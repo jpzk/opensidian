@@ -12,6 +12,9 @@ I'm running as many top frontier models to scan for vulnerabilities, but since t
 - [[wikilinks]] -> clickable links + graph view (canvas force sim)
 - vault = a directory of .md files (env VAULT_DIR, default ./vault)
 
+## Screenshots
+
+
 ## install
 Grab the AppImage from the [latest release](https://github.com/jpzk/rustidian/releases):
 
