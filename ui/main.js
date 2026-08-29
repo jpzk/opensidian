@@ -4,8 +4,9 @@ let graphOn = false, sim = null;
 let vaultPath = null, pmode = null, bpath = null;
 
 /* ---------- tabs ---------- */
-let tabs = [], active = -1;                 // tabs: [{ name }]
+let tabs = [], active = -1;   // tabs: [{ name, mode: "source"|"reading", hist, hpos }]
 const cur = () => (active >= 0 ? tabs[active].name : null);
+const mkTab = name => ({ name, mode: "source", hist: [name], hpos: 0 });
 
 let t = null;                               // autosave debounce timer
 async function flushSave() {                // write pending edits NOW
@@ -13,6 +14,32 @@ async function flushSave() {                // write pending edits NOW
   clearTimeout(t); t = null;
   const n = cur();
   if (n) await inv("write_note", { name: n, content: $("editor").value });
+}
+
+/* ---------- view modes (R3.2: source / reading per tab) ---------- */
+const ICON_BOOK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>';
+const ICON_PEN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/></svg>';
+
+function updateModeBtn() {
+  const t = active >= 0 ? tabs[active] : null;
+  $("modebtn").innerHTML = t && t.mode === "reading" ? ICON_PEN : ICON_BOOK;
+}
+
+function applyMode() {  // reading = preview fills the pane, editor hidden
+  const m = active >= 0 ? tabs[active].mode : "source";
+  $("editor").style.display = m === "reading" ? "none" : "";
+  $("preview").style.display = "";
+  updateModeBtn();
+}
+
+async function cmdToggleMode() {  // Ctrl+E / mode button
+  if (active < 0 || graphOn) return;
+  const tab = tabs[active];
+  if (tab.mode === "source") await flushSave();
+  tab.mode = tab.mode === "source" ? "reading" : "source";
+  hideAc();
+  applyMode();
+  if (tab.mode === "source") $("editor").focus();
 }
 
 function renderTabs() {
@@ -32,16 +59,19 @@ function renderTabs() {
     d.onclick = () => switchTab(i);
     bar.appendChild(d);
   });
+  updateModeBtn();
 }
 
 async function loadActive() {
+  hideAc();
   showEditor();
   const n = cur();
   $("editor").value = n ? await inv("read_note", { name: n }) : "";
-  if (n) $("editor").focus();
+  if (n && tabs[active].mode === "source") $("editor").focus();
   await preview();
   renderTabs();
   await refreshTree();
+  await updateStatus();
 }
 
 async function switchTab(i) {
@@ -55,14 +85,31 @@ async function openInTab(name) {   // explorer click: focus existing tab or open
   await flushSave();
   const i = tabs.findIndex(x => x.name === name);
   if (i >= 0) active = i;
-  else { tabs.push({ name }); active = tabs.length - 1; }
+  else { tabs.push(mkTab(name)); active = tabs.length - 1; }
   await loadActive();
 }
 
-async function navigate(name) {    // wikilink / graph click: replace ACTIVE tab
+async function navigate(name) {    // wikilink / graph click: replace ACTIVE tab, push history
   await flushSave();
-  if (active < 0) { tabs.push({ name }); active = 0; }
-  else tabs[active].name = name;
+  if (active < 0) { tabs.push(mkTab(name)); active = 0; }
+  else {
+    const tab = tabs[active];
+    tab.name = name;
+    tab.hist = tab.hist.slice(0, tab.hpos + 1);
+    tab.hist.push(name);
+    tab.hpos++;
+  }
+  await loadActive();
+}
+
+async function histGo(d) {         // per-tab back/forward (Alt+Left / Alt+Right)
+  if (active < 0) return;
+  const tab = tabs[active];
+  const p = tab.hpos + d;
+  if (p < 0 || p >= tab.hist.length) return;
+  await flushSave();
+  tab.hpos = p;
+  tab.name = tab.hist[p];
   await loadActive();
 }
 
@@ -122,6 +169,7 @@ function renderNode(node, prefix, depth, out) {
 async function refreshTree() {
   const [folders, notes] =
     await Promise.all([inv("list_folders"), inv("list_notes")]);
+  notesCache = notes;
   const tree = $("tree");
   tree.innerHTML = "";
   renderNode(buildTree(folders, notes), "", 0, tree);
@@ -131,24 +179,139 @@ async function refreshTree() {
 async function preview() {
   $("preview").innerHTML = await inv("render", { content: $("editor").value });
   for (const a of $("preview").querySelectorAll("a.wiki"))
-    a.onclick = e => { e.preventDefault(); navigate(a.dataset.note); };
+    a.onclick = async e => {
+      e.preventDefault();
+      const n = a.dataset.note;
+      if (a.classList.contains("wiki-unresolved"))   // R3.5: click creates the note
+        await inv("write_note", { name: n, content: "" });
+      navigate(n);
+    };
 }
-$("editor").oninput = () => {
+
+function scheduleSave() {
   clearTimeout(t);
   t = setTimeout(async () => {
     t = null;
     const n = cur();
     if (n) await inv("write_note", { name: n, content: $("editor").value });
     preview();
+    updateStatus();
   }, 250);
-};
+}
+$("editor").addEventListener("input", () => { scheduleSave(); showAc(); });
+
+/* ---------- status bar (R2.7) ---------- */
+async function updateStatus() {
+  const n = cur();
+  if (!n || graphOn) { $("status").hidden = true; return; }
+  const v = $("editor").value;
+  const w = (v.match(/\S+/g) || []).length;
+  $("st-wc").textContent = w + (w === 1 ? " word" : " words");
+  $("st-cc").textContent = v.length + (v.length === 1 ? " char" : " chars");
+  const bl = await inv("backlinks", { name: n });
+  $("st-bl").textContent = bl.length + (bl.length === 1 ? " backlink" : " backlinks");
+  $("status").hidden = false;
+}
+
+/* ---------- [[ autocomplete (R3.4) ---------- */
+let notesCache = [], acItems = [], acSel = 0, acStart = -1;
+
+function hideAc() { $("ac").hidden = true; acItems = []; acStart = -1; }
+
+function fuzzy(q, s) {  // lower score = better; -1 = no match
+  q = q.toLowerCase();
+  const l = s.toLowerCase();
+  if (!q) return 0;
+  const i = l.indexOf(q);
+  if (i >= 0) return i;                  // substring: rank by position
+  let pos = 0;                           // subsequence fallback
+  for (const c of q) {
+    pos = l.indexOf(c, pos);
+    if (pos < 0) return -1;
+    pos++;
+  }
+  return 1000;
+}
+
+function acContext() {  // caret inside an unclosed [[ on one line?
+  const ed = $("editor");
+  const upto = ed.value.slice(0, ed.selectionStart);
+  const a = upto.lastIndexOf("[[");
+  if (a < 0) return null;
+  const frag = upto.slice(a + 2);
+  if (frag.includes("]]") || frag.includes("\n")) return null;
+  return { start: a, q: frag };
+}
+
+function caretXY() {    // approximate caret position within #content
+  const ed = $("editor");
+  const lines = ed.value.slice(0, ed.selectionStart).split("\n");
+  const col = lines[lines.length - 1].length;
+  const x = ed.offsetLeft + 16 + Math.min(col * 7.8, ed.clientWidth - 40);
+  const y = ed.offsetTop + 16 + lines.length * 20.8 - ed.scrollTop;
+  return [x, y];
+}
+
+function showAc() {
+  const ctx = acContext();
+  if (!ctx) return hideAc();
+  acStart = ctx.start;
+  acItems = notesCache
+    .map(n => [fuzzy(ctx.q, n), n])
+    .filter(([s]) => s >= 0)
+    .sort((a, b) => a[0] - b[0] || a[1].localeCompare(b[1]))
+    .slice(0, 8)
+    .map(([, n]) => n);
+  if (!acItems.length) return hideAc();
+  acSel = 0;
+  const box = $("ac");
+  box.innerHTML = "";
+  acItems.forEach((n, i) => {
+    const d = document.createElement("div");
+    d.textContent = n;
+    if (i === acSel) d.className = "sel";
+    d.onmousedown = e => { e.preventDefault(); acInsert(n); };
+    box.appendChild(d);
+  });
+  const [x, y] = caretXY();
+  box.style.left = Math.max(0, Math.min(x, $("content").clientWidth - 200)) + "px";
+  box.style.top = Math.min(y, $("content").clientHeight - 60) + "px";
+  box.hidden = false;
+}
+
+function acInsert(name) {
+  const ed = $("editor");
+  const end = ed.selectionStart;
+  ed.value = ed.value.slice(0, acStart) + "[[" + name + "]]" + ed.value.slice(end);
+  const p = acStart + name.length + 4;
+  ed.setSelectionRange(p, p);
+  hideAc();
+  ed.focus();
+  scheduleSave();
+}
+
+$("editor").addEventListener("keydown", e => {
+  if ($("ac").hidden) return;
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault(); e.stopPropagation();
+    acSel = (acSel + (e.key === "ArrowDown" ? 1 : acItems.length - 1)) % acItems.length;
+    [...$("ac").children].forEach((d, i) => d.className = i === acSel ? "sel" : "");
+  } else if (e.key === "Enter" || e.key === "Tab") {
+    e.preventDefault(); e.stopPropagation();
+    acInsert(acItems[acSel]);
+  } else if (e.key === "Escape") {
+    e.stopPropagation();
+    hideAc();
+  }
+});
+$("editor").addEventListener("blur", () => setTimeout(hideAc, 100));
 
 /* ---------- commands + keymap ---------- */
 async function cmdNewNote() {                // new note in a NEW tab
   await flushSave();
   const name = "Untitled-" + Date.now() % 10000;
   await inv("write_note", { name, content: "# " + name + "\n" });
-  tabs.push({ name });
+  tabs.push(mkTab(name));
   active = tabs.length - 1;
   await loadActive();
 }
@@ -158,6 +321,7 @@ async function cmdSave() {                   // force save, no debounce
   clearTimeout(t); t = null;
   await inv("write_note", { name: n, content: $("editor").value });
   await preview();
+  await updateStatus();
 }
 async function cmdCloseTab() {
   if (active >= 0) await closeTab(active);
@@ -167,6 +331,9 @@ const keymap = {
   "ctrl+n": cmdNewNote,
   "ctrl+s": cmdSave,
   "ctrl+w": cmdCloseTab,
+  "ctrl+e": cmdToggleMode,
+  "alt+arrowleft": () => histGo(-1),
+  "alt+arrowright": () => histGo(1),
 };
 document.addEventListener("keydown", e => {
   if (e.key === "Escape") {
@@ -181,6 +348,7 @@ document.addEventListener("keydown", e => {
 });
 
 $("newbtn").onclick = cmdNewNote;
+$("modebtn").onclick = cmdToggleMode;
 $("newfolderbtn").onclick = () => {
   const box = $("fnew");
   box.hidden = !box.hidden;
@@ -200,11 +368,13 @@ $("fname").onkeydown = async e => {
 function showEditor() {
   graphOn = false; cancelAnimationFrame(sim);
   $("graph").hidden = true;
-  $("editor").style.display = ""; $("preview").style.display = "";
+  applyMode();
 }
 $("graphbtn").onclick = async () => {
   if (graphOn) return showEditor();
   graphOn = true;
+  hideAc();
+  $("status").hidden = true;
   $("editor").style.display = "none"; $("preview").style.display = "none";
   const cv = $("graph"); cv.hidden = false;
   cv.width = cv.clientWidth; cv.height = cv.clientHeight;
@@ -309,6 +479,8 @@ $("p-go").onclick = async () => {
 async function enterVault() {
   $("vswitch").innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>' + base(vaultPath);
   tabs = []; active = -1; collapsed = new Set();
+  hideAc();
+  $("status").hidden = true;
   showEditor();
   $("editor").value = ""; $("preview").innerHTML = "";
   await refreshTree();

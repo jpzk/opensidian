@@ -183,18 +183,57 @@ fn links_in(s: &str) -> Vec<String> {
     out
 }
 
-#[tauri::command]
-fn render(content: String) -> String {
-    // [[X]] -> inline html anchor, then markdown
-    let mut md = content;
-    for l in links_in(&md.clone()) {
+/// wikilinks resolve by full relative path or basename
+fn resolve(notes: &[String], l: &str) -> Option<usize> {
+    notes
+        .iter()
+        .position(|x| *x == l || x.ends_with(&format!("/{l}")))
+}
+
+fn render_md(content: &str, notes: &[String]) -> String {
+    // [[X]] -> inline html anchor (unresolved targets marked), then markdown
+    let mut md = content.to_string();
+    for l in links_in(content) {
+        let cls = if resolve(notes, &l).is_some() {
+            "wiki"
+        } else {
+            "wiki wiki-unresolved"
+        };
         md = md.replace(
             &format!("[[{l}]]"),
-            &format!("<a href=\"#\" class=\"wiki\" data-note=\"{l}\">{l}</a>"),
+            &format!("<a href=\"#\" class=\"{cls}\" data-note=\"{l}\">{l}</a>"),
         );
     }
     let mut out = String::new();
     html::push_html(&mut out, Parser::new_ext(&md, Options::all()));
+    out
+}
+
+#[tauri::command]
+fn render(v: State<Vault>, content: String) -> String {
+    let notes = cur_vault(&v).map(|r| notes_of(&r)).unwrap_or_default();
+    render_md(&content, &notes)
+}
+
+#[tauri::command]
+fn backlinks(v: State<Vault>, name: String) -> Vec<String> {
+    // invert the graph edges: which notes link to `name`?
+    let Some(root) = cur_vault(&v) else { return vec![] };
+    let notes = notes_of(&root);
+    let mut out = Vec::new();
+    for n in &notes {
+        if *n == name {
+            continue;
+        }
+        let content =
+            fs::read_to_string(format!("{}.md", root.join(n).display())).unwrap_or_default();
+        if links_in(&content)
+            .iter()
+            .any(|l| resolve(&notes, l).map(|j| notes[j] == name).unwrap_or(false))
+        {
+            out.push(n.clone());
+        }
+    }
     out
 }
 
@@ -215,11 +254,7 @@ fn graph(v: State<Vault>) -> Graph {
         let content =
             fs::read_to_string(format!("{}.md", root.join(n).display())).unwrap_or_default();
         for l in links_in(&content) {
-            // wikilinks resolve by full relative path or basename
-            if let Some(j) = nodes
-                .iter()
-                .position(|x| *x == l || x.ends_with(&format!("/{l}")))
-            {
+            if let Some(j) = resolve(&nodes, &l) {
                 if i != j {
                     edges.push((i, j));
                 }
@@ -235,8 +270,22 @@ fn main() {
         .manage(Vault(Mutex::new(init)))
         .invoke_handler(tauri::generate_handler![
             list_notes, read_note, write_note, render, graph, vault_get, set_vault,
-            create_vault, home_dir, list_dirs, list_folders, create_dir
+            create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks
         ])
         .run(tauri::generate_context!())
         .expect("tauri run");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_marks_unresolved() {
+        let notes = vec!["Ideas".to_string(), "sub/Nested".to_string()];
+        let h = render_md("[[Ideas]] [[Nested]] [[Nope]]", &notes);
+        assert!(h.contains(r#"class="wiki" data-note="Ideas""#));
+        assert!(h.contains(r#"class="wiki" data-note="Nested""#)); // basename resolve
+        assert!(h.contains(r#"class="wiki wiki-unresolved" data-note="Nope""#));
+    }
 }
