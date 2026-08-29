@@ -238,9 +238,44 @@ fn backlinks(v: State<Vault>, name: String) -> Vec<String> {
 }
 
 #[derive(serde::Serialize)]
+struct GNode {
+    name: String,
+    resolved: bool,
+}
+
+#[derive(serde::Serialize)]
 struct Graph {
-    nodes: Vec<String>,
+    nodes: Vec<GNode>,
     edges: Vec<(usize, usize)>,
+}
+
+/// R4.2: notes = resolved nodes; wikilinks to nonexistent notes become
+/// unresolved nodes (deduped by link text), so the graph shows ghost targets.
+fn build_graph(docs: &[(String, String)]) -> Graph {
+    let notes: Vec<String> = docs.iter().map(|(n, _)| n.clone()).collect();
+    let mut nodes: Vec<GNode> = notes
+        .iter()
+        .map(|n| GNode { name: n.clone(), resolved: true })
+        .collect();
+    let mut edges = Vec::new();
+    for (i, (_, content)) in docs.iter().enumerate() {
+        for l in links_in(content) {
+            let j = match resolve(&notes, &l) {
+                Some(j) => j,
+                None => nodes
+                    .iter()
+                    .position(|x| !x.resolved && x.name == l)
+                    .unwrap_or_else(|| {
+                        nodes.push(GNode { name: l.clone(), resolved: false });
+                        nodes.len() - 1
+                    }),
+            };
+            if i != j && !edges.contains(&(i, j)) {
+                edges.push((i, j));
+            }
+        }
+    }
+    Graph { nodes, edges }
 }
 
 #[tauri::command]
@@ -248,20 +283,15 @@ fn graph(v: State<Vault>) -> Graph {
     let Some(root) = cur_vault(&v) else {
         return Graph { nodes: vec![], edges: vec![] };
     };
-    let nodes = notes_of(&root);
-    let mut edges = Vec::new();
-    for (i, n) in nodes.iter().enumerate() {
-        let content =
-            fs::read_to_string(format!("{}.md", root.join(n).display())).unwrap_or_default();
-        for l in links_in(&content) {
-            if let Some(j) = resolve(&nodes, &l) {
-                if i != j {
-                    edges.push((i, j));
-                }
-            }
-        }
-    }
-    Graph { nodes, edges }
+    let docs: Vec<(String, String)> = notes_of(&root)
+        .into_iter()
+        .map(|n| {
+            let c = fs::read_to_string(format!("{}.md", root.join(&n).display()))
+                .unwrap_or_default();
+            (n, c)
+        })
+        .collect();
+    build_graph(&docs)
 }
 
 fn main() {
@@ -287,5 +317,22 @@ mod tests {
         assert!(h.contains(r#"class="wiki" data-note="Ideas""#));
         assert!(h.contains(r#"class="wiki" data-note="Nested""#)); // basename resolve
         assert!(h.contains(r#"class="wiki wiki-unresolved" data-note="Nope""#));
+    }
+
+    #[test]
+    fn graph_emits_unresolved_nodes() {
+        let docs = vec![
+            ("A".to_string(), "[[B]] [[Ghost]] [[Ghost]]".to_string()),
+            ("B".to_string(), "[[Ghost]] [[sub/C]]".to_string()),
+            ("sub/C".to_string(), String::new()),
+        ];
+        let g = build_graph(&docs);
+        // 3 real notes + 1 deduped unresolved
+        assert_eq!(g.nodes.len(), 4);
+        assert!(g.nodes[..3].iter().all(|n| n.resolved));
+        assert_eq!(g.nodes[3].name, "Ghost");
+        assert!(!g.nodes[3].resolved);
+        // A->B, A->Ghost (deduped), B->Ghost, B->sub/C
+        assert_eq!(g.edges, vec![(0, 1), (0, 3), (1, 3), (1, 2)]);
     }
 }

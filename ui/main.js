@@ -379,8 +379,9 @@ $("graphbtn").onclick = async () => {
   const cv = $("graph"); cv.hidden = false;
   cv.width = cv.clientWidth; cv.height = cv.clientHeight;
   const g = await inv("graph");
-  const N = g.nodes.map((n, i) => ({
-    n, x: cv.width / 2 + 120 * Math.cos(i), y: cv.height / 2 + 120 * Math.sin(i),
+  const N = g.nodes.map((nd, i) => ({
+    n: nd.name, resolved: nd.resolved,
+    x: cv.width / 2 + 120 * Math.cos(i), y: cv.height / 2 + 120 * Math.sin(i),
     vx: 0, vy: 0
   }));
   const ctx = cv.getContext("2d");
