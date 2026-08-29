@@ -379,12 +379,17 @@ $("graphbtn").onclick = async () => {
   const cv = $("graph"); cv.hidden = false;
   cv.width = cv.clientWidth; cv.height = cv.clientHeight;
   const g = await inv("graph");
+  // sim runs in WORLD coords (world = initial canvas rect); screen = world*scale + t
+  const view = { scale: 1, tx: 0, ty: 0 };
+  const W = cv.width, H = cv.height;                          // world bounds
   const N = g.nodes.map((nd, i) => ({
     n: nd.name, resolved: nd.resolved,
-    x: cv.width / 2 + 120 * Math.cos(i), y: cv.height / 2 + 120 * Math.sin(i),
+    x: W / 2 + 120 * Math.cos(i), y: H / 2 + 120 * Math.sin(i),
     vx: 0, vy: 0
   }));
   const ctx = cv.getContext("2d");
+  const toWorld = (sx, sy) =>
+    [(sx - view.tx) / view.scale, (sy - view.ty) / view.scale];
   function step() {
     for (const a of N) for (const b of N) {
       if (a === b) continue;
@@ -397,28 +402,53 @@ $("graphbtn").onclick = async () => {
       b.vx -= dx * 0.005; b.vy -= dy * 0.005;
     }
     for (const p of N) {
-      p.vx += (cv.width / 2 - p.x) * 0.01; p.vy += (cv.height / 2 - p.y) * 0.01;
+      p.vx += (W / 2 - p.x) * 0.01; p.vy += (H / 2 - p.y) * 0.01;
       p.vx *= 0.85; p.vy *= 0.85; p.x += p.vx; p.y += p.vy;
-      const m = 30;   // keep nodes (and labels) inside the viewport
-      p.x = Math.max(m, Math.min(cv.width - m, p.x));
-      p.y = Math.max(m, Math.min(cv.height - m, p.y));
+      const m = 30;   // clamp in WORLD coords (labels stay near world bounds)
+      p.x = Math.max(m, Math.min(W - m, p.x));
+      p.y = Math.max(m, Math.min(H - m, p.y));
     }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, cv.width, cv.height);
-    ctx.strokeStyle = "#45475a";
+    ctx.setTransform(view.scale, 0, 0, view.scale, view.tx, view.ty);
+    ctx.strokeStyle = "#45475a"; ctx.lineWidth = 1;
     for (const [i, j] of g.edges) {
       ctx.beginPath(); ctx.moveTo(N[i].x, N[i].y); ctx.lineTo(N[j].x, N[j].y); ctx.stroke();
     }
     ctx.fillStyle = "#89b4fa"; ctx.textAlign = "center"; ctx.font = "12px sans-serif";
     for (const p of N) {
       ctx.beginPath(); ctx.arc(p.x, p.y, 6, 0, 7); ctx.fill();
-      ctx.fillText(p.n, p.x, p.y - 10);
+      if (view.scale >= 0.5) ctx.fillText(p.n, p.x, p.y - 10);
     }
     sim = requestAnimationFrame(step);
   }
   step();
-  cv.onclick = e => {
+  // wheel: cursor-anchored zoom, 0.2x-5x
+  cv.onwheel = e => {
+    e.preventDefault();
     const r = cv.getBoundingClientRect();
-    const x = e.clientX - r.left, y = e.clientY - r.top;
+    const mx = e.clientX - r.left, my = e.clientY - r.top;
+    const [wx, wy] = toWorld(mx, my);
+    const s = Math.max(0.2, Math.min(5, view.scale * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
+    view.tx = mx - wx * s; view.ty = my - wy * s; view.scale = s;
+  };
+  // drag anywhere pans (incl. on nodes — simpler); click w/o movement navigates
+  let drag = null, moved = false;
+  cv.onmousedown = e => { drag = { x: e.clientX, y: e.clientY }; moved = false; };
+  cv.onmousemove = e => {
+    if (!drag) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (moved || dx * dx + dy * dy > 16) {
+      moved = true;
+      view.tx += dx; view.ty += dy;
+      drag = { x: e.clientX, y: e.clientY };
+    }
+  };
+  cv.onmouseup = cv.onmouseleave = () => { drag = null; };
+  cv.onclick = e => {
+    if (moved) { moved = false; return; }               // was a pan, not a click
+    const r = cv.getBoundingClientRect();
+    const [x, y] = toWorld(e.clientX - r.left, e.clientY - r.top);
     const hit = N.find(p => (p.x - x) ** 2 + (p.y - y) ** 2 < 144);
     if (hit) navigate(hit.n);
   };
