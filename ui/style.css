@@ -1,15 +1,20 @@
 * { box-sizing: border-box; margin: 0 }
 body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
        background: #1e1e2e; color: #cdd6f4 }
-#side { width: 200px; background: #181825; overflow-y: auto; flex-shrink: 0 }
+#side { width: 200px; background: #181825; flex-shrink: 0;
+        display: flex; flex-direction: column }
 #bar { display: flex; gap: 4px; padding: 6px }
 #bar button { flex: 1; background: #313244; color: #cdd6f4; border: 0;
               padding: 4px; cursor: pointer; border-radius: 4px }
-#notes { list-style: none }
+#notes { list-style: none; flex: 1; overflow-y: auto }
 #notes li { padding: 5px 12px; cursor: pointer; white-space: nowrap;
             overflow: hidden; text-overflow: ellipsis }
 #notes li:hover { background: #313244 }
 #notes li.active { background: #45475a }
+#vswitch { padding: 6px 12px; border-top: 1px solid #313244; color: #a6adc8;
+           cursor: pointer; font-size: 12px; white-space: nowrap;
+           overflow: hidden; text-overflow: ellipsis }
+#vswitch:hover { background: #313244 }
 #main { flex: 1; display: flex; min-width: 0 }
 #editor { flex: 1; background: #1e1e2e; color: #cdd6f4; border: 0;
           border-right: 1px solid #313244; padding: 16px; resize: none;
@@ -19,3 +24,31 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 #preview h1, #preview h2 { border-bottom: 1px solid #313244 }
 #preview code { background: #313244; padding: 1px 4px; border-radius: 3px }
 #graph { flex: 1; background: #11111b }
+
+/* vault picker */
+#picker { position: fixed; inset: 0; background: #1e1e2e; z-index: 10;
+          display: flex; align-items: center; justify-content: center }
+#picker[hidden] { display: none }
+#pcard { width: 480px; background: #26263a; border-radius: 10px;
+         padding: 28px; position: relative }
+#ptitle { text-align: center; font-size: 26px; font-weight: 700;
+          margin-bottom: 20px; letter-spacing: 1px }
+.prow { display: flex; align-items: center; gap: 12px; padding: 14px 0;
+        border-top: 1px solid #313244 }
+.ptext { flex: 1; display: flex; flex-direction: column }
+.ptext span { color: #a6adc8; font-size: 12px }
+.prow button, #p-go { background: #7c6cf0; color: #fff; border: 0;
+        border-radius: 5px; padding: 8px 18px; cursor: pointer }
+#p-back { background: #313244; color: #cdd6f4; border: 0; border-radius: 5px;
+          padding: 8px 18px; cursor: pointer }
+#p-btns { display: flex; justify-content: space-between; margin-top: 8px }
+#p-name, #p-path { width: 100%; background: #181825; color: #cdd6f4;
+        border: 1px solid #45475a; border-radius: 5px; padding: 8px;
+        margin: 6px 0; outline: none; font-size: 13px }
+#p-dirs { list-style: none; height: 180px; overflow-y: auto;
+          border: 1px solid #313244; border-radius: 5px; margin: 6px 0 }
+#p-dirs li { padding: 4px 10px; cursor: pointer; font-size: 13px }
+#p-dirs li:hover { background: #313244 }
+#p-err { color: #f38ba8; font-size: 12px; min-height: 18px }
+#p-close { position: absolute; top: 10px; right: 12px; background: none;
+           border: 0; color: #a6adc8; font-size: 15px; cursor: pointer }

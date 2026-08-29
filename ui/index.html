@@ -8,11 +8,38 @@
     <button id="graphbtn" title="graph view">◉</button>
   </div>
   <ul id="notes"></ul>
+  <div id="vswitch" title="switch vault"></div>
 </div>
 <div id="main">
   <textarea id="editor" spellcheck="false" placeholder="# write markdown, link with [[Note]]"></textarea>
   <div id="preview"></div>
   <canvas id="graph" hidden></canvas>
+</div>
+<div id="picker" hidden>
+  <div id="pcard">
+    <button id="p-close" title="close" hidden>✕</button>
+    <div id="ptitle">rustidian</div>
+    <div id="p-actions">
+      <div class="prow">
+        <div class="ptext"><b>Create new vault</b><span>Create a new vault under a folder.</span></div>
+        <button id="p-create">Create</button>
+      </div>
+      <div class="prow">
+        <div class="ptext"><b>Open folder as vault</b><span>Choose an existing folder of Markdown files.</span></div>
+        <button id="p-open">Open</button>
+      </div>
+    </div>
+    <div id="p-sub" hidden>
+      <input id="p-name" placeholder="Vault name" hidden>
+      <input id="p-path" spellcheck="false" title="location">
+      <ul id="p-dirs"></ul>
+      <div id="p-err"></div>
+      <div id="p-btns">
+        <button id="p-back">Back</button>
+        <button id="p-go"></button>
+      </div>
+    </div>
+  </div>
 </div>
 <script src="main.js"></script>
 </body></html>

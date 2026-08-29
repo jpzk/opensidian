@@ -1,6 +1,7 @@
 const inv = (c, a) => window.__TAURI__.core.invoke(c, a);
 const $ = id => document.getElementById(id);
 let cur = null, graphOn = false, sim = null;
+let vaultPath = null, pmode = null, bpath = null;
 
 async function refreshList() {
   const names = await inv("list_notes");
@@ -17,6 +18,7 @@ async function open(name) {
   cur = name;
   showEditor();
   $("editor").value = await inv("read_note", { name });
+  $("editor").focus();
   await preview();
   refreshList();
 }
@@ -92,8 +94,74 @@ $("graphbtn").onclick = async () => {
   };
 };
 
-(async () => {
+/* ---------- vault picker ---------- */
+function base(p) { return p.replace(/\/+$/, "").split("/").pop() || p; }
+
+function showPicker() {
+  pmode = null;
+  $("picker").hidden = false;
+  $("p-actions").style.display = "";
+  $("p-sub").hidden = true;
+  $("p-err").textContent = "";
+  $("p-close").hidden = !vaultPath;
+}
+async function browseTo(p) {
+  const dirs = await inv("list_dirs", { path: p });
+  bpath = p;
+  $("p-path").value = p;
+  const ul = $("p-dirs");
+  ul.innerHTML = "";
+  const up = document.createElement("li");
+  up.textContent = "..";
+  up.onclick = () => browseTo(bpath.replace(/\/[^/]+\/?$/, "") || "/");
+  ul.appendChild(up);
+  for (const d of dirs) {
+    const li = document.createElement("li");
+    li.textContent = d + "/";
+    li.onclick = () => browseTo((bpath === "/" ? "" : bpath) + "/" + d);
+    ul.appendChild(li);
+  }
+}
+async function enterMode(m) {
+  pmode = m;
+  $("p-actions").style.display = "none";
+  $("p-sub").hidden = false;
+  $("p-name").hidden = m !== "create";
+  $("p-go").textContent = m === "create" ? "Create vault" : "Open this folder";
+  $("p-err").textContent = "";
+  await browseTo(await inv("home_dir"));
+  (m === "create" ? $("p-name") : $("p-path")).focus();
+}
+$("p-create").onclick = () => enterMode("create");
+$("p-open").onclick = () => enterMode("open");
+$("p-back").onclick = showPicker;
+$("p-close").onclick = () => { $("picker").hidden = true; };
+$("p-path").onkeydown = e => { if (e.key === "Enter") browseTo($("p-path").value.trim()); };
+$("p-name").onkeydown = e => { if (e.key === "Enter") $("p-go").click(); };
+$("p-go").onclick = async () => {
+  try {
+    vaultPath = pmode === "create"
+      ? await inv("create_vault", { parent: bpath, name: $("p-name").value })
+      : await inv("set_vault", { path: bpath });
+  } catch (err) { $("p-err").textContent = String(err); return; }
+  $("picker").hidden = true;
+  await enterVault();
+};
+async function enterVault() {
+  $("vswitch").textContent = "⌂ " + base(vaultPath);
+  cur = null;
+  showEditor();
+  $("editor").value = ""; $("preview").innerHTML = "";
   await refreshList();
   const first = $("notes").firstChild;
   if (first) open(first.textContent);
+}
+$("vswitch").onclick = showPicker;
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && vaultPath && !$("picker").hidden) $("picker").hidden = true;
+});
+
+(async () => {
+  vaultPath = await inv("vault_get");
+  if (vaultPath) await enterVault(); else showPicker();
 })();
