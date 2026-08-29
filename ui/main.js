@@ -226,8 +226,11 @@ $("graphbtn").onclick = async () => {
       b.vx -= dx * 0.005; b.vy -= dy * 0.005;
     }
     for (const p of N) {
-      p.vx += (cv.width / 2 - p.x) * 0.001; p.vy += (cv.height / 2 - p.y) * 0.001;
+      p.vx += (cv.width / 2 - p.x) * 0.01; p.vy += (cv.height / 2 - p.y) * 0.01;
       p.vx *= 0.85; p.vy *= 0.85; p.x += p.vx; p.y += p.vy;
+      const m = 30;   // keep nodes (and labels) inside the viewport
+      p.x = Math.max(m, Math.min(cv.width - m, p.x));
+      p.y = Math.max(m, Math.min(cv.height - m, p.y));
     }
     ctx.clearRect(0, 0, cv.width, cv.height);
     ctx.strokeStyle = "#45475a";
