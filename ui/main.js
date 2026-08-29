@@ -422,24 +422,32 @@ $("graphbtn").onclick = async () => {
     adj.length = 0; for (const _ of N) adj.push(new Set());
     for (const [i, j] of g.edges) { adj[i].add(j); adj[j].add(i); }
     hov = -1;
+    alpha = Math.max(alpha, 0.5);   // partial reheat: settle new nodes without scattering old ones
   };
+  // sim heat: forces scale by alpha, which decays each frame; below 0.02
+  // physics freezes (render loop keeps running for hover/zoom/pan), so the
+  // layout settles deterministically instead of jiggling forever
+  let alpha = 1;
   function step() {
+    if (alpha > 0.02) {
     for (const a of N) for (const b of N) {
       if (a === b) continue;
       const dx = a.x - b.x, dy = a.y - b.y, d2 = dx * dx + dy * dy + 0.01;
-      a.vx += 800 * dx / d2; a.vy += 800 * dy / d2;          // repulsion
+      a.vx += alpha * 800 * dx / d2; a.vy += alpha * 800 * dy / d2;  // repulsion
     }
     for (const [i, j] of g.edges) {
       const a = N[i], b = N[j], dx = b.x - a.x, dy = b.y - a.y;
-      a.vx += dx * 0.005; a.vy += dy * 0.005;                 // spring
-      b.vx -= dx * 0.005; b.vy -= dy * 0.005;
+      a.vx += dx * 0.005 * alpha; a.vy += dy * 0.005 * alpha;        // spring
+      b.vx -= dx * 0.005 * alpha; b.vy -= dy * 0.005 * alpha;
     }
     for (const p of N) {
-      p.vx += (W / 2 - p.x) * 0.01; p.vy += (H / 2 - p.y) * 0.01;
+      p.vx += (W / 2 - p.x) * 0.01 * alpha; p.vy += (H / 2 - p.y) * 0.01 * alpha;
       p.vx *= 0.85; p.vy *= 0.85; p.x += p.vx; p.y += p.vy;
       const m = 30;   // clamp in WORLD coords (labels stay near world bounds)
       p.x = Math.max(m, Math.min(W - m, p.x));
       p.y = Math.max(m, Math.min(H - m, p.y));
+    }
+    alpha *= 0.98;
     }
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, cv.width, cv.height);
