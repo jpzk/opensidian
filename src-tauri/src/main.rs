@@ -59,6 +59,39 @@ fn notes_of(root: &Path) -> Vec<String> {
     out
 }
 
+fn walk_dirs(dir: &Path, base: &Path, out: &mut Vec<String>) {
+    let Ok(rd) = fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') {
+            continue;
+        }
+        let p = e.path();
+        if p.is_dir() {
+            if let Ok(rel) = p.strip_prefix(base) {
+                out.push(rel.display().to_string());
+            }
+            walk_dirs(&p, base, out);
+        }
+    }
+}
+
+#[tauri::command]
+fn list_folders(v: State<Vault>) -> Vec<String> {
+    let Some(root) = cur_vault(&v) else { return vec![] };
+    let mut out = Vec::new();
+    walk_dirs(&root, &root, &mut out);
+    out.sort();
+    out
+}
+
+#[tauri::command]
+fn create_dir(v: State<Vault>, name: String) -> Result<(), String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    let rel = safe_rel(&name).ok_or("invalid folder name")?;
+    fs::create_dir_all(root.join(rel)).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn list_notes(v: State<Vault>) -> Vec<String> {
     cur_vault(&v).map(|r| notes_of(&r)).unwrap_or_default()
@@ -202,7 +235,7 @@ fn main() {
         .manage(Vault(Mutex::new(init)))
         .invoke_handler(tauri::generate_handler![
             list_notes, read_note, write_note, render, graph, vault_get, set_vault,
-            create_vault, home_dir, list_dirs
+            create_vault, home_dir, list_dirs, list_folders, create_dir
         ])
         .run(tauri::generate_context!())
         .expect("tauri run");

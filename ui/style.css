@@ -6,16 +6,32 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 #bar { display: flex; gap: 4px; padding: 6px }
 #bar button { flex: 1; background: #313244; color: #cdd6f4; border: 0;
               padding: 4px; cursor: pointer; border-radius: 4px }
-#notes { list-style: none; flex: 1; overflow-y: auto }
-#notes li { padding: 5px 12px; cursor: pointer; white-space: nowrap;
-            overflow: hidden; text-overflow: ellipsis }
-#notes li:hover { background: #313244 }
-#notes li.active { background: #45475a }
+#fnew { padding: 2px 6px }
+#fname { width: 100%; background: #181825; color: #cdd6f4;
+         border: 1px solid #45475a; border-radius: 4px; padding: 4px 6px;
+         outline: none; font-size: 12px }
+#tree { flex: 1; overflow-y: auto }
+.trow { padding: 5px 12px; cursor: pointer; white-space: nowrap;
+        overflow: hidden; text-overflow: ellipsis }
+.trow:hover { background: #313244 }
+.trow.active { background: #45475a }
+.trow.folder { color: #a6adc8 }
 #vswitch { padding: 6px 12px; border-top: 1px solid #313244; color: #a6adc8;
            cursor: pointer; font-size: 12px; white-space: nowrap;
            overflow: hidden; text-overflow: ellipsis }
 #vswitch:hover { background: #313244 }
-#main { flex: 1; display: flex; min-width: 0 }
+#main { flex: 1; display: flex; flex-direction: column; min-width: 0 }
+#tabs { display: flex; height: 32px; background: #11111b; flex-shrink: 0;
+        overflow: hidden }
+.tab { width: 120px; flex-shrink: 0; display: flex; align-items: center;
+       gap: 6px; padding: 0 8px; background: #313244; color: #a6adc8;
+       cursor: pointer; font-size: 12px; border-right: 2px solid #11111b }
+.tab.active { background: #45475a; color: #cdd6f4 }
+.tab .t { flex: 1; overflow: hidden; text-overflow: ellipsis;
+          white-space: nowrap }
+.tab .x { cursor: pointer; padding: 0 2px; border-radius: 3px }
+.tab .x:hover { background: #585b70 }
+#content { flex: 1; display: flex; min-height: 0 }
 #editor { flex: 1; background: #1e1e2e; color: #cdd6f4; border: 0;
           border-right: 1px solid #313244; padding: 16px; resize: none;
           font: 13px/1.6 monospace; outline: none }

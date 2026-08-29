@@ -5,15 +5,20 @@
 <div id="side">
   <div id="bar">
     <button id="newbtn" title="new note">+</button>
+    <button id="newfolderbtn" title="new folder">▣</button>
     <button id="graphbtn" title="graph view">◉</button>
   </div>
-  <ul id="notes"></ul>
+  <div id="fnew" hidden><input id="fname" placeholder="folder name" spellcheck="false"></div>
+  <div id="tree"></div>
   <div id="vswitch" title="switch vault"></div>
 </div>
 <div id="main">
-  <textarea id="editor" spellcheck="false" placeholder="# write markdown, link with [[Note]]"></textarea>
-  <div id="preview"></div>
-  <canvas id="graph" hidden></canvas>
+  <div id="tabs"></div>
+  <div id="content">
+    <textarea id="editor" spellcheck="false" placeholder="# write markdown, link with [[Note]]"></textarea>
+    <div id="preview"></div>
+    <canvas id="graph" hidden></canvas>
+  </div>
 </div>
 <div id="picker" hidden>
   <div id="pcard">

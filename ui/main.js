@@ -1,46 +1,202 @@
 const inv = (c, a) => window.__TAURI__.core.invoke(c, a);
 const $ = id => document.getElementById(id);
-let cur = null, graphOn = false, sim = null;
+let graphOn = false, sim = null;
 let vaultPath = null, pmode = null, bpath = null;
 
-async function refreshList() {
-  const names = await inv("list_notes");
-  $("notes").innerHTML = "";
-  for (const n of names) {
-    const li = document.createElement("li");
-    li.textContent = n;
-    li.className = n === cur ? "active" : "";
-    li.onclick = () => open(n);
-    $("notes").appendChild(li);
+/* ---------- tabs ---------- */
+let tabs = [], active = -1;                 // tabs: [{ name }]
+const cur = () => (active >= 0 ? tabs[active].name : null);
+
+let t = null;                               // autosave debounce timer
+async function flushSave() {                // write pending edits NOW
+  if (!t) return;
+  clearTimeout(t); t = null;
+  const n = cur();
+  if (n) await inv("write_note", { name: n, content: $("editor").value });
+}
+
+function renderTabs() {
+  const bar = $("tabs");
+  bar.innerHTML = "";
+  tabs.forEach((tab, i) => {
+    const d = document.createElement("div");
+    d.className = "tab" + (i === active ? " active" : "");
+    const ttl = document.createElement("span");
+    ttl.className = "t";
+    ttl.textContent = tab.name.split("/").pop();
+    const x = document.createElement("span");
+    x.className = "x";
+    x.textContent = "✕";
+    x.onclick = e => { e.stopPropagation(); closeTab(i); };
+    d.append(ttl, x);
+    d.onclick = () => switchTab(i);
+    bar.appendChild(d);
+  });
+}
+
+async function loadActive() {
+  showEditor();
+  const n = cur();
+  $("editor").value = n ? await inv("read_note", { name: n }) : "";
+  if (n) $("editor").focus();
+  await preview();
+  renderTabs();
+  await refreshTree();
+}
+
+async function switchTab(i) {
+  if (i === active) return;
+  await flushSave();
+  active = i;
+  await loadActive();
+}
+
+async function openInTab(name) {   // explorer click: focus existing tab or open new
+  await flushSave();
+  const i = tabs.findIndex(x => x.name === name);
+  if (i >= 0) active = i;
+  else { tabs.push({ name }); active = tabs.length - 1; }
+  await loadActive();
+}
+
+async function navigate(name) {    // wikilink / graph click: replace ACTIVE tab
+  await flushSave();
+  if (active < 0) { tabs.push({ name }); active = 0; }
+  else tabs[active].name = name;
+  await loadActive();
+}
+
+async function closeTab(i) {
+  if (i === active) await flushSave();
+  tabs.splice(i, 1);
+  if (active >= tabs.length) active = tabs.length - 1;
+  else if (i < active) active--;
+  await loadActive();
+}
+
+/* ---------- explorer tree ---------- */
+let collapsed = new Set();
+
+function buildTree(folders, notes) {
+  const root = { dirs: new Map(), notes: [] };
+  const dirAt = path => {
+    let n = root;
+    for (const part of path.split("/")) {
+      if (!n.dirs.has(part)) n.dirs.set(part, { dirs: new Map(), notes: [] });
+      n = n.dirs.get(part);
+    }
+    return n;
+  };
+  for (const f of folders) dirAt(f);
+  for (const nm of notes) {
+    const i = nm.lastIndexOf("/");
+    (i < 0 ? root : dirAt(nm.slice(0, i))).notes.push(nm);
+  }
+  return root;
+}
+
+function renderNode(node, prefix, depth, out) {
+  for (const d of [...node.dirs.keys()].sort()) {
+    const full = prefix ? prefix + "/" + d : d;
+    const row = document.createElement("div");
+    row.className = "trow folder";
+    row.style.paddingLeft = 12 + depth * 14 + "px";
+    row.textContent = (collapsed.has(full) ? "▸ " : "▾ ") + d;
+    row.onclick = () => {
+      collapsed.has(full) ? collapsed.delete(full) : collapsed.add(full);
+      refreshTree();
+    };
+    out.appendChild(row);
+    if (!collapsed.has(full)) renderNode(node.dirs.get(d), full, depth + 1, out);
+  }
+  for (const nm of [...node.notes].sort()) {
+    const row = document.createElement("div");
+    row.className = "trow note" + (nm === cur() ? " active" : "");
+    row.style.paddingLeft = 12 + depth * 14 + "px";
+    row.textContent = nm.split("/").pop();
+    row.onclick = () => openInTab(nm);
+    out.appendChild(row);
   }
 }
-async function open(name) {
-  cur = name;
-  showEditor();
-  $("editor").value = await inv("read_note", { name });
-  $("editor").focus();
-  await preview();
-  refreshList();
+
+async function refreshTree() {
+  const [folders, notes] =
+    await Promise.all([inv("list_folders"), inv("list_notes")]);
+  const tree = $("tree");
+  tree.innerHTML = "";
+  renderNode(buildTree(folders, notes), "", 0, tree);
 }
+
+/* ---------- editor + preview ---------- */
 async function preview() {
   $("preview").innerHTML = await inv("render", { content: $("editor").value });
   for (const a of $("preview").querySelectorAll("a.wiki"))
-    a.onclick = e => { e.preventDefault(); open(a.dataset.note); };
+    a.onclick = e => { e.preventDefault(); navigate(a.dataset.note); };
 }
-let t;
 $("editor").oninput = () => {
   clearTimeout(t);
   t = setTimeout(async () => {
-    if (cur) await inv("write_note", { name: cur, content: $("editor").value });
+    t = null;
+    const n = cur();
+    if (n) await inv("write_note", { name: n, content: $("editor").value });
     preview();
   }, 250);
 };
-$("newbtn").onclick = async () => {
+
+/* ---------- commands + keymap ---------- */
+async function cmdNewNote() {                // new note in a NEW tab
+  await flushSave();
   const name = "Untitled-" + Date.now() % 10000;
   await inv("write_note", { name, content: "# " + name + "\n" });
-  open(name);
+  tabs.push({ name });
+  active = tabs.length - 1;
+  await loadActive();
+}
+async function cmdSave() {                   // force save, no debounce
+  const n = cur();
+  if (!n) return;
+  clearTimeout(t); t = null;
+  await inv("write_note", { name: n, content: $("editor").value });
+  await preview();
+}
+async function cmdCloseTab() {
+  if (active >= 0) await closeTab(active);
+}
+
+const keymap = {
+  "ctrl+n": cmdNewNote,
+  "ctrl+s": cmdSave,
+  "ctrl+w": cmdCloseTab,
+};
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") {
+    if (vaultPath && !$("picker").hidden) $("picker").hidden = true;
+    if (!$("fnew").hidden) $("fnew").hidden = true;
+    return;
+  }
+  const combo = (e.ctrlKey ? "ctrl+" : "") + (e.altKey ? "alt+" : "")
+    + (e.shiftKey ? "shift+" : "") + e.key.toLowerCase();
+  const fn = keymap[combo];
+  if (fn) { e.preventDefault(); fn(); }
+});
+
+$("newbtn").onclick = cmdNewNote;
+$("newfolderbtn").onclick = () => {
+  const box = $("fnew");
+  box.hidden = !box.hidden;
+  if (!box.hidden) { $("fname").value = ""; $("fname").focus(); }
+};
+$("fname").onkeydown = async e => {
+  if (e.key !== "Enter") return;
+  const name = $("fname").value.trim();
+  if (!name) return;
+  try { await inv("create_dir", { name }); }
+  catch (err) { return; }
+  $("fnew").hidden = true;
+  await refreshTree();
 };
 
+/* ---------- graph ---------- */
 function showEditor() {
   graphOn = false; cancelAnimationFrame(sim);
   $("graph").hidden = true;
@@ -90,7 +246,7 @@ $("graphbtn").onclick = async () => {
     const r = cv.getBoundingClientRect();
     const x = e.clientX - r.left, y = e.clientY - r.top;
     const hit = N.find(p => (p.x - x) ** 2 + (p.y - y) ** 2 < 144);
-    if (hit) open(hit.n);
+    if (hit) navigate(hit.n);
   };
 };
 
@@ -149,17 +305,15 @@ $("p-go").onclick = async () => {
 };
 async function enterVault() {
   $("vswitch").textContent = "⌂ " + base(vaultPath);
-  cur = null;
+  tabs = []; active = -1; collapsed = new Set();
   showEditor();
   $("editor").value = ""; $("preview").innerHTML = "";
-  await refreshList();
-  const first = $("notes").firstChild;
-  if (first) open(first.textContent);
+  await refreshTree();
+  const names = await inv("list_notes");
+  if (names.length) await openInTab(names[0]);
+  else renderTabs();
 }
 $("vswitch").onclick = showPicker;
-document.addEventListener("keydown", e => {
-  if (e.key === "Escape" && vaultPath && !$("picker").hidden) $("picker").hidden = true;
-});
 
 (async () => {
   vaultPath = await inv("vault_get");
