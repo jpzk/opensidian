@@ -1,0 +1,21 @@
+* { box-sizing: border-box; margin: 0 }
+body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
+       background: #1e1e2e; color: #cdd6f4 }
+#side { width: 200px; background: #181825; overflow-y: auto; flex-shrink: 0 }
+#bar { display: flex; gap: 4px; padding: 6px }
+#bar button { flex: 1; background: #313244; color: #cdd6f4; border: 0;
+              padding: 4px; cursor: pointer; border-radius: 4px }
+#notes { list-style: none }
+#notes li { padding: 5px 12px; cursor: pointer; white-space: nowrap;
+            overflow: hidden; text-overflow: ellipsis }
+#notes li:hover { background: #313244 }
+#notes li.active { background: #45475a }
+#main { flex: 1; display: flex; min-width: 0 }
+#editor { flex: 1; background: #1e1e2e; color: #cdd6f4; border: 0;
+          border-right: 1px solid #313244; padding: 16px; resize: none;
+          font: 13px/1.6 monospace; outline: none }
+#preview { flex: 1; padding: 16px; overflow-y: auto }
+#preview a.wiki { color: #89b4fa }
+#preview h1, #preview h2 { border-bottom: 1px solid #313244 }
+#preview code { background: #313244; padding: 1px 4px; border-radius: 3px }
+#graph { flex: 1; background: #11111b }

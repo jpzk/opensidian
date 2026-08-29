@@ -1,0 +1,12 @@
+{
+  "productName": "rustidian",
+  "version": "0.1.0",
+  "identifier": "dev.koto.rustidian",
+  "build": { "frontendDist": "../ui" },
+  "app": {
+    "withGlobalTauri": true,
+    "security": { "csp": null },
+    "windows": [{ "title": "rustidian", "width": 1100, "height": 700 }]
+  },
+  "bundle": { "active": false }
+}
