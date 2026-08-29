@@ -1,6 +1,11 @@
 const inv = (c, a) => window.__TAURI__.core.invoke(c, a);
 const $ = id => document.getElementById(id);
 let graphOn = false, sim = null;
+let graphRefresh = null;                    // set while graph view is open (M4 live refresh)
+async function writeNote(name, content) {   // every save funnels here so graph live-updates
+  await inv("write_note", { name, content });
+  if (graphOn && graphRefresh) await graphRefresh();
+}
 let vaultPath = null, pmode = null, bpath = null;
 
 /* ---------- tabs ---------- */
@@ -13,7 +18,7 @@ async function flushSave() {                // write pending edits NOW
   if (!t) return;
   clearTimeout(t); t = null;
   const n = cur();
-  if (n) await inv("write_note", { name: n, content: $("editor").value });
+  if (n) await writeNote(n, $("editor").value);
 }
 
 /* ---------- view modes (R3.2: source / reading per tab) ---------- */
@@ -183,7 +188,7 @@ async function preview() {
       e.preventDefault();
       const n = a.dataset.note;
       if (a.classList.contains("wiki-unresolved"))   // R3.5: click creates the note
-        await inv("write_note", { name: n, content: "" });
+        await writeNote(n, "");
       navigate(n);
     };
 }
@@ -193,7 +198,7 @@ function scheduleSave() {
   t = setTimeout(async () => {
     t = null;
     const n = cur();
-    if (n) await inv("write_note", { name: n, content: $("editor").value });
+    if (n) await writeNote(n, $("editor").value);
     preview();
     updateStatus();
   }, 250);
@@ -310,7 +315,7 @@ $("editor").addEventListener("blur", () => setTimeout(hideAc, 100));
 async function cmdNewNote() {                // new note in a NEW tab
   await flushSave();
   const name = "Untitled-" + Date.now() % 10000;
-  await inv("write_note", { name, content: "# " + name + "\n" });
+  await writeNote(name, "# " + name + "\n");
   tabs.push(mkTab(name));
   active = tabs.length - 1;
   await loadActive();
@@ -319,7 +324,7 @@ async function cmdSave() {                   // force save, no debounce
   const n = cur();
   if (!n) return;
   clearTimeout(t); t = null;
-  await inv("write_note", { name: n, content: $("editor").value });
+  await writeNote(n, $("editor").value);
   await preview();
   await updateStatus();
 }
@@ -366,7 +371,7 @@ $("fname").onkeydown = async e => {
 
 /* ---------- graph ---------- */
 function showEditor() {
-  graphOn = false; cancelAnimationFrame(sim);
+  graphOn = false; graphRefresh = null; cancelAnimationFrame(sim);
   $("graph").hidden = true;
   applyMode();
 }
@@ -395,6 +400,29 @@ $("graphbtn").onclick = async () => {
   for (const [i, j] of g.edges) { adj[i].add(j); adj[j].add(i); }
   let hov = -1;
   const hitTest = (x, y) => N.findIndex(p => (p.x - x) ** 2 + (p.y - y) ** 2 < 144);
+  // live refresh (R4.3): re-fetch on save, keep surviving positions,
+  // seed new nodes near their first neighbor
+  graphRefresh = async () => {
+    const g2 = await inv("graph");
+    const old = new Map(N.map(p => [p.n, p]));
+    const N2 = g2.nodes.map(nd => {
+      const o = old.get(nd.name);
+      return o ? { n: nd.name, resolved: nd.resolved, x: o.x, y: o.y, vx: o.vx, vy: o.vy }
+               : { n: nd.name, resolved: nd.resolved, x: null, y: null, vx: 0, vy: 0 };
+    });
+    N2.forEach((p, i) => {
+      if (p.x !== null) return;
+      const e = g2.edges.find(([a, b]) => a === i || b === i);
+      const nb = e ? N2[e[0] === i ? e[1] : e[0]] : null;
+      p.x = (nb && nb.x !== null ? nb.x : W / 2) + 30 * (Math.random() - 0.5);
+      p.y = (nb && nb.y !== null ? nb.y : H / 2) + 30 * (Math.random() - 0.5);
+    });
+    N.length = 0; N.push(...N2);
+    g.edges = g2.edges;
+    adj.length = 0; for (const _ of N) adj.push(new Set());
+    for (const [i, j] of g.edges) { adj[i].add(j); adj[j].add(i); }
+    hov = -1;
+  };
   function step() {
     for (const a of N) for (const b of N) {
       if (a === b) continue;
@@ -477,7 +505,7 @@ $("graphbtn").onclick = async () => {
     const hit = N[hitTest(x, y)];
     if (!hit) return;
     if (!hit.resolved)                                  // ghost node: create then open (M3 path)
-      await inv("write_note", { name: hit.n, content: "" });
+      await writeNote(hit.n, "");
     navigate(hit.n);
   };
 };
