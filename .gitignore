@@ -2,3 +2,4 @@ src-tauri/target/
 *.png
 src-tauri/gen/schemas/
 !docs/ref-shots/*.png
+dist/
