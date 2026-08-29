@@ -68,3 +68,5 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 #p-err { color: #f38ba8; font-size: 12px; min-height: 18px }
 #p-close { position: absolute; top: 10px; right: 12px; background: none;
            border: 0; color: #a6adc8; font-size: 15px; cursor: pointer }
+#bar button svg { width: 16px; height: 16px; display: block; margin: 0 auto }
+#vswitch svg { width: 13px; height: 13px; vertical-align: -2px; margin-right: 6px }
