@@ -390,6 +390,11 @@ $("graphbtn").onclick = async () => {
   const ctx = cv.getContext("2d");
   const toWorld = (sx, sy) =>
     [(sx - view.tx) / view.scale, (sy - view.ty) / view.scale];
+  // hover: adjacency + hovered node index (-1 = none)
+  const adj = N.map(() => new Set());
+  for (const [i, j] of g.edges) { adj[i].add(j); adj[j].add(i); }
+  let hov = -1;
+  const hitTest = (x, y) => N.findIndex(p => (p.x - x) ** 2 + (p.y - y) ** 2 < 144);
   function step() {
     for (const a of N) for (const b of N) {
       if (a === b) continue;
@@ -411,15 +416,28 @@ $("graphbtn").onclick = async () => {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, cv.width, cv.height);
     ctx.setTransform(view.scale, 0, 0, view.scale, view.tx, view.ty);
-    ctx.strokeStyle = "#45475a"; ctx.lineWidth = 1;
-    for (const [i, j] of g.edges) {
-      ctx.beginPath(); ctx.moveTo(N[i].x, N[i].y); ctx.lineTo(N[j].x, N[j].y); ctx.stroke();
+    // hover: hovered node + its edges/neighbors lit accent, rest faded
+    const litE = ([i, j]) => hov < 0 || i === hov || j === hov;
+    const litN = i => hov < 0 || i === hov || adj[hov].has(i);
+    ctx.lineWidth = 1;
+    for (const ed of g.edges) {
+      const lit = litE(ed);
+      ctx.globalAlpha = lit ? 1 : 0.12;
+      ctx.strokeStyle = hov >= 0 && lit ? "#f9e2af" : "#45475a";
+      ctx.beginPath(); ctx.moveTo(N[ed[0]].x, N[ed[0]].y);
+      ctx.lineTo(N[ed[1]].x, N[ed[1]].y); ctx.stroke();
     }
-    ctx.fillStyle = "#89b4fa"; ctx.textAlign = "center"; ctx.font = "12px sans-serif";
-    for (const p of N) {
-      ctx.beginPath(); ctx.arc(p.x, p.y, 6, 0, 7); ctx.fill();
-      if (view.scale >= 0.5) ctx.fillText(p.n, p.x, p.y - 10);
+    ctx.textAlign = "center"; ctx.font = "12px sans-serif";
+    for (let i = 0; i < N.length; i++) {
+      const p = N[i];
+      ctx.globalAlpha = litN(i) ? (p.resolved ? 1 : 0.55) : 0.12;
+      const col = i === hov ? "#f9e2af" : "#89b4fa";
+      ctx.beginPath(); ctx.arc(p.x, p.y, 6, 0, 7);
+      if (p.resolved) { ctx.fillStyle = col; ctx.fill(); }
+      else { ctx.lineWidth = 1.5; ctx.strokeStyle = col; ctx.stroke(); ctx.lineWidth = 1; } // hollow = unresolved
+      if (view.scale >= 0.5) { ctx.fillStyle = col; ctx.fillText(p.n, p.x, p.y - 10); }
     }
+    ctx.globalAlpha = 1;
     sim = requestAnimationFrame(step);
   }
   step();
@@ -436,21 +454,31 @@ $("graphbtn").onclick = async () => {
   let drag = null, moved = false;
   cv.onmousedown = e => { drag = { x: e.clientX, y: e.clientY }; moved = false; };
   cv.onmousemove = e => {
-    if (!drag) return;
-    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-    if (moved || dx * dx + dy * dy > 16) {
-      moved = true;
-      view.tx += dx; view.ty += dy;
-      drag = { x: e.clientX, y: e.clientY };
+    const r = cv.getBoundingClientRect();
+    if (drag) {
+      const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+      if (moved || dx * dx + dy * dy > 16) {
+        moved = true;
+        view.tx += dx; view.ty += dy;
+        drag = { x: e.clientX, y: e.clientY };
+      }
+      return;
     }
+    const [x, y] = toWorld(e.clientX - r.left, e.clientY - r.top);
+    hov = hitTest(x, y);
+    cv.style.cursor = hov >= 0 ? "pointer" : "";
   };
-  cv.onmouseup = cv.onmouseleave = () => { drag = null; };
-  cv.onclick = e => {
+  cv.onmouseup = () => { drag = null; };
+  cv.onmouseleave = () => { drag = null; hov = -1; cv.style.cursor = ""; };
+  cv.onclick = async e => {
     if (moved) { moved = false; return; }               // was a pan, not a click
     const r = cv.getBoundingClientRect();
     const [x, y] = toWorld(e.clientX - r.left, e.clientY - r.top);
-    const hit = N.find(p => (p.x - x) ** 2 + (p.y - y) ** 2 < 144);
-    if (hit) navigate(hit.n);
+    const hit = N[hitTest(x, y)];
+    if (!hit) return;
+    if (!hit.resolved)                                  // ghost node: create then open (M3 path)
+      await inv("write_note", { name: hit.n, content: "" });
+    navigate(hit.n);
   };
 };
 
