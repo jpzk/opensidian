@@ -424,12 +424,12 @@ $("graphbtn").onclick = async () => {
     hov = -1;
     alpha = Math.max(alpha, 0.5);   // partial reheat: settle new nodes without scattering old ones
   };
-  // sim heat: forces scale by alpha, which decays each frame; below 0.02
-  // physics freezes (render loop keeps running for hover/zoom/pan), so the
-  // layout settles deterministically instead of jiggling forever
-  let alpha = 1;
-  function step() {
-    if (alpha > 0.02) {
+  // sim heat: forces scale by alpha, which decays per PHYSICS STEP; below
+  // 0.02 physics freezes (render loop keeps running for hover/zoom/pan).
+  // Physics steps are wall-clock-locked at 60/s (substepped inside rAF):
+  // a throttled/headless rAF must not stretch the ~3.2s settle time.
+  let alpha = 1, phAcc = 0, phLast = performance.now();
+  function physStep() {
     for (const a of N) for (const b of N) {
       if (a === b) continue;
       const dx = a.x - b.x, dy = a.y - b.y, d2 = dx * dx + dy * dy + 0.01;
@@ -448,6 +448,13 @@ $("graphbtn").onclick = async () => {
       p.y = Math.max(m, Math.min(H - m, p.y));
     }
     alpha *= 0.98;
+  }
+  function step() {
+    const now = performance.now();
+    phAcc = Math.min(phAcc + (now - phLast) / 1000, 0.25); phLast = now;
+    while (phAcc >= 1 / 60) {
+      phAcc -= 1 / 60;
+      if (alpha > 0.02) physStep();
     }
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, cv.width, cv.height);
