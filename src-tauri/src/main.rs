@@ -114,8 +114,55 @@ fn write_note(v: State<Vault>, name: String, content: String) {
     }
 }
 
+/* ux-3: vault-wide wikilink rewrite on rename. [[Old]] -> [[New]],
+   [[Old|alias]] keeps alias, [[Old#h]] keeps anchor. Basename-style links
+   ([[A]] for sub/A) stay basename-style; full-path links get the full new
+   path. bn_ok=false disables basename matching (caller found ANOTHER note
+   with the same basename — those links now resolve elsewhere, leave them). */
+fn rewrite_links(s: &str, old: &str, new: &str, bn_ok: bool) -> (String, bool) {
+    let ob = old.rsplit('/').next().unwrap_or(old);
+    let nb = new.rsplit('/').next().unwrap_or(new);
+    let (mut out, mut changed) = (String::new(), false);
+    let mut rest = s;
+    while let Some(a) = rest.find("[[") {
+        out.push_str(&rest[..a + 2]);
+        rest = &rest[a + 2..];
+        let Some(b) = rest.find("]]") else { break };
+        let inner = &rest[..b];
+        rest = &rest[b + 2..];
+        let (tgt, alias) = match inner.find('|') {
+            Some(i) => (&inner[..i], &inner[i..]),
+            None => (inner, ""),
+        };
+        let (base, anchor) = match tgt.find('#') {
+            Some(i) => (&tgt[..i], &tgt[i..]),
+            None => (tgt, ""),
+        };
+        let rep = if base == old {
+            Some(new)
+        } else if bn_ok && base == ob {
+            Some(nb)
+        } else {
+            None
+        };
+        match rep {
+            Some(r) => {
+                changed = true;
+                out.push_str(r);
+                out.push_str(anchor);
+                out.push_str(alias);
+            }
+            None => out.push_str(inner),
+        }
+        out.push_str("]]");
+    }
+    out.push_str(rest);
+    (out, changed)
+}
+
 /* m5 F2 rename: fs::rename old.md -> new.md inside root. Parents created,
-   overwrite refused, wikilinks untouched (v1). Pure-ish core for unit tests. */
+   overwrite refused. ux-3: wikilinks updated vault-wide after the move.
+   Pure-ish core for unit tests. */
 fn rename_in(root: &Path, old: &str, new: &str) -> Result<(), String> {
     let op = root.join(safe_rel(old).ok_or("invalid name")?);
     let np = root.join(safe_rel(new).ok_or("invalid name")?);
@@ -130,7 +177,29 @@ fn rename_in(root: &Path, old: &str, new: &str) -> Result<(), String> {
     if let Some(d) = np.parent() {
         fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
-    fs::rename(op, np).map_err(|e| e.to_string())
+    fs::rename(op, np).map_err(|e| e.to_string())?;
+    // ux-3: after the move, rewrite [[links]] in every note. Basename links
+    // only rewrite when unambiguous BOTH ways: no other note carries old's
+    // basename (those links resolve elsewhere) and none carries new's
+    // basename besides the renamed note itself (rewrite would capture it).
+    let ob = old.rsplit('/').next().unwrap_or(old);
+    let nrel = safe_rel(new).unwrap_or_default().display().to_string();
+    let nb = new.rsplit('/').next().unwrap_or(new);
+    let notes = notes_of(root);
+    let bn_ok = !notes.iter().any(|n| {
+        let b = n.rsplit('/').next().unwrap_or(n);
+        b == ob || (b == nb && *n != nrel)
+    });
+    for n in &notes {
+        let p = PathBuf::from(format!("{}.md", root.join(n).display()));
+        if let Ok(c) = fs::read_to_string(&p) {
+            let (nc, changed) = rewrite_links(&c, old, new, bn_ok);
+            if changed {
+                let _ = fs::write(&p, nc);
+            }
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -537,6 +606,45 @@ mod tests {
         let l = toggle_in(l, "A");               // second toggle removes
         assert_eq!(l, vec!["sub/B"]);
         assert!(toggle_in(l, "sub/B").is_empty());
+    }
+
+    #[test]
+    fn rename_updates_links_vault_wide() {
+        let root = std::env::temp_dir().join(format!("rustidian-rl-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::write(root.join("Old.md"), "self [[Old]]").unwrap();
+        fs::write(
+            root.join("B.md"),
+            "see [[Old]] and [[Old|nick]] plus [[Old#h2]] and [[Other]]",
+        )
+        .unwrap();
+        fs::write(root.join("sub/C.md"), "[[Old|x]] deep").unwrap();
+        rename_in(&root, "Old", "New").unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("B.md")).unwrap(),
+            "see [[New]] and [[New|nick]] plus [[New#h2]] and [[Other]]"
+        );
+        assert_eq!(fs::read_to_string(root.join("sub/C.md")).unwrap(), "[[New|x]] deep");
+        assert_eq!(fs::read_to_string(root.join("New.md")).unwrap(), "self [[New]]");
+        // full-path links track a move into a folder; basename links keep basename
+        fs::write(root.join("D.md"), "[[New]] and [[sub/C]]").unwrap();
+        rename_in(&root, "sub/C", "sub/C2").unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("D.md")).unwrap(),
+            "[[New]] and [[sub/C2]]"
+        );
+        // ambiguity guard: renaming sub/C2 -> sub/C while a top-level C.md
+        // exists — basename rewrite would make [[C2]] capture the decoy, so
+        // only the full-path link updates
+        fs::write(root.join("C.md"), "decoy").unwrap();
+        fs::write(root.join("E.md"), "[[C2]] and [[sub/C2]]").unwrap();
+        rename_in(&root, "sub/C2", "sub/C").unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("E.md")).unwrap(),
+            "[[C2]] and [[sub/C]]"
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

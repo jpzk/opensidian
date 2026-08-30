@@ -216,6 +216,7 @@ async function flushSave(g) {               // write g's pending edits NOW
   clearTimeout(g.saveT); g.saveT = null;
   const n = curOf(g);
   if (n) await writeNote(n, g.editor.value);
+  await maybeH1Rename(g);                   // ux-3: H1 edit commits a rename
 }
 
 /* ---------- group DOM + layout render ---------- */
@@ -562,6 +563,8 @@ async function loadActive(g) {
   const n = curOf(g);
   if (n) mruTouch(n);                // m5: quick-switcher MRU order
   g.editor.value = n ? await inv("read_note", { name: n }) : "";
+  const tb0 = g.tabs[g.active];
+  if (tb0 && !tb0.kind) tb0.h1 = h1Of(g.editor.value);  // ux-3: H1 snapshot
   const m = g.tabs[g.active] ? g.tabs[g.active].mode : "livepreview";
   if (n && m === "source") g.editor.focus();
   if (m === "reading") await preview(g);
@@ -925,6 +928,7 @@ function scheduleSave(g) {
     g.saveT = null;
     const n = curOf(g);
     if (n) await writeNote(n, g.editor.value);
+    await maybeH1Rename(g);                 // ux-3: H1 edit commits a rename
     preview(g);
     updateStatus(g);
   }, 250);
@@ -1193,7 +1197,45 @@ function cmdPalette() {
 }
 
 /* m5 F2 rename: inline prompt over the focused note tab; disk rename via
-   rename_note (wikilinks untouched v1), then tabs/hist/mru follow the name */
+   rename_note (ux-3: wikilinks rewritten vault-wide by the rust side), then
+   tabs/hist/mru follow the name */
+async function applyRename(old, nn) {   // post-rename bookkeeping (F2 + H1 paths)
+  for (const h of groups()) for (const tb of h.tabs) {
+    if (tb.kind) continue;
+    if (tb.name === old) tb.name = nn;
+    if (tb.hist) tb.hist = tb.hist.map(n => (n === old ? nn : n));
+  }
+  const mi = mruList.indexOf(old);
+  if (mi >= 0) mruList[mi] = nn;
+  for (const h of groups()) renderTabs(h);
+  await refreshTree();
+  updateTitle();
+}
+
+/* ux-3: committing an edit to the first-line H1 renames the note (Obsidian
+   inline-title behavior). Fires only when the note HAD an H1 and its text
+   changed since load/last commit; collision/invalid -> rust refuses, name
+   kept (content keeps the new H1, like Obsidian on conflict). */
+const h1Of = s => {
+  const m = /^#[ \t]+(.+?)\s*$/.exec((s || "").split("\n", 1)[0]);
+  return m ? m[1] : null;
+};
+async function maybeH1Rename(g) {
+  const t = g.active >= 0 ? g.tabs[g.active] : null;
+  if (!t || t.kind) return;
+  const h1 = h1Of(g.editor.value);
+  const prev = t.h1;
+  t.h1 = h1;
+  if (!h1 || prev == null || h1 === prev) return;
+  const old = t.name;
+  const dir = old.includes("/") ? old.slice(0, old.lastIndexOf("/") + 1) : "";
+  const nn = dir + h1.replace(/[\\/]/g, "-");
+  if (nn === old) return;
+  try { await inv("rename_note", { old, new: nn }); }
+  catch (err) { return; }                   // exists/invalid -> keep old name
+  await applyRename(old, nn);
+}
+
 function cmdRename() {
   const g = fg();
   const t = g && g.active >= 0 ? g.tabs[g.active] : null;
@@ -1217,16 +1259,7 @@ $("rninput").onkeydown = async e => {
   await flushSave(g);                       // old content lands before the move
   try { await inv("rename_note", { old, new: nn }); }
   catch (err) { updateTitle(); return; }    // exists/invalid -> keep old name
-  for (const h of groups()) for (const tb of h.tabs) {
-    if (tb.kind) continue;
-    if (tb.name === old) tb.name = nn;
-    if (tb.hist) tb.hist = tb.hist.map(n => (n === old ? nn : n));
-  }
-  const mi = mruList.indexOf(old);
-  if (mi >= 0) mruList[mi] = nn;
-  for (const h of groups()) renderTabs(h);
-  await refreshTree();
-  updateTitle();
+  await applyRename(old, nn);
 };
 
 const keymap = {
