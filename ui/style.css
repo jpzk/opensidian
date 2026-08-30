@@ -49,6 +49,13 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .shit:hover { background: #313244 }
 .shit mark { background: none; color: #f9e2af }
 .sempty { padding: 8px; color: #6c7086 }
+#bmlist { overflow-y: auto }
+.bmrow { padding: 5px 12px; cursor: pointer; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; color: #cdd6f4;
+  display: flex; align-items: center; gap: 6px }
+.bmrow .bmstar { color: #f9e2af; display: flex }
+.bmrow .bmstar svg { width: 13px; height: 13px }
+.bmrow:hover { background: #313244 }
 .trow { padding: 5px 12px; cursor: pointer; white-space: nowrap;
         overflow: hidden; text-overflow: ellipsis }
 .trow:hover { background: #313244 }

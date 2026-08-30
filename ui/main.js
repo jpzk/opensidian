@@ -41,6 +41,7 @@ function setPane(p) {
     $("stab-" + k).classList.toggle("active", k === p);
   }
   if (p === "search") $("sinput").focus();
+  if (p === "bm") refreshBm();               // re-read: disk is the truth
   updateTitle();
 }
 
@@ -92,6 +93,53 @@ async function runSearch() {
     box.appendChild(row);
   }
   updateTitle();
+}
+
+/* R9.4 bookmarks: tree-row context menu toggles; rust persists the plain
+   list in vault/.rustidian-bookmarks. census [bm:N] while the pane shows. */
+let bmCache = [];
+function renderBm() {
+  const box = $("bmlist");
+  box.textContent = "";
+  if (!bmCache.length) {
+    const d = document.createElement("div");
+    d.className = "sempty"; d.textContent = "No bookmarks.";
+    box.appendChild(d);
+  }
+  for (const nm of bmCache) {              // insertion order, like Obsidian
+    const row = document.createElement("div");
+    row.className = "bmrow";
+    row.title = nm;
+    const s = document.createElement("span");
+    s.className = "bmstar";                // svg, not ★ — headless fonts lack the glyph
+    s.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3h12v18l-6-4.5L6 21z"/></svg>';
+    row.appendChild(s);
+    row.append(nm.split("/").pop());
+    row.onclick = () => openInTab(nm);
+    box.appendChild(row);
+  }
+  updateTitle();
+}
+async function refreshBm() { bmCache = await inv("list_bookmarks"); renderBm(); }
+async function toggleBm(nm) {
+  bmCache = await inv("toggle_bookmark", { name: nm });
+  renderBm();
+}
+function noteMenu(e, nm) {                 // right-click a tree note row
+  e.preventDefault();
+  e.stopPropagation();
+  closeMenu();
+  const m = document.createElement("div");
+  m.className = "ctxmenu";
+  const d = document.createElement("div");
+  d.textContent = bmCache.includes(nm) ? "Remove bookmark" : "Bookmark";
+  d.onmousedown = ev => ev.stopPropagation();
+  d.onclick = () => { closeMenu(); toggleBm(nm); };
+  m.appendChild(d);
+  m.style.left = Math.min(e.clientX, window.innerWidth - 150) + "px";
+  m.style.top = Math.min(e.clientY, window.innerHeight - 60) + "px";
+  document.body.appendChild(m);
+  menuEl = m;
 }
 
 async function writeNote(name, content) {   // every save funnels here so graphs live-update
@@ -230,7 +278,8 @@ function updateTitle() {          // pane/focus census in the window title (head
             " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + lg + md + gg +
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) + "]" +
             " [pane:" + sidePane + "]" +
-            (sidePane === "search" && searchCount >= 0 ? " [sr:" + searchCount + "]" : "");
+            (sidePane === "search" && searchCount >= 0 ? " [sr:" + searchCount + "]" : "") +
+            (sidePane === "bm" ? " [bm:" + bmCache.length + "]" : "");
   document.title = t;
   // publish to the native title: ONE call in flight, last-write-wins, 500ms
   // timeout guard — a hung/rejected setTitle IPC can neither reorder titles
@@ -561,6 +610,7 @@ function renderNode(node, prefix, depth, out) {
     row.style.paddingLeft = 12 + depth * 14 + "px";
     row.textContent = nm.split("/").pop();
     row.onclick = () => openInTab(nm);
+    row.oncontextmenu = e => noteMenu(e, nm);   // R9.4: bookmark toggle
     out.appendChild(row);
   }
 }
@@ -1283,6 +1333,7 @@ async function enterVault() {
   focusGroup(g);
   hideAc();
   await refreshTree();
+  await refreshBm();                 // R9.4: menu label needs the cache early
   const names = await inv("list_notes");
   if (names.length) await openInTab(names[0]);
   else renderTabs(g);

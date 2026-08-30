@@ -354,13 +354,52 @@ fn search(v: State<Vault>, query: String) -> Vec<SearchHit> {
     search_docs(&docs, &query)
 }
 
+/* R9.4 bookmarks: plain newline list in vault/.rustidian-bookmarks —
+   dotfile, so walk()/notes_of never see it. Order = insertion order. */
+const BM_FILE: &str = ".rustidian-bookmarks";
+
+fn read_bookmarks(root: &Path) -> Vec<String> {
+    fs::read_to_string(root.join(BM_FILE))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn toggle_in(mut list: Vec<String>, name: &str) -> Vec<String> {
+    match list.iter().position(|b| b == name) {
+        Some(i) => { list.remove(i); }
+        None => list.push(name.to_string()),
+    }
+    list
+}
+
+#[tauri::command]
+fn list_bookmarks(v: State<Vault>) -> Vec<String> {
+    cur_vault(&v).map(|r| read_bookmarks(&r)).unwrap_or_default()
+}
+
+#[tauri::command]
+fn toggle_bookmark(v: State<Vault>, name: String) -> Result<Vec<String>, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    let list = toggle_in(read_bookmarks(&root), &name);
+    let mut body = list.join("\n");
+    if !body.is_empty() {
+        body.push('\n');
+    }
+    fs::write(root.join(BM_FILE), body).map_err(|e| e.to_string())?;
+    Ok(list)
+}
+
 fn main() {
     let init = std::env::var("VAULT_DIR").ok().map(PathBuf::from);
     tauri::Builder::default()
         .manage(Vault(Mutex::new(init)))
         .invoke_handler(tauri::generate_handler![
             list_notes, read_note, write_note, render, graph, vault_get, set_vault,
-            create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search
+            create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
+            list_bookmarks, toggle_bookmark
         ])
         .run(tauri::generate_context!())
         .expect("tauri run");
@@ -418,5 +457,16 @@ mod tests {
         let h = search_docs(&[long], "needle");
         assert_eq!(h.len(), 1);
         assert!(h[0].snippet.contains("needle") && h[0].snippet.len() <= 210);
+    }
+
+    #[test]
+    fn bookmark_toggle_adds_then_removes() {
+        let l = toggle_in(vec![], "A");
+        assert_eq!(l, vec!["A"]);
+        let l = toggle_in(l, "sub/B");           // append keeps insertion order
+        assert_eq!(l, vec!["A", "sub/B"]);
+        let l = toggle_in(l, "A");               // second toggle removes
+        assert_eq!(l, vec!["sub/B"]);
+        assert!(toggle_in(l, "sub/B").is_empty());
     }
 }
