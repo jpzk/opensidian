@@ -69,12 +69,49 @@ function layoutEl(node) {         // split tree -> DOM; flex weights from fracti
   if (!node.children) return node.pane;
   const d = document.createElement("div");
   d.className = "split " + node.dir;
-  node.children.forEach((c, i) => {
-    const el = layoutEl(c);
+  const els = node.children.map(layoutEl);
+  els.forEach((el, i) => {
     el.style.flex = ((node.fractions && node.fractions[i]) || 1) + " 1 0";
+    if (i > 0) d.appendChild(divider(node, i - 1, els, d));
     d.appendChild(el);
   });
   return d;
+}
+
+// R6.6: draggable divider between split siblings i and i+1 — drag re-weights
+// node.fractions (each side floored at 15% of the split), flex updated live
+function divider(node, i, els, box) {
+  const h = document.createElement("div");
+  h.className = "divider " + node.dir;
+  h.addEventListener("mousedown", e => {
+    e.preventDefault();
+    e.stopPropagation();               // don't let mousedown-to-focus swallow it
+    const row = node.dir === "row";
+    if (!node.fractions) node.fractions = node.children.map(() => 1);
+    const total = node.fractions.reduce((a, b) => a + b, 0);
+    const r = box.getBoundingClientRect();
+    const size = row ? r.width : r.height;
+    const f0 = node.fractions[i], f1 = node.fractions[i + 1];
+    const p0 = row ? e.clientX : e.clientY;
+    const min = 0.15 * total;
+    const move = ev => {
+      if (f0 + f1 < 2 * min || size <= 0) return;
+      const df = ((row ? ev.clientX : ev.clientY) - p0) / size * total;
+      const a = Math.min(Math.max(f0 + df, min), f0 + f1 - min);
+      node.fractions[i] = a;
+      node.fractions[i + 1] = f0 + f1 - a;
+      els[i].style.flex = a + " 1 0";
+      els[i + 1].style.flex = (f0 + f1 - a) + " 1 0";
+    };
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      updateTitle();                   // republish [fx:...] census for probes
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  });
+  return h;
 }
 
 function renderLayout() {
@@ -87,8 +124,9 @@ function renderLayout() {
 function updateTitle() {          // pane/focus census in the window title (headless probe)
   const ps = [...document.querySelectorAll("#main .pane")];
   const nf = document.querySelectorAll("#main .pane.focused").length;
+  const fx = (state.root.fractions || []).map(f => f.toFixed(2)).join(",");
   const t = "rustidian [panes:" + ps.length + " focused:" + nf +
-            "@" + (ps.indexOf(fg() && fg().pane) + 1) + "]";
+            "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]";
   document.title = t;
   // serialize setTitle calls: two in-flight promises (renderLayout's pre-focus
   // census, then focusGroup's) can resolve out of order, leaving a stale

@@ -25,6 +25,11 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .split { display: flex; flex: 1 1 0; min-width: 0; min-height: 0 }
 .split.row { flex-direction: row }
 .split.col { flex-direction: column }
+/* R6.6: draggable divider between sibling panes */
+.divider { flex: 0 0 6px; background: #11111b }
+.divider:hover, .divider:active { background: #585b70 }
+.divider.row { cursor: col-resize }
+.divider.col { cursor: row-resize }
 .pane { flex: 1 1 0; display: flex; flex-direction: column;
         min-width: 0; min-height: 0 }
 .pane:not(.focused) .tabbar { opacity: .7 }   /* dim inactive tab strips */
@@ -34,7 +39,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
            padding: 0 10px; flex-shrink: 0 }
 .modebtn:hover { color: #cdd6f4 }
 .modebtn svg { width: 16px; height: 16px; display: block }
-.tab { width: 120px; flex-shrink: 0; display: flex; align-items: center;
+.tab { width: 120px; min-width: 0; flex-shrink: 1; display: flex; align-items: center;
        gap: 6px; padding: 0 8px; background: #313244; color: #a6adc8;
        cursor: pointer; font-size: 12px; border-right: 2px solid #11111b }
 .tab.active { background: #45475a; color: #cdd6f4 }
