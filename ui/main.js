@@ -126,18 +126,31 @@ function updateTitle() {          // pane/focus census in the window title (head
   const nf = document.querySelectorAll("#main .pane.focused").length;
   const fx = (state.root.fractions || []).map(f => f.toFixed(2)).join(",");
   const t = "rustidian [panes:" + ps.length + " focused:" + nf +
-            "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]";
+            "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
+            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]";
   document.title = t;
-  // serialize setTitle calls: two in-flight promises (renderLayout's pre-focus
-  // census, then focusGroup's) can resolve out of order, leaving a stale
-  // "focused:0@0" title as the winner (seen on the VAULT_DIR boot path)
-  try {
-    titleQ = titleQ
-      .then(() => window.__TAURI__.window.getCurrentWindow().setTitle(t))
-      .catch(() => {});
-  } catch (e) {}
+  // publish to the native title: ONE call in flight, last-write-wins, 500ms
+  // timeout guard — a hung/rejected setTitle IPC can neither reorder titles
+  // nor starve later updates (the old promise-chain stalled forever on one)
+  pushTitle(t);
 }
-let titleQ = Promise.resolve();
+let tSending = false, tWant = "";
+function pushTitle(t) {
+  tWant = t;
+  if (tSending) return;
+  tSending = true;
+  const cur = tWant;
+  let done = false;
+  const fin = () => {
+    if (done) return; done = true;
+    tSending = false;
+    if (tWant !== cur) pushTitle(tWant);
+  };
+  try {
+    window.__TAURI__.window.getCurrentWindow().setTitle(cur).catch(() => {}).then(fin);
+  } catch (e) { fin(); }
+  setTimeout(fin, 500);
+}
 
 function focusGroup(g) {
   const prev = state.focused;
@@ -206,6 +219,7 @@ async function collapseGroup(g) {  // R6.5: closing the last tab removes the gro
 
 let menuEl = null;
 function closeMenu() { if (menuEl) { menuEl.remove(); menuEl = null; } }
+document.addEventListener("contextmenu", e => e.preventDefault()); // app-like: native menu never
 document.addEventListener("mousedown", e => {
   if (menuEl && !menuEl.contains(e.target)) closeMenu();
 }, true);
@@ -277,6 +291,7 @@ function renderTabs(g) {
     g.tabsEl.appendChild(d);
   });
   updateModeBtn(g);
+  updateTitle();                    // keep [tabs:] census fresh on tab changes
 }
 
 async function loadActive(g) {
@@ -824,3 +839,4 @@ $("vswitch").onclick = showPicker;
   vaultPath = await inv("vault_get");
   if (vaultPath) await enterVault(); else showPicker();
 })();
+
