@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-use pulldown_cmark::{html, Options, Parser};
+use pulldown_cmark::{html, Event, Options, Parser, Tag, TagEnd};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
@@ -347,22 +347,82 @@ fn resolve(notes: &[String], l: &str) -> Option<usize> {
         .position(|x| *x == l || x.ends_with(&format!("/{l}")))
 }
 
-fn render_md(content: &str, notes: &[String]) -> String {
-    // [[X]] -> inline html anchor (unresolved targets marked), then markdown
-    let mut md = content.to_string();
-    for l in links_in(content) {
-        let cls = if resolve(notes, &l).is_some() {
+/// html-escape for text content and attribute values (H1 fix)
+fn esc(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// scan coalesced text for [[wikilinks]], emitting escaped anchors (H1 fix)
+fn linkify(buf: &str, notes: &[String], evs: &mut Vec<Event>) {
+    let mut rest = buf;
+    while let Some(i) = rest.find("[[") {
+        let Some(j) = rest[i + 2..].find("]]") else { break };
+        let l = &rest[i + 2..i + 2 + j];
+        evs.push(Event::Text(rest[..i].to_string().into()));
+        let cls = if resolve(notes, l).is_some() {
             "wiki"
         } else {
             "wiki wiki-unresolved"
         };
-        md = md.replace(
-            &format!("[[{l}]]"),
-            &format!("<a href=\"#\" class=\"{cls}\" data-note=\"{l}\">{l}</a>"),
-        );
+        evs.push(Event::Html(
+            format!(
+                "<a href=\"#\" class=\"{cls}\" data-note=\"{}\">{}</a>",
+                esc(l),
+                esc(l)
+            )
+            .into(),
+        ));
+        rest = &rest[i + 2 + j + 2..];
+    }
+    if !rest.is_empty() {
+        evs.push(Event::Text(rest.to_string().into()));
+    }
+}
+
+fn render_md(content: &str, notes: &[String]) -> String {
+    // Security (docs/security-review.md H1): .md files are untrusted, so raw
+    // HTML events are demoted to text (push_html escapes Text). Wikilinks are
+    // linkified at the EVENT level — label and data-note attr escaped — so our
+    // anchors are the only HTML that survives. Code blocks/spans untouched.
+    // NB: pulldown emits "[" "[" "Ideas" "]" "]" as SEPARATE Text events, so
+    // consecutive text is coalesced in `buf` before the wikilink scan.
+    let mut evs: Vec<Event> = Vec::new();
+    let mut buf = String::new();
+    let mut in_code = false;
+    // pulldown's own ENABLE_WIKILINKS would consume [[..]] before our pass;
+    // SMART_PUNCTUATION would curl quotes/apostrophes inside link targets,
+    // breaking [[name]] -> filename fidelity
+    let mut opts = Options::all();
+    opts.remove(Options::ENABLE_WIKILINKS);
+    opts.remove(Options::ENABLE_SMART_PUNCTUATION);
+    for ev in Parser::new_ext(content, opts) {
+        match ev {
+            // demoted raw html + plain text both join the scan buffer
+            Event::Text(t) | Event::Html(t) | Event::InlineHtml(t) if !in_code => {
+                buf.push_str(&t)
+            }
+            other => {
+                if !buf.is_empty() {
+                    linkify(&buf, notes, &mut evs);
+                    buf.clear();
+                }
+                match other {
+                    Event::Start(Tag::CodeBlock(_)) => in_code = true,
+                    Event::End(TagEnd::CodeBlock) => in_code = false,
+                    _ => {}
+                }
+                evs.push(other);
+            }
+        }
+    }
+    if !buf.is_empty() {
+        linkify(&buf, notes, &mut evs);
     }
     let mut out = String::new();
-    html::push_html(&mut out, Parser::new_ext(&md, Options::all()));
+    html::push_html(&mut out, evs.into_iter());
     out
 }
 
@@ -578,6 +638,30 @@ mod tests {
         assert!(h.contains(r#"class="wiki" data-note="Ideas""#));
         assert!(h.contains(r#"class="wiki" data-note="Nested""#)); // basename resolve
         assert!(h.contains(r#"class="wiki wiki-unresolved" data-note="Nope""#));
+    }
+
+    #[test]
+    fn render_neutralizes_raw_html() {
+        // H1 (docs/security-review.md): raw/inline HTML must render inert
+        let h = render_md("hi <img src=x onerror=alert(1)> there", &[]);
+        assert!(!h.contains("<img"), "raw inline html leaked: {h}");
+        assert!(h.contains("&lt;img"));
+        let h = render_md("<script>alert(1)</script>", &[]);
+        assert!(!h.contains("<script"), "html block leaked: {h}");
+        // ...but code blocks still render their (escaped) content normally
+        let h = render_md("```\n<b>code</b>\n```", &[]);
+        assert!(h.contains("<pre><code>") && h.contains("&lt;b&gt;"));
+    }
+
+    #[test]
+    fn render_escapes_wikilink_attr() {
+        // attribute breakout: [[x" onmouseover=...]] must stay inside data-note
+        let h = render_md(r#"[[x" onmouseover="alert(1)]]"#, &[]);
+        assert!(!h.contains(r#"" onmouseover="#), "attr breakout: {h}");
+        assert!(h.contains("data-note=\"x&quot; onmouseover=&quot;alert(1)\""));
+        // wikilinks inside code blocks are NOT linkified
+        let h = render_md("```\n[[Ideas]]\n```", &["Ideas".to_string()]);
+        assert!(!h.contains("class=\"wiki\""));
     }
 
     #[test]
