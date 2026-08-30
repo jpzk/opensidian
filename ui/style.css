@@ -29,6 +29,26 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
          border: 1px solid #45475a; border-radius: 4px; padding: 4px 6px;
          outline: none; font-size: 12px }
 #tree { flex: 1; overflow-y: auto }
+/* R9.3 search pane */
+#sbar { display: flex; gap: 4px; padding: 6px }
+#sinput { flex: 1; min-width: 0; background: #181825; color: #cdd6f4;
+          border: 1px solid #45475a; border-radius: 4px; padding: 4px 6px;
+          outline: none; font-size: 12px }
+#sinput:focus { border-color: #89b4fa }
+#sclear { background: none; color: #a6adc8; border: 0; cursor: pointer;
+          padding: 0 4px; border-radius: 4px }
+#sclear:hover { color: #cdd6f4; background: #313244 }
+#sresults { flex: 1; overflow-y: auto; font-size: 12px }
+.sgroup { padding: 5px 8px 2px; color: #cdd6f4; font-weight: 600;
+          cursor: pointer; white-space: nowrap; overflow: hidden;
+          text-overflow: ellipsis }
+.sgroup:hover { background: #313244 }
+.sgroup .scount { color: #6c7086; font-weight: 400; margin-left: 4px }
+.shit { padding: 2px 8px 2px 16px; color: #a6adc8; cursor: pointer;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.shit:hover { background: #313244 }
+.shit mark { background: none; color: #f9e2af }
+.sempty { padding: 8px; color: #6c7086 }
 .trow { padding: 5px 12px; cursor: pointer; white-space: nowrap;
         overflow: hidden; text-overflow: ellipsis }
 .trow:hover { background: #313244 }

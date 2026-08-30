@@ -40,6 +40,57 @@ function setPane(p) {
     $(id).hidden = k !== p;
     $("stab-" + k).classList.toggle("active", k === p);
   }
+  if (p === "search") $("sinput").focus();
+  updateTitle();
+}
+
+/* R9.3 search pane: debounced rust search(query), grouped by note.
+   census [sr:N] (total hits) while the search pane is showing a query. */
+let searchCount = -1;                       // -1 = no query -> no [sr:] flag
+let searchT = null, searchSeq = 0;
+async function runSearch() {
+  const q = $("sinput").value.trim();
+  const seq = ++searchSeq;                  // stale-response guard
+  const box = $("sresults");
+  if (!q) {
+    searchCount = -1; box.textContent = ""; updateTitle(); return;
+  }
+  const hits = await inv("search", { query: q });
+  if (seq !== searchSeq) return;
+  searchCount = hits.length;
+  box.textContent = "";
+  if (!hits.length) {
+    const d = document.createElement("div");
+    d.className = "sempty"; d.textContent = "No results.";
+    box.appendChild(d);
+  }
+  const ql = q.toLowerCase();
+  let curNote = null;
+  for (const h of hits) {                   // hits arrive ordered by note
+    if (h.note !== curNote) {
+      curNote = h.note;
+      const n = curNote, grp = document.createElement("div");
+      grp.className = "sgroup"; grp.textContent = n;
+      const c = document.createElement("span");
+      c.className = "scount";
+      c.textContent = "(" + hits.filter(x => x.note === n).length + ")";
+      grp.appendChild(c);
+      grp.onclick = () => openInTab(n);
+      box.appendChild(grp);
+    }
+    const note = h.note, row = document.createElement("div");
+    row.className = "shit"; row.title = h.snippet;
+    const at = h.snippet.toLowerCase().indexOf(ql);  // highlight first hit
+    if (at >= 0) {
+      row.append(h.snippet.slice(0, at));
+      const m = document.createElement("mark");
+      m.textContent = h.snippet.slice(at, at + q.length);
+      row.appendChild(m);
+      row.append(h.snippet.slice(at + q.length));
+    } else row.textContent = h.snippet;     // name-hit snippet may differ in case
+    row.onclick = () => openInTab(note);    // LATER: jump to h.line
+    box.appendChild(row);
+  }
   updateTitle();
 }
 
@@ -178,7 +229,8 @@ function updateTitle() {          // pane/focus census in the window title (head
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
             " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + lg + md + gg +
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) + "]" +
-            " [pane:" + sidePane + "]";
+            " [pane:" + sidePane + "]" +
+            (sidePane === "search" && searchCount >= 0 ? " [sr:" + searchCount + "]" : "");
   document.title = t;
   // publish to the native title: ONE call in flight, last-write-wins, 500ms
   // timeout guard — a hung/rejected setTitle IPC can neither reorder titles
@@ -901,6 +953,12 @@ $("stab-files").onclick = () => setPane("files");
 $("collapsebtn").onclick = cmdToggleSide;
 $("stab-search").onclick = () => setPane("search");
 $("stab-bm").onclick = () => setPane("bm");
+$("sinput").oninput = () => {              // debounce 150ms
+  clearTimeout(searchT); searchT = setTimeout(runSearch, 150);
+};
+$("sclear").onclick = () => {
+  $("sinput").value = ""; clearTimeout(searchT); runSearch(); $("sinput").focus();
+};
 $("newbtn").onclick = cmdNewNote;
 $("newfolderbtn").onclick = () => {
   const box = $("fnew");
