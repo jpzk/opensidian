@@ -555,6 +555,23 @@ async function lpRender(g, activeL = -1, col = 0) {
     } else {
       const h = htmls[bi];
       row.innerHTML = h && h.trim() ? h : "&nbsp;";  // blank line stays clickable
+      // R8.6: rendered checkbox click toggles [ ]/[x] on the source line via
+      // the normal save path. pulldown-cmark emits the input disabled (WebKit
+      // eats clicks on disabled controls) so re-enable, and stopPropagation
+      // keeps lpEdit from opening the raw row.
+      row.querySelectorAll("input[type=checkbox]").forEach(cb => {
+        cb.disabled = false;
+        cb.addEventListener("mousedown", e => {
+          e.preventDefault(); e.stopPropagation();
+          lpCommit(g);                           // fold any active raw row first
+          const M = g.editor.value.split("\n");
+          M[b.l0] = M[b.l0].replace(/^(\s*(?:[-*+]|\d+\.) )\[( |[xX])\]/,
+            (_, p, c) => p + (c === " " ? "[x]" : "[ ]"));
+          g.editor.value = M.join("\n");
+          scheduleSave(g);
+          lpRender(g);
+        });
+      });
       row.addEventListener("mousedown", e => {
         e.preventDefault();                      // keep browser from part-selecting
         lpEdit(g, b.l0, lpCol(e, row, b, L));    // R8.3 column mapping
