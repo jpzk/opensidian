@@ -90,9 +90,16 @@ function updateTitle() {          // pane/focus census in the window title (head
   const t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "]";
   document.title = t;
-  try { window.__TAURI__.window.getCurrentWindow().setTitle(t).catch(() => {}); }
-  catch (e) {}
+  // serialize setTitle calls: two in-flight promises (renderLayout's pre-focus
+  // census, then focusGroup's) can resolve out of order, leaving a stale
+  // "focused:0@0" title as the winner (seen on the VAULT_DIR boot path)
+  try {
+    titleQ = titleQ
+      .then(() => window.__TAURI__.window.getCurrentWindow().setTitle(t))
+      .catch(() => {});
+  } catch (e) {}
 }
+let titleQ = Promise.resolve();
 
 function focusGroup(g) {
   const prev = state.focused;
