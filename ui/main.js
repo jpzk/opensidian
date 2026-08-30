@@ -543,6 +543,7 @@ async function lpRender(g, activeL = -1, col = 0) {
       ta.addEventListener("input", () => {       // grow with typed newlines
         ta.rows = ta.value.split("\n").length;
       });
+      ta.addEventListener("keydown", ev => lpKey(g, ev));  // R8.4 traversal
       ta.addEventListener("blur", () => setTimeout(() => {
         if (g.lpActive && g.lpActive.ta === ta) { lpCommit(g); lpRender(g); }
       }, 60));
@@ -590,6 +591,42 @@ function lpCol(e, row, b, L) {
 async function lpEdit(g, line, col) {  // move the raw region to `line`
   lpCommit(g);
   await lpRender(g, line, col);
+}
+
+/* R8.4 keyboard traversal. Up/Down at the raw row's first/last line move the
+   row to the adjacent block (caret column preserved); Enter on a single-line
+   block splits immediately (raw row follows to the new line; fences keep
+   native newlines); Backspace at col 0 joins with the previous source line,
+   caret at the join point. Home/End stay native inside the textarea. */
+function lpKey(g, ev) {
+  const a = g.lpActive;
+  if (!a) return;
+  const ta = a.ta, v = ta.value;
+  const pre = v.slice(0, ta.selectionStart).split("\n");
+  const tl = pre.length - 1, tc = pre[tl].length;   // caret line/col inside ta
+  const nl = v.split("\n").length;
+  if (ev.key === "ArrowUp" && tl === 0 && a.l0 > 0) {
+    ev.preventDefault();
+    lpCommit(g); lpRender(g, a.l0 - 1, tc);
+  } else if (ev.key === "ArrowDown" && tl === nl - 1) {
+    const target = a.l0 + nl;                       // first line after commit
+    const total = g.editor.value.split("\n").length - (a.l1 - a.l0 + 1) + nl;
+    if (target >= total) return;                    // nothing below: native
+    ev.preventDefault();
+    lpCommit(g); lpRender(g, target, tc);
+  } else if (ev.key === "Enter" && a.l1 === a.l0) { // split single-line block
+    ev.preventDefault();
+    ta.value = v.slice(0, ta.selectionStart) + "\n" + v.slice(ta.selectionEnd);
+    lpCommit(g); lpRender(g, a.l0 + pre.length, 0);
+  } else if (ev.key === "Backspace" && ta.selectionStart === 0 &&
+             ta.selectionEnd === 0 && a.l0 > 0) {   // join with previous line
+    ev.preventDefault();
+    lpCommit(g);
+    const L = g.editor.value.split("\n"), p = a.l0 - 1, c = L[p].length;
+    L[p] += L[p + 1]; L.splice(p + 1, 1);
+    g.editor.value = L.join("\n"); scheduleSave(g);
+    lpRender(g, p, c);
+  }
 }
 
 async function preview(g) {
