@@ -1,8 +1,25 @@
 * { box-sizing: border-box; margin: 0 }
 body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
        background: #1e1e2e; color: #cdd6f4 }
-#side { width: 200px; background: #181825; flex-shrink: 0;
+/* R9.1 ribbon: fixed 44px icon strip, survives sidebar collapse */
+#ribbon { width: 44px; background: #11111b; flex-shrink: 0; display: flex;
+          flex-direction: column; align-items: center; gap: 8px;
+          padding: 10px 0 }
+#ribbon button { background: none; color: #a6adc8; border: 0; padding: 5px;
+                 cursor: pointer; border-radius: 4px }
+#ribbon button:hover { background: #313244; color: #cdd6f4 }
+#ribbon button svg { width: 18px; height: 18px; display: block }
+#side { width: 156px; background: #181825; flex-shrink: 0;
         display: flex; flex-direction: column }
+/* R9.2 sidebar tab strip: Files / Search / Bookmarks */
+#stabs { display: flex; gap: 2px; padding: 6px 6px 2px }
+.stab { flex: 1; background: none; color: #a6adc8; border: 0; padding: 4px;
+        cursor: pointer; border-radius: 4px }
+.stab:hover { color: #cdd6f4 }
+.stab.active { background: #313244; color: #cdd6f4 }
+.stab svg { width: 15px; height: 15px; display: block; margin: 0 auto }
+.spane { flex: 1; display: flex; flex-direction: column; min-height: 0 }
+.spane[hidden] { display: none }
 #bar { display: flex; gap: 4px; padding: 6px }
 #bar button { flex: 1; background: #313244; color: #cdd6f4; border: 0;
               padding: 4px; cursor: pointer; border-radius: 4px }

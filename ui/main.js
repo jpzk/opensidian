@@ -23,6 +23,18 @@ const curOf = g => (g.active >= 0 ? g.tabs[g.active].name : null);
 const cur = () => (state && fg() ? curOf(fg()) : null);
 const mkTab = name => ({ name, mode: "livepreview", hist: [name], hpos: 0 });  // R8.8: LP default
 
+/* R9.2: left sidebar pane state — Files / Search / Bookmarks (census [pane:]) */
+let sidePane = "files";
+const SPANES = { files: "pane-files", search: "pane-search", bm: "pane-bm" };
+function setPane(p) {
+  sidePane = p;
+  for (const [k, id] of Object.entries(SPANES)) {
+    $(id).hidden = k !== p;
+    $("stab-" + k).classList.toggle("active", k === p);
+  }
+  updateTitle();
+}
+
 async function writeNote(name, content) {   // every save funnels here so graphs live-update
   await inv("write_note", { name, content });
   for (const g of groups()) if (g.graphOn && g.graphRefresh) await g.graphRefresh();
@@ -150,12 +162,14 @@ function updateTitle() {          // pane/focus census in the window title (head
   // R8.10: focused tab's view mode -> [mode:lp|src|read]; when the lp raw
   // row is active, [mode:lp:<l0>] exposes its block start line (headless probe)
   const ft = fg() && fg().active >= 0 ? fg().tabs[fg().active] : null;
-  let md = ft && ft.kind !== "lg" ? " [mode:" + (MODE_ABBR[ft.mode] || "?") : "";
+  let md = ft && !ft.kind ? " [mode:" + (MODE_ABBR[ft.mode] || "?") : "";
   if (md && ft.mode === "livepreview" && fg().lpActive) md += ":" + fg().lpActive.l0;
   if (md) md += "]";
+  const gg = ft && ft.kind === "gg" ? " [gg]" : "";  // R9.7: global graph tab focused
   const t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
-            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + lg + md;
+            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + lg + md + gg +
+            " [pane:" + sidePane + "]";
   document.title = t;
   // publish to the native title: ONE call in flight, last-write-wins, 500ms
   // timeout guard — a hung/rejected setTitle IPC can neither reorder titles
@@ -305,7 +319,7 @@ async function cmdToggleMode(g) {  // Ctrl+E / mode button: lp -> src -> read ->
   g = g || fg();
   if (!g || g.active < 0 || g.graphOn) return;
   const tab = g.tabs[g.active];
-  if (tab.kind === "lg") return;
+  if (tab.kind) return;             // graph tabs (lg/gg) have no view mode
   await flushSave(g);
   tab.mode = MODE_NEXT[tab.mode] || "livepreview";
   hideAc();
@@ -347,6 +361,21 @@ async function loadActive(g) {
   const t = g.active >= 0 ? g.tabs[g.active] : null;
   if (t && t.kind === "lg") {       // R7.1: localgraph tab owns the pane's canvas
     await showLocalGraph(g, t);
+    renderTabs(g);
+    await refreshTree();
+    return;
+  }
+  if (t && t.kind === "gg") {       // R9.7: global graph as a main tab
+    cancelAnimationFrame(g.sim);    // clean restart on tab switches
+    await startGraph(g, {
+      fetch: () => inv("graph"),
+      center: () => null,
+      onClick: async n => {         // node click: this tab BECOMES the note
+        const tt = g.active >= 0 ? g.tabs[g.active] : null;
+        if (tt && tt.kind === "gg") delete tt.kind;
+        await navigate(g, n);
+      },
+    });
     renderTabs(g);
     await refreshTree();
     return;
@@ -859,6 +888,9 @@ document.addEventListener("keydown", e => {
   if (fn) { e.preventDefault(); fn(); }
 });
 
+$("stab-files").onclick = () => setPane("files");
+$("stab-search").onclick = () => setPane("search");
+$("stab-bm").onclick = () => setPane("bm");
 $("newbtn").onclick = cmdNewNote;
 $("newfolderbtn").onclick = () => {
   const box = $("fnew");
@@ -886,19 +918,19 @@ function showEditor(g) {
   g.lggear.hidden = true; g.lgpop.hidden = true;
   applyMode(g);
 }
-$("graphbtn").onclick = () => {
+$("graphbtn").onclick = cmdGlobalGraph;
+async function cmdGlobalGraph() {  // R9.7: ribbon icon opens GLOBAL graph as a main tab
   if (!state) return;
-  const g = fg(), t = g.active >= 0 ? g.tabs[g.active] : null;
-  if (t && t.kind === "lg") return;   // localgraph tabs own their canvas
-  if (g.graphOn) return showEditor(g);
-  toggleGraph(g);
-};
-async function toggleGraph(g) {  // global graph (R4.x): whole vault, click navigates own group
-  await startGraph(g, {
-    fetch: () => inv("graph"),
-    center: () => null,
-    onClick: n => navigate(g, n),
-  });
+  const g = fg();
+  await flushSave(g);
+  const i = g.tabs.findIndex(t => t.kind === "gg");
+  if (i >= 0) g.active = i;        // one graph-view tab per group, refocus it
+  else {
+    g.tabs.push({ kind: "gg", name: "Graph view", mode: "source",
+                  hist: [], hpos: -1 });
+    g.active = g.tabs.length - 1;
+  }
+  await loadActive(g);
 }
 async function startGraph(g, cfg) {
   g.graphOn = true;
