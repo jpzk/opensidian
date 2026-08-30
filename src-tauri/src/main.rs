@@ -114,6 +114,31 @@ fn write_note(v: State<Vault>, name: String, content: String) {
     }
 }
 
+/* m5 F2 rename: fs::rename old.md -> new.md inside root. Parents created,
+   overwrite refused, wikilinks untouched (v1). Pure-ish core for unit tests. */
+fn rename_in(root: &Path, old: &str, new: &str) -> Result<(), String> {
+    let op = root.join(safe_rel(old).ok_or("invalid name")?);
+    let np = root.join(safe_rel(new).ok_or("invalid name")?);
+    let op = PathBuf::from(format!("{}.md", op.display()));
+    let np = PathBuf::from(format!("{}.md", np.display()));
+    if !op.is_file() {
+        return Err("no such note".into());
+    }
+    if np.exists() {
+        return Err("target exists".into());
+    }
+    if let Some(d) = np.parent() {
+        fs::create_dir_all(d).map_err(|e| e.to_string())?;
+    }
+    fs::rename(op, np).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn rename_note(v: State<Vault>, old: String, new: String) -> Result<(), String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    rename_in(&root, &old, &new)
+}
+
 #[tauri::command]
 fn vault_get(v: State<Vault>) -> Option<String> {
     cur_vault(&v).map(|p| p.display().to_string())
@@ -443,7 +468,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_notes, read_note, write_note, render, graph, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, recent_vaults
+            list_bookmarks, toggle_bookmark, recent_vaults, rename_note
         ])
         .run(tauri::generate_context!())
         .expect("tauri run");
@@ -512,6 +537,22 @@ mod tests {
         let l = toggle_in(l, "A");               // second toggle removes
         assert_eq!(l, vec!["sub/B"]);
         assert!(toggle_in(l, "sub/B").is_empty());
+    }
+
+    #[test]
+    fn rename_moves_refuses_overwrite() {
+        let root = std::env::temp_dir().join(format!("rustidian-rn-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("A.md"), "body").unwrap();
+        fs::write(root.join("B.md"), "other").unwrap();
+        rename_in(&root, "A", "sub/A2").unwrap(); // parents created
+        assert!(!root.join("A.md").exists());
+        assert_eq!(fs::read_to_string(root.join("sub/A2.md")).unwrap(), "body");
+        assert!(rename_in(&root, "sub/A2", "B").is_err()); // refuse overwrite
+        assert!(rename_in(&root, "Ghost", "X").is_err()); // missing source
+        assert!(rename_in(&root, "B", "../esc").is_err()); // traversal blocked
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

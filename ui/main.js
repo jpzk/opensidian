@@ -335,7 +335,8 @@ function updateTitle() {          // pane/focus census in the window title (head
   if (md && ft.mode === "livepreview" && fg().lpActive) md += ":" + fg().lpActive.l0;
   if (md) md += "]";
   const gg = ft && ft.kind === "gg" ? " [gg]" : "";  // R9.7: global graph tab focused
-  const modal = modalKind ? " [modal:" + modalKind + "]" : "";  // m5 fuzzy modal
+  const modal = modalKind ? " [modal:" + modalKind + "]"
+    : ($("rnbox") && !$("rnbox").hidden ? " [modal:rn]" : "");  // m5 fuzzy modal / rename prompt
   const t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
             " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + lg + md + gg + modal +
@@ -1163,6 +1164,7 @@ function cpItems() {                 // palette source: command registry w/ hotk
     { label: "Toggle left sidebar",  hint: "",             run: cmdToggleSide },
     { label: "Toggle right sidebar", hint: "",             run: () => cmdToggleRight() },
     { label: "Switch vault",         hint: "",             run: showPicker },
+    { label: "Rename note",          hint: "F2",           run: cmdRename },
     { label: "Close tab",            hint: "Ctrl+W",       run: cmdCloseTab },
     { label: "Save",                 hint: "Ctrl+S",       run: cmdSave },
   ];
@@ -1170,6 +1172,43 @@ function cpItems() {                 // palette source: command registry w/ hotk
 function cmdPalette() {
   modalKind === "cp" ? closeModal() : openModal("cp", cpItems);
 }
+
+/* m5 F2 rename: inline prompt over the focused note tab; disk rename via
+   rename_note (wikilinks untouched v1), then tabs/hist/mru follow the name */
+function cmdRename() {
+  const g = fg();
+  const t = g && g.active >= 0 ? g.tabs[g.active] : null;
+  if (!t || t.kind) return;                 // notes only, no graph tabs
+  const inp = $("rninput");
+  $("rnbox").hidden = false;
+  inp.value = t.name;
+  inp.focus();
+  inp.select();
+  updateTitle();
+}
+$("rninput").onkeydown = async e => {
+  if (e.key === "Escape") { $("rnbox").hidden = true; updateTitle(); return; }
+  if (e.key !== "Enter") return;
+  const g = fg();
+  const t = g && g.active >= 0 ? g.tabs[g.active] : null;
+  const nn = $("rninput").value.trim();
+  $("rnbox").hidden = true;
+  if (!t || t.kind || !nn || nn === t.name) { updateTitle(); return; }
+  const old = t.name;
+  await flushSave(g);                       // old content lands before the move
+  try { await inv("rename_note", { old, new: nn }); }
+  catch (err) { updateTitle(); return; }    // exists/invalid -> keep old name
+  for (const h of groups()) for (const tb of h.tabs) {
+    if (tb.kind) continue;
+    if (tb.name === old) tb.name = nn;
+    if (tb.hist) tb.hist = tb.hist.map(n => (n === old ? nn : n));
+  }
+  const mi = mruList.indexOf(old);
+  if (mi >= 0) mruList[mi] = nn;
+  for (const h of groups()) renderTabs(h);
+  await refreshTree();
+  updateTitle();
+};
 
 const keymap = {
   "ctrl+n": cmdNewNote,
@@ -1179,6 +1218,7 @@ const keymap = {
   "ctrl+o": cmdQuickSwitch,
   "ctrl+p": cmdPalette,
   "ctrl+g": cmdGlobalGraph,
+  "f2": cmdRename,
   "ctrl+t": cmdNewTab,
   "ctrl+tab": () => cmdCycleTab(1),
   "ctrl+shift+tab": () => cmdCycleTab(-1),
@@ -1192,6 +1232,7 @@ for (let n = 1; n <= 9; n++) keymap["ctrl+" + n] = () => cmdJumpTab(n);
 document.addEventListener("keydown", e => {
   if (e.key === "Escape") {
     if (modalKind) { closeModal(); return; }
+    if (!$("rnbox").hidden) { $("rnbox").hidden = true; updateTitle(); return; }
     closeMenu();
     if (vaultPath && !$("picker").hidden) $("picker").hidden = true;
     if (!$("fnew").hidden) $("fnew").hidden = true;
@@ -1199,10 +1240,15 @@ document.addEventListener("keydown", e => {
   }
   let k = e.key.toLowerCase();
   if (e.code === "Tab") k = "tab";   // X11 shift+tab arrives as ISO_Left_Tab
-  const combo = (e.ctrlKey ? "ctrl+" : "") + (e.altKey ? "alt+" : "")
+  // Xvfb/xdotool synthesize every F-key with a spurious Mod1 latch (alt:true
+  // on F1..F12, clean on letters) — drop alt for function keys so F2 binds.
+  // No alt+Fn combo is in the keymap, so nothing real is masked.
+  const alt = e.altKey && !/^F\d+$/.test(e.code);
+  const combo = (e.ctrlKey ? "ctrl+" : "") + (alt ? "alt+" : "")
     + (e.shiftKey ? "shift+" : "") + k;
   const fn = keymap[combo];
   if (modalKind && fn !== cmdQuickSwitch && fn !== cmdPalette) return;  // modal traps the keymap
+  if (!$("rnbox").hidden) return;    // rename prompt traps the keymap too
   if (fn) { e.preventDefault(); fn(); }
 });
 
