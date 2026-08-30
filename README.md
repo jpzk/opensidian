@@ -52,9 +52,18 @@ rustidian to ONLY your vault:
       --proc /proc --dev /dev --dev-bind /dev/dri /dev/dri \
       --tmpfs /home --tmpfs /tmp --bind ~/vault ~/vault \
       --ro-bind /tmp/.X11-unix /tmp/.X11-unix \
+      --ro-bind ./rustidian-0.2-x86_64-slim.AppImage /app.AppImage \
       --setenv HOME "$HOME" --setenv DISPLAY "$DISPLAY" \
       --unshare-all --die-with-parent \
-      ./rustidian-0.2-x86_64-slim.AppImage --appimage-extract-and-run
+      /app.AppImage --appimage-extract-and-run
+
+Note the AppImage itself must be BOUND INTO the sandbox (`/app.AppImage`
+above) — the `--tmpfs /home` that hides your home dir hides the download
+too. If X complains about authorization, your xauth cookie is also hidden;
+add:
+
+    --ro-bind "${XAUTHORITY:-$HOME/.Xauthority}" /tmp/.Xauthority \
+    --setenv XAUTHORITY /tmp/.Xauthority \
 
 Everything outside the binds is invisible: `~/.ssh`, browser profiles, the
 lot. Swap `~/vault` for your vault path (it's bound read-write; vault picker
