@@ -340,7 +340,12 @@ async function preview(g) {
       const n = a.dataset.note;
       if (a.classList.contains("wiki-unresolved"))   // R3.5: click creates the note
         await writeNote(n, "");
-      navigate(g, n);
+      if (e.ctrlKey) {                               // R6.4: open in NEW TAB, same group
+        await flushSave(g);
+        g.tabs.push(mkTab(n));
+        g.active = g.tabs.length - 1;
+        await loadActive(g);
+      } else navigate(g, n);
     };
 }
 
