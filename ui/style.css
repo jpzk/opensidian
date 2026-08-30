@@ -48,9 +48,16 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .tab .x { cursor: pointer; padding: 0 2px; border-radius: 3px }
 .tab .x:hover { background: #585b70 }
 .content { flex: 1; display: flex; min-height: 0; position: relative }
+/* R8.8: one of .editor/.lp/.preview fills the pane (JS toggles display) —
+   the old permanent editor|preview side-by-side layout is gone */
 .editor { flex: 1; background: #1e1e2e; color: #cdd6f4; border: 0;
-          border-right: 1px solid #313244; padding: 16px; resize: none;
+          padding: 16px; resize: none;
           font: 13px/1.6 monospace; outline: none }
+.lp { flex: 1; padding: 16px; overflow-y: auto }
+.lp a.wiki { color: #89b4fa }
+.lp a.wiki-unresolved { color: #7c86c8; font-style: italic }
+.lp h1, .lp h2 { border-bottom: 1px solid #313244 }
+.lp code { background: #313244; padding: 1px 4px; border-radius: 3px }
 .preview { flex: 1; padding: 16px; overflow-y: auto }
 .preview a.wiki { color: #89b4fa }
 .preview a.wiki-unresolved { color: #7c86c8; font-style: italic }

@@ -21,7 +21,7 @@ const groups = () => (state ? leaves(state.root) : []);
 const fg = () => state.focused;
 const curOf = g => (g.active >= 0 ? g.tabs[g.active].name : null);
 const cur = () => (state && fg() ? curOf(fg()) : null);
-const mkTab = name => ({ name, mode: "source", hist: [name], hpos: 0 });
+const mkTab = name => ({ name, mode: "livepreview", hist: [name], hpos: 0 });  // R8.8: LP default
 
 async function writeNote(name, content) {   // every save funnels here so graphs live-update
   await inv("write_note", { name, content });
@@ -46,6 +46,7 @@ function mkGroup() {
     '<button class="modebtn" title="toggle reading view (Ctrl+E)"></button></div>' +
     '<div class="content">' +
       '<textarea class="editor" spellcheck="false" placeholder="# write markdown, link with [[Note]]"></textarea>' +
+      '<div class="lp"></div>' +
       '<div class="preview"></div>' +
       '<canvas class="graph" hidden></canvas>' +
       '<div class="ac" hidden></div>' +
@@ -61,7 +62,7 @@ function mkGroup() {
   g.pane = pane;
   const q = s => pane.querySelector(s);
   g.tabsEl = q(".tabs"); g.modebtn = q(".modebtn"); g.content = q(".content");
-  g.editor = q(".editor"); g.preview = q(".preview"); g.graph = q(".graph");
+  g.editor = q(".editor"); g.lp = q(".lp"); g.preview = q(".preview"); g.graph = q(".graph");
   g.acEl = q(".ac"); g.status = q(".status");
   g.stBl = q(".st-bl"); g.stWc = q(".st-wc"); g.stCc = q(".st-cc");
   g.lggear = q(".lggear"); g.lgpop = q(".lgpop"); g.lgDv = q(".lgdv");
@@ -143,9 +144,12 @@ function updateTitle() {          // pane/focus census in the window title (head
     const t = h.tabs.find(t => t.kind === "lg");
     if (t) { lg = " [lg:" + t.center + "@" + t.depth + "]"; break; }
   }
+  // R8.10: focused tab's view mode -> [mode:lp|src|read]
+  const ft = fg() && fg().active >= 0 ? fg().tabs[fg().active] : null;
+  const md = ft && ft.kind !== "lg" ? " [mode:" + (MODE_ABBR[ft.mode] || "?") + "]" : "";
   const t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
-            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + lg;
+            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + lg + md;
   document.title = t;
   // publish to the native title: ONE call in flight, last-write-wins, 500ms
   // timeout guard — a hung/rejected setTitle IPC can neither reorder titles
@@ -269,31 +273,41 @@ function tabMenu(e, g, i) {              // right-click a tab -> Split right / S
   menuEl = m;
 }
 
-/* ---------- view modes (R3.2: source / reading per tab) ---------- */
+/* ---------- view modes (R8.8: livepreview / source / reading per tab) ---------- */
 const ICON_BOOK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>';
 const ICON_PEN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/></svg>';
+const ICON_SRC = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 6l-6 6 6 6M16 6l6 6-6 6"/></svg>';
+const MODE_ABBR = { livepreview: "lp", source: "src", reading: "read" };
+const MODE_NEXT = { livepreview: "source", source: "reading", reading: "livepreview" };
 
 function updateModeBtn(g) {
   const tb = g.active >= 0 ? g.tabs[g.active] : null;
-  g.modebtn.innerHTML = tb && tb.mode === "reading" ? ICON_PEN : ICON_BOOK;
+  const m = tb ? tb.mode : "livepreview";
+  g.modebtn.innerHTML =
+    m === "reading" ? ICON_PEN : m === "source" ? ICON_SRC : ICON_BOOK;
 }
 
-function applyMode(g) {  // reading = preview fills the pane, editor hidden
-  const m = g.active >= 0 ? g.tabs[g.active].mode : "source";
-  g.editor.style.display = m === "reading" ? "none" : "";
-  g.preview.style.display = "";
+function applyMode(g) {  // exactly ONE of editor / lp / preview fills the pane
+  const m = g.active >= 0 ? g.tabs[g.active].mode : "livepreview";
+  g.editor.style.display = m === "source" ? "" : "none";
+  g.lp.style.display = m === "livepreview" ? "" : "none";
+  g.preview.style.display = m === "reading" ? "" : "none";
   updateModeBtn(g);
 }
 
-async function cmdToggleMode(g) {  // Ctrl+E / mode button
+async function cmdToggleMode(g) {  // Ctrl+E / mode button: lp -> src -> read -> lp
   g = g || fg();
   if (!g || g.active < 0 || g.graphOn) return;
   const tab = g.tabs[g.active];
-  if (tab.mode === "source") await flushSave(g);
-  tab.mode = tab.mode === "source" ? "reading" : "source";
+  if (tab.kind === "lg") return;
+  await flushSave(g);
+  tab.mode = MODE_NEXT[tab.mode] || "livepreview";
   hideAc();
   applyMode(g);
+  if (tab.mode === "reading") await preview(g);
+  if (tab.mode === "livepreview") await lpRender(g);
   if (tab.mode === "source") g.editor.focus();
+  updateTitle();
 }
 
 /* ---------- tabs (per group) ---------- */
@@ -334,8 +348,10 @@ async function loadActive(g) {
   showEditor(g);
   const n = curOf(g);
   g.editor.value = n ? await inv("read_note", { name: n }) : "";
-  if (n && g.tabs[g.active].mode === "source") g.editor.focus();
-  await preview(g);
+  const m = g.tabs[g.active] ? g.tabs[g.active].mode : "livepreview";
+  if (n && m === "source") g.editor.focus();
+  if (m === "reading") await preview(g);
+  else if (m === "livepreview") await lpRender(g);
   renderTabs(g);
   await refreshTree();
   await updateStatus(g);
@@ -463,6 +479,12 @@ async function refreshTree() {
 }
 
 /* ---------- editor + preview (per group) ---------- */
+// R8.1 stub (item 3 replaces with per-line hybrid: rendered line list + one
+// raw caret row). Interim: whole-doc render so lp-default already shows content.
+async function lpRender(g) {
+  g.lp.innerHTML = await inv("render", { content: g.editor.value });
+}
+
 async function preview(g) {
   g.preview.innerHTML = await inv("render", { content: g.editor.value });
   for (const a of g.preview.querySelectorAll("a.wiki"))
@@ -692,6 +714,7 @@ async function startGraph(g, cfg) {
   hideAc();
   g.status.hidden = true;
   g.editor.style.display = "none"; g.preview.style.display = "none";
+  g.lp.style.display = "none";
   const cv = g.graph; cv.hidden = false;
   cv.width = cv.clientWidth; cv.height = cv.clientHeight;
   const gr = await cfg.fetch();
