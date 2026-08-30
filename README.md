@@ -8,20 +8,33 @@ I'm using a DIY computer use to let AI write requirements to copy the UI/UX of O
 I'm running as many top frontier models to scan for vulnerabilities, but since this is open source and you can do this, please do. Don't trust, verify.
 
 ## Features
-- markdown editor + live preview (pulldown-cmark, rendered in Rust)
-- [[wikilinks]] -> clickable links + graph view (canvas force sim)
-- vault = a directory of .md files (env VAULT_DIR, default ./vault)
+- markdown editor + live preview (pulldown-cmark, rendered in Rust) — live preview is the default mode
+- [[wikilinks]] -> clickable links + local graph view (canvas force sim)
+- splits / tab groups with tab drag & drop
+- full-text search, quick switcher, command palette, bookmarks
+- safe renames (H1 or F2) that rewrite [[links]] across the vault
+- vault picker with persistence (or env VAULT_DIR, default ./vault)
 
 ## Screenshots
 
 
 ## install
-Grab the AppImage from the [latest release](https://github.com/jpzk/rustidian/releases):
+Two AppImage flavors on the [latest release](https://github.com/jpzk/rustidian/releases):
 
-    curl -LO https://github.com/jpzk/rustidian/releases/download/v0.1/rustidian-0.1-x86_64.AppImage
-    chmod +x rustidian-0.1-x86_64.AppImage
-    ./rustidian-0.1-x86_64.AppImage
+**slim** (recommended, ~6MB) — just the binary; uses your system's webkit.
+Needs `libwebkit2gtk-4.1` installed (`apt install libwebkit2gtk-4.1-0` /
+`dnf install webkit2gtk4.1`) — the AppImage tells you if it's missing:
 
-No FUSE on your box (containers, minimal VMs)? Run it without mounting:
+    curl -LO https://github.com/jpzk/rustidian/releases/download/v0.2/rustidian-0.2-x86_64-slim.AppImage
+    chmod +x rustidian-0.2-x86_64-slim.AppImage
+    ./rustidian-0.2-x86_64-slim.AppImage
 
-    ./rustidian-0.1-x86_64.AppImage --appimage-extract-and-run
+**portable** (~110MB) — bundles the entire webkit/gtk closure, zero system deps:
+
+    curl -LO https://github.com/jpzk/rustidian/releases/download/v0.2/rustidian-0.2-x86_64-portable.AppImage
+    chmod +x rustidian-0.2-x86_64-portable.AppImage
+    ./rustidian-0.2-x86_64-portable.AppImage
+
+No FUSE on your box (containers, minimal VMs)? Run either without mounting:
+
+    ./rustidian-0.2-x86_64-slim.AppImage --appimage-extract-and-run
