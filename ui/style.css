@@ -66,6 +66,17 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
            overflow: hidden; text-overflow: ellipsis }
 #vswitch:hover { background: #313244 }
 #main { flex: 1; display: flex; min-width: 0 }
+/* R9.6 right sidebar: localgraph of the active note, resizable divider */
+#rdiv { flex: 0 0 6px; background: #11111b; cursor: col-resize }
+#rdiv:hover, #rdiv:active { background: #585b70 }
+#rdiv[hidden], #rside[hidden] { display: none }
+#rside { width: 260px; flex-shrink: 0; background: #181825; display: flex;
+         min-width: 0 }
+#rtoggle { position: fixed; top: 5px; right: 6px; z-index: 9; background: none;
+           border: 0; color: #a6adc8; cursor: pointer; padding: 3px;
+           border-radius: 4px }
+#rtoggle:hover { background: #313244; color: #cdd6f4 }
+#rtoggle svg { width: 17px; height: 17px; display: block }
 /* split tree (M6): .split nodes wrap .pane leaves; flex weights = fractions */
 .split { display: flex; flex: 1 1 0; min-width: 0; min-height: 0 }
 .split.row { flex-direction: row }

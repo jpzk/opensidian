@@ -33,6 +33,67 @@ function cmdToggleSide() {
   $("collapsebtn").title = sideOpen ? "Collapse sidebar" : "Expand sidebar";
   updateTitle();
 }
+
+/* R9.6 right sidebar: localgraph of the ACTIVE note (depth 1, in+out),
+   reusing startGraph via a stub "group" whose only real element is the
+   canvas. fetch reads the OUTER rgCenter so graphRefresh re-filters on
+   follow without restarting the sim. census [rg:<center>] while open. */
+let rg = null, rgCenter = null;
+// active tab's NOTE (kind tabs like gg/lg have no note -> null; the panel
+// then keeps its previous center, like Obsidian keeps the last file)
+function rgNote() {
+  const g = fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
+  return t && !t.kind ? t.name : null;
+}
+function mkRg() {
+  const stub = () => ({ style: {}, hidden: true });
+  return { graph: $("rgraph"), editor: stub(), preview: stub(), lp: stub(),
+           status: stub(), lggear: stub(), lgpop: stub(),
+           sim: 0, graphRefresh: null, graphOn: false };
+}
+async function rgStart() {                 // (re)build canvas + sim at current size
+  if (!rg) rg = mkRg();
+  cancelAnimationFrame(rg.sim);
+  rgCenter = rgNote() || rgCenter;
+  if (!rgCenter) return;
+  await startGraph(rg, {
+    fetch: async () => lgFilter(await inv("graph"), rgCenter, 1, true, true),
+    center: () => rgCenter,
+    onClick: async n => { await navigate(fg(), n); },  // opens in focused group
+  });
+}
+async function rgFollow() {                // active note changed -> re-center
+  if (!rightOpen || !rg || !rg.graphRefresh) return;
+  const n = rgNote();
+  if (!n || n === rgCenter) return;
+  rgCenter = n;
+  await rg.graphRefresh();
+  updateTitle();
+}
+async function cmdToggleRight() {
+  if (!state) return;
+  rightOpen = !rightOpen;
+  $("rside").hidden = $("rdiv").hidden = !rightOpen;
+  $("rtoggle").title = rightOpen ? "Collapse right sidebar" : "Expand right sidebar";
+  if (rightOpen) await rgStart();
+  else if (rg) { cancelAnimationFrame(rg.sim); rg.graphRefresh = null; rg.graphOn = false; }
+  updateTitle();
+}
+$("rtoggle").onclick = cmdToggleRight;
+$("rdiv").onmousedown = e => {             // resizable divider (clamped 140-600)
+  e.preventDefault();
+  const move = ev => {
+    const w = Math.max(140, Math.min(600, window.innerWidth - ev.clientX - 3));
+    $("rside").style.width = w + "px";
+  };
+  const up = () => {
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", up);
+    if (rightOpen) rgStart();              // re-fit canvas world to new width
+  };
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", up);
+};
 const SPANES = { files: "pane-files", search: "pane-search", bm: "pane-bm" };
 function setPane(p) {
   sidePane = p;
@@ -145,6 +206,7 @@ function noteMenu(e, nm) {                 // right-click a tree note row
 async function writeNote(name, content) {   // every save funnels here so graphs live-update
   await inv("write_note", { name, content });
   for (const g of groups()) if (g.graphOn && g.graphRefresh) await g.graphRefresh();
+  if (rightOpen && rg && rg.graphRefresh) await rg.graphRefresh();  // R9.6 live too
 }
 
 async function flushSave(g) {               // write g's pending edits NOW
@@ -277,6 +339,7 @@ function updateTitle() {          // pane/focus census in the window title (head
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
             " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + lg + md + gg +
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) + "]" +
+            (rightOpen && rgCenter ? " [rg:" + rgCenter + "]" : "") +
             " [pane:" + sidePane + "]" +
             (sidePane === "search" && searchCount >= 0 ? " [sr:" + searchCount + "]" : "") +
             (sidePane === "bm" ? " [bm:" + bmCache.length + "]" : "");
@@ -309,6 +372,7 @@ function focusGroup(g) {
   if (prev === g) return;
   state.focused = g;
   for (const x of groups()) x.pane.classList.toggle("focused", x === g);
+  rgFollow();                     // R9.6: right panel follows focus (fire+forget)
   updateTitle();
   if (prev) refreshTree();        // explorer active-note highlight follows focus
 }
@@ -505,6 +569,7 @@ async function loadActive(g) {
 
 // R7.3: any localgraph tab linked to `src` re-centers on src's active note
 async function lgFollow(src) {
+  await rgFollow();                 // R9.6: right panel tracks the active note too
   const n = curOf(src);
   if (!n) return;
   for (const h of groups()) {
