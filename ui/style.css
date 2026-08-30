@@ -99,10 +99,16 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
        gap: 6px; padding: 0 8px; background: #313244; color: #a6adc8;
        cursor: pointer; font-size: 12px; border-right: 2px solid #11111b }
 .tab.active { background: #45475a; color: #cdd6f4 }
-.tab .t { flex: 1; overflow: hidden; text-overflow: ellipsis;
-          white-space: nowrap }
-.tab .x { cursor: pointer; padding: 0 2px; border-radius: 3px }
-.tab .x:hover { background: #585b70 }
+.tab .t { flex: 1 1 auto; min-width: 0; overflow: hidden;
+          text-overflow: ellipsis; white-space: nowrap }
+/* ux-1: close button — flex-none so ellipsized titles can never crush it,
+   inline svg cross (U+2715 was tofu under webkit2gtk's font set) */
+.tab .x { flex: 0 0 auto; display: flex; align-items: center;
+          justify-content: center; width: 16px; height: 16px;
+          cursor: pointer; border-radius: 3px; color: #7f849c }
+.tab .x svg { width: 9px; height: 9px; display: block }
+.tab .x:hover { background: #585b70; color: #cdd6f4 }
+.tab.active .x { color: #a6adc8 }
 .content { flex: 1; display: flex; min-height: 0; position: relative }
 /* R8.8: one of .editor/.lp/.preview fills the pane (JS toggles display) —
    the old permanent editor|preview side-by-side layout is gone */

@@ -521,7 +521,9 @@ function renderTabs(g) {
     ttl.textContent = (chain ? "\u{1F517} " : "") + tab.name.split("/").pop();
     const x = document.createElement("span");
     x.className = "x";
-    x.textContent = "✕";
+    // ux-1: inline svg cross — the ✕ glyph tofu'd under webkit2gtk
+    x.innerHTML = '<svg viewBox="0 0 10 10"><path d="M1 1l8 8M9 1l-8 8" ' +
+      'stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none"/></svg>';
     x.onclick = e => { e.stopPropagation(); closeTab(g, i); };
     d.append(ttl, x);
     d.onclick = () => switchTab(g, i);
