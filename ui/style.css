@@ -56,11 +56,25 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .bmrow .bmstar { color: #f9e2af; display: flex }
 .bmrow .bmstar svg { width: 13px; height: 13px }
 .bmrow:hover { background: #313244 }
-.trow { padding: 5px 12px; cursor: pointer; white-space: nowrap;
-        overflow: hidden; text-overflow: ellipsis }
+/* ux-2 obsidian parity. HEIGHT MUST STAY 31px — smoke clicks rows at pitch 31 */
+.trow { height: 31px; display: flex; align-items: center; cursor: pointer;
+        margin: 0 8px; padding: 0 4px; border-radius: 5px;
+        font-size: 13px; color: #cdd6f4 }
 .trow:hover { background: #313244 }
 .trow.active { background: #45475a }
-.trow.folder { color: #a6adc8 }
+.trow .tn { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden;
+            text-overflow: ellipsis }
+.trow .tg { flex: 0 0 14px; align-self: stretch; position: relative }
+.trow .tg::before { content: ""; position: absolute; left: 7px; top: 0;
+                    bottom: 0; width: 1px; background: #31324499 }
+.trow .tc { flex: 0 0 16px; display: flex; align-items: center;
+            justify-content: center; color: #6c7086 }
+.trow .tc svg { width: 10px; height: 10px; transition: transform .1s }
+.trow.folder.open .tc svg { transform: rotate(90deg) }
+.trow .tfi { flex: 0 0 18px; display: flex; align-items: center;
+             color: #a6adc8 }
+.trow .tfi svg { width: 14px; height: 14px }
+.trow.folder { font-weight: 500 }
 #vswitch { padding: 6px 12px; border-top: 1px solid #313244; color: #a6adc8;
            cursor: pointer; font-size: 12px; white-space: nowrap;
            overflow: hidden; text-overflow: ellipsis }

@@ -660,25 +660,42 @@ function buildTree(folders, notes) {
   return root;
 }
 
+/* ux-2 obsidian parity: chevron rotates via .open, folder icon, indent-guide
+   spans (.tg) instead of padding math. Row height fixed 31px in CSS — the
+   full smoke suite clicks tree rows at pitch 31 (sub=82), do not change it. */
+const TREE_CHEV =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"' +
+  ' stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>';
+const TREE_FOLDER =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"' +
+  ' stroke-linecap="round" stroke-linejoin="round">' +
+  '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
+const treeGuides = d => '<span class="tg"></span>'.repeat(d);
+
 function renderNode(node, prefix, depth, out) {
   for (const d of [...node.dirs.keys()].sort()) {
     const full = prefix ? prefix + "/" + d : d;
+    const open = !collapsed.has(full);
     const row = document.createElement("div");
-    row.className = "trow folder";
-    row.style.paddingLeft = 12 + depth * 14 + "px";
-    row.textContent = (collapsed.has(full) ? "▸ " : "▾ ") + d;
+    row.className = "trow folder" + (open ? " open" : "");
+    row.innerHTML = treeGuides(depth) +
+      '<span class="tc">' + TREE_CHEV + '</span>' +
+      '<span class="tfi">' + TREE_FOLDER + '</span>' +
+      '<span class="tn"></span>';
+    row.querySelector(".tn").textContent = d;   // names never hit innerHTML
     row.onclick = () => {
       collapsed.has(full) ? collapsed.delete(full) : collapsed.add(full);
       refreshTree();
     };
     out.appendChild(row);
-    if (!collapsed.has(full)) renderNode(node.dirs.get(d), full, depth + 1, out);
+    if (open) renderNode(node.dirs.get(d), full, depth + 1, out);
   }
   for (const nm of [...node.notes].sort()) {
     const row = document.createElement("div");
     row.className = "trow note" + (nm === cur() ? " active" : "");
-    row.style.paddingLeft = 12 + depth * 14 + "px";
-    row.textContent = nm.split("/").pop();
+    row.innerHTML = treeGuides(depth) + '<span class="tc"></span>' +
+      '<span class="tn"></span>';
+    row.querySelector(".tn").textContent = nm.split("/").pop();
     row.onclick = () => openInTab(nm);
     row.oncontextmenu = e => noteMenu(e, nm);   // R9.4: bookmark toggle
     out.appendChild(row);
