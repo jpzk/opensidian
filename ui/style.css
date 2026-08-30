@@ -170,6 +170,13 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 #p-dirs li { padding: 4px 10px; cursor: pointer; font-size: 13px }
 #p-dirs li:hover { background: #313244 }
 #p-err { color: #f38ba8; font-size: 12px; min-height: 18px }
+/* R1.6 recent-vault rows: empty list collapses to just the top border */
+#p-recent { list-style: none; border-top: 1px solid #313244; margin: 0; padding: 4px 0;
+            max-height: 150px; overflow-y: auto }
+#p-recent li { padding: 6px 10px; cursor: pointer; border-radius: 5px;
+               display: flex; flex-direction: column; font-size: 13px }
+#p-recent li:hover { background: #313244 }
+#p-recent li span { color: #a6adc8; font-size: 11px }
 #p-close { position: absolute; top: 10px; right: 12px; background: none;
            border: 0; color: #a6adc8; font-size: 15px; cursor: pointer }
 #bar button svg { width: 16px; height: 16px; display: block; margin: 0 auto }

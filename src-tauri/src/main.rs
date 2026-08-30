@@ -119,12 +119,51 @@ fn vault_get(v: State<Vault>) -> Option<String> {
     cur_vault(&v).map(|p| p.display().to_string())
 }
 
+/* R1.6 vault persistence: ~/.rustidian.json {"last": path, "list": [paths]}.
+   Written only on explicit open/create — VAULT_DIR boots (probes) never touch it. */
+fn cfg_path() -> PathBuf {
+    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())).join(".rustidian.json")
+}
+
+fn read_cfg() -> (Option<String>, Vec<String>) {
+    let Ok(s) = fs::read_to_string(cfg_path()) else { return (None, vec![]) };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) else { return (None, vec![]) };
+    let last = v["last"].as_str().map(String::from);
+    let list = v["list"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    (last, list)
+}
+
+/// MRU push: dedup, newest first, capped at 8 — pure for testability
+fn push_recent(mut list: Vec<String>, path: &str) -> Vec<String> {
+    list.retain(|x| x != path);
+    list.insert(0, path.to_string());
+    list.truncate(8);
+    list
+}
+
+fn persist_vault(p: &Path) {
+    let s = p.display().to_string();
+    let (_, list) = read_cfg();
+    let list = push_recent(list, &s);
+    let j = serde_json::json!({"last": s, "list": list});
+    let _ = fs::write(cfg_path(), j.to_string());
+}
+
+#[tauri::command]
+fn recent_vaults() -> Vec<String> {
+    read_cfg().1.into_iter().filter(|p| Path::new(p).is_dir()).collect()
+}
+
 #[tauri::command]
 fn set_vault(v: State<Vault>, path: String) -> Result<String, String> {
     let p = PathBuf::from(path.trim());
     if !p.is_dir() {
         return Err(format!("not a directory: {}", p.display()));
     }
+    persist_vault(&p);
     *v.0.lock().unwrap() = Some(p.clone());
     Ok(p.display().to_string())
 }
@@ -145,6 +184,7 @@ fn create_vault(v: State<Vault>, parent: String, name: String) -> Result<String,
         "# Welcome\n\nThis is your new vault. Notes are plain Markdown files.\nLink them with [[Wiki Links]].\n",
     )
     .map_err(|e| e.to_string())?;
+    persist_vault(&p);
     *v.0.lock().unwrap() = Some(p.clone());
     Ok(p.display().to_string())
 }
@@ -393,13 +433,17 @@ fn toggle_bookmark(v: State<Vault>, name: String) -> Result<Vec<String>, String>
 }
 
 fn main() {
-    let init = std::env::var("VAULT_DIR").ok().map(PathBuf::from);
+    // VAULT_DIR (probes/tests) wins; else last persisted vault if still a dir (R1.6)
+    let init = std::env::var("VAULT_DIR")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| read_cfg().0.map(PathBuf::from).filter(|p| p.is_dir()));
     tauri::Builder::default()
         .manage(Vault(Mutex::new(init)))
         .invoke_handler(tauri::generate_handler![
             list_notes, read_note, write_note, render, graph, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark
+            list_bookmarks, toggle_bookmark, recent_vaults
         ])
         .run(tauri::generate_context!())
         .expect("tauri run");
@@ -468,5 +512,18 @@ mod tests {
         let l = toggle_in(l, "A");               // second toggle removes
         assert_eq!(l, vec!["sub/B"]);
         assert!(toggle_in(l, "sub/B").is_empty());
+    }
+
+    #[test]
+    fn recent_list_dedups_newest_first_capped() {
+        let l = push_recent(vec![], "/a");
+        let l = push_recent(l, "/b");
+        assert_eq!(l, vec!["/b", "/a"]); // newest first
+        let l = push_recent(l, "/a");    // re-open dedups + promotes
+        assert_eq!(l, vec!["/a", "/b"]);
+        let mut l = l;
+        for i in 0..10 { l = push_recent(l, &format!("/v{i}")); }
+        assert_eq!(l.len(), 8);          // capped
+        assert_eq!(l[0], "/v9");
     }
 }

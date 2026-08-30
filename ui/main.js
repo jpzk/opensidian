@@ -1488,6 +1488,25 @@ function showPicker() {
   $("p-sub").hidden = true;
   $("p-err").textContent = "";
   $("p-close").hidden = !vaultPath;
+  loadRecent();
+}
+/* R1.6: recent-vault rows under the create/open actions — click reopens */
+async function loadRecent() {
+  const ul = $("p-recent");
+  ul.innerHTML = "";
+  for (const p of await inv("recent_vaults")) {
+    const li = document.createElement("li");
+    li.innerHTML = "<b></b><span></span>";
+    li.querySelector("b").textContent = base(p);
+    li.querySelector("span").textContent = p;
+    li.onclick = async () => {
+      try { vaultPath = await inv("set_vault", { path: p }); }
+      catch (err) { $("p-err").textContent = String(err); return; }
+      $("picker").hidden = true;
+      await enterVault();
+    };
+    ul.appendChild(li);
+  }
 }
 async function browseTo(p) {
   const dirs = await inv("list_dirs", { path: p });
