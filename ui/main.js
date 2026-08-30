@@ -556,7 +556,7 @@ async function lpRender(g, activeL = -1, col = 0) {
       row.innerHTML = h && h.trim() ? h : "&nbsp;";  // blank line stays clickable
       row.addEventListener("mousedown", e => {
         e.preventDefault();                      // keep browser from part-selecting
-        lpEdit(g, b.l0, lpCol(e, b, L));         // item 4 refines column mapping
+        lpEdit(g, b.l0, lpCol(e, row, b, L));    // R8.3 column mapping
       });
     }
     g.lp.appendChild(row);
@@ -566,8 +566,25 @@ async function lpRender(g, activeL = -1, col = 0) {
   updateTitle();                                 // republish [mode:lp:<l0>] census
 }
 
-function lpCol(e, b, L) {  // click -> source column (v1: end of line; R8.3 in item 4)
-  return L[b.l0].length;
+/* R8.3 click -> source column. caretRangeFromPoint gives the caret offset in
+   RENDERED text; greedy two-pointer alignment maps it back to the source line
+   (marker chars — **, [[, #, "- [ ] " — exist only source-side and are
+   consumed there alone), so error <= enclosing marker width (spec tolerance).
+   Multi-line (fence) blocks and misses fall back to end/start of line. */
+function lpCol(e, row, b, L) {
+  const s = L[b.l0];
+  if (b.l1 !== b.l0) return 0;                   // fence block: caret at start
+  const cr = document.caretRangeFromPoint
+    ? document.caretRangeFromPoint(e.clientX, e.clientY) : null;
+  if (!cr || !row.contains(cr.startContainer)) return s.length;
+  const r = document.createRange();              // rendered chars before caret
+  r.selectNodeContents(row);
+  r.setEnd(cr.startContainer, cr.startOffset);
+  const k = r.toString().length, rt = row.textContent;
+  let i = 0, j = 0;
+  while (i < s.length && j < k)
+    if (s[i] === rt[j]) { i++; j++; } else i++;  // skip source-only marker char
+  return i;
 }
 
 async function lpEdit(g, line, col) {  // move the raw region to `line`
