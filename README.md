@@ -21,7 +21,7 @@ I'm running as many top frontier models to scan for vulnerabilities, but since t
 ## install
 Two AppImage flavors on the [latest release](https://github.com/jpzk/rustidian/releases):
 
-**slim** (recommended, ~6MB) — just the binary; uses your system's webkit.
+**slim** (recommended, ~3MB) — just the binary; uses your system's webkit.
 Needs `libwebkit2gtk-4.1` installed (`apt install libwebkit2gtk-4.1-0` /
 `dnf install webkit2gtk4.1`) — the AppImage tells you if it's missing:
 
