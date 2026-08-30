@@ -58,6 +58,14 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .lp a.wiki-unresolved { color: #7c86c8; font-style: italic }
 .lp h1, .lp h2 { border-bottom: 1px solid #313244 }
 .lp code { background: #313244; padding: 1px 4px; border-radius: 3px }
+/* R8.2: one rendered row per line/block; the raw caret row blends in */
+.lprow { min-height: 1.5em; cursor: text }
+.lprow > :first-child { margin-top: 0 }
+.lprow > :last-child { margin-bottom: 0 }
+.lprow ul, .lprow ol { margin: 0 }
+.lpraw { display: block; width: 100%; background: #26263a; color: #cdd6f4;
+         border: 0; border-radius: 3px; padding: 0 2px; resize: none;
+         outline: none; font: 13px/1.6 monospace; overflow: hidden }
 .preview { flex: 1; padding: 16px; overflow-y: auto }
 .preview a.wiki { color: #89b4fa }
 .preview a.wiki-unresolved { color: #7c86c8; font-style: italic }

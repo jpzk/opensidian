@@ -29,7 +29,9 @@ async function writeNote(name, content) {   // every save funnels here so graphs
 }
 
 async function flushSave(g) {               // write g's pending edits NOW
-  if (!g || !g.saveT) return;
+  if (!g) return;
+  lpCommit(g);                              // fold any active lp raw row first
+  if (!g.saveT) return;
   clearTimeout(g.saveT); g.saveT = null;
   const n = curOf(g);
   if (n) await writeNote(n, g.editor.value);
@@ -38,7 +40,8 @@ async function flushSave(g) {               // write g's pending edits NOW
 /* ---------- group DOM + layout render ---------- */
 function mkGroup() {
   const g = { id: gidSeq++, tabs: [], active: -1,
-              graphOn: false, graphRefresh: null, sim: null, saveT: null };
+              graphOn: false, graphRefresh: null, sim: null, saveT: null,
+              lpActive: null };
   const pane = document.createElement("div");
   pane.className = "pane";
   pane.innerHTML =
@@ -144,9 +147,12 @@ function updateTitle() {          // pane/focus census in the window title (head
     const t = h.tabs.find(t => t.kind === "lg");
     if (t) { lg = " [lg:" + t.center + "@" + t.depth + "]"; break; }
   }
-  // R8.10: focused tab's view mode -> [mode:lp|src|read]
+  // R8.10: focused tab's view mode -> [mode:lp|src|read]; when the lp raw
+  // row is active, [mode:lp:<l0>] exposes its block start line (headless probe)
   const ft = fg() && fg().active >= 0 ? fg().tabs[fg().active] : null;
-  const md = ft && ft.kind !== "lg" ? " [mode:" + (MODE_ABBR[ft.mode] || "?") + "]" : "";
+  let md = ft && ft.kind !== "lg" ? " [mode:" + (MODE_ABBR[ft.mode] || "?") : "";
+  if (md && ft.mode === "livepreview" && fg().lpActive) md += ":" + fg().lpActive.l0;
+  if (md) md += "]";
   const t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
             " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + lg + md;
@@ -479,10 +485,94 @@ async function refreshTree() {
 }
 
 /* ---------- editor + preview (per group) ---------- */
-// R8.1 stub (item 3 replaces with per-line hybrid: rendered line list + one
-// raw caret row). Interim: whole-doc render so lp-default already shows content.
-async function lpRender(g) {
-  g.lp.innerHTML = await inv("render", { content: g.editor.value });
+/* R8.1+R8.2 live preview: per-line hybrid (doc B.3). The hidden textarea
+   g.editor.value IS the model; lp shows one rendered row per source line
+   (fenced code grouped into one block row). Exactly one raw region: the
+   caret row is a textarea with the block's source; leaving it commits back
+   into the model (normal scheduleSave path = R8.9) and re-renders. */
+function lpBlocks(text) {  // -> [{l0,l1}] inclusive line ranges; fences grouped
+  const L = text.split("\n"), out = [];
+  let i = 0;
+  while (i < L.length) {
+    if (/^(```|~~~)/.test(L[i])) {
+      let j = i + 1;
+      while (j < L.length && !/^(```|~~~)\s*$/.test(L[j])) j++;
+      const end = Math.min(j, L.length - 1);
+      out.push({ l0: i, l1: end });
+      i = end + 1;
+    } else { out.push({ l0: i, l1: i }); i++; }
+  }
+  if (!out.length) out.push({ l0: 0, l1: 0 });
+  return out;
+}
+
+function lpCommit(g) {  // fold the active raw row back into the model
+  const a = g.lpActive;
+  if (!a) return;
+  g.lpActive = null;
+  const L = g.editor.value.split("\n");
+  L.splice(a.l0, a.l1 - a.l0 + 1, ...a.ta.value.split("\n"));
+  const nv = L.join("\n");
+  if (nv !== g.editor.value) { g.editor.value = nv; scheduleSave(g); }
+}
+
+// rebuild the lp pane; activeL >= 0 makes that line's block the raw row,
+// caret placed at (activeL, col)
+async function lpRender(g, activeL = -1, col = 0) {
+  const seq = g.lpSeq = (g.lpSeq || 0) + 1;      // stale-render guard
+  const src = g.editor.value, L = src.split("\n");
+  const blocks = lpBlocks(src);
+  const htmls = await Promise.all(blocks.map(b =>
+    b.l0 <= activeL && activeL <= b.l1 ? null
+    : inv("render", { content: L.slice(b.l0, b.l1 + 1).join("\n") })));
+  if (seq !== g.lpSeq) return;                   // a newer render superseded us
+  const st = g.lp.scrollTop;
+  g.lp.innerHTML = "";
+  let focusTa = null;
+  blocks.forEach((b, bi) => {
+    const row = document.createElement("div");
+    row.className = "lprow";
+    row.dataset.l0 = b.l0; row.dataset.l1 = b.l1;
+    if (b.l0 <= activeL && activeL <= b.l1) {    // the ONE raw region (R8.2)
+      row.classList.add("raw");
+      const ta = document.createElement("textarea");
+      ta.className = "lpraw";
+      ta.value = L.slice(b.l0, b.l1 + 1).join("\n");
+      ta.rows = b.l1 - b.l0 + 1;
+      ta.spellcheck = false;
+      ta.addEventListener("input", () => {       // grow with typed newlines
+        ta.rows = ta.value.split("\n").length;
+      });
+      ta.addEventListener("blur", () => setTimeout(() => {
+        if (g.lpActive && g.lpActive.ta === ta) { lpCommit(g); lpRender(g); }
+      }, 60));
+      row.appendChild(ta);
+      g.lpActive = { l0: b.l0, l1: b.l1, ta };
+      const off = L.slice(b.l0, activeL).reduce((a, s) => a + s.length + 1, 0)
+                + Math.min(col, L[activeL].length);
+      focusTa = () => { ta.focus(); ta.setSelectionRange(off, off); };
+    } else {
+      const h = htmls[bi];
+      row.innerHTML = h && h.trim() ? h : "&nbsp;";  // blank line stays clickable
+      row.addEventListener("mousedown", e => {
+        e.preventDefault();                      // keep browser from part-selecting
+        lpEdit(g, b.l0, lpCol(e, b, L));         // item 4 refines column mapping
+      });
+    }
+    g.lp.appendChild(row);
+  });
+  g.lp.scrollTop = st;
+  if (focusTa) focusTa();
+  updateTitle();                                 // republish [mode:lp:<l0>] census
+}
+
+function lpCol(e, b, L) {  // click -> source column (v1: end of line; R8.3 in item 4)
+  return L[b.l0].length;
+}
+
+async function lpEdit(g, line, col) {  // move the raw region to `line`
+  lpCommit(g);
+  await lpRender(g, line, col);
 }
 
 async function preview(g) {
@@ -635,6 +725,7 @@ async function cmdNewNote() {                // new note in a NEW tab of the foc
 async function cmdSave() {                   // force save, no debounce
   if (!state) return;
   const g = fg();
+  lpCommit(g);
   const n = curOf(g);
   if (!n) return;
   clearTimeout(g.saveT); g.saveT = null;
