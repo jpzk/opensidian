@@ -1,129 +1,214 @@
 const inv = (c, a) => window.__TAURI__.core.invoke(c, a);
 const $ = id => document.getElementById(id);
-let graphOn = false, sim = null;
-let graphRefresh = null;                    // set while graph view is open (M4 live refresh)
-async function writeNote(name, content) {   // every save funnels here so graph live-updates
-  await inv("write_note", { name, content });
-  if (graphOn && graphRefresh) await graphRefresh();
-}
 let vaultPath = null, pmode = null, bpath = null;
 
-/* ---------- tabs ---------- */
-let tabs = [], active = -1;   // tabs: [{ name, mode: "source"|"reading", hist, hpos }]
-const cur = () => (active >= 0 ? tabs[active].name : null);
+/* ---------- pane model (M6 / R6.1): split tree, leaves = tab groups ----------
+   Layout = Split | Group
+   Split  = { dir: "row"|"col", children: [Layout...], fractions: [f...] }
+   Group  = { id, tabs: [{name,mode,hist,hpos}], active, pane DOM refs,
+              per-group graph / autosave / autocomplete state }
+   state.focused is THE focused group (R6.3): explorer clicks, Ctrl+N,
+   keymap and the graph button all target it; clicking a pane focuses it. */
+let state = null;                 // { root: Split, focused: Group }
+let gidSeq = 1;
+
+function leaves(node, out = []) {
+  if (node.children) node.children.forEach(c => leaves(c, out));
+  else out.push(node);
+  return out;
+}
+const groups = () => (state ? leaves(state.root) : []);
+const fg = () => state.focused;
+const curOf = g => (g.active >= 0 ? g.tabs[g.active].name : null);
+const cur = () => (state && fg() ? curOf(fg()) : null);
 const mkTab = name => ({ name, mode: "source", hist: [name], hpos: 0 });
 
-let t = null;                               // autosave debounce timer
-async function flushSave() {                // write pending edits NOW
-  if (!t) return;
-  clearTimeout(t); t = null;
-  const n = cur();
-  if (n) await writeNote(n, $("editor").value);
+async function writeNote(name, content) {   // every save funnels here so graphs live-update
+  await inv("write_note", { name, content });
+  for (const g of groups()) if (g.graphOn && g.graphRefresh) await g.graphRefresh();
+}
+
+async function flushSave(g) {               // write g's pending edits NOW
+  if (!g || !g.saveT) return;
+  clearTimeout(g.saveT); g.saveT = null;
+  const n = curOf(g);
+  if (n) await writeNote(n, g.editor.value);
+}
+
+/* ---------- group DOM + layout render ---------- */
+function mkGroup() {
+  const g = { id: gidSeq++, tabs: [], active: -1,
+              graphOn: false, graphRefresh: null, sim: null, saveT: null };
+  const pane = document.createElement("div");
+  pane.className = "pane";
+  pane.innerHTML =
+    '<div class="tabbar"><div class="tabs"></div>' +
+    '<button class="modebtn" title="toggle reading view (Ctrl+E)"></button></div>' +
+    '<div class="content">' +
+      '<textarea class="editor" spellcheck="false" placeholder="# write markdown, link with [[Note]]"></textarea>' +
+      '<div class="preview"></div>' +
+      '<canvas class="graph" hidden></canvas>' +
+      '<div class="ac" hidden></div>' +
+      '<div class="status" hidden><span class="st-bl"></span><span class="st-wc"></span><span class="st-cc"></span></div>' +
+    '</div>';
+  g.pane = pane;
+  const q = s => pane.querySelector(s);
+  g.tabsEl = q(".tabs"); g.modebtn = q(".modebtn"); g.content = q(".content");
+  g.editor = q(".editor"); g.preview = q(".preview"); g.graph = q(".graph");
+  g.acEl = q(".ac"); g.status = q(".status");
+  g.stBl = q(".st-bl"); g.stWc = q(".st-wc"); g.stCc = q(".st-cc");
+  pane.addEventListener("mousedown", () => focusGroup(g), true);  // R6.3: click focuses
+  g.modebtn.onclick = () => cmdToggleMode(g);
+  g.editor.addEventListener("input", () => { scheduleSave(g); showAc(g); });
+  g.editor.addEventListener("keydown", e => acKeydown(g, e));
+  g.editor.addEventListener("blur", () => setTimeout(hideAc, 100));
+  return g;
+}
+
+function layoutEl(node) {         // split tree -> DOM; flex weights from fractions
+  if (!node.children) return node.pane;
+  const d = document.createElement("div");
+  d.className = "split " + node.dir;
+  node.children.forEach((c, i) => {
+    const el = layoutEl(c);
+    el.style.flex = ((node.fractions && node.fractions[i]) || 1) + " 1 0";
+    d.appendChild(el);
+  });
+  return d;
+}
+
+function renderLayout() {
+  const main = $("main");
+  main.innerHTML = "";
+  main.appendChild(layoutEl(state.root));
+  updateTitle();
+}
+
+function updateTitle() {          // pane/focus census in the window title (headless probe)
+  const ps = [...document.querySelectorAll("#main .pane")];
+  const nf = document.querySelectorAll("#main .pane.focused").length;
+  const t = "rustidian [panes:" + ps.length + " focused:" + nf +
+            "@" + (ps.indexOf(fg() && fg().pane) + 1) + "]";
+  document.title = t;
+  try { window.__TAURI__.window.getCurrentWindow().setTitle(t).catch(() => {}); }
+  catch (e) {}
+}
+
+function focusGroup(g) {
+  const prev = state.focused;
+  if (prev === g) return;
+  state.focused = g;
+  for (const x of groups()) x.pane.classList.toggle("focused", x === g);
+  updateTitle();
+  if (prev) refreshTree();        // explorer active-note highlight follows focus
 }
 
 /* ---------- view modes (R3.2: source / reading per tab) ---------- */
 const ICON_BOOK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>';
 const ICON_PEN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/></svg>';
 
-function updateModeBtn() {
-  const t = active >= 0 ? tabs[active] : null;
-  $("modebtn").innerHTML = t && t.mode === "reading" ? ICON_PEN : ICON_BOOK;
+function updateModeBtn(g) {
+  const tb = g.active >= 0 ? g.tabs[g.active] : null;
+  g.modebtn.innerHTML = tb && tb.mode === "reading" ? ICON_PEN : ICON_BOOK;
 }
 
-function applyMode() {  // reading = preview fills the pane, editor hidden
-  const m = active >= 0 ? tabs[active].mode : "source";
-  $("editor").style.display = m === "reading" ? "none" : "";
-  $("preview").style.display = "";
-  updateModeBtn();
+function applyMode(g) {  // reading = preview fills the pane, editor hidden
+  const m = g.active >= 0 ? g.tabs[g.active].mode : "source";
+  g.editor.style.display = m === "reading" ? "none" : "";
+  g.preview.style.display = "";
+  updateModeBtn(g);
 }
 
-async function cmdToggleMode() {  // Ctrl+E / mode button
-  if (active < 0 || graphOn) return;
-  const tab = tabs[active];
-  if (tab.mode === "source") await flushSave();
+async function cmdToggleMode(g) {  // Ctrl+E / mode button
+  g = g || fg();
+  if (!g || g.active < 0 || g.graphOn) return;
+  const tab = g.tabs[g.active];
+  if (tab.mode === "source") await flushSave(g);
   tab.mode = tab.mode === "source" ? "reading" : "source";
   hideAc();
-  applyMode();
-  if (tab.mode === "source") $("editor").focus();
+  applyMode(g);
+  if (tab.mode === "source") g.editor.focus();
 }
 
-function renderTabs() {
-  const bar = $("tabs");
-  bar.innerHTML = "";
-  tabs.forEach((tab, i) => {
+/* ---------- tabs (per group) ---------- */
+function renderTabs(g) {
+  g.tabsEl.innerHTML = "";
+  g.tabs.forEach((tab, i) => {
     const d = document.createElement("div");
-    d.className = "tab" + (i === active ? " active" : "");
+    d.className = "tab" + (i === g.active ? " active" : "");
     const ttl = document.createElement("span");
     ttl.className = "t";
     ttl.textContent = tab.name.split("/").pop();
     const x = document.createElement("span");
     x.className = "x";
     x.textContent = "✕";
-    x.onclick = e => { e.stopPropagation(); closeTab(i); };
+    x.onclick = e => { e.stopPropagation(); closeTab(g, i); };
     d.append(ttl, x);
-    d.onclick = () => switchTab(i);
-    bar.appendChild(d);
+    d.onclick = () => switchTab(g, i);
+    g.tabsEl.appendChild(d);
   });
-  updateModeBtn();
+  updateModeBtn(g);
 }
 
-async function loadActive() {
+async function loadActive(g) {
   hideAc();
-  showEditor();
-  const n = cur();
-  $("editor").value = n ? await inv("read_note", { name: n }) : "";
-  if (n && tabs[active].mode === "source") $("editor").focus();
-  await preview();
-  renderTabs();
+  showEditor(g);
+  const n = curOf(g);
+  g.editor.value = n ? await inv("read_note", { name: n }) : "";
+  if (n && g.tabs[g.active].mode === "source") g.editor.focus();
+  await preview(g);
+  renderTabs(g);
   await refreshTree();
-  await updateStatus();
+  await updateStatus(g);
 }
 
-async function switchTab(i) {
-  if (i === active) return;
-  await flushSave();
-  active = i;
-  await loadActive();
+async function switchTab(g, i) {
+  if (i === g.active) return;
+  await flushSave(g);
+  g.active = i;
+  await loadActive(g);
 }
 
-async function openInTab(name) {   // explorer click: focus existing tab or open new
-  await flushSave();
-  const i = tabs.findIndex(x => x.name === name);
-  if (i >= 0) active = i;
-  else { tabs.push(mkTab(name)); active = tabs.length - 1; }
-  await loadActive();
+async function openInTab(name) {   // explorer click -> FOCUSED group (R6.3)
+  const g = fg();
+  await flushSave(g);
+  const i = g.tabs.findIndex(x => x.name === name);
+  if (i >= 0) g.active = i;
+  else { g.tabs.push(mkTab(name)); g.active = g.tabs.length - 1; }
+  await loadActive(g);
 }
 
-async function navigate(name) {    // wikilink / graph click: replace ACTIVE tab, push history
-  await flushSave();
-  if (active < 0) { tabs.push(mkTab(name)); active = 0; }
+async function navigate(g, name) { // wikilink / graph click: replace g's ACTIVE tab, push history
+  await flushSave(g);
+  if (g.active < 0) { g.tabs.push(mkTab(name)); g.active = 0; }
   else {
-    const tab = tabs[active];
+    const tab = g.tabs[g.active];
     tab.name = name;
     tab.hist = tab.hist.slice(0, tab.hpos + 1);
     tab.hist.push(name);
     tab.hpos++;
   }
-  await loadActive();
+  await loadActive(g);
 }
 
-async function histGo(d) {         // per-tab back/forward (Alt+Left / Alt+Right)
-  if (active < 0) return;
-  const tab = tabs[active];
+async function histGo(d) {         // per-tab back/forward in the focused group
+  const g = fg();
+  if (!g || g.active < 0) return;
+  const tab = g.tabs[g.active];
   const p = tab.hpos + d;
   if (p < 0 || p >= tab.hist.length) return;
-  await flushSave();
+  await flushSave(g);
   tab.hpos = p;
   tab.name = tab.hist[p];
-  await loadActive();
+  await loadActive(g);
 }
 
-async function closeTab(i) {
-  if (i === active) await flushSave();
-  tabs.splice(i, 1);
-  if (active >= tabs.length) active = tabs.length - 1;
-  else if (i < active) active--;
-  await loadActive();
+async function closeTab(g, i) {
+  if (i === g.active) await flushSave(g);
+  g.tabs.splice(i, 1);
+  if (g.active >= g.tabs.length) g.active = g.tabs.length - 1;
+  else if (i < g.active) g.active--;
+  await loadActive(g);
 }
 
 /* ---------- explorer tree ---------- */
@@ -180,48 +265,50 @@ async function refreshTree() {
   renderNode(buildTree(folders, notes), "", 0, tree);
 }
 
-/* ---------- editor + preview ---------- */
-async function preview() {
-  $("preview").innerHTML = await inv("render", { content: $("editor").value });
-  for (const a of $("preview").querySelectorAll("a.wiki"))
+/* ---------- editor + preview (per group) ---------- */
+async function preview(g) {
+  g.preview.innerHTML = await inv("render", { content: g.editor.value });
+  for (const a of g.preview.querySelectorAll("a.wiki"))
     a.onclick = async e => {
       e.preventDefault();
       const n = a.dataset.note;
       if (a.classList.contains("wiki-unresolved"))   // R3.5: click creates the note
         await writeNote(n, "");
-      navigate(n);
+      navigate(g, n);
     };
 }
 
-function scheduleSave() {
-  clearTimeout(t);
-  t = setTimeout(async () => {
-    t = null;
-    const n = cur();
-    if (n) await writeNote(n, $("editor").value);
-    preview();
-    updateStatus();
+function scheduleSave(g) {
+  clearTimeout(g.saveT);
+  g.saveT = setTimeout(async () => {
+    g.saveT = null;
+    const n = curOf(g);
+    if (n) await writeNote(n, g.editor.value);
+    preview(g);
+    updateStatus(g);
   }, 250);
 }
-$("editor").addEventListener("input", () => { scheduleSave(); showAc(); });
 
-/* ---------- status bar (R2.7) ---------- */
-async function updateStatus() {
-  const n = cur();
-  if (!n || graphOn) { $("status").hidden = true; return; }
-  const v = $("editor").value;
+/* ---------- status bar (R2.7, per group) ---------- */
+async function updateStatus(g) {
+  const n = curOf(g);
+  if (!n || g.graphOn) { g.status.hidden = true; return; }
+  const v = g.editor.value;
   const w = (v.match(/\S+/g) || []).length;
-  $("st-wc").textContent = w + (w === 1 ? " word" : " words");
-  $("st-cc").textContent = v.length + (v.length === 1 ? " char" : " chars");
+  g.stWc.textContent = w + (w === 1 ? " word" : " words");
+  g.stCc.textContent = v.length + (v.length === 1 ? " char" : " chars");
   const bl = await inv("backlinks", { name: n });
-  $("st-bl").textContent = bl.length + (bl.length === 1 ? " backlink" : " backlinks");
-  $("status").hidden = false;
+  g.stBl.textContent = bl.length + (bl.length === 1 ? " backlink" : " backlinks");
+  g.status.hidden = false;
 }
 
 /* ---------- [[ autocomplete (R3.4) ---------- */
 let notesCache = [], acItems = [], acSel = 0, acStart = -1;
 
-function hideAc() { $("ac").hidden = true; acItems = []; acStart = -1; }
+function hideAc() {
+  for (const g of groups()) g.acEl.hidden = true;
+  acItems = []; acStart = -1;
+}
 
 function fuzzy(q, s) {  // lower score = better; -1 = no match
   q = q.toLowerCase();
@@ -238,8 +325,8 @@ function fuzzy(q, s) {  // lower score = better; -1 = no match
   return 1000;
 }
 
-function acContext() {  // caret inside an unclosed [[ on one line?
-  const ed = $("editor");
+function acContext(g) {  // caret inside an unclosed [[ on one line?
+  const ed = g.editor;
   const upto = ed.value.slice(0, ed.selectionStart);
   const a = upto.lastIndexOf("[[");
   if (a < 0) return null;
@@ -248,8 +335,8 @@ function acContext() {  // caret inside an unclosed [[ on one line?
   return { start: a, q: frag };
 }
 
-function caretXY() {    // approximate caret position within #content
-  const ed = $("editor");
+function caretXY(g) {    // approximate caret position within g's content box
+  const ed = g.editor;
   const lines = ed.value.slice(0, ed.selectionStart).split("\n");
   const col = lines[lines.length - 1].length;
   const x = ed.offsetLeft + 16 + Math.min(col * 7.8, ed.clientWidth - 40);
@@ -257,8 +344,8 @@ function caretXY() {    // approximate caret position within #content
   return [x, y];
 }
 
-function showAc() {
-  const ctx = acContext();
+function showAc(g) {
+  const ctx = acContext(g);
   if (!ctx) return hideAc();
   acStart = ctx.start;
   acItems = notesCache
@@ -269,74 +356,77 @@ function showAc() {
     .map(([, n]) => n);
   if (!acItems.length) return hideAc();
   acSel = 0;
-  const box = $("ac");
+  const box = g.acEl;
   box.innerHTML = "";
   acItems.forEach((n, i) => {
     const d = document.createElement("div");
     d.textContent = n;
     if (i === acSel) d.className = "sel";
-    d.onmousedown = e => { e.preventDefault(); acInsert(n); };
+    d.onmousedown = e => { e.preventDefault(); acInsert(g, n); };
     box.appendChild(d);
   });
-  const [x, y] = caretXY();
-  box.style.left = Math.max(0, Math.min(x, $("content").clientWidth - 200)) + "px";
-  box.style.top = Math.min(y, $("content").clientHeight - 60) + "px";
+  const [x, y] = caretXY(g);
+  box.style.left = Math.max(0, Math.min(x, g.content.clientWidth - 200)) + "px";
+  box.style.top = Math.min(y, g.content.clientHeight - 60) + "px";
   box.hidden = false;
 }
 
-function acInsert(name) {
-  const ed = $("editor");
+function acInsert(g, name) {
+  const ed = g.editor;
   const end = ed.selectionStart;
   ed.value = ed.value.slice(0, acStart) + "[[" + name + "]]" + ed.value.slice(end);
   const p = acStart + name.length + 4;
   ed.setSelectionRange(p, p);
   hideAc();
   ed.focus();
-  scheduleSave();
+  scheduleSave(g);
 }
 
-$("editor").addEventListener("keydown", e => {
-  if ($("ac").hidden) return;
+function acKeydown(g, e) {
+  if (g.acEl.hidden) return;
   if (e.key === "ArrowDown" || e.key === "ArrowUp") {
     e.preventDefault(); e.stopPropagation();
     acSel = (acSel + (e.key === "ArrowDown" ? 1 : acItems.length - 1)) % acItems.length;
-    [...$("ac").children].forEach((d, i) => d.className = i === acSel ? "sel" : "");
+    [...g.acEl.children].forEach((d, i) => d.className = i === acSel ? "sel" : "");
   } else if (e.key === "Enter" || e.key === "Tab") {
     e.preventDefault(); e.stopPropagation();
-    acInsert(acItems[acSel]);
+    acInsert(g, acItems[acSel]);
   } else if (e.key === "Escape") {
     e.stopPropagation();
     hideAc();
   }
-});
-$("editor").addEventListener("blur", () => setTimeout(hideAc, 100));
+}
 
-/* ---------- commands + keymap ---------- */
-async function cmdNewNote() {                // new note in a NEW tab
-  await flushSave();
+/* ---------- commands + keymap (target the focused group) ---------- */
+async function cmdNewNote() {                // new note in a NEW tab of the focused group
+  if (!state) return;
+  const g = fg();
+  await flushSave(g);
   const name = "Untitled-" + Date.now() % 10000;
   await writeNote(name, "# " + name + "\n");
-  tabs.push(mkTab(name));
-  active = tabs.length - 1;
-  await loadActive();
+  g.tabs.push(mkTab(name));
+  g.active = g.tabs.length - 1;
+  await loadActive(g);
 }
 async function cmdSave() {                   // force save, no debounce
-  const n = cur();
+  if (!state) return;
+  const g = fg();
+  const n = curOf(g);
   if (!n) return;
-  clearTimeout(t); t = null;
-  await writeNote(n, $("editor").value);
-  await preview();
-  await updateStatus();
+  clearTimeout(g.saveT); g.saveT = null;
+  await writeNote(n, g.editor.value);
+  await preview(g);
+  await updateStatus(g);
 }
 async function cmdCloseTab() {
-  if (active >= 0) await closeTab(active);
+  if (state && fg().active >= 0) await closeTab(fg(), fg().active);
 }
 
 const keymap = {
   "ctrl+n": cmdNewNote,
   "ctrl+s": cmdSave,
   "ctrl+w": cmdCloseTab,
-  "ctrl+e": cmdToggleMode,
+  "ctrl+e": () => cmdToggleMode(),
   "alt+arrowleft": () => histGo(-1),
   "alt+arrowright": () => histGo(1),
 };
@@ -353,7 +443,6 @@ document.addEventListener("keydown", e => {
 });
 
 $("newbtn").onclick = cmdNewNote;
-$("modebtn").onclick = cmdToggleMode;
 $("newfolderbtn").onclick = () => {
   const box = $("fnew");
   box.hidden = !box.hidden;
@@ -369,25 +458,26 @@ $("fname").onkeydown = async e => {
   await refreshTree();
 };
 
-/* ---------- graph ---------- */
-function showEditor() {
-  graphOn = false; graphRefresh = null; cancelAnimationFrame(sim);
-  $("graph").hidden = true;
-  applyMode();
+/* ---------- graph (per group: one sim instance per group) ---------- */
+function showEditor(g) {
+  g.graphOn = false; g.graphRefresh = null; cancelAnimationFrame(g.sim);
+  g.graph.hidden = true;
+  applyMode(g);
 }
-$("graphbtn").onclick = async () => {
-  if (graphOn) return showEditor();
-  graphOn = true;
+$("graphbtn").onclick = () => { if (state) toggleGraph(fg()); };
+async function toggleGraph(g) {
+  if (g.graphOn) return showEditor(g);
+  g.graphOn = true;
   hideAc();
-  $("status").hidden = true;
-  $("editor").style.display = "none"; $("preview").style.display = "none";
-  const cv = $("graph"); cv.hidden = false;
+  g.status.hidden = true;
+  g.editor.style.display = "none"; g.preview.style.display = "none";
+  const cv = g.graph; cv.hidden = false;
   cv.width = cv.clientWidth; cv.height = cv.clientHeight;
-  const g = await inv("graph");
+  const gr = await inv("graph");
   // sim runs in WORLD coords (world = initial canvas rect); screen = world*scale + t
   const view = { scale: 1, tx: 0, ty: 0 };
   const W = cv.width, H = cv.height;                          // world bounds
-  const N = g.nodes.map((nd, i) => ({
+  const N = gr.nodes.map((nd, i) => ({
     n: nd.name, resolved: nd.resolved,
     x: W / 2 + 120 * Math.cos(i), y: H / 2 + 120 * Math.sin(i),
     vx: 0, vy: 0
@@ -397,12 +487,12 @@ $("graphbtn").onclick = async () => {
     [(sx - view.tx) / view.scale, (sy - view.ty) / view.scale];
   // hover: adjacency + hovered node index (-1 = none)
   const adj = N.map(() => new Set());
-  for (const [i, j] of g.edges) { adj[i].add(j); adj[j].add(i); }
+  for (const [i, j] of gr.edges) { adj[i].add(j); adj[j].add(i); }
   let hov = -1;
   const hitTest = (x, y) => N.findIndex(p => (p.x - x) ** 2 + (p.y - y) ** 2 < 144);
   // live refresh (R4.3): re-fetch on save, keep surviving positions,
   // seed new nodes near their first neighbor
-  graphRefresh = async () => {
+  g.graphRefresh = async () => {
     const g2 = await inv("graph");
     const old = new Map(N.map(p => [p.n, p]));
     const N2 = g2.nodes.map(nd => {
@@ -418,9 +508,9 @@ $("graphbtn").onclick = async () => {
       p.y = (nb && nb.y !== null ? nb.y : H / 2) + 30 * (Math.random() - 0.5);
     });
     N.length = 0; N.push(...N2);
-    g.edges = g2.edges;
+    gr.edges = g2.edges;
     adj.length = 0; for (const _ of N) adj.push(new Set());
-    for (const [i, j] of g.edges) { adj[i].add(j); adj[j].add(i); }
+    for (const [i, j] of gr.edges) { adj[i].add(j); adj[j].add(i); }
     hov = -1;
     alpha = Math.max(alpha, 0.5);   // partial reheat: settle new nodes without scattering old ones
   };
@@ -435,7 +525,7 @@ $("graphbtn").onclick = async () => {
       const dx = a.x - b.x, dy = a.y - b.y, d2 = dx * dx + dy * dy + 0.01;
       a.vx += alpha * 800 * dx / d2; a.vy += alpha * 800 * dy / d2;  // repulsion
     }
-    for (const [i, j] of g.edges) {
+    for (const [i, j] of gr.edges) {
       const a = N[i], b = N[j], dx = b.x - a.x, dy = b.y - a.y;
       a.vx += dx * 0.005 * alpha; a.vy += dy * 0.005 * alpha;        // spring
       b.vx -= dx * 0.005 * alpha; b.vy -= dy * 0.005 * alpha;
@@ -463,7 +553,7 @@ $("graphbtn").onclick = async () => {
     const litE = ([i, j]) => hov < 0 || i === hov || j === hov;
     const litN = i => hov < 0 || i === hov || adj[hov].has(i);
     ctx.lineWidth = 1;
-    for (const ed of g.edges) {
+    for (const ed of gr.edges) {
       const lit = litE(ed);
       ctx.globalAlpha = lit ? 1 : 0.12;
       ctx.strokeStyle = hov >= 0 && lit ? "#f9e2af" : "#45475a";
@@ -481,7 +571,7 @@ $("graphbtn").onclick = async () => {
       if (view.scale >= 0.5) { ctx.fillStyle = col; ctx.fillText(p.n, p.x, p.y - 10); }
     }
     ctx.globalAlpha = 1;
-    sim = requestAnimationFrame(step);
+    g.sim = requestAnimationFrame(step);
   }
   step();
   // wheel: cursor-anchored zoom, 0.2x-5x
@@ -521,9 +611,9 @@ $("graphbtn").onclick = async () => {
     if (!hit) return;
     if (!hit.resolved)                                  // ghost node: create then open (M3 path)
       await writeNote(hit.n, "");
-    navigate(hit.n);
+    navigate(g, hit.n);
   };
-};
+}
 
 /* ---------- vault picker ---------- */
 function base(p) { return p.replace(/\/+$/, "").split("/").pop() || p; }
@@ -580,15 +670,16 @@ $("p-go").onclick = async () => {
 };
 async function enterVault() {
   $("vswitch").innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>' + base(vaultPath);
-  tabs = []; active = -1; collapsed = new Set();
+  collapsed = new Set();
+  const g = mkGroup();               // M6: one group, wrapped in a one-leaf split tree
+  state = { root: { dir: "row", children: [g], fractions: [1] }, focused: null };
+  renderLayout();
+  focusGroup(g);
   hideAc();
-  $("status").hidden = true;
-  showEditor();
-  $("editor").value = ""; $("preview").innerHTML = "";
   await refreshTree();
   const names = await inv("list_notes");
   if (names.length) await openInTab(names[0]);
-  else renderTabs();
+  else renderTabs(g);
 }
 $("vswitch").onclick = showPicker;
 
