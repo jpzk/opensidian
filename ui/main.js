@@ -1043,6 +1043,29 @@ async function cmdSave() {                   // force save, no debounce
 async function cmdCloseTab() {
   if (state && fg().active >= 0) await closeTab(fg(), fg().active);
 }
+async function cmdNewTab() {       // R5.3 ctrl+t — v1: new tab on the current note
+  if (!state) return;              // (no empty-tab state yet; graph tabs no-op)
+  const g = fg();
+  const n = curOf(g);
+  if (!n) return;
+  await flushSave(g);
+  g.tabs.push(mkTab(n));
+  g.active = g.tabs.length - 1;
+  await loadActive(g);
+}
+async function cmdCycleTab(d) {    // R5.3 ctrl+(shift+)tab — cycle in focused group
+  const g = fg();
+  const len = g.tabs.length;
+  if (len < 2) return;
+  await switchTab(g, (g.active + d + len) % len);
+}
+async function cmdJumpTab(n) {     // R5.3 ctrl+1..9 — tab n; 9 = last
+  const g = fg();
+  const len = g.tabs.length;
+  if (!len) return;
+  const i = n === 9 ? len - 1 : n - 1;
+  if (i < len) await switchTab(g, i);
+}
 
 /* ---------- m5: shared fuzzy modal — quick switcher (Ctrl+O) + command
    palette (Ctrl+P). One component; item source decides the kind.
@@ -1135,7 +1158,7 @@ function cpItems() {                 // palette source: command registry w/ hotk
     { label: "Toggle edit mode",     hint: "Ctrl+E",       run: () => cmdToggleMode() },
     { label: "Split right",          hint: "",             run: () => splitGroup(fg(), "row", fg().active) },
     { label: "Split down",           hint: "",             run: () => splitGroup(fg(), "col", fg().active) },
-    { label: "Open graph view",      hint: "",             run: cmdGlobalGraph },
+    { label: "Open graph view",      hint: "Ctrl+G",       run: cmdGlobalGraph },
     { label: "Open local graph",     hint: "Ctrl+Shift+G", run: () => cmdLocalGraph() },
     { label: "Toggle left sidebar",  hint: "",             run: cmdToggleSide },
     { label: "Toggle right sidebar", hint: "",             run: () => cmdToggleRight() },
@@ -1155,10 +1178,17 @@ const keymap = {
   "ctrl+e": () => cmdToggleMode(),
   "ctrl+o": cmdQuickSwitch,
   "ctrl+p": cmdPalette,
+  "ctrl+g": cmdGlobalGraph,
+  "ctrl+t": cmdNewTab,
+  "ctrl+tab": () => cmdCycleTab(1),
+  "ctrl+shift+tab": () => cmdCycleTab(-1),
   "ctrl+shift+g": () => cmdLocalGraph(),
   "alt+arrowleft": () => histGo(-1),
   "alt+arrowright": () => histGo(1),
+  "ctrl+alt+arrowleft": () => histGo(-1),
+  "ctrl+alt+arrowright": () => histGo(1),
 };
+for (let n = 1; n <= 9; n++) keymap["ctrl+" + n] = () => cmdJumpTab(n);
 document.addEventListener("keydown", e => {
   if (e.key === "Escape") {
     if (modalKind) { closeModal(); return; }
@@ -1167,8 +1197,10 @@ document.addEventListener("keydown", e => {
     if (!$("fnew").hidden) $("fnew").hidden = true;
     return;
   }
+  let k = e.key.toLowerCase();
+  if (e.code === "Tab") k = "tab";   // X11 shift+tab arrives as ISO_Left_Tab
   const combo = (e.ctrlKey ? "ctrl+" : "") + (e.altKey ? "alt+" : "")
-    + (e.shiftKey ? "shift+" : "") + e.key.toLowerCase();
+    + (e.shiftKey ? "shift+" : "") + k;
   const fn = keymap[combo];
   if (modalKind && fn !== cmdQuickSwitch && fn !== cmdPalette) return;  // modal traps the keymap
   if (fn) { e.preventDefault(); fn(); }
