@@ -572,6 +572,24 @@ async function lpRender(g, activeL = -1, col = 0) {
           lpRender(g);
         });
       });
+      // R8.7: wikilink click navigates, ctrl+click opens a new tab. Mousedown
+      // level (the row's edit handler is mousedown too) + stopPropagation so
+      // the raw row never opens; navigate()/flushSave fold the raw row.
+      row.querySelectorAll("a.wiki").forEach(a => {
+        a.onclick = e => e.preventDefault();     // href="#": no hash churn
+        a.addEventListener("mousedown", async e => {
+          e.preventDefault(); e.stopPropagation();
+          const n = a.dataset.note;
+          if (a.classList.contains("wiki-unresolved"))
+            await writeNote(n, "");
+          if (e.ctrlKey) {                       // new tab, same group
+            await flushSave(g);
+            g.tabs.push(mkTab(n));
+            g.active = g.tabs.length - 1;
+            await loadActive(g);
+          } else navigate(g, n);
+        });
+      });
       row.addEventListener("mousedown", e => {
         e.preventDefault();                      // keep browser from part-selecting
         lpEdit(g, b.l0, lpCol(e, row, b, L));    // R8.3 column mapping
