@@ -29,7 +29,7 @@ let sidePane = "files";
 let sideOpen = true, rightOpen = false;
 function cmdToggleSide() {
   sideOpen = !sideOpen;
-  $("side").hidden = !sideOpen;
+  $("side").hidden = $("ldiv").hidden = !sideOpen;
   $("collapsebtn").title = sideOpen ? "Collapse sidebar" : "Expand sidebar";
   updateTitle();
 }
@@ -80,6 +80,23 @@ async function cmdToggleRight() {
   updateTitle();
 }
 $("rtoggle").onclick = cmdToggleRight;
+/* ux-4: left sidebar drag-resize (clamped 150-600, ribbon is 44px);
+   width persisted as sidebar_w in ~/.rustidian.json on mouseup */
+$("ldiv").onmousedown = e => {
+  e.preventDefault();
+  let w = 0;
+  const move = ev => {
+    w = Math.max(150, Math.min(600, ev.clientX - 44 + 3));
+    $("side").style.width = w + "px";
+  };
+  const up = () => {
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", up);
+    if (w) inv("set_sidebar_w", { w }).catch(() => {});
+  };
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", up);
+};
 $("rdiv").onmousedown = e => {             // resizable divider (clamped 140-600)
   e.preventDefault();
   const move = ev => {
@@ -1665,6 +1682,8 @@ async function enterVault() {
 $("vswitch").onclick = showPicker;
 
 (async () => {
+  const sw = await inv("get_sidebar_w").catch(() => null);   // ux-4
+  if (sw >= 150) $("side").style.width = Math.min(600, sw) + "px";
   vaultPath = await inv("vault_get");
   if (vaultPath) await enterVault(); else showPicker();
 })();

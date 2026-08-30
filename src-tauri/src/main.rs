@@ -219,9 +219,16 @@ fn cfg_path() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())).join(".rustidian.json")
 }
 
+/// whole config as a Value — extra keys (sidebar_w, ...) survive rewrites
+fn cfg_value() -> serde_json::Value {
+    fs::read_to_string(cfg_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}))
+}
+
 fn read_cfg() -> (Option<String>, Vec<String>) {
-    let Ok(s) = fs::read_to_string(cfg_path()) else { return (None, vec![]) };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) else { return (None, vec![]) };
+    let v = cfg_value();
     let last = v["last"].as_str().map(String::from);
     let list = v["list"]
         .as_array()
@@ -242,8 +249,24 @@ fn persist_vault(p: &Path) {
     let s = p.display().to_string();
     let (_, list) = read_cfg();
     let list = push_recent(list, &s);
-    let j = serde_json::json!({"last": s, "list": list});
-    let _ = fs::write(cfg_path(), j.to_string());
+    let mut v = cfg_value(); // keep sidebar_w & future keys
+    v["last"] = serde_json::json!(s);
+    v["list"] = serde_json::json!(list);
+    let _ = fs::write(cfg_path(), v.to_string());
+}
+
+/* ux-4: left sidebar width persistence (clamped 150-600, default 200 total
+   = 44 ribbon + 156 #side stays when the key is absent) */
+#[tauri::command]
+fn get_sidebar_w() -> Option<u64> {
+    cfg_value()["sidebar_w"].as_u64()
+}
+
+#[tauri::command]
+fn set_sidebar_w(w: u64) {
+    let mut v = cfg_value();
+    v["sidebar_w"] = serde_json::json!(w.clamp(150, 600));
+    let _ = fs::write(cfg_path(), v.to_string());
 }
 
 #[tauri::command]
@@ -537,7 +560,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_notes, read_note, write_note, render, graph, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, recent_vaults, rename_note
+            list_bookmarks, toggle_bookmark, recent_vaults, rename_note,
+            get_sidebar_w, set_sidebar_w
         ])
         .run(tauri::generate_context!())
         .expect("tauri run");
