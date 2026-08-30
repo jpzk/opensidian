@@ -123,3 +123,4 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
          font-size: 12px; box-shadow: 0 4px 16px #0008 }
 .lgpop[hidden] { display: none }
 .lgpop label { display: flex; align-items: center; gap: 6px; white-space: nowrap }
+.lgpop input[type=range] { width: 150px; height: 16px; margin: 0 }

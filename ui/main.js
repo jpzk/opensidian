@@ -836,6 +836,9 @@ async function startGraph(g, cfg) {
       await writeNote(hit.n, "");
     cfg.onClick(hit.n);
   };
+  // a save can land while the initial fetch is in flight (writeNote sees
+  // graphRefresh still null and skips) — refresh once now to close the race
+  await g.graphRefresh();
 }
 
 /* ---------- M8 local graph (R7.1-R7.5) ---------- */
