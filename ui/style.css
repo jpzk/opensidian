@@ -106,7 +106,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .divider.row { cursor: col-resize }
 .divider.col { cursor: row-resize }
 .pane { flex: 1 1 0; display: flex; flex-direction: column;
-        min-width: 0; min-height: 0 }
+        min-width: 0; min-height: 0; position: relative }
 .pane:not(.focused) .tabbar { opacity: .7 }   /* dim inactive tab strips */
 .tabbar { display: flex; height: 32px; background: #11111b; flex-shrink: 0 }
 .tabs { display: flex; flex: 1; overflow: hidden }
@@ -128,6 +128,15 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .tab .x svg { width: 9px; height: 9px; display: block }
 .tab .x:hover { background: #585b70; color: #cdd6f4 }
 .tab.active .x { color: #a6adc8 }
+/* ux-5: tab drag — ghost chip under the cursor + drop-target highlights */
+#tabghost { position: fixed; z-index: 99; pointer-events: none;
+            background: #45475a; color: #cdd6f4; padding: 4px 12px;
+            border-radius: 6px; font-size: 12px; opacity: .92;
+            box-shadow: 0 4px 14px rgba(0,0,0,.55) }
+.tabs.drop-strip { outline: 2px solid #89b4fa; outline-offset: -2px }
+.pane.drop-edge::after { content: ""; position: absolute; top: 32px; right: 0;
+                         bottom: 0; width: 40px; pointer-events: none;
+                         background: rgba(137,180,250,.22) }
 .content { flex: 1; display: flex; min-height: 0; position: relative }
 /* R8.8: one of .editor/.lp/.preview fills the pane (JS toggles display) —
    the old permanent editor|preview side-by-side layout is gone */

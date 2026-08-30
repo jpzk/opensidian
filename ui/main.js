@@ -546,10 +546,84 @@ function renderTabs(g) {
     d.append(ttl, x);
     d.onclick = () => switchTab(g, i);
     d.oncontextmenu = e => tabMenu(e, g, i);   // R6.2: split verbs
+    d.addEventListener("mousedown", e => tabDragStart(e, g, i));  // ux-5: tab drag
     g.tabsEl.appendChild(d);
   });
   updateModeBtn(g);
   updateTitle();                    // keep [tabs:] census fresh on tab changes
+}
+
+/* ux-5 (R6.7): tab drag — ghost chip follows the cursor past a 6px threshold.
+   Drop targets, resolved per mousemove against every pane:
+     - another group's tab strip (cursor inside that pane, above the strip's
+       bottom edge)            -> tab MOVES there (appended, becomes active)
+     - the right EDGE zone of any pane (last 40px, below the strip)
+                               -> new row-split carrying the tab (splitWith)
+   Source group emptied by the move collapses (same rule as closeTab). */
+const TAB_EDGE = 40;
+function tabDragStart(e, g, i) {
+  if (e.button !== 0 || e.target.closest(".x")) return;
+  const sx = e.clientX, sy = e.clientY;
+  let ghost = null, target = null, hl = null;
+  const clearHl = () => {
+    if (hl) { hl.classList.remove("drop-strip", "drop-edge"); hl = null; }
+  };
+  const move = ev => {
+    if (!ghost) {
+      if (Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) < 6) return;
+      ghost = document.createElement("div");
+      ghost.id = "tabghost";
+      ghost.textContent = g.tabs[i] ? g.tabs[i].name.split("/").pop() : "";
+      document.body.appendChild(ghost);
+    }
+    ghost.style.left = (ev.clientX + 10) + "px";
+    ghost.style.top = (ev.clientY + 12) + "px";
+    target = null; clearHl();
+    for (const h of groups()) {
+      const pr = h.pane.getBoundingClientRect();
+      if (ev.clientX < pr.left || ev.clientX > pr.right ||
+          ev.clientY < pr.top || ev.clientY > pr.bottom) continue;
+      const tr = h.tabsEl.getBoundingClientRect();
+      if (ev.clientY <= tr.bottom) {
+        if (h !== g) {                       // own strip: reorder unsupported, no-op
+          target = { kind: "strip", g: h };
+          hl = h.tabsEl; hl.classList.add("drop-strip");
+        }
+      } else if (ev.clientX > pr.right - TAB_EDGE) {
+        target = { kind: "edge", g: h };
+        hl = h.pane; hl.classList.add("drop-edge");
+      }
+      break;
+    }
+  };
+  const up = async () => {
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", up);
+    const t = target;
+    if (ghost) ghost.remove();
+    clearHl();
+    if (!ghost || !t) return;                // plain click, or dropped nowhere
+    await flushSave(g);
+    const tab = g.tabs.splice(i, 1)[0];
+    if (!tab) return;
+    if (g.active >= g.tabs.length) g.active = g.tabs.length - 1;
+    else if (i < g.active) g.active--;
+    if (t.kind === "strip") {
+      t.g.tabs.push(tab);
+      t.g.active = t.g.tabs.length - 1;
+      if (!g.tabs.length && groups().length > 1) await collapseGroup(g);
+      else { await loadActive(g); renderTabs(g); }
+      focusGroup(t.g);
+      await loadActive(t.g);
+      renderTabs(t.g);
+    } else {                                 // edge: split, then collapse an
+      await splitWith(t.g, "row", tab);      // emptied source (lone-tab drag to
+      if (!g.tabs.length) await collapseGroup(g);  // own edge nets a plain move)
+      else { await loadActive(g); renderTabs(g); }
+    }
+  };
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", up);
 }
 
 async function loadActive(g) {
