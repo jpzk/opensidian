@@ -38,3 +38,32 @@ Needs `libwebkit2gtk-4.1` installed (`apt install libwebkit2gtk-4.1-0` /
 No FUSE on your box (containers, minimal VMs)? Run either without mounting:
 
     ./rustidian-0.2-x86_64-slim.AppImage --appimage-extract-and-run
+
+## sandboxed run (recommended)
+
+Your notes are just files, but the app doesn't need to see the rest of your
+home directory. With [bubblewrap](https://github.com/containers/bubblewrap)
+(`apt/dnf install bubblewrap` — unprivileged, no SUID) you can confine
+rustidian to ONLY your vault:
+
+    bwrap \
+      --ro-bind /usr /usr --ro-bind /etc /etc \
+      --symlink usr/lib64 /lib64 --symlink usr/lib /lib \
+      --proc /proc --dev /dev --dev-bind /dev/dri /dev/dri \
+      --tmpfs /home --tmpfs /tmp --bind ~/vault ~/vault \
+      --ro-bind /tmp/.X11-unix /tmp/.X11-unix \
+      --setenv HOME "$HOME" --setenv DISPLAY "$DISPLAY" \
+      --unshare-all --die-with-parent \
+      ./rustidian-0.2-x86_64-slim.AppImage --appimage-extract-and-run
+
+Everything outside the binds is invisible: `~/.ssh`, browser profiles, the
+lot. Swap `~/vault` for your vault path (it's bound read-write; vault picker
+naturally only sees that dir). On Wayland, also bind
+`$XDG_RUNTIME_DIR/wayland-0` and pass `WAYLAND_DISPLAY` through. If webkit
+complains about fonts or dbus, add
+`--ro-bind ~/.cache/fontconfig ~/.cache/fontconfig` or
+`--ro-bind $XDG_RUNTIME_DIR/bus $XDG_RUNTIME_DIR/bus` as needed.
+`--appimage-extract-and-run` is required — FUSE mounts don't work inside
+the namespace. Vault persistence (`~/.rustidian.json`) lands on the tmpfs
+and is forgotten on exit; bind a scratch dir over `$HOME` instead of
+`--tmpfs /home` if you want it kept.
