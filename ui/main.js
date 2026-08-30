@@ -141,6 +141,31 @@ async function splitGroup(g, dir, ti) {  // duplicate g's tab ti into a new sibl
   if (ng.active >= 0) await loadActive(ng);
 }
 
+async function collapseGroup(g) {  // R6.5: closing the last tab removes the group
+  const parent = findParent(state.root, g);
+  if (!parent) return;                        // lone root group: caller keeps it
+  if (g.sim) cancelAnimationFrame(g.sim);     // stop the removed group's machinery
+  if (g.saveT) clearTimeout(g.saveT);
+  const idx = parent.children.indexOf(g);
+  const heir = parent.children[idx + 1] || parent.children[idx - 1];
+  parent.children.splice(idx, 1);
+  const f = (parent.fractions || []).splice(idx, 1)[0] || 0;
+  const hi = parent.children.indexOf(heir);   // nearest sibling absorbs the space
+  if (hi >= 0 && parent.fractions[hi] != null) parent.fractions[hi] += f;
+  if (parent.children.length === 1) {         // simplify single-child splits
+    const child = parent.children[0];
+    const gp = findParent(state.root, parent);
+    if (gp) gp.children[gp.children.indexOf(parent)] = child;
+    else if (child.children) state.root = child;
+    // lone Group at root keeps the boot wrapper { dir, children:[g] } —
+    // splitGroup depends on every group having a findParent hit
+  }
+  if (state.focused === g) state.focused = null;
+  renderLayout();
+  focusGroup(leaves(heir)[0]);                // focus nearest surviving group
+  await refreshTree();
+}
+
 let menuEl = null;
 function closeMenu() { if (menuEl) { menuEl.remove(); menuEl = null; } }
 document.addEventListener("mousedown", e => {
@@ -272,6 +297,8 @@ async function histGo(d) {         // per-tab back/forward in the focused group
 async function closeTab(g, i) {
   if (i === g.active) await flushSave(g);
   g.tabs.splice(i, 1);
+  if (!g.tabs.length && groups().length > 1)  // R6.5: empty group leaves the tree
+    return collapseGroup(g);
   if (g.active >= g.tabs.length) g.active = g.tabs.length - 1;
   else if (i < g.active) g.active--;
   await loadActive(g);
