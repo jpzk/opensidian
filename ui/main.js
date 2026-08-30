@@ -616,8 +616,19 @@ function lpKey(g, ev) {
     lpCommit(g); lpRender(g, target, tc);
   } else if (ev.key === "Enter" && a.l1 === a.l0) { // split single-line block
     ev.preventDefault();
-    ta.value = v.slice(0, ta.selectionStart) + "\n" + v.slice(ta.selectionEnd);
-    lpCommit(g); lpRender(g, a.l0 + pre.length, 0);
+    // R8.5: list/checkbox auto-continuation — marker = indent + bullet/number
+    const m = v.match(/^(\s*)([-*+] \[[ xX]\] |[-*+] |\d+\. )/);
+    if (m && v === m[0]) {                          // empty item: clear it
+      ta.value = "";
+      lpCommit(g); lpRender(g, a.l0, 0);
+      return;
+    }
+    const cont = !m ? "" : m[1] +
+      (m[2].includes("[") ? m[2].replace(/\[[xX]\]/, "[ ]")   // checkbox -> unchecked
+       : /^\d/.test(m[2]) ? (parseInt(m[2], 10) + 1) + ". "   // numbered increments
+       : m[2]);
+    ta.value = v.slice(0, ta.selectionStart) + "\n" + cont + v.slice(ta.selectionEnd);
+    lpCommit(g); lpRender(g, a.l0 + pre.length, cont.length);
   } else if (ev.key === "Backspace" && ta.selectionStart === 0 &&
              ta.selectionEnd === 0 && a.l0 > 0) {   // join with previous line
     ev.preventDefault();
