@@ -50,6 +50,13 @@ function mkGroup() {
       '<canvas class="graph" hidden></canvas>' +
       '<div class="ac" hidden></div>' +
       '<div class="status" hidden><span class="st-bl"></span><span class="st-wc"></span><span class="st-cc"></span></div>' +
+      '<button class="lggear" title="local graph settings" hidden>&#9881;</button>' +
+      '<div class="lgpop" hidden>' +
+        '<label>Depth <span class="lgdv">1</span></label>' +
+        '<input class="lgdepth" type="range" min="1" max="3" step="1" value="1">' +
+        '<label><input class="lginc" type="checkbox" checked> Incoming links</label>' +
+        '<label><input class="lgout" type="checkbox" checked> Outgoing links</label>' +
+      '</div>' +
     '</div>';
   g.pane = pane;
   const q = s => pane.querySelector(s);
@@ -57,6 +64,12 @@ function mkGroup() {
   g.editor = q(".editor"); g.preview = q(".preview"); g.graph = q(".graph");
   g.acEl = q(".ac"); g.status = q(".status");
   g.stBl = q(".st-bl"); g.stWc = q(".st-wc"); g.stCc = q(".st-cc");
+  g.lggear = q(".lggear"); g.lgpop = q(".lgpop"); g.lgDv = q(".lgdv");
+  g.lgDepth = q(".lgdepth"); g.lgInc = q(".lginc"); g.lgOut = q(".lgout");
+  g.lggear.onclick = () => { g.lgpop.hidden = !g.lgpop.hidden; };
+  g.lgDepth.oninput = () => lgSet(g);
+  g.lgInc.onchange = () => lgSet(g);
+  g.lgOut.onchange = () => lgSet(g);
   pane.addEventListener("mousedown", () => focusGroup(g), true);  // R6.3: click focuses
   g.modebtn.onclick = () => cmdToggleMode(g);
   g.editor.addEventListener("input", () => { scheduleSave(g); showAc(g); });
@@ -125,9 +138,14 @@ function updateTitle() {          // pane/focus census in the window title (head
   const ps = [...document.querySelectorAll("#main .pane")];
   const nf = document.querySelectorAll("#main .pane.focused").length;
   const fx = (state.root.fractions || []).map(f => f.toFixed(2)).join(",");
+  let lg = "";                    // M8: first localgraph tab -> [lg:<center>@<depth>]
+  for (const h of groups()) {
+    const t = h.tabs.find(t => t.kind === "lg");
+    if (t) { lg = " [lg:" + t.center + "@" + t.depth + "]"; break; }
+  }
   const t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
-            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]";
+            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + lg;
   document.title = t;
   // publish to the native title: ONE call in flight, last-write-wins, 500ms
   // timeout guard — a hung/rejected setTitle IPC can neither reorder titles
@@ -173,11 +191,16 @@ function findParent(node, target, parent = null) {
 }
 
 async function splitGroup(g, dir, ti) {  // duplicate g's tab ti into a new sibling group
+  const src = g.tabs[ti];
+  const t = src ? Object.assign(mkTab(src.name), { mode: src.mode }) : null;
+  await splitWith(g, dir, t);
+}
+
+async function splitWith(g, dir, tab) {  // insert a new sibling group carrying `tab`
   const parent = findParent(state.root, g);
   if (!parent) return;
   const ng = mkGroup();
-  const src = g.tabs[ti];
-  if (src) { ng.tabs.push(mkTab(src.name)); ng.tabs[0].mode = src.mode; ng.active = 0; }
+  if (tab) { ng.tabs.push(tab); ng.active = 0; }
   if (parent.children.length === 1) parent.dir = dir;   // lone child: re-aim the split
   const idx = parent.children.indexOf(g);
   if (parent.dir === dir) {              // same axis: insert sibling, halve g's share
@@ -214,6 +237,7 @@ async function collapseGroup(g) {  // R6.5: closing the last tab removes the gro
   if (state.focused === g) state.focused = null;
   renderLayout();
   focusGroup(leaves(heir)[0]);                // focus nearest surviving group
+  for (const h of groups()) renderTabs(h);    // drop stale chain glyphs (M8)
   await refreshTree();
 }
 
@@ -275,12 +299,16 @@ async function cmdToggleMode(g) {  // Ctrl+E / mode button
 /* ---------- tabs (per group) ---------- */
 function renderTabs(g) {
   g.tabsEl.innerHTML = "";
+  // R7.3: chain glyph on the localgraph tab AND its linked group's active tab
+  const linked = new Set();
+  for (const h of groups()) for (const t of h.tabs) if (t.kind === "lg") linked.add(t.linkId);
   g.tabs.forEach((tab, i) => {
     const d = document.createElement("div");
     d.className = "tab" + (i === g.active ? " active" : "");
     const ttl = document.createElement("span");
     ttl.className = "t";
-    ttl.textContent = tab.name.split("/").pop();
+    const chain = tab.kind === "lg" || (i === g.active && linked.has(g.id));
+    ttl.textContent = (chain ? "\u{1F517} " : "") + tab.name.split("/").pop();
     const x = document.createElement("span");
     x.className = "x";
     x.textContent = "✕";
@@ -296,6 +324,13 @@ function renderTabs(g) {
 
 async function loadActive(g) {
   hideAc();
+  const t = g.active >= 0 ? g.tabs[g.active] : null;
+  if (t && t.kind === "lg") {       // R7.1: localgraph tab owns the pane's canvas
+    await showLocalGraph(g, t);
+    renderTabs(g);
+    await refreshTree();
+    return;
+  }
   showEditor(g);
   const n = curOf(g);
   g.editor.value = n ? await inv("read_note", { name: n }) : "";
@@ -304,6 +339,22 @@ async function loadActive(g) {
   renderTabs(g);
   await refreshTree();
   await updateStatus(g);
+  await lgFollow(g);                // R7.3: linked localgraphs track this group
+}
+
+// R7.3: any localgraph tab linked to `src` re-centers on src's active note
+async function lgFollow(src) {
+  const n = curOf(src);
+  if (!n) return;
+  for (const h of groups()) {
+    const t = h.active >= 0 ? h.tabs[h.active] : null;
+    if (!t || t.kind !== "lg" || t.linkId !== src.id || t.center === n) continue;
+    t.center = n;
+    t.name = "Graph of " + n.split("/").pop();
+    renderTabs(h);
+    if (h.graphRefresh) await h.graphRefresh();
+    updateTitle();
+  }
 }
 
 async function switchTab(g, i) {
@@ -578,6 +629,7 @@ const keymap = {
   "ctrl+s": cmdSave,
   "ctrl+w": cmdCloseTab,
   "ctrl+e": () => cmdToggleMode(),
+  "ctrl+shift+g": () => cmdLocalGraph(),
   "alt+arrowleft": () => histGo(-1),
   "alt+arrowright": () => histGo(1),
 };
@@ -610,22 +662,39 @@ $("fname").onkeydown = async e => {
   await refreshTree();
 };
 
-/* ---------- graph (per group: one sim instance per group) ---------- */
+/* ---------- graph (per group: one sim instance per group) ----------
+   startGraph(g, cfg) is the shared canvas sim (M4): hover/zoom/pan/unresolved.
+   cfg = { fetch: async () -> {nodes, edges},   node/edge supplier
+           center: () -> name|null,             drawn larger + accent (M8 localgraph)
+           onClick: async name -> void }        navigation target on node click */
 function showEditor(g) {
   g.graphOn = false; g.graphRefresh = null; cancelAnimationFrame(g.sim);
   g.graph.hidden = true;
+  g.lggear.hidden = true; g.lgpop.hidden = true;
   applyMode(g);
 }
-$("graphbtn").onclick = () => { if (state) toggleGraph(fg()); };
-async function toggleGraph(g) {
+$("graphbtn").onclick = () => {
+  if (!state) return;
+  const g = fg(), t = g.active >= 0 ? g.tabs[g.active] : null;
+  if (t && t.kind === "lg") return;   // localgraph tabs own their canvas
   if (g.graphOn) return showEditor(g);
+  toggleGraph(g);
+};
+async function toggleGraph(g) {  // global graph (R4.x): whole vault, click navigates own group
+  await startGraph(g, {
+    fetch: () => inv("graph"),
+    center: () => null,
+    onClick: n => navigate(g, n),
+  });
+}
+async function startGraph(g, cfg) {
   g.graphOn = true;
   hideAc();
   g.status.hidden = true;
   g.editor.style.display = "none"; g.preview.style.display = "none";
   const cv = g.graph; cv.hidden = false;
   cv.width = cv.clientWidth; cv.height = cv.clientHeight;
-  const gr = await inv("graph");
+  const gr = await cfg.fetch();
   // sim runs in WORLD coords (world = initial canvas rect); screen = world*scale + t
   const view = { scale: 1, tx: 0, ty: 0 };
   const W = cv.width, H = cv.height;                          // world bounds
@@ -645,7 +714,7 @@ async function toggleGraph(g) {
   // live refresh (R4.3): re-fetch on save, keep surviving positions,
   // seed new nodes near their first neighbor
   g.graphRefresh = async () => {
-    const g2 = await inv("graph");
+    const g2 = await cfg.fetch();
     const old = new Map(N.map(p => [p.n, p]));
     const N2 = g2.nodes.map(nd => {
       const o = old.get(nd.name);
@@ -713,14 +782,16 @@ async function toggleGraph(g) {
       ctx.lineTo(N[ed[1]].x, N[ed[1]].y); ctx.stroke();
     }
     ctx.textAlign = "center"; ctx.font = "12px sans-serif";
+    const cn = cfg.center();          // M8: center node larger + accent (R7.1)
     for (let i = 0; i < N.length; i++) {
       const p = N[i];
+      const isC = cn !== null && p.n === cn;
       ctx.globalAlpha = litN(i) ? (p.resolved ? 1 : 0.55) : 0.12;
-      const col = i === hov ? "#f9e2af" : "#89b4fa";
-      ctx.beginPath(); ctx.arc(p.x, p.y, 6, 0, 7);
+      const col = i === hov ? "#f9e2af" : isC ? "#a6e3a1" : "#89b4fa";
+      ctx.beginPath(); ctx.arc(p.x, p.y, isC ? 10 : 6, 0, 7);
       if (p.resolved) { ctx.fillStyle = col; ctx.fill(); }
       else { ctx.lineWidth = 1.5; ctx.strokeStyle = col; ctx.stroke(); ctx.lineWidth = 1; } // hollow = unresolved
-      if (view.scale >= 0.5) { ctx.fillStyle = col; ctx.fillText(p.n, p.x, p.y - 10); }
+      if (view.scale >= 0.5) { ctx.fillStyle = col; ctx.fillText(p.n, p.x, p.y - (isC ? 14 : 10)); }
     }
     ctx.globalAlpha = 1;
     g.sim = requestAnimationFrame(step);
@@ -763,9 +834,75 @@ async function toggleGraph(g) {
     if (!hit) return;
     if (!hit.resolved)                                  // ghost node: create then open (M3 path)
       await writeNote(hit.n, "");
-    navigate(g, hit.n);
+    cfg.onClick(hit.n);
   };
 }
+
+/* ---------- M8 local graph (R7.1-R7.5) ---------- */
+// BFS neighborhood of `center` over the full edge set; frontier expands via
+// outgoing edges when `out`, incoming when `inc`; keeps ALL edges among the
+// surviving node set (Obsidian's neighbor-links default), remaps indices
+function lgFilter(gr, center, depth, inc, out) {
+  const idx = new Map(gr.nodes.map((nd, i) => [nd.name, i]));
+  const ci = idx.get(center);
+  if (ci == null) return { nodes: [], edges: [] };
+  const keep = new Set([ci]);
+  let frontier = [ci];
+  for (let d = 0; d < depth && frontier.length; d++) {
+    const next = [];
+    for (const [a, b] of gr.edges) for (const f of frontier) {
+      if (out && a === f && !keep.has(b)) { keep.add(b); next.push(b); }
+      if (inc && b === f && !keep.has(a)) { keep.add(a); next.push(a); }
+    }
+    frontier = next;
+  }
+  const order = [...keep];
+  const rmap = new Map(order.map((o, ni) => [o, ni]));
+  return {
+    nodes: order.map(i => gr.nodes[i]),
+    edges: gr.edges.filter(([a, b]) => keep.has(a) && keep.has(b))
+                   .map(([a, b]) => [rmap.get(a), rmap.get(b)]),
+  };
+}
+
+async function showLocalGraph(g, t) {  // t = the localgraph tab (kind:"lg")
+  cancelAnimationFrame(g.sim);         // clean restart on tab switches
+  await startGraph(g, {
+    fetch: async () => lgFilter(await inv("graph"), t.center, t.depth, t.inc, t.out),
+    center: () => t.center,
+    onClick: async n => {              // R7.4: navigate the LINKED group; lgFollow re-centers
+      const lk = groups().find(x => x.id === t.linkId);
+      if (lk) await navigate(lk, n);
+    },
+  });
+  g.lgDepth.value = t.depth; g.lgDv.textContent = t.depth;
+  g.lgInc.checked = t.inc; g.lgOut.checked = t.out;
+  g.lggear.hidden = false;             // R7.5: settings popover entry
+}
+
+async function lgSet(g) {              // R7.5: popover changed -> re-filter live
+  const t = g.active >= 0 ? g.tabs[g.active] : null;
+  if (!t || t.kind !== "lg") return;
+  t.depth = +g.lgDepth.value; t.inc = g.lgInc.checked; t.out = g.lgOut.checked;
+  g.lgDv.textContent = t.depth;
+  if (g.graphRefresh) await g.graphRefresh();
+  updateTitle();                       // republish [lg:center@depth]
+}
+
+async function cmdLocalGraph() {       // R7.2: local graph of focused note -> new right split
+  if (!state) return;
+  const g = fg();
+  const t0 = g.active >= 0 ? g.tabs[g.active] : null;
+  const center = curOf(g);
+  if (!center || (t0 && t0.kind === "lg")) return;
+  await flushSave(g);
+  const t = { kind: "lg", name: "Graph of " + center.split("/").pop(),
+              center, depth: 1, inc: true, out: true, linkId: g.id,
+              mode: "source", hist: [], hpos: 0 };
+  await splitWith(g, "row", t);        // R7.3: auto-linked to g from birth
+  for (const h of groups()) renderTabs(h);  // chain glyph lands on the source tab too
+}
+$("lgbtn").onclick = cmdLocalGraph;
 
 /* ---------- vault picker ---------- */
 function base(p) { return p.replace(/\/+$/, "").split("/").pop() || p; }

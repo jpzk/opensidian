@@ -111,3 +111,15 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .ctxmenu div { padding: 6px 14px; cursor: pointer; font-size: 13px;
                color: #cdd6f4; white-space: nowrap }
 .ctxmenu div:hover { background: #45475a }
+/* M8 local graph (R7.5): per-pane settings gear + popover */
+.lggear { position: absolute; top: 8px; right: 10px; z-index: 7;
+          background: #313244; color: #cdd6f4; border: 0; border-radius: 4px;
+          padding: 2px 8px; cursor: pointer; font-size: 14px; line-height: 20px }
+.lggear:hover { background: #45475a }
+.lggear[hidden] { display: none }
+.lgpop { position: absolute; top: 38px; right: 10px; z-index: 8;
+         background: #26263a; border: 1px solid #45475a; border-radius: 6px;
+         padding: 10px 12px; display: flex; flex-direction: column; gap: 6px;
+         font-size: 12px; box-shadow: 0 4px 16px #0008 }
+.lgpop[hidden] { display: none }
+.lgpop label { display: flex; align-items: center; gap: 6px; white-space: nowrap }
