@@ -44,35 +44,15 @@ No FUSE on your box (containers, minimal VMs)? Run either without mounting:
 Your notes are just files, but the app doesn't need to see the rest of your
 home directory. With [bubblewrap](https://github.com/containers/bubblewrap)
 (`apt/dnf install bubblewrap` — unprivileged, no SUID) you can confine
-rustidian to ONLY your vault:
+rustidian to ONLY your vault. Grab the launcher next to the AppImage and:
 
-    bwrap \
-      --ro-bind /usr /usr --ro-bind /etc /etc \
-      --symlink usr/lib64 /lib64 --symlink usr/lib /lib \
-      --proc /proc --dev /dev --dev-bind /dev/dri /dev/dri \
-      --tmpfs /home --tmpfs /tmp --bind ~/vault ~/vault \
-      --ro-bind /tmp/.X11-unix /tmp/.X11-unix \
-      --ro-bind ./rustidian-0.2-x86_64-slim.AppImage /app.AppImage \
-      --setenv HOME "$HOME" --setenv DISPLAY "$DISPLAY" \
-      --unshare-all --die-with-parent \
-      /app.AppImage --appimage-extract-and-run
+    curl -LO https://github.com/jpzk/rustidian/releases/download/v0.2/rustidian-sandboxed.sh
+    chmod +x rustidian-sandboxed.sh
+    ./rustidian-sandboxed.sh ~/vault
 
-Note the AppImage itself must be BOUND INTO the sandbox (`/app.AppImage`
-above) — the `--tmpfs /home` that hides your home dir hides the download
-too. If X complains about authorization, your xauth cookie is also hidden;
-add:
-
-    --ro-bind "${XAUTHORITY:-$HOME/.Xauthority}" /tmp/.Xauthority \
-    --setenv XAUTHORITY /tmp/.Xauthority \
-
-Everything outside the binds is invisible: `~/.ssh`, browser profiles, the
-lot. Swap `~/vault` for your vault path (it's bound read-write; vault picker
-naturally only sees that dir). On Wayland, also bind
-`$XDG_RUNTIME_DIR/wayland-0` and pass `WAYLAND_DISPLAY` through. If webkit
-complains about fonts or dbus, add
-`--ro-bind ~/.cache/fontconfig ~/.cache/fontconfig` or
-`--ro-bind $XDG_RUNTIME_DIR/bus $XDG_RUNTIME_DIR/bus` as needed.
-`--appimage-extract-and-run` is required — FUSE mounts don't work inside
-the namespace. Vault persistence (`~/.rustidian.json`) lands on the tmpfs
-and is forgotten on exit; bind a scratch dir over `$HOME` instead of
-`--tmpfs /home` if you want it kept.
+It finds the AppImage in the current dir, handles X11/Wayland + xauth, and
+bwraps everything else away behind a tmpfs: `~/.ssh`, browser profiles, the
+lot — the app sees only the vault. (`scripts/rustidian-sandboxed.sh` in the
+repo if you'd rather read it first — you should.) Vault persistence
+(`~/.rustidian.json`) lands on the tmpfs, so the picker asks again each
+launch; bind a scratch dir over `$HOME` in the script if you want it kept.
