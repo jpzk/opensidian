@@ -25,6 +25,14 @@ const mkTab = name => ({ name, mode: "livepreview", hist: [name], hpos: 0 });  /
 
 /* R9.2: left sidebar pane state — Files / Search / Bookmarks (census [pane:]) */
 let sidePane = "files";
+/* R9.5/R9.6: sidebar visibility — census [side:lXrX] (r wired in R9.6) */
+let sideOpen = true, rightOpen = false;
+function cmdToggleSide() {
+  sideOpen = !sideOpen;
+  $("side").hidden = !sideOpen;
+  $("collapsebtn").title = sideOpen ? "Collapse sidebar" : "Expand sidebar";
+  updateTitle();
+}
 const SPANES = { files: "pane-files", search: "pane-search", bm: "pane-bm" };
 function setPane(p) {
   sidePane = p;
@@ -169,6 +177,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   const t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
             " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + lg + md + gg +
+            " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) + "]" +
             " [pane:" + sidePane + "]";
   document.title = t;
   // publish to the native title: ONE call in flight, last-write-wins, 500ms
@@ -889,6 +898,7 @@ document.addEventListener("keydown", e => {
 });
 
 $("stab-files").onclick = () => setPane("files");
+$("collapsebtn").onclick = cmdToggleSide;
 $("stab-search").onclick = () => setPane("search");
 $("stab-bm").onclick = () => setPane("bm");
 $("newbtn").onclick = cmdNewNote;
