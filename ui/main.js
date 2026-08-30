@@ -335,9 +335,10 @@ function updateTitle() {          // pane/focus census in the window title (head
   if (md && ft.mode === "livepreview" && fg().lpActive) md += ":" + fg().lpActive.l0;
   if (md) md += "]";
   const gg = ft && ft.kind === "gg" ? " [gg]" : "";  // R9.7: global graph tab focused
+  const modal = modalKind ? " [modal:" + modalKind + "]" : "";  // m5 fuzzy modal
   const t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
-            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + lg + md + gg +
+            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + lg + md + gg + modal +
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) + "]" +
             (rightOpen && rgCenter ? " [rg:" + rgCenter + "]" : "") +
             " [pane:" + sidePane + "]" +
@@ -556,6 +557,7 @@ async function loadActive(g) {
   }
   showEditor(g);
   const n = curOf(g);
+  if (n) mruTouch(n);                // m5: quick-switcher MRU order
   g.editor.value = n ? await inv("read_note", { name: n }) : "";
   const m = g.tabs[g.active] ? g.tabs[g.active].mode : "livepreview";
   if (n && m === "source") g.editor.focus();
@@ -1042,17 +1044,103 @@ async function cmdCloseTab() {
   if (state && fg().active >= 0) await closeTab(fg(), fg().active);
 }
 
+/* ---------- m5: shared fuzzy modal — quick switcher (Ctrl+O) + command
+   palette (Ctrl+P). One component; item source decides the kind.
+   census [modal:qs|cp] while open. ---------- */
+let modalKind = null, mdItems = [], mdSel = 0, mdSrc = null;
+let mruList = [];                    // per-session note-use order, newest first
+function mruTouch(name) {
+  const i = mruList.indexOf(name);
+  if (i >= 0) mruList.splice(i, 1);
+  mruList.unshift(name);
+}
+function qsItems() {                 // switcher source: MRU first, rest a-z
+  const rest = notesCache.filter(n => !mruList.includes(n)).sort();
+  return [...mruList.filter(n => notesCache.includes(n)), ...rest].map(n => ({
+    label: n, hint: "",
+    run: async ev => {               // Enter = focused group; Ctrl+Enter = new tab
+      if (ev && ev.ctrlKey) {
+        const g = fg();
+        g.tabs.push(mkTab(n)); g.active = g.tabs.length - 1;
+        await loadActive(g);
+      } else await openInTab(n);
+    },
+  }));
+}
+function openModal(kind, src) {
+  modalKind = kind; mdSrc = src;
+  $("minput").value = "";
+  $("minput").placeholder = kind === "qs" ? "Open note..." : "Run command...";
+  $("modal").hidden = false;
+  mdFilter();
+  $("minput").focus();
+  updateTitle();
+}
+function closeModal() {
+  if (!modalKind) return;
+  modalKind = null;
+  $("modal").hidden = true;
+  updateTitle();
+}
+function mdFilter() {
+  const q = $("minput").value.trim();
+  mdItems = mdSrc().map((it, i) => [fuzzy(q, it.label), i, it])
+    .filter(([s]) => s >= 0)
+    .sort((a, b) => a[0] - b[0] || a[1] - b[1])  // ties keep source (MRU) order
+    .slice(0, 10).map(([, , it]) => it);
+  mdSel = 0;
+  renderModal();
+}
+function renderModal() {
+  const box = $("mlist");
+  box.innerHTML = "";
+  if (!mdItems.length) {
+    const d = document.createElement("div");
+    d.className = "mempty"; d.textContent = "No matches";
+    return box.appendChild(d);
+  }
+  mdItems.forEach((it, i) => {
+    const d = document.createElement("div");
+    d.className = "mrow" + (i === mdSel ? " sel" : "");
+    const l = document.createElement("span"); l.textContent = it.label;
+    const h = document.createElement("span"); h.className = "mhint";
+    h.textContent = it.hint || "";
+    d.append(l, h);
+    d.onmousedown = async e => { e.preventDefault(); closeModal(); await it.run(e); };
+    box.appendChild(d);
+  });
+}
+$("minput").oninput = mdFilter;
+$("minput").onkeydown = async e => {
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    if (!mdItems.length) return;
+    mdSel = (mdSel + (e.key === "ArrowDown" ? 1 : mdItems.length - 1)) % mdItems.length;
+    renderModal();
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    const it = mdItems[mdSel];
+    if (it) { closeModal(); await it.run(e); }
+  }
+};
+$("modal").onmousedown = e => { if (e.target === $("modal")) closeModal(); };
+function cmdQuickSwitch() {
+  modalKind === "qs" ? closeModal() : openModal("qs", qsItems);
+}
+
 const keymap = {
   "ctrl+n": cmdNewNote,
   "ctrl+s": cmdSave,
   "ctrl+w": cmdCloseTab,
   "ctrl+e": () => cmdToggleMode(),
+  "ctrl+o": cmdQuickSwitch,
   "ctrl+shift+g": () => cmdLocalGraph(),
   "alt+arrowleft": () => histGo(-1),
   "alt+arrowright": () => histGo(1),
 };
 document.addEventListener("keydown", e => {
   if (e.key === "Escape") {
+    if (modalKind) { closeModal(); return; }
     closeMenu();
     if (vaultPath && !$("picker").hidden) $("picker").hidden = true;
     if (!$("fnew").hidden) $("fnew").hidden = true;
@@ -1061,6 +1149,7 @@ document.addEventListener("keydown", e => {
   const combo = (e.ctrlKey ? "ctrl+" : "") + (e.altKey ? "alt+" : "")
     + (e.shiftKey ? "shift+" : "") + e.key.toLowerCase();
   const fn = keymap[combo];
+  if (modalKind && fn !== cmdQuickSwitch) return;  // modal traps the keymap
   if (fn) { e.preventDefault(); fn(); }
 });
 

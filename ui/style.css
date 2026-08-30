@@ -195,3 +195,19 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .lgpop[hidden] { display: none }
 .lgpop label { display: flex; align-items: center; gap: 6px; white-space: nowrap }
 .lgpop input[type=range] { width: 150px; height: 16px; margin: 0 }
+
+/* m5: shared fuzzy modal (quick switcher Ctrl+O / command palette Ctrl+P) */
+#modal { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.35) }
+#modal[hidden] { display: none }
+#mbox { width: 520px; max-width: 90%; margin: 90px auto 0; background: #26263a;
+        border: 1px solid #45475a; border-radius: 8px; overflow: hidden;
+        box-shadow: 0 8px 30px rgba(0,0,0,.5) }
+#minput { width: 100%; box-sizing: border-box; padding: 10px 14px; border: 0;
+          border-bottom: 1px solid #45475a; background: #1e1e2e;
+          color: #cdd6f4; font-size: 14px; outline: none }
+#mlist { max-height: 320px; overflow-y: auto }
+#mlist .mrow { display: flex; justify-content: space-between; align-items: center;
+               padding: 6px 14px; cursor: pointer; font-size: 13px; color: #cdd6f4 }
+#mlist .mrow.sel, #mlist .mrow:hover { background: #45475a }
+#mlist .mhint { color: #7f849c; font-size: 11px; margin-left: 12px; white-space: nowrap }
+#mlist .mempty { padding: 8px 14px; color: #7f849c; font-size: 12px }
