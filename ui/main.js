@@ -1127,6 +1127,26 @@ $("modal").onmousedown = e => { if (e.target === $("modal")) closeModal(); };
 function cmdQuickSwitch() {
   modalKind === "qs" ? closeModal() : openModal("qs", qsItems);
 }
+function cpItems() {                 // palette source: command registry w/ hotkey hints
+  return [
+    { label: "New note",             hint: "Ctrl+N",       run: cmdNewNote },
+    { label: "New folder",           hint: "",             run: () => {
+        $("fnew").hidden = false; $("fname").value = ""; $("fname").focus(); } },
+    { label: "Toggle edit mode",     hint: "Ctrl+E",       run: () => cmdToggleMode() },
+    { label: "Split right",          hint: "",             run: () => splitGroup(fg(), "row", fg().active) },
+    { label: "Split down",           hint: "",             run: () => splitGroup(fg(), "col", fg().active) },
+    { label: "Open graph view",      hint: "",             run: cmdGlobalGraph },
+    { label: "Open local graph",     hint: "Ctrl+Shift+G", run: () => cmdLocalGraph() },
+    { label: "Toggle left sidebar",  hint: "",             run: cmdToggleSide },
+    { label: "Toggle right sidebar", hint: "",             run: () => cmdToggleRight() },
+    { label: "Switch vault",         hint: "",             run: showPicker },
+    { label: "Close tab",            hint: "Ctrl+W",       run: cmdCloseTab },
+    { label: "Save",                 hint: "Ctrl+S",       run: cmdSave },
+  ];
+}
+function cmdPalette() {
+  modalKind === "cp" ? closeModal() : openModal("cp", cpItems);
+}
 
 const keymap = {
   "ctrl+n": cmdNewNote,
@@ -1134,6 +1154,7 @@ const keymap = {
   "ctrl+w": cmdCloseTab,
   "ctrl+e": () => cmdToggleMode(),
   "ctrl+o": cmdQuickSwitch,
+  "ctrl+p": cmdPalette,
   "ctrl+shift+g": () => cmdLocalGraph(),
   "alt+arrowleft": () => histGo(-1),
   "alt+arrowright": () => histGo(1),
@@ -1149,7 +1170,7 @@ document.addEventListener("keydown", e => {
   const combo = (e.ctrlKey ? "ctrl+" : "") + (e.altKey ? "alt+" : "")
     + (e.shiftKey ? "shift+" : "") + e.key.toLowerCase();
   const fn = keymap[combo];
-  if (modalKind && fn !== cmdQuickSwitch) return;  // modal traps the keymap
+  if (modalKind && fn !== cmdQuickSwitch && fn !== cmdPalette) return;  // modal traps the keymap
   if (fn) { e.preventDefault(); fn(); }
 });
 
