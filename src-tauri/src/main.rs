@@ -294,13 +294,73 @@ fn graph(v: State<Vault>) -> Graph {
     build_graph(&docs)
 }
 
+#[derive(serde::Serialize, Debug, PartialEq)]
+struct SearchHit {
+    note: String,
+    line: u32, // 0-based source line; 0 with snippet==note means a NAME match
+    snippet: String,
+}
+
+/// R9.4: case-insensitive substring over note names + bodies. Hits ordered by
+/// note (docs arrive sorted) then line; snippet = the matching line trimmed to
+/// ~200 chars around the first hit; capped at 500 hits total.
+fn search_docs(docs: &[(String, String)], query: &str) -> Vec<SearchHit> {
+    let q = query.to_lowercase();
+    let mut out = Vec::new();
+    if q.is_empty() {
+        return out;
+    }
+    'docs: for (name, content) in docs {
+        if name.to_lowercase().contains(&q) {
+            out.push(SearchHit { note: name.clone(), line: 0, snippet: name.clone() });
+        }
+        for (i, l) in content.lines().enumerate() {
+            let lower = l.to_lowercase();
+            let Some(bpos) = lower.find(&q) else { continue };
+            let t = l.trim();
+            let snippet = if t.len() <= 200 {
+                t.to_string()
+            } else {
+                // char-safe ~200-char window around the first hit
+                let cpos = lower[..bpos].chars().count();
+                let chars: Vec<char> = l.chars().collect();
+                let start = cpos.saturating_sub(80).min(chars.len());
+                let end = (cpos + 120).min(chars.len());
+                chars[start..end].iter().collect()
+            };
+            out.push(SearchHit { note: name.clone(), line: i as u32, snippet });
+            if out.len() >= 500 {
+                break 'docs;
+            }
+        }
+        if out.len() >= 500 {
+            break;
+        }
+    }
+    out
+}
+
+#[tauri::command]
+fn search(v: State<Vault>, query: String) -> Vec<SearchHit> {
+    let Some(root) = cur_vault(&v) else { return vec![] };
+    let docs: Vec<(String, String)> = notes_of(&root)
+        .into_iter()
+        .map(|n| {
+            let c = fs::read_to_string(format!("{}.md", root.join(&n).display()))
+                .unwrap_or_default();
+            (n, c)
+        })
+        .collect();
+    search_docs(&docs, &query)
+}
+
 fn main() {
     let init = std::env::var("VAULT_DIR").ok().map(PathBuf::from);
     tauri::Builder::default()
         .manage(Vault(Mutex::new(init)))
         .invoke_handler(tauri::generate_handler![
             list_notes, read_note, write_note, render, graph, vault_get, set_vault,
-            create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks
+            create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search
         ])
         .run(tauri::generate_context!())
         .expect("tauri run");
@@ -334,5 +394,29 @@ mod tests {
         assert!(!g.nodes[3].resolved);
         // A->B, A->Ghost (deduped), B->Ghost, B->sub/C
         assert_eq!(g.edges, vec![(0, 1), (0, 3), (1, 3), (1, 2)]);
+    }
+
+    #[test]
+    fn search_finds_case_insensitive_hits() {
+        let docs = vec![
+            ("Alpha".to_string(), "first LINE here\nsecond alpha line".to_string()),
+            ("Beta".to_string(), "nothing\nAlPhA again".to_string()),
+        ];
+        let hits = search_docs(&docs, "alpha");
+        // name hit (Alpha@0) + body hit in Alpha line 1 + body hit in Beta line 1
+        assert_eq!(hits.len(), 3);
+        assert_eq!((hits[0].note.as_str(), hits[0].line, hits[0].snippet.as_str()),
+                   ("Alpha", 0, "Alpha"));
+        assert_eq!((hits[1].note.as_str(), hits[1].line, hits[1].snippet.as_str()),
+                   ("Alpha", 1, "second alpha line"));
+        assert_eq!((hits[2].note.as_str(), hits[2].line, hits[2].snippet.as_str()),
+                   ("Beta", 1, "AlPhA again"));
+        assert!(search_docs(&docs, "").is_empty());
+        assert!(search_docs(&docs, "zzz").is_empty());
+        // long line trims to a window around the hit
+        let long = ("L".to_string(), format!("{}needle{}", "x".repeat(300), "y".repeat(300)));
+        let h = search_docs(&[long], "needle");
+        assert_eq!(h.len(), 1);
+        assert!(h[0].snippet.contains("needle") && h[0].snippet.len() <= 210);
     }
 }
