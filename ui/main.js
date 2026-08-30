@@ -110,6 +110,64 @@ function focusGroup(g) {
   if (prev) refreshTree();        // explorer active-note highlight follows focus
 }
 
+/* ---------- split verbs (M7 / R6.2): tab context menu + tree mutation ---------- */
+function findParent(node, target, parent = null) {
+  if (node === target) return parent;
+  if (!node.children) return null;
+  for (const c of node.children) {
+    const p = findParent(c, target, node);
+    if (p) return p;
+  }
+  return null;
+}
+
+async function splitGroup(g, dir, ti) {  // duplicate g's tab ti into a new sibling group
+  const parent = findParent(state.root, g);
+  if (!parent) return;
+  const ng = mkGroup();
+  const src = g.tabs[ti];
+  if (src) { ng.tabs.push(mkTab(src.name)); ng.tabs[0].mode = src.mode; ng.active = 0; }
+  if (parent.children.length === 1) parent.dir = dir;   // lone child: re-aim the split
+  const idx = parent.children.indexOf(g);
+  if (parent.dir === dir) {              // same axis: insert sibling, halve g's share
+    const f = (parent.fractions && parent.fractions[idx]) || 1;
+    parent.children.splice(idx + 1, 0, ng);
+    parent.fractions.splice(idx, 1, f / 2, f / 2);
+  } else {                               // cross axis: wrap g in a nested split
+    parent.children[idx] = { dir, children: [g, ng], fractions: [0.5, 0.5] };
+  }
+  renderLayout();
+  focusGroup(ng);
+  if (ng.active >= 0) await loadActive(ng);
+}
+
+let menuEl = null;
+function closeMenu() { if (menuEl) { menuEl.remove(); menuEl = null; } }
+document.addEventListener("mousedown", e => {
+  if (menuEl && !menuEl.contains(e.target)) closeMenu();
+}, true);
+
+function tabMenu(e, g, i) {              // right-click a tab -> Split right / Split down
+  e.preventDefault();
+  closeMenu();
+  const m = document.createElement("div");
+  m.className = "ctxmenu";
+  for (const [label, fn] of [
+    ["Split right", () => splitGroup(g, "row", i)],
+    ["Split down",  () => splitGroup(g, "col", i)],
+  ]) {
+    const d = document.createElement("div");
+    d.textContent = label;
+    d.onmousedown = ev => ev.stopPropagation();  // don't let the closer eat the click
+    d.onclick = () => { closeMenu(); fn(); };
+    m.appendChild(d);
+  }
+  m.style.left = Math.min(e.clientX, window.innerWidth - 150) + "px";
+  m.style.top = Math.min(e.clientY, window.innerHeight - 80) + "px";
+  document.body.appendChild(m);
+  menuEl = m;
+}
+
 /* ---------- view modes (R3.2: source / reading per tab) ---------- */
 const ICON_BOOK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>';
 const ICON_PEN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/></svg>';
@@ -152,6 +210,7 @@ function renderTabs(g) {
     x.onclick = e => { e.stopPropagation(); closeTab(g, i); };
     d.append(ttl, x);
     d.onclick = () => switchTab(g, i);
+    d.oncontextmenu = e => tabMenu(e, g, i);   // R6.2: split verbs
     g.tabsEl.appendChild(d);
   });
   updateModeBtn(g);
@@ -439,6 +498,7 @@ const keymap = {
 };
 document.addEventListener("keydown", e => {
   if (e.key === "Escape") {
+    closeMenu();
     if (vaultPath && !$("picker").hidden) $("picker").hidden = true;
     if (!$("fnew").hidden) $("fnew").hidden = true;
     return;

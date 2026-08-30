@@ -98,3 +98,11 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
            border: 0; color: #a6adc8; font-size: 15px; cursor: pointer }
 #bar button svg { width: 16px; height: 16px; display: block; margin: 0 auto }
 #vswitch svg { width: 13px; height: 13px; vertical-align: -2px; margin-right: 6px }
+
+/* tab context menu (M7 / R6.2): simple dark popup */
+.ctxmenu { position: fixed; z-index: 60; background: #1e1e2e;
+           border: 1px solid #45475a; border-radius: 6px; padding: 4px 0;
+           min-width: 130px; box-shadow: 0 4px 14px rgba(0,0,0,.55) }
+.ctxmenu div { padding: 6px 14px; cursor: pointer; font-size: 13px;
+               color: #cdd6f4; white-space: nowrap }
+.ctxmenu div:hover { background: #45475a }
