@@ -5,6 +5,8 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use tauri::State;
 
+mod perf;
+
 /* perf-lp: sorted note-name list cached per vault. Every render used to
    re-walk + sort the whole vault (notes_of); with ~150 blocks per lp pass
    that was the bulk of the 269ms/caret-move. Cache is a plain Option so
@@ -122,18 +124,26 @@ fn create_dir(v: State<Vault>, name: String) -> Result<(), String> {
 
 #[tauri::command]
 fn list_notes(v: State<Vault>) -> Vec<String> {
-    cur_notes(&v)
+    span_timed!("list_notes", cur_notes(&v))
 }
 
 #[tauri::command]
 fn read_note(v: State<Vault>, name: String) -> String {
-    note_path(&v, &name)
-        .and_then(|p| fs::read_to_string(p).ok())
-        .unwrap_or_default()
+    span_timed!(
+        "read_note",
+        note_path(&v, &name)
+            .and_then(|p| fs::read_to_string(p).ok())
+            .unwrap_or_default()
+    )
 }
 
 #[tauri::command]
 fn write_note(v: State<Vault>, name: String, content: String) {
+    let bytes = content.len();
+    span_timed!("write_note", write_note_inner(&v, &name, &content), serde_json::json!({"bytes": bytes}))
+}
+
+fn write_note_inner(v: &State<Vault>, name: &str, content: &str) {
     if let Some(p) = note_path(&v, &name) {
         // new file changes the note set; per-keystroke saves of an existing
         // note must not evict the cache (that is the hot lp path)
@@ -239,7 +249,7 @@ fn rename_in(root: &Path, old: &str, new: &str) -> Result<(), String> {
 fn rename_note(v: State<Vault>, old: String, new: String) -> Result<(), String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
     v.1.invalidate();
-    rename_in(&root, &old, &new)
+    span_timed!("rename_note", rename_in(&root, &old, &new))
 }
 
 #[tauri::command]
@@ -310,6 +320,10 @@ fn recent_vaults() -> Vec<String> {
 
 #[tauri::command]
 fn set_vault(v: State<Vault>, path: String) -> Result<String, String> {
+    span_timed!("set_vault", set_vault_inner(&v, &path))
+}
+
+fn set_vault_inner(v: &State<Vault>, path: &str) -> Result<String, String> {
     let p = PathBuf::from(path.trim());
     if !p.is_dir() {
         return Err(format!("not a directory: {}", p.display()));
@@ -340,6 +354,12 @@ fn create_vault(v: State<Vault>, parent: String, name: String) -> Result<String,
     v.1.invalidate();
     *v.0.lock().unwrap() = Some(p.clone());
     Ok(p.display().to_string())
+}
+
+/// perf-spans: frontend spans land in the same RUSTIDIAN_PERF jsonl as backend ones
+#[tauri::command]
+fn log_span(name: String, ms: f64, extra: serde_json::Value) {
+    perf::span(&name, ms, extra);
 }
 
 #[tauri::command]
@@ -464,7 +484,7 @@ fn render_md(content: &str, notes: &[String]) -> String {
 
 #[tauri::command]
 fn render(v: State<Vault>, content: String) -> String {
-    render_md(&content, &cur_notes(&v))
+    span_timed!("render", render_md(&content, &cur_notes(&v)), serde_json::json!({"bytes": content.len()}))
 }
 
 /// pure core of render_blocks: every block rendered against the same note list
@@ -477,11 +497,16 @@ fn render_blocks_with(blocks: &[String], notes: &[String]) -> Vec<String> {
    ~150 render calls each re-walking the vault. */
 #[tauri::command]
 fn render_blocks(v: State<Vault>, blocks: Vec<String>) -> Vec<String> {
-    render_blocks_with(&blocks, &cur_notes(&v))
+    let n = blocks.len();
+    span_timed!("render_blocks", render_blocks_with(&blocks, &cur_notes(&v)), serde_json::json!({"blocks": n}))
 }
 
 #[tauri::command]
 fn backlinks(v: State<Vault>, name: String) -> Vec<String> {
+    span_timed!("backlinks", backlinks_inner(&v, &name))
+}
+
+fn backlinks_inner(v: &State<Vault>, name: &str) -> Vec<String> {
     // invert the graph edges: which notes link to `name`?
     let Some(root) = cur_vault(&v) else { return vec![] };
     let notes = v.1.get(&root);
@@ -545,6 +570,10 @@ fn build_graph(docs: &[(String, String)]) -> Graph {
 
 #[tauri::command]
 fn graph(v: State<Vault>) -> Graph {
+    span_timed!("graph", graph_inner(&v), serde_json::json!({}))
+}
+
+fn graph_inner(v: &State<Vault>) -> Graph {
     let Some(root) = cur_vault(&v) else {
         return Graph { nodes: vec![], edges: vec![] };
     };
@@ -607,6 +636,10 @@ fn search_docs(docs: &[(String, String)], query: &str) -> Vec<SearchHit> {
 
 #[tauri::command]
 fn search(v: State<Vault>, query: String) -> Vec<SearchHit> {
+    span_timed!("search", search_inner(&v, &query))
+}
+
+fn search_inner(v: &State<Vault>, query: &str) -> Vec<SearchHit> {
     let Some(root) = cur_vault(&v) else { return vec![] };
     let docs: Vec<(String, String)> = v.1.get(&root)
         .into_iter()
@@ -669,7 +702,7 @@ fn main() {
             list_notes, read_note, write_note, render, render_blocks, graph, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, recent_vaults, rename_note,
-            get_sidebar_w, set_sidebar_w
+            get_sidebar_w, set_sidebar_w, log_span
         ])
         .run(tauri::generate_context!())
         .expect("tauri run");
