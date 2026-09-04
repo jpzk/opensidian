@@ -138,6 +138,11 @@ fn rename_in(root: &Path, ix: &mut Index, old: &str, new: &str) -> Result<(), St
     if let Some(d) = np.parent() {
         fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
+    // rename is rare and rewrites text vault-wide: resync the index from disk
+    // FIRST so a note another writer dropped in since boot (smoke seeds one;
+    // LATER: file watcher) gets its [[old]] links rewritten too. One walk per
+    // rename — the hot paths (search/graph/backlinks) stay disk-free.
+    *ix = Index::build(root);
     fs::rename(&op, &np).map_err(|e| e.to_string())?;
     let (okey, nkey) = (orel.display().to_string(), nrel.display().to_string());
     // index==disk invariant: if the key is somehow missing, seed it from the
@@ -694,6 +699,26 @@ mod tests {
             assert_eq!(fresh.content(n), ix.content(n), "{n}");
             assert_eq!(fresh.backlinks(n), ix.backlinks(n), "{n}");
         }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rename_resyncs_externally_added_notes() {
+        // smoke.sh fast ux seeds a linker note ON DISK after boot and expects
+        // the rename to rewrite it: rename resyncs the index from disk first
+        let root = tmp_vault("ixx");
+        fs::write(root.join("Old.md"), "# Old").unwrap();
+        let mut ix = Index::build(&root);
+        assert_eq!(ix.names(), ["Old"]);
+        fs::write(root.join("Linker.md"), "see [[Old]] and [[Old|nick]] here").unwrap();
+        assert!(ix.content("Linker").is_none()); // invisible until the resync
+        rename_in(&root, &mut ix, "Old", "New").unwrap();
+        assert_eq!(ix.names(), ["Linker", "New"]);
+        assert_eq!(
+            fs::read_to_string(root.join("Linker.md")).unwrap(),
+            "see [[New]] and [[New|nick]] here"
+        );
+        assert_eq!(ix.backlinks("New"), ["Linker"]);
         let _ = fs::remove_dir_all(&root);
     }
 

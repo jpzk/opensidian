@@ -816,15 +816,31 @@ function renderNode(node, prefix, depth, out) {
     row.querySelector(".tn").textContent = nm.split("/").pop();
     row.onclick = () => openInTab(nm);
     row.oncontextmenu = e => noteMenu(e, nm);   // R9.4: bookmark toggle
+    treeRows.set(nm, row);
     out.appendChild(row);
   }
 }
 
+// perf-index: with backlinks/search/graph served from RAM, rebuilding the
+// 500-row explorer DOM on EVERY note open / tab switch became the largest
+// remaining slice of note_open. The row set only changes when the folder or
+// note list (or the collapsed set) changes -> memoize on that signature and
+// otherwise just move the .active highlight.
+let treeSig = "", treeRows = new Map();
 async function refreshTree() {
   const [folders, notes] =
     await Promise.all([inv("list_folders"), inv("list_notes")]);
   notesCache = notes;
   const tree = $("tree");
+  const sig = folders.join("\n") + "\0" + notes.join("\n") + "\0" +
+    [...collapsed].sort().join("\n");
+  if (sig === treeSig && tree.childElementCount) {
+    for (const r of tree.querySelectorAll(".trow.note.active")) r.classList.remove("active");
+    const r = treeRows.get(cur());
+    if (r) r.classList.add("active");
+    return;
+  }
+  treeSig = sig; treeRows = new Map();
   tree.innerHTML = "";
   renderNode(buildTree(folders, notes), "", 0, tree);
 }
@@ -1432,9 +1448,9 @@ $("stab-files").onclick = () => setPane("files");
 $("collapsebtn").onclick = cmdToggleSide;
 $("stab-search").onclick = () => setPane("search");
 $("stab-bm").onclick = () => setPane("bm");
-$("sinput").oninput = () => {              // debounce 150ms
+$("sinput").oninput = () => {              // debounce 60ms (was 150: sized for the disk-walking search; the index answers in ~1ms, the DOM for ~400 hits in a few ms)
   if (searchT0 < 0) searchT0 = perf.now();  // perf: first keystroke of this query
-  clearTimeout(searchT); searchT = setTimeout(runSearch, 150);
+  clearTimeout(searchT); searchT = setTimeout(runSearch, 60);
 };
 $("sclear").onclick = () => {
   $("sinput").value = ""; clearTimeout(searchT); runSearch(); $("sinput").focus();
