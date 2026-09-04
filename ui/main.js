@@ -118,7 +118,7 @@ $("rtoggle").onclick = cmdToggleRight;
    graph. Active tab persisted as rside_tab in ~/.rustidian.json; census
    [side:l1r1:<tab>]. All panes follow the focused group's active note
    (rgFollow) and refresh 200ms after a save lands (rSchedule). */
-const RPANES = { bl: "rpane-bl", out: "rpane-out", toc: "rpane-toc", graph: "rpane-graph" };
+const RPANES = { bl: "rpane-bl", out: "rpane-out", tags: "rpane-tags", toc: "rpane-toc", graph: "rpane-graph" };
 let rTab = "graph", rT = null, rpInfo = "";   // rpInfo -> census [rp:...]
 async function setRTab(t, persist = true) {
   if (!RPANES[t]) t = "graph";
@@ -149,6 +149,7 @@ async function rPanesRefresh() {
   if (rTab === "bl") await rBacklinks(n);
   else if (rTab === "out") await rOutgoing(n);
   else if (rTab === "toc") await rOutline(n);
+  else if (rTab === "tags") await rTags();
   updateTitle();
 }
 // Backlinks: "Linked mentions N" + one expandable row per linking note; the
@@ -204,6 +205,61 @@ async function rOutgoing(n) {
     if (o.target) d.onclick = () => navigate(fg(), o.target);
     box.appendChild(d);
   }
+}
+// Tags: every vault tag sorted by count desc then name; nested a/b tags fold
+// into a collapsible tree (parent row count = own + kids); click a row ->
+// search pane prefilled "tag:<name>"
+async function rTags() {
+  const box = $("taglist"), head = $("tagshead");
+  box.textContent = ""; head.textContent = "";
+  const counts = await inv("tag_counts").catch(() => ({}));
+  const names = Object.keys(counts);
+  head.textContent = "Tags"; rpInfo = "tags:" + names.length;
+  const c = document.createElement("span");
+  c.className = "scount"; c.textContent = names.length; head.appendChild(c);
+  if (!names.length) return rEmpty(box, "No tags.");
+  const root = { own: 0, kids: new Map() };
+  for (const n of names) {
+    let cur = root, path = "";
+    for (const seg of n.split("/")) {
+      path = path ? path + "/" + seg : seg;
+      if (!cur.kids.has(seg)) cur.kids.set(seg, { name: path, own: 0, kids: new Map() });
+      cur = cur.kids.get(seg);
+    }
+    cur.own = counts[n];
+  }
+  const total = nd => { nd.total = nd.own; for (const k of nd.kids.values()) nd.total += total(k); return nd.total; };
+  total(root);
+  const build = (parent, nd, depth) => {
+    const list = [...nd.kids.values()].sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
+    for (const k of list) {
+      const row = document.createElement("div");
+      row.className = "tagrow open"; row.dataset.tag = k.name; row.title = "#" + k.name;
+      row.style.paddingLeft = (6 + depth * 12) + "px";
+      row.innerHTML = '<span class="tc"></span><span class="tn"></span><span class="scount"></span>';
+      row.querySelector(".tn").textContent = "#" + k.name.split("/").pop();
+      row.querySelector(".scount").textContent = k.total;
+      const kids = document.createElement("div");
+      kids.className = "tockids";
+      parent.appendChild(row); parent.appendChild(kids);
+      build(kids, k, depth + 1);
+      if (kids.childElementCount) {
+        row.querySelector(".tc").innerHTML = CHEV;
+        row.querySelector(".tc").onclick = e => {
+          e.stopPropagation();
+          row.classList.toggle("open"); kids.hidden = !row.classList.contains("open");
+        };
+      }
+      row.onclick = () => tagSearch(k.name);
+    }
+  };
+  build(box, root, 0);
+}
+function tagSearch(tag) {                  // pane row / inline pill -> search "tag:<name>"
+  if (!sideOpen) cmdToggleSide();
+  setPane("search");
+  $("sinput").value = "tag:" + tag;
+  clearTimeout(searchT); runSearch();
 }
 // Outline: nested collapsible heading tree; click scrolls the focused
 // group's view to that heading; the heading at the viewport top is .active
@@ -1244,6 +1300,10 @@ function lpRow(g, b, h) {
   // R8.7: wikilink click navigates, ctrl+click opens a new tab. Mousedown
   // level (the row's edit handler is mousedown too) + stopPropagation so
   // the raw row never opens; navigate()/flushSave fold the raw row.
+  row.querySelectorAll("a.tag").forEach(a => {   // tags: pill -> tag search, never the raw row
+    a.onclick = e => e.preventDefault();
+    a.addEventListener("mousedown", e => { e.preventDefault(); e.stopPropagation(); tagSearch(a.dataset.tag); });
+  });
   row.querySelectorAll("a.wiki").forEach(a => {
     a.onclick = e => e.preventDefault();       // href="#": no hash churn
     a.addEventListener("mousedown", async e => {
@@ -1344,6 +1404,8 @@ function lpKey(g, ev) {
 
 async function preview(g) {
   g.preview.innerHTML = await inv("render", { content: g.editor.value });
+  for (const a of g.preview.querySelectorAll("a.tag"))
+    a.onclick = e => { e.preventDefault(); tagSearch(a.dataset.tag); };
   for (const a of g.preview.querySelectorAll("a.wiki"))
     a.onclick = async e => {
       e.preventDefault();

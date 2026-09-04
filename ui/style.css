@@ -127,6 +127,15 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .tocrow .tn { overflow: hidden; text-overflow: ellipsis }
 .tockids { display: block }
 .tockids[hidden] { display: none }
+/* tags pane: rows share the outline tree look; #name left, count right */
+.tagrow { display: flex; align-items: center; gap: 2px; padding: 3px 8px 3px 0;
+          color: #cdd6f4; cursor: pointer; white-space: nowrap; overflow: hidden }
+.tagrow:hover { background: #313244 }
+.tagrow .tc { flex: 0 0 14px; display: flex; justify-content: center; color: #6c7086 }
+.tagrow .tc svg { width: 10px; height: 10px; transition: transform .1s }
+.tagrow.open .tc svg { transform: rotate(90deg) }
+.tagrow .tn { flex: 1; overflow: hidden; text-overflow: ellipsis }
+.tagrow .scount { color: #6c7086 }
 #rtoggle { position: fixed; top: 5px; right: 6px; z-index: 9; background: none;
            border: 0; color: #a6adc8; cursor: pointer; padding: 3px;
            border-radius: 4px }
@@ -197,6 +206,11 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .preview a.wiki-unresolved { color: #7c86c8; font-style: italic }
 .preview h1, .preview h2 { border-bottom: 1px solid #313244 }
 .preview code { background: #313244; padding: 1px 4px; border-radius: 3px }
+/* tags: inline #tag pills (stock: small rounded accent-tinted chip) */
+.lp a.tag, .preview a.tag { color: #89b4fa; background: rgba(137,180,250,.15);
+  border-radius: 999px; padding: 0 7px; font-size: .85em; text-decoration: none;
+  cursor: pointer; white-space: nowrap }
+.lp a.tag:hover, .preview a.tag:hover { background: rgba(137,180,250,.3) }
 .graph { flex: 1; background: #11111b }
 
 /* [[ autocomplete */

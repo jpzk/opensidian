@@ -12,6 +12,7 @@ I'm running as many top frontier models to scan for vulnerabilities, but since t
 - [[wikilinks]] -> clickable links + local graph view (canvas force sim)
 - splits / tab groups with tab drag & drop
 - full-text search, quick switcher, command palette, bookmarks
+- #tags: inline pills + frontmatter `tags:`, Tags pane in the right sidebar (nested a/b, counts), `tag:foo` search filter
 - safe renames (H1 or F2) that rewrite [[links]] across the vault
 - vault picker with persistence (or env VAULT_DIR, default ./vault)
 
