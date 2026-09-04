@@ -1566,8 +1566,10 @@ $("fname").onkeydown = async e => {
    cfg = { fetch: async () -> {nodes, edges},   node/edge supplier
            center: () -> name|null,             drawn larger + accent (M8 localgraph)
            onClick: async name -> void }        navigation target on node click */
+let simGen = 0;                    // perf-graph: sim generation counter (see startGraph)
 function showEditor(g) {
   g.graphOn = false; g.graphRefresh = null; cancelAnimationFrame(g.sim);
+  if (g.ro) { g.ro.disconnect(); g.ro = null; }
   perf.flush();                    // ship buffered graph_frame samples of the closed sim
   g.graph.hidden = true;
   g.lggear.hidden = true; g.lgpop.hidden = true;
@@ -1636,58 +1638,85 @@ async function startGraph(g, cfg) {
     adj.length = 0; for (const _ of N) adj.push(new Set());
     for (const [i, j] of gr.edges) { adj[i].add(j); adj[j].add(i); }
     hov = -1;
-    alpha = Math.max(alpha, 0.5);   // partial reheat: settle new nodes without scattering old ones
+    g.reheat();   // partial reheat (alpha >= 0.5): settle new nodes without scattering old ones; restarts a stopped loop
   };
   // sim heat: forces scale by alpha, which decays per PHYSICS STEP; below
-  // 0.02 physics freezes (render loop keeps running for hover/zoom/pan).
-  // Physics steps are wall-clock-locked at 60/s (substepped inside rAF):
-  // a throttled/headless rAF must not stretch the ~3.2s settle time.
+  // 0.02 physics freezes. Physics steps are wall-clock-locked at 60/s
+  // (substepped inside rAF): a throttled/headless rAF must not stretch settle.
+  // perf-graph: the rAF loop is NOT unconditional — it runs while physics is
+  // hot (alpha > 0.02 and kinetic energy above eps) and stops otherwise (CPU 0);
+  // wake() restarts it on refresh (reheat), pan, zoom, hover, resize, close.
   let alpha = 1, phAcc = 0, phLast = performance.now();
-  // perf: settled = total kinetic energy (sum v^2) under 0.0025 px^2/step per node
+  // settled = total kinetic energy (sum v^2) under 0.0025 px^2/step per node
   // (mean speed < 0.05 px/step, invisible) for 10 consecutive steps, or physics frozen
-  let settled = false, calm = 0;
+  let calm = 0, quiet = false;          // quiet: physics halted until the next reheat
+  let settledMark = false;              // graph_settle span fires once per open
   const kinetic = () => { let k = 0; for (const p of N) k += p.vx * p.vx + p.vy * p.vy; return k; };
-  function physStep() {
-    for (const a of N) for (const b of N) {
-      if (a === b) continue;
-      const dx = a.x - b.x, dy = a.y - b.y, d2 = dx * dx + dy * dy + 0.01;
-      a.vx += alpha * 800 * dx / d2; a.vy += alpha * 800 * dy / d2;  // repulsion
+  // Barnes-Hut quadtree (theta 0.8) for the 800*alpha/d repulsion: the force is
+  // long-range (1/d), so a cutoff grid would change the layout; instead every
+  // far cell (side/dist < theta) acts as one body of its mass at its centroid.
+  // O(N log N) per step instead of the all-pairs O(N^2). Cells come from a
+  // pool reused across steps (no per-step allocation churn); depth is capped
+  // at MAXD (leaf >= S/1024 ~ 1px) because nodes pinned to the viewport clamp
+  // sit on IDENTICAL coordinates — an uncapped tree would split 24 levels per
+  // coincident pair. Points sharing a leaf do not repel each other (the
+  // all-pairs code's +0.01 guard gave ~0 for them too).
+  const THETA2 = 0.8 * 0.8, S = Math.max(W, H), MAXD = 10;
+  const pool = []; let pn = 0;
+  const cell = (x0, y0, s) => {
+    let c = pool[pn]; if (!c) c = pool[pn] = {};
+    pn++; c.x0 = x0; c.y0 = y0; c.s = s; c.n = 0; c.sx = 0; c.sy = 0; c.p = null; c.k = null;
+    return c;
+  };
+  const qi = (c, p) => (p.x >= c.x0 + c.s / 2 ? 1 : 0) + (p.y >= c.y0 + c.s / 2 ? 2 : 0);
+  function bhBuild() {
+    pn = 0;
+    const root = cell(0, 0, S);
+    for (const p of N) {
+      let c = root, depth = 0;
+      for (;;) {
+        c.n++; c.sx += p.x; c.sy += p.y;
+        if (c.k) { c = c.k[qi(c, p)]; depth++; continue; }
+        if (c.n === 1) { c.p = p; break; }         // empty leaf takes p
+        if (depth >= MAXD) break;                    // shared leaf: mass only
+        const h = c.s / 2, q = c.p; c.p = null;      // occupied leaf: split, push old point down
+        c.k = [cell(c.x0, c.y0, h), cell(c.x0 + h, c.y0, h), cell(c.x0, c.y0 + h, h), cell(c.x0 + h, c.y0 + h, h)];
+        const cq = c.k[qi(c, q)]; cq.n = 1; cq.sx = q.x; cq.sy = q.y; cq.p = q;
+        c = c.k[qi(c, p)]; depth++;
+      }
     }
+    return root;
+  }
+  function bhApply(a, c, k) {
+    if (c.n === 0) return;
+    const dx = a.x - c.sx / c.n, dy = a.y - c.sy / c.n, d2 = dx * dx + dy * dy + 0.01;
+    if (c.k) {
+      if (c.s * c.s > THETA2 * d2) { const K = c.k; bhApply(a, K[0], k); bhApply(a, K[1], k); bhApply(a, K[2], k); bhApply(a, K[3], k); return; }
+    } else if (c.p === a || (a.x >= c.x0 && a.x < c.x0 + c.s && a.y >= c.y0 && a.y < c.y0 + c.s)) return;  // own leaf
+    a.vx += k * c.n * dx / d2; a.vy += k * c.n * dy / d2;
+  }
+  function physStep() {
+    const root = bhBuild(), k = alpha * 800;
+    for (const a of N) bhApply(a, root, k);                            // repulsion
     for (const [i, j] of gr.edges) {
       const a = N[i], b = N[j], dx = b.x - a.x, dy = b.y - a.y;
       a.vx += dx * 0.005 * alpha; a.vy += dy * 0.005 * alpha;        // spring
       b.vx -= dx * 0.005 * alpha; b.vy -= dy * 0.005 * alpha;
     }
+    const m = 30;   // clamp in WORLD coords (labels stay near world bounds)
     for (const p of N) {
       p.vx += (W / 2 - p.x) * 0.01 * alpha; p.vy += (H / 2 - p.y) * 0.01 * alpha;
       p.vx *= 0.85; p.vy *= 0.85; p.x += p.vx; p.y += p.vy;
-      const m = 30;   // clamp in WORLD coords (labels stay near world bounds)
-      p.x = Math.max(m, Math.min(W - m, p.x));
-      p.y = Math.max(m, Math.min(H - m, p.y));
+      // inelastic wall: a clamped axis loses its velocity, else nodes pinned to the
+      // edge keep a large v forever and the kinetic-energy settle never triggers
+      if (p.x < m) { p.x = m; p.vx = 0; } else if (p.x > W - m) { p.x = W - m; p.vx = 0; }
+      if (p.y < m) { p.y = m; p.vy = 0; } else if (p.y > H - m) { p.y = H - m; p.vy = 0; }
     }
-    alpha *= 0.98;
+    alpha *= 0.975;   // perf-graph: 0.98 -> 0.975 (alpha 0.05 at step 118 = 2.0s, freeze cap 0.02 at 154 = 2.6s; the KE stop lands ~2s)
   }
-  let firstFrame = true;
-  function step() {
-    const now = performance.now();
-    if (firstFrame) {
-      firstFrame = false;
-      if (g.perfT0) { perf.mark("graph_open", g.perfT0, { nodes: N.length, edges: gr.edges.length }); g.perfT0 = null; }
-    }
-    const fT0 = perf.now(); let steps = 0;
-    phAcc = Math.min(phAcc + (now - phLast) / 1000, 0.25); phLast = now;
-    while (phAcc >= 1 / 60) {
-      phAcc -= 1 / 60;
-      if (alpha > 0.02) { physStep(); steps++; }
-    }
-    if (!settled && (steps || alpha <= 0.02)) {
-      const ke = kinetic();
-      calm = ke < 0.0025 * N.length ? calm + 1 : 0;
-      if (calm >= 10 || alpha <= 0.02) {
-        settled = true;
-        perf.mark("graph_settle", openT0, { nodes: N.length, ke: +ke.toFixed(3), alpha: +alpha.toFixed(3) });
-      }
-    }
+  // draw: batched paths — edges in 2 strokes (lit / dim), nodes grouped by
+  // (color, alpha, resolved) into one fill/stroke each, labels per group
+  function draw() {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, cv.width, cv.height);
     ctx.setTransform(view.scale, 0, 0, view.scale, view.tx, view.ty);
@@ -1695,31 +1724,89 @@ async function startGraph(g, cfg) {
     const litE = ([i, j]) => hov < 0 || i === hov || j === hov;
     const litN = i => hov < 0 || i === hov || adj[hov].has(i);
     ctx.lineWidth = 1;
-    for (const ed of gr.edges) {
-      const lit = litE(ed);
-      ctx.globalAlpha = lit ? 1 : 0.12;
-      ctx.strokeStyle = hov >= 0 && lit ? "#f9e2af" : "#45475a";
-      ctx.beginPath(); ctx.moveTo(N[ed[0]].x, N[ed[0]].y);
-      ctx.lineTo(N[ed[1]].x, N[ed[1]].y); ctx.stroke();
-    }
+    const edgePass = (lit, col, a) => {
+      ctx.globalAlpha = a; ctx.strokeStyle = col; ctx.beginPath();
+      let any = false;
+      for (const ed of gr.edges) {
+        if (litE(ed) !== lit) continue;
+        ctx.moveTo(N[ed[0]].x, N[ed[0]].y); ctx.lineTo(N[ed[1]].x, N[ed[1]].y); any = true;
+      }
+      if (any) ctx.stroke();
+    };
+    if (hov >= 0) { edgePass(false, "#45475a", 0.12); edgePass(true, "#f9e2af", 1); }
+    else edgePass(true, "#45475a", 1);
     ctx.textAlign = "center"; ctx.font = "12px sans-serif";
     const cn = cfg.center();          // M8: center node larger + accent (R7.1)
+    const groups = new Map();         // key -> { col, a, res, r, idx: [] }
     for (let i = 0; i < N.length; i++) {
-      const p = N[i];
-      const isC = cn !== null && p.n === cn;
-      ctx.globalAlpha = litN(i) ? (p.resolved ? 1 : 0.55) : 0.12;
+      const p = N[i], isC = cn !== null && p.n === cn;
+      const a = litN(i) ? (p.resolved ? 1 : 0.55) : 0.12;
       const col = i === hov ? "#f9e2af" : isC ? "#a6e3a1" : "#89b4fa";
-      ctx.beginPath(); ctx.arc(p.x, p.y, isC ? 10 : 6, 0, 7);
-      if (p.resolved) { ctx.fillStyle = col; ctx.fill(); }
-      else { ctx.lineWidth = 1.5; ctx.strokeStyle = col; ctx.stroke(); ctx.lineWidth = 1; } // hollow = unresolved
-      if (view.scale >= 0.5) { ctx.fillStyle = col; ctx.fillText(p.n, p.x, p.y - (isC ? 14 : 10)); }
+      const key = col + a + (p.resolved ? "r" : "u") + (isC ? "c" : "");
+      let gp = groups.get(key);
+      if (!gp) groups.set(key, gp = { col, a, res: p.resolved, r: isC ? 10 : 6, idx: [] });
+      gp.idx.push(i);
+    }
+    const labels = view.scale >= 0.5;
+    for (const gp of groups.values()) {
+      ctx.globalAlpha = gp.a; ctx.beginPath();
+      for (const i of gp.idx) { const p = N[i]; ctx.moveTo(p.x + gp.r, p.y); ctx.arc(p.x, p.y, gp.r, 0, 7); }
+      if (gp.res) { ctx.fillStyle = gp.col; ctx.fill(); }
+      else { ctx.lineWidth = 1.5; ctx.strokeStyle = gp.col; ctx.stroke(); ctx.lineWidth = 1; } // hollow = unresolved
+      if (labels) { ctx.fillStyle = gp.col; for (const i of gp.idx) { const p = N[i]; ctx.fillText(p.n, p.x, p.y - (gp.r === 10 ? 14 : 10)); } }
     }
     ctx.globalAlpha = 1;
-    if (steps) perf.push("graph_frame", perf.now() - fT0, { nodes: N.length, steps });
-    else if (settled) perf.flush();
+  }
+  let firstFrame = true, running = false, dirty = true;
+  const gen = ++simGen; g.simGen = gen;   // a newer startGraph on this canvas retires this sim
+  function step() {
+    if (g.simGen !== gen) return;
+    const now = performance.now();
+    if (firstFrame) {
+      firstFrame = false;
+      if (g.perfT0) { perf.mark("graph_open", g.perfT0, { nodes: N.length, edges: gr.edges.length }); g.perfT0 = null; }
+    }
+    const fT0 = perf.now(); let steps = 0, ke = -1;
+    phAcc = Math.min(phAcc + (now - phLast) / 1000, 0.25); phLast = now;
+    while (phAcc >= 1 / 60) {
+      phAcc -= 1 / 60;
+      if (!quiet && alpha > 0.02) { physStep(); steps++; }
+    }
+    const fT1 = perf.now();
+    if (!quiet && (steps || alpha <= 0.02)) {
+      ke = kinetic();
+      calm = ke < 0.0025 * N.length ? calm + 1 : 0;
+      if (calm >= 10 || alpha <= 0.02) {
+        quiet = true;
+        if (!settledMark) {
+          settledMark = true;
+          perf.mark("graph_settle", openT0, { nodes: N.length, ke: +ke.toFixed(3), alpha: +alpha.toFixed(3) });
+        }
+      }
+    }
+    if (steps || dirty) { draw(); dirty = false; }
+    if (steps) perf.push("graph_frame", perf.now() - fT0, { nodes: N.length, steps, phys: +(fT1 - fT0).toFixed(1), ke: +ke.toFixed(2), alpha: +alpha.toFixed(3) });
+    if (quiet) { running = false; perf.flush(); return; }   // settled: loop ends, CPU -> 0
     g.sim = requestAnimationFrame(step);
   }
-  step();
+  const wake = () => {                  // (re)start the loop; a stopped loop draws once and exits
+    if (running) return;
+    running = true; phLast = performance.now(); phAcc = 0;
+    g.sim = requestAnimationFrame(step);
+  };
+  const redraw = () => { dirty = true; wake(); };
+  g.reheat = () => { calm = 0; quiet = false; alpha = Math.max(alpha, 0.5); wake(); };
+  running = true; step();
+  // canvas resized (pane split / window): keep the bitmap crisp, redraw (world unchanged)
+  if (g.ro) g.ro.disconnect();
+  if (window.ResizeObserver) {
+    const ro = g.ro = new ResizeObserver(() => {
+      if (cv.hidden || !g.graphOn || g.simGen !== gen) { ro.disconnect(); return; }
+      if (cv.width === cv.clientWidth && cv.height === cv.clientHeight) return;
+      cv.width = cv.clientWidth; cv.height = cv.clientHeight; redraw();
+    });
+    ro.observe(cv);
+  }
   // wheel: cursor-anchored zoom, 0.2x-5x
   cv.onwheel = e => {
     e.preventDefault();
@@ -1728,6 +1815,7 @@ async function startGraph(g, cfg) {
     const [wx, wy] = toWorld(mx, my);
     const s = Math.max(0.2, Math.min(5, view.scale * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
     view.tx = mx - wx * s; view.ty = my - wy * s; view.scale = s;
+    redraw();
   };
   // drag anywhere pans (incl. on nodes — simpler); click w/o movement navigates
   let drag = null, moved = false;
@@ -1740,15 +1828,17 @@ async function startGraph(g, cfg) {
         moved = true;
         view.tx += dx; view.ty += dy;
         drag = { x: e.clientX, y: e.clientY };
+        redraw();
       }
       return;
     }
     const [x, y] = toWorld(e.clientX - r.left, e.clientY - r.top);
-    hov = hitTest(x, y);
+    const h = hitTest(x, y);
+    if (h !== hov) { hov = h; redraw(); }
     cv.style.cursor = hov >= 0 ? "pointer" : "";
   };
   cv.onmouseup = () => { drag = null; };
-  cv.onmouseleave = () => { drag = null; hov = -1; cv.style.cursor = ""; };
+  cv.onmouseleave = () => { drag = null; if (hov >= 0) { hov = -1; redraw(); } cv.style.cursor = ""; };
   cv.onclick = async e => {
     if (moved) { moved = false; return; }               // was a pan, not a click
     const r = cv.getBoundingClientRect();
@@ -1765,20 +1855,24 @@ async function startGraph(g, cfg) {
 }
 
 /* ---------- M8 local graph (R7.1-R7.5) ---------- */
-// BFS neighborhood of `center` over the full edge set; frontier expands via
-// outgoing edges when `out`, incoming when `inc`; keeps ALL edges among the
-// surviving node set (Obsidian's neighbor-links default), remaps indices
+// BFS neighborhood of `center`: adjacency (out + in lists) is built once per
+// fetch in O(E), then the frontier expands in O(V+E) — via outgoing edges when
+// `out`, incoming when `inc` (was: full edge-list scan per frontier node per
+// depth); keeps ALL edges among the surviving node set (Obsidian's
+// neighbor-links default), remaps indices
 function lgFilter(gr, center, depth, inc, out) {
   const idx = new Map(gr.nodes.map((nd, i) => [nd.name, i]));
   const ci = idx.get(center);
   if (ci == null) return { nodes: [], edges: [] };
+  const fwd = gr.nodes.map(() => []), rev = gr.nodes.map(() => []);
+  for (const [a, b] of gr.edges) { fwd[a].push(b); rev[b].push(a); }
   const keep = new Set([ci]);
   let frontier = [ci];
   for (let d = 0; d < depth && frontier.length; d++) {
     const next = [];
-    for (const [a, b] of gr.edges) for (const f of frontier) {
-      if (out && a === f && !keep.has(b)) { keep.add(b); next.push(b); }
-      if (inc && b === f && !keep.has(a)) { keep.add(a); next.push(a); }
+    for (const f of frontier) {
+      if (out) for (const b of fwd[f]) if (!keep.has(b)) { keep.add(b); next.push(b); }
+      if (inc) for (const a of rev[f]) if (!keep.has(a)) { keep.add(a); next.push(a); }
     }
     frontier = next;
   }
