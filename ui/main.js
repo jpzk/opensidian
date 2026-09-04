@@ -709,7 +709,7 @@ async function switchTab(g, i) {
   perf.mark("tab_switch", t0, { note: curOf(g), kind: g.tabs[i].kind || "note" });
 }
 
-async function openInTab(name) {   // explorer click -> FOCUSED group (R6.3)
+async function openInTab(name, via = "tab") {   // explorer click -> FOCUSED group (R6.3); via:"boot" = auto-open at startup (already inside the boot span)
   const g = fg();
   const t0 = perf.now();
   await flushSave(g);
@@ -717,7 +717,7 @@ async function openInTab(name) {   // explorer click -> FOCUSED group (R6.3)
   if (i >= 0) g.active = i;
   else { g.tabs.push(mkTab(name)); g.active = g.tabs.length - 1; }
   await loadActive(g);
-  perf.mark("note_open", t0, { note: name, mode: g.tabs[g.active].mode, via: "tab" });
+  perf.mark("note_open", t0, { note: name, mode: g.tabs[g.active].mode, via });
 }
 
 async function navigate(g, name) { // wikilink / graph click: replace g's ACTIVE tab, push history
@@ -1790,7 +1790,7 @@ async function enterVault() {
   await refreshTree();
   await refreshBm();                 // R9.4: menu label needs the cache early
   const names = await inv("list_notes");
-  if (names.length) await openInTab(names[0]);
+  if (names.length) await openInTab(names[0], "boot");
   else renderTabs(g);
   perf.mark("boot", 0, { notes: names.length });   // perf: page start -> vault ready (first note rendered)
 }
