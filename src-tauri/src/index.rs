@@ -13,6 +13,9 @@ pub struct NoteMeta {
     /// raw [[link]] texts in source order (aliases/anchors NOT stripped —
     /// same tokens links_in has always produced; resolve() gets them raw)
     pub links: Vec<String>,
+    /// tags: unique, sorted. inline #tag tokens outside code/URLs plus
+    /// frontmatter `tags:` (YAML list or comma string), no leading '#'
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -23,6 +26,142 @@ pub struct Index {
     backlinks: HashMap<String, Vec<String>>,
     /// sorted keys, cached: render_md/resolve want a &[String]
     names: Vec<String>,
+}
+
+/// tag char set (Obsidian): unicode letters/digits, '-', '_', '/'
+fn is_tag_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '-' || c == '_' || c == '/'
+}
+
+/// a tag token must start with a letter or '_' (so #1 / #123 are not tags);
+/// trailing '/' is trimmed. Returns the cleaned tag or None.
+fn clean_tag(t: &str) -> Option<&str> {
+    let t = t.trim_end_matches('/');
+    let first = t.chars().next()?;
+    if !(first.is_alphabetic() || first == '_') || !t.chars().all(is_tag_char) {
+        return None;
+    }
+    Some(t)
+}
+
+/// inline #tag spans in plain text: '#' at start or after whitespace, then a
+/// tag token. `https://x/y#frag` has 'y' before '#', so URL fragments never
+/// match; `# Heading` has a space after '#'. Yields (byte start, byte end),
+/// end excludes any trimmed trailing '/'.
+pub fn tag_spans(s: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut prev_ws = true;
+    let mut i = 0;
+    while i < s.len() {
+        let c = s[i..].chars().next().unwrap();
+        if c == '#' && prev_ws {
+            let body = &s[i + 1..];
+            let n: usize = body.chars().take_while(|&c| is_tag_char(c)).map(char::len_utf8).sum();
+            if let Some(t) = clean_tag(&body[..n]) {
+                out.push((i, i + 1 + t.len()));
+                i += 1 + n;
+                prev_ws = false;
+                continue;
+            }
+        }
+        prev_ws = c.is_whitespace();
+        i += c.len_utf8();
+    }
+    out
+}
+
+/// frontmatter block: content starting with a `---` line up to the next
+/// `---`/`...` line. Returns (yaml lines, byte offset of the body).
+fn frontmatter(s: &str) -> Option<(Vec<&str>, usize)> {
+    let mut lines = s.split_inclusive('\n');
+    let first = lines.next()?;
+    if first.trim_end() != "---" {
+        return None;
+    }
+    let mut off = first.len();
+    let mut yaml = Vec::new();
+    for l in lines {
+        off += l.len();
+        let t = l.trim_end();
+        if t == "---" || t == "..." {
+            return Some((yaml, off));
+        }
+        yaml.push(t);
+    }
+    None
+}
+
+/// frontmatter `tags:`/`tag:` -> cleaned tags. Accepts `tags: a, b`,
+/// `tags: [a, "b"]`, `tags: #a #b`, and the block-list form (`- a` lines).
+fn frontmatter_tags(yaml: &[&str], out: &mut Vec<String>) {
+    let mut push = |raw: &str| {
+        let t = raw.trim().trim_matches(|c| c == '"' || c == '\'').trim_start_matches('#');
+        if let Some(t) = clean_tag(t) {
+            out.push(t.to_string());
+        }
+    };
+    let mut i = 0;
+    while i < yaml.len() {
+        let l = yaml[i];
+        i += 1;
+        let Some(rest) = l.strip_prefix("tags:").or_else(|| l.strip_prefix("tag:")) else { continue };
+        let rest = rest.trim().trim_start_matches('[').trim_end_matches(']');
+        if !rest.is_empty() {
+            rest.split(|c: char| c == ',' || c.is_whitespace()).for_each(&mut push);
+            continue;
+        }
+        // block list: following `- item` lines (indent allowed)
+        while i < yaml.len() {
+            let Some(item) = yaml[i].trim_start().strip_prefix("- ") else { break };
+            push(item);
+            i += 1;
+        }
+    }
+}
+
+/// every tag of a note: frontmatter + inline (fenced ``` / ~~~ blocks and
+/// `inline code` spans skipped), deduped + sorted
+pub fn tags_in(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let body = match frontmatter(s) {
+        Some((yaml, off)) => {
+            frontmatter_tags(&yaml, &mut out);
+            &s[off..]
+        }
+        None => s,
+    };
+    let mut fence: Option<&str> = None;
+    for l in body.lines() {
+        let t = l.trim_start();
+        if let Some(f) = fence {
+            if t.starts_with(f) {
+                fence = None;
+            }
+            continue;
+        }
+        if t.starts_with("```") || t.starts_with("~~~") {
+            fence = Some(&t[..3]);
+            continue;
+        }
+        // odd segments between backticks are code spans (unbalanced tick:
+        // the tail counts as code, like a stray ` would in most renderers)
+        for (k, seg) in l.split('`').enumerate() {
+            if k % 2 == 1 {
+                continue;
+            }
+            for (a, b) in tag_spans(seg) {
+                out.push(seg[a + 1..b].to_string());
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// content -> NoteMeta (links + tags parsed once)
+pub fn parse(c: String) -> NoteMeta {
+    NoteMeta { links: links_in(&c), tags: tags_in(&c), content: c }
 }
 
 pub fn links_in(s: &str) -> Vec<String> {
@@ -88,7 +227,7 @@ impl Index {
         for n in notes_of(root) {
             let c = fs::read_to_string(format!("{}.md", root.join(&n).display()))
                 .unwrap_or_default();
-            ix.notes.insert(n, NoteMeta { links: links_in(&c), content: c });
+            ix.notes.insert(n, parse(c));
         }
         ix.refresh_names();
         ix.rebuild_backlinks();
@@ -112,9 +251,26 @@ impl Index {
         self.notes.get(name).map(|m| m.links.as_slice()).unwrap_or(&[])
     }
 
-    /// (name, content) in sorted order — search's document stream
-    pub fn docs(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.notes.iter().map(|(n, m)| (n.as_str(), m.content.as_str()))
+    /// tags of one note, sorted + unique (no leading '#')
+    pub fn tags(&self, name: &str) -> &[String] {
+        self.notes.get(name).map(|m| m.tags.as_slice()).unwrap_or(&[])
+    }
+
+    /// tag -> number of notes carrying it (exact tag; nested tags count on
+    /// their own key, so a/b does not bump a). O(notes) from memory.
+    pub fn tag_counts(&self) -> BTreeMap<String, usize> {
+        let mut out = BTreeMap::new();
+        for m in self.notes.values() {
+            for t in &m.tags {
+                *out.entry(t.clone()).or_insert(0) += 1;
+            }
+        }
+        out
+    }
+
+    /// (name, content, tags) in sorted order — search's document stream
+    pub fn docs(&self) -> impl Iterator<Item = (&str, &str, &[String])> {
+        self.notes.iter().map(|(n, m)| (n.as_str(), m.content.as_str(), m.tags.as_slice()))
     }
 
     /// (name, links) in sorted order — graph's edge stream
@@ -179,6 +335,7 @@ impl Index {
         match self.notes.get_mut(name) {
             Some(m) => {
                 m.content = content.to_string();
+                m.tags = tags_in(content);
                 if m.links == links {
                     // plain save, link set unchanged (the common case): no
                     // edge work at all
@@ -193,7 +350,7 @@ impl Index {
                 }
             }
             None => {
-                self.notes.insert(name.to_string(), NoteMeta { content: content.to_string(), links });
+                self.notes.insert(name.to_string(), parse(content.to_string()));
                 self.refresh_names();
                 self.rebuild_backlinks();
             }
@@ -209,7 +366,7 @@ impl Index {
         let meta = self
             .notes
             .remove(old)
-            .or_else(|| fallback.map(|c| NoteMeta { links: links_in(&c), content: c }))
+            .or_else(|| fallback.map(parse))
             .unwrap_or_default();
         self.notes.insert(new.to_string(), meta);
         self.refresh_names();

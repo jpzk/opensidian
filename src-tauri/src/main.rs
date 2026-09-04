@@ -6,9 +6,10 @@ use std::sync::Mutex;
 use tauri::State;
 
 mod index;
+mod outline;
 mod perf;
 mod sandbox;
-use index::{links_in, resolve, Index};
+use index::{links_in, resolve, tag_spans, Index};
 
 /* perf-index: root + in-memory Index (src/index.rs). The index replaces the
    perf-lp NoteCache: names, contents, links and backlink edges live in RAM,
@@ -326,7 +327,7 @@ fn linkify(buf: &str, notes: &[String], evs: &mut Vec<Event>) {
     while let Some(i) = rest.find("[[") {
         let Some(j) = rest[i + 2..].find("]]") else { break };
         let l = &rest[i + 2..i + 2 + j];
-        evs.push(Event::Text(rest[..i].to_string().into()));
+        tagify(&rest[..i], evs);
         let cls = if resolve(notes, l).is_some() {
             "wiki"
         } else {
@@ -343,7 +344,23 @@ fn linkify(buf: &str, notes: &[String], evs: &mut Vec<Event>) {
         rest = &rest[i + 2 + j + 2..];
     }
     if !rest.is_empty() {
-        evs.push(Event::Text(rest.to_string().into()));
+        tagify(rest, evs);
+    }
+}
+
+/// tags: inline #tag -> pill anchor (label + data-tag escaped like wikilinks).
+/// Only ever fed text between wikilinks, never code (linkify's callers skip
+/// code blocks/spans + frontmatter), so `#tag` in code stays literal.
+fn tagify(buf: &str, evs: &mut Vec<Event>) {
+    let mut at = 0;
+    for (a, b) in tag_spans(buf) {
+        evs.push(Event::Text(buf[at..a].to_string().into()));
+        let t = esc(&buf[a + 1..b]);
+        evs.push(Event::Html(format!("<a href=\"#\" class=\"tag\" data-tag=\"{t}\">#{t}</a>").into()));
+        at = b;
+    }
+    if at < buf.len() {
+        evs.push(Event::Text(buf[at..].to_string().into()));
     }
 }
 
@@ -375,8 +392,8 @@ fn render_md(content: &str, notes: &[String]) -> String {
                     buf.clear();
                 }
                 match other {
-                    Event::Start(Tag::CodeBlock(_)) => in_code = true,
-                    Event::End(TagEnd::CodeBlock) => in_code = false,
+                    Event::Start(Tag::CodeBlock(_) | Tag::MetadataBlock(_)) => in_code = true,
+                    Event::End(TagEnd::CodeBlock | TagEnd::MetadataBlock(_)) => in_code = false,
                     _ => {}
                 }
                 evs.push(other);
@@ -410,6 +427,18 @@ fn render_blocks(v: State<Vault>, blocks: Vec<String>) -> Vec<String> {
     span_timed!("render_blocks", render_blocks_with(&blocks, v.index.lock().unwrap().names()), serde_json::json!({"blocks": n}))
 }
 
+/// tags: per-note tag list and vault-wide tag -> note count (BTreeMap keeps
+/// the JSON object sorted by tag; the UI re-sorts by count)
+#[tauri::command]
+fn tags(v: State<Vault>, name: String) -> Vec<String> {
+    v.index.lock().unwrap().tags(&name).to_vec()
+}
+
+#[tauri::command]
+fn tag_counts(v: State<Vault>) -> std::collections::BTreeMap<String, usize> {
+    v.index.lock().unwrap().tag_counts()
+}
+
 #[tauri::command]
 fn backlinks(v: State<Vault>, name: String) -> Vec<String> {
     span_timed!("backlinks", backlinks_inner(&v, &name))
@@ -419,6 +448,75 @@ fn backlinks_inner(v: &State<Vault>, name: &str) -> Vec<String> {
     // perf-index: inverted edges are maintained in the index — O(1) lookup,
     // no vault read (was: re-read every note per call, 89ms @500 files)
     v.index.lock().unwrap().backlinks(name)
+}
+
+/* rsidebar: right sidebar panes served from the index (zero disk reads) */
+#[tauri::command]
+fn outline(v: State<Vault>, name: String) -> Vec<outline::Heading> {
+    span_timed!("outline", outline::parse(v.index.lock().unwrap().content(&name).unwrap_or("")))
+}
+
+#[derive(serde::Serialize)]
+struct OutLink {
+    text: String,
+    /// resolved note name, None = unresolved (ghost)
+    target: Option<String>,
+}
+
+/// Outgoing links pane: the note's [[links]] in source order, deduped
+#[tauri::command]
+fn outgoing(v: State<Vault>, name: String) -> Vec<OutLink> {
+    let ix = v.index.lock().unwrap();
+    let names = ix.names();
+    let mut out: Vec<OutLink> = Vec::new();
+    for l in ix.links(&name) {
+        if out.iter().any(|o| o.text == *l) {
+            continue;
+        }
+        out.push(OutLink { text: l.clone(), target: resolve(names, l).map(|j| names[j].clone()) });
+    }
+    out
+}
+
+#[derive(serde::Serialize)]
+struct BacklinkCtx {
+    note: String,
+    /// (0-based line, trimmed line text) for every line linking to the note
+    lines: Vec<(u32, String)>,
+}
+
+/// Backlinks pane: linking notes + the lines that carry the link
+#[tauri::command]
+fn backlinks_ctx(v: State<Vault>, name: String) -> Vec<BacklinkCtx> {
+    let ix = v.index.lock().unwrap();
+    let names = ix.names();
+    ix.backlinks(&name)
+        .into_iter()
+        .map(|src| {
+            let lines = ix
+                .content(&src)
+                .unwrap_or("")
+                .lines()
+                .enumerate()
+                .filter(|(_, l)| links_in(l).iter().any(|k| resolve(names, k) == resolve(names, &name)))
+                .map(|(i, l)| (i as u32, l.trim().chars().take(200).collect()))
+                .collect();
+            BacklinkCtx { note: src, lines }
+        })
+        .collect()
+}
+
+/// active right-sidebar tab, persisted as rside_tab in ~/.rustidian.json
+#[tauri::command]
+fn get_rside_tab() -> Option<String> {
+    cfg_value()["rside_tab"].as_str().map(str::to_string)
+}
+
+#[tauri::command]
+fn set_rside_tab(tab: String) {
+    let mut v = cfg_value();
+    v["rside_tab"] = serde_json::json!(tab);
+    let _ = fs::write(cfg_path(), v.to_string());
 }
 
 #[derive(serde::Serialize)]
@@ -482,13 +580,62 @@ struct SearchHit {
 /// R9.4: case-insensitive substring over note names + bodies. Hits ordered by
 /// note (docs arrive sorted) then line; snippet = the matching line trimmed to
 /// ~200 chars around the first hit; capped at 500 hits total.
-fn search_docs<'a>(docs: impl IntoIterator<Item = (&'a str, &'a str)>, query: &str) -> Vec<SearchHit> {
-    let q = query.to_lowercase();
+/// query grammar: whitespace tokens; `tag:foo` / `tag:#foo` tokens restrict
+/// hits to notes carrying that tag (nested match by prefix: tag:a hits a/b;
+/// case-insensitive); the remaining tokens are the substring query. A
+/// tag-only query yields the lines holding the #tag, else one name hit.
+fn split_query(query: &str) -> (Vec<String>, String) {
+    let (mut tags, mut text) = (Vec::new(), Vec::new());
+    for tok in query.split_whitespace() {
+        match tok.strip_prefix("tag:") {
+            Some(t) => {
+                let t = t.trim_start_matches('#').trim_end_matches('/').to_lowercase();
+                if !t.is_empty() {
+                    tags.push(t);
+                }
+            }
+            None => text.push(tok),
+        }
+    }
+    (tags, text.join(" "))
+}
+
+fn has_tag(tags: &[String], want: &str) -> bool {
+    tags.iter().any(|t| {
+        let t = t.to_lowercase();
+        t == want || (t.starts_with(want) && t[want.len()..].starts_with('/'))
+    })
+}
+
+fn search_docs<'a>(docs: impl IntoIterator<Item = (&'a str, &'a str, &'a [String])>, query: &str) -> Vec<SearchHit> {
+    let (want, text) = split_query(query);
+    let q = text.to_lowercase();
     let mut out = Vec::new();
-    if q.is_empty() {
+    if q.is_empty() && want.is_empty() {
         return out;
     }
-    'docs: for (name, content) in docs {
+    'docs: for (name, content, tags) in docs {
+        if !want.iter().all(|w| has_tag(tags, w)) {
+            continue;
+        }
+        if q.is_empty() {
+            // tag-only: show the lines carrying the tag inline (frontmatter-
+            // only notes get a name hit so they still show up)
+            let n0 = out.len();
+            for (i, l) in content.lines().enumerate() {
+                let lower = l.to_lowercase();
+                if tag_spans(&lower).iter().any(|&(a, b)| want.iter().any(|w| has_tag(&[lower[a + 1..b].to_string()], w))) {
+                    out.push(SearchHit { note: name.to_string(), line: i as u32, snippet: l.trim().chars().take(200).collect() });
+                }
+            }
+            if out.len() == n0 {
+                out.push(SearchHit { note: name.to_string(), line: 0, snippet: name.to_string() });
+            }
+            if out.len() >= 500 {
+                break;
+            }
+            continue;
+        }
         if name.to_lowercase().contains(&q) {
             out.push(SearchHit { note: name.to_string(), line: 0, snippet: name.to_string() });
         }
@@ -586,8 +733,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_notes, read_note, write_note, render, render_blocks, graph, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, recent_vaults, rename_note,
-            get_sidebar_w, set_sidebar_w, log_span, log_spans
+            list_bookmarks, toggle_bookmark, recent_vaults, rename_note, tags, tag_counts,
+            get_sidebar_w, set_sidebar_w, log_span, log_spans,
+            outline, outgoing, backlinks_ctx, get_rside_tab, set_rside_tab
         ])
         .run(tauri::generate_context!())
         .expect("tauri run");
@@ -597,8 +745,10 @@ fn main() {
 mod tests {
     use super::*;
 
-    fn docs_ref(d: &[(String, String)]) -> Vec<(&str, &str)> {
-        d.iter().map(|(n, c)| (n.as_str(), c.as_str())).collect()
+    /// (name, content) docs -> the (name, content, tags) stream search wants;
+    /// tags empty here — tag queries are tested through a real Index
+    fn docs_ref(d: &[(String, String)]) -> Vec<(&str, &str, &[String])> {
+        d.iter().map(|(n, c)| (n.as_str(), c.as_str(), &[][..])).collect()
     }
 
     /// graph from (name, content) docs — what the index feeds build_graph
@@ -781,6 +931,100 @@ mod tests {
         // wikilinks inside code blocks are NOT linkified
         let h = render_md("```\n[[Ideas]]\n```", &["Ideas".to_string()]);
         assert!(!h.contains("class=\"wiki\""));
+    }
+
+    #[test]
+    fn render_tags_become_pills() {
+        let h = render_md("see #alpha and #beta/gamma here", &[]);
+        assert!(h.contains(r##"<a href="#" class="tag" data-tag="alpha">#alpha</a>"##), "{h}");
+        assert!(h.contains(r##"<a href="#" class="tag" data-tag="beta/gamma">#beta/gamma</a>"##), "{h}");
+        // tag next to a wikilink: both anchors, text between preserved
+        let h = render_md("[[Ideas]] #x", &["Ideas".to_string()]);
+        assert!(h.contains("class=\"wiki\"") && h.contains("data-tag=\"x\""), "{h}");
+        // never inside fenced blocks, code spans or frontmatter
+        let h = render_md("```\n#code\n```\n`#span`\n\n---\ntags: [fm]\n---\n", &[]);
+        assert!(!h.contains("class=\"tag\""), "{h}");
+        let h = render_md("---\ntags: #fm\n---\nbody", &[]);
+        assert!(!h.contains("class=\"tag\""), "{h}");
+        // URL fragments and headings are not tags
+        let h = render_md("https://x/y#frag and <https://x/y#frag>\n\n# Heading", &[]);
+        assert!(!h.contains("class=\"tag\""), "{h}");
+        // no raw html leak via tags: '#' followed by '<' is not a tag, and
+        // the '<img>' is escaped by push_html like any text
+        let h = render_md("#<img src=x onerror=alert(1)> #a<img>", &[]);
+        assert!(!h.contains("<img"), "raw html leaked: {h}");
+        assert!(h.contains("data-tag=\"a\">#a</a>&lt;img&gt;"), "{h}");
+    }
+
+    #[test]
+    fn tags_extraction_edge_cases() {
+        use index::tags_in;
+        assert_eq!(tags_in("plain #alpha text"), ["alpha"]);
+        assert_eq!(tags_in("#nested/tag and #nested/tag again"), ["nested/tag"]);
+        assert_eq!(tags_in("#a #b\n#a"), ["a", "b"]);
+        assert_eq!(tags_in("#_under #dash-ed #digits2 #ünï"), ["_under", "dash-ed", "digits2", "ünï"]);
+        // must start with a letter or '_'; punctuation/headings/bare '#'
+        assert!(tags_in("#1 #123 # Heading\n# H1\n## H2 #").is_empty());
+        // trailing '/' trimmed, trailing punctuation not part of the tag
+        assert_eq!(tags_in("#a/ (#b), #c."), ["a", "c"]);
+        // fenced code (both fences) and inline code spans
+        assert_eq!(tags_in("```\n#no\n```\n#yes\n~~~\n#no2\n~~~\n  ```rust\n  #no3\n  ```\n"), ["yes"]);
+        assert_eq!(tags_in("`#no` #yes `x #no2 y`"), ["yes"]);
+        // URL fragments / mid-word '#' / wikilink anchors
+        assert!(tags_in("https://x/y#frag foo#bar [[Note#head]] [[#head]]").is_empty());
+        // frontmatter: YAML list, comma string, inline list, block list, tag: key
+        assert_eq!(tags_in("---\ntags: [one, \"two\", '#three']\n---\n"), ["one", "three", "two"]);
+        assert_eq!(tags_in("---\ntags: one, two/sub\n---\nbody"), ["one", "two/sub"]);
+        assert_eq!(tags_in("---\ntitle: x\ntags:\n  - one\n  - two\nother: y\n---\n#body"), ["body", "one", "two"]);
+        assert_eq!(tags_in("---\ntag: solo\n---\n"), ["solo"]);
+        // frontmatter must open on line 1 and close; unclosed = plain body
+        assert!(tags_in("text\n---\ntags: [x]\n---\n").is_empty());
+        assert!(tags_in("---\ntags: [x]\n").is_empty());
+    }
+
+    #[test]
+    fn index_tags_counts_search_and_sync() {
+        let root = tmp_vault("ixt");
+        fs::write(root.join("A.md"), "---\ntags: [fm, shared]\n---\n#alpha #beta/gamma").unwrap();
+        fs::write(root.join("B.md"), "#shared and #beta/delta").unwrap();
+        fs::write(root.join("sub/C.md"), "no tags").unwrap();
+        let mut ix = Index::build(&root);
+        assert_eq!(ix.tags("A"), ["alpha", "beta/gamma", "fm", "shared"]);
+        assert_eq!(ix.tags("B"), ["beta/delta", "shared"]);
+        assert!(ix.tags("sub/C").is_empty() && ix.tags("Nope").is_empty());
+        let tc = ix.tag_counts();
+        let got: Vec<(&str, usize)> = tc.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+        assert_eq!(got, [("alpha", 1), ("beta/delta", 1), ("beta/gamma", 1), ("fm", 1), ("shared", 2)]);
+        // search: tag: filter, with/without '#', case-insensitive, nested prefix
+        let notes = |ix: &Index, q: &str| {
+            let mut v: Vec<String> = search_docs(ix.docs(), q).into_iter().map(|h| h.note).collect();
+            v.dedup();
+            v
+        };
+        assert_eq!(notes(&ix, "tag:shared"), ["A", "B"]);
+        assert_eq!(notes(&ix, "tag:#alpha"), ["A"]);
+        assert_eq!(notes(&ix, "tag:ALPHA"), ["A"]);
+        assert_eq!(notes(&ix, "tag:beta"), ["A", "B"]);          // prefix hits both nested tags
+        assert_eq!(notes(&ix, "tag:beta/gamma"), ["A"]);
+        assert!(notes(&ix, "tag:bet").is_empty());               // prefix is per segment
+        assert_eq!(notes(&ix, "tag:fm"), ["A"]);                 // frontmatter-only -> name hit
+        assert_eq!(notes(&ix, "tag:shared delta"), ["B"]);       // tag filter + text
+        let h = search_docs(ix.docs(), "tag:alpha");
+        assert_eq!((h[0].line, h[0].snippet.as_str()), (3, "#alpha #beta/gamma"));
+        // upsert keeps tags + counts in sync (existing key and new key)
+        ix.upsert("B", "#shared only");
+        assert_eq!(ix.tags("B"), ["shared"]);
+        assert!(!ix.tag_counts().contains_key("beta/delta"));
+        ix.upsert("D", "#fresh");
+        assert_eq!(ix.tag_counts()["fresh"], 1);
+        assert_eq!(notes(&ix, "tag:fresh"), ["D"]);
+        // rename moves the tags with the key
+        ix.rename("A", "sub/Z", None);
+        assert!(ix.tags("A").is_empty());
+        assert_eq!(ix.tags("sub/Z"), ["alpha", "beta/gamma", "fm", "shared"]);
+        assert_eq!(ix.tag_counts()["shared"], 2);
+        assert_eq!(notes(&ix, "tag:alpha"), ["sub/Z"]);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
