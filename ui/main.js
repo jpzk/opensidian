@@ -846,10 +846,15 @@ async function lpRender(g, activeL = -1, col = 0) {
   const seq = g.lpSeq = (g.lpSeq || 0) + 1;      // stale-render guard
   const src = g.editor.value, L = src.split("\n");
   const blocks = lpBlocks(src);
-  const htmls = await Promise.all(blocks.map(b =>
-    b.l0 <= activeL && activeL <= b.l1 ? null
-    : inv("render", { content: L.slice(b.l0, b.l1 + 1).join("\n") })));
+  // perf: ONE IPC round-trip for the whole pass (backend resolves the note
+  // list once) instead of ~150 per-block render IPC calls per caret move
+  const isRaw = b => b.l0 <= activeL && activeL <= b.l1;
+  const srcs = blocks.filter(b => !isRaw(b))
+    .map(b => L.slice(b.l0, b.l1 + 1).join("\n"));
+  const rendered = srcs.length ? await inv("render_blocks", { blocks: srcs }) : [];
   if (seq !== g.lpSeq) return;                   // a newer render superseded us
+  let ri = 0;
+  const htmls = blocks.map(b => isRaw(b) ? null : rendered[ri++]);
   const st = g.lp.scrollTop;
   g.lp.innerHTML = "";
   let focusTa = null;
