@@ -271,6 +271,19 @@ fn log_span(name: String, ms: f64, extra: serde_json::Value) -> bool {
     perf::enabled() // false lets the UI stop sending spans at all
 }
 
+/// perf-graph: batched variant for high-rate UI spans (one IPC per ~64 sim frames
+/// instead of one per frame, so the telemetry does not perturb what it measures)
+#[tauri::command]
+fn log_spans(spans: Vec<serde_json::Value>) -> bool {
+    for s in spans {
+        let name = s.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let ms = s.get("ms").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let extra = s.get("extra").cloned().unwrap_or(serde_json::Value::Null);
+        perf::span(&name, ms, extra);
+    }
+    perf::enabled()
+}
+
 #[tauri::command]
 fn home_dir() -> String {
     std::env::var("HOME").unwrap_or_else(|_| "/".into())
@@ -559,7 +572,7 @@ fn main() {
             list_notes, read_note, write_note, render, render_blocks, graph, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, recent_vaults, rename_note,
-            get_sidebar_w, set_sidebar_w, log_span
+            get_sidebar_w, set_sidebar_w, log_span, log_spans
         ])
         .run(tauri::generate_context!())
         .expect("tauri run");

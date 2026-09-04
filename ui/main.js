@@ -11,6 +11,20 @@ const perf = {
     const ms = performance.now() - t0;
     inv("log_span", { name, ms, extra }).then(en => { perf.on = !!en; }).catch(() => {});
   },
+  // perf-graph: high-rate spans (one per sim frame) are buffered and shipped
+  // in one log_spans IPC per 64 samples / on flush, so measuring ~60 frames/s
+  // does not itself cost 60 IPC round-trips a second
+  buf: [],
+  push(name, ms, extra = {}) {
+    if (perf.on === false) return;
+    perf.buf.push({ name, ms, extra });
+    if (perf.buf.length >= 64) perf.flush();
+  },
+  flush() {
+    if (!perf.buf.length) return;
+    const spans = perf.buf; perf.buf = [];
+    inv("log_spans", { spans }).then(en => { perf.on = !!en; }).catch(() => {});
+  },
 };
 const $ = id => document.getElementById(id);
 let vaultPath = null, pmode = null, bpath = null;
@@ -1554,6 +1568,7 @@ $("fname").onkeydown = async e => {
            onClick: async name -> void }        navigation target on node click */
 function showEditor(g) {
   g.graphOn = false; g.graphRefresh = null; cancelAnimationFrame(g.sim);
+  perf.flush();                    // ship buffered graph_frame samples of the closed sim
   g.graph.hidden = true;
   g.lggear.hidden = true; g.lgpop.hidden = true;
   applyMode(g);
@@ -1575,6 +1590,7 @@ async function cmdGlobalGraph() {  // R9.7: ribbon icon opens GLOBAL graph as a 
 }
 async function startGraph(g, cfg) {
   g.graphOn = true;
+  const openT0 = g.perfT0 || perf.now();   // perf: graph_settle = open -> kinetic energy below eps
   hideAc();
   g.status.hidden = true;
   g.editor.style.display = "none"; g.preview.style.display = "none";
@@ -1627,6 +1643,10 @@ async function startGraph(g, cfg) {
   // Physics steps are wall-clock-locked at 60/s (substepped inside rAF):
   // a throttled/headless rAF must not stretch the ~3.2s settle time.
   let alpha = 1, phAcc = 0, phLast = performance.now();
+  // perf: settled = total kinetic energy (sum v^2) under 0.0025 px^2/step per node
+  // (mean speed < 0.05 px/step, invisible) for 10 consecutive steps, or physics frozen
+  let settled = false, calm = 0;
+  const kinetic = () => { let k = 0; for (const p of N) k += p.vx * p.vx + p.vy * p.vy; return k; };
   function physStep() {
     for (const a of N) for (const b of N) {
       if (a === b) continue;
@@ -1654,10 +1674,19 @@ async function startGraph(g, cfg) {
       firstFrame = false;
       if (g.perfT0) { perf.mark("graph_open", g.perfT0, { nodes: N.length, edges: gr.edges.length }); g.perfT0 = null; }
     }
+    const fT0 = perf.now(); let steps = 0;
     phAcc = Math.min(phAcc + (now - phLast) / 1000, 0.25); phLast = now;
     while (phAcc >= 1 / 60) {
       phAcc -= 1 / 60;
-      if (alpha > 0.02) physStep();
+      if (alpha > 0.02) { physStep(); steps++; }
+    }
+    if (!settled && (steps || alpha <= 0.02)) {
+      const ke = kinetic();
+      calm = ke < 0.0025 * N.length ? calm + 1 : 0;
+      if (calm >= 10 || alpha <= 0.02) {
+        settled = true;
+        perf.mark("graph_settle", openT0, { nodes: N.length, ke: +ke.toFixed(3), alpha: +alpha.toFixed(3) });
+      }
     }
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, cv.width, cv.height);
@@ -1686,6 +1715,8 @@ async function startGraph(g, cfg) {
       if (view.scale >= 0.5) { ctx.fillStyle = col; ctx.fillText(p.n, p.x, p.y - (isC ? 14 : 10)); }
     }
     ctx.globalAlpha = 1;
+    if (steps) perf.push("graph_frame", perf.now() - fT0, { nodes: N.length, steps });
+    else if (settled) perf.flush();
     g.sim = requestAnimationFrame(step);
   }
   step();
