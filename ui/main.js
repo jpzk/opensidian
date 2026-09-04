@@ -1,4 +1,17 @@
 const inv = (c, a) => window.__TAURI__.core.invoke(c, a);
+/* perf-spans: UI spans land in the SAME RUSTIDIAN_PERF jsonl as the backend
+   via log_span. mark(name, t0, extra) is fire-and-forget; the first reply
+   tells us whether telemetry is on at all — when it is not, every later
+   mark() is a pure no-op (no IPC). */
+const perf = {
+  on: null,                                  // null = unknown yet
+  now: () => performance.now(),
+  mark(name, t0, extra = {}) {
+    if (perf.on === false) return;
+    const ms = performance.now() - t0;
+    inv("log_span", { name, ms, extra }).then(en => { perf.on = !!en; }).catch(() => {});
+  },
+};
 const $ = id => document.getElementById(id);
 let vaultPath = null, pmode = null, bpath = null;
 
@@ -126,7 +139,7 @@ function setPane(p) {
 /* R9.3 search pane: debounced rust search(query), grouped by note.
    census [sr:N] (total hits) while the search pane is showing a query. */
 let searchCount = -1;                       // -1 = no query -> no [sr:] flag
-let searchT = null, searchSeq = 0;
+let searchT = null, searchSeq = 0, searchT0 = -1;
 async function runSearch() {
   const q = $("sinput").value.trim();
   const seq = ++searchSeq;                  // stale-response guard
@@ -134,6 +147,7 @@ async function runSearch() {
   if (!q) {
     searchCount = -1; box.textContent = ""; updateTitle(); return;
   }
+  const st0 = searchT0 >= 0 ? searchT0 : perf.now(); searchT0 = -1;
   const hits = await inv("search", { query: q });
   if (seq !== searchSeq) return;
   searchCount = hits.length;
@@ -171,6 +185,7 @@ async function runSearch() {
     box.appendChild(row);
   }
   updateTitle();
+  perf.mark("search", st0, { q, hits: hits.length });
 }
 
 /* R9.4 bookmarks: tree-row context menu toggles; rust persists the plain
@@ -221,9 +236,11 @@ function noteMenu(e, nm) {                 // right-click a tree note row
 }
 
 async function writeNote(name, content) {   // every save funnels here so graphs live-update
+  const t0 = perf.now();
   await inv("write_note", { name, content });
   for (const g of groups()) if (g.graphOn && g.graphRefresh) await g.graphRefresh();
   if (rightOpen && rg && rg.graphRefresh) await rg.graphRefresh();  // R9.6 live too
+  perf.mark("save", t0, { note: name, bytes: content.length });
 }
 
 async function flushSave(g) {               // write g's pending edits NOW
@@ -685,21 +702,26 @@ async function lgFollow(src) {
 
 async function switchTab(g, i) {
   if (i === g.active) return;
+  const t0 = perf.now();
   await flushSave(g);
   g.active = i;
   await loadActive(g);
+  perf.mark("tab_switch", t0, { note: curOf(g), kind: g.tabs[i].kind || "note" });
 }
 
 async function openInTab(name) {   // explorer click -> FOCUSED group (R6.3)
   const g = fg();
+  const t0 = perf.now();
   await flushSave(g);
   const i = g.tabs.findIndex(x => x.name === name);
   if (i >= 0) g.active = i;
   else { g.tabs.push(mkTab(name)); g.active = g.tabs.length - 1; }
   await loadActive(g);
+  perf.mark("note_open", t0, { note: name, mode: g.tabs[g.active].mode, via: "tab" });
 }
 
 async function navigate(g, name) { // wikilink / graph click: replace g's ACTIVE tab, push history
+  const t0 = perf.now();
   await flushSave(g);
   if (g.active < 0) { g.tabs.push(mkTab(name)); g.active = 0; }
   else {
@@ -710,6 +732,7 @@ async function navigate(g, name) { // wikilink / graph click: replace g's ACTIVE
     tab.hpos++;
   }
   await loadActive(g);
+  perf.mark("note_open", t0, { note: name, mode: g.tabs[g.active].mode, via: "link" });
 }
 
 async function histGo(d) {         // per-tab back/forward in the focused group
@@ -930,6 +953,7 @@ async function lpRender(g, activeL = -1, col = 0) {
   if (focusTa) focusTa();
   lpMs = Math.round(performance.now() - lpT0);   // perf: census [lp:<ms>]
   updateTitle();                                 // republish [mode:lp:<l0>] census
+  perf.mark("lp_render", lpT0, { blocks: blocks.length, lines: L.length, active: activeL });
 }
 
 /* R8.3 click -> source column. caretRangeFromPoint gives the caret offset in
@@ -1409,6 +1433,7 @@ $("collapsebtn").onclick = cmdToggleSide;
 $("stab-search").onclick = () => setPane("search");
 $("stab-bm").onclick = () => setPane("bm");
 $("sinput").oninput = () => {              // debounce 150ms
+  if (searchT0 < 0) searchT0 = perf.now();  // perf: first keystroke of this query
   clearTimeout(searchT); searchT = setTimeout(runSearch, 150);
 };
 $("sclear").onclick = () => {
@@ -1445,6 +1470,7 @@ $("graphbtn").onclick = cmdGlobalGraph;
 async function cmdGlobalGraph() {  // R9.7: ribbon icon opens GLOBAL graph as a main tab
   if (!state) return;
   const g = fg();
+  g.perfT0 = perf.now();           // perf: graph_open = click -> first sim frame
   await flushSave(g);
   const i = g.tabs.findIndex(t => t.kind === "gg");
   if (i >= 0) g.active = i;        // one graph-view tab per group, refocus it
@@ -1529,8 +1555,13 @@ async function startGraph(g, cfg) {
     }
     alpha *= 0.98;
   }
+  let firstFrame = true;
   function step() {
     const now = performance.now();
+    if (firstFrame) {
+      firstFrame = false;
+      if (g.perfT0) { perf.mark("graph_open", g.perfT0, { nodes: N.length, edges: gr.edges.length }); g.perfT0 = null; }
+    }
     phAcc = Math.min(phAcc + (now - phLast) / 1000, 0.25); phLast = now;
     while (phAcc >= 1 / 60) {
       phAcc -= 1 / 60;
@@ -1761,6 +1792,7 @@ async function enterVault() {
   const names = await inv("list_notes");
   if (names.length) await openInTab(names[0]);
   else renderTabs(g);
+  perf.mark("boot", 0, { notes: names.length });   // perf: page start -> vault ready (first note rendered)
 }
 $("vswitch").onclick = showPicker;
 

@@ -358,8 +358,9 @@ fn create_vault(v: State<Vault>, parent: String, name: String) -> Result<String,
 
 /// perf-spans: frontend spans land in the same RUSTIDIAN_PERF jsonl as backend ones
 #[tauri::command]
-fn log_span(name: String, ms: f64, extra: serde_json::Value) {
+fn log_span(name: String, ms: f64, extra: serde_json::Value) -> bool {
     perf::span(&name, ms, extra);
+    perf::enabled() // false lets the UI stop sending spans at all
 }
 
 #[tauri::command]
