@@ -352,6 +352,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   let md = ft && !ft.kind ? " [mode:" + (MODE_ABBR[ft.mode] || "?") : "";
   if (md && ft.mode === "livepreview" && fg().lpActive) md += ":" + fg().lpActive.l0;
   if (md) md += "]";
+  if (lpMs >= 0) md += " [lp:" + lpMs + "]";     // perf: last lpRender ms
   const gg = ft && ft.kind === "gg" ? " [gg]" : "";  // R9.7: global graph tab focused
   const modal = modalKind ? " [modal:" + modalKind + "]"
     : ($("rnbox") && !$("rnbox").hidden ? " [modal:rn]" : "");  // m5 fuzzy modal / rename prompt
@@ -839,7 +840,9 @@ function lpCommit(g) {  // fold the active raw row back into the model
 
 // rebuild the lp pane; activeL >= 0 makes that line's block the raw row,
 // caret placed at (activeL, col)
+let lpMs = -1;                 // last completed lpRender duration (census probe)
 async function lpRender(g, activeL = -1, col = 0) {
+  const lpT0 = performance.now();
   const seq = g.lpSeq = (g.lpSeq || 0) + 1;      // stale-render guard
   const src = g.editor.value, L = src.split("\n");
   const blocks = lpBlocks(src);
@@ -920,6 +923,7 @@ async function lpRender(g, activeL = -1, col = 0) {
   });
   g.lp.scrollTop = st;
   if (focusTa) focusTa();
+  lpMs = Math.round(performance.now() - lpT0);   // perf: census [lp:<ms>]
   updateTitle();                                 // republish [mode:lp:<l0>] census
 }
 
