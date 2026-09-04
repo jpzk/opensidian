@@ -89,8 +89,14 @@ async function rgStart() {                 // (re)build canvas + sim at current 
     onClick: async n => { await navigate(fg(), n); },  // opens in focused group
   });
 }
+function rgStop() {
+  if (!rg) return;
+  cancelAnimationFrame(rg.sim); rg.graphRefresh = null; rg.graphOn = false;
+}
 async function rgFollow() {                // active note changed -> re-center
-  if (!rightOpen || !rg || !rg.graphRefresh) return;
+  if (!rightOpen) return;
+  rPanesRefresh();                         // rsidebar: list panes follow too
+  if (!rg || !rg.graphRefresh) return;
   const n = rgNote();
   if (!n || n === rgCenter) return;
   rgCenter = n;
@@ -102,11 +108,182 @@ async function cmdToggleRight() {
   rightOpen = !rightOpen;
   $("rside").hidden = $("rdiv").hidden = !rightOpen;
   $("rtoggle").title = rightOpen ? "Collapse right sidebar" : "Expand right sidebar";
-  if (rightOpen) await rgStart();
-  else if (rg) { cancelAnimationFrame(rg.sim); rg.graphRefresh = null; rg.graphOn = false; }
+  if (rightOpen) await setRTab(rTab, false);
+  else rgStop();
   updateTitle();
 }
 $("rtoggle").onclick = cmdToggleRight;
+
+/* rsidebar (R9.L1): icon strip Backlinks | Outgoing links | Outline | Local
+   graph. Active tab persisted as rside_tab in ~/.rustidian.json; census
+   [side:l1r1:<tab>]. All panes follow the focused group's active note
+   (rgFollow) and refresh 200ms after a save lands (rSchedule). */
+const RPANES = { bl: "rpane-bl", out: "rpane-out", toc: "rpane-toc", graph: "rpane-graph" };
+let rTab = "graph", rT = null, rpInfo = "";   // rpInfo -> census [rp:...]
+async function setRTab(t, persist = true) {
+  if (!RPANES[t]) t = "graph";
+  rTab = t;
+  for (const [k, id] of Object.entries(RPANES)) {
+    $(id).hidden = k !== t;
+    $("rtab-" + k).classList.toggle("active", k === t);
+  }
+  if (persist) inv("set_rside_tab", { tab: t }).catch(() => {});
+  if (!rightOpen) return;
+  if (t === "graph") await rgStart(); else rgStop();  // sim only while visible
+  await rPanesRefresh();
+  updateTitle();
+}
+for (const k of Object.keys(RPANES)) $("rtab-" + k).onclick = () => setRTab(k);
+function rSchedule() {                     // debounced refresh after edits
+  clearTimeout(rT);
+  rT = setTimeout(() => { rT = null; rPanesRefresh(); }, 200);
+}
+function rEmpty(box, msg) {
+  const d = document.createElement("div");
+  d.className = "rempty"; d.textContent = msg; box.appendChild(d);
+}
+const CHEV = '<svg viewBox="0 0 10 10" fill="currentColor"><path d="M3 1l4 4-4 4z"/></svg>';
+async function rPanesRefresh() {
+  if (!rightOpen) return;
+  const n = rgNote();
+  if (rTab === "bl") await rBacklinks(n);
+  else if (rTab === "out") await rOutgoing(n);
+  else if (rTab === "toc") await rOutline(n);
+  updateTitle();
+}
+// Backlinks: "Linked mentions N" + one expandable row per linking note; the
+// matching lines show with the [[link]] highlighted; click opens the note
+async function rBacklinks(n) {
+  const box = $("bllist"), head = $("blhead");
+  box.textContent = ""; head.textContent = "";
+  const bl = n ? await inv("backlinks_ctx", { name: n }) : [];
+  head.textContent = "Linked mentions"; rpInfo = "bl:" + bl.length;
+  const c = document.createElement("span");
+  c.className = "scount"; c.textContent = bl.length; head.appendChild(c);
+  if (!bl.length) return rEmpty(box, "No backlinks found.");
+  for (const b of bl) {
+    const row = document.createElement("div");
+    row.className = "blnote open";
+    row.innerHTML = '<span class="tc">' + CHEV + '</span><span class="bln"></span><span class="scount"></span>';
+    row.querySelector(".bln").textContent = b.note;
+    row.querySelector(".scount").textContent = b.lines.length;
+    const kids = document.createElement("div");
+    for (const [ln, text] of b.lines) {
+      const d = document.createElement("div");
+      d.className = "blline";
+      d.title = "line " + (ln + 1);
+      text.split(/(\[\[[^\]]*\]\])/).forEach((part, i) => {
+        const el = i % 2 ? document.createElement("mark") : document.createTextNode(part);
+        if (i % 2) el.textContent = part;
+        d.appendChild(el);
+      });
+      d.onclick = () => navigate(fg(), b.note);
+      kids.appendChild(d);
+    }
+    row.querySelector(".tc").onclick = e => {
+      e.stopPropagation();
+      row.classList.toggle("open"); kids.hidden = !row.classList.contains("open");
+    };
+    row.onclick = () => navigate(fg(), b.note);
+    box.appendChild(row); box.appendChild(kids);
+  }
+}
+// Outgoing links: resolved rows navigate, unresolved rows are greyed
+async function rOutgoing(n) {
+  const box = $("outlist"), head = $("outhead");
+  box.textContent = ""; head.textContent = "";
+  const out = n ? await inv("outgoing", { name: n }) : [];
+  head.textContent = "Links"; rpInfo = "out:" + out.filter(o => o.target).length + "/" + out.filter(o => !o.target).length;
+  const c = document.createElement("span");
+  c.className = "scount"; c.textContent = out.length; head.appendChild(c);
+  if (!out.length) return rEmpty(box, "No outgoing links.");
+  for (const o of out) {
+    const d = document.createElement("div");
+    d.className = "outrow" + (o.target ? "" : " unresolved");
+    d.textContent = o.text;
+    if (o.target) d.onclick = () => navigate(fg(), o.target);
+    box.appendChild(d);
+  }
+}
+// Outline: nested collapsible heading tree; click scrolls the focused
+// group's view to that heading; the heading at the viewport top is .active
+let tocHeads = [];
+async function rOutline(n) {
+  const box = $("toclist");
+  box.textContent = "";
+  tocHeads = n ? await inv("outline", { name: n }) : [];
+  rpInfo = "toc:" + tocHeads.length;
+  if (!tocHeads.length) return rEmpty(box, "No headings.");
+  // build tree: a heading's children = following headings with a deeper level
+  const build = (parent, i, minLv) => {
+    while (i < tocHeads.length && tocHeads[i].level > minLv) {
+      const h = tocHeads[i], lv = h.level;
+      const row = document.createElement("div");
+      row.className = "tocrow open"; row.dataset.line = h.line;
+      row.style.paddingLeft = (6 + (lv - 1) * 12) + "px";
+      row.innerHTML = '<span class="tc"></span><span class="tn"></span>';
+      row.querySelector(".tn").textContent = h.text || "(untitled)";
+      const kids = document.createElement("div");
+      kids.className = "tockids";
+      parent.appendChild(row); parent.appendChild(kids);
+      i = build(kids, i + 1, lv);
+      if (kids.childElementCount) {
+        row.querySelector(".tc").innerHTML = CHEV;
+        row.querySelector(".tc").onclick = e => {
+          e.stopPropagation();
+          row.classList.toggle("open"); kids.hidden = !row.classList.contains("open");
+        };
+      }
+      row.onclick = () => tocGo(h.line);
+    }
+    return i;
+  };
+  build(box, 0, 0);
+  tocSync();
+}
+async function tocGo(line) {               // scroll + focus the heading at `line`
+  const g = fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
+  if (!t || t.kind) return;
+  if (t.mode === "livepreview") {
+    lpCommit(g);
+    await lpRender(g, line, 0);            // raw row = the heading, caret on it
+    const row = [...g.lp.children].find(r => +r.dataset.l0 === line);
+    if (row) g.lp.scrollTop = row.offsetTop - g.lp.offsetTop;
+  } else if (t.mode === "source") {
+    const ed = g.editor, off = ed.value.split("\n").slice(0, line).reduce((a, x) => a + x.length + 1, 0);
+    ed.focus(); ed.setSelectionRange(off, off);
+    ed.scrollTop = line * 20.8;
+  } else {
+    const k = tocHeads.findIndex(h => h.line === line);
+    const el = g.preview.querySelectorAll("h1,h2,h3,h4,h5,h6")[k];
+    if (el) { g.preview.scrollTop = el.offsetTop - g.preview.offsetTop; el.setAttribute("tabindex", "-1"); el.focus(); }
+  }
+  tocSync();
+}
+function tocSync() {                       // highlight the heading at the viewport top
+  if (!rightOpen || rTab !== "toc" || !tocHeads.length) return;
+  const g = fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
+  if (!t || t.kind) return;
+  let top = 0;                             // first visible source line
+  if (t.mode === "livepreview") {
+    const st = g.lp.scrollTop + 2;
+    for (const r of g.lp.children) if (r.offsetTop - g.lp.offsetTop <= st) top = +r.dataset.l0;
+  } else if (t.mode === "source") top = Math.floor(g.editor.scrollTop / 20.8);
+  else {
+    const st = g.preview.scrollTop + 2, hs = g.preview.querySelectorAll("h1,h2,h3,h4,h5,h6");
+    let k = -1;
+    hs.forEach((el, i) => { if (el.offsetTop - g.preview.offsetTop <= st) k = i; });
+    top = k >= 0 && tocHeads[k] ? tocHeads[k].line : 0;
+  }
+  let cur = null;
+  for (const h of tocHeads) if (h.line <= top) cur = h.line; else break;
+  if (cur === null) cur = tocHeads[0].line;
+  for (const r of $("toclist").querySelectorAll(".tocrow"))
+    r.classList.toggle("active", +r.dataset.line === cur);
+  const info = "toc:" + tocHeads.length + "@" + cur;
+  if (info !== rpInfo) { rpInfo = info; updateTitle(); }
+}
+$("main").addEventListener("scroll", tocSync, true);   // scroll doesn't bubble: capture
 /* ux-4: left sidebar drag-resize (clamped 150-600, ribbon is 44px);
    width persisted as sidebar_w in ~/.rustidian.json on mouseup */
 $("ldiv").onmousedown = e => {
@@ -133,7 +310,7 @@ $("rdiv").onmousedown = e => {             // resizable divider (clamped 140-600
   const up = () => {
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
-    if (rightOpen) rgStart();              // re-fit canvas world to new width
+    if (rightOpen && rTab === "graph") rgStart();   // re-fit canvas world to new width
   };
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);
@@ -254,6 +431,7 @@ async function writeNote(name, content) {   // every save funnels here so graphs
   await inv("write_note", { name, content });
   for (const g of groups()) if (g.graphOn && g.graphRefresh) await g.graphRefresh();
   if (rightOpen && rg && rg.graphRefresh) await rg.graphRefresh();  // R9.6 live too
+  if (rightOpen) rSchedule();               // rsidebar: list panes refresh (200ms)
   perf.mark("save", t0, { note: name, bytes: content.length });
 }
 
@@ -390,7 +568,9 @@ function updateTitle() {          // pane/focus census in the window title (head
   const t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
             " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + lg + md + gg + modal +
-            " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) + "]" +
+            " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) +
+            (rightOpen ? ":" + rTab : "") + "]" +
+            (rightOpen && rTab !== "graph" && rpInfo ? " [rp:" + rpInfo + "]" : "") +
             (rightOpen && rgCenter ? " [rg:" + rgCenter + "]" : "") +
             " [pane:" + sidePane + "]" +
             (sidePane === "search" && searchCount >= 0 ? " [sr:" + searchCount + "]" : "") +
@@ -2016,6 +2196,8 @@ $("vswitch").onclick = showPicker;
 (async () => {
   const sw = await inv("get_sidebar_w").catch(() => null);   // ux-4
   if (sw >= 150) $("side").style.width = Math.min(600, sw) + "px";
+  const rt = await inv("get_rside_tab").catch(() => null);   // rsidebar
+  await setRTab(RPANES[rt] ? rt : "graph", false);
   vaultPath = await inv("vault_get");
   if (vaultPath) await enterVault(); else showPicker();
 })();

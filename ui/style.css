@@ -90,7 +90,43 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 #rdiv:hover, #rdiv:active { background: #585b70 }
 #rdiv[hidden], #rside[hidden] { display: none }
 #rside { width: 260px; flex-shrink: 0; background: #181825; display: flex;
-         min-width: 0 }
+         flex-direction: column; min-width: 0 }
+/* rsidebar: icon strip + panes (Backlinks / Outgoing / Outline / Local graph) */
+#rtabs { display: flex; gap: 2px; padding: 6px 30px 2px 6px }  /* 30: #rtoggle sits inboard */
+#rpane-graph { display: flex }
+#rpane-graph[hidden] { display: none }
+.rhead { padding: 6px 10px 4px; font-size: 12px; font-weight: 600; color: #cdd6f4 }
+.rhead .scount { color: #6c7086; font-weight: 400; margin-left: 4px }
+.rlist { flex: 1; overflow-y: auto; font-size: 12px }
+.rempty { padding: 8px 10px; color: #6c7086 }
+.blnote { padding: 4px 8px; color: #cdd6f4; cursor: pointer; display: flex;
+          align-items: center; gap: 4px; white-space: nowrap; overflow: hidden }
+.blnote:hover { background: #313244 }
+.blnote .tc { flex: 0 0 12px; display: flex; color: #6c7086 }
+.blnote .tc svg { width: 10px; height: 10px; transition: transform .1s }
+.blnote.open .tc svg { transform: rotate(90deg) }
+.blnote .bln { flex: 1; overflow: hidden; text-overflow: ellipsis }
+.blnote .scount { color: #6c7086 }
+.blline { padding: 2px 8px 2px 24px; color: #a6adc8; cursor: pointer;
+          white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.blline:hover { background: #313244 }
+.blline mark { background: none; color: #f9e2af }
+.outrow { padding: 4px 10px; color: #cdd6f4; cursor: pointer; white-space: nowrap;
+          overflow: hidden; text-overflow: ellipsis }
+.outrow:hover { background: #313244 }
+.outrow.unresolved { color: #6c7086; font-style: italic; cursor: default }
+.outrow.unresolved::after { content: "unresolved"; margin-left: 6px; font-size: 10px;
+                            color: #585b70; font-style: normal }
+.tocrow { display: flex; align-items: center; gap: 2px; padding: 3px 6px 3px 0;
+          color: #a6adc8; cursor: pointer; white-space: nowrap; overflow: hidden }
+.tocrow:hover { background: #313244 }
+.tocrow.active { color: #cdd6f4; background: #313244 }
+.tocrow .tc { flex: 0 0 14px; display: flex; justify-content: center; color: #6c7086 }
+.tocrow .tc svg { width: 10px; height: 10px; transition: transform .1s }
+.tocrow.open .tc svg { transform: rotate(90deg) }
+.tocrow .tn { overflow: hidden; text-overflow: ellipsis }
+.tockids { display: block }
+.tockids[hidden] { display: none }
 #rtoggle { position: fixed; top: 5px; right: 6px; z-index: 9; background: none;
            border: 0; color: #a6adc8; cursor: pointer; padding: 3px;
            border-radius: 4px }
