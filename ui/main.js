@@ -537,7 +537,7 @@ async function cmdToggleMode(g) {  // Ctrl+E / mode button: lp -> src -> read ->
   hideAc();
   applyMode(g);
   if (tab.mode === "reading") await preview(g);
-  if (tab.mode === "livepreview") await lpRender(g);
+  if (tab.mode === "livepreview") await lpRender(g, -1, 0, true);  // mode switch: full rebuild
   if (tab.mode === "source") g.editor.focus();
   updateTitle();
 }
@@ -877,99 +877,175 @@ function lpCommit(g) {  // fold the active raw row back into the model
   if (nv !== g.editor.value) { g.editor.value = nv; scheduleSave(g); }
 }
 
-// rebuild the lp pane; activeL >= 0 makes that line's block the raw row,
-// caret placed at (activeL, col)
+// lp pane render. perf-dom: INCREMENTAL. g.lpCache = {note, texts[], htmls[]}
+// mirrors g.lp.children one row per block. A pass re-splits blocks, diffs the
+// new block texts against the cache by common prefix/suffix, renders (one
+// render_blocks IPC) only blocks whose html is unknown — changed/new blocks
+// and a raw row that never had html — and patches rows in place: middle
+// region replaced by index, kept rows only swapped when their raw/rendered
+// state flips. A caret move inside unchanged text is therefore zero IPC and
+// two row swaps; scroll/selection/hover elsewhere survive. Full rebuild
+// (the only g.lp.innerHTML = "") when: no cache, note switched, `full`
+// (mode switch), or the DOM row count disagrees with the cache.
+// activeL >= 0 makes that line's block the raw row, caret at (activeL, col)
 let lpMs = -1;                 // last completed lpRender duration (census probe)
-async function lpRender(g, activeL = -1, col = 0) {
+async function lpRender(g, activeL = -1, col = 0, full = false) {
   const lpT0 = performance.now();
   const seq = g.lpSeq = (g.lpSeq || 0) + 1;      // stale-render guard
   const src = g.editor.value, L = src.split("\n");
   const blocks = lpBlocks(src);
-  // perf: ONE IPC round-trip for the whole pass (backend resolves the note
-  // list once) instead of ~150 per-block render IPC calls per caret move
-  const isRaw = b => b.l0 <= activeL && activeL <= b.l1;
-  const srcs = blocks.filter(b => !isRaw(b))
-    .map(b => L.slice(b.l0, b.l1 + 1).join("\n"));
-  const rendered = srcs.length ? await inv("render_blocks", { blocks: srcs }) : [];
-  if (seq !== g.lpSeq) return;                   // a newer render superseded us
-  let ri = 0;
-  const htmls = blocks.map(b => isRaw(b) ? null : rendered[ri++]);
+  const texts = blocks.map(b => L.slice(b.l0, b.l1 + 1).join("\n"));
+  const activeBi = activeL < 0 ? -1
+    : blocks.findIndex(b => b.l0 <= activeL && activeL <= b.l1);
+  const note = curOf(g);
+  let c = g.lpCache;
+  if (full || !c || c.note !== note || g.lp.children.length !== c.texts.length)
+    c = null;
+  // diff by block text: common prefix p / suffix s; [p, nn-s) is the edit
+  const on = c ? c.texts.length : 0, nn = texts.length;
+  let p = 0, s = 0;
+  if (c) {
+    while (p < on && p < nn && c.texts[p] === texts[p]) p++;
+    while (s < on - p && s < nn - p && c.texts[on - 1 - s] === texts[nn - 1 - s]) s++;
+  }
+  const htmls = new Array(nn).fill(null);
+  if (c) {
+    for (let i = 0; i < p; i++) htmls[i] = c.htmls[i];
+    for (let i = 0; i < s; i++) htmls[nn - 1 - i] = c.htmls[on - 1 - i];
+  }
+  const need = [];
+  for (let i = 0; i < nn; i++) if (i !== activeBi && htmls[i] == null) need.push(i);
+  if (need.length) {                            // ONE IPC for everything unknown
+    const rendered = await inv("render_blocks", { blocks: need.map(i => texts[i]) });
+    if (seq !== g.lpSeq) return;                 // a newer render superseded us
+    need.forEach((i, k) => { htmls[i] = rendered[k]; });
+  }
   const st = g.lp.scrollTop;
-  g.lp.innerHTML = "";
-  let focusTa = null;
-  blocks.forEach((b, bi) => {
-    const row = document.createElement("div");
-    row.className = "lprow";
-    row.dataset.l0 = b.l0; row.dataset.l1 = b.l1;
-    if (b.l0 <= activeL && activeL <= b.l1) {    // the ONE raw region (R8.2)
-      row.classList.add("raw");
-      const ta = document.createElement("textarea");
-      ta.className = "lpraw";
-      ta.value = L.slice(b.l0, b.l1 + 1).join("\n");
-      ta.rows = b.l1 - b.l0 + 1;
-      ta.spellcheck = false;
-      ta.addEventListener("input", () => {       // grow with typed newlines
-        ta.rows = ta.value.split("\n").length;
-      });
-      ta.addEventListener("keydown", ev => lpKey(g, ev));  // R8.4 traversal
-      ta.addEventListener("blur", () => setTimeout(() => {
-        if (g.lpActive && g.lpActive.ta === ta) { lpCommit(g); lpRender(g); }
-      }, 60));
-      row.appendChild(ta);
-      g.lpActive = { l0: b.l0, l1: b.l1, ta };
-      const off = L.slice(b.l0, activeL).reduce((a, s) => a + s.length + 1, 0)
-                + Math.min(col, L[activeL].length);
-      focusTa = () => { ta.focus(); ta.setSelectionRange(off, off); };
-    } else {
-      const h = htmls[bi];
-      row.innerHTML = h && h.trim() ? h : "&nbsp;";  // blank line stays clickable
-      // R8.6: rendered checkbox click toggles [ ]/[x] on the source line via
-      // the normal save path. pulldown-cmark emits the input disabled (WebKit
-      // eats clicks on disabled controls) so re-enable, and stopPropagation
-      // keeps lpEdit from opening the raw row.
-      row.querySelectorAll("input[type=checkbox]").forEach(cb => {
-        cb.disabled = false;
-        cb.addEventListener("mousedown", e => {
-          e.preventDefault(); e.stopPropagation();
-          lpCommit(g);                           // fold any active raw row first
-          const M = g.editor.value.split("\n");
-          M[b.l0] = M[b.l0].replace(/^(\s*(?:[-*+]|\d+\.) )\[( |[xX])\]/,
-            (_, p, c) => p + (c === " " ? "[x]" : "[ ]"));
-          g.editor.value = M.join("\n");
-          scheduleSave(g);
-          lpRender(g);
-        });
-      });
-      // R8.7: wikilink click navigates, ctrl+click opens a new tab. Mousedown
-      // level (the row's edit handler is mousedown too) + stopPropagation so
-      // the raw row never opens; navigate()/flushSave fold the raw row.
-      row.querySelectorAll("a.wiki").forEach(a => {
-        a.onclick = e => e.preventDefault();     // href="#": no hash churn
-        a.addEventListener("mousedown", async e => {
-          e.preventDefault(); e.stopPropagation();
-          const n = a.dataset.note;
-          if (a.classList.contains("wiki-unresolved"))
-            await writeNote(n, "");
-          if (e.ctrlKey) {                       // new tab, same group
-            await flushSave(g);
-            g.tabs.push(mkTab(n));
-            g.active = g.tabs.length - 1;
-            await loadActive(g);
-          } else navigate(g, n);
-        });
-      });
-      row.addEventListener("mousedown", e => {
-        e.preventDefault();                      // keep browser from part-selecting
-        lpEdit(g, b.l0, lpCol(e, row, b, L));    // R8.3 column mapping
-      });
+  const mk = i => i === activeBi ? lpRawRow(g, blocks[i], texts[i])
+                                 : lpRow(g, blocks[i], htmls[i]);
+  let touched = 0;
+  const rows = g.lp.children;
+  if (!c) {                                      // FULL rebuild
+    g.lp.innerHTML = "";
+    const frag = document.createDocumentFragment();
+    for (let i = 0; i < nn; i++) frag.appendChild(mk(i));
+    g.lp.appendChild(frag);
+    touched = nn;
+  } else {
+    // middle: old rows [p, on-s) -> new rows [p, nn-s)
+    for (let k = on - s - p; k > 0; k--) rows[p].remove();
+    if (nn - s > p) {
+      const frag = document.createDocumentFragment();
+      for (let i = p; i < nn - s; i++) frag.appendChild(mk(i));
+      g.lp.insertBefore(frag, rows[p] || null);
+      touched += nn - s - p;
     }
-    g.lp.appendChild(row);
-  });
+    // kept rows: swap only when raw/rendered state flips; suffix line numbers shift
+    const kept = i => {
+      const row = rows[i], raw = row.classList.contains("raw"), want = i === activeBi;
+      if (raw !== want) { row.replaceWith(mk(i)); touched++; return; }
+      const b = blocks[i];
+      if (+row.dataset.l0 !== b.l0) row.dataset.l0 = b.l0;
+      if (+row.dataset.l1 !== b.l1) row.dataset.l1 = b.l1;
+      if (raw) {                                 // same block text, keep the textarea
+        const ta = row.firstChild;               // ...but a split inside it (Enter) left
+        if (ta.value !== texts[i]) {             // extra lines in ta.value: resync
+          ta.value = texts[i]; ta.rows = b.l1 - b.l0 + 1;
+        }
+        g.lpActive = { l0: b.l0, l1: b.l1, ta };
+      }
+    };
+    for (let i = 0; i < p; i++) kept(i);
+    for (let i = nn - s; i < nn; i++) kept(i);
+  }
+  g.lpCache = { note, texts, htmls };
   g.lp.scrollTop = st;
-  if (focusTa) focusTa();
+  if (activeBi >= 0 && g.lpActive) {             // caret into the raw row
+    const b = blocks[activeBi], ta = g.lpActive.ta;
+    const off = L.slice(b.l0, activeL).reduce((a, x) => a + x.length + 1, 0)
+              + Math.min(col, L[activeL].length);
+    ta.focus(); ta.setSelectionRange(off, off);
+  }
   lpMs = Math.round(performance.now() - lpT0);   // perf: census [lp:<ms>]
   updateTitle();                                 // republish [mode:lp:<l0>] census
-  perf.mark("lp_render", lpT0, { blocks: blocks.length, lines: L.length, active: activeL });
+  perf.mark("lp_render", lpT0, { blocks: nn, lines: L.length, active: activeL,
+                                 rendered: need.length, patched: touched, full: !c });
+}
+
+// the ONE raw region (R8.2): textarea with the block's source; sets g.lpActive
+function lpRawRow(g, b, text) {
+  const row = document.createElement("div");
+  row.className = "lprow raw";
+  row.dataset.l0 = b.l0; row.dataset.l1 = b.l1;
+  const ta = document.createElement("textarea");
+  ta.className = "lpraw";
+  ta.value = text;
+  ta.rows = b.l1 - b.l0 + 1;
+  ta.spellcheck = false;
+  ta.addEventListener("input", () => {           // grow with typed newlines
+    ta.rows = ta.value.split("\n").length;
+  });
+  ta.addEventListener("keydown", ev => lpKey(g, ev));  // R8.4 traversal
+  ta.addEventListener("blur", () => setTimeout(() => {
+    if (g.lpActive && g.lpActive.ta === ta) { lpCommit(g); lpRender(g); }
+  }, 60));
+  row.appendChild(ta);
+  g.lpActive = { l0: b.l0, l1: b.l1, ta };
+  return row;
+}
+
+// a rendered row. Handlers read l0/l1 from row.dataset and the model from
+// g.editor.value AT EVENT TIME: rows are kept across passes, so closures
+// over line numbers would go stale when lines above are inserted/removed.
+function lpRow(g, b, h) {
+  const row = document.createElement("div");
+  row.className = "lprow";
+  row.dataset.l0 = b.l0; row.dataset.l1 = b.l1;
+  row.innerHTML = h && h.trim() ? h : "&nbsp;";  // blank line stays clickable
+  const cur = () => ({ l0: +row.dataset.l0, l1: +row.dataset.l1 });
+  // R8.6: rendered checkbox click toggles [ ]/[x] on the source line via
+  // the normal save path. pulldown-cmark emits the input disabled (WebKit
+  // eats clicks on disabled controls) so re-enable, and stopPropagation
+  // keeps lpEdit from opening the raw row.
+  row.querySelectorAll("input[type=checkbox]").forEach(cb => {
+    cb.disabled = false;
+    cb.addEventListener("mousedown", e => {
+      e.preventDefault(); e.stopPropagation();
+      lpCommit(g);                             // fold any active raw row first
+      const l0 = cur().l0, M = g.editor.value.split("\n");
+      M[l0] = M[l0].replace(/^(\s*(?:[-*+]|\d+\.) )\[( |[xX])\]/,
+        (_, pfx, ch) => pfx + (ch === " " ? "[x]" : "[ ]"));
+      g.editor.value = M.join("\n");
+      scheduleSave(g);
+      lpRender(g);
+    });
+  });
+  // R8.7: wikilink click navigates, ctrl+click opens a new tab. Mousedown
+  // level (the row's edit handler is mousedown too) + stopPropagation so
+  // the raw row never opens; navigate()/flushSave fold the raw row.
+  row.querySelectorAll("a.wiki").forEach(a => {
+    a.onclick = e => e.preventDefault();       // href="#": no hash churn
+    a.addEventListener("mousedown", async e => {
+      e.preventDefault(); e.stopPropagation();
+      const n = a.dataset.note;
+      if (a.classList.contains("wiki-unresolved")) {
+        await writeNote(n, "");
+        for (const gg of groups()) gg.lpCache = null;  // cached html says unresolved
+      }
+      if (e.ctrlKey) {                         // new tab, same group
+        await flushSave(g);
+        g.tabs.push(mkTab(n));
+        g.active = g.tabs.length - 1;
+        await loadActive(g);
+      } else navigate(g, n);
+    });
+  });
+  row.addEventListener("mousedown", e => {
+    e.preventDefault();                        // keep browser from part-selecting
+    const bb = cur(), L = g.editor.value.split("\n");
+    lpEdit(g, bb.l0, lpCol(e, row, bb, L));    // R8.3 column mapping
+  });
+  return row;
 }
 
 /* R8.3 click -> source column. caretRangeFromPoint gives the caret offset in
