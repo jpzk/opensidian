@@ -7,6 +7,7 @@ use tauri::State;
 
 mod index;
 mod perf;
+mod sandbox;
 use index::{links_in, resolve, Index};
 
 /* perf-index: root + in-memory Index (src/index.rs). The index replaces the
@@ -238,6 +239,10 @@ fn set_vault_inner(v: &State<Vault>, path: &str) -> Result<String, String> {
     if !p.is_dir() {
         return Err(format!("not a directory: {}", p.display()));
     }
+    if !sandbox::allows(&p) {
+        persist_vault(&p); // next boot confines to this one instead
+        return Err(format!("sandboxed to {} — vault saved, restart rustidian to open it", sandbox::confined_to().unwrap().display()));
+    }
     persist_vault(&p);
     open_vault(v, &p);
     Ok(p.display().to_string())
@@ -252,6 +257,9 @@ fn create_vault(v: State<Vault>, parent: String, name: String) -> Result<String,
     let p = PathBuf::from(parent.trim()).join(name);
     if p.exists() {
         return Err(format!("already exists: {}", p.display()));
+    }
+    if !sandbox::allows(Path::new(parent.trim())) {
+        return Err(format!("sandboxed to {} — create the folder outside rustidian, then pick it and restart", sandbox::confined_to().unwrap().display()));
     }
     fs::create_dir_all(&p).map_err(|e| e.to_string())?;
     fs::write(
@@ -564,6 +572,13 @@ fn main() {
         .ok()
         .map(PathBuf::from)
         .or_else(|| read_cfg().0.map(PathBuf::from).filter(|p| p.is_dir()));
+    // landlock: confine the whole process tree to the vault before webkit spawns
+    if let (Some(p), true) = (&init, std::env::var_os("RUSTIDIAN_LANDLOCK").is_some()) {
+        match sandbox::enforce(p, &cfg_path()) {
+            Ok(s) => eprintln!("landlock: {s:?}"),
+            Err(e) => eprintln!("landlock: off ({e})"),
+        }
+    }
     // perf-index: one walk + read now, so the first note_open is already warm
     let index = init.as_deref().map(Index::build).unwrap_or_default();
     tauri::Builder::default()
