@@ -5,41 +5,34 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use tauri::State;
 
+mod index;
 mod perf;
+use index::{links_in, resolve, Index};
 
-/* perf-lp: sorted note-name list cached per vault. Every render used to
-   re-walk + sort the whole vault (notes_of); with ~150 blocks per lp pass
-   that was the bulk of the 269ms/caret-move. Cache is a plain Option so
-   invalidate() is one store; readers rebuild lazily on the next get(). */
-#[derive(Default)]
-struct NoteCache(Mutex<Option<Vec<String>>>);
-
-impl NoteCache {
-    fn get(&self, root: &Path) -> Vec<String> {
-        let mut g = self.0.lock().unwrap();
-        if let Some(n) = g.as_ref() {
-            return n.clone();
-        }
-        let n = notes_of(root);
-        *g = Some(n.clone());
-        n
-    }
-    fn invalidate(&self) {
-        *self.0.lock().unwrap() = None;
-    }
+/* perf-index: root + in-memory Index (src/index.rs). The index replaces the
+   perf-lp NoteCache: names, contents, links and backlink edges live in RAM,
+   built once per vault open and kept == disk by write_note/rename_note.
+   search/graph/backlinks/render never touch the filesystem. */
+struct Vault {
+    root: Mutex<Option<PathBuf>>,
+    index: Mutex<Index>,
 }
-
-struct Vault(Mutex<Option<PathBuf>>, NoteCache);
 
 fn cur_vault(v: &State<Vault>) -> Option<PathBuf> {
-    v.0.lock().unwrap().clone()
+    v.root.lock().unwrap().clone()
 }
 
-/// cached sorted note list for the open vault (empty when none open)
+/// sorted note list from the index (empty when no vault open)
 fn cur_notes(v: &State<Vault>) -> Vec<String> {
-    cur_vault(v).map(|r| v.1.get(&r)).unwrap_or_default()
+    v.index.lock().unwrap().names().to_vec()
 }
 
+/// open a vault: swap root + rebuild the index (one walk, one read per note)
+fn open_vault(v: &State<Vault>, p: &Path) {
+    let ix = span_timed!("index_build", Index::build(p), serde_json::json!({"notes": 0}));
+    *v.index.lock().unwrap() = ix;
+    *v.root.lock().unwrap() = Some(p.to_path_buf());
+}
 /// component-wise traversal check: only plain, non-hidden components allowed
 fn safe_rel(name: &str) -> Option<PathBuf> {
     let mut out = PathBuf::new();
@@ -55,37 +48,6 @@ fn safe_rel(name: &str) -> Option<PathBuf> {
 fn note_path(v: &State<Vault>, name: &str) -> Option<PathBuf> {
     let p = cur_vault(v)?.join(safe_rel(name)?);
     Some(PathBuf::from(format!("{}.md", p.display())))
-}
-
-fn walk(dir: &Path, base: &Path, out: &mut Vec<String>) {
-    let Ok(rd) = fs::read_dir(dir) else { return };
-    for e in rd.flatten() {
-        let name = e.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') {
-            continue;
-        }
-        let p = e.path();
-        if p.is_dir() {
-            walk(&p, base, out);
-        } else if let Some(stem) = name.strip_suffix(".md") {
-            let rel = p
-                .parent()
-                .and_then(|d| d.strip_prefix(base).ok())
-                .unwrap_or(Path::new(""));
-            out.push(if rel.as_os_str().is_empty() {
-                stem.to_string()
-            } else {
-                format!("{}/{}", rel.display(), stem)
-            });
-        }
-    }
-}
-
-fn notes_of(root: &Path) -> Vec<String> {
-    let mut out = Vec::new();
-    walk(root, root, &mut out);
-    out.sort();
-    out
 }
 
 fn walk_dirs(dir: &Path, base: &Path, out: &mut Vec<String>) {
@@ -118,7 +80,7 @@ fn list_folders(v: State<Vault>) -> Vec<String> {
 fn create_dir(v: State<Vault>, name: String) -> Result<(), String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
     let rel = safe_rel(&name).ok_or("invalid folder name")?;
-    v.1.invalidate();
+    // perf-index: an empty dir holds no notes -> index unchanged
     fs::create_dir_all(root.join(rel)).map_err(|e| e.to_string())
 }
 
@@ -144,73 +106,29 @@ fn write_note(v: State<Vault>, name: String, content: String) {
 }
 
 fn write_note_inner(v: &State<Vault>, name: &str, content: &str) {
-    if let Some(p) = note_path(&v, &name) {
-        // new file changes the note set; per-keystroke saves of an existing
-        // note must not evict the cache (that is the hot lp path)
-        if !p.exists() {
-            v.1.invalidate();
-        }
+    let Some(rel) = safe_rel(name) else { return };
+    if let Some(p) = note_path(v, name) {
         if let Some(d) = p.parent() {
             let _ = fs::create_dir_all(d);
         }
-        let _ = fs::write(p, content);
+        if fs::write(p, content).is_ok() {
+            // index == disk: reparse this note, patch its outgoing edges
+            // (a NEW key triggers a full in-memory edge rebuild inside upsert)
+            v.index.lock().unwrap().upsert(&rel.display().to_string(), content);
+        }
     }
 }
 
-/* ux-3: vault-wide wikilink rewrite on rename. [[Old]] -> [[New]],
-   [[Old|alias]] keeps alias, [[Old#h]] keeps anchor. Basename-style links
-   ([[A]] for sub/A) stay basename-style; full-path links get the full new
-   path. bn_ok=false disables basename matching (caller found ANOTHER note
-   with the same basename — those links now resolve elsewhere, leave them). */
-fn rewrite_links(s: &str, old: &str, new: &str, bn_ok: bool) -> (String, bool) {
-    let ob = old.rsplit('/').next().unwrap_or(old);
-    let nb = new.rsplit('/').next().unwrap_or(new);
-    let (mut out, mut changed) = (String::new(), false);
-    let mut rest = s;
-    while let Some(a) = rest.find("[[") {
-        out.push_str(&rest[..a + 2]);
-        rest = &rest[a + 2..];
-        let Some(b) = rest.find("]]") else { break };
-        let inner = &rest[..b];
-        rest = &rest[b + 2..];
-        let (tgt, alias) = match inner.find('|') {
-            Some(i) => (&inner[..i], &inner[i..]),
-            None => (inner, ""),
-        };
-        let (base, anchor) = match tgt.find('#') {
-            Some(i) => (&tgt[..i], &tgt[i..]),
-            None => (tgt, ""),
-        };
-        let rep = if base == old {
-            Some(new)
-        } else if bn_ok && base == ob {
-            Some(nb)
-        } else {
-            None
-        };
-        match rep {
-            Some(r) => {
-                changed = true;
-                out.push_str(r);
-                out.push_str(anchor);
-                out.push_str(alias);
-            }
-            None => out.push_str(inner),
-        }
-        out.push_str("]]");
-    }
-    out.push_str(rest);
-    (out, changed)
-}
 
 /* m5 F2 rename: fs::rename old.md -> new.md inside root. Parents created,
-   overwrite refused. ux-3: wikilinks updated vault-wide after the move.
-   Pure-ish core for unit tests. */
-fn rename_in(root: &Path, old: &str, new: &str) -> Result<(), String> {
-    let op = root.join(safe_rel(old).ok_or("invalid name")?);
-    let np = root.join(safe_rel(new).ok_or("invalid name")?);
-    let op = PathBuf::from(format!("{}.md", op.display()));
-    let np = PathBuf::from(format!("{}.md", np.display()));
+   overwrite refused. ux-3: wikilinks updated vault-wide after the move —
+   perf-index: the rewrite runs over the in-memory index (no vault read);
+   only notes whose text changed are written back. Pure-ish core for tests. */
+fn rename_in(root: &Path, ix: &mut Index, old: &str, new: &str) -> Result<(), String> {
+    let orel = safe_rel(old).ok_or("invalid name")?;
+    let nrel = safe_rel(new).ok_or("invalid name")?;
+    let op = PathBuf::from(format!("{}.md", root.join(&orel).display()));
+    let np = PathBuf::from(format!("{}.md", root.join(&nrel).display()));
     if !op.is_file() {
         return Err("no such note".into());
     }
@@ -220,27 +138,14 @@ fn rename_in(root: &Path, old: &str, new: &str) -> Result<(), String> {
     if let Some(d) = np.parent() {
         fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
-    fs::rename(op, np).map_err(|e| e.to_string())?;
-    // ux-3: after the move, rewrite [[links]] in every note. Basename links
-    // only rewrite when unambiguous BOTH ways: no other note carries old's
-    // basename (those links resolve elsewhere) and none carries new's
-    // basename besides the renamed note itself (rewrite would capture it).
-    let ob = old.rsplit('/').next().unwrap_or(old);
-    let nrel = safe_rel(new).unwrap_or_default().display().to_string();
-    let nb = new.rsplit('/').next().unwrap_or(new);
-    let notes = notes_of(root);
-    let bn_ok = !notes.iter().any(|n| {
-        let b = n.rsplit('/').next().unwrap_or(n);
-        b == ob || (b == nb && *n != nrel)
-    });
-    for n in &notes {
+    fs::rename(&op, &np).map_err(|e| e.to_string())?;
+    let (okey, nkey) = (orel.display().to_string(), nrel.display().to_string());
+    // index==disk invariant: if the key is somehow missing, seed it from the
+    // moved file rather than dropping the note
+    let fallback = if ix.content(&okey).is_none() { fs::read_to_string(&np).ok() } else { None };
+    for (n, c) in ix.rename(&okey, &nkey, fallback) {
         let p = PathBuf::from(format!("{}.md", root.join(n).display()));
-        if let Ok(c) = fs::read_to_string(&p) {
-            let (nc, changed) = rewrite_links(&c, old, new, bn_ok);
-            if changed {
-                let _ = fs::write(&p, nc);
-            }
-        }
+        let _ = fs::write(&p, c);
     }
     Ok(())
 }
@@ -248,8 +153,8 @@ fn rename_in(root: &Path, old: &str, new: &str) -> Result<(), String> {
 #[tauri::command]
 fn rename_note(v: State<Vault>, old: String, new: String) -> Result<(), String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
-    v.1.invalidate();
-    span_timed!("rename_note", rename_in(&root, &old, &new))
+    let mut ix = v.index.lock().unwrap();
+    span_timed!("rename_note", rename_in(&root, &mut ix, &old, &new))
 }
 
 #[tauri::command]
@@ -329,8 +234,7 @@ fn set_vault_inner(v: &State<Vault>, path: &str) -> Result<String, String> {
         return Err(format!("not a directory: {}", p.display()));
     }
     persist_vault(&p);
-    v.1.invalidate();
-    *v.0.lock().unwrap() = Some(p.clone());
+    open_vault(v, &p);
     Ok(p.display().to_string())
 }
 
@@ -351,8 +255,7 @@ fn create_vault(v: State<Vault>, parent: String, name: String) -> Result<String,
     )
     .map_err(|e| e.to_string())?;
     persist_vault(&p);
-    v.1.invalidate();
-    *v.0.lock().unwrap() = Some(p.clone());
+    open_vault(&v, &p);
     Ok(p.display().to_string())
 }
 
@@ -382,27 +285,6 @@ fn list_dirs(path: String) -> Vec<String> {
     v
 }
 
-fn links_in(s: &str) -> Vec<String> {
-    let (mut out, mut rest) = (Vec::new(), s);
-    while let Some(a) = rest.find("[[") {
-        rest = &rest[a + 2..];
-        match rest.find("]]") {
-            Some(b) => {
-                out.push(rest[..b].to_string());
-                rest = &rest[b + 2..];
-            }
-            None => break,
-        }
-    }
-    out
-}
-
-/// wikilinks resolve by full relative path or basename
-fn resolve(notes: &[String], l: &str) -> Option<usize> {
-    notes
-        .iter()
-        .position(|x| *x == l || x.ends_with(&format!("/{l}")))
-}
 
 /// html-escape for text content and attribute values (H1 fix)
 fn esc(s: &str) -> String {
@@ -485,7 +367,7 @@ fn render_md(content: &str, notes: &[String]) -> String {
 
 #[tauri::command]
 fn render(v: State<Vault>, content: String) -> String {
-    span_timed!("render", render_md(&content, &cur_notes(&v)), serde_json::json!({"bytes": content.len()}))
+    span_timed!("render", render_md(&content, v.index.lock().unwrap().names()), serde_json::json!({"bytes": content.len()}))
 }
 
 /// pure core of render_blocks: every block rendered against the same note list
@@ -499,7 +381,7 @@ fn render_blocks_with(blocks: &[String], notes: &[String]) -> Vec<String> {
 #[tauri::command]
 fn render_blocks(v: State<Vault>, blocks: Vec<String>) -> Vec<String> {
     let n = blocks.len();
-    span_timed!("render_blocks", render_blocks_with(&blocks, &cur_notes(&v)), serde_json::json!({"blocks": n}))
+    span_timed!("render_blocks", render_blocks_with(&blocks, v.index.lock().unwrap().names()), serde_json::json!({"blocks": n}))
 }
 
 #[tauri::command]
@@ -508,24 +390,9 @@ fn backlinks(v: State<Vault>, name: String) -> Vec<String> {
 }
 
 fn backlinks_inner(v: &State<Vault>, name: &str) -> Vec<String> {
-    // invert the graph edges: which notes link to `name`?
-    let Some(root) = cur_vault(&v) else { return vec![] };
-    let notes = v.1.get(&root);
-    let mut out = Vec::new();
-    for n in &notes {
-        if *n == name {
-            continue;
-        }
-        let content =
-            fs::read_to_string(format!("{}.md", root.join(n).display())).unwrap_or_default();
-        if links_in(&content)
-            .iter()
-            .any(|l| resolve(&notes, l).map(|j| notes[j] == name).unwrap_or(false))
-        {
-            out.push(n.clone());
-        }
-    }
-    out
+    // perf-index: inverted edges are maintained in the index — O(1) lookup,
+    // no vault read (was: re-read every note per call, 89ms @500 files)
+    v.index.lock().unwrap().backlinks(name)
 }
 
 #[derive(serde::Serialize)]
@@ -542,20 +409,19 @@ struct Graph {
 
 /// R4.2: notes = resolved nodes; wikilinks to nonexistent notes become
 /// unresolved nodes (deduped by link text), so the graph shows ghost targets.
-fn build_graph(docs: &[(String, String)]) -> Graph {
-    let notes: Vec<String> = docs.iter().map(|(n, _)| n.clone()).collect();
+fn build_graph(notes: &[String], links: &[&[String]]) -> Graph {
     let mut nodes: Vec<GNode> = notes
         .iter()
         .map(|n| GNode { name: n.clone(), resolved: true })
         .collect();
     let mut edges = Vec::new();
-    for (i, (_, content)) in docs.iter().enumerate() {
-        for l in links_in(content) {
-            let j = match resolve(&notes, &l) {
+    for (i, ls) in links.iter().enumerate() {
+        for l in ls.iter() {
+            let j = match resolve(notes, l) {
                 Some(j) => j,
                 None => nodes
                     .iter()
-                    .position(|x| !x.resolved && x.name == l)
+                    .position(|x| !x.resolved && x.name == *l)
                     .unwrap_or_else(|| {
                         nodes.push(GNode { name: l.clone(), resolved: false });
                         nodes.len() - 1
@@ -575,18 +441,9 @@ fn graph(v: State<Vault>) -> Graph {
 }
 
 fn graph_inner(v: &State<Vault>) -> Graph {
-    let Some(root) = cur_vault(&v) else {
-        return Graph { nodes: vec![], edges: vec![] };
-    };
-    let docs: Vec<(String, String)> = v.1.get(&root)
-        .into_iter()
-        .map(|n| {
-            let c = fs::read_to_string(format!("{}.md", root.join(&n).display()))
-                .unwrap_or_default();
-            (n, c)
-        })
-        .collect();
-    build_graph(&docs)
+    // perf-index: names + per-note link lists straight from memory
+    let ix = v.index.lock().unwrap();
+    build_graph(ix.names(), &ix.link_lists())
 }
 
 #[derive(serde::Serialize, Debug, PartialEq)]
@@ -599,7 +456,7 @@ struct SearchHit {
 /// R9.4: case-insensitive substring over note names + bodies. Hits ordered by
 /// note (docs arrive sorted) then line; snippet = the matching line trimmed to
 /// ~200 chars around the first hit; capped at 500 hits total.
-fn search_docs(docs: &[(String, String)], query: &str) -> Vec<SearchHit> {
+fn search_docs<'a>(docs: impl IntoIterator<Item = (&'a str, &'a str)>, query: &str) -> Vec<SearchHit> {
     let q = query.to_lowercase();
     let mut out = Vec::new();
     if q.is_empty() {
@@ -607,7 +464,7 @@ fn search_docs(docs: &[(String, String)], query: &str) -> Vec<SearchHit> {
     }
     'docs: for (name, content) in docs {
         if name.to_lowercase().contains(&q) {
-            out.push(SearchHit { note: name.clone(), line: 0, snippet: name.clone() });
+            out.push(SearchHit { note: name.to_string(), line: 0, snippet: name.to_string() });
         }
         for (i, l) in content.lines().enumerate() {
             let lower = l.to_lowercase();
@@ -623,7 +480,7 @@ fn search_docs(docs: &[(String, String)], query: &str) -> Vec<SearchHit> {
                 let end = (cpos + 120).min(chars.len());
                 chars[start..end].iter().collect()
             };
-            out.push(SearchHit { note: name.clone(), line: i as u32, snippet });
+            out.push(SearchHit { note: name.to_string(), line: i as u32, snippet });
             if out.len() >= 500 {
                 break 'docs;
             }
@@ -641,16 +498,8 @@ fn search(v: State<Vault>, query: String) -> Vec<SearchHit> {
 }
 
 fn search_inner(v: &State<Vault>, query: &str) -> Vec<SearchHit> {
-    let Some(root) = cur_vault(&v) else { return vec![] };
-    let docs: Vec<(String, String)> = v.1.get(&root)
-        .into_iter()
-        .map(|n| {
-            let c = fs::read_to_string(format!("{}.md", root.join(&n).display()))
-                .unwrap_or_default();
-            (n, c)
-        })
-        .collect();
-    search_docs(&docs, &query)
+    // perf-index: contents are resident; no per-call vault read
+    search_docs(v.index.lock().unwrap().docs(), query)
 }
 
 /* R9.4 bookmarks: plain newline list in vault/.rustidian-bookmarks —
@@ -697,8 +546,10 @@ fn main() {
         .ok()
         .map(PathBuf::from)
         .or_else(|| read_cfg().0.map(PathBuf::from).filter(|p| p.is_dir()));
+    // perf-index: one walk + read now, so the first note_open is already warm
+    let index = init.as_deref().map(Index::build).unwrap_or_default();
     tauri::Builder::default()
-        .manage(Vault(Mutex::new(init), NoteCache::default()))
+        .manage(Vault { index: Mutex::new(index), root: Mutex::new(init) })
         .invoke_handler(tauri::generate_handler![
             list_notes, read_note, write_note, render, render_blocks, graph, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
@@ -712,6 +563,139 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn docs_ref(d: &[(String, String)]) -> Vec<(&str, &str)> {
+        d.iter().map(|(n, c)| (n.as_str(), c.as_str())).collect()
+    }
+
+    /// graph from (name, content) docs — what the index feeds build_graph
+    fn graph_of(d: &[(String, String)]) -> Graph {
+        let names: Vec<String> = d.iter().map(|(n, _)| n.clone()).collect();
+        let links: Vec<Vec<String>> = d.iter().map(|(_, c)| links_in(c)).collect();
+        let refs: Vec<&[String]> = links.iter().map(|l| l.as_slice()).collect();
+        build_graph(&names, &refs)
+    }
+
+    fn tmp_vault(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("rustidian-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("sub")).unwrap();
+        root
+    }
+
+    fn ix_graph(ix: &Index) -> Graph {
+        build_graph(ix.names(), &ix.link_lists())
+    }
+
+    fn edge_names(g: &Graph) -> Vec<(String, String)> {
+        let mut e: Vec<(String, String)> = g
+            .edges
+            .iter()
+            .map(|&(a, b)| (g.nodes[a].name.clone(), g.nodes[b].name.clone()))
+            .collect();
+        e.sort();
+        e
+    }
+
+    #[test]
+    fn index_builds_from_temp_vault() {
+        let root = tmp_vault("ix");
+        fs::write(root.join("A.md"), "[[B]] and [[Nested]] and [[Ghost]]").unwrap();
+        fs::write(root.join("B.md"), "back to [[A]] self [[B]]").unwrap();
+        fs::write(root.join("sub/Nested.md"), "[[A]] twice [[A]]").unwrap();
+        fs::write(root.join(".hidden.md"), "[[A]]").unwrap(); // dotfiles never indexed
+        let ix = Index::build(&root);
+        assert_eq!(ix.names(), ["A", "B", "sub/Nested"]);
+        assert_eq!(ix.content("B"), Some("back to [[A]] self [[B]]"));
+        assert_eq!(ix.links("A"), ["B", "Nested", "Ghost"]);
+        // NB: raw tokens — [[A|alias]] / [[A#h]] do NOT resolve, exactly as the
+        // disk-walking backlinks never did (follow-up, not perf-index scope)
+        assert_eq!(ix.backlinks("A"), ["B", "sub/Nested"]);
+        assert_eq!(ix.backlinks("B"), ["A"]); // B's self-link excluded
+        assert_eq!(ix.backlinks("sub/Nested"), ["A"]); // basename resolve
+        assert!(ix.backlinks("Ghost").is_empty());
+        // graph: unresolved [[Ghost]] stays a ghost node
+        let g = ix_graph(&ix);
+        assert_eq!(g.nodes.len(), 4);
+        assert!(!g.nodes[3].resolved && g.nodes[3].name == "Ghost");
+        // search sees every body without touching disk: mutate disk behind it
+        fs::write(root.join("B.md"), "changed on disk").unwrap();
+        let hits = search_docs(ix.docs(), "back to");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].note, "B");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn write_updates_search_backlinks_graph() {
+        let root = tmp_vault("ixw");
+        fs::write(root.join("A.md"), "[[B]] [[Ghost]]").unwrap();
+        fs::write(root.join("B.md"), "plain").unwrap();
+        let mut ix = Index::build(&root);
+        assert_eq!(ix.backlinks("B"), ["A"]);
+        // edit A: drop the B link, add a C link (C absent -> unresolved)
+        ix.upsert("A", "now [[C]] only, needle here");
+        assert!(ix.backlinks("B").is_empty());
+        assert_eq!(search_docs(ix.docs(), "needle").len(), 1);
+        assert!(search_docs(ix.docs(), "ghost").is_empty());
+        let g = ix_graph(&ix);
+        assert_eq!(edge_names(&g), [("A".to_string(), "C".to_string())]);
+        assert!(g.nodes.iter().any(|n| n.name == "C" && !n.resolved));
+        // new note C appears: A's dangling link now resolves, ghost node gone
+        ix.upsert("C", "[[A]]");
+        assert_eq!(ix.names(), ["A", "B", "C"]);
+        assert_eq!(ix.backlinks("C"), ["A"]);
+        assert_eq!(ix.backlinks("A"), ["C"]);
+        let g = ix_graph(&ix);
+        assert!(g.nodes.iter().all(|n| n.resolved));
+        assert_eq!(
+            edge_names(&g),
+            [("A".to_string(), "C".to_string()), ("C".to_string(), "A".to_string())]
+        );
+        // B links to C too: edge list stays sorted + deduped
+        ix.upsert("B", "[[C]] [[C]]");
+        assert_eq!(ix.backlinks("C"), ["A", "B"]);
+        ix.upsert("B", "");
+        assert_eq!(ix.backlinks("C"), ["A"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rename_moves_keys_edges_and_targets() {
+        let root = tmp_vault("ixr");
+        fs::write(root.join("Old.md"), "[[B]]").unwrap();
+        fs::write(root.join("B.md"), "see [[Old]] and [[Old|nick]]").unwrap();
+        fs::write(root.join("sub/C.md"), "[[Old]] [[Ghost]]").unwrap();
+        let mut ix = Index::build(&root);
+        assert_eq!(ix.backlinks("Old"), ["B", "sub/C"]);
+        rename_in(&root, &mut ix, "Old", "sub/New").unwrap();
+        // keys moved
+        assert_eq!(ix.names(), ["B", "sub/C", "sub/New"]);
+        assert!(ix.content("Old").is_none());
+        assert_eq!(ix.content("sub/New"), Some("[[B]]"));
+        // link targets rewritten in memory AND on disk (exact-path links get
+        // the full new path — same rewrite_links rule as before)
+        assert_eq!(ix.content("B"), Some("see [[sub/New]] and [[sub/New|nick]]"));
+        assert_eq!(fs::read_to_string(root.join("B.md")).unwrap(), "see [[sub/New]] and [[sub/New|nick]]");
+        assert_eq!(ix.content("sub/C"), Some("[[sub/New]] [[Ghost]]"));
+        assert_eq!(ix.links("sub/C"), ["sub/New", "Ghost"]);
+        // edges follow the new key
+        assert!(ix.backlinks("Old").is_empty());
+        assert_eq!(ix.backlinks("sub/New"), ["B", "sub/C"]);
+        assert_eq!(ix.backlinks("B"), ["sub/New"]);
+        // unresolved stays unresolved in the graph
+        let g = ix_graph(&ix);
+        assert!(g.nodes.iter().any(|n| n.name == "Ghost" && !n.resolved));
+        assert!(!g.nodes.iter().any(|n| n.name == "Old"));
+        // index == disk after the whole dance
+        let fresh = Index::build(&root);
+        assert_eq!(fresh.names(), ix.names());
+        for n in ix.names() {
+            assert_eq!(fresh.content(n), ix.content(n), "{n}");
+            assert_eq!(fresh.backlinks(n), ix.backlinks(n), "{n}");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn render_marks_unresolved() {
@@ -753,7 +737,7 @@ mod tests {
             ("B".to_string(), "[[Ghost]] [[sub/C]]".to_string()),
             ("sub/C".to_string(), String::new()),
         ];
-        let g = build_graph(&docs);
+        let g = graph_of(&docs);
         // 3 real notes + 1 deduped unresolved
         assert_eq!(g.nodes.len(), 4);
         assert!(g.nodes[..3].iter().all(|n| n.resolved));
@@ -769,7 +753,7 @@ mod tests {
             ("Alpha".to_string(), "first LINE here\nsecond alpha line".to_string()),
             ("Beta".to_string(), "nothing\nAlPhA again".to_string()),
         ];
-        let hits = search_docs(&docs, "alpha");
+        let hits = search_docs(docs_ref(&docs), "alpha");
         // name hit (Alpha@0) + body hit in Alpha line 1 + body hit in Beta line 1
         assert_eq!(hits.len(), 3);
         assert_eq!((hits[0].note.as_str(), hits[0].line, hits[0].snippet.as_str()),
@@ -778,11 +762,11 @@ mod tests {
                    ("Alpha", 1, "second alpha line"));
         assert_eq!((hits[2].note.as_str(), hits[2].line, hits[2].snippet.as_str()),
                    ("Beta", 1, "AlPhA again"));
-        assert!(search_docs(&docs, "").is_empty());
-        assert!(search_docs(&docs, "zzz").is_empty());
+        assert!(search_docs(docs_ref(&docs), "").is_empty());
+        assert!(search_docs(docs_ref(&docs), "zzz").is_empty());
         // long line trims to a window around the hit
         let long = ("L".to_string(), format!("{}needle{}", "x".repeat(300), "y".repeat(300)));
-        let h = search_docs(&[long], "needle");
+        let h = search_docs(docs_ref(&[long]), "needle");
         assert_eq!(h.len(), 1);
         assert!(h[0].snippet.contains("needle") && h[0].snippet.len() <= 210);
     }
@@ -810,7 +794,8 @@ mod tests {
         )
         .unwrap();
         fs::write(root.join("sub/C.md"), "[[Old|x]] deep").unwrap();
-        rename_in(&root, "Old", "New").unwrap();
+        let mut ix = Index::build(&root);
+        rename_in(&root, &mut ix, "Old", "New").unwrap();
         assert_eq!(
             fs::read_to_string(root.join("B.md")).unwrap(),
             "see [[New]] and [[New|nick]] plus [[New#h2]] and [[Other]]"
@@ -819,7 +804,8 @@ mod tests {
         assert_eq!(fs::read_to_string(root.join("New.md")).unwrap(), "self [[New]]");
         // full-path links track a move into a folder; basename links keep basename
         fs::write(root.join("D.md"), "[[New]] and [[sub/C]]").unwrap();
-        rename_in(&root, "sub/C", "sub/C2").unwrap();
+        ix.upsert("D", "[[New]] and [[sub/C]]");
+        rename_in(&root, &mut ix, "sub/C", "sub/C2").unwrap();
         assert_eq!(
             fs::read_to_string(root.join("D.md")).unwrap(),
             "[[New]] and [[sub/C2]]"
@@ -829,7 +815,9 @@ mod tests {
         // only the full-path link updates
         fs::write(root.join("C.md"), "decoy").unwrap();
         fs::write(root.join("E.md"), "[[C2]] and [[sub/C2]]").unwrap();
-        rename_in(&root, "sub/C2", "sub/C").unwrap();
+        ix.upsert("C", "decoy");
+        ix.upsert("E", "[[C2]] and [[sub/C2]]");
+        rename_in(&root, &mut ix, "sub/C2", "sub/C").unwrap();
         assert_eq!(
             fs::read_to_string(root.join("E.md")).unwrap(),
             "[[C2]] and [[sub/C]]"
@@ -844,12 +832,14 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("A.md"), "body").unwrap();
         fs::write(root.join("B.md"), "other").unwrap();
-        rename_in(&root, "A", "sub/A2").unwrap(); // parents created
+        let mut ix = Index::build(&root);
+        rename_in(&root, &mut ix, "A", "sub/A2").unwrap(); // parents created
         assert!(!root.join("A.md").exists());
         assert_eq!(fs::read_to_string(root.join("sub/A2.md")).unwrap(), "body");
-        assert!(rename_in(&root, "sub/A2", "B").is_err()); // refuse overwrite
-        assert!(rename_in(&root, "Ghost", "X").is_err()); // missing source
-        assert!(rename_in(&root, "B", "../esc").is_err()); // traversal blocked
+        assert_eq!(ix.names(), ["B", "sub/A2"]); // index key moved with the file
+        assert!(rename_in(&root, &mut ix, "sub/A2", "B").is_err()); // refuse overwrite
+        assert!(rename_in(&root, &mut ix, "Ghost", "X").is_err()); // missing source
+        assert!(rename_in(&root, &mut ix, "B", "../esc").is_err()); // traversal blocked
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -872,30 +862,6 @@ mod tests {
             assert_eq!(*out, render_md(b, &notes), "block {b:?} diverged");
         }
         assert!(render_blocks_with(&[], &notes).is_empty());
-    }
-
-    #[test]
-    fn note_cache_invalidates_after_rename() {
-        let root = std::env::temp_dir().join(format!("rustidian-nc-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("A.md"), "a").unwrap();
-        fs::write(root.join("B.md"), "b").unwrap();
-        let c = NoteCache::default();
-        assert_eq!(c.get(&root), vec!["A", "B"]);
-        // stale-by-design: disk changed but no invalidate -> old list served
-        fs::write(root.join("C.md"), "c").unwrap();
-        assert_eq!(c.get(&root), vec!["A", "B"]);
-        // rename + invalidate -> fresh walk shows the new names
-        rename_in(&root, "A", "sub/Z").unwrap();
-        c.invalidate();
-        assert_eq!(c.get(&root), vec!["B", "C", "sub/Z"]);
-        // and the rebuilt list is cached again
-        fs::remove_file(root.join("B.md")).unwrap();
-        assert_eq!(c.get(&root), vec!["B", "C", "sub/Z"]);
-        c.invalidate();
-        assert_eq!(c.get(&root), vec!["C", "sub/Z"]);
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
