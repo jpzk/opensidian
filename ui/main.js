@@ -462,10 +462,11 @@ function mkGroup() {
       '<canvas class="graph" hidden></canvas>' +
       '<div class="ac" hidden></div>' +
       '<div class="status" hidden><span class="st-bl"></span><span class="st-wc"></span><span class="st-cc"></span></div>' +
-      '<button class="lggear" title="local graph settings" hidden>&#9881;</button>' +
+      '<button class="lggear" title="local graph settings" hidden>' +
+        '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"/></svg></button>' +
       '<div class="lgpop" hidden>' +
         '<label>Depth <span class="lgdv">1</span></label>' +
-        '<input class="lgdepth" type="range" min="1" max="3" step="1" value="1">' +
+        '<input class="lgdepth" type="range" min="1" max="5" step="1" value="1">' +
         '<label><input class="lginc" type="checkbox" checked> Incoming links</label>' +
         '<label><input class="lgout" type="checkbox" checked> Outgoing links</label>' +
       '</div>' +
@@ -551,9 +552,33 @@ function updateTitle() {          // pane/focus census in the window title (head
   const nf = document.querySelectorAll("#main .pane.focused").length;
   const fx = (state.root.fractions || []).map(f => f.toFixed(2)).join(",");
   let lg = "";                    // M8: first localgraph tab -> [lg:<center>@<depth>]
+  // graph-parity: settled node screen coords (<= 16 nodes) -> [lgpos:A@x,y|B@x,y]
+  // for the first localgraph group (+ [lgt:<tab title>]), [ggpos:...] for a
+  // focused global graph;
+  // [lgl:<note>] = the lg tab's LINKED group's active note; [chain:N] = tabs
+  // carrying the link glyph. Headless probe for the graphnav smoke.
+  const posTok = h => {
+    if (!h.graphOn || !h.graphSettled || !h.graphNodes) return "";
+    const ns = h.graphNodes();
+    return ns.length > 16 ? "" : ns.map(p => p.n + "@" + p.x + "," + p.y).join("|");
+  };
   for (const h of groups()) {
     const t = h.tabs.find(t => t.kind === "lg");
-    if (t) { lg = " [lg:" + t.center + "@" + t.depth + "]"; break; }
+    if (t) {
+      lg = " [lg:" + t.center + "@" + t.depth + "] [lgt:" + t.name + "]";
+      const lk = groups().find(x => x.id === t.linkId);
+      if (lk && curOf(lk)) lg += " [lgl:" + curOf(lk) + "]";
+      const pt = h.tabs[h.active] === t ? posTok(h) : "";
+      if (pt) lg += " [lgpos:" + pt + "]";
+      break;
+    }
+  }
+  {
+    const linked = new Set();
+    let chain = 0;
+    for (const h of groups()) for (const t of h.tabs) if (t.kind === "lg") { linked.add(t.linkId); chain++; }
+    for (const h of groups()) if (linked.has(h.id) && h.active >= 0) chain++;
+    if (chain) lg += " [chain:" + chain + "]";
   }
   // R8.10: focused tab's view mode -> [mode:lp|src|read]; when the lp raw
   // row is active, [mode:lp:<l0>] exposes its block start line (headless probe)
@@ -562,7 +587,8 @@ function updateTitle() {          // pane/focus census in the window title (head
   if (md && ft.mode === "livepreview" && fg().lpActive) md += ":" + fg().lpActive.l0;
   if (md) md += "]";
   if (lpMs >= 0) md += " [lp:" + lpMs + "]";     // perf: last lpRender ms
-  const gg = ft && ft.kind === "gg" ? " [gg]" : "";  // R9.7: global graph tab focused
+  let gg = ft && ft.kind === "gg" ? " [gg]" : "";  // R9.7: global graph tab focused
+  if (gg) { const pt = posTok(fg()); if (pt) gg += " [ggpos:" + pt + "]"; }
   const modal = modalKind ? " [modal:" + modalKind + "]"
     : ($("rnbox") && !$("rnbox").hidden ? " [modal:rn]" : "");  // m5 fuzzy modal / rename prompt
   const t = "rustidian [panes:" + ps.length + " focused:" + nf +
@@ -888,6 +914,7 @@ async function lgFollow(src) {
     if (!t || t.kind !== "lg" || t.linkId !== src.id || t.center === n) continue;
     t.center = n;
     t.name = "Graph of " + n.split("/").pop();
+    h.graphSettled = false;         // census: old node coords are stale until the re-filtered sim settles
     renderTabs(h);
     if (h.graphRefresh) await h.graphRefresh();
     updateTitle();
@@ -1771,7 +1798,7 @@ async function cmdGlobalGraph() {  // R9.7: ribbon icon opens GLOBAL graph as a 
   await loadActive(g);
 }
 async function startGraph(g, cfg) {
-  g.graphOn = true;
+  g.graphOn = true; g.graphSettled = false;
   const openT0 = g.perfT0 || perf.now();   // perf: graph_settle = open -> kinetic energy below eps
   hideAc();
   g.status.hidden = true;
@@ -1964,9 +1991,14 @@ async function startGraph(g, cfg) {
         }
       }
     }
-    if (steps || dirty) { draw(); dirty = false; }
+    const drew = steps || dirty;
+    if (drew) { draw(); dirty = false; }
     if (steps) perf.push("graph_frame", perf.now() - fT0, { nodes: N.length, steps, phys: +(fT1 - fT0).toFixed(1), ke: +ke.toFixed(2), alpha: +alpha.toFixed(3) });
-    if (quiet) { running = false; perf.flush(); return; }   // settled: loop ends, CPU -> 0
+    if (quiet) {                       // settled: loop ends, CPU -> 0; publish node coords to the census
+      running = false; perf.flush();
+      if (!g.graphSettled || drew) { g.graphSettled = true; updateTitle(); }  // pan/zoom moves screen coords
+      return;
+    }
     g.sim = requestAnimationFrame(step);
   }
   const wake = () => {                  // (re)start the loop; a stopped loop draws once and exits
@@ -1975,7 +2007,11 @@ async function startGraph(g, cfg) {
     g.sim = requestAnimationFrame(step);
   };
   const redraw = () => { dirty = true; wake(); };
-  g.reheat = () => { calm = 0; quiet = false; alpha = Math.max(alpha, 0.5); wake(); };
+  g.reheat = () => { calm = 0; quiet = false; g.graphSettled = false; alpha = Math.max(alpha, 0.5); wake(); };
+  g.graphNodes = () => {              // census: node screen coords (window px) for the graphnav smoke
+    const r = cv.getBoundingClientRect();
+    return N.map(p => ({ n: p.n, x: Math.round(r.left + p.x * view.scale + view.tx), y: Math.round(r.top + p.y * view.scale + view.ty) }));
+  };
   running = true; step();
   // canvas resized (pane split / window): keep the bitmap crisp, redraw (world unchanged)
   if (g.ro) g.ro.disconnect();

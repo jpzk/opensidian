@@ -262,7 +262,8 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 /* M8 local graph (R7.5): per-pane settings gear + popover */
 .lggear { position: absolute; top: 8px; right: 10px; z-index: 7;
           background: #313244; color: #cdd6f4; border: 0; border-radius: 4px;
-          padding: 2px 8px; cursor: pointer; font-size: 14px; line-height: 20px }
+          padding: 4px 6px; cursor: pointer; font-size: 14px; line-height: 0 }
+.lggear svg { width: 16px; height: 16px; display: block }  /* inline svg: U+2699 gear tofu'd under webkit2gtk (like ux-1) */
 .lggear:hover { background: #45475a }
 .lggear[hidden] { display: none }
 .lgpop { position: absolute; top: 38px; right: 10px; z-index: 8;
