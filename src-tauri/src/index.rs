@@ -42,9 +42,11 @@ pub fn links_in(s: &str) -> Vec<String> {
 
 /// wikilinks resolve by full relative path or basename (first sorted match)
 pub fn resolve(notes: &[String], l: &str) -> Option<usize> {
-    notes
-        .iter()
-        .position(|x| *x == l || x.ends_with(&format!("/{l}")))
+    // one suffix alloc per call — it used to be one per note per link, so a
+    // write_note on a 9KB note walked ~50k allocs (2ms debug); graph paid it
+    // per edge too
+    let suffix = format!("/{l}");
+    notes.iter().position(|x| *x == l || x.ends_with(&suffix))
 }
 
 fn walk(dir: &Path, base: &Path, out: &mut Vec<String>) {
@@ -176,8 +178,13 @@ impl Index {
         let links = links_in(content);
         match self.notes.get_mut(name) {
             Some(m) => {
-                let old = std::mem::replace(&mut m.links, links.clone());
                 m.content = content.to_string();
+                if m.links == links {
+                    // plain save, link set unchanged (the common case): no
+                    // edge work at all
+                    return;
+                }
+                let old = std::mem::replace(&mut m.links, links.clone());
                 for l in &old {
                     self.drop_edge(name, l);
                 }
