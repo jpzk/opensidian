@@ -5,10 +5,37 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use tauri::State;
 
-struct Vault(Mutex<Option<PathBuf>>);
+/* perf-lp: sorted note-name list cached per vault. Every render used to
+   re-walk + sort the whole vault (notes_of); with ~150 blocks per lp pass
+   that was the bulk of the 269ms/caret-move. Cache is a plain Option so
+   invalidate() is one store; readers rebuild lazily on the next get(). */
+#[derive(Default)]
+struct NoteCache(Mutex<Option<Vec<String>>>);
+
+impl NoteCache {
+    fn get(&self, root: &Path) -> Vec<String> {
+        let mut g = self.0.lock().unwrap();
+        if let Some(n) = g.as_ref() {
+            return n.clone();
+        }
+        let n = notes_of(root);
+        *g = Some(n.clone());
+        n
+    }
+    fn invalidate(&self) {
+        *self.0.lock().unwrap() = None;
+    }
+}
+
+struct Vault(Mutex<Option<PathBuf>>, NoteCache);
 
 fn cur_vault(v: &State<Vault>) -> Option<PathBuf> {
     v.0.lock().unwrap().clone()
+}
+
+/// cached sorted note list for the open vault (empty when none open)
+fn cur_notes(v: &State<Vault>) -> Vec<String> {
+    cur_vault(v).map(|r| v.1.get(&r)).unwrap_or_default()
 }
 
 /// component-wise traversal check: only plain, non-hidden components allowed
@@ -89,12 +116,13 @@ fn list_folders(v: State<Vault>) -> Vec<String> {
 fn create_dir(v: State<Vault>, name: String) -> Result<(), String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
     let rel = safe_rel(&name).ok_or("invalid folder name")?;
+    v.1.invalidate();
     fs::create_dir_all(root.join(rel)).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn list_notes(v: State<Vault>) -> Vec<String> {
-    cur_vault(&v).map(|r| notes_of(&r)).unwrap_or_default()
+    cur_notes(&v)
 }
 
 #[tauri::command]
@@ -107,6 +135,11 @@ fn read_note(v: State<Vault>, name: String) -> String {
 #[tauri::command]
 fn write_note(v: State<Vault>, name: String, content: String) {
     if let Some(p) = note_path(&v, &name) {
+        // new file changes the note set; per-keystroke saves of an existing
+        // note must not evict the cache (that is the hot lp path)
+        if !p.exists() {
+            v.1.invalidate();
+        }
         if let Some(d) = p.parent() {
             let _ = fs::create_dir_all(d);
         }
@@ -205,6 +238,7 @@ fn rename_in(root: &Path, old: &str, new: &str) -> Result<(), String> {
 #[tauri::command]
 fn rename_note(v: State<Vault>, old: String, new: String) -> Result<(), String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
+    v.1.invalidate();
     rename_in(&root, &old, &new)
 }
 
@@ -281,6 +315,7 @@ fn set_vault(v: State<Vault>, path: String) -> Result<String, String> {
         return Err(format!("not a directory: {}", p.display()));
     }
     persist_vault(&p);
+    v.1.invalidate();
     *v.0.lock().unwrap() = Some(p.clone());
     Ok(p.display().to_string())
 }
@@ -302,6 +337,7 @@ fn create_vault(v: State<Vault>, parent: String, name: String) -> Result<String,
     )
     .map_err(|e| e.to_string())?;
     persist_vault(&p);
+    v.1.invalidate();
     *v.0.lock().unwrap() = Some(p.clone());
     Ok(p.display().to_string())
 }
@@ -428,15 +464,27 @@ fn render_md(content: &str, notes: &[String]) -> String {
 
 #[tauri::command]
 fn render(v: State<Vault>, content: String) -> String {
-    let notes = cur_vault(&v).map(|r| notes_of(&r)).unwrap_or_default();
-    render_md(&content, &notes)
+    render_md(&content, &cur_notes(&v))
+}
+
+/// pure core of render_blocks: every block rendered against the same note list
+fn render_blocks_with(blocks: &[String], notes: &[String]) -> Vec<String> {
+    blocks.iter().map(|b| render_md(b, notes)).collect()
+}
+
+/* perf-lp: live preview renders every block of a note per caret move. One
+   IPC round-trip + one note-list lookup for the whole batch instead of
+   ~150 render calls each re-walking the vault. */
+#[tauri::command]
+fn render_blocks(v: State<Vault>, blocks: Vec<String>) -> Vec<String> {
+    render_blocks_with(&blocks, &cur_notes(&v))
 }
 
 #[tauri::command]
 fn backlinks(v: State<Vault>, name: String) -> Vec<String> {
     // invert the graph edges: which notes link to `name`?
     let Some(root) = cur_vault(&v) else { return vec![] };
-    let notes = notes_of(&root);
+    let notes = v.1.get(&root);
     let mut out = Vec::new();
     for n in &notes {
         if *n == name {
@@ -500,7 +548,7 @@ fn graph(v: State<Vault>) -> Graph {
     let Some(root) = cur_vault(&v) else {
         return Graph { nodes: vec![], edges: vec![] };
     };
-    let docs: Vec<(String, String)> = notes_of(&root)
+    let docs: Vec<(String, String)> = v.1.get(&root)
         .into_iter()
         .map(|n| {
             let c = fs::read_to_string(format!("{}.md", root.join(&n).display()))
@@ -560,7 +608,7 @@ fn search_docs(docs: &[(String, String)], query: &str) -> Vec<SearchHit> {
 #[tauri::command]
 fn search(v: State<Vault>, query: String) -> Vec<SearchHit> {
     let Some(root) = cur_vault(&v) else { return vec![] };
-    let docs: Vec<(String, String)> = notes_of(&root)
+    let docs: Vec<(String, String)> = v.1.get(&root)
         .into_iter()
         .map(|n| {
             let c = fs::read_to_string(format!("{}.md", root.join(&n).display()))
@@ -616,9 +664,9 @@ fn main() {
         .map(PathBuf::from)
         .or_else(|| read_cfg().0.map(PathBuf::from).filter(|p| p.is_dir()));
     tauri::Builder::default()
-        .manage(Vault(Mutex::new(init)))
+        .manage(Vault(Mutex::new(init), NoteCache::default()))
         .invoke_handler(tauri::generate_handler![
-            list_notes, read_note, write_note, render, graph, vault_get, set_vault,
+            list_notes, read_note, write_note, render, render_blocks, graph, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, recent_vaults, rename_note,
             get_sidebar_w, set_sidebar_w
@@ -768,6 +816,51 @@ mod tests {
         assert!(rename_in(&root, "sub/A2", "B").is_err()); // refuse overwrite
         assert!(rename_in(&root, "Ghost", "X").is_err()); // missing source
         assert!(rename_in(&root, "B", "../esc").is_err()); // traversal blocked
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn render_blocks_matches_per_block_render() {
+        let notes = vec!["Ideas".to_string(), "sub/Nested".to_string()];
+        let blocks: Vec<String> = [
+            "# Title [[Ideas]]",
+            "plain para with [[Nested]] and [[Nope]]",
+            "- a\n- b [[Ideas|alias]]",
+            "```\n[[Ideas]]\n```",
+            "",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let batch = render_blocks_with(&blocks, &notes);
+        assert_eq!(batch.len(), blocks.len());
+        for (b, out) in blocks.iter().zip(&batch) {
+            assert_eq!(*out, render_md(b, &notes), "block {b:?} diverged");
+        }
+        assert!(render_blocks_with(&[], &notes).is_empty());
+    }
+
+    #[test]
+    fn note_cache_invalidates_after_rename() {
+        let root = std::env::temp_dir().join(format!("rustidian-nc-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("A.md"), "a").unwrap();
+        fs::write(root.join("B.md"), "b").unwrap();
+        let c = NoteCache::default();
+        assert_eq!(c.get(&root), vec!["A", "B"]);
+        // stale-by-design: disk changed but no invalidate -> old list served
+        fs::write(root.join("C.md"), "c").unwrap();
+        assert_eq!(c.get(&root), vec!["A", "B"]);
+        // rename + invalidate -> fresh walk shows the new names
+        rename_in(&root, "A", "sub/Z").unwrap();
+        c.invalidate();
+        assert_eq!(c.get(&root), vec!["B", "C", "sub/Z"]);
+        // and the rebuilt list is cached again
+        fs::remove_file(root.join("B.md")).unwrap();
+        assert_eq!(c.get(&root), vec!["B", "C", "sub/Z"]);
+        c.invalidate();
+        assert_eq!(c.get(&root), vec!["C", "sub/Z"]);
         let _ = fs::remove_dir_all(&root);
     }
 
