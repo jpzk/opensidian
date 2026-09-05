@@ -16,6 +16,7 @@ I'm running as many top frontier models to scan for vulnerabilities, but since t
 - #tags: inline pills + frontmatter `tags:`, Tags pane in the right sidebar (nested a/b, counts), `tag:foo` search filter
 - safe renames (H1 or F2) that rewrite [[links]] across the vault
 - external edits (R11): the vault is watched (1s tick, std-only); shell edits to an open note appear in place with the caret kept, unsaved local text is merged with external appends, external create/rename/delete update the explorer and close the affected tab
+- source mode (R12): live preview with every marker revealed — grey `#`/`**`/`[[` markers in the text flow, headings keep their size, bold/italic/strike/highlight/code styled, links + `#tag` in accent, fences shaded with the fence lines visible, literal `- [ ]` tasks; same font and measure as live preview, one raw caret row, `[[` autocomplete
 - vault picker with persistence (or env VAULT_DIR, default ./vault)
 
 ## Screenshots

@@ -397,15 +397,11 @@ async function rOutline(n) {
 async function tocGo(line) {               // scroll + focus the heading at `line`
   const g = fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
   if (!t || t.kind) return;
-  if (t.mode === "livepreview") {
+  if (isLp(t.mode)) {                     // R12: source mode = lp with reveal
     lpCommit(g);
     await lpRender(g, line, 0);            // raw row = the heading, caret on it
     const row = [...g.lp.children].find(r => +r.dataset.l0 === line);
     if (row) g.lp.scrollTop = row.offsetTop - g.lp.offsetTop;
-  } else if (t.mode === "source") {
-    const ed = g.editor, off = ed.value.split("\n").slice(0, line).reduce((a, x) => a + x.length + 1, 0);
-    ed.focus(); ed.setSelectionRange(off, off);
-    ed.scrollTop = line * 20.8;
   } else {
     const k = tocHeads.findIndex(h => h.line === line);
     const el = g.preview.querySelectorAll("h1,h2,h3,h4,h5,h6")[k];
@@ -418,11 +414,10 @@ function tocSync() {                       // highlight the heading at the viewp
   const g = fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
   if (!t || t.kind) return;
   let top = 0;                             // first visible source line
-  if (t.mode === "livepreview") {
+  if (isLp(t.mode)) {
     const st = g.lp.scrollTop + 2;
     for (const r of g.lp.children) if (r.offsetTop - g.lp.offsetTop <= st) top = +r.dataset.l0;
-  } else if (t.mode === "source") top = Math.floor(g.editor.scrollTop / 20.8);
-  else {
+  } else {
     const st = g.preview.scrollTop + 2, hs = g.preview.querySelectorAll("h1,h2,h3,h4,h5,h6");
     let k = -1;
     hs.forEach((el, i) => { if (el.offsetTop - g.preview.offsetTop <= st) k = i; });
@@ -641,6 +636,14 @@ function mkGroup() {
   g.editor.addEventListener("input", () => { scheduleSave(g); showAc(g); });
   g.editor.addEventListener("keydown", e => acKeydown(g, e));
   g.editor.addEventListener("blur", () => setTimeout(hideAc, 100));
+  // R12: click below the last row (empty pane space) = caret at the end of
+  // the note, like a textarea / stock; rows handle their own mousedown
+  g.lp.addEventListener("mousedown", e => {
+    if (e.target !== g.lp || g.graphOn) return;
+    e.preventDefault();
+    const L = bufOf(g).split("\n");             // an open raw row counts
+    lpEdit(g, L.length - 1, L[L.length - 1].length);
+  });
   return g;
 }
 
@@ -739,7 +742,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   // row is active, [mode:lp:<l0>] exposes its block start line (headless probe)
   const ft = fg() && fg().active >= 0 ? fg().tabs[fg().active] : null;
   let md = ft && !ft.kind ? " [mode:" + (MODE_ABBR[ft.mode] || "?") : "";
-  if (md && ft.mode === "livepreview" && fg().lpActive) md += ":" + fg().lpActive.l0;
+  if (md && isLp(ft.mode) && fg().lpActive) md += ":" + fg().lpActive.l0;
   if (md) md += "]";
   if (lpMs >= 0) md += " [lp:" + lpMs + "]";     // perf: last lpRender ms
   let gg = ft && ft.kind === "gg" ? " [gg]" : "";  // R9.7: global graph tab focused
@@ -903,6 +906,11 @@ const ICON_PEN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
 const ICON_SRC = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 6l-6 6 6 6M16 6l6 6-6 6"/></svg>';
 const MODE_ABBR = { livepreview: "lp", source: "src", reading: "read" };
 const MODE_NEXT = { livepreview: "source", source: "reading", reading: "livepreview" };
+const isLp = m => m === "livepreview" || m === "source";  // R12: both render in g.lp
+function caretLC(g) {            // [line, col] of the caret inside the active raw row
+  const a = g.lpActive, before = a.ta.value.slice(0, a.ta.selectionStart).split("\n");
+  return [a.l0 + before.length - 1, before[before.length - 1].length];
+}
 
 function updateModeBtn(g) {
   const tb = g.active >= 0 ? g.tabs[g.active] : null;
@@ -911,10 +919,11 @@ function updateModeBtn(g) {
     m === "reading" ? ICON_PEN : m === "source" ? ICON_SRC : ICON_BOOK;
 }
 
-function applyMode(g) {  // exactly ONE of editor / lp / preview fills the pane
+function applyMode(g) {  // exactly ONE of lp / preview fills the pane
   const m = g.active >= 0 ? g.tabs[g.active].mode : "livepreview";
-  g.editor.style.display = m === "source" ? "" : "none";
-  g.lp.style.display = m === "livepreview" ? "" : "none";
+  g.editor.style.display = "none";          // R12: the model textarea never shows; source = lp + reveal
+  g.lp.style.display = isLp(m) ? "" : "none";
+  g.lp.classList.toggle("src", m === "source");
   g.preview.style.display = m === "reading" ? "" : "none";
   updateModeBtn(g);
 }
@@ -924,13 +933,17 @@ async function cmdToggleMode(g) {  // Ctrl+E / mode button: lp -> src -> read ->
   if (!g || g.active < 0 || g.graphOn) return;
   const tab = g.tabs[g.active];
   if (tab.kind) return;             // graph tabs (lg/gg) have no view mode
+  const keep = g.lpActive ? caretLC(g) : null;   // R12.4: caret survives lp<->src
   await flushSave(g);
   tab.mode = MODE_NEXT[tab.mode] || "livepreview";
   hideAc();
   applyMode(g);
   if (tab.mode === "reading") await preview(g);
   if (tab.mode === "livepreview") await lpRender(g, -1, 0, true);  // mode switch: full rebuild
-  if (tab.mode === "source") g.editor.focus();
+  if (tab.mode === "source") {      // raw row where the caret was, else end of note
+    const L = g.editor.value.split("\n");
+    await lpRender(g, keep ? keep[0] : L.length - 1, keep ? keep[1] : L[L.length - 1].length, true);
+  }
   updateTitle();
 }
 
@@ -1065,9 +1078,8 @@ async function loadActive(g) {
   const tb0 = g.tabs[g.active];
   if (tb0 && !tb0.kind) { tb0.h1 = h1Of(g.editor.value); tb0.base = g.editor.value; }  // ux-3: H1 snapshot; R11: disk base
   const m = g.tabs[g.active] ? g.tabs[g.active].mode : "livepreview";
-  if (n && m === "source") g.editor.focus();
   if (m === "reading") await preview(g);
-  else if (m === "livepreview") await lpRender(g);
+  else if (isLp(m)) await lpRender(g);
   renderTabs(g);
   await refreshTree();
   await updateStatus(g);
@@ -1169,16 +1181,13 @@ async function navAnchor(g, anchor) {
   const line = anchorLine(g.editor.value, anchor);
   navInfo = "nav:" + anchor + "@" + line;
   if (line < 0) return updateTitle();
-  if (t.mode === "livepreview") {
+  if (isLp(t.mode)) {
     const row = [...g.lp.children].find(r => +r.dataset.l0 <= line && line <= +r.dataset.l1);
     if (row) {
       g.lp.scrollTop = row.offsetTop - g.lp.offsetTop - (g.lp.clientHeight - row.offsetHeight) / 2;
       flash(row);
     }
-  } else if (t.mode === "source") {
-    const ed = g.editor, off = ed.value.split("\n").slice(0, line).reduce((a, x) => a + x.length + 1, 0);
-    ed.focus(); ed.setSelectionRange(off, off);
-    ed.scrollTop = line * 20.8;
+    if (t.mode === "source") await lpEdit(g, line, 0);  // R12: source puts the caret on the line
   } else {
     let el = null;
     if (anchor.startsWith("^")) {
@@ -1357,9 +1366,10 @@ async function lpRender(g, activeL = -1, col = 0, full = false) {
   const texts = blocks.map(b => L.slice(b.l0, b.l1 + 1).join("\n"));
   const activeBi = activeL < 0 ? -1
     : blocks.findIndex(b => b.l0 <= activeL && activeL <= b.l1);
-  const note = curOf(g);
+  const note = curOf(g), tb = g.tabs[g.active];
+  const cmd = tb && tb.mode === "source" ? "highlight_blocks" : "render_blocks";  // R12: reveal rows
   let c = g.lpCache;
-  if (full || !c || c.note !== note || g.lp.children.length !== c.texts.length)
+  if (full || !c || c.note !== note || c.cmd !== cmd || g.lp.children.length !== c.texts.length)
     c = null;
   // diff by block text: common prefix p / suffix s; [p, nn-s) is the edit
   const on = c ? c.texts.length : 0, nn = texts.length;
@@ -1376,7 +1386,7 @@ async function lpRender(g, activeL = -1, col = 0, full = false) {
   const need = [];
   for (let i = 0; i < nn; i++) if (i !== activeBi && htmls[i] == null) need.push(i);
   if (need.length) {                            // ONE IPC for everything unknown
-    const rendered = await inv("render_blocks", { blocks: need.map(i => texts[i]) });
+    const rendered = await inv(cmd, { blocks: need.map(i => texts[i]) });
     if (seq !== g.lpSeq) return;                 // a newer render superseded us
     need.forEach((i, k) => { htmls[i] = rendered[k]; });
   }
@@ -1418,7 +1428,7 @@ async function lpRender(g, activeL = -1, col = 0, full = false) {
     for (let i = 0; i < p; i++) kept(i);
     for (let i = nn - s; i < nn; i++) kept(i);
   }
-  g.lpCache = { note, texts, htmls };
+  g.lpCache = { note, texts, htmls, cmd };
   g.lp.scrollTop = st;
   if (activeBi >= 0 && g.lpActive) {             // caret into the raw row
     const b = blocks[activeBi], ta = g.lpActive.ta;
@@ -1444,9 +1454,13 @@ function lpRawRow(g, b, text) {
   ta.spellcheck = false;
   ta.addEventListener("input", () => {           // grow with typed newlines
     ta.rows = ta.value.split("\n").length;
+    showAc(g);                                   // R12: [[ autocomplete in the raw row
+    const tb = g.tabs[g.active];                 // source mode saves while typing (textarea parity)
+    if (tb && tb.mode === "source") scheduleSave(g);
   });
-  ta.addEventListener("keydown", ev => lpKey(g, ev));  // R8.4 traversal
+  ta.addEventListener("keydown", ev => { acKeydown(g, ev); if (!ev.defaultPrevented) lpKey(g, ev); });  // R8.4 traversal
   ta.addEventListener("blur", () => setTimeout(() => {
+    hideAc();
     if (g.lpActive && g.lpActive.ta === ta) { lpCommit(g); lpRender(g); }
   }, 60));
   row.appendChild(ta);
@@ -1611,7 +1625,7 @@ function scheduleSave(g) {
   g.saveT = setTimeout(async () => {
     g.saveT = null;
     const n = curOf(g);
-    if (n) { await writeNote(n, g.editor.value); setBase(g); }
+    if (n) { await writeNote(n, bufOf(g)); setBase(g); }   // R12: an open raw row is folded in
     await maybeH1Rename(g);                 // ux-3: H1 edit commits a rename
     preview(g);
     updateStatus(g);
@@ -1656,8 +1670,11 @@ function fuzzy(q, s) {  // lower score = better; -1 = no match
   return 1000;
 }
 
+// R12: the field being typed in — the lp raw row when one is open (source +
+// live preview both edit there now), else the hidden model textarea
+const acField = g => g.lpActive ? g.lpActive.ta : g.editor;
 function acContext(g) {  // caret inside an unclosed [[ on one line?
-  const ed = g.editor;
+  const ed = acField(g);
   const upto = ed.value.slice(0, ed.selectionStart);
   const a = upto.lastIndexOf("[[");
   if (a < 0) return null;
@@ -1667,9 +1684,13 @@ function acContext(g) {  // caret inside an unclosed [[ on one line?
 }
 
 function caretXY(g) {    // approximate caret position within g's content box
-  const ed = g.editor;
+  const ed = acField(g);
   const lines = ed.value.slice(0, ed.selectionStart).split("\n");
   const col = lines[lines.length - 1].length;
+  if (ed !== g.editor) {                         // raw row: its box, relative to the pane
+    const pr = g.pane.getBoundingClientRect(), r = ed.getBoundingClientRect();
+    return [r.left - pr.left + Math.min(col * 7.8, r.width - 40), r.top - pr.top + lines.length * 20.8];
+  }
   const x = ed.offsetLeft + 16 + Math.min(col * 7.8, ed.clientWidth - 40);
   const y = ed.offsetTop + 16 + lines.length * 20.8 - ed.scrollTop;
   return [x, y];
@@ -1731,7 +1752,7 @@ async function showAc(g) {
 }
 
 function acInsert(g, name) {
-  const ed = g.editor;
+  const ed = acField(g);
   const end = ed.selectionStart;
   ed.value = ed.value.slice(0, acStart) + "[[" + name + "]]" + ed.value.slice(end);
   const p = acStart + name.length + 4;
@@ -2511,7 +2532,7 @@ async function enterVault() {
 // dirty == bufOf(g) !== base even while the raw row is still being typed in.
 function setBase(g) {
   const t = g.active >= 0 ? g.tabs[g.active] : null;
-  if (t && !t.kind) t.base = g.editor.value;
+  if (t && !t.kind) t.base = bufOf(g);
 }
 function bufOf(g) {
   const a = g.lpActive;
@@ -2528,10 +2549,8 @@ async function reloadInPlace(g, text) {
     const a = g.lpActive, before = a.ta.value.slice(0, a.ta.selectionStart).split("\n");
     al = a.l0 + before.length - 1; col = before[before.length - 1].length;
   }
-  const [s0, s1, st] = [g.editor.selectionStart, g.editor.selectionEnd, g.editor.scrollTop];
   g.editor.value = text; t.base = text; t.h1 = h1Of(text);
-  if (t.mode === "source") { g.editor.setSelectionRange(s0, s1); g.editor.scrollTop = st; }
-  else if (t.mode === "reading") await preview(g);
+  if (t.mode === "reading") await preview(g);
   else await lpRender(g, al, col);             // incremental: unchanged rows untouched
   updateStatus(g);
 }

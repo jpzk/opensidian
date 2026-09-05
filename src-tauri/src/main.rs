@@ -9,6 +9,7 @@ mod index;
 mod outline;
 mod perf;
 mod sandbox;
+mod srcmode;
 mod watcher;
 use index::{link_parts, links_in, resolve, tag_spans, Index};
 
@@ -482,6 +483,13 @@ fn render_blocks(v: State<Vault>, blocks: Vec<String>) -> Vec<String> {
     span_timed!("render_blocks", render_blocks_with(&blocks, v.index.lock().unwrap().names()), serde_json::json!({"blocks": n}))
 }
 
+/// R12 source mode: lp rows with every marker revealed (src/srcmode.rs)
+#[tauri::command]
+fn highlight_blocks(blocks: Vec<String>) -> Vec<String> {
+    let n = blocks.len();
+    span_timed!("highlight_blocks", blocks.iter().map(|b| srcmode::highlight_block(b)).collect(), serde_json::json!({"blocks": n}))
+}
+
 /// tags: per-note tag list and vault-wide tag -> note count (BTreeMap keeps
 /// the JSON object sorted by tag; the UI re-sorts by count)
 #[tauri::command]
@@ -870,7 +878,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            list_notes, read_note, write_note, render, render_blocks, graph, vault_get, set_vault,
+            list_notes, read_note, write_note, render, render_blocks, highlight_blocks, graph, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, recent_vaults, rename_note, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_span, log_spans,
