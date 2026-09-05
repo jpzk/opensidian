@@ -2290,10 +2290,15 @@ async function startGraph(g, cfg) {
   // STEP toward 0 (alpha += -alpha*ALPHA_DECAY; 0.001 after 300 steps) and
   // physics freezes below 0.001. Physics steps are wall-clock-locked at PH_HZ/s
   // (substepped inside rAF): a throttled/headless rAF must not stretch settle.
+  // Catch-up is capped at PH_CAP s of sim time per frame (PH_CAP*PH_HZ steps,
+  // ~1.5-3 ms each at N=500 debug): a loaded host hands rAF gaps of 250-500 ms,
+  // and every gap beyond the cap is sim time LOST, which stretches settle
+  // (bench: 6 capped frames = +1.2 s at the old 0.25 cap). A hidden tab
+  // returning after minutes bursts at most 300 steps (alpha floor) anyway.
   // perf-graph: the rAF loop is NOT unconditional — it runs while physics is
   // hot (alpha > ALPHA_MIN and kinetic energy above eps) and stops otherwise
   // (CPU 0); wake() restarts it on refresh (reheat), pan, zoom, hover, resize, close.
-  const PH_HZ = 120, ALPHA_MIN = 0.001, ALPHA_DECAY = 1 - Math.pow(0.001, 1 / 300);
+  const PH_HZ = 120, PH_CAP = 1, ALPHA_MIN = 0.001, ALPHA_DECAY = 1 - Math.pow(0.001, 1 / 300);
   let alpha = 1, phAcc = 0, phLast = performance.now();
   // settled = total kinetic energy (sum v^2) under 0.0025 px^2/step per node
   // (mean speed < 0.05 px/step, invisible) for 10 consecutive steps, or physics frozen
@@ -2426,7 +2431,7 @@ async function startGraph(g, cfg) {
       if (g.perfT0) { perf.mark("graph_open", g.perfT0, { nodes: N.length, edges: gr.edges.length }); g.perfT0 = null; }
     }
     const fT0 = perf.now(); let steps = 0, ke = -1;
-    phAcc = Math.min(phAcc + (now - phLast) / 1000, 0.25); phLast = now;
+    phAcc = Math.min(phAcc + (now - phLast) / 1000, PH_CAP); phLast = now;
     while (phAcc >= 1 / PH_HZ) {
       phAcc -= 1 / PH_HZ;
       if (!quiet && alpha > ALPHA_MIN) { physStep(); steps++; }
