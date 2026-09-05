@@ -315,8 +315,8 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .lp .blockid { font-size: .7em; color: #6c7086; vertical-align: super; margin-left: 4px; user-select: none }
 .preview .blockid { display: none }
 /* R10.2 navigation target flash (~2 s fade, stock yellow) */
-.navflash { background: rgba(249,226,175,.35); transition: background 1.5s ease-out .5s }
-.navflash.fade { background: transparent }
+.navflash { background: rgba(249,226,175,.35) }
+.navflash.fade { background: transparent; transition: background 1.5s ease-out }
 .ac .acb { float: right; margin-left: 14px; color: #6c7086; font-size: 11px; line-height: 20px }
 /* R10.5 unlinked mentions: collapsible section head + Link button per hit */
 .ulhead { cursor: pointer; display: flex; align-items: center; gap: 4px; margin-top: 6px;
@@ -325,5 +325,4 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .ulhead .tc svg { width: 10px; height: 10px; transition: transform .1s }
 .ulhead.open .tc svg { transform: rotate(90deg) }
 .ullink { background: #89b4fa; color: #1e1e2e; border: 0; border-radius: 4px;
-          padding: 1px 8px; font: 600 11px sans-serif; cursor: pointer; opacity: .7 }
-.ulnote:hover .ullink { opacity: 1 }
+          padding: 1px 8px; font: 600 11px sans-serif; cursor: pointer }
