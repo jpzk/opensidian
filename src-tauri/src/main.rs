@@ -132,13 +132,13 @@ fn create_dir(v: State<Vault>, name: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn list_notes(v: State<Vault>) -> Vec<String> {
-    span_timed!("list_notes", cur_notes(&v))
+fn list_notes(v: State<Vault>, otel: Option<perf::Ctx>) -> Vec<String> {
+    span_timed!(otel => "list_notes", cur_notes(&v))
 }
 
 #[tauri::command]
-fn read_note(v: State<Vault>, name: String) -> String {
-    span_timed!(
+fn read_note(v: State<Vault>, name: String, otel: Option<perf::Ctx>) -> String {
+    span_timed!(otel =>
         "read_note",
         note_path(&v, &name, false)
             .and_then(|p| read_capped(&p))
@@ -147,9 +147,9 @@ fn read_note(v: State<Vault>, name: String) -> String {
 }
 
 #[tauri::command]
-fn write_note(v: State<Vault>, name: String, content: String) {
+fn write_note(v: State<Vault>, name: String, content: String, otel: Option<perf::Ctx>) {
     let bytes = content.len();
-    span_timed!("write_note", write_note_inner(&v, &name, &content), serde_json::json!({"bytes": bytes}))
+    span_timed!(otel => "write_note", write_note_inner(&v, &name, &content), serde_json::json!({"bytes": bytes}))
 }
 
 fn write_note_inner(v: &State<Vault>, name: &str, content: &str) {
@@ -204,10 +204,10 @@ fn rename_in(root: &Path, ix: &mut Index, old: &str, new: &str) -> Result<(), St
 }
 
 #[tauri::command]
-fn rename_note(v: State<Vault>, old: String, new: String) -> Result<(), String> {
+fn rename_note(v: State<Vault>, old: String, new: String, otel: Option<perf::Ctx>) -> Result<(), String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
     let mut ix = v.index.lock().unwrap();
-    span_timed!("rename_note", rename_in(&root, &mut ix, &old, &new))
+    span_timed!(otel => "rename_note", rename_in(&root, &mut ix, &old, &new))
 }
 
 #[tauri::command]
@@ -277,8 +277,8 @@ fn recent_vaults() -> Vec<String> {
 }
 
 #[tauri::command]
-fn set_vault(v: State<Vault>, path: String) -> Result<String, String> {
-    span_timed!("set_vault", set_vault_inner(&v, &path))
+fn set_vault(v: State<Vault>, path: String, otel: Option<perf::Ctx>) -> Result<String, String> {
+    span_timed!(otel => "set_vault", set_vault_inner(&v, &path))
 }
 
 fn set_vault_inner(v: &State<Vault>, path: &str) -> Result<String, String> {
@@ -325,23 +325,12 @@ fn create_vault(v: State<Vault>, parent: String, name: String) -> Result<String,
     Ok(p.display().to_string())
 }
 
-/// perf-spans: frontend spans land in the same RUSTIDIAN_PERF jsonl as backend ones
-#[tauri::command]
-fn log_span(name: String, ms: f64, extra: serde_json::Value) -> bool {
-    perf::span(&name, ms, extra);
-    perf::enabled() // false lets the UI stop sending spans at all
-}
-
-/// perf-graph: batched variant for high-rate UI spans (one IPC per ~64 sim frames
-/// instead of one per frame, so the telemetry does not perturb what it measures)
+/// otel (R18): frontend spans (ui/otel.js) arrive in ONE batch per 250ms — [{name, traceId, spanId,
+/// parentSpanId, startMs, endMs, attrs}] — and land in the same RUSTIDIAN_OTEL file as backend spans,
+/// one OTLP/JSON request line per batch. Returns false when telemetry is off so the UI stops sending.
 #[tauri::command]
 fn log_spans(spans: Vec<serde_json::Value>) -> bool {
-    for s in spans {
-        let name = s.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let ms = s.get("ms").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        let extra = s.get("extra").cloned().unwrap_or(serde_json::Value::Null);
-        perf::span(&name, ms, extra);
-    }
+    perf::ui_spans(&spans);
     perf::enabled()
 }
 
@@ -633,8 +622,8 @@ fn render_with(content: &str, notes: &[String], reading: bool) -> String {
 }
 
 #[tauri::command]
-fn render(v: State<Vault>, content: String) -> String {
-    span_timed!("render", render_with(&content, v.index.lock().unwrap().names(), true), serde_json::json!({"bytes": content.len()}))
+fn render(v: State<Vault>, content: String, otel: Option<perf::Ctx>) -> String {
+    span_timed!(otel => "render", render_with(&content, v.index.lock().unwrap().names(), true), serde_json::json!({"bytes": content.len()}))
 }
 
 /// pure core of render_blocks: every block rendered against the same note list
@@ -646,16 +635,16 @@ fn render_blocks_with(blocks: &[String], notes: &[String]) -> Vec<String> {
    IPC round-trip + one note-list lookup for the whole batch instead of
    ~150 render calls each re-walking the vault. */
 #[tauri::command]
-fn render_blocks(v: State<Vault>, blocks: Vec<String>) -> Vec<String> {
+fn render_blocks(v: State<Vault>, blocks: Vec<String>, otel: Option<perf::Ctx>) -> Vec<String> {
     let n = blocks.len();
-    span_timed!("render_blocks", render_blocks_with(&blocks, v.index.lock().unwrap().names()), serde_json::json!({"blocks": n}))
+    span_timed!(otel => "render_blocks", render_blocks_with(&blocks, v.index.lock().unwrap().names()), serde_json::json!({"blocks": n}))
 }
 
 /// R12 source mode: lp rows with every marker revealed (src/srcmode.rs)
 #[tauri::command]
-fn highlight_blocks(blocks: Vec<String>) -> Vec<String> {
+fn highlight_blocks(blocks: Vec<String>, otel: Option<perf::Ctx>) -> Vec<String> {
     let n = blocks.len();
-    span_timed!("highlight_blocks", blocks.iter().map(|b| srcmode::highlight_block(b)).collect(), serde_json::json!({"blocks": n}))
+    span_timed!(otel => "highlight_blocks", blocks.iter().map(|b| srcmode::highlight_block(b)).collect(), serde_json::json!({"blocks": n}))
 }
 
 /// tags: per-note tag list and vault-wide tag -> note count (BTreeMap keeps
@@ -671,8 +660,8 @@ fn tag_counts(v: State<Vault>) -> std::collections::BTreeMap<String, usize> {
 }
 
 #[tauri::command]
-fn backlinks(v: State<Vault>, name: String) -> Vec<String> {
-    span_timed!("backlinks", backlinks_inner(&v, &name))
+fn backlinks(v: State<Vault>, name: String, otel: Option<perf::Ctx>) -> Vec<String> {
+    span_timed!(otel => "backlinks", backlinks_inner(&v, &name))
 }
 
 fn backlinks_inner(v: &State<Vault>, name: &str) -> Vec<String> {
@@ -683,8 +672,8 @@ fn backlinks_inner(v: &State<Vault>, name: &str) -> Vec<String> {
 
 /* rsidebar: right sidebar panes served from the index (zero disk reads) */
 #[tauri::command]
-fn outline(v: State<Vault>, name: String) -> Vec<outline::Heading> {
-    span_timed!("outline", outline::parse(v.index.lock().unwrap().content(&name).unwrap_or("")))
+fn outline(v: State<Vault>, name: String, otel: Option<perf::Ctx>) -> Vec<outline::Heading> {
+    span_timed!(otel => "outline", outline::parse(v.index.lock().unwrap().content(&name).unwrap_or("")))
 }
 
 #[derive(serde::Serialize)]
@@ -876,8 +865,8 @@ fn build_graph(notes: &[String], links: &[&[String]]) -> Graph {
 }
 
 #[tauri::command]
-fn graph(v: State<Vault>) -> Graph {
-    span_timed!("graph", graph_inner(&v), serde_json::json!({}))
+fn graph(v: State<Vault>, otel: Option<perf::Ctx>) -> Graph {
+    span_timed!(otel => "graph", graph_inner(&v), serde_json::json!({}))
 }
 
 fn graph_inner(v: &State<Vault>) -> Graph {
@@ -982,8 +971,8 @@ fn search_docs<'a>(docs: impl IntoIterator<Item = (&'a str, &'a str, &'a [String
 }
 
 #[tauri::command]
-fn search(v: State<Vault>, query: String) -> Vec<SearchHit> {
-    span_timed!("search", search_inner(&v, &query))
+fn search(v: State<Vault>, query: String, otel: Option<perf::Ctx>) -> Vec<SearchHit> {
+    span_timed!(otel => "search", search_inner(&v, &query))
 }
 
 fn search_inner(v: &State<Vault>, query: &str) -> Vec<SearchHit> {
@@ -1097,7 +1086,7 @@ fn main() {
             list_notes, read_note, write_note, render, render_blocks, highlight_blocks, graph, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, recent_vaults, rename_note, tags, tag_counts,
-            get_sidebar_w, set_sidebar_w, log_span, log_spans, graph_renderer_pref,
+            get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab,
             get_hotkeys, set_hotkeys, open_external
         ])
