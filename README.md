@@ -10,6 +10,7 @@ I'm running as many top frontier models to scan for vulnerabilities, but since t
 ## Features
 - markdown editor + live preview (pulldown-cmark, rendered in Rust) — live preview is the default mode
 - [[wikilinks]] -> clickable links + local graph view (canvas force sim)
+- `[[note#heading]]`, `[[note#^block]]`, `[[note|alias]]` links: alias text, scroll-to-target + flash, `[[note#` heading autocomplete, block ids (` ^id`); Backlinks pane with Unlinked mentions + Link button
 - splits / tab groups with tab drag & drop
 - full-text search, quick switcher, command palette, bookmarks
 - #tags: inline pills + frontmatter `tags:`, Tags pane in the right sidebar (nested a/b, counts), `tag:foo` search filter
