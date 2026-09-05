@@ -748,7 +748,8 @@ function updateTitle() {          // pane/focus census in the window title (head
   let gg = ft && ft.kind === "gg" ? " [gg]" : "";  // R9.7: global graph tab focused
   if (gg) { const pt = posTok(fg()); if (pt) gg += " [ggpos:" + pt + "]"; }
   const modal = modalKind ? " [modal:" + modalKind + "]"
-    : ($("rnbox") && !$("rnbox").hidden ? " [modal:rn]" : "");  // m5 fuzzy modal / rename prompt
+    : ($("rnbox") && !$("rnbox").hidden ? " [modal:rn]" : "")  // m5 fuzzy modal / rename prompt
+    + (settingsOpen ? " [modal:settings]" + hkInfo : "");      // R14 settings + hotkeys probe
   let t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
             " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + lg + md + gg + modal +
@@ -1217,6 +1218,7 @@ async function histGo(d) {         // per-tab back/forward in the focused group
 
 async function closeTab(g, i) {
   if (i === g.active) await flushSave(g);
+  if (!g.tabs[i].kind) closedTabs.push(g.tabs[i].name);   // R14 undo close tab
   unlinkTab(g, g.tabs[i], true);    // R13.4: closing a member unlinks it
   g.tabs.splice(i, 1);
   if (!g.tabs.length && groups().length > 1)  // R6.5: empty group leaves the tree
@@ -1909,23 +1911,149 @@ $("modal").onmousedown = e => { if (e.target === $("modal")) closeModal(); };
 function cmdQuickSwitch() {
   modalKind === "qs" ? closeModal() : openModal("qs", qsItems);
 }
-function cpItems() {                 // palette source: command registry w/ hotkey hints
-  return [
-    { label: "New note",             hint: "Ctrl+N",       run: cmdNewNote },
-    { label: "New folder",           hint: "",             run: () => {
-        $("fnew").hidden = false; $("fname").value = ""; $("fname").focus(); } },
-    { label: "Toggle edit mode",     hint: "Ctrl+E",       run: () => cmdToggleMode() },
-    { label: "Split right",          hint: "",             run: () => splitGroup(fg(), "row", fg().active) },
-    { label: "Split down",           hint: "",             run: () => splitGroup(fg(), "col", fg().active) },
-    { label: "Open graph view",      hint: "Ctrl+G",       run: cmdGlobalGraph },
-    { label: "Open local graph",     hint: "Ctrl+Shift+G", run: () => cmdLocalGraph() },
-    { label: "Toggle left sidebar",  hint: "",             run: cmdToggleSide },
-    { label: "Toggle right sidebar", hint: "",             run: () => cmdToggleRight() },
-    { label: "Switch vault",         hint: "",             run: showPicker },
-    { label: "Rename note",          hint: "F2",           run: cmdRename },
-    { label: "Close tab",            hint: "Ctrl+W",       run: cmdCloseTab },
-    { label: "Save",                 hint: "Ctrl+S",       run: cmdSave },
-  ];
+/* ---------- R14: command registry = the ONE source of truth for the palette
+   (Ctrl+P), the keymap dispatcher and Settings ▸ Hotkeys. Chords are
+   normalised "ctrl+alt+shift+<key>" (e.key lowercased, Mod = Ctrl on Linux).
+   User overrides live in hkUser {id: [chords]} ([] = default removed) and are
+   persisted to ~/.rustidian.json "hotkeys" in the stock Obsidian shape. ---------- */
+const edField = () => (state && fg() ? acField(fg()) : null);
+function edEdit(fn) {   // fn(value, selStart, selEnd) -> [value, selStart, selEnd]; fires input
+  const ta = edField();
+  if (!ta || ta === fg().editor && !fg().lpActive && fg().tabs[fg().active].mode === "reading") return;
+  const r = fn(ta.value, ta.selectionStart, ta.selectionEnd);
+  if (!r) return;
+  ta.value = r[0]; ta.setSelectionRange(r[1], r[2]);
+  ta.dispatchEvent(new Event("input", { bubbles: true }));
+  ta.focus();
+}
+const edWrap = (m, ph = "text") => edEdit((v, a, b) => {      // toggle **x** / *x* / %%x%%
+  const s = v.slice(a, b);
+  if (s.startsWith(m) && s.endsWith(m) && s.length >= 2 * m.length)
+    return [v.slice(0, a) + s.slice(m.length, -m.length) + v.slice(b), a, b - 2 * m.length];
+  if (v.slice(a - m.length, a) === m && v.slice(b, b + m.length) === m)
+    return [v.slice(0, a - m.length) + s + v.slice(b + m.length), a - m.length, b - m.length];
+  const t = s || ph;
+  return [v.slice(0, a) + m + t + m + v.slice(b), a + m.length, a + m.length + t.length];
+});
+const edLine = fn => edEdit((v, a, b) => {  // fn(line) -> line | null (= delete line)
+  const l0 = v.lastIndexOf("\n", a - 1) + 1;
+  let l1 = v.indexOf("\n", b); if (l1 < 0) l1 = v.length;
+  const nl = fn(v.slice(l0, l1));
+  if (nl == null) { const cut = l1 < v.length ? l1 + 1 : Math.max(0, l0 - 1); return [v.slice(0, l0) + v.slice(l1 + 1), Math.min(l0, cut), Math.min(l0, cut)]; }
+  return [v.slice(0, l0) + nl + v.slice(l1), l0 + Math.min(nl.length, a - l0 + nl.length - (l1 - l0)), l0 + Math.min(nl.length, b - l0 + nl.length - (l1 - l0))];
+});
+function linkAtCaret() {   // [[target]] spanning the caret of the edited field, note part only
+  const ta = edField();
+  if (!ta) return null;
+  const v = ta.value, c = ta.selectionStart;
+  const a = v.lastIndexOf("[[", c);
+  if (a < 0) return null;
+  const b = v.indexOf("]]", a);
+  if (b < 0 || c > b + 1) return null;
+  const inner = v.slice(a + 2, b);
+  return inner.split("|")[0].split("#")[0].trim() || null;
+}
+let closedTabs = [];                       // R14 undo close tab (names, newest last)
+const CMDS = [
+  ["app:open-settings",        "Open settings",                       ["ctrl+,"],               () => cmdSettings()],
+  ["workspace:close",          "Close current tab",                   ["ctrl+w"],               cmdCloseTab],
+  ["window:close",             "Close window",                        ["ctrl+shift+w"],         () => window.__TAURI__.window.getCurrentWindow().close()],
+  ["command-palette:open",     "Open command palette",                ["ctrl+p"],               () => cmdPalette()],
+  ["file-explorer:new-file",   "Create new note",                     ["ctrl+n"],               cmdNewNote],
+  ["file-explorer:new-file-in-new-pane", "Create note to the right",  ["ctrl+shift+n"],         async () => { await splitWith(fg(), "row", null); await cmdNewNote(); }],
+  ["file-explorer:new-folder", "Create new folder",                   [],                       () => { $("fnew").hidden = false; $("fname").value = ""; $("fname").focus(); }],
+  ["editor:delete-paragraph",  "Delete paragraph",                    ["ctrl+d"],               () => edLine(() => null)],
+  ["editor:follow-link",       "Follow link under cursor",            ["alt+enter"],            () => { const n = linkAtCaret(); if (n) navigate(fg(), n); }],
+  ["workspace:goto-last-tab",  "Go to last tab",                      ["ctrl+9"],               () => cmdJumpTab(9)],
+  ["workspace:next-tab",       "Go to next tab",                      ["ctrl+tab", "ctrl+pagedown"],       () => cmdCycleTab(1)],
+  ["workspace:previous-tab",   "Go to previous tab",                  ["ctrl+shift+tab", "ctrl+pageup"],   () => cmdCycleTab(-1)],
+  ...[1, 2, 3, 4, 5, 6, 7, 8].map(n => ["workspace:goto-tab-" + n, "Go to tab #" + n, ["ctrl+" + n], () => cmdJumpTab(n)]),
+  ["graph:open",               "Open graph view",                     ["ctrl+g"],               cmdGlobalGraph],
+  ["graph:open-local",         "Open local graph",                    ["ctrl+shift+g"],         () => cmdLocalGraph()],
+  ["editor:insert-link",       "Insert Markdown link",                ["ctrl+k"],               () => edEdit((v, a, b) => { const s = v.slice(a, b) || "link"; return [v.slice(0, a) + "[" + s + "]()" + v.slice(b), a + s.length + 3, a + s.length + 3]; })],
+  ["editor:insert-wikilink",   "Add internal link",                   [],                       () => edEdit((v, a, b) => { const s = v.slice(a, b); return [v.slice(0, a) + "[[" + s + "]]" + v.slice(b), a + 2, a + 2 + s.length]; })],
+  ["editor:insert-tag",        "Add tag",                             [],                       () => edEdit((v, a, b) => [v.slice(0, a) + "#" + v.slice(b), a + 1, a + 1])],
+  ["app:go-back",              "Navigate back",                       ["ctrl+alt+arrowleft", "alt+arrowleft"],   () => histGo(-1)],
+  ["app:go-forward",           "Navigate forward",                    ["ctrl+alt+arrowright", "alt+arrowright"], () => histGo(1)],
+  ["workspace:new-tab",        "New tab",                             ["ctrl+t"],               cmdNewTab],
+  ["app:open-help",            "Open help",                           ["f1"],                   () => window.open("https://github.com/jpzk/rustidian#readme")],
+  ["editor:open-link-in-new-leaf", "Open link under cursor in new tab", ["ctrl+enter"],         async () => { const n = linkAtCaret(); if (!n) return; const g = fg(); await flushSave(g); g.tabs.push(mkTab(n)); g.active = g.tabs.length - 1; await loadActive(g); }],
+  ["editor:open-link-in-new-split", "Open link under cursor to the right", ["ctrl+alt+enter"], async () => { const n = linkAtCaret(); if (n) await splitWith(fg(), "row", mkTab(n)); }],
+  ["switcher:open",            "Open quick switcher",                 ["ctrl+o"],               () => cmdQuickSwitch()],
+  ["workspace:edit-file-title","Rename file",                         ["f2"],                   cmdRename],
+  ["editor:save-file",         "Save current file",                   ["ctrl+s"],               cmdSave],
+  ["global-search:open",       "Search in all files",                 ["ctrl+shift+f"],         () => { if (!sideOpen) cmdToggleSide(); setPane("search"); }],
+  ["editor:toggle-bold",       "Toggle bold",                         ["ctrl+b"],               () => edWrap("**")],
+  ["editor:toggle-checklist-status", "Toggle checkbox status",        ["ctrl+l"],               () => edLine(l => /^(\s*[-*] )\[ \]/.test(l) ? l.replace("[ ]", "[x]") : /^(\s*[-*] )\[x\]/i.test(l) ? l.replace(/\[x\]/i, "[ ]") : l.replace(/^(\s*)([-*] )?/, "$1- [ ] "))],
+  ["editor:toggle-comments",   "Toggle comment",                      ["ctrl+/"],               () => edWrap("%%", "comment")],
+  ["editor:toggle-italics",    "Toggle italic",                       ["ctrl+i"],               () => edWrap("*")],
+  ["markdown:toggle-preview",  "Toggle reading view",                 ["ctrl+e"],               () => cmdToggleMode()],
+  ["editor:toggle-source",     "Toggle source mode",                  [],                       () => cmdToggleMode()],
+  ["workspace:undo-close-pane","Undo close tab",                      ["ctrl+shift+t"],         async () => { const n = closedTabs.pop(); if (n) await openInTab(n); }],
+  ["workspace:split-vertical", "Split right",                         [],                       () => splitGroup(fg(), "row", fg().active)],
+  ["workspace:split-horizontal","Split down",                         [],                       () => splitGroup(fg(), "col", fg().active)],
+  ["app:toggle-left-sidebar",  "Toggle left sidebar",                 [],                       cmdToggleSide],
+  ["app:toggle-right-sidebar", "Toggle right sidebar",                [],                       () => cmdToggleRight()],
+  ["app:switch-vault",         "Switch vault",                        [],                       showPicker],
+].map(([id, name, def, run]) => ({ id, name, def, run }))
+ .sort((a, b) => a.name.localeCompare(b.name));
+let hkUser = {};                            // id -> [chords] overrides ([] = removed default)
+let keymap = {};                            // chord -> cmd (rebuilt from CMDS + hkUser)
+const hkChords = c => hkUser[c.id] || c.def;
+function hkConflicts() {                    // chord -> [cmd ids] with 2+ owners
+  const by = {};
+  for (const c of CMDS) for (const ch of hkChords(c)) (by[ch] = by[ch] || []).push(c.id);
+  return Object.fromEntries(Object.entries(by).filter(([, v]) => v.length > 1));
+}
+function hkRebuild() {                      // last-defined wins on conflicts (stock behaviour)
+  keymap = {};
+  for (const c of CMDS) for (const ch of hkChords(c)) keymap[ch] = c;
+}
+hkRebuild();
+// stock shape <-> chord strings. e.key names round-trip through KEYNAMES.
+const KEYNAMES = { arrowleft: "ArrowLeft", arrowright: "ArrowRight", arrowup: "ArrowUp", arrowdown: "ArrowDown",
+  pageup: "PageUp", pagedown: "PageDown", tab: "Tab", enter: "Enter", escape: "Escape", backspace: "Backspace",
+  delete: "Delete", home: "Home", end: "End", insert: "Insert", " ": "Space" };
+function chordToStock(ch) {
+  const p = ch.split("+"); const k = p.pop();
+  const mods = p.map(m => ({ ctrl: "Mod", alt: "Alt", shift: "Shift" }[m])).filter(Boolean);
+  return { modifiers: mods, key: k.length === 1 || /^f\d+$/.test(k) ? k.toUpperCase() : KEYNAMES[k] || k };
+}
+function stockToChord(o) {
+  const m = new Set((o.modifiers || []).map(x => x.toLowerCase()));
+  const k = (o.key === "Space" ? " " : String(o.key || "")).toLowerCase();
+  return ((m.has("mod") || m.has("ctrl")) ? "ctrl+" : "") + (m.has("alt") ? "alt+" : "") + (m.has("shift") ? "shift+" : "") + k;
+}
+async function hkLoad() {
+  const m = await inv("get_hotkeys").catch(() => ({}));
+  hkUser = {};
+  const known = new Set(CMDS.map(c => c.id));
+  for (const [id, arr] of Object.entries(m || {})) if (known.has(id)) hkUser[id] = arr.map(stockToChord);
+  hkRebuild();
+}
+function hkSave() {
+  const map = Object.fromEntries(Object.entries(hkUser).map(([id, chs]) => [id, chs.map(chordToStock)]));
+  inv("set_hotkeys", { map }).catch(() => {});
+  hkRebuild();
+}
+function hkSet(c, chords) {                 // set + collapse to "default" when equal
+  const same = chords.length === c.def.length && chords.every((x, i) => x === c.def[i]);
+  if (same) delete hkUser[c.id]; else hkUser[c.id] = chords;
+  hkSave();
+}
+const chordLabel = ch => ch.split("+").map(k => k === "ctrl" ? "Ctrl" : k === "alt" ? "Alt" : k === "shift" ? "Shift"
+  : k.length === 1 ? k.toUpperCase() : (KEYNAMES[k] || k).replace(/^Arrow/, "").replace(/^./, x => x.toUpperCase())).join(" + ");
+function chordOf(e) {                       // keydown -> normalised chord (null for bare modifiers)
+  if (["Control", "Alt", "Shift", "Meta"].includes(e.key)) return null;
+  let k = e.key.toLowerCase();
+  if (e.code === "Tab") k = "tab";   // X11 shift+tab arrives as ISO_Left_Tab
+  // Xvfb/xdotool synthesize every F-key with a spurious Mod1 latch (alt:true
+  // on F1..F12, clean on letters) — drop alt for function keys so F2 binds.
+  const alt = e.altKey && !/^F\d+$/.test(e.code);
+  return (e.ctrlKey ? "ctrl+" : "") + (alt ? "alt+" : "") + (e.shiftKey ? "shift+" : "") + k;
+}
+function cpItems() {                 // palette source: the registry w/ current hotkey hints
+  return CMDS.map(c => ({ label: c.name, hint: hkChords(c).map(chordLabel).join(", "), run: c.run }));
 }
 function cmdPalette() {
   modalKind === "cp" ? closeModal() : openModal("cp", cpItems);
@@ -1997,26 +2125,8 @@ $("rninput").onkeydown = async e => {
   await applyRename(old, nn);
 };
 
-const keymap = {
-  "ctrl+n": cmdNewNote,
-  "ctrl+s": cmdSave,
-  "ctrl+w": cmdCloseTab,
-  "ctrl+e": () => cmdToggleMode(),
-  "ctrl+o": cmdQuickSwitch,
-  "ctrl+p": cmdPalette,
-  "ctrl+g": cmdGlobalGraph,
-  "f2": cmdRename,
-  "ctrl+t": cmdNewTab,
-  "ctrl+tab": () => cmdCycleTab(1),
-  "ctrl+shift+tab": () => cmdCycleTab(-1),
-  "ctrl+shift+g": () => cmdLocalGraph(),
-  "alt+arrowleft": () => histGo(-1),
-  "alt+arrowright": () => histGo(1),
-  "ctrl+alt+arrowleft": () => histGo(-1),
-  "ctrl+alt+arrowright": () => histGo(1),
-};
-for (let n = 1; n <= 9; n++) keymap["ctrl+" + n] = () => cmdJumpTab(n);
 document.addEventListener("keydown", e => {
+  if (settingsOpen) return hkKey(e);       // R14: settings modal owns the keyboard (chord capture)
   if (e.key === "Escape") {
     if (modalKind) { closeModal(); return; }
     if (!$("rnbox").hidden) { $("rnbox").hidden = true; updateTitle(); return; }
@@ -2025,18 +2135,11 @@ document.addEventListener("keydown", e => {
     if (!$("fnew").hidden) $("fnew").hidden = true;
     return;
   }
-  let k = e.key.toLowerCase();
-  if (e.code === "Tab") k = "tab";   // X11 shift+tab arrives as ISO_Left_Tab
-  // Xvfb/xdotool synthesize every F-key with a spurious Mod1 latch (alt:true
-  // on F1..F12, clean on letters) — drop alt for function keys so F2 binds.
-  // No alt+Fn combo is in the keymap, so nothing real is masked.
-  const alt = e.altKey && !/^F\d+$/.test(e.code);
-  const combo = (e.ctrlKey ? "ctrl+" : "") + (alt ? "alt+" : "")
-    + (e.shiftKey ? "shift+" : "") + k;
-  const fn = keymap[combo];
-  if (modalKind && fn !== cmdQuickSwitch && fn !== cmdPalette) return;  // modal traps the keymap
+  const combo = chordOf(e);
+  const c = combo && keymap[combo];
+  if (modalKind && c && c.id !== "switcher:open" && c.id !== "command-palette:open") return;  // modal traps the keymap
   if (!$("rnbox").hidden) return;    // rename prompt traps the keymap too
-  if (fn) { e.preventDefault(); fn(); }
+  if (c) { e.preventDefault(); c.run(); }
 });
 
 $("stab-files").onclick = () => setPane("files");
@@ -2601,8 +2704,145 @@ $("vswitch").onclick = showPicker;
   const sw = await inv("get_sidebar_w").catch(() => null);   // ux-4
   if (sw >= 150) $("side").style.width = Math.min(600, sw) + "px";
   const rt = await inv("get_rside_tab").catch(() => null);   // rsidebar
+  await hkLoad();                                             // R14 custom hotkeys
   await setRTab(RPANES[rt] ? rt : "graph", false);
   vaultPath = await inv("vault_get");
   if (vaultPath) await enterVault(); else showPicker();
 })();
 
+
+/* ---------- R14 Settings modal (Ctrl+,) — Hotkeys page. Layout is fixed-size
+   (900x600 at 190,100 on the 1280x800 smoke screen, 32px rows) so the smoke
+   can click chips by coordinate. census [modal:settings] [hk:<rows>]
+   [hkrec:<id>] while recording, [hkc:N] conflicting commands. ---------- */
+let settingsOpen = false, hkChip = "all", hkRec = null, hkInfo = "";
+const SNAV = ["General", "Appearance", "Interface", "Editor", "Files and links", "Hotkeys", "Core plugins"];
+function cmdSettings() {
+  settingsOpen ? closeSettings() : openSettings();
+}
+function openSettings() {
+  settingsOpen = true; hkRec = null;
+  closeModal();
+  $("settings").hidden = false;
+  showSettingsPage("Hotkeys");
+  updateTitle();
+}
+function closeSettings() {
+  settingsOpen = false; hkRec = null;
+  $("settings").hidden = true;
+  updateTitle();
+}
+function showSettingsPage(name) {
+  const nav = $("snav"); nav.innerHTML = "";
+  const h = document.createElement("div"); h.className = "snavh"; h.textContent = "Options";
+  nav.appendChild(h);
+  for (const n of SNAV) {
+    const d = document.createElement("div");
+    d.className = "snavi" + (n === name ? " sel" : ""); d.textContent = n;
+    d.onclick = () => showSettingsPage(n);
+    nav.appendChild(d);
+  }
+  const pg = $("spage"); pg.innerHTML = "";
+  if (name !== "Hotkeys") {
+    const d = document.createElement("div"); d.className = "sempty";
+    d.textContent = name + " — nothing to configure yet.";
+    return pg.appendChild(d);
+  }
+  const bar = document.createElement("div"); bar.id = "hkbar";
+  const inp = document.createElement("input");
+  inp.id = "hkfilter"; inp.placeholder = "Filter..."; inp.spellcheck = false; inp.autocomplete = "off";
+  inp.oninput = renderHk;
+  const clr = document.createElement("span"); clr.id = "hkclear"; clr.textContent = "⊗"; clr.title = "Clear";
+  clr.onclick = () => { inp.value = ""; renderHk(); inp.focus(); };
+  bar.append(inp, clr);
+  const chips = document.createElement("div"); chips.id = "hkchips";
+  const list = document.createElement("div"); list.id = "hklist";
+  pg.append(bar, chips, list);
+  renderHk();
+  inp.focus();
+}
+const HKCHIPS = [["all", "All"], ["assigned", "Assigned"], ["mine", "Assigned by me"], ["unassigned", "Unassigned"]];
+function hkRows() {                          // fuzzy filter AND active chip
+  const q = ($("hkfilter") ? $("hkfilter").value : "").trim();
+  const conf = hkConflicts();
+  const confIds = new Set(Object.values(conf).flat());
+  return CMDS.filter(c => {
+    if (fuzzy(q, c.name) < 0) return false;
+    const chs = hkChords(c);
+    switch (hkChip) {
+      case "assigned":   return chs.length > 0;
+      case "mine":       return c.id in hkUser && chs.length > 0;
+      case "unassigned": return chs.length === 0;
+      case "conflicts":  return confIds.has(c.id);
+      default:           return true;
+    }
+  });
+}
+function renderHk() {
+  if (!settingsOpen || !$("hklist")) return;
+  const conf = hkConflicts();
+  const confIds = new Set(Object.values(conf).flat());
+  if (hkChip === "conflicts" && !confIds.size) hkChip = "all";
+  const chips = $("hkchips"); chips.innerHTML = "";
+  if (confIds.size) {
+    const d = document.createElement("span"); d.className = "hkchip conf" + (hkChip === "conflicts" ? " sel" : "");
+    d.textContent = "Conflicts " + confIds.size;
+    d.onclick = () => { hkChip = "conflicts"; $("hkfilter").value = ""; renderHk(); };
+    chips.appendChild(d);
+  }
+  for (const [k, l] of HKCHIPS) {
+    const d = document.createElement("span"); d.className = "hkchip" + (hkChip === k ? " sel" : "");
+    d.textContent = l;
+    d.onclick = () => { hkChip = k; renderHk(); };
+    chips.appendChild(d);
+  }
+  const list = $("hklist"); list.innerHTML = "";
+  const rows = hkRows();
+  for (const c of rows) {
+    const chs = hkChords(c);
+    const row = document.createElement("div"); row.className = "hkrow";
+    const nm = document.createElement("span"); nm.className = "hkname"; nm.textContent = c.name;
+    const keys = document.createElement("span"); keys.className = "hkkeys";
+    if (hkRec === c.id) {
+      const k = document.createElement("span"); k.className = "hkkey rec"; k.textContent = "Press hotkey...";
+      keys.appendChild(k);
+    } else if (!chs.length) {
+      const k = document.createElement("span"); k.className = "hkkey blank"; k.textContent = "Blank";
+      keys.appendChild(k);
+    } else for (const ch of chs) {
+      const k = document.createElement("span"); k.className = "hkkey" + (conf[ch] ? " conf" : "");
+      k.textContent = chordLabel(ch);
+      const x = document.createElement("span"); x.className = "hkx"; x.innerHTML = '<svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 3l10 10M13 3L3 13"/></svg>'; x.title = "Remove";
+      x.onclick = () => { hkSet(c, chs.filter(y => y !== ch)); renderHk(); };
+      k.appendChild(x);
+      keys.appendChild(k);
+    }
+    const rs = document.createElement("button"); rs.className = "hkbtn hkrestore"; rs.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8a5 5 0 1 0 1.5-3.6"/><path d="M3 2.5v3h3"/></svg>'; rs.title = "Restore default";
+    rs.style.visibility = c.id in hkUser ? "visible" : "hidden";
+    rs.onclick = () => { delete hkUser[c.id]; hkSave(); renderHk(); };
+    const add = document.createElement("button"); add.className = "hkbtn hkadd"; add.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="8" cy="8" r="6"/><path d="M8 5v6M5 8h6"/></svg>'; add.title = "Customize this command";
+    add.onclick = () => { hkRec = hkRec === c.id ? null : c.id; renderHk(); };
+    row.append(nm, keys, rs, add);
+    list.appendChild(row);
+  }
+  hkInfo = " [hk:" + rows.length + "]" + (hkRec ? " [hkrec:" + hkRec + "]" : "") + (confIds.size ? " [hkc:" + confIds.size + "]" : "");
+  updateTitle();
+}
+function hkKey(e) {                          // keyboard while settings is open
+  if (hkRec) {                               // recording: next non-modifier chord binds, Esc cancels
+    e.preventDefault(); e.stopPropagation();
+    if (e.key === "Escape") { hkRec = null; return renderHk(); }
+    const ch = chordOf(e);
+    if (!ch) return;
+    const c = CMDS.find(x => x.id === hkRec);
+    hkRec = null;
+    if (c && !hkChords(c).includes(ch)) hkSet(c, [...hkChords(c), ch]);
+    renderHk();
+    return $("hkfilter") && $("hkfilter").focus();
+  }
+  if (e.key === "Escape") { e.preventDefault(); return closeSettings(); }
+  const c = keymap[chordOf(e)];
+  if (c && c.id === "app:open-settings") { e.preventDefault(); closeSettings(); }
+}
+$("sclose").onclick = closeSettings;
+$("settings").onmousedown = e => { if (e.target === $("settings")) closeSettings(); };

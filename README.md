@@ -17,6 +17,7 @@ I'm running as many top frontier models to scan for vulnerabilities, but since t
 - safe renames (H1 or F2) that rewrite [[links]] across the vault
 - external edits (R11): the vault is watched (1s tick, std-only); shell edits to an open note appear in place with the caret kept, unsaved local text is merged with external appends, external create/rename/delete update the explorer and close the affected tab
 - source mode (R12): live preview with every marker revealed — grey `#`/`**`/`[[` markers in the text flow, headings keep their size, bold/italic/strike/highlight/code styled, links + `#tag` in accent, fences shaded with the fence lines visible, literal `- [ ]` tasks; same font and measure as live preview, one raw caret row, `[[` autocomplete
+- hotkeys (R14): Settings (Ctrl+,) ▸ Hotkeys — every command from one registry (also feeds the palette) with the stock Obsidian defaults, fuzzy filter + All/Assigned/Assigned by me/Unassigned chips, click ⊕ to record a chord, ✕ to remove, ↺ restore default, duplicate chords flagged red with a `Conflicts N` chip; overrides persist in `~/.rustidian.json` `hotkeys` (stock shape, `[]` = removed default)
 - vault picker with persistence (or env VAULT_DIR, default ./vault)
 
 ## Screenshots
