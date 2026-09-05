@@ -179,8 +179,27 @@ pub fn links_in(s: &str) -> Vec<String> {
     out
 }
 
-/// wikilinks resolve by full relative path or basename (first sorted match)
+/// R10.1: `[[note#anchor|alias]]` -> (note, anchor incl. its leading '#' or
+/// "", alias or ""). `[[#Heading]]` yields an empty note = the current note.
+pub fn link_parts(l: &str) -> (&str, &str, &str) {
+    let (tgt, alias) = match l.find('|') {
+        Some(i) => (&l[..i], &l[i + 1..]),
+        None => (l, ""),
+    };
+    let (note, anchor) = match tgt.find('#') {
+        Some(i) => (&tgt[..i], &tgt[i..]),
+        None => (tgt, ""),
+    };
+    (note, anchor, alias)
+}
+
+/// wikilinks resolve by full relative path or basename (first sorted match);
+/// the raw token may carry #anchor / |alias — only the note part is matched
 pub fn resolve(notes: &[String], l: &str) -> Option<usize> {
+    let l = link_parts(l).0;
+    if l.is_empty() {
+        return None;
+    }
     // one suffix alloc per call — it used to be one per note per link, so a
     // write_note on a 9KB note walked ~50k allocs (2ms debug); graph paid it
     // per edge too
@@ -406,14 +425,7 @@ pub fn rewrite_links(s: &str, old: &str, new: &str, bn_ok: bool) -> (String, boo
         let Some(b) = rest.find("]]") else { break };
         let inner = &rest[..b];
         rest = &rest[b + 2..];
-        let (tgt, alias) = match inner.find('|') {
-            Some(i) => (&inner[..i], &inner[i..]),
-            None => (inner, ""),
-        };
-        let (base, anchor) = match tgt.find('#') {
-            Some(i) => (&tgt[..i], &tgt[i..]),
-            None => (tgt, ""),
-        };
+        let (base, anchor, alias) = link_parts(inner);
         let rep = if base == old {
             Some(new)
         } else if bn_ok && base == ob {
@@ -426,7 +438,10 @@ pub fn rewrite_links(s: &str, old: &str, new: &str, bn_ok: bool) -> (String, boo
                 changed = true;
                 out.push_str(r);
                 out.push_str(anchor);
-                out.push_str(alias);
+                if inner.contains('|') {
+                    out.push('|');
+                    out.push_str(alias);
+                }
             }
             None => out.push_str(inner),
         }

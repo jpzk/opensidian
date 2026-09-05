@@ -9,7 +9,7 @@ mod index;
 mod outline;
 mod perf;
 mod sandbox;
-use index::{links_in, resolve, tag_spans, Index};
+use index::{link_parts, links_in, resolve, tag_spans, Index};
 
 /* perf-index: root + in-memory Index (src/index.rs). The index replaces the
    perf-lp NoteCache: names, contents, links and backlink edges live in RAM,
@@ -541,13 +541,17 @@ fn build_graph(notes: &[String], links: &[&[String]]) -> Graph {
     let mut edges = Vec::new();
     for (i, ls) in links.iter().enumerate() {
         for l in ls.iter() {
+            let l = link_parts(l).0; // ghost nodes carry the note part only
+            if l.is_empty() {
+                continue; // [[#heading]] = self-link
+            }
             let j = match resolve(notes, l) {
                 Some(j) => j,
                 None => nodes
                     .iter()
-                    .position(|x| !x.resolved && x.name == *l)
+                    .position(|x| !x.resolved && x.name == l)
                     .unwrap_or_else(|| {
-                        nodes.push(GNode { name: l.clone(), resolved: false });
+                        nodes.push(GNode { name: l.to_string(), resolved: false });
                         nodes.len() - 1
                     }),
             };
@@ -781,6 +785,60 @@ mod tests {
     }
 
     #[test]
+    fn link_parts_split_note_anchor_alias() {
+        use index::link_parts;
+        assert_eq!(link_parts("Note"), ("Note", "", ""));
+        assert_eq!(link_parts("Note#Heading"), ("Note", "#Heading", ""));
+        assert_eq!(link_parts("Note#^blk1"), ("Note", "#^blk1", ""));
+        assert_eq!(link_parts("Note|nick"), ("Note", "", "nick"));
+        assert_eq!(link_parts("Note#H|nick"), ("Note", "#H", "nick"));
+        assert_eq!(link_parts("#Local"), ("", "#Local", ""));
+        assert_eq!(link_parts("sub/N#a|b|c"), ("sub/N", "#a", "b|c"));
+        let notes = ["A".to_string(), "sub/B".to_string()];
+        assert_eq!(resolve(&notes, "A#h"), Some(0));
+        assert_eq!(resolve(&notes, "B#^id|alias"), Some(1));
+        assert_eq!(resolve(&notes, "A|alias"), Some(0));
+        assert_eq!(resolve(&notes, "#h"), None);
+        assert_eq!(resolve(&notes, "Ghost#h"), None);
+    }
+
+    #[test]
+    fn backlinks_and_graph_resolve_through_suffixes() {
+        let root = tmp_vault("sfx");
+        fs::write(root.join("T.md"), "# H\ntext ^blk").unwrap();
+        fs::write(root.join("A.md"), "[[T#H]] [[T#^blk|nick]] [[#Own]]").unwrap();
+        fs::write(root.join("sub/B.md"), "[[T|alias]] [[Ghost#H]] [[Ghost|g]]").unwrap();
+        let ix = Index::build(&root);
+        assert_eq!(ix.backlinks("T"), ["A", "sub/B"]);
+        let g = ix_graph(&ix);
+        // one ghost node "Ghost" (note part), no node for [[#Own]]
+        assert_eq!(g.nodes.len(), 4);
+        assert!(!g.nodes[3].resolved && g.nodes[3].name == "Ghost");
+        let e = edge_names(&g);
+        assert!(e.contains(&("A".to_string(), "T".to_string())));
+        assert_eq!(e.iter().filter(|(s, _)| s == "A").count(), 1);
+        assert_eq!(e.iter().filter(|(s, _)| s == "sub/B").count(), 2);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rename_rewrites_anchor_and_alias_links() {
+        use index::rewrite_links;
+        assert_eq!(
+            rewrite_links("[[Old#h|alias]] [[Old#^b]] [[Old|a|b]] [[Older]]", "Old", "New", true),
+            ("[[New#h|alias]] [[New#^b]] [[New|a|b]] [[Older]]".to_string(), true)
+        );
+        let root = tmp_vault("ra");
+        fs::write(root.join("Old.md"), "# h").unwrap();
+        fs::write(root.join("L.md"), "x [[Old#h|alias]] y").unwrap();
+        let mut ix = Index::build(&root);
+        rename_in(&root, &mut ix, "Old", "New").unwrap();
+        assert_eq!(fs::read_to_string(root.join("L.md")).unwrap(), "x [[New#h|alias]] y");
+        assert_eq!(ix.backlinks("New"), ["L"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn index_builds_from_temp_vault() {
         let root = tmp_vault("ix");
         fs::write(root.join("A.md"), "[[B]] and [[Nested]] and [[Ghost]]").unwrap();
@@ -791,8 +849,7 @@ mod tests {
         assert_eq!(ix.names(), ["A", "B", "sub/Nested"]);
         assert_eq!(ix.content("B"), Some("back to [[A]] self [[B]]"));
         assert_eq!(ix.links("A"), ["B", "Nested", "Ghost"]);
-        // NB: raw tokens — [[A|alias]] / [[A#h]] do NOT resolve, exactly as the
-        // disk-walking backlinks never did (follow-up, not perf-index scope)
+        // raw tokens are kept in links(); resolve() strips #anchor / |alias (R10)
         assert_eq!(ix.backlinks("A"), ["B", "sub/Nested"]);
         assert_eq!(ix.backlinks("B"), ["A"]); // B's self-link excluded
         assert_eq!(ix.backlinks("sub/Nested"), ["A"]); // basename resolve
