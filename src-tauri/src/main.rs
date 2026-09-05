@@ -321,23 +321,41 @@ fn esc(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// scan coalesced text for [[wikilinks]], emitting escaped anchors (H1 fix)
-fn linkify(buf: &str, notes: &[String], evs: &mut Vec<Event>) {
+/// R10.1 link label: alias wins; `[[#H]]` shows "H"; otherwise the raw target
+/// (LP keeps the '#', reading view joins with " > " like stock)
+fn link_label(note: &str, anchor: &str, alias: &str, reading: bool) -> String {
+    if !alias.is_empty() {
+        alias.to_string()
+    } else if note.is_empty() {
+        anchor.trim_start_matches('#').to_string()
+    } else if reading {
+        format!("{note}{}", anchor.replace('#', " > "))
+    } else {
+        format!("{note}{anchor}")
+    }
+}
+
+/// scan coalesced text for [[wikilinks]], emitting escaped anchors (H1 fix).
+/// data-note = note part (empty = same note), data-anchor = heading text or
+/// ^blockid (no leading '#') so the frontend can scroll after navigating.
+fn linkify(buf: &str, notes: &[String], reading: bool, evs: &mut Vec<Event>) {
     let mut rest = buf;
     while let Some(i) = rest.find("[[") {
         let Some(j) = rest[i + 2..].find("]]") else { break };
         let l = &rest[i + 2..i + 2 + j];
         tagify(&rest[..i], evs);
-        let cls = if resolve(notes, l).is_some() {
+        let (note, anchor, alias) = link_parts(l);
+        let cls = if note.is_empty() || resolve(notes, l).is_some() {
             "wiki"
         } else {
             "wiki wiki-unresolved"
         };
         evs.push(Event::Html(
             format!(
-                "<a href=\"#\" class=\"{cls}\" data-note=\"{}\">{}</a>",
-                esc(l),
-                esc(l)
+                "<a href=\"#\" class=\"{cls}\" data-note=\"{}\" data-anchor=\"{}\">{}</a>",
+                esc(note),
+                esc(anchor.trim_start_matches('#')),
+                esc(&link_label(note, anchor, alias, reading))
             )
             .into(),
         ));
@@ -346,6 +364,19 @@ fn linkify(buf: &str, notes: &[String], evs: &mut Vec<Event>) {
     if !rest.is_empty() {
         tagify(rest, evs);
     }
+}
+
+/// R10.3 block id: ` ^id` (letters/digits/-) at the very end of a block ->
+/// (text without it, id). Stock hides it in reading view, shows a small grey
+/// label in LP — both via CSS on span.blockid.
+fn split_block_id(s: &str) -> Option<(&str, &str)> {
+    let t = s.trim_end();
+    let i = t.rfind(" ^")?;
+    let id = &t[i + 2..];
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return None;
+    }
+    Some((&t[..i], id))
 }
 
 /// tags: inline #tag -> pill anchor (label + data-tag escaped like wikilinks).
@@ -365,6 +396,12 @@ fn tagify(buf: &str, evs: &mut Vec<Event>) {
 }
 
 fn render_md(content: &str, notes: &[String]) -> String {
+    render_with(content, notes, false)
+}
+
+/// reading=true: heading links join with " > " (R10.1). Block ids are emitted
+/// as span.blockid in both modes; CSS decides visibility.
+fn render_with(content: &str, notes: &[String], reading: bool) -> String {
     // Security (docs/security-review.md H1): .md files are untrusted, so raw
     // HTML events are demoted to text (push_html escapes Text). Wikilinks are
     // linkified at the EVENT level — label and data-note attr escaped — so our
@@ -388,7 +425,21 @@ fn render_md(content: &str, notes: &[String]) -> String {
             }
             other => {
                 if !buf.is_empty() {
-                    linkify(&buf, notes, &mut evs);
+                    // R10.3: ` ^id` closing a paragraph / list item / heading
+                    let block_end = matches!(
+                        other,
+                        Event::End(TagEnd::Paragraph | TagEnd::Item | TagEnd::Heading(_))
+                    );
+                    match if block_end { split_block_id(&buf) } else { None } {
+                        Some((text, id)) => {
+                            linkify(text, notes, reading, &mut evs);
+                            let id = esc(id);
+                            evs.push(Event::Html(
+                                format!("<span class=\"blockid\" data-bid=\"{id}\">^{id}</span>").into(),
+                            ));
+                        }
+                        None => linkify(&buf, notes, reading, &mut evs),
+                    }
                     buf.clear();
                 }
                 match other {
@@ -401,7 +452,7 @@ fn render_md(content: &str, notes: &[String]) -> String {
         }
     }
     if !buf.is_empty() {
-        linkify(&buf, notes, &mut evs);
+        linkify(&buf, notes, reading, &mut evs);
     }
     let mut out = String::new();
     html::push_html(&mut out, evs.into_iter());
@@ -410,7 +461,7 @@ fn render_md(content: &str, notes: &[String]) -> String {
 
 #[tauri::command]
 fn render(v: State<Vault>, content: String) -> String {
-    span_timed!("render", render_md(&content, v.index.lock().unwrap().names()), serde_json::json!({"bytes": content.len()}))
+    span_timed!("render", render_with(&content, v.index.lock().unwrap().names(), true), serde_json::json!({"bytes": content.len()}))
 }
 
 /// pure core of render_blocks: every block rendered against the same note list
@@ -955,6 +1006,30 @@ mod tests {
         );
         assert_eq!(ix.backlinks("New"), ["Linker"]);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn render_link_forms_and_block_ids() {
+        let notes = ["T".to_string()];
+        // LP: raw target keeps '#', alias-only, [[#H]] drops '#'; data-note = note part
+        let h = render_md("[[T#Gamma]] [[T#^b1|nick]] [[#Local]] [[Ghost#H]]", &notes);
+        assert!(h.contains(r#"class="wiki" data-note="T" data-anchor="Gamma">T#Gamma</a>"#), "{h}");
+        assert!(h.contains(r#"class="wiki" data-note="T" data-anchor="^b1">nick</a>"#), "{h}");
+        assert!(h.contains(r#"class="wiki" data-note="" data-anchor="Local">Local</a>"#), "{h}");
+        assert!(h.contains(r#"class="wiki wiki-unresolved" data-note="Ghost" data-anchor="H">Ghost#H</a>"#), "{h}");
+        // reading: " > " separator, alias unchanged
+        let r = render_with("[[T#Gamma]] [[T#^b1|nick]] [[#Local]]", &notes, true);
+        assert!(r.contains(">T &gt; Gamma</a>"), "{r}");
+        assert!(r.contains(">nick</a>") && r.contains(">Local</a>"), "{r}");
+        // block ids: paragraph / list item / heading tails become span.blockid;
+        // mid-line ^x and code stay literal
+        let b = render_md("para text ^blk1\n\n- item ^i-2\n\n# Head ^h3\n\nnot ^mid here\n\n`code ^c`", &notes);
+        assert!(b.contains(r#"para text<span class="blockid" data-bid="blk1">^blk1</span></p>"#), "{b}");
+        assert!(b.contains(r#"item<span class="blockid" data-bid="i-2">^i-2</span></li>"#), "{b}");
+        assert!(b.contains(r#"Head<span class="blockid" data-bid="h3">^h3</span></h1>"#), "{b}");
+        assert!(b.contains("not ^mid here</p>") && b.contains("code ^c</code>"), "{b}");
+        assert_eq!(split_block_id("x ^bad id"), None);
+        assert_eq!(split_block_id("x ^ok-1  "), Some(("x", "ok-1")));
     }
 
     #[test]
