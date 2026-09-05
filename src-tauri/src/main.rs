@@ -627,7 +627,9 @@ fn render_with(content: &str, notes: &[String], reading: bool) -> String {
     }
     let mut out = String::new();
     html::push_html(&mut out, evs.into_iter());
-    out
+    // R15.11: pulldown-cmark emits "<input .../>\n" for task markers; that newline is a rendered space (~4px) between the
+    // custom checkbox box and the text, which stock does not have (box->text = 16px box + margin only).
+    out.replace("type=\"checkbox\"/>\n", "type=\"checkbox\"/>").replace("checked=\"\"/>\n", "checked=\"\"/>")
 }
 
 #[tauri::command]
