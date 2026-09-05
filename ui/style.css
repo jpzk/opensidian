@@ -317,3 +317,4 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 /* R10.2 navigation target flash (~2 s fade, stock yellow) */
 .navflash { background: rgba(249,226,175,.35); transition: background 1.5s ease-out .5s }
 .navflash.fade { background: transparent }
+.ac .acb { float: right; margin-left: 14px; color: #6c7086; font-size: 11px; line-height: 20px }

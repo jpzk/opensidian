@@ -654,6 +654,8 @@ function updateTitle() {          // pane/focus census in the window title (head
             (rightOpen ? ":" + rTab : "") + "]" +
             (rightOpen && rTab !== "graph" && rpInfo ? " [rp:" + rpInfo + "]" : "") +
             (rightOpen && rgCenter ? " [rg:" + rgCenter + "]" : "") +
+            (navInfo ? " [" + navInfo + "]" : "") +
+            (acItems.length ? " [ac:" + acKind + ":" + acItems.length + "]" : "") +
             " [pane:" + sidePane + "]" +
             (sidePane === "search" && searchCount >= 0 ? " [sr:" + searchCount + "]" : "") +
             (sidePane === "bm" ? " [bm:" + bmCache.length + "]" : "");
@@ -997,8 +999,9 @@ async function openInTab(name, via = "tab") {   // explorer click -> FOCUSED gro
   perf.mark("note_open", t0, { note: name, mode: g.tabs[g.active].mode, via });
 }
 
-async function navigate(g, name) { // wikilink / graph click: replace g's ACTIVE tab, push history
+async function navigate(g, name, anchor) { // wikilink / graph click: replace g's ACTIVE tab, push history
   const t0 = perf.now();
+  navInfo = "";
   await flushSave(g);
   if (g.active < 0) { g.tabs.push(mkTab(name)); g.active = 0; }
   else {
@@ -1010,6 +1013,70 @@ async function navigate(g, name) { // wikilink / graph click: replace g's ACTIVE
   }
   await loadActive(g);
   perf.mark("note_open", t0, { note: name, mode: g.tabs[g.active].mode, via: "link" });
+  if (anchor) await navAnchor(g, anchor);
+}
+
+/* R10.2: after opening the note, scroll to the #heading / #^block target and
+   flash it ~2 s. LP centers the row (stock), reading/source put it at the
+   top. Unresolvable anchor -> note stays at the top. [nav:<anchor>@<line>]
+   in the census reports the line that was hit (headless probe). */
+let navInfo = "";
+function anchorLine(text, anchor) {  // 0-based source line of the target, or -1
+  const L = text.split("\n");
+  if (anchor.startsWith("^")) {
+    const id = anchor.slice(1);
+    return L.findIndex(l => l.trimEnd().endsWith(" ^" + id));
+  }
+  const want = anchor.trim().toLowerCase();
+  for (const h of tocHeadsOf(text)) if (h.text.toLowerCase() === want) return h.line;
+  return -1;
+}
+function tocHeadsOf(text) {          // cheap ATX scan (outline.rs is the source of truth for the pane)
+  const out = []; let fence = false;
+  text.split("\n").forEach((l, i) => {
+    if (/^ {0,3}(```|~~~)/.test(l)) { fence = !fence; return; }
+    const m = !fence && l.match(/^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$/);
+    if (m) out.push({ level: m[1].length, line: i,
+      text: m[2].replace(/\[\[([^\]]*)\]\]/g, (_, s) => s.split("|").pop().split("#")[0])
+                 .replace(/[*_`~]/g, "").replace(/ \^[A-Za-z0-9-]+$/, "").trim() });
+  });
+  return out;
+}
+function flash(el) {
+  if (!el) return;
+  el.classList.add("navflash");
+  setTimeout(() => el.classList.add("fade"), 400);
+  setTimeout(() => el.classList.remove("navflash", "fade"), 2400);
+}
+async function navAnchor(g, anchor) {
+  const t = g.active >= 0 ? g.tabs[g.active] : null;
+  if (!t || t.kind) return;
+  const line = anchorLine(g.editor.value, anchor);
+  navInfo = "nav:" + anchor + "@" + line;
+  if (line < 0) return updateTitle();
+  if (t.mode === "livepreview") {
+    const row = [...g.lp.children].find(r => +r.dataset.l0 <= line && line <= +r.dataset.l1);
+    if (row) {
+      g.lp.scrollTop = row.offsetTop - g.lp.offsetTop - (g.lp.clientHeight - row.offsetHeight) / 2;
+      flash(row);
+    }
+  } else if (t.mode === "source") {
+    const ed = g.editor, off = ed.value.split("\n").slice(0, line).reduce((a, x) => a + x.length + 1, 0);
+    ed.focus(); ed.setSelectionRange(off, off);
+    ed.scrollTop = line * 20.8;
+  } else {
+    let el = null;
+    if (anchor.startsWith("^")) {
+      const s = [...g.preview.querySelectorAll(".blockid")].find(x => x.dataset.bid === anchor.slice(1));
+      el = s && s.closest("p,li,h1,h2,h3,h4,h5,h6,blockquote");
+    } else {
+      const k = tocHeadsOf(g.editor.value).findIndex(h => h.line === line);
+      el = g.preview.querySelectorAll("h1,h2,h3,h4,h5,h6")[k];
+    }
+    if (el) { g.preview.scrollTop = el.offsetTop - g.preview.offsetTop; flash(el); }
+  }
+  tocSync();
+  updateTitle();
 }
 
 async function histGo(d) {         // per-tab back/forward in the focused group
@@ -1308,7 +1375,7 @@ function lpRow(g, b, h) {
     a.onclick = e => e.preventDefault();       // href="#": no hash churn
     a.addEventListener("mousedown", async e => {
       e.preventDefault(); e.stopPropagation();
-      const n = a.dataset.note;
+      const n = a.dataset.note || curOf(g), an = a.dataset.anchor;  // R10: [[#H]] = this note
       if (a.classList.contains("wiki-unresolved")) {
         await writeNote(n, "");
         for (const gg of groups()) gg.lpCache = null;  // cached html says unresolved
@@ -1318,7 +1385,8 @@ function lpRow(g, b, h) {
         g.tabs.push(mkTab(n));
         g.active = g.tabs.length - 1;
         await loadActive(g);
-      } else navigate(g, n);
+        if (an) await navAnchor(g, an);
+      } else navigate(g, n, an);
     });
   });
   row.addEventListener("mousedown", e => {
@@ -1409,7 +1477,7 @@ async function preview(g) {
   for (const a of g.preview.querySelectorAll("a.wiki"))
     a.onclick = async e => {
       e.preventDefault();
-      const n = a.dataset.note;
+      const n = a.dataset.note || curOf(g), an = a.dataset.anchor;  // R10: [[#H]] = this note
       if (a.classList.contains("wiki-unresolved"))   // R3.5: click creates the note
         await writeNote(n, "");
       if (e.ctrlKey) {                               // R6.4: open in NEW TAB, same group
@@ -1417,7 +1485,8 @@ async function preview(g) {
         g.tabs.push(mkTab(n));
         g.active = g.tabs.length - 1;
         await loadActive(g);
-      } else navigate(g, n);
+        if (an) await navAnchor(g, an);
+      } else navigate(g, n, an);
     };
 }
 
@@ -1447,11 +1516,13 @@ async function updateStatus(g) {
 }
 
 /* ---------- [[ autocomplete (R3.4) ---------- */
-let notesCache = [], acItems = [], acSel = 0, acStart = -1;
+let notesCache = [], acItems = [], acSel = 0, acStart = -1, acKind = "n";
 
 function hideAc() {
+  const was = acItems.length;
   for (const g of groups()) g.acEl.hidden = true;
   acItems = []; acStart = -1;
+  if (was) updateTitle();
 }
 
 function fuzzy(q, s) {  // lower score = better; -1 = no match
@@ -1488,31 +1559,59 @@ function caretXY(g) {    // approximate caret position within g's content box
   return [x, y];
 }
 
-function showAc(g) {
+async function showAc(g) {
   const ctx = acContext(g);
   if (!ctx) return hideAc();
+  const hi = ctx.q.indexOf("#");
+  if (hi >= 0) {
+    // R10.4: [[note#  -> that note's headings (level badge); [[note#^ -> its
+    // existing block ids. [[#  = the current note. Id generation for id-less
+    // blocks is LATER.
+    const note = ctx.q.slice(0, hi), frag = ctx.q.slice(hi + 1);
+    const target = note ? notesCache.find(n => n === note || n.endsWith("/" + note)) : curOf(g);
+    if (!target) return hideAc();
+    const text = target === curOf(g) ? g.editor.value : await inv("read_note", { name: target });
+    const now = acContext(g);                 // keystrokes raced the read: stale, let the next call draw
+    if (!now || now.q !== ctx.q) return;
+    if (frag.startsWith("^")) {
+      acKind = "b";
+      acItems = text.split("\n")
+        .map(l => (l.trimEnd().match(/ \^([A-Za-z0-9-]+)$/) || [])[1]).filter(Boolean)
+        .filter(id => fuzzy(frag.slice(1), id) >= 0)
+        .map(id => ({ ins: note + "#^" + id, label: "^" + id, badge: "" }));
+    } else {
+      acKind = "h";
+      acItems = tocHeadsOf(text).filter(h => fuzzy(frag, h.text) >= 0)
+        .map(h => ({ ins: note + "#" + h.text, label: h.text, badge: "H" + h.level }));
+    }
+    acItems = acItems.slice(0, 8);
+  } else {
+    acKind = "n";
+    acItems = notesCache
+      .map(n => [fuzzy(ctx.q, n), n])
+      .filter(([s]) => s >= 0)
+      .sort((a, b) => a[0] - b[0] || a[1].localeCompare(b[1]))
+      .slice(0, 8)
+      .map(([, n]) => ({ ins: n, label: n, badge: "" }));
+  }
   acStart = ctx.start;
-  acItems = notesCache
-    .map(n => [fuzzy(ctx.q, n), n])
-    .filter(([s]) => s >= 0)
-    .sort((a, b) => a[0] - b[0] || a[1].localeCompare(b[1]))
-    .slice(0, 8)
-    .map(([, n]) => n);
   if (!acItems.length) return hideAc();
   acSel = 0;
   const box = g.acEl;
   box.innerHTML = "";
-  acItems.forEach((n, i) => {
+  acItems.forEach((it, i) => {
     const d = document.createElement("div");
-    d.textContent = n;
+    d.textContent = it.label;
+    if (it.badge) { const b = document.createElement("span"); b.className = "acb"; b.textContent = it.badge; d.appendChild(b); }
     if (i === acSel) d.className = "sel";
-    d.onmousedown = e => { e.preventDefault(); acInsert(g, n); };
+    d.onmousedown = e => { e.preventDefault(); acInsert(g, it.ins); };
     box.appendChild(d);
   });
   const [x, y] = caretXY(g);
   box.style.left = Math.max(0, Math.min(x, g.content.clientWidth - 200)) + "px";
   box.style.top = Math.min(y, g.content.clientHeight - 60) + "px";
   box.hidden = false;
+  updateTitle();
 }
 
 function acInsert(g, name) {
@@ -1534,7 +1633,7 @@ function acKeydown(g, e) {
     [...g.acEl.children].forEach((d, i) => d.className = i === acSel ? "sel" : "");
   } else if (e.key === "Enter" || e.key === "Tab") {
     e.preventDefault(); e.stopPropagation();
-    acInsert(g, acItems[acSel]);
+    acInsert(g, acItems[acSel].ins);
   } else if (e.key === "Escape") {
     e.stopPropagation();
     hideAc();

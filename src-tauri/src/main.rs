@@ -557,6 +557,48 @@ fn backlinks_ctx(v: State<Vault>, name: String) -> Vec<BacklinkCtx> {
         .collect()
 }
 
+#[derive(serde::Serialize)]
+struct Mention {
+    note: String,
+    line: u32,
+    col: u32,
+    len: u32,
+    /// the mention's line, trimmed to 200 chars for the pane
+    text: String,
+}
+
+/// R10.5 Backlinks pane "Unlinked mentions": every other note's plain-text
+/// occurrences of this note's basename (case-insensitive), from the index
+#[tauri::command]
+fn unlinked_mentions(v: State<Vault>, name: String) -> Vec<Mention> {
+    let ix = v.index.lock().unwrap();
+    let base = name.rsplit('/').next().unwrap_or(&name);
+    let mut out = Vec::new();
+    for (n, c, _) in ix.docs() {
+        if n == name {
+            continue;
+        }
+        for (line, col, len) in index::mentions_in(c, base) {
+            let text = c.lines().nth(line as usize).unwrap_or("").trim().chars().take(200).collect();
+            out.push(Mention { note: n.to_string(), line, col, len, text });
+        }
+    }
+    out
+}
+
+/// Link button: wrap the matched text in [[ ]] in `note` and save it
+#[tauri::command]
+fn link_mention(v: State<Vault>, note: String, target: String, line: u32, col: u32, len: u32) -> Result<(), String> {
+    let base = target.rsplit('/').next().unwrap_or(&target);
+    let nc = {
+        let ix = v.index.lock().unwrap();
+        let c = ix.content(&note).ok_or("no such note")?;
+        index::link_mention(c, base, line, col, len).ok_or("mention moved — refresh the pane")?
+    };
+    write_note_inner(&v, &note, &nc);
+    Ok(())
+}
+
 /// active right-sidebar tab, persisted as rside_tab in ~/.rustidian.json
 #[tauri::command]
 fn get_rside_tab() -> Option<String> {
@@ -790,7 +832,7 @@ fn main() {
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, recent_vaults, rename_note, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_span, log_spans,
-            outline, outgoing, backlinks_ctx, get_rside_tab, set_rside_tab
+            outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab
         ])
         .run(tauri::generate_context!())
         .expect("tauri run");
@@ -1030,6 +1072,30 @@ mod tests {
         assert!(b.contains("not ^mid here</p>") && b.contains("code ^c</code>"), "{b}");
         assert_eq!(split_block_id("x ^bad id"), None);
         assert_eq!(split_block_id("x ^ok-1  "), Some(("x", "ok-1")));
+    }
+
+    #[test]
+    fn unlinked_mentions_detected_and_linked() {
+        use index::{link_mention, mentions_in};
+        let c = "Link Target once, link target twice\nalready [[Link Target]] here but Link Target too\n```\nLink Target in code\n```\nno hit\n";
+        assert_eq!(
+            mentions_in(c, "Link Target"),
+            [(0, 0, 11), (0, 18, 11), (1, 33, 11)]
+        );
+        assert!(mentions_in(c, "").is_empty());
+        // Link button: wrap exactly the matched text, case preserved
+        let nc = link_mention(c, "Link Target", 0, 18, 11).unwrap();
+        assert!(nc.starts_with("Link Target once, [[link target]] twice\n"), "{nc}");
+        assert_eq!(mentions_in(&nc, "Link Target").len(), 2);
+        assert!(link_mention(c, "Link Target", 0, 5, 11).is_none()); // stale offsets
+        // through the index (basename of a nested note)
+        let root = tmp_vault("um");
+        fs::write(root.join("sub/Deep Note.md"), "# t").unwrap();
+        fs::write(root.join("A.md"), "see deep note and [[Deep Note]]").unwrap();
+        let ix = Index::build(&root);
+        let hits: Vec<_> = ix.docs().flat_map(|(n, c, _)| mentions_in(c, "Deep Note").into_iter().map(move |h| (n.to_string(), h))).collect();
+        assert_eq!(hits, [("A".to_string(), (0, 4, 9))]);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

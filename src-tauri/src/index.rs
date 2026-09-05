@@ -450,3 +450,66 @@ pub fn rewrite_links(s: &str, old: &str, new: &str, bn_ok: bool) -> (String, boo
     out.push_str(rest);
     (out, changed)
 }
+
+/* R10.5 unlinked mentions: plain-text occurrences of a note's basename,
+   case-insensitive, one per occurrence, skipping [[wikilinks]] and fenced
+   code. Returns (0-based line, byte col, byte len) so the caller can wrap
+   exactly the matched text. Lines whose lowercase form changes byte length
+   (rare non-ASCII case folds) fall back to a case-sensitive scan. */
+pub fn mentions_in(content: &str, base: &str) -> Vec<(u32, u32, u32)> {
+    let mut out = Vec::new();
+    if base.is_empty() {
+        return out;
+    }
+    let lb = base.to_lowercase();
+    let mut fence = false;
+    for (ln, line) in content.lines().enumerate() {
+        let t = line.trim_start_matches(' ');
+        if t.starts_with("```") || t.starts_with("~~~") {
+            fence = !fence;
+            continue;
+        }
+        if fence {
+            continue;
+        }
+        let ll = line.to_lowercase();
+        let (hay, needle): (&str, &str) = if ll.len() == line.len() { (&ll, &lb) } else { (line, base) };
+        // [[..]] spans on this line: a mention inside one is already a link
+        let mut spans = Vec::new();
+        let mut rest = 0;
+        while let Some(a) = line[rest..].find("[[") {
+            let a = rest + a;
+            match line[a..].find("]]") {
+                Some(b) => {
+                    spans.push((a, a + b + 2));
+                    rest = a + b + 2;
+                }
+                None => break,
+            }
+        }
+        let mut at = 0;
+        while let Some(i) = hay[at..].find(needle) {
+            let i = at + i;
+            if !spans.iter().any(|&(a, b)| i >= a && i < b) {
+                out.push((ln as u32, i as u32, needle.len() as u32));
+            }
+            at = i + needle.len().max(1);
+        }
+    }
+    out
+}
+
+/// wrap the (line, col, len) slice in [[ ]] — None if the slice no longer
+/// matches `base` case-insensitively (stale offsets after an edit)
+pub fn link_mention(content: &str, base: &str, line: u32, col: u32, len: u32) -> Option<String> {
+    let mut lines: Vec<&str> = content.split('\n').collect();
+    let l = *lines.get(line as usize)?;
+    let (a, b) = (col as usize, (col + len) as usize);
+    let hit = l.get(a..b)?;
+    if hit.to_lowercase() != base.to_lowercase() {
+        return None;
+    }
+    let nl = format!("{}[[{}]]{}", &l[..a], hit, &l[b..]);
+    lines[line as usize] = &nl;
+    Some(lines.join("\n"))
+}
