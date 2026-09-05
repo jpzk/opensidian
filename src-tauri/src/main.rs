@@ -624,6 +624,45 @@ fn set_rside_tab(tab: String) {
     let _ = fs::write(cfg_path(), v.to_string());
 }
 
+/* R14: custom hotkeys, persisted as "hotkeys" in ~/.rustidian.json in the stock
+   Obsidian shape {"<cmd id>":[{"modifiers":["Mod","Shift"],"key":"G"}]}:
+   [] = default removed, absent id = stock default. The frontend registry
+   (ui/main.js CMDS) is the single source of truth for ids + defaults. */
+#[tauri::command]
+fn get_hotkeys() -> serde_json::Value {
+    hotkeys_clean(cfg_value()["hotkeys"].clone())
+}
+
+#[tauri::command]
+fn set_hotkeys(map: serde_json::Value) {
+    let mut v = cfg_value();
+    v["hotkeys"] = hotkeys_clean(map);
+    let _ = fs::write(cfg_path(), v.to_string());
+}
+
+/// keep only well-formed entries (id -> [{modifiers:[str], key:str}]) so a
+/// hand-edited config can never wedge the dispatcher; [] survives (= removed)
+fn hotkeys_clean(map: serde_json::Value) -> serde_json::Value {
+    let mut out = serde_json::Map::new();
+    if let Some(o) = map.as_object() {
+        for (id, chords) in o {
+            let Some(arr) = chords.as_array() else { continue };
+            let ok: Vec<serde_json::Value> = arr
+                .iter()
+                .filter(|c| {
+                    c["key"].as_str().map_or(false, |k| !k.is_empty())
+                        && c["modifiers"].as_array().map_or(false, |m| m.iter().all(|x| x.is_string()))
+                })
+                .cloned()
+                .collect();
+            if ok.len() == arr.len() {
+                out.insert(id.clone(), serde_json::Value::Array(ok));
+            }
+        }
+    }
+    serde_json::Value::Object(out)
+}
+
 #[derive(serde::Serialize)]
 struct GNode {
     name: String,
@@ -882,7 +921,8 @@ fn main() {
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, recent_vaults, rename_note, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_span, log_spans,
-            outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab
+            outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab,
+            get_hotkeys, set_hotkeys
         ])
         .run(tauri::generate_context!())
         .expect("tauri run");
@@ -891,6 +931,23 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hotkeys_clean_keeps_shape_drops_garbage() {
+        let v = serde_json::json!({
+            "graph:open-local": [{"modifiers": ["Mod"], "key": "G"}],
+            "editor:delete-paragraph": [],
+            "bad-chord": [{"modifiers": "Mod", "key": "X"}],
+            "no-key": [{"modifiers": []}],
+            "not-array": "ctrl+x"
+        });
+        let c = hotkeys_clean(v);
+        let o = c.as_object().unwrap();
+        assert_eq!(o.len(), 2);
+        assert_eq!(o["graph:open-local"][0]["key"], "G");
+        assert_eq!(o["editor:delete-paragraph"].as_array().unwrap().len(), 0);
+        assert_eq!(hotkeys_clean(serde_json::json!(null)), serde_json::json!({}));
+    }
 
     /// (name, content) docs -> the (name, content, tags) stream search wants;
     /// tags empty here — tag queries are tested through a real Index

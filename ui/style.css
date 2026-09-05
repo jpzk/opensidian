@@ -347,3 +347,49 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .lp.src .fence { display: block; font-family: monospace; font-size: 13px; background: #313244;
                  padding: 4px 8px; border-radius: 4px; white-space: pre; overflow-x: auto }
 .lp.src .bq { color: #a6adc8 }
+/* R14 settings modal (Ctrl+,) — fixed 900x600 at (190,100): smoke clicks by coordinate */
+#settings { position: fixed; inset: 0; z-index: 55; background: rgba(0,0,0,.45) }
+#settings[hidden] { display: none }
+#sbox { position: absolute; left: 190px; top: 100px; width: 900px; height: 600px; box-sizing: border-box;
+        background: #26263a; border: 1px solid #45475a; border-radius: 8px; overflow: hidden;
+        display: flex; flex-direction: column; box-shadow: 0 8px 30px rgba(0,0,0,.5); font-size: 13px }
+#shead { height: 36px; box-sizing: border-box; display: flex; align-items: center; justify-content: space-between;
+         padding: 0 12px; background: #1e1e2e; border-bottom: 1px solid #45475a; font-weight: 600 }
+#sclose { background: none; border: 0; color: #a6adc8; cursor: pointer; font-size: 14px }
+#sclose:hover { color: #cdd6f4 }
+#sbody { flex: 1; display: flex; min-height: 0 }
+#snav { width: 180px; box-sizing: border-box; background: #1e1e2e; border-right: 1px solid #45475a;
+        padding: 8px 0; overflow-y: auto }
+.snavh { padding: 4px 14px; color: #7f849c; font-size: 11px; text-transform: uppercase }
+.snavi { padding: 5px 14px; cursor: pointer; color: #cdd6f4 }
+.snavi:hover { background: #313244 }
+.snavi.sel { background: #45475a }
+#spage { flex: 1; min-width: 0; padding: 16px; box-sizing: border-box; display: flex; flex-direction: column }
+.sempty { color: #7f849c }
+#hkbar { display: flex; align-items: center; gap: 6px; height: 28px }
+#hkfilter { flex: 1; height: 28px; box-sizing: border-box; background: #181825; color: #cdd6f4;
+            border: 1px solid #45475a; border-radius: 4px; padding: 0 8px; outline: none; font-size: 13px }
+#hkclear { color: #7f849c; cursor: pointer; width: 16px; text-align: center }
+#hkchips { display: flex; gap: 6px; height: 24px; margin: 8px 0; align-items: center }
+.hkchip { padding: 2px 10px; border-radius: 999px; background: #313244; color: #cdd6f4; cursor: pointer; font-size: 12px; line-height: 16px }
+.hkchip.sel { background: #cba6f7; color: #1e1e2e }
+.hkchip.conf { background: #f38ba8; color: #fff }
+.hkchip.conf.sel { outline: 2px solid #fff }
+#hklist { flex: 1; overflow-y: auto; min-height: 0 }
+.hkrow { display: flex; align-items: center; height: 32px; box-sizing: border-box; gap: 6px;
+         border-bottom: 1px solid #313244 }
+.hkname { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.hkkeys { display: flex; gap: 6px; align-items: center }
+.hkkey { font-family: monospace; font-size: 12px; background: #313244; color: #cdd6f4; border-radius: 4px;
+         padding: 2px 6px; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap }
+.hkkey.blank { color: #7f849c }
+.hkkey.rec { background: #cba6f7; color: #1e1e2e }
+.hkkey.conf { background: #f38ba8; color: #fff }
+.hkx { width: 14px; text-align: center; cursor: pointer; font-size: 11px; color: #a6adc8 }
+.hkkey.conf .hkx { color: #fff }
+.hkx:hover { color: #f38ba8 }
+.hkbtn { width: 24px; height: 24px; box-sizing: border-box; padding: 0; background: #313244; color: #cdd6f4;
+         border: 0; border-radius: 4px; cursor: pointer; font-size: 14px; line-height: 24px }
+.hkbtn:hover { background: #45475a }
+.hkbtn, .hkx, #sclose { display: inline-flex; align-items: center; justify-content: center }
+.hkbtn svg, .hkx svg, #sclose svg { display: block }
