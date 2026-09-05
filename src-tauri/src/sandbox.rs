@@ -1,4 +1,4 @@
-/* Landlock self-sandbox — hidden, OPT-IN: RUSTIDIAN_LANDLOCK=1. Applied once in main()
+/* Landlock self-sandbox — ON by default, RUSTIDIAN_NO_LANDLOCK=1 disables. Applied once in main()
    BEFORE tauri spawns webkit, so every thread/child process inherits it:
    filesystem writes are confined to the vault, ~/.rustidian.json and the
    caches webkit/mesa/fontconfig need; the rest of the system is read-only
@@ -33,7 +33,7 @@ fn env_path(k: &str) -> Option<PathBuf> {
 }
 
 pub fn enforce(vault: &Path, cfg: &Path) -> Result<RulesetStatus, Box<dyn std::error::Error>> {
-    if std::env::var_os("RUSTIDIAN_LANDLOCK").is_none() {
+    if std::env::var_os("RUSTIDIAN_NO_LANDLOCK").is_some() {
         return Ok(RulesetStatus::NotEnforced);
     }
     let vault = vault.canonicalize()?;
@@ -90,7 +90,6 @@ mod tests {
         fs::write(&probe, "secret").unwrap();
         let (vault, cfg, probe2) = (tmp.join("vault"), tmp.join("cfg.json"), probe.clone());
         let res = std::thread::spawn(move || {
-            std::env::set_var("RUSTIDIAN_LANDLOCK", "1");
             if enforce(&vault, &cfg).is_err() {
                 return None; // kernel without landlock (e.g. this firecracker guest)
             }

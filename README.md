@@ -30,28 +30,33 @@ Two AppImage flavors on the [latest release](https://github.com/jpzk/rustidian/r
 Needs `libwebkit2gtk-4.1` installed (`apt install libwebkit2gtk-4.1-0` /
 `dnf install webkit2gtk4.1`) — the AppImage tells you if it's missing:
 
-    curl -LO https://github.com/jpzk/rustidian/releases/download/v0.2/rustidian-0.2-x86_64-slim.AppImage
-    chmod +x rustidian-0.2-x86_64-slim.AppImage
-    ./rustidian-0.2-x86_64-slim.AppImage
+    curl -LO https://github.com/jpzk/rustidian/releases/download/v0.4/rustidian-0.4-x86_64-slim.AppImage
+    chmod +x rustidian-0.4-x86_64-slim.AppImage
+    ./rustidian-0.4-x86_64-slim.AppImage
 
 **portable** (~110MB) — bundles the entire webkit/gtk closure, zero system deps:
 
-    curl -LO https://github.com/jpzk/rustidian/releases/download/v0.2/rustidian-0.2-x86_64-portable.AppImage
-    chmod +x rustidian-0.2-x86_64-portable.AppImage
-    ./rustidian-0.2-x86_64-portable.AppImage
+    curl -LO https://github.com/jpzk/rustidian/releases/download/v0.4/rustidian-0.4-x86_64-portable.AppImage
+    chmod +x rustidian-0.4-x86_64-portable.AppImage
+    ./rustidian-0.4-x86_64-portable.AppImage
 
 No FUSE on your box (containers, minimal VMs)? Run either without mounting:
 
-    ./rustidian-0.2-x86_64-slim.AppImage --appimage-extract-and-run
+    ./rustidian-0.4-x86_64-slim.AppImage --appimage-extract-and-run
 
 ## sandboxed run (recommended)
+
+Since v0.4 the app also sandboxes ITSELF with Landlock (kernel ≥ 5.13): once a vault
+is open the whole process tree can only write inside that vault (+ its own config
+and caches) and cannot read your home directory. Nothing to configure; blank window
+on an exotic setup? `RUSTIDIAN_NO_LANDLOCK=1` turns it off, please file an issue.
 
 Your notes are just files, but the app doesn't need to see the rest of your
 home directory. With [bubblewrap](https://github.com/containers/bubblewrap)
 (`apt/dnf install bubblewrap` — unprivileged, no SUID) you can confine
 rustidian to ONLY your vault. Grab the launcher next to the AppImage and:
 
-    curl -LO https://github.com/jpzk/rustidian/releases/download/v0.2/rustidian-sandboxed.sh
+    curl -LO https://github.com/jpzk/rustidian/releases/download/v0.4/rustidian-sandboxed.sh
     chmod +x rustidian-sandboxed.sh
     ./rustidian-sandboxed.sh ~/vault
 
