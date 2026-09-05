@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-use pulldown_cmark::{html, Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{html, Event, LinkType, Options, Parser, Tag, TagEnd};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
@@ -303,6 +303,28 @@ fn home_dir() -> String {
     std::env::var("HOME").unwrap_or_else(|_| "/".into())
 }
 
+/// S1: the only way an external URL leaves the app — the webview never
+/// navigates (on_navigation + main.js capture). Scheme re-checked here: the
+/// DOM is attacker-influenced, the render allowlist is not the trust boundary.
+fn check_external(url: &str) -> Result<(), String> {
+    if ext_ok(url, false) { Ok(()) } else { Err(format!("blocked scheme: {url}")) }
+}
+
+#[tauri::command]
+fn open_external(url: String) -> Result<(), String> {
+    check_external(&url)?;
+    // std::process::Command only — no shell, no opener plugin. Missing xdg-open
+    // (headless smoke, minimal hosts) is a plain Err, never a fallback.
+    std::process::Command::new("xdg-open")
+        .arg(&url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("xdg-open: {e}"))
+}
+
 #[tauri::command]
 fn list_dirs(path: String) -> Vec<String> {
     let mut v: Vec<String> = fs::read_dir(path)
@@ -404,6 +426,24 @@ fn render_md(content: &str, notes: &[String]) -> String {
     render_with(content, notes, false)
 }
 
+/// S1 (docs/security-review.md): scheme of a markdown link/image target,
+/// lowercased, or None when there is none (relative / fragment / bare word).
+fn url_scheme(url: &str) -> Option<String> {
+    let i = url.find(':')?;
+    let s = &url[..i];
+    let mut cs = s.chars();
+    let ok = cs.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && cs.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    ok.then(|| s.to_ascii_lowercase())
+}
+
+/// S1: only these schemes survive as `<a class="ext">` / `<img>`; everything
+/// else (javascript:, data:, file:, vbscript:, relative paths — the webview
+/// would navigate the app window itself) is rendered as literal text.
+fn ext_ok(url: &str, image: bool) -> bool {
+    matches!(url_scheme(url).as_deref(), Some("http" | "https")) || (!image && url_scheme(url).as_deref() == Some("mailto"))
+}
+
 /// reading=true: heading links join with " > " (R10.1). Block ids are emitted
 /// as span.blockid in both modes; CSS decides visibility.
 fn render_with(content: &str, notes: &[String], reading: bool) -> String {
@@ -416,6 +456,7 @@ fn render_with(content: &str, notes: &[String], reading: bool) -> String {
     let mut evs: Vec<Event> = Vec::new();
     let mut buf = String::new();
     let mut in_code = false;
+    let mut demoted: Vec<Option<String>> = Vec::new(); // S1: per open link/image, Some(text tail) when rendered as text
     // pulldown's own ENABLE_WIKILINKS would consume [[..]] before our pass;
     // SMART_PUNCTUATION would curl quotes/apostrophes inside link targets,
     // breaking [[name]] -> filename fidelity
@@ -450,6 +491,43 @@ fn render_with(content: &str, notes: &[String], reading: bool) -> String {
                 match other {
                     Event::Start(Tag::CodeBlock(_) | Tag::MetadataBlock(_)) => in_code = true,
                     Event::End(TagEnd::CodeBlock | TagEnd::MetadataBlock(_)) => in_code = false,
+                    // S1: standard links / images — scheme allowlist. Allowed link ->
+                    // our own anchor (class ext, rel noopener; main.js routes clicks to
+                    // open_external). Allowed image -> pulldown's own <img> (src escaped
+                    // by push_html). Anything else -> the literal `[label](url)` as TEXT.
+                    Event::Start(Tag::Link { link_type, dest_url, title, .. }) => {
+                        if ext_ok(&dest_url, false) {
+                            let t = if title.is_empty() { String::new() } else { format!(" title=\"{}\"", esc(&title)) };
+                            evs.push(Event::Html(format!("<a href=\"{}\" class=\"ext\" rel=\"noopener\"{t}>", esc(&dest_url)).into()));
+                            demoted.push(None);
+                        } else {
+                            let auto = matches!(link_type, LinkType::Autolink | LinkType::Email);
+                            if !auto { evs.push(Event::Text("[".into())); }
+                            demoted.push(Some(if auto { String::new() } else { format!("]({dest_url})") }));
+                        }
+                        continue;
+                    }
+                    Event::End(TagEnd::Link) => {
+                        match demoted.pop().flatten() {
+                            Some(tail) => { if !tail.is_empty() { evs.push(Event::Text(tail.into())); } }
+                            None => evs.push(Event::Html("</a>".into())),
+                        }
+                        continue;
+                    }
+                    Event::Start(Tag::Image { ref dest_url, .. }) => {
+                        if !ext_ok(dest_url, true) {
+                            evs.push(Event::Text("![".into()));
+                            demoted.push(Some(format!("]({dest_url})")));
+                            continue;
+                        }
+                        demoted.push(None);
+                    }
+                    Event::End(TagEnd::Image) => {
+                        if let Some(tail) = demoted.pop().flatten() {
+                            evs.push(Event::Text(tail.into()));
+                            continue;
+                        }
+                    }
                     _ => {}
                 }
                 evs.push(other);
@@ -916,13 +994,22 @@ fn main() {
             spawn_watcher(app.handle().clone());
             Ok(())
         })
+        // S1: the window is the app, never a browser — every navigation off the
+        // app origin (remote http(s), javascript:, file:, ...) is denied here.
+        // Config-created windows have no builder hook; an inline plugin's
+        // on_navigation applies to every webview of the app.
+        .plugin(
+            tauri::plugin::Builder::<tauri::Wry, ()>::new("navguard")
+                .on_navigation(|_, u| u.scheme() == "tauri" || u.host_str() == Some("tauri.localhost"))
+                .build(),
+        )
         .invoke_handler(tauri::generate_handler![
             list_notes, read_note, write_note, render, render_blocks, highlight_blocks, graph, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, recent_vaults, rename_note, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_span, log_spans,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab,
-            get_hotkeys, set_hotkeys
+            get_hotkeys, set_hotkeys, open_external
         ])
         .run(tauri::generate_context!())
         .expect("tauri run");
@@ -1225,6 +1312,70 @@ mod tests {
         // ...but code blocks still render their (escaped) content normally
         let h = render_md("```\n<b>code</b>\n```", &[]);
         assert!(h.contains("<pre><code>") && h.contains("&lt;b&gt;"));
+    }
+
+    #[test]
+    fn render_keeps_http_mailto_anchors() {
+        // S1: allowed schemes -> our own anchor: class ext, rel noopener
+        let h = render_md("[ext](https://example.com/a?b=1&c=2) [m](mailto:a@b.c) [h](HTTP://x.y)", &[]);
+        assert!(h.contains(r#"<a href="https://example.com/a?b=1&amp;c=2" class="ext" rel="noopener">ext</a>"#), "{h}");
+        assert!(h.contains(r#"<a href="mailto:a@b.c" class="ext" rel="noopener">m</a>"#), "{h}");
+        assert!(h.contains(r#"<a href="HTTP://x.y" class="ext" rel="noopener">h</a>"#), "{h}");
+        // autolink + title survive too
+        let h = render_md(r#"<https://a.b> [t](https://c.d "Ti")"#, &[]);
+        assert!(h.contains(r#"class="ext" rel="noopener">https://a.b</a>"#), "{h}");
+        assert!(h.contains(r#"rel="noopener" title="Ti">t</a>"#), "{h}");
+        // reading mode identical
+        assert!(render_with("[x](https://q)", &[], true).contains(r#"class="ext""#));
+        // remote image keeps pulldown's <img> (img-src CSP is the next layer)
+        let h = render_md("![pic](https://img.x/a.png)", &[]);
+        assert!(h.contains(r#"<img src="https://img.x/a.png" alt="pic""#), "{h}");
+    }
+
+    #[test]
+    fn render_drops_bad_schemes_to_text() {
+        // S1: javascript:/data:/file:/vbscript:/relative -> literal text, no anchor at all
+        for src in [
+            "[js](javascript:alert(1))",
+            "[d](data:text/html,<b>x</b>)",
+            "[f](file:///etc/passwd)",
+            "[v](vbscript:msgbox)",
+            "[r](../../etc/passwd)",
+            "[frag](#h)",
+            "[sp]( javascript:alert(1))",
+            "[tab](java\tscript:alert(1))",
+            "<javascript:alert(1)>",
+        ] {
+            let h = render_md(src, &[]);
+            assert!(!h.contains("<a "), "anchor leaked for {src}: {h}");
+            assert!(!h.contains("href"), "href leaked for {src}: {h}");
+        }
+        let h = render_md("[js](javascript:alert(1))", &[]);
+        assert!(h.contains("[js](javascript:alert(1))"), "literal expected: {h}");
+        let h = render_md("![x](file:///etc/hostname) ![y](javascript:alert(1)) ![z](data:image/png;base64,AAAA)", &[]);
+        assert!(!h.contains("<img"), "img leaked: {h}");
+        assert!(h.contains("![x](file:///etc/hostname)"), "{h}");
+        // label text still escaped (push_html Text), url text too
+        let h = render_md("[<b>](javascript:'<s>')", &[]);
+        assert!(!h.contains("<b>") && !h.contains("<s>"), "{h}");
+        // wikilinks / tags unaffected
+        let h = render_md("[[Ideas]] #tag [x](javascript:1)", &["Ideas".into()]);
+        assert!(h.contains(r#"class="wiki""#) && h.contains(r#"class="tag""#), "{h}");
+    }
+
+    #[test]
+    fn open_external_rejects_non_http() {
+        for u in ["javascript:alert(1)", "file:///etc/passwd", "data:text/html,x", "vbscript:x", "../x", "#h", "", "ftp://a.b"] {
+            assert!(check_external(u).is_err(), "accepted {u}");
+            assert!(open_external(u.to_string()).is_err(), "command accepted {u}");
+        }
+        for u in ["https://example.com", "http://a.b/c", "mailto:x@y.z", "HTTPS://A.B"] {
+            assert!(check_external(u).is_ok(), "rejected {u}");
+        }
+        assert_eq!(url_scheme("javascript:x").as_deref(), Some("javascript"));
+        assert_eq!(url_scheme("no-scheme/path"), None);
+        assert_eq!(url_scheme("1http://x"), None);
+        assert!(!ext_ok("mailto:a@b", true)); // images: http(s) only
     }
 
     #[test]

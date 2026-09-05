@@ -763,7 +763,8 @@ function updateTitle() {          // pane/focus census in the window title (head
             (sidePane === "search" && searchCount >= 0 ? " [sr:" + searchCount + "]" : "") +
             (sidePane === "bm" ? " [bm:" + bmCache.length + "]" : "");
   const t2 = (fg() && fg().active >= 0 && !fg().tabs[fg().active].kind ? " [buf:" + bufOf(fg()).length + "]" : "") +
-             " [tree:" + notesCache.length + "] [vc:" + vcCount + "]";   // R11 probes
+             " [tree:" + notesCache.length + "] [vc:" + vcCount + "]" +   // R11 probes
+             (extCount ? " [ext:" + extCount + "]" : "");                 // S1: external-link clicks routed to open_external
   t += t2;
   document.title = t;
   // publish to the native title: ONE call in flight, last-write-wins, 500ms
@@ -867,6 +868,21 @@ document.addEventListener("contextmenu", e => e.preventDefault()); // app-like: 
 document.addEventListener("mousedown", e => {
   if (menuEl && !menuEl.contains(e.target)) closeMenu();
 }, true);
+// S1 (docs/security-review.md): external links (a.ext from render) NEVER
+// navigate the webview. One capture-phase gate for both mousedown (the lp raw
+// row opens on mousedown) and click (the default navigation): swallow, then
+// hand the href to open_external, which re-checks the scheme in Rust and
+// spawns xdg-open. [ext:N] census counts the attempts (headless probe).
+let extCount = 0;
+for (const ev of ["mousedown", "click"])
+  document.addEventListener(ev, e => {
+    const a = e.target && e.target.closest && e.target.closest("a.ext");
+    if (!a) return;
+    e.preventDefault(); e.stopPropagation();
+    if (ev !== "click") return;
+    extCount++; updateTitle();
+    inv("open_external", { url: a.getAttribute("href") }).catch(err => console.warn("open_external:", err));
+  }, true);
 
 function tabMenu(e, g, i) {              // right-click a tab -> Split right / Split down / Link with tab... (R13.1)
   e.preventDefault();
