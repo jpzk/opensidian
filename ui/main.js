@@ -50,6 +50,62 @@ const curOf = g => (g.active >= 0 ? g.tabs[g.active].name : null);
 const cur = () => (state && fg() ? curOf(fg()) : null);
 const mkTab = name => ({ name, mode: "livepreview", hist: [name], hpos: 0 });  // R8.8: LP default
 
+/* R13: manual linked tabs ('Link with tab...'). tab.link = link-group id
+   shared by every member; tab objects move by reference (drag / split), so a
+   link survives moves. Layered on the R7.3 group-level auto-link of local
+   graph tabs (tab.linkId = group id), which stays as is. */
+let linkSeq = 0;
+function linkMembers(t) {           // every OTHER member of t's link group
+  const out = [];
+  if (t.link == null) return out;
+  for (const h of groups()) for (const x of h.tabs) if (x !== t && x.link === t.link) out.push({ g: h, t: x });
+  return out;
+}
+function linkTabs(a, b) {           // link two tabs; joining a member joins its group
+  if (a === b) return;
+  if (a.link != null && b.link != null) {
+    const old = b.link;
+    for (const h of groups()) for (const x of h.tabs) if (x.link === old) x.link = a.link;
+  } else if (a.link != null) b.link = a.link;
+  else if (b.link != null) a.link = b.link;
+  else a.link = b.link = ++linkSeq;
+  for (const h of groups()) renderTabs(h);
+}
+function isLinked(g, t, i) {        // manual member, lg auto-link, or the auto-linked group's active tab
+  if (t.link != null || (t.kind === "lg" && t.linkId != null)) return true;
+  return i === g.active && groups().some(h => h.tabs.some(x => x.kind === "lg" && x.linkId === g.id));
+}
+function unlinkTab(g, t, closing) { // R13.4: drop t from its group; a group of 1 dissolves
+  if (t.link != null) {
+    const rest = linkMembers(t);
+    delete t.link;
+    if (rest.length < 2) for (const m of rest) delete m.t.link;
+  }
+  if (t.kind === "lg") delete t.linkId;
+  else if (!closing)                // menu on the auto-linked group's tab: detach its local graphs
+    for (const h of groups()) for (const x of h.tabs) if (x.kind === "lg" && x.linkId === g.id) delete x.linkId;
+  for (const h of groups()) renderTabs(h);
+}
+async function linkSync(src, name) { // R13.3: a member opening a note reaches every member
+  for (const { g: h, t } of linkMembers(src)) {
+    const act = h.tabs[h.active] === t;
+    if (t.kind === "lg") {          // graph members re-center + re-title
+      if (t.center === name) continue;
+      t.center = name; t.name = "Graph of " + name.split("/").pop();
+      h.graphSettled = false;
+      renderTabs(h);
+      if (act && h.graphRefresh) await h.graphRefresh();
+      continue;
+    }
+    if (t.kind || t.name === name) continue;
+    if (act) await flushSave(h);
+    t.name = name;                  // editors navigate in place, own mode kept
+    t.hist = t.hist.slice(0, t.hpos + 1); t.hist.push(name); t.hpos++;
+    if (act) await loadActive(h); else renderTabs(h);
+  }
+  updateTitle();
+}
+
 /* R9.2: left sidebar pane state — Files / Search / Bookmarks (census [pane:]) */
 let sidePane = "files";
 /* R9.5/R9.6: sidebar visibility — census [side:lXrX] (r wired in R9.6) */
@@ -671,11 +727,13 @@ function updateTitle() {          // pane/focus census in the window title (head
     }
   }
   {
-    const linked = new Set();
-    let chain = 0;
-    for (const h of groups()) for (const t of h.tabs) if (t.kind === "lg") { linked.add(t.linkId); chain++; }
-    for (const h of groups()) if (linked.has(h.id) && h.active >= 0) chain++;
+    let chain = 0; const lk = [];  // R13: [lk:a|b] = names of manually linked tabs
+    for (const h of groups()) h.tabs.forEach((t, i) => {
+      if (isLinked(h, t, i)) chain++;
+      if (t.link != null) lk.push(t.name.split("/").pop());
+    });
     if (chain) lg += " [chain:" + chain + "]";
+    if (lk.length) lg += " [lk:" + lk.join("|") + "]";
   }
   // R8.10: focused tab's view mode -> [mode:lp|src|read]; when the lp raw
   // row is active, [mode:lp:<l0>] exposes its block start line (headless probe)
@@ -806,21 +864,33 @@ document.addEventListener("mousedown", e => {
   if (menuEl && !menuEl.contains(e.target)) closeMenu();
 }, true);
 
-function tabMenu(e, g, i) {              // right-click a tab -> Split right / Split down
+function tabMenu(e, g, i) {              // right-click a tab -> Split right / Split down / Link with tab... (R13.1)
   e.preventDefault();
   closeMenu();
   const m = document.createElement("div");
   m.className = "ctxmenu";
-  for (const [label, fn] of [
-    ["Split right", () => splitGroup(g, "row", i)],
-    ["Split down",  () => splitGroup(g, "col", i)],
-  ]) {
+  const tab = g.tabs[i];
+  const item = (label, fn) => {
     const d = document.createElement("div");
     d.textContent = label;
     d.onmousedown = ev => ev.stopPropagation();  // don't let the closer eat the click
-    d.onclick = () => { closeMenu(); fn(); };
+    d.onclick = () => { if (fn) fn(); else closeMenu(); };
     m.appendChild(d);
-  }
+  };
+  const pick = () => {                   // R13.1 pick list: every other open tab, in layout order
+    m.innerHTML = "";
+    let any = false;
+    for (const h of groups()) for (const t of h.tabs) {
+      if (t === tab) continue;
+      any = true;
+      item((t.kind === "gg" ? "Graph" : t.name.split("/").pop()), () => { closeMenu(); linkTabs(tab, t); });
+    }
+    if (!any) item("(no other tabs)");
+  };
+  item("Split right", () => { closeMenu(); splitGroup(g, "row", i); });
+  item("Split down",  () => { closeMenu(); splitGroup(g, "col", i); });
+  if (isLinked(g, tab, i)) item("Unlink tab", () => { closeMenu(); unlinkTab(g, tab); });
+  else item("Link with tab...", pick);
   m.style.left = Math.min(e.clientX, window.innerWidth - 150) + "px";
   m.style.top = Math.min(e.clientY, window.innerHeight - 80) + "px";
   document.body.appendChild(m);
@@ -867,15 +937,13 @@ async function cmdToggleMode(g) {  // Ctrl+E / mode button: lp -> src -> read ->
 /* ---------- tabs (per group) ---------- */
 function renderTabs(g) {
   g.tabsEl.innerHTML = "";
-  // R7.3: chain glyph on the localgraph tab AND its linked group's active tab
-  const linked = new Set();
-  for (const h of groups()) for (const t of h.tabs) if (t.kind === "lg") linked.add(t.linkId);
+  // R7.3 / R13.2: chain glyph on every linked tab (lg auto-link + manual links)
   g.tabs.forEach((tab, i) => {
     const d = document.createElement("div");
     d.className = "tab" + (i === g.active ? " active" : "");
     const ttl = document.createElement("span");
     ttl.className = "t";
-    const chain = tab.kind === "lg" || (i === g.active && linked.has(g.id));
+    const chain = isLinked(g, tab, i);
     ttl.textContent = (chain ? "\u{1F517} " : "") + tab.name.split("/").pop();
     const x = document.createElement("span");
     x.className = "x";
@@ -1034,6 +1102,8 @@ async function switchTab(g, i) {
 
 async function openInTab(name, via = "tab") {   // explorer click -> FOCUSED group (R6.3); via:"boot" = auto-open at startup (already inside the boot span)
   const g = fg();
+  const lt = g.active >= 0 ? g.tabs[g.active] : null;
+  if (lt && !lt.kind && lt.link != null && lt.name !== name) return navigate(g, name);  // R13.3: a linked member navigates in place
   const t0 = perf.now();
   await flushSave(g);
   const i = g.tabs.findIndex(x => x.name === name);
@@ -1057,6 +1127,7 @@ async function navigate(g, name, anchor) { // wikilink / graph click: replace g'
   }
   await loadActive(g);
   perf.mark("note_open", t0, { note: name, mode: g.tabs[g.active].mode, via: "link" });
+  await linkSync(g.tabs[g.active], name);   // R13.3: linked members follow
   if (anchor) await navAnchor(g, anchor);
 }
 
@@ -1137,6 +1208,7 @@ async function histGo(d) {         // per-tab back/forward in the focused group
 
 async function closeTab(g, i) {
   if (i === g.active) await flushSave(g);
+  unlinkTab(g, g.tabs[i], true);    // R13.4: closing a member unlinks it
   g.tabs.splice(i, 1);
   if (!g.tabs.length && groups().length > 1)  // R6.5: empty group leaves the tree
     return collapseGroup(g);
@@ -2314,6 +2386,7 @@ async function showLocalGraph(g, t) {  // t = the localgraph tab (kind:"lg")
     onClick: async n => {              // R7.4: navigate the LINKED group; lgFollow re-centers
       const lk = groups().find(x => x.id === t.linkId);
       if (lk) await navigate(lk, n);
+      await linkSync(t, n);          // R13.3: manual members follow too
     },
   });
   g.lgDepth.value = t.depth; g.lgDv.textContent = t.depth;
@@ -2465,6 +2538,7 @@ async function reloadInPlace(g, text) {
 // remove a tab WITHOUT flushing (R11.4: the file is gone; a flush would resurrect it)
 async function dropTab(g, i) {
   if (i === g.active) { clearTimeout(g.saveT); g.saveT = null; g.lpActive = null; }
+  unlinkTab(g, g.tabs[i], true);    // R13.4
   g.tabs.splice(i, 1);
   if (!g.tabs.length && groups().length > 1) return collapseGroup(g);
   if (g.active >= g.tabs.length) g.active = g.tabs.length - 1;
