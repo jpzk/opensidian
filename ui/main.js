@@ -1,31 +1,26 @@
-const inv = (c, a) => window.__TAURI__.core.invoke(c, a);
-/* perf-spans: UI spans land in the SAME RUSTIDIAN_PERF jsonl as the backend
-   via log_span. mark(name, t0, extra) is fire-and-forget; the first reply
-   tells us whether telemetry is on at all — when it is not, every later
-   mark() is a pure no-op (no IPC). */
+/* otel (R18): every invoke carries the innermost open UI action span as the
+   `otel` arg, so backend spans nest under it (commands without the param
+   ignore it). ui/otel.js owns ids, buffering and the 250ms batched IPC. */
+const inv = (c, a) => { const x = otel.ctx(); return window.__TAURI__.core.invoke(c, x ? Object.assign({ otel: x }, a) : a); };
+/* perf-spans shim over otel: mark(name, t0, extra) = a span that started at
+   t0 and ends now; push(name, ms, extra) = an already-measured span (graph
+   frames); both no-ops once the backend said telemetry is off. */
 const perf = {
-  on: null,                                  // null = unknown yet
   now: () => performance.now(),
-  mark(name, t0, extra = {}) {
-    if (perf.on === false) return;
-    const ms = performance.now() - t0;
-    inv("log_span", { name, ms, extra }).then(en => { perf.on = !!en; }).catch(() => {});
-  },
-  // perf-graph: high-rate spans (one per sim frame) are buffered and shipped
-  // in one log_spans IPC per 64 samples / on flush, so measuring ~60 frames/s
-  // does not itself cost 60 IPC round-trips a second
-  buf: [],
-  push(name, ms, extra = {}) {
-    if (perf.on === false) return;
-    perf.buf.push({ name, ms, extra });
-    if (perf.buf.length >= 64) perf.flush();
-  },
-  flush() {
-    if (!perf.buf.length) return;
-    const spans = perf.buf; perf.buf = [];
-    inv("log_spans", { spans }).then(en => { perf.on = !!en; }).catch(() => {});
-  },
+  mark(name, t0, extra = {}) { otel.span(name, extra, performance.now() - t0); },
+  push(name, ms, extra = {}) { otel.span(name, extra, ms); },
+  flush() { otel.flush(); },
 };
+/* R18 action span: act(name, attrs, fn) runs fn (sync or async) inside an
+   open span and ends it at PAINT (otel.paint: double rAF). Backend calls made
+   by fn nest under it (inv attaches the ctx). Returns fn's result. */
+async function act(name, attrs, fn) {
+  const sp = otel.begin(name, attrs);
+  try { return await fn(sp); } finally { otel.paint(sp); }
+}
+/* R18 history_nav: placeholder until R19 wires per-tab history to mouse
+   back/forward + Alt+Left/Right; emits a no-op span so the op has a row. */
+function historyNav(dir) { otel.span("history_nav", { dir, noop: true }); }
 const $ = id => document.getElementById(id);
 let vaultPath = null, pmode = null, bpath = null;
 
@@ -111,10 +106,12 @@ let sidePane = "files";
 /* R9.5/R9.6: sidebar visibility — census [side:lXrX] (r wired in R9.6) */
 let sideOpen = true, rightOpen = false;
 function cmdToggleSide() {
-  sideOpen = !sideOpen;
-  $("side").hidden = $("ldiv").hidden = !sideOpen;
-  $("collapsebtn").title = sideOpen ? "Collapse sidebar" : "Expand sidebar";
-  updateTitle();
+  return act("pane_toggle_left", { open: !sideOpen, tabs: groups().reduce((a, g) => a + g.tabs.length, 0) }, () => {
+    sideOpen = !sideOpen;
+    $("side").hidden = $("ldiv").hidden = !sideOpen;
+    $("collapsebtn").title = sideOpen ? "Collapse sidebar" : "Expand sidebar";
+    updateTitle();
+  });
 }
 
 /* R9.6 right sidebar: localgraph of the ACTIVE note (depth 1, in+out),
@@ -161,12 +158,14 @@ async function rgFollow() {                // active note changed -> re-center
 }
 async function cmdToggleRight() {
   if (!state) return;
-  rightOpen = !rightOpen;
-  $("rside").hidden = $("rdiv").hidden = !rightOpen;
-  $("rtoggle").title = rightOpen ? "Collapse right sidebar" : "Expand right sidebar";
-  if (rightOpen) await setRTab(rTab, false);
-  else rgStop();
-  updateTitle();
+  await act("pane_toggle_right", { open: !rightOpen, rtab: rTab, note: cur() || "" }, async () => {
+    rightOpen = !rightOpen;
+    $("rside").hidden = $("rdiv").hidden = !rightOpen;
+    $("rtoggle").title = rightOpen ? "Collapse right sidebar" : "Expand right sidebar";
+    if (rightOpen) await setRTab(rTab, false);
+    else rgStop();
+    updateTitle();
+  });
 }
 $("rtoggle").onclick = cmdToggleRight;
 
@@ -398,8 +397,7 @@ async function tocGo(line) {               // scroll + focus the heading at `lin
   const g = fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
   if (!t || t.kind) return;
   if (isLp(t.mode)) {                     // R12: source mode = lp with reveal
-    lpCommit(g);
-    await lpRender(g, line, 0);            // raw row = the heading, caret on it
+    await lpMove(g, line, 0, "heading");   // raw row = the heading, caret on it
     const row = [...g.lp.children].find(r => +r.dataset.l0 === line);
     if (row) g.lp.scrollTop = row.offsetTop - g.lp.offsetTop;
   } else {
@@ -478,17 +476,18 @@ function setPane(p) {
 /* R9.3 search pane: debounced rust search(query), grouped by note.
    census [sr:N] (total hits) while the search pane is showing a query. */
 let searchCount = -1;                       // -1 = no query -> no [sr:] flag
-let searchT = null, searchSeq = 0, searchT0 = -1;
+let searchT = null, searchSeq = 0, searchT0 = -1, searchSp = null;   // searchSp: R18 search_type span of the latest keystroke
 async function runSearch() {
   const q = $("sinput").value.trim();
   const seq = ++searchSeq;                  // stale-response guard
   const box = $("sresults");
   if (!q) {
-    searchCount = -1; box.textContent = ""; updateTitle(); return;
+    searchCount = -1; box.textContent = ""; updateTitle();
+    otel.paint(searchSp, { hits: 0 }); searchSp = null; return;
   }
   const st0 = searchT0 >= 0 ? searchT0 : perf.now(); searchT0 = -1;
   const hits = await inv("search", { query: q });
-  if (seq !== searchSeq) return;
+  if (seq !== searchSeq) { otel.cancel(searchSp); return; }
   searchCount = hits.length;
   box.textContent = "";
   if (!hits.length) {
@@ -525,6 +524,7 @@ async function runSearch() {
   }
   updateTitle();
   perf.mark("search", st0, { q, hits: hits.length });
+  otel.paint(searchSp, { hits: hits.length }); searchSp = null;   // R18 search_type: keystroke -> results painted
 }
 
 /* R9.4 bookmarks: tree-row context menu toggles; rust persists the plain
@@ -823,6 +823,7 @@ async function splitGroup(g, dir, ti) {  // duplicate g's tab ti into a new sibl
 async function splitWith(g, dir, tab) {  // insert a new sibling group carrying `tab`
   const parent = findParent(state.root, g);
   if (!parent) return;
+  await act("pane_split", { dir, groups: groups().length + 1, note: tab ? tab.name : "" }, async () => {
   const ng = mkGroup();
   if (tab) { ng.tabs.push(tab); ng.active = 0; }
   if (parent.children.length === 1) parent.dir = dir;   // lone child: re-aim the split
@@ -837,6 +838,7 @@ async function splitWith(g, dir, tab) {  // insert a new sibling group carrying 
   renderLayout();
   focusGroup(ng);
   if (ng.active >= 0) await loadActive(ng);
+  });
 }
 
 async function collapseGroup(g) {  // R6.5: closing the last tab removes the group
@@ -1009,7 +1011,8 @@ function tabDragStart(e, g, i) {
   const clearHl = () => {
     if (hl) { hl.classList.remove("drop-strip", "drop-edge"); hl = null; }
   };
-  const move = ev => {
+  const move = ev => {                       // R18 tab_drag_move: one span per mousemove (JS + forced layouts)
+    const mT0 = performance.now();
     if (!ghost) {
       if (Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) < 6) return;
       ghost = document.createElement("div");
@@ -1036,6 +1039,7 @@ function tabDragStart(e, g, i) {
       }
       break;
     }
+    otel.span("tab_drag_move", { groups: groups().length, target: target ? target.kind : "" }, performance.now() - mT0);
   };
   const up = async () => {
     window.removeEventListener("mousemove", move);
@@ -1044,6 +1048,7 @@ function tabDragStart(e, g, i) {
     if (ghost) ghost.remove();
     clearHl();
     if (!ghost || !t) return;                // plain click, or dropped nowhere
+    await act("tab_drop", { kind: t.kind, groups: groups().length, note: g.tabs[i] ? g.tabs[i].name : "" }, async () => {   // R18: drop -> layout rebuilt + note shown
     await flushSave(g);
     const tab = g.tabs.splice(i, 1)[0];
     if (!tab) return;
@@ -1062,6 +1067,7 @@ function tabDragStart(e, g, i) {
       if (!g.tabs.length) await collapseGroup(g);  // own edge nets a plain move)
       else { await loadActive(g); renderTabs(g); }
     }
+    });
   };
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);
@@ -1125,40 +1131,42 @@ async function lgFollow(src) {
 
 async function switchTab(g, i) {
   if (i === g.active) return;
-  const t0 = perf.now();
-  await flushSave(g);
-  g.active = i;
-  await loadActive(g);
-  perf.mark("tab_switch", t0, { note: curOf(g), kind: g.tabs[i].kind || "note" });
+  await act("tab_switch", { note: g.tabs[i].name, kind: g.tabs[i].kind || "note", tabs: g.tabs.length }, async () => {
+    await flushSave(g);
+    g.active = i;
+    await loadActive(g);
+  });
 }
 
 async function openInTab(name, via = "tab") {   // explorer click -> FOCUSED group (R6.3); via:"boot" = auto-open at startup (already inside the boot span)
   const g = fg();
   const lt = g.active >= 0 ? g.tabs[g.active] : null;
   if (lt && !lt.kind && lt.link != null && lt.name !== name) return navigate(g, name);  // R13.3: a linked member navigates in place
-  const t0 = perf.now();
-  await flushSave(g);
-  const i = g.tabs.findIndex(x => x.name === name);
-  if (i >= 0) g.active = i;
-  else { g.tabs.push(mkTab(name)); g.active = g.tabs.length - 1; }
-  await loadActive(g);
-  perf.mark("note_open", t0, { note: name, mode: g.tabs[g.active].mode, via });
+  await act("note_open", { note: name, via, tabs: g.tabs.length }, async sp => {
+    await flushSave(g);
+    const i = g.tabs.findIndex(x => x.name === name);
+    if (i >= 0) g.active = i;
+    else { g.tabs.push(mkTab(name)); g.active = g.tabs.length - 1; }
+    await loadActive(g);
+    Object.assign(sp.attrs, { mode: g.tabs[g.active].mode, bytes: g.editor.value.length, lines: g.lpLines || 0 });
+  });
 }
 
 async function navigate(g, name, anchor) { // wikilink / graph click: replace g's ACTIVE tab, push history
-  const t0 = perf.now();
   navInfo = "";
-  await flushSave(g);
-  if (g.active < 0) { g.tabs.push(mkTab(name)); g.active = 0; }
-  else {
-    const tab = g.tabs[g.active];
-    tab.name = name;
-    tab.hist = tab.hist.slice(0, tab.hpos + 1);
-    tab.hist.push(name);
-    tab.hpos++;
-  }
-  await loadActive(g);
-  perf.mark("note_open", t0, { note: name, mode: g.tabs[g.active].mode, via: "link" });
+  await act("note_open", { note: name, via: "link", tabs: g.tabs.length }, async sp => {
+    await flushSave(g);
+    if (g.active < 0) { g.tabs.push(mkTab(name)); g.active = 0; }
+    else {
+      const tab = g.tabs[g.active];
+      tab.name = name;
+      tab.hist = tab.hist.slice(0, tab.hpos + 1);
+      tab.hist.push(name);
+      tab.hpos++;
+    }
+    await loadActive(g);
+    Object.assign(sp.attrs, { mode: g.tabs[g.active].mode, bytes: g.editor.value.length, lines: g.lpLines || 0 });
+  });
   await linkSync(g.tabs[g.active], name);   // R13.3: linked members follow
   if (anchor) await navAnchor(g, anchor);
 }
@@ -1236,6 +1244,8 @@ async function histGo(d) {         // per-tab back/forward in the focused group
 }
 
 async function closeTab(g, i) {
+  const rm = g.tabs.length === 1 && groups().length > 1;      // R6.5: last tab -> the pane goes too
+  await act("pane_close", { note: g.tabs[i].name, kind: g.tabs[i].kind || "note", pane_removed: rm, groups: groups().length, tabs: g.tabs.length - 1 }, async () => {
   if (i === g.active) await flushSave(g);
   if (!g.tabs[i].kind) closedTabs.push(g.tabs[i].name);   // R14 undo close tab
   unlinkTab(g, g.tabs[i], true);    // R13.4: closing a member unlinks it
@@ -1245,6 +1255,7 @@ async function closeTab(g, i) {
   if (g.active >= g.tabs.length) g.active = g.tabs.length - 1;
   else if (i < g.active) g.active--;
   await loadActive(g);
+  });
 }
 
 /* ---------- explorer tree ---------- */
@@ -1291,10 +1302,10 @@ function renderNode(node, prefix, depth, out) {
       '<span class="tfi">' + TREE_FOLDER + '</span>' +
       '<span class="tn"></span>';
     row.querySelector(".tn").textContent = d;   // names never hit innerHTML
-    row.onclick = () => {
+    row.onclick = () => act("folder_toggle", { folder: full, open: collapsed.has(full), notes: node.dirs.get(d).notes.length, rows: out.childElementCount }, () => {
       collapsed.has(full) ? collapsed.delete(full) : collapsed.add(full);
       refreshTree();
-    };
+    });
     out.appendChild(row);
     if (open) renderNode(node.dirs.get(d), full, depth + 1, out);
   }
@@ -1367,6 +1378,16 @@ function lpCommit(g) {  // fold the active raw row back into the model
   if (nv !== g.editor.value) { g.editor.value = nv; scheduleSave(g); }
 }
 
+
+/* R18 lp_commit: leaving the caret row = fold the raw row back (lpCommit) +
+   re-render with the caret on `line` (or none: -1) -> paint. `why` = key /
+   click / blur / heading. Every "lpCommit(g); lpRender(g, ...)" pair that
+   moves the caret row goes through here so the op has one span name. */
+function lpMove(g, line, col, why) {
+  const a = g.lpActive;
+  return act("lp_commit", { why, from: a ? a.l0 : -1, to: line, note_lines: g.lpLines || 0, note: curOf(g) || "" },
+             () => { lpCommit(g); return lpRender(g, line, col); });
+}
 // lp pane render. perf-dom: INCREMENTAL. g.lpCache = {note, texts[], htmls[]}
 // mirrors g.lp.children one row per block. A pass re-splits blocks, diffs the
 // new block texts against the cache by common prefix/suffix, renders (one
@@ -1382,7 +1403,7 @@ let lpMs = -1;                 // last completed lpRender duration (census probe
 async function lpRender(g, activeL = -1, col = 0, full = false) {
   const lpT0 = performance.now();
   const seq = g.lpSeq = (g.lpSeq || 0) + 1;      // stale-render guard
-  const src = g.editor.value, L = src.split("\n");
+  const src = g.editor.value, L = src.split("\n"); g.lpLines = L.length;   // R18: note_lines attr
   const blocks = lpBlocks(src);
   const texts = blocks.map(b => L.slice(b.l0, b.l1 + 1).join("\n"));
   const activeBi = activeL < 0 ? -1
@@ -1479,10 +1500,16 @@ function lpRawRow(g, b, text) {
     const tb = g.tabs[g.active];                 // source mode saves while typing (textarea parity)
     if (tb && tb.mode === "source") scheduleSave(g);
   });
-  ta.addEventListener("keydown", ev => { acKeydown(g, ev); if (!ev.defaultPrevented) lpKey(g, ev); });  // R8.4 traversal
+  ta.addEventListener("keydown", ev => {         // R18 key_to_paint: keystroke -> paint (lpKey's re-render included)
+    if (ev.key === "Shift" || ev.key === "Control" || ev.key === "Alt" || ev.key === "Meta") return acKeydown(g, ev);
+    const sp = otel.begin("key_to_paint", { key: ev.key.length === 1 ? "char" : ev.key, note_lines: g.lpLines || 0, row_lines: ta.rows, note: curOf(g) || "" });
+    acKeydown(g, ev);
+    const p = ev.defaultPrevented ? null : lpKey(g, ev);   // R8.4 traversal
+    Promise.resolve(p).then(() => otel.paint(sp), () => otel.paint(sp));
+  });
   ta.addEventListener("blur", () => setTimeout(() => {
     hideAc();
-    if (g.lpActive && g.lpActive.ta === ta) { lpCommit(g); lpRender(g); }
+    if (g.lpActive && g.lpActive.ta === ta) lpMove(g, -1, 0, "blur");
   }, 60));
   row.appendChild(ta);
   g.lpActive = { l0: b.l0, l1: b.l1, ta };
@@ -1573,8 +1600,7 @@ function lpCol(e, row, b, L) {
 }
 
 async function lpEdit(g, line, col) {  // move the raw region to `line`
-  lpCommit(g);
-  await lpRender(g, line, col);
+  await lpMove(g, line, col, "click");
 }
 
 /* R8.4 keyboard traversal. Up/Down at the raw row's first/last line move the
@@ -1591,28 +1617,27 @@ function lpKey(g, ev) {
   const nl = v.split("\n").length;
   if (ev.key === "ArrowUp" && tl === 0 && a.l0 > 0) {
     ev.preventDefault();
-    lpCommit(g); lpRender(g, a.l0 - 1, tc);
+    return lpMove(g, a.l0 - 1, tc, "key");
   } else if (ev.key === "ArrowDown" && tl === nl - 1) {
     const target = a.l0 + nl;                       // first line after commit
     const total = g.editor.value.split("\n").length - (a.l1 - a.l0 + 1) + nl;
     if (target >= total) return;                    // nothing below: native
     ev.preventDefault();
-    lpCommit(g); lpRender(g, target, tc);
+    return lpMove(g, target, tc, "key");
   } else if (ev.key === "Enter" && a.l1 === a.l0) { // split single-line block
     ev.preventDefault();
     // R8.5: list/checkbox auto-continuation — marker = indent + bullet/number
     const m = v.match(/^(\s*)([-*+] \[[ xX]\] |[-*+] |\d+\. )/);
     if (m && v === m[0]) {                          // empty item: clear it
       ta.value = "";
-      lpCommit(g); lpRender(g, a.l0, 0);
-      return;
+      lpCommit(g); return lpRender(g, a.l0, 0);   // (empty item: clear it)
     }
     const cont = !m ? "" : m[1] +
       (m[2].includes("[") ? m[2].replace(/\[[xX]\]/, "[ ]")   // checkbox -> unchecked
        : /^\d/.test(m[2]) ? (parseInt(m[2], 10) + 1) + ". "   // numbered increments
        : m[2]);
     ta.value = v.slice(0, ta.selectionStart) + "\n" + cont + v.slice(ta.selectionEnd);
-    lpCommit(g); lpRender(g, a.l0 + pre.length, cont.length);
+    lpCommit(g); return lpRender(g, a.l0 + pre.length, cont.length);
   } else if (ev.key === "Backspace" && ta.selectionStart === 0 &&
              ta.selectionEnd === 0 && a.l0 > 0) {   // join with previous line
     ev.preventDefault();
@@ -1620,7 +1645,7 @@ function lpKey(g, ev) {
     const L = g.editor.value.split("\n"), p = a.l0 - 1, c = L[p].length;
     L[p] += L[p + 1]; L.splice(p + 1, 1);
     g.editor.value = L.join("\n"); scheduleSave(g);
-    lpRender(g, p, c);
+    return lpRender(g, p, c);
   }
 }
 
@@ -2172,6 +2197,8 @@ $("stab-search").onclick = () => setPane("search");
 $("stab-bm").onclick = () => setPane("bm");
 $("sinput").oninput = () => {              // debounce 60ms (was 150: sized for the disk-walking search; the index answers in ~1ms, the DOM for ~400 hits in a few ms)
   if (searchT0 < 0) searchT0 = perf.now();  // perf: first keystroke of this query
+  otel.cancel(searchSp);                    // R18: a keystroke before the last one painted supersedes it
+  searchSp = otel.begin("search_type", { q_len: $("sinput").value.length, notes: notesCache.length });
   clearTimeout(searchT); searchT = setTimeout(runSearch, 60);
 };
 $("sclear").onclick = () => {
@@ -2523,6 +2550,7 @@ async function startGraph(g, cfg) {
       calm = ke < 0.0025 * N.length ? calm + 1 : 0;
       if (calm >= 10 || alpha <= ALPHA_MIN) {
         quiet = true;
+        if (g.recenterSp) { otel.end(g.recenterSp, { nodes: N.length, edges: gr.edges.length, reheat: true }); g.recenterSp = null; }   // R18 graph_recenter: node click -> re-filtered sim settled
         if (!settledMark) {
           settledMark = true;
           perf.mark("graph_settle", openT0, { nodes: N.length, ke: +ke.toFixed(3), alpha: +alpha.toFixed(3) });
@@ -2611,7 +2639,12 @@ async function startGraph(g, cfg) {
     if (!hit) return;
     if (!hit.resolved)                                  // ghost node: create then open (M3 path)
       await writeNote(hit.n, "");
-    cfg.onClick(hit.n);
+    // R18 graph_recenter: local graph node click -> note opens (child note_open) -> graph re-centres -> sim settled.
+    // Global graph clicks turn the tab into the note (no re-centre): note_open only.
+    const rsp = cfg.center() ? otel.begin("graph_recenter", { node: hit.n, from: cfg.center(), nodes: N.length, edges: gr.edges.length }) : null;
+    if (rsp) { otel.cancel(g.recenterSp); g.recenterSp = rsp; }
+    await cfg.onClick(hit.n);
+    if (rsp && g.recenterSp === rsp && quiet) { otel.end(rsp, { nodes: N.length, edges: gr.edges.length, reheat: false }); g.recenterSp = null; }   // centre unchanged / nothing to settle
   };
   // a save can land while the initial fetch is in flight (writeNote sees
   // graphRefresh still null and skips) — refresh once now to close the race
