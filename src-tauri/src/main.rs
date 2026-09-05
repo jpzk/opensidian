@@ -345,6 +345,17 @@ fn log_spans(spans: Vec<serde_json::Value>) -> bool {
     perf::enabled()
 }
 
+/// graph-webgl: hidden hooks for the graph draw path. RUSTIDIAN_GRAPH_RENDERER=gl|2d forces a
+/// renderer (tests); RUSTIDIAN_GRAPH_LOSE_CTX=1 makes the UI lose its WebGL context once the sim
+/// settled (smoke graphgl: the 2D fallback must keep drawing).
+#[tauri::command]
+fn graph_renderer_pref() -> serde_json::Value {
+    serde_json::json!({
+        "renderer": std::env::var("RUSTIDIAN_GRAPH_RENDERER").ok(),
+        "lose_ctx": std::env::var_os("RUSTIDIAN_GRAPH_LOSE_CTX").is_some(),
+    })
+}
+
 /// S4: the picker commands take arbitrary absolute paths from the webview.
 /// Deny system trees and any dot-component (hidden dirs, `..`); /workspace
 /// and $HOME stay browsable even when they sit under a denied prefix (e.g.
@@ -1084,7 +1095,7 @@ fn main() {
             list_notes, read_note, write_note, render, render_blocks, highlight_blocks, graph, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, recent_vaults, rename_note, tags, tag_counts,
-            get_sidebar_w, set_sidebar_w, log_span, log_spans,
+            get_sidebar_w, set_sidebar_w, log_span, log_spans, graph_renderer_pref,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab,
             get_hotkeys, set_hotkeys, open_external
         ])
