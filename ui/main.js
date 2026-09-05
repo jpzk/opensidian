@@ -161,7 +161,7 @@ async function rBacklinks(n) {
   head.textContent = "Linked mentions"; rpInfo = "bl:" + bl.length;
   const c = document.createElement("span");
   c.className = "scount"; c.textContent = bl.length; head.appendChild(c);
-  if (!bl.length) return rEmpty(box, "No backlinks found.");
+  if (!bl.length) rEmpty(box, "No backlinks found.");
   for (const b of bl) {
     const row = document.createElement("div");
     row.className = "blnote open";
@@ -187,6 +187,47 @@ async function rBacklinks(n) {
     };
     row.onclick = () => navigate(fg(), b.note);
     box.appendChild(row); box.appendChild(kids);
+  }
+  // R10.5 Unlinked mentions: plain-text hits of this note's name in other
+  // notes (collapsed like stock); each row = the line with the hit marked +
+  // a Link button that wraps it in [[ ]] on disk (the hit then migrates up
+  // to Linked mentions on the pane's next refresh)
+  const ul = n ? await inv("unlinked_mentions", { name: n }).catch(() => []) : [];
+  rpInfo = "bl:" + bl.length + "|ul:" + ul.length;
+  if (!n) return;
+  const uh = document.createElement("div");
+  uh.className = "rhead ulhead" + (ulOpen ? " open" : "");
+  uh.innerHTML = '<span class="tc">' + CHEV + '</span>Unlinked mentions<span class="scount"></span>';
+  uh.querySelector(".scount").textContent = ul.length;
+  const ub = document.createElement("div");
+  ub.hidden = !ulOpen;
+  uh.onclick = () => { ulOpen = !ulOpen; uh.classList.toggle("open", ulOpen); ub.hidden = !ulOpen; };
+  box.appendChild(uh); box.appendChild(ub);
+  if (!ul.length) return rEmpty(ub, "No unlinked mentions found.");
+  for (const m of ul) {
+    const row = document.createElement("div");
+    row.className = "blnote ulnote";
+    row.innerHTML = '<span class="bln"></span><button class="ullink">Link</button>';
+    row.querySelector(".bln").textContent = m.note;
+    row.title = "line " + (m.line + 1);
+    const d = document.createElement("div");
+    d.className = "blline";
+    const t = m.text, i = t.toLowerCase().indexOf(n.split("/").pop().toLowerCase());
+    if (i >= 0) {
+      d.appendChild(document.createTextNode(t.slice(0, i)));
+      const mk = document.createElement("mark"); mk.textContent = t.slice(i, i + m.len); d.appendChild(mk);
+      d.appendChild(document.createTextNode(t.slice(i + m.len)));
+    } else d.textContent = t;
+    d.onclick = () => navigate(fg(), m.note);
+    row.onclick = () => navigate(fg(), m.note);
+    row.querySelector(".ullink").onclick = async e => {
+      e.stopPropagation();
+      await inv("link_mention", { note: m.note, target: n, line: m.line, col: m.col, len: m.len })
+        .catch(err => console.error("link_mention", err));
+      for (const gg of groups()) gg.lpCache = null;  // the linked note may be open elsewhere
+      await rBacklinks(n); updateTitle();
+    };
+    ub.appendChild(row); ub.appendChild(d);
   }
 }
 // Outgoing links: resolved rows navigate, unresolved rows are greyed
@@ -263,7 +304,7 @@ function tagSearch(tag) {                  // pane row / inline pill -> search "
 }
 // Outline: nested collapsible heading tree; click scrolls the focused
 // group's view to that heading; the heading at the viewport top is .active
-let tocHeads = [];
+let tocHeads = [], ulOpen = false;
 async function rOutline(n) {
   const box = $("toclist");
   box.textContent = "";
