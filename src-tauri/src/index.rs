@@ -376,6 +376,14 @@ impl Index {
         }
     }
 
+    /// watcher: an external delete dropped this note — key + its edges go
+    pub fn remove(&mut self, name: &str) {
+        if self.notes.remove(name).is_some() {
+            self.refresh_names();
+            self.rebuild_backlinks();
+        }
+    }
+
     /// rename_note (after the fs move): move the key, rewrite [[old]] targets
     /// in every note (same ambiguity rule as before: basename links only when
     /// no other note carries old's basename and none but the renamed note

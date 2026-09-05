@@ -15,6 +15,7 @@ I'm running as many top frontier models to scan for vulnerabilities, but since t
 - full-text search, quick switcher, command palette, bookmarks
 - #tags: inline pills + frontmatter `tags:`, Tags pane in the right sidebar (nested a/b, counts), `tag:foo` search filter
 - safe renames (H1 or F2) that rewrite [[links]] across the vault
+- external edits (R11): the vault is watched (1s tick, std-only); shell edits to an open note appear in place with the caret kept, unsaved local text is merged with external appends, external create/rename/delete update the explorer and close the affected tab
 - vault picker with persistence (or env VAULT_DIR, default ./vault)
 
 ## Screenshots

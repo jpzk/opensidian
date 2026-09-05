@@ -9,6 +9,7 @@ mod index;
 mod outline;
 mod perf;
 mod sandbox;
+mod watcher;
 use index::{link_parts, links_in, resolve, tag_spans, Index};
 
 /* perf-index: root + in-memory Index (src/index.rs). The index replaces the
@@ -113,10 +114,13 @@ fn write_note_inner(v: &State<Vault>, name: &str, content: &str) {
         if let Some(d) = p.parent() {
             let _ = fs::create_dir_all(d);
         }
+        // R11: lock BEFORE the write — the watcher reads+compares under this
+        // lock, so it never sees our bytes on disk without them in the index
+        let mut ix = v.index.lock().unwrap();
         if fs::write(p, content).is_ok() {
             // index == disk: reparse this note, patch its outgoing edges
             // (a NEW key triggers a full in-memory edge rebuild inside upsert)
-            v.index.lock().unwrap().upsert(&rel.display().to_string(), content);
+            ix.upsert(&rel.display().to_string(), content);
         }
     }
 }
@@ -810,6 +814,40 @@ fn toggle_bookmark(v: State<Vault>, name: String) -> Result<Vec<String>, String>
     Ok(list)
 }
 
+/* R11 watcher thread: every TICK_MS walk the vault (stat only), diff against
+   the last snapshot, reconcile candidates with the Index under its lock
+   (src/watcher.rs), emit `vault-changed` when anything external happened.
+   A root switch (set_vault/create_vault) just reseeds the snapshot silently.
+   Idle cost = one read_dir walk + one stat per note per tick, no reads. */
+fn spawn_watcher(app: tauri::AppHandle) {
+    use tauri::{Emitter, Manager};
+    std::thread::spawn(move || {
+        let mut prev: Option<(PathBuf, watcher::Snapshot)> = None;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(watcher::TICK_MS));
+            let v = app.state::<Vault>();
+            let Some(root) = cur_vault(&v) else { prev = None; continue };
+            let cur = watcher::snapshot(&root);
+            let change = match &prev {
+                Some((r, s)) if *r == root => {
+                    let d = watcher::diff(s, &cur);
+                    if d.added.is_empty() && d.removed.is_empty() && d.modified.is_empty() {
+                        watcher::Change::default()
+                    } else {
+                        let mut ix = v.index.lock().unwrap();
+                        span_timed!("watcher_reconcile", watcher::reconcile(&root, &d, &mut ix))
+                    }
+                }
+                _ => watcher::Change::default(),
+            };
+            prev = Some((root, cur));
+            if !change.is_empty() {
+                let _ = app.emit("vault-changed", &change);
+            }
+        }
+    });
+}
+
 fn main() {
     // VAULT_DIR (probes/tests) wins; else last persisted vault if still a dir (R1.6)
     let init = std::env::var("VAULT_DIR")
@@ -827,6 +865,10 @@ fn main() {
     let index = init.as_deref().map(Index::build).unwrap_or_default();
     tauri::Builder::default()
         .manage(Vault { index: Mutex::new(index), root: Mutex::new(init) })
+        .setup(|app| {
+            spawn_watcher(app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             list_notes, read_note, write_note, render, render_blocks, graph, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,

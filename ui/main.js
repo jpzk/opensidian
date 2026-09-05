@@ -538,7 +538,7 @@ async function flushSave(g) {               // write g's pending edits NOW
   if (!g.saveT) return;
   clearTimeout(g.saveT); g.saveT = null;
   const n = curOf(g);
-  if (n) await writeNote(n, g.editor.value);
+  if (n) { await writeNote(n, g.editor.value); setBase(g); }
   await maybeH1Rename(g);                   // ux-3: H1 edit commits a rename
 }
 
@@ -688,7 +688,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   if (gg) { const pt = posTok(fg()); if (pt) gg += " [ggpos:" + pt + "]"; }
   const modal = modalKind ? " [modal:" + modalKind + "]"
     : ($("rnbox") && !$("rnbox").hidden ? " [modal:rn]" : "");  // m5 fuzzy modal / rename prompt
-  const t = "rustidian [panes:" + ps.length + " focused:" + nf +
+  let t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
             " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + lg + md + gg + modal +
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) +
@@ -700,6 +700,9 @@ function updateTitle() {          // pane/focus census in the window title (head
             " [pane:" + sidePane + "]" +
             (sidePane === "search" && searchCount >= 0 ? " [sr:" + searchCount + "]" : "") +
             (sidePane === "bm" ? " [bm:" + bmCache.length + "]" : "");
+  const t2 = (fg() && fg().active >= 0 && !fg().tabs[fg().active].kind ? " [buf:" + bufOf(fg()).length + "]" : "") +
+             " [tree:" + notesCache.length + "] [vc:" + vcCount + "]";   // R11 probes
+  t += t2;
   document.title = t;
   // publish to the native title: ONE call in flight, last-write-wins, 500ms
   // timeout guard — a hung/rejected setTitle IPC can neither reorder titles
@@ -992,7 +995,7 @@ async function loadActive(g) {
   if (n) mruTouch(n);                // m5: quick-switcher MRU order
   g.editor.value = n ? await inv("read_note", { name: n }) : "";
   const tb0 = g.tabs[g.active];
-  if (tb0 && !tb0.kind) tb0.h1 = h1Of(g.editor.value);  // ux-3: H1 snapshot
+  if (tb0 && !tb0.kind) { tb0.h1 = h1Of(g.editor.value); tb0.base = g.editor.value; }  // ux-3: H1 snapshot; R11: disk base
   const m = g.tabs[g.active] ? g.tabs[g.active].mode : "livepreview";
   if (n && m === "source") g.editor.focus();
   if (m === "reading") await preview(g);
@@ -1536,7 +1539,7 @@ function scheduleSave(g) {
   g.saveT = setTimeout(async () => {
     g.saveT = null;
     const n = curOf(g);
-    if (n) await writeNote(n, g.editor.value);
+    if (n) { await writeNote(n, g.editor.value); setBase(g); }
     await maybeH1Rename(g);                 // ux-3: H1 edit commits a rename
     preview(g);
     updateStatus(g);
@@ -2429,6 +2432,76 @@ async function enterVault() {
   else renderTabs(g);
   perf.mark("boot", 0, { notes: names.length });   // perf: page start -> vault ready (first note rendered)
 }
+/* ---------- R11 external edits (backend watcher -> `vault-changed`) ---------- */
+// tab.base = the bytes we last loaded from / saved to disk. bufOf(g) = the
+// editor model with an open lp raw row folded in (no side effects), so
+// dirty == bufOf(g) !== base even while the raw row is still being typed in.
+function setBase(g) {
+  const t = g.active >= 0 ? g.tabs[g.active] : null;
+  if (t && !t.kind) t.base = g.editor.value;
+}
+function bufOf(g) {
+  const a = g.lpActive;
+  if (!a) return g.editor.value;
+  const L = g.editor.value.split("\n");
+  L.splice(a.l0, a.l1 - a.l0 + 1, ...a.ta.value.split("\n"));
+  return L.join("\n");
+}
+// R11.2: replace the ACTIVE tab's text in place — caret line/col + scroll kept
+async function reloadInPlace(g, text) {
+  const t = g.tabs[g.active];
+  let al = -1, col = 0;
+  if (g.lpActive) {                            // caret inside the raw row
+    const a = g.lpActive, before = a.ta.value.slice(0, a.ta.selectionStart).split("\n");
+    al = a.l0 + before.length - 1; col = before[before.length - 1].length;
+  }
+  const [s0, s1, st] = [g.editor.selectionStart, g.editor.selectionEnd, g.editor.scrollTop];
+  g.editor.value = text; t.base = text; t.h1 = h1Of(text);
+  if (t.mode === "source") { g.editor.setSelectionRange(s0, s1); g.editor.scrollTop = st; }
+  else if (t.mode === "reading") await preview(g);
+  else await lpRender(g, al, col);             // incremental: unchanged rows untouched
+  updateStatus(g);
+}
+// remove a tab WITHOUT flushing (R11.4: the file is gone; a flush would resurrect it)
+async function dropTab(g, i) {
+  if (i === g.active) { clearTimeout(g.saveT); g.saveT = null; g.lpActive = null; }
+  g.tabs.splice(i, 1);
+  if (!g.tabs.length && groups().length > 1) return collapseGroup(g);
+  if (g.active >= g.tabs.length) g.active = g.tabs.length - 1;
+  else if (i < g.active) g.active--;
+  await loadActive(g);
+}
+let vcCount = 0;                               // census [vc:N] — events handled
+async function onVaultChanged(c) {
+  vcCount++;
+  const gone = new Set([...c.removed, ...c.renamed.map(r => r[0])]);
+  const mod = new Set(c.modified);
+  for (const g of groups()) {
+    for (let i = g.tabs.length - 1; i >= 0; i--) {   // R11.4: delete/rename closes the tab
+      const t = g.tabs[i];
+      if (!t.kind && gone.has(t.name)) await dropTab(g, i);
+    }
+    const t = g.active >= 0 ? g.tabs[g.active] : null;
+    if (!t || t.kind || !mod.has(t.name)) continue;  // inactive tabs re-read on switch
+    const ext = await inv("read_note", { name: t.name });
+    const buf = bufOf(g);
+    if (buf === ext) { t.base = ext; continue; }
+    if (buf === t.base) { await reloadInPlace(g, ext); continue; }   // clean: take disk
+    // R11.3 dirty: never lose typed text. External append on top of our base
+    // merges (buf + tail); anything else keeps the buffer. Either way re-save.
+    const merged = ext.startsWith(t.base) ? buf + ext.slice(t.base.length) : buf;
+    if (merged !== buf) await reloadInPlace(g, merged);
+    t.base = ext; scheduleSave(g);
+  }
+  await refreshTree();
+  await refreshBm();
+  for (const g of groups()) if (g.graphOn && g.graphRefresh) await g.graphRefresh();
+  if (rightOpen && rg && rg.graphRefresh) await rg.graphRefresh();
+  if (rightOpen) rSchedule();
+  updateTitle();
+}
+window.__TAURI__.event.listen("vault-changed", e => onVaultChanged(e.payload));
+
 $("vswitch").onclick = showPicker;
 
 (async () => {
