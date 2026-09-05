@@ -2191,11 +2191,19 @@ $("fname").onkeydown = async e => {
            center: () -> name|null,             drawn larger + accent (M8 localgraph)
            onClick: async name -> void }        navigation target on node click */
 let simGen = 0;                    // perf-graph: sim generation counter (see startGraph)
+// graph-webgl: draw-path preference. env RUSTIDIAN_GRAPH_RENDERER=gl|2d (backend) beats the
+// hidden localStorage setting rustidian.graphRenderer; RUSTIDIAN_GRAPH_LOSE_CTX=1 is the smoke
+// hook that loses the GL context once the sim has settled (fallback must keep drawing).
+let graphPrefP = null;
+const graphRendererPref = () => graphPrefP || (graphPrefP = inv("graph_renderer_pref").catch(() => null).then(p => {
+  const r = (p && p.renderer) || localStorage.getItem("rustidian.graphRenderer");
+  return { renderer: r === "gl" || r === "2d" ? r : null, loseCtx: !!(p && p.lose_ctx) };
+}));
 function showEditor(g) {
   g.graphOn = false; g.graphRefresh = null; cancelAnimationFrame(g.sim);
   if (g.ro) { g.ro.disconnect(); g.ro = null; }
   perf.flush();                    // ship buffered graph_frame samples of the closed sim
-  g.graph.hidden = true;
+  g.graph.hidden = true; if (g.glcv) g.glcv.hidden = true;
   g.lggear.hidden = true; g.lgpop.hidden = true;
   applyMode(g);
 }
@@ -2223,7 +2231,32 @@ async function startGraph(g, cfg) {
   g.lp.style.display = "none";
   const cv = g.graph; cv.hidden = false;
   cv.width = cv.clientWidth; cv.height = cv.clientHeight;
-  const gr = await cfg.fetch();
+  const fetchP = cfg.fetch(), prefP = graphRendererPref();   // backend works while the renderer comes up
+  const ctx = cv.getContext("2d");
+  // graph-webgl: DEFAULT draw path is WebGL (ui/graph-gl.js) on a .graphgl canvas BEHIND cv
+  // (nodes + edges); cv stays on top for events, labels (Canvas 2D text) and the 2D fallback.
+  // Fallback to the full 2D path when: forced (env/setting), no webgl context, or the
+  // context is lost mid-session (webglcontextlost -> g.glLost). One renderer per canvas is
+  // cached on the group (g.glr); a lost context gets a fresh canvas on the next open.
+  // Created BEFORE the fetch resolves so context + shader setup never lands in the first sim frame.
+  const pref = await prefP, rT0 = perf.now();
+  let glr = null, reason = "default";
+  if (pref.renderer === "2d") reason = "forced:2d";
+  else if (!window.GraphGL) reason = "no-module";
+  else {
+    if (!g.glr || g.glr.lost) {
+      if (g.glcv) g.glcv.remove();
+      g.glcv = document.createElement("canvas"); g.glcv.className = "graphgl";
+      cv.parentNode.insertBefore(g.glcv, cv);
+      g.glr = GraphGL.create(g.glcv, () => { if (g.glLost) g.glLost(); });
+    }
+    glr = g.glr;
+    if (!glr) reason = "no-webgl";
+  }
+  const gpu = glr ? { gpu_vendor: glr.info.vendor, gpu_renderer: glr.info.renderer } : { gpu_vendor: "", gpu_renderer: "" };
+  cv.classList.toggle("gl-on", !!glr); if (g.glcv) g.glcv.hidden = !glr;
+  perf.mark("graph_renderer", rT0, { renderer: glr ? "gl" : "2d", reason, webgl: glr ? glr.info.webgl : 0, ...gpu });
+  const gr = await fetchP;
   // R16 GRAPH FIT (stock-faithful, docs/requirements.md R16): the sim runs in
   // UNBOUNDED world coords with the origin at the canvas centre; camera opens
   // at scale 1 (1 world unit = 1 px) centred on the origin — no fit-to-view,
@@ -2241,7 +2274,6 @@ async function startGraph(g, cfg) {
     const [x, y] = seed(i);
     return { n: nd.name, resolved: nd.resolved, x, y, vx: 0, vy: 0, deg: 0, r: 6.5 };
   });
-  const ctx = cv.getContext("2d");
   const toWorld = (sx, sy) =>
     [(sx - view.tx) / view.scale, (sy - view.ty) / view.scale];
   // adjacency (hover) + undirected unique link list for the spring force;
@@ -2267,6 +2299,13 @@ async function startGraph(g, cfg) {
   // seed new nodes near their first neighbor
   g.graphRefresh = async () => {
     const g2 = await cfg.fetch();
+    // graph-webgl: a refresh that changes nothing (the race-closing refetch below, a save that
+    // touched no link) must not reheat — the layout stays a pure function of the vault, so two
+    // opens land on identical positions (smoke graphgl compares gl vs 2d frames pixel-wise)
+    const same = g2.nodes.length === N.length && g2.edges.length === gr.edges.length &&
+      g2.nodes.every((nd, i) => nd.name === N[i].n && nd.resolved === N[i].resolved) &&
+      g2.edges.every((e, i) => e[0] === gr.edges[i][0] && e[1] === gr.edges[i][1]);
+    if (same) return;
     const old = new Map(N.map(p => [p.n, p]));
     const N2 = g2.nodes.map(nd => {
       const o = old.get(nd.name);
@@ -2377,7 +2416,14 @@ async function startGraph(g, cfg) {
   }
   // draw: batched paths — edges in 2 strokes (lit / dim), nodes grouped by
   // (color, alpha, resolved) into one fill/stroke each, labels per group
+  // graph-webgl: with glr the SAME per-node style decisions feed instance arrays
+  // (x y r ring rgba) and an edge instance array (x0 y0 x1 y1 rgba) for graph-gl.js; cv then
+  // carries only the labels. Arrays grow on demand and are reused across frames.
+  const hex = h => [parseInt(h.slice(1, 3), 16) / 255, parseInt(h.slice(3, 5), 16) / 255, parseInt(h.slice(5, 7), 16) / 255];
+  const RGB = { "#f9e2af": hex("#f9e2af"), "#a6e3a1": hex("#a6e3a1"), "#89b4fa": hex("#89b4fa"), "#45475a": hex("#45475a") };
+  let nArr = new Float32Array(0), eArr = new Float32Array(0);
   function draw() {
+    const dT0 = perf.now();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, cv.width, cv.height);
     ctx.setTransform(view.scale, 0, 0, view.scale, view.tx, view.ty);
@@ -2385,7 +2431,19 @@ async function startGraph(g, cfg) {
     const litE = ([i, j]) => hov < 0 || i === hov || j === hov;
     const litN = i => hov < 0 || i === hov || adj[hov].has(i);
     ctx.lineWidth = 1;
+    let ec = 0;
     const edgePass = (lit, col, a) => {
+      if (glr) {                       // gl: dim pass first, lit pass on top (same order as the 2D strokes)
+        const c = RGB[col];
+        for (const ed of gr.edges) {
+          if (litE(ed) !== lit) continue;
+          const A = N[ed[0]], B = N[ed[1]], o = ec * 8;
+          eArr[o] = A.x; eArr[o + 1] = A.y; eArr[o + 2] = B.x; eArr[o + 3] = B.y;
+          eArr[o + 4] = c[0]; eArr[o + 5] = c[1]; eArr[o + 6] = c[2]; eArr[o + 7] = a;
+          ec++;
+        }
+        return;
+      }
       ctx.globalAlpha = a; ctx.strokeStyle = col; ctx.beginPath();
       let any = false;
       for (const ed of gr.edges) {
@@ -2394,6 +2452,7 @@ async function startGraph(g, cfg) {
       }
       if (any) ctx.stroke();
     };
+    if (glr && eArr.length < gr.edges.length * 8) eArr = new Float32Array(gr.edges.length * 8 + 800);
     if (hov >= 0) { edgePass(false, "#45475a", 0.12); edgePass(true, "#f9e2af", 1); }
     else edgePass(true, "#45475a", 1);
     ctx.textAlign = "center"; ctx.font = "12px sans-serif";
@@ -2412,7 +2471,20 @@ async function startGraph(g, cfg) {
       gp.idx.push(i);
     }
     const labels = view.scale > 0.73;   // R16.5: labels hidden at scale <= 0.73 (Text fade 0)
-    for (const gp of groups.values()) {
+    if (glr) {
+      if (nArr.length < N.length * 8) nArr = new Float32Array(N.length * 8 + 800);
+      let nc = 0;
+      for (const gp of groups.values()) {
+        const c = RGB[gp.col], ring = gp.res ? 0 : 1.5;
+        for (const i of gp.idx) {
+          const p = N[i], o = nc * 8;
+          nArr[o] = p.x; nArr[o + 1] = p.y; nArr[o + 2] = p.r + gp.dr + ring / 2; nArr[o + 3] = ring;   // 2D strokes straddle the radius
+          nArr[o + 4] = c[0]; nArr[o + 5] = c[1]; nArr[o + 6] = c[2]; nArr[o + 7] = gp.a; nc++;
+        }
+        if (labels) { ctx.globalAlpha = gp.a; ctx.fillStyle = gp.col; for (const i of gp.idx) { const p = N[i]; ctx.fillText(p.n, p.x, p.y - p.r - gp.dr - 4); } }
+      }
+      glr.draw(cv.width, cv.height, view, nArr, nc, eArr, ec);
+    } else for (const gp of groups.values()) {
       ctx.globalAlpha = gp.a; ctx.beginPath();
       for (const i of gp.idx) { const p = N[i], r = p.r + gp.dr; ctx.moveTo(p.x + r, p.y); ctx.arc(p.x, p.y, r, 0, 7); }
       if (gp.res) { ctx.fillStyle = gp.col; ctx.fill(); }
@@ -2420,6 +2492,7 @@ async function startGraph(g, cfg) {
       if (labels) { ctx.fillStyle = gp.col; for (const i of gp.idx) { const p = N[i]; ctx.fillText(p.n, p.x, p.y - p.r - gp.dr - 4); } }
     }
     ctx.globalAlpha = 1;
+    perf.push("graph_draw", perf.now() - dT0, { renderer: glr ? "gl" : "2d", nodes: N.length, edges: gr.edges.length, ...gpu });
   }
   let firstFrame = true, running = false, dirty = true;
   const gen = ++simGen; g.simGen = gen;   // a newer startGraph on this canvas retires this sim
@@ -2445,6 +2518,7 @@ async function startGraph(g, cfg) {
         if (!settledMark) {
           settledMark = true;
           perf.mark("graph_settle", openT0, { nodes: N.length, ke: +ke.toFixed(3), alpha: +alpha.toFixed(3) });
+          if (pref.loseCtx && glr) setTimeout(() => { if (glr && g.simGen === gen) glr.loseContext(); }, 300);   // smoke hook: WEBGL_lose_context after settle
         }
       }
     }
@@ -2464,6 +2538,13 @@ async function startGraph(g, cfg) {
     g.sim = requestAnimationFrame(step);
   };
   const redraw = () => { dirty = true; wake(); };
+  // graph-webgl: context lost -> this sim swaps to the 2D path for good (a later open gets a fresh gl canvas)
+  g.glLost = () => {
+    if (g.simGen !== gen || !glr) return;
+    glr = null; cv.classList.remove("gl-on"); if (g.glcv) g.glcv.hidden = true;
+    perf.mark("graph_renderer", perf.now(), { renderer: "2d", reason: "contextlost", webgl: 0, ...gpu });
+    redraw();
+  };
   g.reheat = () => { calm = 0; quiet = false; g.graphSettled = false; alpha = Math.max(alpha, 0.5); wake(); };
   g.graphNodes = () => {              // census: node screen coords (window px) for the graphnav smoke
     const r = cv.getBoundingClientRect();

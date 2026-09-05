@@ -93,7 +93,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
          flex-direction: column; min-width: 0 }
 /* rsidebar: icon strip + panes (Backlinks / Outgoing / Outline / Local graph) */
 #rtabs { display: flex; gap: 2px; padding: 6px 30px 2px 6px }  /* 30: #rtoggle sits inboard */
-#rpane-graph { display: flex }
+#rpane-graph { display: flex; position: relative }
 #rpane-graph[hidden] { display: none }
 .rhead { padding: 6px 10px 4px; font-size: 12px; font-weight: 600; color: #cdd6f4 }
 .rhead .scount { color: #6c7086; font-weight: 400; margin-left: 4px }
@@ -212,7 +212,11 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
   border-radius: 999px; padding: 0 7px; font-size: .85em; text-decoration: none;
   cursor: pointer; white-space: nowrap }
 .lp a.tag:hover, .preview a.tag:hover { background: rgba(137,180,250,.3) }
-.graph { flex: 1; background: #11111b }
+.graph { flex: 1; background: #11111b; position: relative; z-index: 1 }   /* above .graphgl */
+/* graph-webgl: WebGL canvas BEHIND .graph (nodes + edges); .graph goes transparent and keeps events + labels */
+.graphgl { position: absolute; inset: 0; background: #11111b }
+.graphgl[hidden] { display: none }
+.graph.gl-on { background: transparent }
 
 /* [[ autocomplete */
 .ac { position: absolute; z-index: 6; background: #26263a;
