@@ -204,6 +204,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .preview { flex: 1; padding: 16px; overflow-y: auto }
 .preview a.wiki { color: #89b4fa }
 .preview a.wiki-unresolved { color: #7c86c8; font-style: italic }
+.lp a.ext, .preview a.ext { color: #89b4fa; text-decoration: underline; cursor: pointer }  /* S1: external link, opens via xdg-open */
 .preview h1, .preview h2 { border-bottom: 1px solid #313244 }
 .preview code { background: #313244; padding: 1px 4px; border-radius: 3px }
 /* tags: inline #tag pills (stock: small rounded accent-tinted chip) */
