@@ -188,25 +188,20 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .editor { flex: 1; background: #1e1e2e; color: #cdd6f4; border: 0;
           padding: 16px; resize: none;
           font: 13px/1.6 monospace; outline: none }
-.lp { flex: 1; padding: 16px; overflow-y: auto }
+.lp { flex: 1; overflow-y: auto }   /* padding + type: R15 block below */
 .lp a.wiki { color: #89b4fa }
 .lp a.wiki-unresolved { color: #7c86c8; font-style: italic }
-.lp h1, .lp h2 { border-bottom: 1px solid #313244 }
-.lp code { background: #313244; padding: 1px 4px; border-radius: 3px }
 /* R8.2: one rendered row per line/block; the raw caret row blends in */
 .lprow { min-height: 1.5em; cursor: text }
 .lprow > :first-child { margin-top: 0 }
 .lprow > :last-child { margin-bottom: 0 }
-.lprow ul, .lprow ol { margin: 0 }
-.lpraw { display: block; width: 100%; background: #26263a; color: #cdd6f4;
+.lpraw { display: block; width: 100%; background: #26263a; color: inherit;
          border: 0; border-radius: 3px; padding: 0 2px; resize: none;
-         outline: none; font: 13px/1.6 monospace; overflow: hidden }
-.preview { flex: 1; padding: 16px; overflow-y: auto }
+         outline: none; font: inherit; line-height: inherit; overflow: hidden }
+.preview { flex: 1; overflow-y: auto }
 .preview a.wiki { color: #89b4fa }
 .preview a.wiki-unresolved { color: #7c86c8; font-style: italic }
 .lp a.ext, .preview a.ext { color: #89b4fa; text-decoration: underline; cursor: pointer }  /* S1: external link, opens via xdg-open */
-.preview h1, .preview h2 { border-bottom: 1px solid #313244 }
-.preview code { background: #313244; padding: 1px 4px; border-radius: 3px }
 /* tags: inline #tag pills (stock: small rounded accent-tinted chip) */
 .lp a.tag, .preview a.tag { color: #89b4fa; background: rgba(137,180,250,.15);
   border-radius: 999px; padding: 0 7px; font-size: .85em; text-decoration: none;
@@ -345,7 +340,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .lp.src .bi { font-weight: 700; font-style: italic }
 .lp.src .s { text-decoration: line-through }
 .lp.src .hl { background: rgba(249,226,175,.35) }
-.lp.src .code { font-family: monospace; background: #313244; border-radius: 3px }
+.lp.src .code { font-family: var(--font-monospace); font-size: var(--code-size); background: var(--code-background); border-radius: var(--code-radius) }   /* R15.12 stack in source mode too */
 .lp.src .wl, .lp.src .lt, .lp.src .url { color: #89b4fa; text-decoration: underline }
 .lp.src .tag { color: #89b4fa; background: rgba(137,180,250,.15); border-radius: 999px; padding: 0 4px }
 .lp.src .task, .lp.src .hr, .lp.src .tbl { font-family: monospace }
@@ -398,3 +393,116 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .hkbtn:hover { background: #45475a }
 .hkbtn, .hkx, #sclose { display: inline-flex; align-items: center; justify-content: center }
 .hkbtn svg, .hkx svg, #sclose svg { display: block }
+/* ---------- R15 TYPOGRAPHY (docs/requirements.md §15): stock Obsidian 1.13.7 app.css values, dark-theme tokens ---------- */
+/* R15.2 bundled fonts (ui/fonts/, scripts/fetch-fonts.sh): same family names / weight ranges / font-display as stock */
+@font-face { font-family: 'Source Code Pro'; font-weight: normal; font-style: normal; font-display: swap; src: url(fonts/SourceCodePro-Regular.ttf) }
+@font-face { font-family: 'Source Code Pro'; font-weight: normal; font-style: italic; font-display: swap; src: url(fonts/SourceCodePro-Italic.ttf) }
+@font-face { font-family: 'Source Code Pro'; font-weight: bold; font-style: normal; font-display: swap; src: url(fonts/SourceCodePro-Bold.ttf) }
+@font-face { font-family: 'Source Code Pro'; font-weight: bold; font-style: italic; font-display: swap; src: url(fonts/SourceCodePro-BoldItalic.ttf) }
+@font-face { font-family: "Inter"; font-style: normal; font-weight: 100 900; font-display: swap; src: url(fonts/Inter-Variable.woff2) }
+@font-face { font-family: "Inter"; font-style: italic; font-weight: 100 900; font-display: swap; src: url(fonts/Inter-Variable-Italic.woff2) }
+:root {
+  /* R15.1 literal stacks (system-ui resolves first on Linux -> Noto Sans, like stock; code -> bundled Source Code Pro) */
+  --font-default: ui-sans-serif, -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", "Google Sans Flex", Roboto, "Inter Variable", "Inter", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", sans-serif;
+  --font-monospace-default: ui-monospace, SFMono-Regular, "Cascadia Mono", "Roboto Mono", "DejaVu Sans Mono", "Liberation Mono", Menlo, Monaco, "Consolas", "Source Code Pro", monospace;
+  --font-text: var(--font-default); --font-interface: var(--font-default); --font-monospace: var(--font-monospace-default);
+  /* R15.4-6 */
+  --font-text-size: 16px; --font-smaller: 0.9em; --line-height-normal: 1.55; --line-height-tight: 1.25;
+  --font-weight: 400; --bold-modifier: 250; --bold-weight: min(900, calc(var(--font-weight) + var(--bold-modifier)));
+  /* R15.7-9 headings */
+  --h1-size: 1.974em; --h2-size: 1.762em; --h3-size: 1.574em; --h4-size: 1.405em; --h5-size: 1.254em; --h6-size: 1.12em;
+  --h1-weight: 700; --h2-weight: 600; --h3-weight: 600; --h4-weight: 600; --h5-weight: 600; --h6-weight: 600;
+  --h1-line-height: 1.15; --h2-line-height: 1.21; --h3-line-height: 1.27; --h4-line-height: 1.33;
+  --h5-line-height: 1.39; --h6-line-height: 1.45;
+  --h1-letter-spacing: -0.018em; --h2-letter-spacing: -0.015em; --h3-letter-spacing: -0.012em;
+  --h4-letter-spacing: -0.009em; --h5-letter-spacing: -0.006em; --h6-letter-spacing: -0.003em;
+  --p-spacing: calc(var(--space-unit) * 5); --p-spacing-empty: var(--space-unit); --heading-spacing: calc(var(--space-unit) * 8);
+  /* R15.10-13 lists / checkbox / code / blockquote */
+  --indent-unit: 0.5625em; --indent-size: 4; --list-indent: calc(var(--space-unit) * 7);
+  --list-indent-editing: calc(var(--space-unit) * 2); --list-spacing: calc(var(--space-unit) / 2); --list-bullet-size: calc(var(--space-unit) * 1.5); --list-bullet-radius: calc(var(--list-bullet-size) / 2);
+  --list-marker-color: var(--text-chrome-muted);
+  --checkbox-size: calc(var(--space-unit) * 3.5); --checkbox-radius: calc(var(--space-unit) * 0.75); --checkbox-border-color: var(--text-chrome-muted);
+  --checkbox-color: var(--bg-button-primary); --checkbox-marker-color: var(--bg-base);
+  --checkbox-margin-inline-start: calc(var(--space-unit) * 3); --checklist-done-decoration: line-through 0.06em; --checklist-done-color: var(--text-chrome-faint);
+  --code-size: 0.92em; --code-background: var(--bg-surface); --code-radius: calc(var(--space-unit) * 1.5);
+  --blockquote-border-thickness: calc(var(--space-unit) * 0.75); --blockquote-border-color: var(--text-accent);
+  /* R15.14 dark tokens (content area only — app chrome keeps its own palette) + layout */
+  --text-normal: #dadada; --text-muted: #b3b3b3; --text-faint: #666666;
+  --background-primary: #1e1e2e; --background-primary-alt: #232323;
+  --interactive-accent: hsl(258, 88%, 66%);
+  --radius-s: 4px; --size-4-6: 24px; --size-4-8: 32px; --file-line-width: calc(var(--space-unit) * 180); --file-margins: var(--size-4-8);
+}
+@supports (font-variation-settings: normal) {   /* stock: graded heading weights on variable fonts */
+  :root { --h2-weight: 680; --h3-weight: 660; --h4-weight: 640; --h5-weight: 620; --h6-weight: 600 }
+}
+/* note column: 16px/1.5 text, 700px readable line length centred, 32px file margins (stock .markdown-preview-sizer) */
+.lp, .preview { font-family: var(--font-text); font-size: var(--font-text-size); line-height: var(--line-height-normal);
+                color: var(--text-normal); padding: var(--file-margins) }
+.lp > *, .preview > * { max-width: var(--file-line-width); margin-inline: auto }
+.lp .lprow { width: 100% }
+.lp h1, .preview h1, .lp h2, .preview h2, .lp h3, .preview h3, .lp h4, .preview h4, .lp h5, .preview h5, .lp h6, .preview h6 {
+  color: inherit; font-style: normal; font-variant: normal; border: 0 }
+.lp h1, .preview h1 { font-size: var(--h1-size); font-weight: var(--h1-weight); line-height: var(--h1-line-height); letter-spacing: var(--h1-letter-spacing) }
+.lp h2, .preview h2 { font-size: var(--h2-size); font-weight: var(--h2-weight); line-height: var(--h2-line-height); letter-spacing: var(--h2-letter-spacing) }
+.lp h3, .preview h3 { font-size: var(--h3-size); font-weight: var(--h3-weight); line-height: var(--h3-line-height); letter-spacing: var(--h3-letter-spacing) }
+.lp h4, .preview h4 { font-size: var(--h4-size); font-weight: var(--h4-weight); line-height: var(--h4-line-height); letter-spacing: var(--h4-letter-spacing) }
+.lp h5, .preview h5 { font-size: var(--h5-size); font-weight: var(--h5-weight); line-height: var(--h5-line-height); letter-spacing: var(--h5-letter-spacing) }
+.lp h6, .preview h6 { font-size: var(--h6-size); font-weight: var(--h6-weight); line-height: var(--h6-line-height); letter-spacing: var(--h6-letter-spacing) }
+.lp b, .lp strong, .preview b, .preview strong { font-weight: var(--bold-weight) }
+.lp em, .preview em { font-style: italic }
+/* R15.9 reading-mode block spacing (stock .markdown-rendered); LP spacing comes from the blank-line rows */
+.preview :is(p, ul, ol, table, pre, blockquote) { margin-block: var(--p-spacing) }
+.preview :is(h1, h2, h3, h4, h5, h6) { margin-block: var(--p-spacing) }
+.preview :is(p, pre, table, ul, ol) + :is(h1, h2, h3, h4, h5, h6) { margin-top: var(--heading-spacing) }
+.preview > :first-child { margin-top: 0 }
+/* R15.10 lists: no ul/ol padding, li indented 3ch, nested by --list-indent, faint markers, 0.3em disc bullet */
+.lp ul, .lp ol, .preview ul, .preview ol { padding-inline-start: 0 }
+.lp ul ul, .lp ul ol, .lp ol ul, .lp ol ol, .preview ul ul, .preview ul ol, .preview ol ul, .preview ol ol { margin-block: 0 }
+.lp li, .preview li { padding-block: var(--list-spacing); position: relative }
+.preview ul > li, .preview ol > li { margin-inline-start: 3ch }
+.preview ul ul > li, .preview ol ol > li, .preview ul ol > li, .preview ol ul > li { margin-inline-start: var(--list-indent) }
+.lp li::marker, .preview li::marker { color: var(--list-marker-color) }
+/* markers are ::before pseudo-elements (not ::marker): stock draws its own .list-bullet / number so the x offsets are exact.
+   ol keeps the decimal numbering via the built-in list-item counter (honours <ol start>); the box sits 2px left of the h1 "H" ink. */
+.lp ul, .preview ul, .lp ol, .preview ol { list-style: none }
+.lp ul > li::before, .preview ul > li::before { content: ""; position: absolute; width: var(--list-bullet-size); height: var(--list-bullet-size);
+  border-radius: var(--list-bullet-radius); background: var(--list-marker-color); pointer-events: none;
+  inset-inline-start: calc(14px - 3ch); top: calc(var(--list-spacing) + 0.6em) }
+.lp ol > li::before, .preview ol > li::before { content: counter(list-item) "."; position: absolute; color: var(--list-marker-color);
+  pointer-events: none; inset-inline-start: calc(12px - 3ch); top: var(--list-spacing) }
+/* R15.11 task list: custom 16px box r4 1px faint border, accent fill + masked tick; no bullet; done = strike + muted */
+.lp li:has(> input[type=checkbox])::before, .preview li:has(> input[type=checkbox])::before { display: none }
+.lp li:has(> input[type=checkbox]), .preview li:has(> input[type=checkbox]) { list-style: none }
+.lp li:has(> input[type=checkbox]:checked), .preview li:has(> input[type=checkbox]:checked) {
+  text-decoration: var(--checklist-done-decoration); color: var(--checklist-done-color) }
+.lp input[type=checkbox], .preview input[type=checkbox] { -webkit-appearance: none; appearance: none; border-radius: var(--checkbox-radius);
+  border: 1px solid var(--checkbox-border-color); flex-shrink: 0; padding: 0; margin: 0; width: var(--checkbox-size); height: var(--checkbox-size);
+  position: relative; top: 0.2em; margin-inline-end: 0.6em; cursor: pointer; vertical-align: baseline }
+.preview ul > li > input[type=checkbox] { margin-inline-start: calc(var(--checkbox-size) * -1.5 - 1px) }   /* box at +3 (h1-ink relative) */
+/* LP: the task li has no list margin (stock: the checkbox sits in the text flow after the hidden "- " widget); box at +7, text at +27 */
+.lp li:has(> input[type=checkbox]) { margin-inline-start: 0 }
+.lp ul > li > input[type=checkbox] { margin-inline-start: calc(var(--checkbox-margin-inline-start) - 2px); margin-inline-end: calc(0.6em - 4px) }
+.lp input[type=checkbox]:hover, .preview input[type=checkbox]:hover { border-color: var(--text-muted) }
+.lp input[type=checkbox]:checked, .preview input[type=checkbox]:checked { background-color: var(--checkbox-color); border-color: var(--checkbox-color) }
+.lp input[type=checkbox]:checked:after, .preview input[type=checkbox]:checked:after { content: ""; top: -1px; inset-inline-start: -1px; position: absolute;
+  width: var(--checkbox-size); height: var(--checkbox-size); display: block; background-color: var(--checkbox-marker-color);
+  -webkit-mask-position: 52% 52%; -webkit-mask-size: 65%; -webkit-mask-repeat: no-repeat;
+  -webkit-mask-image: url("data:image/svg+xml; utf8, <svg width=\"12px\" height=\"10px\" viewBox=\"0 0 12 8\" version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\"><g stroke=\"none\" stroke-width=\"1\" fill=\"none\" fill-rule=\"evenodd\"><g transform=\"translate%28-4.000000, -6.000000%29\" fill=\"%23000000\"><path d=\"M8.1043257,14.0367999 L4.52468714,10.5420499 C4.32525014,10.3497722 4.32525014,10.0368095 4.52468714,9.8424863 L5.24777413,9.1439454 C5.44721114,8.95166768 5.77142411,8.95166768 5.97086112,9.1439454 L8.46638057,11.5903727 L14.0291389,6.1442083 C14.2285759,5.95193057 14.5527889,5.95193057 14.7522259,6.1442083 L15.4753129,6.84377194 C15.6747499,7.03604967 15.6747499,7.35003511 15.4753129,7.54129009 L8.82741268,14.0367999 C8.62797568,14.2290777 8.3037627,14.2290777 8.1043257,14.0367999\"></path></g></g></svg>") }
+/* R15.12 inline code: Source Code Pro 0.875em on the alt background, r4, 0.15em 0.3em */
+.lp code, .preview code { font-family: var(--font-monospace); font-size: var(--code-size); background-color: var(--code-background);
+  border-radius: var(--code-radius); padding: 0.15em 0.3em; -webkit-box-decoration-break: clone; box-decoration-break: clone; color: var(--text-normal) }
+.lp pre, .preview pre { font-family: var(--font-monospace); font-size: var(--code-size); background-color: var(--code-background); border-radius: var(--code-radius); padding: 0.5em 1em; overflow-x: auto }
+.lp pre code, .preview pre code { padding: 0; background: none; font-size: inherit }
+/* R15.13 blockquote: 2px accent inline-start border, 24px padding, no margin (LP: 14px text offset) */
+.lp blockquote, .preview blockquote { border-inline-start: var(--blockquote-border-thickness) solid var(--blockquote-border-color);
+  padding: 0 0 0 var(--size-4-6); margin-inline: 0; font-style: normal; color: inherit; background: transparent;
+  position: relative; inset-inline-start: 2px }   /* stock border sits on the h1 "H" ink x; the content box is 2px left of it */
+.preview > blockquote { margin-inline: auto }    /* keep the 700px column centring (the rule above outranks .preview > *) */
+.preview blockquote > :first-child { margin-top: 0 }
+.preview blockquote > :last-child { margin-bottom: 0 }
+.lp blockquote { padding-inline-start: 11px }
+/* R15.10 LP: --list-indent-editing 12px, bullet at +12 / text at +22 like stock's cm-formatting-list; nested = literal space width */
+.lp ul > li { margin-inline-start: 23px }
+.lp ul > li::before { inset-inline-start: -9px }
+.lp ol > li { margin-inline-start: 32px; padding-inline-start: 0 }
+.lp ol > li::before { inset-inline-start: -18px }

@@ -745,6 +745,9 @@ function updateTitle() {          // pane/focus census in the window title (head
   if (md && isLp(ft.mode) && fg().lpActive) md += ":" + fg().lpActive.l0;
   if (md) md += "]";
   if (lpMs >= 0) md += " [lp:" + lpMs + "]";     // perf: last lpRender ms
+  // R15.2 font probe: bundled @font-face entries that actually LOADED (lazy: a face loads when text first uses it) -> [fonts:SourceCodePro/400/normal|...]
+  { const fl = document.fonts ? [...document.fonts].filter(f => f.status === "loaded").map(f => f.family.replace(/[" ]/g, "") + "/" + f.weight + "/" + f.style) : [];
+    if (fl.length) md += " [fonts:" + fl.join("|") + "]"; }
   let gg = ft && ft.kind === "gg" ? " [gg]" : "";  // R9.7: global graph tab focused
   if (gg) { const pt = posTok(fg()); if (pt) gg += " [ggpos:" + pt + "]"; }
   const modal = modalKind ? " [modal:" + modalKind + "]"
@@ -1410,7 +1413,7 @@ async function lpRender(g, activeL = -1, col = 0, full = false) {
   }
   const st = g.lp.scrollTop;
   const mk = i => i === activeBi ? lpRawRow(g, blocks[i], texts[i])
-                                 : lpRow(g, blocks[i], htmls[i]);
+                                 : lpRow(g, blocks[i], htmls[i], texts[i]);
   let touched = 0;
   const rows = g.lp.children;
   if (!c) {                                      // FULL rebuild
@@ -1489,9 +1492,12 @@ function lpRawRow(g, b, text) {
 // a rendered row. Handlers read l0/l1 from row.dataset and the model from
 // g.editor.value AT EVENT TIME: rows are kept across passes, so closures
 // over line numbers would go stale when lines above are inserted/removed.
-function lpRow(g, b, h) {
+function lpRow(g, b, h, text) {
   const row = document.createElement("div");
   row.className = "lprow";
+  // R15.10 LP: a leading-space-indented line (nested list) keeps its literal indent, like stock (spaces are not re-laid)
+  const ind = text ? (text.match(/^ */)[0].length) : 0;
+  if (ind) row.style.paddingInlineStart = (ind * 0.26) + "em";
   row.dataset.l0 = b.l0; row.dataset.l1 = b.l1;
   row.innerHTML = h && h.trim() ? h : "&nbsp;";  // blank line stays clickable
   const cur = () => ({ l0: +row.dataset.l0, l1: +row.dataset.l1 });
@@ -2140,6 +2146,8 @@ $("rninput").onkeydown = async e => {
   catch (err) { updateTitle(); return; }    // exists/invalid -> keep old name
   await applyRename(old, nn);
 };
+
+if (document.fonts) document.fonts.addEventListener("loadingdone", () => updateTitle());   // R15.2: republish [fonts:] once a lazy @font-face lands
 
 document.addEventListener("keydown", e => {
   if (settingsOpen) return hkKey(e);       // R14: settings modal owns the keyboard (chord capture)
