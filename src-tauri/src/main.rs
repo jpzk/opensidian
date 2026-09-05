@@ -49,9 +49,49 @@ fn safe_rel(name: &str) -> Option<PathBuf> {
     (!out.as_os_str().is_empty()).then_some(out)
 }
 
-fn note_path(v: &State<Vault>, name: &str) -> Option<PathBuf> {
-    let p = cur_vault(v)?.join(safe_rel(name)?);
-    Some(PathBuf::from(format!("{}.md", p.display())))
+/// S2 vault confinement: canonical parent must live under the canonical root
+/// and the leaf must not be a symlink. `create` makes missing parents (what
+/// write/rename need) — but only after the deepest EXISTING ancestor proved
+/// to be inside the vault, so mkdir never walks through a symlinked dir.
+/// Returns the canonical path; keys stay the relative names, so the
+/// index==disk invariant is untouched.
+fn note_path_in(root: &Path, name: &str, create: bool) -> Option<PathBuf> {
+    let rel = safe_rel(name)?;
+    let croot = root.canonicalize().ok()?;
+    let dir = root.join(rel.parent().unwrap_or(Path::new("")));
+    if create {
+        let mut a = dir.as_path();
+        while !a.exists() {
+            a = a.parent()?;
+        }
+        if !a.canonicalize().ok()?.starts_with(&croot) {
+            return None;
+        }
+        fs::create_dir_all(&dir).ok()?;
+    }
+    let cdir = dir.canonicalize().ok()?;
+    if !cdir.starts_with(&croot) {
+        return None;
+    }
+    let p = cdir.join(format!("{}.md", rel.file_name()?.to_string_lossy()));
+    if fs::symlink_metadata(&p).map(|m| m.is_symlink()).unwrap_or(false) {
+        return None;
+    }
+    Some(p)
+}
+
+fn note_path(v: &State<Vault>, name: &str, create: bool) -> Option<PathBuf> {
+    note_path_in(&cur_vault(v)?, name, create)
+}
+
+/// S5: read a note off disk, "" when it is oversized (never part of the vault)
+fn read_capped(p: &Path) -> Option<String> {
+    let m = fs::symlink_metadata(p).ok()?;
+    if m.len() > index::MAX_NOTE_BYTES {
+        index::warn_oversized(p);
+        return None;
+    }
+    fs::read_to_string(p).ok()
 }
 
 fn walk_dirs(dir: &Path, base: &Path, out: &mut Vec<String>) {
@@ -84,8 +124,11 @@ fn list_folders(v: State<Vault>) -> Vec<String> {
 fn create_dir(v: State<Vault>, name: String) -> Result<(), String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
     let rel = safe_rel(&name).ok_or("invalid folder name")?;
-    // perf-index: an empty dir holds no notes -> index unchanged
-    fs::create_dir_all(root.join(rel)).map_err(|e| e.to_string())
+    // perf-index: an empty dir holds no notes -> index unchanged.
+    // S2: mkdir via note_path_in (create) so it never crosses a symlinked dir
+    note_path_in(&root, &format!("{}/x", rel.display()), true)
+        .map(|_| ())
+        .ok_or_else(|| "outside vault".to_string())
 }
 
 #[tauri::command]
@@ -97,8 +140,8 @@ fn list_notes(v: State<Vault>) -> Vec<String> {
 fn read_note(v: State<Vault>, name: String) -> String {
     span_timed!(
         "read_note",
-        note_path(&v, &name)
-            .and_then(|p| fs::read_to_string(p).ok())
+        note_path(&v, &name, false)
+            .and_then(|p| read_capped(&p))
             .unwrap_or_default()
     )
 }
@@ -111,10 +154,8 @@ fn write_note(v: State<Vault>, name: String, content: String) {
 
 fn write_note_inner(v: &State<Vault>, name: &str, content: &str) {
     let Some(rel) = safe_rel(name) else { return };
-    if let Some(p) = note_path(v, name) {
-        if let Some(d) = p.parent() {
-            let _ = fs::create_dir_all(d);
-        }
+    // S2: parents created + confined inside note_path (None = outside vault)
+    if let Some(p) = note_path(v, name, true) {
         // R11: lock BEFORE the write — the watcher reads+compares under this
         // lock, so it never sees our bytes on disk without them in the index
         let mut ix = v.index.lock().unwrap();
@@ -134,16 +175,14 @@ fn write_note_inner(v: &State<Vault>, name: &str, content: &str) {
 fn rename_in(root: &Path, ix: &mut Index, old: &str, new: &str) -> Result<(), String> {
     let orel = safe_rel(old).ok_or("invalid name")?;
     let nrel = safe_rel(new).ok_or("invalid name")?;
-    let op = PathBuf::from(format!("{}.md", root.join(&orel).display()));
-    let np = PathBuf::from(format!("{}.md", root.join(&nrel).display()));
+    // S2: both ends confined to the vault (symlinked source/parent -> refused)
+    let op = note_path_in(root, old, false).ok_or("invalid name")?;
     if !op.is_file() {
         return Err("no such note".into());
     }
+    let np = note_path_in(root, new, true).ok_or("invalid name")?;
     if np.exists() {
         return Err("target exists".into());
-    }
-    if let Some(d) = np.parent() {
-        fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
     // rename is rare and rewrites text vault-wide: resync the index from disk
     // FIRST so a note another writer dropped in since boot (smoke seeds one;
@@ -156,8 +195,10 @@ fn rename_in(root: &Path, ix: &mut Index, old: &str, new: &str) -> Result<(), St
     // moved file rather than dropping the note
     let fallback = if ix.content(&okey).is_none() { fs::read_to_string(&np).ok() } else { None };
     for (n, c) in ix.rename(&okey, &nkey, fallback) {
-        let p = PathBuf::from(format!("{}.md", root.join(n).display()));
-        let _ = fs::write(&p, c);
+        // S2: never write through a symlink swapped in since the walk
+        if let Some(p) = note_path_in(root, &n, false) {
+            let _ = fs::write(&p, c);
+        }
     }
     Ok(())
 }
@@ -242,6 +283,9 @@ fn set_vault(v: State<Vault>, path: String) -> Result<String, String> {
 
 fn set_vault_inner(v: &State<Vault>, path: &str) -> Result<String, String> {
     let p = PathBuf::from(path.trim());
+    if !picker_allows(&p) {
+        return Err(format!("not allowed as a vault: {}", p.display())); // S4
+    }
     if !p.is_dir() {
         return Err(format!("not a directory: {}", p.display()));
     }
@@ -261,6 +305,9 @@ fn create_vault(v: State<Vault>, parent: String, name: String) -> Result<String,
         return Err("invalid vault name".into());
     }
     let p = PathBuf::from(parent.trim()).join(name);
+    if !picker_allows(&p) {
+        return Err(format!("not allowed as a vault: {}", p.display())); // S4
+    }
     if p.exists() {
         return Err(format!("already exists: {}", p.display()));
     }
@@ -298,6 +345,33 @@ fn log_spans(spans: Vec<serde_json::Value>) -> bool {
     perf::enabled()
 }
 
+/// S4: the picker commands take arbitrary absolute paths from the webview.
+/// Deny system trees and any dot-component (hidden dirs, `..`); /workspace
+/// and $HOME stay browsable even when they sit under a denied prefix (e.g.
+/// HOME=/root). /, /home, /mnt, /media, /run/media, /tmp remain open.
+fn picker_allows(p: &Path) -> bool {
+    const DENY: [&str; 8] = ["/proc", "/sys", "/dev", "/etc", "/usr", "/boot", "/root", "/var"];
+    if !p.is_absolute() {
+        return false;
+    }
+    if p.components().any(|c| match c {
+        Component::Normal(s) => s.to_string_lossy().starts_with('.'),
+        Component::RootDir => false,
+        _ => true, // `..`, `.`, prefixes
+    }) {
+        return false;
+    }
+    if p.starts_with("/workspace") {
+        return true;
+    }
+    if let Ok(h) = std::env::var("HOME") {
+        if h.len() > 1 && p.starts_with(&h) {
+            return true;
+        }
+    }
+    !DENY.iter().any(|d| p.starts_with(d))
+}
+
 #[tauri::command]
 fn home_dir() -> String {
     std::env::var("HOME").unwrap_or_else(|_| "/".into())
@@ -305,6 +379,9 @@ fn home_dir() -> String {
 
 #[tauri::command]
 fn list_dirs(path: String) -> Vec<String> {
+    if !picker_allows(Path::new(&path)) {
+        return vec![]; // S4: the picker just shows ".." there
+    }
     let mut v: Vec<String> = fs::read_dir(path)
         .into_iter()
         .flatten()
@@ -1477,5 +1554,76 @@ mod tests {
         for i in 0..10 { l = push_recent(l, &format!("/v{i}")); }
         assert_eq!(l.len(), 8);          // capped
         assert_eq!(l[0], "/v9");
+    }
+
+    /// S2: symlinked dir + file inside the vault are invisible: not indexed,
+    /// not snapshotted, not readable, not writable, not creatable-through
+    #[test]
+    fn symlinks_are_not_part_of_the_vault() {
+        use std::os::unix::fs::symlink;
+        let root = tmp_vault("sym");
+        let outside = std::env::temp_dir().join(format!("rustidian-sym-out-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("Secret.md"), "secret").unwrap();
+        fs::write(root.join("A.md"), "[[L]] [[link/Secret]]").unwrap();
+        symlink(&outside, root.join("link")).unwrap(); // dir link
+        symlink(outside.join("Secret.md"), root.join("L.md")).unwrap(); // file link
+        // not listed (Index::build + watcher::snapshot share the walk)
+        let ix = Index::build(&root);
+        assert_eq!(ix.names(), ["A"]);
+        assert_eq!(watcher::snapshot(&root).keys().cloned().collect::<Vec<_>>(), ["A"]);
+        // not readable
+        assert_eq!(note_path_in(&root, "L", false), None);
+        assert_eq!(note_path_in(&root, "link/Secret", false), None);
+        assert_eq!(note_path_in(&root, "A", false), Some(root.canonicalize().unwrap().join("A.md")));
+        // not writable: create=true must not mkdir through the link either
+        assert_eq!(note_path_in(&root, "L", true), None);
+        assert_eq!(note_path_in(&root, "link/New", true), None);
+        assert_eq!(note_path_in(&root, "link/deep/er/New", true), None);
+        assert!(!outside.join("New.md").exists());
+        assert!(!outside.join("deep").exists());
+        assert_eq!(fs::read_to_string(outside.join("Secret.md")).unwrap(), "secret");
+        // rename refuses both directions
+        let mut ix = Index::build(&root);
+        assert!(rename_in(&root, &mut ix, "A", "link/A").is_err());
+        assert!(rename_in(&root, &mut ix, "L", "X").is_err());
+        assert!(root.join("A.md").is_file());
+        assert!(!outside.join("A.md").exists());
+        // a plain note still round-trips through create=true (parents made)
+        let p = note_path_in(&root, "sub/deep/N", true).unwrap();
+        assert!(p.parent().unwrap().is_dir());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    /// S4: picker commands refuse system trees and dot-components, keep the
+    /// roots the folder picker offers
+    #[test]
+    fn picker_denies_system_paths_allows_user_roots() {
+        for p in ["/etc", "/proc", "/etc/ssh", "/proc/self", "/sys", "/dev", "/usr/bin", "/boot", "/root", "/var/log",
+                  "/home/u/.ssh", "/tmp/../etc", "/tmp/.hidden", "tmp", ""] {
+            assert!(!picker_allows(Path::new(p)), "{p} must be denied");
+        }
+        for p in ["/", "/workspace", "/workspace/vault", "/tmp", "/tmp/rustidian-smoke97/vault", "/mnt", "/media", "/run/media", "/home", "/home/u/notes"] {
+            assert!(picker_allows(Path::new(p)), "{p} must be allowed");
+        }
+        assert_eq!(list_dirs("/etc".into()), Vec::<String>::new());
+        assert_eq!(list_dirs("/proc".into()), Vec::<String>::new());
+        assert!(list_dirs("/".into()).iter().any(|d| d == "tmp"));
+    }
+
+    /// S5: a 33 MiB sparse note is skipped by the walk and unreadable
+    #[test]
+    fn oversized_note_is_skipped() {
+        let root = tmp_vault("big");
+        fs::write(root.join("A.md"), "small").unwrap();
+        let big = root.join("Big.md");
+        fs::File::create(&big).unwrap().set_len(33 * 1024 * 1024).unwrap();
+        assert_eq!(Index::build(&root).names(), ["A"]);
+        assert_eq!(watcher::snapshot(&root).keys().cloned().collect::<Vec<_>>(), ["A"]);
+        assert_eq!(read_capped(&big), None); // read_note -> ""
+        assert_eq!(read_capped(&root.join("A.md")).as_deref(), Some("small"));
+        let _ = fs::remove_dir_all(&root);
     }
 }

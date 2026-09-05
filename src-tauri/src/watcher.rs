@@ -47,11 +47,15 @@ pub fn note_file(root: &Path, name: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(format!("{}.md", root.join(name).display()))
 }
 
-/// one walk + one stat per note (no reads)
+/// one walk + one stat per note (no reads). S2: lstat — walk already skipped
+/// symlinks, a link swapped in between walk and stat must not be followed
 pub fn snapshot(root: &Path) -> Snapshot {
     let mut out = Snapshot::new();
     for n in notes_of(root) {
-        if let Ok(m) = fs::metadata(note_file(root, &n)) {
+        if let Ok(m) = fs::symlink_metadata(note_file(root, &n)) {
+            if m.is_symlink() {
+                continue;
+            }
             let t = m.modified().unwrap_or(SystemTime::UNIX_EPOCH);
             out.insert(n, (t, m.len()));
         }

@@ -3,9 +3,23 @@
 //! the only writer — this process (write_note / rename_note). search, graph,
 //! backlinks, resolve and render_blocks serve from here: zero disk reads.
 //! LATER: file watcher for external edits (docs/perf.md).
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+
+/// S5: notes larger than this are not part of the vault (walk skips them,
+/// read_note returns ""); a multi-GB .md in a synced vault must not OOM us
+pub const MAX_NOTE_BYTES: u64 = 32 * 1024 * 1024;
+
+/// S5: the watcher re-walks every second — complain once per oversized path
+pub fn warn_oversized(p: &Path) {
+    static SEEN: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    let mut seen = SEEN.get_or_init(|| Mutex::new(HashSet::new())).lock().unwrap();
+    if seen.insert(p.to_path_buf()) {
+        eprintln!("rustidian: skipping {} (> {} MiB)", p.display(), MAX_NOTE_BYTES >> 20);
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct NoteMeta {
@@ -215,9 +229,19 @@ fn walk(dir: &Path, base: &Path, out: &mut Vec<String>) {
             continue;
         }
         let p = e.path();
-        if p.is_dir() {
+        // S2: lstat, never follow — a symlinked dir/file is not part of the
+        // vault (it would index and serve whatever it points at)
+        let Ok(m) = fs::symlink_metadata(&p) else { continue };
+        if m.is_symlink() {
+            continue;
+        }
+        if m.is_dir() {
             walk(&p, base, out);
         } else if let Some(stem) = name.strip_suffix(".md") {
+            if m.len() > MAX_NOTE_BYTES {
+                warn_oversized(&p);
+                continue;
+            }
             let rel = p
                 .parent()
                 .and_then(|d| d.strip_prefix(base).ok())
