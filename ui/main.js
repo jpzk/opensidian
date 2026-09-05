@@ -2417,7 +2417,7 @@ async function startGraph(g, cfg) {
   // draw: batched paths — edges in 2 strokes (lit / dim), nodes grouped by
   // (color, alpha, resolved) into one fill/stroke each, labels per group
   // graph-webgl: with glr the SAME per-node style decisions feed instance arrays
-  // (x y r ring rgba) and an edge vertex array (x y rgba) for graph-gl.js; cv then
+  // (x y r ring rgba) and an edge instance array (x0 y0 x1 y1 rgba) for graph-gl.js; cv then
   // carries only the labels. Arrays grow on demand and are reused across frames.
   const hex = h => [parseInt(h.slice(1, 3), 16) / 255, parseInt(h.slice(3, 5), 16) / 255, parseInt(h.slice(5, 7), 16) / 255];
   const RGB = { "#f9e2af": hex("#f9e2af"), "#a6e3a1": hex("#a6e3a1"), "#89b4fa": hex("#89b4fa"), "#45475a": hex("#45475a") };
@@ -2437,9 +2437,9 @@ async function startGraph(g, cfg) {
         const c = RGB[col];
         for (const ed of gr.edges) {
           if (litE(ed) !== lit) continue;
-          const A = N[ed[0]], B = N[ed[1]], o = ec * 12;
-          eArr[o] = A.x; eArr[o + 1] = A.y; eArr[o + 2] = c[0]; eArr[o + 3] = c[1]; eArr[o + 4] = c[2]; eArr[o + 5] = a;
-          eArr[o + 6] = B.x; eArr[o + 7] = B.y; eArr[o + 8] = c[0]; eArr[o + 9] = c[1]; eArr[o + 10] = c[2]; eArr[o + 11] = a;
+          const A = N[ed[0]], B = N[ed[1]], o = ec * 8;
+          eArr[o] = A.x; eArr[o + 1] = A.y; eArr[o + 2] = B.x; eArr[o + 3] = B.y;
+          eArr[o + 4] = c[0]; eArr[o + 5] = c[1]; eArr[o + 6] = c[2]; eArr[o + 7] = a;
           ec++;
         }
         return;
@@ -2452,7 +2452,7 @@ async function startGraph(g, cfg) {
       }
       if (any) ctx.stroke();
     };
-    if (glr && eArr.length < gr.edges.length * 12) eArr = new Float32Array(gr.edges.length * 12 + 1200);
+    if (glr && eArr.length < gr.edges.length * 8) eArr = new Float32Array(gr.edges.length * 8 + 800);
     if (hov >= 0) { edgePass(false, "#45475a", 0.12); edgePass(true, "#f9e2af", 1); }
     else edgePass(true, "#45475a", 1);
     ctx.textAlign = "center"; ctx.font = "12px sans-serif";
