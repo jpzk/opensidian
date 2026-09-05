@@ -326,3 +326,24 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .ulhead.open .tc svg { transform: rotate(90deg) }
 .ullink { background: #89b4fa; color: #1e1e2e; border: 0; border-radius: 4px;
           padding: 1px 8px; font: 600 11px sans-serif; cursor: pointer }
+/* R12 source mode = lp rows with every marker revealed (highlight_blocks):
+   same font + measure as lp, markers grey, headings keep their size */
+.lp.src .lprow { white-space: pre-wrap; overflow-wrap: anywhere }
+.lp.src .mk { color: #6c7086 }
+.lp.src .h { font-weight: 700 }
+.lp.src .h1 { font-size: 2em }
+.lp.src .h2 { font-size: 1.5em }
+.lp.src .h3 { font-size: 1.17em }
+.lp.src .h4 { font-size: 1.05em }
+.lp.src .b { font-weight: 700 }
+.lp.src .i { font-style: italic }
+.lp.src .bi { font-weight: 700; font-style: italic }
+.lp.src .s { text-decoration: line-through }
+.lp.src .hl { background: rgba(249,226,175,.35) }
+.lp.src .code { font-family: monospace; background: #313244; border-radius: 3px }
+.lp.src .wl, .lp.src .lt, .lp.src .url { color: #89b4fa; text-decoration: underline }
+.lp.src .tag { color: #89b4fa; background: rgba(137,180,250,.15); border-radius: 999px; padding: 0 4px }
+.lp.src .task, .lp.src .hr, .lp.src .tbl { font-family: monospace }
+.lp.src .fence { display: block; font-family: monospace; font-size: 13px; background: #313244;
+                 padding: 4px 8px; border-radius: 4px; white-space: pre; overflow-x: auto }
+.lp.src .bq { color: #a6adc8 }
