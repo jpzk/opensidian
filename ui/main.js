@@ -18,9 +18,6 @@ async function act(name, attrs, fn) {
   const sp = otel.begin(name, attrs);
   try { return await fn(sp); } finally { otel.paint(sp); }
 }
-/* R18 history_nav: placeholder until R19 wires per-tab history to mouse
-   back/forward + Alt+Left/Right; emits a no-op span so the op has a row. */
-function historyNav(dir) { otel.span("history_nav", { dir, noop: true }); }
 const $ = id => document.getElementById(id);
 let vaultPath = null, pmode = null, bpath = null;
 
@@ -43,7 +40,14 @@ const groups = () => (state ? leaves(state.root) : []);
 const fg = () => state.focused;
 const curOf = g => (g.active >= 0 ? g.tabs[g.active].name : null);
 const cur = () => (state && fg() ? curOf(fg()) : null);
-const mkTab = name => ({ name, mode: "livepreview", hist: [name], hpos: 0 });  // R8.8: LP default
+// R19: per-tab history = [{n: note, s: scrollTop}], hpos = cursor; a nav pushes at
+// hpos+1 and drops the forward slice (browser semantics, docs/requirements.md R19)
+const mkTab = name => ({ name, mode: "livepreview", hist: [{ n: name, s: 0 }], hpos: 0 });  // R8.8: LP default
+const scrollOf = g => { const t = g.active >= 0 ? g.tabs[g.active] : null; return !t || t.kind ? 0 : t.mode === "reading" ? g.preview.scrollTop : isLp(t.mode) ? g.lp.scrollTop : g.editor.scrollTop; };
+function histPush(g, tab, name) {     // record where the CURRENT entry was scrolled to, then push the new note
+  if (tab.hist[tab.hpos]) tab.hist[tab.hpos].s = scrollOf(g);
+  tab.hist = tab.hist.slice(0, tab.hpos + 1); tab.hist.push({ n: name, s: 0 }); tab.hpos++;
+}
 
 /* R13: manual linked tabs ('Link with tab...'). tab.link = link-group id
    shared by every member; tab objects move by reference (drag / split), so a
@@ -94,8 +98,8 @@ async function linkSync(src, name) { // R13.3: a member opening a note reaches e
     }
     if (t.kind || t.name === name) continue;
     if (act) await flushSave(h);
-    t.name = name;                  // editors navigate in place, own mode kept
-    t.hist = t.hist.slice(0, t.hpos + 1); t.hist.push(name); t.hpos++;
+    histPush(h, t, name);           // editors navigate in place, own mode kept
+    t.name = name;
     if (act) await loadActive(h); else renderTabs(h);
   }
   updateTitle();
@@ -137,9 +141,12 @@ async function rgStart() {                 // (re)build canvas + sim at current 
   rgCenter = rgNote() || rgCenter;
   if (!rgCenter) return;
   await startGraph(rg, {
-    fetch: async () => lgFilter(await inv("graph"), rgCenter, 1, true, true),
+    fetch: () => inv("graph_local", { center: rgCenter, depth: 1, inc: true, out: true }),   // R19: neighbourhood cut in Rust from cached adjacency
     center: () => rgCenter,
-    onClick: async n => { await navigate(fg(), n); },  // opens in focused group
+    onClick: async n => {                             // opens in focused group; R19: graph prefetched alongside the note
+      rg.prefetch = { n, p: inv("graph_local", { center: n, depth: 1, inc: true, out: true }) };
+      await navigate(fg(), n);
+    },
   });
 }
 function rgStop() {
@@ -1159,10 +1166,8 @@ async function navigate(g, name, anchor) { // wikilink / graph click: replace g'
     if (g.active < 0) { g.tabs.push(mkTab(name)); g.active = 0; }
     else {
       const tab = g.tabs[g.active];
+      histPush(g, tab, name);
       tab.name = name;
-      tab.hist = tab.hist.slice(0, tab.hpos + 1);
-      tab.hist.push(name);
-      tab.hpos++;
     }
     await loadActive(g);
     Object.assign(sp.attrs, { mode: g.tabs[g.active].mode, bytes: g.editor.value.length, lines: g.lpLines || 0 });
@@ -1231,17 +1236,50 @@ async function navAnchor(g, anchor) {
   updateTitle();
 }
 
-async function histGo(d) {         // per-tab back/forward in the focused group
-  const g = fg();
+/* R19 per-tab history (feedback #6/#6b): Back/Forward = mouse buttons 4/5,
+   Alt+Left/Right, palette "Navigate back/forward". The target group is the
+   one under the pointer (mouse) or the focused one (keys/palette); a local
+   graph tab delegates to its LINKED group, whose history the graph clicks
+   pushed (#6b) — the graph then re-centres through lgFollow like any nav.
+   Restores the note + its scroll. Span history_nav: action -> note painted,
+   or -> graph settled when a linked local graph had to re-centre. */
+async function histGo(d, from) {
+  let g = from || fg();
   if (!g || g.active < 0) return;
-  const tab = g.tabs[g.active];
+  let tab = g.tabs[g.active];
+  if (tab.kind === "lg" && tab.linkId != null) {
+    g = groups().find(x => x.id === tab.linkId);
+    if (!g || g.active < 0) return;
+    tab = g.tabs[g.active];
+  }
+  if (tab.kind) return;
   const p = tab.hpos + d;
   if (p < 0 || p >= tab.hist.length) return;
+  const sp = otel.begin("history_nav", { dir: d < 0 ? "back" : "forward", from: tab.name, note: tab.hist[p].n, pos: p, len: tab.hist.length });
   await flushSave(g);
+  tab.hist[tab.hpos].s = scrollOf(g);
   tab.hpos = p;
-  tab.name = tab.hist[p];
+  tab.name = tab.hist[p].n;
+  // a linked local graph re-centres in loadActive -> lgFollow -> graphRefresh; hand it the span so it ends at settle
+  const lgh = groups().find(h => { const t = h.active >= 0 ? h.tabs[h.active] : null; return t && t.kind === "lg" && t.linkId === g.id && t.center !== tab.name; });
+  if (lgh) { otel.cancel(lgh.recenterSp); lgh.recenterSp = sp; }
   await loadActive(g);
+  const s = tab.hist[p].s;
+  if (s) { if (tab.mode === "reading") g.preview.scrollTop = s; else if (isLp(tab.mode)) g.lp.scrollTop = s; else g.editor.scrollTop = s; }
+  if (!lgh) otel.paint(sp);
 }
+// mouse buttons 4/5 (X11 8/9 -> DOM button 3/4): nav fires on mousedown (capture) with
+// preventDefault + stopPropagation so WebKit never turns them into webview history and no
+// row/pane handler sees them; the matching auxclick/mouseup are swallowed the same way
+function histBtn(e) { return e.button === 3 ? -1 : e.button === 4 ? 1 : 0; }
+for (const ev of ["mousedown", "mouseup", "auxclick", "click"])
+  document.addEventListener(ev, e => {
+    const d = histBtn(e); if (!d) return;
+    e.preventDefault(); e.stopPropagation();
+    if (ev !== "mousedown") return;
+    const pane = e.target && e.target.closest ? e.target.closest("#main .pane") : null;
+    histGo(d, pane ? groups().find(h => h.pane === pane) : null);
+  }, true);
 
 async function closeTab(g, i) {
   const rm = g.tabs.length === 1 && groups().length > 1;      // R6.5: last tab -> the pane goes too
@@ -2113,7 +2151,7 @@ async function applyRename(old, nn) {   // post-rename bookkeeping (F2 + H1 path
   for (const h of groups()) for (const tb of h.tabs) {
     if (tb.kind) continue;
     if (tb.name === old) tb.name = nn;
-    if (tb.hist) tb.hist = tb.hist.map(n => (n === old ? nn : n));
+    if (tb.hist) for (const e of tb.hist) if (e.n === old) e.n = nn;
   }
   const mi = mruList.indexOf(old);
   if (mi >= 0) mruList[mi] = nn;
@@ -2333,7 +2371,10 @@ async function startGraph(g, cfg) {
   // live refresh (R4.3): re-fetch on save, keep surviving positions,
   // seed new nodes near their first neighbor
   g.graphRefresh = async () => {
-    const g2 = await cfg.fetch();
+    // R19: a node click prefetches the next neighbourhood in parallel with the
+    // note open (g.prefetch = {n, p}); use it when it is for the current centre
+    const pf = g.prefetch; g.prefetch = null;
+    const g2 = await (pf && pf.n === cfg.center() ? pf.p : cfg.fetch());
     // graph-webgl: a refresh that changes nothing (the race-closing refetch below, a save that
     // touched no link) must not reheat — the layout stays a pure function of the vault, so two
     // opens land on identical positions (smoke graphgl compares gl vs 2d frames pixel-wise)
@@ -2347,18 +2388,29 @@ async function startGraph(g, cfg) {
       return o ? { n: nd.name, resolved: nd.resolved, x: o.x, y: o.y, vx: o.vx, vy: o.vy, deg: 0, r: 6.5 }
                : { n: nd.name, resolved: nd.resolved, x: null, y: null, vx: 0, vy: 0, deg: 0, r: 6.5 };
     });
+    // R19 warm start (feedback #5): survivors keep position + velocity; a NEW
+    // node is seeded one link length (F.dist) from its first surviving
+    // neighbour, on the ray from the old centroid through that neighbour
+    // (outward, where the spring wants it), fanned by index so siblings do
+    // not stack; a node with no placed neighbour takes the phyllotaxis slot.
+    let cx = 0, cy = 0, nOld = 0;
+    for (const p of N2) if (p.x !== null) { cx += p.x; cy += p.y; nOld++; }
+    if (nOld) { cx /= nOld; cy /= nOld; }
     N2.forEach((p, i) => {
       if (p.x !== null) return;
-      const e = g2.edges.find(([a, b]) => a === i || b === i);
-      const nb = e ? N2[e[0] === i ? e[1] : e[0]] : null;
-      p.x = (nb && nb.x !== null ? nb.x : 0) + 30 * (Math.random() - 0.5);
-      p.y = (nb && nb.y !== null ? nb.y : 0) + 30 * (Math.random() - 0.5);
+      const e = g2.edges.find(([a, b]) => (a === i && N2[b].x !== null) || (b === i && N2[a].x !== null));
+      if (!e) { [p.x, p.y] = seed(i); return; }
+      const nb = N2[e[0] === i ? e[1] : e[0]];
+      let ang = Math.atan2(nb.y - cy, nb.x - cx);
+      if (!Number.isFinite(ang) || (nb.x === cx && nb.y === cy)) ang = i * 2.399963;
+      ang += (i % 2 ? 1 : -1) * 0.35 * ((i >> 1) % 3);
+      p.x = nb.x + F.dist * Math.cos(ang); p.y = nb.y + F.dist * Math.sin(ang);
     });
     N.length = 0; N.push(...N2);
     gr.edges = g2.edges;
     rebuild();
     hov = -1;
-    g.reheat();   // partial reheat (alpha >= 0.5): settle new nodes without scattering old ones; restarts a stopped loop
+    g.reheat(0.3);   // R19: d3 restart semantics — alpha 0.3, not 1: settle the new nodes without scattering the old ones
   };
   // sim heat (d3-force shaped): forces scale by alpha, which decays per PHYSICS
   // STEP toward 0 (alpha += -alpha*ALPHA_DECAY; 0.001 after 300 steps) and
@@ -2581,7 +2633,7 @@ async function startGraph(g, cfg) {
     perf.mark("graph_renderer", perf.now(), { renderer: "2d", reason: "contextlost", webgl: 0, ...gpu });
     redraw();
   };
-  g.reheat = () => { calm = 0; quiet = false; g.graphSettled = false; alpha = Math.max(alpha, 0.5); wake(); };
+  g.reheat = (a = 0.5) => { calm = 0; quiet = false; g.graphSettled = false; alpha = Math.max(alpha, a); wake(); };
   g.graphNodes = () => {              // census: node screen coords (window px) for the graphnav smoke
     const r = cv.getBoundingClientRect();
     return N.map(p => ({ n: p.n, x: Math.round(r.left + p.x * view.scale + view.tx), y: Math.round(r.top + p.y * view.scale + view.ty) }));
@@ -2652,43 +2704,18 @@ async function startGraph(g, cfg) {
 }
 
 /* ---------- M8 local graph (R7.1-R7.5) ---------- */
-// BFS neighborhood of `center`: adjacency (out + in lists) is built once per
-// fetch in O(E), then the frontier expands in O(V+E) — via outgoing edges when
-// `out`, incoming when `inc` (was: full edge-list scan per frontier node per
-// depth); keeps ALL edges among the surviving node set (Obsidian's
-// neighbor-links default), remaps indices
-function lgFilter(gr, center, depth, inc, out) {
-  const idx = new Map(gr.nodes.map((nd, i) => [nd.name, i]));
-  const ci = idx.get(center);
-  if (ci == null) return { nodes: [], edges: [] };
-  const fwd = gr.nodes.map(() => []), rev = gr.nodes.map(() => []);
-  for (const [a, b] of gr.edges) { fwd[a].push(b); rev[b].push(a); }
-  const keep = new Set([ci]);
-  let frontier = [ci];
-  for (let d = 0; d < depth && frontier.length; d++) {
-    const next = [];
-    for (const f of frontier) {
-      if (out) for (const b of fwd[f]) if (!keep.has(b)) { keep.add(b); next.push(b); }
-      if (inc) for (const a of rev[f]) if (!keep.has(a)) { keep.add(a); next.push(a); }
-    }
-    frontier = next;
-  }
-  const order = [...keep];
-  const rmap = new Map(order.map((o, ni) => [o, ni]));
-  return {
-    nodes: order.map(i => gr.nodes[i]),
-    edges: gr.edges.filter(([a, b]) => keep.has(a) && keep.has(b))
-                   .map(([a, b]) => [rmap.get(a), rmap.get(b)]),
-  };
-}
+// R19: the depth-N neighbourhood cut (formerly lgFilter here) lives in
+// index.rs GraphCache::local — served over graph_local from the cached adjacency.
 
 async function showLocalGraph(g, t) {  // t = the localgraph tab (kind:"lg")
   cancelAnimationFrame(g.sim);         // clean restart on tab switches
   await startGraph(g, {
-    fetch: async () => lgFilter(await inv("graph"), t.center, t.depth, t.inc, t.out),
+    fetch: () => inv("graph_local", { center: t.center, depth: t.depth, inc: t.inc, out: t.out }),   // R19: served from the index adjacency cache
     center: () => t.center,
     onClick: async n => {              // R7.4: navigate the LINKED group; lgFollow re-centers
       const lk = groups().find(x => x.id === t.linkId);
+      // R19: the next neighbourhood is fetched IN PARALLEL with the note (graphRefresh picks it up)
+      g.prefetch = { n, p: inv("graph_local", { center: n, depth: t.depth, inc: t.inc, out: t.out }) };
       if (lk) await navigate(lk, n);
       await linkSync(t, n);          // R13.3: manual members follow too
     },
