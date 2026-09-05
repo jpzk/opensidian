@@ -708,7 +708,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   const nf = document.querySelectorAll("#main .pane.focused").length;
   const fx = (state.root.fractions || []).map(f => f.toFixed(2)).join(",");
   let lg = "";                    // M8: first localgraph tab -> [lg:<center>@<depth>]
-  // graph-parity: settled node screen coords (<= 16 nodes) -> [lgpos:A@x,y|B@x,y]
+  // graph-parity: settled node screen coords (<= 32 nodes; the fast-mode smoke vault is 17 incl. ghosts) -> [lgpos:A@x,y|B@x,y]
   // for the first localgraph group (+ [lgt:<tab title>]), [ggpos:...] for a
   // focused global graph;
   // [lgl:<note>] = the lg tab's LINKED group's active note; [chain:N] = tabs
@@ -716,7 +716,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   const posTok = h => {
     if (!h.graphOn || !h.graphSettled || !h.graphNodes) return "";
     const ns = h.graphNodes();
-    return ns.length > 16 ? "" : ns.map(p => p.n + "@" + p.x + "," + p.y).join("|");
+    return ns.length > 32 ? "" : ns.map(p => p.n + "@" + p.x + "," + p.y).join("|");
   };
   for (const h of groups()) {
     const t = h.tabs.find(t => t.kind === "lg");
@@ -2224,22 +2224,45 @@ async function startGraph(g, cfg) {
   const cv = g.graph; cv.hidden = false;
   cv.width = cv.clientWidth; cv.height = cv.clientHeight;
   const gr = await cfg.fetch();
-  // sim runs in WORLD coords (world = initial canvas rect); screen = world*scale + t
-  const view = { scale: 1, tx: 0, ty: 0 };
-  const W = cv.width, H = cv.height;                          // world bounds
-  const N = gr.nodes.map((nd, i) => ({
-    n: nd.name, resolved: nd.resolved,
-    x: W / 2 + 120 * Math.cos(i), y: H / 2 + 120 * Math.sin(i),
-    vx: 0, vy: 0
-  }));
+  // R16 GRAPH FIT (stock-faithful, docs/requirements.md R16): the sim runs in
+  // UNBOUNDED world coords with the origin at the canvas centre; camera opens
+  // at scale 1 (1 world unit = 1 px) centred on the origin — no fit-to-view,
+  // no viewport clamp: a big vault overflows the canvas and the user pans/zooms
+  // (R16.4). screen = world*scale + t.
+  const view = { scale: 1, tx: cv.width / 2, ty: cv.height / 2, notch: 0 };
+  // stock force defaults (R16.1). REPEL_K/REPEL_P: per-node many-body strength
+  // = repel * REPEL_K * N^REPEL_P, calibrated offline (goal/graphfit/sim) so
+  // the 12-node vault settles ~35-45% of the canvas wide and the 500-note star
+  // to a ~2300-unit disc with ~80 nodes inside a 1080x764 view (stock: 79).
+  const F = { center: 0.52, repel: 10, link: 1, dist: 250 }, REPEL_K = 7.5, REPEL_P = 0.36;
+  // d3-force style phyllotaxis seed (deterministic: smoke coords repeat)
+  const seed = i => { const r = 10 * Math.sqrt(i + 0.5), t = i * 2.399963; return [r * Math.cos(t), r * Math.sin(t)]; };
+  const N = gr.nodes.map((nd, i) => {
+    const [x, y] = seed(i);
+    return { n: nd.name, resolved: nd.resolved, x, y, vx: 0, vy: 0, deg: 0, r: 6.5 };
+  });
   const ctx = cv.getContext("2d");
   const toWorld = (sx, sy) =>
     [(sx - view.tx) / view.scale, (sy - view.ty) / view.scale];
-  // hover: adjacency + hovered node index (-1 = none)
+  // adjacency (hover) + undirected unique link list for the spring force;
+  // node radius (R16.2, fit on stock deg-1 7.5px / deg-499 29.5px): 6.5 + sqrt(deg)
   const adj = N.map(() => new Set());
-  for (const [i, j] of gr.edges) { adj[i].add(j); adj[j].add(i); }
+  let links = [];                       // [{a, b, bias, k}] d3 link semantics
+  const rebuild = () => {
+    adj.length = 0; for (const _ of N) adj.push(new Set());
+    for (const [i, j] of gr.edges) { adj[i].add(j); adj[j].add(i); }
+    N.forEach((p, i) => { p.deg = adj[i].size; p.r = 6.5 + Math.sqrt(p.deg); });
+    links = [];
+    adj.forEach((s, i) => { for (const j of s) if (i < j) {
+      const di = N[i].deg, dj = N[j].deg;
+      // strength = Link force / min(deg) (d3 default: hubs are not yanked by
+      // every leaf), bias = share of the correction the far end takes
+      links.push({ a: i, b: j, bias: di / (di + dj), k: F.link / Math.min(di, dj) });
+    } });
+  };
+  rebuild();
   let hov = -1;
-  const hitTest = (x, y) => N.findIndex(p => (p.x - x) ** 2 + (p.y - y) ** 2 < 144);
+  const hitTest = (x, y) => N.findIndex(p => (p.x - x) ** 2 + (p.y - y) ** 2 < (p.r + 4) ** 2);
   // live refresh (R4.3): re-fetch on save, keep surviving positions,
   // seed new nodes near their first neighbor
   g.graphRefresh = async () => {
@@ -2247,45 +2270,46 @@ async function startGraph(g, cfg) {
     const old = new Map(N.map(p => [p.n, p]));
     const N2 = g2.nodes.map(nd => {
       const o = old.get(nd.name);
-      return o ? { n: nd.name, resolved: nd.resolved, x: o.x, y: o.y, vx: o.vx, vy: o.vy }
-               : { n: nd.name, resolved: nd.resolved, x: null, y: null, vx: 0, vy: 0 };
+      return o ? { n: nd.name, resolved: nd.resolved, x: o.x, y: o.y, vx: o.vx, vy: o.vy, deg: 0, r: 6.5 }
+               : { n: nd.name, resolved: nd.resolved, x: null, y: null, vx: 0, vy: 0, deg: 0, r: 6.5 };
     });
     N2.forEach((p, i) => {
       if (p.x !== null) return;
       const e = g2.edges.find(([a, b]) => a === i || b === i);
       const nb = e ? N2[e[0] === i ? e[1] : e[0]] : null;
-      p.x = (nb && nb.x !== null ? nb.x : W / 2) + 30 * (Math.random() - 0.5);
-      p.y = (nb && nb.y !== null ? nb.y : H / 2) + 30 * (Math.random() - 0.5);
+      p.x = (nb && nb.x !== null ? nb.x : 0) + 30 * (Math.random() - 0.5);
+      p.y = (nb && nb.y !== null ? nb.y : 0) + 30 * (Math.random() - 0.5);
     });
     N.length = 0; N.push(...N2);
     gr.edges = g2.edges;
-    adj.length = 0; for (const _ of N) adj.push(new Set());
-    for (const [i, j] of gr.edges) { adj[i].add(j); adj[j].add(i); }
+    rebuild();
     hov = -1;
     g.reheat();   // partial reheat (alpha >= 0.5): settle new nodes without scattering old ones; restarts a stopped loop
   };
-  // sim heat: forces scale by alpha, which decays per PHYSICS STEP; below
-  // 0.02 physics freezes. Physics steps are wall-clock-locked at 60/s
+  // sim heat (d3-force shaped): forces scale by alpha, which decays per PHYSICS
+  // STEP toward 0 (alpha += -alpha*ALPHA_DECAY; 0.001 after 300 steps) and
+  // physics freezes below 0.001. Physics steps are wall-clock-locked at PH_HZ/s
   // (substepped inside rAF): a throttled/headless rAF must not stretch settle.
   // perf-graph: the rAF loop is NOT unconditional — it runs while physics is
-  // hot (alpha > 0.02 and kinetic energy above eps) and stops otherwise (CPU 0);
-  // wake() restarts it on refresh (reheat), pan, zoom, hover, resize, close.
+  // hot (alpha > ALPHA_MIN and kinetic energy above eps) and stops otherwise
+  // (CPU 0); wake() restarts it on refresh (reheat), pan, zoom, hover, resize, close.
+  const PH_HZ = 120, ALPHA_MIN = 0.001, ALPHA_DECAY = 1 - Math.pow(0.001, 1 / 300);
   let alpha = 1, phAcc = 0, phLast = performance.now();
   // settled = total kinetic energy (sum v^2) under 0.0025 px^2/step per node
   // (mean speed < 0.05 px/step, invisible) for 10 consecutive steps, or physics frozen
   let calm = 0, quiet = false;          // quiet: physics halted until the next reheat
   let settledMark = false;              // graph_settle span fires once per open
   const kinetic = () => { let k = 0; for (const p of N) k += p.vx * p.vx + p.vy * p.vy; return k; };
-  // Barnes-Hut quadtree (theta 0.8) for the 800*alpha/d repulsion: the force is
-  // long-range (1/d), so a cutoff grid would change the layout; instead every
-  // far cell (side/dist < theta) acts as one body of its mass at its centroid.
+  // Barnes-Hut quadtree (theta 0.8) for the many-body repulsion (d3 shape:
+  // dv = REPEL*alpha*dx/d^2, i.e. |dv| ~ 1/d). The force is long-range, so a
+  // cutoff grid would change the layout; instead every far cell
+  // (side/dist < theta) acts as one body of its mass at its centroid.
   // O(N log N) per step instead of the all-pairs O(N^2). Cells come from a
-  // pool reused across steps (no per-step allocation churn); depth is capped
-  // at MAXD (leaf >= S/1024 ~ 1px) because nodes pinned to the viewport clamp
-  // sit on IDENTICAL coordinates — an uncapped tree would split 24 levels per
-  // coincident pair. Points sharing a leaf do not repel each other (the
-  // all-pairs code's +0.01 guard gave ~0 for them too).
-  const THETA2 = 0.8 * 0.8, S = Math.max(W, H), MAXD = 10;
+  // pool reused across steps (no per-step allocation churn). The root square
+  // is sized from the CURRENT node bbox each step (world is unbounded); depth
+  // is capped at MAXD (leaf >= side/1024) so a coincident pair cannot split
+  // 24 levels. Points sharing a leaf do not repel each other.
+  const THETA2 = 0.8 * 0.8, MAXD = 10;
   const pool = []; let pn = 0;
   const cell = (x0, y0, s) => {
     let c = pool[pn]; if (!c) c = pool[pn] = {};
@@ -2295,7 +2319,9 @@ async function startGraph(g, cfg) {
   const qi = (c, p) => (p.x >= c.x0 + c.s / 2 ? 1 : 0) + (p.y >= c.y0 + c.s / 2 ? 2 : 0);
   function bhBuild() {
     pn = 0;
-    const root = cell(0, 0, S);
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const p of N) { if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x; if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y; }
+    const root = cell(x0, y0, Math.max(x1 - x0, y1 - y0) + 1);
     for (const p of N) {
       let c = root, depth = 0;
       for (;;) {
@@ -2313,30 +2339,36 @@ async function startGraph(g, cfg) {
   }
   function bhApply(a, c, k) {
     if (c.n === 0) return;
-    const dx = a.x - c.sx / c.n, dy = a.y - c.sy / c.n, d2 = dx * dx + dy * dy + 0.01;
+    const dx = a.x - c.sx / c.n, dy = a.y - c.sy / c.n, d2 = dx * dx + dy * dy + 1;
     if (c.k) {
       if (c.s * c.s > THETA2 * d2) { const K = c.k; bhApply(a, K[0], k); bhApply(a, K[1], k); bhApply(a, K[2], k); bhApply(a, K[3], k); return; }
     } else if (c.p === a || (a.x >= c.x0 && a.x < c.x0 + c.s && a.y >= c.y0 && a.y < c.y0 + c.s)) return;  // own leaf
     a.vx += k * c.n * dx / d2; a.vy += k * c.n * dy / d2;
   }
   function physStep() {
-    const root = bhBuild(), k = alpha * 800;
-    for (const a of N) bhApply(a, root, k);                            // repulsion
-    for (const [i, j] of gr.edges) {
-      const a = N[i], b = N[j], dx = b.x - a.x, dy = b.y - a.y;
-      a.vx += dx * 0.005 * alpha; a.vy += dy * 0.005 * alpha;        // spring
-      b.vx -= dx * 0.005 * alpha; b.vy -= dy * 0.005 * alpha;
+    if (!N.length) return;
+    // link: spring to F.dist (R16.1: 250), d3 semantics (strength/bias per link)
+    for (const l of links) {
+      const a = N[l.a], b = N[l.b];
+      let dx = b.x + b.vx - a.x - a.vx, dy = b.y + b.vy - a.y - a.vy;
+      const d = Math.sqrt(dx * dx + dy * dy) || 1e-6, k = (d - F.dist) / d * alpha * l.k;
+      dx *= k; dy *= k;
+      b.vx -= dx * l.bias; b.vy -= dy * l.bias; a.vx += dx * (1 - l.bias); a.vy += dy * (1 - l.bias);
     }
-    const m = 30;   // clamp in WORLD coords (labels stay near world bounds)
+    // many-body repulsion. Per-node strength = REPEL_K * Repel force * N^0.25:
+    // calibrated on two stock layouts (docs/requirements.md R16 — N=12 cloud
+    // ~550px wide, N=500 uniform disc ~2300 world units across, 79 visible)
+    const root = bhBuild(), k = alpha * F.repel * REPEL_K * Math.pow(N.length, REPEL_P);
+    for (const a of N) bhApply(a, root, k);
+    // center force (R16.1: 0.52): centroid pulled toward the origin (d3 forceCenter shape)
+    let sx = 0, sy = 0;
+    for (const p of N) { sx += p.x; sy += p.y; }
+    sx = sx / N.length * F.center; sy = sy / N.length * F.center;
     for (const p of N) {
-      p.vx += (W / 2 - p.x) * 0.01 * alpha; p.vy += (H / 2 - p.y) * 0.01 * alpha;
-      p.vx *= 0.85; p.vy *= 0.85; p.x += p.vx; p.y += p.vy;
-      // inelastic wall: a clamped axis loses its velocity, else nodes pinned to the
-      // edge keep a large v forever and the kinetic-energy settle never triggers
-      if (p.x < m) { p.x = m; p.vx = 0; } else if (p.x > W - m) { p.x = W - m; p.vx = 0; }
-      if (p.y < m) { p.y = m; p.vy = 0; } else if (p.y > H - m) { p.y = H - m; p.vy = 0; }
+      p.x -= sx; p.y -= sy;
+      p.vx *= 0.6; p.vy *= 0.6; p.x += p.vx; p.y += p.vy;   // velocity decay 0.4 (d3 default)
     }
-    alpha *= 0.975;   // perf-graph: 0.98 -> 0.975 (alpha 0.05 at step 118 = 2.0s, freeze cap 0.02 at 154 = 2.6s; the KE stop lands ~2s)
+    alpha += -alpha * ALPHA_DECAY;
   }
   // draw: batched paths — edges in 2 strokes (lit / dim), nodes grouped by
   // (color, alpha, resolved) into one fill/stroke each, labels per group
@@ -2361,23 +2393,26 @@ async function startGraph(g, cfg) {
     else edgePass(true, "#45475a", 1);
     ctx.textAlign = "center"; ctx.font = "12px sans-serif";
     const cn = cfg.center();          // M8: center node larger + accent (R7.1)
-    const groups = new Map();         // key -> { col, a, res, r, idx: [] }
+    const groups = new Map();         // key -> { col, a, res, dr, idx: [] }
+    // world-space cull: nodes outside the viewport are not drawn (R16.4 overflow)
+    const [wx0, wy0] = toWorld(0, 0), [wx1, wy1] = toWorld(cv.width, cv.height), pad = 40 / view.scale;
     for (let i = 0; i < N.length; i++) {
       const p = N[i], isC = cn !== null && p.n === cn;
+      if (p.x < wx0 - pad || p.x > wx1 + pad || p.y < wy0 - pad || p.y > wy1 + pad) continue;
       const a = litN(i) ? (p.resolved ? 1 : 0.55) : 0.12;
       const col = i === hov ? "#f9e2af" : isC ? "#a6e3a1" : "#89b4fa";
       const key = col + a + (p.resolved ? "r" : "u") + (isC ? "c" : "");
       let gp = groups.get(key);
-      if (!gp) groups.set(key, gp = { col, a, res: p.resolved, r: isC ? 10 : 6, idx: [] });
+      if (!gp) groups.set(key, gp = { col, a, res: p.resolved, dr: isC ? 4 : 0, idx: [] });
       gp.idx.push(i);
     }
-    const labels = view.scale >= 0.5;
+    const labels = view.scale > 0.73;   // R16.5: labels hidden at scale <= 0.73 (Text fade 0)
     for (const gp of groups.values()) {
       ctx.globalAlpha = gp.a; ctx.beginPath();
-      for (const i of gp.idx) { const p = N[i]; ctx.moveTo(p.x + gp.r, p.y); ctx.arc(p.x, p.y, gp.r, 0, 7); }
+      for (const i of gp.idx) { const p = N[i], r = p.r + gp.dr; ctx.moveTo(p.x + r, p.y); ctx.arc(p.x, p.y, r, 0, 7); }
       if (gp.res) { ctx.fillStyle = gp.col; ctx.fill(); }
       else { ctx.lineWidth = 1.5; ctx.strokeStyle = gp.col; ctx.stroke(); ctx.lineWidth = 1; } // hollow = unresolved
-      if (labels) { ctx.fillStyle = gp.col; for (const i of gp.idx) { const p = N[i]; ctx.fillText(p.n, p.x, p.y - (gp.r === 10 ? 14 : 10)); } }
+      if (labels) { ctx.fillStyle = gp.col; for (const i of gp.idx) { const p = N[i]; ctx.fillText(p.n, p.x, p.y - p.r - gp.dr - 4); } }
     }
     ctx.globalAlpha = 1;
   }
@@ -2392,15 +2427,15 @@ async function startGraph(g, cfg) {
     }
     const fT0 = perf.now(); let steps = 0, ke = -1;
     phAcc = Math.min(phAcc + (now - phLast) / 1000, 0.25); phLast = now;
-    while (phAcc >= 1 / 60) {
-      phAcc -= 1 / 60;
-      if (!quiet && alpha > 0.02) { physStep(); steps++; }
+    while (phAcc >= 1 / PH_HZ) {
+      phAcc -= 1 / PH_HZ;
+      if (!quiet && alpha > ALPHA_MIN) { physStep(); steps++; }
     }
     const fT1 = perf.now();
-    if (!quiet && (steps || alpha <= 0.02)) {
+    if (!quiet && (steps || alpha <= ALPHA_MIN)) {
       ke = kinetic();
       calm = ke < 0.0025 * N.length ? calm + 1 : 0;
-      if (calm >= 10 || alpha <= 0.02) {
+      if (calm >= 10 || alpha <= ALPHA_MIN) {
         quiet = true;
         if (!settledMark) {
           settledMark = true;
@@ -2440,13 +2475,15 @@ async function startGraph(g, cfg) {
     });
     ro.observe(cv);
   }
-  // wheel: cursor-anchored zoom, 0.2x-5x
+  // wheel: cursor-anchored zoom, stock 0.9 per notch out / 1/0.9 in (R16.5);
+  // scale is derived from a notch counter so 3 out + 3 in is EXACTLY 1.00
   cv.onwheel = e => {
     e.preventDefault();
     const r = cv.getBoundingClientRect();
     const mx = e.clientX - r.left, my = e.clientY - r.top;
     const [wx, wy] = toWorld(mx, my);
-    const s = Math.max(0.2, Math.min(5, view.scale * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
+    view.notch = Math.max(-15, Math.min(15, view.notch + (e.deltaY < 0 ? -1 : 1)));   // 0.9^15 ~ 0.2 .. 0.9^-15 ~ 4.9
+    const s = view.notch === 0 ? 1 : Math.pow(0.9, view.notch);
     view.tx = mx - wx * s; view.ty = my - wy * s; view.scale = s;
     redraw();
   };
