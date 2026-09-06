@@ -979,6 +979,7 @@ function updateTitle() {          // pane/focus census in the window title (head
             (rtInfo ? " [" + rtInfo + "]" : "") +
             (jsErr ? " [jserr:" + jsErr + "]" : "") +
             (saveErr ? " [saveerr:" + saveErr + "]" : "") +   // F1: a save that did not land
+            dirtyTok() +                                      // F1: focused tab still holds unsaved bytes
             " [armed:" + groups().filter(h => h.saveT).length + "]" +   // F2: groups holding a live save timer
             menuTok() +
             (navInfo ? " [" + navInfo + "]" : "") +
@@ -3240,6 +3241,13 @@ async function enterVault() {
 function setBase(g) {
   const t = g.active >= 0 ? g.tabs[g.active] : null;
   if (t && !t.kind) t.base = bufOf(g);
+}
+/* F1 probe: the focused tab holds bytes that are NOT on disk. A failed save
+   must leave this token standing (setBase is skipped) — that is the whole
+   difference between "retried next keystroke" and "silently discarded". */
+function dirtyTok() {
+  const g = fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
+  return t && !t.kind && t.base !== undefined && bufOf(g) !== t.base ? " [dirty:1]" : "";
 }
 function bufOf(g) {
   const a = g.lpActive;
