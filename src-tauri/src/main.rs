@@ -146,25 +146,89 @@ fn read_note(v: State<Vault>, name: String, otel: Option<perf::Ctx>) -> String {
     )
 }
 
+// F1 (dataloss-audit): the Result is the product. A save that did not land
+// MUST reach the UI — a swallowed ENOSPC/EROFS costs every edit of a session.
 #[tauri::command]
-fn write_note(v: State<Vault>, name: String, content: String, otel: Option<perf::Ctx>) {
+fn write_note(v: State<Vault>, name: String, content: String, otel: Option<perf::Ctx>) -> Result<(), String> {
     let bytes = content.len();
     span_timed!(otel => "write_note", write_note_inner(&v, &name, &content), serde_json::json!({"bytes": bytes}))
 }
 
-fn write_note_inner(v: &State<Vault>, name: &str, content: &str) {
-    let Some(rel) = safe_rel(name) else { return };
-    // S2: parents created + confined inside note_path (None = outside vault)
-    if let Some(p) = note_path(v, name, true) {
-        // R11: lock BEFORE the write — the watcher reads+compares under this
-        // lock, so it never sees our bytes on disk without them in the index
-        let mut ix = v.index.lock().unwrap();
-        if fs::write(p, content).is_ok() {
-            // index == disk: reparse this note, patch its outgoing edges
-            // (a NEW key triggers a full in-memory edge rebuild inside upsert)
-            ix.upsert(&rel.display().to_string(), content);
-        }
+fn write_note_inner(v: &State<Vault>, name: &str, content: &str) -> Result<(), String> {
+    let root = cur_vault(v).ok_or("no vault open")?;
+    // R11: lock BEFORE the write — the watcher reads+compares under this
+    // lock, so it never sees our bytes on disk without them in the index
+    let mut ix = v.index.lock().unwrap();
+    write_note_in(&root, &mut ix, name, content)
+}
+
+/* F1/F3 dataloss: the pure core of a note save, so the durability and the
+   error path are testable without Tauri. Every failure is RETURNED (F1) and
+   the index is upserted only after the bytes are on disk (index == disk). */
+fn write_note_in(root: &Path, ix: &mut Index, name: &str, content: &str) -> Result<(), String> {
+    let rel = safe_rel(name).ok_or("invalid name")?;
+    // S2: parents created + confined inside note_path_in (None = outside vault)
+    let p = note_path_in(root, name, true).ok_or("outside vault")?;
+    write_atomic(&p, content)?;
+    // index == disk: reparse this note, patch its outgoing edges
+    // (a NEW key triggers a full in-memory edge rebuild inside upsert)
+    ix.upsert(&rel.display().to_string(), content);
+    Ok(())
+}
+
+/* F3 dataloss: durable replace, std only. A truncating fs::write releases the
+   old bytes at open(2) time, so a crash or ENOSPC mid-write leaves a zero-byte
+   or half-written note; and without fsync even a returned write is only page
+   cache. Write a SIBLING temp (same directory => same filesystem => the rename
+   is atomic; ".tmp" is not ".md", so notes_of and the watcher never index it),
+   fsync it, then rename over the target. Failure leaves the OLD file intact. */
+fn write_atomic(p: &Path, content: &str) -> Result<(), String> {
+    use std::io::Write;
+    let tmp = p.with_extension("md.tmp");
+    let r = (|| -> std::io::Result<()> {
+        let mut f = fs::File::create(&tmp)?;
+        f.write_all(content.as_bytes())?;
+        f.sync_all()?;
+        drop(f);
+        fs::rename(&tmp, p)
+    })();
+    if r.is_err() {
+        let _ = fs::remove_file(&tmp); // never leave a stray temp behind
     }
+    r.map_err(|e| e.to_string())
+}
+
+/// F4 dataloss: the error a create returns when the note is already there.
+/// The UI matches on it to OPEN the existing note instead of clobbering it.
+const EXISTS: &str = "exists";
+
+/* F4 dataloss: creation must never replace an existing note with a stub.
+   create_new(2) is the kernel's atomic exists-check, so unlike a JS-side
+   `if (!notesCache.includes(n))` there is no window in which another writer
+   (git checkout, sync client, the 1000ms-stale index) can land a real file
+   between the check and the truncate. */
+#[tauri::command]
+fn create_note(v: State<Vault>, name: String, content: String, otel: Option<perf::Ctx>) -> Result<(), String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    let mut ix = v.index.lock().unwrap();
+    span_timed!(otel => "create_note", create_note_in(&root, &mut ix, &name, &content))
+}
+
+fn create_note_in(root: &Path, ix: &mut Index, name: &str, content: &str) -> Result<(), String> {
+    use std::io::Write;
+    let rel = safe_rel(name).ok_or("invalid name")?;
+    let p = note_path_in(root, name, true).ok_or("outside vault")?;
+    let mut f = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&p)
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists { EXISTS.to_string() } else { e.to_string() }
+        })?;
+    f.write_all(content.as_bytes()).map_err(|e| e.to_string())?;
+    f.sync_all().map_err(|e| e.to_string())?;
+    ix.upsert(&rel.display().to_string(), content);
+    Ok(())
 }
 
 
@@ -1047,7 +1111,7 @@ fn main() {
                 .build(),
         )
         .invoke_handler(tauri::generate_handler![
-            list_notes, read_note, write_note, render, render_blocks, highlight_blocks, graph, graph_local, vault_get, set_vault,
+            list_notes, read_note, write_note, create_note, render, render_blocks, highlight_blocks, graph, graph_local, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, recent_vaults, rename_note, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref,
@@ -1776,6 +1840,90 @@ mod tests {
         assert_eq!(watcher::snapshot(&root).keys().cloned().collect::<Vec<_>>(), ["A"]);
         assert_eq!(read_capped(&big), None); // read_note -> ""
         assert_eq!(read_capped(&root.join("A.md")).as_deref(), Some("small"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /* ---------- dataloss-audit F1/F3/F4 regression tests ----------
+       These bugs are invisible in normal operation: the product reports
+       success while the bytes are gone. Each test fails without its fix. */
+
+    /// F1 [audit src-tauri/src/main.rs:162]: a write that cannot land must
+    /// RETURN the error and must NOT upsert the index — the old code dropped
+    /// fs::write's Result inside an `if ... .is_ok()`, so the UI marked the
+    /// buffer clean and every edit of the session died in RAM.
+    #[test]
+    fn f1_failed_write_returns_err_and_leaves_the_index_untouched() {
+        let root = tmp_vault("f1");
+        fs::write(root.join("Note.md"), "old body").unwrap();
+        let mut ix = Index::build(&root);
+        // EISDIR as a portable stand-in for the audit's ENOSPC/EROFS/EDQUOT:
+        // a directory sitting exactly where the note file must be created.
+        fs::create_dir(root.join("Blocked.md")).unwrap();
+        let e = write_note_in(&root, &mut ix, "Blocked", "new body").unwrap_err();
+        assert!(!e.is_empty(), "a failed save must carry a message to the UI");
+        assert!(ix.content("Blocked").is_none(), "index upserted for bytes that never landed");
+        // the happy path still succeeds, lands, and indexes
+        assert_eq!(write_note_in(&root, &mut ix, "Note", "new body"), Ok(()));
+        assert_eq!(fs::read_to_string(root.join("Note.md")).unwrap(), "new body");
+        assert_eq!(ix.content("Note"), Some("new body"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// F3 [audit src-tauri/src/main.rs:162]: the note write must be
+    /// sibling-temp + fsync + rename, not a truncating open. rename(2)
+    /// installs a NEW inode over the name; a truncating write keeps the old
+    /// one — that identity IS the window where a crash leaves a short file.
+    #[test]
+    fn f3_note_write_is_sibling_temp_rename_not_a_truncating_open() {
+        use std::os::unix::fs::MetadataExt;
+        let root = tmp_vault("f3");
+        let p = root.join("Note.md");
+        fs::write(&p, "OLD").unwrap();
+        let ino0 = fs::metadata(&p).unwrap().ino();
+        let mut ix = Index::build(&root);
+        write_note_in(&root, &mut ix, "Note", "NEW").unwrap();
+        assert_eq!(fs::read_to_string(&p).unwrap(), "NEW");
+        assert_ne!(
+            fs::metadata(&p).unwrap().ino(),
+            ino0,
+            "note was written in place (O_TRUNC) — no rename barrier"
+        );
+        // no stray temp survives a successful save
+        let stray: Vec<String> = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(stray.is_empty(), "temp left behind: {stray:?}");
+        // the temp is a SIBLING (same dir => same filesystem => atomic rename):
+        // block that exact path and the save fails with the OLD note intact,
+        // where a truncating write would already have destroyed it.
+        fs::write(root.join("Keep.md"), "KEEP").unwrap();
+        fs::create_dir(root.join("Keep.md.tmp")).unwrap();
+        let mut ix2 = Index::build(&root);
+        assert!(write_note_in(&root, &mut ix2, "Keep", "LOST").is_err());
+        assert_eq!(fs::read_to_string(root.join("Keep.md")).unwrap(), "KEEP");
+        assert_eq!(ix2.content("Keep"), Some("KEEP"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// F4 [audit ui/main.js:606]: creation must refuse to clobber. create_new
+    /// is the kernel's atomic exists-check, so the stale in-RAM index cannot
+    /// turn a real note into a two-line stub between the check and the write.
+    #[test]
+    fn f4_create_note_refuses_to_clobber_an_existing_note() {
+        let root = tmp_vault("f4");
+        fs::write(root.join("Ghost.md"), "valuable\n").unwrap();
+        let mut ix = Index::build(&root);
+        let e = create_note_in(&root, &mut ix, "Ghost", "# Ghost\n\n").unwrap_err();
+        assert_eq!(e, EXISTS, "the UI opens the existing note on this exact error");
+        assert_eq!(fs::read_to_string(root.join("Ghost.md")).unwrap(), "valuable\n");
+        assert_eq!(ix.content("Ghost"), Some("valuable\n"), "even the RAM copy must survive");
+        // a genuinely new note is still created, on disk and in the index
+        create_note_in(&root, &mut ix, "sub/New", "# New\n\n").unwrap();
+        assert_eq!(fs::read_to_string(root.join("sub/New.md")).unwrap(), "# New\n\n");
+        assert_eq!(ix.content("sub/New"), Some("# New\n\n"));
         let _ = fs::remove_dir_all(&root);
     }
 }
