@@ -1020,9 +1020,12 @@ function tabMenu(e, g, i) {              // right-click a tab -> Split right / S
   else item("Link with tab...", pick);
   if (!tab.kind) item(tab.mode === "source" ? "Live preview" : "Source mode",   // R20 (#3): source vs LP lives here (stock), not in a chrome icon
     () => { closeMenu(); setMode(g, tab.mode === "source" ? "livepreview" : "source"); });
+  if (!tab.kind) item(bmCache.includes(tab.name) ? "Remove bookmark" : "Bookmark",  // R9.4/R20 (#12): same toggle as the tree row menu; graph tabs (gg/lg) have no note to bookmark
+    () => { closeMenu(); toggleBm(tab.name); });                                    // toggleBm re-renders the bookmarks pane
   m.style.left = Math.min(e.clientX, window.innerWidth - 150) + "px";
-  m.style.top = Math.min(e.clientY, window.innerHeight - 80) + "px";
+  m.style.top = e.clientY + "px";
   document.body.appendChild(m);
+  m.style.top = Math.max(0, Math.min(e.clientY, window.innerHeight - m.offsetHeight - 4)) + "px";  // measured: the menu grew an item (#12)
   menuEl = m;
 }
 
