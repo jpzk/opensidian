@@ -2371,6 +2371,28 @@ async function floorProbe(n = 30) {
     }
     document.body.classList.remove(cls);
   }
+  // INTEGRATE floor #4: compositor_floor_build. The three probes above all re-damage
+  // DOM that is ALREADY laid out, so they price a re-paint, not a first paint — and the
+  // bench says every op over the ceiling (pane_split, tab_drop, note_open) is one that
+  // BUILDS a note column from nothing. This probe prices exactly that and nothing else:
+  // clone the live note's rows (cloneNode = no markdown parse, no invoke, no our-code),
+  // append them as a second .lp column inside #main, and measure to paint. What is left
+  // is the engine's style+layout+raster of N fresh subtrees, i.e. the real floor a pane
+  // split cannot go below while it shows the same note twice.
+  const srcLp = document.querySelector(".lp");
+  if (srcLp) {
+    for (let i = 0; i < 20; i++) {
+      const rows = srcLp.querySelectorAll(".lprow").length;
+      const col = document.createElement("div");
+      col.className = srcLp.className;
+      col.style.cssText = "flex:1 1 0; min-width:0";
+      for (const r of srcLp.children) col.appendChild(r.cloneNode(true));
+      await act("compositor_floor_build", { i, rows }, () => { $("main").appendChild(col); });
+      await new Promise(r => setTimeout(r, 30));
+      col.remove();
+      await new Promise(r => setTimeout(r, 30));   // let the removal paint before the next sample
+    }
+  }
 }
 document.addEventListener("keydown", e => {
   if (e.ctrlKey && e.altKey && e.shiftKey && (e.key === "F" || e.key === "f")) { e.preventDefault(); floorProbe(); return; }
