@@ -520,3 +520,11 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
    Created lazily by floorProbe(); absent from the DOM in normal use. */
 #floorpx { position: fixed; left: 0; bottom: 0; width: 1px; height: 1px; background: #1e1e2e; z-index: 999; pointer-events: none }
 body.floorprobe #floorpx { background: #181825 }
+/* INTEGRATE: the 1px probe above measures the cheapest possible frame (damage =
+   one pixel). pane_split/tab_drop damage the WHOLE window, so two more floors
+   bracket them, driven through the same act()->paint path: `floorfull` flips the
+   inherited colour by 1/255 (every painted glyph re-rastered, no layout) and
+   `floorrelayout` flips #main's padding by 1px (both note columns reflow, then
+   that same full raster) — the damage a pane split actually causes. */
+body.floorfull #main, body.floorfull #side { color: #cdd6f5 }
+body.floorrelayout #main { padding-right: 1px }

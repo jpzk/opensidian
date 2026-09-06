@@ -2356,11 +2356,21 @@ if (document.fonts) document.fonts.addEventListener("loadingdone", () => updateT
 async function floorProbe(n = 30) {
   let px = $("floorpx");
   if (!px) { px = document.createElement("div"); px.id = "floorpx"; document.body.appendChild(px); }
-  for (let i = 0; i < n; i++) {
-    await act("compositor_floor", { i }, () => { document.body.classList.toggle("floorprobe"); });
-    await new Promise(r => setTimeout(r, 30));   // act() resolves before paint lands; let the span close
+  // INTEGRATE: three floors, cheapest damage first. compositor_floor = 1px;
+  // compositor_floor_full = every painted pixel of the content tree re-rastered;
+  // compositor_floor_relayout = both note columns reflow + that raster, i.e. what a
+  // pane split costs the compositor before any of our code is blamed for it. `rows`
+  // records how much live-preview DOM was on screen while the floor was measured.
+  for (const [name, cls, k] of [["compositor_floor", "floorprobe", n],
+                                ["compositor_floor_full", "floorfull", 20],
+                                ["compositor_floor_relayout", "floorrelayout", 20]]) {
+    for (let i = 0; i < k; i++) {
+      const rows = document.querySelectorAll(".lprow").length;
+      await act(name, { i, rows }, () => { document.body.classList.toggle(cls); });
+      await new Promise(r => setTimeout(r, 30));   // act() resolves before paint lands; let the span close
+    }
+    document.body.classList.remove(cls);
   }
-  document.body.classList.remove("floorprobe");
 }
 document.addEventListener("keydown", e => {
   if (e.ctrlKey && e.altKey && e.shiftKey && (e.key === "F" || e.key === "f")) { e.preventDefault(); floorProbe(); return; }
