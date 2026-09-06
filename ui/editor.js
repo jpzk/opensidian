@@ -87,8 +87,14 @@ const Ed = {
     if (lm) {
       const rest = t.slice(lm[0].length);
       if (ind) row.appendChild(Ed.t(ind));
-      row.appendChild(Ed.mk(lm[1] + " ", "lim"));
+      // the marker glyphs and their trailing space are SEPARATE hidden spans:
+      // R15.10 gives .lim the stock marker advance as a box (bullet drawn
+      // inside it), and the space must not sit in that box or a wide "10."
+      // would push the text right by its width. textContent is unchanged.
+      row.appendChild(Ed.mk(lm[1], "lim"));
+      row.appendChild(Ed.mk(" ", "lisp"));
       row.classList.add("li");
+      if (/\d/.test(lm[1])) row.classList.add("ord");
       const task = /^\[([ xX])\] /.exec(rest);
       if (task) {
         row.classList.add("tk");
@@ -479,19 +485,105 @@ const Ed = {
     const cc = ins.length === 1 ? a.c + ins[0].length : ins[ins.length - 1].length;
     Ed.after(g, cl, cc);
   },
-  enter(g, s) {                                  // Enter: split + list continuation
-    const L = Ed.lines(g), line = L[s.a.l] || "";
-    const m = /^(\s*)([-*+] \[[ xX]\] |[-*+] |\d+\. )/.exec(line);
-    if (m && s.empty && line === m[0]) {          // empty item: clear the marker
-      Ed.snap(g, "enter");
-      L[s.a.l] = "";
-      return Ed.after(g, s.a.l, 0);
+  /* ---------- R17.1/R17.2: the structural prefix of a source line ----------
+     ind  leading whitespace — the indent string, copied VERBATIM on continue
+          (M11: a 2-space file keeps spaces, it never normalises to TAB)
+     qt   blockquote prefix ("> ", "> > ", …), "" when none
+     mk   list / task marker WITH its trailing space, "" when none
+     num  the ordered number, or null
+     pre  ind + qt + mk = everything before the item's content */
+  info(line) {
+    const m = /^([ \t]*)((?:> ?)*)((?:[-*+]|\d+\.) (?:\[[ xX]\] )?)?/.exec(line || "");
+    const mk = m[3] || "", n = /^(\d+)\./.exec(mk);
+    return {
+      ind: m[1], qt: m[2], mk, num: n ? parseInt(n[1], 10) : null,
+      task: /\[[ xX]\] $/.test(mk), pre: m[1] + m[2] + mk,
+    };
+  },
+  // the prefix a NEW item after this one carries: same indent + quote, the
+  // ordered number stepped (M4), a task always UNCHECKED (M8)
+  contOf(it) {
+    const mk = it.task ? it.mk.replace(/\[[xX]\]/, "[ ]")
+      : it.num !== null ? (it.num + 1) + ". " + it.mk.slice(String(it.num).length + 2)
+        : it.mk;
+    return it.ind + it.qt + mk;
+  },
+  // M24: Enter on an item's CONTINUATION line starts a new item of the item
+  // that owns it (top level), not another continuation
+  ownerCont(L, l, ind) {
+    for (let k = l - 1; k >= 0; k--) {
+      if (!String(L[k]).trim()) return "";                 // blank line ends the item
+      const it = Ed.info(L[k]);
+      if (it.mk) return it.ind.length < ind.length ? Ed.contOf(it) : "";
     }
-    const cont = m && s.a.c >= m[0].length
-      ? m[1] + (m[2].includes("[") ? m[2].replace(/\[[xX]\]/, "[ ]")
-        : /^\d/.test(m[2]) ? (parseInt(m[2], 10) + 1) + ". " : m[2])
-      : "";
-    Ed.replace(g, s, "\n" + cont, "enter");
+    return "";
+  },
+  // M4/M5/M6/M12: the ordered run BELOW `from` renumbers on the spot. Deeper
+  // lines (nested runs, continuation lines) are skipped, not renumbered — a
+  // nested run numbers independently of its parent; anything at this level
+  // that is not an ordered item ENDS the run.
+  renumber(L, from, ref, next) {
+    const pre = ref.ind + ref.qt;
+    for (let l = from; l < L.length; l++) {
+      const it = Ed.info(L[l]);
+      if (it.num !== null && it.ind + it.qt === pre) {
+        L[l] = pre + next + ". " + it.mk.slice(String(it.num).length + 2) + L[l].slice(it.pre.length);
+        next++;
+      } else if (it.ind.length > ref.ind.length) continue;  // nested / continuation
+      else break;
+    }
+  },
+  // one indent unit off the END of an indent string (Shift+Tab / M13 outdent)
+  outdentStr(ind) { const m = /(\t| {1,4})$/.exec(ind); return m ? ind.slice(0, -m[0].length) : ind; },
+  // the number an ordered item at line `l` takes at `ref`'s level: one past the
+  // previous sibling of that level, or 1 when it opens the run (M32).
+  startNum(L, l, ref) {
+    const pre = ref.ind + ref.qt;
+    for (let k = l - 1; k >= 0; k--) {
+      if (!String(L[k]).trim()) break;                       // a blank line ends the run
+      const it = Ed.info(L[k]);
+      if (it.ind + it.qt === pre) return it.num !== null ? it.num + 1 : 1;
+      if (it.ind.length < ref.ind.length) break;             // left the sub-list
+    }
+    return 1;
+  },
+  enter(g, s) {                                  // Enter: split + list continuation
+    const L = Ed.lines(g), a = s.a, b = s.b, line = L[a.l] || "";
+    const it = Ed.info(line);
+    // --- an EMPTY item / quote line does not continue, it unwinds (M13-M19)
+    if (s.empty && line === it.pre && a.c >= it.pre.length && (it.mk || it.qt)) {
+      Ed.snap(g, "enter");
+      if (it.mk && it.ind) {                      // M13: nested -> outdent one level
+        L[a.l] = Ed.outdentStr(it.ind) + it.qt + it.mk;
+      } else if (it.mk) {                         // M14/M16/M17: drop the marker, keep the line
+        L[a.l] = it.ind + it.qt;
+      } else {                                    // M19: a quote line drops '> ' AND opens a line
+        L[a.l] = "";
+        L.splice(a.l + 1, 0, "");
+        return Ed.after(g, a.l + 1, 0);
+      }
+      return Ed.after(g, a.l, L[a.l].length);
+    }
+    // --- otherwise: split at the caret, the tail inherits the prefix
+    let cont = "";
+    if (a.c >= it.pre.length) {
+      if (it.mk) cont = Ed.contOf(it);            // M1/M7/M10/M20
+      else if (it.qt) cont = it.ind + it.qt;      // M18: the quote prefix continues
+      else if (it.ind) cont = Ed.ownerCont(L, a.l, it.ind);   // M24
+    }
+    Ed.snap(g, "enter");
+    const head = line.slice(0, a.c), tail = (L[b.l] || "").slice(b.c);
+    L.splice(a.l, b.l - a.l + 1, head, cont + tail);
+    const ci = Ed.info(cont);
+    if (ci.num !== null) Ed.renumber(L, a.l + 2, ci, ci.num + 1);
+    Ed.after(g, a.l + 1, cont.length);
+  },
+  // M26 Shift+Enter: a soft break INSIDE the item — the marker's width in
+  // spaces, no marker (tabs in the indent survive as tabs)
+  softBreak(g, s) {
+    const it = Ed.info(Ed.lines(g)[s.a.l] || "");
+    const pad = it.mk && s.a.c >= it.pre.length ? it.pre.replace(/[^\t]/g, " ") : "";
+    Ed.replace(g, s, "\n" + pad, "enter");
   },
   del(g, s, forward, word) {                     // Backspace / Delete
     if (!s.empty) return Ed.replace(g, s, "", "del");
@@ -513,17 +605,58 @@ const Ed = {
     if (l >= L.length - 1) return;
     Ed.replace(g, { a: { l, c }, b: { l: l + 1, c: 0 }, empty: false }, "", "del");
   },
-  indent(g, s, out) {                            // Tab / Shift+Tab on the line
+  /* R17.2/R17.10: Tab / Shift+Tab move the LINE, never insert a tab at the
+     caret (M33/M34). The unit is exactly one TAB (M27, not spaces); Shift+Tab
+     strips one leading TAB or up to 4 spaces and is a NO-OP when the line has
+     no indent — it never eats the marker (M31/M87).
+     A plain caret on a LIST ITEM carries the item's nested children and
+     continuation lines with it: indenting a parent past its own children would
+     re-parent them to the wrong item. A real selection moves exactly the lines
+     it covers (M88/M89), minus a trailing line it only touches at col 0. */
+  indent(g, s, out) {
     const L = Ed.lines(g);
+    let first = s.a.l, last = s.b.l;
+    if (last > first && s.b.c === 0) last--;                 // M88
+    const old = Ed.info(L[first] || "");
+    if (s.empty && old.mk) {                                 // carry the sub-tree
+      for (let l = first + 1; l < L.length; l++) {
+        if (!String(L[l]).trim()) break;
+        if (Ed.info(L[l]).ind.length <= old.ind.length) break;
+        last = l;
+      }
+    }
     Ed.snap(g, "indent");
     let dc = 0;
-    for (let l = s.a.l; l <= s.b.l; l++) {
+    for (let l = first; l <= last; l++) {
       if (out) {
         const m = /^(\t| {1,4})/.exec(L[l]);
         if (m) { L[l] = L[l].slice(m[0].length); if (l === s.b.l) dc = -m[0].length; }
       } else { L[l] = "\t" + L[l]; if (l === s.b.l) dc = 1; }
     }
+    // M32: an ordered item that changes level RESTARTS the run it joins, and
+    // the run it LEFT closes up over the hole ("3. c" -> "2. c").
+    if (s.empty && old.num !== null && L[first] !== undefined) {
+      const it = Ed.info(L[first]);
+      if (it.num !== null) Ed.renumber(L, first, it, Ed.startNum(L, first, it));
+      Ed.renumber(L, last + 1, old, Ed.startNum(L, last + 1, old));
+    }
     Ed.after(g, s.b.l, Math.max(0, s.b.c + dc));
+  },
+  /* R17.4 M46-M51 Ctrl+L "Toggle checkbox status" (in 1.13.7 this is the task
+     toggle — Ctrl+Enter is NOT, see M45/M92): a task flips [ ] <-> [x] in
+     place, a bullet/ordered item gains a "[ ] " after its marker, a plain
+     paragraph gains a whole "- [ ] ". The caret keeps its offset in the TEXT,
+     so it shifts by exactly the bytes inserted before it. */
+  toggleCheck(g, s) {
+    const L = Ed.lines(g), l = s.b.l, line = L[l];
+    if (line === undefined) return;
+    const it = Ed.info(line);
+    Ed.snap(g, "task");
+    let dc = 0;
+    if (it.task) L[l] = line.replace(/\[( |[xX])\] /, (m, ch) => (ch === " " ? "[x] " : "[ ] "));
+    else if (it.mk) { L[l] = it.pre + "[ ] " + line.slice(it.pre.length); dc = 4; }
+    else { L[l] = it.ind + it.qt + "- [ ] " + line.slice(it.pre.length); dc = 6; }
+    Ed.after(g, l, s.b.c >= it.pre.length ? s.b.c + dc : s.b.c);
   },
   undo(g) {
     const v = g.view;
@@ -640,13 +773,23 @@ const Ed = {
     }
     const s = Ed.sel(g);
     if (!s) return;
-    if (e.key === "Tab") { e.preventDefault(); return Ed.indent(g, s, e.shiftKey); }
+    // X11 sends shift+Tab as ISO_Left_Tab, so e.key is NOT "Tab" for the
+    // outdent half of R17.2 — the physical key (e.code) is what identifies it
+    // (chordOf() normalises the same way for the global keymap).
+    if (e.key === "Tab" || e.code === "Tab") { e.preventDefault(); return Ed.indent(g, s, e.shiftKey); }
+    // R17.4 M45 / R17.10 M92: in 1.13.7 Ctrl+Enter is "follow link under
+    // cursor", NOT the task toggle — it must leave the bytes alone. Without
+    // this guard the webview turns it into an insertParagraph.
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); return; }
     // Shift+key arrives UPPERCASE (e.key is the produced character): Ctrl+Shift+Z
     // is "Z", so a lowercase-only compare silently loses redo (R17.8 M83).
     const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
     if (k === "a" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); return Ed.selectAll(g); }
     if (k === "z" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); return e.shiftKey ? Ed.redo(g) : Ed.undo(g); }
     if (k === "y" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); return Ed.redo(g); }
+    // Ctrl+L (M46-M51) is NOT bound here: it is the palette command
+    // editor:toggle-checklist-status, dispatched on document keydown. Binding
+    // it in both places would toggle twice and cancel itself out.
     if (e.key === "Home" || e.key === "End") {
       e.preventDefault();
       const f = Ed.focusPos(g) || s.b;                      // shift-extend moves the FOCUS, not s.b
@@ -687,7 +830,7 @@ const Ed = {
     switch (e.inputType) {
       case "insertText": Ed.replace(g, s, e.data || "", "type"); break;
       case "insertParagraph": Ed.enter(g, s); break;
-      case "insertLineBreak": Ed.replace(g, s, "\n", "type"); break;
+      case "insertLineBreak": Ed.softBreak(g, s); break;
       case "deleteContentBackward": Ed.del(g, s, false, false); break;
       case "deleteContentForward": Ed.del(g, s, true, false); break;
       case "deleteWordBackward": Ed.del(g, s, false, true); break;
@@ -755,6 +898,99 @@ const Ed = {
       const n = Ed.step(sg, l, c, back);
       if ((n ? n.l + "." + n.c : "-") !== want) fail("step:" + l + "." + c + (back ? "<" : ">"));
     }
+    // R17.1 Enter / Shift+Enter, asserted on the MODEL (no DOM, no view): each
+    // case is [before, caret l.c, op, after, caret l.c] straight off the MUST
+    // list. `enter` is where list semantics live, so it is checked in-app on
+    // every load — the smoke's byte assertions are the same claim end to end.
+    const ec = [
+      ["- alpha\n- beta", 0, 7, 0, "- alpha\n- \n- beta", 1, 2],                        // M1
+      ["- alpha\n- beta", 0, 3, 0, "- a\n- lpha\n- beta", 1, 2],                        // M2
+      ["- alpha", 0, 0, 0, "\n- alpha", 1, 0],                                          // M3
+      ["1. one\n2. two\n3. three", 0, 6, 0, "1. one\n2. \n3. two\n4. three", 1, 3],     // M4 renumber
+      ["1. one\n2. two", 1, 4, 0, "1. one\n2. t\n3. wo", 2, 3],                          // M6
+      ["- [x] done", 0, 10, 0, "- [x] done\n- [ ] ", 1, 6],                              // M8 always unchecked
+      ["- a\n  - b", 1, 5, 0, "- a\n  - b\n  - ", 2, 4],                                 // M11 indent verbatim
+      ["1. a\n\t1. b\n2. c", 1, 5, 0, "1. a\n\t1. b\n\t2. \n2. c", 2, 4],                // M12 nested run
+      ["- a\n\t- ", 1, 3, 0, "- a\n- ", 1, 2],                                           // M13 empty nested -> outdent
+      ["- a\n- ", 1, 2, 0, "- a\n", 1, 0],                                               // M14 empty -> drop marker
+      ["- [ ] ", 0, 6, 0, "", 0, 0],                                                     // M16
+      ["> quoted", 0, 8, 0, "> quoted\n> ", 1, 2],                                       // M18
+      ["> ", 0, 2, 0, "\n", 1, 0],                                                       // M19 empty quote
+      ["> - a", 0, 5, 0, "> - a\n> - ", 1, 4],                                           // M20 quote + list
+      ["# Head", 0, 6, 0, "# Head\n", 1, 0],                                             // M21 headings never continue
+      ["---", 0, 3, 0, "---\n", 1, 0],                                                   // M23
+      ["- a\n  cont", 1, 6, 0, "- a\n  cont\n- ", 2, 2],                                 // M24 continuation line
+      ["- alpha", 0, 7, 1, "- alpha\n  ", 1, 2],                                         // M26 soft break
+    ];
+    const oa = Ed.after, on = Ed.snap;
+    let cr = null;
+    Ed.after = (gg, l, c) => { cr = { l, c }; };
+    Ed.snap = () => {};
+    try {
+      for (const [src, l, c, op, want, wl, wc] of ec) {
+        const eg = { view: { lines: src.split("\n") }, editor: {} };
+        const cc = Math.min(c, eg.view.lines[l].length);
+        cr = null;
+        const es = { a: { l, c: cc }, b: { l, c: cc }, empty: true };
+        if (op) Ed.softBreak(eg, es); else Ed.enter(eg, es);
+        if (eg.view.lines.join("\n") !== want || !cr || cr.l !== wl || cr.c !== wc) fail("enter:" + src);
+      }
+      /* R17.2/R17.3/R17.4 on the MODEL: [before, l, c, op, after, l, c] straight
+         off the MUST list. Where a MUST caret column exceeds the raw line length
+         it is clamped (stock counts a leading TAB as two columns; this engine
+         counts raw characters — same caret, different unit). */
+      const kc = [
+        ["- a\n- b", 1, 3, "tab", "- a\n\t- b", 1, 4],                                   // M27
+        ["- a\n- b", 0, 3, "tab", "\t- a\n- b", 0, 4],                                   // M28 first item too
+        ["- a\n\t- b", 1, 4, "tab", "- a\n\t\t- b", 1, 5],                               // M29 unbounded
+        ["- a\n\t- b", 1, 5, "stab", "- a\n- b", 1, 3],                                  // M30
+        ["- a\n- b", 1, 3, "stab", "- a\n- b", 1, 3],                                    // M31 top level = no-op
+        ["1. a\n2. b\n3. c", 1, 4, "tab", "1. a\n\t1. b\n2. c", 1, 5],                   // M32 restart + close up
+        ["1. a\n\t1. b\n\t2. c", 1, 5, "stab", "1. a\n2. b\n\t1. c", 1, 4],              // M32 mirrored
+        ["- alpha", 0, 2, "tab", "\t- alpha", 0, 3],                                     // M33 never a tab at the caret
+        ["plain text", 0, 10, "tab", "\tplain text", 0, 11],                             // M34
+        ["plain para", 0, 10, "stab", "plain para", 0, 10],                              // M87 no-op outside a list
+        ["- a\n\t- b", 0, 3, "tab", "\t- a\n\t\t- b", 0, 4],                             // the sub-tree follows
+        ["- a\n- b", 1, 0, "bs", "- a- b", 0, 3],                                        // M36 col0 JOINS
+        ["- a\n\t- b", 1, 0, "bs", "- a\t- b", 0, 3],                                    // M37 nested joins too
+        ["- a\n- b", 1, 2, "bs", "- a\n-b", 1, 1],                                       // M39 marker is text
+        ["- a\n- ", 1, 2, "bs", "- a\n-", 1, 1],                                         // M40 empty item: no outdent
+        ["- [ ] a", 0, 6, "bs", "- [ ]a", 0, 5],                                         // M41
+        ["> a\n> b", 1, 0, "bs", "> a> b", 0, 3],                                        // M42
+        ["1. one\n2. two", 1, 0, "bs", "1. one2. two", 0, 6],                            // M43 join wins
+        ["- a\n- b", 0, 3, "del", "- a- b", 0, 3],                                       // M44 forward join
+        ["- plain", 0, 7, "ctrl-l", "- [ ] plain", 0, 11],                               // M46
+        ["- [ ] a", 0, 7, "ctrl-l", "- [x] a", 0, 7],                                    // M47
+        ["- [x] a", 0, 7, "ctrl-l", "- [ ] a", 0, 7],                                    // M48
+        ["para", 0, 4, "ctrl-l", "- [ ] para", 0, 10],                                   // M49
+        ["- a\n\t- b", 1, 5, "ctrl-l", "- a\n\t- [ ] b", 1, 8],                          // M50
+        ["1. a", 0, 4, "ctrl-l", "1. [ ] a", 0, 8],                                      // M51 ordered marker kept
+      ];
+      for (const [src, l, c, op, want, wl, wc] of kc) {
+        const eg = { view: { lines: src.split("\n") }, editor: {} };
+        const cc = Math.min(c, eg.view.lines[l].length);
+        cr = null;
+        const es = { a: { l, c: cc }, b: { l, c: cc }, empty: true };
+        if (op === "tab") Ed.indent(eg, es, false);
+        else if (op === "stab") Ed.indent(eg, es, true);
+        else if (op === "bs") Ed.del(eg, es, false, false);
+        else if (op === "del") Ed.del(eg, es, true, false);
+        else Ed.toggleCheck(eg, es);
+        if (eg.view.lines.join("\n") !== want || !cr || cr.l !== wl || cr.c !== wc) fail(op + ":" + src);
+      }
+      // M88/M89: a real SELECTION indents/outdents exactly the lines it covers,
+      // and a trailing line touched only at col 0 is left alone.
+      const sc = [
+        ["- a\n- b\n- c", 0, 0, 2, 0, false, "\t- a\n\t- b\n- c"],                       // M88
+        ["- a\n\t- b\n\t- c", 1, 0, 2, 4, true, "- a\n- b\n- c"],                        // M89
+      ];
+      for (const [src, al, ac, bl, bc, out, want] of sc) {
+        const eg = { view: { lines: src.split("\n") }, editor: {} };
+        cr = null;
+        Ed.indent(eg, { a: { l: al, c: ac }, b: { l: bl, c: bc }, empty: false }, out);
+        if (eg.view.lines.join("\n") !== want) fail("sel-tab:" + src);
+      }
+    } finally { Ed.after = oa; Ed.snap = on; }
     return bad;
   },
 };

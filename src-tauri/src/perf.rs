@@ -23,7 +23,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// env value -> target file; None (no-op) when unset or empty
@@ -128,12 +128,26 @@ pub fn request(spans: &[Span]) -> Value {
 
 /// append one OTLP/JSON line to `path` (create if missing). Errors are swallowed
 /// by callers: telemetry must never break the app.
+///
+/// ONE `write_all` of the whole line, under a process-wide lock. The obvious
+/// `writeln!(f, "{}", request(spans))` is NOT one write: `write_fmt` hands the
+/// formatter's fragments to the file one by one, so two threads appending at the
+/// same instant (a `log_spans` batch from the webview while a command thread
+/// records its own span) interleaved CHARACTER BY CHARACTER and produced a line
+/// no JSON parser accepts. That corruption is silent and total downstream:
+/// scripts/otel-flat.sh is a single `jq`, jq aborts at the bad line, and every
+/// span AFTER it disappears — the smoke's R18 window then measured 0 ed_patch
+/// spans for 16 keystrokes and read it as "telemetry not live".
 pub fn emit(path: &Path, spans: &[Span]) -> std::io::Result<()> {
     if spans.is_empty() {
         return Ok(());
     }
+    let mut line = request(spans).to_string();
+    line.push('\n');
+    static W: Mutex<()> = Mutex::new(());
+    let _g = W.lock().unwrap_or_else(|e| e.into_inner());
     let mut f = OpenOptions::new().create(true).append(true).open(path)?;
-    writeln!(f, "{}", request(spans))
+    f.write_all(line.as_bytes())
 }
 
 /// a backend span that just ended: `ms` long, ending now; child of `ctx` when given
@@ -293,5 +307,42 @@ mod tests {
             span("noop", 1.0, json!({}));
             ui_spans(&[json!({"name":"noop"})]);
         }
+    }
+
+    /// R18 regression: EVERY line must be whole JSON, even when threads append at
+    /// the same instant. The old `writeln!(f, "{}", ...)` split one line into many
+    /// small writes, so a `log_spans` batch and a command's own span interleaved
+    /// mid-line — and one unparseable line silently truncates every consumer
+    /// (scripts/otel-flat.sh is a single jq: it aborts there and every span after
+    /// it vanishes, which the smoke reads as "telemetry not live").
+    #[test]
+    fn concurrent_emit_never_interleaves_a_line() {
+        let p = std::env::temp_dir().join(format!("rustidian-otel-race-{}.jsonl", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        let threads: Vec<_> = (0..8)
+            .map(|t| {
+                let p = p.clone();
+                std::thread::spawn(move || {
+                    for i in 0..64 {
+                        // a batch, so the line is long enough to need several writes
+                        let spans: Vec<Span> = (0..4)
+                            .map(|k| ended(None, "ed_patch", 1.5, json!({"thread": t, "i": i, "k": k, "pad": "x".repeat(64)})))
+                            .collect();
+                        emit(&p, &spans).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for h in threads {
+            h.join().unwrap();
+        }
+        let body = std::fs::read_to_string(&p).unwrap();
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(lines.len(), 8 * 64, "one line per emit, none split or merged");
+        for (n, l) in lines.iter().enumerate() {
+            let v: Value = serde_json::from_str(l).unwrap_or_else(|e| panic!("line {n} is not JSON: {e}"));
+            assert_eq!(v["resourceSpans"][0]["scopeSpans"][0]["spans"].as_array().unwrap().len(), 4);
+        }
+        let _ = std::fs::remove_file(&p);
     }
 }
