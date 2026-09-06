@@ -598,9 +598,12 @@ const Ed = {
     const s = Ed.sel(g);
     if (!s) return;
     if (e.key === "Tab") { e.preventDefault(); return Ed.indent(g, s, e.shiftKey); }
-    if (e.key === "a" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); return Ed.selectAll(g); }
-    if (e.key === "z" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); return e.shiftKey ? Ed.redo(g) : Ed.undo(g); }
-    if (e.key === "y" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); return Ed.redo(g); }
+    // Shift+key arrives UPPERCASE (e.key is the produced character): Ctrl+Shift+Z
+    // is "Z", so a lowercase-only compare silently loses redo (R17.8 M83).
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if (k === "a" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); return Ed.selectAll(g); }
+    if (k === "z" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); return e.shiftKey ? Ed.redo(g) : Ed.undo(g); }
+    if (k === "y" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); return Ed.redo(g); }
     if (e.key === "Home") { e.preventDefault(); return Ed.place(g, s.b.l, 0); }
     if (e.key === "End") { e.preventDefault(); return Ed.place(g, s.b.l, Ed.lines(g)[s.b.l].length); }
   },
