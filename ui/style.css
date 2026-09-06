@@ -193,7 +193,14 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .lp a.wiki { color: #89b4fa }
 .lp a.wiki-unresolved { color: #7c86c8; font-style: italic }
 /* R8.2: one rendered row per line/block; the raw caret row blends in */
-.lprow { min-height: 1.5em; cursor: text }
+/* INTEGRATE perf: a 300-line note is ~200 rows; laying out and rastering the
+   ones below the fold is what made pane_split/tab_drop wait 800ms on vsync
+   (llvmpipe). content-visibility skips layout+paint for off-screen rows;
+   `auto 24px` seeds the scroll height with the R15 row height and is replaced
+   by each row's real size once it has been rendered, so scrollTop restore and
+   the scrollbar stay honest. */
+.lprow { min-height: 1.5em; cursor: text;
+         content-visibility: auto; contain-intrinsic-size: auto 24px }
 .lprow > :first-child { margin-top: 0 }
 .lprow > :last-child { margin-bottom: 0 }
 .lpraw { display: block; width: 100%; background: #26263a; color: inherit;
