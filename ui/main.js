@@ -824,6 +824,11 @@ function updateTitle() {          // pane/focus census in the window title (head
   if (md) md += "]";
   if (lpMs >= 0) md += " [lp:" + lpMs + "]";     // perf: last lpRender ms
   if (edtBad >= 0) md += " [edt:" + (edtBad ? "fail" + edtBad : "ok") + "]";   // R17: renderer/token-map self test
+  // R17 editor probe: the MODEL selection range [sel:l.c-l.c] and the measured
+  // row geometry [edx:] [ery:] of the focused pane — the `edit` smoke asserts
+  // selections and clicks source lines instead of guessed pixels.
+  if (md && ft && !ft.kind && isLp(ft.mode) && typeof Ed !== "undefined" && fg() && fg().lp)
+    md += Ed.selTok(fg()) + Ed.geom(fg());
   // R15.2 font probe: bundled @font-face entries that actually LOADED (lazy: a face loads when text first uses it) -> [fonts:SourceCodePro/400/normal|...]
   { const fl = document.fonts ? [...document.fonts].filter(f => f.status === "loaded").map(f => f.family.replace(/[" ]/g, "") + "/" + f.weight + "/" + f.style) : [];
     if (fl.length) md += " [fonts:" + fl.join("|") + "]"; }

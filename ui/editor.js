@@ -319,6 +319,22 @@ const Ed = {
     if (focus !== false && document.activeElement !== g.lp) g.lp.focus({ preventScroll: true });
     Ed.mark(g, l);
   },
+  // Ctrl+A over the MODEL, not over the painted text: the browser's own
+  // select-all starts at the first VISIBLE character, so on a note that opens
+  // with "# Title" it silently drops the hidden "# " and a copy would come
+  // back without the heading marker. The range is set on the raw text nodes,
+  // hidden or not.
+  selectAll(g) {
+    const L = Ed.lines(g), first = Ed.rowAt(g, 0), last = Ed.rowAt(g, L.length - 1);
+    if (!first || !last) return;
+    const [n0, o0] = Ed.posOf(first, 0, true);
+    const [n1, o1] = Ed.posOf(last, L[L.length - 1].length, true);
+    const r = document.createRange();
+    try { r.setStart(n0, o0); r.setEnd(n1, o1); } catch (_) { return; }
+    const s = window.getSelection();
+    s.removeAllRanges(); s.addRange(r);
+    Ed.census();
+  },
   // the caret row is the ONLY row with its markers revealed (stock behaviour)
   reveal(g, l) {
     const prev = g.lp.querySelector(".lprow.cur");
@@ -328,11 +344,24 @@ const Ed = {
     if (row) row.classList.add("cur");
   },
   mark(g, l) {                                   // census + autocomplete state
+    Ed.census();                                 // selection moved even if the LINE did not
     if (g.lpActive && l >= 0 && g.lpActive.l0 === l) return;   // nothing moved: no title churn
     Ed.cur = l >= 0 ? { g, l } : null;
     g.lpActive = l == null || l < 0 ? null : { l0: l };
     if (g.view) g.view.lpActive = g.lpActive;
-    if (typeof updateTitle === "function") updateTitle();
+    Ed.census();
+  },
+  /* The census carries the caret line, the model selection and the row
+     geometry, and a plain Shift+Right moves none of the first — so it must be
+     republished on every selection change, not only when the LINE changes.
+     Deferred + coalesced (30ms): the title write must never land inside the
+     key_to_paint span it would otherwise inflate. */
+  census() {
+    if (Ed._ct) return;
+    Ed._ct = setTimeout(() => {
+      Ed._ct = null;
+      if (typeof updateTitle === "function") updateTitle();
+    }, 30);
   },
 
   /* ---------- view: dirty-row patching ---------- */
@@ -569,6 +598,7 @@ const Ed = {
     const s = Ed.sel(g);
     if (!s) return;
     if (e.key === "Tab") { e.preventDefault(); return Ed.indent(g, s, e.shiftKey); }
+    if (e.key === "a" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); return Ed.selectAll(g); }
     if (e.key === "z" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); return e.shiftKey ? Ed.redo(g) : Ed.undo(g); }
     if (e.key === "y" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); return Ed.redo(g); }
     if (e.key === "Home") { e.preventDefault(); return Ed.place(g, s.b.l, 0); }
@@ -663,6 +693,37 @@ Ed.placeOffset = function (g, o) {        // document char offset -> caret
   while (l < L.length - 1 && o > L[l].length) { o -= L[l].length + 1; l++; }
   Ed.place(g, l, o);
 };
+/* Headless probe (R17 smoke): the geometry the `edit` phase clicks with.
+   [edx:<left>] + [ery:<centre y per row>] let a test address a SOURCE LINE
+   instead of guessing a pixel — row heights differ per line (headings, list
+   items), so a fixed pitch goes stale on any type change. Capped at 40 rows:
+   the 500-line perf note never pays the layout read, so this stays off the
+   measured keystroke path. */
+Ed.geom = function (g) {
+  const rows = g.lp ? g.lp.children : null;
+  if (!rows || !rows.length || rows.length > 40) return "";
+  const b = rows[0].getBoundingClientRect();   // the ROW box (= the text column), not the padded container
+  let ys = "", xs = "";
+  const r = document.createRange();
+  for (let i = 0; i < rows.length; i++) {
+    const q = rows[i].getBoundingClientRect();
+    ys += (i ? "," : "") + Math.round(q.top + q.height / 2);
+    /* [erx:] = where the row's first PAINTED character starts, which is NOT
+       the row box: a folded list row hides its "- " and paints a ::before
+       bullet instead, so the row box left is inside that bullet and a click
+       there lands on the pseudo-element, not on column 2. Range client rects
+       skip display:none text and generated content, so this is the only
+       honest "visual start of this source line". */
+    r.selectNodeContents(rows[i]);
+    const rc = r.getClientRects();
+    xs += (i ? "," : "") + Math.round(rc.length ? rc[0].left : q.left);
+  }
+  return " [edx:" + Math.round(b.left) + "] [erx:" + xs + "] [ery:" + ys + "]";
+};
+Ed.selTok = function (g) {                // [sel:<l>.<c>-<l>.<c>] model range
+  const s = Ed.sel(g);
+  return s ? " [sel:" + s.a.l + "." + s.a.c + "-" + s.b.l + "." + s.b.c + "]" : "";
+};
 Ed.caretXY = function (g) {               // caret rect relative to the pane box
   const s = window.getSelection();
   const pr = g.pane.getBoundingClientRect();
@@ -687,7 +748,7 @@ document.addEventListener("selectionchange", () => {
   const pane = lp.closest(".pane"), g = pane ? pane._g : null;
   if (!g || g.lp !== lp) return;
   const l = Ed.indexOf(row);
-  if (Ed.cur && Ed.cur.g === g && Ed.cur.l === l) return;
+  if (Ed.cur && Ed.cur.g === g && Ed.cur.l === l) { Ed.census(); return; }
   Ed.cur = { g, l };
   Ed.reveal(g, l);
   Ed.mark(g, l);
