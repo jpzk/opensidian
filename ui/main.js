@@ -973,7 +973,15 @@ let menuEl = null;
 // the context menu carries no census, so smoke had to OCR it (flaky under llvmpipe).
 // openMenu()/closeMenu() publish the live item labels as [menu:a|b|c] instead.
 function openMenu(m) { document.body.appendChild(m); menuEl = m; updateTitle(); }
-function menuTok() { return menuEl ? " [menu:" + [...menuEl.children].map(d => d.textContent).join("|") + "]" : ""; }
+function menuTok() {   // [menu:<labels>] + [mg:<left>,<first row centre y>,<row pitch>] — MEASURED, so a
+  if (!menuEl) return "";                      // driver clicks item i at (left+20, centre + pitch*i) with no
+  const k = menuEl.children, lbl = [...k].map(d => d.textContent).join("|");   // hardcoded padding/line-height guess
+  if (!k.length) return " [menu:" + lbl + "]";
+  const a = k[0].getBoundingClientRect();
+  const pitch = k.length > 1 ? k[1].getBoundingClientRect().top - a.top : a.height;
+  return " [menu:" + lbl + "] [mg:" + Math.round(menuEl.getBoundingClientRect().left) + "," +
+         Math.round(a.top + a.height / 2) + "," + Math.round(pitch) + "]";
+}
 function closeMenu() { if (!menuEl) return; menuEl.remove(); menuEl = null; updateTitle(); }
 document.addEventListener("contextmenu", e => e.preventDefault()); // app-like: native menu never
 document.addEventListener("mousedown", e => {
@@ -1031,6 +1039,7 @@ function tabMenu(e, g, i) {              // right-click a tab -> Split right / S
   m.style.top = e.clientY + "px";
   openMenu(m);
   m.style.top = Math.max(0, Math.min(e.clientY, window.innerHeight - m.offsetHeight - 4)) + "px";  // measured: the menu grew an item (#12)
+  updateTitle();                       // the clamp MOVED the menu after openMenu published [mg:] — re-publish the final rect
 }
 
 /* ---------- view modes (R8.8: livepreview / source / reading per tab) ---------- */
