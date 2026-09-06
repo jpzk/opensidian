@@ -303,6 +303,29 @@ const Ed = {
   },
   caret(g) { const s = Ed.sel(g); return s ? s.b : null; },
   caretLC(g) { const c = Ed.caret(g) || { l: 0, c: 0 }; return [c.l, c.c]; },
+  focusPos(g) {                                  // the MOVING end of the selection
+    const s = window.getSelection();
+    if (!s || !s.focusNode || !g.lp.contains(s.focusNode)) return null;
+    return Ed.pos(g, s.focusNode, s.focusOffset);
+  },
+  // Home target for a line (R17.5 M64-M68): CONTENT start, i.e. after a list /
+  // task / quote marker + its indent. A heading is NOT a marker line — its "# "
+  // stays part of the text, so Home is col 0 there (M68).
+  homeCol(g, l) {
+    const t = Ed.lines(g)[l] || "";
+    if (/^\s*#{1,6} /.test(t)) return 0;
+    const m = /^(\s*(?:> )*(?:[-*+] \[[ xX]\] |[-*+] |\d+\. ))/.exec(t) || /^(\s*(?:> )+)/.exec(t);
+    return m ? m[0].length : 0;
+  },
+  extendTo(g, l, c) {                            // Shift+Home/End: keep the anchor, move the focus
+    const row = Ed.rowAt(g, l);
+    if (!row) return;
+    const [node, off] = Ed.posOf(row, c, true);
+    const s = window.getSelection();
+    if (!s.rangeCount) return Ed.place(g, l, c);
+    try { s.extend(node, off); } catch (_) { return Ed.place(g, l, c); }
+    Ed.mark(g, l);
+  },
   place(g, l, c, focus) {                        // caret to (line,col)
     const L = Ed.lines(g);
     l = Math.max(0, Math.min(l, L.length - 1));
@@ -604,8 +627,13 @@ const Ed = {
     if (k === "a" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); return Ed.selectAll(g); }
     if (k === "z" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); return e.shiftKey ? Ed.redo(g) : Ed.undo(g); }
     if (k === "y" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); return Ed.redo(g); }
-    if (e.key === "Home") { e.preventDefault(); return Ed.place(g, s.b.l, 0); }
-    if (e.key === "End") { e.preventDefault(); return Ed.place(g, s.b.l, Ed.lines(g)[s.b.l].length); }
+    if (e.key === "Home" || e.key === "End") {
+      e.preventDefault();
+      const f = Ed.focusPos(g) || s.b;                      // shift-extend moves the FOCUS, not s.b
+      const h = Ed.homeCol(g, f.l);
+      const c = e.key === "End" ? Ed.lines(g)[f.l].length : (f.c === h ? 0 : h);
+      return e.shiftKey ? Ed.extendTo(g, f.l, c) : Ed.place(g, f.l, c);
+    }
   },
   onInput(g, e) {
     if (!g) return;
@@ -655,6 +683,10 @@ const Ed = {
         if (Ed.colOf(row, n, o) !== k) { bad++; break; }
       }
     }
+    // Home targets (M64-M68), checked on the model, not the DOM
+    const hg = { view: { lines: ["- alpha", "\t- beta", "- [ ] alpha", "# Head", "plain", "> quoted", "1. one"] } };
+    const hw = [2, 3, 6, 0, 0, 2, 3];
+    for (let i = 0; i < hw.length; i++) if (Ed.homeCol(hg, i) !== hw[i]) bad++;
     return bad;
   },
 };
