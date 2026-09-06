@@ -703,6 +703,58 @@ function renderLayout() {
   updateTitle();
 }
 
+/* ---------- R22 layout census: [ovf:<dw>,<dh>,<n>] ----------
+   R22 (no scrollbars, ever): at EVERY window size the app chrome fits
+   exactly. dw/dh = documentElement.scrollWidth-clientWidth /
+   scrollHeight-clientHeight — the WINDOW must never scroll, so both are 0.
+   n = elements in the app FRAME that spill: content wider/taller than their
+   own box while that box neither clips nor scrolls it, or a box that reaches
+   past the viewport edge. OVF_SCROLL lists the containers that scroll BY
+   DESIGN (note body, file tree, result/link lists, picker + modal lists):
+   they are not counted, and the walk does not descend into them — their
+   contents are content, not chrome, and cost is bounded to the frame.
+   When n > 0 the census also carries [ovfe:<el>@<why>|...] (<= 3 offenders)
+   so a fuzz failure names the element instead of just a number. */
+const OVF_SCROLL = "#tree,#sresults,#bmlist,.rlist,.lp,.preview,.editor,.ac," +
+                   "#mlist,#p-dirs,#p-recent,#sbody,#spage,#hklist";
+function ovfName(el) {              // short, stable selector for a failure message
+  const c = (el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className) || "";
+  const k = String(c).trim().split(/\s+/).filter(Boolean).slice(0, 2).map(x => "." + x).join("");
+  return el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + k;
+}
+function ovfScan() {
+  const de = document.documentElement;
+  const vw = de.clientWidth, vh = de.clientHeight;
+  const bad = [];
+  let n = 0;
+  const walk = el => {
+    for (const c of el.children) {
+      if (c.hidden || c.tagName === "SCRIPT" || c.tagName === "STYLE") continue;
+      const r = c.getBoundingClientRect();
+      if (!r.width && !r.height) continue;                 // display:none / not laid out
+      if (c.matches(OVF_SCROLL)) continue;                 // allowed scroll container: skip it AND its subtree
+      const st = getComputedStyle(c);
+      const sw = c.scrollWidth - c.clientWidth, sh = c.scrollHeight - c.clientHeight;
+      let why = "";
+      if (sw > 1 && st.overflowX === "visible") why = "sw+" + sw;
+      else if (sh > 1 && st.overflowY === "visible") why = "sh+" + sh;
+      else if (r.right > vw + 1) why = "r" + Math.round(r.right) + ">" + vw;
+      else if (r.bottom > vh + 1) why = "b" + Math.round(r.bottom) + ">" + vh;
+      else if (r.left < -1) why = "l" + Math.round(r.left);
+      else if (r.top < -1) why = "t" + Math.round(r.top);
+      if (why) { n++; if (bad.length < 3) bad.push(ovfName(c) + "@" + why); }
+      walk(c);
+    }
+  };
+  walk(document.body);
+  return { dw: de.scrollWidth - vw, dh: de.scrollHeight - vh, n, bad };
+}
+let ovfT = 0;
+addEventListener("resize", () => {                 // the census must follow the window, not only UI state
+  requestAnimationFrame(updateTitle);
+  clearTimeout(ovfT); ovfT = setTimeout(updateTitle, 150);   // after the relayout settles
+});
+
 function updateTitle() {          // pane/focus census in the window title (headless probe)
   const ps = [...document.querySelectorAll("#main .pane")];
   const nf = document.querySelectorAll("#main .pane.focused").length;
@@ -769,6 +821,10 @@ function updateTitle() {          // pane/focus census in the window title (head
              " [tree:" + notesCache.length + "] [vc:" + vcCount + "]" +   // R11 probes
              (extCount ? " [ext:" + extCount + "]" : "");                 // S1: external-link clicks routed to open_external
   t += t2;
+  const ov = ovfScan();            // R22: layout overflow census (window + frame)
+  t += " [vp:" + innerWidth + "x" + innerHeight + "]" +   // resize-completed signal for the fuzz harness
+       " [ovf:" + ov.dw + "," + ov.dh + "," + ov.n + "]" +
+       (ov.bad.length ? " [ovfe:" + ov.bad.join("|").slice(0, 120) + "]" : "");
   document.title = t;
   // publish to the native title: ONE call in flight, last-write-wins, 500ms
   // timeout guard — a hung/rejected setTitle IPC can neither reorder titles
