@@ -773,7 +773,10 @@ const Ed = {
     }
     const s = Ed.sel(g);
     if (!s) return;
-    if (e.key === "Tab") { e.preventDefault(); return Ed.indent(g, s, e.shiftKey); }
+    // X11 sends shift+Tab as ISO_Left_Tab, so e.key is NOT "Tab" for the
+    // outdent half of R17.2 — the physical key (e.code) is what identifies it
+    // (chordOf() normalises the same way for the global keymap).
+    if (e.key === "Tab" || e.code === "Tab") { e.preventDefault(); return Ed.indent(g, s, e.shiftKey); }
     // R17.4 M45 / R17.10 M92: in 1.13.7 Ctrl+Enter is "follow link under
     // cursor", NOT the task toggle — it must leave the bytes alone. Without
     // this guard the webview turns it into an insertParagraph.
@@ -943,7 +946,7 @@ const Ed = {
         ["- a\n\t- b", 1, 5, "stab", "- a\n- b", 1, 3],                                  // M30
         ["- a\n- b", 1, 3, "stab", "- a\n- b", 1, 3],                                    // M31 top level = no-op
         ["1. a\n2. b\n3. c", 1, 4, "tab", "1. a\n\t1. b\n2. c", 1, 5],                   // M32 restart + close up
-        ["1. a\n\t1. b\n\t2. c", 1, 5, "stab", "1. a\n2. b\n\t1. c", 1, 3],              // M32 mirrored
+        ["1. a\n\t1. b\n\t2. c", 1, 5, "stab", "1. a\n2. b\n\t1. c", 1, 4],              // M32 mirrored
         ["- alpha", 0, 2, "tab", "\t- alpha", 0, 3],                                     // M33 never a tab at the caret
         ["plain text", 0, 10, "tab", "\tplain text", 0, 11],                             // M34
         ["plain para", 0, 10, "stab", "plain para", 0, 10],                              // M87 no-op outside a list
