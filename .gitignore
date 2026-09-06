@@ -3,3 +3,4 @@ src-tauri/target/
 src-tauri/gen/schemas/
 !docs/ref-shots/**/*.png
 dist/
+.cov-evidence/
