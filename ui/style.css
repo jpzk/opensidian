@@ -371,10 +371,8 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .lp .mk { display: none }
 .lp.src .mk, .lp .lprow.cur .mk { display: inline; color: #6c7086 }
 .lp:focus, .lp .lprow:focus { outline: none }
-.lp .tbox { margin: 0 6px 0 0; vertical-align: middle }        /* rendered task checkbox */
+.lp .tbox { vertical-align: middle }                            /* rendered task checkbox (x offsets: R15.11 below) */
 .lp.src .tbox { display: none }                                 /* source mode shows [ ] instead */
-.lp .lprow.li::before { content: "\2022"; color: #7f849c; margin-right: .45em }   /* the hidden "- " marker still needs a bullet */
-.lp.src .lprow.li::before, .lp .lprow.li.cur::before, .lp .lprow.tk::before { content: none }
 .lp .h { font-weight: 700 }
 .lp .h1 { font-size: var(--h1-size) }
 .lp .h2 { font-size: var(--h2-size) }
@@ -395,7 +393,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .lp .task, .lp .hr, .lp .tbl { font-family: var(--font-monospace) }
 .lp .fence { display: block; font-family: var(--font-monospace); font-size: 13px; background: #313244;
              padding: 0 8px; white-space: pre; overflow-x: auto }
-.lp .bq { color: #a6adc8; border-left: 2px solid #45475a; padding-left: 8px; display: inline-block }
+.lp .bq { color: inherit }   /* geometry (border + padding) is R15.13 below */
 /* R14 settings modal (Ctrl+,) — fixed 900x600 at (190,100): smoke clicks by coordinate */
 #settings { position: fixed; inset: 0; z-index: 55; background: rgba(0,0,0,.45);
   /* R22: the box keeps its (190,100) origin and 900x600 size wherever they fit
@@ -563,11 +561,36 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .preview blockquote > :first-child { margin-top: 0 }
 .preview blockquote > :last-child { margin-bottom: 0 }
 .lp blockquote { padding-inline-start: 11px }
-/* R15.10 LP: --list-indent-editing 12px, bullet at +12 / text at +22 like stock's cm-formatting-list; nested = literal space width */
-.lp ul > li { margin-inline-start: 23px }
-.lp ul > li::before { inset-inline-start: -9px }
-.lp ol > li { margin-inline-start: 32px; padding-inline-start: 0 }
-.lp ol > li::before { inset-inline-start: -18px }
+/* R15.10-13 in LIVE PREVIEW, on the R17 flat row DOM (ui/editor.js emits ONE
+   div.lprow per source line — there is no ul/ol/li/blockquote to select, so
+   the semantic rules above are reading-mode only). The stock offsets are
+   reproduced on the row's own parts, never by absolute positioning against
+   the row: the hidden marker span KEEPS ITS BOX (min-width = the stock
+   marker advance) and draws the bullet inside it, so a nested item's literal
+   indent — real text in the row — shifts marker and text together for free.
+   Revealing the markers (.cur row / source mode) drops the box: the source
+   line then measures exactly as it reads. */
+.lp .li > .mk.lim { display: inline-block; min-width: 23px; position: relative; color: transparent }
+.lp .li > .mk.lim::before { content: ""; position: absolute; inset-inline-start: 14px; top: 0.6em;
+  width: var(--list-bullet-size); height: var(--list-bullet-size);
+  border-radius: var(--list-bullet-radius); background: var(--list-marker-color) }
+.lp .li.ord > .mk.lim { min-width: 32px; padding-inline-start: 15px; color: var(--list-marker-color) }
+.lp .li.ord > .mk.lim::before { content: none }
+.lp .tk > .mk.lim { display: none }                             /* a task row draws a checkbox, not a bullet */
+.lp .tk > .mk.lim::before { content: none }
+/* the selector must out-specify `.lp input[type=checkbox]` above (0,2,1): an
+   attribute selector weighs as much as a class, so a bare `.lp .tbox` loses */
+.lp input[type=checkbox].tbox { margin-inline-start: 9px; margin-inline-end: calc(0.6em - 4px) }   /* box at +7, text at +27 */
+/* markers revealed: the box collapses, the line renders as its raw source */
+.lp.src .li > .mk.lim, .lp .lprow.cur .li > .mk.lim, .lp .lprow.cur.li > .mk.lim {
+  display: inline; min-width: 0; padding: 0; color: #6c7086 }
+.lp.src .li > .mk.lim::before, .lp .lprow.cur .li > .mk.lim::before, .lp .lprow.cur.li > .mk.lim::before { content: none }
+/* R15.13 blockquote in LP: the span.bq is the line's block box — border ink on
+   the h1 "H" ink x (+2 from the column), text 11px past it (stock LP: +14) */
+.lp .bq { display: block; margin-inline-start: 2px;
+  border-inline-start: var(--blockquote-border-thickness) solid var(--blockquote-border-color);
+  padding-inline-start: 11px }
+.lp .bq .bq { margin-inline-start: 0 }                          /* nested "> >": only the outer one is offset */
 
 /* perf (INTEGRATE): compositor floor probe target — a real 1px style+paint
    invalidation so floorProbe() measures a frame, not an elided class flip.

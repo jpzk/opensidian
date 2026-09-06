@@ -87,8 +87,14 @@ const Ed = {
     if (lm) {
       const rest = t.slice(lm[0].length);
       if (ind) row.appendChild(Ed.t(ind));
-      row.appendChild(Ed.mk(lm[1] + " ", "lim"));
+      // the marker glyphs and their trailing space are SEPARATE hidden spans:
+      // R15.10 gives .lim the stock marker advance as a box (bullet drawn
+      // inside it), and the space must not sit in that box or a wide "10."
+      // would push the text right by its width. textContent is unchanged.
+      row.appendChild(Ed.mk(lm[1], "lim"));
+      row.appendChild(Ed.mk(" ", "lisp"));
       row.classList.add("li");
+      if (/\d/.test(lm[1])) row.classList.add("ord");
       const task = /^\[([ xX])\] /.exec(rest);
       if (task) {
         row.classList.add("tk");
