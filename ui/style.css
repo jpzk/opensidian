@@ -605,3 +605,12 @@ body.floorprobe #floorpx { background: #181825 }
    that same full raster) — the damage a pane split actually causes. */
 body.floorfull #main, body.floorfull #side { color: #cdd6f5 }
 body.floorrelayout #main { padding-right: 1px }
+
+/* F1 dataloss: a save that did not land gets a persistent banner — the whole
+   point of the finding is that a failed write used to be invisible. Bottom
+   right, above the panes, non-blocking (the user keeps typing; the buffer is
+   still dirty and every later save retries). */
+#saveerr { position: fixed; right: 12px; bottom: 12px; z-index: 60; max-width: 420px;
+           padding: 8px 12px; border-radius: 6px; border: 1px solid #f38ba8;
+           background: #45283c; color: #f5c2c7; font-size: 12px; line-height: 1.4 }
+#saveerr[hidden] { display: none }
