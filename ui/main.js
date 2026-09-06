@@ -539,8 +539,11 @@ async function runSearch() {
 }
 
 /* R9.4 bookmarks: tree-row context menu toggles; rust persists the plain
-   list in vault/.rustidian-bookmarks. census [bm:N] while the pane shows. */
+   list in vault/.rustidian-bookmarks. census [bm:N] while the pane shows —
+   N counts the .bmrow nodes actually PAINTED in #bmlist, so an assertion on
+   it fails if renderBm() stops repainting even while bmCache is correct. */
 let bmCache = [];
+const bmRows = () => document.querySelectorAll("#bmlist .bmrow").length;
 function renderBm() {
   const box = $("bmlist");
   box.textContent = "";
@@ -838,7 +841,10 @@ function updateTitle() {          // pane/focus census in the window title (head
             (acItems.length ? " [ac:" + acKind + ":" + acItems.length + "]" : "") +
             " [pane:" + sidePane + "]" +
             (sidePane === "search" && searchCount >= 0 ? " [sr:" + searchCount + "]" : "") +
-            (sidePane === "bm" ? " [bm:" + bmCache.length + "]" : "");
+            (sidePane === "bm" ? " [bm:" + bmRows() + "]" +          // RENDERED rows, not bmCache.length:
+              (bmRows() === bmCache.length ? "" :                    // the smoke assertion must prove the PANE
+               " [bmdesync:" + bmCache.length + "/" + bmRows() + "]") : "");   // repainted, not just the model
+
   const t2 = (fg() && fg().active >= 0 && !fg().tabs[fg().active].kind ? " [buf:" + bufOf(fg()).length + "]" : "") +
              " [tree:" + notesCache.length + "] [vc:" + vcCount + "]" +   // R11 probes
              (extCount ? " [ext:" + extCount + "]" : "");                 // S1: external-link clicks routed to open_external
