@@ -40,6 +40,147 @@ pub struct Index {
     backlinks: HashMap<String, Vec<String>>,
     /// sorted keys, cached: render_md/resolve want a &[String]
     names: Vec<String>,
+    /// R19: graph (nodes + edges + adjacency) built lazily from memory and
+    /// kept until the edge set changes (link edit, new/removed/renamed note).
+    /// graph / graph_local serve from here: no per-call rebuild, no disk.
+    pub(crate) graph: Option<GraphCache>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct GNode {
+    pub name: String,
+    pub resolved: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct Graph {
+    pub nodes: Vec<GNode>,
+    pub edges: Vec<(usize, usize)>,
+}
+
+/// graph + per-node adjacency (out / in lists) for the local-graph BFS
+#[derive(Debug, Default)]
+pub struct GraphCache {
+    pub graph: Graph,
+    pub out: Vec<Vec<usize>>,
+    pub inc: Vec<Vec<usize>>,
+}
+
+impl GraphCache {
+    fn new(graph: Graph) -> GraphCache {
+        let n = graph.nodes.len();
+        let (mut out, mut inc) = (vec![Vec::new(); n], vec![Vec::new(); n]);
+        for &(a, b) in &graph.edges {
+            out[a].push(b);
+            inc[b].push(a);
+        }
+        GraphCache { graph, out, inc }
+    }
+
+    /// R7.2 neighbourhood of `center` (same shape as the old JS lgFilter):
+    /// BFS `depth` hops over outgoing (`out`) / incoming (`inc`) edges, keeps
+    /// EVERY edge among the surviving nodes, node order = discovery order,
+    /// indices remapped. Unknown centre -> empty graph.
+    pub fn local(&self, center: &str, depth: usize, inc: bool, out: bool) -> Graph {
+        let Some(ci) = self.graph.nodes.iter().position(|n| n.name == center) else {
+            return Graph::default();
+        };
+        let mut keep = vec![usize::MAX; self.graph.nodes.len()];
+        let mut order = vec![ci];
+        keep[ci] = 0;
+        let mut frontier = vec![ci];
+        for _ in 0..depth {
+            if frontier.is_empty() {
+                break;
+            }
+            let mut next = Vec::new();
+            for &f in &frontier {
+                let mut visit = |j: usize, next: &mut Vec<usize>| {
+                    if keep[j] == usize::MAX {
+                        keep[j] = order.len();
+                        order.push(j);
+                        next.push(j);
+                    }
+                };
+                if out {
+                    for &j in &self.out[f] {
+                        visit(j, &mut next);
+                    }
+                }
+                if inc {
+                    for &j in &self.inc[f] {
+                        visit(j, &mut next);
+                    }
+                }
+            }
+            frontier = next;
+        }
+        Graph {
+            nodes: order.iter().map(|&i| self.graph.nodes[i].clone()).collect(),
+            edges: self
+                .graph
+                .edges
+                .iter()
+                .filter(|(a, b)| keep[*a] != usize::MAX && keep[*b] != usize::MAX)
+                .map(|(a, b)| (keep[*a], keep[*b]))
+                .collect(),
+        }
+    }
+}
+
+/// R4.2: notes = resolved nodes; wikilinks to nonexistent notes become
+/// unresolved nodes (deduped by link text), so the graph shows ghost targets.
+/// Resolution = resolve()'s rule (first sorted note equal to the link or
+/// ending in "/link") served from two maps instead of a scan per link; edge
+/// dedupe via a set (was Vec::contains, O(E) per link).
+pub fn build_graph(notes: &[String], links: &[&[String]]) -> Graph {
+    let mut nodes: Vec<GNode> = notes
+        .iter()
+        .map(|n| GNode { name: n.clone(), resolved: true })
+        .collect();
+    let mut full: HashMap<&str, usize> = HashMap::with_capacity(notes.len());
+    let mut base: HashMap<&str, usize> = HashMap::new();
+    for (i, n) in notes.iter().enumerate() {
+        full.entry(n.as_str()).or_insert(i);
+        if let Some((_, b)) = n.rsplit_once('/') {
+            base.entry(b).or_insert(i);
+        }
+    }
+    let mut ghosts: HashMap<String, usize> = HashMap::new();
+    let mut seen: HashSet<(usize, usize)> = HashSet::new();
+    let mut edges = Vec::new();
+    for (i, ls) in links.iter().enumerate() {
+        for l in ls.iter() {
+            let l = link_parts(l).0; // ghost nodes carry the note part only
+            if l.is_empty() {
+                continue; // [[#heading]] = self-link
+            }
+            // "a/b" links (a longer path suffix) keep the scan: rare, and resolve() is the rule
+            let hit = if l.contains('/') {
+                resolve(notes, l)
+            } else {
+                match (full.get(l), base.get(l)) {
+                    (Some(a), Some(b)) => Some(*a.min(b)),
+                    (a, b) => a.or(b).copied(),
+                }
+            };
+            let j = match hit {
+                Some(j) => j,
+                None => match ghosts.get(l) {
+                    Some(&j) => j,
+                    None => {
+                        nodes.push(GNode { name: l.to_string(), resolved: false });
+                        ghosts.insert(l.to_string(), nodes.len() - 1);
+                        nodes.len() - 1
+                    }
+                },
+            };
+            if i != j && seen.insert((i, j)) {
+                edges.push((i, j));
+            }
+        }
+    }
+    Graph { nodes, edges }
 }
 
 /// tag char set (Obsidian): unicode letters/digits, '-', '_', '/'
@@ -330,9 +471,19 @@ impl Index {
         self.names = self.notes.keys().cloned().collect();
     }
 
+    /// R19: cached graph (built on first use after any edge change)
+    pub fn graph(&mut self) -> &GraphCache {
+        if self.graph.is_none() {
+            let g = build_graph(&self.names, &self.link_lists());
+            self.graph = Some(GraphCache::new(g));
+        }
+        self.graph.as_ref().unwrap()
+    }
+
     /// full edge recompute from memory: O(total links x notes), no disk
     fn rebuild_backlinks(&mut self) {
         self.backlinks.clear();
+        self.graph = None;
         let pairs: Vec<(String, Vec<String>)> = self
             .notes
             .iter()
@@ -384,6 +535,7 @@ impl Index {
                     // edge work at all
                     return;
                 }
+                self.graph = None;
                 let old = std::mem::replace(&mut m.links, links.clone());
                 for l in &old {
                     self.drop_edge(name, l);

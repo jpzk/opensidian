@@ -18,10 +18,18 @@ async function act(name, attrs, fn) {
   const sp = otel.begin(name, attrs);
   try { return await fn(sp); } finally { otel.paint(sp); }
 }
-/* R18 history_nav: placeholder until R19 wires per-tab history to mouse
-   back/forward + Alt+Left/Right; emits a no-op span so the op has a row. */
-function historyNav(dir) { otel.span("history_nav", { dir, noop: true }); }
 const $ = id => document.getElementById(id);
+/* R20: an uncaught error / rejected action left the UI mid-mutation and the
+   census silently STALE (the title only moves in updateTitle) — smoke then
+   reports the symptom, never the cause. Surface it as [jserr:...]. */
+let jsErr = "";
+function noteErr(m) {
+  if (jsErr) return;                       // first error wins (the rest are fallout)
+  jsErr = String(m || "err").replace(/[\[\]]/g, "").slice(0, 60);
+  try { updateTitle(); } catch (_) {}
+}
+window.addEventListener("error", e => noteErr(e.message));
+window.addEventListener("unhandledrejection", e => noteErr(e.reason && e.reason.message || e.reason));
 let vaultPath = null, pmode = null, bpath = null;
 
 /* ---------- pane model (M6 / R6.1): split tree, leaves = tab groups ----------
@@ -43,7 +51,14 @@ const groups = () => (state ? leaves(state.root) : []);
 const fg = () => state.focused;
 const curOf = g => (g.active >= 0 ? g.tabs[g.active].name : null);
 const cur = () => (state && fg() ? curOf(fg()) : null);
-const mkTab = name => ({ name, mode: "livepreview", hist: [name], hpos: 0 });  // R8.8: LP default
+// R19: per-tab history = [{n: note, s: scrollTop}], hpos = cursor; a nav pushes at
+// hpos+1 and drops the forward slice (browser semantics, docs/requirements.md R19)
+const mkTab = name => ({ name, mode: "livepreview", hist: [{ n: name, s: 0 }], hpos: 0 });  // R8.8: LP default
+const scrollOf = g => { const t = g.active >= 0 ? g.tabs[g.active] : null; return !t || t.kind ? 0 : t.mode === "reading" ? g.preview.scrollTop : isLp(t.mode) ? g.lp.scrollTop : g.editor.scrollTop; };
+function histPush(g, tab, name) {     // record where the CURRENT entry was scrolled to, then push the new note
+  if (tab.hist[tab.hpos]) tab.hist[tab.hpos].s = scrollOf(g);
+  tab.hist = tab.hist.slice(0, tab.hpos + 1); tab.hist.push({ n: name, s: 0 }); tab.hpos++;
+}
 
 /* R13: manual linked tabs ('Link with tab...'). tab.link = link-group id
    shared by every member; tab objects move by reference (drag / split), so a
@@ -94,8 +109,8 @@ async function linkSync(src, name) { // R13.3: a member opening a note reaches e
     }
     if (t.kind || t.name === name) continue;
     if (act) await flushSave(h);
-    t.name = name;                  // editors navigate in place, own mode kept
-    t.hist = t.hist.slice(0, t.hpos + 1); t.hist.push(name); t.hpos++;
+    histPush(h, t, name);           // editors navigate in place, own mode kept
+    t.name = name;
     if (act) await loadActive(h); else renderTabs(h);
   }
   updateTitle();
@@ -114,69 +129,67 @@ function cmdToggleSide() {
   });
 }
 
-/* R9.6 right sidebar: localgraph of the ACTIVE note (depth 1, in+out),
-   reusing startGraph via a stub "group" whose only real element is the
-   canvas. fetch reads the OUTER rgCenter so graphRefresh re-filters on
-   follow without restarting the sim. census [rg:<center>] while open. */
-let rg = null, rgCenter = null;
-// active tab's NOTE (kind tabs like gg/lg have no note -> null; the panel
-// then keeps its previous center, like Obsidian keeps the last file)
-function rgNote() {
+/* R20 (#4): the right sidebar holds the list panes only (Backlinks | Outgoing
+   links | Tags | Outline), like stock; the local graph is a main-area tab view
+   (palette 'Open local graph', Ctrl+Shift+G, ribbon). rNote() = the focused
+   group's active NOTE (graph tabs -> null: the panes keep their last note). */
+function rNote() {
   const g = fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
   return t && !t.kind ? t.name : null;
 }
-function mkRg() {
-  const stub = () => ({ style: {}, hidden: true });
-  return { graph: $("rgraph"), editor: stub(), preview: stub(), lp: stub(),
-           status: stub(), lggear: stub(), lgpop: stub(),
-           sim: 0, graphRefresh: null, graphOn: false };
-}
-async function rgStart() {                 // (re)build canvas + sim at current size
-  if (!rg) rg = mkRg();
-  cancelAnimationFrame(rg.sim);
-  rgCenter = rgNote() || rgCenter;
-  if (!rgCenter) return;
-  await startGraph(rg, {
-    fetch: async () => lgFilter(await inv("graph"), rgCenter, 1, true, true),
-    center: () => rgCenter,
-    onClick: async n => { await navigate(fg(), n); },  // opens in focused group
-  });
-}
-function rgStop() {
-  if (!rg) return;
-  cancelAnimationFrame(rg.sim); rg.graphRefresh = null; rg.graphOn = false;
-}
-async function rgFollow() {                // active note changed -> re-center
+async function rgFollow() {                // active note changed -> panes follow
   if (!rightOpen) return;
-  rPanesRefresh();                         // rsidebar: list panes follow too
-  if (!rg || !rg.graphRefresh) return;
-  const n = rgNote();
-  if (!n || n === rgCenter) return;
-  rgCenter = n;
-  await rg.graphRefresh();
-  updateTitle();
+  rPanesRefresh();
+}
+/* R20 (#3): #rtoggle is an in-flow flex item, never position:fixed — in #rtabs
+   while the right sidebar is open (stock: the toggle lives in the sidebar's
+   header), else at the END of the top-right pane's tabbar after .modebtn, so
+   the two can never overlap at any width. Called after every layout change.
+   [rt:x0-x1|mb:x0-x1] census (rects, read 60ms after paint = outside every
+   action span) is the headless overlap probe. */
+let rtInfo = "", rtT = null, rtBtn = null;
+function topRight(node) { return node.children ? topRight(node.children[node.dir === "row" ? node.children.length - 1 : 0]) : node; }
+function placeRToggle() {
+  // The button is CACHED, never re-looked-up: while the right sidebar is closed it
+  // lives in the top-right pane's tabbar, so collapseGroup's g.pane.remove() takes
+  // it out of the document with its host. getElementById would then return null and
+  // the b.parentNode below threw — aborting pane_close/pane_split mid-action and
+  // leaving the toggle gone for good. A detached node re-mounts fine on appendChild.
+  const b = rtBtn || (rtBtn = $("rtoggle"));
+  if (!b) return;
+  const host = rightOpen ? $("rtabs") : (state ? topRight(state.root).pane.querySelector(".tabbar") : null);
+  if (host && b.parentNode !== host) host.appendChild(b);
+  clearTimeout(rtT);
+  rtT = setTimeout(() => {
+    rtT = null;
+    const r = b.getBoundingClientRect(), mb = host && host.classList.contains("tabbar") ? host.querySelector(".modebtn") : null;
+    const m = mb ? mb.getBoundingClientRect() : null;
+    const f = x => Math.round(x);
+    rtInfo = "rt:" + f(r.left) + "-" + f(r.right) + (m ? "|mb:" + f(m.left) + "-" + f(m.right) : "");
+    updateTitle();
+  }, 60);
 }
 async function cmdToggleRight() {
   if (!state) return;
-  await act("pane_toggle_right", { open: !rightOpen, rtab: rTab, note: cur() || "" }, async () => {
+  await act("pane_toggle_right", { open: !rightOpen, rtab: rTab, note: cur() || "" }, () => {
     rightOpen = !rightOpen;
     $("rside").hidden = $("rdiv").hidden = !rightOpen;
     $("rtoggle").title = rightOpen ? "Collapse right sidebar" : "Expand right sidebar";
-    if (rightOpen) await setRTab(rTab, false);
-    else rgStop();
+    placeRToggle();
+    if (rightOpen) setRTab(rTab, false);   // pane content fills in AFTER the toggle paints (not awaited)
     updateTitle();
   });
 }
 $("rtoggle").onclick = cmdToggleRight;
 
-/* rsidebar (R9.L1): icon strip Backlinks | Outgoing links | Outline | Local
-   graph. Active tab persisted as rside_tab in ~/.rustidian.json; census
+/* rsidebar (R9.L1): icon strip Backlinks | Outgoing links | Tags | Outline.
+   Active tab persisted as rside_tab in ~/.rustidian.json; census
    [side:l1r1:<tab>]. All panes follow the focused group's active note
    (rgFollow) and refresh 200ms after a save lands (rSchedule). */
-const RPANES = { bl: "rpane-bl", out: "rpane-out", tags: "rpane-tags", toc: "rpane-toc", graph: "rpane-graph" };
-let rTab = "graph", rT = null, rpInfo = "";   // rpInfo -> census [rp:...]
+const RPANES = { bl: "rpane-bl", out: "rpane-out", tags: "rpane-tags", toc: "rpane-toc" };
+let rTab = "bl", rT = null, rpInfo = "";   // rpInfo -> census [rp:...]
 async function setRTab(t, persist = true) {
-  if (!RPANES[t]) t = "graph";
+  if (!RPANES[t]) t = "bl";
   rTab = t;
   for (const [k, id] of Object.entries(RPANES)) {
     $(id).hidden = k !== t;
@@ -184,7 +197,6 @@ async function setRTab(t, persist = true) {
   }
   if (persist) inv("set_rside_tab", { tab: t }).catch(() => {});
   if (!rightOpen) return;
-  if (t === "graph") await rgStart(); else rgStop();  // sim only while visible
   await rPanesRefresh();
   updateTitle();
 }
@@ -200,7 +212,7 @@ function rEmpty(box, msg) {
 const CHEV = '<svg viewBox="0 0 10 10" fill="currentColor"><path d="M3 1l4 4-4 4z"/></svg>';
 async function rPanesRefresh() {
   if (!rightOpen) return;
-  const n = rgNote();
+  const n = rNote();
   if (rTab === "bl") await rBacklinks(n);
   else if (rTab === "out") await rOutgoing(n);
   else if (rTab === "toc") await rOutline(n);
@@ -456,7 +468,6 @@ $("rdiv").onmousedown = e => {             // resizable divider (clamped 140-600
   const up = () => {
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
-    if (rightOpen && rTab === "graph") rgStart();   // re-fit canvas world to new width
   };
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);
@@ -577,8 +588,9 @@ function noteMenu(e, nm) {                 // right-click a tree note row
 async function writeNote(name, content) {   // every save funnels here so graphs live-update
   const t0 = perf.now();
   await inv("write_note", { name, content });
+  markStale(name);                          // R20: inactive tabs on this note re-read on activation
+  if (!notesCache.includes(name)) await refreshTree();   // R20: a NEW note is the only save that changes the tree
   for (const g of groups()) if (g.graphOn && g.graphRefresh) await g.graphRefresh();
-  if (rightOpen && rg && rg.graphRefresh) await rg.graphRefresh();  // R9.6 live too
   if (rightOpen) rSchedule();               // rsidebar: list panes refresh (200ms)
   perf.mark("save", t0, { note: name, bytes: content.length });
 }
@@ -597,16 +609,14 @@ async function flushSave(g) {               // write g's pending edits NOW
 function mkGroup() {
   const g = { id: gidSeq++, tabs: [], active: -1,
               graphOn: false, graphRefresh: null, sim: null, saveT: null,
-              lpActive: null };
+              lpActive: null, view: null };
   const pane = document.createElement("div");
   pane.className = "pane";
+  pane._g = g;                                   // R20: gOf(el) — event-time group lookup
   pane.innerHTML =
     '<div class="tabbar"><div class="tabs"></div>' +
     '<button class="modebtn" title="toggle reading view (Ctrl+E)"></button></div>' +
     '<div class="content">' +
-      '<textarea class="editor" spellcheck="false" placeholder="# write markdown, link with [[Note]]"></textarea>' +
-      '<div class="lp"></div>' +
-      '<div class="preview"></div>' +
       '<canvas class="graph" hidden></canvas>' +
       '<div class="ac" hidden></div>' +
       '<div class="status" hidden><span class="st-bl"></span><span class="st-wc"></span><span class="st-cc"></span></div>' +
@@ -622,7 +632,7 @@ function mkGroup() {
   g.pane = pane;
   const q = s => pane.querySelector(s);
   g.tabsEl = q(".tabs"); g.modebtn = q(".modebtn"); g.content = q(".content");
-  g.editor = q(".editor"); g.lp = q(".lp"); g.preview = q(".preview"); g.graph = q(".graph");
+  g.graph = q(".graph");
   g.acEl = q(".ac"); g.status = q(".status");
   g.stBl = q(".st-bl"); g.stWc = q(".st-wc"); g.stCc = q(".st-cc");
   g.lggear = q(".lggear"); g.lgpop = q(".lgpop"); g.lgDv = q(".lgdv");
@@ -633,42 +643,103 @@ function mkGroup() {
   g.lgOut.onchange = () => lgSet(g);
   pane.addEventListener("mousedown", () => focusGroup(g), true);  // R6.3: click focuses
   g.modebtn.onclick = () => cmdToggleMode(g);
-  g.editor.addEventListener("input", () => { scheduleSave(g); showAc(g); });
-  g.editor.addEventListener("keydown", e => acKeydown(g, e));
-  g.editor.addEventListener("blur", () => setTimeout(hideAc, 100));
+  attachView(g, mkView(g));                      // scratch view until the first tab adopts it
+  return g;
+}
+
+/* R20 (#d) per-tab VIEW retention (stock keeps every leaf's view alive):
+   view = { editor (hidden model textarea), lp, preview, lp* state, loaded }.
+   Every note tab owns one; all of a group's views live in .content, the
+   active one shown, the rest display:none. Switching tabs = attachView
+   (re-point g.editor/g.lp/g.preview + swap display) — no read, no render,
+   no caret re-find. A view re-renders only when its file changed (t.stale:
+   watcher / another tab saved it) or a raw row was left open (v.dirtyRaw).
+   Tab objects move by reference between groups; their view nodes follow
+   (attachView re-parents) and handlers resolve the group via gOf(). */
+function mkView(g) {
+  const v = { g, tab: null, loaded: false, dirtyRaw: false, scrollTop: 0,
+              lpActive: null, lpCache: null, lpLines: 0, lpSeq: 0 };
+  const ed = document.createElement("textarea");
+  ed.className = "editor"; ed.spellcheck = false; ed.style.display = "none";
+  ed.placeholder = "# write markdown, link with [[Note]]";
+  const lp = document.createElement("div"); lp.className = "lp";
+  const pv = document.createElement("div"); pv.className = "preview";
+  v.editor = ed; v.lp = lp; v.preview = pv;
+  ed.addEventListener("input", () => { scheduleSave(v.g); showAc(v.g); });
+  ed.addEventListener("keydown", e => acKeydown(v.g, e));
+  ed.addEventListener("blur", () => setTimeout(hideAc, 100));
   // R12: click below the last row (empty pane space) = caret at the end of
   // the note, like a textarea / stock; rows handle their own mousedown
-  g.lp.addEventListener("mousedown", e => {
-    if (e.target !== g.lp || g.graphOn) return;
+  lp.addEventListener("mousedown", e => {
+    const g = v.g;
+    if (e.target !== lp || g.graphOn) return;
     e.preventDefault();
     const L = bufOf(g).split("\n");             // an open raw row counts
     lpEdit(g, L.length - 1, L[L.length - 1].length);
   });
-  return g;
+  return v;
+}
+function attachView(g, v) {          // v becomes g's live editor/lp/preview
+  if (g.view === v) return;
+  const old = g.view;
+  if (old && old.g === g) {          // skip when old already moved to another group (tab drop)
+    Object.assign(old, { lpActive: g.lpActive, lpCache: g.lpCache, lpLines: g.lpLines, lpSeq: g.lpSeq,
+                         scrollTop: old.lp.scrollTop });
+    if (!g.lpActive && old.lp.querySelector(".lprow.raw")) old.dirtyRaw = true;  // committed raw row still in the DOM
+    old.lp.style.display = old.preview.style.display = "none";
+  }
+  v.g = g;
+  if (v.editor.parentNode !== g.content) g.content.prepend(v.editor, v.lp, v.preview);
+  g.view = v; g.editor = v.editor; g.lp = v.lp; g.preview = v.preview;
+  g.lpActive = v.lpActive; g.lpCache = v.lpCache; g.lpLines = v.lpLines; g.lpSeq = v.lpSeq;
+}
+function viewOf(g, t) {              // the tab's view; a tab-less scratch view is adopted
+  if (t.view) return t.view;
+  const v = g.view && !g.view.tab ? g.view : mkView(g);
+  v.tab = t; t.view = v;
+  return v;
+}
+function dropView(t) {               // tab closed: its nodes go
+  const v = t.view; if (!v) return;
+  v.editor.remove(); v.lp.remove(); v.preview.remove();
+  if (v.g && v.g.view === v) attachView(v.g, mkView(v.g));
+  t.view = null;
+}
+function markStale(name) {           // a save of `name` -> every INACTIVE retained view of it re-reads on activation
+  for (const h of groups()) for (const t of h.tabs)
+    if (!t.kind && t.name === name && h.tabs[h.active] !== t && t.view && t.view.loaded) t.stale = true;
 }
 
 function layoutEl(node) {         // split tree -> DOM; flex weights from fractions
   if (!node.children) return node.pane;
   const d = document.createElement("div");
   d.className = "split " + node.dir;
-  const els = node.children.map(layoutEl);
-  els.forEach((el, i) => {
-    el.style.flex = ((node.fractions && node.fractions[i]) || 1) + " 1 0";
-    if (i > 0) d.appendChild(divider(node, i - 1, els, d));
-    d.appendChild(el);
+  node.el = d;
+  node.children.forEach((c, i) => {
+    if (i > 0) d.appendChild(divider(node));
+    d.appendChild(layoutEl(c));
   });
+  applyFlex(node);
   return d;
 }
+const elOf = node => (node.children ? node.el : node.pane);
+function applyFlex(node) {        // node.fractions -> child flex weights (in place, no rebuild)
+  node.children.forEach((c, i) => { elOf(c).style.flex = ((node.fractions && node.fractions[i]) || 1) + " 1 0"; });
+}
 
-// R6.6: draggable divider between split siblings i and i+1 — drag re-weights
-// node.fractions (each side floored at 15% of the split), flex updated live
-function divider(node, i, els, box) {
+// R6.6: draggable divider between split siblings — drag re-weights
+// node.fractions (each side floored at 15% of the split), flex updated live.
+// R20: siblings are resolved at mousedown from the DOM (the split's children
+// are inserted/removed in place now, so a captured index would go stale).
+function divider(node) {
   const h = document.createElement("div");
   h.className = "divider " + node.dir;
   h.addEventListener("mousedown", e => {
     e.preventDefault();
     e.stopPropagation();               // don't let mousedown-to-focus swallow it
-    const row = node.dir === "row";
+    const box = node.el, row = node.dir === "row";
+    const i = [...box.children].filter(c => c.classList.contains("divider")).indexOf(h);
+    const els = [elOf(node.children[i]), elOf(node.children[i + 1])];
     if (!node.fractions) node.fractions = node.children.map(() => 1);
     const total = node.fractions.reduce((a, b) => a + b, 0);
     const r = box.getBoundingClientRect();
@@ -682,8 +753,8 @@ function divider(node, i, els, box) {
       const a = Math.min(Math.max(f0 + df, min), f0 + f1 - min);
       node.fractions[i] = a;
       node.fractions[i + 1] = f0 + f1 - a;
-      els[i].style.flex = a + " 1 0";
-      els[i + 1].style.flex = (f0 + f1 - a) + " 1 0";
+      els[0].style.flex = a + " 1 0";
+      els[1].style.flex = (f0 + f1 - a) + " 1 0";
     };
     const up = () => {
       window.removeEventListener("mousemove", move);
@@ -696,10 +767,11 @@ function divider(node, i, els, box) {
   return h;
 }
 
-function renderLayout() {
+function renderLayout() {         // boot / vault switch only — every later change edits the DOM in place (R20)
   const main = $("main");
   main.innerHTML = "";
   main.appendChild(layoutEl(state.root));
+  placeRToggle();
   updateTitle();
 }
 
@@ -758,8 +830,9 @@ function updateTitle() {          // pane/focus census in the window title (head
             " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + lg + md + gg + modal +
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) +
             (rightOpen ? ":" + rTab : "") + "]" +
-            (rightOpen && rTab !== "graph" && rpInfo ? " [rp:" + rpInfo + "]" : "") +
-            (rightOpen && rgCenter ? " [rg:" + rgCenter + "]" : "") +
+            (rightOpen && rpInfo ? " [rp:" + rpInfo + "]" : "") +
+            (rtInfo ? " [" + rtInfo + "]" : "") +
+            (jsErr ? " [jserr:" + jsErr + "]" : "") +
             (navInfo ? " [" + navInfo + "]" : "") +
             (acItems.length ? " [ac:" + acKind + ":" + acItems.length + "]" : "") +
             " [pane:" + sidePane + "]" +
@@ -800,7 +873,7 @@ function focusGroup(g) {
   for (const x of groups()) x.pane.classList.toggle("focused", x === g);
   rgFollow();                     // R9.6: right panel follows focus (fire+forget)
   updateTitle();
-  if (prev) refreshTree();        // explorer active-note highlight follows focus
+  if (prev) treeHighlight();      // explorer active-note highlight follows focus
 }
 
 /* ---------- split verbs (M7 / R6.2): tab context menu + tree mutation ---------- */
@@ -826,16 +899,32 @@ async function splitWith(g, dir, tab) {  // insert a new sibling group carrying 
   await act("pane_split", { dir, groups: groups().length + 1, note: tab ? tab.name : "" }, async () => {
   const ng = mkGroup();
   if (tab) { ng.tabs.push(tab); ng.active = 0; }
-  if (parent.children.length === 1) parent.dir = dir;   // lone child: re-aim the split
+  if (parent.children.length === 1) {    // lone child: re-aim the split
+    parent.dir = dir;
+    parent.el.className = "split " + dir;
+    parent.el.querySelectorAll(":scope > .divider").forEach(d => { d.className = "divider " + dir; });
+  }
   const idx = parent.children.indexOf(g);
-  if (parent.dir === dir) {              // same axis: insert sibling, halve g's share
-    const f = (parent.fractions && parent.fractions[idx]) || 1;
+  if (!parent.fractions) parent.fractions = parent.children.map(() => 1);
+  if (parent.dir === dir) {              // same axis: insert sibling, halve g's share (DOM: divider + pane after g)
+    const f = parent.fractions[idx] || 1;
     parent.children.splice(idx + 1, 0, ng);
     parent.fractions.splice(idx, 1, f / 2, f / 2);
-  } else {                               // cross axis: wrap g in a nested split
-    parent.children[idx] = { dir, children: [g, ng], fractions: [0.5, 0.5] };
+    g.pane.after(divider(parent), ng.pane);
+    applyFlex(parent);
+  } else {                               // cross axis: wrap g in a nested split (DOM: new .split takes g's slot)
+    const node = { dir, children: [g, ng], fractions: [0.5, 0.5] };
+    parent.children[idx] = node;
+    const s = document.createElement("div");
+    s.className = "split " + dir;
+    node.el = s;
+    s.style.flex = g.pane.style.flex;
+    g.pane.replaceWith(s);
+    s.append(g.pane, divider(node), ng.pane);
+    applyFlex(node);
   }
-  renderLayout();
+  placeRToggle();
+  updateTitle();
   focusGroup(ng);
   if (ng.active >= 0) await loadActive(ng);
   });
@@ -852,19 +941,31 @@ async function collapseGroup(g) {  // R6.5: closing the last tab removes the gro
   const f = (parent.fractions || []).splice(idx, 1)[0] || 0;
   const hi = parent.children.indexOf(heir);   // nearest sibling absorbs the space
   if (hi >= 0 && parent.fractions[hi] != null) parent.fractions[hi] += f;
+  // DOM: drop the pane and one adjacent divider (R20: siblings stay mounted, no re-render)
+  const dv = g.pane.previousElementSibling || g.pane.nextElementSibling;
+  if (dv && dv.classList.contains("divider")) dv.remove();
+  g.pane.remove();
+  applyFlex(parent);
   if (parent.children.length === 1) {         // simplify single-child splits
     const child = parent.children[0];
     const gp = findParent(state.root, parent);
-    if (gp) gp.children[gp.children.indexOf(parent)] = child;
-    else if (child.children) state.root = child;
+    if (gp) {                                 // unwrap: child takes the split's slot + flex share
+      gp.children[gp.children.indexOf(parent)] = child;
+      elOf(child).style.flex = parent.el.style.flex;
+      parent.el.replaceWith(elOf(child));
+    } else if (child.children) {
+      state.root = child;
+      parent.el.replaceWith(child.el);
+    }
     // lone Group at root keeps the boot wrapper { dir, children:[g] } —
     // splitGroup depends on every group having a findParent hit
   }
   if (state.focused === g) state.focused = null;
-  renderLayout();
+  placeRToggle();
+  updateTitle();
   focusGroup(leaves(heir)[0]);                // focus nearest surviving group
   for (const h of groups()) renderTabs(h);    // drop stale chain glyphs (M8)
-  await refreshTree();
+  treeHighlight();
 }
 
 let menuEl = null;
@@ -916,6 +1017,8 @@ function tabMenu(e, g, i) {              // right-click a tab -> Split right / S
   item("Split down",  () => { closeMenu(); splitGroup(g, "col", i); });
   if (isLinked(g, tab, i)) item("Unlink tab", () => { closeMenu(); unlinkTab(g, tab); });
   else item("Link with tab...", pick);
+  if (!tab.kind) item(tab.mode === "source" ? "Live preview" : "Source mode",   // R20 (#3): source vs LP lives here (stock), not in a chrome icon
+    () => { closeMenu(); setMode(g, tab.mode === "source" ? "livepreview" : "source"); });
   m.style.left = Math.min(e.clientX, window.innerWidth - 150) + "px";
   m.style.top = Math.min(e.clientY, window.innerHeight - 80) + "px";
   document.body.appendChild(m);
@@ -925,7 +1028,6 @@ function tabMenu(e, g, i) {              // right-click a tab -> Split right / S
 /* ---------- view modes (R8.8: livepreview / source / reading per tab) ---------- */
 const ICON_BOOK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>';
 const ICON_PEN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/></svg>';
-const ICON_SRC = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 6l-6 6 6 6M16 6l6 6-6 6"/></svg>';
 const MODE_ABBR = { livepreview: "lp", source: "src", reading: "read" };
 const MODE_NEXT = { livepreview: "source", source: "reading", reading: "livepreview" };
 const isLp = m => m === "livepreview" || m === "source";  // R12: both render in g.lp
@@ -937,8 +1039,7 @@ function caretLC(g) {            // [line, col] of the caret inside the active r
 function updateModeBtn(g) {
   const tb = g.active >= 0 ? g.tabs[g.active] : null;
   const m = tb ? tb.mode : "livepreview";
-  g.modebtn.innerHTML =
-    m === "reading" ? ICON_PEN : m === "source" ? ICON_SRC : ICON_BOOK;
+  g.modebtn.innerHTML = m === "reading" ? ICON_PEN : ICON_BOOK;   // R20 (#3): stock shows pen/book only; source vs LP lives in the tab menu + Ctrl+E
 }
 
 function applyMode(g) {  // exactly ONE of lp / preview fills the pane
@@ -955,9 +1056,13 @@ async function cmdToggleMode(g) {  // Ctrl+E / mode button: lp -> src -> read ->
   if (!g || g.active < 0 || g.graphOn) return;
   const tab = g.tabs[g.active];
   if (tab.kind) return;             // graph tabs (lg/gg) have no view mode
+  await setMode(g, MODE_NEXT[tab.mode] || "livepreview");
+}
+async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu / palette / the Ctrl+E cycle
+  const tab = g.tabs[g.active];
   const keep = g.lpActive ? caretLC(g) : null;   // R12.4: caret survives lp<->src
   await flushSave(g);
-  tab.mode = MODE_NEXT[tab.mode] || "livepreview";
+  tab.mode = mode;
   hideAc();
   applyMode(g);
   if (tab.mode === "reading") await preview(g);
@@ -1007,48 +1112,50 @@ const TAB_EDGE = 40;
 function tabDragStart(e, g, i) {
   if (e.button !== 0 || e.target.closest(".x")) return;
   const sx = e.clientX, sy = e.clientY;
-  let ghost = null, target = null, hl = null;
+  let ghost = null, target = null, hl = null, zones = null, raf = 0, last = null;
   const clearHl = () => {
     if (hl) { hl.classList.remove("drop-strip", "drop-edge"); hl = null; }
   };
-  const move = ev => {                       // R18 tab_drag_move: one span per mousemove (JS + forced layouts)
-    const mT0 = performance.now();
+  const sameT = (a, b) => (a ? a.kind + a.g.id : "") === (b ? b.kind + b.g.id : "");
+  const step = () => {                       // R20: one span per FRAME; rects cached at drag start, classes only on target change
+    raf = 0;
+    const ev = last, mT0 = performance.now();
     if (!ghost) {
       if (Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) < 6) return;
       ghost = document.createElement("div");
       ghost.id = "tabghost";
       ghost.textContent = g.tabs[i] ? g.tabs[i].name.split("/").pop() : "";
       document.body.appendChild(ghost);
+      zones = groups().map(h => ({ g: h, pr: h.pane.getBoundingClientRect(), tb: h.tabsEl.getBoundingClientRect().bottom }));
     }
-    ghost.style.left = (ev.clientX + 10) + "px";
-    ghost.style.top = (ev.clientY + 12) + "px";
-    target = null; clearHl();
-    for (const h of groups()) {
-      const pr = h.pane.getBoundingClientRect();
+    ghost.style.transform = "translate3d(" + (ev.clientX + 10) + "px," + (ev.clientY + 12) + "px,0)";
+    let nt = null;
+    for (const z of zones) {
+      const pr = z.pr;
       if (ev.clientX < pr.left || ev.clientX > pr.right ||
           ev.clientY < pr.top || ev.clientY > pr.bottom) continue;
-      const tr = h.tabsEl.getBoundingClientRect();
-      if (ev.clientY <= tr.bottom) {
-        if (h !== g) {                       // own strip: reorder unsupported, no-op
-          target = { kind: "strip", g: h };
-          hl = h.tabsEl; hl.classList.add("drop-strip");
-        }
-      } else if (ev.clientX > pr.right - TAB_EDGE) {
-        target = { kind: "edge", g: h };
-        hl = h.pane; hl.classList.add("drop-edge");
-      }
+      if (ev.clientY <= z.tb) {
+        if (z.g !== g) nt = { kind: "strip", g: z.g };   // own strip: reorder unsupported, no-op
+      } else if (ev.clientX > pr.right - TAB_EDGE) nt = { kind: "edge", g: z.g };
       break;
     }
-    otel.span("tab_drag_move", { groups: groups().length, target: target ? target.kind : "" }, performance.now() - mT0);
+    if (!sameT(nt, target)) {
+      clearHl();
+      if (nt) { hl = nt.kind === "strip" ? nt.g.tabsEl : nt.g.pane; hl.classList.add(nt.kind === "strip" ? "drop-strip" : "drop-edge"); }
+    }
+    target = nt;
+    otel.span("tab_drag_move", { groups: zones.length, target: target ? target.kind : "" }, performance.now() - mT0);
   };
+  const move = ev => { last = ev; if (!raf) raf = requestAnimationFrame(step); };
   const up = async () => {
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
+    if (raf) { cancelAnimationFrame(raf); raf = 0; if (last) step(); }
     const t = target;
     if (ghost) ghost.remove();
     clearHl();
     if (!ghost || !t) return;                // plain click, or dropped nowhere
-    await act("tab_drop", { kind: t.kind, groups: groups().length, note: g.tabs[i] ? g.tabs[i].name : "" }, async () => {   // R18: drop -> layout rebuilt + note shown
+    await act("tab_drop", { kind: t.kind, groups: groups().length, note: g.tabs[i] ? g.tabs[i].name : "" }, async () => {   // R20: pane/tab nodes MOVE, no layout rebuild
     await flushSave(g);
     const tab = g.tabs.splice(i, 1)[0];
     if (!tab) return;
@@ -1079,7 +1186,7 @@ async function loadActive(g) {
   if (t && t.kind === "lg") {       // R7.1: localgraph tab owns the pane's canvas
     await showLocalGraph(g, t);
     renderTabs(g);
-    await refreshTree();
+    treeHighlight();
     return;
   }
   if (t && t.kind === "gg") {       // R9.7: global graph as a main tab
@@ -1094,22 +1201,31 @@ async function loadActive(g) {
       },
     });
     renderTabs(g);
-    await refreshTree();
+    treeHighlight();
     return;
   }
+  // R20 (#d): the tab's retained view is swapped in; read + render only on
+  // first activation or when the file changed underneath (t.stale)
+  const v = t ? viewOf(g, t) : g.view;
+  attachView(g, v);
   showEditor(g);
   const n = curOf(g);
   if (n) mruTouch(n);                // m5: quick-switcher MRU order
-  g.editor.value = n ? await inv("read_note", { name: n }) : "";
-  const tb0 = g.tabs[g.active];
-  if (tb0 && !tb0.kind) { tb0.h1 = h1Of(g.editor.value); tb0.base = g.editor.value; }  // ux-3: H1 snapshot; R11: disk base
-  const m = g.tabs[g.active] ? g.tabs[g.active].mode : "livepreview";
-  if (m === "reading") await preview(g);
-  else if (isLp(m)) await lpRender(g);
+  const m = t ? t.mode : "livepreview";
+  if (!t || !v.loaded || t.stale || v.name !== n) {   // v.name: navigate() renames the tab in place
+    g.editor.value = n ? await inv("read_note", { name: n }) : "";
+    v.name = n;
+    if (t) { t.h1 = h1Of(g.editor.value); t.base = g.editor.value; t.stale = false; v.loaded = true; }  // ux-3: H1 snapshot; R11: disk base
+    if (m === "reading") await preview(g);
+    else if (isLp(m)) await lpRender(g);
+  } else if (v.dirtyRaw && isLp(m)) {  // a committed raw row is still in the DOM: one incremental pass
+    v.dirtyRaw = false;
+    await lpRender(g);
+  } else if (v.scrollTop) g.lp.scrollTop = v.scrollTop;
   renderTabs(g);
-  await refreshTree();
-  await updateStatus(g);
-  await lgFollow(g);                // R7.3: linked localgraphs track this group
+  treeHighlight();
+  updateStatus(g);                   // word/char count sync, backlinks async (not awaited: outside the action span)
+  await lgFollow(g);                 // R7.3: linked localgraphs track this group
 }
 
 // R7.3: any localgraph tab linked to `src` re-centers on src's active note
@@ -1159,10 +1275,8 @@ async function navigate(g, name, anchor) { // wikilink / graph click: replace g'
     if (g.active < 0) { g.tabs.push(mkTab(name)); g.active = 0; }
     else {
       const tab = g.tabs[g.active];
+      histPush(g, tab, name);
       tab.name = name;
-      tab.hist = tab.hist.slice(0, tab.hpos + 1);
-      tab.hist.push(name);
-      tab.hpos++;
     }
     await loadActive(g);
     Object.assign(sp.attrs, { mode: g.tabs[g.active].mode, bytes: g.editor.value.length, lines: g.lpLines || 0 });
@@ -1231,17 +1345,52 @@ async function navAnchor(g, anchor) {
   updateTitle();
 }
 
-async function histGo(d) {         // per-tab back/forward in the focused group
-  const g = fg();
+/* R19 per-tab history (feedback #6/#6b): Back/Forward = mouse buttons 4/5,
+   Alt+Left/Right, palette "Navigate back/forward". The target group is the
+   one under the pointer (mouse) or the focused one (keys/palette); a local
+   graph tab delegates to its LINKED group, whose history the graph clicks
+   pushed (#6b) — the graph then re-centres through lgFollow like any nav.
+   Restores the note + its scroll. Span history_nav: action -> note painted,
+   or -> graph settled when a linked local graph had to re-centre. */
+async function histGo(d, from) {
+  let g = from || fg();
   if (!g || g.active < 0) return;
-  const tab = g.tabs[g.active];
+  let tab = g.tabs[g.active];
+  if (tab.kind === "lg" && tab.linkId != null) {
+    g = groups().find(x => x.id === tab.linkId);
+    if (!g || g.active < 0) return;
+    tab = g.tabs[g.active];
+  }
+  if (tab.kind) return;
   const p = tab.hpos + d;
   if (p < 0 || p >= tab.hist.length) return;
+  const sp = otel.begin("history_nav", { dir: d < 0 ? "back" : "forward", from: tab.name, note: tab.hist[p].n, pos: p, len: tab.hist.length });
   await flushSave(g);
+  tab.hist[tab.hpos].s = scrollOf(g);
   tab.hpos = p;
-  tab.name = tab.hist[p];
+  tab.name = tab.hist[p].n;
+  // R19 (HARD RULE 100ms): history_nav always ends at PAINT. A linked local graph
+  // re-centres in loadActive -> lgFollow -> graphRefresh; its settling is animation and
+  // is measured by that group's own graph_settle span, never by history_nav.
+  const lgh = groups().find(h => { const t = h.active >= 0 ? h.tabs[h.active] : null; return t && t.kind === "lg" && t.linkId === g.id && t.center !== tab.name; });
+  if (lgh) { otel.cancel(lgh.settleSp); lgh.settleSp = otel.begin("graph_settle", { node: tab.name, from: "history", nodes: 0 }); }
   await loadActive(g);
+  const s = tab.hist[p].s;
+  if (s) { if (tab.mode === "reading") g.preview.scrollTop = s; else if (isLp(tab.mode)) g.lp.scrollTop = s; else g.editor.scrollTop = s; }
+  otel.paint(sp);
 }
+// mouse buttons 4/5 (X11 8/9 -> DOM button 3/4): nav fires on mousedown (capture) with
+// preventDefault + stopPropagation so WebKit never turns them into webview history and no
+// row/pane handler sees them; the matching auxclick/mouseup are swallowed the same way
+function histBtn(e) { return e.button === 3 ? -1 : e.button === 4 ? 1 : 0; }
+for (const ev of ["mousedown", "mouseup", "auxclick", "click"])
+  document.addEventListener(ev, e => {
+    const d = histBtn(e); if (!d) return;
+    e.preventDefault(); e.stopPropagation();
+    if (ev !== "mousedown") return;
+    const pane = e.target && e.target.closest ? e.target.closest("#main .pane") : null;
+    histGo(d, pane ? groups().find(h => h.pane === pane) : null);
+  }, true);
 
 async function closeTab(g, i) {
   const rm = g.tabs.length === 1 && groups().length > 1;      // R6.5: last tab -> the pane goes too
@@ -1249,6 +1398,7 @@ async function closeTab(g, i) {
   if (i === g.active) await flushSave(g);
   if (!g.tabs[i].kind) closedTabs.push(g.tabs[i].name);   // R14 undo close tab
   unlinkTab(g, g.tabs[i], true);    // R13.4: closing a member unlinks it
+  dropView(g.tabs[i]);              // R20: retained view goes with the tab
   g.tabs.splice(i, 1);
   if (!g.tabs.length && groups().length > 1)  // R6.5: empty group leaves the tree
     return collapseGroup(g);
@@ -1302,16 +1452,24 @@ function renderNode(node, prefix, depth, out) {
       '<span class="tfi">' + TREE_FOLDER + '</span>' +
       '<span class="tn"></span>';
     row.querySelector(".tn").textContent = d;   // names never hit innerHTML
-    row.onclick = () => act("folder_toggle", { folder: full, open: collapsed.has(full), notes: node.dirs.get(d).notes.length, rows: out.childElementCount }, () => {
-      collapsed.has(full) ? collapsed.delete(full) : collapsed.add(full);
-      refreshTree();
+    // R20 (#7): children live in a .tkids box rendered ONCE; a click only flips
+    // .collapsed on the box (+ .open on the row) — zero IPC, no tree rebuild.
+    // The tree DOM is rebuilt only when the note/folder list changes (refreshTree).
+    const kids = document.createElement("div");
+    kids.className = "tkids" + (open ? "" : " collapsed");
+    row.onclick = () => act("folder_toggle", { folder: full, open: collapsed.has(full), notes: node.dirs.get(d).notes.length, rows: kids.childElementCount }, () => {
+      const o = collapsed.has(full);
+      o ? collapsed.delete(full) : collapsed.add(full);
+      row.classList.toggle("open", o);
+      kids.classList.toggle("collapsed", !o);
     });
     out.appendChild(row);
-    if (open) renderNode(node.dirs.get(d), full, depth + 1, out);
+    renderNode(node.dirs.get(d), full, depth + 1, kids);
+    out.appendChild(kids);
   }
   for (const nm of [...node.notes].sort()) {
     const row = document.createElement("div");
-    row.className = "trow note" + (nm === cur() ? " active" : "");
+    row.className = "trow note";                // .active: treeHighlight()
     row.innerHTML = treeGuides(depth) + '<span class="tc"></span>' +
       '<span class="tn"></span>';
     row.querySelector(".tn").textContent = nm.split("/").pop();
@@ -1325,25 +1483,28 @@ function renderNode(node, prefix, depth, out) {
 // perf-index: with backlinks/search/graph served from RAM, rebuilding the
 // 500-row explorer DOM on EVERY note open / tab switch became the largest
 // remaining slice of note_open. The row set only changes when the folder or
-// note list (or the collapsed set) changes -> memoize on that signature and
-// otherwise just move the .active highlight.
-let treeSig = "", treeRows = new Map();
+// note list changes -> memoize on that signature and otherwise just move the
+// .active highlight. R20: treeHighlight() is the zero-IPC half (tab switch /
+// focus change); refreshTree() re-lists the vault (watcher, create, rename).
+let treeSig = "", treeRows = new Map(), treeActive = null;
+function treeHighlight() {
+  const r = treeRows.get(cur()) || null;
+  if (r === treeActive) return;
+  if (treeActive) treeActive.classList.remove("active");
+  if (r) r.classList.add("active");
+  treeActive = r;
+}
 async function refreshTree() {
   const [folders, notes] =
     await Promise.all([inv("list_folders"), inv("list_notes")]);
   notesCache = notes;
   const tree = $("tree");
-  const sig = folders.join("\n") + "\0" + notes.join("\n") + "\0" +
-    [...collapsed].sort().join("\n");
-  if (sig === treeSig && tree.childElementCount) {
-    for (const r of tree.querySelectorAll(".trow.note.active")) r.classList.remove("active");
-    const r = treeRows.get(cur());
-    if (r) r.classList.add("active");
-    return;
-  }
-  treeSig = sig; treeRows = new Map();
+  const sig = folders.join("\n") + "\0" + notes.join("\n");
+  if (sig === treeSig && tree.childElementCount) { treeHighlight(); return; }
+  treeSig = sig; treeRows = new Map(); treeActive = null;
   tree.innerHTML = "";
   renderNode(buildTree(folders, notes), "", 0, tree);
+  treeHighlight();
 }
 
 /* ---------- editor + preview (per group) ---------- */
@@ -1484,8 +1645,14 @@ async function lpRender(g, activeL = -1, col = 0, full = false) {
                                  rendered: need.length, patched: touched, full: !c });
 }
 
+// R20 (#8/#d): row handlers resolve their group AT EVENT TIME from the DOM
+// (pane._g) — a tab's rendered view is retained and can move to another
+// group (tab drag / split) without being rebuilt, so closures over `g` would
+// go stale exactly like closures over line numbers did.
+const gOf = el => { const p = el.closest(".pane"); return p ? p._g : null; };
+
 // the ONE raw region (R8.2): textarea with the block's source; sets g.lpActive
-function lpRawRow(g, b, text) {
+function lpRawRow(g0, b, text) {
   const row = document.createElement("div");
   row.className = "lprow raw";
   row.dataset.l0 = b.l0; row.dataset.l1 = b.l1;
@@ -1495,12 +1662,14 @@ function lpRawRow(g, b, text) {
   ta.rows = b.l1 - b.l0 + 1;
   ta.spellcheck = false;
   ta.addEventListener("input", () => {           // grow with typed newlines
+    const g = gOf(row);
     ta.rows = ta.value.split("\n").length;
     showAc(g);                                   // R12: [[ autocomplete in the raw row
     const tb = g.tabs[g.active];                 // source mode saves while typing (textarea parity)
     if (tb && tb.mode === "source") scheduleSave(g);
   });
   ta.addEventListener("keydown", ev => {         // R18 key_to_paint: keystroke -> paint (lpKey's re-render included)
+    const g = gOf(row);
     if (ev.key === "Shift" || ev.key === "Control" || ev.key === "Alt" || ev.key === "Meta") return acKeydown(g, ev);
     const sp = otel.begin("key_to_paint", { key: ev.key.length === 1 ? "char" : ev.key, note_lines: g.lpLines || 0, row_lines: ta.rows, note: curOf(g) || "" });
     acKeydown(g, ev);
@@ -1508,18 +1677,19 @@ function lpRawRow(g, b, text) {
     Promise.resolve(p).then(() => otel.paint(sp), () => otel.paint(sp));
   });
   ta.addEventListener("blur", () => setTimeout(() => {
+    const g = gOf(row);
     hideAc();
-    if (g.lpActive && g.lpActive.ta === ta) lpMove(g, -1, 0, "blur");
+    if (g && g.lpActive && g.lpActive.ta === ta) lpMove(g, -1, 0, "blur");
   }, 60));
   row.appendChild(ta);
-  g.lpActive = { l0: b.l0, l1: b.l1, ta };
+  g0.lpActive = { l0: b.l0, l1: b.l1, ta };
   return row;
 }
 
 // a rendered row. Handlers read l0/l1 from row.dataset and the model from
 // g.editor.value AT EVENT TIME: rows are kept across passes, so closures
 // over line numbers would go stale when lines above are inserted/removed.
-function lpRow(g, b, h, text) {
+function lpRow(g0, b, h, text) {
   const row = document.createElement("div");
   row.className = "lprow";
   // R15.10 LP: a leading-space-indented line (nested list) keeps its literal indent, like stock (spaces are not re-laid)
@@ -1536,6 +1706,7 @@ function lpRow(g, b, h, text) {
     cb.disabled = false;
     cb.addEventListener("mousedown", e => {
       e.preventDefault(); e.stopPropagation();
+      const g = gOf(row);
       lpCommit(g);                             // fold any active raw row first
       const l0 = cur().l0, M = g.editor.value.split("\n");
       M[l0] = M[l0].replace(/^(\s*(?:[-*+]|\d+\.) )\[( |[xX])\]/,
@@ -1556,6 +1727,7 @@ function lpRow(g, b, h, text) {
     a.onclick = e => e.preventDefault();       // href="#": no hash churn
     a.addEventListener("mousedown", async e => {
       e.preventDefault(); e.stopPropagation();
+      const g = gOf(row);
       const n = a.dataset.note || curOf(g), an = a.dataset.anchor;  // R10: [[#H]] = this note
       if (a.classList.contains("wiki-unresolved")) {
         await writeNote(n, "");
@@ -1572,6 +1744,7 @@ function lpRow(g, b, h, text) {
   });
   row.addEventListener("mousedown", e => {
     e.preventDefault();                        // keep browser from part-selecting
+    const g = gOf(row);
     const bb = cur(), L = g.editor.value.split("\n");
     lpEdit(g, bb.l0, lpCol(e, row, bb, L));    // R8.3 column mapping
   });
@@ -1656,6 +1829,7 @@ async function preview(g) {
   for (const a of g.preview.querySelectorAll("a.wiki"))
     a.onclick = async e => {
       e.preventDefault();
+      const g = gOf(a);                              // R20: event-time group (retained views move)
       const n = a.dataset.note || curOf(g), an = a.dataset.anchor;  // R10: [[#H]] = this note
       if (a.classList.contains("wiki-unresolved"))   // R3.5: click creates the note
         await writeNote(n, "");
@@ -2113,7 +2287,7 @@ async function applyRename(old, nn) {   // post-rename bookkeeping (F2 + H1 path
   for (const h of groups()) for (const tb of h.tabs) {
     if (tb.kind) continue;
     if (tb.name === old) tb.name = nn;
-    if (tb.hist) tb.hist = tb.hist.map(n => (n === old ? nn : n));
+    if (tb.hist) for (const e of tb.hist) if (e.n === old) e.n = nn;
   }
   const mi = mruList.indexOf(old);
   if (mi >= 0) mruList[mi] = nn;
@@ -2174,7 +2348,54 @@ $("rninput").onkeydown = async e => {
 
 if (document.fonts) document.fonts.addEventListener("loadingdone", () => updateTitle());   // R15.2: republish [fonts:] once a lazy @font-face lands
 
+/* perf (INTEGRATE): compositor FLOOR probe — N no-op 1px repaints driven through
+   the SAME act() -> otel.paint() path every interaction uses, so each op can be
+   reported as a multiple of what one frame costs on this host (Xvfb/llvmpipe is
+   ~an order slower than a GPU). A 1.2x-floor op is the framebuffer; a 3x-floor
+   op is our code. Bench-only: Ctrl+Alt+Shift+F, no menu/palette entry. */
+async function floorProbe(n = 30) {
+  let px = $("floorpx");
+  if (!px) { px = document.createElement("div"); px.id = "floorpx"; document.body.appendChild(px); }
+  // INTEGRATE: three floors, cheapest damage first. compositor_floor = 1px;
+  // compositor_floor_full = every painted pixel of the content tree re-rastered;
+  // compositor_floor_relayout = both note columns reflow + that raster, i.e. what a
+  // pane split costs the compositor before any of our code is blamed for it. `rows`
+  // records how much live-preview DOM was on screen while the floor was measured.
+  for (const [name, cls, k] of [["compositor_floor", "floorprobe", n],
+                                ["compositor_floor_full", "floorfull", 20],
+                                ["compositor_floor_relayout", "floorrelayout", 20]]) {
+    for (let i = 0; i < k; i++) {
+      const rows = document.querySelectorAll(".lprow").length;
+      await act(name, { i, rows }, () => { document.body.classList.toggle(cls); });
+      await new Promise(r => setTimeout(r, 30));   // act() resolves before paint lands; let the span close
+    }
+    document.body.classList.remove(cls);
+  }
+  // INTEGRATE floor #4: compositor_floor_build. The three probes above all re-damage
+  // DOM that is ALREADY laid out, so they price a re-paint, not a first paint — and the
+  // bench says every op over the ceiling (pane_split, tab_drop, note_open) is one that
+  // BUILDS a note column from nothing. This probe prices exactly that and nothing else:
+  // clone the live note's rows (cloneNode = no markdown parse, no invoke, no our-code),
+  // append them as a second .lp column inside #main, and measure to paint. What is left
+  // is the engine's style+layout+raster of N fresh subtrees, i.e. the real floor a pane
+  // split cannot go below while it shows the same note twice.
+  const srcLp = document.querySelector(".lp");
+  if (srcLp) {
+    for (let i = 0; i < 20; i++) {
+      const rows = srcLp.querySelectorAll(".lprow").length;
+      const col = document.createElement("div");
+      col.className = srcLp.className;
+      col.style.cssText = "flex:1 1 0; min-width:0";
+      for (const r of srcLp.children) col.appendChild(r.cloneNode(true));
+      await act("compositor_floor_build", { i, rows }, () => { $("main").appendChild(col); });
+      await new Promise(r => setTimeout(r, 30));
+      col.remove();
+      await new Promise(r => setTimeout(r, 30));   // let the removal paint before the next sample
+    }
+  }
+}
 document.addEventListener("keydown", e => {
+  if (e.ctrlKey && e.altKey && e.shiftKey && (e.key === "F" || e.key === "f")) { e.preventDefault(); floorProbe(); return; }
   if (settingsOpen) return hkKey(e);       // R14: settings modal owns the keyboard (chord capture)
   if (e.key === "Escape") {
     if (modalKind) { closeModal(); return; }
@@ -2259,7 +2480,7 @@ async function cmdGlobalGraph() {  // R9.7: ribbon icon opens GLOBAL graph as a 
 }
 async function startGraph(g, cfg) {
   g.graphOn = true; g.graphSettled = false;
-  const openT0 = g.perfT0 || perf.now();   // perf: graph_settle = open -> kinetic energy below eps
+  const openT0 = g.perfT0 || perf.now();   // perf: graph_open_settle = open -> kinetic energy below eps
   hideAc();
   g.status.hidden = true;
   g.editor.style.display = "none"; g.preview.style.display = "none";
@@ -2333,7 +2554,10 @@ async function startGraph(g, cfg) {
   // live refresh (R4.3): re-fetch on save, keep surviving positions,
   // seed new nodes near their first neighbor
   g.graphRefresh = async () => {
-    const g2 = await cfg.fetch();
+    // R19: a node click prefetches the next neighbourhood in parallel with the
+    // note open (g.prefetch = {n, p}); use it when it is for the current centre
+    const pf = g.prefetch; g.prefetch = null;
+    const g2 = await (pf && pf.n === cfg.center() ? pf.p : cfg.fetch());
     // graph-webgl: a refresh that changes nothing (the race-closing refetch below, a save that
     // touched no link) must not reheat — the layout stays a pure function of the vault, so two
     // opens land on identical positions (smoke graphgl compares gl vs 2d frames pixel-wise)
@@ -2347,18 +2571,29 @@ async function startGraph(g, cfg) {
       return o ? { n: nd.name, resolved: nd.resolved, x: o.x, y: o.y, vx: o.vx, vy: o.vy, deg: 0, r: 6.5 }
                : { n: nd.name, resolved: nd.resolved, x: null, y: null, vx: 0, vy: 0, deg: 0, r: 6.5 };
     });
+    // R19 warm start (feedback #5): survivors keep position + velocity; a NEW
+    // node is seeded one link length (F.dist) from its first surviving
+    // neighbour, on the ray from the old centroid through that neighbour
+    // (outward, where the spring wants it), fanned by index so siblings do
+    // not stack; a node with no placed neighbour takes the phyllotaxis slot.
+    let cx = 0, cy = 0, nOld = 0;
+    for (const p of N2) if (p.x !== null) { cx += p.x; cy += p.y; nOld++; }
+    if (nOld) { cx /= nOld; cy /= nOld; }
     N2.forEach((p, i) => {
       if (p.x !== null) return;
-      const e = g2.edges.find(([a, b]) => a === i || b === i);
-      const nb = e ? N2[e[0] === i ? e[1] : e[0]] : null;
-      p.x = (nb && nb.x !== null ? nb.x : 0) + 30 * (Math.random() - 0.5);
-      p.y = (nb && nb.y !== null ? nb.y : 0) + 30 * (Math.random() - 0.5);
+      const e = g2.edges.find(([a, b]) => (a === i && N2[b].x !== null) || (b === i && N2[a].x !== null));
+      if (!e) { [p.x, p.y] = seed(i); return; }
+      const nb = N2[e[0] === i ? e[1] : e[0]];
+      let ang = Math.atan2(nb.y - cy, nb.x - cx);
+      if (!Number.isFinite(ang) || (nb.x === cx && nb.y === cy)) ang = i * 2.399963;
+      ang += (i % 2 ? 1 : -1) * 0.35 * ((i >> 1) % 3);
+      p.x = nb.x + F.dist * Math.cos(ang); p.y = nb.y + F.dist * Math.sin(ang);
     });
     N.length = 0; N.push(...N2);
     gr.edges = g2.edges;
     rebuild();
     hov = -1;
-    g.reheat();   // partial reheat (alpha >= 0.5): settle new nodes without scattering old ones; restarts a stopped loop
+    g.reheat(0.3);   // R19: d3 restart semantics — alpha 0.3, not 1: settle the new nodes without scattering the old ones
   };
   // sim heat (d3-force shaped): forces scale by alpha, which decays per PHYSICS
   // STEP toward 0 (alpha += -alpha*ALPHA_DECAY; 0.001 after 300 steps) and
@@ -2377,7 +2612,7 @@ async function startGraph(g, cfg) {
   // settled = total kinetic energy (sum v^2) under 0.0025 px^2/step per node
   // (mean speed < 0.05 px/step, invisible) for 10 consecutive steps, or physics frozen
   let calm = 0, quiet = false;          // quiet: physics halted until the next reheat
-  let settledMark = false;              // graph_settle span fires once per open
+  let settledMark = false;              // graph_open_settle mark fires once per open
   const kinetic = () => { let k = 0; for (const p of N) k += p.vx * p.vx + p.vy * p.vy; return k; };
   // Barnes-Hut quadtree (theta 0.8) for the many-body repulsion (d3 shape:
   // dv = REPEL*alpha*dx/d^2, i.e. |dv| ~ 1/d). The force is long-range, so a
@@ -2550,10 +2785,13 @@ async function startGraph(g, cfg) {
       calm = ke < 0.0025 * N.length ? calm + 1 : 0;
       if (calm >= 10 || alpha <= ALPHA_MIN) {
         quiet = true;
-        if (g.recenterSp) { otel.end(g.recenterSp, { nodes: N.length, edges: gr.edges.length, reheat: true }); g.recenterSp = null; }   // R18 graph_recenter: node click -> re-filtered sim settled
+        // R19 (HARD RULE 100ms): graph_recenter ends at the first PAINT of the new centre
+        // (see cv.onclick); what happens after that is ANIMATION and is measured here as its
+        // own span graph_settle = click -> kinetic energy below eps.
+        if (g.settleSp) { otel.end(g.settleSp, { nodes: N.length, edges: gr.edges.length, ke: +ke.toFixed(3), alpha: +alpha.toFixed(3) }); g.settleSp = null; }
         if (!settledMark) {
           settledMark = true;
-          perf.mark("graph_settle", openT0, { nodes: N.length, ke: +ke.toFixed(3), alpha: +alpha.toFixed(3) });
+          perf.mark("graph_open_settle", openT0, { nodes: N.length, ke: +ke.toFixed(3), alpha: +alpha.toFixed(3) });
           if (pref.loseCtx && glr) setTimeout(() => { if (glr && g.simGen === gen) glr.loseContext(); }, 300);   // smoke hook: WEBGL_lose_context after settle
         }
       }
@@ -2581,7 +2819,7 @@ async function startGraph(g, cfg) {
     perf.mark("graph_renderer", perf.now(), { renderer: "2d", reason: "contextlost", webgl: 0, ...gpu });
     redraw();
   };
-  g.reheat = () => { calm = 0; quiet = false; g.graphSettled = false; alpha = Math.max(alpha, 0.5); wake(); };
+  g.reheat = (a = 0.5) => { calm = 0; quiet = false; g.graphSettled = false; alpha = Math.max(alpha, a); wake(); };
   g.graphNodes = () => {              // census: node screen coords (window px) for the graphnav smoke
     const r = cv.getBoundingClientRect();
     return N.map(p => ({ n: p.n, x: Math.round(r.left + p.x * view.scale + view.tx), y: Math.round(r.top + p.y * view.scale + view.ty) }));
@@ -2639,12 +2877,15 @@ async function startGraph(g, cfg) {
     if (!hit) return;
     if (!hit.resolved)                                  // ghost node: create then open (M3 path)
       await writeNote(hit.n, "");
-    // R18 graph_recenter: local graph node click -> note opens (child note_open) -> graph re-centres -> sim settled.
+    // R19 (HARD RULE 100ms): the CLICK is the interaction — graph_recenter measures it to the
+    // first paint of the response (note painted + graph redrawn at the new centre). The sim
+    // settling afterwards is animation: it gets its own informational span graph_settle.
     // Global graph clicks turn the tab into the note (no re-centre): note_open only.
     const rsp = cfg.center() ? otel.begin("graph_recenter", { node: hit.n, from: cfg.center(), nodes: N.length, edges: gr.edges.length }) : null;
-    if (rsp) { otel.cancel(g.recenterSp); g.recenterSp = rsp; }
+    if (rsp) { otel.cancel(g.settleSp); g.settleSp = otel.begin("graph_settle", { node: hit.n, from: cfg.center(), nodes: N.length }); }
     await cfg.onClick(hit.n);
-    if (rsp && g.recenterSp === rsp && quiet) { otel.end(rsp, { nodes: N.length, edges: gr.edges.length, reheat: false }); g.recenterSp = null; }   // centre unchanged / nothing to settle
+    if (rsp) otel.paint(rsp, { nodes: N.length, edges: gr.edges.length });
+    if (g.settleSp && quiet) { otel.end(g.settleSp, { nodes: N.length, edges: gr.edges.length, reheat: false }); g.settleSp = null; }   // centre unchanged / nothing to settle
   };
   // a save can land while the initial fetch is in flight (writeNote sees
   // graphRefresh still null and skips) — refresh once now to close the race
@@ -2652,43 +2893,18 @@ async function startGraph(g, cfg) {
 }
 
 /* ---------- M8 local graph (R7.1-R7.5) ---------- */
-// BFS neighborhood of `center`: adjacency (out + in lists) is built once per
-// fetch in O(E), then the frontier expands in O(V+E) — via outgoing edges when
-// `out`, incoming when `inc` (was: full edge-list scan per frontier node per
-// depth); keeps ALL edges among the surviving node set (Obsidian's
-// neighbor-links default), remaps indices
-function lgFilter(gr, center, depth, inc, out) {
-  const idx = new Map(gr.nodes.map((nd, i) => [nd.name, i]));
-  const ci = idx.get(center);
-  if (ci == null) return { nodes: [], edges: [] };
-  const fwd = gr.nodes.map(() => []), rev = gr.nodes.map(() => []);
-  for (const [a, b] of gr.edges) { fwd[a].push(b); rev[b].push(a); }
-  const keep = new Set([ci]);
-  let frontier = [ci];
-  for (let d = 0; d < depth && frontier.length; d++) {
-    const next = [];
-    for (const f of frontier) {
-      if (out) for (const b of fwd[f]) if (!keep.has(b)) { keep.add(b); next.push(b); }
-      if (inc) for (const a of rev[f]) if (!keep.has(a)) { keep.add(a); next.push(a); }
-    }
-    frontier = next;
-  }
-  const order = [...keep];
-  const rmap = new Map(order.map((o, ni) => [o, ni]));
-  return {
-    nodes: order.map(i => gr.nodes[i]),
-    edges: gr.edges.filter(([a, b]) => keep.has(a) && keep.has(b))
-                   .map(([a, b]) => [rmap.get(a), rmap.get(b)]),
-  };
-}
+// R19: the depth-N neighbourhood cut (formerly lgFilter here) lives in
+// index.rs GraphCache::local — served over graph_local from the cached adjacency.
 
 async function showLocalGraph(g, t) {  // t = the localgraph tab (kind:"lg")
   cancelAnimationFrame(g.sim);         // clean restart on tab switches
   await startGraph(g, {
-    fetch: async () => lgFilter(await inv("graph"), t.center, t.depth, t.inc, t.out),
+    fetch: () => inv("graph_local", { center: t.center, depth: t.depth, inc: t.inc, out: t.out }),   // R19: served from the index adjacency cache
     center: () => t.center,
     onClick: async n => {              // R7.4: navigate the LINKED group; lgFollow re-centers
       const lk = groups().find(x => x.id === t.linkId);
+      // R19: the next neighbourhood is fetched IN PARALLEL with the note (graphRefresh picks it up)
+      g.prefetch = { n, p: inv("graph_local", { center: n, depth: t.depth, inc: t.inc, out: t.out }) };
       if (lk) await navigate(lk, n);
       await linkSync(t, n);          // R13.3: manual members follow too
     },
@@ -2841,6 +3057,7 @@ async function reloadInPlace(g, text) {
 async function dropTab(g, i) {
   if (i === g.active) { clearTimeout(g.saveT); g.saveT = null; g.lpActive = null; }
   unlinkTab(g, g.tabs[i], true);    // R13.4
+  dropView(g.tabs[i]);
   g.tabs.splice(i, 1);
   if (!g.tabs.length && groups().length > 1) return collapseGroup(g);
   if (g.active >= g.tabs.length) g.active = g.tabs.length - 1;
@@ -2857,8 +3074,9 @@ async function onVaultChanged(c) {
       const t = g.tabs[i];
       if (!t.kind && gone.has(t.name)) await dropTab(g, i);
     }
+    for (const x of g.tabs) if (!x.kind && x !== g.tabs[g.active] && mod.has(x.name)) x.stale = true;  // R20: retained views re-read on switch
     const t = g.active >= 0 ? g.tabs[g.active] : null;
-    if (!t || t.kind || !mod.has(t.name)) continue;  // inactive tabs re-read on switch
+    if (!t || t.kind || !mod.has(t.name)) continue;
     const ext = await inv("read_note", { name: t.name });
     const buf = bufOf(g);
     if (buf === ext) { t.base = ext; continue; }
@@ -2872,7 +3090,6 @@ async function onVaultChanged(c) {
   await refreshTree();
   await refreshBm();
   for (const g of groups()) if (g.graphOn && g.graphRefresh) await g.graphRefresh();
-  if (rightOpen && rg && rg.graphRefresh) await rg.graphRefresh();
   if (rightOpen) rSchedule();
   updateTitle();
 }
@@ -2885,7 +3102,7 @@ $("vswitch").onclick = showPicker;
   if (sw >= 150) $("side").style.width = Math.min(600, sw) + "px";
   const rt = await inv("get_rside_tab").catch(() => null);   // rsidebar
   await hkLoad();                                             // R14 custom hotkeys
-  await setRTab(RPANES[rt] ? rt : "graph", false);
+  await setRTab(RPANES[rt] ? rt : "bl", false);
   vaultPath = await inv("vault_get");
   if (vaultPath) await enterVault(); else showPicker();
 })();

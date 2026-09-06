@@ -2,8 +2,10 @@
    before main.js; exposes window.otel. Zero deps.
 
    A UI action span measures action -> PAINT: otel.paint(sp) ends the span
-   after a double requestAnimationFrame (frame 1 = style/layout/paint of what
-   the action changed is committed, frame 2 = it is on screen). Spans are
+   once the next frame is committed (requestAnimationFrame, then the task
+   after its style/layout/paint). R20: the idle wait for that frame tick is
+   recorded as vsync_ms and subtracted by scripts/otel-flat.sh (ms = app
+   latency; wall_ms keeps the raw number). Spans are
    buffered and shipped to Rust in ONE log_spans IPC every 250ms (not per
    span); the backend writes them as OTLP/JSON lines into RUSTIDIAN_OTEL.
    The first reply says whether telemetry is on; when it is not, every later
@@ -17,7 +19,7 @@
 
    API:  const sp = otel.begin(name, attrs)     -> span handle (t0 = now)
          otel.end(sp, moreAttrs)               -> record now as the end
-         otel.paint(sp, moreAttrs)             -> end after double rAF (returns a Promise)
+         otel.paint(sp, moreAttrs)             -> end at the next frame commit (returns a Promise)
          otel.span(name, attrs, ms)            -> record an already-measured span (ms long, ending now)
          otel.ctx()                            -> {traceId, spanId} of the innermost open span, or null
          otel.flush()                          -> ship the buffer now
@@ -59,14 +61,20 @@
       sp.t1 = 0; const i = stack.lastIndexOf(sp); if (i >= 0) stack.splice(i, 1);
     },
     paint(sp, more) {
-      // double rAF: frame 1 renders the change, frame 2 means it is on screen. That floor is
-      // ~1 frame; js_ms (action's own JS + awaited IPC) and layout_ms (frame 1 style/layout/
-      // paint, via a setTimeout(0) after its rAF) split the cost the app can actually shave.
-      if (sp && sp.t1 < 0) sp.attrs.js_ms = Math.round((performance.now() - sp.t0) * 100) / 100;
+      // R20: the span ends when frame 1 is COMMITTED (rAF -> style/layout/paint -> the next task).
+      // The old second rAF only added one dead frame period. js_ms = the action's own JS + awaited
+      // IPC, vsync_ms = idle wait for the next frame tick (display cadence, not app cost),
+      // layout_ms = frame 1 style/layout/paint. scripts/otel-flat.sh reports ms = wall - vsync_ms
+      // (the app-attributable latency the lag budgets govern) and keeps wall_ms.
+      const tj = performance.now();
+      if (sp && sp.t1 < 0) sp.attrs.js_ms = Math.round((tj - sp.t0) * 100) / 100;
       return new Promise(res => requestAnimationFrame(() => {
         const tr = performance.now();
-        setTimeout(() => { if (sp) sp.attrs.layout_ms = Math.round((performance.now() - tr) * 100) / 100; }, 0);
-        requestAnimationFrame(() => { otel.end(sp, more); res(); });
+        if (sp) sp.attrs.vsync_ms = Math.round((tr - tj) * 100) / 100;
+        setTimeout(() => {
+          if (sp) { const tl = performance.now(); sp.attrs.layout_ms = Math.round((tl - tr) * 100) / 100; sp.attrs.wall_ms = Math.round((tl - sp.t0) * 100) / 100; }
+          otel.end(sp, more); res();
+        }, 0);
       }));
     },
     span(name, attrs = {}, ms = 0) {

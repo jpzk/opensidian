@@ -67,6 +67,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
         font-size: 13px; color: #cdd6f4 }
 .trow:hover { background: #313244 }
 .trow.active { background: #45475a }
+.tkids.collapsed { display: none }   /* R20: collapsed folder = its .tkids box hidden, rows stay built */
 .trow .tn { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden;
             text-overflow: ellipsis }
 .trow .tg { flex: 0 0 14px; align-self: stretch; position: relative }
@@ -92,9 +93,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 #rside { width: 260px; flex-shrink: 0; background: #181825; display: flex;
          flex-direction: column; min-width: 0 }
 /* rsidebar: icon strip + panes (Backlinks / Outgoing / Outline / Local graph) */
-#rtabs { display: flex; gap: 2px; padding: 6px 30px 2px 6px }  /* 30: #rtoggle sits inboard */
-#rpane-graph { display: flex; position: relative }
-#rpane-graph[hidden] { display: none }
+#rtabs { display: flex; gap: 2px; padding: 6px 6px 2px 6px }
 .rhead { padding: 6px 10px 4px; font-size: 12px; font-weight: 600; color: #cdd6f4 }
 .rhead .scount { color: #6c7086; font-weight: 400; margin-left: 4px }
 .rlist { flex: 1; overflow-y: auto; font-size: 12px }
@@ -136,8 +135,10 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .tagrow.open .tc svg { transform: rotate(90deg) }
 .tagrow .tn { flex: 1; overflow: hidden; text-overflow: ellipsis }
 .tagrow .scount { color: #6c7086 }
-#rtoggle { position: fixed; top: 5px; right: 6px; z-index: 9; background: none;
-           border: 0; color: #a6adc8; cursor: pointer; padding: 3px;
+/* R20 (#3): in flow — last item of #rtabs (sidebar open) or of the top-right
+   pane's .tabbar after .modebtn (collapsed); placeRToggle() moves the node */
+#rtoggle { margin-left: auto; align-self: center; flex-shrink: 0; background: none;
+           border: 0; color: #a6adc8; cursor: pointer; padding: 3px; margin-right: 6px;
            border-radius: 4px }
 #rtoggle:hover { background: #313244; color: #cdd6f4 }
 #rtoggle svg { width: 17px; height: 17px; display: block }
@@ -174,7 +175,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .tab .x:hover { background: #585b70; color: #cdd6f4 }
 .tab.active .x { color: #a6adc8 }
 /* ux-5: tab drag — ghost chip under the cursor + drop-target highlights */
-#tabghost { position: fixed; z-index: 99; pointer-events: none;
+#tabghost { position: fixed; left: 0; top: 0; will-change: transform; z-index: 99; pointer-events: none;
             background: #45475a; color: #cdd6f4; padding: 4px 12px;
             border-radius: 6px; font-size: 12px; opacity: .92;
             box-shadow: 0 4px 14px rgba(0,0,0,.55) }
@@ -506,3 +507,17 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .lp ul > li::before { inset-inline-start: -9px }
 .lp ol > li { margin-inline-start: 32px; padding-inline-start: 0 }
 .lp ol > li::before { inset-inline-start: -18px }
+
+/* perf (INTEGRATE): compositor floor probe target — a real 1px style+paint
+   invalidation so floorProbe() measures a frame, not an elided class flip.
+   Created lazily by floorProbe(); absent from the DOM in normal use. */
+#floorpx { position: fixed; left: 0; bottom: 0; width: 1px; height: 1px; background: #1e1e2e; z-index: 999; pointer-events: none }
+body.floorprobe #floorpx { background: #181825 }
+/* INTEGRATE: the 1px probe above measures the cheapest possible frame (damage =
+   one pixel). pane_split/tab_drop damage the WHOLE window, so two more floors
+   bracket them, driven through the same act()->paint path: `floorfull` flips the
+   inherited colour by 1/255 (every painted glyph re-rastered, no layout) and
+   `floorrelayout` flips #main's padding by 1px (both note columns reflow, then
+   that same full raster) — the damage a pane split actually causes. */
+body.floorfull #main, body.floorfull #side { color: #cdd6f5 }
+body.floorrelayout #main { padding-right: 1px }
