@@ -989,11 +989,16 @@ function openMenu(m) { document.body.appendChild(m); menuEl = m; updateTitle(); 
 function menuTok() {   // [menu:<labels>] + [mg:<left>,<first row centre y>,<row pitch>] — MEASURED, so a
   if (!menuEl) return "";                      // driver clicks item i at (left+20, centre + pitch*i) with no
   const k = menuEl.children, lbl = [...k].map(d => d.textContent).join("|");   // hardcoded padding/line-height guess
-  if (!k.length) return " [menu:" + lbl + "]";
+  // [mt:<kind>:<label>] — WHICH tab this menu belongs to (R20.8). Without it an assertion like
+  // "a graph tab offers no Bookmark" rests on the driver's guess that x=380 hit the gg tab: hit
+  // the wrong tab and the claim is about a tab nobody named. tabMenu stamps the target it was
+  // handed by the browser's hit test, so the census reports the tab that was ACTUALLY clicked.
+  const mt = menuEl.dataset.mt ? " [mt:" + menuEl.dataset.mt + "]" : "";
+  if (!k.length) return " [menu:" + lbl + "]" + mt;
   const a = k[0].getBoundingClientRect();
   const pitch = k.length > 1 ? k[1].getBoundingClientRect().top - a.top : a.height;
   return " [menu:" + lbl + "] [mg:" + Math.round(menuEl.getBoundingClientRect().left) + "," +
-         Math.round(a.top + a.height / 2) + "," + Math.round(pitch) + "]";
+         Math.round(a.top + a.height / 2) + "," + Math.round(pitch) + "]" + mt;
 }
 function closeMenu() { if (!menuEl) return; menuEl.remove(); menuEl = null; updateTitle(); }
 document.addEventListener("contextmenu", e => e.preventDefault()); // app-like: native menu never
@@ -1022,6 +1027,11 @@ function tabMenu(e, g, i) {              // right-click a tab -> Split right / S
   const m = document.createElement("div");
   m.className = "ctxmenu";
   const tab = g.tabs[i];
+  // stamp the menu with the tab the hit test actually handed us -> census [mt:kind:label].
+  // gg/lg tabs carry no note, so they publish their kind and an empty label. Separators and ':'
+  // are stripped so a note named 'a:b]' cannot forge a token.
+  m.dataset.mt = (tab.kind || "note") + ":" +
+    (tab.kind ? "" : String(tab.name).split("/").pop().replace(/[|\]:]/g, ""));
   const item = (label, fn) => {
     const d = document.createElement("div");
     d.textContent = label;
