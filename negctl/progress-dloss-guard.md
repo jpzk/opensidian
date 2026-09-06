@@ -143,3 +143,19 @@ the PASS run only because the FAIL run died before reaching it. Not an error.)
   the driver would exit 9 ("expected FAIL, got rc=0"), and I would have had to debug a
   flake instead of reading a message that names the cause. It did not fire in either run
   (`[vc:1]` in the failure census = the decoy only).
+
+### 4. gate (job Wn9FEIzU), every rc from a redirect
+    [19:25:20] cargo rc=0    test result: ok. 51 passed; 0 failed; 0 ignored
+    [19:27:25] full smoke rc=0   [smoke] PASS - screenshots in /tmp/rustidian-smokedlguard95
+    [19:27:26] check-loss rc=0   citations checked : 75 (bad: 0)  RESULT: PASS
+    [19:27:26] GATE rc_all=0
+Raw logs: negctl/gate-cargo.log, negctl/gate-full.log, negctl/gate-checkloss.log.
+
+### 5. one line beyond the brief, deliberately: scripts/gate.sh:20 now runs `dloss`
+main recorded at 19:04 that the push gate's phase list (`edit lp src links linkpanes rside
+fuzz chrome ux typo hist graphnav m5`) had NO dloss — phase_dloss passed only because a goal
+invoked it by hand, so the assertions protecting against silent save failure were themselves
+never run on a push. Writing a guard that the gate never runs would have reproduced exactly
+the disease this goal exists to cure, so the phase is now in the list (`... m5 dloss`).
+One word; `sh -n scripts/gate.sh` clean; the phase itself is proven green above and by the
+control pair. Everything else in the diff is the smoke assertion and negctl/.

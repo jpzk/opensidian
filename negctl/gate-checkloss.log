@@ -1,0 +1,32 @@
+== check-loss.sh ==
+document : /workspace/notes/dataloss-audit.md
+repo     : /workspace/rustidian
+
+-- A. finding structure --
+SITE: 14 findings
+ok    SITE count 14 >= 9
+ok    MECHANISM count 14 == SITE count
+ok    BLAST count 14 == SITE count
+ok    WITNESS count 14 == SITE count
+ok    FIX count 14 == SITE count
+
+-- B. interleaving tags (I1..I9, each RISK or SAFE) --
+ok    I1 tagged: [I1 RISK] (in 1 finding heading(s))
+ok    I2 tagged: [I2 RISK] (in 2 finding heading(s))
+ok    I3 tagged: [I3 RISK] (in 2 finding heading(s))
+ok    I4 tagged: [I4 SAFE] (in 1 finding heading(s))
+ok    I5 tagged: [I5 RISK] [I5 SAFE] (in 2 finding heading(s))
+ok    I6 tagged: [I6 RISK] (in 1 finding heading(s))
+ok    I7 tagged: [I7 RISK] [I7 SAFE] (in 3 finding heading(s))
+ok    I8 tagged: [I8 SAFE] (in 1 finding heading(s))
+ok    I9 tagged: [I9 RISK] (in 1 finding heading(s))
+
+-- C. file:line citations --
+checked 75 distinct citations, 0 bad
+ok    every citation resolves
+
+-- summary --
+findings          : 14
+interleavings     : 9 required
+citations checked : 75 (bad: 0)
+RESULT: PASS
