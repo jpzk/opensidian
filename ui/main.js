@@ -1848,15 +1848,32 @@ function lpHydrate(lp) {
    auto` containment added to .lprow for perf, such a click no longer misses
    (which used to give the s.length fallback) — it HITS, resolving to the row
    element at offset 0, so the caret landed at column 0 and " EDITMARK" was
-   typed at the start of the line. Measured both ways on :98 (goal/integrate
-   lpexp.sh): CSS removed + old code = PASS, CSS kept + this guard = PASS. */
+   typed at the start of the line.
+   That guard must measure the INKED TEXT, not the row's contents box: a
+   paragraph renders as a block <p> (render_md; .lp .lprow is width:100%), and
+   a Range over an element resolves to that element's BORDER box, so
+   selectNodeContents(row).getBoundingClientRect().right is the note column's
+   right edge — never less than the x of a click inside the column, i.e. the
+   comparison was dead code for every paragraph row. lpTextRight walks to the
+   LAST non-blank text node and takes its last client rect (last rect = last
+   visual line, so a wrapped row compares against the line actually clicked). */
+function lpTextRight(row) {                      // right edge of the last text run
+  const w = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+  let last = null, n;
+  while ((n = w.nextNode())) if (n.nodeValue.trim()) last = n;
+  if (!last) return null;
+  const r = document.createRange();
+  r.selectNodeContents(last);
+  const rects = r.getClientRects();
+  return rects.length ? rects[rects.length - 1] : null;
+}
 function lpCol(e, row, b, L) {
   const s = L[b.l0];
   if (b.l1 !== b.l0) return 0;                   // fence block: caret at start
   const r = document.createRange();              // rendered chars before caret
   r.selectNodeContents(row);
-  const tb = r.getBoundingClientRect();          // extent of the RENDERED text
-  if (tb.width && e.clientX > tb.right) return s.length;   // click past EOL
+  const tb = lpTextRight(row);                   // extent of the RENDERED text
+  if (tb && tb.width && e.clientX > tb.right) return s.length;   // click past EOL
   const cr = document.caretRangeFromPoint
     ? document.caretRangeFromPoint(e.clientX, e.clientY) : null;
   if (!cr || !row.contains(cr.startContainer)) return s.length;
