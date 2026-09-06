@@ -539,8 +539,17 @@ async function runSearch() {
 }
 
 /* R9.4 bookmarks: tree-row context menu toggles; rust persists the plain
-   list in vault/.rustidian-bookmarks. census [bm:N] while the pane shows. */
+   list in vault/.rustidian-bookmarks. census [bm:N] while the pane shows —
+   N counts the .bmrow nodes actually PAINTED in #bmlist, so an assertion on
+   it fails if renderBm() stops repainting even while bmCache is correct. */
 let bmCache = [];
+const bmRows = () => document.querySelectorAll("#bmlist .bmrow").length;
+/* R20.6: the LABELS the user can actually read, taken from the painted rows in
+   paint order. A count alone passes a renderBm() that paints the right NUMBER of
+   wrong rows, so [bmn:] is what proves the pane tracks disk. '|' and ']' are
+   stripped so a note named with a separator cannot forge a census token. */
+const bmNames = () => Array.from(document.querySelectorAll("#bmlist .bmrow"))
+  .map(r => r.textContent.replace(/[|\]]/g, "")).join("|");
 function renderBm() {
   const box = $("bmlist");
   box.textContent = "";
@@ -581,8 +590,7 @@ function noteMenu(e, nm) {                 // right-click a tree note row
   m.appendChild(d);
   m.style.left = Math.min(e.clientX, window.innerWidth - 150) + "px";
   m.style.top = Math.min(e.clientY, window.innerHeight - 60) + "px";
-  document.body.appendChild(m);
-  menuEl = m;
+  openMenu(m);
 }
 
 async function writeNote(name, content) {   // every save funnels here so graphs live-update
@@ -833,11 +841,16 @@ function updateTitle() {          // pane/focus census in the window title (head
             (rightOpen && rpInfo ? " [rp:" + rpInfo + "]" : "") +
             (rtInfo ? " [" + rtInfo + "]" : "") +
             (jsErr ? " [jserr:" + jsErr + "]" : "") +
+            menuTok() +
             (navInfo ? " [" + navInfo + "]" : "") +
             (acItems.length ? " [ac:" + acKind + ":" + acItems.length + "]" : "") +
             " [pane:" + sidePane + "]" +
             (sidePane === "search" && searchCount >= 0 ? " [sr:" + searchCount + "]" : "") +
-            (sidePane === "bm" ? " [bm:" + bmCache.length + "]" : "");
+            (sidePane === "bm" ? " [bm:" + bmRows() + "]" +          // RENDERED rows, not bmCache.length:
+              " [bmn:" + bmNames() + "]" +                          // and their painted LABELS, in paint order
+              (bmRows() === bmCache.length ? "" :                    // the smoke assertion must prove the PANE
+               " [bmdesync:" + bmCache.length + "/" + bmRows() + "]") : "");   // repainted, not just the model
+
   const t2 = (fg() && fg().active >= 0 && !fg().tabs[fg().active].kind ? " [buf:" + bufOf(fg()).length + "]" : "") +
              " [tree:" + notesCache.length + "] [vc:" + vcCount + "]" +   // R11 probes
              (extCount ? " [ext:" + extCount + "]" : "");                 // S1: external-link clicks routed to open_external
@@ -969,7 +982,24 @@ async function collapseGroup(g) {  // R6.5: closing the last tab removes the gro
 }
 
 let menuEl = null;
-function closeMenu() { if (menuEl) { menuEl.remove(); menuEl = null; } }
+// the context menu carries no census, so smoke had to OCR it (flaky under llvmpipe).
+// openMenu()/closeMenu() publish the live item labels as [menu:a|b|c] instead.
+function openMenu(m) { document.body.appendChild(m); menuEl = m; updateTitle(); }
+function menuTok() {   // [menu:<labels>] + [mg:<left>,<first row centre y>,<row pitch>] — MEASURED, so a
+  if (!menuEl) return "";                      // driver clicks item i at (left+20, centre + pitch*i) with no
+  const k = menuEl.children, lbl = [...k].map(d => d.textContent).join("|");   // hardcoded padding/line-height guess
+  // [mt:<kind>:<label>] — WHICH tab this menu belongs to (R20.8). Without it an assertion like
+  // "a graph tab offers no Bookmark" rests on the driver's guess that x=380 hit the gg tab: hit
+  // the wrong tab and the claim is about a tab nobody named. tabMenu stamps the target it was
+  // handed by the browser's hit test, so the census reports the tab that was ACTUALLY clicked.
+  const mt = menuEl.dataset.mt ? " [mt:" + menuEl.dataset.mt + "]" : "";
+  if (!k.length) return " [menu:" + lbl + "]" + mt;
+  const a = k[0].getBoundingClientRect();
+  const pitch = k.length > 1 ? k[1].getBoundingClientRect().top - a.top : a.height;
+  return " [menu:" + lbl + "] [mg:" + Math.round(menuEl.getBoundingClientRect().left) + "," +
+         Math.round(a.top + a.height / 2) + "," + Math.round(pitch) + "]" + mt;
+}
+function closeMenu() { if (!menuEl) return; menuEl.remove(); menuEl = null; updateTitle(); }
 document.addEventListener("contextmenu", e => e.preventDefault()); // app-like: native menu never
 document.addEventListener("mousedown", e => {
   if (menuEl && !menuEl.contains(e.target)) closeMenu();
@@ -996,6 +1026,11 @@ function tabMenu(e, g, i) {              // right-click a tab -> Split right / S
   const m = document.createElement("div");
   m.className = "ctxmenu";
   const tab = g.tabs[i];
+  // stamp the menu with the tab the hit test actually handed us -> census [mt:kind:label].
+  // gg/lg tabs carry no note, so they publish their kind and an empty label. Separators and ':'
+  // are stripped so a note named 'a:b]' cannot forge a token.
+  m.dataset.mt = (tab.kind || "note") + ":" +
+    (tab.kind ? "" : String(tab.name).split("/").pop().replace(/[|\]:]/g, ""));
   const item = (label, fn) => {
     const d = document.createElement("div");
     d.textContent = label;
@@ -1012,6 +1047,7 @@ function tabMenu(e, g, i) {              // right-click a tab -> Split right / S
       item((t.kind === "gg" ? "Graph" : t.name.split("/").pop()), () => { closeMenu(); linkTabs(tab, t); });
     }
     if (!any) item("(no other tabs)");
+    updateTitle();                       // the menu was rebuilt in place -> refresh [menu:]
   };
   item("Split right", () => { closeMenu(); splitGroup(g, "row", i); });
   item("Split down",  () => { closeMenu(); splitGroup(g, "col", i); });
@@ -1019,10 +1055,13 @@ function tabMenu(e, g, i) {              // right-click a tab -> Split right / S
   else item("Link with tab...", pick);
   if (!tab.kind) item(tab.mode === "source" ? "Live preview" : "Source mode",   // R20 (#3): source vs LP lives here (stock), not in a chrome icon
     () => { closeMenu(); setMode(g, tab.mode === "source" ? "livepreview" : "source"); });
+  if (!tab.kind) item(bmCache.includes(tab.name) ? "Remove bookmark" : "Bookmark",  // R20.4 (#12, bookmarks pane = R9.5): same toggle as the tree row menu; graph tabs (gg/lg) have no note to bookmark
+    () => { closeMenu(); toggleBm(tab.name); });                                    // toggleBm re-renders the bookmarks pane
   m.style.left = Math.min(e.clientX, window.innerWidth - 150) + "px";
-  m.style.top = Math.min(e.clientY, window.innerHeight - 80) + "px";
-  document.body.appendChild(m);
-  menuEl = m;
+  m.style.top = e.clientY + "px";
+  openMenu(m);
+  m.style.top = Math.max(0, Math.min(e.clientY, window.innerHeight - m.offsetHeight - 4)) + "px";  // measured: the menu grew an item (#12)
+  updateTitle();                       // the clamp MOVED the menu after openMenu published [mg:] — re-publish the final rect
 }
 
 /* ---------- view modes (R8.8: livepreview / source / reading per tab) ---------- */
