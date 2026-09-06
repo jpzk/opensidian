@@ -114,6 +114,46 @@ const Ed = {
     Ed.inline(g, row, t);
   },
 
+  // R17.7: "[text](dest)" at the START of s, CommonMark-compatible. Returns
+  // [whole, text, dest] (exec-shaped) or null. The destination is SCANNED, not
+  // regexed: CommonMark allows BALANCED parens in a link destination
+  // (…/wiki/Foo_(bar)), so a ')' closes the destination only at depth 0. The old
+  // /^\[([^\[\]]*)\]\(([^)\s]*)\)/ truncated such a URL at the first ')' and left
+  // the rest as stray text — reading mode (pulldown-cmark) never did.
+  // A backslash escapes the next character: it never counts as a paren and is
+  // kept in the slice, so a row's textContent stays === its source line.
+  // Unchanged from the regex: whitespace anywhere in the destination means "not
+  // a link" (fall through to plain text), and an empty destination is a link.
+  linkAt(s) {
+    const m = /^\[([^\[\]]*)\]\(/.exec(s);
+    if (!m) return null;
+    let d = 0;
+    for (let i = m[0].length; i < s.length; i++) {
+      const c = s[i];
+      if (c === "\\") { if (/\s/.test(s[i + 1] || " ")) return null; i++; continue; }
+      if (/\s/.test(c)) return null;
+      if (c === "(") d++;
+      else if (c === ")") { if (d === 0) return [s.slice(0, i + 1), m[1], s.slice(m[0].length, i)]; d--; }
+    }
+    return null;                                                 // unterminated
+  },
+
+  // R17.7: bare http(s) URL at the START of s, with the same paren rule (GFM
+  // autolink): a ')' that closes no '(' inside the URL belongs to the enclosing
+  // prose — "(see https://x.example/a)" must not swallow the closing paren —
+  // while "https://en.wikipedia.org/wiki/Foo_(bar)" keeps its own.
+  urlAt(s) {
+    const m = /^https?:\/\/\S+/.exec(s);
+    if (!m) return null;
+    let d = 0;
+    for (let i = 0; i < m[0].length; i++) {
+      const c = m[0][i];
+      if (c === "(") d++;
+      else if (c === ")") { if (d === 0) return [m[0].slice(0, i)]; d--; }
+    }
+    return m;
+  },
+
   // inline markers, longest-opener-wins, unmatched markers fall through as text
   inline(g, box, s) {
     let plain = "";
@@ -166,7 +206,7 @@ const Ed = {
         box.appendChild(Ed.mk("]]"));
         i += wl[0].length; continue;
       }
-      const lt = /^\[([^\[\]]*)\]\(([^)\s]*)\)/.exec(rest);      // [text](url)
+      const lt = Ed.linkAt(rest);                                // [text](url)
       if (lt) {
         flush();
         box.appendChild(Ed.mk("["));
@@ -182,7 +222,7 @@ const Ed = {
         box.appendChild(Ed.mk(")", "url"));
         i += lt[0].length; continue;
       }
-      const url = /^https?:\/\/\S+/.exec(rest);                  // bare url
+      const url = Ed.urlAt(rest);                                // bare url
       if (url) {
         flush();
         const a = Ed.el("a", "ext url");
@@ -860,7 +900,9 @@ const Ed = {
                    "   ", "###### h6", "## **bold** head", "- [x] done", "  - two spaces", "12) twelve",
                    "> > deep", "> - a", "---", "a **b _c_ d** e", "![[Welcome]]", "a#nottag and #tag/sub",
                    "snake_case_word stays", "`a**b`", "text with <b>&amp;", "unclosed **bold",
-                   "- **bold item** with [[Link]]", "\t\t1. deep ordered"];
+                   "- **bold item** with [[Link]]", "\t\t1. deep ordered",
+                   // R17.7: destinations with parens, on both link forms
+                   "[wiki](https://e.example/wiki/Foo_(bar)) tail", "(see https://e.example/a) end"];
     let bad = 0;
     Ed.edtWhy = "";
     // the label rides in the window-title census, so keep it token-safe
@@ -886,6 +928,16 @@ const Ed = {
                 ["#tag", "#tag"], ["# Head", "Head"], ["- alpha", "alpha"], ["\t- nested", "\tnested"],
                 ["- [ ] todo", "todo"], ["> quoted", "quoted"], ["1. one", "one"]];
     for (const [s, w] of rf) if (vis(s) !== w) fail("vis:" + s);
+    // R17.7 link destinations: balanced parens survive whole (CommonMark), a
+    // backslash escape stays literal, whitespace is still not a link, an empty
+    // destination still is, and a bare URL leaves the enclosing prose's ')' out.
+    const dest = s => { const a = Ed.row(g, s, 0).querySelector("a.lt, a.ext"); return a ? a.dataset.url : null; };
+    const dl = [["[w](https://e.example/wiki/Foo_(bar))", "https://e.example/wiki/Foo_(bar)"],
+                ["[w](https://e.example/a)", "https://e.example/a"],
+                ["[w]()", ""], ["[w](a\\)b)", "a\\)b"], ["[w](a b)", null], ["[w](a(b)", null],
+                ["(see https://e.example/a) x", "https://e.example/a"],
+                ["https://e.example/wiki/Foo_(bar) x", "https://e.example/wiki/Foo_(bar)"]];
+    for (const [s, w] of dl) if (dest(s) !== w) fail("dest:" + s);
     // Home targets (M64-M68), checked on the model, not the DOM
     const hg = { view: { lines: ["- alpha", "\t- beta", "- [ ] alpha", "# Head", "plain", "> quoted", "1. one"] } };
     const hw = [2, 3, 6, 0, 0, 2, 3];
