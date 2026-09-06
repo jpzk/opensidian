@@ -595,6 +595,17 @@ function noteMenu(e, nm) {                 // right-click a tree note row
   placeMenu(m, e.clientX, e.clientY);   /* R22: viewport-clamped by measured size */
 }
 
+// R23 (feedback #15): EVERY path that creates a note seeds it with an H1 of its
+// own name. cmdNewNote already did this inline; the three INDIRECT paths (an
+// unresolved wikilink clicked in live preview, the same in reading view, and a
+// ghost node clicked in the graph) wrote "" instead. That inconsistency existed
+// precisely because the seeding lived inside one call site instead of being
+// shared by all of them — so this helper is the fix, not the four edits.
+// Path-qualified names ("folder/Note") get the BASENAME as the heading.
+async function createNote(name) {
+  await writeNote(name, "# " + name.split("/").pop() + "\n\n");
+}
+
 async function writeNote(name, content) {   // every save funnels here so graphs live-update
   const t0 = perf.now();
   await inv("write_note", { name, content });
@@ -1678,7 +1689,7 @@ async function wikiClick(e, a) {
   const g = gOf(a);
   if (!g) return;
   const n = a.dataset.note || curOf(g), an = a.dataset.anchor;   // R10: [[#H]] = this note
-  if (a.classList.contains("wiki-unresolved")) await writeNote(n, "");
+  if (a.classList.contains("wiki-unresolved")) await createNote(n);
   if (e.ctrlKey) {                            // R6.4: new tab, same group
     await flushSave(g);
     g.tabs.push(mkTab(n));
@@ -1702,7 +1713,7 @@ async function preview(g) {
       const g = gOf(a);                              // R20: event-time group (retained views move)
       const n = a.dataset.note || curOf(g), an = a.dataset.anchor;  // R10: [[#H]] = this note
       if (a.classList.contains("wiki-unresolved"))   // R3.5: click creates the note
-        await writeNote(n, "");
+        await createNote(n);
       if (e.ctrlKey) {                               // R6.4: open in NEW TAB, same group
         await flushSave(g);
         g.tabs.push(mkTab(n));
@@ -1865,7 +1876,7 @@ async function cmdNewNote() {                // new note in a NEW tab of the foc
   const g = fg();
   await flushSave(g);
   const name = "Untitled-" + Date.now() % 10000;
-  await writeNote(name, "# " + name + "\n");
+  await createNote(name);
   g.tabs.push(mkTab(name));
   g.active = g.tabs.length - 1;
   await loadActive(g);
@@ -2736,7 +2747,7 @@ async function startGraph(g, cfg) {
     const hit = N[hitTest(x, y)];
     if (!hit) return;
     if (!hit.resolved)                                  // ghost node: create then open (M3 path)
-      await writeNote(hit.n, "");
+      await createNote(hit.n);
     // R19 (HARD RULE 100ms): the CLICK is the interaction — graph_recenter measures it to the
     // first paint of the response (note painted + graph redrawn at the new centre). The sim
     // settling afterwards is animation: it gets its own informational span graph_settle.
