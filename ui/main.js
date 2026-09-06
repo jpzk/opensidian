@@ -2342,7 +2342,22 @@ $("rninput").onkeydown = async e => {
 
 if (document.fonts) document.fonts.addEventListener("loadingdone", () => updateTitle());   // R15.2: republish [fonts:] once a lazy @font-face lands
 
+/* perf (INTEGRATE): compositor FLOOR probe — N no-op 1px repaints driven through
+   the SAME act() -> otel.paint() path every interaction uses, so each op can be
+   reported as a multiple of what one frame costs on this host (Xvfb/llvmpipe is
+   ~an order slower than a GPU). A 1.2x-floor op is the framebuffer; a 3x-floor
+   op is our code. Bench-only: Ctrl+Alt+Shift+F, no menu/palette entry. */
+async function floorProbe(n = 30) {
+  let px = $("floorpx");
+  if (!px) { px = document.createElement("div"); px.id = "floorpx"; document.body.appendChild(px); }
+  for (let i = 0; i < n; i++) {
+    await act("compositor_floor", { i }, () => { document.body.classList.toggle("floorprobe"); });
+    await new Promise(r => setTimeout(r, 30));   // act() resolves before paint lands; let the span close
+  }
+  document.body.classList.remove("floorprobe");
+}
 document.addEventListener("keydown", e => {
+  if (e.ctrlKey && e.altKey && e.shiftKey && (e.key === "F" || e.key === "f")) { e.preventDefault(); floorProbe(); return; }
   if (settingsOpen) return hkKey(e);       // R14: settings modal owns the keyboard (chord capture)
   if (e.key === "Escape") {
     if (modalKind) { closeModal(); return; }

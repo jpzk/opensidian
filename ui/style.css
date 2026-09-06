@@ -507,3 +507,9 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .lp ul > li::before { inset-inline-start: -9px }
 .lp ol > li { margin-inline-start: 32px; padding-inline-start: 0 }
 .lp ol > li::before { inset-inline-start: -18px }
+
+/* perf (INTEGRATE): compositor floor probe target — a real 1px style+paint
+   invalidation so floorProbe() measures a frame, not an elided class flip.
+   Created lazily by floorProbe(); absent from the DOM in normal use. */
+#floorpx { position: fixed; left: 0; bottom: 0; width: 1px; height: 1px; background: #1e1e2e; z-index: 999; pointer-events: none }
+body.floorprobe #floorpx { background: #181825 }
