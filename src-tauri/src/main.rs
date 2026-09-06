@@ -11,7 +11,7 @@ mod perf;
 mod sandbox;
 mod srcmode;
 mod watcher;
-use index::{link_parts, links_in, resolve, tag_spans, Index};
+use index::{link_parts, links_in, resolve, tag_spans, Graph, Index};
 
 /* perf-index: root + in-memory Index (src/index.rs). The index replaces the
    perf-lp NoteCache: names, contents, links and backlink edges live in RAM,
@@ -820,59 +820,23 @@ fn hotkeys_clean(map: serde_json::Value) -> serde_json::Value {
     serde_json::Value::Object(out)
 }
 
-#[derive(serde::Serialize)]
-struct GNode {
-    name: String,
-    resolved: bool,
-}
-
-#[derive(serde::Serialize)]
-struct Graph {
-    nodes: Vec<GNode>,
-    edges: Vec<(usize, usize)>,
-}
-
-/// R4.2: notes = resolved nodes; wikilinks to nonexistent notes become
-/// unresolved nodes (deduped by link text), so the graph shows ghost targets.
-fn build_graph(notes: &[String], links: &[&[String]]) -> Graph {
-    let mut nodes: Vec<GNode> = notes
-        .iter()
-        .map(|n| GNode { name: n.clone(), resolved: true })
-        .collect();
-    let mut edges = Vec::new();
-    for (i, ls) in links.iter().enumerate() {
-        for l in ls.iter() {
-            let l = link_parts(l).0; // ghost nodes carry the note part only
-            if l.is_empty() {
-                continue; // [[#heading]] = self-link
-            }
-            let j = match resolve(notes, l) {
-                Some(j) => j,
-                None => nodes
-                    .iter()
-                    .position(|x| !x.resolved && x.name == l)
-                    .unwrap_or_else(|| {
-                        nodes.push(GNode { name: l.to_string(), resolved: false });
-                        nodes.len() - 1
-                    }),
-            };
-            if i != j && !edges.contains(&(i, j)) {
-                edges.push((i, j));
-            }
-        }
-    }
-    Graph { nodes, edges }
-}
-
 #[tauri::command]
 fn graph(v: State<Vault>, otel: Option<perf::Ctx>) -> Graph {
     span_timed!(otel => "graph", graph_inner(&v), serde_json::json!({}))
 }
 
 fn graph_inner(v: &State<Vault>) -> Graph {
-    // perf-index: names + per-note link lists straight from memory
-    let ix = v.index.lock().unwrap();
-    build_graph(ix.names(), &ix.link_lists())
+    // R19: served from the index graph cache (built once per edge change)
+    v.index.lock().unwrap().graph().graph.clone()
+}
+
+/// R19 (feedback #5): local-graph neighbourhood cut in Rust from the cached
+/// adjacency — the UI no longer pulls the whole vault graph per recentre.
+#[tauri::command]
+fn graph_local(v: State<Vault>, center: String, depth: usize, inc: bool, out: bool, otel: Option<perf::Ctx>) -> Graph {
+    span_timed!(otel => "graph_fetch",
+        v.index.lock().unwrap().graph().local(&center, depth.min(5), inc, out),
+        serde_json::json!({ "center": center, "depth": depth }))
 }
 
 #[derive(serde::Serialize, Debug, PartialEq)]
@@ -1083,7 +1047,7 @@ fn main() {
                 .build(),
         )
         .invoke_handler(tauri::generate_handler![
-            list_notes, read_note, write_note, render, render_blocks, highlight_blocks, graph, vault_get, set_vault,
+            list_notes, read_note, write_note, render, render_blocks, highlight_blocks, graph, graph_local, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, recent_vaults, rename_note, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref,
@@ -1126,7 +1090,7 @@ mod tests {
         let names: Vec<String> = d.iter().map(|(n, _)| n.clone()).collect();
         let links: Vec<Vec<String>> = d.iter().map(|(_, c)| links_in(c)).collect();
         let refs: Vec<&[String]> = links.iter().map(|l| l.as_slice()).collect();
-        build_graph(&names, &refs)
+        index::build_graph(&names, &refs)
     }
 
     fn tmp_vault(tag: &str) -> PathBuf {
@@ -1137,7 +1101,7 @@ mod tests {
     }
 
     fn ix_graph(ix: &Index) -> Graph {
-        build_graph(ix.names(), &ix.link_lists())
+        index::build_graph(ix.names(), &ix.link_lists())
     }
 
     fn edge_names(g: &Graph) -> Vec<(String, String)> {
@@ -1229,6 +1193,41 @@ mod tests {
         let hits = search_docs(ix.docs(), "back to");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].note, "B");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn graph_cache_invalidates_and_local_bfs() {  // R19
+        let root = tmp_vault("gc");
+        fs::write(root.join("A.md"), "[[B]] [[Ghost]]").unwrap();
+        fs::write(root.join("B.md"), "[[C]]").unwrap();
+        fs::write(root.join("C.md"), "[[A]]").unwrap();
+        fs::write(root.join("D.md"), "[[C]]").unwrap();
+        let mut ix = Index::build(&root);
+        // cached graph == the from-scratch build
+        let fresh = ix_graph(&ix);
+        assert_eq!(ix.graph().graph, fresh);
+        assert_eq!(ix.graph().out[0], [1, 4]); // A -> B, Ghost
+        assert_eq!(ix.graph().inc[2], [1, 3]); // B, D -> C
+        // local: depth 1 out+in around B = B, C, A; edges among them keep every direction
+        let l = ix.graph().local("B", 1, true, true);
+        assert_eq!(l.nodes.iter().map(|n| n.name.as_str()).collect::<Vec<_>>(), ["B", "C", "A"]);
+        assert_eq!(edge_names(&l).len(), 3); // A->B, B->C, C->A
+        let l = ix.graph().local("B", 1, false, true); // outgoing only
+        assert_eq!(l.nodes.len(), 2);
+        let l = ix.graph().local("B", 2, true, true); // 2 hops reach D + Ghost
+        assert_eq!(l.nodes.len(), 5);
+        assert!(ix.graph().local("Nope", 1, true, true).nodes.is_empty());
+        // plain save (links unchanged) keeps the cache; a link edit / new note / remove rebuilds it
+        ix.upsert("D", "[[C]] more text");
+        assert!(ix.graph.is_some());
+        ix.upsert("D", "[[A]]");
+        assert!(ix.graph.is_none());
+        assert_eq!(ix.graph().inc[0], [2, 3]);
+        ix.upsert("Ghost", "");
+        assert!(ix.graph().graph.nodes.iter().all(|n| n.resolved));
+        ix.remove("Ghost");
+        assert!(!ix.graph().graph.nodes.iter().all(|n| n.resolved));
         let _ = fs::remove_dir_all(&root);
     }
 
