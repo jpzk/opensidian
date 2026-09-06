@@ -22,6 +22,17 @@ async function act(name, attrs, fn) {
    back/forward + Alt+Left/Right; emits a no-op span so the op has a row. */
 function historyNav(dir) { otel.span("history_nav", { dir, noop: true }); }
 const $ = id => document.getElementById(id);
+/* R20: an uncaught error / rejected action left the UI mid-mutation and the
+   census silently STALE (the title only moves in updateTitle) — smoke then
+   reports the symptom, never the cause. Surface it as [jserr:...]. */
+let jsErr = "";
+function noteErr(m) {
+  if (jsErr) return;                       // first error wins (the rest are fallout)
+  jsErr = String(m || "err").replace(/[\[\]]/g, "").slice(0, 60);
+  try { updateTitle(); } catch (_) {}
+}
+window.addEventListener("error", e => noteErr(e.message));
+window.addEventListener("unhandledrejection", e => noteErr(e.reason && e.reason.message || e.reason));
 let vaultPath = null, pmode = null, bpath = null;
 
 /* ---------- pane model (M6 / R6.1): split tree, leaves = tab groups ----------
@@ -811,6 +822,7 @@ function updateTitle() {          // pane/focus census in the window title (head
             (rightOpen ? ":" + rTab : "") + "]" +
             (rightOpen && rpInfo ? " [rp:" + rpInfo + "]" : "") +
             (rtInfo ? " [" + rtInfo + "]" : "") +
+            (jsErr ? " [jserr:" + jsErr + "]" : "") +
             (navInfo ? " [" + navInfo + "]" : "") +
             (acItems.length ? " [ac:" + acKind + ":" + acItems.length + "]" : "") +
             " [pane:" + sidePane + "]" +
