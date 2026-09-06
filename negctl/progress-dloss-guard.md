@@ -159,3 +159,9 @@ never run on a push. Writing a guard that the gate never runs would have reprodu
 the disease this goal exists to cure, so the phase is now in the list (`... m5 dloss`).
 One word; `sh -n scripts/gate.sh` clean; the phase itself is proven green above and by the
 control pair. Everything else in the diff is the smoke assertion and negctl/.
+
+### 6. final re-verification (commands, not claims), at d41d8b2
+    git merge-base --is-ancestor origin/main goal/dloss-guard   -> rc=0
+    git status --porcelain                                       -> 0 lines
+    git log origin/goal/dloss-guard..goal/dloss-guard            -> 0 lines (pushed)
+All 7 ledger items done. Branch NOT merged, per the brief.
