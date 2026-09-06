@@ -25,6 +25,7 @@
 const Ed = {
   cur: null,            // {g, l} row currently holding the caret (reveal state)
   composing: false,
+  UNDO_IDLE_MS: 2000,   // R17.8: idle gap that CLOSES an undo group (~2s, stock)
 
   /* ---------- model ---------- */
   lines(g) { const v = g.view; if (!v.lines) v.lines = [""]; return v.lines; },
@@ -447,7 +448,11 @@ const Ed = {
     if (!v.undo) { v.undo = []; v.redo = []; }
     v.redo = [];
     const last = v.undo[v.undo.length - 1];
-    if (last && last.kind === kind && kind === "type" && now - last.t < 700) { last.t = now; return; }
+    // R17.8 M79/M80: an uninterrupted typing burst is ONE step (spaces do not
+    // split it); the group is closed by an IDLE TIMER (gap since the last
+    // keystroke, refreshed per key), never by a char count. Enter/del/paste/
+    // indent each stay their own step.
+    if (last && last.kind === kind && kind === "type" && now - last.t < Ed.UNDO_IDLE_MS) { last.t = now; return; }
     v.undo.push({ lines: Ed.lines(g).slice(), caret: Ed.caret(g), kind, t: now });
     if (v.undo.length > 300) v.undo.shift();
   },
