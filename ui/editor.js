@@ -429,7 +429,11 @@ const Ed = {
     if (caret != null && caret >= 0) Ed.place(g, caret, col || 0);
     else Ed.reveal(g, -1);
     if (typeof perf !== "undefined" && perf.mark)
-      perf.mark("lp_render", t0, { lines: L.length, patched: touched, full: !!full || !old });
+      // R18: this is the JS row patch, NOT the old per-keystroke Rust render.
+      // "lp_render" stays reserved for the IPC span (docs/perf.md '## EDITOR':
+      // its count must be 0 while typing) — reusing the name here would make
+      // that check unfalsifiable.
+      perf.mark("ed_patch", t0, { lines: L.length, patched: touched, full: !!full || !old });
     return Promise.resolve();
   },
   // re-render exactly one row (IME reconcile / self-heal)

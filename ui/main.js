@@ -51,6 +51,9 @@ const groups = () => (state ? leaves(state.root) : []);
 const fg = () => state.focused;
 const curOf = g => (g.active >= 0 ? g.tabs[g.active].name : null);
 const cur = () => (state && fg() ? curOf(fg()) : null);
+// R18: is this group's active tab showing the READING pane? (the only pane the
+// Rust renderer feeds — lp/source render in JS, see ui/editor.js)
+const isReading = g => { const t = g.active >= 0 ? g.tabs[g.active] : null; return !!t && !t.kind && t.mode === "reading"; };
 // R19: per-tab history = [{n: note, s: scrollTop}], hpos = cursor; a nav pushes at
 // hpos+1 and drops the forward slice (browser semantics, docs/requirements.md R19)
 const mkTab = name => ({ name, mode: "livepreview", hist: [{ n: name, s: 0 }], hpos: 0 });  // R8.8: LP default
@@ -1716,7 +1719,12 @@ function scheduleSave(g) {
     g.saveT = null;
     await saveBuf(g);                       // R11.3: merge an external append instead of clobbering it
     await maybeH1Rename(g);                 // ux-3: H1 edit commits a rename
-    preview(g);
+    // R18: only the READING pane needs the Rust renderer. This used to call
+    // preview() on every debounced save, i.e. one full-note render IPC per
+    // typing burst, into a #preview that is display:none in lp/source mode.
+    // Entering reading mode renders it anyway (setMode / openNote / restore),
+    // so the hidden refresh bought nothing and put Rust on the typing path.
+    if (isReading(g)) preview(g);
     updateStatus(g);
   }, 250);
 }
