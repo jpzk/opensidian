@@ -1,0 +1,72 @@
+warning: unused `Result` that must be used
+   --> src/main.rs:844:5
+    |
+844 |     write_note_inner(&v, &note, &nc);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+    = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+    |
+844 |     let _ = write_note_inner(&v, &note, &nc);
+    |     +++++++
+
+warning: `rustidian` (bin "rustidian" test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.25s
+     Running unittests src/main.rs (/workspace/rustidian/src-tauri/target/debug/deps/rustidian-44bb70f57b1f3701)
+
+running 51 tests
+test outline::tests::fenced_code_ignored ... ok
+test outline::tests::setext_and_hashtags_ignored ... ok
+test outline::tests::empty ... ok
+test outline::tests::nested_levels_and_lines ... ok
+test outline::tests::inline_markdown_stripped ... ok
+test srcmode::tests::fence_block_lines_visible ... ok
+test srcmode::tests::heading_keeps_marker_and_size_class ... ok
+test perf::tests::otlp_lines_parse_ids_nest_noop_when_unset ... ok
+test srcmode::tests::links_full_raw_target ... ok
+test srcmode::tests::inline_markers_visible_text_styled ... ok
+test sandbox::tests::confines_reads_to_vault ... ok
+test srcmode::tests::lists_tasks_quote_hr_table_tag ... ok
+test srcmode::tests::raw_html_is_escaped_never_emitted ... ok
+test srcmode::tests::text_roundtrip_unicode_and_blank ... ok
+test tests::bookmark_toggle_adds_then_removes ... ok
+test tests::backlinks_and_graph_resolve_through_suffixes ... ok
+test tests::f1_failed_write_returns_err_and_leaves_the_index_untouched ... ok
+test tests::f3_note_write_is_sibling_temp_rename_not_a_truncating_open ... ok
+test tests::graph_cache_invalidates_and_local_bfs ... ok
+test tests::f4_create_note_refuses_to_clobber_an_existing_note ... ok
+test tests::hotkeys_clean_keeps_shape_drops_garbage ... ok
+test tests::graph_emits_unresolved_nodes ... ok
+test tests::index_tags_counts_search_and_sync ... ok
+test tests::link_parts_split_note_anchor_alias ... ok
+test tests::oversized_note_is_skipped ... ok
+test tests::picker_denies_system_paths_allows_user_roots ... ok
+test tests::recent_list_dedups_newest_first_capped ... ok
+test tests::rename_moves_keys_edges_and_targets ... ok
+test tests::index_builds_from_temp_vault ... ok
+test tests::open_external_rejects_non_http ... ok
+test tests::rename_rewrites_anchor_and_alias_links ... ok
+test tests::rename_moves_refuses_overwrite ... ok
+test tests::rename_resyncs_externally_added_notes ... ok
+test tests::render_blocks_matches_per_block_render ... ok
+test tests::render_escapes_wikilink_attr ... ok
+test tests::render_keeps_http_mailto_anchors ... ok
+test tests::render_link_forms_and_block_ids ... ok
+test tests::render_marks_unresolved ... ok
+test tests::render_neutralizes_raw_html ... ok
+test tests::render_tags_become_pills ... ok
+test tests::search_finds_case_insensitive_hits ... ok
+test tests::rename_updates_links_vault_wide ... ok
+test tests::tags_extraction_edge_cases ... ok
+test tests::render_drops_bad_schemes_to_text ... ok
+test tests::symlinks_are_not_part_of_the_vault ... ok
+test tests::unlinked_mentions_detected_and_linked ... ok
+test watcher::tests::external_create_delete_rename ... ok
+test watcher::tests::diff_added_removed_modified_unchanged ... ok
+test tests::write_updates_search_backlinks_graph ... ok
+test watcher::tests::own_write_ignored_external_edit_reported ... ok
+test perf::tests::concurrent_emit_never_interleaves_a_line ... ok
+
+test result: ok. 51 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+

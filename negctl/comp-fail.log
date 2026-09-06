@@ -1,0 +1,9 @@
+[smoke] holding :95 lock (pid 31101)
+[smoke] building...
+
+warning: `rustidian` (bin "rustidian") generated 3 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 40.00s
+[smoke] stale :95 socket (no server) - removing
+[smoke] F1: rejected save -> [saveerr:A-LP] + [dirty:1] + disk bytes untouched
+[smoke] F1: vault writable again -> ctrl+s landed the SAME buffer and cleared the banner token
+[smoke] FAIL: a save that FAILED after an external append left the tab CLEAN (base == buffer): F1's dirty state is gone and the typed bytes are unrecoverable (rustidian [panes:1 focused:1@1] [fx:1.00] [tabs:1] [mode:src:6] [lp:2] [edt:ok] [sel:6.18-6.18] [edx:300] [erx:300,300,300,300,300,300,300,300] [ery:83,114,138,162,186,210,234,258] [fonts:SourceCodePro/normal/normal] [side:l1r0] [rt:1071-1094|mb:1051-1071] [saveerr:A-LP] [armed:0] [pane:files] [buf:144] [tree:17] [vc:1] [vp:1100x700] [ovf:0,0,0])

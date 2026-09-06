@@ -1,0 +1,14 @@
+[smoke] holding :95 lock (pid 20885)
+[smoke] building...
+
+warning: `rustidian` (bin "rustidian") generated 3 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.23s
+[smoke] stale :95 socket (no server) - removing
+[smoke] F1: rejected save -> [saveerr:A-LP] + [dirty:1] + disk bytes untouched
+[smoke] F1: vault writable again -> ctrl+s landed the SAME buffer and cleared the banner token
+[smoke] F1xR11.3: failed save after an external append -> [saveerr:A-LP] + [dirty:1], disk keeps the append and not the buffer
+[smoke] F1xR11.3: chmod u+w + ctrl+s landed BOTH the typed text and the external append
+scripts/smoke.sh: line 52: 20918 Killed                     env $LENV VAULT_DIR="${1:-$OUT/vault}" HOME="$OUT/home" DISPLAY=$D "$BIN" > "$OUT/app-${2:-fast}.log" 2>&1
+[smoke] F2: switch flushed A's edit into A and left [armed:0]
+[smoke] F2: vault B's same-named note byte-identical 16s after the switch
+[smoke] PASS (fast dloss)
