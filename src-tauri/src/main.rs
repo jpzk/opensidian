@@ -409,6 +409,19 @@ fn graph_renderer_pref() -> serde_json::Value {
     })
 }
 
+/// F2 (dataloss-audit) test hook: the vault-switch race lives INSIDE the save
+/// debounce window, so at 250ms it is not mechanically reproducible.
+/// RUSTIDIAN_SAVE_MS widens the window for the smoke; every normal run gets
+/// the stock 250ms (the env var is absent, and out-of-range values are ignored).
+#[tauri::command]
+fn save_debounce_ms() -> u64 {
+    std::env::var("RUSTIDIAN_SAVE_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|n| (1..=60_000).contains(n))
+        .unwrap_or(250)
+}
+
 /// S4: the picker commands take arbitrary absolute paths from the webview.
 /// Deny system trees and any dot-component (hidden dirs, `..`); /workspace
 /// and $HOME stay browsable even when they sit under a denied prefix (e.g.
@@ -1116,7 +1129,7 @@ fn main() {
             list_bookmarks, toggle_bookmark, recent_vaults, rename_note, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab,
-            get_hotkeys, set_hotkeys, open_external
+            get_hotkeys, set_hotkeys, open_external, save_debounce_ms
         ])
         .run(tauri::generate_context!())
         .expect("tauri run");
