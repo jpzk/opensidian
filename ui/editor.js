@@ -535,6 +535,18 @@ const Ed = {
   },
   // one indent unit off the END of an indent string (Shift+Tab / M13 outdent)
   outdentStr(ind) { const m = /(\t| {1,4})$/.exec(ind); return m ? ind.slice(0, -m[0].length) : ind; },
+  // the number an ordered item at line `l` takes at `ref`'s level: one past the
+  // previous sibling of that level, or 1 when it opens the run (M32).
+  startNum(L, l, ref) {
+    const pre = ref.ind + ref.qt;
+    for (let k = l - 1; k >= 0; k--) {
+      if (!String(L[k]).trim()) break;                       // a blank line ends the run
+      const it = Ed.info(L[k]);
+      if (it.ind + it.qt === pre) return it.num !== null ? it.num + 1 : 1;
+      if (it.ind.length < ref.ind.length) break;             // left the sub-list
+    }
+    return 1;
+  },
   enter(g, s) {                                  // Enter: split + list continuation
     const L = Ed.lines(g), a = s.a, b = s.b, line = L[a.l] || "";
     const it = Ed.info(line);
@@ -593,17 +605,58 @@ const Ed = {
     if (l >= L.length - 1) return;
     Ed.replace(g, { a: { l, c }, b: { l: l + 1, c: 0 }, empty: false }, "", "del");
   },
-  indent(g, s, out) {                            // Tab / Shift+Tab on the line
+  /* R17.2/R17.10: Tab / Shift+Tab move the LINE, never insert a tab at the
+     caret (M33/M34). The unit is exactly one TAB (M27, not spaces); Shift+Tab
+     strips one leading TAB or up to 4 spaces and is a NO-OP when the line has
+     no indent — it never eats the marker (M31/M87).
+     A plain caret on a LIST ITEM carries the item's nested children and
+     continuation lines with it: indenting a parent past its own children would
+     re-parent them to the wrong item. A real selection moves exactly the lines
+     it covers (M88/M89), minus a trailing line it only touches at col 0. */
+  indent(g, s, out) {
     const L = Ed.lines(g);
+    let first = s.a.l, last = s.b.l;
+    if (last > first && s.b.c === 0) last--;                 // M88
+    const old = Ed.info(L[first] || "");
+    if (s.empty && old.mk) {                                 // carry the sub-tree
+      for (let l = first + 1; l < L.length; l++) {
+        if (!String(L[l]).trim()) break;
+        if (Ed.info(L[l]).ind.length <= old.ind.length) break;
+        last = l;
+      }
+    }
     Ed.snap(g, "indent");
     let dc = 0;
-    for (let l = s.a.l; l <= s.b.l; l++) {
+    for (let l = first; l <= last; l++) {
       if (out) {
         const m = /^(\t| {1,4})/.exec(L[l]);
         if (m) { L[l] = L[l].slice(m[0].length); if (l === s.b.l) dc = -m[0].length; }
       } else { L[l] = "\t" + L[l]; if (l === s.b.l) dc = 1; }
     }
+    // M32: an ordered item that changes level RESTARTS the run it joins, and
+    // the run it LEFT closes up over the hole ("3. c" -> "2. c").
+    if (s.empty && old.num !== null && L[first] !== undefined) {
+      const it = Ed.info(L[first]);
+      if (it.num !== null) Ed.renumber(L, first, it, Ed.startNum(L, first, it));
+      Ed.renumber(L, last + 1, old, Ed.startNum(L, last + 1, old));
+    }
     Ed.after(g, s.b.l, Math.max(0, s.b.c + dc));
+  },
+  /* R17.4 M46-M51 Ctrl+L "Toggle checkbox status" (in 1.13.7 this is the task
+     toggle — Ctrl+Enter is NOT, see M45/M92): a task flips [ ] <-> [x] in
+     place, a bullet/ordered item gains a "[ ] " after its marker, a plain
+     paragraph gains a whole "- [ ] ". The caret keeps its offset in the TEXT,
+     so it shifts by exactly the bytes inserted before it. */
+  toggleCheck(g, s) {
+    const L = Ed.lines(g), l = s.b.l, line = L[l];
+    if (line === undefined) return;
+    const it = Ed.info(line);
+    Ed.snap(g, "task");
+    let dc = 0;
+    if (it.task) L[l] = line.replace(/\[( |[xX])\] /, (m, ch) => (ch === " " ? "[x] " : "[ ] "));
+    else if (it.mk) { L[l] = it.pre + "[ ] " + line.slice(it.pre.length); dc = 4; }
+    else { L[l] = it.ind + it.qt + "- [ ] " + line.slice(it.pre.length); dc = 6; }
+    Ed.after(g, l, s.b.c >= it.pre.length ? s.b.c + dc : s.b.c);
   },
   undo(g) {
     const v = g.view;
@@ -721,12 +774,19 @@ const Ed = {
     const s = Ed.sel(g);
     if (!s) return;
     if (e.key === "Tab") { e.preventDefault(); return Ed.indent(g, s, e.shiftKey); }
+    // R17.4 M45 / R17.10 M92: in 1.13.7 Ctrl+Enter is "follow link under
+    // cursor", NOT the task toggle — it must leave the bytes alone. Without
+    // this guard the webview turns it into an insertParagraph.
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); return; }
     // Shift+key arrives UPPERCASE (e.key is the produced character): Ctrl+Shift+Z
     // is "Z", so a lowercase-only compare silently loses redo (R17.8 M83).
     const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
     if (k === "a" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); return Ed.selectAll(g); }
     if (k === "z" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); return e.shiftKey ? Ed.redo(g) : Ed.undo(g); }
     if (k === "y" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); return Ed.redo(g); }
+    // Ctrl+L (M46-M51) is NOT bound here: it is the palette command
+    // editor:toggle-checklist-status, dispatched on document keydown. Binding
+    // it in both places would toggle twice and cancel itself out.
     if (e.key === "Home" || e.key === "End") {
       e.preventDefault();
       const f = Ed.focusPos(g) || s.b;                      // shift-extend moves the FOCUS, not s.b
@@ -871,6 +931,61 @@ const Ed = {
         const es = { a: { l, c: cc }, b: { l, c: cc }, empty: true };
         if (op) Ed.softBreak(eg, es); else Ed.enter(eg, es);
         if (eg.view.lines.join("\n") !== want || !cr || cr.l !== wl || cr.c !== wc) fail("enter:" + src);
+      }
+      /* R17.2/R17.3/R17.4 on the MODEL: [before, l, c, op, after, l, c] straight
+         off the MUST list. Where a MUST caret column exceeds the raw line length
+         it is clamped (stock counts a leading TAB as two columns; this engine
+         counts raw characters — same caret, different unit). */
+      const kc = [
+        ["- a\n- b", 1, 3, "tab", "- a\n\t- b", 1, 4],                                   // M27
+        ["- a\n- b", 0, 3, "tab", "\t- a\n- b", 0, 4],                                   // M28 first item too
+        ["- a\n\t- b", 1, 4, "tab", "- a\n\t\t- b", 1, 5],                               // M29 unbounded
+        ["- a\n\t- b", 1, 5, "stab", "- a\n- b", 1, 3],                                  // M30
+        ["- a\n- b", 1, 3, "stab", "- a\n- b", 1, 3],                                    // M31 top level = no-op
+        ["1. a\n2. b\n3. c", 1, 4, "tab", "1. a\n\t1. b\n2. c", 1, 5],                   // M32 restart + close up
+        ["1. a\n\t1. b\n\t2. c", 1, 5, "stab", "1. a\n2. b\n\t1. c", 1, 3],              // M32 mirrored
+        ["- alpha", 0, 2, "tab", "\t- alpha", 0, 3],                                     // M33 never a tab at the caret
+        ["plain text", 0, 10, "tab", "\tplain text", 0, 11],                             // M34
+        ["plain para", 0, 10, "stab", "plain para", 0, 10],                              // M87 no-op outside a list
+        ["- a\n\t- b", 0, 3, "tab", "\t- a\n\t\t- b", 0, 4],                             // the sub-tree follows
+        ["- a\n- b", 1, 0, "bs", "- a- b", 0, 3],                                        // M36 col0 JOINS
+        ["- a\n\t- b", 1, 0, "bs", "- a\t- b", 0, 3],                                    // M37 nested joins too
+        ["- a\n- b", 1, 2, "bs", "- a\n-b", 1, 1],                                       // M39 marker is text
+        ["- a\n- ", 1, 2, "bs", "- a\n-", 1, 1],                                         // M40 empty item: no outdent
+        ["- [ ] a", 0, 6, "bs", "- [ ]a", 0, 5],                                         // M41
+        ["> a\n> b", 1, 0, "bs", "> a> b", 0, 3],                                        // M42
+        ["1. one\n2. two", 1, 0, "bs", "1. one2. two", 0, 6],                            // M43 join wins
+        ["- a\n- b", 0, 3, "del", "- a- b", 0, 3],                                       // M44 forward join
+        ["- plain", 0, 7, "ctrl-l", "- [ ] plain", 0, 11],                               // M46
+        ["- [ ] a", 0, 7, "ctrl-l", "- [x] a", 0, 7],                                    // M47
+        ["- [x] a", 0, 7, "ctrl-l", "- [ ] a", 0, 7],                                    // M48
+        ["para", 0, 4, "ctrl-l", "- [ ] para", 0, 10],                                   // M49
+        ["- a\n\t- b", 1, 5, "ctrl-l", "- a\n\t- [ ] b", 1, 8],                          // M50
+        ["1. a", 0, 4, "ctrl-l", "1. [ ] a", 0, 8],                                      // M51 ordered marker kept
+      ];
+      for (const [src, l, c, op, want, wl, wc] of kc) {
+        const eg = { view: { lines: src.split("\n") }, editor: {} };
+        const cc = Math.min(c, eg.view.lines[l].length);
+        cr = null;
+        const es = { a: { l, c: cc }, b: { l, c: cc }, empty: true };
+        if (op === "tab") Ed.indent(eg, es, false);
+        else if (op === "stab") Ed.indent(eg, es, true);
+        else if (op === "bs") Ed.del(eg, es, false, false);
+        else if (op === "del") Ed.del(eg, es, true, false);
+        else Ed.toggleCheck(eg, es);
+        if (eg.view.lines.join("\n") !== want || !cr || cr.l !== wl || cr.c !== wc) fail(op + ":" + src);
+      }
+      // M88/M89: a real SELECTION indents/outdents exactly the lines it covers,
+      // and a trailing line touched only at col 0 is left alone.
+      const sc = [
+        ["- a\n- b\n- c", 0, 0, 2, 0, false, "\t- a\n\t- b\n- c"],                       // M88
+        ["- a\n\t- b\n\t- c", 1, 0, 2, 4, true, "- a\n- b\n- c"],                        // M89
+      ];
+      for (const [src, al, ac, bl, bc, out, want] of sc) {
+        const eg = { view: { lines: src.split("\n") }, editor: {} };
+        cr = null;
+        Ed.indent(eg, { a: { l: al, c: ac }, b: { l: bl, c: bc }, empty: false }, out);
+        if (eg.view.lines.join("\n") !== want) fail("sel-tab:" + src);
       }
     } finally { Ed.after = oa; Ed.snap = on; }
     return bad;

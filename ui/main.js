@@ -2023,6 +2023,15 @@ const edLine = fn => edEdit((v, a, b) => {  // fn(line) -> line | null (= delete
   if (nl == null) { const cut = l1 < v.length ? l1 + 1 : Math.max(0, l0 - 1); return [v.slice(0, l0) + v.slice(l1 + 1), Math.min(l0, cut), Math.min(l0, cut)]; }
   return [v.slice(0, l0) + nl + v.slice(l1), l0 + Math.min(nl.length, a - l0 + nl.length - (l1 - l0)), l0 + Math.min(nl.length, b - l0 + nl.length - (l1 - l0))];
 });
+// R17.4 M46-M51 "Toggle checkbox status": a MODEL op (one row patched, stock
+// caret rule), not a whole-document rewrite through the textarea shim.
+function edTask() {
+  const g = state && fg();
+  const t = g && g.active >= 0 ? g.tabs[g.active] : null;
+  if (!g || !t || t.kind || t.mode === "reading") return;
+  const s = Ed.sel(g);
+  if (s) Ed.toggleCheck(g, s);
+}
 function linkAtCaret() {   // [[target]] spanning the caret of the edited field, note part only
   const ta = edField();
   if (!ta) return null;
@@ -2065,7 +2074,7 @@ const CMDS = [
   ["editor:save-file",         "Save current file",                   ["ctrl+s"],               cmdSave],
   ["global-search:open",       "Search in all files",                 ["ctrl+shift+f"],         () => { if (!sideOpen) cmdToggleSide(); setPane("search"); }],
   ["editor:toggle-bold",       "Toggle bold",                         ["ctrl+b"],               () => edWrap("**")],
-  ["editor:toggle-checklist-status", "Toggle checkbox status",        ["ctrl+l"],               () => edLine(l => /^(\s*[-*] )\[ \]/.test(l) ? l.replace("[ ]", "[x]") : /^(\s*[-*] )\[x\]/i.test(l) ? l.replace(/\[x\]/i, "[ ]") : l.replace(/^(\s*)([-*] )?/, "$1- [ ] "))],
+  ["editor:toggle-checklist-status", "Toggle checkbox status",        ["ctrl+l"],               () => edTask()],
   ["editor:toggle-comments",   "Toggle comment",                      ["ctrl+/"],               () => edWrap("%%", "comment")],
   ["editor:toggle-italics",    "Toggle italic",                       ["ctrl+i"],               () => edWrap("*")],
   ["markdown:toggle-preview",  "Toggle reading view",                 ["ctrl+e"],               () => cmdToggleMode()],
