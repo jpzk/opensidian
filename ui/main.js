@@ -607,8 +607,7 @@ async function flushSave(g) {               // write g's pending edits NOW
   lpCommit(g);                              // fold any active lp raw row first
   if (!g.saveT) return;
   clearTimeout(g.saveT); g.saveT = null;
-  const n = curOf(g);
-  if (n) { await writeNote(n, bufOf(g)); setBase(g); }
+  await saveBuf(g);                         // R11.3 merge-before-write
   await maybeH1Rename(g);                   // ux-3: H1 edit commits a rename
 }
 
@@ -1715,8 +1714,7 @@ function scheduleSave(g) {
   clearTimeout(g.saveT);
   g.saveT = setTimeout(async () => {
     g.saveT = null;
-    const n = curOf(g);
-    if (n) { await writeNote(n, bufOf(g)); setBase(g); }   // R12: an open raw row is folded in
+    await saveBuf(g);                       // R11.3: merge an external append instead of clobbering it
     await maybeH1Rename(g);                 // ux-3: H1 edit commits a rename
     preview(g);
     updateStatus(g);
@@ -1871,7 +1869,7 @@ async function cmdSave() {                   // force save, no debounce
   const n = curOf(g);
   if (!n) return;
   clearTimeout(g.saveT); g.saveT = null;
-  await writeNote(n, g.editor.value);
+  await saveBuf(g);
   await preview(g);
   await updateStatus(g);
 }
@@ -2890,6 +2888,29 @@ function setBase(g) {
 }
 function bufOf(g) {          // R17: the model IS the buffer (g.editor is its mirror)
   return g.view && g.view.lines ? Ed.text(g) : g.editor.value;
+}
+// R11.3 AT SAVE TIME. Every write of the active note goes through here.
+// Under R17 the model saves on a 250ms debounce while you type (the old design
+// only wrote when the caret LEFT the raw row), so our write can now land inside
+// the watcher's 1s tick and silently clobber an external append that reached
+// disk first. Compare disk against the tab's base and apply the SAME merge rule
+// as onVaultChanged before writing: an external append on top of our base is
+// folded in (buf + tail), anything else keeps the buffer. One read per debounced
+// save — never on the keystroke path.
+async function saveBuf(g) {
+  const n = curOf(g);
+  if (!n) return;
+  const t = g.active >= 0 ? g.tabs[g.active] : null;
+  let buf = bufOf(g);
+  if (t && !t.kind && t.base != null) {
+    const disk = await inv("read_note", { name: n });
+    if (disk !== t.base && disk !== buf) {
+      const merged = disk.startsWith(t.base) ? buf + disk.slice(t.base.length) : buf;
+      if (merged !== buf) { await reloadInPlace(g, merged); buf = merged; }
+    }
+  }
+  await writeNote(n, buf);
+  setBase(g);
 }
 // R11.2: replace the ACTIVE tab's text in place — caret line/col + scroll kept
 async function reloadInPlace(g, text) {
