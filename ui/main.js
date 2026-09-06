@@ -899,7 +899,9 @@ function updateTitle() {          // pane/focus census in the window title (head
   if (md && isLp(ft.mode) && fg().lpActive) md += ":" + fg().lpActive.l0;
   if (md) md += "]";
   if (lpMs >= 0) md += " [lp:" + lpMs + "]";     // perf: last lpRender ms
-  if (edtBad >= 0) md += " [edt:" + (edtBad ? "fail" + edtBad : "ok") + "]";   // R17: renderer/token-map self test
+  // R17: renderer/token-map self test. A failure names its FIRST bad case
+  // (Ed.edtWhy) so the smoke log says what broke, not just how many.
+  if (edtBad >= 0) md += " [edt:" + (edtBad ? "fail" + edtBad + ":" + (Ed.edtWhy || "?") : "ok") + "]";
   // R17 editor probe: the MODEL selection range [sel:l.c-l.c] and the measured
   // row geometry [edx:] [ery:] of the focused pane — the `edit` smoke asserts
   // selections and clicks source lines instead of guessed pixels.

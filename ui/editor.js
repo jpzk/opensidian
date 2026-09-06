@@ -707,29 +707,49 @@ const Ed = {
   selfTest() {
     const cases = ["# Heading one", "- [ ] task **bold** here", "plain *it* and `co de` #tag",
                    "\t- nested [[Note|alias]] tail", "> quote with [text](http://x/y)", "", "| a | b |",
-                   "1. numbered ~~s~~ ==hl== end", "```js", "text with https://x.example/z end"];
+                   "1. numbered ~~s~~ ==hl== end", "```js", "text with https://x.example/z end",
+                   // corpus inherited from the deleted scripts/edit-unit.js (it drove a pure
+                   // API that no longer exists; the invariants it protected live on here)
+                   "   ", "###### h6", "## **bold** head", "- [x] done", "  - two spaces", "12) twelve",
+                   "> > deep", "> - a", "---", "a **b _c_ d** e", "![[Welcome]]", "a#nottag and #tag/sub",
+                   "snake_case_word stays", "`a**b`", "text with <b>&amp;", "unclosed **bold",
+                   "- **bold item** with [[Link]]", "\t\t1. deep ordered"];
     let bad = 0;
+    Ed.edtWhy = "";
+    // the label rides in the window-title census, so keep it token-safe
+    const fail = m => { bad++; if (!Ed.edtWhy) Ed.edtWhy = String(m).replace(/[^\w.:<>+-]/g, "_").slice(0, 40); };
     const g = { view: {}, lp: document.createElement("div") };
     for (const c of cases) {
       const row = Ed.row(g, c, 0);
-      if (row.textContent !== c) { bad++; continue; }
+      if (row.textContent !== c) { fail("text:" + c); continue; }
       for (let k = 0; k <= c.length; k++) {          // col -> DOM -> col round trip
         const [n, o] = Ed.posOf(row, k, true);
         if (n === row) continue;
-        if (Ed.colOf(row, n, o) !== k) { bad++; break; }
+        if (Ed.colOf(row, n, o) !== k) { fail("col" + k + ":" + c); break; }
       }
     }
+    // R17.6 rendered form: the VISIBLE text of a row (markers live in .mk and
+    // are display:none off the caret row) is the source minus those markers.
+    // textContent === source above is the reveal-all/source-mode side of the
+    // same invariant, and it is also the escaping proof: a row built only from
+    // text nodes can never turn "<b>" into markup.
+    const vis = s => Ed.nodes(Ed.row(g, s, 0)).filter(n => !n.hid).map(n => n.n.nodeValue).join("");
+    const rf = [["**bold**", "bold"], ["*it*", "it"], ["`code`", "code"], ["~~s~~ ==h==", "s h"],
+                ["[[Welcome]]", "Welcome"], ["[[Welcome|alias]]", "alias"], ["[ext](http://x.y/z)", "ext"],
+                ["#tag", "#tag"], ["# Head", "Head"], ["- alpha", "alpha"], ["\t- nested", "\tnested"],
+                ["- [ ] todo", "todo"], ["> quoted", "quoted"], ["1. one", "one"]];
+    for (const [s, w] of rf) if (vis(s) !== w) fail("vis:" + s);
     // Home targets (M64-M68), checked on the model, not the DOM
     const hg = { view: { lines: ["- alpha", "\t- beta", "- [ ] alpha", "# Head", "plain", "> quoted", "1. one"] } };
     const hw = [2, 3, 6, 0, 0, 2, 3];
-    for (let i = 0; i < hw.length; i++) if (Ed.homeCol(hg, i) !== hw[i]) bad++;
+    for (let i = 0; i < hw.length; i++) if (Ed.homeCol(hg, i) !== hw[i]) fail("home:" + i);
     // horizontal steps walk RAW columns and cross line edges (M69-M71)
     const sg = { view: { lines: ["**b** x", "- y"] } };
     const sw = [[0, 2, true, "0.1"], [0, 0, true, "-"], [1, 0, true, "0.7"],
                 [0, 7, false, "1.0"], [1, 3, false, "-"], [0, 0, false, "0.1"]];
     for (const [l, c, back, want] of sw) {
       const n = Ed.step(sg, l, c, back);
-      if ((n ? n.l + "." + n.c : "-") !== want) bad++;
+      if ((n ? n.l + "." + n.c : "-") !== want) fail("step:" + l + "." + c + (back ? "<" : ">"));
     }
     return bad;
   },
