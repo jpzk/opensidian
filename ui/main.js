@@ -677,7 +677,6 @@ function mkView(g) {
     const L = bufOf(g).split("\n");             // an open raw row counts
     lpEdit(g, L.length - 1, L[L.length - 1].length);
   });
-  lp.addEventListener("scroll", () => lpHydrate(lp), { passive: true });  // perf-dom: fill rows scrolled into view
   return v;
 }
 function attachView(g, v) {          // v becomes g's live editor/lp/preview
@@ -1595,15 +1594,8 @@ async function lpRender(g, activeL = -1, col = 0, full = false) {
     need.forEach((i, k) => { htmls[i] = rendered[k]; });
   }
   const st = g.lp.scrollTop;
-  // perf-dom (INTEGRATE): off-screen rows are built EMPTY on a long note
-  const [wa, wb] = nn >= LP_DEFER_MIN ? lpWindow(g.lp, blocks, st) : [0, nn];
-  let deferred = 0;
-  const mk = i => {
-    if (i === activeBi) return lpRawRow(g, blocks[i], texts[i]);
-    const d = i < wa || i >= wb;
-    if (d) deferred++;
-    return lpRow(g, blocks[i], htmls[i], texts[i], d);
-  };
+  const mk = i => i === activeBi ? lpRawRow(g, blocks[i], texts[i])
+                                 : lpRow(g, blocks[i], htmls[i], texts[i]);
   let touched = 0;
   const rows = g.lp.children;
   if (!c) {                                      // FULL rebuild
@@ -1641,7 +1633,6 @@ async function lpRender(g, activeL = -1, col = 0, full = false) {
   }
   g.lpCache = { note, texts, htmls, cmd };
   g.lp.scrollTop = st;
-  if (deferred) lpHydrate(g.lp);                 // fill the rest off the critical path
   if (activeBi >= 0 && g.lpActive) {             // caret into the raw row
     const b = blocks[activeBi], ta = g.lpActive.ta;
     const off = L.slice(b.l0, activeL).reduce((a, x) => a + x.length + 1, 0)
@@ -1651,8 +1642,7 @@ async function lpRender(g, activeL = -1, col = 0, full = false) {
   lpMs = Math.round(performance.now() - lpT0);   // perf: census [lp:<ms>]
   updateTitle();                                 // republish [mode:lp:<l0>] census
   perf.mark("lp_render", lpT0, { blocks: nn, lines: L.length, active: activeL,
-                                 rendered: need.length, patched: touched, full: !c,
-                                 deferred });
+                                 rendered: need.length, patched: touched, full: !c });
 }
 
 // R20 (#8/#d): row handlers resolve their group AT EVENT TIME from the DOM
@@ -1699,47 +1689,13 @@ function lpRawRow(g0, b, text) {
 // a rendered row. Handlers read l0/l1 from row.dataset and the model from
 // g.editor.value AT EVENT TIME: rows are kept across passes, so closures
 // over line numbers would go stale when lines above are inserted/removed.
-// `defer` builds the row EMPTY (see lpFill / lpHydrate): the row element, its
-// dataset and its mousedown handler exist, only the content is postponed.
-function lpRow(g0, b, h, text, defer) {
+function lpRow(g0, b, h, text) {
   const row = document.createElement("div");
   row.className = "lprow";
   // R15.10 LP: a leading-space-indented line (nested list) keeps its literal indent, like stock (spaces are not re-laid)
   const ind = text ? (text.match(/^ */)[0].length) : 0;
   if (ind) row.style.paddingInlineStart = (ind * 0.26) + "em";
   row.dataset.l0 = b.l0; row.dataset.l1 = b.l1;
-  row._lph = h;
-  if (defer) {                                   // height estimate keeps the scrollbar honest
-    row.classList.add("lpdefer");
-    const n = b.l1 - b.l0 + 1;
-    if (n > 1) row.style.minHeight = (n * LP_ROW_PX) + "px";
-  } else lpFill(row);
-  row.addEventListener("mousedown", e => {
-    lpFill(row);                                 // a click never lands on an empty row
-    e.preventDefault();                          // keep browser from part-selecting
-    const g = gOf(row);
-    const bb = { l0: +row.dataset.l0, l1: +row.dataset.l1 }, L = g.editor.value.split("\n");
-    lpEdit(g, bb.l0, lpCol(e, row, bb, L));      // R8.3 column mapping
-  });
-  return row;
-}
-
-/* perf-dom (INTEGRATE): fill a deferred row. The measured cost of building a
-   long note's live preview is NOT our JS (js_ms 33-108 for 301 rows) but the
-   rendering update that follows it — style resolution + first layout + text
-   shaping of ~301 freshly built subtrees (pane_split on the 301-row note:
-   566ms wall vs 35ms on a 3-row note, while a full reflow + re-raster of the
-   SAME 301 rows once they exist is 17ms: compositor_floor_relayout). It is
-   content-bound, and `content-visibility: auto` cannot fix it because it
-   skips off-screen LAYOUT and PAINT, never DOM construction or style. So the
-   rows nobody can see are built empty and filled here, on idle / on scroll /
-   on click. Called on an already-filled row it is a no-op. */
-function lpFill(row) {
-  const h = row._lph;
-  if (h === undefined) return;                   // already filled (or a raw row)
-  row._lph = undefined;
-  row.classList.remove("lpdefer");
-  row.style.minHeight = "";
   row.innerHTML = h && h.trim() ? h : "&nbsp;";  // blank line stays clickable
   const cur = () => ({ l0: +row.dataset.l0, l1: +row.dataset.l1 });
   // R8.6: rendered checkbox click toggles [ ]/[x] on the source line via
@@ -1786,97 +1742,28 @@ function lpFill(row) {
       } else navigate(g, n, an);
     });
   });
-}
-
-/* perf-dom (INTEGRATE): the eager window — which rows lpRender must build
-   with their content so the paint that ENDS an op shows what the user sees.
-   Estimated from scrollTop and the block line counts BEFORE the mutation (no
-   layout read, no forced reflow): the viewport plus one screen either side.
-   An estimate that is off is corrected by lpHydrate, which always fills the
-   rows nearest the viewport first. */
-const LP_DEFER_MIN = 80;         // shorter notes build eagerly: the old path, unchanged
-const LP_ROW_PX = 24;            // px per source line (= .lprow contain-intrinsic-size)
-const LP_BATCH = 40;             // rows filled per idle pass
-function lpWindow(lp, blocks, st) {
-  const ch = lp.clientHeight || 600, top = st - ch, bot = st + 2 * ch;
-  let y = 0, a = blocks.length, b = 0;
-  for (let i = 0; i < blocks.length; i++) {
-    const h = (blocks[i].l1 - blocks[i].l0 + 1) * LP_ROW_PX;
-    if (y + h > top && y < bot) { if (i < a) a = i; b = i + 1; }
-    y += h;
-  }
-  return [a, b];
-}
-
-/* Fill deferred rows in the background, nearest the viewport first, LP_BATCH
-   per idle pass. Rows ABOVE the viewport grow from their estimate to their
-   real height, which would shift the content under the user: the first
-   visible row is used as a scroll anchor and scrollTop is corrected by how
-   far it moved. Keyed on the lp element, not the group, because a view moves
-   between groups (tab drag / split). */
-function lpHydrate(lp) {
-  if (lp._hyd) return;
-  const idle = window.requestIdleCallback || (f => setTimeout(f, 16));
-  lp._hyd = idle(() => {
-    lp._hyd = 0;
-    const rows = lp.querySelectorAll(".lpdefer");
-    if (!rows.length) return;
-    const top = lp.scrollTop, bot = top + lp.clientHeight;
-    const dist = r => {                          // 0 = on screen
-      const o = r.offsetTop, e = o + r.offsetHeight;
-      return e < top ? top - e : o > bot ? o - bot : 0;
-    };
-    const near = [...rows].map(r => [dist(r), r]).sort((x, y) => x[0] - y[0]);
-    const anchor = [...lp.children].find(r => r.offsetTop + r.offsetHeight > top);
-    const y0 = anchor ? anchor.offsetTop : 0;
-    for (let i = 0; i < near.length && i < LP_BATCH; i++) lpFill(near[i][1]);
-    if (anchor) {                                // rows above grew: keep the view put
-      const dy = anchor.offsetTop - y0;
-      if (dy) lp.scrollTop = top + dy;
-    }
-    if (near.length > LP_BATCH) lpHydrate(lp);
+  row.addEventListener("mousedown", e => {
+    e.preventDefault();                        // keep browser from part-selecting
+    const g = gOf(row);
+    const bb = cur(), L = g.editor.value.split("\n");
+    lpEdit(g, bb.l0, lpCol(e, row, bb, L));    // R8.3 column mapping
   });
+  return row;
 }
 
 /* R8.3 click -> source column. caretRangeFromPoint gives the caret offset in
    RENDERED text; greedy two-pointer alignment maps it back to the source line
    (marker chars — **, [[, #, "- [ ] " — exist only source-side and are
    consumed there alone), so error <= enclosing marker width (spec tolerance).
-   Multi-line (fence) blocks and misses fall back to end/start of line.
-   INTEGRATE: a click PAST the end of the rendered text is answered before
-   caretRangeFromPoint is consulted at all. Under the `content-visibility:
-   auto` containment added to .lprow for perf, such a click no longer misses
-   (which used to give the s.length fallback) — it HITS, resolving to the row
-   element at offset 0, so the caret landed at column 0 and " EDITMARK" was
-   typed at the start of the line.
-   That guard must measure the INKED TEXT, not the row's contents box: a
-   paragraph renders as a block <p> (render_md; .lp .lprow is width:100%), and
-   a Range over an element resolves to that element's BORDER box, so
-   selectNodeContents(row).getBoundingClientRect().right is the note column's
-   right edge — never less than the x of a click inside the column, i.e. the
-   comparison was dead code for every paragraph row. lpTextRight walks to the
-   LAST non-blank text node and takes its last client rect (last rect = last
-   visual line, so a wrapped row compares against the line actually clicked). */
-function lpTextRight(row) {                      // right edge of the last text run
-  const w = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
-  let last = null, n;
-  while ((n = w.nextNode())) if (n.nodeValue.trim()) last = n;
-  if (!last) return null;
-  const r = document.createRange();
-  r.selectNodeContents(last);
-  const rects = r.getClientRects();
-  return rects.length ? rects[rects.length - 1] : null;
-}
+   Multi-line (fence) blocks and misses fall back to end/start of line. */
 function lpCol(e, row, b, L) {
   const s = L[b.l0];
   if (b.l1 !== b.l0) return 0;                   // fence block: caret at start
-  const r = document.createRange();              // rendered chars before caret
-  r.selectNodeContents(row);
-  const tb = lpTextRight(row);                   // extent of the RENDERED text
-  if (tb && tb.width && e.clientX > tb.right) return s.length;   // click past EOL
   const cr = document.caretRangeFromPoint
     ? document.caretRangeFromPoint(e.clientX, e.clientY) : null;
   if (!cr || !row.contains(cr.startContainer)) return s.length;
+  const r = document.createRange();              // rendered chars before caret
+  r.selectNodeContents(row);
   r.setEnd(cr.startContainer, cr.startOffset);
   const k = r.toString().length, rt = row.textContent;
   let i = 0, j = 0;
