@@ -165,3 +165,41 @@ control pair. Everything else in the diff is the smoke assertion and negctl/.
     git status --porcelain                                       -> 0 lines
     git log origin/goal/dloss-guard..goal/dloss-guard            -> 0 lines (pushed)
 All 7 ledger items done. Branch NOT merged, per the brief.
+
+## iteration 2 (20:0x) — re-invoked after goal_done: main MOVED, ancestry criterion broke
+
+Re-ran the ritual verification before assuming iteration 1's green was still green. It was
+not: `git merge-base --is-ancestor origin/main goal/dloss-guard` came back **rc=1** — main
+advanced two commits while this goal was reporting (55d6f04 gate: run phase_dloss on every
+push — main made the SAME one-word gate.sh edit independently at 19:04; ad54ec0 release.sh:
+force ui/ re-embed + refuse to move a published tag). Criterion 4 was false at 19:54.
+
+Fix: `git merge --no-edit origin/main` -> b3fb573, clean (gate.sh identical on both sides,
+so no conflict; only release.sh came in). Ancestry rc=0 again.
+
+Re-verified EVERYTHING at the merged head (job QAlxe4nE, /workspace/goal/dloss-guard/reverify.sh,
+every rc from a redirect):
+
+    [20:06:42] 1/5 fast dloss
+    [20:07:07] fast dloss rc=0
+    [smoke] F1xR11.3: failed save after an external append -> [saveerr:A-LP] + [dirty:1], disk keeps the append and not the buffer
+    [smoke] F1xR11.3: chmod u+w + ctrl+s landed BOTH the typed text and the external append
+    [smoke] PASS (fast dloss)
+    [20:07:07] cargo rc=0   test result: ok. 51 passed; 0 failed; 0 ignored
+    [20:08:13] full smoke rc=0   [smoke] PASS — screenshots in /tmp/rustidian-smokedlguard95
+    [20:08:13] check-loss rc=0   citations checked : 75 (bad: 0)  RESULT: PASS
+    [20:08:13] ancestry rc=0     status lines: 0
+    [20:08:13] REVERIFY rc_all=0
+
+Assertion line numbers after the merge (unchanged — the merge did not touch smoke.sh):
+scripts/smoke.sh:1500-1533, the composition block; the four asserts at 1522-1529 and the
+retry-lands-both at 1531-1533.
+
+Raw logs: negctl/rv-fast-dloss.log, rv-cargo.log, rv-full.log, rv-checkloss.log.
+
+### mistake worth recording
+While the first re-verify job was running I ran `pkill -f 'reverify.sh'` / `pkill -f 'smoke.sh'`
+to clear what I thought was a stray job — the pattern also matched cs-job's own `sh -c`
+wrapper, which killed the job mid-F2 and left it stuck in `running` with no process behind
+it. Nothing was lost (flock releases on death, smoke.sh removes its own stale X socket), but:
+never pkill by a pattern that matches your own job wrapper; kill by pid or let it finish.
