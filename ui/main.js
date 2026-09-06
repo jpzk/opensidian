@@ -544,6 +544,12 @@ async function runSearch() {
    it fails if renderBm() stops repainting even while bmCache is correct. */
 let bmCache = [];
 const bmRows = () => document.querySelectorAll("#bmlist .bmrow").length;
+/* R20.6: the LABELS the user can actually read, taken from the painted rows in
+   paint order. A count alone passes a renderBm() that paints the right NUMBER of
+   wrong rows, so [bmn:] is what proves the pane tracks disk. '|' and ']' are
+   stripped so a note named with a separator cannot forge a census token. */
+const bmNames = () => Array.from(document.querySelectorAll("#bmlist .bmrow"))
+  .map(r => r.textContent.replace(/[|\]]/g, "")).join("|");
 function renderBm() {
   const box = $("bmlist");
   box.textContent = "";
@@ -842,6 +848,7 @@ function updateTitle() {          // pane/focus census in the window title (head
             " [pane:" + sidePane + "]" +
             (sidePane === "search" && searchCount >= 0 ? " [sr:" + searchCount + "]" : "") +
             (sidePane === "bm" ? " [bm:" + bmRows() + "]" +          // RENDERED rows, not bmCache.length:
+              " [bmn:" + bmNames() + "]" +                          // and their painted LABELS, in paint order
               (bmRows() === bmCache.length ? "" :                    // the smoke assertion must prove the PANE
                " [bmdesync:" + bmCache.length + "/" + bmRows() + "]") : "");   // repainted, not just the model
 
