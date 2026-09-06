@@ -977,6 +977,22 @@ function updateTitle() {          // pane/focus census in the window title (head
   // selections and clicks source lines instead of guessed pixels.
   if (md && ft && !ft.kind && isLp(ft.mode) && typeof Ed !== "undefined" && fg() && fg().lp)
     md += Ed.selTok(fg()) + Ed.geom(fg());
+  // R17.7 link probe: the FIRST rendered link of the focused note view -> [xl:<dest>|<visible line>].
+  // BOTH renderers publish it (live preview/source from g.lp, reading from g.preview, i.e. Rust's
+  // pulldown-cmark HTML), so the smoke can assert they AGREE on a destination containing balanced
+  // parens — and that no leftover ')' is sitting there as text — from the DOM instead of OCR-ing a
+  // paren. dest = the href routing would use for an a.ext, else the parsed destination. innerText,
+  // not textContent: lp hides the link markup off the caret row and hidden markup is not rendered text.
+  if (md && ft && !ft.kind && fg()) {
+    const rt = ft.mode === "reading" ? fg().preview : fg().lp;
+    const la = rt && rt.querySelector("a.ext, a.lt");
+    if (la) {
+      const host = la.closest(".lprow, p, li, h1, h2, h3, h4, h5, h6") || la.parentNode;
+      const xs = s => String(s == null ? "" : s).replace(/[[\]|]/g, "").trim().slice(0, 120);
+      md += " [xl:" + xs(la.classList.contains("ext") ? la.getAttribute("href") : la.dataset.url) +
+            "|" + xs(host.innerText) + "]";
+    }
+  }
   // R15.2 font probe: bundled @font-face entries that actually LOADED (lazy: a face loads when text first uses it) -> [fonts:SourceCodePro/400/normal|...]
   { const fl = document.fonts ? [...document.fonts].filter(f => f.status === "loaded").map(f => f.family.replace(/[" ]/g, "") + "/" + f.weight + "/" + f.style) : [];
     if (fl.length) md += " [fonts:" + fl.join("|") + "]"; }
