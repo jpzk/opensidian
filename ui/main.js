@@ -1760,10 +1760,23 @@ async function wikiClick(e, a) {
     if (an) await navAnchor(g, an);
   } else navigate(g, n, an);
 }
-// S1 external link: opens in the desktop browser, never in the webview
-function extClick(e, a) {
+// S1 external link, live-preview side: SWALLOW only. The mousedown must not
+// open the raw row under the link, and the webview must never navigate.
+// Routing to the desktop browser has exactly ONE choke point — the capture-phase
+// a.ext gate above, which preventDefaults both mousedown and click, counts
+// [ext:N] and hands the HREF (only ever http(s) here; every other scheme renders
+// with href="#") to open_external, where Rust check_external re-checks the
+// scheme. This handler deliberately does NOT route: a second path would open the
+// browser TWICE for one click, and it could not restore safety anyway (without
+// the gate the anchor's own default navigation is what fires).
+// It used to end with `if (a.dataset.url) openExt(a.dataset.url)` and openExt was
+// DEFINED NOWHERE (introduced by 7cc7cb5, shipped in v0.6): a ReferenceError on a
+// path that only ever ran for non-ext links, and only because the capture gate
+// stops a.ext events before they reach here. Deleted rather than defined — a
+// dangerous scheme (javascript:) is now unreachable by construction, not by
+// listener ordering.
+function extClick(e, a) {   // `a` unused: kept for the Ed.extClick(e, a) signature
   e.preventDefault(); e.stopPropagation();
-  if (a.dataset.url) openExt(a.dataset.url);
 }
 async function preview(g) {
   g.preview.innerHTML = await inv("render", { content: g.editor.value });
