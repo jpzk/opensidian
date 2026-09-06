@@ -568,10 +568,7 @@ function noteMenu(e, nm) {                 // right-click a tree note row
   d.onmousedown = ev => ev.stopPropagation();
   d.onclick = () => { closeMenu(); toggleBm(nm); };
   m.appendChild(d);
-  m.style.left = Math.min(e.clientX, window.innerWidth - 150) + "px";
-  m.style.top = Math.min(e.clientY, window.innerHeight - 60) + "px";
-  document.body.appendChild(m);
-  menuEl = m;
+  placeMenu(m, e.clientX, e.clientY);   /* R22: viewport-clamped by measured size */
 }
 
 async function writeNote(name, content) {   // every save funnels here so graphs live-update
@@ -713,8 +710,11 @@ function renderLayout() {
    DESIGN (note body, file tree, result/link lists, picker + modal lists):
    they are not counted, and the walk does not descend into them — their
    contents are content, not chrome, and cost is bounded to the frame.
-   When n > 0 the census also carries [ovfe:<el>@<why>|...] (<= 3 offenders)
-   so a fuzz failure names the element instead of just a number. */
+   When n > 0 the census also carries [ovfe:<el>@<why>|...] so a fuzz failure
+   names the element instead of just a number. Only LEAF offenders are named:
+   an overflowing child makes every ancestor's scrollWidth overflow too, and
+   reporting `#main` when the real culprit is a button in the tab strip costs
+   an iteration every time. */
 const OVF_SCROLL = "#tree,#sresults,#bmlist,.rlist,.lp,.preview,.editor,.ac," +
                    "#mlist,#p-dirs,#p-recent,#sbody,#spage,#hklist";
 function ovfName(el) {              // short, stable selector for a failure message
@@ -722,12 +722,27 @@ function ovfName(el) {              // short, stable selector for a failure mess
   const k = String(c).trim().split(/\s+/).filter(Boolean).slice(0, 2).map(x => "." + x).join("");
   return el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + k;
 }
+function ovfCause(el, why) {         // "<child" = the child that makes el overflow (leaf case only)
+  const horiz = why[1] === "w" || why[0] === "r" || why[0] === "l";
+  const box = el.getBoundingClientRect();
+  let worst = null, worstBy = 1;
+  for (const c of el.children) {
+    if (c.hidden) continue;
+    const r = c.getBoundingClientRect();
+    if (!r.width && !r.height) continue;
+    const by = horiz ? Math.max(r.right - box.right, box.left - r.left)
+                     : Math.max(r.bottom - box.bottom, box.top - r.top);
+    if (by > worstBy) { worstBy = by; worst = c; }
+  }
+  return worst ? "<" + ovfName(worst) + "+" + Math.round(worstBy) : "";
+}
 function ovfScan() {
   const de = document.documentElement;
   const vw = de.clientWidth, vh = de.clientHeight;
   const bad = [];
   let n = 0;
-  const walk = el => {
+  const walk = el => {                 // returns how many offenders live BELOW el
+    let deep = 0;
     for (const c of el.children) {
       if (c.hidden || c.tagName === "SCRIPT" || c.tagName === "STYLE") continue;
       const r = c.getBoundingClientRect();
@@ -742,9 +757,17 @@ function ovfScan() {
       else if (r.bottom > vh + 1) why = "b" + Math.round(r.bottom) + ">" + vh;
       else if (r.left < -1) why = "l" + Math.round(r.left);
       else if (r.top < -1) why = "t" + Math.round(r.top);
-      if (why) { n++; if (bad.length < 3) bad.push(ovfName(c) + "@" + why); }
-      walk(c);
+      const sub = walk(c);
+      if (why) {
+        n++;
+        // a LEAF offender is overflowed by a child the walk does not check
+        // (an allowed scroll container, or an absolutely-positioned box):
+        // name the widest/tallest such child so the cause is not a mystery
+        if (!sub && bad.length < 4) bad.push(ovfName(c) + "@" + why + ovfCause(c, why));
+      }
+      deep += sub + (why ? 1 : 0);
     }
+    return deep;
   };
   walk(document.body);
   return { dw: de.scrollWidth - vw, dh: de.scrollHeight - vh, n, bad };
@@ -804,7 +827,8 @@ function updateTitle() {          // pane/focus census in the window title (head
   if (gg) { const pt = posTok(fg()); if (pt) gg += " [ggpos:" + pt + "]"; }
   const modal = modalKind ? " [modal:" + modalKind + "]"
     : ($("rnbox") && !$("rnbox").hidden ? " [modal:rn]" : "")  // m5 fuzzy modal / rename prompt
-    + (settingsOpen ? " [modal:settings]" + hkInfo : "");      // R14 settings + hotkeys probe
+    + (settingsOpen ? " [modal:settings]" + hkInfo : "")       // R14 settings + hotkeys probe
+    + (menuEl ? " [menu:1]" : "");                             // R22: a context menu is open (fuzz probe)
   let t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
             " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + lg + md + gg + modal +
@@ -824,7 +848,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   const ov = ovfScan();            // R22: layout overflow census (window + frame)
   t += " [vp:" + innerWidth + "x" + innerHeight + "]" +   // resize-completed signal for the fuzz harness
        " [ovf:" + ov.dw + "," + ov.dh + "," + ov.n + "]" +
-       (ov.bad.length ? " [ovfe:" + ov.bad.join("|").slice(0, 120) + "]" : "");
+       (ov.bad.length ? " [ovfe:" + ov.bad.join("|").slice(0, 180) + "]" : "");
   document.title = t;
   // publish to the native title: ONE call in flight, last-write-wins, 500ms
   // timeout guard — a hung/rejected setTitle IPC can neither reorder titles
@@ -924,7 +948,24 @@ async function collapseGroup(g) {  // R6.5: closing the last tab removes the gro
 }
 
 let menuEl = null;
-function closeMenu() { if (menuEl) { menuEl.remove(); menuEl = null; } }
+function closeMenu() { if (menuEl) { menuEl.remove(); menuEl = null; updateTitle(); } }
+/* R22: a context menu is position:fixed — clamp it to the viewport by its
+   MEASURED box. The old `innerWidth - 150 / innerHeight - 60` guesses spilled
+   whenever the menu was wider/taller than the guess or the window was small.
+   placeMenu appends first (so offsetWidth/Height are real), then places;
+   clampMenu re-runs it after the menu's contents change (R13.1 pick list). */
+function placeMenu(m, x, y) {
+  m.style.left = "0px"; m.style.top = "0px";
+  document.body.appendChild(m);
+  m.dataset.x = x; m.dataset.y = y;
+  menuEl = m;
+  clampMenu(m);
+  updateTitle();                  // census [menu:1]
+}
+function clampMenu(m) {
+  m.style.left = Math.max(0, Math.min(+m.dataset.x, innerWidth - m.offsetWidth)) + "px";
+  m.style.top = Math.max(0, Math.min(+m.dataset.y, innerHeight - m.offsetHeight)) + "px";
+}
 document.addEventListener("contextmenu", e => e.preventDefault()); // app-like: native menu never
 document.addEventListener("mousedown", e => {
   if (menuEl && !menuEl.contains(e.target)) closeMenu();
@@ -960,6 +1001,7 @@ function tabMenu(e, g, i) {              // right-click a tab -> Split right / S
   };
   const pick = () => {                   // R13.1 pick list: every other open tab, in layout order
     m.innerHTML = "";
+    setTimeout(() => clampMenu(m), 0);   // R22: the pick list resizes the menu — re-clamp it
     let any = false;
     for (const h of groups()) for (const t of h.tabs) {
       if (t === tab) continue;
@@ -972,10 +1014,7 @@ function tabMenu(e, g, i) {              // right-click a tab -> Split right / S
   item("Split down",  () => { closeMenu(); splitGroup(g, "col", i); });
   if (isLinked(g, tab, i)) item("Unlink tab", () => { closeMenu(); unlinkTab(g, tab); });
   else item("Link with tab...", pick);
-  m.style.left = Math.min(e.clientX, window.innerWidth - 150) + "px";
-  m.style.top = Math.min(e.clientY, window.innerHeight - 80) + "px";
-  document.body.appendChild(m);
-  menuEl = m;
+  placeMenu(m, e.clientX, e.clientY);   /* R22: viewport-clamped by measured size */
 }
 
 /* ---------- view modes (R8.8: livepreview / source / reading per tab) ---------- */

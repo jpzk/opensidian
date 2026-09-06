@@ -9,12 +9,17 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
                  cursor: pointer; border-radius: 4px }
 #ribbon button:hover { background: #313244; color: #cdd6f4 }
 #ribbon button svg { width: 18px; height: 18px; display: block }
-#side { width: 156px; background: #181825; flex-shrink: 0;
+/* R22: the sidebars keep their nominal width but SHRINK (never past 40% of the
+   window each) instead of forcing the body wider than the viewport — 44 + 156
+   + 260 = 460px of fixed chrome does not fit a 320px window. overflow:hidden
+   is the backstop: a clipped icon strip beats a window scrollbar. */
+#side { width: 156px; flex: 0 1 auto; min-width: 0; max-width: 40%;
+        overflow: hidden; background: #181825;
         display: flex; flex-direction: column }
 /* R9.2 sidebar tab strip: Files / Search / Bookmarks */
-#stabs { display: flex; gap: 2px; padding: 6px 6px 2px }
-.stab { flex: 1; background: none; color: #a6adc8; border: 0; padding: 4px;
-        cursor: pointer; border-radius: 4px }
+#stabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 6px 6px 2px; overflow: hidden }   /* R22: wrap, then clip — never push the sidebar wider */
+.stab { flex: 1; min-width: 0; overflow: hidden; background: none; color: #a6adc8;
+        border: 0; padding: 4px; cursor: pointer; border-radius: 4px }   /* R22: min-width:0 = shrinkable icon button */
 .stab:hover { color: #cdd6f4 }
 .stab.active { background: #313244; color: #cdd6f4 }
 .stab svg { width: 15px; height: 15px; display: block; margin: 0 auto }
@@ -89,10 +94,11 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 #rdiv { flex: 0 0 6px; background: #11111b; cursor: col-resize }
 #rdiv:hover, #rdiv:active { background: #585b70 }
 #rdiv[hidden], #rside[hidden] { display: none }
-#rside { width: 260px; flex-shrink: 0; background: #181825; display: flex;
-         flex-direction: column; min-width: 0 }
+#rside { width: 260px; flex: 0 1 auto; min-width: 0; max-width: 40%;   /* R22 */
+         overflow: hidden; background: #181825; display: flex;
+         flex-direction: column }
 /* rsidebar: icon strip + panes (Backlinks / Outgoing / Outline / Local graph) */
-#rtabs { display: flex; gap: 2px; padding: 6px 30px 2px 6px }  /* 30: #rtoggle sits inboard */
+#rtabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 6px 30px 2px 6px; overflow: hidden }   /* R22: wrap+clip */  /* 30: #rtoggle sits inboard */
 #rpane-graph { display: flex; position: relative }
 #rpane-graph[hidden] { display: none }
 .rhead { padding: 6px 10px 4px; font-size: 12px; font-weight: 600; color: #cdd6f4 }
@@ -153,15 +159,19 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .pane { flex: 1 1 0; display: flex; flex-direction: column;
         min-width: 0; min-height: 0; position: relative }
 .pane:not(.focused) .tabbar { opacity: .7 }   /* dim inactive tab strips */
-.tabbar { display: flex; height: 32px; background: #11111b; flex-shrink: 0; user-select: none }   /* R18: a missed tab grab must not start a text-selection DnD (stock: tab strip unselectable) */
-.tabs { display: flex; flex: 1; overflow: hidden }
+/* R22: the strip is a fixed-height row of shrinkable items — min-width:0 +
+   overflow:hidden all the way down, so a pane squeezed to a few px clips the
+   strip instead of pushing #main (and the window) wider than the viewport. */
+.tabbar { display: flex; height: 32px; background: #11111b; flex-shrink: 0;
+          min-width: 0; overflow: hidden; user-select: none }   /* R18: a missed tab grab must not start a text-selection DnD (stock: tab strip unselectable) */
+.tabs { display: flex; flex: 1 1 0; min-width: 0; overflow: hidden }
 .modebtn { background: none; border: 0; color: #a6adc8; cursor: pointer;
-           padding: 0 10px; flex-shrink: 0 }
+           padding: 0 10px; flex: 0 1 auto; min-width: 0; overflow: hidden }   /* R22: shrinkable, was flex-shrink:0 */
 .modebtn:hover { color: #cdd6f4 }
 .modebtn svg { width: 16px; height: 16px; display: block }
-.tab { width: 120px; min-width: 0; flex-shrink: 1; display: flex; align-items: center;
+.tab { width: 120px; min-width: 0; flex-shrink: 1; overflow: hidden; display: flex; align-items: center;
        gap: 6px; padding: 0 8px; background: #313244; color: #a6adc8;
-       cursor: pointer; font-size: 12px; border-right: 2px solid #11111b }
+       cursor: pointer; font-size: 12px; border-right: 2px solid #11111b }   /* R22: overflow:hidden — the 16px close button + 16px padding cannot fit a 2px tab, so clip */
 .tab.active { background: #45475a; color: #cdd6f4 }
 .tab .t { flex: 1 1 auto; min-width: 0; overflow: hidden;
           text-overflow: ellipsis; white-space: nowrap }
@@ -182,13 +192,13 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .pane.drop-edge::after { content: ""; position: absolute; top: 32px; right: 0;
                          bottom: 0; width: 40px; pointer-events: none;
                          background: rgba(137,180,250,.22) }
-.content { flex: 1; display: flex; min-height: 0; position: relative }
+.content { flex: 1 1 0; display: flex; min-width: 0; min-height: 0; position: relative }   /* R22: min-width:0 */
 /* R8.8: one of .editor/.lp/.preview fills the pane (JS toggles display) —
    the old permanent editor|preview side-by-side layout is gone */
-.editor { flex: 1; background: #1e1e2e; color: #cdd6f4; border: 0;
+.editor { flex: 1 1 0; min-width: 0;   /* R22 */ background: #1e1e2e; color: #cdd6f4; border: 0;
           padding: 16px; resize: none;
           font: 13px/1.6 monospace; outline: none }
-.lp { flex: 1; overflow-y: auto }   /* padding + type: R15 block below */
+.lp { flex: 1 1 0; min-width: 0; overflow-y: auto; overflow-x: hidden }   /* R22: min-width:0 + no h-scroll */   /* padding + type: R15 block below */
 .lp a.wiki { color: #89b4fa }
 .lp a.wiki-unresolved { color: #7c86c8; font-style: italic }
 /* R8.2: one rendered row per line/block; the raw caret row blends in */
@@ -198,7 +208,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .lpraw { display: block; width: 100%; background: #26263a; color: inherit;
          border: 0; border-radius: 3px; padding: 0 2px; resize: none;
          outline: none; font: inherit; line-height: inherit; overflow: hidden }
-.preview { flex: 1; overflow-y: auto }
+.preview { flex: 1 1 0; min-width: 0; overflow-y: auto; overflow-x: hidden }   /* R22 */
 .preview a.wiki { color: #89b4fa }
 .preview a.wiki-unresolved { color: #7c86c8; font-style: italic }
 .lp a.ext, .preview a.ext { color: #89b4fa; text-decoration: underline; cursor: pointer }  /* S1: external link, opens via xdg-open */
@@ -207,7 +217,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
   border-radius: 999px; padding: 0 7px; font-size: .85em; text-decoration: none;
   cursor: pointer; white-space: nowrap }
 .lp a.tag:hover, .preview a.tag:hover { background: rgba(137,180,250,.3) }
-.graph { flex: 1; background: #11111b; position: relative; z-index: 1 }   /* above .graphgl */
+.graph { flex: 1 1 0; min-width: 0; min-height: 0;   /* R22 */ background: #11111b; position: relative; z-index: 1 }   /* above .graphgl */
 /* graph-webgl: WebGL canvas BEHIND .graph (nodes + edges); .graph goes transparent and keeps events + labels */
 .graphgl { position: absolute; inset: 0; background: #11111b }
 .graphgl[hidden] { display: none }
@@ -226,14 +236,21 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .status { position: absolute; right: 10px; bottom: 8px; display: flex;
           gap: 12px; background: #181825; border: 1px solid #313244;
           border-radius: 6px; padding: 3px 10px; font-size: 12px;
+          /* R22: in a narrow pane the three counters wrap (bottom-anchored, so
+             the box grows upward) and each one ellipsises rather than spilling
+             out over the sidebar / past the window edge. */
+          max-width: calc(100% - 20px); overflow: hidden;
+          flex-wrap: wrap; justify-content: flex-end;
           color: #a6adc8; z-index: 5; pointer-events: none }
+.status > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 .status[hidden] { display: none }
 
 /* vault picker */
 #picker { position: fixed; inset: 0; background: #1e1e2e; z-index: 10;
           display: flex; align-items: center; justify-content: center }
 #picker[hidden] { display: none }
-#pcard { width: 480px; background: #26263a; border-radius: 10px;
+#pcard { width: 480px; max-width: calc(100% - 24px); background: #26263a;   /* R22: never wider than the window */
+         border-radius: 10px;
          padding: 28px; position: relative }
 #ptitle { text-align: center; font-size: 26px; font-weight: 700;
           margin-bottom: 20px; letter-spacing: 1px }
@@ -269,7 +286,10 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 /* tab context menu (M7 / R6.2): simple dark popup */
 .ctxmenu { position: fixed; z-index: 60; background: #1e1e2e;
            border: 1px solid #45475a; border-radius: 6px; padding: 4px 0;
-           min-width: 130px; box-shadow: 0 4px 14px rgba(0,0,0,.55) }
+           min-width: 130px; box-shadow: 0 4px 14px rgba(0,0,0,.55);
+           /* R22: JS clamps the position to the MEASURED box (placeMenu);
+              these cap a menu that is bigger than the whole window */
+           max-width: 100vw; max-height: 100vh; overflow: auto }
 .ctxmenu div { padding: 6px 14px; cursor: pointer; font-size: 13px;
                color: #cdd6f4; white-space: nowrap }
 .ctxmenu div:hover { background: #45475a }
@@ -289,15 +309,24 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .lgpop input[type=range] { width: 150px; height: 16px; margin: 0 }
 
 /* m5: shared fuzzy modal (quick switcher Ctrl+O / command palette Ctrl+P) */
-#modal { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.35) }
+/* R22: the overlay is the flex box, #mbox is its item — the 90px top offset is
+   kept EXACTLY (same smoke click coordinates) as long as the natural card
+   (~360px: input + 320px list) still fits under it, then it collapses toward 0
+   and the card's own list is what shrinks. Nothing ever reaches past the
+   bottom edge. */
+#modal { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.35);
+         display: flex; flex-direction: column; align-items: center; box-sizing: border-box;
+         padding: max(0px, min(90px, 100vh - 420px)) 0 8px }
 #modal[hidden] { display: none }
-#mbox { width: 520px; max-width: 90%; margin: 90px auto 0; background: #26263a;
+#mbox { width: 520px; max-width: 90%; margin: 0; background: #26263a;
+        max-height: 100%; min-height: 0; display: flex; flex-direction: column;
         border: 1px solid #45475a; border-radius: 8px; overflow: hidden;
         box-shadow: 0 8px 30px rgba(0,0,0,.5) }
 #minput { width: 100%; box-sizing: border-box; padding: 10px 14px; border: 0;
+          flex: 0 0 auto;
           border-bottom: 1px solid #45475a; background: #1e1e2e;
           color: #cdd6f4; font-size: 14px; outline: none }
-#mlist { max-height: 320px; overflow-y: auto }
+#mlist { max-height: 320px; min-height: 0; flex: 0 1 auto; overflow-y: auto }
 #mlist .mrow { display: flex; justify-content: space-between; align-items: center;
                padding: 6px 14px; cursor: pointer; font-size: 13px; color: #cdd6f4 }
 #mlist .mrow.sel, #mlist .mrow:hover { background: #45475a }
@@ -305,7 +334,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 #mlist .mempty { padding: 8px 14px; color: #7f849c; font-size: 12px }
 
 /* m5 F2 rename inline prompt */
-#rnbox { position: fixed; top: 90px; left: 50%; transform: translateX(-50%);
+#rnbox { position: fixed; top: max(0px, min(90px, 100vh - 60px)); left: 50%; transform: translateX(-50%);   /* R22: never below the bottom edge */
          width: 380px; max-width: 90%; background: #26263a; z-index: 60;
          border: 1px solid #45475a; border-radius: 8px; overflow: hidden;
          box-shadow: 0 8px 30px rgba(0,0,0,.5) }
@@ -348,9 +377,16 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
                  padding: 4px 8px; border-radius: 4px; white-space: pre; overflow-x: auto }
 .lp.src .bq { color: #a6adc8 }
 /* R14 settings modal (Ctrl+,) — fixed 900x600 at (190,100): smoke clicks by coordinate */
-#settings { position: fixed; inset: 0; z-index: 55; background: rgba(0,0,0,.45) }
+#settings { position: fixed; inset: 0; z-index: 55; background: rgba(0,0,0,.45);
+  /* R22: the box keeps its (190,100) origin and 900x600 size wherever they fit
+     (1100x700 = the smoke's R14 click coordinates: nothing moves there); below
+     that the offset collapses first, then the box itself shrinks. */
+  display: flex; box-sizing: border-box;
+  padding-left: max(0px, min(190px, 100vw - 900px));
+  padding-top:  max(0px, min(100px, 100vh - 600px)) }
 #settings[hidden] { display: none }
-#sbox { position: absolute; left: 190px; top: 100px; width: 900px; height: 600px; box-sizing: border-box;
+#sbox { position: relative; width: 900px; height: 600px; box-sizing: border-box;
+        min-width: 0; min-height: 0; max-width: 100%; max-height: 100%;
         background: #26263a; border: 1px solid #45475a; border-radius: 8px; overflow: hidden;
         display: flex; flex-direction: column; box-shadow: 0 8px 30px rgba(0,0,0,.5); font-size: 13px }
 #shead { height: 36px; box-sizing: border-box; display: flex; align-items: center; justify-content: space-between;
@@ -435,9 +471,15 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 @supports (font-variation-settings: normal) {   /* stock: graded heading weights on variable fonts */
   :root { --h2-weight: 680; --h3-weight: 660; --h4-weight: 640; --h5-weight: 620; --h6-weight: 600 }
 }
-/* note column: 16px/1.5 text, 700px readable line length centred, 32px file margins (stock .markdown-preview-sizer) */
+/* note column: 16px/1.5 text, 700px readable line length centred, 32px file margins (stock .markdown-preview-sizer)
+   R22: the side margins are min(32px, 5% of the pane) — padding does NOT shrink,
+   so a literal 32px on each side makes the note pane 64px wide minimum and
+   pushes the whole window past the viewport in a narrow split. 5% >= 32px for
+   any pane >= 640px, so every normal size (and every R15 measurement) is
+   byte-identical; only a pane squeezed below 640px sees smaller margins. */
 .lp, .preview { font-family: var(--font-text); font-size: var(--font-text-size); line-height: var(--line-height-normal);
-                color: var(--text-normal); padding: var(--file-margins) }
+                color: var(--text-normal);
+                padding: var(--file-margins) min(var(--file-margins), 5%) }
 .lp > *, .preview > * { max-width: var(--file-line-width); margin-inline: auto }
 .lp .lprow { width: 100% }
 .lp h1, .preview h1, .lp h2, .preview h2, .lp h3, .preview h3, .lp h4, .preview h4, .lp h5, .preview h5, .lp h6, .preview h6 {
