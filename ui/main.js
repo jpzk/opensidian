@@ -588,9 +588,7 @@ function noteMenu(e, nm) {                 // right-click a tree note row
   d.onmousedown = ev => ev.stopPropagation();
   d.onclick = () => { closeMenu(); toggleBm(nm); };
   m.appendChild(d);
-  m.style.left = Math.min(e.clientX, window.innerWidth - 150) + "px";
-  m.style.top = Math.min(e.clientY, window.innerHeight - 60) + "px";
-  openMenu(m);
+  placeMenu(m, e.clientX, e.clientY);   /* R22: viewport-clamped by measured size */
 }
 
 async function writeNote(name, content) {   // every save funnels here so graphs live-update
@@ -783,6 +781,84 @@ function renderLayout() {         // boot / vault switch only — every later ch
   updateTitle();
 }
 
+/* ---------- R22 layout census: [ovf:<dw>,<dh>,<n>] ----------
+   R22 (no scrollbars, ever): at EVERY window size the app chrome fits
+   exactly. dw/dh = documentElement.scrollWidth-clientWidth /
+   scrollHeight-clientHeight — the WINDOW must never scroll, so both are 0.
+   n = elements in the app FRAME that spill: content wider/taller than their
+   own box while that box neither clips nor scrolls it, or a box that reaches
+   past the viewport edge. OVF_SCROLL lists the containers that scroll BY
+   DESIGN (note body, file tree, result/link lists, picker + modal lists):
+   they are not counted, and the walk does not descend into them — their
+   contents are content, not chrome, and cost is bounded to the frame.
+   When n > 0 the census also carries [ovfe:<el>@<why>|...] so a fuzz failure
+   names the element instead of just a number. Only LEAF offenders are named:
+   an overflowing child makes every ancestor's scrollWidth overflow too, and
+   reporting `#main` when the real culprit is a button in the tab strip costs
+   an iteration every time. */
+const OVF_SCROLL = "#tree,#sresults,#bmlist,.rlist,.lp,.preview,.editor,.ac," +
+                   "#mlist,#p-dirs,#p-recent,#sbody,#spage,#hklist";
+function ovfName(el) {              // short, stable selector for a failure message
+  const c = (el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className) || "";
+  const k = String(c).trim().split(/\s+/).filter(Boolean).slice(0, 2).map(x => "." + x).join("");
+  return el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + k;
+}
+function ovfCause(el, why) {         // "<child" = the child that makes el overflow (leaf case only)
+  const horiz = why[1] === "w" || why[0] === "r" || why[0] === "l";
+  const box = el.getBoundingClientRect();
+  let worst = null, worstBy = 1;
+  for (const c of el.children) {
+    if (c.hidden) continue;
+    const r = c.getBoundingClientRect();
+    if (!r.width && !r.height) continue;
+    const by = horiz ? Math.max(r.right - box.right, box.left - r.left)
+                     : Math.max(r.bottom - box.bottom, box.top - r.top);
+    if (by > worstBy) { worstBy = by; worst = c; }
+  }
+  return worst ? "<" + ovfName(worst) + "+" + Math.round(worstBy) : "";
+}
+function ovfScan() {
+  const de = document.documentElement;
+  const vw = de.clientWidth, vh = de.clientHeight;
+  const bad = [];
+  let n = 0;
+  const walk = el => {                 // returns how many offenders live BELOW el
+    let deep = 0;
+    for (const c of el.children) {
+      if (c.hidden || c.tagName === "SCRIPT" || c.tagName === "STYLE") continue;
+      const r = c.getBoundingClientRect();
+      if (!r.width && !r.height) continue;                 // display:none / not laid out
+      if (c.matches(OVF_SCROLL)) continue;                 // allowed scroll container: skip it AND its subtree
+      const st = getComputedStyle(c);
+      const sw = c.scrollWidth - c.clientWidth, sh = c.scrollHeight - c.clientHeight;
+      let why = "";
+      if (sw > 1 && st.overflowX === "visible") why = "sw+" + sw;
+      else if (sh > 1 && st.overflowY === "visible") why = "sh+" + sh;
+      else if (r.right > vw + 1) why = "r" + Math.round(r.right) + ">" + vw;
+      else if (r.bottom > vh + 1) why = "b" + Math.round(r.bottom) + ">" + vh;
+      else if (r.left < -1) why = "l" + Math.round(r.left);
+      else if (r.top < -1) why = "t" + Math.round(r.top);
+      const sub = walk(c);
+      if (why) {
+        n++;
+        // a LEAF offender is overflowed by a child the walk does not check
+        // (an allowed scroll container, or an absolutely-positioned box):
+        // name the widest/tallest such child so the cause is not a mystery
+        if (!sub && bad.length < 4) bad.push(ovfName(c) + "@" + why + ovfCause(c, why));
+      }
+      deep += sub + (why ? 1 : 0);
+    }
+    return deep;
+  };
+  walk(document.body);
+  return { dw: de.scrollWidth - vw, dh: de.scrollHeight - vh, n, bad };
+}
+let ovfT = 0;
+addEventListener("resize", () => {                 // the census must follow the window, not only UI state
+  requestAnimationFrame(updateTitle);
+  clearTimeout(ovfT); ovfT = setTimeout(updateTitle, 150);   // after the relayout settles
+});
+
 function updateTitle() {          // pane/focus census in the window title (headless probe)
   const ps = [...document.querySelectorAll("#main .pane")];
   const nf = document.querySelectorAll("#main .pane.focused").length;
@@ -832,7 +908,8 @@ function updateTitle() {          // pane/focus census in the window title (head
   if (gg) { const pt = posTok(fg()); if (pt) gg += " [ggpos:" + pt + "]"; }
   const modal = modalKind ? " [modal:" + modalKind + "]"
     : ($("rnbox") && !$("rnbox").hidden ? " [modal:rn]" : "")  // m5 fuzzy modal / rename prompt
-    + (settingsOpen ? " [modal:settings]" + hkInfo : "");      // R14 settings + hotkeys probe
+    + (settingsOpen ? " [modal:settings]" + hkInfo : "")       // R14 settings + hotkeys probe
+    + (menuEl ? " [menu:1]" : "");                             // R22: a context menu is open (fuzz probe)
   let t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
             " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + lg + md + gg + modal +
@@ -855,6 +932,10 @@ function updateTitle() {          // pane/focus census in the window title (head
              " [tree:" + notesCache.length + "] [vc:" + vcCount + "]" +   // R11 probes
              (extCount ? " [ext:" + extCount + "]" : "");                 // S1: external-link clicks routed to open_external
   t += t2;
+  const ov = ovfScan();            // R22: layout overflow census (window + frame)
+  t += " [vp:" + innerWidth + "x" + innerHeight + "]" +   // resize-completed signal for the fuzz harness
+       " [ovf:" + ov.dw + "," + ov.dh + "," + ov.n + "]" +
+       (ov.bad.length ? " [ovfe:" + ov.bad.join("|").slice(0, 180) + "]" : "");
   document.title = t;
   // publish to the native title: ONE call in flight, last-write-wins, 500ms
   // timeout guard — a hung/rejected setTitle IPC can neither reorder titles
@@ -983,8 +1064,7 @@ async function collapseGroup(g) {  // R6.5: closing the last tab removes the gro
 
 let menuEl = null;
 // the context menu carries no census, so smoke had to OCR it (flaky under llvmpipe).
-// openMenu()/closeMenu() publish the live item labels as [menu:a|b|c] instead.
-function openMenu(m) { document.body.appendChild(m); menuEl = m; updateTitle(); }
+// placeMenu()/closeMenu() publish the live item labels as [menu:a|b|c] instead.
 function menuTok() {   // [menu:<labels>] + [mg:<left>,<first row centre y>,<row pitch>] — MEASURED, so a
   if (!menuEl) return "";                      // driver clicks item i at (left+20, centre + pitch*i) with no
   const k = menuEl.children, lbl = [...k].map(d => d.textContent).join("|");   // hardcoded padding/line-height guess
@@ -999,7 +1079,24 @@ function menuTok() {   // [menu:<labels>] + [mg:<left>,<first row centre y>,<row
   return " [menu:" + lbl + "] [mg:" + Math.round(menuEl.getBoundingClientRect().left) + "," +
          Math.round(a.top + a.height / 2) + "," + Math.round(pitch) + "]" + mt;
 }
-function closeMenu() { if (!menuEl) return; menuEl.remove(); menuEl = null; updateTitle(); }
+function closeMenu() { if (menuEl) { menuEl.remove(); menuEl = null; updateTitle(); } }
+/* R22: a context menu is position:fixed — clamp it to the viewport by its
+   MEASURED box. The old `innerWidth - 150 / innerHeight - 60` guesses spilled
+   whenever the menu was wider/taller than the guess or the window was small.
+   placeMenu appends first (so offsetWidth/Height are real), then places;
+   clampMenu re-runs it after the menu's contents change (R13.1 pick list). */
+function placeMenu(m, x, y) {
+  m.style.left = "0px"; m.style.top = "0px";
+  document.body.appendChild(m);
+  m.dataset.x = x; m.dataset.y = y;
+  menuEl = m;
+  clampMenu(m);
+  updateTitle();                  // census [menu:1]
+}
+function clampMenu(m) {
+  m.style.left = Math.max(0, Math.min(+m.dataset.x, innerWidth - m.offsetWidth)) + "px";
+  m.style.top = Math.max(0, Math.min(+m.dataset.y, innerHeight - m.offsetHeight)) + "px";
+}
 document.addEventListener("contextmenu", e => e.preventDefault()); // app-like: native menu never
 document.addEventListener("mousedown", e => {
   if (menuEl && !menuEl.contains(e.target)) closeMenu();
@@ -1040,6 +1137,7 @@ function tabMenu(e, g, i) {              // right-click a tab -> Split right / S
   };
   const pick = () => {                   // R13.1 pick list: every other open tab, in layout order
     m.innerHTML = "";
+    setTimeout(() => clampMenu(m), 0);   // R22: the pick list resizes the menu — re-clamp it
     let any = false;
     for (const h of groups()) for (const t of h.tabs) {
       if (t === tab) continue;
@@ -1057,11 +1155,7 @@ function tabMenu(e, g, i) {              // right-click a tab -> Split right / S
     () => { closeMenu(); setMode(g, tab.mode === "source" ? "livepreview" : "source"); });
   if (!tab.kind) item(bmCache.includes(tab.name) ? "Remove bookmark" : "Bookmark",  // R20.4 (#12, bookmarks pane = R9.5): same toggle as the tree row menu; graph tabs (gg/lg) have no note to bookmark
     () => { closeMenu(); toggleBm(tab.name); });                                    // toggleBm re-renders the bookmarks pane
-  m.style.left = Math.min(e.clientX, window.innerWidth - 150) + "px";
-  m.style.top = e.clientY + "px";
-  openMenu(m);
-  m.style.top = Math.max(0, Math.min(e.clientY, window.innerHeight - m.offsetHeight - 4)) + "px";  // measured: the menu grew an item (#12)
-  updateTitle();                       // the clamp MOVED the menu after openMenu published [mg:] — re-publish the final rect
+  placeMenu(m, e.clientX, e.clientY);   /* R22: viewport-clamped by MEASURED size — supersedes the old innerWidth-150 guess and the #12 post-append top clamp */
 }
 
 /* ---------- view modes (R8.8: livepreview / source / reading per tab) ---------- */
