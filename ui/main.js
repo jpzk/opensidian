@@ -1260,13 +1260,15 @@ async function histGo(d, from) {
   tab.hist[tab.hpos].s = scrollOf(g);
   tab.hpos = p;
   tab.name = tab.hist[p].n;
-  // a linked local graph re-centres in loadActive -> lgFollow -> graphRefresh; hand it the span so it ends at settle
+  // R19 (HARD RULE 100ms): history_nav always ends at PAINT. A linked local graph
+  // re-centres in loadActive -> lgFollow -> graphRefresh; its settling is animation and
+  // is measured by that group's own graph_settle span, never by history_nav.
   const lgh = groups().find(h => { const t = h.active >= 0 ? h.tabs[h.active] : null; return t && t.kind === "lg" && t.linkId === g.id && t.center !== tab.name; });
-  if (lgh) { otel.cancel(lgh.recenterSp); lgh.recenterSp = sp; }
+  if (lgh) { otel.cancel(lgh.settleSp); lgh.settleSp = otel.begin("graph_settle", { node: tab.name, from: "history", nodes: 0 }); }
   await loadActive(g);
   const s = tab.hist[p].s;
   if (s) { if (tab.mode === "reading") g.preview.scrollTop = s; else if (isLp(tab.mode)) g.lp.scrollTop = s; else g.editor.scrollTop = s; }
-  if (!lgh) otel.paint(sp);
+  otel.paint(sp);
 }
 // mouse buttons 4/5 (X11 8/9 -> DOM button 3/4): nav fires on mousedown (capture) with
 // preventDefault + stopPropagation so WebKit never turns them into webview history and no
@@ -2297,7 +2299,7 @@ async function cmdGlobalGraph() {  // R9.7: ribbon icon opens GLOBAL graph as a 
 }
 async function startGraph(g, cfg) {
   g.graphOn = true; g.graphSettled = false;
-  const openT0 = g.perfT0 || perf.now();   // perf: graph_settle = open -> kinetic energy below eps
+  const openT0 = g.perfT0 || perf.now();   // perf: graph_open_settle = open -> kinetic energy below eps
   hideAc();
   g.status.hidden = true;
   g.editor.style.display = "none"; g.preview.style.display = "none";
@@ -2429,7 +2431,7 @@ async function startGraph(g, cfg) {
   // settled = total kinetic energy (sum v^2) under 0.0025 px^2/step per node
   // (mean speed < 0.05 px/step, invisible) for 10 consecutive steps, or physics frozen
   let calm = 0, quiet = false;          // quiet: physics halted until the next reheat
-  let settledMark = false;              // graph_settle span fires once per open
+  let settledMark = false;              // graph_open_settle mark fires once per open
   const kinetic = () => { let k = 0; for (const p of N) k += p.vx * p.vx + p.vy * p.vy; return k; };
   // Barnes-Hut quadtree (theta 0.8) for the many-body repulsion (d3 shape:
   // dv = REPEL*alpha*dx/d^2, i.e. |dv| ~ 1/d). The force is long-range, so a
@@ -2602,10 +2604,13 @@ async function startGraph(g, cfg) {
       calm = ke < 0.0025 * N.length ? calm + 1 : 0;
       if (calm >= 10 || alpha <= ALPHA_MIN) {
         quiet = true;
-        if (g.recenterSp) { otel.end(g.recenterSp, { nodes: N.length, edges: gr.edges.length, reheat: true }); g.recenterSp = null; }   // R18 graph_recenter: node click -> re-filtered sim settled
+        // R19 (HARD RULE 100ms): graph_recenter ends at the first PAINT of the new centre
+        // (see cv.onclick); what happens after that is ANIMATION and is measured here as its
+        // own span graph_settle = click -> kinetic energy below eps.
+        if (g.settleSp) { otel.end(g.settleSp, { nodes: N.length, edges: gr.edges.length, ke: +ke.toFixed(3), alpha: +alpha.toFixed(3) }); g.settleSp = null; }
         if (!settledMark) {
           settledMark = true;
-          perf.mark("graph_settle", openT0, { nodes: N.length, ke: +ke.toFixed(3), alpha: +alpha.toFixed(3) });
+          perf.mark("graph_open_settle", openT0, { nodes: N.length, ke: +ke.toFixed(3), alpha: +alpha.toFixed(3) });
           if (pref.loseCtx && glr) setTimeout(() => { if (glr && g.simGen === gen) glr.loseContext(); }, 300);   // smoke hook: WEBGL_lose_context after settle
         }
       }
@@ -2691,12 +2696,15 @@ async function startGraph(g, cfg) {
     if (!hit) return;
     if (!hit.resolved)                                  // ghost node: create then open (M3 path)
       await writeNote(hit.n, "");
-    // R18 graph_recenter: local graph node click -> note opens (child note_open) -> graph re-centres -> sim settled.
+    // R19 (HARD RULE 100ms): the CLICK is the interaction — graph_recenter measures it to the
+    // first paint of the response (note painted + graph redrawn at the new centre). The sim
+    // settling afterwards is animation: it gets its own informational span graph_settle.
     // Global graph clicks turn the tab into the note (no re-centre): note_open only.
     const rsp = cfg.center() ? otel.begin("graph_recenter", { node: hit.n, from: cfg.center(), nodes: N.length, edges: gr.edges.length }) : null;
-    if (rsp) { otel.cancel(g.recenterSp); g.recenterSp = rsp; }
+    if (rsp) { otel.cancel(g.settleSp); g.settleSp = otel.begin("graph_settle", { node: hit.n, from: cfg.center(), nodes: N.length }); }
     await cfg.onClick(hit.n);
-    if (rsp && g.recenterSp === rsp && quiet) { otel.end(rsp, { nodes: N.length, edges: gr.edges.length, reheat: false }); g.recenterSp = null; }   // centre unchanged / nothing to settle
+    if (rsp) otel.paint(rsp, { nodes: N.length, edges: gr.edges.length });
+    if (g.settleSp && quiet) { otel.end(g.settleSp, { nodes: N.length, edges: gr.edges.length, reheat: false }); g.settleSp = null; }   // centre unchanged / nothing to settle
   };
   // a save can land while the initial fetch is in flight (writeNote sees
   // graphRefresh still null and skips) — refresh once now to close the race
