@@ -1755,15 +1755,24 @@ function lpRow(g0, b, h, text) {
    RENDERED text; greedy two-pointer alignment maps it back to the source line
    (marker chars — **, [[, #, "- [ ] " — exist only source-side and are
    consumed there alone), so error <= enclosing marker width (spec tolerance).
-   Multi-line (fence) blocks and misses fall back to end/start of line. */
+   Multi-line (fence) blocks and misses fall back to end/start of line.
+   INTEGRATE: a click PAST the end of the rendered text is answered before
+   caretRangeFromPoint is consulted at all. Under the `content-visibility:
+   auto` containment added to .lprow for perf, such a click no longer misses
+   (which used to give the s.length fallback) — it HITS, resolving to the row
+   element at offset 0, so the caret landed at column 0 and " EDITMARK" was
+   typed at the start of the line. Measured both ways on :98 (goal/integrate
+   lpexp.sh): CSS removed + old code = PASS, CSS kept + this guard = PASS. */
 function lpCol(e, row, b, L) {
   const s = L[b.l0];
   if (b.l1 !== b.l0) return 0;                   // fence block: caret at start
+  const r = document.createRange();              // rendered chars before caret
+  r.selectNodeContents(row);
+  const tb = r.getBoundingClientRect();          // extent of the RENDERED text
+  if (tb.width && e.clientX > tb.right) return s.length;   // click past EOL
   const cr = document.caretRangeFromPoint
     ? document.caretRangeFromPoint(e.clientX, e.clientY) : null;
   if (!cr || !row.contains(cr.startContainer)) return s.length;
-  const r = document.createRange();              // rendered chars before caret
-  r.selectNodeContents(row);
   r.setEnd(cr.startContainer, cr.startOffset);
   const k = r.toString().length, rt = row.textContent;
   let i = 0, j = 0;

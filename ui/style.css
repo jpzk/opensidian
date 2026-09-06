@@ -198,7 +198,10 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
    (llvmpipe). content-visibility skips layout+paint for off-screen rows;
    `auto 24px` seeds the scroll height with the R15 row height and is replaced
    by each row's real size once it has been rendered, so scrollTop restore and
-   the scrollbar stay honest. */
+   the scrollbar stay honest.
+   CAUTION: the containment this implies changes HIT TESTING — a click past
+   end-of-line resolves to the row at offset 0 instead of missing. lpCol()
+   guards that explicitly; do not remove the guard while this rule exists. */
 .lprow { min-height: 1.5em; cursor: text;
          content-visibility: auto; contain-intrinsic-size: auto 24px }
 .lprow > :first-child { margin-top: 0 }
