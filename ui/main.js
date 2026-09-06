@@ -147,10 +147,16 @@ async function rgFollow() {                // active note changed -> panes follo
    the two can never overlap at any width. Called after every layout change.
    [rt:x0-x1|mb:x0-x1] census (rects, read 60ms after paint = outside every
    action span) is the headless overlap probe. */
-let rtInfo = "", rtT = null;
+let rtInfo = "", rtT = null, rtBtn = null;
 function topRight(node) { return node.children ? topRight(node.children[node.dir === "row" ? node.children.length - 1 : 0]) : node; }
 function placeRToggle() {
-  const b = $("rtoggle");
+  // The button is CACHED, never re-looked-up: while the right sidebar is closed it
+  // lives in the top-right pane's tabbar, so collapseGroup's g.pane.remove() takes
+  // it out of the document with its host. getElementById would then return null and
+  // the b.parentNode below threw — aborting pane_close/pane_split mid-action and
+  // leaving the toggle gone for good. A detached node re-mounts fine on appendChild.
+  const b = rtBtn || (rtBtn = $("rtoggle"));
+  if (!b) return;
   const host = rightOpen ? $("rtabs") : (state ? topRight(state.root).pane.querySelector(".tabbar") : null);
   if (host && b.parentNode !== host) host.appendChild(b);
   clearTimeout(rtT);
