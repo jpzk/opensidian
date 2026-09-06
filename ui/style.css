@@ -327,27 +327,40 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .ulhead.open .tc svg { transform: rotate(90deg) }
 .ullink { background: #89b4fa; color: #1e1e2e; border: 0; border-radius: 4px;
           padding: 1px 8px; font: 600 11px sans-serif; cursor: pointer }
-/* R12 source mode = lp rows with every marker revealed (highlight_blocks):
-   same font + measure as lp, markers grey, headings keep their size */
-.lp.src .lprow { white-space: pre-wrap; overflow-wrap: anywhere }
-.lp.src .mk { color: #6c7086 }
-.lp.src .h { font-weight: 700 }
-.lp.src .h1 { font-size: 2em }
-.lp.src .h2 { font-size: 1.5em }
-.lp.src .h3 { font-size: 1.17em }
-.lp.src .h4 { font-size: 1.05em }
-.lp.src .b { font-weight: 700 }
-.lp.src .i { font-style: italic }
-.lp.src .bi { font-weight: 700; font-style: italic }
-.lp.src .s { text-decoration: line-through }
-.lp.src .hl { background: rgba(249,226,175,.35) }
-.lp.src .code { font-family: var(--font-monospace); font-size: var(--code-size); background: var(--code-background); border-radius: var(--code-radius) }   /* R15.12 stack in source mode too */
-.lp.src .wl, .lp.src .lt, .lp.src .url { color: #89b4fa; text-decoration: underline }
-.lp.src .tag { color: #89b4fa; background: rgba(137,180,250,.15); border-radius: 999px; padding: 0 4px }
-.lp.src .task, .lp.src .hr, .lp.src .tbl { font-family: monospace }
-.lp.src .fence { display: block; font-family: monospace; font-size: 13px; background: #313244;
-                 padding: 4px 8px; border-radius: 4px; white-space: pre; overflow-x: auto }
-.lp.src .bq { color: #a6adc8 }
+/* R17: ONE engine for live preview and source mode (ui/editor.js). Every
+   row carries its whole source line; the markers live in span.mk and are
+   HIDDEN unless the row holds the caret (.cur) or the pane is in source
+   mode (.lp.src) — "source mode = live preview with every marker revealed".
+   Because a hidden marker is display:none the caret can never land in it. */
+.lp .lprow { white-space: pre-wrap; overflow-wrap: anywhere }
+.lp .mk { display: none }
+.lp.src .mk, .lp .lprow.cur .mk { display: inline; color: #6c7086 }
+.lp:focus, .lp .lprow:focus { outline: none }
+.lp .tbox { margin: 0 6px 0 0; vertical-align: middle }        /* rendered task checkbox */
+.lp.src .tbox { display: none }                                 /* source mode shows [ ] instead */
+.lp .lprow.li::before { content: "\2022"; color: #7f849c; margin-right: .45em }   /* the hidden "- " marker still needs a bullet */
+.lp.src .lprow.li::before, .lp .lprow.li.cur::before, .lp .lprow.tk::before { content: none }
+.lp .h { font-weight: 700 }
+.lp .h1 { font-size: var(--h1-size) }
+.lp .h2 { font-size: var(--h2-size) }
+.lp .h3 { font-size: var(--h3-size) }
+.lp .h4 { font-size: var(--h4-size) }
+.lp .h5 { font-size: var(--h5-size) }
+.lp .h6 { font-size: var(--h6-size) }
+.lp .b { font-weight: var(--bold-weight) }
+.lp .i { font-style: italic }
+.lp .bi { font-weight: var(--bold-weight); font-style: italic }
+.lp .s { text-decoration: line-through }
+.lp .hl { background: rgba(249,226,175,.35) }
+.lp .code { font-family: var(--font-monospace); font-size: var(--code-size); background: var(--code-background); border-radius: var(--code-radius) }
+.lp .wl, .lp .lt, .lp .url { color: #89b4fa }
+.lp a.wiki { text-decoration: none }
+.lp.src .wl, .lp.src .lt, .lp.src .url { text-decoration: underline }
+.lp .tag { color: #89b4fa; background: rgba(137,180,250,.15); border-radius: 999px; padding: 0 4px }
+.lp .task, .lp .hr, .lp .tbl { font-family: var(--font-monospace) }
+.lp .fence { display: block; font-family: var(--font-monospace); font-size: 13px; background: #313244;
+             padding: 0 8px; white-space: pre; overflow-x: auto }
+.lp .bq { color: #a6adc8; border-left: 2px solid #45475a; padding-left: 8px; display: inline-block }
 /* R14 settings modal (Ctrl+,) — fixed 900x600 at (190,100): smoke clicks by coordinate */
 #settings { position: fixed; inset: 0; z-index: 55; background: rgba(0,0,0,.45) }
 #settings[hidden] { display: none }
