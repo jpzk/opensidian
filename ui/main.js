@@ -602,18 +602,75 @@ function noteMenu(e, nm) {                 // right-click a tree note row
 // precisely because the seeding lived inside one call site instead of being
 // shared by all of them — so this helper is the fix, not the four edits.
 // Path-qualified names ("folder/Note") get the BASENAME as the heading.
-async function createNote(name) {
-  await writeNote(name, "# " + name.split("/").pop() + "\n\n");
+/* F4 (dataloss-audit): creation must never replace an existing note with a
+   stub. The backend uses create_new(2) — the kernel's atomic exists-check —
+   so unlike a JS-side notesCache test there is no window for another writer
+   (git checkout, sync client, the 1000ms-stale index) to land a real file
+   between check and truncate. "exists" is not an error here: every creation
+   path means "take me to Foo", so the caller opens the existing note (stock
+   behaviour); nothing is overwritten either way. -> "ok" | "exists" | "err" */
+async function createNote(name, content) {
+  const body = content != null ? content : "# " + name.split("/").pop() + "\n\n";
+  try { await inv("create_note", { name, content: body }); }
+  catch (e) {
+    if (errStr(e) === "exists") return "exists";
+    saveFailed(name, e);
+    return "err";
+  }
+  await afterWrite(name);
+  return "ok";
 }
 
 async function writeNote(name, content) {   // every save funnels here so graphs live-update
   const t0 = perf.now();
-  await inv("write_note", { name, content });
+  await inv("write_note", { name, content });   // F1: REJECTS if the bytes did not land
+  await afterWrite(name);
+  perf.mark("save", t0, { note: name, bytes: content.length });
+}
+async function afterWrite(name) {           // bookkeeping shared by write + create
   markStale(name);                          // R20: inactive tabs on this note re-read on activation
   if (!notesCache.includes(name)) await refreshTree();   // R20: a NEW note is the only save that changes the tree
   for (const g of groups()) if (g.graphOn && g.graphRefresh) await g.graphRefresh();
   if (rightOpen) rSchedule();               // rsidebar: list panes refresh (200ms)
-  perf.mark("save", t0, { note: name, bytes: content.length });
+}
+
+/* F1 (dataloss-audit): a save that did not land must be VISIBLE and must not
+   mark the buffer clean. write_note now rejects on ENOSPC/EROFS/EACCES, and
+   saveBuf() — the single write seam for the active note under R11.3 — surfaces
+   the failure (banner + census [saveerr:<note>]) and returns false, so the tab
+   keeps its base and stays dirty: the next debounce / ctrl+s retries the same
+   bytes. Swallowing it costs every edit of a whole session with zero signal. */
+let saveErr = "";
+/* F2 test hook: the vault-switch race lives inside the debounce window, so it
+   is not mechanically reproducible at 250ms — RUSTIDIAN_SAVE_MS widens it for
+   the smoke (backend save_debounce_ms; default 250 in every normal run). */
+let SAVE_MS = 250;
+const errStr = e => String((e && e.message) || e);
+function saveFailed(name, e) {
+  saveErr = String(name).replace(/[\[\]|]/g, "").slice(0, 60);
+  const b = $("saveerr");
+  b.textContent = "Save failed — " + name + ": " + errStr(e).slice(0, 120);
+  b.hidden = false;
+  updateTitle();
+}
+async function saveNote(name, content) {    // true == the bytes are on disk
+  try { await writeNote(name, content); }
+  catch (e) { saveFailed(name, e); return false; }
+  if (saveErr) { saveErr = ""; $("saveerr").hidden = true; updateTitle(); }
+  return true;
+}
+
+/* F2 (dataloss-audit): a timer armed in vault A fires AFTER the swap and
+   writes A's buffer into B's same-named note — two notes damaged by one
+   action, and A's own edits never reach A. Every path that leaves a vault
+   flushes first and then clears the handle UNCONDITIONALLY: losing a 250ms
+   burst is strictly better than writing it into the wrong vault. */
+async function leaveVault() {
+  if (!state) return;
+  for (const h of groups()) {
+    try { await flushSave(h); }
+    finally { clearTimeout(h.saveT); h.saveT = null; }
+  }
 }
 
 async function flushSave(g) {               // write g's pending edits NOW
@@ -937,6 +994,8 @@ function updateTitle() {          // pane/focus census in the window title (head
             (rightOpen && rpInfo ? " [rp:" + rpInfo + "]" : "") +
             (rtInfo ? " [" + rtInfo + "]" : "") +
             (jsErr ? " [jserr:" + jsErr + "]" : "") +
+            (saveErr ? " [saveerr:" + saveErr + "]" : "") +             // F1: a save that did not land
+            " [armed:" + groups().filter(h => h.saveT).length + "]" +   // F2: groups holding a live save timer
             menuTok() +
             (navInfo ? " [" + navInfo + "]" : "") +
             (acItems.length ? " [ac:" + acKind + ":" + acItems.length + "]" : "") +
@@ -947,7 +1006,10 @@ function updateTitle() {          // pane/focus census in the window title (head
               (bmRows() === bmCache.length ? "" :                    // the smoke assertion must prove the PANE
                " [bmdesync:" + bmCache.length + "/" + bmRows() + "]") : "");   // repainted, not just the model
 
-  const t2 = (fg() && fg().active >= 0 && !fg().tabs[fg().active].kind ? " [buf:" + bufOf(fg()).length + "]" : "") +
+  // R17: ONE model->text join per title publish, shared by [buf:] and F1's
+  // [dirty:] — the token must not put a second full join on the typing path.
+  const fb = fg() && fg().active >= 0 && !fg().tabs[fg().active].kind ? bufOf(fg()) : null;
+  const t2 = (fb !== null ? " [buf:" + fb.length + "]" + dirtyTok(fb) : "") +
              " [tree:" + notesCache.length + "] [vc:" + vcCount + "]" +   // R11 probes
              (extCount ? " [ext:" + extCount + "]" : "");                 // S1: external-link clicks routed to open_external
   t += t2;
@@ -1737,7 +1799,7 @@ function scheduleSave(g) {
     // so the hidden refresh bought nothing and put Rust on the typing path.
     if (isReading(g)) preview(g);
     updateStatus(g);
-  }, 250);
+  }, SAVE_MS);
 }
 
 /* ---------- status bar (R2.7, per group) ---------- */
@@ -1875,8 +1937,16 @@ async function cmdNewNote() {                // new note in a NEW tab of the foc
   if (!state) return;
   const g = fg();
   await flushSave(g);
-  const name = "Untitled-" + Date.now() % 10000;
-  await createNote(name);
+  // F4: "Untitled-" + Date.now() % 10000 repeats exactly every 10s, so the old
+  // create could silently eat a note from ten seconds ago. create_note REFUSES;
+  // on a collision we pick another name instead of clobbering.
+  let name = "Untitled-" + Date.now() % 10000;
+  let r = await createNote(name);
+  for (let i = 2; r === "exists" && i < 100; i++) {
+    name = "Untitled-" + Date.now() % 10000 + "-" + i;
+    r = await createNote(name);
+  }
+  if (r !== "ok") return;                    // no tab for a note that is not on disk
   g.tabs.push(mkTab(name));
   g.active = g.tabs.length - 1;
   await loadActive(g);
@@ -2840,6 +2910,7 @@ async function loadRecent() {
     li.querySelector("b").textContent = base(p);
     li.querySelector("span").textContent = p;
     li.onclick = async () => {
+      await leaveVault();                    // F2: flush + disarm BEFORE the root swaps
       try { vaultPath = await inv("set_vault", { path: p }); }
       catch (err) { $("p-err").textContent = String(err); return; }
       $("picker").hidden = true;
@@ -2882,6 +2953,7 @@ $("p-close").onclick = () => { $("picker").hidden = true; };
 $("p-path").onkeydown = e => { if (e.key === "Enter") browseTo($("p-path").value.trim()); };
 $("p-name").onkeydown = e => { if (e.key === "Enter") $("p-go").click(); };
 $("p-go").onclick = async () => {
+  await leaveVault();                        // F2: flush + disarm BEFORE the root swaps
   try {
     vaultPath = pmode === "create"
       ? await inv("create_vault", { parent: bpath, name: $("p-name").value })
@@ -2891,6 +2963,9 @@ $("p-go").onclick = async () => {
   await enterVault();
 };
 async function enterVault() {
+  // F2 backstop: whatever route got us here, no timer from the old vault may
+  // survive into this one (leaveVault flushes; this only guarantees disarm).
+  if (state) for (const h of groups()) { clearTimeout(h.saveT); h.saveT = null; }
   $("vswitch").innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>' + base(vaultPath);
   collapsed = new Set();
   const g = mkGroup();               // M6: one group, wrapped in a one-leaf split tree
@@ -2914,6 +2989,13 @@ function setBase(g) {
   const t = g.active >= 0 ? g.tabs[g.active] : null;
   if (t && !t.kind) t.base = bufOf(g);
 }
+/* F1 probe: the focused tab holds bytes that are NOT on disk. A failed save
+   must leave this token standing (setBase is skipped) — that is the whole
+   difference between "retried next keystroke" and "silently discarded". */
+function dirtyTok(buf) {
+  const g = fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
+  return t && !t.kind && t.base !== undefined && buf !== t.base ? " [dirty:1]" : "";
+}
 function bufOf(g) {          // R17: the model IS the buffer (g.editor is its mirror)
   return g.view && g.view.lines ? Ed.text(g) : g.editor.value;
 }
@@ -2927,18 +3009,25 @@ function bufOf(g) {          // R17: the model IS the buffer (g.editor is its mi
 // save — never on the keystroke path.
 async function saveBuf(g) {
   const n = curOf(g);
-  if (!n) return;
+  if (!n) return false;
   const t = g.active >= 0 ? g.tabs[g.active] : null;
   let buf = bufOf(g);
   if (t && !t.kind && t.base != null) {
     const disk = await inv("read_note", { name: n });
     if (disk !== t.base && disk !== buf) {
       const merged = disk.startsWith(t.base) ? buf + disk.slice(t.base.length) : buf;
-      if (merged !== buf) { await reloadInPlace(g, merged); buf = merged; }
+      // F1 x R11.3: reloadInPlace sets base = the text we are ABOUT to write.
+      // If the write then fails, base == buf and the tab reads CLEAN — the
+      // exact loss F1 is about, reintroduced through the merge path. base
+      // means "the bytes we last saw on disk", so put the DISK bytes there:
+      // correct on failure (dirty, and the next merge still sees the append
+      // as an append), and overwritten by setBase below on success.
+      if (merged !== buf) { await reloadInPlace(g, merged); buf = merged; t.base = disk; }
     }
   }
-  await writeNote(n, buf);
+  if (!await saveNote(n, buf)) return false;   // F1: a failed save leaves the tab DIRTY, banner up
   setBase(g);
+  return true;
 }
 // R11.2: replace the ACTIVE tab's text in place — caret line/col + scroll kept
 async function reloadInPlace(g, text) {
@@ -2994,6 +3083,7 @@ window.__TAURI__.event.listen("vault-changed", e => onVaultChanged(e.payload));
 $("vswitch").onclick = showPicker;
 
 (async () => {
+  SAVE_MS = await inv("save_debounce_ms").catch(() => 250);   // F2 smoke hook
   const sw = await inv("get_sidebar_w").catch(() => null);   // ux-4
   if (sw >= 150) $("side").style.width = Math.min(600, sw) + "px";
   const rt = await inv("get_rside_tab").catch(() => null);   // rsidebar
