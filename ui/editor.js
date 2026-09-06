@@ -317,6 +317,17 @@ const Ed = {
     const m = /^(\s*(?:> )*(?:[-*+] \[[ xX]\] |[-*+] |\d+\. ))/.exec(t) || /^(\s*(?:> )+)/.exec(t);
     return m ? m[0].length : 0;
   },
+  // one RAW column left/right, crossing the line edge (R17.5 M69-M71). Pure:
+  // covered by Ed.selfTest. null = the document edge, leave it to the browser.
+  step(g, l, c, back) {
+    const L = Ed.lines(g);
+    if (back) {
+      if (c > 0) return { l, c: c - 1 };
+      return l > 0 ? { l: l - 1, c: L[l - 1].length } : null;
+    }
+    if (c < (L[l] || "").length) return { l, c: c + 1 };
+    return l < L.length - 1 ? { l: l + 1, c: 0 } : null;
+  },
   extendTo(g, l, c) {                            // Shift+Home/End: keep the anchor, move the focus
     const row = Ed.rowAt(g, l);
     if (!row) return;
@@ -634,6 +645,26 @@ const Ed = {
       const c = e.key === "End" ? Ed.lines(g)[f.l].length : (f.c === h ? 0 : h);
       return e.shiftKey ? Ed.extendTo(g, f.l, c) : Ed.place(g, f.l, c);
     }
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      /* R17.5 M69-M71: horizontal motion is a MODEL move — one RAW column at a
+         time (a hidden marker is a caret stop, not a jump), and at a line edge
+         it crosses to the RAW end/start of the neighbour row. Native motion
+         cannot do the crossing: the row it lands on is still folded, so the
+         browser stops at the last VISIBLE character and the caret lands before
+         the hidden markers instead of after them. */
+      if (e.ctrlKey || e.metaKey || e.altKey) return;         // word/doc moves stay native
+      const back = e.key === "ArrowLeft";
+      if (!e.shiftKey && !s.empty) {                          // a plain arrow collapses to the edge
+        e.preventDefault();
+        const p = back ? s.a : s.b;
+        return Ed.place(g, p.l, p.c);
+      }
+      const f = (e.shiftKey && Ed.focusPos(g)) || (back ? s.a : s.b);
+      const n = Ed.step(g, f.l, f.c, back);
+      if (!n) return;                                         // document edge: nothing to do
+      e.preventDefault();
+      return e.shiftKey ? Ed.extendTo(g, n.l, n.c) : Ed.place(g, n.l, n.c);
+    }
   },
   onInput(g, e) {
     if (!g) return;
@@ -687,6 +718,14 @@ const Ed = {
     const hg = { view: { lines: ["- alpha", "\t- beta", "- [ ] alpha", "# Head", "plain", "> quoted", "1. one"] } };
     const hw = [2, 3, 6, 0, 0, 2, 3];
     for (let i = 0; i < hw.length; i++) if (Ed.homeCol(hg, i) !== hw[i]) bad++;
+    // horizontal steps walk RAW columns and cross line edges (M69-M71)
+    const sg = { view: { lines: ["**b** x", "- y"] } };
+    const sw = [[0, 2, true, "0.1"], [0, 0, true, "-"], [1, 0, true, "0.7"],
+                [0, 7, false, "1.0"], [1, 3, false, "-"], [0, 0, false, "0.1"]];
+    for (const [l, c, back, want] of sw) {
+      const n = Ed.step(sg, l, c, back);
+      if ((n ? n.l + "." + n.c : "-") !== want) bad++;
+    }
     return bad;
   },
 };
