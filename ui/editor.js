@@ -703,11 +703,20 @@ Ed.geom = function (g) {
   const rows = g.lp ? g.lp.children : null;
   if (!rows || !rows.length || rows.length > 40) return "";
   const b = rows[0].getBoundingClientRect();   // the ROW box (= the text column), not the padded container
-  let ys = "", xs = "";
+  let ys = "", xs = "", cb = "";
   const r = document.createRange();
   for (let i = 0; i < rows.length; i++) {
     const q = rows[i].getBoundingClientRect();
     ys += (i ? "," : "") + Math.round(q.top + q.height / 2);
+    /* [ecb:<row>@<x>] = centre of the rendered task checkbox on that row. It
+       is an <input>, so it is invisible to the range rects above, and its x
+       moves with the hidden "- [ ] " run — the lp phase used to click a
+       constant 315 for it. */
+    const box = rows[i].querySelector("input.tbox");
+    if (box) {
+      const bb = box.getBoundingClientRect();
+      if (bb.width) cb += (cb ? "," : "") + i + "@" + Math.round(bb.left + bb.width / 2);
+    }
     /* [erx:] = where the row's first PAINTED character starts, which is NOT
        the row box: a folded list row hides its "- " and paints a ::before
        bullet instead, so the row box left is inside that bullet and a click
@@ -718,7 +727,8 @@ Ed.geom = function (g) {
     const rc = r.getClientRects();
     xs += (i ? "," : "") + Math.round(rc.length ? rc[0].left : q.left);
   }
-  return " [edx:" + Math.round(b.left) + "] [erx:" + xs + "] [ery:" + ys + "]";
+  return " [edx:" + Math.round(b.left) + "] [erx:" + xs + "] [ery:" + ys + "]"
+    + (cb ? " [ecb:" + cb + "]" : "");
 };
 Ed.selTok = function (g) {                // [sel:<l>.<c>-<l>.<c>] model range
   const s = Ed.sel(g);
