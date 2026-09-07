@@ -972,11 +972,13 @@ function updateTitle() {          // pane/focus census in the window title (head
   // R17: renderer/token-map self test. A failure names its FIRST bad case
   // (Ed.edtWhy) so the smoke log says what broke, not just how many.
   if (edtBad >= 0) md += " [edt:" + (edtBad ? "fail" + edtBad + ":" + (Ed.edtWhy || "?") : "ok") + "]";
-  // R17 editor probe: the MODEL selection range [sel:l.c-l.c] and the measured
-  // row geometry [edx:] [ery:] of the focused pane — the `edit` smoke asserts
-  // selections and clicks source lines instead of guessed pixels.
+  // R17 editor probe: the MODEL selection range [sel:l.c-l.c], the R17.6/R17.7
+  // REVEAL SET [rv:<l>.<s>-<e>:<kind>,...] (which tokens are showing their raw
+  // markers — "-" for none, "src" in source mode) and the measured row geometry
+  // [edx:] [ery:] of the focused pane — the `edit` smoke asserts selections,
+  // reveal scope and clicks on source lines instead of guessed pixels.
   if (md && ft && !ft.kind && isLp(ft.mode) && typeof Ed !== "undefined" && fg() && fg().lp)
-    md += Ed.selTok(fg()) + Ed.geom(fg());
+    md += Ed.selTok(fg()) + Ed.rvTok(fg()) + Ed.cmTok() + Ed.geom(fg());
   // R17.7 link probe: the FIRST rendered link of the focused note view -> [xl:<dest>|<visible line>].
   // BOTH renderers publish it (live preview/source from g.lp, reading from g.preview, i.e. Rust's
   // pulldown-cmark HTML), so the smoke can assert they AGREE on a destination containing balanced

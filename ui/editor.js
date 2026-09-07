@@ -23,7 +23,11 @@
    (same class vocabulary: mk h bq hr tbl task li code wl lt url tag b i bi
    s hl fence), so source mode is the same engine with the markers revealed. */
 const Ed = {
-  cur: null,            // {g, l} row currently holding the caret (reveal state)
+  cur: null,            // {g, l} row currently holding the caret (census/geometry)
+  _tk: null,            // R17.6 token map under construction (Ed.row owns it)
+  // the REVEAL SET lives on the pane's .lp element (g.lp._rv = the marker spans
+  // carrying .rv, g.lp._rvs = their "<l>.<s>-<e>:<kind>" labels for the census),
+  // so two panes never clear each other's reveal.
   composing: false,
   UNDO_IDLE_MS: 2000,   // R17.8: idle gap that CLOSES an undo group (~2s, stock)
 
@@ -43,10 +47,50 @@ const Ed = {
   t(s) { return document.createTextNode(s); },
   mk(s, extra) { const e = Ed.el("span", extra ? "mk " + extra : "mk"); e.appendChild(Ed.t(s)); return e; },
 
+  /* ---------- R17.6 per-line TOKEN MAP ----------
+     "the per-line token map MUST carry, for each token, its raw range plus its
+     rendered form, so that revealing a token is a per-token class flip on ONE
+     line" (R17.6, consequence for the implementation).
+
+     A token is declared by the renderer as the DOM nodes it SPANS (`els`, in
+     document order) plus the subset that is hideable markup (`mks`) and a kind
+     from the class vocabulary. The raw range is NOT threaded through the
+     renderer as an offset: the markers of `**bold**` are siblings of the
+     <strong>, not its ancestors, so there is no wrapper to measure — instead
+     Ed.row resolves every declared node's raw range in ONE post-pass over the
+     finished row (Ed.tokRanges). The map is built ONCE per row render and
+     cached on the element, so a caret move is a class flip over the tokens of
+     at most the touched lines, never a re-render (R18: this runs on EVERY
+     caret move). */
+  tok(els, mks, kind) { if (Ed._tk) Ed._tk.push({ els, mks, kind, s: 0, e: 0 }); },
+  // raw column range of every element in the row, by walking its text in order
+  tokRanges(row, list) {
+    if (!list.length) return list;
+    const off = new Map();
+    const walk = (el, c) => {
+      for (const n of el.childNodes) {
+        if (n.nodeType === 3) { c += n.nodeValue.length; continue; }
+        const s = c;
+        c = walk(n, c);
+        off.set(n, [s, c]);
+      }
+      return c;
+    };
+    walk(row, 0);
+    for (const t of list) {
+      let s = Infinity, e = -1;
+      for (const el of t.els) { const r = off.get(el); if (!r) continue; if (r[0] < s) s = r[0]; if (r[1] > e) e = r[1]; }
+      t.s = s === Infinity ? 0 : s; t.e = e < 0 ? t.s : e;
+    }
+    return list;
+  },
+
   row(g, line, i) {
     const row = Ed.el("div", "lprow");
     row.dataset.l = i;
-    Ed.block(g, row, line);
+    const tk = Ed._tk = [];
+    try { Ed.block(g, row, line); } finally { Ed._tk = null; }
+    row._tok = Ed.tokRanges(row, tk);
     if (!row.firstChild) row.appendChild(document.createElement("br"));
     return row;
   },
@@ -57,22 +101,27 @@ const Ed = {
     const h = /^(#{1,6}) /.exec(t);
     if (h && !ind) {
       const box = Ed.el("span", "h h" + h[1].length);
-      box.appendChild(Ed.mk(h[1]));
-      box.appendChild(Ed.mk(" "));
+      const m0 = Ed.mk(h[1]), m1 = Ed.mk(" ");
+      box.appendChild(m0);
+      box.appendChild(m1);
+      Ed.tok([m0, m1], [m0, m1], "h");            // "## " is ONE token (R17.6)
       Ed.inline(g, box, t.slice(h[1].length + 1));
       row.appendChild(box);
       return;
     }
     const tt = t.replace(/\s+$/, "");
     if (tt.length >= 3 && /^(-+|\*+|_+)$/.test(tt)) {          // hr
-      const box = Ed.el("span", "hr"); box.appendChild(Ed.mk(s)); row.appendChild(box); return;
+      const box = Ed.el("span", "hr"), m = Ed.mk(s);
+      box.appendChild(m); Ed.tok([m], [m], "hr"); row.appendChild(box); return;
     }
     if (t.startsWith(">")) {                                    // blockquote
       const box = Ed.el("span", "bq");
       if (ind) box.appendChild(Ed.t(ind));
-      box.appendChild(Ed.mk(">"));
+      const m0 = Ed.mk(">"); box.appendChild(m0);
+      const qm = [m0];
       let rest = t.slice(1);
-      if (rest.startsWith(" ")) { box.appendChild(Ed.mk(" ")); rest = rest.slice(1); }
+      if (rest.startsWith(" ")) { const m1 = Ed.mk(" "); box.appendChild(m1); qm.push(m1); rest = rest.slice(1); }
+      Ed.tok(qm, qm, "bq");
       Ed.block(g, box, rest);                                   // "> - a": list inside the quote
       row.appendChild(box);
       return;
@@ -81,7 +130,8 @@ const Ed = {
       const box = Ed.el("span", "tbl"); box.appendChild(Ed.t(s)); row.appendChild(box); return;
     }
     if (/^(```|~~~)/.test(t)) {                                 // fence delimiter line
-      const box = Ed.el("span", "fence"); box.appendChild(Ed.mk(s)); row.appendChild(box); return;
+      const box = Ed.el("span", "fence"), m = Ed.mk(s);
+      box.appendChild(m); Ed.tok([m], [m], "fence"); row.appendChild(box); return;
     }
     const lm = /^([-*+]|\d+\.) /.exec(t);
     if (lm) {
@@ -91,8 +141,9 @@ const Ed = {
       // R15.10 gives .lim the stock marker advance as a box (bullet drawn
       // inside it), and the space must not sit in that box or a wide "10."
       // would push the text right by its width. textContent is unchanged.
-      row.appendChild(Ed.mk(lm[1], "lim"));
-      row.appendChild(Ed.mk(" ", "lisp"));
+      const li0 = Ed.mk(lm[1], "lim"), li1 = Ed.mk(" ", "lisp");
+      row.appendChild(li0);
+      row.appendChild(li1);
       row.classList.add("li");
       if (/\d/.test(lm[1])) row.classList.add("ord");
       const task = /^\[([ xX])\] /.exec(rest);
@@ -103,9 +154,14 @@ const Ed = {
         cb.contentEditable = "false";
         cb.addEventListener("mousedown", e => Ed.toggleTask(e, row));
         row.appendChild(cb);
-        row.appendChild(Ed.mk("[" + task[1] + "] ", "task"));
+        const tm = Ed.mk("[" + task[1] + "] ", "task");
+        row.appendChild(tm);
+        // R17.6 lists "- [ ] " as ONE token: the bullet marker and the
+        // checkbox are the same widget, so they reveal together.
+        Ed.tok([li0, li1, cb, tm], [li0, li1, tm], "task");
         Ed.inline(g, row, rest.slice(4));
       } else {
+        Ed.tok([li0, li1], [li0, li1], "li");
         Ed.inline(g, row, rest);
       }
       return;
@@ -179,10 +235,11 @@ const Ed = {
         if (j > i) {
           flush();
           const c = Ed.el("code", "code");
-          c.appendChild(Ed.mk("`"));
+          const m0 = Ed.mk("`"), m1 = Ed.mk("`");
+          c.appendChild(m0);
           c.appendChild(Ed.t(s.slice(i + 1, j)));
-          c.appendChild(Ed.mk("`"));
-          box.appendChild(c); i = j + 1; continue;
+          c.appendChild(m1);
+          box.appendChild(c); Ed.tok([c], [m0, m1], "code"); i = j + 1; continue;
         }
       }
       const wl = /^(!?)\[\[([^\]]*)\]\]/.exec(rest);             // [[wikilink]] / ![[embed]]
@@ -192,8 +249,10 @@ const Ed = {
         const target = bar >= 0 ? raw.slice(0, bar) : raw;
         const label = bar >= 0 ? raw.slice(bar + 1) : raw;
         const hash = target.indexOf("#");
-        box.appendChild(Ed.mk(wl[1] + "[["));
-        if (bar >= 0) box.appendChild(Ed.mk(target + "|", "wl"));
+        const parts = [], mks = [];
+        const add = (el, isMk) => { parts.push(el); if (isMk) mks.push(el); box.appendChild(el); };
+        add(Ed.mk(wl[1] + "[["), true);
+        if (bar >= 0) add(Ed.mk(target + "|", "wl"), true);
         const a = Ed.el("a", "wiki wl");
         a.href = "#";
         const note = hash >= 0 ? target.slice(0, hash) : target;
@@ -202,24 +261,28 @@ const Ed = {
         if (!Ed.resolves(note)) a.classList.add("wiki-unresolved");
         a.appendChild(Ed.t(label));
         a.addEventListener("mousedown", e => Ed.linkClick(e, a));
-        box.appendChild(a);
-        box.appendChild(Ed.mk("]]"));
+        add(a, false);
+        add(Ed.mk("]]"), true);
+        Ed.tok(parts, mks, wl[1] ? "embed" : "wl");
         i += wl[0].length; continue;
       }
       const lt = Ed.linkAt(rest);                                // [text](url)
       if (lt) {
         flush();
-        box.appendChild(Ed.mk("["));
+        const parts = [], mks = [];
+        const add = (el, isMk) => { parts.push(el); if (isMk) mks.push(el); box.appendChild(el); };
+        add(Ed.mk("["), true);
         const ext = /^https?:\/\//.test(lt[2]);
         const a = Ed.el("a", ext ? "ext lt" : "lt");
         a.href = ext ? lt[2] : "#";       // S1: the capture-phase gate hands http(s) to open_external
         a.dataset.url = lt[2];
         a.appendChild(Ed.t(lt[1]));
         a.addEventListener("mousedown", e => Ed.extClick(e, a));
-        box.appendChild(a);
-        box.appendChild(Ed.mk("](", "url"));
-        box.appendChild(Ed.mk(lt[2], "url"));
-        box.appendChild(Ed.mk(")", "url"));
+        add(a, false);
+        add(Ed.mk("](", "url"), true);
+        add(Ed.mk(lt[2], "url"), true);
+        add(Ed.mk(")", "url"), true);
+        Ed.tok(parts, mks, "lt");
         i += lt[0].length; continue;
       }
       const url = Ed.urlAt(rest);                                // bare url
@@ -242,11 +305,14 @@ const Ed = {
         const j = s.indexOf(open, a0);
         if (j > a0 && /\S/.test(s[j - 1])) {
           flush();
-          box.appendChild(Ed.mk(open));
+          const m0 = Ed.mk(open);
+          box.appendChild(m0);
           const e = Ed.el(tag, cls);
           Ed.inline(g, e, s.slice(a0, j));
           box.appendChild(e);
-          box.appendChild(Ed.mk(open));
+          const m1 = Ed.mk(open);
+          box.appendChild(m1);
+          Ed.tok([m0, e, m1], [m0, m1], cls);
           i = j + open.length; done = true;
         }
         break;                                                   // longest opener decides
@@ -283,13 +349,15 @@ const Ed = {
   /* ---------- token map: source col <-> DOM offset ---------- */
   // The row's text nodes in document order carry the whole source line, in
   // order, so the map is implicit. `hidden` = the node sits inside a span.mk
-  // that CSS is not revealing — never a caret target while the row is folded.
+  // that CSS is not revealing — never a caret target while the token is folded.
+  // A marker whose token IS revealed (.rv, R17.7) is ordinary visible text.
   nodes(row) {
     const out = [];
     const w = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
     let c = 0, n;
     while ((n = w.nextNode())) {
-      out.push({ n, c, len: n.nodeValue.length, hid: !!n.parentElement.closest(".mk") });
+      const m = n.parentElement.closest(".mk");
+      out.push({ n, c, len: n.nodeValue.length, hid: !!m && !m.classList.contains("rv") });
       c += n.nodeValue.length;
     }
     return out;
@@ -390,7 +458,7 @@ const Ed = {
     c = Math.max(0, Math.min(c, L[l].length));
     const row = Ed.rowAt(g, l);
     if (!row) return;
-    Ed.reveal(g, l);                             // markers first: offsets stay valid
+    Ed.reveal(g, { l, c }, { l, c });             // markers first: offsets stay valid
     const [node, off] = Ed.posOf(row, c, true);
     const s = window.getSelection();
     const r = document.createRange();
@@ -416,13 +484,129 @@ const Ed = {
     s.removeAllRanges(); s.addRange(r);
     Ed.census();
   },
-  // the caret row is the ONLY row with its markers revealed (stock behaviour)
-  reveal(g, l) {
-    const prev = g.lp.querySelector(".lprow.cur");
-    const row = Ed.rowAt(g, l);
-    if (prev === row) return;
-    if (prev) prev.classList.remove("cur");
-    if (row) row.classList.add("cur");
+  /* R17.6 / R17.7 REVEAL — PER TOKEN, not per row.
+     "a marker is hidden iff the selection does NOT intersect that token's raw
+     range — this is PER TOKEN, not per line" (R17.6). So: walk the tokens of
+     the touched lines only, flip `.rv` on the marker spans of the ones the
+     selection reaches, and drop `.rv` from last move's set. `.cur` still marks
+     the caret ROW, but it no longer reveals anything — the row-wide rule
+     survives for SOURCE MODE alone (`.lp.src .mk`, ui/style.css).
+
+     a/b = the model selection ends (a <= b), null to reveal nothing. A
+     COLLAPSED caret touches a token when its column is anywhere in the closed
+     range [s, e] (M74: col 15 in `*ital*` 13..19 reveals it; M77: col 55 with
+     `#tag` at 57..61 reveals nothing). A non-empty range needs real overlap, so
+     selecting up to a token's first column does not open it.
+
+     Cost: O(tokens on the touched lines). The map itself is built once per row
+     in Ed.row and cached on the element, so nothing is re-rendered or re-parsed
+     here — this is the code that runs on every caret move. */
+  /* ---------- PERF: caret-move cost to first paint (R18, 100ms ceiling) ----------
+     The per-token reveal (R17.6/R17.7) runs on EVERY caret move, which is the
+     highest-frequency interaction in the product, so the caret move gets its own
+     measurement instead of riding on key_to_paint (that span covers INPUT, and a
+     caret move types nothing). t0 = the key, t1 = after the frame carrying the
+     new reveal set is committed — the same rAF -> task pattern otel.paint uses,
+     so the number is comparable with key_to_paint's wall_ms.
+     Published as [cm:<last>/<max>/<n>] in the census; also emitted as a
+     `caret_move` otel span when instrumentation is on. */
+  cmT0: -1, cmMs: -1, cmMax: 0, cmN: 0,
+  cmStart() { if (Ed.cmT0 < 0) Ed.cmT0 = performance.now(); },
+  cmEnd(g) {
+    if (Ed.cmT0 < 0) return;
+    const t0 = Ed.cmT0; Ed.cmT0 = -1;
+    requestAnimationFrame(() => setTimeout(() => {
+      const ms = Math.round((performance.now() - t0) * 100) / 100;
+      Ed.cmMs = ms; Ed.cmN++;
+      if (ms > Ed.cmMax) Ed.cmMax = ms;
+      if (typeof otel !== "undefined" && otel.span)
+        otel.span("caret_move", { reveal: ((g && g.lp && g.lp._rvs) || []).length, note_lines: (g && g.lpLines) || 0 }, ms);
+      Ed.census();
+    }, 0));
+  },
+  cmTok() { return Ed.cmMs < 0 ? "" : " [cm:" + Ed.cmMs + "/" + Ed.cmMax + "/" + Ed.cmN + "]"; },
+  // PURE: the tokens of ONE line that a selection [lo,hi] on that line touches.
+  // A COLLAPSED caret (lo === hi) touches the CLOSED range [s,e] — M74: col 15
+  // inside `*ital*` 13..19 opens it, M77: col 55 with `#tag` at 57..61 opens
+  // nothing. A non-empty range needs real overlap, so selecting up to a token's
+  // first column does not open it. Unit-asserted in Ed.selfTest.
+  tokAt(toks, lo, hi) {
+    const touch = lo === hi ? (t => lo >= t.s && lo <= t.e) : (t => lo < t.e && hi > t.s);
+    return toks.filter(touch);
+  },
+  reveal(g, a, b) {
+    const lp = g.lp;
+    const prev = lp.querySelector(".lprow.cur");
+    const row = a ? Ed.rowAt(g, a.l) : null;
+    if (prev !== row) { if (prev) prev.classList.remove("cur"); if (row) row.classList.add("cur"); }
+    const mks = [], labels = [];
+    if (a) {
+      if (!b) b = a;
+      if (b.l < a.l || (b.l === a.l && b.c < a.c)) { const t = a; a = b; b = t; }
+      const L = Ed.lines(g);
+      for (let l = a.l; l <= b.l && l < lp.children.length; l++) {
+        const toks = lp.children[l] && lp.children[l]._tok;
+        if (!toks || !toks.length) continue;
+        const len = (L[l] || "").length;
+        for (const t of Ed.tokAt(toks, l === a.l ? a.c : 0, l === b.l ? b.c : len)) {
+          for (const m of t.mks) mks.push(m);
+          labels.push(l + "." + t.s + "-" + t.e + ":" + t.kind);
+        }
+      }
+    }
+    /* Idempotence is load-bearing, not an optimisation: making a marker visible
+       relayouts the row, WebKit can re-fire selectionchange off that, and a
+       reveal that always remove-then-adds the class would then chase its own
+       tail. Same set => not one DOM write. (Ed.render clears the signature: new
+       rows carry no .rv, so the set is stale even when its labels match.) */
+    const sig = labels.join(",");
+    if (lp._rvsig === sig) return;
+    for (const el of (lp._rv || [])) el.classList.remove("rv");
+    for (const m of mks) m.classList.add("rv");
+    lp._rv = mks; lp._rvs = labels; lp._rvsig = sig;
+  },
+  /* R17.6/R17.7 census: the REVEAL SET — which tokens are showing their raw
+     markers right now, as "<line>.<start>-<end>:<kind>", "-" for none, "src" in
+     source mode. Without this the smoke could only see the caret ROW, which is
+     exactly how the reveal scope drifted from per-token to per-row unnoticed.
+
+     It reads the PAINTED state (computed `display` of one marker per token),
+     NOT `lp._rvs`: the scope lives half in JS and half in ONE CSS rule, and a
+     revert of that rule alone would leave the bookkeeping perfectly correct
+     while the whole row reveals on screen. Probing the rendered style is what
+     makes the negative control (docs/negctl-lp-reveal/) bite.
+
+     The probe marker is the first NON-`.lim` one: `.mk.lim` is the list bullet
+     box, which is `display: inline-block` with transparent ink even while
+     FOLDED (R15.10), so it can never answer "is this marker's text showing?".
+     Its sibling `.lisp` (the marker's trailing space) can.
+
+     Rows scanned = the ones the selection touches plus the caret row. Census
+     runs deferred and coalesced (30ms), off the keystroke and off the
+     caret-move measurement — but a getComputedStyle per token is still a
+     layout read, so it stays bounded to the rows R17.6/R17.7 govern. */
+  rvRows(g) {
+    const out = [], add = l => { if (l >= 0 && l < g.lp.children.length && out.indexOf(l) < 0) out.push(l); };
+    const s = Ed.sel(g);
+    if (s) for (let l = s.a.l; l <= s.b.l && l - s.a.l < 64; l++) add(l);
+    const cur = g.lp.querySelector(".lprow.cur");
+    if (cur) add(Ed.indexOf(cur));
+    return out.sort((x, y) => x - y);
+  },
+  rvTok(g) {
+    if (!g.lp) return "";
+    if (g.lp.classList.contains("src")) return " [rv:src]";
+    const out = [];
+    for (const l of Ed.rvRows(g)) {
+      const toks = g.lp.children[l] && g.lp.children[l]._tok;
+      if (!toks) continue;
+      for (const t of toks) {
+        const probe = t.mks.filter(m => !m.classList.contains("lim"))[0] || t.mks[0];
+        if (!probe) continue;
+        if (getComputedStyle(probe).display !== "none") out.push(l + "." + t.s + "-" + t.e + ":" + t.kind);
+      }
+    }
+    return " [rv:" + (out.length ? out.join(",") : "-") + "]";
   },
   mark(g, l) {                                   // census + autocomplete state
     Ed.census();                                 // selection moved even if the LINE did not
@@ -449,6 +633,7 @@ const Ed = {
   render(g, caret, col, full) {
     const v = g.view, lp = g.lp, L = Ed.lines(g), old = v.rowSrc;
     g.lpLines = L.length;
+    lp._rv = []; lp._rvsig = null;      // patched rows carry no .rv: the reveal set is stale by construction
     const t0 = performance.now();
     let touched = 0;
     if (full || !old || lp.children.length !== old.length) {
@@ -473,7 +658,7 @@ const Ed = {
     v.rowSrc = L.slice();
     v.note = typeof curOf === "function" ? curOf(g) : null;
     if (caret != null && caret >= 0) Ed.place(g, caret, col || 0);
-    else Ed.reveal(g, -1);
+    else Ed.reveal(g, null);
     if (typeof perf !== "undefined" && perf.mark)
       // R18: this is the JS row patch, NOT the old per-keystroke Rust render.
       // "lp_render" stays reserved for the IPC span (docs/perf.md '## EDITOR':
@@ -830,12 +1015,16 @@ const Ed = {
     // Ctrl+L (M46-M51) is NOT bound here: it is the palette command
     // editor:toggle-checklist-status, dispatched on document keydown. Binding
     // it in both places would toggle twice and cancel itself out.
+    // PERF: Home/End/arrows are pure CARET MOVES — the interaction the per-token
+    // reveal runs on. Time them to first paint (census [cm:], R18 100ms ceiling).
+    if (e.key === "Home" || e.key === "End" || e.key === "ArrowLeft" || e.key === "ArrowRight") Ed.cmStart();
     if (e.key === "Home" || e.key === "End") {
       e.preventDefault();
       const f = Ed.focusPos(g) || s.b;                      // shift-extend moves the FOCUS, not s.b
       const h = Ed.homeCol(g, f.l);
       const c = e.key === "End" ? Ed.lines(g)[f.l].length : (f.c === h ? 0 : h);
-      return e.shiftKey ? Ed.extendTo(g, f.l, c) : Ed.place(g, f.l, c);
+      if (e.shiftKey) Ed.extendTo(g, f.l, c); else Ed.place(g, f.l, c);
+      return Ed.cmEnd(g);
     }
     if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
       /* R17.5 M69-M71: horizontal motion is a MODEL move — one RAW column at a
@@ -844,19 +1033,22 @@ const Ed = {
          cannot do the crossing: the row it lands on is still folded, so the
          browser stops at the last VISIBLE character and the caret lands before
          the hidden markers instead of after them. */
-      if (e.ctrlKey || e.metaKey || e.altKey) return;         // word/doc moves stay native
+      if (e.ctrlKey || e.metaKey || e.altKey) { Ed.cmT0 = -1; return; }   // word/doc moves stay native
       const back = e.key === "ArrowLeft";
       if (!e.shiftKey && !s.empty) {                          // a plain arrow collapses to the edge
         e.preventDefault();
         const p = back ? s.a : s.b;
-        return Ed.place(g, p.l, p.c);
+        Ed.place(g, p.l, p.c);
+        return Ed.cmEnd(g);
       }
       const f = (e.shiftKey && Ed.focusPos(g)) || (back ? s.a : s.b);
       const n = Ed.step(g, f.l, f.c, back);
-      if (!n) return;                                         // document edge: nothing to do
+      if (!n) { Ed.cmT0 = -1; return; }                       // document edge: nothing to do
       e.preventDefault();
-      return e.shiftKey ? Ed.extendTo(g, n.l, n.c) : Ed.place(g, n.l, n.c);
+      if (e.shiftKey) Ed.extendTo(g, n.l, n.c); else Ed.place(g, n.l, n.c);
+      return Ed.cmEnd(g);
     }
+    Ed.cmT0 = -1;                                            // not a caret move after all
   },
   onInput(g, e) {
     if (!g) return;
@@ -928,6 +1120,31 @@ const Ed = {
                 ["#tag", "#tag"], ["# Head", "Head"], ["- alpha", "alpha"], ["\t- nested", "\tnested"],
                 ["- [ ] todo", "todo"], ["> quoted", "quoted"], ["1. one", "one"]];
     for (const [s, w] of rf) if (vis(s) !== w) fail("vis:" + s);
+    /* R17.6 TOKEN MAP + R17.7 PER-TOKEN REVEAL, on the map itself (pure: no
+       selection, no CSS). `tm` is the M73-M78 fixture line, raw length 61:
+       **bold** 0..8, *ital* 13..19, `code` 24..30, [[Welcome|alias]] 35..52,
+       #tag 57..61 (never a token — its '#' is part of the pill, R17.6).
+       Each case is [caret col, expected reveal set] straight off M73-M77;
+       the last two are M78 (whole line) and the negative "one column short". */
+    const tm = "**bold** and *ital* and `code` and [[Welcome|alias]] and #tag";
+    const tt = Ed.row(g, tm, 0)._tok;
+    const setOf = (lo, hi) => Ed.tokAt(tt, lo, hi).map(t => t.s + "-" + t.e + ":" + t.kind).join(",") || "-";
+    const tcs = [[10, 10, "-"],                       // M73 inside the plain word "and"
+                 [15, 15, "13-19:i"],                 // M74 inside *ital*
+                 [26, 26, "24-30:code"],              // M75 inside `code`
+                 [40, 40, "35-52:wl"],                // M76 inside the wikilink target
+                 [55, 55, "-"],                       // M77 two chars before "#tag"
+                 [3, 3, "0-8:b"],                     // inside **bold**, nothing else
+                 [0, 61, "0-8:b,13-19:i,24-30:code,35-52:wl"]];   // M78 select the whole line
+    for (const [lo, hi, w] of tcs) if (setOf(lo, hi) !== w) fail("rv" + lo + "." + hi + ":" + setOf(lo, hi));
+    // the block markers are tokens too, with the ranges R17.6 names
+    const btk = [["## Head", "0-3:h"], ["- alpha", "0-2:li"], ["\t- alpha", "1-3:li"],
+                 ["- [ ] todo", "0-6:task"], ["> quoted", "0-2:bq"],
+                 ["[ext](http://x.y/z)", "0-19:lt"], ["1. one", "0-3:li"]];
+    for (const [s, w] of btk) {
+      const tk = Ed.row(g, s, 0)._tok.map(t => t.s + "-" + t.e + ":" + t.kind).join(",");
+      if (tk !== w) fail("tok:" + s + ":" + tk);
+    }
     // R17.7 link destinations: balanced parens survive whole (CommonMark), a
     // backslash escape stays literal, whitespace is still not a link, an empty
     // destination still is, and a bare URL leaves the enclosing prose's ')' out.
@@ -1137,9 +1354,14 @@ Ed.caretXY = function (g) {               // caret rect relative to the pane box
   return [r.left - pr.left, r.bottom - pr.top];
 };
 
-/* The caret row is the only revealed row (stock). Selection moves that the
+/* R17.6/R17.7: reveal follows the SELECTION, per token. Selection moves the
    browser handles natively (arrows, clicks, drag-select) land here — no
-   re-render, just the .cur class + the [mode:lp:<line>] census. */
+   re-render, just the `.rv` class flip + the [mode:lp:<line>] [rv:] census.
+
+   The old "same line? nothing to do" short-circuit is GONE on purpose: with a
+   per-token reveal a move WITHIN a line changes the reveal set (col 10 -> col
+   15 opens `*ital*`), so bailing on the line number is exactly the bug this
+   replaces. Ed.mark still guards the title churn on the line number. */
 document.addEventListener("selectionchange", () => {
   const s = window.getSelection();
   if (!s || !s.anchorNode) return;
@@ -1149,8 +1371,9 @@ document.addEventListener("selectionchange", () => {
   const pane = lp.closest(".pane"), g = pane ? pane._g : null;
   if (!g || g.lp !== lp) return;
   const l = Ed.indexOf(row);
+  const ms = Ed.sel(g);
+  Ed.reveal(g, ms && ms.a, ms && ms.b);
   if (Ed.cur && Ed.cur.g === g && Ed.cur.l === l) { Ed.census(); return; }
   Ed.cur = { g, l };
-  Ed.reveal(g, l);
   Ed.mark(g, l);
 });

@@ -364,12 +364,16 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
           padding: 1px 8px; font: 600 11px sans-serif; cursor: pointer }
 /* R17: ONE engine for live preview and source mode (ui/editor.js). Every
    row carries its whole source line; the markers live in span.mk and are
-   HIDDEN unless the row holds the caret (.cur) or the pane is in source
+   HIDDEN unless the SELECTION touches their TOKEN's raw range (.rv, flipped
+   per token by Ed.reveal — R17.6/R17.7 M73-M77) or the pane is in source
    mode (.lp.src) — "source mode = live preview with every marker revealed".
+   The row-wide rule is source mode ONLY: `.lprow.cur` still names the caret
+   row for geometry/census, but revealing a whole row on every caret move is
+   the R17.6 divergence this replaced.
    Because a hidden marker is display:none the caret can never land in it. */
 .lp .lprow { white-space: pre-wrap; overflow-wrap: anywhere }
 .lp .mk { display: none }
-.lp.src .mk, .lp .lprow.cur .mk { display: inline; color: #6c7086 }
+.lp.src .mk, .lp .mk.rv { display: inline; color: #6c7086 }
 .lp:focus, .lp .lprow:focus { outline: none }
 .lp .tbox { vertical-align: middle }                            /* rendered task checkbox (x offsets: R15.11 below) */
 .lp.src .tbox { display: none }                                 /* source mode shows [ ] instead */
@@ -581,10 +585,12 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 /* the selector must out-specify `.lp input[type=checkbox]` above (0,2,1): an
    attribute selector weighs as much as a class, so a bare `.lp .tbox` loses */
 .lp input[type=checkbox].tbox { margin-inline-start: 9px; margin-inline-end: calc(0.6em - 4px) }   /* box at +7, text at +27 */
-/* markers revealed: the box collapses, the line renders as its raw source */
-.lp.src .li > .mk.lim, .lp .lprow.cur .li > .mk.lim, .lp .lprow.cur.li > .mk.lim {
+/* markers revealed: the box collapses, the line renders as its raw source.
+   Per TOKEN (.rv) now, not per row — the list marker opens only when the
+   selection actually touches "- " (R17.6 D6 vs E6). */
+.lp.src .li > .mk.lim, .lp .li > .mk.lim.rv {
   display: inline; min-width: 0; padding: 0; color: #6c7086 }
-.lp.src .li > .mk.lim::before, .lp .lprow.cur .li > .mk.lim::before, .lp .lprow.cur.li > .mk.lim::before { content: none }
+.lp.src .li > .mk.lim::before, .lp .li > .mk.lim.rv::before { content: none }
 /* R15.13 blockquote in LP: the span.bq is the line's block box — border ink on
    the h1 "H" ink x (+2 from the column), text 11px past it (stock LP: +14) */
 .lp .bq { display: block; margin-inline-start: 2px;
