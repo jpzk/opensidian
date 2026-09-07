@@ -510,21 +510,26 @@ const Ed = {
      so the number is comparable with key_to_paint's wall_ms.
      Published as [cm:<last>/<max>/<n>] in the census; also emitted as a
      `caret_move` otel span when instrumentation is on. */
-  cmT0: -1, cmMs: -1, cmMax: 0, cmN: 0,
+  cmT0: -1, cmMs: -1, cmMax: 0, cmN: 0, cmSum: 0,
   cmStart() { if (Ed.cmT0 < 0) Ed.cmT0 = performance.now(); },
   cmEnd(g) {
     if (Ed.cmT0 < 0) return;
     const t0 = Ed.cmT0; Ed.cmT0 = -1;
     requestAnimationFrame(() => setTimeout(() => {
       const ms = Math.round((performance.now() - t0) * 100) / 100;
-      Ed.cmMs = ms; Ed.cmN++;
+      Ed.cmMs = ms; Ed.cmN++; Ed.cmSum += ms;
       if (ms > Ed.cmMax) Ed.cmMax = ms;
       if (typeof otel !== "undefined" && otel.span)
         otel.span("caret_move", { reveal: ((g && g.lp && g.lp._rvs) || []).length, note_lines: (g && g.lpLines) || 0 }, ms);
       Ed.census();
     }, 0));
   },
-  cmTok() { return Ed.cmMs < 0 ? "" : " [cm:" + Ed.cmMs + "/" + Ed.cmMax + "/" + Ed.cmN + "]"; },
+  // [cm:<last>/<max>/<avg>/<n>] — ms to first paint, over the run so far
+  cmTok() {
+    if (Ed.cmMs < 0) return "";
+    return " [cm:" + Ed.cmMs + "/" + Ed.cmMax + "/" +
+           (Math.round(Ed.cmSum / Ed.cmN * 100) / 100) + "/" + Ed.cmN + "]";
+  },
   // PURE: the tokens of ONE line that a selection [lo,hi] on that line touches.
   // A COLLAPSED caret (lo === hi) touches the CLOSED range [s,e] — M74: col 15
   // inside `*ital*` 13..19 opens it, M77: col 55 with `#tag` at 57..61 opens
