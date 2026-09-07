@@ -8,7 +8,7 @@ I'm using a DIY computer use to let AI write requirements to copy the UI/UX of O
 I'm running as many top frontier models to scan for vulnerabilities, but since this is open source and you can do this, please do. Don't trust, verify.
 
 ## Features
-- markdown editor + live preview (pulldown-cmark, rendered in Rust) — live preview is the default mode
+- markdown editor with three modes — live preview (default), reading, source. Live preview runs the R17 editor core: a line model, one DOM row per source line and a token map, patched incrementally per keystroke with no Rust round-trip; reading mode renders through `pulldown-cmark` in Rust. Selection spans rows, copy/cut yield raw markdown, undo coalesces bursts, and the caret reveals only the TOKEN under it — not the whole line
 - [[wikilinks]] -> clickable links + local graph view (canvas force sim)
 - `[[note#heading]]`, `[[note#^block]]`, `[[note|alias]]` links: alias text, scroll-to-target + flash, `[[note#` heading autocomplete, block ids (` ^id`); Backlinks pane with Unlinked mentions + Link button
 - splits / tab groups with tab drag & drop
@@ -19,7 +19,7 @@ I'm running as many top frontier models to scan for vulnerabilities, but since t
 - source mode (R12): live preview with every marker revealed — grey `#`/`**`/`[[` markers in the text flow, headings keep their size, bold/italic/strike/highlight/code styled, links + `#tag` in accent, fences shaded with the fence lines visible, literal `- [ ]` tasks; same font and measure as live preview, one raw caret row, `[[` autocomplete
 - hotkeys (R14): Settings (Ctrl+,) ▸ Hotkeys — every command from one registry (also feeds the palette) with the stock Obsidian defaults, fuzzy filter + All/Assigned/Assigned by me/Unassigned chips, click ⊕ to record a chord, ✕ to remove, ↺ restore default, duplicate chords flagged red with a `Conflicts N` chip; overrides persist in `~/.rustidian.json` `hotkeys` (stock shape, `[]` = removed default)
 - vault picker with persistence (or env VAULT_DIR, default ./vault)
-- graph (R16): stock-faithful force layout (d3 semantics, world-space, camera fit), WebGL renderer by default with a Canvas 2D fallback (`RUSTIDIAN_GRAPH_RENDERER=gl|2d`)
+- graph (R16): stock-faithful force layout (d3 semantics, world-space, camera fit), drag a node and it stays pinned where you drop it (empty-canvas drag pans), WebGL renderer by default with a Canvas 2D fallback (`RUSTIDIAN_GRAPH_RENDERER=gl|2d`)
 - typography (R15): the exact Obsidian 1.13.7 type metrics in reading, live preview and source mode — bundled Inter Variable 4.001 + Source Code Pro 2.030 (SIL OFL, sha256-pinned via `scripts/fetch-fonts.sh --verify`), stock font stacks, h1–h6 sizes/weights/line-heights, list/checkbox/code/blockquote geometry within 1px of stock
 - hardening: vault paths canonicalised and confined to the vault root, system dirs refused, symlinks and >32 MiB files skipped, link scheme allowlist (http/https/mailto only; opened via `xdg-open`), in-app navigation locked to the app origin, Landlock self-sandbox on by default
 
