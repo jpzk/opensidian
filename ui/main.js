@@ -2549,7 +2549,9 @@ async function startGraph(g, cfg) {
     const old = new Map(N.map(p => [p.n, p]));
     const N2 = g2.nodes.map(nd => {
       const o = old.get(nd.name);
-      return o ? { n: nd.name, resolved: nd.resolved, x: o.x, y: o.y, vx: o.vx, vy: o.vy, deg: 0, r: 6.5 }
+      // C3: a survivor keeps its PIN too (fx/fy) — a save must not unstick a node
+      // the user dropped somewhere on purpose.
+      return o ? { n: nd.name, resolved: nd.resolved, x: o.x, y: o.y, vx: o.vx, vy: o.vy, fx: o.fx, fy: o.fy, deg: 0, r: 6.5 }
                : { n: nd.name, resolved: nd.resolved, x: null, y: null, vx: 0, vy: 0, deg: 0, r: 6.5 };
     });
     // R19 warm start (feedback #5): survivors keep position + velocity; a NEW
@@ -2662,6 +2664,12 @@ async function startGraph(g, cfg) {
     for (const p of N) {
       p.x -= sx; p.y -= sy;
       p.vx *= 0.6; p.vy *= 0.6; p.x += p.vx; p.y += p.vy;   // velocity decay 0.4 (d3 default)
+      // C3 PIN (d3 forceSimulation semantics): a node the user dropped carries
+      // fx/fy and is CLAMPED back onto it after every force — including the
+      // centre force's whole-cloud translation above, which is what would
+      // otherwise drift it away from the drop point. The layout reflows
+      // AROUND it; it does not move again until it is dragged again.
+      if (p.fx != null) { p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0; }
     }
     alpha += -alpha * ALPHA_DECAY;
   }
@@ -2828,17 +2836,36 @@ async function startGraph(g, cfg) {
     view.tx = mx - wx * s; view.ty = my - wy * s; view.scale = s;
     redraw();
   };
-  // drag anywhere pans (incl. on nodes — simpler); click w/o movement navigates
+  // C3: mousedown HIT TESTS. On a node the drag moves the NODE (pinned via
+  // fx/fy, so releasing keeps the drop position); on empty canvas it pans the
+  // camera exactly as it always did. Click w/o movement still navigates.
   let drag = null, moved = false;
-  cv.onmousedown = e => { drag = { x: e.clientX, y: e.clientY }; moved = false; };
+  cv.onmousedown = e => {
+    const r = cv.getBoundingClientRect();
+    const [wx, wy] = toWorld(e.clientX - r.left, e.clientY - r.top);
+    const i = hitTest(wx, wy);
+    drag = { x: e.clientX, y: e.clientY, node: i >= 0 ? N[i] : null };
+    moved = false;
+  };
   cv.onmousemove = e => {
     const r = cv.getBoundingClientRect();
     if (drag) {
       const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
       if (moved || dx * dx + dy * dy > 16) {
         moved = true;
-        view.tx += dx; view.ty += dy;
-        drag = { x: e.clientX, y: e.clientY };
+        if (drag.node) {
+          // NODE drag. Pin on the first real movement, not on mousedown: a bare
+          // click must not stick a node it never moved. Pointer px -> world
+          // units via the camera scale, so a zoomed-out drag still tracks.
+          const p = drag.node;
+          if (p.fx == null) { p.fx = p.x; p.fy = p.y; }
+          p.fx += dx / view.scale; p.fy += dy / view.scale;
+          p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0;
+          g.reheat(0.3);                 // d3 alphaTarget: the neighbours follow the node out
+        } else {
+          view.tx += dx; view.ty += dy;  // EMPTY canvas: camera pan, unchanged
+        }
+        drag.x = e.clientX; drag.y = e.clientY;
         redraw();
       }
       return;
