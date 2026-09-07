@@ -1000,13 +1000,21 @@ function updateTitle() {          // pane/focus census in the window title (head
     if (fl.length) md += " [fonts:" + fl.join("|") + "]"; }
   let gg = ft && ft.kind === "gg" ? " [gg]" : "";  // R9.7: global graph tab focused
   if (gg) { const pt = posTok(fg()); if (pt) gg += " [ggpos:" + pt + "]"; }
-  const modal = modalKind ? " [modal:" + modalKind + "]"
+  const tokq = s => String(s == null ? "" : s).replace(/[[\]|]/g, "").slice(0, 80);
+  const modal = modalKind ? " [modal:" + modalKind + "]" +
+                            (mdNew ? " [mdnew:" + tokq(mdNew) + "]" : "")   // C4: the create-this-note affordance is on screen
     : ($("rnbox") && !$("rnbox").hidden ? " [modal:rn]" : "")  // m5 fuzzy modal / rename prompt
     + (settingsOpen ? " [modal:settings]" + hkInfo : "")       // R14 settings + hotkeys probe
     + (menuEl ? " [menu:1]" : "");                             // R22: a context menu is open (fuzz probe)
+  // [note:<name>] = the FOCUSED group's active note (null for a graph tab).
+  // Which note is active was previously only observable by mutating it (type a
+  // marker, grep the disk) or by renaming it — both destroy the thing under
+  // test, which is useless for a data-loss assertion.
+  const anote = state && fg() ? curOf(fg()) : null;
+  const noteTok = anote ? " [note:" + tokq(anote) + "]" : "";
   let t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
-            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + lg + md + gg + modal +
+            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + lg + md + gg + modal +
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) +
             (rightOpen ? ":" + rTab : "") + "]" +
             (rightOpen && rpInfo ? " [rp:" + rpInfo + "]" : "") +
@@ -2055,6 +2063,7 @@ function openModal(kind, src) {
 function closeModal() {
   if (!modalKind) return;
   modalKind = null;
+  mdNew = "";
   $("modal").hidden = true;
   updateTitle();
 }
@@ -2067,13 +2076,50 @@ function mdFilter() {
   mdSel = 0;
   renderModal();
 }
+/* C4 (R5.1): the switcher's dead end. A query that matches no note used to
+   paint the single dead word "No matches" — the only move left was Escape and
+   Ctrl+N with the name retyped. Stock creates the note on Shift+Enter and opens
+   it, so offer that action here.
+   GATED ON kind "qs": renderModal() is SHARED with the COMMAND PALETTE
+   ([modal:cp], mdSrc = cmdItems), where "create a note" is not an answer to an
+   unknown COMMAND. mdNew is the affordance's name ("" = not offered) and is
+   published as [mdnew:<name>] so the smoke asserts the affordance itself, not
+   an OCR of its label. */
+let mdNew = "";
+/* Creation from the switcher goes through the SHARED createNote helper (which
+   seeds the "# <basename>" H1, feedback #15 / R23) — there is deliberately no
+   second creation path. It CANNOT overwrite: the backend uses create_new(2),
+   the kernel's atomic exists-check, and createNote maps that to "exists" and
+   returns without writing a byte.
+   The real hazard here is CASE. fuzzy() lowercases both sides, so "ideas"
+   matches "Ideas" and the affordance never appears — but on a case-sensitive
+   filesystem createNote("ideas") would cheerfully lay a SECOND file down next
+   to Ideas.md and open the empty one, which reads as "my note lost its
+   contents". So resolve the typed name against the tree case-insensitively
+   FIRST and open the note that is already there. */
+async function qsCreateNote(name) {
+  const hit = notesCache.find(n => n.toLowerCase() === name.toLowerCase());
+  if (hit) return await openInTab(hit);
+  const r = await createNote(name);
+  if (r === "err") return;              // no tab for a note that is not on disk
+  await openInTab(name);                // "exists" (racing writer) -> open it, untouched
+}
 function renderModal() {
   const box = $("mlist");
   box.innerHTML = "";
+  const nq = modalKind === "qs" ? $("minput").value.trim() : "";
+  mdNew = !mdItems.length && nq ? nq : "";
   if (!mdItems.length) {
     const d = document.createElement("div");
-    d.className = "mempty"; d.textContent = "No matches";
-    return box.appendChild(d);
+    if (mdNew) {
+      d.className = "mrow sel";
+      const l = document.createElement("span"); l.textContent = 'Create "' + mdNew + '"';
+      const h = document.createElement("span"); h.className = "mhint"; h.textContent = "Shift+Enter";
+      d.append(l, h);
+      d.onmousedown = async e => { e.preventDefault(); const n = mdNew; closeModal(); await qsCreateNote(n); };
+    } else { d.className = "mempty"; d.textContent = "No matches"; }
+    box.appendChild(d);
+    return updateTitle();
   }
   mdItems.forEach((it, i) => {
     const d = document.createElement("div");
@@ -2085,6 +2131,7 @@ function renderModal() {
     d.onmousedown = async e => { e.preventDefault(); closeModal(); await it.run(e); };
     box.appendChild(d);
   });
+  updateTitle();   // C4: mdFilter() runs on every keystroke — republish [mdnew:]
 }
 $("minput").oninput = mdFilter;
 $("minput").onkeydown = async e => {
@@ -2096,7 +2143,11 @@ $("minput").onkeydown = async e => {
   } else if (e.key === "Enter") {
     e.preventDefault();
     const it = mdItems[mdSel];
-    if (it) { closeModal(); await it.run(e); }
+    if (it) { closeModal(); return await it.run(e); }
+    // C4: zero matches + a non-empty switcher query -> Shift+Enter creates it.
+    // Only when there is nothing to pick: with a match present (incl. a
+    // case-differing one) Shift+Enter must never become a creation.
+    if (e.shiftKey && mdNew) { const n = mdNew; closeModal(); await qsCreateNote(n); }
   }
 };
 $("modal").onmousedown = e => { if (e.target === $("modal")) closeModal(); };
