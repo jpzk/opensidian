@@ -950,6 +950,11 @@ function updateTitle() {          // pane/focus census in the window title (head
       if (lk && curOf(lk)) lg += " [lgl:" + curOf(lk) + "]";
       const pt = h.tabs[h.active] === t ? posTok(h) : "";
       if (pt) lg += " [lgpos:" + pt + "]";
+      // C5: the last re-centre's continuity record (see rcRecord) — first-frame evidence that
+      // the survivors kept their place and their motion, that the new node was seeded beside
+      // a placed neighbour, that the restart was warm and the neighbourhood was prefetched.
+      const rc = h.tabs[h.active] === t && h.graphRc ? h.graphRc() : "";
+      if (rc) lg += " [lgrc:" + rc + "]";
       break;
     }
   }
@@ -2488,7 +2493,7 @@ const graphRendererPref = () => graphPrefP || (graphPrefP = inv("graph_renderer_
   return { renderer: r === "gl" || r === "2d" ? r : null, loseCtx: !!(p && p.lose_ctx) };
 }));
 function showEditor(g) {
-  g.graphOn = false; g.graphRefresh = null; cancelAnimationFrame(g.sim);
+  g.graphOn = false; g.graphRefresh = null; g.graphRc = null; cancelAnimationFrame(g.sim);
   if (g.ro) { g.ro.disconnect(); g.ro = null; }
   perf.flush();                    // ship buffered graph_frame samples of the closed sim
   g.graph.hidden = true; if (g.glcv) g.glcv.hidden = true;
@@ -2583,13 +2588,26 @@ async function startGraph(g, cfg) {
   rebuild();
   let hov = -1;
   const hitTest = (x, y) => N.findIndex(p => (p.x - x) ** 2 + (p.y - y) ** 2 < (p.r + 4) ** 2);
+  // C5 (B26-B29, R19.2/R19.3): the re-centre CONTINUITY record. graphRefresh snapshots the
+  // real pre-refresh node objects; the first frame after the swap (rcPre) and its first PAINT
+  // (rcRecord) measure the LIVE N[] against that snapshot and publish it once as [lgrc:].
+  // A shell cannot sample a frame, so the frame reports itself. It is a probe, not a metric:
+  // nothing is recomputed on later frames, so a settled graph pays two null tests per frame.
+  let rcSnap = null, rcTok = "", rcSeq = 0;
+  g.graphRc = () => rcTok;
   // live refresh (R4.3): re-fetch on save, keep surviving positions,
   // seed new nodes near their first neighbor
   g.graphRefresh = async () => {
     // R19: a node click prefetches the next neighbourhood in parallel with the
     // note open (g.prefetch = {n, p}); use it when it is for the current centre
     const pf = g.prefetch; g.prefetch = null;
-    const g2 = await (pf && pf.n === cfg.center() ? pf.p : cfg.fetch());
+    // C5: the branch B26 guards. pfHit is the condition the code ALREADY took; naming it
+    // changes nothing but lets the first paint report which side it ran, and `waited` is the
+    // wall time this refresh spent blocked on the fetch — ~0 when the request really did run
+    // in parallel with the note open, a full round trip when it did not.
+    const pfHit = !!(pf && pf.n === cfg.center()), wT0 = perf.now();
+    const g2 = await (pfHit ? pf.p : cfg.fetch());
+    const waited = perf.now() - wT0;
     // graph-webgl: a refresh that changes nothing (the race-closing refetch below, a save that
     // touched no link) must not reheat — the layout stays a pure function of the vault, so two
     // opens land on identical positions (smoke graphgl compares gl vs 2d frames pixel-wise)
@@ -2598,6 +2616,11 @@ async function startGraph(g, cfg) {
       g2.edges.every((e, i) => e[0] === gr.edges[i][0] && e[1] === gr.edges[i][1]);
     if (same) return;
     const old = new Map(N.map(p => [p.n, p]));
+    // C5: plain-value copy of the REAL pre-refresh nodes, taken before the swap. These
+    // objects leave N below and are never stepped again, but copy anyway so the frames that
+    // read the record compare against numbers that cannot have moved under them.
+    const prev = new Map();
+    for (const [nm, o] of old) prev.set(nm, { x: o.x, y: o.y, vx: o.vx, vy: o.vy, pin: o.fx != null });
     const N2 = g2.nodes.map(nd => {
       const o = old.get(nd.name);
       // C3: a survivor keeps its PIN too (fx/fy) — a save must not unstick a node
@@ -2627,6 +2650,11 @@ async function startGraph(g, cfg) {
     gr.edges = g2.edges;
     rebuild();
     hov = -1;
+    // C5: a0 is the sim's REAL alpha before the restart — a graph can go quiet with alpha
+    // still around 0.5 (kinetic calm wins the race against the alpha floor), and reheat only
+    // ever RAISES alpha, so "the restart was warm" is `alpha at the first paint <= max(a0,
+    // 0.3)`, never `<= 0.3`.
+    rcSnap = { prev, pf: pfHit, w: waited, a0: alpha, c: cfg.center() };
     g.reheat(0.3);   // R19: d3 restart semantics — alpha 0.3, not 1: settle the new nodes without scattering the old ones
   };
   // sim heat (d3-force shaped): forces scale by alpha, which decays per PHYSICS
@@ -2724,6 +2752,66 @@ async function startGraph(g, cfg) {
     }
     alpha += -alpha * ALPHA_DECAY;
   }
+  // C5 (B26-B29, R19.2/R19.3): the two halves of the re-centre continuity record. Every field
+  // is a measurement of the node objects the renderer is about to draw — never a variable the
+  // refresh set to describe itself.
+  //
+  // rcPre runs at the top of the FIRST frame after the swap, BEFORE that frame's physics: the
+  // only instant at which a carried velocity is still literally the velocity the node had.
+  //   vraw = % of unpinned survivors still holding their own (vx,vy). 100 = every one of them
+  //          kept its motion, 0 = they were all restarted from rest. Vacuous when the graph
+  //          was already still, which is why vold is published next to it.
+  function rcPre() {
+    const s = rcSnap; let n = 0, k = 0;
+    for (const p of N) {
+      const o = s.prev.get(p.n);
+      if (!o || o.pin || p.fx != null) continue;
+      n++; if (p.vx === o.vx && p.vy === o.vy) k++;
+    }
+    s.vraw = n ? Math.round(100 * k / n) : -1;
+  }
+  // rcRecord runs at that frame's PAINT — the frame the user actually sees.
+  //   a/a0  = the sim's real alpha now, and what it was before the restart (see above).
+  //   d     = the survivor displacement the EYE reads. The centre force translates the whole
+  //           cloud whenever the node set changes (a node 250 away moves the centroid, and
+  //           every node with it), so the common translation is subtracted first: d is the
+  //           RELATIVE motion, i.e. "did the layout come apart".
+  //   vold  = rms speed the survivors had before the re-centre; dv = d / vold, how far they
+  //           coasted in this frame per unit of the motion they had (a node that kept its
+  //           velocity glides on, one restarted from rest barely moves).
+  //   vkeep = sum(v_now . v_before) / sum(|v_before|^2) in %.
+  //   nd/no = a NEW node's distance to the nearest node that already had a place, and to the
+  //           layout origin (the phyllotaxis fallback sits within ~30px of it).
+  // C3: pinned nodes are excluded throughout — fx/fy clamps them, so they are immobile by
+  // construction and would make any displacement assertion vacuously true.
+  function rcRecord() {
+    const s = rcSnap; rcSnap = null;
+    const sur = [];
+    for (const p of N) { const o = s.prev.get(p.n); if (o && !o.pin && p.fx == null) sur.push([p, o]); }
+    let mx = 0, my = 0;
+    for (const [p, o] of sur) { mx += p.x - o.x; my += p.y - o.y; }
+    if (sur.length) { mx /= sur.length; my /= sur.length; }
+    let d = 0, dot = 0, v2 = 0;
+    for (const [p, o] of sur) {
+      d = Math.max(d, Math.hypot(p.x - o.x - mx, p.y - o.y - my));
+      dot += p.vx * o.vx + p.vy * o.vy; v2 += o.vx * o.vx + o.vy * o.vy;
+    }
+    let nn = 0, nd = -1, no = -1;
+    for (const p of N) {
+      if (s.prev.has(p.n)) continue;
+      nn++;
+      if (nn > 64) continue;           // O(new x survivors) bound: this is a probe, not a metric
+      let best = Infinity;
+      for (const [q] of sur) { const b = Math.hypot(p.x - q.x, p.y - q.y); if (b < best) best = b; }
+      if (best < Infinity && (nd < 0 || best < nd)) { nd = Math.round(best); no = Math.round(Math.hypot(p.x, p.y)); }
+    }
+    const r2 = v => Math.round(v * 100) / 100, vold = Math.sqrt(v2 / (sur.length || 1));
+    rcTok = "s=" + (++rcSeq) + ",a=" + r2(alpha) + ",a0=" + r2(s.a0) + ",pf=" + (s.pf ? 1 : 0) +
+            ",w=" + r2(s.w) + ",sur=" + sur.length + ",d=" + r2(d) + ",vold=" + r2(vold) +
+            ",dv=" + (vold > 1e-6 ? r2(d / vold) : -1) + ",vraw=" + (s.vraw === undefined ? -1 : s.vraw) +
+            ",vkeep=" + (v2 > 1e-9 ? Math.round(100 * dot / v2) : -1) +
+            ",new=" + nn + ",nd=" + nd + ",no=" + no + ",c=" + s.c;
+  }
   // draw: batched paths — edges in 2 strokes (lit / dim), nodes grouped by
   // (color, alpha, resolved) into one fill/stroke each, labels per group
   // graph-webgl: with glr the SAME per-node style decisions feed instance arrays
@@ -2802,6 +2890,7 @@ async function startGraph(g, cfg) {
       if (labels) { ctx.fillStyle = gp.col; for (const i of gp.idx) { const p = N[i]; ctx.fillText(p.n, p.x, p.y - p.r - gp.dr - 4); } }
     }
     ctx.globalAlpha = 1;
+    if (rcSnap) { rcRecord(); updateTitle(); }   // C5: once, on the first paint after a re-centre
     perf.push("graph_draw", perf.now() - dT0, { renderer: glr ? "gl" : "2d", nodes: N.length, edges: gr.edges.length, ...gpu });
   }
   let firstFrame = true, running = false, dirty = true;
@@ -2814,6 +2903,7 @@ async function startGraph(g, cfg) {
       if (g.perfT0) { perf.mark("graph_open", g.perfT0, { nodes: N.length, edges: gr.edges.length }); g.perfT0 = null; }
     }
     const fT0 = perf.now(); let steps = 0, ke = -1;
+    if (rcSnap && rcSnap.vraw === undefined) rcPre();   // C5: before this frame's physics
     phAcc = Math.min(phAcc + (now - phLast) / 1000, PH_CAP); phLast = now;
     while (phAcc >= 1 / PH_HZ) {
       phAcc -= 1 / PH_HZ;
