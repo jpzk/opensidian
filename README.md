@@ -33,19 +33,19 @@ Two AppImage flavors on the [latest release](https://github.com/jpzk/rustidian/r
 Needs `libwebkit2gtk-4.1` installed (`apt install libwebkit2gtk-4.1-0` /
 `dnf install webkit2gtk4.1`) — the AppImage tells you if it's missing:
 
-    curl -LO https://github.com/jpzk/rustidian/releases/download/v0.4/rustidian-0.4-x86_64-slim.AppImage
-    chmod +x rustidian-0.4-x86_64-slim.AppImage
-    ./rustidian-0.4-x86_64-slim.AppImage
+    curl -LO https://github.com/jpzk/rustidian/releases/download/v0.7/rustidian-0.7-x86_64-slim.AppImage
+    chmod +x rustidian-0.7-x86_64-slim.AppImage
+    ./rustidian-0.7-x86_64-slim.AppImage
 
 **portable** (~110MB) — bundles the entire webkit/gtk closure, zero system deps:
 
-    curl -LO https://github.com/jpzk/rustidian/releases/download/v0.4/rustidian-0.4-x86_64-portable.AppImage
-    chmod +x rustidian-0.4-x86_64-portable.AppImage
-    ./rustidian-0.4-x86_64-portable.AppImage
+    curl -LO https://github.com/jpzk/rustidian/releases/download/v0.7/rustidian-0.7-x86_64-portable.AppImage
+    chmod +x rustidian-0.7-x86_64-portable.AppImage
+    ./rustidian-0.7-x86_64-portable.AppImage
 
 No FUSE on your box (containers, minimal VMs)? Run either without mounting:
 
-    ./rustidian-0.4-x86_64-slim.AppImage --appimage-extract-and-run
+    ./rustidian-0.7-x86_64-slim.AppImage --appimage-extract-and-run
 
 ## sandboxed run (recommended)
 
@@ -59,7 +59,7 @@ home directory. With [bubblewrap](https://github.com/containers/bubblewrap)
 (`apt/dnf install bubblewrap` — unprivileged, no SUID) you can confine
 rustidian to ONLY your vault. Grab the launcher next to the AppImage and:
 
-    curl -LO https://github.com/jpzk/rustidian/releases/download/v0.4/rustidian-sandboxed.sh
+    curl -LO https://github.com/jpzk/rustidian/releases/download/v0.7/rustidian-sandboxed.sh
     chmod +x rustidian-sandboxed.sh
     ./rustidian-sandboxed.sh ~/vault
 
