@@ -662,6 +662,10 @@ async function afterWrite(name) {           // bookkeeping shared by write + cre
    keeps its base and stays dirty: the next debounce / ctrl+s retries the same
    bytes. Swallowing it costs every edit of a whole session with zero signal. */
 let saveErr = "";
+/* R31.9 last drop outcome, declared up here with saveErr so updateTitle (below)
+   can never read it through a temporal-dead-zone. The drop code itself is in
+   the R31 section further down. */
+let dropTok = "", dropT = null;
 /* F2 test hook: the vault-switch race lives inside the debounce window, so it
    is not mechanically reproducible at 250ms — RUSTIDIAN_SAVE_MS widens it for
    the smoke (backend save_debounce_ms; default 250 in every normal run). */
@@ -1052,6 +1056,10 @@ function updateTitle() {          // pane/focus census in the window title (head
             ims.slice(0, 3).map(i => "|" + xi(i.getAttribute("src"))).join("") + "]";
     }
   }
+  // R31.9 drop probe: the LAST drop's outcome -> [drop:<copied>/<refused>].
+  // Deliberately not derived from the banner (which times out): "no drop yet"
+  // and "a drop whose banner faded" must not look the same to a probe.
+  if (dropTok) md += " [drop:" + dropTok.replace(/[[\]|]/g, "") + "]";
   // R15.2 font probe: bundled @font-face entries that actually LOADED (lazy: a face loads when text first uses it) -> [fonts:SourceCodePro/400/normal|...]
   { const fl = document.fonts ? [...document.fonts].filter(f => f.status === "loaded").map(f => f.family.replace(/[" ]/g, "") + "/" + f.weight + "/" + f.style) : [];
     if (fl.length) md += " [fonts:" + fl.join("|") + "]"; }
@@ -2280,6 +2288,49 @@ function linkAtCaret() {   // [[target]] spanning the caret of the edited field,
   const inner = v.slice(a + 2, b);
   return inner.split("|")[0].split("#")[0].trim() || null;
 }
+/* ---------- R31 drop-to-attach (feedback #18) ---------------------------
+   A real OS drop NEVER reaches the DOM: wry takes the XDND at the GTK layer
+   and Tauri hands it to Rust as WindowEvent::DragDrop, which re-emits the
+   paths as `drop-files` (main.rs R31.1). So this listener is the drop, and a
+   `dragover`/`drop` handler on the editor would be decoration.
+   This half decides WHERE text goes — the caret of the focused editor — and
+   nothing else: the vault write, the file name, the link text and every
+   refusal sentence come back from attach_files -> attach_drop. Anything that
+   looks like policy down here would be a second copy of the rules.  */
+function dropSay(msg) {           // R31.5 a refusal is VISIBLE or it is a bug report
+  const b = $("dropmsg");
+  b.textContent = msg;
+  b.hidden = !msg;
+  clearTimeout(dropT);
+  // the banner is transient, the census token is NOT: it is rewritten by the
+  // next drop and never expires, so a probe cannot read "no drop happened"
+  // off a banner that merely timed out.
+  if (msg) dropT = setTimeout(() => { $("dropmsg").hidden = true; }, 4000);
+}
+/* R31.6 READING VIEW HAS NO CARET, so a drop there cannot "insert at the
+   cursor". Stock's behaviour is UNVERIFIED (recon could not drive a drop, and
+   the paste oracle is edit-only), and the brief's rule for an unverified
+   answer is: refuse, visibly. Copying the file in anyway and inserting it
+   somewhere we guessed is the worse failure — it writes to the vault for an
+   action the user cannot see the result of. */
+async function attachDrop(paths) {
+  if (!state || !fg()) return dropSay("open a note first");
+  const g = fg(), t = g.active >= 0 ? g.tabs[g.active] : null;
+  if (!t || t.kind) return dropSay("open a note first");
+  if (t.mode === "reading") return dropSay("switch to editing (Ctrl+E) to attach a file");
+  let a;
+  try { a = await inv("attach_files", { note: t.name, paths }); }
+  catch (e) { dropTok = "err"; dropSay(errStr(e)); return updateTitle(); }
+  // R29.11: both renderers resolve ![[x.png]] against the index list, and the
+  // LP engine reads its own copy (imgsCache) — a file copied but not re-listed
+  // paints as a MISSING image. Refresh BEFORE the insert so the first render
+  // of the new link already resolves.
+  if (a.copied.length) await refreshTree();
+  if (a.text) edEdit((v, s, e2) => [v.slice(0, s) + a.text + v.slice(e2), s + a.text.length, s + a.text.length]);
+  dropTok = a.copied.length + "/" + a.refused.length;
+  dropSay(a.refused.join("\n"));
+  updateTitle();
+}
 let closedTabs = [];                       // R14 undo close tab (names, newest last)
 const CMDS = [
   ["app:open-settings",        "Open settings",                       ["ctrl+,"],               () => cmdSettings()],
@@ -3347,6 +3398,8 @@ async function onVaultChanged(c) {
   updateTitle();
 }
 window.__TAURI__.event.listen("vault-changed", e => onVaultChanged(e.payload));
+// R31.1: a real OS drop arrives here, from Rust, never from a DOM drop event.
+window.__TAURI__.event.listen("drop-files", e => attachDrop(e.payload || []));
 
 $("vswitch").onclick = showPicker;
 

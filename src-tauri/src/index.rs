@@ -463,7 +463,7 @@ impl Index {
         &self.names
     }
 
-    /// R30: an image that JUST landed in the vault becomes a member without a
+    /// R31: an image that JUST landed in the vault becomes a member without a
     /// re-walk. Both renderers resolve `![[x.png]]` against this list
     /// (`list_images` hands it out verbatim), so a dropped file that is not in
     /// here is copied but invisible — the R29.11 gap, which a DROP must not

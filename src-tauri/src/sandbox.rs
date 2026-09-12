@@ -3,7 +3,7 @@
    filesystem writes are confined to the vault, ~/.rustidian.json and the
    caches webkit/mesa/fontconfig need; the rest of the system is read-only
    and $HOME is not readable as a whole — dir listing only (for the picker),
-   plus READ on the three R30.12 drop-source folders (see DROP_READ_DIRS),
+   plus READ on the three R31.12 drop-source folders (see DROP_READ_DIRS),
    which is what makes drag & drop of an image possible at all.
    Best-effort: kernels without Landlock (< 5.13 / LSM disabled) run as
    before (stderr says why). Threads restrict only
@@ -34,7 +34,7 @@ fn env_path(k: &str) -> Option<PathBuf> {
     std::env::var_os(k).map(PathBuf::from).filter(|p| p.exists())
 }
 
-/* R30.12 DROP SOURCES — the sandbox is why drag & drop is not "read the file".
+/* R31.12 DROP SOURCES — the sandbox is why drag & drop is not "read the file".
    A drop hands us a path the user picked in a file manager; the landlock
    ruleset is immutable after restrict_self(), so a folder not named HERE can
    never be read later, and ~/Pictures/cat.png fails with EACCES before a
@@ -66,7 +66,7 @@ pub fn read_roots(home: &Path) -> Vec<PathBuf> {
         .map(PathBuf::from)
         .collect();
     ro.extend([home.join(".config"), home.join(".local/share"), home.join(".fonts"), home.join(".Xauthority")]);
-    // R30.12: drop sources, read-only and enumerated — never $HOME itself
+    // R31.12: drop sources, read-only and enumerated — never $HOME itself
     ro.extend(DROP_READ_DIRS.iter().map(|d| home.join(d)));
     ro.extend(["APPIMAGE", "APPDIR", "XAUTHORITY"].iter().filter_map(|k| env_path(k)));
     if let Ok(exe) = std::env::current_exe() {
@@ -125,7 +125,7 @@ mod tests {
     use super::*;
     use std::fs;
 
-    /* R30.12 THE RULESET CONTENT IS THE ONLY TESTABLE PART HERE. This kernel
+    /* R31.12 THE RULESET CONTENT IS THE ONLY TESTABLE PART HERE. This kernel
        has no Landlock, so `confines_reads_to_vault` below SKIPS and a green
        suite says nothing about enforcement. These three tests assert what the
        kernel would be told instead — the vectors themselves — so the drop
