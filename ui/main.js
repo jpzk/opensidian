@@ -886,7 +886,7 @@ function renderLayout() {         // boot / vault switch only — every later ch
    reporting `#main` when the real culprit is a button in the tab strip costs
    an iteration every time. */
 const OVF_SCROLL = "#tree,#sresults,#bmlist,.rlist,.lp,.preview,.editor,.ac," +
-                   "#mlist,#p-dirs,#p-recent,#sbody,#spage,#hklist";
+                   "#mlist,#p-dirs,#p-recent,#sbody,#snav,#spage,#hklist";
 function ovfName(el) {              // short, stable selector for a failure message
   const c = (el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className) || "";
   const k = String(c).trim().split(/\s+/).filter(Boolean).slice(0, 2).map(x => "." + x).join("");
