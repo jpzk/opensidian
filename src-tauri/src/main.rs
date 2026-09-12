@@ -181,6 +181,60 @@ fn serve_image(root: &Path, target: &str) -> Option<(&'static str, Vec<u8>)> {
     Some((mime, fs::read(&p).ok()?))
 }
 
+/// percent-ENCODE a vault-relative path for the `rustidian-img:` URL. Unreserved
+/// RFC3986 characters and `/` survive; everything else (space, `#`, `?`, `%`,
+/// non-ASCII) becomes %XX, so `pct_decode` on the serving side gets the exact
+/// bytes back. Without this a note named `a#b.png` would lose everything after
+/// the `#` to URL fragment parsing, and `a?b.png` to the query.
+fn pct_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                out.push(*b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// R29.1/R29.2: the html for ONE image embed, from the index's image list.
+///
+/// Resolution goes through `index::resolve` — the SAME resolver `[[note]]`
+/// links use — for BOTH syntaxes, so `![[pic.png]]` and `![](sub/pic.png)`
+/// cannot disagree about what a name means (two resolvers for one syntax is
+/// how this codebase grew its last bug). The `src` is the path the INDEX
+/// holds, never the raw target: the index only ever contains real, non-hidden,
+/// non-symlinked vault members, so a target that resolves to nothing gets no
+/// URL at all — and the byte server re-checks containment independently.
+///
+/// Unresolved -> R29.4's banner, verbatim wording, target escaped. R29.5 makes
+/// an out-of-vault target take this same branch, so an escape is
+/// indistinguishable from a typo and leaks nothing about the filesystem.
+fn image_html(imgs: &[String], target: &str, alt: &str) -> String {
+    let dec = pct_decode(target).unwrap_or_else(|| target.to_string());
+    match index::resolve(imgs, &dec).map(|i| &imgs[i]) {
+        Some(rel) => format!(
+            "<img class=\"vimg\" src=\"{IMG_SCHEME}://localhost/{}\" alt=\"{}\">",
+            pct_encode(rel),
+            esc(alt)
+        ),
+        None => format!(
+            "<span class=\"imgmiss\">\u{201c}{}\u{201d} could not be found.</span>",
+            esc(target)
+        ),
+    }
+}
+
+/// is this wikilink target an image embed (`![[pic.png]]`) rather than a NOTE
+/// embed (`![[Second Note]]`, out of scope — requirements.md:410)?
+fn is_img_target(target: &str) -> bool {
+    target
+        .rsplit_once('.')
+        .is_some_and(|(_, e)| index::IMG_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+}
+
 /// S5: read a note off disk, "" when it is oversized (never part of the vault)
 fn read_capped(p: &Path) -> Option<String> {
     let m = fs::symlink_metadata(p).ok()?;
@@ -231,6 +285,15 @@ fn create_dir(v: State<Vault>, name: String) -> Result<(), String> {
 #[tauri::command]
 fn list_notes(v: State<Vault>, otel: Option<perf::Ctx>) -> Vec<String> {
     span_timed!(otel => "list_notes", cur_notes(&v))
+}
+
+/// R29.6/R29.7: the same image list the Rust renderer resolves against, handed
+/// to live preview. ONE source of truth for "does this embed resolve?", so the
+/// two engines cannot disagree about a name (the `extlink` phase exists because
+/// they disagreed once before).
+#[tauri::command]
+fn list_images(v: State<Vault>, otel: Option<perf::Ctx>) -> Vec<String> {
+    span_timed!(otel => "list_images", v.index.lock().unwrap().images().to_vec())
 }
 
 #[tauri::command]
@@ -616,13 +679,23 @@ fn link_label(note: &str, anchor: &str, alias: &str, reading: bool) -> String {
 /// scan coalesced text for [[wikilinks]], emitting escaped anchors (H1 fix).
 /// data-note = note part (empty = same note), data-anchor = heading text or
 /// ^blockid (no leading '#') so the frontend can scroll after navigating.
-fn linkify(buf: &str, notes: &[String], reading: bool, evs: &mut Vec<Event>) {
+fn linkify(buf: &str, notes: &[String], imgs: &[String], reading: bool, evs: &mut Vec<Event>) {
     let mut rest = buf;
     while let Some(i) = rest.find("[[") {
         let Some(j) = rest[i + 2..].find("]]") else { break };
         let l = &rest[i + 2..i + 2 + j];
-        tagify(&rest[..i], evs);
         let (note, anchor, alias) = link_parts(l);
+        // R29.1 `![[pic.png]]`: the bang belongs to the embed, so it must not
+        // be emitted as text. Only IMAGE extensions take this branch — a note
+        // embed `![[Second Note]]` stays the link it is today (req 410).
+        if i > 0 && rest.as_bytes()[i - 1] == b'!' && anchor.is_empty() && is_img_target(note) {
+            tagify(&rest[..i - 1], evs);
+            let alt = if alias.is_empty() { note } else { alias };
+            evs.push(Event::Html(image_html(imgs, note, alt).into()));
+            rest = &rest[i + 2 + j + 2..];
+            continue;
+        }
+        tagify(&rest[..i], evs);
         let cls = if note.is_empty() || resolve(notes, l).is_some() {
             "wiki"
         } else {
@@ -674,7 +747,7 @@ fn tagify(buf: &str, evs: &mut Vec<Event>) {
 }
 
 fn render_md(content: &str, notes: &[String]) -> String {
-    render_with(content, notes, false)
+    render_with(content, notes, &[], false)
 }
 
 /// S1 (docs/security-review.md): scheme of a markdown link/image target,
@@ -697,7 +770,7 @@ fn ext_ok(url: &str, image: bool) -> bool {
 
 /// reading=true: heading links join with " > " (R10.1). Block ids are emitted
 /// as span.blockid in both modes; CSS decides visibility.
-fn render_with(content: &str, notes: &[String], reading: bool) -> String {
+fn render_with(content: &str, notes: &[String], imgs: &[String], reading: bool) -> String {
     // Security (docs/security-review.md H1): .md files are untrusted, so raw
     // HTML events are demoted to text (push_html escapes Text). Wikilinks are
     // linkified at the EVENT level — label and data-note attr escaped — so our
@@ -708,6 +781,8 @@ fn render_with(content: &str, notes: &[String], reading: bool) -> String {
     let mut buf = String::new();
     let mut in_code = false;
     let mut demoted: Vec<Option<String>> = Vec::new(); // S1: per open link/image, Some(text tail) when rendered as text
+    // R29.2: Some((target, alt so far)) while inside a vault-relative image
+    let mut img_alt: Option<(String, String)> = None;
     // pulldown's own ENABLE_WIKILINKS would consume [[..]] before our pass;
     // SMART_PUNCTUATION would curl quotes/apostrophes inside link targets,
     // breaking [[name]] -> filename fidelity
@@ -715,6 +790,20 @@ fn render_with(content: &str, notes: &[String], reading: bool) -> String {
     opts.remove(Options::ENABLE_WIKILINKS);
     opts.remove(Options::ENABLE_SMART_PUNCTUATION);
     for ev in Parser::new_ext(content, opts) {
+        // inside `![alt](rel.png)`: swallow the inner events, keep their text as
+        // the alt attribute. Nothing here reaches linkify — an alt is not a place
+        // where a wikilink or a tag renders, in either engine.
+        if let Some((_, alt)) = img_alt.as_mut() {
+            match ev {
+                Event::Text(t) | Event::Code(t) => alt.push_str(&t),
+                Event::End(TagEnd::Image) => {
+                    let (target, alt) = img_alt.take().expect("img_alt set");
+                    evs.push(Event::Html(image_html(imgs, &target, &alt).into()));
+                }
+                _ => {}
+            }
+            continue;
+        }
         match ev {
             // demoted raw html + plain text both join the scan buffer
             Event::Text(t) | Event::Html(t) | Event::InlineHtml(t) if !in_code => {
@@ -729,13 +818,13 @@ fn render_with(content: &str, notes: &[String], reading: bool) -> String {
                     );
                     match if block_end { split_block_id(&buf) } else { None } {
                         Some((text, id)) => {
-                            linkify(text, notes, reading, &mut evs);
+                            linkify(text, notes, imgs, reading, &mut evs);
                             let id = esc(id);
                             evs.push(Event::Html(
                                 format!("<span class=\"blockid\" data-bid=\"{id}\">^{id}</span>").into(),
                             ));
                         }
-                        None => linkify(&buf, notes, reading, &mut evs),
+                        None => linkify(&buf, notes, imgs, reading, &mut evs),
                     }
                     buf.clear();
                 }
@@ -765,6 +854,16 @@ fn render_with(content: &str, notes: &[String], reading: bool) -> String {
                         }
                         continue;
                     }
+                    // R29.2: a target with NO scheme is a vault-relative image.
+                    // Its alt text arrives as the events BETWEEN Start and End,
+                    // so capture them (img_alt) instead of letting them reach the
+                    // wikilink scan, and emit our own <img> at the End.
+                    Event::Start(Tag::Image { ref dest_url, .. })
+                        if url_scheme(dest_url).is_none() =>
+                    {
+                        img_alt = Some((dest_url.to_string(), String::new()));
+                        continue;
+                    }
                     Event::Start(Tag::Image { ref dest_url, .. }) => {
                         if !ext_ok(dest_url, true) {
                             evs.push(Event::Text("![".into()));
@@ -786,7 +885,7 @@ fn render_with(content: &str, notes: &[String], reading: bool) -> String {
         }
     }
     if !buf.is_empty() {
-        linkify(&buf, notes, reading, &mut evs);
+        linkify(&buf, notes, imgs, reading, &mut evs);
     }
     let mut out = String::new();
     html::push_html(&mut out, evs.into_iter());
@@ -797,12 +896,15 @@ fn render_with(content: &str, notes: &[String], reading: bool) -> String {
 
 #[tauri::command]
 fn render(v: State<Vault>, content: String, otel: Option<perf::Ctx>) -> String {
-    span_timed!(otel => "render", render_with(&content, v.index.lock().unwrap().names(), true), serde_json::json!({"bytes": content.len()}))
+    // ONE lock for both lists: two `v.index.lock()` calls in one expression is
+    // a deadlock on a non-reentrant Mutex, not a style question.
+    let ix = v.index.lock().unwrap();
+    span_timed!(otel => "render", render_with(&content, ix.names(), ix.images(), true), serde_json::json!({"bytes": content.len()}))
 }
 
 /// pure core of render_blocks: every block rendered against the same note list
-fn render_blocks_with(blocks: &[String], notes: &[String]) -> Vec<String> {
-    blocks.iter().map(|b| render_md(b, notes)).collect()
+fn render_blocks_with(blocks: &[String], notes: &[String], imgs: &[String]) -> Vec<String> {
+    blocks.iter().map(|b| render_with(b, notes, imgs, false)).collect()
 }
 
 /* perf-lp: live preview renders every block of a note per caret move. One
@@ -811,7 +913,8 @@ fn render_blocks_with(blocks: &[String], notes: &[String]) -> Vec<String> {
 #[tauri::command]
 fn render_blocks(v: State<Vault>, blocks: Vec<String>, otel: Option<perf::Ctx>) -> Vec<String> {
     let n = blocks.len();
-    span_timed!(otel => "render_blocks", render_blocks_with(&blocks, v.index.lock().unwrap().names()), serde_json::json!({"blocks": n}))
+    let ix = v.index.lock().unwrap();
+    span_timed!(otel => "render_blocks", render_blocks_with(&blocks, ix.names(), ix.images()), serde_json::json!({"blocks": n}))
 }
 
 /// R12 source mode: lp rows with every marker revealed (src/srcmode.rs)
@@ -1241,7 +1344,7 @@ fn main() {
             .expect("img response")
         })
         .invoke_handler(tauri::generate_handler![
-            list_notes, read_note, write_note, create_note, render, render_blocks, highlight_blocks, graph, graph_local, vault_get, set_vault,
+            list_notes, list_images, read_note, write_note, create_note, render, render_blocks, highlight_blocks, graph, graph_local, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, recent_vaults, rename_note, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref,
@@ -1526,7 +1629,7 @@ mod tests {
         assert!(h.contains(r#"class="wiki" data-note="" data-anchor="Local">Local</a>"#), "{h}");
         assert!(h.contains(r#"class="wiki wiki-unresolved" data-note="Ghost" data-anchor="H">Ghost#H</a>"#), "{h}");
         // reading: " > " separator, alias unchanged
-        let r = render_with("[[T#Gamma]] [[T#^b1|nick]] [[#Local]]", &notes, true);
+        let r = render_with("[[T#Gamma]] [[T#^b1|nick]] [[#Local]]", &notes, &[], true);
         assert!(r.contains(">T &gt; Gamma</a>"), "{r}");
         assert!(r.contains(">nick</a>") && r.contains(">Local</a>"), "{r}");
         // block ids: paragraph / list item / heading tails become span.blockid;
@@ -1598,10 +1701,151 @@ mod tests {
         assert!(h.contains(r#"class="ext" rel="noopener">https://a.b</a>"#), "{h}");
         assert!(h.contains(r#"rel="noopener" title="Ti">t</a>"#), "{h}");
         // reading mode identical
-        assert!(render_with("[x](https://q)", &[], true).contains(r#"class="ext""#));
-        // remote image keeps pulldown's <img> (img-src CSP is the next layer)
+        assert!(render_with("[x](https://q)", &[], &[], true).contains(r#"class="ext""#));
+        // R29.10: a REMOTE image still gets pulldown's own <img> — unchanged by
+        // R29 and deliberately so. It is not on our scheme, and the CSP has no
+        // remote img origin (see csp_is_exactly_this_string_...), so the bytes
+        // are still blocked; turning remote images on is the operator's call.
+        // This assertion used to read "images are http(s) or they are text",
+        // which encoded the absence of the feature; the vault-relative half now
+        // lives in render_images_resolve_through_the_index (C3 pattern).
         let h = render_md("![pic](https://img.x/a.png)", &[]);
         assert!(h.contains(r#"<img src="https://img.x/a.png" alt="pic""#), "{h}");
+        assert!(!h.contains(IMG_SCHEME), "remote image must not ride our scheme: {h}");
+    }
+
+    /// R29.6 — what the index calls a vault image. This list is what BOTH
+    /// renderers resolve against, so anything wrongly in it is a URL the
+    /// webview will ask for: hidden dirs, symlinks and non-image extensions
+    /// must stay out, and the extension set must match the byte server's.
+    #[test]
+    fn index_lists_vault_images_only() {
+        use std::os::unix::fs::symlink;
+        // the renderer's allowlist and the byte server's table cannot drift:
+        // a name the index resolves but serve_image refuses is a broken image
+        let served: Vec<&str> = IMG_TYPES.iter().map(|(e, _)| *e).collect();
+        assert_eq!(served, index::IMG_EXTS.to_vec(), "IMG_TYPES vs index::IMG_EXTS");
+        let root = tmp_vault("imgidx");
+        let outside = std::env::temp_dir().join(format!("rustidian-imgout-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("secret.png"), b"out").unwrap();
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::create_dir_all(root.join(".hidden")).unwrap();
+        for (p, b) in [
+            ("A.md", "note"),
+            ("pic.png", "x"),
+            ("UP.JPG", "x"),
+            ("sub/nested.webp", "x"),
+            (".hidden/h.png", "x"),
+            ("doc.svg", "x"),
+            ("notes.txt", "x"),
+        ] {
+            fs::write(root.join(p), b).unwrap();
+        }
+        symlink(outside.join("secret.png"), root.join("link.png")).unwrap();
+        let ix = Index::build(&root);
+        assert_eq!(ix.images(), ["UP.JPG", "pic.png", "sub/nested.webp"], "{:?}", ix.images());
+        assert_eq!(ix.names(), ["A"], "images must never become notes");
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    /// the two halves must MEET: whatever url the renderer emits, the byte
+    /// server must serve — and only that. A pct_encode/pct_decode mismatch
+    /// would show up here as a broken image in the app and nowhere else.
+    #[test]
+    fn rendered_img_url_round_trips_through_the_byte_server() {
+        let root = tmp_vault("imgtrip");
+        fs::create_dir_all(root.join("sub")).unwrap();
+        let png = b"\x89PNG\r\n\x1a\n-solid";
+        for p in ["pic.png", "my pic.png", "sub/nested.webp"] {
+            fs::write(root.join(p), png).unwrap();
+        }
+        let ix = Index::build(&root);
+        for md in ["![](pic.png)", "![[pic.png]]", "![](my%20pic.png)", "![[my pic.png]]", "![[nested.webp]]"] {
+            let h = render_with(md, &[], ix.images(), true);
+            let i = h.find("src=\"").unwrap_or_else(|| panic!("no img for {md}: {h}")) + 5;
+            let url = h[i..].split('"').next().unwrap();
+            let target = url.strip_prefix(&format!("{IMG_SCHEME}://localhost/")).expect(url);
+            // exactly the path the protocol handler passes to serve_image
+            let (mime, bytes) = serve_image(&root, target).unwrap_or_else(|| panic!("{md} -> {url} served nothing"));
+            assert_eq!(bytes, png, "{md}");
+            assert!(mime.starts_with("image/"), "{md}: {mime}");
+        }
+    }
+
+    /// R29.1/R29.2/R29.3/R29.4/R29.5 — the READING-MODE renderer. Both syntaxes
+    /// go through ONE resolver (index::resolve over the index's image list), so
+    /// what they cannot resolve they cannot emit a URL for.
+    #[test]
+    fn render_images_resolve_through_the_index() {
+        let imgs: Vec<String> = ["pic.png", "sub/nested.png", "my pic.png", "q\"t.png", "up.JPG"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let src = |h: &str| -> String {
+            let i = h.find("src=\"").expect("no src") + 5;
+            h[i..].split('"').next().unwrap().to_string()
+        };
+        // images resolve against the INDEX IMAGE LIST, not the note list
+        let rmd = |c: &str| render_with(c, &[], &imgs, false);
+        // R29.2 relative path, alt preserved and escaped
+        let h = rmd("![a pic](pic.png)");
+        assert_eq!(src(&h), format!("{IMG_SCHEME}://localhost/pic.png"), "{h}");
+        assert!(h.contains(r#"alt="a pic""#), "{h}");
+        // subfolder: full path AND bare basename resolve to the same file
+        let full = rmd("![](sub/nested.png)");
+        let bare = rmd("![](nested.png)");
+        assert_eq!(src(&full), format!("{IMG_SCHEME}://localhost/sub/nested.png"), "{full}");
+        assert_eq!(src(&bare), src(&full), "basename must resolve like the path");
+        // R29.1: the wikilink embed form agrees with the markdown form, exactly
+        assert_eq!(src(&rmd("![[pic.png]]")), src(&rmd("![](pic.png)")));
+        assert_eq!(src(&rmd("![[nested.png]]")), src(&full));
+        assert!(!rmd("![[pic.png]]").contains('!'), "bang leaked as text");
+        // R29.3: %20 resolves and comes back percent-ENCODED in the url
+        let h = rmd("![](my%20pic.png)");
+        assert_eq!(src(&h), format!("{IMG_SCHEME}://localhost/my%20pic.png"), "{h}");
+        // R29.3 second half: a RAW space is not an image at all (pulldown), text
+        let h = rmd("![](my pic.png)");
+        assert!(!h.contains("<img") && h.contains("![](my pic.png)"), "{h}");
+        // case-insensitive extension is still an embed target
+        assert!(rmd("![[up.JPG]]").contains("<img"), "ext case");
+        // a quote in a vault filename cannot break out of the src attribute
+        assert!(src(&rmd("![[q\"t.png]]")).ends_with("q%22t.png"));
+        // R29.5: an ESCAPE is indistinguishable from a typo, and serves no url
+        for t in [
+            "../../../etc/passwd",
+            "../outside.png",
+            "/etc/passwd",
+            "..%2f..%2fpic.png",
+            "%2e%2e%2fpic.png",
+            ".hidden/pic.png",
+            "sub/../../pic.png",
+        ] {
+            for h in [rmd(&format!("![]({t})")), rmd(&format!("![[{t}]]"))] {
+                assert!(!h.contains("<img"), "{t} produced an image: {h}");
+                assert!(!h.contains(IMG_SCHEME), "{t} produced a url: {h}");
+            }
+        }
+        // R29.4: missing -> stock's banner, verbatim, and NO element to load
+        for m in ["![](nope.png)", "![[nope.png]]"] {
+            let h = rmd(m);
+            assert!(h.contains("\u{201c}nope.png\u{201d} could not be found."), "{m}: {h}");
+            assert!(!h.contains("<img") && !h.contains(IMG_SCHEME), "{m}: {h}");
+        }
+        // the banner escapes the target it echoes back
+        let h = rmd(r#"![[x" onerror="alert(1).png]]"#);
+        assert!(!h.contains("onerror=\"alert") && h.contains("&quot;"), "{h}");
+        // note embeds are NOT image embeds (requirements.md:410): still a link
+        let h = render_md("![[Second Note]]", &["Second Note".to_string()]);
+        assert!(h.contains(r#"class="wiki""#) && !h.contains("<img"), "{h}");
+        // both Rust modes (reading view, live-preview block batch) agree
+        let note = "![[pic.png]] ![](sub/nested.png) ![](nope.png)";
+        assert_eq!(
+            render_with(note, &[], &imgs, true),
+            render_with(note, &[], &imgs, false),
+            "reading view and block render disagree"
+        );
     }
 
     #[test]
@@ -1881,12 +2125,12 @@ mod tests {
         .iter()
         .map(|s| s.to_string())
         .collect();
-        let batch = render_blocks_with(&blocks, &notes);
+        let batch = render_blocks_with(&blocks, &notes, &[]);
         assert_eq!(batch.len(), blocks.len());
         for (b, out) in blocks.iter().zip(&batch) {
             assert_eq!(*out, render_md(b, &notes), "block {b:?} diverged");
         }
-        assert!(render_blocks_with(&[], &notes).is_empty());
+        assert!(render_blocks_with(&[], &notes, &[]).is_empty());
     }
 
     #[test]

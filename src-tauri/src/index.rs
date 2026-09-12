@@ -40,6 +40,10 @@ pub struct Index {
     backlinks: HashMap<String, Vec<String>>,
     /// sorted keys, cached: render_md/resolve want a &[String]
     names: Vec<String>,
+    /// R29.6: sorted vault-relative image paths (with extension). NOT notes —
+    /// they never enter `notes`, they only answer "does this embed resolve?"
+    /// for BOTH renderers, so the two agree by construction.
+    images: Vec<String>,
     /// R19: graph (nodes + edges + adjacency) built lazily from memory and
     /// kept until the edge set changes (link edit, new/removed/renamed note).
     /// graph / graph_local serve from here: no per-call rebuild, no disk.
@@ -362,7 +366,7 @@ pub fn resolve(notes: &[String], l: &str) -> Option<usize> {
     notes.iter().position(|x| *x == l || x.ends_with(&suffix))
 }
 
-fn walk(dir: &Path, base: &Path, out: &mut Vec<String>) {
+fn walk(dir: &Path, base: &Path, out: &mut Vec<String>, imgs: &mut Vec<String>) {
     let Ok(rd) = fs::read_dir(dir) else { return };
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
@@ -377,7 +381,13 @@ fn walk(dir: &Path, base: &Path, out: &mut Vec<String>) {
             continue;
         }
         if m.is_dir() {
-            walk(&p, base, out);
+            walk(&p, base, out, imgs);
+        } else if let Some(rel) = img_rel(&p, base, &name) {
+            // R29.6: image files are vault MEMBERS but never notes. They ride
+            // the note walk (no second traversal, no second symlink policy) and
+            // land in their own list, keyed by vault-relative path WITH the
+            // extension — which is what `resolve` matches on for `![[pic.png]]`.
+            imgs.push(rel);
         } else if let Some(stem) = name.strip_suffix(".md") {
             if m.len() > MAX_NOTE_BYTES {
                 warn_oversized(&p);
@@ -396,19 +406,45 @@ fn walk(dir: &Path, base: &Path, out: &mut Vec<String>) {
     }
 }
 
+/// R29.8: the extensions v1 treats as vault images — stock's list minus `svg`
+/// (scriptable, no sanitizer here), `bmp`, `avif` (scope). main.rs::IMG_TYPES
+/// maps the SAME set to Content-Types and a unit test pins the two together:
+/// a name the index resolves but the byte server refuses is a broken image.
+pub const IMG_EXTS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
+
+/// vault-relative path of `p` when its extension is an R29.8 image, else None
+fn img_rel(p: &Path, base: &Path, name: &str) -> Option<String> {
+    let ext = name.rsplit_once('.')?.1.to_ascii_lowercase();
+    if !IMG_EXTS.contains(&ext.as_str()) {
+        return None;
+    }
+    let dir = p.parent().and_then(|d| d.strip_prefix(base).ok())?;
+    Some(if dir.as_os_str().is_empty() {
+        name.to_string()
+    } else {
+        format!("{}/{name}", dir.display())
+    })
+}
+
 /// sorted note names under root (the one and only vault walk)
 pub fn notes_of(root: &Path) -> Vec<String> {
     let mut out = Vec::new();
-    walk(root, root, &mut out);
+    walk(root, root, &mut out, &mut Vec::new());
     out.sort();
     out
 }
 
 impl Index {
-    /// one walk + one read per note; links parsed once
+    /// one walk + one read per note; links parsed once. The SAME walk yields
+    /// the R29.6 image members — no second traversal, no second symlink policy.
     pub fn build(root: &Path) -> Index {
         let mut ix = Index::default();
-        for n in notes_of(root) {
+        let (mut notes, mut imgs) = (Vec::new(), Vec::new());
+        walk(root, root, &mut notes, &mut imgs);
+        notes.sort();
+        imgs.sort();
+        ix.images = imgs;
+        for n in notes {
             let c = fs::read_to_string(format!("{}.md", root.join(&n).display()))
                 .unwrap_or_default();
             ix.notes.insert(n, parse(c));
@@ -425,6 +461,11 @@ impl Index {
 
     pub fn names(&self) -> &[String] {
         &self.names
+    }
+
+    /// R29.6: sorted vault-relative image paths (with extension)
+    pub fn images(&self) -> &[String] {
+        &self.images
     }
 
     pub fn content(&self, name: &str) -> Option<&str> {
