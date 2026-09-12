@@ -288,7 +288,7 @@ const DROP_EVENT: &str = "drop-files";
 
 /// R31.5 why a single dropped file was refused. Typed, because the UI must say
 /// WHY: a drop that silently does nothing is indistinguishable from a bug, and
-/// (R31.7) a REMOTE drag must not be described as a missing file.
+/// (R31.8) a REMOTE drag must not be described as a missing file.
 #[derive(Debug, PartialEq, Clone, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 enum Refused {
@@ -506,7 +506,7 @@ fn attach_drop(root: &Path, note: &str, paths: &[PathBuf]) -> Result<Attached, D
 /// one dropped path -> the name it got in the attachment folder
 fn attach_one(dir: &Path, p: &Path) -> Result<String, Refused> {
     let raw = p.to_string_lossy();
-    // R31.7 / R29.10: a browser drag delivers a URL, never a file. Downloading
+    // R31.8 / R29.10: a browser drag delivers a URL, never a file. Downloading
     // it would be a network fetch caused by a note, which is forbidden — and
     // the refusal says exactly that instead of "could not be found".
     if raw.contains("://") || raw.starts_with("http:") || raw.starts_with("https:") || raw.starts_with("data:") {
@@ -3072,7 +3072,7 @@ mod tests {
         let _ = fs::remove_dir_all(&srcd);
     }
 
-    /// R31.7 / R29.10: a browser drag delivers a URL, not a file. Refused —
+    /// R31.8 / R29.10: a browser drag delivers a URL, not a file. Refused —
     /// and the refusal SAYS "remote images are disabled" instead of reusing
     /// R29.4's "could not be found", which is an error that misdescribes its
     /// own cause.
