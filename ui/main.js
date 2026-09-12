@@ -1061,7 +1061,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   const modal = modalKind ? " [modal:" + modalKind + "]" +
                             (mdNew ? " [mdnew:" + tokq(mdNew) + "]" : "")   // C4: the create-this-note affordance is on screen
     : ($("rnbox") && !$("rnbox").hidden ? " [modal:rn]" : "")  // m5 fuzzy modal / rename prompt
-    + (settingsOpen ? " [modal:settings]" + hkInfo : "")       // R14 settings + hotkeys probe
+    + (settingsOpen ? " [modal:settings]" + setTok() + hkInfo : "")   // R14 hotkeys + R30 settings probe
     + (menuEl ? " [menu:1]" : "");                             // R22: a context menu is open (fuzz probe)
   // [note:<name>] = the FOCUSED group's active note (null for a graph tab).
   // Which note is active was previously only observable by mutating it (type a
@@ -3359,7 +3359,11 @@ $("vswitch").onclick = showPicker;
   await setRTab(RPANES[rt] ? rt : "bl", false);
   vaultPath = await inv("vault_get");
   if (vaultPath) await enterVault(); else showPicker();
-  smodelPrefetch().catch(() => {});     // R30: settings table warmed off the open path (T2)
+  // R30 / T2: the table AND the nav DOM are warmed off the open path — the nav is
+  // 19 entries that never change, so building it at boot into the hidden modal
+  // takes the only unavoidable DOM work out of the open keystroke. The pane stays
+  // lazy (105 rows are never all built), which is the half that actually scales.
+  smodelPrefetch().then(buildSettingsNav, () => {});
 })();
 
 
@@ -3381,7 +3385,52 @@ function smodelPrefetch() {
   return SMODELP;
 }
 function cmdSettings() {
+  if (!settingsOpen) sfpT0 = performance.now();   // R30.12: t0 is the OPEN request, not the paint
   settingsOpen ? closeSettings() : openSettings();
+}
+/* ---------- R30.12 PERF: open-keystroke -> first paint of the modal ----------
+   T2's ceiling is 100 ms and the brief says measure it, do not assume it. Same
+   rAF -> task pattern as Ed.cmEnd (ui/editor.js:614) so the number is
+   comparable with [cm:] and otel's key_to_paint wall_ms: t0 is taken in
+   cmdSettings (the command the keystroke dispatches, before any DOM work), t1
+   inside a task queued from the frame that carries the modal — i.e. after the
+   frame is committed, not merely after the DOM is mutated.
+   Published as [sfp:<last>/<max>/<avg>/<n>] while the modal is open, so the
+   `settings` smoke phase reads it out of the window title instead of trusting
+   a claim in a doc. [sfpw:<last>/<max>] is the same span WITHOUT the frame
+   wait — the synchronous build cost, which is the part this code owns. The
+   smoke host is a 4-vCPU VM running three goals with software GL, where the
+   compositor alone can stall a frame for half a second; separating the two
+   numbers is what keeps a host stall from reading as a slow modal, and what
+   makes the slow modal (were it ever slow) impossible to hide behind one. */
+let sfpT0 = -1, sfpMs = -1, sfpMax = 0, sfpN = 0, sfpSum = 0, sfpW = -1, sfpWMax = 0;
+function sfpEnd() {
+  if (sfpT0 < 0) return;
+  const t0 = sfpT0; sfpT0 = -1;
+  sfpW = Math.round((performance.now() - t0) * 100) / 100;   // work only: DOM built, frame not yet committed
+  if (sfpW > sfpWMax) sfpWMax = sfpW;
+  requestAnimationFrame(() => setTimeout(() => {
+    const ms = Math.round((performance.now() - t0) * 100) / 100;
+    sfpMs = ms; sfpN++; sfpSum += ms;
+    if (ms > sfpMax) sfpMax = ms;
+    if (typeof otel !== "undefined" && otel.span)
+      otel.span("settings_open", { tabs: SMODEL ? SMODEL.nav.length : 0, rows_built: sRowsShown }, ms);
+    updateTitle();
+  }, 0));
+}
+/* [set:<tabs>/<rows>/<enabled>] — the DATA TABLE's own counts (R30.14), so a
+   row silently added, dropped or flipped to enabled moves a number the gate
+   asserts. [spane:<id>/<rows>/<enabled>] is the pane currently BUILT, which is
+   how the phase proves a nav click actually swapped the pane (OCR alone cannot
+   distinguish "clicked" from "painted the same pane again"). */
+function setTok() {
+  if (!SMODEL) return "";
+  const e = SMODEL.rows.reduce((n, r) => n + (r.enabled ? 1 : 0), 0);
+  return " [set:" + SMODEL.nav.length + "/" + SMODEL.rows.length + "/" + e + "]" +
+         " [spane:" + sPane + "/" + sRowsShown + "/" + sEnabledShown + "]" +
+         (sfpMs >= 0 ? " [sfp:" + sfpMs + "/" + sfpMax + "/" +
+                       (Math.round(sfpSum / sfpN * 100) / 100) + "/" + sfpN + "]" : "") +
+         (sfpW >= 0 ? " [sfpw:" + sfpW + "/" + sfpWMax + "]" : "");
 }
 async function openSettings() {
   if (!SMODEL) await smodelPrefetch();   // cold open only (prefetched at boot)
@@ -3390,7 +3439,8 @@ async function openSettings() {
   $("settings").hidden = false;
   buildSettingsNav();
   showSettingsPage(sPane);
-  updateTitle();
+  sfpEnd();        // BEFORE the census: updateTitle walks the whole document for
+  updateTitle();   // the R22 overflow probe, and that is the instrument's cost, not the modal's
 }
 function closeSettings() {
   settingsOpen = false; hkRec = null;
@@ -3436,9 +3486,9 @@ function showSettingsPage(id) {
     if (!rows.length) {                     // per-core-plugin panes: nav entry + empty pane (brief §2 OUT)
       const d = document.createElement("div"); d.className = "sempty";
       d.textContent = (e ? e.entry : pane) + " — nothing to configure yet.";
-      return pg.appendChild(d);
-    }
-    return buildSettingsRows(pg, rows, pane);
+      pg.appendChild(d);
+    } else buildSettingsRows(pg, rows, pane);
+    return updateTitle();                   // [spane:] follows the pane that is actually built
   }
   const bar = document.createElement("div"); bar.id = "hkbar";
   const inp = document.createElement("input");
