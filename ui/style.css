@@ -442,7 +442,9 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
    not clickable, aria-disabled in the DOM — grey paint is the least of it. */
 .srow.dis { cursor: default }
 .srow.dis .slabel { color: #a6adc8 }
-.srow.dis .sctl { opacity: .5; pointer-events: none }
+.srow.dis .slabel.slink { color: #89b4fa }   /* a link line stays a link line when disabled (stock underlines it) */
+.srow.linkrow .slabel { text-decoration: underline }
+.srow.dis .sctl, .srow.dis .sicons { opacity: .5; pointer-events: none }
 .sctl { flex: none; display: flex; align-items: center; gap: 8px; color: #cdd6f4; font-size: 13px }
 .sctl.toggle { width: 40px; height: 22px; border-radius: 999px; background: #45475a; padding: 0; position: relative }
 .sctl.toggle > i { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #cdd6f4 }
@@ -457,6 +459,24 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .sctl.color .sw { width: 22px; height: 22px; border-radius: 4px; background: #cba6f7; display: inline-block }
 .sctl.nav { color: #7f849c }
 .sbtn { padding: 4px 10px; background: #313244; border: 1px solid #45475a; border-radius: 4px; white-space: nowrap }
+.sbtn.acc { background: #cba6f7; border-color: #cba6f7; color: #11111b }
+/* LIST pane (Core plugins). Measured off $RECON/shots/17-coreplugins-0.png via
+   $RECON/measure-list.sh: separators at y=283,352,404,457,509,562,614,682,735,787
+   => 52 px for a one-line row, +16 px per extra description line; the search
+   field is 30 px tall and sits on the row inset, 8 px above the first row. */
+#spage.rows.list .srow { min-height: 52px; padding: 8px 17px }
+.ssearch { height: 30px; box-sizing: border-box; margin: 16px 17px 8px; padding: 0 10px;
+           background: #181825; border: 1px solid #45475a; border-radius: 4px;
+           color: #7f849c; font-size: 13px; line-height: 28px; opacity: .5; pointer-events: none }
+.sicons { flex: none; display: flex; align-items: center; gap: 19px; color: #7f849c }
+.sico { width: 16px; height: 16px; display: flex; align-items: center; justify-content: center;
+        text-align: center; font-size: 15px; line-height: 16px }
+/* Community plugins' security card: paragraph + stock's 2x2 grid of cells. */
+.sblurbwrap { padding: 16px 17px; border-bottom: 1px solid #313244 }
+.sblurb { font-size: 13px; line-height: 18px; color: #a6adc8 }
+.sgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 24px; margin-top: 12px }
+.scell { font-size: 13px; color: #cdd6f4 }
+.srow.linkrow { min-height: 44px }
 .sempty { color: #7f849c }
 #hkbar { display: flex; align-items: center; gap: 6px; height: 28px }
 #hkfilter { flex: 1; height: 28px; box-sizing: border-box; background: #181825; color: #cdd6f4;

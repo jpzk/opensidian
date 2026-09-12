@@ -3438,7 +3438,7 @@ function showSettingsPage(id) {
       d.textContent = (e ? e.entry : pane) + " — nothing to configure yet.";
       return pg.appendChild(d);
     }
-    return buildSettingsRows(pg, rows);
+    return buildSettingsRows(pg, rows, pane);
   }
   const bar = document.createElement("div"); bar.id = "hkbar";
   const inp = document.createElement("input");
@@ -3478,7 +3478,7 @@ function sctl(r) {                            // the control cell for one row, o
   switch (r.control) {
     case "none": return null;                 // stock shows label + description and nothing else
     case "toggle":
-      if (v === "on") d.classList.add("on");
+      if (/^on\b/.test(v)) d.classList.add("on");       // "on", "on + gear + plus", ...
       d.appendChild(document.createElement("i"));       // the knob
       break;
     case "dropdown": case "text": case "list":
@@ -3495,8 +3495,8 @@ function sctl(r) {                            // the control cell for one row, o
       d.append(n, t);
       break;
     }
-    case "button": case "buttons":
-      parts(v, "sbtn");
+    case "button": case "buttons":            // "(accent-filled)" = stock's one filled button
+      parts(v.replace(" (accent-filled)", ""), "sbtn" + (v.includes("(accent-filled)") ? " acc" : ""));
       break;
     case "nav":
       if (v) { const s = document.createElement("span"); s.className = "nv"; s.textContent = v; d.appendChild(s); }
@@ -3507,8 +3507,74 @@ function sctl(r) {                            // the control cell for one row, o
   }
   return d;
 }
-function buildSettingsRows(pg, rows) {
-  pg.className = "rows";
+/* stock's plugin rows carry a gear ("options") and/or a plus ("add to sidebar")
+   glyph LEFT of the toggle — transcribed in default_shown as "on + gear + plus".
+   The gear is DRAWN (inline SVG, built with createElementNS): the bundled fonts
+   have no U+2699, so a text gear renders as nothing at all — which is how the
+   first pass of this pane shipped a row that silently lost its icon.
+   Same rule as every other control: no handler, no tab stop, aria-hidden. */
+function svgel(n, at) {
+  const e = document.createElementNS("http://www.w3.org/2000/svg", n);
+  for (const k in at) e.setAttribute(k, at[k]);
+  return e;
+}
+function gearSvg() {
+  const s = svgel("svg", { width: 14, height: 14, viewBox: "0 0 16 16", fill: "none",
+                           stroke: "currentColor", "stroke-width": 1.3, "aria-hidden": "true" });
+  s.appendChild(svgel("circle", { cx: 8, cy: 8, r: 2.4 }));
+  for (let i = 0; i < 8; i++) {                 // 8 teeth, radial strokes
+    const a = i * Math.PI / 4, c = Math.cos(a), n = Math.sin(a);
+    s.appendChild(svgel("line", { x1: (8 + c * 4.4).toFixed(2), y1: (8 + n * 4.4).toFixed(2),
+                                  x2: (8 + c * 6.8).toFixed(2), y2: (8 + n * 6.8).toFixed(2) }));
+  }
+  return s;
+}
+function sicons(v) {
+  const want = ["gear", "plus"].filter(n => v.includes(n));
+  if (!want.length) return null;
+  const d = document.createElement("div"); d.className = "sicons";
+  for (const n of want) {
+    const s = document.createElement("span"); s.className = "sico " + n;
+    s.appendChild(n === "gear" ? gearSvg() : document.createTextNode("+"));
+    d.appendChild(s);
+  }
+  return d;
+}
+/* CHROME rows: the transcript marks a pane's non-setting furniture with a
+   parenthesised label — "(search field)" at the top of Core plugins, the
+   "(security blurb)" card on Community plugins. Stock draws them as part of the
+   pane, not as a label/description row, so they get their own shape here.
+   They are keyless, therefore disabled, therefore inert like everything else. */
+function schrome(r) {
+  if (r.label === "(search field)") {
+    const d = document.createElement("div"); d.className = "ssearch dis";
+    d.setAttribute("aria-disabled", "true"); d.title = SDIS_TITLE;
+    d.textContent = r.desc.replace(/ placeholder$/, "");
+    return d;
+  }
+  if (r.label === "(security blurb)") {
+    const wrap = document.createElement("div"); wrap.className = "sblurbwrap";
+    const m = r.desc.match(/^(.*?)\s*\+ \d+ cards \((.*)\)$/);
+    const p = document.createElement("div"); p.className = "sblurb";
+    p.textContent = m ? m[1] : r.desc;
+    wrap.appendChild(p);
+    if (m) {                                  // stock's 2x2 grid of security cells
+      const g = document.createElement("div"); g.className = "sgrid";
+      for (const t of m[2].split(" / ")) {
+        const c = document.createElement("div"); c.className = "scell"; c.textContent = t;
+        g.appendChild(c);
+      }
+      wrap.appendChild(g);
+    }
+    return wrap;
+  }
+  return null;
+}
+function buildSettingsRows(pg, rows, pane) {
+  /* Core plugins is stock's LIST pane, not a settings-card pane: denser rows
+     (52 px for a one-line description, measurements.txt LIST PANE) and a search
+     field at the top instead of a section heading. */
+  pg.className = "rows" + (pane === "coreplugins" ? " list" : "");
   let section = null, card = null;   // null !== "" so the first row always opens a card
   for (const r of rows) {
     const sec = r.section || "";
@@ -3517,13 +3583,17 @@ function buildSettingsRows(pg, rows) {
       if (sec) { const h = document.createElement("div"); h.className = "ssec"; h.textContent = sec; pg.appendChild(h); }
       card = document.createElement("div"); card.className = "scard"; pg.appendChild(card);
     }
+    const ch = schrome(r);                    // furniture, not a setting row
+    if (ch) { card.appendChild(ch); continue; }
     const row = document.createElement("div");
     row.className = "srow" + (r.enabled ? "" : " dis");
     if (!r.enabled) { row.setAttribute("aria-disabled", "true"); row.title = SDIS_TITLE; }
     const info = document.createElement("div"); info.className = "sinfo";
     const lb = document.createElement("div"); lb.className = "slabel"; lb.textContent = r.label;
+    const link = r.desc === "(external link row)";   // stock's bare link line, no description
+    if (link) { lb.classList.add("slink"); row.classList.add("linkrow"); }
     info.appendChild(lb);
-    if (r.desc && r.desc !== "-") {
+    if (!link && r.desc && r.desc !== "-") {
       const ds = document.createElement("div"); ds.className = "sdesc";
       r.desc.split(" | ").forEach((p, i) => {   // " | " marks stock's inline link tail
         const s = document.createElement("span");
@@ -3534,6 +3604,8 @@ function buildSettingsRows(pg, rows) {
       info.appendChild(ds);
     }
     row.appendChild(info);
+    const ic = sicons(r.default_shown || "");
+    if (ic) row.appendChild(ic);
     const c = sctl(r);
     if (c) row.appendChild(c);
     card.appendChild(row);
