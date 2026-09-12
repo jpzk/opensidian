@@ -56,7 +56,28 @@ const cur = () => (state && fg() ? curOf(fg()) : null);
 const isReading = g => { const t = g.active >= 0 ? g.tabs[g.active] : null; return !!t && !t.kind && t.mode === "reading"; };
 // R19: per-tab history = [{n: note, s: scrollTop}], hpos = cursor; a nav pushes at
 // hpos+1 and drops the forward slice (browser semantics, docs/requirements.md R19)
-const mkTab = name => ({ name, mode: "livepreview", hist: [{ n: name, s: 0 }], hpos: 0 });  // R8.8: LP default
+// R12.4 / feedback #16: a leaf carries TWO ORTHOGONAL BITS, exactly as stock
+// persists them in .obsidian/workspace.json ({"mode":"source|preview","source":
+// true|false}):  tab.read = READING vs EDITING, tab.src = Source vs Live Preview.
+// The view-header icon and Ctrl+E flip the FIRST one only (two states); the tab
+// menu radio and the "Toggle Live Preview/Source mode" command flip the second.
+// Because they are independent, the sub-mode SURVIVES a trip through reading
+// view: source -> reading -> source. `tab.mode` stays as the derived 3-value
+// string the rest of the app (and the [mode:] census token) reads — one name for
+// a view, not a third state: setting it "reading" never touches tab.src.
+function modeBits(t) {
+  const m = t.mode;                       // seed from a plain literal (graph tabs carry mode: "source")
+  t.read = !!t.read || m === "reading";
+  t.src  = !!t.src  || m === "source";
+  delete t.mode;
+  Object.defineProperty(t, "mode", {
+    enumerable: true, configurable: true,
+    get: () => t.read ? "reading" : t.src ? "source" : "livepreview",
+    set: v => { if (v === "reading") { t.read = true; return; } t.read = false; t.src = v === "source"; },
+  });
+  return t;
+}
+const mkTab = name => modeBits({ name, read: false, src: false, hist: [{ n: name, s: 0 }], hpos: 0 });  // R8.8: LP default
 const scrollOf = g => { const t = g.active >= 0 ? g.tabs[g.active] : null; return !t || t.kind ? 0 : t.mode === "reading" ? g.preview.scrollTop : isLp(t.mode) ? g.lp.scrollTop : g.editor.scrollTop; };
 function histPush(g, tab, name) {     // record where the CURRENT entry was scrolled to, then push the new note
   if (tab.hist[tab.hpos]) tab.hist[tab.hpos].s = scrollOf(g);
@@ -1095,7 +1116,7 @@ function findParent(node, target, parent = null) {
 
 async function splitGroup(g, dir, ti) {  // duplicate g's tab ti into a new sibling group
   const src = g.tabs[ti];
-  const t = src ? Object.assign(mkTab(src.name), { mode: src.mode }) : null;
+  const t = src ? Object.assign(mkTab(src.name), { src: !!src.src, mode: src.mode }) : null;   // #16: BOTH bits ride along (sub-mode survives a split of a reading tab)
   await splitWith(g, dir, t);
 }
 
@@ -1263,8 +1284,10 @@ function tabMenu(e, g, i) {              // right-click a tab -> Split right / S
   item("Split down",  () => { closeMenu(); splitGroup(g, "col", i); });
   if (isLinked(g, tab, i)) item("Unlink tab", () => { closeMenu(); unlinkTab(g, tab); });
   else item("Link with tab...", pick);
-  if (!tab.kind) item(tab.mode === "source" ? "Live preview" : "Source mode",   // R20 (#3): source vs LP lives here (stock), not in a chrome icon
-    () => { closeMenu(); setMode(g, tab.mode === "source" ? "livepreview" : "source"); });
+  if (!tab.kind) {   // R12.4 / R20 (#3): the source-vs-LP RADIO lives here (stock), not in a chrome icon — ✓ on the active one, per tab
+    item((tab.src ? "" : "✓ ") + "Live preview", () => { closeMenu(); setMode(g, "livepreview"); });
+    item((tab.src ? "✓ " : "") + "Source mode",  () => { closeMenu(); setMode(g, "source"); });
+  }
   if (!tab.kind) item(bmCache.includes(tab.name) ? "Remove bookmark" : "Bookmark",  // R20.4 (#12, bookmarks pane = R9.5): same toggle as the tree row menu; graph tabs (gg/lg) have no note to bookmark
     () => { closeMenu(); toggleBm(tab.name); });                                    // toggleBm re-renders the bookmarks pane
   placeMenu(m, e.clientX, e.clientY);   /* R22: viewport-clamped by MEASURED size — supersedes the old innerWidth-150 guess and the #12 post-append top clamp */
@@ -1274,14 +1297,13 @@ function tabMenu(e, g, i) {              // right-click a tab -> Split right / S
 const ICON_BOOK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>';
 const ICON_PEN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/></svg>';
 const MODE_ABBR = { livepreview: "lp", source: "src", reading: "read" };
-const MODE_NEXT = { livepreview: "source", source: "reading", reading: "livepreview" };
 const isLp = m => m === "livepreview" || m === "source";  // R12: both render in g.lp
 function caretLC(g) { return Ed.caretLC(g); }   // [line, col] of the caret in the lp view
 
 function updateModeBtn(g) {
   const tb = g.active >= 0 ? g.tabs[g.active] : null;
   const m = tb ? tb.mode : "livepreview";
-  g.modebtn.innerHTML = m === "reading" ? ICON_PEN : ICON_BOOK;   // R20 (#3): stock shows pen/book only; source vs LP lives in the tab menu + Ctrl+E
+  g.modebtn.innerHTML = m === "reading" ? ICON_PEN : ICON_BOOK;   // R20 (#3)/#16: stock shows pen/book only — TWO states; source vs LP lives in the tab menu radio + its own command
 }
 
 function applyMode(g) {  // exactly ONE of lp / preview fills the pane
@@ -1293,14 +1315,23 @@ function applyMode(g) {  // exactly ONE of lp / preview fills the pane
   updateModeBtn(g);
 }
 
-async function cmdToggleMode(g) {  // Ctrl+E / mode button: lp -> src -> read -> lp
+async function cmdToggleMode(g) {  // #16: Ctrl+E / the view-header icon = EDIT <-> READING, two states, nothing else
   g = g || fg();
   if (!g || g.active < 0 || g.graphOn) return;
   const tab = g.tabs[g.active];
   if (tab.kind) return;             // graph tabs (lg/gg) have no view mode
-  await setMode(g, MODE_NEXT[tab.mode] || "livepreview");
+  // leaving reading lands in the sub-mode you left from (tab.src is untouched by
+  // the reading flag) -> source -> reading -> source, like stock
+  await setMode(g, tab.read ? (tab.src ? "source" : "livepreview") : "reading");
 }
-async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu / palette / the Ctrl+E cycle
+async function cmdToggleSource(g) {  // stock "Toggle Live Preview/Source mode": flips the OTHER bit
+  g = g || fg();
+  if (!g || g.active < 0 || g.graphOn) return;
+  const tab = g.tabs[g.active];
+  if (tab.kind) return;
+  await setMode(g, tab.src ? "livepreview" : "source");   // an editing choice: it also leaves reading view
+}
+async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu radio / palette / the Ctrl+E edit<->reading toggle
   const tab = g.tabs[g.active];
   const keep = g.lpActive ? caretLC(g) : null;   // R12.4: caret survives lp<->src
   await flushSave(g);
@@ -1438,7 +1469,7 @@ async function loadActive(g) {
       center: () => null,
       onClick: async n => {         // node click: this tab BECOMES the note
         const tt = g.active >= 0 ? g.tabs[g.active] : null;
-        if (tt && tt.kind === "gg") delete tt.kind;
+        if (tt && tt.kind === "gg") { delete tt.kind; modeBits(tt); }   // #16: it is a NOTE tab now — give it the two mode bits
         await navigate(g, n);
       },
     });
@@ -2246,7 +2277,7 @@ const CMDS = [
   ["editor:toggle-comments",   "Toggle comment",                      ["ctrl+/"],               () => edWrap("%%", "comment")],
   ["editor:toggle-italics",    "Toggle italic",                       ["ctrl+i"],               () => edWrap("*")],
   ["markdown:toggle-preview",  "Toggle reading view",                 ["ctrl+e"],               () => cmdToggleMode()],
-  ["editor:toggle-source",     "Toggle source mode",                  [],                       () => cmdToggleMode()],
+  ["editor:toggle-source",     "Toggle Live Preview/Source mode",     [],                       () => cmdToggleSource()],
   ["workspace:undo-close-pane","Undo close tab",                      ["ctrl+shift+t"],         async () => { const n = closedTabs.pop(); if (n) await openInTab(n); }],
   ["workspace:split-vertical", "Split right",                         [],                       () => splitGroup(fg(), "row", fg().active)],
   ["workspace:split-horizontal","Split down",                         [],                       () => splitGroup(fg(), "col", fg().active)],
