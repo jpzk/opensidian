@@ -84,6 +84,103 @@ fn note_path(v: &State<Vault>, name: &str, create: bool) -> Option<PathBuf> {
     note_path_in(&cur_vault(v)?, name, create)
 }
 
+/* ---- R29 image embeds: the vault-contained byte server ------------------
+   The attacker's input here is a .md file that arrived by sync/clone/share,
+   so a rendered document decides which path we read. The containment rule is
+   ours (docs/requirements.md R29.5) and lives in `img_path_in` below, the
+   sibling of `note_path_in`: same shape, same two-sided canonicalize, so the
+   two are read together. Landlock is NOT the guard — sandbox.rs:46 allowlists
+   /etc and /usr for reading and sandbox.rs:94 reports it unsupported on this
+   kernel; it is defence in depth that is currently absent.                */
+
+/// R29.8: what v1 serves — stock's list minus `svg` (scriptable, and we have
+/// no sanitizer), `bmp` and `avif` (scope only). ext -> Content-Type.
+const IMG_TYPES: [(&str, &str); 5] = [
+    ("png", "image/png"),
+    ("jpg", "image/jpeg"),
+    ("jpeg", "image/jpeg"),
+    ("gif", "image/gif"),
+    ("webp", "image/webp"),
+];
+
+/// the scheme our images are served on; the CSP names it exactly (R29 / S1)
+const IMG_SCHEME: &str = "rustidian-img";
+
+/// S5-style cap: an image bigger than this is not served (a synced vault must
+/// not be able to make us allocate a multi-GB buffer inside the webview IPC).
+const MAX_IMG_BYTES: u64 = 32 * 1024 * 1024;
+
+/// percent-decode a markdown image target (R29.3: `my%20pic.png` -> `my pic.png`).
+/// Strict: a `%` not followed by two hex digits is not a valid escape and the
+/// whole target is refused rather than half-decoded. Decoding happens BEFORE
+/// any containment check — decode-after-validate is exactly how `%2e%2e%2f`
+/// becomes the escape.
+fn pct_decode(s: &str) -> Option<String> {
+    let b = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' {
+            let hi = (*b.get(i + 1)? as char).to_digit(16)?;
+            let lo = (*b.get(i + 2)? as char).to_digit(16)?;
+            out.push((hi * 16 + lo) as u8);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// R29.5 containment: a vault-relative image target -> the canonical file to
+/// read, or None (serve nothing, say nothing — stock does not leak whether an
+/// out-of-vault file exists, see R29.5).
+///
+/// Order matters, every step earns its place:
+///  1. percent-decode first, so `%2e%2e%2f` is a plain `../` to the check below;
+///  2. `safe_rel` refuses `..`, absolute paths, hidden components and (via
+///     `Component::Normal`) anything with a NUL, and a scheme'd target like
+///     `file:///etc/passwd` never reaches here (the renderer keeps schemes out);
+///  3. extension allowlist — R29.8, lowercased;
+///  4. canonicalize BOTH sides and compare, because a prefix test on the raw
+///     string is not containment. Canonicalizing the ROOT too is what keeps a
+///     genuinely symlinked vault (req S2) working;
+///  5. the LEAF must not be a symlink — that is the symlink-inside-the-vault-
+///     pointing-out case, which canonicalizing the dir alone would not catch.
+fn img_path_in(root: &Path, target: &str) -> Option<PathBuf> {
+    let dec = pct_decode(target)?;
+    if dec.contains('\0') {
+        return None;
+    }
+    let rel = safe_rel(&dec)?;
+    let ext = rel.extension()?.to_str()?.to_ascii_lowercase();
+    if !IMG_TYPES.iter().any(|(e, _)| *e == ext) {
+        return None;
+    }
+    let croot = root.canonicalize().ok()?;
+    let cdir = root.join(rel.parent().unwrap_or(Path::new(""))).canonicalize().ok()?;
+    if !cdir.starts_with(&croot) {
+        return None;
+    }
+    let p = cdir.join(rel.file_name()?);
+    let m = fs::symlink_metadata(&p).ok()?;
+    if m.is_symlink() || !m.is_file() || m.len() > MAX_IMG_BYTES {
+        return None;
+    }
+    Some(p)
+}
+
+/// R29: bytes + Content-Type for a contained image, or None. The type comes
+/// from OUR allowlist, never from the file, and the response is served
+/// `nosniff` so a mislabeled blob cannot be re-interpreted as script.
+fn serve_image(root: &Path, target: &str) -> Option<(&'static str, Vec<u8>)> {
+    let p = img_path_in(root, target)?;
+    let ext = p.extension()?.to_str()?.to_ascii_lowercase();
+    let mime = IMG_TYPES.iter().find(|(e, _)| *e == ext).map(|(_, m)| *m)?;
+    Some((mime, fs::read(&p).ok()?))
+}
+
 /// S5: read a note off disk, "" when it is oversized (never part of the vault)
 fn read_capped(p: &Path) -> Option<String> {
     let m = fs::symlink_metadata(p).ok()?;
@@ -1123,6 +1220,26 @@ fn main() {
                 .on_navigation(|_, u| u.scheme() == "tauri" || u.host_str() == Some("tauri.localhost"))
                 .build(),
         )
+        // R29: image bytes reach the webview on our own scheme, so the
+        // containment rule is a function we can unit-test (img_path_in) rather
+        // than a runtime scope config. Out-of-vault targets get a bodiless 404 —
+        // the renderer paints R29.4's "could not be found" banner either way, so
+        // an escape is indistinguishable from a typo (R29.5).
+        .register_uri_scheme_protocol(IMG_SCHEME, |ctx, req| {
+            use tauri::Manager;
+            let root = ctx.app_handle().state::<Vault>().root.lock().unwrap().clone();
+            let target = req.uri().path().trim_start_matches('/').to_string();
+            match root.as_deref().and_then(|r| serve_image(r, &target)) {
+                Some((mime, body)) => tauri::http::Response::builder()
+                    .status(200)
+                    .header("Content-Type", mime)
+                    .header("X-Content-Type-Options", "nosniff")
+                    .header("Cache-Control", "no-store")
+                    .body(body),
+                None => tauri::http::Response::builder().status(404).body(Vec::new()),
+            }
+            .expect("img response")
+        })
         .invoke_handler(tauri::generate_handler![
             list_notes, read_note, write_note, create_note, render, render_blocks, highlight_blocks, graph, graph_local, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
@@ -1822,6 +1939,103 @@ mod tests {
         // a plain note still round-trips through create=true (parents made)
         let p = note_path_in(&root, "sub/deep/N", true).unwrap();
         assert!(p.parent().unwrap().is_dir());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    /// R29 images, POSITIVE half: the shapes that MUST serve bytes. Kept next
+    /// to the traversal test because a containment check that refuses
+    /// everything also passes the negative one.
+    #[test]
+    fn img_serves_contained_vault_images_only() {
+        let root = tmp_vault("img-ok");
+        let px = b"\x89PNG\r\n\x1a\nfake-but-bytes";
+        for f in ["pic.png", "my pic.png", "UPPER.PNG", "sub/nested.jpeg", "doc.md", "vec.svg"] {
+            fs::write(root.join(f), px).unwrap();
+        }
+        let croot = root.canonicalize().unwrap();
+        // R29.2 relative + subfolder; R29.3 percent-decoded space
+        assert_eq!(img_path_in(&root, "pic.png"), Some(croot.join("pic.png")));
+        assert_eq!(img_path_in(&root, "sub/nested.jpeg"), Some(croot.join("sub/nested.jpeg")));
+        assert_eq!(img_path_in(&root, "my%20pic.png"), Some(croot.join("my pic.png")));
+        assert_eq!(img_path_in(&root, "my pic.png"), Some(croot.join("my pic.png")));
+        // extension match is case-insensitive, the Content-Type comes from OUR table
+        assert_eq!(serve_image(&root, "UPPER.PNG").unwrap().0, "image/png");
+        assert_eq!(serve_image(&root, "sub/nested.jpeg").unwrap().0, "image/jpeg");
+        assert_eq!(serve_image(&root, "pic.png").unwrap().1, px.to_vec());
+        // R29.8: svg is NOT in v1 (scriptable, no sanitizer here); non-images never
+        assert_eq!(img_path_in(&root, "vec.svg"), None);
+        assert_eq!(img_path_in(&root, "doc.md"), None);
+        assert_eq!(img_path_in(&root, "pic"), None);
+        // R29.4: a missing file serves nothing — same None as an escape, no leak
+        assert_eq!(img_path_in(&root, "nope.png"), None);
+        // S5-style cap: an oversized image is not part of the vault either
+        let big = root.join("big.png");
+        fs::write(&big, px).unwrap();
+        assert!(img_path_in(&root, "big.png").is_some());
+        let f = fs::OpenOptions::new().write(true).open(&big).unwrap();
+        f.set_len(MAX_IMG_BYTES + 1).unwrap();
+        assert_eq!(img_path_in(&root, "big.png"), None);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// R29.5 + S2: every escape serves NO bytes, in both directions —
+    /// a target that walks out, and a symlink inside the vault that points out.
+    /// The positive control (a genuinely SYMLINKED VAULT still serves) is in
+    /// the same test on purpose: canonicalizing only one side passes one half
+    /// and fails the other, which is the likely failure mode.
+    #[test]
+    fn img_traversal_and_symlink_escapes_serve_no_bytes() {
+        use std::os::unix::fs::symlink;
+        let root = tmp_vault("img-esc");
+        let outside = std::env::temp_dir().join(format!("rustidian-img-out-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(&outside).unwrap();
+        let px = b"\x89PNG\r\n\x1a\nsecret-bytes";
+        fs::write(outside.join("outside.png"), px).unwrap();
+        fs::write(root.join("pic.png"), b"\x89PNG\r\n\x1a\nin-vault").unwrap();
+        // a HIDDEN component is not a vault member (same rule as notes, safe_rel).
+        // The file is created on purpose: without it the `.hidden/pic.png` case
+        // below would be refused by a failed canonicalize instead of by the
+        // check, and deleting safe_rel would not turn this test red.
+        fs::create_dir_all(root.join(".hidden")).unwrap();
+        fs::write(root.join(".hidden/pic.png"), px).unwrap();
+        // the out-of-vault file EXISTS — refusing it must not depend on a stat miss
+        assert!(outside.join("outside.png").is_file());
+        for t in [
+            "../../../etc/passwd",
+            "../outside.png",
+            "sub/../../outside.png",
+            "..%2foutside.png",
+            "%2e%2e%2foutside.png",
+            "%2e%2e/outside.png",
+            "/etc/passwd",
+            "/tmp/rustidian-img-out.png",
+            "file:///etc/passwd",
+            "pic.png\0.txt",
+            "pic.png%00.txt",
+            ".hidden/pic.png",
+            "%zz.png",
+            "%2",
+        ] {
+            assert_eq!(img_path_in(&root, t), None, "escaped the vault: {t:?}");
+            assert!(serve_image(&root, t).is_none(), "served bytes for {t:?}");
+        }
+        // a symlink INSIDE the vault pointing OUT of it: leaf link and dir link
+        symlink(outside.join("outside.png"), root.join("link.png")).unwrap();
+        symlink(&outside, root.join("out")).unwrap();
+        assert_eq!(img_path_in(&root, "link.png"), None);
+        assert_eq!(img_path_in(&root, "out/outside.png"), None);
+        assert!(serve_image(&root, "link.png").is_none());
+        assert!(serve_image(&root, "out/outside.png").is_none());
+        // POSITIVE CONTROL (req S2): a vault reached THROUGH a symlink still
+        // serves its own images — this is what canonicalizing the root buys.
+        let vlink = std::env::temp_dir().join(format!("rustidian-img-vlink-{}", std::process::id()));
+        let _ = fs::remove_file(&vlink);
+        symlink(&root, &vlink).unwrap();
+        assert_eq!(serve_image(&vlink, "pic.png").unwrap().1, b"\x89PNG\r\n\x1a\nin-vault".to_vec());
+        assert_eq!(img_path_in(&vlink, "link.png"), None); // still refused through the link
+        let _ = fs::remove_file(&vlink);
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&outside);
     }
