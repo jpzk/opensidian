@@ -2432,7 +2432,25 @@ async function applyRename(old, nn) {   // post-rename bookkeeping (F2 + H1 path
 /* ux-3: committing an edit to the first-line H1 renames the note (Obsidian
    inline-title behavior). Fires only when the note HAD an H1 and its text
    changed since load/last commit; collision/invalid -> rust refuses, name
-   kept (content keeps the new H1, like Obsidian on conflict). */
+   kept (content keeps the new H1, like Obsidian on conflict).
+
+   #20 / R31.5 — THE Q4 DECISION, KEPT DELIBERATELY. Recon measured what stock
+   1.13.7 actually does (progress.md Q4, commit 7c4389e): stock does NOT rename
+   from a body H1 (typed into `# Rename Me`, the file grew 40 -> 49 bytes and
+   the filename never moved); it renames from the INLINE TITLE, then raises an
+   "Update links" modal. Our inline title is a CSS ::before (ui/style.css:519)
+   because ui/editor.js indexes model rows POSITIONALLY, so it cannot hold a
+   caret and stock's rename surface does not exist here. Retiring ux-3 would
+   therefore delete a working rename path (and its vault-wide link rewrite, the
+   riskiest operation in the app, covered by phase `ux` A085-A087) and hand
+   nothing back. So: the title is NON-EDITABLE — recorded as the known delta in
+   R31.5 — and ux-3 stays as rustidian's own affordance, a documented
+   divergence, not an accident. What is forbidden is a title that LOOKS
+   editable and eats the keystrokes; smoke phase `title` section F asserts the
+   opposite on the running app (click the title -> caret lands in the BODY,
+   typed bytes reach disk, no rename), and notes/negctl-title-noedit.sh proves
+   that section goes red. F2 / cmdRename remains the explicit rename path in
+   both models. */
 const h1Of = s => {
   const m = /^#[ \t]+(.+?)\s*$/.exec((s || "").split("\n", 1)[0]);
   return m ? m[1] : null;
