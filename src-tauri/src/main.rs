@@ -543,6 +543,26 @@ fn set_vault_inner(v: &State<Vault>, path: &str) -> Result<String, String> {
     Ok(p.display().to_string())
 }
 
+/* feedback #20 [R31.6]: the starter note a NEW vault is seeded with. Recon
+   against stock 1.13.7 (2026-09-12, shots $RECON/shots5/E0-E9): stock's own
+   create-vault flow writes exactly one file, `Welcome.md`, 203 bytes, and it
+   carries NO heading — it opens on prose ("This is your new *vault*.") while
+   the big "Welcome" on screen is the INLINE TITLE, the filename rendered.
+   So the `# Welcome` line rustidian used to seed was redundant the moment the
+   inline title landed: it drew the word twice, once from the filename and
+   once from bytes we wrote ourselves.
+   Seeding CONTENT is deliberate and stays (R1.2) — it is NOT note creation,
+   which materializes zero bytes (`create_note`). The prose is rustidian's own;
+   only the heading is dropped. Deliberate delta from stock: we keep a trailing
+   newline (stock's seed ends without one) because a text file should end in \n. */
+const NEW_VAULT_SEED_NAME: &str = "Welcome.md";
+const NEW_VAULT_SEED: &str =
+    "This is your new vault. Notes are plain Markdown files.\nLink them with [[Wiki Links]].\n";
+
+fn seed_new_vault(dir: &Path) -> std::io::Result<()> {
+    fs::write(dir.join(NEW_VAULT_SEED_NAME), NEW_VAULT_SEED)
+}
+
 #[tauri::command]
 fn create_vault(v: State<Vault>, parent: String, name: String) -> Result<String, String> {
     let name = name.trim();
@@ -560,11 +580,7 @@ fn create_vault(v: State<Vault>, parent: String, name: String) -> Result<String,
         return Err(format!("sandboxed to {} — create the folder outside rustidian, then pick it and restart", sandbox::confined_to().unwrap().display()));
     }
     fs::create_dir_all(&p).map_err(|e| e.to_string())?;
-    fs::write(
-        p.join("Welcome.md"),
-        "# Welcome\n\nThis is your new vault. Notes are plain Markdown files.\nLink them with [[Wiki Links]].\n",
-    )
-    .map_err(|e| e.to_string())?;
+    seed_new_vault(&p).map_err(|e| e.to_string())?;
     persist_vault(&p);
     open_vault(&v, &p);
     Ok(p.display().to_string())
@@ -2543,6 +2559,36 @@ mod tests {
         // an explicit body is still honoured — this is a DEFAULT, not a filter
         create_note_in(&root, &mut ix, "Seeded", "given\n").unwrap();
         assert_eq!(fs::read_to_string(root.join("Seeded.md")).unwrap(), "given\n");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /* feedback #20 [R31.6]: the NEW-VAULT seed is starter CONTENT, not note
+       creation — it stays (R1.2) — but it must not re-mint the title as bytes.
+       Recon, stock 1.13.7, its own create-vault flow (shots5/E9): one file,
+       `Welcome.md`, 203 bytes, first line `This is your new *vault*.` — no
+       heading anywhere in it; the big "Welcome" is the inline title drawn from
+       the filename. This test pins our seed to that SHAPE: a non-empty starter
+       note whose bytes contain no ATX heading at all, and in particular not
+       the vault-name heading we used to write. */
+    #[test]
+    fn f20_new_vault_seed_carries_prose_not_a_heading() {
+        let root = tmp_vault("f20seed");
+        seed_new_vault(&root).unwrap();
+        let p = root.join(NEW_VAULT_SEED_NAME);
+        assert_eq!(p.file_name().unwrap(), "Welcome.md", "stock seeds Welcome.md");
+        let got = fs::read_to_string(&p).unwrap();
+        assert_eq!(got, NEW_VAULT_SEED, "the seed on disk is the constant, byte for byte");
+        // starter content is deliberate — this is NOT the zero-byte new-note path
+        assert!(!got.is_empty(), "R1.2: a new vault still gets one starter note");
+        // ...but nothing in it is a heading, and nothing repeats the filename
+        for (i, line) in got.lines().enumerate() {
+            assert!(
+                !line.trim_start().starts_with('#'),
+                "seed line {i} is a heading, the inline title already draws the name: {line:?}"
+            );
+        }
+        assert!(!got.contains("# Welcome"), "the redundant `# Welcome` is gone");
+        assert!(got.ends_with('\n'), "known delta from stock: our seed ends with a newline");
         let _ = fs::remove_dir_all(&root);
     }
 
