@@ -291,6 +291,7 @@ enum Refused {
     BadName,         // S3: traversal, NUL, control chars, hidden, non-UTF8
     BadExt(String),  // S4: not one of IMG_TYPES
     TooBig(u64),     // > MAX_IMG_BYTES
+    Unreadable,      // R30.12: outside the sandbox's drop-source folders (EACCES)
     NoFreeName,      // 1000 collisions deep: refuse rather than loop
     Io(String),      // the copy itself failed (ENOSPC, EACCES from landlock, ...)
 }
@@ -307,6 +308,10 @@ impl Refused {
             Refused::BadName => format!("{name}: unsafe file name"),
             Refused::BadExt(e) => format!("{name}: .{e} is not an image rustidian can show"),
             Refused::TooBig(n) => format!("{name}: {} MB is over the {} MB limit", n / 1048576, MAX_IMG_BYTES / 1048576),
+            Refused::Unreadable => format!(
+                "{name}: rustidian may only read dropped files from {} (sandbox)",
+                sandbox::DROP_READ_DIRS.iter().map(|d| format!("~/{d}")).collect::<Vec<_>>().join(", ")
+            ),
             Refused::NoFreeName => format!("{name}: no free file name left in the attachment folder"),
             Refused::Io(e) => format!("{name}: could not be copied ({e})"),
         }
@@ -413,7 +418,24 @@ fn free_dest(dir: &Path, name: &str) -> Result<(PathBuf, String, fs::File), Refu
 /// copy at most MAX_IMG_BYTES + 1 bytes; Err leaves NOTHING behind.
 fn copy_capped(src: &Path, dst: &Path, mut out: fs::File) -> Result<u64, Refused> {
     use std::io::{Read, Write};
-    let mut f = fs::File::open(src).map_err(|e| Refused::Io(e.to_string()))?;
+    // free_dest already created `dst` with O_EXCL, so EVERY exit from here on
+    // must unlink it — a failed drop that leaves an empty `cat.png` in the
+    // vault is worse than the refusal it reports.
+    let mut f = match fs::File::open(src) {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = fs::remove_file(dst);
+            // R30.12: the sandbox only grants READ on the drop-source folders,
+            // so EACCES here is the expected answer for a file anywhere else.
+            // Say THAT, not "could not be copied (os error 13)" — a refusal
+            // that misdescribes its cause is the bug trap (g) is about.
+            return Err(if e.kind() == std::io::ErrorKind::PermissionDenied {
+                Refused::Unreadable
+            } else {
+                Refused::Io(e.to_string())
+            });
+        }
+    };
     let mut buf = [0u8; 64 * 1024];
     let mut total: u64 = 0;
     loop {
