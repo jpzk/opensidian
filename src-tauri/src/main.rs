@@ -385,9 +385,13 @@ const EXISTS: &str = "exists";
    (git checkout, sync client, the 1000ms-stale index) can land a real file
    between the check and the truncate. */
 #[tauri::command]
-fn create_note(v: State<Vault>, name: String, content: String, otel: Option<perf::Ctx>) -> Result<(), String> {
+fn create_note(v: State<Vault>, name: String, content: Option<String>, otel: Option<perf::Ctx>) -> Result<(), String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
     let mut ix = v.index.lock().unwrap();
+    // feedback #20: an ABSENT content is an EMPTY note, not a seeded one. The
+    // default lives here as well as at ui/main.js createNote so that neither
+    // side can re-mint "# name" on its own; a new note is zero bytes on disk.
+    let content = content.unwrap_or_default();
     span_timed!(otel => "create_note", create_note_in(&root, &mut ix, &name, &content))
 }
 
@@ -2516,5 +2520,70 @@ mod tests {
         assert_eq!(fs::read_to_string(root.join("sub/New.md")).unwrap(), "# New\n\n");
         assert_eq!(ix.content("sub/New"), Some("# New\n\n"));
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /* feedback #20 [acceptance 1]: a brand-new note materializes NOTHING.
+       Recon Q1 against stock 1.13.7: Ctrl+N produces `Untitled.md` whose
+       `wc -c` is 0, and a second one `Untitled 1.md`, also 0. The big title
+       the user sees is the INLINE TITLE — the FILENAME, rendered — so the
+       bytes on disk are empty. Asserted on disk (metadata len) AND in the
+       in-RAM index, which the UI reads back for search. */
+    #[test]
+    fn f20_a_new_note_is_zero_bytes_on_disk() {
+        let root = tmp_vault("f20zero");
+        let mut ix = Index::build(&root);
+        create_note_in(&root, &mut ix, "Untitled", "").unwrap();
+        let p = root.join("Untitled.md");
+        assert_eq!(fs::metadata(&p).unwrap().len(), 0, "stock's new note is ZERO bytes");
+        assert_eq!(fs::read_to_string(&p).unwrap(), "");
+        assert_eq!(ix.content("Untitled"), Some(""), "the index copy is empty too");
+        // the path-qualified path is where the old code seeded the BASENAME
+        create_note_in(&root, &mut ix, "sub/Deep Note", "").unwrap();
+        assert_eq!(fs::metadata(root.join("sub/Deep Note.md")).unwrap().len(), 0);
+        // an explicit body is still honoured — this is a DEFAULT, not a filter
+        create_note_in(&root, &mut ix, "Seeded", "given\n").unwrap();
+        assert_eq!(fs::read_to_string(root.join("Seeded.md")).unwrap(), "given\n");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /* feedback #20 [acceptance 1]: ...and NO code path may re-mint a heading.
+       The fix is at the two seams every creation path funnels through —
+       ui/main.js `createNote` (the shared helper for all four JS paths) and
+       the rust `create_note` command's default — so this test reads the JS
+       source and pins BOTH: the helper's default body is the empty string,
+       and the `"# " + name` construction exists nowhere in main.js. A string
+       strip in one caller would not satisfy either half. */
+    #[test]
+    fn f20_no_code_path_materializes_a_heading_at_creation() {
+        const UI: &str = include_str!("../../ui/main.js");
+        assert!(
+            UI.contains(r#"  const body = content != null ? content : "";"#),
+            "createNote's default body must be EMPTY — that is the shared seam"
+        );
+        assert!(
+            !UI.contains(r##""# " + name"##),
+            "no creation path may mint a heading from the note name"
+        );
+        // exactly one call site invokes the backend command, and it passes the
+        // helper's body — so the default above is the only default there is.
+        assert_eq!(
+            UI.matches(r#"inv("create_note""#).count(),
+            1,
+            "creation must funnel through the single createNote helper"
+        );
+        assert!(UI.contains(r#"inv("create_note", { name, content: body })"#));
+        // and the backend must not synthesise one from a name either. The
+        // needle is ASSEMBLED AT RUNTIME on purpose: include_str!("main.rs")
+        // contains THIS test, so a literal would match itself and the
+        // assertion would fail no matter what the production code does (it
+        // did, on the first run — the failure was the test, not the fix).
+        const RS: &str = include_str!("main.rs");
+        let minted = ["format!(\"#", " {}"].concat();
+        assert!(
+            !RS.contains(&minted),
+            "the backend must not synthesise a heading from a name either"
+        );
+        // the rust command's own default is empty, mirroring the JS seam.
+        assert!(RS.contains("let content = content.unwrap_or_default();"));
     }
 }

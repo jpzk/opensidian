@@ -630,8 +630,14 @@ function noteMenu(e, nm) {                 // right-click a tree note row
    between check and truncate. "exists" is not an error here: every creation
    path means "take me to Foo", so the caller opens the existing note (stock
    behaviour); nothing is overwritten either way. -> "ok" | "exists" | "err" */
+/* feedback #20: creation materializes NOTHING. Stock's brand-new note is a
+   ZERO-BYTE file (recon Q1: Ctrl+N -> Untitled.md, wc -c = 0); the big title
+   the user sees is the INLINE TITLE — a render of the FILENAME (mkInlineTitle)
+   that lives in no file. This is the single seam all four creation paths share,
+   so the default body is "" here and nowhere else; the rust command defaults an
+   absent `content` to "" too, so neither side can re-mint a heading alone. */
 async function createNote(name, content) {
-  const body = content != null ? content : "# " + name.split("/").pop() + "\n\n";
+  const body = content != null ? content : "";
   try { await inv("create_note", { name, content: body }); }
   catch (e) {
     if (errStr(e) === "exists") return "exists";
