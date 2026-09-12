@@ -1500,7 +1500,7 @@ function tabDragStart(e, g, i) {
   window.addEventListener("mouseup", up);
 }
 
-/* #20 (R31): the big title a note shows is its FILENAME, rendered — never
+/* #20 (R32): the big title a note shows is its FILENAME, rendered — never
    bytes in the file (stock calls it the inline title; a new note is zero
    bytes). It is published as data-title on the two SCROLLERS and drawn by a
    ::before in ui/style.css, deliberately NOT as a DOM child: ui/editor.js
@@ -2500,7 +2500,7 @@ async function applyRename(old, nn) {   // post-rename bookkeeping (F2 + H1 path
    changed since load/last commit; collision/invalid -> rust refuses, name
    kept (content keeps the new H1, like Obsidian on conflict).
 
-   #20 / R31.5 — THE Q4 DECISION, KEPT DELIBERATELY. Recon measured what stock
+   #20 / R32.5 — THE Q4 DECISION, KEPT DELIBERATELY. Recon measured what stock
    1.13.7 actually does (progress.md Q4, commit 7c4389e): stock does NOT rename
    from a body H1 (typed into `# Rename Me`, the file grew 40 -> 49 bytes and
    the filename never moved); it renames from the INLINE TITLE, then raises an
@@ -2510,7 +2510,7 @@ async function applyRename(old, nn) {   // post-rename bookkeeping (F2 + H1 path
    therefore delete a working rename path (and its vault-wide link rewrite, the
    riskiest operation in the app, covered by phase `ux` A085-A087) and hand
    nothing back. So: the title is NON-EDITABLE — recorded as the known delta in
-   R31.5 — and ux-3 stays as rustidian's own affordance, a documented
+   R32.5 — and ux-3 stays as rustidian's own affordance, a documented
    divergence, not an accident. What is forbidden is a title that LOOKS
    editable and eats the keystrokes; smoke phase `title` section F asserts the
    opposite on the running app (click the title -> caret lands in the BODY,

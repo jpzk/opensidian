@@ -855,7 +855,7 @@ fn set_vault_inner(v: &State<Vault>, path: &str) -> Result<String, String> {
     Ok(p.display().to_string())
 }
 
-/* feedback #20 [R31.6]: the starter note a NEW vault is seeded with. Recon
+/* feedback #20 [R32.6]: the starter note a NEW vault is seeded with. Recon
    against stock 1.13.7 (2026-09-12, shots $RECON/shots5/E0-E9): stock's own
    create-vault flow writes exactly one file, `Welcome.md`, 203 bytes, and it
    carries NO heading — it opens on prose ("This is your new *vault*.") while
@@ -2895,7 +2895,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /* feedback #20 [R31.6]: the NEW-VAULT seed is starter CONTENT, not note
+    /* feedback #20 [R32.6]: the NEW-VAULT seed is starter CONTENT, not note
        creation — it stays (R1.2) — but it must not re-mint the title as bytes.
        Recon, stock 1.13.7, its own create-vault flow (shots5/E9): one file,
        `Welcome.md`, 203 bytes, first line `This is your new *vault*.` — no
