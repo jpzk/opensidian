@@ -4,3 +4,10 @@ src-tauri/gen/schemas/
 !docs/ref-shots/**/*.png
 dist/
 .cov-evidence/
+
+# .goalenv is PER-WORKTREE goal state: it cd's into ONE goal's worktree and pins that
+# goal's allocated X display, OUT, RECON and HOME. Tracking it means the merge drops one
+# goal's copy into every other goal's worktree, where `. ./.goalenv` then silently runs
+# their commands in the WRONG TREE on the WRONG DISPLAY. It happened (2026-09-12 23:25).
+# scripts/wt.sh writes it per worktree; it is never content to share.
+.goalenv
