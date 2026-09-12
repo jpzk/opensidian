@@ -2040,6 +2040,33 @@ mod tests {
         let _ = fs::remove_dir_all(&outside);
     }
 
+    /// R29 + S1: the CSP is a security boundary, so it is asserted as an EXACT
+    /// string. A future widening (`img-src *`, an http origin, a stray
+    /// 'unsafe-inline' in script-src) then fails a test instead of shipping
+    /// silently. tauri.conf.json IS a cargo input, so editing it rebuilds this.
+    #[test]
+    fn csp_is_exactly_this_string_and_no_remote_image_origin() {
+        const CONF: &str = include_str!("../tauri.conf.json");
+        let csp = serde_json::from_str::<serde_json::Value>(CONF).unwrap()["app"]["security"]["csp"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            csp,
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+             img-src 'self' data: rustidian-img:; font-src 'self'; \
+             connect-src ipc: http://ipc.localhost",
+            "the CSP changed — if that was deliberate, say why in the commit message"
+        );
+        // R29: the image widening is ONE scheme token, and it is ours
+        let img = csp.split("; ").find(|d| d.starts_with("img-src ")).unwrap();
+        assert_eq!(img, format!("img-src 'self' data: {IMG_SCHEME}:"));
+        // R29.10: remote images stay closed pending an operator decision —
+        // no wildcard, no http(s) origin anywhere in the image directive
+        assert!(!img.contains('*'), "img-src wildcard re-enables remote beacons: {img}");
+        assert!(!img.contains("http"), "img-src names a remote origin: {img}");
+    }
+
     /// S4: picker commands refuse system trees and dot-components, keep the
     /// roots the folder picker offers
     #[test]

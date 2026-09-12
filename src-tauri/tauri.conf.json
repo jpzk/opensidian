@@ -5,7 +5,7 @@
   "build": { "frontendDist": "../ui" },
   "app": {
     "withGlobalTauri": true,
-    "security": { "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src ipc: http://ipc.localhost" },
+    "security": { "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: rustidian-img:; font-src 'self'; connect-src ipc: http://ipc.localhost" },
     "windows": [{ "title": "rustidian", "width": 1100, "height": 700 }]
   },
   "bundle": { "active": false }
