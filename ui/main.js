@@ -616,13 +616,14 @@ function noteMenu(e, nm) {                 // right-click a tree note row
   placeMenu(m, e.clientX, e.clientY);   /* R22: viewport-clamped by measured size */
 }
 
-// R23 (feedback #15): EVERY path that creates a note seeds it with an H1 of its
-// own name. cmdNewNote already did this inline; the three INDIRECT paths (an
-// unresolved wikilink clicked in live preview, the same in reading view, and a
-// ghost node clicked in the graph) wrote "" instead. That inconsistency existed
-// precisely because the seeding lived inside one call site instead of being
-// shared by all of them — so this helper is the fix, not the four edits.
-// Path-qualified names ("folder/Note") get the BASENAME as the heading.
+// R23 (feedback #15) built this helper because the four creation paths
+// disagreed about the new note's body: cmdNewNote seeded an H1 of the note's
+// own name inline, while the three INDIRECT paths (an unresolved wikilink
+// clicked in live preview, the same in reading view, a ghost node clicked in
+// the graph) wrote "". ONE shared seam was the fix, not four edits — and it is
+// why feedback #20 below is a one-line change instead of four.
+// SUPERSEDED BY feedback #20: the seeded heading is gone (see the block below);
+// what R23 still buys is that every path funnels through here.
 /* F4 (dataloss-audit): creation must never replace an existing note with a
    stub. The backend uses create_new(2) — the kernel's atomic exists-check —
    so unlike a JS-side notesCache test there is no window for another writer
@@ -2185,9 +2186,10 @@ function mdFilter() {
    published as [mdnew:<name>] so the smoke asserts the affordance itself, not
    an OCR of its label. */
 let mdNew = "";
-/* Creation from the switcher goes through the SHARED createNote helper (which
-   seeds the "# <basename>" H1, feedback #15 / R23) — there is deliberately no
-   second creation path. It CANNOT overwrite: the backend uses create_new(2),
+/* Creation from the switcher goes through the SHARED createNote helper (whose
+   body is now EMPTY — feedback #20: a new note is a zero-byte file and the big
+   title is the filename, rendered) — there is deliberately no second creation
+   path. It CANNOT overwrite: the backend uses create_new(2),
    the kernel's atomic exists-check, and createNote maps that to "exists" and
    returns without writing a byte.
    The real hazard here is CASE. fuzzy() lowercases both sides, so "ideas"

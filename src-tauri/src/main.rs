@@ -2680,4 +2680,86 @@ mod tests {
         }
         let _ = fs::remove_dir_all(&root);
     }
+
+    /* feedback #20 [acceptance 3]: the title left the bytes — FINDING must not
+       have left with it. Before this goal the `# <name>` heading meant every
+       note's own title was searchable as BODY TEXT; a zero-byte note has no
+       body at all, so both find-by-title paths now rest on the FILENAME:
+
+         search        -> search_docs' name arm (`name.contains(q)`), fed by
+                          Index::docs(), which yields a name for every note
+                          however empty its content is.
+         quick switcher-> ui/main.js qsItems(), whose labels are notesCache =
+                          the `list_notes` command = Index::names(); mdFilter
+                          scores `it.label`, never a body.
+
+       So the Rust half drives the REAL matcher over notes whose bodies cannot
+       help (one zero-byte, one whose text never mentions its name), and the
+       switcher half pins its data source + the field it matches on. */
+    #[test]
+    fn f20_a_note_is_findable_by_its_title_now_that_the_title_is_not_in_the_body() {
+        let root = tmp_vault("f20find");
+        let mut ix = Index::build(&root);
+        // created the way the app creates them now: NOTHING on disk
+        create_note_in(&root, &mut ix, "Project Ideas", "").unwrap();
+        create_note_in(&root, &mut ix, "sub/Deep Thought", "").unwrap();
+        // a note whose body never mentions its own name
+        fs::write(root.join("Meeting Notes.md"), "agenda\ndiscussed the budget\n").unwrap();
+        let ix = Index::build(&root);
+        assert_eq!(fs::metadata(root.join("Project Ideas.md")).unwrap().len(), 0);
+
+        // SEARCH: the query is title text and nothing else on disk carries it
+        let hits = search_docs(ix.docs(), "project ideas");
+        assert_eq!(hits.len(), 1, "a zero-byte note must still be findable by its title");
+        assert_eq!(
+            (hits[0].note.as_str(), hits[0].line, hits[0].snippet.as_str()),
+            ("Project Ideas", 0, "Project Ideas"),
+            "the hit is the NAME arm: line 0, snippet = the title itself"
+        );
+        // partial + case-insensitive + a nested note matched by its basename
+        assert_eq!(search_docs(ix.docs(), "IDEAS")[0].note, "Project Ideas");
+        assert_eq!(search_docs(ix.docs(), "thought")[0].note, "sub/Deep Thought");
+        // ...and the body-less note is findable by title while its neighbour
+        // is findable by body — the two arms are independent
+        let m = search_docs(ix.docs(), "meeting");
+        assert_eq!(m.len(), 1, "title hit only; the body never says 'meeting'");
+        assert_eq!((m[0].note.as_str(), m[0].line), ("Meeting Notes", 0));
+        let b = search_docs(ix.docs(), "budget");
+        assert_eq!((b.len(), b[0].note.as_str(), b[0].line), (1, "Meeting Notes", 1));
+
+        // and the name hit does NOT come from content: prove it on a doc stream
+        // whose content is empty by construction.
+        let docs = vec![("Only A Name".to_string(), String::new())];
+        let h = search_docs(docs_ref(&docs), "only a name");
+        assert_eq!((h.len(), h[0].snippet.as_str()), (1, "Only A Name"));
+
+        // QUICK SWITCHER: its source is Index::names() via `list_notes`, which
+        // lists a zero-byte note exactly like any other.
+        assert_eq!(ix.names(), ["Meeting Notes", "Project Ideas", "sub/Deep Thought"]);
+        assert_eq!(index::notes_of(&root), ix.names(), "the walk and the index agree");
+        assert!(ix.content("Project Ideas").unwrap().is_empty(), "found by name, not by bytes");
+
+        // the JS half: the switcher's items are FILENAMES and the filter scores
+        // that label. A switcher that had matched on body text would need a
+        // second source here; there is none.
+        const UI: &str = include_str!("../../ui/main.js");
+        let qs = {
+            let i = UI.find("function qsItems() {").expect("qsItems moved");
+            let end = UI[i..].find("\nfunction ").unwrap_or(UI.len() - i);
+            &UI[i..i + end]
+        };
+        assert!(qs.contains("notesCache"), "the switcher lists the vault's NOTE NAMES");
+        assert!(qs.contains("label: n,"), "each item's label IS the note name");
+        assert!(!qs.contains("content") && !qs.contains("read_note"), "it never reads bodies");
+        assert!(
+            UI.contains(r#"mdItems = mdSrc().map((it, i) => [fuzzy(q, it.label), i, it])"#),
+            "the filter scores the label"
+        );
+        assert!(
+            UI.contains(r#"await Promise.all([inv("list_folders"), inv("list_notes"), inv("list_images")]);"#)
+                && UI.contains("notesCache = notes;"),
+            "notesCache is the list_notes command = Index::names()"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
 }
