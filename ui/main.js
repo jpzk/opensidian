@@ -1490,6 +1490,24 @@ function tabDragStart(e, g, i) {
   window.addEventListener("mouseup", up);
 }
 
+/* #20 (R31): the big title a note shows is its FILENAME, rendered — never
+   bytes in the file (stock calls it the inline title; a new note is zero
+   bytes). It is published as data-title on the two SCROLLERS and drawn by a
+   ::before in ui/style.css, deliberately NOT as a DOM child: ui/editor.js
+   indexes model rows positionally (g.lp.children[l], editor.js:491), so a
+   prepended element would shift every line index by one and break the caret.
+   Inside the scroller = it scrolls with the content, like stock, and adds no
+   scroll container (R22.2's allowlist is unchanged). No name -> attribute
+   REMOVED, so an empty pane keeps its y-origin. */
+const titleOf = name => (name ? name.split("/").pop().replace(/\.md$/i, "") : "");
+function setInlineTitle(v, name) {
+  const t = titleOf(name);
+  for (const el of [v.lp, v.preview]) {
+    if (!el) continue;
+    if (t) el.dataset.title = t; else delete el.dataset.title;
+  }
+}
+
 async function loadActive(g) {
   hideAc();
   const t = g.active >= 0 ? g.tabs[g.active] : null;
@@ -1520,6 +1538,7 @@ async function loadActive(g) {
   attachView(g, v);
   showEditor(g);
   const n = curOf(g);
+  setInlineTitle(v, n);              // #20: the rendered filename, before any body render
   if (n) mruTouch(n);                // m5: quick-switcher MRU order
   const m = t ? t.mode : "livepreview";
   if (!t || !v.loaded || t.stale || v.name !== n) {   // v.name: navigate() renames the tab in place
@@ -2398,7 +2417,7 @@ function cmdPalette() {
 async function applyRename(old, nn) {   // post-rename bookkeeping (F2 + H1 paths)
   for (const h of groups()) for (const tb of h.tabs) {
     if (tb.kind) continue;
-    if (tb.name === old) tb.name = nn;
+    if (tb.name === old) { tb.name = nn; if (tb.view) setInlineTitle(tb.view, nn); }   // #20: the rendered title follows the FILE, in every retained view
     if (tb.hist) for (const e of tb.hist) if (e.n === old) e.n = nn;
   }
   const mi = mruList.indexOf(old);
