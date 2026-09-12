@@ -627,10 +627,11 @@ body.floorrelayout #main { padding-right: 1px }
    deliberately — R29.7 says a divergence between reading view and live preview
    is a bug, and that includes the painted box. */
 .lp .vimg, .preview .vimg { display: block; max-width: 100%; height: auto; margin: 8px 0 }
-/* remote (`![](https://…)`): pulldown emits a bare <img>, we emit img.rimg.
-   The CSP has no remote img origin, so neither one ever loads bytes (R29.10);
-   sizing it like a vault image keeps the two engines identical if the operator
-   ever opens that door. */
+/* R29.10: NEITHER engine mints a remote <img> any more — an http(s) target
+   takes the R29.4 banner below, so no img.rimg is ever created and no note can
+   cause a network fetch. This rule stays as the PAINT backstop the way the CSP
+   is the FETCH backstop: if some future path ever emits a bare remote <img>,
+   it is sized like a vault image instead of reflowing the note. */
 .lp .rimg, .preview img:not(.vimg):not(.rimg), .preview .rimg {
   display: block; max-width: 100%; height: auto; margin: 8px 0 }
 /* R29.4: a full-width grey banner, NOT a broken-image icon. Reading view
@@ -638,7 +639,8 @@ body.floorrelayout #main { padding-right: 1px }
    live preview carries the target in data-miss and CSS paints the identical
    sentence, because a row's textContent MUST stay equal to its source line —
    the token map walks text nodes, so banner prose inside the row would move
-   every caret column after it. */
+   every caret column after it. A REMOTE target's label is the constant
+   "remote image" in both engines, never the URL (R29.10). */
 .lp .imgmiss, .preview .imgmiss {
   display: block; padding: 12px 16px; margin: 8px 0; border-radius: 6px;
   background: #313244; color: #a6adc8; font-size: 14px; line-height: 1.4;

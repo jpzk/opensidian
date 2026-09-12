@@ -106,6 +106,12 @@ const IMG_TYPES: [(&str, &str); 5] = [
 /// the scheme our images are served on; the CSP names it exactly (R29 / S1)
 const IMG_SCHEME: &str = "rustidian-img";
 
+/// R29.10: the label the R29.4 banner carries in place of a REMOTE target.
+/// Both engines paint the same sentence (ui/editor.js `imgEl` sets it as
+/// data-miss, style.css paints it) — R29.7 says the two renderers agree, and
+/// that includes this box. A constant, never the URL: see `image_html`.
+const REMOTE_IMG_LABEL: &str = "remote image";
+
 /// S5-style cap: an image bigger than this is not served (a synced vault must
 /// not be able to make us allocate a multi-GB buffer inside the webview IPC).
 const MAX_IMG_BYTES: u64 = 32 * 1024 * 1024;
@@ -212,7 +218,18 @@ fn pct_encode(s: &str) -> String {
 /// Unresolved -> R29.4's banner, verbatim wording, target escaped. R29.5 makes
 /// an out-of-vault target take this same branch, so an escape is
 /// indistinguishable from a typo and leaks nothing about the filesystem.
+///
+/// R29.10 rides the same branch: a target carrying ANY scheme (`https://…`,
+/// `http://…`, `file://…`) is never resolved and never minted — one rule, one
+/// banner. The label is the literal `remote image`, NOT the target, so the URL
+/// itself never reaches the DOM: an attribute a note controls is a beacon the
+/// moment some later CSS/JS reads it.
 fn image_html(imgs: &[String], target: &str, alt: &str) -> String {
+    if url_scheme(target).is_some() {
+        return format!(
+            "<span class=\"imgmiss\">\u{201c}{REMOTE_IMG_LABEL}\u{201d} could not be found.</span>"
+        );
+    }
     let dec = pct_decode(target).unwrap_or_else(|| target.to_string());
     match index::resolve(imgs, &dec).map(|i| &imgs[i]) {
         Some(rel) => format!(
@@ -761,11 +778,27 @@ fn url_scheme(url: &str) -> Option<String> {
     ok.then(|| s.to_ascii_lowercase())
 }
 
-/// S1: only these schemes survive as `<a class="ext">` / `<img>`; everything
-/// else (javascript:, data:, file:, vbscript:, relative paths — the webview
-/// would navigate the app window itself) is rendered as literal text.
+/// S1: only these schemes survive as `<a class="ext">`; everything else
+/// (javascript:, data:, file:, vbscript:, relative paths — the webview would
+/// navigate the app window itself) is rendered as literal text.
+///
+/// R29.10: `image` is ALWAYS false-ing. No scheme whatsoever mints an `<img>`
+/// — a note must not be able to cause a network fetch, so the renderer refuses
+/// to mint a remote src at all and the CSP's `img-src` is only the backstop.
+/// Two independent layers: widening one of them must not open the door.
+/// A schemed image target takes `image_html`'s banner branch instead (R29.4).
 fn ext_ok(url: &str, image: bool) -> bool {
-    matches!(url_scheme(url).as_deref(), Some("http" | "https")) || (!image && url_scheme(url).as_deref() == Some("mailto"))
+    if image {
+        return false;
+    }
+    matches!(url_scheme(url).as_deref(), Some("http" | "https" | "mailto"))
+}
+
+/// R29.10: is this image target REMOTE — i.e. would rendering it fetch bytes
+/// over the network? http(s) only; `file:`/`data:`/`javascript:` are S1's
+/// business (literal text) and are left exactly where they were.
+fn is_remote_img(url: &str) -> bool {
+    matches!(url_scheme(url).as_deref(), Some("http" | "https"))
 }
 
 /// reading=true: heading links join with " > " (R10.1). Block ids are emitted
@@ -865,12 +898,26 @@ fn render_with(content: &str, notes: &[String], imgs: &[String], reading: bool) 
                         continue;
                     }
                     Event::Start(Tag::Image { ref dest_url, .. }) => {
-                        if !ext_ok(dest_url, true) {
+                        if ext_ok(dest_url, true) {
+                            // DEAD in a correct build: `ext_ok(_, true)` is false for
+                            // every scheme (R29.10). This is the branch that would mint
+                            // pulldown's own `<img src="https://…">` — it is what
+                            // docs/negctl-remote-img/ restores, and the moment it lives
+                            // the note is a beacon. Kept, and only kept, so the control
+                            // has something to turn red.
+                            demoted.push(None);
+                        } else if is_remote_img(dest_url) {
+                            // R29.10: http(s) image -> R29.4's banner, same as a missing
+                            // local target. No <img>, and the URL never reaches the DOM.
+                            img_alt = Some((dest_url.to_string(), String::new()));
+                            continue;
+                        } else {
+                            // S1 unchanged: any OTHER scheme (file:, data:, javascript:)
+                            // stays literal text — `imgsec`'s ZJ-File asserts exactly that.
                             evs.push(Event::Text("![".into()));
                             demoted.push(Some(format!("]({dest_url})")));
                             continue;
                         }
-                        demoted.push(None);
                     }
                     Event::End(TagEnd::Image) => {
                         if let Some(tail) = demoted.pop().flatten() {
@@ -1702,15 +1749,15 @@ mod tests {
         assert!(h.contains(r#"rel="noopener" title="Ti">t</a>"#), "{h}");
         // reading mode identical
         assert!(render_with("[x](https://q)", &[], &[], true).contains(r#"class="ext""#));
-        // R29.10: a REMOTE image still gets pulldown's own <img> — unchanged by
-        // R29 and deliberately so. It is not on our scheme, and the CSP has no
-        // remote img origin (see csp_is_exactly_this_string_...), so the bytes
-        // are still blocked; turning remote images on is the operator's call.
-        // This assertion used to read "images are http(s) or they are text",
-        // which encoded the absence of the feature; the vault-relative half now
-        // lives in render_images_resolve_through_the_index (C3 pattern).
+        // R29.10 (operator decision, 2026-09-12): a REMOTE image mints NOTHING.
+        // The same URL as a LINK still works — that is the point of scoping the
+        // refusal to images, and extlink asserts it end to end. The <img> that
+        // used to be asserted here is now the mutation of
+        // docs/negctl-remote-img/; the rule lives in
+        // remote_images_never_mint_an_img_element.
         let h = render_md("![pic](https://img.x/a.png)", &[]);
-        assert!(h.contains(r#"<img src="https://img.x/a.png" alt="pic""#), "{h}");
+        assert!(!h.contains("<img"), "a remote image minted an element: {h}");
+        assert!(!h.contains("img.x"), "a remote URL reached the DOM: {h}");
         assert!(!h.contains(IMG_SCHEME), "remote image must not ride our scheme: {h}");
     }
 
@@ -1891,7 +1938,53 @@ mod tests {
         assert_eq!(url_scheme("javascript:x").as_deref(), Some("javascript"));
         assert_eq!(url_scheme("no-scheme/path"), None);
         assert_eq!(url_scheme("1http://x"), None);
-        assert!(!ext_ok("mailto:a@b", true)); // images: http(s) only
+        assert!(!ext_ok("mailto:a@b", true)); // images: no scheme at all (R29.10)
+        for u in ["https://example.com/x.png", "http://example.com/y.png", "HTTPS://A.B/z.png"] {
+            assert!(!ext_ok(u, true), "an image was allowed a remote src: {u}");
+            assert!(ext_ok(u, false), "the same url must still open as a LINK: {u}");
+        }
+    }
+
+    /// R29.10 layer 1 (the renderer). The CSP is layer 2 and is pinned by
+    /// csp_is_exactly_this_string_and_no_remote_image_origin — neither test
+    /// knows about the other, which is the whole point of two layers.
+    ///
+    /// MUTATE TO CHECK: restore the remote branch in `ext_ok`
+    /// (`matches!(url_scheme(url).as_deref(), Some("http" | "https")) || …`)
+    /// and this goes red on `<img src="https://example.com/x.png">`.
+    #[test]
+    fn remote_images_never_mint_an_img_element() {
+        let md = "![a](https://example.com/x.png)\n\n![b](http://example.com/y.png)\n\n\
+                  ![c](HTTPS://EXAMPLE.COM/z.png)\n";
+        for reading in [true, false] {
+            // the vault DOES hold an x.png: a remote target must not be able to
+            // borrow a local file's bytes either (resolve is never reached).
+            let h = render_with(md, &[], &["x.png".to_string()], reading);
+            let lo = h.to_ascii_lowercase(); // the third target is UPPERCASE on purpose
+            assert!(!h.contains("<img"), "reading={reading}: a remote target minted an <img>: {h}");
+            assert!(!lo.contains("http"), "reading={reading}: a remote URL reached the DOM: {h}");
+            assert!(!lo.contains("example.com"), "reading={reading}: the host leaked: {h}");
+            assert_eq!(
+                h.matches("class=\"imgmiss\"").count(),
+                3,
+                "reading={reading}: want R29.4's banner for each remote image: {h}"
+            );
+            assert!(
+                h.contains("\u{201c}remote image\u{201d} could not be found."),
+                "reading={reading}: the banner is not R29.4's wording: {h}"
+            );
+            // S4/extlink is NOT affected: the same url is still a working link.
+            let l = render_with("[text](https://example.com/x.png)", &[], &[], reading);
+            assert!(
+                l.contains("<a href=\"https://example.com/x.png\" class=\"ext\""),
+                "reading={reading}: a non-image external link stopped working: {l}"
+            );
+        }
+        // S1 unchanged: any other scheme is still literal text, not a banner
+        // (smoke `imgsec`/ZJ-File asserts the census publishes no [xi:] token).
+        let f = render_with("![d](file:///etc/passwd)", &[], &[], true);
+        assert!(!f.contains("imgmiss") && !f.contains("<img"), "file:// image changed shape: {f}");
+        assert!(f.contains("![d](file:///etc/passwd)"), "file:// image is no longer literal text: {f}");
     }
 
     #[test]

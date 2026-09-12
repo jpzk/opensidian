@@ -284,12 +284,12 @@ const Ed = {
       // scanner as a link (balanced parens, whitespace = not a link), so
       // `![](my pic.png)` stays literal text exactly as pulldown-cmark leaves
       // it (R29.3). Scheme split mirrors the two Tag::Image arms in main.rs:
-      // no scheme -> our vault image; http(s) -> pulldown's plain <img>, which
-      // the CSP still blocks (R29.10, remote is the operator's decision);
-      // any other scheme -> text, which is the fall-through below.
+      // no scheme -> our vault image; http(s) -> R29.4's banner and NO <img>
+      // at all (R29.10 — the renderer refuses to mint a remote src, the CSP is
+      // only the backstop); any other scheme -> text, the fall-through below.
       if (rest[0] === "!") {
         const im = Ed.linkAt(rest.slice(1));
-        const rem = im && /^https?:\/\//.test(im[2]);
+        const rem = im && /^https?:\/\//i.test(im[2]);   // R29.10: scheme, not spelling (url_scheme lowercases)
         if (im && (rem || !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(im[2]))) {
           flush();
           const parts = [], mks = [];
@@ -424,15 +424,19 @@ const Ed = {
   // the ONE widget both syntaxes paint. Carries no TEXT node in either branch:
   // the row's textContent must stay === its source line (the token map walks
   // text nodes), so the R29.4 banner wording is painted by CSS from data-miss.
+  // R29.10: `remote` (http(s)) never becomes an <img> — it takes the SAME
+  // banner a missing local target takes, labelled with the constant
+  // "remote image" (main.rs REMOTE_IMG_LABEL), never the URL. The renderer
+  // refusing to mint the src is layer 1; the CSP's img-src is the backstop.
   imgEl(target, alt, remote) {
-    const src = remote ? target : Ed.imgSrc(target);
+    const src = remote ? null : Ed.imgSrc(target);
     if (src === null) {
       const s = Ed.el("span", "imgmiss");
-      s.dataset.miss = target;                 // CSS: “<target>” could not be found.
+      s.dataset.miss = remote ? "remote image" : target;  // CSS: “<label>” could not be found.
       s.contentEditable = "false";
       return s;
     }
-    const im = Ed.el("img", remote ? "rimg" : "vimg");
+    const im = Ed.el("img", "vimg");
     im.setAttribute("src", src);               // attribute, not property: the
     im.setAttribute("alt", alt || "");         // agreement assertion compares raw attrs
     im.contentEditable = "false";
