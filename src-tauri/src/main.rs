@@ -2586,4 +2586,98 @@ mod tests {
         // the rust command's own default is empty, mirroring the JS seam.
         assert!(RS.contains("let content = content.unwrap_or_default();"));
     }
+
+    /* feedback #20 [acceptance 2]: an EXISTING note is NOT ours to tidy.
+       Now that the big title is the filename, a note whose body still starts
+       with `# Foo` shows the title twice — exactly what stock does (recon Q6),
+       and exactly what we must leave alone. The rule of order puts data loss
+       above every fidelity argument: a "migration" that strips a redundant
+       heading rewrites bytes the user typed, so none may exist.
+
+       The cycle below is open -> render -> close at the PURE CORES the Tauri
+       commands delegate to (read_capped for read_note, render_with for
+       render, render_blocks_with for live preview, srcmode::highlight_block
+       for source mode), plus Index::build for opening the vault itself — the
+       only places that could plausibly rewrite a file. The oracle is the
+       whole vault's bytes AND mtimes, so a rewrite that happened to produce
+       identical content elsewhere would still be caught. */
+    #[test]
+    fn f20_an_existing_body_heading_survives_open_render_close_byte_for_byte() {
+        let root = tmp_vault("f20keep");
+        // written BEHIND the app's back: these are pre-existing user files
+        let foo = "# Foo\n\nfirst paragraph\n\n# Foo\ntwo headings, both stay\n";
+        let same = "# Same Name\n\nbody\n"; // Q6: the heading EQUALS the filename
+        let odd = "# Keep\r\n\r\nCRLF, no trailing newline, trailing spaces   ";
+        fs::write(root.join("Foo.md"), foo).unwrap();
+        fs::write(root.join("Same Name.md"), same).unwrap();
+        fs::write(root.join("Keep.md"), odd).unwrap();
+        let files = ["Foo", "Same Name", "Keep"];
+        let snap = |root: &Path| -> Vec<(Vec<u8>, std::time::SystemTime)> {
+            files
+                .iter()
+                .map(|n| {
+                    let p = root.join(format!("{n}.md"));
+                    let m = fs::metadata(&p).unwrap();
+                    (fs::read(&p).unwrap(), m.modified().unwrap())
+                })
+                .collect()
+        };
+        let before = snap(&root);
+
+        // OPEN the vault, then per note: read, render (reading + LP + source)
+        let ix = Index::build(&root);
+        for n in files {
+            let p = root.join(format!("{n}.md"));
+            let text = read_capped(&p).expect("read_note's core must read it");
+            let html = render_with(&text, ix.names(), ix.images(), true);
+            let blocks: Vec<String> = text.split("\n\n").map(str::to_string).collect();
+            let _ = render_blocks_with(&blocks, ix.names(), ix.images());
+            let _: Vec<String> = blocks.iter().map(|b| srcmode::highlight_block(b)).collect();
+            // the index must hold the file's bytes, not a cleaned-up copy
+            assert_eq!(ix.content(n), Some(text.as_str()), "{n}: index != disk");
+            if n == "Foo" {
+                assert_eq!(
+                    html.matches("<h1").count(),
+                    2,
+                    "both body headings must render — nothing is stripped: {html}"
+                );
+            }
+            if n == "Same Name" {
+                assert!(
+                    html.contains("Same Name"),
+                    "a heading equal to the filename is still the user's text (Q6): {html}"
+                );
+            }
+        }
+        drop(ix); // CLOSE the vault
+
+        assert_eq!(before, snap(&root), "open+render+close rewrote a user file");
+        // and re-opening the vault is not a second chance to rewrite anything
+        let ix2 = Index::build(&root);
+        assert_eq!(ix2.content("Foo"), Some(foo));
+        drop(ix2);
+        assert_eq!(before, snap(&root), "re-opening the vault rewrote a user file");
+
+        // source level: no migration may exist, in either language. The note
+        // OPEN path in the UI must not write — `setInlineTitle` publishes a
+        // dataset attribute, it does not touch bytes.
+        const UI: &str = include_str!("../../ui/main.js");
+        let i = UI.find("async function loadActive(g) {").expect("loadActive moved");
+        let end = UI[i..].find("\nasync function ").unwrap_or(UI.len() - i);
+        let open_path = &UI[i..i + end];
+        assert!(
+            !open_path.contains("write_note"),
+            "opening a note must never write it back"
+        );
+        assert!(open_path.contains("setInlineTitle"), "the open path draws the title");
+        const RS2: &str = include_str!("main.rs");
+        // needles ASSEMBLED AT RUNTIME: include_str!("main.rs") contains THIS
+        // test, so a literal needle matches itself and the assertion fails no
+        // matter what the production code does (it did, first run).
+        for needle in [["fn mig", "rate"].concat(), ["strip_", "heading"].concat(), ["strip", "Title"].concat()] {
+            assert!(!RS2.contains(&needle), "no migration may exist ({needle})");
+            assert!(!UI.contains(&needle), "no migration may exist ({needle})");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
 }
