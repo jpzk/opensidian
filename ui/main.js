@@ -669,6 +669,10 @@ async function afterWrite(name) {           // bookkeeping shared by write + cre
    keeps its base and stays dirty: the next debounce / ctrl+s retries the same
    bytes. Swallowing it costs every edit of a whole session with zero signal. */
 let saveErr = "";
+/* R31.9 last drop outcome, declared up here with saveErr so updateTitle (below)
+   can never read it through a temporal-dead-zone. The drop code itself is in
+   the R31 section further down. */
+let dropTok = "", dropT = null;
 /* F2 test hook: the vault-switch race lives inside the debounce window, so it
    is not mechanically reproducible at 250ms — RUSTIDIAN_SAVE_MS widens it for
    the smoke (backend save_debounce_ms; default 250 in every normal run). */
@@ -1059,6 +1063,10 @@ function updateTitle() {          // pane/focus census in the window title (head
             ims.slice(0, 3).map(i => "|" + xi(i.getAttribute("src"))).join("") + "]";
     }
   }
+  // R31.9 drop probe: the LAST drop's outcome -> [drop:<copied>/<refused>].
+  // Deliberately not derived from the banner (which times out): "no drop yet"
+  // and "a drop whose banner faded" must not look the same to a probe.
+  if (dropTok) md += " [drop:" + dropTok.replace(/[[\]|]/g, "") + "]";
   // R15.2 font probe: bundled @font-face entries that actually LOADED (lazy: a face loads when text first uses it) -> [fonts:SourceCodePro/400/normal|...]
   { const fl = document.fonts ? [...document.fonts].filter(f => f.status === "loaded").map(f => f.family.replace(/[" ]/g, "") + "/" + f.weight + "/" + f.style) : [];
     if (fl.length) md += " [fonts:" + fl.join("|") + "]"; }
@@ -1068,6 +1076,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   const modal = modalKind ? " [modal:" + modalKind + "]" +
                             (mdNew ? " [mdnew:" + tokq(mdNew) + "]" : "")   // C4: the create-this-note affordance is on screen
     : ($("rnbox") && !$("rnbox").hidden ? " [modal:rn]" : "")  // m5 fuzzy modal / rename prompt
+    + ($("anew") && !$("anew").hidden ? " [modal:att]" : "")   // R31.7 Insert attachment prompt
     + (settingsOpen ? " [modal:settings]" + hkInfo : "")       // R14 settings + hotkeys probe
     + (menuEl ? " [menu:1]" : "");                             // R22: a context menu is open (fuzz probe)
   // [note:<name>] = the FOCUSED group's active note (null for a graph tab).
@@ -2307,6 +2316,62 @@ function linkAtCaret() {   // [[target]] spanning the caret of the edited field,
   const inner = v.slice(a + 2, b);
   return inner.split("|")[0].split("#")[0].trim() || null;
 }
+/* ---------- R31 drop-to-attach (feedback #18) ---------------------------
+   A real OS drop NEVER reaches the DOM: wry takes the XDND at the GTK layer
+   and Tauri hands it to Rust as WindowEvent::DragDrop, which re-emits the
+   paths as `drop-files` (main.rs R31.1). So this listener is the drop, and a
+   `dragover`/`drop` handler on the editor would be decoration.
+   This half decides WHERE text goes — the caret of the focused editor — and
+   nothing else: the vault write, the file name, the link text and every
+   refusal sentence come back from attach_files -> attach_drop. Anything that
+   looks like policy down here would be a second copy of the rules.  */
+function dropSay(msg) {           // R31.5 a refusal is VISIBLE or it is a bug report
+  const b = $("dropmsg");
+  b.textContent = msg;
+  b.hidden = !msg;
+  clearTimeout(dropT);
+  // the banner is transient, the census token is NOT: it is rewritten by the
+  // next drop and never expires, so a probe cannot read "no drop happened"
+  // off a banner that merely timed out.
+  if (msg) dropT = setTimeout(() => { $("dropmsg").hidden = true; }, 4000);
+}
+/* R31.6 READING VIEW HAS NO CARET, so a drop there cannot "insert at the
+   cursor". Stock's behaviour is UNVERIFIED (recon could not drive a drop, and
+   the paste oracle is edit-only), and the brief's rule for an unverified
+   answer is: refuse, visibly. Copying the file in anyway and inserting it
+   somewhere we guessed is the worse failure — it writes to the vault for an
+   action the user cannot see the result of. */
+async function attachDrop(paths) {
+  if (!state || !fg()) return dropSay("open a note first");
+  const g = fg(), t = g.active >= 0 ? g.tabs[g.active] : null;
+  if (!t || t.kind) return dropSay("open a note first");
+  if (t.mode === "reading") { dropTok = "ro"; dropSay("switch to editing (Ctrl+E) to attach a file"); return updateTitle(); }
+  let a;
+  try { a = await inv("attach_files", { note: t.name, paths }); }
+  catch (e) { dropTok = "err"; dropSay(errStr(e)); return updateTitle(); }
+  // R29.11: both renderers resolve ![[x.png]] against the index list, and the
+  // LP engine reads its own copy (imgsCache) — a file copied but not re-listed
+  // paints as a MISSING image. Refresh BEFORE the insert so the first render
+  // of the new link already resolves.
+  if (a.copied.length) await refreshTree();
+  if (a.text) edEdit((v, s, e2) => [v.slice(0, s) + a.text + v.slice(e2), s + a.text.length, s + a.text.length]);
+  dropTok = a.copied.length + "/" + a.refused.length;
+  dropSay(a.refused.join("\n"));
+  updateTitle();
+}
+/* R31.7 "Insert attachment" — the keyboard road to the SAME attach a drop
+   takes. It exists for two reasons, in this order: an OS drop is unreachable
+   without a pointer (and unreachable to any automated probe — xdotool has no
+   XDND, brief §5), and the smoke must drive the real path, not a JS fake.
+   It adds NO policy: it collects a path string and hands it to attachDrop,
+   which is the same entry point the `drop-files` event calls. */
+function cmdAttach() {
+  const box = $("anew");
+  box.hidden = !box.hidden;
+  if (!box.hidden) { $("apath").value = ""; $("apath").focus(); }
+  updateTitle();
+}
+function closeAttach() { $("anew").hidden = true; updateTitle(); }
 let closedTabs = [];                       // R14 undo close tab (names, newest last)
 const CMDS = [
   ["app:open-settings",        "Open settings",                       ["ctrl+,"],               () => cmdSettings()],
@@ -2317,6 +2382,7 @@ const CMDS = [
   ["file-explorer:new-file-in-new-pane", "Create note to the right",  ["ctrl+shift+n"],         async () => { await splitWith(fg(), "row", null); await cmdNewNote(); }],
   ["file-explorer:new-folder", "Create new folder",                   [],                       () => { $("fnew").hidden = false; $("fname").value = ""; $("fname").focus(); }],
   ["editor:delete-paragraph",  "Delete paragraph",                    ["ctrl+d"],               () => edLine(() => null)],
+  ["editor:insert-attachment", "Insert attachment",                   [],                       cmdAttach],
   ["editor:follow-link",       "Follow link under cursor",            ["alt+enter"],            () => { const n = linkAtCaret(); if (n) navigate(fg(), n); }],
   ["workspace:goto-last-tab",  "Go to last tab",                      ["ctrl+9"],               () => cmdJumpTab(9)],
   ["workspace:next-tab",       "Go to next tab",                      ["ctrl+tab", "ctrl+pagedown"],       () => cmdCycleTab(1)],
@@ -2554,12 +2620,14 @@ document.addEventListener("keydown", e => {
     closeMenu();
     if (vaultPath && !$("picker").hidden) $("picker").hidden = true;
     if (!$("fnew").hidden) $("fnew").hidden = true;
+    if (!$("anew").hidden) closeAttach();       // R31.7
     return;
   }
   const combo = chordOf(e);
   const c = combo && keymap[combo];
   if (modalKind && c && c.id !== "switcher:open" && c.id !== "command-palette:open") return;  // modal traps the keymap
   if (!$("rnbox").hidden) return;    // rename prompt traps the keymap too
+  if (!$("anew").hidden) return;     // R31.7: so does the attachment prompt — a path contains characters that are chords
   if (c) { e.preventDefault(); c.run(); }
 });
 
@@ -2590,6 +2658,15 @@ $("fname").onkeydown = async e => {
   catch (err) { return; }
   $("fnew").hidden = true;
   await refreshTree();
+};
+// R31.7: Enter attaches the typed path through attachDrop (the drop's own entry
+// point — no second copy of the rules down here), Escape just closes.
+$("apath").onkeydown = async e => {
+  if (e.key === "Escape") return closeAttach();
+  if (e.key !== "Enter") return;
+  const p = $("apath").value.trim();
+  closeAttach();
+  if (p) await attachDrop([p]);
 };
 
 /* ---------- graph (per group: one sim instance per group) ----------
@@ -3392,6 +3469,8 @@ async function onVaultChanged(c) {
   updateTitle();
 }
 window.__TAURI__.event.listen("vault-changed", e => onVaultChanged(e.payload));
+// R31.1: a real OS drop arrives here, from Rust, never from a DOM drop event.
+window.__TAURI__.event.listen("drop-files", e => attachDrop(e.payload || []));
 
 $("vswitch").onclick = showPicker;
 

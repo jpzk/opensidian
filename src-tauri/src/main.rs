@@ -252,6 +252,318 @@ fn is_img_target(target: &str) -> bool {
         .is_some_and(|(_, e)| index::IMG_EXTS.contains(&e.to_ascii_lowercase().as_str()))
 }
 
+/* ---- R31 drop-to-attach (feedback #18) ---------------------------------
+   A drop is the FIRST user-driven write of arbitrary bytes into the vault, so
+   everything R29 built (read-side containment) is only half of what is needed
+   here. The whole behaviour lives in `attach_drop` below: it takes the vault,
+   the note being edited and the dropped paths, copies what it is allowed to
+   copy and RETURNS the text to insert. The Tauri command and the
+   WindowEvent::DragDrop handler are pass-throughs, because an OS drop cannot
+   be synthesized in a test (xdotool has no XDND) — the tests and the smoke
+   phase drive this function, and only the wry->handler transport is untested.
+
+   Order of the checks is the design, each earns its place:
+     S1 SOURCE  — a file manager can hand us anything: canonicalize, and refuse
+                  a symlink / dir / fifo / socket / device outright.
+     S3 NAME    — the basename is ATTACKER-CONTROLLED TEXT, not a name just
+                  because the OS produced it: safe_rel + NUL + control chars.
+     S4 TYPE    — the EXTENSION allowlist decides what is copied (IMG_TYPES),
+                  never a content sniff; img_path_in decides what is served.
+     S2 DEST    — the attachment dir is canonicalized against the canonical
+                  vault root (the note_path_in shape), so vault/attachments ->
+                  /home/user cannot turn a drop into a write outside the vault.
+     S5 NO OVER — create_new(), i.e. O_EXCL: never exists()-then-write, and
+                  never an overwrite. Data loss outranks stock parity (rule of
+                  order): the collision gets a new name, the old file stays.
+     CAP        — MAX_IMG_BYTES on the source metadata BEFORE the copy, and
+                  again on the stream, so a file that grows mid-copy cannot
+                  smuggle bytes past the cap.                              */
+
+/// R31.1 the ONE name an OS drop reaches the UI under. Not `tauri://drag-drop`
+/// (Tauri's own, which also fires for hover/leave and carries a pointer
+/// position the editor has no use for): a name we own, carrying exactly the
+/// paths, so the seam between "the OS dropped something" and "rustidian
+/// attaches it" is one grep away for whoever reads this next.
+const DROP_EVENT: &str = "drop-files";
+
+/// R31.5 why a single dropped file was refused. Typed, because the UI must say
+/// WHY: a drop that silently does nothing is indistinguishable from a bug, and
+/// (R31.8) a REMOTE drag must not be described as a missing file.
+#[derive(Debug, PartialEq, Clone, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum Refused {
+    Remote,          // a URL, not a file: R29.10 says no note may cause a fetch
+    NotAFile,        // dir, fifo, socket, device, or gone
+    Symlink,         // S1: a symlinked source is refused, never followed
+    BadName,         // S3: traversal, NUL, control chars, hidden, non-UTF8
+    BadExt(String),  // S4: not one of IMG_TYPES
+    TooBig(u64),     // > MAX_IMG_BYTES
+    Unreadable,      // R31.12: outside the sandbox's drop-source folders (EACCES)
+    NoFreeName,      // 1000 collisions deep: refuse rather than loop
+    Io(String),      // the copy itself failed (ENOSPC, EACCES from landlock, ...)
+}
+
+impl Refused {
+    /// the sentence the UI shows. Must describe the CAUSE — the R29.10 refusal
+    /// used to reuse R29.4's "could not be found", which is an error that
+    /// misdescribes itself.
+    fn say(&self, name: &str) -> String {
+        match self {
+            Refused::Remote => "remote images are disabled".into(),
+            Refused::NotAFile => format!("{name}: not a regular file"),
+            Refused::Symlink => format!("{name}: symlinks are not copied"),
+            Refused::BadName => format!("{name}: unsafe file name"),
+            Refused::BadExt(e) => format!("{name}: .{e} is not an image rustidian can show"),
+            Refused::TooBig(n) => format!("{name}: {} MB is over the {} MB limit", n / 1048576, MAX_IMG_BYTES / 1048576),
+            Refused::Unreadable => format!(
+                "{name}: rustidian may only read dropped files from {} (sandbox)",
+                sandbox::DROP_READ_DIRS.iter().map(|d| format!("~/{d}")).collect::<Vec<_>>().join(", ")
+            ),
+            Refused::NoFreeName => format!("{name}: no free file name left in the attachment folder"),
+            Refused::Io(e) => format!("{name}: could not be copied ({e})"),
+        }
+    }
+}
+
+/// R31 whole-drop failure: nothing was copied and there is nothing to insert.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DropErr {
+    Empty,           // a drop carrying no path at all
+    NoNote,          // no note open, or the target name is not a vault note
+    BadAttachDir,    // S2: the attachment folder is not inside the vault
+}
+
+impl DropErr {
+    fn say(&self) -> String {
+        match self {
+            DropErr::Empty => "nothing to attach".into(),
+            DropErr::NoNote => "open a note first".into(),
+            DropErr::BadAttachDir => "the attachment folder is not inside the vault".into(),
+        }
+    }
+}
+
+/// R31 what a drop did: the text to insert at the cursor, what landed in the
+/// vault (so the index can learn the new images), and one sentence per refusal.
+#[derive(Debug, Default, PartialEq, serde::Serialize)]
+struct Attached {
+    text: String,          // "" = insert nothing
+    copied: Vec<String>,   // vault-relative paths, in drop order
+    refused: Vec<String>,  // human sentences, already formatted
+}
+
+/// R31.3 the attachment folder: stock's default is the VAULT ROOT (recon
+/// 2026-09-12: `.obsidian/app.json` is `{}` and the file lands at the root).
+/// `attachmentFolderPath` is honoured when it is a plain vault-relative folder;
+/// a note-relative `./sub` value is NOT supported in v1 and falls back to the
+/// root with a visible notice, never silently. Returns (dir, notice).
+fn attach_dir(root: &Path) -> Result<(PathBuf, Option<String>), DropErr> {
+    let croot = root.canonicalize().map_err(|_| DropErr::BadAttachDir)?;
+    let cfg = fs::read_to_string(root.join(".obsidian/app.json")).unwrap_or_default();
+    let want = serde_json::from_str::<serde_json::Value>(&cfg)
+        .ok()
+        .and_then(|v| v.get("attachmentFolderPath")?.as_str().map(str::to_string))
+        .unwrap_or_default();
+    let want = want.trim();
+    if want.is_empty() || want == "/" || want == "." {
+        return Ok((croot, None));
+    }
+    let Some(rel) = safe_rel(want) else {
+        return Ok((croot, Some(format!("attachmentFolderPath {want:?} is not supported — attaching to the vault root"))));
+    };
+    // S2, the note_path_in shape: the deepest EXISTING ancestor must already be
+    // inside the vault before anything is created, so mkdir never walks through
+    // a symlinked directory.
+    let dir = root.join(&rel);
+    let mut a = dir.as_path();
+    while !a.exists() {
+        a = a.parent().ok_or(DropErr::BadAttachDir)?;
+    }
+    if !a.canonicalize().map_err(|_| DropErr::BadAttachDir)?.starts_with(&croot) {
+        return Err(DropErr::BadAttachDir);
+    }
+    fs::create_dir_all(&dir).map_err(|_| DropErr::BadAttachDir)?;
+    let cdir = dir.canonicalize().map_err(|_| DropErr::BadAttachDir)?;
+    if !cdir.starts_with(&croot) || !cdir.is_dir() {
+        return Err(DropErr::BadAttachDir);
+    }
+    Ok((cdir, None))
+}
+
+/// S3: the dropped basename -> a name we are willing to create, or None.
+/// `safe_rel` already refuses `..`, absolute paths, hidden components and NUL;
+/// this adds "exactly one component" and "no control characters".
+fn attach_name(p: &Path) -> Option<String> {
+    let name = p.file_name()?.to_str()?;
+    if name.contains('\0') || name.chars().any(|c| c.is_control()) {
+        return None;
+    }
+    let rel = safe_rel(name)?;
+    (rel.components().count() == 1 && rel.as_os_str() == name).then(|| name.to_string())
+}
+
+/// R31.4 collision: stock appends ` <n>` to the STEM, keeping the extension
+/// (recon: `Pasted image ... .png` -> `... 1.png` -> `... 2.png`). Never an
+/// overwrite (S5), so this is a create_new() loop, not an exists() test.
+fn free_dest(dir: &Path, name: &str) -> Result<(PathBuf, String, fs::File), Refused> {
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
+        _ => (name.to_string(), String::new()),
+    };
+    for n in 0..1000 {
+        let cand = if n == 0 { name.to_string() } else { format!("{stem} {n}{ext}") };
+        match fs::OpenOptions::new().write(true).create_new(true).open(dir.join(&cand)) {
+            Ok(f) => return Ok((dir.join(&cand), cand, f)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(Refused::Io(e.to_string())),
+        }
+    }
+    Err(Refused::NoFreeName)
+}
+
+/// copy at most MAX_IMG_BYTES + 1 bytes; Err leaves NOTHING behind.
+fn copy_capped(src: &Path, dst: &Path, mut out: fs::File) -> Result<u64, Refused> {
+    use std::io::{Read, Write};
+    // free_dest already created `dst` with O_EXCL, so EVERY exit from here on
+    // must unlink it — a failed drop that leaves an empty `cat.png` in the
+    // vault is worse than the refusal it reports.
+    let mut f = match fs::File::open(src) {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = fs::remove_file(dst);
+            // R31.12: the sandbox only grants READ on the drop-source folders,
+            // so EACCES here is the expected answer for a file anywhere else.
+            // Say THAT, not "could not be copied (os error 13)" — a refusal
+            // that misdescribes its cause is the bug trap (g) is about.
+            return Err(if e.kind() == std::io::ErrorKind::PermissionDenied {
+                Refused::Unreadable
+            } else {
+                Refused::Io(e.to_string())
+            });
+        }
+    };
+    let mut buf = [0u8; 64 * 1024];
+    let mut total: u64 = 0;
+    loop {
+        let n = match f.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) => {
+                let _ = fs::remove_file(dst);
+                return Err(Refused::Io(e.to_string()));
+            }
+        };
+        total += n as u64;
+        if total > MAX_IMG_BYTES {
+            let _ = fs::remove_file(dst);           // a file that GREW mid-copy
+            return Err(Refused::TooBig(total));
+        }
+        if let Err(e) = out.write_all(&buf[..n]) {
+            let _ = fs::remove_file(dst);
+            return Err(Refused::Io(e.to_string()));
+        }
+    }
+    if let Err(e) = out.sync_all() {
+        let _ = fs::remove_file(dst);
+        return Err(Refused::Io(e.to_string()));
+    }
+    Ok(total)
+}
+
+/// R31 THE function. Copies every droppable image into the vault's attachment
+/// folder and returns the markdown to insert at the cursor. Never moves, never
+/// symlinks, never overwrites. The caller inserts the text and teaches the
+/// index the new images (R29.11: the index is what both renderers resolve
+/// against, so a copied file that is not in the index would not paint).
+fn attach_drop(root: &Path, note: &str, paths: &[PathBuf]) -> Result<Attached, DropErr> {
+    if paths.is_empty() {
+        return Err(DropErr::Empty);
+    }
+    if note.is_empty() || note_path_in(root, note, false).is_none() {
+        return Err(DropErr::NoNote);
+    }
+    let (dir, notice) = attach_dir(root)?;
+    let croot = root.canonicalize().map_err(|_| DropErr::BadAttachDir)?;
+    let rel_dir = dir.strip_prefix(&croot).ok().map(|d| d.display().to_string()).unwrap_or_default();
+    let mut out = Attached::default();
+    out.refused.extend(notice);
+    let mut links: Vec<String> = Vec::new();
+    for p in paths {
+        let shown = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| p.display().to_string());
+        match attach_one(&dir, p) {
+            Ok(name) => {
+                links.push(format!("![[{name}]]"));
+                out.copied.push(if rel_dir.is_empty() { name.clone() } else { format!("{rel_dir}/{name}") });
+            }
+            Err(r) => out.refused.push(r.say(&shown)),
+        }
+    }
+    out.text = links.join("\n");
+    Ok(out)
+}
+
+/// one dropped path -> the name it got in the attachment folder
+fn attach_one(dir: &Path, p: &Path) -> Result<String, Refused> {
+    let raw = p.to_string_lossy();
+    // R31.8 / R29.10: a browser drag delivers a URL, never a file. Downloading
+    // it would be a network fetch caused by a note, which is forbidden — and
+    // the refusal says exactly that instead of "could not be found".
+    if raw.contains("://") || raw.starts_with("http:") || raw.starts_with("https:") || raw.starts_with("data:") {
+        return Err(Refused::Remote);
+    }
+    let name = attach_name(p).ok_or(Refused::BadName)?;
+    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    if !IMG_TYPES.iter().any(|(e, _)| *e == ext) {
+        return Err(Refused::BadExt(ext));
+    }
+    // S1: symlink_metadata, so a symlinked source is REFUSED and not followed
+    let m = fs::symlink_metadata(p).map_err(|_| Refused::NotAFile)?;
+    if m.is_symlink() {
+        return Err(Refused::Symlink);
+    }
+    if !m.is_file() {
+        return Err(Refused::NotAFile);
+    }
+    if m.len() > MAX_IMG_BYTES {
+        return Err(Refused::TooBig(m.len()));
+    }
+    let src = p.canonicalize().map_err(|_| Refused::NotAFile)?;
+    if !fs::symlink_metadata(&src).map(|m| m.is_file()).unwrap_or(false) {
+        return Err(Refused::NotAFile);
+    }
+    let (dst, name, fh) = free_dest(dir, &name)?;
+    copy_capped(&src, &dst, fh)?;
+    Ok(name)
+}
+
+/* R31 THE WRAPPER — 7 statements, no behaviour. An OS drop is delivered by
+   wry/GTK to Rust and re-emitted by Tauri itself as `tauri://drag-drop`
+   (tauri-2.11.5 manager/webview.rs:722), so the DOM never sees a DataTransfer
+   with files and there is nothing to intercept in JS: ui/main.js listens for
+   that event and calls this command. `async` so a 32 MB copy runs on the
+   async runtime instead of the event loop (rule of order: no lag the user can
+   feel). The index learns the copied images here because BOTH renderers
+   resolve `![[x.png]]` against `Index::images()` (R29.11) — a file copied but
+   not indexed would not paint. */
+#[tauri::command]
+async fn attach_files(
+    v: State<'_, Vault>,
+    note: String,
+    paths: Vec<PathBuf>,
+    otel: Option<perf::Ctx>,
+) -> Result<Attached, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    let n = paths.len();
+    let a = span_timed!(otel => "attach_files", attach_drop(&root, &note, &paths), serde_json::json!({"files": n}))
+        .map_err(|e| e.say())?;
+    let mut ix = v.index.lock().unwrap();
+    for rel in &a.copied {
+        ix.add_image(rel);
+    }
+    Ok(a)
+}
+
 /// S5: read a note off disk, "" when it is oversized (never part of the vault)
 fn read_capped(p: &Path) -> Option<String> {
     let m = fs::symlink_metadata(p).ok()?;
@@ -1381,6 +1693,27 @@ fn main() {
             spawn_watcher(app.handle().clone());
             Ok(())
         })
+        // R31.1 THE DROP HANDLER — 4 lines of body, no behaviour, no I/O, no policy.
+        // wry delivers a real XDND drop to Rust and Tauri hands it to us as
+        // WindowEvent::DragDrop (tauri-runtime-wry-2.11.4:4889: for a window's
+        // own content webview the drop is a SYNTHESIZED WINDOW event, not a
+        // webview one), so the DOM never sees a DataTransfer carrying files —
+        // faking a DOM drop in JS would test a path production does not have.
+        // Which note is open and where the caret sits is webview state, so this
+        // re-emits the paths under ONE name the UI owns (`drop-files`) and
+        // stops: every rule — source checks, name checks, the cap, containment,
+        // no-overwrite — lives in `attach_drop`, reached through `attach_files`.
+        // Caveat, stated because it is real: `emit` serializes to JSON, so a
+        // source path whose bytes are not UTF-8 cannot be carried. It is then
+        // dropped here and the user sees nothing — the same hole Tauri's own
+        // `tauri://drag-drop` payload has. Such a file is never attached, never
+        // half-attached; R31.10.
+        .on_window_event(|w, e| {
+            if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = e {
+                use tauri::Emitter;
+                let _ = w.emit(DROP_EVENT, paths);
+            }
+        })
         // S1: the window is the app, never a browser — every navigation off the
         // app origin (remote http(s), javascript:, file:, ...) is denied here.
         // Config-created windows have no builder hook; an inline plugin's
@@ -1416,7 +1749,7 @@ fn main() {
             list_bookmarks, toggle_bookmark, recent_vaults, rename_note, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab,
-            get_hotkeys, set_hotkeys, open_external, save_debounce_ms
+            get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files
         ])
         .run(tauri::generate_context!())
         .expect("tauri run");
@@ -2807,5 +3140,297 @@ mod tests {
             "notesCache is the list_notes command = Index::names()"
         );
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /* ---- R31 drop-to-attach (feedback #18) -----------------------------
+       These hammer `attach_drop`, the ONE function the drop handler wraps.
+       WHAT THEY DO NOT COVER, stated once here and in docs/features.md: the
+       wry/GTK -> `tauri://drag-drop` transport. An OS drop cannot be
+       synthesized (xdotool has no XDND), so faking a DOM drag event would
+       test a code path that does not exist in production.               */
+
+    /// a 40x40-ish png-shaped blob; content is never sniffed (S4), the
+    /// EXTENSION decides, so the bytes only have to be recognisable again.
+    fn src_file(dir: &Path, name: &str, body: &[u8]) -> PathBuf {
+        fs::create_dir_all(dir).unwrap();
+        let p = dir.join(name);
+        fs::write(&p, body).unwrap();
+        p
+    }
+
+    fn drop_vault(tag: &str) -> (PathBuf, PathBuf) {
+        let root = tmp_vault(tag);
+        fs::write(root.join("Note.md"), "# Note\n\nEND\n").unwrap();
+        let src = std::env::temp_dir().join(format!("rustidian-{tag}-src-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&src);
+        fs::create_dir_all(&src).unwrap();
+        (root, src)
+    }
+
+    /// R31.1/R31.2/R31.3: one dropped png is COPIED (never moved) into the
+    /// vault root and the inserted text is stock's wikilink embed, byte exact.
+    #[test]
+    fn drop_copies_the_file_and_returns_the_stock_link() {
+        let (root, srcd) = drop_vault("drop-happy");
+        let s = src_file(&srcd, "cat.png", b"\x89PNG\r\n\x1a\nCAT");
+        let a = attach_drop(&root, "Note", &[s.clone()]).unwrap();
+        assert_eq!(a.text, "![[cat.png]]", "R31.2: stock inserts ![[name]] and nothing else");
+        assert_eq!(a.copied, vec!["cat.png".to_string()]);
+        assert!(a.refused.is_empty());
+        assert_eq!(fs::read(root.join("cat.png")).unwrap(), b"\x89PNG\r\n\x1a\nCAT");
+        assert!(s.exists(), "R31.1: the source is COPIED, never moved");
+        // and the byte server will serve exactly what we wrote (R29 reused)
+        assert_eq!(serve_image(&root, "cat.png").unwrap().1, b"\x89PNG\r\n\x1a\nCAT".to_vec());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&srcd);
+    }
+
+    /// R31.4 + S5: three drops of the SAME name give `cat.png`, `cat 1.png`,
+    /// `cat 2.png` (stock's convention, verified against 1.13.7), and the
+    /// earlier files are BYTE-IDENTICAL afterwards. A drop that overwrites a
+    /// file the user already had is data loss, which outranks everything.
+    #[test]
+    fn drop_never_overwrites_and_renames_like_stock() {
+        let (root, srcd) = drop_vault("drop-coll");
+        fs::write(root.join("cat.png"), b"ALREADY-MINE").unwrap();
+        let s = src_file(&srcd, "cat.png", b"\x89PNGnew");
+        let a1 = attach_drop(&root, "Note", &[s.clone()]).unwrap();
+        let a2 = attach_drop(&root, "Note", &[s.clone()]).unwrap();
+        let a3 = attach_drop(&root, "Note", &[s.clone()]).unwrap();
+        assert_eq!((a1.text.as_str(), a2.text.as_str(), a3.text.as_str()),
+                   ("![[cat 1.png]]", "![[cat 2.png]]", "![[cat 3.png]]"));
+        assert_eq!(fs::read(root.join("cat.png")).unwrap(), b"ALREADY-MINE",
+                   "S5: the pre-existing file was CLOBBERED — that is the data-loss bug this test owns");
+        for n in ["cat 1.png", "cat 2.png", "cat 3.png"] {
+            assert_eq!(fs::read(root.join(n)).unwrap(), b"\x89PNGnew", "{n}");
+        }
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&srcd);
+    }
+
+    /// S1: a file manager can hand us anything. A symlink is REFUSED, not
+    /// followed (following it is how a drop reads /etc/shadow into the vault),
+    /// and so is a directory, a fifo and a path that is simply gone.
+    #[test]
+    fn drop_refuses_symlink_dir_fifo_and_missing_sources() {
+        use std::os::unix::fs::symlink;
+        let (root, srcd) = drop_vault("drop-s1");
+        let real = src_file(&srcd, "real.png", b"\x89PNGreal");
+        let link = srcd.join("link.png");
+        symlink(&real, &link).unwrap();
+        let dir = srcd.join("dir.png");
+        fs::create_dir_all(&dir).unwrap();
+        let gone = srcd.join("gone.png");
+        let a = attach_drop(&root, "Note", &[link, dir, gone]).unwrap();
+        assert_eq!(a.text, "", "nothing may be inserted when everything was refused");
+        assert!(a.copied.is_empty());
+        assert_eq!(a.refused.len(), 3, "{:?}", a.refused);
+        assert!(a.refused[0].contains("symlinks are not copied"), "{:?}", a.refused);
+        assert!(a.refused[1].contains("not a regular file"), "{:?}", a.refused);
+        assert!(a.refused[2].contains("not a regular file"), "{:?}", a.refused);
+        assert_eq!(fs::read_dir(&root).unwrap().filter(|e| e.as_ref().unwrap().path().extension().is_some_and(|x| x == "png")).count(), 0);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&srcd);
+    }
+
+    /// the cap is MAX_IMG_BYTES, enforced on the SOURCE metadata before a byte
+    /// is copied — an oversized image would not be served anyway (R29 S5), so
+    /// copying it would only fill the user's disk.
+    #[test]
+    fn drop_refuses_an_oversized_source_before_copying() {
+        let (root, srcd) = drop_vault("drop-big");
+        let big = src_file(&srcd, "big.png", b"\x89PNG");
+        let f = fs::OpenOptions::new().write(true).open(&big).unwrap();
+        f.set_len(MAX_IMG_BYTES + 1).unwrap();
+        let a = attach_drop(&root, "Note", &[big]).unwrap();
+        assert_eq!(a.text, "");
+        assert!(a.refused[0].contains("over the 32 MB limit"), "{:?}", a.refused);
+        assert!(!root.join("big.png").exists(), "not one byte may land");
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&srcd);
+    }
+
+    /// S4: the EXTENSION allowlist decides what is copied (IMG_TYPES == the
+    /// list img_path_in serves), never a content sniff. svg included: stock
+    /// renders it after sanitizing, we have no sanitizer (R29.8).
+    #[test]
+    fn drop_refuses_everything_outside_img_types() {
+        let (root, srcd) = drop_vault("drop-ext");
+        let mut paths = Vec::new();
+        for n in ["doc.pdf", "arch.zip", "vec.svg", "pic.bmp", "note.md", "noext", "script.png.sh"] {
+            paths.push(src_file(&srcd, n, b"\x89PNGdisguised-as-an-image"));
+        }
+        let a = attach_drop(&root, "Note", &paths).unwrap();
+        assert_eq!(a.text, "", "a disguised payload is still refused: the extension decides");
+        assert_eq!(a.refused.len(), 7, "{:?}", a.refused);
+        assert!(a.refused[0].contains(".pdf is not an image"), "{:?}", a.refused);
+        assert!(a.refused[5].contains("is not an image"), "{:?}", a.refused);
+        // and the positive control in the same test: png/jpg/jpeg/gif/webp pass
+        let ok: Vec<PathBuf> = IMG_TYPES.iter().map(|(e, _)| src_file(&srcd, &format!("ok.{e}"), b"\x89PNGok")).collect();
+        let b = attach_drop(&root, "Note", &ok).unwrap();
+        assert_eq!(b.copied.len(), IMG_TYPES.len(), "{:?}", b.refused);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&srcd);
+    }
+
+    /// S3: the basename is attacker-controlled TEXT. Traversal, NUL, control
+    /// characters and a hidden leading dot are refused — safe_rel's rules,
+    /// reused rather than re-invented.
+    #[test]
+    fn drop_refuses_unsafe_basenames() {
+        let (root, srcd) = drop_vault("drop-name");
+        let real = src_file(&srcd, "real.png", b"\x89PNGreal");
+        // the OS cannot produce these as file_name(), a hostile drop source can
+        let cases: Vec<PathBuf> = vec![
+            srcd.join(".."),
+            PathBuf::from(format!("{}/..%2f..%2fetc/../../evil.png", srcd.display())),
+            PathBuf::from("/tmp/a\0b.png"),
+            PathBuf::from("/tmp/bell\u{7}.png"),
+            srcd.join(".hidden.png"),
+        ];
+        for c in &cases {
+            let a = attach_drop(&root, "Note", std::slice::from_ref(c)).unwrap();
+            assert_eq!(a.text, "", "{c:?} was ACCEPTED");
+            assert_eq!(a.copied.len(), 0, "{c:?} was copied");
+            assert_eq!(a.refused.len(), 1, "{c:?}: {:?}", a.refused);
+        }
+        // nothing landed, and the vault still has only the note + the control
+        let a = attach_drop(&root, "Note", &[real]).unwrap();
+        assert_eq!(a.copied, vec!["real.png".to_string()]);
+        let pngs = fs::read_dir(&root).unwrap().filter_map(|e| e.ok()).filter(|e| e.path().extension().is_some_and(|x| x == "png")).count();
+        assert_eq!(pngs, 1, "an unsafe basename created a file");
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&srcd);
+    }
+
+    /// S2 the destination half, which R29 never needed: `attachmentFolderPath`
+    /// pointing at a SYMLINK out of the vault must refuse the whole drop.
+    /// Threat: vault/attachments -> /home/user, and every drop writes there.
+    /// The positive control (a real subfolder works, and the link is still the
+    /// BASENAME, which resolves by suffix) is in the same test on purpose.
+    #[test]
+    fn drop_refuses_a_destination_that_leaves_the_vault() {
+        use std::os::unix::fs::symlink;
+        let (root, srcd) = drop_vault("drop-dest");
+        let outside = std::env::temp_dir().join(format!("rustidian-drop-out-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(&outside).unwrap();
+        let s = src_file(&srcd, "cat.png", b"\x89PNGcat");
+        fs::create_dir_all(root.join(".obsidian")).unwrap();
+        let set = |v: &str| fs::write(root.join(".obsidian/app.json"), format!("{{\"attachmentFolderPath\":\"{v}\"}}")).unwrap();
+        // 1. a symlinked attachment dir: refused, and NOTHING is written outside
+        symlink(&outside, root.join("att")).unwrap();
+        set("att");
+        assert_eq!(attach_drop(&root, "Note", &[s.clone()]), Err(DropErr::BadAttachDir));
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0, "a byte landed OUTSIDE the vault");
+        // 2. traversal in the config value: not supported -> vault root + a
+        //    VISIBLE notice, never a silent write somewhere else
+        set("../evil");
+        let a = attach_drop(&root, "Note", &[s.clone()]).unwrap();
+        assert_eq!(a.copied, vec!["cat.png".to_string()]);
+        assert!(a.refused[0].contains("is not supported"), "{:?}", a.refused);
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+        // 3. positive control: a plain subfolder is honoured and created
+        set("files/img");
+        let b = attach_drop(&root, "Note", &[s.clone()]).unwrap();
+        assert_eq!(b.text, "![[cat.png]]", "the LINK stays the basename (stock)");
+        assert_eq!(b.copied, vec!["files/img/cat.png".to_string()], "the INDEX key is the relative path");
+        assert!(root.join("files/img/cat.png").is_file());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&srcd);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    /// a multi-file drop: every file copied, ORDER preserved, one link per
+    /// line; and the two whole-drop failures (empty drop, no note open).
+    #[test]
+    fn drop_handles_multi_file_empty_and_noteless_drops() {
+        let (root, srcd) = drop_vault("drop-multi");
+        let p: Vec<PathBuf> = ["a.png", "b.jpg", "c.gif"].iter().map(|n| src_file(&srcd, n, format!("PNG-{n}").as_bytes())).collect();
+        let mut all = p.clone();
+        all.insert(2, src_file(&srcd, "nope.exe", b"MZ"));       // mixed drop
+        let a = attach_drop(&root, "Note", &all).unwrap();
+        assert_eq!(a.text, "![[a.png]]\n![[b.jpg]]\n![[c.gif]]", "one link per line, drop order");
+        assert_eq!(a.copied, vec!["a.png", "b.jpg", "c.gif"]);
+        assert_eq!(a.refused.len(), 1, "the refusal is REPORTED, the rest still attach");
+        for n in ["a.png", "b.jpg", "c.gif"] {
+            assert_eq!(fs::read(root.join(n)).unwrap(), format!("PNG-{n}").into_bytes());
+        }
+        assert_eq!(attach_drop(&root, "Note", &[]), Err(DropErr::Empty));
+        assert_eq!(attach_drop(&root, "", &p).unwrap_err(), DropErr::NoNote);
+        assert_eq!(attach_drop(&root, "../outside", &p).unwrap_err(), DropErr::NoNote);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&srcd);
+    }
+
+    /// R31.8 / R29.10: a browser drag delivers a URL, not a file. Refused —
+    /// and the refusal SAYS "remote images are disabled" instead of reusing
+    /// R29.4's "could not be found", which is an error that misdescribes its
+    /// own cause.
+    #[test]
+    fn drop_refuses_a_remote_drag_with_an_honest_reason() {
+        let (root, srcd) = drop_vault("drop-remote");
+        let urls = ["https://evil.test/cat.png", "http://evil.test/cat.png", "data:image/png;base64,AAAA"];
+        for u in urls {
+            let a = attach_drop(&root, "Note", &[PathBuf::from(u)]).unwrap();
+            assert_eq!(a.text, "");
+            assert_eq!(a.refused, vec!["remote images are disabled".to_string()], "{u}");
+            assert!(!a.refused[0].contains("could not be found"), "{u}: the R29.4 wording misdescribes a remote drag");
+        }
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&srcd);
+    }
+
+    /// R29.11 for the drop path: a file copied but not INDEXED is invisible to
+    /// both renderers, so `Index::add_image` must produce exactly what a fresh
+    /// walk would (sorted, deduped) — otherwise the link paints [xi:1/0/1].
+    #[test]
+    fn dropped_images_enter_the_index_like_a_fresh_walk() {
+        let (root, srcd) = drop_vault("drop-index");
+        let mut ix = Index::build(&root);
+        assert_eq!(ix.images(), Vec::<String>::new().as_slice());
+        let a = attach_drop(&root, "Note", &[src_file(&srcd, "zed.png", b"\x89PNGz"), src_file(&srcd, "abe.png", b"\x89PNGa")]).unwrap();
+        for r in &a.copied {
+            ix.add_image(r);
+            ix.add_image(r); // idempotent: a double drop must not double the list
+        }
+        assert_eq!(ix.images(), ["abe.png", "zed.png"], "sorted, deduped");
+        assert_eq!(ix.images(), Index::build(&root).images(), "== a fresh walk");
+        // and the resolver the renderers use finds it
+        assert!(image_html(ix.images(), "zed.png", "").contains("rustidian-img://localhost/zed.png"));
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&srcd);
+    }
+
+    /// R31.1 THE WIRING IS A STRING, and a string drifts. Rust emits
+    /// DROP_EVENT from the WindowEvent::DragDrop handler; ui/main.js listens
+    /// for that exact name and calls `attach_files`. Rename either end and the
+    /// feature dies in total silence — the build is still green, the tests are
+    /// still green, and a drop simply does nothing. Nothing else in this repo
+    /// would notice, because ui/ is not a cargo input (docs/features.md trap).
+    ///
+    /// It also pins the handler as a PASS-THROUGH, which is the structural
+    /// claim the whole design rests on: an OS drop cannot be synthesized in a
+    /// test, so the part that IS tested must be the part that has the
+    /// behaviour (`attach_drop`). A handler that grows a body is that claim
+    /// quietly becoming false — this test fails at 9 lines.
+    #[test]
+    fn the_drop_handler_is_a_pass_through_and_the_ui_listens_for_the_same_name() {
+        let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
+        let ui = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/main.js")).unwrap();
+        let lines: Vec<&str> = src.lines().collect();
+        let i = lines.iter().position(|l| l.contains(".on_window_event(")).expect("no OS drop is wired at all");
+        let j = i + lines[i..].iter().position(|l| l.trim() == "})").expect("unterminated handler");
+        let body = &lines[i..=j];
+        assert!(body.len() <= 8, "the drop handler is {} lines: it is meant to be a pass-through", body.len());
+        assert!(body.iter().any(|l| l.contains("WindowEvent::DragDrop")), "the handler must be the REAL OS drop event");
+        assert!(body.iter().any(|l| l.contains("emit(DROP_EVENT")), "the handler must forward under the shared name");
+        for forbidden in ["fs::", "copy", "canonicalize", "if !", "unwrap()"] {
+            assert!(!body.iter().any(|l| l.contains(forbidden)), "policy or I/O ({forbidden}) leaked into the drop handler");
+        }
+        assert_eq!(DROP_EVENT, "drop-files");
+        assert!(ui.contains(&format!("listen(\"{DROP_EVENT}\"")), "ui/main.js must listen for the name Rust emits");
+        assert!(ui.contains("inv(\"attach_files\""), "the UI reaches attach_drop through the attach_files command");
+        assert!(ui.contains("function attachDrop("), "the UI half of the drop has a name to grep for");
     }
 }
