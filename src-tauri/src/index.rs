@@ -463,6 +463,18 @@ impl Index {
         &self.names
     }
 
+    /// R31.11: an image that JUST landed in the vault becomes a member without a
+    /// re-walk. Both renderers resolve `![[x.png]]` against this list
+    /// (`list_images` hands it out verbatim), so a dropped file that is not in
+    /// here is copied but invisible — the R29.11 gap, which a DROP must not
+    /// have: the link is inserted in the same gesture. Sorted + deduped, so the
+    /// list stays byte-identical to what a fresh `Index::build` would produce.
+    pub fn add_image(&mut self, rel: &str) {
+        if let Err(i) = self.images.binary_search(&rel.to_string()) {
+            self.images.insert(i, rel.to_string());
+        }
+    }
+
     /// R29.6: sorted vault-relative image paths (with extension)
     pub fn images(&self) -> &[String] {
         &self.images

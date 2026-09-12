@@ -621,6 +621,26 @@ body.floorrelayout #main { padding-right: 1px }
            background: #45283c; color: #f5c2c7; font-size: 12px; line-height: 1.4 }
 #saveerr[hidden] { display: none }
 
+/* R31.5 drop-to-attach: the same corner, the same shape — a refusal the user
+   can read ("remote images are disabled", "…is over the 32 MB limit"). Neutral
+   border, because most of what it says is a decision, not a failure. It is
+   transient (4 s): unlike a failed save nothing is left dirty behind it. */
+#dropmsg { position: fixed; right: 12px; bottom: 12px; z-index: 60; max-width: 420px;
+           padding: 8px 12px; border-radius: 6px; border: 1px solid #585b70;
+           background: #313244; color: #cdd6f4; font-size: 12px; line-height: 1.4;
+           white-space: pre-line }
+#dropmsg[hidden] { display: none }
+#saveerr:not([hidden]) ~ #dropmsg { bottom: 58px }   /* never cover the dataloss banner */
+
+/* R31.7 "Insert attachment" prompt — one line, centred over the note column,
+   because it is the keyboard road to the SAME attach that a drop takes. */
+#anew { position: fixed; left: 50%; top: 80px; transform: translateX(-50%); z-index: 61;
+        width: 520px; max-width: 70vw; padding: 6px; border-radius: 6px;
+        border: 1px solid #585b70; background: #1e1e2e }
+#anew[hidden] { display: none }
+#apath { width: 100%; box-sizing: border-box; background: #181825; color: #cdd6f4;
+         border: 1px solid #45475a; border-radius: 4px; padding: 6px 8px; font-size: 13px }
+
 /* ---------- R29 IMAGE EMBEDS ---------- */
 /* Both engines emit the same two elements: img.vimg (bytes over the
    rustidian-img: scheme) and span.imgmiss (R29.4's banner). The CSS is shared
