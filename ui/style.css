@@ -620,3 +620,31 @@ body.floorrelayout #main { padding-right: 1px }
            padding: 8px 12px; border-radius: 6px; border: 1px solid #f38ba8;
            background: #45283c; color: #f5c2c7; font-size: 12px; line-height: 1.4 }
 #saveerr[hidden] { display: none }
+
+/* ---------- R29 IMAGE EMBEDS ---------- */
+/* Both engines emit the same two elements: img.vimg (bytes over the
+   rustidian-img: scheme) and span.imgmiss (R29.4's banner). The CSS is shared
+   deliberately — R29.7 says a divergence between reading view and live preview
+   is a bug, and that includes the painted box. */
+.lp .vimg, .preview .vimg { display: block; max-width: 100%; height: auto; margin: 8px 0 }
+/* remote (`![](https://…)`): pulldown emits a bare <img>, we emit img.rimg.
+   The CSP has no remote img origin, so neither one ever loads bytes (R29.10);
+   sizing it like a vault image keeps the two engines identical if the operator
+   ever opens that door. */
+.lp .rimg, .preview img:not(.vimg):not(.rimg), .preview .rimg {
+  display: block; max-width: 100%; height: auto; margin: 8px 0 }
+/* R29.4: a full-width grey banner, NOT a broken-image icon. Reading view
+   carries the wording as TEXT (the Rust renderer escapes the target into it);
+   live preview carries the target in data-miss and CSS paints the identical
+   sentence, because a row's textContent MUST stay equal to its source line —
+   the token map walks text nodes, so banner prose inside the row would move
+   every caret column after it. */
+.lp .imgmiss, .preview .imgmiss {
+  display: block; padding: 12px 16px; margin: 8px 0; border-radius: 6px;
+  background: #313244; color: #a6adc8; font-size: 14px; line-height: 1.4;
+  user-select: none }
+.lp .imgmiss::after { content: "\201C" attr(data-miss) "\201D could not be found." }
+/* source mode (.lp.src) is raw markdown: markers are all revealed and the
+   widget must not paint. With the caret merely ON the row the widget stays,
+   exactly like the task checkbox of an edited "- [x] " line (R17.6). */
+.lp.src .vimg, .lp.src .rimg, .lp.src .imgmiss { display: none }

@@ -1765,9 +1765,10 @@ function treeHighlight() {
   treeActive = r;
 }
 async function refreshTree() {
-  const [folders, notes] =
-    await Promise.all([inv("list_folders"), inv("list_notes")]);
+  const [folders, notes, imgs] =
+    await Promise.all([inv("list_folders"), inv("list_notes"), inv("list_images")]);
   notesCache = notes;
+  imgsCache = imgs;                                     // R29: LP resolves image embeds against this
   const tree = $("tree");
   const sig = folders.join("\n") + "\0" + notes.join("\n");
   if (sig === treeSig && tree.childElementCount) { treeHighlight(); return; }
@@ -1892,6 +1893,12 @@ async function updateStatus(g) {
 
 /* ---------- [[ autocomplete (R3.4) ---------- */
 let notesCache = [], acItems = [], acSel = 0, acStart = -1, acKind = "n";
+/* R29: the live-preview engine's image list — the SAME list the Rust renderer
+   resolves against (`list_images` hands out `Index::images()` verbatim), so the
+   two engines cannot disagree about what `![[pic.png]]` names (R29.7). Loaded
+   with notesCache in refreshTree(); R29.11 (an image added while the vault is
+   open) is a known gap on BOTH sides, not a JS one. */
+let imgsCache = [];
 
 function hideAc() {
   const was = acItems.length;

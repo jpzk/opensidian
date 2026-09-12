@@ -249,6 +249,20 @@ const Ed = {
         const target = bar >= 0 ? raw.slice(0, bar) : raw;
         const label = bar >= 0 ? raw.slice(bar + 1) : raw;
         const hash = target.indexOf("#");
+        // R29.1 `![[pic.png]]`: an IMAGE embed, not a link. Mirrors linkify()'s
+        // guard exactly — bang present, NO anchor, and the target must have an
+        // image extension, so a NOTE embed `![[Second Note]]` (requirements.md
+        // :410) and `![[pic.png#x]]` both fall through to the link branch below.
+        if (wl[1] === "!" && hash < 0 && Ed.isImg(target)) {
+          const em = [], emk = [];
+          const eadd = (el, isMk) => { em.push(el); if (isMk) emk.push(el); box.appendChild(el); };
+          eadd(Ed.mk("![["), true);
+          eadd(Ed.mk(raw, "img"), true);                          // the whole inner text, folded
+          eadd(Ed.mk("]]"), true);
+          eadd(Ed.imgEl(target, bar >= 0 ? label : target), false);  // alias is the alt (image_html)
+          Ed.tok(em, emk, "img");
+          i += wl[0].length; continue;
+        }
         const parts = [], mks = [];
         const add = (el, isMk) => { parts.push(el); if (isMk) mks.push(el); box.appendChild(el); };
         add(Ed.mk(wl[1] + "[["), true);
@@ -265,6 +279,28 @@ const Ed = {
         add(Ed.mk("]]"), true);
         Ed.tok(parts, mks, wl[1] ? "embed" : "wl");
         i += wl[0].length; continue;
+      }
+      // R29.2 `![alt](pic.png)` — the markdown image form. Same destination
+      // scanner as a link (balanced parens, whitespace = not a link), so
+      // `![](my pic.png)` stays literal text exactly as pulldown-cmark leaves
+      // it (R29.3). Scheme split mirrors the two Tag::Image arms in main.rs:
+      // no scheme -> our vault image; http(s) -> pulldown's plain <img>, which
+      // the CSP still blocks (R29.10, remote is the operator's decision);
+      // any other scheme -> text, which is the fall-through below.
+      if (rest[0] === "!") {
+        const im = Ed.linkAt(rest.slice(1));
+        const rem = im && /^https?:\/\//.test(im[2]);
+        if (im && (rem || !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(im[2]))) {
+          flush();
+          const parts = [], mks = [];
+          const add = (el, isMk) => { parts.push(el); if (isMk) mks.push(el); box.appendChild(el); };
+          add(Ed.mk("![", "img"), true);
+          if (im[1]) add(Ed.mk(im[1], "img"), true);
+          add(Ed.mk("](" + im[2] + ")", "img"), true);
+          add(Ed.imgEl(im[2], im[1], rem), false);
+          Ed.tok(parts, mks, "img");
+          i += 1 + im[0].length; continue;
+        }
       }
       const lt = Ed.linkAt(rest);                                // [text](url)
       if (lt) {
@@ -344,6 +380,64 @@ const Ed = {
     if (typeof notesCache === "undefined" || !notesCache.length) return true;
     return notesCache.some(x => x === n || x.endsWith("/" + n) ||
                                 x === n + ".md" || x.endsWith("/" + n + ".md"));
+  },
+
+  /* ---------- R29 IMAGE EMBEDS (live preview half) ----------
+     R29.7: reading view (Rust/pulldown-cmark) and live preview are separate
+     engines, so every decision below mirrors ONE named function in
+     src-tauri/src/main.rs and nothing else:
+       Ed.isImg     <- is_img_target        (index::IMG_EXTS, 5 extensions)
+       Ed.pctDec    <- pct_decode           (strict: %XX or nothing)
+       Ed.pctEnc    <- pct_encode           (unreserved + '/' survive)
+       Ed.imgRel    <- index::resolve       (exact, else basename suffix)
+       Ed.imgEl     <- image_html           (src from the INDEX, never the target)
+     The src is built from the path the IMAGE LIST holds, never from the
+     target in the note: the list only ever contains real, non-hidden,
+     non-symlinked vault members, so a traversal target resolves to nothing
+     and gets no URL at all (the byte server re-checks containment anyway).
+     An unresolved target is R29.4's banner in both engines. */
+  IMG_EXTS: ["png", "jpg", "jpeg", "gif", "webp"],
+  IMG_SCHEME: "rustidian-img",
+  isImg(t) {                                   // is this target an IMAGE embed, not a note embed?
+    const i = t.lastIndexOf(".");
+    return i >= 0 && Ed.IMG_EXTS.includes(t.slice(i + 1).toLowerCase());
+  },
+  pctDec(s) { try { return decodeURIComponent(s); } catch (_) { return null; } },
+  pctEnc(s) {
+    let out = "";
+    for (const b of new TextEncoder().encode(s)) {
+      const c = String.fromCharCode(b);
+      out += /[A-Za-z0-9\-._~\/]/.test(c) ? c : "%" + b.toString(16).toUpperCase().padStart(2, "0");
+    }
+    return out;
+  },
+  imgRel(target) {                             // vault-relative path from the image list, or null
+    const dec = Ed.pctDec(target) ?? target;   // image_html's unwrap_or_else(target)
+    if (!dec || typeof imgsCache === "undefined") return null;
+    const suf = "/" + dec;
+    return imgsCache.find(x => x === dec || x.endsWith(suf)) ?? null;
+  },
+  imgSrc(target) {
+    const rel = Ed.imgRel(target);
+    return rel === null ? null : Ed.IMG_SCHEME + "://localhost/" + Ed.pctEnc(rel);
+  },
+  // the ONE widget both syntaxes paint. Carries no TEXT node in either branch:
+  // the row's textContent must stay === its source line (the token map walks
+  // text nodes), so the R29.4 banner wording is painted by CSS from data-miss.
+  imgEl(target, alt, remote) {
+    const src = remote ? target : Ed.imgSrc(target);
+    if (src === null) {
+      const s = Ed.el("span", "imgmiss");
+      s.dataset.miss = target;                 // CSS: “<target>” could not be found.
+      s.contentEditable = "false";
+      return s;
+    }
+    const im = Ed.el("img", remote ? "rimg" : "vimg");
+    im.setAttribute("src", src);               // attribute, not property: the
+    im.setAttribute("alt", alt || "");         // agreement assertion compares raw attrs
+    im.contentEditable = "false";
+    im.draggable = false;
+    return im;
   },
 
   /* ---------- token map: source col <-> DOM offset ---------- */
@@ -1099,7 +1193,15 @@ const Ed = {
                    "snake_case_word stays", "`a**b`", "text with <b>&amp;", "unclosed **bold",
                    "- **bold item** with [[Link]]", "\t\t1. deep ordered",
                    // R17.7: destinations with parens, on both link forms
-                   "[wiki](https://e.example/wiki/Foo_(bar)) tail", "(see https://e.example/a) end"];
+                   "[wiki](https://e.example/wiki/Foo_(bar)) tail", "(see https://e.example/a) end",
+                   // R29 image embeds: the widget carries NO text node, so the
+                   // row's textContent === its source line only if every one of
+                   // these lands entirely in markers (and `![](my pic.png)`,
+                   // R29.3, is not an image at all — it is plain text)
+                   "![[pic.png]]", "![](pic.png)", "![alt text](sub/dir/pic.png)",
+                   "![](my%20pic.png)", "![](my pic.png)", "![[Second Note]]",
+                   "![[pic.png|300]]", "![](https://x.example/a.png)", "text ![](pic.png) tail",
+                   "![](pic.png", "![]()", "![[pic.png#x]]"];
     let bad = 0;
     Ed.edtWhy = "";
     // the label rides in the window-title census, so keep it token-safe
@@ -1123,7 +1225,12 @@ const Ed = {
     const rf = [["**bold**", "bold"], ["*it*", "it"], ["`code`", "code"], ["~~s~~ ==h==", "s h"],
                 ["[[Welcome]]", "Welcome"], ["[[Welcome|alias]]", "alias"], ["[ext](http://x.y/z)", "ext"],
                 ["#tag", "#tag"], ["# Head", "Head"], ["- alpha", "alpha"], ["\t- nested", "\tnested"],
-                ["- [ ] todo", "todo"], ["> quoted", "quoted"], ["1. one", "one"]];
+                ["- [ ] todo", "todo"], ["> quoted", "quoted"], ["1. one", "one"],
+                // R29: an image embed paints a WIDGET, so its visible text is
+                // empty in both forms — while a NOTE embed is still a link and
+                // keeps its label, and a raw space is still literal text
+                ["![[pic.png]]", ""], ["![](pic.png)", ""], ["![alt](sub/pic.png)", ""],
+                ["![[Second Note]]", "Second Note"], ["![](my pic.png)", "![](my pic.png)"]];
     for (const [s, w] of rf) if (vis(s) !== w) fail("vis:" + s);
     /* R17.6 TOKEN MAP + R17.7 PER-TOKEN REVEAL, on the map itself (pure: no
        selection, no CSS). `tm` is the M73-M78 fixture line, raw length 61:
