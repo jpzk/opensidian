@@ -423,6 +423,40 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .snavi:hover { background: #313244 }
 .snavi.sel { background: #45475a }
 #spage { flex: 1; min-width: 0; padding: 16px; box-sizing: border-box; display: flex; flex-direction: column }
+/* R30 row panes. Measured off stock 1.13.7 (docs/stock-settings-recon/measurements.txt):
+   card inset 17px, 76px row with a one-line description (+16px per extra line),
+   1px separator inset to the card, controls flush right. #spage is already an
+   allowed R22 scroll container, so the pane scrolls without a new registration. */
+#spage.rows { display: block; overflow-y: auto; padding: 16px 20px }
+.ssec { font-weight: 600; color: #cdd6f4; margin: 24px 0 8px; font-size: 13px }
+#spage.rows > .ssec:first-child { margin-top: 0 }
+.scard { background: #1e1e2e; border: 1px solid #313244; border-radius: 6px }
+.srow { display: flex; align-items: center; gap: 16px; min-height: 76px; box-sizing: border-box;
+        padding: 20px 17px; border-bottom: 1px solid #313244 }
+.scard > .srow:last-child { border-bottom: 0 }
+.sinfo { flex: 1; min-width: 0 }
+.slabel { font-size: 14px; line-height: 19px; color: #cdd6f4 }
+.sdesc { font-size: 13px; line-height: 16px; color: #7f849c; margin-top: 2px }
+.slink { color: #89b4fa }
+/* the ONE disabled treatment (R30): not focusable (no control is a form element),
+   not clickable, aria-disabled in the DOM — grey paint is the least of it. */
+.srow.dis { cursor: default }
+.srow.dis .slabel { color: #a6adc8 }
+.srow.dis .sctl { opacity: .5; pointer-events: none }
+.sctl { flex: none; display: flex; align-items: center; gap: 8px; color: #cdd6f4; font-size: 13px }
+.sctl.toggle { width: 40px; height: 22px; border-radius: 999px; background: #45475a; padding: 0; position: relative }
+.sctl.toggle > i { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #cdd6f4 }
+.sctl.toggle.on { background: #cba6f7 }
+.sctl.toggle.on > i { left: 21px; background: #1e1e2e }
+.sctl.dropdown { width: 141px; height: 24px; box-sizing: border-box; padding: 0 8px; background: #181825;
+                 border: 1px solid #45475a; border-radius: 4px; white-space: nowrap; overflow: hidden }
+.sctl.text { width: 141px; height: 24px; box-sizing: border-box; padding: 0 8px; background: #181825;
+             border: 1px solid #45475a; border-radius: 4px; color: #7f849c; white-space: nowrap; overflow: hidden }
+.sctl.list { color: #7f849c; max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.sctl.slider .trk { width: 150px; height: 4px; border-radius: 2px; background: #45475a; display: inline-block }
+.sctl.color .sw { width: 22px; height: 22px; border-radius: 4px; background: #cba6f7; display: inline-block }
+.sctl.nav { color: #7f849c }
+.sbtn { padding: 4px 10px; background: #313244; border: 1px solid #45475a; border-radius: 4px; white-space: nowrap }
 .sempty { color: #7f849c }
 #hkbar { display: flex; align-items: center; gap: 6px; height: 28px }
 #hkfilter { flex: 1; height: 28px; box-sizing: border-box; background: #181825; color: #cdd6f4;

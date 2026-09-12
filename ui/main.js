@@ -3428,11 +3428,17 @@ function showSettingsPage(id) {
   const pane = e ? e.id : "hotkeys";
   sPane = pane;
   for (const d of $("snav").querySelectorAll(".snavi")) d.classList.toggle("sel", d.dataset.pane === pane);
-  const pg = $("spage"); pg.innerHTML = "";
+  const pg = $("spage"); pg.innerHTML = ""; pg.className = "";
+  const rows = SMODEL.rows.filter(r => r.tab === pane);   // what this pane owes the census
+  sRowsShown = rows.length;
+  sEnabledShown = rows.filter(r => r.enabled).length;
   if (pane !== "hotkeys") {
-    const d = document.createElement("div"); d.className = "sempty";
-    d.textContent = (e ? e.entry : pane) + " — nothing to configure yet.";
-    return pg.appendChild(d);
+    if (!rows.length) {                     // per-core-plugin panes: nav entry + empty pane (brief §2 OUT)
+      const d = document.createElement("div"); d.className = "sempty";
+      d.textContent = (e ? e.entry : pane) + " — nothing to configure yet.";
+      return pg.appendChild(d);
+    }
+    return buildSettingsRows(pg, rows);
   }
   const bar = document.createElement("div"); bar.id = "hkbar";
   const inp = document.createElement("input");
@@ -3446,6 +3452,92 @@ function showSettingsPage(id) {
   pg.append(bar, chips, list);
   renderHk();
   inp.focus();
+}
+/* R30 ROWS — the Options-tab panes, built from the data table, never from HTML.
+   Stock has no disabled style to copy (recon Q4: where a control does not apply
+   stock REMOVES it), so ours is invented ONCE, here, and applied to every row
+   the table does not back with a real config key:
+     - .dis + aria-disabled="true": it reads as disabled, it is not merely grey
+     - the control is a DIV, never a form element — there is no tab stop to take
+       away, no default activation to suppress, and no handler is attached
+     - pointer-events:none (style.css) so click and hover do nothing either
+     - ONE hover string for all of them (SDIS_TITLE), no per-row "coming soon"
+   Geometry comes from docs/stock-settings-recon/measurements.txt: 76 px row with
+   a one-line description, +16 px per extra line, 17 px card inset, 1 px
+   separator, controls at the card's right edge. The palette stays rustidian's
+   dark theme — that delta is recorded in R30. */
+const SDIS_TITLE = "Not implemented yet";
+let sRowsShown = 0, sEnabledShown = 0;
+function sctl(r) {                            // the control cell for one row, or null
+  const v = r.default_shown === "-" ? "" : r.default_shown;
+  const d = document.createElement("div");
+  d.className = "sctl " + r.control;
+  const parts = (t, cls) => t.split(" / ").forEach(p => {
+    const s = document.createElement("span"); s.className = cls; s.textContent = p; d.appendChild(s);
+  });
+  switch (r.control) {
+    case "none": return null;                 // stock shows label + description and nothing else
+    case "toggle":
+      if (v === "on") d.classList.add("on");
+      d.appendChild(document.createElement("i"));       // the knob
+      break;
+    case "dropdown": case "text": case "list":
+      d.textContent = v.length > 48 ? v.slice(0, 47) + "…" : v;
+      break;
+    case "color": {
+      const sw = document.createElement("span"); sw.className = "sw";
+      d.appendChild(sw); d.appendChild(document.createTextNode(v.replace(" + reset", "")));
+      break;
+    }
+    case "slider": {
+      const t = document.createElement("span"); t.className = "trk";
+      const n = document.createElement("span"); n.className = "val"; n.textContent = v.replace(" + reset", "");
+      d.append(n, t);
+      break;
+    }
+    case "button": case "buttons":
+      parts(v, "sbtn");
+      break;
+    case "nav":
+      if (v) { const s = document.createElement("span"); s.className = "nv"; s.textContent = v; d.appendChild(s); }
+      d.appendChild(document.createTextNode("›"));
+      break;
+    default:
+      d.textContent = v;
+  }
+  return d;
+}
+function buildSettingsRows(pg, rows) {
+  pg.className = "rows";
+  let section = null, card = null;   // null !== "" so the first row always opens a card
+  for (const r of rows) {
+    const sec = r.section || "";
+    if (sec !== section) {                    // a new section = its own heading + card, like stock
+      section = sec;
+      if (sec) { const h = document.createElement("div"); h.className = "ssec"; h.textContent = sec; pg.appendChild(h); }
+      card = document.createElement("div"); card.className = "scard"; pg.appendChild(card);
+    }
+    const row = document.createElement("div");
+    row.className = "srow" + (r.enabled ? "" : " dis");
+    if (!r.enabled) { row.setAttribute("aria-disabled", "true"); row.title = SDIS_TITLE; }
+    const info = document.createElement("div"); info.className = "sinfo";
+    const lb = document.createElement("div"); lb.className = "slabel"; lb.textContent = r.label;
+    info.appendChild(lb);
+    if (r.desc && r.desc !== "-") {
+      const ds = document.createElement("div"); ds.className = "sdesc";
+      r.desc.split(" | ").forEach((p, i) => {   // " | " marks stock's inline link tail
+        const s = document.createElement("span");
+        if (i) s.className = "slink";
+        s.textContent = (i ? " " : "") + p;
+        ds.appendChild(s);
+      });
+      info.appendChild(ds);
+    }
+    row.appendChild(info);
+    const c = sctl(r);
+    if (c) row.appendChild(c);
+    card.appendChild(row);
+  }
 }
 const HKCHIPS = [["all", "All"], ["assigned", "Assigned"], ["mine", "Assigned by me"], ["unassigned", "Unassigned"]];
 function hkRows() {                          // fuzzy filter AND active chip
