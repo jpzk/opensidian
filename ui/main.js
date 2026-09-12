@@ -1021,6 +1021,37 @@ function updateTitle() {          // pane/focus census in the window title (head
             "|" + xs(host.innerText) + "]";
     }
   }
+  // R29 image probe: the focused note view's images -> [xi:<n>/<loaded>/<miss>|<src>|<src>].
+  // TRAP: an <img> in the DOM is NOT evidence that any byte arrived — a CSP-blocked,
+  // out-of-vault or 404 image is still an element with the src you asked for. `loaded`
+  // counts naturalWidth > 0, which ONLY a decoded image has, so the census can tell
+  // "rendered" from "requested". <miss> is the R29.4 banner count (span.imgmiss), which is
+  // the defined answer for a target that resolves to nothing — it must never be an <img>.
+  // BOTH renderers publish this from their OWN DOM (reading = Rust's pulldown-cmark HTML,
+  // lp = the R17 JS engine), so the smoke asserts they agree on the RESOLVED src byte for
+  // byte (getAttribute, not .src: the property is absolutised and would hide a disagreement).
+  if (md && ft && !ft.kind && fg()) {
+    const rv = ft.mode === "reading" ? fg().preview : fg().lp;
+    const ims = rv ? [...rv.querySelectorAll("img")] : [];
+    const nmiss = rv ? rv.querySelectorAll(".imgmiss").length : 0;
+    if (ims.length || nmiss) {
+      // the title only MOVES in updateTitle (see noteErr's note), and an image decodes
+      // asynchronously — so at render time every naturalWidth is 0 and the census would
+      // sit there saying "0 loaded" forever, which a poll cannot tell from "blocked".
+      // Re-publish once per element when its bytes land (or fail): one-shot, so this can
+      // never become a title loop.
+      for (const i of ims) {
+        if (i.dataset.xiw || i.complete) continue;
+        i.dataset.xiw = "1";
+        const again = () => requestAnimationFrame(updateTitle);
+        i.addEventListener("load", again, { once: true });
+        i.addEventListener("error", again, { once: true });
+      }
+      const xi = s => String(s == null ? "" : s).replace(/[[\]|]/g, "").slice(0, 100);
+      md += " [xi:" + ims.length + "/" + ims.filter(i => i.naturalWidth > 0).length + "/" + nmiss +
+            ims.slice(0, 3).map(i => "|" + xi(i.getAttribute("src"))).join("") + "]";
+    }
+  }
   // R15.2 font probe: bundled @font-face entries that actually LOADED (lazy: a face loads when text first uses it) -> [fonts:SourceCodePro/400/normal|...]
   { const fl = document.fonts ? [...document.fonts].filter(f => f.status === "loaded").map(f => f.family.replace(/[" ]/g, "") + "/" + f.weight + "/" + f.style) : [];
     if (fl.length) md += " [fonts:" + fl.join("|") + "]"; }
