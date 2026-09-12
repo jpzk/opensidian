@@ -3359,6 +3359,7 @@ $("vswitch").onclick = showPicker;
   await setRTab(RPANES[rt] ? rt : "bl", false);
   vaultPath = await inv("vault_get");
   if (vaultPath) await enterVault(); else showPicker();
+  smodelPrefetch().catch(() => {});     // R30: settings table warmed off the open path (T2)
 })();
 
 
@@ -3367,15 +3368,28 @@ $("vswitch").onclick = showPicker;
    can click chips by coordinate. census [modal:settings] [hk:<rows>]
    [hkrec:<id>] while recording, [hkc:N] conflicting commands. ---------- */
 let settingsOpen = false, hkChip = "all", hkRec = null, hkInfo = "";
-const SNAV = ["General", "Appearance", "Interface", "Editor", "Files and links", "Hotkeys", "Core plugins"];
+/* R30 (feedback #19): the nav tree and the row lists are a DATA TABLE in Rust
+   (src-tauri/src/settings.rs = the black-box recon transcript of stock 1.13.7).
+   The frontend authors NO structure: it fetches `settings_model` once and
+   renders it. Prefetched at boot, so opening the modal does synchronous work
+   only — T2's 100 ms first-paint ceiling has no round trip inside it.
+   NAV IS EAGER (19 entries, built once per session), PANE IS LAZY: only the
+   selected pane exists in the DOM, so 105 rows are never all built at once. */
+let SMODEL = null, SMODELP = null, sPane = "hotkeys";
+function smodelPrefetch() {
+  if (!SMODELP) SMODELP = inv("settings_model").then(m => (SMODEL = m), e => { SMODELP = null; throw e; });
+  return SMODELP;
+}
 function cmdSettings() {
   settingsOpen ? closeSettings() : openSettings();
 }
-function openSettings() {
+async function openSettings() {
+  if (!SMODEL) await smodelPrefetch();   // cold open only (prefetched at boot)
   settingsOpen = true; hkRec = null;
   closeModal();
   $("settings").hidden = false;
-  showSettingsPage("Hotkeys");
+  buildSettingsNav();
+  showSettingsPage(sPane);
   updateTitle();
 }
 function closeSettings() {
@@ -3383,20 +3397,41 @@ function closeSettings() {
   $("settings").hidden = true;
   updateTitle();
 }
-function showSettingsPage(name) {
-  const nav = $("snav"); nav.innerHTML = "";
-  const h = document.createElement("div"); h.className = "snavh"; h.textContent = "Options";
-  nav.appendChild(h);
-  for (const n of SNAV) {
+/* the left nav, 1:1 with stock's order and grouping (Options 1-9, then the
+   Core plugins group) — built ONCE from the model, never re-created on a tab
+   switch: selection is a class toggle, so clicking a nav entry costs one pane
+   build and nothing else. */
+function buildSettingsNav() {
+  const nav = $("snav");
+  if (nav.dataset.built === "1") return;
+  nav.innerHTML = "";
+  let group = null;
+  for (const e of SMODEL.nav) {
+    if (e.group !== group) {
+      group = e.group;
+      const h = document.createElement("div"); h.className = "snavh"; h.textContent = group;
+      nav.appendChild(h);
+    }
     const d = document.createElement("div");
-    d.className = "snavi" + (n === name ? " sel" : ""); d.textContent = n;
-    d.onclick = () => showSettingsPage(n);
+    d.className = "snavi"; d.textContent = e.entry;
+    d.dataset.pane = e.id; d.tabIndex = 0;
+    d.onclick = () => showSettingsPage(e.id);
+    d.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); showSettingsPage(e.id); } };
     nav.appendChild(d);
   }
+  nav.dataset.built = "1";
+}
+/* `id` is a pane id from the model ("general", "hotkeys", "cp-dailynotes", ...);
+   a stock ENTRY NAME is accepted too, so older call sites keep working. */
+function showSettingsPage(id) {
+  const e = SMODEL.nav.find(n => n.id === id) || SMODEL.nav.find(n => n.entry === id);
+  const pane = e ? e.id : "hotkeys";
+  sPane = pane;
+  for (const d of $("snav").querySelectorAll(".snavi")) d.classList.toggle("sel", d.dataset.pane === pane);
   const pg = $("spage"); pg.innerHTML = "";
-  if (name !== "Hotkeys") {
+  if (pane !== "hotkeys") {
     const d = document.createElement("div"); d.className = "sempty";
-    d.textContent = name + " — nothing to configure yet.";
+    d.textContent = (e ? e.entry : pane) + " — nothing to configure yet.";
     return pg.appendChild(d);
   }
   const bar = document.createElement("div"); bar.id = "hkbar";
