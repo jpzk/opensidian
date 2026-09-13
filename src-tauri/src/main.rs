@@ -726,7 +726,7 @@ fn create_note_in(root: &Path, ix: &mut Index, name: &str, content: &str) -> Res
 
 
 /* m5 F2 rename: fs::rename old.md -> new.md inside root. Parents created,
-   overwrite refused. ux-3: wikilinks updated vault-wide after the move —
+   overwrite refused. Wikilinks updated vault-wide after the move —
    perf-index: the rewrite runs over the in-memory index (no vault read);
    only notes whose text changed are written back. Pure-ish core for tests. */
 fn rename_in(root: &Path, ix: &mut Index, old: &str, new: &str) -> Result<(), String> {

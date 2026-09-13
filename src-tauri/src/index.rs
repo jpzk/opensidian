@@ -646,7 +646,7 @@ impl Index {
     }
 }
 
-/* ux-3: vault-wide wikilink rewrite on rename. [[Old]] -> [[New]],
+/* vault-wide wikilink rewrite on rename (F2 / rename_note). [[Old]] -> [[New]],
    [[Old|alias]] keeps alias, [[Old#h]] keeps anchor. Basename-style links
    ([[A]] for sub/A) stay basename-style; full-path links get the full new
    path. bn_ok=false disables basename matching (caller found ANOTHER note
