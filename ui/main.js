@@ -916,7 +916,7 @@ function ovfCause(el, why) {         // "<child" = the child that makes el overf
   }
   return worst ? "<" + ovfName(worst) + "+" + Math.round(worstBy) : "";
 }
-/* R32.10 — the window-control strip reserves 140px at the right end of the row
+/* R32.13 — the window-control strip reserves 140px at the right end of the row
    it covers (.wfinset), and the four rside tabs are `flex: 1`, so EVERY ONE OF
    THEM MOVED when the strip shipped (measured at 1100x700, 260px sidebar:
    868/926/981/1036 -> the numbers this token now reports). A test that keeps
@@ -1105,7 +1105,7 @@ function updateTitle() {          // pane/focus census in the window title (head
             (rightOpen ? ":" + rTab : "") + "]" +
             (rightOpen && rpInfo ? " [rp:" + rpInfo + "]" : "") +
             (rtInfo ? " [" + rtInfo + "]" : "") +
-            (rightOpen ? " [stx:" + stabCentres() + "]" : "") +   // R32.10: the strip MOVED these — smoke reads them, never guesses
+            (rightOpen ? " [stx:" + stabCentres() + "]" : "") +   // R32.13: the strip MOVED these — smoke reads them, never guesses
             (jsErr ? " [jserr:" + jsErr + "]" : "") +
             (saveErr ? " [saveerr:" + saveErr + "]" : "") +             // F1: a save that did not land
             " [armed:" + groups().filter(h => h.saveT).length + "]" +   // F2: groups holding a live save timer
