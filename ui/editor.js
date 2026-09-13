@@ -487,7 +487,21 @@ const Ed = {
     return [last.n, last.len];
   },
 
-  /* ---------- caret + selection ---------- */
+  /* ---------- caret + selection ----------
+     THE POSITIONAL CONTRACT, and what R34 had to do to keep it: model line `l`
+     IS `g.lp.children[l]`, index for index, with nothing else in that list.
+     R32 kept the inline title out of it by drawing it as a ::before; R34 makes
+     that title a rename surface (ui/main.js openTitleEdit) WITHOUT joining the
+     list — the caret box is appended to `.content`, a sibling of the scroller,
+     and the ::before stays exactly where it is (visibility:hidden) so the box
+     it reserves, and therefore row 0's y, never moves. Anything editable put
+     inside .lp — prepended, appended or absolutely positioned — is a child,
+     and rowAt() then returns the wrong node for every line after it.
+     That is not a comment you have to trust: the census publishes
+     [te:<text>/<children>] while the title is open and [ery:] gives one entry
+     per child, phase `title` section F asserts both are unchanged, and
+     docs/negctl-title-rename/README.md (control T1) is the committed run where
+     making the box a child reads `[te:…/5]` on a 4-line note and goes red. */
   rowAt(g, l) { return g.lp.children[l] || null; },
   indexOf(row) { return row && row.parentNode ? Array.prototype.indexOf.call(row.parentNode.children, row) : -1; },
   rowOf(node) {

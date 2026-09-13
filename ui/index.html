@@ -98,6 +98,26 @@
   <div id="sbody"><div id="snav"></div><div id="spage"></div></div>
 </div></div>
 <div id="rnbox" hidden><input id="rninput" spellcheck="false" autocomplete="off" placeholder="new name"></div>
+<!-- R34.4-R34.7 "Update links": the PROMPT that sits BETWEEN the rename and the
+     link rewrite. Copy is stock's, read off the recon shots: the title is
+     "Update links", the body is a question, and #ulsay states the counted blast
+     radius ("This will affect 4 links in 1 file.") which is computed BEFORE the
+     prompt (move_note returns it). Three buttons, "Always update" first and
+     focused — measured in PIXELS on D2/D3/D4, not OCR'd. -->
+<div id="ulbox" hidden><div id="ulcard">
+  <div id="ultitle">Update links</div>
+  <div id="ulq">Do you want to update internal links that link to this file?</div>
+  <div id="ulsay"></div>
+  <div id="ulbtns">
+    <button id="ul-always">Always update</button>
+    <button id="ul-once">Just once</button>
+    <button id="ul-no">Do not update</button>
+  </div>
+</div></div>
+<!-- R34.12/R34.13: a refusal is VISIBLE. Stock puts a notice on screen and
+     renames nothing; a refusal nobody can see is indistinguishable from a
+     rename that silently did nothing. -->
+<div id="notice" hidden></div>
 <script src="otel.js"></script>
 <script src="graph-gl.js"></script>
 <script src="editor.js"></script>

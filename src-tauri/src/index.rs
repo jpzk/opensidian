@@ -619,6 +619,20 @@ impl Index {
     /// carries new's), rebuild edges. Returns (name, new content) for every
     /// note whose text changed — the caller writes those to disk.
     pub fn rename(&mut self, old: &str, new: &str, fallback: Option<String>) -> Vec<(String, String)> {
+        self.move_key(old, new, fallback);
+        self.rewrite_to(old, new)
+    }
+
+    /* R34.2: the two halves of `rename`, separately callable — because stock
+       renames the FILE on Enter and only then ASKS about the links. Between
+       move_key and rewrite_to the vault is in the state stock leaves it in
+       when you answer "no": the note has its new name and every inbound
+       [[old]] still says old. That state is legal, so it gets its own API
+       instead of being a half-finished rename. */
+
+    /// move the key (and its metadata) to `new`, touching NO other note's
+    /// text. `fallback` seeds the metadata when the key is missing.
+    pub fn move_key(&mut self, old: &str, new: &str, fallback: Option<String>) {
         let meta = self
             .notes
             .remove(old)
@@ -626,16 +640,17 @@ impl Index {
             .unwrap_or_default();
         self.notes.insert(new.to_string(), meta);
         self.refresh_names();
-        let ob = old.rsplit('/').next().unwrap_or(old);
-        let nb = new.rsplit('/').next().unwrap_or(new);
-        let bn_ok = !self.names.iter().any(|n| {
-            let b = n.rsplit('/').next().unwrap_or(n);
-            b == ob || (b == nb && n != new)
-        });
+        self.rebuild_backlinks();
+    }
+
+    /// after the key moved: rewrite [[old]] -> [[new]] everywhere. Returns
+    /// (name, new content) for every note whose text changed.
+    pub fn rewrite_to(&mut self, old: &str, new: &str) -> Vec<(String, String)> {
+        let bn_ok = bn_ok_in(&self.names, old, new);
         let mut changed = Vec::new();
         for (n, m) in self.notes.iter_mut() {
-            let (nc, did) = rewrite_links(&m.content, old, new, bn_ok);
-            if did {
+            let (nc, hits) = rewrite_links_n(&m.content, old, new, bn_ok);
+            if hits > 0 {
                 m.links = links_in(&nc);
                 m.content = nc.clone();
                 changed.push((n.clone(), nc));
@@ -644,6 +659,43 @@ impl Index {
         self.rebuild_backlinks();
         changed
     }
+
+    /// R34.3 blast radius: (links, files) that `rewrite_to` WOULD change.
+    /// Counted from memory with the same matcher the rewrite uses, so the
+    /// number the modal states is the number the rewrite performs. Call it
+    /// BEFORE move_key (the modal quotes it after the move, but a count taken
+    /// after the key moved would have to un-move it to see the old name).
+    pub fn rename_blast(&self, old: &str, new: &str) -> (usize, usize) {
+        // bn_ok as it will be POST-move: old is gone, new is present
+        let names: Vec<String> = self
+            .names
+            .iter()
+            .filter(|n| n.as_str() != old)
+            .cloned()
+            .chain(std::iter::once(new.to_string()))
+            .collect();
+        let bn_ok = bn_ok_in(&names, old, new);
+        let (mut links, mut files) = (0usize, 0usize);
+        for m in self.notes.values() {
+            let (_, hits) = rewrite_links_n(&m.content, old, new, bn_ok);
+            if hits > 0 {
+                links += hits;
+                files += 1;
+            }
+        }
+        (links, files)
+    }
+}
+
+/// basename links are safe to rewrite only when no OTHER note carries old's
+/// basename and none but the renamed note carries new's (names = post-move)
+fn bn_ok_in(names: &[String], old: &str, new: &str) -> bool {
+    let ob = old.rsplit('/').next().unwrap_or(old);
+    let nb = new.rsplit('/').next().unwrap_or(new);
+    !names.iter().any(|n| {
+        let b = n.rsplit('/').next().unwrap_or(n);
+        b == ob || (b == nb && n != new)
+    })
 }
 
 /* vault-wide wikilink rewrite on rename (F2 / rename_note). [[Old]] -> [[New]],
@@ -652,9 +704,17 @@ impl Index {
    path. bn_ok=false disables basename matching (caller found ANOTHER note
    with the same basename — those links now resolve elsewhere, leave them). */
 pub fn rewrite_links(s: &str, old: &str, new: &str, bn_ok: bool) -> (String, bool) {
+    let (out, hits) = rewrite_links_n(s, old, new, bn_ok);
+    (out, hits > 0)
+}
+
+/// same rewrite, but returns HOW MANY links it replaced — R34.3's "N links in
+/// M files" is this number summed, never an estimate from a backlink list (a
+/// note that links [[Old]] three times is one backlink and three links).
+pub fn rewrite_links_n(s: &str, old: &str, new: &str, bn_ok: bool) -> (String, usize) {
     let ob = old.rsplit('/').next().unwrap_or(old);
     let nb = new.rsplit('/').next().unwrap_or(new);
-    let (mut out, mut changed) = (String::new(), false);
+    let (mut out, mut changed) = (String::new(), 0usize);
     let mut rest = s;
     while let Some(a) = rest.find("[[") {
         out.push_str(&rest[..a + 2]);
@@ -672,7 +732,7 @@ pub fn rewrite_links(s: &str, old: &str, new: &str, bn_ok: bool) -> (String, boo
         };
         match rep {
             Some(r) => {
-                changed = true;
+                changed += 1;
                 out.push_str(r);
                 out.push_str(anchor);
                 if inner.contains('|') {

@@ -735,8 +735,31 @@ fn create_note_in(root: &Path, ix: &mut Index, name: &str, content: &str) -> Res
 /* m5 F2 rename: fs::rename old.md -> new.md inside root. Parents created,
    overwrite refused. Wikilinks updated vault-wide after the move —
    perf-index: the rewrite runs over the in-memory index (no vault read);
-   only notes whose text changed are written back. Pure-ish core for tests. */
+   only notes whose text changed are written back. Pure-ish core for tests.
+
+   R34: this is now the COMPOSITE of the two halves below. F2 keeps its
+   one-shot semantics; the title-rename path calls move_note_in, shows the
+   counted prompt, and only then calls update_links_in. */
 fn rename_in(root: &Path, ix: &mut Index, old: &str, new: &str) -> Result<(), String> {
+    move_note_in(root, ix, old, new)?;
+    update_links_in(root, ix, old, new);
+    Ok(())
+}
+
+/* R34.1/R34.3: the MOVE, and NOTHING else. Not one inbound [[old]] is
+   touched — rewriting them is a separate, consented call. Returns the blast
+   radius (links, files) counted BEFORE the move, which is the sentence the
+   Update links modal states.
+
+   Collision is refused by the KERNEL, not by a stat: create_new(2) claims the
+   target name atomically (O_EXCL), so unlike `if np.exists()` there is no
+   window in which another writer (sync client, git checkout, a second
+   rename) can land a real file between the check and the move. Only after
+   the claim is ours does rename(2) run — it overwrites exactly one file, the
+   zero-byte placeholder we just created. A crash between the two leaves that
+   placeholder behind; an empty note is a visible, recoverable state, a
+   clobbered one is not. */
+fn move_note_in(root: &Path, ix: &mut Index, old: &str, new: &str) -> Result<(usize, usize), String> {
     let orel = safe_rel(old).ok_or("invalid name")?;
     let nrel = safe_rel(new).ok_or("invalid name")?;
     // S2: both ends confined to the vault (symlinked source/parent -> refused)
@@ -745,26 +768,149 @@ fn rename_in(root: &Path, ix: &mut Index, old: &str, new: &str) -> Result<(), St
         return Err("no such note".into());
     }
     let np = note_path_in(root, new, true).ok_or("invalid name")?;
-    if np.exists() {
-        return Err("target exists".into());
-    }
     // rename is rare and rewrites text vault-wide: resync the index from disk
     // FIRST so a note another writer dropped in since boot (smoke seeds one;
     // LATER: file watcher) gets its [[old]] links rewritten too. One walk per
     // rename — the hot paths (search/graph/backlinks) stay disk-free.
     *ix = Index::build(root);
-    fs::rename(&op, &np).map_err(|e| e.to_string())?;
     let (okey, nkey) = (orel.display().to_string(), nrel.display().to_string());
+    // counted BEFORE the move, off the freshly-resynced index
+    let radius = ix.rename_blast(&okey, &nkey);
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&np)
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                "target exists".to_string()
+            } else {
+                e.to_string()
+            }
+        })?;
+    if let Err(e) = fs::rename(&op, &np) {
+        let _ = fs::remove_file(&np); // never leave a stray claim behind
+        return Err(e.to_string());
+    }
     // index==disk invariant: if the key is somehow missing, seed it from the
     // moved file rather than dropping the note
     let fallback = if ix.content(&okey).is_none() { fs::read_to_string(&np).ok() } else { None };
-    for (n, c) in ix.rename(&okey, &nkey, fallback) {
+    ix.move_key(&okey, &nkey, fallback);
+    Ok(radius)
+}
+
+/* R34.3: the CONSENTED half — rewrite every inbound [[old]] to [[new]],
+   preserving alias, #anchor and embed form (index::rewrite_links). Returns
+   how many files were written. Never called without the user's answer. */
+fn update_links_in(root: &Path, ix: &mut Index, old: &str, new: &str) -> usize {
+    let okey = safe_rel(old).map(|p| p.display().to_string()).unwrap_or_default();
+    let nkey = safe_rel(new).map(|p| p.display().to_string()).unwrap_or_default();
+    let mut wrote = 0;
+    for (n, c) in ix.rewrite_to(&okey, &nkey) {
         // S2: never write through a symlink swapped in since the walk
         if let Some(p) = note_path_in(root, &n, false) {
-            let _ = fs::write(&p, c);
+            if fs::write(&p, c).is_ok() {
+                wrote += 1;
+            }
         }
     }
-    Ok(())
+    wrote
+}
+
+/// R34.3: what the Update links modal states — "This will affect {links}
+/// link[s] in {files} file[s]". files==0 means stock shows NO modal.
+#[derive(serde::Serialize)]
+struct Blast {
+    links: usize,
+    files: usize,
+}
+
+/* R34.1: the title-rename backend. The file moves NOW (stock renames on
+   Enter, before any question is asked) and the caller is handed the blast
+   radius to put in the prompt. Inbound links are untouched until the caller
+   answers with update_links. */
+#[tauri::command]
+fn move_note(v: State<Vault>, old: String, new: String, otel: Option<perf::Ctx>) -> Result<Blast, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    let mut ix = v.index.lock().unwrap();
+    let (links, files) = span_timed!(otel => "move_note", move_note_in(&root, &mut ix, &old, &new))?;
+    Ok(Blast { links, files })
+}
+
+/* R34.3: the answer to the prompt. Separate command on purpose — a rename
+   that rewrote links without this call could not be told from one that did,
+   and the phase's negative control is exactly that difference. */
+#[tauri::command]
+fn update_links(v: State<Vault>, old: String, new: String, otel: Option<perf::Ctx>) -> Result<usize, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    let mut ix = v.index.lock().unwrap();
+    Ok(span_timed!(otel => "update_links", update_links_in(&root, &mut ix, &old, &new)))
+}
+
+/* R34.8 — CONSENT IS REMEMBERED IN THE VAULT, not in the session. Measured on
+   stock: answering `Always update` wrote `.obsidian/app.json` =
+   {"alwaysUpdateLinks": true} (31 bytes, committed as
+   docs/recon-title-rename/D-app.json-after-always-update) and the SECOND
+   rename in the same session raised no modal while still rewriting all four
+   links. So the prompt is conditional on this flag, and the flag outlives the
+   process — which is why it is read off disk rather than cached in the UI. */
+fn link_consent_in(root: &Path) -> bool {
+    let cfg = fs::read_to_string(root.join(".obsidian/app.json")).unwrap_or_default();
+    serde_json::from_str::<serde_json::Value>(&cfg)
+        .ok()
+        .and_then(|v| v.get("alwaysUpdateLinks").and_then(|b| b.as_bool()))
+        .unwrap_or(false)
+}
+
+/* The write half. app.json is the USER's file and holds keys we do not own
+   (attachmentFolderPath, R31.3), so this is a MERGE into the parsed object and
+   never a fresh document. An app.json we cannot parse, or one that is not an
+   object, is REFUSED rather than replaced: losing someone's vault config to
+   remember a checkbox is the same trade as overwriting a note on collision,
+   and it goes the same way. The write is temp+fsync+rename, so a crash cannot
+   leave a truncated config either. */
+fn set_link_consent_in(root: &Path, on: bool) -> Result<(), String> {
+    use std::io::Write;
+    let dir = root.join(".obsidian");
+    let p = dir.join("app.json");
+    let cur = fs::read_to_string(&p).unwrap_or_default();
+    let mut v = if cur.trim().is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_str::<serde_json::Value>(&cur).map_err(|e| format!("app.json is not JSON ({e}) — refusing to overwrite it"))?
+    };
+    if !v.is_object() {
+        return Err("app.json is not a JSON object — refusing to overwrite it".into());
+    }
+    v.as_object_mut().unwrap().insert("alwaysUpdateLinks".into(), serde_json::Value::Bool(on));
+    let body = serde_json::to_string(&v).map_err(|e| e.to_string())?;
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let tmp = dir.join("app.json.tmp");
+    let r = (|| -> std::io::Result<()> {
+        let mut f = fs::File::create(&tmp)?;
+        f.write_all(body.as_bytes())?;
+        f.sync_all()?;
+        drop(f);
+        fs::rename(&tmp, &p)
+    })();
+    if r.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    r.map_err(|e| e.to_string())
+}
+
+/// R34.8: does the vault already carry the user's answer? `true` -> the UI
+/// rewrites links without asking; `false` -> the modal.
+#[tauri::command]
+fn link_consent(v: State<Vault>) -> Result<bool, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    Ok(link_consent_in(&root))
+}
+
+/// R34.8: record the `Always update` answer in the vault.
+#[tauri::command]
+fn set_link_consent(v: State<Vault>, on: bool) -> Result<(), String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    set_link_consent_in(&root, on)
 }
 
 #[tauri::command]
@@ -1921,7 +2067,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, read_note, write_note, create_note, render, render_blocks, highlight_blocks, graph, graph_local, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, recent_vaults, rename_note, tags, tag_counts,
+            list_bookmarks, toggle_bookmark, recent_vaults, rename_note, move_note, update_links, link_consent, set_link_consent, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
@@ -2714,6 +2860,183 @@ mod tests {
             fs::read_to_string(root.join("E.md")).unwrap(),
             "[[C2]] and [[sub/C]]"
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /* ---- R34: rename-from-title splits the move from the link rewrite ---- */
+
+    /// scratch vault under a per-test name (tests share the process)
+    fn r34_vault(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("rustidian-r34-{}-{}", tag, std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    /// R34.1 + R34.2: the move renames the FILE and NOT ONE inbound link.
+    /// This is the backend shape of "never rewrite links without the prompt":
+    /// after move_note_in the vault is in stock's answer-was-no state.
+    #[test]
+    fn move_note_renames_the_file_and_rewrites_no_link() {
+        let root = r34_vault("move");
+        fs::write(root.join("Old.md"), "# Heading\nbody [[Other]]\n").unwrap();
+        fs::write(root.join("B.md"), "[[Old]] and [[Old|alias]] and [[Old#anchor]]").unwrap();
+        fs::write(root.join("C.md"), "embed ![[Old]]").unwrap();
+        fs::write(root.join("D.md"), "unrelated").unwrap();
+        let mut ix = Index::build(&root);
+        let (b0, c0, d0) = (
+            fs::read(root.join("B.md")).unwrap(),
+            fs::read(root.join("C.md")).unwrap(),
+            fs::read(root.join("D.md")).unwrap(),
+        );
+
+        let (links, files) = move_note_in(&root, &mut ix, "Old", "New").unwrap();
+        // 3 links in B + 1 embed in C, in 2 files — links are counted per
+        // OCCURRENCE, so this can never be read off a backlink list (which
+        // would say "2")
+        assert_eq!((links, files), (4, 2), "blast radius the modal states");
+
+        // the file moved, byte-for-byte, body untouched (R34.1)
+        assert!(!root.join("Old.md").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("New.md")).unwrap(),
+            "# Heading\nbody [[Other]]\n",
+            "the move must not touch the note's own text"
+        );
+        // and NOT ONE inbound link moved with it
+        assert_eq!(fs::read(root.join("B.md")).unwrap(), b0, "B was rewritten without consent");
+        assert_eq!(fs::read(root.join("C.md")).unwrap(), c0, "C was rewritten without consent");
+        assert_eq!(fs::read(root.join("D.md")).unwrap(), d0);
+        assert_eq!(ix.names(), ["B", "C", "D", "New"]);
+
+        // ...and the consented half preserves alias, #anchor and embed form
+        let wrote = update_links_in(&root, &mut ix, "Old", "New");
+        assert_eq!(wrote, 2);
+        assert_eq!(
+            fs::read_to_string(root.join("B.md")).unwrap(),
+            "[[New]] and [[New|alias]] and [[New#anchor]]"
+        );
+        assert_eq!(fs::read_to_string(root.join("C.md")).unwrap(), "embed ![[New]]");
+        assert_eq!(fs::read(root.join("D.md")).unwrap(), d0, "an unlinked note is never rewritten");
+        assert_eq!(ix.backlinks("New"), ["B", "C"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// R34.11: collision NEVER overwrites. create_new(2) is the kernel's
+    /// atomic exists-check — the refusal does not depend on a stat that a
+    /// racing writer could invalidate, and the victim's bytes are the proof.
+    #[test]
+    fn move_note_never_overwrites_on_collision() {
+        let root = r34_vault("collide");
+        fs::write(root.join("A.md"), "the note being renamed").unwrap();
+        fs::write(root.join("X.md"), "PRECIOUS — must survive").unwrap();
+        fs::create_dir_all(root.join("Dir.md")).unwrap(); // a DIRECTORY in the way
+        let mut ix = Index::build(&root);
+
+        assert_eq!(move_note_in(&root, &mut ix, "A", "X").unwrap_err(), "target exists");
+        assert_eq!(
+            fs::read_to_string(root.join("X.md")).unwrap(),
+            "PRECIOUS — must survive",
+            "the target was clobbered"
+        );
+        assert_eq!(fs::read_to_string(root.join("A.md")).unwrap(), "the note being renamed");
+        assert!(move_note_in(&root, &mut ix, "A", "Dir").is_err());
+        assert!(root.join("Dir.md").is_dir());
+        // a refused move leaves NO zero-byte claim behind anywhere
+        let mut names: Vec<String> = fs::read_dir(&root)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["A.md", "Dir.md", "X.md"]);
+        // rename onto ITSELF is a collision too, and must not truncate
+        assert!(move_note_in(&root, &mut ix, "A", "A").is_err());
+        assert_eq!(fs::read_to_string(root.join("A.md")).unwrap(), "the note being renamed");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// R34.3: zero inbound links => (0, 0) => stock shows NO modal. The
+    /// count is what suppresses the prompt, so it gets its own assertion.
+    #[test]
+    fn move_note_blast_radius_is_zero_when_nothing_links_in() {
+        let root = r34_vault("zero");
+        fs::write(root.join("Lonely.md"), "nobody links here").unwrap();
+        fs::write(root.join("Other.md"), "[[Somewhere]] else").unwrap();
+        let mut ix = Index::build(&root);
+        assert_eq!(ix.rename_blast("Lonely", "Renamed"), (0, 0));
+        assert_eq!(move_note_in(&root, &mut ix, "Lonely", "Renamed").unwrap(), (0, 0));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// the count is a PROMISE: whatever rename_blast says before the move,
+    /// update_links delivers exactly that many rewritten links after it.
+    #[test]
+    fn blast_radius_equals_what_the_rewrite_actually_changes() {
+        let root = r34_vault("promise");
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::write(root.join("sub/Target.md"), "x").unwrap();
+        fs::write(root.join("P.md"), "[[Target]] [[sub/Target]] [[Target|a]]").unwrap();
+        fs::write(root.join("Q.md"), "![[sub/Target#h]]").unwrap();
+        let mut ix = Index::build(&root);
+        let before = ix.rename_blast("sub/Target", "sub/Moved");
+        assert_eq!(before, (4, 2));
+        let after = move_note_in(&root, &mut ix, "sub/Target", "sub/Moved").unwrap();
+        assert_eq!(after, before);
+        update_links_in(&root, &mut ix, "sub/Target", "sub/Moved");
+        let (p, q) = (
+            fs::read_to_string(root.join("P.md")).unwrap(),
+            fs::read_to_string(root.join("Q.md")).unwrap(),
+        );
+        assert_eq!(p, "[[Moved]] [[sub/Moved]] [[Moved|a]]");
+        assert_eq!(q, "![[sub/Moved#h]]");
+        // exactly `links` occurrences changed, not one more
+        assert_eq!(p.matches("Moved").count() + q.matches("Moved").count(), before.0);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// R34.8: the consent flag round-trips through `.obsidian/app.json`, and
+    /// the MERGE is the point — a vault that already configures
+    /// attachmentFolderPath (R31.3) must still configure it afterwards. A
+    /// remembered checkbox that eats the rest of someone's config is a worse
+    /// bug than the modal it suppresses.
+    #[test]
+    fn link_consent_round_trips_and_preserves_other_config() {
+        let root = r34_vault("consent");
+        assert!(!link_consent_in(&root), "a fresh vault has no consent on record");
+        fs::create_dir_all(root.join(".obsidian")).unwrap();
+        fs::write(root.join(".obsidian/app.json"), r#"{"attachmentFolderPath":"files"}"#).unwrap();
+        assert!(!link_consent_in(&root), "an unrelated config is not consent");
+        set_link_consent_in(&root, true).unwrap();
+        assert!(link_consent_in(&root));
+        let v: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(root.join(".obsidian/app.json")).unwrap()).unwrap();
+        assert_eq!(v["attachmentFolderPath"], "files", "the merge kept the key we do not own");
+        assert_eq!(v["alwaysUpdateLinks"], true);
+        // and it can be revoked without dropping the neighbour key either
+        set_link_consent_in(&root, false).unwrap();
+        assert!(!link_consent_in(&root));
+        let v: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(root.join(".obsidian/app.json")).unwrap()).unwrap();
+        assert_eq!(v["attachmentFolderPath"], "files");
+        assert!(!root.join(".obsidian/app.json.tmp").exists(), "no stray temp left behind");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// ...and an app.json we cannot parse is REFUSED, byte-for-byte intact.
+    /// Same rule as the collision: data loss outranks the feature.
+    #[test]
+    fn set_link_consent_never_overwrites_an_unparseable_config() {
+        let root = r34_vault("badcfg");
+        fs::create_dir_all(root.join(".obsidian")).unwrap();
+        let junk = "{ this is not json, but it IS someone's config\n";
+        fs::write(root.join(".obsidian/app.json"), junk).unwrap();
+        assert!(set_link_consent_in(&root, true).is_err());
+        assert_eq!(fs::read_to_string(root.join(".obsidian/app.json")).unwrap(), junk);
+        assert!(!link_consent_in(&root), "unparseable is never read as consent");
+        // a JSON document that is not an object is refused too, not wrapped
+        fs::write(root.join(".obsidian/app.json"), "[1,2,3]").unwrap();
+        assert!(set_link_consent_in(&root, true).is_err());
+        assert_eq!(fs::read_to_string(root.join(".obsidian/app.json")).unwrap(), "[1,2,3]");
         let _ = fs::remove_dir_all(&root);
     }
 

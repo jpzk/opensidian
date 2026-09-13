@@ -347,6 +347,48 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
          box-shadow: 0 8px 30px rgba(0,0,0,.5) }
 #rninput { width: 100%; box-sizing: border-box; padding: 10px 14px; border: 0;
            background: #1e1e2e; color: #cdd6f4; font-size: 14px; outline: none }
+/* R34.4-R34.7 the "Update links" dialog. GEOMETRY IS FIXED ON PURPOSE: the
+   card is a constant width, the button row is right-aligned and every button
+   has an explicit width, so the focus ring lands at coordinates a probe can
+   compute — and it does not have to: updateTitle() publishes the button
+   centres as [ulx:...] (the R33.13 idiom — smoke READS the geometry, never
+   hard-codes it).
+   The fills are stock's MEASURED values, kept verbatim so the same pixel
+   discriminator works on their screenshots and ours: on D2-modal.png the
+   default button's fill is #FFFFFF against #E0E0E0 for its two neighbours,
+   with a #BDBDBD ring row under it (docs/recon-title-rename/btn-analysis.log).
+   The ring is what makes "which button is default" measurable in PIXELS
+   instead of OCR-ed off a word list. */
+#ulbox { position: fixed; inset: 0; z-index: 70; background: rgba(0,0,0,.35);
+         display: flex; flex-direction: column; align-items: center; box-sizing: border-box;
+         padding: max(0px, min(120px, 100vh - 260px)) 0 8px }
+#ulbox[hidden] { display: none }
+#ulcard { width: 480px; max-width: 92%; box-sizing: border-box; background: #26263a;
+          border: 1px solid #45475a; border-radius: 8px; padding: 18px 20px 16px;
+          box-shadow: 0 8px 30px rgba(0,0,0,.5); color: #cdd6f4 }
+#ultitle { font-size: 17px; font-weight: 600; margin-bottom: 10px }
+#ulq { font-size: 13px; line-height: 1.5 }
+#ulsay { font-size: 13px; line-height: 1.5; margin-top: 6px; color: #bac2de }
+#ulbtns { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px }
+#ulbtns button { box-sizing: border-box; height: 30px; border: 0; border-radius: 5px;
+                 background: #e0e0e0; color: #1e1e2e; font-size: 13px; font-weight: 500;
+                 cursor: pointer; outline: none; padding: 0 }
+#ul-always { width: 102px }      /* stock: [588-690] on y=455 */
+#ul-once   { width: 68px }       /* stock: [709-777] */
+#ul-no     { width: 101px }      /* stock: [796-897] */
+#ulbtns button:focus { background: #fff; box-shadow: 0 0 0 2px #bdbdbd }
+
+/* R34.12/R34.13 refusal notice — the dropmsg shape (bottom-right, transient),
+   because it says the same kind of thing: what was refused and why. The census
+   token it publishes does NOT expire with the banner (dropTok's lesson: "no
+   refusal happened" and "a refusal whose banner faded" must not look alike). */
+#notice { position: fixed; right: 12px; bottom: 12px; z-index: 71; max-width: 420px;
+          padding: 8px 12px; border-radius: 6px; border: 1px solid #585b70;
+          background: #313244; color: #cdd6f4; font-size: 12px; line-height: 1.4;
+          white-space: pre-line }
+#notice[hidden] { display: none }
+#saveerr:not([hidden]) ~ #notice, #dropmsg:not([hidden]) ~ #notice { bottom: 58px }
+
 /* R10.3 block ids: grey superscript label in LP, hidden in reading view */
 .lp .blockid { font-size: .7em; color: #6c7086; vertical-align: super; margin-left: 4px; user-select: none }
 .preview .blockid { display: none }
@@ -567,8 +609,10 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
    It is a ::before, NOT a DOM child, and that is load-bearing: ui/editor.js
    indexes model rows POSITIONALLY (rowAt = g.lp.children[l], editor.js:491),
    so a real element prepended to .lp would shift every line index by one.
-   A pseudo-element also cannot hold a caret — the title is non-editable by
-   construction (R32.5), which is the documented delta from stock.
+   A pseudo-element also cannot hold a caret. R32.5 called that "non-editable
+   by construction" and accepted it as the delta from stock; R34 reverses that
+   half — see the R34.15 block below for the mechanism that gives the title a
+   caret while the ::before, and therefore every row index, stays put.
    Fed by data-title (ui/main.js setInlineTitle); the ATTRIBUTE selector is
    deliberate — no attribute, no box, so a note-less pane keeps its y-origin. */
 .lp[data-title]::before, .preview[data-title]::before {
@@ -577,7 +621,36 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
   font-size: var(--h1-size); font-weight: var(--h1-weight);
   line-height: var(--h1-line-height); letter-spacing: var(--h1-letter-spacing);
   color: inherit; margin-top: 0; margin-bottom: 0.5em;
-  overflow-wrap: anywhere; white-space: pre-wrap; cursor: default; user-select: none;
+  overflow-wrap: anywhere; white-space: pre-wrap; cursor: text; user-select: none;
+}
+/* R34.15 (R32.4 restated as a NUMERIC condition) — HOW THE TITLE BECOMES
+   EDITABLE WITHOUT BECOMING A ROW.
+   The ::before above stays exactly as it is, always, including while the title
+   is being edited: it is the LAYOUT. `visibility: hidden` (never `display:
+   none`, never a swapped-in element) keeps its box — same height, same
+   margin-bottom, same y-origin for row 0 — and only drops the ink, so no row
+   moves and the scroller does not jump by 44px the moment a caret arrives.
+   The caret surface is `.titlewrap > .titleedit`, appended to `.content`
+   (ui/main.js openTitleEdit) — a SIBLING of the scroller, never a child of it.
+   ui/editor.js indexes model rows positionally (rowAt = g.lp.children[l],
+   editor.js:491); an editable node inside .lp — prepended, appended or
+   absolutely positioned — is still `g.lp.children[i]` and shifts or extends
+   that list. Outside it, `children` is byte-identical open or closed, which is
+   what the census token [te:<text>/<rows>] publishes so a phase can assert it.
+   .titlewrap is the POSITIONER (the scroller's content box, full width, fed
+   pixel values by titleBox()); .titleedit is the text column and repeats the
+   ::before's type declarations verbatim — same font-size/weight/line-height/
+   letter-spacing/max-width/margin-inline — so the glyphs land on the same
+   baseline as the ink it replaces. Background stays transparent: there is
+   nothing to cover, the ::before is already invisible underneath. */
+.lp.titling::before, .preview.titling::before { visibility: hidden }
+.titlewrap { position: absolute; z-index: 5; box-sizing: border-box }
+.titleedit {
+  display: block; max-width: var(--file-line-width); margin-inline: auto;
+  font-size: var(--h1-size); font-weight: var(--h1-weight);
+  line-height: var(--h1-line-height); letter-spacing: var(--h1-letter-spacing);
+  color: inherit; background: transparent; border: 0; outline: none;
+  overflow-wrap: anywhere; white-space: pre-wrap; user-select: text; cursor: text;
 }
 .lp .lprow { width: 100% }
 .lp h1, .preview h1, .lp h2, .preview h2, .lp h3, .preview h3, .lp h4, .preview h4, .lp h5, .preview h5, .lp h6, .preview h6 {

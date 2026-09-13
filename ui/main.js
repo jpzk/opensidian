@@ -815,6 +815,11 @@ function mkView(g) {
   lp.addEventListener("mousedown", e => {
     const g = v.g;
     if (e.target !== lp || g.graphOn) return;
+    // R34.15: the ::before is not an event target — a click on the title's ink
+    // reports .lp itself, so the title band is identified by GEOMETRY. Inside
+    // it the click opens the rename surface (R34.1); anywhere else below the
+    // last row keeps R17's "caret at the end of the note".
+    if (titleHit(lp, e.clientX, e.clientY)) { e.preventDefault(); openTitleEdit(g, lp, e.clientX, e.clientY); return; }
     e.preventDefault();
     const L = Ed.lines(g);
     Ed.place(g, L.length - 1, L[L.length - 1].length);
@@ -1054,6 +1059,15 @@ function updateTitle() {          // pane/focus census in the window title (head
   if (md && isLp(ft.mode) && fg().lpActive) md += ":" + fg().lpActive.l0;
   if (md) md += "]";
   if (lpMs >= 0) md += " [lp:" + lpMs + "]";     // perf: last lpRender ms
+  /* R34.15 title probe -> [te:<text in the box>/<g.lp.children.length>]. Two
+     facts in one token, and the second one is the R32.4 acceptance condition
+     made observable: while the title is being edited the scroller's child list
+     must be EXACTLY what it is when it is not (the caret surface is a sibling,
+     ui/style.css .titlewrap). A phase compares the row count in this token with
+     the count from Ed.geom before the click; a mechanism that prepended a node
+     would read one higher here and break every positional index silently. */
+  if (titling) md += " [te:" + titling.el.textContent.replace(/[[\]|/]/g, "") +
+                     "/" + (titling.g.lp ? titling.g.lp.children.length : -1) + "]";
   // R17: renderer/token-map self test. A failure names its FIRST bad case
   // (Ed.edtWhy) so the smoke log says what broke, not just how many.
   if (edtBad >= 0) md += " [edt:" + (edtBad ? "fail" + edtBad + ":" + (Ed.edtWhy || "?") : "ok") + "]";
@@ -1126,6 +1140,8 @@ function updateTitle() {          // pane/focus census in the window title (head
     : ($("rnbox") && !$("rnbox").hidden ? " [modal:rn]" : "")  // m5 fuzzy modal / rename prompt
     + ($("anew") && !$("anew").hidden ? " [modal:att]" : "")   // R31.7 Insert attachment prompt
     + (settingsOpen ? " [modal:settings]" + setTok() + hkInfo : "")   // R14 hotkeys + R30 settings probe
+    + (ulPending ? " [modal:ul]" + ulTok() : "")                // R34.6 Update links prompt
+    + (noticeTxt ? " [notice:" + tokq(noticeTxt) + "]" : "")    // R34.12/13 the last refusal — does NOT expire with the banner
     + (menuEl ? " [menu:1]" : "");                             // R22: a context menu is open (fuzz probe)
   // [note:<name>] = the FOCUSED group's active note (null for a graph tab).
   // Which note is active was previously only observable by mutating it (type a
@@ -1567,6 +1583,280 @@ function setInlineTitle(v, name) {
     if (!el) continue;
     if (t) el.dataset.title = t; else delete el.dataset.title;
   }
+}
+
+/* R34.15 — THE CARET PROBLEM, SOLVED OUTSIDE THE ROW LIST.
+   R34 makes the inline title a rename surface (reversing half of R32.5), and
+   the hard part is not the rename: it is that ui/editor.js addresses model
+   rows POSITIONALLY (`rowAt(g,l) = g.lp.children[l]`, editor.js:491). Anything
+   editable placed INSIDE the scroller — prepended, appended, or absolutely
+   positioned — becomes a member of `g.lp.children` and either shifts every
+   line index by one or lengthens a list that `Ed.pos`/`Ed.paint`/`lpRender`
+   read as "one child per source line". R15's measured offsets and phase
+   `typo`'s SKIP=1 sit on top of that.
+   So the caret surface is a SIBLING of the scroller, in `.content` (which is
+   position:relative), positioned over the ::before's measured box; the
+   ::before itself stays in place and merely goes `visibility: hidden`
+   (ui/style.css .lp.titling::before), so the LAYOUT is untouched — the title
+   box still reserves its 44px and row 0 does not move.
+   Consequence, and it is the point: `g.lp.children` is IDENTICAL whether the
+   title is being edited or not. updateTitle publishes [te:<text>/<rows>] so a
+   smoke phase can assert that number instead of trusting this comment. */
+let titling = null;          // {g, host, wrap, el, name, orig} while the title is being edited
+const titleEditing = () => !!titling;
+
+/* The ::before's box in CLIENT coordinates (a pseudo-element has no node, so it
+   cannot be measured with getBoundingClientRect — it is derived instead):
+   top    = the scroller's content-box top, minus how far it has scrolled;
+   height = the distance to row 0, less the ::before's own margin-bottom;
+   width  = the content box (the text column inside it is re-centred by CSS,
+            exactly as `.lp > *` and the ::before itself are). */
+function titleBox(host) {
+  if (!host || !host.dataset.title) return null;
+  const cs = getComputedStyle(host), pre = getComputedStyle(host, "::before");
+  const r = host.getBoundingClientRect();
+  const padT = parseFloat(cs.paddingTop) || 0;
+  const padL = parseFloat(cs.paddingLeft) || 0, padR = parseFloat(cs.paddingRight) || 0;
+  const top = r.top + padT - host.scrollTop;
+  const first = host.firstElementChild;
+  const mb = parseFloat(pre.marginBottom) || 0;
+  const h = first ? first.getBoundingClientRect().top - top - mb
+                  : (parseFloat(pre.height) || parseFloat(pre.lineHeight) || 0);
+  return { top, left: r.left + padL, width: Math.max(0, host.clientWidth - padL - padR), height: h };
+}
+const titleHit = (host, x, y) => {          // is this click on the title's own band?
+  const b = titleBox(host);
+  return !!b && b.height > 0 && y >= b.top && y < b.top + b.height && x >= b.left && x < b.left + b.width;
+};
+
+function openTitleEdit(g, host, x, y) {
+  if (titling) closeTitleEdit();
+  const name = curOf(g);
+  const b = name ? titleBox(host) : null;
+  if (!b || b.height <= 0) return false;
+  const wrap = document.createElement("div");
+  wrap.className = "titlewrap";
+  const el = document.createElement("div");
+  el.className = "titleedit";
+  el.contentEditable = "plaintext-only";     // one line of text, no markup, no paste-in HTML
+  el.spellcheck = false;
+  el.textContent = titleOf(name);
+  wrap.appendChild(el);
+  wrap.style.top = (b.top - g.content.getBoundingClientRect().top) + "px";
+  wrap.style.left = (b.left - g.content.getBoundingClientRect().left) + "px";
+  wrap.style.width = b.width + "px";
+  host.classList.add("titling");             // hide the INK, keep the BOX
+  g.content.appendChild(wrap);               // sibling of the scroller — never g.lp.children
+  titling = { g, host, wrap, el, name, orig: titleOf(name) };
+  el.focus();
+  const rng = typeof x === "number" && document.caretRangeFromPoint ? document.caretRangeFromPoint(x, y) : null;
+  const sel = window.getSelection();
+  if (sel) {
+    const r = rng && el.contains(rng.startContainer) ? rng : document.createRange();
+    if (!(rng && el.contains(rng.startContainer))) r.selectNodeContents(el), r.collapse(false);
+    sel.removeAllRanges(); sel.addRange(r);
+  }
+  el.addEventListener("keydown", onTitleKey);
+  el.addEventListener("input", onTitleInput);   // R34.12/R34.13: refuse WHILE typing, as stock does
+  el.addEventListener("blur", () => closeTitleEdit());
+  host.addEventListener("scroll", onTitleScroll);
+  updateTitle();
+  return true;
+}
+
+/* Scrolling the note away from under an absolutely-positioned overlay would
+   paint a title over the tab row (.content does not clip). Editing a filename
+   while scrolling the body is not an interaction anyone performs, so a scroll
+   REVERTS — which loses nothing, because a revert never renames. */
+function onTitleScroll() { closeTitleEdit(); }
+
+function closeTitleEdit() {
+  if (!titling) return;
+  const t = titling;
+  titling = null;                            // first: el.remove() fires blur, which re-enters
+  t.host.removeEventListener("scroll", onTitleScroll);
+  t.wrap.remove();
+  t.host.classList.remove("titling");
+  if (t.host === t.g.lp && t.g.lp.isConnected) t.g.lp.focus({ preventScroll: true });
+  updateTitle();
+}
+
+function onTitleKey(e) {
+  if (e.key === "Escape") {                  // R34.10: Escape REVERTS, measured past blur
+    e.preventDefault(); e.stopPropagation();
+    closeTitleEdit();
+    return;
+  }
+  if (e.key === "Enter") {
+    e.preventDefault(); e.stopPropagation();
+    commitTitleEdit();
+    return;
+  }
+  e.stopPropagation();                       // a filename contains characters the R14 keymap binds
+}
+
+/* R34.1 — ENTER RENAMES THE FILE. The order is stock's, measured, and it is
+   not negotiable: the file moves FIRST (move_note), the links are still stale
+   at that instant (R34.2), and only THEN is the question asked. The refusals
+   come before any of it and produce a visible notice instead of a rename.
+
+   Every branch here is a measurement:
+     empty title      -> revert, no rename            (R34.14, E8/E9)
+     unchanged title  -> nothing at all
+     illegal chars    -> notice, BOX STAYS OPEN       (R34.13, E6/E7) — and a
+                         "/" is a rejected character, never a move into a folder
+     existing name    -> notice, BOX STAYS OPEN       (R34.12, E4/E5)
+     otherwise        -> move now, ask after          (R34.1/R34.2)
+   The UI's collision check is a COURTESY (stock shows its notice before Enter);
+   the one that counts is create_new/O_EXCL in move_note_in, and a move_note
+   error is surfaced, never swallowed. */
+const TITLE_ILLEGAL = /[\\/:*?"<>|]/;        // stock's own set (R34.13, read at 250%)
+async function commitTitleEdit() {
+  if (!titling) return;
+  const { g, el, name, orig } = titling;
+  const t = (el.textContent || "").replace(/[\r\n]+/g, " ").trim();
+  if (!t || t === orig) { closeTitleEdit(); return; }     // R34.14 / no-op
+  if (!titleCheck()) return;                 // illegal chars or a name already taken:
+                                             // the notice is up, the box stays open, NOTHING moved
+  const dir = name.includes("/") ? name.slice(0, name.lastIndexOf("/") + 1) : "";
+  const nn = dir + t + ".md";
+  closeTitleEdit();
+  await flushSave(g);                        // the body's own bytes land before the file moves
+  let blast;
+  try { blast = await inv("move_note", { old: name, new: nn }); }
+  catch (err) { say(String(err && err.message || err)); updateTitle(); return; }
+  await applyRename(name, nn);
+  const links = blast && blast.links || 0, files = blast && blast.files || 0;
+  if (!files) { updateTitle(); return; }     // R34.3: nothing links in -> NO modal, ever
+  let consent = false;
+  try { consent = await inv("link_consent"); } catch (err) { consent = false; }
+  if (consent) { await runUpdateLinks(name, nn); return; }   // R34.8: already answered, in the vault
+  openUpdateLinks(name, nn, links, files);
+}
+
+/* ---------- R34.4-R34.8 the "Update links" prompt --------------------------
+   This modal is the difference between R34 and the DELETED ux-3 feature, which
+   rewrote a whole vault's links with no question asked. So it is written as a
+   gate, not as a notification: `update_links` is called from exactly two
+   places, both of them on the far side of a recorded answer (this modal, or
+   R34.8 consent already in the vault). */
+let ulPending = null, noticeTxt = "", noticeT = 0, noticeSrc = "";
+
+function say(msg, src) {                     // R34.12/R34.13: a refusal is VISIBLE
+  const b = $("notice");
+  b.textContent = msg;
+  b.hidden = !msg;
+  noticeTxt = msg || "";
+  noticeSrc = msg ? (src || "") : "";
+  clearTimeout(noticeT);
+  if (msg) noticeT = setTimeout(() => { $("notice").hidden = true; }, 4000);
+  updateTitle();
+}
+
+/* R34.12/R34.13 — the refusal is measured on stock BEFORE Enter: the notice
+   "There's already a file with the same name" is on screen while the title box
+   still holds `Dup`, and Enter then does nothing (E4/E5). So the check runs on
+   every keystroke, and it RETRACTS when the name becomes legal again — a notice
+   that outlived the condition it describes is worse than none. It is a courtesy
+   check, though: what actually refuses a collision is create_new/O_EXCL in the
+   backend, which is the only thing that holds against another writer. */
+function titleCheck() {
+  if (!titling) return true;
+  const t = (titling.el.textContent || "").replace(/[\r\n]+/g, " ").trim();
+  const name = titling.name;
+  const dir = name.includes("/") ? name.slice(0, name.lastIndexOf("/") + 1) : "";
+  let msg = "";
+  if (t && TITLE_ILLEGAL.test(t)) msg = 'File name cannot contain any of these characters: \\ / : * ? " < > |';
+  else if (t && t !== titling.orig && notesCache.includes(dir + t + ".md")) msg = "There's already a file with the same name";
+  if (msg) { if (msg !== noticeTxt) say(msg, "title"); return false; }
+  if (noticeSrc === "title") say("", "title");
+  return true;
+}
+function onTitleInput() { titleCheck(); updateTitle(); }
+
+/* R34.5 — the counted sentence, rendered from the radius move_note counted
+   BEFORE the move. Stock's fixture was plural on both numbers ("4 links in 1
+   file"); the SINGULAR form was never observed, so the n!==1 pluralisation is
+   OURS and is flagged as such in docs/requirements.md R34.5. */
+const ulSentence = (links, files) =>
+  "This will affect " + links + (links === 1 ? " link" : " links") +
+  " in " + files + (files === 1 ? " file" : " files") + ".";
+
+function openUpdateLinks(old, nn, links, files) {
+  ulPending = { old, nn, links, files };
+  $("ulsay").textContent = ulSentence(links, files);
+  $("ulbox").hidden = false;
+  $("ul-always").focus();                    // R34.6/R34.7: the DEFAULT is the leftmost, measured in pixels
+  updateTitle();
+}
+function closeUpdateLinks() {
+  if (!ulPending) return;
+  ulPending = null;
+  $("ulbox").hidden = true;
+  const g = fg();
+  if (g && g.lp && g.lp.isConnected) g.lp.focus({ preventScroll: true });
+  updateTitle();
+}
+async function runUpdateLinks(old, nn) {     // the CONSENTED half, and the only caller of update_links
+  try { await inv("update_links", { old, new: nn }); }
+  catch (err) { say(String(err && err.message || err)); }
+  // Bookkeeping ONLY, deliberately: the rewrite changed text in OTHER notes, and
+  // reloading them here would discard any unsaved buffer they hold (some group's
+  // dirty tab is not this rename's business). F2's rename does the same and no
+  // more — a tab showing stale link text is a repaint, a clobbered buffer is a
+  // data-loss bug.
+  await refreshTree();
+  updateTitle();
+}
+async function ulAnswer(kind) {
+  if (!ulPending) return;
+  const { old, nn } = ulPending;
+  closeUpdateLinks();
+  if (kind === "no") return;                 // renamed file, stale links — stock's shape (R34.2)
+  if (kind === "always") {
+    try { await inv("set_link_consent", { on: true }); }   // R34.8: remembered in the VAULT
+    catch (err) { say(String(err && err.message || err)); }
+  }
+  await runUpdateLinks(old, nn);
+}
+$("ul-always").onclick = () => ulAnswer("always");
+$("ul-once").onclick = () => ulAnswer("once");
+$("ul-no").onclick = () => ulAnswer("no");
+/* Escape = "Do not update": the conservative answer is the one that writes
+   nothing, and dismissing a question is not consent. */
+$("ulbox").addEventListener("keydown", e => {
+  if (!ulPending) return;
+  if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); ulAnswer("no"); return; }
+  if (e.key === "Tab") {                     // a focus TRAP: three buttons, and the ring never leaves them
+    e.preventDefault();
+    const b = [$("ul-always"), $("ul-once"), $("ul-no")];
+    const i = b.indexOf(document.activeElement);
+    b[(i < 0 ? 0 : i + (e.shiftKey ? b.length - 1 : 1)) % b.length].focus();
+    updateTitle();
+    return;
+  }
+  e.stopPropagation();                       // Enter activates the FOCUSED button (the browser does that)
+});
+$("ulbox").addEventListener("mousedown", e => { if (e.target === $("ulbox")) e.preventDefault(); });  // click-off is not an answer
+
+/* R34.5/R34.6 made observable WITHOUT a screenshot, and the geometry published
+   so the pixel test does not have to guess where to look (R33.13's idiom):
+     [ul:<links>/<files>/<focused button index 0..2>]
+     [ulsay:<the counted sentence, verbatim>]
+     [ulx:<cx,cy>;<cx,cy>;<cx,cy>]   centres of Always / Just once / Do not update
+   The focus index is the DEFAULT-button assertion (R34.6/R34.7) in a form that
+   cannot be faked by a screenshot's antialiasing, and [ulx:] is what a
+   focus-ring colour-delta probe reads its coordinates from. */
+function ulTok() {
+  const b = [$("ul-always"), $("ul-once"), $("ul-no")];
+  const f = b.indexOf(document.activeElement);
+  const xs = b.map(e => {
+    const r = e.getBoundingClientRect();
+    return Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2);
+  }).join(";");
+  return " [ul:" + ulPending.links + "/" + ulPending.files + "/" + f + "]" +
+         " [ulsay:" + $("ulsay").textContent.replace(/[[\]|]/g, "") + "]" +
+         " [ulx:" + xs + "]";
 }
 
 async function loadActive(g) {
@@ -2635,6 +2925,8 @@ async function floorProbe(n = 30) {
 document.addEventListener("keydown", e => {
   if (e.ctrlKey && e.altKey && e.shiftKey && (e.key === "F" || e.key === "f")) { e.preventDefault(); floorProbe(); return; }
   if (settingsOpen) return hkKey(e);       // R14: settings modal owns the keyboard (chord capture)
+  if (ulPending) return;                   // R34.6: the Update links prompt owns the keyboard — its own handler answers it
+  if (titleEditing()) return;              // R34.1: so does the title box (a filename contains chords)
   if (e.key === "Escape") {
     if (modalKind) { closeModal(); return; }
     if (!$("rnbox").hidden) { $("rnbox").hidden = true; updateTitle(); return; }
