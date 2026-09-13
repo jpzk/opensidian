@@ -1709,7 +1709,18 @@ function onTitleKey(e) {
      otherwise        -> move now, ask after          (R34.1/R34.2)
    The UI's collision check is a COURTESY (stock shows its notice before Enter);
    the one that counts is create_new/O_EXCL in move_note_in, and a move_note
-   error is surfaced, never swallowed. */
+   error is surfaced, never swallowed.
+
+   NOTE NAMES CARRY NO EXTENSION. Every name on the IPC surface and in
+   notesCache is vault-relative and `.md`-less ("sub/Nested"); the extension is
+   appended at the filesystem boundary alone (`note_path_in` in
+   src-tauri/src/main.rs: `cdir.join(format!("{}.md", …))`), which is why F2's
+   rename box shows "Ideas" and not "Ideas.md". The first cut of this function
+   built `t + ".md"` and produced `ZR Target X.md.md` on disk plus a
+   notesCache collision check that could never match — invisible to every unit
+   test (the rust side is asserted with `.md`-less keys) and to phase `title`
+   (which never presses Enter). The `rename` phase caught it on the first run;
+   that is what an end-to-end phase is FOR. */
 const TITLE_ILLEGAL = /[\\/:*?"<>|]/;        // stock's own set (R34.13, read at 250%)
 async function commitTitleEdit() {
   if (!titling) return;
@@ -1719,7 +1730,7 @@ async function commitTitleEdit() {
   if (!titleCheck()) return;                 // illegal chars or a name already taken:
                                              // the notice is up, the box stays open, NOTHING moved
   const dir = name.includes("/") ? name.slice(0, name.lastIndexOf("/") + 1) : "";
-  const nn = dir + t + ".md";
+  const nn = dir + t;                        // NAMES CARRY NO EXTENSION (see NOTE NAMES below)
   closeTitleEdit();
   await flushSave(g);                        // the body's own bytes land before the file moves
   let blast;
@@ -1767,7 +1778,7 @@ function titleCheck() {
   const dir = name.includes("/") ? name.slice(0, name.lastIndexOf("/") + 1) : "";
   let msg = "";
   if (t && TITLE_ILLEGAL.test(t)) msg = 'File name cannot contain any of these characters: \\ / : * ? " < > |';
-  else if (t && t !== titling.orig && notesCache.includes(dir + t + ".md")) msg = "There's already a file with the same name";
+  else if (t && t !== titling.orig && notesCache.includes(dir + t)) msg = "There's already a file with the same name";
   if (msg) { if (msg !== noticeTxt) say(msg, "title"); return false; }
   if (noticeSrc === "title") say("", "title");
   return true;
@@ -1827,7 +1838,14 @@ $("ul-no").onclick = () => ulAnswer("no");
 $("ulbox").addEventListener("keydown", e => {
   if (!ulPending) return;
   if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); ulAnswer("no"); return; }
-  if (e.key === "Tab") {                     // a focus TRAP: three buttons, and the ring never leaves them
+  /* MEASURED, not assumed: under WebKitGTK a shift+Tab arrives as
+     `key = "Unidentified"`, `shiftKey = true`, `keyCode = 9` — X11 sends the
+     ISO_Left_Tab keysym and GDK has no `key` name for it. A trap written as
+     `e.key === "Tab"` therefore catches forward-Tab only and the ring can never
+     walk back; the first cut of this handler did exactly that and phase `rename`
+     caught it ([ulk:Unidentified,S,9], measured with a throwaway census probe).
+     keyCode 9 is the spelling both directions share. */
+  if (e.key === "Tab" || e.keyCode === 9) {  // a focus TRAP: three buttons, and the ring never leaves them
     e.preventDefault();
     const b = [$("ul-always"), $("ul-once"), $("ul-no")];
     const i = b.indexOf(document.activeElement);
