@@ -711,7 +711,6 @@ async function flushSave(g) {               // write g's pending edits NOW
   if (!g.saveT) return;
   clearTimeout(g.saveT); g.saveT = null;
   await saveBuf(g);                         // R11.3 merge-before-write
-  await maybeH1Rename(g);                   // ux-3: H1 edit commits a rename
 }
 
 /* ---------- group DOM + layout render ---------- */
@@ -1554,7 +1553,7 @@ async function loadActive(g) {
   if (!t || !v.loaded || t.stale || v.name !== n) {   // v.name: navigate() renames the tab in place
     Ed.setText(g, n ? await inv("read_note", { name: n }) : "");   // R17: load the MODEL
     v.name = n;
-    if (t) { t.h1 = h1Of(g.editor.value); t.base = g.editor.value; t.stale = false; v.loaded = true; }  // ux-3: H1 snapshot; R11: disk base
+    if (t) { t.base = g.editor.value; t.stale = false; v.loaded = true; }  // R11: disk base
     if (m === "reading") await preview(g);
     else if (isLp(m)) await lpRender(g, -1, 0, true);
   } else if (v.scrollTop) g.lp.scrollTop = v.scrollTop;
@@ -1933,7 +1932,6 @@ function scheduleSave(g) {
   g.saveT = setTimeout(async () => {
     g.saveT = null;
     await saveBuf(g);                       // R11.3: merge an external append instead of clobbering it
-    await maybeH1Rename(g);                 // ux-3: H1 edit commits a rename
     // R18: only the READING pane needs the Rust renderer. This used to call
     // preview() on every debounced save, i.e. one full-note render IPC per
     // typing burst, into a #preview that is display:none in lp/source mode.
@@ -2480,9 +2478,9 @@ function cmdPalette() {
 }
 
 /* m5 F2 rename: inline prompt over the focused note tab; disk rename via
-   rename_note (ux-3: wikilinks rewritten vault-wide by the rust side), then
+   rename_note (the rust side rewrites inbound wikilinks vault-wide), then
    tabs/hist/mru follow the name */
-async function applyRename(old, nn) {   // post-rename bookkeeping (F2 + H1 paths)
+async function applyRename(old, nn) {   // post-rename bookkeeping (F2 / cmdRename is the only caller)
   for (const h of groups()) for (const tb of h.tabs) {
     if (tb.kind) continue;
     if (tb.name === old) { tb.name = nn; if (tb.view) setInlineTitle(tb.view, nn); }   // #20: the rendered title follows the FILE, in every retained view
@@ -2495,48 +2493,19 @@ async function applyRename(old, nn) {   // post-rename bookkeeping (F2 + H1 path
   updateTitle();
 }
 
-/* ux-3: committing an edit to the first-line H1 renames the note (Obsidian
-   inline-title behavior). Fires only when the note HAD an H1 and its text
-   changed since load/last commit; collision/invalid -> rust refuses, name
-   kept (content keeps the new H1, like Obsidian on conflict).
-
-   #20 / R32.5 — THE Q4 DECISION, KEPT DELIBERATELY. Recon measured what stock
-   1.13.7 actually does (progress.md Q4, commit 7c4389e): stock does NOT rename
-   from a body H1 (typed into `# Rename Me`, the file grew 40 -> 49 bytes and
-   the filename never moved); it renames from the INLINE TITLE, then raises an
-   "Update links" modal. Our inline title is a CSS ::before (ui/style.css:519)
-   because ui/editor.js indexes model rows POSITIONALLY, so it cannot hold a
-   caret and stock's rename surface does not exist here. Retiring ux-3 would
-   therefore delete a working rename path (and its vault-wide link rewrite, the
-   riskiest operation in the app, covered by phase `ux` A085-A087) and hand
-   nothing back. So: the title is NON-EDITABLE — recorded as the known delta in
-   R32.5 — and ux-3 stays as rustidian's own affordance, a documented
-   divergence, not an accident. What is forbidden is a title that LOOKS
-   editable and eats the keystrokes; smoke phase `title` section F asserts the
-   opposite on the running app (click the title -> caret lands in the BODY,
-   typed bytes reach disk, no rename), and notes/negctl-title-noedit.sh proves
-   that section goes red. F2 / cmdRename remains the explicit rename path in
-   both models. */
-const h1Of = s => {
-  const m = /^#[ \t]+(.+?)\s*$/.exec((s || "").split("\n", 1)[0]);
-  return m ? m[1] : null;
-};
-async function maybeH1Rename(g) {
-  const t = g.active >= 0 ? g.tabs[g.active] : null;
-  if (!t || t.kind) return;
-  const h1 = h1Of(g.editor.value);
-  const prev = t.h1;
-  t.h1 = h1;
-  if (!h1 || prev == null || h1 === prev) return;
-  const old = t.name;
-  const dir = old.includes("/") ? old.slice(0, old.lastIndexOf("/") + 1) : "";
-  const nn = dir + h1.replace(/[\\/]/g, "-");
-  if (nn === old) return;
-  try { await inv("rename_note", { old, new: nn }); }
-  catch (err) { return; }                   // exists/invalid -> keep old name
-  await applyRename(old, nn);
-}
-
+/* ux-3 is GONE (#20 / R32.5). It used to rename the note — and rewrite every
+   inbound [[link]] vault-wide — whenever a committed edit changed the note's
+   first-line body H1. Recon on stock 1.13.7 (inline-title/09, progress.md Q4)
+   measured the opposite: typing into a note's first-line `# Rename Me` grew
+   the file 40 -> 49 bytes and the FILENAME NEVER MOVED. Stock renames from the
+   inline TITLE, and then raises an "Update links" modal (Always update / Just
+   once / Do not update) — it never silently rewrites a vault. So a body-H1
+   edit that mutates the user's filename and every note that links to it was
+   rustidian's own invention, not parity, and it is the riskiest write in the
+   app. It is deleted: editing a body H1 now does what stock does — edits text.
+   The rename path is F2 / "Rename file" -> cmdRename below (phase `m5` asserts
+   it lands on disk); phase `ux` step 2 asserts the negative half (a body-H1
+   edit leaves the filename and every inbound link alone, and the bytes land). */
 function cmdRename() {
   const g = fg();
   const t = g && g.active >= 0 ? g.tabs[g.active] : null;
@@ -3423,7 +3392,7 @@ async function saveBuf(g) {
 async function reloadInPlace(g, text) {
   const t = g.tabs[g.active];
   const c = g.lpActive ? Ed.caret(g) : null;   // R17: caret survives the reload
-  Ed.setText(g, text); t.base = text; t.h1 = h1Of(text);
+  Ed.setText(g, text); t.base = text;
   if (t.mode === "reading") await preview(g);
   else await lpRender(g, c ? c.l : -1, c ? c.c : 0);   // dirty rows only
   updateStatus(g);
