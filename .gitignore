@@ -2,6 +2,9 @@ src-tauri/target/
 *.png
 src-tauri/gen/schemas/
 !docs/ref-shots/**/*.png
+# recon evidence for R34 (title rename): the shots ARE the measurement — a
+# prose claim about a focus ring is not verifiable, the pixels are.
+!docs/recon-title-rename/**/*.png
 dist/
 .cov-evidence/
 
