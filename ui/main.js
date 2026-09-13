@@ -212,6 +212,14 @@ $("rtoggle").onclick = cmdToggleRight;
    (rgFollow) and refresh 200ms after a save lands (rSchedule). */
 const RPANES = { bl: "rpane-bl", out: "rpane-out", tags: "rpane-tags", toc: "rpane-toc" };
 let rTab = "bl", rT = null, rpInfo = "";   // rpInfo -> census [rp:...]
+/* F1 (lostwrite-ui) repaint probe -> census [rpn:<n>]: how many times the
+   backlinks pane has STARTED a paint. The pane's CONTENT cannot prove the
+   optimistic repaint was skipped after a refused write — the backend index is
+   only upserted after the bytes land, so a repaint that DID run reads back the
+   same bl/ul numbers and looks exactly like no repaint at all. The counter is
+   the difference, and it is monotone, so a probe compares it across an action
+   instead of trusting a snapshot. */
+let rbN = 0;
 async function setRTab(t, persist = true) {
   if (!RPANES[t]) t = "bl";
   rTab = t;
@@ -246,6 +254,7 @@ async function rPanesRefresh() {
 // Backlinks: "Linked mentions N" + one expandable row per linking note; the
 // matching lines show with the [[link]] highlighted; click opens the note
 async function rBacklinks(n) {
+  rbN++;                                  // [rpn:] — counted at ENTRY: the bug is calling it at all
   const box = $("bllist"), head = $("blhead");
   box.textContent = ""; head.textContent = "";
   const bl = n ? await inv("backlinks_ctx", { name: n }) : [];
@@ -313,8 +322,20 @@ async function rBacklinks(n) {
     row.onclick = () => navigate(fg(), m.note);
     row.querySelector(".ullink").onclick = async e => {
       e.stopPropagation();
-      await inv("link_mention", { note: m.note, target: n, line: m.line, col: m.col, len: m.len })
-        .catch(err => console.error("link_mention", err));
+      /* F1 (lostwrite-ui): Link REWRITES A NOTE ON DISK, so it is a write seam and
+         obeys the same rule as saveBuf — a write that did not land is VISIBLE and
+         nothing repaints as if it had. The catch here used to log the Err to the
+         devtools console — which nobody is looking at — and then the three lines
+         below ran anyway: rowSrc dropped (so an open copy
+         of the note re-reads and shows the OLD text as if refreshed), the backlinks
+         pane repainted the mention as LINKED, and the title republished. On a
+         refused write (EROFS/ENOSPC/EACCES) that painted the link the user asked
+         for and never got. saveFailed() is the existing F1 surface (#saveerr banner
+         + [saveerr:<note>] census token) — reused, not re-invented. */
+      try {
+        await inv("link_mention", { note: m.note, target: n, line: m.line, col: m.col, len: m.len });
+      } catch (err) { saveFailed(m.note, err); return; }   // no optimistic repaint on the failure path
+      saveCleared();                                       // this write DID land: retire an older banner
       for (const gg of groups()) if (gg.view) gg.view.rowSrc = null;  // the linked note may be open elsewhere
       await rBacklinks(n); updateTitle();
     };
@@ -678,10 +699,18 @@ function saveFailed(name, e) {
   b.hidden = false;
   updateTitle();
 }
+/* the banner is persistent by design (F1), so exactly one thing retires it: a
+   write to the vault that DID land. Was inline in saveNote; named because the
+   Link seam (rBacklinks) needs the same three lines and a second copy of them
+   is how the two surfaces drift apart. */
+function saveCleared() {
+  if (!saveErr) return;
+  saveErr = ""; $("saveerr").hidden = true; updateTitle();
+}
 async function saveNote(name, content) {    // true == the bytes are on disk
   try { await writeNote(name, content); }
   catch (e) { saveFailed(name, e); return false; }
-  if (saveErr) { saveErr = ""; $("saveerr").hidden = true; updateTitle(); }
+  saveCleared();
   return true;
 }
 
@@ -1084,6 +1113,7 @@ function updateTitle() {          // pane/focus census in the window title (head
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) +
             (rightOpen ? ":" + rTab : "") + "]" +
             (rightOpen && rpInfo ? " [rp:" + rpInfo + "]" : "") +
+            " [rpn:" + rbN + "]" +                              // F1: backlink repaints ENTERED, so a skipped one is observable
             (rtInfo ? " [" + rtInfo + "]" : "") +
             (jsErr ? " [jserr:" + jsErr + "]" : "") +
             (saveErr ? " [saveerr:" + saveErr + "]" : "") +             // F1: a save that did not land
