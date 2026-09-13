@@ -919,7 +919,7 @@ function renderLayout() {         // boot / vault switch only — every later ch
    reporting `#main` when the real culprit is a button in the tab strip costs
    an iteration every time. */
 const OVF_SCROLL = "#tree,#sresults,#bmlist,.rlist,.lp,.preview,.editor,.ac," +
-                   "#mlist,#p-dirs,#p-recent,#sbody,#spage,#hklist";
+                   "#mlist,#p-dirs,#p-recent,#sbody,#snav,#spage,#hklist";
 function ovfName(el) {              // short, stable selector for a failure message
   const c = (el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className) || "";
   const k = String(c).trim().split(/\s+/).filter(Boolean).slice(0, 2).map(x => "." + x).join("");
@@ -1099,7 +1099,7 @@ function updateTitle() {          // pane/focus census in the window title (head
                             (mdNew ? " [mdnew:" + tokq(mdNew) + "]" : "")   // C4: the create-this-note affordance is on screen
     : ($("rnbox") && !$("rnbox").hidden ? " [modal:rn]" : "")  // m5 fuzzy modal / rename prompt
     + ($("anew") && !$("anew").hidden ? " [modal:att]" : "")   // R31.7 Insert attachment prompt
-    + (settingsOpen ? " [modal:settings]" + hkInfo : "")       // R14 settings + hotkeys probe
+    + (settingsOpen ? " [modal:settings]" + setTok() + hkInfo : "")   // R14 hotkeys + R30 settings probe
     + (menuEl ? " [menu:1]" : "");                             // R22: a context menu is open (fuzz probe)
   // [note:<name>] = the FOCUSED group's active note (null for a graph tab).
   // Which note is active was previously only observable by mutating it (type a
@@ -3468,6 +3468,11 @@ $("vswitch").onclick = showPicker;
   await setRTab(RPANES[rt] ? rt : "bl", false);
   vaultPath = await inv("vault_get");
   if (vaultPath) await enterVault(); else showPicker();
+  // R30 / T2: the table AND the nav DOM are warmed off the open path — the nav is
+  // 19 entries that never change, so building it at boot into the hidden modal
+  // takes the only unavoidable DOM work out of the open keystroke. The pane stays
+  // lazy (105 rows are never all built), which is the half that actually scales.
+  smodelPrefetch().then(buildSettingsNav, () => {});
 })();
 
 
@@ -3476,37 +3481,123 @@ $("vswitch").onclick = showPicker;
    can click chips by coordinate. census [modal:settings] [hk:<rows>]
    [hkrec:<id>] while recording, [hkc:N] conflicting commands. ---------- */
 let settingsOpen = false, hkChip = "all", hkRec = null, hkInfo = "";
-const SNAV = ["General", "Appearance", "Interface", "Editor", "Files and links", "Hotkeys", "Core plugins"];
+/* R30 (feedback #19): the nav tree and the row lists are a DATA TABLE in Rust
+   (src-tauri/src/settings.rs = the black-box recon transcript of stock 1.13.7).
+   The frontend authors NO structure: it fetches `settings_model` once and
+   renders it. Prefetched at boot, so opening the modal does synchronous work
+   only — T2's 100 ms first-paint ceiling has no round trip inside it.
+   NAV IS EAGER (19 entries, built once per session), PANE IS LAZY: only the
+   selected pane exists in the DOM, so 105 rows are never all built at once. */
+let SMODEL = null, SMODELP = null, sPane = "hotkeys";
+function smodelPrefetch() {
+  if (!SMODELP) SMODELP = inv("settings_model").then(m => (SMODEL = m), e => { SMODELP = null; throw e; });
+  return SMODELP;
+}
 function cmdSettings() {
+  if (!settingsOpen) sfpT0 = performance.now();   // R30.12: t0 is the OPEN request, not the paint
   settingsOpen ? closeSettings() : openSettings();
 }
-function openSettings() {
+/* ---------- R30.12 PERF: open-keystroke -> first paint of the modal ----------
+   T2's ceiling is 100 ms and the brief says measure it, do not assume it. Same
+   rAF -> task pattern as Ed.cmEnd (ui/editor.js:614) so the number is
+   comparable with [cm:] and otel's key_to_paint wall_ms: t0 is taken in
+   cmdSettings (the command the keystroke dispatches, before any DOM work), t1
+   inside a task queued from the frame that carries the modal — i.e. after the
+   frame is committed, not merely after the DOM is mutated.
+   Published as [sfp:<last>/<max>/<avg>/<n>] while the modal is open, so the
+   `settings` smoke phase reads it out of the window title instead of trusting
+   a claim in a doc. [sfpw:<last>/<max>] is the same span WITHOUT the frame
+   wait — the synchronous build cost, which is the part this code owns. The
+   smoke host is a 4-vCPU VM running three goals with software GL, where the
+   compositor alone can stall a frame for half a second; separating the two
+   numbers is what keeps a host stall from reading as a slow modal, and what
+   makes the slow modal (were it ever slow) impossible to hide behind one. */
+let sfpT0 = -1, sfpMs = -1, sfpMax = 0, sfpN = 0, sfpSum = 0, sfpW = -1, sfpWMax = 0;
+function sfpEnd() {
+  if (sfpT0 < 0) return;
+  const t0 = sfpT0; sfpT0 = -1;
+  sfpW = Math.round((performance.now() - t0) * 100) / 100;   // work only: DOM built, frame not yet committed
+  if (sfpW > sfpWMax) sfpWMax = sfpW;
+  requestAnimationFrame(() => setTimeout(() => {
+    const ms = Math.round((performance.now() - t0) * 100) / 100;
+    sfpMs = ms; sfpN++; sfpSum += ms;
+    if (ms > sfpMax) sfpMax = ms;
+    if (typeof otel !== "undefined" && otel.span)
+      otel.span("settings_open", { tabs: SMODEL ? SMODEL.nav.length : 0, rows_built: sRowsShown }, ms);
+    updateTitle();
+  }, 0));
+}
+/* [set:<tabs>/<rows>/<enabled>] — the DATA TABLE's own counts (R30.14), so a
+   row silently added, dropped or flipped to enabled moves a number the gate
+   asserts. [spane:<id>/<rows>/<enabled>] is the pane currently BUILT, which is
+   how the phase proves a nav click actually swapped the pane (OCR alone cannot
+   distinguish "clicked" from "painted the same pane again"). */
+function setTok() {
+  if (!SMODEL) return "";
+  const e = SMODEL.rows.reduce((n, r) => n + (r.enabled ? 1 : 0), 0);
+  return " [set:" + SMODEL.nav.length + "/" + SMODEL.rows.length + "/" + e + "]" +
+         " [spane:" + sPane + "/" + sRowsShown + "/" + sEnabledShown + "]" +
+         (sfpMs >= 0 ? " [sfp:" + sfpMs + "/" + sfpMax + "/" +
+                       (Math.round(sfpSum / sfpN * 100) / 100) + "/" + sfpN + "]" : "") +
+         (sfpW >= 0 ? " [sfpw:" + sfpW + "/" + sfpWMax + "]" : "");
+}
+async function openSettings() {
+  if (!SMODEL) await smodelPrefetch();   // cold open only (prefetched at boot)
   settingsOpen = true; hkRec = null;
   closeModal();
   $("settings").hidden = false;
-  showSettingsPage("Hotkeys");
-  updateTitle();
+  buildSettingsNav();
+  showSettingsPage(sPane);
+  sfpEnd();        // BEFORE the census: updateTitle walks the whole document for
+  updateTitle();   // the R22 overflow probe, and that is the instrument's cost, not the modal's
 }
 function closeSettings() {
   settingsOpen = false; hkRec = null;
   $("settings").hidden = true;
   updateTitle();
 }
-function showSettingsPage(name) {
-  const nav = $("snav"); nav.innerHTML = "";
-  const h = document.createElement("div"); h.className = "snavh"; h.textContent = "Options";
-  nav.appendChild(h);
-  for (const n of SNAV) {
+/* the left nav, 1:1 with stock's order and grouping (Options 1-9, then the
+   Core plugins group) — built ONCE from the model, never re-created on a tab
+   switch: selection is a class toggle, so clicking a nav entry costs one pane
+   build and nothing else. */
+function buildSettingsNav() {
+  const nav = $("snav");
+  if (nav.dataset.built === "1") return;
+  nav.innerHTML = "";
+  let group = null;
+  for (const e of SMODEL.nav) {
+    if (e.group !== group) {
+      group = e.group;
+      const h = document.createElement("div"); h.className = "snavh"; h.textContent = group;
+      nav.appendChild(h);
+    }
     const d = document.createElement("div");
-    d.className = "snavi" + (n === name ? " sel" : ""); d.textContent = n;
-    d.onclick = () => showSettingsPage(n);
+    d.className = "snavi"; d.textContent = e.entry;
+    d.dataset.pane = e.id; d.tabIndex = 0;
+    d.onclick = () => showSettingsPage(e.id);
+    d.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); showSettingsPage(e.id); } };
     nav.appendChild(d);
   }
-  const pg = $("spage"); pg.innerHTML = "";
-  if (name !== "Hotkeys") {
-    const d = document.createElement("div"); d.className = "sempty";
-    d.textContent = name + " — nothing to configure yet.";
-    return pg.appendChild(d);
+  nav.dataset.built = "1";
+}
+/* `id` is a pane id from the model ("general", "hotkeys", "cp-dailynotes", ...);
+   a stock ENTRY NAME is accepted too, so older call sites keep working. */
+function showSettingsPage(id) {
+  const e = SMODEL.nav.find(n => n.id === id) || SMODEL.nav.find(n => n.entry === id);
+  const pane = e ? e.id : "hotkeys";
+  sPane = pane;
+  for (const d of $("snav").querySelectorAll(".snavi")) d.classList.toggle("sel", d.dataset.pane === pane);
+  const pg = $("spage"); pg.innerHTML = ""; pg.className = "";
+  const rows = SMODEL.rows.filter(r => r.tab === pane);   // what this pane owes the census
+  sRowsShown = rows.length;
+  sEnabledShown = rows.filter(r => r.enabled).length;
+  if (pane !== "hotkeys") {
+    if (!rows.length) {                     // per-core-plugin panes: nav entry + empty pane (brief §2 OUT)
+      const d = document.createElement("div"); d.className = "sempty";
+      d.textContent = (e ? e.entry : pane) + " — nothing to configure yet.";
+      pg.appendChild(d);
+    } else buildSettingsRows(pg, rows, pane);
+    return updateTitle();                   // [spane:] follows the pane that is actually built
   }
   const bar = document.createElement("div"); bar.id = "hkbar";
   const inp = document.createElement("input");
@@ -3520,6 +3611,164 @@ function showSettingsPage(name) {
   pg.append(bar, chips, list);
   renderHk();
   inp.focus();
+}
+/* R30 ROWS — the Options-tab panes, built from the data table, never from HTML.
+   Stock has no disabled style to copy (recon Q4: where a control does not apply
+   stock REMOVES it), so ours is invented ONCE, here, and applied to every row
+   the table does not back with a real config key:
+     - .dis + aria-disabled="true": it reads as disabled, it is not merely grey
+     - the control is a DIV, never a form element — there is no tab stop to take
+       away, no default activation to suppress, and no handler is attached
+     - pointer-events:none (style.css) so click and hover do nothing either
+     - ONE hover string for all of them (SDIS_TITLE), no per-row "coming soon"
+   Geometry comes from docs/stock-settings-recon/measurements.txt: 76 px row with
+   a one-line description, +16 px per extra line, 17 px card inset, 1 px
+   separator, controls at the card's right edge. The palette stays rustidian's
+   dark theme — that delta is recorded in R30. */
+const SDIS_TITLE = "Not implemented yet";
+let sRowsShown = 0, sEnabledShown = 0;
+function sctl(r) {                            // the control cell for one row, or null
+  const v = r.default_shown === "-" ? "" : r.default_shown;
+  const d = document.createElement("div");
+  d.className = "sctl " + r.control;
+  const parts = (t, cls) => t.split(" / ").forEach(p => {
+    const s = document.createElement("span"); s.className = cls; s.textContent = p; d.appendChild(s);
+  });
+  switch (r.control) {
+    case "none": return null;                 // stock shows label + description and nothing else
+    case "toggle":
+      if (/^on\b/.test(v)) d.classList.add("on");       // "on", "on + gear + plus", ...
+      d.appendChild(document.createElement("i"));       // the knob
+      break;
+    case "dropdown": case "text": case "list":
+      d.textContent = v.length > 48 ? v.slice(0, 47) + "…" : v;
+      break;
+    case "color": {
+      const sw = document.createElement("span"); sw.className = "sw";
+      d.appendChild(sw); d.appendChild(document.createTextNode(v.replace(" + reset", "")));
+      break;
+    }
+    case "slider": {
+      const t = document.createElement("span"); t.className = "trk";
+      const n = document.createElement("span"); n.className = "val"; n.textContent = v.replace(" + reset", "");
+      d.append(n, t);
+      break;
+    }
+    case "button": case "buttons":            // "(accent-filled)" = stock's one filled button
+      parts(v.replace(" (accent-filled)", ""), "sbtn" + (v.includes("(accent-filled)") ? " acc" : ""));
+      break;
+    case "nav":
+      if (v) { const s = document.createElement("span"); s.className = "nv"; s.textContent = v; d.appendChild(s); }
+      d.appendChild(document.createTextNode("›"));
+      break;
+    default:
+      d.textContent = v;
+  }
+  return d;
+}
+/* stock's plugin rows carry a gear ("options") and/or a plus ("add to sidebar")
+   glyph LEFT of the toggle — transcribed in default_shown as "on + gear + plus".
+   The gear is DRAWN (inline SVG, built with createElementNS): the bundled fonts
+   have no U+2699, so a text gear renders as nothing at all — which is how the
+   first pass of this pane shipped a row that silently lost its icon.
+   Same rule as every other control: no handler, no tab stop, aria-hidden. */
+function svgel(n, at) {
+  const e = document.createElementNS("http://www.w3.org/2000/svg", n);
+  for (const k in at) e.setAttribute(k, at[k]);
+  return e;
+}
+function gearSvg() {
+  const s = svgel("svg", { width: 14, height: 14, viewBox: "0 0 16 16", fill: "none",
+                           stroke: "currentColor", "stroke-width": 1.3, "aria-hidden": "true" });
+  s.appendChild(svgel("circle", { cx: 8, cy: 8, r: 2.4 }));
+  for (let i = 0; i < 8; i++) {                 // 8 teeth, radial strokes
+    const a = i * Math.PI / 4, c = Math.cos(a), n = Math.sin(a);
+    s.appendChild(svgel("line", { x1: (8 + c * 4.4).toFixed(2), y1: (8 + n * 4.4).toFixed(2),
+                                  x2: (8 + c * 6.8).toFixed(2), y2: (8 + n * 6.8).toFixed(2) }));
+  }
+  return s;
+}
+function sicons(v) {
+  const want = ["gear", "plus"].filter(n => v.includes(n));
+  if (!want.length) return null;
+  const d = document.createElement("div"); d.className = "sicons";
+  for (const n of want) {
+    const s = document.createElement("span"); s.className = "sico " + n;
+    s.appendChild(n === "gear" ? gearSvg() : document.createTextNode("+"));
+    d.appendChild(s);
+  }
+  return d;
+}
+/* CHROME rows: the transcript marks a pane's non-setting furniture with a
+   parenthesised label — "(search field)" at the top of Core plugins, the
+   "(security blurb)" card on Community plugins. Stock draws them as part of the
+   pane, not as a label/description row, so they get their own shape here.
+   They are keyless, therefore disabled, therefore inert like everything else. */
+function schrome(r) {
+  if (r.label === "(search field)") {
+    const d = document.createElement("div"); d.className = "ssearch dis";
+    d.setAttribute("aria-disabled", "true"); d.title = SDIS_TITLE;
+    d.textContent = r.desc.replace(/ placeholder$/, "");
+    return d;
+  }
+  if (r.label === "(security blurb)") {
+    const wrap = document.createElement("div"); wrap.className = "sblurbwrap";
+    const m = r.desc.match(/^(.*?)\s*\+ \d+ cards \((.*)\)$/);
+    const p = document.createElement("div"); p.className = "sblurb";
+    p.textContent = m ? m[1] : r.desc;
+    wrap.appendChild(p);
+    if (m) {                                  // stock's 2x2 grid of security cells
+      const g = document.createElement("div"); g.className = "sgrid";
+      for (const t of m[2].split(" / ")) {
+        const c = document.createElement("div"); c.className = "scell"; c.textContent = t;
+        g.appendChild(c);
+      }
+      wrap.appendChild(g);
+    }
+    return wrap;
+  }
+  return null;
+}
+function buildSettingsRows(pg, rows, pane) {
+  /* Core plugins is stock's LIST pane, not a settings-card pane: denser rows
+     (52 px for a one-line description, measurements.txt LIST PANE) and a search
+     field at the top instead of a section heading. */
+  pg.className = "rows" + (pane === "coreplugins" ? " list" : "");
+  let section = null, card = null;   // null !== "" so the first row always opens a card
+  for (const r of rows) {
+    const sec = r.section || "";
+    if (sec !== section) {                    // a new section = its own heading + card, like stock
+      section = sec;
+      if (sec) { const h = document.createElement("div"); h.className = "ssec"; h.textContent = sec; pg.appendChild(h); }
+      card = document.createElement("div"); card.className = "scard"; pg.appendChild(card);
+    }
+    const ch = schrome(r);                    // furniture, not a setting row
+    if (ch) { card.appendChild(ch); continue; }
+    const row = document.createElement("div");
+    row.className = "srow" + (r.enabled ? "" : " dis");
+    if (!r.enabled) { row.setAttribute("aria-disabled", "true"); row.title = SDIS_TITLE; }
+    const info = document.createElement("div"); info.className = "sinfo";
+    const lb = document.createElement("div"); lb.className = "slabel"; lb.textContent = r.label;
+    const link = r.desc === "(external link row)";   // stock's bare link line, no description
+    if (link) { lb.classList.add("slink"); row.classList.add("linkrow"); }
+    info.appendChild(lb);
+    if (!link && r.desc && r.desc !== "-") {
+      const ds = document.createElement("div"); ds.className = "sdesc";
+      r.desc.split(" | ").forEach((p, i) => {   // " | " marks stock's inline link tail
+        const s = document.createElement("span");
+        if (i) s.className = "slink";
+        s.textContent = (i ? " " : "") + p;
+        ds.appendChild(s);
+      });
+      info.appendChild(ds);
+    }
+    row.appendChild(info);
+    const ic = sicons(r.default_shown || "");
+    if (ic) row.appendChild(ic);
+    const c = sctl(r);
+    if (c) row.appendChild(c);
+    card.appendChild(row);
+  }
 }
 const HKCHIPS = [["all", "All"], ["assigned", "Assigned"], ["mine", "Assigned by me"], ["unassigned", "Unassigned"]];
 function hkRows() {                          // fuzzy filter AND active chip

@@ -15,6 +15,7 @@ mod index;
 mod outline;
 mod perf;
 mod sandbox;
+mod settings;
 mod srcmode;
 mod watcher;
 use index::{link_parts, links_in, resolve, tag_spans, Graph, Index};
@@ -1751,7 +1752,8 @@ fn main() {
             list_bookmarks, toggle_bookmark, recent_vaults, rename_note, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab,
-            get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files
+            get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
+            settings::settings_model
         ])
         .run(tauri::generate_context!())
         .expect("tauri run");
