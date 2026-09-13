@@ -670,3 +670,51 @@ body.floorrelayout #main { padding-right: 1px }
    widget must not paint. With the caret merely ON the row the widget stays,
    exactly like the task checkbox of an edited "- [x] " line (R17.6). */
 .lp.src .vimg, .lp.src .rimg, .lp.src .imgmiss { display: none }
+
+/* ---------- R32 frameless window: the app draws its own frame ----------
+   tauri.conf.json ships `decorations: false`: there is no WM title bar and no WM
+   resize border, so every affordance the frame provided lives here.
+   #wframe is the title bar's replacement. Stock Obsidian does NOT stack a strip
+   above its tabs — it puts the window controls inside the top chrome row (recon
+   under openbox, 1100px-wide window: minimise centred at right-113, maximise at
+   right-70, close at right-26, row 40px tall). This strip keeps those three x
+   centres (44px hit areas at right 4/48/92) but is 32px tall, because that is
+   rustidian's tab-row height — a 40px strip would shift every baseline in the
+   suite for 8px of fidelity.
+   position:fixed, z-index above the picker / settings / modal overlays: a window
+   you cannot close while a modal is open is a broken interaction. The row under
+   the strip reserves its width (.wfinset, set by placeRToggle) instead of being
+   covered — #rtoggle and .modebtn live at exactly that end of the row. */
+#wframe { position: fixed; top: 0; right: 0; width: 140px; height: 32px;
+          z-index: 200; background: #11111b; user-select: none }
+#wframe button { position: absolute; top: 0; width: 44px; height: 32px; padding: 0;
+                 background: none; border: 0; color: #a6adc8; cursor: pointer;
+                 display: flex; align-items: center; justify-content: center }
+#wf-min { right: 92px }        /* stock: centre at right-113 -> 92+22 = right-114 */
+#wf-max { right: 48px }        /* stock: right-70  -> 48+22 = right-70 */
+#wf-close { right: 4px }       /* stock: right-26  -> 4+22  = right-26 */
+#wframe button:hover { background: #313244; color: #cdd6f4 }
+#wf-close:hover { background: #f38ba8; color: #11111b }
+/* R32.4 keyboard: every control is a real <button>, so Tab reaches it and
+   Enter/Space activates it — the focus ring has to be visible or "operable by
+   keyboard" is a claim nobody can see. */
+#wframe button:focus-visible, #wframe button:focus { outline: 2px solid #89b4fa;
+          outline-offset: -3px; color: #cdd6f4 }
+#wframe button svg { width: 11px; height: 11px; display: block }
+#rtabs.wfinset { padding-right: 140px; flex-wrap: nowrap }   /* nowrap: wrapping would DOUBLE the row height instead of clipping (R22) */
+.tabbar.wfinset { padding-right: 140px }
+/* R32.3 resize: eight invisible grips. The layer is pointer-events:none so only
+   the grips themselves take a press; they paint nothing, so no screenshot
+   baseline and no pixel probe moves. The north grip stops at the control strip
+   (right:140px) — stock has no top-edge resize at all, and a 4px band over the
+   buttons would eat clicks aimed at close. */
+#wrz { position: fixed; inset: 0; z-index: 210; pointer-events: none }
+#wrz i { position: absolute; display: block; pointer-events: auto }
+#wrz i[data-d="n"] { top: 0; left: 0; right: 140px; height: 4px; cursor: n-resize }
+#wrz i[data-d="s"] { bottom: 0; left: 0; right: 0; height: 4px; cursor: s-resize }
+#wrz i[data-d="e"] { top: 0; bottom: 0; right: 0; width: 4px; cursor: e-resize }
+#wrz i[data-d="w"] { top: 0; bottom: 0; left: 0; width: 4px; cursor: w-resize }
+#wrz i[data-d="ne"] { top: 0; right: 0; width: 12px; height: 12px; cursor: ne-resize }
+#wrz i[data-d="nw"] { top: 0; left: 0; width: 12px; height: 12px; cursor: nw-resize }
+#wrz i[data-d="se"] { bottom: 0; right: 0; width: 12px; height: 12px; cursor: se-resize }
+#wrz i[data-d="sw"] { bottom: 0; left: 0; width: 12px; height: 12px; cursor: sw-resize }

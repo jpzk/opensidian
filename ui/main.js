@@ -183,6 +183,12 @@ function placeRToggle() {
   if (!b) return;
   const host = rightOpen ? $("rtabs") : (state ? topRight(state.root).pane.querySelector(".tabbar") : null);
   if (host && b.parentNode !== host) host.appendChild(b);
+  /* R32: the window controls are pinned to the window's TOP-RIGHT corner, which is
+     the right end of exactly this row — the same end #rtoggle and .modebtn sit at.
+     The row reserves their width instead of being covered by them: an invisible
+     #rtoggle is a control the user has lost. */
+  for (const el of document.querySelectorAll(".wfinset")) if (el !== host) el.classList.remove("wfinset");
+  if (host) host.classList.add("wfinset");
   clearTimeout(rtT);
   rtT = setTimeout(() => {
     rtT = null;
@@ -1109,6 +1115,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   t += " [vp:" + innerWidth + "x" + innerHeight + "]" +   // resize-completed signal for the fuzz harness
        " [ovf:" + ov.dw + "," + ov.dh + "," + ov.n + "]" +
        (ov.bad.length ? " [ovfe:" + ov.bad.join("|").slice(0, 180) + "]" : "");
+  t += wfTok();                    // R32: the window's own frame (controls, grips, maximised, keyboard focus)
   document.title = t;
   // publish to the native title: ONE call in flight, last-write-wins, 500ms
   // timeout guard — a hung/rejected setTitle IPC can neither reorder titles
@@ -3576,3 +3583,115 @@ function hkKey(e) {                          // keyboard while settings is open
 }
 $("sclose").onclick = closeSettings;
 $("settings").onmousedown = e => { if (e.target === $("settings")) closeSettings(); };
+
+/* ---------- R32 frameless window: the app IS the title bar ----------
+   With `decorations: false` there is no WM frame, so moving, resizing,
+   minimising, maximising and closing the window are this file's job.
+
+   WHY THE GESTURES ARE OURS AND NOT THE WM'S: the obvious implementation hands
+   the press to the WM (start_dragging / _NET_WM_MOVERESIZE) and lets it move the
+   window. That does nothing where there is NO window manager — which is exactly
+   the state of every Xvfb display this repo tests on, and an undecorated window
+   there would be permanently stuck. So a gesture sends the ANCHOR rect it started
+   from plus the cursor delta, and win_gesture applies the resulting geometry
+   (absolute at every step: a dropped pointermove cannot make the window drift).
+   Cost: the window follows the cursor one frame late. R32 records the divergence.
+
+   THE DRAG REGION is the empty part of the TOP row (the strip itself and the
+   background of the top tab bar, never a tab or a button) — stock drags by the
+   same empty tab-row space. `top <= 2` keeps a split pane's own tab bar, halfway
+   down the window, from moving the window instead of doing nothing. */
+/* `var`, not `let`: updateTitle() runs during this file's own top-level init,
+   BEFORE execution reaches this block at the bottom — a `let` would still be in
+   its temporal dead zone and reading it would throw, turning the whole census
+   into [jserr:] instead of a title. */
+var wfMax = false;          // last state win_toggle_max reported -> census [wfm:]
+var wfArmed = false;          // the gesture listeners are installed -> census [wf:3d8]
+var wfA = null;               // gesture in flight: {dir, sx, sy, r, moved}
+var wfPend = null, wfRaf = 0; // rAF-coalesced pointer delta (the LAST one always lands)
+var wfLast = "-";          // last gesture, published as [wfg:] for the smoke assertions
+var wfDownT = 0, wfDownX = 0, wfDownY = 0;   // double-press detector (= maximise)
+
+function wfDragRegion(t) {    // is this event target part of the drag region?
+  if (!t || !t.classList) return false;
+  if (t.id === "wframe") return true;
+  if (!t.classList.contains("tabbar") && !t.classList.contains("tabs")) return false;
+  return t.getBoundingClientRect().top <= 2;      // the TOP row only
+}
+async function wfToggleMax() {
+  try { wfMax = await inv("win_toggle_max"); } catch (e) { noteErr(e); }
+  updateTitle();
+}
+function wfFlush() {
+  wfRaf = 0;
+  const a = wfA, p = wfPend; wfPend = null;
+  if (!a || !p) return;
+  /* the anchor rect is the single thing a gesture can get wrong invisibly: send the
+     wrong w/h and the window resizes to a number nobody asked for, which reads as
+     "our resize is broken" when it is really "win_rect lied". So the last gesture
+     is published in the census — dir, the anchor it used, and the delta — and the
+     smoke phase asserts it against the geometry the WM reports. */
+  wfLast = a.dir + ":" + a.r.x + "," + a.r.y + "," + a.r.w + "," + a.r.h + "+" + p.dx + "," + p.dy;
+  inv("win_gesture", { dir: a.dir, x: a.r.x, y: a.r.y, w: a.r.w, h: a.r.h, dx: p.dx, dy: p.dy })
+    .then(() => updateTitle()).catch(noteErr);
+}
+async function wfBegin(dir, ev, el) {
+  if (ev.button !== 0) return;
+  if (dir === "move") {       // second press on the strip inside 400ms = maximise/restore
+    const now = Date.now(), near = Math.abs(ev.screenX - wfDownX) + Math.abs(ev.screenY - wfDownY) < 8;
+    const dbl = now - wfDownT < 400 && near;
+    wfDownT = now; wfDownX = ev.screenX; wfDownY = ev.screenY;
+    if (dbl) { wfDownT = 0; return wfToggleMax(); }
+  }
+  ev.preventDefault();
+  let r; try { r = await inv("win_rect"); } catch (e) { return noteErr(e); }
+  wfA = { dir, sx: ev.screenX, sy: ev.screenY, r, moved: false };
+  try { el.setPointerCapture(ev.pointerId); } catch (e) { /* capture is an optimisation, not the mechanism */ }
+}
+function wfDrag(ev) {
+  const a = wfA;
+  if (!a) return;
+  const dx = ev.screenX - a.sx, dy = ev.screenY - a.sy;
+  if (!a.moved && Math.abs(dx) + Math.abs(dy) < 3) return;   // a click is not a drag
+  a.moved = true;
+  wfPend = { dx, dy };
+  if (!wfRaf) wfRaf = requestAnimationFrame(wfFlush);
+}
+function wfEnd() {
+  if (wfPend) wfFlush();      // the last delta decides the final geometry
+  wfA = null;
+}
+function wfArm() {
+  // spelled out, one call per control: the cargo test greps for inv("win_...")
+  // in this file, which is the only thing that notices when a command is renamed
+  // in Rust and the button silently becomes a no-op (ui/ is not a cargo input)
+  $("wf-min").onclick = () => inv("win_minimize").catch(noteErr);
+  $("wf-close").onclick = () => inv("win_close").catch(noteErr);
+  $("wf-max").onclick = wfToggleMax;
+  for (const g of document.querySelectorAll("#wrz i"))
+    g.addEventListener("pointerdown", ev => wfBegin(g.dataset.d, ev, g));
+  // capture phase: the press must be claimed before a tab bar handler sees it,
+  // and ONLY when it landed on the background (a tab is its own target)
+  addEventListener("pointerdown", ev => { if (wfDragRegion(ev.target)) wfBegin("move", ev, ev.target); }, true);
+  addEventListener("pointermove", wfDrag, true);
+  addEventListener("pointerup", wfEnd, true);
+  addEventListener("pointercancel", wfEnd, true);
+  // the census must be able to say WHICH control the keyboard is on (R32.4)
+  for (const b of document.querySelectorAll("#wframe button")) {
+    b.addEventListener("focus", updateTitle);
+    b.addEventListener("blur", updateTitle);
+  }
+  wfArmed = true;
+  updateTitle();
+}
+/* census: [wf:<buttons><d|-><grips>] [wfm:<maximised>] [wfk:<focused control>].
+   `d` = the gesture listeners are armed; without them the window cannot be
+   moved, and the smoke's move assertion is the thing that notices. */
+function wfTok() {
+  const b = document.querySelectorAll("#wframe button").length;
+  const g = document.querySelectorAll("#wrz i").length;
+  const a = document.activeElement;
+  const k = a && a.id && a.id.indexOf("wf-") === 0 ? a.id : "-";
+  return " [wf:" + b + (wfArmed ? "d" : "-") + g + "] [wfm:" + (wfMax ? 1 : 0) + "] [wfk:" + k + "] [wfg:" + wfLast + "]";
+}
+wfArm();
