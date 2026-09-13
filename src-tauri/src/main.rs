@@ -1,4 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+/* lost-write: a dropped Result is how a failed save becomes a reported
+   success. rustc warned about exactly that in link_mention for weeks and
+   nobody read the build log — a warning nobody reads is not a safety net.
+   DENY, so the next one is a build error. Where ignoring is genuinely right,
+   write `let _ = ...` WITH a reason next to it. */
+#![deny(unused_must_use)]
 use pulldown_cmark::{html, Event, LinkType, Options, Parser, Tag, TagEnd};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -9,6 +15,7 @@ mod index;
 mod outline;
 mod perf;
 mod sandbox;
+mod settings;
 mod srcmode;
 mod watcher;
 use index::{link_parts, links_in, resolve, tag_spans, Graph, Index};
@@ -1394,14 +1401,30 @@ fn unlinked_mentions(v: State<Vault>, name: String) -> Vec<Mention> {
 /// Link button: wrap the matched text in [[ ]] in `note` and save it
 #[tauri::command]
 fn link_mention(v: State<Vault>, note: String, target: String, line: u32, col: u32, len: u32) -> Result<(), String> {
-    let base = target.rsplit('/').next().unwrap_or(&target);
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    let mut ix = v.index.lock().unwrap();
+    link_mention_in(&root, &mut ix, &note, &target, line, col, len)
+}
+
+/* F1 dataloss: the pure core, so the ERROR path is testable without Tauri.
+   This call site used to drop the write's Result on the floor and return
+   Ok(()) — a refused write (ENOSPC, EROFS, the sandbox) was reported to the
+   user as a saved one and the edit was gone. The Result IS the product. */
+fn link_mention_in(
+    root: &Path,
+    ix: &mut Index,
+    note: &str,
+    target: &str,
+    line: u32,
+    col: u32,
+    len: u32,
+) -> Result<(), String> {
+    let base = target.rsplit('/').next().unwrap_or(target);
     let nc = {
-        let ix = v.index.lock().unwrap();
-        let c = ix.content(&note).ok_or("no such note")?;
+        let c = ix.content(note).ok_or("no such note")?;
         index::link_mention(c, base, line, col, len).ok_or("mention moved — refresh the pane")?
     };
-    write_note_inner(&v, &note, &nc);
-    Ok(())
+    write_note_in(root, ix, note, &nc)
 }
 
 /// active right-sidebar tab, persisted as rside_tab in ~/.rustidian.json
@@ -1881,7 +1904,8 @@ fn main() {
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
-            win_rect, win_gesture, win_minimize, win_toggle_max, win_close
+            win_rect, win_gesture, win_minimize, win_toggle_max, win_close,
+            settings::settings_model
         ])
         .run(tauri::generate_context!())
         .expect("tauri run");
@@ -2942,6 +2966,53 @@ mod tests {
         assert_eq!(write_note_in(&root, &mut ix, "Note", "new body"), Ok(()));
         assert_eq!(fs::read_to_string(root.join("Note.md")).unwrap(), "new body");
         assert_eq!(ix.content("Note"), Some("new body"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// LW (lost-write): `link_mention` used to call write_note_inner and
+    /// THROW THE RESULT AWAY, returning Ok(()) — the user clicked "link
+    /// mention", the write was refused (ENOSPC/EROFS/sandbox), the UI said it
+    /// worked and the edit was gone. A refused write must reach the caller.
+    /// Read-only vault dir = a real refusal (write_atomic must create a
+    /// sibling temp in it), not a deleted file, which is a different path.
+    #[test]
+    fn lw_link_mention_surfaces_a_refused_write() {
+        use std::os::unix::fs::PermissionsExt;
+        /// restores the mode even if an assert below panics — a test that
+        /// dies with the fixture at 0555 poisons every later run
+        struct RestoreMode(PathBuf, u32);
+        impl Drop for RestoreMode {
+            fn drop(&mut self) {
+                let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(self.1));
+            }
+        }
+        const BODY: &str = "see Link Target here\n";
+        let root = tmp_vault("lw");
+        fs::write(root.join("Link Target.md"), "target\n").unwrap();
+        fs::write(root.join("Note.md"), BODY).unwrap();
+        let mut ix = Index::build(&root);
+        // control: while the vault is writable the same call lands
+        link_mention_in(&root, &mut ix, "Note", "Link Target", 0, 4, 11).unwrap();
+        assert_eq!(fs::read_to_string(root.join("Note.md")).unwrap(), "see [[Link Target]] here\n");
+
+        fs::write(root.join("Note.md"), BODY).unwrap();
+        let mut ix = Index::build(&root);
+        let mode0 = fs::metadata(&root).unwrap().permissions().mode();
+        let guard = RestoreMode(root.clone(), mode0);
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o555)).unwrap();
+        // the setup must ACTUALLY refuse the write — root ignores 0555, and a
+        // test whose failure injection silently did nothing proves nothing
+        assert!(
+            fs::File::create(root.join("probe.tmp")).is_err(),
+            "vault still writable at 0555 (running as root?) — no refusal was injected"
+        );
+        let e = link_mention_in(&root, &mut ix, "Note", "Link Target", 0, 4, 11)
+            .expect_err("a write that was REFUSED was reported to the user as a saved one");
+        assert!(!e.is_empty(), "a failed save must carry a message to the UI");
+        // nothing landed, and the index still == disk
+        assert_eq!(fs::read_to_string(root.join("Note.md")).unwrap(), BODY);
+        assert_eq!(ix.content("Note"), Some(BODY));
+        drop(guard);
         let _ = fs::remove_dir_all(&root);
     }
 
