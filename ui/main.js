@@ -815,6 +815,11 @@ function mkView(g) {
   lp.addEventListener("mousedown", e => {
     const g = v.g;
     if (e.target !== lp || g.graphOn) return;
+    // R34.15: the ::before is not an event target — a click on the title's ink
+    // reports .lp itself, so the title band is identified by GEOMETRY. Inside
+    // it the click opens the rename surface (R34.1); anywhere else below the
+    // last row keeps R17's "caret at the end of the note".
+    if (titleHit(lp, e.clientX, e.clientY)) { e.preventDefault(); openTitleEdit(g, lp, e.clientX, e.clientY); return; }
     e.preventDefault();
     const L = Ed.lines(g);
     Ed.place(g, L.length - 1, L[L.length - 1].length);
@@ -1054,6 +1059,15 @@ function updateTitle() {          // pane/focus census in the window title (head
   if (md && isLp(ft.mode) && fg().lpActive) md += ":" + fg().lpActive.l0;
   if (md) md += "]";
   if (lpMs >= 0) md += " [lp:" + lpMs + "]";     // perf: last lpRender ms
+  /* R34.15 title probe -> [te:<text in the box>/<g.lp.children.length>]. Two
+     facts in one token, and the second one is the R32.4 acceptance condition
+     made observable: while the title is being edited the scroller's child list
+     must be EXACTLY what it is when it is not (the caret surface is a sibling,
+     ui/style.css .titlewrap). A phase compares the row count in this token with
+     the count from Ed.geom before the click; a mechanism that prepended a node
+     would read one higher here and break every positional index silently. */
+  if (titling) md += " [te:" + titling.el.textContent.replace(/[[\]|/]/g, "") +
+                     "/" + (titling.g.lp ? titling.g.lp.children.length : -1) + "]";
   // R17: renderer/token-map self test. A failure names its FIRST bad case
   // (Ed.edtWhy) so the smoke log says what broke, not just how many.
   if (edtBad >= 0) md += " [edt:" + (edtBad ? "fail" + edtBad + ":" + (Ed.edtWhy || "?") : "ok") + "]";
@@ -1568,6 +1582,123 @@ function setInlineTitle(v, name) {
     if (t) el.dataset.title = t; else delete el.dataset.title;
   }
 }
+
+/* R34.15 — THE CARET PROBLEM, SOLVED OUTSIDE THE ROW LIST.
+   R34 makes the inline title a rename surface (reversing half of R32.5), and
+   the hard part is not the rename: it is that ui/editor.js addresses model
+   rows POSITIONALLY (`rowAt(g,l) = g.lp.children[l]`, editor.js:491). Anything
+   editable placed INSIDE the scroller — prepended, appended, or absolutely
+   positioned — becomes a member of `g.lp.children` and either shifts every
+   line index by one or lengthens a list that `Ed.pos`/`Ed.paint`/`lpRender`
+   read as "one child per source line". R15's measured offsets and phase
+   `typo`'s SKIP=1 sit on top of that.
+   So the caret surface is a SIBLING of the scroller, in `.content` (which is
+   position:relative), positioned over the ::before's measured box; the
+   ::before itself stays in place and merely goes `visibility: hidden`
+   (ui/style.css .lp.titling::before), so the LAYOUT is untouched — the title
+   box still reserves its 44px and row 0 does not move.
+   Consequence, and it is the point: `g.lp.children` is IDENTICAL whether the
+   title is being edited or not. updateTitle publishes [te:<text>/<rows>] so a
+   smoke phase can assert that number instead of trusting this comment. */
+let titling = null;          // {g, host, wrap, el, name, orig} while the title is being edited
+const titleEditing = () => !!titling;
+
+/* The ::before's box in CLIENT coordinates (a pseudo-element has no node, so it
+   cannot be measured with getBoundingClientRect — it is derived instead):
+   top    = the scroller's content-box top, minus how far it has scrolled;
+   height = the distance to row 0, less the ::before's own margin-bottom;
+   width  = the content box (the text column inside it is re-centred by CSS,
+            exactly as `.lp > *` and the ::before itself are). */
+function titleBox(host) {
+  if (!host || !host.dataset.title) return null;
+  const cs = getComputedStyle(host), pre = getComputedStyle(host, "::before");
+  const r = host.getBoundingClientRect();
+  const padT = parseFloat(cs.paddingTop) || 0;
+  const padL = parseFloat(cs.paddingLeft) || 0, padR = parseFloat(cs.paddingRight) || 0;
+  const top = r.top + padT - host.scrollTop;
+  const first = host.firstElementChild;
+  const mb = parseFloat(pre.marginBottom) || 0;
+  const h = first ? first.getBoundingClientRect().top - top - mb
+                  : (parseFloat(pre.height) || parseFloat(pre.lineHeight) || 0);
+  return { top, left: r.left + padL, width: Math.max(0, host.clientWidth - padL - padR), height: h };
+}
+const titleHit = (host, x, y) => {          // is this click on the title's own band?
+  const b = titleBox(host);
+  return !!b && b.height > 0 && y >= b.top && y < b.top + b.height && x >= b.left && x < b.left + b.width;
+};
+
+function openTitleEdit(g, host, x, y) {
+  if (titling) closeTitleEdit();
+  const name = curOf(g);
+  const b = name ? titleBox(host) : null;
+  if (!b || b.height <= 0) return false;
+  const wrap = document.createElement("div");
+  wrap.className = "titlewrap";
+  const el = document.createElement("div");
+  el.className = "titleedit";
+  el.contentEditable = "plaintext-only";     // one line of text, no markup, no paste-in HTML
+  el.spellcheck = false;
+  el.textContent = titleOf(name);
+  wrap.appendChild(el);
+  wrap.style.top = (b.top - g.content.getBoundingClientRect().top) + "px";
+  wrap.style.left = (b.left - g.content.getBoundingClientRect().left) + "px";
+  wrap.style.width = b.width + "px";
+  host.classList.add("titling");             // hide the INK, keep the BOX
+  g.content.appendChild(wrap);               // sibling of the scroller — never g.lp.children
+  titling = { g, host, wrap, el, name, orig: titleOf(name) };
+  el.focus();
+  const rng = typeof x === "number" && document.caretRangeFromPoint ? document.caretRangeFromPoint(x, y) : null;
+  const sel = window.getSelection();
+  if (sel) {
+    const r = rng && el.contains(rng.startContainer) ? rng : document.createRange();
+    if (!(rng && el.contains(rng.startContainer))) r.selectNodeContents(el), r.collapse(false);
+    sel.removeAllRanges(); sel.addRange(r);
+  }
+  el.addEventListener("keydown", onTitleKey);
+  el.addEventListener("input", updateTitle);
+  el.addEventListener("blur", () => closeTitleEdit());
+  host.addEventListener("scroll", onTitleScroll);
+  updateTitle();
+  return true;
+}
+
+/* Scrolling the note away from under an absolutely-positioned overlay would
+   paint a title over the tab row (.content does not clip). Editing a filename
+   while scrolling the body is not an interaction anyone performs, so a scroll
+   REVERTS — which loses nothing, because a revert never renames. */
+function onTitleScroll() { closeTitleEdit(); }
+
+function closeTitleEdit() {
+  if (!titling) return;
+  const t = titling;
+  titling = null;                            // first: el.remove() fires blur, which re-enters
+  t.host.removeEventListener("scroll", onTitleScroll);
+  t.wrap.remove();
+  t.host.classList.remove("titling");
+  if (t.host === t.g.lp && t.g.lp.isConnected) t.g.lp.focus({ preventScroll: true });
+  updateTitle();
+}
+
+function onTitleKey(e) {
+  if (e.key === "Escape") {                  // R34.10: Escape REVERTS, measured past blur
+    e.preventDefault(); e.stopPropagation();
+    closeTitleEdit();
+    return;
+  }
+  if (e.key === "Enter") {
+    e.preventDefault(); e.stopPropagation();
+    commitTitleEdit();
+    return;
+  }
+  e.stopPropagation();                       // a filename contains characters the R14 keymap binds
+}
+
+/* R34.1 — Enter renames the file. NOT YET IMPLEMENTED (ledger item 8: the
+   move-only backend + the counted `Update links` prompt land together). Until
+   then Enter closes and keeps the name: the one shape the brief forbids is a
+   rename that happens without the prompt, so the placeholder is the REFUSAL,
+   never the silent rename. */
+function commitTitleEdit() { closeTitleEdit(); }
 
 async function loadActive(g) {
   hideAc();
