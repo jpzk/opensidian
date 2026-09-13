@@ -916,6 +916,20 @@ function ovfCause(el, why) {         // "<child" = the child that makes el overf
   }
   return worst ? "<" + ovfName(worst) + "+" + Math.round(worstBy) : "";
 }
+/* R32.10 — the window-control strip reserves 140px at the right end of the row
+   it covers (.wfinset), and the four rside tabs are `flex: 1`, so EVERY ONE OF
+   THEM MOVED when the strip shipped (measured at 1100x700, 260px sidebar:
+   868/926/981/1036 -> the numbers this token now reports). A test that keeps
+   clicking the old x hits whatever is there now — the chrome phase's 1082 landed
+   on the new CLOSE button and shut the app down mid-phase, which the harness
+   reported as "APP DIED ... OOM-kill is the usual cause". So the app publishes
+   where they actually are and smoke clicks THAT: re-measured, not suppressed,
+   and it cannot rot the next time something shifts the row. */
+function stabCentres() {
+  return [...document.querySelectorAll("#rtabs .stab")]
+    .map(b => { const r = b.getBoundingClientRect(); return Math.round(r.left + r.width / 2); })
+    .join(",");
+}
 function ovfScan() {
   const de = document.documentElement;
   const vw = de.clientWidth, vh = de.clientHeight;
@@ -1091,6 +1105,7 @@ function updateTitle() {          // pane/focus census in the window title (head
             (rightOpen ? ":" + rTab : "") + "]" +
             (rightOpen && rpInfo ? " [rp:" + rpInfo + "]" : "") +
             (rtInfo ? " [" + rtInfo + "]" : "") +
+            (rightOpen ? " [stx:" + stabCentres() + "]" : "") +   // R32.10: the strip MOVED these — smoke reads them, never guesses
             (jsErr ? " [jserr:" + jsErr + "]" : "") +
             (saveErr ? " [saveerr:" + saveErr + "]" : "") +             // F1: a save that did not land
             " [armed:" + groups().filter(h => h.saveT).length + "]" +   // F2: groups holding a live save timer

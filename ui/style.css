@@ -701,8 +701,20 @@ body.floorrelayout #main { padding-right: 1px }
 #wframe button:focus-visible, #wframe button:focus { outline: 2px solid #89b4fa;
           outline-offset: -3px; color: #cdd6f4 }
 #wframe button svg { width: 11px; height: 11px; display: block }
-#rtabs.wfinset { padding-right: 140px; flex-wrap: nowrap }   /* nowrap: wrapping would DOUBLE the row height instead of clipping (R22) */
-.tabbar.wfinset { padding-right: 140px }
+/* R32.10 the reservation must never make the row SPILL the window (R22). The
+   140px is padding on a border-box, and a border-box width can never go below its
+   own padding — so on a window narrower than the strip the row was floored at
+   140px+ no matter what min-width said. Measured at 320x240 with the right sidebar
+   open (sidebar = max-width 40% = 122px): #rtabs came out 338px wide and phase fuzz
+   caught it ([ovf:0,0,1] [ovfe:div#rtabs.wfinset@r338>320]); adding min-width:0
+   alone did NOT fix it (re-run, same 338). min(140px, …) reserves the strip's full
+   width whenever the row can afford it and collapses the reservation when it
+   cannot — at those sizes #rtoggle sits under the strip either way (with no
+   reservation it is at the window's right edge, i.e. under the close button), so
+   the clamp gives up nothing the reservation would have saved. With the clamp:
+   fuzz PASSES 352 assertions over 44 sizes x 8 states, [ovf:0,0,0] everywhere. */
+#rtabs.wfinset { padding-right: min(140px, calc(100% - 6px)); flex-wrap: nowrap; min-width: 0 }   /* nowrap: wrapping would DOUBLE the row height instead of clipping (R22) */
+.tabbar.wfinset { padding-right: min(140px, 100%); min-width: 0 }
 /* R32.3 resize: eight invisible grips. The layer is pointer-events:none so only
    the grips themselves take a press; they paint nothing, so no screenshot
    baseline and no pixel probe moves. The north grip stops at the control strip
