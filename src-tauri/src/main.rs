@@ -704,9 +704,13 @@ const EXISTS: &str = "exists";
    (git checkout, sync client, the 1000ms-stale index) can land a real file
    between the check and the truncate. */
 #[tauri::command]
-fn create_note(v: State<Vault>, name: String, content: String, otel: Option<perf::Ctx>) -> Result<(), String> {
+fn create_note(v: State<Vault>, name: String, content: Option<String>, otel: Option<perf::Ctx>) -> Result<(), String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
     let mut ix = v.index.lock().unwrap();
+    // feedback #20: an ABSENT content is an EMPTY note, not a seeded one. The
+    // default lives here as well as at ui/main.js createNote so that neither
+    // side can re-mint "# name" on its own; a new note is zero bytes on disk.
+    let content = content.unwrap_or_default();
     span_timed!(otel => "create_note", create_note_in(&root, &mut ix, &name, &content))
 }
 
@@ -858,6 +862,26 @@ fn set_vault_inner(v: &State<Vault>, path: &str) -> Result<String, String> {
     Ok(p.display().to_string())
 }
 
+/* feedback #20 [R32.6]: the starter note a NEW vault is seeded with. Recon
+   against stock 1.13.7 (2026-09-12, shots $RECON/shots5/E0-E9): stock's own
+   create-vault flow writes exactly one file, `Welcome.md`, 203 bytes, and it
+   carries NO heading — it opens on prose ("This is your new *vault*.") while
+   the big "Welcome" on screen is the INLINE TITLE, the filename rendered.
+   So the `# Welcome` line rustidian used to seed was redundant the moment the
+   inline title landed: it drew the word twice, once from the filename and
+   once from bytes we wrote ourselves.
+   Seeding CONTENT is deliberate and stays (R1.2) — it is NOT note creation,
+   which materializes zero bytes (`create_note`). The prose is rustidian's own;
+   only the heading is dropped. Deliberate delta from stock: we keep a trailing
+   newline (stock's seed ends without one) because a text file should end in \n. */
+const NEW_VAULT_SEED_NAME: &str = "Welcome.md";
+const NEW_VAULT_SEED: &str =
+    "This is your new vault. Notes are plain Markdown files.\nLink them with [[Wiki Links]].\n";
+
+fn seed_new_vault(dir: &Path) -> std::io::Result<()> {
+    fs::write(dir.join(NEW_VAULT_SEED_NAME), NEW_VAULT_SEED)
+}
+
 #[tauri::command]
 fn create_vault(v: State<Vault>, parent: String, name: String) -> Result<String, String> {
     let name = name.trim();
@@ -875,11 +899,7 @@ fn create_vault(v: State<Vault>, parent: String, name: String) -> Result<String,
         return Err(format!("sandboxed to {} — create the folder outside rustidian, then pick it and restart", sandbox::confined_to().unwrap().display()));
     }
     fs::create_dir_all(&p).map_err(|e| e.to_string())?;
-    fs::write(
-        p.join("Welcome.md"),
-        "# Welcome\n\nThis is your new vault. Notes are plain Markdown files.\nLink them with [[Wiki Links]].\n",
-    )
-    .map_err(|e| e.to_string())?;
+    seed_new_vault(&p).map_err(|e| e.to_string())?;
     persist_vault(&p);
     open_vault(&v, &p);
     Ok(p.display().to_string())
@@ -2919,6 +2939,277 @@ mod tests {
         create_note_in(&root, &mut ix, "sub/New", "# New\n\n").unwrap();
         assert_eq!(fs::read_to_string(root.join("sub/New.md")).unwrap(), "# New\n\n");
         assert_eq!(ix.content("sub/New"), Some("# New\n\n"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /* feedback #20 [acceptance 1]: a brand-new note materializes NOTHING.
+       Recon Q1 against stock 1.13.7: Ctrl+N produces `Untitled.md` whose
+       `wc -c` is 0, and a second one `Untitled 1.md`, also 0. The big title
+       the user sees is the INLINE TITLE — the FILENAME, rendered — so the
+       bytes on disk are empty. Asserted on disk (metadata len) AND in the
+       in-RAM index, which the UI reads back for search. */
+    #[test]
+    fn f20_a_new_note_is_zero_bytes_on_disk() {
+        let root = tmp_vault("f20zero");
+        let mut ix = Index::build(&root);
+        create_note_in(&root, &mut ix, "Untitled", "").unwrap();
+        let p = root.join("Untitled.md");
+        assert_eq!(fs::metadata(&p).unwrap().len(), 0, "stock's new note is ZERO bytes");
+        assert_eq!(fs::read_to_string(&p).unwrap(), "");
+        assert_eq!(ix.content("Untitled"), Some(""), "the index copy is empty too");
+        // the path-qualified path is where the old code seeded the BASENAME
+        create_note_in(&root, &mut ix, "sub/Deep Note", "").unwrap();
+        assert_eq!(fs::metadata(root.join("sub/Deep Note.md")).unwrap().len(), 0);
+        // an explicit body is still honoured — this is a DEFAULT, not a filter
+        create_note_in(&root, &mut ix, "Seeded", "given\n").unwrap();
+        assert_eq!(fs::read_to_string(root.join("Seeded.md")).unwrap(), "given\n");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /* feedback #20 [R32.6]: the NEW-VAULT seed is starter CONTENT, not note
+       creation — it stays (R1.2) — but it must not re-mint the title as bytes.
+       Recon, stock 1.13.7, its own create-vault flow (shots5/E9): one file,
+       `Welcome.md`, 203 bytes, first line `This is your new *vault*.` — no
+       heading anywhere in it; the big "Welcome" is the inline title drawn from
+       the filename. This test pins our seed to that SHAPE: a non-empty starter
+       note whose bytes contain no ATX heading at all, and in particular not
+       the vault-name heading we used to write. */
+    #[test]
+    fn f20_new_vault_seed_carries_prose_not_a_heading() {
+        let root = tmp_vault("f20seed");
+        seed_new_vault(&root).unwrap();
+        let p = root.join(NEW_VAULT_SEED_NAME);
+        assert_eq!(p.file_name().unwrap(), "Welcome.md", "stock seeds Welcome.md");
+        let got = fs::read_to_string(&p).unwrap();
+        assert_eq!(got, NEW_VAULT_SEED, "the seed on disk is the constant, byte for byte");
+        // starter content is deliberate — this is NOT the zero-byte new-note path
+        assert!(!got.is_empty(), "R1.2: a new vault still gets one starter note");
+        // ...but nothing in it is a heading, and nothing repeats the filename
+        for (i, line) in got.lines().enumerate() {
+            assert!(
+                !line.trim_start().starts_with('#'),
+                "seed line {i} is a heading, the inline title already draws the name: {line:?}"
+            );
+        }
+        assert!(!got.contains("# Welcome"), "the redundant `# Welcome` is gone");
+        assert!(got.ends_with('\n'), "known delta from stock: our seed ends with a newline");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /* feedback #20 [acceptance 1]: ...and NO code path may re-mint a heading.
+       The fix is at the two seams every creation path funnels through —
+       ui/main.js `createNote` (the shared helper for all four JS paths) and
+       the rust `create_note` command's default — so this test reads the JS
+       source and pins BOTH: the helper's default body is the empty string,
+       and the `"# " + name` construction exists nowhere in main.js. A string
+       strip in one caller would not satisfy either half. */
+    #[test]
+    fn f20_no_code_path_materializes_a_heading_at_creation() {
+        const UI: &str = include_str!("../../ui/main.js");
+        assert!(
+            UI.contains(r#"  const body = content != null ? content : "";"#),
+            "createNote's default body must be EMPTY — that is the shared seam"
+        );
+        assert!(
+            !UI.contains(r##""# " + name"##),
+            "no creation path may mint a heading from the note name"
+        );
+        // exactly one call site invokes the backend command, and it passes the
+        // helper's body — so the default above is the only default there is.
+        assert_eq!(
+            UI.matches(r#"inv("create_note""#).count(),
+            1,
+            "creation must funnel through the single createNote helper"
+        );
+        assert!(UI.contains(r#"inv("create_note", { name, content: body })"#));
+        // and the backend must not synthesise one from a name either. The
+        // needle is ASSEMBLED AT RUNTIME on purpose: include_str!("main.rs")
+        // contains THIS test, so a literal would match itself and the
+        // assertion would fail no matter what the production code does (it
+        // did, on the first run — the failure was the test, not the fix).
+        const RS: &str = include_str!("main.rs");
+        let minted = ["format!(\"#", " {}"].concat();
+        assert!(
+            !RS.contains(&minted),
+            "the backend must not synthesise a heading from a name either"
+        );
+        // the rust command's own default is empty, mirroring the JS seam.
+        assert!(RS.contains("let content = content.unwrap_or_default();"));
+    }
+
+    /* feedback #20 [acceptance 2]: an EXISTING note is NOT ours to tidy.
+       Now that the big title is the filename, a note whose body still starts
+       with `# Foo` shows the title twice — exactly what stock does (recon Q6),
+       and exactly what we must leave alone. The rule of order puts data loss
+       above every fidelity argument: a "migration" that strips a redundant
+       heading rewrites bytes the user typed, so none may exist.
+
+       The cycle below is open -> render -> close at the PURE CORES the Tauri
+       commands delegate to (read_capped for read_note, render_with for
+       render, render_blocks_with for live preview, srcmode::highlight_block
+       for source mode), plus Index::build for opening the vault itself — the
+       only places that could plausibly rewrite a file. The oracle is the
+       whole vault's bytes AND mtimes, so a rewrite that happened to produce
+       identical content elsewhere would still be caught. */
+    #[test]
+    fn f20_an_existing_body_heading_survives_open_render_close_byte_for_byte() {
+        let root = tmp_vault("f20keep");
+        // written BEHIND the app's back: these are pre-existing user files
+        let foo = "# Foo\n\nfirst paragraph\n\n# Foo\ntwo headings, both stay\n";
+        let same = "# Same Name\n\nbody\n"; // Q6: the heading EQUALS the filename
+        let odd = "# Keep\r\n\r\nCRLF, no trailing newline, trailing spaces   ";
+        fs::write(root.join("Foo.md"), foo).unwrap();
+        fs::write(root.join("Same Name.md"), same).unwrap();
+        fs::write(root.join("Keep.md"), odd).unwrap();
+        let files = ["Foo", "Same Name", "Keep"];
+        let snap = |root: &Path| -> Vec<(Vec<u8>, std::time::SystemTime)> {
+            files
+                .iter()
+                .map(|n| {
+                    let p = root.join(format!("{n}.md"));
+                    let m = fs::metadata(&p).unwrap();
+                    (fs::read(&p).unwrap(), m.modified().unwrap())
+                })
+                .collect()
+        };
+        let before = snap(&root);
+
+        // OPEN the vault, then per note: read, render (reading + LP + source)
+        let ix = Index::build(&root);
+        for n in files {
+            let p = root.join(format!("{n}.md"));
+            let text = read_capped(&p).expect("read_note's core must read it");
+            let html = render_with(&text, ix.names(), ix.images(), true);
+            let blocks: Vec<String> = text.split("\n\n").map(str::to_string).collect();
+            let _ = render_blocks_with(&blocks, ix.names(), ix.images());
+            let _: Vec<String> = blocks.iter().map(|b| srcmode::highlight_block(b)).collect();
+            // the index must hold the file's bytes, not a cleaned-up copy
+            assert_eq!(ix.content(n), Some(text.as_str()), "{n}: index != disk");
+            if n == "Foo" {
+                assert_eq!(
+                    html.matches("<h1").count(),
+                    2,
+                    "both body headings must render — nothing is stripped: {html}"
+                );
+            }
+            if n == "Same Name" {
+                assert!(
+                    html.contains("Same Name"),
+                    "a heading equal to the filename is still the user's text (Q6): {html}"
+                );
+            }
+        }
+        drop(ix); // CLOSE the vault
+
+        assert_eq!(before, snap(&root), "open+render+close rewrote a user file");
+        // and re-opening the vault is not a second chance to rewrite anything
+        let ix2 = Index::build(&root);
+        assert_eq!(ix2.content("Foo"), Some(foo));
+        drop(ix2);
+        assert_eq!(before, snap(&root), "re-opening the vault rewrote a user file");
+
+        // source level: no migration may exist, in either language. The note
+        // OPEN path in the UI must not write — `setInlineTitle` publishes a
+        // dataset attribute, it does not touch bytes.
+        const UI: &str = include_str!("../../ui/main.js");
+        let i = UI.find("async function loadActive(g) {").expect("loadActive moved");
+        let end = UI[i..].find("\nasync function ").unwrap_or(UI.len() - i);
+        let open_path = &UI[i..i + end];
+        assert!(
+            !open_path.contains("write_note"),
+            "opening a note must never write it back"
+        );
+        assert!(open_path.contains("setInlineTitle"), "the open path draws the title");
+        const RS2: &str = include_str!("main.rs");
+        // needles ASSEMBLED AT RUNTIME: include_str!("main.rs") contains THIS
+        // test, so a literal needle matches itself and the assertion fails no
+        // matter what the production code does (it did, first run).
+        for needle in [["fn mig", "rate"].concat(), ["strip_", "heading"].concat(), ["strip", "Title"].concat()] {
+            assert!(!RS2.contains(&needle), "no migration may exist ({needle})");
+            assert!(!UI.contains(&needle), "no migration may exist ({needle})");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /* feedback #20 [acceptance 3]: the title left the bytes — FINDING must not
+       have left with it. Before this goal the `# <name>` heading meant every
+       note's own title was searchable as BODY TEXT; a zero-byte note has no
+       body at all, so both find-by-title paths now rest on the FILENAME:
+
+         search        -> search_docs' name arm (`name.contains(q)`), fed by
+                          Index::docs(), which yields a name for every note
+                          however empty its content is.
+         quick switcher-> ui/main.js qsItems(), whose labels are notesCache =
+                          the `list_notes` command = Index::names(); mdFilter
+                          scores `it.label`, never a body.
+
+       So the Rust half drives the REAL matcher over notes whose bodies cannot
+       help (one zero-byte, one whose text never mentions its name), and the
+       switcher half pins its data source + the field it matches on. */
+    #[test]
+    fn f20_a_note_is_findable_by_its_title_now_that_the_title_is_not_in_the_body() {
+        let root = tmp_vault("f20find");
+        let mut ix = Index::build(&root);
+        // created the way the app creates them now: NOTHING on disk
+        create_note_in(&root, &mut ix, "Project Ideas", "").unwrap();
+        create_note_in(&root, &mut ix, "sub/Deep Thought", "").unwrap();
+        // a note whose body never mentions its own name
+        fs::write(root.join("Meeting Notes.md"), "agenda\ndiscussed the budget\n").unwrap();
+        let ix = Index::build(&root);
+        assert_eq!(fs::metadata(root.join("Project Ideas.md")).unwrap().len(), 0);
+
+        // SEARCH: the query is title text and nothing else on disk carries it
+        let hits = search_docs(ix.docs(), "project ideas");
+        assert_eq!(hits.len(), 1, "a zero-byte note must still be findable by its title");
+        assert_eq!(
+            (hits[0].note.as_str(), hits[0].line, hits[0].snippet.as_str()),
+            ("Project Ideas", 0, "Project Ideas"),
+            "the hit is the NAME arm: line 0, snippet = the title itself"
+        );
+        // partial + case-insensitive + a nested note matched by its basename
+        assert_eq!(search_docs(ix.docs(), "IDEAS")[0].note, "Project Ideas");
+        assert_eq!(search_docs(ix.docs(), "thought")[0].note, "sub/Deep Thought");
+        // ...and the body-less note is findable by title while its neighbour
+        // is findable by body — the two arms are independent
+        let m = search_docs(ix.docs(), "meeting");
+        assert_eq!(m.len(), 1, "title hit only; the body never says 'meeting'");
+        assert_eq!((m[0].note.as_str(), m[0].line), ("Meeting Notes", 0));
+        let b = search_docs(ix.docs(), "budget");
+        assert_eq!((b.len(), b[0].note.as_str(), b[0].line), (1, "Meeting Notes", 1));
+
+        // and the name hit does NOT come from content: prove it on a doc stream
+        // whose content is empty by construction.
+        let docs = vec![("Only A Name".to_string(), String::new())];
+        let h = search_docs(docs_ref(&docs), "only a name");
+        assert_eq!((h.len(), h[0].snippet.as_str()), (1, "Only A Name"));
+
+        // QUICK SWITCHER: its source is Index::names() via `list_notes`, which
+        // lists a zero-byte note exactly like any other.
+        assert_eq!(ix.names(), ["Meeting Notes", "Project Ideas", "sub/Deep Thought"]);
+        assert_eq!(index::notes_of(&root), ix.names(), "the walk and the index agree");
+        assert!(ix.content("Project Ideas").unwrap().is_empty(), "found by name, not by bytes");
+
+        // the JS half: the switcher's items are FILENAMES and the filter scores
+        // that label. A switcher that had matched on body text would need a
+        // second source here; there is none.
+        const UI: &str = include_str!("../../ui/main.js");
+        let qs = {
+            let i = UI.find("function qsItems() {").expect("qsItems moved");
+            let end = UI[i..].find("\nfunction ").unwrap_or(UI.len() - i);
+            &UI[i..i + end]
+        };
+        assert!(qs.contains("notesCache"), "the switcher lists the vault's NOTE NAMES");
+        assert!(qs.contains("label: n,"), "each item's label IS the note name");
+        assert!(!qs.contains("content") && !qs.contains("read_note"), "it never reads bodies");
+        assert!(
+            UI.contains(r#"mdItems = mdSrc().map((it, i) => [fuzzy(q, it.label), i, it])"#),
+            "the filter scores the label"
+        );
+        assert!(
+            UI.contains(r#"await Promise.all([inv("list_folders"), inv("list_notes"), inv("list_images")]);"#)
+                && UI.contains("notesCache = notes;"),
+            "notesCache is the list_notes command = Index::names()"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 

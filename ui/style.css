@@ -558,6 +558,27 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
                 color: var(--text-normal);
                 padding: var(--file-margins) min(var(--file-margins), 5%) }
 .lp > *, .preview > * { max-width: var(--file-line-width); margin-inline: auto }
+/* #20 INLINE TITLE (R32): the big title of a note is its FILENAME, rendered —
+   it lives in no file. Measured against stock 1.13.7 (progress.md Q3): the
+   title is pixel-identical to a body h1 (1048 ink px vs 1048, same trim box)
+   and the block it adds above the content is 44 px = 31.07 line box
+   (25.89px * 1.2) + 12.94 margin-bottom (0.5em). NOTHING above it: the title
+   takes the content column's own y-origin.
+   It is a ::before, NOT a DOM child, and that is load-bearing: ui/editor.js
+   indexes model rows POSITIONALLY (rowAt = g.lp.children[l], editor.js:491),
+   so a real element prepended to .lp would shift every line index by one.
+   A pseudo-element also cannot hold a caret — the title is non-editable by
+   construction (R32.5), which is the documented delta from stock.
+   Fed by data-title (ui/main.js setInlineTitle); the ATTRIBUTE selector is
+   deliberate — no attribute, no box, so a note-less pane keeps its y-origin. */
+.lp[data-title]::before, .preview[data-title]::before {
+  content: attr(data-title);
+  display: block; max-width: var(--file-line-width); margin-inline: auto;
+  font-size: var(--h1-size); font-weight: var(--h1-weight);
+  line-height: var(--h1-line-height); letter-spacing: var(--h1-letter-spacing);
+  color: inherit; margin-top: 0; margin-bottom: 0.5em;
+  overflow-wrap: anywhere; white-space: pre-wrap; cursor: default; user-select: none;
+}
 .lp .lprow { width: 100% }
 .lp h1, .preview h1, .lp h2, .preview h2, .lp h3, .preview h3, .lp h4, .preview h4, .lp h5, .preview h5, .lp h6, .preview h6 {
   color: inherit; font-style: normal; font-variant: normal; border: 0 }

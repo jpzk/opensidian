@@ -637,13 +637,14 @@ function noteMenu(e, nm) {                 // right-click a tree note row
   placeMenu(m, e.clientX, e.clientY);   /* R22: viewport-clamped by measured size */
 }
 
-// R23 (feedback #15): EVERY path that creates a note seeds it with an H1 of its
-// own name. cmdNewNote already did this inline; the three INDIRECT paths (an
-// unresolved wikilink clicked in live preview, the same in reading view, and a
-// ghost node clicked in the graph) wrote "" instead. That inconsistency existed
-// precisely because the seeding lived inside one call site instead of being
-// shared by all of them — so this helper is the fix, not the four edits.
-// Path-qualified names ("folder/Note") get the BASENAME as the heading.
+// R23 (feedback #15) built this helper because the four creation paths
+// disagreed about the new note's body: cmdNewNote seeded an H1 of the note's
+// own name inline, while the three INDIRECT paths (an unresolved wikilink
+// clicked in live preview, the same in reading view, a ghost node clicked in
+// the graph) wrote "". ONE shared seam was the fix, not four edits — and it is
+// why feedback #20 below is a one-line change instead of four.
+// SUPERSEDED BY feedback #20: the seeded heading is gone (see the block below);
+// what R23 still buys is that every path funnels through here.
 /* F4 (dataloss-audit): creation must never replace an existing note with a
    stub. The backend uses create_new(2) — the kernel's atomic exists-check —
    so unlike a JS-side notesCache test there is no window for another writer
@@ -651,8 +652,14 @@ function noteMenu(e, nm) {                 // right-click a tree note row
    between check and truncate. "exists" is not an error here: every creation
    path means "take me to Foo", so the caller opens the existing note (stock
    behaviour); nothing is overwritten either way. -> "ok" | "exists" | "err" */
+/* feedback #20: creation materializes NOTHING. Stock's brand-new note is a
+   ZERO-BYTE file (recon Q1: Ctrl+N -> Untitled.md, wc -c = 0); the big title
+   the user sees is the INLINE TITLE — a render of the FILENAME (mkInlineTitle)
+   that lives in no file. This is the single seam all four creation paths share,
+   so the default body is "" here and nowhere else; the rust command defaults an
+   absent `content` to "" too, so neither side can re-mint a heading alone. */
 async function createNote(name, content) {
-  const body = content != null ? content : "# " + name.split("/").pop() + "\n\n";
+  const body = content != null ? content : "";
   try { await inv("create_note", { name, content: body }); }
   catch (e) {
     if (errStr(e) === "exists") return "exists";
@@ -1523,6 +1530,24 @@ function tabDragStart(e, g, i) {
   window.addEventListener("mouseup", up);
 }
 
+/* #20 (R32): the big title a note shows is its FILENAME, rendered — never
+   bytes in the file (stock calls it the inline title; a new note is zero
+   bytes). It is published as data-title on the two SCROLLERS and drawn by a
+   ::before in ui/style.css, deliberately NOT as a DOM child: ui/editor.js
+   indexes model rows positionally (g.lp.children[l], editor.js:491), so a
+   prepended element would shift every line index by one and break the caret.
+   Inside the scroller = it scrolls with the content, like stock, and adds no
+   scroll container (R22.2's allowlist is unchanged). No name -> attribute
+   REMOVED, so an empty pane keeps its y-origin. */
+const titleOf = name => (name ? name.split("/").pop().replace(/\.md$/i, "") : "");
+function setInlineTitle(v, name) {
+  const t = titleOf(name);
+  for (const el of [v.lp, v.preview]) {
+    if (!el) continue;
+    if (t) el.dataset.title = t; else delete el.dataset.title;
+  }
+}
+
 async function loadActive(g) {
   hideAc();
   const t = g.active >= 0 ? g.tabs[g.active] : null;
@@ -1553,6 +1578,7 @@ async function loadActive(g) {
   attachView(g, v);
   showEditor(g);
   const n = curOf(g);
+  setInlineTitle(v, n);              // #20: the rendered filename, before any body render
   if (n) mruTouch(n);                // m5: quick-switcher MRU order
   const m = t ? t.mode : "livepreview";
   if (!t || !v.loaded || t.stale || v.name !== n) {   // v.name: navigate() renames the tab in place
@@ -2199,9 +2225,10 @@ function mdFilter() {
    published as [mdnew:<name>] so the smoke asserts the affordance itself, not
    an OCR of its label. */
 let mdNew = "";
-/* Creation from the switcher goes through the SHARED createNote helper (which
-   seeds the "# <basename>" H1, feedback #15 / R23) — there is deliberately no
-   second creation path. It CANNOT overwrite: the backend uses create_new(2),
+/* Creation from the switcher goes through the SHARED createNote helper (whose
+   body is now EMPTY — feedback #20: a new note is a zero-byte file and the big
+   title is the filename, rendered) — there is deliberately no second creation
+   path. It CANNOT overwrite: the backend uses create_new(2),
    the kernel's atomic exists-check, and createNote maps that to "exists" and
    returns without writing a byte.
    The real hazard here is CASE. fuzzy() lowercases both sides, so "ideas"
@@ -2488,7 +2515,7 @@ function cmdPalette() {
 async function applyRename(old, nn) {   // post-rename bookkeeping (F2 + H1 paths)
   for (const h of groups()) for (const tb of h.tabs) {
     if (tb.kind) continue;
-    if (tb.name === old) tb.name = nn;
+    if (tb.name === old) { tb.name = nn; if (tb.view) setInlineTitle(tb.view, nn); }   // #20: the rendered title follows the FILE, in every retained view
     if (tb.hist) for (const e of tb.hist) if (e.n === old) e.n = nn;
   }
   const mi = mruList.indexOf(old);
@@ -2501,7 +2528,25 @@ async function applyRename(old, nn) {   // post-rename bookkeeping (F2 + H1 path
 /* ux-3: committing an edit to the first-line H1 renames the note (Obsidian
    inline-title behavior). Fires only when the note HAD an H1 and its text
    changed since load/last commit; collision/invalid -> rust refuses, name
-   kept (content keeps the new H1, like Obsidian on conflict). */
+   kept (content keeps the new H1, like Obsidian on conflict).
+
+   #20 / R32.5 — THE Q4 DECISION, KEPT DELIBERATELY. Recon measured what stock
+   1.13.7 actually does (progress.md Q4, commit 7c4389e): stock does NOT rename
+   from a body H1 (typed into `# Rename Me`, the file grew 40 -> 49 bytes and
+   the filename never moved); it renames from the INLINE TITLE, then raises an
+   "Update links" modal. Our inline title is a CSS ::before (ui/style.css:519)
+   because ui/editor.js indexes model rows POSITIONALLY, so it cannot hold a
+   caret and stock's rename surface does not exist here. Retiring ux-3 would
+   therefore delete a working rename path (and its vault-wide link rewrite, the
+   riskiest operation in the app, covered by phase `ux` A085-A087) and hand
+   nothing back. So: the title is NON-EDITABLE — recorded as the known delta in
+   R32.5 — and ux-3 stays as rustidian's own affordance, a documented
+   divergence, not an accident. What is forbidden is a title that LOOKS
+   editable and eats the keystrokes; smoke phase `title` section F asserts the
+   opposite on the running app (click the title -> caret lands in the BODY,
+   typed bytes reach disk, no rename), and notes/negctl-title-noedit.sh proves
+   that section goes red. F2 / cmdRename remains the explicit rename path in
+   both models. */
 const h1Of = s => {
   const m = /^#[ \t]+(.+?)\s*$/.exec((s || "").split("\n", 1)[0]);
   return m ? m[1] : null;
