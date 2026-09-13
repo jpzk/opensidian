@@ -1761,6 +1761,12 @@ fn win_rect(win: tauri::Window) -> Result<WinRect, String> {
 /// absolute at every step and a dropped event cannot make the window drift.
 #[tauri::command]
 fn win_gesture(win: tauri::Window, dir: String, x: f64, y: f64, w: f64, h: f64, dx: f64, dy: f64) -> Result<(), String> {
+    // THE ONE PLACE A GESTURE CANNOT LIE. The census ([wfg:]/[wfl:]) is published
+    // through the window TITLE, and a title that stops updating looks exactly like a
+    // gesture that never happened — an iteration was spent on that ambiguity, with
+    // four resizes landing pixel-perfect while the census still showed the previous
+    // one. This line is written by the process that actually moves the window.
+    eprintln!("[win_gesture] dir={dir} anchor={x},{y},{w}x{h} d={dx},{dy}");
     let (nx, ny, nw, nh) =
         gesture_rect(&dir, (x, y, w, h), dx, dy).ok_or_else(|| format!("unknown gesture direction: {dir}"))?;
     if nw != w || nh != h {
@@ -3359,5 +3365,38 @@ mod tests {
         for d in ["n", "s", "e", "w", "ne", "nw", "se", "sw"] {
             assert!(html.contains(&format!("data-d=\"{d}\"")), "no resize handle for {d}");
         }
+        // R32.9: the controls must be operable by KEYBOARD, not mouse only. Three
+        // independent pieces, and losing any one of them makes the strip mouse-only:
+        // real <button>s (Enter/Space activate them), a chord that REACHES the strip
+        // from wherever focus is, and a focus ring so the user can see where they are.
+        for id in ["wf-min", "wf-max", "wf-close"] {
+            assert!(
+                html.contains(&format!("<button id=\"{id}\"")),
+                "#{id} is no longer a <button> — Enter/Space would stop activating it (R32.9)"
+            );
+            assert!(html.contains("aria-label"), "the window controls lost their aria-labels");
+        }
+        assert!(
+            js.contains("ev.altKey") && js.contains("\"Spacebar\""),
+            "ui/main.js lost the Alt+Space handler that focuses the frame strip — the controls would be mouse-only (R32.9)"
+        );
+        // and the SECOND chord, which is the one that survives a real desktop: openbox
+        // (and most WMs) GRAB Alt+Space for their own client menu, so on a managed
+        // display that chord never reaches the app. Losing F10 would make the strip
+        // keyboard-operable only on a WM-less rig like our smoke display — i.e. green
+        // here and mouse-only for the user (R32.9).
+        assert!(
+            js.contains("\"F10\""),
+            "ui/main.js lost the F10 chord — Alt+Space alone is grabbed by the window manager, so the strip would be unreachable by keyboard on a real desktop (R32.9)"
+        );
+        assert!(
+            js.contains("ArrowRight") && js.contains("#wframe button"),
+            "ui/main.js lost the arrow-key roving focus between the window controls (R32.9)"
+        );
+        let css = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/style.css")).unwrap();
+        assert!(
+            css.contains("#wframe button:focus"),
+            "ui/style.css lost the focus ring on the window controls: keyboard focus nobody can see is not operable (R32.9)"
+        );
     }
 }
