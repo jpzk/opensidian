@@ -846,6 +846,73 @@ fn update_links(v: State<Vault>, old: String, new: String, otel: Option<perf::Ct
     Ok(span_timed!(otel => "update_links", update_links_in(&root, &mut ix, &old, &new)))
 }
 
+/* R34.8 — CONSENT IS REMEMBERED IN THE VAULT, not in the session. Measured on
+   stock: answering `Always update` wrote `.obsidian/app.json` =
+   {"alwaysUpdateLinks": true} (31 bytes, committed as
+   docs/recon-title-rename/D-app.json-after-always-update) and the SECOND
+   rename in the same session raised no modal while still rewriting all four
+   links. So the prompt is conditional on this flag, and the flag outlives the
+   process — which is why it is read off disk rather than cached in the UI. */
+fn link_consent_in(root: &Path) -> bool {
+    let cfg = fs::read_to_string(root.join(".obsidian/app.json")).unwrap_or_default();
+    serde_json::from_str::<serde_json::Value>(&cfg)
+        .ok()
+        .and_then(|v| v.get("alwaysUpdateLinks").and_then(|b| b.as_bool()))
+        .unwrap_or(false)
+}
+
+/* The write half. app.json is the USER's file and holds keys we do not own
+   (attachmentFolderPath, R31.3), so this is a MERGE into the parsed object and
+   never a fresh document. An app.json we cannot parse, or one that is not an
+   object, is REFUSED rather than replaced: losing someone's vault config to
+   remember a checkbox is the same trade as overwriting a note on collision,
+   and it goes the same way. The write is temp+fsync+rename, so a crash cannot
+   leave a truncated config either. */
+fn set_link_consent_in(root: &Path, on: bool) -> Result<(), String> {
+    use std::io::Write;
+    let dir = root.join(".obsidian");
+    let p = dir.join("app.json");
+    let cur = fs::read_to_string(&p).unwrap_or_default();
+    let mut v = if cur.trim().is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_str::<serde_json::Value>(&cur).map_err(|e| format!("app.json is not JSON ({e}) — refusing to overwrite it"))?
+    };
+    if !v.is_object() {
+        return Err("app.json is not a JSON object — refusing to overwrite it".into());
+    }
+    v.as_object_mut().unwrap().insert("alwaysUpdateLinks".into(), serde_json::Value::Bool(on));
+    let body = serde_json::to_string(&v).map_err(|e| e.to_string())?;
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let tmp = dir.join("app.json.tmp");
+    let r = (|| -> std::io::Result<()> {
+        let mut f = fs::File::create(&tmp)?;
+        f.write_all(body.as_bytes())?;
+        f.sync_all()?;
+        drop(f);
+        fs::rename(&tmp, &p)
+    })();
+    if r.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    r.map_err(|e| e.to_string())
+}
+
+/// R34.8: does the vault already carry the user's answer? `true` -> the UI
+/// rewrites links without asking; `false` -> the modal.
+#[tauri::command]
+fn link_consent(v: State<Vault>) -> Result<bool, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    Ok(link_consent_in(&root))
+}
+
+/// R34.8: record the `Always update` answer in the vault.
+#[tauri::command]
+fn set_link_consent(v: State<Vault>, on: bool) -> Result<(), String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    set_link_consent_in(&root, on)
+}
+
 #[tauri::command]
 fn rename_note(v: State<Vault>, old: String, new: String, otel: Option<perf::Ctx>) -> Result<(), String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
@@ -2000,7 +2067,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, read_note, write_note, create_note, render, render_blocks, highlight_blocks, graph, graph_local, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, recent_vaults, rename_note, move_note, update_links, tags, tag_counts,
+            list_bookmarks, toggle_bookmark, recent_vaults, rename_note, move_note, update_links, link_consent, set_link_consent, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
@@ -2924,6 +2991,52 @@ mod tests {
         assert_eq!(q, "![[sub/Moved#h]]");
         // exactly `links` occurrences changed, not one more
         assert_eq!(p.matches("Moved").count() + q.matches("Moved").count(), before.0);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// R34.8: the consent flag round-trips through `.obsidian/app.json`, and
+    /// the MERGE is the point — a vault that already configures
+    /// attachmentFolderPath (R31.3) must still configure it afterwards. A
+    /// remembered checkbox that eats the rest of someone's config is a worse
+    /// bug than the modal it suppresses.
+    #[test]
+    fn link_consent_round_trips_and_preserves_other_config() {
+        let root = r34_vault("consent");
+        assert!(!link_consent_in(&root), "a fresh vault has no consent on record");
+        fs::create_dir_all(root.join(".obsidian")).unwrap();
+        fs::write(root.join(".obsidian/app.json"), r#"{"attachmentFolderPath":"files"}"#).unwrap();
+        assert!(!link_consent_in(&root), "an unrelated config is not consent");
+        set_link_consent_in(&root, true).unwrap();
+        assert!(link_consent_in(&root));
+        let v: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(root.join(".obsidian/app.json")).unwrap()).unwrap();
+        assert_eq!(v["attachmentFolderPath"], "files", "the merge kept the key we do not own");
+        assert_eq!(v["alwaysUpdateLinks"], true);
+        // and it can be revoked without dropping the neighbour key either
+        set_link_consent_in(&root, false).unwrap();
+        assert!(!link_consent_in(&root));
+        let v: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(root.join(".obsidian/app.json")).unwrap()).unwrap();
+        assert_eq!(v["attachmentFolderPath"], "files");
+        assert!(!root.join(".obsidian/app.json.tmp").exists(), "no stray temp left behind");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// ...and an app.json we cannot parse is REFUSED, byte-for-byte intact.
+    /// Same rule as the collision: data loss outranks the feature.
+    #[test]
+    fn set_link_consent_never_overwrites_an_unparseable_config() {
+        let root = r34_vault("badcfg");
+        fs::create_dir_all(root.join(".obsidian")).unwrap();
+        let junk = "{ this is not json, but it IS someone's config\n";
+        fs::write(root.join(".obsidian/app.json"), junk).unwrap();
+        assert!(set_link_consent_in(&root, true).is_err());
+        assert_eq!(fs::read_to_string(root.join(".obsidian/app.json")).unwrap(), junk);
+        assert!(!link_consent_in(&root), "unparseable is never read as consent");
+        // a JSON document that is not an object is refused too, not wrapped
+        fs::write(root.join(".obsidian/app.json"), "[1,2,3]").unwrap();
+        assert!(set_link_consent_in(&root, true).is_err());
+        assert_eq!(fs::read_to_string(root.join(".obsidian/app.json")).unwrap(), "[1,2,3]");
         let _ = fs::remove_dir_all(&root);
     }
 

@@ -347,6 +347,48 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
          box-shadow: 0 8px 30px rgba(0,0,0,.5) }
 #rninput { width: 100%; box-sizing: border-box; padding: 10px 14px; border: 0;
            background: #1e1e2e; color: #cdd6f4; font-size: 14px; outline: none }
+/* R34.4-R34.7 the "Update links" dialog. GEOMETRY IS FIXED ON PURPOSE: the
+   card is a constant width, the button row is right-aligned and every button
+   has an explicit width, so the focus ring lands at coordinates a probe can
+   compute — and it does not have to: updateTitle() publishes the button
+   centres as [ulx:...] (the R33.13 idiom — smoke READS the geometry, never
+   hard-codes it).
+   The fills are stock's MEASURED values, kept verbatim so the same pixel
+   discriminator works on their screenshots and ours: on D2-modal.png the
+   default button's fill is #FFFFFF against #E0E0E0 for its two neighbours,
+   with a #BDBDBD ring row under it (docs/recon-title-rename/btn-analysis.log).
+   The ring is what makes "which button is default" measurable in PIXELS
+   instead of OCR-ed off a word list. */
+#ulbox { position: fixed; inset: 0; z-index: 70; background: rgba(0,0,0,.35);
+         display: flex; flex-direction: column; align-items: center; box-sizing: border-box;
+         padding: max(0px, min(120px, 100vh - 260px)) 0 8px }
+#ulbox[hidden] { display: none }
+#ulcard { width: 480px; max-width: 92%; box-sizing: border-box; background: #26263a;
+          border: 1px solid #45475a; border-radius: 8px; padding: 18px 20px 16px;
+          box-shadow: 0 8px 30px rgba(0,0,0,.5); color: #cdd6f4 }
+#ultitle { font-size: 17px; font-weight: 600; margin-bottom: 10px }
+#ulq { font-size: 13px; line-height: 1.5 }
+#ulsay { font-size: 13px; line-height: 1.5; margin-top: 6px; color: #bac2de }
+#ulbtns { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px }
+#ulbtns button { box-sizing: border-box; height: 30px; border: 0; border-radius: 5px;
+                 background: #e0e0e0; color: #1e1e2e; font-size: 13px; font-weight: 500;
+                 cursor: pointer; outline: none; padding: 0 }
+#ul-always { width: 102px }      /* stock: [588-690] on y=455 */
+#ul-once   { width: 68px }       /* stock: [709-777] */
+#ul-no     { width: 101px }      /* stock: [796-897] */
+#ulbtns button:focus { background: #fff; box-shadow: 0 0 0 2px #bdbdbd }
+
+/* R34.12/R34.13 refusal notice — the dropmsg shape (bottom-right, transient),
+   because it says the same kind of thing: what was refused and why. The census
+   token it publishes does NOT expire with the banner (dropTok's lesson: "no
+   refusal happened" and "a refusal whose banner faded" must not look alike). */
+#notice { position: fixed; right: 12px; bottom: 12px; z-index: 71; max-width: 420px;
+          padding: 8px 12px; border-radius: 6px; border: 1px solid #585b70;
+          background: #313244; color: #cdd6f4; font-size: 12px; line-height: 1.4;
+          white-space: pre-line }
+#notice[hidden] { display: none }
+#saveerr:not([hidden]) ~ #notice, #dropmsg:not([hidden]) ~ #notice { bottom: 58px }
+
 /* R10.3 block ids: grey superscript label in LP, hidden in reading view */
 .lp .blockid { font-size: .7em; color: #6c7086; vertical-align: super; margin-left: 4px; user-select: none }
 .preview .blockid { display: none }

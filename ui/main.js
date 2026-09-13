@@ -1140,6 +1140,8 @@ function updateTitle() {          // pane/focus census in the window title (head
     : ($("rnbox") && !$("rnbox").hidden ? " [modal:rn]" : "")  // m5 fuzzy modal / rename prompt
     + ($("anew") && !$("anew").hidden ? " [modal:att]" : "")   // R31.7 Insert attachment prompt
     + (settingsOpen ? " [modal:settings]" + setTok() + hkInfo : "")   // R14 hotkeys + R30 settings probe
+    + (ulPending ? " [modal:ul]" + ulTok() : "")                // R34.6 Update links prompt
+    + (noticeTxt ? " [notice:" + tokq(noticeTxt) + "]" : "")    // R34.12/13 the last refusal — does NOT expire with the banner
     + (menuEl ? " [menu:1]" : "");                             // R22: a context menu is open (fuzz probe)
   // [note:<name>] = the FOCUSED group's active note (null for a graph tab).
   // Which note is active was previously only observable by mutating it (type a
@@ -1655,7 +1657,7 @@ function openTitleEdit(g, host, x, y) {
     sel.removeAllRanges(); sel.addRange(r);
   }
   el.addEventListener("keydown", onTitleKey);
-  el.addEventListener("input", updateTitle);
+  el.addEventListener("input", onTitleInput);   // R34.12/R34.13: refuse WHILE typing, as stock does
   el.addEventListener("blur", () => closeTitleEdit());
   host.addEventListener("scroll", onTitleScroll);
   updateTitle();
@@ -1693,12 +1695,169 @@ function onTitleKey(e) {
   e.stopPropagation();                       // a filename contains characters the R14 keymap binds
 }
 
-/* R34.1 — Enter renames the file. NOT YET IMPLEMENTED (ledger item 8: the
-   move-only backend + the counted `Update links` prompt land together). Until
-   then Enter closes and keeps the name: the one shape the brief forbids is a
-   rename that happens without the prompt, so the placeholder is the REFUSAL,
-   never the silent rename. */
-function commitTitleEdit() { closeTitleEdit(); }
+/* R34.1 — ENTER RENAMES THE FILE. The order is stock's, measured, and it is
+   not negotiable: the file moves FIRST (move_note), the links are still stale
+   at that instant (R34.2), and only THEN is the question asked. The refusals
+   come before any of it and produce a visible notice instead of a rename.
+
+   Every branch here is a measurement:
+     empty title      -> revert, no rename            (R34.14, E8/E9)
+     unchanged title  -> nothing at all
+     illegal chars    -> notice, BOX STAYS OPEN       (R34.13, E6/E7) — and a
+                         "/" is a rejected character, never a move into a folder
+     existing name    -> notice, BOX STAYS OPEN       (R34.12, E4/E5)
+     otherwise        -> move now, ask after          (R34.1/R34.2)
+   The UI's collision check is a COURTESY (stock shows its notice before Enter);
+   the one that counts is create_new/O_EXCL in move_note_in, and a move_note
+   error is surfaced, never swallowed. */
+const TITLE_ILLEGAL = /[\\/:*?"<>|]/;        // stock's own set (R34.13, read at 250%)
+async function commitTitleEdit() {
+  if (!titling) return;
+  const { g, el, name, orig } = titling;
+  const t = (el.textContent || "").replace(/[\r\n]+/g, " ").trim();
+  if (!t || t === orig) { closeTitleEdit(); return; }     // R34.14 / no-op
+  if (!titleCheck()) return;                 // illegal chars or a name already taken:
+                                             // the notice is up, the box stays open, NOTHING moved
+  const dir = name.includes("/") ? name.slice(0, name.lastIndexOf("/") + 1) : "";
+  const nn = dir + t + ".md";
+  closeTitleEdit();
+  await flushSave(g);                        // the body's own bytes land before the file moves
+  let blast;
+  try { blast = await inv("move_note", { old: name, new: nn }); }
+  catch (err) { say(String(err && err.message || err)); updateTitle(); return; }
+  await applyRename(name, nn);
+  const links = blast && blast.links || 0, files = blast && blast.files || 0;
+  if (!files) { updateTitle(); return; }     // R34.3: nothing links in -> NO modal, ever
+  let consent = false;
+  try { consent = await inv("link_consent"); } catch (err) { consent = false; }
+  if (consent) { await runUpdateLinks(name, nn); return; }   // R34.8: already answered, in the vault
+  openUpdateLinks(name, nn, links, files);
+}
+
+/* ---------- R34.4-R34.8 the "Update links" prompt --------------------------
+   This modal is the difference between R34 and the DELETED ux-3 feature, which
+   rewrote a whole vault's links with no question asked. So it is written as a
+   gate, not as a notification: `update_links` is called from exactly two
+   places, both of them on the far side of a recorded answer (this modal, or
+   R34.8 consent already in the vault). */
+let ulPending = null, noticeTxt = "", noticeT = 0, noticeSrc = "";
+
+function say(msg, src) {                     // R34.12/R34.13: a refusal is VISIBLE
+  const b = $("notice");
+  b.textContent = msg;
+  b.hidden = !msg;
+  noticeTxt = msg || "";
+  noticeSrc = msg ? (src || "") : "";
+  clearTimeout(noticeT);
+  if (msg) noticeT = setTimeout(() => { $("notice").hidden = true; }, 4000);
+  updateTitle();
+}
+
+/* R34.12/R34.13 — the refusal is measured on stock BEFORE Enter: the notice
+   "There's already a file with the same name" is on screen while the title box
+   still holds `Dup`, and Enter then does nothing (E4/E5). So the check runs on
+   every keystroke, and it RETRACTS when the name becomes legal again — a notice
+   that outlived the condition it describes is worse than none. It is a courtesy
+   check, though: what actually refuses a collision is create_new/O_EXCL in the
+   backend, which is the only thing that holds against another writer. */
+function titleCheck() {
+  if (!titling) return true;
+  const t = (titling.el.textContent || "").replace(/[\r\n]+/g, " ").trim();
+  const name = titling.name;
+  const dir = name.includes("/") ? name.slice(0, name.lastIndexOf("/") + 1) : "";
+  let msg = "";
+  if (t && TITLE_ILLEGAL.test(t)) msg = 'File name cannot contain any of these characters: \\ / : * ? " < > |';
+  else if (t && t !== titling.orig && notesCache.includes(dir + t + ".md")) msg = "There's already a file with the same name";
+  if (msg) { if (msg !== noticeTxt) say(msg, "title"); return false; }
+  if (noticeSrc === "title") say("", "title");
+  return true;
+}
+function onTitleInput() { titleCheck(); updateTitle(); }
+
+/* R34.5 — the counted sentence, rendered from the radius move_note counted
+   BEFORE the move. Stock's fixture was plural on both numbers ("4 links in 1
+   file"); the SINGULAR form was never observed, so the n!==1 pluralisation is
+   OURS and is flagged as such in docs/requirements.md R34.5. */
+const ulSentence = (links, files) =>
+  "This will affect " + links + (links === 1 ? " link" : " links") +
+  " in " + files + (files === 1 ? " file" : " files") + ".";
+
+function openUpdateLinks(old, nn, links, files) {
+  ulPending = { old, nn, links, files };
+  $("ulsay").textContent = ulSentence(links, files);
+  $("ulbox").hidden = false;
+  $("ul-always").focus();                    // R34.6/R34.7: the DEFAULT is the leftmost, measured in pixels
+  updateTitle();
+}
+function closeUpdateLinks() {
+  if (!ulPending) return;
+  ulPending = null;
+  $("ulbox").hidden = true;
+  const g = fg();
+  if (g && g.lp && g.lp.isConnected) g.lp.focus({ preventScroll: true });
+  updateTitle();
+}
+async function runUpdateLinks(old, nn) {     // the CONSENTED half, and the only caller of update_links
+  try { await inv("update_links", { old, new: nn }); }
+  catch (err) { say(String(err && err.message || err)); }
+  // Bookkeeping ONLY, deliberately: the rewrite changed text in OTHER notes, and
+  // reloading them here would discard any unsaved buffer they hold (some group's
+  // dirty tab is not this rename's business). F2's rename does the same and no
+  // more — a tab showing stale link text is a repaint, a clobbered buffer is a
+  // data-loss bug.
+  await refreshTree();
+  updateTitle();
+}
+async function ulAnswer(kind) {
+  if (!ulPending) return;
+  const { old, nn } = ulPending;
+  closeUpdateLinks();
+  if (kind === "no") return;                 // renamed file, stale links — stock's shape (R34.2)
+  if (kind === "always") {
+    try { await inv("set_link_consent", { on: true }); }   // R34.8: remembered in the VAULT
+    catch (err) { say(String(err && err.message || err)); }
+  }
+  await runUpdateLinks(old, nn);
+}
+$("ul-always").onclick = () => ulAnswer("always");
+$("ul-once").onclick = () => ulAnswer("once");
+$("ul-no").onclick = () => ulAnswer("no");
+/* Escape = "Do not update": the conservative answer is the one that writes
+   nothing, and dismissing a question is not consent. */
+$("ulbox").addEventListener("keydown", e => {
+  if (!ulPending) return;
+  if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); ulAnswer("no"); return; }
+  if (e.key === "Tab") {                     // a focus TRAP: three buttons, and the ring never leaves them
+    e.preventDefault();
+    const b = [$("ul-always"), $("ul-once"), $("ul-no")];
+    const i = b.indexOf(document.activeElement);
+    b[(i < 0 ? 0 : i + (e.shiftKey ? b.length - 1 : 1)) % b.length].focus();
+    updateTitle();
+    return;
+  }
+  e.stopPropagation();                       // Enter activates the FOCUSED button (the browser does that)
+});
+$("ulbox").addEventListener("mousedown", e => { if (e.target === $("ulbox")) e.preventDefault(); });  // click-off is not an answer
+
+/* R34.5/R34.6 made observable WITHOUT a screenshot, and the geometry published
+   so the pixel test does not have to guess where to look (R33.13's idiom):
+     [ul:<links>/<files>/<focused button index 0..2>]
+     [ulsay:<the counted sentence, verbatim>]
+     [ulx:<cx,cy>;<cx,cy>;<cx,cy>]   centres of Always / Just once / Do not update
+   The focus index is the DEFAULT-button assertion (R34.6/R34.7) in a form that
+   cannot be faked by a screenshot's antialiasing, and [ulx:] is what a
+   focus-ring colour-delta probe reads its coordinates from. */
+function ulTok() {
+  const b = [$("ul-always"), $("ul-once"), $("ul-no")];
+  const f = b.indexOf(document.activeElement);
+  const xs = b.map(e => {
+    const r = e.getBoundingClientRect();
+    return Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2);
+  }).join(";");
+  return " [ul:" + ulPending.links + "/" + ulPending.files + "/" + f + "]" +
+         " [ulsay:" + $("ulsay").textContent.replace(/[[\]|]/g, "") + "]" +
+         " [ulx:" + xs + "]";
+}
 
 async function loadActive(g) {
   hideAc();
@@ -2766,6 +2925,8 @@ async function floorProbe(n = 30) {
 document.addEventListener("keydown", e => {
   if (e.ctrlKey && e.altKey && e.shiftKey && (e.key === "F" || e.key === "f")) { e.preventDefault(); floorProbe(); return; }
   if (settingsOpen) return hkKey(e);       // R14: settings modal owns the keyboard (chord capture)
+  if (ulPending) return;                   // R34.6: the Update links prompt owns the keyboard — its own handler answers it
+  if (titleEditing()) return;              // R34.1: so does the title box (a filename contains chords)
   if (e.key === "Escape") {
     if (modalKind) { closeModal(); return; }
     if (!$("rnbox").hidden) { $("rnbox").hidden = true; updateTitle(); return; }
