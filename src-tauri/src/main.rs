@@ -1695,6 +1695,157 @@ fn spawn_watcher(app: tauri::AppHandle) {
     });
 }
 
+/* ---------- R33 frameless window: the app draws its own frame ----------
+   The window ships with `decorations: false` (tauri.conf.json), so there is no
+   WM titlebar AND no WM resize border: every affordance the frame used to
+   provide has to come from here, driven by #wframe / the resize handles in
+   ui/. Stock Obsidian does the same (recon: its window reports
+   _NET_FRAME_EXTENTS 0,0,0,0 under openbox while showing its own strip).
+
+   WHY WE MOVE AND RESIZE THE WINDOW OURSELVES instead of handing the gesture
+   to the WM (start_dragging / start_resize_dragging, i.e.
+   _NET_WM_MOVERESIZE): the gesture must also work where there is NO window
+   manager at all — our Xvfb rigs have none, and an undecorated window there
+   has no other way to be moved or resized. So the UI sends the anchor rect
+   plus the pointer delta and we apply the resulting outer geometry. Cost: the
+   window follows the cursor one frame late. Deliberate divergence, recorded
+   in docs/requirements.md R33. */
+// The floor our own gesture enforces. It is R22's smallest supported window
+// (the fuzz phase drives the app down to 320x240 and asserts the chrome still
+// fits), NOT a tauri.conf minWidth: a config minimum would make GTK refuse the
+// fuzz phase's own resizes and turn an R22 census into a false failure.
+const WIN_MIN_W: f64 = 320.0;
+const WIN_MIN_H: f64 = 240.0;
+
+/// The outer rect a drag in direction `dir` produces, from the rect the
+/// gesture started on (`r` = x, y, w, h) and the cursor delta since then.
+/// `dir`: "move", or an edge/corner as n/s/e/w ("n", "se", ...). `None` = an
+/// unknown direction: a typo must be an error, never a silent no-op.
+/// The edge OPPOSITE the one being dragged never moves, including when the
+/// clamp bites (drag the west edge right past the minimum and x stops, it
+/// does not keep walking).
+fn gesture_rect(dir: &str, r: (f64, f64, f64, f64), dx: f64, dy: f64) -> Option<(f64, f64, f64, f64)> {
+    let (x, y, w, h) = r;
+    if dir == "move" {
+        return Some(((x + dx).round(), (y + dy).round(), w, h));
+    }
+    let (n, s, e, we) = match dir {
+        "n" => (true, false, false, false),
+        "s" => (false, true, false, false),
+        "e" => (false, false, true, false),
+        "w" => (false, false, false, true),
+        "ne" => (true, false, true, false),
+        "nw" => (true, false, false, true),
+        "se" => (false, true, true, false),
+        "sw" => (false, true, false, true),
+        _ => return None,
+    };
+    let (mut nx, mut ny, mut nw, mut nh) = (x, y, w, h);
+    if e {
+        nw = w + dx;
+    }
+    if we {
+        nw = w - dx;
+        nx = x + dx;
+    }
+    if s {
+        nh = h + dy;
+    }
+    if n {
+        nh = h - dy;
+        ny = y + dy;
+    }
+    if nw < WIN_MIN_W {
+        nw = WIN_MIN_W;
+        if we {
+            nx = x + w - WIN_MIN_W;
+        }
+    }
+    if nh < WIN_MIN_H {
+        nh = WIN_MIN_H;
+        if n {
+            ny = y + h - WIN_MIN_H;
+        }
+    }
+    Some((nx.round(), ny.round(), nw.round(), nh.round()))
+}
+
+#[derive(serde::Serialize)]
+struct WinRect {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    max: bool,
+    dec: bool,
+}
+
+/// The window's OUTER geometry in logical px, plus the two facts the frame UI
+/// needs: maximised, and decorated (`dec: false` is the whole point of R33 —
+/// it is also the config-level oracle for the WM-less displays, where no
+/// screenshot can tell a decorated window from an undecorated one).
+#[tauri::command]
+fn win_rect(win: tauri::Window) -> Result<WinRect, String> {
+    let sf = win.scale_factor().map_err(|e| e.to_string())?;
+    let p = win.outer_position().map_err(|e| e.to_string())?.to_logical::<f64>(sf);
+    let s = win.outer_size().map_err(|e| e.to_string())?.to_logical::<f64>(sf);
+    Ok(WinRect {
+        x: p.x,
+        y: p.y,
+        w: s.width,
+        h: s.height,
+        max: win.is_maximized().map_err(|e| e.to_string())?,
+        dec: win.is_decorated().map_err(|e| e.to_string())?,
+    })
+}
+
+/// Apply one step of a move/resize gesture. The UI sends the ANCHOR rect
+/// (win_rect at pointerdown) and the cumulative delta, so the geometry is
+/// absolute at every step and a dropped event cannot make the window drift.
+#[tauri::command]
+fn win_gesture(win: tauri::Window, dir: String, x: f64, y: f64, w: f64, h: f64, dx: f64, dy: f64) -> Result<(), String> {
+    // THE ONE PLACE A GESTURE CANNOT LIE. The census ([wfg:]/[wfl:]) is published
+    // through the window TITLE, and a title that stops updating looks exactly like a
+    // gesture that never happened — an iteration was spent on that ambiguity, with
+    // four resizes landing pixel-perfect while the census still showed the previous
+    // one. This line is written by the process that actually moves the window.
+    eprintln!("[win_gesture] dir={dir} anchor={x},{y},{w}x{h} d={dx},{dy}");
+    let (nx, ny, nw, nh) =
+        gesture_rect(&dir, (x, y, w, h), dx, dy).ok_or_else(|| format!("unknown gesture direction: {dir}"))?;
+    if nw != w || nh != h {
+        win.set_size(tauri::LogicalSize::new(nw, nh)).map_err(|e| e.to_string())?;
+    }
+    if nx != x || ny != y {
+        win.set_position(tauri::LogicalPosition::new(nx, ny)).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn win_minimize(win: tauri::Window) -> Result<(), String> {
+    win.minimize().map_err(|e| e.to_string())
+}
+
+/// maximise <-> restore; returns the state it left the window in
+#[tauri::command]
+fn win_toggle_max(win: tauri::Window) -> Result<bool, String> {
+    let m = win.is_maximized().map_err(|e| e.to_string())?;
+    if m {
+        win.unmaximize().map_err(|e| e.to_string())?;
+    } else {
+        win.maximize().map_err(|e| e.to_string())?;
+    }
+    Ok(!m)
+}
+
+/// F1: closing the window is the app's own affordance, not the WM's — with
+/// decorations off there is no frame button, and on a bare X server there is
+/// no WM to ask. `close()` runs the normal close path (window events fire).
+#[tauri::command]
+fn win_close(win: tauri::Window) -> Result<(), String> {
+    win.close().map_err(|e| e.to_string())
+}
+
 fn main() {
     // VAULT_DIR (probes/tests) wins; else last persisted vault if still a dir (R1.6)
     let init = std::env::var("VAULT_DIR")
@@ -1773,6 +1924,7 @@ fn main() {
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
+            win_rect, win_gesture, win_minimize, win_toggle_max, win_close,
             settings::settings_model
         ])
         .run(tauri::generate_context!())
@@ -3503,5 +3655,110 @@ mod tests {
         assert!(ui.contains(&format!("listen(\"{DROP_EVENT}\"")), "ui/main.js must listen for the name Rust emits");
         assert!(ui.contains("inv(\"attach_files\""), "the UI reaches attach_drop through the attach_files command");
         assert!(ui.contains("function attachDrop("), "the UI half of the drop has a name to grep for");
+    }
+
+    // ---------- R33 frameless window ----------
+    /// The gesture math is the whole resize/move behaviour, and it is pure:
+    /// anchor rect + cursor delta -> new outer rect. Every edge and corner is
+    /// here because "resizable from every edge and corner" is the acceptance
+    /// criterion an undecorated window is most likely to quietly lose.
+    #[test]
+    fn a_gesture_moves_only_the_edges_it_grabbed() {
+        let r = (100.0, 50.0, 1000.0, 700.0);
+        assert_eq!(gesture_rect("move", r, 30.0, -20.0), Some((130.0, 30.0, 1000.0, 700.0)), "move: position only");
+        assert_eq!(gesture_rect("e", r, 40.0, 999.0), Some((100.0, 50.0, 1040.0, 700.0)), "east: width only, dy ignored");
+        assert_eq!(gesture_rect("w", r, -60.0, 0.0), Some((40.0, 50.0, 1060.0, 700.0)), "west: x AND width (the east edge holds)");
+        assert_eq!(gesture_rect("s", r, 999.0, 30.0), Some((100.0, 50.0, 1000.0, 730.0)), "south: height only, dx ignored");
+        assert_eq!(gesture_rect("n", r, 0.0, -25.0), Some((100.0, 25.0, 1000.0, 725.0)), "north: y AND height (the south edge holds)");
+        assert_eq!(gesture_rect("se", r, 10.0, 20.0), Some((100.0, 50.0, 1010.0, 720.0)), "SE corner");
+        assert_eq!(gesture_rect("sw", r, -10.0, 20.0), Some((90.0, 50.0, 1010.0, 720.0)), "SW corner");
+        assert_eq!(gesture_rect("ne", r, 10.0, -20.0), Some((100.0, 30.0, 1010.0, 720.0)), "NE corner");
+        assert_eq!(gesture_rect("nw", r, -10.0, -20.0), Some((90.0, 30.0, 1010.0, 720.0)), "NW corner");
+    }
+
+    /// The clamp must PIN the dragged edge, not keep walking: dragging the west
+    /// edge far to the right is the classic "the window slides away instead of
+    /// refusing to shrink" bug. The opposite edge is the invariant.
+    #[test]
+    fn the_minimum_pins_the_dragged_edge_and_holds_the_opposite_one() {
+        let r = (100.0, 50.0, 1000.0, 700.0);
+        let (x, y, w, h) = gesture_rect("nw", r, 5000.0, 5000.0).unwrap();
+        assert_eq!((w, h), (WIN_MIN_W, WIN_MIN_H), "clamped to the R22 floor");
+        assert_eq!(x + w, 1100.0, "the east edge never moved");
+        assert_eq!(y + h, 750.0, "the south edge never moved");
+        let c = gesture_rect("se", r, -5000.0, -5000.0).unwrap();
+        assert_eq!(c, (100.0, 50.0, WIN_MIN_W, WIN_MIN_H), "an SE clamp leaves the origin alone");
+    }
+
+    /// An unknown direction is an ERROR, never a silent no-op: win_gesture turns
+    /// None into a rejected IPC call, so a renamed handle shows up as a broken
+    /// gesture in the log instead of as a window that mysteriously will not move.
+    #[test]
+    fn an_unknown_gesture_direction_is_rejected() {
+        let r = (0.0, 0.0, 800.0, 600.0);
+        for bad in ["", "N", "en", "nn", "ns", "ew", "north", "resize", "moveto"] {
+            assert_eq!(gesture_rect(bad, r, 10.0, 10.0), None, "{bad:?} must not be accepted as a direction");
+        }
+    }
+
+    /// R33 THE CONFIG IS THE FEATURE, and on a display with no window manager it
+    /// is the only thing that can prove it: without a WM every window renders
+    /// undecorated, so no screenshot can tell `decorations: false` from the
+    /// default. This pins the config, and the strip that has to replace the frame
+    /// it removes — the DOM ids and the command names that move, resize, minimise
+    /// and close the window. Delete any one of them and the window becomes
+    /// unmovable or unclosable, which outranks every fidelity argument.
+    #[test]
+    fn the_window_is_undecorated_and_the_ui_replaces_every_affordance() {
+        let conf = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tauri.conf.json")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&conf).unwrap();
+        assert_eq!(v["app"]["windows"][0]["decorations"], serde_json::json!(false), "R33: the window must ship undecorated");
+        let html = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/index.html")).unwrap();
+        let js = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/main.js")).unwrap();
+        let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
+        for id in ["wframe", "wf-min", "wf-max", "wf-close", "wrz"] {
+            assert!(html.contains(&format!("id=\"{id}\"")), "ui/index.html lost #{id}");
+        }
+        for cmd in ["win_rect", "win_gesture", "win_minimize", "win_toggle_max", "win_close"] {
+            assert!(js.contains(&format!("inv(\"{cmd}\"")), "ui/main.js no longer calls {cmd}");
+            assert!(src.contains(&format!("fn {cmd}(")), "{cmd} is called by the UI but not implemented");
+        }
+        // all eight resize handles, or the undecorated window has lost an edge
+        for d in ["n", "s", "e", "w", "ne", "nw", "se", "sw"] {
+            assert!(html.contains(&format!("data-d=\"{d}\"")), "no resize handle for {d}");
+        }
+        // R33.9: the controls must be operable by KEYBOARD, not mouse only. Three
+        // independent pieces, and losing any one of them makes the strip mouse-only:
+        // real <button>s (Enter/Space activate them), a chord that REACHES the strip
+        // from wherever focus is, and a focus ring so the user can see where they are.
+        for id in ["wf-min", "wf-max", "wf-close"] {
+            assert!(
+                html.contains(&format!("<button id=\"{id}\"")),
+                "#{id} is no longer a <button> — Enter/Space would stop activating it (R33.9)"
+            );
+            assert!(html.contains("aria-label"), "the window controls lost their aria-labels");
+        }
+        assert!(
+            js.contains("ev.altKey") && js.contains("\"Spacebar\""),
+            "ui/main.js lost the Alt+Space handler that focuses the frame strip — the controls would be mouse-only (R33.9)"
+        );
+        // and the SECOND chord, which is the one that survives a real desktop: openbox
+        // (and most WMs) GRAB Alt+Space for their own client menu, so on a managed
+        // display that chord never reaches the app. Losing F10 would make the strip
+        // keyboard-operable only on a WM-less rig like our smoke display — i.e. green
+        // here and mouse-only for the user (R33.9).
+        assert!(
+            js.contains("\"F10\""),
+            "ui/main.js lost the F10 chord — Alt+Space alone is grabbed by the window manager, so the strip would be unreachable by keyboard on a real desktop (R33.9)"
+        );
+        assert!(
+            js.contains("ArrowRight") && js.contains("#wframe button"),
+            "ui/main.js lost the arrow-key roving focus between the window controls (R33.9)"
+        );
+        let css = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/style.css")).unwrap();
+        assert!(
+            css.contains("#wframe button:focus"),
+            "ui/style.css lost the focus ring on the window controls: keyboard focus nobody can see is not operable (R33.9)"
+        );
     }
 }

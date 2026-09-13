@@ -183,6 +183,12 @@ function placeRToggle() {
   if (!b) return;
   const host = rightOpen ? $("rtabs") : (state ? topRight(state.root).pane.querySelector(".tabbar") : null);
   if (host && b.parentNode !== host) host.appendChild(b);
+  /* R33: the window controls are pinned to the window's TOP-RIGHT corner, which is
+     the right end of exactly this row — the same end #rtoggle and .modebtn sit at.
+     The row reserves their width instead of being covered by them: an invisible
+     #rtoggle is a control the user has lost. */
+  for (const el of document.querySelectorAll(".wfinset")) if (el !== host) el.classList.remove("wfinset");
+  if (host) host.classList.add("wfinset");
   clearTimeout(rtT);
   rtT = setTimeout(() => {
     rtT = null;
@@ -945,6 +951,20 @@ function ovfCause(el, why) {         // "<child" = the child that makes el overf
   }
   return worst ? "<" + ovfName(worst) + "+" + Math.round(worstBy) : "";
 }
+/* R33.13 — the window-control strip reserves 140px at the right end of the row
+   it covers (.wfinset), and the four rside tabs are `flex: 1`, so EVERY ONE OF
+   THEM MOVED when the strip shipped (measured at 1100x700, 260px sidebar:
+   868/926/981/1036 -> the numbers this token now reports). A test that keeps
+   clicking the old x hits whatever is there now — the chrome phase's 1082 landed
+   on the new CLOSE button and shut the app down mid-phase, which the harness
+   reported as "APP DIED ... OOM-kill is the usual cause". So the app publishes
+   where they actually are and smoke clicks THAT: re-measured, not suppressed,
+   and it cannot rot the next time something shifts the row. */
+function stabCentres() {
+  return [...document.querySelectorAll("#rtabs .stab")]
+    .map(b => { const r = b.getBoundingClientRect(); return Math.round(r.left + r.width / 2); })
+    .join(",");
+}
 function ovfScan() {
   const de = document.documentElement;
   const vw = de.clientWidth, vh = de.clientHeight;
@@ -1121,6 +1141,7 @@ function updateTitle() {          // pane/focus census in the window title (head
             (rightOpen && rpInfo ? " [rp:" + rpInfo + "]" : "") +
             " [rpn:" + rbN + "]" +                              // F1: backlink repaints ENTERED, so a skipped one is observable
             (rtInfo ? " [" + rtInfo + "]" : "") +
+            (rightOpen ? " [stx:" + stabCentres() + "]" : "") +   // R33.13: the strip MOVED these — smoke reads them, never guesses
             (jsErr ? " [jserr:" + jsErr + "]" : "") +
             (saveErr ? " [saveerr:" + saveErr + "]" : "") +             // F1: a save that did not land
             " [armed:" + groups().filter(h => h.saveT).length + "]" +   // F2: groups holding a live save timer
@@ -1145,6 +1166,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   t += " [vp:" + innerWidth + "x" + innerHeight + "]" +   // resize-completed signal for the fuzz harness
        " [ovf:" + ov.dw + "," + ov.dh + "," + ov.n + "]" +
        (ov.bad.length ? " [ovfe:" + ov.bad.join("|").slice(0, 180) + "]" : "");
+  t += wfTok();                    // R33: the window's own frame (controls, grips, maximised, keyboard focus)
   document.title = t;
   // publish to the native title: ONE call in flight, last-write-wins, 500ms
   // timeout guard — a hung/rejected setTitle IPC can neither reorder titles
@@ -3869,3 +3891,213 @@ function hkKey(e) {                          // keyboard while settings is open
 }
 $("sclose").onclick = closeSettings;
 $("settings").onmousedown = e => { if (e.target === $("settings")) closeSettings(); };
+
+/* ---------- R33 frameless window: the app IS the title bar ----------
+   With `decorations: false` there is no WM frame, so moving, resizing,
+   minimising, maximising and closing the window are this file's job.
+
+   WHY THE GESTURES ARE OURS AND NOT THE WM'S: the obvious implementation hands
+   the press to the WM (start_dragging / _NET_WM_MOVERESIZE) and lets it move the
+   window. That does nothing where there is NO window manager — which is exactly
+   the state of every Xvfb display this repo tests on, and an undecorated window
+   there would be permanently stuck. So a gesture sends the ANCHOR rect it started
+   from plus the cursor delta, and win_gesture applies the resulting geometry
+   (absolute at every step: a dropped pointermove cannot make the window drift).
+   Cost: the window follows the cursor one frame late. R33 records the divergence.
+
+   THE DRAG REGION is the empty part of the TOP row (the strip itself and the
+   background of the top tab bar, never a tab or a button) — stock drags by the
+   same empty tab-row space. `top <= 2` keeps a split pane's own tab bar, halfway
+   down the window, from moving the window instead of doing nothing. */
+/* `var`, not `let`: updateTitle() runs during this file's own top-level init,
+   BEFORE execution reaches this block at the bottom — a `let` would still be in
+   its temporal dead zone and reading it would throw, turning the whole census
+   into [jserr:] instead of a title. */
+var wfMax = false;          // last state win_toggle_max reported -> census [wfm:]
+var wfArmed = false;          // the gesture listeners are installed -> census [wf:3d8]
+var wfA = null;               // gesture in flight: {dir, sx, sy, r, moved, seq}
+/* wfSeq IS THE FIX FOR A ZOMBIE GESTURE, and it was paid for by a whole recon pass
+   in which SIX of the eight resize directions read as broken. wfBegin has to AWAIT
+   win_rect (the anchor), and a synthetic click releases the button long before that
+   IPC resolves: pointerup ran, wfEnd set wfA = null, and THEN the await resumed and
+   assigned wfA — a gesture nobody was holding. Every later pointermove, including
+   the next drag's, then kept resizing with the DEAD gesture's direction and press
+   point: the west drag reported `[wfg:e:...+-1158,0]` (direction e, delta measured
+   from the previous drag's press x) and the window walked to its 320px floor.
+   So every press takes a ticket, and a release or a newer press invalidates it: an
+   anchor that arrives after its ticket expired is dropped instead of becoming state. */
+var wfSeq = 0;
+var wfPend = null, wfRaf = 0; // rAF-coalesced pointer delta (the LAST one always lands)
+var wfLast = "-";          // last gesture, published as [wfg:] for the smoke assertions
+var wfRet = null;          // R33.9: where keyboard focus came from before Alt+Space
+/* a gesture is a SEQUENCE, and only the sequence says which step went wrong: a press
+   with no begin, a begin whose anchor arrived after its ticket expired, a flush after
+   the release. [wfg:] carries the last flush only, which is why the zombie gesture
+   read as "our maths is wrong" for two iterations. Last 8 steps, oldest first. */
+var wfLogA = [];
+function wfLog(t) { wfLogA.push(t); if (wfLogA.length > 8) wfLogA.shift(); }
+var wfDownT = 0, wfDownX = 0, wfDownY = 0;   // double-press detector (= maximise)
+
+function wfDragRegion(t) {    // is this event target part of the drag region?
+  if (!t || !t.classList) return false;
+  if (t.id === "wframe") return true;
+  if (!t.classList.contains("tabbar") && !t.classList.contains("tabs")) return false;
+  return t.getBoundingClientRect().top <= 2;      // the TOP row only
+}
+async function wfToggleMax() {
+  try { wfMax = await inv("win_toggle_max"); } catch (e) { noteErr(e); }
+  updateTitle();
+}
+function wfFlush() {
+  wfRaf = 0;
+  const a = wfA, p = wfPend;
+  if (!a || !p) { wfPend = null; return; }
+  if (!a.r) return;             // the anchor has not arrived yet: KEEP the delta pending
+  wfPend = null;
+  /* the anchor rect is the single thing a gesture can get wrong invisibly: send the
+     wrong w/h and the window resizes to a number nobody asked for, which reads as
+     "our resize is broken" when it is really "win_rect lied". So the last gesture
+     is published in the census — dir, the anchor it used, and the delta — and the
+     smoke phase asserts it against the geometry the WM reports. */
+  wfLog("f" + a.dir + "#" + a.seq);
+  wfLast = a.dir + ":" + a.r.x + "," + a.r.y + "," + a.r.w + "," + a.r.h + "+" + p.dx + "," + p.dy;
+  inv("win_gesture", { dir: a.dir, x: a.r.x, y: a.r.y, w: a.r.w, h: a.r.h, dx: p.dx, dy: p.dy })
+    .then(() => updateTitle()).catch(noteErr);
+}
+async function wfBegin(dir, ev, el) {
+  if (ev.button !== 0) return;
+  if (dir === "move") {       // second press on the strip inside 400ms = maximise/restore
+    const now = Date.now(), near = Math.abs(ev.screenX - wfDownX) + Math.abs(ev.screenY - wfDownY) < 8;
+    const dbl = now - wfDownT < 400 && near;
+    wfDownT = now; wfDownX = ev.screenX; wfDownY = ev.screenY;
+    if (dbl) { wfDownT = 0; return wfToggleMax(); }
+  }
+  ev.preventDefault();
+  const seq = ++wfSeq;
+  // ACTIVE IMMEDIATELY, anchor later: the gesture exists from the press, so a
+  // pointerup that lands during the win_rect round trip can cancel it (wfEnd bumps
+  // wfSeq), and moves that arrive during it are buffered, not lost.
+  wfLog("b" + dir + "#" + seq);
+  wfA = { dir, sx: ev.screenX, sy: ev.screenY, r: null, moved: false, seq, el, pid: ev.pointerId };
+  try { el.setPointerCapture(ev.pointerId); } catch (e) { /* capture is an optimisation, not the mechanism */ }
+  let r; try { r = await inv("win_rect"); } catch (e) { if (wfA && wfA.seq === seq) wfA = null; return noteErr(e); }
+  if (!wfA || wfA.seq !== seq || wfSeq !== seq) { wfLog("x" + dir + "#" + seq); return; }   // released or superseded while we waited
+  wfA.r = r;
+  if (wfPend && !wfRaf) wfRaf = requestAnimationFrame(wfFlush);   // the buffered delta lands now
+}
+function wfDrag(ev) {
+  const a = wfA;
+  if (!a) return;
+  /* A LOST POINTERUP IS THE SECOND WAY A GESTURE BECOMES A ZOMBIE, and it is the one
+     that poisoned six of eight resize directions after wfSeq fixed the first. The
+     window is moving under the cursor, so a release can land where the DOM never sees
+     it (outside the window the resize has not caught up with yet, on the frame of a
+     window that just shrank away from the pointer). The gesture then stays armed AND
+     the grip keeps pointer capture — so the NEXT press is retargeted to the OLD grip,
+     no new gesture begins, and the dead gesture keeps resizing with its own direction
+     and press point: the west drag reported `[wfg:e:...+-1158,0]` and the window walked
+     to its 320px floor. `buttons === 0` on a move means the button is up whatever we
+     were told, so end the gesture there — this is the only signal that survives a
+     dropped release. */
+  if (ev.buttons === 0) { wfLog("z"); return wfEnd(); }
+  const dx = ev.screenX - a.sx, dy = ev.screenY - a.sy;
+  if (!a.moved && Math.abs(dx) + Math.abs(dy) < 3) return;   // a click is not a drag
+  a.moved = true;
+  wfPend = { dx, dy };
+  if (!wfRaf) wfRaf = requestAnimationFrame(wfFlush);
+}
+function wfEnd() {
+  if (wfA) wfLog("e#" + wfA.seq);
+  if (wfPend) wfFlush();      // the last delta decides the final geometry
+  const a = wfA;
+  // hand the capture back, or the next press is retargeted to this grip and the
+  // control it actually landed on never hears about it
+  if (a && a.el && a.el.hasPointerCapture && a.el.hasPointerCapture(a.pid))
+    try { a.el.releasePointerCapture(a.pid); } catch (e) { /* already gone */ }
+  wfA = null; wfPend = null;
+  wfSeq++;                    // invalidate any anchor still in flight (see wfSeq)
+}
+function wfArm() {
+  // spelled out, one call per control: the cargo test greps for inv("win_...")
+  // in this file, which is the only thing that notices when a command is renamed
+  // in Rust and the button silently becomes a no-op (ui/ is not a cargo input)
+  $("wf-min").onclick = () => inv("win_minimize").catch(noteErr);
+  $("wf-close").onclick = () => inv("win_close").catch(noteErr);
+  $("wf-max").onclick = wfToggleMax;
+  for (const g of document.querySelectorAll("#wrz i"))
+    g.addEventListener("pointerdown", ev => wfBegin(g.dataset.d, ev, g));
+  // capture phase: the press must be claimed before a tab bar handler sees it,
+  // and ONLY when it landed on the background (a tab is its own target)
+  addEventListener("pointerdown", ev => { if (wfDragRegion(ev.target)) wfBegin("move", ev, ev.target); }, true);
+  addEventListener("pointermove", wfDrag, true);
+  addEventListener("pointerup", wfEnd, true);
+  addEventListener("pointercancel", wfEnd, true);
+  // the census must be able to say WHICH control the keyboard is on (R33.4)
+  for (const b of document.querySelectorAll("#wframe button")) {
+    b.addEventListener("focus", updateTitle);
+    b.addEventListener("blur", updateTitle);
+  }
+  /* R33.9 KEYBOARD — the controls are real <button>s, so Enter and Space already
+     activate them; the missing half is REACHING them. Tab is not the answer: focus
+     lives in the editor, where Tab is a text edit, and a user who has to tab through
+     the whole app to close a window has a mouse-only window with extra steps. So the
+     strip gets the classic window-menu chord, Alt+Space, handled in the CAPTURE phase
+     so it works from inside the editor and from inside a modal — a window you cannot
+     close while a modal is open is a broken interaction. Left/Right rove between the
+     three controls, Escape hands focus back to wherever it came from. Handled keys
+     are stopped so the R14 keymap cannot also fire on them. */
+  addEventListener("keydown", ev => {
+    const bs = Array.from(document.querySelectorAll("#wframe button"));
+    if (!bs.length) return;
+    const at = bs.indexOf(document.activeElement);
+    const take = () => { ev.preventDefault(); ev.stopPropagation(); };
+    /* TWO chords, and the second one is not belt-and-braces: it is the only one that
+       works on a real desktop. Alt+Space is the classic window-menu chord, which is
+       exactly why window managers GRAB it — openbox 3.6's stock rc.xml binds
+       `A-space` to its client-menu (/etc/xdg/openbox/rc.xml:245), so the key never
+       reaches the app when a WM is running, and the smoke phase measured precisely
+       that ("Alt+Space did not move keyboard focus onto the frame strip", under
+       openbox, while it works on a WM-less display). F10 is the GTK/GNOME menubar
+       convention, no WM grabs it, and it is what makes R33.9 true for a user rather
+       than only for our headless rig. Divergence recorded in R33.9. */
+    const wfChord = (ev.altKey && !ev.ctrlKey && !ev.metaKey && (ev.key === " " || ev.key === "Spacebar")) ||
+                    (ev.key === "F10" && !ev.ctrlKey && !ev.metaKey && !ev.shiftKey);
+    if (wfChord) {
+      take();
+      if (at < 0) wfRet = document.activeElement;   // remember, so Escape can give it back
+      bs[0].focus();
+      return;
+    }
+    if (at < 0) return;                 // focus is not on the strip: nothing below applies
+    if (ev.key === "ArrowRight" || ev.key === "ArrowLeft") {
+      take();
+      bs[(at + (ev.key === "ArrowRight" ? 1 : bs.length - 1)) % bs.length].focus();
+      return;
+    }
+    if (ev.key === "Escape") {
+      take();
+      bs[at].blur();
+      if (wfRet && typeof wfRet.focus === "function") { try { wfRet.focus(); } catch (e) { /* the node may be gone */ } }
+      wfRet = null;
+    }
+  }, true);
+  wfArmed = true;
+  /* wfArm() runs at top-level, BEFORE a vault is loaded, so `state` can still be
+     null — and updateTitle() reads state.root unguarded. Calling it here threw
+     "null is not an object (evaluating 'state.root')" into window.onerror, which
+     noteErr latched as [jserr:] for the whole session: a first-error-wins channel
+     poisoned before the app even booted, hiding the NEXT real error from every
+     smoke phase. The census is republished by the first real updateTitle anyway. */
+  if (typeof state !== "undefined" && state) updateTitle();
+}
+/* census: [wf:<buttons><d|-><grips>] [wfm:<maximised>] [wfk:<focused control>].
+   `d` = the gesture listeners are armed; without them the window cannot be
+   moved, and the smoke's move assertion is the thing that notices. */
+function wfTok() {
+  const b = document.querySelectorAll("#wframe button").length;
+  const g = document.querySelectorAll("#wrz i").length;
+  const a = document.activeElement;
+  const k = a && a.id && a.id.indexOf("wf-") === 0 ? a.id : "-";
+  return " [wf:" + b + (wfArmed ? "d" : "-") + g + "] [wfm:" + (wfMax ? 1 : 0) + "] [wfk:" + k + "] [wfg:" + wfLast + "] [wfl:" + wfLogA.join(">") + "]";
+}
+wfArm();
