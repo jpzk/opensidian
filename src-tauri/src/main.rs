@@ -1853,7 +1853,8 @@ fn main() {
         .map(PathBuf::from)
         .or_else(|| read_cfg().0.map(PathBuf::from).filter(|p| p.is_dir()));
     // landlock: confine the whole process tree to the vault before webkit spawns
-    if let (Some(p), true) = (&init, std::env::var_os("RUSTIDIAN_NO_LANDLOCK").is_none()) {
+    // the off-switch is named ONCE, in sandbox.rs — not spelled again here
+    if let (Some(p), true) = (&init, !sandbox::no_landlock_requested()) {
         match sandbox::enforce(p, &cfg_path()) {
             Ok(s) => eprintln!("landlock: {s:?}"),
             Err(e) => eprintln!("landlock: off ({e})"),
