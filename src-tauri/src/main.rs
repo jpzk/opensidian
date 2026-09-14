@@ -1426,6 +1426,67 @@ fn render_with(content: &str, notes: &[String], imgs: &[String], reading: bool) 
     out.replace("type=\"checkbox\"/>\n", "type=\"checkbox\"/>").replace("checked=\"\"/>\n", "checked=\"\"/>")
 }
 
+/// R35 SCROLL SYNC: the 1-based SOURCE LINE on which each TOP-LEVEL block of
+/// `content` begins, in the same order `render` emits its top-level elements.
+///
+/// This is the mapping the reading view cannot otherwise have: the rendered
+/// HTML carries no line information, and a pixel copy between the two
+/// scrollers is wrong by construction (the reading document re-flows to a
+/// different height — measured at 0.868x the edit document on the scroll
+/// fixture, and NOT uniformly, so no scale factor exists either).
+///
+/// It is derived from the SAME parser, with the SAME options, that produced
+/// the HTML — a second, hand-rolled block splitter in JS would drift from the
+/// renderer the first time either changed. Depth 0 only: a nested paragraph
+/// inside a list item is not a top-level element.
+fn block_lines_of(content: &str) -> Vec<u32> {
+    let mut opts = Options::all();
+    opts.remove(Options::ENABLE_WIKILINKS);
+    opts.remove(Options::ENABLE_SMART_PUNCTUATION);
+    // byte offset -> 1-based line, walked once in step with the (monotonic) block starts
+    let mut nl: Vec<usize> = vec![0];
+    for (i, b) in content.bytes().enumerate() {
+        if b == b'\n' {
+            nl.push(i + 1);
+        }
+    }
+    let line_of = |off: usize| -> u32 {
+        match nl.binary_search(&off) {
+            Ok(i) => (i + 1) as u32,
+            Err(i) => i as u32, // i = count of line starts <= off
+        }
+    };
+    let mut depth = 0i32;
+    let mut out = Vec::new();
+    for (ev, range) in Parser::new_ext(content, opts).into_offset_iter() {
+        match ev {
+            // a metadata block (frontmatter) is parsed but renders to NOTHING,
+            // so it must not consume an element slot in the map
+            Event::Start(Tag::MetadataBlock(_)) => depth += 1,
+            Event::End(TagEnd::MetadataBlock(_)) => depth -= 1,
+            Event::Start(_) => {
+                if depth == 0 {
+                    out.push(line_of(range.start));
+                }
+                depth += 1;
+            }
+            Event::End(_) => depth -= 1,
+            Event::Rule => {
+                if depth == 0 {
+                    out.push(line_of(range.start));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+#[tauri::command]
+fn block_lines(content: String) -> Vec<u32> {
+    block_lines_of(&content)
+}
+
 #[tauri::command]
 fn render(v: State<Vault>, content: String, otel: Option<perf::Ctx>) -> String {
     // ONE lock for both lists: two `v.index.lock()` calls in one expression is
@@ -2065,7 +2126,7 @@ fn main() {
             .expect("img response")
         })
         .invoke_handler(tauri::generate_handler![
-            list_notes, list_images, read_note, write_note, create_note, render, render_blocks, highlight_blocks, graph, graph_local, vault_get, set_vault,
+            list_notes, list_images, read_note, write_note, create_note, render, render_blocks, block_lines, highlight_blocks, graph, graph_local, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, recent_vaults, rename_note, move_note, update_links, link_consent, set_link_consent, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref,
@@ -2081,6 +2142,28 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn block_lines_maps_every_top_level_block_to_its_source_line() {
+        // one of each shape the scroll fixture uses. The mapping is what the
+        // reading view scrolls by, so it is asserted as EXACT line numbers,
+        // and its LENGTH must equal the number of top-level elements the
+        // renderer emits — one slot per #preview child, or the index mapping
+        // in ui/main.js silently points at the wrong block.
+        let md = "# H1\n\npara one\nstill one\n\n## H2\n\n- a\n- b\n\n> quote\n\n```\ncode\n```\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\ntail\n";
+        assert_eq!(block_lines_of(md), vec![1, 3, 6, 8, 11, 13, 17, 21]);
+        let html = render_md(md, &[]);
+        let tops = ["<h1", "<p>", "<h2", "<ul>", "<blockquote>", "<pre>", "<table>"];
+        for t in tops {
+            assert!(html.contains(t), "renderer no longer emits {t}: {html}");
+        }
+        // frontmatter renders to nothing and must not consume a slot
+        let fm = "---\ntitle: x\n---\n\npara\n";
+        assert_eq!(block_lines_of(fm), vec![5]);
+        // a line-1 start is line 1, not line 0 (1-based, like the fixture markers)
+        assert_eq!(block_lines_of("only\n"), vec![1]);
+        assert_eq!(block_lines_of(""), Vec::<u32>::new());
+    }
 
     #[test]
     fn hotkeys_clean_keeps_shape_drops_garbage() {
