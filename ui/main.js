@@ -1150,9 +1150,15 @@ function updateTitle() {          // pane/focus census in the window title (head
   // test, which is useless for a data-loss assertion.
   const anote = state && fg() ? curOf(fg()) : null;
   const noteTok = anote ? " [note:" + tokq(anote) + "]" : "";
+  // THEME census: the mode read back OFF THE DOM, not off themeMode — a probe
+  // must not be able to pass because a variable says "light" while the root
+  // attribute (the thing that actually paints) was never written. Pixels remain
+  // the assertion of record in the phase; this token is how it knows WHICH
+  // theme the pixels it just sampled are supposed to be.
+  const themeTok = " [theme:" + (document.documentElement.getAttribute("data-theme") || "unset") + "]";
   let t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
-            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + lg + md + gg + modal +
+            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + lg + md + gg + modal +
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) +
             (rightOpen ? ":" + rTab : "") + "]" +
             (rightOpen && rpInfo ? " [rp:" + rpInfo + "]" : "") +
@@ -2850,9 +2856,40 @@ function cmdAttach() {
   updateTitle();
 }
 function closeAttach() { $("anew").hidden = true; updateTitle(); }
+/* ---------- THEME: ONE attribute, on ONE root ---------------------------
+   Every colour in the app is a token defined in the block at the top of
+   ui/style.css; `light` is that same token block re-stated under
+   :root[data-theme="light"]. So switching the theme is exactly one DOM write:
+   the attribute on document.documentElement. That is deliberate and it is the
+   whole design —
+     - panes, modals, the graph canvas and the settings modal all inherit their
+       colours from the same :root custom properties, so none of them needs to
+       know a theme exists. A per-pane or per-container attribute would be a
+       second source of truth and would leave whichever container was forgotten
+       painting the old theme (negative control N2 drives exactly that).
+     - the graph reads its colours out of getComputedStyle(documentElement)
+       (commit 2a0f7ba), so it follows the same attribute with no extra wiring.
+   themeMode is the in-memory copy; persistence and the system default are a
+   separate concern and land on top of applyTheme(), not inside it. */
+let themeMode = "dark";                    // "dark" | "light"
+function applyTheme(t) {
+  themeMode = t === "light" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", themeMode);
+  if (state) updateTitle();                // census [theme:<mode>] follows the DOM
+                                           // (before a vault is open there is no
+                                           // title census to refresh — updateTitle
+                                           // reads state.root)
+}
+function cmdToggleTheme() { applyTheme(themeMode === "dark" ? "light" : "dark"); }
 let closedTabs = [];                       // R14 undo close tab (names, newest last)
 const CMDS = [
   ["app:open-settings",        "Open settings",                       ["ctrl+,"],               () => cmdSettings()],
+  // R14: the theme switch is a registry entry like any other — no bespoke
+  // keystroke, no menu item of its own. It ships with NO default chord on
+  // purpose: the palette is the road, so the smoke phase has to drive the real
+  // Ctrl+P path (and a user can still bind a chord in Settings ▸ Hotkeys,
+  // which works for free because this is in the one registry).
+  ["theme:switch",             "Toggle light/dark mode",              [],                       cmdToggleTheme],
   ["workspace:close",          "Close current tab",                   ["ctrl+w"],               cmdCloseTab],
   ["window:close",             "Close window",                        ["ctrl+shift+w"],         () => window.__TAURI__.window.getCurrentWindow().close()],
   ["command-palette:open",     "Open command palette",                ["ctrl+p"],               () => cmdPalette()],
@@ -3953,6 +3990,10 @@ window.__TAURI__.event.listen("drop-files", e => attachDrop(e.payload || []));
 $("vswitch").onclick = showPicker;
 
 (async () => {
+  applyTheme(themeMode);         // the root attribute exists from the first paint;
+                                 // the STORED choice / system default replaces this
+                                 // default in the same place (next item), so there
+                                 // is only ever one call site that decides it.
   SAVE_MS = await inv("save_debounce_ms").catch(() => 250);   // F2 smoke hook
   const sw = await inv("get_sidebar_w").catch(() => null);   // ux-4
   if (sw >= 150) $("side").style.width = Math.min(600, sw) + "px";
