@@ -2142,9 +2142,15 @@ fn zoom(webview: tauri::Webview, z: State<ZoomLevel>, action: String) -> Result<
 
 /// the level this app run STARTS at — persisted (R35.4), clamped on read so a
 /// hand-edited config cannot park the UI outside the range the keys can leave.
+/// Returns the SAME shape as `zoom` so the frontend never re-derives
+/// level->factor: the base 1.2 and the 0.5 step exist in exactly one file.
 #[tauri::command]
-fn zoom_get() -> f64 {
-    read_zoom_cfg()
+fn zoom_get() -> ZoomOut {
+    let l = read_zoom_cfg();
+    // `clamped` is false even when the restored level IS a clamp: nothing was
+    // pressed into anything, and the census marker `!` means "that press did
+    // nothing", which is a statement about a keypress, not about a value.
+    ZoomOut { level: l, factor: zoom_factor(l), clamped: false }
 }
 
 fn read_zoom_cfg() -> f64 {

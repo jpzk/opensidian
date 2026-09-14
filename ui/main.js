@@ -2877,6 +2877,20 @@ async function cmdZoom(action) {
   }
   updateTitle();
 }
+/* R35.4 the census must not LIE after a restore. The persisted level is applied
+   in Rust, inside setup(), BEFORE the first paint (main.rs R35.4) — so the
+   webview can come up at 1.7280 while this file's optimistic default still
+   reads "1.0000@0", and a probe would call a restored zoom "still at 100%".
+   Ask the backend once at startup instead of assuming. `zoom_get` returns the
+   SAME shape as `zoom`, so the base and the step are still in exactly one file.
+   Deliberately NOT on the awaited boot path (enterVault): it is one IPC that
+   nothing on screen waits for, and the census is republished by the first real
+   updateTitle anyway. The restart assertion in `scripts/smoke.sh fast zoom` is
+   what notices if this line is ever deleted. */
+inv("zoom_get").then(z => {
+  zoomTok = z.factor.toFixed(4) + "@" + z.level;
+  if (typeof state !== "undefined" && state) updateTitle();
+}, () => { /* a backend that cannot answer is not a reason to blank the census */ });
 let closedTabs = [];                       // R14 undo close tab (names, newest last)
 const CMDS = [
   ["app:open-settings",        "Open settings",                       ["ctrl+,"],               () => cmdSettings()],
