@@ -1,4 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// rustidian, an Obsidian-compatible markdown notes app.
+// Copyright (C) 2026 Jendrik Poloczek
+// SPDX-License-Identifier: GPL-3.0-or-later
+// This program comes with ABSOLUTELY NO WARRANTY. It is free software, and you
+// are welcome to redistribute it under the terms of the GNU GPL version 3 or
+// (at your option) any later version. See LICENSE, or <https://www.gnu.org/licenses/>.
 /* lost-write: a dropped Result is how a failed save becomes a reported
    success. rustc warned about exactly that in link_mention for weeks and
    nobody read the build log — a warning nobody reads is not a safety net.

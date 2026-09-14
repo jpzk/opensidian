@@ -1,8 +1,14 @@
 # Third-party notices
 
-rustidian bundles or derives from the works listed here. Each section carries
-the upstream licence text as that licence requires.
+rustidian is **GPL-3.0-or-later** (see LICENSE). It bundles or derives from the
+works listed here. Each section carries the upstream licence text as that
+licence requires, and states how it sits with the GPL.
 
+Compatibility summary: every dependency is permissive (MIT / Apache-2.0 / BSD /
+ISC / Zlib / Unicode-3.0 / 0BSD / CC0) or weak copyleft (MPL-2.0, whose §3.3
+grants GPL compatibility explicitly). Nothing here is GPL-incompatible. The
+version is 3 and not 2 because `tao`, the crate that opens the app's window, is
+Apache-2.0-only, which GPLv2 cannot link.
 ---
 
 ## Catppuccin (Mocha palette)

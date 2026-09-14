@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! otel (R18): screen-free lag telemetry in the OpenTelemetry data model.
 //! Zero deps beyond serde/serde_json.
 //!

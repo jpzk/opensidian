@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! perf-index: in-memory vault index. Built ONCE per set_vault/create_vault/
 //! boot (one walk + one read per .md), then kept in lock-step with disk by
 //! the only writer — this process (write_note / rename_note). search, graph,

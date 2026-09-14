@@ -1,3 +1,9 @@
+// rustidian, an Obsidian-compatible markdown notes app.
+// Copyright (C) 2026 Jendrik Poloczek
+// SPDX-License-Identifier: GPL-3.0-or-later
+// This program comes with ABSOLUTELY NO WARRANTY. It is free software, and you
+// are welcome to redistribute it under the terms of the GNU GPL version 3 or
+// (at your option) any later version. See LICENSE, or <https://www.gnu.org/licenses/>.
 /* otel (R18): every invoke carries the innermost open UI action span as the
    `otel` arg, so backend spans nest under it (commands without the param
    ignore it). ui/otel.js owns ids, buffering and the 250ms batched IPC. */

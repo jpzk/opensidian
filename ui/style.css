@@ -1,3 +1,20 @@
+/*
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * WITH ONE CARVE-OUT, AND IT IS NOT DECORATIVE. This file is not wholly ours
+ * to license. Two sets of values in it come from elsewhere:
+ *
+ *   - the dark palette is Catppuccin Mocha (MIT). GPL-compatible; the notice
+ *     travels with it in THIRD-PARTY.md, which is the licence's one condition.
+ *   - 46 custom-property values are byte-identical to an extract of the
+ *     PROPRIETARY Obsidian bundle. A licence grants rights the grantor holds,
+ *     and we do not hold these. The GPL header above does not make them ours;
+ *     if anything it asserts a right we cannot back. They are disclosed in
+ *     THIRD-PARTY.md and the releases carrying them are marked prerelease.
+ *
+ * Re-derive those 46 from measurement and this caveat goes away. Until then,
+ * do not read the header above as covering every line below it.
+ */
 * { box-sizing: border-box; margin: 0 }
 body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
        background: #1e1e2e; color: #cdd6f4 }

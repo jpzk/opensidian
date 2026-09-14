@@ -69,3 +69,18 @@ lot — the app sees only the vault. (`scripts/rustidian-sandboxed.sh` in the
 repo if you'd rather read it first — you should.) Vault persistence
 (`~/.rustidian.json`) lands on the tmpfs, so the picker asks again each
 launch; bind a scratch dir over `$HOME` in the script if you want it kept.
+
+## licence
+
+**GPL-3.0-or-later.** Full text in [LICENSE](LICENSE).
+
+Why GPL: this repo exists because "it sucks that one has to
+run proprietary closed source blobs just for editing markdown files" (above).
+A permissive licence would let someone take this, close it, and ship exactly
+the blob the project was written to avoid. The GPL does not. If you distribute a modified
+rustidian, you pass on the source under the same terms.
+
+Third-party material that travels with the code — the Catppuccin Mocha palette
+(MIT), and an unresolved contamination that is nobody's to license — is
+itemised in [THIRD-PARTY.md](THIRD-PARTY.md). Read that one before you
+redistribute.

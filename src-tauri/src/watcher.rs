@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! R11 external edits: std-only vault watcher. A background thread walks the
 //! vault every TICK, snapshots (mtime, len) per note and diffs against the
 //! previous snapshot. Candidates are then RECONCILED against the in-RAM Index

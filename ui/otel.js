@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /* otel (R18): frontend lag spans in the OpenTelemetry data model. Loaded
    before main.js; exposes window.otel. Zero deps.
 
