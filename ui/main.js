@@ -1130,6 +1130,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   // Deliberately not derived from the banner (which times out): "no drop yet"
   // and "a drop whose banner faded" must not look the same to a probe.
   if (dropTok) md += " [drop:" + dropTok.replace(/[[\]|]/g, "") + "]";
+  md += " [zoom:" + zoomTok + "]";   // R36: always present — a probe must be able to read "still at 100%"
   // R15.2 font probe: bundled @font-face entries that actually LOADED (lazy: a face loads when text first uses it) -> [fonts:SourceCodePro/400/normal|...]
   { const fl = document.fonts ? [...document.fonts].filter(f => f.status === "loaded").map(f => f.family.replace(/[" ]/g, "") + "/" + f.weight + "/" + f.style) : [];
     if (fl.length) md += " [fonts:" + fl.join("|") + "]"; }
@@ -2850,6 +2851,46 @@ function cmdAttach() {
   updateTitle();
 }
 function closeAttach() { $("anew").hidden = true; updateTitle(); }
+/* ---------- R36 interface zoom (Ctrl+= / Ctrl+- / Ctrl+0) ---------------
+   There is deliberately NO CSS in this function. The scale is applied by
+   webkit_web_view_set_zoom_level through the `zoom` command (main.rs R36.1),
+   which changes what a CSS pixel IS — so the sidebar's 200px, the ribbon's
+   44px, the tab strip's height, every icon and the text all scale by the one
+   factor, together. Scaling `font-size`/rem here instead would move the text
+   and leave the chrome behind: that is the text-only result the operator
+   rejected, it is committed as negative control N1 (docs/negctl-zoom/), and
+   `scripts/smoke.sh fast zoom` measures three non-text boundaries so it goes
+   red.
+   The step, the clamps and the level->factor math are NOT duplicated here:
+   this function knows three verbs and nothing else, so the palette row and
+   the hotkey cannot drift from each other or from the backend. */
+let zoomTok = "1.0000@0";                  // [zoom:<factor>@<level>] census — the app's own belief
+async function cmdZoom(action) {
+  try {
+    const z = await inv("zoom", { action });
+    // the CLAMP is part of the census: pressing into the ceiling and the key
+    // never arriving look identical in the factor alone, and telling those two
+    // apart is exactly what the clamp assertions in the smoke phase need.
+    zoomTok = z.factor.toFixed(4) + "@" + z.level + (z.clamped ? "!" : "");
+  } catch (e) {
+    zoomTok = "err:" + errStr(e).replace(/[[\]|]/g, "").slice(0, 40);
+  }
+  updateTitle();
+}
+/* R36.4 the census must not LIE after a restore. The persisted level is applied
+   in Rust, inside setup(), BEFORE the first paint (main.rs R36.4) — so the
+   webview can come up at 1.7280 while this file's optimistic default still
+   reads "1.0000@0", and a probe would call a restored zoom "still at 100%".
+   Ask the backend once at startup instead of assuming. `zoom_get` returns the
+   SAME shape as `zoom`, so the base and the step are still in exactly one file.
+   Deliberately NOT on the awaited boot path (enterVault): it is one IPC that
+   nothing on screen waits for, and the census is republished by the first real
+   updateTitle anyway. The restart assertion in `scripts/smoke.sh fast zoom` is
+   what notices if this line is ever deleted. */
+inv("zoom_get").then(z => {
+  zoomTok = z.factor.toFixed(4) + "@" + z.level;
+  if (typeof state !== "undefined" && state) updateTitle();
+}, () => { /* a backend that cannot answer is not a reason to blank the census */ });
 let closedTabs = [];                       // R14 undo close tab (names, newest last)
 const CMDS = [
   ["app:open-settings",        "Open settings",                       ["ctrl+,"],               () => cmdSettings()],
@@ -2893,6 +2934,15 @@ const CMDS = [
   ["app:toggle-left-sidebar",  "Toggle left sidebar",                 [],                       cmdToggleSide],
   ["app:toggle-right-sidebar", "Toggle right sidebar",                [],                       () => cmdToggleRight()],
   ["app:switch-vault",         "Switch vault",                        [],                       showPicker],
+  // R36: stock lists exactly these three, with NO hotkey text beside them
+  // (recon-zoom shot 01) — built-in bindings it does not surface as rebindable
+  // rows. Ours ARE in the one registry, so the palette, the keymap and
+  // Settings ▸ Hotkeys all read the same line. The chord is the PLAIN '=' key:
+  // Ctrl+plus, Ctrl+Shift+= and Ctrl+KP_Add were each measured as no-ops on
+  // stock (notes/recon-zoom.txt), and binding "plus" is negative control N2.
+  ["window:zoom-in",           "Zoom in",                             ["ctrl+="],               () => cmdZoom("in")],
+  ["window:zoom-out",          "Zoom out",                            ["ctrl+-"],               () => cmdZoom("out")],
+  ["window:reset-zoom",        "Reset zoom",                          ["ctrl+0"],               () => cmdZoom("reset")],
 ].map(([id, name, def, run]) => ({ id, name, def, run }))
  .sort((a, b) => a.name.localeCompare(b.name));
 let hkUser = {};                            // id -> [chords] overrides ([] = removed default)
