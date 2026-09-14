@@ -5,6 +5,9 @@ src-tauri/gen/schemas/
 # recon evidence for R34 (title rename): the shots ARE the measurement — a
 # prose claim about a focus ring is not verifiable, the pixels are.
 !docs/recon-title-rename/**/*.png
+# recon evidence for scroll-sync: the shots carry the L<NNNN> markers the whole
+# measurement is read from — measure.sh re-derives every number from these pngs.
+!docs/recon-scroll-sync/**/*.png
 dist/
 .cov-evidence/
 
