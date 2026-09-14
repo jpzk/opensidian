@@ -2053,6 +2053,110 @@ fn win_close(win: tauri::Window) -> Result<(), String> {
     win.close().map_err(|e| e.to_string())
 }
 
+/* ---------- R35 INTERFACE ZOOM (operator, 2026-09-14: "interface wide zoom,
+   not only text") ----------------------------------------------------------
+   Ctrl+= / Ctrl+- / Ctrl+0, and the three palette commands behind them.
+   The scale is applied by exactly ONE call — tauri `Webview::set_zoom` ->
+   wry-0.55.1 `WebView::zoom` -> `webkit_web_view_set_zoom_level` — which
+   scales the CSS PIXEL for the whole page. The window is frameless (R33), so
+   everything the user can see is inside that webview: ribbon, sidebar, tab
+   bar, icons and text move together, by construction, because they are all
+   measured in the unit that changed.
+   NOT a CSS font-size/rem scale. That moves the text and leaves every fixed-px
+   chrome dimension (sidebar width, ribbon width, tab height) where it was —
+   the text-only outcome the operator explicitly rejected. It is not merely
+   discouraged here: negative control N1 in docs/negctl-zoom/ implements it,
+   and `scripts/smoke.sh fast zoom` measures three NON-TEXT boundaries, so N1
+   is RED.
+
+   EVERY CONSTANT BELOW IS MEASURED OFF STOCK 1.13.7, BLACK-BOX, NOT CHOSEN
+   (notes/recon-zoom.txt on :46; recon-zoom/drive-clamps.sh + clamps.log on :54;
+   the readout is the sidebar/editor boundary x on the scanline y=400):
+     STEP   one press = HALF an Electron zoom level, factor 1.2^level:
+            348 -> 381 -> 417 going in, 318 going out.
+            381/348 = 1.0948 vs 1.2^0.5  = 1.0954
+            417/348 = 1.1983 vs 1.2^1.0  = 1.2
+            318/348 = 0.9138 vs 1.2^-0.5 = 0.9129     (<= 0.1% apart)
+            i.e. +9.54% / -8.71% per press. NOT 10%, NOT 20%.
+     CEILING +6 presses = level +3.0 (1.728x): the sidebar edge stops at 598
+            and presses 7..12 changed NOTHING AT ALL (pixel diff 0, six times).
+     FLOOR  -5 presses = level -2.5 (0.6339x): edge stops at 222, presses
+            6..10 pixel-diff 0. The range is ASYMMETRIC; that is what stock
+            does, so it is what we do.
+     RESET  Ctrl+0 after the ceiling returned the screen to a frame that is
+            PIXEL-IDENTICAL to the baseline (diff 0), so reset means the
+            original value, not "some neutral value" (negative control N3). */
+/// Electron's zoom base — stock scales by this per whole level (recon-zoom).
+const ZOOM_BASE: f64 = 1.2;
+/// one keypress = half a level (measured 9.54% in / 8.71% out).
+const ZOOM_STEP: f64 = 0.5;
+/// measured ceiling: 6 presses in, then stock stops (recon-zoom/clamps.log).
+const ZOOM_MAX: f64 = 3.0;
+/// measured floor: 5 presses out, then stock stops (same log).
+const ZOOM_MIN: f64 = -2.5;
+
+/// zoom level -> the scale factor webkit is asked for.
+fn zoom_factor(level: f64) -> f64 {
+    ZOOM_BASE.powf(level)
+}
+
+/// `action` -> the level it lands on, clamped to the measured stock range.
+/// Pure on purpose: the clamp is the part that can silently be wrong, and this
+/// way it is unit-testable without a webview or a display.
+fn zoom_next(level: f64, action: &str) -> Option<f64> {
+    let l = match action {
+        "in" => level + ZOOM_STEP,
+        "out" => level - ZOOM_STEP,
+        "reset" => 0.0,
+        _ => return None,
+    };
+    Some(l.clamp(ZOOM_MIN, ZOOM_MAX))
+}
+
+#[derive(serde::Serialize)]
+struct ZoomOut {
+    level: f64,
+    factor: f64,
+    /// at a clamp — the UI can say so instead of the user pressing into silence
+    clamped: bool,
+}
+
+/// the current zoom level of this app run (one webview; see R35.3 in docs)
+struct ZoomLevel(Mutex<f64>);
+
+/// R35.1 the ONE zoom entry point: "in" | "out" | "reset".
+/// The step, the clamps and the level->factor math live in Rust (above), so
+/// the palette command, the hotkey and any future settings row cannot drift
+/// apart — they all land here.
+#[tauri::command]
+fn zoom(webview: tauri::Webview, z: State<ZoomLevel>, action: String) -> Result<ZoomOut, String> {
+    let mut cur = z.0.lock().unwrap();
+    let want = zoom_next(*cur, &action).ok_or_else(|| format!("unknown zoom action: {action}"))?;
+    let f = zoom_factor(want);
+    webview.set_zoom(f).map_err(|e| e.to_string())?;
+    let clamped = want == *cur && action != "reset";
+    *cur = want;
+    set_zoom_cfg(want);
+    Ok(ZoomOut { level: want, factor: f, clamped })
+}
+
+/// the level this app run STARTS at — persisted (R35.4), clamped on read so a
+/// hand-edited config cannot park the UI outside the range the keys can leave.
+#[tauri::command]
+fn zoom_get() -> f64 {
+    read_zoom_cfg()
+}
+
+fn read_zoom_cfg() -> f64 {
+    cfg_value()["zoom"].as_f64().unwrap_or(0.0).clamp(ZOOM_MIN, ZOOM_MAX)
+}
+
+fn set_zoom_cfg(level: f64) {
+    let mut v = cfg_value();
+    v["zoom"] = serde_json::json!(level);
+    let _ = fs::write(cfg_path(), v.to_string());
+}
+
 fn main() {
     // VAULT_DIR (probes/tests) wins; else last persisted vault if still a dir (R1.6)
     let init = std::env::var("VAULT_DIR")
@@ -2071,8 +2175,23 @@ fn main() {
     let index = init.as_deref().map(Index::build).unwrap_or_default();
     tauri::Builder::default()
         .manage(Vault { index: Mutex::new(index), root: Mutex::new(init) })
+        .manage(ZoomLevel(Mutex::new(read_zoom_cfg())))
         .setup(|app| {
             spawn_watcher(app.handle().clone());
+            // R35.4 the persisted zoom is applied HERE, before the first paint the
+            // user sees, and not from JS: a webview that boots at 100% and is
+            // rescaled after the UI script runs shows one frame at the wrong size
+            // on every start. Stock persists it too (recon-zoom/clamps.log:
+            // ~/.config/obsidian/<vault-id>.json "zoom":1 after two presses in —
+            // stock's own file stores the LEVEL, which is also the third
+            // independent confirmation that one press is half a level).
+            let lvl = read_zoom_cfg();
+            if lvl != 0.0 {
+                use tauri::Manager;
+                if let Some(w) = app.webview_windows().values().next() {
+                    let _ = w.set_zoom(zoom_factor(lvl));
+                }
+            }
             Ok(())
         })
         // R31.1 THE DROP HANDLER — 4 lines of body, no behaviour, no I/O, no policy.
@@ -2133,6 +2252,7 @@ fn main() {
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
             win_rect, win_gesture, win_minimize, win_toggle_max, win_close,
+            zoom, zoom_get,
             settings::settings_model
         ])
         .run(tauri::generate_context!())
@@ -2142,6 +2262,53 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /* R35: the numbers the keys land on. These tests are not decoration — the
+       step and the two clamps are the whole behavioural content of zoom, and
+       all three are MEASURED values (recon-zoom/clamps.log) that a later
+       "tidy-up" could round off without any phase noticing until a user hits
+       the ceiling. */
+    #[test]
+    fn zoom_step_is_half_an_electron_level() {
+        // one press in = +9.54%, one press out = -8.71% (measured off stock)
+        assert!((zoom_factor(zoom_next(0.0, "in").unwrap()) - 1.0954).abs() < 0.0005);
+        assert!((zoom_factor(zoom_next(0.0, "out").unwrap()) - 0.9129).abs() < 0.0005);
+        // two presses in = exactly one Electron level = 1.2
+        assert!((zoom_factor(zoom_next(zoom_next(0.0, "in").unwrap(), "in").unwrap()) - 1.2).abs() < 1e-9);
+        assert_eq!(zoom_factor(0.0), 1.0);
+    }
+
+    #[test]
+    fn zoom_clamps_match_the_measured_stock_range() {
+        // ceiling: stock stopped after 6 presses in (level +3.0, 1.728x)
+        let mut l = 0.0;
+        for _ in 0..12 {
+            l = zoom_next(l, "in").unwrap();
+        }
+        assert_eq!(l, 3.0);
+        assert!((zoom_factor(l) - 1.728).abs() < 1e-9);
+        // floor: stock stopped after 5 presses out (level -2.5, 0.6339x)
+        let mut l = 0.0;
+        for _ in 0..12 {
+            l = zoom_next(l, "out").unwrap();
+        }
+        assert_eq!(l, -2.5);
+        assert!((zoom_factor(l) - 0.63387).abs() < 0.0001);
+    }
+
+    #[test]
+    fn zoom_reset_is_the_original_value_not_a_third_one() {
+        // N3's shape: reset must land on 1.0 from either side, and from a clamp
+        assert_eq!(zoom_next(3.0, "reset").unwrap(), 0.0);
+        assert_eq!(zoom_next(-2.5, "reset").unwrap(), 0.0);
+        assert_eq!(zoom_factor(zoom_next(1.5, "reset").unwrap()), 1.0);
+    }
+
+    #[test]
+    fn zoom_rejects_an_unknown_action() {
+        assert!(zoom_next(0.0, "bigger").is_none());
+        assert!(zoom_next(0.0, "").is_none());
+    }
 
     #[test]
     fn block_lines_maps_every_top_level_block_to_its_source_line() {

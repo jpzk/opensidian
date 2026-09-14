@@ -27,7 +27,7 @@ pub const NAV_TSV: &str = include_str!("../../docs/stock-settings-recon/nav.tsv"
 
 /// Keys that really exist in ~/.rustidian.json handling (main.rs cfg_value()).
 /// `config_keys_are_all_read_or_written_by_main` pins this list to the source.
-pub const CONFIG_KEYS: &[&str] = &["last", "list", "sidebar_w", "rside_tab", "hotkeys"];
+pub const CONFIG_KEYS: &[&str] = &["last", "list", "sidebar_w", "rside_tab", "hotkeys", "zoom"];
 
 /// (tab, label) -> config key. A row named here is the ONLY kind that renders
 /// enabled. Today: the Hotkeys tab, whose filter, scope chips and command rows
