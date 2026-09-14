@@ -1059,6 +1059,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   if (md && isLp(ft.mode) && fg().lpActive) md += ":" + fg().lpActive.l0;
   if (md) md += "]";
   if (lpMs >= 0) md += " [lp:" + lpMs + "]";     // perf: last lpRender ms
+  if (md) md += mswTok();                        // R35 perf: the mode switch's own cost (see mswEnd)
   /* R34.15 title probe -> [te:<text in the box>/<g.lp.children.length>]. Two
      facts in one token, and the second one is the R32.4 acceptance condition
      made observable: while the title is being edited the scroller's child list
@@ -1480,6 +1481,40 @@ function ssRestore(g, line) {   // scroll the CURRENT view so `line` is at the t
   ssScrollTo(g.lp, rows[i], Math.min(1, Math.max(0, line - i)));
 }
 
+/* ---------- R35 PERF: the mode switch against the 100 ms ceiling ----------
+   Three numbers, because they fail for different reasons and one of them is
+   the only one this feature OWNS:
+     [msw:<last>/<max>/<avg>/<n>] command -> FIRST PAINT (rAF -> task, the same
+       pattern as Ed.cmEnd/[cm:] and [sfp:], so the numbers are comparable);
+     [mswk:<last>/<max>]          the synchronous work before the frame —
+       flushSave + the full re-render of the destination view + the restore;
+     [mswss:<last>/<max>]         ssAnchor + ssRestore ALONE, i.e. the cost the
+       scroll-sync feature ADDED on top of a mode switch that already had to
+       re-render. A regression in the anchoring (say an O(n^2) walk over the
+       block map) moves this number and nothing else, and it cannot hide behind
+       the re-render or behind a stalled compositor frame.
+   t0 is taken at the top of setMode — the command, before any DOM work — not
+   at the keystroke: Ctrl+E, the view-header icon and the tab-menu radio all
+   funnel through here, so one probe covers every way in. */
+let mswMs = -1, mswMax = 0, mswN = 0, mswSum = 0, mswW = -1, mswWMax = 0, mswSs = -1, mswSsMax = 0;
+const mswR = x => Math.round(x * 100) / 100;
+function mswEnd(t0, ss) {
+  mswSs = mswR(ss); if (mswSs > mswSsMax) mswSsMax = mswSs;
+  mswW = mswR(performance.now() - t0); if (mswW > mswWMax) mswWMax = mswW;
+  requestAnimationFrame(() => setTimeout(() => {
+    const ms = mswR(performance.now() - t0);
+    mswMs = ms; mswN++; mswSum += ms;
+    if (ms > mswMax) mswMax = ms;
+    if (typeof otel !== "undefined" && otel.span) otel.span("mode_switch", { ss_ms: mswSs }, ms);
+    updateTitle();
+  }, 0));
+}
+function mswTok() {
+  return (mswMs >= 0 ? " [msw:" + mswMs + "/" + mswMax + "/" + mswR(mswSum / mswN) + "/" + mswN + "]" : "") +
+         (mswW >= 0 ? " [mswk:" + mswW + "/" + mswWMax + "]" : "") +
+         (mswSs >= 0 ? " [mswss:" + mswSs + "/" + mswSsMax + "]" : "");
+}
+
 function updateModeBtn(g) {
   const tb = g.active >= 0 ? g.tabs[g.active] : null;
   const m = tb ? tb.mode : "livepreview";
@@ -1513,8 +1548,11 @@ async function cmdToggleSource(g) {  // stock "Toggle Live Preview/Source mode":
 }
 async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu radio / palette / the Ctrl+E edit<->reading toggle
   const tab = g.tabs[g.active];
+  const mswT0 = performance.now();               // R35 perf: the command, before any DOM work
   const keep = g.lpActive ? caretLC(g) : null;   // R12.4: caret survives lp<->src
+  const mswA0 = performance.now();
   const anchor = ssAnchor(g);                    // R35: read the top SOURCE LINE from the OLD view, before anything flips
+  let mswSsMs = performance.now() - mswA0;
   await flushSave(g);
   tab.mode = mode;
   hideAc();
@@ -1529,7 +1567,10 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
   // it, through its own geometry. AFTER the caret work above on purpose: source
   // mode's Ed.place() scrolls the caret into view, and the scroll the USER chose
   // outranks the caret they cannot see (the brief's "caret off-screen" case).
+  const mswR0 = performance.now();
   ssRestore(g, anchor);
+  mswSsMs += performance.now() - mswR0;
+  mswEnd(mswT0, mswSsMs);
   updateTitle();
 }
 
