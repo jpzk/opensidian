@@ -1,3 +1,15 @@
+/* ============================================================================
+   THE COLOUR PALETTE. Everything below this block refers to colour only through
+   var(--...): scripts/lint-colors.sh fails on a hex / rgb() / hsl() / named
+   colour anywhere else in ui/, and scripts/gate.sh runs the lint, so a literal
+   reintroduced by a later feature fails the gate instead of a code review.
+   The two marker comments below are what the lint keys on — do not duplicate
+   them and do not move them apart to widen the allowance.
+   ========================================================================== */
+/* THEME TOKENS BEGIN */
+:root {
+}
+/* THEME TOKENS END */
 * { box-sizing: border-box; margin: 0 }
 body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
        background: #1e1e2e; color: #cdd6f4 }
