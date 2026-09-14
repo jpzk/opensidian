@@ -2871,7 +2871,17 @@ function closeAttach() { $("anew").hidden = true; updateTitle(); }
        (commit 2a0f7ba), so it follows the same attribute with no extra wiring.
    themeMode is the in-memory copy; persistence and the system default are a
    separate concern and land on top of applyTheme(), not inside it. */
-let themeMode = "dark";                    // "dark" | "light"
+const MQ_DARK = matchMedia("(prefers-color-scheme: dark)");
+/* THE SYSTEM SIGNAL. Nine measured runs (notes/theme/detect-recon.md): the tauri
+   2.5 Window::theme() answers Light on this platform no matter what the desktop
+   says (a stub), and its JS half throws; prefers-color-scheme is the only reading
+   that actually MOVED when the desktop moved, in both directions. Caveat recorded
+   there and true here: WebKitGTK never reports no-preference, so "light" also
+   means "nothing is configured" — which is why the STORED choice, not the media
+   query, is what a user's decision is kept in. */
+const systemTheme = () => (MQ_DARK.matches ? "dark" : "light");
+let themeMode = "dark";                    // "dark" | "light" — replaced at boot
+let themeStored = false;                   // a user chose: the system stops deciding
 function applyTheme(t) {
   themeMode = t === "light" ? "light" : "dark";
   document.documentElement.setAttribute("data-theme", themeMode);
@@ -2880,7 +2890,36 @@ function applyTheme(t) {
                                            // title census to refresh — updateTitle
                                            // reads state.root)
 }
-function cmdToggleTheme() { applyTheme(themeMode === "dark" ? "light" : "dark"); }
+/* a USER choice: apply it, and remember it. Persisted through the EXISTING
+   settings store (~/.rustidian.json, key "theme" — main.rs set_theme), the same
+   file sidebar_w / rside_tab / hotkeys already live in. Fire-and-forget: a failed
+   write must not undo the theme the user is looking at. */
+function chooseTheme(t) {
+  applyTheme(t);
+  themeStored = true;
+  inv("set_theme", { theme: themeMode }).catch(() => {});
+}
+function cmdToggleTheme() { chooseTheme(themeMode === "dark" ? "light" : "dark"); }
+/* LIVE system change, documented behaviour: the desktop flipping light<->dark
+   moves the app ONLY while the user has made no choice of their own. Once they
+   have chosen, their choice outranks the desktop until they change it — the
+   stored value is never silently overwritten by a system event. */
+if (MQ_DARK.addEventListener) {
+  MQ_DARK.addEventListener("change", () => { if (!themeStored) applyTheme(systemTheme()); });
+} else if (MQ_DARK.addListener) {          // older WebKit spelling
+  MQ_DARK.addListener(() => { if (!themeStored) applyTheme(systemTheme()); });
+}
+/* BOOT ORDER, and why it is this way: the system signal is SYNCHRONOUS, the
+   stored choice is an IPC round trip. So paint the system default first (the root
+   attribute exists before webkit's first frame — no flash of the wrong theme on
+   the common path where the two agree), then let the stored choice, if there is
+   one, replace it as the first await of the boot sequence, before any vault
+   content is on screen. */
+async function bootTheme() {
+  applyTheme(systemTheme());
+  const st = await inv("get_theme").catch(() => null);
+  if (st === "dark" || st === "light") { themeStored = true; applyTheme(st); }
+}
 let closedTabs = [];                       // R14 undo close tab (names, newest last)
 const CMDS = [
   ["app:open-settings",        "Open settings",                       ["ctrl+,"],               () => cmdSettings()],
@@ -3990,10 +4029,9 @@ window.__TAURI__.event.listen("drop-files", e => attachDrop(e.payload || []));
 $("vswitch").onclick = showPicker;
 
 (async () => {
-  applyTheme(themeMode);         // the root attribute exists from the first paint;
-                                 // the STORED choice / system default replaces this
-                                 // default in the same place (next item), so there
-                                 // is only ever one call site that decides it.
+  await bootTheme();             // the root attribute is set synchronously inside
+                                 // (system default), then the STORED choice replaces
+                                 // it — one call site decides the boot theme.
   SAVE_MS = await inv("save_debounce_ms").catch(() => 250);   // F2 smoke hook
   const sw = await inv("get_sidebar_w").catch(() => null);   // ux-4
   if (sw >= 150) $("side").style.width = Math.min(600, sw) + "px";
