@@ -57,6 +57,49 @@
   --background-primary-alt: #232323;
   --interactive-accent: hsl(258, 88%, 66%);
 }
+/* ---------------------------------------------------------------------------
+   LIGHT. Every value below was SAMPLED from a pixel of a running stock instance
+   in its light theme (moonstone) — shot file + x,y per value in
+   notes/theme/provenance.txt, sampler and shots in notes/theme/light-sample/.
+   Nothing here was invented, eyeballed or read out of a bundle.
+   A token absent from this block KEEPS its value above on purpose: alpha
+   scrims/shadows composite correctly over a light surface, and an unchanged
+   value is not a new colour, so it needs no provenance.
+   --------------------------------------------------------------------------- */
+:root[data-theme="light"] {
+  /* ---- chrome surfaces ---- */
+  --bg-base: #ffffff;
+  --bg-sidebar: #f6f6f6;
+  --bg-ribbon: #f6f6f6;
+  --bg-surface: #e5e5e5;
+  --bg-elevated: #fcfcfc;
+  --bg-banner-error: #fdeaec;
+  /* ---- lines ---- */
+  --border: #e4e4e4;
+  --border-strong: #ababab;
+  --rule-faint: #eeeeee;
+  /* ---- chrome ink ---- */
+  --text-chrome: #222222;
+  --text-chrome-alt: #222222;
+  --text-chrome-muted: #5c5c5c;
+  --text-chrome-faint: #ababab;
+  --text-chrome-dim: #b6b6b6;
+  --text-quiet: #5c5c5c;
+  --text-banner-error: #e93147;
+  --link-unresolved: #ad8cf8;
+  /* ---- accents ---- */
+  --accent-blue: #086ddd;
+  --accent-mauve: #8a5cf5;
+  --accent-red: #e93147;
+  --accent-yellow: #ec7500;
+  --accent-green: #08b94e;
+  --highlight-yellow: #ffec99;
+  /* ---- R15 content tokens: the note column ---- */
+  --text-normal: #222222;
+  --text-muted: #5c5c5c;
+  --text-faint: #ababab;
+  --background-primary-alt: #fafafa;
+}
 /* THEME TOKENS END */
 * { box-sizing: border-box; margin: 0 }
 body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
