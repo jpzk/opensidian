@@ -3459,11 +3459,38 @@ async function startGraph(g, cfg) {
   // graph-webgl: with glr the SAME per-node style decisions feed instance arrays
   // (x y r ring rgba) and an edge instance array (x0 y0 x1 y1 rgba) for graph-gl.js; cv then
   // carries only the labels. Arrays grow on demand and are reused across frames.
-  const hex = h => [parseInt(h.slice(1, 3), 16) / 255, parseInt(h.slice(3, 5), 16) / 255, parseInt(h.slice(5, 7), 16) / 255];
-  const RGB = { "#f9e2af": hex("#f9e2af"), "#a6e3a1": hex("#a6e3a1"), "#89b4fa": hex("#89b4fa"), "#45475a": hex("#45475a") };
+  // #rrggbb / #rgb -> [r,g,b] in 0..1 for the GL instance arrays. The 2D path wants
+  // the string itself, so both come from the ONE value read out of the token block.
+  const hex = h => {
+    const s = h.trim(), x = s.length < 7 ? "#" + s[1] + s[1] + s[2] + s[2] + s[3] + s[3] : s;
+    return [parseInt(x.slice(1, 3), 16) / 255, parseInt(x.slice(3, 5), 16) / 255, parseInt(x.slice(5, 7), 16) / 255];
+  };
+  // GRAPH PALETTE. The graph is a <canvas>: it cannot inherit a colour the way every
+  // other surface does, it has to ASK for one. It used to hold four hex literals — a
+  // second palette that no theme could reach, so a light theme would have left the
+  // graph painting dark-theme blue on white. These read the SAME tokens the stylesheet
+  // defines, off documentElement, so there is exactly one definition of each colour.
+  //
+  // CACHED PER THEME, not per node: getComputedStyle forces a style resolution and
+  // draw() runs at up to 60 Hz over every node, so the lookup happens once per draw()
+  // and only re-reads when the theme attribute actually changes (R13 graph_draw budget).
+  // RGB is keyed by the colour STRING, so it is rebuilt with the palette — a stale key
+  // would hand the GL path `undefined` and paint nothing.
+  const PAL_VAR = { hi: "--accent-yellow", ctr: "--accent-green", node: "--accent-blue", edge: "--border" };
+  let pal = null, palKey = null, RGB = {};
+  const palette = () => {
+    const key = document.documentElement.dataset.theme || "";
+    if (pal && palKey === key) return pal;
+    const cs = getComputedStyle(document.documentElement), p = {};
+    RGB = {};
+    for (const k in PAL_VAR) { const v = cs.getPropertyValue(PAL_VAR[k]).trim(); p[k] = v; RGB[v] = hex(v); }
+    palKey = key; pal = p;
+    return p;
+  };
   let nArr = new Float32Array(0), eArr = new Float32Array(0);
   function draw() {
     const dT0 = perf.now();
+    const P = palette();               // one token read per frame, none per node
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, cv.width, cv.height);
     ctx.setTransform(view.scale, 0, 0, view.scale, view.tx, view.ty);
@@ -3493,8 +3520,8 @@ async function startGraph(g, cfg) {
       if (any) ctx.stroke();
     };
     if (glr && eArr.length < gr.edges.length * 8) eArr = new Float32Array(gr.edges.length * 8 + 800);
-    if (hov >= 0) { edgePass(false, "#45475a", 0.12); edgePass(true, "#f9e2af", 1); }
-    else edgePass(true, "#45475a", 1);
+    if (hov >= 0) { edgePass(false, P.edge, 0.12); edgePass(true, P.hi, 1); }
+    else edgePass(true, P.edge, 1);
     ctx.textAlign = "center"; ctx.font = "12px sans-serif";
     const cn = cfg.center();          // M8: center node larger + accent (R7.1)
     const groups = new Map();         // key -> { col, a, res, dr, idx: [] }
@@ -3504,7 +3531,7 @@ async function startGraph(g, cfg) {
       const p = N[i], isC = cn !== null && p.n === cn;
       if (p.x < wx0 - pad || p.x > wx1 + pad || p.y < wy0 - pad || p.y > wy1 + pad) continue;
       const a = litN(i) ? (p.resolved ? 1 : 0.55) : 0.12;
-      const col = i === hov ? "#f9e2af" : isC ? "#a6e3a1" : "#89b4fa";
+      const col = i === hov ? P.hi : isC ? P.ctr : P.node;
       const key = col + a + (p.resolved ? "r" : "u") + (isC ? "c" : "");
       let gp = groups.get(key);
       if (!gp) groups.set(key, gp = { col, a, res: p.resolved, dr: isC ? 4 : 0, idx: [] });
