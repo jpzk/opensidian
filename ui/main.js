@@ -1130,7 +1130,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   // Deliberately not derived from the banner (which times out): "no drop yet"
   // and "a drop whose banner faded" must not look the same to a probe.
   if (dropTok) md += " [drop:" + dropTok.replace(/[[\]|]/g, "") + "]";
-  md += " [zoom:" + zoomTok + "]";   // R35: always present — a probe must be able to read "still at 100%"
+  md += " [zoom:" + zoomTok + "]";   // R36: always present — a probe must be able to read "still at 100%"
   // R15.2 font probe: bundled @font-face entries that actually LOADED (lazy: a face loads when text first uses it) -> [fonts:SourceCodePro/400/normal|...]
   { const fl = document.fonts ? [...document.fonts].filter(f => f.status === "loaded").map(f => f.family.replace(/[" ]/g, "") + "/" + f.weight + "/" + f.style) : [];
     if (fl.length) md += " [fonts:" + fl.join("|") + "]"; }
@@ -2851,9 +2851,9 @@ function cmdAttach() {
   updateTitle();
 }
 function closeAttach() { $("anew").hidden = true; updateTitle(); }
-/* ---------- R35 interface zoom (Ctrl+= / Ctrl+- / Ctrl+0) ---------------
+/* ---------- R36 interface zoom (Ctrl+= / Ctrl+- / Ctrl+0) ---------------
    There is deliberately NO CSS in this function. The scale is applied by
-   webkit_web_view_set_zoom_level through the `zoom` command (main.rs R35.1),
+   webkit_web_view_set_zoom_level through the `zoom` command (main.rs R36.1),
    which changes what a CSS pixel IS — so the sidebar's 200px, the ribbon's
    44px, the tab strip's height, every icon and the text all scale by the one
    factor, together. Scaling `font-size`/rem here instead would move the text
@@ -2877,8 +2877,8 @@ async function cmdZoom(action) {
   }
   updateTitle();
 }
-/* R35.4 the census must not LIE after a restore. The persisted level is applied
-   in Rust, inside setup(), BEFORE the first paint (main.rs R35.4) — so the
+/* R36.4 the census must not LIE after a restore. The persisted level is applied
+   in Rust, inside setup(), BEFORE the first paint (main.rs R36.4) — so the
    webview can come up at 1.7280 while this file's optimistic default still
    reads "1.0000@0", and a probe would call a restored zoom "still at 100%".
    Ask the backend once at startup instead of assuming. `zoom_get` returns the
@@ -2934,7 +2934,7 @@ const CMDS = [
   ["app:toggle-left-sidebar",  "Toggle left sidebar",                 [],                       cmdToggleSide],
   ["app:toggle-right-sidebar", "Toggle right sidebar",                [],                       () => cmdToggleRight()],
   ["app:switch-vault",         "Switch vault",                        [],                       showPicker],
-  // R35: stock lists exactly these three, with NO hotkey text beside them
+  // R36: stock lists exactly these three, with NO hotkey text beside them
   // (recon-zoom shot 01) — built-in bindings it does not surface as rebindable
   // rows. Ours ARE in the one registry, so the palette, the keymap and
   // Settings ▸ Hotkeys all read the same line. The chord is the PLAIN '=' key:

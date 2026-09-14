@@ -2053,7 +2053,7 @@ fn win_close(win: tauri::Window) -> Result<(), String> {
     win.close().map_err(|e| e.to_string())
 }
 
-/* ---------- R35 INTERFACE ZOOM (operator, 2026-09-14: "interface wide zoom,
+/* ---------- R36 INTERFACE ZOOM (operator, 2026-09-14: "interface wide zoom,
    not only text") ----------------------------------------------------------
    Ctrl+= / Ctrl+- / Ctrl+0, and the three palette commands behind them.
    The scale is applied by exactly ONE call — tauri `Webview::set_zoom` ->
@@ -2121,10 +2121,10 @@ struct ZoomOut {
     clamped: bool,
 }
 
-/// the current zoom level of this app run (one webview; see R35.3 in docs)
+/// the current zoom level of this app run (one webview; see R36.3 in docs)
 struct ZoomLevel(Mutex<f64>);
 
-/// R35.1 the ONE zoom entry point: "in" | "out" | "reset".
+/// R36.1 the ONE zoom entry point: "in" | "out" | "reset".
 /// The step, the clamps and the level->factor math live in Rust (above), so
 /// the palette command, the hotkey and any future settings row cannot drift
 /// apart — they all land here.
@@ -2140,7 +2140,7 @@ fn zoom(webview: tauri::Webview, z: State<ZoomLevel>, action: String) -> Result<
     Ok(ZoomOut { level: want, factor: f, clamped })
 }
 
-/// the level this app run STARTS at — persisted (R35.4), clamped on read so a
+/// the level this app run STARTS at — persisted (R36.4), clamped on read so a
 /// hand-edited config cannot park the UI outside the range the keys can leave.
 /// Returns the SAME shape as `zoom` so the frontend never re-derives
 /// level->factor: the base 1.2 and the 0.5 step exist in exactly one file.
@@ -2184,7 +2184,7 @@ fn main() {
         .manage(ZoomLevel(Mutex::new(read_zoom_cfg())))
         .setup(|app| {
             spawn_watcher(app.handle().clone());
-            // R35.4 the persisted zoom is applied HERE, before the first paint the
+            // R36.4 the persisted zoom is applied HERE, before the first paint the
             // user sees, and not from JS: a webview that boots at 100% and is
             // rescaled after the UI script runs shows one frame at the wrong size
             // on every start. Stock persists it too (recon-zoom/clamps.log:
@@ -2269,7 +2269,7 @@ fn main() {
 mod tests {
     use super::*;
 
-    /* R35: the numbers the keys land on. These tests are not decoration — the
+    /* R36: the numbers the keys land on. These tests are not decoration — the
        step and the two clamps are the whole behavioural content of zoom, and
        all three are MEASURED values (recon-zoom/clamps.log) that a later
        "tidy-up" could round off without any phase noticing until a user hits
