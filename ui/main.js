@@ -1059,6 +1059,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   if (md && isLp(ft.mode) && fg().lpActive) md += ":" + fg().lpActive.l0;
   if (md) md += "]";
   if (lpMs >= 0) md += " [lp:" + lpMs + "]";     // perf: last lpRender ms
+  if (md) md += mswTok();                        // R35 perf: the mode switch's own cost (see mswEnd)
   /* R34.15 title probe -> [te:<text in the box>/<g.lp.children.length>]. Two
      facts in one token, and the second one is the R32.4 acceptance condition
      made observable: while the title is being edited the scroller's child list
@@ -1414,6 +1415,106 @@ const MODE_ABBR = { livepreview: "lp", source: "src", reading: "read" };
 const isLp = m => m === "livepreview" || m === "source";  // R12: both render in g.lp
 function caretLC(g) { return Ed.caretLC(g); }   // [line, col] of the caret in the lp view
 
+/* ---------- R35 SCROLL SYNC: the position that survives Ctrl+E is CONTENT ----------
+   /workspace/notes/brief-scroll-sync.txt, docs/requirements.md §34 (R35).
+   The two views are TWO INDEPENDENT SCROLLERS (g.lp and g.preview) over the
+   SAME note at DIFFERENT pixel heights: reading collapses markdown syntax and
+   re-flows, measured at 0.868x the edit document on the 320-line fixture, and
+   the compaction is NOT uniform along the note (1.00 across plain prose, 0.90
+   across headings and lists), so `preview.scrollTop = lp.scrollTop` has no
+   correct scale factor — it is 9-20 source lines wrong mid-note (negative
+   control N2, docs/scroll-sync-controls/).
+   What is preserved instead is the SOURCE LINE at the top of the viewport,
+   fractional so a position inside a long block survives too:
+     edit side    row i of g.lp IS source line i (Ed.render, one row per line)
+     reading side block k of g.preview starts at source line pvLines[k]
+                  (block_lines, from the renderer's own parser)
+   Both directions map line -> pixels through the destination's OWN geometry,
+   so neither view's height is ever assumed from the other's. */
+function ssTopOf(cont, kids) {   // -> [index, fraction] of the first child not scrolled off the top
+  const ct = cont.getBoundingClientRect().top;
+  for (let i = 0; i < kids.length; i++) {
+    const r = kids[i].getBoundingClientRect();
+    if (r.bottom > ct + 1) {
+      const f = r.height > 0 ? Math.min(1, Math.max(0, (ct - r.top) / r.height)) : 0;
+      return [i, f];
+    }
+  }
+  return [Math.max(0, kids.length - 1), 0];
+}
+function ssScrollTo(cont, el, frac) {   // put `frac` into `el` at the top of `cont`, clamped
+  const d = el.getBoundingClientRect().top - cont.getBoundingClientRect().top
+          + frac * el.getBoundingClientRect().height;
+  const max = Math.max(0, cont.scrollHeight - cont.clientHeight);
+  cont.scrollTop = Math.min(max, Math.max(0, cont.scrollTop + d));
+}
+function ssAnchor(g) {   // the (fractional, 0-based) SOURCE LINE at the top of the CURRENT view, or null
+  const t = g.active >= 0 ? g.tabs[g.active] : null;
+  if (!t || t.kind || g.graphOn) return null;
+  if (t.mode === "reading") {
+    const ch = g.preview.children, bl = g.pvLines;
+    if (!ch.length || !bl || bl.length !== ch.length) return null;   // map out of step: no anchor beats a wrong one
+    const [i, f] = ssTopOf(g.preview, ch);
+    const a = bl[i] - 1, b = i + 1 < bl.length ? bl[i + 1] - 1 : a + 1;
+    return a + f * Math.max(1, b - a);
+  }
+  const rows = g.lp.children;
+  if (!rows.length) return null;
+  const [i, f] = ssTopOf(g.lp, rows);
+  return i + f;
+}
+function ssRestore(g, line) {   // scroll the CURRENT view so `line` is at the top
+  const t = g.active >= 0 ? g.tabs[g.active] : null;
+  if (!t || t.kind || line == null || g.graphOn) return;
+  if (t.mode === "reading") {
+    const ch = g.preview.children, bl = g.pvLines;
+    if (!ch.length || !bl || bl.length !== ch.length) return;
+    let i = 0;
+    while (i + 1 < bl.length && bl[i + 1] - 1 <= line) i++;
+    const a = bl[i] - 1, b = i + 1 < bl.length ? bl[i + 1] - 1 : a + 1;
+    ssScrollTo(g.preview, ch[i], Math.min(1, Math.max(0, (line - a) / Math.max(1, b - a))));
+    return;
+  }
+  const rows = g.lp.children;
+  if (!rows.length) return;
+  const i = Math.min(rows.length - 1, Math.max(0, Math.floor(line)));
+  ssScrollTo(g.lp, rows[i], Math.min(1, Math.max(0, line - i)));
+}
+
+/* ---------- R35 PERF: the mode switch against the 100 ms ceiling ----------
+   Three numbers, because they fail for different reasons and one of them is
+   the only one this feature OWNS:
+     [msw:<last>/<max>/<avg>/<n>] command -> FIRST PAINT (rAF -> task, the same
+       pattern as Ed.cmEnd/[cm:] and [sfp:], so the numbers are comparable);
+     [mswk:<last>/<max>]          the synchronous work before the frame —
+       flushSave + the full re-render of the destination view + the restore;
+     [mswss:<last>/<max>]         ssAnchor + ssRestore ALONE, i.e. the cost the
+       scroll-sync feature ADDED on top of a mode switch that already had to
+       re-render. A regression in the anchoring (say an O(n^2) walk over the
+       block map) moves this number and nothing else, and it cannot hide behind
+       the re-render or behind a stalled compositor frame.
+   t0 is taken at the top of setMode — the command, before any DOM work — not
+   at the keystroke: Ctrl+E, the view-header icon and the tab-menu radio all
+   funnel through here, so one probe covers every way in. */
+let mswMs = -1, mswMax = 0, mswN = 0, mswSum = 0, mswW = -1, mswWMax = 0, mswSs = -1, mswSsMax = 0;
+const mswR = x => Math.round(x * 100) / 100;
+function mswEnd(t0, ss) {
+  mswSs = mswR(ss); if (mswSs > mswSsMax) mswSsMax = mswSs;
+  mswW = mswR(performance.now() - t0); if (mswW > mswWMax) mswWMax = mswW;
+  requestAnimationFrame(() => setTimeout(() => {
+    const ms = mswR(performance.now() - t0);
+    mswMs = ms; mswN++; mswSum += ms;
+    if (ms > mswMax) mswMax = ms;
+    if (typeof otel !== "undefined" && otel.span) otel.span("mode_switch", { ss_ms: mswSs }, ms);
+    updateTitle();
+  }, 0));
+}
+function mswTok() {
+  return (mswMs >= 0 ? " [msw:" + mswMs + "/" + mswMax + "/" + mswR(mswSum / mswN) + "/" + mswN + "]" : "") +
+         (mswW >= 0 ? " [mswk:" + mswW + "/" + mswWMax + "]" : "") +
+         (mswSs >= 0 ? " [mswss:" + mswSs + "/" + mswSsMax + "]" : "");
+}
+
 function updateModeBtn(g) {
   const tb = g.active >= 0 ? g.tabs[g.active] : null;
   const m = tb ? tb.mode : "livepreview";
@@ -1447,7 +1548,11 @@ async function cmdToggleSource(g) {  // stock "Toggle Live Preview/Source mode":
 }
 async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu radio / palette / the Ctrl+E edit<->reading toggle
   const tab = g.tabs[g.active];
+  const mswT0 = performance.now();               // R35 perf: the command, before any DOM work
   const keep = g.lpActive ? caretLC(g) : null;   // R12.4: caret survives lp<->src
+  const mswA0 = performance.now();
+  const anchor = ssAnchor(g);                    // R35: read the top SOURCE LINE from the OLD view, before anything flips
+  let mswSsMs = performance.now() - mswA0;
   await flushSave(g);
   tab.mode = mode;
   hideAc();
@@ -1458,6 +1563,14 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
     const L = Ed.lines(g);
     await lpRender(g, keep ? keep[0] : L.length - 1, keep ? keep[1] : L[L.length - 1].length, true);
   }
+  // R35: the destination is rendered — place the SAME source line at the top of
+  // it, through its own geometry. AFTER the caret work above on purpose: source
+  // mode's Ed.place() scrolls the caret into view, and the scroll the USER chose
+  // outranks the caret they cannot see (the brief's "caret off-screen" case).
+  const mswR0 = performance.now();
+  ssRestore(g, anchor);
+  mswSsMs += performance.now() - mswR0;
+  mswEnd(mswT0, mswSsMs);
   updateTitle();
 }
 
@@ -2267,7 +2380,14 @@ function extClick(e, a) {   // `a` unused: kept for the Ed.extClick(e, a) signat
   e.preventDefault(); e.stopPropagation();
 }
 async function preview(g) {
-  g.preview.innerHTML = await inv("render", { content: g.editor.value });
+  const src = g.editor.value;
+  g.preview.innerHTML = await inv("render", { content: src });
+  // R35: the block -> source line map for THIS html, from the renderer's own
+  // parser. Stored next to the html it describes and re-read on every render:
+  // a stale map would scroll the reading view to the wrong block, which is
+  // exactly the silent wrongness this feature exists to avoid (ssAnchor /
+  // ssRestore refuse to act when its length does not match #preview's).
+  g.pvLines = await inv("block_lines", { content: src });
   for (const a of g.preview.querySelectorAll("a.tag"))
     a.onclick = e => { e.preventDefault(); tagSearch(a.dataset.tag); };
   for (const a of g.preview.querySelectorAll("a.wiki"))
