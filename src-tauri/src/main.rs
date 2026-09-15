@@ -1682,6 +1682,31 @@ fn set_rside_tab(tab: String) {
     let _ = fs::write(cfg_path(), v.to_string());
 }
 
+/* THEME: the chosen mode, persisted as "theme" in ~/.rustidian.json through the
+   SAME store as every other ui preference (cfg_value/cfg_path — no new store, no
+   new crate). ABSENT is a third state and it is the important one: absent means
+   "the user never chose", and the frontend then follows the system signal
+   (prefers-color-scheme; notes/theme/detect-recon.md). So absent != "dark" — a
+   Rust-side default here would be a hardcoded theme wearing a system-detection
+   costume, which is exactly what item 8 rejected the tauri theme API for. */
+#[tauri::command]
+fn get_theme() -> Option<String> {
+    match cfg_value()["theme"].as_str() {
+        Some(t @ ("dark" | "light")) => Some(t.to_string()),
+        _ => None, // absent, or a hand-edited junk value = no stored choice
+    }
+}
+
+#[tauri::command]
+fn set_theme(theme: String) {
+    if theme != "dark" && theme != "light" {
+        return; // never let a typo'd mode into the file: it would read back as "no choice"
+    }
+    let mut v = cfg_value();
+    v["theme"] = serde_json::json!(theme);
+    let _ = fs::write(cfg_path(), v.to_string());
+}
+
 /* R14: custom hotkeys, persisted as "hotkeys" in ~/.rustidian.json in the stock
    Obsidian shape {"<cmd id>":[{"modifiers":["Mod","Shift"],"key":"G"}]}:
    [] = default removed, absent id = stock default. The frontend registry
@@ -2326,7 +2351,7 @@ fn main() {
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, recent_vaults, rename_note, move_note, update_links, link_consent, set_link_consent, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref,
-            outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab,
+            outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
             win_rect, win_gesture, win_minimize, win_toggle_max, win_close,
             zoom, zoom_get,

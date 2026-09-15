@@ -1157,9 +1157,15 @@ function updateTitle() {          // pane/focus census in the window title (head
   // test, which is useless for a data-loss assertion.
   const anote = state && fg() ? curOf(fg()) : null;
   const noteTok = anote ? " [note:" + tokq(anote) + "]" : "";
+  // THEME census: the mode read back OFF THE DOM, not off themeMode — a probe
+  // must not be able to pass because a variable says "light" while the root
+  // attribute (the thing that actually paints) was never written. Pixels remain
+  // the assertion of record in the phase; this token is how it knows WHICH
+  // theme the pixels it just sampled are supposed to be.
+  const themeTok = " [theme:" + (document.documentElement.getAttribute("data-theme") || "unset") + "]";
   let t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
-            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + lg + md + gg + modal +
+            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + lg + md + gg + modal +
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) +
             (rightOpen ? ":" + rTab : "") + "]" +
             (rightOpen && rpInfo ? " [rp:" + rpInfo + "]" : "") +
@@ -2857,6 +2863,70 @@ function cmdAttach() {
   updateTitle();
 }
 function closeAttach() { $("anew").hidden = true; updateTitle(); }
+/* ---------- THEME: ONE attribute, on ONE root ---------------------------
+   Every colour in the app is a token defined in the block at the top of
+   ui/style.css; `light` is that same token block re-stated under
+   :root[data-theme="light"]. So switching the theme is exactly one DOM write:
+   the attribute on document.documentElement. That is deliberate and it is the
+   whole design —
+     - panes, modals, the graph canvas and the settings modal all inherit their
+       colours from the same :root custom properties, so none of them needs to
+       know a theme exists. A per-pane or per-container attribute would be a
+       second source of truth and would leave whichever container was forgotten
+       painting the old theme (negative control N2 drives exactly that).
+     - the graph reads its colours out of getComputedStyle(documentElement)
+       (commit 2a0f7ba), so it follows the same attribute with no extra wiring.
+   themeMode is the in-memory copy; persistence and the system default are a
+   separate concern and land on top of applyTheme(), not inside it. */
+const MQ_DARK = matchMedia("(prefers-color-scheme: dark)");
+/* THE SYSTEM SIGNAL. Nine measured runs (notes/theme/detect-recon.md): the tauri
+   2.5 Window::theme() answers Light on this platform no matter what the desktop
+   says (a stub), and its JS half throws; prefers-color-scheme is the only reading
+   that actually MOVED when the desktop moved, in both directions. Caveat recorded
+   there and true here: WebKitGTK never reports no-preference, so "light" also
+   means "nothing is configured" — which is why the STORED choice, not the media
+   query, is what a user's decision is kept in. */
+const systemTheme = () => (MQ_DARK.matches ? "dark" : "light");
+let themeMode = "dark";                    // "dark" | "light" — replaced at boot
+let themeStored = false;                   // a user chose: the system stops deciding
+function applyTheme(t) {
+  themeMode = t === "light" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", themeMode);
+  if (state) updateTitle();                // census [theme:<mode>] follows the DOM
+                                           // (before a vault is open there is no
+                                           // title census to refresh — updateTitle
+                                           // reads state.root)
+}
+/* a USER choice: apply it, and remember it. Persisted through the EXISTING
+   settings store (~/.rustidian.json, key "theme" — main.rs set_theme), the same
+   file sidebar_w / rside_tab / hotkeys already live in. Fire-and-forget: a failed
+   write must not undo the theme the user is looking at. */
+function chooseTheme(t) {
+  applyTheme(t);
+  themeStored = true;
+  inv("set_theme", { theme: themeMode }).catch(() => {});
+}
+function cmdToggleTheme() { chooseTheme(themeMode === "dark" ? "light" : "dark"); }
+/* LIVE system change, documented behaviour: the desktop flipping light<->dark
+   moves the app ONLY while the user has made no choice of their own. Once they
+   have chosen, their choice outranks the desktop until they change it — the
+   stored value is never silently overwritten by a system event. */
+if (MQ_DARK.addEventListener) {
+  MQ_DARK.addEventListener("change", () => { if (!themeStored) applyTheme(systemTheme()); });
+} else if (MQ_DARK.addListener) {          // older WebKit spelling
+  MQ_DARK.addListener(() => { if (!themeStored) applyTheme(systemTheme()); });
+}
+/* BOOT ORDER, and why it is this way: the system signal is SYNCHRONOUS, the
+   stored choice is an IPC round trip. So paint the system default first (the root
+   attribute exists before webkit's first frame — no flash of the wrong theme on
+   the common path where the two agree), then let the stored choice, if there is
+   one, replace it as the first await of the boot sequence, before any vault
+   content is on screen. */
+async function bootTheme() {
+  applyTheme(systemTheme());
+  const st = await inv("get_theme").catch(() => null);
+  if (st === "dark" || st === "light") { themeStored = true; applyTheme(st); }
+}
 /* ---------- R36 interface zoom (Ctrl+= / Ctrl+- / Ctrl+0) ---------------
    There is deliberately NO CSS in this function. The scale is applied by
    webkit_web_view_set_zoom_level through the `zoom` command (main.rs R36.1),
@@ -2900,6 +2970,12 @@ inv("zoom_get").then(z => {
 let closedTabs = [];                       // R14 undo close tab (names, newest last)
 const CMDS = [
   ["app:open-settings",        "Open settings",                       ["ctrl+,"],               () => cmdSettings()],
+  // R14: the theme switch is a registry entry like any other — no bespoke
+  // keystroke, no menu item of its own. It ships with NO default chord on
+  // purpose: the palette is the road, so the smoke phase has to drive the real
+  // Ctrl+P path (and a user can still bind a chord in Settings ▸ Hotkeys,
+  // which works for free because this is in the one registry).
+  ["theme:switch",             "Toggle light/dark mode",              [],                       cmdToggleTheme],
   ["workspace:close",          "Close current tab",                   ["ctrl+w"],               cmdCloseTab],
   ["window:close",             "Close window",                        ["ctrl+shift+w"],         () => window.__TAURI__.window.getCurrentWindow().close()],
   ["command-palette:open",     "Open command palette",                ["ctrl+p"],               () => cmdPalette()],
@@ -3526,11 +3602,38 @@ async function startGraph(g, cfg) {
   // graph-webgl: with glr the SAME per-node style decisions feed instance arrays
   // (x y r ring rgba) and an edge instance array (x0 y0 x1 y1 rgba) for graph-gl.js; cv then
   // carries only the labels. Arrays grow on demand and are reused across frames.
-  const hex = h => [parseInt(h.slice(1, 3), 16) / 255, parseInt(h.slice(3, 5), 16) / 255, parseInt(h.slice(5, 7), 16) / 255];
-  const RGB = { "#f9e2af": hex("#f9e2af"), "#a6e3a1": hex("#a6e3a1"), "#89b4fa": hex("#89b4fa"), "#45475a": hex("#45475a") };
+  // #rrggbb / #rgb -> [r,g,b] in 0..1 for the GL instance arrays. The 2D path wants
+  // the string itself, so both come from the ONE value read out of the token block.
+  const hex = h => {
+    const s = h.trim(), x = s.length < 7 ? "#" + s[1] + s[1] + s[2] + s[2] + s[3] + s[3] : s;
+    return [parseInt(x.slice(1, 3), 16) / 255, parseInt(x.slice(3, 5), 16) / 255, parseInt(x.slice(5, 7), 16) / 255];
+  };
+  // GRAPH PALETTE. The graph is a <canvas>: it cannot inherit a colour the way every
+  // other surface does, it has to ASK for one. It used to hold four hex literals — a
+  // second palette that no theme could reach, so a light theme would have left the
+  // graph painting dark-theme blue on white. These read the SAME tokens the stylesheet
+  // defines, off documentElement, so there is exactly one definition of each colour.
+  //
+  // CACHED PER THEME, not per node: getComputedStyle forces a style resolution and
+  // draw() runs at up to 60 Hz over every node, so the lookup happens once per draw()
+  // and only re-reads when the theme attribute actually changes (R13 graph_draw budget).
+  // RGB is keyed by the colour STRING, so it is rebuilt with the palette — a stale key
+  // would hand the GL path `undefined` and paint nothing.
+  const PAL_VAR = { hi: "--accent-yellow", ctr: "--accent-green", node: "--accent-blue", edge: "--border" };
+  let pal = null, palKey = null, RGB = {};
+  const palette = () => {
+    const key = document.documentElement.dataset.theme || "";
+    if (pal && palKey === key) return pal;
+    const cs = getComputedStyle(document.documentElement), p = {};
+    RGB = {};
+    for (const k in PAL_VAR) { const v = cs.getPropertyValue(PAL_VAR[k]).trim(); p[k] = v; RGB[v] = hex(v); }
+    palKey = key; pal = p;
+    return p;
+  };
   let nArr = new Float32Array(0), eArr = new Float32Array(0);
   function draw() {
     const dT0 = perf.now();
+    const P = palette();               // one token read per frame, none per node
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, cv.width, cv.height);
     ctx.setTransform(view.scale, 0, 0, view.scale, view.tx, view.ty);
@@ -3560,8 +3663,8 @@ async function startGraph(g, cfg) {
       if (any) ctx.stroke();
     };
     if (glr && eArr.length < gr.edges.length * 8) eArr = new Float32Array(gr.edges.length * 8 + 800);
-    if (hov >= 0) { edgePass(false, "#45475a", 0.12); edgePass(true, "#f9e2af", 1); }
-    else edgePass(true, "#45475a", 1);
+    if (hov >= 0) { edgePass(false, P.edge, 0.12); edgePass(true, P.hi, 1); }
+    else edgePass(true, P.edge, 1);
     ctx.textAlign = "center"; ctx.font = "12px sans-serif";
     const cn = cfg.center();          // M8: center node larger + accent (R7.1)
     const groups = new Map();         // key -> { col, a, res, dr, idx: [] }
@@ -3571,7 +3674,7 @@ async function startGraph(g, cfg) {
       const p = N[i], isC = cn !== null && p.n === cn;
       if (p.x < wx0 - pad || p.x > wx1 + pad || p.y < wy0 - pad || p.y > wy1 + pad) continue;
       const a = litN(i) ? (p.resolved ? 1 : 0.55) : 0.12;
-      const col = i === hov ? "#f9e2af" : isC ? "#a6e3a1" : "#89b4fa";
+      const col = i === hov ? P.hi : isC ? P.ctr : P.node;
       const key = col + a + (p.resolved ? "r" : "u") + (isC ? "c" : "");
       let gp = groups.get(key);
       if (!gp) groups.set(key, gp = { col, a, res: p.resolved, dr: isC ? 4 : 0, idx: [] });
@@ -3993,6 +4096,9 @@ window.__TAURI__.event.listen("drop-files", e => attachDrop(e.payload || []));
 $("vswitch").onclick = showPicker;
 
 (async () => {
+  await bootTheme();             // the root attribute is set synchronously inside
+                                 // (system default), then the STORED choice replaces
+                                 // it — one call site decides the boot theme.
   SAVE_MS = await inv("save_debounce_ms").catch(() => 250);   // F2 smoke hook
   const sw = await inv("get_sidebar_w").catch(() => null);   // ux-4
   if (sw >= 150) $("side").style.width = Math.min(600, sw) + "px";
