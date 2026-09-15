@@ -147,7 +147,9 @@ pub fn slow_banner() -> String {
     };
     let ex: Vec<&str> = WARN_EXCLUDE.iter().map(|(n, _)| *n).collect();
     format!(
-        "[perf] slow_ms={ms} ceiling={SLOW_MS_CEIL} src=perf.rs:SLOW_MS_CEIL env={env} excluded={} ({})",
+        "[perf] slow_ms={ms} ceiling={SLOW_MS_CEIL} src=perf.rs:SLOW_MS_CEIL env={env} inject={} budget={} excluded={} ({})",
+        inject_desc(),
+        WARN_LINE_BUDGET,
         ex.join(","),
         ex.len()
     )
@@ -235,6 +237,66 @@ pub fn decide_warn(st: &mut WarnState, name: &str, ms: f64, now_ms: u64, ceil_ms
         line.push_str(&format!(" suppressed={sup}"));
     }
     Some(line)
+}
+
+// ===== THE NEGATIVE CONTROL: DELIBERATE SLOWNESS ============================
+// A warning that never fired is not evidence. This hook makes ONE named span
+// genuinely slow — it SLEEPS inside the timed region, so the ms the console
+// reports is MEASURED by the same timer as every other span, not fabricated for
+// the test. Removing the env removes the sleep and nothing else, which is what
+// makes the two runs the SAME scenario.
+//
+// WHAT THE HOOK CANNOT DO, by construction — assume someone will try to use it
+// to buy a green:
+//   * it cannot touch SLOW_MS_CEIL or slow_ms(): different env var, different
+//     parser, no path between them (proved by inject_cannot_loosen_the_ceiling).
+//   * it only ever moves one direction — SLOWER. It can make the console louder,
+//     never quieter, so it cannot silence a real breach.
+//   * it is CLAMPED at INJECT_MAX_MS, so a fat-fingered 9999999 cannot wedge a
+//     gate phase into a timeout.
+/// env that injects a real delay into one named span: "<span_name>=<ms>"
+pub const INJECT_ENV: &str = "RUSTIDIAN_SLOW_INJECT";
+/// the most an injection may add to one span, in ms (values above are clamped)
+pub const INJECT_MAX_MS: u64 = 5000;
+
+/// PURE (takes the spec, reads nothing): "<span_name>=<ms>" -> (name, ms).
+/// Empty name, non-numeric or zero ms, or a missing '=' -> None (no injection).
+pub fn parse_inject(spec: Option<&str>) -> Option<(String, u64)> {
+    let s = spec.map(str::trim).filter(|s| !s.is_empty())?;
+    let (name, ms) = s.split_once('=')?;
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let ms: u64 = ms.trim().parse().ok()?;
+    if ms == 0 {
+        return None;
+    }
+    Some((name.to_string(), ms.min(INJECT_MAX_MS)))
+}
+
+/// this process's injection (env read once)
+fn inject() -> Option<&'static (String, u64)> {
+    static I: OnceLock<Option<(String, u64)>> = OnceLock::new();
+    I.get_or_init(|| parse_inject(std::env::var(INJECT_ENV).ok().as_deref())).as_ref()
+}
+
+/// how the banner states the injection: "none", or "<name>=<ms>ms"
+pub fn inject_desc() -> String {
+    match inject() {
+        None => "none".to_string(),
+        Some((n, ms)) => format!("{n}={ms}ms"),
+    }
+}
+
+/// Called at the start of a timed span (inside the measured region). Sleeps only
+/// for the one span named by INJECT_ENV; every other span pays one string compare.
+pub fn inject_delay(name: &str) {
+    if let Some((n, ms)) = inject() {
+        if n == name {
+            std::thread::sleep(std::time::Duration::from_millis(*ms));
+        }
+    }
 }
 
 fn warn_state() -> &'static Mutex<WarnState> {
@@ -445,6 +507,11 @@ macro_rules! span_timed {
         // the lag. `$extra` (a json! literal) is still built ONLY when telemetry
         // is on, so an untraced run pays one Instant and no allocation.
         let __t0 = ::std::time::Instant::now();
+        // INSIDE the measured region on purpose: the negative control's delay is
+        // part of what the timer sees, so the ms the console prints is measured
+        // the same way as every other span's. Without an injection this is one
+        // string compare against None.
+        $crate::perf::inject_delay($name);
         let __r = $e;
         let __ms = __t0.elapsed().as_secs_f64() * 1000.0;
         if $crate::perf::enabled() {
@@ -488,6 +555,60 @@ mod tests {
         let b = slow_banner();
         assert!(b.starts_with("[perf] slow_ms="), "{b}");
         assert!(!b.contains('\n'), "the banner is ONE line: {b}");
+    }
+
+    /// THE NEGATIVE CONTROL'S HOOK, pinned to what it is allowed to do: add time
+    /// to ONE named span. Parsing is pure, so these are facts about the rule.
+    #[test]
+    fn inject_spec_parses_only_name_equals_positive_ms() {
+        assert_eq!(parse_inject(Some("read_note=250")), Some(("read_note".into(), 250)));
+        assert_eq!(parse_inject(Some("  read_note = 250 ")), Some(("read_note".into(), 250)));
+        // clamped, so a typo cannot hang a phase into its timeout
+        assert_eq!(parse_inject(Some("read_note=9999999")), Some(("read_note".into(), INJECT_MAX_MS)));
+        assert_eq!(INJECT_MAX_MS, 5000);
+        // no injection: unset, empty, no '=', empty name, zero, junk, negative, float
+        for s in [None, Some(""), Some("   "), Some("read_note"), Some("=250"), Some("read_note=0"), Some("read_note=abc"), Some("read_note=-5"), Some("read_note=2.5")] {
+            assert_eq!(parse_inject(s), None, "{s:?} produced an injection");
+        }
+    }
+
+    /// THE HOOK MAY NOT BUY A GREEN. It shares no code and no env var with the
+    /// ceiling, so no spec — however hostile — can move slow_ms or silence a
+    /// breach. The only direction it moves anything is SLOWER.
+    #[test]
+    fn inject_cannot_loosen_the_ceiling() {
+        for hostile in [
+            "RUSTIDIAN_SLOW_MS=99999",
+            "ceiling=99999",
+            "SLOW_MS_CEIL=99999",
+            "*=0",
+            "read_note=99999999",
+        ] {
+            // the ceiling is computed from SLOW_ENV alone and never sees this string
+            assert_eq!(effective_slow_ms(None), (SLOW_MS_CEIL, SlowSrc::Ceiling), "{hostile}");
+            assert_eq!(effective_slow_ms(Some(hostile)).0, SLOW_MS_CEIL, "{hostile} moved the ceiling");
+            // and a breach still warns while it is set
+            assert!(
+                decide_warn(&mut WarnState::new(), "read_note", (SLOW_MS_CEIL + 1) as f64, 1, SLOW_MS_CEIL).is_some(),
+                "{hostile} silenced a breach"
+            );
+            // whatever it parses to, it is a DELAY in ms, never a threshold
+            if let Some((_, ms)) = parse_inject(Some(hostile)) {
+                assert!(ms <= INJECT_MAX_MS, "{hostile} -> {ms}ms is above the clamp");
+            }
+        }
+    }
+
+    /// the banner says what is injected, in the same one line: a reader of the log
+    /// never has to guess whether the run they are looking at was rigged.
+    #[test]
+    fn banner_states_the_injection_in_one_line() {
+        let b = slow_banner();
+        assert!(b.contains(" inject="), "banner hides the injection: {b}");
+        assert!(!b.contains('\n'), "the banner is ONE line: {b}");
+        // unset in the test process -> "none"
+        assert_eq!(inject_desc(), "none", "a test process must not be rigged");
+        assert!(b.contains(&format!(" budget={WARN_LINE_BUDGET}")), "banner hides the stated bound: {b}");
     }
 
     /// the out-of-scope table is data a reviewer reads: every entry needs a name
