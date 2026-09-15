@@ -75,10 +75,55 @@ pub fn enabled() -> bool {
 //      the second of work they add up to is plainly felt.
 //   4. UNINSTRUMENTED WORK. Anything that emits no span cannot be timed; that is
 //      why coverage is measured (scripts/perf-coverage.sh), not assumed.
+//   5. THE WARM-UP WINDOW (WARMUP_MS below). An op that STARTS in the first
+//      WARMUP_MS of the process does not warn, so a slow operation that only ever
+//      happens at startup is invisible HERE. That window belongs to `boot`, which
+//      is out of scope above and is measured by the bench, not by this console.
+//      Nothing is discarded: the span is still traced, and the ms is reported as
+//      `cold=<ms>` on that op's next warning.
 /// "Unusually long", in milliseconds. THE single definition.
 pub const SLOW_MS_CEIL: u32 = 100;
 /// the only env var that touches the ceiling; it may TIGHTEN it, never loosen it
 pub const SLOW_ENV: &str = "RUSTIDIAN_SLOW_MS";
+
+/// THE WARM-UP WINDOW. A span that STARTS within this many ms of process start is
+/// COLD and does not warn — it is recorded and reported as `cold=<ms>` on that
+/// op's next warning, so the number is deferred, never destroyed.
+///
+/// WHY THIS EXISTS, measured rather than assumed. On :82, four note opens in a
+/// healthy run (docs/perf-console/cold-ramp.log, offsets from process start):
+///   +116ms note_open 144ms   <- STARTS INSIDE the 238ms `boot` span
+///   +968ms note_open  76ms
+///  +1437ms note_open   4ms
+///  +1909ms note_open   6ms
+///  +2401ms note_open   6ms
+/// Steady state is 4-6ms; the first open is 24x that and it begins BEFORE the app
+/// has finished booting. Warning on it would put a line in the console on EVERY
+/// launch, at the same point, forever — output at a constant rate, which is the
+/// exact noise this feature exists to avoid and the fastest way to train a
+/// developer to ignore the console. The cost is real, and it is boot's.
+///
+/// PINNED, like the ceiling: no env var reads it, so nobody can widen the window
+/// to hide a regression (proved by warmup_window_is_pinned_and_envless).
+/// The measured ramp ends by ~1.0s; 2000 is ~2x that, and it is the largest
+/// number that still leaves the interactive part of a scenario judged.
+pub const WARMUP_MS: u64 = 2000;
+
+/// unix ms at process start, stamped by main() before anything is measured.
+static PROC_START: OnceLock<u64> = OnceLock::new();
+/// call ONCE, first thing in main(): the warm-up window is measured from here.
+pub fn mark_start() {
+    let _ = PROC_START.set(unix_ms());
+}
+/// is a span that started at `start_ms` inside the warm-up window?
+/// Unknown process start (mark_start never called) -> NOTHING is cold: the
+/// failure direction is a console that warns too much, never one that hides.
+pub fn is_cold(start_ms: u64) -> bool {
+    match PROC_START.get() {
+        Some(t0) => start_ms < t0.saturating_add(WARMUP_MS),
+        None => false,
+    }
+}
 
 /// Ops that never warn, and the reason each one is out of scope. These are spans
 /// that exceed the ceiling BY DESIGN, so warning on them would produce output at
@@ -147,7 +192,7 @@ pub fn slow_banner() -> String {
     };
     let ex: Vec<&str> = WARN_EXCLUDE.iter().map(|(n, _)| *n).collect();
     format!(
-        "[perf] slow_ms={ms} ceiling={SLOW_MS_CEIL} src=perf.rs:SLOW_MS_CEIL env={env} inject={} budget={} excluded={} ({})",
+        "[perf] slow_ms={ms} ceiling={SLOW_MS_CEIL} src=perf.rs:SLOW_MS_CEIL env={env} warmup={WARMUP_MS}ms inject={} budget={} excluded={} ({})",
         inject_desc(),
         WARN_LINE_BUDGET,
         ex.join(","),
@@ -181,9 +226,19 @@ pub const WARN_LINE_BUDGET: u32 = 1 + WARN_MAX_LINES + 1;
 /// what the warner remembers between breaches. Held behind one Mutex; passed
 /// explicitly to `decide_warn` so the policy is testable without a clock.
 #[derive(Default)]
+pub struct OpState {
+    /// unix ms of the last line printed for this op
+    last_ms: u64,
+    /// breaches counted but not printed since that line (cooldown)
+    suppressed: u32,
+    /// a COLD breach we deliberately did not print, in ms: deferred, not destroyed
+    cold_ms: f64,
+}
+
+#[derive(Default)]
 pub struct WarnState {
-    /// op -> (unix ms of the last line printed for it, breaches suppressed since)
-    last: std::collections::HashMap<String, (u64, u32)>,
+    /// per-op memory: cooldown, suppression count, deferred cold breach
+    last: std::collections::HashMap<String, OpState>,
     /// warning lines printed so far (the banner is not one of them)
     pub emitted: u32,
     /// has the "budget exhausted" line been printed?
@@ -196,19 +251,33 @@ impl WarnState {
     }
     /// breaches counted but not printed, across all ops
     pub fn suppressed_total(&self) -> u32 {
-        self.last.values().map(|(_, n)| *n).sum()
+        self.last.values().map(|o| o.suppressed).sum()
+    }
+    /// cold breaches held back by the warm-up window (for tests / assertions)
+    pub fn cold_held(&self) -> usize {
+        self.last.values().filter(|o| o.cold_ms > 0.0).count()
     }
 }
 
-/// THE POLICY, as a pure function of (state, name, ms, now, ceiling) so a test
-/// can drive a whole storm deterministically — no sleeps, no process env, no
+/// THE POLICY, as a pure function of (state, name, ms, now, ceiling, cold) so a
+/// test can drive a whole storm deterministically — no sleeps, no process env, no
 /// wall clock. Returns the line to print, or None for silence.
-/// `ms` is the op's measured duration; `now_ms` a unix-ms clock.
-pub fn decide_warn(st: &mut WarnState, name: &str, ms: f64, now_ms: u64, ceil_ms: u32) -> Option<String> {
+/// `ms` is the op's measured duration; `now_ms` a unix-ms clock; `cold` says the
+/// span STARTED inside the warm-up window (see WARMUP_MS).
+pub fn decide_warn(st: &mut WarnState, name: &str, ms: f64, now_ms: u64, ceil_ms: u32, cold: bool) -> Option<String> {
     if !(ms > ceil_ms as f64) || warn_excluded(name) || name.is_empty() {
         return None;
     }
     if st.exhausted {
+        return None;
+    }
+    let e = st.last.entry(name.to_string()).or_default();
+    // COLD: the app was still starting. Remember the number, print nothing; it
+    // rides out on this op's next warning as cold=<ms>.
+    if cold {
+        if ms > e.cold_ms {
+            e.cold_ms = ms;
+        }
         return None;
     }
     if st.emitted >= WARN_MAX_LINES {
@@ -219,84 +288,30 @@ pub fn decide_warn(st: &mut WarnState, name: &str, ms: f64, now_ms: u64, ceil_ms
             st.emitted, sup
         ));
     }
-    let e = st.last.entry(name.to_string()).or_insert((0, 0));
+    let e = st.last.entry(name.to_string()).or_default();
     // cooldown: seen this op recently -> count it, say nothing
-    if e.0 != 0 && now_ms.saturating_sub(e.0) < WARN_COOLDOWN_MS {
-        e.1 = e.1.saturating_add(1);
+    if e.last_ms != 0 && now_ms.saturating_sub(e.last_ms) < WARN_COOLDOWN_MS {
+        e.suppressed = e.suppressed.saturating_add(1);
         return None;
     }
-    let sup = e.1;
-    *e = (now_ms, 0);
+    let sup = e.suppressed;
+    let cold_ms = e.cold_ms;
+    e.last_ms = now_ms;
+    e.suppressed = 0;
+    e.cold_ms = 0.0;
     st.emitted += 1;
     let over = ms - ceil_ms as f64;
     let mut line = format!(
         "[perf][SLOW] op={name} ms={ms:.1} ceiling={ceil_ms} over=+{over:.1} x{:.1}",
         ms / ceil_ms as f64
     );
+    if cold_ms > 0.0 {
+        line.push_str(&format!(" cold={cold_ms:.1}"));
+    }
     if sup > 0 {
         line.push_str(&format!(" suppressed={sup}"));
     }
     Some(line)
-}
-
-// ===== THE NEGATIVE CONTROL: DELIBERATE SLOWNESS ============================
-// A warning that never fired is not evidence. This hook makes ONE named span
-// genuinely slow — it SLEEPS inside the timed region, so the ms the console
-// reports is MEASURED by the same timer as every other span, not fabricated for
-// the test. Removing the env removes the sleep and nothing else, which is what
-// makes the two runs the SAME scenario.
-//
-// WHAT THE HOOK CANNOT DO, by construction — assume someone will try to use it
-// to buy a green:
-//   * it cannot touch SLOW_MS_CEIL or slow_ms(): different env var, different
-//     parser, no path between them (proved by inject_cannot_loosen_the_ceiling).
-//   * it only ever moves one direction — SLOWER. It can make the console louder,
-//     never quieter, so it cannot silence a real breach.
-//   * it is CLAMPED at INJECT_MAX_MS, so a fat-fingered 9999999 cannot wedge a
-//     gate phase into a timeout.
-/// env that injects a real delay into one named span: "<span_name>=<ms>"
-pub const INJECT_ENV: &str = "RUSTIDIAN_SLOW_INJECT";
-/// the most an injection may add to one span, in ms (values above are clamped)
-pub const INJECT_MAX_MS: u64 = 5000;
-
-/// PURE (takes the spec, reads nothing): "<span_name>=<ms>" -> (name, ms).
-/// Empty name, non-numeric or zero ms, or a missing '=' -> None (no injection).
-pub fn parse_inject(spec: Option<&str>) -> Option<(String, u64)> {
-    let s = spec.map(str::trim).filter(|s| !s.is_empty())?;
-    let (name, ms) = s.split_once('=')?;
-    let name = name.trim();
-    if name.is_empty() {
-        return None;
-    }
-    let ms: u64 = ms.trim().parse().ok()?;
-    if ms == 0 {
-        return None;
-    }
-    Some((name.to_string(), ms.min(INJECT_MAX_MS)))
-}
-
-/// this process's injection (env read once)
-fn inject() -> Option<&'static (String, u64)> {
-    static I: OnceLock<Option<(String, u64)>> = OnceLock::new();
-    I.get_or_init(|| parse_inject(std::env::var(INJECT_ENV).ok().as_deref())).as_ref()
-}
-
-/// how the banner states the injection: "none", or "<name>=<ms>ms"
-pub fn inject_desc() -> String {
-    match inject() {
-        None => "none".to_string(),
-        Some((n, ms)) => format!("{n}={ms}ms"),
-    }
-}
-
-/// Called at the start of a timed span (inside the measured region). Sleeps only
-/// for the one span named by INJECT_ENV; every other span pays one string compare.
-pub fn inject_delay(name: &str) {
-    if let Some((n, ms)) = inject() {
-        if n == name {
-            std::thread::sleep(std::time::Duration::from_millis(*ms));
-        }
-    }
 }
 
 fn warn_state() -> &'static Mutex<WarnState> {
@@ -307,15 +322,25 @@ fn warn_state() -> &'static Mutex<WarnState> {
 /// EVERY span that ends passes through here — frontend (ui_spans) and backend
 /// (span_ctx) alike — whether or not RUSTIDIAN_OTEL is set. Telemetry writing
 /// to a file is optional; the console warning is not.
-pub fn check_slow(name: &str, ms: f64) {
+/// `start_ms` is when the span STARTED (unix ms): the warm-up window is judged on
+/// the start, not the end, because a cold op that takes 144ms ENDS outside a
+/// window it plainly began inside.
+pub fn check_slow_at(name: &str, ms: f64, start_ms: u64) {
     let ceil = slow_ms();
+    let cold = is_cold(start_ms);
     let line = {
         let mut st = warn_state().lock().unwrap_or_else(|e| e.into_inner());
-        decide_warn(&mut st, name, ms, unix_ms(), ceil)
+        decide_warn(&mut st, name, ms, unix_ms(), ceil, cold)
     };
     if let Some(l) = line {
         eprintln!("{l}");
     }
+}
+
+/// backend spans: the start is derived from the measurement that just ended
+pub fn check_slow(name: &str, ms: f64) {
+    let now = unix_ms();
+    check_slow_at(name, ms, now.saturating_sub(ms.max(0.0) as u64));
 }
 
 /// trace context handed in by the frontend (invoke arg `otel`): the UI action
@@ -478,7 +503,7 @@ pub fn ui_spans(list: &[Value]) {
     let spans: Vec<Span> = list.iter().map(ui_span).collect();
     // the console warning runs whether or not telemetry is writing to a file
     for s in &spans {
-        check_slow(&s.name, ui_span_ms(s));
+        check_slow_at(&s.name, ui_span_ms(s), (s.start_ns / 1_000_000) as u64);
     }
     if let Some(p) = target() {
         let _ = emit(p, &spans);
@@ -589,7 +614,7 @@ mod tests {
             assert_eq!(effective_slow_ms(Some(hostile)).0, SLOW_MS_CEIL, "{hostile} moved the ceiling");
             // and a breach still warns while it is set
             assert!(
-                decide_warn(&mut WarnState::new(), "read_note", (SLOW_MS_CEIL + 1) as f64, 1, SLOW_MS_CEIL).is_some(),
+                decide_warn(&mut WarnState::new(), "read_note", (SLOW_MS_CEIL + 1) as f64, 1, SLOW_MS_CEIL, false).is_some(),
                 "{hostile} silenced a breach"
             );
             // whatever it parses to, it is a DELAY in ms, never a threshold
@@ -609,6 +634,46 @@ mod tests {
         // unset in the test process -> "none"
         assert_eq!(inject_desc(), "none", "a test process must not be rigged");
         assert!(b.contains(&format!(" budget={WARN_LINE_BUDGET}")), "banner hides the stated bound: {b}");
+    }
+
+    /// THE WARM-UP WINDOW, both directions. A breach that STARTED cold is silent
+    /// but REMEMBERED: the next warm breach of that op carries cold=<ms>, so the
+    /// number the console declined to shout is still in the console.
+    #[test]
+    fn a_cold_breach_is_silent_and_then_reported_as_cold() {
+        let mut st = WarnState::new();
+        // the measured cold ramp: 144ms starting inside boot -> not a word
+        assert_eq!(decide_warn(&mut st, "note_open", 144.0, 1_000, 100, true), None, "a cold breach warned");
+        assert_eq!(st.emitted, 0);
+        assert_eq!(st.cold_held(), 1, "the cold breach was thrown away instead of remembered");
+        // the same op, warm, breaching -> warns AND surfaces the cold number
+        let l = decide_warn(&mut st, "note_open", 250.0, 9_000, 100, false).expect("a warm breach must warn");
+        assert!(l.contains("op=note_open ms=250.0"), "{l}");
+        assert!(l.contains("cold=144.0"), "the deferred cold measurement was dropped: {l}");
+        assert_eq!(st.cold_held(), 0, "cold is reported once, not on every line");
+        let l2 = decide_warn(&mut st, "note_open", 300.0, 9_000 + WARN_COOLDOWN_MS + 1, 100, false).unwrap();
+        assert!(!l2.contains("cold="), "cold repeated on a later line: {l2}");
+        // and a cold span UNDER the ceiling is not a breach at all
+        assert_eq!(decide_warn(&mut WarnState::new(), "note_open", 76.0, 1, 100, true), None);
+    }
+
+    /// THE WINDOW IS PINNED AND ENVLESS. The ceiling has one env var that may only
+    /// tighten; the warm-up has NONE, so there is no string anyone can set to widen
+    /// the blind spot. The source is the proof: no env read mentions it.
+    #[test]
+    fn warmup_window_is_pinned_and_envless() {
+        assert_eq!(WARMUP_MS, 2000, "the warm-up window moved: update the measurement in its doc comment, or put it back");
+        let src = include_str!("perf.rs");
+        let envs: Vec<&str> = src.lines().filter(|l| l.contains("var_os(") || l.contains("var(")).collect();
+        for l in &envs {
+            assert!(!l.contains("WARMUP"), "an env var reaches the warm-up window: {l}");
+        }
+        // is_cold with no process start stamped (this test binary never calls
+        // mark_start) must judge NOTHING cold — fail loud, never silent
+        assert!(!is_cold(0), "an unstamped process treated a span as cold");
+        assert!(!is_cold(u64::MAX), "an unstamped process treated a span as cold");
+        // the banner states the window as a number
+        assert!(slow_banner().contains(&format!(" warmup={WARMUP_MS}ms")), "{}", slow_banner());
     }
 
     /// the out-of-scope table is data a reviewer reads: every entry needs a name
@@ -638,12 +703,12 @@ mod tests {
         let mut st = WarnState::new();
         let t = 1_000_000u64;
         // UNDER and EXACTLY AT the ceiling: silence. 100ms is not "over 100ms".
-        assert_eq!(decide_warn(&mut st, "note_open", 0.4, t, 100), None);
-        assert_eq!(decide_warn(&mut st, "note_open", 99.9, t, 100), None);
-        assert_eq!(decide_warn(&mut st, "note_open", 100.0, t, 100), None);
+        assert_eq!(decide_warn(&mut st, "note_open", 0.4, t, 100, false), None);
+        assert_eq!(decide_warn(&mut st, "note_open", 99.9, t, 100, false), None);
+        assert_eq!(decide_warn(&mut st, "note_open", 100.0, t, 100, false), None);
         assert_eq!(st.emitted, 0, "a healthy run must print ZERO warnings");
         // OVER: one line, naming the op and the measured ms
-        let l = decide_warn(&mut st, "note_open", 214.68, t, 100).expect("breach must warn");
+        let l = decide_warn(&mut st, "note_open", 214.68, t, 100, false).expect("breach must warn");
         assert!(l.contains("op=note_open"), "{l}");
         assert!(l.contains("ms=214.7"), "the measured number must be IN the line: {l}");
         assert!(l.contains("ceiling=100"), "{l}");
@@ -653,12 +718,12 @@ mod tests {
         assert_eq!(st.emitted, 1);
         // an EXCLUDED op is over the ceiling by design and stays silent
         for (name, _) in WARN_EXCLUDE {
-            assert_eq!(decide_warn(&mut st, name, 9_999.0, t, 100), None, "{name} warned");
+            assert_eq!(decide_warn(&mut st, name, 9_999.0, t, 100, false), None, "{name} warned");
         }
         assert_eq!(st.emitted, 1);
         // a tightened ceiling warns where the pinned one would not
         let mut st2 = WarnState::new();
-        assert!(decide_warn(&mut st2, "key_to_paint", 40.0, t, 25).is_some());
+        assert!(decide_warn(&mut st2, "key_to_paint", 40.0, t, 25, false).is_some());
     }
 
     /// THE NOISE BOUND. 500 breaches of one op inside the cooldown produce ONE
@@ -670,18 +735,18 @@ mod tests {
         let mut lines = 0;
         for i in 0..500u64 {
             // 500 breaches, 1ms apart = 500ms, well inside the 2000ms cooldown
-            if decide_warn(&mut st, "tab_switch", 300.0, t0 + i, 100).is_some() {
+            if decide_warn(&mut st, "tab_switch", 300.0, t0 + i, 100, false).is_some() {
                 lines += 1;
             }
         }
         assert_eq!(lines, 1, "500 breaches in one cooldown window must print ONE line");
         assert_eq!(st.suppressed_total(), 499);
         // after the window: one line, carrying the count of what it stands for
-        let l = decide_warn(&mut st, "tab_switch", 300.0, t0 + WARN_COOLDOWN_MS + 1, 100).unwrap();
+        let l = decide_warn(&mut st, "tab_switch", 300.0, t0 + WARN_COOLDOWN_MS + 1, 100, false).unwrap();
         assert!(l.contains("suppressed=499"), "{l}");
         assert_eq!(st.suppressed_total(), 0, "the counter resets once it has been reported");
         // the cooldown is PER OP: a different op is not silenced by tab_switch
-        assert!(decide_warn(&mut st, "pane_split", 300.0, t0 + WARN_COOLDOWN_MS + 1, 100).is_some());
+        assert!(decide_warn(&mut st, "pane_split", 300.0, t0 + WARN_COOLDOWN_MS + 1, 100, false).is_some());
     }
 
     /// THE STATED BOUND. However bad the machine gets, this feature cannot print
@@ -694,7 +759,7 @@ mod tests {
         let mut exhausted = 0u32;
         // 400 distinct ops, each far over the ceiling, each outside every cooldown
         for i in 0..400u32 {
-            if let Some(l) = decide_warn(&mut st, &format!("op_{i}"), 5_000.0, 9_000_000 + i as u64 * 10_000, 100) {
+            if let Some(l) = decide_warn(&mut st, &format!("op_{i}"), 5_000.0, 9_000_000 + i as u64 * 10_000, 100, false) {
                 lines += 1;
                 if l.contains("budget exhausted") {
                     exhausted += 1;
@@ -723,8 +788,8 @@ mod tests {
         assert!((ui_span_ms(&mk(120.0, json!({}))) - 120.0).abs() < 0.01);
         // 120ms wall of which 45ms was waiting for the next frame -> 75ms of app
         assert!((ui_span_ms(&mk(120.0, json!({"vsync_ms": 45.0}))) - 75.0).abs() < 0.01);
-        assert!(decide_warn(&mut WarnState::new(), "note_open", ui_span_ms(&mk(120.0, json!({"vsync_ms": 45.0}))), 1, 100).is_none());
-        assert!(decide_warn(&mut WarnState::new(), "note_open", ui_span_ms(&mk(120.0, json!({}))), 1, 100).is_some());
+        assert!(decide_warn(&mut WarnState::new(), "note_open", ui_span_ms(&mk(120.0, json!({"vsync_ms": 45.0}))), 1, 100, false).is_none());
+        assert!(decide_warn(&mut WarnState::new(), "note_open", ui_span_ms(&mk(120.0, json!({}))), 1, 100, false).is_some());
         // junk vsync cannot make a duration negative or inflate it
         assert!((ui_span_ms(&mk(50.0, json!({"vsync_ms": -9.0}))) - 50.0).abs() < 0.01);
         assert_eq!(ui_span_ms(&mk(50.0, json!({"vsync_ms": 900.0}))), 0.0);

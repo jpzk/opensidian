@@ -2269,6 +2269,10 @@ fn set_zoom_cfg(level: f64) {
 }
 
 fn main() {
+    // FIRST STATEMENT IN THE PROCESS, deliberately: the warm-up window (perf.rs,
+    // WARMUP_MS) is measured from here, so anything that runs before this stamp
+    // would be judged against a start time it predates.
+    perf::mark_start();
     // perf-console: state the rule on the console BEFORE anything can breach it.
     // ONE line, printed unconditionally (breach or not), so "unusually long" is a
     // number you can read off the console instead of a promise in a comment. It is
