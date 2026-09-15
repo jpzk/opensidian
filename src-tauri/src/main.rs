@@ -1072,7 +1072,16 @@ fn create_vault(v: State<Vault>, parent: String, name: String) -> Result<String,
 #[tauri::command]
 fn log_spans(spans: Vec<serde_json::Value>) -> bool {
     perf::ui_spans(&spans);
-    perf::enabled()
+    // TRUE unconditionally, and that is the perf-console change. The frontend
+    // uses this reply to decide whether to keep measuring at all (ui/otel.js:
+    // `on === false` makes every later call a no-op), and the slow-op console
+    // warning needs UI spans in EVERY run, not only in runs that set
+    // RUSTIDIAN_OTEL. ui_spans() above warns on a breach whether or not a trace
+    // file is being written; returning perf::enabled() here would have switched
+    // the whole feature off for ordinary users — the ones who actually feel the
+    // lag. Cost when untraced: one IPC per 250ms while spans are being produced,
+    // and no file I/O.
+    true
 }
 
 /// graph-webgl: hidden hooks for the graph draw path. RUSTIDIAN_GRAPH_RENDERER=gl|2d forces a

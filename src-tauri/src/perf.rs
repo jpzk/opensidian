@@ -153,6 +153,109 @@ pub fn slow_banner() -> String {
     )
 }
 
+// ===== THE CONSOLE SURFACE ==================================================
+// A breach prints ONE line on stderr. THE TRAP this guards against: "log every
+// long operation" degrading into "log every operation". Output arriving at a
+// constant rate carries no information, and a console that always talks makes a
+// bottleneck HARDER to find, not easier. Two bounds, both measured, neither a
+// promise in a comment:
+//   * PER-OP COOLDOWN: one line per op per WARN_COOLDOWN_MS. Breaches inside
+//     the window are COUNTED, not dropped, and reported on the next line for
+//     that op as `suppressed=N`. A storm of 500 slow note_opens is 1 line every
+//     2s saying how many it stands for.
+//   * PER-PROCESS CAP: WARN_MAX_LINES lines, then ONE final "budget exhausted"
+//     line and silence. Without it a permanently slow machine turns the console
+//     into a log file.
+// So the console output of this feature is bounded, for the whole process, by
+//   1 (banner) + WARN_MAX_LINES + 1 (exhausted) = 102 lines
+// and on a healthy run it is EXACTLY 1 (the banner) with 0 warnings.
+/// one line per op per this many ms; the rest are counted and summarised
+pub const WARN_COOLDOWN_MS: u64 = 2000;
+/// hard ceiling on warning lines for the life of the process
+pub const WARN_MAX_LINES: u32 = 100;
+/// the stated bound: banner + warnings + the exhausted notice
+pub const WARN_LINE_BUDGET: u32 = 1 + WARN_MAX_LINES + 1;
+
+/// what the warner remembers between breaches. Held behind one Mutex; passed
+/// explicitly to `decide_warn` so the policy is testable without a clock.
+#[derive(Default)]
+pub struct WarnState {
+    /// op -> (unix ms of the last line printed for it, breaches suppressed since)
+    last: std::collections::HashMap<String, (u64, u32)>,
+    /// warning lines printed so far (the banner is not one of them)
+    pub emitted: u32,
+    /// has the "budget exhausted" line been printed?
+    exhausted: bool,
+}
+
+impl WarnState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// breaches counted but not printed, across all ops
+    pub fn suppressed_total(&self) -> u32 {
+        self.last.values().map(|(_, n)| *n).sum()
+    }
+}
+
+/// THE POLICY, as a pure function of (state, name, ms, now, ceiling) so a test
+/// can drive a whole storm deterministically — no sleeps, no process env, no
+/// wall clock. Returns the line to print, or None for silence.
+/// `ms` is the op's measured duration; `now_ms` a unix-ms clock.
+pub fn decide_warn(st: &mut WarnState, name: &str, ms: f64, now_ms: u64, ceil_ms: u32) -> Option<String> {
+    if !(ms > ceil_ms as f64) || warn_excluded(name) || name.is_empty() {
+        return None;
+    }
+    if st.exhausted {
+        return None;
+    }
+    if st.emitted >= WARN_MAX_LINES {
+        st.exhausted = true;
+        let sup = st.suppressed_total();
+        return Some(format!(
+            "[perf][SLOW] warning budget exhausted: {} lines printed, {} further breaches counted and now silent (bound: perf.rs:WARN_MAX_LINES)",
+            st.emitted, sup
+        ));
+    }
+    let e = st.last.entry(name.to_string()).or_insert((0, 0));
+    // cooldown: seen this op recently -> count it, say nothing
+    if e.0 != 0 && now_ms.saturating_sub(e.0) < WARN_COOLDOWN_MS {
+        e.1 = e.1.saturating_add(1);
+        return None;
+    }
+    let sup = e.1;
+    *e = (now_ms, 0);
+    st.emitted += 1;
+    let over = ms - ceil_ms as f64;
+    let mut line = format!(
+        "[perf][SLOW] op={name} ms={ms:.1} ceiling={ceil_ms} over=+{over:.1} x{:.1}",
+        ms / ceil_ms as f64
+    );
+    if sup > 0 {
+        line.push_str(&format!(" suppressed={sup}"));
+    }
+    Some(line)
+}
+
+fn warn_state() -> &'static Mutex<WarnState> {
+    static S: OnceLock<Mutex<WarnState>> = OnceLock::new();
+    S.get_or_init(|| Mutex::new(WarnState::new()))
+}
+
+/// EVERY span that ends passes through here — frontend (ui_spans) and backend
+/// (span_ctx) alike — whether or not RUSTIDIAN_OTEL is set. Telemetry writing
+/// to a file is optional; the console warning is not.
+pub fn check_slow(name: &str, ms: f64) {
+    let ceil = slow_ms();
+    let line = {
+        let mut st = warn_state().lock().unwrap_or_else(|e| e.into_inner());
+        decide_warn(&mut st, name, ms, unix_ms(), ceil)
+    };
+    if let Some(l) = line {
+        eprintln!("{l}");
+    }
+}
+
 /// trace context handed in by the frontend (invoke arg `otel`): the UI action
 /// span that triggered this command. Backend spans become its children.
 #[derive(Deserialize, Clone, Debug, Default, PartialEq)]
@@ -275,6 +378,7 @@ pub fn span(name: &str, ms: f64, extra: Value) {
     span_ctx(None, name, ms, extra)
 }
 pub fn span_ctx(ctx: Option<&Ctx>, name: &str, ms: f64, extra: Value) {
+    check_slow(name, ms);
     if let Some(p) = target() {
         let _ = emit(p, &[ended(ctx, name, ms, extra)]);
     }
@@ -295,9 +399,26 @@ pub fn ui_span(v: &Value) -> Span {
     let attrs = v.get("attrs").or_else(|| v.get("extra")).cloned().unwrap_or(Value::Null);
     Span { name: s("name"), trace_id, span_id, parent_span_id: s("parentSpanId"), start_ns, end_ns, attrs }
 }
+/// APP-ATTRIBUTABLE duration of a frontend span, in ms — the number the warning
+/// judges. Wall time MINUS vsync_ms, exactly as scripts/otel-flat.sh reports it
+/// and as the lag budgets are written: vsync_ms is the idle wait for the next
+/// frame tick (display cadence — 16.7ms at 60Hz, more under Xvfb), which the app
+/// cannot make shorter. Warning on raw wall time would blame the display for the
+/// app's latency and fire on healthy runs, which is the noise this feature exists
+/// to avoid.
+pub fn ui_span_ms(s: &Span) -> f64 {
+    let wall = s.end_ns.saturating_sub(s.start_ns) as f64 / 1e6;
+    let vsync = s.attrs.get("vsync_ms").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    (wall - vsync.max(0.0)).max(0.0)
+}
+
 pub fn ui_spans(list: &[Value]) {
+    let spans: Vec<Span> = list.iter().map(ui_span).collect();
+    // the console warning runs whether or not telemetry is writing to a file
+    for s in &spans {
+        check_slow(&s.name, ui_span_ms(s));
+    }
     if let Some(p) = target() {
-        let spans: Vec<Span> = list.iter().map(ui_span).collect();
         let _ = emit(p, &spans);
     }
 }
@@ -318,14 +439,20 @@ macro_rules! span_timed {
         $crate::span_timed!($ctx => $name, $e, ::serde_json::json!({}))
     };
     ($ctx:expr => $name:expr, $e:expr, $extra:expr) => {{
+        // ALWAYS timed. The old form measured only when RUSTIDIAN_OTEL was set,
+        // which would have made the slow-op console warning a traced-runs-only
+        // feature — invisible in exactly the ordinary run where a user notices
+        // the lag. `$extra` (a json! literal) is still built ONLY when telemetry
+        // is on, so an untraced run pays one Instant and no allocation.
+        let __t0 = ::std::time::Instant::now();
+        let __r = $e;
+        let __ms = __t0.elapsed().as_secs_f64() * 1000.0;
         if $crate::perf::enabled() {
-            let __t0 = ::std::time::Instant::now();
-            let __r = $e;
-            $crate::perf::span_ctx($ctx.as_ref(), $name, __t0.elapsed().as_secs_f64() * 1000.0, $extra);
-            __r
+            $crate::perf::span_ctx($ctx.as_ref(), $name, __ms, $extra);
         } else {
-            $e
+            $crate::perf::check_slow($name, __ms);
         }
+        __r
     }};
 }
 
@@ -380,6 +507,106 @@ mod tests {
         assert_eq!(names.len(), n0, "duplicate entry in WARN_EXCLUDE");
         assert!(!warn_excluded("key_to_paint"), "an interaction op must NOT be excluded");
         assert!(!warn_excluded("note_open"));
+    }
+
+    /// THE WARNING POLICY, both directions. A warning that never fires is not
+    /// evidence; one that always fires is noise. Driven through the pure
+    /// `decide_warn` with an explicit clock, so the storm below is deterministic.
+    #[test]
+    fn warning_fires_over_the_ceiling_and_is_silent_under_it() {
+        let mut st = WarnState::new();
+        let t = 1_000_000u64;
+        // UNDER and EXACTLY AT the ceiling: silence. 100ms is not "over 100ms".
+        assert_eq!(decide_warn(&mut st, "note_open", 0.4, t, 100), None);
+        assert_eq!(decide_warn(&mut st, "note_open", 99.9, t, 100), None);
+        assert_eq!(decide_warn(&mut st, "note_open", 100.0, t, 100), None);
+        assert_eq!(st.emitted, 0, "a healthy run must print ZERO warnings");
+        // OVER: one line, naming the op and the measured ms
+        let l = decide_warn(&mut st, "note_open", 214.68, t, 100).expect("breach must warn");
+        assert!(l.contains("op=note_open"), "{l}");
+        assert!(l.contains("ms=214.7"), "the measured number must be IN the line: {l}");
+        assert!(l.contains("ceiling=100"), "{l}");
+        assert!(l.contains("over=+114.7"), "{l}");
+        assert!(l.starts_with("[perf][SLOW] "), "{l}");
+        assert!(!l.contains("suppressed"), "first line has nothing to summarise: {l}");
+        assert_eq!(st.emitted, 1);
+        // an EXCLUDED op is over the ceiling by design and stays silent
+        for (name, _) in WARN_EXCLUDE {
+            assert_eq!(decide_warn(&mut st, name, 9_999.0, t, 100), None, "{name} warned");
+        }
+        assert_eq!(st.emitted, 1);
+        // a tightened ceiling warns where the pinned one would not
+        let mut st2 = WarnState::new();
+        assert!(decide_warn(&mut st2, "key_to_paint", 40.0, t, 25).is_some());
+    }
+
+    /// THE NOISE BOUND. 500 breaches of one op inside the cooldown produce ONE
+    /// line, and the next line after the window says how many it stood for.
+    #[test]
+    fn a_storm_is_summarised_not_streamed() {
+        let mut st = WarnState::new();
+        let t0 = 5_000_000u64;
+        let mut lines = 0;
+        for i in 0..500u64 {
+            // 500 breaches, 1ms apart = 500ms, well inside the 2000ms cooldown
+            if decide_warn(&mut st, "tab_switch", 300.0, t0 + i, 100).is_some() {
+                lines += 1;
+            }
+        }
+        assert_eq!(lines, 1, "500 breaches in one cooldown window must print ONE line");
+        assert_eq!(st.suppressed_total(), 499);
+        // after the window: one line, carrying the count of what it stands for
+        let l = decide_warn(&mut st, "tab_switch", 300.0, t0 + WARN_COOLDOWN_MS + 1, 100).unwrap();
+        assert!(l.contains("suppressed=499"), "{l}");
+        assert_eq!(st.suppressed_total(), 0, "the counter resets once it has been reported");
+        // the cooldown is PER OP: a different op is not silenced by tab_switch
+        assert!(decide_warn(&mut st, "pane_split", 300.0, t0 + WARN_COOLDOWN_MS + 1, 100).is_some());
+    }
+
+    /// THE STATED BOUND. However bad the machine gets, this feature cannot print
+    /// more than WARN_LINE_BUDGET lines for the life of the process.
+    #[test]
+    fn console_output_is_bounded_by_a_number() {
+        assert_eq!(WARN_LINE_BUDGET, 102, "the documented bound is 1 banner + 100 warnings + 1 notice");
+        let mut st = WarnState::new();
+        let mut lines = 0u32;
+        let mut exhausted = 0u32;
+        // 400 distinct ops, each far over the ceiling, each outside every cooldown
+        for i in 0..400u32 {
+            if let Some(l) = decide_warn(&mut st, &format!("op_{i}"), 5_000.0, 9_000_000 + i as u64 * 10_000, 100) {
+                lines += 1;
+                if l.contains("budget exhausted") {
+                    exhausted += 1;
+                    assert!(l.contains("100 lines printed"), "{l}");
+                }
+            }
+        }
+        assert_eq!(st.emitted, WARN_MAX_LINES, "the cap is the cap");
+        assert_eq!(exhausted, 1, "the budget notice is printed exactly ONCE, then silence");
+        assert_eq!(lines, WARN_LINE_BUDGET - 1, "warnings + notice = the bound minus the banner");
+    }
+
+    /// vsync is the display's cadence, not the app's latency: warning on raw
+    /// wall time would fire on a healthy run under a slow Xvfb.
+    #[test]
+    fn ui_duration_subtracts_the_frame_wait() {
+        let mk = |wall: f64, attrs: Value| Span {
+            name: "note_open".into(),
+            trace_id: new_trace_id(),
+            span_id: new_span_id(),
+            parent_span_id: String::new(),
+            start_ns: 1_000_000_000_000,
+            end_ns: 1_000_000_000_000 + (wall * 1e6) as u128,
+            attrs,
+        };
+        assert!((ui_span_ms(&mk(120.0, json!({}))) - 120.0).abs() < 0.01);
+        // 120ms wall of which 45ms was waiting for the next frame -> 75ms of app
+        assert!((ui_span_ms(&mk(120.0, json!({"vsync_ms": 45.0}))) - 75.0).abs() < 0.01);
+        assert!(decide_warn(&mut WarnState::new(), "note_open", ui_span_ms(&mk(120.0, json!({"vsync_ms": 45.0}))), 1, 100).is_none());
+        assert!(decide_warn(&mut WarnState::new(), "note_open", ui_span_ms(&mk(120.0, json!({}))), 1, 100).is_some());
+        // junk vsync cannot make a duration negative or inflate it
+        assert!((ui_span_ms(&mk(50.0, json!({"vsync_ms": -9.0}))) - 50.0).abs() < 0.01);
+        assert_eq!(ui_span_ms(&mk(50.0, json!({"vsync_ms": 900.0}))), 0.0);
     }
 
     fn first_span(line: &str) -> Value {
