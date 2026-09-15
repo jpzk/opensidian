@@ -196,7 +196,7 @@ pub fn slow_banner() -> String {
     };
     let ex: Vec<&str> = WARN_EXCLUDE.iter().map(|(n, _)| *n).collect();
     format!(
-        "[perf] slow_ms={ms} ceiling={SLOW_MS_CEIL} src=perf.rs:SLOW_MS_CEIL env={env} warmup={WARMUP_MS}ms inject={} budget={} excluded={} ({})",
+        "[perf] slow_ms={ms} ceiling={SLOW_MS_CEIL} src=perf.rs:SLOW_MS_CEIL env={env} warmup={WARMUP_MS}ms cooldown={WARN_COOLDOWN_MS}ms inject={} budget={} excluded={} ({})",
         inject_desc(),
         WARN_LINE_BUDGET,
         ex.join(","),
@@ -738,6 +738,39 @@ mod tests {
         assert!(!is_cold(u64::MAX), "an unstamped process treated a span as cold");
         // the banner states the window as a number
         assert!(slow_banner().contains(&format!(" warmup={WARMUP_MS}ms")), "{}", slow_banner());
+    }
+
+    /// THE THIRD SILENCE CHANNEL. The ceiling is pinned and the warm-up window is
+    /// pinned, but the per-op COOLDOWN silences breaches too, and until this test
+    /// existed every assertion about it was written as `t0 + WARN_COOLDOWN_MS + 1`
+    /// — self-referential, so raising the constant to an hour kept the whole suite
+    /// green while the console went quiet for every repeat breach. A test that
+    /// moves with the number it guards is not a pin. These numbers are LITERALS.
+    #[test]
+    fn cooldown_and_cap_are_pinned_literals_and_envless() {
+        assert_eq!(WARN_COOLDOWN_MS, 2000, "the per-op cooldown moved: it is the third way to silence a warning, so it is pinned like the ceiling");
+        assert_eq!(WARN_MAX_LINES, 100, "the per-process cap moved; 0 would silence the feature entirely while reading as noise reduction");
+        assert_eq!(WARN_LINE_BUDGET, 102, "the stated bound is 1 + 100 + 1");
+
+        // BEHAVIOUR, in literal milliseconds: 1999ms after a warning is silence,
+        // 2000ms is a line. Both directions, so a wider OR narrower window fails.
+        let mut st = WarnState::new();
+        let t0: u64 = 1_000_000;
+        assert!(decide_warn(&mut st, "note_open", 300.0, t0, 100, false).is_some(), "the first breach must warn");
+        assert!(decide_warn(&mut st, "note_open", 300.0, t0 + 1999, 100, false).is_none(), "1999ms after a warning must still be inside the cooldown");
+        let l = decide_warn(&mut st, "note_open", 300.0, t0 + 2000, 100, false)
+            .expect("2000ms after a warning the cooldown is over — a longer window is a loosened rule");
+        assert!(l.contains("suppressed=1"), "the breach held back at 1999ms must be counted, not dropped: {l}");
+
+        // no env var may reach the cooldown, the cap or the budget
+        let src = include_str!("perf.rs");
+        for l in src.lines().filter(|l| l.contains("var_os(") || l.contains("var(")) {
+            for knob in ["COOLDOWN", "MAX_LINES", "LINE_BUDGET"] {
+                assert!(!l.contains(knob), "an env var reaches {knob}: {l}");
+            }
+        }
+        // and the console STATES it: an undeclared blind spot is one nobody thought about
+        assert!(slow_banner().contains(" cooldown=2000ms"), "the banner does not state the cooldown: {}", slow_banner());
     }
 
     /// the out-of-scope table is data a reviewer reads: every entry needs a name
