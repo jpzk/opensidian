@@ -1,3 +1,9 @@
+// rustidian, an Obsidian-compatible markdown notes app.
+// Copyright (C) 2026 Jendrik Poloczek
+// SPDX-License-Identifier: GPL-3.0-or-later
+// This program comes with ABSOLUTELY NO WARRANTY. It is free software, and you
+// are welcome to redistribute it under the terms of the GNU GPL version 3 or
+// (at your option) any later version. See LICENSE, or <https://www.gnu.org/licenses/>.
 /* otel (R18): every invoke carries the innermost open UI action span as the
    `otel` arg, so backend spans nest under it (commands without the param
    ignore it). ui/otel.js owns ids, buffering and the 250ms batched IPC. */
@@ -3096,6 +3102,17 @@ async function applyRename(old, nn) {   // post-rename bookkeeping (F2 / cmdRena
   if (mi >= 0) mruList[mi] = nn;
   for (const h of groups()) renderTabs(h);
   await refreshTree();
+  /* R9.8: the note's name changed, so the rust side rewrote its entry in
+     .rustidian-bookmarks (move_note_in). bmCache is a COPY of that file taken
+     at the last refresh, and the bookmarks pane paints from the cache — so
+     without this line the file is right on disk and the pane still shows the
+     old name until the user switches panes (the pane's own `if (p === "bm")
+     refreshBm()`). Here, not in the two callers: applyRename is the UI's
+     single post-rename choke point, the mirror of move_note_in on the rust
+     side, and both the F2 rename and the R34 title rename (a MOVE) reach it.
+     Re-read rather than patch the cache locally: disk is the truth, and the
+     rewrite rules (index kept, duplicate collapsed) live in one place. */
+  await refreshBm();
   updateTitle();
 }
 
@@ -4491,10 +4508,22 @@ $("settings").onmousedown = e => { if (e.target === $("settings")) closeSettings
    (absolute at every step: a dropped pointermove cannot make the window drift).
    Cost: the window follows the cursor one frame late. R33 records the divergence.
 
-   THE DRAG REGION is the empty part of the TOP row (the strip itself and the
-   background of the top tab bar, never a tab or a button) — stock drags by the
-   same empty tab-row space. `top <= 2` keeps a split pane's own tab bar, halfway
-   down the window, from moving the window instead of doing nothing. */
+   THE DRAG REGION is the empty part of ANY pane header (the strip itself and the
+   background of a tab bar, never a tab or a button) — stock drags by the same
+   empty tab-row space, in every pane, and R37 extends this region from the top
+   row to all of them. It USED to end at `top <= 2`, i.e. the top row only: a
+   split pane's own tab bar, halfway down the window, did nothing at all. That is
+   the case R37 exists to fix, so the test is gone, and with it the only thing
+   that made a non-first pane's header dead space.
+   WHAT STILL MUST NOT DRAG, and why each is safe without an extra test here:
+     - a tab, its close button, .modebtn, #rtoggle: each is its OWN event target,
+       and none of them carries the .tabbar/.tabs class this function requires;
+     - the .wfinset reservation at the right end of the top row: #wframe is
+       `position: fixed; right: 0; width: 140px; z-index: 200` (ui/style.css),
+       i.e. it COVERS exactly the reserved strip, so a press there targets the
+       frame or one of its buttons and never reaches the tab bar underneath.
+       (.wfinset is on at most one row — placeRToggle — and it is always that
+       top-right one, so no lower pane reserves space nobody covers.) */
 /* `var`, not `let`: updateTitle() runs during this file's own top-level init,
    BEFORE execution reaches this block at the bottom — a `let` would still be in
    its temporal dead zone and reading it would throw, turning the whole census
@@ -4527,8 +4556,42 @@ var wfDownT = 0, wfDownX = 0, wfDownY = 0;   // double-press detector (= maximis
 function wfDragRegion(t) {    // is this event target part of the drag region?
   if (!t || !t.classList) return false;
   if (t.id === "wframe") return true;
-  if (!t.classList.contains("tabbar") && !t.classList.contains("tabs")) return false;
-  return t.getBoundingClientRect().top <= 2;      // the TOP row only
+  // R37: ANY pane's tab-bar background, not just the top row's (see the block above)
+  return t.classList.contains("tabbar") || t.classList.contains("tabs");
+}
+/* R37 census [hdr:<i>@<free>/<tab0>/<modebtn>|...] — one entry per pane, in
+   document order, every field an `x,y` CENTRE in CLIENT px (add the window's
+   outer origin to get the screen point xdotool needs), `-` when that thing does
+   not exist here:
+     free    = the middle of the pane header's FREE space, i.e. the R37 drag
+               region: between the last tab's right edge and the right end of
+               .tabs (which already stops before the .wfinset reservation,
+               because that padding is on the .tabbar and .tabs is its content).
+     tab0    = the first tab, the thing that must KEEP switching and reordering.
+     modebtn = the reading-view toggle, which must keep toggling.
+   The smoke must never GUESS these points: a press that lands 1px inside the
+   last tab exercises the tab path, not the window drag, and still "passes".
+   Same reason [stx:] (R33.13) publishes the right strip's buttons. */
+function wfHdrTok() {
+  const ctr = el => {
+    if (!el) return "-";
+    const r = el.getBoundingClientRect();
+    return r.width < 1 || r.height < 1 ? "-" : Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2);
+  };
+  const out = [];
+  let i = 0;
+  for (const el of document.querySelectorAll("#main .pane .tabs")) {
+    i++;
+    const r = el.getBoundingClientRect();
+    let left = r.left;
+    for (const t of el.querySelectorAll(".tab")) left = Math.max(left, t.getBoundingClientRect().right);
+    const free = r.right - left >= 16 && r.height > 4
+      ? Math.round((left + r.right) / 2) + "," + Math.round(r.top + r.height / 2) : "-";
+    const bar = el.parentNode;
+    out.push(i + "@" + free + "/" + ctr(el.querySelector(".tab")) +
+             "/" + ctr(bar && bar.querySelector ? bar.querySelector(".modebtn") : null));
+  }
+  return out.join("|");
 }
 async function wfToggleMax() {
   try { wfMax = await inv("win_toggle_max"); } catch (e) { noteErr(e); }
@@ -4684,6 +4747,6 @@ function wfTok() {
   const g = document.querySelectorAll("#wrz i").length;
   const a = document.activeElement;
   const k = a && a.id && a.id.indexOf("wf-") === 0 ? a.id : "-";
-  return " [wf:" + b + (wfArmed ? "d" : "-") + g + "] [wfm:" + (wfMax ? 1 : 0) + "] [wfk:" + k + "] [wfg:" + wfLast + "] [wfl:" + wfLogA.join(">") + "]";
+  return " [wf:" + b + (wfArmed ? "d" : "-") + g + "] [wfm:" + (wfMax ? 1 : 0) + "] [wfk:" + k + "] [wfg:" + wfLast + "] [wfl:" + wfLogA.join(">") + "] [hdr:" + wfHdrTok() + "]";
 }
 wfArm();

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /* R17 EDITOR CORE (v0.6) — the model/view engine behind Live Preview and
    source mode. Replaces the "caret row becomes a textarea" hybrid (R8.2),
    which re-rendered the whole note per keystroke and mangled list markers

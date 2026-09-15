@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! R12 source mode: "live preview with every marker revealed". One escaped
 //! span-html string per lp block; the row's textContent equals the block's
 //! source byte-for-byte (markers are emitted as text inside `span.mk`), so

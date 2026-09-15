@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /*! R30 — the settings row DATA TABLE.
 
 feedback #19 wants stock Obsidian's settings structure 1:1, with every control

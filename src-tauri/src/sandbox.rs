@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /* Landlock self-sandbox — ON by default, RUSTIDIAN_NO_LANDLOCK=1 disables. Applied once in main()
    BEFORE tauri spawns webkit, so every thread/child process inherits it:
    filesystem writes are confined to the vault, ~/.rustidian.json and the

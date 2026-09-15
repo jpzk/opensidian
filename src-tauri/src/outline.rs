@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! rsidebar: Outline (TOC) — ATX headings from a note's source. Setext
 //! headings are ignored (Obsidian's outline lists them, but they're rare in
 //! wikilink vaults and would need lookahead); lines inside fenced code are

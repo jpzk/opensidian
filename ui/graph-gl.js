@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /* graph-gl: WebGL draw path for the graph view (global + local). DRAW LAYER ONLY —
    physics, hit-testing, labels and the view transform live in main.js startGraph.
    Nodes = one instanced quad per node (radius + colour + ring per instance);
