@@ -4253,11 +4253,30 @@ function sfpEnd() {
    asserts. [spane:<id>/<rows>/<enabled>] is the pane currently BUILT, which is
    how the phase proves a nav click actually swapped the pane (OCR alone cannot
    distinguish "clicked" from "painted the same pane again"). */
+/* [spal:<centre x>,<centre y>,<label>] — the Appearance ▸ Themes control's OWN
+   measured rect and the text it is currently showing, published for the same
+   reason [mg:] publishes the context menu's geometry: the settings-UI route is
+   proven by a phase that must CLICK this control, and a hardcoded coordinate
+   would be a guess that goes stale the moment a row above it gains a line of
+   description. The label is in the token too, so "the control shows the active
+   palette" is assertable without OCR. Absent when the pane holding it is not
+   built — which is itself the assertion that the control is only on Appearance. */
+function spalTok() {
+  const d = document.getElementById("spalette");
+  if (!d) return "";
+  const b = d.getBoundingClientRect();
+  // the same sanitising updateTitle's local tokq does (brackets and | would
+  // break the census grammar); inline because tokq is scoped to updateTitle.
+  const lbl = String(d.textContent || "").replace(/[[\]|]/g, "").slice(0, 40);
+  return " [spal:" + Math.round(b.left + b.width / 2) + "," +
+         Math.round(b.top + b.height / 2) + "," + lbl + "]";
+}
 function setTok() {
   if (!SMODEL) return "";
   const e = SMODEL.rows.reduce((n, r) => n + (r.enabled ? 1 : 0), 0);
   return " [set:" + SMODEL.nav.length + "/" + SMODEL.rows.length + "/" + e + "]" +
          " [spane:" + sPane + "/" + sRowsShown + "/" + sEnabledShown + "]" +
+         spalTok() +
          (sfpMs >= 0 ? " [sfp:" + sfpMs + "/" + sfpMax + "/" +
                        (Math.round(sfpSum / sfpN * 100) / 100) + "/" + sfpN + "]" : "") +
          (sfpW >= 0 ? " [sfpw:" + sfpW + "/" + sfpWMax + "]" : "");
@@ -4274,6 +4293,13 @@ async function openSettings() {
 }
 function closeSettings() {
   settingsOpen = false; hkRec = null;
+  /* THE PANE'S OWN MENU GOES WITH IT (goal/theme-1984). Appearance ▸ Themes
+     opens a .ctxmenu anchored to a control INSIDE this modal; .ctxmenu is
+     position:fixed at z-index 60, so a menu left open when the modal is hidden
+     goes on painting over the note, anchored to a control that is no longer on
+     screen. Measured: 7005 px of a stray Default/1984 card still floating after
+     Esc, which is how the smoke phase found it. */
+  closeMenu();
   $("settings").hidden = true;
   updateTitle();
 }
