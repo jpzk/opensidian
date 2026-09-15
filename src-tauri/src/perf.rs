@@ -182,9 +182,16 @@ pub fn slow_ms() -> u32 {
 }
 
 /// THE ONE LINE this feature prints when nothing is slow. It states the ceiling,
-/// where it is defined, what the env did (including a refusal), and which ops are
+/// where it is defined, what the env did (including a refusal), whether telemetry
+/// is writing at all (`otel=on|off`, straight from [`enabled`]), and which ops are
 /// out of scope — so "unusually long" is a number on the screen, not a claim in a
 /// comment. Exactly one line, always, breach or not.
+///
+/// `otel=` exists because the warning must reach the console in an ORDINARY run,
+/// the one where a user actually feels the lag and no trace file is open. Without
+/// it, a log cannot be told apart from a traced one, and a smoke direction that
+/// claims to be untraced is asserting on its own launcher's intent instead of on
+/// what the process did.
 pub fn slow_banner() -> String {
     let raw = std::env::var(SLOW_ENV).ok();
     let (ms, src) = effective_slow_ms(raw.as_deref());
@@ -196,7 +203,8 @@ pub fn slow_banner() -> String {
     };
     let ex: Vec<&str> = WARN_EXCLUDE.iter().map(|(n, _)| *n).collect();
     format!(
-        "[perf] slow_ms={ms} ceiling={SLOW_MS_CEIL} src=perf.rs:SLOW_MS_CEIL env={env} warmup={WARMUP_MS}ms cooldown={WARN_COOLDOWN_MS}ms inject={} budget={} excluded={} ({})",
+        "[perf] slow_ms={ms} ceiling={SLOW_MS_CEIL} src=perf.rs:SLOW_MS_CEIL env={env} otel={} warmup={WARMUP_MS}ms cooldown={WARN_COOLDOWN_MS}ms inject={} budget={} excluded={} ({})",
+        if enabled() { "on" } else { "off" },
         inject_desc(),
         WARN_LINE_BUDGET,
         ex.join(","),
@@ -698,6 +706,22 @@ mod tests {
         // unset in the test process -> "none"
         assert_eq!(inject_desc(), "none", "a test process must not be rigged");
         assert!(b.contains(&format!(" budget={WARN_LINE_BUDGET}")), "banner hides the stated bound: {b}");
+    }
+
+    /// THE UNTRACED RUN IS A DIRECTION, so the log must say which one it is. The
+    /// smoke phase launches the app three times — injected+traced, clean+traced,
+    /// injected+UNTRACED — and only the third proves the warning is not
+    /// traced-runs-only. Nothing in a log distinguished the third from the first,
+    /// so the phase had to trust its own launcher. The banner now reports
+    /// [`enabled`] verbatim, and it agrees with it in both states.
+    #[test]
+    fn banner_reports_whether_telemetry_is_writing() {
+        let b = slow_banner();
+        let want = if enabled() { " otel=on " } else { " otel=off " };
+        assert!(b.contains(want), "banner does not state the telemetry state as {want:?}: {b}");
+        // exactly one of the two, never both, and still one line
+        assert_ne!(b.contains(" otel=on "), b.contains(" otel=off "), "ambiguous otel= field: {b}");
+        assert!(!b.contains('\n'), "the banner is ONE line: {b}");
     }
 
     /// THE WARM-UP WINDOW, both directions. A breach that STARTED cold is silent
