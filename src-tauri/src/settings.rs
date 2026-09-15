@@ -28,7 +28,7 @@ pub const NAV_TSV: &str = include_str!("../../docs/stock-settings-recon/nav.tsv"
 
 /// Keys that really exist in ~/.rustidian.json handling (main.rs cfg_value()).
 /// `config_keys_are_all_read_or_written_by_main` pins this list to the source.
-pub const CONFIG_KEYS: &[&str] = &["last", "list", "sidebar_w", "rside_tab", "hotkeys", "theme", "zoom"];
+pub const CONFIG_KEYS: &[&str] = &["last", "list", "sidebar_w", "rside_tab", "hotkeys", "theme", "palette", "zoom"];
 
 /// (tab, label) -> config key. A row named here is the ONLY kind that renders
 /// enabled. Today: the Hotkeys tab, whose filter, scope chips and command rows
@@ -38,6 +38,13 @@ const BACKED: &[(&str, &str, &str)] = &[
     ("hotkeys", "(filter field)", "hotkeys"),
     ("hotkeys", "(scope chips)", "hotkeys"),
     ("hotkeys", "(command rows)", "hotkeys"),
+    // the PALETTE axis (goal/theme-1984). Stock's Appearance > Themes row is
+    // literally "Manage installed themes" — a dropdown naming the active theme —
+    // so the palette selector belongs on the row stock already put it on, not on
+    // a row we invent. It is backed by "palette", which main.rs really reads and
+    // writes (get_palette / set_palette); "Base color scheme" one row above
+    // stays disabled because that is the MODE axis and its control is Ctrl+P.
+    ("appearance", "Themes", "palette"),
 ];
 
 /// nav entry -> tab id used in structure.tsv's first column
@@ -275,7 +282,7 @@ mod tests {
             }
         }
         let enabled = rows().iter().filter(|r| r.enabled).count();
-        assert_eq!(enabled, 3, "enabled-row count changed — say why in progress.md (R30)");
+        assert_eq!(enabled, 4, "enabled-row count changed — say why in progress.md (R30)");
     }
 
     /// a key is "real" only if main.rs actually reads or writes it
