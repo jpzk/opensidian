@@ -90,23 +90,27 @@ pub const SLOW_ENV: &str = "RUSTIDIAN_SLOW_MS";
 /// COLD and does not warn — it is recorded and reported as `cold=<ms>` on that
 /// op's next warning, so the number is deferred, never destroyed.
 ///
-/// WHY THIS EXISTS, measured rather than assumed. On :82, four note opens in a
-/// healthy run (docs/perf-console/cold-ramp.log, offsets from process start):
-///   +116ms note_open 144ms   <- STARTS INSIDE the 238ms `boot` span
-///   +968ms note_open  76ms
-///  +1437ms note_open   4ms
-///  +1909ms note_open   6ms
-///  +2401ms note_open   6ms
-/// Steady state is 4-6ms; the first open is 24x that and it begins BEFORE the app
-/// has finished booting. Warning on it would put a line in the console on EVERY
-/// launch, at the same point, forever — output at a constant rate, which is the
-/// exact noise this feature exists to avoid and the fastest way to train a
+/// WHY THIS EXISTS, measured rather than assumed. Five note opens in the CLEAN
+/// half of phase `perfslow`, the gate's own run at 3c4a80a on :82 — the full
+/// capture, its provenance and the command that reproduces it are committed in
+/// docs/perf-console/cold-ramp.log (offsets from the start of the `boot` span):
+///   +125ms note_open 169ms   <- STARTS INSIDE the 255ms `boot` span
+///   +973ms note_open  77ms
+///  +1440ms note_open  10ms
+///  +1928ms note_open  11ms
+///  +2441ms note_open  11ms
+/// Steady state is 10-11ms; the first open is 15x that and it begins BEFORE the
+/// app has finished booting. Warning on it would put a line in the console on
+/// EVERY launch, at the same point, forever — output at a constant rate, which is
+/// the exact noise this feature exists to avoid and the fastest way to train a
 /// developer to ignore the console. The cost is real, and it is boot's.
 ///
 /// PINNED, like the ceiling: no env var reads it, so nobody can widen the window
 /// to hide a regression (proved by warmup_window_is_pinned_and_envless).
-/// The measured ramp ends by ~1.0s; 2000 is ~2x that, and it is the largest
-/// number that still leaves the interactive part of a scenario judged.
+/// The ramp is over by +1440ms in that run; 2000 is 1.4x that, and it is the
+/// largest number that still leaves the interactive part of a scenario judged —
+/// the 5th open at +2441ms IS judged, and is silent because it is fast (11ms),
+/// not because it is cold.
 pub const WARMUP_MS: u64 = 2000;
 
 /// unix ms at process start, stamped by main() before anything is measured.
