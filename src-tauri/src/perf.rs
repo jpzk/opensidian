@@ -20,7 +20,7 @@
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::ffi::OsString;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -43,6 +43,39 @@ fn target() -> Option<&'static PathBuf> {
 /// true when RUSTIDIAN_OTEL / RUSTIDIAN_PERF is set (checked once per process)
 pub fn enabled() -> bool {
     target().is_some()
+}
+
+/* R18.1 THE SINK IS AN OPEN FD, NOT A PATH RE-OPENED PER SPAN.
+   Landlock filters PATH LOOKUPS; it does not revoke a descriptor that is
+   already open. rustidian confines itself to `sandbox::write_roots()` before
+   the webview starts, so on a landlock kernel every later `open(RUSTIDIAN_OTEL)`
+   is EACCES whenever the target sits outside vault/cfg/~.cache//tmp//run//dev//var/tmp.
+   `emit`'s error is swallowed by every caller ("telemetry must never break the
+   app"), so R18.1 — "with RUSTIDIAN_OTEL=<file> set, the app appends one
+   OTLP/JSON line per span" — became SILENTLY FALSE the day the app first ran on
+   a kernel that enforces the sandbox: app ran, spans were built, file never
+   existed, nothing said so. Measured on the Hetzner box (kernel 6.8, landlock
+   FullyEnforced, gate $OUT=/srv/out/<goal>): 0 bytes written, 0 diagnostics.
+   Opening HERE, before `sandbox::enforce`, makes the sink work wherever it
+   points — without widening the ruleset by one path. */
+static SINK: OnceLock<Mutex<File>> = OnceLock::new();
+
+/// Open the RUSTIDIAN_OTEL / RUSTIDIAN_PERF target and keep the fd for the life
+/// of the process. MUST be called BEFORE `sandbox::enforce()` — after it, a
+/// target outside the write roots can no longer be opened at all.
+/// No-op when the env is unset (R18.3: unset = zero cost, no file, no syscall).
+/// It prints EITHER WAY: a telemetry run that writes nothing must say so, since
+/// the downstream reader (`otel-flat.sh`, the smoke's span windows) can only
+/// see an empty file and cannot tell "no spans" from "no permission".
+pub fn open_sink() {
+    let Some(p) = target() else { return };
+    match OpenOptions::new().create(true).append(true).open(p) {
+        Ok(f) => {
+            let _ = SINK.set(Mutex::new(f));
+            eprintln!("otel: sink {} open (fd held across the sandbox)", p.display());
+        }
+        Err(e) => eprintln!("otel: sink {} UNWRITABLE ({e}) — R18.1 telemetry is OFF for this run", p.display()),
+    }
 }
 
 /// trace context handed in by the frontend (invoke arg `otel`): the UI action
@@ -145,6 +178,14 @@ pub fn emit(path: &Path, spans: &[Span]) -> std::io::Result<()> {
     }
     let mut line = request(spans).to_string();
     line.push('\n');
+    // the process sink, when this is the process's own target: ONE write_all
+    // through the fd opened before the sandbox closed (see SINK above).
+    if let (Some(m), Some(t)) = (SINK.get(), target()) {
+        if t == path {
+            let mut f = m.lock().unwrap_or_else(|e| e.into_inner());
+            return f.write_all(line.as_bytes());
+        }
+    }
     static W: Mutex<()> = Mutex::new(());
     let _g = W.lock().unwrap_or_else(|e| e.into_inner());
     let mut f = OpenOptions::new().create(true).append(true).open(path)?;
@@ -345,5 +386,63 @@ mod tests {
             assert_eq!(v["resourceSpans"][0]["scopeSpans"][0]["spans"].as_array().unwrap().len(), 4);
         }
         let _ = std::fs::remove_file(&p);
+    }
+
+    /* R18.1 UNDER AN ENFORCED SANDBOX — the regression this file's SINK exists
+       for. The old `emit` re-opened RUSTIDIAN_OTEL for every span; on a kernel
+       that enforces landlock that open is EACCES for any target outside the
+       write roots, and the error is swallowed, so telemetry died in silence.
+       The test asserts BOTH halves on the same enforced thread:
+         by_path == false   the old behaviour would write nothing (the bug)
+         by_fd   == true    a descriptor opened BEFORE enforce still writes
+       $HOME itself is the "outside" path: sandbox grants ReadDir on it and
+       write on ~/.cache only, which is exactly the shape of the gate's
+       /srv/out/<goal>. On a kernel with no landlock the test SKIPS LOUDLY —
+       it prints what the kernel lacks, it never passes vacuously. */
+    #[test]
+    fn otel_sink_survives_the_sandbox_that_kills_a_path_open() {
+        use crate::sandbox;
+        use std::io::Write as _;
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+            eprintln!("otel sink test SKIPPED: no HOME in the environment");
+            return;
+        };
+        let base = std::env::temp_dir().join(format!("rustidian-otelsink-{}", std::process::id()));
+        let (vault, cfg) = (base.join("vault"), base.join("cfg.json"));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&vault).unwrap();
+        // outside every write root, like the gate's $OUT
+        let sink_path = home.join(format!(".rustidian-otel-sink-{}.jsonl", std::process::id()));
+        let _ = std::fs::remove_file(&sink_path);
+        let pre = OpenOptions::new().create(true).append(true).open(&sink_path).expect("pre-open (before enforce)");
+        let (sp, v2, c2) = (sink_path.clone(), vault.clone(), cfg.clone());
+        // restrict_self is per-thread: enforce in a child, keep the parent free to clean up
+        let res = std::thread::spawn(move || {
+            match sandbox::enforce(&v2, &c2) {
+                Err(e) => {
+                    eprintln!("otel sink test SKIPPED: this kernel cannot enforce landlock ({e})");
+                    None
+                }
+                Ok(landlock::RulesetStatus::NotEnforced) => {
+                    eprintln!("otel sink test SKIPPED: landlock reported NotEnforced on this kernel");
+                    None
+                }
+                Ok(_) => {
+                    let by_path = OpenOptions::new().create(true).append(true).open(&sp).is_ok();
+                    let mut f = pre;
+                    let by_fd = f.write_all(b"{\"resourceSpans\":[]}\n").and_then(|_| f.flush()).is_ok();
+                    Some((by_path, by_fd))
+                }
+            }
+        })
+        .join()
+        .unwrap();
+        let bytes = std::fs::metadata(&sink_path).map(|m| m.len()).unwrap_or(0);
+        let _ = std::fs::remove_file(&sink_path);
+        let _ = std::fs::remove_dir_all(&base);
+        if let Some(r) = res {
+            assert_eq!(r, (false, true), "(open-by-path, write-through-held-fd) under an enforced ruleset");
+            assert_eq!(bytes, 21, "the held fd really wrote the line ({bytes} bytes)");
+        }
     }
 }
