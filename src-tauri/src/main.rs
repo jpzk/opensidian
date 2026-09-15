@@ -801,6 +801,15 @@ fn move_note_in(root: &Path, ix: &mut Index, old: &str, new: &str) -> Result<(us
     // moved file rather than dropping the note
     let fallback = if ix.content(&okey).is_none() { fs::read_to_string(&np).ok() } else { None };
     ix.move_key(&okey, &nkey, fallback);
+    // R9.8: the note's name changed, so its BOOKMARK follows it — here, after
+    // the rename is a fact on disk, and never before: everything above this
+    // line can still return Err, and a refused rename must leave
+    // .rustidian-bookmarks byte-for-byte unchanged. See rename_bookmark_in.
+    // This is also the reason the fix is not in rename_in: the move_note
+    // command calls move_note_in DIRECTLY, so a note MOVED to another folder
+    // changes its vault-relative name by exactly this code and keeps its
+    // bookmark for free.
+    rename_bookmark_in(root, &okey, &nkey);
     Ok(radius)
 }
 
@@ -1849,6 +1858,66 @@ fn read_bookmarks(root: &Path) -> Vec<String> {
         .collect()
 }
 
+/* the ONE serializer. toggle_bookmark and rename_bookmark_in must not each
+   spell the format out — a trailing newline present in one writer and absent
+   in the other is a diff nobody reads until a byte-for-byte test fails. */
+fn write_bookmarks(root: &Path, list: &[String]) -> Result<(), String> {
+    let mut body = list.join("\n");
+    if !body.is_empty() {
+        body.push('\n');
+    }
+    fs::write(root.join(BM_FILE), body).map_err(|e| e.to_string())
+}
+
+/* R9.8 — a bookmark IS a vault-relative name, so the note that changes its
+   name takes its bookmark with it. Called from move_note_in and nowhere else:
+   that is the one function that knows both ends, and it is the function BOTH
+   the rename path (rename_in) and the move path (the move_note command) go
+   through, so a moved note keeps its bookmark by the same code that a renamed
+   one does. Duplicating this into the two callers is how the two drift apart.
+
+   Rules, each one a test in `mod tests`:
+   - the entry keeps its INDEX. Order is insertion order and that is the order
+     the pane paints, so a bookmark must not fall to the bottom because its
+     note was renamed. Hence the rebuild-in-place rather than remove+push.
+   - a note that was NOT bookmarked gains nothing, and the file is not even
+     rewritten — nothing to follow means no write at all.
+   - NO bookmarks file means no bookmarks: we do not materialise an empty one
+     as a side effect of a rename.
+   - renaming onto a name that is ALREADY bookmarked (possible: the target
+     name may be a stale bookmark with no file, so the kernel does not refuse
+     the rename) collapses to ONE entry, at the old entry's position.
+   - best-effort by design: the note is already moved when we get here. A
+     bookmarks file we cannot write is not a reason to report the rename as
+     failed — that would be a lie about the note, which is the thing that
+     matters. It is also why the call sits AFTER fs::rename: a rename refused
+     by create_new(2) returns before this line, so the file is untouched. */
+fn rename_bookmark_in(root: &Path, old: &str, new: &str) {
+    if old == new {
+        return;
+    }
+    let p = root.join(BM_FILE);
+    if !p.is_file() {
+        return; // no bookmarks file: nothing to follow, nothing to create
+    }
+    let list = read_bookmarks(root);
+    let at = match list.iter().position(|b| b == old) {
+        Some(i) => i,
+        None => return, // this note was not bookmarked — do not touch the file
+    };
+    let mut out: Vec<String> = Vec::with_capacity(list.len());
+    for (i, b) in list.iter().enumerate() {
+        if i == at {
+            out.push(new.to_string()); // in place: same index as before
+        } else if b == new || b == old {
+            continue; // no duplicate, and collapse a hand-written repeat
+        } else {
+            out.push(b.clone()); // every other note's bookmark, verbatim
+        }
+    }
+    let _ = write_bookmarks(root, &out);
+}
+
 fn toggle_in(mut list: Vec<String>, name: &str) -> Vec<String> {
     match list.iter().position(|b| b == name) {
         Some(i) => { list.remove(i); }
@@ -1866,11 +1935,7 @@ fn list_bookmarks(v: State<Vault>) -> Vec<String> {
 fn toggle_bookmark(v: State<Vault>, name: String) -> Result<Vec<String>, String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
     let list = toggle_in(read_bookmarks(&root), &name);
-    let mut body = list.join("\n");
-    if !body.is_empty() {
-        body.push('\n');
-    }
-    fs::write(root.join(BM_FILE), body).map_err(|e| e.to_string())?;
+    write_bookmarks(&root, &list)?;
     Ok(list)
 }
 
@@ -3080,6 +3145,157 @@ mod tests {
         let l = toggle_in(l, "A");               // second toggle removes
         assert_eq!(l, vec!["sub/B"]);
         assert!(toggle_in(l, "sub/B").is_empty());
+    }
+
+    /* ---- R9.8: a renamed or MOVED note takes its bookmark with it ----
+       Every test below drives the real functions against a real vault on
+       disk, because the thing under test is a FILE (.rustidian-bookmarks)
+       and half the cases are about bytes that must NOT change. */
+
+    /// seed a vault with a bookmarks file, in toggle_bookmark's exact format
+    fn bm_seed(root: &Path, names: &[&str]) {
+        let list: Vec<String> = names.iter().map(|s| s.to_string()).collect();
+        write_bookmarks(root, &list).unwrap();
+    }
+
+    fn bm_bytes(root: &Path) -> Vec<u8> {
+        fs::read(root.join(BM_FILE)).unwrap()
+    }
+
+    /// R9.8 criterion 1: the new name is there, the old one is gone, and the
+    /// entry holds the SAME INDEX — the pane renders insertion order, so a
+    /// bookmark that fell to the bottom would be a visible regression.
+    #[test]
+    fn r9_8_rename_keeps_the_bookmark_at_its_index() {
+        let root = tmp_vault("bm-idx");
+        fs::write(root.join("A.md"), "a").unwrap();
+        fs::write(root.join("Old.md"), "self [[Old]]").unwrap();
+        fs::write(root.join("Z.md"), "z").unwrap();
+        bm_seed(&root, &["A", "Old", "Z"]);
+        assert_eq!(read_bookmarks(&root).iter().position(|b| b == "Old"), Some(1));
+        let mut ix = Index::build(&root);
+        rename_in(&root, &mut ix, "Old", "New").unwrap();
+        let after = read_bookmarks(&root);
+        assert!(after.contains(&"New".to_string()), "new name bookmarked: {after:?}");
+        assert!(!after.contains(&"Old".to_string()), "old name gone: {after:?}");
+        assert_eq!(after.iter().position(|b| b == "New"), Some(1), "same index: {after:?}");
+        assert_eq!(after, vec!["A", "New", "Z"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// R9.8 criterion 2: a MOVE into another folder changes the
+    /// vault-relative name too, and it goes through move_note_in — the
+    /// command's own path, asserted here rather than assumed from the source.
+    #[test]
+    fn r9_8_move_to_another_folder_keeps_the_bookmark() {
+        let root = tmp_vault("bm-move");
+        fs::write(root.join("Note.md"), "n").unwrap();
+        fs::write(root.join("Keep.md"), "k").unwrap();
+        bm_seed(&root, &["Note", "Keep"]);
+        let mut ix = Index::build(&root);
+        // move_note_in DIRECTLY: this is what the move_note command calls,
+        // without rename_in's link rewrite
+        move_note_in(&root, &mut ix, "Note", "sub/Note").unwrap();
+        assert!(root.join("sub/Note.md").is_file());
+        assert_eq!(read_bookmarks(&root), vec!["sub/Note", "Keep"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// R9.8: a note that was NOT bookmarked gains no bookmark.
+    #[test]
+    fn r9_8_unbookmarked_note_gains_no_bookmark() {
+        let root = tmp_vault("bm-none");
+        fs::write(root.join("Plain.md"), "p").unwrap();
+        fs::write(root.join("Fav.md"), "f").unwrap();
+        bm_seed(&root, &["Fav"]);
+        let before = bm_bytes(&root);
+        let mut ix = Index::build(&root);
+        rename_in(&root, &mut ix, "Plain", "Plain2").unwrap();
+        assert_eq!(read_bookmarks(&root), vec!["Fav"]);
+        assert_eq!(bm_bytes(&root), before, "file not even rewritten");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// R9.8: renaming onto a name that is ALREADY bookmarked leaves ONE
+    /// entry, not two. Reachable because a bookmark can be stale (its note
+    /// deleted), so the kernel does not refuse the rename.
+    #[test]
+    fn r9_8_rename_onto_a_bookmarked_name_leaves_no_duplicate() {
+        let root = tmp_vault("bm-dup");
+        fs::write(root.join("Old.md"), "o").unwrap();
+        // "New" is bookmarked but has NO file — a stale bookmark
+        bm_seed(&root, &["Old", "New", "Tail"]);
+        let mut ix = Index::build(&root);
+        rename_in(&root, &mut ix, "Old", "New").unwrap();
+        let after = read_bookmarks(&root);
+        assert_eq!(after.iter().filter(|b| *b == "New").count(), 1, "one entry: {after:?}");
+        assert_eq!(after, vec!["New", "Tail"], "kept the old entry's position");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// R9.8: a case-only rename is a rename like any other.
+    #[test]
+    fn r9_8_case_only_rename_is_followed() {
+        let root = tmp_vault("bm-case");
+        fs::write(root.join("Note.md"), "n").unwrap();
+        bm_seed(&root, &["Note"]);
+        let mut ix = Index::build(&root);
+        rename_in(&root, &mut ix, "Note", "note").unwrap();
+        assert_eq!(read_bookmarks(&root), vec!["note"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// R9.8: every OTHER note's bookmark survives byte for byte.
+    #[test]
+    fn r9_8_other_bookmarks_are_byte_for_byte_unchanged() {
+        let root = tmp_vault("bm-others");
+        fs::write(root.join("A.md"), "a").unwrap();
+        fs::write(root.join("Old.md"), "o").unwrap();
+        fs::write(root.join("sub/Z.md"), "z").unwrap();
+        bm_seed(&root, &["A", "Old", "sub/Z"]);
+        let before = bm_bytes(&root);
+        let mut ix = Index::build(&root);
+        rename_in(&root, &mut ix, "Old", "New").unwrap();
+        let after = bm_bytes(&root);
+        // the ONLY difference is the renamed line
+        assert_eq!(
+            String::from_utf8(before).unwrap().replace("Old\n", "New\n"),
+            String::from_utf8(after).unwrap()
+        );
+        assert_eq!(read_bookmarks(&root), vec!["A", "New", "sub/Z"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// R9.8: a vault with NO bookmarks file does not grow one as a side
+    /// effect of a rename. An empty file is a different state from no file —
+    /// it is what the pane would read, and it is litter in someone's vault.
+    #[test]
+    fn r9_8_vault_without_bookmarks_file_gains_none() {
+        let root = tmp_vault("bm-absent");
+        fs::write(root.join("Old.md"), "o").unwrap();
+        assert!(!root.join(BM_FILE).exists());
+        let mut ix = Index::build(&root);
+        rename_in(&root, &mut ix, "Old", "New").unwrap();
+        assert!(!root.join(BM_FILE).exists(), "no bookmarks file materialised");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// R9.8 criterion 4: a rename REFUSED by the kernel (create_new(2) on a
+    /// target that exists) leaves the bookmarks file byte for byte unchanged.
+    /// Asserted with a genuinely failed rename, not by reading the source.
+    #[test]
+    fn r9_8_refused_rename_leaves_bookmarks_unchanged() {
+        let root = tmp_vault("bm-refused");
+        fs::write(root.join("Old.md"), "o").unwrap();
+        fs::write(root.join("Taken.md"), "t").unwrap(); // the collision
+        bm_seed(&root, &["Old", "Taken"]);
+        let before = bm_bytes(&root);
+        let mut ix = Index::build(&root);
+        let e = rename_in(&root, &mut ix, "Old", "Taken").unwrap_err();
+        assert_eq!(e, "target exists", "the rename really was refused");
+        assert!(root.join("Old.md").is_file(), "the note did not move");
+        assert_eq!(bm_bytes(&root), before, "bookmarks untouched after a failed rename");
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
