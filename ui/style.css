@@ -747,8 +747,12 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
    This selector list used to be two rules that a comment PROMISED were the same
    ("repeats the ::before's type declarations verbatim"). They were not, and a
    promise in a comment is not a mechanism: `scripts/smoke.sh fast titletype`
-   measured 25.888px rendered against 22.652px editing, family ui-sans-serif
-   against system-ui, colour rgb(218,218,218) against rgb(205,214,244).
+   measured the two surfaces apart on THREE axes — size (1.618em resolving
+   against a 16px base on one and a 14px base on the other), family (the
+   --font-text stack against the body's system-ui fallback), and colour
+   (--text-normal against --text-chrome). The NUMBERS deliberately do not live
+   here: this file is where the false claim lived, so the measurement stays in
+   the phase's log, where every run re-takes it.
    Now there is ONE rule, so the two surfaces cannot drift by editing: every
    declaration here lands on the ::before that PAINTS the title and on the
    .titleedit that replaces it while renaming. What each needs on its own —
