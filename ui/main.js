@@ -3446,15 +3446,29 @@ async function startGraph(g, cfg) {
   // STEP toward 0 (alpha += -alpha*ALPHA_DECAY; 0.001 after 300 steps) and
   // physics freezes below 0.001. Physics steps are wall-clock-locked at PH_HZ/s
   // (substepped inside rAF): a throttled/headless rAF must not stretch settle.
-  // Catch-up is capped at PH_CAP s of sim time per frame (PH_CAP*PH_HZ steps,
-  // ~1.5-3 ms each at N=500 debug): a loaded host hands rAF gaps of 250-500 ms,
-  // and every gap beyond the cap is sim time LOST, which stretches settle
-  // (bench: 6 capped frames = +1.2 s at the old 0.25 cap). A hidden tab
-  // returning after minutes bursts at most 300 steps (alpha floor) anyway.
+  // Catch-up is bounded TWICE, and the bound is the frame-time budget: at most
+  // PH_STEP_CAP steps of sim time may be owed at the top of a frame
+  // (PH_STEP_CAP/PH_HZ s), and the substep loop also stops once it has spent
+  // PH_BUDGET_MS of WALL time inside one frame, whichever binds first. The old
+  // bound was sim time only (PH_CAP = 1 s = 120 substeps/frame) and was argued
+  // for, never measured: "every gap beyond the cap is sim time LOST, which
+  // stretches settle". Measured at N=3000 (docs/graph-perf, item 8) that trade
+  // is real but one-sided — a step costs 6.13 ms here, so an unbounded catch-up
+  // converts every scheduler gap the host hands rAF into MORE steps in the next
+  // frame: hot_frames x steps/frame = 300.0 in every run at every load (the
+  // alpha floor fixes the TOTAL work), and load only repackages that constant
+  // into fewer, fatter frames — 11.54 steps = 78 ms, 18.75 steps = 129 ms.
+  // The frame is the thing the user feels; the settle is the thing the cap
+  // costs. Prediction and arithmetic committed before this change (item 8):
+  // S=7 => frame 50.2 ms (-35.7%), settle ~3.29 s (+15%), steps/frame pinned at
+  // the cap, per-step physics unchanged. Sim time beyond the cap is still lost;
+  // that is now a measured 15% on settle, not an unmeasured 1 s of debt.
+  // A hidden tab returning after minutes bursts at most 300 steps (alpha floor)
+  // anyway, and now drains them at PH_STEP_CAP per frame instead of 120.
   // perf-graph: the rAF loop is NOT unconditional — it runs while physics is
   // hot (alpha > ALPHA_MIN and kinetic energy above eps) and stops otherwise
   // (CPU 0); wake() restarts it on refresh (reheat), pan, zoom, hover, resize, close.
-  const PH_HZ = 120, PH_CAP = 1, ALPHA_MIN = 0.001, ALPHA_DECAY = 1 - Math.pow(0.001, 1 / 300);
+  const PH_HZ = 120, PH_STEP_CAP = 7, PH_BUDGET_MS = 40, ALPHA_MIN = 0.001, ALPHA_DECAY = 1 - Math.pow(0.001, 1 / 300);
   let alpha = 1, phAcc = 0, phLast = performance.now();
   // settled = total kinetic energy (sum v^2) under 0.0025 px^2/step per node
   // (mean speed < 0.05 px/step, invisible) for 10 consecutive steps, or physics frozen
@@ -3716,10 +3730,12 @@ async function startGraph(g, cfg) {
     }
     const fT0 = perf.now(); let steps = 0, ke = -1;
     if (rcSnap && rcSnap.vraw === undefined) rcPre();   // C5: before this frame's physics
-    phAcc = Math.min(phAcc + (now - phLast) / 1000, PH_CAP); phLast = now;
+    phAcc = Math.min(phAcc + (now - phLast) / 1000, PH_STEP_CAP / PH_HZ); phLast = now;
+    const phT0 = perf.now();
     while (phAcc >= 1 / PH_HZ) {
       phAcc -= 1 / PH_HZ;
       if (!quiet && alpha > ALPHA_MIN) { physStep(); steps++; }
+      if (steps && perf.now() - phT0 >= PH_BUDGET_MS) { phAcc = 0; break; }   // wall-clock backstop: a costlier step (bigger N) must not lengthen the frame
     }
     const fT1 = perf.now();
     if (!quiet && (steps || alpha <= ALPHA_MIN)) {
