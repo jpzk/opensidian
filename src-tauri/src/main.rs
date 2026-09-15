@@ -1086,6 +1086,21 @@ fn graph_renderer_pref() -> serde_json::Value {
     })
 }
 
+/// R34.18 inline-title TYPE PROBE — a test-only hook, OFF unless RUSTIDIAN_TYPEPROBE=1.
+/// It buys the smoke two things it cannot get from outside the webview:
+///   1. the census publishes [tty:]/[lpc:] — computed type of the rendered title
+///      and of the caret surface, and the scroller's child-list signature;
+///   2. three chords (ctrl+alt+shift+1/2/3) perturb the caret surface's type,
+///      restore it, and move --font-text-size, so `fast titletype` can show its
+///      own assertions going RED and back GREEN inside ONE run.
+/// Gating it here (rather than publishing the tokens always) is deliberate: no
+/// pre-existing phase's census string changes, so the gate keeps judging the
+/// same bytes it judged before.
+#[tauri::command]
+fn type_probe() -> bool {
+    std::env::var("RUSTIDIAN_TYPEPROBE").as_deref() == Ok("1")
+}
+
 /// F2 (dataloss-audit) test hook: the vault-switch race lives INSIDE the save
 /// debounce window, so at 250ms it is not mechanically reproducible.
 /// RUSTIDIAN_SAVE_MS widens the window for the smoke; every normal run gets
@@ -2350,7 +2365,7 @@ fn main() {
             list_notes, list_images, read_note, write_note, create_note, render, render_blocks, block_lines, highlight_blocks, graph, graph_local, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, recent_vaults, rename_note, move_note, update_links, link_consent, set_link_consent, tags, tag_counts,
-            get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref,
+            get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
             win_rect, win_gesture, win_minimize, win_toggle_max, win_close,

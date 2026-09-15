@@ -1075,6 +1075,22 @@ function updateTitle() {          // pane/focus census in the window title (head
      would read one higher here and break every positional index silently. */
   if (titling) md += " [te:" + titling.el.textContent.replace(/[[\]|/]/g, "") +
                      "/" + (titling.g.lp ? titling.g.lp.children.length : -1) + "]";
+  /* R34.18 — the two surfaces, MEASURED, not claimed (see tpType above).
+     [tty:<rendered>~<editing>], each side
+       font-size/weight/letter-spacing/line-height/colour/family-hash/family-head
+     read with getComputedStyle from the live DOM: the ::before that paints the
+     rendered title, and the .titleedit that stands in for it while renaming.
+     [lpc:] is the scroller's child-list signature (R34.15), published open AND
+     closed so the phase can diff the two instead of trusting the comment.
+     [tpf:] is --font-text-size as the document actually resolves it, which is
+     what makes the size-independence re-run readable in the log. */
+  if (typeProbe && md) {
+    if (titling) md += " [tty:" + tpType(getComputedStyle(titling.host, "::before")) +
+                       "~" + tpType(getComputedStyle(titling.el)) + "]";
+    if (fg() && fg().lp) md += " [lpc:" + tpKids(fg().lp) + "]";
+    md += " [tpf:" + getComputedStyle(document.documentElement).getPropertyValue("--font-text-size").trim() +
+          "/" + (tpPerturb || "-") + "]";
+  }
   // R17: renderer/token-map self test. A failure names its FIRST bad case
   // (Ed.edtWhy) so the smoke log says what broke, not just how many.
   if (edtBad >= 0) md += " [edt:" + (edtBad ? "fail" + edtBad + ":" + (Ed.edtWhy || "?") : "ok") + "]";
@@ -1731,6 +1747,57 @@ function setInlineTitle(v, name) {
 let titling = null;          // {g, host, wrap, el, name, orig} while the title is being edited
 const titleEditing = () => !!titling;
 
+/* ---------- R34.18 TYPE PROBE (test-only, RUSTIDIAN_TYPEPROBE=1) ------------
+   The operator's report was "renaming the h1 changes the font-size/decoration",
+   and ui/style.css answered it with a COMMENT ("repeats the ::before's type
+   declarations verbatim"). A comment is what produced the bug. So the two
+   surfaces are made MEASURABLE instead: this probe reads getComputedStyle off
+   the LIVE DOM — the ::before that draws the rendered title, and the .titleedit
+   that replaces it — and publishes both in the census, so a phase compares the
+   two surfaces to EACH OTHER and never to a pixel literal.
+   Everything here is inert unless the backend hook says the env var is set:
+   no pre-existing phase sees a changed census, and a shipped build has no
+   perturbation chords. */
+let typeProbe = false;
+inv("type_probe").then(v => { typeProbe = !!v; if (typeProbe) tpInstall(); }).catch(() => {});
+let tpPerturb = "";          // the negative control's forced font-size on .titleedit ("" = none)
+const tpHash = s => {        // FNV-1a/32 — font stacks are 250+ chars; the census compares
+  let h = 2166136261;        // the HASH and prints the head, so "same family" is a measurement
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0).toString(16).padStart(8, "0");
+};
+const tpFam = s => s.split(",")[0].replace(/["']/g, "").trim().slice(0, 16).replace(/[[\]|/~ ]/g, "_");
+const tpType = cs => [cs.fontSize, cs.fontWeight, cs.letterSpacing, cs.lineHeight,
+                      cs.color.replace(/\s+/g, ""), tpHash(cs.fontFamily), tpFam(cs.fontFamily)].join("/");
+/* the scroller's child list as a STRING, so R34.15 is proved byte-for-byte
+   instead of by a count: one "<tag>.<class>" per child, plus the length. A
+   caret surface that became a row changes this token; a count alone would not
+   notice a swap. Published whenever a live-preview scroller exists, so the
+   phase can read it with the editor CLOSED and OPEN and diff the two. */
+const tpKids = lp => {
+  if (!lp) return "-";
+  const sig = [...lp.children].map(c => c.tagName.toLowerCase() + "." +
+                (c.className || "-").toString().replace(/[[\]|/~ ]/g, "_")).join(",");
+  return lp.children.length + ":" + tpHash(sig) + ":" + sig.slice(0, 90);
+};
+function tpInstall() {       // the three chords, capture-phase so a focused contenteditable cannot eat them
+  window.addEventListener("keydown", e => {
+    if (!(e.ctrlKey && e.altKey && e.shiftKey)) return;
+    if (e.key === "1" || e.code === "Digit1") {          // PERTURB the caret surface's type
+      tpPerturb = "31px";
+      if (titling) titling.el.style.fontSize = tpPerturb;
+    } else if (e.key === "2" || e.code === "Digit2") {   // RESTORE it
+      tpPerturb = "";
+      if (titling) titling.el.style.fontSize = "";
+    } else if (e.key === "3" || e.code === "Digit3") {   // move --font-text-size off its default
+      const r = document.documentElement;
+      r.style.setProperty("--font-text-size", r.style.getPropertyValue("--font-text-size") ? "" : "22px");
+    } else return;
+    e.preventDefault(); e.stopPropagation();
+    updateTitle();
+  }, true);
+}
+
 /* The ::before's box in CLIENT coordinates (a pseudo-element has no node, so it
    cannot be measured with getBoundingClientRect — it is derived instead):
    top    = the scroller's content-box top, minus how far it has scrolled;
@@ -1766,6 +1833,7 @@ function openTitleEdit(g, host, x, y) {
   el.className = "titleedit";
   el.contentEditable = "plaintext-only";     // one line of text, no markup, no paste-in HTML
   el.spellcheck = false;
+  if (tpPerturb) el.style.fontSize = tpPerturb;   // R34.18 negative control, armed before this open
   el.textContent = titleOf(name);
   wrap.appendChild(el);
   wrap.style.top = (b.top - g.content.getBoundingClientRect().top) + "px";
