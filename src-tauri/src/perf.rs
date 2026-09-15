@@ -403,6 +403,44 @@ mod tests {
     fn otel_sink_survives_the_sandbox_that_kills_a_path_open() {
         use crate::sandbox;
         use std::io::Write as _;
+        // TEST ISOLATION, AND WHY IT IS A CHILD PROCESS.
+        // `sandbox::enforce()` publishes its vault into `sandbox::CONFINED`, a
+        // process-global `OnceLock<PathBuf>` — FIRST WRITER WINS, permanently.
+        // cargo runs every #[test] as a thread in ONE process, so two tests that
+        // both call enforce() race for that slot: whoever loses still sees the
+        // winner's vault through `sandbox::allows()`. The pre-existing
+        // `sandbox::tests::confines_reads_to_vault` asserts
+        // `allows(&its_own_vault) == true`, so when THIS test won the race that
+        // test failed with `left: (false,false,true,false,false)` vs
+        // `right: (..,true,..)` — a real, order-dependent regression this test
+        // introduced (gate log 0ae56ee: "112 passed; 1 failed"; reproduced on the
+        // box, where running as plain root also exposes the capsh-dependent
+        // lw_link_mention test). Serialising the two would not fix it: a OnceLock
+        // cannot be reset, so the loser is poisoned whatever the order.
+        // So this test re-execs the test binary and does its work in a FRESH
+        // process, where it is the only caller of enforce() and CONFINED is
+        // unset. The product's real enforce() stays in the assertion path and no
+        // pre-existing assertion moves.
+        const GUARD: &str = "RUSTIDIAN_OTELSINK_CHILD";
+        if std::env::var_os(GUARD).is_none() {
+            let exe = std::env::current_exe().expect("current_exe for the isolated re-exec");
+            let st = std::process::Command::new(exe)
+                .args([
+                    "--exact",
+                    "perf::tests::otel_sink_survives_the_sandbox_that_kills_a_path_open",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(GUARD, "1")
+                .status()
+                .expect("re-exec the test binary for sandbox isolation");
+            assert!(
+                st.success(),
+                "the ISOLATED (child-process) run of this test failed — see its output above; \
+                 the assertions live in the child so that sandbox::CONFINED is unset there"
+            );
+            return;
+        }
         let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
             eprintln!("otel sink test SKIPPED: no HOME in the environment");
             return;
