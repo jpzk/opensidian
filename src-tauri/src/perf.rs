@@ -45,6 +45,114 @@ pub fn enabled() -> bool {
     target().is_some()
 }
 
+// ===== SLOW-OP CONSOLE WARNINGS =============================================
+// THE THRESHOLD LIVES HERE AND NOWHERE ELSE.
+//
+// WHAT "UNUSUALLY LONG" MEANS: a FIXED CEILING of 100ms. Not a baseline.
+// Why fixed, stated so a reviewer can disagree with the reasoning rather than
+// with a feeling:
+//   * it is REVIEWABLE — one integer in one file, diffable, and it cannot be
+//     argued into a green by an environment variable (see effective_slow_ms).
+//   * it is ALREADY the project's hard rule: scripts/lag-budgets.env pins
+//     MAX_INTERACTION_MS=100 as the p95 no user interaction may exceed.
+//     scripts/perf-coverage.sh FAILS if these two numbers ever diverge, so the
+//     duplication is a checked equality, not drift.
+//   * a baseline-relative rule (warn at k x the op's own p95) normalises a slow
+//     regression: if everything degrades together the baseline follows it down
+//     and the warning never fires. It also has no answer on the first run.
+//
+// WHAT THIS CEILING CANNOT CATCH — every threshold has a blind spot; one with
+// no stated blind spot is one nobody thought about:
+//   1. SUB-CEILING REGRESSIONS. key_to_paint has an 8ms budget. Degrading from
+//      8ms to 95ms is ~12x worse and this console stays SILENT. The p95 budgets
+//      in scripts/lag-budgets.env (enforced by scripts/lag-gate.sh in the bench)
+//      are what catch that class; the console is for the breach you can feel.
+//   2. HARDWARE. On a machine slow enough that ordinary ops exceed 100ms the
+//      console becomes noisy and stops being a signal. RUSTIDIAN_SLOW_MS can
+//      only make it stricter, so there is deliberately NO escape hatch for a
+//      slow box: the honest reading is "this machine is over the budget".
+//   3. DEATH BY A THOUSAND CUTS. 40 ops of 90ms in a row never warn even though
+//      the second of work they add up to is plainly felt.
+//   4. UNINSTRUMENTED WORK. Anything that emits no span cannot be timed; that is
+//      why coverage is measured (scripts/perf-coverage.sh), not assumed.
+/// "Unusually long", in milliseconds. THE single definition.
+pub const SLOW_MS_CEIL: u32 = 100;
+/// the only env var that touches the ceiling; it may TIGHTEN it, never loosen it
+pub const SLOW_ENV: &str = "RUSTIDIAN_SLOW_MS";
+
+/// Ops that never warn, and the reason each one is out of scope. These are spans
+/// that exceed the ceiling BY DESIGN, so warning on them would produce output at
+/// a constant rate — which carries no information about whether anything is wrong.
+/// They are still traced; they are only excluded from the console warning.
+pub const WARN_EXCLUDE: &[(&str, &str)] = &[
+    ("graph_settle", "post-paint force-sim convergence, budgeted informationally at 500ms (GRAPH_SETTLE_INFO_MS) - exceeds 100ms on every graph open by design"),
+    ("graph_open_settle", "same family as graph_settle: convergence measured AFTER the paint the user waited for"),
+    ("graph_frame", "emitted per animation frame; a per-frame warning is output at a constant rate, i.e. zero information"),
+    ("graph_draw", "per-frame renderer span, same reason as graph_frame"),
+    ("boot", "process start -> first note painted: webview init + vault scan, over 100ms by construction and not an interaction"),
+    ("compositor_floor_build", "a bench fixture that builds DOM on purpose to measure the compositor floor, not a user operation"),
+];
+
+/// is this span name out of scope for the console warning?
+pub fn warn_excluded(name: &str) -> bool {
+    WARN_EXCLUDE.iter().any(|(n, _)| *n == name)
+}
+
+/// where the effective ceiling came from
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlowSrc {
+    /// no env override: the pinned ceiling
+    Ceiling,
+    /// env asked for a STRICTER ceiling and got it
+    Tightened,
+    /// env asked to LOOSEN the ceiling: refused, pinned value kept
+    RefusedLoosen,
+    /// env was not a usable number: refused, pinned value kept
+    RefusedJunk,
+}
+
+/// PURE (takes the env value, reads nothing) so a test can prove the rule
+/// without racing the process environment: the env may only TIGHTEN.
+/// Anything >= the pinned ceiling, zero, or unparseable is REFUSED and the
+/// pinned ceiling is returned unchanged.
+pub fn effective_slow_ms(env: Option<&str>) -> (u32, SlowSrc) {
+    match env.map(str::trim).filter(|s| !s.is_empty()) {
+        None => (SLOW_MS_CEIL, SlowSrc::Ceiling),
+        Some(s) => match s.parse::<u32>() {
+            Ok(v) if v > 0 && v < SLOW_MS_CEIL => (v, SlowSrc::Tightened),
+            Ok(_) => (SLOW_MS_CEIL, SlowSrc::RefusedLoosen),
+            Err(_) => (SLOW_MS_CEIL, SlowSrc::RefusedJunk),
+        },
+    }
+}
+
+/// the effective ceiling for THIS process (env read once)
+pub fn slow_ms() -> u32 {
+    static M: OnceLock<u32> = OnceLock::new();
+    *M.get_or_init(|| effective_slow_ms(std::env::var(SLOW_ENV).ok().as_deref()).0)
+}
+
+/// THE ONE LINE this feature prints when nothing is slow. It states the ceiling,
+/// where it is defined, what the env did (including a refusal), and which ops are
+/// out of scope — so "unusually long" is a number on the screen, not a claim in a
+/// comment. Exactly one line, always, breach or not.
+pub fn slow_banner() -> String {
+    let raw = std::env::var(SLOW_ENV).ok();
+    let (ms, src) = effective_slow_ms(raw.as_deref());
+    let env = match src {
+        SlowSrc::Ceiling => "unset".to_string(),
+        SlowSrc::Tightened => format!("{}={} TIGHTENED", SLOW_ENV, raw.unwrap_or_default()),
+        SlowSrc::RefusedLoosen => format!("{}={} REFUSED(may only tighten)", SLOW_ENV, raw.unwrap_or_default()),
+        SlowSrc::RefusedJunk => format!("{}={} REFUSED(not a number)", SLOW_ENV, raw.unwrap_or_default()),
+    };
+    let ex: Vec<&str> = WARN_EXCLUDE.iter().map(|(n, _)| *n).collect();
+    format!(
+        "[perf] slow_ms={ms} ceiling={SLOW_MS_CEIL} src=perf.rs:SLOW_MS_CEIL env={env} excluded={} ({})",
+        ex.join(","),
+        ex.len()
+    )
+}
+
 /// trace context handed in by the frontend (invoke arg `otel`): the UI action
 /// span that triggered this command. Backend spans become its children.
 #[derive(Deserialize, Clone, Debug, Default, PartialEq)]
@@ -224,6 +332,55 @@ macro_rules! span_timed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// THE PIN. The env may make the ceiling stricter; every attempt to make it
+    /// looser returns the pinned number. Written against the PURE function so it
+    /// proves the rule itself, not one process's environment — and so it cannot
+    /// race another test that sets env vars.
+    #[test]
+    fn env_can_tighten_the_slow_ceiling_but_never_loosen_it() {
+        assert_eq!(SLOW_MS_CEIL, 100, "the ceiling moved: update lag-budgets.env MAX_INTERACTION_MS and docs, or put it back");
+        // no override -> the pinned ceiling
+        assert_eq!(effective_slow_ms(None), (100, SlowSrc::Ceiling));
+        assert_eq!(effective_slow_ms(Some("")), (100, SlowSrc::Ceiling));
+        assert_eq!(effective_slow_ms(Some("   ")), (100, SlowSrc::Ceiling));
+        // STRICTER is honoured
+        assert_eq!(effective_slow_ms(Some("25")), (25, SlowSrc::Tightened));
+        assert_eq!(effective_slow_ms(Some(" 99 ")), (99, SlowSrc::Tightened));
+        // LOOSER is refused, at every scale, including the absurd
+        for v in ["100", "101", "250", "5000", "999999", "4294967295"] {
+            assert_eq!(effective_slow_ms(Some(v)), (100, SlowSrc::RefusedLoosen), "{v} loosened the ceiling");
+        }
+        // junk, negatives, floats and overflow are refused too (never "disabled")
+        for v in ["0", "-1", "-999", "1e9", "100.5", "abc", "99999999999999999999", "inf", "null"] {
+            let (ms, src) = effective_slow_ms(Some(v));
+            assert_eq!(ms, 100, "{v} moved the ceiling");
+            assert!(matches!(src, SlowSrc::RefusedJunk | SlowSrc::RefusedLoosen), "{v} -> {src:?}");
+        }
+        // the banner states the effective number and says the override was refused
+        let b = slow_banner();
+        assert!(b.starts_with("[perf] slow_ms="), "{b}");
+        assert!(!b.contains('\n'), "the banner is ONE line: {b}");
+    }
+
+    /// the out-of-scope table is data a reviewer reads: every entry needs a name
+    /// and a REASON, and no entry may be duplicated.
+    #[test]
+    fn warn_exclusions_are_named_reasoned_and_unique() {
+        assert!(!WARN_EXCLUDE.is_empty());
+        for (n, why) in WARN_EXCLUDE {
+            assert!(!n.is_empty() && !n.contains(' '), "bad op name {n:?}");
+            assert!(why.len() > 30, "op {n} has no real reason: {why:?}");
+            assert!(warn_excluded(n));
+        }
+        let mut names: Vec<&str> = WARN_EXCLUDE.iter().map(|(n, _)| *n).collect();
+        let n0 = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), n0, "duplicate entry in WARN_EXCLUDE");
+        assert!(!warn_excluded("key_to_paint"), "an interaction op must NOT be excluded");
+        assert!(!warn_excluded("note_open"));
+    }
 
     fn first_span(line: &str) -> Value {
         let v: Value = serde_json::from_str(line).unwrap();

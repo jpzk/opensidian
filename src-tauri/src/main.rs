@@ -2260,6 +2260,12 @@ fn set_zoom_cfg(level: f64) {
 }
 
 fn main() {
+    // perf-console: state the rule on the console BEFORE anything can breach it.
+    // ONE line, printed unconditionally (breach or not), so "unusually long" is a
+    // number you can read off the console instead of a promise in a comment. It is
+    // also the whole quiet-case output of the feature: healthy run = this line, no
+    // warnings. The ceiling itself is pinned in perf.rs; env can only tighten it.
+    eprintln!("{}", perf::slow_banner());
     // VAULT_DIR (probes/tests) wins; else last persisted vault if still a dir (R1.6)
     let init = std::env::var("VAULT_DIR")
         .ok()
