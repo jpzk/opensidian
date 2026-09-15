@@ -314,6 +314,66 @@ pub fn decide_warn(st: &mut WarnState, name: &str, ms: f64, now_ms: u64, ceil_ms
     Some(line)
 }
 
+// ===== THE NEGATIVE CONTROL: DELIBERATE SLOWNESS ============================
+// A warning that never fired is not evidence. This hook makes ONE named span
+// genuinely slow — it SLEEPS inside the timed region, so the ms the console
+// reports is MEASURED by the same timer as every other span, not fabricated for
+// the test. Removing the env removes the sleep and nothing else, which is what
+// makes the two runs the SAME scenario.
+//
+// WHAT THE HOOK CANNOT DO, by construction — assume someone will try to use it
+// to buy a green:
+//   * it cannot touch SLOW_MS_CEIL or slow_ms(): different env var, different
+//     parser, no path between them (proved by inject_cannot_loosen_the_ceiling).
+//   * it only ever moves one direction — SLOWER. It can make the console louder,
+//     never quieter, so it cannot silence a real breach.
+//   * it is CLAMPED at INJECT_MAX_MS, so a fat-fingered 9999999 cannot wedge a
+//     gate phase into a timeout.
+/// env that injects a real delay into one named span: "<span_name>=<ms>"
+pub const INJECT_ENV: &str = "RUSTIDIAN_SLOW_INJECT";
+/// the most an injection may add to one span, in ms (values above are clamped)
+pub const INJECT_MAX_MS: u64 = 5000;
+
+/// PURE (takes the spec, reads nothing): "<span_name>=<ms>" -> (name, ms).
+/// Empty name, non-numeric or zero ms, or a missing '=' -> None (no injection).
+pub fn parse_inject(spec: Option<&str>) -> Option<(String, u64)> {
+    let s = spec.map(str::trim).filter(|s| !s.is_empty())?;
+    let (name, ms) = s.split_once('=')?;
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let ms: u64 = ms.trim().parse().ok()?;
+    if ms == 0 {
+        return None;
+    }
+    Some((name.to_string(), ms.min(INJECT_MAX_MS)))
+}
+
+/// this process's injection (env read once)
+fn inject() -> Option<&'static (String, u64)> {
+    static I: OnceLock<Option<(String, u64)>> = OnceLock::new();
+    I.get_or_init(|| parse_inject(std::env::var(INJECT_ENV).ok().as_deref())).as_ref()
+}
+
+/// how the banner states the injection: "none", or "<name>=<ms>ms"
+pub fn inject_desc() -> String {
+    match inject() {
+        None => "none".to_string(),
+        Some((n, ms)) => format!("{n}={ms}ms"),
+    }
+}
+
+/// Called at the start of a timed span (inside the measured region). Sleeps only
+/// for the one span named by INJECT_ENV; every other span pays one string compare.
+pub fn inject_delay(name: &str) {
+    if let Some((n, ms)) = inject() {
+        if n == name {
+            std::thread::sleep(std::time::Duration::from_millis(*ms));
+        }
+    }
+}
+
 fn warn_state() -> &'static Mutex<WarnState> {
     static S: OnceLock<Mutex<WarnState>> = OnceLock::new();
     S.get_or_init(|| Mutex::new(WarnState::new()))
