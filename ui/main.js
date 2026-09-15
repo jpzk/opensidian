@@ -3026,6 +3026,17 @@ async function applyRename(old, nn) {   // post-rename bookkeeping (F2 / cmdRena
   if (mi >= 0) mruList[mi] = nn;
   for (const h of groups()) renderTabs(h);
   await refreshTree();
+  /* R9.8: the note's name changed, so the rust side rewrote its entry in
+     .rustidian-bookmarks (move_note_in). bmCache is a COPY of that file taken
+     at the last refresh, and the bookmarks pane paints from the cache — so
+     without this line the file is right on disk and the pane still shows the
+     old name until the user switches panes (the pane's own `if (p === "bm")
+     refreshBm()`). Here, not in the two callers: applyRename is the UI's
+     single post-rename choke point, the mirror of move_note_in on the rust
+     side, and both the F2 rename and the R34 title rename (a MOVE) reach it.
+     Re-read rather than patch the cache locally: disk is the truth, and the
+     rewrite rules (index kept, duplicate collapsed) live in one place. */
+  await refreshBm();
   updateTitle();
 }
 
