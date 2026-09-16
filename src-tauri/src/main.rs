@@ -606,22 +606,26 @@ fn walk_dirs(dir: &Path, base: &Path, out: &mut Vec<String>) {
 
 #[tauri::command]
 fn list_folders(v: State<Vault>) -> Vec<String> {
-    let Some(root) = cur_vault(&v) else { return vec![] };
-    let mut out = Vec::new();
-    walk_dirs(&root, &root, &mut out);
-    out.sort();
-    out
+    span_timed!("list_folders", {
+        let Some(root) = cur_vault(&v) else { return vec![] };
+        let mut out = Vec::new();
+        walk_dirs(&root, &root, &mut out);
+        out.sort();
+        out
+    })
 }
 
 #[tauri::command]
 fn create_dir(v: State<Vault>, name: String) -> Result<(), String> {
-    let root = cur_vault(&v).ok_or("no vault open")?;
-    let rel = safe_rel(&name).ok_or("invalid folder name")?;
-    // perf-index: an empty dir holds no notes -> index unchanged.
-    // S2: mkdir via note_path_in (create) so it never crosses a symlinked dir
-    note_path_in(&root, &format!("{}/x", rel.display()), true)
-        .map(|_| ())
-        .ok_or_else(|| "outside vault".to_string())
+    span_timed!("create_dir", {
+        let root = cur_vault(&v).ok_or("no vault open")?;
+        let rel = safe_rel(&name).ok_or("invalid folder name")?;
+        // perf-index: an empty dir holds no notes -> index unchanged.
+        // S2: mkdir via note_path_in (create) so it never crosses a symlinked dir
+        note_path_in(&root, &format!("{}/x", rel.display()), true)
+            .map(|_| ())
+            .ok_or_else(|| "outside vault".to_string())
+    })
 }
 
 #[tauri::command]
@@ -998,7 +1002,7 @@ fn set_sidebar_w(w: u64) {
 
 #[tauri::command]
 fn recent_vaults() -> Vec<String> {
-    read_cfg().1.into_iter().filter(|p| Path::new(p).is_dir()).collect()
+    span_timed!("recent_vaults", read_cfg().1.into_iter().filter(|p| Path::new(p).is_dir()).collect())
 }
 
 #[tauri::command]
@@ -1045,25 +1049,27 @@ fn seed_new_vault(dir: &Path) -> std::io::Result<()> {
 
 #[tauri::command]
 fn create_vault(v: State<Vault>, parent: String, name: String) -> Result<String, String> {
-    let name = name.trim();
-    if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
-        return Err("invalid vault name".into());
-    }
-    let p = PathBuf::from(parent.trim()).join(name);
-    if !picker_allows(&p) {
-        return Err(format!("not allowed as a vault: {}", p.display())); // S4
-    }
-    if p.exists() {
-        return Err(format!("already exists: {}", p.display()));
-    }
-    if !sandbox::allows(Path::new(parent.trim())) {
-        return Err(format!("sandboxed to {} — create the folder outside rustidian, then pick it and restart", sandbox::confined_to().unwrap().display()));
-    }
-    fs::create_dir_all(&p).map_err(|e| e.to_string())?;
-    seed_new_vault(&p).map_err(|e| e.to_string())?;
-    persist_vault(&p);
-    open_vault(&v, &p);
-    Ok(p.display().to_string())
+    span_timed!("create_vault", {
+        let name = name.trim();
+        if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
+            return Err("invalid vault name".into());
+        }
+        let p = PathBuf::from(parent.trim()).join(name);
+        if !picker_allows(&p) {
+            return Err(format!("not allowed as a vault: {}", p.display())); // S4
+        }
+        if p.exists() {
+            return Err(format!("already exists: {}", p.display()));
+        }
+        if !sandbox::allows(Path::new(parent.trim())) {
+            return Err(format!("sandboxed to {} — create the folder outside rustidian, then pick it and restart", sandbox::confined_to().unwrap().display()));
+        }
+        fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+        seed_new_vault(&p).map_err(|e| e.to_string())?;
+        persist_vault(&p);
+        open_vault(&v, &p);
+        Ok(p.display().to_string())
+    })
 }
 
 /// otel (R18): frontend spans (ui/otel.js) arrive in ONE batch per 250ms — [{name, traceId, spanId,
@@ -1072,7 +1078,16 @@ fn create_vault(v: State<Vault>, parent: String, name: String) -> Result<String,
 #[tauri::command]
 fn log_spans(spans: Vec<serde_json::Value>) -> bool {
     perf::ui_spans(&spans);
-    perf::enabled()
+    // TRUE unconditionally, and that is the perf-console change. The frontend
+    // uses this reply to decide whether to keep measuring at all (ui/otel.js:
+    // `on === false` makes every later call a no-op), and the slow-op console
+    // warning needs UI spans in EVERY run, not only in runs that set
+    // RUSTIDIAN_OTEL. ui_spans() above warns on a breach whether or not a trace
+    // file is being written; returning perf::enabled() here would have switched
+    // the whole feature off for ordinary users — the ones who actually feel the
+    // lag. Cost when untraced: one IPC per 250ms while spans are being produced,
+    // and no file I/O.
+    true
 }
 
 /// graph-webgl: hidden hooks for the graph draw path. RUSTIDIAN_GRAPH_RENDERER=gl|2d forces a
@@ -1155,19 +1170,21 @@ fn open_external(url: String) -> Result<(), String> {
 
 #[tauri::command]
 fn list_dirs(path: String) -> Vec<String> {
-    if !picker_allows(Path::new(&path)) {
-        return vec![]; // S4: the picker just shows ".." there
-    }
-    let mut v: Vec<String> = fs::read_dir(path)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|n| !n.starts_with('.'))
-        .collect();
-    v.sort();
-    v
+    span_timed!("list_dirs", {
+        if !picker_allows(Path::new(&path)) {
+            return vec![]; // S4: the picker just shows ".." there
+        }
+        let mut v: Vec<String> = fs::read_dir(path)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| !n.starts_with('.'))
+            .collect();
+        v.sort();
+        v
+    })
 }
 
 
@@ -1499,7 +1516,7 @@ fn block_lines_of(content: &str) -> Vec<u32> {
 
 #[tauri::command]
 fn block_lines(content: String) -> Vec<u32> {
-    block_lines_of(&content)
+    span_timed!("block_lines", block_lines_of(&content))
 }
 
 #[tauri::command]
@@ -1536,12 +1553,12 @@ fn highlight_blocks(blocks: Vec<String>, otel: Option<perf::Ctx>) -> Vec<String>
 /// the JSON object sorted by tag; the UI re-sorts by count)
 #[tauri::command]
 fn tags(v: State<Vault>, name: String) -> Vec<String> {
-    v.index.lock().unwrap().tags(&name).to_vec()
+    span_timed!("tags", v.index.lock().unwrap().tags(&name).to_vec())
 }
 
 #[tauri::command]
 fn tag_counts(v: State<Vault>) -> std::collections::BTreeMap<String, usize> {
-    v.index.lock().unwrap().tag_counts()
+    span_timed!("tag_counts", v.index.lock().unwrap().tag_counts())
 }
 
 #[tauri::command]
@@ -1571,16 +1588,18 @@ struct OutLink {
 /// Outgoing links pane: the note's [[links]] in source order, deduped
 #[tauri::command]
 fn outgoing(v: State<Vault>, name: String) -> Vec<OutLink> {
-    let ix = v.index.lock().unwrap();
-    let names = ix.names();
-    let mut out: Vec<OutLink> = Vec::new();
-    for l in ix.links(&name) {
-        if out.iter().any(|o| o.text == *l) {
-            continue;
+    span_timed!("outgoing", {
+        let ix = v.index.lock().unwrap();
+        let names = ix.names();
+        let mut out: Vec<OutLink> = Vec::new();
+        for l in ix.links(&name) {
+            if out.iter().any(|o| o.text == *l) {
+                continue;
+            }
+            out.push(OutLink { text: l.clone(), target: resolve(names, l).map(|j| names[j].clone()) });
         }
-        out.push(OutLink { text: l.clone(), target: resolve(names, l).map(|j| names[j].clone()) });
-    }
-    out
+        out
+    })
 }
 
 #[derive(serde::Serialize)]
@@ -1593,22 +1612,24 @@ struct BacklinkCtx {
 /// Backlinks pane: linking notes + the lines that carry the link
 #[tauri::command]
 fn backlinks_ctx(v: State<Vault>, name: String) -> Vec<BacklinkCtx> {
-    let ix = v.index.lock().unwrap();
-    let names = ix.names();
-    ix.backlinks(&name)
-        .into_iter()
-        .map(|src| {
-            let lines = ix
-                .content(&src)
-                .unwrap_or("")
-                .lines()
-                .enumerate()
-                .filter(|(_, l)| links_in(l).iter().any(|k| resolve(names, k) == resolve(names, &name)))
-                .map(|(i, l)| (i as u32, l.trim().chars().take(200).collect()))
-                .collect();
-            BacklinkCtx { note: src, lines }
-        })
-        .collect()
+    span_timed!("backlinks_ctx", {
+        let ix = v.index.lock().unwrap();
+        let names = ix.names();
+        ix.backlinks(&name)
+            .into_iter()
+            .map(|src| {
+                let lines = ix
+                    .content(&src)
+                    .unwrap_or("")
+                    .lines()
+                    .enumerate()
+                    .filter(|(_, l)| links_in(l).iter().any(|k| resolve(names, k) == resolve(names, &name)))
+                    .map(|(i, l)| (i as u32, l.trim().chars().take(200).collect()))
+                    .collect();
+                BacklinkCtx { note: src, lines }
+            })
+            .collect()
+    })
 }
 
 #[derive(serde::Serialize)]
@@ -1625,27 +1646,31 @@ struct Mention {
 /// occurrences of this note's basename (case-insensitive), from the index
 #[tauri::command]
 fn unlinked_mentions(v: State<Vault>, name: String) -> Vec<Mention> {
-    let ix = v.index.lock().unwrap();
-    let base = name.rsplit('/').next().unwrap_or(&name);
-    let mut out = Vec::new();
-    for (n, c, _) in ix.docs() {
-        if n == name {
-            continue;
+    span_timed!("unlinked_mentions", {
+        let ix = v.index.lock().unwrap();
+        let base = name.rsplit('/').next().unwrap_or(&name);
+        let mut out = Vec::new();
+        for (n, c, _) in ix.docs() {
+            if n == name {
+                continue;
+            }
+            for (line, col, len) in index::mentions_in(c, base) {
+                let text = c.lines().nth(line as usize).unwrap_or("").trim().chars().take(200).collect();
+                out.push(Mention { note: n.to_string(), line, col, len, text });
+            }
         }
-        for (line, col, len) in index::mentions_in(c, base) {
-            let text = c.lines().nth(line as usize).unwrap_or("").trim().chars().take(200).collect();
-            out.push(Mention { note: n.to_string(), line, col, len, text });
-        }
-    }
-    out
+        out
+    })
 }
 
 /// Link button: wrap the matched text in [[ ]] in `note` and save it
 #[tauri::command]
 fn link_mention(v: State<Vault>, note: String, target: String, line: u32, col: u32, len: u32) -> Result<(), String> {
-    let root = cur_vault(&v).ok_or("no vault open")?;
-    let mut ix = v.index.lock().unwrap();
-    link_mention_in(&root, &mut ix, &note, &target, line, col, len)
+    span_timed!("link_mention", {
+        let root = cur_vault(&v).ok_or("no vault open")?;
+        let mut ix = v.index.lock().unwrap();
+        link_mention_in(&root, &mut ix, &note, &target, line, col, len)
+    })
 }
 
 /* F1 dataloss: the pure core, so the ERROR path is testable without Tauri.
@@ -1953,15 +1978,17 @@ fn toggle_in(mut list: Vec<String>, name: &str) -> Vec<String> {
 
 #[tauri::command]
 fn list_bookmarks(v: State<Vault>) -> Vec<String> {
-    cur_vault(&v).map(|r| read_bookmarks(&r)).unwrap_or_default()
+    span_timed!("list_bookmarks", cur_vault(&v).map(|r| read_bookmarks(&r)).unwrap_or_default())
 }
 
 #[tauri::command]
 fn toggle_bookmark(v: State<Vault>, name: String) -> Result<Vec<String>, String> {
-    let root = cur_vault(&v).ok_or("no vault open")?;
-    let list = toggle_in(read_bookmarks(&root), &name);
-    write_bookmarks(&root, &list)?;
-    Ok(list)
+    span_timed!("toggle_bookmark", {
+        let root = cur_vault(&v).ok_or("no vault open")?;
+        let list = toggle_in(read_bookmarks(&root), &name);
+        write_bookmarks(&root, &list)?;
+        Ok(list)
+    })
 }
 
 /* R11 watcher thread: every TICK_MS walk the vault (stat only), diff against
@@ -2260,6 +2287,16 @@ fn set_zoom_cfg(level: f64) {
 }
 
 fn main() {
+    // FIRST STATEMENT IN THE PROCESS, deliberately: the warm-up window (perf.rs,
+    // WARMUP_MS) is measured from here, so anything that runs before this stamp
+    // would be judged against a start time it predates.
+    perf::mark_start();
+    // perf-console: state the rule on the console BEFORE anything can breach it.
+    // ONE line, printed unconditionally (breach or not), so "unusually long" is a
+    // number you can read off the console instead of a promise in a comment. It is
+    // also the whole quiet-case output of the feature: healthy run = this line, no
+    // warnings. The ceiling itself is pinned in perf.rs; env can only tighten it.
+    eprintln!("{}", perf::slow_banner());
     // VAULT_DIR (probes/tests) wins; else last persisted vault if still a dir (R1.6)
     let init = std::env::var("VAULT_DIR")
         .ok()
