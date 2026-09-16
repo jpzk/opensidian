@@ -2265,6 +2265,11 @@ fn main() {
         .ok()
         .map(PathBuf::from)
         .or_else(|| read_cfg().0.map(PathBuf::from).filter(|p| p.is_dir()));
+    // R18.1: open the telemetry sink BEFORE the sandbox closes. Landlock filters
+    // path lookups, not open descriptors, and RUSTIDIAN_OTEL routinely names a
+    // file outside the write roots (the gate's $OUT). Opening it after enforce()
+    // is EACCES on every span, swallowed — see perf::SINK.
+    perf::open_sink();
     // landlock: confine the whole process tree to the vault before webkit spawns
     // the off-switch is named ONCE, in sandbox.rs — not spelled again here
     if let (Some(p), true) = (&init, !sandbox::no_landlock_requested()) {
