@@ -1951,16 +1951,40 @@ async function commitTitleEdit() {
   const nn = dir + t;                        // NAMES CARRY NO EXTENSION (see NOTE NAMES below)
   closeTitleEdit();
   await flushSave(g);                        // the body's own bytes land before the file moves
+  await renameThenAsk(name, nn);
+}
+
+/* R24.3 — THE RENAME TAIL, AND THE ONLY ONE. "After a rename that has incoming
+   links, stock shows the Update links modal ... because `Automatically update
+   internal links` is OFF by default" — R24.3 says nothing about WHICH rename
+   surface, and the app has two: the inline title (R34) and F2 / "Rename file"
+   (cmdRename). Until now only the title road asked; F2 called `rename_note`,
+   which is `move_note_in` + `update_links_in` with no question in between — a
+   silent vault-wide rewrite, the exact shape ux-3 was deleted for (R32.5).
+   Two roads with two different answers to "may I edit your other notes" is one
+   road too many, so the tail is extracted here and both call it.
+
+   The ORDER is R34.1's measured order and is not negotiable: the file moves
+   FIRST (move_note), the links are stale at that instant (R34.2), and only
+   then is the question asked. `update_links` therefore still has exactly two
+   callers, both on the far side of a recorded answer (the modal, or R34.8
+   consent already on disk in the vault).
+
+   `rename_note` survives as the composite the rust unit tests exercise
+   (rename_in); the UI no longer calls it, because nothing the USER does may
+   rewrite another note without an answer. */
+async function renameThenAsk(old, nn) {
   let blast;
-  try { blast = await inv("move_note", { old: name, new: nn }); }
-  catch (err) { say(String(err && err.message || err)); updateTitle(); return; }
-  await applyRename(name, nn);
+  try { blast = await inv("move_note", { old, new: nn }); }
+  catch (err) { say(String(err && err.message || err)); updateTitle(); return false; }
+  await applyRename(old, nn);
   const links = blast && blast.links || 0, files = blast && blast.files || 0;
-  if (!files) { updateTitle(); return; }     // R34.3: nothing links in -> NO modal, ever
+  if (!files) { updateTitle(); return true; }   // R34.3: nothing links in -> NO modal, ever
   let consent = false;
   try { consent = await inv("link_consent"); } catch (err) { consent = false; }
-  if (consent) { await runUpdateLinks(name, nn); return; }   // R34.8: already answered, in the vault
-  openUpdateLinks(name, nn, links, files);
+  if (consent) { await runUpdateLinks(old, nn); return true; }   // R34.8: already answered, in the vault
+  openUpdateLinks(old, nn, links, files);
+  return true;
 }
 
 /* ---------- R34.4-R34.8 the "Update links" prompt --------------------------
@@ -3427,9 +3451,9 @@ function cmdPalette() {
   modalKind === "cp" ? closeModal() : openModal("cp", cpItems);
 }
 
-/* m5 F2 rename: inline prompt over the focused note tab; disk rename via
-   rename_note (the rust side rewrites inbound wikilinks vault-wide), then
-   tabs/hist/mru follow the name */
+/* m5 F2 rename: inline prompt over the focused note tab; the disk move and the
+   consented link rewrite are renameThenAsk's (R24.3), the same tail the inline
+   title uses, then tabs/hist/mru follow the name */
 async function applyRename(old, nn) {   // post-rename bookkeeping (F2 / cmdRename, the R34 title rename, and R24.6's drag-move)
   for (const h of groups()) for (const tb of h.tabs) {
     if (tb.kind) continue;
@@ -3488,9 +3512,11 @@ $("rninput").onkeydown = async e => {
   if (!t || t.kind || !nn || nn === t.name) { updateTitle(); return; }
   const old = t.name;
   await flushSave(g);                       // old content lands before the move
-  try { await inv("rename_note", { old, new: nn }); }
-  catch (err) { updateTitle(); return; }    // exists/invalid -> keep old name
-  await applyRename(old, nn);
+  // R24.3: the SAME tail as the title road — move, then ask if anything links
+  // in. This used to be `rename_note` (move + a silent vault-wide rewrite);
+  // a refusal now reaches the notice banner instead of being swallowed, which
+  // is R34.12's rule and was always the right one for this road too.
+  await renameThenAsk(old, nn);
 };
 
 if (document.fonts) document.fonts.addEventListener("loadingdone", () => updateTitle());   // R15.2: republish [fonts:] once a lazy @font-face lands
