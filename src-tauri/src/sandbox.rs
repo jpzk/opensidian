@@ -335,10 +335,48 @@ mod tests {
         }
     }
 
+    /* ENFORCEMENT IS PROCESS STATE, SO EACH ENFORCING TEST GETS A PROCESS.
+       `CONFINED` is a OnceLock and `restrict_self()` cannot be undone, so two
+       tests that both call enforce() inside ONE test binary cannot both be
+       right: whichever thread gets there first owns CONFINED, and `allows()`
+       then answers about the other test's vault. That is not hypothetical —
+       adding the R24 move test below turned `confines_reads_to_vault` red on
+       the box at 3dab929 (17:50: left (.., false, false), right (.., true,
+       false)) while every unsandboxed test stayed green. A #[test] that
+       mutates global state must therefore not share one.
+
+       `reexec_alone` re-runs THIS binary for the single named test: one test,
+       one process, one ruleset, and the child's panic text is inherited so the
+       failure reads the same as an ordinary one. Guarded by an env var, so the
+       child runs the body instead of spawning a grandchild.
+
+       THE SAME TRAP, THE SAME ANSWER, SECOND TIME: `perf::tests::
+       otel_sink_survives_the_sandbox_that_kills_a_path_open` (perf.rs:1094)
+       hit this exact collision earlier and re-execs itself the same way — its
+       comment records the identical left/right mismatch. This helper is that
+       precedent generalised for the two tests in this module; a third caller
+       of enforce() must use one of them, not invent a third copy. */
+    fn reexec_alone(name: &str) -> bool {
+        if std::env::var_os("RUSTIDIAN_LL_ALONE").is_some() {
+            return false; // we ARE the child: run the body
+        }
+        let exe = std::env::current_exe().expect("the test binary's own path");
+        let st = std::process::Command::new(exe)
+            .args([name, "--exact", "--nocapture", "--test-threads=1"])
+            .env("RUSTIDIAN_LL_ALONE", "1")
+            .status()
+            .expect("re-exec the test binary");
+        assert!(st.success(), "{name} FAILED in its own process (its output is above)");
+        true
+    }
+
     /// restrict_self is per-thread: enforce + probe in a child thread, the
     /// unrestricted parent cleans up. Skips on kernels without Landlock.
     #[test]
     fn confines_reads_to_vault() {
+        if reexec_alone("sandbox::tests::confines_reads_to_vault") {
+            return;
+        }
         let home = env_path("HOME").expect("HOME");
         let tmp = std::env::temp_dir().join(format!("rustidian-ll-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
@@ -391,6 +429,9 @@ mod tests {
     /// grant having been dropped from enforce().
     #[test]
     fn a_move_into_the_vault_trash_survives_our_own_sandbox() {
+        if reexec_alone("sandbox::tests::a_move_into_the_vault_trash_survives_our_own_sandbox") {
+            return;
+        }
         let refer = kernel_has_refer();
         let tmp = std::env::temp_dir().join(format!("rustidian-ll-mv-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
