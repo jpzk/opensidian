@@ -1007,3 +1007,30 @@ body.floorrelayout #main { padding-right: 1px }
 #wrz i[data-d="nw"] { top: 0; left: 0; width: 12px; height: 12px; cursor: nw-resize }
 #wrz i[data-d="se"] { bottom: 0; right: 0; width: 12px; height: 12px; cursor: se-resize }
 #wrz i[data-d="sw"] { bottom: 0; left: 0; width: 12px; height: 12px; cursor: sw-resize }
+
+/* ---- R26 find bar (Ctrl+F), one per pane -----------------------------------
+   Floats over the note column at the top right, the way stock's does. It is a
+   child of .content (position:relative), NOT of .lp: Ed's positional contract
+   is "model line l IS g.lp.children[l], with nothing else in that list", and a
+   bar inside the scroller would be row 0 for every caret computation.
+   R22: max-width + overflow:hidden so the bar CLIPS in a narrow pane instead of
+   reaching past the window edge (the fuzz phase counts any element that does). */
+.findbar { position: absolute; top: 8px; right: 16px; z-index: 6;
+           display: flex; flex-direction: column; gap: 4px;
+           max-width: calc(100% - 24px); overflow: hidden;
+           padding: 5px 6px; border: 1px solid var(--border); border-radius: 6px;
+           background: var(--bg-elevated); box-shadow: 0 2px 8px var(--shadow-popover) }
+.findbar[hidden] { display: none }
+.findrow { display: flex; align-items: center; gap: 4px; min-width: 0 }
+.findq { width: 160px; min-width: 0; padding: 2px 6px; border-radius: 4px;
+         border: 1px solid var(--border); background: var(--bg-base);
+         color: var(--text-chrome); font: 12px/1.5 system-ui, sans-serif; outline: none }
+.findq:focus { border-color: var(--border-focus-ring) }
+.findcount { min-width: 46px; text-align: center; white-space: nowrap;
+             color: var(--text-chrome-muted); font-size: 12px }
+.findbar button { padding: 1px 5px; border: 0; border-radius: 4px; cursor: pointer;
+                  background: var(--transparent); color: var(--text-chrome-muted); font-size: 12px }
+.findbar button:hover { background: var(--bg-surface); color: var(--text-chrome) }
+/* R26.8: every match is marked; the current one is the one you are standing on. */
+span.fmk { background: var(--highlight-yellow); border-radius: 2px }
+span.fmk.fcur { background: var(--tag-bg-hover); outline: 1px solid var(--accent-yellow) }

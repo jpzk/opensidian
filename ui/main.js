@@ -834,6 +834,12 @@ function mkView(g) {
 }
 function attachView(g, v) {          // v becomes g's live editor/lp/preview
   if (g.view === v) return;
+  // R26: the find bar belongs to the NOTE it was opened on. Its hits are model
+  // positions in THAT text, and its marks are spans in THAT view's rows — both
+  // are meaningless one tab later, and the marks would ride back into the old
+  // view when it is re-attached. Closing here (without moving the caret: this
+  // is a tab switch, not an Escape) is the one choke point every swap passes.
+  if (g.find && g.find.open) fClose(g, false);
   const old = g.view;
   if (old && old.g === g) {          // skip when old already moved to another group (tab drop)
     Object.assign(old, { lpActive: g.lpActive, lpLines: g.lpLines, scrollTop: old.lp.scrollTop });
@@ -1132,6 +1138,8 @@ function updateTitle() {          // pane/focus census in the window title (head
             ims.slice(0, 3).map(i => "|" + xi(i.getAttribute("src"))).join("") + "]";
     }
   }
+  // R26: the in-note find bar of the FOCUSED pane (open only) — see fTok.
+  if (md && fg()) md += fTok(fg());
   // R31.9 drop probe: the LAST drop's outcome -> [drop:<copied>/<refused>].
   // Deliberately not derived from the banner (which times out): "no drop yet"
   // and "a drop whose banner faded" must not look the same to a probe.
@@ -2421,6 +2429,11 @@ async function preview(g) {
 }
 
 function scheduleSave(g) {
+  // R26: an edit moves every match after it. Ed.after() re-renders the touched
+  // rows (dropping their marks) and every edit path lands here, so this is where
+  // an open bar re-scans. Guarded on `open` so the closed case — i.e. the whole
+  // measured typing path (R18) — costs one property read and nothing else.
+  if (g.find && g.find.open) fSync(g);
   clearTimeout(g.saveT);
   g.saveT = setTimeout(async () => {
     g.saveT = null;
@@ -3004,6 +3017,10 @@ const CMDS = [
   ["workspace:edit-file-title","Rename file",                         ["f2"],                   cmdRename],
   ["editor:save-file",         "Save current file",                   ["ctrl+s"],               cmdSave],
   ["global-search:open",       "Search in all files",                 ["ctrl+shift+f"],         () => { if (!sideOpen) cmdToggleSide(); setPane("search"); }],
+  // R26.1: find INSIDE the note. Stock's id and name, and stock's chord — the
+  // vault-wide search above (R25) is a different requirement in a different
+  // pane and keeps Ctrl+Shift+F.
+  ["editor:open-search",       "Search current file",                 ["ctrl+f"],               () => fOpen(fg())],
   ["editor:toggle-bold",       "Toggle bold",                         ["ctrl+b"],               () => edWrap("**")],
   ["editor:toggle-checklist-status", "Toggle checkbox status",        ["ctrl+l"],               () => edTask()],
   ["editor:toggle-comments",   "Toggle comment",                      ["ctrl+/"],               () => edWrap("%%", "comment")],
@@ -4750,3 +4767,251 @@ function wfTok() {
   return " [wf:" + b + (wfArmed ? "d" : "-") + g + "] [wfm:" + (wfMax ? 1 : 0) + "] [wfk:" + k + "] [wfg:" + wfLast + "] [wfl:" + wfLogA.join(">") + "] [hdr:" + wfHdrTok() + "]";
 }
 wfArm();
+
+/* ================= R26: FIND INSIDE A NOTE (Ctrl+F) =================
+   Stock's in-note find bar, cloned. What the requirement rows buy, and where
+   each one lives in this block:
+     R26.1  Ctrl+F opens the bar and FOCUS LANDS IN THE INPUT      -> fOpen
+     R26.2  five elements and no more: input, count, prev, next, close -> fBar
+     R26.3  the counter appears WITH the query, live as you type    -> fPaint
+     R26.4  case-insensitive substring ALWAYS (no toggles, R26.5)   -> fScan
+     R26.7  `0 / 0` when nothing matches — not blank, not hidden     -> fPaint
+     R26.8  every match is marked in the note                       -> fMarks
+     R26.11 Enter advances, Shift+Enter goes back                   -> fGo
+     R26.12 advancing SCROLLS the match into view                   -> fReveal
+     R26.13 cycling WRAPS past the last match back to the first     -> fGo
+     R26.14 Escape closes and leaves the caret AT the match         -> fClose
+
+   WHERE THE MATCHES LIVE. Hits are computed over the MODEL (Ed.lines), never
+   over the painted DOM: live preview hides markup, so a DOM-text search would
+   silently disagree with the bytes on disk (and with the replace that follows).
+   The MARKS, by contrast, are pure DOM: each hit's run is wrapped in a
+   <span class="fmk"> by splitting the row's text nodes. That is safe for every
+   other part of the editor because Ed.nodes() maps a row's text nodes to source
+   columns by CONCATENATION — wrapping a run adds no text and removes none, so
+   every caret column, selection range and token range reads exactly as before.
+   Nothing in this block writes g.view.lines.
+
+   ONE BAR PER PANE, owned by the group (g.findEl / g.find), because a split is
+   two independent notes and a single global bar would search one and mark the
+   other. The census reports the FOCUSED group's bar (fTok, in updateTitle). */
+const F_MARK = "fmk", F_CUR = "fcur";
+function fState(g) {
+  if (!g.find) g.find = { open: false, q: "", hits: [], idx: 0 };
+  return g.find;
+}
+function fBar(g) {                     // the bar's DOM, built once per pane
+  if (g.findEl) return g.findEl;
+  const bar = document.createElement("div");
+  bar.className = "findbar";
+  bar.hidden = true;
+  /* R26.2: EXACTLY these five children of .findrow. R26.5 records that stock
+     deliberately offers no case / whole-word / regex toggles — the census
+     publishes [fels:] so an added sixth control fails the phase, which is the
+     only way "and no more" can be a testable claim rather than a wish. */
+  bar.innerHTML =
+    '<div class="findrow">' +
+      '<input class="findq" type="text" spellcheck="false" autocomplete="off" placeholder="Find">' +
+      '<span class="findcount"></span>' +
+      '<button class="findprev" title="Previous match (Shift+Enter)">↑</button>' +
+      '<button class="findnext" title="Next match (Enter)">↓</button>' +
+      '<button class="findclose" title="Close (Escape)">✕</button>' +
+    '</div>';
+  const inp = bar.querySelector(".findq");
+  inp.addEventListener("input", () => {          // R26.3: the count follows the query, per keystroke
+    fState(g).q = inp.value;
+    fSync(g, true);
+    fReveal(g);
+    updateTitle();
+  });
+  inp.addEventListener("keydown", e => {
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); fClose(g, true); return; }
+    if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); fGo(g, e.shiftKey ? -1 : 1); return; }
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if ((e.ctrlKey || e.metaKey) && k === "f") { e.preventDefault(); e.stopPropagation(); inp.select(); return; }
+    /* Everything else belongs to the BOX, not to the app keymap: a query
+       contains characters that are chords elsewhere (F2 renames the file, Tab
+       indents, Ctrl+W closes the tab). The global keydown listener is on
+       `document`, so stopping the bubble here is what keeps them out. */
+    e.stopPropagation();
+  });
+  bar.querySelector(".findprev").onclick = () => { fGo(g, -1); fFocus(g); };
+  bar.querySelector(".findnext").onclick = () => { fGo(g, 1); fFocus(g); };
+  bar.querySelector(".findclose").onclick = () => fClose(g, true);
+  g.content.appendChild(bar);          // .content is position:relative; the bar floats over the note
+  g.findEl = bar;
+  return bar;
+}
+function fFocus(g) { const b = g.findEl; if (b) { const i = b.querySelector(".findq"); if (i) i.focus(); } }
+/* R26.4: case-insensitive SUBSTRING, always, over the source lines. Matches do
+   not overlap (stock's counter counts the same runs its Enter walks). */
+function fScan(g) {
+  const st = fState(g), out = [];
+  const q = st.q.toLowerCase();
+  if (!q || !g.lp) return out;
+  const L = Ed.lines(g);
+  for (let l = 0; l < L.length; l++) {
+    const hay = (L[l] || "").toLowerCase();
+    let i = hay.indexOf(q);
+    while (i >= 0) { out.push({ l, c: i }); i = hay.indexOf(q, i + q.length); }
+  }
+  return out;
+}
+function fClear(g) {                   // unwrap every mark, leaving the row byte-identical
+  if (!g.lp) return;
+  for (const m of [...g.lp.querySelectorAll("span." + F_MARK)]) {
+    const p = m.parentNode;
+    if (!p) continue;
+    while (m.firstChild) p.insertBefore(m.firstChild, m);
+    p.removeChild(m);
+    p.normalize();                     // re-join the split text nodes: no fragmentation accumulates
+  }
+}
+/* R26.8: EVERY match is marked, the current one distinguishably (.fcur).
+   The wrapping is done per text node, from the LAST offset backwards, so a
+   splitText never invalidates an offset that has not been used yet. A hit that
+   straddles two text nodes (a match running into a rendered <strong>) becomes
+   two spans carrying the SAME data-fh, which is why the census counts DISTINCT
+   hit indices rather than spans — "every match is marked" must not be
+   satisfiable by marking one match twice. */
+function fMarks(g) {
+  fClear(g);
+  const st = fState(g);
+  if (!st.open || !st.hits.length || !g.lp) return;
+  const qlen = st.q.length, byRow = new Map();
+  st.hits.forEach((h, i) => {
+    if (!byRow.has(h.l)) byRow.set(h.l, []);
+    byRow.get(h.l).push({ c: h.c, i, cur: i === st.idx });
+  });
+  for (const [l, hs] of byRow) {
+    const row = Ed.rowAt(g, l);
+    if (!row) continue;                // row not rendered (should not happen: one row per line)
+    const map = Ed.nodes(row), jobs = new Map();
+    for (const h of hs) for (const s of map) {
+      const a = Math.max(h.c, s.c), b = Math.min(h.c + qlen, s.c + s.len);
+      if (b <= a) continue;
+      if (!jobs.has(s.n)) jobs.set(s.n, []);
+      jobs.get(s.n).push({ a: a - s.c, b: b - s.c, i: h.i, cur: h.cur });
+    }
+    for (const [node, js] of jobs) {
+      js.sort((x, y) => y.a - x.a);    // right to left
+      let head = node;
+      for (const j of js) {
+        head.splitText(j.b);           // tail leaves; head keeps [0, j.b)
+        const mid = head.splitText(j.a);
+        const sp = document.createElement("span");
+        sp.className = F_MARK + (j.cur ? " " + F_CUR : "");
+        sp.dataset.fh = String(j.i);
+        mid.parentNode.insertBefore(sp, mid);
+        sp.appendChild(mid);
+      }
+    }
+  }
+}
+function fPaint(g) {
+  const st = fState(g), bar = fBar(g);
+  fMarks(g);
+  /* R26.3 + R26.7: the counter appears WITH the query (empty box, no counter)
+     and a query that matches nothing reads "0 / 0" — a hidden counter and a
+     blank one are both indistinguishable from "the search never ran". */
+  bar.querySelector(".findcount").textContent =
+    !st.q ? "" : st.hits.length ? (st.idx + 1) + " / " + st.hits.length : "0 / 0";
+}
+function fSync(g, reset) {             // recompute hits against the current text
+  const st = fState(g);
+  if (!st.open) return;
+  const was = st.hits[st.idx];
+  st.hits = fScan(g);
+  if (reset || !was) st.idx = 0;
+  else {                               // keep the caret's place in the note across a re-scan
+    const i = st.hits.findIndex(h => h.l > was.l || (h.l === was.l && h.c >= was.c));
+    st.idx = i < 0 ? 0 : i;
+  }
+  if (st.idx >= st.hits.length) st.idx = 0;
+  fPaint(g);
+}
+/* R26.12: "a find that does not scroll has not found anything". The scroll is
+   done on the NOTE SCROLLER only (g.lp), never through scrollIntoView, which
+   would also scroll every ancestor — including the window, which R22 says must
+   never scroll at all. */
+function fReveal(g) {
+  const sc = g.lp;
+  if (!sc) return;
+  const el = sc.querySelector("span." + F_MARK + "." + F_CUR);
+  if (!el) return;
+  const r = el.getBoundingClientRect(), b = sc.getBoundingClientRect();
+  if (r.top >= b.top + 4 && r.bottom <= b.bottom - 4) return;      // already on screen: do not jitter
+  sc.scrollTop += (r.top - b.top) - Math.max(0, (sc.clientHeight - r.height) / 2);
+}
+function fGo(g, d) {                   // R26.11 + R26.13
+  const st = fState(g);
+  if (!st.open || !st.hits.length) return;
+  const n = st.hits.length;
+  st.idx = (st.idx + d + n) % n;       // past the last match IS the first: the cycle wraps
+  fPaint(g);
+  fReveal(g);
+  updateTitle();
+}
+function fOpen(g) {                    // R26.1
+  if (!g) return;
+  const t = g.active >= 0 ? g.tabs[g.active] : null;
+  if (!t || t.kind) return;            // notes only — a graph tab has no text to search
+  const st = fState(g), bar = fBar(g);
+  st.open = true;
+  bar.hidden = false;
+  const inp = bar.querySelector(".findq");
+  inp.value = st.q;
+  fSync(g, true);
+  fReveal(g);
+  inp.focus();
+  inp.select();                        // a re-press replaces the previous query, stock-style
+  updateTitle();
+}
+function fClose(g, atMatch) {          // R26.14
+  const st = fState(g);
+  const h = st.hits[st.idx], qlen = st.q.length;
+  st.open = false;
+  if (g.findEl) g.findEl.hidden = true;
+  fClear(g);
+  st.hits = [];
+  /* Escape LEAVES THE CARET AT THE MATCH — this is what turns find into
+     navigation instead of a counter. The match is left SELECTED (caret at its
+     end), so the next keystroke replaces what was searched for. */
+  if (atMatch && h && g.lp) { Ed.place(g, h.l, h.c); Ed.extendTo(g, h.l, h.c + qlen); }
+  updateTitle();
+}
+/* Census (headless probe), published for the FOCUSED group by updateTitle:
+     [find:1]              the bar is open
+     [fels:<n>]            children of .findrow — R26.2's "five and no more"
+     [ffoc:q|lp|-]         where the DOM focus actually is (R26.1)
+     [fq:<query>]          the text IN THE BOX, not the state variable
+     [fc:<counter text>]   the counter's own textContent ("3 / 7", "0 / 0", "-" = empty)
+     [fmk:<marked>/<hits>] DISTINCT hits carrying a painted mark / hits found (R26.8)
+     [fcw:<text>]          the painted text of the CURRENT match — a lowercase
+                           query selecting "ALPHA" is how R26.4 is observed
+     [fsc:<scrollTop>]     the note scroller's own scroll offset (R26.12)
+     [fvis:0|1]            is the current match's box inside the scroller's box */
+function fTok(g) {
+  const st = g && g.find;
+  if (!st || !st.open || !g.findEl) return "";
+  const bar = g.findEl, inp = bar.querySelector(".findq");
+  const marks = g.lp ? [...g.lp.querySelectorAll("span." + F_MARK)] : [];
+  const cur = marks.filter(m => m.classList.contains(F_CUR));
+  const a = document.activeElement;
+  const q = s => String(s == null ? "" : s).replace(/[[\]|]/g, "").slice(0, 60);
+  const cnt = bar.querySelector(".findcount").textContent;
+  let t = " [find:1] [fels:" + bar.querySelector(".findrow").children.length + "]" +
+          " [ffoc:" + (a === inp ? "q" : a === g.lp ? "lp" : "-") + "]" +
+          " [fq:" + (q(inp.value) || "-") + "]" +
+          " [fc:" + (q(cnt) || "-") + "]" +
+          " [fmk:" + new Set(marks.map(m => m.dataset.fh)).size + "/" + st.hits.length + "]" +
+          " [fcw:" + (q(cur.map(m => m.textContent).join("")) || "-") + "]";
+  if (g.lp) {
+    t += " [fsc:" + Math.round(g.lp.scrollTop) + "]";
+    if (cur.length) {
+      const r = cur[0].getBoundingClientRect(), b = g.lp.getBoundingClientRect();
+      t += " [fvis:" + (r.top >= b.top - 1 && r.bottom <= b.bottom + 1 ? 1 : 0) + "]";
+    } else t += " [fvis:-]";
+  }
+  return t;
+}
