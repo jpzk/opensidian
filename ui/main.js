@@ -641,11 +641,19 @@ function noteMenu(e, nm) {                 // right-click a tree note row
   closeMenu();
   const m = document.createElement("div");
   m.className = "ctxmenu";
-  const d = document.createElement("div");
-  d.textContent = bmCache.includes(nm) ? "Remove bookmark" : "Bookmark";
-  d.onmousedown = ev => ev.stopPropagation();
-  d.onclick = () => { closeMenu(); toggleBm(nm); };
-  m.appendChild(d);
+  const mkItem = (label, fn) => {
+    const d = document.createElement("div");
+    d.textContent = label;
+    d.onmousedown = ev => ev.stopPropagation();
+    d.onclick = () => { closeMenu(); fn(); };
+    m.appendChild(d);
+  };
+  mkItem(bmCache.includes(nm) ? "Remove bookmark" : "Bookmark", () => toggleBm(nm));
+  /* R24.7: Delete lives HERE, on the explorer row, because that is where the
+     user is when they decide a note is finished — and it opens a question, not
+     a deletion. askDelete does no I/O of its own beyond counting the inbound
+     links the confirmation has to state. */
+  mkItem("Delete", () => askDelete(nm));
   placeMenu(m, e.clientX, e.clientY);   /* R22: viewport-clamped by measured size */
 }
 
@@ -1165,6 +1173,7 @@ function updateTitle() {          // pane/focus census in the window title (head
     + ($("anew") && !$("anew").hidden ? " [modal:att]" : "")   // R31.7 Insert attachment prompt
     + (settingsOpen ? " [modal:settings]" + setTok() + hkInfo : "")   // R14 hotkeys + R30 settings probe
     + (ulPending ? " [modal:ul]" + ulTok() : "")                // R34.6 Update links prompt
+    + (delPending ? " [modal:del]" + delTok() : "")             // R24.7 delete confirmation
     + (noticeTxt ? " [notice:" + tokq(noticeTxt) + "]" : "")    // R34.12/13 the last refusal — does NOT expire with the banner
     + (menuEl ? " [menu:1]" : "");                             // R22: a context menu is open (fuzz probe)
   // [note:<name>] = the FOCUSED group's active note (null for a graph tab).
@@ -1946,6 +1955,10 @@ async function commitTitleEdit() {
    places, both of them on the far side of a recorded answer (this modal, or
    R34.8 consent already in the vault). */
 let ulPending = null, noticeTxt = "", noticeT = 0, noticeSrc = "";
+// R24.7: declared beside ulPending, not down in its own section, because
+// updateTitle() reads it and updateTitle runs from load-time code ABOVE that
+// section — a `let` in the temporal dead zone would throw there, not read null.
+let delPending = null;
 
 function say(msg, src) {                     // R34.12/R34.13: a refusal is VISIBLE
   const b = $("notice");
@@ -2069,6 +2082,126 @@ function ulTok() {
   return " [ul:" + ulPending.links + "/" + ulPending.files + "/" + f + "]" +
          " [ulsay:" + $("ulsay").textContent.replace(/[[\]|]/g, "") + "]" +
          " [ulx:" + xs + "]";
+}
+
+/* ---------- R24.7/R24.8 the delete confirmation --------------------------
+   The only irreversible act the explorer offers, so it is written as a
+   QUESTION with two answers that are both real: Cancel leaves the file exactly
+   where it was (nothing is called at all — not even a "dry run" of the
+   backend), Delete calls delete_note once.
+
+   WHAT THE DIALOG STATES, and why each part is there:
+     - the file, by its vault-relative name (two notes can share a basename);
+     - where it goes: `.trash/` inside THIS vault. delete_note_in moves it
+       there with one rename(2) and the commit message argues why that, and not
+       "your system trash", is the honest sentence under the Landlock ruleset;
+     - how many notes link to it. R24.8 forbids editing those notes, and R24.9
+       (shipped) renders their now-unresolved links faded. The count is the
+       warning the user gets BEFORE the fact; the faded links are what they see
+       after. A delete that quietly breaks four links in three notes and says
+       nothing is the failure mode this line exists to prevent.
+   The count comes from `backlinks_ctx` — the command the backlinks pane
+   already uses. No second counter: R24.8 says a delete must not even READ the
+   other notes for the purpose of rewriting them, and it does not, but the
+   number on screen must still come from the same index everything else reads,
+   not from a private walk that can disagree with the pane one panel away. */
+const delSentence = (files, lines) =>
+  files ? "Its links break in " + files + (files === 1 ? " note" : " notes") +
+          " (" + lines + (lines === 1 ? " line" : " lines") +
+          "). Those notes are not edited — their links go faded."
+        : "No other note links to it.";
+
+async function askDelete(nm) {
+  let bl = [];
+  try { bl = await inv("backlinks_ctx", { name: nm }); }
+  catch (err) { bl = []; }                   // a count we could not take must not block the delete
+  const files = bl.length, lines = bl.reduce((a, b) => a + b.lines.length, 0);
+  openDelete(nm, files, lines);
+}
+function openDelete(nm, files, lines) {
+  delPending = { name: nm, files, lines };
+  $("delq").textContent = "Are you sure you want to delete " + nm + "? It will be moved to .trash in this vault.";
+  $("delsay").textContent = delSentence(files, lines);
+  $("delbox").hidden = false;
+  $("del-no").focus();                       // the DEFAULT is Cancel — see style.css
+  updateTitle();
+}
+function closeDelete() {
+  if (!delPending) return;
+  delPending = null;
+  $("delbox").hidden = true;
+  const g = fg();
+  if (g && g.lp && g.lp.isConnected) g.lp.focus({ preventScroll: true });
+  updateTitle();
+}
+async function delAnswer(kind) {
+  if (!delPending) return;
+  const nm = delPending.name;
+  closeDelete();
+  if (kind !== "yes") return;                // Cancel: the vault is not touched at all
+  try { await inv("delete_note", { name: nm }); }
+  catch (err) { say(String(err && err.message || err)); return; }
+  await afterDelete(nm);
+}
+/* The note is gone from disk; now the UI stops claiming otherwise. Tabs first,
+   because a tab holding an unsaved buffer of a deleted note would RESURRECT it:
+   closeTab flushes the pending save, and that write recreates the file the user
+   just deleted. So the pending timer is cancelled before the tab is closed —
+   the user's answer was "delete", and honouring a 400 ms-old keystroke over it
+   is the same data-loss shape in reverse. */
+async function afterDelete(nm) {
+  for (const g of groups()) {
+    for (let i = g.tabs.length - 1; i >= 0; i--) {
+      const t = g.tabs[i];
+      if (t.kind || t.name !== nm) continue;
+      if (i === g.active && g.saveT) { clearTimeout(g.saveT); g.saveT = null; }
+      await closeTab(g, i);
+    }
+  }
+  // R14 undo-close would otherwise offer to reopen a note that no longer exists
+  for (let i = closedTabs.length - 1; i >= 0; i--) if (closedTabs[i] === nm) closedTabs.splice(i, 1);
+  const mi = mruList.indexOf(nm);
+  if (mi >= 0) mruList.splice(mi, 1);
+  await refreshTree();                       // the explorer row goes
+  await refreshBm();                         // a bookmark of it is now a bookmark with no file (backend leaves it: R24.8)
+  updateTitle();
+}
+$("del-no").onclick = () => delAnswer("no");
+$("del-yes").onclick = () => delAnswer("yes");
+/* Escape = Cancel: dismissing a question is never consent, and here consent is
+   irreversible. Same focus trap as the Update links prompt (keyCode 9 for the
+   ISO_Left_Tab spelling WebKitGTK actually sends). */
+$("delbox").addEventListener("keydown", e => {
+  if (!delPending) return;
+  if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); delAnswer("no"); return; }
+  if (e.key === "Tab" || e.keyCode === 9) {
+    e.preventDefault();
+    const b = [$("del-no"), $("del-yes")];
+    const i = b.indexOf(document.activeElement);
+    b[(i < 0 ? 0 : i + (e.shiftKey ? b.length - 1 : 1)) % b.length].focus();
+    updateTitle();
+    return;
+  }
+  e.stopPropagation();
+});
+$("delbox").addEventListener("mousedown", e => { if (e.target === $("delbox")) e.preventDefault(); });  // click-off is not an answer
+
+/* [modal:del] + [del:<name>/<files>/<lines>/<focused button 0=Cancel,1=Delete>]
+   + [delsay:<the stated sentence>] + [delx:<cx,cy>;<cx,cy>].
+   The phase asserts the DIALOG, not just the end state: without a token, a
+   Cancel test cannot tell "the dialog came up and was dismissed" from "Delete
+   did nothing at all", and those are the two things a confirmation is between. */
+function delTok() {
+  const b = [$("del-no"), $("del-yes")];
+  const f = b.indexOf(document.activeElement);
+  const xs = b.map(e => {
+    const r = e.getBoundingClientRect();
+    return Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2);
+  }).join(";");
+  const q = s => String(s == null ? "" : s).replace(/[[\]|]/g, "");
+  return " [del:" + q(delPending.name) + "/" + delPending.files + "/" + delPending.lines + "/" + f + "]" +
+         " [delsay:" + q($("delq").textContent + " " + $("delsay").textContent).slice(0, 200) + "]" +
+         " [delx:" + xs + "]";
 }
 
 async function loadActive(g) {
@@ -3275,6 +3408,7 @@ document.addEventListener("keydown", e => {
   if (e.ctrlKey && e.altKey && e.shiftKey && (e.key === "F" || e.key === "f")) { e.preventDefault(); floorProbe(); return; }
   if (settingsOpen) return hkKey(e);       // R14: settings modal owns the keyboard (chord capture)
   if (ulPending) return;                   // R34.6: the Update links prompt owns the keyboard — its own handler answers it
+  if (delPending) return;                  // R24.7: so does the delete confirmation (Escape there = Cancel)
   if (titleEditing()) return;              // R34.1: so does the title box (a filename contains chords)
   if (e.key === "Escape") {
     if (modalKind) { closeModal(); return; }
