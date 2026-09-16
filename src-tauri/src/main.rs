@@ -697,8 +697,20 @@ fn write_note_in(root: &Path, ix: &mut Index, name: &str, content: &str) -> Resu
    is atomic; ".tmp" is not ".md", so notes_of and the watcher never index it),
    fsync it, then rename over the target. Failure leaves the OLD file intact. */
 fn write_atomic(p: &Path, content: &str) -> Result<(), String> {
+    write_atomic_ext(p, content, "md.tmp")
+}
+
+/* The same durable replace for a file that is not a note. R28.3 writes the
+   session layout WHILE THE APP RUNS, i.e. repeatedly, under a `kill -9` that
+   may land at any instant — exactly the crash window this function exists to
+   close, so the layout takes the note path's guarantees rather than a second,
+   weaker copy of them. The temp SUFFIX is the only thing that differs: for a
+   note it must not be ".md" (notes_of and the watcher index those); for
+   workspace.json it must not be ".json" for the same reason a reader must
+   never see a half-written layout. */
+fn write_atomic_ext(p: &Path, content: &str, tmp_ext: &str) -> Result<(), String> {
     use std::io::Write;
-    let tmp = p.with_extension("md.tmp");
+    let tmp = p.with_extension(tmp_ext);
     let r = (|| -> std::io::Result<()> {
         let mut f = fs::File::create(&tmp)?;
         f.write_all(content.as_bytes())?;
@@ -1092,6 +1104,65 @@ fn get_sidebar_w() -> Option<u64> {
 fn set_sidebar_w(w: u64) {
     let mut v = cfg_value();
     v["sidebar_w"] = serde_json::json!(w.clamp(150, 600));
+    let _ = fs::write(cfg_path(), v.to_string());
+}
+
+/* ---------- R28 WORKSPACE PERSISTENCE: the two files, and why they are two ----
+   R28.1  the LAYOUT lives inside the vault, in stock's own file and stock's own
+          shape: <vault>/.obsidian/workspace.json. A vault carries its own
+          session, so a vault opened by stock Obsidian and back again (R28.16)
+          finds the tabs where it left them.
+   R28.2  the WINDOW GEOMETRY does NOT live there. It goes in ~/.rustidian.json
+          ("win"), beside the other machine-scoped settings (sidebar_w, theme,
+          zoom). This is not tidiness: a vault synced between a laptop and a
+          desktop would otherwise carry one machine's window rectangle to the
+          other and the two would fight over it on every launch. The layout is
+          a property of the VAULT; the rectangle is a property of the MACHINE.
+   `.obsidian` is a hidden directory, so `safe_rel`/`notes_of` refuse it and the
+   R11 watcher never sees these writes — the layout cannot masquerade as a note
+   and a save cannot trigger a vault-changed storm. */
+fn workspace_path(root: &Path) -> PathBuf {
+    root.join(".obsidian").join("workspace.json")
+}
+
+/// R28.13: a missing, unreadable or UNPARSEABLE layout is reported as ABSENT,
+/// never as an error. The first launch of a vault and the launch after a
+/// half-synced file are the same path, and that path must land on a usable
+/// window rather than on an error screen.
+#[tauri::command]
+fn read_workspace(v: State<Vault>) -> Option<serde_json::Value> {
+    let root = cur_vault(&v)?;
+    let s = fs::read_to_string(workspace_path(&root)).ok()?;
+    serde_json::from_str(&s).ok()
+}
+
+/// R28.3: called WHILE THE APP RUNS (see wsFlush in ui/main.js), not at exit.
+/// There is deliberately no exit handler anywhere in this feature: a handler
+/// that runs on a clean quit is exactly the mechanism a `kill -9`, an OOM kill
+/// or a power cut skips.
+#[tauri::command]
+fn write_workspace(v: State<Vault>, layout: serde_json::Value) -> Result<(), String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    let p = workspace_path(&root);
+    if let Some(d) = p.parent() {
+        fs::create_dir_all(d).map_err(|e| e.to_string())?;
+    }
+    write_atomic_ext(&p, &layout.to_string(), "json.tmp")
+}
+
+/// R28.2: the window rectangle, stored OUTSIDE the vault. Read back by nothing
+/// in this feature on purpose — where it is kept is the requirement; restoring
+/// it is a separate row nobody has written yet (see docs/negctl-wspace).
+#[tauri::command]
+fn get_win_geom() -> Option<serde_json::Value> {
+    let v = cfg_value();
+    v.get("win").filter(|w| w.is_object()).cloned()
+}
+
+#[tauri::command]
+fn set_win_geom(x: i64, y: i64, w: u64, h: u64) {
+    let mut v = cfg_value();
+    v["win"] = serde_json::json!({ "x": x, "y": y, "w": w, "h": h });
     let _ = fs::write(cfg_path(), v.to_string());
 }
 
@@ -3893,6 +3964,7 @@ fn main() {
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, smoke_css,
+            read_workspace, write_workspace, get_win_geom, set_win_geom,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
             themes_scan, theme_css, get_css_theme, set_css_theme, theme_seed_report, vault_css_watch,
@@ -4019,6 +4091,33 @@ mod tests {
 
     fn ix_graph(ix: &Index) -> Graph {
         index::build_graph(ix.names(), &ix.link_lists())
+    }
+
+    /* R28.1/R28.2 — THE TWO FILES. This is the only place the layout PATH is
+       pinned in Rust; the phase asserts the same thing from outside on a real
+       vault, because a unit test cannot tell you which path the running app
+       used. */
+    #[test]
+    fn the_layout_file_is_the_stock_path_inside_the_vault() {
+        let root = tmp_vault("wspath");
+        assert_eq!(workspace_path(&root), root.join(".obsidian").join("workspace.json"));
+        // a hidden component => never a note, never watched, never indexed
+        assert!(safe_rel(".obsidian/workspace.json").is_none());
+    }
+
+    #[test]
+    fn a_layout_write_is_atomic_and_leaves_no_json_temp_behind() {
+        let root = tmp_vault("wsatomic");
+        let p = workspace_path(&root);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        write_atomic_ext(&p, "{\"main\":{}}", "json.tmp").unwrap();
+        assert_eq!(fs::read_to_string(&p).unwrap(), "{\"main\":{}}");
+        // the temp is a sibling that no longer exists, and it was never a .json
+        // a reader could have picked up half-written
+        assert!(!p.with_extension("json.tmp").exists());
+        // a second write replaces rather than appends
+        write_atomic_ext(&p, "{\"main\":{\"type\":\"split\"}}", "json.tmp").unwrap();
+        assert_eq!(fs::read_to_string(&p).unwrap(), "{\"main\":{\"type\":\"split\"}}");
     }
 
     fn edge_names(g: &Graph) -> Vec<(String, String)> {

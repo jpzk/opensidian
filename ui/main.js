@@ -1936,6 +1936,144 @@ function renderLayout() {         // boot / vault switch only — every later ch
   updateTitle();
 }
 
+/* ---------- R28 WORKSPACE PERSISTENCE: quit, relaunch, your layout is there ---
+   The file is the vault's own `.obsidian/workspace.json`, in STOCK's shape
+   (R28.1/R28.16) — a rustidian vault stays openable by stock Obsidian and back.
+   Shape, as measured off a stock vault:
+     { main:  { id, type:"split", direction:"vertical"|"horizontal",
+                children: [ { id, type:"tabs", currentTab?, dimension?,
+                              children: [ { id, type:"leaf",
+                                            state:{ type:"markdown",
+                                                    state:{ file, mode, source },
+                                                    icon, title } } ] } ] },
+       left / right: the sidebars, same node grammar, `collapsed` on the split,
+       active: <the focused LEAF's id>,
+       lastOpenFiles: [names, newest first] }
+   Two shape details that are not decoration:
+     R28.5  `currentTab` is OMITTED when it is 0 — stock writes it only when a
+            tab other than the first is active, and a file that carries it
+            anyway is a file stock did not write.
+     R28.6  a split child's size is a PERCENTAGE (`dimension`), never pixels, so
+            a layout restored into a differently sized window keeps its
+            PROPORTIONS instead of overflowing or leaving a gap.
+   `direction` is stock's, and it is the OPPOSITE word to ours: stock's
+   "vertical" split stands its children side by side (our dir:"row"), its
+   "horizontal" stacks them (our dir:"col"). Translated in exactly two places
+   (wsNode and wsNodeIn) so the confusion cannot spread.
+   R28.4 leaf ids are STABLE across restarts: an id is minted once per tab and
+   then carried through the file, so a restore is a restore (the ids the next
+   save writes are the ids the last one wrote) rather than a rebuild. */
+const WS_VIEW_L = { files: "file-explorer", search: "search", bm: "bookmarks" };
+const WS_VIEW_R = { bl: "backlink", out: "outgoing-link", tags: "tag", toc: "outline" };
+let wsWrites = 0;        // successful write_workspace calls THIS PROCESS (census [ws:])
+let wsRestored = 0;      // leaves rebuilt from the file on this launch
+let wsDropped = 0;       // R28.17: leaves whose file was gone, dropped instead of failing
+let wsT = null, wsLast = "", wsIds = {};
+const wsId = () => {     // stock's ids are 16 hex chars; the VALUE is opaque, only stability matters
+  let s = "";
+  for (let i = 0; i < 16; i++) s += ((Math.random() * 16) | 0).toString(16);
+  return s;
+};
+const wsIdOf = (o, k) => (o[k] || (o[k] = wsId()));
+const wsPersistable = t => !!t && !t.kind && typeof t.name === "string";   // graph leaves are not files
+function wsLeaf(t) {
+  // R28.9: the per-tab view mode, in stock's two orthogonal bits (see modeBits).
+  // Without it every tab that was READING comes back as an editor.
+  const st = t.read
+    ? { file: t.name, mode: "preview", source: !!t.src }
+    : { file: t.name, mode: "source", source: !!t.src };
+  return { id: wsIdOf(t, "lid"), type: "leaf",
+           state: { type: "markdown", state: st, icon: "lucide-file", title: titleOf(t.name) } };
+}
+function wsNode(node) {
+  if (node.children) {
+    const kids = node.children.map(wsNode);
+    const fr = node.fractions || [];
+    const tot = fr.reduce((a, b) => a + (b || 0), 0) || kids.length;
+    kids.forEach((k, i) => { if (k) k.dimension = Math.round(((fr[i] != null ? fr[i] : 1) / tot) * 1e4) / 1e2; });
+    return { id: wsIdOf(node, "wid"), type: "split",
+             children: kids.filter(Boolean),
+             direction: node.dir === "row" ? "vertical" : "horizontal" };
+  }
+  const tabs = node.tabs.filter(wsPersistable);
+  const act = node.active >= 0 ? tabs.indexOf(node.tabs[node.active]) : -1;
+  const o = { id: wsIdOf(node, "wid"), type: "tabs", children: tabs.map(wsLeaf) };
+  if (act > 0) o.currentTab = act;          // R28.5: 0 is written by its ABSENCE
+  return o;
+}
+function wsSide(which) {
+  const open = which === "left" ? sideOpen : rightOpen;
+  const view = which === "left" ? (WS_VIEW_L[sidePane] || "file-explorer") : (WS_VIEW_R[rTab] || "backlink");
+  return { id: wsIdOf(wsIds, which), type: "split", direction: "horizontal",
+           children: [{ id: wsIdOf(wsIds, which + "tabs"), type: "tabs",
+                        children: [{ id: wsIdOf(wsIds, which + "leaf"), type: "leaf",
+                                     state: { type: view, state: {} } }] }],
+           collapsed: !open };     // R28.10: the sidebar the operator collapsed stays collapsed
+}
+function wsDoc() {
+  const ft = fg() && fg().active >= 0 ? fg().tabs[fg().active] : null;
+  return {
+    main: wsNode(state.root),
+    left: wsSide("left"),
+    right: wsSide("right"),
+    active: wsPersistable(ft) ? wsIdOf(ft, "lid") : "",   // R28.12: focus lands on the NAMED leaf
+    // R28.15: `lastOpenFiles` is the note-use order, newest first. It is the
+    // SAME list the quick switcher already keeps (mruList) rather than a second
+    // one that could disagree with it — nothing reads the key back yet beyond
+    // seeding that list on restore, which is exactly what the row says: written
+    // for a recent-files affordance that does not exist.
+    lastOpenFiles: mruList.slice(0, 20),
+  };
+}
+/* R28.3 — WRITTEN WHILE RUNNING, NOT AT EXIT. This is the data-loss row of the
+   section and the reason there is no beforeunload/window-close handler anywhere
+   in this feature: a handler that runs on a clean quit is exactly what a
+   `kill -9`, an OOM kill or a power cut skips, and the layout would be lost in
+   precisely the cases the user did not choose. wsTouch() is called from
+   updateTitle(), which every mutation in this app already funnels through, so
+   "something changed" needs no second list of call sites to fall out of date.
+   THROTTLE, not debounce: the timer is armed by the first change and NOT reset
+   by later ones, so continuous typing cannot starve the write forever — at most
+   WS_MS of layout change is ever unwritten. The write is skipped when the
+   serialized layout is byte-identical to the last one, so a typing burst costs
+   one stringify and no IPC. */
+const WS_MS = 400;
+function wsTouch() {
+  if (!state || !vaultPath || wsT) return;
+  wsT = setTimeout(wsFlush, WS_MS);
+}
+async function wsFlush() {
+  wsT = null;
+  if (!state || !vaultPath) return;
+  let doc, s;
+  try { doc = wsDoc(); s = JSON.stringify(doc); } catch (e) { return; }   // never let a census update throw
+  if (s === wsLast) return;
+  try {
+    await inv("write_workspace", { layout: doc });
+    wsLast = s; wsWrites++;
+    updateTitle();                 // republish [ws:] — the write is observable, not asserted by faith
+  } catch (e) { /* R28.13/R28.17: persistence must never be able to break the session */ }
+}
+/* R28.2 — THE WINDOW RECTANGLE GOES SOMEWHERE ELSE. Not in the vault: a vault
+   synced between a laptop and a desktop would otherwise carry one machine's
+   window size to the other and the two would overwrite each other on every
+   launch. It is written to ~/.rustidian.json ("win") beside sidebar_w / theme /
+   zoom, which are machine facts for the same reason. Throttled on resize, and
+   deliberately NOT applied at startup — WHERE the geometry lives is the
+   requirement; restoring it is a row nobody has written. */
+let wgT = null;
+function wsGeomTouch() {
+  if (wgT) return;
+  wgT = setTimeout(async () => {
+    wgT = null;
+    try {
+      const r = await inv("win_rect");
+      await inv("set_win_geom", { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.w), h: Math.round(r.h) });
+    } catch (e) { /* geometry is a convenience; it never breaks a session */ }
+  }, 700);
+}
+window.addEventListener("resize", wsGeomTouch);
+
 /* ---------- R22 layout census: [ovf:<dw>,<dh>,<n>] ----------
    R22 (no scrollbars, ever): at EVERY window size the app chrome fits
    exactly. dw/dh = documentElement.scrollWidth-clientWidth /
@@ -2047,6 +2185,24 @@ document.addEventListener("selectionchange", () => {
   if (rvSelT) return;
   rvSelT = setTimeout(() => { rvSelT = null; updateTitle(); }, 30);
 });
+
+/* R28 census (goal wsrestore) — registered in ui/census.js, not inline.
+   [wstabs:<note>:<mode>,<note>:<mode>|<note>:<mode>] — EVERY tab of EVERY
+   group, in paint order, with its own view mode; groups separated by "|".
+   [mode:] publishes the FOCUSED tab only, so without this token "each tab's
+   mode came back" is unobservable and a restore that flattened every reading
+   tab into an editor would pass.
+   [ws:<writes>,<restored>,<dropped>] — writes = write_workspace calls that
+   RETURNED this process (R28.3 is a claim about the running app, so the
+   census counts the act, not the intent); restored = leaves rebuilt from the
+   file on this launch; dropped = leaves whose file was gone and which were
+   dropped instead of failing the restore (R28.17). A degrade that silently
+   did nothing and a degrade that dropped a leaf are different numbers. */
+function wsTok() {
+  return " [wstabs:" + groups().map(h => h.tabs.map(x =>
+        (x.kind ? x.kind : titleOf(x.name)) + ":" + (x.kind ? "-" : (MODE_ABBR[x.mode] || "?"))).join(",")).join("|") + "]" +
+       " [ws:" + wsWrites + "," + wsRestored + "," + wsDropped + "]";
+}
 
 // G2 (goal gatetrain): the registered census tokens from ui/census.js, in
 // registration order. typeof guard: a page that failed to load census.js must
@@ -2629,6 +2785,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   // timeout guard — a hung/rejected setTitle IPC can neither reorder titles
   // nor starve later updates (the old promise-chain stalled forever on one)
   pushTitle(t);
+  wsTouch();   // R28.3: every mutation already funnels through here — arm the layout write
 }
 let tSending = false, tWant = "";
 function pushTitle(t) {
@@ -6756,6 +6913,7 @@ async function enterVault() {
   if (names.length) await openInTab(names[0], "boot");
   else renderTabs(g);
   perf.mark("boot", 0, { notes: names.length });   // perf: page start -> vault ready (first note rendered)
+  wsGeomTouch();   // R28.2: the rectangle is recorded once per session OUTSIDE the vault, resize or no resize
 }
 /* ---------- R11 external edits (backend watcher -> `vault-changed`) ---------- */
 // tab.base = the bytes we last loaded from / saved to disk. bufOf(g) = the
