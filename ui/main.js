@@ -3229,6 +3229,19 @@ document.addEventListener("keydown", e => {
   if (e.key === "Escape") {
     if (modalKind) { closeModal(); return; }
     if (!$("rnbox").hidden) { $("rnbox").hidden = true; updateTitle(); return; }
+    /* R26.14 FROM THE NOTE. The bar's own two inputs close it in their own
+       handlers (and put the caret on the match). But focus does not stay in the
+       bar: undo, a click in the text, and replace-all itself all hand the
+       keyboard back to the editor, and Escape is still the key that closes the
+       find bar there — that is the panel this clones, and a bar that can only be
+       dismissed by first clicking back into it is a trap.
+       The caret is NOT moved on this path (fClose's atMatch=false): the user is
+       already somewhere in the text, and dragging them back to a match they have
+       since left would be a jump, not navigation. */
+    {
+      const gf = fg();
+      if (gf && gf.find && gf.find.open) { fClose(gf, false); return; }
+    }
     closeMenu();
     if (vaultPath && !$("picker").hidden) $("picker").hidden = true;
     if (!$("fnew").hidden) $("fnew").hidden = true;
