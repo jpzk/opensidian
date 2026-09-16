@@ -878,13 +878,34 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
    caret while the ::before, and therefore every row index, stays put.
    Fed by data-title (ui/main.js setInlineTitle); the ATTRIBUTE selector is
    deliberate — no attribute, no box, so a note-less pane keeps its y-origin. */
-.lp[data-title]::before, .preview[data-title]::before {
-  content: attr(data-title);
+/* R34.18 — THE TITLE'S TYPE, DECLARED ONCE, FOR BOTH SURFACES.
+   This selector list used to be two rules that a comment PROMISED were the same
+   ("repeats the ::before's type declarations verbatim"). They were not, and a
+   promise in a comment is not a mechanism: `scripts/smoke.sh fast titletype`
+   measured the two surfaces apart on THREE axes — size (1.618em resolving
+   against a 16px base on one and a 14px base on the other), family (the
+   --font-text stack against the body's system-ui fallback), and colour
+   (--text-normal against --text-chrome). The NUMBERS deliberately do not live
+   here: this file is where the false claim lived, so the measurement stays in
+   the phase's log, where every run re-takes it.
+   Now there is ONE rule, so the two surfaces cannot drift by editing: every
+   declaration here lands on the ::before that PAINTS the title and on the
+   .titleedit that replaces it while renaming. What each needs on its own —
+   content, margins and user-select for the ::before; a transparent box with no
+   border for the editor — stays in its own rule below.
+   NOTE the sizes are all `em`/token relative and MUST stay that way: a literal
+   would lock the fix to --font-text-size: 16px, which is the same bug holding
+   one lucky value. What makes em resolve identically on both is .titlewrap
+   carrying the note column's own type context — see the rule below it. */
+.lp[data-title]::before, .preview[data-title]::before, .titleedit {
   display: block; max-width: var(--file-line-width); margin-inline: auto;
   font-size: var(--h1-size); font-weight: var(--h1-weight);
   line-height: var(--h1-line-height); letter-spacing: var(--h1-letter-spacing);
-  color: inherit; margin-top: 0; margin-bottom: 0.5em;
-  overflow-wrap: anywhere; white-space: pre-wrap; cursor: text; user-select: none;
+  color: inherit; overflow-wrap: anywhere; white-space: pre-wrap; cursor: text;
+}
+.lp[data-title]::before, .preview[data-title]::before {
+  content: attr(data-title);
+  margin-top: 0; margin-bottom: 0.5em; user-select: none;
 }
 /* R34.15 (R32.4 restated as a NUMERIC condition) — HOW THE TITLE BECOMES
    EDITABLE WITHOUT BECOMING A ROW.
@@ -901,19 +922,39 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
    that list. Outside it, `children` is byte-identical open or closed, which is
    what the census token [te:<text>/<rows>] publishes so a phase can assert it.
    .titlewrap is the POSITIONER (the scroller's content box, full width, fed
-   pixel values by titleBox()); .titleedit is the text column and repeats the
-   ::before's type declarations verbatim — same font-size/weight/line-height/
-   letter-spacing/max-width/margin-inline — so the glyphs land on the same
-   baseline as the ink it replaces. Background stays transparent: there is
-   nothing to cover, the ::before is already invisible underneath. */
+   pixel values by titleBox()); .titleedit is the text column. It no longer
+   "repeats the ::before's type declarations verbatim" — that sentence stood
+   here while the two surfaces differed by 3.236px, a font family and a text
+   colour, which is R34.18's whole lesson: the type is now declared ONCE, in a
+   selector list both surfaces are in, and the agreement is MEASURED by
+   `scripts/smoke.sh fast titletype` (computed style off the live DOM + ink off
+   a screenshot) rather than asserted here. Background stays transparent: there
+   is nothing to cover, the ::before is already invisible underneath. */
 .lp.titling::before, .preview.titling::before { visibility: hidden }
-.titlewrap { position: absolute; z-index: 5; box-sizing: border-box }
+/* R34.18 — THE ROOT CAUSE, AND WHY THE FIX IS HERE AND NOT ON .titleedit.
+   The shared rule above is written in em and tokens: `--h1-size: 1.974em` and
+   `--h1-letter-spacing: -0.018em`. `em` resolves against the element's INHERITED
+   font-size, and `color: inherit` / an undeclared font-family resolve against
+   the inherited value — so identical declarations produce different type when
+   the two elements sit in different contexts, which is exactly what happened:
+     .lp[data-title]::before  inherits .lp  -> --font-text / --font-text-size
+                              (style.css `.lp, .preview`) -> 1.974 x 16 = 31.584px
+     .titleedit               inherits .content, which sets no type at all, so
+                              it fell through to `body { font: 14px/1.5 system-ui }`
+                              and `color: var(--text-chrome)` -> 1.974 x 14 = 27.636px,
+                              a different family, and the CHROME text colour.
+   .titleedit cannot be moved inside .lp to inherit it — an editable node in the
+   scroller is `g.lp.children[i]` and shifts every positional row index
+   (ui/editor.js:491, R34.15). So the CONTEXT is brought to the surface instead:
+   .titlewrap, the positioner, restates the note column's own type context, the
+   same tokens `.lp, .preview` reads. Nothing is hardcoded — move
+   --font-text-size and both surfaces move together, which is what
+   `fast titletype` re-measures at a non-default size. */
+.titlewrap { position: absolute; z-index: 5; box-sizing: border-box;
+             font-family: var(--font-text); font-size: var(--font-text-size);
+             line-height: var(--line-height-normal); color: var(--text-normal) }
 .titleedit {
-  display: block; max-width: var(--file-line-width); margin-inline: auto;
-  font-size: var(--h1-size); font-weight: var(--h1-weight);
-  line-height: var(--h1-line-height); letter-spacing: var(--h1-letter-spacing);
-  color: inherit; background: var(--transparent); border: 0; outline: none;
-  overflow-wrap: anywhere; white-space: pre-wrap; user-select: text; cursor: text;
+  background: var(--transparent); border: 0; outline: none; user-select: text;
 }
 .lp .lprow { width: 100% }
 .lp h1, .preview h1, .lp h2, .preview h2, .lp h3, .preview h3, .lp h4, .preview h4, .lp h5, .preview h5, .lp h6, .preview h6 {
