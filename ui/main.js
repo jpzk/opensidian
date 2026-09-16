@@ -719,6 +719,12 @@ let saveErr = "";
    can never read it through a temporal-dead-zone. The drop code itself is in
    the R31 section further down. */
 let dropTok = "", dropT = null;
+/* R24.6 explorer drag-to-move, declared here for the same reason as dropTok:
+   updateTitle() reads both and runs from load-time code ABOVE the explorer
+   section, where a `let` in its own section would be a temporal-dead-zone
+   throw rather than an empty token. [dragt:] is live (a drag is up, this is
+   the destination it resolved to), [mv:] is the last completed move. */
+let dragTok = "", mvTok = "";
 /* F2 test hook: the vault-switch race lives inside the debounce window, so it
    is not mechanically reproducible at 250ms — RUSTIDIAN_SAVE_MS widens it for
    the smoke (backend save_debounce_ms; default 250 in every normal run). */
@@ -1165,6 +1171,10 @@ function updateTitle() {          // pane/focus census in the window title (head
   // Deliberately not derived from the banner (which times out): "no drop yet"
   // and "a drop whose banner faded" must not look the same to a probe.
   if (dropTok) md += " [drop:" + dropTok.replace(/[[\]|]/g, "") + "]";
+  // R24.6 explorer drag-to-move: [dragt:<dest or - >:<the chip's own text>] while
+  // a drag is up, [mv:<old>><new>/<files linking in>] for the last completed move.
+  if (dragTok) md += " [dragt:" + dragTok.replace(/[[\]|]/g, "").slice(0, 120) + "]";
+  if (mvTok) md += " [mv:" + mvTok.replace(/[[\]|]/g, "").slice(0, 120) + "]";
   md += " [zoom:" + zoomTok + "]";   // R36: always present — a probe must be able to read "still at 100%"
   // R15.2 font probe: bundled @font-face entries that actually LOADED (lazy: a face loads when text first uses it) -> [fonts:SourceCodePro/400/normal|...]
   { const fl = document.fonts ? [...document.fonts].filter(f => f.status === "loaded").map(f => f.family.replace(/[" ]/g, "") + "/" + f.weight + "/" + f.style) : [];
@@ -2482,6 +2492,7 @@ function renderNode(node, prefix, depth, out) {
     // R20 (#7): children live in a .tkids box rendered ONCE; a click only flips
     // .collapsed on the box (+ .open on the row) — zero IPC, no tree rebuild.
     // The tree DOM is rebuilt only when the note/folder list changes (refreshTree).
+    row.dataset.folder = full;                  // R24.6: the drop target's identity, off the DOM
     const kids = document.createElement("div");
     kids.className = "tkids" + (open ? "" : " collapsed");
     row.onclick = () => act("folder_toggle", { folder: full, open: collapsed.has(full), notes: node.dirs.get(d).notes.length, rows: kids.childElementCount }, () => {
@@ -2500,11 +2511,132 @@ function renderNode(node, prefix, depth, out) {
     row.innerHTML = treeGuides(depth) + '<span class="tc"></span>' +
       '<span class="tn"></span>';
     row.querySelector(".tn").textContent = nm.split("/").pop();
-    row.onclick = () => openInTab(nm);
+    row.dataset.note = nm;
+    row.onclick = () => { if (treeClickEaten()) return; openInTab(nm); };
     row.oncontextmenu = e => noteMenu(e, nm);   // R9.4: bookmark toggle
+    row.addEventListener("mousedown", e => treeDragStart(e, nm));   // R24.6: drag onto a folder row = move
     treeRows.set(nm, row);
     out.appendChild(row);
   }
+}
+
+/* ---------- R24.6: DRAG A NOTE ONTO A FOLDER ROW TO MOVE IT ----------------
+   THE SAME MOUSE MACHINE AS THE TABS, not a second convention: mousedown +
+   window mousemove/mouseup, a 6px threshold, a #tabghost chip, drop targets
+   resolved once per rAF frame against rects cached at drag start, and the
+   commit wrapped in act(). HTML5 `dragstart`/dataTransfer is used NOWHERE in
+   this codebase and is not introduced here; R31's drop-to-attach is an
+   OS-level XDND delivered as the `drop-files` event and never sees a DOM drag,
+   so the two cannot collide.
+
+   NO LINKS ARE REWRITTEN AND NO PROMPT IS SHOWN — that is R24.6 itself
+   ("links that still resolve are left untouched and no prompt is shown"), and
+   it is true of THIS vault for a mechanical reason worth writing down:
+   index.rs:367 resolves a wikilink by full relative path OR basename, so
+   `[[Note]]` still resolves after `Note` becomes `sub/Note`. The only spelling
+   a move can break is a FULL-PATH link (`[[old/Note]]`), and silently
+   rewriting those vault-wide without asking is exactly the deleted ux-3
+   behaviour (R32.5). So the move calls move_note — the EXISTING backend, which
+   also carries the bookmark (move_note_in) — and stops. `update_links` keeps
+   its two consented callers (R34's prompt and R34.8 consent) and gains none;
+   there is no second rewriter in this feature, and the blast radius move_note
+   returns is published in the census rather than acted on.
+
+   Folder rows are drop TARGETS here, not drag sources: moving a folder is N
+   moves with no atomicity and belongs with the folder-rename work (R24.5).  */
+let treeEat = 0;                         // mark: a drag just ended, eat the click it generates
+function treeClickEaten() {              // a completed drag must not also open/toggle the row
+  const t = treeEat;
+  treeEat = 0;                           // one click only, and stale marks expire by time:
+  return !!t && performance.now() - t < 400;   // a drop on a FOLDER row generates no row click
+}
+function treeDragStart(e, nm) {
+  if (e.button !== 0) return;
+  const sx = e.clientX, sy = e.clientY;
+  const base = nm.split("/").pop();
+  const par = nm.includes("/") ? nm.slice(0, nm.lastIndexOf("/")) : "";
+  let ghost = null, target = null, hl = null, zones = null, raf = 0, last = null;
+  const clearHl = () => { if (hl) { hl.classList.remove("drop-into"); hl = null; } };
+  const step = () => {
+    raf = 0;
+    const ev = last;
+    if (!ghost) {
+      if (Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) < 6) return;
+      ghost = document.createElement("div");
+      ghost.id = "tabghost";
+      ghost.textContent = base;
+      document.body.appendChild(ghost);
+      dragTok = "-:" + base;             // a drag is UP with no destination yet
+      updateTitle();
+      // rects cached ONCE (R20): a per-frame getBoundingClientRect over every
+      // folder row is a layout read per mousemove on a 500-row explorer.
+      // The tree box is LAST so a folder row always wins the hit test.
+      zones = [...document.querySelectorAll("#tree .trow.folder")]
+        .map(el => ({ el, f: el.dataset.folder, r: el.getBoundingClientRect() }))
+        .filter(z => z.r.height > 0 && z.f != null);
+      zones.push({ el: $("tree"), f: "", r: $("tree").getBoundingClientRect() });   // the vault ROOT
+    }
+    ghost.style.transform = "translate3d(" + (ev.clientX + 10) + "px," + (ev.clientY + 12) + "px,0)";
+    let nt = null;
+    for (const z of zones) {
+      const r = z.r;
+      if (ev.clientX < r.left || ev.clientX > r.right ||
+          ev.clientY < r.top || ev.clientY > r.bottom) continue;
+      if (z.f !== par) nt = z;            // the folder it is ALREADY in is not a destination
+      break;
+    }
+    if ((nt ? nt.f : null) !== (target ? target.f : null)) {
+      clearHl();
+      if (nt) { hl = nt.el; hl.classList.add("drop-into"); }   // R24.6: the target is OUTLINED
+      target = nt;
+      // R24.6: the chip NAMES THE DESTINATION — and the census carries the same
+      // sentence, so a phase asserts what the chip says instead of OCR'ing it.
+      // ASCII arrow on purpose: this string travels through the window title.
+      ghost.textContent = base + (target ? " -> " + (target.f || "vault root") : "");
+      dragTok = (target ? (target.f || "/") : "-") + ":" + ghost.textContent;
+      updateTitle();                     // ONLY on a target change — never per frame
+    }
+  };
+  const move = ev => { last = ev; if (!raf) raf = requestAnimationFrame(step); };
+  const up = async () => {
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", up);
+    if (raf) { cancelAnimationFrame(raf); raf = 0; if (last) step(); }
+    const t = target;
+    if (ghost) ghost.remove();
+    clearHl();
+    dragTok = "";
+    if (!ghost || !t) { updateTitle(); return; }   // plain click, or dropped on nothing
+    treeEat = 1;                                   // the mouseup's click is not an "open this note"
+    await moveNoteTo(nm, t.f);
+  };
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", up);
+}
+
+/* The commit. Refusals are the rename's refusals (say(), nothing moves) and
+   the collision check is the same COURTESY the title rename does — what
+   actually refuses is create_new/O_EXCL inside move_note_in, which no JS-side
+   test of a 1000ms-stale cache can hold against another writer. */
+async function moveNoteTo(nm, folder) {
+  const base = nm.split("/").pop();
+  const nn = folder ? folder + "/" + base : base;
+  if (nn === nm) return;
+  if (notesCache.includes(nn)) { say("There's already a file with the same name"); return; }
+  await act("note_move", { note: nm, to: folder, dest: nn }, async () => {
+    // the bytes of any open buffer of THIS note land before the file moves —
+    // a debounced save that fires after the rename would write the old path
+    for (const g of groups()) if (curOf(g) === nm) await flushSave(g);
+    let blast;
+    try { blast = await inv("move_note", { old: nm, new: nn }); }
+    catch (err) { say(String(err && err.message || err)); updateTitle(); return; }
+    await applyRename(nm, nn);        // tabs, history, MRU, bookmarks, tree — the ONE post-move choke point
+    // [mv:<old>><new>/<files that link in>] — the radius is REPORTED, never
+    // acted on (R24.6). A phase can assert "2 notes link here and were still
+    // not touched", which is the whole claim.
+    mvTok = nm + ">" + nn + "/" + ((blast && blast.files) || 0);
+    updateTitle();
+  });
 }
 
 // perf-index: with backlinks/search/graph served from RAM, rebuilding the
@@ -3298,7 +3430,7 @@ function cmdPalette() {
 /* m5 F2 rename: inline prompt over the focused note tab; disk rename via
    rename_note (the rust side rewrites inbound wikilinks vault-wide), then
    tabs/hist/mru follow the name */
-async function applyRename(old, nn) {   // post-rename bookkeeping (F2 / cmdRename is the only caller)
+async function applyRename(old, nn) {   // post-rename bookkeeping (F2 / cmdRename, the R34 title rename, and R24.6's drag-move)
   for (const h of groups()) for (const tb of h.tabs) {
     if (tb.kind) continue;
     if (tb.name === old) { tb.name = nn; if (tb.view) setInlineTitle(tb.view, nn); }   // #20: the rendered title follows the FILE, in every retained view

@@ -322,6 +322,12 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
             border-radius: 6px; font-size: 12px; opacity: .92;
             box-shadow: 0 4px 14px var(--shadow-popover) }
 .tabs.drop-strip { outline: 2px solid var(--accent-blue); outline-offset: -2px }
+/* R24.6: the explorer drop target is OUTLINED — the folder row the note lands
+   in, or the whole tree when the destination is the vault root. Same accent
+   and same inset as the tab strip's: one drop-target idiom, two surfaces. */
+.trow.drop-into { outline: 2px solid var(--accent-blue); outline-offset: -2px;
+                  background: var(--bg-surface) }
+#tree.drop-into { outline: 2px solid var(--accent-blue); outline-offset: -2px }
 .pane.drop-edge::after { content: ""; position: absolute; top: 32px; right: 0;
                          bottom: 0; width: 40px; pointer-events: none;
                          background: var(--accent-blue-veil) }
