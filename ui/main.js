@@ -3021,6 +3021,7 @@ const CMDS = [
   // vault-wide search above (R25) is a different requirement in a different
   // pane and keeps Ctrl+Shift+F.
   ["editor:open-search",       "Search current file",                 ["ctrl+f"],               () => fOpen(fg())],
+  ["editor:open-search-replace", "Search & replace current file",     ["ctrl+h"],               () => fOpenRep(fg())],
   ["editor:toggle-bold",       "Toggle bold",                         ["ctrl+b"],               () => edWrap("**")],
   ["editor:toggle-checklist-status", "Toggle checkbox status",        ["ctrl+l"],               () => edTask()],
   ["editor:toggle-comments",   "Toggle comment",                      ["ctrl+/"],               () => edWrap("%%", "comment")],
@@ -4797,7 +4798,7 @@ wfArm();
    other. The census reports the FOCUSED group's bar (fTok, in updateTitle). */
 const F_MARK = "fmk", F_CUR = "fcur";
 function fState(g) {
-  if (!g.find) g.find = { open: false, q: "", hits: [], idx: 0 };
+  if (!g.find) g.find = { open: false, rep: false, q: "", r: "", hits: [], idx: 0 };
   return g.find;
 }
 function fBar(g) {                     // the bar's DOM, built once per pane
@@ -4816,6 +4817,15 @@ function fBar(g) {                     // the bar's DOM, built once per pane
       '<button class="findprev" title="Previous match (Shift+Enter)">↑</button>' +
       '<button class="findnext" title="Next match (Enter)">↓</button>' +
       '<button class="findclose" title="Close (Escape)">✕</button>' +
+    '</div>' +
+    /* R26.15: the replace row is the SAME bar with a second row revealed, not a
+       second widget — that is what makes R26.16 ("replace inherits the find
+       query") structural rather than a copy step that can drift. Three children:
+       the replacement box, Replace, Replace all. */
+    '<div class="reprow" hidden>' +
+      '<input class="repq" type="text" spellcheck="false" autocomplete="off" placeholder="Replace">' +
+      '<button class="repone" title="Replace this match (Enter)">Replace</button>' +
+      '<button class="repall" title="Replace all matches">Replace all</button>' +
     '</div>';
   const inp = bar.querySelector(".findq");
   inp.addEventListener("input", () => {          // R26.3: the count follows the query, per keystroke
@@ -4827,8 +4837,10 @@ function fBar(g) {                     // the bar's DOM, built once per pane
   inp.addEventListener("keydown", e => {
     if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); fClose(g, true); return; }
     if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); fGo(g, e.shiftKey ? -1 : 1); return; }
+    if (fEdit(g, e)) return;
     const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
     if ((e.ctrlKey || e.metaKey) && k === "f") { e.preventDefault(); e.stopPropagation(); inp.select(); return; }
+    if ((e.ctrlKey || e.metaKey) && k === "h") { e.preventDefault(); e.stopPropagation(); fOpenRep(g); return; }
     /* Everything else belongs to the BOX, not to the app keymap: a query
        contains characters that are chords elsewhere (F2 renames the file, Tab
        indents, Ctrl+W closes the tab). The global keydown listener is on
@@ -4838,11 +4850,45 @@ function fBar(g) {                     // the bar's DOM, built once per pane
   bar.querySelector(".findprev").onclick = () => { fGo(g, -1); fFocus(g); };
   bar.querySelector(".findnext").onclick = () => { fGo(g, 1); fFocus(g); };
   bar.querySelector(".findclose").onclick = () => fClose(g, true);
+  const rin = bar.querySelector(".repq");
+  rin.addEventListener("input", () => { fState(g).r = rin.value; updateTitle(); });
+  rin.addEventListener("keydown", e => {
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); fClose(g, true); return; }
+    if (e.key === "Enter") {            // R26.17: Enter in the replacement box rewrites THIS match
+      e.preventDefault(); e.stopPropagation();
+      if (e.shiftKey || e.ctrlKey || e.metaKey) fRepAll(g); else fRepOne(g);
+      return;
+    }
+    if (fEdit(g, e)) return;
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if ((e.ctrlKey || e.metaKey) && k === "f") { e.preventDefault(); e.stopPropagation(); fFocus(g); return; }
+    e.stopPropagation();
+  });
+  bar.querySelector(".repone").onclick = () => { fRepOne(g); fRFocus(g); };
+  bar.querySelector(".repall").onclick = () => { fRepAll(g); fRFocus(g); };
   g.content.appendChild(bar);          // .content is position:relative; the bar floats over the note
   g.findEl = bar;
   return bar;
 }
 function fFocus(g) { const b = g.findEl; if (b) { const i = b.querySelector(".findq"); if (i) i.focus(); } }
+function fRFocus(g) { const b = g.findEl; if (b) { const i = b.querySelector(".repq"); if (i) i.focus(); } }
+/* THE UNDO BRIDGE. Focus sits in a text input while the bar is open, so the
+   global keydown listener never sees Ctrl+Z — and after a replace-all the one
+   chord a user reaches for is exactly that one. R26.20 promises a note can be
+   put back with ONE undo; a promise reachable only after closing the bar first
+   is not the promise. So the two boxes forward undo/redo TO THE NOTE, and only
+   those two chords: everything else keeps belonging to the input. Returns true
+   when it handled the event. */
+function fEdit(g, e) {
+  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  if (!(e.ctrlKey || e.metaKey)) return false;
+  if (k !== "z" && k !== "y") return false;
+  e.preventDefault(); e.stopPropagation();
+  if (k === "y" || e.shiftKey) Ed.redo(g); else Ed.undo(g);
+  fSync(g, true);                      // the note changed under the query: re-count, re-mark
+  updateTitle();
+  return true;
+}
 /* R26.4: case-insensitive SUBSTRING, always, over the source lines. Matches do
    not overlap (stock's counter counts the same runs its Enter walks). */
 function fScan(g) {
@@ -4952,6 +4998,81 @@ function fGo(g, d) {                   // R26.11 + R26.13
   fReveal(g);
   updateTitle();
 }
+/* ---------- R26.15–R26.20: replace ---------- */
+/* R26.17: ONE match — the current one — and the cycle moves on to the next.
+   This goes through Ed.replace(), so it is an ordinary edit with its own undo
+   entry, exactly like typing over a selection. */
+function fRepOne(g) {
+  const st = fState(g);
+  if (!st.open || !st.rep || !st.q || !st.hits.length) return 0;
+  const h = st.hits[st.idx], qlen = st.q.length;
+  Ed.replace(g, { a: { l: h.l, c: h.c }, b: { l: h.l, c: h.c + qlen } }, fRepText(g), "replace");
+  fSync(g, false);                     // keep the place: the next hit at/after where this one was
+  fReveal(g);
+  fRFocus(g);
+  updateTitle();
+  return 1;
+}
+function fRepText(g) {                 // an <input> cannot hold a newline; do not let one in anyway
+  const r = fState(g).r;
+  return String(r == null ? "" : r).replace(/[\r\n]/g, " ");
+}
+/* R26.18 + R26.20 — REPLACE-ALL IS ONE UNDO TRANSACTION.
+   The whole row exists because of data loss: replace-all is the one command in
+   the app that can rewrite a note in dozens of places at once, and the only
+   thing between a mistyped query and a lost note is that ONE Ctrl+Z puts every
+   byte back.
+   That property is not a property of the loop, it is a property of WHERE the
+   snapshot is taken. Ed.snap() pushes a FULL copy of lines[], so the correct
+   shape is exactly one snap, taken BEFORE the first mutation, and then direct
+   splices into the model. Looping over Ed.replace() would read identically and
+   be wrong: it snaps per call, so N replacements push N entries and one undo
+   restores only the LAST one — the note comes back mangled, and the user, who
+   pressed undo once and saw the text move, believes it came back.
+   The undo assertion in phase_find is the bytes of the file before and after,
+   and docs/negctl-find/ is the proof it is observed failing when this snap is
+   moved into the loop. */
+function fRepAll(g) {
+  const st = fState(g);
+  if (!st.open || !st.rep || !st.q || !st.hits.length) return 0;
+  const L = Ed.lines(g), qlen = st.q.length, rep = fRepText(g), n = st.hits.length;
+  Ed.snap(g, "replace-all");           // ONCE, before anything changes. See above.
+  for (let i = n - 1; i >= 0; i--) {   // right to left: an earlier hit's column is never invalidated
+    const h = st.hits[i];
+    L[h.l] = L[h.l].slice(0, h.c) + rep + L[h.l].slice(h.c + qlen);
+  }
+  /* The caret lands after the LAST replacement. Its column is the last hit's
+     column shifted by every EARLIER hit on that same line (each moved the text
+     right of it by rep.length - qlen) — the fixture has one hit per line, so a
+     naive `last.c` would pass here and be wrong on any real note. */
+  const last = st.hits[n - 1];
+  const before = st.hits.filter(h => h.l === last.l && h.c < last.c).length;
+  Ed.after(g, last.l, last.c + before * (rep.length - qlen) + rep.length);
+  st.idx = 0;
+  fSync(g, true);
+  fReveal(g);
+  fRFocus(g);
+  updateTitle();
+  return n;
+}
+function fOpenRep(g) {                 // R26.15
+  if (!g) return;
+  const t = g.active >= 0 ? g.tabs[g.active] : null;
+  if (!t || t.kind) return;            // notes only
+  const st = fState(g), bar = fBar(g);
+  const wasOpen = st.open;
+  if (!wasOpen) fOpen(g);              // fOpen() clears rep mode, so it must run FIRST
+  st.rep = true;
+  bar.querySelector(".reprow").hidden = false;
+  const rin = bar.querySelector(".repq");
+  rin.value = st.r;
+  /* R26.16: Ctrl+H over an open find INHERITS the query — the search you are
+     already looking at, with the same case rules, is the one being replaced.
+     Focus goes where the new text is typed; on a cold open there is no query
+     yet, so it goes to the find box instead. */
+  if (wasOpen && st.q) { rin.focus(); rin.select(); } else fFocus(g);
+  updateTitle();
+}
 function fOpen(g) {                    // R26.1
   if (!g) return;
   const t = g.active >= 0 ? g.tabs[g.active] : null;
@@ -4959,6 +5080,10 @@ function fOpen(g) {                    // R26.1
   const st = fState(g), bar = fBar(g);
   st.open = true;
   bar.hidden = false;
+  /* Ctrl+F is FIND. Re-pressing it over an open replace bar drops back to the
+     find row (stock: the replace row is a mode you enter deliberately). */
+  st.rep = false;
+  bar.querySelector(".reprow").hidden = true;
   const inp = bar.querySelector(".findq");
   inp.value = st.q;
   fSync(g, true);
@@ -4983,8 +5108,11 @@ function fClose(g, atMatch) {          // R26.14
 /* Census (headless probe), published for the FOCUSED group by updateTitle:
      [find:1]              the bar is open
      [fels:<n>]            children of .findrow — R26.2's "five and no more"
-     [ffoc:q|lp|-]         where the DOM focus actually is (R26.1)
+     [ffoc:q|r|lp|-]       where the DOM focus actually is (R26.1, R26.15)
      [fq:<query>]          the text IN THE BOX, not the state variable
+     [frep:0|1]            is the replace row revealed (R26.15)
+     [rels:<n>]            children of .reprow — replacement box, Replace, Replace all
+     [fr:<text>]           the text in the REPLACEMENT box (R26.16 inheritance)
      [fc:<counter text>]   the counter's own textContent ("3 / 7", "0 / 0", "-" = empty)
      [fmk:<marked>/<hits>] DISTINCT hits carrying a painted mark / hits found (R26.8)
      [fcw:<text>]          the painted text of the CURRENT match — a lowercase
@@ -4994,15 +5122,19 @@ function fClose(g, atMatch) {          // R26.14
 function fTok(g) {
   const st = g && g.find;
   if (!st || !st.open || !g.findEl) return "";
-  const bar = g.findEl, inp = bar.querySelector(".findq");
+  const bar = g.findEl, inp = bar.querySelector(".findq"), rin = bar.querySelector(".repq");
+  const rrow = bar.querySelector(".reprow");
   const marks = g.lp ? [...g.lp.querySelectorAll("span." + F_MARK)] : [];
   const cur = marks.filter(m => m.classList.contains(F_CUR));
   const a = document.activeElement;
   const q = s => String(s == null ? "" : s).replace(/[[\]|]/g, "").slice(0, 60);
   const cnt = bar.querySelector(".findcount").textContent;
   let t = " [find:1] [fels:" + bar.querySelector(".findrow").children.length + "]" +
-          " [ffoc:" + (a === inp ? "q" : a === g.lp ? "lp" : "-") + "]" +
+          " [ffoc:" + (a === inp ? "q" : a === rin ? "r" : a === g.lp ? "lp" : "-") + "]" +
           " [fq:" + (q(inp.value) || "-") + "]" +
+          " [frep:" + (st.rep && !rrow.hidden ? 1 : 0) + "]" +
+          " [rels:" + rrow.children.length + "]" +
+          " [fr:" + (q(rin.value) || "-") + "]" +
           " [fc:" + (q(cnt) || "-") + "]" +
           " [fmk:" + new Set(marks.map(m => m.dataset.fh)).size + "/" + st.hits.length + "]" +
           " [fcw:" + (q(cur.map(m => m.textContent).join("")) || "-") + "]";
