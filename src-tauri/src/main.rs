@@ -19,6 +19,7 @@ use tauri::State;
 
 mod index;
 mod outline;
+mod palette;
 mod perf;
 mod sandbox;
 mod settings;
@@ -1732,6 +1733,49 @@ fn set_theme(theme: String) {
     let _ = fs::write(cfg_path(), v.to_string());
 }
 
+/* THE SECOND THEME AXIS: the PALETTE, persisted as "palette" in
+   ~/.rustidian.json. It is deliberately NOT the "theme" key above.
+
+   "theme" is the MODE (dark|light) and it has a meaning this feature must not
+   take away: absent = the user has chosen no mode, so prefers-color-scheme
+   decides. Storing a palette name there would make "no mode chosen" and "the
+   1984 palette" the same state, and the system default would stop working the
+   moment anyone picked a palette. Two axes, two keys, and they compose: the
+   palette selects WHICH set of colours, the mode selects that set's variant.
+
+   VALIDATION is the same rule set_theme follows, for the same reason — a name
+   we do not ship must never reach the file, because on the next boot it would
+   read back as a deliberate choice and the user would be pinned to a palette
+   that does not exist. See palette::is_known. */
+#[tauri::command]
+fn get_palette() -> Option<String> {
+    match cfg_value()["palette"].as_str() {
+        Some(p) if palette::is_known(p) && p != palette::DEFAULT_PALETTE => Some(p.to_string()),
+        // absent, hand-edited junk, or the default written by an older build:
+        // all three mean "nothing to apply", and the frontend paints the default.
+        _ => None,
+    }
+}
+
+#[tauri::command]
+fn set_palette(palette: String) {
+    if !palette::is_known(&palette) {
+        return; // refused: never written, so it can never read back as a choice
+    }
+    let mut v = cfg_value();
+    if palette == palette::DEFAULT_PALETTE {
+        // choosing the default is choosing the ABSENCE of a palette — the key is
+        // removed, not set to "default", so the stored shape of "I picked the
+        // default" and "I never picked" stay the same one state.
+        if let Some(o) = v.as_object_mut() {
+            o.remove("palette");
+        }
+    } else {
+        v["palette"] = serde_json::json!(palette);
+    }
+    let _ = fs::write(cfg_path(), v.to_string());
+}
+
 /* R14: custom hotkeys, persisted as "hotkeys" in ~/.rustidian.json in the stock
    Obsidian shape {"<cmd id>":[{"modifiers":["Mod","Shift"],"key":"G"}]}:
    [] = default removed, absent id = stock default. The frontend registry
@@ -2393,7 +2437,7 @@ fn main() {
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, recent_vaults, rename_note, move_note, update_links, link_consent, set_link_consent, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref,
-            outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme,
+            outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme, get_palette, set_palette,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
             win_rect, win_gesture, win_minimize, win_toggle_max, win_close,
             zoom, zoom_get,
