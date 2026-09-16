@@ -2004,11 +2004,19 @@ function wsNode(node) {
 function wsSide(which) {
   const open = which === "left" ? sideOpen : rightOpen;
   const view = which === "left" ? (WS_VIEW_L[sidePane] || "file-explorer") : (WS_VIEW_R[rTab] || "backlink");
-  return { id: wsIdOf(wsIds, which), type: "split", direction: "horizontal",
-           children: [{ id: wsIdOf(wsIds, which + "tabs"), type: "tabs",
-                        children: [{ id: wsIdOf(wsIds, which + "leaf"), type: "leaf",
-                                     state: { type: view, state: {} } }] }],
-           collapsed: !open };     // R28.10: the sidebar the operator collapsed stays collapsed
+  // R28.11: a sidebar leaf carries its OWN view state, not just which pane is
+  // showing. Stock's search leaf comes back still holding its query, so the
+  // query travels in the leaf's state where stock puts it.
+  const lst = which === "left" && sidePane === "search" ? { query: $("sinput").value } : {};
+  const o = { id: wsIdOf(wsIds, which), type: "split", direction: "horizontal",
+              children: [{ id: wsIdOf(wsIds, which + "tabs"), type: "tabs",
+                           children: [{ id: wsIdOf(wsIds, which + "leaf"), type: "leaf",
+                                        state: { type: view, state: lst } }] }] };
+  // R28.10: the key is ABSENT when the sidebar is open, not `false` — stock
+  // writes `collapsed` only for a collapsed sidebar, and a file carrying
+  // `collapsed: false` is a file stock did not write.
+  if (!open) o.collapsed = true;
+  return o;
 }
 function wsDoc() {
   const ft = fg() && fg().active >= 0 ? fg().tabs[fg().active] : null;
@@ -2053,6 +2061,177 @@ async function wsFlush() {
     wsLast = s; wsWrites++;
     updateTitle();                 // republish [ws:] — the write is observable, not asserted by faith
   } catch (e) { /* R28.13/R28.17: persistence must never be able to break the session */ }
+}
+
+/* ---------- R28 GROUP 2: READ IT BACK ----------------------------------------
+   The inverse of wsDoc(), and deliberately written as a SEPARATE pair of
+   functions rather than a generic walker: the two directions disagree about
+   what is authoritative. Writing trusts the live model; READING trusts nothing
+   — the file may have been written by stock, by an older rustidian, by a half
+   finished sync, or by a text editor. Every branch below therefore has a "this
+   is not what I expected" exit that returns null, and a null anywhere means
+   DROP THAT SUBTREE, never "fail the restore" (R28.17).
+
+   THE DEGRADE RULE, stated once so the three call sites can be read against it:
+     leaf  whose file is gone / has no file  -> dropped, wsDropped++  (R28.17/R28.14)
+     tabs  node left with zero tabs          -> dropped, the group does not exist
+     split node left with zero children      -> dropped
+     split node left with ONE child          -> collapses to that child; a split
+                                                with one side is not a split, and
+                                                leaving it would show the user a
+                                                divider they cannot remove
+     nothing restorable at all               -> false, and the caller takes the
+                                                ordinary first-launch path (R28.13)
+   R28.8 IS AN EXPLICIT NON-GOAL: stock does not restore scroll position and
+   neither does this. Cloning the absence is the requirement — no hpos/scroll
+   value is read here, and none is written by wsLeaf(). */
+function wsTabIn(leaf, have) {
+  const st = leaf && leaf.state && leaf.state.state;
+  const f = st && st.file;
+  if (typeof f !== "string" || !f) return null;      // stock's `empty` leaf carries no file
+  if (!have.has(f)) { wsDropped++; return null; }     // R28.17 / R28.14
+  const t = mkTab(f);
+  // R28.9: the two orthogonal bits back out of stock's two keys — the exact
+  // inverse of wsLeaf(). Assigned to t.read/t.src rather than through the
+  // t.mode setter, because that setter is deliberately not symmetric (setting
+  // "reading" leaves the source bit alone) and would silently lose one bit.
+  t.read = st.mode === "preview";
+  t.src = st.source === true;
+  if (typeof leaf.id === "string" && leaf.id) t.lid = leaf.id;   // R28.4: the id the file names is the id we keep
+  wsRestored++;
+  return t;
+}
+function wsNodeIn(node, have) {
+  if (!node || typeof node !== "object") return null;
+  if (node.type === "split" && Array.isArray(node.children)) {
+    const kids = [], dims = [];
+    for (const c of node.children) {
+      const k = wsNodeIn(c, have);
+      if (!k) continue;                                 // a dropped child costs its share, not the split
+      kids.push(k);
+      // R28.6: the size on the file is a PERCENTAGE, so a layout restored into
+      // a window of a different size keeps its PROPORTIONS. They are
+      // renormalised over the SURVIVORS below, which is what makes a dropped
+      // child give its space back instead of leaving a gap.
+      dims.push(typeof c.dimension === "number" && c.dimension > 0 ? c.dimension : 1);
+    }
+    if (!kids.length) return null;
+    if (kids.length === 1) return kids[0];
+    const tot = dims.reduce((a, b) => a + b, 0) || kids.length;
+    const out = { dir: node.direction === "vertical" ? "row" : "col",   // stock's word is the OPPOSITE of ours
+                  children: kids, fractions: dims.map(d => d / tot) };
+    if (typeof node.id === "string" && node.id) out.wid = node.id;      // R28.4
+    return out;
+  }
+  if (node.type === "tabs" && Array.isArray(node.children)) {
+    const want = Number.isInteger(node.currentTab) ? node.currentTab : 0;   // R28.5: absent means 0
+    const g = mkGroup();
+    let act = 0;
+    node.children.forEach((leaf, i) => {
+      const t = wsTabIn(leaf, have);
+      if (!t) return;
+      // the active index must survive the drops BEFORE it: if the tab that was
+      // active is itself gone, focus falls back to the nearest survivor to its
+      // left rather than to a tab the user was not looking at.
+      if (i <= want) act = g.tabs.length;
+      g.tabs.push(t);
+    });
+    if (!g.tabs.length) return null;
+    if (typeof node.id === "string" && node.id) g.wid = node.id;
+    g.active = Math.min(act, g.tabs.length - 1);
+    return g;
+  }
+  return null;
+}
+/* Read the file. Separated from wsApply so enterVault can do it BEFORE the
+   first renderLayout(): renderLayout calls updateTitle, updateTitle arms
+   wsTouch, and a 400ms timer that fires before we have read would overwrite the
+   very file we came to restore with the empty boot layout. */
+async function wsRead() {
+  try { return await inv("read_workspace"); } catch (e) { return null; }
+}
+async function wsApply(doc, names) {
+  if (!doc || typeof doc !== "object") return false;     // R28.13: missing/corrupt == first launch
+  const have = new Set(names);
+  let root = null;
+  try { root = wsNodeIn(doc.main, have); } catch (e) { root = null; }
+  if (!root) return false;
+  if (!root.children) root = { dir: "row", children: [root], fractions: [1] };
+  state.root = root;
+  state.focused = null;
+  renderLayout();
+  const gs = groups();
+  // R28.12: focus lands on the leaf NAMED by `active`, not on "the first group"
+  let target = gs[0];
+  if (typeof doc.active === "string" && doc.active) {
+    for (const g of gs) {
+      const i = g.tabs.findIndex(t => t.lid === doc.active);
+      if (i >= 0) { g.active = i; target = g; break; }
+    }
+  }
+  focusGroup(target);
+  for (const g of gs) if (g !== target) await loadActive(g);
+  await loadActive(target);                              // the focused pane renders LAST, so it owns the caret
+  // R28.10 / R28.11: the sidebars, each independently, with their own view state
+  try { wsSidesIn(doc); } catch (e) { /* a sidebar is not worth the layout */ }
+  // R28.15: seed the quick switcher's recency from the file, filtered to notes
+  // that still exist — the list is written for a recent-files affordance and a
+  // dead name in it would offer the user a note they cannot open.
+  if (Array.isArray(doc.lastOpenFiles)) {
+    mruList = doc.lastOpenFiles.filter(n => typeof n === "string" && have.has(n)).slice(0, 20);
+  }
+  // the ids the file used are the ids the next save writes (R28.4)
+  for (const k of ["left", "right"]) {
+    const s = doc[k];
+    if (!s || typeof s.id !== "string") continue;
+    wsIds[k] = s.id;
+    const tabs = s.children && s.children[0];
+    if (tabs && typeof tabs.id === "string") wsIds[k + "tabs"] = tabs.id;
+    const leaf = tabs && tabs.children && tabs.children[0];
+    if (leaf && typeof leaf.id === "string") wsIds[k + "leaf"] = leaf.id;
+  }
+  updateTitle();
+  return true;
+}
+const WS_VIEW_L_IN = { "file-explorer": "files", search: "search", bookmarks: "bm" };
+const WS_VIEW_R_IN = { backlink: "bl", "outgoing-link": "out", tag: "tags", outline: "toc" };
+function wsSideLeaf(s) {               // the one leaf of a sidebar split, or null
+  const tabs = s && Array.isArray(s.children) ? s.children[0] : null;
+  const leaf = tabs && Array.isArray(tabs.children) ? tabs.children[0] : null;
+  return leaf && leaf.state ? leaf.state : null;
+}
+function wsSidesIn(doc) {
+  // R28.10: `collapsed` is ABSENT when the sidebar is open, so "open" is the
+  // absence of the key and not `collapsed === false`.
+  const lOpen = !(doc.left && doc.left.collapsed === true);
+  const rOpen = !!(doc.right && doc.right.collapsed !== true);
+  const ls = wsSideLeaf(doc.left), rs = wsSideLeaf(doc.right);
+  if (ls) {
+    const p = WS_VIEW_L_IN[ls.type];
+    if (p && p !== sidePane) setPane(p);
+    // R28.11: the search leaf comes back holding its query, and the results
+    // that query produced — the pane is restored, not merely selected.
+    if (ls.state && typeof ls.state.query === "string" && ls.state.query) {
+      $("sinput").value = ls.state.query;
+      runSearch();                     // fire+forget: results fill in, boot is not blocked on them
+    }
+  }
+  if (rs) {
+    const t = WS_VIEW_R_IN[rs.type];
+    if (t && t !== rTab) setRTab(t, false);
+  }
+  if (lOpen !== sideOpen) {
+    sideOpen = lOpen;
+    $("side").hidden = $("ldiv").hidden = !sideOpen;
+    $("collapsebtn").title = sideOpen ? "Collapse sidebar" : "Expand sidebar";
+  }
+  if (rOpen !== rightOpen) {
+    rightOpen = rOpen;
+    $("rside").hidden = $("rdiv").hidden = !rightOpen;
+    $("rtoggle").title = rightOpen ? "Collapse right sidebar" : "Expand right sidebar";
+    placeRToggle();
+    if (rightOpen) setRTab(rTab, false);
+  }
 }
 /* R28.2 — THE WINDOW RECTANGLE GOES SOMEWHERE ELSE. Not in the vault: a vault
    synced between a laptop and a desktop would otherwise carry one machine's
@@ -6900,6 +7079,10 @@ async function enterVault() {
   collapsed = new Set();
   bmFolds = new Set();               // collapseall: folds are per vault and in memory (R6)
   feCaFlag = "E"; bmCaFlag = "C";    // collapseall Q5: the empty-pane label flags start where stock's do
+  // R28.7: read the layout BEFORE the first render. renderLayout -> updateTitle
+  // -> wsTouch arms a 400ms write, so reading later would race a write of the
+  // empty boot layout over the file we came here to restore.
+  const wdoc = await wsRead();
   const g = mkGroup();               // M6: one group, wrapped in a one-leaf split tree
   state = { root: { dir: "row", children: [g], fractions: [1] }, focused: null };
   renderLayout();
@@ -6910,8 +7093,13 @@ async function enterVault() {
   await refreshTree();
   await refreshBm();                 // R9.4: menu label needs the cache early
   const names = await inv("list_notes");
-  if (names.length) await openInTab(names[0], "boot");
-  else renderTabs(g);
+  // R28.7 / R28.13: the restore, or — if there is no file, it is corrupt, or
+  // nothing in it survived the degrade rule — the ordinary first-launch path.
+  // Both land on a usable window; that is the whole point of R28.13.
+  if (!await wsApply(wdoc, names)) {
+    if (names.length) await openInTab(names[0], "boot");
+    else renderTabs(g);
+  }
   perf.mark("boot", 0, { notes: names.length });   // perf: page start -> vault ready (first note rendered)
   wsGeomTouch();   // R28.2: the rectangle is recorded once per session OUTSIDE the vault, resize or no resize
 }

@@ -1131,9 +1131,19 @@ fn workspace_path(root: &Path) -> PathBuf {
 /// window rather than on an error screen.
 #[tauri::command]
 fn read_workspace(v: State<Vault>) -> Option<serde_json::Value> {
-    let root = cur_vault(&v)?;
-    let s = fs::read_to_string(workspace_path(&root)).ok()?;
-    serde_json::from_str(&s).ok()
+    // SPANNED, not scoped. This is a disk read plus a JSON parse on the LAUNCH
+    // path — the one moment a user is already waiting — so an uninstrumented
+    // version would render as fast by being absent, which is exactly what
+    // scripts/perf-coverage.sh exists to refuse. Written with and_then rather
+    // than `?` on purpose: an early return would leave the span unclosed and
+    // the miss path (first launch, corrupt file) unmeasured, and that path is
+    // the one that touches the slowest disk case.
+    span_timed!(
+        "read_workspace",
+        cur_vault(&v)
+            .and_then(|root| fs::read_to_string(workspace_path(&root)).ok())
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+    )
 }
 
 /// R28.3: called WHILE THE APP RUNS (see wsFlush in ui/main.js), not at exit.
@@ -1142,12 +1152,25 @@ fn read_workspace(v: State<Vault>) -> Option<serde_json::Value> {
 /// or a power cut skips.
 #[tauri::command]
 fn write_workspace(v: State<Vault>, layout: serde_json::Value) -> Result<(), String> {
-    let root = cur_vault(&v).ok_or("no vault open")?;
-    let p = workspace_path(&root);
-    if let Some(d) = p.parent() {
-        fs::create_dir_all(d).map_err(|e| e.to_string())?;
-    }
-    write_atomic_ext(&p, &layout.to_string(), "json.tmp")
+    // SPANNED, and the span covers the WHOLE command including the fsync. This
+    // one runs on every layout mutation (wsTouch throttles it, it does not stop
+    // it), so a slow durable write here is felt as lag on a tab switch — the
+    // precise shape of bottleneck the slow-op console was built to name. The
+    // closure keeps the `?` early exits INSIDE the measured region; `$extra` is
+    // built only when telemetry is on, so the second to_string costs an
+    // untraced run nothing.
+    span_timed!(
+        "write_workspace",
+        (|| {
+            let root = cur_vault(&v).ok_or("no vault open")?;
+            let p = workspace_path(&root);
+            if let Some(d) = p.parent() {
+                fs::create_dir_all(d).map_err(|e| e.to_string())?;
+            }
+            write_atomic_ext(&p, &layout.to_string(), "json.tmp")
+        })(),
+        serde_json::json!({ "bytes": layout.to_string().len() })
+    )
 }
 
 /// R28.2: the window rectangle, stored OUTSIDE the vault. Read back by nothing
