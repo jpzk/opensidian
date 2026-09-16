@@ -1031,6 +1031,10 @@ body.floorrelayout #main { padding-right: 1px }
 .findbar button { padding: 1px 5px; border: 0; border-radius: 4px; cursor: pointer;
                   background: var(--transparent); color: var(--text-chrome-muted); font-size: 12px }
 .findbar button:hover { background: var(--bg-surface); color: var(--text-chrome) }
+/* R26.21: the reduced bar of reading view. The arrows are hidden, not removed —
+   `hidden` is what the census counts ([fvels:]), and a control that is not
+   displayed offers nothing. R26.24 is why they are gone: nothing to navigate. */
+.findbar button[hidden] { display: none }
 /* R26.8: every match is marked; the current one is the one you are standing on. */
 span.fmk { background: var(--highlight-yellow); border-radius: 2px }
 span.fmk.fcur { background: var(--tag-bg-hover); outline: 1px solid var(--accent-yellow) }

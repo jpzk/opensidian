@@ -1592,6 +1592,7 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
   ssRestore(g, anchor);
   mswSsMs += performance.now() - mswR0;
   mswEnd(mswT0, mswSsMs);
+  fModeSwitched(g);   // R26.21/R26.23: an open find bar re-shapes and re-scans for the new surface
   updateTitle();
 }
 
@@ -4814,6 +4815,65 @@ function fState(g) {
   if (!g.find) g.find = { open: false, rep: false, q: "", r: "", hits: [], idx: 0 };
   return g.find;
 }
+/* ---- R26.21–R26.24: THE READING-VIEW QUIRKS, cloned, not improved ----
+   In reading view stock's find is a DIFFERENT, smaller thing, and the brief is
+   explicit that the quirks are the requirement:
+     R26.21 the bar is REDUCED — the two navigation arrows are gone
+     R26.23 it searches the RENDERED text, so markup the renderer consumed
+            (`**`) is not findable and text the renderer JOINED ("with bold")
+            is — the opposite answer from the editor on the same note
+     R26.24 it COUNTS but does not navigate: no current match, Enter does
+            nothing, nothing scrolls
+     R26.22 Ctrl+H is a NO-OP there — you cannot replace what you cannot edit
+   Consequences that follow from those rows, not from taste: the counter cannot
+   read "i / n" when there is no i, so it is the bare count; hits are offsets
+   into the rendered text (no {l,c} exists for a <strong> the source does not
+   have); and the marks are painted in g.preview, which is why every surface
+   read below goes through fSurf() instead of naming g.lp. */
+const fRead = g => !!g && isReading(g);
+const fSurf = g => (!g ? null : fRead(g) ? g.preview : g.lp);
+/* The rendered text as ONE string, plus the text nodes it was concatenated
+   from. Marks never change the text (a <span> wrapping a run adds no
+   characters), so these offsets are stable whether or not the previous query's
+   marks are still in the DOM. */
+function fRSegs(el) {
+  const segs = [], parts = [];
+  let len = 0;
+  if (!el) return { segs, text: "" };
+  const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
+  for (let n = w.nextNode(); n; n = w.nextNode()) {
+    const t = n.nodeValue || "";
+    if (!t) continue;
+    segs.push({ n, start: len, len: t.length });
+    parts.push(t);
+    len += t.length;
+  }
+  return { segs, text: parts.join("") };
+}
+/* R26.21 + R26.22: the bar's SHAPE follows the view. The five children stay in
+   the DOM (R26.2 is about what the bar offers, and a hidden control offers
+   nothing) — prev/next are hidden, and an open replace row is withdrawn,
+   because entering reading view with replace open would leave a Replace all
+   button over a note that cannot be edited. */
+function fShape(g) {
+  const bar = g.findEl;
+  if (!bar) return;
+  const r = fRead(g);
+  bar.classList.toggle("reading", r);
+  bar.querySelector(".findprev").hidden = r;
+  bar.querySelector(".findnext").hidden = r;
+  if (r) { fState(g).rep = false; bar.querySelector(".reprow").hidden = true; }
+}
+/* The bar survives a mode switch, so the switch must re-shape it and re-scan:
+   the same query over the rendered text is a different set of hits. */
+function fModeSwitched(g) {
+  const st = g && g.find;
+  if (!st || !st.open) return;
+  fClear(g);
+  fShape(g);
+  fSync(g, true);
+  fReveal(g);
+}
 function fBar(g) {                     // the bar's DOM, built once per pane
   if (g.findEl) return g.findEl;
   const bar = document.createElement("div");
@@ -4907,7 +4967,18 @@ function fEdit(g, e) {
 function fScan(g) {
   const st = fState(g), out = [];
   const q = st.q.toLowerCase();
-  if (!q || !g.lp) return out;
+  if (!q) return out;
+  /* R26.23: in reading view the haystack is what the RENDERER produced, not the
+     source — same case rule, different text. A hit is an offset range into that
+     flat text; it deliberately has no {l,c}, because the rendered string has no
+     source line (a <strong> spans markup the source still carries). */
+  if (fRead(g)) {
+    const hay = fRSegs(g.preview).text.toLowerCase();
+    let i = hay.indexOf(q);
+    while (i >= 0) { out.push({ a: i, b: i + q.length }); i = hay.indexOf(q, i + q.length); }
+    return out;
+  }
+  if (!g.lp) return out;
   const L = Ed.lines(g);
   for (let l = 0; l < L.length; l++) {
     const hay = (L[l] || "").toLowerCase();
@@ -4917,13 +4988,17 @@ function fScan(g) {
   return out;
 }
 function fClear(g) {                   // unwrap every mark, leaving the row byte-identical
-  if (!g.lp) return;
-  for (const m of [...g.lp.querySelectorAll("span." + F_MARK)]) {
-    const p = m.parentNode;
-    if (!p) continue;
-    while (m.firstChild) p.insertBefore(m.firstChild, m);
-    p.removeChild(m);
-    p.normalize();                     // re-join the split text nodes: no fragmentation accumulates
+  /* BOTH surfaces: a mode switch leaves the marks it painted behind in the view
+     the user just left, where nothing else will ever come back to remove them. */
+  for (const sc of [g.lp, g.preview]) {
+    if (!sc) continue;
+    for (const m of [...sc.querySelectorAll("span." + F_MARK)]) {
+      const p = m.parentNode;
+      if (!p) continue;
+      while (m.firstChild) p.insertBefore(m.firstChild, m);
+      p.removeChild(m);
+      p.normalize();                   // re-join the split text nodes: no fragmentation accumulates
+    }
   }
 }
 /* R26.8: EVERY match is marked, the current one distinguishably (.fcur).
@@ -4936,7 +5011,28 @@ function fClear(g) {                   // unwrap every mark, leaving the row byt
 function fMarks(g) {
   fClear(g);
   const st = fState(g);
-  if (!st.open || !st.hits.length || !g.lp) return;
+  if (!st.open || !st.hits.length) return;
+  /* Reading view: the hits are offsets into the concatenated rendered text, so
+     the same right-to-left splitText walk runs over the preview's text nodes.
+     A hit that straddles a node boundary ("with bold" = "text with " + a
+     <strong>) becomes two spans carrying one data-fh — one match, marked once.
+     NOTHING is given .fcur here: R26.24 says this bar counts, it does not
+     navigate, and a "current" match is the navigation. */
+  if (fRead(g)) {
+    const { segs } = fRSegs(g.preview), jobs = new Map();
+    for (let i = 0; i < st.hits.length; i++) {
+      const h = st.hits[i];
+      for (const s of segs) {
+        const a = Math.max(h.a, s.start), b = Math.min(h.b, s.start + s.len);
+        if (b <= a) continue;
+        if (!jobs.has(s.n)) jobs.set(s.n, []);
+        jobs.get(s.n).push({ a: a - s.start, b: b - s.start, i, cur: false });
+      }
+    }
+    fWrap(jobs);
+    return;
+  }
+  if (!g.lp) return;
   const qlen = st.q.length, byRow = new Map();
   st.hits.forEach((h, i) => {
     if (!byRow.has(h.l)) byRow.set(h.l, []);
@@ -4952,18 +5048,23 @@ function fMarks(g) {
       if (!jobs.has(s.n)) jobs.set(s.n, []);
       jobs.get(s.n).push({ a: a - s.c, b: b - s.c, i: h.i, cur: h.cur });
     }
-    for (const [node, js] of jobs) {
-      js.sort((x, y) => y.a - x.a);    // right to left
-      let head = node;
-      for (const j of js) {
-        head.splitText(j.b);           // tail leaves; head keeps [0, j.b)
-        const mid = head.splitText(j.a);
-        const sp = document.createElement("span");
-        sp.className = F_MARK + (j.cur ? " " + F_CUR : "");
-        sp.dataset.fh = String(j.i);
-        mid.parentNode.insertBefore(sp, mid);
-        sp.appendChild(mid);
-      }
+    fWrap(jobs);
+  }
+}
+/* The wrap itself, shared by both surfaces: per text node, right to left, so a
+   splitText never invalidates an offset that has not been used yet. */
+function fWrap(jobs) {
+  for (const [node, js] of jobs) {
+    js.sort((x, y) => y.a - x.a);      // right to left
+    let head = node;
+    for (const j of js) {
+      head.splitText(j.b);             // tail leaves; head keeps [0, j.b)
+      const mid = head.splitText(j.a);
+      const sp = document.createElement("span");
+      sp.className = F_MARK + (j.cur ? " " + F_CUR : "");
+      sp.dataset.fh = String(j.i);
+      mid.parentNode.insertBefore(sp, mid);
+      sp.appendChild(mid);
     }
   }
 }
@@ -4972,16 +5073,22 @@ function fPaint(g) {
   fMarks(g);
   /* R26.3 + R26.7: the counter appears WITH the query (empty box, no counter)
      and a query that matches nothing reads "0 / 0" — a hidden counter and a
-     blank one are both indistinguishable from "the search never ran". */
+     blank one are both indistinguishable from "the search never ran".
+     R26.24: in reading view there IS no current match, so there is no "i" to
+     print — the counter is the bare number of matches ("3", "0"). Printing
+     "1 / 3" there would claim a position the bar refuses to move. */
   bar.querySelector(".findcount").textContent =
-    !st.q ? "" : st.hits.length ? (st.idx + 1) + " / " + st.hits.length : "0 / 0";
+    !st.q ? "" : fRead(g) ? String(st.hits.length)
+                          : st.hits.length ? (st.idx + 1) + " / " + st.hits.length : "0 / 0";
 }
 function fSync(g, reset) {             // recompute hits against the current text
   const st = fState(g);
   if (!st.open) return;
   const was = st.hits[st.idx];
   st.hits = fScan(g);
-  if (reset || !was) st.idx = 0;
+  /* Reading view has no place to keep: there is no current match to hold and
+     no edits to hold it across (R26.24). */
+  if (reset || !was || fRead(g) || was.l == null) st.idx = 0;
   else {                               // keep the caret's place in the note across a re-scan
     const i = st.hits.findIndex(h => h.l > was.l || (h.l === was.l && h.c >= was.c));
     st.idx = i < 0 ? 0 : i;
@@ -4994,7 +5101,10 @@ function fSync(g, reset) {             // recompute hits against the current tex
    would also scroll every ancestor — including the window, which R22 says must
    never scroll at all. */
 function fReveal(g) {
-  const sc = g.lp;
+  /* Nothing to reveal in reading view: no .fcur is ever painted there, so this
+     returns without touching g.preview.scrollTop — R26.24's "does not
+     navigate" includes not moving the page under the reader. */
+  const sc = fSurf(g);
   if (!sc) return;
   const el = sc.querySelector("span." + F_MARK + "." + F_CUR);
   if (!el) return;
@@ -5005,6 +5115,7 @@ function fReveal(g) {
 function fGo(g, d) {                   // R26.11 + R26.13
   const st = fState(g);
   if (!st.open || !st.hits.length) return;
+  if (fRead(g)) return;                // R26.24: reading view counts, it does not navigate
   const n = st.hits.length;
   st.idx = (st.idx + d + n) % n;       // past the last match IS the first: the cycle wraps
   fPaint(g);
@@ -5072,6 +5183,10 @@ function fOpenRep(g) {                 // R26.15
   if (!g) return;
   const t = g.active >= 0 ? g.tabs[g.active] : null;
   if (!t || t.kind) return;            // notes only
+  /* R26.22: in reading view Ctrl+H is a NO-OP — not a disabled button, not an
+     error: nothing happens at all, because there is no editable text under the
+     bar to rewrite. It does not even open the find bar. */
+  if (fRead(g)) return;
   const st = fState(g), bar = fBar(g);
   const wasOpen = st.open;
   if (!wasOpen) fOpen(g);              // fOpen() clears rep mode, so it must run FIRST
@@ -5097,6 +5212,7 @@ function fOpen(g) {                    // R26.1
      find row (stock: the replace row is a mode you enter deliberately). */
   st.rep = false;
   bar.querySelector(".reprow").hidden = true;
+  fShape(g);                           // R26.21: reduced in reading view, full in the editor
   const inp = bar.querySelector(".findq");
   inp.value = st.q;
   fSync(g, true);
@@ -5114,13 +5230,18 @@ function fClose(g, atMatch) {          // R26.14
   st.hits = [];
   /* Escape LEAVES THE CARET AT THE MATCH — this is what turns find into
      navigation instead of a counter. The match is left SELECTED (caret at its
-     end), so the next keystroke replaces what was searched for. */
-  if (atMatch && h && g.lp) { Ed.place(g, h.l, h.c); Ed.extendTo(g, h.l, h.c + qlen); }
+     end), so the next keystroke replaces what was searched for.
+     Reading view is excluded by `h.l == null`: its hits are rendered-text
+     offsets with no source position, and there is no caret to place (R26.24). */
+  if (atMatch && h && h.l != null && !fRead(g) && g.lp) { Ed.place(g, h.l, h.c); Ed.extendTo(g, h.l, h.c + qlen); }
   updateTitle();
 }
 /* Census (headless probe), published for the FOCUSED group by updateTitle:
      [find:1]              the bar is open
      [fels:<n>]            children of .findrow — R26.2's "five and no more"
+     [fvels:<n>]           of those, the ones NOT hidden — 5 in the editor, 3 in
+                           reading view (input, count, close): R26.21
+     [fbar:full|read]      which bar the view is showing (R26.21/R26.23)
      [ffoc:q|r|lp|-]       where the DOM focus actually is (R26.1, R26.15)
      [fq:<query>]          the text IN THE BOX, not the state variable
      [frep:0|1]            is the replace row revealed (R26.15)
@@ -5137,12 +5258,16 @@ function fTok(g) {
   if (!st || !st.open || !g.findEl) return "";
   const bar = g.findEl, inp = bar.querySelector(".findq"), rin = bar.querySelector(".repq");
   const rrow = bar.querySelector(".reprow");
-  const marks = g.lp ? [...g.lp.querySelectorAll("span." + F_MARK)] : [];
+  const surf = fSurf(g);
+  const marks = surf ? [...surf.querySelectorAll("span." + F_MARK)] : [];
   const cur = marks.filter(m => m.classList.contains(F_CUR));
   const a = document.activeElement;
   const q = s => String(s == null ? "" : s).replace(/[[\]|]/g, "").slice(0, 60);
   const cnt = bar.querySelector(".findcount").textContent;
-  let t = " [find:1] [fels:" + bar.querySelector(".findrow").children.length + "]" +
+  const row = bar.querySelector(".findrow");
+  let t = " [find:1] [fels:" + row.children.length + "]" +
+          " [fvels:" + [...row.children].filter(c => !c.hidden).length + "]" +
+          " [fbar:" + (fRead(g) ? "read" : "full") + "]" +
           " [ffoc:" + (a === inp ? "q" : a === rin ? "r" : a === g.lp ? "lp" : "-") + "]" +
           " [fq:" + (q(inp.value) || "-") + "]" +
           " [frep:" + (st.rep && !rrow.hidden ? 1 : 0) + "]" +
@@ -5151,10 +5276,10 @@ function fTok(g) {
           " [fc:" + (q(cnt) || "-") + "]" +
           " [fmk:" + new Set(marks.map(m => m.dataset.fh)).size + "/" + st.hits.length + "]" +
           " [fcw:" + (q(cur.map(m => m.textContent).join("")) || "-") + "]";
-  if (g.lp) {
-    t += " [fsc:" + Math.round(g.lp.scrollTop) + "]";
+  if (surf) {
+    t += " [fsc:" + Math.round(surf.scrollTop) + "]";
     if (cur.length) {
-      const r = cur[0].getBoundingClientRect(), b = g.lp.getBoundingClientRect();
+      const r = cur[0].getBoundingClientRect(), b = surf.getBoundingClientRect();
       t += " [fvis:" + (r.top >= b.top - 1 && r.bottom <= b.bottom + 1 ? 1 : 0) + "]";
     } else t += " [fvis:-]";
   }
