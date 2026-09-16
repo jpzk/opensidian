@@ -654,6 +654,11 @@ function noteMenu(e, nm) {                 // right-click a tree note row
      a deletion. askDelete does no I/O of its own beyond counting the inbound
      links the confirmation has to state. */
   mkItem("Delete", () => askDelete(nm));
+  /* [mt:note:<name>] — WHICH ROW the browser's hit test actually handed us. The
+     explorer row is found by OCR in the harness, and R20.8's lesson applies
+     harder here than it did for tabs: an OCR row miss followed by "Delete" would
+     delete a note nobody named and still look green. */
+  m.dataset.mt = "note:" + nm;
   placeMenu(m, e.clientX, e.clientY);   /* R22: viewport-clamped by measured size */
 }
 
