@@ -1701,6 +1701,10 @@ async function leaveVault() {
     try { await flushSave(h); h.flushedAt = tgSeq; }   // tabclose: witness for the session-replace record
     finally { clearTimeout(h.saveT); h.saveT = null; }
   }
+  // R28: the LAYOUT timer is process-wide, so the loop above cannot reach it.
+  // Same rule as the buffers — flush into the vault we are leaving, then make
+  // sure nothing from it can still fire into the next one.
+  try { await wsLeave(); } catch (e) { /* a layout is never worth blocking a switch */ }
 }
 
 /* -> true iff bytes reached DISK in this call (false = nothing needed writing,
@@ -1968,7 +1972,7 @@ const WS_VIEW_R = { bl: "backlink", out: "outgoing-link", tags: "tag", toc: "out
 let wsWrites = 0;        // successful write_workspace calls THIS PROCESS (census [ws:])
 let wsRestored = 0;      // leaves rebuilt from the file on this launch
 let wsDropped = 0;       // R28.17: leaves whose file was gone, dropped instead of failing
-let wsT = null, wsLast = "", wsIds = {};
+let wsT = null, wsLast = "", wsIds = {}, wsInFlight = null;
 const wsId = () => {     // stock's ids are 16 hex chars; the VALUE is opaque, only stability matters
   let s = "";
   for (let i = 0; i < 16; i++) s += ((Math.random() * 16) | 0).toString(16);
@@ -2056,11 +2060,39 @@ async function wsFlush() {
   let doc, s;
   try { doc = wsDoc(); s = JSON.stringify(doc); } catch (e) { return; }   // never let a census update throw
   if (s === wsLast) return;
-  try {
-    await inv("write_workspace", { layout: doc });
-    wsLast = s; wsWrites++;
-    updateTitle();                 // republish [ws:] — the write is observable, not asserted by faith
-  } catch (e) { /* R28.13/R28.17: persistence must never be able to break the session */ }
+  // The vault is captured HERE, with the bytes it describes, and travels with
+  // them: everything below this line is asynchronous, and `vaultPath` is not a
+  // constant across an await (see wsLeave). The backend refuses a write whose
+  // `vault` is not the one it has open, so a layout serialized in A can never
+  // land in B no matter how the timers fall.
+  const v = vaultPath;
+  wsInFlight = (async () => {
+    try {
+      await inv("write_workspace", { vault: v, layout: doc });
+      if (v !== vaultPath) return;     // switched under us: the backend dropped it, so must our bookkeeping
+      wsLast = s; wsWrites++;
+      updateTitle();                 // republish [ws:] — the write is observable, not asserted by faith
+    } catch (e) { /* R28.13/R28.17: persistence must never be able to break the session */ }
+  })();
+  await wsInFlight;
+  wsInFlight = null;
+}
+/* A VAULT SWITCH IS A HARD BOUNDARY FOR THE LAYOUT WRITER, and it needs its own
+   function because leaveVault's existing loop disarms `saveT` per group — it
+   knows nothing about the single process-wide layout timer. Three things have
+   to happen, in this order, BEFORE `set_vault` swaps the root:
+     1. flush what is pending, so leaving a vault persists the layout you had
+        (R28.3 is "while running", and a switch is not an exit);
+     2. await any write already in flight, because clearTimeout cannot recall an
+        IPC that has left;
+     3. forget `wsLast` and `wsIds`. wsLast is a CONTENT dedupe: carried across
+        the switch, a vault B whose layout happened to serialize identically to
+        A's would have its first write skipped and keep a stale file forever.
+        wsIds are the ids the FILE named (R28.4) and belong to A's file alone. */
+async function wsLeave() {
+  if (wsT) { clearTimeout(wsT); wsT = null; await wsFlush(); }
+  try { await wsInFlight; } catch (e) { /* its own catch already ate it */ }
+  wsInFlight = null; wsLast = ""; wsIds = {};
 }
 
 /* ---------- R28 GROUP 2: READ IT BACK ----------------------------------------
@@ -7075,6 +7107,11 @@ async function enterVault() {
     for (const t of h.tabs) tabGone("session-replace", t, { dirty: false, flushed: h.flushedAt !== undefined, via: "enterVault", tabsLeft: 0 });
     clearTimeout(h.saveT); h.saveT = null;
   }
+  // ...including the process-wide layout timer, and the dedupe/id memory that
+  // belongs to the file we just stopped looking at. Disarm only — a route that
+  // reached here WITHOUT leaveVault has no vault left to flush into safely.
+  if (wsT) { clearTimeout(wsT); wsT = null; }
+  wsLast = ""; wsIds = {};
   $("vswitch").innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>' + base(vaultPath);
   collapsed = new Set();
   bmFolds = new Set();               // collapseall: folds are per vault and in memory (R6)

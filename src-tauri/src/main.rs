@@ -1151,7 +1151,25 @@ fn read_workspace(v: State<Vault>) -> Option<serde_json::Value> {
 /// that runs on a clean quit is exactly the mechanism a `kill -9`, an OOM kill
 /// or a power cut skips.
 #[tauri::command]
-fn write_workspace(v: State<Vault>, layout: serde_json::Value) -> Result<(), String> {
+fn write_workspace(
+    v: State<Vault>,
+    vault: String,
+    layout: serde_json::Value,
+) -> Result<(), String> {
+    // THE WRITE IS VAULT-SCOPED, and that argument is the whole point of it.
+    // A layout write is ARMED by a mutation in one vault and EXECUTED up to
+    // WS_MS later, plus an IPC hop; `set_vault` can land in that window. If
+    // this command resolved the destination from `cur_vault` alone — as it did
+    // until the dloss phase caught it — a switch from A to B would write A's
+    // tabs into B's `.obsidian/workspace.json`, and on the next launch B would
+    // restore A's layout. That is the same class of cross-vault leak that
+    // R28/F2 already forbids for note buffers, and it is a SYNCED-VAULT
+    // corruption, not a cosmetic one: the file is inside the vault (R28.1), so
+    // the wrong layout propagates to the user's other machines.
+    // The caller passes the vault it serialized FROM; disagreeing means the
+    // write is stale by definition and the only correct action is to drop it.
+    // Refusing here rather than trusting the UI to cancel its timer is
+    // deliberate: the guard holds even if a future call site forgets.
     // SPANNED, and the span covers the WHOLE command including the fsync. This
     // one runs on every layout mutation (wsTouch throttles it, it does not stop
     // it), so a slow durable write here is felt as lag on a tab switch — the
@@ -1163,6 +1181,12 @@ fn write_workspace(v: State<Vault>, layout: serde_json::Value) -> Result<(), Str
         "write_workspace",
         (|| {
             let root = cur_vault(&v).ok_or("no vault open")?;
+            if root != PathBuf::from(&vault) {
+                return Err(format!(
+                    "stale layout write: serialized from {vault}, current vault is {}",
+                    root.display()
+                ));
+            }
             let p = workspace_path(&root);
             if let Some(d) = p.parent() {
                 fs::create_dir_all(d).map_err(|e| e.to_string())?;
