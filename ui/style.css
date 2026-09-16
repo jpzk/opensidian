@@ -127,6 +127,133 @@
   --text-faint: #ababab;
   --background-primary-alt: #fafafa;
 }
+/* ===========================================================================
+   THE SECOND AXIS: PALETTE. Everything above is the DEFAULT palette, in its two
+   MODE variants (dark = the bare :root block, light = :root[data-theme="light"]).
+   Below, a palette is one extra attribute on the SAME root element:
+
+       <html data-palette="1984" data-theme="light">
+               ^ palette (this axis)      ^ mode (the existing axis, untouched)
+
+   The two compose and neither knows about the other. A user who has chosen no
+   palette has NO data-palette attribute at all, so not one selector below can
+   match and the default is byte-identical to what it was before this block
+   existed — that is the whole reason the axis is an attribute the app omits
+   rather than a value it writes.
+
+   CASCADE, AND WHY EVERY TOKEN IS REPEATED IN BOTH VARIANTS BELOW.
+   :root[data-theme="light"] and :root[data-palette="1984"] have the SAME
+   specificity (0,2,0), and the palette block is LATER in the file, so on
+   light + 1984 the palette block would otherwise beat the default light block
+   and paint a dark token. The fix is not to reorder (that just breaks the other
+   pair) but to make each palette VARIANT total:
+   :root[data-palette="1984"][data-theme="light"] is (0,3,0) and outranks both,
+   so it must re-declare every token its dark sibling declares. Adding a token
+   to one of the two blocks below and not the other is the bug to look for.
+
+   PROVENANCE. The colour VALUES marked (upstream) are the iTerm 2 colour
+   scheme "1984" by covertbert — https://github.com/covertbert/iterm2-1984 —
+   read out of its published swatches and re-expressed here as our own CSS
+   custom properties. No upstream file is vendored, copied or committed: that
+   repository ships no LICENSE, so there is no grant to rely on, and its
+   .itermcolors files are not ours to redistribute. Colour values themselves
+   are facts, not authorship, which is why the numbers may travel and the files
+   may not. Attribution is given because it is owed, not because a licence
+   compels it.
+   Values marked (derived) are OURS: an editor has surfaces a terminal does not
+   have (a ribbon, a sidebar, an elevated popover, a faint rule), so those are
+   computed as shades of the upstream background and are not claimed to come
+   from upstream.
+   =========================================================================== */
+:root[data-palette="1984"] {
+  /* ---- chrome surfaces ---- */
+  --bg-base: #0d0f31;            /* (upstream) 1984 Background Color */
+  --bg-sidebar: #0a0b26;         /* (derived) bg-base darkened 25% */
+  --bg-ribbon: #07081c;          /* (derived) bg-base darkened 45% */
+  --bg-surface: #1b1f57;         /* (derived) bg-base lifted toward the blue */
+  --bg-elevated: #13163f;        /* (derived) bg-base lifted 15% */
+  --bg-banner-error: #3d0a2c;    /* (derived) the upstream magenta over bg-base */
+  --bg-button-plain: #d8d9ee;    /* (derived) the light variant's paper */
+  --bg-button-primary: #f806fa;  /* (upstream) 1984 Ansi 13 / Link Color */
+  /* ---- lines ---- */
+  --border: #272c6b;             /* (derived) bg-base lifted 20% */
+  --border-strong: #59e1e3;      /* (upstream) 1984 Cursor Color */
+  --border-focus-ring: #59e1e3;  /* (upstream) 1984 Cursor Color */
+  --rule-faint: #1b1f5799;       /* (derived) bg-surface at 60% alpha */
+  /* ---- chrome ink ---- */
+  --text-chrome: #ffffff;        /* (upstream) 1984 Foreground Color */
+  --text-chrome-alt: #ffffff;    /* (upstream) 1984 Bold Color */
+  --text-chrome-muted: #b7b9e0;  /* (derived) foreground toward bg-base, 72% */
+  --text-chrome-faint: #8184b8;  /* (derived) foreground toward bg-base, 52% */
+  --text-chrome-dim: #5f6293;    /* (derived) foreground toward bg-base, 38% */
+  --text-on-accent: #ffffff;     /* (upstream) 1984 Cursor Text Color */
+  --text-quiet: #b7b9e0;         /* (derived) = text-chrome-muted */
+  --text-banner-error: #ff16b0;  /* (upstream) 1984 Ansi 9 */
+  --link-unresolved: #a86ad0;    /* (derived) the upstream link magenta, desaturated */
+  /* ---- accents: the ANSI row, which is where the neon lives ---- */
+  --accent-blue: #46bdff;        /* (upstream) 1984 Ansi 12 */
+  --accent-mauve: #f806fa;       /* (upstream) 1984 Ansi 13 */
+  --accent-red: #ff16b0;         /* (upstream) 1984 Ansi 9 */
+  --accent-yellow: #ffea16;      /* (upstream) 1984 Ansi 11 */
+  --accent-green: #b3f361;       /* (upstream) 1984 Ansi 10 */
+  /* ---- translucency: re-tinted so the veils follow the new accent ---- */
+  --accent-blue-veil: rgba(70,189,255,.22);   /* (derived) accent-blue at 22% */
+  --tag-bg: rgba(248,6,250,.15);              /* (derived) accent-mauve at 15% */
+  --tag-bg-hover: rgba(248,6,250,.3);         /* (derived) accent-mauve at 30% */
+  --highlight-yellow: rgba(255,234,22,.35);   /* (derived) accent-yellow at 35% */
+  /* ---- R15 content tokens: the note column ---- */
+  --text-normal: #ffffff;        /* (upstream) 1984 Foreground Color */
+  --text-muted: #b7b9e0;         /* (derived) = text-chrome-muted */
+  --text-faint: #6b6ea3;         /* (derived) foreground toward bg-base, 42% */
+  --background-primary-alt: #13163f;          /* (derived) = bg-elevated */
+  --interactive-accent: hsl(299, 96%, 50%);   /* (derived) accent-mauve in hsl */
+}
+/* the SAME palette in the light MODE: the upstream ships a 1984-light variant,
+   so this is not a computed inversion — the two anchor colours below are read
+   from it, and the surfaces are shaded from them the same way as above. */
+:root[data-palette="1984"][data-theme="light"] {
+  /* ---- chrome surfaces ---- */
+  --bg-base: #e4e5f5;            /* (upstream) 1984-light Background Color */
+  --bg-sidebar: #d6d7ec;         /* (derived) bg-base darkened 8% */
+  --bg-ribbon: #c8cae4;          /* (derived) bg-base darkened 14% */
+  --bg-surface: #c2c4e1;         /* (derived) bg-base darkened 17% */
+  --bg-elevated: #f1f2fb;        /* (derived) bg-base lightened 5% */
+  --bg-banner-error: #ffe3f4;    /* (derived) the upstream magenta over bg-base */
+  --bg-button-plain: #d6d7ec;    /* (derived) = bg-sidebar */
+  --bg-button-primary: #f806fa;  /* (upstream) 1984-light Ansi 13 */
+  /* ---- lines ---- */
+  --border: #bcbed9;             /* (derived) bg-base darkened 20% */
+  --border-strong: #00b2be;      /* (upstream) 1984-light Cursor Color */
+  --border-focus-ring: #00b2be;  /* (upstream) 1984-light Cursor Color */
+  --rule-faint: #c2c4e199;       /* (derived) bg-surface at 60% alpha */
+  /* ---- chrome ink ---- */
+  --text-chrome: #19152c;        /* (upstream) 1984-light Foreground Color */
+  --text-chrome-alt: #19152c;    /* (upstream) 1984-light Bold Color */
+  --text-chrome-muted: #474364;  /* (derived) foreground toward bg-base, 78% */
+  --text-chrome-faint: #7b7897;  /* (derived) foreground toward bg-base, 55% */
+  --text-chrome-dim: #9b98b3;    /* (derived) foreground toward bg-base, 42% */
+  --text-on-accent: #ffffff;     /* (derived) ink that stays legible on the neon */
+  --text-quiet: #474364;         /* (derived) = text-chrome-muted */
+  --text-banner-error: #ff16b0;  /* (upstream) 1984-light Ansi 9 / Link Color */
+  --link-unresolved: #9d74c8;    /* (derived) the upstream link magenta, desaturated */
+  /* ---- accents: the 1984-light ANSI row ---- */
+  --accent-blue: #0098fd;        /* (upstream) 1984-light Ansi 12 */
+  --accent-mauve: #f806fa;       /* (upstream) 1984-light Ansi 13 */
+  --accent-red: #ff16b0;         /* (upstream) 1984-light Ansi 9 */
+  --accent-yellow: #ff8d01;      /* (upstream) 1984-light Ansi 11 */
+  --accent-green: #00af4f;       /* (upstream) 1984-light Ansi 10 */
+  /* ---- translucency ---- */
+  --accent-blue-veil: rgba(0,152,253,.18);    /* (derived) accent-blue at 18% */
+  --tag-bg: rgba(248,6,250,.12);              /* (derived) accent-mauve at 12% */
+  --tag-bg-hover: rgba(248,6,250,.24);        /* (derived) accent-mauve at 24% */
+  --highlight-yellow: rgba(255,141,1,.32);    /* (derived) accent-yellow at 32% */
+  /* ---- R15 content tokens: the note column ---- */
+  --text-normal: #19152c;        /* (upstream) 1984-light Foreground Color */
+  --text-muted: #474364;         /* (derived) = text-chrome-muted */
+  --text-faint: #8f8ca9;         /* (derived) foreground toward bg-base, 48% */
+  --background-primary-alt: #ededf8;          /* (derived) bg-base lightened 3% */
+  --interactive-accent: hsl(299, 96%, 50%);   /* (derived) accent-mauve in hsl */
+}
 /* THEME TOKENS END */
 * { box-sizing: border-box; margin: 0 }
 body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
@@ -657,6 +784,14 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .sctl.toggle.on > i { left: 21px; background: var(--bg-base) }
 .sctl.dropdown { width: 141px; height: 24px; box-sizing: border-box; padding: 0 8px; background: var(--bg-sidebar);
                  border: 1px solid var(--border); border-radius: 4px; white-space: nowrap; overflow: hidden }
+/* .live = the one dropdown in this pane with a handler behind it (Appearance ▸
+   Themes, the palette axis). Every other control here is a transcription of
+   stock with no behaviour, rendered inert; this one gets the affordances that
+   inertness withholds — a pointer, a hover, and a visible focus ring, because
+   it IS a tab stop. */
+.sctl.dropdown.live { cursor: pointer; background: var(--bg-surface) }
+.sctl.dropdown.live:hover { border-color: var(--border-strong) }
+.sctl.dropdown.live:focus-visible { outline: 2px solid var(--border-focus-ring); outline-offset: 1px }
 .sctl.text { width: 141px; height: 24px; box-sizing: border-box; padding: 0 8px; background: var(--bg-sidebar);
              border: 1px solid var(--border); border-radius: 4px; color: var(--text-chrome-faint); white-space: nowrap; overflow: hidden }
 .sctl.list { color: var(--text-chrome-faint); max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
