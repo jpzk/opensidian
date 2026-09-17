@@ -940,6 +940,93 @@ fn rename_note(v: State<Vault>, old: String, new: String, otel: Option<perf::Ctx
     span_timed!(otel => "rename_note", rename_in(&root, &mut ix, &old, &new))
 }
 
+/* R24.7/R24.8 — DELETE, AND NOTHING BUT DELETE. ------------------------------
+
+   R24.8 is the whole rule of this path: *a delete NEVER edits linking notes*.
+   So this function is deliberately NOT built on rename_in — it calls neither
+   update_links_in nor rewrite_to, and the only path it writes through is the
+   deleted note's own. What the user sees instead is R24.9, which is already
+   shipped: once the key leaves the index the inbound `[[Target]]` links stop
+   resolving and render faded. That faded link IS the notification; rewriting
+   the linking notes would destroy the user's text to hide a fact.
+
+   WHERE IT GOES. Stock says "moved to your system trash". This app cannot
+   honestly say that: `sandbox.rs::write_roots` grants write access to /tmp,
+   /dev, /run, /var/tmp, ~/.cache, ~/.local/share/dev.koto.rustidian, the vault
+   and the config file — and to nothing else. ~/.local/share/Trash is NOT in
+   that set, so under an enforced Landlock ruleset (which the box enforces) an
+   XDG trash move is EACCES, and widening the ruleset to reach a directory full
+   of other applications' deleted files is a security decision, not a file-ops
+   one. The destination is therefore the vault's own `.trash/` — which is
+   stock's other documented option, is inside the one directory we may already
+   write, and is on the SAME FILESYSTEM as the note, so the move is one
+   rename(2): atomic, never a copy, and it cannot half-delete a note by filling
+   a disk. `walk()` (index.rs:374) skips every dot-prefixed entry and
+   `safe_rel` refuses one, so the trashed copy is invisible to the explorer,
+   the index, search and the graph — it is gone from the vault in every sense
+   the user can observe, and still recoverable with a file manager. The
+   confirmation names THIS destination; a dialog that says "system trash" while
+   writing somewhere else is the same class of lie as a comment that outruns
+   its code.
+
+   NOT TOUCHED, ON PURPOSE: `.rustidian-bookmarks`. A delete writes the deleted
+   note's path and nothing else, and this codebase already tolerates a bookmark
+   with no file behind it (see rename_bookmark_in's "the target name may be a
+   stale bookmark with no file"). R24 says nothing about bookmarks; the
+   conservative reading of R24.8 is that a delete edits no other file AT ALL,
+   and a unit test pins the bookmarks file byte-identical across a delete. */
+const TRASH_DIR: &str = ".trash";
+
+/// `<vault>/.trash/<base>.md`, suffixed `.1`, `.2`, ... when that name is
+/// already taken — deleting two notes that share a basename (`a/Note` and
+/// `b/Note`) must not silently overwrite the first one's only remaining copy.
+fn trash_dest(tdir: &Path, base: &str) -> PathBuf {
+    let first = tdir.join(format!("{base}.md"));
+    if !first.exists() {
+        return first;
+    }
+    for i in 1..10_000 {
+        let p = tdir.join(format!("{base}.{i}.md"));
+        if !p.exists() {
+            return p;
+        }
+    }
+    tdir.join(format!("{base}.{}.md", std::process::id()))
+}
+
+/// Returns the vault-relative path the note now occupies inside the trash —
+/// what the UI reports, and what a test reads the original bytes back from.
+fn delete_note_in(root: &Path, ix: &mut Index, name: &str) -> Result<String, String> {
+    let rel = safe_rel(name).ok_or("invalid name")?;
+    let key = rel.display().to_string();
+    // S2: confined to the vault, and never through a symlinked leaf/parent
+    let p = note_path_in(root, name, false).ok_or("invalid name")?;
+    if !p.is_file() {
+        return Err("no such note".into());
+    }
+    let tdir = root.join(TRASH_DIR);
+    fs::create_dir_all(&tdir).map_err(|e| format!("cannot open the vault trash: {e}"))?;
+    let base = rel.file_name().ok_or("invalid name")?.to_string_lossy().into_owned();
+    let dest = trash_dest(&tdir, &base);
+    // one rename(2) inside the vault: the note is either where it was or in the
+    // trash, never in neither place and never in two
+    fs::rename(&p, &dest).map_err(|e| e.to_string())?;
+    // index==disk: the key is gone, so every inbound link stops resolving and
+    // R24.9's faded rendering appears. No other note is read, written or parsed.
+    ix.remove(&key);
+    Ok(dest.strip_prefix(root).unwrap_or(&dest).display().to_string())
+}
+
+/// R24.7: the explorer's Delete, behind the confirmation the UI raises. The
+/// count the dialog states comes from `backlinks_ctx` (links per line, files
+/// per note) — no second counter for this path, and none is added here.
+#[tauri::command]
+fn delete_note(v: State<Vault>, name: String, otel: Option<perf::Ctx>) -> Result<String, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    let mut ix = v.index.lock().unwrap();
+    span_timed!(otel => "delete_note", delete_note_in(&root, &mut ix, &name))
+}
+
 #[tauri::command]
 fn vault_get(v: State<Vault>) -> Option<String> {
     cur_vault(&v).map(|p| p.display().to_string())
@@ -2450,7 +2537,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, read_note, write_note, create_note, render, render_blocks, block_lines, highlight_blocks, graph, graph_local, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, recent_vaults, rename_note, move_note, update_links, link_consent, set_link_consent, tags, tag_counts,
+            list_bookmarks, toggle_bookmark, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme, get_palette, set_palette,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
@@ -3475,6 +3562,105 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    // ---- R24.7/R24.8 DELETE ------------------------------------------------
+
+    /// R24.8, asserted BY BYTES, which is the only way it can be asserted: every
+    /// note that links to the target is hashed before the delete and compared
+    /// after it. "We did not intend to write them" is not evidence; a byte
+    /// comparison over all six link forms is.
+    #[test]
+    fn delete_leaves_every_linking_note_byte_identical() {
+        let root = r34_vault("del-bytes");
+        fs::write(root.join("Target.md"), "# Target\nbody\n").unwrap();
+        fs::write(root.join("B.md"), "[[Target]] and [[Target|alias]] and [[Target#anchor]]\n").unwrap();
+        fs::write(root.join("C.md"), "embed ![[Target]] and block [[Target#^id]]\n").unwrap();
+        fs::write(root.join("D.md"), "markdown [t](Target.md)\n").unwrap();
+        fs::write(root.join("E.md"), "links nowhere near it\n").unwrap();
+        let mut ix = Index::build(&root);
+        let before: Vec<Vec<u8>> = ["B", "C", "D", "E"]
+            .iter()
+            .map(|n| fs::read(root.join(format!("{n}.md"))).unwrap())
+            .collect();
+
+        let dest = delete_note_in(&root, &mut ix, "Target").unwrap();
+
+        // the file is GONE from the vault, and recoverable from the trash with
+        // its own bytes intact
+        assert!(!root.join("Target.md").exists(), "the note is still where it was");
+        assert_eq!(dest, ".trash/Target.md");
+        assert_eq!(fs::read_to_string(root.join(&dest)).unwrap(), "# Target\nbody\n");
+        // R24.8: not one linking note changed by a single byte
+        for (n, b0) in ["B", "C", "D", "E"].iter().zip(before) {
+            assert_eq!(fs::read(root.join(format!("{n}.md"))).unwrap(), b0, "{n} was rewritten by a DELETE");
+        }
+        // R24.9's precondition: the key left the index, so those links no longer
+        // resolve — which is what makes them render faded
+        assert_eq!(ix.names(), ["B", "C", "D", "E"]);
+        assert!(ix.content("Target").is_none());
+        assert_eq!(resolve(ix.names(), "Target"), None, "a deleted note must not resolve");
+    }
+
+    /// The trashed copy must be gone from the VAULT as the app walks it —
+    /// otherwise "deleted" means "moved to a folder the explorer still lists".
+    #[test]
+    fn a_deleted_note_never_walks_back_into_the_index() {
+        let root = r34_vault("del-walk");
+        fs::write(root.join("Gone.md"), "x\n").unwrap();
+        fs::write(root.join("Keep.md"), "[[Gone]]\n").unwrap();
+        let mut ix = Index::build(&root);
+        delete_note_in(&root, &mut ix, "Gone").unwrap();
+        assert!(root.join(".trash/Gone.md").is_file(), "nothing was preserved");
+        // a FRESH walk of the vault, i.e. what the next boot / watcher tick sees
+        assert_eq!(Index::build(&root).names(), ["Keep"]);
+        assert!(!index::notes_of(&root).iter().any(|n| n.contains("trash")));
+    }
+
+    /// Two notes with the same basename in different folders: the second delete
+    /// must not overwrite the first one's only remaining copy.
+    #[test]
+    fn deleting_two_notes_that_share_a_basename_keeps_both_copies() {
+        let root = r34_vault("del-collide");
+        fs::create_dir_all(root.join("a")).unwrap();
+        fs::create_dir_all(root.join("b")).unwrap();
+        fs::write(root.join("a/Note.md"), "first\n").unwrap();
+        fs::write(root.join("b/Note.md"), "second\n").unwrap();
+        let mut ix = Index::build(&root);
+        assert_eq!(delete_note_in(&root, &mut ix, "a/Note").unwrap(), ".trash/Note.md");
+        assert_eq!(delete_note_in(&root, &mut ix, "b/Note").unwrap(), ".trash/Note.1.md");
+        assert_eq!(fs::read_to_string(root.join(".trash/Note.md")).unwrap(), "first\n");
+        assert_eq!(fs::read_to_string(root.join(".trash/Note.1.md")).unwrap(), "second\n");
+    }
+
+    /// A refused delete changes NOTHING: no trash directory materialises, no
+    /// note moves, and the index still holds every key.
+    #[test]
+    fn a_refused_delete_touches_nothing() {
+        let root = r34_vault("del-refuse");
+        fs::write(root.join("A.md"), "a\n").unwrap();
+        let mut ix = Index::build(&root);
+        for bad in ["../escape", "Missing", ".obsidian/app", ""] {
+            assert!(delete_note_in(&root, &mut ix, bad).is_err(), "delete accepted {bad:?}");
+        }
+        assert!(!root.join(".trash").exists(), "a refused delete created the trash dir");
+        assert_eq!(fs::read_to_string(root.join("A.md")).unwrap(), "a\n");
+        assert_eq!(ix.names(), ["A"]);
+    }
+
+    /// R24.8 taken literally: a delete writes the deleted note's path and no
+    /// other file — including the user's bookmarks file, which this codebase
+    /// already tolerates holding an entry with no file behind it.
+    #[test]
+    fn delete_does_not_touch_the_bookmarks_file() {
+        let root = r34_vault("del-bm");
+        fs::write(root.join("A.md"), "a\n").unwrap();
+        fs::write(root.join("B.md"), "[[A]]\n").unwrap();
+        write_bookmarks(&root, &["A".to_string(), "B".to_string()]).unwrap();
+        let bm0 = fs::read(root.join(BM_FILE)).unwrap();
+        let mut ix = Index::build(&root);
+        delete_note_in(&root, &mut ix, "A").unwrap();
+        assert_eq!(fs::read(root.join(BM_FILE)).unwrap(), bm0, "a delete rewrote .rustidian-bookmarks");
     }
 
     /// R34.1 + R34.2: the move renames the FILE and NOT ONE inbound link.

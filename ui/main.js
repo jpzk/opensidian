@@ -641,11 +641,24 @@ function noteMenu(e, nm) {                 // right-click a tree note row
   closeMenu();
   const m = document.createElement("div");
   m.className = "ctxmenu";
-  const d = document.createElement("div");
-  d.textContent = bmCache.includes(nm) ? "Remove bookmark" : "Bookmark";
-  d.onmousedown = ev => ev.stopPropagation();
-  d.onclick = () => { closeMenu(); toggleBm(nm); };
-  m.appendChild(d);
+  const mkItem = (label, fn) => {
+    const d = document.createElement("div");
+    d.textContent = label;
+    d.onmousedown = ev => ev.stopPropagation();
+    d.onclick = () => { closeMenu(); fn(); };
+    m.appendChild(d);
+  };
+  mkItem(bmCache.includes(nm) ? "Remove bookmark" : "Bookmark", () => toggleBm(nm));
+  /* R24.7: Delete lives HERE, on the explorer row, because that is where the
+     user is when they decide a note is finished — and it opens a question, not
+     a deletion. askDelete does no I/O of its own beyond counting the inbound
+     links the confirmation has to state. */
+  mkItem("Delete", () => askDelete(nm));
+  /* [mt:note:<name>] — WHICH ROW the browser's hit test actually handed us. The
+     explorer row is found by OCR in the harness, and R20.8's lesson applies
+     harder here than it did for tabs: an OCR row miss followed by "Delete" would
+     delete a note nobody named and still look green. */
+  m.dataset.mt = "note:" + nm;
   placeMenu(m, e.clientX, e.clientY);   /* R22: viewport-clamped by measured size */
 }
 
@@ -706,6 +719,12 @@ let saveErr = "";
    can never read it through a temporal-dead-zone. The drop code itself is in
    the R31 section further down. */
 let dropTok = "", dropT = null;
+/* R24.6 explorer drag-to-move, declared here for the same reason as dropTok:
+   updateTitle() reads both and runs from load-time code ABOVE the explorer
+   section, where a `let` in its own section would be a temporal-dead-zone
+   throw rather than an empty token. [dragt:] is live (a drag is up, this is
+   the destination it resolved to), [mv:] is the last completed move. */
+let dragTok = "", mvTok = "";
 /* F2 test hook: the vault-switch race lives inside the debounce window, so it
    is not mechanically reproducible at 250ms — RUSTIDIAN_SAVE_MS widens it for
    the smoke (backend save_debounce_ms; default 250 in every normal run). */
@@ -1160,6 +1179,10 @@ function updateTitle() {          // pane/focus census in the window title (head
   // Deliberately not derived from the banner (which times out): "no drop yet"
   // and "a drop whose banner faded" must not look the same to a probe.
   if (dropTok) md += " [drop:" + dropTok.replace(/[[\]|]/g, "") + "]";
+  // R24.6 explorer drag-to-move: [dragt:<dest or - >:<the chip's own text>] while
+  // a drag is up, [mv:<old>><new>/<files linking in>] for the last completed move.
+  if (dragTok) md += " [dragt:" + dragTok.replace(/[[\]|]/g, "").slice(0, 120) + "]";
+  if (mvTok) md += " [mv:" + mvTok.replace(/[[\]|]/g, "").slice(0, 120) + "]";
   md += " [zoom:" + zoomTok + "]";   // R36: always present — a probe must be able to read "still at 100%"
   // R15.2 font probe: bundled @font-face entries that actually LOADED (lazy: a face loads when text first uses it) -> [fonts:SourceCodePro/400/normal|...]
   { const fl = document.fonts ? [...document.fonts].filter(f => f.status === "loaded").map(f => f.family.replace(/[" ]/g, "") + "/" + f.weight + "/" + f.style) : [];
@@ -1173,6 +1196,7 @@ function updateTitle() {          // pane/focus census in the window title (head
     + ($("anew") && !$("anew").hidden ? " [modal:att]" : "")   // R31.7 Insert attachment prompt
     + (settingsOpen ? " [modal:settings]" + setTok() + hkInfo : "")   // R14 hotkeys + R30 settings probe
     + (ulPending ? " [modal:ul]" + ulTok() : "")                // R34.6 Update links prompt
+    + (delPending ? " [modal:del]" + delTok() : "")             // R24.7 delete confirmation
     + (noticeTxt ? " [notice:" + tokq(noticeTxt) + "]" : "")    // R34.12/13 the last refusal — does NOT expire with the banner
     + (menuEl ? " [menu:1]" : "");                             // R22: a context menu is open (fuzz probe)
   // [note:<name>] = the FOCUSED group's active note (null for a graph tab).
@@ -1940,16 +1964,40 @@ async function commitTitleEdit() {
   const nn = dir + t;                        // NAMES CARRY NO EXTENSION (see NOTE NAMES below)
   closeTitleEdit();
   await flushSave(g);                        // the body's own bytes land before the file moves
+  await renameThenAsk(name, nn);
+}
+
+/* R24.3 — THE RENAME TAIL, AND THE ONLY ONE. "After a rename that has incoming
+   links, stock shows the Update links modal ... because `Automatically update
+   internal links` is OFF by default" — R24.3 says nothing about WHICH rename
+   surface, and the app has two: the inline title (R34) and F2 / "Rename file"
+   (cmdRename). Until now only the title road asked; F2 called `rename_note`,
+   which is `move_note_in` + `update_links_in` with no question in between — a
+   silent vault-wide rewrite, the exact shape ux-3 was deleted for (R32.5).
+   Two roads with two different answers to "may I edit your other notes" is one
+   road too many, so the tail is extracted here and both call it.
+
+   The ORDER is R34.1's measured order and is not negotiable: the file moves
+   FIRST (move_note), the links are stale at that instant (R34.2), and only
+   then is the question asked. `update_links` therefore still has exactly two
+   callers, both on the far side of a recorded answer (the modal, or R34.8
+   consent already on disk in the vault).
+
+   `rename_note` survives as the composite the rust unit tests exercise
+   (rename_in); the UI no longer calls it, because nothing the USER does may
+   rewrite another note without an answer. */
+async function renameThenAsk(old, nn) {
   let blast;
-  try { blast = await inv("move_note", { old: name, new: nn }); }
-  catch (err) { say(String(err && err.message || err)); updateTitle(); return; }
-  await applyRename(name, nn);
+  try { blast = await inv("move_note", { old, new: nn }); }
+  catch (err) { say(String(err && err.message || err)); updateTitle(); return false; }
+  await applyRename(old, nn);
   const links = blast && blast.links || 0, files = blast && blast.files || 0;
-  if (!files) { updateTitle(); return; }     // R34.3: nothing links in -> NO modal, ever
+  if (!files) { updateTitle(); return true; }   // R34.3: nothing links in -> NO modal, ever
   let consent = false;
   try { consent = await inv("link_consent"); } catch (err) { consent = false; }
-  if (consent) { await runUpdateLinks(name, nn); return; }   // R34.8: already answered, in the vault
-  openUpdateLinks(name, nn, links, files);
+  if (consent) { await runUpdateLinks(old, nn); return true; }   // R34.8: already answered, in the vault
+  openUpdateLinks(old, nn, links, files);
+  return true;
 }
 
 /* ---------- R34.4-R34.8 the "Update links" prompt --------------------------
@@ -1959,6 +2007,10 @@ async function commitTitleEdit() {
    places, both of them on the far side of a recorded answer (this modal, or
    R34.8 consent already in the vault). */
 let ulPending = null, noticeTxt = "", noticeT = 0, noticeSrc = "";
+// R24.7: declared beside ulPending, not down in its own section, because
+// updateTitle() reads it and updateTitle runs from load-time code ABOVE that
+// section — a `let` in the temporal dead zone would throw there, not read null.
+let delPending = null;
 
 function say(msg, src) {                     // R34.12/R34.13: a refusal is VISIBLE
   const b = $("notice");
@@ -2082,6 +2134,126 @@ function ulTok() {
   return " [ul:" + ulPending.links + "/" + ulPending.files + "/" + f + "]" +
          " [ulsay:" + $("ulsay").textContent.replace(/[[\]|]/g, "") + "]" +
          " [ulx:" + xs + "]";
+}
+
+/* ---------- R24.7/R24.8 the delete confirmation --------------------------
+   The only irreversible act the explorer offers, so it is written as a
+   QUESTION with two answers that are both real: Cancel leaves the file exactly
+   where it was (nothing is called at all — not even a "dry run" of the
+   backend), Delete calls delete_note once.
+
+   WHAT THE DIALOG STATES, and why each part is there:
+     - the file, by its vault-relative name (two notes can share a basename);
+     - where it goes: `.trash/` inside THIS vault. delete_note_in moves it
+       there with one rename(2) and the commit message argues why that, and not
+       "your system trash", is the honest sentence under the Landlock ruleset;
+     - how many notes link to it. R24.8 forbids editing those notes, and R24.9
+       (shipped) renders their now-unresolved links faded. The count is the
+       warning the user gets BEFORE the fact; the faded links are what they see
+       after. A delete that quietly breaks four links in three notes and says
+       nothing is the failure mode this line exists to prevent.
+   The count comes from `backlinks_ctx` — the command the backlinks pane
+   already uses. No second counter: R24.8 says a delete must not even READ the
+   other notes for the purpose of rewriting them, and it does not, but the
+   number on screen must still come from the same index everything else reads,
+   not from a private walk that can disagree with the pane one panel away. */
+const delSentence = (files, lines) =>
+  files ? "Its links break in " + files + (files === 1 ? " note" : " notes") +
+          " (" + lines + (lines === 1 ? " line" : " lines") +
+          "). Those notes are not edited — their links go faded."
+        : "No other note links to it.";
+
+async function askDelete(nm) {
+  let bl = [];
+  try { bl = await inv("backlinks_ctx", { name: nm }); }
+  catch (err) { bl = []; }                   // a count we could not take must not block the delete
+  const files = bl.length, lines = bl.reduce((a, b) => a + b.lines.length, 0);
+  openDelete(nm, files, lines);
+}
+function openDelete(nm, files, lines) {
+  delPending = { name: nm, files, lines };
+  $("delq").textContent = "Are you sure you want to delete " + nm + "? It will be moved to .trash in this vault.";
+  $("delsay").textContent = delSentence(files, lines);
+  $("delbox").hidden = false;
+  $("del-no").focus();                       // the DEFAULT is Cancel — see style.css
+  updateTitle();
+}
+function closeDelete() {
+  if (!delPending) return;
+  delPending = null;
+  $("delbox").hidden = true;
+  const g = fg();
+  if (g && g.lp && g.lp.isConnected) g.lp.focus({ preventScroll: true });
+  updateTitle();
+}
+async function delAnswer(kind) {
+  if (!delPending) return;
+  const nm = delPending.name;
+  closeDelete();
+  if (kind !== "yes") return;                // Cancel: the vault is not touched at all
+  try { await inv("delete_note", { name: nm }); }
+  catch (err) { say(String(err && err.message || err)); return; }
+  await afterDelete(nm);
+}
+/* The note is gone from disk; now the UI stops claiming otherwise. Tabs first,
+   because a tab holding an unsaved buffer of a deleted note would RESURRECT it:
+   closeTab flushes the pending save, and that write recreates the file the user
+   just deleted. So the pending timer is cancelled before the tab is closed —
+   the user's answer was "delete", and honouring a 400 ms-old keystroke over it
+   is the same data-loss shape in reverse. */
+async function afterDelete(nm) {
+  for (const g of groups()) {
+    for (let i = g.tabs.length - 1; i >= 0; i--) {
+      const t = g.tabs[i];
+      if (t.kind || t.name !== nm) continue;
+      if (i === g.active && g.saveT) { clearTimeout(g.saveT); g.saveT = null; }
+      await closeTab(g, i);
+    }
+  }
+  // R14 undo-close would otherwise offer to reopen a note that no longer exists
+  for (let i = closedTabs.length - 1; i >= 0; i--) if (closedTabs[i] === nm) closedTabs.splice(i, 1);
+  const mi = mruList.indexOf(nm);
+  if (mi >= 0) mruList.splice(mi, 1);
+  await refreshTree();                       // the explorer row goes
+  await refreshBm();                         // a bookmark of it is now a bookmark with no file (backend leaves it: R24.8)
+  updateTitle();
+}
+$("del-no").onclick = () => delAnswer("no");
+$("del-yes").onclick = () => delAnswer("yes");
+/* Escape = Cancel: dismissing a question is never consent, and here consent is
+   irreversible. Same focus trap as the Update links prompt (keyCode 9 for the
+   ISO_Left_Tab spelling WebKitGTK actually sends). */
+$("delbox").addEventListener("keydown", e => {
+  if (!delPending) return;
+  if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); delAnswer("no"); return; }
+  if (e.key === "Tab" || e.keyCode === 9) {
+    e.preventDefault();
+    const b = [$("del-no"), $("del-yes")];
+    const i = b.indexOf(document.activeElement);
+    b[(i < 0 ? 0 : i + (e.shiftKey ? b.length - 1 : 1)) % b.length].focus();
+    updateTitle();
+    return;
+  }
+  e.stopPropagation();
+});
+$("delbox").addEventListener("mousedown", e => { if (e.target === $("delbox")) e.preventDefault(); });  // click-off is not an answer
+
+/* [modal:del] + [del:<name>/<files>/<lines>/<focused button 0=Cancel,1=Delete>]
+   + [delsay:<the stated sentence>] + [delx:<cx,cy>;<cx,cy>].
+   The phase asserts the DIALOG, not just the end state: without a token, a
+   Cancel test cannot tell "the dialog came up and was dismissed" from "Delete
+   did nothing at all", and those are the two things a confirmation is between. */
+function delTok() {
+  const b = [$("del-no"), $("del-yes")];
+  const f = b.indexOf(document.activeElement);
+  const xs = b.map(e => {
+    const r = e.getBoundingClientRect();
+    return Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2);
+  }).join(";");
+  const q = s => String(s == null ? "" : s).replace(/[[\]|]/g, "");
+  return " [del:" + q(delPending.name) + "/" + delPending.files + "/" + delPending.lines + "/" + f + "]" +
+         " [delsay:" + q($("delq").textContent + " " + $("delsay").textContent).slice(0, 200) + "]" +
+         " [delx:" + xs + "]";
 }
 
 async function loadActive(g) {
@@ -2357,6 +2529,7 @@ function renderNode(node, prefix, depth, out) {
     // R20 (#7): children live in a .tkids box rendered ONCE; a click only flips
     // .collapsed on the box (+ .open on the row) — zero IPC, no tree rebuild.
     // The tree DOM is rebuilt only when the note/folder list changes (refreshTree).
+    row.dataset.folder = full;                  // R24.6: the drop target's identity, off the DOM
     const kids = document.createElement("div");
     kids.className = "tkids" + (open ? "" : " collapsed");
     row.onclick = () => act("folder_toggle", { folder: full, open: collapsed.has(full), notes: node.dirs.get(d).notes.length, rows: kids.childElementCount }, () => {
@@ -2375,11 +2548,132 @@ function renderNode(node, prefix, depth, out) {
     row.innerHTML = treeGuides(depth) + '<span class="tc"></span>' +
       '<span class="tn"></span>';
     row.querySelector(".tn").textContent = nm.split("/").pop();
-    row.onclick = () => openInTab(nm);
+    row.dataset.note = nm;
+    row.onclick = () => { if (treeClickEaten()) return; openInTab(nm); };
     row.oncontextmenu = e => noteMenu(e, nm);   // R9.4: bookmark toggle
+    row.addEventListener("mousedown", e => treeDragStart(e, nm));   // R24.6: drag onto a folder row = move
     treeRows.set(nm, row);
     out.appendChild(row);
   }
+}
+
+/* ---------- R24.6: DRAG A NOTE ONTO A FOLDER ROW TO MOVE IT ----------------
+   THE SAME MOUSE MACHINE AS THE TABS, not a second convention: mousedown +
+   window mousemove/mouseup, a 6px threshold, a #tabghost chip, drop targets
+   resolved once per rAF frame against rects cached at drag start, and the
+   commit wrapped in act(). HTML5 `dragstart`/dataTransfer is used NOWHERE in
+   this codebase and is not introduced here; R31's drop-to-attach is an
+   OS-level XDND delivered as the `drop-files` event and never sees a DOM drag,
+   so the two cannot collide.
+
+   NO LINKS ARE REWRITTEN AND NO PROMPT IS SHOWN — that is R24.6 itself
+   ("links that still resolve are left untouched and no prompt is shown"), and
+   it is true of THIS vault for a mechanical reason worth writing down:
+   index.rs:367 resolves a wikilink by full relative path OR basename, so
+   `[[Note]]` still resolves after `Note` becomes `sub/Note`. The only spelling
+   a move can break is a FULL-PATH link (`[[old/Note]]`), and silently
+   rewriting those vault-wide without asking is exactly the deleted ux-3
+   behaviour (R32.5). So the move calls move_note — the EXISTING backend, which
+   also carries the bookmark (move_note_in) — and stops. `update_links` keeps
+   its two consented callers (R34's prompt and R34.8 consent) and gains none;
+   there is no second rewriter in this feature, and the blast radius move_note
+   returns is published in the census rather than acted on.
+
+   Folder rows are drop TARGETS here, not drag sources: moving a folder is N
+   moves with no atomicity and belongs with the folder-rename work (R24.5).  */
+let treeEat = 0;                         // mark: a drag just ended, eat the click it generates
+function treeClickEaten() {              // a completed drag must not also open/toggle the row
+  const t = treeEat;
+  treeEat = 0;                           // one click only, and stale marks expire by time:
+  return !!t && performance.now() - t < 400;   // a drop on a FOLDER row generates no row click
+}
+function treeDragStart(e, nm) {
+  if (e.button !== 0) return;
+  const sx = e.clientX, sy = e.clientY;
+  const base = nm.split("/").pop();
+  const par = nm.includes("/") ? nm.slice(0, nm.lastIndexOf("/")) : "";
+  let ghost = null, target = null, hl = null, zones = null, raf = 0, last = null;
+  const clearHl = () => { if (hl) { hl.classList.remove("drop-into"); hl = null; } };
+  const step = () => {
+    raf = 0;
+    const ev = last;
+    if (!ghost) {
+      if (Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) < 6) return;
+      ghost = document.createElement("div");
+      ghost.id = "tabghost";
+      ghost.textContent = base;
+      document.body.appendChild(ghost);
+      dragTok = "-:" + base;             // a drag is UP with no destination yet
+      updateTitle();
+      // rects cached ONCE (R20): a per-frame getBoundingClientRect over every
+      // folder row is a layout read per mousemove on a 500-row explorer.
+      // The tree box is LAST so a folder row always wins the hit test.
+      zones = [...document.querySelectorAll("#tree .trow.folder")]
+        .map(el => ({ el, f: el.dataset.folder, r: el.getBoundingClientRect() }))
+        .filter(z => z.r.height > 0 && z.f != null);
+      zones.push({ el: $("tree"), f: "", r: $("tree").getBoundingClientRect() });   // the vault ROOT
+    }
+    ghost.style.transform = "translate3d(" + (ev.clientX + 10) + "px," + (ev.clientY + 12) + "px,0)";
+    let nt = null;
+    for (const z of zones) {
+      const r = z.r;
+      if (ev.clientX < r.left || ev.clientX > r.right ||
+          ev.clientY < r.top || ev.clientY > r.bottom) continue;
+      if (z.f !== par) nt = z;            // the folder it is ALREADY in is not a destination
+      break;
+    }
+    if ((nt ? nt.f : null) !== (target ? target.f : null)) {
+      clearHl();
+      if (nt) { hl = nt.el; hl.classList.add("drop-into"); }   // R24.6: the target is OUTLINED
+      target = nt;
+      // R24.6: the chip NAMES THE DESTINATION — and the census carries the same
+      // sentence, so a phase asserts what the chip says instead of OCR'ing it.
+      // ASCII arrow on purpose: this string travels through the window title.
+      ghost.textContent = base + (target ? " -> " + (target.f || "vault root") : "");
+      dragTok = (target ? (target.f || "/") : "-") + ":" + ghost.textContent;
+      updateTitle();                     // ONLY on a target change — never per frame
+    }
+  };
+  const move = ev => { last = ev; if (!raf) raf = requestAnimationFrame(step); };
+  const up = async () => {
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", up);
+    if (raf) { cancelAnimationFrame(raf); raf = 0; if (last) step(); }
+    const t = target;
+    if (ghost) ghost.remove();
+    clearHl();
+    dragTok = "";
+    if (!ghost || !t) { updateTitle(); return; }   // plain click, or dropped on nothing
+    treeEat = 1;                                   // the mouseup's click is not an "open this note"
+    await moveNoteTo(nm, t.f);
+  };
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", up);
+}
+
+/* The commit. Refusals are the rename's refusals (say(), nothing moves) and
+   the collision check is the same COURTESY the title rename does — what
+   actually refuses is create_new/O_EXCL inside move_note_in, which no JS-side
+   test of a 1000ms-stale cache can hold against another writer. */
+async function moveNoteTo(nm, folder) {
+  const base = nm.split("/").pop();
+  const nn = folder ? folder + "/" + base : base;
+  if (nn === nm) return;
+  if (notesCache.includes(nn)) { say("There's already a file with the same name"); return; }
+  await act("note_move", { note: nm, to: folder, dest: nn }, async () => {
+    // the bytes of any open buffer of THIS note land before the file moves —
+    // a debounced save that fires after the rename would write the old path
+    for (const g of groups()) if (curOf(g) === nm) await flushSave(g);
+    let blast;
+    try { blast = await inv("move_note", { old: nm, new: nn }); }
+    catch (err) { say(String(err && err.message || err)); updateTitle(); return; }
+    await applyRename(nm, nn);        // tabs, history, MRU, bookmarks, tree — the ONE post-move choke point
+    // [mv:<old>><new>/<files that link in>] — the radius is REPORTED, never
+    // acted on (R24.6). A phase can assert "2 notes link here and were still
+    // not touched", which is the whole claim.
+    mvTok = nm + ">" + nn + "/" + ((blast && blast.files) || 0);
+    updateTitle();
+  });
 }
 
 // perf-index: with backlinks/search/graph served from RAM, rebuilding the
@@ -3254,10 +3548,10 @@ function cmdPalette() {
   modalKind === "cp" ? closeModal() : openModal("cp", cpItems);
 }
 
-/* m5 F2 rename: inline prompt over the focused note tab; disk rename via
-   rename_note (the rust side rewrites inbound wikilinks vault-wide), then
-   tabs/hist/mru follow the name */
-async function applyRename(old, nn) {   // post-rename bookkeeping (F2 / cmdRename is the only caller)
+/* m5 F2 rename: inline prompt over the focused note tab; the disk move and the
+   consented link rewrite are renameThenAsk's (R24.3), the same tail the inline
+   title uses, then tabs/hist/mru follow the name */
+async function applyRename(old, nn) {   // post-rename bookkeeping (F2 / cmdRename, the R34 title rename, and R24.6's drag-move)
   for (const h of groups()) for (const tb of h.tabs) {
     if (tb.kind) continue;
     if (tb.name === old) { tb.name = nn; if (tb.view) setInlineTitle(tb.view, nn); }   // #20: the rendered title follows the FILE, in every retained view
@@ -3315,9 +3609,11 @@ $("rninput").onkeydown = async e => {
   if (!t || t.kind || !nn || nn === t.name) { updateTitle(); return; }
   const old = t.name;
   await flushSave(g);                       // old content lands before the move
-  try { await inv("rename_note", { old, new: nn }); }
-  catch (err) { updateTitle(); return; }    // exists/invalid -> keep old name
-  await applyRename(old, nn);
+  // R24.3: the SAME tail as the title road — move, then ask if anything links
+  // in. This used to be `rename_note` (move + a silent vault-wide rewrite);
+  // a refusal now reaches the notice banner instead of being swallowed, which
+  // is R34.12's rule and was always the right one for this road too.
+  await renameThenAsk(old, nn);
 };
 
 if (document.fonts) document.fonts.addEventListener("loadingdone", () => updateTitle());   // R15.2: republish [fonts:] once a lazy @font-face lands
@@ -3372,6 +3668,7 @@ document.addEventListener("keydown", e => {
   if (e.ctrlKey && e.altKey && e.shiftKey && (e.key === "F" || e.key === "f")) { e.preventDefault(); floorProbe(); return; }
   if (settingsOpen) return hkKey(e);       // R14: settings modal owns the keyboard (chord capture)
   if (ulPending) return;                   // R34.6: the Update links prompt owns the keyboard — its own handler answers it
+  if (delPending) return;                  // R24.7: so does the delete confirmation (Escape there = Cancel)
   if (titleEditing()) return;              // R34.1: so does the title box (a filename contains chords)
   if (e.key === "Escape") {
     if (modalKind) { closeModal(); return; }
