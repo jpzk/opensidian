@@ -122,6 +122,22 @@
     <button id="ul-no">Do not update</button>
   </div>
 </div></div>
+<!-- R24.7 — DELETE ASKS FIRST. The dialog states three things the user cannot
+     get back afterwards: WHICH file, WHERE it goes (the vault's own .trash/,
+     which is what delete_note_in actually does — saying "system trash" while
+     writing elsewhere is a lie the sandbox would make us tell), and HOW MANY
+     notes link to it. That last number is here because of R24.8: those links
+     are NOT rewritten, they go faded (R24.9), and this dialog is the only
+     place the user is told before the fact. -->
+<div id="delbox" hidden><div id="delcard">
+  <div id="deltitle">Delete file</div>
+  <div id="delq"></div>
+  <div id="delsay"></div>
+  <div id="delbtns">
+    <button id="del-no">Cancel</button>
+    <button id="del-yes">Delete</button>
+  </div>
+</div></div>
 <!-- R34.12/R34.13: a refusal is VISIBLE. Stock puts a notice on screen and
      renames nothing; a refusal nobody can see is indistinguishable from a
      rename that silently did nothing. -->

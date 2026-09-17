@@ -10,8 +10,8 @@
    before (stderr says why). Threads restrict only
    themselves, hence "once, at boot" — switching vaults needs a restart. */
 use landlock::{
-    path_beneath_rules, Access, AccessFs, Compatible, PathBeneath, PathFd, Ruleset, RulesetAttr,
-    RulesetCreatedAttr, RulesetStatus, ABI,
+    path_beneath_rules, Access, AccessFs, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset,
+    RulesetAttr, RulesetCreatedAttr, RulesetStatus, ABI,
 };
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -150,6 +150,32 @@ pub fn enforce(vault: &Path, cfg: &Path) -> Result<RulesetStatus, Box<dyn std::e
         std::fs::write(cfg, "{}")?;
     }
     let abi = ABI::V1;
+    /* R24 — MOVING A FILE BETWEEN TWO DIRECTORIES IS A LANDLOCK RIGHT OF ITS OWN.
+       ABI v1 has no REFER, and a v1 ruleset denies EVERY cross-directory
+       rename(2)/link(2) unconditionally — no rule can permit it. The kernel
+       answers EXDEV, "Invalid cross-device link", which is precisely what the
+       explorer's Delete hit on the gate box (census
+       [notice:Invalid cross-device link (os error 18)], 2026-09-16): moving
+       vault/ZF-Doomed.md to vault/.trash/ZF-Doomed.md was refused inside our
+       own sandbox with BOTH ends in the same granted hierarchy, one mount, one
+       device. R24.6's drag-to-move and any rename into another folder are the
+       same call and were broken the same way. So REFER is handled, and granted
+       on the WRITE roots only.
+
+       BEST EFFORT, unlike the v1 base above (which stays a HardRequirement):
+       REFER arrived with ABI v2 / Linux 5.19. On an older kernel the right is
+       dropped and the process gets exactly today's ruleset — cross-directory
+       moves keep failing, visibly and with the message above, rather than the
+       app refusing to start.
+
+       IT HANDS THE PROCESS NO NEW REACH. REFER permits a rename only between
+       two hierarchies that BOTH grant it, i.e. write root to write root; every
+       one of those is already readable and writable, where copy+unlink was
+       always available. The read-only roots keep from_read() and gain nothing,
+       so no file can be moved INTO or OUT OF them — a webkit that wanted
+       ~/Pictures/cat.png in the vault must still copy it, and cannot touch
+       anything outside the write set at all. */
+    let refer = AccessFs::Refer;
     // ONE source of truth: the vectors below are the tested ones, or the tests
     // are testing a ruleset the kernel never sees.
     let plan = match ruleset_plan(off, &home, &vault, cfg) {
@@ -160,11 +186,16 @@ pub fn enforce(vault: &Path, cfg: &Path) -> Result<RulesetStatus, Box<dyn std::e
         let _ = std::fs::create_dir_all(d);
     }
     let mut created = Ruleset::default()
-        .set_compatibility(landlock::CompatLevel::HardRequirement)
+        .set_compatibility(CompatLevel::HardRequirement)
         .handle_access(AccessFs::from_all(abi))?
+        .set_compatibility(CompatLevel::BestEffort)
+        .handle_access(refer)?
         .create()?
+        .set_compatibility(CompatLevel::HardRequirement)
         .add_rules(path_beneath_rules(&plan.read, AccessFs::from_read(abi)))?
-        .add_rules(path_beneath_rules(&plan.write, AccessFs::from_all(abi)))?;
+        .set_compatibility(CompatLevel::BestEffort)
+        .add_rules(path_beneath_rules(&plan.write, AccessFs::from_all(abi) | refer))?
+        .set_compatibility(CompatLevel::HardRequirement);
     for d in &plan.list_only {
         created = created.add_rule(PathBeneath::new(PathFd::new(d)?, AccessFs::ReadDir))?;
     }
@@ -304,10 +335,48 @@ mod tests {
         }
     }
 
+    /* ENFORCEMENT IS PROCESS STATE, SO EACH ENFORCING TEST GETS A PROCESS.
+       `CONFINED` is a OnceLock and `restrict_self()` cannot be undone, so two
+       tests that both call enforce() inside ONE test binary cannot both be
+       right: whichever thread gets there first owns CONFINED, and `allows()`
+       then answers about the other test's vault. That is not hypothetical —
+       adding the R24 move test below turned `confines_reads_to_vault` red on
+       the box at 3dab929 (17:50: left (.., false, false), right (.., true,
+       false)) while every unsandboxed test stayed green. A #[test] that
+       mutates global state must therefore not share one.
+
+       `reexec_alone` re-runs THIS binary for the single named test: one test,
+       one process, one ruleset, and the child's panic text is inherited so the
+       failure reads the same as an ordinary one. Guarded by an env var, so the
+       child runs the body instead of spawning a grandchild.
+
+       THE SAME TRAP, THE SAME ANSWER, SECOND TIME: `perf::tests::
+       otel_sink_survives_the_sandbox_that_kills_a_path_open` (perf.rs:1094)
+       hit this exact collision earlier and re-execs itself the same way — its
+       comment records the identical left/right mismatch. This helper is that
+       precedent generalised for the two tests in this module; a third caller
+       of enforce() must use one of them, not invent a third copy. */
+    fn reexec_alone(name: &str) -> bool {
+        if std::env::var_os("RUSTIDIAN_LL_ALONE").is_some() {
+            return false; // we ARE the child: run the body
+        }
+        let exe = std::env::current_exe().expect("the test binary's own path");
+        let st = std::process::Command::new(exe)
+            .args([name, "--exact", "--nocapture", "--test-threads=1"])
+            .env("RUSTIDIAN_LL_ALONE", "1")
+            .status()
+            .expect("re-exec the test binary");
+        assert!(st.success(), "{name} FAILED in its own process (its output is above)");
+        true
+    }
+
     /// restrict_self is per-thread: enforce + probe in a child thread, the
     /// unrestricted parent cleans up. Skips on kernels without Landlock.
     #[test]
     fn confines_reads_to_vault() {
+        if reexec_alone("sandbox::tests::confines_reads_to_vault") {
+            return;
+        }
         let home = env_path("HOME").expect("HOME");
         let tmp = std::env::temp_dir().join(format!("rustidian-ll-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
@@ -332,6 +401,79 @@ mod tests {
         match res {
             None => eprintln!("landlock unsupported here — test skipped"),
             Some(r) => assert_eq!(r, (false, false, true, true, false)),
+        }
+    }
+
+    /// true when the running kernel knows REFER (ABI v2, Linux 5.19). Asked as
+    /// a HardRequirement ruleset that is BUILT AND DROPPED — nothing is
+    /// restricted by it, so the caller is as unconfined afterwards as before.
+    fn kernel_has_refer() -> bool {
+        Ruleset::default()
+            .set_compatibility(CompatLevel::HardRequirement)
+            .handle_access(AccessFs::Refer)
+            .and_then(|r| r.create())
+            .is_ok()
+    }
+
+    /// R24 REGRESSION: the vault's own `.trash` is one rename(2) away, and
+    /// under an ABI v1 ruleset the kernel refuses it with EXDEV no matter what
+    /// the rules say — which is how the explorer's Delete shipped broken and
+    /// green (the phase never reached Confirm until 2026-09-16; the unit tests
+    /// below run UNSANDBOXED and cannot see it). So the assertion lives here,
+    /// inside the ruleset, where the failure actually was.
+    ///
+    /// Three outcomes, each distinct on purpose: no landlock -> skip (nothing
+    /// is enforced, nothing is proved); landlock without REFER -> skip, naming
+    /// the kernel, because on such a kernel the move CANNOT be permitted;
+    /// landlock with REFER -> the move must succeed, and an EXDEV here is the
+    /// grant having been dropped from enforce().
+    #[test]
+    fn a_move_into_the_vault_trash_survives_our_own_sandbox() {
+        if reexec_alone("sandbox::tests::a_move_into_the_vault_trash_survives_our_own_sandbox") {
+            return;
+        }
+        let refer = kernel_has_refer();
+        let tmp = std::env::temp_dir().join(format!("rustidian-ll-mv-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("vault/.trash")).unwrap();
+        fs::create_dir_all(tmp.join("vault/sub")).unwrap();
+        let (vault, cfg) = (tmp.join("vault"), tmp.join("cfg.json"));
+        let home = env_path("HOME").expect("HOME");
+        let res = std::thread::spawn(move || {
+            if enforce(&vault, &cfg).is_err() {
+                return None; // kernel without landlock
+            }
+            fs::write(vault.join("N.md"), "x").expect("vault writable");
+            // R24.7 delete: vault root -> .trash. R24.6 move: root -> subfolder.
+            let trashed = fs::rename(vault.join("N.md"), vault.join(".trash/N.md"));
+            fs::write(vault.join("M.md"), "y").expect("vault writable");
+            let moved = fs::rename(vault.join("M.md"), vault.join("sub/M.md"));
+            // and the confinement is UNCHANGED: REFER may not carry a file into
+            // a hierarchy that does not grant it. $HOME is ReadDir-only, so a
+            // rename into it must still be refused — with EACCES, not EXDEV.
+            // (NOT /tmp as the target: /tmp is itself a write root, where a
+            // copy was always permitted, and a move that lands there proves
+            // nothing about the boundary.)
+            let escaped = fs::rename(vault.join(".trash/N.md"), home.join("escaped.md"));
+            Some((
+                trashed.as_ref().err().and_then(|e| e.raw_os_error()),
+                moved.as_ref().err().and_then(|e| e.raw_os_error()),
+                escaped.is_ok(),
+            ))
+        })
+        .join()
+        .unwrap();
+        let _ = fs::remove_dir_all(&tmp);
+        match (res, refer) {
+            (None, _) => eprintln!("landlock unsupported here — test skipped"),
+            (Some(_), false) => eprintln!(
+                "landlock without REFER (kernel < 5.19) — a cross-directory move cannot be permitted on this kernel; test skipped"
+            ),
+            (Some((trashed, moved, escaped)), true) => {
+                assert_eq!(trashed, None, "moving a note into the vault's .trash was refused by our own ruleset (18 = EXDEV = the REFER grant is gone)");
+                assert_eq!(moved, None, "moving a note into a vault subfolder was refused by our own ruleset (18 = EXDEV)");
+                assert!(!escaped, "a note was moved OUT of the vault — REFER widened the confinement");
+            }
         }
     }
 }

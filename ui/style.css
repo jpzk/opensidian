@@ -449,6 +449,12 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
             border-radius: 6px; font-size: 12px; opacity: .92;
             box-shadow: 0 4px 14px var(--shadow-popover) }
 .tabs.drop-strip { outline: 2px solid var(--accent-blue); outline-offset: -2px }
+/* R24.6: the explorer drop target is OUTLINED — the folder row the note lands
+   in, or the whole tree when the destination is the vault root. Same accent
+   and same inset as the tab strip's: one drop-target idiom, two surfaces. */
+.trow.drop-into { outline: 2px solid var(--accent-blue); outline-offset: -2px;
+                  background: var(--bg-surface) }
+#tree.drop-into { outline: 2px solid var(--accent-blue); outline-offset: -2px }
 .pane.drop-edge::after { content: ""; position: absolute; top: 32px; right: 0;
                          bottom: 0; width: 40px; pointer-events: none;
                          background: var(--accent-blue-veil) }
@@ -645,6 +651,31 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 #ul-once   { width: 68px }       /* stock: [709-777] */
 #ul-no     { width: 101px }      /* stock: [796-897] */
 #ulbtns button:focus { background: var(--text-on-accent); box-shadow: 0 0 0 2px var(--border-focus-ring) }
+
+/* R24.7 delete confirmation — deliberately the Update-links card's geometry
+   (same scrim, same 480px card, same button row), so this app maintains ONE
+   modal shape rather than two that drift. Two differences, both on purpose:
+   the DEFAULT is Cancel (the destructive answer must not be one Enter away
+   from a user who did not read the question), and Delete is tinted with the
+   error colour so the irreversible button does not look like the safe one. */
+#delbox { position: fixed; inset: 0; z-index: 70; background: var(--scrim);
+          display: flex; flex-direction: column; align-items: center; box-sizing: border-box;
+          padding: max(0px, min(120px, 100vh - 260px)) 0 8px }
+#delbox[hidden] { display: none }
+#delcard { width: 480px; max-width: 92%; box-sizing: border-box; background: var(--bg-elevated);
+           border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px 16px;
+           box-shadow: 0 8px 30px var(--shadow-modal); color: var(--text-chrome) }
+#deltitle { font-size: 17px; font-weight: 600; margin-bottom: 10px }
+#delq { font-size: 13px; line-height: 1.5 }
+#delsay { font-size: 13px; line-height: 1.5; margin-top: 6px; color: var(--text-quiet) }
+#delbtns { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px }
+#delbtns button { box-sizing: border-box; height: 30px; border: 0; border-radius: 5px;
+                  background: var(--bg-button-plain); color: var(--bg-base); font-size: 13px; font-weight: 500;
+                  cursor: pointer; outline: none; padding: 0 }
+#del-no  { width: 101px }
+#del-yes { width: 101px; background: var(--text-banner-error); color: var(--bg-base) }
+#delbtns button:focus { box-shadow: 0 0 0 2px var(--border-focus-ring) }
+#del-no:focus { background: var(--text-on-accent) }
 
 /* R34.12/R34.13 refusal notice — the dropmsg shape (bottom-right, transient),
    because it says the same kind of thing: what was refused and why. The census
