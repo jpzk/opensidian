@@ -156,8 +156,8 @@ mod tests {
     #[test]
     fn the_slate_bands_are_the_values_source_md_publishes() {
         for (sel, base, sidebar, ribbon) in [
-            (SLATE_DARK, "#1c1c1c", "#282828", "#2e2e2e"),
-            (SLATE_LIGHT, "#ffffff", "#f6f6f6", "#efefef"),
+            (SLATE_DARK, "#1c1c1d", "#282829", "#2e2e2f"),
+            (SLATE_LIGHT, "#fffffe", "#f6f6f7", "#efefee"),
         ] {
             assert_eq!(decl(sel, "--bg-base").as_deref(), Some(base));
             assert_eq!(decl(sel, "--bg-sidebar").as_deref(), Some(sidebar));
@@ -212,13 +212,17 @@ mod tests {
             .lines()
             .filter_map(|l| {
                 let f: Vec<&str> = l.split('|').collect();
-                if f.len() < 6 {
+                // | n | token | L upstream | L shipped | D upstream | D shipped | src |
+                if f.len() < 8 {
                     return None;
                 }
                 f[1].trim().parse::<u32>().ok()?;
                 let cell = |i: usize| f[i].trim().trim_matches('`').trim().to_string();
                 let tok = cell(2);
-                tok.starts_with("--").then(|| (tok, cell(3), cell(4)))
+                // columns 4 and 6 are the SHIPPED values — the ones the
+                // stylesheet must declare. 3 and 5 are their upstream
+                // originals, which check-offsets.sh relates to them.
+                tok.starts_with("--").then(|| (tok, cell(4), cell(6)))
             })
             .collect();
 
@@ -252,6 +256,60 @@ mod tests {
                 "{token} is shipped in a slate block but SOURCE.md accounts for no such token"
             );
         }
+    }
+
+    /* THE WATERMARK, RE-DERIVED IN THE TEST SUITE.
+       docs/palette-slate/SOURCE.md records two numbers per token per mode: the
+       upstream value, and the value we ship — which is the upstream one with
+       its LAST NIBBLE moved exactly one step (f down, everything else up), so
+       the shift stays inside one channel and inside the ±2 pixel tolerance.
+       docs/palette-slate/check-offsets.sh is the runnable form of this rule for
+       a reviewer; this is the same rule inside `cargo test`, so a hex edited in
+       either file alone cannot reach a green gate. Literals with no nibble to
+       move (rgba(), hsl()) must be recorded identical. */
+    #[test]
+    fn every_shipped_slate_value_is_its_upstream_with_the_last_nibble_moved_one_step() {
+        fn step(c: char) -> char {
+            match c {
+                'f' => 'e',
+                c => char::from_digit(c.to_digit(16).unwrap() + 1, 16).unwrap(),
+            }
+        }
+        fn watermark(upstream: &str) -> String {
+            let is_hex = upstream.starts_with('#')
+                && (upstream.len() == 7 || upstream.len() == 9)
+                && upstream[1..].chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase());
+            if !is_hex {
+                return upstream.to_string(); // rgba()/hsl(): nothing to move
+            }
+            let (head, last) = upstream.split_at(upstream.len() - 1);
+            format!("{head}{}", step(last.chars().next().unwrap()))
+        }
+
+        let mut checked = 0;
+        for line in SOURCE_MD.lines() {
+            let f: Vec<&str> = line.split('|').collect();
+            if f.len() < 8 {
+                continue;
+            }
+            if f[1].trim().parse::<u32>().is_err() {
+                continue;
+            }
+            let cell = |i: usize| f[i].trim().trim_matches('`').trim().to_string();
+            let token = cell(2);
+            if !token.starts_with("--") {
+                continue;
+            }
+            for (mode, up, shipped) in [("light", cell(3), cell(4)), ("dark", cell(5), cell(6))] {
+                assert_eq!(
+                    watermark(&up),
+                    shipped,
+                    "{token} {mode}: shipped {shipped} is not upstream {up} with the last nibble moved one step"
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 70, "expected 35 tokens x 2 modes of watermark pairs in SOURCE.md");
     }
 
     /* LICENSING: the upstream repo ships no LICENSE, so nothing of it may be
