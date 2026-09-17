@@ -553,6 +553,16 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .ctxmenu div { padding: 6px 14px; cursor: pointer; font-size: 13px;
                color: var(--text-chrome); white-space: nowrap }
 .ctxmenu div:hover { background: var(--border) }
+/* bmmenu (docs/recon-bmmenu/README.md): the bookmark-row menu has separators and
+   rows this tree cannot back. .sep is a real child so the census reads "---" where
+   stock draws a rule; .dis is the settings rows' disabled treatment (R30 note in
+   main.js, "stock has no disabled style") applied to a menu row: muted, inert,
+   reason in the hover title. */
+.ctxmenu div.sep { padding: 0; height: 1px; margin: 5px 0; background: var(--border); cursor: default; pointer-events: none }
+.ctxmenu div.dis { color: var(--text-chrome-muted); cursor: default; pointer-events: none }
+.ctxmenu div.dis:hover { background: transparent }
+/* "Reveal file in navigation": stock puts a focus ring on the explorer row, no selection (recon 10-reveal.png) */
+.trow.revealed { outline: 2px solid var(--border-focus-ring); outline-offset: -2px }
 /* M8 local graph (R7.5): per-pane settings gear + popover */
 .lggear { position: absolute; top: 8px; right: 10px; z-index: 7;
           background: var(--bg-surface); color: var(--text-chrome); border: 0; border-radius: 4px;

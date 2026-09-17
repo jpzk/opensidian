@@ -533,6 +533,10 @@ $("rdiv").onmousedown = e => {             // resizable divider (clamped 140-600
 const SPANES = { files: "pane-files", search: "pane-search", bm: "pane-bm" };
 function setPane(p) {
   sidePane = p;
+  if (revealInfo) {                        // bmmenu: the reveal ring is a pointer, not a selection — a pane switch drops it
+    revealInfo = "";
+    document.querySelectorAll("#tree .trow.revealed").forEach(r => r.classList.remove("revealed"));
+  }
   for (const [k, id] of Object.entries(SPANES)) {
     $(id).hidden = k !== p;
     $("stab-" + k).classList.toggle("active", k === p);
@@ -601,6 +605,7 @@ async function runSearch() {
    N counts the .bmrow nodes actually PAINTED in #bmlist, so an assertion on
    it fails if renderBm() stops repainting even while bmCache is correct. */
 let bmCache = [];
+let revealInfo = "";                      // bmmenu: [bmrv:<name>] after "Reveal file in navigation" (bmReveal), cleared by setPane
 const bmRows = () => document.querySelectorAll("#bmlist .bmrow").length;
 /* R20.6: the LABELS the user can actually read, taken from the painted rows in
    paint order. A count alone passes a renderBm() that paints the right NUMBER of
@@ -614,6 +619,7 @@ function renderBm() {
   if (!bmCache.length) {
     const d = document.createElement("div");
     d.className = "sempty"; d.textContent = "No bookmarks.";
+    d.oncontextmenu = e => bmEmptyMenu(e);   // bmmenu: stock's one-item "New group" menu, disabled here
     box.appendChild(d);
   }
   for (const nm of bmCache) {              // insertion order, like Obsidian
@@ -626,8 +632,83 @@ function renderBm() {
     row.appendChild(s);
     row.append(nm.split("/").pop());
     row.onclick = () => openInTab(nm);
+    row.oncontextmenu = e => bmRowMenu(e, nm);   // bmmenu: stock 1.13.7's bookmark-row menu (docs/recon-bmmenu/README.md)
     box.appendChild(row);
   }
+  updateTitle();
+}
+/* [bmg:<row centre x>,<first row centre y>,<row pitch>] — the PAINTED geometry of the
+   bookmark rows, so a driver right-clicks a row it measured, not a y it guessed
+   (the same idea as [mg:] for menus). Emitted only while the pane shows rows. */
+function bmGeom() {
+  const k = document.querySelectorAll("#bmlist .bmrow");
+  if (!k.length) return "";
+  const a = k[0].getBoundingClientRect();
+  const pitch = k.length > 1 ? k[1].getBoundingClientRect().top - a.top : a.height;
+  return " [bmg:" + Math.round(a.left + a.width / 2) + "," + Math.round(a.top + a.height / 2) + "," + Math.round(pitch) + "]";
+}
+/* ---------- bmmenu: the bookmark-row context menu, stock 1.13.7's list ----------
+   THE SPEC is docs/recon-bmmenu/README.md — seven items, three separators, measured
+   on the box against /srv/reference/obsidian.AppImage (sha256 e0d8e0a6…72663). Not
+   one label below is from memory; the README's WIRED / NOT WIRED section names the
+   function behind each row. Rows stock has that this tree has no backing for are
+   shown DISABLED the way the settings rows are (R30 note below SDIS_TITLE: .dis +
+   aria-disabled + pointer-events:none, a stated reason in the hover title) — stock
+   itself has no disabled style to copy, and inventing a second one would be worse.
+   Separators are real children (div.sep) so the census reads the list EXACTLY as
+   the README writes it: [menu:…|Open in new window|---|Rename|…]. */
+function bmMenuItems(m) {
+  const item = (label, fn, why) => {       // why != null -> disabled, with the reason as the tooltip
+    const d = document.createElement("div");
+    d.textContent = label;
+    if (why != null) { d.className = "dis"; d.setAttribute("aria-disabled", "true"); d.title = why; }
+    else { d.onmousedown = ev => ev.stopPropagation(); d.onclick = () => { closeMenu(); fn(); }; }
+    m.appendChild(d);
+  };
+  const sep = () => { const d = document.createElement("div"); d.className = "sep"; m.appendChild(d); };
+  return { item, sep };
+}
+function bmRowMenu(e, nm) {                // right-click a .bmrow -> stock's file-bookmark menu
+  e.preventDefault();
+  e.stopPropagation();
+  closeMenu();
+  const m = document.createElement("div");
+  m.className = "ctxmenu";
+  const { item, sep } = bmMenuItems(m);
+  item("Open in new tab",   () => openInTab(nm));                          // WIRED: openInTab — the row's own click (R9.5); an already-open note is activated, not duplicated
+  item("Open to the right", () => splitWith(fg(), "row", mkTab(nm)));      // WIRED: splitWith — the verb behind the tab menu's "Split right" (M7/R6.2), carrying a fresh tab of this note
+  item("Open in new window", null, "Single-window app: there is no second window to open into");   // NOT WIRED
+  sep();
+  item("Rename",  null, "Bookmarks are note names on disk (.rustidian-bookmarks); there is no per-bookmark title to rename");   // NOT WIRED
+  item("Edit...", null, "Stock's Edit bookmark modal edits a title and a group; this tree has neither");                        // NOT WIRED
+  sep();
+  item("Reveal file in navigation", () => bmReveal(nm));                   // WIRED: bmReveal — setPane("files") + the explorer row's focus ring (R9.3 pane switch, treeRows)
+  sep();
+  item("Remove", () => { if (bmCache.includes(nm)) toggleBm(nm); });       // WIRED: toggleBm — the same toggle the explorer-row / tab menus use (R9.4 / R20.4); guarded so it can only REMOVE
+  placeMenu(m, e.clientX, e.clientY);      // R22: viewport-clamped by measured size — the same seam as noteMenu/tabMenu
+}
+function bmEmptyMenu(e) {                  // right-click the empty state -> stock's one-item "New group" menu
+  e.preventDefault();
+  e.stopPropagation();
+  closeMenu();
+  const m = document.createElement("div");
+  m.className = "ctxmenu";
+  bmMenuItems(m).item("New group", null, "Bookmark groups are not implemented; the list is flat");   // NOT WIRED (recon: 17-emptystate-menu.png)
+  placeMenu(m, e.clientX, e.clientY);
+}
+/* Reveal file in navigation: stock switches the left sidebar to Files and puts the
+   focus ring on that note's row — no tab opens, the editor is untouched (recon
+   10-reveal.png). The ring is .revealed on the explorer row (one at a time); the
+   census publishes [bmrv:<name>] so a driver asserts the HANDLER ran, not merely
+   that the Files pane is showing (it was showing before the click too). Cleared
+   by the next pane switch (setPane) — the ring is a pointer, not a selection. */
+
+function bmReveal(nm) {
+  setPane("files");
+  document.querySelectorAll("#tree .trow.revealed").forEach(r => r.classList.remove("revealed"));
+  const r = treeRows.get(nm);
+  if (r) { r.classList.add("revealed"); r.scrollIntoView({ block: "nearest" }); }
+  revealInfo = r ? nm.replace(/[|\]:]/g, "") : "";
   updateTitle();
 }
 async function refreshBm() { bmCache = await inv("list_bookmarks"); renderBm(); }
@@ -1205,11 +1286,13 @@ function updateTitle() {          // pane/focus census in the window title (head
             " [armed:" + groups().filter(h => h.saveT).length + "]" +   // F2: groups holding a live save timer
             menuTok() +
             (navInfo ? " [" + navInfo + "]" : "") +
+            (revealInfo ? " [bmrv:" + revealInfo + "]" : "") +      // bmmenu: "Reveal file in navigation" ran (bmReveal) — not merely "the Files pane is showing"
             (acItems.length ? " [ac:" + acKind + ":" + acItems.length + "]" : "") +
             " [pane:" + sidePane + "]" +
             (sidePane === "search" && searchCount >= 0 ? " [sr:" + searchCount + "]" : "") +
             (sidePane === "bm" ? " [bm:" + bmRows() + "]" +          // RENDERED rows, not bmCache.length:
               " [bmn:" + bmNames() + "]" +                          // and their painted LABELS, in paint order
+              bmGeom() +                                            // bmmenu: [bmg:x,y,pitch] of the painted rows — a driver right-clicks what it measured
               (bmRows() === bmCache.length ? "" :                    // the smoke assertion must prove the PANE
                " [bmdesync:" + bmCache.length + "/" + bmRows() + "]") : "");   // repainted, not just the model
 
@@ -1356,17 +1439,28 @@ let menuEl = null;
 // placeMenu()/closeMenu() publish the live item labels as [menu:a|b|c] instead.
 function menuTok() {   // [menu:<labels>] + [mg:<left>,<first row centre y>,<row pitch>] — MEASURED, so a
   if (!menuEl) return "";                      // driver clicks item i at (left+20, centre + pitch*i) with no
-  const k = menuEl.children, lbl = [...k].map(d => d.textContent).join("|");   // hardcoded padding/line-height guess
+  // bmmenu: a separator child (div.sep) reads as "---", so the census spells the list the way
+  // docs/recon-bmmenu/README.md does; no other menu has one, so their tokens are unchanged.
+  const k = menuEl.children, lbl = [...k].map(d => d.classList.contains("sep") ? "---" : d.textContent).join("|");   // hardcoded padding/line-height guess
   // [mt:<kind>:<label>] — WHICH tab this menu belongs to (R20.8). Without it an assertion like
   // "a graph tab offers no Bookmark" rests on the driver's guess that x=380 hit the gg tab: hit
   // the wrong tab and the claim is about a tab nobody named. tabMenu stamps the target it was
   // handed by the browser's hit test, so the census reports the tab that was ACTUALLY clicked.
   const mt = menuEl.dataset.mt ? " [mt:" + menuEl.dataset.mt + "]" : "";
-  if (!k.length) return " [menu:" + lbl + "]" + mt;
+  // bmmenu: [mdis:i|j] = 1-based indices (in [menu:] order) of the rows shown DISABLED —
+  // the label list alone cannot tell a wired row from a stated-reason stub.
+  const dis = [...k].map((d, i) => d.classList.contains("dis") ? i + 1 : 0).filter(Boolean);
+  const md = dis.length ? " [mdis:" + dis.join("|") + "]" : "";
+  if (!k.length) return " [menu:" + lbl + "]" + mt + md;
   const a = k[0].getBoundingClientRect();
   const pitch = k.length > 1 ? k[1].getBoundingClientRect().top - a.top : a.height;
+  // bmmenu: with separators the rows are NOT one pitch apart, so a menu that has one also
+  // publishes every child's centre y — [mgy:y1|y2|…] in [menu:] order (separators included, so
+  // the index a driver found in [menu:] is the index it clicks). menu_click prefers it when present.
+  const mgy = [...k].some(d => d.classList.contains("sep"))
+    ? " [mgy:" + [...k].map(d => { const b = d.getBoundingClientRect(); return Math.round(b.top + b.height / 2); }).join("|") + "]" : "";
   return " [menu:" + lbl + "] [mg:" + Math.round(menuEl.getBoundingClientRect().left) + "," +
-         Math.round(a.top + a.height / 2) + "," + Math.round(pitch) + "]" + mt;
+         Math.round(a.top + a.height / 2) + "," + Math.round(pitch) + "]" + mt + md + mgy;
 }
 function closeMenu() { if (menuEl) { menuEl.remove(); menuEl = null; updateTitle(); } }
 /* R22: a context menu is position:fixed — clamp it to the viewport by its
@@ -3374,6 +3468,7 @@ document.addEventListener("keydown", e => {
   if (ulPending) return;                   // R34.6: the Update links prompt owns the keyboard — its own handler answers it
   if (titleEditing()) return;              // R34.1: so does the title box (a filename contains chords)
   if (e.key === "Escape") {
+    if (menuEl) { closeMenu(); return; }   // bmmenu: stock closes an open context menu on Escape (recon 15-escape.png); the guards above keep settings' own Escape (R14) first
     if (modalKind) { closeModal(); return; }
     if (!$("rnbox").hidden) { $("rnbox").hidden = true; updateTitle(); return; }
     /* R26.14 FROM THE NOTE. The bar's own two inputs close it in their own
