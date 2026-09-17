@@ -39,6 +39,7 @@
   --bg-base: #1e1e2e;
   --bg-sidebar: #181825;
   --bg-ribbon: #11111b;
+  --graph-bg: var(--bg-ribbon);   /* the graph canvas (2D fill + WebGL clear) — the pane behind it already paints --bg-ribbon, so the alias keeps the two from drifting; a palette that wants a distinct graph background overrides this ONE row */
   --bg-surface: #313244;
   --bg-elevated: #26263a;
   --bg-banner-error: #45283c;
@@ -98,6 +99,7 @@
   --bg-base: #ffffff;
   --bg-sidebar: #f6f6f6;
   --bg-ribbon: #f6f6f6;
+  --graph-bg: var(--bg-ribbon);   /* graph canvas — see :root */
   --bg-surface: #e5e5e5;
   --bg-elevated: #fcfcfc;
   --bg-banner-error: #fdeaec;
@@ -170,6 +172,7 @@
   --bg-base: #0d0f31;            /* (upstream) 1984 Background Color */
   --bg-sidebar: #0a0b26;         /* (derived) bg-base darkened 25% */
   --bg-ribbon: #07081c;          /* (derived) bg-base darkened 45% */
+  --graph-bg: var(--bg-ribbon);   /* graph canvas — see :root */
   --bg-surface: #1b1f57;         /* (derived) bg-base lifted toward the blue */
   --bg-elevated: #13163f;        /* (derived) bg-base lifted 15% */
   --bg-banner-error: #3d0a2c;    /* (derived) the upstream magenta over bg-base */
@@ -216,6 +219,7 @@
   --bg-base: #e4e5f5;            /* (upstream) 1984-light Background Color */
   --bg-sidebar: #d6d7ec;         /* (derived) bg-base darkened 8% */
   --bg-ribbon: #c8cae4;          /* (derived) bg-base darkened 14% */
+  --graph-bg: var(--bg-ribbon);   /* graph canvas — see :root */
   --bg-surface: #c2c4e1;         /* (derived) bg-base darkened 17% */
   --bg-elevated: #f1f2fb;        /* (derived) bg-base lightened 5% */
   --bg-banner-error: #ffe3f4;    /* (derived) the upstream magenta over bg-base */

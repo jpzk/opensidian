@@ -1189,6 +1189,16 @@ function updateTitle() {          // pane/focus census in the window title (head
     if (fl.length) md += " [fonts:" + fl.join("|") + "]"; }
   let gg = ft && ft.kind === "gg" ? " [gg]" : "";  // R9.7: global graph tab focused
   if (gg) { const pt = posTok(fg()); if (pt) gg += " [ggpos:" + pt + "]"; }
+  // GRAPH THEME census (goal graphtheme). [graphbg:]/[graphnode:] are a FRESH read of the
+  // stylesheet off the root element — deliberately NOT the graph's own cached palette: the
+  // defect under test is a cache that outlives a palette switch, and a token read from that
+  // cache would agree with the stale pixels and pass. The phase compares the pixels the graph
+  // painted against what the stylesheet says it should have painted. [gl:] names the draw path
+  // the same shot came from (gl = ui/graph-gl.js, 2d = the Canvas 2D fallback).
+  if (gg) {
+    const cs = getComputedStyle(document.documentElement), tokv = n => cs.getPropertyValue(n).trim().toLowerCase();
+    gg += " [gl:" + (fg().graphRenderer || "none") + "] [graphbg:" + tokv("--graph-bg") + "] [graphnode:" + tokv("--accent-blue") + "]";
+  }
   const tokq = s => String(s == null ? "" : s).replace(/[[\]|]/g, "").slice(0, 80);
   const modal = modalKind ? " [modal:" + modalKind + "]" +
                             (mdNew ? " [mdnew:" + tokq(mdNew) + "]" : "")   // C4: the create-this-note affordance is on screen
@@ -3753,7 +3763,7 @@ const graphRendererPref = () => graphPrefP || (graphPrefP = inv("graph_renderer_
   return { renderer: r === "gl" || r === "2d" ? r : null, loseCtx: !!(p && p.lose_ctx) };
 }));
 function showEditor(g) {
-  g.graphOn = false; g.graphRefresh = null; g.graphRc = null; cancelAnimationFrame(g.sim);
+  g.graphOn = false; g.graphRefresh = null; g.graphRc = null; cancelAnimationFrame(g.sim); g.graphRenderer = null;
   if (g.ro) { g.ro.disconnect(); g.ro = null; }
   perf.flush();                    // ship buffered graph_frame samples of the closed sim
   g.graph.hidden = true; if (g.glcv) g.glcv.hidden = true;
@@ -3808,6 +3818,7 @@ async function startGraph(g, cfg) {
   }
   const gpu = glr ? { gpu_vendor: glr.info.vendor, gpu_renderer: glr.info.renderer } : { gpu_vendor: "", gpu_renderer: "" };
   cv.classList.toggle("gl-on", !!glr); if (g.glcv) g.glcv.hidden = !glr;
+  g.graphRenderer = glr ? "gl" : "2d";   // census [gl:] — which draw path painted the shot
   perf.mark("graph_renderer", rT0, { renderer: glr ? "gl" : "2d", reason, webgl: glr ? glr.info.webgl : 0, ...gpu });
   const gr = await fetchP;
   // R16 GRAPH FIT (stock-faithful, docs/requirements.md R16): the sim runs in
@@ -4249,6 +4260,7 @@ async function startGraph(g, cfg) {
   g.glLost = () => {
     if (g.simGen !== gen || !glr) return;
     glr = null; cv.classList.remove("gl-on"); if (g.glcv) g.glcv.hidden = true;
+    g.graphRenderer = "2d";
     perf.mark("graph_renderer", perf.now(), { renderer: "2d", reason: "contextlost", webgl: 0, ...gpu });
     redraw();
   };
