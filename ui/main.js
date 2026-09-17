@@ -3765,6 +3765,7 @@ const graphRendererPref = () => graphPrefP || (graphPrefP = inv("graph_renderer_
 function showEditor(g) {
   g.graphOn = false; g.graphRefresh = null; g.graphRc = null; cancelAnimationFrame(g.sim); g.graphRenderer = null;
   if (g.ro) { g.ro.disconnect(); g.ro = null; }
+  if (g.attrObs) { g.attrObs.disconnect(); g.attrObs = null; }
   perf.flush();                    // ship buffered graph_frame samples of the closed sim
   g.graph.hidden = true; if (g.glcv) g.glcv.hidden = true;
   g.lggear.hidden = true; g.lgpop.hidden = true;
@@ -3803,6 +3804,40 @@ async function startGraph(g, cfg) {
   // cached on the group (g.glr); a lost context gets a fresh canvas on the next open.
   // Created BEFORE the fetch resolves so context + shader setup never lands in the first sim frame.
   const pref = await prefP, rT0 = perf.now();
+  // #rrggbb / #rgb -> [r,g,b] in 0..1 for the GL instance arrays and the GL clear. The 2D path
+  // wants the string itself, so both come from the ONE value read out of the token block.
+  const hex = h => {
+    const s = h.trim(), x = s.length < 7 ? "#" + s[1] + s[1] + s[2] + s[2] + s[3] + s[3] : s;
+    return [parseInt(x.slice(1, 3), 16) / 255, parseInt(x.slice(3, 5), 16) / 255, parseInt(x.slice(5, 7), 16) / 255];
+  };
+  // GRAPH PALETTE. The graph is a <canvas>: it cannot inherit a colour the way every
+  // other surface does, it has to ASK for one. It used to hold four hex literals — a
+  // second palette that no theme could reach, so a light theme would have left the
+  // graph painting dark-theme blue on white. These read the SAME tokens the stylesheet
+  // defines, off documentElement, so there is exactly one definition of each colour.
+  // bg is the fifth: --graph-bg, the canvas background on BOTH draw paths (the 2D fill
+  // and the WebGL clear colour) — ui/graph-gl.js holds no colour of its own.
+  //
+  // CACHED PER THEME x PALETTE, not per node: getComputedStyle forces a style resolution
+  // and draw() runs at up to 60 Hz over every node, so the lookup happens once per draw()
+  // and only re-reads when a root attribute actually changes (R13 graph_draw budget).
+  // THE KEY NAMES BOTH AXES. It used to be data-theme alone (goal graphtheme, D1): a
+  // palette switch with the mode held kept the previous palette's colours until the next
+  // mode flip, because nothing in the key had changed. Every attribute the stylesheet
+  // selects a token block on is in the key, or the cache is a second, stale palette.
+  // RGB is keyed by the colour STRING, so it is rebuilt with the palette — a stale key
+  // would hand the GL path `undefined` and paint nothing.
+  const PAL_VAR = { hi: "--accent-yellow", ctr: "--accent-green", node: "--accent-blue", edge: "--border", bg: "--graph-bg" };
+  let pal = null, palKey = null, RGB = {};
+  const palette = () => {
+    const ds = document.documentElement.dataset, key = (ds.theme || "") + "|" + (ds.palette || "");
+    if (pal && palKey === key) return pal;
+    const cs = getComputedStyle(document.documentElement), p = {};
+    RGB = {};
+    for (const k in PAL_VAR) { const v = cs.getPropertyValue(PAL_VAR[k]).trim(); p[k] = v; RGB[v] = hex(v); }
+    palKey = key; pal = p;
+    return p;
+  };
   let glr = null, reason = "default";
   if (pref.renderer === "2d") reason = "forced:2d";
   else if (!window.GraphGL) reason = "no-module";
@@ -3811,7 +3846,7 @@ async function startGraph(g, cfg) {
       if (g.glcv) g.glcv.remove();
       g.glcv = document.createElement("canvas"); g.glcv.className = "graphgl";
       cv.parentNode.insertBefore(g.glcv, cv);
-      g.glr = GraphGL.create(g.glcv, () => { if (g.glLost) g.glLost(); });
+      g.glr = GraphGL.create(g.glcv, () => { if (g.glLost) g.glLost(); }, RGB[palette().bg]);   // the warm-up frame clears to the token too
     }
     glr = g.glr;
     if (!glr) reason = "no-webgl";
@@ -4102,40 +4137,16 @@ async function startGraph(g, cfg) {
   // graph-webgl: with glr the SAME per-node style decisions feed instance arrays
   // (x y r ring rgba) and an edge instance array (x0 y0 x1 y1 rgba) for graph-gl.js; cv then
   // carries only the labels. Arrays grow on demand and are reused across frames.
-  // #rrggbb / #rgb -> [r,g,b] in 0..1 for the GL instance arrays. The 2D path wants
-  // the string itself, so both come from the ONE value read out of the token block.
-  const hex = h => {
-    const s = h.trim(), x = s.length < 7 ? "#" + s[1] + s[1] + s[2] + s[2] + s[3] + s[3] : s;
-    return [parseInt(x.slice(1, 3), 16) / 255, parseInt(x.slice(3, 5), 16) / 255, parseInt(x.slice(5, 7), 16) / 255];
-  };
-  // GRAPH PALETTE. The graph is a <canvas>: it cannot inherit a colour the way every
-  // other surface does, it has to ASK for one. It used to hold four hex literals — a
-  // second palette that no theme could reach, so a light theme would have left the
-  // graph painting dark-theme blue on white. These read the SAME tokens the stylesheet
-  // defines, off documentElement, so there is exactly one definition of each colour.
-  //
-  // CACHED PER THEME, not per node: getComputedStyle forces a style resolution and
-  // draw() runs at up to 60 Hz over every node, so the lookup happens once per draw()
-  // and only re-reads when the theme attribute actually changes (R13 graph_draw budget).
-  // RGB is keyed by the colour STRING, so it is rebuilt with the palette — a stale key
-  // would hand the GL path `undefined` and paint nothing.
-  const PAL_VAR = { hi: "--accent-yellow", ctr: "--accent-green", node: "--accent-blue", edge: "--border" };
-  let pal = null, palKey = null, RGB = {};
-  const palette = () => {
-    const key = document.documentElement.dataset.theme || "";
-    if (pal && palKey === key) return pal;
-    const cs = getComputedStyle(document.documentElement), p = {};
-    RGB = {};
-    for (const k in PAL_VAR) { const v = cs.getPropertyValue(PAL_VAR[k]).trim(); p[k] = v; RGB[v] = hex(v); }
-    palKey = key; pal = p;
-    return p;
-  };
   let nArr = new Float32Array(0), eArr = new Float32Array(0);
   function draw() {
     const dT0 = perf.now();
     const P = palette();               // one token read per frame, none per node
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, cv.width, cv.height);
+    // background: the 2D path PAINTS --graph-bg (a transparent canvas would show the pane behind it,
+    // which happens to be the same token today and is not a contract); over WebGL the 2D canvas only
+    // carries labels, so it stays clear and the GL clear colour below is the one that paints.
+    if (glr) ctx.clearRect(0, 0, cv.width, cv.height);
+    else { ctx.globalAlpha = 1; ctx.fillStyle = P.bg; ctx.fillRect(0, 0, cv.width, cv.height); }
     ctx.setTransform(view.scale, 0, 0, view.scale, view.tx, view.ty);
     // hover: hovered node + its edges/neighbors lit accent, rest faded
     const litE = ([i, j]) => hov < 0 || i === hov || j === hov;
@@ -4193,7 +4204,7 @@ async function startGraph(g, cfg) {
         }
         if (labels) { ctx.globalAlpha = gp.a; ctx.fillStyle = gp.col; for (const i of gp.idx) { const p = N[i]; ctx.fillText(p.n, p.x, p.y - p.r - gp.dr - 4); } }
       }
-      glr.draw(cv.width, cv.height, view, nArr, nc, eArr, ec);
+      glr.draw(cv.width, cv.height, view, nArr, nc, eArr, ec, RGB[P.bg]);   // bg: the clear colour, from the token like every other colour here
     } else for (const gp of groups.values()) {
       ctx.globalAlpha = gp.a; ctx.beginPath();
       for (const i of gp.idx) { const p = N[i], r = p.r + gp.dr; ctx.moveTo(p.x + r, p.y); ctx.arc(p.x, p.y, r, 0, 7); }
@@ -4256,6 +4267,19 @@ async function startGraph(g, cfg) {
     g.sim = requestAnimationFrame(step);
   };
   const redraw = () => { dirty = true; wake(); };
+  // THEME / PALETTE -> REPAINT (goal graphtheme). The loop stops once the sim is quiet (CPU -> 0),
+  // so a settled graph paints nothing until something wakes it — a mode or palette switch used to
+  // leave the old colours on screen until the next hover or pan, whatever the cache did. The graph
+  // watches the two root attributes its tokens are selected by and redraws ONCE per change: no
+  // reheat, the layout is untouched, only the colours are re-read (palette() sees the new key).
+  // Torn down with the sim, the way g.ro is: a retired sim must not paint over its successor.
+  if (g.attrObs) g.attrObs.disconnect();
+  const obs = new MutationObserver(() => {   // `obs`, not g.attrObs: by the time a retired sim's callback runs, g.attrObs is its successor's
+    if (g.simGen !== gen || !g.graphOn) { obs.disconnect(); if (g.attrObs === obs) g.attrObs = null; return; }
+    redraw();
+  });
+  obs.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "data-palette"] });
+  g.attrObs = obs;
   // graph-webgl: context lost -> this sim swaps to the 2D path for good (a later open gets a fresh gl canvas)
   g.glLost = () => {
     if (g.simGen !== gen || !glr) return;
