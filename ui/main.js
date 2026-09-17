@@ -1081,6 +1081,22 @@ function updateTitle() {          // pane/focus census in the window title (head
      would read one higher here and break every positional index silently. */
   if (titling) md += " [te:" + titling.el.textContent.replace(/[[\]|/]/g, "") +
                      "/" + (titling.g.lp ? titling.g.lp.children.length : -1) + "]";
+  /* R34.18 — the two surfaces, MEASURED, not claimed (see tpType above).
+     [tty:<rendered>~<editing>], each side
+       font-size/weight/letter-spacing/line-height/colour/family-hash/family-head
+     read with getComputedStyle from the live DOM: the ::before that paints the
+     rendered title, and the .titleedit that stands in for it while renaming.
+     [lpc:] is the scroller's child-list signature (R34.15), published open AND
+     closed so the phase can diff the two instead of trusting the comment.
+     [tpf:] is --font-text-size as the document actually resolves it, which is
+     what makes the size-independence re-run readable in the log. */
+  if (typeProbe && md) {
+    if (titling) md += " [tty:" + tpType(getComputedStyle(titling.host, "::before")) +
+                       "~" + tpType(getComputedStyle(titling.el)) + "]";
+    if (fg() && fg().lp) md += " [lpc:" + tpKids(fg().lp) + "]";
+    md += " [tpf:" + getComputedStyle(document.documentElement).getPropertyValue("--font-text-size").trim() +
+          "/" + (tpPerturb || "-") + "]";
+  }
   // R17: renderer/token-map self test. A failure names its FIRST bad case
   // (Ed.edtWhy) so the smoke log says what broke, not just how many.
   if (edtBad >= 0) md += " [edt:" + (edtBad ? "fail" + edtBad + ":" + (Ed.edtWhy || "?") : "ok") + "]";
@@ -1171,9 +1187,13 @@ function updateTitle() {          // pane/focus census in the window title (head
   // the assertion of record in the phase; this token is how it knows WHICH
   // theme the pixels it just sampled are supposed to be.
   const themeTok = " [theme:" + (document.documentElement.getAttribute("data-theme") || "unset") + "]";
+  // PALETTE census, read off the DOM for the same reason: "default" here means
+  // the attribute is ABSENT, which is the state the default palette IS. A probe
+  // cannot pass by setting a variable.
+  const palTok = " [palette:" + (document.documentElement.getAttribute("data-palette") || "default") + "]";
   let t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
-            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + lg + md + gg + modal +
+            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + palTok + lg + md + gg + modal +
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) +
             (rightOpen ? ":" + rTab : "") + "]" +
             (rightOpen && rpInfo ? " [rp:" + rpInfo + "]" : "") +
@@ -1740,6 +1760,57 @@ function setInlineTitle(v, name) {
 let titling = null;          // {g, host, wrap, el, name, orig} while the title is being edited
 const titleEditing = () => !!titling;
 
+/* ---------- R34.18 TYPE PROBE (test-only, RUSTIDIAN_TYPEPROBE=1) ------------
+   The operator's report was "renaming the h1 changes the font-size/decoration",
+   and ui/style.css answered it with a COMMENT ("repeats the ::before's type
+   declarations verbatim"). A comment is what produced the bug. So the two
+   surfaces are made MEASURABLE instead: this probe reads getComputedStyle off
+   the LIVE DOM — the ::before that draws the rendered title, and the .titleedit
+   that replaces it — and publishes both in the census, so a phase compares the
+   two surfaces to EACH OTHER and never to a pixel literal.
+   Everything here is inert unless the backend hook says the env var is set:
+   no pre-existing phase sees a changed census, and a shipped build has no
+   perturbation chords. */
+let typeProbe = false;
+inv("type_probe").then(v => { typeProbe = !!v; if (typeProbe) tpInstall(); }).catch(() => {});
+let tpPerturb = "";          // the negative control's forced font-size on .titleedit ("" = none)
+const tpHash = s => {        // FNV-1a/32 — font stacks are 250+ chars; the census compares
+  let h = 2166136261;        // the HASH and prints the head, so "same family" is a measurement
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0).toString(16).padStart(8, "0");
+};
+const tpFam = s => s.split(",")[0].replace(/["']/g, "").trim().slice(0, 16).replace(/[[\]|/~ ]/g, "_");
+const tpType = cs => [cs.fontSize, cs.fontWeight, cs.letterSpacing, cs.lineHeight,
+                      cs.color.replace(/\s+/g, ""), tpHash(cs.fontFamily), tpFam(cs.fontFamily)].join("/");
+/* the scroller's child list as a STRING, so R34.15 is proved byte-for-byte
+   instead of by a count: one "<tag>.<class>" per child, plus the length. A
+   caret surface that became a row changes this token; a count alone would not
+   notice a swap. Published whenever a live-preview scroller exists, so the
+   phase can read it with the editor CLOSED and OPEN and diff the two. */
+const tpKids = lp => {
+  if (!lp) return "-";
+  const sig = [...lp.children].map(c => c.tagName.toLowerCase() + "." +
+                (c.className || "-").toString().replace(/[[\]|/~ ]/g, "_")).join(",");
+  return lp.children.length + ":" + tpHash(sig) + ":" + sig.slice(0, 90);
+};
+function tpInstall() {       // the three chords, capture-phase so a focused contenteditable cannot eat them
+  window.addEventListener("keydown", e => {
+    if (!(e.ctrlKey && e.altKey && e.shiftKey)) return;
+    if (e.key === "1" || e.code === "Digit1") {          // PERTURB the caret surface's type
+      tpPerturb = "31px";
+      if (titling) titling.el.style.fontSize = tpPerturb;
+    } else if (e.key === "2" || e.code === "Digit2") {   // RESTORE it
+      tpPerturb = "";
+      if (titling) titling.el.style.fontSize = "";
+    } else if (e.key === "3" || e.code === "Digit3") {   // move --font-text-size off its default
+      const r = document.documentElement;
+      r.style.setProperty("--font-text-size", r.style.getPropertyValue("--font-text-size") ? "" : "22px");
+    } else return;
+    e.preventDefault(); e.stopPropagation();
+    updateTitle();
+  }, true);
+}
+
 /* The ::before's box in CLIENT coordinates (a pseudo-element has no node, so it
    cannot be measured with getBoundingClientRect — it is derived instead):
    top    = the scroller's content-box top, minus how far it has scrolled;
@@ -1775,6 +1846,7 @@ function openTitleEdit(g, host, x, y) {
   el.className = "titleedit";
   el.contentEditable = "plaintext-only";     // one line of text, no markup, no paste-in HTML
   el.spellcheck = false;
+  if (tpPerturb) el.style.fontSize = tpPerturb;   // R34.18 negative control, armed before this open
   el.textContent = titleOf(name);
   wrap.appendChild(el);
   wrap.style.top = (b.top - g.content.getBoundingClientRect().top) + "px";
@@ -2941,6 +3013,61 @@ async function bootTheme() {
   const st = await inv("get_theme").catch(() => null);
   if (st === "dark" || st === "light") { themeStored = true; applyTheme(st); }
 }
+/* ---------- PALETTE: the SECOND axis, on the SAME root -------------------
+   Mode (above) answers "light or dark". Palette answers "light or dark OF
+   WHAT". They are independent and they compose:
+
+       <html data-palette="1984" data-theme="light">
+
+   and ui/style.css has a block per (palette, mode) pair, so flipping either
+   attribute re-resolves every token in the app through the same one mechanism
+   applyTheme already uses. Nothing else in the app learns that palettes exist.
+
+   THE DEFAULT IS THE ABSENCE OF THE ATTRIBUTE, not a value of it. A user who
+   has chosen no palette has no data-palette on the root, so no palette
+   selector can match and the pixels are byte-for-byte the ones this app
+   painted before the axis existed. "default" as an attribute VALUE would mean
+   a second definition of the default, free to drift from the first.
+
+   WHY NOT REUSE THE "theme" KEY. Because "theme" absent means "the user has
+   chosen no MODE, let prefers-color-scheme decide". Writing a palette name
+   there would destroy that state, and the system default — the thing a user
+   who never opens settings relies on — would break the moment anyone picked a
+   palette. Two axes, two keys. src-tauri/src/palette.rs is the table both
+   sides agree on; a rust test pins THIS list to it. */
+const PALETTES = [["default", "Default"], ["1984", "1984"]];
+const DEFAULT_PALETTE = PALETTES[0][0];
+const paletteKnown = p => PALETTES.some(([id]) => id === p);
+/* an unknown name is not an error to surface, it is the default to paint —
+   the same fallback main.rs::get_palette applies on the way out of the file */
+const resolvePalette = p => (paletteKnown(p) ? p : DEFAULT_PALETTE);
+let themePalette = DEFAULT_PALETTE;
+function applyPalette(p) {
+  themePalette = resolvePalette(p);
+  const root = document.documentElement;
+  if (themePalette === DEFAULT_PALETTE) root.removeAttribute("data-palette");
+  else root.setAttribute("data-palette", themePalette);
+  if (settingsOpen) renderPaletteCtl();     // the settings dropdown follows the state
+  if (state) updateTitle();                 // census [palette:<id>] follows the DOM
+}
+/* a USER choice. Refused names never reach applyPalette's DOM write as
+   themselves and are never sent to the backend either — which matters because
+   the backend refusing silently and the frontend painting it anyway would look
+   to a user exactly like a palette that works until you restart. */
+function choosePalette(p) {
+  const want = resolvePalette(p);
+  applyPalette(want);
+  inv("set_palette", { palette: want }).catch(() => {});
+}
+/* BOOT: same order and same reasoning as bootTheme — nothing synchronous to
+   paint first (no palette IS the default), then the stored choice replaces it
+   before any vault content is on screen. get_palette answers null for absent,
+   junk, or an explicitly-stored default, so all three land on the default. */
+async function bootPalette() {
+  const st = await inv("get_palette").catch(() => null);
+  if (st && paletteKnown(st)) applyPalette(st);
+}
+function cmdSetPalette(id) { return () => choosePalette(id); }
 /* ---------- R36 interface zoom (Ctrl+= / Ctrl+- / Ctrl+0) ---------------
    There is deliberately NO CSS in this function. The scale is applied by
    webkit_web_view_set_zoom_level through the `zoom` command (main.rs R36.1),
@@ -2990,6 +3117,25 @@ const CMDS = [
   // Ctrl+P path (and a user can still bind a chord in Settings ▸ Hotkeys,
   // which works for free because this is in the one registry).
   ["theme:switch",             "Toggle light/dark mode",              [],                       cmdToggleTheme],
+  /* THE PALETTE AXIS IN THE PALETTE (goal/theme-1984). One registry entry per
+     shipped palette rather than one cycling command, for two reasons:
+       - a cycle is not addressable. "Use theme: 1984" lands on 1984 from any
+         starting state; a cycler lands somewhere that depends on where you
+         were, which is exactly what a user searching a command palette is
+         trying not to think about. It is also why the smoke phase can assert
+         a RESULT instead of a sequence.
+       - it is what the list is for. Adding a palette to PALETTES adds its
+         command here for free, with no third place to forget.
+     No default chord, same reasoning as theme:switch above: Ctrl+P IS the road,
+     and a chord can still be bound in Settings ▸ Hotkeys because these are
+     ordinary registry entries. The names are distinct prefixes of each other's
+     complement, so the palette's fuzzy match resolves each one uniquely. */
+  ...PALETTES.map(([id, label]) => [
+    "theme:palette:" + id,
+    "Use theme: " + label,
+    [],
+    cmdSetPalette(id),
+  ]),
   ["workspace:close",          "Close current tab",                   ["ctrl+w"],               cmdCloseTab],
   ["window:close",             "Close window",                        ["ctrl+shift+w"],         () => window.__TAURI__.window.getCurrentWindow().close()],
   ["command-palette:open",     "Open command palette",                ["ctrl+p"],               () => cmdPalette()],
@@ -3478,15 +3624,29 @@ async function startGraph(g, cfg) {
   // STEP toward 0 (alpha += -alpha*ALPHA_DECAY; 0.001 after 300 steps) and
   // physics freezes below 0.001. Physics steps are wall-clock-locked at PH_HZ/s
   // (substepped inside rAF): a throttled/headless rAF must not stretch settle.
-  // Catch-up is capped at PH_CAP s of sim time per frame (PH_CAP*PH_HZ steps,
-  // ~1.5-3 ms each at N=500 debug): a loaded host hands rAF gaps of 250-500 ms,
-  // and every gap beyond the cap is sim time LOST, which stretches settle
-  // (bench: 6 capped frames = +1.2 s at the old 0.25 cap). A hidden tab
-  // returning after minutes bursts at most 300 steps (alpha floor) anyway.
+  // Catch-up is bounded TWICE, and the bound is the frame-time budget: at most
+  // PH_STEP_CAP steps of sim time may be owed at the top of a frame
+  // (PH_STEP_CAP/PH_HZ s), and the substep loop also stops once it has spent
+  // PH_BUDGET_MS of WALL time inside one frame, whichever binds first. The old
+  // bound was sim time only (PH_CAP = 1 s = 120 substeps/frame) and was argued
+  // for, never measured: "every gap beyond the cap is sim time LOST, which
+  // stretches settle". Measured at N=3000 (docs/graph-perf, item 8) that trade
+  // is real but one-sided — a step costs 6.13 ms here, so an unbounded catch-up
+  // converts every scheduler gap the host hands rAF into MORE steps in the next
+  // frame: hot_frames x steps/frame = 300.0 in every run at every load (the
+  // alpha floor fixes the TOTAL work), and load only repackages that constant
+  // into fewer, fatter frames — 11.54 steps = 78 ms, 18.75 steps = 129 ms.
+  // The frame is the thing the user feels; the settle is the thing the cap
+  // costs. Prediction and arithmetic committed before this change (item 8):
+  // S=7 => frame 50.2 ms (-35.7%), settle ~3.29 s (+15%), steps/frame pinned at
+  // the cap, per-step physics unchanged. Sim time beyond the cap is still lost;
+  // that is now a measured 15% on settle, not an unmeasured 1 s of debt.
+  // A hidden tab returning after minutes bursts at most 300 steps (alpha floor)
+  // anyway, and now drains them at PH_STEP_CAP per frame instead of 120.
   // perf-graph: the rAF loop is NOT unconditional — it runs while physics is
   // hot (alpha > ALPHA_MIN and kinetic energy above eps) and stops otherwise
   // (CPU 0); wake() restarts it on refresh (reheat), pan, zoom, hover, resize, close.
-  const PH_HZ = 120, PH_CAP = 1, ALPHA_MIN = 0.001, ALPHA_DECAY = 1 - Math.pow(0.001, 1 / 300);
+  const PH_HZ = 120, PH_STEP_CAP = 7, PH_BUDGET_MS = 40, ALPHA_MIN = 0.001, ALPHA_DECAY = 1 - Math.pow(0.001, 1 / 300);
   let alpha = 1, phAcc = 0, phLast = performance.now();
   // settled = total kinetic energy (sum v^2) under 0.0025 px^2/step per node
   // (mean speed < 0.05 px/step, invisible) for 10 consecutive steps, or physics frozen
@@ -3748,10 +3908,12 @@ async function startGraph(g, cfg) {
     }
     const fT0 = perf.now(); let steps = 0, ke = -1;
     if (rcSnap && rcSnap.vraw === undefined) rcPre();   // C5: before this frame's physics
-    phAcc = Math.min(phAcc + (now - phLast) / 1000, PH_CAP); phLast = now;
+    phAcc = Math.min(phAcc + (now - phLast) / 1000, PH_STEP_CAP / PH_HZ); phLast = now;
+    const phT0 = perf.now();
     while (phAcc >= 1 / PH_HZ) {
       phAcc -= 1 / PH_HZ;
       if (!quiet && alpha > ALPHA_MIN) { physStep(); steps++; }
+      if (steps && perf.now() - phT0 >= PH_BUDGET_MS) { phAcc = 0; break; }   // wall-clock backstop: a costlier step (bigger N) must not lengthen the frame
     }
     const fT1 = perf.now();
     if (!quiet && (steps || alpha <= ALPHA_MIN)) {
@@ -4131,6 +4293,10 @@ $("vswitch").onclick = showPicker;
   await bootTheme();             // the root attribute is set synchronously inside
                                  // (system default), then the STORED choice replaces
                                  // it — one call site decides the boot theme.
+  await bootPalette();           // the OTHER axis, after the mode and before any
+                                 // vault content: a stored palette must be on the
+                                 // root before webkit's first frame, or the user
+                                 // sees the default flash past on every start.
   SAVE_MS = await inv("save_debounce_ms").catch(() => 250);   // F2 smoke hook
   const sw = await inv("get_sidebar_w").catch(() => null);   // ux-4
   if (sw >= 150) $("side").style.width = Math.min(600, sw) + "px";
@@ -4203,11 +4369,30 @@ function sfpEnd() {
    asserts. [spane:<id>/<rows>/<enabled>] is the pane currently BUILT, which is
    how the phase proves a nav click actually swapped the pane (OCR alone cannot
    distinguish "clicked" from "painted the same pane again"). */
+/* [spal:<centre x>,<centre y>,<label>] — the Appearance ▸ Themes control's OWN
+   measured rect and the text it is currently showing, published for the same
+   reason [mg:] publishes the context menu's geometry: the settings-UI route is
+   proven by a phase that must CLICK this control, and a hardcoded coordinate
+   would be a guess that goes stale the moment a row above it gains a line of
+   description. The label is in the token too, so "the control shows the active
+   palette" is assertable without OCR. Absent when the pane holding it is not
+   built — which is itself the assertion that the control is only on Appearance. */
+function spalTok() {
+  const d = document.getElementById("spalette");
+  if (!d) return "";
+  const b = d.getBoundingClientRect();
+  // the same sanitising updateTitle's local tokq does (brackets and | would
+  // break the census grammar); inline because tokq is scoped to updateTitle.
+  const lbl = String(d.textContent || "").replace(/[[\]|]/g, "").slice(0, 40);
+  return " [spal:" + Math.round(b.left + b.width / 2) + "," +
+         Math.round(b.top + b.height / 2) + "," + lbl + "]";
+}
 function setTok() {
   if (!SMODEL) return "";
   const e = SMODEL.rows.reduce((n, r) => n + (r.enabled ? 1 : 0), 0);
   return " [set:" + SMODEL.nav.length + "/" + SMODEL.rows.length + "/" + e + "]" +
          " [spane:" + sPane + "/" + sRowsShown + "/" + sEnabledShown + "]" +
+         spalTok() +
          (sfpMs >= 0 ? " [sfp:" + sfpMs + "/" + sfpMax + "/" +
                        (Math.round(sfpSum / sfpN * 100) / 100) + "/" + sfpN + "]" : "") +
          (sfpW >= 0 ? " [sfpw:" + sfpW + "/" + sfpWMax + "]" : "");
@@ -4224,6 +4409,13 @@ async function openSettings() {
 }
 function closeSettings() {
   settingsOpen = false; hkRec = null;
+  /* THE PANE'S OWN MENU GOES WITH IT (goal/theme-1984). Appearance ▸ Themes
+     opens a .ctxmenu anchored to a control INSIDE this modal; .ctxmenu is
+     position:fixed at z-index 60, so a menu left open when the modal is hidden
+     goes on painting over the note, anchored to a control that is no longer on
+     screen. Measured: 7005 px of a stray Default/1984 card still floating after
+     Esc, which is how the smoke phase found it. */
+  closeMenu();
   $("settings").hidden = true;
   updateTitle();
 }
@@ -4297,9 +4489,65 @@ function showSettingsPage(id) {
    separator, controls at the card's right edge. The palette stays rustidian's
    dark theme — that delta is recorded in R30. */
 const SDIS_TITLE = "Not implemented yet";
+/* ---- Appearance ▸ Themes: the settings-UI route onto the PALETTE axis ----
+   Two routes reach this feature and each is proven separately: Ctrl+P (the
+   "Use theme: <name>" registry entries) and this control. They share
+   choosePalette(), so neither can drift into a second definition of what
+   selecting a palette means. */
+const paletteLabel = id => (PALETTES.find(([p]) => p === id) || PALETTES[0])[1];
+function paletteCtl() {
+  const d = document.createElement("div");
+  d.className = "sctl dropdown live";
+  d.id = "spalette";
+  d.tabIndex = 0;                             // an ENABLED row is a tab stop, unlike the disabled ones
+  d.setAttribute("role", "button");
+  d.setAttribute("aria-haspopup", "menu");
+  d.textContent = paletteLabel(themePalette);
+  const open = ev => { ev.preventDefault(); ev.stopPropagation(); openPaletteMenu(d); };
+  d.onmousedown = ev => ev.stopPropagation();  // the document-level closer must not eat this
+  d.onclick = open;
+  d.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") open(ev); };
+  return d;
+}
+/* the control shows the LIVE state, not the state it was built in: selecting a
+   palette from Ctrl+P while the pane is open must move this text too, or the
+   two routes disagree on screen about which palette is active. */
+function renderPaletteCtl() {
+  const d = document.getElementById("spalette");
+  if (d) d.textContent = paletteLabel(themePalette);
+}
+function openPaletteMenu(anchor) {
+  closeMenu();
+  const m = document.createElement("div");
+  m.className = "ctxmenu";
+  for (const [id, label] of PALETTES) {
+    const it = document.createElement("div");
+    // ✓ on the active one, the same radio idiom the tab menu uses — so the
+    // census [menu:] carries which palette is active as well as the choices.
+    it.textContent = (id === themePalette ? "✓ " : "") + label;
+    it.onmousedown = ev => ev.stopPropagation();
+    it.onclick = () => { closeMenu(); choosePalette(id); };
+    m.appendChild(it);
+  }
+  const b = anchor.getBoundingClientRect();
+  // .ctxmenu is z-index 60 and #settings is 55, so the menu is above the modal;
+  // placeMenu clamps it to the viewport by its measured box (R22).
+  placeMenu(m, Math.round(b.left), Math.round(b.bottom + 4));
+}
 let sRowsShown = 0, sEnabledShown = 0;
 function sctl(r) {                            // the control cell for one row, or null
   const v = r.default_shown === "-" ? "" : r.default_shown;
+  /* THE ONE LIVE DROPDOWN (goal/theme-1984). Everything else in this pane is a
+     transcription of stock's pixels with no handler; Appearance ▸ Themes is
+     backed by the "palette" config key (settings.rs BACKED), so it is rendered
+     as a control that actually does something. It deliberately does NOT use a
+     native <select>: a native popup is an OS-level window, invisible to the
+     screenshot-and-census rig, so the ONE settings control that changes the
+     app's appearance would be the one no phase could prove. It opens the app's
+     own .ctxmenu instead — the same widget the tab menu uses, published in the
+     census as [menu:<labels>] with measured geometry, so the settings-UI route
+     is drivable and assertable exactly like every other menu in the app. */
+  if (r.key === "palette") return paletteCtl();
   const d = document.createElement("div");
   d.className = "sctl " + r.control;
   const parts = (t, cls) => t.split(" / ").forEach(p => {
