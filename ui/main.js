@@ -3826,14 +3826,18 @@ async function startGraph(g, cfg) {
   // mode flip, because nothing in the key had changed. Every attribute the stylesheet
   // selects a token block on is in the key, or the cache is a second, stale palette.
   // RGB is keyed by the colour STRING, so it is rebuilt with the palette — a stale key
-  // would hand the GL path `undefined` and paint nothing.
+  // would hand the GL path `undefined` and paint nothing. RGB is ONE object, emptied in
+  // place, never reassigned: `RGB[palette().bg]` evaluates the base RGB BEFORE the call,
+  // so a reassigning palette() handed the warm-up frame the old, empty map (undefined bg,
+  // draw threw, no GL renderer, every graph phase dead — d374a32).
   const PAL_VAR = { hi: "--accent-yellow", ctr: "--accent-green", node: "--accent-blue", edge: "--border", bg: "--graph-bg" };
-  let pal = null, palKey = null, RGB = {};
+  const RGB = {};
+  let pal = null, palKey = null;
   const palette = () => {
     const ds = document.documentElement.dataset, key = (ds.theme || "") + "|" + (ds.palette || "");
     if (pal && palKey === key) return pal;
     const cs = getComputedStyle(document.documentElement), p = {};
-    RGB = {};
+    for (const k in RGB) delete RGB[k];
     for (const k in PAL_VAR) { const v = cs.getPropertyValue(PAL_VAR[k]).trim(); p[k] = v; RGB[v] = hex(v); }
     palKey = key; pal = p;
     return p;
@@ -3846,7 +3850,8 @@ async function startGraph(g, cfg) {
       if (g.glcv) g.glcv.remove();
       g.glcv = document.createElement("canvas"); g.glcv.className = "graphgl";
       cv.parentNode.insertBefore(g.glcv, cv);
-      g.glr = GraphGL.create(g.glcv, () => { if (g.glLost) g.glLost(); }, RGB[palette().bg]);   // the warm-up frame clears to the token too
+      const P0 = palette();   // read the tokens FIRST, then index RGB — see the note above palette()
+      g.glr = GraphGL.create(g.glcv, () => { if (g.glLost) g.glLost(); }, RGB[P0.bg]);   // the warm-up frame clears to the token too
     }
     glr = g.glr;
     if (!glr) reason = "no-webgl";
