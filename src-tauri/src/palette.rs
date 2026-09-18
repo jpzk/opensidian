@@ -4,7 +4,7 @@
 The app already had ONE theme axis, and it is not this one:
 
     MODE     light | dark     cfg key "theme"    main.rs set_theme / get_theme
-    PALETTE  default | 1984 | slate   cfg "palette"  main.rs set_palette / get_palette
+    PALETTE  default | 1984 | slate | wasp   cfg "palette"  main.rs set_palette / get_palette
 
 They COMPOSE and neither overloads the other. Mode keeps its whole existing
 contract: it defaults to the system's prefers-color-scheme until the user picks
@@ -29,7 +29,7 @@ definition of the default that could drift from the first.
 
 /// (id, the name shown to a human). `default` first: it is the fallback, and
 /// `PALETTES[0].0` is what an unknown name resolves to.
-pub const PALETTES: &[(&str, &str)] = &[("default", "Default"), ("1984", "1984"), ("slate", "Slate")];
+pub const PALETTES: &[(&str, &str)] = &[("default", "Default"), ("1984", "1984"), ("slate", "Slate"), ("wasp", "Wasp")];
 
 /// the id stored/applied when nothing valid was chosen
 pub const DEFAULT_PALETTE: &str = PALETTES[0].0;
@@ -332,6 +332,158 @@ mod tests {
                 MAIN_JS.contains(&format!("[\"{id}\", \"{label}\"]")),
                 "ui/main.js PALETTES is missing [\"{id}\", \"{label}\"]"
             );
+        }
+    }
+
+    // ---- `wasp`: the operator's picture, traced token by token ----
+
+    const WASP_DARK: &str = ":root[data-palette=\"wasp\"] {";
+    const WASP_LIGHT: &str = ":root[data-palette=\"wasp\"][data-theme=\"light\"] {";
+    const WASP_SOURCE_MD: &str = include_str!("../../docs/palette-wasp/SOURCE.md");
+
+    /// the SOURCE.md token table, as (token, light shipped, dark shipped, light source, dark source)
+    fn wasp_rows() -> Vec<(String, String, String, String, String)> {
+        WASP_SOURCE_MD
+            .lines()
+            .filter_map(|l| {
+                let f: Vec<&str> = l.split('|').collect();
+                // | n | token | L source | L shipped | D source | D shipped | src |
+                if f.len() < 8 {
+                    return None;
+                }
+                f[1].trim().parse::<u32>().ok()?;
+                let cell = |i: usize| f[i].trim().trim_matches('`').trim().to_string();
+                let tok = cell(2);
+                tok.starts_with("--").then(|| (tok, cell(4), cell(6), cell(3), cell(5)))
+            })
+            .collect()
+    }
+
+    /// the four pixels the `wasp` smoke phase reads off the window, pinned to
+    /// docs/palette-wasp/SOURCE.md's shipped column — one definition, found here
+    /// in 0.1s rather than after 20 minutes of X11
+    #[test]
+    fn the_wasp_pixels_are_the_values_source_md_publishes() {
+        for (sel, base, heading, link, frame) in [
+            (WASP_LIGHT, "#c4c4c5", "#d49336", "#961328", "#f2b713"),
+            (WASP_DARK, "#242425", "#e0e0e1", "#f8c538", "#f8c538"),
+        ] {
+            assert_eq!(decl(sel, "--bg-base").as_deref(), Some(base));
+            assert_eq!(decl(sel, "--text-heading").as_deref(), Some(heading));
+            // R4 in SOURCE.md: --accent-blue is the token every link rule reads
+            assert_eq!(decl(sel, "--accent-blue").as_deref(), Some(link));
+            assert_eq!(decl(sel, "--frame-color").as_deref(), Some(frame));
+        }
+        // the light "accent red on a link" criterion is meaningful only because
+        // the link token and the red token carry the same value in light
+        assert_eq!(decl(WASP_LIGHT, "--accent-red"), decl(WASP_LIGHT, "--accent-blue"));
+    }
+
+    /* the light assertion must not be the dark one passing twice: every band
+       the phase measures differs between the two variants */
+    #[test]
+    fn the_two_wasp_variants_are_not_the_same_window() {
+        for token in ["--bg-base", "--text-heading", "--accent-blue"] {
+            assert_ne!(decl(WASP_DARK, token), decl(WASP_LIGHT, token), "{token} is identical in both wasp variants");
+        }
+        // and the ring must be visible against the surface it borders
+        for sel in [WASP_DARK, WASP_LIGHT] {
+            assert_ne!(decl(sel, "--frame-color"), decl(sel, "--bg-base"));
+            assert_ne!(decl(sel, "--frame-color"), decl(sel, "--bg-ribbon"));
+        }
+    }
+
+    /* PROVENANCE IS MACHINE-CHECKED: every literal in both wasp blocks says
+       where it came from — (upstream) the theme's variable, (measured) a pixel
+       of reference.png, or (derived) a rule. An untagged hex is the failure
+       mode SOURCE.md exists to prevent. */
+    #[test]
+    fn every_wasp_literal_names_its_source() {
+        for sel in [WASP_DARK, WASP_LIGHT] {
+            for line in block(sel).lines().map(str::trim).filter(|l| l.starts_with("--")) {
+                assert!(
+                    line.contains("(upstream)") || line.contains("(measured)") || line.contains("(derived)"),
+                    "no provenance tag on {sel} line {line:?}"
+                );
+            }
+        }
+    }
+
+    /* THE TABLE IN SOURCE.md IS THE PALETTE, OR IT IS FICTION — read back and
+       compared to the stylesheet in both directions, as for slate */
+    #[test]
+    fn source_md_accounts_for_every_wasp_token_with_the_value_we_ship() {
+        let rows = wasp_rows();
+        let dark = tokens_of(WASP_DARK);
+        let light = tokens_of(WASP_LIGHT);
+        assert_eq!(rows.len(), dark.len(), "SOURCE.md documents {} tokens but the wasp block declares {}", rows.len(), dark.len());
+        assert_eq!(dark.len(), light.len());
+        // the 1984 block is the complete set a palette must define; wasp adds
+        // exactly three of its own (SOURCE.md R5)
+        let base = tokens_of(":root[data-palette=\"1984\"] {");
+        for t in &base {
+            assert!(dark.contains(t) && light.contains(t), "1984 token {t} missing from a wasp block");
+        }
+        let extra: Vec<&String> = dark.iter().filter(|t| !base.contains(t)).collect();
+        let mut extra: Vec<&str> = extra.iter().map(|s| s.as_str()).collect();
+        extra.sort_unstable();
+        assert_eq!(extra, ["--frame-color", "--frame-width", "--text-heading"]);
+
+        for (token, light_value, dark_value, _, _) in &rows {
+            assert_eq!(decl(WASP_LIGHT, token).as_deref(), Some(light_value.as_str()), "SOURCE.md's LIGHT value for {token} is not what ui/style.css ships");
+            assert_eq!(decl(WASP_DARK, token).as_deref(), Some(dark_value.as_str()), "SOURCE.md's DARK value for {token} is not what ui/style.css ships");
+        }
+        for token in light.iter().chain(dark.iter()) {
+            assert!(rows.iter().any(|(t, ..)| t == token), "{token} is shipped in a wasp block but SOURCE.md accounts for no such token");
+        }
+    }
+
+    /* THE WATERMARK, RE-DERIVED: shipped = source with the last nibble moved
+       one step (f down); literals with no nibble (rgba(), the vh width) are
+       recorded identical. docs/palette-wasp/check-offsets.sh is the same rule
+       for a reviewer's shell. */
+    #[test]
+    fn every_shipped_wasp_value_is_its_source_with_the_last_nibble_moved_one_step() {
+        fn step(c: char) -> char {
+            match c {
+                'f' => 'e',
+                c => char::from_digit(c.to_digit(16).unwrap() + 1, 16).unwrap(),
+            }
+        }
+        fn watermark(source: &str) -> String {
+            let is_hex = source.starts_with('#')
+                && (source.len() == 7 || source.len() == 9)
+                && source[1..].chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase());
+            if !is_hex {
+                assert!(!source.starts_with('#'), "{source}: a hex in SOURCE.md must be lower-case and 6 or 8 digits");
+                return source.to_string();
+            }
+            let (head, last) = source.split_at(source.len() - 1);
+            format!("{head}{}", step(last.chars().next().unwrap()))
+        }
+        let mut checked = 0;
+        for (token, l_ship, d_ship, l_src, d_src) in wasp_rows() {
+            for (mode, src, shipped) in [("light", l_src, l_ship), ("dark", d_src, d_ship)] {
+                assert_eq!(watermark(&src), shipped, "{token} {mode}: shipped {shipped} is not source {src} with the last nibble moved one step");
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 76, "expected 38 tokens x 2 modes of watermark pairs in SOURCE.md");
+    }
+
+    /* THE SEAMS: the three wasp-only tokens are consumed OUTSIDE the token
+       block with fallbacks that make every other palette compute what it
+       computed before. A rule that read them without the fallback would paint
+       the default palette's headings/body with an undefined value. */
+    #[test]
+    fn the_wasp_only_tokens_are_read_with_fallbacks_that_leave_other_palettes_alone() {
+        assert!(CSS.contains("border: var(--frame-width, 0) solid var(--frame-color, currentColor)"), "the body rule must read the frame tokens with 0/currentColor fallbacks");
+        assert_eq!(CSS.matches("var(--text-heading, currentColor)").count(), 2, "both heading rules (.lp .h and h1..h6) read --text-heading with a currentColor fallback");
+        for tok in ["--frame-width", "--frame-color", "--text-heading"] {
+            // the tokens exist ONLY in the two wasp blocks, so no other palette
+            // (the default included) can pick up a ring or a heading colour
+            let declared = CSS.matches(&format!("\n  {tok}:")).count();
+            assert_eq!(declared, 2, "{tok} must be declared exactly twice (the two wasp blocks), found {declared}");
         }
     }
 

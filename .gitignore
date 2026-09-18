@@ -18,3 +18,5 @@ dist/
 .goalenv
 # recon-bmmenu: the stock 1.13.7 bookmark-row menu — the README reads every label off these
 !docs/recon-bmmenu/**/*.png
+# docs/palette-wasp/reference.png is the operator picture the wasp palette is traced to (criterion 1 of goal/wasp)
+!docs/palette-wasp/reference.png

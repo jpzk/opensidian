@@ -382,9 +382,127 @@
   --background-primary-alt: #fafafb;          /* (upstream) --color-base-10, light */
   --interactive-accent: hsl(258, 88%, 66%);   /* (upstream) --accent-h/-s/-l, the published accent triple */
 }
+/* ---------------------------------------------------------------------------
+   `wasp` — the community theme "Wasp" by Santi Younger, as OUR table row.
+   PROVENANCE: docs/palette-wasp/SOURCE.md, one row per token, in the same
+   7-column form as Slate's. Values marked (upstream) are read from
+   github.com/santiyounger/Wasp-Obsidian-Theme, obsidian.css at commit
+   b42649be4ae4e2a13e32f7ba3db05666486a9246 (MIT, 2020-2026 Santi Younger) —
+   VALUES only, no file vendored. Values marked (measured) are pixels of
+   docs/palette-wasp/reference.png (the operator's picture, x,y cited), used
+   where the picture and the stylesheet disagree or upstream has no token.
+   Values marked (derived) state their rule. Every shipped hex is its
+   source hex with the last nibble moved one step (f down) — the same
+   watermark Slate carries; docs/palette-wasp/check-offsets.sh re-derives it.
+   Three tokens beyond the 1984 set: --text-heading (the orange headings are
+   the theme; consumed by the heading rules below the token block with a
+   currentColor fallback, so no other palette moves), --frame-color and
+   --frame-width (the 30px yellow ring around the picture; consumed by the
+   body rule with a 0 fallback). Both variants are TOTAL for the cascade
+   reason stated above the 1984 block.
+   --------------------------------------------------------------------------- */
+:root[data-palette="wasp"] {
+  /* ---- chrome surfaces ---- */
+  --bg-base: #242425;            /* (upstream) --background-primary, dark */
+  --bg-sidebar: #19191a;         /* (upstream) --background-secondary, dark */
+  --bg-ribbon: #131314;          /* (derived) --background-secondary dark at 75%, so the strip stays an edge — SOURCE.md #3 */
+  --bg-surface: #3d3d3e;         /* (upstream) --background-secondary-alt, dark */
+  --bg-elevated: #313132;        /* (derived) midpoint of --background-primary and --background-secondary-alt, dark — SOURCE.md #5 */
+  --bg-banner-error: #640212;    /* (upstream) --text-highlight-bg, dark */
+  --bg-button-plain: #bdae94;    /* (upstream) --text-faint, dark, as the raised control's paper — SOURCE.md #7 */
+  --bg-button-primary: #f8c538;  /* (upstream) --interactive-accent, dark */
+  /* ---- lines ---- */
+  --border: #3d3d3e;             /* (upstream) --background-secondary-alt, dark */
+  --border-strong: #7c6f65;      /* (upstream) --interactive-before, dark */
+  --border-focus-ring: #f8c538;  /* (upstream) --vim-cursor, dark */
+  --rule-faint: #3d3d3d9a;       /* (derived) --border at 60% alpha — SOURCE.md #12 */
+  /* ---- chrome ink ---- */
+  --text-chrome: #faf2d7;        /* (upstream) --text-normal, dark */
+  --text-chrome-alt: #faf2d7;    /* (upstream) --text-normal, dark */
+  --text-chrome-muted: #bdae94;  /* (upstream) --text-faint, dark */
+  --text-chrome-faint: #7c6f65;  /* (upstream) --interactive-before, dark */
+  --text-chrome-dim: #5d5652;    /* (derived) midpoint of --interactive-before and --background-secondary-alt, dark — SOURCE.md #17 */
+  --text-on-accent: #242425;     /* (upstream) --button-text-color, dark */
+  --text-quiet: #bdae94;         /* (upstream) --text-faint, dark */
+  --text-banner-error: #d49336;  /* (upstream) --text-accent-hover, dark */
+  --link-unresolved: #b89532;    /* (derived) --text-a at 70% over --background-primary, dark — SOURCE.md #21 */
+  /* ---- accents: --accent-blue is the token every link rule reads ---- */
+  --accent-blue: #f8c538;        /* (upstream) --text-a, dark */
+  --accent-mauve: #f8c538;       /* (upstream) --text-accent, dark */
+  --accent-red: #d49336;         /* (upstream) --text-accent-hover, dark */
+  --accent-yellow: #f8c538;      /* (upstream) --interactive-accent, dark */
+  --accent-green: #83a599;       /* (upstream) --inline-code, dark */
+  /* ---- translucency: channels of the accents above ---- */
+  --accent-blue-veil: rgba(248,197,55,.22);   /* (derived) --text-a dark at 22% */
+  --tag-bg: rgba(248,197,55,.15);             /* (derived) --text-accent dark at 15% */
+  --tag-bg-hover: rgba(248,197,55,.3);        /* (derived) --text-accent dark at 30% */
+  --highlight-yellow: #640212;   /* (upstream) --text-highlight-bg, dark */
+  /* ---- R15 content tokens: the note column ---- */
+  --text-normal: #faf2d7;        /* (upstream) --text-normal, dark */
+  --text-muted: #bdae94;         /* (upstream) --text-faint, dark */
+  --text-faint: #7c6f65;         /* (upstream) --interactive-before, dark */
+  --background-primary-alt: #3d3d3e;          /* (upstream) --background-secondary-alt, dark — SOURCE.md #34 */
+  --interactive-accent: #f8c538;              /* (upstream) --interactive-accent, dark */
+  /* ---- the theme's signature: orange headings, the yellow ring ---- */
+  --text-heading: #e0e0e1;       /* (upstream) --text-title-h1, dark */
+  --frame-color: #f8c538;        /* (upstream) --background-modifier-border, dark */
+  --frame-width: 2.78vh;         /* (measured) reference.png: 30px of 1080 on all four sides; no nibble, unchanged */
+}
+/* the SAME palette in the light MODE — the mode the picture shows. Where the
+   picture and upstream disagree (the ring is #f2b712 in the picture and
+   --background-modifier-border says otherwise), the picture is the source. */
+:root[data-palette="wasp"][data-theme="light"] {
+  /* ---- chrome surfaces ---- */
+  --bg-base: #c4c4c5;            /* (upstream) --background-secondary, light; (measured) reference.png 180,580 — 1,630,878 of 2,073,600 px */
+  --bg-sidebar: #c4c4c5;         /* (upstream) --background-secondary, light */
+  --bg-ribbon: #bebebf;          /* (measured) reference.png 30,114, the inactive tab's underline; = --pre-code, light */
+  --bg-surface: #ededee;         /* (upstream) --background-primary, light */
+  --bg-elevated: #ededee;        /* (upstream) --background-primary, light */
+  --bg-banner-error: #bfb2b5;    /* (derived) --text-a at 10% over --background-secondary, light — SOURCE.md #6 */
+  --bg-button-plain: #707071;    /* (upstream) --background-secondary-alt, light */
+  --bg-button-primary: #f8c538;  /* (upstream) --interactive-accent, light; (measured) reference.png 97,304 */
+  /* ---- lines ---- */
+  --border: #a7a7a8;             /* (measured) reference.png 949,185, the pane divider */
+  --border-strong: #707071;      /* (upstream) --background-secondary-alt, light */
+  --border-focus-ring: #961328;  /* (upstream) --vim-cursor, light; (measured) reference.png 1000,114, the active tab's underline */
+  --rule-faint: #a7a7a79a;       /* (derived) --border at 60% alpha — SOURCE.md #12 */
+  /* ---- chrome ink ---- */
+  --text-chrome: #1a2024;        /* (upstream) --text-normal, light; (measured) reference.png 108,453 */
+  --text-chrome-alt: #1a2024;    /* (upstream) --text-normal, light */
+  --text-chrome-muted: #888889;  /* (measured) reference.png 143,80, the tab title */
+  --text-chrome-faint: #a7a7a8;  /* (measured) reference.png 949,185 */
+  --text-chrome-dim: #bebebf;    /* (measured) reference.png 30,114 */
+  --text-on-accent: #1a2024;     /* (upstream) --text-normal, light — upstream's own button.mod-cta rule puts it on the accent */
+  --text-quiet: #888889;         /* (measured) reference.png 143,80 */
+  --text-banner-error: #961328;  /* (upstream) --text-a, light */
+  --link-unresolved: #a44857;    /* (derived) --text-a at 70% over --background-secondary, light — SOURCE.md #21 */
+  /* ---- accents: --accent-blue is the token every link rule reads ---- */
+  --accent-blue: #961328;        /* (upstream) --text-a, light; (measured) reference.png 171,263, a wikilink */
+  --accent-mauve: #961328;       /* (upstream) --text-accent, light */
+  --accent-red: #961328;         /* (upstream) --text-a, light; (measured) reference.png 171,263 */
+  --accent-yellow: #f8c538;      /* (upstream) --interactive-accent, light */
+  --accent-green: #458589;       /* (upstream) --inline-code, light */
+  /* ---- translucency ---- */
+  --accent-blue-veil: rgba(150,19,39,.22);    /* (derived) --text-a light at 22% */
+  --tag-bg: rgba(150,19,39,.15);              /* (derived) --text-accent light at 15% */
+  --tag-bg-hover: rgba(150,19,39,.3);         /* (derived) --text-accent light at 30% */
+  --highlight-yellow: #edc454;   /* (measured) reference.png 610,444, the caret-column highlight */
+  /* ---- R15 content tokens: the note column ---- */
+  --text-normal: #1a2024;        /* (upstream) --text-normal, light; (measured) reference.png 108,453 */
+  --text-muted: #888889;         /* (measured) reference.png 143,80 */
+  --text-faint: #a7a7a8;         /* (measured) reference.png 949,185 */
+  --background-primary-alt: #bebebf;          /* (upstream) --pre-code, light */
+  --interactive-accent: #f8c538;              /* (upstream) --interactive-accent, light */
+  /* ---- the theme's signature: orange headings, the yellow ring ---- */
+  --text-heading: #d49336;       /* (upstream) --text-title-h1, light; (measured) reference.png 193,299, "Heading 1" */
+  --frame-color: #f2b713;        /* (measured) reference.png 10,10 — 176,400 px = the 30px ring exactly; upstream --background-modifier-border differs, the picture wins */
+  --frame-width: 2.78vh;         /* (measured) reference.png: 30px of 1080 on all four sides; no nibble, unchanged */
+}
 /* THEME TOKENS END */
 * { box-sizing: border-box; margin: 0 }
 body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
+       /* the wasp ring: a palette that declares --frame-width/--frame-color paints it here; every other palette resolves to 0 (colour irrelevant at 0 width) — docs/palette-wasp/SOURCE.md "The frame" */
+       border: var(--frame-width, 0) solid var(--frame-color, currentColor);
        background: var(--bg-base); color: var(--text-chrome) }
 /* R9.1 ribbon: fixed 44px icon strip, survives sidebar collapse */
 #ribbon { width: 44px; background: var(--bg-ribbon); flex-shrink: 0; display: flex;
@@ -845,7 +963,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .lp:focus, .lp .lprow:focus { outline: none }
 .lp .tbox { vertical-align: middle }                            /* rendered task checkbox (x offsets: R15.11 below) */
 .lp.src .tbox { display: none }                                 /* source mode shows [ ] instead */
-.lp .h { font-weight: 700 }
+.lp .h { font-weight: 700; color: var(--text-heading, currentColor) }   /* wasp: orange headings; currentColor = inherit for every palette that declares no --text-heading */
 .lp .h1 { font-size: var(--h1-size) }
 .lp .h2 { font-size: var(--h2-size) }
 .lp .h3 { font-size: var(--h3-size) }
@@ -1126,7 +1244,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 }
 .lp .lprow { width: 100% }
 .lp h1, .preview h1, .lp h2, .preview h2, .lp h3, .preview h3, .lp h4, .preview h4, .lp h5, .preview h5, .lp h6, .preview h6 {
-  color: inherit; font-style: normal; font-variant: normal; border: 0 }
+  color: var(--text-heading, currentColor); font-style: normal; font-variant: normal; border: 0 }   /* wasp: see .lp .h */
 .lp h1, .preview h1 { font-size: var(--h1-size); font-weight: var(--h1-weight); line-height: var(--h1-line-height); letter-spacing: var(--h1-letter-spacing) }
 .lp h2, .preview h2 { font-size: var(--h2-size); font-weight: var(--h2-weight); line-height: var(--h2-line-height); letter-spacing: var(--h2-letter-spacing) }
 .lp h3, .preview h3 { font-size: var(--h3-size); font-weight: var(--h3-weight); line-height: var(--h3-line-height); letter-spacing: var(--h3-letter-spacing) }
