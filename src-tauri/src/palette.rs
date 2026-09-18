@@ -309,7 +309,7 @@ mod tests {
                 checked += 1;
             }
         }
-        assert_eq!(checked, 70, "expected 35 tokens x 2 modes of watermark pairs in SOURCE.md");
+        assert_eq!(checked, 72, "expected 36 tokens (35 colours + the --graph-bg alias) x 2 modes of watermark pairs in SOURCE.md");
     }
 
     /* LICENSING: the upstream repo ships no LICENSE, so nothing of it may be
