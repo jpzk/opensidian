@@ -302,6 +302,7 @@
   --bg-base: #1c1c1d;            /* (upstream) --color-base-00, dark */
   --bg-sidebar: #282829;         /* (upstream) --color-base-20, dark */
   --bg-ribbon: #2e2e2f;          /* (upstream) --color-base-25, dark — SOURCE.md R8 */
+  --graph-bg: var(--bg-ribbon);   /* graph canvas — see :root */
   --bg-surface: #333334;         /* (upstream) --color-base-30, dark */
   --bg-elevated: #212122;        /* (upstream) --color-base-05, dark */
   --bg-banner-error: #322022;    /* (upstream) derived from --color-red at 10% over --color-base-00, dark — SOURCE.md #6 */
@@ -348,6 +349,7 @@
   --bg-base: #fffffe;            /* (upstream) --color-base-00, light */
   --bg-sidebar: #f6f6f7;         /* (upstream) --color-base-20, light */
   --bg-ribbon: #efefee;          /* (upstream) --color-base-25, light — SOURCE.md R8 */
+  --graph-bg: var(--bg-ribbon);   /* graph canvas — see :root */
   --bg-surface: #e4e4e5;         /* (upstream) --color-base-30, light */
   --bg-elevated: #fcfcfd;        /* (upstream) --color-base-05, light */
   --bg-banner-error: #fdeaee;    /* (upstream) derived from --color-red at 10% over --color-base-00, light — SOURCE.md #6 */
