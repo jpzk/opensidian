@@ -39,6 +39,7 @@
   --bg-base: #1e1e2e;
   --bg-sidebar: #181825;
   --bg-ribbon: #11111b;
+  --graph-bg: var(--bg-ribbon);   /* the graph canvas (2D fill + WebGL clear) — the pane behind it already paints --bg-ribbon, so the alias keeps the two from drifting; a palette that wants a distinct graph background overrides this ONE row */
   --bg-surface: #313244;
   --bg-elevated: #26263a;
   --bg-banner-error: #45283c;
@@ -98,6 +99,7 @@
   --bg-base: #ffffff;
   --bg-sidebar: #f6f6f6;
   --bg-ribbon: #f6f6f6;
+  --graph-bg: var(--bg-ribbon);   /* graph canvas — see :root */
   --bg-surface: #e5e5e5;
   --bg-elevated: #fcfcfc;
   --bg-banner-error: #fdeaec;
@@ -170,6 +172,7 @@
   --bg-base: #0d0f31;            /* (upstream) 1984 Background Color */
   --bg-sidebar: #0a0b26;         /* (derived) bg-base darkened 25% */
   --bg-ribbon: #07081c;          /* (derived) bg-base darkened 45% */
+  --graph-bg: var(--bg-ribbon);   /* graph canvas — see :root */
   --bg-surface: #1b1f57;         /* (derived) bg-base lifted toward the blue */
   --bg-elevated: #13163f;        /* (derived) bg-base lifted 15% */
   --bg-banner-error: #3d0a2c;    /* (derived) the upstream magenta over bg-base */
@@ -216,6 +219,7 @@
   --bg-base: #e4e5f5;            /* (upstream) 1984-light Background Color */
   --bg-sidebar: #d6d7ec;         /* (derived) bg-base darkened 8% */
   --bg-ribbon: #c8cae4;          /* (derived) bg-base darkened 14% */
+  --graph-bg: var(--bg-ribbon);   /* graph canvas — see :root */
   --bg-surface: #c2c4e1;         /* (derived) bg-base darkened 17% */
   --bg-elevated: #f1f2fb;        /* (derived) bg-base lightened 5% */
   --bg-banner-error: #ffe3f4;    /* (derived) the upstream magenta over bg-base */
@@ -298,6 +302,7 @@
   --bg-base: #1c1c1d;            /* (upstream) --color-base-00, dark */
   --bg-sidebar: #282829;         /* (upstream) --color-base-20, dark */
   --bg-ribbon: #2e2e2f;          /* (upstream) --color-base-25, dark — SOURCE.md R8 */
+  --graph-bg: var(--bg-ribbon);   /* (upstream) --color-base-25 by ALIAS of --bg-ribbon above — no literal of its own, nothing to watermark; SOURCE.md row 36 */
   --bg-surface: #333334;         /* (upstream) --color-base-30, dark */
   --bg-elevated: #212122;        /* (upstream) --color-base-05, dark */
   --bg-banner-error: #322022;    /* (upstream) derived from --color-red at 10% over --color-base-00, dark — SOURCE.md #6 */
@@ -344,6 +349,7 @@
   --bg-base: #fffffe;            /* (upstream) --color-base-00, light */
   --bg-sidebar: #f6f6f7;         /* (upstream) --color-base-20, light */
   --bg-ribbon: #efefee;          /* (upstream) --color-base-25, light — SOURCE.md R8 */
+  --graph-bg: var(--bg-ribbon);   /* (upstream) --color-base-25 by ALIAS of --bg-ribbon above — no literal of its own, nothing to watermark; SOURCE.md row 36 */
   --bg-surface: #e4e4e5;         /* (upstream) --color-base-30, light */
   --bg-elevated: #fcfcfd;        /* (upstream) --color-base-05, light */
   --bg-banner-error: #fdeaee;    /* (upstream) derived from --color-red at 10% over --color-base-00, light — SOURCE.md #6 */
@@ -406,6 +412,7 @@
   --bg-base: #242425;            /* (upstream) --background-primary, dark */
   --bg-sidebar: #19191a;         /* (upstream) --background-secondary, dark */
   --bg-ribbon: #131314;          /* (derived) --background-secondary dark at 75%, so the strip stays an edge — SOURCE.md #3 */
+  --graph-bg: var(--bg-ribbon);   /* (derived) alias of --bg-ribbon above, as every palette block declares it since main d2790cb — no literal of its own, nothing to watermark; SOURCE.md #39 */
   --bg-surface: #3d3d3e;         /* (upstream) --background-secondary-alt, dark */
   --bg-elevated: #313132;        /* (derived) midpoint of --background-primary and --background-secondary-alt, dark — SOURCE.md #5 */
   --bg-banner-error: #640212;    /* (upstream) --text-highlight-bg, dark */
@@ -456,6 +463,7 @@
   --bg-base: #c4c4c5;            /* (upstream) --background-secondary, light; (measured) reference.png 180,580 — 1,630,878 of 2,073,600 px */
   --bg-sidebar: #c4c4c5;         /* (upstream) --background-secondary, light */
   --bg-ribbon: #bebebf;          /* (measured) reference.png 30,114, the inactive tab's underline; = --pre-code, light */
+  --graph-bg: var(--bg-ribbon);   /* (derived) alias of --bg-ribbon above, as every palette block declares it since main d2790cb — no literal of its own, nothing to watermark; SOURCE.md #39 */
   --bg-surface: #ededee;         /* (upstream) --background-primary, light */
   --bg-elevated: #ededee;        /* (upstream) --background-primary, light */
   --bg-banner-error: #bfb2b5;    /* (derived) --text-a at 10% over --background-secondary, light — SOURCE.md #6 */

@@ -61,8 +61,12 @@
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error("link: " + gl.getProgramInfoLog(p));
     return p;
   }
-  // create(canvas, onLost) -> renderer | null. onLost fires once on webglcontextlost (main.js swaps to 2d).
-  function create(cv, onLost) {
+  // create(canvas, onLost, bg) -> renderer | null. onLost fires once on webglcontextlost (main.js swaps to 2d).
+  // bg = [r,g,b] in 0..1: the clear colour for the warm-up frame. THIS FILE HOLDS NO COLOUR OF ITS OWN —
+  // every rgb here arrives from main.js, which reads it out of the stylesheet token block (--graph-bg for
+  // the clear). It used to clear to a literal dark, which was one palette's crust behind every other
+  // palette's light mode (goal graphtheme, D2).
+  function create(cv, onLost, bg) {
     const attrs = { antialias: false, powerPreference: "high-performance", preserveDrawingBuffer: false, alpha: false, depth: false, stencil: false };
     let gl = null, ver = 0;
     try { gl = cv.getContext("webgl2", attrs); if (gl) ver = 2; } catch (e) { gl = null; }
@@ -88,7 +92,6 @@
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
     const nbuf = gl.createBuffer(), ebuf = gl.createBuffer();
     gl.disable(gl.DEPTH_TEST); gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-    gl.clearColor(0x11 / 255, 0x11 / 255, 0x1b / 255, 1);
     // one instanced pass: P = program table, buf = instance buffer, data = Float32Array (8 floats / instance)
     const pass = (P, prg, buf, data, n, view, w, h) => {
       gl.useProgram(prg);
@@ -105,11 +108,12 @@
     cv.addEventListener("webglcontextlost", e => { e.preventDefault(); if (lost) return; lost = true; onLost && onLost(); }, false);
     const R = {
       kind: "gl", info, get lost() { return lost; },
-      // draw(w, h, view, nodes: Float32Array [x y r ring r g b a]*n, nCount, edges: Float32Array [x0 y0 x1 y1 r g b a]*e, eCount)
-      draw(w, h, view, nodes, nCount, edges, eCount) {
+      // draw(w, h, view, nodes: Float32Array [x y r ring r g b a]*n, nCount, edges: Float32Array [x0 y0 x1 y1 r g b a]*e, eCount, bg: [r g b])
+      draw(w, h, view, nodes, nCount, edges, eCount, bg) {
         if (lost) return false;
         if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
         gl.viewport(0, 0, w, h);
+        gl.clearColor(bg[0], bg[1], bg[2], 1);   // per frame: the token can change between frames (palette / mode switch), the context does not
         gl.clear(gl.COLOR_BUFFER_BIT);
         if (eCount) pass(E, ep, ebuf, edges, eCount, view, w, h);
         if (nCount) pass(N, np, nbuf, nodes, nCount, view, w, h);
@@ -123,7 +127,7 @@
     // warm-up: the driver builds its pipelines on the FIRST draw of each program (llvmpipe: ~300ms of
     // shader JIT) — pay that here, at renderer creation, not inside the first sim frame
     const one = new Float32Array([0, 0, 1, 0, 0, 0, 0, 0]);
-    R.draw(Math.max(cv.width, 1), Math.max(cv.height, 1), { scale: 1, tx: 0, ty: 0 }, one, 1, one, 1);
+    R.draw(Math.max(cv.width, 1), Math.max(cv.height, 1), { scale: 1, tx: 0, ty: 0 }, one, 1, one, 1, bg);
     return R;
   }
   window.GraphGL = { create };
