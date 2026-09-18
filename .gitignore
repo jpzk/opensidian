@@ -16,3 +16,5 @@ dist/
 # into the WRONG worktree — that happened 2026-09-12 (drop-attach -> main ->
 # inline-title), which is how a goal ends up building in a peer's tree.
 .goalenv
+# recon-bmmenu: the stock 1.13.7 bookmark-row menu — the README reads every label off these
+!docs/recon-bmmenu/**/*.png
