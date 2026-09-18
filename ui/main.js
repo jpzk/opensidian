@@ -3423,7 +3423,7 @@ async function bootTheme() {
    who never opens settings relies on — would break the moment anyone picked a
    palette. Two axes, two keys. src-tauri/src/palette.rs is the table both
    sides agree on; a rust test pins THIS list to it. */
-const PALETTES = [["default", "Default"], ["1984", "1984"]];
+const PALETTES = [["default", "Default"], ["1984", "1984"], ["slate", "Slate"]];
 const DEFAULT_PALETTE = PALETTES[0][0];
 const paletteKnown = p => PALETTES.some(([id]) => id === p);
 /* an unknown name is not an error to surface, it is the default to paint —

@@ -254,6 +254,134 @@
   --background-primary-alt: #ededf8;          /* (derived) bg-base lightened 3% */
   --interactive-accent: hsl(299, 96%, 50%);   /* (derived) accent-mauve in hsl */
 }
+/* ---------------------------------------------------------------------------
+   PALETTE `slate` — the upstream editor's own two default schemes, as values.
+
+   PROVENANCE, IN FULL, IS docs/palette-slate/SOURCE.md: every literal below is
+   either a value published in the Obsidian CSS-variables reference
+   (docs.obsidian.md, Foundations/Colors, retrieved 2026-09-17) or a value
+   computed from published ones by docs/palette-slate/derive.sh. The comment on
+   each line names the upstream variable it came from; SOURCE.md's numbered
+   table says which of the two it is and why. Nothing here was eyeballed.
+
+   THE NAME IS OURS, THE VALUES ARE THEIRS. We ship this palette as "Slate":
+   colour values are facts and may travel, a trademark may not, so no other
+   product's name appears in our menu, our palette ids or any string a user
+   sees. Attribution lives here, next to the values it is owed for. No upstream
+   FILE, icon, font, logo or image is vendored — values only.
+
+   MAPPING. The reference publishes VALUES for the base ramp, the accent and
+   the extended colours, but only DESCRIPTIONS for the semantic variables
+   (--background-primary, --text-muted, ...). So the assignment of a ramp step
+   to one of OUR tokens is a rule we wrote down (SOURCE.md R1-R9), not a
+   quotation — and R2/R3 are cross-checked against notes/theme/provenance.txt,
+   where the same steps were sampled from a running stock instance.
+   One deliberate deviation, R8: upstream paints ribbon and sidebar with the
+   same surface; ours must stay distinct when the sidebar collapses, so the
+   ribbon takes the next published step (--color-base-25).
+
+   THE HEXES BELOW ARE WATERMARKED, AND THAT IS WHY THEY ARE NOT THE UPSTREAM
+   VALUES DIGIT FOR DIGIT. Every one of them is the value SOURCE.md records
+   with its LAST NIBBLE moved exactly one step (f down, everything else up):
+   1/255 of one channel, invisible, and inside the ±2 tolerance the pixel
+   assertions already use. It is a FINGERPRINT that lets us recognise this file
+   if it turns up elsewhere — it is not a legal device and claims nothing.
+   `sh docs/palette-slate/check-offsets.sh` re-derives every shipped value from
+   the upstream value recorded beside it and names any token that does not hold.
+
+   Both variants are TOTAL, for the cascade reason spelled out above the 1984
+   block: the (0,3,0) light variant must re-declare every token its dark
+   sibling declares, or light+slate paints a dark token.
+   --------------------------------------------------------------------------- */
+:root[data-palette="slate"] {
+  /* ---- chrome surfaces ---- */
+  --bg-base: #1c1c1d;            /* (upstream) --color-base-00, dark */
+  --bg-sidebar: #282829;         /* (upstream) --color-base-20, dark */
+  --bg-ribbon: #2e2e2f;          /* (upstream) --color-base-25, dark — SOURCE.md R8 */
+  --bg-surface: #333334;         /* (upstream) --color-base-30, dark */
+  --bg-elevated: #212122;        /* (upstream) --color-base-05, dark */
+  --bg-banner-error: #322022;    /* (upstream) derived from --color-red at 10% over --color-base-00, dark — SOURCE.md #6 */
+  --bg-button-plain: #333334;    /* (upstream) --color-base-30, dark */
+  --bg-button-primary: #8a5cf6;  /* (upstream) --color-accent = hsl(258,88%,66%) */
+  /* ---- lines ---- */
+  --border: #333334;             /* (upstream) --color-base-30, dark */
+  --border-strong: #666667;      /* (upstream) --color-base-50, dark */
+  --border-focus-ring: #8a5cf6;  /* (upstream) --color-accent */
+  --rule-faint: #3333339a;       /* (upstream) derived from --color-base-30 dark at 60% alpha — SOURCE.md #12 */
+  /* ---- chrome ink ---- */
+  --text-chrome: #dadadb;        /* (upstream) --color-base-100, dark */
+  --text-chrome-alt: #dadadb;    /* (upstream) --color-base-100, dark */
+  --text-chrome-muted: #b3b3b4;  /* (upstream) --color-base-70, dark */
+  --text-chrome-faint: #666667;  /* (upstream) --color-base-50, dark */
+  --text-chrome-dim: #555556;    /* (upstream) --color-base-40, dark */
+  --text-on-accent: #fffffe;     /* (upstream) --mono-100, dark = white; the accent is dark in both modes */
+  --text-quiet: #b3b3b4;         /* (upstream) --color-base-70, dark */
+  --text-banner-error: #fb464d;  /* (upstream) --color-red, dark */
+  --link-unresolved: #6949b5;    /* (upstream) derived from --color-accent at 70% over --color-base-00, dark — SOURCE.md #21 */
+  /* ---- accents ---- */
+  --accent-blue: #027afe;        /* (upstream) --color-blue, dark */
+  --accent-mauve: #8a5cf6;       /* (upstream) --color-accent */
+  --accent-red: #fb464d;         /* (upstream) --color-red, dark */
+  --accent-yellow: #e0de72;      /* (upstream) --color-yellow, dark */
+  --accent-green: #44cf6f;       /* (upstream) --color-green, dark */
+  /* ---- translucency: built from the published -rgb channels ---- */
+  --accent-blue-veil: rgba(2,122,255,.22);    /* (upstream) --color-blue-rgb, dark, at 22% */
+  --tag-bg: rgba(138,92,245,.15);             /* (upstream) --color-accent channels at 15% */
+  --tag-bg-hover: rgba(138,92,245,.3);        /* (upstream) --color-accent channels at 30% */
+  --highlight-yellow: rgba(224,222,113,.35);  /* (upstream) --color-yellow-rgb, dark, at 35% */
+  /* ---- R15 content tokens: the note column ---- */
+  --text-normal: #dadadb;        /* (upstream) --color-base-100, dark */
+  --text-muted: #b3b3b4;         /* (upstream) --color-base-70, dark */
+  --text-faint: #666667;         /* (upstream) --color-base-50, dark */
+  --background-primary-alt: #232324;          /* (upstream) --color-base-10, dark */
+  --interactive-accent: hsl(258, 88%, 66%);   /* (upstream) --accent-h/-s/-l, the published accent triple */
+}
+/* the SAME palette in the light MODE. Upstream publishes a light column for
+   every variable used above, so this is a second set of read values, not a
+   computed inversion of the block above. */
+:root[data-palette="slate"][data-theme="light"] {
+  /* ---- chrome surfaces ---- */
+  --bg-base: #fffffe;            /* (upstream) --color-base-00, light */
+  --bg-sidebar: #f6f6f7;         /* (upstream) --color-base-20, light */
+  --bg-ribbon: #efefee;          /* (upstream) --color-base-25, light — SOURCE.md R8 */
+  --bg-surface: #e4e4e5;         /* (upstream) --color-base-30, light */
+  --bg-elevated: #fcfcfd;        /* (upstream) --color-base-05, light */
+  --bg-banner-error: #fdeaee;    /* (upstream) derived from --color-red at 10% over --color-base-00, light — SOURCE.md #6 */
+  --bg-button-plain: #e4e4e5;    /* (upstream) --color-base-30, light */
+  --bg-button-primary: #8a5cf6;  /* (upstream) --color-accent = hsl(258,88%,66%) */
+  /* ---- lines ---- */
+  --border: #e4e4e5;             /* (upstream) --color-base-30, light */
+  --border-strong: #ababac;      /* (upstream) --color-base-50, light */
+  --border-focus-ring: #8a5cf6;  /* (upstream) --color-accent */
+  --rule-faint: #e4e4e49a;       /* (upstream) derived from --color-base-30 light at 60% alpha — SOURCE.md #12 */
+  /* ---- chrome ink ---- */
+  --text-chrome: #222223;        /* (upstream) --color-base-100, light */
+  --text-chrome-alt: #222223;    /* (upstream) --color-base-100, light */
+  --text-chrome-muted: #5c5c5d;  /* (upstream) --color-base-70, light */
+  --text-chrome-faint: #ababac;  /* (upstream) --color-base-50, light */
+  --text-chrome-dim: #bdbdbe;    /* (upstream) --color-base-40, light */
+  --text-on-accent: #fffffe;     /* (upstream) --mono-0, light = white; the accent is dark in both modes */
+  --text-quiet: #5c5c5d;         /* (upstream) --color-base-70, light */
+  --text-banner-error: #e93148;  /* (upstream) --color-red, light */
+  --link-unresolved: #ad8df9;    /* (upstream) derived from --color-accent at 70% over --color-base-00, light — SOURCE.md #21 */
+  /* ---- accents ---- */
+  --accent-blue: #086dde;        /* (upstream) --color-blue, light */
+  --accent-mauve: #8a5cf6;       /* (upstream) --color-accent */
+  --accent-red: #e93148;         /* (upstream) --color-red, light */
+  --accent-yellow: #e0ac01;      /* (upstream) --color-yellow, light */
+  --accent-green: #08b94f;       /* (upstream) --color-green, light */
+  /* ---- translucency ---- */
+  --accent-blue-veil: rgba(8,109,221,.22);    /* (upstream) --color-blue-rgb, light, at 22% */
+  --tag-bg: rgba(138,92,245,.15);             /* (upstream) --color-accent channels at 15% */
+  --tag-bg-hover: rgba(138,92,245,.3);        /* (upstream) --color-accent channels at 30% */
+  --highlight-yellow: rgba(224,172,0,.35);    /* (upstream) --color-yellow-rgb, light, at 35% */
+  /* ---- R15 content tokens: the note column ---- */
+  --text-normal: #222223;        /* (upstream) --color-base-100, light */
+  --text-muted: #5c5c5d;         /* (upstream) --color-base-70, light */
+  --text-faint: #ababac;         /* (upstream) --color-base-50, light */
+  --background-primary-alt: #fafafb;          /* (upstream) --color-base-10, light */
+  --interactive-accent: hsl(258, 88%, 66%);   /* (upstream) --accent-h/-s/-l, the published accent triple */
+}
 /* THEME TOKENS END */
 * { box-sizing: border-box; margin: 0 }
 body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;

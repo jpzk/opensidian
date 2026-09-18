@@ -4,7 +4,7 @@
 The app already had ONE theme axis, and it is not this one:
 
     MODE     light | dark     cfg key "theme"    main.rs set_theme / get_theme
-    PALETTE  default | 1984   cfg key "palette"  main.rs set_palette / get_palette
+    PALETTE  default | 1984 | slate   cfg "palette"  main.rs set_palette / get_palette
 
 They COMPOSE and neither overloads the other. Mode keeps its whole existing
 contract: it defaults to the system's prefers-color-scheme until the user picks
@@ -29,7 +29,7 @@ definition of the default that could drift from the first.
 
 /// (id, the name shown to a human). `default` first: it is the fallback, and
 /// `PALETTES[0].0` is what an unknown name resolves to.
-pub const PALETTES: &[(&str, &str)] = &[("default", "Default"), ("1984", "1984")];
+pub const PALETTES: &[(&str, &str)] = &[("default", "Default"), ("1984", "1984"), ("slate", "Slate")];
 
 /// the id stored/applied when nothing valid was chosen
 pub const DEFAULT_PALETTE: &str = PALETTES[0].0;
@@ -141,6 +141,175 @@ mod tests {
             decl(":root[data-palette=\"1984\"][data-theme=\"light\"] {", "--bg-base").as_deref(),
             Some("#e4e5f5")
         );
+    }
+
+    // ---- `slate`: the palette whose whole claim is that its numbers are traceable ----
+
+    const SLATE_DARK: &str = ":root[data-palette=\"slate\"] {";
+    const SLATE_LIGHT: &str = ":root[data-palette=\"slate\"][data-theme=\"light\"] {";
+    const SOURCE_MD: &str = include_str!("../../docs/palette-slate/SOURCE.md");
+
+    /// the three bands the `obspal` smoke phase reads out of PIXELS, pinned to
+    /// docs/palette-slate/SOURCE.md's table so a stylesheet edit that moves one
+    /// of them fails in 0.1s instead of 20 minutes of X11 — and so the phase's
+    /// expected values have exactly one definition anyone can find.
+    #[test]
+    fn the_slate_bands_are_the_values_source_md_publishes() {
+        for (sel, base, sidebar, ribbon) in [
+            (SLATE_DARK, "#1c1c1d", "#282829", "#2e2e2f"),
+            (SLATE_LIGHT, "#fffffe", "#f6f6f7", "#efefee"),
+        ] {
+            assert_eq!(decl(sel, "--bg-base").as_deref(), Some(base));
+            assert_eq!(decl(sel, "--bg-sidebar").as_deref(), Some(sidebar));
+            assert_eq!(decl(sel, "--bg-ribbon").as_deref(), Some(ribbon));
+        }
+    }
+
+    /* THE CHECK THAT MUST NOT GIVE THE SAME ANSWER TWICE. A dark and a light
+       assertion that would both pass on ONE palette block are one assertion
+       wearing two hats. These three bands are the ones the smoke phase
+       measures, so if they ever coincide the pixel evidence stops meaning
+       "both variants exist". */
+    #[test]
+    fn the_two_slate_variants_are_not_the_same_window() {
+        for token in ["--bg-base", "--bg-sidebar", "--bg-ribbon"] {
+            assert_ne!(
+                decl(SLATE_DARK, token),
+                decl(SLATE_LIGHT, token),
+                "{token} is identical in both slate variants — the light assertion would pass on the dark block"
+            );
+        }
+        // and the ribbon must not collide with the sidebar, or R8's deviation
+        // (the reason the light variant is distinguishable at all) is gone
+        assert_ne!(decl(SLATE_LIGHT, "--bg-ribbon"), decl(SLATE_LIGHT, "--bg-sidebar"));
+    }
+
+    /* PROVENANCE IS THE POINT, AND IT IS MACHINE-CHECKED.
+       Every literal in both slate blocks carries a comment naming the upstream
+       variable it came from. An undocumented hex here is indistinguishable
+       from a correct one in a screenshot, which is exactly why this is a test
+       and not a review convention. */
+    #[test]
+    fn every_slate_literal_names_its_upstream_source() {
+        for sel in [SLATE_DARK, SLATE_LIGHT] {
+            for line in block(sel).lines().map(str::trim).filter(|l| l.starts_with("--")) {
+                assert!(
+                    line.contains("(upstream)"),
+                    "no provenance comment on {sel} line {line:?}"
+                );
+            }
+        }
+    }
+
+    /* THE TABLE IN SOURCE.md IS THE PALETTE, OR IT IS FICTION.
+       docs/palette-slate/SOURCE.md accounts for every token with the value it
+       says we ship; this reads that table back and compares it to the
+       stylesheet in BOTH directions, so neither a doc that drifted nor a hex
+       that was "fixed" in the CSS alone can survive. */
+    #[test]
+    fn source_md_accounts_for_every_slate_token_with_the_value_we_ship() {
+        let rows: Vec<(String, String, String)> = SOURCE_MD
+            .lines()
+            .filter_map(|l| {
+                let f: Vec<&str> = l.split('|').collect();
+                // | n | token | L upstream | L shipped | D upstream | D shipped | src |
+                if f.len() < 8 {
+                    return None;
+                }
+                f[1].trim().parse::<u32>().ok()?;
+                let cell = |i: usize| f[i].trim().trim_matches('`').trim().to_string();
+                let tok = cell(2);
+                // columns 4 and 6 are the SHIPPED values — the ones the
+                // stylesheet must declare. 3 and 5 are their upstream
+                // originals, which check-offsets.sh relates to them.
+                tok.starts_with("--").then(|| (tok, cell(4), cell(6)))
+            })
+            .collect();
+
+        let dark = tokens_of(SLATE_DARK);
+        assert_eq!(
+            rows.len(),
+            dark.len(),
+            "SOURCE.md documents {} tokens but the slate block declares {}",
+            rows.len(),
+            dark.len()
+        );
+        // the criterion the goal states in so many words: a palette must be
+        // TOTAL, and 1984 is the definition of the complete token set
+        assert_eq!(dark.len(), tokens_of(":root[data-palette=\"1984\"] {").len());
+
+        for (token, light_value, dark_value) in &rows {
+            assert_eq!(
+                decl(SLATE_LIGHT, token).as_deref(),
+                Some(light_value.as_str()),
+                "SOURCE.md's LIGHT value for {token} is not what ui/style.css ships"
+            );
+            assert_eq!(
+                decl(SLATE_DARK, token).as_deref(),
+                Some(dark_value.as_str()),
+                "SOURCE.md's DARK value for {token} is not what ui/style.css ships"
+            );
+        }
+        for token in tokens_of(SLATE_LIGHT).iter().chain(dark.iter()) {
+            assert!(
+                rows.iter().any(|(t, _, _)| t == token),
+                "{token} is shipped in a slate block but SOURCE.md accounts for no such token"
+            );
+        }
+    }
+
+    /* THE WATERMARK, RE-DERIVED IN THE TEST SUITE.
+       docs/palette-slate/SOURCE.md records two numbers per token per mode: the
+       upstream value, and the value we ship — which is the upstream one with
+       its LAST NIBBLE moved exactly one step (f down, everything else up), so
+       the shift stays inside one channel and inside the ±2 pixel tolerance.
+       docs/palette-slate/check-offsets.sh is the runnable form of this rule for
+       a reviewer; this is the same rule inside `cargo test`, so a hex edited in
+       either file alone cannot reach a green gate. Literals with no nibble to
+       move (rgba(), hsl()) must be recorded identical. */
+    #[test]
+    fn every_shipped_slate_value_is_its_upstream_with_the_last_nibble_moved_one_step() {
+        fn step(c: char) -> char {
+            match c {
+                'f' => 'e',
+                c => char::from_digit(c.to_digit(16).unwrap() + 1, 16).unwrap(),
+            }
+        }
+        fn watermark(upstream: &str) -> String {
+            let is_hex = upstream.starts_with('#')
+                && (upstream.len() == 7 || upstream.len() == 9)
+                && upstream[1..].chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase());
+            if !is_hex {
+                return upstream.to_string(); // rgba()/hsl(): nothing to move
+            }
+            let (head, last) = upstream.split_at(upstream.len() - 1);
+            format!("{head}{}", step(last.chars().next().unwrap()))
+        }
+
+        let mut checked = 0;
+        for line in SOURCE_MD.lines() {
+            let f: Vec<&str> = line.split('|').collect();
+            if f.len() < 8 {
+                continue;
+            }
+            if f[1].trim().parse::<u32>().is_err() {
+                continue;
+            }
+            let cell = |i: usize| f[i].trim().trim_matches('`').trim().to_string();
+            let token = cell(2);
+            if !token.starts_with("--") {
+                continue;
+            }
+            for (mode, up, shipped) in [("light", cell(3), cell(4)), ("dark", cell(5), cell(6))] {
+                assert_eq!(
+                    watermark(&up),
+                    shipped,
+                    "{token} {mode}: shipped {shipped} is not upstream {up} with the last nibble moved one step"
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 70, "expected 35 tokens x 2 modes of watermark pairs in SOURCE.md");
     }
 
     /* LICENSING: the upstream repo ships no LICENSE, so nothing of it may be
