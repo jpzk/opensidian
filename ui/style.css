@@ -594,6 +594,16 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
                 border: 1px solid var(--border-focus-ring); border-radius: 3px;
                 font: inherit; padding: 0 4px; outline: none }
 .bmrow:hover { background: var(--bg-surface) }
+/* bmdrag drop feedback — colours MEASURED on stock (docs/recon-bmdrag/README):
+   the between-rows/background indicator is a 3px #9873F7 accent line spanning
+   the pane (cases 1/3 — stock's own render wobbles 3px+AA vs 4px on subpixel
+   offset, so phases assert colour+position, never AA), onto-a-group is a
+   #ECE9F6 full-row fill with NO line (case 2), and the dragged row keeps an
+   accent fill while the drag is live (case 1). AFTER .bmrow:hover on purpose:
+   equal specificity, so source order keeps the drag fill over the hover fill. */
+#bmdropline { position: fixed; height: 3px; background: #9873F7; z-index: 98; pointer-events: none }
+.bmrow.bmdrop-into, .bmrow.bmdrop-into:hover { background: #ECE9F6; color: #3f3f3f }
+.bmrow.bmdrop-src, .bmrow.bmdrop-src:hover { background: rgba(152, 115, 247, .28) }
 /* ux-2 obsidian parity. HEIGHT MUST STAY 31px — smoke clicks rows at pitch 31 */
 .trow { height: 31px; display: flex; align-items: center; cursor: pointer;
         margin: 0 8px; padding: 0 4px; border-radius: 5px;

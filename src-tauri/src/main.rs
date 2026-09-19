@@ -2553,6 +2553,98 @@ fn bm_move_in_tree(tree: &mut Vec<BmNode>, ix: usize, into: Option<usize>) -> Re
     Ok(())
 }
 
+/* bmdrag — the two painted<->raw maps the drag commit needs. Rows and slots in
+   the PANE number only painted nodes, but bm_path_of's paths and the items
+   vecs are RAW: an Opaque node (the stock fixture's search entry, anything the
+   model cannot express) occupies a raw index the pane never shows. A drop
+   names a PAINTED slot, so it must be translated before Vec::insert or a
+   fixture carrying opaques lands the row one off. */
+fn bm_painted_ix(list: &[BmNode], raw: usize) -> usize {
+    list[..raw].iter().filter(|n| !matches!(n, BmNode::Opaque(_))).count()
+}
+fn bm_raw_slot(list: &[BmNode], pos: usize) -> usize {
+    let mut painted = 0usize;
+    for (i, n) in list.iter().enumerate() {
+        if matches!(n, BmNode::Opaque(_)) {
+            continue;
+        }
+        if painted == pos {
+            return i; // insert BEFORE the painted node currently in slot pos
+        }
+        painted += 1;
+    }
+    list.len() // pos == painted len: append after everything, opaques included
+}
+
+/* bmdrag — the drag gesture's commit: a POSITIONAL insert. bm_move_in_tree can
+   only PUSH (the Edit modal's semantics, doc §4); a drop names an exact slot,
+   so this fn shares its helpers and its refusal predicate and inserts at
+   `pos`, a PAINTED slot among `parent`'s children (parent None = top level).
+   A refusal Err returns BEFORE bm_apply ever writes: the file is not touched,
+   not even rewritten with identical bytes — recon-bmdrag case 6 measured stock
+   bumping mtime on a refused drop, so the phase asserts BYTES and both pass.
+   Both endpoints are resolved BEFORE the detach, then two fixups, because
+   removing the source renumbers (a) a destination group sitting after it at
+   the same level (raw path component) and (b) the slot itself on a
+   same-parent move — fixup (b) is the one-line break negctl-bmdrag deletes. */
+fn bm_drag_in_tree(tree: &mut Vec<BmNode>, ix: usize, parent: Option<usize>, mut pos: usize) -> Result<(), String> {
+    let src = bm_path_of(tree, ix).ok_or("no such row")?;
+    let dst = match parent {
+        None => None,
+        Some(g) => {
+            let p = bm_path_of(tree, g).ok_or("no such group")?;
+            match bm_at(tree, &p) {
+                Some(BmNode::Group { .. }) => {}
+                _ => return Err("target row is not a group".to_string()),
+            }
+            if p.len() >= src.len() && p[..src.len()] == src[..] {
+                return Err("cannot move a row into itself".to_string());
+            }
+            Some(p)
+        }
+    };
+    let lvl = src.len() - 1;
+    // src's painted index among its own siblings, read BEFORE the detach
+    let src_painted = {
+        let sib: &[BmNode] = if lvl == 0 {
+            tree
+        } else {
+            match bm_at(tree, &src[..lvl]) {
+                Some(BmNode::Group { items, .. }) => items,
+                _ => return Err("no such row".to_string()),
+            }
+        };
+        bm_painted_ix(sib, src[lvl])
+    };
+    let node = bm_take(tree, &src).ok_or("no such row")?;
+    let dstp = dst.map(|mut p| {
+        if p.len() > lvl && p[..lvl] == src[..lvl] && p[lvl] > src[lvl] {
+            p[lvl] -= 1; // fixup (a): the detach shifted src's later siblings
+        }
+        p
+    });
+    let same_list = match &dstp {
+        None => lvl == 0,
+        Some(p) => p.len() == lvl && p[..] == src[..lvl],
+    };
+    if same_list && src_painted < pos {
+        pos -= 1; // fixup (b): the slot was numbered against the pre-detach list
+    }
+    let items: &mut Vec<BmNode> = match &dstp {
+        None => tree,
+        Some(p) => match bm_at_mut(tree, p) {
+            Some(BmNode::Group { items, .. }) => items,
+            _ => {
+                tree.push(node); // never lose the row we detached
+                return Err("target group vanished".to_string());
+            }
+        },
+    };
+    let raw = bm_raw_slot(items, pos); // never exceeds items.len() by construction
+    items.insert(raw, node);
+    Ok(())
+}
+
 /* R9.8 — a bookmark IS a vault-relative name, so the note that changes its
    name takes its bookmark with it. Called from move_note_in and nowhere else:
    that is the one function that knows both ends, and it is the function BOTH
@@ -2707,6 +2799,15 @@ fn bm_group_delete(v: State<Vault>, ix: usize) -> Result<Vec<BmRow>, String> {
 #[tauri::command]
 fn bm_move(v: State<Vault>, ix: usize, into: Option<usize>) -> Result<Vec<BmRow>, String> {
     span_timed!("bm_move", bm_apply(&v, |t| bm_move_in_tree(t, ix, into)))
+}
+
+/* bmdrag — the drop's commit route: same bm_apply three-step as every other
+   structural command, so the pane repaints what the FILE says. A refused drop
+   (own descendant) is an Err out of f() and bm_apply never reaches
+   write_bm_tree: the refusal is byte-level by construction. */
+#[tauri::command]
+fn bm_drag(v: State<Vault>, ix: usize, parent: Option<usize>, pos: usize) -> Result<Vec<BmRow>, String> {
+    span_timed!("bm_drag", bm_apply(&v, |t| bm_drag_in_tree(t, ix, parent, pos)))
 }
 
 /* R11 watcher thread: every TICK_MS walk the vault (stat only), diff against
@@ -3441,7 +3542,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, read_note, write_note, create_note, render, render_blocks, block_lines, highlight_blocks, graph, graph_local, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, tags, tag_counts,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme, get_palette, set_palette,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
