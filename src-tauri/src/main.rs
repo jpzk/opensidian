@@ -2185,6 +2185,11 @@ struct BmRow {
     kind: String,
     depth: usize,
     name: String,
+    /// the TEXT the row paints — stock's measured rule (R4X.17, recon-bmcompat
+    /// §5 shot 30-afterinject.png): a file row is labelled by its `title` when
+    /// it has one, by the basename of the name when it has none; a group row
+    /// by its title. `name` stays the click/open key; `label` is only paint.
+    label: String,
 }
 
 /* the ONE parser, and it is TOLERANT by construction: a body that is not
@@ -2372,9 +2377,16 @@ fn write_bookmarks(root: &Path, list: &[String]) -> Result<(), String> {
 fn bm_rows_in(nodes: &[BmNode], depth: usize, out: &mut Vec<BmRow>) {
     for n in nodes {
         match n {
-            BmNode::File { name, .. } => out.push(BmRow { kind: "f".into(), depth, name: name.clone() }),
+            BmNode::File { name, title, .. } => {
+                // R4X.17 (recon-bmcompat §5, 30-afterinject.png): title when
+                // typed, else basename minus ".md" — never the full path
+                let label = title
+                    .clone()
+                    .unwrap_or_else(|| name.rsplit('/').next().unwrap_or(name).to_string());
+                out.push(BmRow { kind: "f".into(), depth, name: name.clone(), label });
+            }
             BmNode::Group { title, items, .. } => {
-                out.push(BmRow { kind: "g".into(), depth, name: title.clone() });
+                out.push(BmRow { kind: "g".into(), depth, name: title.clone(), label: title.clone() });
                 bm_rows_in(items, depth + 1, out);
             }
             BmNode::Opaque(_) => {} // preserved on disk, never painted
@@ -4656,6 +4668,31 @@ mod tests {
         assert_eq!(items[0]["ctime"], serde_json::json!(1789851600000u64), "ctime included");
         assert_eq!(items[1]["path"], "Diagram.canvas");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// R4X.17 — the painted LABEL follows stock's measured rule
+    /// (docs/recon-bmcompat/README.md §5, shots/30-afterinject.png): a file
+    /// row is labelled by its `title` when it has one (`ZettelAlpha`, not
+    /// `Atomic Notes`), by the basename of the name when it has none
+    /// (`Roadmap`, not `Projects/Roadmap`); a group by its title. The input
+    /// is the committed pure fixture stock itself wrote, and `name` — the
+    /// key a click opens by — keeps the full extensionless path throughout.
+    #[test]
+    fn r4x_row_labels_follow_stocks_measured_rule() {
+        let orig: &str =
+            include_str!("../../docs/fixtures/bmcompat/stock-1.13.7-pure.bookmarks.json");
+        let t = parse_bm_tree(orig);
+        let rows = bm_rows_of(&t);
+        assert_eq!(
+            rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),
+            vec!["Roadmap", "Work", "ZettelAlpha", "Untitled group"],
+            "labels must be what stock paints (30-afterinject.png)"
+        );
+        assert_eq!(
+            rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            vec!["Projects/Roadmap", "Work", "Zettel/Atomic Notes", "Untitled group"],
+            "names keep the full extensionless path — the label is only paint"
+        );
     }
 
     /// criterion 4, and it is BYTE-WISE: the input is the committed fixture

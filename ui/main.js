@@ -902,8 +902,8 @@ function srGeom() {
    it fails if renderBm() stops repainting even while the model is correct.
 
    bmfolder (R4X.*, docs/bookmark-groups.md): the list is a TREE now. The pane
-   paints `bookmark_rows()` — a PRE-ORDER vector of {kind,depth,name}, one entry
-   per painted row, in the same order as the file on disk — so the UI never
+   paints `bookmark_rows()` — a PRE-ORDER vector of {kind,depth,name,label}, one
+   entry per painted row, in the same order as the file on disk — so the UI never
    walks a tree and cannot invent an order the file does not have. Every
    structural command is addressed by the row's INDEX into that vector, never by
    title: two sibling groups may carry the same title (measured on stock,
@@ -911,7 +911,7 @@ function srGeom() {
    bmCache stays the FLAT name list every other caller asks `includes()` of
    (tab menu, note menu, R9.6 rename) — derived from bmTree, never fetched. */
 let bmCache = [];                         // the `f` rows' names, pre-order (== list_bookmarks)
-let bmTree = [];                          // the PAINTED rows: [{kind:"f"|"g", depth, name}]
+let bmTree = [];                          // the PAINTED rows: [{kind:"f"|"g", depth, name, label}]
 let bmRenaming = null;                    // row index whose label is an inline editor (stock's Rename, 07-nest-named.png)
 let bmEdit = null;                        // the open Edit bookmark modal: {ix, name, opts}
 let revealInfo = "";                      // bmmenu: [bmrv:<name>] after "Reveal file in navigation" (bmReveal), cleared by setPane
@@ -1000,7 +1000,10 @@ function renderBm() {
       };
       row.appendChild(inp);
     } else {
-      row.append(grp ? r.name : r.name.split("/").pop());
+      // R4X.17: the backend computes the painted label by stock's measured rule
+      // (title when typed, else basename — recon-bmcompat 30-afterinject.png);
+      // r.name stays the full extensionless name the click opens by.
+      row.append(r.label ?? (grp ? r.name : r.name.split("/").pop()));
     }
     // a GROUP row opens nothing on click — it holds names, and collapsing is UNMEASURED
     row.onclick = grp ? null : () => openInTab(r.name);
