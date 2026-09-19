@@ -20,3 +20,7 @@ dist/
 !docs/recon-bmmenu/**/*.png
 # docs/palette-wasp/reference.png is the operator picture the wasp palette is traced to (criterion 1 of goal/wasp)
 !docs/palette-wasp/reference.png
+# recon-flatpak: shots/ is the launch evidence for the goal's criterion 2 — a
+# .flatpak that "launches" is a claim until the pixels are in the tree next to
+# the census line that measured them (docs/recon-flatpak, item L).
+!docs/recon-flatpak/**/*.png
