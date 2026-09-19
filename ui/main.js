@@ -4308,8 +4308,12 @@ async function undoCloseTab() {
      call, no TOCTOU window between the look and the write. */
   let wrote = false, disk = null;
   if (e.text != null) {
-    /* THROUGH createNote, not around it: f20 pins ONE `inv("create_note")`
-       call site in this file (main.rs f20_no_code_path_materializes_a_heading
+    /* THROUGH createNote, not around it: f20 pins ONE backend create-note
+       invocation in this file — the literal is deliberately NOT spelled here,
+       because f20 counts OCCURRENCES OF THE STRING, so a comment that quotes
+       it reddens the gate with a call site that does not exist (measured
+       2026-09-19: gate rc=1, cargo-test, left 2 right 1, on this very comment)
+       (main.rs f20_no_code_path_materializes_a_heading
        _at_creation) so the empty default body has exactly one home. The helper
        already answers the only question the rescue has — "ok" = the name was
        free and the bytes are down, "exists"/"err" = somebody else owns it. */
