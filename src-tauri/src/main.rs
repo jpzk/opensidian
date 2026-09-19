@@ -4656,6 +4656,83 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// criterion 4, and it is BYTE-WISE: the input is the committed fixture
+    /// stock 1.13.7 itself wrote while CARRYING keys it does not recognise
+    /// (docs/fixtures/bmcompat/README.md — capture 32-editdone, sha ea9f2f6e…).
+    /// Read it, apply ONE edit through the model, write it back: the file on
+    /// disk is the fixture with exactly ONE line changed — the edited title —
+    /// so every key the fixture had that our model does not author
+    /// (`zzUnknownFile`, `zzUnknownGroup`, the whole `search` entry, and every
+    /// `ctime`) is proved present and unchanged by byte equality, not by a
+    /// checklist of the keys we DO author.
+    #[test]
+    fn r4x_criterion4_stock_fixture_unknown_keys_round_trip_byte_wise() {
+        let orig: &str =
+            include_str!("../../docs/fixtures/bmcompat/stock-1.13.7-unknown-keys.bookmarks.json");
+        let root = tmp_vault("bm-c4-fixture");
+        fs::create_dir_all(root.join(".obsidian")).unwrap();
+        fs::write(root.join(BM_FILE), orig).unwrap();
+
+        // read -> write with NO edit first: the output is byte-identical to
+        // what stock wrote, layout included (2-space indent, no trailing
+        // newline, key order per type, unknowns after authored keys)
+        let t = read_bm_tree(&root);
+        write_bm_tree(&root, &t).unwrap();
+        let unedited = String::from_utf8(bm_bytes(&root)).unwrap();
+        assert_eq!(unedited, orig, "an edit-free round trip must not change one byte");
+
+        // the ONE edit: rename the group `Work` (row 1: rows are Roadmap=0,
+        // Work=1 — the `search` entry paints no row)
+        let mut t = read_bm_tree(&root);
+        assert_eq!(bm_rows_of(&t)[1].name, "Work", "the edit target is the measured row");
+        bm_group_rename_in(&mut t, 1, "Work Renamed").unwrap();
+        write_bm_tree(&root, &t).unwrap();
+        let edited = String::from_utf8(bm_bytes(&root)).unwrap();
+
+        // byte-wise: the result IS the fixture with that one line swapped —
+        // `"title": "Work",` appears exactly once in the fixture
+        assert_eq!(orig.matches("\"title\": \"Work\",").count(), 1);
+        let want = orig.replacen("\"title\": \"Work\",", "\"title\": \"Work Renamed\",", 1);
+        assert_eq!(edited, want, "one edit changes one line and nothing else");
+
+        // the same facts spelled key by key, so a failure names the loss:
+        let o: serde_json::Value = serde_json::from_str(orig).unwrap();
+        let e: serde_json::Value = serde_json::from_str(&edited).unwrap();
+        assert_eq!(e["items"][0]["zzUnknownFile"], serde_json::json!(42));
+        assert_eq!(e["items"][1]["zzUnknownGroup"], o["items"][1]["zzUnknownGroup"]);
+        assert_eq!(e["items"][2], o["items"][2], "the whole search entry, verbatim");
+        for i in 0..4 {
+            assert_eq!(e["items"][i]["ctime"], o["items"][i]["ctime"], "ctime included (item {i})");
+        }
+        assert_eq!(
+            e["items"][1]["items"][0]["ctime"], o["items"][1]["items"][0]["ctime"],
+            "nested ctime too"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// criterion 4's decision beyond stock: a TOP-LEVEL key we do not author
+    /// survives our write even though stock itself would drop it (recon §5 —
+    /// we are strictly more conservative than the app we replace).
+    #[test]
+    fn r4x_top_level_unknown_keys_survive_a_write() {
+        let root = tmp_vault("bm-c4-toplevel");
+        fs::create_dir_all(root.join(".obsidian")).unwrap();
+        fs::write(
+            root.join(BM_FILE),
+            r#"{"items": [{"type": "file", "ctime": 5, "path": "A.md"}], "zzTop": {"v": 1}}"#,
+        )
+        .unwrap();
+        let mut t = read_bm_tree(&root);
+        bm_toggle_in(&mut t, "B"); // one edit: add a bookmark
+        write_bm_tree(&root, &t).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bm_bytes(&root)).unwrap();
+        assert_eq!(v["zzTop"], serde_json::json!({"v": 1}), "top-level unknown kept");
+        assert_eq!(v["items"][0]["ctime"], serde_json::json!(5));
+        assert_eq!(v["items"][1]["path"], "B.md");
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// the parser is TOLERANT: not-JSON reads as the empty tree, an entry it
     /// cannot model reads as OPAQUE, and nothing panics.
     #[test]
