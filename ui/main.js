@@ -1643,20 +1643,39 @@ function updateTitle() {          // pane/focus census in the window title (head
        client rect, so generated content and hidden runs cannot move it),
        which is what the phase DRAGS along — a guessed pixel would make a
        failure mean "missed the text", not "cannot select". */
+    /* ONE implementation of "where is this element painted", used by [rvsel:]
+       and [rvlb:] alike: the FIRST painted line box of the element's contents
+       (a range client rect — generated content and hidden runs cannot move it),
+       as <x0>,<y-middle>,<x1> in viewport pixels, or "-" when it paints
+       nothing. Two copies of this would be two chances to disagree about which
+       pixel a driver is aiming at. */
+    const rvbox = el => {
+      if (!el) return "-";
+      const rr = document.createRange(); rr.selectNodeContents(el);
+      const rcs = rr.getClientRects(), q = rcs.length ? rcs[0] : el.getBoundingClientRect();
+      return q.width ? Math.round(q.left) + "," + Math.round(q.top + q.height / 2) + "," + Math.round(q.right) : "-";
+    };
     let rvsl = "-", rvsx = "-";
     if (rvp) {
       const ss = window.getSelection();
       rvsl = (ss && ss.rangeCount && ss.anchorNode && ss.focusNode &&
               rvp.contains(ss.anchorNode) && rvp.contains(ss.focusNode))
              ? String(ss.toString().length) : "0";
-      const rvpp = rvq(rvp, "p");
-      if (rvpp) {
-        const rr = document.createRange(); rr.selectNodeContents(rvpp);
-        const rcs = rr.getClientRects(), q = rcs.length ? rcs[0] : rvpp.getBoundingClientRect();
-        if (q.width) rvsx = Math.round(q.left) + "," + Math.round(q.top + q.height / 2) + "," + Math.round(q.right);
-      }
+      rvsx = rvbox(rvq(rvp, "p"));
     }
     md += " [rvsel:" + rvsl + "|" + rvsx + "]";
+    /* rvcursor criterion 2 -> [rvlb:wiki=<x0>,<y>,<x1>|p=<x0>,<y>,<x1>] — WHERE
+       the two surfaces of the X-pointer measurement are painted. The computed
+       style ([rvc:]) cannot see the shape the X server draws (getComputedStyle
+       returns the literal "auto" for the UA link fallback, hand and I-beam
+       alike), so the second, INDEPENDENT measurement grabs the screen with the
+       pointer drawn over a link and over plain text — and it must warp to a
+       pixel that is REALLY inside each of them. A guessed pixel would turn
+       "wrong shape" and "missed the element" into the same result. `p` is the
+       same box [rvsel:] publishes (same rvbox call), so a driver can read one
+       token for both points. */
+    md += " [rvlb:wiki=" + (rvp ? rvbox(rvq(rvp, "a.wiki:not(.wiki-unresolved)")) : "-") +
+          "|p=" + (rvp ? rvsx : "-") + "]";
   }
   // R26: the in-note find bar of the FOCUSED pane (open only) — see fTok.
   if (md && fg()) md += fTok(fg());
