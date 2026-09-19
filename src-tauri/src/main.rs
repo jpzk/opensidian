@@ -3453,8 +3453,15 @@ mod tests {
         let h = search_docs(docs_ref(&[("U".to_string(), uni.clone())]), "needle");
         assert_eq!(h.len(), 1);
         assert_eq!((h[0].line, h[0].len), (1, 6));
-        // line 0 = é(1) + 𝄞(2) + x(1) + \n(1) = 5; then "plain é𝄞 " = 9 units
-        assert_eq!(h[0].offset, 14);
+        // line 0 = é(1) + 𝄞(2) + x(1) + \n(1) = 5; then the line-1 prefix
+        // "plain é𝄞 " = p,l,a,i,n,SPACE(6) + é(1) + 𝄞(2) + SPACE(1) = 10 units.
+        // 5 + 10 = 15. The literal was 14 until 2026-09-19: the count dropped
+        // the space between 𝄞 and the match, and the ONLY reason it was ever
+        // believable is that it is a hand-count — which is why the u16slice
+        // round-trip below is the assertion that actually decides the rule.
+        // It disagreed with the literal (it reads " needl" at 14), and the
+        // gate's cargo test is where that disagreement surfaced.
+        assert_eq!(h[0].offset, 15);
         assert_eq!(u16slice(&uni, h[0].offset, h[0].len), "needle");
 
         // case-insensitive match: the offset points at the ORIGINAL text, and
