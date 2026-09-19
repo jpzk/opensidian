@@ -694,9 +694,22 @@ async function scJump(g, hits) {
   await lpMove(g, p.l, p.c, "search");
   scMarks(g);                              // the caret move re-rendered the touched rows
   const row = g.lp.children[p.l];
-  if (row) scCenter(g.lp, row.offsetTop - g.lp.offsetTop, row.offsetHeight);
+  // The four numbers R25.13c's rule is MADE of, published beside the result it
+  // produced: the smoke phase recomputes
+  //   clamp(rowTop - (clientHeight - rowHeight)/2, 0, scrollHeight - clientHeight)
+  // and compares it to the scrollTop that was actually set, so "the match is
+  // CENTRED, clamped to the scroller's own range" is an arithmetic assertion
+  // rather than a screenshot — and the two clamped ends (a match above the
+  // first half-viewport, a match on the last line) are distinguishable from a
+  // jump that simply did not scroll. Row heights differ per line, so they are
+  // MEASURED here and never assumed by the phase.
+  const rt = row ? row.offsetTop - g.lp.offsetTop : -1;
+  const rh = row ? row.offsetHeight : -1;
+  if (row) scCenter(g.lp, rt, rh);
   scInfo = "sc:" + curOf(g) + "@" + p.l + "." + p.c + "|hl:" + scHits(g).length +
-           "|top:" + Math.round(g.lp.scrollTop);
+           "|top:" + Math.round(g.lp.scrollTop) +
+           "|vp:" + Math.round(g.lp.clientHeight) + "x" + Math.round(g.lp.scrollHeight) +
+           "|row:" + Math.round(rt) + "x" + Math.round(rh);
   updateTitle();
 }
 /* the reading-view block holding a hit: the rendered text is not the source
@@ -829,6 +842,40 @@ async function runSearch() {
   updateTitle();
   perf.mark("search", st0, { q, hits: hits.length });
   otel.paint(searchSp, { hits: hits.length }); searchSp = null;   // R18 search_type: keystroke -> results painted
+}
+/* [srg:<centre x>|Q<y>|G<y>|H<y>|H<y>…] — the PAINTED geometry of the search
+   pane, in paint order: `Q` the query input, `G` a note-name group row, `H` a
+   hit row, each y the element's centre in window coordinates. Same idea as
+   [bmg:] for the bookmark rows and [mgy:] for menu rows, and for the same
+   reason: the srclick phase clicks the row it MEASURED, never a y computed
+   from a padding it read off a stylesheet. A row scrolled out of the #sresults
+   viewport publishes y = -1 rather than a coordinate a click would miss, so
+   "the row is reachable" is a census fact and not an assumption.
+   ONE x for all of them: #sinput and the rows are the same full-width column
+   of the pane, so the results box's centre is inside every one of them — and
+   the phase needs the input's coordinate too, because "the decoration survives
+   BLUR" (R25.13f) is a pointer click OUTSIDE that editor, which has to land
+   somewhere that is not another result row.
+   Emitted only while the search pane shows a query ([sr:] is showing). */
+function srGeom() {
+  const box = $("sresults");
+  if (!box) return "";
+  const rows = box.querySelectorAll(".sgroup, .shit");
+  if (!rows.length) return "";
+  const b = box.getBoundingClientRect();
+  const parts = [];
+  const qi = $("sinput");
+  if (qi) {
+    const a = qi.getBoundingClientRect();
+    parts.push("Q" + Math.round(a.top + a.height / 2));
+  }
+  for (const r of rows) {
+    const a = r.getBoundingClientRect();
+    const cy = Math.round(a.top + a.height / 2);
+    const vis = a.top >= b.top - 1 && a.bottom <= b.bottom + 1;
+    parts.push((r.className === "sgroup" ? "G" : "H") + (vis ? cy : -1));
+  }
+  return " [srg:" + Math.round(b.left + b.width / 2) + "|" + parts.join("|") + "]";
 }
 
 /* R9.4 bookmarks: tree-row context menu toggles; rust persists the plain
@@ -1584,7 +1631,7 @@ function updateTitle() {          // pane/focus census in the window title (head
             (revealInfo ? " [bmrv:" + revealInfo + "]" : "") +      // bmmenu: "Reveal file in navigation" ran (bmReveal) — not merely "the Files pane is showing"
             (acItems.length ? " [ac:" + acKind + ":" + acItems.length + "]" : "") +
             " [pane:" + sidePane + "]" +
-            (sidePane === "search" && searchCount >= 0 ? " [sr:" + searchCount + "]" : "") +
+            (sidePane === "search" && searchCount >= 0 ? " [sr:" + searchCount + "]" + srGeom() : "") +
             (sidePane === "bm" ? " [bm:" + bmRows() + "]" +          // RENDERED rows, not bmCache.length:
               " [bmn:" + bmNames() + "]" +                          // and their painted LABELS, in paint order
               bmGeom() +                                            // bmmenu: [bmg:x,y,pitch] of the painted rows — a driver right-clicks what it measured
