@@ -1426,6 +1426,26 @@ addEventListener("resize", () => {                 // the census must follow the
   clearTimeout(ovfT); ovfT = setTimeout(updateTitle, 150);   // after the relayout settles
 });
 
+/* rvcursor (criterion 3): a MOUSE drag over READING VIEW runs no application
+   code at all — WebKit does the selection natively — so the [rvsel:] census
+   would stay STALE from before the drag and a phase could only ever read "no
+   selection". This listener is the republish, and it is deliberately narrow:
+   the guard returns on the very first branch unless the selection's anchor is
+   inside a `.preview`, so the EDITOR's keystroke path (every caret move fires
+   selectionchange too) does exactly what it did before this goal — no title
+   write, no layout read. When it does fire it is deferred+coalesced 30ms, the
+   same shape Ed.census() uses, so the title write can never land inside a
+   key_to_paint span. */
+let rvSelT = null;
+document.addEventListener("selectionchange", () => {
+  const s = window.getSelection(), n = s && s.anchorNode;
+  if (!n) return;
+  const e = n.nodeType === 1 ? n : n.parentNode;
+  if (!e || !e.closest || !e.closest(".preview")) return;
+  if (rvSelT) return;
+  rvSelT = setTimeout(() => { rvSelT = null; updateTitle(); }, 30);
+});
+
 function updateTitle() {          // pane/focus census in the window title (headless probe)
   const ps = [...document.querySelectorAll("#main .pane")];
   const nf = document.querySelectorAll("#main .pane.focused").length;
@@ -1610,6 +1630,33 @@ function updateTitle() {          // pane/focus census in the window title (head
           "|task=" + rvc(rvtb) + (rvtb ? ":dis" + (rvtb.disabled ? 1 : 0) : "") +
           "|img=" + rvc(rvq(rvp, "img")) +
           "|lprow=" + rvc(rvq(rvl, ".lprow")) + "]";
+    /* rvcursor criterion 3 -> [rvsel:<chars>|<x0>,<y>,<x1>] — the SELECTION
+       CAPABILITY, which is a different question from the cursor SHAPE: stock
+       ships the I-beam over reading-view prose, and the I-beam is the
+       affordance that says "this text can be selected", so removing it is
+       exactly the change that could quietly take selectability with it.
+       <chars> = the length of the live DOM selection when BOTH its ends sit
+       inside this pane's .preview (0 = nothing selected there, "-" = no
+       preview in this view), read with window.getSelection() — never from
+       CSS, which would only re-assert what the stylesheet already says.
+       <x0>,<y>,<x1> = the first paragraph's first painted line box (range
+       client rect, so generated content and hidden runs cannot move it),
+       which is what the phase DRAGS along — a guessed pixel would make a
+       failure mean "missed the text", not "cannot select". */
+    let rvsl = "-", rvsx = "-";
+    if (rvp) {
+      const ss = window.getSelection();
+      rvsl = (ss && ss.rangeCount && ss.anchorNode && ss.focusNode &&
+              rvp.contains(ss.anchorNode) && rvp.contains(ss.focusNode))
+             ? String(ss.toString().length) : "0";
+      const rvpp = rvq(rvp, "p");
+      if (rvpp) {
+        const rr = document.createRange(); rr.selectNodeContents(rvpp);
+        const rcs = rr.getClientRects(), q = rcs.length ? rcs[0] : rvpp.getBoundingClientRect();
+        if (q.width) rvsx = Math.round(q.left) + "," + Math.round(q.top + q.height / 2) + "," + Math.round(q.right);
+      }
+    }
+    md += " [rvsel:" + rvsl + "|" + rvsx + "]";
   }
   // R26: the in-note find bar of the FOCUSED pane (open only) — see fTok.
   if (md && fg()) md += fTok(fg());
