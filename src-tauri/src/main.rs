@@ -1204,6 +1204,23 @@ fn type_probe() -> bool {
     std::env::var("RUSTIDIAN_TYPEPROBE").as_deref() == Ok("1")
 }
 
+/// themecsp RIG APPLICATOR — a test-only hook, OFF unless RUSTIDIAN_SMOKE_CSS=<path>.
+/// It returns the contents of the named CSS file so the smoke can inject it as an
+/// inline <style>: style-src 'unsafe-inline' means the STYLE is ALLOWED TO EXIST,
+/// and the property the egress proof falsifies is that nothing inside it can REACH
+/// the network. This models the threat (attacker-controlled CSS in the document)
+/// with the CHEAPEST possible injector.
+///   NOT a CSS loader: no product feature calls this, it is inert without the env
+///   var, a shipped build never sets it, and it takes an absolute path the OPERATOR
+///   chose (the test rig), never a vault-relative or user-influenced name. The
+///   census then publishes body's computed style so a phase can prove a stock-shaped
+///   rule won a pixel (crit 5). Precedent: type_probe (RUSTIDIAN_TYPEPROBE), main.rs.
+#[tauri::command]
+fn smoke_css() -> Option<String> {
+    let path = std::env::var("RUSTIDIAN_SMOKE_CSS").ok()?;
+    std::fs::read_to_string(&path).ok()
+}
+
 /// F2 (dataloss-audit) test hook: the vault-switch race lives INSIDE the save
 /// debounce window, so at 250ms it is not mechanically reproducible.
 /// RUSTIDIAN_SAVE_MS widens the window for the smoke; every normal run gets
@@ -3326,7 +3343,7 @@ fn main() {
             list_notes, list_images, read_note, write_note, create_note, render, render_blocks, block_lines, highlight_blocks, graph, graph_local, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, tags, tag_counts,
-            get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe,
+            get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, smoke_css,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme, get_palette, set_palette,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
             win_rect, win_gesture, win_move_proto, win_drag_start, win_minimize, win_toggle_max, win_close,
