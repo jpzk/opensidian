@@ -616,11 +616,29 @@ function scLC(g, off) {
   const last = Math.max(0, L.length - 1);
   return { l: last, c: (L[last] || "").length };
 }
+/* R25.13f/m: this runs on EVERY keystroke while a decoration is live (from
+   lpRender and from scheduleSave), and what it does is DOM SURGERY ON THE ROW
+   THE CARET IS IN: the unwrap below calls p.normalize(), which MERGES the text
+   nodes the DOM Selection is anchored in, and a merged anchor is a moved
+   caret. Measured on the box (12:54 and 13:2x): typing `ZCDIRTY` at the start
+   of the line-42 match put `Z` at column 0 and the remaining six characters at
+   column 10 — the END of the match — because the first keystroke's scMarks
+   relocated the caret and every later one landed where it had been left. The
+   model position is the truth, so read it BEFORE the surgery and put it back
+   after. Ed.sel() returns null when the caret is not in this pane's lp, so a
+   blurred editor (R25.13f's query-input case) is left exactly as it was. */
+function scMarks(g) {
+  const s0 = g && g.lp ? Ed.sel(g) : null;
+  scPaint(g);
+  if (!s0) return;
+  if (s0.empty) Ed.place(g, s0.b.l, s0.b.c, false);
+  else { Ed.place(g, s0.a.l, s0.a.c, false); Ed.extendTo(g, s0.b.l, s0.b.c); }
+}
 /* paint the set with the SAME per-text-node right-to-left walk the find bar
    uses (fWrap): a match that straddles a rendered <strong> becomes two spans,
    and no offset is invalidated mid-walk. Only the lp surface is painted —
    R25.13k measured that stock paints NO highlight in the reading renderer. */
-function scMarks(g) {
+function scPaint(g) {
   for (const sc of [g.lp, g.preview]) {
     if (!sc) continue;
     for (const m of [...sc.querySelectorAll("span." + SC_MARK)]) {
