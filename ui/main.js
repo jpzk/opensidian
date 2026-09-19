@@ -1759,6 +1759,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   const t2 = (fb !== null ? " [buf:" + fb.length + "]" + dirtyTok(fb) : "") +
              " [tree:" + notesCache.length + "] [vc:" + vcCount + "]" +   // R11 probes
              tgTok() +                                                    // tabclose: why every tab went
+             ucTok() +                                                    // tabclose: the undo-close RESCUE buffer (depth/with-bytes)
              tcxTok() +                                                   // tabclose S4: the close glyph's PAINTED centres
              (extCount ? " [ext:" + extCount + "]" : "");                 // S1: external-link clicks routed to open_external
   t += t2;
@@ -1865,8 +1866,14 @@ async function collapseGroup(g, via) {  // R6.5: closing the last tab removes th
   // names the pane, not a tab. dirty is stated only when the group still owns
   // its active tab; a group emptied by a move no longer holds the buffer.
   const at = g.active >= 0 && g.tabs[g.active] ? g.tabs[g.active] : null;
+  // criterion 4: a pane that still owns a dirty tab FLUSHES before it goes.
+  // Unlike dropTab's path the file is still on disk here, so the honest rescue
+  // is the write itself — the timer below then clears nothing that mattered.
+  const atDirty = !!(at && !at.kind && g.saveT);
+  if (atDirty) { try { await flushSave(g); } catch (_) {} }
+  const atFlushed = atDirty && !g.saveT && (!at.base || bufOf(g) === at.base);
   tabGone("pane-collapse", at || ("pane#" + (g.id == null ? "?" : g.id)),
-          { dirty: !!(at && !at.kind && g.saveT), flushed: false, via: via || "collapseGroup", tabsLeft: g.tabs.length });
+          { dirty: atDirty, flushed: atFlushed, via: via || "collapseGroup", tabsLeft: g.tabs.length });
   if (g.saveT) clearTimeout(g.saveT);
   const idx = parent.children.indexOf(g);
   const heir = parent.children[idx + 1] || parent.children[idx - 1];
@@ -2916,7 +2923,7 @@ async function afterDelete(nm) {
     }
   }
   // R14 undo-close would otherwise offer to reopen a note that no longer exists
-  for (let i = closedTabs.length - 1; i >= 0; i--) if (closedTabs[i] === nm) closedTabs.splice(i, 1);
+  for (let i = closedTabs.length - 1; i >= 0; i--) if (closedTabs[i].name === nm) closedTabs.splice(i, 1);
   const mi = mruList.indexOf(nm);
   if (mi >= 0) mruList.splice(mi, 1);
   await refreshTree();                       // the explorer row goes
@@ -3193,9 +3200,11 @@ for (const ev of ["mousedown", "mouseup", "auxclick", "click"])
        disappeared — `grep '\[tabgone\]' app-*.log`.
      * a CENSUS token in the title -> a driver can assert the cause of a removal
        it just triggered, in the same read as [dirty:] and [vc:].
-   `dirty` is the tab's state AT REMOVAL and `flushed` says whether its bytes
-   were written first: dirty=1 flushed=0 is the F-class defect, stated at the
-   moment it happens instead of reconstructed from a bug report. */
+   `dirty` is the tab's state AT REMOVAL; `flushed` says whether its bytes were
+   written to DISK first and `preserved` whether they were parked in the
+   undo-close rescue buffer because writing them was not allowed (R11.4: the
+   file is gone). dirty=1 flushed=0 preserved=0 is the F-class defect, stated at
+   the moment it happens instead of reconstructed from a bug report. */
 const TAB_CAUSES = ["user-close", "external-delete", "external-rename", "pane-collapse", "session-replace"];
 let tgSeq = 0, tgHist = [];        // census [tgn:<seq>] [tg:<cause>:<d>:<note>|...]
 /* A note name is user data and the census is a bracket-delimited string, so the
@@ -3215,12 +3224,19 @@ function tabGone(cause, t, opts) {
   const bad = TAB_CAUSES.indexOf(cause) < 0;
   if (bad) noteErr("tabGone bad cause " + cause);     // surfaced as [jserr:], never swallowed
   tgSeq++;
-  tgHist.push((bad ? "BAD" : cause) + ":" + (dirty ? "d" : "c") + (o.flushed ? "f" : "") + ":" + tgSafe(name));
+  // The witness letters, in the order a reviewer reads them: d/c = dirty state,
+  // then what happened to those bytes — `f` they reached DISK before the tab
+  // went, `p` they were PRESERVED in the undo-close buffer because writing them
+  // was not allowed (the file is gone: R11.4 forbids the resurrect). A dirty
+  // removal with NEITHER letter is the F-class defect, and now says so in one
+  // token instead of in a bug report.
+  tgHist.push((bad ? "BAD" : cause) + ":" + (dirty ? "d" : "c")
+    + (o.flushed ? "f" : "") + (o.preserved ? "p" : "") + ":" + tgSafe(name));
   if (tgHist.length > 8) tgHist.shift();              // the census is a title, not a journal
   try {
     inv("tab_removed", {
       cause: bad ? "BAD-" + cause : cause, note: String(name).slice(0, 120),
-      dirty, flushed: !!o.flushed, via: String(o.via || "?"), seq: tgSeq,
+      dirty, flushed: !!o.flushed, preserved: !!o.preserved, via: String(o.via || "?"), seq: tgSeq,
       tabsLeft: o.tabsLeft == null ? -1 : o.tabsLeft, groups: groups().length,
     }).catch(() => {});                               // the log is evidence, never a dependency of the close
   } catch (_) {}
@@ -3266,7 +3282,7 @@ async function closeTab(g, i, cause, via) {
   const wasDirty = i === g.active && !g.tabs[i].kind ? bufOf(g) !== g.tabs[i].base : false;
   if (i === g.active) await flushSave(g);
   tabGone(cause || "user-close", g.tabs[i], { dirty: wasDirty, flushed: wasDirty, via: via || "closeTab", tabsLeft: g.tabs.length - 1 });
-  if (!g.tabs[i].kind) closedTabs.push(g.tabs[i].name);   // R14 undo close tab
+  if (!g.tabs[i].kind) ucPush(g.tabs[i].name, null, "user-close");   // R14 undo close tab (flushed above: no bytes to rescue)
   unlinkTab(g, g.tabs[i], true);    // R13.4: closing a member unlinks it
   dropView(g.tabs[i]);              // R20: retained view goes with the tab
   g.tabs.splice(i, 1);
@@ -4203,7 +4219,52 @@ inv("zoom_get").then(z => {
   zoomTok = z.factor.toFixed(4) + "@" + z.level;
   if (typeof state !== "undefined" && state) updateTitle();
 }, () => { /* a backend that cannot answer is not a reason to blank the census */ });
-let closedTabs = [];                       // R14 undo close tab (names, newest last)
+/* R14 undo close tab — newest last. tabclose: an entry is now an OBJECT
+   {name, text, cause}, not a bare name, because the stack is also this app's
+   only rescue buffer. A tab removed by the watcher cannot be flushed (the file
+   is gone; R11.4 says a write here would resurrect it), so the bytes that were
+   in the editor are parked HERE with the name, and Ctrl+Shift+T brings them
+   back. text === null means "nothing was at risk, reopen from disk". */
+let closedTabs = [];
+const ucPush = (name, text, cause) => {
+  closedTabs.push({ name: String(name), text: text == null ? null : String(text), cause: cause || "user-close" });
+  if (closedTabs.length > 20) closedTabs.shift();   // a rescue buffer, not a journal
+};
+/* census: how deep the stack is, and how many entries carry rescued BYTES —
+   [uc:<depth>/<rescued>]. A driver that triggers a removal asserts the rescue
+   in the same read as [tg:], and a reviewer can see at a glance that nothing
+   was silently dropped. */
+function ucTok() {
+  const r = closedTabs.filter(e => e.text != null).length;
+  return " [uc:" + closedTabs.length + "/" + r + "]";
+}
+/* Ctrl+Shift+T. Reopening a tab whose bytes were RESCUED is the other half of
+   the promise made at removal time: the keystrokes come back, and they come
+   back where the user can see them.
+     * nothing on disk (the watcher's delete took the file) -> the rescued
+       bytes are written back under the old name. This is a USER action, not an
+       autosave: R11.4 forbids a timer resurrecting a deleted file behind the
+       user's back, not the user asking for their text back.
+     * a file IS there and differs -> it is left ALONE and the rescued bytes go
+       into the buffer, which then reads dirty against the disk bytes. The user
+       decides; nothing of either version is destroyed. */
+async function undoCloseTab() {
+  const e = closedTabs.pop();
+  if (!e) return false;
+  let disk = null;
+  if (e.text != null) {
+    try { disk = await inv("read_note", { name: e.name }); } catch (_) { disk = null; }
+    if (disk == null) await saveNote(e.name, e.text);
+  }
+  await openInTab(e.name);
+  const g = fg();
+  if (e.text != null && disk != null && disk !== e.text && curOf(g) === e.name && g.active >= 0) {
+    await reloadInPlace(g, e.text);
+    g.tabs[g.active].base = disk;            // base = the bytes on disk -> the tab reads DIRTY, honestly
+  }
+  updateTitle();
+  return true;
+}
 const CMDS = [
   ["app:open-settings",        "Open settings",                       ["ctrl+,"],               () => cmdSettings()],
   // R14: the theme switch is a registry entry like any other — no bespoke
@@ -4270,7 +4331,7 @@ const CMDS = [
   ["editor:toggle-italics",    "Toggle italic",                       ["ctrl+i"],               () => edWrap("*")],
   ["markdown:toggle-preview",  "Toggle reading view",                 ["ctrl+e"],               () => cmdToggleMode()],
   ["editor:toggle-source",     "Toggle Live Preview/Source mode",     [],                       () => cmdToggleSource()],
-  ["workspace:undo-close-pane","Undo close tab",                      ["ctrl+shift+t"],         async () => { const n = closedTabs.pop(); if (n) await openInTab(n); }],
+  ["workspace:undo-close-pane","Undo close tab",                      ["ctrl+shift+t"],         async () => { await undoCloseTab(); }],
   ["workspace:split-vertical", "Split right",                         [],                       () => splitGroup(fg(), "row", fg().active)],
   ["workspace:split-horizontal","Split down",                         [],                       () => splitGroup(fg(), "col", fg().active)],
   ["app:toggle-left-sidebar",  "Toggle left sidebar",                 [],                       cmdToggleSide],
@@ -5380,6 +5441,9 @@ async function reloadInPlace(g, text) {
   updateStatus(g);
 }
 // remove a tab WITHOUT flushing (R11.4: the file is gone; a flush would resurrect it)
+// — but NOT without the bytes: whatever was typed inside the debounce is parked
+// in the undo-close buffer (ucPush) before the timer dies, so "cannot write it
+// back" stops meaning "throw it away". Ctrl+Shift+T returns it.
 // tabclose: `cause` is external-delete or external-rename — the watcher is the
 // ONLY caller, and which of the two it is decides the whole diagnosis (S1 vs
 // S2/S3), so it is not inferred here, it is passed in by the caller that knows.
@@ -5389,7 +5453,16 @@ async function dropTab(g, i, cause, via) {
   // where the pending save dies, and the log line is the only record that
   // anything was in flight when it did.
   const wasDirty = i === g.active && !t.kind ? bufOf(g) !== t.base : false;
-  tabGone(cause || "external-delete", t, { dirty: wasDirty, flushed: false, via: via || "dropTab", tabsLeft: g.tabs.length - 1 });
+  // THE F-CLASS FIX (criterion 4). The bytes cannot go to DISK here — the file
+  // is gone and writing it back is the resurrect R11.4 exists to forbid — so
+  // they go to the undo-close buffer, which is the one place the user can ask
+  // for them back (Ctrl+Shift+T). Read the buffer BEFORE the timer dies, for
+  // the same reason `wasDirty` is read here: two lines down there is nothing
+  // left to read. A CLEAN tab parks its name only; there is nothing at risk.
+  const rescued = wasDirty ? bufOf(g) : null;
+  if (!t.kind) ucPush(t.name, rescued, cause || "external-delete");
+  tabGone(cause || "external-delete", t,
+    { dirty: wasDirty, flushed: false, preserved: rescued != null, via: via || "dropTab", tabsLeft: g.tabs.length - 1 });
   if (i === g.active) { clearTimeout(g.saveT); g.saveT = null; g.lpActive = null; }
   unlinkTab(g, g.tabs[i], true);    // R13.4
   dropView(g.tabs[i]);

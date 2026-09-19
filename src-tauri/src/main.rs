@@ -2367,6 +2367,7 @@ fn tab_removed(
     note: String,
     dirty: bool,
     flushed: bool,
+    preserved: bool,
     via: String,
     seq: u32,
     tabs_left: usize,
@@ -2379,9 +2380,10 @@ fn tab_removed(
         return Err(format!("unknown tab-removal cause: {cause}"));
     }
     eprintln!(
-        "[tabgone] seq={seq} cause={cause} note={note} dirty={} flushed={} via={via} tabs_left={tabs_left} groups={groups}",
+        "[tabgone] seq={seq} cause={cause} note={note} dirty={} flushed={} preserved={} via={via} tabs_left={tabs_left} groups={groups}",
         u8::from(dirty),
-        u8::from(flushed)
+        u8::from(flushed),
+        u8::from(preserved)
     );
     Ok(())
 }
@@ -5455,6 +5457,7 @@ mod tests {
             "ZZ-Note".into(),
             true,
             false,
+            true,   // preserved: the watcher path parks the bytes it may not write back
             "onVaultChanged#1".into(),
             1,
             0,
@@ -5465,6 +5468,7 @@ mod tests {
             "mystery".into(),
             "ZZ-Note".into(),
             true,
+            false,
             false,
             "?".into(),
             2,
