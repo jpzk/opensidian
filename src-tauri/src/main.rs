@@ -2212,10 +2212,36 @@ fn spawn_watcher(app: tauri::AppHandle) {
             std::thread::sleep(std::time::Duration::from_millis(watcher::TICK_MS));
             let v = app.state::<Vault>();
             let Some(root) = cur_vault(&v) else { prev = None; continue };
-            let cur = watcher::snapshot(&root);
+            let mut cur = watcher::snapshot(&root);
             let change = match &prev {
                 Some((r, s)) if *r == root => {
-                    let d = watcher::diff(s, &cur);
+                    let mut d = watcher::diff(s, &cur);
+                    /* THE S1 GUARD (goal/tabclose). A removal is the only
+                       change class that DESTROYS state the user cannot get
+                       back from the event: the UI closes those tabs (R11.4)
+                       and whatever was inside the save debounce goes with
+                       them. A walk that came back short produces exactly the
+                       same Diff as a mass delete, so a claimed removal is
+                       CONFIRMED before it is believed — a second walk, then an
+                       lstat per name still claimed gone. Both cost nothing on
+                       a tick that claims no removal, which is every idle
+                       tick. */
+                    if !d.removed.is_empty() {
+                        let claimed = d.removed.len();
+                        let mut c2 = watcher::snapshot(&root);
+                        let mut d2 = watcher::diff(s, &c2);
+                        let healed = watcher::heal_short_walk(&root, &mut c2, &mut d2);
+                        if d2.removed.len() < claimed {
+                            eprintln!(
+                                "[tabclose] SHORT WALK REJECTED claimed={claimed} confirmed={} restat_healed={:?} kept={:?}",
+                                d2.removed.len(),
+                                healed,
+                                d2.removed
+                            );
+                        }
+                        cur = c2;
+                        d = d2;
+                    }
                     if d.added.is_empty() && d.removed.is_empty() && d.modified.is_empty() {
                         watcher::Change::default()
                     } else {

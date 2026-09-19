@@ -1142,12 +1142,31 @@ async function leaveVault() {
   }
 }
 
+/* -> true iff bytes reached DISK in this call (false = nothing needed writing,
+   or the write failed and the banner is up).
+
+   tabclose: this used to `return` on `!g.saveT` — "no pending timer, nothing
+   to write". That is true for every buffer the EDITOR filled (typing arms the
+   debounce) and false for the one buffer that matters here: undoCloseTab
+   restores rescued keystrokes with reloadInPlace, which arms no timer, so the
+   tab read DIRTY and flushed NOTHING, and the next close dropped the rescue on
+   the floor (phase_tabrepro RP4 at cdb768f: seq=5 dirty=1 flushed=1 with the
+   bytes nowhere on disk). The timer is not the question — the BUFFER is. */
 async function flushSave(g) {               // write g's pending edits NOW
-  if (!g) return;
+  if (!g) return false;
   lpCommit(g);                              // fold any active lp raw row first
-  if (!g.saveT) return;
+  const armed = !!g.saveT;
   clearTimeout(g.saveT); g.saveT = null;
-  await saveBuf(g);                         // R11.3 merge-before-write
+  if (!armed && !bufDirty(g)) return false; // genuinely nothing at risk
+  return await saveBuf(g);                  // R11.3 merge-before-write
+}
+/* "does the active tab hold bytes the disk does not have?" — the one test
+   behind both the [dirty:] census and every flush decision. A non-note tab
+   (kind) and a tab with no base have no buffer of their own. */
+function bufDirty(g) {
+  if (!g || g.active < 0) return false;
+  const t = g.tabs[g.active];
+  return !!(t && !t.kind && t.base !== undefined && bufOf(g) !== t.base);
 }
 
 /* ---------- group DOM + layout render ---------- */
@@ -1869,11 +1888,18 @@ async function collapseGroup(g, via) {  // R6.5: closing the last tab removes th
   // criterion 4: a pane that still owns a dirty tab FLUSHES before it goes.
   // Unlike dropTab's path the file is still on disk here, so the honest rescue
   // is the write itself — the timer below then clears nothing that mattered.
-  const atDirty = !!(at && !at.kind && g.saveT);
-  if (atDirty) { try { await flushSave(g); } catch (_) {} }
-  const atFlushed = atDirty && !g.saveT && (!at.base || bufOf(g) === at.base);
+  // tabclose: dirty is read from the BUFFER (bufDirty), not from `g.saveT`. A
+  // pane can hold unsaved bytes with no timer armed (the undo-close restore),
+  // and "no timer" said clean while the bytes were still only in RAM.
+  const atDirty = !!at && bufDirty(g);
+  const risked = atDirty ? bufOf(g) : null;
+  let atFlushed = false;
+  if (atDirty) { try { atFlushed = await flushSave(g); } catch (_) { atFlushed = false; } }
+  // a write that did not land (F1 banner, or a vanished file) still must not
+  // cost the keystrokes: park them where Ctrl+Shift+T can return them
+  if (atDirty && !atFlushed && !at.kind) ucPush(at.name, risked, "user-close");
   tabGone("pane-collapse", at || ("pane#" + (g.id == null ? "?" : g.id)),
-          { dirty: atDirty, flushed: atFlushed, via: via || "collapseGroup", tabsLeft: g.tabs.length });
+          { dirty: atDirty, flushed: atFlushed, preserved: atDirty && !atFlushed, via: via || "collapseGroup", tabsLeft: g.tabs.length });
   if (g.saveT) clearTimeout(g.saveT);
   const idx = parent.children.indexOf(g);
   const heir = parent.children[idx + 1] || parent.children[idx - 1];
@@ -2919,7 +2945,7 @@ async function afterDelete(nm) {
       const t = g.tabs[i];
       if (t.kind || t.name !== nm) continue;
       if (i === g.active && g.saveT) { clearTimeout(g.saveT); g.saveT = null; }
-      await closeTab(g, i, "user-close", "delete-dialog");
+      await closeTab(g, i, "user-close", "delete-dialog", true);   // noFlush: never resurrect what the user deleted
     }
   }
   // R14 undo-close would otherwise offer to reopen a note that no longer exists
@@ -3273,16 +3299,33 @@ function tcxTok() {
   return " [tcx:" + panes.join("|") + "]";
 }
 
-async function closeTab(g, i, cause, via) {
+/* `noFlush` exists for exactly ONE caller: afterDelete. The user said delete;
+   writing a 400 ms-old keystroke back would recreate the file they just
+   removed. Before the flushSave fix that was achieved by cancelling the timer
+   and relying on flushSave's early return — a guarantee made of a side effect,
+   which broke the moment flushSave started trusting the BUFFER instead of the
+   timer. It is a parameter now, so the one path that must not write says so. */
+async function closeTab(g, i, cause, via, noFlush) {
   const rm = g.tabs.length === 1 && groups().length > 1;      // R6.5: last tab -> the pane goes too
   await act("pane_close", { note: g.tabs[i].name, kind: g.tabs[i].kind || "note", pane_removed: rm, groups: groups().length, tabs: g.tabs.length - 1 }, async () => {
   // tabclose: recorded BEFORE the flush, with the dirty state the user's
   // keystrokes actually left — after flushSave() every tab is clean and the
   // log would claim there was never anything at risk.
   const wasDirty = i === g.active && !g.tabs[i].kind ? bufOf(g) !== g.tabs[i].base : false;
-  if (i === g.active) await flushSave(g);
-  tabGone(cause || "user-close", g.tabs[i], { dirty: wasDirty, flushed: wasDirty, via: via || "closeTab", tabsLeft: g.tabs.length - 1 });
-  if (!g.tabs[i].kind) ucPush(g.tabs[i].name, null, "user-close");   // R14 undo close tab (flushed above: no bytes to rescue)
+  const risked = wasDirty ? bufOf(g) : null;       // the bytes, read while they still exist
+  // `flushed` is now the RESULT of the flush, not the intention to flush. It
+  // used to be recorded as `wasDirty`, so a flush that wrote nothing (no timer
+  // armed — the undo-close restore path) or failed (F1 banner) logged
+  // flushed=1 with the bytes nowhere: the instrument lied on exactly the path
+  // criterion 4 is about.
+  const flushed = i === g.active && !noFlush ? await flushSave(g) : false;
+  // and if the bytes did NOT reach disk, they are not thrown away either:
+  // same promise dropTab makes, on the path the user asked for. (A note the
+  // user DELETED is the exception: afterDelete purges its rescue entry two
+  // lines later anyway, and offering the bytes back is offering a resurrect.)
+  const rescued = wasDirty && !flushed && !noFlush ? risked : null;
+  tabGone(cause || "user-close", g.tabs[i], { dirty: wasDirty, flushed, preserved: rescued != null, via: via || "closeTab", tabsLeft: g.tabs.length - 1 });
+  if (!g.tabs[i].kind) ucPush(g.tabs[i].name, rescued, cause || "user-close");   // R14 undo close tab
   unlinkTab(g, g.tabs[i], true);    // R13.4: closing a member unlinks it
   dropView(g.tabs[i]);              // R20: retained view goes with the tab
   g.tabs.splice(i, 1);
