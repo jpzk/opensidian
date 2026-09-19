@@ -27,11 +27,12 @@ packaging/flatpak/gen-cargo-sources.sh > "$ROOT/cargo-sources.json"
 # Measured 2026-09-19 at ab8b04a: with the include missing it printed
 #   Can't open .../cargo-sources.json
 #   Json-WARNING: Failed to deserialize "sources" property ...
-# on stderr, dropped EVERY source (the module's own `dir` source included) and
+# on stderr (note --show-manifest spaces its colons: "dest" : "cargo/vendor/…",
+# which is why the preflight pattern is tolerant), dropped EVERY source (the module's own `dir` source included) and
 # went on to build an empty directory, failing 200 lines later with the
 # misleading "manifest path src-tauri/Cargo.toml does not exist". A warning
 # that costs a full build to diagnose is a failure; turn it into one here.
-n=$(flatpak-builder --show-manifest "$MAN" | grep -c '"dest": "cargo/vendor/') || true
+n=$(flatpak-builder --show-manifest "$MAN" | grep -Ec "\"dest\" *: *\"cargo/vendor/") || true
 [ "$n" -ge 400 ] || { echo "PREFLIGHT FAILED: flatpak-builder sees $n vendored crates in $MAN (expected >=400) — the sources include did not load"; exit 4; }
 echo "[$(date +%H:%M:%S)] preflight: flatpak-builder sees $n vendored crate sources"
 
