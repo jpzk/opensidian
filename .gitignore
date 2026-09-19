@@ -45,3 +45,7 @@ dist/
 # on an external rename/delete instead of closing it. The title log alone cannot
 # show that the tab is still in the strip; 11-ren-after.png and 21-del-after.png can.
 !docs/recon-tabclose/shots/*.png
+# recon-bmfolder: criterion 1 is "every answer names a committed shot it was
+# read from" — group creation, the group row menu, indent geometry, delete and
+# restart are all read off these pngs, so they are evidence, not screenshots.
+!docs/recon-bmfolder/shots/*.png
