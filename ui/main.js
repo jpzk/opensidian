@@ -5870,16 +5870,18 @@ var wfRet = null;          // R33.9: where keyboard focus came from before Alt+S
 var wfLogA = [];
 function wfLog(t) { wfLogA.push(t); if (wfLogA.length > 8) wfLogA.shift(); }
 var wfDownT = 0, wfDownX = 0, wfDownY = 0;   // double-press detector (= maximise)
-/* R33.6b THE TWO PATHS. "none" = no WM/compositor will move this window, so the
-   app moves it itself (win_rect anchor + cursor delta + win_gesture) — that is
-   the Xvfb rigs, and the ONLY mechanism that works there. "wm" / "wayland" = a
-   real move protocol exists (_NET_WM_MOVERESIZE / xdg_toplevel.move), which on
-   an XWayland or Wayland session is the only mechanism that works AT ALL, so the
-   press is handed over and the compositor drags the window.
+/* R33.6b THE TWO PATHS. "none" = this window can position ITSELF, so the app
+   moves it (win_rect anchor + cursor delta + win_gesture) — that is every Xvfb
+   rig (nobody else could move it) AND every plain X11 desktop, where E1 measured
+   our geometry exact under openbox and a handover measurably WORSE (every other
+   press swallowed by the WM's pointer grab). "wm" / "wayland" = MEASURED that a
+   client's position request does nothing here, or known a priori on native
+   Wayland; then the compositor is the only party that can move the window and
+   the press is handed to it.
    CACHED, not awaited per press: the WM-less path must keep the timing it has
    today (panedrag is green because of it), so the press path adds zero IPC.
-   "none" is the boot value, so a press that beats the probe home takes today's
-   path — the fallback is the behaviour this repo has evidence for, never a hang. */
+   "none" is the boot value and the value until something is measured, so the
+   fallback is always the behaviour this repo has evidence for, never a hang. */
 var wfProto = "none";
 /* R33.6b DIAGNOSTIC: what the webview actually receives around a handover.
    Published as [wfd:] so a phase can tell "the press never arrived" apart from
@@ -5957,25 +5959,24 @@ async function wfBegin(dir, ev, el) {
   }
   ev.preventDefault();
   /* ===== THE LINE THAT CHOOSES THE PATH (R33.6b, docs/negctl-hdrdrag) =====
-     A move on a session that HAS a move protocol is the WM's/compositor's to
-     perform: it owns the window position (measured — an XWayland client's own
-     position requests are dropped on the floor, see docs/recon-hdrdrag), and it
-     is the only party that can move a toplevel on Wayland. Hand the press over
-     and return: no anchor, no delta, no win_gesture, nothing for the WM's own
-     drag to fight with. Resizes are NOT handed over — the eight grips are a
-     different protocol edge and are out of this goal's scope. */
+     wfProto is "none" until the Rust side has MEASURED that this session drops
+     a client's position request on the floor (or knows it must, because the
+     session is native Wayland). "none" therefore covers both X11 cases — no WM,
+     and a WM that lets us position ourselves — and both keep today's anchor+delta
+     path, unchanged, which is what E1 measured exact under openbox and what the
+     gate rigs depend on. When the path IS "wm"/"wayland", the compositor owns the
+     position and our arithmetic is a 0 px no-op, so hand the press over and
+     return: no anchor, no delta, no win_gesture, nothing for its drag to fight.
+     Resizes are NOT handed over — the eight grips are a different protocol edge
+     and are out of this goal's scope.
+     KNOWN, MEASURED COST of the handover (docs/recon-hdrdrag/B-ALT.log): the WM
+     grabs the pointer for its move loop, so the webview never sees that press's
+     release and the NEXT press can be swallowed. That is why the handover is
+     spent only where the alternative moves the window 0 px every time. */
   if (dir === "move" && wfProto !== "none") {
     wfLog("h" + wfProto + "#" + ++wfSeq);
     wfLast = "handover:" + wfProto;
-    /* EXPERIMENT (R33.6b): capture the pointer before handing over. The WM takes
-       an X pointer grab for its own move loop, so the real release lands on the
-       WM and the webview never sees it — measured: presses alternate MOVED/DEAD
-       because the engine still believes button 1 is down and suppresses the next
-       pointerdown. GTK reports a foreign grab as a grab-broken event; IF WebKit
-       maps that to pointercancel, holding capture is what makes it arrive, which
-       would clear the state for free. wfEv counts what actually shows up. */
-    try { ev.target.setPointerCapture(ev.pointerId); } catch (e) { /* not the mechanism */ }
-    inv("win_drag_start").then(p => { wfLast = "handover:" + p; updateTitle(); }).catch(noteErr);
+    inv("win_drag_start").then(p => { wfProto = p; wfLast = "handover:" + p; updateTitle(); }).catch(noteErr);
     return updateTitle();
   }
   const seq = ++wfSeq;
@@ -6021,6 +6022,14 @@ function wfEnd() {
     try { a.el.releasePointerCapture(a.pid); } catch (e) { /* already gone */ }
   wfA = null; wfPend = null;
   wfSeq++;                    // invalidate any anchor still in flight (see wfSeq)
+  /* R33.6b: the path can change UNDER US. win_gesture measures, during a real
+     move, whether this session honours a client-set position, and the verdict
+     can only arrive after the gesture has been running a moment — so the answer
+     is re-read HERE, after the drag, never in the press path (which must keep
+     the timing the WM-less rigs are green with). On every session this repo
+     gates, the answer is the same "none" it booted with. */
+  if (a && a.dir === "move" && wfProto === "none")
+    inv("win_move_proto").then(p => { if (p !== wfProto) { wfProto = p; wfLog("p" + p); } updateTitle(); }).catch(noteErr);
 }
 function wfArm() {
   // R33.6b: ask ONCE who moves this window, then publish it as [wfp:] — a smoke

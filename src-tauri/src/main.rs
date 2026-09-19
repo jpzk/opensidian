@@ -2341,7 +2341,17 @@ fn win_rect(win: tauri::Window) -> Result<WinRect, String> {
 /// (win_rect at pointerdown) and the cumulative delta, so the geometry is
 /// absolute at every step and a dropped event cannot make the window drift.
 #[tauri::command]
-fn win_gesture(win: tauri::Window, dir: String, x: f64, y: f64, w: f64, h: f64, dx: f64, dy: f64) -> Result<(), String> {
+fn win_gesture(
+    win: tauri::Window,
+    proto: tauri::State<'_, DragProto>,
+    dir: String,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    dx: f64,
+    dy: f64,
+) -> Result<(), String> {
     // THE ONE PLACE A GESTURE CANNOT LIE. The census ([wfg:]/[wfl:]) is published
     // through the window TITLE, and a title that stops updating looks exactly like a
     // gesture that never happened — an iteration was spent on that ambiguity, with
@@ -2356,7 +2366,60 @@ fn win_gesture(win: tauri::Window, dir: String, x: f64, y: f64, w: f64, h: f64, 
     if nx != x || ny != y {
         win.set_position(tauri::LogicalPosition::new(nx, ny)).map_err(|e| e.to_string())?;
     }
+    // ---- R33.6b THE MEASUREMENT THAT CHOOSES THE PATH (see drag_path) --------
+    // Everything above is unchanged, on purpose: the geometry path runs FIRST and
+    // in full, so a session that honours it behaves exactly as it does today and
+    // phase panedrag passes for the reason it passes now. What follows only LOOKS.
+    //
+    // Why not at the first step: set_position on X11 is a request, and the reply
+    // (ConfigureNotify) arrives later — reading back immediately would call a
+    // healthy WM a liar and hand the press over on the one desktop where our
+    // arithmetic is exact (openbox, E1). So the verdict waits for a gesture that
+    // has been asking for a real displacement for a real amount of time, and asks
+    // the only question that cannot be faked: did the window leave the anchor?
+    if dir == "move" && win_gesture_should_probe(&proto) {
+        let settle = std::time::Duration::from_millis(250);
+        let mut st = proto.pos.lock().map_err(|e| e.to_string())?;
+        match st.anchor {
+            // a different anchor = a different gesture: restart the clock.
+            Some(a) if a == (x, y) => {}
+            _ => {
+                st.anchor = Some((x, y));
+                st.t0 = Some(std::time::Instant::now());
+            }
+        }
+        let old_enough = st.t0.map(|t| t.elapsed() >= settle).unwrap_or(false);
+        // 8 px: below that a WM's own snapping could legitimately eat the delta,
+        // and a verdict off a 1 px request would be noise.
+        if old_enough && dx.abs().max(dy.abs()) >= 8.0 {
+            let sf = win.scale_factor().map_err(|e| e.to_string())?;
+            let p = win.outer_position().map_err(|e| e.to_string())?.to_logical::<f64>(sf);
+            let moved = (p.x - x).abs().max((p.y - y).abs()) >= 3.0;
+            st.honoured = Some(moved);
+            drop(st); // start_dragging re-enters nothing, but never hold a lock across it
+            eprintln!(
+                "[win_drag] position probe: anchor={x},{y} requested={nx},{ny} actual={},{} honoured={moved}",
+                p.x, p.y
+            );
+            if !moved {
+                // The press is STILL DOWN — this is the same gesture. Handing over
+                // now rescues the very first drag of the session instead of making
+                // the user drag twice; every later press takes the "wm"/"wayland"
+                // branch in wfBegin without any of this running again.
+                eprintln!("[win_drag] the session ignores client positioning — handing this press over mid-gesture");
+                win.start_dragging().map_err(|e| e.to_string())?;
+            }
+        }
+    }
     Ok(())
+}
+
+/// Is the empirical probe worth running at all? Only where a verdict could
+/// CHANGE the path: an X11 display, a WM that advertises the move protocol, and
+/// no verdict yet. On the WM-less rigs this is false at boot and stays false, so
+/// the gate's gesture path runs exactly the code it ran before R33.6b.
+fn win_gesture_should_probe(proto: &tauri::State<'_, DragProto>) -> bool {
+    proto.x11 && proto.moveresize && proto.pos.lock().map(|p| p.honoured.is_none()).unwrap_or(false)
 }
 
 /* ---------- R33.6b TWO-PATH DRAG: who is allowed to move this window? -------
@@ -2390,27 +2453,67 @@ fn win_gesture(win: tauri::Window, dir: String, x: f64, y: f64, w: f64, h: f64, 
    bug being fixed, never worse than it. Probed ONCE at setup on the GTK main
    thread: a WM started mid-session keeps the old answer until restart, which is
    stated here because it is real and is the reason [wfp:] is published. */
-fn drag_path(is_x11: bool, moveresize_advertised: bool) -> &'static str {
-    match (is_x11, moveresize_advertised) {
-        // not an X11 display => native Wayland: only the compositor may move a
-        // toplevel, so there is no second path to choose from.
-        (false, _) => "wayland",
-        (true, true) => "wm",
-        // an X server with no WM advertising the move protocol: the app's own
-        // absolute geometry is the only thing that can move this window (E3).
-        (true, false) => "none",
+   AND THE RULE ITSELF WAS MEASURED WRONG ONCE, WHICH IS WHY IT IS THIS SHAPE.
+   The first cut handed the press over whenever a WM advertised the protocol.
+   Under openbox that SHIPS A REGRESSION: docs/recon-hdrdrag/B-ALT.log drives
+   five consecutive header drags and gets MOVED, DEAD, MOVED, DEAD, MOVED — the
+   WM's move loop takes an X pointer grab, the webview never sees the release,
+   and every other press is swallowed. E1 says our own geometry path is EXACT
+   there. So "a move protocol exists" is NOT a reason to hand over; "this window
+   cannot position itself" is. Those two are the same thing only on Wayland.
+   THE DISCRIMINATOR IS THEREFORE EMPIRICAL, and it is the most positive test
+   available: request a position, then look at where the window actually IS.
+   A session that honours client positioning (X11, WM or not) keeps today's
+   anchor+delta path byte-for-byte; a session that drops the request on the floor
+   (XWayland under a compositor) is detected BY THAT and the press is handed over
+   — mid-gesture the first time, at press time thereafter. */
+fn drag_path(is_x11: bool, moveresize_advertised: bool, position_honoured: Option<bool>) -> &'static str {
+    match (is_x11, moveresize_advertised, position_honoured) {
+        // not an X11 display => native Wayland: a client cannot position itself at
+        // all, so there is nothing to measure and no second path to choose from.
+        (false, _, _) => "wayland",
+        // an X server where no WM advertises the move protocol: the app's own
+        // absolute geometry is the only thing that CAN move this window (E3, every
+        // Xvfb gate rig). This arm is the belt on the braces — even a wrong
+        // empirical verdict cannot take the gate off its measured path.
+        (true, false, _) => "none",
+        // MEASURED: a position request was issued and the window did not move.
+        // Someone else owns the position; hand the press to them (E2).
+        (true, true, Some(false)) => "wm",
+        // honoured, or not yet measured: the path this repo has evidence for.
+        (true, true, _) => "none",
     }
 }
 
-/// The path this SESSION will use, probed once (see the block above).
-struct DragProto(&'static str);
+/// What this session lets us do, probed once at setup + refined by measurement.
+struct DragProto {
+    /// is the live GdkDisplay an X11 one (a real X server OR XWayland)?
+    x11: bool,
+    /// does a WM advertise `_NET_WM_MOVERESIZE` on the root window right now?
+    moveresize: bool,
+    /// the empirical half — `Some(false)` once a move request has been measured
+    /// to do nothing. Written by win_gesture, read by win_move_proto.
+    pos: Mutex<PosProbe>,
+}
+
+/// State for the one measurement that decides the path (see win_gesture).
+#[derive(Default)]
+struct PosProbe {
+    /// the anchor of the gesture currently being watched — a new anchor is a new
+    /// gesture, which is how the probe knows to restart its clock.
+    anchor: Option<(f64, f64)>,
+    /// when that gesture's first step was applied.
+    t0: Option<std::time::Instant>,
+    /// None = not measured yet; Some(true) = the window moved when asked.
+    honoured: Option<bool>,
+}
 
 #[cfg(target_os = "linux")]
-fn probe_drag_proto() -> &'static str {
+fn probe_drag_proto() -> DragProto {
     use gdk::prelude::*;
     let Some(display) = gdk::Display::default() else {
         // no GdkDisplay at all: nothing to hand a press to.
-        return drag_path(true, false);
+        return DragProto { x11: true, moveresize: false, pos: Mutex::new(PosProbe::default()) };
     };
     // The downcast IS the session test: GDK hands back a GdkX11Screen on a real
     // X server AND under XWayland, and a GdkWaylandScreen on a native Wayland
@@ -2421,32 +2524,40 @@ fn probe_drag_proto() -> &'static str {
         // root window behind a live `_NET_SUPPORTING_WM_CHECK`, so this is "is a
         // WM running here NOW and does it implement the move protocol", not "was
         // one running when someone built this".
-        Ok(xs) => drag_path(true, xs.supports_net_wm_hint(&gdk::Atom::intern("_NET_WM_MOVERESIZE"))),
-        Err(_) => drag_path(false, false),
+        Ok(xs) => DragProto {
+            x11: true,
+            moveresize: xs.supports_net_wm_hint(&gdk::Atom::intern("_NET_WM_MOVERESIZE")),
+            pos: Mutex::new(PosProbe::default()),
+        },
+        Err(_) => DragProto { x11: false, moveresize: false, pos: Mutex::new(PosProbe::default()) },
     }
 }
 
 #[cfg(not(target_os = "linux"))]
-fn probe_drag_proto() -> &'static str {
+fn probe_drag_proto() -> DragProto {
     // Nothing is measured off this platform, so claim nothing: the geometry path
     // is the one this repo has evidence for.
-    drag_path(true, false)
+    DragProto { x11: true, moveresize: false, pos: Mutex::new(PosProbe::default()) }
 }
 
 /// Which mechanism will move this window — "wm" | "wayland" | "none".
-/// Read-only; the UI caches it at boot and publishes it as the `[wfp:]` census
-/// token, so a test never has to infer the path from whether the window moved.
+/// Read-only; the UI caches it and publishes it as the `[wfp:]` census token, so
+/// a test never has to infer the path from whether the window moved. It is
+/// re-read after each drag because the empirical half can flip it mid-session.
 #[tauri::command]
 fn win_move_proto(proto: tauri::State<'_, DragProto>) -> String {
-    proto.0.to_string()
+    let honoured = proto.pos.lock().map(|p| p.honoured).unwrap_or(None);
+    drag_path(proto.x11, proto.moveresize, honoured).to_string()
 }
 
-/// R33.6b: hand the press to the WM/compositor when a real move protocol exists.
-/// Returns the path actually taken, so the UI can log it and a smoke phase can
-/// assert on it; "none" means the caller must run today's anchor+delta gesture.
+/// R33.6b: hand the press to the WM/compositor when this session will not let the
+/// window position itself. Returns the path actually taken, so the UI can log it
+/// and a smoke phase can assert on it; "none" means the caller must run today's
+/// anchor+delta gesture.
 #[tauri::command]
 fn win_drag_start(win: tauri::Window, proto: tauri::State<'_, DragProto>) -> Result<String, String> {
-    let p = proto.0;
+    let honoured = proto.pos.lock().map(|p| p.honoured).unwrap_or(None);
+    let p = drag_path(proto.x11, proto.moveresize, honoured);
     // Written by the process that actually asks, for the same reason win_gesture
     // logs: a title census that stops updating looks exactly like a handover that
     // never happened.
@@ -2634,8 +2745,13 @@ fn main() {
             {
                 use tauri::Manager;
                 let proto = probe_drag_proto();
-                eprintln!("[win_drag] session move protocol: {proto}");
-                app.manage(DragProto(proto));
+                eprintln!(
+                    "[win_drag] session: x11={} _NET_WM_MOVERESIZE={} -> path {}",
+                    proto.x11,
+                    proto.moveresize,
+                    drag_path(proto.x11, proto.moveresize, None)
+                );
+                app.manage(proto);
             }
             // R36.4 the persisted zoom is applied HERE, before the first paint the
             // user sees, and not from JS: a webview that boots at 100% and is
@@ -5058,20 +5174,30 @@ mod tests {
     }
 
     /// R33.6b THE PATH CHOICE, as a pure function so it is testable without a
-    /// display: a probe needs a live GdkDisplay, a table of three cases does not.
-    /// Each row is one of the three environments docs/recon-hdrdrag measured.
+    /// display: a probe needs a live GdkDisplay, a table of cases does not.
+    /// Each row is one of the environments docs/recon-hdrdrag measured.
     #[test]
     fn the_drag_path_is_chosen_from_the_session_not_the_platform() {
         // E3, every Xvfb gate rig: no WM advertises the move protocol, so the
         // app's own geometry is the ONLY thing that can move the window. This is
-        // the row that keeps phase panedrag passing for the reason it passes today.
-        assert_eq!(drag_path(true, false), "none", "X11 with no WM: keep the anchor+delta path");
-        // E1, X11 + openbox: a real WM that implements _NET_WM_MOVERESIZE.
-        assert_eq!(drag_path(true, true), "wm", "X11 + a WM offering the move protocol: hand it over");
-        // E2, native Wayland: a client cannot position itself at all, whatever
-        // else is advertised — there is no X11 root window to advertise it on.
-        assert_eq!(drag_path(false, false), "wayland", "Wayland: only the compositor may move a toplevel");
-        assert_eq!(drag_path(false, true), "wayland", "Wayland stays Wayland");
+        // the row that keeps phase panedrag passing for the reason it passes today
+        // — and it holds whatever the empirical probe would say, which is the belt
+        // on the braces: a wrong verdict cannot take the gate off its path.
+        assert_eq!(drag_path(true, false, None), "none", "X11 with no WM: keep the anchor+delta path");
+        assert_eq!(drag_path(true, false, Some(false)), "none", "no WM to hand to, whatever was measured");
+        // E1, X11 + openbox: a WM offering _NET_WM_MOVERESIZE, and MEASURED to let
+        // the window position itself exactly. Handing over there regresses it —
+        // five consecutive handover drags went MOVED,DEAD,MOVED,DEAD,MOVED — so a
+        // WM that merely EXISTS is not a reason to hand the press over.
+        assert_eq!(drag_path(true, true, None), "none", "a WM exists, but nothing says our geometry fails");
+        assert_eq!(drag_path(true, true, Some(true)), "none", "measured: the window moved when asked");
+        // E2, the operator's bug: the request was issued and the window did not
+        // move. Someone else owns the position — hand the press to them.
+        assert_eq!(drag_path(true, true, Some(false)), "wm", "measured: client positioning is ignored");
+        // Native Wayland: a client cannot position itself at all, whatever else is
+        // advertised — there is no X11 root window to advertise it on.
+        assert_eq!(drag_path(false, false, None), "wayland", "Wayland: only the compositor may move a toplevel");
+        assert_eq!(drag_path(false, true, Some(true)), "wayland", "Wayland stays Wayland");
     }
 
     /// An unknown direction is an ERROR, never a silent no-op: win_gesture turns
