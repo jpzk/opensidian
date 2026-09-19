@@ -737,8 +737,10 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
    not touch (proven by the drag-select phase). Declaring `default` here also
    makes every clickable's own `cursor: pointer` LOAD-BEARING, because the UA's
    "auto over a link = hand" fallback no longer applies to descendants — hence
-   the explicit pointer on a.wiki below (a.ext :734 and a.tag :736 already had
-   one). Live preview (.lp / .lprow, :725) keeps `cursor: text` and source mode
+   the explicit pointer on a.wiki below (a.ext, now :754, and a.tag :756/:758,
+   already had one — the brief's :734/:736 were their numbers before this
+   comment grew above them; a.wiki itself is :752).
+   Live preview (.lp / .lprow, :725) keeps `cursor: text` and source mode
    is untouched: those views ARE editable. Divergence from stock 1.13.7, which
    shows the I-beam over reading-view text, is recorded in
    docs/recon-rvcursor/STOCK.md; the operator ask is the requirement. */
