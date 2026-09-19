@@ -2359,6 +2359,99 @@ fn win_gesture(win: tauri::Window, dir: String, x: f64, y: f64, w: f64, h: f64, 
     Ok(())
 }
 
+/* ---------- R33.6b TWO-PATH DRAG: who is allowed to move this window? -------
+   MEASURED, not assumed — docs/recon-hdrdrag/README.md carries the transcripts:
+     E1  X11 + openbox 3.6.1 on Xvfb :118: our anchor+delta client-set geometry
+         SURVIVES exactly (no snap, no frame offset, no late revert). R33.6's
+         suspicion that a real WM "fights" us is FALSE there.
+     E2  a Wayland session with the app as an XWAYLAND client (sway 1.9 /
+         Xwayland 23.2.6): our whole path runs — win_gesture 0->2->4, four
+         [win_gesture] lines in the app log — and the window moves 0 px. The
+         control settles it: an external `xdotool windowmove` is ignored too,
+         while the compositor's own `move position` works. The compositor owns
+         the position, so NO X11-side position request is honoured, ever.
+     E3  no WM at all (every Xvfb gate rig): our path works and is the ONLY
+         mechanism that can — there is nobody to hand the press to.
+   So the fix is not arithmetic, it is WHO MOVES THE WINDOW, chosen per session.
+
+   THE TEST IS POSITIVE AND ABOUT THE LIVE SESSION, never a platform string:
+   `gdk_x11_screen_supports_net_wm_hint(_NET_WM_MOVERESIZE)` asks the running
+   root window's `_NET_SUPPORTED` (behind a live `_NET_SUPPORTING_WM_CHECK`),
+   i.e. "is there a window manager here, right now, that implements the move
+   protocol?" — openbox YES, sway's XWayland YES, the WM-less rig NO. A display
+   that does not downcast to an X11 display is a native Wayland display, where a
+   client cannot position itself at all and `start_dragging` (xdg_toplevel.move)
+   is the only mechanism that exists.
+   WHEN THE DETECTION IS WRONG, each direction: a false "wm" hands the press to
+   a WM that ignores _NET_WM_MOVERESIZE -> the window does not move (no drift,
+   no damage, and the [wfp:] census token says which path was taken); a false
+   "none" falls back to today's geometry path, which is correct wherever the
+   client may position itself and a 0 px no-op where it may not — exactly the
+   bug being fixed, never worse than it. Probed ONCE at setup on the GTK main
+   thread: a WM started mid-session keeps the old answer until restart, which is
+   stated here because it is real and is the reason [wfp:] is published. */
+fn drag_path(is_x11: bool, moveresize_advertised: bool) -> &'static str {
+    match (is_x11, moveresize_advertised) {
+        // not an X11 display => native Wayland: only the compositor may move a
+        // toplevel, so there is no second path to choose from.
+        (false, _) => "wayland",
+        (true, true) => "wm",
+        // an X server with no WM advertising the move protocol: the app's own
+        // absolute geometry is the only thing that can move this window (E3).
+        (true, false) => "none",
+    }
+}
+
+/// The path this SESSION will use, probed once (see the block above).
+struct DragProto(&'static str);
+
+#[cfg(target_os = "linux")]
+fn probe_drag_proto() -> &'static str {
+    use gdk::prelude::*;
+    let Some(display) = gdk::Display::default() else {
+        // no GdkDisplay at all: nothing to hand a press to.
+        return drag_path(true, false);
+    };
+    let Ok(x11) = display.downcast::<gdkx11::X11Display>() else {
+        return drag_path(false, false);
+    };
+    let Ok(screen) = x11.default_screen().downcast::<gdkx11::X11Screen>() else {
+        return drag_path(true, false);
+    };
+    drag_path(true, screen.supports_net_wm_hint(&gdk::Atom::intern("_NET_WM_MOVERESIZE")))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn probe_drag_proto() -> &'static str {
+    // Nothing is measured off this platform, so claim nothing: the geometry path
+    // is the one this repo has evidence for.
+    drag_path(true, false)
+}
+
+/// Which mechanism will move this window — "wm" | "wayland" | "none".
+/// Read-only; the UI caches it at boot and publishes it as the `[wfp:]` census
+/// token, so a test never has to infer the path from whether the window moved.
+#[tauri::command]
+fn win_move_proto(proto: tauri::State<'_, DragProto>) -> String {
+    proto.0.to_string()
+}
+
+/// R33.6b: hand the press to the WM/compositor when a real move protocol exists.
+/// Returns the path actually taken, so the UI can log it and a smoke phase can
+/// assert on it; "none" means the caller must run today's anchor+delta gesture.
+#[tauri::command]
+fn win_drag_start(win: tauri::Window, proto: tauri::State<'_, DragProto>) -> Result<String, String> {
+    let p = proto.0;
+    // Written by the process that actually asks, for the same reason win_gesture
+    // logs: a title census that stops updating looks exactly like a handover that
+    // never happened.
+    eprintln!("[win_drag] proto={p} handover={}", p != "none");
+    if p != "none" {
+        win.start_dragging().map_err(|e| e.to_string())?;
+    }
+    Ok(p.to_string())
+}
+
 #[tauri::command]
 fn win_minimize(win: tauri::Window) -> Result<(), String> {
     win.minimize().map_err(|e| e.to_string())
@@ -2530,6 +2623,15 @@ fn main() {
         .manage(ZoomLevel(Mutex::new(read_zoom_cfg())))
         .setup(|app| {
             spawn_watcher(app.handle().clone());
+            // R33.6b: probe the LIVE session once, HERE — setup runs on the GTK
+            // main thread with the display already open, and GDK may not be
+            // touched from the command threads where win_drag_start runs.
+            {
+                use tauri::Manager;
+                let proto = probe_drag_proto();
+                eprintln!("[win_drag] session move protocol: {proto}");
+                app.manage(DragProto(proto));
+            }
             // R36.4 the persisted zoom is applied HERE, before the first paint the
             // user sees, and not from JS: a webview that boots at 100% and is
             // rescaled after the UI script runs shows one frame at the wrong size
@@ -2603,7 +2705,7 @@ fn main() {
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme, get_palette, set_palette,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
-            win_rect, win_gesture, win_minimize, win_toggle_max, win_close,
+            win_rect, win_gesture, win_move_proto, win_drag_start, win_minimize, win_toggle_max, win_close,
             zoom, zoom_get,
             settings::settings_model
         ])
@@ -4950,6 +5052,23 @@ mod tests {
         assert_eq!(c, (100.0, 50.0, WIN_MIN_W, WIN_MIN_H), "an SE clamp leaves the origin alone");
     }
 
+    /// R33.6b THE PATH CHOICE, as a pure function so it is testable without a
+    /// display: a probe needs a live GdkDisplay, a table of three cases does not.
+    /// Each row is one of the three environments docs/recon-hdrdrag measured.
+    #[test]
+    fn the_drag_path_is_chosen_from_the_session_not_the_platform() {
+        // E3, every Xvfb gate rig: no WM advertises the move protocol, so the
+        // app's own geometry is the ONLY thing that can move the window. This is
+        // the row that keeps phase panedrag passing for the reason it passes today.
+        assert_eq!(drag_path(true, false), "none", "X11 with no WM: keep the anchor+delta path");
+        // E1, X11 + openbox: a real WM that implements _NET_WM_MOVERESIZE.
+        assert_eq!(drag_path(true, true), "wm", "X11 + a WM offering the move protocol: hand it over");
+        // E2, native Wayland: a client cannot position itself at all, whatever
+        // else is advertised — there is no X11 root window to advertise it on.
+        assert_eq!(drag_path(false, false), "wayland", "Wayland: only the compositor may move a toplevel");
+        assert_eq!(drag_path(false, true), "wayland", "Wayland stays Wayland");
+    }
+
     /// An unknown direction is an ERROR, never a silent no-op: win_gesture turns
     /// None into a rejected IPC call, so a renamed handle shows up as a broken
     /// gesture in the log instead of as a window that mysteriously will not move.
@@ -4979,7 +5098,7 @@ mod tests {
         for id in ["wframe", "wf-min", "wf-max", "wf-close", "wrz"] {
             assert!(html.contains(&format!("id=\"{id}\"")), "ui/index.html lost #{id}");
         }
-        for cmd in ["win_rect", "win_gesture", "win_minimize", "win_toggle_max", "win_close"] {
+        for cmd in ["win_rect", "win_gesture", "win_move_proto", "win_drag_start", "win_minimize", "win_toggle_max", "win_close"] {
             assert!(js.contains(&format!("inv(\"{cmd}\"")), "ui/main.js no longer calls {cmd}");
             assert!(src.contains(&format!("fn {cmd}(")), "{cmd} is called by the UI but not implemented");
         }

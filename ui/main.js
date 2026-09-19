@@ -5808,14 +5808,23 @@ $("settings").onmousedown = e => { if (e.target === $("settings")) closeSettings
    With `decorations: false` there is no WM frame, so moving, resizing,
    minimising, maximising and closing the window are this file's job.
 
-   WHY THE GESTURES ARE OURS AND NOT THE WM'S: the obvious implementation hands
-   the press to the WM (start_dragging / _NET_WM_MOVERESIZE) and lets it move the
-   window. That does nothing where there is NO window manager — which is exactly
-   the state of every Xvfb display this repo tests on, and an undecorated window
-   there would be permanently stuck. So a gesture sends the ANCHOR rect it started
-   from plus the cursor delta, and win_gesture applies the resulting geometry
-   (absolute at every step: a dropped pointermove cannot make the window drift).
+   WHY THE GESTURES ARE OURS AND NOT THE WM'S — *WHEN THERE IS NO WM*: the
+   obvious implementation hands the press to the WM (start_dragging /
+   _NET_WM_MOVERESIZE) and lets it move the window. That does nothing where there
+   is NO window manager — which is exactly the state of every Xvfb display this
+   repo tests on, and an undecorated window there would be permanently stuck. So
+   a gesture sends the ANCHOR rect it started from plus the cursor delta, and
+   win_gesture applies the resulting geometry (absolute at every step: a dropped
+   pointermove cannot make the window drift).
    Cost: the window follows the cursor one frame late. R33 records the divergence.
+   AND THE CONVERSE, WHICH R33.6 MISSED AND AN OPERATOR PAID FOR (R33.6b): where
+   a compositor owns the position — any Wayland session, including the app
+   running as an XWayland client — a client's own position request is DROPPED,
+   so that same path moves the window 0 px and nothing about the arithmetic can
+   fix it (docs/recon-hdrdrag/README.md has the measurement). The path is
+   therefore chosen at runtime from a positive test of the live session
+   (win_move_proto -> wfProto, published as [wfp:]), and BOTH paths ship: see
+   "THE LINE THAT CHOOSES THE PATH" in wfBegin.
 
    THE DRAG REGION is the empty part of ANY pane header (the strip itself and the
    background of a tab bar, never a tab or a button) — stock drags by the same
@@ -5861,6 +5870,17 @@ var wfRet = null;          // R33.9: where keyboard focus came from before Alt+S
 var wfLogA = [];
 function wfLog(t) { wfLogA.push(t); if (wfLogA.length > 8) wfLogA.shift(); }
 var wfDownT = 0, wfDownX = 0, wfDownY = 0;   // double-press detector (= maximise)
+/* R33.6b THE TWO PATHS. "none" = no WM/compositor will move this window, so the
+   app moves it itself (win_rect anchor + cursor delta + win_gesture) — that is
+   the Xvfb rigs, and the ONLY mechanism that works there. "wm" / "wayland" = a
+   real move protocol exists (_NET_WM_MOVERESIZE / xdg_toplevel.move), which on
+   an XWayland or Wayland session is the only mechanism that works AT ALL, so the
+   press is handed over and the compositor drags the window.
+   CACHED, not awaited per press: the WM-less path must keep the timing it has
+   today (panedrag is green because of it), so the press path adds zero IPC.
+   "none" is the boot value, so a press that beats the probe home takes today's
+   path — the fallback is the behaviour this repo has evidence for, never a hang. */
+var wfProto = "none";
 
 function wfDragRegion(t) {    // is this event target part of the drag region?
   if (!t || !t.classList) return false;
@@ -5931,6 +5951,20 @@ async function wfBegin(dir, ev, el) {
     if (dbl) { wfDownT = 0; return wfToggleMax(); }
   }
   ev.preventDefault();
+  /* ===== THE LINE THAT CHOOSES THE PATH (R33.6b, docs/negctl-hdrdrag) =====
+     A move on a session that HAS a move protocol is the WM's/compositor's to
+     perform: it owns the window position (measured — an XWayland client's own
+     position requests are dropped on the floor, see docs/recon-hdrdrag), and it
+     is the only party that can move a toplevel on Wayland. Hand the press over
+     and return: no anchor, no delta, no win_gesture, nothing for the WM's own
+     drag to fight with. Resizes are NOT handed over — the eight grips are a
+     different protocol edge and are out of this goal's scope. */
+  if (dir === "move" && wfProto !== "none") {
+    wfLog("h" + wfProto + "#" + ++wfSeq);
+    wfLast = "handover:" + wfProto;
+    inv("win_drag_start").then(p => { wfLast = "handover:" + p; updateTitle(); }).catch(noteErr);
+    return updateTitle();
+  }
   const seq = ++wfSeq;
   // ACTIVE IMMEDIATELY, anchor later: the gesture exists from the press, so a
   // pointerup that lands during the win_rect round trip can cancel it (wfEnd bumps
@@ -5976,6 +6010,10 @@ function wfEnd() {
   wfSeq++;                    // invalidate any anchor still in flight (see wfSeq)
 }
 function wfArm() {
+  // R33.6b: ask ONCE who moves this window, then publish it as [wfp:] — a smoke
+  // phase must be able to read the path that was taken instead of inferring it
+  // from whether the window ended up somewhere.
+  inv("win_move_proto").then(p => { wfProto = p; updateTitle(); }).catch(noteErr);
   // spelled out, one call per control: the cargo test greps for inv("win_...")
   // in this file, which is the only thing that notices when a command is renamed
   // in Rust and the button silently becomes a no-op (ui/ is not a cargo input)
@@ -6048,7 +6086,10 @@ function wfArm() {
      smoke phase. The census is republished by the first real updateTitle anyway. */
   if (typeof state !== "undefined" && state) updateTitle();
 }
-/* census: [wf:<buttons><d|-><grips>] [wfm:<maximised>] [wfk:<focused control>].
+/* census: [wf:<buttons><d|-><grips>] [wfm:<maximised>] [wfk:<focused control>]
+   [wfp:<none|wm|wayland>] — which mechanism this session moves the window with
+   (R33.6b), read from win_move_proto at arm time, so a phase asserts the PATH
+   and not just the outcome.
    `d` = the gesture listeners are armed; without them the window cannot be
    moved, and the smoke's move assertion is the thing that notices. */
 function wfTok() {
@@ -6056,7 +6097,7 @@ function wfTok() {
   const g = document.querySelectorAll("#wrz i").length;
   const a = document.activeElement;
   const k = a && a.id && a.id.indexOf("wf-") === 0 ? a.id : "-";
-  return " [wf:" + b + (wfArmed ? "d" : "-") + g + "] [wfm:" + (wfMax ? 1 : 0) + "] [wfk:" + k + "] [wfg:" + wfLast + "] [wfl:" + wfLogA.join(">") + "] [hdr:" + wfHdrTok() + "]";
+  return " [wf:" + b + (wfArmed ? "d" : "-") + g + "] [wfm:" + (wfMax ? 1 : 0) + "] [wfk:" + k + "] [wfg:" + wfLast + "] [wfl:" + wfLogA.join(">") + "] [wfp:" + wfProto + "] [hdr:" + wfHdrTok() + "]";
 }
 wfArm();
 
