@@ -2212,10 +2212,36 @@ fn spawn_watcher(app: tauri::AppHandle) {
             std::thread::sleep(std::time::Duration::from_millis(watcher::TICK_MS));
             let v = app.state::<Vault>();
             let Some(root) = cur_vault(&v) else { prev = None; continue };
-            let cur = watcher::snapshot(&root);
+            let mut cur = watcher::snapshot(&root);
             let change = match &prev {
                 Some((r, s)) if *r == root => {
-                    let d = watcher::diff(s, &cur);
+                    let mut d = watcher::diff(s, &cur);
+                    /* THE S1 GUARD (goal/tabclose). A removal is the only
+                       change class that DESTROYS state the user cannot get
+                       back from the event: the UI closes those tabs (R11.4)
+                       and whatever was inside the save debounce goes with
+                       them. A walk that came back short produces exactly the
+                       same Diff as a mass delete, so a claimed removal is
+                       CONFIRMED before it is believed — a second walk, then an
+                       lstat per name still claimed gone. Both cost nothing on
+                       a tick that claims no removal, which is every idle
+                       tick. */
+                    if !d.removed.is_empty() {
+                        let claimed = d.removed.len();
+                        let mut c2 = watcher::snapshot(&root);
+                        let mut d2 = watcher::diff(s, &c2);
+                        let healed = watcher::heal_short_walk(&root, &mut c2, &mut d2);
+                        if d2.removed.len() < claimed {
+                            eprintln!(
+                                "[tabclose] SHORT WALK REJECTED claimed={claimed} confirmed={} restat_healed={:?} kept={:?}",
+                                d2.removed.len(),
+                                healed,
+                                d2.removed
+                            );
+                        }
+                        cur = c2;
+                        d = d2;
+                    }
                     if d.added.is_empty() && d.removed.is_empty() && d.modified.is_empty() {
                         watcher::Change::default()
                     } else {
@@ -2340,6 +2366,60 @@ fn win_rect(win: tauri::Window) -> Result<WinRect, String> {
 /// Apply one step of a move/resize gesture. The UI sends the ANCHOR rect
 /// (win_rect at pointerdown) and the cumulative delta, so the geometry is
 /// absolute at every step and a dropped event cannot make the window drift.
+/// TABCLOSE INSTRUMENTATION — the one place a tab removal cannot lie.
+///
+/// The operator reported "when I'm editing a note, it randomly closes". There
+/// was no way to answer WHY from any artifact: the census is a title that only
+/// carries the CURRENT state, and a tab that is gone leaves nothing behind. So
+/// every path that removes a tab (ui/main.js dropTab / closeTab /
+/// collapseGroup / enterVault) calls this, and the line lands in the app log
+/// (`$OUT/app-*.log` under the smoke rig, stderr for a real user) where a
+/// reviewer can grep it long after the window is closed.
+///
+/// `cause` is CLOSED, exactly five values — an unknown one is an error, never a
+/// silent pass-through, because "some other path removed it" is precisely the
+/// diagnosis that was missing:
+///   user-close       the user asked: close glyph, ctrl+w, middle click, the
+///                    delete dialog's own tidy-up
+///   external-delete  the watcher saw the file vanish from the vault
+///   external-rename  the watcher paired the vanished file with a new name
+///   pane-collapse    the group went with its last tab (R6.5)
+///   session-replace  the whole layout was thrown away (vault switch)
+/// `dirty` and `flushed` are the F-class half: a removal with dirty=1
+/// flushed=0 IS the data loss, stated in the log at the moment it happens.
+#[tauri::command]
+fn tab_removed(
+    cause: String,
+    note: String,
+    dirty: bool,
+    flushed: bool,
+    preserved: bool,
+    via: String,
+    seq: u32,
+    tabs_left: usize,
+    groups: usize,
+) -> Result<(), String> {
+    if !TAB_REMOVAL_CAUSES.contains(&cause.as_str()) {
+        // Loud, and still logged: a caller that invents a cause is a bug in the
+        // instrumentation, and swallowing it would rebuild the blind spot.
+        eprintln!("[tabgone] BAD-CAUSE cause={cause} note={note} seq={seq}");
+        return Err(format!("unknown tab-removal cause: {cause}"));
+    }
+    eprintln!(
+        "[tabgone] seq={seq} cause={cause} note={note} dirty={} flushed={} preserved={} via={via} tabs_left={tabs_left} groups={groups}",
+        u8::from(dirty),
+        u8::from(flushed),
+        u8::from(preserved)
+    );
+    Ok(())
+}
+
+/// The closed set, shared by the command above and the UI (ui/main.js keeps the
+/// same five strings in TAB_CAUSES; a test in this file pins them together so
+/// the two lists cannot drift apart unnoticed).
+const TAB_REMOVAL_CAUSES: [&str; 5] =
+    ["user-close", "external-delete", "external-rename", "pane-collapse", "session-replace"];
+
 #[tauri::command]
 fn win_gesture(
     win: tauri::Window,
@@ -2856,6 +2936,7 @@ fn main() {
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme, get_palette, set_palette,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
             win_rect, win_gesture, win_move_proto, win_drag_start, win_minimize, win_toggle_max, win_close,
+            tab_removed,
             zoom, zoom_get,
             settings::settings_model
         ])
@@ -5298,6 +5379,135 @@ mod tests {
         assert!(
             css.contains("#wframe button:focus"),
             "ui/style.css lost the focus ring on the window controls: keyboard focus nobody can see is not operable (R33.9)"
+        );
+    }
+
+    // ---------- tabclose: the instrumentation cannot drift ----------
+    /// The operator's report was "it randomly closes", and the reason that
+    /// could not be answered is that a removed tab left NO record. The fix for
+    /// that is only as good as its weakest call site: one path that removes a
+    /// tab without naming a cause rebuilds the blind spot exactly, and it does
+    /// so silently, because a missing log line looks like a quiet run.
+    ///
+    /// So this test pins the structure, not the behaviour:
+    ///   1. the five causes are the SAME five in both languages, in the same
+    ///      order (Rust `TAB_REMOVAL_CAUSES` <-> JS `TAB_CAUSES`). ui/ is not a
+    ///      cargo input, so nothing else would notice them diverging;
+    ///   2. each of the four removal functions records one — the body of
+    ///      `closeTab`, `dropTab`, `collapseGroup` and `enterVault` contains a
+    ///      `tabGone(` call;
+    ///   3. a tab only ever leaves a group through `g.tabs.splice(`, and every
+    ///      occurrence of that splice is inside `closeTab` or `dropTab`. A new
+    ///      fifth remover would fail here instead of in a bug report.
+    #[test]
+    fn tabclose_every_removal_path_names_a_cause() {
+        let ui = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/main.js")).unwrap();
+
+        // 1. the closed set, both sides, same order.
+        let js_line = ui
+            .lines()
+            .find(|l| l.trim_start().starts_with("const TAB_CAUSES"))
+            .expect("ui/main.js lost the TAB_CAUSES list — the causes are no longer a closed set");
+        let js_causes: Vec<String> = js_line
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            js_causes,
+            TAB_REMOVAL_CAUSES.to_vec(),
+            "the JS and Rust cause lists have drifted: JS says {js_causes:?}, Rust says {TAB_REMOVAL_CAUSES:?} — a cause the backend rejects makes the log line disappear at the moment it matters"
+        );
+
+        // 2. every removal function records one. The body is taken from the
+        //    function header to the next top-level `\n}` so a call in a
+        //    NEIGHBOURING function cannot satisfy the assertion.
+        let body_of = |header: &str| -> String {
+            let at = ui
+                .find(header)
+                .unwrap_or_else(|| panic!("ui/main.js no longer contains `{header}`"));
+            let rest = &ui[at..];
+            let end = rest.find("\n}").unwrap_or(rest.len());
+            rest[..end].to_string()
+        };
+        for header in [
+            "async function closeTab(",
+            "async function dropTab(",
+            "async function collapseGroup(",
+            "async function enterVault(",
+        ] {
+            assert!(
+                body_of(header).contains("tabGone("),
+                "`{header}` removes tabs without recording a cause — that is the blind spot this instrumentation exists to close"
+            );
+        }
+
+        // 3. and nothing else takes a tab out of a group. THREE splices, each
+        //    accounted for by name: two destroy the tab (closeTab, dropTab)
+        //    and one MOVES it to another group (tabDragStart) — the moved tab
+        //    still exists, so it is not a removal cause, but the pane it left
+        //    may collapse, and that collapse passes its own `via`.
+        let splices = ui.matches("g.tabs.splice(").count();
+        assert_eq!(
+            splices, 3,
+            "ui/main.js has {splices} `g.tabs.splice(` sites, not the 3 (closeTab, dropTab, tabDragStart) this test knows how to account for — a new one must name a cause before it ships"
+        );
+        for header in ["async function closeTab(", "async function dropTab("] {
+            assert!(
+                body_of(header).contains("g.tabs.splice("),
+                "`{header}` no longer splices the tab out — the splice census above is measuring the wrong functions"
+            );
+        }
+        let drag = body_of("function tabDragStart(");
+        assert!(
+            drag.contains("g.tabs.splice("),
+            "the third splice is no longer the drag — re-derive the census above"
+        );
+        for via in ["\"tabdrag-strip\"", "\"tabdrag-edge\""] {
+            assert!(
+                drag.contains(&format!("collapseGroup(g, {via})")),
+                "a drag that empties its source pane must say which drag did it ({via}) — 'the pane vanished' with no via is the report we could not answer"
+            );
+        }
+    }
+
+    /// The backend half: an unknown cause is an ERROR, never a shrug. A
+    /// pass-through would log `cause=whatever` and read as evidence, which is
+    /// worse than no line at all — the census would agree with a caller that
+    /// invented its own vocabulary.
+    #[test]
+    fn tabclose_an_unknown_cause_is_rejected() {
+        let ok = tab_removed(
+            "external-delete".into(),
+            "ZZ-Note".into(),
+            true,
+            false,
+            true,   // preserved: the watcher path parks the bytes it may not write back
+            "onVaultChanged#1".into(),
+            1,
+            0,
+            1,
+        );
+        assert!(ok.is_ok(), "a legitimate cause must be accepted: {ok:?}");
+        let bad = tab_removed(
+            "mystery".into(),
+            "ZZ-Note".into(),
+            true,
+            false,
+            false,
+            "?".into(),
+            2,
+            0,
+            1,
+        );
+        assert!(
+            bad.is_err(),
+            "an unknown cause must be an error — 'something else removed it' is the diagnosis that was missing"
+        );
+        assert!(
+            bad.unwrap_err().contains("mystery"),
+            "the rejection must name the cause it refused, or the log cannot identify the bad caller"
         );
     }
 }

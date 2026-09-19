@@ -45,3 +45,7 @@ dist/
 # .flatpak that "launches" is a claim until the pixels are in the tree next to
 # the census line that measured them (docs/recon-flatpak, item L).
 !docs/recon-flatpak/**/*.png
+# recon-tabclose: the S3 measurement — stock 1.13.7 ORPHANS the tab ("No file")
+# on an external rename/delete instead of closing it. The title log alone cannot
+# show that the tab is still in the strip; 11-ren-after.png and 21-del-after.png can.
+!docs/recon-tabclose/shots/*.png
