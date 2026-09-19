@@ -2412,13 +2412,18 @@ fn probe_drag_proto() -> &'static str {
         // no GdkDisplay at all: nothing to hand a press to.
         return drag_path(true, false);
     };
-    let Ok(x11) = display.downcast::<gdkx11::X11Display>() else {
-        return drag_path(false, false);
-    };
-    let Ok(screen) = x11.default_screen().downcast::<gdkx11::X11Screen>() else {
-        return drag_path(true, false);
-    };
-    drag_path(true, screen.supports_net_wm_hint(&gdk::Atom::intern("_NET_WM_MOVERESIZE")))
+    // The downcast IS the session test: GDK hands back a GdkX11Screen on a real
+    // X server AND under XWayland, and a GdkWaylandScreen on a native Wayland
+    // session — the live object the app is drawing on, not $XDG_SESSION_TYPE,
+    // which is a login-time string a launcher can set to anything.
+    match display.default_screen().downcast::<gdkx11::X11Screen>() {
+        // gdk_x11_screen_supports_net_wm_hint re-reads `_NET_SUPPORTED` off the
+        // root window behind a live `_NET_SUPPORTING_WM_CHECK`, so this is "is a
+        // WM running here NOW and does it implement the move protocol", not "was
+        // one running when someone built this".
+        Ok(xs) => drag_path(true, xs.supports_net_wm_hint(&gdk::Atom::intern("_NET_WM_MOVERESIZE"))),
+        Err(_) => drag_path(false, false),
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
