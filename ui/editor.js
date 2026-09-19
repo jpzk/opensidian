@@ -1523,7 +1523,21 @@ document.addEventListener("selectionchange", () => {
   const l = Ed.indexOf(row);
   const ms = Ed.sel(g);
   Ed.reveal(g, ms && ms.a, ms && ms.b);
-  if (Ed.cur && Ed.cur.g === g && Ed.cur.l === l) { Ed.census(); return; }
+  /* THE CACHE MAY NOT OUTLIVE THE STATE IT CACHES (2026-09-19, tabclose).
+     Ed.cur is a module-level memo of "the caret is already on this row of this
+     pane", and the ONLY writer that keeps it in step with g.lpActive is
+     Ed.mark. Anything that nulls g.lpActive behind mark's back — dropTab()
+     (main.js: the watcher removing the active tab) and the per-tab view
+     restore (main.js: g.lpActive = v.lpActive on a tab switch) — leaves Ed.cur
+     pointing at a row of a note that is gone, and this short-circuit then
+     swallows the very click that should have re-armed the raw row: the caret
+     lands (the selection moves, [sel:0.16-0.16]) and [mode:lp] stays without a
+     line FOREVER, because every later click on the same row number is
+     short-circuited too. Measured on :123 at 738a530: after an external delete
+     closed a tab, five clicks on the next note's line 0 produced no raw row.
+     So the memo is only trusted when g.lpActive AGREES with it — one condition
+     here instead of an invalidation call every caller must remember. */
+  if (Ed.cur && Ed.cur.g === g && Ed.cur.l === l && g.lpActive && g.lpActive.l0 === l) { Ed.census(); return; }
   Ed.cur = { g, l };
   Ed.mark(g, l);
 });
