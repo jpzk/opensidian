@@ -26,3 +26,8 @@ dist/
 # ignored: iteration 3 reported "five shots committed" and `git ls-files` showed
 # none — `git add` on an ignored path is a no-op that prints nothing.
 !docs/recon-tabmenu/**/*.png
+
+# recon-dotfiles: the evidence IS the deliverable — .gitignore line 2 (*.png)
+# would otherwise keep every cited shot out of a clone (measured on themearch
+# and on srclick: README cites a path a reviewer cannot open).
+!docs/recon-dotfiles/**/*.png
