@@ -34,6 +34,20 @@ finish-args:
   - --device=dri
   - --filesystem=home
   - --talk-name=org.freedesktop.portal.Desktop
+  # WITHOUT THE NEXT LINE THE APP DOES NOT START (docs/recon-flatpak, item L).
+  # flatpak points XDG_DATA_HOME at ~/.var/app/<id>/data; tauri resolves its
+  # app-data dir through XDG_DATA_HOME; rustidian's OWN landlock ruleset
+  # (src-tauri/src/sandbox.rs:82 write_roots) grants $HOME/.local/share/<id>
+  # and nothing under ~/.var/app — so the first write tauri makes is refused by
+  # the kernel and tauri panics "Failed to setup app: Permission denied (os
+  # error 13)" one line after the app logs "landlock: FullyEnforced".
+  # An EMPTY value is not a trick: the XDG basedir spec makes a non-absolute
+  # XDG_DATA_HOME fall back to $HOME/.local/share — the same path the AppImage
+  # build uses and the one landlock was already told about, so no path is
+  # hardcoded here. Measured both ways: arm A (without) panics, arms C/F (with)
+  # reach the tabbed editor with landlock still FullyEnforced —
+  # evidence/L-launch.txt. Deleting this line reverts a launch to a panic.
+  - --env=XDG_DATA_HOME=
 
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
