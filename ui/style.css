@@ -820,6 +820,20 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
    reason in the hover title. */
 .ctxmenu div.sep { padding: 0; height: 1px; margin: 5px 0; background: var(--border); cursor: default; pointer-events: none }
 .ctxmenu div.dis { color: var(--text-chrome-muted); cursor: default; pointer-events: none }   /* no :hover rule needed: pointer-events:none means the row never hovers (and lint-colors bans "transparent") */
+/* R38 (docs/recon-tabmenu/README.md): the tab menu's radio rows. Stock has no
+   `Live preview` row and no ✓ in any label, so R12.4's mark is an ELEMENT
+   (span.chk) rather than text in the label — the rendered label set then equals
+   stock's character for character while the radio state stays visible, and
+   [menu:] (textContent) reads stock's wording. The gutter is reserved on EVERY
+   row of these two so the labels do not shift when the mark moves. */
+.ctxmenu div.chkrow { padding-left: 4px }
+.ctxmenu .chk { display: inline-block; width: 12px; height: 12px; margin-right: 4px; vertical-align: -1px }
+.ctxmenu .chk svg { width: 12px; height: 12px; display: block }
+/* R38.29: `Delete file` is the ONE non-default-coloured row in stock's menu (measured red, hex eb4655 — recorded in docs/requirements.md R38.29, not repeated as a literal here) */
+.ctxmenu div.del { color: var(--accent-red) }
+/* R38.7: the pin glyph rides in FRONT of a pinned tab's label (shots/m3-pinned-tabbar.png) */
+.tab .pin { flex: 0 0 auto; display: flex; align-items: center; color: var(--text-chrome-muted); margin-right: 3px }
+.tab .pin svg { width: 11px; height: 11px; display: block }
 /* "Reveal file in navigation": stock puts a focus ring on the explorer row, no selection (recon 10-reveal.png) */
 .trow.revealed { outline: 2px solid var(--border-focus-ring); outline-offset: -2px }
 /* M8 local graph (R7.5): per-pane settings gear + popover */

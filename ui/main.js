@@ -1163,6 +1163,14 @@ function updateTitle() {          // pane/focus census in the window title (head
     });
     if (chain) lg += " [chain:" + chain + "]";
     if (lk.length) lg += " [lk:" + lk.join("|") + "]";
+    // R38.7/R38.34: [pin:<names>] = every PINNED tab, in layout order. Pin is
+    // the one row in the tab menu whose effect is a tab-bar glyph, and a glyph
+    // is not assertable headlessly — this token is, so the gate reads the
+    // handler's state instead of OCRing the strip.
+    const pn = [];
+    for (const h of groups()) for (const t of h.tabs)
+      if (t.pinned) pn.push(String(t.name).split("/").pop().replace(/[[\]|]/g, ""));
+    if (pn.length) lg += " [pin:" + pn.join("|") + "]";
   }
   // R8.10: focused tab's view mode -> [mode:lp|src|read]; when the lp raw
   // row is active, [mode:lp:<l0>] exposes its block start line (headless probe)
@@ -1507,6 +1515,14 @@ function placeMenu(m, x, y) {
   document.body.appendChild(m);
   m.dataset.x = x; m.dataset.y = y;
   menuEl = m;
+  /* R38: stock's note-tab menu is 28 rows + 8 separators ≈ 820 px, TALLER than
+     the 700 px smoke window, so .ctxmenu's overflow:auto scrolls it and the
+     bottom rows (Reveal file in navigation, Delete file) sit below the viewport
+     until it does. [mgy:] is measured from the live rects, so it stays true —
+     but only if the census is REFRESHED when the menu scrolls, which a scroll
+     alone does not do. Without this the geometry a driver clicks is the
+     geometry from before its own wheel event. */
+  m.addEventListener("scroll", () => updateTitle());
   clampMenu(m);
   updateTitle();                  // census [menu:1]
 }
@@ -1534,7 +1550,70 @@ for (const ev of ["mousedown", "click"])
     inv("open_external", { url: a.getAttribute("href") }).catch(err => console.warn("open_external:", err));
   }, true);
 
-function tabMenu(e, g, i) {              // right-click a tab -> Split right / Split down / Link with tab... (R13.1)
+const DIS_WIN = "Missing subsystem: a second OS window — single-window tauri app, and no backend command creates one";
+/* ---------- R38: THE TAB CONTEXT MENU — stock 1.13.7's list, measured ----------
+   THE SPEC is docs/requirements.md §36 (R38) + docs/recon-tabmenu/README.md's
+   WIRED / NOT WIRED split: 28 rows in 9 groups on an ACTIVE NOTE tab, 11 on a
+   graph tab, and three ABSENCE rules (R38.31) — stock's grammar for an
+   inapplicable row is that the row is NOT THERE (R38.2: across 12 measured
+   menus not one row was greyed), so our disabled treatment is reserved for the
+   rows we cannot WIRE, each carrying its missing subsystem in the hover title
+   (the rule bmRowMenu already established). Nothing below is from memory: the
+   labels, the group boundaries and every effect were measured on the box
+   against obsidian.AppImage sha256 e0d8e0a6…72663, one fresh stock instance per
+   performed row (docs/recon-tabmenu/effects/, shots/eff-*).
+   SUPERSEDES the six-item menu (Split right first) and, with it, R12.4's
+   "Live preview / Source mode" pair: stock has NO Live preview row, so the ✓
+   moves out of the label TEXT into a span.chk marker element and the rendered
+   label set equals stock's character for character (R38.10). */
+const ICON_CHK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"' +
+  ' stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5L13 5"/></svg>';
+const ICON_PIN = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"' +
+  ' stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h4l-.6 4.2 2.6 2.4H3.9l2.7-2.4z"/><path d="M8 8.6V14"/></svg>';
+/* The close verbs, R38.3-R38.6. EVERY one of them goes through the existing
+   flush-then-close path (closeTab -> flushSave), and each also flushes ONCE up
+   front because the doomed set may contain the tab whose buffer is pending
+   while the right-clicked target is a different one — R38.32, the data-loss
+   rule, is the reason these are three functions and not three inline loops. */
+async function closeOtherTabs(g, i) {      // Close others: the TARGET survives and takes focus (measured: not the active tab)
+  await flushSave(g);
+  const keep = g.tabs[i];
+  for (let j = g.tabs.length - 1; j >= 0; j--) if (g.tabs[j] !== keep) await closeTab(g, j);
+  const k = g.tabs.indexOf(keep);
+  if (k >= 0 && g.active !== k) { g.active = k; await loadActive(g); }
+}
+async function closeTabsAfter(g, i) {      // Close tabs after: target + everything to its LEFT kept (5 -> 2 measured)
+  await flushSave(g);
+  const keep = g.tabs[i];
+  for (let j = g.tabs.length - 1; j > i; j--) await closeTab(g, j);
+  const k = g.tabs.indexOf(keep);
+  // focus: the target if the active tab was one of the doomed ones (stock's
+  // survivor rule). A surviving active tab LEFT of the target keeps focus —
+  // stock's behaviour in that case is UNMEASURED and is not guessed here.
+  if (k >= 0 && g.active < 0) { g.active = k; await loadActive(g); }
+}
+async function closeAllTabs(g) {           // Close all: the GROUP SURVIVES (collapseGroup must not run)
+  await flushSave(g);
+  while (g.tabs.length > 1) await closeTab(g, g.tabs.length - 1);
+  if (!g.tabs.length) return;
+  /* The last tab cannot go through closeTab: with more than one group that path
+     is R6.5's "empty group leaves the tree" and the group would be REMOVED,
+     which is exactly what stock does not do (R38.6). Same teardown, no collapse.
+     DEVIATION, stated: stock leaves an empty leaf whose tab reads `New tab`; we
+     have no empty-tab entity (a tab is a note name), so the group survives with
+     ZERO tabs — observably [tabs:0] with the pane still there, one tab row
+     fewer than stock. docs/recon-tabmenu/README.md records it. */
+  const t = g.tabs[0];
+  await act("pane_close", { note: t.name, kind: t.kind || "note", pane_removed: false, groups: groups().length, tabs: 0 }, async () => {
+    if (!t.kind) closedTabs.push(t.name);  // R14: undo close tab still works on the last one
+    unlinkTab(g, t, true);
+    dropView(t);
+    g.tabs.length = 0;
+    g.active = -1;
+    await loadActive(g);
+  });
+}
+function tabMenu(e, g, i) {
   e.preventDefault();
   closeMenu();
   const m = document.createElement("div");
@@ -1545,16 +1624,32 @@ function tabMenu(e, g, i) {              // right-click a tab -> Split right / S
   // are stripped so a note named 'a:b]' cannot forge a token.
   m.dataset.mt = (tab.kind || "note") + ":" +
     (tab.kind ? "" : String(tab.name).split("/").pop().replace(/[|\]:]/g, ""));
-  const item = (label, fn) => {
+  /* item(label, fn) wires a row; item(label, null, why) renders it DISABLED with
+     `why` (the missing subsystem) as the hover title; chk adds the radio marker
+     as an ELEMENT so textContent — and therefore [menu:] — stays stock's label. */
+  const item = (label, fn, why, chk) => {
     const d = document.createElement("div");
-    d.textContent = label;
-    d.onmousedown = ev => ev.stopPropagation();  // don't let the closer eat the click
-    d.onclick = () => { if (fn) fn(); else closeMenu(); };
+    if (chk !== undefined) {             // a RADIO row: the gutter is reserved whether or not this one is the active mode
+      d.className = "chkrow";
+      const s = document.createElement("span");
+      s.className = "chk";
+      if (chk) s.innerHTML = ICON_CHK;
+      d.appendChild(s);
+    }
+    d.appendChild(document.createTextNode(label));
+    if (why != null) { d.className = (d.className ? d.className + " " : "") + "dis"; d.setAttribute("aria-disabled", "true"); d.title = why; }
+    else { d.onmousedown = ev => ev.stopPropagation(); d.onclick = () => { if (fn) fn(); else closeMenu(); }; }
     m.appendChild(d);
+    return d;
   };
-  const pick = () => {                   // R13.1 pick list: every other open tab, in layout order
+  const sep = () => { const d = document.createElement("div"); d.className = "sep"; m.appendChild(d); };
+  const inPlace = fill => {              // the ctxmenu's ONE submenu seam: rebuild in place (R13.1's pick list)
     m.innerHTML = "";
-    setTimeout(() => clampMenu(m), 0);   // R22: the pick list resizes the menu — re-clamp it
+    fill();
+    setTimeout(() => clampMenu(m), 0);   // R22: the new list resizes the menu — re-clamp it
+    updateTitle();                       // the menu was rebuilt in place -> refresh [menu:]
+  };
+  const pick = () => inPlace(() => {     // R13.1/R38.8: every other open tab, in layout order
     let any = false;
     for (const h of groups()) for (const t of h.tabs) {
       if (t === tab) continue;
@@ -1562,19 +1657,96 @@ function tabMenu(e, g, i) {              // right-click a tab -> Split right / S
       item((t.kind === "gg" ? "Graph" : t.name.split("/").pop()), () => { closeMenu(); linkTabs(tab, t); });
     }
     if (!any) item("(no other tabs)");
-    updateTitle();                       // the menu was rebuilt in place -> refresh [menu:]
+  });
+  const pickFolder = async () => {       // R38.16: stock opens a modal folder SUGGESTER; ours is the same in-place list
+    let fl = [];
+    try { fl = await inv("list_folders"); } catch (err) { fl = []; }
+    const here = tab.name.includes("/") ? tab.name.slice(0, tab.name.lastIndexOf("/")) : "";
+    inPlace(() => {
+      if (here) item("(vault root)", () => { closeMenu(); moveNoteTo(tab.name, ""); });
+      for (const f of fl) if (f !== here) item(f, () => { closeMenu(); moveNoteTo(tab.name, f); });
+      if (!m.children.length) item("(no other folder)");
+    });
   };
-  item("Split right", () => { closeMenu(); splitGroup(g, "row", i); });
-  item("Split down",  () => { closeMenu(); splitGroup(g, "col", i); });
-  if (isLinked(g, tab, i)) item("Unlink tab", () => { closeMenu(); unlinkTab(g, tab); });
-  else item("Link with tab...", pick);
-  if (!tab.kind) {   // R12.4 / R20 (#3): the source-vs-LP RADIO lives here (stock), not in a chrome icon — ✓ on the active one, per tab
-    item((tab.src ? "" : "✓ ") + "Live preview", () => { closeMenu(); setMode(g, "livepreview"); });
-    item((tab.src ? "✓ " : "") + "Source mode",  () => { closeMenu(); setMode(g, "source"); });
+  // ---- group 1, the close group. R38.31: the SET is the absence rule ----
+  const n = g.tabs.length, rightmost = i === n - 1;
+  item("Close", () => { closeMenu(); closeTab(g, i); });                        // WIRED: closeTab — flushes, focus to the NEXT tab (R38.3)
+  if (n > 1) {
+    item("Close others", () => { closeMenu(); closeOtherTabs(g, i); });         // WIRED (R38.4)
+    if (!rightmost) item("Close tabs after", () => { closeMenu(); closeTabsAfter(g, i); });   // WIRED, absent when rightmost (R38.5)
+    item("Close all", () => { closeMenu(); closeAllTabs(g); });                 // WIRED (R38.6)
   }
-  if (!tab.kind) item(bmCache.includes(tab.name) ? "Remove bookmark" : "Bookmark",  // R20.4 (#12, bookmarks pane = R9.5): same toggle as the tree row menu; graph tabs (gg/lg) have no note to bookmark
-    () => { closeMenu(); toggleBm(tab.name); });                                    // toggleBm re-renders the bookmarks pane
-  placeMenu(m, e.clientX, e.clientY);   /* R22: viewport-clamped by MEASURED size — supersedes the old innerWidth-150 guess and the #12 post-append top clamp */
+  /* R38.31, the first absence rule: an INACTIVE tab's menu is the close group
+     and NOTHING else (M5/M8, 4 rows not 28). Measured twice, and it is why
+     every row below may assume the target IS this group's active tab — which is
+     what lets Reading view / Find... / Rename... keep taking the group. */
+  if (i !== g.active) { placeMenu(m, e.clientX, e.clientY); return; }
+  sep();
+  const pinRow = () => item(tab.pinned ? "Unpin" : "Pin", () => { closeMenu(); togglePin(g, tab); });   // WIRED (R38.7)
+  const linkRow = () => isLinked(g, tab, i)
+    ? item("Unlink tab", () => { closeMenu(); unlinkTab(g, tab); })             // WIRED: R6.8, unchanged — stock wording in a stock slot
+    : item("Link with tab...", pick);
+  if (tab.kind) {
+    /* ---- R38.30: a GRAPH tab gets a DIFFERENT menu, assembled from the view
+       type — 11 rows with a second tab in the group, 8 alone. It drops every
+       row that needs a file behind the tab and adds Copy screenshot. ---- */
+    pinRow(); linkRow();
+    sep();
+    item("Move to new window", null, DIS_WIN);
+    item("Split right", () => { closeMenu(); splitGroup(g, "row", i); });
+    item("Split down",  () => { closeMenu(); splitGroup(g, "col", i); });
+    sep();
+    item("Copy screenshot", null, "Missing subsystem: canvas-to-clipboard — no programmatic clipboard write exists in this tree (ui/editor.js writes only inside real copy events) and the graph view has no canvas-to-PNG step");
+    item("Bookmark...", null, "Missing subsystem: bookmarks of non-file views — a bookmark here is a note name on disk (R9.4) and a graph tab has no note behind it");
+    placeMenu(m, e.clientX, e.clientY);
+    return;
+  }
+  // ---- group 2 (5 rows) ----
+  pinRow();
+  linkRow();
+  item("Backlinks in document", null, "Missing subsystem: an in-document backlinks section — stock appends backlinks to the BOTTOM OF THE NOTE PANE; ours is a right-sidebar pane (R27), a different surface");
+  item("Reading view", () => { closeMenu(); setMode(g, "reading"); }, null, tab.mode === "reading");     // WIRED: setMode (R38.10)
+  item("Source mode",  () => { closeMenu(); setMode(g, "source"); },  null, tab.mode === "source");      // WIRED: setMode — the ✓ is the R12.4 radio, now a marker element
+  // ---- group 3 (4 rows) ----
+  sep();
+  item("Move to new window", null, DIS_WIN);
+  item("Split right", () => { closeMenu(); splitGroup(g, "row", i); });         // WIRED: R6.2 — row 11 now, not row 1 (R38.12)
+  item("Split down",  () => { closeMenu(); splitGroup(g, "col", i); });         // WIRED: R6.2 (R38.13)
+  item("Open in new window", null, DIS_WIN + " — and this row COPIES the tab where the one above MOVES it (measured), so the two stay distinct");
+  // ---- group 4 (6 rows) ----
+  sep();
+  item("Rename...", () => { closeMenu(); focusGroup(g); cmdRename(); });        // WIRED: R24.2/R34 rename + the prompted link update
+  item("Move file to...", pickFolder);                                          // WIRED: moveNoteTo behind the in-place folder list (R38.16)
+  item(bmCache.includes(tab.name) ? "Remove bookmark" : "Bookmark...",          // WIRED: toggleBm — stock's wording, our flat-list toggle (R38.17/R20.4)
+    () => { closeMenu(); toggleBm(tab.name); });
+  item("Merge entire file with...", null, "Missing subsystem: file merge — no command concatenates one note into another, and stock's is a suggester with four modifier behaviours");
+  item("Add file property", null, "Missing subsystem: a frontmatter property model — stock writes a Properties block at the top of the note; there is no frontmatter parser or editor here");
+  item("Export to PDF...", null, "Missing subsystem: a PDF pipeline — no renderer and no page-size/margin model; PDF export is an explicit project non-goal");
+  // ---- group 5 (2 rows) ----
+  sep();
+  item("Find...",    () => { closeMenu(); fOpen(g); });                         // WIRED: R26 find bar
+  item("Replace...", () => { closeMenu(); fOpenRep(g); });                      // WIRED: R26 replace row
+  // ---- group 6 (1 row) ----
+  sep();
+  item("Copy path", null, "Missing subsystems: submenu panels in ctxmenu (stock keeps the parent menu OPEN beside a child panel; ours can only rebuild itself in place) and a programmatic clipboard write (the only clipboard access in the tree is inside real copy/paste events, ui/editor.js)");
+  // ---- group 7 (2 rows) ----
+  sep();
+  item("Open version history", null, "Missing subsystem: file history — nothing here keeps a revision of a note to show changes from or restore");
+  item("Open linked view", null, "Missing subsystem: submenu panels in ctxmenu — four of stock's five children already have backends here (R7 local graph, backlinks, outgoing, outline), so this is the highest-value row in this list");
+  // ---- group 8 (3 rows) ----
+  sep();
+  item("Open in default app", null, "Missing subsystem: a file-path opener — open_external takes a URL, not a vault path");
+  item("Show in system explorer", null, "Missing subsystem: a file-manager handler — no command reveals a path in a file manager");
+  item("Reveal file in navigation", () => { closeMenu(); bmReveal(tab.name); });  // WIRED: bmReveal — the identical verb bmRowMenu wires, publishes [bmrv:] (R38.28)
+  // ---- group 9 (1 row) ----
+  sep();
+  item("Delete file", () => { closeMenu(); askDelete(tab.name); }).className = "del";   // WIRED: askDelete — stock's row is the link-COUNTING confirmation, not an unlink (R38.29)
+  placeMenu(m, e.clientX, e.clientY);   /* R22: viewport-clamped by MEASURED size */
+}
+async function togglePin(g, tab) {      // R38.7: the flag + the tab-bar glyph; Close stays enabled on a pinned tab (measured)
+  tab.pinned = !tab.pinned;
+  renderTabs(g);
+  updateTitle();                        // census [pin:<names>]
 }
 
 /* ---------- view modes (R8.8: livepreview / source / reading per tab) ---------- */
@@ -1754,6 +1926,10 @@ function renderTabs(g) {
     const ttl = document.createElement("span");
     ttl.className = "t";
     const chain = isLinked(g, tab, i);
+    // R38.7: a PINNED tab carries a pin glyph in FRONT of the label, the way
+    // stock paints it (shots/m3-pinned-tabbar.png). It is a marker element, not
+    // text, so [tabs:]/[note:] and every label assertion are unchanged.
+    if (tab.pinned) { const p = document.createElement("span"); p.className = "pin"; p.innerHTML = ICON_PIN; d.appendChild(p); }
     ttl.textContent = (chain ? "\u{1F517} " : "") + tab.name.split("/").pop();
     const x = document.createElement("span");
     x.className = "x";
