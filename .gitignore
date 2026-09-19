@@ -53,3 +53,5 @@ dist/
 # read from" — group creation, the group row menu, indent geometry, delete and
 # restart are all read off these pngs, so they are evidence, not screenshots.
 !docs/recon-bmfolder/shots/*.png
+# themecsp: the egress-proof evidence (shots ARE the deliverable, criterion 1-2)
+!docs/themecsp/**/*.png
