@@ -546,6 +546,255 @@ function setPane(p) {
   updateTitle();
 }
 
+/* ============ R25.13a..m — CLICKING A SEARCH RESULT ============
+   Every rule below was MEASURED against stock 1.13.7 first; the measurements,
+   with a shot each, are docs/recon-srclick/README.md (C1-C12) and the rules
+   they produced are R25.13a-m in docs/requirements.md. Nothing here is a guess:
+   what stock does that we do not yet do is listed LATER in that README, not
+   approximated.
+
+   The one non-obvious fact, and the reason the payload grew an `offset`
+   (src-tauri/src/main.rs, search_hits_carry_absolute_utf16_offsets): stock
+   records a hit as an ABSOLUTE CHARACTER OFFSET into the file as indexed, not
+   as a line number and not as a string to re-find. Delete five lines above a
+   match and stock jumps to the same offset, which is now other text (C12,
+   shots 58-61). So the frontend NEVER re-searches the buffer — a second search
+   that can disagree with the first is exactly the bug the brief forbids — it
+   maps the backend's offset into the current text and lands wherever it lands.
+
+   The decoration (R25.13d) is stored as offsets on the VIEW, not as a class in
+   the DOM and not behind a timer (R25.13f: it survives blur, arrow keys,
+   typing, undo and tab switches, measured in shots 19-25). The view is the
+   per-tab object, so "the editor instance going away" — the tab takes another
+   file, the tab is closed — drops it exactly as measured, with no bookkeeping. */
+const SC_MARK = "is-flashing";
+let scInfo = "";                           // census [sc:...] — the last jump, as it happened
+function scView(g) { return g && g.view ? g.view : null; }
+function scHits(g) {                       // the live decoration set, or [] once the view holds another note
+  const v = scView(g);
+  return v && v.scHl && v.scNote === curOf(g) ? v.scHl : [];
+}
+// the cheap guard editor.js asks on every keystroke before paying for offOf
+function scLive(g) { const v = scView(g); return !!(v && v.scHl && v.scHl.length); }
+function scSet(g, list) {                  // R25.13e: the next result click REPLACES the set, never accumulates
+  const v = scView(g);
+  if (!v) return;
+  v.scHl = (list || []).filter(h => h && h.len > 0);
+  v.scNote = curOf(g);
+  scMarks(g);
+}
+function scClear(g) {                      // R25.13f: a pointer click in that editor, or the next result click
+  const v = scView(g);
+  if (!v || !(v.scHl && v.scHl.length)) return;
+  v.scHl = [];
+  scMarks(g);
+  updateTitle();
+}
+/* R25.13d "a range that follows subsequent edits": the offsets are mapped
+   through the splice at Ed.replace — the single edit choke point — the way a
+   cm6 range is mapped, so typing above the match moves it and typing inside it
+   grows it. Called from editor.js by name, the same way it calls updateTitle. */
+function scShift(g, from, to, ins) {
+  const v = scView(g);
+  if (!v || !(v.scHl && v.scHl.length)) return;
+  const d = ins - (to - from);
+  const map = (p, start) => (p <= from ? p : p >= to ? p + d : start ? from : from + ins);
+  v.scHl = v.scHl.map(h => {
+    const a = map(h.off, true), b = map(h.off + h.len, false);
+    return { off: a, len: Math.max(0, b - a) };
+  }).filter(h => h.len > 0);
+}
+/* absolute UTF-16 offset -> {l,c}, CLAMPED to the document end (R25.13m: an
+   offset past the end lands at the end, with no highlight and no crash). */
+function scLC(g, off) {
+  const L = Ed.lines(g);
+  let o = Math.max(0, off);
+  for (let l = 0; l < L.length; l++) {
+    if (o <= L[l].length) return { l, c: o };
+    o -= L[l].length + 1;                  // + the newline this line ends with
+  }
+  const last = Math.max(0, L.length - 1);
+  return { l: last, c: (L[last] || "").length };
+}
+/* R25.13f/m: this runs on EVERY keystroke while a decoration is live (from
+   lpRender and from scheduleSave), and what it does is DOM SURGERY ON THE ROW
+   THE CARET IS IN: the unwrap below calls p.normalize(), which MERGES the text
+   nodes the DOM Selection is anchored in, and a merged anchor is a moved
+   caret. Measured on the box (12:54 and 13:2x): typing `ZCDIRTY` at the start
+   of the line-42 match put `Z` at column 0 and the remaining six characters at
+   column 10 — the END of the match — because the first keystroke's scMarks
+   relocated the caret and every later one landed where it had been left. The
+   model position is the truth, so read it BEFORE the surgery and put it back
+   after. Ed.sel() returns null when the caret is not in this pane's lp, so a
+   blurred editor (R25.13f's query-input case) is left exactly as it was. */
+function scMarks(g) {
+  const s0 = g && g.lp ? Ed.sel(g) : null;
+  scPaint(g);
+  if (!s0) return;
+  if (s0.empty) Ed.place(g, s0.b.l, s0.b.c, false);
+  else { Ed.place(g, s0.a.l, s0.a.c, false); Ed.extendTo(g, s0.b.l, s0.b.c); }
+}
+/* paint the set with the SAME per-text-node right-to-left walk the find bar
+   uses (fWrap): a match that straddles a rendered <strong> becomes two spans,
+   and no offset is invalidated mid-walk. Only the lp surface is painted —
+   R25.13k measured that stock paints NO highlight in the reading renderer. */
+function scPaint(g) {
+  for (const sc of [g.lp, g.preview]) {
+    if (!sc) continue;
+    for (const m of [...sc.querySelectorAll("span." + SC_MARK)]) {
+      const p = m.parentNode;
+      if (!p) continue;
+      while (m.firstChild) p.insertBefore(m.firstChild, m);
+      p.removeChild(m);
+      p.normalize();
+    }
+  }
+  const hs = scHits(g);
+  if (!hs.length || !g.lp) return;
+  const t = g.active >= 0 ? g.tabs[g.active] : null;
+  if (!t || t.kind || !isLp(t.mode)) return;
+  const byRow = new Map();
+  hs.forEach((h, i) => {
+    const a = scLC(g, h.off), b = scLC(g, h.off + h.len);
+    for (let l = a.l; l <= b.l; l++) {
+      const c0 = l === a.l ? a.c : 0;
+      const c1 = l === b.l ? b.c : (Ed.lines(g)[l] || "").length;
+      if (c1 <= c0) continue;
+      if (!byRow.has(l)) byRow.set(l, []);
+      byRow.get(l).push({ c: c0, end: c1, i });
+    }
+  });
+  for (const [l, rs] of byRow) {
+    const row = Ed.rowAt(g, l);
+    if (!row) continue;
+    const map = Ed.nodes(row), jobs = new Map();
+    for (const h of rs) for (const s of map) {
+      const a = Math.max(h.c, s.c), b = Math.min(h.end, s.c + s.len);
+      if (b <= a) continue;
+      if (!jobs.has(s.n)) jobs.set(s.n, []);
+      jobs.get(s.n).push({ a: a - s.c, b: b - s.c, i: h.i, cur: false });
+    }
+    fWrap(jobs, SC_MARK);
+  }
+}
+/* R25.13c: the match is CENTRED — measured at a 349 px offset in a 718 px
+   viewport, independent of note length — and the scroll is a SINGLE-FRAME JUMP
+   (a 60 Hz frame sampler saw exactly one scrollTop change, shots 15-18). The
+   clamp is the scroller's own range: no overscroll is invented. */
+function scCenter(sc, top, h) {
+  if (!sc) return;
+  sc.scrollTop = Math.max(0, Math.min(top - (sc.clientHeight - h) / 2,
+                                      Math.max(0, sc.scrollHeight - sc.clientHeight)));
+}
+/* the jump itself. `hits` = the occurrences to decorate (one for a hit row,
+   every occurrence in the note for a group header, R25.13b); hits[0] is the
+   one jumped to. */
+async function scJump(g, hits) {
+  const t = g.active >= 0 ? g.tabs[g.active] : null;
+  if (!t || t.kind || !hits.length) return;
+  const h0 = hits[0], p = scLC(g, h0.offset);
+  if (t.mode === "reading") {
+    // R25.13k: a hit click NEVER changes the view mode. In reading mode stock
+    // scrolls the PREVIEW renderer to centre the occurrence and does nothing
+    // else — no highlight, no caret (shots 51-53). The preview's text offsets
+    // are the rendered ones, so the occurrence is located with the find bar's
+    // own reading-view segment map (fRSegs) rather than with a source offset.
+    scSet(g, []);
+    const el = scPreviewEl(g, h0);
+    if (el) scCenter(g.preview, el.offsetTop - g.preview.offsetTop, el.offsetHeight);
+    scInfo = "sc:" + curOf(g) + "@read|hl:0|top:" + Math.round(g.preview.scrollTop);
+    updateTitle();
+    return;
+  }
+  scSet(g, hits.map(h => ({ off: h.offset, len: h.len })));
+  // R25.13l: ONE COLLAPSED caret at the first character of the match — the
+  // match is never selected, and a selection that was live is replaced by it.
+  await lpMove(g, p.l, p.c, "search");
+  scMarks(g);                              // the caret move re-rendered the touched rows
+  const row = g.lp.children[p.l];
+  // The four numbers R25.13c's rule is MADE of, published beside the result it
+  // produced: the smoke phase recomputes
+  //   clamp(rowTop - (clientHeight - rowHeight)/2, 0, scrollHeight - clientHeight)
+  // and compares it to the scrollTop that was actually set, so "the match is
+  // CENTRED, clamped to the scroller's own range" is an arithmetic assertion
+  // rather than a screenshot — and the two clamped ends (a match above the
+  // first half-viewport, a match on the last line) are distinguishable from a
+  // jump that simply did not scroll. Row heights differ per line, so they are
+  // MEASURED here and never assumed by the phase.
+  const rt = row ? row.offsetTop - g.lp.offsetTop : -1;
+  const rh = row ? row.offsetHeight : -1;
+  if (row) scCenter(g.lp, rt, rh);
+  scInfo = "sc:" + curOf(g) + "@" + p.l + "." + p.c + "|hl:" + scHits(g).length +
+           "|top:" + Math.round(g.lp.scrollTop) +
+           "|vp:" + Math.round(g.lp.clientHeight) + "x" + Math.round(g.lp.scrollHeight) +
+           "|row:" + Math.round(rt) + "x" + Math.round(rh);
+  updateTitle();
+}
+/* the reading-view block holding a hit: the rendered text is not the source
+   text, so the occurrence is found by its INDEX among the note's hits (the
+   n-th match in document order), never by a second search of the buffer. */
+function scPreviewEl(g, h) {
+  if (!g.preview) return null;
+  const { segs } = fRSegs(g.preview);
+  let k = h.nth || 0;
+  const q = (h.text || "").toLowerCase();
+  if (!q) return g.preview.firstElementChild;
+  for (const s of segs) {
+    const low = (s.n.nodeValue || "").toLowerCase();
+    let i = low.indexOf(q);
+    while (i >= 0) {
+      if (k === 0) {
+        const e = s.n.parentElement;
+        return e ? (e.closest("p,li,h1,h2,h3,h4,h5,h6,blockquote,pre,td") || e) : null;
+      }
+      k--;
+      i = low.indexOf(q, i + 1);
+    }
+  }
+  return null;
+}
+/* R25.13a: a hit click loads the file into the ACTIVE tab, replacing whatever
+   it held. No tab is created and a tab that already holds that file elsewhere
+   is NEITHER reused NOR focused (shots 04-10). R25.13i: Ctrl+click and MIDDLE
+   click open a NEW tab in the active group and activate it; Shift+click and
+   Alt+click are plain clicks; every variant performs the full jump.
+   Ctrl+Alt+click (stock: a new split pane) is LATER — see the README. */
+async function scOpen(g, note, ev) {
+  const newTab = !!(ev && (ev.ctrlKey || ev.metaKey || ev.button === 1)) && !(ev && ev.altKey);
+  if (newTab) {
+    await flushSave(g);
+    g.tabs.push(mkTab(note));
+    g.active = g.tabs.length - 1;
+    await loadActive(g);
+    return;
+  }
+  const t = g.active >= 0 ? g.tabs[g.active] : null;
+  if (t && !t.kind && curOf(g) === note) { await flushSave(g); return; }  // already here: R25.13m still flushes
+  await navigate(g, note);                 // replaces the ACTIVE tab, appends when there is none
+}
+/* the handler the rows and the group headers share. `hits` are this note's
+   hits in document order; `one` = the clicked occurrence, or null for the
+   group header, which jumps to the FIRST hit and decorates EVERY occurrence
+   in that note (R25.13b, shots 11-13). */
+async function scClick(ev, note, hits, one) {
+  const g = fg();
+  if (!g) return;
+  const set = one ? [one] : hits;
+  await scOpen(g, note, ev);
+  await scJump(g, set);
+}
+/* the index of a hit among the hits of ITS note, in document order. The
+   reading renderer has no source offsets, so this ordinal is the only honest
+   way to point at the same occurrence there (R25.13k). */
+function scNth(hits, h) {
+  let k = 0;
+  for (const x of hits) {
+    if (x === h) return k;
+    if (x.note === h.note && x.len > 0) k++;
+  }
+  return 0;
+}
+
 /* R9.3 search pane: debounced rust search(query), grouped by note.
    census [sr:N] (total hits) while the search pane is showing a query. */
 let searchCount = -1;                       // -1 = no query -> no [sr:] flag
@@ -579,7 +828,11 @@ async function runSearch() {
       c.className = "scount";
       c.textContent = "(" + hits.filter(x => x.note === n).length + ")";
       grp.appendChild(c);
-      grp.onclick = () => openInTab(n);
+      // R25.13b: the note-name row opens the note AND jumps to its FIRST hit,
+      // with EVERY occurrence in that note decorated.
+      const nh = hits.filter(x => x.note === n)
+                     .map(x => ({ offset: x.offset, len: x.len, nth: scNth(hits, x), text: q }));
+      grp.onclick = ev => scClick(ev, n, nh, null);
       box.appendChild(grp);
     }
     const note = h.note, row = document.createElement("div");
@@ -592,12 +845,55 @@ async function runSearch() {
       row.appendChild(m);
       row.append(h.snippet.slice(at + q.length));
     } else row.textContent = h.snippet;     // name-hit snippet may differ in case
-    row.onclick = () => openInTab(note);    // LATER: jump to h.line
+    // R25.13a/d/e: the clicked occurrence, and ONLY it, is decorated. The row
+    // carries the backend's absolute offset (R25.13m) — the frontend never
+    // re-finds the text. `nth` is its index among this note's hits, which is
+    // how the reading renderer locates the same occurrence (R25.13k).
+    const one = { offset: h.offset, len: h.len, nth: scNth(hits, h), text: q };
+    row.onclick = ev => scClick(ev, note, [one], one);
+    // R25.13i: MIDDLE click opens a new tab. mousedown prevents the paste-on-
+    // middle-click default; the open runs on auxclick, where button === 1.
+    row.onmousedown = ev => { if (ev.button === 1) ev.preventDefault(); };
+    row.onauxclick = ev => { if (ev.button === 1) { ev.preventDefault(); scClick(ev, note, [one], one); } };
     box.appendChild(row);
   }
   updateTitle();
   perf.mark("search", st0, { q, hits: hits.length });
   otel.paint(searchSp, { hits: hits.length }); searchSp = null;   // R18 search_type: keystroke -> results painted
+}
+/* [srg:<centre x>|Q<y>|G<y>|H<y>|H<y>…] — the PAINTED geometry of the search
+   pane, in paint order: `Q` the query input, `G` a note-name group row, `H` a
+   hit row, each y the element's centre in window coordinates. Same idea as
+   [bmg:] for the bookmark rows and [mgy:] for menu rows, and for the same
+   reason: the srclick phase clicks the row it MEASURED, never a y computed
+   from a padding it read off a stylesheet. A row scrolled out of the #sresults
+   viewport publishes y = -1 rather than a coordinate a click would miss, so
+   "the row is reachable" is a census fact and not an assumption.
+   ONE x for all of them: #sinput and the rows are the same full-width column
+   of the pane, so the results box's centre is inside every one of them — and
+   the phase needs the input's coordinate too, because "the decoration survives
+   BLUR" (R25.13f) is a pointer click OUTSIDE that editor, which has to land
+   somewhere that is not another result row.
+   Emitted only while the search pane shows a query ([sr:] is showing). */
+function srGeom() {
+  const box = $("sresults");
+  if (!box) return "";
+  const rows = box.querySelectorAll(".sgroup, .shit");
+  if (!rows.length) return "";
+  const b = box.getBoundingClientRect();
+  const parts = [];
+  const qi = $("sinput");
+  if (qi) {
+    const a = qi.getBoundingClientRect();
+    parts.push("Q" + Math.round(a.top + a.height / 2));
+  }
+  for (const r of rows) {
+    const a = r.getBoundingClientRect();
+    const cy = Math.round(a.top + a.height / 2);
+    const vis = a.top >= b.top - 1 && a.bottom <= b.bottom + 1;
+    parts.push((r.className === "sgroup" ? "G" : "H") + (vis ? cy : -1));
+  }
+  return " [srg:" + Math.round(b.left + b.width / 2) + "|" + parts.join("|") + "]";
 }
 
 /* R9.4 bookmarks: tree-row context menu toggles; rust persists the plain
@@ -920,6 +1216,12 @@ function mkView(g) {
   // the note, like stock; rows themselves get the native caret placement
   lp.addEventListener("mousedown", e => {
     const g = v.g;
+    /* R25.13f: a POINTER CLICK inside this editor is one of the three things
+       that remove the search flash (the others are the next result click and
+       the editor instance going away). Keystrokes, blur, undo and tab
+       switches do NOT — that was measured, shots 19-25, and the flash is
+       stored on the view precisely so nothing else has to remember it. */
+    if (g) scClear(g);
     if (e.target !== lp || g.graphOn) return;
     // R34.15: the ::before is not an event target — a click on the title's ink
     // reports .lp itself, so the title band is identified by GEOMETRY. Inside
@@ -1124,6 +1426,26 @@ addEventListener("resize", () => {                 // the census must follow the
   clearTimeout(ovfT); ovfT = setTimeout(updateTitle, 150);   // after the relayout settles
 });
 
+/* rvcursor (criterion 3): a MOUSE drag over READING VIEW runs no application
+   code at all — WebKit does the selection natively — so the [rvsel:] census
+   would stay STALE from before the drag and a phase could only ever read "no
+   selection". This listener is the republish, and it is deliberately narrow:
+   the guard returns on the very first branch unless the selection's anchor is
+   inside a `.preview`, so the EDITOR's keystroke path (every caret move fires
+   selectionchange too) does exactly what it did before this goal — no title
+   write, no layout read. When it does fire it is deferred+coalesced 30ms, the
+   same shape Ed.census() uses, so the title write can never land inside a
+   key_to_paint span. */
+let rvSelT = null;
+document.addEventListener("selectionchange", () => {
+  const s = window.getSelection(), n = s && s.anchorNode;
+  if (!n) return;
+  const e = n.nodeType === 1 ? n : n.parentNode;
+  if (!e || !e.closest || !e.closest(".preview")) return;
+  if (rvSelT) return;
+  rvSelT = setTimeout(() => { rvSelT = null; updateTitle(); }, 30);
+});
+
 function updateTitle() {          // pane/focus census in the window title (headless probe)
   const ps = [...document.querySelectorAll("#main .pane")];
   const nf = document.querySelectorAll("#main .pane.focused").length;
@@ -1163,6 +1485,14 @@ function updateTitle() {          // pane/focus census in the window title (head
     });
     if (chain) lg += " [chain:" + chain + "]";
     if (lk.length) lg += " [lk:" + lk.join("|") + "]";
+    // R38.7/R38.34: [pin:<names>] = every PINNED tab, in layout order. Pin is
+    // the one row in the tab menu whose effect is a tab-bar glyph, and a glyph
+    // is not assertable headlessly — this token is, so the gate reads the
+    // handler's state instead of OCRing the strip.
+    const pn = [];
+    for (const h of groups()) for (const t of h.tabs)
+      if (t.pinned) pn.push(String(t.name).split("/").pop().replace(/[[\]|]/g, ""));
+    if (pn.length) lg += " [pin:" + pn.join("|") + "]";
   }
   // R8.10: focused tab's view mode -> [mode:lp|src|read]; when the lp raw
   // row is active, [mode:lp:<l0>] exposes its block start line (headless probe)
@@ -1171,6 +1501,22 @@ function updateTitle() {          // pane/focus census in the window title (head
   if (md && isLp(ft.mode) && fg().lpActive) md += ":" + fg().lpActive.l0;
   if (md) md += "]";
   if (lpMs >= 0) md += " [lp:" + lpMs + "]";     // perf: last lpRender ms
+  /* R25.13 census — the ONE headless record of a search-result click, read by
+     scripts/gate.sh phase srclick:
+       [sc:<note>@<line>.<col>|hl:<ranges>|top:<scrollTop>]  (source / lp)
+       [sc:<note>@read|hl:0|top:<preview scrollTop>]         (reading, R25.13k)
+     plus [scm:<spans>/<ranges>] read from the LIVE DOM of the focused pane, so
+     the phase can tell "a range is remembered" from "a range is painted": the
+     decoration is what the user sees, and the offsets alone would let a broken
+     painter report a green. scm is published whenever the view holds a set,
+     which is how the lifetime rules (R25.13f) are asserted after a keystroke,
+     an undo or a tab switch. */
+  if (scInfo) md += " [" + scInfo + "]";
+  if (fg() && scHits(fg()).length) {
+    const sc = fg().lp;
+    md += " [scm:" + (sc ? sc.querySelectorAll("span." + SC_MARK).length : -1) +
+          "/" + scHits(fg()).length + "]";
+  }
   if (md) md += mswTok();                        // R35 perf: the mode switch's own cost (see mswEnd)
   /* R34.15 title probe -> [te:<text in the box>/<g.lp.children.length>]. Two
      facts in one token, and the second one is the R32.4 acceptance condition
@@ -1254,6 +1600,83 @@ function updateTitle() {          // pane/focus census in the window title (head
             ims.slice(0, 3).map(i => "|" + xi(i.getAttribute("src"))).join("") + "]";
     }
   }
+  /* rvcursor census -> [rvc:p=default|h1=default|wiki=pointer|wikiu=pointer|ext=pointer|
+     tag=pointer|task=default:dis1|img=default|lprow=text] — the computed cursor
+     SHAPE of every surface this goal names, read with getComputedStyle from the
+     LIVE DOM of the focused group, never from the stylesheet text and never
+     from a pixel. "-" = the surface is not in this note's DOM (so a phase can
+     tell "wrong cursor" from "the note never rendered the element", which an
+     absent-equals-pass token would hide). The reading-view surfaces come from
+     g.preview (Rust's pulldown-cmark HTML) and `lprow` from g.lp, published in
+     EVERY mode — the hidden view still computes a cursor, so one shot asserts
+     both the fix and criterion 4's "live preview unchanged".
+     WHY THIS IS NOT THE WHOLE PROOF: getComputedStyle returns the literal
+     "auto" for the UA link fallback, so it cannot tell a hand from an I-beam
+     (docs/recon-rvcursor/CLICKABLES.md H1/H3). The shape the X server actually
+     draws is measured independently by the -draw_mouse grab (POINTER-GRAB.md).
+     `task` also publishes the `disabled` attribute its inert verdict rests on
+     (dis1/dis0), so that classification is measured here, not taken from a note. */
+  if (md && fg()) {
+    const rvg = fg(), rvp = rvg.preview, rvl = rvg.lp;
+    const rvc = el => el ? String(getComputedStyle(el).cursor || "?").replace(/[[\]|=]/g, "").slice(0, 24) : "-";
+    const rvq = (r, s) => (r ? r.querySelector(s) : null);
+    const rvtb = rvq(rvp, "input[type=checkbox]");
+    md += " [rvc:p=" + rvc(rvq(rvp, "p")) +
+          "|h1=" + rvc(rvq(rvp, "h1")) +
+          "|wiki=" + rvc(rvq(rvp, "a.wiki:not(.wiki-unresolved)")) +
+          "|wikiu=" + rvc(rvq(rvp, "a.wiki-unresolved")) +
+          "|ext=" + rvc(rvq(rvp, "a.ext")) +
+          "|tag=" + rvc(rvq(rvp, "a.tag")) +
+          "|task=" + rvc(rvtb) + (rvtb ? ":dis" + (rvtb.disabled ? 1 : 0) : "") +
+          "|img=" + rvc(rvq(rvp, "img")) +
+          "|lprow=" + rvc(rvq(rvl, ".lprow")) + "]";
+    /* rvcursor criterion 3 -> [rvsel:<chars>|<x0>,<y>,<x1>] — the SELECTION
+       CAPABILITY, which is a different question from the cursor SHAPE: stock
+       ships the I-beam over reading-view prose, and the I-beam is the
+       affordance that says "this text can be selected", so removing it is
+       exactly the change that could quietly take selectability with it.
+       <chars> = the length of the live DOM selection when BOTH its ends sit
+       inside this pane's .preview (0 = nothing selected there, "-" = no
+       preview in this view), read with window.getSelection() — never from
+       CSS, which would only re-assert what the stylesheet already says.
+       <x0>,<y>,<x1> = the first paragraph's first painted line box (range
+       client rect, so generated content and hidden runs cannot move it),
+       which is what the phase DRAGS along — a guessed pixel would make a
+       failure mean "missed the text", not "cannot select". */
+    /* ONE implementation of "where is this element painted", used by [rvsel:]
+       and [rvlb:] alike: the FIRST painted line box of the element's contents
+       (a range client rect — generated content and hidden runs cannot move it),
+       as <x0>,<y-middle>,<x1> in viewport pixels, or "-" when it paints
+       nothing. Two copies of this would be two chances to disagree about which
+       pixel a driver is aiming at. */
+    const rvbox = el => {
+      if (!el) return "-";
+      const rr = document.createRange(); rr.selectNodeContents(el);
+      const rcs = rr.getClientRects(), q = rcs.length ? rcs[0] : el.getBoundingClientRect();
+      return q.width ? Math.round(q.left) + "," + Math.round(q.top + q.height / 2) + "," + Math.round(q.right) : "-";
+    };
+    let rvsl = "-", rvsx = "-";
+    if (rvp) {
+      const ss = window.getSelection();
+      rvsl = (ss && ss.rangeCount && ss.anchorNode && ss.focusNode &&
+              rvp.contains(ss.anchorNode) && rvp.contains(ss.focusNode))
+             ? String(ss.toString().length) : "0";
+      rvsx = rvbox(rvq(rvp, "p"));
+    }
+    md += " [rvsel:" + rvsl + "|" + rvsx + "]";
+    /* rvcursor criterion 2 -> [rvlb:wiki=<x0>,<y>,<x1>|p=<x0>,<y>,<x1>] — WHERE
+       the two surfaces of the X-pointer measurement are painted. The computed
+       style ([rvc:]) cannot see the shape the X server draws (getComputedStyle
+       returns the literal "auto" for the UA link fallback, hand and I-beam
+       alike), so the second, INDEPENDENT measurement grabs the screen with the
+       pointer drawn over a link and over plain text — and it must warp to a
+       pixel that is REALLY inside each of them. A guessed pixel would turn
+       "wrong shape" and "missed the element" into the same result. `p` is the
+       same box [rvsel:] publishes (same rvbox call), so a driver can read one
+       token for both points. */
+    md += " [rvlb:wiki=" + (rvp ? rvbox(rvq(rvp, "a.wiki:not(.wiki-unresolved)")) : "-") +
+          "|p=" + (rvp ? rvsx : "-") + "]";
+  }
   // R26: the in-note find bar of the FOCUSED pane (open only) — see fTok.
   if (md && fg()) md += fTok(fg());
   // R31.9 drop probe: the LAST drop's outcome -> [drop:<copied>/<refused>].
@@ -1323,7 +1746,7 @@ function updateTitle() {          // pane/focus census in the window title (head
             (revealInfo ? " [bmrv:" + revealInfo + "]" : "") +      // bmmenu: "Reveal file in navigation" ran (bmReveal) — not merely "the Files pane is showing"
             (acItems.length ? " [ac:" + acKind + ":" + acItems.length + "]" : "") +
             " [pane:" + sidePane + "]" +
-            (sidePane === "search" && searchCount >= 0 ? " [sr:" + searchCount + "]" : "") +
+            (sidePane === "search" && searchCount >= 0 ? " [sr:" + searchCount + "]" + srGeom() : "") +
             (sidePane === "bm" ? " [bm:" + bmRows() + "]" +          // RENDERED rows, not bmCache.length:
               " [bmn:" + bmNames() + "]" +                          // and their painted LABELS, in paint order
               bmGeom() +                                            // bmmenu: [bmg:x,y,pitch] of the painted rows — a driver right-clicks what it measured
@@ -1507,6 +1930,14 @@ function placeMenu(m, x, y) {
   document.body.appendChild(m);
   m.dataset.x = x; m.dataset.y = y;
   menuEl = m;
+  /* R38: stock's note-tab menu is 28 rows + 8 separators ≈ 820 px, TALLER than
+     the 700 px smoke window, so .ctxmenu's overflow:auto scrolls it and the
+     bottom rows (Reveal file in navigation, Delete file) sit below the viewport
+     until it does. [mgy:] is measured from the live rects, so it stays true —
+     but only if the census is REFRESHED when the menu scrolls, which a scroll
+     alone does not do. Without this the geometry a driver clicks is the
+     geometry from before its own wheel event. */
+  m.addEventListener("scroll", () => updateTitle());
   clampMenu(m);
   updateTitle();                  // census [menu:1]
 }
@@ -1534,7 +1965,70 @@ for (const ev of ["mousedown", "click"])
     inv("open_external", { url: a.getAttribute("href") }).catch(err => console.warn("open_external:", err));
   }, true);
 
-function tabMenu(e, g, i) {              // right-click a tab -> Split right / Split down / Link with tab... (R13.1)
+const DIS_WIN = "Missing subsystem: a second OS window — single-window tauri app, and no backend command creates one";
+/* ---------- R38: THE TAB CONTEXT MENU — stock 1.13.7's list, measured ----------
+   THE SPEC is docs/requirements.md §36 (R38) + docs/recon-tabmenu/README.md's
+   WIRED / NOT WIRED split: 28 rows in 9 groups on an ACTIVE NOTE tab, 11 on a
+   graph tab, and three ABSENCE rules (R38.31) — stock's grammar for an
+   inapplicable row is that the row is NOT THERE (R38.2: across 12 measured
+   menus not one row was greyed), so our disabled treatment is reserved for the
+   rows we cannot WIRE, each carrying its missing subsystem in the hover title
+   (the rule bmRowMenu already established). Nothing below is from memory: the
+   labels, the group boundaries and every effect were measured on the box
+   against obsidian.AppImage sha256 e0d8e0a6…72663, one fresh stock instance per
+   performed row (docs/recon-tabmenu/effects/, shots/eff-*).
+   SUPERSEDES the six-item menu (Split right first) and, with it, R12.4's
+   "Live preview / Source mode" pair: stock has NO Live preview row, so the ✓
+   moves out of the label TEXT into a span.chk marker element and the rendered
+   label set equals stock's character for character (R38.10). */
+const ICON_CHK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"' +
+  ' stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5L13 5"/></svg>';
+const ICON_PIN = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"' +
+  ' stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h4l-.6 4.2 2.6 2.4H3.9l2.7-2.4z"/><path d="M8 8.6V14"/></svg>';
+/* The close verbs, R38.3-R38.6. EVERY one of them goes through the existing
+   flush-then-close path (closeTab -> flushSave), and each also flushes ONCE up
+   front because the doomed set may contain the tab whose buffer is pending
+   while the right-clicked target is a different one — R38.32, the data-loss
+   rule, is the reason these are three functions and not three inline loops. */
+async function closeOtherTabs(g, i) {      // Close others: the TARGET survives and takes focus (measured: not the active tab)
+  await flushSave(g);
+  const keep = g.tabs[i];
+  for (let j = g.tabs.length - 1; j >= 0; j--) if (g.tabs[j] !== keep) await closeTab(g, j);
+  const k = g.tabs.indexOf(keep);
+  if (k >= 0 && g.active !== k) { g.active = k; await loadActive(g); }
+}
+async function closeTabsAfter(g, i) {      // Close tabs after: target + everything to its LEFT kept (5 -> 2 measured)
+  await flushSave(g);
+  const keep = g.tabs[i];
+  for (let j = g.tabs.length - 1; j > i; j--) await closeTab(g, j);
+  const k = g.tabs.indexOf(keep);
+  // focus: the target if the active tab was one of the doomed ones (stock's
+  // survivor rule). A surviving active tab LEFT of the target keeps focus —
+  // stock's behaviour in that case is UNMEASURED and is not guessed here.
+  if (k >= 0 && g.active < 0) { g.active = k; await loadActive(g); }
+}
+async function closeAllTabs(g) {           // Close all: the GROUP SURVIVES (collapseGroup must not run)
+  await flushSave(g);
+  while (g.tabs.length > 1) await closeTab(g, g.tabs.length - 1);
+  if (!g.tabs.length) return;
+  /* The last tab cannot go through closeTab: with more than one group that path
+     is R6.5's "empty group leaves the tree" and the group would be REMOVED,
+     which is exactly what stock does not do (R38.6). Same teardown, no collapse.
+     DEVIATION, stated: stock leaves an empty leaf whose tab reads `New tab`; we
+     have no empty-tab entity (a tab is a note name), so the group survives with
+     ZERO tabs — observably [tabs:0] with the pane still there, one tab row
+     fewer than stock. docs/recon-tabmenu/README.md records it. */
+  const t = g.tabs[0];
+  await act("pane_close", { note: t.name, kind: t.kind || "note", pane_removed: false, groups: groups().length, tabs: 0 }, async () => {
+    if (!t.kind) closedTabs.push(t.name);  // R14: undo close tab still works on the last one
+    unlinkTab(g, t, true);
+    dropView(t);
+    g.tabs.length = 0;
+    g.active = -1;
+    await loadActive(g);
+  });
+}
+function tabMenu(e, g, i) {
   e.preventDefault();
   closeMenu();
   const m = document.createElement("div");
@@ -1545,16 +2039,32 @@ function tabMenu(e, g, i) {              // right-click a tab -> Split right / S
   // are stripped so a note named 'a:b]' cannot forge a token.
   m.dataset.mt = (tab.kind || "note") + ":" +
     (tab.kind ? "" : String(tab.name).split("/").pop().replace(/[|\]:]/g, ""));
-  const item = (label, fn) => {
+  /* item(label, fn) wires a row; item(label, null, why) renders it DISABLED with
+     `why` (the missing subsystem) as the hover title; chk adds the radio marker
+     as an ELEMENT so textContent — and therefore [menu:] — stays stock's label. */
+  const item = (label, fn, why, chk) => {
     const d = document.createElement("div");
-    d.textContent = label;
-    d.onmousedown = ev => ev.stopPropagation();  // don't let the closer eat the click
-    d.onclick = () => { if (fn) fn(); else closeMenu(); };
+    if (chk !== undefined) {             // a RADIO row: the gutter is reserved whether or not this one is the active mode
+      d.className = "chkrow";
+      const s = document.createElement("span");
+      s.className = "chk";
+      if (chk) s.innerHTML = ICON_CHK;
+      d.appendChild(s);
+    }
+    d.appendChild(document.createTextNode(label));
+    if (why != null) { d.className = (d.className ? d.className + " " : "") + "dis"; d.setAttribute("aria-disabled", "true"); d.title = why; }
+    else { d.onmousedown = ev => ev.stopPropagation(); d.onclick = () => { if (fn) fn(); else closeMenu(); }; }
     m.appendChild(d);
+    return d;
   };
-  const pick = () => {                   // R13.1 pick list: every other open tab, in layout order
+  const sep = () => { const d = document.createElement("div"); d.className = "sep"; m.appendChild(d); };
+  const inPlace = fill => {              // the ctxmenu's ONE submenu seam: rebuild in place (R13.1's pick list)
     m.innerHTML = "";
-    setTimeout(() => clampMenu(m), 0);   // R22: the pick list resizes the menu — re-clamp it
+    fill();
+    setTimeout(() => clampMenu(m), 0);   // R22: the new list resizes the menu — re-clamp it
+    updateTitle();                       // the menu was rebuilt in place -> refresh [menu:]
+  };
+  const pick = () => inPlace(() => {     // R13.1/R38.8: every other open tab, in layout order
     let any = false;
     for (const h of groups()) for (const t of h.tabs) {
       if (t === tab) continue;
@@ -1562,19 +2072,96 @@ function tabMenu(e, g, i) {              // right-click a tab -> Split right / S
       item((t.kind === "gg" ? "Graph" : t.name.split("/").pop()), () => { closeMenu(); linkTabs(tab, t); });
     }
     if (!any) item("(no other tabs)");
-    updateTitle();                       // the menu was rebuilt in place -> refresh [menu:]
+  });
+  const pickFolder = async () => {       // R38.16: stock opens a modal folder SUGGESTER; ours is the same in-place list
+    let fl = [];
+    try { fl = await inv("list_folders"); } catch (err) { fl = []; }
+    const here = tab.name.includes("/") ? tab.name.slice(0, tab.name.lastIndexOf("/")) : "";
+    inPlace(() => {
+      if (here) item("(vault root)", () => { closeMenu(); moveNoteTo(tab.name, ""); });
+      for (const f of fl) if (f !== here) item(f, () => { closeMenu(); moveNoteTo(tab.name, f); });
+      if (!m.children.length) item("(no other folder)");
+    });
   };
-  item("Split right", () => { closeMenu(); splitGroup(g, "row", i); });
-  item("Split down",  () => { closeMenu(); splitGroup(g, "col", i); });
-  if (isLinked(g, tab, i)) item("Unlink tab", () => { closeMenu(); unlinkTab(g, tab); });
-  else item("Link with tab...", pick);
-  if (!tab.kind) {   // R12.4 / R20 (#3): the source-vs-LP RADIO lives here (stock), not in a chrome icon — ✓ on the active one, per tab
-    item((tab.src ? "" : "✓ ") + "Live preview", () => { closeMenu(); setMode(g, "livepreview"); });
-    item((tab.src ? "✓ " : "") + "Source mode",  () => { closeMenu(); setMode(g, "source"); });
+  // ---- group 1, the close group. R38.31: the SET is the absence rule ----
+  const n = g.tabs.length, rightmost = i === n - 1;
+  item("Close", () => { closeMenu(); closeTab(g, i); });                        // WIRED: closeTab — flushes, focus to the NEXT tab (R38.3)
+  if (n > 1) {
+    item("Close others", () => { closeMenu(); closeOtherTabs(g, i); });         // WIRED (R38.4)
+    if (!rightmost) item("Close tabs after", () => { closeMenu(); closeTabsAfter(g, i); });   // WIRED, absent when rightmost (R38.5)
+    item("Close all", () => { closeMenu(); closeAllTabs(g); });                 // WIRED (R38.6)
   }
-  if (!tab.kind) item(bmCache.includes(tab.name) ? "Remove bookmark" : "Bookmark",  // R20.4 (#12, bookmarks pane = R9.5): same toggle as the tree row menu; graph tabs (gg/lg) have no note to bookmark
-    () => { closeMenu(); toggleBm(tab.name); });                                    // toggleBm re-renders the bookmarks pane
-  placeMenu(m, e.clientX, e.clientY);   /* R22: viewport-clamped by MEASURED size — supersedes the old innerWidth-150 guess and the #12 post-append top clamp */
+  /* R38.31, the first absence rule: an INACTIVE tab's menu is the close group
+     and NOTHING else (M5/M8, 4 rows not 28). Measured twice, and it is why
+     every row below may assume the target IS this group's active tab — which is
+     what lets Reading view / Find... / Rename... keep taking the group. */
+  if (i !== g.active) { placeMenu(m, e.clientX, e.clientY); return; }
+  sep();
+  const pinRow = () => item(tab.pinned ? "Unpin" : "Pin", () => { closeMenu(); togglePin(g, tab); });   // WIRED (R38.7)
+  const linkRow = () => isLinked(g, tab, i)
+    ? item("Unlink tab", () => { closeMenu(); unlinkTab(g, tab); })             // WIRED: R6.8, unchanged — stock wording in a stock slot
+    : item("Link with tab...", pick);
+  if (tab.kind) {
+    /* ---- R38.30: a GRAPH tab gets a DIFFERENT menu, assembled from the view
+       type — 11 rows with a second tab in the group, 8 alone. It drops every
+       row that needs a file behind the tab and adds Copy screenshot. ---- */
+    pinRow(); linkRow();
+    sep();
+    item("Move to new window", null, DIS_WIN);
+    item("Split right", () => { closeMenu(); splitGroup(g, "row", i); });
+    item("Split down",  () => { closeMenu(); splitGroup(g, "col", i); });
+    sep();
+    item("Copy screenshot", null, "Missing subsystem: canvas-to-clipboard — no programmatic clipboard write exists in this tree (ui/editor.js writes only inside real copy events) and the graph view has no canvas-to-PNG step");
+    item("Bookmark...", null, "Missing subsystem: bookmarks of non-file views — a bookmark here is a note name on disk (R9.4) and a graph tab has no note behind it");
+    placeMenu(m, e.clientX, e.clientY);
+    return;
+  }
+  // ---- group 2 (5 rows) ----
+  pinRow();
+  linkRow();
+  item("Backlinks in document", null, "Missing subsystem: an in-document backlinks section — stock appends backlinks to the BOTTOM OF THE NOTE PANE; ours is a right-sidebar pane (R27), a different surface");
+  item("Reading view", () => { closeMenu(); setMode(g, "reading"); }, null, tab.mode === "reading");     // WIRED: setMode (R38.10)
+  item("Source mode",  () => { closeMenu(); setMode(g, "source"); },  null, tab.mode === "source");      // WIRED: setMode — the ✓ is the R12.4 radio, now a marker element
+  // ---- group 3 (4 rows) ----
+  sep();
+  item("Move to new window", null, DIS_WIN);
+  item("Split right", () => { closeMenu(); splitGroup(g, "row", i); });         // WIRED: R6.2 — row 11 now, not row 1 (R38.12)
+  item("Split down",  () => { closeMenu(); splitGroup(g, "col", i); });         // WIRED: R6.2 (R38.13)
+  item("Open in new window", null, DIS_WIN + " — and this row COPIES the tab where the one above MOVES it (measured), so the two stay distinct");
+  // ---- group 4 (6 rows) ----
+  sep();
+  item("Rename...", () => { closeMenu(); focusGroup(g); cmdRename(); });        // WIRED: R24.2/R34 rename + the prompted link update
+  item("Move file to...", pickFolder);                                          // WIRED: moveNoteTo behind the in-place folder list (R38.16)
+  item(bmCache.includes(tab.name) ? "Remove bookmark" : "Bookmark...",          // WIRED: toggleBm — stock's wording, our flat-list toggle (R38.17/R20.4)
+    () => { closeMenu(); toggleBm(tab.name); });
+  item("Merge entire file with...", null, "Missing subsystem: file merge — no command concatenates one note into another, and stock's is a suggester with four modifier behaviours");
+  item("Add file property", null, "Missing subsystem: a frontmatter property model — stock writes a Properties block at the top of the note; there is no frontmatter parser or editor here");
+  item("Export to PDF...", null, "Missing subsystem: a PDF pipeline — no renderer and no page-size/margin model; PDF export is an explicit project non-goal");
+  // ---- group 5 (2 rows) ----
+  sep();
+  item("Find...",    () => { closeMenu(); fOpen(g); });                         // WIRED: R26 find bar
+  item("Replace...", () => { closeMenu(); fOpenRep(g); });                      // WIRED: R26 replace row
+  // ---- group 6 (1 row) ----
+  sep();
+  item("Copy path", null, "Missing subsystems: submenu panels in ctxmenu (stock keeps the parent menu OPEN beside a child panel; ours can only rebuild itself in place) and a programmatic clipboard write (the only clipboard access in the tree is inside real copy/paste events, ui/editor.js)");
+  // ---- group 7 (2 rows) ----
+  sep();
+  item("Open version history", null, "Missing subsystem: file history — nothing here keeps a revision of a note to show changes from or restore");
+  item("Open linked view", null, "Missing subsystem: submenu panels in ctxmenu — four of stock's five children already have backends here (R7 local graph, backlinks, outgoing, outline), so this is the highest-value row in this list");
+  // ---- group 8 (3 rows) ----
+  sep();
+  item("Open in default app", null, "Missing subsystem: a file-path opener — open_external takes a URL, not a vault path");
+  item("Show in system explorer", null, "Missing subsystem: a file-manager handler — no command reveals a path in a file manager");
+  item("Reveal file in navigation", () => { closeMenu(); bmReveal(tab.name); });  // WIRED: bmReveal — the identical verb bmRowMenu wires, publishes [bmrv:] (R38.28)
+  // ---- group 9 (1 row) ----
+  sep();
+  item("Delete file", () => { closeMenu(); askDelete(tab.name); }).className = "del";   // WIRED: askDelete — stock's row is the link-COUNTING confirmation, not an unlink (R38.29)
+  placeMenu(m, e.clientX, e.clientY);   /* R22: viewport-clamped by MEASURED size */
+}
+async function togglePin(g, tab) {      // R38.7: the flag + the tab-bar glyph; Close stays enabled on a pinned tab (measured)
+  tab.pinned = !tab.pinned;
+  renderTabs(g);
+  updateTitle();                        // census [pin:<names>]
 }
 
 /* ---------- view modes (R8.8: livepreview / source / reading per tab) ---------- */
@@ -1754,6 +2341,10 @@ function renderTabs(g) {
     const ttl = document.createElement("span");
     ttl.className = "t";
     const chain = isLinked(g, tab, i);
+    // R38.7: a PINNED tab carries a pin glyph in FRONT of the label, the way
+    // stock paints it (shots/m3-pinned-tabbar.png). It is a marker element, not
+    // text, so [tabs:]/[note:] and every label assertion are unchanged.
+    if (tab.pinned) { const p = document.createElement("span"); p.className = "pin"; p.innerHTML = ICON_PIN; d.appendChild(p); }
     ttl.textContent = (chain ? "\u{1F517} " : "") + tab.name.split("/").pop();
     const x = document.createElement("span");
     x.className = "x";
@@ -2823,6 +3414,7 @@ async function lpRender(g, activeL = -1, col = 0, full = false) {
   const t0 = performance.now();
   Ed.render(g, activeL, col, full || (g.view && g.view.note !== curOf(g)));
   lpMs = Math.round(performance.now() - t0);
+  if (scHits(g).length) scMarks(g);        // R25.13f: the flash survives every re-render
   updateTitle();
 }
 function lpCommit(g) { if (g && g.view && g.view.lines) Ed.sync(g); }   // model -> save bridge
@@ -2905,6 +3497,10 @@ function scheduleSave(g) {
   // an open bar re-scans. Guarded on `open` so the closed case — i.e. the whole
   // measured typing path (R18) — costs one property read and nothing else.
   if (g.find && g.find.open) fSync(g);
+  // R25.13d/f: the search flash has NO timer and survives typing and undo. The
+  // rows it was painted on were just rebuilt, so it is repainted here, at the
+  // same choke point, from offsets Ed.replace already mapped through the edit.
+  if (scHits(g).length) scMarks(g);
   clearTimeout(g.saveT);
   g.saveT = setTimeout(async () => {
     g.saveT = null;
@@ -5212,14 +5808,23 @@ $("settings").onmousedown = e => { if (e.target === $("settings")) closeSettings
    With `decorations: false` there is no WM frame, so moving, resizing,
    minimising, maximising and closing the window are this file's job.
 
-   WHY THE GESTURES ARE OURS AND NOT THE WM'S: the obvious implementation hands
-   the press to the WM (start_dragging / _NET_WM_MOVERESIZE) and lets it move the
-   window. That does nothing where there is NO window manager — which is exactly
-   the state of every Xvfb display this repo tests on, and an undecorated window
-   there would be permanently stuck. So a gesture sends the ANCHOR rect it started
-   from plus the cursor delta, and win_gesture applies the resulting geometry
-   (absolute at every step: a dropped pointermove cannot make the window drift).
+   WHY THE GESTURES ARE OURS AND NOT THE WM'S — *WHEN THERE IS NO WM*: the
+   obvious implementation hands the press to the WM (start_dragging /
+   _NET_WM_MOVERESIZE) and lets it move the window. That does nothing where there
+   is NO window manager — which is exactly the state of every Xvfb display this
+   repo tests on, and an undecorated window there would be permanently stuck. So
+   a gesture sends the ANCHOR rect it started from plus the cursor delta, and
+   win_gesture applies the resulting geometry (absolute at every step: a dropped
+   pointermove cannot make the window drift).
    Cost: the window follows the cursor one frame late. R33 records the divergence.
+   AND THE CONVERSE, WHICH R33.6 MISSED AND AN OPERATOR PAID FOR (R33.6b): where
+   a compositor owns the position — any Wayland session, including the app
+   running as an XWayland client — a client's own position request is DROPPED,
+   so that same path moves the window 0 px and nothing about the arithmetic can
+   fix it (docs/recon-hdrdrag/README.md has the measurement). The path is
+   therefore chosen at runtime from a positive test of the live session
+   (win_move_proto -> wfProto, published as [wfp:]), and BOTH paths ship: see
+   "THE LINE THAT CHOOSES THE PATH" in wfBegin.
 
    THE DRAG REGION is the empty part of ANY pane header (the strip itself and the
    background of a tab bar, never a tab or a button) — stock drags by the same
@@ -5265,6 +5870,24 @@ var wfRet = null;          // R33.9: where keyboard focus came from before Alt+S
 var wfLogA = [];
 function wfLog(t) { wfLogA.push(t); if (wfLogA.length > 8) wfLogA.shift(); }
 var wfDownT = 0, wfDownX = 0, wfDownY = 0;   // double-press detector (= maximise)
+/* R33.6b THE TWO PATHS. "none" = this window can position ITSELF, so the app
+   moves it (win_rect anchor + cursor delta + win_gesture) — that is every Xvfb
+   rig (nobody else could move it) AND every plain X11 desktop, where E1 measured
+   our geometry exact under openbox and a handover measurably WORSE (every other
+   press swallowed by the WM's pointer grab). "wm" / "wayland" = MEASURED that a
+   client's position request does nothing here, or known a priori on native
+   Wayland; then the compositor is the only party that can move the window and
+   the press is handed to it.
+   CACHED, not awaited per press: the WM-less path must keep the timing it has
+   today (panedrag is green because of it), so the press path adds zero IPC.
+   "none" is the boot value and the value until something is measured, so the
+   fallback is always the behaviour this repo has evidence for, never a hang. */
+var wfProto = "none";
+/* R33.6b DIAGNOSTIC: what the webview actually receives around a handover.
+   Published as [wfd:] so a phase can tell "the press never arrived" apart from
+   "the press arrived and the handover did nothing" — the two look identical in
+   the geometry alone, and telling them apart is the whole debugging step. */
+var wfEv = { dn: 0, up: 0, cx: 0, lc: 0, mvb: 0 };
 
 function wfDragRegion(t) {    // is this event target part of the drag region?
   if (!t || !t.classList) return false;
@@ -5335,6 +5958,27 @@ async function wfBegin(dir, ev, el) {
     if (dbl) { wfDownT = 0; return wfToggleMax(); }
   }
   ev.preventDefault();
+  /* ===== THE LINE THAT CHOOSES THE PATH (R33.6b, docs/negctl-hdrdrag) =====
+     wfProto is "none" until the Rust side has MEASURED that this session drops
+     a client's position request on the floor (or knows it must, because the
+     session is native Wayland). "none" therefore covers both X11 cases — no WM,
+     and a WM that lets us position ourselves — and both keep today's anchor+delta
+     path, unchanged, which is what E1 measured exact under openbox and what the
+     gate rigs depend on. When the path IS "wm"/"wayland", the compositor owns the
+     position and our arithmetic is a 0 px no-op, so hand the press over and
+     return: no anchor, no delta, no win_gesture, nothing for its drag to fight.
+     Resizes are NOT handed over — the eight grips are a different protocol edge
+     and are out of this goal's scope.
+     KNOWN, MEASURED COST of the handover (docs/recon-hdrdrag/B-ALT.log): the WM
+     grabs the pointer for its move loop, so the webview never sees that press's
+     release and the NEXT press can be swallowed. That is why the handover is
+     spent only where the alternative moves the window 0 px every time. */
+  if (dir === "move" && wfProto !== "none") {
+    wfLog("h" + wfProto + "#" + ++wfSeq);
+    wfLast = "handover:" + wfProto;
+    inv("win_drag_start").then(p => { wfProto = p; wfLast = "handover:" + p; wfTitleSafe(); }).catch(noteErr);
+    return updateTitle();
+  }
   const seq = ++wfSeq;
   // ACTIVE IMMEDIATELY, anchor later: the gesture exists from the press, so a
   // pointerup that lands during the win_rect round trip can cancel it (wfEnd bumps
@@ -5378,8 +6022,34 @@ function wfEnd() {
     try { a.el.releasePointerCapture(a.pid); } catch (e) { /* already gone */ }
   wfA = null; wfPend = null;
   wfSeq++;                    // invalidate any anchor still in flight (see wfSeq)
+  /* R33.6b: the path can change UNDER US. win_gesture measures, during a real
+     move, whether this session honours a client-set position, and the verdict
+     can only arrive after the gesture has been running a moment — so the answer
+     is re-read HERE, after the drag, never in the press path (which must keep
+     the timing the WM-less rigs are green with). On every session this repo
+     gates, the answer is the same "none" it booted with. */
+  if (a && a.dir === "move" && wfProto === "none")
+    inv("win_move_proto").then(p => { if (p !== wfProto) { wfProto = p; wfLog("p" + p); } wfTitleSafe(); }).catch(noteErr);
 }
+/* R33.6b: THE PATH PROBES ARE ASYNC, AND THE FIRST ONE RESOLVES DURING BOOT.
+   wfArm() runs at top level, before any vault is loaded, so `state` can still be
+   null — and updateTitle() reads state.root unguarded. Republishing the census
+   straight from a probe callback therefore threw "null is not an object
+   (evaluating 'state.root')" into window.onerror, and noteErr latches the FIRST
+   error as [jserr:] for the whole session: a first-error-wins channel poisoned
+   before the app booted, which hides the next real error from every smoke phase.
+   MEASURED, not theorised: phase hdrdragwm's "a plain click on free header space
+   is a no-op" assertion went red on that boot-time error, on a click that was
+   fine (the window had not moved a pixel) — and the same [jserr:] sat in the
+   census of every launch on this branch while main's was clean.
+   It is the same scar as the guarded updateTitle() at the end of wfArm, so every
+   async path callback republishes through THIS, never through updateTitle. */
+function wfTitleSafe() { if (typeof state !== "undefined" && state) updateTitle(); }
 function wfArm() {
+  // R33.6b: ask ONCE who moves this window, then publish it as [wfp:] — a smoke
+  // phase must be able to read the path that was taken instead of inferring it
+  // from whether the window ended up somewhere.
+  inv("win_move_proto").then(p => { wfProto = p; wfTitleSafe(); }).catch(noteErr);
   // spelled out, one call per control: the cargo test greps for inv("win_...")
   // in this file, which is the only thing that notices when a command is renamed
   // in Rust and the button silently becomes a no-op (ui/ is not a cargo input)
@@ -5390,10 +6060,13 @@ function wfArm() {
     g.addEventListener("pointerdown", ev => wfBegin(g.dataset.d, ev, g));
   // capture phase: the press must be claimed before a tab bar handler sees it,
   // and ONLY when it landed on the background (a tab is its own target)
-  addEventListener("pointerdown", ev => { if (wfDragRegion(ev.target)) wfBegin("move", ev, ev.target); }, true);
-  addEventListener("pointermove", wfDrag, true);
-  addEventListener("pointerup", wfEnd, true);
-  addEventListener("pointercancel", wfEnd, true);
+  addEventListener("pointerdown", ev => { wfEv.dn++; if (wfDragRegion(ev.target)) wfBegin("move", ev, ev.target); }, true);
+  addEventListener("pointermove", ev => { if (ev.buttons) wfEv.mvb++; wfDrag(ev); }, true);
+  addEventListener("pointerup", ev => { wfEv.up++; wfEnd(ev); }, true);
+  addEventListener("pointercancel", ev => { wfEv.cx++; wfEnd(ev); }, true);
+  // grab-broken -> lostpointercapture is the event that would clear the engine's
+  // stuck button state for free if WebKit emits it; count it either way.
+  addEventListener("lostpointercapture", () => { wfEv.lc++; }, true);
   // the census must be able to say WHICH control the keyboard is on (R33.4)
   for (const b of document.querySelectorAll("#wframe button")) {
     b.addEventListener("focus", updateTitle);
@@ -5452,7 +6125,10 @@ function wfArm() {
      smoke phase. The census is republished by the first real updateTitle anyway. */
   if (typeof state !== "undefined" && state) updateTitle();
 }
-/* census: [wf:<buttons><d|-><grips>] [wfm:<maximised>] [wfk:<focused control>].
+/* census: [wf:<buttons><d|-><grips>] [wfm:<maximised>] [wfk:<focused control>]
+   [wfp:<none|wm|wayland>] — which mechanism this session moves the window with
+   (R33.6b), read from win_move_proto at arm time, so a phase asserts the PATH
+   and not just the outcome.
    `d` = the gesture listeners are armed; without them the window cannot be
    moved, and the smoke's move assertion is the thing that notices. */
 function wfTok() {
@@ -5460,7 +6136,7 @@ function wfTok() {
   const g = document.querySelectorAll("#wrz i").length;
   const a = document.activeElement;
   const k = a && a.id && a.id.indexOf("wf-") === 0 ? a.id : "-";
-  return " [wf:" + b + (wfArmed ? "d" : "-") + g + "] [wfm:" + (wfMax ? 1 : 0) + "] [wfk:" + k + "] [wfg:" + wfLast + "] [wfl:" + wfLogA.join(">") + "] [hdr:" + wfHdrTok() + "]";
+  return " [wf:" + b + (wfArmed ? "d" : "-") + g + "] [wfm:" + (wfMax ? 1 : 0) + "] [wfk:" + k + "] [wfg:" + wfLast + "] [wfl:" + wfLogA.join(">") + "] [wfp:" + wfProto + "] [wfd:" + wfEv.dn + "," + wfEv.up + "," + wfEv.cx + "," + wfEv.lc + "," + wfEv.mvb + "] [hdr:" + wfHdrTok() + "]";
 }
 wfArm();
 
@@ -5734,7 +6410,7 @@ function fMarks(g) {
 }
 /* The wrap itself, shared by both surfaces: per text node, right to left, so a
    splitText never invalidates an offset that has not been used yet. */
-function fWrap(jobs) {
+function fWrap(jobs, cls) {
   for (const [node, js] of jobs) {
     js.sort((x, y) => y.a - x.a);      // right to left
     let head = node;
@@ -5742,7 +6418,7 @@ function fWrap(jobs) {
       head.splitText(j.b);             // tail leaves; head keeps [0, j.b)
       const mid = head.splitText(j.a);
       const sp = document.createElement("span");
-      sp.className = F_MARK + (j.cur ? " " + F_CUR : "");
+      sp.className = (cls || F_MARK) + (j.cur ? " " + F_CUR : "");
       sp.dataset.fh = String(j.i);
       mid.parentNode.insertBefore(sp, mid);
       sp.appendChild(mid);

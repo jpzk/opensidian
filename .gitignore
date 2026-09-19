@@ -20,6 +20,27 @@ dist/
 !docs/recon-bmmenu/**/*.png
 # docs/palette-wasp/reference.png is the operator picture the wasp palette is traced to (criterion 1 of goal/wasp)
 !docs/palette-wasp/reference.png
+# recon-tabmenu: the stock 1.13.7 NOTE TAB menu. Every row count, box size and
+# wording in docs/recon-tabmenu/README.md is read off these crops, so they are
+# the measurement, not decoration. Without this exception the shots are silently
+# ignored: iteration 3 reported "five shots committed" and `git ls-files` showed
+# none — `git add` on an ignored path is a no-op that prints nothing.
+!docs/recon-tabmenu/**/*.png
+
+# recon-dotfiles: the evidence IS the deliverable — .gitignore line 2 (*.png)
+# would otherwise keep every cited shot out of a clone (measured on themearch
+# and on srclick: README cites a path a reviewer cannot open).
+!docs/recon-dotfiles/**/*.png
+# recon-srclick: acceptance criterion 1 is "every C1-C12 answer names a shot
+# that EXISTS under docs/recon-srclick/shots/" — so these pngs are the evidence
+# a reviewer opens, not incidental screenshots. The numbers beside them live in
+# docs/recon-srclick/measurements/*.json (DOM state) and *-scroll.json (frames).
+!docs/recon-srclick/**/*.png
+# rvcursor: the pointer crops and masks ARE the measurement (criteria 2 and 5).
+# A prose claim about a cursor shape is not verifiable; the pixels are, and the
+# masks are what the classifier compares.
+!docs/recon-rvcursor/**/*.png
+!docs/negctl-rvcursor/**/*.png
 # recon-flatpak: shots/ is the launch evidence for the goal's criterion 2 — a
 # .flatpak that "launches" is a claim until the pixels are in the tree next to
 # the census line that measured them (docs/recon-flatpak, item L).

@@ -728,8 +728,28 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .lpraw { display: block; width: 100%; background: var(--bg-elevated); color: inherit;
          border: 0; border-radius: 3px; padding: 0 2px; resize: none;
          outline: none; font: inherit; line-height: inherit; overflow: hidden }
-.preview { flex: 1 1 0; min-width: 0; overflow-y: auto; overflow-x: hidden }   /* R22 */
-.preview a.wiki { color: var(--accent-blue) }
+/* rvcursor: READING VIEW IS NOT EDITABLE, so the pointer must never be the
+   I-beam here. The container declares the ordinary arrow (`default`) for all
+   ordinary content — without this declaration the UA resolves the inherited
+   `cursor: auto` against the hit test and hands back the text caret over
+   selectable prose, which lies about what a click does. `default` is a cursor
+   SHAPE only: selection is governed by `user-select`, which this change does
+   not touch (proven by the drag-select phase). Declaring `default` here also
+   makes every clickable's own `cursor: pointer` LOAD-BEARING, because the UA's
+   "auto over a link = hand" fallback no longer applies to descendants — hence
+   the explicit pointer on a.wiki below (a.ext, now :754, and a.tag :756/:758,
+   already had one — the brief's :734/:736 were their numbers before this
+   comment grew above them; a.wiki itself is :752).
+   Live preview (.lp / .lprow, :725) keeps `cursor: text` and source mode
+   is untouched: those views ARE editable. Divergence from stock 1.13.7, which
+   shows the I-beam over reading-view text, is recorded in
+   docs/recon-rvcursor/STOCK.md; the operator ask is the requirement. */
+.preview { flex: 1 1 0; min-width: 0; overflow-y: auto; overflow-x: hidden;
+           cursor: default }   /* R22 */
+/* one rule covers both wikilink states: the unresolved anchor carries
+   `class="wiki wiki-unresolved"` (main.rs:1336-1343), never wiki-unresolved
+   alone — :733 adds only colour + italic */
+.preview a.wiki { color: var(--accent-blue); cursor: pointer }
 .preview a.wiki-unresolved { color: var(--link-unresolved); font-style: italic }
 .lp a.ext, .preview a.ext { color: var(--accent-blue); text-decoration: underline; cursor: pointer }  /* S1: external link, opens via xdg-open */
 /* tags: inline #tag pills (stock: small rounded accent-tinted chip) */
@@ -820,6 +840,20 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
    reason in the hover title. */
 .ctxmenu div.sep { padding: 0; height: 1px; margin: 5px 0; background: var(--border); cursor: default; pointer-events: none }
 .ctxmenu div.dis { color: var(--text-chrome-muted); cursor: default; pointer-events: none }   /* no :hover rule needed: pointer-events:none means the row never hovers (and lint-colors bans "transparent") */
+/* R38 (docs/recon-tabmenu/README.md): the tab menu's radio rows. Stock has no
+   `Live preview` row and no ✓ in any label, so R12.4's mark is an ELEMENT
+   (span.chk) rather than text in the label — the rendered label set then equals
+   stock's character for character while the radio state stays visible, and
+   [menu:] (textContent) reads stock's wording. The gutter is reserved on EVERY
+   row of these two so the labels do not shift when the mark moves. */
+.ctxmenu div.chkrow { padding-left: 4px }
+.ctxmenu .chk { display: inline-block; width: 12px; height: 12px; margin-right: 4px; vertical-align: -1px }
+.ctxmenu .chk svg { width: 12px; height: 12px; display: block }
+/* R38.29: `Delete file` is the ONE non-default-coloured row in stock's menu (measured red, hex eb4655 — recorded in docs/requirements.md R38.29, not repeated as a literal here) */
+.ctxmenu div.del { color: var(--accent-red) }
+/* R38.7: the pin glyph rides in FRONT of a pinned tab's label (shots/m3-pinned-tabbar.png) */
+.tab .pin { flex: 0 0 auto; display: flex; align-items: center; color: var(--text-chrome-muted); margin-right: 3px }
+.tab .pin svg { width: 11px; height: 11px; display: block }
 /* "Reveal file in navigation": stock puts a focus ring on the explorer row, no selection (recon 10-reveal.png) */
 .trow.revealed { outline: 2px solid var(--border-focus-ring); outline-offset: -2px }
 /* M8 local graph (R7.5): per-pane settings gear + popover */
@@ -1290,6 +1324,13 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
   border: 1px solid var(--checkbox-border-color); flex-shrink: 0; padding: 0; margin: 0; width: var(--checkbox-size); height: var(--checkbox-size);
   position: relative; top: 0.2em; margin-inline-end: 0.6em; cursor: pointer; vertical-align: baseline }
 .preview ul > li > input[type=checkbox] { margin-inline-start: calc(var(--checkbox-size) * -1.5 - 1px) }   /* box at +3 (h1-ink relative) */
+/* rvcursor: the READING-VIEW task box is INERT — pulldown-cmark emits it with
+   `disabled` and no JS wires a toggle here (docs/recon-rvcursor/CLICKABLES.md
+   §2), so it takes the ordinary arrow; a hand would promise a toggle that does
+   not exist. Declared, not inherited, because a UA sheet may set its own
+   `cursor` on a form control; the census phase reads the live value either way.
+   LP's box is NOT named here — live preview is editable and unchanged. */
+.preview input[type=checkbox] { cursor: default }
 /* LP: the task li has no list margin (stock: the checkbox sits in the text flow after the hidden "- " widget); box at +7, text at +27 */
 .lp li:has(> input[type=checkbox]) { margin-inline-start: 0 }
 .lp ul > li > input[type=checkbox] { margin-inline-start: calc(var(--checkbox-margin-inline-start) - 2px); margin-inline-end: calc(0.6em - 4px) }
@@ -1508,3 +1549,11 @@ body.floorrelayout #main { padding-right: 1px }
 /* R26.8: every match is marked; the current one is the one you are standing on. */
 span.fmk { background: var(--highlight-yellow); border-radius: 2px }
 span.fmk.fcur { background: var(--tag-bg-hover); outline: 1px solid var(--accent-yellow) }
+/* R25.13d: the search-result flash. Measured on stock 1.13.7 as class
+   `is-flashing`, a translucent yellow wash, NO animation and NO timer (C4,
+   shots 19-25); stock's exact literal is recorded in docs/recon-srclick/
+   README.md, NOT copied here — a hardcoded colour is a colour no theme can
+   reach (scripts/lint-colors.sh). The class name is the measurement's; the
+   value is this app's yellow highlight token, the same one .fmk and .navflash
+   use, so the flash follows every palette. */
+span.is-flashing { background: var(--highlight-yellow) }

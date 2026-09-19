@@ -1941,6 +1941,24 @@ struct SearchHit {
     note: String,
     line: u32, // 0-based source line; 0 with snippet==note means a NAME match
     snippet: String,
+    /// R25.13m: a hit is an ABSOLUTE OFFSET into the file AS INDEXED, not a
+    /// line number — measured against stock in docs/recon-srclick/README.md
+    /// C12, where deleting lines above a match moved the jump by exactly the
+    /// characters removed and never re-found the text. The frontend jumps by
+    /// this, so it must be in the SAME unit a JS string is indexed in: UTF-16
+    /// CODE UNITS, not bytes and not chars. `"é".length === 1` but 2 bytes;
+    /// `"𝄞".length === 2` but 1 char — a byte offset would land mid-character
+    /// and a char offset would drift one unit per astral character.
+    offset: u32,
+    /// match length in the same unit; 0 = nothing to highlight (a NAME match,
+    /// or a tag-only line hit, which points at a line, not at a span).
+    len: u32,
+}
+
+/// UTF-16 code units in `s` — the unit `offset`/`len` are counted in, so that
+/// `editor.value.slice(offset, offset + len)` on the frontend is the match.
+fn u16len(s: &str) -> u32 {
+    s.encode_utf16().count() as u32
 }
 
 /// R9.4: case-insensitive substring over note names + bodies. Hits ordered by
@@ -1973,6 +1991,22 @@ fn has_tag(tags: &[String], want: &str) -> bool {
     })
 }
 
+/// `content.lines()` paired with each line's absolute UTF-16 offset in
+/// `content`. Reproduces `lines()` EXACTLY — `split_inclusive('\n')` yields
+/// the same pieces (no phantom trailing line when the file ends in \n, nothing
+/// for an empty file) and the same text once the terminator is stripped, \r\n
+/// included — while counting the terminators `lines()` throws away, because
+/// R25.13m's offset is into the FILE, not into the line.
+fn lines_with_offsets(content: &str) -> impl Iterator<Item = (usize, &str, u32)> {
+    let mut base: u32 = 0;
+    content.split_inclusive('\n').enumerate().map(move |(i, raw)| {
+        let here = base;
+        base += u16len(raw);
+        let l = raw.strip_suffix('\n').unwrap_or(raw);
+        (i, l.strip_suffix('\r').unwrap_or(l), here)
+    })
+}
+
 fn search_docs<'a>(docs: impl IntoIterator<Item = (&'a str, &'a str, &'a [String])>, query: &str) -> Vec<SearchHit> {
     let (want, text) = split_query(query);
     let q = text.to_lowercase();
@@ -1988,14 +2022,19 @@ fn search_docs<'a>(docs: impl IntoIterator<Item = (&'a str, &'a str, &'a [String
             // tag-only: show the lines carrying the tag inline (frontmatter-
             // only notes get a name hit so they still show up)
             let n0 = out.len();
-            for (i, l) in content.lines().enumerate() {
+            for (i, l, base) in lines_with_offsets(content) {
                 let lower = l.to_lowercase();
                 if tag_spans(&lower).iter().any(|&(a, b)| want.iter().any(|w| has_tag(&[lower[a + 1..b].to_string()], w))) {
-                    out.push(SearchHit { note: name.to_string(), line: i as u32, snippet: l.trim().chars().take(200).collect() });
+                    // a tag-only hit points at a LINE, not at a span: offset =
+                    // the line start, len = 0, so R25.13d paints nothing and
+                    // the jump still lands on the line. Pointing at the matched
+                    // #tag span itself is LATER — unmeasured (stock has no
+                    // tag: grammar to measure against), never guessed.
+                    out.push(SearchHit { note: name.to_string(), line: i as u32, snippet: l.trim().chars().take(200).collect(), offset: base, len: 0 });
                 }
             }
             if out.len() == n0 {
-                out.push(SearchHit { note: name.to_string(), line: 0, snippet: name.to_string() });
+                out.push(SearchHit { note: name.to_string(), line: 0, snippet: name.to_string(), offset: 0, len: 0 });
             }
             if out.len() >= 500 {
                 break;
@@ -2003,23 +2042,46 @@ fn search_docs<'a>(docs: impl IntoIterator<Item = (&'a str, &'a str, &'a [String
             continue;
         }
         if name.to_lowercase().contains(&q) {
-            out.push(SearchHit { note: name.to_string(), line: 0, snippet: name.to_string() });
+            // a NAME match has no span in the body: offset 0, len 0 — open the
+            // note at the top, highlight nothing (R25.13a/d).
+            out.push(SearchHit { note: name.to_string(), line: 0, snippet: name.to_string(), offset: 0, len: 0 });
         }
-        for (i, l) in content.lines().enumerate() {
+        for (i, l, base) in lines_with_offsets(content) {
             let lower = l.to_lowercase();
             let Some(bpos) = lower.find(&q) else { continue };
             let t = l.trim();
+            // cpos: the match start as a CHAR index into the original line.
+            // `bpos` is a byte index into the LOWERCASED line, so this inherits
+            // the assumption the snippet window already makes — that
+            // to_lowercase() preserves char COUNT. It does for every script
+            // this app is shipped with; the pathological cases (İ -> i̇, one
+            // char to two) would shift the highlight within the line, never
+            // outside it, and never panic: the slicing below is by char index
+            // into a Vec<char>, clamped to its own length.
+            let chars: Vec<char> = l.chars().collect();
+            let cpos = lower[..bpos].chars().count().min(chars.len());
+            let qlen = q.chars().count().min(chars.len() - cpos);
             let snippet = if t.len() <= 200 {
                 t.to_string()
             } else {
                 // char-safe ~200-char window around the first hit
-                let cpos = lower[..bpos].chars().count();
-                let chars: Vec<char> = l.chars().collect();
                 let start = cpos.saturating_sub(80).min(chars.len());
                 let end = (cpos + 120).min(chars.len());
                 chars[start..end].iter().collect()
             };
-            out.push(SearchHit { note: name.to_string(), line: i as u32, snippet });
+            // R25.13m: absolute UTF-16 offset of the match in the FILE, and its
+            // length, so the frontend jumps by the offset the backend found
+            // instead of re-finding the match itself — two searches that can
+            // disagree is exactly what the brief forbids.
+            let in_line: String = chars[..cpos].iter().collect();
+            let matched: String = chars[cpos..cpos + qlen].iter().collect();
+            out.push(SearchHit {
+                note: name.to_string(),
+                line: i as u32,
+                snippet,
+                offset: base + u16len(&in_line),
+                len: u16len(&matched),
+            });
             if out.len() >= 500 {
                 break 'docs;
             }
@@ -2279,7 +2341,17 @@ fn win_rect(win: tauri::Window) -> Result<WinRect, String> {
 /// (win_rect at pointerdown) and the cumulative delta, so the geometry is
 /// absolute at every step and a dropped event cannot make the window drift.
 #[tauri::command]
-fn win_gesture(win: tauri::Window, dir: String, x: f64, y: f64, w: f64, h: f64, dx: f64, dy: f64) -> Result<(), String> {
+fn win_gesture(
+    win: tauri::Window,
+    proto: tauri::State<'_, DragProto>,
+    dir: String,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    dx: f64,
+    dy: f64,
+) -> Result<(), String> {
     // THE ONE PLACE A GESTURE CANNOT LIE. The census ([wfg:]/[wfl:]) is published
     // through the window TITLE, and a title that stops updating looks exactly like a
     // gesture that never happened — an iteration was spent on that ambiguity, with
@@ -2294,7 +2366,235 @@ fn win_gesture(win: tauri::Window, dir: String, x: f64, y: f64, w: f64, h: f64, 
     if nx != x || ny != y {
         win.set_position(tauri::LogicalPosition::new(nx, ny)).map_err(|e| e.to_string())?;
     }
+    // ---- R33.6b THE MEASUREMENT THAT CHOOSES THE PATH (see drag_path) --------
+    // Everything above is unchanged, on purpose: the geometry path runs FIRST and
+    // in full, so a session that honours it behaves exactly as it does today and
+    // phase panedrag passes for the reason it passes now. What follows only LOOKS.
+    //
+    // Why not at the first step: set_position on X11 is a request, and the reply
+    // (ConfigureNotify) arrives later — reading back immediately would call a
+    // healthy WM a liar and hand the press over on the one desktop where our
+    // arithmetic is exact (openbox, E1). So the verdict waits for a gesture that
+    // has been asking for a real displacement for a real amount of time, and asks
+    // the only question that cannot be faked: did the window leave the anchor?
+    if dir == "move" && win_gesture_should_probe(&proto) {
+        let settle = std::time::Duration::from_millis(250);
+        let mut st = proto.pos.lock().map_err(|e| e.to_string())?;
+        match st.anchor {
+            // a different anchor = a different gesture: restart the clock.
+            Some(a) if a == (x, y) => {}
+            _ => {
+                st.anchor = Some((x, y));
+                st.t0 = Some(std::time::Instant::now());
+            }
+        }
+        let old_enough = st.t0.map(|t| t.elapsed() >= settle).unwrap_or(false);
+        // 8 px: below that a WM's own snapping could legitimately eat the delta,
+        // and a verdict off a 1 px request would be noise.
+        if old_enough && dx.abs().max(dy.abs()) >= 8.0 {
+            let sf = win.scale_factor().map_err(|e| e.to_string())?;
+            let p = win.outer_position().map_err(|e| e.to_string())?.to_logical::<f64>(sf);
+            let moved = (p.x - x).abs().max((p.y - y).abs()) >= 3.0;
+            st.honoured = Some(moved);
+            drop(st); // start_dragging re-enters nothing, but never hold a lock across it
+            eprintln!(
+                "[win_drag] position probe: anchor={x},{y} requested={nx},{ny} actual={},{} honoured={moved}",
+                p.x, p.y
+            );
+            if !moved {
+                // The press is STILL DOWN — this is the same gesture. Handing over
+                // now rescues the very first drag of the session instead of making
+                // the user drag twice; every later press takes the "wm"/"wayland"
+                // branch in wfBegin without any of this running again.
+                eprintln!("[win_drag] the session ignores client positioning — handing this press over mid-gesture");
+                win.start_dragging().map_err(|e| e.to_string())?;
+            }
+        }
+    }
     Ok(())
+}
+
+/// Is the empirical probe worth running at all? Only where a verdict could
+/// CHANGE the path: an X11 display, a WM that advertises the move protocol, and
+/// no verdict yet. On the WM-less rigs this is false at boot and stays false, so
+/// the gate's gesture path runs exactly the code it ran before R33.6b.
+fn win_gesture_should_probe(proto: &tauri::State<'_, DragProto>) -> bool {
+    proto.x11 && proto.moveresize && proto.pos.lock().map(|p| p.honoured.is_none()).unwrap_or(false)
+}
+
+/* ---------- R33.6b TWO-PATH DRAG: who is allowed to move this window? -------
+   MEASURED, not assumed — docs/recon-hdrdrag/README.md carries the transcripts:
+     E1  X11 + openbox 3.6.1 on Xvfb :118: our anchor+delta client-set geometry
+         SURVIVES exactly (no snap, no frame offset, no late revert). R33.6's
+         suspicion that a real WM "fights" us is FALSE there.
+     E2  a Wayland session with the app as an XWAYLAND client (sway 1.9 /
+         Xwayland 23.2.6): our whole path runs — win_gesture 0->2->4, four
+         [win_gesture] lines in the app log — and the window moves 0 px. The
+         control settles it: an external `xdotool windowmove` is ignored too,
+         while the compositor's own `move position` works. The compositor owns
+         the position, so NO X11-side position request is honoured, ever.
+     E3  no WM at all (every Xvfb gate rig): our path works and is the ONLY
+         mechanism that can — there is nobody to hand the press to.
+   So the fix is not arithmetic, it is WHO MOVES THE WINDOW, chosen per session.
+
+   THE TEST IS POSITIVE AND ABOUT THE LIVE SESSION, never a platform string:
+   `gdk_x11_screen_supports_net_wm_hint(_NET_WM_MOVERESIZE)` asks the running
+   root window's `_NET_SUPPORTED` (behind a live `_NET_SUPPORTING_WM_CHECK`),
+   i.e. "is there a window manager here, right now, that implements the move
+   protocol?" — openbox YES, sway's XWayland YES, the WM-less rig NO. A display
+   that does not downcast to an X11 display is a native Wayland display, where a
+   client cannot position itself at all and `start_dragging` (xdg_toplevel.move)
+   is the only mechanism that exists.
+   WHEN THE DETECTION IS WRONG, each direction: a false "wm" hands the press to
+   a WM that ignores _NET_WM_MOVERESIZE -> the window does not move (no drift,
+   no damage, and the [wfp:] census token says which path was taken); a false
+   "none" falls back to today's geometry path, which is correct wherever the
+   client may position itself and a 0 px no-op where it may not — exactly the
+   bug being fixed, never worse than it. The startup half is probed ONCE on the
+   GTK main thread: a WM started mid-session keeps the old answer until restart,
+   which is stated here because it is real and is the reason [wfp:] is published.
+   AND THE RULE ITSELF WAS MEASURED WRONG ONCE, WHICH IS WHY IT IS THIS SHAPE.
+   The first cut handed the press over whenever a WM advertised the protocol.
+   Under openbox that SHIPS A REGRESSION: docs/recon-hdrdrag/B-ALT.log drives
+   five consecutive header drags and gets MOVED, DEAD, MOVED, DEAD, MOVED — the
+   WM's move loop takes an X pointer grab, the webview never sees the release,
+   and every other press is swallowed. E1 says our own geometry path is EXACT
+   there. So "a move protocol exists" is NOT a reason to hand over; "this window
+   cannot position itself" is. Those two are the same thing only on Wayland.
+   THE DISCRIMINATOR IS THEREFORE EMPIRICAL, and it is the most positive test
+   available: request a position, then look at where the window actually IS.
+   A session that honours client positioning (X11, WM or not) keeps today's
+   anchor+delta path byte-for-byte; a session that drops the request on the floor
+   (XWayland under a compositor) is detected BY THAT and the press is handed over
+   — mid-gesture the first time, at press time thereafter. */
+fn drag_path(is_x11: bool, moveresize_advertised: bool, position_honoured: Option<bool>) -> &'static str {
+    match (is_x11, moveresize_advertised, position_honoured) {
+        // not an X11 display => native Wayland: a client cannot position itself at
+        // all, so there is nothing to measure and no second path to choose from.
+        (false, _, _) => "wayland",
+        // an X server where no WM advertises the move protocol: the app's own
+        // absolute geometry is the only thing that CAN move this window (E3, every
+        // Xvfb gate rig). This arm is the belt on the braces — even a wrong
+        // empirical verdict cannot take the gate off its measured path.
+        (true, false, _) => "none",
+        // MEASURED: a position request was issued and the window did not move.
+        // Someone else owns the position; hand the press to them (E2).
+        (true, true, Some(false)) => "wm",
+        // honoured, or not yet measured: the path this repo has evidence for.
+        (true, true, _) => "none",
+    }
+}
+
+/// What this session lets us do, probed once at setup + refined by measurement.
+struct DragProto {
+    /// is the live GdkDisplay an X11 one (a real X server OR XWayland)?
+    x11: bool,
+    /// does a WM advertise `_NET_WM_MOVERESIZE` on the root window right now?
+    moveresize: bool,
+    /// the empirical half — `Some(false)` once a move request has been measured
+    /// to do nothing. Written by win_gesture, read by win_move_proto.
+    pos: Mutex<PosProbe>,
+}
+
+/// State for the one measurement that decides the path (see win_gesture).
+#[derive(Default)]
+struct PosProbe {
+    /// the anchor of the gesture currently being watched — a new anchor is a new
+    /// gesture, which is how the probe knows to restart its clock.
+    anchor: Option<(f64, f64)>,
+    /// when that gesture's first step was applied.
+    t0: Option<std::time::Instant>,
+    /// None = not measured yet; Some(true) = the window moved when asked.
+    honoured: Option<bool>,
+}
+
+#[cfg(target_os = "linux")]
+fn probe_drag_proto() -> DragProto {
+    use gdk::prelude::*;
+    let Some(display) = gdk::Display::default() else {
+        // no GdkDisplay at all: nothing to hand a press to.
+        return DragProto { x11: true, moveresize: false, pos: Mutex::new(PosProbe::default()) };
+    };
+    // The downcast IS the session test: GDK hands back a GdkX11Screen on a real
+    // X server AND under XWayland, and a GdkWaylandScreen on a native Wayland
+    // session — the live object the app is drawing on, not $XDG_SESSION_TYPE,
+    // which is a login-time string a launcher can set to anything.
+    match display.default_screen().downcast::<gdkx11::X11Screen>() {
+        // gdk_x11_screen_supports_net_wm_hint re-reads `_NET_SUPPORTED` off the
+        // root window behind a live `_NET_SUPPORTING_WM_CHECK`, so this is "is a
+        // WM running here NOW and does it implement the move protocol", not "was
+        // one running when someone built this".
+        Ok(xs) => DragProto {
+            x11: true,
+            moveresize: xs.supports_net_wm_hint(&gdk::Atom::intern("_NET_WM_MOVERESIZE")),
+            pos: Mutex::new(PosProbe::default()),
+        },
+        Err(_) => DragProto { x11: false, moveresize: false, pos: Mutex::new(PosProbe::default()) },
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn probe_drag_proto() -> DragProto {
+    // Nothing is measured off this platform, so claim nothing: the geometry path
+    // is the one this repo has evidence for.
+    DragProto { x11: true, moveresize: false, pos: Mutex::new(PosProbe::default()) }
+}
+
+/// Which mechanism will move this window — "wm" | "wayland" | "none".
+/// Read-only; the UI caches it and publishes it as the `[wfp:]` census token, so
+/// a test never has to infer the path from whether the window moved. It is
+/// re-read after each drag because the empirical half can flip it mid-session.
+#[tauri::command]
+fn win_move_proto(proto: tauri::State<'_, DragProto>) -> String {
+    let honoured = proto.pos.lock().map(|p| p.honoured).unwrap_or(None);
+    drag_path(proto.x11, proto.moveresize, honoured).to_string()
+}
+
+/// R33.6b: hand the press to the WM/compositor when this session will not let the
+/// window position itself. Returns the path actually taken, so the UI can log it
+/// and a smoke phase can assert on it; "none" means the caller must run today's
+/// anchor+delta gesture.
+///
+/// TIMED, under its own name, and it is NOT the same case as win_minimize /
+/// win_toggle_max / win_rect (all declared out of scope in
+/// scripts/perf-coverage.sh because the WM owns the time and a screenshot phase
+/// is the only honest clock for it). This command sits at the START of a user
+/// gesture: the user has the button down and is already moving the mouse, so
+/// every millisecond spent here is latency the user feels as a window that does
+/// not follow the pointer yet. What the span measures is OURS, not the WM's —
+/// take the PosProbe mutex (contended with win_gesture, which writes it from the
+/// motion stream), decide the path, and dispatch. `start_dragging()` posts
+/// _NET_WM_MOVERESIZE and returns; the WM's own move loop happens afterwards and
+/// is not inside this region. If this ever crosses the ceiling the cause is a
+/// lock we hold or a round trip we added, both of which are this app's to fix,
+/// and an op that emits no span renders as fast BY BEING ABSENT.
+#[tauri::command]
+fn win_drag_start(win: tauri::Window, proto: tauri::State<'_, DragProto>) -> Result<String, String> {
+    // the path the gesture actually took, lifted out of the timed region so the
+    // span carries it: "wm" and "none" are different code paths with different
+    // costs, and a span that cannot tell them apart is a number without a unit.
+    let mut taken = "none";
+    span_timed!(
+        "win_drag_start",
+        {
+            let honoured = proto.pos.lock().map(|p| p.honoured).unwrap_or(None);
+            let p = drag_path(proto.x11, proto.moveresize, honoured);
+            taken = p;
+            // Written by the process that actually asks, for the same reason
+            // win_gesture logs: a title census that stops updating looks exactly
+            // like a handover that never happened.
+            eprintln!("[win_drag] proto={p} handover={}", p != "none");
+            // no `?` inside the timed region on purpose: an early return would
+            // jump over the measurement, so the FAILING handover — the slow one
+            // worth seeing — would be the one case that emits no span.
+            if p != "none" {
+                win.start_dragging().map_err(|e| e.to_string()).map(|()| p.to_string())
+            } else {
+                Ok(p.to_string())
+            }
+        },
+        serde_json::json!({"path": taken})
+    )
 }
 
 #[tauri::command]
@@ -2468,6 +2768,20 @@ fn main() {
         .manage(ZoomLevel(Mutex::new(read_zoom_cfg())))
         .setup(|app| {
             spawn_watcher(app.handle().clone());
+            // R33.6b: probe the LIVE session once, HERE — setup runs on the GTK
+            // main thread with the display already open, and GDK may not be
+            // touched from the command threads where win_drag_start runs.
+            {
+                use tauri::Manager;
+                let proto = probe_drag_proto();
+                eprintln!(
+                    "[win_drag] session: x11={} _NET_WM_MOVERESIZE={} -> path {}",
+                    proto.x11,
+                    proto.moveresize,
+                    drag_path(proto.x11, proto.moveresize, None)
+                );
+                app.manage(proto);
+            }
             // R36.4 the persisted zoom is applied HERE, before the first paint the
             // user sees, and not from JS: a webview that boots at 100% and is
             // rescaled after the UI script runs shows one frame at the wrong size
@@ -2541,7 +2855,7 @@ fn main() {
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme, get_palette, set_palette,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
-            win_rect, win_gesture, win_minimize, win_toggle_max, win_close,
+            win_rect, win_gesture, win_move_proto, win_drag_start, win_minimize, win_toggle_max, win_close,
             zoom, zoom_get,
             settings::settings_model
         ])
@@ -3347,6 +3661,90 @@ mod tests {
         let h = search_docs(docs_ref(&[long]), "needle");
         assert_eq!(h.len(), 1);
         assert!(h[0].snippet.contains("needle") && h[0].snippet.len() <= 210);
+    }
+
+    /// R25.13m: every hit carries the ABSOLUTE UTF-16 offset of the match in
+    /// the file as indexed, plus its length, and `content[offset..offset+len]`
+    /// IS the match. Measured against stock in docs/recon-srclick C12, where
+    /// the jump moved by exactly the characters deleted above it and never
+    /// re-found the text — so the frontend must jump by this number and never
+    /// search again. The unit is UTF-16 code units because that is how the
+    /// frontend indexes the buffer; this test is what makes the difference
+    /// between "chars" and "code units" a failure rather than a drift.
+    #[test]
+    fn search_hits_carry_absolute_utf16_offsets() {
+        // the slice a JS `String.prototype.slice(offset, offset+len)` would
+        // take, computed in Rust over the same UTF-16 units.
+        fn u16slice(s: &str, off: u32, len: u32) -> String {
+            let u: Vec<u16> = s.encode_utf16().collect();
+            String::from_utf16_lossy(&u[off as usize..(off + len) as usize])
+        }
+
+        // ASCII, three lines: the offsets are the byte offsets here, which is
+        // exactly why the astral case below is the one that matters.
+        let body = "zero\nneedle here\ntail needle\n".to_string();
+        let docs = vec![("N".to_string(), body.clone())];
+        let h = search_docs(docs_ref(&docs), "needle");
+        assert_eq!(h.len(), 2);
+        assert_eq!((h[0].line, h[0].offset, h[0].len), (1, 5, 6));
+        assert_eq!((h[1].line, h[1].offset, h[1].len), (2, 22, 6));
+        for x in &h {
+            assert_eq!(u16slice(&body, x.offset, x.len), "needle", "offset must land ON the match");
+        }
+
+        // CRLF: lines() drops \r\n, the offset must still count both units.
+        let crlf = "zero\r\nneedle\r\n".to_string();
+        let h = search_docs(docs_ref(&[("C".to_string(), crlf.clone())]), "needle");
+        assert_eq!((h[0].line, h[0].offset, h[0].len), (1, 6, 6));
+        assert_eq!(u16slice(&crlf, h[0].offset, h[0].len), "needle");
+
+        // non-ASCII: "é" is 2 BYTES and 1 unit, "𝄞" is 4 bytes, 1 char and
+        // 2 UNITS. A byte offset lands mid-character; a char offset drifts by
+        // one per astral char. Only the UTF-16 count round-trips.
+        let uni = "é𝄞x\nplain é𝄞 needle\n".to_string();
+        let h = search_docs(docs_ref(&[("U".to_string(), uni.clone())]), "needle");
+        assert_eq!(h.len(), 1);
+        assert_eq!((h[0].line, h[0].len), (1, 6));
+        // line 0 = é(1) + 𝄞(2) + x(1) + \n(1) = 5; then the line-1 prefix
+        // "plain é𝄞 " = p,l,a,i,n,SPACE(6) + é(1) + 𝄞(2) + SPACE(1) = 10 units.
+        // 5 + 10 = 15. The literal was 14 until 2026-09-19: the count dropped
+        // the space between 𝄞 and the match, and the ONLY reason it was ever
+        // believable is that it is a hand-count — which is why the u16slice
+        // round-trip below is the assertion that actually decides the rule.
+        // It disagreed with the literal (it reads " needl" at 14), and the
+        // gate's cargo test is where that disagreement surfaced.
+        assert_eq!(h[0].offset, 15);
+        assert_eq!(u16slice(&uni, h[0].offset, h[0].len), "needle");
+
+        // case-insensitive match: the offset points at the ORIGINAL text, and
+        // len is the matched text's length, not the query's.
+        let mixed = "say NeEdLe now\n".to_string();
+        let h = search_docs(docs_ref(&[("M".to_string(), mixed.clone())]), "needle");
+        assert_eq!((h[0].offset, h[0].len), (4, 6));
+        assert_eq!(u16slice(&mixed, h[0].offset, h[0].len), "NeEdLe");
+
+        // a NAME hit has no span in the body: offset 0, len 0 -> open, do not
+        // highlight (R25.13a/d). "needle" is in the name AND the body here.
+        let named = "needle body\n".to_string();
+        let h = search_docs(docs_ref(&[("needle".to_string(), named.clone())]), "needle");
+        assert_eq!((h[0].line, h[0].offset, h[0].len), (0, 0, 0), "name hit highlights nothing");
+        assert_eq!((h[1].line, h[1].offset, h[1].len), (0, 0, 6), "the body hit still carries its span");
+
+        // a tag-only hit points at the LINE start with len 0 (see search_docs).
+        let tagged = "intro\nline with #alpha on it\n".to_string();
+        let h = search_docs(
+            vec![("T", tagged.as_str(), &["alpha".to_string()][..])],
+            "tag:alpha",
+        );
+        assert_eq!((h[0].line, h[0].offset, h[0].len), (1, 6, 0));
+
+        // the last line without a terminator, and an empty file, do not panic
+        // and do not invent a line.
+        let tailless = "a\nneedle".to_string();
+        let h = search_docs(docs_ref(&[("E".to_string(), tailless.clone())]), "needle");
+        assert_eq!((h[0].line, h[0].offset, h[0].len), (1, 2, 6));
+        assert_eq!(u16slice(&tailless, h[0].offset, h[0].len), "needle");
+        assert!(search_docs(docs_ref(&[("Z".to_string(), String::new())]), "needle").is_empty());
     }
 
     #[test]
@@ -4804,6 +5202,33 @@ mod tests {
         assert_eq!(c, (100.0, 50.0, WIN_MIN_W, WIN_MIN_H), "an SE clamp leaves the origin alone");
     }
 
+    /// R33.6b THE PATH CHOICE, as a pure function so it is testable without a
+    /// display: a probe needs a live GdkDisplay, a table of cases does not.
+    /// Each row is one of the environments docs/recon-hdrdrag measured.
+    #[test]
+    fn the_drag_path_is_chosen_from_the_session_not_the_platform() {
+        // E3, every Xvfb gate rig: no WM advertises the move protocol, so the
+        // app's own geometry is the ONLY thing that can move the window. This is
+        // the row that keeps phase panedrag passing for the reason it passes today
+        // — and it holds whatever the empirical probe would say, which is the belt
+        // on the braces: a wrong verdict cannot take the gate off its path.
+        assert_eq!(drag_path(true, false, None), "none", "X11 with no WM: keep the anchor+delta path");
+        assert_eq!(drag_path(true, false, Some(false)), "none", "no WM to hand to, whatever was measured");
+        // E1, X11 + openbox: a WM offering _NET_WM_MOVERESIZE, and MEASURED to let
+        // the window position itself exactly. Handing over there regresses it —
+        // five consecutive handover drags went MOVED,DEAD,MOVED,DEAD,MOVED — so a
+        // WM that merely EXISTS is not a reason to hand the press over.
+        assert_eq!(drag_path(true, true, None), "none", "a WM exists, but nothing says our geometry fails");
+        assert_eq!(drag_path(true, true, Some(true)), "none", "measured: the window moved when asked");
+        // E2, the operator's bug: the request was issued and the window did not
+        // move. Someone else owns the position — hand the press to them.
+        assert_eq!(drag_path(true, true, Some(false)), "wm", "measured: client positioning is ignored");
+        // Native Wayland: a client cannot position itself at all, whatever else is
+        // advertised — there is no X11 root window to advertise it on.
+        assert_eq!(drag_path(false, false, None), "wayland", "Wayland: only the compositor may move a toplevel");
+        assert_eq!(drag_path(false, true, Some(true)), "wayland", "Wayland stays Wayland");
+    }
+
     /// An unknown direction is an ERROR, never a silent no-op: win_gesture turns
     /// None into a rejected IPC call, so a renamed handle shows up as a broken
     /// gesture in the log instead of as a window that mysteriously will not move.
@@ -4833,7 +5258,7 @@ mod tests {
         for id in ["wframe", "wf-min", "wf-max", "wf-close", "wrz"] {
             assert!(html.contains(&format!("id=\"{id}\"")), "ui/index.html lost #{id}");
         }
-        for cmd in ["win_rect", "win_gesture", "win_minimize", "win_toggle_max", "win_close"] {
+        for cmd in ["win_rect", "win_gesture", "win_move_proto", "win_drag_start", "win_minimize", "win_toggle_max", "win_close"] {
             assert!(js.contains(&format!("inv(\"{cmd}\"")), "ui/main.js no longer calls {cmd}");
             assert!(src.contains(&format!("fn {cmd}(")), "{cmd} is called by the UI but not implemented");
         }
