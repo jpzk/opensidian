@@ -48,6 +48,68 @@ pub fn note_file(root: &Path, name: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(format!("{}.md", root.join(name).display()))
 }
 
+/* ---------- TEST-ONLY HOOK: a walk that comes back PARTIAL (suspect S1) ----
+   S1 is "a partial vault walk read as a mass delete": one tick's walk returns
+   a SUBSET of the notes that are on disk (an interrupted read_dir, a vault on
+   a slow/remounting filesystem, a directory replaced under us), diff() reads
+   every missing name as a removal, and the UI closes those tabs. The mechanism
+   is real but not reproducible on demand from outside the process, so the
+   harness needs a way to make ONE tick lie — and only one.
+
+   WHAT THE HOOK CANNOT DO, by construction (assume someone will try to use it
+   to buy a green):
+     * it can only REMOVE names from the snapshot it is handed. It cannot add a
+       name, change a fingerprint, touch the Index or write to the vault — so
+       it can manufacture a spurious DELETE (the bug) and nothing else.
+     * it needs BOTH halves: PARTIAL_ENV set at launch AND the arm file present
+       on disk at tick time. No env -> one OnceLock read per tick, no syscall.
+     * it is ONE-SHOT: the arming tick consumes (removes) the arm file, so a
+       test that arms it once cannot leave the watcher permanently blind. The
+       next tick walks normally, which is exactly the S1 shape we must survive.
+     * it is invisible to the fix: it lies INSIDE snapshot(), so the sanity
+       guard above it sees a genuinely short walk and cannot special-case it. */
+/// env that arms the partial-walk hook: "<arm-file>" or "<arm-file>=<keep>"
+pub const PARTIAL_ENV: &str = "RUSTIDIAN_TEST_PARTIAL_WALK";
+/// how many notes a partial walk keeps when the spec does not say
+pub const PARTIAL_KEEP_DEFAULT: usize = 1;
+
+/// PURE (takes the spec, reads nothing): "<path>" | "<path>=<keep>" ->
+/// (arm file, keep). Empty path, empty or non-numeric keep -> None (hook off).
+pub fn parse_partial(spec: Option<&str>) -> Option<(std::path::PathBuf, usize)> {
+    let s = spec.map(str::trim).filter(|s| !s.is_empty())?;
+    let (path, keep) = match s.rsplit_once('=') {
+        Some((p, k)) => (p.trim(), k.trim().parse::<usize>().ok()?),
+        None => (s, PARTIAL_KEEP_DEFAULT),
+    };
+    if path.is_empty() {
+        return None;
+    }
+    Some((std::path::PathBuf::from(path), keep))
+}
+
+/// PURE: the subset a partial walk would have returned — the first `keep`
+/// names in walk (BTreeMap) order. keep >= len is a no-op (not a partial walk).
+pub fn partial_take(snap: Snapshot, keep: usize) -> Snapshot {
+    snap.into_iter().take(keep).collect()
+}
+
+/// this process's arming spec (env read once)
+fn partial_spec() -> Option<&'static (std::path::PathBuf, usize)> {
+    static P: std::sync::OnceLock<Option<(std::path::PathBuf, usize)>> = std::sync::OnceLock::new();
+    P.get_or_init(|| parse_partial(std::env::var(PARTIAL_ENV).ok().as_deref())).as_ref()
+}
+
+/// Is the hook armed for THIS tick? Consumes the arm file so it fires once.
+/// Returns the number of notes the lying walk keeps.
+fn partial_armed() -> Option<usize> {
+    let (f, keep) = partial_spec()?;
+    if fs::remove_file(f).is_ok() {
+        eprintln!("[tabclose] PARTIAL_WALK ARMED file={} keep={keep} (test hook, one tick)", f.display());
+        return Some(*keep);
+    }
+    None
+}
+
 /// one walk + one stat per note (no reads). S2: lstat — walk already skipped
 /// symlinks, a link swapped in between walk and stat must not be followed
 pub fn snapshot(root: &Path) -> Snapshot {
@@ -61,7 +123,14 @@ pub fn snapshot(root: &Path) -> Snapshot {
             out.insert(n, (t, m.len()));
         }
     }
-    out
+    match partial_armed() {
+        Some(keep) => {
+            let short = partial_take(out, keep);
+            eprintln!("[tabclose] PARTIAL_WALK FIRED kept={} names={:?}", short.len(), short.keys().collect::<Vec<_>>());
+            short
+        }
+        None => out,
+    }
 }
 
 /// pure set diff on fingerprints: names sorted (BTreeMap order)
@@ -174,6 +243,100 @@ mod tests {
         assert_eq!(c.modified, vec!["A"]);
         assert_eq!(ix.content("A"), Some("alpha ext [[B]]\n"));
         assert_eq!(ix.backlinks("B"), vec!["A"]); // edges follow the external edit
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// S1, the pure half: a walk that comes back SHORT is indistinguishable,
+    /// at the diff, from someone deleting every note it failed to list. This
+    /// is set math on fingerprints and stays true after the fix — what item 8
+    /// changes is what the TICK does with a diff shaped like this one.
+    #[test]
+    fn s1_partial_walk_reads_as_a_mass_delete() {
+        let root = tmp("partial");
+        for n in ["A", "B", "C", "sub/D", "sub/E"] {
+            w(&root, n, &format!("body of {n}\n"));
+        }
+        let full = snapshot(&root);
+        assert_eq!(full.len(), 5);
+        // the lying walk: read_dir gave us the first entry and stopped
+        let short = partial_take(full.clone(), 1);
+        assert_eq!(short.keys().cloned().collect::<Vec<_>>(), ["A"]);
+        let d = diff(&full, &short);
+        assert_eq!(d.removed, ["B", "C", "sub/D", "sub/E"]); // four notes "deleted"
+        assert!(d.added.is_empty() && d.modified.is_empty());
+        // and the index agrees with the lie: reconcile drops them for real
+        let mut ix = Index::build(&root);
+        let c = reconcile(&root, &d, &mut ix);
+        assert_eq!(c.removed, ["B", "C", "sub/D", "sub/E"]);
+        assert_eq!(ix.names(), ["A"]); // every file is still on disk
+        assert_eq!(notes_of(&root).len(), 5);
+        // the NEXT walk is honest again — that is the S1 shape: one bad tick
+        let back = snapshot(&root);
+        assert_eq!(diff(&short, &back).added, ["B", "C", "sub/D", "sub/E"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// the hook's spec parser and its one-shot arming. No env -> no hook.
+    #[test]
+    fn s1_hook_parses_and_fires_exactly_once() {
+        assert_eq!(parse_partial(None), None);
+        assert_eq!(parse_partial(Some("   ")), None);
+        assert_eq!(parse_partial(Some("=3")), None); // no path
+        assert_eq!(parse_partial(Some("/t/arm=x")), None); // keep must be a number
+        let pb = |s: &str| std::path::PathBuf::from(s);
+        assert_eq!(parse_partial(Some("/t/arm")), Some((pb("/t/arm"), PARTIAL_KEEP_DEFAULT)));
+        assert_eq!(parse_partial(Some(" /t/arm=2 ")), Some((pb("/t/arm"), 2)));
+        // keep >= len is not a partial walk at all
+        let root = tmp("hook");
+        for n in ["A", "B"] {
+            w(&root, n, "x\n");
+        }
+        let full = snapshot(&root);
+        assert_eq!(partial_take(full.clone(), 9), full);
+        assert!(partial_take(full, 0).is_empty()); // a walk that listed nothing
+        // arming is a file, and the tick that sees it CONSUMES it
+        let arm = root.join("arm");
+        fs::write(&arm, b"").unwrap();
+        assert!(arm.exists());
+        // (the env is read once per process, so this half checks the file half)
+        assert!(fs::remove_file(&arm).is_ok());
+        assert!(fs::remove_file(&arm).is_err()); // second tick: not armed
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// S2: rename pairing is by CONTENT, and empty notes are all the same
+    /// bytes. Delete one empty note, create another, and reconcile reports a
+    /// rename between two notes that have nothing to do with each other — the
+    /// UI then retitles (or closes) the wrong tab. Ambiguity is the bug: the
+    /// pairing has TWO equally good candidates and picks by walk order.
+    #[test]
+    fn s2_identical_empty_notes_pair_as_the_wrong_rename() {
+        let root = tmp("ambig");
+        w(&root, "Empty One", "");
+        w(&root, "Empty Two", "");
+        w(&root, "Typed", "words\n");
+        let mut ix = Index::build(&root);
+        let s0 = snapshot(&root);
+        // an editor's save dance on ONE of them: remove both empties, add a new
+        // empty note. Every candidate has identical (zero) bytes.
+        fs::remove_file(note_file(&root, "Empty One")).unwrap();
+        fs::remove_file(note_file(&root, "Empty Two")).unwrap();
+        w(&root, "Fresh", "");
+        let s1 = snapshot(&root);
+        let d = diff(&s0, &s1);
+        assert_eq!(d.removed, ["Empty One", "Empty Two"]);
+        assert_eq!(d.added, ["Fresh"]);
+        let c = reconcile(&root, &d, &mut ix);
+        // exactly one pair is reported, and it is chosen by order, not by fact:
+        assert_eq!(c.renamed.len(), 1);
+        let (old, new) = c.renamed[0].clone();
+        assert_eq!(new, "Fresh");
+        assert!(old == "Empty One" || old == "Empty Two");
+        // the OTHER empty note — untouched by any rename — is reported removed,
+        // so one of the two tabs gets retitled and the other gets closed, and
+        // which is which is walk order. Both candidates were byte-identical:
+        assert_eq!(c.removed.len(), 1);
+        assert_ne!(c.removed[0], old);
         let _ = fs::remove_dir_all(&root);
     }
 
