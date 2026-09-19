@@ -36,3 +36,8 @@ dist/
 # a reviewer opens, not incidental screenshots. The numbers beside them live in
 # docs/recon-srclick/measurements/*.json (DOM state) and *-scroll.json (frames).
 !docs/recon-srclick/**/*.png
+# rvcursor: the pointer crops and masks ARE the measurement (criteria 2 and 5).
+# A prose claim about a cursor shape is not verifiable; the pixels are, and the
+# masks are what the classifier compares.
+!docs/recon-rvcursor/**/*.png
+!docs/negctl-rvcursor/**/*.png
