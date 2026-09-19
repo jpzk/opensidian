@@ -570,7 +570,13 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .shit:hover { background: var(--bg-surface) }
 .shit mark { background: none; color: var(--accent-yellow) }
 .sempty { padding: 8px; color: var(--text-chrome-dim) }
-#bmlist { overflow-y: auto }
+/* bmfolder: `flex: 1` is LOAD-BEARING, not tidiness. .spane is a flex column, so
+   a content-sized #bmlist ends at its last row and the area below the rows is the
+   PANE, not the list — and bmPaneMenu (the pane-BACKGROUND "New group" of
+   02-emptymenu.png) only fires for e.target === #bmlist. Without this the one
+   route that creates a top-level group when the list is not empty is unreachable
+   by a pointer, while every unit test and every model assertion stays green. */
+#bmlist { flex: 1; overflow-y: auto }
 .bmrow { padding: 5px 12px; cursor: pointer; white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; color: var(--text-chrome);
   display: flex; align-items: center; gap: 6px }
