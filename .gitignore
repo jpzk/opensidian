@@ -31,3 +31,8 @@ dist/
 # would otherwise keep every cited shot out of a clone (measured on themearch
 # and on srclick: README cites a path a reviewer cannot open).
 !docs/recon-dotfiles/**/*.png
+# recon-srclick: acceptance criterion 1 is "every C1-C12 answer names a shot
+# that EXISTS under docs/recon-srclick/shots/" — so these pngs are the evidence
+# a reviewer opens, not incidental screenshots. The numbers beside them live in
+# docs/recon-srclick/measurements/*.json (DOM state) and *-scroll.json (frames).
+!docs/recon-srclick/**/*.png
