@@ -29,11 +29,18 @@ command: rustidian
 # under $HOME without a portal round-trip on every file the editor touches.
 finish-args:
   - --share=ipc
-  - --socket=x11
+  # fallback-x11, not x11: flatpak-builder-lint (org.flatpak.Builder, the
+  # linter Flathub's own CI runs) fails a manifest that asks for BOTH
+  # --socket=x11 and --socket=wayland ("finish-args-contains-both-x11-and-
+  # wayland"); fallback-x11 gives X11 only when there is no wayland display,
+  # which is exactly the box's :121 case. Measured: B6 evidence.
+  - --socket=fallback-x11
   - --socket=wayland
   - --device=dri
   - --filesystem=home
-  - --talk-name=org.freedesktop.portal.Desktop
+  # NOTE: --talk-name=org.freedesktop.portal.Desktop was REMOVED — the linter
+  # calls it out ("finish-args-portal-talk-name") because every app already
+  # has portal talk access; asking for it again is redundant, not extra power.
   # WITHOUT THE NEXT LINE THE APP DOES NOT START (docs/recon-flatpak, item L).
   # flatpak points XDG_DATA_HOME at ~/.var/app/<id>/data; tauri resolves its
   # app-data dir through XDG_DATA_HOME; rustidian's OWN landlock ruleset

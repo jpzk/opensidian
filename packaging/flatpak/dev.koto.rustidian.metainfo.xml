@@ -13,7 +13,27 @@
       keeps your notes as files on disk and never needs a network connection.
     </p>
   </description>
+  <!-- url + developer: added because appstreamcli 1.0.6 (org.gnome.Sdk//49)
+       REJECTED the file without them — url-homepage-missing (W) is a
+       validation failure, developer-info-missing (I) is not. The homepage is
+       the URL this repo already uses for releases (README.md, scripts/
+       release.sh:164). It answers 404 today: the repo is not public, which is
+       itself a Flathub blocker — see docs/recon-flatpak/README.md, B6. -->
+  <url type="homepage">https://github.com/jpzk/rustidian</url>
+  <url type="bugtracker">https://github.com/jpzk/rustidian/issues</url>
+  <developer id="dev.koto">
+    <name>koto</name>
+  </developer>
   <launchable type="desktop-id">dev.koto.rustidian.desktop</launchable>
+  <!-- Flathub requires at least one screenshot, fetched over the network from
+       a URL that resolves. This one is the committed launch shot; it resolves
+       only once the repo is public and this branch is on main. -->
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/jpzk/rustidian/main/docs/recon-flatpak/shots/L-flatpak-editor.png</image>
+      <caption>The tabbed editor with a vault open</caption>
+    </screenshot>
+  </screenshots>
   <content_rating type="oars-1.1"/>
   <releases>
     <release version="0.11.0" date="2026-09-19"/>
