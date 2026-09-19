@@ -73,6 +73,14 @@
   --shadow-modal: rgba(0,0,0,.5);
   --shadow-drop: #0008;
   --accent-blue-veil: rgba(137,180,250,.22);
+  /* ---- bmdrag drop feedback: values MEASURED on stock (docs/recon-bmdrag) —
+     the gap indicator line (cases 1/3), the onto-a-group row fill + its ink
+     (case 2), and the dragged row's own fill (case 1). Defined ONCE here;
+     palettes that want their own drop colours override these rows. ---- */
+  --bm-drop-line: #9873F7;
+  --bm-drop-into-bg: #ECE9F6;
+  --bm-drop-into-fg: #3f3f3f;
+  --bm-drop-src-bg: rgba(152,115,247,.28);
   --tag-bg: rgba(137,180,250,.15);
   --tag-bg-hover: rgba(137,180,250,.3);
   --highlight-yellow: rgba(249,226,175,.35);
@@ -594,16 +602,17 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
                 border: 1px solid var(--border-focus-ring); border-radius: 3px;
                 font: inherit; padding: 0 4px; outline: none }
 .bmrow:hover { background: var(--bg-surface) }
-/* bmdrag drop feedback — colours MEASURED on stock (docs/recon-bmdrag/README):
-   the between-rows/background indicator is a 3px #9873F7 accent line spanning
-   the pane (cases 1/3 — stock's own render wobbles 3px+AA vs 4px on subpixel
-   offset, so phases assert colour+position, never AA), onto-a-group is a
-   #ECE9F6 full-row fill with NO line (case 2), and the dragged row keeps an
-   accent fill while the drag is live (case 1). AFTER .bmrow:hover on purpose:
-   equal specificity, so source order keeps the drag fill over the hover fill. */
-#bmdropline { position: fixed; height: 3px; background: #9873F7; z-index: 98; pointer-events: none }
-.bmrow.bmdrop-into, .bmrow.bmdrop-into:hover { background: #ECE9F6; color: #3f3f3f }
-.bmrow.bmdrop-src, .bmrow.bmdrop-src:hover { background: rgba(152, 115, 247, .28) }
+/* bmdrag drop feedback — geometry as MEASURED on stock (docs/recon-bmdrag/
+   README): the between-rows/background indicator is a 3px line spanning the
+   pane (cases 1/3 — stock's own render wobbles a pixel on subpixel offset, so
+   phases assert colour+position, never AA), onto-a-group is a full-row fill
+   with NO line (case 2), and the dragged row keeps its fill while the drag is
+   live (case 1). Colours live in the theme-token block (lint-colors). AFTER
+   .bmrow:hover on purpose: equal specificity, so source order keeps the drag
+   fills over the hover fill. */
+#bmdropline { position: fixed; height: 3px; background: var(--bm-drop-line); z-index: 98; pointer-events: none }
+.bmrow.bmdrop-into, .bmrow.bmdrop-into:hover { background: var(--bm-drop-into-bg); color: var(--bm-drop-into-fg) }
+.bmrow.bmdrop-src, .bmrow.bmdrop-src:hover { background: var(--bm-drop-src-bg) }
 /* ux-2 obsidian parity. HEIGHT MUST STAY 31px — smoke clicks rows at pitch 31 */
 .trow { height: 31px; display: flex; align-items: center; cursor: pointer;
         margin: 0 8px; padding: 0 4px; border-radius: 5px;

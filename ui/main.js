@@ -1269,10 +1269,10 @@ function bmDragStart(e, ix) {
       if (nd) {
         if (nd.grp != null) {
           hl = z.rows[nd.grp].el;
-          hl.classList.add("bmdrop-into"); // #ECE9F6 row fill, no line (case 2)
+          hl.classList.add("bmdrop-into"); // measured row fill, no line (case 2)
         } else {
           line = document.createElement("div");
-          line.id = "bmdropline";          // 3px #9873F7 line spanning the pane (cases 1/3)
+          line.id = "bmdropline";          // 3px accent line spanning the pane (cases 1/3)
           line.style.left = z.box.left + "px";
           line.style.width = z.box.width + "px";
           line.style.top = (nd.y - 1) + "px";
