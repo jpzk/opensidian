@@ -1580,6 +1580,37 @@ function updateTitle() {          // pane/focus census in the window title (head
             ims.slice(0, 3).map(i => "|" + xi(i.getAttribute("src"))).join("") + "]";
     }
   }
+  /* rvcursor census -> [rvc:p=default|h1=default|wiki=pointer|wikiu=pointer|ext=pointer|
+     tag=pointer|task=default:dis1|img=default|lprow=text] — the computed cursor
+     SHAPE of every surface this goal names, read with getComputedStyle from the
+     LIVE DOM of the focused group, never from the stylesheet text and never
+     from a pixel. "-" = the surface is not in this note's DOM (so a phase can
+     tell "wrong cursor" from "the note never rendered the element", which an
+     absent-equals-pass token would hide). The reading-view surfaces come from
+     g.preview (Rust's pulldown-cmark HTML) and `lprow` from g.lp, published in
+     EVERY mode — the hidden view still computes a cursor, so one shot asserts
+     both the fix and criterion 4's "live preview unchanged".
+     WHY THIS IS NOT THE WHOLE PROOF: getComputedStyle returns the literal
+     "auto" for the UA link fallback, so it cannot tell a hand from an I-beam
+     (docs/recon-rvcursor/CLICKABLES.md H1/H3). The shape the X server actually
+     draws is measured independently by the -draw_mouse grab (POINTER-GRAB.md).
+     `task` also publishes the `disabled` attribute its inert verdict rests on
+     (dis1/dis0), so that classification is measured here, not taken from a note. */
+  if (md && fg()) {
+    const rvg = fg(), rvp = rvg.preview, rvl = rvg.lp;
+    const rvc = el => el ? String(getComputedStyle(el).cursor || "?").replace(/[[\]|=]/g, "").slice(0, 24) : "-";
+    const rvq = (r, s) => (r ? r.querySelector(s) : null);
+    const rvtb = rvq(rvp, "input[type=checkbox]");
+    md += " [rvc:p=" + rvc(rvq(rvp, "p")) +
+          "|h1=" + rvc(rvq(rvp, "h1")) +
+          "|wiki=" + rvc(rvq(rvp, "a.wiki:not(.wiki-unresolved)")) +
+          "|wikiu=" + rvc(rvq(rvp, "a.wiki-unresolved")) +
+          "|ext=" + rvc(rvq(rvp, "a.ext")) +
+          "|tag=" + rvc(rvq(rvp, "a.tag")) +
+          "|task=" + rvc(rvtb) + (rvtb ? ":dis" + (rvtb.disabled ? 1 : 0) : "") +
+          "|img=" + rvc(rvq(rvp, "img")) +
+          "|lprow=" + rvc(rvq(rvl, ".lprow")) + "]";
+  }
   // R26: the in-note find bar of the FOCUSED pane (open only) — see fTok.
   if (md && fg()) md += fTok(fg());
   // R31.9 drop probe: the LAST drop's outcome -> [drop:<copied>/<refused>].
