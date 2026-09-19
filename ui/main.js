@@ -1137,7 +1137,7 @@ async function saveNote(name, content) {    // true == the bytes are on disk
 async function leaveVault() {
   if (!state) return;
   for (const h of groups()) {
-    try { await flushSave(h); }
+    try { await flushSave(h); h.flushedAt = tgSeq; }   // tabclose: witness for the session-replace record
     finally { clearTimeout(h.saveT); h.saveT = null; }
   }
 }
@@ -1758,6 +1758,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   const fb = fg() && fg().active >= 0 && !fg().tabs[fg().active].kind ? bufOf(fg()) : null;
   const t2 = (fb !== null ? " [buf:" + fb.length + "]" + dirtyTok(fb) : "") +
              " [tree:" + notesCache.length + "] [vc:" + vcCount + "]" +   // R11 probes
+             tgTok() +                                                    // tabclose: why every tab went
              (extCount ? " [ext:" + extCount + "]" : "");                 // S1: external-link clicks routed to open_external
   t += t2;
   const ov = ovfScan();            // R22: layout overflow census (window + frame)
@@ -1853,10 +1854,18 @@ async function splitWith(g, dir, tab) {  // insert a new sibling group carrying 
   });
 }
 
-async function collapseGroup(g) {  // R6.5: closing the last tab removes the group
+async function collapseGroup(g, via) {  // R6.5: closing the last tab removes the group
   const parent = findParent(state.root, g);
   if (!parent) return;                        // lone root group: caller keeps it
   if (g.sim) cancelAnimationFrame(g.sim);     // stop the removed group's machinery
+  // tabclose: the SECOND unflushed path. This clears an armed save exactly like
+  // dropTab does, and it is reachable with tabs still in the group (a drag that
+  // moves the last tab out, :1837/:1844) — so the record is unconditional and
+  // names the pane, not a tab. dirty is stated only when the group still owns
+  // its active tab; a group emptied by a move no longer holds the buffer.
+  const at = g.active >= 0 && g.tabs[g.active] ? g.tabs[g.active] : null;
+  tabGone("pane-collapse", at || ("pane#" + (g.id == null ? "?" : g.id)),
+          { dirty: !!(at && !at.kind && g.saveT), flushed: false, via: via || "collapseGroup", tabsLeft: g.tabs.length });
   if (g.saveT) clearTimeout(g.saveT);
   const idx = parent.children.indexOf(g);
   const heir = parent.children[idx + 1] || parent.children[idx - 1];
@@ -2351,7 +2360,7 @@ function renderTabs(g) {
     // ux-1: inline svg cross — the ✕ glyph tofu'd under webkit2gtk
     x.innerHTML = '<svg viewBox="0 0 10 10"><path d="M1 1l8 8M9 1l-8 8" ' +
       'stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none"/></svg>';
-    x.onclick = e => { e.stopPropagation(); closeTab(g, i); };
+    x.onclick = e => { e.stopPropagation(); closeTab(g, i, "user-close", "close-glyph"); };
     d.append(ttl, x);
     d.onclick = () => switchTab(g, i);
     d.oncontextmenu = e => tabMenu(e, g, i);   // R6.2: split verbs
@@ -2425,14 +2434,14 @@ function tabDragStart(e, g, i) {
     if (t.kind === "strip") {
       t.g.tabs.push(tab);
       t.g.active = t.g.tabs.length - 1;
-      if (!g.tabs.length && groups().length > 1) await collapseGroup(g);
+      if (!g.tabs.length && groups().length > 1) await collapseGroup(g, "tabdrag-strip");
       else { await loadActive(g); renderTabs(g); }
       focusGroup(t.g);
       await loadActive(t.g);
       renderTabs(t.g);
     } else {                                 // edge: split, then collapse an
       await splitWith(t.g, "row", tab);      // emptied source (lone-tab drag to
-      if (!g.tabs.length) await collapseGroup(g);  // own edge nets a plain move)
+      if (!g.tabs.length) await collapseGroup(g, "tabdrag-edge");  // own edge nets a plain move)
       else { await loadActive(g); renderTabs(g); }
     }
     });
@@ -2902,7 +2911,7 @@ async function afterDelete(nm) {
       const t = g.tabs[i];
       if (t.kind || t.name !== nm) continue;
       if (i === g.active && g.saveT) { clearTimeout(g.saveT); g.saveT = null; }
-      await closeTab(g, i);
+      await closeTab(g, i, "user-close", "delete-dialog");
     }
   }
   // R14 undo-close would otherwise offer to reopen a note that no longer exists
@@ -3161,16 +3170,80 @@ for (const ev of ["mousedown", "mouseup", "auxclick", "click"])
     histGo(d, pane ? groups().find(h => h.pane === pane) : null);
   }, true);
 
-async function closeTab(g, i) {
+/* ---------- TABCLOSE: why did that tab disappear? ----------
+   Operator report 2026-09-19: "when I'm editing a note, it randomly closes."
+   The report could not be answered from any artifact, because nothing recorded
+   WHY a tab went — and dropTab() below cancels the pending save first, so a
+   spurious close is silent data loss of everything typed inside the debounce.
+
+   So: there are exactly FOUR places in this file that remove a tab from a
+   group, and every one of them now names its cause here.
+     closeTab()      user-close     (close glyph :1763, ctrl+w, delete dialog)
+     dropTab()       external-delete / external-rename (the watcher)
+     collapseGroup() pane-collapse  (R6.5 — the group follows its last tab)
+     enterVault()    session-replace (the whole layout is thrown away)
+   The cause set is CLOSED and mirrored in src-tauri/src/main.rs
+   (TAB_REMOVAL_CAUSES); an unknown cause is an error on both sides, because
+   "something else removed it" is exactly the answer that was missing.
+
+   Two records per removal, deliberately, because each alone lies:
+     * a LOG line, via the tab_removed command -> the app's stderr. It survives
+       the window, so a reviewer greps a finished run and can say why every tab
+       disappeared — `grep '\[tabgone\]' app-*.log`.
+     * a CENSUS token in the title -> a driver can assert the cause of a removal
+       it just triggered, in the same read as [dirty:] and [vc:].
+   `dirty` is the tab's state AT REMOVAL and `flushed` says whether its bytes
+   were written first: dirty=1 flushed=0 is the F-class defect, stated at the
+   moment it happens instead of reconstructed from a bug report. */
+const TAB_CAUSES = ["user-close", "external-delete", "external-rename", "pane-collapse", "session-replace"];
+let tgSeq = 0, tgHist = [];        // census [tgn:<seq>] [tg:<cause>:<d>:<note>|...]
+/* A note name is user data and the census is a bracket-delimited string, so the
+   same stripping the bookmark census uses applies: a note called "x] [dirty:0"
+   must not be able to forge a token (see the [bm:] comment). */
+const tgSafe = s => String(s == null ? "" : s).replace(/[\[\]|:]/g, "").slice(0, 40);
+/* t may be a tab object, a bare name, or null (collapseGroup records the PANE,
+   which has no single tab). dirty is read from the tab's own base, not from the
+   focused group, because the tab being removed is often not the focused one. */
+function tabGone(cause, t, opts) {
+  const o = opts || {};
+  const name = typeof t === "string" ? t : (t && (t.kind ? t.kind + ":" + (t.name || "") : t.name)) || "";
+  // dirty: the caller may state it (it knows the buffer); otherwise derive it
+  // from the tab's base, which is the only per-tab record of the disk bytes.
+  const dirty = o.dirty !== undefined ? !!o.dirty
+    : !!(t && typeof t === "object" && !t.kind && t.base !== undefined && o.buf !== undefined && o.buf !== t.base);
+  const bad = TAB_CAUSES.indexOf(cause) < 0;
+  if (bad) noteErr("tabGone bad cause " + cause);     // surfaced as [jserr:], never swallowed
+  tgSeq++;
+  tgHist.push((bad ? "BAD" : cause) + ":" + (dirty ? "d" : "c") + (o.flushed ? "f" : "") + ":" + tgSafe(name));
+  if (tgHist.length > 8) tgHist.shift();              // the census is a title, not a journal
+  try {
+    inv("tab_removed", {
+      cause: bad ? "BAD-" + cause : cause, note: String(name).slice(0, 120),
+      dirty, flushed: !!o.flushed, via: String(o.via || "?"), seq: tgSeq,
+      tabsLeft: o.tabsLeft == null ? -1 : o.tabsLeft, groups: groups().length,
+    }).catch(() => {});                               // the log is evidence, never a dependency of the close
+  } catch (_) {}
+  return dirty;
+}
+function tgTok() {
+  return " [tgn:" + tgSeq + "]" + (tgHist.length ? " [tg:" + tgHist.join("|") + "]" : "");
+}
+
+async function closeTab(g, i, cause, via) {
   const rm = g.tabs.length === 1 && groups().length > 1;      // R6.5: last tab -> the pane goes too
   await act("pane_close", { note: g.tabs[i].name, kind: g.tabs[i].kind || "note", pane_removed: rm, groups: groups().length, tabs: g.tabs.length - 1 }, async () => {
+  // tabclose: recorded BEFORE the flush, with the dirty state the user's
+  // keystrokes actually left — after flushSave() every tab is clean and the
+  // log would claim there was never anything at risk.
+  const wasDirty = i === g.active && !g.tabs[i].kind ? bufOf(g) !== g.tabs[i].base : false;
   if (i === g.active) await flushSave(g);
+  tabGone(cause || "user-close", g.tabs[i], { dirty: wasDirty, flushed: wasDirty, via: via || "closeTab", tabsLeft: g.tabs.length - 1 });
   if (!g.tabs[i].kind) closedTabs.push(g.tabs[i].name);   // R14 undo close tab
   unlinkTab(g, g.tabs[i], true);    // R13.4: closing a member unlinks it
   dropView(g.tabs[i]);              // R20: retained view goes with the tab
   g.tabs.splice(i, 1);
   if (!g.tabs.length && groups().length > 1)  // R6.5: empty group leaves the tree
-    return collapseGroup(g);
+    return collapseGroup(g, "closeTab");
   if (g.active >= g.tabs.length) g.active = g.tabs.length - 1;
   else if (i < g.active) g.active--;
   await loadActive(g);
@@ -3682,7 +3755,7 @@ async function cmdSave() {                   // force save, no debounce
   await updateStatus(g);
 }
 async function cmdCloseTab() {
-  if (state && fg().active >= 0) await closeTab(fg(), fg().active);
+  if (state && fg().active >= 0) await closeTab(fg(), fg().active, "user-close", "cmdCloseTab");
 }
 async function cmdNewTab() {       // R5.3 ctrl+t — v1: new tab on the current note
   if (!state) return;              // (no empty-tab state yet; graph tabs no-op)
@@ -5199,7 +5272,13 @@ $("p-go").onclick = async () => {
 async function enterVault() {
   // F2 backstop: whatever route got us here, no timer from the old vault may
   // survive into this one (leaveVault flushes; this only guarantees disarm).
-  if (state) for (const h of groups()) { clearTimeout(h.saveT); h.saveT = null; }
+  // tabclose: every tab of the OLD layout disappears on the next line, without
+  // passing dropTab or closeTab. Unrecorded, this path could account for any
+  // number of "it closed by itself" reports, so it names itself too.
+  if (state) for (const h of groups()) {
+    for (const t of h.tabs) tabGone("session-replace", t, { dirty: false, flushed: h.flushedAt !== undefined, via: "enterVault", tabsLeft: 0 });
+    clearTimeout(h.saveT); h.saveT = null;
+  }
   $("vswitch").innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>' + base(vaultPath);
   collapsed = new Set();
   const g = mkGroup();               // M6: one group, wrapped in a one-leaf split tree
@@ -5273,12 +5352,21 @@ async function reloadInPlace(g, text) {
   updateStatus(g);
 }
 // remove a tab WITHOUT flushing (R11.4: the file is gone; a flush would resurrect it)
-async function dropTab(g, i) {
+// tabclose: `cause` is external-delete or external-rename — the watcher is the
+// ONLY caller, and which of the two it is decides the whole diagnosis (S1 vs
+// S2/S3), so it is not inferred here, it is passed in by the caller that knows.
+async function dropTab(g, i, cause, via) {
+  const t = g.tabs[i];
+  // The dirty read must happen BEFORE clearTimeout: this is the exact line
+  // where the pending save dies, and the log line is the only record that
+  // anything was in flight when it did.
+  const wasDirty = i === g.active && !t.kind ? bufOf(g) !== t.base : false;
+  tabGone(cause || "external-delete", t, { dirty: wasDirty, flushed: false, via: via || "dropTab", tabsLeft: g.tabs.length - 1 });
   if (i === g.active) { clearTimeout(g.saveT); g.saveT = null; g.lpActive = null; }
   unlinkTab(g, g.tabs[i], true);    // R13.4
   dropView(g.tabs[i]);
   g.tabs.splice(i, 1);
-  if (!g.tabs.length && groups().length > 1) return collapseGroup(g);
+  if (!g.tabs.length && groups().length > 1) return collapseGroup(g, "dropTab");
   if (g.active >= g.tabs.length) g.active = g.tabs.length - 1;
   else if (i < g.active) g.active--;
   await loadActive(g);
@@ -5286,12 +5374,18 @@ async function dropTab(g, i) {
 let vcCount = 0;                               // census [vc:N] — events handled
 async function onVaultChanged(c) {
   vcCount++;
-  const gone = new Set([...c.removed, ...c.renamed.map(r => r[0])]);
+  // tabclose: `gone` used to be one undifferentiated Set, so the log could not
+  // tell a DELETE from a rename the watcher paired by content (S2) — which is
+  // the single most important bit in this whole investigation. Keep the causes
+  // apart from here down.
+  const renamedFrom = new Set(c.renamed.map(r => r[0]));
+  const gone = new Set([...c.removed, ...renamedFrom]);
   const mod = new Set(c.modified);
   for (const g of groups()) {
     for (let i = g.tabs.length - 1; i >= 0; i--) {   // R11.4: delete/rename closes the tab
       const t = g.tabs[i];
-      if (!t.kind && gone.has(t.name)) await dropTab(g, i);
+      if (!t.kind && gone.has(t.name))
+        await dropTab(g, i, renamedFrom.has(t.name) ? "external-rename" : "external-delete", "onVaultChanged#" + vcCount);
     }
     for (const x of g.tabs) if (!x.kind && x !== g.tabs[g.active] && mod.has(x.name)) x.stale = true;  // R20: retained views re-read on switch
     const t = g.active >= 0 ? g.tabs[g.active] : null;
