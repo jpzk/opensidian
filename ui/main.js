@@ -896,41 +896,118 @@ function srGeom() {
   return " [srg:" + Math.round(b.left + b.width / 2) + "|" + parts.join("|") + "]";
 }
 
-/* R9.4 bookmarks: tree-row context menu toggles; rust persists the plain
-   list in vault/.rustidian-bookmarks. census [bm:N] while the pane shows —
+/* R9.4 bookmarks: tree-row context menu toggles; rust persists the list in
+   vault/.rustidian-bookmarks. census [bm:N] while the pane shows —
    N counts the .bmrow nodes actually PAINTED in #bmlist, so an assertion on
-   it fails if renderBm() stops repainting even while bmCache is correct. */
-let bmCache = [];
+   it fails if renderBm() stops repainting even while the model is correct.
+
+   bmfolder (R4X.*, docs/bookmark-groups.md): the list is a TREE now. The pane
+   paints `bookmark_rows()` — a PRE-ORDER vector of {kind,depth,name}, one entry
+   per painted row, in the same order as the file on disk — so the UI never
+   walks a tree and cannot invent an order the file does not have. Every
+   structural command is addressed by the row's INDEX into that vector, never by
+   title: two sibling groups may carry the same title (measured on stock,
+   docs/recon-bmfolder/05-nest.png), so a title is not a key.
+   bmCache stays the FLAT name list every other caller asks `includes()` of
+   (tab menu, note menu, R9.6 rename) — derived from bmTree, never fetched. */
+let bmCache = [];                         // the `f` rows' names, pre-order (== list_bookmarks)
+let bmTree = [];                          // the PAINTED rows: [{kind:"f"|"g", depth, name}]
+let bmRenaming = null;                    // row index whose label is an inline editor (stock's Rename, 07-nest-named.png)
+let bmEdit = null;                        // the open Edit bookmark modal: {ix, name, opts}
 let revealInfo = "";                      // bmmenu: [bmrv:<name>] after "Reveal file in navigation" (bmReveal), cleared by setPane
+const BM_INDENT = 17;                     // px per depth level — MEASURED on stock (14-saved.png), icon and label both shift
+const BM_PAD = 12;                        // .bmrow's own left padding (style.css), depth 0
 const bmRows = () => document.querySelectorAll("#bmlist .bmrow").length;
 /* R20.6: the LABELS the user can actually read, taken from the painted rows in
    paint order. A count alone passes a renderBm() that paints the right NUMBER of
    wrong rows, so [bmn:] is what proves the pane tracks disk. '|' and ']' are
-   stripped so a note named with a separator cannot forge a census token. */
+   stripped so a note named with a separator cannot forge a census token.
+   Group rows are painted rows, so they count in [bm:] and name themselves in
+   [bmn:] — R20.6/R20.7 keep their meanings exactly, there are simply more rows. */
 const bmNames = () => Array.from(document.querySelectorAll("#bmlist .bmrow"))
   .map(r => r.textContent.replace(/[|\]]/g, "")).join("|");
+/* R4X.5 [bmt:<kind><depth>|…] — the painted TREE SHAPE, one field per row in
+   paint order, positionally parallel to [bmn:]: a driver reads shape and labels
+   off the same index. Read off the DOM (the class and the row's own data-bmd),
+   not off bmTree, for the reason [bm:] is: a model that is right while the pane
+   paints something else is the bug this token exists to catch. */
+const bmShape = () => Array.from(document.querySelectorAll("#bmlist .bmrow"))
+  .map(r => (r.classList.contains("bmgrp") ? "g" : "f") + (r.dataset.bmd || "0")).join("|");
+/* R4X.6 [bmi:<px>] — the painted INDENT STEP, measured between the SHALLOWEST
+   and DEEPEST painted row's content (the icon, which stock shifts too) and
+   divided by the depth difference. A class that is applied but paints no offset
+   passes [bmt:] and fails this. Empty when fewer than two depths are painted. */
+function bmIndentTok() {
+  const k = Array.from(document.querySelectorAll("#bmlist .bmrow"));
+  let lo = null, hi = null;
+  for (const r of k) {
+    const ic = r.querySelector(".bmic");
+    if (!ic) continue;
+    const e = { d: Number(r.dataset.bmd || 0), x: ic.getBoundingClientRect().left };
+    if (lo === null || e.d < lo.d) lo = e;
+    if (hi === null || e.d > hi.d) hi = e;
+  }
+  if (!lo || !hi || hi.d === lo.d) return " [bmi:]";
+  return " [bmi:" + Math.round((hi.x - lo.x) / (hi.d - lo.d)) + "]";
+}
+/* R4X.8 [bmren:<text in the inline editor>] — Rename opens an editor IN the row
+   and the model is untouched until Return (stock: the dump still says "Untitled
+   group" while the box reads "Inner", 07-nest-named.png -> 08-nest-commit.png).
+   Without this token a phase cannot tell "the editor is open" from "the rename
+   already committed", which is exactly the difference stock draws. */
+const bmRenTok = () => (bmRenaming === null ? "" :
+  " [bmren:" + String(($("bmren") && $("bmren").value) || "").replace(/[|\]]/g, "") + "]");
+function bmSync() {                        // the flat view every non-pane caller uses
+  bmCache = bmTree.filter(r => r.kind === "f").map(r => r.name);
+}
+const BM_ICON_FILE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3h12v18l-6-4.5L6 21z"/></svg>';
+// a group row carries a CHEVRON where a file row carries its bookmark glyph, at
+// the same slot and the same depth (14-saved.png). It points DOWN: every group
+// stock painted was expanded, and collapsing is UNMEASURED (recon README).
+const BM_ICON_GROUP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>';
 function renderBm() {
   const box = $("bmlist");
   box.textContent = "";
-  if (!bmCache.length) {
+  box.oncontextmenu = e => { if (e.target === box) bmPaneMenu(e); };   // the pane BACKGROUND: stock's one-item "New group" (02-emptymenu.png)
+  if (!bmTree.length) {
     const d = document.createElement("div");
     d.className = "sempty"; d.textContent = "No bookmarks.";
-    d.oncontextmenu = e => bmEmptyMenu(e);   // bmmenu: stock's one-item "New group" menu, disabled here
+    d.oncontextmenu = e => bmEmptyMenu(e);   // bmmenu: stock's one-item "New group" menu, disabled on THIS line — see bmEmptyMenu
     box.appendChild(d);
   }
-  for (const nm of bmCache) {              // insertion order, like Obsidian
+  bmTree.forEach((r, ix) => {              // pre-order == file order == paint order
     const row = document.createElement("div");
-    row.className = "bmrow";
-    row.title = nm;
+    const grp = r.kind === "g";
+    row.className = "bmrow" + (grp ? " bmgrp" : "");
+    row.dataset.bmd = String(r.depth);
+    row.style.paddingLeft = (BM_PAD + r.depth * BM_INDENT) + "px";   // content shifts, background still spans the pane (14-saved.png)
+    row.title = r.name;
     const s = document.createElement("span");
-    s.className = "bmstar";                // svg, not ★ — headless fonts lack the glyph
-    s.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3h12v18l-6-4.5L6 21z"/></svg>';
+    s.className = "bmic " + (grp ? "bmchev" : "bmstar");             // svg, not ★/▾ — headless fonts lack the glyphs
+    s.innerHTML = grp ? BM_ICON_GROUP : BM_ICON_FILE;
     row.appendChild(s);
-    row.append(nm.split("/").pop());
-    row.onclick = () => openInTab(nm);
-    row.oncontextmenu = e => bmRowMenu(e, nm);   // bmmenu: stock 1.13.7's bookmark-row menu (docs/recon-bmmenu/README.md)
+    if (grp && ix === bmRenaming) {        // Rename: an editor INSIDE the row's ring, model untouched until Return
+      const inp = document.createElement("input");
+      inp.id = "bmren"; inp.className = "bmren"; inp.value = r.name;
+      inp.spellcheck = false; inp.autocomplete = "off";
+      inp.onclick = e => e.stopPropagation();
+      inp.oninput = () => updateTitle();
+      inp.onblur = () => { if (bmRenaming === ix) { bmRenaming = null; renderBm(); } };   // blur is not a commit: only Return is (08-nest-commit.png)
+      inp.onkeydown = e => {
+        e.stopPropagation();               // a group title may contain any chord the global keymap owns
+        if (e.key === "Enter") { e.preventDefault(); bmGroupRenameCommit(ix, inp.value); }
+        else if (e.key === "Escape") { e.preventDefault(); bmRenaming = null; renderBm(); }
+      };
+      row.appendChild(inp);
+    } else {
+      row.append(grp ? r.name : r.name.split("/").pop());
+    }
+    // a GROUP row opens nothing on click — it holds names, and collapsing is UNMEASURED
+    row.onclick = grp ? null : () => openInTab(r.name);
+    row.oncontextmenu = e => (grp ? bmGroupMenu(e, ix, r.name) : bmRowMenu(e, r.name, ix));
     box.appendChild(row);
-  }
+  });
+  if (bmRenaming !== null) { const i = $("bmren"); if (i) { i.focus(); i.select(); } }
   updateTitle();
 }
 /* [bmg:<row centre x>,<first row centre y>,<row pitch>] — the PAINTED geometry of the
@@ -964,32 +1041,84 @@ function bmMenuItems(m) {
   const sep = () => { const d = document.createElement("div"); d.className = "sep"; m.appendChild(d); };
   return { item, sep };
 }
-function bmRowMenu(e, nm) {                // right-click a .bmrow -> stock's file-bookmark menu
+function bmRowMenu(e, nm, ix) {             // right-click a FILE .bmrow -> stock's file-bookmark menu
   e.preventDefault();
   e.stopPropagation();
   closeMenu();
   const m = document.createElement("div");
   m.className = "ctxmenu";
   const { item, sep } = bmMenuItems(m);
+  /* Edit... is the route that MOVES a bookmark between groups (recon: 11-edit.png
+     -> 14-saved.png; it is not a "Move to group" item). It stays DISABLED while
+     the pane holds no group: the modal's only wired field is the group chooser,
+     and a chooser whose every option is "(top level)" is a dialog that cannot
+     change anything. That is also why phase_bmmenu — which runs on a FLAT list
+     and asserts [mdis:3|5|6] — keeps passing unedited (criterion 8). */
+  const hasGrp = bmTree.some(r => r.kind === "g");
   item("Open in new tab",   () => openInTab(nm));                          // WIRED: openInTab — the row's own click (R9.5); an already-open note is activated, not duplicated
   item("Open to the right", () => splitWith(fg(), "row", mkTab(nm)));      // WIRED: splitWith — the verb behind the tab menu's "Split right" (M7/R6.2), carrying a fresh tab of this note
   item("Open in new window", null, "Single-window app: there is no second window to open into");   // NOT WIRED
   sep();
   item("Rename",  null, "Bookmarks are note names on disk (.rustidian-bookmarks); there is no per-bookmark title to rename");   // NOT WIRED
-  item("Edit...", null, "Stock's Edit bookmark modal edits a title and a group; this tree has neither");                        // NOT WIRED
+  item("Edit...", hasGrp ? () => openBmEdit(ix) : null,                    // WIRED (R4X.7) once a group exists: the move route, in and out
+       hasGrp ? null : "Edit bookmark chooses a GROUP and this pane has none — right-click the pane background to create one");
   sep();
   item("Reveal file in navigation", () => bmReveal(nm));                   // WIRED: bmReveal — setPane("files") + the explorer row's focus ring (R9.3 pane switch, treeRows)
   sep();
   item("Remove", () => { if (bmCache.includes(nm)) toggleBm(nm); });       // WIRED: toggleBm — the same toggle the explorer-row / tab menus use (R9.4 / R20.4); guarded so it can only REMOVE
   placeMenu(m, e.clientX, e.clientY);      // R22: viewport-clamped by measured size — the same seam as noteMenu/tabMenu
 }
-function bmEmptyMenu(e) {                  // right-click the empty state -> stock's one-item "New group" menu
+/* ---------- bmfolder: the GROUP-row menu, stock 1.13.7's list ----------
+   SEVEN items, TWO separators, verbatim and in order off the pixels of
+   docs/recon-bmfolder/04-groupmenu.png (re-measured on 23-del-menu.png for a
+   group that HAS children: the same seven, no confirmation item). It differs
+   from the file-row menu exactly as the recon says: no Edit..., no Reveal file
+   in navigation, and it gains "Bookmark the active tab..." and "New group". */
+function bmGroupMenu(e, ix, title) {
   e.preventDefault();
   e.stopPropagation();
   closeMenu();
   const m = document.createElement("div");
   m.className = "ctxmenu";
-  bmMenuItems(m).item("New group", null, "Bookmark groups are not implemented; the list is flat");   // NOT WIRED (recon: 17-emptystate-menu.png)
+  const { item, sep } = bmMenuItems(m);
+  const OPEN_WHY = "A group holds NAMES, not a note (R9.4) — there is nothing behind this row to open; stock's own behaviour here is UNMEASURED (docs/recon-bmfolder/README.md)";
+  item("Open in new tab",    null, OPEN_WHY);                              // NOT WIRED
+  item("Open to the right",  null, OPEN_WHY);                              // NOT WIRED
+  item("Open in new window", null, "Single-window app: there is no second window to open into");   // NOT WIRED
+  sep();
+  item("Rename", () => bmGroupRenameStart(ix));                            // WIRED: inline editor in the row (07-nest-named.png -> 08-nest-commit.png)
+  item("Bookmark the active tab...", null, "Recorded as a LABEL only: docs/recon-bmfolder/README.md never drove this item, and an unmeasured behaviour is not a spec to copy");   // NOT WIRED
+  item("New group", () => bmGroupNew(ix));                                 // WIRED: nests INSIDE this group (04-groupmenu.png -> 05-nest.png)
+  sep();
+  item("Remove", () => bmGroupDelete(ix));                                 // WIRED: takes the SUBTREE, no confirmation (23-del-menu.png -> 24-deleted.png)
+  // [mt:bmgroup:<title>] — WHICH row the browser's hit test handed us (R20.8's
+  // lesson): "Remove" on a group drops its whole subtree, so an OCR/geometry
+  // miss followed by Remove would delete a group nobody named and still look green.
+  m.dataset.mt = "bmgroup:" + String(title).replace(/[|\]]/g, "");
+  placeMenu(m, e.clientX, e.clientY);
+}
+function bmEmptyMenu(e) {                  // right-click the "No bookmarks." LINE -> stock's one-item menu
+  e.preventDefault();
+  e.stopPropagation();
+  closeMenu();
+  const m = document.createElement("div");
+  m.className = "ctxmenu";
+  /* DELIBERATE DELTA, and the doc says so: stock enables New group here
+     (02-emptymenu.png). phase_bmmenu asserts [menu:New group] [mdis:1] on this
+     exact line and criterion 8 forbids editing it, so THIS line keeps its
+     committed answer. The affordance is not lost: the same right-click anywhere
+     else in the pane background creates a group (bmPaneMenu), empty list or not. */
+  bmMenuItems(m).item("New group", null, "Not from the empty-state line — right-click the pane background below it to create a group");
+  placeMenu(m, e.clientX, e.clientY);
+}
+function bmPaneMenu(e) {                   // right-click the pane BACKGROUND -> stock's one-item "New group" (02-emptymenu.png)
+  e.preventDefault();
+  e.stopPropagation();
+  closeMenu();
+  const m = document.createElement("div");
+  m.className = "ctxmenu";
+  bmMenuItems(m).item("New group", () => bmGroupNew(null));                // WIRED: appends at the END of the top level, titled "Untitled group" (03-newgroup.png)
+  m.dataset.mt = "bmpane:";
   placeMenu(m, e.clientX, e.clientY);
 }
 /* Reveal file in navigation: stock switches the left sidebar to Files and puts the
@@ -1007,11 +1136,108 @@ function bmReveal(nm) {
   revealInfo = r ? nm.replace(/[|\]:]/g, "") : "";
   updateTitle();
 }
-async function refreshBm() { bmCache = await inv("list_bookmarks"); renderBm(); }
+async function refreshBm() { bmTree = await inv("bookmark_rows"); bmSync(); renderBm(); }
 async function toggleBm(nm) {
-  bmCache = await inv("toggle_bookmark", { name: nm });
+  await inv("toggle_bookmark", { name: nm });   // by NAME (R9.4/R20.4): ON appends at the top level, OFF removes at any depth
+  await refreshBm();                            // the TREE is the model the pane paints — never patch bmCache behind it
+}
+/* ---------- bmfolder: the four structural commands ----------
+   Every one is addressed by the ROW INDEX the pane just painted, and every one
+   returns the new row vector, so the pane repaints what rust actually wrote
+   instead of a prediction of it. NONE of them takes a vault path: a group
+   operation moves NAMES and never touches a .md (R4X.2, criterion 6). */
+async function bmApply(cmd, args) {
+  try { bmTree = await inv(cmd, args); }
+  catch (err) { say(String(err && err.message || err)); return; }   // a refused move (into its own child) is stated, not swallowed
+  bmSync();
   renderBm();
 }
+const bmGroupNew = parent => bmApply("bm_group_new", { parent });   // parent = a group's row index, or null for the top level
+const bmGroupDelete = ix => bmApply("bm_group_delete", { ix });     // the SUBTREE goes with it, and nothing asks (R4X.3)
+function bmGroupRenameStart(ix) { bmRenaming = ix; renderBm(); }    // renderBm focuses+selects the editor it just painted
+function bmGroupRenameCommit(ix, title) { bmRenaming = null; return bmApply("bm_group_rename", { ix, title }); }
+/* ---------- R4X.7 the Edit bookmark modal — the MOVE route ----------
+   Stock's `Edit...` opens a modal whose `Bookmark group` dropdown lists the
+   existing groups by TITLE with nesting shown by indentation (12-groupdd.png),
+   and picking one + Save relocates the bookmark, first among that group's
+   children, without touching the note on disk (14-saved.png).
+   THE ONE DELIBERATE DELTA: option 0 is a TOP-LEVEL entry. Stock's chooser has
+   no such option — measured three ways (16-dd2.png, 18-dd-up-shot.png,
+   19-crop.png) — so in stock this route cannot move a bookmark back OUT and
+   only drag-and-drop can. Drag is goal bmdrag; criterion 2 needs both
+   directions through the menu, so rustidian ships the superset and records it. */
+const BM_TOP = "(top level)";
+function bmGroupOpts() {                   // option 0 = the top level, then every group row in pre-order
+  const out = [{ ix: null, title: BM_TOP, depth: 0 }];
+  bmTree.forEach((r, i) => { if (r.kind === "g") out.push({ ix: i, title: r.name, depth: r.depth }); });
+  return out;
+}
+function bmParentOf(ix) {                  // the row index of the group this row sits in, or null at the top level
+  const d = bmTree[ix] ? bmTree[ix].depth : 0;
+  for (let i = ix - 1; i >= 0; i--) if (bmTree[i].depth < d) return bmTree[i].kind === "g" ? i : null;
+  return null;
+}
+function openBmEdit(ix) {
+  const r = bmTree[ix];
+  if (!r || r.kind !== "f") return;        // a group row has no Edit... in stock's menu either
+  const opts = bmGroupOpts();
+  bmEdit = { ix, name: r.name, opts };
+  const sel = $("bme-grp");
+  sel.textContent = "";
+  opts.forEach((o, i) => {
+    const op = document.createElement("option");
+    op.value = String(i);
+    op.textContent = "  ".repeat(o.depth) + o.title;   // nesting shown by indentation, like stock's chooser
+    sel.appendChild(op);
+  });
+  const p = bmParentOf(ix);
+  const cur = opts.findIndex(o => o.ix === p);
+  sel.value = String(cur < 0 ? 0 : cur);
+  $("bme-path").value = r.name;            // read-only: a bookmark IS the vault-relative name (R9.4), there is no title to edit
+  $("bmebox").hidden = false;
+  sel.focus();
+  updateTitle();
+}
+function closeBmEdit() {
+  if (!bmEdit) return;
+  bmEdit = null;
+  $("bmebox").hidden = true;
+  updateTitle();
+}
+async function bmEditSave() {
+  if (!bmEdit) return;
+  const o = bmEdit.opts[Number($("bme-grp").value)] || bmEdit.opts[0];
+  const ix = bmEdit.ix;
+  closeBmEdit();
+  await bmApply("bm_move", { ix, into: o.ix });    // into: null == back to the top level (the delta above)
+}
+/* [modal:bmedit] + [bmedit:<name>|<selected>|<option>|<option>…] (R4X.7) +
+   [bmex:<cx,cy>;…] for the chooser and the two buttons, the [delx:] pattern:
+   a driver clicks what it measured. The option list is published by TITLE with
+   the indentation stripped — the indent is presentation, and a shell assertion
+   should not have to spell non-breaking spaces. */
+function bmEditTok() {
+  const q = s => String(s == null ? "" : s).replace(/[|\]]/g, "");
+  const sel = $("bme-grp");
+  const cur = bmEdit.opts[Number(sel.value)] || bmEdit.opts[0];
+  const xs = [sel, $("bme-no"), $("bme-yes")].map(e => {
+    const r = e.getBoundingClientRect();
+    return Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2);
+  }).join(";");
+  return " [bmedit:" + q(bmEdit.name) + "|" + q(cur.title) + "|" +
+         bmEdit.opts.map(o => q(o.title)).join("|") + "] [bmex:" + xs + "]";
+}
+$("bme-no").onclick = () => closeBmEdit();          // Cancel moves nothing
+$("bme-yes").onclick = () => bmEditSave();
+$("bme-grp").onchange = () => updateTitle();        // the census follows the selection, keyboard or mouse
+$("bmebox").addEventListener("keydown", e => {
+  if (!bmEdit) return;
+  if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeBmEdit(); return; }
+  if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); bmEditSave(); return; }
+  e.stopPropagation();                              // arrows belong to the chooser, not to the global keymap
+  setTimeout(updateTitle, 0);                       // a <select> changed by arrow keys publishes its new value
+});
+$("bmebox").addEventListener("mousedown", e => { if (e.target === $("bmebox")) e.preventDefault(); });   // click-off is not Save
 function noteMenu(e, nm) {                 // right-click a tree note row
   e.preventDefault();
   e.stopPropagation();
@@ -1730,6 +1956,7 @@ function updateTitle() {          // pane/focus census in the window title (head
     + (settingsOpen ? " [modal:settings]" + setTok() + hkInfo : "")   // R14 hotkeys + R30 settings probe
     + (ulPending ? " [modal:ul]" + ulTok() : "")                // R34.6 Update links prompt
     + (delPending ? " [modal:del]" + delTok() : "")             // R24.7 delete confirmation
+    + (bmEdit ? " [modal:bmedit]" + bmEditTok() : "")           // R4X.7 Edit bookmark (the group MOVE route)
     + (noticeTxt ? " [notice:" + tokq(noticeTxt) + "]" : "")    // R34.12/13 the last refusal — does NOT expire with the banner
     + (menuEl ? " [menu:1]" : "");                             // R22: a context menu is open (fuzz probe)
   // [note:<name>] = the FOCUSED group's active note (null for a graph tab).
@@ -1766,11 +1993,14 @@ function updateTitle() {          // pane/focus census in the window title (head
             (acItems.length ? " [ac:" + acKind + ":" + acItems.length + "]" : "") +
             " [pane:" + sidePane + "]" +
             (sidePane === "search" && searchCount >= 0 ? " [sr:" + searchCount + "]" + srGeom() : "") +
-            (sidePane === "bm" ? " [bm:" + bmRows() + "]" +          // RENDERED rows, not bmCache.length:
+            (sidePane === "bm" ? " [bm:" + bmRows() + "]" +          // RENDERED rows, not the model's length:
               " [bmn:" + bmNames() + "]" +                          // and their painted LABELS, in paint order
               bmGeom() +                                            // bmmenu: [bmg:x,y,pitch] of the painted rows — a driver right-clicks what it measured
-              (bmRows() === bmCache.length ? "" :                    // the smoke assertion must prove the PANE
-               " [bmdesync:" + bmCache.length + "/" + bmRows() + "]") : "");   // repainted, not just the model
+              " [bmt:" + bmShape() + "]" +                          // R4X.5: the painted TREE SHAPE, parallel to [bmn:]
+              bmIndentTok() +                                       // R4X.6: the painted indent STEP in px
+              bmRenTok() +                                          // R4X.8: an inline group rename is OPEN and not yet committed
+              (bmRows() === bmTree.length ? "" :                     // the smoke assertion must prove the PANE
+               " [bmdesync:" + bmTree.length + "/" + bmRows() + "]") : "");   // repainted, not just the model
 
   // R17: ONE model->text join per title publish, shared by [buf:] and F1's
   // [dirty:] — the token must not put a second full join on the typing path.
@@ -4595,6 +4825,7 @@ document.addEventListener("keydown", e => {
   if (settingsOpen) return hkKey(e);       // R14: settings modal owns the keyboard (chord capture)
   if (ulPending) return;                   // R34.6: the Update links prompt owns the keyboard — its own handler answers it
   if (delPending) return;                  // R24.7: so does the delete confirmation (Escape there = Cancel)
+  if (bmEdit) return;                      // R4X.7: and the Edit bookmark modal (its own handler: Escape = Cancel, Enter = Save)
   if (titleEditing()) return;              // R34.1: so does the title box (a filename contains chords)
   if (e.key === "Escape") {
     if (menuEl) { closeMenu(); return; }   // bmmenu: stock closes an open context menu on Escape (recon 15-escape.png); the guards above keep settings' own Escape (R14) first

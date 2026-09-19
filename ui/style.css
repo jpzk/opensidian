@@ -576,6 +576,17 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
   display: flex; align-items: center; gap: 6px }
 .bmrow .bmstar { color: var(--accent-yellow); display: flex }
 .bmrow .bmstar svg { width: 13px; height: 13px }
+/* bmfolder: a GROUP row. The chevron sits in the same icon slot as a file row's
+   bookmark glyph, so a group and a file at the same depth put their labels at
+   the same x (measured on stock, docs/recon-bmfolder/14-saved.png). The DEPTH
+   is painted as padding-left on the row itself (renderBm: 12px + 17px/level), so
+   the content shifts while the row background still spans the whole pane. */
+.bmrow .bmchev { color: var(--text-chrome-dim); display: flex }
+.bmrow .bmchev svg { width: 13px; height: 13px }
+.bmrow.bmgrp { font-weight: 500 }
+.bmrow .bmren { flex: 1; min-width: 0; background: var(--bg-base); color: var(--text-chrome);
+                border: 1px solid var(--border-focus-ring); border-radius: 3px;
+                font: inherit; padding: 0 4px; outline: none }
 .bmrow:hover { background: var(--bg-surface) }
 /* ux-2 obsidian parity. HEIGHT MUST STAY 31px — smoke clicks rows at pitch 31 */
 .trow { height: 31px; display: flex; align-items: center; cursor: pointer;
@@ -963,6 +974,34 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 #del-yes { width: 101px; background: var(--text-banner-error); color: var(--bg-base) }
 #delbtns button:focus { box-shadow: 0 0 0 2px var(--border-focus-ring) }
 #del-no:focus { background: var(--text-on-accent) }
+
+/* R4X.7 Edit bookmark — the #delbox shape again (one modal geometry in this app,
+   not three that drift): fixed overlay, 480px card, buttons bottom-right with
+   Save last and accented. Stock's card is 558x280 centred (11-edit.png); ours
+   inherits the house modal rather than growing a second one, and the phase
+   clicks by the MEASURED [bmex:] centres, never by a constant. */
+#bmebox { position: fixed; inset: 0; z-index: 70; background: var(--scrim);
+          display: flex; flex-direction: column; align-items: center; box-sizing: border-box;
+          padding: max(0px, min(120px, 100vh - 260px)) 0 8px }
+#bmebox[hidden] { display: none }
+#bmecard { width: 480px; max-width: 92%; box-sizing: border-box; background: var(--bg-elevated);
+           border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px 16px;
+           box-shadow: 0 8px 30px var(--shadow-modal); color: var(--text-chrome) }
+#bmetitle { font-size: 17px; font-weight: 600; margin-bottom: 10px }
+.bmerow { display: flex; align-items: center; justify-content: space-between;
+          gap: 12px; margin-top: 12px; font-size: 13px }
+.bmelbl { color: var(--text-quiet) }
+#bmecard input, #bmecard select { box-sizing: border-box; width: 240px; height: 28px;
+          background: var(--bg-base); color: var(--text-chrome); font: inherit;
+          border: 1px solid var(--border); border-radius: 4px; padding: 0 6px; outline: none }
+#bme-path { color: var(--text-chrome-dim) }          /* read-only: the name IS the bookmark (R9.4) */
+#bmecard select:focus { box-shadow: 0 0 0 2px var(--border-focus-ring) }
+#bmebtns { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px }
+#bmebtns button { box-sizing: border-box; height: 30px; width: 101px; border: 0; border-radius: 5px;
+                  background: var(--bg-button-plain); color: var(--bg-base); font-size: 13px; font-weight: 500;
+                  cursor: pointer; outline: none; padding: 0 }
+#bme-yes { background: var(--accent-blue); color: var(--bg-base) }   /* the accented, non-destructive default, like .ullink */
+#bmebtns button:focus { box-shadow: 0 0 0 2px var(--border-focus-ring) }
 
 /* R34.12/R34.13 refusal notice — the dropmsg shape (bottom-right, transient),
    because it says the same kind of thing: what was refused and why. The census

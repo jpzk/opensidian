@@ -138,6 +138,22 @@
     <button id="del-yes">Delete</button>
   </div>
 </div></div>
+<!-- R4X.7 "Edit bookmark" — stock's route for moving a bookmark BETWEEN groups
+     (docs/recon-bmfolder/11-edit.png … 14-saved.png). Path is read-only because
+     a bookmark IS the vault-relative name (R9.4) and there is no per-bookmark
+     title in this model; the chooser is the whole dialog. ONE deliberate delta,
+     argued in docs/bookmark-groups.md: option 0 is "(top level)", which stock's
+     chooser does not have (16-dd2.png / 18-dd-up-shot.png / 19-crop.png) — so
+     here the menu route moves a bookmark OUT of a group as well as in. -->
+<div id="bmebox" hidden><div id="bmecard">
+  <div id="bmetitle">Edit bookmark</div>
+  <div class="bmerow"><span class="bmelbl">Path</span><input id="bme-path" readonly tabindex="-1"></div>
+  <div class="bmerow"><span class="bmelbl">Bookmark group</span><select id="bme-grp"></select></div>
+  <div id="bmebtns">
+    <button id="bme-no">Cancel</button>
+    <button id="bme-yes">Save</button>
+  </div>
+</div></div>
 <!-- R34.12/R34.13: a refusal is VISIBLE. Stock puts a notice on screen and
      renames nothing; a refusal nobody can see is indistinguishable from a
      rename that silently did nothing. -->
