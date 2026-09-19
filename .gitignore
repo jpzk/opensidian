@@ -41,3 +41,7 @@ dist/
 # masks are what the classifier compares.
 !docs/recon-rvcursor/**/*.png
 !docs/negctl-rvcursor/**/*.png
+# recon-tabclose: the S3 measurement — stock 1.13.7 ORPHANS the tab ("No file")
+# on an external rename/delete instead of closing it. The title log alone cannot
+# show that the tab is still in the strip; 11-ren-after.png and 21-del-after.png can.
+!docs/recon-tabclose/shots/*.png
