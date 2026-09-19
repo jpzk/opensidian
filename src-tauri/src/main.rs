@@ -2103,28 +2103,339 @@ fn search_inner(v: &State<Vault>, query: &str) -> Vec<SearchHit> {
     search_docs(v.index.lock().unwrap().docs(), query)
 }
 
-/* R9.4 bookmarks: plain newline list in vault/.rustidian-bookmarks —
-   dotfile, so walk()/notes_of never see it. Order = insertion order. */
-const BM_FILE: &str = ".rustidian-bookmarks";
+/* R9.4 bookmarks live in vault/.rustidian-bookmarks — dotfile, so
+   walk()/notes_of never see it. R4X.1 (docs/bookmark-groups.md): the file is a
+   PRE-ORDER LINE DUMP OF A TREE, one painted row per line, depth written as
+   LEADING TABS —
 
-fn read_bookmarks(root: &Path) -> Vec<String> {
-    fs::read_to_string(root.join(BM_FILE))
-        .unwrap_or_default()
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(str::to_string)
-        .collect()
+       Second Note
+       :g:Work
+       \tIdeas
+       \t:g:Inner
+       \t\tDeep
+
+   so file order == wire order == paint order == [bmn:] order. It is not JSON,
+   though serde_json is already a dependency: the smoke phases assert on this
+   file from SHELL, with no parser on either side.
+
+   A TOP-LEVEL FILE BOOKMARK IS A BARE NAME LINE — byte-identical to v0.12, and
+   that is not nostalgia: phase_chrome, phase_bmmenu and phase_rename each
+   `grep -qx "<name>" .rustidian-bookmarks` (smoke.sh:3069, 3132, 5403) and must
+   pass UNEDITED. A v0.12 file is therefore already a valid v1 file: every line
+   a top-level bookmark, read as-is, rewritten in place by the next write
+   (criterion 4). Only the two new affordances are new bytes: a leading tab per
+   level of depth, and the `:g:` sentinel that makes a line a GROUP TITLE
+   instead of a name. A name that would collide with the sentinel is written
+   `:f:`-prefixed, so any name round-trips. */
+const BM_FILE: &str = ".rustidian-bookmarks";
+const BM_GROUP: &str = ":g:";
+const BM_FILE_ESC: &str = ":f:";
+/// stock's default for a freshly created group, MEASURED, not remembered
+/// (docs/recon-bmfolder/README.md, `03-newgroup.png`).
+const BM_NEW_GROUP: &str = "Untitled group";
+
+#[derive(Debug, Clone, PartialEq)]
+enum BmNode {
+    File(String),
+    Group { title: String, items: Vec<BmNode> },
 }
 
-/* the ONE serializer. toggle_bookmark and rename_bookmark_in must not each
-   spell the format out — a trailing newline present in one writer and absent
-   in the other is a diff nobody reads until a byte-for-byte test fails. */
-fn write_bookmarks(root: &Path, list: &[String]) -> Result<(), String> {
-    let mut body = list.join("\n");
-    if !body.is_empty() {
-        body.push('\n');
+/* one PAINTED ROW. The pane renders this vector top to bottom and indents by
+   `depth`, so the UI never walks a tree and cannot invent an order the file
+   does not have; `kind` is "f" or "g" and R4X.5 `[bmt:]` publishes exactly
+   this pair per row. */
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+struct BmRow {
+    kind: String,
+    depth: usize,
+    name: String,
+}
+
+/* the ONE parser, and it is TOLERANT by construction: a depth deeper than
+   previous+1 is CLAMPED, a depth with no group open is top level, a blank line
+   is skipped. There is no malformed input and no version branch — every line
+   is a row, which is exactly why the v0.12 file needs no conversion step. */
+fn parse_bm_tree(body: &str) -> Vec<BmNode> {
+    let mut root: Vec<BmNode> = Vec::new();
+    let mut open: Vec<(String, Vec<BmNode>)> = Vec::new();
+    let mut prev_depth = 0usize;
+    let mut first_row = true;
+    for line in body.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let want = line.bytes().take_while(|b| *b == b'\t').count();
+        let rest = &line[want..]; // a tab is one byte, so this is a char boundary
+        let ceiling = if first_row { 0 } else { prev_depth + 1 };
+        let mut d = want.min(ceiling);
+        while open.len() > d {
+            bm_close(&mut root, &mut open);
+        }
+        d = d.min(open.len());
+        match rest.strip_prefix(BM_GROUP) {
+            Some(title) => open.push((title.to_string(), Vec::new())),
+            None => {
+                let name = rest.strip_prefix(BM_FILE_ESC).unwrap_or(rest);
+                bm_push(&mut root, &mut open, BmNode::File(name.to_string()));
+            }
+        }
+        prev_depth = d;
+        first_row = false;
     }
+    while !open.is_empty() {
+        bm_close(&mut root, &mut open);
+    }
+    root
+}
+
+fn bm_push(root: &mut Vec<BmNode>, open: &mut [(String, Vec<BmNode>)], node: BmNode) {
+    match open.last_mut() {
+        Some(top) => top.1.push(node),
+        None => root.push(node),
+    }
+}
+
+fn bm_close(root: &mut Vec<BmNode>, open: &mut Vec<(String, Vec<BmNode>)>) {
+    if let Some((title, items)) = open.pop() {
+        bm_push(root, open, BmNode::Group { title, items });
+    }
+}
+
+fn read_bm_tree(root: &Path) -> Vec<BmNode> {
+    parse_bm_tree(&fs::read_to_string(root.join(BM_FILE)).unwrap_or_default())
+}
+
+/* the ONE serializer. Nothing else may spell the format out — a trailing
+   newline present in one writer and absent in the other is a diff nobody reads
+   until a byte-for-byte test fails. A payload's newlines and TABS are
+   flattened HERE, at the single place that knows a line is a line and that a
+   leading tab is depth. */
+fn bm_flatten(s: &str) -> String {
+    s.replace(['\n', '\r', '\t'], " ")
+}
+
+fn bm_emit(nodes: &[BmNode], depth: usize, out: &mut String) {
+    for n in nodes {
+        for _ in 0..depth {
+            out.push('\t');
+        }
+        match n {
+            BmNode::File(name) => {
+                let flat = bm_flatten(name);
+                if flat.starts_with(BM_GROUP) || flat.starts_with(BM_FILE_ESC) {
+                    out.push_str(BM_FILE_ESC); // a NAME that looks like a sentinel
+                }
+                out.push_str(&flat);
+            }
+            BmNode::Group { title, .. } => {
+                out.push_str(BM_GROUP);
+                out.push_str(&bm_flatten(title));
+            }
+        }
+        out.push('\n');
+        if let BmNode::Group { items, .. } = n {
+            bm_emit(items, depth + 1, out);
+        }
+    }
+}
+
+fn write_bm_tree(root: &Path, tree: &[BmNode]) -> Result<(), String> {
+    let mut body = String::new();
+    bm_emit(tree, 0, &mut body); // empty tree == empty file, unchanged from v0.12
     fs::write(root.join(BM_FILE), body).map_err(|e| e.to_string())
+}
+
+/* DERIVED VIEW: the `f` payloads in pre-order — exactly what list_bookmarks
+   has always returned, and what every r9_8_* test asserts against unedited. */
+fn bm_names(nodes: &[BmNode], out: &mut Vec<String>) {
+    for n in nodes {
+        match n {
+            BmNode::File(name) => out.push(name.clone()),
+            BmNode::Group { items, .. } => bm_names(items, out),
+        }
+    }
+}
+
+fn read_bookmarks(root: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    bm_names(&read_bm_tree(root), &mut out);
+    out
+}
+
+/* the FLAT convenience, for seeds and tests. A FLAT WRITE IS A
+   STRUCTURE-DESTROYING WRITE: every group in the file is gone afterwards.
+   Production paths that must preserve structure call write_bm_tree — which
+   this delegates to, so there is still exactly ONE serializer. */
+fn write_bookmarks(root: &Path, list: &[String]) -> Result<(), String> {
+    let tree: Vec<BmNode> = list.iter().map(|n| BmNode::File(n.clone())).collect();
+    write_bm_tree(root, &tree)
+}
+
+fn bm_rows_in(nodes: &[BmNode], depth: usize, out: &mut Vec<BmRow>) {
+    for n in nodes {
+        match n {
+            BmNode::File(name) => out.push(BmRow { kind: "f".into(), depth, name: name.clone() }),
+            BmNode::Group { title, items } => {
+                out.push(BmRow { kind: "g".into(), depth, name: title.clone() });
+                bm_rows_in(items, depth + 1, out);
+            }
+        }
+    }
+}
+
+fn bm_rows_of(tree: &[BmNode]) -> Vec<BmRow> {
+    let mut out = Vec::new();
+    bm_rows_in(tree, 0, &mut out);
+    out
+}
+
+/* Rows are addressed by INDEX into that pre-order vector, never by title: two
+   sibling groups may carry the same title — measured on stock, `05-nest.png` —
+   so a title is not a key. bm_path_of turns a row index into the chain of
+   child indices that reaches it. */
+fn bm_path_of(tree: &[BmNode], ix: usize) -> Option<Vec<usize>> {
+    fn walk(nodes: &[BmNode], target: usize, seen: &mut usize, path: &mut Vec<usize>) -> bool {
+        for (i, n) in nodes.iter().enumerate() {
+            path.push(i);
+            if *seen == target {
+                return true;
+            }
+            *seen += 1;
+            if let BmNode::Group { items, .. } = n {
+                if walk(items, target, seen, path) {
+                    return true;
+                }
+            }
+            path.pop();
+        }
+        false
+    }
+    let mut path = Vec::new();
+    let mut seen = 0usize;
+    walk(tree, ix, &mut seen, &mut path).then_some(path)
+}
+
+fn bm_at<'a>(tree: &'a [BmNode], path: &[usize]) -> Option<&'a BmNode> {
+    let (last, rest) = path.split_last()?;
+    let mut cur = tree;
+    for &i in rest {
+        cur = match cur.get(i)? {
+            BmNode::Group { items, .. } => items,
+            _ => return None,
+        };
+    }
+    cur.get(*last)
+}
+
+fn bm_at_mut<'a>(tree: &'a mut Vec<BmNode>, path: &[usize]) -> Option<&'a mut BmNode> {
+    let (last, rest) = path.split_last()?;
+    let mut cur: &mut Vec<BmNode> = tree;
+    for &i in rest {
+        cur = match cur.get_mut(i)? {
+            BmNode::Group { items, .. } => items,
+            _ => return None,
+        };
+    }
+    cur.get_mut(*last)
+}
+
+fn bm_take(tree: &mut Vec<BmNode>, path: &[usize]) -> Option<BmNode> {
+    let (last, rest) = path.split_last()?;
+    let mut cur: &mut Vec<BmNode> = tree;
+    for &i in rest {
+        cur = match cur.get_mut(i)? {
+            BmNode::Group { items, .. } => items,
+            _ => return None,
+        };
+    }
+    (*last < cur.len()).then(|| cur.remove(*last))
+}
+
+/* ---- the four STRUCTURAL operations, pure so the tests drive them directly.
+   NONE of them takes a vault path, calls the Index, fs::rename, create_note_in
+   or delete_note_in: a group organises NAMES and never touches a .md on disk
+   (R4X.2, criterion 6 — which the phase proves with a byte comparison). ---- */
+
+fn bm_group_new_in(tree: &mut Vec<BmNode>, parent: Option<usize>) -> Result<(), String> {
+    let node = BmNode::Group { title: BM_NEW_GROUP.to_string(), items: Vec::new() };
+    match parent {
+        None => {
+            tree.push(node);
+            Ok(())
+        }
+        Some(ix) => {
+            let p = bm_path_of(tree, ix).ok_or("no such row")?;
+            match bm_at_mut(tree, &p) {
+                Some(BmNode::Group { items, .. }) => {
+                    items.push(node);
+                    Ok(())
+                }
+                _ => Err("parent row is not a group".to_string()),
+            }
+        }
+    }
+}
+
+fn bm_group_rename_in(tree: &mut Vec<BmNode>, ix: usize, title: &str) -> Result<(), String> {
+    let p = bm_path_of(tree, ix).ok_or("no such row")?;
+    match bm_at_mut(tree, &p) {
+        Some(BmNode::Group { title: t, .. }) => {
+            *t = title.to_string();
+            Ok(())
+        }
+        _ => Err("that row is not a group".to_string()),
+    }
+}
+
+/* R4X.3 — delete takes the SUBTREE and re-parents nothing, copied from stock
+   deliberately (`23-del-menu.png` -> `24-deleted.png`), and it deletes NAMES:
+   the notes behind them are still on disk afterwards. */
+fn bm_group_delete_in(tree: &mut Vec<BmNode>, ix: usize) -> Result<(), String> {
+    let p = bm_path_of(tree, ix).ok_or("no such row")?;
+    match bm_at(tree, &p) {
+        Some(BmNode::Group { .. }) => {}
+        _ => return Err("that row is not a group".to_string()),
+    }
+    bm_take(tree, &p).map(|_| ()).ok_or_else(|| "no such row".to_string())
+}
+
+/* `into: None` is the SUPERSET over stock (doc §4): move back out, to the end
+   of the top level. Both endpoints are resolved BEFORE the detach, because
+   removing a row renumbers its siblings. */
+fn bm_move_in_tree(tree: &mut Vec<BmNode>, ix: usize, into: Option<usize>) -> Result<(), String> {
+    let src = bm_path_of(tree, ix).ok_or("no such row")?;
+    let dst = match into {
+        None => None,
+        Some(d) => {
+            let p = bm_path_of(tree, d).ok_or("no such group")?;
+            match bm_at(tree, &p) {
+                Some(BmNode::Group { .. }) => {}
+                _ => return Err("target row is not a group".to_string()),
+            }
+            if p.len() >= src.len() && p[..src.len()] == src[..] {
+                return Err("cannot move a row into itself".to_string());
+            }
+            Some(p)
+        }
+    };
+    let node = bm_take(tree, &src).ok_or("no such row")?;
+    match dst {
+        None => tree.push(node),
+        Some(mut p) => {
+            let lvl = src.len() - 1; // the detach shifted src's later siblings
+            if p.len() > lvl && p[..lvl] == src[..lvl] && p[lvl] > src[lvl] {
+                p[lvl] -= 1;
+            }
+            match bm_at_mut(tree, &p) {
+                Some(BmNode::Group { items, .. }) => items.push(node),
+                _ => {
+                    tree.push(node); // never lose the row we detached
+                    return Err("target group vanished".to_string());
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /* R9.8 — a bookmark IS a vault-relative name, so the note that changes its
@@ -2158,30 +2469,72 @@ fn rename_bookmark_in(root: &Path, old: &str, new: &str) {
     if !p.is_file() {
         return; // no bookmarks file: nothing to follow, nothing to create
     }
-    let list = read_bookmarks(root);
-    let at = match list.iter().position(|b| b == old) {
-        Some(i) => i,
-        None => return, // this note was not bookmarked — do not touch the file
-    };
-    let mut out: Vec<String> = Vec::with_capacity(list.len());
-    for (i, b) in list.iter().enumerate() {
-        if i == at {
-            out.push(new.to_string()); // in place: same index as before
-        } else if b == new || b == old {
-            continue; // no duplicate, and collapse a hand-written repeat
-        } else {
-            out.push(b.clone()); // every other note's bookmark, verbatim
-        }
+    let mut tree = read_bm_tree(root);
+    if !bm_rename_walk(&mut tree, old, new) {
+        return; // this note was not bookmarked — do not touch the file
     }
-    let _ = write_bookmarks(root, &out);
+    let _ = write_bm_tree(root, &tree);
 }
 
-fn toggle_in(mut list: Vec<String>, name: &str) -> Vec<String> {
-    match list.iter().position(|b| b == name) {
-        Some(i) => { list.remove(i); }
-        None => list.push(name.to_string()),
+/* R4X.4 (criterion 5) — IN PLACE, wherever the entry SITS: the payload of the
+   matching `f` node is replaced and the node does not move, so a bookmark
+   inside a group keeps its GROUP and its index within that group. Rebuilding a
+   flat list here (what this function used to do) would silently flatten the
+   whole tree on the next rename — exactly the bug the clause exists to forbid.
+   Any OTHER entry equal to `old` or to `new`, at any depth, is dropped: that
+   is the stale-bookmark collapse R9.8 already required. Returns whether the
+   old name was found at all, because "not bookmarked" means NO write. */
+fn bm_rename_walk(tree: &mut Vec<BmNode>, old: &str, new: &str) -> bool {
+    fn walk(nodes: &mut Vec<BmNode>, old: &str, new: &str, done: &mut bool) {
+        let mut i = 0;
+        while i < nodes.len() {
+            let mut drop = false;
+            match &mut nodes[i] {
+                BmNode::File(n) => {
+                    if !*done && n == old {
+                        *n = new.to_string();
+                        *done = true;
+                    } else if n == old || n == new {
+                        drop = true;
+                    }
+                }
+                BmNode::Group { items, .. } => walk(items, old, new, done),
+            }
+            if drop {
+                nodes.remove(i);
+            } else {
+                i += 1;
+            }
+        }
     }
-    list
+    let mut done = false;
+    walk(tree, old, new, &mut done);
+    done
+}
+
+/* toggle_bookmark keeps its by-NAME signature (R9.4/R20.4): toggling ON
+   appends at the TOP level, toggling OFF removes the first pre-order match AT
+   WHATEVER DEPTH IT SITS — a bookmark inside a group is un-bookmarked from
+   inside that group, and the group stays. */
+fn bm_toggle_in(tree: &mut Vec<BmNode>, name: &str) {
+    if !bm_drop_first_name(tree, name) {
+        tree.push(BmNode::File(name.to_string()));
+    }
+}
+
+fn bm_drop_first_name(nodes: &mut Vec<BmNode>, name: &str) -> bool {
+    for i in 0..nodes.len() {
+        if matches!(&nodes[i], BmNode::File(n) if n == name) {
+            nodes.remove(i);
+            return true;
+        }
+        if let BmNode::Group { items, .. } = &mut nodes[i] {
+            if bm_drop_first_name(items, name) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 #[tauri::command]
@@ -2189,14 +2542,55 @@ fn list_bookmarks(v: State<Vault>) -> Vec<String> {
     span_timed!("list_bookmarks", cur_vault(&v).map(|r| read_bookmarks(&r)).unwrap_or_default())
 }
 
+/// the pane's own source: one painted row per entry, in file order.
+#[tauri::command]
+fn bookmark_rows(v: State<Vault>) -> Vec<BmRow> {
+    span_timed!("bookmark_rows", cur_vault(&v).map(|r| bm_rows_of(&read_bm_tree(&r))).unwrap_or_default())
+}
+
 #[tauri::command]
 fn toggle_bookmark(v: State<Vault>, name: String) -> Result<Vec<String>, String> {
     span_timed!("toggle_bookmark", {
         let root = cur_vault(&v).ok_or("no vault open")?;
-        let list = toggle_in(read_bookmarks(&root), &name);
-        write_bookmarks(&root, &list)?;
-        Ok(list)
+        let mut tree = read_bm_tree(&root);
+        bm_toggle_in(&mut tree, &name);
+        write_bm_tree(&root, &tree)?;
+        let mut out = Vec::new();
+        bm_names(&tree, &mut out);
+        Ok(out)
     })
+}
+
+/* every structural command is the same three steps — read the tree, mutate it
+   BY ROW INDEX, write it through the one serializer — and each returns the new
+   painted vector, so the UI repaints what the FILE says instead of its own
+   guess about what its click did. */
+fn bm_apply(v: &State<Vault>, f: impl FnOnce(&mut Vec<BmNode>) -> Result<(), String>) -> Result<Vec<BmRow>, String> {
+    let root = cur_vault(v).ok_or("no vault open")?;
+    let mut tree = read_bm_tree(&root);
+    f(&mut tree)?;
+    write_bm_tree(&root, &tree)?;
+    Ok(bm_rows_of(&tree))
+}
+
+#[tauri::command]
+fn bm_group_new(v: State<Vault>, parent: Option<usize>) -> Result<Vec<BmRow>, String> {
+    span_timed!("bm_group_new", bm_apply(&v, |t| bm_group_new_in(t, parent)))
+}
+
+#[tauri::command]
+fn bm_group_rename(v: State<Vault>, ix: usize, title: String) -> Result<Vec<BmRow>, String> {
+    span_timed!("bm_group_rename", bm_apply(&v, |t| bm_group_rename_in(t, ix, &title)))
+}
+
+#[tauri::command]
+fn bm_group_delete(v: State<Vault>, ix: usize) -> Result<Vec<BmRow>, String> {
+    span_timed!("bm_group_delete", bm_apply(&v, |t| bm_group_delete_in(t, ix)))
+}
+
+#[tauri::command]
+fn bm_move(v: State<Vault>, ix: usize, into: Option<usize>) -> Result<Vec<BmRow>, String> {
+    span_timed!("bm_move", bm_apply(&v, |t| bm_move_in_tree(t, ix, into)))
 }
 
 /* R11 watcher thread: every TICK_MS walk the vault (stat only), diff against
@@ -2931,7 +3325,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, read_note, write_note, create_note, render, render_blocks, block_lines, highlight_blocks, graph, graph_local, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, tags, tag_counts,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme, get_palette, set_palette,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
@@ -3828,15 +4222,32 @@ mod tests {
         assert!(search_docs(docs_ref(&[("Z".to_string(), String::new())]), "needle").is_empty());
     }
 
+    /// names of the `f` nodes, pre-order — the flat view every older
+    /// assertion in this file is written against.
+    fn bm_flat(tree: &[BmNode]) -> Vec<String> {
+        let mut out = Vec::new();
+        bm_names(tree, &mut out);
+        out
+    }
+
     #[test]
     fn bookmark_toggle_adds_then_removes() {
-        let l = toggle_in(vec![], "A");
-        assert_eq!(l, vec!["A"]);
-        let l = toggle_in(l, "sub/B");           // append keeps insertion order
-        assert_eq!(l, vec!["A", "sub/B"]);
-        let l = toggle_in(l, "A");               // second toggle removes
-        assert_eq!(l, vec!["sub/B"]);
-        assert!(toggle_in(l, "sub/B").is_empty());
+        let mut t: Vec<BmNode> = vec![];
+        bm_toggle_in(&mut t, "A");
+        assert_eq!(bm_flat(&t), vec!["A"]);
+        bm_toggle_in(&mut t, "sub/B");           // append keeps insertion order
+        assert_eq!(bm_flat(&t), vec!["A", "sub/B"]);
+        bm_toggle_in(&mut t, "A");               // second toggle removes
+        assert_eq!(bm_flat(&t), vec!["sub/B"]);
+        bm_toggle_in(&mut t, "sub/B");
+        assert!(bm_flat(&t).is_empty());
+        // ...and toggling OFF reaches INSIDE a group, leaving the group there
+        let mut g = vec![BmNode::Group { title: "Work".into(), items: vec![BmNode::File("Ideas".into())] }];
+        bm_toggle_in(&mut g, "Ideas");
+        assert_eq!(g, vec![BmNode::Group { title: "Work".into(), items: vec![] }]);
+        bm_toggle_in(&mut g, "Ideas");           // ...and back ON at the TOP level
+        assert_eq!(bm_rows_of(&g).iter().map(|r| (r.kind.as_str(), r.depth)).collect::<Vec<_>>(),
+                   vec![("g", 0), ("f", 0)]);
     }
 
     /* ---- R9.8: a renamed or MOVED note takes its bookmark with it ----
@@ -3987,6 +4398,239 @@ mod tests {
         assert_eq!(e, "target exists", "the rename really was refused");
         assert!(root.join("Old.md").is_file(), "the note did not move");
         assert_eq!(bm_bytes(&root), before, "bookmarks untouched after a failed rename");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /* ---- R4X: bookmark GROUPS (goal bmfolder, docs/bookmark-groups.md) ----
+       The file is the contract: every test below asserts on the BYTES or on
+       the painted row vector, because criterion 2's smoke phase asserts on the
+       same bytes from shell. */
+
+    /// seed a TREE and read the file straight back: the format round-trips,
+    /// pre-order, one line per painted row, depth as leading TABS.
+    #[test]
+    fn r4x_tree_round_trips_through_the_one_serializer() {
+        let root = tmp_vault("bm-tree");
+        let tree = vec![
+            BmNode::Group {
+                title: "Work".into(),
+                items: vec![BmNode::File("Ideas".into()), BmNode::Group { title: "Inner".into(), items: vec![BmNode::File("Deep".into())] }],
+            },
+            BmNode::File("Second Note".into()),
+        ];
+        write_bm_tree(&root, &tree).unwrap();
+        assert_eq!(
+            String::from_utf8(bm_bytes(&root)).unwrap(),
+            ":g:Work\n\tIdeas\n\t:g:Inner\n\t\tDeep\nSecond Note\n"
+        );
+        assert_eq!(read_bm_tree(&root), tree, "read(write(t)) == t");
+        // the derived flat view is the `f` payloads in pre-order, and that is
+        // what list_bookmarks returns
+        assert_eq!(read_bookmarks(&root), vec!["Ideas", "Deep", "Second Note"]);
+        // ...and the painted vector is the same sequence, with depths
+        let rows: Vec<(String, usize, String)> =
+            bm_rows_of(&tree).into_iter().map(|r| (r.kind, r.depth, r.name)).collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("g".to_string(), 0, "Work".to_string()),
+                ("f".to_string(), 1, "Ideas".to_string()),
+                ("g".to_string(), 1, "Inner".to_string()),
+                ("f".to_string(), 2, "Deep".to_string()),
+                ("f".to_string(), 0, "Second Note".to_string()),
+            ]
+        );
+        // a NAME that looks like the group sentinel, or carries a tab or a
+        // newline, still round-trips: the serializer escapes and flattens.
+        let odd = vec![BmNode::File(":g:not a group".into()), BmNode::File("tab\there".into())];
+        write_bm_tree(&root, &odd).unwrap();
+        assert_eq!(String::from_utf8(bm_bytes(&root)).unwrap(), ":f::g:not a group\ntab here\n");
+        assert_eq!(read_bookmarks(&root), vec![":g:not a group", "tab here"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// THE CONSTRAINT THAT PICKED THIS FORMAT: a top-level bookmark is a BARE
+    /// NAME line, byte-identical to v0.12, because three committed phases
+    /// `grep -qx` for exactly that and must pass UNEDITED (criterion 8).
+    #[test]
+    fn r4x_a_top_level_bookmark_is_still_a_bare_name_line() {
+        let root = tmp_vault("bm-bare");
+        bm_seed(&root, &["Ideas", "A-LP", "ZR Target X Y"]);
+        assert_eq!(String::from_utf8(bm_bytes(&root)).unwrap(), "Ideas\nA-LP\nZR Target X Y\n");
+        // the same file after a group appears: the top-level lines do not move
+        let mut t = read_bm_tree(&root);
+        bm_group_new_in(&mut t, None).unwrap();
+        bm_move_in_tree(&mut t, 1, Some(3)).unwrap(); // A-LP into the new group
+        write_bm_tree(&root, &t).unwrap();
+        assert_eq!(
+            String::from_utf8(bm_bytes(&root)).unwrap(),
+            "Ideas\nZR Target X Y\n:g:Untitled group\n\tA-LP\n",
+            "grep -qx 'Ideas' still holds; the grouped one is tab-indented"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// criterion 4, as a behaviour and not only a sentence in the doc: a
+    /// pre-existing FLAT v0.12 file reads as top-level bookmarks in the same
+    /// order, and the next write keeps those lines byte-for-byte.
+    #[test]
+    fn r4x_a_flat_v012_file_reads_as_top_level_and_survives_the_next_write() {
+        let root = tmp_vault("bm-flat");
+        fs::write(root.join(BM_FILE), "A\nsub/B\nC\n").unwrap(); // v0.12 bytes
+        assert_eq!(read_bookmarks(&root), vec!["A", "sub/B", "C"]);
+        assert!(bm_rows_of(&read_bm_tree(&root)).iter().all(|r| r.kind == "f" && r.depth == 0));
+        let mut t = read_bm_tree(&root);
+        bm_group_new_in(&mut t, None).unwrap();
+        write_bm_tree(&root, &t).unwrap();
+        assert_eq!(String::from_utf8(bm_bytes(&root)).unwrap(), "A\nsub/B\nC\n:g:Untitled group\n");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// the parser is TOLERANT: a depth jump is clamped, a depth with no group
+    /// open is top level, a blank line is skipped, and nothing panics.
+    #[test]
+    fn r4x_the_parser_clamps_rather_than_panicking() {
+        let t = parse_bm_tree("Notes: 2026\n\t\t\torphan deep\n:g:a:b\n\t\t\t\t\tclamped child\n\n");
+        assert_eq!(
+            bm_rows_of(&t).into_iter().map(|r| (r.kind, r.depth, r.name)).collect::<Vec<_>>(),
+            vec![
+                ("f".to_string(), 0, "Notes: 2026".to_string()),  // a name may hold ':'
+                ("f".to_string(), 0, "orphan deep".to_string()),  // depth with no group open
+                ("g".to_string(), 0, "a:b".to_string()),          // a title may hold ':'
+                ("f".to_string(), 1, "clamped child".to_string()) // 5 clamped to prev+1
+            ]
+        );
+        assert!(parse_bm_tree("").is_empty() && parse_bm_tree("\n\n").is_empty());
+    }
+
+    /// the four structural operations, addressed by ROW INDEX (titles are not
+    /// keys: stock allows two sibling groups with the same title).
+    #[test]
+    fn r4x_group_new_rename_delete_and_move_by_row_index() {
+        let mut t: Vec<BmNode> = vec![BmNode::File("A".into()), BmNode::File("B".into())];
+        // new group at the top level, with stock's default name
+        bm_group_new_in(&mut t, None).unwrap();
+        assert_eq!(bm_rows_of(&t)[2].name, "Untitled group");
+        // ...and a second one, nested in the first — two groups, same title
+        bm_group_new_in(&mut t, Some(2)).unwrap();
+        assert_eq!(
+            bm_rows_of(&t).iter().map(|r| format!("{}{}", r.kind, r.depth)).collect::<Vec<_>>(),
+            vec!["f0", "f0", "g0", "g1"]
+        );
+        bm_group_rename_in(&mut t, 2, "Work").unwrap();
+        assert_eq!(bm_rows_of(&t)[2].name, "Work");
+        assert!(bm_group_rename_in(&mut t, 0, "nope").is_err(), "a file row is not a group");
+        // move a file IN, then back OUT to the top level (the superset route)
+        bm_move_in_tree(&mut t, 0, Some(2)).unwrap();
+        assert_eq!(
+            bm_rows_of(&t).iter().map(|r| format!("{}{}:{}", r.kind, r.depth, r.name)).collect::<Vec<_>>(),
+            vec!["f0:B", "g0:Work", "g1:Untitled group", "f1:A"]
+        );
+        bm_move_in_tree(&mut t, 3, None).unwrap();
+        assert_eq!(
+            bm_rows_of(&t).iter().map(|r| format!("{}{}:{}", r.kind, r.depth, r.name)).collect::<Vec<_>>(),
+            vec!["f0:B", "g0:Work", "g1:Untitled group", "f0:A"]
+        );
+        assert!(bm_move_in_tree(&mut t, 1, Some(2)).is_err(), "a group cannot move into its own child");
+        // R4X.3: delete takes the SUBTREE, children are not re-parented
+        bm_move_in_tree(&mut t, 0, Some(2)).unwrap(); // B into the nested group
+        bm_group_delete_in(&mut t, 0).unwrap();       // delete Work, holding it
+        assert!(bm_rows_of(&t).iter().map(|r| r.name.clone()).collect::<Vec<_>>() == vec!["A"],
+                "the whole subtree went, nothing re-parented: {:?}", bm_rows_of(&t));
+    }
+
+    /// criterion 5, half 1 — a bookmarked note RENAMED while it lives inside a
+    /// group keeps that group. The assertion NAMES the group and its line,
+    /// rather than counting survivors: a flat rebuild would leave the same
+    /// number of bookmarks and lose every group.
+    #[test]
+    fn r4x_grouped_bookmark_keeps_group_on_rename() {
+        let root = tmp_vault("bm-grp-ren");
+        fs::write(root.join("Ideas.md"), "i").unwrap();
+        fs::write(root.join("Loose.md"), "l").unwrap();
+        write_bm_tree(
+            &root,
+            &[
+                BmNode::Group { title: "Work".into(), items: vec![BmNode::File("Ideas".into())] },
+                BmNode::File("Loose".into()),
+            ],
+        )
+        .unwrap();
+        let mut ix = Index::build(&root);
+        rename_in(&root, &mut ix, "Ideas", "Plans").unwrap();
+        assert_eq!(
+            String::from_utf8(bm_bytes(&root)).unwrap(),
+            ":g:Work\n\tPlans\nLoose\n",
+            "the renamed bookmark is still INSIDE Work, at its index"
+        );
+        // and a MOVE to another folder goes through the same code (R9.8)
+        move_note_in(&root, &mut ix, "Plans", "sub/Plans").unwrap();
+        assert!(
+            String::from_utf8(bm_bytes(&root)).unwrap().contains(":g:Work\n\tsub/Plans\n"),
+            "a moved note keeps its group too: {}",
+            String::from_utf8(bm_bytes(&root)).unwrap()
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// criterion 5, half 2 — a bookmarked note DELETED while it lives inside a
+    /// group keeps that group: delete_note_in does not touch the bookmarks
+    /// file at all, so the entry stays where it sits and goes stale, which is
+    /// a state R9.8 already treats as reachable.
+    #[test]
+    fn r4x_grouped_bookmark_keeps_group_on_delete() {
+        let root = tmp_vault("bm-grp-del");
+        fs::write(root.join("Ideas.md"), "i").unwrap();
+        write_bm_tree(&root, &[BmNode::Group { title: "Work".into(), items: vec![BmNode::File("Ideas".into())] }]).unwrap();
+        let before = bm_bytes(&root);
+        let mut ix = Index::build(&root);
+        delete_note_in(&root, &mut ix, "Ideas").unwrap();
+        assert!(!root.join("Ideas.md").exists(), "the note really was deleted");
+        assert_eq!(bm_bytes(&root), before, "a delete rewrote .rustidian-bookmarks");
+        assert_eq!(
+            String::from_utf8(bm_bytes(&root)).unwrap(),
+            ":g:Work\n\tIdeas\n",
+            "the stale bookmark is still inside Work"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// R4X.2 / criterion 6 at the unit level — no structural operation may
+    /// touch a .md. The phase proves it again against the real app; this
+    /// proves the MODEL cannot even express it: the vault's bytes and mtimes
+    /// are identical across a create/rename/move/delete sequence.
+    #[test]
+    fn r4x_no_group_operation_touches_a_note_on_disk() {
+        let root = tmp_vault("bm-nomd");
+        fs::write(root.join("Ideas.md"), "i").unwrap();
+        fs::write(root.join("Other.md"), "o").unwrap();
+        bm_seed(&root, &["Ideas", "Other"]);
+        let snap = |r: &Path| -> Vec<(String, Vec<u8>, std::time::SystemTime)> {
+            let mut v: Vec<_> = fs::read_dir(r)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().map(|x| x == "md").unwrap_or(false))
+                .map(|e| {
+                    (
+                        e.file_name().to_string_lossy().to_string(),
+                        fs::read(e.path()).unwrap(),
+                        e.metadata().unwrap().modified().unwrap(),
+                    )
+                })
+                .collect();
+            v.sort();
+            v
+        };
+        let before = snap(&root);
+        let mut t = read_bm_tree(&root);
+        bm_group_new_in(&mut t, None).unwrap();
+        bm_group_rename_in(&mut t, 2, "Work").unwrap();
+        bm_move_in_tree(&mut t, 0, Some(2)).unwrap();
+        bm_group_delete_in(&mut t, 1).unwrap();
+        write_bm_tree(&root, &t).unwrap();
+        assert_eq!(bm_flat(&t), vec!["Other"], "the NAME went with the group");
+        assert!(root.join("Ideas.md").is_file(), "the NOTE did not");
+        assert_eq!(snap(&root), before, "a group operation rewrote a .md");
         let _ = fs::remove_dir_all(&root);
     }
 
