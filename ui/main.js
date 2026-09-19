@@ -1759,6 +1759,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   const t2 = (fb !== null ? " [buf:" + fb.length + "]" + dirtyTok(fb) : "") +
              " [tree:" + notesCache.length + "] [vc:" + vcCount + "]" +   // R11 probes
              tgTok() +                                                    // tabclose: why every tab went
+             tcxTok() +                                                   // tabclose S4: the close glyph's PAINTED centres
              (extCount ? " [ext:" + extCount + "]" : "");                 // S1: external-link clicks routed to open_external
   t += t2;
   const ov = ovfScan();            // R22: layout overflow census (window + frame)
@@ -3227,6 +3228,33 @@ function tabGone(cause, t, opts) {
 }
 function tgTok() {
   return " [tgn:" + tgSeq + "]" + (tgHist.length ? " [tg:" + tgHist.join("|") + "]" : "");
+}
+/* S4, the close glyph (:1763) under a REFLOWING tab bar. The cross is a 16px
+   box at the right edge of a 120px tab that is `flex-shrink: 1` inside a strip
+   that also carries the mode button, the right-panel toggle and — with the
+   window frame on — a 140px inset (.tabbar.wfinset). A driver that clicks a
+   computed 200+120*i+102 therefore hits the TAB BODY once anything reflows,
+   which SWITCHES tabs instead of closing one: a spurious "nothing happened",
+   or worse a close of the wrong tab. So publish the painted centre of every
+   cross, per pane, exactly like [stx:] does for the right-panel strip: the
+   phase clicks what it measured. A cross whose centre has been clipped out of
+   its own tab (R22: overflow:hidden at narrow widths) is reported as `!x,y` —
+   an unclickable close button is itself a finding, not a missing measurement. */
+function tcxTok() {
+  const panes = [];
+  for (const g of groups()) {
+    const xs = [];
+    const strip = g.tabsEl ? g.tabsEl.getBoundingClientRect() : null;
+    for (const el of (g.tabsEl ? g.tabsEl.querySelectorAll(".tab > .x") : [])) {
+      const r = el.getBoundingClientRect(), tab = el.parentElement.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) { xs.push("-"); continue; }
+      const cx = Math.round(r.left + r.width / 2), cy = Math.round(r.top + r.height / 2);
+      const clipped = !strip || cx < tab.left || cx > tab.right || cx < strip.left || cx > strip.right;
+      xs.push((clipped ? "!" : "") + cx + "," + cy);
+    }
+    panes.push(xs.join(";"));
+  }
+  return " [tcx:" + panes.join("|") + "]";
 }
 
 async function closeTab(g, i, cause, via) {
