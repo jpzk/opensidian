@@ -55,3 +55,9 @@ dist/
 !docs/recon-bmfolder/shots/*.png
 # themecsp: the egress-proof evidence (shots ARE the deliverable, criterion 1-2)
 !docs/themecsp/**/*.png
+
+# recon-bmcompat: stock 1.13.7's OWN bookmarks.json is the spec for goal
+# bmcompat, and every claim in docs/recon-bmcompat/README.md names the shot it
+# was read from — line 2 (*.png) would drop exactly the evidence, so unignore
+# it here. The .bookmarks.json captures under captures/ are not ignored.
+!docs/recon-bmcompat/**/*.png

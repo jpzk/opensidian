@@ -896,14 +896,14 @@ function srGeom() {
   return " [srg:" + Math.round(b.left + b.width / 2) + "|" + parts.join("|") + "]";
 }
 
-/* R9.4 bookmarks: tree-row context menu toggles; rust persists the list in
-   vault/.rustidian-bookmarks. census [bm:N] while the pane shows —
+/* R9.4 bookmarks: tree-row context menu toggles; rust persists the tree in
+   vault/.obsidian/bookmarks.json (stock's own file, R4X.10). census [bm:N] while the pane shows —
    N counts the .bmrow nodes actually PAINTED in #bmlist, so an assertion on
    it fails if renderBm() stops repainting even while the model is correct.
 
    bmfolder (R4X.*, docs/bookmark-groups.md): the list is a TREE now. The pane
-   paints `bookmark_rows()` — a PRE-ORDER vector of {kind,depth,name}, one entry
-   per painted row, in the same order as the file on disk — so the UI never
+   paints `bookmark_rows()` — a PRE-ORDER vector of {kind,depth,name,label}, one
+   entry per painted row, in the same order as the file on disk — so the UI never
    walks a tree and cannot invent an order the file does not have. Every
    structural command is addressed by the row's INDEX into that vector, never by
    title: two sibling groups may carry the same title (measured on stock,
@@ -911,7 +911,7 @@ function srGeom() {
    bmCache stays the FLAT name list every other caller asks `includes()` of
    (tab menu, note menu, R9.6 rename) — derived from bmTree, never fetched. */
 let bmCache = [];                         // the `f` rows' names, pre-order (== list_bookmarks)
-let bmTree = [];                          // the PAINTED rows: [{kind:"f"|"g", depth, name}]
+let bmTree = [];                          // the PAINTED rows: [{kind:"f"|"g", depth, name, label}]
 let bmRenaming = null;                    // row index whose label is an inline editor (stock's Rename, 07-nest-named.png)
 let bmEdit = null;                        // the open Edit bookmark modal: {ix, name, opts}
 let revealInfo = "";                      // bmmenu: [bmrv:<name>] after "Reveal file in navigation" (bmReveal), cleared by setPane
@@ -1000,7 +1000,10 @@ function renderBm() {
       };
       row.appendChild(inp);
     } else {
-      row.append(grp ? r.name : r.name.split("/").pop());
+      // R4X.17: the backend computes the painted label by stock's measured rule
+      // (title when typed, else basename — recon-bmcompat 30-afterinject.png);
+      // r.name stays the full extensionless name the click opens by.
+      row.append(r.label ?? (grp ? r.name : r.name.split("/").pop()));
     }
     // a GROUP row opens nothing on click — it holds names, and collapsing is UNMEASURED
     row.onclick = grp ? null : () => openInTab(r.name);
@@ -1059,7 +1062,7 @@ function bmRowMenu(e, nm, ix) {             // right-click a FILE .bmrow -> stoc
   item("Open to the right", () => splitWith(fg(), "row", mkTab(nm)));      // WIRED: splitWith — the verb behind the tab menu's "Split right" (M7/R6.2), carrying a fresh tab of this note
   item("Open in new window", null, "Single-window app: there is no second window to open into");   // NOT WIRED
   sep();
-  item("Rename",  null, "Bookmarks are note names on disk (.rustidian-bookmarks); there is no per-bookmark title to rename");   // NOT WIRED
+  item("Rename",  null, "Bookmarks are note names on disk (.obsidian/bookmarks.json); there is no per-bookmark title to rename");   // NOT WIRED
   item("Edit...", hasGrp ? () => openBmEdit(ix) : null,                    // WIRED (R4X.7) once a group exists: the move route, in and out
        hasGrp ? null : "Edit bookmark chooses a GROUP and this pane has none — right-click the pane background to create one");
   sep();
@@ -4761,7 +4764,7 @@ async function applyRename(old, nn) {   // post-rename bookkeeping (F2 / cmdRena
   for (const h of groups()) renderTabs(h);
   await refreshTree();
   /* R9.8: the note's name changed, so the rust side rewrote its entry in
-     .rustidian-bookmarks (move_note_in). bmCache is a COPY of that file taken
+     .obsidian/bookmarks.json (move_note_in). bmCache is a COPY of that file taken
      at the last refresh, and the bookmarks pane paints from the cache — so
      without this line the file is right on disk and the pane still shows the
      old name until the user switches panes (the pane's own `if (p === "bm")
