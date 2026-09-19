@@ -821,12 +821,31 @@ const Ed = {
     const a = s.a, b = s.b;
     const head = L[a.l].slice(0, a.c), tail = (L[b.l] || "").slice(b.c);
     const ins = String(text == null ? "" : text).replace(/\r\n?/g, "\n").split("\n");
+    /* R25.13d: the search flash is "a range that FOLLOWS subsequent edits", so
+       its absolute offsets are mapped through the splice HERE — the one edit
+       choke point — before the model changes under them. Called by name, the
+       same way this file calls updateTitle: editor.js owns the text, main.js
+       owns the decoration, and neither imports the other.
+       GUARDED on there being a flash at all: Ed.offOf walks the line array, and
+       this runs on EVERY keystroke (R18). With no flash — the whole measured
+       typing path — it costs one typeof and one property read. */
+    if (typeof scLive === "function" && scLive(g))
+      scShift(g, Ed.offOf(g, a.l, a.c), Ed.offOf(g, b.l, b.c), ins.join("\n").length);
     const mid = ins.length === 1 ? [head + ins[0] + tail]
       : [head + ins[0]].concat(ins.slice(1, -1), [ins[ins.length - 1] + tail]);
     L.splice(a.l, b.l - a.l + 1, ...mid);
     const cl = a.l + ins.length - 1;
     const cc = ins.length === 1 ? a.c + ins[0].length : ins[ins.length - 1].length;
     Ed.after(g, cl, cc);
+  },
+  // (line, col) -> absolute UTF-16 offset into the model, counting the newline
+  // each line ends with. The inverse of main.js scLC; the unit is the one the
+  // backend's search payload uses (src-tauri/src/main.rs lines_with_offsets).
+  offOf(g, l, c) {
+    const L = Ed.lines(g);
+    let o = 0;
+    for (let i = 0; i < l && i < L.length; i++) o += L[i].length + 1;
+    return o + c;
   },
   /* ---------- R17.1/R17.2: the structural prefix of a source line ----------
      ind  leading whitespace — the indent string, copied VERBATIM on continue

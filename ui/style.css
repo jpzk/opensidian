@@ -1522,3 +1522,7 @@ body.floorrelayout #main { padding-right: 1px }
 /* R26.8: every match is marked; the current one is the one you are standing on. */
 span.fmk { background: var(--highlight-yellow); border-radius: 2px }
 span.fmk.fcur { background: var(--tag-bg-hover); outline: 1px solid var(--accent-yellow) }
+/* R25.13d: the search-result flash. Measured on stock 1.13.7 as class
+   `is-flashing`, rgba(255,208,0,0.4), NO animation and NO timer (C4, shots
+   19-25) — the name and the colour are the measurement's, not a choice. */
+span.is-flashing { background: rgba(255, 208, 0, 0.4) }

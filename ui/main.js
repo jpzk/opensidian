@@ -546,6 +546,224 @@ function setPane(p) {
   updateTitle();
 }
 
+/* ============ R25.13a..m — CLICKING A SEARCH RESULT ============
+   Every rule below was MEASURED against stock 1.13.7 first; the measurements,
+   with a shot each, are docs/recon-srclick/README.md (C1-C12) and the rules
+   they produced are R25.13a-m in docs/requirements.md. Nothing here is a guess:
+   what stock does that we do not yet do is listed LATER in that README, not
+   approximated.
+
+   The one non-obvious fact, and the reason the payload grew an `offset`
+   (src-tauri/src/main.rs, search_hits_carry_absolute_utf16_offsets): stock
+   records a hit as an ABSOLUTE CHARACTER OFFSET into the file as indexed, not
+   as a line number and not as a string to re-find. Delete five lines above a
+   match and stock jumps to the same offset, which is now other text (C12,
+   shots 58-61). So the frontend NEVER re-searches the buffer — a second search
+   that can disagree with the first is exactly the bug the brief forbids — it
+   maps the backend's offset into the current text and lands wherever it lands.
+
+   The decoration (R25.13d) is stored as offsets on the VIEW, not as a class in
+   the DOM and not behind a timer (R25.13f: it survives blur, arrow keys,
+   typing, undo and tab switches, measured in shots 19-25). The view is the
+   per-tab object, so "the editor instance going away" — the tab takes another
+   file, the tab is closed — drops it exactly as measured, with no bookkeeping. */
+const SC_MARK = "is-flashing";
+let scInfo = "";                           // census [sc:...] — the last jump, as it happened
+function scView(g) { return g && g.view ? g.view : null; }
+function scHits(g) {                       // the live decoration set, or [] once the view holds another note
+  const v = scView(g);
+  return v && v.scHl && v.scNote === curOf(g) ? v.scHl : [];
+}
+// the cheap guard editor.js asks on every keystroke before paying for offOf
+function scLive(g) { const v = scView(g); return !!(v && v.scHl && v.scHl.length); }
+function scSet(g, list) {                  // R25.13e: the next result click REPLACES the set, never accumulates
+  const v = scView(g);
+  if (!v) return;
+  v.scHl = (list || []).filter(h => h && h.len > 0);
+  v.scNote = curOf(g);
+  scMarks(g);
+}
+function scClear(g) {                      // R25.13f: a pointer click in that editor, or the next result click
+  const v = scView(g);
+  if (!v || !(v.scHl && v.scHl.length)) return;
+  v.scHl = [];
+  scMarks(g);
+  updateTitle();
+}
+/* R25.13d "a range that follows subsequent edits": the offsets are mapped
+   through the splice at Ed.replace — the single edit choke point — the way a
+   cm6 range is mapped, so typing above the match moves it and typing inside it
+   grows it. Called from editor.js by name, the same way it calls updateTitle. */
+function scShift(g, from, to, ins) {
+  const v = scView(g);
+  if (!v || !(v.scHl && v.scHl.length)) return;
+  const d = ins - (to - from);
+  const map = (p, start) => (p <= from ? p : p >= to ? p + d : start ? from : from + ins);
+  v.scHl = v.scHl.map(h => {
+    const a = map(h.off, true), b = map(h.off + h.len, false);
+    return { off: a, len: Math.max(0, b - a) };
+  }).filter(h => h.len > 0);
+}
+/* absolute UTF-16 offset -> {l,c}, CLAMPED to the document end (R25.13m: an
+   offset past the end lands at the end, with no highlight and no crash). */
+function scLC(g, off) {
+  const L = Ed.lines(g);
+  let o = Math.max(0, off);
+  for (let l = 0; l < L.length; l++) {
+    if (o <= L[l].length) return { l, c: o };
+    o -= L[l].length + 1;                  // + the newline this line ends with
+  }
+  const last = Math.max(0, L.length - 1);
+  return { l: last, c: (L[last] || "").length };
+}
+/* paint the set with the SAME per-text-node right-to-left walk the find bar
+   uses (fWrap): a match that straddles a rendered <strong> becomes two spans,
+   and no offset is invalidated mid-walk. Only the lp surface is painted —
+   R25.13k measured that stock paints NO highlight in the reading renderer. */
+function scMarks(g) {
+  for (const sc of [g.lp, g.preview]) {
+    if (!sc) continue;
+    for (const m of [...sc.querySelectorAll("span." + SC_MARK)]) {
+      const p = m.parentNode;
+      if (!p) continue;
+      while (m.firstChild) p.insertBefore(m.firstChild, m);
+      p.removeChild(m);
+      p.normalize();
+    }
+  }
+  const hs = scHits(g);
+  if (!hs.length || !g.lp) return;
+  const t = g.active >= 0 ? g.tabs[g.active] : null;
+  if (!t || t.kind || !isLp(t.mode)) return;
+  const byRow = new Map();
+  hs.forEach((h, i) => {
+    const a = scLC(g, h.off), b = scLC(g, h.off + h.len);
+    for (let l = a.l; l <= b.l; l++) {
+      const c0 = l === a.l ? a.c : 0;
+      const c1 = l === b.l ? b.c : (Ed.lines(g)[l] || "").length;
+      if (c1 <= c0) continue;
+      if (!byRow.has(l)) byRow.set(l, []);
+      byRow.get(l).push({ c: c0, end: c1, i });
+    }
+  });
+  for (const [l, rs] of byRow) {
+    const row = Ed.rowAt(g, l);
+    if (!row) continue;
+    const map = Ed.nodes(row), jobs = new Map();
+    for (const h of rs) for (const s of map) {
+      const a = Math.max(h.c, s.c), b = Math.min(h.end, s.c + s.len);
+      if (b <= a) continue;
+      if (!jobs.has(s.n)) jobs.set(s.n, []);
+      jobs.get(s.n).push({ a: a - s.c, b: b - s.c, i: h.i, cur: false });
+    }
+    fWrap(jobs, SC_MARK);
+  }
+}
+/* R25.13c: the match is CENTRED — measured at a 349 px offset in a 718 px
+   viewport, independent of note length — and the scroll is a SINGLE-FRAME JUMP
+   (a 60 Hz frame sampler saw exactly one scrollTop change, shots 15-18). The
+   clamp is the scroller's own range: no overscroll is invented. */
+function scCenter(sc, top, h) {
+  if (!sc) return;
+  sc.scrollTop = Math.max(0, Math.min(top - (sc.clientHeight - h) / 2,
+                                      Math.max(0, sc.scrollHeight - sc.clientHeight)));
+}
+/* the jump itself. `hits` = the occurrences to decorate (one for a hit row,
+   every occurrence in the note for a group header, R25.13b); hits[0] is the
+   one jumped to. */
+async function scJump(g, hits) {
+  const t = g.active >= 0 ? g.tabs[g.active] : null;
+  if (!t || t.kind || !hits.length) return;
+  const h0 = hits[0], p = scLC(g, h0.offset);
+  if (t.mode === "reading") {
+    // R25.13k: a hit click NEVER changes the view mode. In reading mode stock
+    // scrolls the PREVIEW renderer to centre the occurrence and does nothing
+    // else — no highlight, no caret (shots 51-53). The preview's text offsets
+    // are the rendered ones, so the occurrence is located with the find bar's
+    // own reading-view segment map (fRSegs) rather than with a source offset.
+    scSet(g, []);
+    const el = scPreviewEl(g, h0);
+    if (el) scCenter(g.preview, el.offsetTop - g.preview.offsetTop, el.offsetHeight);
+    scInfo = "sc:" + curOf(g) + "@read|hl:0|top:" + Math.round(g.preview.scrollTop);
+    updateTitle();
+    return;
+  }
+  scSet(g, hits.map(h => ({ off: h.offset, len: h.len })));
+  // R25.13l: ONE COLLAPSED caret at the first character of the match — the
+  // match is never selected, and a selection that was live is replaced by it.
+  await lpMove(g, p.l, p.c, "search");
+  scMarks(g);                              // the caret move re-rendered the touched rows
+  const row = g.lp.children[p.l];
+  if (row) scCenter(g.lp, row.offsetTop - g.lp.offsetTop, row.offsetHeight);
+  scInfo = "sc:" + curOf(g) + "@" + p.l + "." + p.c + "|hl:" + scHits(g).length +
+           "|top:" + Math.round(g.lp.scrollTop);
+  updateTitle();
+}
+/* the reading-view block holding a hit: the rendered text is not the source
+   text, so the occurrence is found by its INDEX among the note's hits (the
+   n-th match in document order), never by a second search of the buffer. */
+function scPreviewEl(g, h) {
+  if (!g.preview) return null;
+  const { segs } = fRSegs(g.preview);
+  let k = h.nth || 0;
+  const q = (h.text || "").toLowerCase();
+  if (!q) return g.preview.firstElementChild;
+  for (const s of segs) {
+    const low = (s.n.nodeValue || "").toLowerCase();
+    let i = low.indexOf(q);
+    while (i >= 0) {
+      if (k === 0) {
+        const e = s.n.parentElement;
+        return e ? (e.closest("p,li,h1,h2,h3,h4,h5,h6,blockquote,pre,td") || e) : null;
+      }
+      k--;
+      i = low.indexOf(q, i + 1);
+    }
+  }
+  return null;
+}
+/* R25.13a: a hit click loads the file into the ACTIVE tab, replacing whatever
+   it held. No tab is created and a tab that already holds that file elsewhere
+   is NEITHER reused NOR focused (shots 04-10). R25.13i: Ctrl+click and MIDDLE
+   click open a NEW tab in the active group and activate it; Shift+click and
+   Alt+click are plain clicks; every variant performs the full jump.
+   Ctrl+Alt+click (stock: a new split pane) is LATER — see the README. */
+async function scOpen(g, note, ev) {
+  const newTab = !!(ev && (ev.ctrlKey || ev.metaKey || ev.button === 1)) && !(ev && ev.altKey);
+  if (newTab) {
+    await flushSave(g);
+    g.tabs.push(mkTab(note));
+    g.active = g.tabs.length - 1;
+    await loadActive(g);
+    return;
+  }
+  const t = g.active >= 0 ? g.tabs[g.active] : null;
+  if (t && !t.kind && curOf(g) === note) { await flushSave(g); return; }  // already here: R25.13m still flushes
+  await navigate(g, note);                 // replaces the ACTIVE tab, appends when there is none
+}
+/* the handler the rows and the group headers share. `hits` are this note's
+   hits in document order; `one` = the clicked occurrence, or null for the
+   group header, which jumps to the FIRST hit and decorates EVERY occurrence
+   in that note (R25.13b, shots 11-13). */
+async function scClick(ev, note, hits, one) {
+  const g = fg();
+  if (!g) return;
+  const set = one ? [one] : hits;
+  await scOpen(g, note, ev);
+  await scJump(g, set);
+}
+/* the index of a hit among the hits of ITS note, in document order. The
+   reading renderer has no source offsets, so this ordinal is the only honest
+   way to point at the same occurrence there (R25.13k). */
+function scNth(hits, h) {
+  let k = 0;
+  for (const x of hits) {
+    if (x === h) return k;
+    if (x.note === h.note && x.len > 0) k++;
+  }
+  return 0;
+}
+
 /* R9.3 search pane: debounced rust search(query), grouped by note.
    census [sr:N] (total hits) while the search pane is showing a query. */
 let searchCount = -1;                       // -1 = no query -> no [sr:] flag
@@ -579,7 +797,11 @@ async function runSearch() {
       c.className = "scount";
       c.textContent = "(" + hits.filter(x => x.note === n).length + ")";
       grp.appendChild(c);
-      grp.onclick = () => openInTab(n);
+      // R25.13b: the note-name row opens the note AND jumps to its FIRST hit,
+      // with EVERY occurrence in that note decorated.
+      const nh = hits.filter(x => x.note === n)
+                     .map(x => ({ offset: x.offset, len: x.len, nth: scNth(hits, x), text: q }));
+      grp.onclick = ev => scClick(ev, n, nh, null);
       box.appendChild(grp);
     }
     const note = h.note, row = document.createElement("div");
@@ -592,7 +814,16 @@ async function runSearch() {
       row.appendChild(m);
       row.append(h.snippet.slice(at + q.length));
     } else row.textContent = h.snippet;     // name-hit snippet may differ in case
-    row.onclick = () => openInTab(note);    // LATER: jump to h.line
+    // R25.13a/d/e: the clicked occurrence, and ONLY it, is decorated. The row
+    // carries the backend's absolute offset (R25.13m) — the frontend never
+    // re-finds the text. `nth` is its index among this note's hits, which is
+    // how the reading renderer locates the same occurrence (R25.13k).
+    const one = { offset: h.offset, len: h.len, nth: scNth(hits, h), text: q };
+    row.onclick = ev => scClick(ev, note, [one], one);
+    // R25.13i: MIDDLE click opens a new tab. mousedown prevents the paste-on-
+    // middle-click default; the open runs on auxclick, where button === 1.
+    row.onmousedown = ev => { if (ev.button === 1) ev.preventDefault(); };
+    row.onauxclick = ev => { if (ev.button === 1) { ev.preventDefault(); scClick(ev, note, [one], one); } };
     box.appendChild(row);
   }
   updateTitle();
@@ -920,6 +1151,12 @@ function mkView(g) {
   // the note, like stock; rows themselves get the native caret placement
   lp.addEventListener("mousedown", e => {
     const g = v.g;
+    /* R25.13f: a POINTER CLICK inside this editor is one of the three things
+       that remove the search flash (the others are the next result click and
+       the editor instance going away). Keystrokes, blur, undo and tab
+       switches do NOT — that was measured, shots 19-25, and the flash is
+       stored on the view precisely so nothing else has to remember it. */
+    if (g) scClear(g);
     if (e.target !== lp || g.graphOn) return;
     // R34.15: the ::before is not an event target — a click on the title's ink
     // reports .lp itself, so the title band is identified by GEOMETRY. Inside
@@ -1179,6 +1416,22 @@ function updateTitle() {          // pane/focus census in the window title (head
   if (md && isLp(ft.mode) && fg().lpActive) md += ":" + fg().lpActive.l0;
   if (md) md += "]";
   if (lpMs >= 0) md += " [lp:" + lpMs + "]";     // perf: last lpRender ms
+  /* R25.13 census — the ONE headless record of a search-result click, read by
+     scripts/gate.sh phase srclick:
+       [sc:<note>@<line>.<col>|hl:<ranges>|top:<scrollTop>]  (source / lp)
+       [sc:<note>@read|hl:0|top:<preview scrollTop>]         (reading, R25.13k)
+     plus [scm:<spans>/<ranges>] read from the LIVE DOM of the focused pane, so
+     the phase can tell "a range is remembered" from "a range is painted": the
+     decoration is what the user sees, and the offsets alone would let a broken
+     painter report a green. scm is published whenever the view holds a set,
+     which is how the lifetime rules (R25.13f) are asserted after a keystroke,
+     an undo or a tab switch. */
+  if (scInfo) md += " [" + scInfo + "]";
+  if (fg() && scHits(fg()).length) {
+    const sc = fg().lp;
+    md += " [scm:" + (sc ? sc.querySelectorAll("span." + SC_MARK).length : -1) +
+          "/" + scHits(fg()).length + "]";
+  }
   if (md) md += mswTok();                        // R35 perf: the mode switch's own cost (see mswEnd)
   /* R34.15 title probe -> [te:<text in the box>/<g.lp.children.length>]. Two
      facts in one token, and the second one is the R32.4 acceptance condition
@@ -2999,6 +3252,7 @@ async function lpRender(g, activeL = -1, col = 0, full = false) {
   const t0 = performance.now();
   Ed.render(g, activeL, col, full || (g.view && g.view.note !== curOf(g)));
   lpMs = Math.round(performance.now() - t0);
+  if (scHits(g).length) scMarks(g);        // R25.13f: the flash survives every re-render
   updateTitle();
 }
 function lpCommit(g) { if (g && g.view && g.view.lines) Ed.sync(g); }   // model -> save bridge
@@ -3081,6 +3335,10 @@ function scheduleSave(g) {
   // an open bar re-scans. Guarded on `open` so the closed case — i.e. the whole
   // measured typing path (R18) — costs one property read and nothing else.
   if (g.find && g.find.open) fSync(g);
+  // R25.13d/f: the search flash has NO timer and survives typing and undo. The
+  // rows it was painted on were just rebuilt, so it is repainted here, at the
+  // same choke point, from offsets Ed.replace already mapped through the edit.
+  if (scHits(g).length) scMarks(g);
   clearTimeout(g.saveT);
   g.saveT = setTimeout(async () => {
     g.saveT = null;
@@ -5910,7 +6168,7 @@ function fMarks(g) {
 }
 /* The wrap itself, shared by both surfaces: per text node, right to left, so a
    splitText never invalidates an offset that has not been used yet. */
-function fWrap(jobs) {
+function fWrap(jobs, cls) {
   for (const [node, js] of jobs) {
     js.sort((x, y) => y.a - x.a);      // right to left
     let head = node;
@@ -5918,7 +6176,7 @@ function fWrap(jobs) {
       head.splitText(j.b);             // tail leaves; head keeps [0, j.b)
       const mid = head.splitText(j.a);
       const sp = document.createElement("span");
-      sp.className = F_MARK + (j.cur ? " " + F_CUR : "");
+      sp.className = (cls || F_MARK) + (j.cur ? " " + F_CUR : "");
       sp.dataset.fh = String(j.i);
       mid.parentNode.insertBefore(sp, mid);
       sp.appendChild(mid);
