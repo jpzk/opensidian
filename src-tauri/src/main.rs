@@ -2554,18 +2554,47 @@ fn win_move_proto(proto: tauri::State<'_, DragProto>) -> String {
 /// window position itself. Returns the path actually taken, so the UI can log it
 /// and a smoke phase can assert on it; "none" means the caller must run today's
 /// anchor+delta gesture.
+///
+/// TIMED, under its own name, and it is NOT the same case as win_minimize /
+/// win_toggle_max / win_rect (all declared out of scope in
+/// scripts/perf-coverage.sh because the WM owns the time and a screenshot phase
+/// is the only honest clock for it). This command sits at the START of a user
+/// gesture: the user has the button down and is already moving the mouse, so
+/// every millisecond spent here is latency the user feels as a window that does
+/// not follow the pointer yet. What the span measures is OURS, not the WM's —
+/// take the PosProbe mutex (contended with win_gesture, which writes it from the
+/// motion stream), decide the path, and dispatch. `start_dragging()` posts
+/// _NET_WM_MOVERESIZE and returns; the WM's own move loop happens afterwards and
+/// is not inside this region. If this ever crosses the ceiling the cause is a
+/// lock we hold or a round trip we added, both of which are this app's to fix,
+/// and an op that emits no span renders as fast BY BEING ABSENT.
 #[tauri::command]
 fn win_drag_start(win: tauri::Window, proto: tauri::State<'_, DragProto>) -> Result<String, String> {
-    let honoured = proto.pos.lock().map(|p| p.honoured).unwrap_or(None);
-    let p = drag_path(proto.x11, proto.moveresize, honoured);
-    // Written by the process that actually asks, for the same reason win_gesture
-    // logs: a title census that stops updating looks exactly like a handover that
-    // never happened.
-    eprintln!("[win_drag] proto={p} handover={}", p != "none");
-    if p != "none" {
-        win.start_dragging().map_err(|e| e.to_string())?;
-    }
-    Ok(p.to_string())
+    // the path the gesture actually took, lifted out of the timed region so the
+    // span carries it: "wm" and "none" are different code paths with different
+    // costs, and a span that cannot tell them apart is a number without a unit.
+    let mut taken = "none";
+    span_timed!(
+        "win_drag_start",
+        {
+            let honoured = proto.pos.lock().map(|p| p.honoured).unwrap_or(None);
+            let p = drag_path(proto.x11, proto.moveresize, honoured);
+            taken = p;
+            // Written by the process that actually asks, for the same reason
+            // win_gesture logs: a title census that stops updating looks exactly
+            // like a handover that never happened.
+            eprintln!("[win_drag] proto={p} handover={}", p != "none");
+            // no `?` inside the timed region on purpose: an early return would
+            // jump over the measurement, so the FAILING handover — the slow one
+            // worth seeing — would be the one case that emits no span.
+            if p != "none" {
+                win.start_dragging().map_err(|e| e.to_string()).map(|()| p.to_string())
+            } else {
+                Ok(p.to_string())
+            }
+        },
+        serde_json::json!({"path": taken})
+    )
 }
 
 #[tauri::command]
