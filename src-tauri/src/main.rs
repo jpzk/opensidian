@@ -809,7 +809,7 @@ fn move_note_in(root: &Path, ix: &mut Index, old: &str, new: &str) -> Result<(us
     // R9.8: the note's name changed, so its BOOKMARK follows it — here, after
     // the rename is a fact on disk, and never before: everything above this
     // line can still return Err, and a refused rename must leave
-    // .rustidian-bookmarks byte-for-byte unchanged. See rename_bookmark_in.
+    // .obsidian/bookmarks.json byte-for-byte unchanged. See rename_bookmark_in.
     // This is also the reason the fix is not in rename_in: the move_note
     // command calls move_note_in DIRECTLY, so a note MOVED to another folder
     // changes its vault-relative name by exactly this code and keeps its
@@ -969,7 +969,7 @@ fn rename_note(v: State<Vault>, old: String, new: String, otel: Option<perf::Ctx
    writing somewhere else is the same class of lie as a comment that outruns
    its code.
 
-   NOT TOUCHED, ON PURPOSE: `.rustidian-bookmarks`. A delete writes the deleted
+   NOT TOUCHED, ON PURPOSE: `.obsidian/bookmarks.json`. A delete writes the deleted
    note's path and nothing else, and this codebase already tolerates a bookmark
    with no file behind it (see rename_bookmark_in's "the target name may be a
    stale bookmark with no file"). R24 says nothing about bookmarks; the
@@ -2103,41 +2103,77 @@ fn search_inner(v: &State<Vault>, query: &str) -> Vec<SearchHit> {
     search_docs(v.index.lock().unwrap().docs(), query)
 }
 
-/* R9.4 bookmarks live in vault/.rustidian-bookmarks — dotfile, so
-   walk()/notes_of never see it. R4X.1 (docs/bookmark-groups.md): the file is a
-   PRE-ORDER LINE DUMP OF A TREE, one painted row per line, depth written as
-   LEADING TABS —
+/* R9.4 bookmarks live in vault/.obsidian/bookmarks.json — Obsidian's OWN
+   file, read and written in stock 1.13.7's schema, because rustidian is a
+   drop-in replacement (operator decision 2026-09-19, goal bmcompat). The
+   shape is MEASURED, not remembered — docs/recon-bmcompat/README.md, every
+   claim named after its capture:
 
-       Second Note
-       :g:Work
-       \tIdeas
-       \t:g:Inner
-       \t\tDeep
+     { "items": [ ... ] }                          top level: an OBJECT
+     { "type": "file",  "ctime": N, "path": "Projects/Roadmap.md" }
+     { "type": "file",  ..., "title": "Zet" }      title LAST, only when typed
+     { "type": "group", "ctime": N, "items": [...], "title": "Work" }
 
-   so file order == wire order == paint order == [bmn:] order. It is not JSON,
-   though serde_json is already a dependency: the smoke phases assert on this
-   file from SHELL, with no parser on either side.
+   2-space indent, NO trailing newline (last byte `}`), key order per TYPE,
+   nesting is `items` and nothing else. Stock's `path` is our R9.4 name +
+   ".md" (recon §6): the name stays the model, the ".md" is spelled only at
+   this file boundary. A file entry whose path is NOT *.md, and any entry of
+   a type we do not model (stock's `search`, a future 1.14 type) rides
+   through read -> edit -> write as an OPAQUE value, content-equal. UNKNOWN
+   KEYS ROUND-TRIP (criterion 4): stock itself preserves per-entry keys it
+   does not recognise and drops top-level ones (recon §5, 32-editdone); we
+   preserve BOTH — never the app that lost someone's future 1.14 key.
 
-   A TOP-LEVEL FILE BOOKMARK IS A BARE NAME LINE — byte-identical to v0.12, and
-   that is not nostalgia: phase_chrome, phase_bmmenu and phase_rename each
-   `grep -qx "<name>" .rustidian-bookmarks` (smoke.sh:3069, 3132, 5403) and must
-   pass UNEDITED. A v0.12 file is therefore already a valid v1 file: every line
-   a top-level bookmark, read as-is, rewritten in place by the next write
-   (criterion 4). Only the two new affordances are new bytes: a leading tab per
-   level of depth, and the `:g:` sentinel that makes a line a GROUP TITLE
-   instead of a name. A name that would collide with the sentinel is written
-   `:f:`-prefixed, so any name round-trips. */
-const BM_FILE: &str = ".rustidian-bookmarks";
-const BM_GROUP: &str = ":g:";
-const BM_FILE_ESC: &str = ":f:";
+   The old v0.12/v1 `.rustidian-bookmarks` is IGNORED: never read, never
+   written, never deleted (criterion 5's one sentence, as behaviour —
+   r4x_a_pre_existing_rustidian_bookmarks_file_is_ignored). */
+const BM_FILE: &str = ".obsidian/bookmarks.json";
 /// stock's default for a freshly created group, MEASURED, not remembered
 /// (docs/recon-bmfolder/README.md, `03-newgroup.png`).
 const BM_NEW_GROUP: &str = "Untitled group";
 
+/// what a node carries that our model does not AUTHOR: stock's ctime
+/// (preserved verbatim; minted only for nodes we create) and every key a
+/// newer Obsidian wrote that we do not know — kept in FILE order
+/// (serde_json's preserve_order) and re-emitted after the keys we do author,
+/// which is where stock itself re-serialises them (32-editdone).
+#[derive(Debug, Clone, PartialEq, Default)]
+struct BmExtra {
+    ctime: Option<serde_json::Number>,
+    keys: Vec<(String, serde_json::Value)>,
+}
+
+impl BmExtra {
+    /// a node we create gets its ctime exactly as stock mints one: unix
+    /// millis (26-moved.bookmarks.json).
+    fn now() -> Self {
+        let ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        BmExtra { ctime: Some(serde_json::Number::from(ms)), keys: Vec::new() }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum BmNode {
-    File(String),
-    Group { title: String, items: Vec<BmNode> },
+    /// a bookmarked note: `name` is the R9.4 vault-relative NAME; on disk it
+    /// is stock's `path` = name + ".md". `title` is stock's optional display
+    /// alias — we never author one, we never lose one.
+    File { name: String, title: Option<String>, x: BmExtra },
+    Group { title: String, items: Vec<BmNode>, x: BmExtra },
+    /// an entry our model cannot express — stock's `search`, a non-.md path,
+    /// a future type. Not painted, not addressable, written back verbatim.
+    Opaque(serde_json::Value),
+}
+
+impl BmNode {
+    fn file(name: impl Into<String>) -> Self {
+        BmNode::File { name: name.into(), title: None, x: BmExtra::now() }
+    }
+    fn group(title: impl Into<String>, items: Vec<BmNode>) -> Self {
+        BmNode::Group { title: title.into(), items, x: BmExtra::now() }
+    }
 }
 
 /* one PAINTED ROW. The pane renders this vector top to bottom and indents by
@@ -2151,53 +2187,81 @@ struct BmRow {
     name: String,
 }
 
-/* the ONE parser, and it is TOLERANT by construction: a depth deeper than
-   previous+1 is CLAMPED, a depth with no group open is top level, a blank line
-   is skipped. There is no malformed input and no version branch — every line
-   is a row, which is exactly why the v0.12 file needs no conversion step. */
+/* the ONE parser, and it is TOLERANT by construction: a body that is not
+   JSON, or whose `items` is not an array, reads as the EMPTY tree; an entry
+   we cannot model reads as Opaque and is CARRIED, never dropped. There is no
+   version branch — the only format this parser has ever read is stock's. */
 fn parse_bm_tree(body: &str) -> Vec<BmNode> {
-    let mut root: Vec<BmNode> = Vec::new();
-    let mut open: Vec<(String, Vec<BmNode>)> = Vec::new();
-    let mut prev_depth = 0usize;
-    let mut first_row = true;
-    for line in body.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let want = line.bytes().take_while(|b| *b == b'\t').count();
-        let rest = &line[want..]; // a tab is one byte, so this is a char boundary
-        let ceiling = if first_row { 0 } else { prev_depth + 1 };
-        let mut d = want.min(ceiling);
-        while open.len() > d {
-            bm_close(&mut root, &mut open);
-        }
-        d = d.min(open.len());
-        match rest.strip_prefix(BM_GROUP) {
-            Some(title) => open.push((title.to_string(), Vec::new())),
-            None => {
-                let name = rest.strip_prefix(BM_FILE_ESC).unwrap_or(rest);
-                bm_push(&mut root, &mut open, BmNode::File(name.to_string()));
-            }
-        }
-        prev_depth = d;
-        first_row = false;
-    }
-    while !open.is_empty() {
-        bm_close(&mut root, &mut open);
-    }
-    root
-}
-
-fn bm_push(root: &mut Vec<BmNode>, open: &mut [(String, Vec<BmNode>)], node: BmNode) {
-    match open.last_mut() {
-        Some(top) => top.1.push(node),
-        None => root.push(node),
+    let v: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    match v.get("items").and_then(|i| i.as_array()) {
+        Some(a) => a.iter().map(bm_node_of).collect(),
+        None => Vec::new(),
     }
 }
 
-fn bm_close(root: &mut Vec<BmNode>, open: &mut Vec<(String, Vec<BmNode>)>) {
-    if let Some((title, items)) = open.pop() {
-        bm_push(root, open, BmNode::Group { title, items });
+/// one JSON entry -> one node. Keys our model AUTHORS are lifted out; every
+/// other key lands in `x.keys` unchanged, in file order. A `ctime`/`title`
+/// of the wrong JSON type is NOT lifted — it stays an unknown key, because
+/// re-typing someone's value is as much data loss as dropping it.
+fn bm_node_of(v: &serde_json::Value) -> BmNode {
+    let obj = match v.as_object() {
+        Some(o) => o,
+        None => return BmNode::Opaque(v.clone()),
+    };
+    let ctime = obj.get("ctime").and_then(|c| c.as_number()).cloned();
+    match obj.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+        "file" => {
+            // stock's `path` is our name + ".md" (recon §6); any other path
+            // (canvas, pdf, bare) is not expressible as an R9.4 name -> opaque
+            let name = match obj
+                .get("path")
+                .and_then(|p| p.as_str())
+                .and_then(|p| p.strip_suffix(".md"))
+                .filter(|n| !n.is_empty())
+            {
+                Some(n) => n.to_string(),
+                None => return BmNode::Opaque(v.clone()),
+            };
+            let title = obj.get("title").and_then(|t| t.as_str()).map(str::to_string);
+            let keys = obj
+                .iter()
+                .filter(|(k, _)| {
+                    !(k.as_str() == "type"
+                        || k.as_str() == "path"
+                        || (k.as_str() == "ctime" && ctime.is_some())
+                        || (k.as_str() == "title" && title.is_some()))
+                })
+                .map(|(k, val)| (k.clone(), val.clone()))
+                .collect();
+            BmNode::File { name, title, x: BmExtra { ctime, keys } }
+        }
+        "group" => {
+            // a group whose title is not a string or whose items is not an
+            // array is not ours to reshape: carry it whole
+            let title = match obj.get("title").and_then(|t| t.as_str()) {
+                Some(t) => t.to_string(),
+                None => return BmNode::Opaque(v.clone()),
+            };
+            let items: Vec<BmNode> = match obj.get("items").and_then(|i| i.as_array()) {
+                Some(a) => a.iter().map(bm_node_of).collect(),
+                None => return BmNode::Opaque(v.clone()),
+            };
+            let keys = obj
+                .iter()
+                .filter(|(k, _)| {
+                    !(k.as_str() == "type"
+                        || k.as_str() == "items"
+                        || k.as_str() == "title"
+                        || (k.as_str() == "ctime" && ctime.is_some()))
+                })
+                .map(|(k, val)| (k.clone(), val.clone()))
+                .collect();
+            BmNode::Group { title, items, x: BmExtra { ctime, keys } }
+        }
+        _ => BmNode::Opaque(v.clone()),
     }
 }
 
@@ -2205,43 +2269,75 @@ fn read_bm_tree(root: &Path) -> Vec<BmNode> {
     parse_bm_tree(&fs::read_to_string(root.join(BM_FILE)).unwrap_or_default())
 }
 
-/* the ONE serializer. Nothing else may spell the format out — a trailing
-   newline present in one writer and absent in the other is a diff nobody reads
-   until a byte-for-byte test fails. A payload's newlines and TABS are
-   flattened HERE, at the single place that knows a line is a line and that a
-   leading tab is depth. */
-fn bm_flatten(s: &str) -> String {
-    s.replace(['\n', '\r', '\t'], " ")
-}
-
-fn bm_emit(nodes: &[BmNode], depth: usize, out: &mut String) {
-    for n in nodes {
-        for _ in 0..depth {
-            out.push('\t');
-        }
-        match n {
-            BmNode::File(name) => {
-                let flat = bm_flatten(name);
-                if flat.starts_with(BM_GROUP) || flat.starts_with(BM_FILE_ESC) {
-                    out.push_str(BM_FILE_ESC); // a NAME that looks like a sentinel
-                }
-                out.push_str(&flat);
+/* the ONE serializer. bm_value_of spells the KEY ORDER stock writes — per
+   type: file = type,ctime,path[,title]; group = type,ctime,items,title;
+   unknown keys AFTER the authored ones, in file order, which is where stock
+   itself re-serialises them (32-editdone.bookmarks.json) — and serde_json's
+   pretty printer spells the layout stock uses: 2-space indent, ": "
+   separator, NO trailing newline (11-first.bookmarks.json, last byte `}`).
+   Nothing else may turn a tree into bytes. */
+fn bm_value_of(n: &BmNode) -> serde_json::Value {
+    use serde_json::{Map, Value};
+    match n {
+        BmNode::Opaque(v) => v.clone(),
+        BmNode::File { name, title, x } => {
+            let mut m = Map::new();
+            m.insert("type".into(), Value::String("file".into()));
+            if let Some(c) = &x.ctime {
+                m.insert("ctime".into(), Value::Number(c.clone()));
             }
-            BmNode::Group { title, .. } => {
-                out.push_str(BM_GROUP);
-                out.push_str(&bm_flatten(title));
+            m.insert("path".into(), Value::String(format!("{name}.md")));
+            if let Some(t) = title {
+                m.insert("title".into(), Value::String(t.clone()));
             }
+            for (k, v) in &x.keys {
+                m.insert(k.clone(), v.clone());
+            }
+            Value::Object(m)
         }
-        out.push('\n');
-        if let BmNode::Group { items, .. } = n {
-            bm_emit(items, depth + 1, out);
+        BmNode::Group { title, items, x } => {
+            let mut m = Map::new();
+            m.insert("type".into(), Value::String("group".into()));
+            if let Some(c) = &x.ctime {
+                m.insert("ctime".into(), Value::Number(c.clone()));
+            }
+            m.insert("items".into(), Value::Array(items.iter().map(bm_value_of).collect()));
+            m.insert("title".into(), Value::String(title.clone()));
+            for (k, v) in &x.keys {
+                m.insert(k.clone(), v.clone());
+            }
+            Value::Object(m)
         }
     }
 }
 
+fn bm_emit(tree: &[BmNode], top: &[(String, serde_json::Value)]) -> String {
+    let mut root = serde_json::Map::new();
+    root.insert("items".into(), serde_json::Value::Array(tree.iter().map(bm_value_of).collect()));
+    for (k, v) in top {
+        if k != "items" {
+            root.insert(k.clone(), v.clone());
+        }
+    }
+    serde_json::to_string_pretty(&serde_json::Value::Object(root))
+        .unwrap_or_else(|_| "{\n  \"items\": []\n}".to_string())
+}
+
+/// the TOP-LEVEL keys we do not author, read back off the current file so a
+/// write preserves them. Stock DROPS these (recon §5); we keep them — the
+/// strictly more conservative choice — re-emitted after `items`.
+fn bm_top_extra(root: &Path) -> Vec<(String, serde_json::Value)> {
+    let body = fs::read_to_string(root.join(BM_FILE)).unwrap_or_default();
+    match serde_json::from_str::<serde_json::Value>(&body) {
+        Ok(serde_json::Value::Object(o)) => o.into_iter().filter(|(k, _)| k != "items").collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn write_bm_tree(root: &Path, tree: &[BmNode]) -> Result<(), String> {
-    let mut body = String::new();
-    bm_emit(tree, 0, &mut body); // empty tree == empty file, unchanged from v0.12
+    let top = bm_top_extra(root); // preserved BEFORE the file is replaced
+    let body = bm_emit(tree, &top);
+    fs::create_dir_all(root.join(".obsidian")).map_err(|e| e.to_string())?;
     fs::write(root.join(BM_FILE), body).map_err(|e| e.to_string())
 }
 
@@ -2250,8 +2346,9 @@ fn write_bm_tree(root: &Path, tree: &[BmNode]) -> Result<(), String> {
 fn bm_names(nodes: &[BmNode], out: &mut Vec<String>) {
     for n in nodes {
         match n {
-            BmNode::File(name) => out.push(name.clone()),
+            BmNode::File { name, .. } => out.push(name.clone()),
             BmNode::Group { items, .. } => bm_names(items, out),
+            BmNode::Opaque(_) => {} // not a name — carried, not listed
         }
     }
 }
@@ -2267,18 +2364,19 @@ fn read_bookmarks(root: &Path) -> Vec<String> {
    Production paths that must preserve structure call write_bm_tree — which
    this delegates to, so there is still exactly ONE serializer. */
 fn write_bookmarks(root: &Path, list: &[String]) -> Result<(), String> {
-    let tree: Vec<BmNode> = list.iter().map(|n| BmNode::File(n.clone())).collect();
+    let tree: Vec<BmNode> = list.iter().map(|n| BmNode::file(n.clone())).collect();
     write_bm_tree(root, &tree)
 }
 
 fn bm_rows_in(nodes: &[BmNode], depth: usize, out: &mut Vec<BmRow>) {
     for n in nodes {
         match n {
-            BmNode::File(name) => out.push(BmRow { kind: "f".into(), depth, name: name.clone() }),
-            BmNode::Group { title, items } => {
+            BmNode::File { name, .. } => out.push(BmRow { kind: "f".into(), depth, name: name.clone() }),
+            BmNode::Group { title, items, .. } => {
                 out.push(BmRow { kind: "g".into(), depth, name: title.clone() });
                 bm_rows_in(items, depth + 1, out);
             }
+            BmNode::Opaque(_) => {} // preserved on disk, never painted
         }
     }
 }
@@ -2296,6 +2394,10 @@ fn bm_rows_of(tree: &[BmNode]) -> Vec<BmRow> {
 fn bm_path_of(tree: &[BmNode], ix: usize) -> Option<Vec<usize>> {
     fn walk(nodes: &[BmNode], target: usize, seen: &mut usize, path: &mut Vec<usize>) -> bool {
         for (i, n) in nodes.iter().enumerate() {
+            if matches!(n, BmNode::Opaque(_)) {
+                continue; // never painted, so never numbered — but `i` still
+                          // counts it: paths stay RAW child indices
+            }
             path.push(i);
             if *seen == target {
                 return true;
@@ -2357,7 +2459,7 @@ fn bm_take(tree: &mut Vec<BmNode>, path: &[usize]) -> Option<BmNode> {
    (R4X.2, criterion 6 — which the phase proves with a byte comparison). ---- */
 
 fn bm_group_new_in(tree: &mut Vec<BmNode>, parent: Option<usize>) -> Result<(), String> {
-    let node = BmNode::Group { title: BM_NEW_GROUP.to_string(), items: Vec::new() };
+    let node = BmNode::group(BM_NEW_GROUP, Vec::new());
     match parent {
         None => {
             tree.push(node);
@@ -2490,7 +2592,7 @@ fn bm_rename_walk(tree: &mut Vec<BmNode>, old: &str, new: &str) -> bool {
         while i < nodes.len() {
             let mut drop = false;
             match &mut nodes[i] {
-                BmNode::File(n) => {
+                BmNode::File { name: n, .. } => {
                     if !*done && n == old {
                         *n = new.to_string();
                         *done = true;
@@ -2499,6 +2601,7 @@ fn bm_rename_walk(tree: &mut Vec<BmNode>, old: &str, new: &str) -> bool {
                     }
                 }
                 BmNode::Group { items, .. } => walk(items, old, new, done),
+                BmNode::Opaque(_) => {} // not a name; never followed, never dropped
             }
             if drop {
                 nodes.remove(i);
@@ -2518,13 +2621,13 @@ fn bm_rename_walk(tree: &mut Vec<BmNode>, old: &str, new: &str) -> bool {
    inside that group, and the group stays. */
 fn bm_toggle_in(tree: &mut Vec<BmNode>, name: &str) {
     if !bm_drop_first_name(tree, name) {
-        tree.push(BmNode::File(name.to_string()));
+        tree.push(BmNode::file(name));
     }
 }
 
 fn bm_drop_first_name(nodes: &mut Vec<BmNode>, name: &str) -> bool {
     for i in 0..nodes.len() {
-        if matches!(&nodes[i], BmNode::File(n) if n == name) {
+        if matches!(&nodes[i], BmNode::File { name: n, .. } if n == name) {
             nodes.remove(i);
             return true;
         }
@@ -4242,9 +4345,11 @@ mod tests {
         bm_toggle_in(&mut t, "sub/B");
         assert!(bm_flat(&t).is_empty());
         // ...and toggling OFF reaches INSIDE a group, leaving the group there
-        let mut g = vec![BmNode::Group { title: "Work".into(), items: vec![BmNode::File("Ideas".into())] }];
+        let mut g = vec![BmNode::group("Work", vec![BmNode::file("Ideas")])];
         bm_toggle_in(&mut g, "Ideas");
-        assert_eq!(g, vec![BmNode::Group { title: "Work".into(), items: vec![] }]);
+        assert!(bm_flat(&g).is_empty(), "toggled OFF inside the group");
+        assert_eq!(bm_rows_of(&g).iter().map(|r| (r.kind.as_str(), r.depth)).collect::<Vec<_>>(),
+                   vec![("g", 0)], "...and the group stays");
         bm_toggle_in(&mut g, "Ideas");           // ...and back ON at the TOP level
         assert_eq!(bm_rows_of(&g).iter().map(|r| (r.kind.as_str(), r.depth)).collect::<Vec<_>>(),
                    vec![("g", 0), ("f", 0)]);
@@ -4252,7 +4357,7 @@ mod tests {
 
     /* ---- R9.8: a renamed or MOVED note takes its bookmark with it ----
        Every test below drives the real functions against a real vault on
-       disk, because the thing under test is a FILE (.rustidian-bookmarks)
+       disk, because the thing under test is a FILE (.obsidian/bookmarks.json)
        and half the cases are about bytes that must NOT change. */
 
     /// seed a vault with a bookmarks file, in toggle_bookmark's exact format
@@ -4401,29 +4506,75 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /* ---- R4X: bookmark GROUPS (goal bmfolder, docs/bookmark-groups.md) ----
-       The file is the contract: every test below asserts on the BYTES or on
-       the painted row vector, because criterion 2's smoke phase asserts on the
-       same bytes from shell. */
+    /* ---- R4X: bookmark GROUPS (goal bmfolder, docs/bookmark-groups.md),
+       stored in stock's schema since goal bmcompat. The file is the contract:
+       the tests below assert on the BYTES or on the painted row vector,
+       because criterion 3's smoke phase asserts on the same file from
+       shell. */
 
-    /// seed a TREE and read the file straight back: the format round-trips,
-    /// pre-order, one line per painted row, depth as leading TABS.
+    /// seed a TREE and read the file straight back: stock 1.13.7's schema
+    /// round-trips through the one serializer — key order per type, 2-space
+    /// indent, no trailing newline — byte-deterministic under fixed ctimes.
     #[test]
     fn r4x_tree_round_trips_through_the_one_serializer() {
         let root = tmp_vault("bm-tree");
+        let x = |ms: u64| BmExtra { ctime: Some(serde_json::Number::from(ms)), keys: Vec::new() };
         let tree = vec![
             BmNode::Group {
                 title: "Work".into(),
-                items: vec![BmNode::File("Ideas".into()), BmNode::Group { title: "Inner".into(), items: vec![BmNode::File("Deep".into())] }],
+                items: vec![
+                    BmNode::File { name: "Ideas".into(), title: None, x: x(2) },
+                    BmNode::Group {
+                        title: "Inner".into(),
+                        items: vec![BmNode::File { name: "Deep".into(), title: None, x: x(3) }],
+                        x: x(4),
+                    },
+                ],
+                x: x(1),
             },
-            BmNode::File("Second Note".into()),
+            BmNode::File { name: "Second Note".into(), title: None, x: x(5) },
         ];
         write_bm_tree(&root, &tree).unwrap();
         assert_eq!(
             String::from_utf8(bm_bytes(&root)).unwrap(),
-            ":g:Work\n\tIdeas\n\t:g:Inner\n\t\tDeep\nSecond Note\n"
+            concat!(
+                "{\n",
+                "  \"items\": [\n",
+                "    {\n",
+                "      \"type\": \"group\",\n",
+                "      \"ctime\": 1,\n",
+                "      \"items\": [\n",
+                "        {\n",
+                "          \"type\": \"file\",\n",
+                "          \"ctime\": 2,\n",
+                "          \"path\": \"Ideas.md\"\n",
+                "        },\n",
+                "        {\n",
+                "          \"type\": \"group\",\n",
+                "          \"ctime\": 4,\n",
+                "          \"items\": [\n",
+                "            {\n",
+                "              \"type\": \"file\",\n",
+                "              \"ctime\": 3,\n",
+                "              \"path\": \"Deep.md\"\n",
+                "            }\n",
+                "          ],\n",
+                "          \"title\": \"Inner\"\n",
+                "        }\n",
+                "      ],\n",
+                "      \"title\": \"Work\"\n",
+                "    },\n",
+                "    {\n",
+                "      \"type\": \"file\",\n",
+                "      \"ctime\": 5,\n",
+                "      \"path\": \"Second Note.md\"\n",
+                "    }\n",
+                "  ]\n",
+                "}"
+            ),
+            "stock's exact layout: docs/recon-bmcompat captures 11-first/26-moved"
         );
-        assert_eq!(read_bm_tree(&root), tree, "read(write(t)) == t");
+        assert_eq!(read_bm_tree(&root), tree, "read(write(t)) == t, ctime included");
         // the derived flat view is the `f` payloads in pre-order, and that is
         // what list_bookmarks returns
         assert_eq!(read_bookmarks(&root), vec!["Ideas", "Deep", "Second Note"]);
@@ -4440,74 +4591,99 @@ mod tests {
                 ("f".to_string(), 0, "Second Note".to_string()),
             ]
         );
-        // a NAME that looks like the group sentinel, or carries a tab or a
-        // newline, still round-trips: the serializer escapes and flattens.
-        let odd = vec![BmNode::File(":g:not a group".into()), BmNode::File("tab\there".into())];
+        // names the old LINE format had to escape or flatten round-trip
+        // VERBATIM now: JSON escaping is not lossy.
+        let odd = vec![BmNode::file(":g:not a group"), BmNode::file("tab\there"), BmNode::file("nl\nthere")];
         write_bm_tree(&root, &odd).unwrap();
-        assert_eq!(String::from_utf8(bm_bytes(&root)).unwrap(), ":f::g:not a group\ntab here\n");
-        assert_eq!(read_bookmarks(&root), vec![":g:not a group", "tab here"]);
+        assert_eq!(read_bookmarks(&root), vec![":g:not a group", "tab\there", "nl\nthere"]);
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// THE CONSTRAINT THAT PICKED THIS FORMAT: a top-level bookmark is a BARE
-    /// NAME line, byte-identical to v0.12, because three committed phases
-    /// `grep -qx` for exactly that and must pass UNEDITED (criterion 8).
+    /// criterion 5's one sentence, as behaviour: a pre-existing
+    /// .rustidian-bookmarks is IGNORED — never read, never written, never
+    /// deleted. Bookmarks come from .obsidian/bookmarks.json alone.
     #[test]
-    fn r4x_a_top_level_bookmark_is_still_a_bare_name_line() {
-        let root = tmp_vault("bm-bare");
-        bm_seed(&root, &["Ideas", "A-LP", "ZR Target X Y"]);
-        assert_eq!(String::from_utf8(bm_bytes(&root)).unwrap(), "Ideas\nA-LP\nZR Target X Y\n");
-        // the same file after a group appears: the top-level lines do not move
+    fn r4x_a_pre_existing_rustidian_bookmarks_file_is_ignored() {
+        let root = tmp_vault("bm-old-dotfile");
+        let v012 = b"Ideas\n:g:Work\n\tA-LP\n";
+        fs::write(root.join(".rustidian-bookmarks"), v012).unwrap();
+        assert!(read_bookmarks(&root).is_empty(), "the old dotfile is not read");
         let mut t = read_bm_tree(&root);
-        bm_group_new_in(&mut t, None).unwrap();
-        bm_move_in_tree(&mut t, 1, Some(3)).unwrap(); // A-LP into the new group
+        bm_toggle_in(&mut t, "Ideas");
         write_bm_tree(&root, &t).unwrap();
+        assert_eq!(read_bookmarks(&root), vec!["Ideas"], "bookmarks live in the stock file");
+        assert!(root.join(".obsidian/bookmarks.json").is_file());
         assert_eq!(
-            String::from_utf8(bm_bytes(&root)).unwrap(),
-            "Ideas\nZR Target X Y\n:g:Untitled group\n\tA-LP\n",
-            "grep -qx 'Ideas' still holds; the grouped one is tab-indented"
+            fs::read(root.join(".rustidian-bookmarks")).unwrap(),
+            v012.to_vec(),
+            "...and the old dotfile is byte-for-byte untouched"
         );
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// criterion 4, as a behaviour and not only a sentence in the doc: a
-    /// pre-existing FLAT v0.12 file reads as top-level bookmarks in the same
-    /// order, and the next write keeps those lines byte-for-byte.
+    /// entries our model cannot express — stock's `search`, a non-.md path —
+    /// ride through read -> edit -> write VERBATIM, invisible to the pane
+    /// (recon §5: dropping someone else's entry is data loss in their app).
     #[test]
-    fn r4x_a_flat_v012_file_reads_as_top_level_and_survives_the_next_write() {
-        let root = tmp_vault("bm-flat");
-        fs::write(root.join(BM_FILE), "A\nsub/B\nC\n").unwrap(); // v0.12 bytes
-        assert_eq!(read_bookmarks(&root), vec!["A", "sub/B", "C"]);
-        assert!(bm_rows_of(&read_bm_tree(&root)).iter().all(|r| r.kind == "f" && r.depth == 0));
-        let mut t = read_bm_tree(&root);
-        bm_group_new_in(&mut t, None).unwrap();
+    fn r4x_unmodelled_entries_ride_through_a_write_verbatim() {
+        let root = tmp_vault("bm-opaque");
+        fs::create_dir_all(root.join(".obsidian")).unwrap();
+        fs::write(
+            root.join(BM_FILE),
+            r#"{"items": [
+                {"type": "search", "ctime": 1789851600000, "query": "tag:#recon"},
+                {"type": "file", "ctime": 7, "path": "Diagram.canvas"},
+                {"type": "file", "ctime": 9, "path": "Plain.md"}
+            ]}"#,
+        )
+        .unwrap();
+        let t = read_bm_tree(&root);
+        // the pane paints ONLY what we model...
+        assert_eq!(bm_rows_of(&t).iter().map(|r| r.name.clone()).collect::<Vec<_>>(), vec!["Plain"]);
+        // ...row 0 is "Plain" even though two opaque entries precede it on
+        // disk: rows never number an opaque, paths stay raw child indices
+        assert_eq!(bm_path_of(&t, 0), Some(vec![2]));
+        // ...and an edit does not cost the vault the other two entries
+        let mut t = t;
+        bm_toggle_in(&mut t, "Plain"); // remove the only modelled entry
         write_bm_tree(&root, &t).unwrap();
-        assert_eq!(String::from_utf8(bm_bytes(&root)).unwrap(), "A\nsub/B\nC\n:g:Untitled group\n");
+        let v: serde_json::Value = serde_json::from_slice(&bm_bytes(&root)).unwrap();
+        let items = v["items"].as_array().unwrap();
+        assert_eq!(items.len(), 2, "search + canvas survived: {items:?}");
+        assert_eq!(items[0]["query"], "tag:#recon");
+        assert_eq!(items[0]["ctime"], serde_json::json!(1789851600000u64), "ctime included");
+        assert_eq!(items[1]["path"], "Diagram.canvas");
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// the parser is TOLERANT: a depth jump is clamped, a depth with no group
-    /// open is top level, a blank line is skipped, and nothing panics.
+    /// the parser is TOLERANT: not-JSON reads as the empty tree, an entry it
+    /// cannot model reads as OPAQUE, and nothing panics.
     #[test]
-    fn r4x_the_parser_clamps_rather_than_panicking() {
-        let t = parse_bm_tree("Notes: 2026\n\t\t\torphan deep\n:g:a:b\n\t\t\t\t\tclamped child\n\n");
+    fn r4x_the_parser_tolerates_what_it_cannot_model() {
+        assert!(parse_bm_tree("").is_empty());
+        assert!(parse_bm_tree("\n\n").is_empty());
+        assert!(parse_bm_tree("A\nsub/B\nC\n").is_empty(), "a v0.12 body is not JSON: ignored");
+        assert!(parse_bm_tree("[]").is_empty(), "top level must be an object");
+        assert!(parse_bm_tree(r#"{"items": 3}"#).is_empty(), "items must be an array");
+        let t = parse_bm_tree(
+            r#"{"items": [7, {"type": "zz"}, {"type": "group", "title": 5, "items": []},
+                          {"type": "file", "ctime": 1, "path": "A.md"}]}"#,
+        );
+        assert_eq!(t.len(), 4, "nothing dropped");
+        assert!(matches!(&t[0], BmNode::Opaque(_)), "a non-object entry is opaque");
+        assert!(matches!(&t[1], BmNode::Opaque(_)), "an unknown type is opaque");
+        assert!(matches!(&t[2], BmNode::Opaque(_)), "a non-string title is not ours to reshape");
         assert_eq!(
             bm_rows_of(&t).into_iter().map(|r| (r.kind, r.depth, r.name)).collect::<Vec<_>>(),
-            vec![
-                ("f".to_string(), 0, "Notes: 2026".to_string()),  // a name may hold ':'
-                ("f".to_string(), 0, "orphan deep".to_string()),  // depth with no group open
-                ("g".to_string(), 0, "a:b".to_string()),          // a title may hold ':'
-                ("f".to_string(), 1, "clamped child".to_string()) // 5 clamped to prev+1
-            ]
+            vec![("f".to_string(), 0, "A".to_string())]
         );
-        assert!(parse_bm_tree("").is_empty() && parse_bm_tree("\n\n").is_empty());
     }
 
     /// the four structural operations, addressed by ROW INDEX (titles are not
     /// keys: stock allows two sibling groups with the same title).
     #[test]
     fn r4x_group_new_rename_delete_and_move_by_row_index() {
-        let mut t: Vec<BmNode> = vec![BmNode::File("A".into()), BmNode::File("B".into())];
+        let mut t: Vec<BmNode> = vec![BmNode::file("A"), BmNode::file("B")];
         // new group at the top level, with stock's default name
         bm_group_new_in(&mut t, None).unwrap();
         assert_eq!(bm_rows_of(&t)[2].name, "Untitled group");
@@ -4551,24 +4727,30 @@ mod tests {
         write_bm_tree(
             &root,
             &[
-                BmNode::Group { title: "Work".into(), items: vec![BmNode::File("Ideas".into())] },
-                BmNode::File("Loose".into()),
+                BmNode::group("Work", vec![BmNode::file("Ideas")]),
+                BmNode::file("Loose"),
             ],
         )
         .unwrap();
+        let rows = |root: &Path| -> Vec<String> {
+            bm_rows_of(&read_bm_tree(root))
+                .into_iter()
+                .map(|r| format!("{}{}:{}", r.kind, r.depth, r.name))
+                .collect()
+        };
         let mut ix = Index::build(&root);
         rename_in(&root, &mut ix, "Ideas", "Plans").unwrap();
         assert_eq!(
-            String::from_utf8(bm_bytes(&root)).unwrap(),
-            ":g:Work\n\tPlans\nLoose\n",
+            rows(&root),
+            vec!["g0:Work", "f1:Plans", "f0:Loose"],
             "the renamed bookmark is still INSIDE Work, at its index"
         );
         // and a MOVE to another folder goes through the same code (R9.8)
         move_note_in(&root, &mut ix, "Plans", "sub/Plans").unwrap();
-        assert!(
-            String::from_utf8(bm_bytes(&root)).unwrap().contains(":g:Work\n\tsub/Plans\n"),
-            "a moved note keeps its group too: {}",
-            String::from_utf8(bm_bytes(&root)).unwrap()
+        assert_eq!(
+            rows(&root),
+            vec!["g0:Work", "f1:sub/Plans", "f0:Loose"],
+            "a moved note keeps its group too"
         );
         let _ = fs::remove_dir_all(&root);
     }
@@ -4581,15 +4763,16 @@ mod tests {
     fn r4x_grouped_bookmark_keeps_group_on_delete() {
         let root = tmp_vault("bm-grp-del");
         fs::write(root.join("Ideas.md"), "i").unwrap();
-        write_bm_tree(&root, &[BmNode::Group { title: "Work".into(), items: vec![BmNode::File("Ideas".into())] }]).unwrap();
+        write_bm_tree(&root, &[BmNode::group("Work", vec![BmNode::file("Ideas")])]).unwrap();
         let before = bm_bytes(&root);
         let mut ix = Index::build(&root);
         delete_note_in(&root, &mut ix, "Ideas").unwrap();
         assert!(!root.join("Ideas.md").exists(), "the note really was deleted");
-        assert_eq!(bm_bytes(&root), before, "a delete rewrote .rustidian-bookmarks");
+        assert_eq!(bm_bytes(&root), before, "a delete rewrote .obsidian/bookmarks.json");
+        let v: serde_json::Value = serde_json::from_slice(&bm_bytes(&root)).unwrap();
+        assert_eq!(v["items"][0]["title"], "Work");
         assert_eq!(
-            String::from_utf8(bm_bytes(&root)).unwrap(),
-            ":g:Work\n\tIdeas\n",
+            v["items"][0]["items"][0]["path"], "Ideas.md",
             "the stale bookmark is still inside Work"
         );
         let _ = fs::remove_dir_all(&root);
@@ -4783,7 +4966,7 @@ mod tests {
         let bm0 = fs::read(root.join(BM_FILE)).unwrap();
         let mut ix = Index::build(&root);
         delete_note_in(&root, &mut ix, "A").unwrap();
-        assert_eq!(fs::read(root.join(BM_FILE)).unwrap(), bm0, "a delete rewrote .rustidian-bookmarks");
+        assert_eq!(fs::read(root.join(BM_FILE)).unwrap(), bm0, "a delete rewrote .obsidian/bookmarks.json");
     }
 
     /// R34.1 + R34.2: the move renames the FILE and NOT ONE inbound link.
