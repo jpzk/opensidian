@@ -4241,26 +4241,38 @@ function ucTok() {
 /* Ctrl+Shift+T. Reopening a tab whose bytes were RESCUED is the other half of
    the promise made at removal time: the keystrokes come back, and they come
    back where the user can see them.
-     * nothing on disk (the watcher's delete took the file) -> the rescued
-       bytes are written back under the old name. This is a USER action, not an
-       autosave: R11.4 forbids a timer resurrecting a deleted file behind the
-       user's back, not the user asking for their text back.
+     * the name is FREE (the watcher's delete took the file) -> the rescued
+       bytes are written back under the old name, by create_note, whose
+       create_new(true) makes "was it free?" and "write it" ONE step. This is a
+       USER action, not an autosave: R11.4 forbids a timer resurrecting a
+       deleted file behind the user's back, not the user asking for their text
+       back.
      * a file IS there and differs -> it is left ALONE and the rescued bytes go
        into the buffer, which then reads dirty against the disk bytes. The user
        decides; nothing of either version is destroyed. */
 async function undoCloseTab() {
   const e = closedTabs.pop();
   if (!e) return false;
-  let disk = null;
+  /* "is anything on disk under that name?" is NOT a read_note question: a
+     missing note reads back as the EMPTY STRING (src-tauri/src/main.rs:652,
+     `unwrap_or_default`), so a `disk == null` test is never true and 25fe7a0's
+     rescue silently wrote nothing — gate 25fe7a0 died on exactly that
+     ("the rescue lost the keystrokes: ZTC-Del2 came back without TC-KEEP-2",
+     hz-artifacts/tabclose/phase-25fe7a0-red.log).
+     create_note IS the question: it opens with create_new(true) (main.rs
+     create_note_in), so it either WRITES the rescued bytes because the name was
+     free, or it fails with EXISTS because a different file owns it. One atomic
+     call, no TOCTOU window between the look and the write. */
+  let wrote = false, disk = null;
   if (e.text != null) {
-    try { disk = await inv("read_note", { name: e.name }); } catch (_) { disk = null; }
-    if (disk == null) await saveNote(e.name, e.text);
+    try { await inv("create_note", { name: e.name, content: e.text }); wrote = true; }
+    catch (_) { try { disk = await inv("read_note", { name: e.name }); } catch (_2) { disk = null; } }
   }
   await openInTab(e.name);
   const g = fg();
-  if (e.text != null && disk != null && disk !== e.text && curOf(g) === e.name && g.active >= 0) {
+  if (e.text != null && !wrote && disk !== e.text && curOf(g) === e.name && g.active >= 0) {
     await reloadInPlace(g, e.text);
-    g.tabs[g.active].base = disk;            // base = the bytes on disk -> the tab reads DIRTY, honestly
+    g.tabs[g.active].base = disk == null ? "" : disk;   // base = the bytes on disk -> the tab reads DIRTY, honestly
   }
   updateTitle();
   return true;
