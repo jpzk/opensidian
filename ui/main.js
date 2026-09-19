@@ -896,8 +896,8 @@ function srGeom() {
   return " [srg:" + Math.round(b.left + b.width / 2) + "|" + parts.join("|") + "]";
 }
 
-/* R9.4 bookmarks: tree-row context menu toggles; rust persists the list in
-   vault/.rustidian-bookmarks. census [bm:N] while the pane shows —
+/* R9.4 bookmarks: tree-row context menu toggles; rust persists the tree in
+   vault/.obsidian/bookmarks.json (stock's own file, R4X.10). census [bm:N] while the pane shows —
    N counts the .bmrow nodes actually PAINTED in #bmlist, so an assertion on
    it fails if renderBm() stops repainting even while the model is correct.
 
@@ -1059,7 +1059,7 @@ function bmRowMenu(e, nm, ix) {             // right-click a FILE .bmrow -> stoc
   item("Open to the right", () => splitWith(fg(), "row", mkTab(nm)));      // WIRED: splitWith — the verb behind the tab menu's "Split right" (M7/R6.2), carrying a fresh tab of this note
   item("Open in new window", null, "Single-window app: there is no second window to open into");   // NOT WIRED
   sep();
-  item("Rename",  null, "Bookmarks are note names on disk (.rustidian-bookmarks); there is no per-bookmark title to rename");   // NOT WIRED
+  item("Rename",  null, "Bookmarks are note names on disk (.obsidian/bookmarks.json); there is no per-bookmark title to rename");   // NOT WIRED
   item("Edit...", hasGrp ? () => openBmEdit(ix) : null,                    // WIRED (R4X.7) once a group exists: the move route, in and out
        hasGrp ? null : "Edit bookmark chooses a GROUP and this pane has none — right-click the pane background to create one");
   sep();
@@ -4718,7 +4718,7 @@ async function applyRename(old, nn) {   // post-rename bookkeeping (F2 / cmdRena
   for (const h of groups()) renderTabs(h);
   await refreshTree();
   /* R9.8: the note's name changed, so the rust side rewrote its entry in
-     .rustidian-bookmarks (move_note_in). bmCache is a COPY of that file taken
+     .obsidian/bookmarks.json (move_note_in). bmCache is a COPY of that file taken
      at the last refresh, and the bookmarks pane paints from the cache — so
      without this line the file is right on disk and the pane still shows the
      old name until the user switches panes (the pane's own `if (p === "bm")

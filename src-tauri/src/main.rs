@@ -2274,7 +2274,8 @@ fn read_bm_tree(root: &Path) -> Vec<BmNode> {
    unknown keys AFTER the authored ones, in file order, which is where stock
    itself re-serialises them (32-editdone.bookmarks.json) — and serde_json's
    pretty printer spells the layout stock uses: 2-space indent, ": "
-   separator, NO trailing newline (11-first.bookmarks.json, last byte `}`).
+   separator, NO trailing newline (32-editdone.bookmarks.json, last byte `}`
+   — od -c verified at fixture-commit time).
    Nothing else may turn a tree into bytes. */
 fn bm_value_of(n: &BmNode) -> serde_json::Value {
     use serde_json::{Map, Value};
@@ -4465,9 +4466,10 @@ mod tests {
         let mut ix = Index::build(&root);
         rename_in(&root, &mut ix, "Old", "New").unwrap();
         let after = bm_bytes(&root);
-        // the ONLY difference is the renamed line
+        // the ONLY difference is the renamed entry's path value (stock schema:
+        // the entry is a JSON object now, not a bare line)
         assert_eq!(
-            String::from_utf8(before).unwrap().replace("Old\n", "New\n"),
+            String::from_utf8(before).unwrap().replace("\"path\": \"Old.md\"", "\"path\": \"New.md\""),
             String::from_utf8(after).unwrap()
         );
         assert_eq!(read_bookmarks(&root), vec!["A", "New", "sub/Z"]);
@@ -4572,7 +4574,7 @@ mod tests {
                 "  ]\n",
                 "}"
             ),
-            "stock's exact layout: docs/recon-bmcompat captures 11-first/26-moved"
+            "stock's exact layout: docs/recon-bmcompat captures 26-moved/32-editdone"
         );
         assert_eq!(read_bm_tree(&root), tree, "read(write(t)) == t, ctime included");
         // the derived flat view is the `f` payloads in pre-order, and that is
