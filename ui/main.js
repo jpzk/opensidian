@@ -4308,8 +4308,13 @@ async function undoCloseTab() {
      call, no TOCTOU window between the look and the write. */
   let wrote = false, disk = null;
   if (e.text != null) {
-    try { await inv("create_note", { name: e.name, content: e.text }); wrote = true; }
-    catch (_) { try { disk = await inv("read_note", { name: e.name }); } catch (_2) { disk = null; } }
+    /* THROUGH createNote, not around it: f20 pins ONE `inv("create_note")`
+       call site in this file (main.rs f20_no_code_path_materializes_a_heading
+       _at_creation) so the empty default body has exactly one home. The helper
+       already answers the only question the rescue has — "ok" = the name was
+       free and the bytes are down, "exists"/"err" = somebody else owns it. */
+    wrote = (await createNote(e.name, e.text)) === "ok";
+    if (!wrote) { try { disk = await inv("read_note", { name: e.name }); } catch (_2) { disk = null; } }
   }
   await openInTab(e.name);
   const g = fg();
