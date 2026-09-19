@@ -37,7 +37,14 @@ n=$(flatpak-builder --show-manifest "$MAN" | grep -Ec "\"dest\" *: *\"cargo/vend
 echo "[$(date +%H:%M:%S)] preflight: flatpak-builder sees $n vendored crate sources"
 
 echo "[$(date +%H:%M:%S)] 2/5 fetching sources (network; the build phase has none)"
-flatpak-builder --download-only --state-dir="$ROOT/state" "$ROOT/build" "$MAN"
+# --force-clean HERE TOO, not only on the build phase below. Measured 2026-09-19
+# on the first WARM re-run (7419cf9, state dir kept): flatpak-builder refuses
+# with "App dir 'dist/flatpak/build' is not empty. Please delete the existing
+# contents or use --force-clean." and exits 1 in 0.13 s, i.e. build.sh worked
+# exactly once per checkout and then broke — the script that is supposed to run
+# every release could not run twice. The download phase does not need the app
+# dir at all; the build phase re-initialises it regardless.
+flatpak-builder --force-clean --download-only --state-dir="$ROOT/state" "$ROOT/build" "$MAN"
 echo "[$(date +%H:%M:%S)] 3/5 building (offline)"
 flatpak-builder --disable-download --disable-updates --force-clean \
   --state-dir="$ROOT/state" --repo="$ROOT/repo" "$ROOT/build" "$MAN"
