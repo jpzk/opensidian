@@ -59,3 +59,6 @@ dist/
 # was read from — line 2 (*.png) would drop exactly the evidence, so unignore
 # it here. The .bookmarks.json captures under captures/ are not ignored.
 !docs/recon-bmcompat/**/*.png
+# recon-bmdrag: criterion 1 is "every claim names a committed shot" — the drop
+# indicator's position, thickness and colour are read off these pngs.
+!docs/recon-bmdrag/shots/*.png
