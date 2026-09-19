@@ -1971,13 +1971,21 @@ function updateTitle() {          // pane/focus census in the window title (head
   // the assertion of record in the phase; this token is how it knows WHICH
   // theme the pixels it just sampled are supposed to be.
   const themeTok = " [theme:" + (document.documentElement.getAttribute("data-theme") || "unset") + "]";
+  // R1 (themecsp): stock Obsidian marks the mode as a CLASS on <body>
+  // (.theme-dark / .theme-light); T6 measured a stock-shaped rule keys off
+  // body.theme-dark, which our :root[data-theme] shadows. We emit BOTH so
+  // stock-shaped CSS can match. This token reads the body class back OFF THE
+  // DOM (not off themeMode) so a phase can assert the marker stock CSS sees.
+  const bodyCls = document.body ? document.body.classList : null;
+  const thmTok = " [thm:" + (bodyCls && bodyCls.contains("theme-dark") ? "dark"
+                          : bodyCls && bodyCls.contains("theme-light") ? "light" : "unset") + "]";
   // PALETTE census, read off the DOM for the same reason: "default" here means
   // the attribute is ABSENT, which is the state the default palette IS. A probe
   // cannot pass by setting a variable.
   const palTok = " [palette:" + (document.documentElement.getAttribute("data-palette") || "default") + "]";
   let t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
-            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + palTok + lg + md + gg + modal +
+            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + palTok + lg + md + gg + modal +
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) +
             (rightOpen ? ":" + rTab : "") + "]" +
             (rightOpen && rpInfo ? " [rp:" + rpInfo + "]" : "") +
@@ -4362,6 +4370,15 @@ let themeStored = false;                   // a user chose: the system stops dec
 function applyTheme(t) {
   themeMode = t === "light" ? "light" : "dark";
   document.documentElement.setAttribute("data-theme", themeMode);
+  // R1 (themecsp): ALSO emit stock Obsidian's mode marker as a class on <body>
+  // (.theme-dark / .theme-light), next to our :root[data-theme]. Stock-shaped
+  // CSS keys off body.theme-dark (T6), which our root attribute shadows; without
+  // this marker no stock CSS can ever apply. body exists (main.js loads at the
+  // end of <body>); guard anyway so an early call never throws.
+  if (document.body) {
+    document.body.classList.toggle("theme-dark", themeMode === "dark");
+    document.body.classList.toggle("theme-light", themeMode === "light");
+  }
   if (state) updateTitle();                // census [theme:<mode>] follows the DOM
                                            // (before a vault is open there is no
                                            // title census to refresh — updateTitle
