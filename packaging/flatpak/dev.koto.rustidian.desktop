@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=rustidian
+Comment=Local-first markdown vault editor
+Exec=rustidian
+Icon=dev.koto.rustidian
+Terminal=false
+Categories=Utility;TextEditor;
