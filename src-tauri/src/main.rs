@@ -1941,6 +1941,24 @@ struct SearchHit {
     note: String,
     line: u32, // 0-based source line; 0 with snippet==note means a NAME match
     snippet: String,
+    /// R25.13m: a hit is an ABSOLUTE OFFSET into the file AS INDEXED, not a
+    /// line number — measured against stock in docs/recon-srclick/README.md
+    /// C12, where deleting lines above a match moved the jump by exactly the
+    /// characters removed and never re-found the text. The frontend jumps by
+    /// this, so it must be in the SAME unit a JS string is indexed in: UTF-16
+    /// CODE UNITS, not bytes and not chars. `"é".length === 1` but 2 bytes;
+    /// `"𝄞".length === 2` but 1 char — a byte offset would land mid-character
+    /// and a char offset would drift one unit per astral character.
+    offset: u32,
+    /// match length in the same unit; 0 = nothing to highlight (a NAME match,
+    /// or a tag-only line hit, which points at a line, not at a span).
+    len: u32,
+}
+
+/// UTF-16 code units in `s` — the unit `offset`/`len` are counted in, so that
+/// `editor.value.slice(offset, offset + len)` on the frontend is the match.
+fn u16len(s: &str) -> u32 {
+    s.encode_utf16().count() as u32
 }
 
 /// R9.4: case-insensitive substring over note names + bodies. Hits ordered by
@@ -1973,6 +1991,22 @@ fn has_tag(tags: &[String], want: &str) -> bool {
     })
 }
 
+/// `content.lines()` paired with each line's absolute UTF-16 offset in
+/// `content`. Reproduces `lines()` EXACTLY — `split_inclusive('\n')` yields
+/// the same pieces (no phantom trailing line when the file ends in \n, nothing
+/// for an empty file) and the same text once the terminator is stripped, \r\n
+/// included — while counting the terminators `lines()` throws away, because
+/// R25.13m's offset is into the FILE, not into the line.
+fn lines_with_offsets(content: &str) -> impl Iterator<Item = (usize, &str, u32)> {
+    let mut base: u32 = 0;
+    content.split_inclusive('\n').enumerate().map(move |(i, raw)| {
+        let here = base;
+        base += u16len(raw);
+        let l = raw.strip_suffix('\n').unwrap_or(raw);
+        (i, l.strip_suffix('\r').unwrap_or(l), here)
+    })
+}
+
 fn search_docs<'a>(docs: impl IntoIterator<Item = (&'a str, &'a str, &'a [String])>, query: &str) -> Vec<SearchHit> {
     let (want, text) = split_query(query);
     let q = text.to_lowercase();
@@ -1988,14 +2022,19 @@ fn search_docs<'a>(docs: impl IntoIterator<Item = (&'a str, &'a str, &'a [String
             // tag-only: show the lines carrying the tag inline (frontmatter-
             // only notes get a name hit so they still show up)
             let n0 = out.len();
-            for (i, l) in content.lines().enumerate() {
+            for (i, l, base) in lines_with_offsets(content) {
                 let lower = l.to_lowercase();
                 if tag_spans(&lower).iter().any(|&(a, b)| want.iter().any(|w| has_tag(&[lower[a + 1..b].to_string()], w))) {
-                    out.push(SearchHit { note: name.to_string(), line: i as u32, snippet: l.trim().chars().take(200).collect() });
+                    // a tag-only hit points at a LINE, not at a span: offset =
+                    // the line start, len = 0, so R25.13d paints nothing and
+                    // the jump still lands on the line. Pointing at the matched
+                    // #tag span itself is LATER — unmeasured (stock has no
+                    // tag: grammar to measure against), never guessed.
+                    out.push(SearchHit { note: name.to_string(), line: i as u32, snippet: l.trim().chars().take(200).collect(), offset: base, len: 0 });
                 }
             }
             if out.len() == n0 {
-                out.push(SearchHit { note: name.to_string(), line: 0, snippet: name.to_string() });
+                out.push(SearchHit { note: name.to_string(), line: 0, snippet: name.to_string(), offset: 0, len: 0 });
             }
             if out.len() >= 500 {
                 break;
@@ -2003,23 +2042,46 @@ fn search_docs<'a>(docs: impl IntoIterator<Item = (&'a str, &'a str, &'a [String
             continue;
         }
         if name.to_lowercase().contains(&q) {
-            out.push(SearchHit { note: name.to_string(), line: 0, snippet: name.to_string() });
+            // a NAME match has no span in the body: offset 0, len 0 — open the
+            // note at the top, highlight nothing (R25.13a/d).
+            out.push(SearchHit { note: name.to_string(), line: 0, snippet: name.to_string(), offset: 0, len: 0 });
         }
-        for (i, l) in content.lines().enumerate() {
+        for (i, l, base) in lines_with_offsets(content) {
             let lower = l.to_lowercase();
             let Some(bpos) = lower.find(&q) else { continue };
             let t = l.trim();
+            // cpos: the match start as a CHAR index into the original line.
+            // `bpos` is a byte index into the LOWERCASED line, so this inherits
+            // the assumption the snippet window already makes — that
+            // to_lowercase() preserves char COUNT. It does for every script
+            // this app is shipped with; the pathological cases (İ -> i̇, one
+            // char to two) would shift the highlight within the line, never
+            // outside it, and never panic: the slicing below is by char index
+            // into a Vec<char>, clamped to its own length.
+            let chars: Vec<char> = l.chars().collect();
+            let cpos = lower[..bpos].chars().count().min(chars.len());
+            let qlen = q.chars().count().min(chars.len() - cpos);
             let snippet = if t.len() <= 200 {
                 t.to_string()
             } else {
                 // char-safe ~200-char window around the first hit
-                let cpos = lower[..bpos].chars().count();
-                let chars: Vec<char> = l.chars().collect();
                 let start = cpos.saturating_sub(80).min(chars.len());
                 let end = (cpos + 120).min(chars.len());
                 chars[start..end].iter().collect()
             };
-            out.push(SearchHit { note: name.to_string(), line: i as u32, snippet });
+            // R25.13m: absolute UTF-16 offset of the match in the FILE, and its
+            // length, so the frontend jumps by the offset the backend found
+            // instead of re-finding the match itself — two searches that can
+            // disagree is exactly what the brief forbids.
+            let in_line: String = chars[..cpos].iter().collect();
+            let matched: String = chars[cpos..cpos + qlen].iter().collect();
+            out.push(SearchHit {
+                note: name.to_string(),
+                line: i as u32,
+                snippet,
+                offset: base + u16len(&in_line),
+                len: u16len(&matched),
+            });
             if out.len() >= 500 {
                 break 'docs;
             }
@@ -3347,6 +3409,83 @@ mod tests {
         let h = search_docs(docs_ref(&[long]), "needle");
         assert_eq!(h.len(), 1);
         assert!(h[0].snippet.contains("needle") && h[0].snippet.len() <= 210);
+    }
+
+    /// R25.13m: every hit carries the ABSOLUTE UTF-16 offset of the match in
+    /// the file as indexed, plus its length, and `content[offset..offset+len]`
+    /// IS the match. Measured against stock in docs/recon-srclick C12, where
+    /// the jump moved by exactly the characters deleted above it and never
+    /// re-found the text — so the frontend must jump by this number and never
+    /// search again. The unit is UTF-16 code units because that is how the
+    /// frontend indexes the buffer; this test is what makes the difference
+    /// between "chars" and "code units" a failure rather than a drift.
+    #[test]
+    fn search_hits_carry_absolute_utf16_offsets() {
+        // the slice a JS `String.prototype.slice(offset, offset+len)` would
+        // take, computed in Rust over the same UTF-16 units.
+        fn u16slice(s: &str, off: u32, len: u32) -> String {
+            let u: Vec<u16> = s.encode_utf16().collect();
+            String::from_utf16_lossy(&u[off as usize..(off + len) as usize])
+        }
+
+        // ASCII, three lines: the offsets are the byte offsets here, which is
+        // exactly why the astral case below is the one that matters.
+        let body = "zero\nneedle here\ntail needle\n".to_string();
+        let docs = vec![("N".to_string(), body.clone())];
+        let h = search_docs(docs_ref(&docs), "needle");
+        assert_eq!(h.len(), 2);
+        assert_eq!((h[0].line, h[0].offset, h[0].len), (1, 5, 6));
+        assert_eq!((h[1].line, h[1].offset, h[1].len), (2, 22, 6));
+        for x in &h {
+            assert_eq!(u16slice(&body, x.offset, x.len), "needle", "offset must land ON the match");
+        }
+
+        // CRLF: lines() drops \r\n, the offset must still count both units.
+        let crlf = "zero\r\nneedle\r\n".to_string();
+        let h = search_docs(docs_ref(&[("C".to_string(), crlf.clone())]), "needle");
+        assert_eq!((h[0].line, h[0].offset, h[0].len), (1, 6, 6));
+        assert_eq!(u16slice(&crlf, h[0].offset, h[0].len), "needle");
+
+        // non-ASCII: "é" is 2 BYTES and 1 unit, "𝄞" is 4 bytes, 1 char and
+        // 2 UNITS. A byte offset lands mid-character; a char offset drifts by
+        // one per astral char. Only the UTF-16 count round-trips.
+        let uni = "é𝄞x\nplain é𝄞 needle\n".to_string();
+        let h = search_docs(docs_ref(&[("U".to_string(), uni.clone())]), "needle");
+        assert_eq!(h.len(), 1);
+        assert_eq!((h[0].line, h[0].len), (1, 6));
+        // line 0 = é(1) + 𝄞(2) + x(1) + \n(1) = 5; then "plain é𝄞 " = 9 units
+        assert_eq!(h[0].offset, 14);
+        assert_eq!(u16slice(&uni, h[0].offset, h[0].len), "needle");
+
+        // case-insensitive match: the offset points at the ORIGINAL text, and
+        // len is the matched text's length, not the query's.
+        let mixed = "say NeEdLe now\n".to_string();
+        let h = search_docs(docs_ref(&[("M".to_string(), mixed.clone())]), "needle");
+        assert_eq!((h[0].offset, h[0].len), (4, 6));
+        assert_eq!(u16slice(&mixed, h[0].offset, h[0].len), "NeEdLe");
+
+        // a NAME hit has no span in the body: offset 0, len 0 -> open, do not
+        // highlight (R25.13a/d). "needle" is in the name AND the body here.
+        let named = "needle body\n".to_string();
+        let h = search_docs(docs_ref(&[("needle".to_string(), named.clone())]), "needle");
+        assert_eq!((h[0].line, h[0].offset, h[0].len), (0, 0, 0), "name hit highlights nothing");
+        assert_eq!((h[1].line, h[1].offset, h[1].len), (0, 0, 6), "the body hit still carries its span");
+
+        // a tag-only hit points at the LINE start with len 0 (see search_docs).
+        let tagged = "intro\nline with #alpha on it\n".to_string();
+        let h = search_docs(
+            vec![("T", tagged.as_str(), &["alpha".to_string()][..])],
+            "tag:alpha",
+        );
+        assert_eq!((h[0].line, h[0].offset, h[0].len), (1, 6, 0));
+
+        // the last line without a terminator, and an empty file, do not panic
+        // and do not invent a line.
+        let tailless = "a\nneedle".to_string();
+        let h = search_docs(docs_ref(&[("E".to_string(), tailless.clone())]), "needle");
+        assert_eq!((h[0].line, h[0].offset, h[0].len), (1, 2, 6));
+        assert_eq!(u16slice(&tailless, h[0].offset, h[0].len), "needle");
+        assert!(search_docs(docs_ref(&[("Z".to_string(), String::new())]), "needle").is_empty());
     }
 
     #[test]
