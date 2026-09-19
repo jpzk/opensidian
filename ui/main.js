@@ -5976,7 +5976,7 @@ async function wfBegin(dir, ev, el) {
   if (dir === "move" && wfProto !== "none") {
     wfLog("h" + wfProto + "#" + ++wfSeq);
     wfLast = "handover:" + wfProto;
-    inv("win_drag_start").then(p => { wfProto = p; wfLast = "handover:" + p; updateTitle(); }).catch(noteErr);
+    inv("win_drag_start").then(p => { wfProto = p; wfLast = "handover:" + p; wfTitleSafe(); }).catch(noteErr);
     return updateTitle();
   }
   const seq = ++wfSeq;
@@ -6029,13 +6029,27 @@ function wfEnd() {
      the timing the WM-less rigs are green with). On every session this repo
      gates, the answer is the same "none" it booted with. */
   if (a && a.dir === "move" && wfProto === "none")
-    inv("win_move_proto").then(p => { if (p !== wfProto) { wfProto = p; wfLog("p" + p); } updateTitle(); }).catch(noteErr);
+    inv("win_move_proto").then(p => { if (p !== wfProto) { wfProto = p; wfLog("p" + p); } wfTitleSafe(); }).catch(noteErr);
 }
+/* R33.6b: THE PATH PROBES ARE ASYNC, AND THE FIRST ONE RESOLVES DURING BOOT.
+   wfArm() runs at top level, before any vault is loaded, so `state` can still be
+   null — and updateTitle() reads state.root unguarded. Republishing the census
+   straight from a probe callback therefore threw "null is not an object
+   (evaluating 'state.root')" into window.onerror, and noteErr latches the FIRST
+   error as [jserr:] for the whole session: a first-error-wins channel poisoned
+   before the app booted, which hides the next real error from every smoke phase.
+   MEASURED, not theorised: phase hdrdragwm's "a plain click on free header space
+   is a no-op" assertion went red on that boot-time error, on a click that was
+   fine (the window had not moved a pixel) — and the same [jserr:] sat in the
+   census of every launch on this branch while main's was clean.
+   It is the same scar as the guarded updateTitle() at the end of wfArm, so every
+   async path callback republishes through THIS, never through updateTitle. */
+function wfTitleSafe() { if (typeof state !== "undefined" && state) updateTitle(); }
 function wfArm() {
   // R33.6b: ask ONCE who moves this window, then publish it as [wfp:] — a smoke
   // phase must be able to read the path that was taken instead of inferring it
   // from whether the window ended up somewhere.
-  inv("win_move_proto").then(p => { wfProto = p; updateTitle(); }).catch(noteErr);
+  inv("win_move_proto").then(p => { wfProto = p; wfTitleSafe(); }).catch(noteErr);
   // spelled out, one call per control: the cargo test greps for inv("win_...")
   // in this file, which is the only thing that notices when a command is renamed
   // in Rust and the button silently becomes a no-op (ui/ is not a cargo input)
