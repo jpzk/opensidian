@@ -5881,6 +5881,11 @@ var wfDownT = 0, wfDownX = 0, wfDownY = 0;   // double-press detector (= maximis
    "none" is the boot value, so a press that beats the probe home takes today's
    path — the fallback is the behaviour this repo has evidence for, never a hang. */
 var wfProto = "none";
+/* R33.6b DIAGNOSTIC: what the webview actually receives around a handover.
+   Published as [wfd:] so a phase can tell "the press never arrived" apart from
+   "the press arrived and the handover did nothing" — the two look identical in
+   the geometry alone, and telling them apart is the whole debugging step. */
+var wfEv = { dn: 0, up: 0, cx: 0, lc: 0, mvb: 0 };
 
 function wfDragRegion(t) {    // is this event target part of the drag region?
   if (!t || !t.classList) return false;
@@ -5962,6 +5967,14 @@ async function wfBegin(dir, ev, el) {
   if (dir === "move" && wfProto !== "none") {
     wfLog("h" + wfProto + "#" + ++wfSeq);
     wfLast = "handover:" + wfProto;
+    /* EXPERIMENT (R33.6b): capture the pointer before handing over. The WM takes
+       an X pointer grab for its own move loop, so the real release lands on the
+       WM and the webview never sees it — measured: presses alternate MOVED/DEAD
+       because the engine still believes button 1 is down and suppresses the next
+       pointerdown. GTK reports a foreign grab as a grab-broken event; IF WebKit
+       maps that to pointercancel, holding capture is what makes it arrive, which
+       would clear the state for free. wfEv counts what actually shows up. */
+    try { ev.target.setPointerCapture(ev.pointerId); } catch (e) { /* not the mechanism */ }
     inv("win_drag_start").then(p => { wfLast = "handover:" + p; updateTitle(); }).catch(noteErr);
     return updateTitle();
   }
@@ -6024,10 +6037,13 @@ function wfArm() {
     g.addEventListener("pointerdown", ev => wfBegin(g.dataset.d, ev, g));
   // capture phase: the press must be claimed before a tab bar handler sees it,
   // and ONLY when it landed on the background (a tab is its own target)
-  addEventListener("pointerdown", ev => { if (wfDragRegion(ev.target)) wfBegin("move", ev, ev.target); }, true);
-  addEventListener("pointermove", wfDrag, true);
-  addEventListener("pointerup", wfEnd, true);
-  addEventListener("pointercancel", wfEnd, true);
+  addEventListener("pointerdown", ev => { wfEv.dn++; if (wfDragRegion(ev.target)) wfBegin("move", ev, ev.target); }, true);
+  addEventListener("pointermove", ev => { if (ev.buttons) wfEv.mvb++; wfDrag(ev); }, true);
+  addEventListener("pointerup", ev => { wfEv.up++; wfEnd(ev); }, true);
+  addEventListener("pointercancel", ev => { wfEv.cx++; wfEnd(ev); }, true);
+  // grab-broken -> lostpointercapture is the event that would clear the engine's
+  // stuck button state for free if WebKit emits it; count it either way.
+  addEventListener("lostpointercapture", () => { wfEv.lc++; }, true);
   // the census must be able to say WHICH control the keyboard is on (R33.4)
   for (const b of document.querySelectorAll("#wframe button")) {
     b.addEventListener("focus", updateTitle);
@@ -6097,7 +6113,7 @@ function wfTok() {
   const g = document.querySelectorAll("#wrz i").length;
   const a = document.activeElement;
   const k = a && a.id && a.id.indexOf("wf-") === 0 ? a.id : "-";
-  return " [wf:" + b + (wfArmed ? "d" : "-") + g + "] [wfm:" + (wfMax ? 1 : 0) + "] [wfk:" + k + "] [wfg:" + wfLast + "] [wfl:" + wfLogA.join(">") + "] [wfp:" + wfProto + "] [hdr:" + wfHdrTok() + "]";
+  return " [wf:" + b + (wfArmed ? "d" : "-") + g + "] [wfm:" + (wfMax ? 1 : 0) + "] [wfk:" + k + "] [wfg:" + wfLast + "] [wfl:" + wfLogA.join(">") + "] [wfp:" + wfProto + "] [wfd:" + wfEv.dn + "," + wfEv.up + "," + wfEv.cx + "," + wfEv.lc + "," + wfEv.mvb + "] [hdr:" + wfHdrTok() + "]";
 }
 wfArm();
 
