@@ -2450,9 +2450,9 @@ fn win_gesture_should_probe(proto: &tauri::State<'_, DragProto>) -> bool {
    no damage, and the [wfp:] census token says which path was taken); a false
    "none" falls back to today's geometry path, which is correct wherever the
    client may position itself and a 0 px no-op where it may not — exactly the
-   bug being fixed, never worse than it. Probed ONCE at setup on the GTK main
-   thread: a WM started mid-session keeps the old answer until restart, which is
-   stated here because it is real and is the reason [wfp:] is published. */
+   bug being fixed, never worse than it. The startup half is probed ONCE on the
+   GTK main thread: a WM started mid-session keeps the old answer until restart,
+   which is stated here because it is real and is the reason [wfp:] is published.
    AND THE RULE ITSELF WAS MEASURED WRONG ONCE, WHICH IS WHY IT IS THIS SHAPE.
    The first cut handed the press over whenever a WM advertised the protocol.
    Under openbox that SHIPS A REGRESSION: docs/recon-hdrdrag/B-ALT.log drives
