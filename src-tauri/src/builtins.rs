@@ -200,7 +200,6 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    const STYLE_CSS: &str = include_str!("../../ui/style.css");
 
     fn tmp_vault(tag: &str) -> PathBuf {
         let root =
@@ -297,28 +296,43 @@ mod tests {
         }
     }
 
-    // ---- the migration itself: no colour was lost on the way out ----
+    // ---- what survives the migration: the assets ARE the source now ----
 
-    /// Every colour VALUE declared in a `:root[data-palette=...]` block of
-    /// ui/style.css, as written (a `var(...)` reference is not a value).
-    fn palette_block_values() -> Vec<String> {
+    /* THREE TESTS DIED HERE, IN THE COMMIT THAT EARNED THEIR DEATH (item 5).
+       They all compared an asset against `ui/style.css`'s per-palette blocks,
+       and item 5 deletes those blocks — the assets are the definition now, so
+       every one of them would have passed VACUOUSLY on an empty left-hand
+       side, which is the failure mode this project keeps re-learning:
+
+         * `every_palette_colour_is_carried_by_exactly_one_asset` — the item-3
+           migration check. Its non-vacuity floor (>= 100 values) would have
+           FIRED rather than lied, which is exactly why it was written that
+           way, and firing is its instruction to be deleted with the blocks.
+         * `an_asset_invents_no_colour_of_its_own` — "every asset literal is a
+           literal style.css declares". After the blocks go, style.css declares
+           the DEFAULT's colours and nothing else, so the property is false by
+           construction and no weaker form of it is true: a built-in theme's
+           colours live in the built-in theme, which is the point of the goal.
+         * `every_palette_but_the_default_ships_as_an_asset` — pinned the asset
+           set to `palette::PALETTES`, and item 8 deletes that table with the
+           module.
+
+       What was REAL in the first of them survives below: the cross-asset half
+       of "exactly one" does not depend on style.css at all. Two built-ins
+       sharing a literal is what an extraction that crossed a block boundary
+       looks like, and that is still checkable — against the assets themselves.
+       The per-asset floor keeps it from passing on an empty tree. */
+    fn asset_values(css: &str) -> Vec<String> {
         let mut out = Vec::new();
-        let mut inside = false;
-        for line in STYLE_CSS.lines() {
-            if line.starts_with(":root[data-palette=") {
-                inside = true;
-                continue;
-            }
-            if inside && line.starts_with('}') {
-                inside = false;
-                continue;
-            }
-            if !inside || !line.starts_with("  --") {
+        for line in css.lines() {
+            let line = line.trim();
+            if !line.starts_with("--") {
                 continue;
             }
             let Some((_, rest)) = line.split_once(':') else { continue };
             let Some((val, _)) = rest.split_once(';') else { continue };
             let val = val.trim();
+            // a var() row carries no colour of its own: it POINTS at one
             if val.starts_with("var(") || val.is_empty() {
                 continue;
             }
@@ -329,78 +343,33 @@ mod tests {
         out
     }
 
-    /// The migration criterion of ledger item 3: every colour the palette
-    /// blocks carry appears in EXACTLY ONE asset. Not zero (it was dropped on
-    /// the way out) and not two (two themes would share a literal, which for
-    /// these three palettes would mean the extraction crossed a block
-    /// boundary).
-    ///
-    /// THIS TEST DIES WITH THE BLOCKS. Item 5 deletes the per-palette blocks
-    /// from ui/style.css; on that commit `palette_block_values()` returns
-    /// nothing, the floor below fires, and the test must be REMOVED in the
-    /// same commit — it is a migration check, and a migration check that
-    /// passes vacuously after the migration is worse than no check.
+    /// Every value an asset declares is a colour a browser can parse, and no
+    /// two assets declare the SAME one.
     #[test]
-    fn every_palette_colour_is_carried_by_exactly_one_asset() {
-        let vals = palette_block_values();
-        assert!(
-            vals.len() >= 100,
-            "non-vacuity floor: ui/style.css declared {} palette values, expected >= 100 \
-             (if the palette blocks are GONE, delete this test with them — see the doc comment)",
-            vals.len()
-        );
-        for v in &vals {
-            let hits: Vec<&str> = BUILTIN_THEMES
-                .iter()
-                .filter(|t| t.css.contains(v.as_str()))
-                .map(|t| t.name)
-                .collect();
-            assert_eq!(hits.len(), 1, "{v:?} appears in {hits:?}, want exactly one asset");
-        }
-    }
-
-    /// The other direction, so the assets cannot quietly INVENT a colour: every
-    /// hex literal in an asset is a hex literal ui/style.css declares. (Values
-    /// mapped onto stock names are copies, so they are covered by this too.)
-    #[test]
-    fn an_asset_invents_no_colour_of_its_own() {
+    fn asset_values_are_wellformed_and_no_two_assets_share_one() {
+        let mut seen: Vec<(String, &str)> = Vec::new();
         for t in BUILTIN_THEMES {
-            for line in t.css.lines() {
-                let line = line.trim();
-                if !line.starts_with("--") {
-                    continue;
+            let vals = asset_values(t.css);
+            assert!(
+                vals.len() >= 30,
+                "non-vacuity floor: {} declares {} colour values, expected >= 30",
+                t.name,
+                vals.len()
+            );
+            for v in vals {
+                let ok = v.starts_with('#')
+                    || v.starts_with("rgba(")
+                    || v.starts_with("rgb(")
+                    || v.starts_with("hsl(")
+                    || v == "transparent"
+                    || v == "currentColor";
+                assert!(ok, "{}: {v:?} is not a colour literal this app knows how to ship", t.name);
+                if let Some((_, other)) = seen.iter().find(|(s, _)| *s == v) {
+                    panic!("{v:?} is declared by BOTH {other} and {} — the extraction crossed a block boundary", t.name);
                 }
-                let Some((_, rest)) = line.split_once(':') else { continue };
-                let Some((val, _)) = rest.split_once(';') else { continue };
-                let val = val.trim();
-                if val.starts_with("var(") {
-                    continue;
-                }
-                assert!(
-                    STYLE_CSS.contains(val),
-                    "{}: {val:?} is in no palette block of ui/style.css",
-                    t.name
-                );
+                seen.push((v, t.name));
             }
         }
-    }
-
-    /// Until item 8 deletes `palette::PALETTES`, the two lists must agree:
-    /// every palette except `default` ships as an asset under its MENU name.
-    /// A palette added to the table with no asset would be a dead menu row.
-    #[test]
-    fn every_palette_but_the_default_ships_as_an_asset() {
-        for (id, label) in crate::palette::PALETTES {
-            if *id == crate::palette::DEFAULT_PALETTE {
-                continue; // the default is the absence of a theme (module doc)
-            }
-            assert!(is_builtin(label), "palette {id:?} ({label:?}) ships no asset");
-        }
-        assert_eq!(
-            BUILTIN_THEMES.len(),
-            crate::palette::PALETTES.len() - 1,
-            "an asset with no palette row (or the reverse)"
-        );
     }
 
     // ================= ledger item 4 / criterion 3: SEEDING =================

@@ -28,7 +28,10 @@ pub const NAV_TSV: &str = include_str!("../../docs/stock-settings-recon/nav.tsv"
 
 /// Keys that really exist in ~/.rustidian.json handling (main.rs cfg_value()).
 /// `config_keys_are_all_read_or_written_by_main` pins this list to the source.
-pub const CONFIG_KEYS: &[&str] = &["last", "list", "sidebar_w", "rside_tab", "hotkeys", "theme", "palette", "zoom"];
+/// (themeone item 8: "palette" LEFT this list with its readers — main.rs no
+/// longer has a get_palette/set_palette, so the key would fail the test below.
+/// A stale key in an existing ~/.rustidian.json is round-tripped, not read.)
+pub const CONFIG_KEYS: &[&str] = &["last", "list", "sidebar_w", "rside_tab", "hotkeys", "theme", "zoom"];
 
 /// (tab, label) -> config key. A row named here is the ONLY kind that renders
 /// enabled. Today: the Hotkeys tab, whose filter, scope chips and command rows
@@ -43,14 +46,14 @@ const BACKED: &[(&str, &str, &str)] = &[
     // vault's own appearance.json "cssTheme" (T1/T2) — so with vault themes
     // real (src-tauri/src/themefs.rs themes_scan/load_theme, the oracle's
     // predicate), the drop-in charter puts that picker back on stock's row.
-    // The PALETTE axis (goal/theme-1984, ~/.rustidian.json "palette") that
-    // previously parked here moves ONE row down, onto "Current community
-    // themes" — stock's installed-themes surface, whose stock control is a
-    // status line; a live control there is OUR delta, recorded here and in
-    // docs/themefs/README.md. "Base color scheme" one row above stays
-    // disabled: that is the MODE axis and its control is Ctrl+P.
+    // THIS IS NOW THE ONLY THEME CONTROL IN THE PANE (themeone item 7 / C1).
+    // The PALETTE axis (goal/theme-1984) used to park a SECOND live dropdown
+    // one row down, on "Current community themes" — a recorded delta from
+    // stock. It is gone: its colours ship as theme files the row above
+    // selects, so that row goes back to stock's inert status line and the
+    // pane publishes exactly one theme control. "Base color scheme" one row
+    // above stays disabled: that is the MODE axis and its control is Ctrl+P.
     ("appearance", "Themes", "cssTheme"),
-    ("appearance", "Current community themes", "palette"),
     // themefs R3. Stock's Appearance > CSS snippets row manages the vault's
     // .obsidian/snippets/*.css toggles, persisted in the VAULT's own
     // appearance.json "enabledCssSnippets" array (T3) — a vault file, not a

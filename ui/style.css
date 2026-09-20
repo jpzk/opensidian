@@ -33,40 +33,119 @@
    The two marker comments below are what the lint keys on — do not duplicate
    them and do not move them apart to widen the allowance.
    ========================================================================== */
+/* THE INVERSION (themeone item 5, DESIGN §2 "INVERT, do not extend").
+   Three layers, and the direction of every arrow is the whole point:
+
+     LAYER 1  stock's names, derived from stock's ramp — the values live HERE
+     LAYER 2  our names, each RESOLVED FROM the layer-1 name it corresponds to
+     LAYER 3  ours alone: no stock name was measured for these
+
+   WHY body AND NOT :root. T6 RESULT 3 measured stock's mode switch as a CLASS
+   ON <body>, and T6b/C measured that the SAME declaration on html changes
+   nothing (the same sentinel-magenta declaration on html -> 0 px, on body ->
+   650344 px). A theme therefore declares on body.theme-dark / body.theme-light.
+   Custom-property substitution happens on the element that CARRIES the
+   declaration, so a chain written at :root would substitute :root's own value
+   and could never see the theme's — inheriting the RESULT, not the lookup.
+   Written on body, `var(--background-primary)` reads whatever won the cascade
+   ON BODY: the theme's declaration when it has one, ours when it does not.
+   That one sentence is why the palette blocks below this line could go.
+
+   THE DEFINED FALLBACK (R4: never empty, never a transparent pixel) is the
+   LITERAL at the end of every layer-1 chain — layer 1 is declared
+   unconditionally, so a layer-2 var() can never fall through to nothing. The
+   failure direction is "our default colour", never the guaranteed-invalid
+   value that makes a background transparent.
+
+   MODE. Layer 2 is mode-INDEPENDENT (an alias resolves per element, so it
+   follows whatever layer 1 says in this mode); only layers 1 and 3 have a
+   light variant. The old cascade hazard — "add a token to one palette variant
+   and not the other" — is gone with the palette blocks that caused it.
+   The light selector is body.theme-light, the SAME specificity (0,1,1) stock
+   themes use, so a theme's own light rules tie with ours and win on order
+   (#vault-theme is injected into <head> after this stylesheet, main.js
+   themeInject). The old :root[data-theme="light"] was (0,2,0) and OUT-RANKED
+   every stock-shaped light rule a theme could write — that shadowing is what
+   main.js:4698 warned about, and it ends here. */
 /* THEME TOKENS BEGIN */
-:root {
-  /* ---- chrome surfaces ---- */
-  --bg-base: #1e1e2e;
-  --bg-sidebar: #181825;
-  --bg-ribbon: #11111b;
-  --graph-bg: var(--bg-ribbon);   /* the graph canvas (2D fill + WebGL clear) — the pane behind it already paints --bg-ribbon, so the alias keeps the two from drifting; a palette that wants a distinct graph background overrides this ONE row */
-  --bg-surface: #313244;
+body {
+  /* ======================= LAYER 1 — STOCK'S NAMES ========================
+     Stock ships a TWO-layer palette (T6b): a low-level --color-* ramp and
+     semantic names derived from it, and a real third-party theme commonly
+     enters at the ramp and never spells the semantic name. So each row below
+     is `var(<ramp name>, <our literal>)` where the ramp pairing is EVIDENCED,
+     and a bare literal where it is not. A half-invented ramp is worse than
+     none: it hands a surface to a name we never measured.
+     Evidence key — T6b = docs/recon-themes/logs/t6b-cascade.log, where the
+     ramp row produced the SAME pixel count as the semantic name it feeds;
+     R15.14 = docs/requirements.md, stock's own derivation as recorded there;
+     T9 = docs/recon-themes/README.md (the graph canvas). */
+  --background-primary: var(--color-base-00, #1e1e2e);        /* T6b: base-00 = 650344 px = --background-primary */
+  --background-primary-alt: var(--color-base-10, #232323);    /* T6b: base-10 = 5620 px = the code/alt surface */
+  --background-secondary: #181825;                            /* no ramp row measured */
+  --background-secondary-alt: #313244;                        /* no ramp row measured */
+  --ribbon-background: #11111b;                               /* no ramp row measured */
+  --background-modifier-border: var(--color-base-30, #45475a);/* T6b: base-30 = 3486 px = --divider-color/--background-modifier-border */
+  --text-normal: var(--color-base-100, #dadada);              /* R15.14: --text-normal: var(--color-base-100) */
+  --text-muted: var(--color-base-70, #b3b3b3);                /* R15.14 */
+  --text-faint: var(--color-base-50, #666666);                /* R15.14 */
+  --text-error: var(--color-red, #f5c2c7);                    /* T6b: color-red = 23 px = --text-error */
+  --text-accent: #89b4fa;                                     /* T5 RESULT 1; no ramp row measured */
+  --interactive-accent: var(--color-accent, hsl(258, 88%, 66%));  /* R15.14 dark accent triple */
+  --tag-background: rgba(137,180,250,.15);
+  --text-highlight-bg: rgba(249,226,175,.35);
+  /* ============ LAYER 2 — OUR NAMES, RESOLVED FROM LAYER 1 ================
+     One definition per surface. These rows carry NO colour: the value is
+     wherever the stock name landed on this element. Pairings are the ones the
+     item-3 generator emitted into the built-in assets (scripts/gen-builtin-
+     themes.sh, "THE MAPPING TABLE"), which is the same table read backwards.
+     THREE PAIRS COLLAPSED HERE, and the default's pixels moved because of it:
+       --text-chrome        #cdd6f4 -> #dadada  (= --text-normal)
+       --text-chrome-muted  #a6adc8 -> #b3b3b3  (= --text-muted)
+       --bg-button-primary  #7c6cf0 -> hsl(258,88%,66%) (= --interactive-accent)
+     All three built-ins (1984, Slate, Wasp) already give the two names of each
+     pair ONE value — only the default had drifted apart, which is exactly the
+     second definition this goal deletes. The alternative (leave chrome ink on
+     its own literal) keeps a byte-identical default and breaks the thing the
+     operator asked for: a third-party theme that repaints the background but
+     cannot reach the ink paints unreadable chrome. --text-chrome-faint is NOT
+     collapsed onto --text-faint: 1984 gives them different values (#8184b8 vs
+     #6b6ea3), so they are two surfaces and the data refuses the row. */
+  --bg-base: var(--background-primary);
+  --bg-sidebar: var(--background-secondary);
+  --bg-ribbon: var(--ribbon-background);
+  --bg-surface: var(--background-secondary-alt);
+  --border: var(--background-modifier-border);
+  --text-chrome: var(--text-normal);
+  --text-chrome-muted: var(--text-muted);
+  --bg-button-primary: var(--interactive-accent);
+  --text-banner-error: var(--text-error);
+  --accent-blue: var(--text-accent);
+  --accent-red: var(--color-red, #f38ba8);   /* ramp only: stock's --color-red IS this surface (T6b), and no semantic name of ours sits between */
+  --tag-bg: var(--tag-background);
+  --highlight-yellow: var(--text-highlight-bg);
+  /* ==================== LAYER 3 — OURS ALONE =============================
+     An editor has surfaces a stock recon never showed painting through any
+     name we probed (a ribbon ink, an elevated popover, a faint rule, the
+     scrims and shadows, the bookmark drop feedback). They keep OUR names and
+     OUR values, which is legal for any theme file to declare — the built-in
+     assets declare every one of them, and a third-party theme may too. */
+  --graph-bg: var(--bg-ribbon);   /* the graph canvas (2D fill + WebGL clear) — item 6 (R5) moves this onto the measured stock name (T9); until then it is the pane colour behind it, unchanged */
   --bg-elevated: #26263a;
   --bg-banner-error: #45283c;
   --bg-button-plain: #e0e0e0;
-  --bg-button-primary: #7c6cf0;
-  /* ---- lines ---- */
-  --border: #45475a;
   --border-strong: #585b70;
   --border-focus-ring: #bdbdbd;
   --rule-faint: #31324499;
-  /* ---- chrome ink ---- */
-  --text-chrome: #cdd6f4;
   --text-chrome-alt: #cdd6f5;
-  --text-chrome-muted: #a6adc8;
   --text-chrome-faint: #7f849c;
   --text-chrome-dim: #6c7086;
   --text-on-accent: #fff;
   --text-quiet: #bac2de;
-  --text-banner-error: #f5c2c7;
   --link-unresolved: #7c86c8;
-  /* ---- accents ---- */
-  --accent-blue: #89b4fa;
   --accent-mauve: #cba6f7;
-  --accent-red: #f38ba8;
   --accent-yellow: #f9e2af;
   --accent-green: #a6e3a1;
-  /* ---- translucency: scrims, shadows, highlights ---- */
   --scrim: rgba(0,0,0,.35);
   --scrim-strong: rgba(0,0,0,.45);
   --shadow-popover: rgba(0,0,0,.55);
@@ -75,23 +154,13 @@
   --accent-blue-veil: rgba(137,180,250,.22);
   /* ---- bmdrag drop feedback: values MEASURED on stock (docs/recon-bmdrag) —
      the gap indicator line (cases 1/3), the onto-a-group row fill + its ink
-     (case 2), and the dragged row's own fill (case 1). Defined ONCE here;
-     palettes that want their own drop colours override these rows. ---- */
+     (case 2), and the dragged row's own fill (case 1). ---- */
   --bm-drop-line: #9873F7;
   --bm-drop-into-bg: #ECE9F6;
   --bm-drop-into-fg: #3f3f3f;
   --bm-drop-src-bg: rgba(152,115,247,.28);
-  --tag-bg: rgba(137,180,250,.15);
   --tag-bg-hover: rgba(137,180,250,.3);
-  --highlight-yellow: rgba(249,226,175,.35);
   --transparent: transparent;
-  /* ---- R15 content tokens (docs/requirements.md 15.14): the note column ---- */
-  --text-normal: #dadada;
-  --text-muted: #b3b3b3;
-  --text-faint: #666666;
-  --background-primary: var(--bg-base);
-  --background-primary-alt: #232323;
-  --interactive-accent: hsl(258, 88%, 66%);
 }
 /* ---------------------------------------------------------------------------
    LIGHT. Every value below was SAMPLED from a pixel of a running stock instance
@@ -101,423 +170,47 @@
    A token absent from this block KEEPS its value above on purpose: alpha
    scrims/shadows composite correctly over a light surface, and an unchanged
    value is not a new colour, so it needs no provenance.
+   LAYER 2 IS ABSENT FROM THIS BLOCK BY CONSTRUCTION, not by omission: an alias
+   resolves against whatever layer 1 says on this element, so re-declaring it
+   per mode could only introduce a disagreement.
    --------------------------------------------------------------------------- */
-:root[data-theme="light"] {
-  /* ---- chrome surfaces ---- */
-  --bg-base: #ffffff;
-  --bg-sidebar: #f6f6f6;
-  --bg-ribbon: #f6f6f6;
-  --graph-bg: var(--bg-ribbon);   /* graph canvas — see :root */
-  --bg-surface: #e5e5e5;
+body.theme-light {
+  /* ---- layer 1: stock's names ---- */
+  --background-primary: var(--color-base-00, #ffffff);
+  --background-primary-alt: var(--color-base-10, #fafafa);
+  --background-secondary: #f6f6f6;
+  --background-secondary-alt: #e5e5e5;
+  --ribbon-background: #f6f6f6;
+  --background-modifier-border: var(--color-base-30, #e4e4e4);
+  --text-normal: var(--color-base-100, #222222);
+  --text-muted: var(--color-base-70, #5c5c5c);
+  --text-faint: var(--color-base-50, #ababab);
+  --text-error: var(--color-red, #e93147);
+  --text-accent: #086ddd;
+  --text-highlight-bg: #ffec99;
+  /* --interactive-accent and --tag-background have NO light row today and get
+     none here: R15.14 records a different light accent, but adopting it would
+     be a colour change this item is not making. Item 5 moves the MECHANISM. */
+  /* ---- layer 2 in light: only the one row whose fallback is mode-specific ---- */
+  --accent-red: var(--color-red, #e93147);
+  /* ---- layer 3: ours alone ---- */
   --bg-elevated: #fcfcfc;
   --bg-banner-error: #fdeaec;
-  /* ---- lines ---- */
-  --border: #e4e4e4;
   --border-strong: #ababab;
   --rule-faint: #eeeeee;
-  /* ---- chrome ink ---- */
-  --text-chrome: #222222;
   --text-chrome-alt: #222222;
-  --text-chrome-muted: #5c5c5c;
   --text-chrome-faint: #ababab;
   --text-chrome-dim: #b6b6b6;
   --text-quiet: #5c5c5c;
-  --text-banner-error: #e93147;
   --link-unresolved: #ad8cf8;
-  /* ---- accents ---- */
-  --accent-blue: #086ddd;
   --accent-mauve: #8a5cf5;
-  --accent-red: #e93147;
   --accent-yellow: #ec7500;
   --accent-green: #08b94e;
-  --highlight-yellow: #ffec99;
-  /* ---- R15 content tokens: the note column ---- */
-  --text-normal: #222222;
-  --text-muted: #5c5c5c;
-  --text-faint: #ababab;
-  --background-primary-alt: #fafafa;
-}
-/* ===========================================================================
-   THE SECOND AXIS: PALETTE. Everything above is the DEFAULT palette, in its two
-   MODE variants (dark = the bare :root block, light = :root[data-theme="light"]).
-   Below, a palette is one extra attribute on the SAME root element:
-
-       <html data-palette="1984" data-theme="light">
-               ^ palette (this axis)      ^ mode (the existing axis, untouched)
-
-   The two compose and neither knows about the other. A user who has chosen no
-   palette has NO data-palette attribute at all, so not one selector below can
-   match and the default is byte-identical to what it was before this block
-   existed — that is the whole reason the axis is an attribute the app omits
-   rather than a value it writes.
-
-   CASCADE, AND WHY EVERY TOKEN IS REPEATED IN BOTH VARIANTS BELOW.
-   :root[data-theme="light"] and :root[data-palette="1984"] have the SAME
-   specificity (0,2,0), and the palette block is LATER in the file, so on
-   light + 1984 the palette block would otherwise beat the default light block
-   and paint a dark token. The fix is not to reorder (that just breaks the other
-   pair) but to make each palette VARIANT total:
-   :root[data-palette="1984"][data-theme="light"] is (0,3,0) and outranks both,
-   so it must re-declare every token its dark sibling declares. Adding a token
-   to one of the two blocks below and not the other is the bug to look for.
-
-   PROVENANCE. The colour VALUES marked (upstream) are the iTerm 2 colour
-   scheme "1984" by covertbert — https://github.com/covertbert/iterm2-1984 —
-   read out of its published swatches and re-expressed here as our own CSS
-   custom properties. No upstream file is vendored, copied or committed: that
-   repository ships no LICENSE, so there is no grant to rely on, and its
-   .itermcolors files are not ours to redistribute. Colour values themselves
-   are facts, not authorship, which is why the numbers may travel and the files
-   may not. Attribution is given because it is owed, not because a licence
-   compels it.
-   Values marked (derived) are OURS: an editor has surfaces a terminal does not
-   have (a ribbon, a sidebar, an elevated popover, a faint rule), so those are
-   computed as shades of the upstream background and are not claimed to come
-   from upstream.
-   =========================================================================== */
-:root[data-palette="1984"] {
-  /* ---- chrome surfaces ---- */
-  --bg-base: #0d0f31;            /* (upstream) 1984 Background Color */
-  --bg-sidebar: #0a0b26;         /* (derived) bg-base darkened 25% */
-  --bg-ribbon: #07081c;          /* (derived) bg-base darkened 45% */
-  --graph-bg: var(--bg-ribbon);   /* graph canvas — see :root */
-  --bg-surface: #1b1f57;         /* (derived) bg-base lifted toward the blue */
-  --bg-elevated: #13163f;        /* (derived) bg-base lifted 15% */
-  --bg-banner-error: #3d0a2c;    /* (derived) the upstream magenta over bg-base */
-  --bg-button-plain: #d8d9ee;    /* (derived) the light variant's paper */
-  --bg-button-primary: #f806fa;  /* (upstream) 1984 Ansi 13 / Link Color */
-  /* ---- lines ---- */
-  --border: #272c6b;             /* (derived) bg-base lifted 20% */
-  --border-strong: #59e1e3;      /* (upstream) 1984 Cursor Color */
-  --border-focus-ring: #59e1e3;  /* (upstream) 1984 Cursor Color */
-  --rule-faint: #1b1f5799;       /* (derived) bg-surface at 60% alpha */
-  /* ---- chrome ink ---- */
-  --text-chrome: #ffffff;        /* (upstream) 1984 Foreground Color */
-  --text-chrome-alt: #ffffff;    /* (upstream) 1984 Bold Color */
-  --text-chrome-muted: #b7b9e0;  /* (derived) foreground toward bg-base, 72% */
-  --text-chrome-faint: #8184b8;  /* (derived) foreground toward bg-base, 52% */
-  --text-chrome-dim: #5f6293;    /* (derived) foreground toward bg-base, 38% */
-  --text-on-accent: #ffffff;     /* (upstream) 1984 Cursor Text Color */
-  --text-quiet: #b7b9e0;         /* (derived) = text-chrome-muted */
-  --text-banner-error: #ff16b0;  /* (upstream) 1984 Ansi 9 */
-  --link-unresolved: #a86ad0;    /* (derived) the upstream link magenta, desaturated */
-  /* ---- accents: the ANSI row, which is where the neon lives ---- */
-  --accent-blue: #46bdff;        /* (upstream) 1984 Ansi 12 */
-  --accent-mauve: #f806fa;       /* (upstream) 1984 Ansi 13 */
-  --accent-red: #ff16b0;         /* (upstream) 1984 Ansi 9 */
-  --accent-yellow: #ffea16;      /* (upstream) 1984 Ansi 11 */
-  --accent-green: #b3f361;       /* (upstream) 1984 Ansi 10 */
-  /* ---- translucency: re-tinted so the veils follow the new accent ---- */
-  --accent-blue-veil: rgba(70,189,255,.22);   /* (derived) accent-blue at 22% */
-  --tag-bg: rgba(248,6,250,.15);              /* (derived) accent-mauve at 15% */
-  --tag-bg-hover: rgba(248,6,250,.3);         /* (derived) accent-mauve at 30% */
-  --highlight-yellow: rgba(255,234,22,.35);   /* (derived) accent-yellow at 35% */
-  /* ---- R15 content tokens: the note column ---- */
-  --text-normal: #ffffff;        /* (upstream) 1984 Foreground Color */
-  --text-muted: #b7b9e0;         /* (derived) = text-chrome-muted */
-  --text-faint: #6b6ea3;         /* (derived) foreground toward bg-base, 42% */
-  --background-primary-alt: #13163f;          /* (derived) = bg-elevated */
-  --interactive-accent: hsl(299, 96%, 50%);   /* (derived) accent-mauve in hsl */
-}
-/* the SAME palette in the light MODE: the upstream ships a 1984-light variant,
-   so this is not a computed inversion — the two anchor colours below are read
-   from it, and the surfaces are shaded from them the same way as above. */
-:root[data-palette="1984"][data-theme="light"] {
-  /* ---- chrome surfaces ---- */
-  --bg-base: #e4e5f5;            /* (upstream) 1984-light Background Color */
-  --bg-sidebar: #d6d7ec;         /* (derived) bg-base darkened 8% */
-  --bg-ribbon: #c8cae4;          /* (derived) bg-base darkened 14% */
-  --graph-bg: var(--bg-ribbon);   /* graph canvas — see :root */
-  --bg-surface: #c2c4e1;         /* (derived) bg-base darkened 17% */
-  --bg-elevated: #f1f2fb;        /* (derived) bg-base lightened 5% */
-  --bg-banner-error: #ffe3f4;    /* (derived) the upstream magenta over bg-base */
-  --bg-button-plain: #d6d7ec;    /* (derived) = bg-sidebar */
-  --bg-button-primary: #f806fa;  /* (upstream) 1984-light Ansi 13 */
-  /* ---- lines ---- */
-  --border: #bcbed9;             /* (derived) bg-base darkened 20% */
-  --border-strong: #00b2be;      /* (upstream) 1984-light Cursor Color */
-  --border-focus-ring: #00b2be;  /* (upstream) 1984-light Cursor Color */
-  --rule-faint: #c2c4e199;       /* (derived) bg-surface at 60% alpha */
-  /* ---- chrome ink ---- */
-  --text-chrome: #19152c;        /* (upstream) 1984-light Foreground Color */
-  --text-chrome-alt: #19152c;    /* (upstream) 1984-light Bold Color */
-  --text-chrome-muted: #474364;  /* (derived) foreground toward bg-base, 78% */
-  --text-chrome-faint: #7b7897;  /* (derived) foreground toward bg-base, 55% */
-  --text-chrome-dim: #9b98b3;    /* (derived) foreground toward bg-base, 42% */
-  --text-on-accent: #ffffff;     /* (derived) ink that stays legible on the neon */
-  --text-quiet: #474364;         /* (derived) = text-chrome-muted */
-  --text-banner-error: #ff16b0;  /* (upstream) 1984-light Ansi 9 / Link Color */
-  --link-unresolved: #9d74c8;    /* (derived) the upstream link magenta, desaturated */
-  /* ---- accents: the 1984-light ANSI row ---- */
-  --accent-blue: #0098fd;        /* (upstream) 1984-light Ansi 12 */
-  --accent-mauve: #f806fa;       /* (upstream) 1984-light Ansi 13 */
-  --accent-red: #ff16b0;         /* (upstream) 1984-light Ansi 9 */
-  --accent-yellow: #ff8d01;      /* (upstream) 1984-light Ansi 11 */
-  --accent-green: #00af4f;       /* (upstream) 1984-light Ansi 10 */
-  /* ---- translucency ---- */
-  --accent-blue-veil: rgba(0,152,253,.18);    /* (derived) accent-blue at 18% */
-  --tag-bg: rgba(248,6,250,.12);              /* (derived) accent-mauve at 12% */
-  --tag-bg-hover: rgba(248,6,250,.24);        /* (derived) accent-mauve at 24% */
-  --highlight-yellow: rgba(255,141,1,.32);    /* (derived) accent-yellow at 32% */
-  /* ---- R15 content tokens: the note column ---- */
-  --text-normal: #19152c;        /* (upstream) 1984-light Foreground Color */
-  --text-muted: #474364;         /* (derived) = text-chrome-muted */
-  --text-faint: #8f8ca9;         /* (derived) foreground toward bg-base, 48% */
-  --background-primary-alt: #ededf8;          /* (derived) bg-base lightened 3% */
-  --interactive-accent: hsl(299, 96%, 50%);   /* (derived) accent-mauve in hsl */
-}
-/* ---------------------------------------------------------------------------
-   PALETTE `slate` — the upstream editor's own two default schemes, as values.
-
-   PROVENANCE, IN FULL, IS docs/palette-slate/SOURCE.md: every literal below is
-   either a value published in the Obsidian CSS-variables reference
-   (docs.obsidian.md, Foundations/Colors, retrieved 2026-09-17) or a value
-   computed from published ones by docs/palette-slate/derive.sh. The comment on
-   each line names the upstream variable it came from; SOURCE.md's numbered
-   table says which of the two it is and why. Nothing here was eyeballed.
-
-   THE NAME IS OURS, THE VALUES ARE THEIRS. We ship this palette as "Slate":
-   colour values are facts and may travel, a trademark may not, so no other
-   product's name appears in our menu, our palette ids or any string a user
-   sees. Attribution lives here, next to the values it is owed for. No upstream
-   FILE, icon, font, logo or image is vendored — values only.
-
-   MAPPING. The reference publishes VALUES for the base ramp, the accent and
-   the extended colours, but only DESCRIPTIONS for the semantic variables
-   (--background-primary, --text-muted, ...). So the assignment of a ramp step
-   to one of OUR tokens is a rule we wrote down (SOURCE.md R1-R9), not a
-   quotation — and R2/R3 are cross-checked against notes/theme/provenance.txt,
-   where the same steps were sampled from a running stock instance.
-   One deliberate deviation, R8: upstream paints ribbon and sidebar with the
-   same surface; ours must stay distinct when the sidebar collapses, so the
-   ribbon takes the next published step (--color-base-25).
-
-   THE HEXES BELOW ARE WATERMARKED, AND THAT IS WHY THEY ARE NOT THE UPSTREAM
-   VALUES DIGIT FOR DIGIT. Every one of them is the value SOURCE.md records
-   with its LAST NIBBLE moved exactly one step (f down, everything else up):
-   1/255 of one channel, invisible, and inside the ±2 tolerance the pixel
-   assertions already use. It is a FINGERPRINT that lets us recognise this file
-   if it turns up elsewhere — it is not a legal device and claims nothing.
-   `sh docs/palette-slate/check-offsets.sh` re-derives every shipped value from
-   the upstream value recorded beside it and names any token that does not hold.
-
-   Both variants are TOTAL, for the cascade reason spelled out above the 1984
-   block: the (0,3,0) light variant must re-declare every token its dark
-   sibling declares, or light+slate paints a dark token.
-   --------------------------------------------------------------------------- */
-:root[data-palette="slate"] {
-  /* ---- chrome surfaces ---- */
-  --bg-base: #1c1c1d;            /* (upstream) --color-base-00, dark */
-  --bg-sidebar: #282829;         /* (upstream) --color-base-20, dark */
-  --bg-ribbon: #2e2e2f;          /* (upstream) --color-base-25, dark — SOURCE.md R8 */
-  --graph-bg: var(--bg-ribbon);   /* (upstream) --color-base-25 by ALIAS of --bg-ribbon above — no literal of its own, nothing to watermark; SOURCE.md row 36 */
-  --bg-surface: #333334;         /* (upstream) --color-base-30, dark */
-  --bg-elevated: #212122;        /* (upstream) --color-base-05, dark */
-  --bg-banner-error: #322022;    /* (upstream) derived from --color-red at 10% over --color-base-00, dark — SOURCE.md #6 */
-  --bg-button-plain: #333334;    /* (upstream) --color-base-30, dark */
-  --bg-button-primary: #8a5cf6;  /* (upstream) --color-accent = hsl(258,88%,66%) */
-  /* ---- lines ---- */
-  --border: #333334;             /* (upstream) --color-base-30, dark */
-  --border-strong: #666667;      /* (upstream) --color-base-50, dark */
-  --border-focus-ring: #8a5cf6;  /* (upstream) --color-accent */
-  --rule-faint: #3333339a;       /* (upstream) derived from --color-base-30 dark at 60% alpha — SOURCE.md #12 */
-  /* ---- chrome ink ---- */
-  --text-chrome: #dadadb;        /* (upstream) --color-base-100, dark */
-  --text-chrome-alt: #dadadb;    /* (upstream) --color-base-100, dark */
-  --text-chrome-muted: #b3b3b4;  /* (upstream) --color-base-70, dark */
-  --text-chrome-faint: #666667;  /* (upstream) --color-base-50, dark */
-  --text-chrome-dim: #555556;    /* (upstream) --color-base-40, dark */
-  --text-on-accent: #fffffe;     /* (upstream) --mono-100, dark = white; the accent is dark in both modes */
-  --text-quiet: #b3b3b4;         /* (upstream) --color-base-70, dark */
-  --text-banner-error: #fb464d;  /* (upstream) --color-red, dark */
-  --link-unresolved: #6949b5;    /* (upstream) derived from --color-accent at 70% over --color-base-00, dark — SOURCE.md #21 */
-  /* ---- accents ---- */
-  --accent-blue: #027afe;        /* (upstream) --color-blue, dark */
-  --accent-mauve: #8a5cf6;       /* (upstream) --color-accent */
-  --accent-red: #fb464d;         /* (upstream) --color-red, dark */
-  --accent-yellow: #e0de72;      /* (upstream) --color-yellow, dark */
-  --accent-green: #44cf6f;       /* (upstream) --color-green, dark */
-  /* ---- translucency: built from the published -rgb channels ---- */
-  --accent-blue-veil: rgba(2,122,255,.22);    /* (upstream) --color-blue-rgb, dark, at 22% */
-  --tag-bg: rgba(138,92,245,.15);             /* (upstream) --color-accent channels at 15% */
-  --tag-bg-hover: rgba(138,92,245,.3);        /* (upstream) --color-accent channels at 30% */
-  --highlight-yellow: rgba(224,222,113,.35);  /* (upstream) --color-yellow-rgb, dark, at 35% */
-  /* ---- R15 content tokens: the note column ---- */
-  --text-normal: #dadadb;        /* (upstream) --color-base-100, dark */
-  --text-muted: #b3b3b4;         /* (upstream) --color-base-70, dark */
-  --text-faint: #666667;         /* (upstream) --color-base-50, dark */
-  --background-primary-alt: #232324;          /* (upstream) --color-base-10, dark */
-  --interactive-accent: hsl(258, 88%, 66%);   /* (upstream) --accent-h/-s/-l, the published accent triple */
-}
-/* the SAME palette in the light MODE. Upstream publishes a light column for
-   every variable used above, so this is a second set of read values, not a
-   computed inversion of the block above. */
-:root[data-palette="slate"][data-theme="light"] {
-  /* ---- chrome surfaces ---- */
-  --bg-base: #fffffe;            /* (upstream) --color-base-00, light */
-  --bg-sidebar: #f6f6f7;         /* (upstream) --color-base-20, light */
-  --bg-ribbon: #efefee;          /* (upstream) --color-base-25, light — SOURCE.md R8 */
-  --graph-bg: var(--bg-ribbon);   /* (upstream) --color-base-25 by ALIAS of --bg-ribbon above — no literal of its own, nothing to watermark; SOURCE.md row 36 */
-  --bg-surface: #e4e4e5;         /* (upstream) --color-base-30, light */
-  --bg-elevated: #fcfcfd;        /* (upstream) --color-base-05, light */
-  --bg-banner-error: #fdeaee;    /* (upstream) derived from --color-red at 10% over --color-base-00, light — SOURCE.md #6 */
-  --bg-button-plain: #e4e4e5;    /* (upstream) --color-base-30, light */
-  --bg-button-primary: #8a5cf6;  /* (upstream) --color-accent = hsl(258,88%,66%) */
-  /* ---- lines ---- */
-  --border: #e4e4e5;             /* (upstream) --color-base-30, light */
-  --border-strong: #ababac;      /* (upstream) --color-base-50, light */
-  --border-focus-ring: #8a5cf6;  /* (upstream) --color-accent */
-  --rule-faint: #e4e4e49a;       /* (upstream) derived from --color-base-30 light at 60% alpha — SOURCE.md #12 */
-  /* ---- chrome ink ---- */
-  --text-chrome: #222223;        /* (upstream) --color-base-100, light */
-  --text-chrome-alt: #222223;    /* (upstream) --color-base-100, light */
-  --text-chrome-muted: #5c5c5d;  /* (upstream) --color-base-70, light */
-  --text-chrome-faint: #ababac;  /* (upstream) --color-base-50, light */
-  --text-chrome-dim: #bdbdbe;    /* (upstream) --color-base-40, light */
-  --text-on-accent: #fffffe;     /* (upstream) --mono-0, light = white; the accent is dark in both modes */
-  --text-quiet: #5c5c5d;         /* (upstream) --color-base-70, light */
-  --text-banner-error: #e93148;  /* (upstream) --color-red, light */
-  --link-unresolved: #ad8df9;    /* (upstream) derived from --color-accent at 70% over --color-base-00, light — SOURCE.md #21 */
-  /* ---- accents ---- */
-  --accent-blue: #086dde;        /* (upstream) --color-blue, light */
-  --accent-mauve: #8a5cf6;       /* (upstream) --color-accent */
-  --accent-red: #e93148;         /* (upstream) --color-red, light */
-  --accent-yellow: #e0ac01;      /* (upstream) --color-yellow, light */
-  --accent-green: #08b94f;       /* (upstream) --color-green, light */
-  /* ---- translucency ---- */
-  --accent-blue-veil: rgba(8,109,221,.22);    /* (upstream) --color-blue-rgb, light, at 22% */
-  --tag-bg: rgba(138,92,245,.15);             /* (upstream) --color-accent channels at 15% */
-  --tag-bg-hover: rgba(138,92,245,.3);        /* (upstream) --color-accent channels at 30% */
-  --highlight-yellow: rgba(224,172,0,.35);    /* (upstream) --color-yellow-rgb, light, at 35% */
-  /* ---- R15 content tokens: the note column ---- */
-  --text-normal: #222223;        /* (upstream) --color-base-100, light */
-  --text-muted: #5c5c5d;         /* (upstream) --color-base-70, light */
-  --text-faint: #ababac;         /* (upstream) --color-base-50, light */
-  --background-primary-alt: #fafafb;          /* (upstream) --color-base-10, light */
-  --interactive-accent: hsl(258, 88%, 66%);   /* (upstream) --accent-h/-s/-l, the published accent triple */
-}
-/* ---------------------------------------------------------------------------
-   `wasp` — the community theme "Wasp" by Santi Younger, as OUR table row.
-   PROVENANCE: docs/palette-wasp/SOURCE.md, one row per token, in the same
-   7-column form as Slate's. Values marked (upstream) are read from
-   github.com/santiyounger/Wasp-Obsidian-Theme, obsidian.css at commit
-   b42649be4ae4e2a13e32f7ba3db05666486a9246 (MIT, 2020-2026 Santi Younger) —
-   VALUES only, no file vendored. Values marked (measured) are pixels of
-   docs/palette-wasp/reference.png (the operator's picture, x,y cited), used
-   where the picture and the stylesheet disagree or upstream has no token.
-   Values marked (derived) state their rule. Every shipped hex is its
-   source hex with the last nibble moved one step (f down) — the same
-   watermark Slate carries; docs/palette-wasp/check-offsets.sh re-derives it.
-   Three tokens beyond the 1984 set: --text-heading (the orange headings are
-   the theme; consumed by the heading rules below the token block with a
-   currentColor fallback, so no other palette moves), --frame-color and
-   --frame-width (the 30px yellow ring around the picture; consumed by the
-   body rule with a 0 fallback). Both variants are TOTAL for the cascade
-   reason stated above the 1984 block.
-   --------------------------------------------------------------------------- */
-:root[data-palette="wasp"] {
-  /* ---- chrome surfaces ---- */
-  --bg-base: #242425;            /* (upstream) --background-primary, dark */
-  --bg-sidebar: #19191a;         /* (upstream) --background-secondary, dark */
-  --bg-ribbon: #131314;          /* (derived) --background-secondary dark at 75%, so the strip stays an edge — SOURCE.md #3 */
-  --graph-bg: var(--bg-ribbon);   /* (derived) alias of --bg-ribbon above, as every palette block declares it since main d2790cb — no literal of its own, nothing to watermark; SOURCE.md #39 */
-  --bg-surface: #3d3d3e;         /* (upstream) --background-secondary-alt, dark */
-  --bg-elevated: #313132;        /* (derived) midpoint of --background-primary and --background-secondary-alt, dark — SOURCE.md #5 */
-  --bg-banner-error: #640212;    /* (upstream) --text-highlight-bg, dark */
-  --bg-button-plain: #bdae94;    /* (upstream) --text-faint, dark, as the raised control's paper — SOURCE.md #7 */
-  --bg-button-primary: #f8c538;  /* (upstream) --interactive-accent, dark */
-  /* ---- lines ---- */
-  --border: #3d3d3e;             /* (upstream) --background-secondary-alt, dark */
-  --border-strong: #7c6f65;      /* (upstream) --interactive-before, dark */
-  --border-focus-ring: #f8c538;  /* (upstream) --vim-cursor, dark */
-  --rule-faint: #3d3d3d9a;       /* (derived) --border at 60% alpha — SOURCE.md #12 */
-  /* ---- chrome ink ---- */
-  --text-chrome: #faf2d7;        /* (upstream) --text-normal, dark */
-  --text-chrome-alt: #faf2d7;    /* (upstream) --text-normal, dark */
-  --text-chrome-muted: #bdae94;  /* (upstream) --text-faint, dark */
-  --text-chrome-faint: #7c6f65;  /* (upstream) --interactive-before, dark */
-  --text-chrome-dim: #5d5652;    /* (derived) midpoint of --interactive-before and --background-secondary-alt, dark — SOURCE.md #17 */
-  --text-on-accent: #242425;     /* (upstream) --button-text-color, dark */
-  --text-quiet: #bdae94;         /* (upstream) --text-faint, dark */
-  --text-banner-error: #d49336;  /* (upstream) --text-accent-hover, dark */
-  --link-unresolved: #b89532;    /* (derived) --text-a at 70% over --background-primary, dark — SOURCE.md #21 */
-  /* ---- accents: --accent-blue is the token every link rule reads ---- */
-  --accent-blue: #f8c538;        /* (upstream) --text-a, dark */
-  --accent-mauve: #f8c538;       /* (upstream) --text-accent, dark */
-  --accent-red: #d49336;         /* (upstream) --text-accent-hover, dark */
-  --accent-yellow: #f8c538;      /* (upstream) --interactive-accent, dark */
-  --accent-green: #83a599;       /* (upstream) --inline-code, dark */
-  /* ---- translucency: channels of the accents above ---- */
-  --accent-blue-veil: rgba(248,197,55,.22);   /* (derived) --text-a dark at 22% */
-  --tag-bg: rgba(248,197,55,.15);             /* (derived) --text-accent dark at 15% */
-  --tag-bg-hover: rgba(248,197,55,.3);        /* (derived) --text-accent dark at 30% */
-  --highlight-yellow: #640212;   /* (upstream) --text-highlight-bg, dark */
-  /* ---- R15 content tokens: the note column ---- */
-  --text-normal: #faf2d7;        /* (upstream) --text-normal, dark */
-  --text-muted: #bdae94;         /* (upstream) --text-faint, dark */
-  --text-faint: #7c6f65;         /* (upstream) --interactive-before, dark */
-  --background-primary-alt: #3d3d3e;          /* (upstream) --background-secondary-alt, dark — SOURCE.md #34 */
-  --interactive-accent: #f8c538;              /* (upstream) --interactive-accent, dark */
-  /* ---- the theme's signature: orange headings, the yellow ring ---- */
-  --text-heading: #e0e0e1;       /* (upstream) --text-title-h1, dark */
-  --frame-color: #f8c538;        /* (upstream) --background-modifier-border, dark */
-  --frame-width: 2.78vh;         /* (measured) reference.png: 30px of 1080 on all four sides; no nibble, unchanged */
-}
-/* the SAME palette in the light MODE — the mode the picture shows. Where the
-   picture and upstream disagree (the ring is #f2b712 in the picture and
-   --background-modifier-border says otherwise), the picture is the source. */
-:root[data-palette="wasp"][data-theme="light"] {
-  /* ---- chrome surfaces ---- */
-  --bg-base: #c4c4c5;            /* (upstream) --background-secondary, light; (measured) reference.png 180,580 — 1,630,878 of 2,073,600 px */
-  --bg-sidebar: #c4c4c5;         /* (upstream) --background-secondary, light */
-  --bg-ribbon: #bebebf;          /* (measured) reference.png 30,114, the inactive tab's underline; = --pre-code, light */
-  --graph-bg: var(--bg-ribbon);   /* (derived) alias of --bg-ribbon above, as every palette block declares it since main d2790cb — no literal of its own, nothing to watermark; SOURCE.md #39 */
-  --bg-surface: #ededee;         /* (upstream) --background-primary, light */
-  --bg-elevated: #ededee;        /* (upstream) --background-primary, light */
-  --bg-banner-error: #bfb2b5;    /* (derived) --text-a at 10% over --background-secondary, light — SOURCE.md #6 */
-  --bg-button-plain: #707071;    /* (upstream) --background-secondary-alt, light */
-  --bg-button-primary: #f8c538;  /* (upstream) --interactive-accent, light; (measured) reference.png 97,304 */
-  /* ---- lines ---- */
-  --border: #a7a7a8;             /* (measured) reference.png 949,185, the pane divider */
-  --border-strong: #707071;      /* (upstream) --background-secondary-alt, light */
-  --border-focus-ring: #961328;  /* (upstream) --vim-cursor, light; (measured) reference.png 1000,114, the active tab's underline */
-  --rule-faint: #a7a7a79a;       /* (derived) --border at 60% alpha — SOURCE.md #12 */
-  /* ---- chrome ink ---- */
-  --text-chrome: #1a2024;        /* (upstream) --text-normal, light; (measured) reference.png 108,453 */
-  --text-chrome-alt: #1a2024;    /* (upstream) --text-normal, light */
-  --text-chrome-muted: #888889;  /* (measured) reference.png 143,80, the tab title */
-  --text-chrome-faint: #a7a7a8;  /* (measured) reference.png 949,185 */
-  --text-chrome-dim: #bebebf;    /* (measured) reference.png 30,114 */
-  --text-on-accent: #1a2024;     /* (upstream) --text-normal, light — upstream's own button.mod-cta rule puts it on the accent */
-  --text-quiet: #888889;         /* (measured) reference.png 143,80 */
-  --text-banner-error: #961328;  /* (upstream) --text-a, light */
-  --link-unresolved: #a44857;    /* (derived) --text-a at 70% over --background-secondary, light — SOURCE.md #21 */
-  /* ---- accents: --accent-blue is the token every link rule reads ---- */
-  --accent-blue: #961328;        /* (upstream) --text-a, light; (measured) reference.png 171,263, a wikilink */
-  --accent-mauve: #961328;       /* (upstream) --text-accent, light */
-  --accent-red: #961328;         /* (upstream) --text-a, light; (measured) reference.png 171,263 */
-  --accent-yellow: #f8c538;      /* (upstream) --interactive-accent, light */
-  --accent-green: #458589;       /* (upstream) --inline-code, light */
-  /* ---- translucency ---- */
-  --accent-blue-veil: rgba(150,19,39,.22);    /* (derived) --text-a light at 22% */
-  --tag-bg: rgba(150,19,39,.15);              /* (derived) --text-accent light at 15% */
-  --tag-bg-hover: rgba(150,19,39,.3);         /* (derived) --text-accent light at 30% */
-  --highlight-yellow: #edc454;   /* (measured) reference.png 610,444, the caret-column highlight */
-  /* ---- R15 content tokens: the note column ---- */
-  --text-normal: #1a2024;        /* (upstream) --text-normal, light; (measured) reference.png 108,453 */
-  --text-muted: #888889;         /* (measured) reference.png 143,80 */
-  --text-faint: #a7a7a8;         /* (measured) reference.png 949,185 */
-  --background-primary-alt: #bebebf;          /* (upstream) --pre-code, light */
-  --interactive-accent: #f8c538;              /* (upstream) --interactive-accent, light */
-  /* ---- the theme's signature: orange headings, the yellow ring ---- */
-  --text-heading: #d49336;       /* (upstream) --text-title-h1, light; (measured) reference.png 193,299, "Heading 1" */
-  --frame-color: #f2b713;        /* (measured) reference.png 10,10 — 176,400 px = the 30px ring exactly; upstream --background-modifier-border differs, the picture wins */
-  --frame-width: 2.78vh;         /* (measured) reference.png: 30px of 1080 on all four sides; no nibble, unchanged */
 }
 /* THEME TOKENS END */
 * { box-sizing: border-box; margin: 0 }
 body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
-       /* the wasp ring: a palette that declares --frame-width/--frame-color paints it here; every other palette resolves to 0 (colour irrelevant at 0 width) — docs/palette-wasp/SOURCE.md "The frame" */
+       /* the wasp ring: a THEME that declares --frame-width/--frame-color paints it here; every other theme resolves to 0 (colour irrelevant at 0 width) — docs/palette-wasp/SOURCE.md "The frame" */
        border: var(--frame-width, 0) solid var(--frame-color, currentColor);
        background: var(--bg-base); color: var(--text-chrome) }
 /* R9.1 ribbon: fixed 44px icon strip, survives sidebar collapse */
@@ -1085,7 +778,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .lp:focus, .lp .lprow:focus { outline: none }
 .lp .tbox { vertical-align: middle }                            /* rendered task checkbox (x offsets: R15.11 below) */
 .lp.src .tbox { display: none }                                 /* source mode shows [ ] instead */
-.lp .h { font-weight: 700; color: var(--text-heading, currentColor) }   /* wasp: orange headings; currentColor = inherit for every palette that declares no --text-heading */
+.lp .h { font-weight: 700; color: var(--text-heading, currentColor) }   /* wasp: orange headings; currentColor = inherit for every theme that declares no --text-heading */
 .lp .h1 { font-size: var(--h1-size) }
 .lp .h2 { font-size: var(--h2-size) }
 .lp .h3 { font-size: var(--h3-size) }
@@ -1162,7 +855,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .sctl.dropdown { width: 141px; height: 24px; box-sizing: border-box; padding: 0 8px; background: var(--bg-sidebar);
                  border: 1px solid var(--border); border-radius: 4px; white-space: nowrap; overflow: hidden }
 /* .live = the one dropdown in this pane with a handler behind it (Appearance ▸
-   Themes, the palette axis). Every other control here is a transcription of
+   Themes; the palette axis that used to sit beside it is gone — themeone item 7). Every other control here is a transcription of
    stock with no behaviour, rendered inert; this one gets the affordances that
    inertness withholds — a pointer, a hover, and a visible focus ring, because
    it IS a tab stop. */
@@ -1255,7 +948,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
   --checkbox-margin-inline-start: calc(var(--space-unit) * 3); --checklist-done-decoration: line-through 0.06em; --checklist-done-color: var(--text-chrome-faint);
   --code-size: 0.92em; --code-background: var(--bg-surface); --code-radius: calc(var(--space-unit) * 1.5);
   --blockquote-border-thickness: calc(var(--space-unit) * 0.75); --blockquote-border-color: var(--text-accent);
-  /* R15.14 dark tokens (content area only — app chrome keeps its own palette): --text-normal / --text-muted / --text-faint / --background-primary(-alt) / --interactive-accent all live in the ONE token block at the top of this file */
+  /* R15.14 dark tokens (content area only — app chrome keeps its own token layer): --text-normal / --text-muted / --text-faint / --background-primary(-alt) / --interactive-accent all live in the ONE token block at the top of this file */
   --radius-s: 4px; --size-4-6: 24px; --size-4-8: 32px; --file-line-width: calc(var(--space-unit) * 180); --file-margins: var(--size-4-8);
 }
 @supports (font-variation-settings: normal) {   /* stock: graded heading weights on variable fonts */
@@ -1556,7 +1249,7 @@ body.floorrelayout #main { padding-right: 1px }
 #wframe { position: fixed; top: 0; right: 0; width: 140px; height: 32px;
           /* --titlebar-bg is DEFINED only by the item-8 R4 bridge (a vault
              theme declaring --titlebar-background-focused); without a bridge
-             the var is undefined and the fallback keeps the palette's ribbon */
+             the var is undefined and the fallback keeps the theme's ribbon */
           z-index: 200; background: var(--titlebar-bg, var(--bg-ribbon)); user-select: none }
 #wframe button { position: absolute; top: 0; width: 44px; height: 32px; padding: 0;
                  background: none; border: 0; color: var(--text-chrome-muted); cursor: pointer;
@@ -1638,5 +1331,5 @@ span.fmk.fcur { background: var(--tag-bg-hover); outline: 1px solid var(--accent
    README.md, NOT copied here — a hardcoded colour is a colour no theme can
    reach (scripts/lint-colors.sh). The class name is the measurement's; the
    value is this app's yellow highlight token, the same one .fmk and .navflash
-   use, so the flash follows every palette. */
+   use, so the flash follows every theme. */
 span.is-flashing { background: var(--highlight-yellow) }

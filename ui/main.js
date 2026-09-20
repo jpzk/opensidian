@@ -2115,7 +2115,13 @@ function updateTitle() {          // pane/focus census in the window title (head
   // painted against what the stylesheet says it should have painted. [gl:] names the draw path
   // the same shot came from (gl = ui/graph-gl.js, 2d = the Canvas 2D fallback).
   if (gg) {
-    const cs = getComputedStyle(document.documentElement), tokv = n => cs.getPropertyValue(n).trim().toLowerCase();
+    // READ WHERE THE THEME DECLARES (item 5). The colour tokens moved from
+    // :root to body — a theme declares on body.theme-dark/.theme-light (T6
+    // RESULT 3) and custom-property substitution happens on the element that
+    // carries the declaration, so an <html> lookup sees our defaults and can
+    // never see a theme's value. That is DESIGN §3 cause (1), arriving with
+    // the declarations it follows; item 6 owns causes 2-4.
+    const cs = getComputedStyle(document.body), tokv = n => cs.getPropertyValue(n).trim().toLowerCase();
     gg += " [gl:" + (fg().graphRenderer || "none") + "] [graphbg:" + tokv("--graph-bg") + "] [graphnode:" + tokv("--accent-blue") + "]";
   }
   const tokq = s => String(s == null ? "" : s).replace(/[[\]|]/g, "").slice(0, 80);
@@ -2149,10 +2155,12 @@ function updateTitle() {          // pane/focus census in the window title (head
   const bodyCls = document.body ? document.body.classList : null;
   const thmTok = " [thm:" + (bodyCls && bodyCls.contains("theme-dark") ? "dark"
                           : bodyCls && bodyCls.contains("theme-light") ? "light" : "unset") + "]";
-  // PALETTE census, read off the DOM for the same reason: "default" here means
-  // the attribute is ABSENT, which is the state the default palette IS. A probe
-  // cannot pass by setting a variable.
-  const palTok = " [palette:" + (document.documentElement.getAttribute("data-palette") || "default") + "]";
+  // THE [palette:] TOKEN IS GONE (themeone item 7/8). It published
+  // documentElement's data-palette attribute — the second theme axis, which
+  // this goal deletes. What a phase wants to know now ("which theme is
+  // painting") is [vtheme:] below, and it is a STRICTLY better token: it reads
+  // the name off the injected <style> element, so it says what is painting
+  // rather than what an attribute wishes were painting.
   // themecsp crit 5: with the rig applicator active (RUSTIDIAN_SMOKE_CSS), publish
   // body's COMPUTED background-color so a phase can prove a stock-shaped rule
   // targeting body.theme-dark won a pixel (getComputedStyle before/after). Off
@@ -2214,7 +2222,7 @@ function updateTitle() {          // pane/focus census in the window title (head
     : "";
   let t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
-            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + palTok + thmpxTok + snipTok + vthemeTok + creloadTok + vbridgeTok + bseedTok + vpxTok + navTok + navgTok + lg + md + gg + modal +
+            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + thmpxTok + snipTok + vthemeTok + creloadTok + vbridgeTok + bseedTok + vpxTok + navTok + navgTok + lg + md + gg + modal +
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) +
             (rightOpen ? ":" + rTab : "") + "]" +
             (rightOpen && rpInfo ? " [rp:" + rpInfo + "]" : "") +
@@ -4737,61 +4745,29 @@ async function bootTheme() {
   const st = await inv("get_theme").catch(() => null);
   if (st === "dark" || st === "light") { themeStored = true; applyTheme(st); }
 }
-/* ---------- PALETTE: the SECOND axis, on the SAME root -------------------
-   Mode (above) answers "light or dark". Palette answers "light or dark OF
-   WHAT". They are independent and they compose:
+/* ---------- THE SECOND AXIS IS GONE (themeone items 7/8, R1/R2) ----------
+   Fifty lines lived here: PALETTES, applyPalette (the data-palette write),
+   choosePalette, bootPalette and cmdSetPalette — a SECOND theme axis beside
+   the mode, selecting between colour sets this file's own stylesheet carried.
 
-       <html data-palette="1984" data-theme="light">
+   The operator asked for one axis. So the three palettes became real THEME
+   FILES (src-tauri/themes/, seeded onto the vault's .obsidian/themes/ by
+   builtins.rs), and the ONE thing that selects a theme is stock's cssTheme
+   picker — `chooseVaultTheme` above. Everything that used to call
+   choosePalette now calls that: the Appearance ▸ Themes dropdown, and the
+   Ctrl+P "Use theme: <name>" entries (cpItems, which builds one per LISTED
+   theme instead of one per hardcoded palette id).
 
-   and ui/style.css has a block per (palette, mode) pair, so flipping either
-   attribute re-resolves every token in the app through the same one mechanism
-   applyTheme already uses. Nothing else in the app learns that palettes exist.
+   WHAT IS GAINED, precisely: a third-party theme a user drops in
+   .obsidian/themes/ is reachable by the same command as a built-in, because
+   there is no longer a private list of names the app will select between. A
+   palette table could never have listed it.
 
-   THE DEFAULT IS THE ABSENCE OF THE ATTRIBUTE, not a value of it. A user who
-   has chosen no palette has no data-palette on the root, so no palette
-   selector can match and the pixels are byte-for-byte the ones this app
-   painted before the axis existed. "default" as an attribute VALUE would mean
-   a second definition of the default, free to drift from the first.
-
-   WHY NOT REUSE THE "theme" KEY. Because "theme" absent means "the user has
-   chosen no MODE, let prefers-color-scheme decide". Writing a palette name
-   there would destroy that state, and the system default — the thing a user
-   who never opens settings relies on — would break the moment anyone picked a
-   palette. Two axes, two keys. src-tauri/src/palette.rs is the table both
-   sides agree on; a rust test pins THIS list to it. */
-const PALETTES = [["default", "Default"], ["1984", "1984"], ["slate", "Slate"], ["wasp", "Wasp"]];
-const DEFAULT_PALETTE = PALETTES[0][0];
-const paletteKnown = p => PALETTES.some(([id]) => id === p);
-/* an unknown name is not an error to surface, it is the default to paint —
-   the same fallback main.rs::get_palette applies on the way out of the file */
-const resolvePalette = p => (paletteKnown(p) ? p : DEFAULT_PALETTE);
-let themePalette = DEFAULT_PALETTE;
-function applyPalette(p) {
-  themePalette = resolvePalette(p);
-  const root = document.documentElement;
-  if (themePalette === DEFAULT_PALETTE) root.removeAttribute("data-palette");
-  else root.setAttribute("data-palette", themePalette);
-  if (settingsOpen) renderPaletteCtl();     // the settings dropdown follows the state
-  if (state) updateTitle();                 // census [palette:<id>] follows the DOM
-}
-/* a USER choice. Refused names never reach applyPalette's DOM write as
-   themselves and are never sent to the backend either — which matters because
-   the backend refusing silently and the frontend painting it anyway would look
-   to a user exactly like a palette that works until you restart. */
-function choosePalette(p) {
-  const want = resolvePalette(p);
-  applyPalette(want);
-  inv("set_palette", { palette: want }).catch(() => {});
-}
-/* BOOT: same order and same reasoning as bootTheme — nothing synchronous to
-   paint first (no palette IS the default), then the stored choice replaces it
-   before any vault content is on screen. get_palette answers null for absent,
-   junk, or an explicitly-stored default, so all three land on the default. */
-async function bootPalette() {
-  const st = await inv("get_palette").catch(() => null);
-  if (st && paletteKnown(st)) applyPalette(st);
-}
-function cmdSetPalette(id) { return () => choosePalette(id); }
+   The MODE axis (applyTheme/chooseTheme above, dark|light, "theme" in
+   ~/.rustidian.json) is untouched, including "no stored value =
+   prefers-color-scheme decides" (R6). Mode and theme compose exactly the way
+   mode and palette did: a theme declares body.theme-dark and body.theme-light
+   blocks, and the mode class picks which one paints. */
 /* ---------- themefs R3: vault CSS snippets (stock's files, T3) ----------
    A snippet is <vault>/.obsidian/snippets/<label>.css, toggled by the
    enabledCssSnippets array in the vault's own appearance.json — the backend
@@ -5134,25 +5110,18 @@ const CMDS = [
   // Ctrl+P path (and a user can still bind a chord in Settings ▸ Hotkeys,
   // which works for free because this is in the one registry).
   ["theme:switch",             "Toggle light/dark mode",              [],                       cmdToggleTheme],
-  /* THE PALETTE AXIS IN THE PALETTE (goal/theme-1984). One registry entry per
-     shipped palette rather than one cycling command, for two reasons:
-       - a cycle is not addressable. "Use theme: 1984" lands on 1984 from any
-         starting state; a cycler lands somewhere that depends on where you
-         were, which is exactly what a user searching a command palette is
-         trying not to think about. It is also why the smoke phase can assert
-         a RESULT instead of a sequence.
-       - it is what the list is for. Adding a palette to PALETTES adds its
-         command here for free, with no third place to forget.
-     No default chord, same reasoning as theme:switch above: Ctrl+P IS the road,
-     and a chord can still be bound in Settings ▸ Hotkeys because these are
-     ordinary registry entries. The names are distinct prefixes of each other's
-     complement, so the palette's fuzzy match resolves each one uniquely. */
-  ...PALETTES.map(([id, label]) => [
-    "theme:palette:" + id,
-    "Use theme: " + label,
-    [],
-    cmdSetPalette(id),
-  ]),
+  /* THE "Use theme: <name>" ENTRIES ARE NOT HERE ANY MORE — see cpItems().
+     They used to be one static registry row per PALETTES id. A theme is a
+     directory in the vault now (.obsidian/themes/), discovered at runtime and
+     different per vault, so a static row per theme is the one shape this
+     cannot have: the registry is fixed at load, and the vault is not. They are
+     built where the palette is opened, from the SAME listed set the Appearance
+     dropdown offers, and they call the SAME chooseVaultTheme (item 7: one
+     selection function, two routes onto it).
+     The consequence, stated rather than hidden: a theme command cannot carry a
+     user hotkey, because Settings ▸ Hotkeys binds registry ids and there is no
+     stable id for "a directory that may not exist in the next vault". The mode
+     toggle below IS a registry row and keeps its binding. */
   ["workspace:close",          "Close current tab",                   ["ctrl+w"],               cmdCloseTab],
   ["window:close",             "Close window",                        ["ctrl+shift+w"],         () => window.__TAURI__.window.getCurrentWindow().close()],
   ["command-palette:open",     "Open command palette",                ["ctrl+p"],               () => cmdPalette()],
@@ -5264,8 +5233,24 @@ function chordOf(e) {                       // keydown -> normalised chord (null
   const alt = e.altKey && !/^F\d+$/.test(e.code);
   return (e.ctrlKey ? "ctrl+" : "") + (alt ? "alt+" : "") + (e.shiftKey ? "shift+" : "") + k;
 }
-function cpItems() {                 // palette source: the registry w/ current hotkey hints
-  return CMDS.map(c => ({ label: c.name, hint: hkChords(c).map(chordLabel).join(", "), run: c.run }));
+/* palette source: the registry w/ current hotkey hints, PLUS one "Use theme:
+   <name>" item per theme this vault actually offers (themeone item 7).
+   The theme items are built here, at open time, for the reason the comment in
+   CMDS gives: the set is the vault's, not the build's. They are appended after
+   the registry so every fixed command keeps the position a user has learned,
+   and they carry no hint because they carry no chord.
+   `(Default)` is offered like any other, and is stock's "" — the absence of a
+   theme, not a theme named Default; chooseVaultTheme("") is what the dropdown
+   sends for the same row, which is the point: ONE function, and neither route
+   can drift into a second definition of what selecting a theme means. */
+function cpItems() {
+  const themes = [["Default", ""]].concat(vaultThemesScan.listed.map(n => [n, n]));
+  return CMDS.map(c => ({ label: c.name, hint: hkChords(c).map(chordLabel).join(", "), run: c.run }))
+    .concat(themes.map(([label, name]) => ({
+      label: "Use theme: " + label,
+      hint: "",
+      run: () => chooseVaultTheme(name),
+    })));
 }
 function cmdPalette() {
   modalKind === "cp" ? closeModal() : openModal("cp", cpItems);
@@ -5551,7 +5536,7 @@ async function startGraph(g, cfg) {
   const palette = () => {
     const ds = document.documentElement.dataset, key = (ds.theme || "") + "|" + (ds.palette || "");
     if (pal && palKey === key) return pal;
-    const cs = getComputedStyle(document.documentElement), p = {};
+    const cs = getComputedStyle(document.body), p = {};   // item 5: the tokens live on body now — DESIGN §3 cause (1)
     for (const k in RGB) delete RGB[k];
     for (const k in PAL_VAR) { const v = cs.getPropertyValue(PAL_VAR[k]).trim(); p[k] = v; RGB[v] = hex(v); }
     palKey = key; pal = p;
@@ -6381,10 +6366,10 @@ $("vswitch").onclick = showPicker;
   await bootTheme();             // the root attribute is set synchronously inside
                                  // (system default), then the STORED choice replaces
                                  // it — one call site decides the boot theme.
-  await bootPalette();           // the OTHER axis, after the mode and before any
-                                 // vault content: a stored palette must be on the
-                                 // root before webkit's first frame, or the user
-                                 // sees the default flash past on every start.
+                                 // (item 8: bootPalette's second axis is gone; the
+                                 // vault's own cssTheme is applied by loadVaultCss
+                                 // when a vault opens, which is where it belongs —
+                                 // a theme is a property of the vault, not the app.)
   SAVE_MS = await inv("save_debounce_ms").catch(() => 250);   // F2 smoke hook
   const sw = await inv("get_sidebar_w").catch(() => null);   // ux-4
   if (sw >= 150) $("side").style.width = Math.min(600, sw) + "px";
@@ -6457,30 +6442,20 @@ function sfpEnd() {
    asserts. [spane:<id>/<rows>/<enabled>] is the pane currently BUILT, which is
    how the phase proves a nav click actually swapped the pane (OCR alone cannot
    distinguish "clicked" from "painted the same pane again"). */
-/* [spal:<centre x>,<centre y>,<label>] — the PALETTE control's OWN
-   measured rect and the text it is currently showing (since themefs R5 it
-   lives on Appearance ▸ Current community themes; the Themes row went back
-   to stock's cssTheme picker, published as [svt:] below), for the same
-   reason [mg:] publishes the context menu's geometry: the settings-UI route is
-   proven by a phase that must CLICK this control, and a hardcoded coordinate
-   would be a guess that goes stale the moment a row above it gains a line of
-   description. The label is in the token too, so "the control shows the active
-   palette" is assertable without OCR. Absent when the pane holding it is not
-   built — which is itself the assertion that the control is only on Appearance. */
-function spalTok() {
-  const d = document.getElementById("spalette");
-  if (!d) return "";
-  const b = d.getBoundingClientRect();
-  // the same sanitising updateTitle's local tokq does (brackets and | would
-  // break the census grammar); inline because tokq is scoped to updateTitle.
-  const lbl = String(d.textContent || "").replace(/[[\]|]/g, "").slice(0, 40);
-  return " [spal:" + Math.round(b.left + b.width / 2) + "," +
-         Math.round(b.top + b.height / 2) + "," + lbl + "]";
-}
+/* THE PALETTE CONTROL'S CENSUS TOKEN IS GONE (themeone item 7 / C1). A
+   `spal` token used to publish the PALETTE dropdown's measured rect on
+   Appearance > Current community themes. That control is deleted — not
+   hidden, not disabled: there is no second theme control to click, so there
+   is no geometry to publish and no token to read. The ONE theme control
+   publishes svtTok below, and a census carrying exactly one such control
+   token is how criterion 1 is asserted without OCR. The old token's name is
+   deliberately not written out here in its bracketed form: criterion 1 is
+   checked by grepping this tree for it, and a comment that spells it would
+   answer that grep with a line about its own absence. */
 /* [svt:<centre x>,<centre y>,<label>] — the vault-theme picker's control
-   (Appearance ▸ Themes, themefs R5), published for the same reason [spal:]
-   is: the phase that proves the picker must CLICK its measured rect and
-   assert the shown label without OCR. */
+   (Appearance ▸ Themes, themefs R5), and since themeone item 7 the ONLY theme
+   control the pane publishes: the phase that proves the picker must CLICK its
+   measured rect and assert the shown label without OCR. */
 function svtTok() {
   const d = document.getElementById("svtheme");
   if (!d) return "";
@@ -6490,9 +6465,12 @@ function svtTok() {
          Math.round(b.top + b.height / 2) + "," + lbl + "]";
 }
 /* [ssn:<centre x>,<centre y>,<label>] — the CSS-snippets control (Appearance
-   ▸ CSS snippets, themefs R3), published like [svt:]/[spal:] and for the same
+   ▸ CSS snippets, themefs R3), published like [svt:] and for the same
    reason: the phase that proves the toggle must CLICK the control's measured
-   rect and assert its live "<n> enabled" label without OCR. */
+   rect and assert its live "<n> enabled" label without OCR.
+   (A third token of this shape used to sit beside them for the palette
+   dropdown; it went with the control in themeone item 7, and its name is not
+   spelled here on purpose — C1 is checked by grepping this tree for it.) */
 function ssnTok() {
   const d = document.getElementById("ssnips");
   if (!d) return "";
@@ -6506,7 +6484,7 @@ function setTok() {
   const e = SMODEL.rows.reduce((n, r) => n + (r.enabled ? 1 : 0), 0);
   return " [set:" + SMODEL.nav.length + "/" + SMODEL.rows.length + "/" + e + "]" +
          " [spane:" + sPane + "/" + sRowsShown + "/" + sEnabledShown + "]" +
-         spalTok() + svtTok() + ssnTok() +
+         svtTok() + ssnTok() +
          (sfpMs >= 0 ? " [sfp:" + sfpMs + "/" + sfpMax + "/" +
                        (Math.round(sfpSum / sfpN * 100) / 100) + "/" + sfpN + "]" : "") +
          (sfpW >= 0 ? " [sfpw:" + sfpW + "/" + sfpWMax + "]" : "");
@@ -6603,38 +6581,20 @@ function showSettingsPage(id) {
    separator, controls at the card's right edge. The palette stays rustidian's
    dark theme — that delta is recorded in R30. */
 const SDIS_TITLE = "Not implemented yet";
-/* ---- Appearance ▸ Current community themes: the settings-UI route onto the
-   PALETTE axis (moved off the Themes row by themefs R5 — stock's Themes row
-   is the cssTheme picker and got its stock semantics back; this adjacent
-   installed-themes row hosting OUR palette axis is the recorded delta).
-   Two routes reach this feature and each is proven separately: Ctrl+P (the
-   "Use theme: <name>" registry entries) and this control. They share
-   choosePalette(), so neither can drift into a second definition of what
-   selecting a palette means. */
-const paletteLabel = id => (PALETTES.find(([p]) => p === id) || PALETTES[0])[1];
-function paletteCtl() {
-  const d = document.createElement("div");
-  d.className = "sctl dropdown live";
-  d.id = "spalette";
-  d.tabIndex = 0;                             // an ENABLED row is a tab stop, unlike the disabled ones
-  d.setAttribute("role", "button");
-  d.setAttribute("aria-haspopup", "menu");
-  d.textContent = paletteLabel(themePalette);
-  const open = ev => { ev.preventDefault(); ev.stopPropagation(); openPaletteMenu(d); };
-  d.onmousedown = ev => ev.stopPropagation();  // the document-level closer must not eat this
-  d.onclick = open;
-  d.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") open(ev); };
-  return d;
-}
-/* the control shows the LIVE state, not the state it was built in: selecting a
-   palette from Ctrl+P while the pane is open must move this text too, or the
-   two routes disagree on screen about which palette is active. */
-function renderPaletteCtl() {
-  const d = document.getElementById("spalette");
-  if (d) d.textContent = paletteLabel(themePalette);
-}
+/* THE PALETTE CONTROL IS DELETED (themeone item 7 / C1 / R1). A second live
+   dropdown used to be built here for Appearance > Current community themes:
+   paletteCtl / renderPaletteCtl / openPaletteMenu, the settings-UI route onto
+   the palette axis. Deleted rather than hidden — settings.rs's BACKED table
+   no longer names that row, so it renders the way every other unimplemented
+   row does (stock's inert status line), and this pane now publishes EXACTLY
+   ONE theme control: themeCtl, on stock's own Themes row.
+   The two routes that reach theme selection — Ctrl+P "Use theme: <name>" and
+   that dropdown — share chooseVaultTheme(), so neither can drift into a
+   second definition of what selecting a theme means. That was the argument
+   for sharing choosePalette() when there were two axes; it is the same
+   argument, and now there is one thing to share. */
 /* ---- Appearance ▸ CSS snippets: the settings-UI route onto the vault's
-   snippet toggles (themefs R3). Same construction as paletteCtl and for the
+   snippet toggles (themefs R3). Same construction as themeCtl and for the
    same reason: the ONE menu widget the census can see ([menu:]), not a native
    popup. The text is the live count, the shape stock's own row shows
    ("0 enabled"); toggling goes through toggleSnippet(), the same function the
@@ -6663,7 +6623,7 @@ function renderSnipCtl() {
    the active cssTheme ("Default" when ""), listing (Default) + EXACTLY the
    oracle-predicate set (DESIGN §9), the excluded dirs rendered inert with
    their reason so the pane shows WHY a broken theme is not offered. Same
-   ctxmenu construction as paletteCtl, same reason ([menu:] census). */
+   ctxmenu construction as snipCtl, same reason ([menu:] census). */
 const themeCtlLabel = () => vaultTheme || "Default";
 function themeCtl() {
   const d = document.createElement("div");
@@ -6730,38 +6690,20 @@ function openSnipMenu(anchor) {
   const b = anchor.getBoundingClientRect();
   placeMenu(m, Math.round(b.left), Math.round(b.bottom + 4));
 }
-function openPaletteMenu(anchor) {
-  closeMenu();
-  const m = document.createElement("div");
-  m.className = "ctxmenu";
-  for (const [id, label] of PALETTES) {
-    const it = document.createElement("div");
-    // ✓ on the active one, the same radio idiom the tab menu uses — so the
-    // census [menu:] carries which palette is active as well as the choices.
-    it.textContent = (id === themePalette ? "✓ " : "") + label;
-    it.onmousedown = ev => ev.stopPropagation();
-    it.onclick = () => { closeMenu(); choosePalette(id); };
-    m.appendChild(it);
-  }
-  const b = anchor.getBoundingClientRect();
-  // .ctxmenu is z-index 60 and #settings is 55, so the menu is above the modal;
-  // placeMenu clamps it to the viewport by its measured box (R22).
-  placeMenu(m, Math.round(b.left), Math.round(b.bottom + 4));
-}
 let sRowsShown = 0, sEnabledShown = 0;
 function sctl(r) {                            // the control cell for one row, or null
   const v = r.default_shown === "-" ? "" : r.default_shown;
-  /* THE LIVE DROPDOWNS (goal/theme-1984, extended by themefs). Everything
-     else in this pane is a transcription of stock's pixels with no handler;
-     a row is rendered live only when settings.rs BACKED names its real key
-     (palette / cssTheme / enabledCssSnippets). None uses a
+  /* THE LIVE DROPDOWNS (themefs R5/R3). Everything else in this pane is a
+     transcription of stock's pixels with no handler; a row is rendered live
+     only when settings.rs BACKED names its real key (cssTheme /
+     enabledCssSnippets — the palette key left that table with its axis,
+     themeone item 7). None uses a
      native <select>: a native popup is an OS-level window, invisible to the
      screenshot-and-census rig, so the settings controls that change the
      app's appearance would be the ones no phase could prove. Each opens the
      app's own .ctxmenu instead — the same widget the tab menu uses, published
      in the census as [menu:<labels>] with measured geometry, so the
      settings-UI route is drivable and assertable like every other menu. */
-  if (r.key === "palette") return paletteCtl();
   if (r.key === "cssTheme") return themeCtl();            // themefs R5: stock's Themes row, stock's semantics
   if (r.key === "enabledCssSnippets") return snipCtl();   // themefs R3, same live-control rule
   const d = document.createElement("div");
