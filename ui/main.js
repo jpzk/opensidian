@@ -1185,7 +1185,6 @@ function bmGroupRenameCommit(ix, title) { bmRenaming = null; return bmApply("bm_
    pane — the chevron is static and groups cannot collapse (bmfolder recon) —
    recorded here so the future collapse goal inherits the measurement. */
 let bmDropTok = "", bmEat = 0, bmDrop = null;
-let bmDbg = "";   // TEMP bmdrag diagnosis (drop before gate): mv,st,lastX,lastY,boxL,boxT,boxR,boxB,nrows
 function bmClickEaten() {                  // a completed drag must not also open the note under the cursor
   const t = bmEat;
   bmEat = 0;
@@ -1204,7 +1203,6 @@ function bmDragStart(e, ix) {
   const sx = e.clientX, sy = e.clientY;
   const label = src.label ?? (src.kind === "g" ? src.name : src.name.split("/").pop());
   let ghost = null, line = null, hl = null, srcEl = null, zones = null, raf = 0, last = null;
-  let dbgMv = 0, dbgSt = 0;   // TEMP bmdrag diagnosis
   bmDrop = null;
   const clearFb = () => {
     if (line) { line.remove(); line = null; }
@@ -1213,7 +1211,6 @@ function bmDragStart(e, ix) {
   const step = () => {
     raf = 0;
     const ev = last;
-    dbgSt++;   // TEMP bmdrag diagnosis
     if (!ghost) {
       if (Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) < 6) return;
       ghost = document.createElement("div");
@@ -1287,13 +1284,8 @@ function bmDragStart(e, ix) {
       ghost.textContent = label + (nd ? " -> " + tok : "");   // the chip names the decision
       updateTitle();                       // ONLY on a decision change — never per frame
     }
-    // TEMP bmdrag diagnosis: publish the loop's vitals per frame (drop before gate)
-    bmDbg = dbgMv + "," + dbgSt + "," + Math.round(ev.clientX) + "," + Math.round(ev.clientY) + "," +
-      Math.round(z.box.left) + "," + Math.round(z.box.top) + "," + Math.round(z.box.right) + "," +
-      Math.round(z.box.bottom) + "," + z.rows.length;
-    updateTitle();
   };
-  const move = ev => { dbgMv++; last = ev; if (!raf) raf = requestAnimationFrame(step); };
+  const move = ev => { last = ev; if (!raf) raf = requestAnimationFrame(step); };
   const up = async () => {
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
@@ -1304,7 +1296,6 @@ function bmDragStart(e, ix) {
     if (srcEl) srcEl.classList.remove("bmdrop-src");
     bmDropTok = "";
     bmDrop = null;
-    bmDbg = "";   // TEMP bmdrag diagnosis
     if (!dragged) return;                  // below the threshold: a plain click, let it through
     bmEat = performance.now();
     if (!d) { updateTitle(); return; }     // no legal target: NOTHING is called — byte-level refusal
@@ -2157,7 +2148,6 @@ function updateTitle() {          // pane/focus census in the window title (head
               bmIndentTok() +                                       // R4X.6: the painted indent STEP in px
               bmRenTok() +                                          // R4X.8: an inline group rename is OPEN and not yet committed
               (bmDropTok ? " [bmdrop:" + bmDropTok.replace(/[[\]|]/g, "") + "]" : "") +   // bmdrag: the app-computed drop target, live only mid-drag
-              (bmDbg ? " [bmdbg:" + bmDbg + "]" : "") +              // TEMP bmdrag diagnosis (drop before gate)
               (bmRows() === bmTree.length ? "" :                     // the smoke assertion must prove the PANE
                " [bmdesync:" + bmTree.length + "/" + bmRows() + "]") : "");   // repainted, not just the model
 
