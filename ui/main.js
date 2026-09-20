@@ -2239,18 +2239,33 @@ function updateTitle() {          // pane/focus census in the window title (head
   // w3k0f0 and the NEXT boot on the same vault k3, which is legs 1 and 2 of
   // criterion 3 readable off the title.
   const bseedTok = " [bseed:" + vaultSeedTok + "]";
-  // themefs item 10: the phase's getComputedStyle surface — the COMPUTED
-  // background of the three chrome points the R4 bridge can move (body /
-  // #side / #wframe) plus one it deliberately CANNOT (#bar button paints
-  // --bg-surface, a token no bridge row aliases). Criterion 1 reads
-  // theme-vs-default off the first three; criterion 7 proves the palette
-  // axis still moves the fourth while a vault theme holds the others.
+  // themefs item 10, MIGRATED by themeone item 14: the phase's
+  // getComputedStyle surface — five COMPUTED chrome backgrounds, in three
+  // classes, so one instrument answers both halves of "how far does a vault
+  // theme reach":
+  //   1-3  body / #side / #wframe — the R4 ALIAS BRIDGE's points
+  //        (--bg-base / --bg-sidebar / --titlebar-bg): a stock name the
+  //        BRIDGE_ALIASES table names, emitted as a var() row.
+  //   4    #bar button (--bg-surface) — the INVERSION's point. No bridge row
+  //        aliases it and none ever will: since item 5, style.css declares
+  //        `--bg-surface: var(--background-secondary-alt)` on BODY (layer 2),
+  //        so a theme declaring that stock name on body.theme-dark wins the
+  //        cascade on the same element and reaches our chrome with no table
+  //        in the path. This field was "must NOT move" before item 5; it is
+  //        "must move" now, which is the whole R4 thesis as a pixel.
+  //   5    #mbox (--bg-elevated) — LAYER 3, ours alone: no stock name sits
+  //        behind it (style.css ships the literal), so neither route can
+  //        carry a theme there. The containment half of the old field-4
+  //        assert lives here now. #mbox is static in index.html under
+  //        #modal[hidden], and getComputedStyle resolves custom properties
+  //        on a display:none element, so it reads without opening the modal.
   // Always on, like [snips:]/[vtheme:]: a probe cannot pass by setting a
   // variable — these are resolved pixels off the live cascade.
   const vpxBg = el => el ? getComputedStyle(el).backgroundColor.replace(/\s+/g, "") : "-";
   const vpxTok = document.body
     ? " [vpx:" + vpxBg(document.body) + "/" + vpxBg(document.getElementById("side")) +
-      "/" + vpxBg(document.getElementById("wframe")) + "/" + vpxBg(document.querySelector("#bar button")) + "]"
+      "/" + vpxBg(document.getElementById("wframe")) + "/" + vpxBg(document.querySelector("#bar button")) +
+      "/" + vpxBg(document.getElementById("mbox")) + "]"
     : "";
   let t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
