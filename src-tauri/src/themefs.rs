@@ -119,6 +119,270 @@ pub fn set_snippet_enabled(root: &Path, label: &str, on: bool) -> Result<(), Str
     write_appearance(root, &m)
 }
 
+// ---------------------------------------------------------------------------
+// Part 2 (ledger item 3): the CSS sanitizer — the mask policy, R4X.4.
+//
+// The brick finding (docs/themecsp/README.md): an unloadable
+// `-webkit-mask-image` makes ZERO network requests but silently composites
+// the masked subtree to blank — the CSP cannot see it, so the LOADER must.
+// Policy (DESIGN §6): any declaration whose property name, after comment
+// removal and CSS-escape decoding, case-insensitively is `mask`, starts
+// `mask-`, or starts `-webkit-mask`, is STRIPPED and counted; the caller
+// surfaces mask_strip_message(). If the scanner cannot tokenize confidently
+// (unclosed comment, unterminated string, unbalanced braces/parens, dangling
+// escape, mask-shaped prelude) the FILE is REFUSED with Err("cannot parse
+// safely: ...") — a parse we are not sure of is a strip we cannot promise.
+//
+// Scanner notes, each a deliberate decision:
+// - comments become ONE SPACE (spec: a comment is a token boundary), so
+//   `/*x*/mask-image` is still caught while `ma/**/sk-image` becomes the
+//   invalid `ma sk-image` — which no browser applies either.
+// - `;` inside parentheses does NOT end a declaration (unquoted
+//   `url(data:image/svg+xml;base64,...)` is legal); a brace inside
+//   parentheses is refused.
+// - strings are opaque: `content: "}; mask: none"` strips nothing.
+// - bytes ≥ 0x80 (multibyte UTF-8) never equal an ASCII structural byte, so
+//   byte-wise scanning cannot split a code point; segments are cut only at
+//   ASCII bytes, so every emitted slice is valid UTF-8.
+
+/// Sanitizer output: the CSS to inject and how many declarations were cut.
+#[derive(Debug)]
+pub struct Sanitized {
+    pub css: String,
+    pub stripped: usize,
+}
+
+/// DESIGN §6's loud message, in ONE place. `origin` names the file for the
+/// user, e.g. `theme Minimal` or `snippet custom-checkbox.css`.
+pub fn mask_strip_message(origin: &str, n: usize) -> String {
+    format!(
+        "{origin}: stripped {n} mask declaration(s) — mask can blank the window (docs/themecsp R4X.4)"
+    )
+}
+
+fn refuse(reason: &str) -> String {
+    format!("cannot parse safely: {reason}")
+}
+
+/// The deny predicate, on a DECODED lower-cased property name.
+fn is_mask_prop(p: &str) -> bool {
+    p == "mask" || p.starts_with("mask-") || p.starts_with("-webkit-mask")
+}
+
+/// Decode CSS escapes in a property-name slice (`\6d ask` → `mask`,
+/// `m\61 sk` → `mask`). None = an escape we cannot decode confidently
+/// (dangling backslash, bad hex, invalid code point) — the caller refuses.
+/// Bytes ≥ 0x80 map through as-is; they can never match the ASCII predicate.
+fn decode_ident(raw: &[u8]) -> Option<String> {
+    let n = raw.len();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < n {
+        let c = raw[i];
+        if c == b'\\' {
+            i += 1;
+            if i >= n {
+                return None; // dangling escape
+            }
+            let start = i;
+            while i < n && i - start < 6 && raw[i].is_ascii_hexdigit() {
+                i += 1;
+            }
+            if i > start {
+                let hex = std::str::from_utf8(&raw[start..i]).ok()?;
+                let cp = u32::from_str_radix(hex, 16).ok()?;
+                out.push(char::from_u32(cp)?);
+                // one whitespace terminates a hex escape and is consumed
+                if i < n && matches!(raw[i], b' ' | b'\t' | b'\n' | b'\r') {
+                    i += 1;
+                }
+            } else {
+                out.push(raw[i] as char); // literal escape: \m → m
+                i += 1;
+            }
+        } else {
+            out.push(c as char);
+            i += 1;
+        }
+    }
+    Some(out)
+}
+
+/// Property name of a candidate declaration segment: bytes before the first
+/// `:`, trimmed, escape-decoded, lower-cased. None if the segment has no `:`.
+fn segment_prop(seg: &[u8]) -> Result<Option<String>, String> {
+    let ci = match seg.iter().position(|&c| c == b':') {
+        Some(ci) => ci,
+        None => return Ok(None),
+    };
+    let mut a = 0;
+    let mut b = ci;
+    while a < b && seg[a].is_ascii_whitespace() {
+        a += 1;
+    }
+    while b > a && seg[b - 1].is_ascii_whitespace() {
+        b -= 1;
+    }
+    let decoded = decode_ident(&seg[a..b])
+        .ok_or_else(|| refuse("undecodable escape in property name"))?;
+    Ok(Some(decoded.to_ascii_lowercase()))
+}
+
+/// Sanitize one CSS file (theme.css or a snippet). Ok = the bytes to inject
+/// plus the strip count (caller raises the loud message when > 0);
+/// Err = REFUSE the whole file, loudly, reason inside (DESIGN §6 fail-closed).
+pub fn sanitize_css(src: &str) -> Result<Sanitized, String> {
+    let b = src.as_bytes();
+    let n = b.len();
+    let mut out: Vec<u8> = Vec::with_capacity(n);
+    let mut seg: Vec<u8> = Vec::new(); // since the last { } or ;
+    let mut depth: u32 = 0; // brace depth
+    let mut paren: u32 = 0;
+    let mut stripped = 0usize;
+
+    // flush a candidate declaration: strip it (count) or emit it verbatim
+    let flush = |seg: &mut Vec<u8>,
+                 out: &mut Vec<u8>,
+                 depth: u32,
+                 stripped: &mut usize|
+     -> Result<(), String> {
+        if depth >= 1 {
+            if let Some(p) = segment_prop(seg)? {
+                if is_mask_prop(&p) {
+                    *stripped += 1;
+                    seg.clear();
+                    return Ok(());
+                }
+            }
+        }
+        out.append(seg);
+        Ok(())
+    };
+
+    let mut i = 0;
+    while i < n {
+        let c = b[i];
+        match c {
+            b'/' if i + 1 < n && b[i + 1] == b'*' => {
+                let mut j = i + 2;
+                let mut closed = false;
+                while j + 1 < n {
+                    if b[j] == b'*' && b[j + 1] == b'/' {
+                        closed = true;
+                        break;
+                    }
+                    j += 1;
+                }
+                if !closed {
+                    return Err(refuse("unclosed comment"));
+                }
+                seg.push(b' '); // a comment is a token boundary
+                i = j + 2;
+            }
+            b'"' | b'\'' => {
+                seg.push(c);
+                let mut j = i + 1;
+                loop {
+                    if j >= n {
+                        return Err(refuse("unterminated string"));
+                    }
+                    let d = b[j];
+                    if d == b'\\' {
+                        if j + 1 >= n {
+                            return Err(refuse("dangling escape in string"));
+                        }
+                        seg.push(d);
+                        seg.push(b[j + 1]);
+                        j += 2;
+                        continue;
+                    }
+                    if d == b'\n' {
+                        return Err(refuse("newline inside string"));
+                    }
+                    seg.push(d);
+                    j += 1;
+                    if d == c {
+                        break;
+                    }
+                }
+                i = j;
+            }
+            b'(' => {
+                paren += 1;
+                seg.push(c);
+                i += 1;
+            }
+            b')' => {
+                if paren == 0 {
+                    return Err(refuse("unbalanced parentheses: stray ')'"));
+                }
+                paren -= 1;
+                seg.push(c);
+                i += 1;
+            }
+            b'{' | b'}' | b';' if paren > 0 => {
+                // `;` legally appears in unquoted data: urls; braces do not.
+                if c == b';' {
+                    seg.push(c);
+                    i += 1;
+                } else {
+                    return Err(refuse("brace inside parentheses"));
+                }
+            }
+            b'{' => {
+                // prelude flush. FAIL CLOSED on a mask-shaped prelude
+                // (`mask: {`) — nesting ambiguity we will not guess at.
+                if let Some(p) = segment_prop(&seg)? {
+                    if is_mask_prop(&p) {
+                        return Err(refuse("ambiguous 'mask' before '{'"));
+                    }
+                }
+                out.append(&mut seg);
+                out.push(b'{');
+                depth += 1;
+                i += 1;
+            }
+            b'}' => {
+                if depth == 0 {
+                    return Err(refuse("unbalanced braces: stray '}'"));
+                }
+                flush(&mut seg, &mut out, depth, &mut stripped)?; // last decl may lack ';'
+                out.push(b'}');
+                depth -= 1;
+                i += 1;
+            }
+            b';' => {
+                seg.push(b';');
+                flush(&mut seg, &mut out, depth, &mut stripped)?;
+                i += 1;
+            }
+            b'\\' => {
+                if i + 1 >= n {
+                    return Err(refuse("dangling escape"));
+                }
+                seg.push(c);
+                seg.push(b[i + 1]);
+                i += 2;
+            }
+            _ => {
+                seg.push(c);
+                i += 1;
+            }
+        }
+    }
+    if depth != 0 {
+        return Err(refuse("unbalanced braces at EOF"));
+    }
+    if paren != 0 {
+        return Err(refuse("unbalanced parentheses at EOF"));
+    }
+    out.append(&mut seg); // depth-0 tail: whitespace/junk, applies to nothing
+    Ok(Sanitized {
+        css: String::from_utf8(out).map_err(|_| refuse("output not UTF-8"))?,
+        stripped,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,5 +528,134 @@ mod tests {
         assert!(set_css_theme(&root, "X").unwrap_err().contains("not a JSON object"));
         assert_eq!(bytes(&root), "[1,2]");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    // ---- part 2: the sanitizer (R4X.4) ------------------------------------
+
+    fn ok(src: &str) -> Sanitized {
+        sanitize_css(src).expect("expected Ok")
+    }
+    fn err(src: &str) -> String {
+        sanitize_css(src).expect_err("expected refusal")
+    }
+
+    #[test]
+    fn themefs_sanitize_clean_css_is_untouched_and_idempotent() {
+        let src = ".a { color: red; background: url(\"x.png\") }\n.b:hover { border: 1px }\n";
+        let s = ok(src);
+        assert_eq!(s.stripped, 0);
+        assert_eq!(s.css, src, "no mask, no comments: byte-identical");
+        let again = ok(&s.css);
+        assert_eq!(again.stripped, 0);
+        assert_eq!(again.css, s.css, "sanitizer must be idempotent");
+    }
+
+    #[test]
+    fn themefs_sanitize_strips_the_deny_family() {
+        // shorthand, longhand, -webkit- prefixed shorthand + longhand
+        let s = ok(".a { color: red; mask: url(x); mask-image: url(x); -webkit-mask: url(x); -webkit-mask-image: url(x); font-size: 1em }");
+        assert_eq!(s.stripped, 4);
+        assert!(!s.css.to_ascii_lowercase().contains("mask"));
+        assert!(s.css.contains("color: red;") && s.css.contains("font-size: 1em"));
+        // the mask- prefix family (the brick needs no image longhand)
+        let s = ok(".a { mask-position: 0 0; mask-composite: add; -webkit-mask-box-image: url(x) }");
+        assert_eq!(s.stripped, 3);
+        assert!(!s.css.to_ascii_lowercase().contains("mask"));
+    }
+
+    #[test]
+    fn themefs_sanitize_evasion_case_and_whitespace() {
+        let s = ok(".a { MASK-IMAGE: url(x); -WebKit-Mask: url(x); color: red }");
+        assert_eq!(s.stripped, 2);
+        let s = ok(".a { mask \n : url(x); color: red }");
+        assert_eq!(s.stripped, 1);
+        assert!(s.css.contains("color: red"));
+    }
+
+    #[test]
+    fn themefs_sanitize_evasion_css_escapes_are_decoded() {
+        // \6d = 'm', \61 = 'a' — WebKit decodes these in property names
+        let s = ok(".a { \\6d ask-image: url(x); color: red }");
+        assert_eq!(s.stripped, 1, "hex-escaped first letter");
+        let s = ok(".a { m\\61 sk: url(x); color: red }");
+        assert_eq!(s.stripped, 1, "hex escape mid-name");
+        let s = ok(".a { \\4D ASK: url(x) }"); // uppercase hex, uppercase rest
+        assert_eq!(s.stripped, 1);
+        let s = ok(".a { m\\ask: url(x) }"); // literal escape \a? no: \a is hex
+        // `\a` IS a hex digit escape (LF) → 'm' + LF + "sk" — not mask, and no
+        // browser applies it either. The decode must not panic; strip count 0.
+        assert_eq!(s.stripped, 0);
+        let s = ok(".a { \\6D\\61\\73\\6B: url(x) }"); // fully hex-escaped "mask"
+        assert_eq!(s.stripped, 1);
+    }
+
+    #[test]
+    fn themefs_sanitize_evasion_comments_in_and_before_the_name() {
+        // comment BEFORE the name: browsers apply it → we must catch it
+        let s = ok(".a { /*x*/mask-image: url(x); color: red }");
+        assert_eq!(s.stripped, 1);
+        // comment INSIDE the name: a token boundary — browsers refuse the
+        // declaration, we emit the equally-inert `ma sk-image`
+        let s = ok(".a { ma/**/sk-image: url(x); color: red }");
+        assert!(!s.css.to_ascii_lowercase().contains("mask"));
+        assert!(s.css.contains("color: red"));
+    }
+
+    #[test]
+    fn themefs_sanitize_semicolon_in_unquoted_url_does_not_split() {
+        let s = ok(".a { background: url(data:image/svg+xml;base64,AA); mask: none; color: red }");
+        assert_eq!(s.stripped, 1);
+        assert!(s.css.contains("url(data:image/svg+xml;base64,AA)"), "data: url intact");
+        assert!(s.css.contains("color: red"));
+    }
+
+    #[test]
+    fn themefs_sanitize_strings_are_opaque() {
+        let s = ok(".a { content: \"}; mask: none\"; color: red }");
+        assert_eq!(s.stripped, 0, "mask inside a string is data, not a declaration");
+        assert!(s.css.contains("\"}; mask: none\""));
+        let s = ok(".a { content: \"/*\"; mask: none; color: red }");
+        assert_eq!(s.stripped, 1, "quote does not open a comment");
+        assert!(s.css.contains("\"/*\""));
+    }
+
+    #[test]
+    fn themefs_sanitize_near_names_are_kept() {
+        // custom properties and lookalikes are NOT the deny family
+        let s = ok(".a { --mask-color: red; masking: 1; unmask: 2; --webkit-mask: x }");
+        assert_eq!(s.stripped, 0);
+        assert!(s.css.contains("--mask-color: red"));
+    }
+
+    #[test]
+    fn themefs_sanitize_nested_blocks_and_media() {
+        let s = ok("@media (max-width: 100px) { .a { mask: url(x); color: red } }");
+        assert_eq!(s.stripped, 1);
+        assert!(s.css.contains("@media (max-width: 100px)"));
+        assert!(s.css.contains("color: red"));
+    }
+
+    #[test]
+    fn themefs_sanitize_refuses_what_it_cannot_tokenize() {
+        // DESIGN §6 fail-closed: each broken shape is a refusal, not a guess
+        assert!(err(".a { /* x").contains("unclosed comment"));
+        assert!(err(".a { content: \"x }").contains("unterminated string"));
+        assert!(err("} .a { color: red }").contains("stray '}'"));
+        assert!(err(".a { color: red;").contains("unbalanced braces at EOF"));
+        assert!(err(".a { background: url(x }").contains("brace inside parentheses"));
+        assert!(err(".a { color: red\\").contains("dangling escape"));
+        assert!(err(".x { mask: { } }").contains("ambiguous 'mask' before '{'"));
+        // every refusal wears the DESIGN §6 prefix the caller shows the user
+        for s in [".a { /* x", "} x", ".a { color: red;"] {
+            assert!(err(s).starts_with("cannot parse safely: "), "prefix on {s:?}");
+        }
+    }
+
+    #[test]
+    fn themefs_sanitize_mask_message_is_the_design_string() {
+        assert_eq!(
+            mask_strip_message("theme Minimal", 2),
+            "theme Minimal: stripped 2 mask declaration(s) — mask can blank the window (docs/themecsp R4X.4)"
+        );
     }
 }
