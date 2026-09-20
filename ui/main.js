@@ -2003,9 +2003,13 @@ function updateTitle() {          // pane/focus census in the window title (head
   const vthemeTok = " [vtheme:" +
     (document.getElementById("vault-theme") && vaultTheme
       ? String(vaultTheme).replace(/[[\]|]/g, "").slice(0, 40) : "none") + "]";
+  // themefs item 6: hot reloads APPLIED this session — the phase's latency
+  // clock (edit the file, poll the title until this bumps, subtract; the
+  // pixels are then proved separately with getComputedStyle/thmpx).
+  const creloadTok = " [creload:" + vaultCssReloads + "]";
   let t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
-            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + palTok + thmpxTok + snipTok + vthemeTok + lg + md + gg + modal +
+            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + palTok + thmpxTok + snipTok + vthemeTok + creloadTok + lg + md + gg + modal +
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) +
             (rightOpen ? ":" + rTab : "") + "]" +
             (rightOpen && rpInfo ? " [rp:" + rpInfo + "]" : "") +
@@ -4529,15 +4533,22 @@ let vaultSnips = [], vaultSnipsOn = [], snipEls = new Map();
    T3 RESULT 4); the #vault-bridge element (item 8) will insertBefore it. */
 let vaultThemesScan = { listed: [], excluded: [] }, vaultTheme = "";
 async function themeInject(name) {
-  themeRemove();
   try {
     const r = await inv("theme_css", { name });
-    const el = document.createElement("style");
-    el.id = "vault-theme";
+    // swap IN PLACE: the old css keeps painting until the new bytes are
+    // ready (item 6 re-injects through here — remove-then-insert would let
+    // a frame of Default through on every hot reload), and the element's
+    // position (before the first [data-snip], DESIGN §5) never moves.
+    let el = document.getElementById("vault-theme");
+    if (!el) {
+      el = document.createElement("style");
+      el.id = "vault-theme";
+      document.head.insertBefore(el, document.head.querySelector("style[data-snip]"));
+    }
     el.textContent = r.css;
-    document.head.insertBefore(el, document.head.querySelector("style[data-snip]"));
     if (r.message) say(r.message, "theme");  // R4X.4: the strip is LOUD
   } catch (e) {
+    themeRemove();                           // stale css must not keep painting
     say(String(e), "theme");                 // R6: the refusal names the file
   }
 }
@@ -4554,7 +4565,21 @@ async function chooseVaultTheme(name) {
   vaultTheme = name;
   if (name) await themeInject(name); else themeRemove();
   renderThemeCtl();
+  armCssReload();                        // item 6: the watched set follows what is applied
   if (state) updateTitle();
+}
+/* the ONE insertion authority for snippet elements: enabledCssSnippets order
+   (T3 RESULT 3), independent of WHEN the element is created — at load and on
+   toggle-on the element lands last among snips (same as append), but a hot
+   reload re-creating a mid-array element (item 6: a refused file fixed by an
+   edit) must land BEFORE its later siblings, or the cascade lies about the
+   enable order. */
+function snipElInsert(label, el) {
+  for (const l of vaultSnipsOn.slice(vaultSnipsOn.indexOf(label) + 1)) {
+    const nxt = snipEls.get(l);
+    if (nxt) { document.head.insertBefore(el, nxt); return; }
+  }
+  document.head.appendChild(el);
 }
 async function snipInject(label) {
   if (snipEls.has(label)) return;
@@ -4563,11 +4588,34 @@ async function snipInject(label) {
     const el = document.createElement("style");
     el.dataset.snip = label;              // the removal/census handle — the label stays data, never an id fragment
     el.textContent = r.css;
-    document.head.appendChild(el);
+    snipElInsert(label, el);
     snipEls.set(label, el);
     if (r.message) say(r.message, "snip");   // R4X.4: the strip is LOUD, one string, authored in themefs.rs
   } catch (e) {
     say(String(e), "snip");               // R6: the refusal names the file and the reason (backend string)
+  }
+}
+/* item 6, the hot-reload path: re-read -> re-sanitize -> re-inject that ONE
+   element. In place when it exists (the old css paints until the new bytes
+   are ready); created at its enable-order position when it does not (an edit
+   FIXING a previously refused snippet goes live — same loop as the theme).
+   A re-read that now refuses removes the element: stale css must not keep
+   painting a file the sanitizer no longer accepts. */
+async function snipReinject(label) {
+  try {
+    const r = await inv("snippet_css", { label });
+    let el = snipEls.get(label);
+    if (!el) {
+      el = document.createElement("style");
+      el.dataset.snip = label;
+      snipElInsert(label, el);
+      snipEls.set(label, el);
+    }
+    el.textContent = r.css;
+    if (r.message) say(r.message, "snip");
+  } catch (e) {
+    snipRemove(label);
+    say(String(e), "snip");
   }
 }
 function snipRemove(label) {
@@ -4604,6 +4652,37 @@ async function loadVaultCss() {
     vaultSnipsOn = (await inv("snippets_enabled")).filter(l => vaultSnips.includes(l));
   } catch { vaultSnips = []; vaultSnipsOn = []; }
   for (const l of vaultSnipsOn) await snipInject(l);
+  armCssReload();
+  if (state) updateTitle();
+}
+/* ---- themefs item 6: hot reload (DESIGN §8, criterion 4) ----------------
+   The backend polls AT MOST the applied theme.css + enabled snippet files at
+   100 ms (themefs::RELOAD_TICK_MS, alive only while something is applied)
+   and emits `vault-css-changed` {kind,name} on an (mtime,len) move; this
+   side re-reads through the SAME sanitizing commands and re-injects that ONE
+   element. armCssReload is the frontend declaring what is APPLIED — it owns
+   the listed/painting decision, so an unlisted cssTheme is declared as ""
+   (Default paints, nothing to watch). Nothing here writes: criterion 4
+   asserts appearance.json's bytes across an edit. NEW files are not live
+   (stock's asymmetry, T4 RESULT 4 / T3 RESULT 5): the watch set moves only
+   when a user action lands here, never because a tick discovered a file. */
+let vaultCssReloads = 0;                 // census [creload:<n>] — the phase's latency clock
+function armCssReload() {
+  const theme = (vaultTheme && vaultThemesScan.listed.includes(vaultTheme)) ? vaultTheme : "";
+  inv("vault_css_watch", { theme, snippets: vaultSnipsOn.slice() }).catch(() => {});
+}
+async function onVaultCssChanged(ch) {
+  if (!ch) return;
+  if (ch.kind === "theme") {
+    // stale-event guard: the poller's word is never newer than this side's
+    // own state — only the theme that IS painting gets re-injected
+    if (ch.name !== vaultTheme || !vaultThemesScan.listed.includes(ch.name)) return;
+    await themeInject(ch.name);
+  } else if (ch.kind === "snippet") {
+    if (!vaultSnipsOn.includes(ch.name)) return;
+    await snipReinject(ch.name);
+  } else return;
+  vaultCssReloads++;
   if (state) updateTitle();
 }
 /* the toggle WITHOUT restart (criterion 3): one user action moves the file
@@ -4618,6 +4697,7 @@ async function toggleSnippet(label) {
   if (on) { vaultSnipsOn.push(label); await snipInject(label); }
   else { vaultSnipsOn = vaultSnipsOn.filter(l => l !== label); snipRemove(label); }
   renderSnipCtl();                       // the settings control follows the state, like renderPaletteCtl
+  armCssReload();                        // item 6: the watched set follows what is applied
   if (state) updateTitle();
 }
 /* ---------- R36 interface zoom (Ctrl+= / Ctrl+- / Ctrl+0) ---------------
@@ -5972,6 +6052,7 @@ async function onVaultChanged(c) {
   updateTitle();
 }
 window.__TAURI__.event.listen("vault-changed", e => onVaultChanged(e.payload));
+window.__TAURI__.event.listen("vault-css-changed", e => onVaultCssChanged(e.payload));  // themefs item 6: hot reload
 // R31.1: a real OS drop arrives here, from Rust, never from a DOM drop event.
 window.__TAURI__.event.listen("drop-files", e => attachDrop(e.payload || []));
 

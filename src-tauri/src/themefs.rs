@@ -603,6 +603,83 @@ pub fn sanitize_css(src: &str) -> Result<Sanitized, String> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Part 5 (ledger item 6): hot reload — DESIGN §8, criterion 4.
+//
+// Stock's bar: an edit to the ACTIVE theme.css or an ENABLED snippet repaints
+// in 0.14–0.34 s, no restart, and appearance.json is NOT rewritten (T4). The
+// vault watcher ticks at 1000 ms (watcher.rs TICK_MS) — it cannot meet that
+// bar — so main.rs runs a DEDICATED poller at RELOAD_TICK_MS over AT MOST the
+// files this derivation names, alive only while the set is non-empty. On an
+// (mtime, len) change the frontend re-reads through the same sanitizing
+// commands (theme_css / snippet_css) and re-injects that ONE element. Nothing
+// on this path writes: criterion 4 asserts appearance.json's bytes.
+//
+// Stock's asymmetry, kept (T4 RESULT 4, T3 RESULT 5): a NEW theme directory
+// or snippet file is NOT live. The watch set is derived from what is APPLIED
+// (the painting theme + the enabled snippets), and only from files that exist
+// at derivation time — discovery refreshes on the next user action, never on
+// a tick.
+
+/// the dedicated hot-reload poll interval: ≤100 ms detection + one repaint
+/// keeps us inside stock's measured 0.14–0.34 s bar (DESIGN §8)
+pub const RELOAD_TICK_MS: u64 = 100;
+
+/// event kinds — ui/main.js onVaultCssChanged matches these strings
+pub const RELOAD_KIND_THEME: &str = "theme";
+pub const RELOAD_KIND_SNIPPET: &str = "snippet";
+
+/// One watched file: which element the frontend re-injects when it changes.
+/// The emitted payload is {kind, name} — the path stays backend-side (the
+/// frontend re-reads by NAME through the refusing path rules, never by path).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct WatchedFile {
+    pub kind: &'static str,
+    pub name: String,
+    #[serde(skip)]
+    pub path: PathBuf,
+}
+
+/// (mtime, len) — watcher.rs's cheap fingerprint shape; None = missing or
+/// unstatable. None COMPARES: an editor that writes via rename reads as
+/// Some→Some with a new pair, a genuine delete as Some→None — which fires
+/// once (the fingerprint then STAYS None), so the loud re-read refusal is
+/// said one time, not ten times a second.
+pub type ReloadFp = Option<(std::time::SystemTime, u64)>;
+
+/// stat one watched file into its fingerprint
+pub fn reload_fp(p: &Path) -> ReloadFp {
+    let md = fs::metadata(p).ok()?;
+    Some((md.modified().ok()?, md.len()))
+}
+
+/// Derive the watched file set from what is APPLIED: the active theme's
+/// theme.css (the caller passes "" when nothing is painting — an unlisted
+/// cssTheme paints Default and must not be watched), then each enabled
+/// snippet's file in enable order. A name the path rules refuse (traversal
+/// shapes — the pickers never produce one) or a file ABSENT at derivation
+/// time is silently not watched: absence here is stock's asymmetry (new
+/// files are not live), not an error — the apply path already said anything
+/// loud there was to say.
+pub fn watch_set(root: &Path, theme: &str, snippets: &[String]) -> Vec<WatchedFile> {
+    let mut out = Vec::new();
+    if !theme.is_empty() {
+        if let Ok(p) = theme_path(root, theme) {
+            if p.is_file() {
+                out.push(WatchedFile { kind: RELOAD_KIND_THEME, name: theme.to_string(), path: p });
+            }
+        }
+    }
+    for l in snippets {
+        if let Ok(p) = snippet_path(root, l) {
+            if p.is_file() {
+                out.push(WatchedFile { kind: RELOAD_KIND_SNIPPET, name: l.clone(), path: p });
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1067,5 +1144,87 @@ mod tests {
         fs::write(d.join("theme.css"), ".a { /* unclosed").unwrap();
         let e2 = load_theme(&root, "Masky").unwrap_err();
         assert!(e2.starts_with("theme Masky/theme.css: cannot parse safely:"), "got {e2:?}");
+    }
+
+    // ---- Part 5: the hot-reload watch set (item 6, DESIGN §8) ----
+
+    fn mk_snip(root: &Path, label: &str) {
+        let d = root.join(".obsidian").join("snippets");
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join(format!("{label}.css")), "body { color: blue }").unwrap();
+    }
+
+    /// the set is what is APPLIED, not what exists: files on disk with
+    /// nothing active watch nothing; theme first, then snippets in the
+    /// caller's (enable) order, each with the path the loaders would read.
+    #[test]
+    fn reload_watch_set_is_what_is_applied_in_order() {
+        let root = tmp_vault("ws1");
+        mk_theme(&root, "T", Some(r#"{"name": "T"}"#), true);
+        mk_snip(&root, "a");
+        mk_snip(&root, "b");
+        assert!(watch_set(&root, "", &[]).is_empty(), "nothing applied, nothing watched");
+        let w = watch_set(&root, "T", &["b".into(), "a".into()]);
+        assert_eq!(
+            w.iter().map(|x| (x.kind, x.name.as_str())).collect::<Vec<_>>(),
+            [("theme", "T"), ("snippet", "b"), ("snippet", "a")]
+        );
+        assert!(w[0].path.ends_with(".obsidian/themes/T/theme.css"));
+        assert!(w[1].path.ends_with(".obsidian/snippets/b.css"));
+    }
+
+    /// stock's asymmetry: a file ABSENT at derivation time is not watched —
+    /// a new file appearing later is NOT live (T4 RESULT 4, T3 RESULT 5);
+    /// and names the path rules refuse are silently not watched (the apply
+    /// path already refused them loudly).
+    #[test]
+    fn reload_watch_set_skips_missing_and_refused_names() {
+        let root = tmp_vault("ws2");
+        mk_snip(&root, "a");
+        mk_theme(&root, "NoCss", Some(r#"{"name": "NoCss"}"#), false);
+        let w = watch_set(
+            &root,
+            "NoCss", // dir exists, theme.css does not -> not watched
+            &["gone".into(), "a".into(), "../up".into(), ".h".into(), "x/y".into(), "".into()],
+        );
+        assert_eq!(
+            w.iter().map(|x| (x.kind, x.name.as_str())).collect::<Vec<_>>(),
+            [("snippet", "a")]
+        );
+    }
+
+    /// the emitted payload is exactly {kind, name} — the path never crosses
+    /// to the frontend (it re-reads by NAME through the refusing loaders)
+    #[test]
+    fn reload_watched_file_serializes_kind_and_name_only() {
+        let w = WatchedFile {
+            kind: RELOAD_KIND_THEME,
+            name: "T".into(),
+            path: PathBuf::from("/secret/abs/path"),
+        };
+        assert_eq!(
+            serde_json::to_string(&w).unwrap(),
+            r#"{"kind":"theme","name":"T"}"#
+        );
+    }
+
+    /// the fingerprint: missing = None (once), present = Some((mtime, len));
+    /// a length change moves it deterministically (mtime granularity is the
+    /// filesystem's business — len is the test's honest clock)
+    #[test]
+    fn reload_fp_none_when_missing_and_moves_on_len_change() {
+        let root = tmp_vault("wsfp");
+        mk_snip(&root, "s");
+        let p = snippet_path(&root, "s").unwrap();
+        assert_eq!(reload_fp(&root.join("nope.css")), None);
+        let fp1 = reload_fp(&p);
+        assert!(fp1.is_some());
+        let mut bytes = fs::read(&p).unwrap();
+        bytes.extend_from_slice(b"/*x*/");
+        fs::write(&p, &bytes).unwrap();
+        let fp2 = reload_fp(&p);
+        assert!(fp2.is_some() && fp2 != fp1, "a longer file must re-fingerprint");
+        fs::remove_file(&p).unwrap();
+        assert_eq!(reload_fp(&p), None, "a deleted file reads None — the change fires once");
     }
 }

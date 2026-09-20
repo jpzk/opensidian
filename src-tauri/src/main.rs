@@ -1971,6 +1971,106 @@ fn set_css_theme(v: State<Vault>, name: String) -> Result<(), String> {
     themefs::set_css_theme(&root, &name)
 }
 
+/* ---- themefs item 6: hot reload (DESIGN §8, criterion 4) ----------------
+   The R11 vault watcher ticks at 1000 ms — it cannot meet stock's measured
+   0.14–0.34 s repaint bar (T4) — so the APPLIED vault CSS gets its own
+   poller: at most the painting theme.css + the enabled snippet files
+   (themefs::watch_set), one (mtime, len) stat each per RELOAD_TICK_MS,
+   ALIVE ONLY while that set is non-empty. On a fingerprint move it emits
+   `vault-css-changed` {kind, name}; the frontend re-reads through the same
+   sanitizing commands (theme_css / snippet_css) and re-injects that ONE
+   element. Nothing on this path writes — criterion 4 asserts
+   appearance.json's bytes across an edit — and NEW files are not live
+   (stock's asymmetry): the set is re-derived only when vault_css_watch says
+   the applied state moved, never by scanning on a tick.
+
+   vault_css_watch is the frontend declaring what is APPLIED — it owns the
+   listed/painting decision (an unlisted cssTheme paints Default and must
+   not be watched), so the backend does not re-guess it. The command itself
+   touches memory only (OUT_OF_SCOPE_CMD, reason in perf-coverage.sh); the
+   derivation and the stats happen on the poller thread. */
+struct CssReloadCfg {
+    theme: String,
+    snippets: Vec<String>,
+    gen: u64,
+    alive: bool,
+}
+static CSS_RELOAD: Mutex<CssReloadCfg> = Mutex::new(CssReloadCfg {
+    theme: String::new(),
+    snippets: Vec::new(),
+    gen: 0,
+    alive: false,
+});
+
+#[tauri::command]
+fn vault_css_watch(
+    app: tauri::AppHandle,
+    v: State<Vault>,
+    theme: String,
+    snippets: Vec<String>,
+) -> Result<(), String> {
+    let have_vault = cur_vault(&v).is_some();
+    let mut st = CSS_RELOAD.lock().unwrap();
+    st.theme = theme;
+    st.snippets = snippets;
+    st.gen += 1;
+    // spawn-on-demand, under the SAME lock the poller dies under: while
+    // anything is applied a poller exists, and never two of them
+    if have_vault && !(st.theme.is_empty() && st.snippets.is_empty()) && !st.alive {
+        st.alive = true;
+        spawn_css_reload(app);
+    }
+    Ok(())
+}
+
+fn spawn_css_reload(app: tauri::AppHandle) {
+    use tauri::{Emitter, Manager};
+    std::thread::spawn(move || {
+        let mut gen = 0u64; // != any bumped gen, so the first tick derives
+        let mut watched: Vec<(themefs::WatchedFile, themefs::ReloadFp)> = Vec::new();
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(themefs::RELOAD_TICK_MS));
+            let (g, theme, snippets) = {
+                let st = CSS_RELOAD.lock().unwrap();
+                (st.gen, st.theme.clone(), st.snippets.clone())
+            };
+            if g != gen {
+                gen = g;
+                // a config move is a USER action the frontend already
+                // applied — reseed the fingerprints silently, emit nothing
+                let root = cur_vault(&app.state::<Vault>());
+                watched = match &root {
+                    Some(r) => themefs::watch_set(r, &theme, &snippets)
+                        .into_iter()
+                        .map(|w| {
+                            let fp = themefs::reload_fp(&w.path);
+                            (w, fp)
+                        })
+                        .collect(),
+                    None => Vec::new(),
+                };
+            }
+            if watched.is_empty() {
+                // nothing to watch: die — UNLESS the config moved again
+                // while we looked (checked under the spawn lock above)
+                let mut st = CSS_RELOAD.lock().unwrap();
+                if st.gen == gen {
+                    st.alive = false;
+                    return;
+                }
+                continue;
+            }
+            for (w, fp) in watched.iter_mut() {
+                let now = themefs::reload_fp(&w.path);
+                if now != *fp {
+                    *fp = now;
+                    let _ = app.emit("vault-css-changed", &*w);
+                }
+            }
+        }
+    });
+}
+
 /* R14: custom hotkeys, persisted as "hotkeys" in ~/.rustidian.json in the stock
    Obsidian shape {"<cmd id>":[{"modifiers":["Mod","Shift"],"key":"G"}]}:
    [] = default removed, absent id = stock default. The frontend registry
@@ -3538,7 +3638,7 @@ fn main() {
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, smoke_css,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme, get_palette, set_palette,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
-            themes_scan, theme_css, get_css_theme, set_css_theme,
+            themes_scan, theme_css, get_css_theme, set_css_theme, vault_css_watch,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
             win_rect, win_gesture, win_move_proto, win_drag_start, win_minimize, win_toggle_max, win_close,
             tab_removed,
