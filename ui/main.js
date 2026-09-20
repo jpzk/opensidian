@@ -2194,6 +2194,11 @@ function updateTitle() {          // pane/focus census in the window title (head
   // themefs item 8: alias rows the R4 bridge is painting (0 = no #vault-bridge
   // element — no theme, or a theme declaring none of the aliased stock names)
   const vbridgeTok = " [vbridge:" + vaultBridgeAliases + "]";
+  // themeone item 4 (C3): the boot's seeding decision — w<wrote> k<kept>
+  // f<failed>. Always on, like [snips:]/[vtheme:]: a fresh vault must read
+  // w3k0f0 and the NEXT boot on the same vault k3, which is legs 1 and 2 of
+  // criterion 3 readable off the title.
+  const bseedTok = " [bseed:" + vaultSeedTok + "]";
   // themefs item 10: the phase's getComputedStyle surface — the COMPUTED
   // background of the three chrome points the R4 bridge can move (body /
   // #side / #wframe) plus one it deliberately CANNOT (#bar button paints
@@ -2209,7 +2214,7 @@ function updateTitle() {          // pane/focus census in the window title (head
     : "";
   let t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
-            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + palTok + thmpxTok + snipTok + vthemeTok + creloadTok + vbridgeTok + vpxTok + navTok + navgTok + lg + md + gg + modal +
+            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + palTok + thmpxTok + snipTok + vthemeTok + creloadTok + vbridgeTok + bseedTok + vpxTok + navTok + navgTok + lg + md + gg + modal +
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) +
             (rightOpen ? ":" + rTab : "") + "]" +
             (rightOpen && rpInfo ? " [rp:" + rpInfo + "]" : "") +
@@ -4808,6 +4813,12 @@ let vaultSnips = [], vaultSnipsOn = [], snipEls = new Map();
    T3 RESULT 4); the #vault-bridge element (item 8) insertBefores it. */
 let vaultThemesScan = { listed: [], excluded: [] }, vaultTheme = "";
 let vaultBridgeAliases = 0;   // census [vbridge:<n>] — item 8 alias rows painting
+/* themeone item 4 (C3): the boot's SEEDING decision, as the backend reported
+   it — wrote / kept / failed counts, census [bseed:w<n>k<n>f<n>]. Read after
+   the scan (the write already happened in Rust, before the webview existed),
+   so on a fresh vault the same title carries w3 AND the three listed names,
+   and on the second boot k3 with the same names. "-" until a vault is open. */
+let vaultSeedTok = "-";
 async function themeInject(name) {
   try {
     const r = await inv("theme_css", { name });
@@ -4930,6 +4941,7 @@ async function loadVaultCss() {
   themeRemove();
   vaultSnips = []; vaultSnipsOn = [];
   vaultThemesScan = { listed: [], excluded: [] }; vaultTheme = "";
+  vaultSeedTok = "-";
   try {
     vaultThemesScan = await inv("themes_scan");
     // R6: LOUD where stock silently excludes — every broken theme dir says
@@ -4937,6 +4949,14 @@ async function loadVaultCss() {
     for (const x of vaultThemesScan.excluded) say(x.message, "theme");
     vaultTheme = await inv("get_css_theme");
   } catch { vaultThemesScan = { listed: [], excluded: [] }; vaultTheme = ""; }
+  // item 4: the seeding pass that ran before this webview existed. Its own
+  // try — a census token is not worth failing the vault entry over, and a
+  // backend that could not answer must read as "-" and not as w0k0f0.
+  try {
+    const s = await inv("theme_seed_report");
+    vaultSeedTok = "w" + s.wrote.length + "k" + s.kept.length + "f" + s.failed.length;
+    for (const f of s.failed) say("theme seed failed — " + f, "theme");  // R6: loud
+  } catch { vaultSeedTok = "-"; }
   // apply ONLY what the predicate lists: cssTheme naming an unlisted theme
   // paints the Default (its dir, if present, already said WHY above; an
   // absent dir is stock's silent normal — the oracle flags "!!" either way)

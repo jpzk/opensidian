@@ -31,10 +31,14 @@ blocks that used to sit in `ui/style.css`, by `scripts/gen-builtin-themes.sh`
 on the assets ARE the source.
 */
 
-// The seeding step (ledger item 4) is this module's first non-test consumer;
-// until it lands the tests below are the only caller. An allow beats inventing
-// a use for the compiler's benefit — and it is scoped to this file.
+// `is_builtin` has no non-test caller until the settings pane marks its rows
+// (item 7). An allow beats inventing a use for the compiler's benefit — and it
+// is scoped to this file.
 #![allow(dead_code)]
+
+use std::fs;
+use std::path::Path;
+use std::sync::Mutex;
 
 /// One shipped theme: the bytes of a real theme directory. `name` is BOTH the
 /// directory name and the manifest's `name`, because `themefs::themes_scan`
@@ -64,11 +68,129 @@ pub const BUILTIN_THEMES: &[BuiltinTheme] = &[
     builtin!("Wasp", "Wasp"),
 ];
 
-/// Is `name` one of ours? (Used by the seeding step in item 4 and by the
-/// settings pane to mark a row; it is NOT a privileged load path — after
-/// seeding a built-in is an ordinary file on disk with no second code path.)
+/// Is `name` one of ours? (For the settings pane, to mark a row; it is NOT a
+/// privileged load path — after seeding a built-in is an ordinary file on disk
+/// with no second code path. The seeding step below does not consult it: it
+/// iterates the assets it ships, which is the same list from the other side.)
 pub fn is_builtin(name: &str) -> bool {
     BUILTIN_THEMES.iter().any(|t| t.name == name)
+}
+
+/* ============================ R3 — SEEDING ================================
+The one thing in this app that writes into `.obsidian/themes/`. The scan
+itself still creates NOTHING (T1/T3 RESULT 1: stock creates neither `themes/`
+nor `snippets/`), so seeding is a separate, explicit boot step and it is named
+as one, on stderr, every time it runs.
+
+THE PREDICATE IS PER *FILE*, and that is the whole contract:
+
+  write `<vault>/.obsidian/themes/<Name>/<file>` if and only if that path does
+  not exist.
+
+Read against C3's three legs, which is why it is a file and not a flag:
+
+- *no `.obsidian/themes/`* -> every path is missing -> all three are written,
+  and from that moment they are ordinary theme directories: scanned, listed,
+  chosen, hot-reloaded and deleted through the same code a third-party theme
+  takes. There is no second load path (DESIGN §4).
+- *second boot* -> every path exists -> nothing is opened for writing, so
+  bytes AND mtime are unchanged. `create_dir_all` is not even called: it
+  would be a no-op on the bytes but this way the directory's own mtime is
+  untouchable too.
+- *one deleted* -> exactly that one comes back. A global "have I seeded this
+  vault" flag passes the first two legs and FAILS this one, which is why the
+  state lives in the filesystem and nowhere else.
+
+A USER EDIT SURVIVES, because an existing file is never opened. The cost of
+that rule, stated plainly: a built-in the user deliberately deleted returns on
+the next boot — the same thing stock does with a vault's config files, and the
+direction that cannot lose bytes. An edit that makes the theme unlistable is
+NOT repaired either; `themes_scan` already reports it with a reason (R6), and
+guessing that a broken manifest was not meant would mean overwriting it.
+
+`exists()` follows symlinks on purpose: a built-in the user has symlinked
+somewhere else is present, so it is kept, not clobbered.
+========================================================================== */
+
+/// What one seeding pass did, per theme. Serialized to the UI for the
+/// `[bseed:w<n>k<n>f<n>]` census token, so a gate phase can read the boot's
+/// decision off the window title instead of trusting a log line.
+#[derive(Debug, Default, Clone, serde::Serialize)]
+pub struct SeedReport {
+    /// themes that had at least one missing file, now written
+    pub wrote: Vec<String>,
+    /// themes already complete on disk — untouched, bytes and mtime
+    pub kept: Vec<String>,
+    /// `<name>: <io error>` — a vault we could not write to (read-only mount,
+    /// a symlinked dir outside the landlock roots). Loud, never silent.
+    pub failed: Vec<String>,
+}
+
+impl SeedReport {
+    const fn empty() -> Self {
+        SeedReport { wrote: Vec::new(), kept: Vec::new(), failed: Vec::new() }
+    }
+    /// the stderr line, and the shape the census token carries
+    pub fn line(&self) -> String {
+        format!(
+            "[seed] themes: wrote {:?} kept {:?} failed {:?}",
+            self.wrote, self.kept, self.failed
+        )
+    }
+}
+
+/// The last pass, for the census. One boot or one vault switch = one pass, so
+/// this is the CURRENT root's report; a switch replaces it rather than
+/// accumulating (the old vault's decision is not a fact about the new one).
+static LAST_SEED: Mutex<SeedReport> = Mutex::new(SeedReport::empty());
+
+/// Write the built-ins that are not already on disk. Returns what it did;
+/// errors are collected, never propagated — a vault we cannot seed still
+/// opens, and the scan then simply lists whatever IS there.
+pub fn seed_builtin_themes(root: &Path) -> SeedReport {
+    let td = root.join(".obsidian").join("themes");
+    let mut rep = SeedReport::default();
+    for t in BUILTIN_THEMES {
+        let d = td.join(t.name);
+        let files: [(&str, &str); 2] = [("manifest.json", t.manifest), ("theme.css", t.css)];
+        let missing: Vec<&(&str, &str)> = files.iter().filter(|(f, _)| !d.join(f).exists()).collect();
+        if missing.is_empty() {
+            rep.kept.push(t.name.to_string());
+            continue;
+        }
+        if let Err(e) = fs::create_dir_all(&d) {
+            rep.failed.push(format!("{}: {e}", t.name));
+            continue;
+        }
+        let mut err = None;
+        for (f, bytes) in missing {
+            if let Err(e) = fs::write(d.join(f), bytes) {
+                err = Some(format!("{}/{f}: {e}", t.name));
+                break;
+            }
+        }
+        match err {
+            Some(e) => rep.failed.push(e),
+            None => rep.wrote.push(t.name.to_string()),
+        }
+    }
+    rep
+}
+
+/// Seed `root` and record the pass for the census + the console. Called from
+/// exactly two places (main.rs): the boot that opens the persisted/`VAULT_DIR`
+/// vault, and `open_vault` (the vault switch and the freshly created vault).
+pub fn seed_and_record(root: &Path) {
+    let rep = seed_builtin_themes(root);
+    eprintln!("{}", rep.line());
+    if let Ok(mut g) = LAST_SEED.lock() {
+        *g = rep;
+    }
+}
+
+/// The recorded pass (empty before the first one: no vault open).
+pub fn last_seed() -> SeedReport {
+    LAST_SEED.lock().map(|g| (*g).clone()).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -88,15 +210,13 @@ mod tests {
         root
     }
 
-    /// write every shipped asset into `root`'s theme directory, the way the
-    /// seeding step will (item 4). Nothing clever: a directory and two files.
+    /// write every shipped asset into `root`'s theme directory — through the
+    /// PRODUCTION path (item 4), so the listing test below is an assertion
+    /// about what the app actually puts on a user's disk, not about a copy of
+    /// it written by the test.
     fn write_assets(root: &Path) {
-        for t in BUILTIN_THEMES {
-            let d = root.join(".obsidian").join("themes").join(t.name);
-            fs::create_dir_all(&d).unwrap();
-            fs::write(d.join("manifest.json"), t.manifest).unwrap();
-            fs::write(d.join("theme.css"), t.css).unwrap();
-        }
+        let rep = seed_builtin_themes(root);
+        assert!(rep.failed.is_empty(), "seeding a tmp vault failed: {:?}", rep.failed);
     }
 
     /// THE criterion of ledger item 3 (C3's first leg): our OWN listing
@@ -281,5 +401,157 @@ mod tests {
             crate::palette::PALETTES.len() - 1,
             "an asset with no palette row (or the reverse)"
         );
+    }
+
+    // ================= ledger item 4 / criterion 3: SEEDING =================
+    // The three legs C3 names, each as its own test, plus the two the
+    // per-FILE predicate is there for (a partial dir, and an unwritable
+    // vault). A reviewer runs: cargo test --manifest-path src-tauri/Cargo.toml
+    // builtins:: -- --nocapture
+
+    /// (bytes, mtime) of every file the seeder can write, so "unchanged" is a
+    /// comparison and not a claim. Missing files are recorded as `None` —
+    /// present in the map, so a file that VANISHED is a diff, not a silence.
+    fn snapshot(root: &Path) -> Vec<(PathBuf, Option<(Vec<u8>, std::time::SystemTime)>)> {
+        let td = root.join(".obsidian").join("themes");
+        let mut out = Vec::new();
+        for t in BUILTIN_THEMES {
+            for f in ["manifest.json", "theme.css"] {
+                let p = td.join(t.name).join(f);
+                let v = fs::read(&p).ok().and_then(|b| {
+                    fs::metadata(&p).and_then(|m| m.modified()).ok().map(|m| (b, m))
+                });
+                out.push((p, v));
+            }
+        }
+        out
+    }
+
+    fn names(v: &[String]) -> Vec<&str> {
+        v.iter().map(|s| s.as_str()).collect()
+    }
+
+    /// C3 LEG 1: a vault with no `.obsidian/themes/` gets the built-ins as
+    /// REAL theme dirs, and the predicate that lists third-party themes lists
+    /// them — the seeded bytes are the shipped bytes, so there is nothing
+    /// "built-in" about them once they are down.
+    #[test]
+    fn seed_writes_the_builtins_when_the_themes_dir_is_absent() {
+        let root = tmp_vault("absent");
+        assert!(!root.join(".obsidian/themes").exists(), "precondition: no themes dir");
+        let rep = seed_builtin_themes(&root);
+        let mut want: Vec<&str> = BUILTIN_THEMES.iter().map(|t| t.name).collect();
+        want.sort();
+        let mut got = names(&rep.wrote);
+        got.sort();
+        assert_eq!(got, want, "every built-in is written on a vault that has none");
+        assert!(rep.kept.is_empty() && rep.failed.is_empty(), "{rep:?}");
+        let s = themes_scan(&root);
+        assert_eq!(s.listed, want, "the seeded dirs must be LISTED by themefs's predicate");
+        assert!(s.excluded.is_empty(), "{:?}", s.excluded);
+        // the bytes on disk ARE the shipped asset, byte for byte
+        for t in BUILTIN_THEMES {
+            let d = root.join(".obsidian/themes").join(t.name);
+            assert_eq!(fs::read_to_string(d.join("manifest.json")).unwrap(), t.manifest);
+            assert_eq!(fs::read_to_string(d.join("theme.css")).unwrap(), t.css);
+        }
+    }
+
+    /// C3 LEG 2: a second boot writes NOTHING — same bytes, same mtime, and
+    /// the report says `kept`, which is the decision the census publishes.
+    /// (mtime equality on a filesystem with coarse timestamps could hide a
+    /// rewrite; that is why `seed_never_overwrites_a_user_edit` exists — an
+    /// edit is detectable whatever the clock resolution.)
+    #[test]
+    fn seed_twice_touches_neither_bytes_nor_mtime() {
+        let root = tmp_vault("twice");
+        seed_builtin_themes(&root);
+        let before = snapshot(&root);
+        assert!(before.iter().all(|(_, v)| v.is_some()), "first pass left a file unwritten");
+        let rep = seed_builtin_themes(&root);
+        assert!(rep.wrote.is_empty(), "a second boot wrote {:?}", rep.wrote);
+        assert_eq!(rep.kept.len(), BUILTIN_THEMES.len(), "{rep:?}");
+        assert_eq!(snapshot(&root), before, "a second boot changed bytes or mtime");
+    }
+
+    /// The rule that makes leg 2 worth anything: an existing file is never
+    /// opened, so a user's edit to a built-in survives every later boot.
+    #[test]
+    fn seed_never_overwrites_a_user_edit() {
+        let root = tmp_vault("edit");
+        seed_builtin_themes(&root);
+        let p = root.join(".obsidian/themes/Wasp/theme.css");
+        let edited = format!("{}\nbody.theme-dark {{ --text-normal: #ff00ff; }}\n", BUILTIN_THEMES[2].css);
+        assert_eq!(BUILTIN_THEMES[2].name, "Wasp", "index/name drift");
+        fs::write(&p, &edited).unwrap();
+        let rep = seed_builtin_themes(&root);
+        assert!(rep.wrote.is_empty(), "the edit was overwritten: {rep:?}");
+        assert_eq!(fs::read_to_string(&p).unwrap(), edited, "the user's bytes must survive");
+    }
+
+    /// C3 LEG 3: delete ONE and the next boot restores exactly that one. This
+    /// is the leg a global "already seeded this vault" flag fails, and the
+    /// reason the state is the filesystem.
+    #[test]
+    fn seed_restores_only_the_theme_that_was_deleted() {
+        let root = tmp_vault("deleted");
+        seed_builtin_themes(&root);
+        let gone = BUILTIN_THEMES[1].name; // Slate
+        fs::remove_dir_all(root.join(".obsidian/themes").join(gone)).unwrap();
+        let others = snapshot(&root)
+            .into_iter()
+            .filter(|(p, _)| !p.starts_with(root.join(".obsidian/themes").join(gone)))
+            .collect::<Vec<_>>();
+        let rep = seed_builtin_themes(&root);
+        assert_eq!(names(&rep.wrote), vec![gone], "only the deleted one is restored");
+        assert_eq!(rep.kept.len(), BUILTIN_THEMES.len() - 1, "{rep:?}");
+        let after = snapshot(&root)
+            .into_iter()
+            .filter(|(p, _)| !p.starts_with(root.join(".obsidian/themes").join(gone)))
+            .collect::<Vec<_>>();
+        assert_eq!(after, others, "restoring one theme touched another");
+        let s = themes_scan(&root);
+        assert!(s.listed.contains(&gone.to_string()), "restored but not listed: {:?}", s);
+    }
+
+    /// The predicate is per FILE, not per directory: a half-deleted built-in
+    /// (the dir and one file survive) is completed, and the surviving file is
+    /// not rewritten. A per-directory check would leave this vault with a
+    /// theme `themes_scan` excludes for ever.
+    #[test]
+    fn seed_completes_a_half_deleted_theme_without_touching_its_sibling() {
+        let root = tmp_vault("partial");
+        seed_builtin_themes(&root);
+        let d = root.join(".obsidian/themes").join(BUILTIN_THEMES[0].name);
+        fs::remove_file(d.join("theme.css")).unwrap();
+        let m_before = fs::metadata(d.join("manifest.json")).unwrap().modified().unwrap();
+        assert!(!themes_scan(&root).excluded.is_empty(), "precondition: the half theme is excluded");
+        let rep = seed_builtin_themes(&root);
+        assert_eq!(names(&rep.wrote), vec![BUILTIN_THEMES[0].name], "{rep:?}");
+        assert_eq!(fs::read_to_string(d.join("theme.css")).unwrap(), BUILTIN_THEMES[0].css);
+        assert_eq!(
+            fs::metadata(d.join("manifest.json")).unwrap().modified().unwrap(),
+            m_before,
+            "the sibling file was rewritten"
+        );
+        assert!(themes_scan(&root).excluded.is_empty(), "still excluded after completion");
+    }
+
+    /// A vault we cannot write to must OPEN anyway: the failure is collected
+    /// and reported (the census's `f<n>`), never panicked, never silent. The
+    /// unwritable case is forced the only portable way — a regular FILE where
+    /// the themes directory belongs, which is also a real user's typo.
+    #[test]
+    fn seed_reports_an_unwritable_vault_instead_of_panicking() {
+        let root = tmp_vault("unwritable");
+        fs::write(root.join(".obsidian").join("themes"), b"not a directory\n").unwrap();
+        let rep = seed_builtin_themes(&root);
+        assert!(rep.wrote.is_empty() && rep.kept.is_empty(), "{rep:?}");
+        assert_eq!(rep.failed.len(), BUILTIN_THEMES.len(), "every theme must report: {rep:?}");
+        for f in &rep.failed {
+            assert!(f.contains(':'), "a failure names the theme and the error: {f:?}");
+        }
+        assert!(rep.line().contains("failed ["), "the console line carries the failures");
+        assert_eq!(themes_scan(&root).listed.len(), 0, "nothing was listed, and nothing crashed");
     }
 }

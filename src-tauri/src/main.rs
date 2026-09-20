@@ -49,6 +49,12 @@ fn cur_notes(v: &State<Vault>) -> Vec<String> {
 
 /// open a vault: swap root + rebuild the index (one walk, one read per note)
 fn open_vault(v: &State<Vault>, p: &Path) {
+    // R3 (item 4): the vault SWITCH seeds too, and before the index walk, so
+    // the frontend's themes_scan — which runs after this returns — sees the
+    // built-ins as ordinary theme dirs on the new root. Seeding writes only
+    // paths that do not exist (builtins.rs), so switching back and forth over
+    // an already-seeded vault writes nothing.
+    builtins::seed_and_record(p);
     let ix = span_timed!("index_build", Index::build(p), serde_json::json!({"notes": 0}));
     *v.index.lock().unwrap() = ix;
     *v.root.lock().unwrap() = Some(p.to_path_buf());
@@ -1980,6 +1986,16 @@ fn set_css_theme(v: State<Vault>, name: String) -> Result<(), String> {
     themefs::set_css_theme(&root, &name)
 }
 
+/// themeone item 4 (C3): what the LAST seeding pass decided, for the
+/// `[bseed:w<n>k<n>f<n>]` census token. Read-only and side-effect free —
+/// seeding happens at boot / on the vault switch, never because something
+/// asked about it. A phase reads the decision off the window title; it then
+/// still has to prove the bytes on disk itself (the Rust tests do the mtime).
+#[tauri::command]
+fn theme_seed_report() -> builtins::SeedReport {
+    builtins::last_seed()
+}
+
 /* ---- themefs item 6: hot reload (DESIGN §8, criterion 4) ----------------
    The R11 vault watcher ticks at 1000 ms — it cannot meet stock's measured
    0.14–0.34 s repaint bar (T4) — so the APPLIED vault CSS gets its own
@@ -3654,6 +3670,14 @@ fn main() {
             Err(e) => eprintln!("landlock: off ({e})"),
         }
     }
+    // R3 (item 4): the built-ins are FILES, and this is where a vault with no
+    // `.obsidian/themes/` gets them — AFTER landlock, deliberately: seeding
+    // writes inside the vault, so it must survive the same confinement a
+    // user's own write does. If it does not, the failure is on the console and
+    // in the [bseed:] census token, and the vault still opens.
+    if let Some(p) = &init {
+        builtins::seed_and_record(p);
+    }
     // perf-index: one walk + read now, so the first note_open is already warm
     let index = init.as_deref().map(Index::build).unwrap_or_default();
     tauri::Builder::default()
@@ -3748,7 +3772,7 @@ fn main() {
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, smoke_css,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme, get_palette, set_palette,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
-            themes_scan, theme_css, get_css_theme, set_css_theme, vault_css_watch,
+            themes_scan, theme_css, get_css_theme, set_css_theme, theme_seed_report, vault_css_watch,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
             win_rect, win_gesture, win_move_proto, win_drag_start, win_minimize, win_toggle_max, win_close,
             tab_removed,
