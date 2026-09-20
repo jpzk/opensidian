@@ -65,6 +65,48 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ---
 
+## Minimal (Obsidian theme, test fixture)
+
+**Used in:** `docs/fixtures/themefs/vault-minimal/.obsidian/themes/Minimal/`
+— a REAL community theme committed as a test fixture (goal themefs,
+criterion 1: a vault carrying a theme installed by stock Obsidian 1.13.7's
+own community-theme installer must open in rustidian with that theme
+applied). The fixture is exactly what stock wrote:
+`manifest.json` (version 9.0.2) and `theme.css` (264,778 bytes,
+md5 `b73d22cec0325a10785d8ed6f21013b1`). Provenance and the install
+transcript: `docs/fixtures/themefs/README.md`.
+
+**Upstream:** https://github.com/kepano/obsidian-minimal
+**Licence:** MIT (full text also at
+`docs/fixtures/themefs/LICENSE-obsidian-minimal`, fetched from the upstream
+repository the day the fixture was made)
+
+```
+MIT License
+
+Copyright (c) 2020-2024 Steph Ango (@kepano)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
 ## Unresolved: CSS token contamination
 
 Separately from the palette above, and NOT covered by any licence grant:

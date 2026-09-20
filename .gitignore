@@ -61,3 +61,9 @@ dist/
 # was read from — line 2 (*.png) would drop exactly the evidence, so unignore
 # it here. The .bookmarks.json captures under captures/ are not ignored.
 !docs/recon-bmcompat/**/*.png
+
+# fixtures/themefs: the two shots ARE the fixture's provenance — stock 1.13.7's
+# own UI saying "Minimal INSTALLED/ACTIVE" and the Appearance pane showing the
+# dropdown on Minimal with "1 theme installed". Without this exception line 2
+# (*.png) silently drops exactly the evidence the fixture README cites.
+!docs/fixtures/themefs/shots/*.png
