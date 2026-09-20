@@ -75,3 +75,17 @@ dist/
 # recon-bmdrag: criterion 1 is "every claim names a committed shot" — the drop
 # indicator's position, thickness and colour are read off these pngs.
 !docs/recon-bmdrag/shots/*.png
+
+# recon-themes: T9 (the graph's background) is measured BY PIXEL — the four
+# sentinel counts in README.md's T9 ANSWER are re-derived from these pngs, so
+# the shots ARE the measurement. T1-T8's shots and logs were force-added
+# file-by-file with no rule, which is why T9's were silently dropped by line 2
+# on the first `git add -A docs/` (it printed nothing, exactly the failure the
+# recon-tabmenu comment above records). Rule, not a habit:
+!docs/recon-themes/**/*.png
+# ...and the probe transcripts every number is grepped out of. `logs` is
+# excluded repo-locally in .git/info/exclude (which cannot be committed, by
+# design); a .gitignore negation outranks info/exclude, and the DIRECTORY has
+# to be re-included or git never descends into it to see the files.
+!docs/recon-themes/**/logs/
+!docs/recon-themes/**/logs/*.log
