@@ -383,6 +383,56 @@ mod tests {
         }
     }
 
+    // ============ the gate's PIXEL ANCHORS, pinned to the assets ============
+    // scripts/smoke.sh's theme phases read the window and compare it to named
+    // hexes. Those hexes used to be pinned by a unit test in `palette.rs`
+    // against the table the values lived in; that file is deleted (ledger item
+    // 8) and the values live in the ASSETS now, so the pin moved here with
+    // them. Without it, an asset edit that moves an anchor is found by a
+    // 20-minute gate on the box instead of by a 0.1 s `cargo test`.
+
+    /// The text a `body.theme-<mode>` selector opens, up to its closing brace.
+    /// (The assets are generated, one flat declaration block per mode, no
+    /// nested rules and no `}` inside a comment — verified for all three.)
+    fn mode_block<'a>(css: &'a str, mode: &str) -> &'a str {
+        let sel = format!("body.theme-{mode} {{");
+        let start = css
+            .find(&sel)
+            .unwrap_or_else(|| panic!("no `{sel}` block in the asset"))
+            + sel.len();
+        let rest = &css[start..];
+        let end = rest
+            .find('}')
+            .unwrap_or_else(|| panic!("`{sel}` block is never closed"));
+        &rest[..end]
+    }
+
+    /// Every `--bg-base` anchor a gate phase asserts in PIXELS is the value
+    /// its asset declares, in the right mode block.
+    #[test]
+    fn the_anchor_values_the_gate_phases_read_are_the_ones_the_assets_declare() {
+        // (asset, dark --bg-base, light --bg-base) = smoke.sh's
+        // PAL_D_BASE/PAL_L_BASE (phase_palette), SL_D_BASE/SL_L_BASE
+        // (phase_obspal), WA_D_BASE/WA_L_BASE (phase_wasp).
+        let anchors = [
+            ("1984", "#0d0f31", "#e4e5f5"),
+            ("Slate", "#1c1c1d", "#fffffe"),
+            ("Wasp", "#242425", "#c4c4c5"),
+        ];
+        for (name, dark, light) in anchors {
+            let t = BUILTIN_THEMES.iter().find(|t| t.name == name).unwrap_or_else(|| {
+                panic!("{name} is not a shipped asset any more, but scripts/smoke.sh still reads its pixels")
+            });
+            for (mode, want) in [("dark", dark), ("light", light)] {
+                let decl = format!("--bg-base: {want};");
+                assert!(
+                    mode_block(t.css, mode).contains(&decl),
+                    "{name} body.theme-{mode} does not declare `{decl}` — that hex is what a gate phase asserts as a PIXEL, so moving it here without moving it there turns a 0.1 s failure into a 20-minute one"
+                );
+            }
+        }
+    }
+
     // ================= ledger item 4 / criterion 3: SEEDING =================
     // The three legs C3 names, each as its own test, plus the two the
     // per-FILE predicate is there for (a partial dir, and an unwritable
