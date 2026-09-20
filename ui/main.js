@@ -2119,13 +2119,28 @@ function updateTitle() {          // pane/focus census in the window title (head
   // the assertion of record in the phase; this token is how it knows WHICH
   // theme the pixels it just sampled are supposed to be.
   const themeTok = " [theme:" + (document.documentElement.getAttribute("data-theme") || "unset") + "]";
+  // R1 (themecsp): stock Obsidian marks the mode as a CLASS on <body>
+  // (.theme-dark / .theme-light); T6 measured a stock-shaped rule keys off
+  // body.theme-dark, which our :root[data-theme] shadows. We emit BOTH so
+  // stock-shaped CSS can match. This token reads the body class back OFF THE
+  // DOM (not off themeMode) so a phase can assert the marker stock CSS sees.
+  const bodyCls = document.body ? document.body.classList : null;
+  const thmTok = " [thm:" + (bodyCls && bodyCls.contains("theme-dark") ? "dark"
+                          : bodyCls && bodyCls.contains("theme-light") ? "light" : "unset") + "]";
   // PALETTE census, read off the DOM for the same reason: "default" here means
   // the attribute is ABSENT, which is the state the default palette IS. A probe
   // cannot pass by setting a variable.
   const palTok = " [palette:" + (document.documentElement.getAttribute("data-palette") || "default") + "]";
+  // themecsp crit 5: with the rig applicator active (RUSTIDIAN_SMOKE_CSS), publish
+  // body's COMPUTED background-color so a phase can prove a stock-shaped rule
+  // targeting body.theme-dark won a pixel (getComputedStyle before/after). Off
+  // (empty) on every normal run, so no pre-existing phase's census changes.
+  const thmpxTok = (smokeCssOn && document.body)
+    ? " [thmpx:" + getComputedStyle(document.body).backgroundColor.replace(/\s+/g, "") + "]"
+    : "";
   let t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
-            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + palTok + lg + md + gg + modal +
+            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + palTok + thmpxTok + lg + md + gg + modal +
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) +
             (rightOpen ? ":" + rTab : "") + "]" +
             (rightOpen && rpInfo ? " [rp:" + rpInfo + "]" : "") +
@@ -2914,6 +2929,25 @@ const titleEditing = () => !!titling;
    perturbation chords. */
 let typeProbe = false;
 inv("type_probe").then(v => { typeProbe = !!v; if (typeProbe) tpInstall(); }).catch(() => {});
+/* ---------- themecsp RIG APPLICATOR (test-only, RUSTIDIAN_SMOKE_CSS=<path>) ---
+   NOT a CSS loader. The threat model is attacker-controlled CSS living in the
+   document; the CHEAPEST injector for that is an inline <style> (style-src
+   'unsafe-inline' lets the style EXIST — what the egress proof falsifies is that
+   anything inside it can REACH the network). The backend hook returns the file
+   only when the operator set the env var; a shipped build never sets it and no
+   product feature calls smoke_css. Once injected we republish the census so the
+   [thmpx:] computed-style probe reflects whatever rule just won the cascade. */
+let smokeCssOn = false;
+inv("smoke_css").then(css => {
+  if (typeof css === "string" && css.length) {
+    const s = document.createElement("style");
+    s.id = "rustidian-smoke-css";
+    s.textContent = css;                 // inline: allowed to exist, must not egress
+    (document.head || document.documentElement).appendChild(s);
+    smokeCssOn = true;
+    try { updateTitle(); } catch (_) {}  // census now carries [thmpx:]
+  }
+}).catch(() => {});
 let tpPerturb = "";          // the negative control's forced font-size on .titleedit ("" = none)
 const tpHash = s => {        // FNV-1a/32 — font stacks are 250+ chars; the census compares
   let h = 2166136261;        // the HASH and prints the head, so "same family" is a measurement
@@ -4511,6 +4545,15 @@ let themeStored = false;                   // a user chose: the system stops dec
 function applyTheme(t) {
   themeMode = t === "light" ? "light" : "dark";
   document.documentElement.setAttribute("data-theme", themeMode);
+  // R1 (themecsp): ALSO emit stock Obsidian's mode marker as a class on <body>
+  // (.theme-dark / .theme-light), next to our :root[data-theme]. Stock-shaped
+  // CSS keys off body.theme-dark (T6), which our root attribute shadows; without
+  // this marker no stock CSS can ever apply. body exists (main.js loads at the
+  // end of <body>); guard anyway so an early call never throws.
+  if (document.body) {
+    document.body.classList.toggle("theme-dark", themeMode === "dark");
+    document.body.classList.toggle("theme-light", themeMode === "light");
+  }
   if (state) updateTitle();                // census [theme:<mode>] follows the DOM
                                            // (before a vault is open there is no
                                            // title census to refresh — updateTitle
