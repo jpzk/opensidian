@@ -62,11 +62,22 @@ macro_rules! builtin {
 
 /// The themes this binary can seed. Order is the order they are written; the
 /// scan sorts what it lists, so it is not user-visible.
+///
+/// THE ONE PLACE A THEME NAME MAY APPEAR IN CODE. The markers below are read by
+/// `scripts/lint-themes.sh` (ledger item 9 / criterion 2), which refuses a theme
+/// name anywhere else in `src-tauri/src` or `ui/`. The rows are allowed here —
+/// and ONLY here — because each one names a FILE: `builtin!` expands to
+/// `include_str!("../themes/<dir>/…")`, so the name is a path, not a value. The
+/// lint proves that per row: the asset directory must exist and its manifest's
+/// `name` must equal the row's name. The moment a row carried colours instead
+/// of a path it would be the palette table again, under a new name.
+// THEME ASSETS BEGIN
 pub const BUILTIN_THEMES: &[BuiltinTheme] = &[
     builtin!("1984", "1984"),
     builtin!("Slate", "Slate"),
     builtin!("Wasp", "Wasp"),
 ];
+// THEME ASSETS END
 
 /// Is `name` one of ours? (For the settings pane, to mark a row; it is NOT a
 /// privileged load path — after seeding a built-in is an ordinary file on disk
