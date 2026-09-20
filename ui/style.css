@@ -696,6 +696,17 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .tabbar { display: flex; height: 32px; background: var(--bg-ribbon); flex-shrink: 0;
           min-width: 0; overflow: hidden; user-select: none }   /* R18: a missed tab grab must not start a text-selection DnD (stock: tab strip unselectable) */
 .tabs { display: flex; flex: 1 1 0; min-width: 0; overflow: hidden }
+/* R4X.1 (navbtn): Back/Forward at the header's left edge (docs/recon-navbtn §1—§3).
+   Stock: enabled = dark glyph, disabled = light grey, hover paints a rounded
+   light rect ONLY when enabled; the title tooltip shows in both states.
+   R22: shrinkable + overflow:hidden so a squeezed pane clips, never overflows. */
+.navbtns { display: flex; align-items: center; flex: 0 1 auto; min-width: 0;
+           overflow: hidden; padding: 0 2px }
+.navbtn { background: none; border: 0; color: var(--text-chrome); cursor: pointer;
+          padding: 3px 5px; border-radius: 4px; display: flex; align-items: center }
+.navbtn:disabled { color: var(--text-chrome-muted); cursor: default }
+.navbtn:not(:disabled):hover { background: var(--border) }
+.navbtn svg { width: 12px; height: 12px; display: block }
 .modebtn { background: none; border: 0; color: var(--text-chrome-muted); cursor: pointer;
            padding: 0 10px; flex: 0 1 auto; min-width: 0; overflow: hidden }   /* R22: shrinkable, was flex-shrink:0 */
 .modebtn:hover { color: var(--text-chrome) }

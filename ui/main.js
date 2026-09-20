@@ -1407,7 +1407,17 @@ function mkGroup() {
   pane.className = "pane";
   pane._g = g;                                   // R20: gOf(el) — event-time group lookup
   pane.innerHTML =
-    '<div class="tabbar"><div class="tabs"></div>' +
+    // R4X.1 (navbtn): Back/Forward live at the LEFT edge of the view header,
+    // before the tabs — stock 1.13.7 measured placement (docs/recon-navbtn
+    // §1: back then forward, thin chevrons, ~28px apart, left of the title).
+    // Stock's titlebar variant is NOT copied: our titlebar is a gated surface
+    // (phases hdrdragwm/wmframe) — divergence recorded in the recon README.
+    '<div class="tabbar"><div class="navbtns">' +
+      '<button class="navbtn navback" title="Navigate back" disabled>' +
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 5l-7 7 7 7"/></svg></button>' +
+      '<button class="navbtn navfwd" title="Navigate forward" disabled>' +
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5l7 7-7 7"/></svg></button>' +
+    '</div><div class="tabs"></div>' +
     '<button class="modebtn" title="toggle reading view (Ctrl+E)"></button></div>' +
     '<div class="content">' +
       '<canvas class="graph" hidden></canvas>' +
@@ -1425,6 +1435,7 @@ function mkGroup() {
   g.pane = pane;
   const q = s => pane.querySelector(s);
   g.tabsEl = q(".tabs"); g.modebtn = q(".modebtn"); g.content = q(".content");
+  g.navback = q(".navback"); g.navfwd = q(".navfwd");
   g.graph = q(".graph");
   g.acEl = q(".ac"); g.status = q(".status");
   g.stBl = q(".st-bl"); g.stWc = q(".st-wc"); g.stCc = q(".st-cc");
@@ -1436,6 +1447,13 @@ function mkGroup() {
   g.lgOut.onchange = () => lgSet(g);
   pane.addEventListener("mousedown", () => focusGroup(g), true);  // R6.3: click focuses
   g.modebtn.onclick = () => cmdToggleMode(g);
+  // R4X.2 (navbtn): the buttons walk THIS pane's history through the R19
+  // model (histGo — same entry point as Alt+Left/Right, mouse 8/9, palette).
+  // A disabled button never fires (native disabled), matching stock's
+  // measured no-op (docs/recon-navbtn §2); histGo's own range guard backs
+  // that up even if the disabled paint were ever stale.
+  g.navback.onclick = () => histGo(-1, g);
+  g.navfwd.onclick = () => histGo(1, g);
   attachView(g, mkView(g));                      // scratch view until the first tab adopts it
   return g;
 }
@@ -1993,9 +2011,16 @@ function updateTitle() {          // pane/focus census in the window title (head
   const thmpxTok = (smokeCssOn && document.body)
     ? " [thmpx:" + getComputedStyle(document.body).backgroundColor.replace(/\s+/g, "") + "]"
     : "";
+  // R4X.4 (navbtn) census [nav:bXfX] — the app's DECIDED button state for the
+  // focused pane (1 = enabled), from the same navState the buttons paint from.
+  // Published on every title write, so it moves with nav, tab switch and
+  // focus change; a phase asserts the DECISION, never pixels.
+  navBtnSync();
+  const nv = navState(fg());
+  const navTok = " [nav:b" + (nv.b ? 1 : 0) + "f" + (nv.f ? 1 : 0) + "]";
   let t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
-            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + palTok + thmpxTok + lg + md + gg + modal +
+            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + palTok + thmpxTok + navTok + lg + md + gg + modal +
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) +
             (rightOpen ? ":" + rTab : "") + "]" +
             (rightOpen && rpInfo ? " [rp:" + rpInfo + "]" : "") +
@@ -3431,6 +3456,31 @@ async function navAnchor(g, anchor) {
    pushed (#6b) — the graph then re-centres through lgFollow like any nav.
    Restores the note + its scroll. Span history_nav: action -> note painted,
    or -> graph settled when a linked local graph had to re-centre. */
+/* R4X.3 (navbtn): the buttons' TRUTH comes from the R19 model, not pixels.
+   navState resolves the group's acting tab exactly the way histGo does — a
+   linked local graph delegates to its linked group — and reads hpos against
+   the history bounds. navBtnSync repaints every pane's pair from that state;
+   it is called from updateTitle, the one census choke point, so the buttons
+   can never be fresher or staler than the [nav:] token a phase asserts. */
+function navState(g) {
+  if (!g || g.active < 0) return { b: false, f: false };
+  let tab = g.tabs[g.active];
+  if (tab.kind === "lg" && tab.linkId != null) {
+    const h = groups().find(x => x.id === tab.linkId);
+    if (!h || h.active < 0) return { b: false, f: false };
+    tab = h.tabs[h.active];
+  }
+  if (tab.kind) return { b: false, f: false };
+  return { b: tab.hpos > 0, f: tab.hpos < tab.hist.length - 1 };
+}
+function navBtnSync() {
+  for (const h of groups()) {
+    if (!h.navback) continue;
+    const s = navState(h);
+    h.navback.disabled = !s.b;
+    h.navfwd.disabled = !s.f;
+  }
+}
 async function histGo(d, from) {
   let g = from || fg();
   if (!g || g.active < 0) return;
