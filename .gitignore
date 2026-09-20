@@ -67,3 +67,7 @@ dist/
 # dropdown on Minimal with "1 theme installed". Without this exception line 2
 # (*.png) silently drops exactly the evidence the fixture README cites.
 !docs/fixtures/themefs/shots/*.png
+
+# recon-bmdrag: criterion 1 is "every claim names a committed shot" — the drop
+# indicator's position, thickness and colour are read off these pngs.
+!docs/recon-bmdrag/shots/*.png

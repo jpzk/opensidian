@@ -2754,6 +2754,98 @@ fn bm_move_in_tree(tree: &mut Vec<BmNode>, ix: usize, into: Option<usize>) -> Re
     Ok(())
 }
 
+/* bmdrag — the two painted<->raw maps the drag commit needs. Rows and slots in
+   the PANE number only painted nodes, but bm_path_of's paths and the items
+   vecs are RAW: an Opaque node (the stock fixture's search entry, anything the
+   model cannot express) occupies a raw index the pane never shows. A drop
+   names a PAINTED slot, so it must be translated before Vec::insert or a
+   fixture carrying opaques lands the row one off. */
+fn bm_painted_ix(list: &[BmNode], raw: usize) -> usize {
+    list[..raw].iter().filter(|n| !matches!(n, BmNode::Opaque(_))).count()
+}
+fn bm_raw_slot(list: &[BmNode], pos: usize) -> usize {
+    let mut painted = 0usize;
+    for (i, n) in list.iter().enumerate() {
+        if matches!(n, BmNode::Opaque(_)) {
+            continue;
+        }
+        if painted == pos {
+            return i; // insert BEFORE the painted node currently in slot pos
+        }
+        painted += 1;
+    }
+    list.len() // pos == painted len: append after everything, opaques included
+}
+
+/* bmdrag — the drag gesture's commit: a POSITIONAL insert. bm_move_in_tree can
+   only PUSH (the Edit modal's semantics, doc §4); a drop names an exact slot,
+   so this fn shares its helpers and its refusal predicate and inserts at
+   `pos`, a PAINTED slot among `parent`'s children (parent None = top level).
+   A refusal Err returns BEFORE bm_apply ever writes: the file is not touched,
+   not even rewritten with identical bytes — recon-bmdrag case 6 measured stock
+   bumping mtime on a refused drop, so the phase asserts BYTES and both pass.
+   Both endpoints are resolved BEFORE the detach, then two fixups, because
+   removing the source renumbers (a) a destination group sitting after it at
+   the same level (raw path component) and (b) the slot itself on a
+   same-parent move — fixup (b) is the one-line break negctl-bmdrag deletes. */
+fn bm_drag_in_tree(tree: &mut Vec<BmNode>, ix: usize, parent: Option<usize>, mut pos: usize) -> Result<(), String> {
+    let src = bm_path_of(tree, ix).ok_or("no such row")?;
+    let dst = match parent {
+        None => None,
+        Some(g) => {
+            let p = bm_path_of(tree, g).ok_or("no such group")?;
+            match bm_at(tree, &p) {
+                Some(BmNode::Group { .. }) => {}
+                _ => return Err("target row is not a group".to_string()),
+            }
+            if p.len() >= src.len() && p[..src.len()] == src[..] {
+                return Err("cannot move a row into itself".to_string());
+            }
+            Some(p)
+        }
+    };
+    let lvl = src.len() - 1;
+    // src's painted index among its own siblings, read BEFORE the detach
+    let src_painted = {
+        let sib: &[BmNode] = if lvl == 0 {
+            tree
+        } else {
+            match bm_at(tree, &src[..lvl]) {
+                Some(BmNode::Group { items, .. }) => items,
+                _ => return Err("no such row".to_string()),
+            }
+        };
+        bm_painted_ix(sib, src[lvl])
+    };
+    let node = bm_take(tree, &src).ok_or("no such row")?;
+    let dstp = dst.map(|mut p| {
+        if p.len() > lvl && p[..lvl] == src[..lvl] && p[lvl] > src[lvl] {
+            p[lvl] -= 1; // fixup (a): the detach shifted src's later siblings
+        }
+        p
+    });
+    let same_list = match &dstp {
+        None => lvl == 0,
+        Some(p) => p.len() == lvl && p[..] == src[..lvl],
+    };
+    if same_list && src_painted < pos {
+        pos -= 1; // fixup (b): the slot was numbered against the pre-detach list
+    }
+    let items: &mut Vec<BmNode> = match &dstp {
+        None => tree,
+        Some(p) => match bm_at_mut(tree, p) {
+            Some(BmNode::Group { items, .. }) => items,
+            _ => {
+                tree.push(node); // never lose the row we detached
+                return Err("target group vanished".to_string());
+            }
+        },
+    };
+    let raw = bm_raw_slot(items, pos); // never exceeds items.len() by construction
+    items.insert(raw, node);
+    Ok(())
+}
+
 /* R9.8 — a bookmark IS a vault-relative name, so the note that changes its
    name takes its bookmark with it. Called from move_note_in and nowhere else:
    that is the one function that knows both ends, and it is the function BOTH
@@ -2908,6 +3000,15 @@ fn bm_group_delete(v: State<Vault>, ix: usize) -> Result<Vec<BmRow>, String> {
 #[tauri::command]
 fn bm_move(v: State<Vault>, ix: usize, into: Option<usize>) -> Result<Vec<BmRow>, String> {
     span_timed!("bm_move", bm_apply(&v, |t| bm_move_in_tree(t, ix, into)))
+}
+
+/* bmdrag — the drop's commit route: same bm_apply three-step as every other
+   structural command, so the pane repaints what the FILE says. A refused drop
+   (own descendant) is an Err out of f() and bm_apply never reaches
+   write_bm_tree: the refusal is byte-level by construction. */
+#[tauri::command]
+fn bm_drag(v: State<Vault>, ix: usize, parent: Option<usize>, pos: usize) -> Result<Vec<BmRow>, String> {
+    span_timed!("bm_drag", bm_apply(&v, |t| bm_drag_in_tree(t, ix, parent, pos)))
 }
 
 /* R11 watcher thread: every TICK_MS walk the vault (stat only), diff against
@@ -3642,7 +3743,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, read_note, write_note, create_note, render, render_blocks, block_lines, highlight_blocks, graph, graph_local, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, tags, tag_counts,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, smoke_css,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme, get_palette, set_palette,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
@@ -4951,6 +5052,103 @@ mod tests {
             "nested ctime too"
         );
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// R4X.n (bmdrag, criterion 4) — the r4x_criterion4 pattern applied to a
+    /// MOVE: the input is the same fixture stock 1.13.7 wrote while carrying
+    /// keys it does not recognise, and the edit is `bm_drag_in_tree` — the
+    /// drop path — not a field edit. Three drags, each proved BYTE-WISE by
+    /// string surgery on the fixture itself (relocate the entry's text block,
+    /// touch nothing else), so `zzUnknownFile` rides with its entry,
+    /// `zzUnknownGroup`, the whole `search` entry and every `ctime` are
+    /// proved unchanged by byte equality, not by a checklist:
+    ///   1. row 0 -> end of top level (parent=None): the block lands AFTER
+    ///      the search entry the pane never numbers — the painted-slot ->
+    ///      raw-index mapping on the write path, on disk;
+    ///   2. inverse drag: the file is byte-identical to the fixture again —
+    ///      a move away and back destroys nothing;
+    ///   3. row 0 -> first child of the group (recon case 2's prepend): the
+    ///      same block re-indented into `Work`'s items, everything else
+    ///      byte-for-byte the fixture.
+    #[test]
+    fn r4x_criterion4_move_through_the_drop_path_round_trips_byte_wise() {
+        let orig: &str =
+            include_str!("../../docs/fixtures/bmcompat/stock-1.13.7-unknown-keys.bookmarks.json");
+        let root = tmp_vault("bm-c4-move");
+        fs::create_dir_all(root.join(".obsidian")).unwrap();
+        fs::write(root.join(BM_FILE), orig).unwrap();
+
+        // the entry we move, exactly as the fixture spells it (top level,
+        // 4-space indent) — present exactly once
+        let block = "    {\n      \"type\": \"file\",\n      \"ctime\": 1789851379753,\n      \"path\": \"Projects/Roadmap.md\",\n      \"zzUnknownFile\": 42\n    },\n";
+        assert_eq!(orig.matches(block).count(), 1, "surgery anchor: the moved block");
+
+        // drag 1: row 0 (Roadmap) to the end of the top level. Painted
+        // top-level rows pre-detach: Roadmap=0, Work=1, Untitled group=2 —
+        // pos 3 is the below-everything slot recon case 3 measured (append
+        // to END of top level).
+        let mut t = read_bm_tree(&root);
+        assert_eq!(bm_rows_of(&t)[0].name, "Projects/Roadmap", "the drag source is the measured row");
+        bm_drag_in_tree(&mut t, 0, None, 3).unwrap();
+        write_bm_tree(&root, &t).unwrap();
+        let moved = String::from_utf8(bm_bytes(&root)).unwrap();
+        // expected bytes: the fixture minus the block, with the block (comma
+        // dropped) re-attached after the LAST entry — i.e. after the search
+        // entry, which paints no row: the raw slot is proved on disk
+        let tail_old = "      \"title\": \"Untitled group\"\n    }\n  ]\n}";
+        let tail_new = "      \"title\": \"Untitled group\"\n    },\n    {\n      \"type\": \"file\",\n      \"ctime\": 1789851379753,\n      \"path\": \"Projects/Roadmap.md\",\n      \"zzUnknownFile\": 42\n    }\n  ]\n}";
+        assert!(orig.ends_with(tail_old), "surgery anchor: the fixture's tail");
+        let want = orig.replacen(block, "", 1).replacen(tail_old, tail_new, 1);
+        assert_eq!(moved, want, "the move relocates one block and changes nothing else");
+
+        // drag 2: the inverse — back to painted slot 0 at the top level.
+        // Painted rows now: Work=0, Untitled group=1, Roadmap=2.
+        let mut t = read_bm_tree(&root);
+        assert_eq!(bm_rows_of(&t)[4].name, "Projects/Roadmap");
+        bm_drag_in_tree(&mut t, 4, None, 0).unwrap();
+        write_bm_tree(&root, &t).unwrap();
+        let restored = String::from_utf8(bm_bytes(&root)).unwrap();
+        assert_eq!(restored, orig, "a move away and back is byte-identity");
+
+        // drag 3: row 0 INTO the group `Work` as its first child (recon case
+        // 2: a drop onto a group PREPENDS). The block re-indents to 8 spaces;
+        // everything else is the fixture, byte for byte.
+        let mut t = read_bm_tree(&root);
+        bm_drag_in_tree(&mut t, 0, Some(1), 0).unwrap();
+        write_bm_tree(&root, &t).unwrap();
+        let nested = String::from_utf8(bm_bytes(&root)).unwrap();
+        let open_old = "      \"items\": [\n        {\n          \"type\": \"file\",\n          \"ctime\": 1789851462235,";
+        let open_new = "      \"items\": [\n        {\n          \"type\": \"file\",\n          \"ctime\": 1789851379753,\n          \"path\": \"Projects/Roadmap.md\",\n          \"zzUnknownFile\": 42\n        },\n        {\n          \"type\": \"file\",\n          \"ctime\": 1789851462235,";
+        assert_eq!(orig.matches(open_old).count(), 1, "surgery anchor: Work's items open");
+        let want = orig.replacen(block, "", 1).replacen(open_old, open_new, 1);
+        assert_eq!(nested, want, "into-group prepends the same bytes, re-indented");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// the refusal is byte-level BY CONSTRUCTION (recon case 6): a group
+    /// dragged into itself or its own descendant returns Err BEFORE the tree
+    /// is touched, so bm_apply never reaches the write and the file keeps its
+    /// bytes — asserted here on the tree, on disk by phase_bmdrag.
+    #[test]
+    fn r4x_drag_refuses_self_and_descendant_without_touching_the_tree() {
+        // rows: A=0(f), B=1(f), Work=2(g), inner=3(g, Work's child)
+        let mut t: Vec<BmNode> = vec![BmNode::file("A"), BmNode::file("B")];
+        bm_group_new_in(&mut t, None).unwrap();
+        bm_group_rename_in(&mut t, 2, "Work").unwrap();
+        bm_group_new_in(&mut t, Some(2)).unwrap();
+        let snap = |t: &Vec<BmNode>| {
+            bm_rows_of(t).iter().map(|r| format!("{}{}:{}", r.kind, r.depth, r.name)).collect::<Vec<_>>()
+        };
+        let before = snap(&t);
+        let wk = before.iter().position(|s| s.ends_with(":Work")).unwrap();
+        let inner = wk + 1; // its child paints directly under it
+        assert!(bm_drag_in_tree(&mut t, wk, Some(wk), 0).is_err(), "into itself: refused");
+        assert_eq!(snap(&t), before, "…and the tree is untouched");
+        assert!(bm_drag_in_tree(&mut t, wk, Some(inner), 0).is_err(), "into own descendant: refused");
+        assert_eq!(snap(&t), before, "…and the tree is untouched");
+        // a file row is not a drop target
+        assert!(bm_drag_in_tree(&mut t, wk, Some(0), 0).is_err(), "a file row is not a group");
+        assert_eq!(snap(&t), before);
     }
 
     /// criterion 4's decision beyond stock: a TOP-LEVEL key we do not author

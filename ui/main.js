@@ -1006,8 +1006,9 @@ function renderBm() {
       row.append(r.label ?? (grp ? r.name : r.name.split("/").pop()));
     }
     // a GROUP row opens nothing on click — it holds names, and collapsing is UNMEASURED
-    row.onclick = grp ? null : () => openInTab(r.name);
+    row.onclick = grp ? null : () => { if (bmClickEaten()) return; openInTab(r.name); };   // bmdrag: a drop's click opens nothing
     row.oncontextmenu = e => (grp ? bmGroupMenu(e, ix, r.name) : bmRowMenu(e, r.name, ix));
+    row.addEventListener("mousedown", e => bmDragStart(e, ix));   // bmdrag: every row drags, groups included (recon case 5)
     box.appendChild(row);
   });
   if (bmRenaming !== null) { const i = $("bmren"); if (i) { i.focus(); i.select(); } }
@@ -1159,6 +1160,150 @@ const bmGroupNew = parent => bmApply("bm_group_new", { parent });   // parent = 
 const bmGroupDelete = ix => bmApply("bm_group_delete", { ix });     // the SUBTREE goes with it, and nothing asks (R4X.3)
 function bmGroupRenameStart(ix) { bmRenaming = ix; renderBm(); }    // renderBm focuses+selects the editor it just painted
 function bmGroupRenameCommit(ix, title) { bmRenaming = null; return bmApply("bm_group_rename", { ix, title }); }
+/* ---------- bmdrag: DRAG A BOOKMARK ROW (R4X.n placeholders) ----------
+   R24.6's mouse machine, not a second convention (and HTML5 dragstart/
+   dataTransfer stays used NOWHERE — the R24.6 comment is binding here too):
+   mousedown + window mousemove/mouseup, a 6px Manhattan threshold, a
+   #tabghost chip, targets resolved once per rAF frame against rects cached at
+   drag start, the census published only on a DECISION change, the drag's
+   click eaten, the commit through bmApply.
+   THE DECISION is [bmdrop:...] ([wfp:] pattern, criterion 3) — the app's own
+   computed drop target, so a phase asserts what the app DECIDED:
+     gap@<parent>.<pos> — insert between siblings; <parent> = the parent
+       group's flat row ix, '-' for the top level; <pos> = painted slot among
+       its children. The pane background below the last row SNAPS to the END
+       of the top level at root depth (recon-bmdrag case 3).
+     grp@<ix>          — onto group row <ix>: the drop PREPENDS as its first
+       child (recon case 2, row fill, no line).
+     none              — drag live, no legal target: over the source row or
+       its own descendants NOTHING paints, and mouseup calls NOTHING — the
+       refusal never even reaches the backend (recon case 6; the file is
+       asserted on BYTES because stock rewrites identical bytes there).
+   Groups drag exactly like files, the whole subtree moves intact (case 5).
+   Spring-load (case 4: a COLLAPSED group under a ~1.5s held hover opens
+   mid-drag, takes the drop as a prepend, stays open) has NO trigger in this
+   pane — the chevron is static and groups cannot collapse (bmfolder recon) —
+   recorded here so the future collapse goal inherits the measurement. */
+let bmDropTok = "", bmEat = 0, bmDrop = null;
+function bmClickEaten() {                  // a completed drag must not also open the note under the cursor
+  const t = bmEat;
+  bmEat = 0;
+  return !!t && performance.now() - t < 400;
+}
+function bmSubEnd(ix) {                    // one past the last painted row of ix's subtree
+  const d = bmTree[ix].depth;
+  let j = ix + 1;
+  while (j < bmTree.length && bmTree[j].depth > d) j++;
+  return j;
+}
+function bmDragStart(e, ix) {
+  if (e.button !== 0 || bmRenaming !== null) return;
+  const src = bmTree[ix];
+  if (!src) return;
+  const sx = e.clientX, sy = e.clientY;
+  const label = src.label ?? (src.kind === "g" ? src.name : src.name.split("/").pop());
+  let ghost = null, line = null, hl = null, srcEl = null, zones = null, raf = 0, last = null;
+  bmDrop = null;
+  const clearFb = () => {
+    if (line) { line.remove(); line = null; }
+    if (hl) { hl.classList.remove("bmdrop-into"); hl = null; }
+  };
+  const step = () => {
+    raf = 0;
+    const ev = last;
+    if (!ghost) {
+      if (Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) < 6) return;
+      ghost = document.createElement("div");
+      ghost.id = "tabghost";
+      ghost.textContent = label;
+      document.body.appendChild(ghost);
+      // rects cached ONCE (R20, like treeDragStart), plus the parent/slot
+      // tables, so a gap names its exact slot without a per-frame model walk
+      const rows = [...document.querySelectorAll("#bmlist .bmrow")];
+      const par = bmTree.map((_, i) => bmParentOf(i));
+      const cix = bmTree.map((_, i) => { let n = 0; for (let k = 0; k < i; k++) if (par[k] === par[i]) n++; return n; });
+      zones = {
+        rows: rows.map((el, i) => ({ el, i, r: el.getBoundingClientRect() })),
+        box: $("bmlist").getBoundingClientRect(),
+        par, cix,
+        rootLen: par.filter(p => p === null).length,
+        exFrom: ix, exTo: bmSubEnd(ix),    // the dragged row and its descendants are not targets
+      };
+      srcEl = rows[ix];
+      if (srcEl) srcEl.classList.add("bmdrop-src");   // the dragged row keeps its fill (recon case 1)
+      bmDropTok = "none";
+      updateTitle();
+    }
+    ghost.style.transform = "translate3d(" + (ev.clientX + 10) + "px," + (ev.clientY + 12) + "px,0)";
+    const z = zones;
+    let nd = null;                         // {grp, parent, pos, y}
+    const gapAt = j => j >= z.rows.length
+      ? { parent: null, pos: z.rootLen, y: z.rows.length ? z.rows[z.rows.length - 1].r.bottom : z.box.top }
+      : { parent: z.par[j], pos: z.cix[j], y: z.rows[j].r.top };
+    if (ev.clientX >= z.box.left && ev.clientX <= z.box.right &&
+        ev.clientY >= z.box.top && ev.clientY <= z.box.bottom) {
+      let hit = null;
+      for (const w of z.rows) if (ev.clientY >= w.r.top && ev.clientY < w.r.bottom) { hit = w; break; }
+      if (!hit) {
+        // pane background: the line SNAPS below the last row, root depth (case 3)
+        if (!z.rows.length || ev.clientY >= z.rows[z.rows.length - 1].r.bottom) nd = gapAt(z.rows.length);
+      } else if (hit.i >= z.exFrom && hit.i < z.exTo) {
+        nd = null;                         // self or own descendant: NOTHING paints (case 6)
+      } else {
+        const band = ev.clientY - hit.r.top;
+        const grp = bmTree[hit.i] && bmTree[hit.i].kind === "g";
+        if (band < 6) nd = gapAt(hit.i);                       // top band: the gap above
+        else if (grp && band < hit.r.height - 6) nd = { grp: hit.i, parent: hit.i, pos: 0, y: 0 };   // group middle: PREPEND (case 2)
+        else nd = gapAt(hit.i + 1);                            // bottom band / file middle: the gap below
+      }
+      // the slot the row already occupies is not a move — treeDragStart's
+      // "the folder it is ALREADY in is not a destination", gap edition
+      if (nd && nd.grp == null && nd.parent === z.par[ix] && (nd.pos === z.cix[ix] || nd.pos === z.cix[ix] + 1)) nd = null;
+      // a first-child slot reached via a gap can still name a dragged group's
+      // descendant as parent — same refusal as the row-band test above
+      if (nd && nd.parent !== null && nd.parent >= z.exFrom && nd.parent < z.exTo) nd = null;
+    }
+    const tok = nd == null ? "none" : (nd.grp != null ? "grp@" + nd.grp : "gap@" + (nd.parent === null ? "-" : nd.parent) + "." + nd.pos);
+    if (tok !== bmDropTok) {
+      clearFb();
+      if (nd) {
+        if (nd.grp != null) {
+          hl = z.rows[nd.grp].el;
+          hl.classList.add("bmdrop-into"); // measured row fill, no line (case 2)
+        } else {
+          line = document.createElement("div");
+          line.id = "bmdropline";          // 3px accent line spanning the pane (cases 1/3)
+          line.style.left = z.box.left + "px";
+          line.style.width = z.box.width + "px";
+          line.style.top = (nd.y - 1) + "px";
+          document.body.appendChild(line);
+        }
+      }
+      bmDrop = nd;
+      bmDropTok = tok;
+      ghost.textContent = label + (nd ? " -> " + tok : "");   // the chip names the decision
+      updateTitle();                       // ONLY on a decision change — never per frame
+    }
+  };
+  const move = ev => { last = ev; if (!raf) raf = requestAnimationFrame(step); };
+  const up = async () => {
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", up);
+    if (raf) { cancelAnimationFrame(raf); raf = 0; if (last) step(); }
+    const d = bmDrop, dragged = !!ghost;
+    if (ghost) { ghost.remove(); ghost = null; }
+    clearFb();
+    if (srcEl) srcEl.classList.remove("bmdrop-src");
+    bmDropTok = "";
+    bmDrop = null;
+    if (!dragged) return;                  // below the threshold: a plain click, let it through
+    bmEat = performance.now();
+    if (!d) { updateTitle(); return; }     // no legal target: NOTHING is called — byte-level refusal
+    await bmApply("bm_drag", { ix, parent: d.parent, pos: d.pos });
+  };
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", up);
+}
 /* ---------- R4X.7 the Edit bookmark modal — the MOVE route ----------
    Stock's `Edit...` opens a modal whose `Bookmark group` dropdown lists the
    existing groups by TITLE with nesting shown by indentation (12-groupdd.png),
@@ -2047,6 +2192,7 @@ function updateTitle() {          // pane/focus census in the window title (head
               " [bmt:" + bmShape() + "]" +                          // R4X.5: the painted TREE SHAPE, parallel to [bmn:]
               bmIndentTok() +                                       // R4X.6: the painted indent STEP in px
               bmRenTok() +                                          // R4X.8: an inline group rename is OPEN and not yet committed
+              (bmDropTok ? " [bmdrop:" + bmDropTok.replace(/[[\]|]/g, "") + "]" : "") +   // bmdrag: the app-computed drop target, live only mid-drag
               (bmRows() === bmTree.length ? "" :                     // the smoke assertion must prove the PANE
                " [bmdesync:" + bmTree.length + "/" + bmRows() + "]") : "");   // repainted, not just the model
 
