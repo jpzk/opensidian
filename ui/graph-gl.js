@@ -113,7 +113,12 @@
         if (lost) return false;
         if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
         gl.viewport(0, 0, w, h);
-        gl.clearColor(bg[0], bg[1], bg[2], 1);   // per frame: the token can change between frames (palette / mode switch), the context does not
+        // bg is the resolved [r,g,b] main.js got from the browser. If resolution failed for
+        // BOTH the theme's text and our own :root fallback it hands null — keep the previous
+        // clear colour rather than clearing to a silent black: a channel this file cannot read
+        // is a colour it must not invent (a NaN channel clamps to 0, which is how a themed
+        // graph rendered black under a fixture typing a notation the old parser did not know).
+        if (bg && bg.length >= 3) { gl.clearColor(bg[0], bg[1], bg[2], 1); }   // per frame: the token can change between frames (palette / mode switch), the context does not
         gl.clear(gl.COLOR_BUFFER_BIT);
         if (eCount) pass(E, ep, ebuf, edges, eCount, view, w, h);
         if (nCount) pass(N, np, nbuf, nodes, nCount, view, w, h);

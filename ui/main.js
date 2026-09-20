@@ -5585,11 +5585,42 @@ async function startGraph(g, cfg) {
   // cached on the group (g.glr); a lost context gets a fresh canvas on the next open.
   // Created BEFORE the fetch resolves so context + shader setup never lands in the first sim frame.
   const pref = await prefP, rT0 = perf.now();
-  // #rrggbb / #rgb -> [r,g,b] in 0..1 for the GL instance arrays and the GL clear. The 2D path
-  // wants the string itself, so both come from the ONE value read out of the token block.
-  const hex = h => {
-    const s = h.trim(), x = s.length < 7 ? "#" + s[1] + s[1] + s[2] + s[2] + s[3] + s[3] : s;
-    return [parseInt(x.slice(1, 3), 16) / 255, parseInt(x.slice(3, 5), 16) / 255, parseInt(x.slice(5, 7), 16) / 255];
+  // COLOUR RESOLUTION — DESIGN §9. A custom property's computed value is the AUTHOR'S TEXT
+  // after var() substitution, not a colour: the browser never parses it, because a custom
+  // property has no type. Our own assets type their colours as hex; the committed Solarized
+  // fixture types the same colour in the functional notation; a theme downloaded tomorrow may
+  // type a named colour, a hue-based notation, or a mix. Every one of those is a legal CSS
+  // colour and the theme MEANT it, so the graph must paint it.
+  //
+  // This used to be a six-line hex parser (`parseInt(x.slice(1,3), 16)`), which is why the
+  // criterion-4 pixel phase caught a BLACK canvas under Solarized: a functional-notation token
+  // sliced as if it were hex yields NaN per channel, gl.clearColor(NaN, NaN, NaN, 1) clamps to
+  // zero, and the graph cleared to black on a theme whose background is dark cyan. The token
+  // had moved — the census proved it — and the pixel had not. A hand-written parser can only
+  // ever cover the syntaxes its author thought of; the browser already has the whole grammar.
+  //
+  // So: ASK THE BROWSER. A hidden probe span (in the document — a detached element has no
+  // computed style) takes the text as `color`, and getComputedStyle serialises it back in the
+  // one legacy notation this file reads, with 0..255 channels. CSS.supports() gates the
+  // assignment so an unparseable value is REFUSED BY NAME instead of silently leaving the
+  // previous colour behind. The 2D path wants a string, the GL path wants 0..1 floats: both
+  // come from this ONE resolution, so the two renderers cannot disagree about a colour.
+  const LEGACY = /^rgba?\s*\(/;                    // the serialisation this file reads back
+  const probe = document.createElement("span");
+  probe.style.cssText = "position:absolute;left:-9999px;top:0;width:0;height:0;visibility:hidden;pointer-events:none";
+  const cssColor = raw => {                        // theme text -> the browser's own serialisation, or null
+    const s = (raw || "").trim();
+    if (!s || !(window.CSS && CSS.supports && CSS.supports("color", s))) return null;
+    probe.style.color = "";                        // never let a refused value keep the previous one
+    probe.style.color = s;
+    const out = getComputedStyle(probe).color.trim();
+    return out && LEGACY.test(out) ? out : null;   // a wide-gamut serialisation is not read here
+  };
+  const chan01 = s => {                            // that serialisation -> [r,g,b] in 0..1 for GL
+    const m = String(s).match(/-?\d*\.?\d+/g);
+    if (!m || m.length < 3) return null;
+    const c = i => Math.min(1, Math.max(0, parseFloat(m[i]) / 255));
+    return [c(0), c(1), c(2)];
   };
   // GRAPH PALETTE. The graph is a <canvas>: it cannot inherit a colour the way every
   // other surface does, it has to ASK for one. It used to hold four hex literals — a
@@ -5632,8 +5663,18 @@ async function startGraph(g, cfg) {
     const ds = document.documentElement.dataset, key = (ds.theme || "") + "|" + (ds.vtheme || "");
     if (pal && palKey === key) return pal;
     const cs = getComputedStyle(document.body), p = {};   // item 5: the tokens live on body now — DESIGN §3 cause (1)
+    const csRoot = getComputedStyle(document.documentElement);   // our own token block: the DEFINED fallback
     for (const k in RGB) delete RGB[k];
-    for (const k in PAL_VAR) { const v = cs.getPropertyValue(PAL_VAR[k]).trim(); p[k] = v; RGB[v] = hex(v); }
+    document.body.appendChild(probe);                     // in the document only while we resolve
+    for (const k in PAL_VAR) {
+      // the theme's text first; if the browser refuses it (a syntax it does not know, an
+      // empty token, a wide-gamut serialisation), fall back to the SAME token off :root,
+      // which is our own block and always plain. Never empty, never transparent (DESIGN §7).
+      const themeText = cs.getPropertyValue(PAL_VAR[k]).trim();
+      const v = cssColor(themeText) || cssColor(csRoot.getPropertyValue(PAL_VAR[k]).trim()) || themeText;
+      p[k] = v; RGB[v] = chan01(v);                       // null only if BOTH were unreadable
+    }
+    probe.remove();
     palKey = key; pal = p;
     return p;
   };
