@@ -2022,9 +2022,19 @@ function updateTitle() {          // pane/focus census in the window title (head
   navBtnSync();
   const nv = navState(fg());
   const navTok = " [nav:b" + (nv.b ? 1 : 0) + "f" + (nv.f ? 1 : 0) + "]";
+  // R4X.4b [navg:<back cx>,<fwd cx>,<cy>] — the PAINTED centres of the focused
+  // pane's nav buttons, same idea as [mg:]/[bmg:]: the phase clicks MEASURED
+  // geometry, never a guessed pixel. Empty only if the pair is not painted.
+  let navgTok = "";
+  const nfg = fg();
+  if (nfg && nfg.navback) {
+    const nbr = nfg.navback.getBoundingClientRect(), nfr = nfg.navfwd.getBoundingClientRect();
+    if (nbr.width) navgTok = " [navg:" + Math.round(nbr.left + nbr.width / 2) + "," +
+      Math.round(nfr.left + nfr.width / 2) + "," + Math.round(nbr.top + nbr.height / 2) + "]";
+  }
   let t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
-            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + palTok + thmpxTok + navTok + lg + md + gg + modal +
+            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + palTok + thmpxTok + navTok + navgTok + lg + md + gg + modal +
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) +
             (rightOpen ? ":" + rTab : "") + "]" +
             (rightOpen && rpInfo ? " [rp:" + rpInfo + "]" : "") +
