@@ -72,6 +72,13 @@ dist/
 # (*.png) silently drops exactly the evidence the fixture README cites.
 !docs/fixtures/themefs/shots/*.png
 
+# fixtures/themeone: same reason, for the Solarized fixture criterion 4 needs —
+# stock 1.13.7's own community browser saying "Solarized INSTALLED / ACTIVE"
+# with its whole UI repainted, and the filter showing "Showing 1 theme", which
+# is what makes "installed via stock's OWN installer" checkable instead of
+# claimed.
+!docs/fixtures/themeone/shots/*.png
+
 # recon-bmdrag: criterion 1 is "every claim names a committed shot" — the drop
 # indicator's position, thickness and colour are read off these pngs.
 !docs/recon-bmdrag/shots/*.png
