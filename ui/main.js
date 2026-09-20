@@ -2114,15 +2114,38 @@ function updateTitle() {          // pane/focus census in the window title (head
   // cache would agree with the stale pixels and pass. The phase compares the pixels the graph
   // painted against what the stylesheet says it should have painted. [gl:] names the draw path
   // the same shot came from (gl = ui/graph-gl.js, 2d = the Canvas 2D fallback).
-  if (gg) {
-    // READ WHERE THE THEME DECLARES (item 5). The colour tokens moved from
-    // :root to body — a theme declares on body.theme-dark/.theme-light (T6
-    // RESULT 3) and custom-property substitution happens on the element that
-    // carries the declaration, so an <html> lookup sees our defaults and can
-    // never see a theme's value. That is DESIGN §3 cause (1), arriving with
-    // the declarations it follows; item 6 owns causes 2-4.
-    const cs = getComputedStyle(document.body), tokv = n => cs.getPropertyValue(n).trim().toLowerCase();
-    gg += " [gl:" + (fg().graphRenderer || "none") + "] [graphbg:" + tokv("--graph-bg") + "] [graphnode:" + tokv("--accent-blue") + "]";
+  // BOTH GRAPHS, NOT JUST THE GLOBAL ONE (goal themeone item 11, criterion 4). The
+  // block above only ever fired for a focused GLOBAL graph, so a phase asserting the
+  // LOCAL graph's canvas had no token to compare its pixels against and no way to
+  // know which draw path painted them. The tokens are document-level (the stylesheet
+  // read) plus the FOCUSED GROUP's renderer, so publishing them for a focused `lg`
+  // tab is the same read about the other canvas — nothing here is gg-specific.
+  // [gcv:<kind>:<x>,<y>,<w>,<h>] is the canvas's MEASURED rect in window coordinates
+  // (the window is undecorated at 0,0, so this is also the screenshot crop): a pixel
+  // phase crops what the app says it painted instead of a hand-counted box. That is
+  // the navbtn/phase_ux lesson — drive and measure the PUBLISHED body, never a
+  // remembered coordinate. The rect is omitted while the canvas is hidden (no graph
+  // is painting, so there is nothing to crop); the colour tokens are published
+  // whenever a graph tab is focused, exactly as before for `gg`.
+  let gpx = "";
+  {
+    const fkind = ft && ft.kind, fgr = fg();
+    if (fkind === "gg" || fkind === "lg") {
+      // READ WHERE THE THEME DECLARES (item 5). The colour tokens moved from
+      // :root to body — a theme declares on body.theme-dark/.theme-light (T6
+      // RESULT 3) and custom-property substitution happens on the element that
+      // carries the declaration, so an <html> lookup sees our defaults and can
+      // never see a theme's value. That is DESIGN §3 cause (1), arriving with
+      // the declarations it follows; item 6 owns causes 2-4.
+      const cs = getComputedStyle(document.body), tokv = n => cs.getPropertyValue(n).trim().toLowerCase();
+      gpx = " [gl:" + ((fgr && fgr.graphRenderer) || "none") + "] [graphbg:" + tokv("--graph-bg") + "] [graphnode:" + tokv("--accent-blue") + "]";
+      const cvEl = fgr && fgr.graph;
+      if (cvEl && !cvEl.hidden) {
+        const r = cvEl.getBoundingClientRect();
+        gpx += " [gcv:" + fkind + ":" + Math.round(r.left) + "," + Math.round(r.top) +
+               "," + Math.round(r.width) + "," + Math.round(r.height) + "]";
+      }
+    }
   }
   const tokq = s => String(s == null ? "" : s).replace(/[[\]|]/g, "").slice(0, 80);
   const modal = modalKind ? " [modal:" + modalKind + "]" +
@@ -2231,7 +2254,7 @@ function updateTitle() {          // pane/focus census in the window title (head
     : "";
   let t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
-            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + thmpxTok + snipTok + vthemeTok + creloadTok + vbridgeTok + vtgTok + bseedTok + vpxTok + navTok + navgTok + lg + md + gg + modal +
+            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + thmpxTok + snipTok + vthemeTok + creloadTok + vbridgeTok + vtgTok + bseedTok + vpxTok + navTok + navgTok + lg + md + gg + gpx + modal +
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) +
             (rightOpen ? ":" + rTab : "") + "]" +
             (rightOpen && rpInfo ? " [rp:" + rpInfo + "]" : "") +
