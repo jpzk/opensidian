@@ -2202,6 +2202,15 @@ function updateTitle() {          // pane/focus census in the window title (head
   // themefs item 8: alias rows the R4 bridge is painting (0 = no #vault-bridge
   // element — no theme, or a theme declaring none of the aliased stock names)
   const vbridgeTok = " [vbridge:" + vaultBridgeAliases + "]";
+  // themeone item 6 (R5 causes 3+4): the ROOT ATTRIBUTE the graph's cache key
+  // and its MutationObserver both read — "<generation>:<name>", "-" before the
+  // first theme decision of the session. Deliberately a SEPARATE token from
+  // [vtheme:]: that one reads the <style> element (what is painting), this one
+  // reads documentElement.dataset.vtheme (what the graph was TOLD). A phase
+  // asserting the repaint trigger needs the second, and the two disagreeing is
+  // itself the bug — a theme painting whose generation never reached the root
+  // is exactly the silent staleness cause 4 describes.
+  const vtgTok = " [vtg:" + (document.documentElement.dataset.vtheme || "-") + "]";
   // themeone item 4 (C3): the boot's seeding decision — w<wrote> k<kept>
   // f<failed>. Always on, like [snips:]/[vtheme:]: a fresh vault must read
   // w3k0f0 and the NEXT boot on the same vault k3, which is legs 1 and 2 of
@@ -2222,7 +2231,7 @@ function updateTitle() {          // pane/focus census in the window title (head
     : "";
   let t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
-            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + thmpxTok + snipTok + vthemeTok + creloadTok + vbridgeTok + bseedTok + vpxTok + navTok + navgTok + lg + md + gg + modal +
+            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + thmpxTok + snipTok + vthemeTok + creloadTok + vbridgeTok + vtgTok + bseedTok + vpxTok + navTok + navgTok + lg + md + gg + modal +
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) +
             (rightOpen ? ":" + rTab : "") + "]" +
             (rightOpen && rpInfo ? " [rp:" + rpInfo + "]" : "") +
@@ -4683,8 +4692,10 @@ function closeAttach() { $("anew").hidden = true; updateTitle(); }
        know a theme exists. A per-pane or per-container attribute would be a
        second source of truth and would leave whichever container was forgotten
        painting the old theme (negative control N2 drives exactly that).
-     - the graph reads its colours out of getComputedStyle(documentElement)
-       (commit 2a0f7ba), so it follows the same attribute with no extra wiring.
+     - the graph reads its colours out of getComputedStyle(document.body) — off
+       BODY since themeone item 6, because that is where a theme's declarations
+       land (DESIGN §3 cause 1); it follows the mode through the same body class
+       with no extra wiring, and the ACTIVE THEME through data-vtheme.
    themeMode is the in-memory copy; persistence and the system default are a
    separate concern and land on top of applyTheme(), not inside it. */
 const MQ_DARK = matchMedia("(prefers-color-scheme: dark)");
@@ -4795,6 +4806,31 @@ let vaultBridgeAliases = 0;   // census [vbridge:<n>] — item 8 alias rows pain
    so on a fresh vault the same title carries w3 AND the three listed names,
    and on the second boot k3 with the same names. "-" until a vault is open. */
 let vaultSeedTok = "-";
+/* themeone item 6 (R5 causes 3+4): THE ACTIVE THEME'S IDENTITY, ON THE ROOT.
+   The graph caches its five tokens (palette(), below) and repaints on a root
+   attribute change. Both were keyed on data-theme/data-palette, and injecting
+   or removing <style id="vault-theme"> moves NEITHER — so before this, picking
+   a theme with the mode held left the graph holding the previous theme's
+   colours AND never redrawing to notice (DESIGN §3 causes 3 and 4).
+   ONE mechanism kills both, because both read the same attribute: themeInject
+   and themeRemove — already the only authority over the theme element — write
+   `data-vtheme` here, and the attribute then enters the cache key (cause 3)
+   and the existing attributeFilter (cause 4).
+   THE GENERATION COUNTER IS NOT DECORATION. A hot reload rewrites the SAME
+   theme's bytes under the SAME name (T4 RESULT 2 measured stock repainting an
+   edit to the active theme in 0.14-0.34 s); a name-only attribute would be
+   unchanged across that write, the MutationObserver would not fire, and the
+   graph would keep painting the pre-edit colours. The counter changes on every
+   inject and every remove, so "same name, new bytes" is a different value.
+   Removal writes a generation with an EMPTY name rather than deleting the
+   attribute: `delete dataset.x` is also an attribute mutation and would fire
+   the observer, but it would leave the key equal to the no-theme boot key, so
+   a theme applied and removed within one cache lifetime would hand back the
+   themed colours. */
+let themeGen = 0;
+const vthemeMark = name => {
+  document.documentElement.dataset.vtheme = (++themeGen) + ":" + (name || "");
+};
 async function themeInject(name) {
   try {
     const r = await inv("theme_css", { name });
@@ -4827,6 +4863,12 @@ async function themeInject(name) {
     } else if (br) br.remove();
     // census [vbridge:<n>] — alias rows actually painting (one var() each)
     vaultBridgeAliases = bcss ? (bcss.match(/var\(/g) || []).length : 0;
+    // item 6: the bytes are IN the DOM now — publish the identity that the
+    // graph's cache key and its MutationObserver both read. AFTER the write,
+    // never before: the observer fires synchronously at the end of this task,
+    // and a mark set first would have the graph re-read tokens off a
+    // stylesheet that has not been swapped yet.
+    vthemeMark(name);
     if (r.message) say(r.message, "theme");  // R4X.4: the strip is LOUD
   } catch (e) {
     themeRemove();                           // stale css must not keep painting
@@ -4841,6 +4883,7 @@ function themeRemove() {
   const br = document.getElementById("vault-bridge");
   if (br) br.remove();
   vaultBridgeAliases = 0;
+  vthemeMark("");   // item 6: "no theme, as of generation n" — a new key, and a repaint
 }
 /* pick a theme (the settings control's route): file FIRST — a refused write
    (unparseable appearance.json) must not paint a choice that will not
@@ -5514,17 +5557,31 @@ async function startGraph(g, cfg) {
   // other surface does, it has to ASK for one. It used to hold four hex literals — a
   // second palette that no theme could reach, so a light theme would have left the
   // graph painting dark-theme blue on white. These read the SAME tokens the stylesheet
-  // defines, off documentElement, so there is exactly one definition of each colour.
+  // defines, off document.body, so there is exactly one definition of each colour.
+  //
+  // OFF BODY, NOT documentElement — DESIGN §3 cause (1), and the single reason the
+  // graph was not themed at all. A theme's declarations land on `body.theme-dark` /
+  // `body.theme-light` (T6 measured stock putting the mode class on BODY, and our
+  // stylesheet now declares there too); custom properties inherit, so a lookup on
+  // <body> sees the theme's value when it exists and our :root-side fallback when it
+  // does not, while a lookup on <html> can only ever see ours. T9 confirmed a
+  // <canvas> cannot be painted by a custom property at all — stock READS the computed
+  // value and fills with it — so the element we read off is the whole contract.
   // bg is the fifth: --graph-bg, the canvas background on BOTH draw paths (the 2D fill
   // and the WebGL clear colour) — ui/graph-gl.js holds no colour of its own.
   //
-  // CACHED PER THEME x PALETTE, not per node: getComputedStyle forces a style resolution
-  // and draw() runs at up to 60 Hz over every node, so the lookup happens once per draw()
-  // and only re-reads when a root attribute actually changes (R13 graph_draw budget).
-  // THE KEY NAMES BOTH AXES. It used to be data-theme alone (goal graphtheme, D1): a
-  // palette switch with the mode held kept the previous palette's colours until the next
-  // mode flip, because nothing in the key had changed. Every attribute the stylesheet
-  // selects a token block on is in the key, or the cache is a second, stale palette.
+  // CACHED PER (MODE x ACTIVE THEME), not per node: getComputedStyle forces a style
+  // resolution and draw() runs at up to 60 Hz over every node, so the lookup happens
+  // once per draw() and only re-reads when a root attribute actually changes (R13
+  // graph_draw budget).
+  // THE KEY NAMES BOTH AXES — every axis the stylesheet selects a token block on, or
+  // the cache IS a second, stale palette. It was data-theme alone (goal graphtheme,
+  // D1): a palette switch with the mode held kept the previous colours until the next
+  // mode flip, because nothing in the key had changed. themeone deletes the palette
+  // axis and replaces it with the vault THEME, whose identity does not live in an
+  // attribute of its own accord — injecting <style id="vault-theme"> moves nothing on
+  // the root. data-vtheme is written for exactly this (see vthemeMark), and carries a
+  // GENERATION so a hot reload of the same theme's bytes is a new key too (cause 3).
   // RGB is keyed by the colour STRING, so it is rebuilt with the palette — a stale key
   // would hand the GL path `undefined` and paint nothing. RGB is ONE object, emptied in
   // place, never reassigned: `RGB[palette().bg]` evaluates the base RGB BEFORE the call,
@@ -5534,7 +5591,7 @@ async function startGraph(g, cfg) {
   const RGB = {};
   let pal = null, palKey = null;
   const palette = () => {
-    const ds = document.documentElement.dataset, key = (ds.theme || "") + "|" + (ds.palette || "");
+    const ds = document.documentElement.dataset, key = (ds.theme || "") + "|" + (ds.vtheme || "");
     if (pal && palKey === key) return pal;
     const cs = getComputedStyle(document.body), p = {};   // item 5: the tokens live on body now — DESIGN §3 cause (1)
     for (const k in RGB) delete RGB[k];
@@ -5983,7 +6040,7 @@ async function startGraph(g, cfg) {
     if (g.simGen !== gen || !g.graphOn) { obs.disconnect(); if (g.attrObs === obs) g.attrObs = null; return; }
     redraw();
   });
-  obs.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "data-palette"] });
+  obs.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "data-vtheme"] });
   g.attrObs = obs;
   // graph-webgl: context lost -> this sim swaps to the 2D path for good (a later open gets a fresh gl canvas)
   g.glLost = () => {

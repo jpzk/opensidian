@@ -121,6 +121,26 @@ body {
   --bg-button-primary: var(--interactive-accent);
   --text-banner-error: var(--text-error);
   --accent-blue: var(--text-accent);
+  /* THE GRAPH CANVAS (2D fill + WebGL clear). MEASURED, not chosen: T9
+     (docs/recon-themes/README.md, "which stock name paints the GRAPH VIEW
+     canvas background") painted stock's graph with --background-primary in
+     BOTH graphs and BOTH modes — global dark 228790 px, local dark 149269 px,
+     global light 216693 px, local light 148213 px of sentinel, each filling
+     its pane — while --graph-bg itself moved 0 px there, i.e. it is OUR name
+     and no theme will ever spell it. So the row belongs HERE, in layer 2, and
+     not in layer 3 where item 5 parked it: one hop to the stock name, and
+     because --background-primary is itself var(--color-base-00, ...), a theme
+     that enters at the RAMP and never spells a semantic name reaches the
+     canvas too. That is the Solarized-class entry point T9 measured, and it
+     is what an alias TABLE could not have carried (DESIGN §3 cause 2 —
+     "dissolves rather than being fixed row by row").
+     THE DEFAULT'S GRAPH PIXEL MOVES because of this row, and that is the
+     point, not a side effect: dark #11111b -> #1e1e2e, light #f6f6f6 ->
+     #ffffff. It was --bg-ribbon (the pane colour BEHIND the canvas), which
+     made the untuned default look right by painting the graph the colour of
+     the hole it sits in — and made every theme wrong, because a theme that
+     repaints the editor background does not repaint our ribbon. */
+  --graph-bg: var(--background-primary);
   --accent-red: var(--color-red, #f38ba8);   /* ramp only: stock's --color-red IS this surface (T6b), and no semantic name of ours sits between */
   --tag-bg: var(--tag-background);
   --highlight-yellow: var(--text-highlight-bg);
@@ -130,7 +150,6 @@ body {
      scrims and shadows, the bookmark drop feedback). They keep OUR names and
      OUR values, which is legal for any theme file to declare — the built-in
      assets declare every one of them, and a third-party theme may too. */
-  --graph-bg: var(--bg-ribbon);   /* the graph canvas (2D fill + WebGL clear) — item 6 (R5) moves this onto the measured stock name (T9); until then it is the pane colour behind it, unchanged */
   --bg-elevated: #26263a;
   --bg-banner-error: #45283c;
   --bg-button-plain: #e0e0e0;
