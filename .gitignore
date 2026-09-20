@@ -75,3 +75,9 @@ dist/
 # recon-bmdrag: criterion 1 is "every claim names a committed shot" — the drop
 # indicator's position, thickness and colour are read off these pngs.
 !docs/recon-bmdrag/shots/*.png
+
+# recon-bmcollapse: criterion 2 is "every shot the README cites exists under
+# docs/recon-bmcollapse/shots/ and is NOT git-ignored" — line 2 (*.png) would
+# drop exactly the evidence for where stock keeps a collapsed group, what the
+# pane-header toggle does and what is at the bottom edge of the sidebar.
+!docs/recon-bmcollapse/shots/*.png
