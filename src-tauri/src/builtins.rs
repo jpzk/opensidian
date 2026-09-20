@@ -333,48 +333,84 @@ mod tests {
        sharing a literal is what an extraction that crossed a block boundary
        looks like, and that is still checkable — against the assets themselves.
        The per-asset floor keeps it from passing on an empty tree. */
-    fn asset_values(css: &str) -> Vec<String> {
+    /* The ONE non-colour declaration the built-in assets are allowed to carry,
+       and the argument for it. `Wasp` is the FRAME theme (goal wasp): its
+       palette block always declared a MEASURED `--frame-width` beside its
+       colours — the frame is part of what that theme IS, not chrome the theme
+       merely tints — so item 3's migration carried the length into the asset
+       with the colours it belongs to. Everything else an asset declares must
+       be a colour a browser can parse. A second entry here cannot be added by
+       an extraction accidentally widening: it has to be typed, with a reason,
+       which is the whole point of the list being a list and not a predicate
+       like "anything with a unit suffix". */
+    const NON_COLOUR_TOKENS: &[&str] = &["--frame-width"];
+
+    /// Every `--token: value;` an asset declares, as (token, value), with the
+    /// `var()` rows dropped: a var() row carries no value of its own, it
+    /// POINTS at one.
+    fn asset_values(css: &str) -> Vec<(String, String)> {
         let mut out = Vec::new();
         for line in css.lines() {
             let line = line.trim();
             if !line.starts_with("--") {
                 continue;
             }
-            let Some((_, rest)) = line.split_once(':') else { continue };
+            let Some((name, rest)) = line.split_once(':') else { continue };
             let Some((val, _)) = rest.split_once(';') else { continue };
-            let val = val.trim();
+            let (name, val) = (name.trim(), val.trim());
             // a var() row carries no colour of its own: it POINTS at one
             if val.starts_with("var(") || val.is_empty() {
                 continue;
             }
-            out.push(val.to_string());
+            out.push((name.to_string(), val.to_string()));
         }
         out.sort();
         out.dedup();
         out
     }
 
-    /// Every value an asset declares is a colour a browser can parse, and no
-    /// two assets declare the SAME one.
+    /// Every COLOUR value an asset declares is a colour a browser can parse,
+    /// no two assets declare the SAME one, and the only declarations exempt
+    /// from "is a colour" are the named ones in `NON_COLOUR_TOKENS`.
     #[test]
     fn asset_values_are_wellformed_and_no_two_assets_share_one() {
         let mut seen: Vec<(String, &str)> = Vec::new();
         for t in BUILTIN_THEMES {
-            let vals = asset_values(t.css);
-            assert!(
-                vals.len() >= 30,
-                "non-vacuity floor: {} declares {} colour values, expected >= 30",
-                t.name,
-                vals.len()
-            );
-            for v in vals {
+            let mut colours: Vec<String> = Vec::new();
+            for (name, v) in asset_values(t.css) {
+                if NON_COLOUR_TOKENS.contains(&name.as_str()) {
+                    // A length may legitimately repeat across assets, so it is
+                    // held out of the cross-asset uniqueness check too — the
+                    // defect that check exists to catch (an extraction
+                    // crossing a block boundary) is about colours.
+                    continue;
+                }
                 let ok = v.starts_with('#')
                     || v.starts_with("rgba(")
                     || v.starts_with("rgb(")
                     || v.starts_with("hsl(")
                     || v == "transparent"
                     || v == "currentColor";
-                assert!(ok, "{}: {v:?} is not a colour literal this app knows how to ship", t.name);
+                assert!(
+                    ok,
+                    "{}: {name} = {v:?} is not a colour literal this app knows how to ship, \
+                     and {name} is not in NON_COLOUR_TOKENS",
+                    t.name
+                );
+                colours.push(v);
+            }
+            // sorted BY VALUE before the dedup: one asset naming the same hex
+            // from two tokens (or from its dark and its light block) is one
+            // colour, not a collision with itself.
+            colours.sort();
+            colours.dedup();
+            assert!(
+                colours.len() >= 30,
+                "non-vacuity floor: {} declares {} colour values, expected >= 30",
+                t.name,
+                colours.len()
+            );
+            for v in colours {
                 if let Some((_, other)) = seen.iter().find(|(s, _)| *s == v) {
                     panic!("{v:?} is declared by BOTH {other} and {} — the extraction crossed a block boundary", t.name);
                 }

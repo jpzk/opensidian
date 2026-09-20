@@ -144,6 +144,33 @@ body {
   --accent-red: var(--color-red, #f38ba8);   /* ramp only: stock's --color-red IS this surface (T6b), and no semantic name of ours sits between */
   --tag-bg: var(--tag-background);
   --highlight-yellow: var(--text-highlight-bg);
+  /* ---- R15.10-13 CONTENT COLOURS, MOVED HERE FROM :root (typo regression) --
+     These seven rows derive a content-area colour from a layer-1 stock name,
+     so they are layer 2 by definition and they have to be DECLARED where
+     layer 1 is. They used to sit in the R15 typography block at `:root`
+     (html) with the rest of that block, which was correct while layer 1 also
+     lived at `:root` — item 5 moved layer 1 onto `body` (a stock theme
+     declares on body.theme-dark / body.theme-light, T6 RESULT 3), and a
+     `var()` naming a property the element does not have resolves to the
+     GUARANTEED-INVALID value, not to a fallback that was never written. So
+     every one of them computed to nothing on html and inherited that nothing
+     down: `background-color: var(--code-background)` and
+     `border-inline-start: 2px solid var(--blockquote-border-color)` are then
+     INVALID AT COMPUTED-VALUE TIME and drop out entirely. That is what the
+     gate measured: CODE_H=1 (no code box to trim — stock 22) and
+     BQ_BORDER_W / LP_BQ_TEXT_X empty (no blockquote border to find).
+     The metric half of the R15 block (sizes, weights, indents, radii) names
+     no colour and stays at `:root`, where the fonts and the layout numbers
+     belong. Splitting on "does this row reference a layer-1 name" is the
+     whole rule, and it is checkable by grepping that block for `var(--text-`
+     / `var(--background-` / `var(--interactive-`. */
+  --list-marker-color: var(--text-chrome-muted);
+  --checkbox-border-color: var(--text-chrome-muted);
+  --checkbox-color: var(--bg-button-primary);
+  --checkbox-marker-color: var(--bg-base);
+  --checklist-done-color: var(--text-chrome-faint);
+  --code-background: var(--bg-surface);
+  --blockquote-border-color: var(--text-accent);
   /* ==================== LAYER 3 — OURS ALONE =============================
      An editor has surfaces a stock recon never showed painting through any
      name we probed (a ribbon ink, an elevated popover, a faint rule, the
@@ -961,12 +988,17 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
   /* R15.10-13 lists / checkbox / code / blockquote */
   --indent-unit: 0.5625em; --indent-size: 4; --list-indent: calc(var(--space-unit) * 7);
   --list-indent-editing: calc(var(--space-unit) * 2); --list-spacing: calc(var(--space-unit) / 2); --list-bullet-size: calc(var(--space-unit) * 1.5); --list-bullet-radius: calc(var(--list-bullet-size) / 2);
-  --list-marker-color: var(--text-chrome-muted);
-  --checkbox-size: calc(var(--space-unit) * 3.5); --checkbox-radius: calc(var(--space-unit) * 0.75); --checkbox-border-color: var(--text-chrome-muted);
-  --checkbox-color: var(--bg-button-primary); --checkbox-marker-color: var(--bg-base);
-  --checkbox-margin-inline-start: calc(var(--space-unit) * 3); --checklist-done-decoration: line-through 0.06em; --checklist-done-color: var(--text-chrome-faint);
-  --code-size: 0.92em; --code-background: var(--bg-surface); --code-radius: calc(var(--space-unit) * 1.5);
-  --blockquote-border-thickness: calc(var(--space-unit) * 0.75); --blockquote-border-color: var(--text-accent);
+  --checkbox-size: calc(var(--space-unit) * 3.5); --checkbox-radius: calc(var(--space-unit) * 0.75);
+  --checkbox-margin-inline-start: calc(var(--space-unit) * 3); --checklist-done-decoration: line-through 0.06em;
+  --code-size: 0.92em; --code-radius: calc(var(--space-unit) * 1.5);
+  --blockquote-border-thickness: calc(var(--space-unit) * 0.75);
+  /* THE SEVEN COLOUR ROWS OF THIS BLOCK LIVE ON `body`, NOT HERE — see the
+     "R15.10-13 CONTENT COLOURS" comment in the body token block at the top of
+     this file: --list-marker-color, --checkbox-border-color, --checkbox-color,
+     --checkbox-marker-color, --checklist-done-color, --code-background,
+     --blockquote-border-color. Each derives from a layer-1 stock name, layer 1
+     is declared on body, and a var() naming a property this element does not
+     have is guaranteed-invalid, not a fallback. Keep this block colour-free. */
   /* R15.14 dark tokens (content area only — app chrome keeps its own token layer): --text-normal / --text-muted / --text-faint / --background-primary(-alt) / --interactive-accent all live in the ONE token block at the top of this file */
   --radius-s: 4px; --size-4-6: 24px; --size-4-8: 32px; --file-line-width: calc(var(--space-unit) * 180); --file-margins: var(--size-4-8);
 }

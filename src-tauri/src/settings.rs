@@ -304,7 +304,12 @@ mod tests {
             }
         }
         let enabled = rows().iter().filter(|r| r.enabled).count();
-        assert_eq!(enabled, 6, "enabled-row count changed — say why in progress.md (R30)");
+        // 6 -> 5 (themeone item 7 / C1): the palette dropdown on Appearance >
+        // "Current community themes" is DELETED, so BACKED no longer names
+        // that row and it renders the way every other unimplemented row does.
+        // The pane publishes exactly one theme control ("Themes"). Recorded in
+        // docs/goal/themeone progress.md as R30 requires.
+        assert_eq!(enabled, 5, "enabled-row count changed — say why in progress.md (R30)");
     }
 
     /// a key is "real" only if main.rs actually reads or writes it
