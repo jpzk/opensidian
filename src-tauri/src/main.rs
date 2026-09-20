@@ -17,6 +17,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use tauri::State;
 
+mod builtins;
 mod index;
 mod outline;
 mod palette;
