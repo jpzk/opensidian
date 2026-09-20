@@ -96,3 +96,9 @@ dist/
 # to be re-included or git never descends into it to see the files.
 !docs/recon-themes/**/logs/
 !docs/recon-themes/**/logs/*.log
+
+# recon-bmcollapse: criterion 2 is "every shot the README cites exists under
+# docs/recon-bmcollapse/shots/ and is NOT git-ignored" — line 2 (*.png) would
+# drop exactly the evidence for where stock keeps a collapsed group, what the
+# pane-header toggle does and what is at the bottom edge of the sidebar.
+!docs/recon-bmcollapse/shots/*.png
