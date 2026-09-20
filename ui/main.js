@@ -1006,8 +1006,9 @@ function renderBm() {
       row.append(r.label ?? (grp ? r.name : r.name.split("/").pop()));
     }
     // a GROUP row opens nothing on click — it holds names, and collapsing is UNMEASURED
-    row.onclick = grp ? null : () => openInTab(r.name);
+    row.onclick = grp ? null : () => { if (bmClickEaten()) return; openInTab(r.name); };   // bmdrag: a drop's click opens nothing
     row.oncontextmenu = e => (grp ? bmGroupMenu(e, ix, r.name) : bmRowMenu(e, r.name, ix));
+    row.addEventListener("mousedown", e => bmDragStart(e, ix));   // bmdrag: every row drags, groups included (recon case 5)
     box.appendChild(row);
   });
   if (bmRenaming !== null) { const i = $("bmren"); if (i) { i.focus(); i.select(); } }
@@ -1159,6 +1160,150 @@ const bmGroupNew = parent => bmApply("bm_group_new", { parent });   // parent = 
 const bmGroupDelete = ix => bmApply("bm_group_delete", { ix });     // the SUBTREE goes with it, and nothing asks (R4X.3)
 function bmGroupRenameStart(ix) { bmRenaming = ix; renderBm(); }    // renderBm focuses+selects the editor it just painted
 function bmGroupRenameCommit(ix, title) { bmRenaming = null; return bmApply("bm_group_rename", { ix, title }); }
+/* ---------- bmdrag: DRAG A BOOKMARK ROW (R4X.n placeholders) ----------
+   R24.6's mouse machine, not a second convention (and HTML5 dragstart/
+   dataTransfer stays used NOWHERE — the R24.6 comment is binding here too):
+   mousedown + window mousemove/mouseup, a 6px Manhattan threshold, a
+   #tabghost chip, targets resolved once per rAF frame against rects cached at
+   drag start, the census published only on a DECISION change, the drag's
+   click eaten, the commit through bmApply.
+   THE DECISION is [bmdrop:...] ([wfp:] pattern, criterion 3) — the app's own
+   computed drop target, so a phase asserts what the app DECIDED:
+     gap@<parent>.<pos> — insert between siblings; <parent> = the parent
+       group's flat row ix, '-' for the top level; <pos> = painted slot among
+       its children. The pane background below the last row SNAPS to the END
+       of the top level at root depth (recon-bmdrag case 3).
+     grp@<ix>          — onto group row <ix>: the drop PREPENDS as its first
+       child (recon case 2, row fill, no line).
+     none              — drag live, no legal target: over the source row or
+       its own descendants NOTHING paints, and mouseup calls NOTHING — the
+       refusal never even reaches the backend (recon case 6; the file is
+       asserted on BYTES because stock rewrites identical bytes there).
+   Groups drag exactly like files, the whole subtree moves intact (case 5).
+   Spring-load (case 4: a COLLAPSED group under a ~1.5s held hover opens
+   mid-drag, takes the drop as a prepend, stays open) has NO trigger in this
+   pane — the chevron is static and groups cannot collapse (bmfolder recon) —
+   recorded here so the future collapse goal inherits the measurement. */
+let bmDropTok = "", bmEat = 0, bmDrop = null;
+function bmClickEaten() {                  // a completed drag must not also open the note under the cursor
+  const t = bmEat;
+  bmEat = 0;
+  return !!t && performance.now() - t < 400;
+}
+function bmSubEnd(ix) {                    // one past the last painted row of ix's subtree
+  const d = bmTree[ix].depth;
+  let j = ix + 1;
+  while (j < bmTree.length && bmTree[j].depth > d) j++;
+  return j;
+}
+function bmDragStart(e, ix) {
+  if (e.button !== 0 || bmRenaming !== null) return;
+  const src = bmTree[ix];
+  if (!src) return;
+  const sx = e.clientX, sy = e.clientY;
+  const label = src.label ?? (src.kind === "g" ? src.name : src.name.split("/").pop());
+  let ghost = null, line = null, hl = null, srcEl = null, zones = null, raf = 0, last = null;
+  bmDrop = null;
+  const clearFb = () => {
+    if (line) { line.remove(); line = null; }
+    if (hl) { hl.classList.remove("bmdrop-into"); hl = null; }
+  };
+  const step = () => {
+    raf = 0;
+    const ev = last;
+    if (!ghost) {
+      if (Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) < 6) return;
+      ghost = document.createElement("div");
+      ghost.id = "tabghost";
+      ghost.textContent = label;
+      document.body.appendChild(ghost);
+      // rects cached ONCE (R20, like treeDragStart), plus the parent/slot
+      // tables, so a gap names its exact slot without a per-frame model walk
+      const rows = [...document.querySelectorAll("#bmlist .bmrow")];
+      const par = bmTree.map((_, i) => bmParentOf(i));
+      const cix = bmTree.map((_, i) => { let n = 0; for (let k = 0; k < i; k++) if (par[k] === par[i]) n++; return n; });
+      zones = {
+        rows: rows.map((el, i) => ({ el, i, r: el.getBoundingClientRect() })),
+        box: $("bmlist").getBoundingClientRect(),
+        par, cix,
+        rootLen: par.filter(p => p === null).length,
+        exFrom: ix, exTo: bmSubEnd(ix),    // the dragged row and its descendants are not targets
+      };
+      srcEl = rows[ix];
+      if (srcEl) srcEl.classList.add("bmdrop-src");   // the dragged row keeps its fill (recon case 1)
+      bmDropTok = "none";
+      updateTitle();
+    }
+    ghost.style.transform = "translate3d(" + (ev.clientX + 10) + "px," + (ev.clientY + 12) + "px,0)";
+    const z = zones;
+    let nd = null;                         // {grp, parent, pos, y}
+    const gapAt = j => j >= z.rows.length
+      ? { parent: null, pos: z.rootLen, y: z.rows.length ? z.rows[z.rows.length - 1].r.bottom : z.box.top }
+      : { parent: z.par[j], pos: z.cix[j], y: z.rows[j].r.top };
+    if (ev.clientX >= z.box.left && ev.clientX <= z.box.right &&
+        ev.clientY >= z.box.top && ev.clientY <= z.box.bottom) {
+      let hit = null;
+      for (const w of z.rows) if (ev.clientY >= w.r.top && ev.clientY < w.r.bottom) { hit = w; break; }
+      if (!hit) {
+        // pane background: the line SNAPS below the last row, root depth (case 3)
+        if (!z.rows.length || ev.clientY >= z.rows[z.rows.length - 1].r.bottom) nd = gapAt(z.rows.length);
+      } else if (hit.i >= z.exFrom && hit.i < z.exTo) {
+        nd = null;                         // self or own descendant: NOTHING paints (case 6)
+      } else {
+        const band = ev.clientY - hit.r.top;
+        const grp = bmTree[hit.i] && bmTree[hit.i].kind === "g";
+        if (band < 6) nd = gapAt(hit.i);                       // top band: the gap above
+        else if (grp && band < hit.r.height - 6) nd = { grp: hit.i, parent: hit.i, pos: 0, y: 0 };   // group middle: PREPEND (case 2)
+        else nd = gapAt(hit.i + 1);                            // bottom band / file middle: the gap below
+      }
+      // the slot the row already occupies is not a move — treeDragStart's
+      // "the folder it is ALREADY in is not a destination", gap edition
+      if (nd && nd.grp == null && nd.parent === z.par[ix] && (nd.pos === z.cix[ix] || nd.pos === z.cix[ix] + 1)) nd = null;
+      // a first-child slot reached via a gap can still name a dragged group's
+      // descendant as parent — same refusal as the row-band test above
+      if (nd && nd.parent !== null && nd.parent >= z.exFrom && nd.parent < z.exTo) nd = null;
+    }
+    const tok = nd == null ? "none" : (nd.grp != null ? "grp@" + nd.grp : "gap@" + (nd.parent === null ? "-" : nd.parent) + "." + nd.pos);
+    if (tok !== bmDropTok) {
+      clearFb();
+      if (nd) {
+        if (nd.grp != null) {
+          hl = z.rows[nd.grp].el;
+          hl.classList.add("bmdrop-into"); // measured row fill, no line (case 2)
+        } else {
+          line = document.createElement("div");
+          line.id = "bmdropline";          // 3px accent line spanning the pane (cases 1/3)
+          line.style.left = z.box.left + "px";
+          line.style.width = z.box.width + "px";
+          line.style.top = (nd.y - 1) + "px";
+          document.body.appendChild(line);
+        }
+      }
+      bmDrop = nd;
+      bmDropTok = tok;
+      ghost.textContent = label + (nd ? " -> " + tok : "");   // the chip names the decision
+      updateTitle();                       // ONLY on a decision change — never per frame
+    }
+  };
+  const move = ev => { last = ev; if (!raf) raf = requestAnimationFrame(step); };
+  const up = async () => {
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", up);
+    if (raf) { cancelAnimationFrame(raf); raf = 0; if (last) step(); }
+    const d = bmDrop, dragged = !!ghost;
+    if (ghost) { ghost.remove(); ghost = null; }
+    clearFb();
+    if (srcEl) srcEl.classList.remove("bmdrop-src");
+    bmDropTok = "";
+    bmDrop = null;
+    if (!dragged) return;                  // below the threshold: a plain click, let it through
+    bmEat = performance.now();
+    if (!d) { updateTitle(); return; }     // no legal target: NOTHING is called — byte-level refusal
+    await bmApply("bm_drag", { ix, parent: d.parent, pos: d.pos });
+  };
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", up);
+}
 /* ---------- R4X.7 the Edit bookmark modal — the MOVE route ----------
    Stock's `Edit...` opens a modal whose `Bookmark group` dropdown lists the
    existing groups by TITLE with nesting shown by indentation (12-groupdd.png),
@@ -2032,9 +2177,39 @@ function updateTitle() {          // pane/focus census in the window title (head
     if (nbr.width) navgTok = " [navg:" + Math.round(nbr.left + nbr.width / 2) + "," +
       Math.round(nfr.left + nfr.width / 2) + "," + Math.round(nbr.top + nbr.height / 2) + "]";
   }
+  // themefs R3: how many snippet <style> elements are ACTUALLY in the head —
+  // counted off the DOM (snipEls maps label -> live element), not off the
+  // enabled array, so an injection that failed loudly is not counted as on.
+  const snipTok = " [snips:" + snipEls.size + "]";
+  // themefs R5: the active VAULT theme — the name only when its <style> is
+  // really in the head (a refused/unlisted cssTheme reads "none": the census
+  // reports what is painting, not what the config wishes were)
+  const vthemeTok = " [vtheme:" +
+    (document.getElementById("vault-theme") && vaultTheme
+      ? String(vaultTheme).replace(/[[\]|]/g, "").slice(0, 40) : "none") + "]";
+  // themefs item 6: hot reloads APPLIED this session — the phase's latency
+  // clock (edit the file, poll the title until this bumps, subtract; the
+  // pixels are then proved separately with getComputedStyle/thmpx).
+  const creloadTok = " [creload:" + vaultCssReloads + "]";
+  // themefs item 8: alias rows the R4 bridge is painting (0 = no #vault-bridge
+  // element — no theme, or a theme declaring none of the aliased stock names)
+  const vbridgeTok = " [vbridge:" + vaultBridgeAliases + "]";
+  // themefs item 10: the phase's getComputedStyle surface — the COMPUTED
+  // background of the three chrome points the R4 bridge can move (body /
+  // #side / #wframe) plus one it deliberately CANNOT (#bar button paints
+  // --bg-surface, a token no bridge row aliases). Criterion 1 reads
+  // theme-vs-default off the first three; criterion 7 proves the palette
+  // axis still moves the fourth while a vault theme holds the others.
+  // Always on, like [snips:]/[vtheme:]: a probe cannot pass by setting a
+  // variable — these are resolved pixels off the live cascade.
+  const vpxBg = el => el ? getComputedStyle(el).backgroundColor.replace(/\s+/g, "") : "-";
+  const vpxTok = document.body
+    ? " [vpx:" + vpxBg(document.body) + "/" + vpxBg(document.getElementById("side")) +
+      "/" + vpxBg(document.getElementById("wframe")) + "/" + vpxBg(document.querySelector("#bar button")) + "]"
+    : "";
   let t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
-            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + palTok + thmpxTok + navTok + navgTok + lg + md + gg + modal +
+            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + palTok + thmpxTok + snipTok + vthemeTok + creloadTok + vbridgeTok + vpxTok + navTok + navgTok + lg + md + gg + modal +
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) +
             (rightOpen ? ":" + rTab : "") + "]" +
             (rightOpen && rpInfo ? " [rp:" + rpInfo + "]" : "") +
@@ -2056,6 +2231,7 @@ function updateTitle() {          // pane/focus census in the window title (head
               " [bmt:" + bmShape() + "]" +                          // R4X.5: the painted TREE SHAPE, parallel to [bmn:]
               bmIndentTok() +                                       // R4X.6: the painted indent STEP in px
               bmRenTok() +                                          // R4X.8: an inline group rename is OPEN and not yet committed
+              (bmDropTok ? " [bmdrop:" + bmDropTok.replace(/[[\]|]/g, "") + "]" : "") +   // bmdrag: the app-computed drop target, live only mid-drag
               (bmRows() === bmTree.length ? "" :                     // the smoke assertion must prove the PANE
                " [bmdesync:" + bmTree.length + "/" + bmRows() + "]") : "");   // repainted, not just the model
 
@@ -4611,6 +4787,218 @@ async function bootPalette() {
   if (st && paletteKnown(st)) applyPalette(st);
 }
 function cmdSetPalette(id) { return () => choosePalette(id); }
+/* ---------- themefs R3: vault CSS snippets (stock's files, T3) ----------
+   A snippet is <vault>/.obsidian/snippets/<label>.css, toggled by the
+   enabledCssSnippets array in the vault's own appearance.json — the backend
+   (src-tauri/src/themefs.rs) owns the listing predicate, the byte-wise config
+   round-trip and the R4X.4 mask sanitizer; this side only injects <style>
+   elements and keeps them in DESIGN §5's cascade order:
+       <link style.css> -> #vault-bridge -> #vault-theme -> snippet styles
+   Snippets sit LAST (T3 RESULT 4: they compose on top of the theme), in
+   enabledCssSnippets ARRAY order (T3 RESULT 3: the array is enable order).
+   Appending to <head> keeps that true; #vault-theme (below) insertBefores the
+   first [data-snip] element, and #vault-bridge (item 8) insertBefores
+   #vault-theme. */
+let vaultSnips = [], vaultSnipsOn = [], snipEls = new Map();
+/* ---- themefs R5: the vault THEME (stock's .obsidian/themes/<Name>/) ----
+   vaultThemesScan is the backend's oracle-predicate result: {listed:[names],
+   excluded:[{dir,file,reason,message}]}. vaultTheme mirrors cssTheme ("" =
+   built-in Default). The theme's <style id="vault-theme"> sits BEFORE every
+   [data-snip] element (DESIGN §5: snippets compose on top of the theme —
+   T3 RESULT 4); the #vault-bridge element (item 8) insertBefores it. */
+let vaultThemesScan = { listed: [], excluded: [] }, vaultTheme = "";
+let vaultBridgeAliases = 0;   // census [vbridge:<n>] — item 8 alias rows painting
+async function themeInject(name) {
+  try {
+    const r = await inv("theme_css", { name });
+    // swap IN PLACE: the old css keeps painting until the new bytes are
+    // ready (item 6 re-injects through here — remove-then-insert would let
+    // a frame of Default through on every hot reload), and the element's
+    // position (before the first [data-snip], DESIGN §5) never moves.
+    let el = document.getElementById("vault-theme");
+    if (!el) {
+      el = document.createElement("style");
+      el.id = "vault-theme";
+      document.head.insertBefore(el, document.head.querySelector("style[data-snip]"));
+    }
+    el.textContent = r.css;
+    // item 8, the R4 alias bridge (DESIGN §5/§7): #vault-bridge sits BEFORE
+    // #vault-theme so the theme out-cascades its own aliases. GENERATED by
+    // the backend from the same sanitized bytes: empty when the theme
+    // declares none of the aliased stock names — then NO element exists and
+    // the DOM stays byte-identical to the palette baseline. Same in-place
+    // swap discipline as the theme element (hot reload comes through here).
+    const bcss = r.bridge || "";
+    let br = document.getElementById("vault-bridge");
+    if (bcss) {
+      if (!br) {
+        br = document.createElement("style");
+        br.id = "vault-bridge";
+        document.head.insertBefore(br, el);
+      }
+      br.textContent = bcss;
+    } else if (br) br.remove();
+    // census [vbridge:<n>] — alias rows actually painting (one var() each)
+    vaultBridgeAliases = bcss ? (bcss.match(/var\(/g) || []).length : 0;
+    if (r.message) say(r.message, "theme");  // R4X.4: the strip is LOUD
+  } catch (e) {
+    themeRemove();                           // stale css must not keep painting
+    say(String(e), "theme");                 // R6: the refusal names the file
+  }
+}
+function themeRemove() {
+  const el = document.getElementById("vault-theme");
+  if (el) el.remove();
+  // the bridge lives and dies with the theme: aliases painting while no
+  // theme does would hand the chrome to a var() nobody declares (item 8)
+  const br = document.getElementById("vault-bridge");
+  if (br) br.remove();
+  vaultBridgeAliases = 0;
+}
+/* pick a theme (the settings control's route): file FIRST — a refused write
+   (unparseable appearance.json) must not paint a choice that will not
+   survive the next boot — then the DOM. "" = Default: remove, inject nothing. */
+async function chooseVaultTheme(name) {
+  try { await inv("set_css_theme", { name }); }
+  catch (e) { say(String(e), "theme"); return; }
+  vaultTheme = name;
+  if (name) await themeInject(name); else themeRemove();
+  renderThemeCtl();
+  armCssReload();                        // item 6: the watched set follows what is applied
+  if (state) updateTitle();
+}
+/* the ONE insertion authority for snippet elements: enabledCssSnippets order
+   (T3 RESULT 3), independent of WHEN the element is created — at load and on
+   toggle-on the element lands last among snips (same as append), but a hot
+   reload re-creating a mid-array element (item 6: a refused file fixed by an
+   edit) must land BEFORE its later siblings, or the cascade lies about the
+   enable order. */
+function snipElInsert(label, el) {
+  for (const l of vaultSnipsOn.slice(vaultSnipsOn.indexOf(label) + 1)) {
+    const nxt = snipEls.get(l);
+    if (nxt) { document.head.insertBefore(el, nxt); return; }
+  }
+  document.head.appendChild(el);
+}
+async function snipInject(label) {
+  if (snipEls.has(label)) return;
+  try {
+    const r = await inv("snippet_css", { label });
+    const el = document.createElement("style");
+    el.dataset.snip = label;              // the removal/census handle — the label stays data, never an id fragment
+    el.textContent = r.css;
+    snipElInsert(label, el);
+    snipEls.set(label, el);
+    if (r.message) say(r.message, "snip");   // R4X.4: the strip is LOUD, one string, authored in themefs.rs
+  } catch (e) {
+    say(String(e), "snip");               // R6: the refusal names the file and the reason (backend string)
+  }
+}
+/* item 6, the hot-reload path: re-read -> re-sanitize -> re-inject that ONE
+   element. In place when it exists (the old css paints until the new bytes
+   are ready); created at its enable-order position when it does not (an edit
+   FIXING a previously refused snippet goes live — same loop as the theme).
+   A re-read that now refuses removes the element: stale css must not keep
+   painting a file the sanitizer no longer accepts. */
+async function snipReinject(label) {
+  try {
+    const r = await inv("snippet_css", { label });
+    let el = snipEls.get(label);
+    if (!el) {
+      el = document.createElement("style");
+      el.dataset.snip = label;
+      snipElInsert(label, el);
+      snipEls.set(label, el);
+    }
+    el.textContent = r.css;
+    if (r.message) say(r.message, "snip");
+  } catch (e) {
+    snipRemove(label);
+    say(String(e), "snip");
+  }
+}
+function snipRemove(label) {
+  const el = snipEls.get(label);
+  if (el) el.remove();
+  snipEls.delete(label);
+}
+/* vault entry (and vault SWITCH: the old vault's CSS must not survive into
+   the new one, so this clears before it loads). Failure to scan is not a
+   notice: no vault / no snippets dir is stock's silent normal (T0). */
+async function loadVaultCss() {
+  for (const l of [...snipEls.keys()]) snipRemove(l);
+  themeRemove();
+  vaultSnips = []; vaultSnipsOn = [];
+  vaultThemesScan = { listed: [], excluded: [] }; vaultTheme = "";
+  try {
+    vaultThemesScan = await inv("themes_scan");
+    // R6: LOUD where stock silently excludes — every broken theme dir says
+    // its one message (dir + reason, authored in themefs.rs) at scan time.
+    for (const x of vaultThemesScan.excluded) say(x.message, "theme");
+    vaultTheme = await inv("get_css_theme");
+  } catch { vaultThemesScan = { listed: [], excluded: [] }; vaultTheme = ""; }
+  // apply ONLY what the predicate lists: cssTheme naming an unlisted theme
+  // paints the Default (its dir, if present, already said WHY above; an
+  // absent dir is stock's silent normal — the oracle flags "!!" either way)
+  if (vaultTheme && vaultThemesScan.listed.includes(vaultTheme)) {
+    await themeInject(vaultTheme);
+  }
+  try {
+    vaultSnips = await inv("snippets_scan");
+    // a stale enabled entry whose file is gone is skipped silently — the array
+    // is stock's own record and may outlive the file (unmeasured; re-measure
+    // against /srv/reference/obsidian.AppImage if a gate ever makes it matter)
+    vaultSnipsOn = (await inv("snippets_enabled")).filter(l => vaultSnips.includes(l));
+  } catch { vaultSnips = []; vaultSnipsOn = []; }
+  for (const l of vaultSnipsOn) await snipInject(l);
+  armCssReload();
+  if (state) updateTitle();
+}
+/* ---- themefs item 6: hot reload (DESIGN §8, criterion 4) ----------------
+   The backend polls AT MOST the applied theme.css + enabled snippet files at
+   100 ms (themefs::RELOAD_TICK_MS, alive only while something is applied)
+   and emits `vault-css-changed` {kind,name} on an (mtime,len) move; this
+   side re-reads through the SAME sanitizing commands and re-injects that ONE
+   element. armCssReload is the frontend declaring what is APPLIED — it owns
+   the listed/painting decision, so an unlisted cssTheme is declared as ""
+   (Default paints, nothing to watch). Nothing here writes: criterion 4
+   asserts appearance.json's bytes across an edit. NEW files are not live
+   (stock's asymmetry, T4 RESULT 4 / T3 RESULT 5): the watch set moves only
+   when a user action lands here, never because a tick discovered a file. */
+let vaultCssReloads = 0;                 // census [creload:<n>] — the phase's latency clock
+function armCssReload() {
+  const theme = (vaultTheme && vaultThemesScan.listed.includes(vaultTheme)) ? vaultTheme : "";
+  inv("vault_css_watch", { theme, snippets: vaultSnipsOn.slice() }).catch(() => {});
+}
+async function onVaultCssChanged(ch) {
+  if (!ch) return;
+  if (ch.kind === "theme") {
+    // stale-event guard: the poller's word is never newer than this side's
+    // own state — only the theme that IS painting gets re-injected
+    if (ch.name !== vaultTheme || !vaultThemesScan.listed.includes(ch.name)) return;
+    await themeInject(ch.name);
+  } else if (ch.kind === "snippet") {
+    if (!vaultSnipsOn.includes(ch.name)) return;
+    await snipReinject(ch.name);
+  } else return;
+  vaultCssReloads++;
+  if (state) updateTitle();
+}
+/* the toggle WITHOUT restart (criterion 3): one user action moves the file
+   AND the DOM — but the file first. If the backend refuses (unparseable
+   appearance.json is refused, never overwritten), the DOM stays put: a toggle
+   that paints but does not persist would look exactly like one that works,
+   until the next boot un-decides it. */
+async function toggleSnippet(label) {
+  const on = !vaultSnipsOn.includes(label);
+  try { await inv("set_snippet_enabled", { label, on }); }
+  catch (e) { say(String(e), "snip"); return; }
+  if (on) { vaultSnipsOn.push(label); await snipInject(label); }
+  else { vaultSnipsOn = vaultSnipsOn.filter(l => l !== label); snipRemove(label); }
+  renderSnipCtl();                       // the settings control follows the state, like renderPaletteCtl
+  armCssReload();                        // item 6: the watched set follows what is applied
+  if (state) updateTitle();
+}
 /* ---------- R36 interface zoom (Ctrl+= / Ctrl+- / Ctrl+0) ---------------
    There is deliberately NO CSS in this function. The scale is applied by
    webkit_web_view_set_zoom_level through the `zoom` command (main.rs R36.1),
@@ -5830,6 +6218,7 @@ async function enterVault() {
   focusGroup(g);
   hideAc();
   edtBad = Ed.selfTest();            // R17: renderer + token map invariants -> [edt:] census
+  await loadVaultCss();              // themefs R3: the vault's own snippet CSS, before first paint of a note
   await refreshTree();
   await refreshBm();                 // R9.4: menu label needs the cache early
   const names = await inv("list_notes");
@@ -5962,6 +6351,7 @@ async function onVaultChanged(c) {
   updateTitle();
 }
 window.__TAURI__.event.listen("vault-changed", e => onVaultChanged(e.payload));
+window.__TAURI__.event.listen("vault-css-changed", e => onVaultCssChanged(e.payload));  // themefs item 6: hot reload
 // R31.1: a real OS drop arrives here, from Rust, never from a DOM drop event.
 window.__TAURI__.event.listen("drop-files", e => attachDrop(e.payload || []));
 
@@ -6047,8 +6437,10 @@ function sfpEnd() {
    asserts. [spane:<id>/<rows>/<enabled>] is the pane currently BUILT, which is
    how the phase proves a nav click actually swapped the pane (OCR alone cannot
    distinguish "clicked" from "painted the same pane again"). */
-/* [spal:<centre x>,<centre y>,<label>] — the Appearance ▸ Themes control's OWN
-   measured rect and the text it is currently showing, published for the same
+/* [spal:<centre x>,<centre y>,<label>] — the PALETTE control's OWN
+   measured rect and the text it is currently showing (since themefs R5 it
+   lives on Appearance ▸ Current community themes; the Themes row went back
+   to stock's cssTheme picker, published as [svt:] below), for the same
    reason [mg:] publishes the context menu's geometry: the settings-UI route is
    proven by a phase that must CLICK this control, and a hardcoded coordinate
    would be a guess that goes stale the moment a row above it gains a line of
@@ -6065,12 +6457,36 @@ function spalTok() {
   return " [spal:" + Math.round(b.left + b.width / 2) + "," +
          Math.round(b.top + b.height / 2) + "," + lbl + "]";
 }
+/* [svt:<centre x>,<centre y>,<label>] — the vault-theme picker's control
+   (Appearance ▸ Themes, themefs R5), published for the same reason [spal:]
+   is: the phase that proves the picker must CLICK its measured rect and
+   assert the shown label without OCR. */
+function svtTok() {
+  const d = document.getElementById("svtheme");
+  if (!d) return "";
+  const b = d.getBoundingClientRect();
+  const lbl = String(d.textContent || "").replace(/[[\]|]/g, "").slice(0, 40);
+  return " [svt:" + Math.round(b.left + b.width / 2) + "," +
+         Math.round(b.top + b.height / 2) + "," + lbl + "]";
+}
+/* [ssn:<centre x>,<centre y>,<label>] — the CSS-snippets control (Appearance
+   ▸ CSS snippets, themefs R3), published like [svt:]/[spal:] and for the same
+   reason: the phase that proves the toggle must CLICK the control's measured
+   rect and assert its live "<n> enabled" label without OCR. */
+function ssnTok() {
+  const d = document.getElementById("ssnips");
+  if (!d) return "";
+  const b = d.getBoundingClientRect();
+  const lbl = String(d.textContent || "").replace(/[[\]|]/g, "").slice(0, 40);
+  return " [ssn:" + Math.round(b.left + b.width / 2) + "," +
+         Math.round(b.top + b.height / 2) + "," + lbl + "]";
+}
 function setTok() {
   if (!SMODEL) return "";
   const e = SMODEL.rows.reduce((n, r) => n + (r.enabled ? 1 : 0), 0);
   return " [set:" + SMODEL.nav.length + "/" + SMODEL.rows.length + "/" + e + "]" +
          " [spane:" + sPane + "/" + sRowsShown + "/" + sEnabledShown + "]" +
-         spalTok() +
+         spalTok() + svtTok() + ssnTok() +
          (sfpMs >= 0 ? " [sfp:" + sfpMs + "/" + sfpMax + "/" +
                        (Math.round(sfpSum / sfpN * 100) / 100) + "/" + sfpN + "]" : "") +
          (sfpW >= 0 ? " [sfpw:" + sfpW + "/" + sfpWMax + "]" : "");
@@ -6167,7 +6583,10 @@ function showSettingsPage(id) {
    separator, controls at the card's right edge. The palette stays rustidian's
    dark theme — that delta is recorded in R30. */
 const SDIS_TITLE = "Not implemented yet";
-/* ---- Appearance ▸ Themes: the settings-UI route onto the PALETTE axis ----
+/* ---- Appearance ▸ Current community themes: the settings-UI route onto the
+   PALETTE axis (moved off the Themes row by themefs R5 — stock's Themes row
+   is the cssTheme picker and got its stock semantics back; this adjacent
+   installed-themes row hosting OUR palette axis is the recorded delta).
    Two routes reach this feature and each is proven separately: Ctrl+P (the
    "Use theme: <name>" registry entries) and this control. They share
    choosePalette(), so neither can drift into a second definition of what
@@ -6194,6 +6613,103 @@ function renderPaletteCtl() {
   const d = document.getElementById("spalette");
   if (d) d.textContent = paletteLabel(themePalette);
 }
+/* ---- Appearance ▸ CSS snippets: the settings-UI route onto the vault's
+   snippet toggles (themefs R3). Same construction as paletteCtl and for the
+   same reason: the ONE menu widget the census can see ([menu:]), not a native
+   popup. The text is the live count, the shape stock's own row shows
+   ("0 enabled"); toggling goes through toggleSnippet(), the same function the
+   injection path uses, so the pane and the <head> cannot disagree. */
+const snipCtlLabel = () => vaultSnipsOn.length + " enabled";
+function snipCtl() {
+  const d = document.createElement("div");
+  d.className = "sctl dropdown live";
+  d.id = "ssnips";
+  d.tabIndex = 0;
+  d.setAttribute("role", "button");
+  d.setAttribute("aria-haspopup", "menu");
+  d.textContent = snipCtlLabel();
+  const open = ev => { ev.preventDefault(); ev.stopPropagation(); openSnipMenu(d); };
+  d.onmousedown = ev => ev.stopPropagation();
+  d.onclick = open;
+  d.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") open(ev); };
+  return d;
+}
+function renderSnipCtl() {
+  const d = document.getElementById("ssnips");
+  if (d) d.textContent = snipCtlLabel();
+}
+/* ---- Appearance ▸ Themes: the settings-UI route onto the VAULT theme
+   (themefs R5) — stock's own row, stock's own semantics: a dropdown showing
+   the active cssTheme ("Default" when ""), listing (Default) + EXACTLY the
+   oracle-predicate set (DESIGN §9), the excluded dirs rendered inert with
+   their reason so the pane shows WHY a broken theme is not offered. Same
+   ctxmenu construction as paletteCtl, same reason ([menu:] census). */
+const themeCtlLabel = () => vaultTheme || "Default";
+function themeCtl() {
+  const d = document.createElement("div");
+  d.className = "sctl dropdown live";
+  d.id = "svtheme";
+  d.tabIndex = 0;
+  d.setAttribute("role", "button");
+  d.setAttribute("aria-haspopup", "menu");
+  d.textContent = themeCtlLabel();
+  const open = ev => { ev.preventDefault(); ev.stopPropagation(); openThemeMenu(d); };
+  d.onmousedown = ev => ev.stopPropagation();
+  d.onclick = open;
+  d.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") open(ev); };
+  return d;
+}
+function renderThemeCtl() {
+  const d = document.getElementById("svtheme");
+  if (d) d.textContent = themeCtlLabel();
+}
+function openThemeMenu(anchor) {
+  closeMenu();
+  const m = document.createElement("div");
+  m.className = "ctxmenu";
+  const mk = (txt, on) => {
+    const it = document.createElement("div");
+    it.textContent = txt;
+    it.onmousedown = ev => ev.stopPropagation();
+    if (on) it.onclick = on;
+    return it;
+  };
+  m.appendChild(mk((vaultTheme === "" ? "✓ " : "") + "(Default)",
+    () => { closeMenu(); chooseVaultTheme(""); }));
+  for (const name of vaultThemesScan.listed) {
+    m.appendChild(mk((name === vaultTheme ? "✓ " : "") + name,
+      () => { closeMenu(); chooseVaultTheme(name); }));
+  }
+  // inert-with-reason (DESIGN §9): visible, not clickable — no handler
+  for (const x of vaultThemesScan.excluded) {
+    const it = mk("✕ " + x.dir + " — " + x.reason, null);
+    it.style.opacity = "0.5";
+    m.appendChild(it);
+  }
+  const b = anchor.getBoundingClientRect();
+  placeMenu(m, Math.round(b.left), Math.round(b.bottom + 4));
+}
+function openSnipMenu(anchor) {
+  closeMenu();
+  const m = document.createElement("div");
+  m.className = "ctxmenu";
+  if (!vaultSnips.length) {
+    // absent snippets/ is stock's silent normal (T0): an empty menu entry,
+    // deliberately not a notice and not a directory-creating button (yet)
+    const it = document.createElement("div");
+    it.textContent = "(no snippets)";
+    m.appendChild(it);
+  }
+  for (const label of vaultSnips) {
+    const it = document.createElement("div");
+    it.textContent = (vaultSnipsOn.includes(label) ? "✓ " : "") + label;
+    it.onmousedown = ev => ev.stopPropagation();
+    it.onclick = () => { closeMenu(); toggleSnippet(label); };
+    m.appendChild(it);
+  }
+  const b = anchor.getBoundingClientRect();
+  placeMenu(m, Math.round(b.left), Math.round(b.bottom + 4));
+}
 function openPaletteMenu(anchor) {
   closeMenu();
   const m = document.createElement("div");
@@ -6215,17 +6731,19 @@ function openPaletteMenu(anchor) {
 let sRowsShown = 0, sEnabledShown = 0;
 function sctl(r) {                            // the control cell for one row, or null
   const v = r.default_shown === "-" ? "" : r.default_shown;
-  /* THE ONE LIVE DROPDOWN (goal/theme-1984). Everything else in this pane is a
-     transcription of stock's pixels with no handler; Appearance ▸ Themes is
-     backed by the "palette" config key (settings.rs BACKED), so it is rendered
-     as a control that actually does something. It deliberately does NOT use a
+  /* THE LIVE DROPDOWNS (goal/theme-1984, extended by themefs). Everything
+     else in this pane is a transcription of stock's pixels with no handler;
+     a row is rendered live only when settings.rs BACKED names its real key
+     (palette / cssTheme / enabledCssSnippets). None uses a
      native <select>: a native popup is an OS-level window, invisible to the
-     screenshot-and-census rig, so the ONE settings control that changes the
-     app's appearance would be the one no phase could prove. It opens the app's
-     own .ctxmenu instead — the same widget the tab menu uses, published in the
-     census as [menu:<labels>] with measured geometry, so the settings-UI route
-     is drivable and assertable exactly like every other menu in the app. */
+     screenshot-and-census rig, so the settings controls that change the
+     app's appearance would be the ones no phase could prove. Each opens the
+     app's own .ctxmenu instead — the same widget the tab menu uses, published
+     in the census as [menu:<labels>] with measured geometry, so the
+     settings-UI route is drivable and assertable like every other menu. */
   if (r.key === "palette") return paletteCtl();
+  if (r.key === "cssTheme") return themeCtl();            // themefs R5: stock's Themes row, stock's semantics
+  if (r.key === "enabledCssSnippets") return snipCtl();   // themefs R3, same live-control rule
   const d = document.createElement("div");
   d.className = "sctl " + r.control;
   const parts = (t, cls) => t.split(" / ").forEach(p => {
