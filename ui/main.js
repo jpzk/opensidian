@@ -2015,13 +2015,13 @@ function updateTitle() {          // pane/focus census in the window title (head
   const thmpxTok = (smokeCssOn && document.body)
     ? " [thmpx:" + getComputedStyle(document.body).backgroundColor.replace(/\s+/g, "") + "]"
     : "";
-  // R4X.4 (navbtn) census [nav:bXfX] — the app's DECIDED button state for the
+  // R4X.4 (navbtn) census [nvb:bXfX] — the app's DECIDED button state for the
   // focused pane (1 = enabled), from the same navState the buttons paint from.
   // Published on every title write, so it moves with nav, tab switch and
   // focus change; a phase asserts the DECISION, never pixels.
   navBtnSync();
   const nv = navState(fg());
-  const navTok = " [nav:b" + (nv.b ? 1 : 0) + "f" + (nv.f ? 1 : 0) + "]";
+  const navTok = " [nvb:b" + (nv.b ? 1 : 0) + "f" + (nv.f ? 1 : 0) + "]";
   // R4X.4b [navg:<back cx>,<fwd cx>,<cy>] — the PAINTED centres of the focused
   // pane's nav buttons, same idea as [mg:]/[bmg:]: the phase clicks MEASURED
   // geometry, never a guessed pixel. Empty only if the pair is not painted.
@@ -3475,7 +3475,7 @@ async function navAnchor(g, anchor) {
    linked local graph delegates to its linked group — and reads hpos against
    the history bounds. navBtnSync repaints every pane's pair from that state;
    it is called from updateTitle, the one census choke point, so the buttons
-   can never be fresher or staler than the [nav:] token a phase asserts. */
+   can never be fresher or staler than the [nvb:] token a phase asserts. */
 function navState(g) {
   if (!g || g.active < 0) return { b: false, f: false };
   let tab = g.tabs[g.active];
