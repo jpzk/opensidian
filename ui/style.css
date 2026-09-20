@@ -877,6 +877,11 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .ctxmenu div.chkrow { padding-left: 4px }
 .ctxmenu .chk { display: inline-block; width: 12px; height: 12px; margin-right: 4px; vertical-align: -1px }
 .ctxmenu .chk svg { width: 12px; height: 12px; display: block }
+/* R4X.5 (navbtn): the history menu carries a file icon per row (recon-navbtn
+   §4, 18-menu-crop.png) — an ELEMENT like .chk, so textContent and [menu:]
+   stay the bare note labels. */
+.ctxmenu .mi { display: inline-block; width: 12px; height: 12px; margin-right: 6px; vertical-align: -1px; color: var(--text-chrome-muted) }
+.ctxmenu .mi svg { width: 12px; height: 12px; display: block }
 /* R38.29: `Delete file` is the ONE non-default-coloured row in stock's menu (measured red, hex eb4655 — recorded in docs/requirements.md R38.29, not repeated as a literal here) */
 .ctxmenu div.del { color: var(--accent-red) }
 /* R38.7: the pin glyph rides in FRONT of a pinned tab's label (shots/m3-pinned-tabbar.png) */

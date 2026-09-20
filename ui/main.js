@@ -1454,6 +1454,10 @@ function mkGroup() {
   // that up even if the disabled paint were ever stale.
   g.navback.onclick = () => histGo(-1, g);
   g.navfwd.onclick = () => histGo(1, g);
+  // R4X.5: plain right-click drops the history menu (navHistMenu — stock's
+  // measured gesture, docs/recon-navbtn §4); a disabled button opens nothing.
+  g.navback.oncontextmenu = e => navHistMenu(e, g, -1, g.navback);
+  g.navfwd.oncontextmenu = e => navHistMenu(e, g, 1, g.navfwd);
   attachView(g, mkView(g));                      // scratch view until the first tab adopts it
   return g;
 }
@@ -3480,6 +3484,55 @@ function navBtnSync() {
     h.navback.disabled = !s.b;
     h.navfwd.disabled = !s.f;
   }
+}
+/* R4X.5 (navbtn): right-click on a nav button drops that stack as a menu
+   BELOW the button — stock 1.13.7 measured (docs/recon-navbtn §4): the back
+   menu lists the back stack most-recent-first, the forward menu the forward
+   stack nearest-first, the CURRENT entry marked by EXCLUSION (never listed,
+   no checkmark), a file icon per row. Selecting a row is a move WITHIN the
+   stack — histGo with that row's delta — so BOTH stacks survive the jump
+   (browser semantics, §4 19-mid-click.png: only a NEW navigation, histPush,
+   discards forward). Right-clicking a DISABLED button opens NOTHING, not
+   even an empty panel (§4 23-fwd-after.png): native disabled suppresses the
+   event, and the stack-empty guard below backs that up if an engine ever
+   dispatches it anyway. The menu inherits the shared .ctxmenu plumbing, so
+   [menu:]/[mt:]/[mg:] census, outside-click and Escape dismissal all come
+   from the same seam every other menu is asserted through. */
+function navHistMenu(e, g, dir, btn) {
+  e.preventDefault();
+  e.stopPropagation();
+  closeMenu();
+  if (!g || g.active < 0) return;
+  let h = g, tab = h.tabs[h.active];
+  if (tab.kind === "lg" && tab.linkId != null) {  // lg delegates to its linked group — exactly navState/histGo
+    h = groups().find(x => x.id === tab.linkId);
+    if (!h || h.active < 0) return;
+    tab = h.tabs[h.active];
+  }
+  if (tab.kind) return;
+  const idx = [];
+  if (dir < 0) { for (let i = tab.hpos - 1; i >= 0; i--) idx.push(i); }               // back: most-recent-first
+  else { for (let i = tab.hpos + 1; i < tab.hist.length; i++) idx.push(i); }          // fwd: nearest-first
+  if (!idx.length) return;                        // disabled end: opens nothing
+  const m = document.createElement("div");
+  m.className = "ctxmenu";
+  // [mt:navback|navfwd:<note>] — WHICH button on WHICH note this menu came off
+  // (same forge-stripping as tabMenu), so per-tab menu assertions name their tab.
+  m.dataset.mt = (dir < 0 ? "navback" : "navfwd") + ":" +
+    String(tab.name).split("/").pop().replace(/[|\]:]/g, "");
+  for (const i of idx) {
+    const d = document.createElement("div");
+    const s = document.createElement("span");
+    s.className = "mi";                           // file icon per row (recon §4, 18-menu-crop.png)
+    s.innerHTML = BM_ICON_FILE;
+    d.appendChild(s);
+    d.appendChild(document.createTextNode(String(tab.hist[i].n).split("/").pop()));
+    d.onmousedown = ev => ev.stopPropagation();
+    d.onclick = () => { closeMenu(); histGo(i - tab.hpos, h); };   // delta read at CLICK time
+    m.appendChild(d);
+  }
+  const r = btn.getBoundingClientRect();          // stock: panel below the button, left-aligned (§4)
+  placeMenu(m, Math.round(r.left), Math.round(r.bottom) + 2);
 }
 async function histGo(d, from) {
   let g = from || fg();
