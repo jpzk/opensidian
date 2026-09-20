@@ -2010,9 +2010,22 @@ function updateTitle() {          // pane/focus census in the window title (head
   // themefs item 8: alias rows the R4 bridge is painting (0 = no #vault-bridge
   // element — no theme, or a theme declaring none of the aliased stock names)
   const vbridgeTok = " [vbridge:" + vaultBridgeAliases + "]";
+  // themefs item 10: the phase's getComputedStyle surface — the COMPUTED
+  // background of the three chrome points the R4 bridge can move (body /
+  // #side / #wframe) plus one it deliberately CANNOT (#bar button paints
+  // --bg-surface, a token no bridge row aliases). Criterion 1 reads
+  // theme-vs-default off the first three; criterion 7 proves the palette
+  // axis still moves the fourth while a vault theme holds the others.
+  // Always on, like [snips:]/[vtheme:]: a probe cannot pass by setting a
+  // variable — these are resolved pixels off the live cascade.
+  const vpxBg = el => el ? getComputedStyle(el).backgroundColor.replace(/\s+/g, "") : "-";
+  const vpxTok = document.body
+    ? " [vpx:" + vpxBg(document.body) + "/" + vpxBg(document.getElementById("side")) +
+      "/" + vpxBg(document.getElementById("wframe")) + "/" + vpxBg(document.querySelector("#bar button")) + "]"
+    : "";
   let t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
-            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + palTok + thmpxTok + snipTok + vthemeTok + creloadTok + vbridgeTok + lg + md + gg + modal +
+            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + palTok + thmpxTok + snipTok + vthemeTok + creloadTok + vbridgeTok + vpxTok + lg + md + gg + modal +
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) +
             (rightOpen ? ":" + rTab : "") + "]" +
             (rightOpen && rpInfo ? " [rp:" + rpInfo + "]" : "") +
@@ -6197,12 +6210,24 @@ function svtTok() {
   return " [svt:" + Math.round(b.left + b.width / 2) + "," +
          Math.round(b.top + b.height / 2) + "," + lbl + "]";
 }
+/* [ssn:<centre x>,<centre y>,<label>] — the CSS-snippets control (Appearance
+   ▸ CSS snippets, themefs R3), published like [svt:]/[spal:] and for the same
+   reason: the phase that proves the toggle must CLICK the control's measured
+   rect and assert its live "<n> enabled" label without OCR. */
+function ssnTok() {
+  const d = document.getElementById("ssnips");
+  if (!d) return "";
+  const b = d.getBoundingClientRect();
+  const lbl = String(d.textContent || "").replace(/[[\]|]/g, "").slice(0, 40);
+  return " [ssn:" + Math.round(b.left + b.width / 2) + "," +
+         Math.round(b.top + b.height / 2) + "," + lbl + "]";
+}
 function setTok() {
   if (!SMODEL) return "";
   const e = SMODEL.rows.reduce((n, r) => n + (r.enabled ? 1 : 0), 0);
   return " [set:" + SMODEL.nav.length + "/" + SMODEL.rows.length + "/" + e + "]" +
          " [spane:" + sPane + "/" + sRowsShown + "/" + sEnabledShown + "]" +
-         spalTok() + svtTok() +
+         spalTok() + svtTok() + ssnTok() +
          (sfpMs >= 0 ? " [sfp:" + sfpMs + "/" + sfpMax + "/" +
                        (Math.round(sfpSum / sfpN * 100) / 100) + "/" + sfpN + "]" : "") +
          (sfpW >= 0 ? " [sfpw:" + sfpW + "/" + sfpWMax + "]" : "");
