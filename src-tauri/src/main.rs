@@ -24,6 +24,7 @@ mod perf;
 mod sandbox;
 mod settings;
 mod srcmode;
+mod themefs;
 mod watcher;
 use index::{link_parts, links_in, resolve, tag_spans, Graph, Index};
 
