@@ -1904,11 +1904,15 @@ fn set_palette(palette: String) {
    banner) and names the file — R6: loud where stock is silent. */
 
 /// what the frontend injects for one snippet or theme: the sanitized bytes
-/// plus the R4X.4 strip message when mask declarations were cut (None = none)
+/// plus the R4X.4 strip message when mask declarations were cut (None = none).
+/// `bridge` is the item-8 R4 alias sheet (themefs::bridge_css), GENERATED from
+/// the theme's sanitized css — themes only (None for snippets: one bridge per
+/// PAINTING theme, snippets compose on top and never re-alias the chrome).
 #[derive(serde::Serialize)]
 struct VaultCss {
     css: String,
     message: Option<String>,
+    bridge: Option<String>,
 }
 
 #[tauri::command]
@@ -1928,7 +1932,7 @@ fn snippet_css(v: State<Vault>, label: String, otel: Option<perf::Ctx>) -> Resul
     let root = cur_vault(&v).ok_or("no vault open")?;
     let (css, message) =
         span_timed!(otel => "snippet_css", themefs::load_snippet(&root, &label))?;
-    Ok(VaultCss { css, message })
+    Ok(VaultCss { css, message, bridge: None })
 }
 
 #[tauri::command]
@@ -1956,7 +1960,11 @@ fn theme_css(v: State<Vault>, name: String, otel: Option<perf::Ctx>) -> Result<V
     let root = cur_vault(&v).ok_or("no vault open")?;
     let (css, message) =
         span_timed!(otel => "theme_css", themefs::load_theme(&root, &name))?;
-    Ok(VaultCss { css, message })
+    // item 8: the R4 alias bridge rides the same response — generated from
+    // the SAME sanitized bytes the frontend is about to inject, so the bridge
+    // can never describe a different file than the one painting
+    let bridge = Some(themefs::bridge_css(&css));
+    Ok(VaultCss { css, message, bridge })
 }
 
 #[tauri::command]

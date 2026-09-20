@@ -1519,7 +1519,10 @@ body.floorrelayout #main { padding-right: 1px }
    the strip reserves its width (.wfinset, set by placeRToggle) instead of being
    covered — #rtoggle and .modebtn live at exactly that end of the row. */
 #wframe { position: fixed; top: 0; right: 0; width: 140px; height: 32px;
-          z-index: 200; background: var(--bg-ribbon); user-select: none }
+          /* --titlebar-bg is DEFINED only by the item-8 R4 bridge (a vault
+             theme declaring --titlebar-background-focused); without a bridge
+             the var is undefined and the fallback keeps the palette's ribbon */
+          z-index: 200; background: var(--titlebar-bg, var(--bg-ribbon)); user-select: none }
 #wframe button { position: absolute; top: 0; width: 44px; height: 32px; padding: 0;
                  background: none; border: 0; color: var(--text-chrome-muted); cursor: pointer;
                  display: flex; align-items: center; justify-content: center }

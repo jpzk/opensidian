@@ -340,6 +340,111 @@ pub fn load_theme(root: &Path, name: &str) -> Result<(String, Option<String>), S
 }
 
 // ---------------------------------------------------------------------------
+// item 8: the R4 MINIMAL alias bridge (DESIGN §7) — GENERATED, never static.
+//
+// A vault theme is stock-shaped CSS: it declares stock's custom properties
+// (`--background-primary`, ...) on `.theme-dark`/`.theme-light`. Our CHROME
+// paints from our own tokens (`--bg-base`, `--text-chrome`, ...), so without
+// a bridge a stock theme moves the note column (which already reads stock
+// names, R15.14) but never the chrome. The bridge is ONE generated <style>
+// (#vault-bridge, before #vault-theme — DESIGN §5) of alias rows
+// `--ours: var(--stock)` scoped to `body.theme-dark, body.theme-light`.
+//
+// WHY GENERATED (DESIGN §7): a static alias whose stock source the theme
+// never declares resolves the var() against OUR OWN `:root` values — at best
+// a no-op, at worst (`--background-primary: var(--bg-base)` lives in
+// style.css) a self-reference. So a row is emitted ONLY when the theme's
+// sanitized CSS textually DECLARES the stock name. No declared names → empty
+// string → no element → the DOM is byte-identical to the palette baseline.
+//
+// WHY body AND NOT :root: the alias must LOSE to the theme for the stock
+// name and WIN over the palette for ours. Declarations land on different
+// elements: palettes/`:root` set tokens on <html>; the bridge sets ours on
+// <body>. An element's OWN declaration always beats an inherited one, and an
+// inherited custom property arrives ALREADY RESOLVED (substitution happens
+// per element, computed values inherit) — so `--bg-base: var(--background-
+// primary)` on body cannot cycle through :root's `--background-primary:
+// var(--bg-base)` on html: if the theme did not declare the name for the
+// body's current class, the var() resolves to html's resolved value and the
+// pixels simply stay the palette's (fail-safe in the benign direction).
+//
+// The scan runs on SANITIZED css (comments are already one space, so a
+// commented-out declaration cannot match). A declaration inside a string
+// ("--text-normal:" as content) can false-positive — same benign direction:
+// the alias row resolves to the inherited palette value, no pixel moves.
+// Custom property names are CASE-SENSITIVE (CSS Variables 1 §2), so the
+// match is exact-case.
+
+/// Stock name → our chrome token(s). The MINIMAL set (DESIGN §7): enough to
+/// make a real stock theme visibly move our chrome, each row a measured
+/// surface (T5 RESULT 1, and iter-8's census of what Minimal 9.0.2 declares).
+/// EVERY alias is a promise — the full T5 surface is a follow-up in
+/// docs/themefs/README.md, deliberately NOT promised here.
+pub const BRIDGE_ALIASES: &[(&str, &[&str])] = &[
+    // stock's base surface → body/main background (style.css: body{background})
+    ("--background-primary", &["--bg-base"]),
+    // stock's sidebar surface → our sidebar AND ribbon (both are "secondary"
+    // chrome surfaces; stock paints its ribbon from background-secondary too)
+    ("--background-secondary", &["--bg-sidebar", "--bg-ribbon"]),
+    // stock's body ink → chrome ink (body{color:var(--text-chrome)})
+    ("--text-normal", &["--text-chrome"]),
+    ("--text-muted", &["--text-chrome-muted"]),
+    // stock's accent → the primary button chrome (content already reads
+    // --interactive-accent directly; this moves the chrome side)
+    ("--interactive-accent", &["--bg-button-primary"]),
+    // stock's titlebar → #wframe, via its dedicated hook: style.css paints
+    // #wframe with var(--titlebar-bg, var(--bg-ribbon)) — undefined without
+    // a bridge (fallback = the palette's ribbon), defined only here
+    ("--titlebar-background-focused", &["--titlebar-bg"]),
+];
+
+/// Does `css` DECLARE custom property `name` (exact case)? A declaration is
+/// the name at an identifier boundary followed by optional whitespace and
+/// `:` — `var(--x)` (no colon) and `--x-alt:` (longer identifier) do not
+/// match. Textual on purpose: both failure directions are benign (see above).
+fn declares(css: &str, name: &str) -> bool {
+    let b = css.as_bytes();
+    let ident = |c: u8| c == b'-' || c == b'_' || c == b'\\' || c.is_ascii_alphanumeric();
+    let mut from = 0;
+    while let Some(off) = css[from..].find(name) {
+        let p = from + off;
+        from = p + 1;
+        if p > 0 && ident(b[p - 1]) {
+            continue; // tail of a longer identifier
+        }
+        let mut j = p + name.len();
+        if j < b.len() && ident(b[j]) {
+            continue; // --background-primary-alt is not --background-primary
+        }
+        while j < b.len() && b[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        if j < b.len() && b[j] == b':' {
+            return true;
+        }
+    }
+    false
+}
+
+/// Generate the bridge for one theme's SANITIZED css. Empty string = no
+/// bridge element (the theme declares none of the aliased stock names).
+pub fn bridge_css(sanitized: &str) -> String {
+    let mut rows = String::new();
+    for (stock, ours) in BRIDGE_ALIASES {
+        if declares(sanitized, stock) {
+            for o in *ours {
+                rows.push_str(&format!("  {o}: var({stock});\n"));
+            }
+        }
+    }
+    if rows.is_empty() {
+        String::new()
+    } else {
+        format!("body.theme-dark, body.theme-light {{\n{rows}}}\n")
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Part 2 (ledger item 3): the CSS sanitizer — the mask policy, R4X.4.
 //
 // The brick finding (docs/themecsp/README.md): an unloadable
@@ -1226,5 +1331,76 @@ mod tests {
         assert!(fp2.is_some() && fp2 != fp1, "a longer file must re-fingerprint");
         fs::remove_file(&p).unwrap();
         assert_eq!(reload_fp(&p), None, "a deleted file reads None — the change fires once");
+    }
+
+    // ---- item 8: the R4 minimal alias bridge (generated) -------------------
+
+    /// the REAL theme fixture, installed by stock 1.13.7 itself (item 9,
+    /// docs/fixtures/themefs/README.md) — the bridge's whole point is that
+    /// THIS file moves our chrome, so it is the fixture the generator is
+    /// proved against, through the same sanitize step the loader uses.
+    const MINIMAL: &str =
+        include_str!("../../docs/fixtures/themefs/vault-minimal/.obsidian/themes/Minimal/theme.css");
+
+    #[test]
+    fn themefs_bridge_minimal_fixture_emits_the_full_set() {
+        let s = sanitize_css(MINIMAL).expect("the stock-installed fixture must sanitize");
+        let b = bridge_css(&s.css);
+        assert!(
+            b.starts_with("body.theme-dark, body.theme-light {\n"),
+            "bridge scope is the body theme classes (own-decl beats inheritance): {b}"
+        );
+        // Minimal 9.0.2 declares every stock name in the minimal set (measured
+        // iter 8: primary 3 / secondary 6 / normal 1 / muted 1 / accent 2 /
+        // titlebar-focused 4 declarations) — all seven alias rows must emit.
+        for row in [
+            "  --bg-base: var(--background-primary);",
+            "  --bg-sidebar: var(--background-secondary);",
+            "  --bg-ribbon: var(--background-secondary);",
+            "  --text-chrome: var(--text-normal);",
+            "  --text-chrome-muted: var(--text-muted);",
+            "  --bg-button-primary: var(--interactive-accent);",
+            "  --titlebar-bg: var(--titlebar-background-focused);",
+        ] {
+            assert!(b.contains(row), "missing alias row {row:?} in:\n{b}");
+        }
+    }
+
+    #[test]
+    fn themefs_bridge_absent_when_nothing_declared() {
+        // no stock names → empty string → the frontend injects NO element and
+        // the DOM stays byte-identical to the palette baseline (DESIGN §7)
+        assert_eq!(bridge_css(".x { color: red; background: blue }"), "");
+        assert_eq!(bridge_css(""), "");
+    }
+
+    #[test]
+    fn themefs_bridge_usage_is_not_a_declaration() {
+        // reading a stock name is not defining it: an alias emitted for a
+        // mere var() reference would resolve against our own :root values
+        assert_eq!(bridge_css("a { color: var(--background-primary) }"), "");
+        // a LONGER identifier is a different property
+        assert_eq!(bridge_css(".theme-dark { --background-primary-alt: #fff }"), "");
+        // and the name as a var() DEFAULT is still not a declaration
+        assert_eq!(bridge_css("a { color: var(--x, var(--text-normal)) }"), "");
+    }
+
+    #[test]
+    fn themefs_bridge_declaration_forms() {
+        // tight colon
+        let b = bridge_css(".theme-dark{--text-normal:#fff}");
+        assert!(b.contains("--text-chrome: var(--text-normal);"), "{b}");
+        // whitespace before the colon is legal in a declaration
+        let b = bridge_css(".theme-light { --text-muted\n\t: red }");
+        assert!(b.contains("--text-chrome-muted: var(--text-muted);"), "{b}");
+        // only the declared name's rows emit — nothing speculative
+        assert!(!b.contains("--bg-base"), "undeclared names must not alias: {b}");
+    }
+
+    #[test]
+    fn themefs_bridge_names_are_case_sensitive() {
+        // custom property names are case-sensitive (CSS Variables 1 §2):
+        // --TEXT-NORMAL is a DIFFERENT property and must not emit the alias
+        assert_eq!(bridge_css(".theme-dark { --TEXT-NORMAL: #fff }"), "");
     }
 }
