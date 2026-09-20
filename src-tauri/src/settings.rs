@@ -38,13 +38,19 @@ const BACKED: &[(&str, &str, &str)] = &[
     ("hotkeys", "(filter field)", "hotkeys"),
     ("hotkeys", "(scope chips)", "hotkeys"),
     ("hotkeys", "(command rows)", "hotkeys"),
-    // the PALETTE axis (goal/theme-1984). Stock's Appearance > Themes row is
-    // literally "Manage installed themes" — a dropdown naming the active theme —
-    // so the palette selector belongs on the row stock already put it on, not on
-    // a row we invent. It is backed by "palette", which main.rs really reads and
-    // writes (get_palette / set_palette); "Base color scheme" one row above
-    // stays disabled because that is the MODE axis and its control is Ctrl+P.
-    ("appearance", "Themes", "palette"),
+    // themefs R5. Stock's Appearance > Themes row IS the active-theme picker —
+    // a dropdown showing "Default" or the installed theme's name, wired to the
+    // vault's own appearance.json "cssTheme" (T1/T2) — so with vault themes
+    // real (src-tauri/src/themefs.rs themes_scan/load_theme, the oracle's
+    // predicate), the drop-in charter puts that picker back on stock's row.
+    // The PALETTE axis (goal/theme-1984, ~/.rustidian.json "palette") that
+    // previously parked here moves ONE row down, onto "Current community
+    // themes" — stock's installed-themes surface, whose stock control is a
+    // status line; a live control there is OUR delta, recorded here and in
+    // docs/themefs/README.md. "Base color scheme" one row above stays
+    // disabled: that is the MODE axis and its control is Ctrl+P.
+    ("appearance", "Themes", "cssTheme"),
+    ("appearance", "Current community themes", "palette"),
     // themefs R3. Stock's Appearance > CSS snippets row manages the vault's
     // .obsidian/snippets/*.css toggles, persisted in the VAULT's own
     // appearance.json "enabledCssSnippets" array (T3) — a vault file, not a
@@ -58,7 +64,7 @@ const BACKED: &[(&str, &str, &str)] = &[
 /// (stock's file, byte-wise round-trip — src-tauri/src/themefs.rs), not in
 /// ~/.rustidian.json. Same invariant as CONFIG_KEYS, different home:
 /// `vault_keys_are_all_touched_by_themefs` pins this list to the source.
-pub const VAULT_KEYS: &[&str] = &["enabledCssSnippets"];
+pub const VAULT_KEYS: &[&str] = &["enabledCssSnippets", "cssTheme"];
 
 /// nav entry -> tab id used in structure.tsv's first column
 const OPTIONS_TABS: &[(&str, &str)] = &[
@@ -295,7 +301,7 @@ mod tests {
             }
         }
         let enabled = rows().iter().filter(|r| r.enabled).count();
-        assert_eq!(enabled, 5, "enabled-row count changed — say why in progress.md (R30)");
+        assert_eq!(enabled, 6, "enabled-row count changed — say why in progress.md (R30)");
     }
 
     /// a key is "real" only if main.rs actually reads or writes it

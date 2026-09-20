@@ -1903,10 +1903,10 @@ fn set_palette(palette: String) {
    Every refusal string is user-visible (the frontend puts it on the notice
    banner) and names the file — R6: loud where stock is silent. */
 
-/// what the frontend injects for one snippet: the sanitized bytes plus the
-/// R4X.4 strip message when mask declarations were cut (None = nothing cut)
+/// what the frontend injects for one snippet or theme: the sanitized bytes
+/// plus the R4X.4 strip message when mask declarations were cut (None = none)
 #[derive(serde::Serialize)]
-struct SnippetCss {
+struct VaultCss {
     css: String,
     message: Option<String>,
 }
@@ -1924,17 +1924,51 @@ fn snippets_enabled(v: State<Vault>) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-fn snippet_css(v: State<Vault>, label: String, otel: Option<perf::Ctx>) -> Result<SnippetCss, String> {
+fn snippet_css(v: State<Vault>, label: String, otel: Option<perf::Ctx>) -> Result<VaultCss, String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
     let (css, message) =
         span_timed!(otel => "snippet_css", themefs::load_snippet(&root, &label))?;
-    Ok(SnippetCss { css, message })
+    Ok(VaultCss { css, message })
 }
 
 #[tauri::command]
 fn set_snippet_enabled(v: State<Vault>, label: String, on: bool) -> Result<(), String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
     themefs::set_snippet_enabled(&root, &label, on)
+}
+
+/* ---- themefs R5 (themes): the listing predicate is the oracle's, verbatim
+   (probe-stock-vault.sh §3 — themefs::themes_scan). themes_scan/theme_css
+   are INSTRUMENTED (a directory walk that grows with the user's installed
+   themes; a user-sized CSS file through the R4X.4 sanitizer); get_css_theme/
+   set_css_theme are the get_theme class homed in vault config — one scalar in
+   the small appearance.json (byte-wise round-trip), OUT_OF_SCOPE_CMD with
+   reasons in perf-coverage.sh. */
+
+#[tauri::command]
+fn themes_scan(v: State<Vault>, otel: Option<perf::Ctx>) -> Result<themefs::ThemesScan, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    Ok(span_timed!(otel => "themes_scan", themefs::themes_scan(&root)))
+}
+
+#[tauri::command]
+fn theme_css(v: State<Vault>, name: String, otel: Option<perf::Ctx>) -> Result<VaultCss, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    let (css, message) =
+        span_timed!(otel => "theme_css", themefs::load_theme(&root, &name))?;
+    Ok(VaultCss { css, message })
+}
+
+#[tauri::command]
+fn get_css_theme(v: State<Vault>) -> Result<String, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    Ok(themefs::css_theme(&root))
+}
+
+#[tauri::command]
+fn set_css_theme(v: State<Vault>, name: String) -> Result<(), String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    themefs::set_css_theme(&root, &name)
 }
 
 /* R14: custom hotkeys, persisted as "hotkeys" in ~/.rustidian.json in the stock
@@ -3504,6 +3538,7 @@ fn main() {
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, smoke_css,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme, get_palette, set_palette,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
+            themes_scan, theme_css, get_css_theme, set_css_theme,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
             win_rect, win_gesture, win_move_proto, win_drag_start, win_minimize, win_toggle_max, win_close,
             tab_removed,

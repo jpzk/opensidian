@@ -23,8 +23,8 @@ through byte-wise: read bytes → parse with preserve_order (Cargo.toml locks
 the feature) → mutate ONLY the key we author → pretty-print. Criterion 2.
 */
 
-// Wired into tauri commands by the R5/R3 ledger items (picker + snippet
-// toggle); until those land only the tests call this module.
+// Wired into main.rs's thin tauri commands: R3 snippets (item 4) and the R5
+// theme picker (item 5). dead_code stands for helpers only tests call yet.
 #![allow(dead_code)]
 
 use serde_json::{Map, Value};
@@ -182,6 +182,160 @@ pub fn load_snippet(root: &Path, label: &str) -> Result<(String, Option<String>)
         fs::read_to_string(&p).map_err(|e| format!("{origin}: cannot read: {e}"))?;
     let s = sanitize_css(&src).map_err(|e| format!("{origin}: {e}"))?;
     let msg = (s.stripped > 0).then(|| mask_strip_message(&origin, s.stripped));
+    Ok((s.css, msg))
+}
+
+// ---------------------------------------------------------------------------
+// Part 4 (ledger item 5): the theme listing + loader — R5.
+//
+// The oracle (docs/recon-themes/probe-stock-vault.sh §3, T1/T7):
+//
+//     LISTED  <=>  manifest.json parses as a JSON object     (T7 RESULT 3)
+//             AND  it has a non-empty "name"                 (T1 RESULT 2)
+//             AND  name == DIRECTORY name                    (T1 RESULT 2)
+//             AND  theme.css exists in the directory         (T7 RESULT 3)
+//
+// Candidates are `themes/*` — a sh glob, so no dotfiles; a non-directory is
+// silently not a candidate (the oracle prints NOT A DIRECTORY -> NOT LISTED
+// with no reason line — it is not one of the five case-3 shapes). Exclusions
+// carry the FIRST failing reason, exactly as the oracle's `why` is only ever
+// set once (a dir with a bad manifest AND no theme.css reports the manifest).
+// Absent themes/ directory is SILENT NORMAL (T0): empty scan, no message,
+// nothing created. Stock silently excludes; we are LOUD (R6): every exclusion
+// carries a user-visible message naming the theme dir and the reason, the
+// five DESIGN §3 strings verbatim.
+
+/// One excluded theme directory: which dir, which file the reason is about,
+/// the oracle's reason string, and the R6 loud message shown to the user.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ThemeExcluded {
+    pub dir: String,
+    pub file: String,
+    pub reason: String,
+    pub message: String,
+}
+
+/// The scan: what the picker lists (dir names, == manifest names by the
+/// predicate) and what it renders inert-with-reason (DESIGN §9).
+#[derive(Debug, Default, serde::Serialize)]
+pub struct ThemesScan {
+    pub listed: Vec<String>,
+    pub excluded: Vec<ThemeExcluded>,
+}
+
+/// The R6 message for one excluded theme dir, in ONE place (item 7 asserts
+/// these five distinctly; the reason names the file, the prefix the dir).
+fn theme_excluded_message(dir: &str, reason: &str) -> String {
+    format!("theme {dir}: {reason}")
+}
+
+/// jq's view of `.name` (the oracle's json_get): a string comes through
+/// as-is, any other value as its compact JSON (`tojson`); absent or empty
+/// is "no name". preserve_order's to_string is compact JSON, like tojson.
+fn manifest_name(m: &Map<String, Value>) -> Option<String> {
+    let s = match m.get("name")? {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    (!s.is_empty()).then_some(s)
+}
+
+/// List theme directories for a vault — the oracle's predicate, verbatim.
+/// `listed` and `excluded` are each sorted bytewise (deterministic; the
+/// oracle's glob order is collation order, unmeasured on-screen in stock).
+pub fn themes_scan(root: &Path) -> ThemesScan {
+    let td = root.join(".obsidian").join("themes");
+    let rd = match fs::read_dir(&td) {
+        Ok(r) => r,
+        Err(_) => return ThemesScan::default(), // absent = silent normal (T0)
+    };
+    let mut scan = ThemesScan::default();
+    for e in rd.filter_map(|e| e.ok()) {
+        let b = match e.file_name().into_string() {
+            Ok(n) => n,
+            Err(_) => continue, // not valid UTF-8: the glob-shaped tools never list it
+        };
+        if b.starts_with('.') {
+            continue; // sh glob: dotfiles are not candidates
+        }
+        // is_dir follows symlinks, as the oracle's `[ ! -d "$d" ]` does
+        if !e.path().is_dir() {
+            continue; // NOT A DIRECTORY -> silently not a candidate
+        }
+        let m = td.join(&b).join("manifest.json");
+        let c = td.join(&b).join("theme.css");
+        // first-reason-wins, the oracle's order: manifest shape, then name,
+        // then theme.css presence.
+        let mut why: Option<(&str, String)> = None; // (file, reason)
+        if !m.is_file() {
+            why = Some(("manifest.json", "no manifest.json".into()));
+        } else {
+            match fs::read_to_string(&m)
+                .ok()
+                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                .and_then(|v| v.as_object().cloned())
+            {
+                None => why = Some(("manifest.json", "manifest.json does not parse".into())),
+                Some(obj) => match manifest_name(&obj) {
+                    None => why = Some(("manifest.json", "manifest has no \"name\"".into())),
+                    Some(name) if name != b => {
+                        why = Some((
+                            "manifest.json",
+                            format!("name \"{name}\" != directory \"{b}\""),
+                        ));
+                    }
+                    Some(_) => {}
+                },
+            }
+        }
+        if why.is_none() && !c.is_file() {
+            why = Some(("theme.css", "no theme.css".into()));
+        }
+        match why {
+            None => scan.listed.push(b),
+            Some((file, reason)) => scan.excluded.push(ThemeExcluded {
+                message: theme_excluded_message(&b, &reason),
+                dir: b,
+                file: file.into(),
+                reason,
+            }),
+        }
+    }
+    scan.listed.sort();
+    scan.excluded.sort_by(|a, z| a.dir.cmp(&z.dir));
+    scan
+}
+
+/// The one path a theme name may reach: `.obsidian/themes/<name>/theme.css`.
+/// The name comes from cssTheme (user config) or the picker — never trusted
+/// as a path; anything that could traverse is refused loudly (snippet_path's
+/// rule, same reason: a silent skip would read as "theme off").
+pub fn theme_path(root: &Path, name: &str) -> Result<PathBuf, String> {
+    if name.is_empty()
+        || name.starts_with('.')
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains('\0')
+    {
+        return Err(format!("theme name {name:?} refused: not a theme directory name"));
+    }
+    Ok(root
+        .join(".obsidian")
+        .join("themes")
+        .join(name)
+        .join("theme.css"))
+}
+
+/// Read + sanitize ONE theme's css for injection. Ok = (css, Some(loud
+/// message) when mask declarations were stripped — R4X.4, DESIGN §6's
+/// `theme <name>:` origin). Err = the R6-loud refusal naming the FILE
+/// (bad name, unreadable, sanitizer refusal).
+pub fn load_theme(root: &Path, name: &str) -> Result<(String, Option<String>), String> {
+    let p = theme_path(root, name)?;
+    let file = format!("theme {name}/theme.css");
+    let src = fs::read_to_string(&p).map_err(|e| format!("{file}: cannot read: {e}"))?;
+    let s = sanitize_css(&src).map_err(|e| format!("{file}: {e}"))?;
+    let msg = (s.stripped > 0).then(|| mask_strip_message(&format!("theme {name}"), s.stripped));
     Ok((s.css, msg))
 }
 
@@ -786,5 +940,132 @@ mod tests {
         // a clean file carries NO message — silence is the no-mask signal
         fs::write(sd.join("ok.css"), ".a { color: blue }").unwrap();
         assert_eq!(load_snippet(&root, "ok").unwrap().1, None);
+    }
+
+    // ---- Part 4 (item 5): the theme listing predicate == the oracle ----
+
+    /// write one theme dir: manifest bytes (None = no manifest), css yes/no
+    fn mk_theme(root: &Path, dir: &str, manifest: Option<&str>, css: bool) {
+        let d = root.join(".obsidian").join("themes").join(dir);
+        fs::create_dir_all(&d).unwrap();
+        if let Some(m) = manifest {
+            fs::write(d.join("manifest.json"), m).unwrap();
+        }
+        if css {
+            fs::write(d.join("theme.css"), "body { color: red }").unwrap();
+        }
+    }
+
+    #[test]
+    fn themes_absent_dir_is_silent_empty_and_never_created() {
+        let root = tmp_vault("thnone");
+        let s = themes_scan(&root);
+        assert!(s.listed.is_empty() && s.excluded.is_empty());
+        assert!(!root.join(".obsidian").join("themes").exists(), "scan must not create");
+    }
+
+    /// probe-stock-vault.sh case 3, all five shapes + a valid dir, one scan.
+    /// The five reasons are DESIGN §3's strings verbatim; message = dir-prefixed.
+    #[test]
+    fn themes_predicate_matches_the_oracle_case3() {
+        let root = tmp_vault("thcase3");
+        mk_theme(&root, "Good", Some(r#"{"name": "Good", "version": "1.0.0"}"#), true);
+        mk_theme(&root, "T7nomanifest", None, true);
+        mk_theme(&root, "T7emptydir", None, false);
+        mk_theme(&root, "T7badjson", Some("{ not json"), true);
+        mk_theme(&root, "T7textmanifest", Some("just text\n"), true);
+        mk_theme(&root, "T7nocss", Some(r#"{"name": "T7nocss"}"#), false);
+        mk_theme(&root, "NoName", Some(r#"{"version": "1.0.0"}"#), true);
+        mk_theme(&root, "WrongName", Some(r#"{"name": "Other"}"#), true);
+        let s = themes_scan(&root);
+        assert_eq!(s.listed, vec!["Good"]);
+        let why: Vec<(&str, &str, &str)> = s
+            .excluded
+            .iter()
+            .map(|x| (x.dir.as_str(), x.file.as_str(), x.reason.as_str()))
+            .collect();
+        assert_eq!(
+            why,
+            vec![
+                ("NoName", "manifest.json", "manifest has no \"name\""),
+                ("T7badjson", "manifest.json", "manifest.json does not parse"),
+                ("T7emptydir", "manifest.json", "no manifest.json"),
+                ("T7nocss", "theme.css", "no theme.css"),
+                ("T7nomanifest", "manifest.json", "no manifest.json"),
+                ("T7textmanifest", "manifest.json", "manifest.json does not parse"),
+                ("WrongName", "manifest.json", "name \"Other\" != directory \"WrongName\""),
+            ]
+        );
+        // the R6 message: dir-prefixed reason, authored in ONE place
+        for x in &s.excluded {
+            assert_eq!(x.message, format!("theme {}: {}", x.dir, x.reason));
+        }
+    }
+
+    /// sh-glob candidacy: dotdirs and non-directories are silently NOT
+    /// candidates — neither listed nor excluded (no reason line in the oracle).
+    #[test]
+    fn themes_non_dirs_and_dotdirs_are_not_candidates() {
+        let root = tmp_vault("thcand");
+        let td = root.join(".obsidian").join("themes");
+        fs::create_dir_all(td.join(".git")).unwrap();
+        fs::write(td.join("stray.css"), "body{}").unwrap();
+        fs::write(td.join("x.css"), "not a dir").unwrap();
+        let s = themes_scan(&root);
+        assert!(s.listed.is_empty(), "{:?}", s.listed);
+        assert!(s.excluded.is_empty(), "{:?}", s.excluded);
+    }
+
+    /// first-reason-wins, the oracle's `why` set-once: bad manifest AND no
+    /// theme.css reports the manifest, once.
+    #[test]
+    fn themes_exclusion_carries_the_first_reason_only() {
+        let root = tmp_vault("thfirst");
+        mk_theme(&root, "Both", Some("garbage"), false);
+        let s = themes_scan(&root);
+        assert_eq!(s.excluded.len(), 1);
+        assert_eq!(s.excluded[0].reason, "manifest.json does not parse");
+    }
+
+    /// jq tojson semantics for a non-string name: compared as compact JSON
+    /// (numeric name 42 vs dir "42j" mismatches with name "42").
+    #[test]
+    fn themes_nonstring_name_compares_as_json() {
+        let root = tmp_vault("thnum");
+        mk_theme(&root, "42", Some(r#"{"name": 42}"#), true);
+        let s = themes_scan(&root);
+        assert_eq!(s.listed, vec!["42"], "{:?}", s.excluded);
+        // and an empty-string name is "no name", like json_get's empty
+        mk_theme(&root, "Empty", Some(r#"{"name": ""}"#), true);
+        let s2 = themes_scan(&root);
+        assert!(s2.excluded.iter().any(|x| x.dir == "Empty"
+            && x.reason == "manifest has no \"name\""));
+    }
+
+    #[test]
+    fn themes_theme_path_refuses_traversal_shapes() {
+        let root = tmp_vault("thpath");
+        for bad in ["", ".", "..", "../up", "a/b", "a\\b", ".hidden", "x\0y"] {
+            assert!(theme_path(&root, bad).is_err(), "accepted {bad:?}");
+        }
+        let p = theme_path(&root, "Minimal").unwrap();
+        assert!(p.ends_with(".obsidian/themes/Minimal/theme.css"));
+    }
+
+    #[test]
+    fn themes_load_theme_strips_mask_loudly_and_refusals_name_the_file() {
+        let root = tmp_vault("thload");
+        mk_theme(&root, "Masky", Some(r#"{"name": "Masky"}"#), false);
+        let d = root.join(".obsidian").join("themes").join("Masky");
+        fs::write(d.join("theme.css"), ".a { color: red; mask: url(x) }").unwrap();
+        let (css, msg) = load_theme(&root, "Masky").unwrap();
+        assert!(css.contains("color: red") && !css.to_lowercase().contains("mask"));
+        // DESIGN §6's origin shape: `theme <name>:`, not the file path
+        assert_eq!(msg, Some(mask_strip_message("theme Masky", 1)));
+        let e = load_theme(&root, "Ghost").unwrap_err();
+        assert!(e.starts_with("theme Ghost/theme.css: cannot read:"), "got {e:?}");
+        fs::write(d.join("theme.css"), ".a { /* unclosed").unwrap();
+        let e2 = load_theme(&root, "Masky").unwrap_err();
+        assert!(e2.starts_with("theme Masky/theme.css: cannot parse safely:"), "got {e2:?}");
     }
 }

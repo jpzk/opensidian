@@ -1997,9 +1997,15 @@ function updateTitle() {          // pane/focus census in the window title (head
   // counted off the DOM (snipEls maps label -> live element), not off the
   // enabled array, so an injection that failed loudly is not counted as on.
   const snipTok = " [snips:" + snipEls.size + "]";
+  // themefs R5: the active VAULT theme — the name only when its <style> is
+  // really in the head (a refused/unlisted cssTheme reads "none": the census
+  // reports what is painting, not what the config wishes were)
+  const vthemeTok = " [vtheme:" +
+    (document.getElementById("vault-theme") && vaultTheme
+      ? String(vaultTheme).replace(/[[\]|]/g, "").slice(0, 40) : "none") + "]";
   let t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
-            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + palTok + thmpxTok + snipTok + lg + md + gg + modal +
+            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + palTok + thmpxTok + snipTok + vthemeTok + lg + md + gg + modal +
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) +
             (rightOpen ? ":" + rTab : "") + "]" +
             (rightOpen && rpInfo ? " [rp:" + rpInfo + "]" : "") +
@@ -4511,9 +4517,45 @@ function cmdSetPalette(id) { return () => choosePalette(id); }
        <link style.css> -> #vault-bridge -> #vault-theme -> snippet styles
    Snippets sit LAST (T3 RESULT 4: they compose on top of the theme), in
    enabledCssSnippets ARRAY order (T3 RESULT 3: the array is enable order).
-   Appending to <head> keeps that true; the bridge/theme elements (items 5/8)
-   must insertBefore the first [data-snip] element when they land. */
+   Appending to <head> keeps that true; #vault-theme (below) insertBefores the
+   first [data-snip] element, and #vault-bridge (item 8) will do the same
+   relative to #vault-theme. */
 let vaultSnips = [], vaultSnipsOn = [], snipEls = new Map();
+/* ---- themefs R5: the vault THEME (stock's .obsidian/themes/<Name>/) ----
+   vaultThemesScan is the backend's oracle-predicate result: {listed:[names],
+   excluded:[{dir,file,reason,message}]}. vaultTheme mirrors cssTheme ("" =
+   built-in Default). The theme's <style id="vault-theme"> sits BEFORE every
+   [data-snip] element (DESIGN §5: snippets compose on top of the theme —
+   T3 RESULT 4); the #vault-bridge element (item 8) will insertBefore it. */
+let vaultThemesScan = { listed: [], excluded: [] }, vaultTheme = "";
+async function themeInject(name) {
+  themeRemove();
+  try {
+    const r = await inv("theme_css", { name });
+    const el = document.createElement("style");
+    el.id = "vault-theme";
+    el.textContent = r.css;
+    document.head.insertBefore(el, document.head.querySelector("style[data-snip]"));
+    if (r.message) say(r.message, "theme");  // R4X.4: the strip is LOUD
+  } catch (e) {
+    say(String(e), "theme");                 // R6: the refusal names the file
+  }
+}
+function themeRemove() {
+  const el = document.getElementById("vault-theme");
+  if (el) el.remove();
+}
+/* pick a theme (the settings control's route): file FIRST — a refused write
+   (unparseable appearance.json) must not paint a choice that will not
+   survive the next boot — then the DOM. "" = Default: remove, inject nothing. */
+async function chooseVaultTheme(name) {
+  try { await inv("set_css_theme", { name }); }
+  catch (e) { say(String(e), "theme"); return; }
+  vaultTheme = name;
+  if (name) await themeInject(name); else themeRemove();
+  renderThemeCtl();
+  if (state) updateTitle();
+}
 async function snipInject(label) {
   if (snipEls.has(label)) return;
   try {
@@ -4538,7 +4580,22 @@ function snipRemove(label) {
    notice: no vault / no snippets dir is stock's silent normal (T0). */
 async function loadVaultCss() {
   for (const l of [...snipEls.keys()]) snipRemove(l);
+  themeRemove();
   vaultSnips = []; vaultSnipsOn = [];
+  vaultThemesScan = { listed: [], excluded: [] }; vaultTheme = "";
+  try {
+    vaultThemesScan = await inv("themes_scan");
+    // R6: LOUD where stock silently excludes — every broken theme dir says
+    // its one message (dir + reason, authored in themefs.rs) at scan time.
+    for (const x of vaultThemesScan.excluded) say(x.message, "theme");
+    vaultTheme = await inv("get_css_theme");
+  } catch { vaultThemesScan = { listed: [], excluded: [] }; vaultTheme = ""; }
+  // apply ONLY what the predicate lists: cssTheme naming an unlisted theme
+  // paints the Default (its dir, if present, already said WHY above; an
+  // absent dir is stock's silent normal — the oracle flags "!!" either way)
+  if (vaultTheme && vaultThemesScan.listed.includes(vaultTheme)) {
+    await themeInject(vaultTheme);
+  }
   try {
     vaultSnips = await inv("snippets_scan");
     // a stale enabled entry whose file is gone is skipped silently — the array
@@ -6000,8 +6057,10 @@ function sfpEnd() {
    asserts. [spane:<id>/<rows>/<enabled>] is the pane currently BUILT, which is
    how the phase proves a nav click actually swapped the pane (OCR alone cannot
    distinguish "clicked" from "painted the same pane again"). */
-/* [spal:<centre x>,<centre y>,<label>] — the Appearance ▸ Themes control's OWN
-   measured rect and the text it is currently showing, published for the same
+/* [spal:<centre x>,<centre y>,<label>] — the PALETTE control's OWN
+   measured rect and the text it is currently showing (since themefs R5 it
+   lives on Appearance ▸ Current community themes; the Themes row went back
+   to stock's cssTheme picker, published as [svt:] below), for the same
    reason [mg:] publishes the context menu's geometry: the settings-UI route is
    proven by a phase that must CLICK this control, and a hardcoded coordinate
    would be a guess that goes stale the moment a row above it gains a line of
@@ -6018,12 +6077,24 @@ function spalTok() {
   return " [spal:" + Math.round(b.left + b.width / 2) + "," +
          Math.round(b.top + b.height / 2) + "," + lbl + "]";
 }
+/* [svt:<centre x>,<centre y>,<label>] — the vault-theme picker's control
+   (Appearance ▸ Themes, themefs R5), published for the same reason [spal:]
+   is: the phase that proves the picker must CLICK its measured rect and
+   assert the shown label without OCR. */
+function svtTok() {
+  const d = document.getElementById("svtheme");
+  if (!d) return "";
+  const b = d.getBoundingClientRect();
+  const lbl = String(d.textContent || "").replace(/[[\]|]/g, "").slice(0, 40);
+  return " [svt:" + Math.round(b.left + b.width / 2) + "," +
+         Math.round(b.top + b.height / 2) + "," + lbl + "]";
+}
 function setTok() {
   if (!SMODEL) return "";
   const e = SMODEL.rows.reduce((n, r) => n + (r.enabled ? 1 : 0), 0);
   return " [set:" + SMODEL.nav.length + "/" + SMODEL.rows.length + "/" + e + "]" +
          " [spane:" + sPane + "/" + sRowsShown + "/" + sEnabledShown + "]" +
-         spalTok() +
+         spalTok() + svtTok() +
          (sfpMs >= 0 ? " [sfp:" + sfpMs + "/" + sfpMax + "/" +
                        (Math.round(sfpSum / sfpN * 100) / 100) + "/" + sfpN + "]" : "") +
          (sfpW >= 0 ? " [sfpw:" + sfpW + "/" + sfpWMax + "]" : "");
@@ -6120,7 +6191,10 @@ function showSettingsPage(id) {
    separator, controls at the card's right edge. The palette stays rustidian's
    dark theme — that delta is recorded in R30. */
 const SDIS_TITLE = "Not implemented yet";
-/* ---- Appearance ▸ Themes: the settings-UI route onto the PALETTE axis ----
+/* ---- Appearance ▸ Current community themes: the settings-UI route onto the
+   PALETTE axis (moved off the Themes row by themefs R5 — stock's Themes row
+   is the cssTheme picker and got its stock semantics back; this adjacent
+   installed-themes row hosting OUR palette axis is the recorded delta).
    Two routes reach this feature and each is proven separately: Ctrl+P (the
    "Use theme: <name>" registry entries) and this control. They share
    choosePalette(), so neither can drift into a second definition of what
@@ -6172,6 +6246,57 @@ function renderSnipCtl() {
   const d = document.getElementById("ssnips");
   if (d) d.textContent = snipCtlLabel();
 }
+/* ---- Appearance ▸ Themes: the settings-UI route onto the VAULT theme
+   (themefs R5) — stock's own row, stock's own semantics: a dropdown showing
+   the active cssTheme ("Default" when ""), listing (Default) + EXACTLY the
+   oracle-predicate set (DESIGN §9), the excluded dirs rendered inert with
+   their reason so the pane shows WHY a broken theme is not offered. Same
+   ctxmenu construction as paletteCtl, same reason ([menu:] census). */
+const themeCtlLabel = () => vaultTheme || "Default";
+function themeCtl() {
+  const d = document.createElement("div");
+  d.className = "sctl dropdown live";
+  d.id = "svtheme";
+  d.tabIndex = 0;
+  d.setAttribute("role", "button");
+  d.setAttribute("aria-haspopup", "menu");
+  d.textContent = themeCtlLabel();
+  const open = ev => { ev.preventDefault(); ev.stopPropagation(); openThemeMenu(d); };
+  d.onmousedown = ev => ev.stopPropagation();
+  d.onclick = open;
+  d.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") open(ev); };
+  return d;
+}
+function renderThemeCtl() {
+  const d = document.getElementById("svtheme");
+  if (d) d.textContent = themeCtlLabel();
+}
+function openThemeMenu(anchor) {
+  closeMenu();
+  const m = document.createElement("div");
+  m.className = "ctxmenu";
+  const mk = (txt, on) => {
+    const it = document.createElement("div");
+    it.textContent = txt;
+    it.onmousedown = ev => ev.stopPropagation();
+    if (on) it.onclick = on;
+    return it;
+  };
+  m.appendChild(mk((vaultTheme === "" ? "✓ " : "") + "(Default)",
+    () => { closeMenu(); chooseVaultTheme(""); }));
+  for (const name of vaultThemesScan.listed) {
+    m.appendChild(mk((name === vaultTheme ? "✓ " : "") + name,
+      () => { closeMenu(); chooseVaultTheme(name); }));
+  }
+  // inert-with-reason (DESIGN §9): visible, not clickable — no handler
+  for (const x of vaultThemesScan.excluded) {
+    const it = mk("✕ " + x.dir + " — " + x.reason, null);
+    it.style.opacity = "0.5";
+    m.appendChild(it);
+  }
+  const b = anchor.getBoundingClientRect();
+  placeMenu(m, Math.round(b.left), Math.round(b.bottom + 4));
+}
 function openSnipMenu(anchor) {
   closeMenu();
   const m = document.createElement("div");
@@ -6214,17 +6339,18 @@ function openPaletteMenu(anchor) {
 let sRowsShown = 0, sEnabledShown = 0;
 function sctl(r) {                            // the control cell for one row, or null
   const v = r.default_shown === "-" ? "" : r.default_shown;
-  /* THE ONE LIVE DROPDOWN (goal/theme-1984). Everything else in this pane is a
-     transcription of stock's pixels with no handler; Appearance ▸ Themes is
-     backed by the "palette" config key (settings.rs BACKED), so it is rendered
-     as a control that actually does something. It deliberately does NOT use a
+  /* THE LIVE DROPDOWNS (goal/theme-1984, extended by themefs). Everything
+     else in this pane is a transcription of stock's pixels with no handler;
+     a row is rendered live only when settings.rs BACKED names its real key
+     (palette / cssTheme / enabledCssSnippets). None uses a
      native <select>: a native popup is an OS-level window, invisible to the
-     screenshot-and-census rig, so the ONE settings control that changes the
-     app's appearance would be the one no phase could prove. It opens the app's
-     own .ctxmenu instead — the same widget the tab menu uses, published in the
-     census as [menu:<labels>] with measured geometry, so the settings-UI route
-     is drivable and assertable exactly like every other menu in the app. */
+     screenshot-and-census rig, so the settings controls that change the
+     app's appearance would be the ones no phase could prove. Each opens the
+     app's own .ctxmenu instead — the same widget the tab menu uses, published
+     in the census as [menu:<labels>] with measured geometry, so the
+     settings-UI route is drivable and assertable like every other menu. */
   if (r.key === "palette") return paletteCtl();
+  if (r.key === "cssTheme") return themeCtl();            // themefs R5: stock's Themes row, stock's semantics
   if (r.key === "enabledCssSnippets") return snipCtl();   // themefs R3, same live-control rule
   const d = document.createElement("div");
   d.className = "sctl " + r.control;
