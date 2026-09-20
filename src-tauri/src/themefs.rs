@@ -29,7 +29,7 @@ the feature) → mutate ONLY the key we author → pretty-print. Criterion 2.
 
 use serde_json::{Map, Value};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub const APPEARANCE_FILE: &str = ".obsidian/appearance.json";
 
@@ -117,6 +117,72 @@ pub fn set_snippet_enabled(root: &Path, label: &str, on: bool) -> Result<(), Str
     }
     m.insert("enabledCssSnippets".into(), Value::Array(list));
     write_appearance(root, &m)
+}
+
+// ---------------------------------------------------------------------------
+// Part 3 (ledger item 4): the snippet listing + loader — R3.
+//
+// The oracle (docs/recon-themes/probe-stock-vault.sh §4, T3 RESULT 2):
+// top-level `<vault>/.obsidian/snippets/*.css` ONLY. `*.css` is a sh glob, so
+// the rule it encodes is: no dotfiles (the glob never matches a leading `.`),
+// exact-case `.css` suffix, subdirectories NEVER recursed (a directory —
+// even one NAMED `x.css` — is not a snippet), non-.css files ignored. The
+// label is the basename minus `.css`. Absent snippets/ directory is SILENT
+// NORMAL (T0, T3 RESULT 1): empty list, no message, nothing created.
+
+/// List snippet labels for a vault, sorted bytewise (deterministic — stock's
+/// on-screen order was not measured; re-measure if a gate ever compares it).
+pub fn list_snippets(root: &Path) -> Vec<String> {
+    let dir = root.join(".obsidian").join("snippets");
+    let rd = match fs::read_dir(&dir) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(), // absent = silent normal, never created here
+    };
+    let mut out: Vec<String> = rd
+        .filter_map(|e| e.ok())
+        // path().is_file() follows symlinks, as the oracle's `[ -d "$f" ]` does
+        .filter(|e| e.path().is_file())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| !n.starts_with('.'))
+        .filter_map(|n| n.strip_suffix(".css").map(str::to_string))
+        .collect();
+    out.sort();
+    out
+}
+
+/// The one path a label may name: `<vault>/.obsidian/snippets/<label>.css`.
+/// A label is a LISTING result, never a path — anything that could traverse
+/// (separators, a leading dot, emptiness) is refused before the filesystem
+/// sees it, loudly, because a silent skip here would read as "snippet off".
+pub fn snippet_path(root: &Path, label: &str) -> Result<PathBuf, String> {
+    if label.is_empty()
+        || label.starts_with('.')
+        || label.contains('/')
+        || label.contains('\\')
+        || label.contains('\0')
+    {
+        return Err(format!(
+            "snippet label {label:?} refused: not a top-level snippet name"
+        ));
+    }
+    Ok(root
+        .join(".obsidian")
+        .join("snippets")
+        .join(format!("{label}.css")))
+}
+
+/// Read + sanitize ONE snippet for injection. Ok = (css, Some(loud message)
+/// when mask declarations were stripped — R4X.4). Err = the R6-loud refusal,
+/// always naming the FILE and the reason (bad label, unreadable, sanitizer
+/// refusal), because stock silently excludes and this loader must not.
+pub fn load_snippet(root: &Path, label: &str) -> Result<(String, Option<String>), String> {
+    let p = snippet_path(root, label)?;
+    let origin = format!("snippet {label}.css");
+    let src =
+        fs::read_to_string(&p).map_err(|e| format!("{origin}: cannot read: {e}"))?;
+    let s = sanitize_css(&src).map_err(|e| format!("{origin}: {e}"))?;
+    let msg = (s.stripped > 0).then(|| mask_strip_message(&origin, s.stripped));
+    Ok((s.css, msg))
 }
 
 // ---------------------------------------------------------------------------
@@ -657,5 +723,68 @@ mod tests {
             mask_strip_message("theme Minimal", 2),
             "theme Minimal: stripped 2 mask declaration(s) — mask can blank the window (docs/themecsp R4X.4)"
         );
+    }
+
+    // ---- Part 3: snippet listing + loader (item 4, T3 semantics) ----------
+
+    #[test]
+    fn themefs_snips_top_level_exact_case_css_files_only() {
+        let root = tmp_vault("sniplist");
+        let sd = root.join(".obsidian").join("snippets");
+        fs::create_dir_all(sd.join("sub")).unwrap(); // subdirectory: never recursed
+        fs::create_dir_all(sd.join("dir.css")).unwrap(); // a DIRECTORY named x.css is not a snippet
+        fs::write(sd.join("zeta.css"), ".z{}").unwrap();
+        fs::write(sd.join("alpha.css"), ".a{}").unwrap();
+        fs::write(sd.join("note.txt"), "not css").unwrap(); // non-.css ignored
+        fs::write(sd.join(".hidden.css"), ".h{}").unwrap(); // dotfile: the oracle's glob skips it
+        fs::write(sd.join("Upper.CSS"), ".u{}").unwrap(); // exact-case suffix only (sh glob)
+        fs::write(sd.join("sub").join("nested.css"), ".n{}").unwrap(); // T3 RESULT 2: ignored
+        assert_eq!(list_snippets(&root), vec!["alpha".to_string(), "zeta".to_string()]);
+    }
+
+    #[test]
+    fn themefs_snips_absent_dir_is_silent_normal() {
+        let root = tmp_vault("snipabsent");
+        assert!(list_snippets(&root).is_empty());
+        // T0: listing must not CREATE the directory stock never creates
+        assert!(!root.join(".obsidian").join("snippets").exists());
+    }
+
+    #[test]
+    fn themefs_snippet_path_refuses_anything_that_is_not_a_listing_label() {
+        let root = tmp_vault("snippath");
+        for bad in ["", "..", ".hidden", "a/b", "a\\b", "../evil", "a\0b"] {
+            let e = snippet_path(&root, bad).unwrap_err();
+            assert!(e.contains("refused"), "label {bad:?} must be refused, got {e:?}");
+        }
+        let p = snippet_path(&root, "custom-checkbox").unwrap();
+        assert!(p.ends_with(".obsidian/snippets/custom-checkbox.css"));
+    }
+
+    #[test]
+    fn themefs_load_snippet_strips_mask_loudly() {
+        let root = tmp_vault("snipload");
+        let sd = root.join(".obsidian").join("snippets");
+        fs::create_dir_all(&sd).unwrap();
+        fs::write(sd.join("m.css"), ".a { color: red; -webkit-mask-image: url(x) }").unwrap();
+        let (css, msg) = load_snippet(&root, "m").unwrap();
+        assert!(css.contains("color: red"));
+        assert!(!css.to_lowercase().contains("mask"));
+        assert_eq!(msg, Some(mask_strip_message("snippet m.css", 1)));
+    }
+
+    #[test]
+    fn themefs_load_snippet_refusals_name_the_file() {
+        let root = tmp_vault("sniprefuse");
+        let sd = root.join(".obsidian").join("snippets");
+        fs::create_dir_all(&sd).unwrap();
+        fs::write(sd.join("broken.css"), ".a { /* unclosed").unwrap();
+        let e = load_snippet(&root, "broken").unwrap_err();
+        assert!(e.starts_with("snippet broken.css: cannot parse safely:"), "got {e:?}");
+        let e2 = load_snippet(&root, "ghost").unwrap_err();
+        assert!(e2.starts_with("snippet ghost.css: cannot read:"), "got {e2:?}");
+        // a clean file carries NO message — silence is the no-mask signal
+        fs::write(sd.join("ok.css"), ".a { color: blue }").unwrap();
+        assert_eq!(load_snippet(&root, "ok").unwrap().1, None);
     }
 }

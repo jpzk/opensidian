@@ -1896,6 +1896,47 @@ fn set_palette(palette: String) {
     let _ = fs::write(cfg_path(), v.to_string());
 }
 
+/* ---- themefs R3 (snippets): thin commands over src-tauri/src/themefs.rs ----
+   The vault-CSS axis lives in the VAULT's own .obsidian/appearance.json
+   (stock's file, byte-wise round-trip — themefs.rs), never in ~/.rustidian.json:
+   pointing rustidian at a vault must find the choice Obsidian already made.
+   Every refusal string is user-visible (the frontend puts it on the notice
+   banner) and names the file — R6: loud where stock is silent. */
+
+/// what the frontend injects for one snippet: the sanitized bytes plus the
+/// R4X.4 strip message when mask declarations were cut (None = nothing cut)
+#[derive(serde::Serialize)]
+struct SnippetCss {
+    css: String,
+    message: Option<String>,
+}
+
+#[tauri::command]
+fn snippets_scan(v: State<Vault>, otel: Option<perf::Ctx>) -> Result<Vec<String>, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    Ok(span_timed!(otel => "snippets_scan", themefs::list_snippets(&root)))
+}
+
+#[tauri::command]
+fn snippets_enabled(v: State<Vault>) -> Result<Vec<String>, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    Ok(themefs::enabled_snippets(&root))
+}
+
+#[tauri::command]
+fn snippet_css(v: State<Vault>, label: String, otel: Option<perf::Ctx>) -> Result<SnippetCss, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    let (css, message) =
+        span_timed!(otel => "snippet_css", themefs::load_snippet(&root, &label))?;
+    Ok(SnippetCss { css, message })
+}
+
+#[tauri::command]
+fn set_snippet_enabled(v: State<Vault>, label: String, on: bool) -> Result<(), String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    themefs::set_snippet_enabled(&root, &label, on)
+}
+
 /* R14: custom hotkeys, persisted as "hotkeys" in ~/.rustidian.json in the stock
    Obsidian shape {"<cmd id>":[{"modifiers":["Mod","Shift"],"key":"G"}]}:
    [] = default removed, absent id = stock default. The frontend registry
@@ -3462,6 +3503,7 @@ fn main() {
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, smoke_css,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme, get_palette, set_palette,
+            snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
             win_rect, win_gesture, win_move_proto, win_drag_start, win_minimize, win_toggle_max, win_close,
             tab_removed,

@@ -1993,9 +1993,13 @@ function updateTitle() {          // pane/focus census in the window title (head
   const thmpxTok = (smokeCssOn && document.body)
     ? " [thmpx:" + getComputedStyle(document.body).backgroundColor.replace(/\s+/g, "") + "]"
     : "";
+  // themefs R3: how many snippet <style> elements are ACTUALLY in the head —
+  // counted off the DOM (snipEls maps label -> live element), not off the
+  // enabled array, so an injection that failed loudly is not counted as on.
+  const snipTok = " [snips:" + snipEls.size + "]";
   let t = "rustidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
-            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + palTok + thmpxTok + lg + md + gg + modal +
+            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + palTok + thmpxTok + snipTok + lg + md + gg + modal +
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) +
             (rightOpen ? ":" + rTab : "") + "]" +
             (rightOpen && rpInfo ? " [rp:" + rpInfo + "]" : "") +
@@ -4498,6 +4502,67 @@ async function bootPalette() {
   if (st && paletteKnown(st)) applyPalette(st);
 }
 function cmdSetPalette(id) { return () => choosePalette(id); }
+/* ---------- themefs R3: vault CSS snippets (stock's files, T3) ----------
+   A snippet is <vault>/.obsidian/snippets/<label>.css, toggled by the
+   enabledCssSnippets array in the vault's own appearance.json — the backend
+   (src-tauri/src/themefs.rs) owns the listing predicate, the byte-wise config
+   round-trip and the R4X.4 mask sanitizer; this side only injects <style>
+   elements and keeps them in DESIGN §5's cascade order:
+       <link style.css> -> #vault-bridge -> #vault-theme -> snippet styles
+   Snippets sit LAST (T3 RESULT 4: they compose on top of the theme), in
+   enabledCssSnippets ARRAY order (T3 RESULT 3: the array is enable order).
+   Appending to <head> keeps that true; the bridge/theme elements (items 5/8)
+   must insertBefore the first [data-snip] element when they land. */
+let vaultSnips = [], vaultSnipsOn = [], snipEls = new Map();
+async function snipInject(label) {
+  if (snipEls.has(label)) return;
+  try {
+    const r = await inv("snippet_css", { label });
+    const el = document.createElement("style");
+    el.dataset.snip = label;              // the removal/census handle — the label stays data, never an id fragment
+    el.textContent = r.css;
+    document.head.appendChild(el);
+    snipEls.set(label, el);
+    if (r.message) say(r.message, "snip");   // R4X.4: the strip is LOUD, one string, authored in themefs.rs
+  } catch (e) {
+    say(String(e), "snip");               // R6: the refusal names the file and the reason (backend string)
+  }
+}
+function snipRemove(label) {
+  const el = snipEls.get(label);
+  if (el) el.remove();
+  snipEls.delete(label);
+}
+/* vault entry (and vault SWITCH: the old vault's CSS must not survive into
+   the new one, so this clears before it loads). Failure to scan is not a
+   notice: no vault / no snippets dir is stock's silent normal (T0). */
+async function loadVaultCss() {
+  for (const l of [...snipEls.keys()]) snipRemove(l);
+  vaultSnips = []; vaultSnipsOn = [];
+  try {
+    vaultSnips = await inv("snippets_scan");
+    // a stale enabled entry whose file is gone is skipped silently — the array
+    // is stock's own record and may outlive the file (unmeasured; re-measure
+    // against /srv/reference/obsidian.AppImage if a gate ever makes it matter)
+    vaultSnipsOn = (await inv("snippets_enabled")).filter(l => vaultSnips.includes(l));
+  } catch { vaultSnips = []; vaultSnipsOn = []; }
+  for (const l of vaultSnipsOn) await snipInject(l);
+  if (state) updateTitle();
+}
+/* the toggle WITHOUT restart (criterion 3): one user action moves the file
+   AND the DOM — but the file first. If the backend refuses (unparseable
+   appearance.json is refused, never overwritten), the DOM stays put: a toggle
+   that paints but does not persist would look exactly like one that works,
+   until the next boot un-decides it. */
+async function toggleSnippet(label) {
+  const on = !vaultSnipsOn.includes(label);
+  try { await inv("set_snippet_enabled", { label, on }); }
+  catch (e) { say(String(e), "snip"); return; }
+  if (on) { vaultSnipsOn.push(label); await snipInject(label); }
+  else { vaultSnipsOn = vaultSnipsOn.filter(l => l !== label); snipRemove(label); }
+  renderSnipCtl();                       // the settings control follows the state, like renderPaletteCtl
+  if (state) updateTitle();
+}
 /* ---------- R36 interface zoom (Ctrl+= / Ctrl+- / Ctrl+0) ---------------
    There is deliberately NO CSS in this function. The scale is applied by
    webkit_web_view_set_zoom_level through the `zoom` command (main.rs R36.1),
@@ -5717,6 +5782,7 @@ async function enterVault() {
   focusGroup(g);
   hideAc();
   edtBad = Ed.selfTest();            // R17: renderer + token map invariants -> [edt:] census
+  await loadVaultCss();              // themefs R3: the vault's own snippet CSS, before first paint of a note
   await refreshTree();
   await refreshBm();                 // R9.4: menu label needs the cache early
   const names = await inv("list_notes");
@@ -6081,6 +6147,52 @@ function renderPaletteCtl() {
   const d = document.getElementById("spalette");
   if (d) d.textContent = paletteLabel(themePalette);
 }
+/* ---- Appearance ▸ CSS snippets: the settings-UI route onto the vault's
+   snippet toggles (themefs R3). Same construction as paletteCtl and for the
+   same reason: the ONE menu widget the census can see ([menu:]), not a native
+   popup. The text is the live count, the shape stock's own row shows
+   ("0 enabled"); toggling goes through toggleSnippet(), the same function the
+   injection path uses, so the pane and the <head> cannot disagree. */
+const snipCtlLabel = () => vaultSnipsOn.length + " enabled";
+function snipCtl() {
+  const d = document.createElement("div");
+  d.className = "sctl dropdown live";
+  d.id = "ssnips";
+  d.tabIndex = 0;
+  d.setAttribute("role", "button");
+  d.setAttribute("aria-haspopup", "menu");
+  d.textContent = snipCtlLabel();
+  const open = ev => { ev.preventDefault(); ev.stopPropagation(); openSnipMenu(d); };
+  d.onmousedown = ev => ev.stopPropagation();
+  d.onclick = open;
+  d.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") open(ev); };
+  return d;
+}
+function renderSnipCtl() {
+  const d = document.getElementById("ssnips");
+  if (d) d.textContent = snipCtlLabel();
+}
+function openSnipMenu(anchor) {
+  closeMenu();
+  const m = document.createElement("div");
+  m.className = "ctxmenu";
+  if (!vaultSnips.length) {
+    // absent snippets/ is stock's silent normal (T0): an empty menu entry,
+    // deliberately not a notice and not a directory-creating button (yet)
+    const it = document.createElement("div");
+    it.textContent = "(no snippets)";
+    m.appendChild(it);
+  }
+  for (const label of vaultSnips) {
+    const it = document.createElement("div");
+    it.textContent = (vaultSnipsOn.includes(label) ? "✓ " : "") + label;
+    it.onmousedown = ev => ev.stopPropagation();
+    it.onclick = () => { closeMenu(); toggleSnippet(label); };
+    m.appendChild(it);
+  }
+  const b = anchor.getBoundingClientRect();
+  placeMenu(m, Math.round(b.left), Math.round(b.bottom + 4));
+}
 function openPaletteMenu(anchor) {
   closeMenu();
   const m = document.createElement("div");
@@ -6113,6 +6225,7 @@ function sctl(r) {                            // the control cell for one row, o
      census as [menu:<labels>] with measured geometry, so the settings-UI route
      is drivable and assertable exactly like every other menu in the app. */
   if (r.key === "palette") return paletteCtl();
+  if (r.key === "enabledCssSnippets") return snipCtl();   // themefs R3, same live-control rule
   const d = document.createElement("div");
   d.className = "sctl " + r.control;
   const parts = (t, cls) => t.split(" / ").forEach(p => {
