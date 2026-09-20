@@ -71,9 +71,3 @@ dist/
 # recon-bmdrag: criterion 1 is "every claim names a committed shot" — the drop
 # indicator's position, thickness and colour are read off these pngs.
 !docs/recon-bmdrag/shots/*.png
-
-# themefs/egress: the ten boot shots ARE the measurement — render-verdict.sh
-# reads the run log's per-arm colour counts against them, and the maskimage
-# shot is the brick that did NOT happen (themecsp's same arm composited the
-# masked subtree to nothing; ours strips the sink, so the window still paints).
-!docs/themefs/egress/*.png
