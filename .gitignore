@@ -61,3 +61,7 @@ dist/
 # was read from — line 2 (*.png) would drop exactly the evidence, so unignore
 # it here. The .bookmarks.json captures under captures/ are not ignored.
 !docs/recon-bmcompat/**/*.png
+# recon-navbtn: stock 1.13.7 back/forward nav buttons — every geometry px,
+# icon and disabled-state claim in docs/recon-navbtn/README.md is read off
+# these shots, so they are the measurement, not decoration.
+!docs/recon-navbtn/**/*.png
