@@ -4702,6 +4702,19 @@ function edTask() {
   const s = Ed.sel(g);
   if (s) Ed.toggleCheck(g, s);
 }
+// listtoggle R1/R3: the note tab in an editing mode (LP or Source — the op is
+// text-only, R5 [Q15]); reading view is excluded [Q14]. Both the palette filter
+// and the run guard use it, so a user-bound chord is a no-op in reading view.
+function edEditable() {
+  const g = state && fg();
+  const t = g && g.active >= 0 ? g.tabs[g.active] : null;
+  return !!(t && !t.kind && t.mode !== "reading");
+}
+function edList(kind) {        // one Ed.snap inside Ed.toggleList = ONE undo step [Q12 q12-undo*]
+  if (!edEditable()) return;
+  const g = fg(), s = Ed.sel(g);
+  if (s) Ed.toggleList(g, s, kind);
+}
 function linkAtCaret() {   // [[target]] spanning the caret of the edited field, note part only
   const ta = edField();
   if (!ta) return null;
@@ -5288,6 +5301,12 @@ const CMDS = [
   ["editor:open-search-replace", "Search & replace current file",     ["ctrl+h"],               () => fOpenRep(fg())],
   ["editor:toggle-bold",       "Toggle bold",                         ["ctrl+b"],               () => edWrap("**")],
   ["editor:toggle-checklist-status", "Toggle checkbox status",        ["ctrl+l"],               () => edTask()],
+  // listtoggle R1: stock's ids and names, NO default chord (Settings ▸ Hotkeys
+  // reads Blank on stock, docs/recon-listtoggle Q1 q01-ids). The 5th field is
+  // the palette's visibility test: stock hides both in reading view — palette
+  // "Toggle bullet list" -> no command, no write [Q14 q14-reading].
+  ["editor:toggle-bullet-list",   "Toggle bullet list",               [],                       () => edList("bullet"),   edEditable],
+  ["editor:toggle-numbered-list", "Toggle numbered list",             [],                       () => edList("numbered"), edEditable],
   ["editor:toggle-comments",   "Toggle comment",                      ["ctrl+/"],               () => edWrap("%%", "comment")],
   ["editor:toggle-italics",    "Toggle italic",                       ["ctrl+i"],               () => edWrap("*")],
   ["markdown:toggle-preview",  "Toggle reading view",                 ["ctrl+e"],               () => cmdToggleMode()],
@@ -5307,7 +5326,7 @@ const CMDS = [
   ["window:zoom-in",           "Zoom in",                             ["ctrl+="],               () => cmdZoom("in")],
   ["window:zoom-out",          "Zoom out",                            ["ctrl+-"],               () => cmdZoom("out")],
   ["window:reset-zoom",        "Reset zoom",                          ["ctrl+0"],               () => cmdZoom("reset")],
-].map(([id, name, def, run]) => ({ id, name, def, run }))
+].map(([id, name, def, run, when]) => ({ id, name, def, run, when }))
  .sort((a, b) => a.name.localeCompare(b.name));
 let hkUser = {};                            // id -> [chords] overrides ([] = removed default)
 let keymap = {};                            // chord -> cmd (rebuilt from CMDS + hkUser)
@@ -5376,7 +5395,7 @@ function chordOf(e) {                       // keydown -> normalised chord (null
    can drift into a second definition of what selecting a theme means. */
 function cpItems() {
   const themes = [["Default", ""]].concat(vaultThemesScan.listed.map(n => [n, n]));
-  return CMDS.map(c => ({ label: c.name, hint: hkChords(c).map(chordLabel).join(", "), run: c.run }))
+  return CMDS.filter(c => !c.when || c.when()).map(c => ({ label: c.name, hint: hkChords(c).map(chordLabel).join(", "), run: c.run }))
     .concat(themes.map(([label, name]) => ({
       label: "Use theme: " + label,
       hint: "",
