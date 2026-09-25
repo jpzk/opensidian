@@ -156,13 +156,16 @@ fn listtoggle_table() {
         println!("row {name:<16} {kind:<9} {sel:<9} {}", if fails.len() == nfail { "ok" } else { "FAIL" });
     }
     // completeness: every evidence case is a row or a named exclusion
+    let mut cases = 0;
     let ev = std::fs::read_dir(root().join("docs/recon-listtoggle/evidence")).unwrap();
     for e in ev {
         let n = e.unwrap().file_name().to_string_lossy().trim_end_matches(".txt").to_string();
         let excluded = n == "q01-ids" || n == "q14-reading" || n.starts_with("q16-");
         assert!(excluded || seen.contains(&n), "evidence case {n} has no table row");
+        if !excluded { cases += 1; }
     }
     assert!(fails.is_empty(), "{} of {rows} rows FAILED:\n{}", fails.len(), fails.join("\n"));
     println!("listtoggle table: {rows}/{rows} rows pass");
-    assert_eq!(rows, 53);
+    // one row per measured case, no more (a row naming no evidence would fail load())
+    assert_eq!(rows, cases, "rows != measured cases");
 }
