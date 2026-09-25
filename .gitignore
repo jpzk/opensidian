@@ -112,3 +112,8 @@ dist/
 # criterion 5 puts ours-before/ours-after.png here — the right-pane contents
 # (kept / followed / empty) are read off these pngs, so they are the evidence.
 !docs/recon-lgpanes/shots/*.png
+
+# recon-listtoggle: Q1 (palette names, Hotkeys "Blank" rows, the ids bound on
+# disk), Q9's frontmatter selection and Q14's "No commands found" are read off
+# these shots — line 2 (*.png) would drop exactly the cited evidence.
+!docs/recon-listtoggle/shots/*.png
