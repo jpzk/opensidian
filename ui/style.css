@@ -845,16 +845,13 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .lp .fence { display: block; font-family: var(--font-monospace); font-size: 13px; background: var(--bg-surface);
              padding: 0 8px; white-space: pre; overflow-x: auto }
 .lp .bq { color: inherit }   /* geometry (border + padding) is R15.13 below */
-/* R14 settings modal (Ctrl+,) — fixed 900x600 at (190,100): smoke clicks by coordinate */
+/* R14 settings modal (Ctrl+,) — setcenter R1/R2: centred on both axes by flex, stock
+   1.13.7 size rule min(90vw,1100) x min(85vh,1000); recentres on resize with no JS.
+   Phases never click it by literal coordinate: they read the census [sbox:] [snav:] ... */
 #settings { position: fixed; inset: 0; z-index: 55; background: var(--scrim-strong);
-  /* R22: the box keeps its (190,100) origin and 900x600 size wherever they fit
-     (1100x700 = the smoke's R14 click coordinates: nothing moves there); below
-     that the offset collapses first, then the box itself shrinks. */
-  display: flex; box-sizing: border-box;
-  padding-left: max(0px, min(190px, 100vw - 900px));
-  padding-top:  max(0px, min(100px, 100vh - 600px)) }
+  display: flex; align-items: center; justify-content: center; box-sizing: border-box }
 #settings[hidden] { display: none }
-#sbox { position: relative; width: 900px; height: 600px; box-sizing: border-box;
+#sbox { position: relative; width: min(90vw, 1100px); height: min(85vh, 1000px); box-sizing: border-box;
         min-width: 0; min-height: 0; max-width: 100%; max-height: 100%;
         background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
         display: flex; flex-direction: column; box-shadow: 0 8px 30px var(--shadow-modal); font-size: 13px }
