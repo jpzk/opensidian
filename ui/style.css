@@ -177,7 +177,7 @@ body {
      scrims and shadows, the bookmark drop feedback). They keep OUR names and
      OUR values, which is legal for any theme file to declare — the built-in
      assets declare every one of them, and a third-party theme may too. */
-  --bg-elevated: #26263a;
+  --bg-elevated: var(--modal-background, #26263a);
   --bg-banner-error: #45283c;
   --bg-button-plain: #e0e0e0;
   --border-strong: #585b70;
@@ -189,11 +189,11 @@ body {
   --text-on-accent: #fff;
   --text-quiet: #bac2de;
   --link-unresolved: #7c86c8;
-  --accent-mauve: #cba6f7;
+  --accent-mauve: var(--color-accent, #cba6f7);
   --accent-yellow: #f9e2af;
   --accent-green: #a6e3a1;
-  --scrim: rgba(0,0,0,.35);
-  --scrim-strong: rgba(0,0,0,.45);
+  --scrim: var(--background-modifier-cover, rgba(0,0,0,.35));
+  --scrim-strong: var(--background-modifier-cover, rgba(0,0,0,.45));
   --shadow-popover: rgba(0,0,0,.55);
   --shadow-modal: rgba(0,0,0,.5);
   --shadow-drop: #0008;
@@ -240,7 +240,7 @@ body.theme-light {
   /* ---- layer 2 in light: only the one row whose fallback is mode-specific ---- */
   --accent-red: var(--color-red, #e93147);
   /* ---- layer 3: ours alone ---- */
-  --bg-elevated: #fcfcfc;
+  --bg-elevated: var(--modal-background, #fcfcfc);
   --bg-banner-error: #fdeaec;
   --border-strong: #ababab;
   --rule-faint: #eeeeee;
@@ -249,7 +249,7 @@ body.theme-light {
   --text-chrome-dim: #b6b6b6;
   --text-quiet: #5c5c5c;
   --link-unresolved: #ad8cf8;
-  --accent-mauve: #8a5cf5;
+  --accent-mauve: var(--color-accent, #8a5cf5);
   --accent-yellow: #ec7500;
   --accent-green: #08b94e;
 }

@@ -445,6 +445,53 @@ pub fn bridge_css(sanitized: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// goal overlaytheme: STOCK DEFAULTS (#vault-stockdef) — generated, never static.
+//
+// Layer 3 of style.css now reads a few STOCK names that ours never declares
+// (docs/recon-overlaytheme R1 table, MAPPED rows): `--bg-elevated:
+// var(--modal-background, #26263a)`. Stock itself defines those names from its
+// base ramp — Q1 measured the chain `--modal-background` <- `--background-
+// primary` (a theme that sets only --background-primary repaints stock's
+// palette, switcher, graph options and settings card). A third-party theme
+// therefore usually declares the SOURCE and never the derived name, so
+// without this sheet the var() falls back to our literal and nothing moves.
+//
+// This is NOT an alias row (the bridge's `--ours: var(--stock)`): it declares
+// a STOCK name from another stock name, exactly as stock's own app.css would.
+// It rides its own element so the bridge keeps meaning "alias rows" (census
+// [vbridge:<n>] counts the bridge's var()s — a stock default is not one).
+//
+// A row is emitted ONLY when the theme DECLARES the source AND does NOT
+// declare the target: a theme that sets --modal-background itself must win
+// with its own value, and a theme that never sets the source must leave the
+// fallback literal painting (R2: no theme -> no sheet -> DOM identical).
+// Same textual `declares` test and the same benign failure direction as the
+// bridge. Scope matches the bridge (body theme classes): the source resolves
+// on <body>, where the theme's `.theme-dark/.theme-light` rule lands.
+
+/// (target stock name, source stock name) — Q1 of docs/recon-overlaytheme.
+pub const STOCK_DEFAULTS: &[(&str, &str)] = &[
+    // palette / switcher / graph options / settings card background
+    ("--modal-background", "--background-primary"),
+];
+
+/// Generate the stock-default sheet for one theme's SANITIZED css. Empty
+/// string = no element.
+pub fn stock_defaults_css(sanitized: &str) -> String {
+    let mut rows = String::new();
+    for (target, source) in STOCK_DEFAULTS {
+        if declares(sanitized, source) && !declares(sanitized, target) {
+            rows.push_str(&format!("  {target}: var({source});\n"));
+        }
+    }
+    if rows.is_empty() {
+        String::new()
+    } else {
+        format!("body.theme-dark, body.theme-light {{\n{rows}}}\n")
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Part 2 (ledger item 3): the CSS sanitizer — the mask policy, R4X.4.
 //
 // The brick finding (docs/themecsp/README.md): an unloadable
@@ -1402,5 +1449,69 @@ mod tests {
         // custom property names are case-sensitive (CSS Variables 1 §2):
         // --TEXT-NORMAL is a DIFFERENT property and must not emit the alias
         assert_eq!(bridge_css(".theme-dark { --TEXT-NORMAL: #fff }"), "");
+    }
+
+    // ---- goal overlaytheme: stock defaults (#vault-stockdef) ---------------
+
+    const SOLARIZED: &str = include_str!(
+        "../../docs/fixtures/themeone/vault-solarized/.obsidian/themes/Solarized/theme.css"
+    );
+
+    #[test]
+    fn themefs_stockdef_solarized_fixture_derives_modal_background() {
+        // the goal's fixture declares --background-primary (both modes) and
+        // never --modal-background: the row must emit, scoped like the bridge
+        let s = sanitize_css(SOLARIZED).expect("the committed fixture must sanitize");
+        assert_eq!(
+            stock_defaults_css(&s.css),
+            "body.theme-dark, body.theme-light {\n  --modal-background: var(--background-primary);\n}\n"
+        );
+    }
+
+    #[test]
+    fn themefs_stockdef_absent_without_the_source() {
+        // no source -> no sheet -> the Layer 3 fallback literal paints (R2)
+        assert_eq!(stock_defaults_css(""), "");
+        assert_eq!(stock_defaults_css(".theme-dark { --text-normal: #fff }"), "");
+        // reading the source is not declaring it
+        assert_eq!(stock_defaults_css("a { color: var(--background-primary) }"), "");
+        // a longer identifier is a different property
+        assert_eq!(stock_defaults_css(".theme-dark { --background-primary-alt: #fff }"), "");
+    }
+
+    #[test]
+    fn themefs_stockdef_theme_own_target_wins() {
+        // a theme that sets --modal-background itself keeps its own value:
+        // emitting the default would out-specify its .theme-dark rule
+        assert_eq!(
+            stock_defaults_css(".theme-dark { --background-primary: #000; --modal-background: #111 }"),
+            ""
+        );
+    }
+
+    #[test]
+    fn themefs_stockdef_is_not_a_bridge_row() {
+        // the bridge's alias census ([vbridge:<n>]) must not change: a theme
+        // declaring only --background-primary still yields exactly ONE alias
+        let css = ".theme-dark { --background-primary: #002b36 }";
+        assert_eq!(bridge_css(css).matches("var(").count(), 1);
+        assert!(!bridge_css(css).contains("--modal-background"));
+        assert!(stock_defaults_css(css).contains("--modal-background: var(--background-primary);"));
+    }
+
+    #[test]
+    fn themefs_stockdef_builtins_emit_but_their_own_layer3_wins() {
+        // R3: every built-in declares --bg-elevated itself (a later cascade
+        // layer than style.css), so the derived --modal-background can never
+        // reach its elevated surfaces — asserted here so a built-in that
+        // stops declaring it is a red test, not a silent colour change
+        for css in [
+            include_str!("../themes/1984/theme.css"),
+            include_str!("../themes/Slate/theme.css"),
+            include_str!("../themes/Wasp/theme.css"),
+        ] {
+            let s = sanitize_css(css).expect("built-ins sanitize");
+            assert!(declares(&s.css, "--bg-elevated"), "a built-in dropped --bg-elevated");
+        }
     }
 }

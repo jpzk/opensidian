@@ -2000,6 +2000,9 @@ struct VaultCss {
     css: String,
     message: Option<String>,
     bridge: Option<String>,
+    /// goal overlaytheme: the stock-default sheet (themefs::stock_defaults_css),
+    /// themes only — stock names derived from stock names (#vault-stockdef)
+    stockdef: Option<String>,
 }
 
 #[tauri::command]
@@ -2019,7 +2022,7 @@ fn snippet_css(v: State<Vault>, label: String, otel: Option<perf::Ctx>) -> Resul
     let root = cur_vault(&v).ok_or("no vault open")?;
     let (css, message) =
         span_timed!(otel => "snippet_css", themefs::load_snippet(&root, &label))?;
-    Ok(VaultCss { css, message, bridge: None })
+    Ok(VaultCss { css, message, bridge: None, stockdef: None })
 }
 
 #[tauri::command]
@@ -2051,7 +2054,9 @@ fn theme_css(v: State<Vault>, name: String, otel: Option<perf::Ctx>) -> Result<V
     // the SAME sanitized bytes the frontend is about to inject, so the bridge
     // can never describe a different file than the one painting
     let bridge = Some(themefs::bridge_css(&css));
-    Ok(VaultCss { css, message, bridge })
+    // goal overlaytheme: stock defaults ride the same response, same bytes
+    let stockdef = Some(themefs::stock_defaults_css(&css));
+    Ok(VaultCss { css, message, bridge, stockdef })
 }
 
 #[tauri::command]
