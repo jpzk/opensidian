@@ -1244,10 +1244,14 @@ function bmGroupRenameCommit(ix, title) { bmRenaming = null; return bmApply("bm_
        refusal never even reaches the backend (recon case 6; the file is
        asserted on BYTES because stock rewrites identical bytes there).
    Groups drag exactly like files, the whole subtree moves intact (case 5).
-   Spring-load (case 4: a COLLAPSED group under a ~1.5s held hover opens
-   mid-drag, takes the drop as a prepend, stays open) has NO trigger in this
-   pane — the chevron is static and groups cannot collapse (bmfolder recon) —
-   recorded here so the future collapse goal inherits the measurement. */
+   Spring-load (case 4: a COLLAPSED group under a held hover opens mid-drag,
+   takes the drop as a prepend, stays open). collapseall R5 makes groups
+   collapsible, so it ships here: a grp@<ix> decision on a .bmfold row arms a
+   BM_SPRING_MS timer (0.85s, spec R5 / M6); ANY decision change or the mouseup
+   disarms it. On fire the group leaves bmFolds (in memory — no inv(), R2),
+   renderBm() repaints, and the zone cache is REBUILT, because the rects cached
+   at drag start do not contain the rows that just started painting. */
+const BM_SPRING_MS = 850;
 let bmDropTok = "", bmEat = 0, bmDrop = null;
 function bmClickEaten() {                  // a completed drag must not also open the note under the cursor
   const t = bmEat;
@@ -1267,10 +1271,44 @@ function bmDragStart(e, ix) {
   const sx = e.clientX, sy = e.clientY;
   const label = src.label ?? (src.kind === "g" ? src.name : src.name.split("/").pop());
   let ghost = null, line = null, hl = null, srcEl = null, zones = null, raf = 0, last = null;
+  let spring = 0;                          // collapseall R5: the armed spring-load timer
   bmDrop = null;
   const clearFb = () => {
     if (line) { line.remove(); line = null; }
     if (hl) { hl.classList.remove("bmdrop-into"); hl = null; }
+  };
+  const disarm = () => { if (spring) { clearTimeout(spring); spring = 0; } };
+  // rects cached ONCE per paint (R20, like treeDragStart), plus the parent/slot
+  // tables, so a gap names its exact slot without a per-frame model walk. Rebuilt
+  // only when a spring-load repaints the pane mid-drag.
+  const cacheZones = () => {
+    const rows = [...document.querySelectorAll("#bmlist .bmrow")];
+    const par = bmTree.map((_, i) => bmParentOf(i));
+    const cix = bmTree.map((_, i) => { let n = 0; for (let k = 0; k < i; k++) if (par[k] === par[i]) n++; return n; });
+    zones = {
+      // collapseall: a folded row (.bmhide) keeps its slot so rows[i] stays bmTree[i],
+      // but it is not a target — vis=false, and hit tests skip it
+      rows: rows.map((el, i) => ({ el, i, r: el.getBoundingClientRect(), vis: !el.classList.contains("bmhide") })),
+      box: $("bmlist").getBoundingClientRect(),
+      par, cix,
+      rootLen: par.filter(p => p === null).length,
+      exFrom: ix, exTo: bmSubEnd(ix),      // the dragged row and its descendants are not targets
+    };
+    if (srcEl) srcEl.classList.remove("bmdrop-src");
+    srcEl = rows[ix];
+    if (srcEl) srcEl.classList.add("bmdrop-src");   // the dragged row keeps its fill (recon case 1)
+  };
+  const springFire = key => {
+    spring = 0;
+    if (!ghost || !bmFolds.has(key)) return;
+    act("bm_spring", { group: key.split("\u001f").join("/") }, () => {
+      bmFolds.delete(key);                 // in memory only — the file is never written (R2)
+      clearFb();
+      renderBm();                          // repaints: every cached rect/element is now stale
+      cacheZones();
+      bmDropTok = "";                      // force the next frame to re-publish + re-highlight
+      if (last && !raf) raf = requestAnimationFrame(step);
+    });
   };
   const step = () => {
     raf = 0;
@@ -1281,22 +1319,7 @@ function bmDragStart(e, ix) {
       ghost.id = "tabghost";
       ghost.textContent = label;
       document.body.appendChild(ghost);
-      // rects cached ONCE (R20, like treeDragStart), plus the parent/slot
-      // tables, so a gap names its exact slot without a per-frame model walk
-      const rows = [...document.querySelectorAll("#bmlist .bmrow")];
-      const par = bmTree.map((_, i) => bmParentOf(i));
-      const cix = bmTree.map((_, i) => { let n = 0; for (let k = 0; k < i; k++) if (par[k] === par[i]) n++; return n; });
-      zones = {
-        // collapseall: a folded row (.bmhide) keeps its slot so rows[i] stays bmTree[i],
-        // but it is not a target — vis=false, and hit tests skip it
-        rows: rows.map((el, i) => ({ el, i, r: el.getBoundingClientRect(), vis: !el.classList.contains("bmhide") })),
-        box: $("bmlist").getBoundingClientRect(),
-        par, cix,
-        rootLen: par.filter(p => p === null).length,
-        exFrom: ix, exTo: bmSubEnd(ix),    // the dragged row and its descendants are not targets
-      };
-      srcEl = rows[ix];
-      if (srcEl) srcEl.classList.add("bmdrop-src");   // the dragged row keeps its fill (recon case 1)
+      cacheZones();
       bmDropTok = "none";
       updateTitle();
     }
@@ -1336,6 +1359,11 @@ function bmDragStart(e, ix) {
     const tok = nd == null ? "none" : (nd.grp != null ? "grp@" + nd.grp : "gap@" + (nd.parent === null ? "-" : nd.parent) + "." + nd.pos);
     if (tok !== bmDropTok) {
       clearFb();
+      disarm();                            // R5: a decision change restarts the hover clock
+      if (nd && nd.grp != null && z.rows[nd.grp].el.classList.contains("bmfold")) {
+        const key = z.rows[nd.grp].el.dataset.bmk;
+        spring = setTimeout(() => springFire(key), BM_SPRING_MS);
+      }
       if (nd) {
         if (nd.grp != null) {
           hl = z.rows[nd.grp].el;
@@ -1360,6 +1388,7 @@ function bmDragStart(e, ix) {
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
     if (raf) { cancelAnimationFrame(raf); raf = 0; if (last) step(); }
+    disarm();                              // R5: a release before 0.85s opens nothing
     const d = bmDrop, dragged = !!ghost;
     if (ghost) { ghost.remove(); ghost = null; }
     clearFb();
