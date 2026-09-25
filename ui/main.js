@@ -1981,6 +1981,21 @@ let wsRestored = 0;      // leaves rebuilt from the file on this launch
 let wsDropped = 0;       // R28.17: leaves whose file was gone, dropped instead of failing
 let wsT = null, wsLast = "", wsIds = {}, wsInFlight = null;
 let wsGrp = {};          // W3: link-group key ("L<link>" | "G<group id>") -> the 16-hex `group` value on file
+/* W4 (F6, frozen): what this app does not understand it hands back unchanged.
+     wsExtra   top-level keys other than WS_TOP, in file order (stock drops
+               them; keeping them is the documented safe divergence)
+     wsSideRaw the left / right sidebar subtree AS READ. Stock keeps several
+               leaves per sidebar (file-explorer+search+bookmarks; backlink+
+               outgoing+localgraph+tag+all-properties+outline; `width`) and
+               rustidian shows one pane at a time: writing only that one leaf
+               would delete the rest from a stock vault opened here once
+     wsSide0   the pane each sidebar showed right after the restore. While it
+               is unchanged the file's currentTab stands — it may name a leaf
+               there is no pane for here (a stock sidebar local graph) */
+let wsExtra = null, wsSideRaw = {}, wsSide0 = {};
+const WS_TOP = ["main", "left", "right", "active", "lastOpenFiles"];
+const WS_KNOWN = new Set(["markdown", "graph", "localgraph", "empty"]);
+const wsClone = o => JSON.parse(JSON.stringify(o));
 const wsId = () => {     // stock's ids are 16 hex chars; the VALUE is opaque, only stability matters
   let s = "";
   for (let i = 0; i < 16; i++) s += ((Math.random() * 16) | 0).toString(16);
@@ -1995,7 +2010,7 @@ const wsPathIn = f => (typeof f === "string" && f.endsWith(".md")) ? f.slice(0, 
 // W2 (F1/F2): the two graph views are leaves too — global graph and local graph
 // persist with stock's type/state; any other kind (none today) is not written.
 const wsPersistable = t => !!t && typeof t.name === "string" &&
-  (!t.kind || t.kind === "gg" || (t.kind === "lg" && typeof t.center === "string" && !!t.center));
+  (!t.kind || t.kind === "gg" || (t.kind === "unk" && !!t.raw) || (t.kind === "lg" && typeof t.center === "string" && !!t.center));
 const WS_GICON = "lucide-git-fork";
 // F2: `options` is 23 keys of stock graph settings. Only three mean anything
 // here (depth, incoming, outgoing); the rest ride along OPAQUE in t.opts so a
@@ -2006,6 +2021,11 @@ function wsLgOpts(t) {
   return o;
 }
 function wsLeaf(t) {
+  if (t.kind === "unk") {                    // W4: the leaf as read, id and all; `group` is re-decided by wsNode
+    const l = wsClone(t.raw);
+    delete l.group;
+    return l;
+  }
   if (t.kind === "gg")                       // F1: state is EMPTY in stock
     return { id: wsIdOf(t, "lid"), type: "leaf",
              state: { type: "graph", state: {}, icon: WS_GICON, title: "Graph view" } };
@@ -2077,6 +2097,7 @@ function wsSide(which) {
   // showing. Stock's search leaf comes back still holding its query, so the
   // query travels in the leaf's state where stock puts it.
   const lst = which === "left" && sidePane === "search" ? { query: $("sinput").value } : {};
+  if (wsSideRaw[which]) return wsSideKeep(which, view, open, lst);
   const o = { id: wsIdOf(wsIds, which), type: "split", direction: "horizontal",
               children: [{ id: wsIdOf(wsIds, which + "tabs"), type: "tabs",
                            children: [{ id: wsIdOf(wsIds, which + "leaf"), type: "leaf",
@@ -2087,12 +2108,50 @@ function wsSide(which) {
   if (!open) o.collapsed = true;
   return o;
 }
+/* W4: a sidebar that came from the file is written back AS READ, with only the
+   three facts this app owns laid over it: collapsed, which leaf is showing
+   (only once the user has changed pane — until then the file's currentTab
+   stands), and the search leaf's query. Every other leaf, id, key and `width`
+   rides through untouched. */
+function wsSideTabs(o) {
+  const ts = [];
+  (function walk(n) {
+    if (!n || typeof n !== "object" || !Array.isArray(n.children)) return;
+    if (n.type === "tabs") ts.push(n); else n.children.forEach(walk);
+  })(o);
+  return ts;
+}
+function wsSideKeep(which, view, open, lst) {
+  const cur = which === "left" ? sidePane : rTab;
+  const moved = cur !== wsSide0[which];
+  const has = tn => tn.children.some(l => l && l.state && l.state.type === view);
+  const rts = wsSideTabs(wsSideRaw[which]);
+  if (moved && rts.length && !rts.some(has))    // a pane the file had no leaf for: ADD one (never replace),
+    rts[0].children.push({ id: wsId(), type: "leaf", state: { type: view, state: {} } });   // kept in raw so its id is stable
+  const o = wsClone(wsSideRaw[which]);
+  let hit = null;
+  for (const tn of wsSideTabs(o)) {
+    const i = tn.children.findIndex(l => l && l.state && l.state.type === view);
+    if (i >= 0) { hit = { tn, i }; break; }
+  }
+  if (moved && hit) { if (hit.i > 0) hit.tn.currentTab = hit.i; else delete hit.tn.currentTab; }
+  if (hit && lst.query !== undefined) {
+    const ls = hit.tn.children[hit.i].state;
+    ls.state = Object.assign({}, ls.state && typeof ls.state === "object" ? ls.state : {}, lst);
+  }
+  if (open) delete o.collapsed; else o.collapsed = true;
+  return o;
+}
 function wsDoc() {
   const ft = fg() && fg().active >= 0 ? fg().tabs[fg().active] : null;
-  return {
+  const d = {
     main: wsNode(state.root),
     left: wsSide("left"),
     right: wsSide("right"),
+  };
+  // W4: unknown top-level keys, where stock puts its own extra key (left-ribbon)
+  if (wsExtra) for (const k of Object.keys(wsExtra)) d[k] = wsClone(wsExtra[k]);
+  return Object.assign(d, {
     active: wsPersistable(ft) ? wsIdOf(ft, "lid") : "",   // R28.12: focus lands on the NAMED leaf
     // R28.15: `lastOpenFiles` is the note-use order, newest first. It is the
     // SAME list the quick switcher already keeps (mruList) rather than a second
@@ -2100,7 +2159,7 @@ function wsDoc() {
     // seeding that list on restore, which is exactly what the row says: written
     // for a recent-files affordance that does not exist.
     lastOpenFiles: mruList.slice(0, 20).map(wsPathOut),
-  };
+  });
 }
 /* R28.3 — WRITTEN WHILE RUNNING, NOT AT EXIT. This is the data-loss row of the
    section and the reason there is no beforeunload/window-close handler anywhere
@@ -2171,6 +2230,7 @@ async function wsLeave() {
   if (wsT) { clearTimeout(wsT); wsT = null; await wsFlush(true); }
   try { await wsInFlight; } catch (e) { /* its own catch already ate it */ }
   wsInFlight = null; wsLast = ""; wsIds = {}; wsGrp = {};
+  wsExtra = null; wsSideRaw = {}; wsSide0 = {};          // W4: A's unknowns belong to A's file alone
 }
 
 /* ---------- R28 GROUP 2: READ IT BACK ----------------------------------------
@@ -2218,6 +2278,17 @@ function wsGraphIn(leaf, have) {
 function wsTabIn(leaf, have) {
   if (leaf && leaf.state && (leaf.state.type === "graph" || leaf.state.type === "localgraph"))
     return wsGraphIn(leaf, have);
+  // W4 (F6): a leaf type this app has no view for (canvas, pdf, a plugin's view)
+  // is KEPT as a placeholder tab carrying the leaf verbatim — id, slot, type,
+  // state — the way stock keeps a disabled plugin's leaf ("Plugin no longer
+  // active"). Nothing about it is checked: its file is not ours to judge.
+  const ty = leaf && leaf.state && leaf.state.type;
+  if (typeof ty === "string" && ty && !WS_KNOWN.has(ty) && typeof leaf.id === "string" && leaf.id) {
+    const ti = leaf.state.title;
+    wsRestored++;
+    return { kind: "unk", name: typeof ti === "string" && ti ? ti : ty, utype: ty, raw: wsClone(leaf),
+             lid: leaf.id, mode: "source", hist: [], hpos: -1 };
+  }
   const st = leaf && leaf.state && leaf.state.state;
   const f = wsPathIn(st && st.file);
   if (typeof f !== "string" || !f) return null;      // stock's `empty` leaf carries no file
@@ -2314,10 +2385,17 @@ async function wsRead() {
 }
 async function wsApply(doc, names) {
   if (!doc || typeof doc !== "object") return false;     // R28.13: missing/corrupt == first launch
+  // W4: captured BEFORE anything can bail — even a file whose main area is
+  // unusable must not lose its unknown keys or its sidebars on the next write
+  wsExtra = {};
+  for (const k of Object.keys(doc)) if (!WS_TOP.includes(k)) wsExtra[k] = wsClone(doc[k]);
+  for (const k of ["left", "right"])
+    if (doc[k] && typeof doc[k] === "object" && !Array.isArray(doc[k]) && wsSideTabs(doc[k]).length)
+      wsSideRaw[k] = wsClone(doc[k]);
   const have = new Set(names);
   let root = null;
   try { root = wsNodeIn(doc.main, have); } catch (e) { root = null; }
-  if (!root) return false;
+  if (!root) { wsSide0 = { left: sidePane, right: rTab }; return false; }
   if (!root.children) root = { dir: "row", children: [root], fractions: [1] };
   state.root = root;
   state.focused = null;
@@ -2337,6 +2415,7 @@ async function wsApply(doc, names) {
   await loadActive(target);                              // the focused pane renders LAST, so it owns the caret
   // R28.10 / R28.11: the sidebars, each independently, with their own view state
   try { wsSidesIn(doc); } catch (e) { /* a sidebar is not worth the layout */ }
+  wsSide0 = { left: sidePane, right: rTab };             // W4: the file's currentTab stands until the user moves
   // R28.15: seed the quick switcher's recency from the file, filtered to notes
   // that still exist — the list is written for a recent-files affordance and a
   // dead name in it would offer the user a note they cannot open.
@@ -2358,9 +2437,10 @@ async function wsApply(doc, names) {
 }
 const WS_VIEW_L_IN = { "file-explorer": "files", search: "search", bookmarks: "bm" };
 const WS_VIEW_R_IN = { backlink: "bl", "outgoing-link": "out", tag: "tags", outline: "toc" };
-function wsSideLeaf(s) {               // the one leaf of a sidebar split, or null
+function wsSideLeaf(s) {               // the SHOWING leaf of a sidebar split (currentTab, absent = 0), or null
   const tabs = s && Array.isArray(s.children) ? s.children[0] : null;
-  const leaf = tabs && Array.isArray(tabs.children) ? tabs.children[0] : null;
+  const ci = tabs && Number.isInteger(tabs.currentTab) ? tabs.currentTab : 0;
+  const leaf = tabs && Array.isArray(tabs.children) ? tabs.children[ci] : null;
   return leaf && leaf.state ? leaf.state : null;
 }
 function wsSidesIn(doc) {
@@ -2543,7 +2623,17 @@ document.addEventListener("selectionchange", () => {
 function wsTok() {
   return " [wstabs:" + groups().map(h => h.tabs.map(x =>
         (x.kind ? x.kind : titleOf(x.name)) + ":" + (x.kind ? "-" : (MODE_ABBR[x.mode] || "?"))).join(",")).join("|") + "]" +
-       " [ws:" + wsWrites + "," + wsRestored + "," + wsDropped + "]";
+       " [ws:" + wsWrites + "," + wsRestored + "," + wsDropped + "]" + wsUnkTok();
+}
+// W4: the kept-but-unviewable leaves, by stock type, in layout order; the
+// right-sidebar leaf types as they will be written (only while a file supplied them)
+function wsUnkTok() {
+  const u = [];
+  for (const h of groups()) for (const x of h.tabs) if (x.kind === "unk") u.push(x.utype);
+  let s = u.length ? " [wsunk:" + u.join(",") + "]" : "";
+  if (wsSideRaw.right) s += " [wsside:" + wsSideTabs(wsSideRaw.right).map(tn =>
+    tn.children.map(l => (l && l.state && l.state.type) || "?").join(",")).join("|") + "]";
+  return s;
 }
 
 // G2 (goal gatetrain): the registered census tokens from ui/census.js, in
@@ -3170,6 +3260,11 @@ function findParent(node, target, parent = null) {
 
 async function splitGroup(g, dir, ti) {  // duplicate g's tab ti into a new sibling group
   const src = g.tabs[ti];
+  if (src && src.kind === "unk") {         // W4: a kept leaf duplicates as itself under a NEW id (two leaves never share one)
+    const id = wsId(), raw = wsClone(src.raw);
+    raw.id = id; delete raw.group;
+    return splitWith(g, dir, { kind: "unk", name: src.name, utype: src.utype, raw, lid: id, mode: "source", hist: [], hpos: -1 });
+  }
   const t = src ? Object.assign(mkTab(src.name), { src: !!src.src, mode: src.mode }) : null;   // #16: BOTH bits ride along (sub-mode survives a split of a reading tab)
   await splitWith(g, dir, t);
 }
@@ -4353,6 +4448,28 @@ function delTok() {
 async function loadActive(g) {
   hideAc();
   const t = g.active >= 0 ? g.tabs[g.active] : null;
+  if (g.unkEl) g.unkEl.hidden = !(t && t.kind === "unk");
+  if (t && t.kind === "unk") {      // W4: a kept leaf we have no view for — say so, keep it, touch nothing
+    showEditor(g);                  // stops a graph sim this pane may have been running
+    g.status.hidden = true;
+    g.lp.style.display = g.preview.style.display = g.editor.style.display = "none";
+    if (!g.unkEl) {
+      g.unkEl = document.createElement("div");
+      g.unkEl.className = "unkview";
+      g.content.append(g.unkEl);
+    }
+    g.unkEl.innerHTML = "";
+    const h = document.createElement("div"); h.className = "unkt";
+    h.textContent = "No view for “" + t.utype + "” here";
+    const p = document.createElement("div");
+    p.textContent = "This tab is kept in the layout unchanged, so the app that made it finds it again.";
+    g.unkEl.append(h, p);
+    g.unkEl.hidden = false;
+    renderTabs(g);
+    treeHighlight();
+    rgFollow();
+    return;
+  }
   if (t && t.kind === "lg") {       // R7.1: localgraph tab owns the pane's canvas
     await showLocalGraph(g, t);
     renderTabs(g);

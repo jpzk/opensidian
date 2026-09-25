@@ -1409,3 +1409,11 @@ span.fmk.fcur { background: var(--tag-bg-hover); outline: 1px solid var(--accent
    value is this app's yellow highlight token, the same one .fmk and .navflash
    use, so the flash follows every theme. */
 span.is-flashing { background: var(--highlight-yellow) }
+/* W4 (goal wsrestore): a leaf this app has no view for (canvas, pdf, a plugin's
+   view) is kept in the layout as a placeholder tab, like stock's "Plugin no
+   longer active". The message fills the pane the editor would. */
+.unkview { flex: 1 1 0; display: flex; flex-direction: column; align-items: center;
+           justify-content: center; gap: 6px; color: var(--text-muted); padding: 24px;
+           text-align: center; user-select: text }
+.unkview[hidden] { display: none }
+.unkview .unkt { font-size: 1.1em; color: var(--text-normal, inherit) }
