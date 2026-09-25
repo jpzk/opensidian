@@ -6713,6 +6713,47 @@ function ssnTok() {
   return " [ssn:" + Math.round(b.left + b.width / 2) + "," +
          Math.round(b.top + b.height / 2) + "," + lbl + "]";
 }
+/* setcenter R3 — the settings modal's PUBLISHED geometry, one census line of
+   its own (ui/census.js), emitted only while settings is open. Every phase
+   that clicks inside the box reads these instead of a literal pixel, so the
+   box can move (centred, viewport-relative, R1) without a phase noticing.
+     [sbox:x,y,w,h]   #sbox's rect                    (A2 asserts its margins)
+     [snav:x,y,w,h]   #snav, the scrolling nav column (OCR crop, wheel target)
+     [srow1:ctlx,cy,bodyx]   rows panes: the first .srow's control-cell centre
+                      x, its centre y, and its body (.sinfo) centre x
+     [shkf:cx,cy]     Hotkeys: the filter input
+     [shkc:cx,cy]     Hotkeys: the Conflicts chip (only while it is shown)
+     [shk<N>:x,y,w,h,addx,rsx,xx]   Hotkeys rows 1-2: the row rect, then the
+                      centre x of its add ⊕, restore ↺ and LAST chip's ✕
+                      (0 = no chip); the centre y is y+h/2
+   All rounded getBoundingClientRect, i.e. viewport px == screen px for the
+   gate's window at +0+0. */
+function sgeoTok() {
+  if (!settingsOpen) return "";
+  const R = el => el ? el.getBoundingClientRect() : null;
+  const cx = b => Math.round(b.left + b.width / 2), cy = b => Math.round(b.top + b.height / 2);
+  const rc = b => Math.round(b.left) + "," + Math.round(b.top) + "," + Math.round(b.width) + "," + Math.round(b.height);
+  const sb = R($("sbox")), nv = R($("snav"));
+  let t = " [sbox:" + rc(sb) + "] [snav:" + rc(nv) + "]";
+  const row = document.querySelector("#spage .srow");
+  if (row) {
+    const rb = R(row), cb = R(row.querySelector(".sctl")) || rb, ib = R(row.querySelector(".sinfo")) || rb;
+    t += " [srow1:" + (cb === rb ? Math.round(rb.right - 50) : cx(cb)) + "," + cy(rb) + "," + cx(ib) + "]";
+  }
+  const f = $("hkfilter");
+  if (f && f.isConnected) {
+    t += " [shkf:" + cx(R(f)) + "," + cy(R(f)) + "]";
+    const cc = document.querySelector("#hkchips .hkchip.conf");
+    if (cc) t += " [shkc:" + cx(R(cc)) + "," + cy(R(cc)) + "]";
+    const rows = document.querySelectorAll("#hklist .hkrow");
+    for (let i = 0; i < 2 && i < rows.length; i++) {
+      const xs = rows[i].querySelectorAll(".hkx");
+      t += " [shk" + (i + 1) + ":" + rc(R(rows[i])) + "," + cx(R(rows[i].querySelector(".hkadd"))) + "," +
+           cx(R(rows[i].querySelector(".hkrestore"))) + "," + (xs.length ? cx(R(xs[xs.length - 1])) : 0) + "]";
+    }
+  }
+  return t;
+}
 function setTok() {
   if (!SMODEL) return "";
   const e = SMODEL.rows.reduce((n, r) => n + (r.enabled ? 1 : 0), 0);
