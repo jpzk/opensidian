@@ -1979,13 +1979,18 @@ const wsId = () => {     // stock's ids are 16 hex chars; the VALUE is opaque, o
   return s;
 };
 const wsIdOf = (o, k) => (o[k] || (o[k] = wsId()));
+// Stock stores VAULT PATHS WITH THE EXTENSION ("file": "sub/A.md", lastOpenFiles
+// ["sub/A.md"]); a tab here is named without it. Convert at the file boundary
+// only — a bare name in a leaf is a file stock would not open (gate 1247154).
+const wsPathOut = n => n + ".md";
+const wsPathIn = f => (typeof f === "string" && f.endsWith(".md")) ? f.slice(0, -3) : f;
 const wsPersistable = t => !!t && !t.kind && typeof t.name === "string";   // graph leaves are not files
 function wsLeaf(t) {
   // R28.9: the per-tab view mode, in stock's two orthogonal bits (see modeBits).
   // Without it every tab that was READING comes back as an editor.
   const st = t.read
-    ? { file: t.name, mode: "preview", source: !!t.src }
-    : { file: t.name, mode: "source", source: !!t.src };
+    ? { file: wsPathOut(t.name), mode: "preview", source: !!t.src }
+    : { file: wsPathOut(t.name), mode: "source", source: !!t.src };
   return { id: wsIdOf(t, "lid"), type: "leaf",
            state: { type: "markdown", state: st, icon: "lucide-file", title: titleOf(t.name) } };
 }
@@ -2034,7 +2039,7 @@ function wsDoc() {
     // one that could disagree with it — nothing reads the key back yet beyond
     // seeding that list on restore, which is exactly what the row says: written
     // for a recent-files affordance that does not exist.
-    lastOpenFiles: mruList.slice(0, 20),
+    lastOpenFiles: mruList.slice(0, 20).map(wsPathOut),
   };
 }
 /* R28.3 — WRITTEN WHILE RUNNING, NOT AT EXIT. This is the data-loss row of the
@@ -2119,7 +2124,7 @@ async function wsLeave() {
    value is read here, and none is written by wsLeaf(). */
 function wsTabIn(leaf, have) {
   const st = leaf && leaf.state && leaf.state.state;
-  const f = st && st.file;
+  const f = wsPathIn(st && st.file);
   if (typeof f !== "string" || !f) return null;      // stock's `empty` leaf carries no file
   if (!have.has(f)) { wsDropped++; return null; }     // R28.17 / R28.14
   const t = mkTab(f);
@@ -2210,7 +2215,7 @@ async function wsApply(doc, names) {
   // that still exist — the list is written for a recent-files affordance and a
   // dead name in it would offer the user a note they cannot open.
   if (Array.isArray(doc.lastOpenFiles)) {
-    mruList = doc.lastOpenFiles.filter(n => typeof n === "string" && have.has(n)).slice(0, 20);
+    mruList = doc.lastOpenFiles.map(wsPathIn).filter(n => typeof n === "string" && have.has(n)).slice(0, 20);
   }
   // the ids the file used are the ids the next save writes (R28.4)
   for (const k of ["left", "right"]) {
