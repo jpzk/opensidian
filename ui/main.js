@@ -1991,8 +1991,27 @@ const wsIdOf = (o, k) => (o[k] || (o[k] = wsId()));
 // only — a bare name in a leaf is a file stock would not open (gate 1247154).
 const wsPathOut = n => n + ".md";
 const wsPathIn = f => (typeof f === "string" && f.endsWith(".md")) ? f.slice(0, -3) : f;
-const wsPersistable = t => !!t && !t.kind && typeof t.name === "string";   // graph leaves are not files
+// W2 (F1/F2): the two graph views are leaves too — global graph and local graph
+// persist with stock's type/state; any other kind (none today) is not written.
+const wsPersistable = t => !!t && typeof t.name === "string" &&
+  (!t.kind || t.kind === "gg" || (t.kind === "lg" && typeof t.center === "string" && !!t.center));
+const WS_GICON = "lucide-git-fork";
+// F2: `options` is 23 keys of stock graph settings. Only three mean anything
+// here (depth, incoming, outgoing); the rest ride along OPAQUE in t.opts so a
+// stock file loses nothing by passing through (W2 frozen: round-tripped as-is).
+function wsLgOpts(t) {
+  const o = Object.assign({}, t.opts && typeof t.opts === "object" ? t.opts : {});
+  o.localJumps = t.depth; o.localBacklinks = !!t.inc; o.localForelinks = !!t.out;
+  return o;
+}
 function wsLeaf(t) {
+  if (t.kind === "gg")                       // F1: state is EMPTY in stock
+    return { id: wsIdOf(t, "lid"), type: "leaf",
+             state: { type: "graph", state: {}, icon: WS_GICON, title: "Graph view" } };
+  if (t.kind === "lg")                       // F2: main-area lg is bound to its stored file
+    return { id: wsIdOf(t, "lid"), type: "leaf",
+             state: { type: "localgraph", state: { file: wsPathOut(t.center), options: wsLgOpts(t) },
+                      icon: WS_GICON, title: "Graph of " + titleOf(t.center) } };
   // R28.9: the per-tab view mode, in stock's two orthogonal bits (see modeBits).
   // Without it every tab that was READING comes back as an editor.
   const st = t.read
@@ -2142,7 +2161,29 @@ async function wsLeave() {
    R28.8 IS AN EXPLICIT NON-GOAL: stock does not restore scroll position and
    neither does this. Cloning the absence is the requirement — no hpos/scroll
    value is read here, and none is written by wsLeaf(). */
+function wsGraphIn(leaf, have) {
+  const ls = leaf.state, st = ls.state && typeof ls.state === "object" ? ls.state : {};
+  let t;
+  if (ls.type === "graph") {                         // F1: nothing to bind, nothing to check
+    t = { kind: "gg", name: "Graph view", mode: "source", hist: [], hpos: -1 };
+  } else {
+    const c = wsPathIn(st.file);
+    // a local graph of a note that is gone is dropped like that note's tab
+    // (R28.17): a graph centred on nothing is not a view the user can use
+    if (typeof c !== "string" || !c || !have.has(c)) { wsDropped++; return null; }
+    const o = st.options && typeof st.options === "object" && !Array.isArray(st.options) ? st.options : {};
+    const d = Number.isInteger(o.localJumps) ? Math.min(5, Math.max(1, o.localJumps)) : 1;
+    t = { kind: "lg", name: "Graph of " + c.split("/").pop(), center: c, depth: d,
+          inc: o.localBacklinks !== false, out: o.localForelinks !== false,
+          opts: o, mode: "source", hist: [], hpos: 0 };
+  }
+  if (typeof leaf.id === "string" && leaf.id) t.lid = leaf.id;   // R28.4
+  wsRestored++;
+  return t;
+}
 function wsTabIn(leaf, have) {
+  if (leaf && leaf.state && (leaf.state.type === "graph" || leaf.state.type === "localgraph"))
+    return wsGraphIn(leaf, have);
   const st = leaf && leaf.state && leaf.state.state;
   const f = wsPathIn(st && st.file);
   if (typeof f !== "string" || !f) return null;      // stock's `empty` leaf carries no file
