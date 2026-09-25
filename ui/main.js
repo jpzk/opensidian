@@ -3579,6 +3579,7 @@ async function loadActive(g) {
     await showLocalGraph(g, t);
     renderTabs(g);
     treeHighlight();
+    rgFollow();                     // lgpanes: lg focused -> panes = rLeaf note (not awaited: outside graph perf spans)
     return;
   }
   if (t && t.kind === "gg") {       // R9.7: global graph as a main tab
@@ -3594,6 +3595,7 @@ async function loadActive(g) {
     });
     renderTabs(g);
     treeHighlight();
+    rgFollow();                     // lgpanes (Q4, shot 16): GLOBAL graph focused -> panes empty
     return;
   }
   // R20 (#d): the tab's retained view is swapped in; read + render only on
