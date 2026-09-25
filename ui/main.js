@@ -4557,7 +4557,36 @@ function qsItems() {                 // switcher source: MRU first, rest a-z
     },
   }));
 }
+/* listtoggle A3 (found by the gate phase, not by reading): the palette input
+   TAKES the DOM selection, so a palette command that reads the editor
+   selection (Ed.sel) found none and was a silent no-op — "Toggle bullet list"
+   run from Ctrl+P changed no byte. Stock runs palette commands against the
+   selection the editor had when the palette opened (evidence/q02-bullet.txt:
+   select 3 lines, palette, all 3 toggled). So snapshot it at open and put it
+   back, anchor and focus, just before a command RUNS. Escape is unchanged. */
+let mdEdSel = null;
+function edSelSnap() {
+  if (!edEditable()) return null;
+  const g = fg(), s = Ed.sel(g);
+  if (!s) return null;
+  const f = Ed.focusPos(g);
+  const back = f && f.l === s.a.l && f.c === s.a.c && !s.empty;   // selection made upward
+  return { g, t: g.tabs[g.active], anc: back ? s.b : s.a, foc: back ? s.a : s.b };
+}
+function edSelRestore(r) {
+  const g = fg();
+  if (!r || g !== r.g || g.tabs[g.active] !== r.t || !edEditable()) return;
+  Ed.place(g, r.anc.l, r.anc.c);
+  if (r.anc.l !== r.foc.l || r.anc.c !== r.foc.c) Ed.extendTo(g, r.foc.l, r.foc.c);
+}
+async function mdRun(it, e) {
+  const r = mdEdSel; mdEdSel = null;
+  closeModal();
+  edSelRestore(r);
+  return await it.run(e);
+}
 function openModal(kind, src) {
+  mdEdSel = kind === "cp" ? edSelSnap() : null;   // BEFORE minput.focus() takes the selection
   modalKind = kind; mdSrc = src;
   $("minput").value = "";
   $("minput").placeholder = kind === "qs" ? "Open note..." : "Run command...";
@@ -4635,7 +4664,7 @@ function renderModal() {
     const h = document.createElement("span"); h.className = "mhint";
     h.textContent = it.hint || "";
     d.append(l, h);
-    d.onmousedown = async e => { e.preventDefault(); closeModal(); await it.run(e); };
+    d.onmousedown = async e => { e.preventDefault(); await mdRun(it, e); };
     box.appendChild(d);
   });
   updateTitle();   // C4: mdFilter() runs on every keystroke — republish [mdnew:]
@@ -4650,7 +4679,7 @@ $("minput").onkeydown = async e => {
   } else if (e.key === "Enter") {
     e.preventDefault();
     const it = mdItems[mdSel];
-    if (it) { closeModal(); return await it.run(e); }
+    if (it) return await mdRun(it, e);
     // C4: zero matches + a non-empty switcher query -> Shift+Enter creates it.
     // Only when there is nothing to pick: with a match present (incl. a
     // case-differing one) Shift+Enter must never become a creation.
