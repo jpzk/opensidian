@@ -336,6 +336,10 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
    the content shifts while the row background still spans the whole pane. */
 .bmrow .bmchev { color: var(--text-chrome-dim); display: flex }
 .bmrow .bmchev svg { width: 13px; height: 13px }
+/* collapseall R1: a collapsed group's chevron points RIGHT (the svg is drawn
+   pointing down), and every row inside it is kept in the DOM but not painted. */
+.bmrow.bmfold .bmchev svg { transform: rotate(-90deg) }
+.bmrow.bmhide { display: none }
 .bmrow.bmgrp { font-weight: 500 }
 .bmrow .bmren { flex: 1; min-width: 0; background: var(--bg-base); color: var(--text-chrome);
                 border: 1px solid var(--border-focus-ring); border-radius: 3px;

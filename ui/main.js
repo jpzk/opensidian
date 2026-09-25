@@ -934,11 +934,24 @@ function srGeom() {
 let bmCache = [];                         // the `f` rows' names, pre-order (== list_bookmarks)
 let bmTree = [];                          // the PAINTED rows: [{kind:"f"|"g", depth, name, label}]
 let bmRenaming = null;                    // row index whose label is an inline editor (stock's Rename, 07-nest-named.png)
+/* collapseall R1/R6: the COLLAPSED bookmark groups, keyed by the group's title
+   path from the top level ("Work\u001fInner"). IN MEMORY ONLY, like the explorer's
+   `collapsed` Set: stock keeps its folds in Electron localStorage
+   ("<vaultId>-bookmarks-folds"), never in bookmarks.json (recon-bmcollapse Q1-Q5),
+   and R2 forbids a fold from writing that file — so nothing here calls inv().
+   Persisting the folds is todo id:bmcollapsebuild (spec R6). A group not in the
+   set paints EXPANDED (M5: an unrecorded group is expanded). */
+let bmFolds = new Set();
 let bmEdit = null;                        // the open Edit bookmark modal: {ix, name, opts}
 let revealInfo = "";                      // bmmenu: [bmrv:<name>] after "Reveal file in navigation" (bmReveal), cleared by setPane
 const BM_INDENT = 17;                     // px per depth level — MEASURED on stock (14-saved.png), icon and label both shift
 const BM_PAD = 12;                        // .bmrow's own left padding (style.css), depth 0
 const bmRows = () => document.querySelectorAll("#bmlist .bmrow").length;
+/* collapseall: a row inside a collapsed group stays IN the DOM (class .bmhide,
+   display:none) so row i is still bmTree[i] for the drag machine and [bm:]/[bmn:]/
+   [bmt:] keep describing the whole rendered model ([bmdesync:] stays meaningful).
+   What the user can SEE is [bmvis:<n>]; geometry tokens read visible rows only. */
+const bmVisRows = () => Array.from(document.querySelectorAll("#bmlist .bmrow:not(.bmhide)"));
 /* R20.6: the LABELS the user can actually read, taken from the painted rows in
    paint order. A count alone passes a renderBm() that paints the right NUMBER of
    wrong rows, so [bmn:] is what proves the pane tracks disk. '|' and ']' are
@@ -959,7 +972,7 @@ const bmShape = () => Array.from(document.querySelectorAll("#bmlist .bmrow"))
    divided by the depth difference. A class that is applied but paints no offset
    passes [bmt:] and fails this. Empty when fewer than two depths are painted. */
 function bmIndentTok() {
-  const k = Array.from(document.querySelectorAll("#bmlist .bmrow"));
+  const k = bmVisRows();
   let lo = null, hi = null;
   for (const r of k) {
     const ic = r.querySelector(".bmic");
@@ -983,8 +996,8 @@ function bmSync() {                        // the flat view every non-pane calle
 }
 const BM_ICON_FILE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3h12v18l-6-4.5L6 21z"/></svg>';
 // a group row carries a CHEVRON where a file row carries its bookmark glyph, at
-// the same slot and the same depth (14-saved.png). It points DOWN: every group
-// stock painted was expanded, and collapsing is UNMEASURED (recon README).
+// the same slot and the same depth (14-saved.png). It points DOWN when expanded;
+// .bmfold on the row rotates it to point RIGHT (collapseall R1, style.css).
 const BM_ICON_GROUP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>';
 function renderBm() {
   const box = $("bmlist");
@@ -996,10 +1009,17 @@ function renderBm() {
     d.oncontextmenu = e => bmEmptyMenu(e);   // bmmenu: stock's one-item "New group" menu, disabled on THIS line — see bmEmptyMenu
     box.appendChild(d);
   }
+  const anc = [];                          // collapseall: the open ancestor chain {depth, key, folded}
   bmTree.forEach((r, ix) => {              // pre-order == file order == paint order
     const row = document.createElement("div");
     const grp = r.kind === "g";
-    row.className = "bmrow" + (grp ? " bmgrp" : "");
+    while (anc.length && anc[anc.length - 1].depth >= r.depth) anc.pop();
+    const hide = anc.some(a => a.folded);  // inside ANY collapsed ancestor: in the DOM, not painted
+    const key = grp ? anc.map(a => a.name).concat(r.name).join("\u001f") : null;
+    const folded = grp && bmFolds.has(key);
+    if (grp) anc.push({ depth: r.depth, name: r.name, folded });
+    row.className = "bmrow" + (grp ? " bmgrp" : "") + (folded ? " bmfold" : "") + (hide ? " bmhide" : "");
+    if (grp) row.dataset.bmk = key;
     row.dataset.bmd = String(r.depth);
     row.style.paddingLeft = (BM_PAD + r.depth * BM_INDENT) + "px";   // content shifts, background still spans the pane (14-saved.png)
     row.title = r.name;
@@ -1026,8 +1046,10 @@ function renderBm() {
       // r.name stays the full extensionless name the click opens by.
       row.append(r.label ?? (grp ? r.name : r.name.split("/").pop()));
     }
-    // a GROUP row opens nothing on click — it holds names, and collapsing is UNMEASURED
-    row.onclick = grp ? null : () => { if (bmClickEaten()) return; openInTab(r.name); };   // bmdrag: a drop's click opens nothing
+    // a GROUP row opens nothing — a click on its chevron, label or row background
+    // TOGGLES its fold (collapseall R1, M5 / recon-bmcollapse). A FILE row opens.
+    row.onclick = grp ? () => { if (bmClickEaten()) return; bmFoldToggle(key); }
+                      : () => { if (bmClickEaten()) return; openInTab(r.name); };   // bmdrag: a drop's click opens nothing
     row.oncontextmenu = e => (grp ? bmGroupMenu(e, ix, r.name) : bmRowMenu(e, r.name, ix));
     row.addEventListener("mousedown", e => bmDragStart(e, ix));   // bmdrag: every row drags, groups included (recon case 5)
     box.appendChild(row);
@@ -1047,11 +1069,20 @@ function sfontTok() {
   };
   return " [sfont:t" + fs("#tree .trow") + "b" + fs("#bmlist .bmrow") + "r" + fs(".rlist > :not(.rempty)") + "]";
 }
+/* collapseall R1/R2: flip ONE group's fold. Pure view state — no inv(), so the
+   bookmarks.json bytes cannot move (the phase sha256s the file around it). */
+function bmFoldToggle(key) {
+  if (key == null || bmRenaming !== null) return;
+  return act("bm_fold", { group: key.split("\u001f").join("/"), open: bmFolds.has(key) }, () => {
+    bmFolds.has(key) ? bmFolds.delete(key) : bmFolds.add(key);
+    renderBm();
+  });
+}
 /* [bmg:<row centre x>,<first row centre y>,<row pitch>] — the PAINTED geometry of the
    bookmark rows, so a driver right-clicks a row it measured, not a y it guessed
    (the same idea as [mg:] for menus). Emitted only while the pane shows rows. */
 function bmGeom() {
-  const k = document.querySelectorAll("#bmlist .bmrow");
+  const k = bmVisRows();                   // a folded row paints nothing: it has no centre to click
   if (!k.length) return "";
   const a = k[0].getBoundingClientRect();
   const pitch = k.length > 1 ? k[1].getBoundingClientRect().top - a.top : a.height;
@@ -1256,7 +1287,9 @@ function bmDragStart(e, ix) {
       const par = bmTree.map((_, i) => bmParentOf(i));
       const cix = bmTree.map((_, i) => { let n = 0; for (let k = 0; k < i; k++) if (par[k] === par[i]) n++; return n; });
       zones = {
-        rows: rows.map((el, i) => ({ el, i, r: el.getBoundingClientRect() })),
+        // collapseall: a folded row (.bmhide) keeps its slot so rows[i] stays bmTree[i],
+        // but it is not a target — vis=false, and hit tests skip it
+        rows: rows.map((el, i) => ({ el, i, r: el.getBoundingClientRect(), vis: !el.classList.contains("bmhide") })),
         box: $("bmlist").getBoundingClientRect(),
         par, cix,
         rootLen: par.filter(p => p === null).length,
@@ -1270,16 +1303,18 @@ function bmDragStart(e, ix) {
     ghost.style.transform = "translate3d(" + (ev.clientX + 10) + "px," + (ev.clientY + 12) + "px,0)";
     const z = zones;
     let nd = null;                         // {grp, parent, pos, y}
+    let lastVis = null;                    // the last PAINTED row (a folded tail has no bottom)
+    for (const w of z.rows) if (w.vis) lastVis = w;
     const gapAt = j => j >= z.rows.length
-      ? { parent: null, pos: z.rootLen, y: z.rows.length ? z.rows[z.rows.length - 1].r.bottom : z.box.top }
+      ? { parent: null, pos: z.rootLen, y: lastVis ? lastVis.r.bottom : z.box.top }
       : { parent: z.par[j], pos: z.cix[j], y: z.rows[j].r.top };
     if (ev.clientX >= z.box.left && ev.clientX <= z.box.right &&
         ev.clientY >= z.box.top && ev.clientY <= z.box.bottom) {
       let hit = null;
-      for (const w of z.rows) if (ev.clientY >= w.r.top && ev.clientY < w.r.bottom) { hit = w; break; }
+      for (const w of z.rows) if (w.vis && ev.clientY >= w.r.top && ev.clientY < w.r.bottom) { hit = w; break; }
       if (!hit) {
         // pane background: the line SNAPS below the last row, root depth (case 3)
-        if (!z.rows.length || ev.clientY >= z.rows[z.rows.length - 1].r.bottom) nd = gapAt(z.rows.length);
+        if (!lastVis || ev.clientY >= lastVis.r.bottom) nd = gapAt(z.rows.length);
       } else if (hit.i >= z.exFrom && hit.i < z.exTo) {
         nd = null;                         // self or own descendant: NOTHING paints (case 6)
       } else {
@@ -1287,7 +1322,9 @@ function bmDragStart(e, ix) {
         const grp = bmTree[hit.i] && bmTree[hit.i].kind === "g";
         if (band < 6) nd = gapAt(hit.i);                       // top band: the gap above
         else if (grp && band < hit.r.height - 6) nd = { grp: hit.i, parent: hit.i, pos: 0, y: 0 };   // group middle: PREPEND (case 2)
-        else nd = gapAt(hit.i + 1);                            // bottom band / file middle: the gap below
+        // bottom band / file middle: the gap below. Below a COLLAPSED group that is
+        // after its whole (unpainted) subtree, never inside it (collapseall)
+        else nd = gapAt(hit.el.classList.contains("bmfold") ? bmSubEnd(hit.i) : hit.i + 1);
       }
       // the slot the row already occupies is not a move — treeDragStart's
       // "the folder it is ALREADY in is not a destination", gap edition
@@ -1905,6 +1942,19 @@ function censusToks() {
   }
   return s;
 }
+/* collapseall R7 [fold:fe<collapsed>/<folders>:<C|E>,bm<collapsed>/<groups>:<C|E>]
+   read off the DOM of BOTH panes (hidden panes keep their DOM), so a phase asserts
+   fold state without pixels. C|E = what that pane's header toggle would do NOW:
+   Collapse while anything is expanded, else Expand (R4, M3). */
+function foldTok() {
+  const fe = document.querySelectorAll("#tree .trow.folder");
+  const feC = document.querySelectorAll("#tree .trow.folder:not(.open)").length;
+  const bm = document.querySelectorAll("#bmlist .bmrow.bmgrp");
+  const bmC = document.querySelectorAll("#bmlist .bmrow.bmgrp.bmfold").length;
+  const lab = (c, n) => (n && c === n ? "E" : "C");
+  return " [fold:fe" + feC + "/" + fe.length + ":" + lab(feC, fe.length) +
+         ",bm" + bmC + "/" + bm.length + ":" + lab(bmC, bm.length) + "]";
+}
 function updateTitle() {          // pane/focus census in the window title (headless probe)
   rTrack();                       // lgpanes: keep rLeaf current even with the right sidebar closed
   const ps = [...document.querySelectorAll("#main .pane")];
@@ -2329,10 +2379,11 @@ function updateTitle() {          // pane/focus census in the window title (head
             (navInfo ? " [" + navInfo + "]" : "") +
             (revealInfo ? " [bmrv:" + revealInfo + "]" : "") +      // bmmenu: "Reveal file in navigation" ran (bmReveal) — not merely "the Files pane is showing"
             (acItems.length ? " [ac:" + acKind + ":" + acItems.length + "]" : "") +
-            " [pane:" + sidePane + "]" +
+            " [pane:" + sidePane + "]" + foldTok() +
             sfontTok() +                                        // sidefont: computed sidebar row font sizes (t=trow b=bmrow r=rlist)
             (sidePane === "search" && searchCount >= 0 ? " [sr:" + searchCount + "]" + srGeom() : "") +
             (sidePane === "bm" ? " [bm:" + bmRows() + "]" +          // RENDERED rows, not the model's length:
+              " [bmvis:" + bmVisRows().length + "]" +               // collapseall: the rows NOT folded away (what is seen)
               " [bmn:" + bmNames() + "]" +                          // and their painted LABELS, in paint order
               bmGeom() +                                            // bmmenu: [bmg:x,y,pitch] of the painted rows — a driver right-clicks what it measured
               " [bmt:" + bmShape() + "]" +                          // R4X.5: the painted TREE SHAPE, parallel to [bmn:]
@@ -4059,6 +4110,7 @@ function renderNode(node, prefix, depth, out) {
       o ? collapsed.delete(full) : collapsed.add(full);
       row.classList.toggle("open", o);
       kids.classList.toggle("collapsed", !o);
+      updateTitle();                            // collapseall: [fold:] moves with every folder toggle
     });
     out.appendChild(row);
     renderNode(node.dirs.get(d), full, depth + 1, kids);
@@ -6452,6 +6504,7 @@ async function enterVault() {
   }
   $("vswitch").innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>' + base(vaultPath);
   collapsed = new Set();
+  bmFolds = new Set();               // collapseall: folds are per vault and in memory (R6)
   const g = mkGroup();               // M6: one group, wrapped in a one-leaf split tree
   state = { root: { dir: "row", children: [g], fractions: [1] }, focused: null };
   renderLayout();
