@@ -13,3 +13,4 @@
 // Tokens are appended AFTER every inline token (end of the title), in this
 // file's line order; a token that throws is published as [cerr:<index>].
 var CENSUS = [];
+CENSUS.push(() => { const L = CMDS.filter(c => c.id === "editor:toggle-bullet-list" || c.id === "editor:toggle-numbered-list"); return " [lt:" + L.length + "/" + L.filter(c => !c.when || c.when()).length + "]"; });   // listtoggle: both list commands registered / offered by the palette (editing view only)
