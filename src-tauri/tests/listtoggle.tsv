@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# listtoggle unit table (spec R4, acceptance A2): ONE ROW PER MEASURED CASE.
+# The bytes are NOT copied here: tests/listtoggle.rs reads the fixture (before)
+# and stock 1.13.7's after-bytes straight out of
+# docs/recon-listtoggle/evidence/<case>.txt, and checks that the palette command
+# this row names is the one the evidence recorded. A sel/caret dump in the
+# evidence (stock typed "Z" over its selection after the command) is asserted
+# by typing "Z" over OUR mapped selection; an undo dump must equal "before".
+# selection = anchor-head as line.col (model coordinates). It is cross-checked
+# against a replay of the case's recorded keystrokes; "keys=no" rows are the
+# ones where the keys do not determine the model selection (Live Preview's
+# Ctrl+Home lands BELOW the Properties widget, README q09-fmb).
+# Measured cases with NO row: q01-ids (command ids, no edit), q14-reading
+# (reading view: command absent, no write — asserted by the gate/registry),
+# q16-* (the checkbox command, not this op; filed as a todo, R6).
+#case	command	selection	keys
+q02-bullet	bullet	0.0-2.5	yes
+q02-star	bullet	2.0-4.5	yes
+q03-num	numbered	0.0-2.5	yes
+q04-offb	bullet	0.0-2.7	yes
+q04-offind	bullet	0.0-2.8	yes
+q04-offn	numbered	0.0-2.8	yes
+q04-offparen	numbered	0.0-2.8	yes
+q04-offplus	bullet	0.0-2.7	yes
+q04-offstar	bullet	0.0-2.7	yes
+q05-mixb	bullet	0.0-2.8	yes
+q05-mixn	numbered	0.0-2.8	yes
+q05-mostb	bullet	0.0-2.5	yes
+q05-mostn	numbered	0.0-2.5	yes
+q06-b2n	numbered	0.0-2.7	yes
+q06-n2b	bullet	0.0-2.8	yes
+q07-blankb	bullet	0.0-2.4	yes
+q07-blankn	numbered	0.0-2.4	yes
+q07-offb	bullet	0.0-2.6	yes
+q08-nestn	numbered	0.0-3.5	yes
+q08-nestoff	numbered	0.0-2.8	yes
+q08-sp2n	numbered	0.0-2.7	yes
+q08-tabb	bullet	0.0-2.6	yes
+q09-codeb	bullet	0.0-2.3	yes
+q09-fmb	bullet	3.0-3.4	no
+q09-headb	bullet	0.0-2.5	yes
+q09-quoteb	bullet	0.0-2.7	yes
+q09-quoten	numbered	0.0-2.7	yes
+q09-taskb	bullet	0.0-2.11	yes
+q09-taskn	numbered	0.0-2.11	yes
+q10-col0	bullet	0.0-3.0	yes
+q10-partial	bullet	0.2-2.2	yes
+q11-caretb	bullet	1.2-1.2	yes
+q11-caretn	numbered	1.2-1.2	yes
+q11-caretoff	bullet	1.4-1.4	yes
+q12-selb	bullet	0.0-2.5	yes
+q12-seloff	numbered	0.0-2.8	yes
+q12-selpart	numbered	0.2-2.2	yes
+q12-undob	bullet	0.0-2.5	yes
+q12-undon	numbered	0.0-2.5	yes
+q12-undooff	bullet	0.0-2.7	yes
+q13-bulletabove	numbered	1.0-2.5	yes
+q13-cont	numbered	1.0-2.5	yes
+q13-follow	numbered	1.0-1.0	yes
+q13-gap	numbered	2.0-2.0	yes
+q13-offmid	numbered	1.0-2.4	yes
+q13-start5	numbered	1.0-2.5	yes
+q13-stopb	numbered	1.0-1.0	yes
+q13-stopdeep	numbered	1.0-1.0	yes
+q15-srcb	bullet	0.0-2.5	yes
+q15-srcfm	bullet	0.0-3.4	yes
+q15-srcmix	bullet	0.0-2.8	yes
+q15-srcn	numbered	0.0-3.5	yes
+q15-srcoff	numbered	0.0-2.8	yes

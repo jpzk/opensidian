@@ -26,3 +26,10 @@ landlock = "=0.4.7"
 [target.'cfg(target_os = "linux")'.dependencies]
 gdk = "=0.18.2"
 gdkx11 = "=0.18.2"
+
+# listtoggle A2 — the unit table runs ui/editor.js in JavaScriptCore, the engine
+# the webview runs it in. javascriptcore-rs 1.1.2 is ALREADY in Cargo.lock as
+# webkit2gtk's own dependency; `=` pins it to that locked version, so this
+# fetches and trusts nothing new. Test-only: the shipped binary is unchanged.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+javascriptcore-rs = "=1.1.2"

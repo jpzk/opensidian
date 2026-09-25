@@ -1020,6 +1020,93 @@ const Ed = {
     else { L[l] = it.ind + it.qt + "- [ ] " + line.slice(it.pre.length); dc = 6; }
     Ed.after(g, l, s.b.c >= it.pre.length ? s.b.c + dc : s.b.c);
   },
+  /* listtoggle R1-R5: "Toggle bullet list" / "Toggle numbered list" over a
+     SELECTION (stock 1.13.7 measured, docs/recon-listtoggle/README.md; spec
+     §4 frozen). Unlike toggleCheck this acts on EVERY line the selection
+     touches — a selection ending at column 0 of line N still includes N [Q10].
+     Ed.listToggle is PURE (lines + selection in -> lines + selection out, or
+     null for a no-op) so the unit table (src-tauri/tests/listtoggle.{tsv,rs}, cargo test) can run
+     it without a DOM; Ed.toggleList is the thin view wrapper (one undo step).
+     Own marker parser, NOT Ed.info: stock treats "N)" as numbered [Q4
+     q04-offparen] and Ed.info does not, and widening Ed.info would change
+     Enter/indent continuation, which nothing here measured. */
+  ltParse(line) {
+    const m = /^([ \t]*)((?:> ?)*)(?:([-*+]) (\[[ xX]\] )?|(\d+)[.)] (\[[ xX]\] )?)?/.exec(line || "");
+    const kind = m[3] ? (m[4] ? "task" : "bullet") : m[5] !== undefined ? "numbered" : "";
+    return { ind: m[1], qt: m[2], box: m[1].length + m[2].length, mk: m[0].length - m[1].length - m[2].length,
+             kind, num: m[5] !== undefined ? parseInt(m[5], 10) : null };
+  },
+  /* Q13 scan: the number a numbered item at `l` (indent `ind`, quote `qt`)
+     takes = previous numbered item at that level + 1, scanning UP past plain,
+     blank and deeper lines; a bullet/task at that level or any shallower line
+     (or a different quote container) ends the scan -> 1. */
+  ltStart(L, l, ind, qt) {
+    for (let k = l - 1; k >= 0; k--) {
+      if (!String(L[k]).trim()) continue;
+      const p = Ed.ltParse(L[k]);
+      if (p.ind.length > ind.length) continue;             // deeper: skipped [q13-stopdeep]
+      if (p.ind.length < ind.length || p.qt !== qt) return 1;
+      if (p.kind === "numbered") return p.num + 1;
+      if (p.kind) return 1;                                // bullet at this level [q13-bulletabove]
+    }                                                      // plain at this level: skipped [q13-gap]
+    return 1;
+  },
+  // following numbered items at a level, renumbered by the same scan
+  // [q13-follow/offmid/stopb/stopdeep]
+  ltFollow(L, from, ind, qt) {
+    for (let l = from; l < L.length; l++) {
+      if (!String(L[l]).trim()) continue;
+      const p = Ed.ltParse(L[l]);
+      if (p.ind.length > ind.length) continue;
+      if (p.ind.length < ind.length || p.qt !== qt) return;
+      if (p.kind === "numbered") {
+        const n = Ed.ltStart(L, l, ind, qt), s0 = p.box;
+        const old = L[l].slice(s0, s0 + p.mk), mk = n + old.slice(String(p.num).length);
+        L[l] = L[l].slice(0, s0) + mk + L[l].slice(s0 + p.mk);
+      } else if (p.kind) return;
+    }
+  },
+  listToggle(lines, s, kind) {
+    const L = lines.slice(), a = { l: s.a.l, c: s.a.c }, b = { l: s.b.l, c: s.b.c };
+    const first = a.l, last = Math.min(b.l, L.length - 1);
+    const P = [];
+    for (let l = first; l <= last; l++) P[l] = String(L[l]).trim() ? Ed.ltParse(L[l]) : null;
+    const live = P.filter(Boolean);
+    if (!live.length) return null;                        // all blank: nothing to do (UNMEASURED)
+    const off = live.every(p => p.kind === kind);         // [Q4 Q5 q07-offb]
+    const shift = { };                                     // l -> [s0, oldLen, newLen]
+    for (let l = first; l <= last; l++) {
+      const p = P[l];
+      if (!p) continue;                                   // blank: left alone [Q7]
+      let mk = "";
+      if (!off) mk = kind === "bullet" ? "- " : Ed.ltStart(L, l, p.ind, p.qt) + ". ";
+      L[l] = L[l].slice(0, p.box) + mk + L[l].slice(p.box + p.mk);
+      shift[l] = [p.box, p.mk, mk.length];
+    }
+    // the numbered runs after the selection, one per level it touched (R2 scopes
+    // this to the NUMBERED command; bullet -> following run is UNMEASURED)
+    const lv = new Set();
+    if (kind === "numbered") for (let l = first; l <= last; l++) if (P[l]) lv.add(P[l].ind + "\u0000" + P[l].qt);
+    for (const k of lv) { const [ind, qt] = k.split("\u0000"); Ed.ltFollow(L, last + 1, ind, qt); }
+    // positions through the edit: insertion AT a position pushes it right [Q12]
+    const map = p => {
+      const t = shift[p.l];
+      if (!t) return p;
+      const [s0, o, n] = t;
+      if (p.c < s0) return p;
+      return { l: p.l, c: p.c >= s0 + o ? p.c - o + n : s0 + n };   // inside the old marker -> after the new one
+    };
+    return { lines: L, a: map(a), b: map(b) };
+  },
+  toggleList(g, s, kind) {
+    const r = Ed.listToggle(Ed.lines(g), s, kind);
+    if (!r) return;
+    Ed.snap(g, "list");                                   // ONE undo step [q12-undob/undon/undooff]
+    const L = Ed.lines(g);
+    L.splice(0, L.length, ...r.lines);
+    Ed.after(g, r.a.l, r.a.c);
+    if (r.a.l !== r.b.l || r.a.c !== r.b.c) Ed.extendTo(g, r.b.l, r.b.c);
+  },
   undo(g) {
     const v = g.view;
     if (!v.undo || !v.undo.length) return;
