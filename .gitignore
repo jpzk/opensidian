@@ -134,3 +134,6 @@ dist/
 !docs/recon-bmactive/shots/*.png
 # roundtrip-bmactive (B5/A6): stock opening a rustidian-written vault — the shot IS the evidence
 !docs/roundtrip-bmactive/*.png
+# recon-wsrestore: criterion A1 requires every cited stock shot (Q1-Q6) to be
+# committed and NOT ignored — the shots are the evidence a reviewer opens.
+!docs/recon-wsrestore/**/*.png
