@@ -1894,6 +1894,17 @@ document.addEventListener("selectionchange", () => {
   rvSelT = setTimeout(() => { rvSelT = null; updateTitle(); }, 30);
 });
 
+// G2 (goal gatetrain): the registered census tokens from ui/census.js, in
+// registration order. typeof guard: a page that failed to load census.js must
+// still publish every inline token. A throwing token is named, not swallowed.
+function censusToks() {
+  if (typeof CENSUS === "undefined") return "";
+  let s = "";
+  for (let i = 0; i < CENSUS.length; i++) {
+    try { s += CENSUS[i]() || ""; } catch (_) { s += " [cerr:" + i + "]"; }
+  }
+  return s;
+}
 function updateTitle() {          // pane/focus census in the window title (headless probe)
   rTrack();                       // lgpanes: keep rLeaf current even with the right sidebar closed
   const ps = [...document.querySelectorAll("#main .pane")];
@@ -2346,6 +2357,7 @@ function updateTitle() {          // pane/focus census in the window title (head
        " [ovf:" + ov.dw + "," + ov.dh + "," + ov.n + "]" +
        (ov.bad.length ? " [ovfe:" + ov.bad.join("|").slice(0, 180) + "]" : "");
   t += wfTok();                    // R33: the window's own frame (controls, grips, maximised, keyboard focus)
+  t += censusToks();               // G2: registered tokens (ui/census.js) — new tokens go THERE, not on the lines above
   document.title = t;
   // publish to the native title: ONE call in flight, last-write-wins, 500ms
   // timeout guard — a hung/rejected setTitle IPC can neither reorder titles

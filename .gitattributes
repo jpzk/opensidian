@@ -1,0 +1,2 @@
+# census token registry: two branches appending a line each merge to both lines (G2)
+ui/census.js merge=union
