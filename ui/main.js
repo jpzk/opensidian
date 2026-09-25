@@ -2892,6 +2892,7 @@ function updateModeBtn(g) {
 }
 
 function applyMode(g) {  // exactly ONE of lp / preview fills the pane
+  if (typeof Ed !== "undefined" && Ed.rvEnd) Ed.rvEnd(g);   // rvtask R3: a mode change closes the reading-view undo step
   const m = g.active >= 0 ? g.tabs[g.active].mode : "livepreview";
   g.editor.style.display = "none";          // R12: the model textarea never shows; source = lp + reveal
   g.lp.style.display = isLp(m) ? "" : "none";

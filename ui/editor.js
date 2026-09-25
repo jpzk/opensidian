@@ -1015,7 +1015,7 @@ const Ed = {
     const it = Ed.info(line);
     Ed.snap(g, "task");
     let dc = 0;
-    if (it.task) L[l] = line.replace(/\[( |[xX])\] /, (m, ch) => (ch === " " ? "[x] " : "[ ] "));
+    if (it.task) L[l] = Ed.flipTask(line);
     else if (it.mk) { L[l] = it.pre + "[ ] " + line.slice(it.pre.length); dc = 4; }
     else { L[l] = it.ind + it.qt + "- [ ] " + line.slice(it.pre.length); dc = 6; }
     Ed.after(g, l, s.b.c >= it.pre.length ? s.b.c + dc : s.b.c);
@@ -1112,6 +1112,40 @@ const Ed = {
     Ed.after(g, r.a.l, r.a.c);
     if (r.a.l !== r.b.l || r.a.c !== r.b.c) Ed.extendTo(g, r.b.l, r.b.c);
   },
+  /* rvtask R3 — THE task-status byte op, shared by Ctrl+L (toggleCheck) and the
+     reading-view click. Stock 1.13.7 (docs/recon-rvtask Q1/Q2): the status char
+     of the item's "[?]" flips ' ' -> 'x' and ANYTHING else (x X / - > ?) -> ' '.
+     One byte, this line only; indent, quote prefix, list marker and the text are
+     returned untouched. null = not a task item (nothing to flip). */
+  flipTask(line) {
+    const m = /^([ \t]*(?:> ?)*(?:[-*+]|\d+[.)])[ \t]+\[)([^\]\n])\]/.exec(line || "");
+    if (!m) return null;
+    return m[1] + (m[2] === " " ? "x" : " ") + line.slice(m[1].length + 1);
+  },
+  /* rvtask R3: a reading-view checkbox click on SOURCE line l (the renderer's
+     data-line). Goes through the note's editor model like any edit: one undo
+     entry per reading-view SESSION (stock Q6: one Ctrl+Z undoes every toggle
+     made since entering reading view), the model -> bridge sync, and the normal
+     debounced save (scheduleSave; saveBuf owns the watcher-echo guard). The
+     session ends when the pane's mode is applied again (Ed.rvEnd from
+     applyMode) — so read -> edit -> read starts a new step. */
+  rvToggle(g, l) {
+    const L = Ed.lines(g), nl = Ed.flipTask(L[l]);
+    if (nl == null) return false;
+    const v = g.view, last = v.undo && v.undo[v.undo.length - 1];
+    if (v.rvSess && last && last.kind === "rvtask" && last.rvs === v.rvSess) v.redo = [];
+    else {
+      Ed.snap(g, "rvtask");
+      v.rvSess = v.rvSess || {};
+      v.undo[v.undo.length - 1].rvs = v.rvSess;
+    }
+    L[l] = nl;
+    Ed.sync(g);
+    Ed.render(g, null);                         // keep the hidden lp rows in step with the model
+    if (typeof scheduleSave === "function") scheduleSave(g);
+    return true;
+  },
+  rvEnd(g) { if (g && g.view) g.view.rvSess = null; },
   undo(g) {
     const v = g.view;
     if (!v.undo || !v.undo.length) return;
@@ -1433,6 +1467,17 @@ const Ed = {
       ["- a\n  cont", 1, 6, 0, "- a\n  cont\n- ", 2, 2],                                 // M24 continuation line
       ["- alpha", 0, 7, 1, "- alpha\n  ", 1, 2],                                         // M26 soft break
     ];
+    // rvtask R3: the shared status-byte op, stock Q1/Q2/Q3 byte for byte
+    const ft = [
+      ["- [ ] a", "- [x] a"], ["- [x] a", "- [ ] a"], ["- [X] a", "- [ ] a"],
+      ["- [/] a", "- [ ] a"], ["- [-] a", "- [ ] a"], ["- [>] a", "- [ ] a"], ["- [?] a", "- [ ] a"],
+      ["- [ ] inner [ ] and  two  ", "- [x] inner [ ] and  two  "],
+      ["    - [ ] n4", "    - [x] n4"], ["\t\t* [x] t", "\t\t* [ ] t"],
+      ["> - [ ] q", "> - [x] q"], ["> > + [ ] qq", "> > + [x] qq"],
+      ["1. [ ] one", "1. [x] one"], ["12) [x] t", "12) [ ] t"],
+      ["[ ] bare", null], ["- plain [ ] x", null], ["text", null], ["- [] e", null],
+    ];
+    for (const [src, want] of ft) if (Ed.flipTask(src) !== want) fail("flip:" + src);
     const oa = Ed.after, on = Ed.snap;
     let cr = null;
     Ed.after = (gg, l, c) => { cr = { l, c }; };
@@ -1632,4 +1677,30 @@ document.addEventListener("selectionchange", () => {
   if (Ed.cur && Ed.cur.g === g && Ed.cur.l === l && g.lpActive && g.lpActive.l0 === l) { Ed.census(); return; }
   Ed.cur = { g, l };
   Ed.mark(g, l);
+});
+
+/* rvtask R3/R4: reading-view task checkbox click. ONE delegated listener: the
+   renderer (src-tauri main.rs emit) gives each reading-view box data-line = its
+   0-based FILE line, so duplicate / nested / quoted / numbered items map
+   exactly (spec R2). The native toggle is cancelled — the MODEL decides the
+   state (Ed.rvToggle), then the pane re-renders from it at once, with the
+   scroll put back (R4, stock Q5 keeps it). Keyboard (stock Q9: Tab to the box,
+   Space) arrives here too: Space on a focused checkbox IS a click event. */
+document.addEventListener("click", e => {
+  const cb = e.target;
+  if (!cb || cb.tagName !== "INPUT" || cb.type !== "checkbox" || !cb.hasAttribute("data-line")) return;
+  const pv = cb.closest(".preview");
+  if (!pv) return;
+  e.preventDefault();
+  const pane = pv.closest(".pane"), g = pane ? pane._g : null;
+  if (!g || g.preview !== pv || !Ed.rvToggle(g, parseInt(cb.dataset.line, 10))) return;
+  const st = pv.scrollTop, had = document.activeElement === cb, idx = [...pv.querySelectorAll("input[type=checkbox][data-line]")].indexOf(cb);
+  if (typeof preview !== "function") return;
+  Promise.resolve(preview(g)).then(() => {
+    if (g.preview !== pv) return;
+    pv.scrollTop = st;
+    const back = pv.querySelectorAll("input[type=checkbox][data-line]")[idx];
+    if (back && had) back.focus({ preventScroll: true });
+    if (typeof updateTitle === "function") updateTitle();
+  });
 });
