@@ -724,6 +724,19 @@ fn write_atomic_ext(p: &Path, content: &str, tmp_ext: &str) -> Result<(), String
     r.map_err(|e| e.to_string())
 }
 
+/* W5 (req-wsrestore): the rename above is atomic, but on ext4/xfs it is not
+   DURABLE until the directory entry is on disk. A power cut after rename()
+   returns can come back with the name still on the OLD inode, or (the first
+   write into a fresh .obsidian/) with no file at all. fsync the parent
+   directory so the new layout survives the crash R28.3 is about. Only the
+   layout takes this second fsync: it runs on the async pool (W6), off every
+   note path, so notes keep write_atomic's single fsync and its latency. */
+fn write_atomic_durable(p: &Path, content: &str, tmp_ext: &str) -> Result<(), String> {
+    write_atomic_ext(p, content, tmp_ext)?;
+    let d = p.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    fs::File::open(d).and_then(|f| f.sync_all()).map_err(|e| e.to_string())
+}
+
 /// F4 dataloss: the error a create returns when the note is already there.
 /// The UI matches on it to OPEN the existing note instead of clobbering it.
 const EXISTS: &str = "exists";
@@ -1198,7 +1211,7 @@ fn write_workspace(
             if let Some(d) = p.parent() {
                 fs::create_dir_all(d).map_err(|e| e.to_string())?;
             }
-            write_atomic_ext(&p, &layout.to_string(), "json.tmp")
+            write_atomic_durable(&p, &layout.to_string(), "json.tmp")
         })(),
         serde_json::json!({ "bytes": layout.to_string().len() })
     )
@@ -4172,6 +4185,50 @@ mod tests {
         // a second write replaces rather than appends
         write_atomic_ext(&p, "{\"main\":{\"type\":\"split\"}}", "json.tmp").unwrap();
         assert_eq!(fs::read_to_string(&p).unwrap(), "{\"main\":{\"type\":\"split\"}}");
+    }
+
+    /// W5: a write that FAILS must leave the previous layout byte-identical.
+    /// The failure is forced at the temp: a directory squats on
+    /// workspace.json.tmp, so File::create fails before the target is touched.
+    /// A truncate-in-place writer (stock, F5) would already have emptied it.
+    #[test]
+    fn w5_a_failed_layout_write_leaves_the_old_file_intact() {
+        let root = tmp_vault("wsfail");
+        let p = workspace_path(&root);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        write_atomic_durable(&p, "{\"old\":1}", "json.tmp").unwrap();
+        let squat = p.with_extension("json.tmp");
+        fs::create_dir(&squat).unwrap();
+        assert!(write_atomic_durable(&p, "{\"new\":2}", "json.tmp").is_err());
+        assert_eq!(fs::read_to_string(&p).unwrap(), "{\"old\":1}");
+        // the cleanup must not have eaten the squatter either (remove_file on a dir fails)
+        assert!(squat.is_dir());
+    }
+
+    /// W5: a temp left behind by a crash between create and rename (kill -9 in
+    /// the window) must not block the next write: create truncates it, the
+    /// rename consumes it, and no stale half-layout survives.
+    #[test]
+    fn w5_a_stale_temp_from_a_crash_is_replaced_not_obeyed() {
+        let root = tmp_vault("wsstale");
+        let p = workspace_path(&root);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p.with_extension("json.tmp"), "{\"half\":").unwrap();
+        write_atomic_durable(&p, "{\"main\":{}}", "json.tmp").unwrap();
+        assert_eq!(fs::read_to_string(&p).unwrap(), "{\"main\":{}}");
+        assert!(!p.with_extension("json.tmp").exists());
+    }
+
+    /// W5: the first write into a vault with no .obsidian yet — the directory
+    /// fsync runs on the directory write_workspace just created.
+    #[test]
+    fn w5_first_layout_write_into_a_fresh_dir_is_durable_and_readable() {
+        let root = tmp_vault("wsfresh");
+        let p = workspace_path(&root);
+        assert!(!p.parent().unwrap().exists());
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        write_atomic_durable(&p, "{}", "json.tmp").unwrap();
+        assert_eq!(fs::read_to_string(&p).unwrap(), "{}");
     }
 
     fn edge_names(g: &Graph) -> Vec<(String, String)> {
