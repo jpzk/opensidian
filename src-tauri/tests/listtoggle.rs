@@ -9,7 +9,7 @@
 //! wrote. See tests/listtoggle.tsv for the row format.
 #![cfg(target_os = "linux")]
 
-use javascriptcore::{ContextExt, ValueExt};
+use javascriptcore::{ContextExt, ExceptionExt, ValueExt};
 use std::path::PathBuf;
 
 fn root() -> PathBuf { PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..") }
@@ -44,7 +44,14 @@ fn load(name: &str) -> Case {
             if let Some((tag, _)) = rest.split_once(':') {
                 let mut j = i + 1;
                 while j < lines.len() && lines[j] != "--- end ---" { j += 1; }
-                blocks.push((tag.to_string(), uncat(&lines[i + 1..j])));
+                let body = &lines[i + 1..j];
+                // the clipboard dump is `xclip -o | cat -A; echo`: its LAST line has no
+                // "$" (a selection need not end in a newline) and the echo ends it
+                let text = if tag == "clip" {
+                    let (last, init) = body.split_last().expect("empty clip block");
+                    uncat(init) + last
+                } else { uncat(body) };
+                blocks.push((tag.to_string(), text));
                 i = j;
             }
         }
@@ -60,26 +67,32 @@ fn pos(s: &str) -> P {
     (l.parse().unwrap(), c.parse().unwrap())
 }
 
-/// Replays the recorded "k" keystrokes (CodeMirror semantics: goal column on
-/// vertical moves, shift extends the head) to cross-check the table's selection.
-fn replay(text: &str, steps: &str) -> (P, P) {
+/// Replays the recorded "k" keystrokes (shift extends the head) to cross-check
+/// the table's selection. A VERTICAL move from a column > 0 returns None: Live
+/// Preview keeps the goal column in PIXELS of a proportional font ("al|pha" +
+/// Down lands "g|amma", q12b-clip*), which a character replay cannot know — such
+/// rows are keys=no and their selection is pinned by a clipboard dump instead.
+fn replay(text: &str, steps: &str) -> Option<(P, P)> {
     let lines: Vec<&str> = text.split('\n').collect();
     let len = |l: usize| lines[l].chars().count();
-    let (mut a, mut h, mut goal): (P, P, usize) = ((0, 0), (0, 0), 0);
+    // (pos, column-unknown) for anchor and head
+    let (mut a, mut h, mut goal, mut ua, mut uh): (P, P, usize, bool, bool) = ((0, 0), (0, 0), 0, false, false);
     let k = steps.split('|').find(|s| s.starts_with("k ") && !s.contains("ctrl+e"))
         .expect("no keystroke step");
     for key in k[2..].split_whitespace() {
         let shift = key.starts_with("shift+");
         match key.trim_start_matches("shift+") {
-            "ctrl+Home" => { h = (0, 0); goal = 0; }
-            "Down" => { if h.0 + 1 < lines.len() { h = (h.0 + 1, goal.min(len(h.0 + 1))); } }
+            "ctrl+Home" => { h = (0, 0); goal = 0; uh = false; }
+            "Down" => { if h.0 + 1 < lines.len() { h = (h.0 + 1, goal.min(len(h.0 + 1))); uh = uh || goal > 0; } }
             "Right" => { h = if h.1 < len(h.0) { (h.0, h.1 + 1) } else { (h.0 + 1, 0) }; goal = h.1; }
-            "End" => { h = (h.0, len(h.0)); goal = h.1; }
+            "Left" => { h = if h.1 > 0 { (h.0, h.1 - 1) } else { (h.0 - 1, len(h.0 - 1)) }; goal = h.1; }
+            "End" => { h = (h.0, len(h.0)); goal = h.1; uh = false; }
+            "Home" => { h = (h.0, 0); goal = 0; uh = false; }
             other => panic!("replay: key {other:?} not modelled"),
         }
-        if !shift { a = h; }
+        if !shift { a = h; ua = uh; }
     }
-    (a, h)
+    if ua || uh { None } else { Some((a, h)) }
 }
 
 fn js_str(s: &str) -> String { serde_json::to_string(s).unwrap() }
@@ -111,7 +124,7 @@ fn listtoggle_table() {
         let (a, b) = (pos(sa), pos(sb));
         if keys == "yes" {
             let r = replay(&c.before, &c.steps);
-            assert_eq!(r, (a, b), "{name}: table selection {sel} != replayed keys {:?}", c.steps);
+            assert_eq!(r, Some((a, b)), "{name}: table selection {sel} != replayed keys {:?}", c.steps);
         }
         let js = format!(
             "(function(){{ var r = Ed.listToggle({t}.split('\\n'), {{a:{{l:{},c:{}}}, b:{{l:{},c:{}}}}}, {k});\
@@ -119,11 +132,13 @@ fn listtoggle_table() {
              var L = r.lines.slice(), s = r.a, e = r.b;\
              var z = L[s.l].slice(0, s.c) + 'Z' + L[e.l].slice(e.c);\
              L.splice(s.l, e.l - s.l + 1, z);\
-             return JSON.stringify([r.lines.join('\\n'), L.join('\\n')]); }})()",
+             var C = r.lines, t = s.l === e.l ? C[s.l].slice(s.c, e.c)\
+               : [C[s.l].slice(s.c)].concat(C.slice(s.l + 1, e.l), [C[e.l].slice(0, e.c)]).join('\\n');\
+             return JSON.stringify([r.lines.join('\\n'), L.join('\\n'), t]); }})()",
             a.0, a.1, b.0, b.1, t = js_str(&c.before), k = js_str(kind));
         let out = ctx.evaluate(&js).map(|v| v.to_str().to_string()).unwrap_or_default();
         if let Some(e) = ctx.exception() { fails.push(format!("{name}: JS threw {}", e.to_str())); ctx.clear_exception(); continue; }
-        let (after, typed): (String, String) = match serde_json::from_str::<(String, String)>(&out) {
+        let (after, typed, clip): (String, String, String) = match serde_json::from_str::<(String, String, String)>(&out) {
             Ok(v) => v, Err(_) => { fails.push(format!("{name}: op returned {out:?}")); continue; }
         };
         for (tag, want) in &c.blocks {
@@ -131,6 +146,7 @@ fn listtoggle_table() {
                 "before" => continue,
                 "after" => &after,
                 "sel" | "caret" => &typed,
+                "clip" => &clip,        // stock's Ctrl+C right after the command = the selection itself
                 "undo" => &c.before,   // R3's Ctrl+Z is the gate's job; here: the dump is the fixture
                 other => panic!("{name}: unknown dump {other:?}"),
             };

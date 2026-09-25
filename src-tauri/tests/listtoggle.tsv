@@ -9,7 +9,8 @@
 # selection = anchor-head as line.col (model coordinates). It is cross-checked
 # against a replay of the case's recorded keystrokes; "keys=no" rows are the
 # ones where the keys do not determine the model selection (Live Preview's
-# Ctrl+Home lands BELOW the Properties widget, README q09-fmb).
+# Ctrl+Home lands BELOW the Properties widget, README q09-fmb; and a vertical
+# move from column > 0, whose goal column is in PIXELS, README Q12 q12b-cliprep).
 # Measured cases with NO row: q01-ids (command ids, no edit), q14-reading
 # (reading view: command absent, no write — asserted by the gate/registry),
 # q16-* (the checkbox command, not this op; filed as a todo, R6).
@@ -50,10 +51,27 @@ q11-caretn	numbered	1.2-1.2	yes
 q11-caretoff	bullet	1.4-1.4	yes
 q12-selb	bullet	0.0-2.5	yes
 q12-seloff	numbered	0.0-2.8	yes
-q12-selpart	numbered	0.2-2.2	yes
+q12-selpart	numbered	0.2-2.1	no
 q12-undob	bullet	0.0-2.5	yes
 q12-undon	numbered	0.0-2.5	yes
 q12-undooff	bullet	0.0-2.7	yes
+q12b-rep	numbered	0.2-2.1	no
+q12b-bull	bullet	0.2-2.1	no
+q12b-two	numbered	0.2-1.2	no
+q12b-col4	numbered	0.4-2.3	no
+q12b-one	numbered	0.1-0.3	yes
+q12b-offpart	numbered	0.5-2.4	no
+q12b-cliprep	numbered	0.2-2.1	no
+q12b-clipselb	bullet	0.0-2.5	yes
+q12b-clipone	numbered	0.1-0.3	yes
+q12b-clipcol0	bullet	0.0-2.0	yes
+q12b-clipcol1	numbered	0.0-2.1	yes
+q12b-cliplast	numbered	0.0-2.4	yes
+q12b-clipind	bullet	0.0-2.3	yes
+q12b-clipmideol	bullet	0.2-2.5	yes
+q12b-clipmid1	numbered	0.2-2.1	yes
+q12b-clipmid0	numbered	0.2-2.0	yes
+q12b-caret0	bullet	1.0-1.0	yes
 q13-bulletabove	numbered	1.0-2.5	yes
 q13-cont	numbered	1.0-2.5	yes
 q13-follow	numbered	1.0-1.0	yes

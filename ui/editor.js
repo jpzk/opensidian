@@ -1088,15 +1088,20 @@ const Ed = {
     const lv = new Set();
     if (kind === "numbered") for (let l = first; l <= last; l++) if (P[l]) lv.add(P[l].ind + "\u0000" + P[l].qt);
     for (const k of lv) { const [ind, qt] = k.split("\u0000"); Ed.ltFollow(L, last + 1, ind, qt); }
-    // positions through the edit: insertion AT a position pushes it right [Q12]
-    const map = p => {
+    // positions through the edit (CodeMirror range mapping, measured): the
+    // caret and a range's START move right past a marker inserted AT them
+    // [q11-*, q12-selb, q12b-caret0]; a non-empty range's END stays before it,
+    // so the range never grows over the next line's marker [q12b-clipcol0,
+    // q12b-clipmid0]. Inside a removed/replaced marker -> the edge of the new one.
+    const empty = a.l === b.l && a.c === b.c;
+    const map = (p, end) => {
       const t = shift[p.l];
       if (!t) return p;
       const [s0, o, n] = t;
-      if (p.c < s0) return p;
-      return { l: p.l, c: p.c >= s0 + o ? p.c - o + n : s0 + n };   // inside the old marker -> after the new one
+      if (p.c < s0 || (end && p.c === s0 && o === 0)) return p;
+      return { l: p.l, c: p.c >= s0 + o ? p.c - o + n : end ? s0 : s0 + n };
     };
-    return { lines: L, a: map(a), b: map(b) };
+    return { lines: L, a: map(a, false), b: map(b, !empty) };
   },
   toggleList(g, s, kind) {
     const r = Ed.listToggle(Ed.lines(g), s, kind);
