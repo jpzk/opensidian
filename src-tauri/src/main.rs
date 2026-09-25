@@ -1492,7 +1492,7 @@ impl<'a> TaskScan<'a> {
             evs[i] = Event::Html(format!("<li class=\"{cls}\" data-task=\"{ds}\">").into());
         }
         let c = if checked { " checked=\"\"" } else { "" };
-        evs.push(Event::Html(format!("<input disabled=\"\" type=\"checkbox\"{c} data-line=\"{line}\"/>").into()));
+        evs.push(Event::Html(format!("<input type=\"checkbox\"{c} data-line=\"{line}\"/>").into()));
     }
     /// pulldown's own TaskListMarker (' ' / x / X): read the real status byte
     fn marker(&mut self, st: char, off: usize, evs: &mut Vec<Event>) {
@@ -4280,18 +4280,20 @@ mod tests {
             assert!(s.contains("] "), "line {l} = {s:?}");
         }
         // duplicates: two distinct boxes, two distinct lines, same text
-        assert!(h.contains(r#"<input disabled="" type="checkbox" data-line="2"/>same"#), "{h}");
-        assert!(h.contains(r#"<input disabled="" type="checkbox" data-line="3"/>same"#), "{h}");
+        assert!(h.contains(r#"<input type="checkbox" data-line="2"/>same"#), "{h}");
+        assert!(h.contains(r#"<input type="checkbox" data-line="3"/>same"#), "{h}");
         // status byte from the SOURCE: x vs X distinguishable, both checked
-        assert!(h.contains(r#"<li class="task-list-item is-checked" data-task="x"><input disabled="" type="checkbox" checked="" data-line="4"/>done"#), "{h}");
-        assert!(h.contains(r#"data-task="X"><input disabled="" type="checkbox" checked="" data-line="5"/>caps"#), "{h}");
-        assert!(h.contains(r#"<li class="task-list-item" data-task=""><input disabled="" type="checkbox" data-line="6"/>nested4"#), "{h}");
+        assert!(h.contains(r#"<li class="task-list-item is-checked" data-task="x"><input type="checkbox" checked="" data-line="4"/>done"#), "{h}");
+        assert!(h.contains(r#"data-task="X"><input type="checkbox" checked="" data-line="5"/>caps"#), "{h}");
+        assert!(h.contains(r#"<li class="task-list-item" data-task=""><input type="checkbox" data-line="6"/>nested4"#), "{h}");
         // numbered
         assert!(h.contains(r#"<ol>"#) && h.contains(r#"data-line="14"/>one"#) && h.contains(r#"checked="" data-line="15"/>two"#), "{h}");
         // custom statuses: checked, marker stripped from the text
-        assert!(h.contains(r#"data-task="/"><input disabled="" type="checkbox" checked="" data-line="17"/>half"#), "{h}");
-        assert!(h.contains(r#"data-task="&gt;"><input disabled="" type="checkbox" checked="" data-line="19"/>fwd"#), "{h}");
+        assert!(h.contains(r#"data-task="/"><input type="checkbox" checked="" data-line="17"/>half"#), "{h}");
+        assert!(h.contains(r#"data-task="&gt;"><input type="checkbox" checked="" data-line="19"/>fwd"#), "{h}");
         assert!(!h.contains("[/]") && !h.contains("[-]") && !h.contains("[?]"), "{h}");
+        // R1: reading-view boxes are ENABLED (clickable); every box, none disabled
+        assert!(!h.contains("disabled"), "{h}");
         // not tasks: a wikilink or a word in brackets without a following space
         let n = render_with("- [[Ideas]] x\n- [ab] y\n- [a]b\n", &["Ideas".to_string()], &[], true);
         assert!(!n.contains("checkbox"), "{n}");

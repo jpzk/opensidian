@@ -1155,10 +1155,10 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
   border: 1px solid var(--checkbox-border-color); flex-shrink: 0; padding: 0; margin: 0; width: var(--checkbox-size); height: var(--checkbox-size);
   position: relative; top: 0.2em; margin-inline-end: 0.6em; cursor: pointer; vertical-align: baseline }
 .preview ul > li > input[type=checkbox] { margin-inline-start: calc(var(--checkbox-size) * -1.5 - 1px) }   /* box at +3 (h1-ink relative) */
-/* rvcursor: the READING-VIEW task box is INERT — pulldown-cmark emits it with
-   `disabled` and no JS wires a toggle here (docs/recon-rvcursor/CLICKABLES.md
-   §2), so it takes the ordinary arrow; a hand would promise a toggle that does
-   not exist. Declared, not inherited, because a UA sheet may set its own
+/* rvcursor + rvtask R1: the READING-VIEW task box is now ENABLED and toggles
+   the source line (rvtask R3), but it keeps the ordinary ARROW — stock 1.13.7
+   measures cursor:default on it, hovered too (docs/recon-rvtask README Q10,
+   spec K1). Declared, not inherited, because a UA sheet may set its own
    `cursor` on a form control; the census phase reads the live value either way.
    LP's box is NOT named here — live preview is editable and unchanged. */
 .preview input[type=checkbox] { cursor: default }
