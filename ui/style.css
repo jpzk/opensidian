@@ -307,7 +307,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
           padding: 0 4px; border-radius: 4px }
 #sclear:hover { color: var(--text-chrome); background: var(--bg-surface) }
 #sresults { flex: 1; overflow-y: auto; font-size: 12px }
-.sgroup { padding: 5px 8px 2px; color: var(--text-chrome); font-weight: 600;
+.sgroup { padding: 5px 8px 2px; color: var(--text-chrome); font-weight: 600; font-size: var(--sidebar-font-size);   /* sidefont: stock file rows = Q1; .shit snippets keep 12px */
           cursor: pointer; white-space: nowrap; overflow: hidden;
           text-overflow: ellipsis }
 .sgroup:hover { background: var(--bg-surface) }
@@ -326,7 +326,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 #bmlist { flex: 1; overflow-y: auto }
 .bmrow { padding: 5px 12px; cursor: pointer; white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; color: var(--text-chrome);
-  display: flex; align-items: center; gap: 6px }
+  display: flex; align-items: center; gap: 6px; font-size: var(--sidebar-font-size) }
 .bmrow .bmstar { color: var(--accent-yellow); display: flex }
 .bmrow .bmstar svg { width: 13px; height: 13px }
 /* bmfolder: a GROUP row. The chevron sits in the same icon slot as a file row's
@@ -355,7 +355,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 /* ux-2 obsidian parity. HEIGHT MUST STAY 31px — smoke clicks rows at pitch 31 */
 .trow { height: 31px; display: flex; align-items: center; cursor: pointer;
         margin: 0 8px; padding: 0 4px; border-radius: 5px;
-        font-size: 13px; color: var(--text-chrome) }
+        font-size: var(--sidebar-font-size); color: var(--text-chrome) }
 .trow:hover { background: var(--bg-surface) }
 .trow.active { background: var(--border) }
 .tkids.collapsed { display: none }   /* R20: collapsed folder = its .tkids box hidden, rows stay built */
@@ -390,7 +390,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 #rpane-graph[hidden] { display: none }
 .rhead { padding: 6px 10px 4px; font-size: 12px; font-weight: 600; color: var(--text-chrome) }
 .rhead .scount { color: var(--text-chrome-dim); font-weight: 400; margin-left: 4px }
-.rlist { flex: 1; overflow-y: auto; font-size: 12px }
+.rlist { flex: 1; overflow-y: auto; font-size: var(--sidebar-font-size) }   /* sidefont: stock backlinks/outgoing/outline rows = Q1 (docs/recon-sidefont Q3) */
 .rempty { padding: 8px 10px; color: var(--text-chrome-dim) }
 .blnote { padding: 4px 8px; color: var(--text-chrome); cursor: pointer; display: flex;
           align-items: center; gap: 4px; white-space: nowrap; overflow: hidden }
@@ -400,7 +400,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .blnote.open .tc svg { transform: rotate(90deg) }
 .blnote .bln { flex: 1; overflow: hidden; text-overflow: ellipsis }
 .blnote .scount { color: var(--text-chrome-dim) }
-.blline { padding: 2px 8px 2px 24px; color: var(--text-chrome-muted); cursor: pointer;
+.blline { padding: 2px 8px 2px 24px; color: var(--text-chrome-muted); cursor: pointer; font-size: 12px;   /* sidefont: context SNIPPET, stock 12px < Q1 (Q3) */
           white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
 .blline:hover { background: var(--bg-surface) }
 .blline mark { background: none; color: var(--accent-yellow) }
@@ -1001,6 +1001,13 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
      have is guaranteed-invalid, not a fallback. Keep this block colour-free. */
   /* R15.14 dark tokens (content area only — app chrome keeps its own token layer): --text-normal / --text-muted / --text-faint / --background-primary(-alt) / --interactive-accent all live in the ONE token block at the top of this file */
   --radius-s: 4px; --size-4-6: 24px; --size-4-8: 32px; --file-line-width: calc(var(--space-unit) * 180); --file-margins: var(--size-4-8);
+  /* sidefont: ONE size for every sidebar list row — explorer .trow, bookmarks
+     .bmrow, the right-strip .rlist rows, search .sgroup file rows. 13px is
+     stock 1.13.7's measured value (docs/recon-sidefont/README.md Q1/Q3/Q5), and
+     stock's text-font slider never moves it (Q4), so it is a standalone UI
+     size, NOT derived from --font-text-size. Snippet lines (.shit, .blline)
+     are 12px in stock and keep their own size. Published as [sfont:t<>b<>r<>]. */
+  --sidebar-font-size: 13px;
 }
 @supports (font-variation-settings: normal) {   /* stock: graded heading weights on variable fonts */
   :root { --h2-weight: 680; --h3-weight: 660; --h4-weight: 640; --h5-weight: 620; --h6-weight: 600 }

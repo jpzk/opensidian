@@ -1014,6 +1014,18 @@ function renderBm() {
   if (bmRenaming !== null) { const i = $("bmren"); if (i) { i.focus(); i.select(); } }
   updateTitle();
 }
+/* sidefont: [sfont:t<px>b<px>r<px>] — the COMPUTED font-size of the first
+   explorer .trow, bookmark .bmrow and right-strip .rlist row in the DOM ("-"
+   when that kind has no row rendered). Read off getComputedStyle, not off the CSS
+   text, so a theme or a stray rule that overrides --sidebar-font-size shows up
+   here. The gate phase `sfont` asserts t==b==13 (stock Q1) and r==t. */
+function sfontTok() {
+  const fs = sel => {            // first row IN THE DOM: Files and Bookmarks share one slot, so
+    const el = document.querySelector(sel);   // one of the two is always [hidden] — computed style still resolves there
+    return el ? Math.round(parseFloat(getComputedStyle(el).fontSize)) : "-";
+  };
+  return " [sfont:t" + fs("#tree .trow") + "b" + fs("#bmlist .bmrow") + "r" + fs(".rlist > :not(.rempty)") + "]";
+}
 /* [bmg:<row centre x>,<first row centre y>,<row pitch>] — the PAINTED geometry of the
    bookmark rows, so a driver right-clicks a row it measured, not a y it guessed
    (the same idea as [mg:] for menus). Emitted only while the pane shows rows. */
@@ -2284,6 +2296,7 @@ function updateTitle() {          // pane/focus census in the window title (head
             (revealInfo ? " [bmrv:" + revealInfo + "]" : "") +      // bmmenu: "Reveal file in navigation" ran (bmReveal) — not merely "the Files pane is showing"
             (acItems.length ? " [ac:" + acKind + ":" + acItems.length + "]" : "") +
             " [pane:" + sidePane + "]" +
+            sfontTok() +                                        // sidefont: computed sidebar row font sizes (t=trow b=bmrow r=rlist)
             (sidePane === "search" && searchCount >= 0 ? " [sr:" + searchCount + "]" + srGeom() : "") +
             (sidePane === "bm" ? " [bm:" + bmRows() + "]" +          // RENDERED rows, not the model's length:
               " [bmn:" + bmNames() + "]" +                          // and their painted LABELS, in paint order
