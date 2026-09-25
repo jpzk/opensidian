@@ -126,3 +126,7 @@ dist/
 # shots, git check-ignore -v over shots prints nothing" and A4 puts the
 # ours-after shots in the same directory — line 2 (*.png) would drop both.
 !docs/recon-collapseall/shots/*.png
+# recon-overlaytheme: every Q1-Q6 answer and every R1 table row cites one of
+# these shots (the sentinel frames ARE the measurement); without this exception
+# `git add` silently drops them.
+!docs/recon-overlaytheme/**/*.png
