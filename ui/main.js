@@ -1980,6 +1980,7 @@ let wsWrites = 0;        // successful write_workspace calls THIS PROCESS (censu
 let wsRestored = 0;      // leaves rebuilt from the file on this launch
 let wsDropped = 0;       // R28.17: leaves whose file was gone, dropped instead of failing
 let wsT = null, wsLast = "", wsIds = {}, wsInFlight = null;
+let wsGrp = {};          // W3: link-group key ("L<link>" | "G<group id>") -> the 16-hex `group` value on file
 const wsId = () => {     // stock's ids are 16 hex chars; the VALUE is opaque, only stability matters
   let s = "";
   for (let i = 0; i < 16; i++) s += ((Math.random() * 16) | 0).toString(16);
@@ -2020,6 +2021,35 @@ function wsLeaf(t) {
   return { id: wsIdOf(t, "lid"), type: "leaf",
            state: { type: "markdown", state: st, icon: "lucide-file", title: titleOf(t.name) } };
 }
+/* W3 (F3, stock 1.13.7): LINKED LEAVES CARRY A SHARED `group` (16 hex, opaque)
+   on every member, and stock restores them linked. Two link models live here:
+   manual links (t.link, R13 — a tab-level set) and the lg auto-link (t.linkId =
+   a PANE id, R7.3 — the graph follows whatever tab is active in that pane). On
+   file both become one `group` value:
+     t.link L                        -> key "L<L>"
+     lg with linkId P                -> the active tab of pane P is its partner:
+                                        that partner's "L<L>" if it has one, else "G<P>"
+     the active note of a pane some lg follows -> "G<pane id>"
+   An lg whose partner is not a note (a graph is focused there) writes no group:
+   a group of one links nothing. The hex is minted once per key and remembered
+   (wsGrp), and wsLinksIn seeds it from the file, so a restore writes back the
+   bytes it read (stock: byte-identical across relaunch). */
+function wsLkPartner(pid) {
+  const h = groups().find(x => x.id === pid);
+  const pt = h && h.active >= 0 ? h.tabs[h.active] : null;
+  return pt && !pt.kind && wsPersistable(pt) ? pt : null;
+}
+function wsGroupKey(t, g) {
+  if (t.link != null) return "L" + t.link;
+  if (t.kind === "lg") {
+    if (t.linkId == null) return null;
+    const pt = wsLkPartner(t.linkId);
+    return pt ? (pt.link != null ? "L" + pt.link : "G" + t.linkId) : null;
+  }
+  if (t.kind || g.tabs[g.active] !== t) return null;
+  return groups().some(h => h.tabs.some(x => x.kind === "lg" && x.linkId === g.id && wsPersistable(x)))
+    ? "G" + g.id : null;
+}
 function wsNode(node) {
   if (node.children) {
     const kids = node.children.map(wsNode);
@@ -2032,7 +2062,11 @@ function wsNode(node) {
   }
   const tabs = node.tabs.filter(wsPersistable);
   const act = node.active >= 0 ? tabs.indexOf(node.tabs[node.active]) : -1;
-  const o = { id: wsIdOf(node, "wid"), type: "tabs", children: tabs.map(wsLeaf) };
+  const o = { id: wsIdOf(node, "wid"), type: "tabs", children: tabs.map(t => {
+    const l = wsLeaf(t), k = wsGroupKey(t, node);
+    if (k) l.group = wsIdOf(wsGrp, k);      // F3: stock writes `group` after `state`, on EVERY member
+    return l;
+  }) };
   if (act > 0) o.currentTab = act;          // R28.5: 0 is written by its ABSENCE
   return o;
 }
@@ -2136,7 +2170,7 @@ async function wsFlush(force) {
 async function wsLeave() {
   if (wsT) { clearTimeout(wsT); wsT = null; await wsFlush(true); }
   try { await wsInFlight; } catch (e) { /* its own catch already ate it */ }
-  wsInFlight = null; wsLast = ""; wsIds = {};
+  wsInFlight = null; wsLast = ""; wsIds = {}; wsGrp = {};
 }
 
 /* ---------- R28 GROUP 2: READ IT BACK ----------------------------------------
@@ -2199,6 +2233,35 @@ function wsTabIn(leaf, have) {
   wsRestored++;
   return t;
 }
+/* W3 inverse. Members of one `group`, after the degrade drops (a member whose
+   note is gone is simply absent; a group left with ONE member links nothing):
+     >= 2 non-graph members         -> manual link (t.link) between them
+     only local graphs (>= 2)       -> manual link between them (linkSync handles lg members)
+     every lg member                -> follows the pane holding the group's note
+                                       (the one ACTIVE in its pane, else the first),
+                                       never its own pane
+   and the key the next write computes for this set is mapped to the hex on file. */
+function wsLinksIn(gs) {
+  const by = new Map();
+  for (const g of gs) for (const t of g.tabs) {
+    if (typeof t.wsg !== "string") continue;
+    if (!by.has(t.wsg)) by.set(t.wsg, []);
+    by.get(t.wsg).push({ g, t });
+    delete t.wsg;
+  }
+  for (const [hex, ms] of by) {
+    if (ms.length < 2) continue;
+    const lgs = ms.filter(m => m.t.kind === "lg"), rest = ms.filter(m => m.t.kind !== "lg");
+    const notes = rest.filter(m => !m.t.kind);
+    const anchor = notes.find(m => m.g.tabs[m.g.active] === m.t) || notes[0] || null;
+    let key = null;
+    const man = rest.length >= 2 ? rest : (!rest.length && lgs.length >= 2 ? lgs : null);
+    if (man) { const L = ++linkSeq; for (const m of man) m.t.link = L; key = "L" + L; }
+    if (anchor) for (const m of lgs) if (m.g !== anchor.g) m.t.linkId = anchor.g.id;
+    if (!key && anchor && lgs.some(m => m.t.linkId === anchor.g.id)) key = "G" + anchor.g.id;
+    if (key) wsGrp[key] = hex;
+  }
+}
 function wsNodeIn(node, have) {
   if (!node || typeof node !== "object") return null;
   if (node.type === "split" && Array.isArray(node.children)) {
@@ -2228,6 +2291,7 @@ function wsNodeIn(node, have) {
     node.children.forEach((leaf, i) => {
       const t = wsTabIn(leaf, have);
       if (!t) return;
+      if (typeof leaf.group === "string" && leaf.group) t.wsg = leaf.group;   // W3: resolved by wsLinksIn once every group exists
       // the active index must survive the drops BEFORE it: if the tab that was
       // active is itself gone, focus falls back to the nearest survivor to its
       // left rather than to a tab the user was not looking at.
@@ -2267,6 +2331,7 @@ async function wsApply(doc, names) {
       if (i >= 0) { g.active = i; target = g; break; }
     }
   }
+  try { wsLinksIn(gs); } catch (e) { /* a link is not worth the layout */ }
   focusGroup(target);
   for (const g of gs) if (g !== target) await loadActive(g);
   await loadActive(target);                              // the focused pane renders LAST, so it owns the caret
