@@ -120,3 +120,5 @@ dist/
 # recon-setcenter: the stock 1.13.7 settings modal geometry (Q1-Q4) and ours-before/after —
 # the README cites these shots as the evidence; without this they would be silently ignored.
 !docs/recon-setcenter/**/*.png
+# recon-rvtask: stock 1.13.7 reading-view task clicks; the README cites every shot, and ours-before/ours-after (A5) live beside them
+!docs/recon-rvtask/**/*.png
