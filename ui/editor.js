@@ -1715,7 +1715,28 @@ document.addEventListener("click", e => {
    a phase proves a toggle did not move the view (R4, +-2px). Registered by ONE ui/census.js line. */
 Ed.rvTaskTok = () => {
   const g = typeof fg === "function" ? fg() : null;
-  if (!g || !g.preview || typeof isReading !== "function" || !isReading(g)) return "";
+  if (!g || typeof isReading !== "function") return "";
+  if (!isReading(g)) {
+    /* [rvtaskex:x,y] = a click point INSIDE the editor on the first visible
+       row that has painted text and no task box (a click there moves the caret,
+       never a byte). Ed.geom's [erx:]/[ery:] stop at 40 rows; the rvtask
+       fixture is 230 lines, so the Q6 undo step needs its own point. */
+    const rows = g.lp ? g.lp.children : null;
+    if (!rows) return "";
+    const lb = g.lp.getBoundingClientRect(), r = document.createRange();
+    for (let i = 0; i < rows.length && i < 400; i++) {
+      const q = rows[i].getBoundingClientRect();
+      if (q.bottom <= lb.top) continue;
+      if (q.top >= lb.bottom) break;
+      if (rows[i].querySelector("input")) continue;
+      r.selectNodeContents(rows[i]);
+      const rc = r.getClientRects();
+      if (!rc.length || !rc[0].width) continue;
+      return " [rvtaskex:" + Math.round(rc[0].left + 2) + "," + Math.round(q.top + q.height / 2) + "]";
+    }
+    return "";
+  }
+  if (!g.preview) return "";
   const bs = [...g.preview.querySelectorAll("input[type=checkbox][data-line]")];
   const pr = g.preview.getBoundingClientRect(), xy = [];
   for (const b of bs) {
