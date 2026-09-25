@@ -102,3 +102,8 @@ dist/
 # drop exactly the evidence for where stock keeps a collapsed group, what the
 # pane-header toggle does and what is at the bottom edge of the sidebar.
 !docs/recon-bmcollapse/shots/*.png
+
+# recon-sidefont: criterion 1 is "every Q1-Q5 answer cites a committed shot and
+# `git check-ignore -v` over shots/ prints nothing" — the font px, row pitch and
+# baselines are read off these pngs, and ours-before/after.png are criterion 6.
+!docs/recon-sidefont/shots/*.png
