@@ -2479,11 +2479,10 @@ function updateTitle() {          // pane/focus census in the window title (head
             (navInfo ? " [" + navInfo + "]" : "") +
             (revealInfo ? " [bmrv:" + revealInfo + "]" : "") +      // bmmenu: "Reveal file in navigation" ran (bmReveal) — not merely "the Files pane is showing"
             (acItems.length ? " [ac:" + acKind + ":" + acItems.length + "]" : "") +
-            " [pane:" + sidePane + "]" + foldTok() + caSync() +   // collapseall R4/R7: toggle faces + [fecab:]/[bmcab:]
+            " [pane:" + sidePane + "]" +
             sfontTok() +                                        // sidefont: computed sidebar row font sizes (t=trow b=bmrow r=rlist)
             (sidePane === "search" && searchCount >= 0 ? " [sr:" + searchCount + "]" + srGeom() : "") +
             (sidePane === "bm" ? " [bm:" + bmRows() + "]" +          // RENDERED rows, not the model's length:
-              " [bmvis:" + bmVisRows().length + "]" +               // collapseall: the rows NOT folded away (what is seen)
               " [bmn:" + bmNames() + "]" +                          // and their painted LABELS, in paint order
               bmGeom() +                                            // bmmenu: [bmg:x,y,pitch] of the painted rows — a driver right-clicks what it measured
               " [bmt:" + bmShape() + "]" +                          // R4X.5: the painted TREE SHAPE, parallel to [bmn:]

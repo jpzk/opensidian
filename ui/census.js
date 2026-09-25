@@ -16,3 +16,6 @@ var CENSUS = [];
 CENSUS.push(() => { const L = CMDS.filter(c => c.id === "editor:toggle-bullet-list" || c.id === "editor:toggle-numbered-list"); return " [lt:" + L.length + "/" + L.filter(c => !c.when || c.when()).length + "]"; });   // listtoggle: both list commands registered / offered by the palette (editing view only)
 CENSUS.push(() => sgeoTok());   // setcenter R3: settings modal geometry [sbox:] [snav:] [srow1:] [shkf:] [shkc:] [shk1/2:] (only while settings is open)
 CENSUS.push(() => Ed.rvTaskTok());   // rvtask R5: reading-view task boxes [rvtask:n/checked] + painted centres per source line [rvtaskxy:]
+CENSUS.push(() => foldTok());   // collapseall R7: [fold:fe<c>/<n>:<C|E>,bm<c>/<n>:<C|E>] fold state of both trees, read off the DOM
+CENSUS.push(() => caSync());   // collapseall R3/R4: [fecab:x0-x1,y][bmcab:x0-x1,y] painted rects of the two header toggles
+CENSUS.push(() => sidePane === "bm" ? " [bmvis:" + bmVisRows().length + "]" : "");   // collapseall: bookmark rows NOT folded away (what is seen)
