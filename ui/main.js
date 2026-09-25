@@ -20,9 +20,16 @@ const perf = {
 /* R18 action span: act(name, attrs, fn) runs fn (sync or async) inside an
    open span and ends it at PAINT (otel.paint: double rAF). Backend calls made
    by fn nest under it (inv attaches the ctx). Returns fn's result. */
+/* W6: actN counts user actions still between begin and their PAINT. The layout
+   writer (wsFlush) yields while it is non-zero, so a note_open span can never
+   contain the workspace serialisation or its IPC. The count is released only
+   after the paint promise settles, which is exactly where the span ends. */
+let actN = 0;
 async function act(name, attrs, fn) {
   const sp = otel.begin(name, attrs);
-  try { return await fn(sp); } finally { otel.paint(sp); }
+  actN++;
+  try { return await fn(sp); }
+  finally { Promise.resolve(otel.paint(sp)).finally(() => { actN--; }); }
 }
 const $ = id => document.getElementById(id);
 /* R20: an uncaught error / rejected action left the UI mid-mutation and the
@@ -2057,11 +2064,24 @@ function wsDoc() {
 const WS_MS = 400;
 function wsTouch() {
   if (!state || !vaultPath || wsT) return;
-  wsT = setTimeout(wsFlush, WS_MS);
+  wsT = setTimeout(() => wsFlush(), WS_MS);
 }
-async function wsFlush() {
+/* W6 — OFF THE note_open PATH. The throttle timer can fall due in the middle of
+   an action (between two awaits of openInTab, or between its last IPC and the
+   paint), and a flush there would put wsDoc + stringify + the write IPC inside
+   the user-visible span. So while an action is open the flush YIELDS and
+   re-arms in WS_YIELD_MS steps. The yield is CAPPED (WS_YIELD_MAX): a paint
+   that never comes (hidden window, throttled rAF) must not starve R28.3, so
+   after the cap the write goes anyway — worst case 400 + 2000ms unwritten,
+   still inside the 5s the wspace phase asserts. `force` (wsLeave) never yields:
+   a vault switch is a hard boundary. */
+const WS_YIELD_MS = 50, WS_YIELD_MAX = 40;
+let wsYields = 0;
+async function wsFlush(force) {
   wsT = null;
   if (!state || !vaultPath) return;
+  if (!force && actN > 0 && wsYields < WS_YIELD_MAX) { wsYields++; wsT = setTimeout(() => wsFlush(), WS_YIELD_MS); return; }
+  wsYields = 0;
   let doc, s;
   try { doc = wsDoc(); s = JSON.stringify(doc); } catch (e) { return; }   // never let a census update throw
   if (s === wsLast) return;
@@ -2095,7 +2115,7 @@ async function wsFlush() {
         A's would have its first write skipped and keep a stale file forever.
         wsIds are the ids the FILE named (R28.4) and belong to A's file alone. */
 async function wsLeave() {
-  if (wsT) { clearTimeout(wsT); wsT = null; await wsFlush(); }
+  if (wsT) { clearTimeout(wsT); wsT = null; await wsFlush(true); }
   try { await wsInFlight; } catch (e) { /* its own catch already ate it */ }
   wsInFlight = null; wsLast = ""; wsIds = {};
 }

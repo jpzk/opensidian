@@ -1150,7 +1150,14 @@ fn read_workspace(v: State<Vault>) -> Option<serde_json::Value> {
 /// There is deliberately no exit handler anywhere in this feature: a handler
 /// that runs on a clean quit is exactly the mechanism a `kill -9`, an OOM kill
 /// or a power cut skips.
-#[tauri::command]
+///
+/// W6: `(async)` IS THE FIX, not decoration. A plain sync command runs on the
+/// MAIN thread, the same thread every other sync command (read_note included)
+/// is dispatched on, so a layout write with its fsync queued ahead of a
+/// read_note stalled note_open by the fsync. `(async)` moves it to the async
+/// runtime's worker pool: the durable write keeps its fsync (W5) and stops
+/// being able to delay a note.
+#[tauri::command(async)]
 fn write_workspace(
     v: State<Vault>,
     vault: String,
