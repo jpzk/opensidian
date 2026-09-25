@@ -141,7 +141,8 @@ async function linkSync(src, name) { // R13.3: a member opening a note reaches e
     if (act) await flushSave(h);
     histPush(h, t, name);           // editors navigate in place, own mode kept
     t.name = name;
-    if (act) await loadActive(h); else renderTabs(h);
+    if (act) await loadActive(h);   // loadActive -> lgFollow -> rgFollow refreshes the panes
+    else { renderTabs(h); if (rLeaf && rLeaf.t === t) rgFollow(); }   // lgpanes: an unfocused rLeaf moved
   }
   updateTitle();
 }
@@ -161,11 +162,30 @@ function cmdToggleSide() {
 
 /* R20 (#4): the right sidebar holds the list panes only (Backlinks | Outgoing
    links | Tags | Outline), like stock; the local graph is a main-area tab view
-   (palette 'Open local graph', Ctrl+Shift+G, ribbon). rNote() = the focused
-   group's active NOTE (graph tabs -> null: the panes keep their last note). */
-function rNote() {
+   (palette 'Open local graph', Ctrl+Shift+G, ribbon).
+   lgpanes (recon docs/recon-lgpanes, stock 1.13.7): the panes render the
+   note of the most recently focused NOTE LEAF (rLeaf, a tab object, so it
+   follows that leaf when it navigates) — not the graph's t.center:
+   - a note tab focused          -> that note (and it becomes rLeaf);
+   - a LOCAL graph tab focused   -> rLeaf's current note, null if none yet
+     (shots 04, 17: stock keeps the last note; a node click navigates the
+     linked leaf, so the panes then show the clicked note, shot 08);
+   - GLOBAL graph / other views  -> null, the panes empty (shot 16, Q4).
+   rTrack() runs from updateTitle too, so rLeaf is current while the right
+   sidebar is closed. Census [rpnote:<note>|-] = the note last rendered. */
+let rLeaf = null, rpNote = "-";
+function rTrack() {
+  if (!state) return null;
   const g = fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
-  return t && !t.kind ? t.name : null;
+  if (t && !t.kind) rLeaf = { g, t };
+  if (rLeaf && !(groups().includes(rLeaf.g) && rLeaf.g.tabs.includes(rLeaf.t))) rLeaf = null;  // leaf closed
+  return t;
+}
+function rNote() {
+  const t = rTrack();
+  if (t && !t.kind) return t.name;
+  if (t && t.kind === "lg" && rLeaf) return rLeaf.t.name;
+  return null;
 }
 async function rgFollow() {                // active note changed -> panes follow
   if (!rightOpen) return;
@@ -257,6 +277,7 @@ const CHEV = '<svg viewBox="0 0 10 10" fill="currentColor"><path d="M3 1l4 4-4 4
 async function rPanesRefresh() {
   if (!rightOpen) return;
   const n = rNote();
+  rpNote = n || "-";                       // census [rpnote:] — the note the panes render
   if (rTab === "bl") await rBacklinks(n);
   else if (rTab === "out") await rOutgoing(n);
   else if (rTab === "toc") await rOutline(n);
@@ -1874,6 +1895,7 @@ document.addEventListener("selectionchange", () => {
 });
 
 function updateTitle() {          // pane/focus census in the window title (headless probe)
+  rTrack();                       // lgpanes: keep rLeaf current even with the right sidebar closed
   const ps = [...document.querySelectorAll("#main .pane")];
   const nf = document.querySelectorAll("#main .pane.focused").length;
   const fx = (state.root.fractions || []).map(f => f.toFixed(2)).join(",");
@@ -2285,6 +2307,7 @@ function updateTitle() {          // pane/focus census in the window title (head
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) +
             (rightOpen ? ":" + rTab : "") + "]" +
             (rightOpen && rpInfo ? " [rp:" + rpInfo + "]" : "") +
+            (rightOpen ? " [rpnote:" + rpNote + "]" : "") +      // lgpanes: the note the right panes render (- = none)
             " [rpn:" + rbN + "]" +                              // F1: backlink repaints ENTERED, so a skipped one is observable
             (rtInfo ? " [" + rtInfo + "]" : "") +
             (rightOpen ? " [stx:" + stabCentres() + "]" : "") +   // R33.13: the strip MOVED these — smoke reads them, never guesses
