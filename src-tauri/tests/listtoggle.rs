@@ -49,7 +49,8 @@ fn load(name: &str) -> Case {
                 // "$" (a selection need not end in a newline) and the echo ends it
                 let text = if tag == "clip" {
                     let (last, init) = body.split_last().expect("empty clip block");
-                    uncat(init) + last
+                    let last = uncat(&[&format!("{last}$")]);
+                    uncat(init) + last.strip_suffix('\n').unwrap()
                 } else { uncat(body) };
                 blocks.push((tag.to_string(), text));
                 i = j;
