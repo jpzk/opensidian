@@ -1445,6 +1445,88 @@ fn is_remote_img(url: &str) -> bool {
     matches!(url_scheme(url).as_deref(), Some("http" | "https"))
 }
 
+/// rvtask R2 (notes/req-rvtask.md §4): reading-view task boxes.
+///
+/// Each box carries `data-line` = the 0-based FILE line of its "[" — not a
+/// block index, not stock's section-relative number (§3 Q4) — so the click path
+/// can patch exactly that line: a duplicate task maps by position, a nested /
+/// quoted / callout / numbered one by its own line (Q3). The status byte is read
+/// from the SOURCE, so "[X]" stays distinguishable from "[x]" (data-task), and
+/// a custom status ("[/]" "[-]" "[>]" "[?]" …) is a CHECKED task (Q2), which
+/// pulldown-cmark does not know: it arrives as the item's leading text.
+/// Off (reading=false) the renderer is byte-identical to before: live preview
+/// renders per block, where a line number would be block-relative and wrong.
+struct TaskScan<'a> {
+    src: &'a str,
+    on: bool,
+    nl: Vec<usize>,         // byte offsets of every '\n'
+    item: Option<usize>,    // evs index of the Start(Item) whose first content we have not seen yet
+}
+
+impl<'a> TaskScan<'a> {
+    fn new(src: &'a str, on: bool) -> Self {
+        let nl = if on { src.bytes().enumerate().filter(|b| b.1 == b'\n').map(|b| b.0).collect() } else { Vec::new() };
+        TaskScan { src, on, nl, item: None }
+    }
+    /// 0-based line of byte offset `off`
+    fn line(&self, off: usize) -> usize {
+        self.nl.partition_point(|&n| n < off)
+    }
+    fn item_at(&mut self, idx: usize) {
+        self.item = Some(idx);
+    }
+    /// any event but a paragraph opening (loose item) or the marker itself ends
+    /// the window in which a task marker may appear
+    fn step(&mut self, ev: &Event) {
+        if !matches!(ev, Event::Start(Tag::Paragraph) | Event::TaskListMarker(_)) {
+            self.item = None;
+        }
+    }
+    /// emit the box for status `st` whose "[" is at or after `off`
+    fn emit(&mut self, st: char, lb: usize, evs: &mut Vec<Event>) {
+        let checked = st != ' ';
+        let line = self.line(lb);
+        if let Some(i) = self.item.take() {
+            let ds = if checked { esc(&st.to_string()) } else { String::new() };
+            let cls = if checked { "task-list-item is-checked" } else { "task-list-item" };
+            evs[i] = Event::Html(format!("<li class=\"{cls}\" data-task=\"{ds}\">").into());
+        }
+        let c = if checked { " checked=\"\"" } else { "" };
+        evs.push(Event::Html(format!("<input disabled=\"\" type=\"checkbox\"{c} data-line=\"{line}\"/>").into()));
+    }
+    /// pulldown's own TaskListMarker (' ' / x / X): read the real status byte
+    fn marker(&mut self, st: char, off: usize, evs: &mut Vec<Event>) {
+        let lb = self.src[off..].find('[').map_or(off, |i| off + i);
+        let real = self.src[lb..].chars().nth(1).filter(|c| matches!(c, ' ' | 'x' | 'X')).unwrap_or(st);
+        self.emit(real, lb, evs);
+    }
+    /// custom status: `buf` (starting at source offset `at`) is the item's first
+    /// text and begins "[c]" + space/end with c not ' '/x/X/[/]. Returns how many
+    /// bytes of `buf` the marker (and the whitespace after it) consumed.
+    fn custom(&mut self, buf: &str, at: usize, evs: &mut Vec<Event>) -> Option<usize> {
+        if !self.on || self.item.is_none() {
+            return None;
+        }
+        let mut cs = buf.char_indices();
+        if cs.next()?.1 != '[' {
+            return None;
+        }
+        let (_, st) = cs.next()?;
+        let (close, rb) = cs.next()?;
+        if rb != ']' || matches!(st, ' ' | 'x' | 'X' | '[' | ']') || st.is_whitespace() {
+            return None;
+        }
+        let rest = &buf[close + 1..];
+        if !(rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t')) {
+            return None;
+        }
+        // the text event may start at a backslash escape; the "[" is at or after `at`
+        let lb = self.src[at..].find('[').map_or(at, |i| at + i);
+        self.emit(st, lb, evs);
+        Some(buf.len() - rest.trim_start().len())
+    }
+}
+
 /// reading=true: heading links join with " > " (R10.1). Block ids are emitted
 /// as span.blockid in both modes; CSS decides visibility.
 fn render_with(content: &str, notes: &[String], imgs: &[String], reading: bool) -> String {
@@ -1466,7 +1548,12 @@ fn render_with(content: &str, notes: &[String], imgs: &[String], reading: bool) 
     let mut opts = Options::all();
     opts.remove(Options::ENABLE_WIKILINKS);
     opts.remove(Options::ENABLE_SMART_PUNCTUATION);
-    for ev in Parser::new_ext(content, opts) {
+    // rvtask R2: reading view only — every task checkbox carries the 0-based FILE line of
+    // its "[" (duplicates / nested / quoted / numbered map exactly), custom statuses
+    // ("[/]" "[-]" ...) are tasks too (stock Q2), and the li gets data-task + is-checked (Q5).
+    let mut tk = TaskScan::new(content, reading);
+    let mut buf_at = 0usize; // source offset of buf's first byte
+    for (ev, range) in Parser::new_ext(content, opts).into_offset_iter() {
         // inside `![alt](rel.png)`: swallow the inner events, keep their text as
         // the alt attribute. Nothing here reaches linkify — an alt is not a place
         // where a wikilink or a tag renders, in either engine.
@@ -1484,9 +1571,20 @@ fn render_with(content: &str, notes: &[String], imgs: &[String], reading: bool) 
         match ev {
             // demoted raw html + plain text both join the scan buffer
             Event::Text(t) | Event::Html(t) | Event::InlineHtml(t) if !in_code => {
+                if buf.is_empty() {
+                    buf_at = range.start;
+                }
                 buf.push_str(&t)
             }
             other => {
+                // rvtask: a custom-status marker "[c] " opening a list item arrives as
+                // plain text — pulldown only knows ' ' / x / X. Strip it, emit the box.
+                if !buf.is_empty() {
+                    if let Some(n) = tk.custom(&buf, buf_at, &mut evs) {
+                        buf.drain(..n);
+                    }
+                }
+                tk.step(&other);
                 if !buf.is_empty() {
                     // R10.3: ` ^id` closing a paragraph / list item / heading
                     let block_end = matches!(
@@ -1506,6 +1604,13 @@ fn render_with(content: &str, notes: &[String], imgs: &[String], reading: bool) 
                     buf.clear();
                 }
                 match other {
+                    Event::TaskListMarker(checked) if reading => {
+                        tk.marker(if checked { 'x' } else { ' ' }, range.start, &mut evs);
+                        continue;
+                    }
+                    Event::Start(Tag::Item) if reading => {
+                        tk.item_at(evs.len());
+                    }
                     Event::Start(Tag::CodeBlock(_) | Tag::MetadataBlock(_)) => in_code = true,
                     Event::End(TagEnd::CodeBlock | TagEnd::MetadataBlock(_)) => in_code = false,
                     // S1: standard links / images — scheme allowlist. Allowed link ->
@@ -4137,6 +4242,65 @@ mod tests {
         let hits: Vec<_> = ix.docs().flat_map(|(n, c, _)| mentions_in(c, "Deep Note").into_iter().map(move |h| (n.to_string(), h))).collect();
         assert_eq!(hits, [("A".to_string(), (0, 4, 9))]);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// rvtask R2 / A3: every reading-view task box carries the 0-based FILE line
+    /// of its "[" — duplicates by position, nested / quoted / callout / numbered
+    /// by their own line; custom statuses are checked tasks (Q2); LP unchanged.
+    #[test]
+    fn render_task_data_line() {
+        let md = "# T\n\
+                  \n\
+                  - [ ] same\n\
+                  - [ ] same\n\
+                  - [x] done\n\
+                  - [X] caps\n\
+                  \x20   - [ ] nested4\n\
+                  \x20       - [x] nested8\n\
+                  \n\
+                  > - [ ] quoted\n\
+                  \n\
+                  > [!note]\n\
+                  > - [ ] callout\n\
+                  \n\
+                  1. [ ] one\n\
+                  2. [x] two\n\
+                  \n\
+                  - [/] half\n\
+                  - [-] cancel\n\
+                  - [>] fwd\n\
+                  - [?] q\n";
+        let h = render_with(md, &[], &[], true);
+        let lines: Vec<&str> = h.split("data-line=\"").skip(1).map(|s| &s[..s.find('"').unwrap()]).collect();
+        assert_eq!(lines, ["2", "3", "4", "5", "6", "7", "9", "12", "14", "15", "17", "18", "19", "20"], "{h}");
+        // line N really holds a task marker in the source (the click target)
+        let src: Vec<&str> = md.lines().collect();
+        for l in &lines {
+            let s = src[l.parse::<usize>().unwrap()];
+            assert!(s.contains("] "), "line {l} = {s:?}");
+        }
+        // duplicates: two distinct boxes, two distinct lines, same text
+        assert!(h.contains(r#"<input disabled="" type="checkbox" data-line="2"/>same"#), "{h}");
+        assert!(h.contains(r#"<input disabled="" type="checkbox" data-line="3"/>same"#), "{h}");
+        // status byte from the SOURCE: x vs X distinguishable, both checked
+        assert!(h.contains(r#"<li class="task-list-item is-checked" data-task="x"><input disabled="" type="checkbox" checked="" data-line="4"/>done"#), "{h}");
+        assert!(h.contains(r#"data-task="X"><input disabled="" type="checkbox" checked="" data-line="5"/>caps"#), "{h}");
+        assert!(h.contains(r#"<li class="task-list-item" data-task=""><input disabled="" type="checkbox" data-line="6"/>nested4"#), "{h}");
+        // numbered
+        assert!(h.contains(r#"<ol>"#) && h.contains(r#"data-line="14"/>one"#) && h.contains(r#"checked="" data-line="15"/>two"#), "{h}");
+        // custom statuses: checked, marker stripped from the text
+        assert!(h.contains(r#"data-task="/"><input disabled="" type="checkbox" checked="" data-line="17"/>half"#), "{h}");
+        assert!(h.contains(r#"data-task="&gt;"><input disabled="" type="checkbox" checked="" data-line="19"/>fwd"#), "{h}");
+        assert!(!h.contains("[/]") && !h.contains("[-]") && !h.contains("[?]"), "{h}");
+        // not tasks: a wikilink or a word in brackets without a following space
+        let n = render_with("- [[Ideas]] x\n- [ab] y\n- [a]b\n", &["Ideas".to_string()], &[], true);
+        assert!(!n.contains("checkbox"), "{n}");
+        // LP (reading=false) is unchanged: no data-line, custom status stays text
+        let lp = render_with("- [ ] a\n- [/] b\n", &[], &[], false);
+        assert!(lp.contains(r#"<li><input disabled="" type="checkbox"/>a</li>"#) && lp.contains("[/] b") && !lp.contains("data-line"), "{lp}");
+        // a block id after a custom marker still splits
+        let b = render_with("- [/] part ^b1\n", &[], &[], true);
+        assert!(b.contains(r#"data-line="0"/>part<span class="blockid" data-bid="b1">"#), "{b}");
     }
 
     #[test]

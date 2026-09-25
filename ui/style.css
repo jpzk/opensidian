@@ -1146,7 +1146,10 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 /* R15.11 task list: custom 16px box r4 1px faint border, accent fill + masked tick; no bullet; done = strike + muted */
 .lp li:has(> input[type=checkbox])::before, .preview li:has(> input[type=checkbox])::before { display: none }
 .lp li:has(> input[type=checkbox]), .preview li:has(> input[type=checkbox]) { list-style: none }
-.lp li:has(> input[type=checkbox]:checked), .preview li:has(> input[type=checkbox]:checked) {
+.lp li:has(> input[type=checkbox]:checked),
+/* rvtask Q5: stock strikes only "[x]"/"[X]" in a BULLET list — a custom status ("[/]" "[-]" …)
+   and an ORDERED-list task are filled but not struck. data-task comes from the renderer. */
+.preview ul > li:is([data-task="x"], [data-task="X"]) {
   text-decoration: var(--checklist-done-decoration); color: var(--checklist-done-color) }
 .lp input[type=checkbox], .preview input[type=checkbox] { -webkit-appearance: none; appearance: none; border-radius: var(--checkbox-radius);
   border: 1px solid var(--checkbox-border-color); flex-shrink: 0; padding: 0; margin: 0; width: var(--checkbox-size); height: var(--checkbox-size);
