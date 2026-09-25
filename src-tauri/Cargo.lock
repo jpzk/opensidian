@@ -2585,6 +2585,9 @@ dependencies = [
 name = "rustidian"
 version = "0.14.0"
 dependencies = [
+ "gdk",
+ "gdkx11",
+ "javascriptcore-rs",
  "landlock",
  "pulldown-cmark",
  "serde",

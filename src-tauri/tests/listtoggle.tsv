@@ -45,7 +45,7 @@ q09-quoten	numbered	0.0-2.7	yes
 q09-taskb	bullet	0.0-2.11	yes
 q09-taskn	numbered	0.0-2.11	yes
 q10-col0	bullet	0.0-3.0	yes
-q10-partial	bullet	0.2-2.2	yes
+q10-partial	bullet	0.2-2.1	no
 q11-caretb	bullet	1.2-1.2	yes
 q11-caretn	numbered	1.2-1.2	yes
 q11-caretoff	bullet	1.4-1.4	yes
