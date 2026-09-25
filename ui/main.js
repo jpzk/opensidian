@@ -1982,12 +1982,40 @@ function censusToks() {
 let feCaFlag = "E", bmCaFlag = "C";
 const feFoldRows = () => document.querySelectorAll("#tree .trow.folder");
 const bmGroupRows = () => document.querySelectorAll("#bmlist .bmrow.bmgrp");
+/* caperf C2b: the fold counts are EVENT-driven, not re-queried per updateTitle.
+   caFold caches {fc,fn,bc,bn}; a MutationObserver on #tree and #bmlist (static
+   elements, index.html) drops it on a child-list change or on a class flip that
+   moves a row in/out of folder|open (explorer) or bmgrp|bmfold (bookmarks) —
+   hover/selection class churn does not. Readers drain takeRecords() first, so a
+   fold followed by updateTitle() in the SAME task (feCollapseAll) is never stale. */
+let caFold = null, caObs = null;
+const caCls = (s, a, b) => { const t = " " + (s || "") + " "; return (t.includes(" " + a + " ") ? 1 : 0) + (t.includes(" " + b + " ") ? 2 : 0); };
+function caRel(m) {
+  if (m.type === "childList") return true;
+  if (m.attributeName !== "class") return false;
+  const now = m.target.getAttribute("class"), inTree = !!m.target.closest("#tree");
+  return inTree ? caCls(m.oldValue, "folder", "open") !== caCls(now, "folder", "open")
+                : caCls(m.oldValue, "bmgrp", "bmfold") !== caCls(now, "bmgrp", "bmfold");
+}
+function caCounts() {
+  if (!caObs) {
+    caObs = new MutationObserver(ms => { if (caFold && ms.some(caRel)) caFold = null; });
+    const o = { childList: true, subtree: true, attributes: true, attributeFilter: ["class"], attributeOldValue: true };
+    for (const id of ["tree", "bmlist"]) { const el = $(id); if (el) caObs.observe(el, o); }
+  } else if (caFold && caObs.takeRecords().some(caRel)) caFold = null;
+  else caObs.takeRecords();
+  if (!caFold) caFold = {
+    fn: feFoldRows().length, fc: document.querySelectorAll("#tree .trow.folder:not(.open)").length,
+    bn: bmGroupRows().length, bc: document.querySelectorAll("#bmlist .bmrow.bmgrp.bmfold").length,
+  };
+  return caFold;
+}
 function feCaState() {
-  const n = feFoldRows().length, c = document.querySelectorAll("#tree .trow.folder:not(.open)").length;
+  const k = caCounts(), n = k.fn, c = k.fc;
   return { c, n, lab: n ? (c === n ? "E" : "C") : feCaFlag };
 }
 function bmCaState() {
-  const n = bmGroupRows().length, c = document.querySelectorAll("#bmlist .bmrow.bmgrp.bmfold").length;
+  const k = caCounts(), n = k.bn, c = k.bc;
   return { c, n, lab: n ? (c === n ? "E" : "C") : bmCaFlag };
 }
 function foldTok() {
