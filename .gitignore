@@ -117,3 +117,6 @@ dist/
 # disk), Q9's frontmatter selection and Q14's "No commands found" are read off
 # these shots — line 2 (*.png) would drop exactly the cited evidence.
 !docs/recon-listtoggle/shots/*.png
+# recon-setcenter: the stock 1.13.7 settings modal geometry (Q1-Q4) and ours-before/after —
+# the README cites these shots as the evidence; without this they would be silently ignored.
+!docs/recon-setcenter/**/*.png
