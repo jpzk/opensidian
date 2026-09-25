@@ -1,2 +1,4 @@
 # census token registry: two branches appending a line each merge to both lines (G2)
 ui/census.js merge=union
+# every goal appends its own recon-shots negation block; union keeps both (append-only, like census.js)
+.gitignore merge=union
