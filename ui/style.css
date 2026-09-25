@@ -289,8 +289,14 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 #ldiv { flex: 0 0 6px; margin-left: -6px; z-index: 3; cursor: col-resize }
 #ldiv:hover, #ldiv:active { background: var(--border-strong) }
 #ldiv[hidden] { display: none }
-#bar { display: flex; gap: 4px; padding: 6px }
-#bar button { flex: 1; background: var(--bg-surface); color: var(--text-chrome); border: 0;
+/* collapseall R3: #bmbar is the bookmarks pane header, built the same as #bar so
+   both toggles paint alike; .hslot = a RESERVED stock slot (sort / auto-reveal /
+   add bookmark / new group / search filter — out of scope, spec R3): it takes a
+   button's width and paints nothing, so the toggle sits in stock's slot ORDER.
+   #bar keeps its height (the tree's first row stays at y=82, R8). */
+#bar, #bmbar { display: flex; gap: 4px; padding: 6px; flex-shrink: 0 }
+.hslot { flex: 1; min-width: 0 }
+#bar button, #bmbar button { flex: 1; min-width: 0; background: var(--bg-surface); color: var(--text-chrome); border: 0;
               padding: 4px; cursor: pointer; border-radius: 4px }
 #fnew { padding: 2px 6px }
 #fname { width: 100%; background: var(--bg-sidebar); color: var(--text-chrome);
@@ -610,7 +616,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 #p-recent li span { color: var(--text-chrome-muted); font-size: 11px }
 #p-close { position: absolute; top: 10px; right: 12px; background: none;
            border: 0; color: var(--text-chrome-muted); font-size: 15px; cursor: pointer }
-#bar button svg { width: 16px; height: 16px; display: block; margin: 0 auto }
+#bar button svg, #bmbar button svg { width: 16px; height: 16px; display: block; margin: 0 auto }
 #vswitch svg { width: 13px; height: 13px; vertical-align: -2px; margin-right: 6px }
 
 /* tab context menu (M7 / R6.2): simple dark popup */

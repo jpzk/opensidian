@@ -40,6 +40,9 @@
     <div id="bar">
       <button id="newbtn" title="New note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-9z"/><path d="M14 3v6h6"/><path d="M12 12v6M9 15h6"/></svg></button>
       <button id="newfolderbtn" title="New folder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7V5a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v6M9 14h6"/></svg></button>
+      <!-- collapseall R3: stock 1.13.7 order (recon-collapseall Q1): New note, New folder, [Change sort order], [Auto-reveal current file], Collapse/Expand all. The two middle slots are RESERVED (out of scope, spec R3) so the toggle is the 5th slot, as in stock. -->
+      <span class="hslot" aria-hidden="true"></span><span class="hslot" aria-hidden="true"></span>
+      <button id="fecabtn" class="cabtn" title="Collapse all"></button>
     </div>
     <div id="fnew" hidden><input id="fname" placeholder="folder name" spellcheck="false"></div>
     <div id="tree"></div>
@@ -48,7 +51,11 @@
     <div id="sbar"><input id="sinput" placeholder="Search..." spellcheck="false"><button id="sclear" title="Clear search">✕</button></div>
     <div id="sresults"></div>
   </div>
-  <div id="pane-bm" class="spane" hidden><div id="bmlist"></div></div>
+  <div id="pane-bm" class="spane" hidden>
+    <!-- collapseall R3: stock's bookmarks header (recon-collapseall Q1): [Bookmark the active tab], [New group], Collapse/Expand all, [Show search filter] — the toggle is the 3rd of 4; the other three slots are RESERVED (spec R3). -->
+    <div id="bmbar" class="hbar"><span class="hslot" aria-hidden="true"></span><span class="hslot" aria-hidden="true"></span><button id="bmcabtn" class="cabtn" title="Collapse all"></button><span class="hslot" aria-hidden="true"></span></div>
+    <div id="bmlist"></div>
+  </div>
   <div id="vswitch" title="switch vault"></div>
 </div>
 <div id="ldiv"></div>

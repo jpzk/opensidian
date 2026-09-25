@@ -1944,16 +1944,87 @@ function censusToks() {
 }
 /* collapseall R7 [fold:fe<collapsed>/<folders>:<C|E>,bm<collapsed>/<groups>:<C|E>]
    read off the DOM of BOTH panes (hidden panes keep their DOM), so a phase asserts
-   fold state without pixels. C|E = what that pane's header toggle would do NOW:
-   Collapse while anything is expanded, else Expand (R4, M3). */
+   fold state without pixels. C|E = what that pane's header toggle would do NOW
+   (R4, M3): Collapse while anything is expanded, else Expand. A pane with NOTHING
+   to fold has no state to derive it from, and stock then flips the label as a
+   FLAG on every click (recon-collapseall Q5, 42/46/47): the explorer's flag
+   starts on Expand (stock's folders start collapsed, 40-q5-fe-flat.png), the
+   bookmarks' on Collapse (43-q5-bm-flat.png). Reset per vault (enterVault). */
+let feCaFlag = "E", bmCaFlag = "C";
+const feFoldRows = () => document.querySelectorAll("#tree .trow.folder");
+const bmGroupRows = () => document.querySelectorAll("#bmlist .bmrow.bmgrp");
+function feCaState() {
+  const n = feFoldRows().length, c = document.querySelectorAll("#tree .trow.folder:not(.open)").length;
+  return { c, n, lab: n ? (c === n ? "E" : "C") : feCaFlag };
+}
+function bmCaState() {
+  const n = bmGroupRows().length, c = document.querySelectorAll("#bmlist .bmrow.bmgrp.bmfold").length;
+  return { c, n, lab: n ? (c === n ? "E" : "C") : bmCaFlag };
+}
 function foldTok() {
-  const fe = document.querySelectorAll("#tree .trow.folder");
-  const feC = document.querySelectorAll("#tree .trow.folder:not(.open)").length;
-  const bm = document.querySelectorAll("#bmlist .bmrow.bmgrp");
-  const bmC = document.querySelectorAll("#bmlist .bmrow.bmgrp.bmfold").length;
-  const lab = (c, n) => (n && c === n ? "E" : "C");
-  return " [fold:fe" + feC + "/" + fe.length + ":" + lab(feC, fe.length) +
-         ",bm" + bmC + "/" + bm.length + ":" + lab(bmC, bm.length) + "]";
+  const f = feCaState(), b = bmCaState();
+  return " [fold:fe" + f.c + "/" + f.n + ":" + f.lab + ",bm" + b.c + "/" + b.n + ":" + b.lab + "]";
+}
+/* collapseall R4: the header toggle's face. Title = the NEXT action (M3); glyph
+   chevrons-IN (pointing at each other) when the next action is Collapse, chevrons-
+   OUT when it is Expand (recon-collapseall Q3: a glyph flip, NO state highlight —
+   the hover background every #bar button has is all stock paints). Written only
+   when it changes: updateTitle runs this on every census tick. */
+const CA_IN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 20l5-5 5 5M7 4l5 5 5-5"/></svg>';
+const CA_OUT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 15l5 5 5-5M7 9l5-5 5 5"/></svg>';
+function caFace(btn, lab) {
+  if (!btn || btn.dataset.ca === lab) return;
+  btn.dataset.ca = lab;
+  btn.title = lab === "C" ? "Collapse all" : "Expand all";
+  btn.innerHTML = lab === "C" ? CA_IN : CA_OUT;
+}
+/* [fecab:x0-x1,y] / [bmcab:x0-x1,y] — the toggle's PAINTED rect (x span, centre y),
+   so a phase clicks what it measured (lessons/a-phase-must-not-own-a-layout.md).
+   Only while the button paints: a hidden pane's button has a zero rect. */
+function cabTok(id, name) {
+  const b = $(id);
+  if (!b) return "";
+  const r = b.getBoundingClientRect();
+  if (!r.width || !r.height) return "";
+  return " [" + name + ":" + Math.round(r.left) + "-" + Math.round(r.right) + "," + Math.round(r.top + r.height / 2) + "]";
+}
+/* collapseall R4, explorer: any folder expanded -> collapse ALL (nested included:
+   every folder path goes into `collapsed`, so re-opening a parent shows its
+   children still shut, recon Q2 05-fe-open-projects.png); else expand ALL. Same
+   zero-IPC DOM flip as a single folder click (renderNode), no tree rebuild. */
+/* updateTitle hook: repaint both toggle faces from the live state, then publish
+   their rects (after the face is set, so the rect is the one a click will hit). */
+function caSync() {
+  caFace($("fecabtn"), feCaState().lab);
+  caFace($("bmcabtn"), bmCaState().lab);
+  return cabTok("fecabtn", "fecab") + cabTok("bmcabtn", "bmcab");
+}
+function feCollapseAll() {
+  const s = feCaState();
+  return act("fe_foldall", { action: s.lab, folders: s.n, collapsed: s.c }, () => {
+    if (!s.n) { feCaFlag = feCaFlag === "C" ? "E" : "C"; updateTitle(); return; }
+    const shut = s.lab === "C";
+    for (const row of feFoldRows()) {
+      const full = row.dataset.folder;
+      shut ? collapsed.add(full) : collapsed.delete(full);
+      row.classList.toggle("open", !shut);
+      const kids = row.nextElementSibling;
+      if (kids && kids.classList.contains("tkids")) kids.classList.toggle("collapsed", shut);
+    }
+    updateTitle();
+  });
+}
+/* collapseall R4 + R2, bookmarks: the same rule over the groups. View state only:
+   no inv(), so bookmarks.json cannot move (the phase sha256s it around this). */
+function bmCollapseAll() {
+  if (bmRenaming !== null) return;
+  const s = bmCaState();
+  return act("bm_foldall", { action: s.lab, groups: s.n, collapsed: s.c }, () => {
+    if (!s.n) { bmCaFlag = bmCaFlag === "C" ? "E" : "C"; updateTitle(); return; }
+    if (s.lab === "C") for (const r of bmGroupRows()) bmFolds.add(r.dataset.bmk);
+    else bmFolds.clear();
+    renderBm();
+  });
 }
 function updateTitle() {          // pane/focus census in the window title (headless probe)
   rTrack();                       // lgpanes: keep rLeaf current even with the right sidebar closed
@@ -2379,7 +2450,7 @@ function updateTitle() {          // pane/focus census in the window title (head
             (navInfo ? " [" + navInfo + "]" : "") +
             (revealInfo ? " [bmrv:" + revealInfo + "]" : "") +      // bmmenu: "Reveal file in navigation" ran (bmReveal) — not merely "the Files pane is showing"
             (acItems.length ? " [ac:" + acKind + ":" + acItems.length + "]" : "") +
-            " [pane:" + sidePane + "]" + foldTok() +
+            " [pane:" + sidePane + "]" + foldTok() + caSync() +   // collapseall R4/R7: toggle faces + [fecab:]/[bmcab:]
             sfontTok() +                                        // sidefont: computed sidebar row font sizes (t=trow b=bmrow r=rlist)
             (sidePane === "search" && searchCount >= 0 ? " [sr:" + searchCount + "]" + srGeom() : "") +
             (sidePane === "bm" ? " [bm:" + bmRows() + "]" +          // RENDERED rows, not the model's length:
@@ -5656,6 +5727,8 @@ $("sclear").onclick = () => {
   $("sinput").value = ""; clearTimeout(searchT); runSearch(); $("sinput").focus();
 };
 $("newbtn").onclick = cmdNewNote;
+$("fecabtn").onclick = () => feCollapseAll();   // collapseall R3/R4: explorer header, 5th slot
+$("bmcabtn").onclick = () => bmCollapseAll();   // collapseall R3/R4: bookmarks header, 3rd of 4
 $("newfolderbtn").onclick = () => {
   const box = $("fnew");
   box.hidden = !box.hidden;
@@ -6505,6 +6578,7 @@ async function enterVault() {
   $("vswitch").innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>' + base(vaultPath);
   collapsed = new Set();
   bmFolds = new Set();               // collapseall: folds are per vault and in memory (R6)
+  feCaFlag = "E"; bmCaFlag = "C";    // collapseall Q5: the empty-pane label flags start where stock's do
   const g = mkGroup();               // M6: one group, wrapped in a one-leaf split tree
   state = { root: { dir: "row", children: [g], fractions: [1] }, focused: null };
   renderLayout();
