@@ -122,3 +122,7 @@ dist/
 !docs/recon-setcenter/**/*.png
 # recon-rvtask: stock 1.13.7 reading-view task clicks; the README cites every shot, and ours-before/ours-after (A5) live beside them
 !docs/recon-rvtask/**/*.png
+# recon-collapseall: criterion A1 is "README answers Q1-Q5 citing committed
+# shots, git check-ignore -v over shots prints nothing" and A4 puts the
+# ours-after shots in the same directory — line 2 (*.png) would drop both.
+!docs/recon-collapseall/shots/*.png
