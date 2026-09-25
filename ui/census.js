@@ -15,3 +15,4 @@
 var CENSUS = [];
 CENSUS.push(() => { const L = CMDS.filter(c => c.id === "editor:toggle-bullet-list" || c.id === "editor:toggle-numbered-list"); return " [lt:" + L.length + "/" + L.filter(c => !c.when || c.when()).length + "]"; });   // listtoggle: both list commands registered / offered by the palette (editing view only)
 CENSUS.push(() => sgeoTok());   // setcenter R3: settings modal geometry [sbox:] [snav:] [srow1:] [shkf:] [shkc:] [shk1/2:] (only while settings is open)
+CENSUS.push(() => Ed.rvTaskTok());   // rvtask R5: reading-view task boxes [rvtask:n/checked] + painted centres per source line [rvtaskxy:]

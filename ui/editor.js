@@ -1704,3 +1704,36 @@ document.addEventListener("click", e => {
     if (typeof updateTitle === "function") updateTitle();
   });
 });
+
+/* rvtask R5 census -> " [rvtask:<boxes>/<checked>] [rvtaskxy:<line>:<x>,<y>|...] [rvtaskst:<scrollTop>]"
+   for the FOCUSED group's reading view (both absent otherwise). rvtask counts
+   every reading-view task box of the note; rvtaskxy is the painted CENTRE of
+   each box that is inside the pane's viewport, keyed by its data-line (source
+   line), in document order, first 40 — so a phase clicks published geometry
+   for exactly the line it means (duplicates differ by line), never a literal.
+   Viewport pixels, same frame as [rvlb:]. rvtaskst = the reading pane scrollTop, so
+   a phase proves a toggle did not move the view (R4, +-2px). Registered by ONE ui/census.js line. */
+Ed.rvTaskTok = () => {
+  const g = typeof fg === "function" ? fg() : null;
+  if (!g || !g.preview || typeof isReading !== "function" || !isReading(g)) return "";
+  const bs = [...g.preview.querySelectorAll("input[type=checkbox][data-line]")];
+  const pr = g.preview.getBoundingClientRect(), xy = [];
+  for (const b of bs) {
+    const r = b.getBoundingClientRect();
+    if (!r.width || r.top < pr.top || r.bottom > pr.bottom) continue;
+    xy.push(b.dataset.line + ":" + Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2));
+    if (xy.length >= 40) break;
+  }
+  return " [rvtask:" + bs.length + "/" + bs.filter(b => b.checked).length + "] [rvtaskxy:" + (xy.join("|") || "-") + "] [rvtaskst:" + Math.round(g.preview.scrollTop) + "]";
+};
+/* rvtask R5: [rvtaskxy:]/[rvtaskst:] are geometry, so the census must follow a
+   READING-VIEW scroll (nothing else refreshes the title on one — the same
+   reason the context menu refreshes it on its own scroll). Debounced: one
+   title write per settled scroll, not per wheel tick. */
+let rvTaskScT = null;
+document.addEventListener("scroll", e => {
+  const t = e.target;
+  if (!t || !t.classList || !t.classList.contains("preview")) return;
+  clearTimeout(rvTaskScT);
+  rvTaskScT = setTimeout(() => { rvTaskScT = null; if (typeof updateTitle === "function") updateTitle(); }, 60);
+}, true);
