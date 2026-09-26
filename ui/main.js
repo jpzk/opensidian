@@ -1155,7 +1155,7 @@ function bmGroupMenu(e, ix, title) {
   item("Open in new window", null, "Single-window app: there is no second window to open into");   // NOT WIRED
   sep();
   item("Rename", () => bmGroupRenameStart(ix));                            // WIRED: inline editor in the row (07-nest-named.png -> 08-nest-commit.png)
-  item("Bookmark the active tab...", null, "Recorded as a LABEL only: docs/recon-bmfolder/README.md never drove this item, and an unmeasured behaviour is not a spec to copy");   // NOT WIRED
+  item("Bookmark the active tab...", () => openBmAdd(ix));                // WIRED (bmactive): stock's "Add bookmark" modal, docs/recon-bmactive F1/F2
   item("New group", () => bmGroupNew(ix));                                 // WIRED: nests INSIDE this group (04-groupmenu.png -> 05-nest.png)
   sep();
   item("Remove", () => bmGroupDelete(ix));                                 // WIRED: takes the SUBTREE, no confirmation (23-del-menu.png -> 24-deleted.png)
@@ -1474,10 +1474,98 @@ function bmEditTok() {
   return " [bmedit:" + q(bmEdit.name) + "|" + q(cur.title) + "|" +
          bmEdit.opts.map(o => q(o.title)).join("|") + "] [bmex:" + xs + "]";
 }
-$("bme-no").onclick = () => closeBmEdit();          // Cancel moves nothing
-$("bme-yes").onclick = () => bmEditSave();
+/* ---------- bmactive: "Bookmark the active tab..." — the SAME card, Add mode ----------
+   THE SPEC is docs/recon-bmactive/README.md (stock 1.13.7, black box):
+   F1 the modal is "Add bookmark": Path (read-only basename), Title (EMPTY, the
+      basename as placeholder, FOCUSED), Bookmark group (preset to the group
+      right-clicked), Cancel / Save, an X. So it is #bmebox with the Title row
+      and the X shown — one modal geometry, not a second card.
+   F2 Save APPENDS a file item as the LAST child of the chosen group; `title` is
+      written only when typed (bm_add_in, the one serializer does the bytes).
+   F3 an already-bookmarked note is DUPLICATED, never moved: no lookup here.
+   F4/F7 the active tab is the last-focused MAIN leaf: rTrack() (lgpanes), not
+      rNote() — rNote maps a local graph to its note, and stock NO-OPS on a local
+      graph and on an empty tab (our zero-tab pane). A GLOBAL graph is the one
+      deliberate delta (spec B2): stock writes a type:"graph" item this pane
+      cannot paint, so we refuse VISIBLY and write nothing.
+   F6 Cancel / Escape / X write nothing: closing never calls inv().
+   bmAdd is its own state (not bmEdit) so R4X.7's [modal:bmedit] census stays
+   exactly what it was; the add census is one ui/census.js line (bmAddTok). */
+let bmAdd = null;                          // the open Add bookmark modal: {name, opts}
+function openBmAdd(gix) {
+  const t = rTrack();
+  if (!t) return;                          // a pane with no tab = stock's empty tab: no-op (108-emptyitem)
+  if (t.kind === "gg") { say("Bookmarking a graph view is not supported: the bookmarks pane cannot show a graph bookmark"); return; }
+  if (t.kind) return;                      // local graph (and any non-note view): no-op (102-lgitem)
+  const opts = bmGroupOpts();
+  const cur = opts.findIndex(o => o.ix === gix);
+  bmAdd = { name: t.name, opts };
+  const sel = $("bme-grp");
+  sel.textContent = "";
+  opts.forEach((o, i) => {
+    const op = document.createElement("option");
+    op.value = String(i);
+    op.textContent = "  ".repeat(o.depth) + o.title;
+    sel.appendChild(op);
+  });
+  sel.value = String(cur < 0 ? 0 : cur);
+  const base = t.name.split("/").pop();
+  $("bmetitle").textContent = "Add bookmark";
+  $("bme-path").value = base;
+  $("bme-title").value = "";
+  $("bme-title").placeholder = base;
+  $("bme-trow").hidden = false;
+  $("bme-x").hidden = false;
+  $("bmebox").hidden = false;
+  $("bme-title").focus();
+  updateTitle();
+}
+function closeBmAdd() {
+  if (!bmAdd) return;
+  bmAdd = null;
+  $("bmebox").hidden = true;
+  $("bme-trow").hidden = true;             // back to the Edit card's shape
+  $("bme-x").hidden = true;
+  $("bmetitle").textContent = "Edit bookmark";
+  updateTitle();
+}
+async function bmAddSave() {
+  if (!bmAdd) return;
+  const o = bmAdd.opts[Number($("bme-grp").value)] || bmAdd.opts[0];
+  const name = bmAdd.name, title = $("bme-title").value;
+  closeBmAdd();
+  await bmApply("bm_add", { into: o.ix, name, title: title || null });
+}
+/* [modal:bmadd] [bmadd:<note>|<selected group>|<typed title>|<option>…]
+   [bmax:<title>;<chooser>;<cancel>;<save>;<x>] — centres a driver clicks
+   (the [bmex:] pattern), plus [bmafocus:title|-]: F1 says the Title input
+   has the focus on open. */
+function bmAddTok() {
+  if (!bmAdd) return "";
+  const q = s => String(s == null ? "" : s).replace(/[|\]]/g, "");
+  const sel = $("bme-grp");
+  const cur = bmAdd.opts[Number(sel.value)] || bmAdd.opts[0];
+  const xs = [$("bme-title"), sel, $("bme-no"), $("bme-yes"), $("bme-x")].map(e => {
+    const r = e.getBoundingClientRect();
+    return Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2);
+  }).join(";");
+  return " [modal:bmadd] [bmadd:" + q(bmAdd.name) + "|" + q(cur.title) + "|" + q($("bme-title").value) + "|" +
+         bmAdd.opts.map(o => q(o.title)).join("|") + "] [bmax:" + xs + "] [bmafocus:" +
+         (document.activeElement === $("bme-title") ? "title" : "-") + "]";
+}
+$("bme-no").onclick = () => (bmAdd ? closeBmAdd() : closeBmEdit());   // Cancel writes nothing
+$("bme-yes").onclick = () => (bmAdd ? bmAddSave() : bmEditSave());
+$("bme-x").onclick = () => closeBmAdd();             // the X exists only in Add mode
+$("bme-title").oninput = () => updateTitle();        // the census carries the typed title
 $("bme-grp").onchange = () => updateTitle();        // the census follows the selection, keyboard or mouse
 $("bmebox").addEventListener("keydown", e => {
+  if (bmAdd) {
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeBmAdd(); return; }
+    if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); bmAddSave(); return; }
+    e.stopPropagation();                            // typing belongs to the Title input, not the global keymap
+    setTimeout(updateTitle, 0);
+    return;
+  }
   if (!bmEdit) return;
   if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeBmEdit(); return; }
   if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); bmEditSave(); return; }
@@ -5756,6 +5844,7 @@ document.addEventListener("keydown", e => {
   if (ulPending) return;                   // R34.6: the Update links prompt owns the keyboard — its own handler answers it
   if (delPending) return;                  // R24.7: so does the delete confirmation (Escape there = Cancel)
   if (bmEdit) return;                      // R4X.7: and the Edit bookmark modal (its own handler: Escape = Cancel, Enter = Save)
+  if (bmAdd) return;                       // bmactive: and its Add mode (Escape = Cancel, Enter = Save, typing = the Title input)
   if (titleEditing()) return;              // R34.1: so does the title box (a filename contains chords)
   if (e.key === "Escape") {
     if (menuEl) { closeMenu(); return; }   // bmmenu: stock closes an open context menu on Escape (recon 15-escape.png); the guards above keep settings' own Escape (R14) first

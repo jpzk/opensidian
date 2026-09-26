@@ -2856,6 +2856,38 @@ fn bm_move_in_tree(tree: &mut Vec<BmNode>, ix: usize, into: Option<usize>) -> Re
     Ok(())
 }
 
+/* bmactive — "Bookmark the active tab..." on a GROUP row (recon-bmactive F2/F3):
+   a NEW file item, appended as the LAST child of the target group (after any
+   nested group), fresh ctime, `title` only when the user typed one. An already
+   bookmarked note is DUPLICATED, never moved (F3: stock does exactly that, in
+   the same group, another group and from the top level). `into: None` is the
+   R4X.7 chooser's "(top level)" superset: the end of the top level. */
+fn bm_add_in(tree: &mut Vec<BmNode>, into: Option<usize>, name: &str, title: Option<&str>) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("no active note to bookmark".to_string());
+    }
+    let mut node = BmNode::file(name);
+    if let (BmNode::File { title: t, .. }, Some(s)) = (&mut node, title.filter(|s| !s.is_empty())) {
+        *t = Some(s.to_string());
+    }
+    match into {
+        None => {
+            tree.push(node);
+            Ok(())
+        }
+        Some(ix) => {
+            let p = bm_path_of(tree, ix).ok_or("no such group")?;
+            match bm_at_mut(tree, &p) {
+                Some(BmNode::Group { items, .. }) => {
+                    items.push(node);
+                    Ok(())
+                }
+                _ => Err("target row is not a group".to_string()),
+            }
+        }
+    }
+}
+
 /* bmdrag — the two painted<->raw maps the drag commit needs. Rows and slots in
    the PANE number only painted nodes, but bm_path_of's paths and the items
    vecs are RAW: an Opaque node (the stock fixture's search entry, anything the
@@ -3102,6 +3134,12 @@ fn bm_group_delete(v: State<Vault>, ix: usize) -> Result<Vec<BmRow>, String> {
 #[tauri::command]
 fn bm_move(v: State<Vault>, ix: usize, into: Option<usize>) -> Result<Vec<BmRow>, String> {
     span_timed!("bm_move", bm_apply(&v, |t| bm_move_in_tree(t, ix, into)))
+}
+
+/* bmactive: the group menu's "Bookmark the active tab..." Save (bm_add_in). */
+#[tauri::command]
+fn bm_add(v: State<Vault>, into: Option<usize>, name: String, title: Option<String>) -> Result<Vec<BmRow>, String> {
+    span_timed!("bm_add", bm_apply(&v, |t| bm_add_in(t, into, &name, title.as_deref())))
 }
 
 /* bmdrag — the drop's commit route: same bm_apply three-step as every other
@@ -3853,7 +3891,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, read_note, write_note, create_note, render, render_blocks, block_lines, highlight_blocks, graph, graph_local, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, tags, tag_counts,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, smoke_css,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
@@ -5365,6 +5403,42 @@ mod tests {
             bm_rows_of(&t).into_iter().map(|r| (r.kind, r.depth, r.name)).collect::<Vec<_>>(),
             vec![("f".to_string(), 0, "A".to_string())]
         );
+    }
+
+    /// bmactive F2/F3/F5 (docs/recon-bmactive): the group menu's add appends a
+    /// FILE item as the LAST child (after a nested group), writes `title` only
+    /// when typed, duplicates an already-bookmarked note, lands in a nested
+    /// group, and the bytes are stock's 14-saved.json modulo ctime.
+    #[test]
+    fn bmactive_add_appends_last_child_duplicates_and_nests() {
+        let seed = r#"{"items":[{"type":"file","ctime":1789000000002,"path":"Second Note.md"},{"type":"group","ctime":1789000000010,"items":[{"type":"file","ctime":1789000000001,"path":"Ideas.md"},{"type":"group","ctime":1789000000011,"items":[],"title":"Inner"}],"title":"Work"}]}"#;
+        let mut t = parse_bm_tree(seed);
+        bm_add_in(&mut t, Some(1), "Edit Recon", None).unwrap(); // Work = painted row 1
+        let out = bm_emit(&t, &[]);
+        let ct = |s: &str| {
+            let mut o = String::new();
+            let mut it = s.split("\"ctime\": ");
+            o.push_str(it.next().unwrap());
+            for p in it { o.push_str("\"ctime\": N"); o.push_str(&p[p.find(|c: char| !c.is_ascii_digit()).unwrap()..]); }
+            o
+        };
+        let stock = "{\n  \"items\": [\n    {\n      \"type\": \"file\",\n      \"ctime\": 1789000000002,\n      \"path\": \"Second Note.md\"\n    },\n    {\n      \"type\": \"group\",\n      \"ctime\": 1789000000010,\n      \"items\": [\n        {\n          \"type\": \"file\",\n          \"ctime\": 1789000000001,\n          \"path\": \"Ideas.md\"\n        },\n        {\n          \"type\": \"group\",\n          \"ctime\": 1789000000011,\n          \"items\": [],\n          \"title\": \"Inner\"\n        },\n        {\n          \"type\": \"file\",\n          \"ctime\": 1790400709390,\n          \"path\": \"Edit Recon.md\"\n        }\n      ],\n      \"title\": \"Work\"\n    }\n  ]\n}";
+        assert_eq!(ct(&out), ct(stock), "stock 14-saved.json modulo ctime");
+        // nested: Inner is painted row 3 -> lands INSIDE Inner (F5)
+        bm_add_in(&mut t, Some(3), "Welcome", None).unwrap();
+        // duplicate into Work, with a typed title (F3 + F2 title key after path)
+        bm_add_in(&mut t, Some(1), "Welcome", Some("W")).unwrap();
+        // empty typed title == no title key
+        bm_add_in(&mut t, None, "Second Note", Some("")).unwrap();
+        assert_eq!(
+            bm_rows_of(&t).iter().map(|r| format!("{}{}:{}", r.kind, r.depth, r.label)).collect::<Vec<_>>(),
+            vec!["f0:Second Note", "g0:Work", "f1:Ideas", "g1:Inner", "f2:Welcome", "f1:Edit Recon", "f1:W", "f0:Second Note"]
+        );
+        let out = bm_emit(&t, &[]);
+        assert!(out.contains("\"path\": \"Welcome.md\",\n          \"title\": \"W\"\n"), "{out}");
+        assert_eq!(out.matches("\"title\"").count(), 3, "Work, Inner, W — no empty title: {out}");
+        assert!(bm_add_in(&mut t, Some(0), "X", None).is_err(), "a file row is not a group");
+        assert!(bm_add_in(&mut t, Some(1), "", None).is_err());
     }
 
     /// the four structural operations, addressed by ROW INDEX (titles are not

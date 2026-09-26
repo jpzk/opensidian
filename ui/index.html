@@ -153,8 +153,10 @@
      chooser does not have (16-dd2.png / 18-dd-up-shot.png / 19-crop.png) — so
      here the menu route moves a bookmark OUT of a group as well as in. -->
 <div id="bmebox" hidden><div id="bmecard">
+  <button id="bme-x" hidden aria-label="Close">×</button>
   <div id="bmetitle">Edit bookmark</div>
   <div class="bmerow"><span class="bmelbl">Path</span><input id="bme-path" readonly tabindex="-1"></div>
+  <div class="bmerow" id="bme-trow" hidden><span class="bmelbl">Title</span><input id="bme-title" spellcheck="false"></div>
   <div class="bmerow"><span class="bmelbl">Bookmark group</span><select id="bme-grp"></select></div>
   <div id="bmebtns">
     <button id="bme-no">Cancel</button>

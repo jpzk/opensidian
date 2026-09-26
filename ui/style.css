@@ -792,6 +792,14 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
                   cursor: pointer; outline: none; padding: 0 }
 #bme-yes { background: var(--accent-blue); color: var(--bg-base) }   /* the accented, non-destructive default, like .ullink */
 #bmebtns button:focus { box-shadow: 0 0 0 2px var(--border-focus-ring) }
+/* bmactive: the SAME card in "Add bookmark" mode (recon-bmactive F1, 03-modal.png):
+   a Title row between Path and Bookmark group, and stock's X close top-right.
+   Both are hidden in Edit mode so R4X.7's card is unchanged. */
+#bmecard { position: relative }
+.bmerow[hidden], #bme-x[hidden] { display: none }
+#bme-x { position: absolute; top: 10px; right: 12px; width: 24px; height: 24px; border: 0; padding: 0;
+         background: none; color: var(--text-quiet); font-size: 18px; line-height: 24px; cursor: pointer }
+#bmecard #bme-title:focus { box-shadow: 0 0 0 2px var(--border-focus-ring) }
 
 /* R34.12/R34.13 refusal notice — the dropmsg shape (bottom-right, transient),
    because it says the same kind of thing: what was refused and why. The census
