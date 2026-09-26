@@ -130,3 +130,5 @@ dist/
 # these shots (the sentinel frames ARE the measurement); without this exception
 # `git add` silently drops them.
 !docs/recon-overlaytheme/**/*.png
+# recon-bmactive: every Q1-Q8 answer names a committed shot + its bookmarks.json dump
+!docs/recon-bmactive/shots/*.png
