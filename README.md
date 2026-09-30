@@ -21,7 +21,7 @@ I'm running as many top frontier models to scan for vulnerabilities, but since t
 - vault picker with persistence (or env VAULT_DIR, default ./vault)
 - graph (R16): stock-faithful force layout (d3 semantics, world-space, camera fit), drag a node and it stays pinned where you drop it (empty-canvas drag pans), WebGL renderer by default with a Canvas 2D fallback (`RUSTIDIAN_GRAPH_RENDERER=gl|2d`)
 - typography (R15): the exact Obsidian 1.13.7 type metrics in reading, live preview and source mode — bundled Inter Variable 4.001 + Source Code Pro 2.030 (SIL OFL, sha256-pinned via `scripts/fetch-fonts.sh --verify`), stock font stacks, h1–h6 sizes/weights/line-heights, list/checkbox/code/blockquote geometry within 1px of stock
-- hardening: vault paths canonicalised and confined to the vault root, system dirs refused, symlinks and >32 MiB files skipped, link scheme allowlist (http/https/mailto only; opened via `xdg-open`), in-app navigation locked to the app origin, Landlock self-sandbox on by default
+- hardening: vault paths canonicalised and confined to the vault root, system dirs refused, symlinks and >32 MiB files skipped, link scheme allowlist (http/https/mailto only; opened via `xdg-open`), in-app navigation locked to the app origin, Landlock self-sandbox, opt-in via `RUSTIDIAN_LANDLOCK=1` (off by default)
 - themes: dark and light, chosen in Settings or followed from the system preference in BOTH directions, and the stored choice survives a restart — asserted from pixels, not from a class name; plus an accent PALETTE axis independent of the light/dark axis. `ui/style.css` is one token block: 239 colour literals became tokens with no pixel moved, and a lint keeps new literals out
 - panes and window (R37): drag a pane divider to resize (the split keeps its ratio across a window resize), and the window frame — move, resize, maximise, restore — round-trips from the keyboard alone
 - bookmarks follow the note (R9.8): rename or MOVE a bookmarked note and its bookmark moves with it, rather than dangling at the old path
@@ -52,28 +52,20 @@ No FUSE on your box (containers, minimal VMs)? Run either without mounting:
 
     ./rustidian-0.15-x86_64-slim.AppImage --appimage-extract-and-run
 
-## sandboxed run (recommended)
+## Landlock (opt-in)
 
-Since v0.4 the app also sandboxes ITSELF with Landlock (kernel ≥ 5.13): once a vault
-is open the whole process tree can only write inside that vault (+ its own config
-and caches) and cannot read your home directory. Nothing to configure; blank window
-on an exotic setup? `RUSTIDIAN_NO_LANDLOCK=1` turns it off, please file an issue.
+The app can sandbox ITSELF with Landlock (kernel ≥ 5.13). It is OFF by
+default; opt in with:
 
-Your notes are just files, but the app doesn't need to see the rest of your
-home directory. With [bubblewrap](https://github.com/containers/bubblewrap)
-(`apt/dnf install bubblewrap` — unprivileged, no SUID) you can confine
-rustidian to ONLY your vault. Grab the launcher next to the AppImage and:
+    RUSTIDIAN_LANDLOCK=1 ./rustidian-*-x86_64-slim.AppImage
 
-    curl -LO https://github.com/jpzk/rustidian/releases/download/v0.15/rustidian-sandboxed.sh
-    chmod +x rustidian-sandboxed.sh
-    ./rustidian-sandboxed.sh ~/vault
-
-It finds the AppImage in the current dir, handles X11/Wayland + xauth, and
-bwraps everything else away behind a tmpfs: `~/.ssh`, browser profiles, the
-lot — the app sees only the vault. (`scripts/rustidian-sandboxed.sh` in the
-repo if you'd rather read it first — you should.) Vault persistence
-(`~/.rustidian.json`) lands on the tmpfs, so the picker asks again each
-launch; bind a scratch dir over `$HOME` in the script if you want it kept.
+Once a vault is open, the whole process tree can then only write inside that
+vault (+ its own config and caches) and cannot read your home directory. A
+stderr line at launch tells you which mode you got: `landlock: off (default;
+RUSTIDIAN_LANDLOCK=1 enables)` or `landlock: FullyEnforced`.
+`RUSTIDIAN_NO_LANDLOCK=1` always wins and turns it off, even when
+`RUSTIDIAN_LANDLOCK=1` is also set. While enforced, switching to a vault
+outside the one you opened needs a restart.
 
 ## licence
 
