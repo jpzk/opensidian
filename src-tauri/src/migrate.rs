@@ -122,7 +122,7 @@ mod tests {
     #[test]
     fn old_only_is_copied_and_left_untouched() {
         let h = tmp("oldonly");
-        let old = br#"{"last":"/v","list":["/v"],"theme":"light","palette":{"accent":"#ff0000"}}"#;
+        let old = br#"{"last":"/v","list":["/v"],"theme":"light","palette":"1984"}"#;
         fs::write(h.join(OLD_CFG), old).unwrap();
         assert_eq!(carry(&h.join(OLD_CFG), &h.join(NEW_CFG)).unwrap(), Carry::Copied);
         assert_eq!(fs::read(h.join(NEW_CFG)).unwrap(), old.to_vec(), "new = old, byte for byte");
