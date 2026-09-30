@@ -3848,7 +3848,7 @@ const TAB_EDGE = 40;
 function tabDragStart(e, g, i) {
   if (e.button !== 0 || e.target.closest(".x")) return;
   const sx = e.clientX, sy = e.clientY;
-  let ghost = null, target = null, hl = null, zones = null, raf = 0, last = null;
+  let ghost = null, target = null, hl = null, zones = null, raf = 0, last = null, rsR = null;
   const clearHl = () => {
     if (hl) { hl.classList.remove("drop-strip", "drop-edge"); hl = null; }
   };
@@ -3863,10 +3863,17 @@ function tabDragStart(e, g, i) {
       ghost.textContent = g.tabs[i] ? g.tabs[i].name.split("/").pop() : "";
       document.body.appendChild(ghost);
       zones = groups().map(h => ({ g: h, pr: h.pane.getBoundingClientRect(), tb: h.tabsEl.getBoundingClientRect().bottom }));
+      // R20.3 (operator 2026-09-30, wsrestore): the right sidebar is content panes ONLY.
+      // No tab is ever accepted there — a drop over #rside (its strip included) is
+      // refused, the tab stays where it was. Explicit, not an accident of zones[].
+      const rs = $("rside");
+      rsR = rs && !rs.hidden ? rs.getBoundingClientRect() : null;
     }
     ghost.style.transform = "translate3d(" + (ev.clientX + 10) + "px," + (ev.clientY + 12) + "px,0)";
     let nt = null;
-    for (const z of zones) {
+    const overSide = rsR && ev.clientX >= rsR.left && ev.clientX <= rsR.right &&
+                     ev.clientY >= rsR.top && ev.clientY <= rsR.bottom;
+    for (const z of overSide ? [] : zones) {
       const pr = z.pr;
       if (ev.clientX < pr.left || ev.clientX > pr.right ||
           ev.clientY < pr.top || ev.clientY > pr.bottom) continue;
