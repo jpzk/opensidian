@@ -3889,14 +3889,23 @@ function tabDragStart(e, g, i) {
     target = nt;
     otel.span("tab_drag_move", { groups: zones.length, target: target ? target.kind : "" }, performance.now() - mT0);
   };
+  // A tab drag is OUR gesture, never a text selection: WebKit otherwise extends a
+  // selection from the press across whatever the pointer crosses, and a drop that
+  // moves nothing (refused over #rside, or nowhere) leaves it behind — the NEXT
+  // press on a tab then starts a native selection DnD that swallows every
+  // mousemove (measured on the box, rside drag positive control, 2026-09-30).
+  const noSel = ev => ev.preventDefault();
+  window.addEventListener("selectstart", noSel, true);
   const move = ev => { last = ev; if (!raf) raf = requestAnimationFrame(step); };
   const up = async () => {
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
+    window.removeEventListener("selectstart", noSel, true);
     if (raf) { cancelAnimationFrame(raf); raf = 0; if (last) step(); }
     const t = target;
     if (ghost) ghost.remove();
     clearHl();
+    if (ghost) { const s = getSelection(); if (s && !s.isCollapsed) s.removeAllRanges(); }
     if (!ghost || !t) return;                // plain click, or dropped nowhere
     await act("tab_drop", { kind: t.kind, groups: groups().length, note: g.tabs[i] ? g.tabs[i].name : "" }, async () => {   // R20: pane/tab nodes MOVE, no layout rebuild
     await flushSave(g);
