@@ -3923,13 +3923,18 @@ fn main() {
     // file outside the write roots (the gate's $OUT). Opening it after enforce()
     // is EACCES on every span, swallowed — see perf::SINK.
     perf::open_sink();
-    // landlock: confine the whole process tree to the vault before webkit spawns
-    // the off-switch is named ONCE, in sandbox.rs — not spelled again here
-    if let (Some(p), true) = (&init, !sandbox::no_landlock_requested()) {
-        match sandbox::enforce(p, &cfg_path()) {
-            Ok(s) => eprintln!("landlock: {s:?}"),
-            Err(e) => eprintln!("landlock: off ({e})"),
+    // landlock: OPT-IN since 2026-09-30 (operator). RUSTIDIAN_LANDLOCK=1 confines
+    // the whole process tree to the vault before webkit spawns;
+    // RUSTIDIAN_NO_LANDLOCK wins. Both switches are named ONCE, in sandbox.rs.
+    if sandbox::landlock_enabled() {
+        if let Some(p) = &init {
+            match sandbox::enforce(p, &cfg_path()) {
+                Ok(s) => eprintln!("landlock: {s:?}"),
+                Err(e) => eprintln!("landlock: off ({e})"),
+            }
         }
+    } else {
+        eprintln!("{}", sandbox::OFF_LINE);
     }
     // R3 (item 4): the built-ins are FILES, and this is where a vault with no
     // `.obsidian/themes/` gets them — AFTER landlock, deliberately: seeding

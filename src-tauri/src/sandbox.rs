@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-/* Landlock self-sandbox — ON by default, RUSTIDIAN_NO_LANDLOCK=1 disables. Applied once in main()
+/* Landlock self-sandbox — OFF by default (operator 2026-09-30); RUSTIDIAN_LANDLOCK=1 opts in,
+   RUSTIDIAN_NO_LANDLOCK=1 forces it off and wins over the opt-in. When enabled it is applied once in main()
    BEFORE tauri spawns webkit, so every thread/child process inherits it:
    filesystem writes are confined to the vault, ~/.rustidian.json and the
    caches webkit/mesa/fontconfig need; the rest of the system is read-only
@@ -100,6 +101,35 @@ pub const NO_LANDLOCK_ENV: &str = "RUSTIDIAN_NO_LANDLOCK";
 /// by spelling the variable's name a second time somewhere else.
 pub fn no_landlock_requested() -> bool {
     std::env::var_os(NO_LANDLOCK_ENV).is_some()
+}
+
+/* lloff (operator 2026-09-30, "make landlock default off"): Landlock is OPT-IN.
+   RUSTIDIAN_LANDLOCK=1 enables the ruleset above, unchanged. The old off-switch
+   keeps its meaning and WINS: both set = no ruleset (dloss/tabclose launches
+   set RUSTIDIAN_NO_LANDLOCK and must stay unsandboxed whatever else is set). */
+pub const LANDLOCK_ENV: &str = "RUSTIDIAN_LANDLOCK";
+
+/// The one stderr line a launch prints when no ruleset is built (default, or
+/// the off-switch). Phase lloff greps for it verbatim.
+pub const OFF_LINE: &str = "landlock: off (default; RUSTIDIAN_LANDLOCK=1 enables)";
+
+/// Pure switch resolution, testable without touching process env (see the
+/// `ruleset_plan` note on why tests must not `set_var`). `opt_in` / `no` are
+/// the raw values of RUSTIDIAN_LANDLOCK / RUSTIDIAN_NO_LANDLOCK.
+/// Opt-in means the value "1"; the off-switch is ANY presence, as before.
+pub fn landlock_switch(opt_in: Option<&std::ffi::OsStr>, no: Option<&std::ffi::OsStr>) -> bool {
+    if no.is_some() {
+        return false;
+    }
+    opt_in.is_some_and(|v| v == "1")
+}
+
+/// Should main() build a ruleset? Reads both env vars, spelled once each.
+pub fn landlock_enabled() -> bool {
+    landlock_switch(
+        std::env::var_os(LANDLOCK_ENV).as_deref(),
+        std::env::var_os(NO_LANDLOCK_ENV).as_deref(),
+    )
 }
 
 /// The ruleset rustidian hands the kernel, AS DATA — the three vectors and the
@@ -277,10 +307,40 @@ mod tests {
     fn ruleset_plan_is_none_when_the_no_landlock_switch_is_set() {
         let (home, vault, cfg) = (Path::new("/home/u"), Path::new("/home/u/vault"), Path::new("/home/u/.rustidian.json"));
         assert_eq!(ruleset_plan(true, home, vault, cfg), None, "the off-switch must build no ruleset at all");
-        assert!(ruleset_plan(false, home, vault, cfg).is_some(), "default is ON: a ruleset must be built");
+        assert!(ruleset_plan(false, home, vault, cfg).is_some(), "switch not set to off: a ruleset must be built (main() only calls this when landlock_enabled())");
         // ...and the switch is that variable, spelled once (main.rs reads it
         // through no_landlock_requested(), features.md names the same string).
         assert_eq!(NO_LANDLOCK_ENV, "RUSTIDIAN_NO_LANDLOCK");
+    }
+
+    /* lloff — the switch resolution main() uses (operator 2026-09-30). */
+
+    /// DEFAULT IS OFF: with neither variable set, no ruleset is built.
+    #[test]
+    fn landlock_switch_default_is_off() {
+        assert!(!landlock_switch(None, None), "no env -> landlock must be OFF");
+        assert_eq!(LANDLOCK_ENV, "RUSTIDIAN_LANDLOCK");
+        assert_eq!(OFF_LINE, "landlock: off (default; RUSTIDIAN_LANDLOCK=1 enables)");
+    }
+
+    /// RUSTIDIAN_LANDLOCK=1 opts in; any other value does not.
+    #[test]
+    fn landlock_switch_opt_in_is_exactly_1() {
+        use std::ffi::OsStr;
+        assert!(landlock_switch(Some(OsStr::new("1")), None), "RUSTIDIAN_LANDLOCK=1 must enable");
+        for v in ["", "0", "true", "yes", "2"] {
+            assert!(!landlock_switch(Some(OsStr::new(v)), None), "RUSTIDIAN_LANDLOCK={v:?} must not enable");
+        }
+    }
+
+    /// RUSTIDIAN_NO_LANDLOCK (any value, even empty) WINS over the opt-in.
+    #[test]
+    fn landlock_switch_no_landlock_wins() {
+        use std::ffi::OsStr;
+        for n in ["1", "", "0"] {
+            assert!(!landlock_switch(Some(OsStr::new("1")), Some(OsStr::new(n))), "NO_LANDLOCK={n:?} must win over LANDLOCK=1");
+            assert!(!landlock_switch(None, Some(OsStr::new(n))));
+        }
     }
 
     /// the plan IS the ruleset: what a test reads must be what `enforce()`
