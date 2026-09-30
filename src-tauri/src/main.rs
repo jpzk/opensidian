@@ -19,6 +19,7 @@ use tauri::State;
 
 mod builtins;
 mod index;
+mod migrate;
 mod outline;
 mod perf;
 mod sandbox;
@@ -2565,9 +2566,13 @@ fn search_inner(v: &State<Vault>, query: &str) -> Vec<SearchHit> {
    does not recognise and drops top-level ones (recon §5, 32-editdone); we
    preserve BOTH — never the app that lost someone's future 1.14 key.
 
-   The old v0.12/v1 `.opensidian-bookmarks` is IGNORED: never read, never
-   written, never deleted (criterion 5's one sentence, as behaviour —
-   r4x_a_pre_existing_opensidian_bookmarks_file_is_ignored). */
+   The old v0.12/v1 dotfile is IGNORED whenever stock's file exists: never
+   read, never written, never deleted (criterion 5's one sentence, as
+   behaviour — r4x_a_pre_existing_opensidian_bookmarks_file_is_ignored).
+   AMENDED by goal opensidian (2026-09-30, rename migration): in a vault with
+   NO .obsidian/bookmarks.json yet, the old .rustidian-bookmarks is copied to
+   .opensidian-bookmarks (migrate.rs) and READ in its v0.12 grammar, so a
+   v0.15 user's bookmarks survive the upgrade. read_bm_tree, below. */
 const BM_FILE: &str = ".obsidian/bookmarks.json";
 /// stock's default for a freshly created group, MEASURED, not remembered
 /// (docs/recon-bmfolder/README.md, `03-newgroup.png`).
@@ -2712,7 +2717,63 @@ fn bm_node_of(v: &serde_json::Value) -> BmNode {
 }
 
 fn read_bm_tree(root: &Path) -> Vec<BmNode> {
-    parse_bm_tree(&fs::read_to_string(root.join(BM_FILE)).unwrap_or_default())
+    match fs::read_to_string(root.join(BM_FILE)) {
+        // stock's file exists: it is THE store, and every dotfile is ignored
+        Ok(body) => parse_bm_tree(&body),
+        // no stock file yet: a vault that only ever saw v0.12..v0.15 bookmarks
+        // may carry them in the old dotfile. Rename migration (migrate.rs):
+        // .rustidian-bookmarks is copied to .opensidian-bookmarks if the new
+        // one is absent, and the new one is READ in the v0.12 line grammar.
+        // Nothing is written to .obsidian/ here — the first bookmark EDIT
+        // writes stock's file, and from then on stock's file wins.
+        Err(_) => migrate::vault_bookmarks(root)
+            .and_then(|p| fs::read_to_string(p).ok())
+            .map(|b| parse_legacy_bm(&b))
+            .unwrap_or_default(),
+    }
+}
+
+/* the v0.12 LINE grammar of the old dotfile (read-only now; its writer is
+   gone since goal bmcompat): one entry per line in pre-order, one TAB per
+   depth, ":g:"+title opens a group, ":f:" escapes a file name that starts
+   with ':'. TOLERANT: a depth deeper than previous+1 is clamped, a depth with
+   no group open is top level, blank lines are skipped. */
+fn parse_legacy_bm(body: &str) -> Vec<BmNode> {
+    fn push(root: &mut Vec<BmNode>, open: &mut [(String, Vec<BmNode>)], n: BmNode) {
+        match open.last_mut() {
+            Some(top) => top.1.push(n),
+            None => root.push(n),
+        }
+    }
+    fn close(root: &mut Vec<BmNode>, open: &mut Vec<(String, Vec<BmNode>)>) {
+        if let Some((title, items)) = open.pop() {
+            push(root, open, BmNode::group(title, items));
+        }
+    }
+    let (mut root, mut open): (Vec<BmNode>, Vec<(String, Vec<BmNode>)>) = (Vec::new(), Vec::new());
+    let (mut prev, mut first) = (0usize, true);
+    for line in body.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let want = line.bytes().take_while(|b| *b == b'\t').count();
+        let rest = &line[want..];
+        let mut d = want.min(if first { 0 } else { prev + 1 });
+        while open.len() > d {
+            close(&mut root, &mut open);
+        }
+        d = d.min(open.len());
+        match rest.strip_prefix(":g:") {
+            Some(t) => open.push((t.to_string(), Vec::new())),
+            None => push(&mut root, &mut open, BmNode::file(rest.strip_prefix(":f:").unwrap_or(rest))),
+        }
+        prev = d;
+        first = false;
+    }
+    while !open.is_empty() {
+        close(&mut root, &mut open);
+    }
+    root
 }
 
 /* the ONE serializer. bm_value_of spells the KEY ORDER stock writes — per
@@ -3913,6 +3974,29 @@ fn main() {
     // also the whole quiet-case output of the feature: healthy run = this line, no
     // warnings. The ceiling itself is pinned in perf.rs; env can only tighten it.
     eprintln!("{}", perf::slow_banner());
+    // RENAME MIGRATION (goal opensidian): old -> new table in migrate.rs —
+    //   ~/.rustidian.json -> ~/.opensidian.json,
+    //   <vault>/.rustidian-bookmarks -> <vault>/.opensidian-bookmarks (per vault, read_bm_tree),
+    //   ~/.local/share/dev.koto.rustidian -> ~/.local/share/dev.koto.opensidian.
+    // New wins; else the old is COPIED (never moved/deleted). BEFORE the first
+    // cfg read (the vault list below) and before Landlock closes.
+    // ENV VARS are a CLEAN rename — the old names are NOT read. Old -> new:
+    //   RUSTIDIAN_LANDLOCK          -> OPENSIDIAN_LANDLOCK
+    //   RUSTIDIAN_NO_LANDLOCK       -> OPENSIDIAN_NO_LANDLOCK
+    //   RUSTIDIAN_OTEL              -> OPENSIDIAN_OTEL
+    //   RUSTIDIAN_PERF              -> OPENSIDIAN_PERF
+    //   RUSTIDIAN_SAVE_MS           -> OPENSIDIAN_SAVE_MS
+    //   RUSTIDIAN_SLOW_MS           -> OPENSIDIAN_SLOW_MS
+    //   RUSTIDIAN_SLOW_INJECT       -> OPENSIDIAN_SLOW_INJECT
+    //   RUSTIDIAN_GRAPH_RENDERER    -> OPENSIDIAN_GRAPH_RENDERER
+    //   RUSTIDIAN_GRAPH_LOSE_CTX    -> OPENSIDIAN_GRAPH_LOSE_CTX
+    //   RUSTIDIAN_TYPEPROBE         -> OPENSIDIAN_TYPEPROBE
+    //   RUSTIDIAN_SMOKE_CSS         -> OPENSIDIAN_SMOKE_CSS
+    //   RUSTIDIAN_TEST_PARTIAL_WALK -> OPENSIDIAN_TEST_PARTIAL_WALK
+    //   RUSTIDIAN_LL_ALONE          -> OPENSIDIAN_LL_ALONE (test only)
+    //   RUSTIDIAN_OTELSINK_CHILD    -> OPENSIDIAN_OTELSINK_CHILD (test only)
+    //   localStorage rustidian.graphRenderer -> opensidian.graphRenderer (hidden dev knob)
+    migrate::run_home(&PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())));
     // VAULT_DIR (probes/tests) wins; else last persisted vault if still a dir (R1.6)
     let init = std::env::var("VAULT_DIR")
         .ok()
@@ -5341,25 +5425,58 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// criterion 5's one sentence, as behaviour: a pre-existing
-    /// .opensidian-bookmarks is IGNORED — never read, never written, never
-    /// deleted. Bookmarks come from .obsidian/bookmarks.json alone.
+    /// criterion 5's one sentence, as behaviour: once stock's
+    /// .obsidian/bookmarks.json exists, a dotfile (old OR new name) is
+    /// IGNORED — never read, never written, never deleted.
     #[test]
     fn r4x_a_pre_existing_opensidian_bookmarks_file_is_ignored() {
         let root = tmp_vault("bm-old-dotfile");
         let v012 = b"Ideas\n:g:Work\n\tA-LP\n";
+        fs::create_dir_all(root.join(".obsidian")).unwrap();
+        fs::write(root.join(BM_FILE), "{\n  \"items\": []\n}").unwrap();
         fs::write(root.join(".opensidian-bookmarks"), v012).unwrap();
-        assert!(read_bookmarks(&root).is_empty(), "the old dotfile is not read");
+        fs::write(root.join(".rustidian-bookmarks"), v012).unwrap();
+        assert!(read_bookmarks(&root).is_empty(), "stock's file wins; the dotfiles are not read");
         let mut t = read_bm_tree(&root);
         bm_toggle_in(&mut t, "Ideas");
         write_bm_tree(&root, &t).unwrap();
         assert_eq!(read_bookmarks(&root), vec!["Ideas"], "bookmarks live in the stock file");
-        assert!(root.join(".obsidian/bookmarks.json").is_file());
-        assert_eq!(
-            fs::read(root.join(".opensidian-bookmarks")).unwrap(),
-            v012.to_vec(),
-            "...and the old dotfile is byte-for-byte untouched"
-        );
+        for f in [".opensidian-bookmarks", ".rustidian-bookmarks"] {
+            assert_eq!(fs::read(root.join(f)).unwrap(), v012.to_vec(), "{f} byte-for-byte untouched");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// rename migration (goal opensidian): a v0.15 vault with ONLY the old
+    /// .rustidian-bookmarks and no stock file — the dotfile is copied to
+    /// .opensidian-bookmarks, read in the v0.12 grammar (groups, depth), the
+    /// old file stays byte-identical, and the first EDIT writes stock's file.
+    #[test]
+    fn rename_old_bookmarks_dotfile_carries_over_then_stock_takes_over() {
+        let root = tmp_vault("bm-rename");
+        let v012 = b"Ideas\n:g:Work\n\tA-LP\n\t:f::colon\nTop\n";
+        fs::write(root.join(".rustidian-bookmarks"), v012).unwrap();
+        assert_eq!(read_bookmarks(&root), vec!["Ideas", "A-LP", ":colon", "Top"]);
+        assert_eq!(fs::read(root.join(".opensidian-bookmarks")).unwrap(), v012.to_vec(), "new written = old bytes");
+        assert!(!root.join(BM_FILE).exists(), "a read writes nothing into .obsidian/");
+        let t = read_bm_tree(&root);
+        assert!(matches!(&t[1], BmNode::Group { title, items, .. } if title == "Work" && items.len() == 2));
+        let mut t = t;
+        bm_toggle_in(&mut t, "Top");
+        write_bm_tree(&root, &t).unwrap();
+        assert_eq!(read_bookmarks(&root), vec!["Ideas", "A-LP", ":colon"], "edit lands in stock's file");
+        assert_eq!(fs::read(root.join(".rustidian-bookmarks")).unwrap(), v012.to_vec(), "old untouched");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// both dotfiles, no stock file: the NEW one wins.
+    #[test]
+    fn rename_both_bookmark_dotfiles_new_wins() {
+        let root = tmp_vault("bm-both");
+        fs::write(root.join(".rustidian-bookmarks"), b"OldOne\n").unwrap();
+        fs::write(root.join(".opensidian-bookmarks"), b"NewOne\n").unwrap();
+        assert_eq!(read_bookmarks(&root), vec!["NewOne"]);
+        assert_eq!(fs::read(root.join(".opensidian-bookmarks")).unwrap(), b"NewOne\n".to_vec());
         let _ = fs::remove_dir_all(&root);
     }
 

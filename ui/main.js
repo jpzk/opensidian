@@ -7317,6 +7317,7 @@ async function loadRecent() {
     };
     ul.appendChild(li);
   }
+  if (vaultPath) { try { updateTitle(); } catch (_) {} }   // brand: publish [precent:] once the rows exist (async); never at the boot picker, whose window must stay untitled by the census
 }
 async function browseTo(p) {
   const dirs = await inv("list_dirs", { path: p });
