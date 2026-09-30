@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <component type="desktop-application">
-  <id>dev.koto.rustidian</id>
+  <id>dev.koto.opensidian</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
-  <name>rustidian</name>
+  <name>opensidian</name>
   <summary>Local-first markdown vault editor</summary>
   <description>
     <p>
-      rustidian is a local-first markdown editor for a folder of plain files (a
+      opensidian is a local-first markdown editor for a folder of plain files (a
       vault): tabbed editing, wiki links, a graph view and themeable chrome. It
       keeps your notes as files on disk and never needs a network connection.
     </p>
@@ -19,18 +19,18 @@
        the URL this repo already uses for releases (README.md, scripts/
        release.sh:164). It answers 404 today: the repo is not public, which is
        itself a Flathub blocker — see docs/recon-flatpak/README.md, B6. -->
-  <url type="homepage">https://github.com/jpzk/rustidian</url>
-  <url type="bugtracker">https://github.com/jpzk/rustidian/issues</url>
+  <url type="homepage">https://github.com/jpzk/opensidian</url>
+  <url type="bugtracker">https://github.com/jpzk/opensidian/issues</url>
   <developer id="dev.koto">
     <name>koto</name>
   </developer>
-  <launchable type="desktop-id">dev.koto.rustidian.desktop</launchable>
+  <launchable type="desktop-id">dev.koto.opensidian.desktop</launchable>
   <!-- Flathub requires at least one screenshot, fetched over the network from
        a URL that resolves. This one is the committed launch shot; it resolves
        only once the repo is public and this branch is on main. -->
   <screenshots>
     <screenshot type="default">
-      <image>https://raw.githubusercontent.com/jpzk/rustidian/main/docs/recon-flatpak/shots/L-flatpak-editor.png</image>
+      <image>https://raw.githubusercontent.com/jpzk/opensidian/main/docs/recon-flatpak/shots/L-flatpak-editor.png</image>
       <caption>The tabbed editor with a vault open</caption>
     </screenshot>
   </screenshots>

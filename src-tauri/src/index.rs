@@ -18,7 +18,7 @@ pub fn warn_oversized(p: &Path) {
     static SEEN: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
     let mut seen = SEEN.get_or_init(|| Mutex::new(HashSet::new())).lock().unwrap();
     if seen.insert(p.to_path_buf()) {
-        eprintln!("rustidian: skipping {} (> {} MiB)", p.display(), MAX_NOTE_BYTES >> 20);
+        eprintln!("opensidian: skipping {} (> {} MiB)", p.display(), MAX_NOTE_BYTES >> 20);
     }
 }
 

@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build the rustidian flatpak: generate the offline cargo sources, then build.
+# Build the opensidian flatpak: generate the offline cargo sources, then build.
 #
 #   packaging/flatpak/build.sh
 #
@@ -18,7 +18,7 @@
 set -eu
 cd "$(dirname "$0")/../.."
 ROOT=dist/flatpak
-MAN=packaging/flatpak/dev.koto.rustidian.yml
+MAN=packaging/flatpak/dev.koto.opensidian.yml
 mkdir -p "$ROOT"
 echo "[$(date +%H:%M:%S)] 1/5 cargo sources from src-tauri/Cargo.lock"
 packaging/flatpak/gen-cargo-sources.sh > "$ROOT/cargo-sources.json"
@@ -49,6 +49,6 @@ echo "[$(date +%H:%M:%S)] 3/5 building (offline)"
 flatpak-builder --disable-download --disable-updates --force-clean \
   --state-dir="$ROOT/state" --repo="$ROOT/repo" "$ROOT/build" "$MAN"
 echo "[$(date +%H:%M:%S)] 4/5 exporting bundle"
-flatpak build-bundle "$ROOT/repo" "$ROOT/rustidian.flatpak" dev.koto.rustidian master
-ls -l "$ROOT/rustidian.flatpak"
+flatpak build-bundle "$ROOT/repo" "$ROOT/opensidian.flatpak" dev.koto.opensidian master
+ls -l "$ROOT/opensidian.flatpak"
 echo "[$(date +%H:%M:%S)] 5/5 done"

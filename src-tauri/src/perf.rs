@@ -2,11 +2,11 @@
 //! otel (R18): screen-free lag telemetry in the OpenTelemetry data model.
 //! Zero deps beyond serde/serde_json.
 //!
-//! When RUSTIDIAN_OTEL (alias: RUSTIDIAN_PERF) names a file, every span is
+//! When OPENSIDIAN_OTEL (alias: OPENSIDIAN_PERF) names a file, every span is
 //! appended as ONE OTLP/JSON line — an ExportTraceServiceRequest, i.e. what the
 //! otel-collector `otlpjsonfile` receiver reads:
 //!   {"resourceSpans":[{"resource":{"attributes":[service.name, service.version]},
-//!     "scopeSpans":[{"scope":{"name":"rustidian"},"spans":[{traceId, spanId,
+//!     "scopeSpans":[{"scope":{"name":"opensidian"},"spans":[{traceId, spanId,
 //!     parentSpanId, name, kind, startTimeUnixNano, endTimeUnixNano, attributes}]}]}]}
 //! When unset the target resolves once (OnceLock) to None and every span is a
 //! no-op — `span_timed!` doesn't even take an Instant then.
@@ -35,12 +35,12 @@ pub fn resolve(env: Option<OsString>) -> Option<PathBuf> {
 fn target() -> Option<&'static PathBuf> {
     static T: OnceLock<Option<PathBuf>> = OnceLock::new();
     T.get_or_init(|| {
-        resolve(std::env::var_os("RUSTIDIAN_OTEL")).or_else(|| resolve(std::env::var_os("RUSTIDIAN_PERF")))
+        resolve(std::env::var_os("OPENSIDIAN_OTEL")).or_else(|| resolve(std::env::var_os("OPENSIDIAN_PERF")))
     })
     .as_ref()
 }
 
-/// true when RUSTIDIAN_OTEL / RUSTIDIAN_PERF is set (checked once per process)
+/// true when OPENSIDIAN_OTEL / OPENSIDIAN_PERF is set (checked once per process)
 pub fn enabled() -> bool {
     target().is_some()
 }
@@ -68,7 +68,7 @@ pub fn enabled() -> bool {
 //      in scripts/lag-budgets.env (enforced by scripts/lag-gate.sh in the bench)
 //      are what catch that class; the console is for the breach you can feel.
 //   2. HARDWARE. On a machine slow enough that ordinary ops exceed 100ms the
-//      console becomes noisy and stops being a signal. RUSTIDIAN_SLOW_MS can
+//      console becomes noisy and stops being a signal. OPENSIDIAN_SLOW_MS can
 //      only make it stricter, so there is deliberately NO escape hatch for a
 //      slow box: the honest reading is "this machine is over the budget".
 //   3. DEATH BY A THOUSAND CUTS. 40 ops of 90ms in a row never warn even though
@@ -84,7 +84,7 @@ pub fn enabled() -> bool {
 /// "Unusually long", in milliseconds. THE single definition.
 pub const SLOW_MS_CEIL: u32 = 100;
 /// the only env var that touches the ceiling; it may TIGHTEN it, never loosen it
-pub const SLOW_ENV: &str = "RUSTIDIAN_SLOW_MS";
+pub const SLOW_ENV: &str = "OPENSIDIAN_SLOW_MS";
 
 /// THE WARM-UP WINDOW. A span that STARTS within this many ms of process start is
 /// COLD and does not warn — it is recorded and reported as `cold=<ms>` on that
@@ -342,7 +342,7 @@ pub fn decide_warn(st: &mut WarnState, name: &str, ms: f64, now_ms: u64, ceil_ms
 //   * it is CLAMPED at INJECT_MAX_MS, so a fat-fingered 9999999 cannot wedge a
 //     gate phase into a timeout.
 /// env that injects a real delay into one named span: "<span_name>=<ms>"
-pub const INJECT_ENV: &str = "RUSTIDIAN_SLOW_INJECT";
+pub const INJECT_ENV: &str = "OPENSIDIAN_SLOW_INJECT";
 /// the most an injection may add to one span, in ms (values above are clamped)
 pub const INJECT_MAX_MS: u64 = 5000;
 
@@ -392,7 +392,7 @@ fn warn_state() -> &'static Mutex<WarnState> {
 }
 
 /// EVERY span that ends passes through here — frontend (ui_spans) and backend
-/// (span_ctx) alike — whether or not RUSTIDIAN_OTEL is set. Telemetry writing
+/// (span_ctx) alike — whether or not OPENSIDIAN_OTEL is set. Telemetry writing
 /// to a file is optional; the console warning is not.
 /// `start_ms` is when the span STARTED (unix ms): the warm-up window is judged on
 /// the start, not the end, because a cold op that takes 144ms ENDS outside a
@@ -417,11 +417,11 @@ pub fn check_slow(name: &str, ms: f64) {
 
 /* R18.1 THE SINK IS AN OPEN FD, NOT A PATH RE-OPENED PER SPAN.
    Landlock filters PATH LOOKUPS; it does not revoke a descriptor that is
-   already open. rustidian confines itself to `sandbox::write_roots()` before
-   the webview starts, so on a landlock kernel every later `open(RUSTIDIAN_OTEL)`
+   already open. opensidian confines itself to `sandbox::write_roots()` before
+   the webview starts, so on a landlock kernel every later `open(OPENSIDIAN_OTEL)`
    is EACCES whenever the target sits outside vault/cfg/~.cache//tmp//run//dev//var/tmp.
    `emit`'s error is swallowed by every caller ("telemetry must never break the
-   app"), so R18.1 — "with RUSTIDIAN_OTEL=<file> set, the app appends one
+   app"), so R18.1 — "with OPENSIDIAN_OTEL=<file> set, the app appends one
    OTLP/JSON line per span" — became SILENTLY FALSE the day the app first ran on
    a kernel that enforces the sandbox: app ran, spans were built, file never
    existed, nothing said so. Measured on the Hetzner box (kernel 6.8, landlock
@@ -430,7 +430,7 @@ pub fn check_slow(name: &str, ms: f64) {
    points — without widening the ruleset by one path. */
 static SINK: OnceLock<Mutex<File>> = OnceLock::new();
 
-/// Open the RUSTIDIAN_OTEL / RUSTIDIAN_PERF target and keep the fd for the life
+/// Open the OPENSIDIAN_OTEL / OPENSIDIAN_PERF target and keep the fd for the life
 /// of the process. MUST be called BEFORE `sandbox::enforce()` — after it, a
 /// target outside the write roots can no longer be opened at all.
 /// No-op when the env is unset (R18.3: unset = zero cost, no file, no syscall).
@@ -525,9 +525,9 @@ pub fn span_json(s: &Span) -> Value {
 pub fn request(spans: &[Span]) -> Value {
     json!({ "resourceSpans": [{
         "resource": { "attributes": [
-            { "key": "service.name", "value": { "stringValue": "rustidian" } },
+            { "key": "service.name", "value": { "stringValue": "opensidian" } },
             { "key": "service.version", "value": { "stringValue": env!("CARGO_PKG_VERSION") } } ] },
-        "scopeSpans": [{ "scope": { "name": "rustidian" }, "spans": spans.iter().map(span_json).collect::<Vec<_>>() }] }] })
+        "scopeSpans": [{ "scope": { "name": "opensidian" }, "spans": spans.iter().map(span_json).collect::<Vec<_>>() }] }] })
 }
 
 /// append one OTLP/JSON line to `path` (create if missing). Errors are swallowed
@@ -639,7 +639,7 @@ macro_rules! span_timed {
         $crate::span_timed!($ctx => $name, $e, ::serde_json::json!({}))
     };
     ($ctx:expr => $name:expr, $e:expr, $extra:expr) => {{
-        // ALWAYS timed. The old form measured only when RUSTIDIAN_OTEL was set,
+        // ALWAYS timed. The old form measured only when OPENSIDIAN_OTEL was set,
         // which would have made the slow-op console warning a traced-runs-only
         // feature — invisible in exactly the ordinary run where a user notices
         // the lag. `$extra` (a json! literal) is still built ONLY when telemetry
@@ -716,7 +716,7 @@ mod tests {
     #[test]
     fn inject_cannot_loosen_the_ceiling() {
         for hostile in [
-            "RUSTIDIAN_SLOW_MS=99999",
+            "OPENSIDIAN_SLOW_MS=99999",
             "ceiling=99999",
             "SLOW_MS_CEIL=99999",
             "*=0",
@@ -960,7 +960,7 @@ mod tests {
     fn first_span(line: &str) -> Value {
         let v: Value = serde_json::from_str(line).unwrap();
         let rs = &v["resourceSpans"][0];
-        assert_eq!(rs["resource"]["attributes"][0]["value"]["stringValue"], "rustidian");
+        assert_eq!(rs["resource"]["attributes"][0]["value"]["stringValue"], "opensidian");
         assert_eq!(rs["resource"]["attributes"][1]["key"], "service.version");
         rs["scopeSpans"][0]["spans"][0].clone()
     }
@@ -977,7 +977,7 @@ mod tests {
         assert_ne!(new_span_id(), new_span_id());
         assert_eq!(new_span_id().len(), 16);
 
-        let p = std::env::temp_dir().join(format!("rustidian-otel-test-{}.jsonl", std::process::id()));
+        let p = std::env::temp_dir().join(format!("opensidian-otel-test-{}.jsonl", std::process::id()));
         let _ = std::fs::remove_file(&p);
         // root backend span with typed attrs
         emit(&p, &[ended(None, "render_blocks", 12.3456, json!({"blocks": 150, "name": "evil", "f": 1.5, "b": true}))]).unwrap();
@@ -1035,7 +1035,7 @@ mod tests {
         // the process-wide entry point: whatever the env says now is what
         // span() does; with both vars unset in `cargo test` this is the
         // no-op path and must not create anything.
-        if std::env::var_os("RUSTIDIAN_OTEL").is_none() && std::env::var_os("RUSTIDIAN_PERF").is_none() {
+        if std::env::var_os("OPENSIDIAN_OTEL").is_none() && std::env::var_os("OPENSIDIAN_PERF").is_none() {
             assert!(!enabled());
             span("noop", 1.0, json!({}));
             ui_spans(&[json!({"name":"noop"})]);
@@ -1050,7 +1050,7 @@ mod tests {
     /// it vanishes, which the smoke reads as "telemetry not live").
     #[test]
     fn concurrent_emit_never_interleaves_a_line() {
-        let p = std::env::temp_dir().join(format!("rustidian-otel-race-{}.jsonl", std::process::id()));
+        let p = std::env::temp_dir().join(format!("opensidian-otel-race-{}.jsonl", std::process::id()));
         let _ = std::fs::remove_file(&p);
         let threads: Vec<_> = (0..8)
             .map(|t| {
@@ -1080,7 +1080,7 @@ mod tests {
     }
 
     /* R18.1 UNDER AN ENFORCED SANDBOX — the regression this file's SINK exists
-       for. The old `emit` re-opened RUSTIDIAN_OTEL for every span; on a kernel
+       for. The old `emit` re-opened OPENSIDIAN_OTEL for every span; on a kernel
        that enforces landlock that open is EACCES for any target outside the
        write roots, and the error is swallowed, so telemetry died in silence.
        The test asserts BOTH halves on the same enforced thread:
@@ -1112,7 +1112,7 @@ mod tests {
         // process, where it is the only caller of enforce() and CONFINED is
         // unset. The product's real enforce() stays in the assertion path and no
         // pre-existing assertion moves.
-        const GUARD: &str = "RUSTIDIAN_OTELSINK_CHILD";
+        const GUARD: &str = "OPENSIDIAN_OTELSINK_CHILD";
         if std::env::var_os(GUARD).is_none() {
             let exe = std::env::current_exe().expect("current_exe for the isolated re-exec");
             let st = std::process::Command::new(exe)
@@ -1136,12 +1136,12 @@ mod tests {
             eprintln!("otel sink test SKIPPED: no HOME in the environment");
             return;
         };
-        let base = std::env::temp_dir().join(format!("rustidian-otelsink-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("opensidian-otelsink-{}", std::process::id()));
         let (vault, cfg) = (base.join("vault"), base.join("cfg.json"));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&vault).unwrap();
         // outside every write root, like the gate's $OUT
-        let sink_path = home.join(format!(".rustidian-otel-sink-{}.jsonl", std::process::id()));
+        let sink_path = home.join(format!(".opensidian-otel-sink-{}.jsonl", std::process::id()));
         let _ = std::fs::remove_file(&sink_path);
         let pre = OpenOptions::new().create(true).append(true).open(&sink_path).expect("pre-open (before enforce)");
         let (sp, v2, c2) = (sink_path.clone(), vault.clone(), cfg.clone());

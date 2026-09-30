@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-// rustidian, an Obsidian-compatible markdown notes app.
+// opensidian, an Obsidian-compatible markdown notes app.
 // Copyright (C) 2026 Jendrik Poloczek
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This program comes with ABSOLUTELY NO WARRANTY. It is free software, and you
@@ -125,7 +125,7 @@ const IMG_TYPES: [(&str, &str); 5] = [
 ];
 
 /// the scheme our images are served on; the CSP names it exactly (R29 / S1)
-const IMG_SCHEME: &str = "rustidian-img";
+const IMG_SCHEME: &str = "opensidian-img";
 
 /// R29.10: the label the R29.4 banner carries in place of a REMOTE target.
 /// Both engines paint the same sentence (ui/editor.js `imgEl` sets it as
@@ -208,7 +208,7 @@ fn serve_image(root: &Path, target: &str) -> Option<(&'static str, Vec<u8>)> {
     Some((mime, fs::read(&p).ok()?))
 }
 
-/// percent-ENCODE a vault-relative path for the `rustidian-img:` URL. Unreserved
+/// percent-ENCODE a vault-relative path for the `opensidian-img:` URL. Unreserved
 /// RFC3986 characters and `/` survive; everything else (space, `#`, `?`, `%`,
 /// non-ASCII) becomes %XX, so `pct_decode` on the serving side gets the exact
 /// bytes back. Without this a note named `a#b.png` would lose everything after
@@ -303,7 +303,7 @@ fn is_img_target(target: &str) -> bool {
 /// R31.1 the ONE name an OS drop reaches the UI under. Not `tauri://drag-drop`
 /// (Tauri's own, which also fires for hover/leave and carries a pointer
 /// position the editor has no use for): a name we own, carrying exactly the
-/// paths, so the seam between "the OS dropped something" and "rustidian
+/// paths, so the seam between "the OS dropped something" and "opensidian
 /// attaches it" is one grep away for whoever reads this next.
 const DROP_EVENT: &str = "drop-files";
 
@@ -334,10 +334,10 @@ impl Refused {
             Refused::NotAFile => format!("{name}: not a regular file"),
             Refused::Symlink => format!("{name}: symlinks are not copied"),
             Refused::BadName => format!("{name}: unsafe file name"),
-            Refused::BadExt(e) => format!("{name}: .{e} is not an image rustidian can show"),
+            Refused::BadExt(e) => format!("{name}: .{e} is not an image opensidian can show"),
             Refused::TooBig(n) => format!("{name}: {} MB is over the {} MB limit", n / 1048576, MAX_IMG_BYTES / 1048576),
             Refused::Unreadable => format!(
-                "{name}: rustidian may only read dropped files from {} (sandbox)",
+                "{name}: opensidian may only read dropped files from {} (sandbox)",
                 sandbox::DROP_READ_DIRS.iter().map(|d| format!("~/{d}")).collect::<Vec<_>>().join(", ")
             ),
             Refused::NoFreeName => format!("{name}: no free file name left in the attachment folder"),
@@ -984,7 +984,7 @@ fn rename_note(v: State<Vault>, old: String, new: String, otel: Option<perf::Ctx
 
    WHERE IT GOES. Stock says "moved to your system trash". This app cannot
    honestly say that: `sandbox.rs::write_roots` grants write access to /tmp,
-   /dev, /run, /var/tmp, ~/.cache, ~/.local/share/dev.koto.rustidian, the vault
+   /dev, /run, /var/tmp, ~/.cache, ~/.local/share/dev.koto.opensidian, the vault
    and the config file — and to nothing else. ~/.local/share/Trash is NOT in
    that set, so under an enforced Landlock ruleset (which the box enforces) an
    XDG trash move is EACCES, and widening the ruleset to reach a directory full
@@ -1064,10 +1064,10 @@ fn vault_get(v: State<Vault>) -> Option<String> {
     cur_vault(&v).map(|p| p.display().to_string())
 }
 
-/* R1.6 vault persistence: ~/.rustidian.json {"last": path, "list": [paths]}.
+/* R1.6 vault persistence: ~/.opensidian.json {"last": path, "list": [paths]}.
    Written only on explicit open/create — VAULT_DIR boots (probes) never touch it. */
 fn cfg_path() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())).join(".rustidian.json")
+    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())).join(".opensidian.json")
 }
 
 /// whole config as a Value — extra keys (sidebar_w, ...) survive rewrites
@@ -1125,7 +1125,7 @@ fn set_sidebar_w(w: u64) {
           shape: <vault>/.obsidian/workspace.json. A vault carries its own
           session, so a vault opened by stock Obsidian and back again (R28.16)
           finds the tabs where it left them.
-   R28.2  the WINDOW GEOMETRY does NOT live there. It goes in ~/.rustidian.json
+   R28.2  the WINDOW GEOMETRY does NOT live there. It goes in ~/.opensidian.json
           ("win"), beside the other machine-scoped settings (sidebar_w, theme,
           zoom). This is not tidiness: a vault synced between a laptop and a
           desktop would otherwise carry one machine's window rectangle to the
@@ -1253,7 +1253,7 @@ fn set_vault_inner(v: &State<Vault>, path: &str) -> Result<String, String> {
     }
     if !sandbox::allows(&p) {
         persist_vault(&p); // next boot confines to this one instead
-        return Err(format!("sandboxed to {} — vault saved, restart rustidian to open it", sandbox::confined_to().unwrap().display()));
+        return Err(format!("sandboxed to {} — vault saved, restart opensidian to open it", sandbox::confined_to().unwrap().display()));
     }
     persist_vault(&p);
     open_vault(v, &p);
@@ -1265,11 +1265,11 @@ fn set_vault_inner(v: &State<Vault>, path: &str) -> Result<String, String> {
    create-vault flow writes exactly one file, `Welcome.md`, 203 bytes, and it
    carries NO heading — it opens on prose ("This is your new *vault*.") while
    the big "Welcome" on screen is the INLINE TITLE, the filename rendered.
-   So the `# Welcome` line rustidian used to seed was redundant the moment the
+   So the `# Welcome` line opensidian used to seed was redundant the moment the
    inline title landed: it drew the word twice, once from the filename and
    once from bytes we wrote ourselves.
    Seeding CONTENT is deliberate and stays (R1.2) — it is NOT note creation,
-   which materializes zero bytes (`create_note`). The prose is rustidian's own;
+   which materializes zero bytes (`create_note`). The prose is opensidian's own;
    only the heading is dropped. Deliberate delta from stock: we keep a trailing
    newline (stock's seed ends without one) because a text file should end in \n. */
 const NEW_VAULT_SEED_NAME: &str = "Welcome.md";
@@ -1295,7 +1295,7 @@ fn create_vault(v: State<Vault>, parent: String, name: String) -> Result<String,
             return Err(format!("already exists: {}", p.display()));
         }
         if !sandbox::allows(Path::new(parent.trim())) {
-            return Err(format!("sandboxed to {} — create the folder outside rustidian, then pick it and restart", sandbox::confined_to().unwrap().display()));
+            return Err(format!("sandboxed to {} — create the folder outside opensidian, then pick it and restart", sandbox::confined_to().unwrap().display()));
         }
         fs::create_dir_all(&p).map_err(|e| e.to_string())?;
         seed_new_vault(&p).map_err(|e| e.to_string())?;
@@ -1306,7 +1306,7 @@ fn create_vault(v: State<Vault>, parent: String, name: String) -> Result<String,
 }
 
 /// otel (R18): frontend spans (ui/otel.js) arrive in ONE batch per 250ms — [{name, traceId, spanId,
-/// parentSpanId, startMs, endMs, attrs}] — and land in the same RUSTIDIAN_OTEL file as backend spans,
+/// parentSpanId, startMs, endMs, attrs}] — and land in the same OPENSIDIAN_OTEL file as backend spans,
 /// one OTLP/JSON request line per batch. Returns false when telemetry is off so the UI stops sending.
 #[tauri::command]
 fn log_spans(spans: Vec<serde_json::Value>) -> bool {
@@ -1315,7 +1315,7 @@ fn log_spans(spans: Vec<serde_json::Value>) -> bool {
     // uses this reply to decide whether to keep measuring at all (ui/otel.js:
     // `on === false` makes every later call a no-op), and the slow-op console
     // warning needs UI spans in EVERY run, not only in runs that set
-    // RUSTIDIAN_OTEL. ui_spans() above warns on a breach whether or not a trace
+    // OPENSIDIAN_OTEL. ui_spans() above warns on a breach whether or not a trace
     // file is being written; returning perf::enabled() here would have switched
     // the whole feature off for ordinary users — the ones who actually feel the
     // lag. Cost when untraced: one IPC per 250ms while spans are being produced,
@@ -1323,18 +1323,18 @@ fn log_spans(spans: Vec<serde_json::Value>) -> bool {
     true
 }
 
-/// graph-webgl: hidden hooks for the graph draw path. RUSTIDIAN_GRAPH_RENDERER=gl|2d forces a
-/// renderer (tests); RUSTIDIAN_GRAPH_LOSE_CTX=1 makes the UI lose its WebGL context once the sim
+/// graph-webgl: hidden hooks for the graph draw path. OPENSIDIAN_GRAPH_RENDERER=gl|2d forces a
+/// renderer (tests); OPENSIDIAN_GRAPH_LOSE_CTX=1 makes the UI lose its WebGL context once the sim
 /// settled (smoke graphgl: the 2D fallback must keep drawing).
 #[tauri::command]
 fn graph_renderer_pref() -> serde_json::Value {
     serde_json::json!({
-        "renderer": std::env::var("RUSTIDIAN_GRAPH_RENDERER").ok(),
-        "lose_ctx": std::env::var_os("RUSTIDIAN_GRAPH_LOSE_CTX").is_some(),
+        "renderer": std::env::var("OPENSIDIAN_GRAPH_RENDERER").ok(),
+        "lose_ctx": std::env::var_os("OPENSIDIAN_GRAPH_LOSE_CTX").is_some(),
     })
 }
 
-/// R34.18 inline-title TYPE PROBE — a test-only hook, OFF unless RUSTIDIAN_TYPEPROBE=1.
+/// R34.18 inline-title TYPE PROBE — a test-only hook, OFF unless OPENSIDIAN_TYPEPROBE=1.
 /// It buys the smoke two things it cannot get from outside the webview:
 ///   1. the census publishes [tty:]/[lpc:] — computed type of the rendered title
 ///      and of the caret surface, and the scroller's child-list signature;
@@ -1346,10 +1346,10 @@ fn graph_renderer_pref() -> serde_json::Value {
 /// same bytes it judged before.
 #[tauri::command]
 fn type_probe() -> bool {
-    std::env::var("RUSTIDIAN_TYPEPROBE").as_deref() == Ok("1")
+    std::env::var("OPENSIDIAN_TYPEPROBE").as_deref() == Ok("1")
 }
 
-/// themecsp RIG APPLICATOR — a test-only hook, OFF unless RUSTIDIAN_SMOKE_CSS=<path>.
+/// themecsp RIG APPLICATOR — a test-only hook, OFF unless OPENSIDIAN_SMOKE_CSS=<path>.
 /// It returns the contents of the named CSS file so the smoke can inject it as an
 /// inline <style>: style-src 'unsafe-inline' means the STYLE is ALLOWED TO EXIST,
 /// and the property the egress proof falsifies is that nothing inside it can REACH
@@ -1359,20 +1359,20 @@ fn type_probe() -> bool {
 ///   var, a shipped build never sets it, and it takes an absolute path the OPERATOR
 ///   chose (the test rig), never a vault-relative or user-influenced name. The
 ///   census then publishes body's computed style so a phase can prove a stock-shaped
-///   rule won a pixel (crit 5). Precedent: type_probe (RUSTIDIAN_TYPEPROBE), main.rs.
+///   rule won a pixel (crit 5). Precedent: type_probe (OPENSIDIAN_TYPEPROBE), main.rs.
 #[tauri::command]
 fn smoke_css() -> Option<String> {
-    let path = std::env::var("RUSTIDIAN_SMOKE_CSS").ok()?;
+    let path = std::env::var("OPENSIDIAN_SMOKE_CSS").ok()?;
     std::fs::read_to_string(&path).ok()
 }
 
 /// F2 (dataloss-audit) test hook: the vault-switch race lives INSIDE the save
 /// debounce window, so at 250ms it is not mechanically reproducible.
-/// RUSTIDIAN_SAVE_MS widens the window for the smoke; every normal run gets
+/// OPENSIDIAN_SAVE_MS widens the window for the smoke; every normal run gets
 /// the stock 250ms (the env var is absent, and out-of-range values are ignored).
 #[tauri::command]
 fn save_debounce_ms() -> u64 {
-    std::env::var("RUSTIDIAN_SAVE_MS")
+    std::env::var("OPENSIDIAN_SAVE_MS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .filter(|n| (1..=60_000).contains(n))
@@ -2064,7 +2064,7 @@ fn link_mention_in(
     write_note_in(root, ix, note, &nc)
 }
 
-/// active right-sidebar tab, persisted as rside_tab in ~/.rustidian.json
+/// active right-sidebar tab, persisted as rside_tab in ~/.opensidian.json
 #[tauri::command]
 fn get_rside_tab() -> Option<String> {
     cfg_value()["rside_tab"].as_str().map(str::to_string)
@@ -2077,7 +2077,7 @@ fn set_rside_tab(tab: String) {
     let _ = fs::write(cfg_path(), v.to_string());
 }
 
-/* THEME: the chosen mode, persisted as "theme" in ~/.rustidian.json through the
+/* THEME: the chosen mode, persisted as "theme" in ~/.opensidian.json through the
    SAME store as every other ui preference (cfg_value/cfg_path — no new store, no
    new crate). ABSENT is a third state and it is the important one: absent means
    "the user never chose", and the frontend then follows the system signal
@@ -2103,14 +2103,14 @@ fn set_theme(theme: String) {
 }
 
 /* THE PALETTE AXIS IS GONE (themeone item 8 / R2). It used to live here as
-   get_palette/set_palette over a "palette" key in ~/.rustidian.json, a SECOND
+   get_palette/set_palette over a "palette" key in ~/.opensidian.json, a SECOND
    theme axis beside the mode. The operator asked for one axis and one axis
    only, and the colours it selected now ship as real theme FILES
    (src-tauri/themes/, seeded by builtins.rs), chosen through stock's own
    cssTheme picker — so a Rust table of palette ids would be a second, private
    list of themes that the vault's themes/ directory could not extend.
 
-   AN EXISTING ~/.rustidian.json IS NOT REWRITTEN. cfg_value() parses the whole
+   AN EXISTING ~/.opensidian.json IS NOT REWRITTEN. cfg_value() parses the whole
    object and every writer round-trips it, so a "palette":"1984" left by an
    older build stays in the file, unread, and can never read back as a choice:
    nothing looks it up, so there is no dead palette to apply. It is not deleted
@@ -2122,8 +2122,8 @@ fn set_theme(theme: String) {
    contract, including "absent = prefers-color-scheme decides" (R6). */
 /* ---- themefs R3 (snippets): thin commands over src-tauri/src/themefs.rs ----
    The vault-CSS axis lives in the VAULT's own .obsidian/appearance.json
-   (stock's file, byte-wise round-trip — themefs.rs), never in ~/.rustidian.json:
-   pointing rustidian at a vault must find the choice Obsidian already made.
+   (stock's file, byte-wise round-trip — themefs.rs), never in ~/.opensidian.json:
+   pointing opensidian at a vault must find the choice Obsidian already made.
    Every refusal string is user-visible (the frontend puts it on the notice
    banner) and names the file — R6: loud where stock is silent. */
 
@@ -2319,7 +2319,7 @@ fn spawn_css_reload(app: tauri::AppHandle) {
     });
 }
 
-/* R14: custom hotkeys, persisted as "hotkeys" in ~/.rustidian.json in the stock
+/* R14: custom hotkeys, persisted as "hotkeys" in ~/.opensidian.json in the stock
    Obsidian shape {"<cmd id>":[{"modifiers":["Mod","Shift"],"key":"G"}]}:
    [] = default removed, absent id = stock default. The frontend registry
    (ui/main.js CMDS) is the single source of truth for ids + defaults. */
@@ -2545,7 +2545,7 @@ fn search_inner(v: &State<Vault>, query: &str) -> Vec<SearchHit> {
 }
 
 /* R9.4 bookmarks live in vault/.obsidian/bookmarks.json — Obsidian's OWN
-   file, read and written in stock 1.13.7's schema, because rustidian is a
+   file, read and written in stock 1.13.7's schema, because opensidian is a
    drop-in replacement (operator decision 2026-09-19, goal bmcompat). The
    shape is MEASURED, not remembered — docs/recon-bmcompat/README.md, every
    claim named after its capture:
@@ -2565,9 +2565,9 @@ fn search_inner(v: &State<Vault>, query: &str) -> Vec<SearchHit> {
    does not recognise and drops top-level ones (recon §5, 32-editdone); we
    preserve BOTH — never the app that lost someone's future 1.14 key.
 
-   The old v0.12/v1 `.rustidian-bookmarks` is IGNORED: never read, never
+   The old v0.12/v1 `.opensidian-bookmarks` is IGNORED: never read, never
    written, never deleted (criterion 5's one sentence, as behaviour —
-   r4x_a_pre_existing_rustidian_bookmarks_file_is_ignored). */
+   r4x_a_pre_existing_opensidian_bookmarks_file_is_ignored). */
 const BM_FILE: &str = ".obsidian/bookmarks.json";
 /// stock's default for a freshly created group, MEASURED, not remembered
 /// (docs/recon-bmfolder/README.md, `03-newgroup.png`).
@@ -3919,13 +3919,13 @@ fn main() {
         .map(PathBuf::from)
         .or_else(|| read_cfg().0.map(PathBuf::from).filter(|p| p.is_dir()));
     // R18.1: open the telemetry sink BEFORE the sandbox closes. Landlock filters
-    // path lookups, not open descriptors, and RUSTIDIAN_OTEL routinely names a
+    // path lookups, not open descriptors, and OPENSIDIAN_OTEL routinely names a
     // file outside the write roots (the gate's $OUT). Opening it after enforce()
     // is EACCES on every span, swallowed — see perf::SINK.
     perf::open_sink();
-    // landlock: OPT-IN since 2026-09-30 (operator). RUSTIDIAN_LANDLOCK=1 confines
+    // landlock: OPT-IN since 2026-09-30 (operator). OPENSIDIAN_LANDLOCK=1 confines
     // the whole process tree to the vault before webkit spawns;
-    // RUSTIDIAN_NO_LANDLOCK wins. Both switches are named ONCE, in sandbox.rs.
+    // OPENSIDIAN_NO_LANDLOCK wins. Both switches are named ONCE, in sandbox.rs.
     if sandbox::landlock_enabled() {
         if let Some(p) = &init {
             match sandbox::enforce(p, &cfg_path()) {
@@ -4155,7 +4155,7 @@ mod tests {
     }
 
     fn tmp_vault(tag: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("rustidian-{tag}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("opensidian-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("sub")).unwrap();
         root
@@ -4622,7 +4622,7 @@ mod tests {
         let served: Vec<&str> = IMG_TYPES.iter().map(|(e, _)| *e).collect();
         assert_eq!(served, index::IMG_EXTS.to_vec(), "IMG_TYPES vs index::IMG_EXTS");
         let root = tmp_vault("imgidx");
-        let outside = std::env::temp_dir().join(format!("rustidian-imgout-{}", std::process::id()));
+        let outside = std::env::temp_dir().join(format!("opensidian-imgout-{}", std::process::id()));
         let _ = fs::remove_dir_all(&outside);
         fs::create_dir_all(&outside).unwrap();
         fs::write(outside.join("secret.png"), b"out").unwrap();
@@ -5342,13 +5342,13 @@ mod tests {
     }
 
     /// criterion 5's one sentence, as behaviour: a pre-existing
-    /// .rustidian-bookmarks is IGNORED — never read, never written, never
+    /// .opensidian-bookmarks is IGNORED — never read, never written, never
     /// deleted. Bookmarks come from .obsidian/bookmarks.json alone.
     #[test]
-    fn r4x_a_pre_existing_rustidian_bookmarks_file_is_ignored() {
+    fn r4x_a_pre_existing_opensidian_bookmarks_file_is_ignored() {
         let root = tmp_vault("bm-old-dotfile");
         let v012 = b"Ideas\n:g:Work\n\tA-LP\n";
-        fs::write(root.join(".rustidian-bookmarks"), v012).unwrap();
+        fs::write(root.join(".opensidian-bookmarks"), v012).unwrap();
         assert!(read_bookmarks(&root).is_empty(), "the old dotfile is not read");
         let mut t = read_bm_tree(&root);
         bm_toggle_in(&mut t, "Ideas");
@@ -5356,7 +5356,7 @@ mod tests {
         assert_eq!(read_bookmarks(&root), vec!["Ideas"], "bookmarks live in the stock file");
         assert!(root.join(".obsidian/bookmarks.json").is_file());
         assert_eq!(
-            fs::read(root.join(".rustidian-bookmarks")).unwrap(),
+            fs::read(root.join(".opensidian-bookmarks")).unwrap(),
             v012.to_vec(),
             "...and the old dotfile is byte-for-byte untouched"
         );
@@ -5796,7 +5796,7 @@ mod tests {
 
     #[test]
     fn rename_updates_links_vault_wide() {
-        let root = std::env::temp_dir().join(format!("rustidian-rl-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("opensidian-rl-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("sub")).unwrap();
         fs::write(root.join("Old.md"), "self [[Old]]").unwrap();
@@ -5841,7 +5841,7 @@ mod tests {
 
     /// scratch vault under a per-test name (tests share the process)
     fn r34_vault(tag: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("rustidian-r34-{}-{}", tag, std::process::id()));
+        let root = std::env::temp_dir().join(format!("opensidian-r34-{}-{}", tag, std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root
@@ -6115,7 +6115,7 @@ mod tests {
 
     #[test]
     fn rename_moves_refuses_overwrite() {
-        let root = std::env::temp_dir().join(format!("rustidian-rn-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("opensidian-rn-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("A.md"), "body").unwrap();
@@ -6171,7 +6171,7 @@ mod tests {
     fn symlinks_are_not_part_of_the_vault() {
         use std::os::unix::fs::symlink;
         let root = tmp_vault("sym");
-        let outside = std::env::temp_dir().join(format!("rustidian-sym-out-{}", std::process::id()));
+        let outside = std::env::temp_dir().join(format!("opensidian-sym-out-{}", std::process::id()));
         let _ = fs::remove_dir_all(&outside);
         fs::create_dir_all(&outside).unwrap();
         fs::write(outside.join("Secret.md"), "secret").unwrap();
@@ -6251,7 +6251,7 @@ mod tests {
     fn img_traversal_and_symlink_escapes_serve_no_bytes() {
         use std::os::unix::fs::symlink;
         let root = tmp_vault("img-esc");
-        let outside = std::env::temp_dir().join(format!("rustidian-img-out-{}", std::process::id()));
+        let outside = std::env::temp_dir().join(format!("opensidian-img-out-{}", std::process::id()));
         let _ = fs::remove_dir_all(&outside);
         fs::create_dir_all(&outside).unwrap();
         let px = b"\x89PNG\r\n\x1a\nsecret-bytes";
@@ -6273,7 +6273,7 @@ mod tests {
             "%2e%2e%2foutside.png",
             "%2e%2e/outside.png",
             "/etc/passwd",
-            "/tmp/rustidian-img-out.png",
+            "/tmp/opensidian-img-out.png",
             "file:///etc/passwd",
             "pic.png\0.txt",
             "pic.png%00.txt",
@@ -6293,7 +6293,7 @@ mod tests {
         assert!(serve_image(&root, "out/outside.png").is_none());
         // POSITIVE CONTROL (req S2): a vault reached THROUGH a symlink still
         // serves its own images — this is what canonicalizing the root buys.
-        let vlink = std::env::temp_dir().join(format!("rustidian-img-vlink-{}", std::process::id()));
+        let vlink = std::env::temp_dir().join(format!("opensidian-img-vlink-{}", std::process::id()));
         let _ = fs::remove_file(&vlink);
         symlink(&root, &vlink).unwrap();
         assert_eq!(serve_image(&vlink, "pic.png").unwrap().1, b"\x89PNG\r\n\x1a\nin-vault".to_vec());
@@ -6317,7 +6317,7 @@ mod tests {
         assert_eq!(
             csp,
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
-             img-src 'self' data: rustidian-img:; font-src 'self'; \
+             img-src 'self' data: opensidian-img:; font-src 'self'; \
              connect-src ipc: http://ipc.localhost",
             "the CSP changed — if that was deliberate, say why in the commit message"
         );
@@ -6338,7 +6338,7 @@ mod tests {
                   "/home/u/.ssh", "/tmp/../etc", "/tmp/.hidden", "tmp", ""] {
             assert!(!picker_allows(Path::new(p)), "{p} must be denied");
         }
-        for p in ["/", "/workspace", "/workspace/vault", "/tmp", "/tmp/rustidian-smoke97/vault", "/mnt", "/media", "/run/media", "/home", "/home/u/notes"] {
+        for p in ["/", "/workspace", "/workspace/vault", "/tmp", "/tmp/opensidian-smoke97/vault", "/mnt", "/media", "/run/media", "/home", "/home/u/notes"] {
             assert!(picker_allows(Path::new(p)), "{p} must be allowed");
         }
         assert_eq!(list_dirs("/etc".into()), Vec::<String>::new());
@@ -6781,7 +6781,7 @@ mod tests {
     fn drop_vault(tag: &str) -> (PathBuf, PathBuf) {
         let root = tmp_vault(tag);
         fs::write(root.join("Note.md"), "# Note\n\nEND\n").unwrap();
-        let src = std::env::temp_dir().join(format!("rustidian-{tag}-src-{}", std::process::id()));
+        let src = std::env::temp_dir().join(format!("opensidian-{tag}-src-{}", std::process::id()));
         let _ = fs::remove_dir_all(&src);
         fs::create_dir_all(&src).unwrap();
         (root, src)
@@ -6932,7 +6932,7 @@ mod tests {
     fn drop_refuses_a_destination_that_leaves_the_vault() {
         use std::os::unix::fs::symlink;
         let (root, srcd) = drop_vault("drop-dest");
-        let outside = std::env::temp_dir().join(format!("rustidian-drop-out-{}", std::process::id()));
+        let outside = std::env::temp_dir().join(format!("opensidian-drop-out-{}", std::process::id()));
         let _ = fs::remove_dir_all(&outside);
         fs::create_dir_all(&outside).unwrap();
         let s = src_file(&srcd, "cat.png", b"\x89PNGcat");
@@ -7017,7 +7017,7 @@ mod tests {
         assert_eq!(ix.images(), ["abe.png", "zed.png"], "sorted, deduped");
         assert_eq!(ix.images(), Index::build(&root).images(), "== a fresh walk");
         // and the resolver the renderers use finds it
-        assert!(image_html(ix.images(), "zed.png", "").contains("rustidian-img://localhost/zed.png"));
+        assert!(image_html(ix.images(), "zed.png", "").contains("opensidian-img://localhost/zed.png"));
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&srcd);
     }

@@ -1280,7 +1280,7 @@ body.floorrelayout #main { padding-right: 1px }
 
 /* ---------- R29 IMAGE EMBEDS ---------- */
 /* Both engines emit the same two elements: img.vimg (bytes over the
-   rustidian-img: scheme) and span.imgmiss (R29.4's banner). The CSS is shared
+   opensidian-img: scheme) and span.imgmiss (R29.4's banner). The CSS is shared
    deliberately — R29.7 says a divergence between reading view and live preview
    is a bug, and that includes the painted box. */
 .lp .vimg, .preview .vimg { display: block; max-width: 100%; height: auto; margin: 8px 0 }
@@ -1316,7 +1316,7 @@ body.floorrelayout #main { padding-right: 1px }
    under openbox, 1100px-wide window: minimise centred at right-113, maximise at
    right-70, close at right-26, row 40px tall). This strip keeps those three x
    centres (44px hit areas at right 4/48/92) but is 32px tall, because that is
-   rustidian's tab-row height — a 40px strip would shift every baseline in the
+   opensidian's tab-row height — a 40px strip would shift every baseline in the
    suite for 8px of fidelity.
    position:fixed, z-index above the picker / settings / modal overlays: a window
    you cannot close while a modal is open is a broken interaction. The row under

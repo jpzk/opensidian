@@ -26,11 +26,11 @@ pub const STRUCTURE_TSV: &str = include_str!("../../docs/stock-settings-recon/st
 /// stock's left nav, in stock's order
 pub const NAV_TSV: &str = include_str!("../../docs/stock-settings-recon/nav.tsv");
 
-/// Keys that really exist in ~/.rustidian.json handling (main.rs cfg_value()).
+/// Keys that really exist in ~/.opensidian.json handling (main.rs cfg_value()).
 /// `config_keys_are_all_read_or_written_by_main` pins this list to the source.
 /// (themeone item 8: "palette" LEFT this list with its readers — main.rs no
 /// longer has a get_palette/set_palette, so the key would fail the test below.
-/// A stale key in an existing ~/.rustidian.json is round-tripped, not read.)
+/// A stale key in an existing ~/.opensidian.json is round-tripped, not read.)
 pub const CONFIG_KEYS: &[&str] = &["last", "list", "sidebar_w", "rside_tab", "hotkeys", "theme", "zoom"];
 
 /// (tab, label) -> config key. A row named here is the ONLY kind that renders
@@ -57,7 +57,7 @@ const BACKED: &[(&str, &str, &str)] = &[
     // themefs R3. Stock's Appearance > CSS snippets row manages the vault's
     // .obsidian/snippets/*.css toggles, persisted in the VAULT's own
     // appearance.json "enabledCssSnippets" array (T3) — a vault file, not a
-    // ~/.rustidian.json key, so it lives in VAULT_KEYS below and is really
+    // ~/.opensidian.json key, so it lives in VAULT_KEYS below and is really
     // read/written by src-tauri/src/themefs.rs (enabled_snippets /
     // set_snippet_enabled), pinned by `vault_keys_are_all_touched_by_themefs`.
     ("appearance", "CSS snippets", "enabledCssSnippets"),
@@ -65,7 +65,7 @@ const BACKED: &[(&str, &str, &str)] = &[
 
 /// Keys that back a settings row but live in the VAULT's .obsidian/appearance.json
 /// (stock's file, byte-wise round-trip — src-tauri/src/themefs.rs), not in
-/// ~/.rustidian.json. Same invariant as CONFIG_KEYS, different home:
+/// ~/.opensidian.json. Same invariant as CONFIG_KEYS, different home:
 /// `vault_keys_are_all_touched_by_themefs` pins this list to the source.
 pub const VAULT_KEYS: &[&str] = &["enabledCssSnippets", "cssTheme"];
 

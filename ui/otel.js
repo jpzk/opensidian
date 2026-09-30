@@ -8,14 +8,14 @@
    recorded as vsync_ms and subtracted by scripts/otel-flat.sh (ms = app
    latency; wall_ms keeps the raw number). Spans are
    buffered and shipped to Rust in ONE log_spans IPC every 250ms (not per
-   span); the backend writes them as OTLP/JSON lines into RUSTIDIAN_OTEL.
+   span); the backend writes them as OTLP/JSON lines into OPENSIDIAN_OTEL.
    The first reply says whether the backend still wants spans; when it says
    no, every later call is a pure no-op (no buffer, no IPC). perf-console:
    it now says YES in every run, traced or not, because the backend judges
    every span against the 100ms ceiling (perf.rs:SLOW_MS_CEIL) and prints
-   [perf][SLOW] on a breach — a warning that only worked with RUSTIDIAN_OTEL
+   [perf][SLOW] on a breach — a warning that only worked with OPENSIDIAN_OTEL
    set would be absent from exactly the runs where lag is felt. Writing the
-   trace FILE is still what RUSTIDIAN_OTEL switches.
+   trace FILE is still what OPENSIDIAN_OTEL switches.
 
    Trace propagation: while an action span is open (begin..end) it is the
    CURRENT ctx; main.js's inv() attaches {traceId, spanId} as the `otel`

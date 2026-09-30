@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
-Name=rustidian
+Name=opensidian
 Comment=Local-first markdown vault editor
-Exec=rustidian
-Icon=dev.koto.rustidian
+Exec=opensidian
+Icon=dev.koto.opensidian
 Terminal=false
 Categories=Utility;TextEditor;

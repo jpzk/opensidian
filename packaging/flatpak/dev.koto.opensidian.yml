@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# rustidian — flatpak manifest.
+# opensidian — flatpak manifest.
 #
 # RUNTIME CHOICE (docs/recon-flatpak/README.md, B2): org.gnome.Platform//49 is
 # the runtime that still ships webkit2gtk-4.1 (2.52.5, measured with
@@ -16,13 +16,13 @@
 # packaging/flatpak/build.sh, which generates it and then builds. The build
 # itself needs NO network (flatpak-builder gives the build sandbox no network
 # unless --share=network is asked for, and we never ask).
-app-id: dev.koto.rustidian
+app-id: dev.koto.opensidian
 runtime: org.gnome.Platform
 runtime-version: '49'
 sdk: org.gnome.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
-command: rustidian
+command: opensidian
 
 # FILESYSTEM: --filesystem=home is the vault decision, not a packaging detail —
 # see B5. It is the weakest permission that lets a user open an arbitrary vault
@@ -43,7 +43,7 @@ finish-args:
   # has portal talk access; asking for it again is redundant, not extra power.
   # WITHOUT THE NEXT LINE THE APP DOES NOT START (docs/recon-flatpak, item L).
   # flatpak points XDG_DATA_HOME at ~/.var/app/<id>/data; tauri resolves its
-  # app-data dir through XDG_DATA_HOME; rustidian's OWN landlock ruleset
+  # app-data dir through XDG_DATA_HOME; opensidian's OWN landlock ruleset
   # (src-tauri/src/sandbox.rs:82 write_roots) grants $HOME/.local/share/<id>
   # and nothing under ~/.var/app — so the first write tauri makes is refused by
   # the kernel and tauri panics "Failed to setup app: Permission denied (os
@@ -59,25 +59,25 @@ finish-args:
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
   env:
-    CARGO_HOME: /run/build/rustidian/cargo
+    CARGO_HOME: /run/build/opensidian/cargo
     CARGO_NET_OFFLINE: 'true'
 
 modules:
-  - name: rustidian
+  - name: opensidian
     buildsystem: simple
     build-commands:
       - cargo --offline build --release --manifest-path src-tauri/Cargo.toml
-      - install -Dm755 src-tauri/target/release/rustidian /app/bin/rustidian
+      - install -Dm755 src-tauri/target/release/opensidian /app/bin/opensidian
       - install -Dm644 src-tauri/icons/icon.png
-        /app/share/icons/hicolor/128x128/apps/dev.koto.rustidian.png
-      - install -Dm644 packaging/flatpak/dev.koto.rustidian.desktop
-        /app/share/applications/dev.koto.rustidian.desktop
-      - install -Dm644 packaging/flatpak/dev.koto.rustidian.metainfo.xml
-        /app/share/metainfo/dev.koto.rustidian.metainfo.xml
+        /app/share/icons/hicolor/128x128/apps/dev.koto.opensidian.png
+      - install -Dm644 packaging/flatpak/dev.koto.opensidian.desktop
+        /app/share/applications/dev.koto.opensidian.desktop
+      - install -Dm644 packaging/flatpak/dev.koto.opensidian.metainfo.xml
+        /app/share/metainfo/dev.koto.opensidian.metainfo.xml
     sources:
       # The checkout being built. For a Flathub submission this becomes
       #   - type: git
-      #     url: https://github.com/<org>/rustidian.git
+      #     url: https://github.com/<org>/opensidian.git
       #     tag: v0.12.0
       #     commit: <full sha of the tag>
       # which is the same tree with a checksum Flathub can verify; everything

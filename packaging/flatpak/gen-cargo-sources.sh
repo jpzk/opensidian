@@ -18,11 +18,11 @@
 # usage: packaging/flatpak/gen-cargo-sources.sh [BUILDDIR] > cargo-sources.json
 #   BUILDDIR: the module's build directory inside the sandbox; CARGO_HOME is
 #   BUILDDIR/cargo and the vendor dir BUILDDIR/cargo/vendor. Default
-#   /run/build/rustidian (flatpak-builder's dir for a module named "rustidian").
+#   /run/build/opensidian (flatpak-builder's dir for a module named "opensidian").
 set -e
 cd "$(dirname "$0")/../.."
 LOCK=src-tauri/Cargo.lock
-BUILDDIR=${1:-/run/build/rustidian}
+BUILDDIR=${1:-/run/build/opensidian}
 CRATES=https://static.crates.io/crates
 
 [ -f "$LOCK" ] || { echo "no $LOCK" >&2; exit 2; }

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* Wasp — a built-in rustidian theme, shipped as an ordinary theme
+/* Wasp — a built-in opensidian theme, shipped as an ordinary theme
    directory and seeded into the vault like any other (docs/themeone/
    DESIGN.md section 4). GENERATED from ui/style.css :root[data-palette="wasp"]
    by scripts/gen-builtin-themes.sh — edit the generator, not this file.

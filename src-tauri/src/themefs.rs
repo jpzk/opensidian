@@ -842,7 +842,7 @@ mod tests {
 
     fn tmp_vault(tag: &str) -> PathBuf {
         let root =
-            std::env::temp_dir().join(format!("rustidian-themefs-{tag}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("opensidian-themefs-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join(".obsidian")).unwrap();
         root

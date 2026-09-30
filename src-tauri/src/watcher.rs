@@ -75,7 +75,7 @@ pub fn note_file(root: &Path, name: &str) -> std::path::PathBuf {
      * it is invisible to the fix: it lies INSIDE snapshot(), so the sanity
        guard above it sees a genuinely short walk and cannot special-case it. */
 /// env that arms the partial-walk hook: "<arm-file>" or "<arm-file>=<keep>"
-pub const PARTIAL_ENV: &str = "RUSTIDIAN_TEST_PARTIAL_WALK";
+pub const PARTIAL_ENV: &str = "OPENSIDIAN_TEST_PARTIAL_WALK";
 /// how many notes a partial walk keeps when the spec does not say
 pub const PARTIAL_KEEP_DEFAULT: usize = 1;
 
@@ -259,7 +259,7 @@ mod tests {
         v.iter().map(|(n, t, l)| (n.to_string(), meta(*t, *l))).collect()
     }
     fn tmp(tag: &str) -> std::path::PathBuf {
-        let p = std::env::temp_dir().join(format!("rustidian-watch-{tag}-{}", std::process::id()));
+        let p = std::env::temp_dir().join(format!("opensidian-watch-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(p.join("sub")).unwrap();
         p

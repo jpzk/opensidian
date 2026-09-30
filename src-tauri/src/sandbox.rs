@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-/* Landlock self-sandbox — OFF by default (operator 2026-09-30); RUSTIDIAN_LANDLOCK=1 opts in,
-   RUSTIDIAN_NO_LANDLOCK=1 forces it off and wins over the opt-in. When enabled it is applied once in main()
+/* Landlock self-sandbox — OFF by default (operator 2026-09-30); OPENSIDIAN_LANDLOCK=1 opts in,
+   OPENSIDIAN_NO_LANDLOCK=1 forces it off and wins over the opt-in. When enabled it is applied once in main()
    BEFORE tauri spawns webkit, so every thread/child process inherits it:
-   filesystem writes are confined to the vault, ~/.rustidian.json and the
+   filesystem writes are confined to the vault, ~/.opensidian.json and the
    caches webkit/mesa/fontconfig need; the rest of the system is read-only
    and $HOME is not readable as a whole — dir listing only (for the picker),
    plus READ on the three R31.12 drop-source folders (see DROP_READ_DIRS),
@@ -78,13 +78,13 @@ pub fn read_roots(home: &Path) -> Vec<PathBuf> {
 }
 
 /// The read-write half, as data for the same reason. A drop source is NEVER in
-/// here: rustidian copies out of those folders and never writes into them.
+/// here: opensidian copies out of those folders and never writes into them.
 pub fn write_roots(home: &Path, vault: &Path, cfg: &Path) -> Vec<PathBuf> {
     // webkit/mesa/fontconfig scratch + sockets (X11, wayland, dbus, shm, gpu)
     let mut rw: Vec<PathBuf> = ["/tmp", "/dev", "/run", "/var/tmp"].iter().map(PathBuf::from).collect();
     rw.extend([
         home.join(".cache"),
-        home.join(".local/share/dev.koto.rustidian"),
+        home.join(".local/share/dev.koto.opensidian"),
         vault.to_path_buf(),
         cfg.to_path_buf(),
     ]);
@@ -95,7 +95,7 @@ pub fn write_roots(home: &Path, vault: &Path, cfg: &Path) -> Vec<PathBuf> {
    The env var name was a string literal in TWO files (here and main.rs's
    startup guard), so "off" could have come to mean two different things. It is
    a const now, read through `no_landlock_requested()` by both. */
-pub const NO_LANDLOCK_ENV: &str = "RUSTIDIAN_NO_LANDLOCK";
+pub const NO_LANDLOCK_ENV: &str = "OPENSIDIAN_NO_LANDLOCK";
 
 /// The documented off-switch (docs/features.md, req S3). Read it HERE, never
 /// by spelling the variable's name a second time somewhere else.
@@ -104,18 +104,18 @@ pub fn no_landlock_requested() -> bool {
 }
 
 /* lloff (operator 2026-09-30, "make landlock default off"): Landlock is OPT-IN.
-   RUSTIDIAN_LANDLOCK=1 enables the ruleset above, unchanged. The old off-switch
+   OPENSIDIAN_LANDLOCK=1 enables the ruleset above, unchanged. The old off-switch
    keeps its meaning and WINS: both set = no ruleset (dloss/tabclose launches
-   set RUSTIDIAN_NO_LANDLOCK and must stay unsandboxed whatever else is set). */
-pub const LANDLOCK_ENV: &str = "RUSTIDIAN_LANDLOCK";
+   set OPENSIDIAN_NO_LANDLOCK and must stay unsandboxed whatever else is set). */
+pub const LANDLOCK_ENV: &str = "OPENSIDIAN_LANDLOCK";
 
 /// The one stderr line a launch prints when no ruleset is built (default, or
 /// the off-switch). Phase lloff greps for it verbatim.
-pub const OFF_LINE: &str = "landlock: off (default; RUSTIDIAN_LANDLOCK=1 enables)";
+pub const OFF_LINE: &str = "landlock: off (default; OPENSIDIAN_LANDLOCK=1 enables)";
 
 /// Pure switch resolution, testable without touching process env (see the
 /// `ruleset_plan` note on why tests must not `set_var`). `opt_in` / `no` are
-/// the raw values of RUSTIDIAN_LANDLOCK / RUSTIDIAN_NO_LANDLOCK.
+/// the raw values of OPENSIDIAN_LANDLOCK / OPENSIDIAN_NO_LANDLOCK.
 /// Opt-in means the value "1"; the off-switch is ANY presence, as before.
 pub fn landlock_switch(opt_in: Option<&std::ffi::OsStr>, no: Option<&std::ffi::OsStr>) -> bool {
     if no.is_some() {
@@ -132,7 +132,7 @@ pub fn landlock_enabled() -> bool {
     )
 }
 
-/// The ruleset rustidian hands the kernel, AS DATA — the three vectors and the
+/// The ruleset opensidian hands the kernel, AS DATA — the three vectors and the
 /// access class each is granted. `enforce()` below builds its rules from THIS
 /// value and nothing else, so a test that reads a plan reads what the kernel
 /// would be told, on a kernel that can enforce it and on this one, which
@@ -148,7 +148,7 @@ pub struct RulesetPlan {
 }
 
 /// `None` = NO RULESET IS BUILT AT ALL, i.e. the process stays unsandboxed.
-/// That is what `RUSTIDIAN_NO_LANDLOCK=1` buys, and it is the whole meaning of
+/// That is what `OPENSIDIAN_NO_LANDLOCK=1` buys, and it is the whole meaning of
 /// the switch: not "a looser ruleset", but no ruleset.
 ///
 /// `disabled` is a PARAMETER rather than an env read so both branches are
@@ -212,7 +212,7 @@ pub fn enforce(vault: &Path, cfg: &Path) -> Result<RulesetStatus, Box<dyn std::e
         Some(p) => p,
         None => return Ok(RulesetStatus::NotEnforced),
     };
-    for d in [home.join(".cache"), home.join(".local/share/dev.koto.rustidian")] {
+    for d in [home.join(".cache"), home.join(".local/share/dev.koto.opensidian")] {
         let _ = std::fs::create_dir_all(d);
     }
     let mut created = Ruleset::default()
@@ -265,7 +265,7 @@ mod tests {
     #[test]
     fn ro_vec_does_not_widen_to_all_of_home() {
         let home = Path::new("/home/u");
-        let (ro, rw) = (read_roots(home), write_roots(home, Path::new("/home/u/vault"), Path::new("/home/u/.rustidian.json")));
+        let (ro, rw) = (read_roots(home), write_roots(home, Path::new("/home/u/vault"), Path::new("/home/u/.opensidian.json")));
         assert!(!ro.contains(&home.to_path_buf()), "$HOME itself must never be readable: {ro:?}");
         // no granted root may be an ancestor of a secret-bearing dotfile
         for secret in [".ssh/id_ed25519", ".gnupg/secring.gpg", ".aws/credentials", ".netrc", ".bash_history", ".mozilla/firefox"] {
@@ -286,7 +286,7 @@ mod tests {
     #[test]
     fn rw_vec_is_the_vault_not_the_drop_sources() {
         let home = Path::new("/home/u");
-        let (vault, cfg) = (home.join("vault"), home.join(".rustidian.json"));
+        let (vault, cfg) = (home.join("vault"), home.join(".opensidian.json"));
         let rw = write_roots(home, &vault, &cfg);
         assert!(rw.contains(&vault) && rw.contains(&cfg), "{rw:?}");
         for d in DROP_READ_DIRS {
@@ -300,17 +300,17 @@ mod tests {
        hands the kernel. They assert DATA, which is all that can be asserted on
        a kernel with no Landlock — see the module header and progress.md. */
 
-    /// `RUSTIDIAN_NO_LANDLOCK=1` means NO RULESET, not a looser one. If this
+    /// `OPENSIDIAN_NO_LANDLOCK=1` means NO RULESET, not a looser one. If this
     /// ever returns Some, the switch has quietly become a no-op and the app
     /// would sandbox itself in the very configuration documented as "off".
     #[test]
     fn ruleset_plan_is_none_when_the_no_landlock_switch_is_set() {
-        let (home, vault, cfg) = (Path::new("/home/u"), Path::new("/home/u/vault"), Path::new("/home/u/.rustidian.json"));
+        let (home, vault, cfg) = (Path::new("/home/u"), Path::new("/home/u/vault"), Path::new("/home/u/.opensidian.json"));
         assert_eq!(ruleset_plan(true, home, vault, cfg), None, "the off-switch must build no ruleset at all");
         assert!(ruleset_plan(false, home, vault, cfg).is_some(), "switch not set to off: a ruleset must be built (main() only calls this when landlock_enabled())");
         // ...and the switch is that variable, spelled once (main.rs reads it
         // through no_landlock_requested(), features.md names the same string).
-        assert_eq!(NO_LANDLOCK_ENV, "RUSTIDIAN_NO_LANDLOCK");
+        assert_eq!(NO_LANDLOCK_ENV, "OPENSIDIAN_NO_LANDLOCK");
     }
 
     /* lloff — the switch resolution main() uses (operator 2026-09-30). */
@@ -319,21 +319,21 @@ mod tests {
     #[test]
     fn landlock_switch_default_is_off() {
         assert!(!landlock_switch(None, None), "no env -> landlock must be OFF");
-        assert_eq!(LANDLOCK_ENV, "RUSTIDIAN_LANDLOCK");
-        assert_eq!(OFF_LINE, "landlock: off (default; RUSTIDIAN_LANDLOCK=1 enables)");
+        assert_eq!(LANDLOCK_ENV, "OPENSIDIAN_LANDLOCK");
+        assert_eq!(OFF_LINE, "landlock: off (default; OPENSIDIAN_LANDLOCK=1 enables)");
     }
 
-    /// RUSTIDIAN_LANDLOCK=1 opts in; any other value does not.
+    /// OPENSIDIAN_LANDLOCK=1 opts in; any other value does not.
     #[test]
     fn landlock_switch_opt_in_is_exactly_1() {
         use std::ffi::OsStr;
-        assert!(landlock_switch(Some(OsStr::new("1")), None), "RUSTIDIAN_LANDLOCK=1 must enable");
+        assert!(landlock_switch(Some(OsStr::new("1")), None), "OPENSIDIAN_LANDLOCK=1 must enable");
         for v in ["", "0", "true", "yes", "2"] {
-            assert!(!landlock_switch(Some(OsStr::new(v)), None), "RUSTIDIAN_LANDLOCK={v:?} must not enable");
+            assert!(!landlock_switch(Some(OsStr::new(v)), None), "OPENSIDIAN_LANDLOCK={v:?} must not enable");
         }
     }
 
-    /// RUSTIDIAN_NO_LANDLOCK (any value, even empty) WINS over the opt-in.
+    /// OPENSIDIAN_NO_LANDLOCK (any value, even empty) WINS over the opt-in.
     #[test]
     fn landlock_switch_no_landlock_wins() {
         use std::ffi::OsStr;
@@ -347,7 +347,7 @@ mod tests {
     /// hands the kernel, or these tests guard a vector nobody applies.
     #[test]
     fn ruleset_plan_is_built_from_the_same_vectors_enforce_applies() {
-        let (home, vault, cfg) = (Path::new("/home/u"), Path::new("/home/u/vault"), Path::new("/home/u/.rustidian.json"));
+        let (home, vault, cfg) = (Path::new("/home/u"), Path::new("/home/u/vault"), Path::new("/home/u/.opensidian.json"));
         let p = ruleset_plan(false, home, vault, cfg).expect("switch is off");
         assert_eq!(p.read, read_roots(home), "plan.read must BE read_roots()");
         assert_eq!(p.write, write_roots(home, vault, cfg), "plan.write must BE write_roots()");
@@ -362,13 +362,13 @@ mod tests {
     /// decoration, and it is the mutation in docs/negctl-lands control B.
     #[test]
     fn ruleset_plan_confines_writes_to_the_vault_cfg_and_named_scratch() {
-        let (home, vault, cfg) = (Path::new("/home/u"), Path::new("/home/u/vault"), Path::new("/home/u/.rustidian.json"));
+        let (home, vault, cfg) = (Path::new("/home/u"), Path::new("/home/u/vault"), Path::new("/home/u/.opensidian.json"));
         let w = ruleset_plan(false, home, vault, cfg).expect("switch is off").write;
         assert!(w.contains(&vault.to_path_buf()) && w.contains(&cfg.to_path_buf()), "{w:?}");
         let allowed: Vec<PathBuf> = ["/tmp", "/dev", "/run", "/var/tmp"]
             .iter()
             .map(PathBuf::from)
-            .chain([home.join(".cache"), home.join(".local/share/dev.koto.rustidian"), vault.to_path_buf(), cfg.to_path_buf()])
+            .chain([home.join(".cache"), home.join(".local/share/dev.koto.opensidian"), vault.to_path_buf(), cfg.to_path_buf()])
             .collect();
         assert_eq!(w, allowed, "the writable set grew or shrank — say so in features.md before changing it");
         // no writable root may CONTAIN the home dir, the vault's parent or /
@@ -385,7 +385,7 @@ mod tests {
     /// upgrades it to RW, since landlock unions the rules for a path).
     #[test]
     fn ruleset_plan_read_only_roots_are_not_also_writable() {
-        let (home, vault, cfg) = (Path::new("/home/u"), Path::new("/home/u/vault"), Path::new("/home/u/.rustidian.json"));
+        let (home, vault, cfg) = (Path::new("/home/u"), Path::new("/home/u/vault"), Path::new("/home/u/.opensidian.json"));
         let p = ruleset_plan(false, home, vault, cfg).expect("switch is off");
         for r in &p.read {
             assert!(!p.write.contains(r), "{r:?} is in BOTH halves — read-only is a lie for it");
@@ -417,13 +417,13 @@ mod tests {
        precedent generalised for the two tests in this module; a third caller
        of enforce() must use one of them, not invent a third copy. */
     fn reexec_alone(name: &str) -> bool {
-        if std::env::var_os("RUSTIDIAN_LL_ALONE").is_some() {
+        if std::env::var_os("OPENSIDIAN_LL_ALONE").is_some() {
             return false; // we ARE the child: run the body
         }
         let exe = std::env::current_exe().expect("the test binary's own path");
         let st = std::process::Command::new(exe)
             .args([name, "--exact", "--nocapture", "--test-threads=1"])
-            .env("RUSTIDIAN_LL_ALONE", "1")
+            .env("OPENSIDIAN_LL_ALONE", "1")
             .status()
             .expect("re-exec the test binary");
         assert!(st.success(), "{name} FAILED in its own process (its output is above)");
@@ -438,10 +438,10 @@ mod tests {
             return;
         }
         let home = env_path("HOME").expect("HOME");
-        let tmp = std::env::temp_dir().join(format!("rustidian-ll-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("opensidian-ll-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(tmp.join("vault")).unwrap();
-        let probe = home.join(format!(".rustidian-probe-{}", std::process::id()));
+        let probe = home.join(format!(".opensidian-probe-{}", std::process::id()));
         fs::write(&probe, "secret").unwrap();
         let (vault, cfg, probe2) = (tmp.join("vault"), tmp.join("cfg.json"), probe.clone());
         let res = std::thread::spawn(move || {
@@ -450,7 +450,7 @@ mod tests {
             }
             fs::write(vault.join("a.md"), "x").expect("vault writable");
             let read_ok = fs::read(&probe2).is_ok();
-            let home_write_ok = fs::write(home.join(".rustidian-probe-w"), "x").is_ok();
+            let home_write_ok = fs::write(home.join(".opensidian-probe-w"), "x").is_ok();
             let etc_ok = fs::read_dir("/etc").is_ok();
             Some((read_ok, home_write_ok, etc_ok, allows(&vault), allows(&home)))
         })
@@ -493,7 +493,7 @@ mod tests {
             return;
         }
         let refer = kernel_has_refer();
-        let tmp = std::env::temp_dir().join(format!("rustidian-ll-mv-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("opensidian-ll-mv-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(tmp.join("vault/.trash")).unwrap();
         fs::create_dir_all(tmp.join("vault/sub")).unwrap();

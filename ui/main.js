@@ -1,4 +1,4 @@
-// rustidian, an Obsidian-compatible markdown notes app.
+// opensidian, an Obsidian-compatible markdown notes app.
 // Copyright (C) 2026 Jendrik Poloczek
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This program comes with ABSOLUTELY NO WARRANTY. It is free software, and you
@@ -246,7 +246,7 @@ async function cmdToggleRight() {
 $("rtoggle").onclick = cmdToggleRight;
 
 /* rsidebar (R9.L1): icon strip Backlinks | Outgoing links | Tags | Outline.
-   Active tab persisted as rside_tab in ~/.rustidian.json; census
+   Active tab persisted as rside_tab in ~/.opensidian.json; census
    [side:l1r1:<tab>]. All panes follow the focused group's active note
    (rgFollow) and refresh 200ms after a save lands (rSchedule). */
 const RPANES = { bl: "rpane-bl", out: "rpane-out", tags: "rpane-tags", toc: "rpane-toc" };
@@ -529,7 +529,7 @@ function tocSync() {                       // highlight the heading at the viewp
 }
 $("main").addEventListener("scroll", tocSync, true);   // scroll doesn't bubble: capture
 /* ux-4: left sidebar drag-resize (clamped 150-600, ribbon is 44px);
-   width persisted as sidebar_w in ~/.rustidian.json on mouseup */
+   width persisted as sidebar_w in ~/.opensidian.json on mouseup */
 $("ldiv").onmousedown = e => {
   e.preventDefault();
   let w = 0;
@@ -1419,7 +1419,7 @@ function bmDragStart(e, ix) {
    no such option — measured three ways (16-dd2.png, 18-dd-up-shot.png,
    19-crop.png) — so in stock this route cannot move a bookmark back OUT and
    only drag-and-drop can. Drag is goal bmdrag; criterion 2 needs both
-   directions through the menu, so rustidian ships the superset and records it. */
+   directions through the menu, so opensidian ships the superset and records it. */
 const BM_TOP = "(top level)";
 function bmGroupOpts() {                   // option 0 = the top level, then every group row in pre-order
   const out = [{ ix: null, title: BM_TOP, depth: 0 }];
@@ -1671,7 +1671,7 @@ let dropTok = "", dropT = null;
    the destination it resolved to), [mv:] is the last completed move. */
 let dragTok = "", mvTok = "";
 /* F2 test hook: the vault-switch race lives inside the debounce window, so it
-   is not mechanically reproducible at 250ms — RUSTIDIAN_SAVE_MS widens it for
+   is not mechanically reproducible at 250ms — OPENSIDIAN_SAVE_MS widens it for
    the smoke (backend save_debounce_ms; default 250 in every normal run). */
 let SAVE_MS = 250;
 const errStr = e => String((e && e.message) || e);
@@ -1949,7 +1949,7 @@ function renderLayout() {         // boot / vault switch only — every later ch
 
 /* ---------- R28 WORKSPACE PERSISTENCE: quit, relaunch, your layout is there ---
    The file is the vault's own `.obsidian/workspace.json`, in STOCK's shape
-   (R28.1/R28.16) — a rustidian vault stays openable by stock Obsidian and back.
+   (R28.1/R28.16) — an opensidian vault stays openable by stock Obsidian and back.
    Shape, as measured off a stock vault:
      { main:  { id, type:"split", direction:"vertical"|"horizontal",
                 children: [ { id, type:"tabs", currentTab?, dimension?,
@@ -1987,7 +1987,7 @@ let wsGrp = {};          // W3: link-group key ("L<link>" | "G<group id>") -> th
      wsSideRaw the left / right sidebar subtree AS READ. Stock keeps several
                leaves per sidebar (file-explorer+search+bookmarks; backlink+
                outgoing+localgraph+tag+all-properties+outline; `width`) and
-               rustidian shows one pane at a time: writing only that one leaf
+               opensidian shows one pane at a time: writing only that one leaf
                would delete the rest from a stock vault opened here once
      wsSide0   the pane each sidebar showed right after the restore. While it
                is unchanged the file's currentTab stands — it may name a leaf
@@ -2237,7 +2237,7 @@ async function wsLeave() {
    The inverse of wsDoc(), and deliberately written as a SEPARATE pair of
    functions rather than a generic walker: the two directions disagree about
    what is authoritative. Writing trusts the live model; READING trusts nothing
-   — the file may have been written by stock, by an older rustidian, by a half
+   — the file may have been written by stock, by an older opensidian, by a half
    finished sync, or by a text editor. Every branch below therefore has a "this
    is not what I expected" exit that returns null, and a null anywhere means
    DROP THAT SUBTREE, never "fail the restore" (R28.17).
@@ -2479,7 +2479,7 @@ function wsSidesIn(doc) {
 /* R28.2 — THE WINDOW RECTANGLE GOES SOMEWHERE ELSE. Not in the vault: a vault
    synced between a laptop and a desktop would otherwise carry one machine's
    window size to the other and the two would overwrite each other on every
-   launch. It is written to ~/.rustidian.json ("win") beside sidebar_w / theme /
+   launch. It is written to ~/.opensidian.json ("win") beside sidebar_w / theme /
    zoom, which are machine facts for the same reason. Throttled on resize, and
    deliberately NOT applied at startup — WHERE the geometry lives is the
    requirement; restoring it is a row nobody has written. */
@@ -3083,7 +3083,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   // painting") is [vtheme:] below, and it is a STRICTLY better token: it reads
   // the name off the injected <style> element, so it says what is painting
   // rather than what an attribute wishes were painting.
-  // themecsp crit 5: with the rig applicator active (RUSTIDIAN_SMOKE_CSS), publish
+  // themecsp crit 5: with the rig applicator active (OPENSIDIAN_SMOKE_CSS), publish
   // body's COMPUTED background-color so a phase can prove a stock-shaped rule
   // targeting body.theme-dark won a pixel (getComputedStyle before/after). Off
   // (empty) on every normal run, so no pre-existing phase's census changes.
@@ -3166,7 +3166,7 @@ function updateTitle() {          // pane/focus census in the window title (head
       "/" + vpxBg(document.getElementById("wframe")) + "/" + vpxBg(document.querySelector("#bar button")) +
       "/" + vpxBg(document.getElementById("mbox")) + "]"
     : "";
-  let t = "rustidian [panes:" + ps.length + " focused:" + nf +
+  let t = "opensidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
             " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + thmpxTok + snipTok + vthemeTok + creloadTok + vbridgeTok + vtgTok + bseedTok + vpxTok + navTok + navgTok + lg + md + gg + gpx + modal +
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) +
@@ -3970,7 +3970,7 @@ function setInlineTitle(v, name) {
 let titling = null;          // {g, host, wrap, el, name, orig} while the title is being edited
 const titleEditing = () => !!titling;
 
-/* ---------- R34.18 TYPE PROBE (test-only, RUSTIDIAN_TYPEPROBE=1) ------------
+/* ---------- R34.18 TYPE PROBE (test-only, OPENSIDIAN_TYPEPROBE=1) ------------
    The operator's report was "renaming the h1 changes the font-size/decoration",
    and ui/style.css answered it with a COMMENT ("repeats the ::before's type
    declarations verbatim"). A comment is what produced the bug. So the two
@@ -3983,7 +3983,7 @@ const titleEditing = () => !!titling;
    perturbation chords. */
 let typeProbe = false;
 inv("type_probe").then(v => { typeProbe = !!v; if (typeProbe) tpInstall(); }).catch(() => {});
-/* ---------- themecsp RIG APPLICATOR (test-only, RUSTIDIAN_SMOKE_CSS=<path>) ---
+/* ---------- themecsp RIG APPLICATOR (test-only, OPENSIDIAN_SMOKE_CSS=<path>) ---
    NOT a CSS loader. The threat model is attacker-controlled CSS living in the
    document; the CHEAPEST injector for that is an inline <style> (style-src
    'unsafe-inline' lets the style EXIST — what the egress proof falsifies is that
@@ -3995,7 +3995,7 @@ let smokeCssOn = false;
 inv("smoke_css").then(css => {
   if (typeof css === "string" && css.length) {
     const s = document.createElement("style");
-    s.id = "rustidian-smoke-css";
+    s.id = "opensidian-smoke-css";
     s.textContent = css;                 // inline: allowed to exist, must not egress
     (document.head || document.documentElement).appendChild(s);
     smokeCssOn = true;
@@ -5594,7 +5594,7 @@ function cmdQuickSwitch() {
    (Ctrl+P), the keymap dispatcher and Settings ▸ Hotkeys. Chords are
    normalised "ctrl+alt+shift+<key>" (e.key lowercased, Mod = Ctrl on Linux).
    User overrides live in hkUser {id: [chords]} ([] = default removed) and are
-   persisted to ~/.rustidian.json "hotkeys" in the stock Obsidian shape. ---------- */
+   persisted to ~/.opensidian.json "hotkeys" in the stock Obsidian shape. ---------- */
 const edField = () => (state && fg() ? acField(fg()) : null);
 function edEdit(fn) {   // fn(value, selStart, selEnd) -> [value, selStart, selEnd]; fires input
   const ta = edField();
@@ -5757,7 +5757,7 @@ function applyTheme(t) {
                                            // reads state.root)
 }
 /* a USER choice: apply it, and remember it. Persisted through the EXISTING
-   settings store (~/.rustidian.json, key "theme" — main.rs set_theme), the same
+   settings store (~/.opensidian.json, key "theme" — main.rs set_theme), the same
    file sidebar_w / rside_tab / hotkeys already live in. Fire-and-forget: a failed
    write must not undo the theme the user is looking at. */
 function chooseTheme(t) {
@@ -5805,7 +5805,7 @@ async function bootTheme() {
    palette table could never have listed it.
 
    The MODE axis (applyTheme/chooseTheme above, dark|light, "theme" in
-   ~/.rustidian.json) is untouched, including "no stored value =
+   ~/.opensidian.json) is untouched, including "no stored value =
    prefers-color-scheme decides" (R6). Mode and theme compose exactly the way
    mode and palette did: a theme declares body.theme-dark and body.theme-light
    blocks, and the mode class picks which one paints. */
@@ -6235,7 +6235,7 @@ const CMDS = [
   ["app:go-back",              "Navigate back",                       ["ctrl+alt+arrowleft", "alt+arrowleft"],   () => histGo(-1)],
   ["app:go-forward",           "Navigate forward",                    ["ctrl+alt+arrowright", "alt+arrowright"], () => histGo(1)],
   ["workspace:new-tab",        "New tab",                             ["ctrl+t"],               cmdNewTab],
-  ["app:open-help",            "Open help",                           ["f1"],                   () => window.open("https://github.com/jpzk/rustidian#readme")],
+  ["app:open-help",            "Open help",                           ["f1"],                   () => window.open("https://github.com/jpzk/opensidian#readme")],
   ["editor:open-link-in-new-leaf", "Open link under cursor in new tab", ["ctrl+enter"],         async () => { const n = linkAtCaret(); if (!n) return; const g = fg(); await flushSave(g); g.tabs.push(mkTab(n)); g.active = g.tabs.length - 1; await loadActive(g); }],
   ["editor:open-link-in-new-split", "Open link under cursor to the right", ["ctrl+alt+enter"], async () => { const n = linkAtCaret(); if (n) await splitWith(fg(), "row", mkTab(n)); }],
   ["switcher:open",            "Open quick switcher",                 ["ctrl+o"],               () => cmdQuickSwitch()],
@@ -6389,7 +6389,7 @@ async function applyRename(old, nn) {   // post-rename bookkeeping (F2 / cmdRena
    inline TITLE, and then raises an "Update links" modal (Always update / Just
    once / Do not update) — it never silently rewrites a vault. So a body-H1
    edit that mutates the user's filename and every note that links to it was
-   rustidian's own invention, not parity, and it is the riskiest write in the
+   opensidian's own invention, not parity, and it is the riskiest write in the
    app. It is deleted: editing a body H1 now does what stock does — edits text.
    The rename path is F2 / "Rename file" -> cmdRename below (phase `m5` asserts
    it lands on disk); phase `ux` step 2 asserts the negative half (a body-H1
@@ -6555,12 +6555,12 @@ $("apath").onkeydown = async e => {
            center: () -> name|null,             drawn larger + accent (M8 localgraph)
            onClick: async name -> void }        navigation target on node click */
 let simGen = 0;                    // perf-graph: sim generation counter (see startGraph)
-// graph-webgl: draw-path preference. env RUSTIDIAN_GRAPH_RENDERER=gl|2d (backend) beats the
-// hidden localStorage setting rustidian.graphRenderer; RUSTIDIAN_GRAPH_LOSE_CTX=1 is the smoke
+// graph-webgl: draw-path preference. env OPENSIDIAN_GRAPH_RENDERER=gl|2d (backend) beats the
+// hidden localStorage setting opensidian.graphRenderer; OPENSIDIAN_GRAPH_LOSE_CTX=1 is the smoke
 // hook that loses the GL context once the sim has settled (fallback must keep drawing).
 let graphPrefP = null;
 const graphRendererPref = () => graphPrefP || (graphPrefP = inv("graph_renderer_pref").catch(() => null).then(p => {
-  const r = (p && p.renderer) || localStorage.getItem("rustidian.graphRenderer");
+  const r = (p && p.renderer) || localStorage.getItem("opensidian.graphRenderer");
   return { renderer: r === "gl" || r === "2d" ? r : null, loseCtx: !!(p && p.lose_ctx) };
 }));
 function showEditor(g) {
@@ -7792,7 +7792,7 @@ function showSettingsPage(id) {
      - ONE hover string for all of them (SDIS_TITLE), no per-row "coming soon"
    Geometry comes from docs/stock-settings-recon/measurements.txt: 76 px row with
    a one-line description, +16 px per extra line, 17 px card inset, 1 px
-   separator, controls at the card's right edge. The palette stays rustidian's
+   separator, controls at the card's right edge. The palette stays opensidian's
    dark theme — that delta is recorded in R30. */
 const SDIS_TITLE = "Not implemented yet";
 /* THE PALETTE CONTROL IS DELETED (themeone item 7 / C1 / R1). A second live

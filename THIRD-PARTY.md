@@ -1,6 +1,6 @@
 # Third-party notices
 
-rustidian is **GPL-3.0-or-later** (see LICENSE). It bundles or derives from the
+opensidian is **GPL-3.0-or-later** (see LICENSE). It bundles or derives from the
 works listed here. Each section carries the upstream licence text as that
 licence requires, and states how it sits with the GPL.
 
@@ -70,7 +70,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR OTHER DEALINGS IN THE SOFTWARE.
 **Used in:** `docs/fixtures/themefs/vault-minimal/.obsidian/themes/Minimal/`
 — a REAL community theme committed as a test fixture (goal themefs,
 criterion 1: a vault carrying a theme installed by stock Obsidian 1.13.7's
-own community-theme installer must open in rustidian with that theme
+own community-theme installer must open in opensidian with that theme
 applied). The fixture is exactly what stock wrote:
 `manifest.json` (version 9.0.2) and `theme.css` (264,778 bytes,
 md5 `b73d22cec0325a10785d8ed6f21013b1`). Provenance and the install
