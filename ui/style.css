@@ -1245,8 +1245,8 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .preview ul > li::before { inset-inline-start: calc(-12.8px - var(--list-bullet-size) / 2) }   /* REQ-1: dot centre = text x - 12.8 */
 .preview li > p { margin-block: 0 }                                                         /* REQ-13: loose list == tight */
 .preview ol > li::before { inset-inline-start: auto; inset-inline-end: calc(100% + 6px); font-variant-numeric: tabular-nums; white-space: nowrap }   /* REQ-11: right-aligned, tabular; "." ink right = text ink - 7 (native ::marker sits 5px further left in WebKitGTK) */
-.preview ul > li > input[type=checkbox] { margin-inline-start: calc(var(--checkbox-size) * -1.5 + 1px);   /* REQ-12: box ink 523, text ink 546 */
-  margin-inline-end: calc(0.6em - 1px); top: calc(0.2em - 1px) }
+.preview ul > li > input[type=checkbox] { margin-inline-start: calc(var(--checkbox-size) * -1.5);   /* REQ-12: stock's own -1.5 x size, end 0.6em: DOM box->text 23.8 (stock 24); ink box 522 / text 546 (stock 523/546) and +4 h1-relative in typo (stock ref +3) — both within 1px; see recon.md AFTER "two stock frames" */
+  margin-inline-end: 0.6em; top: calc(0.2em - 1px) }
 .preview a.ext { padding-inline-end: 0.9em; background-repeat: no-repeat; background-position: 100% 4px; background-size: 0.825em;   /* REQ-6 */
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238a8a8a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 3h6v6'/%3E%3Cpath d='M10 14 21 3'/%3E%3Cpath d='M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6'/%3E%3C/svg%3E") }
 .preview a.wiki-unresolved { font-style: normal; text-decoration-color: var(--link-unresolved-underline) }   /* REQ-15 */
