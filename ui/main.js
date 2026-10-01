@@ -8226,7 +8226,7 @@ function sctl(r) {                            // the control cell for one row, o
     const d = document.createElement("div");
     d.className = "sctl toggle" + (qfsAct ? " on" : ""); d.id = "sqfs";
     d.appendChild(document.createElement("i"));
-    d.onclick = () => { qfsSetAction(!qfsAct); d.classList.toggle("on", qfsAct); };
+    d.onclick = () => { d.classList.toggle("on", !qfsAct); qfsSetAction(!qfsAct); };   // drawn state first: qfsSetAction repaints the census
     return d;
   }
   const d = document.createElement("div");
