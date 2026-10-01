@@ -80,19 +80,56 @@ body {
      ramp row produced the SAME pixel count as the semantic name it feeds;
      R15.14 = docs/requirements.md, stock's own derivation as recorded there;
      T9 = docs/recon-themes/README.md (the graph canvas). */
-  --background-primary: var(--color-base-00, #1e1e2e);        /* T6b: base-00 = 650344 px = --background-primary */
+  --background-primary: var(--color-base-00, #1c1c1c);        /* T6b: base-00 = 650344 px = --background-primary; value: themelight BEFORE audit, stock dark body px 28.28.28 */
   --background-primary-alt: var(--color-base-10, #232323);    /* T6b: base-10 = 5620 px = the code/alt surface */
-  --background-secondary: #181825;                            /* no ramp row measured */
+  --background-secondary: #282828;                            /* no ramp row measured; value: themelight audit, stock dark side/status px 40.40.40 */
   --background-secondary-alt: #313244;                        /* no ramp row measured */
-  --ribbon-background: #11111b;                               /* no ramp row measured */
+  --ribbon-background: #282828;                               /* no ramp row measured; value: themelight audit, stock dark ribbon px 40.40.40 */
   --background-modifier-border: var(--color-base-30, #45475a);/* T6b: base-30 = 3486 px = --divider-color/--background-modifier-border */
   --text-normal: var(--color-base-100, #dadada);              /* R15.14: --text-normal: var(--color-base-100) */
   --text-muted: var(--color-base-70, #b3b3b3);                /* R15.14 */
   --text-faint: var(--color-base-50, #666666);                /* R15.14 */
   --text-error: var(--color-red, #f5c2c7);                    /* T6b: color-red = 23 px = --text-error */
-  --text-accent: #89b4fa;                                     /* T5 RESULT 1; no ramp row measured */
-  --interactive-accent: var(--color-accent, hsl(258, 88%, 66%));  /* R15.14 dark accent triple */
-  --tag-background: rgba(137,180,250,.15);
+  /* ---- THE ACCENT CHAIN (goal themematch). Stock derives every accent
+     surface from ONE triple, --accent-h/-s/-l, through --color-accent and two
+     shifted steps. The step factors below are FITTED to stock pixels
+     (docs/themelight/before, default theme, stock_px column), not read from
+     any bundle:
+       dark  link/tag ink   166.138.249 = triple at h-3, s x1.02, l x1.15
+       dark  link hover     197.182.252 = triple at h-5, s x1.05, l x1.29
+       dark  toggle/button  138.92.245  = the triple itself
+       light link/tag ink   138.92.245  = the triple itself
+       light toggle/check   152.115.247 = triple at h-1, s x1.01, l x1.075
+       light link hover     166.138.249 = the dark step-1 shift
+     A theme that sets only the triple (Minimal does, on body) therefore moves
+     links, tags, toggles, buttons, checkboxes and selection together, as in
+     stock. The old row was a hardcoded blue link colour: the operator's
+     "accent colours are off". */
+  --accent-h: 258;
+  --accent-s: 88%;
+  --accent-l: 66%;
+  --color-accent: hsl(var(--accent-h), var(--accent-s), var(--accent-l));
+  --color-accent-1: hsl(calc(var(--accent-h) - 3), calc(var(--accent-s) * 1.02), calc(var(--accent-l) * 1.15));
+  --color-accent-2: hsl(calc(var(--accent-h) - 5), calc(var(--accent-s) * 1.05), calc(var(--accent-l) * 1.29));
+  --text-accent: var(--color-accent-1);
+  --text-accent-hover: var(--color-accent-2);
+  --interactive-accent: var(--color-accent);
+  /* selection: stock dark 63.48.99 over 28 = the triple at alpha .32;
+     tag pill: stock 39.34.50 dark / 244.241.254 light = the triple at .1 */
+  --text-selection: hsla(var(--accent-h), var(--accent-s), var(--accent-l), .32);
+  --tag-background: hsla(var(--accent-h), var(--accent-s), var(--accent-l), .1);
+  /* ---- chrome surfaces stock names (themelight audit, stock dark px):
+     active tree row 54 over sidebar 40 and the selected palette row 43 over
+     28 are the SAME white veil (alpha .067); tab strip + title 51; active tab
+     = the note surface; the focused search field's border 85; file tree ink
+     = --text-muted (179). */
+  --background-modifier-hover: rgba(255, 255, 255, .067);
+  --background-modifier-border-focus: #555555;
+  --nav-item-color: var(--text-muted);
+  --nav-item-color-active: var(--text-normal);
+  --nav-item-background-active: var(--background-modifier-hover);
+  --tab-container-background: #333333;
+  --tab-background-active: var(--background-primary);
   --text-highlight-bg: rgba(249,226,175,.35);
   /* ============ LAYER 2 — OUR NAMES, RESOLVED FROM LAYER 1 ================
      One definition per surface. These rows carry NO colour: the value is
@@ -177,7 +214,7 @@ body {
      scrims and shadows, the bookmark drop feedback). They keep OUR names and
      OUR values, which is legal for any theme file to declare — the built-in
      assets declare every one of them, and a third-party theme may too. */
-  --bg-elevated: var(--modal-background, #26263a);
+  --bg-elevated: var(--modal-background, var(--background-primary));   /* stock palette card = the note surface (audit pal: 28 dark, 255 light) */
   --bg-banner-error: #45283c;
   --bg-button-plain: #e0e0e0;
   --border-strong: #585b70;
@@ -220,7 +257,14 @@ body {
    resolves against whatever layer 1 says on this element, so re-declaring it
    per mode could only introduce a disagreement.
    --------------------------------------------------------------------------- */
-body.theme-light {
+/* body:where(.theme-light) = (0,0,1), NOT body.theme-light (0,1,1): stock
+   ships its light palette at .theme-light and a theme wins over it ON ORDER. Minimal 9.0.2
+   declares at .theme-light, so body.theme-light out-ranked every light row it
+   wrote (themelight BEFORE: Minimal light text 34 vs stock 15, links blue).
+   Ours now ties the dark block (body, 0,0,1) and wins it on order; every
+   theme rule (.theme-light, body.theme-light, or body after this sheet)
+   beats it. :where() keeps the lint-colors selector shape (^body). */
+body:where(.theme-light) {
   /* ---- layer 1: stock's names ---- */
   --background-primary: var(--color-base-00, #ffffff);
   --background-primary-alt: var(--color-base-10, #fafafa);
@@ -232,15 +276,23 @@ body.theme-light {
   --text-muted: var(--color-base-70, #5c5c5c);
   --text-faint: var(--color-base-50, #ababab);
   --text-error: var(--color-red, #e93147);
-  --text-accent: #086ddd;
   --text-highlight-bg: #ffec99;
-  /* --interactive-accent and --tag-background have NO light row today and get
-     none here: R15.14 records a different light accent, but adopting it would
-     be a colour change this item is not making. Item 5 moves the MECHANISM. */
+  /* the accent chain in light (factors fitted to stock light px, see the
+     dark block): ink = the triple, fills = step 1, hover = step 2 */
+  --color-accent-1: hsl(calc(var(--accent-h) - 1), calc(var(--accent-s) * 1.01), calc(var(--accent-l) * 1.075));
+  --color-accent-2: hsl(calc(var(--accent-h) - 3), calc(var(--accent-s) * 1.02), calc(var(--accent-l) * 1.15));
+  --text-accent: var(--color-accent);
+  --interactive-accent: var(--color-accent-1);
+  /* stock light selection 234.227.253 over 255 = the triple at .18; tree
+     row 229 over 246 and palette row 238 over 255 = black at .067; tab strip
+     and title 252; focused field border 189 */
+  --text-selection: hsla(var(--accent-h), var(--accent-s), var(--accent-l), .18);
+  --background-modifier-hover: rgba(0, 0, 0, .067);
+  --background-modifier-border-focus: #bdbdbd;
+  --tab-container-background: #fcfcfc;
   /* ---- layer 2 in light: only the one row whose fallback is mode-specific ---- */
   --accent-red: var(--color-red, #e93147);
   /* ---- layer 3: ours alone ---- */
-  --bg-elevated: var(--modal-background, #fcfcfc);
   --bg-banner-error: #fdeaec;
   --border-strong: #ababab;
   --rule-faint: #eeeeee;
@@ -365,9 +417,9 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 /* ux-2 obsidian parity. HEIGHT MUST STAY 31px — smoke clicks rows at pitch 31 */
 .trow { height: 31px; display: flex; align-items: center; cursor: pointer;
         margin: 0 8px; padding: 0 4px; border-radius: 5px;
-        font-size: var(--sidebar-font-size); color: var(--text-chrome) }
+        font-size: var(--sidebar-font-size); color: var(--nav-item-color) }   /* themematch: stock tree ink = --nav-item-color (muted), not body ink */
 .trow:hover { background: var(--bg-surface) }
-.trow.active { background: var(--border) }
+.trow.active { background: var(--nav-item-background-active); color: var(--nav-item-color-active) }
 .tkids.collapsed { display: none }   /* R20: collapsed folder = its .tkids box hidden, rows stay built */
 .trow .tn { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden;
             text-overflow: ellipsis }
@@ -461,7 +513,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 /* R22: the strip is a fixed-height row of shrinkable items — min-width:0 +
    overflow:hidden all the way down, so a pane squeezed to a few px clips the
    strip instead of pushing #main (and the window) wider than the viewport. */
-.tabbar { display: flex; height: 32px; background: var(--bg-ribbon); flex-shrink: 0;
+.tabbar { display: flex; height: 32px; background: var(--tab-container-background); flex-shrink: 0;
           min-width: 0; overflow: hidden; user-select: none }   /* R18: a missed tab grab must not start a text-selection DnD (stock: tab strip unselectable) */
 .tabs { display: flex; flex: 1 1 0; min-width: 0; overflow: hidden }
 /* R4X.1 (navbtn): Back/Forward at the header's left edge (docs/recon-navbtn §1—§3).
@@ -482,7 +534,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .tab { width: 120px; min-width: 0; flex-shrink: 1; overflow: hidden; display: flex; align-items: center;
        gap: 6px; padding: 0 8px; background: var(--bg-surface); color: var(--text-chrome-muted);
        cursor: pointer; font-size: 12px; border-right: 2px solid var(--bg-ribbon) }   /* R22: overflow:hidden — the 16px close button + 16px padding cannot fit a 2px tab, so clip */
-.tab.active { background: var(--border); color: var(--text-chrome) }
+.tab.active { background: var(--tab-background-active); color: var(--text-chrome) }   /* themematch: stock active tab = the note surface */
 .tab .t { flex: 1 1 auto; min-width: 0; overflow: hidden;
           text-overflow: ellipsis; white-space: nowrap }
 /* ux-1: close button — flex-none so ellipsized titles can never crush it,
@@ -697,7 +749,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 #mlist { max-height: 320px; min-height: 0; flex: 0 1 auto; overflow-y: auto }
 #mlist .mrow { display: flex; justify-content: space-between; align-items: center;
                padding: 6px 14px; cursor: pointer; font-size: 13px; color: var(--text-chrome) }
-#mlist .mrow.sel, #mlist .mrow:hover { background: var(--border) }
+#mlist .mrow.sel, #mlist .mrow:hover { background: var(--background-modifier-hover) }   /* themematch: stock selected suggestion */
 #mlist .mhint { color: var(--text-chrome-faint); font-size: 11px; margin-left: 12px; white-space: nowrap }
 #mlist .mempty { padding: 8px 14px; color: var(--text-chrome-faint); font-size: 12px }
 
@@ -856,6 +908,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .lp .hl { background: var(--highlight-yellow) }
 .lp .code { font-family: var(--font-monospace); font-size: var(--code-size); background: var(--code-background); border-radius: var(--code-radius) }
 .lp .wl, .lp .lt, .lp .url { color: var(--accent-blue) }
+.lp .wl:hover, .lp .lt:hover, .lp .url:hover { color: var(--text-accent-hover) }   /* themematch: stock link hover ink */
 .lp a.wiki { text-decoration: none }
 .lp.src .wl, .lp.src .lt, .lp.src .url { text-decoration: underline }
 .lp .tag { color: var(--accent-blue); background: var(--tag-bg); border-radius: 999px; padding: 0 4px }
@@ -907,11 +960,14 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .srow.dis .slabel { color: var(--text-chrome-muted) }
 .srow.dis .slabel.slink { color: var(--accent-blue) }   /* a link line stays a link line when disabled (stock underlines it) */
 .srow.linkrow .slabel { text-decoration: underline }
-.srow.dis .sctl, .srow.dis .sicons { opacity: .5; pointer-events: none }
+/* themematch: a disabled CONTROL keeps stock paint (stock has no disabled
+   style, recon Q4) — the muted label, aria-disabled and the title carry it */
+.srow.dis .sctl { pointer-events: none }
+.srow.dis .sicons { opacity: .5; pointer-events: none }
 .sctl { flex: none; display: flex; align-items: center; gap: 8px; color: var(--text-chrome); font-size: 13px }
 .sctl.toggle { width: 40px; height: 22px; border-radius: 999px; background: var(--border); padding: 0; position: relative }
 .sctl.toggle > i { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--text-chrome) }
-.sctl.toggle.on { background: var(--accent-mauve) }
+.sctl.toggle.on { background: var(--interactive-accent) }
 .sctl.toggle.on > i { left: 21px; background: var(--bg-base) }
 .sctl.dropdown { width: 141px; height: 24px; box-sizing: border-box; padding: 0 8px; background: var(--bg-sidebar);
                  border: 1px solid var(--border); border-radius: 4px; white-space: nowrap; overflow: hidden }
@@ -930,7 +986,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .sctl.color .sw { width: 22px; height: 22px; border-radius: 4px; background: var(--accent-mauve); display: inline-block }
 .sctl.nav { color: var(--text-chrome-faint) }
 .sbtn { padding: 4px 10px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 4px; white-space: nowrap }
-.sbtn.acc { background: var(--accent-mauve); border-color: var(--accent-mauve); color: var(--bg-ribbon) }
+.sbtn.acc { background: var(--interactive-accent); border-color: var(--interactive-accent); color: var(--bg-ribbon) }
 .sicons { flex: none; display: flex; align-items: center; gap: 19px; color: var(--text-chrome-faint) }
 .sico { width: 16px; height: 16px; display: flex; align-items: center; justify-content: center;
         text-align: center; font-size: 15px; line-height: 16px }
@@ -941,6 +997,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 #hkbar { display: flex; align-items: center; gap: 6px; height: 28px }
 #hkfilter { flex: 1; height: 28px; box-sizing: border-box; background: var(--bg-sidebar); color: var(--text-chrome);
             border: 1px solid var(--border); border-radius: 4px; padding: 0 8px; outline: none; font-size: 13px }
+#hkfilter:focus { border-color: var(--background-modifier-border-focus) }   /* themematch: stock focused search field border */
 #hkclear { color: var(--text-chrome-faint); cursor: pointer; width: 16px; text-align: center }
 #hkchips { display: flex; gap: 6px; height: 24px; margin: 8px 0; align-items: center }
 .hkchip { padding: 2px 10px; border-radius: 999px; background: var(--bg-surface); color: var(--text-chrome); cursor: pointer; font-size: 12px; line-height: 16px }
@@ -1315,7 +1372,7 @@ body.floorrelayout #main { padding-right: 1px }
           /* --titlebar-bg is DEFINED only by the item-8 R4 bridge (a vault
              theme declaring --titlebar-background-focused); without a bridge
              the var is undefined and the fallback keeps the theme's ribbon */
-          z-index: 200; background: var(--titlebar-bg, var(--bg-ribbon)); user-select: none }
+          z-index: 200; background: var(--titlebar-bg, var(--tab-container-background)); user-select: none }   /* themematch: stock title area continues the tab strip */
 #wframe button { position: absolute; top: 0; width: 44px; height: 32px; padding: 0;
                  background: none; border: 0; color: var(--text-chrome-muted); cursor: pointer;
                  display: flex; align-items: center; justify-content: center }
@@ -1406,3 +1463,6 @@ span.is-flashing { background: var(--highlight-yellow) }
            text-align: center; user-select: text }
 .unkview[hidden] { display: none }
 .unkview .unkt { font-size: 1.1em; color: var(--text-normal, inherit) }
+/* themematch: stock paints text selection from --text-selection (the accent
+   triple at .18 light / .32 dark); without this the engine default blue showed */
+::selection { background-color: var(--text-selection) }
