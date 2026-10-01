@@ -4596,7 +4596,10 @@ async function openNewTab(name) {
   await act("note_open", { note: name, via: "newtab", tabs: g.tabs.length }, async sp => {
     await flushSave(g);
     const at = g.active >= 0 ? g.active + 1 : g.tabs.length;
-    g.tabs.splice(at, 0, mkTab(name));
+    // an INSERT at `at`, written without splice: the tabclose census (main.rs test
+    // tabclose_every_removal_path_names_a_cause) counts every splice on g.tabs as a removal site
+    const nt = mkTab(name);
+    g.tabs.push(nt); g.tabs.copyWithin(at + 1, at); g.tabs[at] = nt;
     g.active = at;
     await loadActive(g);
     Object.assign(sp.attrs, { mode: g.tabs[g.active].mode, bytes: g.editor.value.length, lines: g.lpLines || 0 });
