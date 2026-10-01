@@ -61,7 +61,17 @@ const BACKED: &[(&str, &str, &str)] = &[
     // read/written by src-tauri/src/themefs.rs (enabled_snippets /
     // set_snippet_enabled), pinned by `vault_keys_are_all_touched_by_themefs`.
     ("appearance", "CSS snippets", "enabledCssSnippets"),
+    // goal/linebreak REQ-1. Stock's Editor > Display "Strict line breaks" toggle,
+    // wired to the VAULT's .obsidian/app.json "strictLineBreaks" (stock's file and
+    // key, default off). main.rs reads it on every reading render and writes it
+    // by merge (strict_line_breaks / set_strict_line_breaks); APP_KEYS below.
+    ("editor", "Strict line breaks", "strictLineBreaks"),
 ];
+
+/// Keys that back a settings row and live in the VAULT's .obsidian/app.json,
+/// read and merge-written by main.rs (app_bool_in / set_app_bool_in).
+/// `app_keys_are_all_touched_by_main` pins this list to the source.
+pub const APP_KEYS: &[&str] = &["strictLineBreaks"];
 
 /// Keys that back a settings row but live in the VAULT's .obsidian/appearance.json
 /// (stock's file, byte-wise round-trip — src-tauri/src/themefs.rs), not in
@@ -287,7 +297,7 @@ mod tests {
             match r.key {
                 Some(k) => {
                     assert!(
-                        CONFIG_KEYS.contains(&k) || VAULT_KEYS.contains(&k),
+                        CONFIG_KEYS.contains(&k) || VAULT_KEYS.contains(&k) || APP_KEYS.contains(&k),
                         "row {}/{} is enabled on key {:?}, which is not a real config key",
                         r.tab,
                         r.label,
@@ -309,7 +319,9 @@ mod tests {
         // that row and it renders the way every other unimplemented row does.
         // The pane publishes exactly one theme control ("Themes"). Recorded in
         // docs/goal/themeone progress.md as R30 requires.
-        assert_eq!(enabled, 5, "enabled-row count changed — say why in progress.md (R30)");
+        // 5 -> 6 (goal/linebreak REQ-1): Editor > "Strict line breaks" is backed
+        // by app.json strictLineBreaks. Recorded in goal/linebreak progress.md.
+        assert_eq!(enabled, 6, "enabled-row count changed — say why in progress.md (R30)");
     }
 
     /// a key is "real" only if main.rs actually reads or writes it
@@ -334,6 +346,18 @@ mod tests {
             assert!(
                 src.contains(&format!("\"{k}\"")),
                 "VAULT_KEYS names {k:?} but themefs.rs never touches it"
+            );
+        }
+    }
+
+    /// the app.json keys: main.rs really reads AND writes each one
+    #[test]
+    fn app_keys_are_all_touched_by_main() {
+        let src = include_str!("main.rs");
+        for k in APP_KEYS {
+            assert!(
+                src.matches(&format!("\"{k}\"")).count() >= 2,
+                "APP_KEYS names {k:?} but main.rs does not both read and write it"
             );
         }
     }

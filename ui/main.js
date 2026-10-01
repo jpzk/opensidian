@@ -3074,6 +3074,30 @@ function updateTitle() {          // pane/focus census in the window title (head
        token for both points. */
     md += " [rvlb:wiki=" + (rvp ? rvbox(rvq(rvp, "a.wiki:not(.wiki-unresolved)")) : "-") +
           "|p=" + (rvp ? rvsx : "-") + "]";
+    /* goal/linebreak -> [rvab:<yA>,<yB>,<br>,<blk>] — the DOM measurement the
+       `linebreak` phase asserts (docs/linebreak/recon.md, the same ruler the
+       stock recon used): the painted row (Range client-rect top, px) of the
+       FIRST "Alpha" and the first "Beta" in this pane's reading view ("-" =
+       absent / not painted), the number of <br> in the view, and the first
+       code/table/math block as <tag>:<height>:<br inside> ("-" = none).
+       Reading view only, and the text walk is capped at 400 nodes, so a big
+       note costs the census nothing it did not already pay. */
+    if (rvp && isReading(rvg)) {
+      const tw = document.createTreeWalker(rvp, NodeFilter.SHOW_TEXT);
+      const ys = { Alpha: "-", Beta: "-" };
+      for (let n, k = 0; (n = tw.nextNode()) && k < 400 && (ys.Alpha === "-" || ys.Beta === "-"); k++) {
+        for (const w of ["Alpha", "Beta"]) {
+          const i = ys[w] === "-" ? n.data.indexOf(w) : -1;
+          if (i < 0) continue;
+          const rr = document.createRange(); rr.setStart(n, i); rr.setEnd(n, i + w.length);
+          const q = rr.getClientRects()[0];
+          if (q && q.height) ys[w] = Math.round(q.top);
+        }
+      }
+      const bk = rvq(rvp, "pre, table, .math-display");
+      const bh = bk ? bk.tagName.toLowerCase() + ":" + Math.round(bk.getBoundingClientRect().height) + ":" + bk.querySelectorAll("br").length : "-";
+      md += " [rvab:" + ys.Alpha + "," + ys.Beta + "," + rvp.querySelectorAll("br").length + "," + bh + "]";
+    }
   }
   // R26: the in-note find bar of the FOCUSED pane (open only) — see fTok.
   if (md && fg()) md += fTok(fg());
@@ -7815,13 +7839,14 @@ function setTok() {
   const e = SMODEL.rows.reduce((n, r) => n + (r.enabled ? 1 : 0), 0);
   return " [set:" + SMODEL.nav.length + "/" + SMODEL.rows.length + "/" + e + "]" +
          " [spane:" + sPane + "/" + sRowsShown + "/" + sEnabledShown + "]" +
-         svtTok() + ssnTok() +
+         svtTok() + ssnTok() + slbTok() +
          (sfpMs >= 0 ? " [sfp:" + sfpMs + "/" + sfpMax + "/" +
                        (Math.round(sfpSum / sfpN * 100) / 100) + "/" + sfpN + "]" : "") +
          (sfpW >= 0 ? " [sfpw:" + sfpW + "/" + sfpWMax + "]" : "");
 }
 async function openSettings() {
   if (!SMODEL) await smodelPrefetch();   // cold open only (prefetched at boot)
+  try { slbOn = !!(await inv("strict_line_breaks")); } catch (err) { slbOn = false; }   // goal/linebreak: disk is the truth
   settingsOpen = true; hkRec = null;
   closeModal();
   $("settings").hidden = false;
@@ -7949,6 +7974,45 @@ function renderSnipCtl() {
   const d = document.getElementById("ssnips");
   if (d) d.textContent = snipCtlLabel();
 }
+/* ---- Editor ▸ Display ▸ Strict line breaks (goal/linebreak REQ-1/REQ-2,
+   docs/linebreak/recon.md). Stock's row, stock's key: the VAULT's
+   .obsidian/app.json "strictLineBreaks", default off. The disk is the truth —
+   Rust's `render` reads it on every reading render — so this control only
+   writes it, mirrors it, and re-renders every open reading view at once
+   (stock re-renders without a reopen, REQ-2). slbOn is refreshed on every
+   settings open, so a hand edit of app.json shows up on the next open. */
+let slbOn = false;
+function slbCtl() {
+  const d = document.createElement("div");
+  d.className = "sctl toggle live" + (slbOn ? " on" : "");
+  d.id = "sslb";
+  d.tabIndex = 0;
+  d.setAttribute("role", "switch");
+  d.setAttribute("aria-checked", String(slbOn));
+  d.appendChild(document.createElement("i"));
+  const flip = async ev => {
+    ev.preventDefault(); ev.stopPropagation();
+    const want = !slbOn;
+    try { await inv("set_strict_line_breaks", { on: want }); }
+    catch (err) { say("Strict line breaks: " + String(err && err.message || err)); return; }
+    slbOn = want;
+    d.classList.toggle("on", slbOn); d.setAttribute("aria-checked", String(slbOn));
+    for (const g of groups()) if (isReading(g)) await preview(g);
+    updateTitle();
+  };
+  d.onmousedown = ev => ev.stopPropagation();
+  d.onclick = flip;
+  d.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") flip(ev); };
+  return d;
+}
+/* [slb:<0|1>,<cx>,<cy>] — the toggle's state and centre while it is built
+   (Editor pane open), so the smoke phase CLICKS its measured rect. */
+function slbTok() {
+  const d = document.getElementById("sslb");
+  if (!d) return "";
+  const b = d.getBoundingClientRect();
+  return " [slb:" + (slbOn ? 1 : 0) + "," + Math.round(b.left + b.width / 2) + "," + Math.round(b.top + b.height / 2) + "]";
+}
 /* ---- Appearance ▸ Themes: the settings-UI route onto the VAULT theme
    (themefs R5) — stock's own row, stock's own semantics: a dropdown showing
    the active cssTheme ("Default" when ""), listing (Default) + EXACTLY the
@@ -8037,6 +8101,7 @@ function sctl(r) {                            // the control cell for one row, o
      settings-UI route is drivable and assertable like every other menu. */
   if (r.key === "cssTheme") return themeCtl();            // themefs R5: stock's Themes row, stock's semantics
   if (r.key === "enabledCssSnippets") return snipCtl();   // themefs R3, same live-control rule
+  if (r.key === "strictLineBreaks") return slbCtl();      // goal/linebreak REQ-1: stock's Editor toggle
   const d = document.createElement("div");
   d.className = "sctl " + r.control;
   const parts = (t, cls) => t.split(" / ").forEach(p => {

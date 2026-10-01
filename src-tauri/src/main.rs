@@ -907,10 +907,17 @@ fn update_links(v: State<Vault>, old: String, new: String, otel: Option<perf::Ct
    links. So the prompt is conditional on this flag, and the flag outlives the
    process — which is why it is read off disk rather than cached in the UI. */
 fn link_consent_in(root: &Path) -> bool {
+    app_bool_in(root, "alwaysUpdateLinks")
+}
+
+/// one boolean key of the vault's `.obsidian/app.json`. Absent, unparsable or
+/// not a bool = false, which is stock's default for every key read this way
+/// (alwaysUpdateLinks, strictLineBreaks).
+fn app_bool_in(root: &Path, key: &str) -> bool {
     let cfg = fs::read_to_string(root.join(".obsidian/app.json")).unwrap_or_default();
     serde_json::from_str::<serde_json::Value>(&cfg)
         .ok()
-        .and_then(|v| v.get("alwaysUpdateLinks").and_then(|b| b.as_bool()))
+        .and_then(|v| v.get(key).and_then(|b| b.as_bool()))
         .unwrap_or(false)
 }
 
@@ -922,6 +929,12 @@ fn link_consent_in(root: &Path) -> bool {
    and it goes the same way. The write is temp+fsync+rename, so a crash cannot
    leave a truncated config either. */
 fn set_link_consent_in(root: &Path, on: bool) -> Result<(), String> {
+    set_app_bool_in(root, "alwaysUpdateLinks", on)
+}
+
+/// merge ONE boolean key into app.json — the refusal and temp+fsync+rename
+/// rules above hold for every key written through here
+fn set_app_bool_in(root: &Path, key: &str, on: bool) -> Result<(), String> {
     use std::io::Write;
     let dir = root.join(".obsidian");
     let p = dir.join("app.json");
@@ -934,7 +947,7 @@ fn set_link_consent_in(root: &Path, on: bool) -> Result<(), String> {
     if !v.is_object() {
         return Err("app.json is not a JSON object — refusing to overwrite it".into());
     }
-    v.as_object_mut().unwrap().insert("alwaysUpdateLinks".into(), serde_json::Value::Bool(on));
+    v.as_object_mut().unwrap().insert(key.into(), serde_json::Value::Bool(on));
     let body = serde_json::to_string(&v).map_err(|e| e.to_string())?;
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let tmp = dir.join("app.json.tmp");
@@ -964,6 +977,23 @@ fn link_consent(v: State<Vault>) -> Result<bool, String> {
 fn set_link_consent(v: State<Vault>, on: bool) -> Result<(), String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
     set_link_consent_in(&root, on)
+}
+
+/* goal/linebreak REQ-1 — stock's Settings > Editor > Display "Strict line
+   breaks" (docs/linebreak/recon.md). Stock's key, stock's file:
+   `<vault>/.obsidian/app.json` "strictLineBreaks", default false (stock's
+   app.json is `{}` until the toggle is first clicked; the key then stays,
+   true/false). Read off disk on every reading render (`render` below), so a
+   toggle, another window or a hand edit all take effect on the next render. */
+#[tauri::command]
+fn strict_line_breaks(v: State<Vault>) -> bool {
+    cur_vault(&v).is_some_and(|r| app_bool_in(&r, "strictLineBreaks"))
+}
+
+#[tauri::command]
+fn set_strict_line_breaks(v: State<Vault>, on: bool) -> Result<(), String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    set_app_bool_in(&root, "strictLineBreaks", on)
 }
 
 #[tauri::command]
@@ -1669,6 +1699,17 @@ impl<'a> TaskScan<'a> {
 /// reading=true: heading links join with " > " (R10.1). Block ids are emitted
 /// as span.blockid in both modes; CSS decides visibility.
 fn render_with(content: &str, notes: &[String], imgs: &[String], reading: bool) -> String {
+    render_with_br(content, notes, imgs, reading, false)
+}
+
+/// goal/linebreak REQ-3..14: `soft_br` = stock's reading view with "Strict line
+/// breaks" OFF (its default): a SOFT break inside a paragraph, list item,
+/// quote or emphasis renders as `<br>`, i.e. its own row. Only `SoftBreak`
+/// events are touched: code blocks (Text), tables (no soft breaks), `$$` math
+/// (one DisplayMath event) and headings never carry one, which is exactly
+/// stock's REQ-16 "unaffected" set. Live preview passes false (REQ-17: it
+/// shows source lines; its blocks never render a multi-line paragraph).
+fn render_with_br(content: &str, notes: &[String], imgs: &[String], reading: bool, soft_br: bool) -> String {
     // Security (docs/security-review.md H1): .md files are untrusted, so raw
     // HTML events are demoted to text (push_html escapes Text). Wikilinks are
     // linkified at the EVENT level — label and data-note attr escaped — so our
@@ -1749,6 +1790,11 @@ fn render_with(content: &str, notes: &[String], imgs: &[String], reading: bool) 
                     }
                     Event::Start(Tag::Item) if reading => {
                         tk.item_at(evs.len());
+                    }
+                    // goal/linebreak: stock's non-strict reading view (see render_with_br)
+                    Event::SoftBreak if soft_br => {
+                        evs.push(Event::HardBreak);
+                        continue;
                     }
                     Event::Start(Tag::CodeBlock(_) | Tag::MetadataBlock(_)) => in_code = true,
                     Event::End(TagEnd::CodeBlock | TagEnd::MetadataBlock(_)) => in_code = false,
@@ -1892,10 +1938,12 @@ fn block_lines(content: String) -> Vec<u32> {
 
 #[tauri::command]
 fn render(v: State<Vault>, content: String, otel: Option<perf::Ctx>) -> String {
+    // goal/linebreak: the setting is read BEFORE the index lock (root is its own mutex)
+    let soft_br = !cur_vault(&v).is_some_and(|r| app_bool_in(&r, "strictLineBreaks"));
     // ONE lock for both lists: two `v.index.lock()` calls in one expression is
     // a deadlock on a non-reentrant Mutex, not a style question.
     let ix = v.index.lock().unwrap();
-    span_timed!(otel => "render", render_with(&content, ix.names(), ix.images(), true), serde_json::json!({"bytes": content.len()}))
+    span_timed!(otel => "render", render_with_br(&content, ix.names(), ix.images(), true, soft_br), serde_json::json!({"bytes": content.len()}))
 }
 
 /// pure core of render_blocks: every block rendered against the same note list
@@ -4118,7 +4166,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, read_note, write_note, create_note, render, render_blocks, block_lines, highlight_blocks, graph, graph_local, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, tags, tag_counts,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, smoke_css,
             read_workspace, write_workspace, get_win_geom, set_win_geom,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme,
@@ -6246,6 +6294,66 @@ mod tests {
         assert!(rename_in(&root, &mut ix, "Ghost", "X").is_err()); // missing source
         assert!(rename_in(&root, &mut ix, "B", "../esc").is_err()); // traversal blocked
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// goal/linebreak REQ-3..16: a soft break is a `<br>` in the non-strict
+    /// reading render and nothing else changes; strict (and live preview's
+    /// `render_with`) is byte-identical to CommonMark.
+    #[test]
+    fn soft_break_renders_br_unless_strict() {
+        let notes = vec!["Alpha".to_string(), "Beta".to_string()];
+        let br = |s: &str| render_with_br(s, &notes, &[], true, true);
+        let st = |s: &str| render_with_br(s, &notes, &[], true, false);
+        // links / text / list continuation / quote / emphasis: one <br> per soft break
+        for s in [
+            "[[Alpha]]\n[[Beta]]",
+            "[Alpha](https://example.com/a)\n[Beta](https://example.com/b)",
+            "Alpha line\nBeta line",
+            "- Alpha item\n  Beta continued\n- third item",
+            "- Alpha item\nBeta lazy",
+            "> Alpha quote\n> Beta quote",
+            "*Alpha emph\nBeta emph*",
+        ] {
+            assert_eq!(br(s).matches("<br />").count(), 1, "{s:?} -> {}", br(s));
+            assert_eq!(st(s).matches("<br />").count(), 0, "strict {s:?} -> {}", st(s));
+            assert_eq!(br(s).replace("<br />\n", "\n"), st(s), "{s:?}: only the break may differ");
+        }
+        // hard breaks: <br> in both, exactly once
+        for s in ["Alpha hard  \nBeta hard", "Alpha bs\\\nBeta bs"] {
+            assert_eq!(br(s), st(s), "{s:?}");
+            assert_eq!(st(s).matches("<br />").count(), 1, "{s:?}");
+        }
+        // REQ-16: code, table, math, heading, blank-line paragraphs untouched
+        for s in [
+            "```\nAlpha code\nBeta code\n```",
+            "| col |\n| --- |\n| Alpha cell |\n| Beta cell |",
+            "$$\n\\begin{aligned}a&=1\\\\\nb&=2\\end{aligned}\n$$",
+            "# Alpha head\nBeta after",
+            "Alpha para\n\nBeta para",
+        ] {
+            assert_eq!(br(s), st(s), "{s:?} must not react to the setting");
+            assert!(!br(s).contains("<br"), "{s:?} -> {}", br(s));
+        }
+        // live preview's entry point is the strict (CommonMark) render
+        assert_eq!(render_with("Alpha\nBeta", &notes, &[], false), render_with_br("Alpha\nBeta", &notes, &[], false, false));
+    }
+
+    /// goal/linebreak REQ-1: strictLineBreaks lives in app.json, default false,
+    /// and writing it MERGES (other keys survive, the key stays on false)
+    #[test]
+    fn strict_line_breaks_round_trips_in_app_json() {
+        let root = r34_vault("strictlb");
+        assert!(!app_bool_in(&root, "strictLineBreaks"), "stock default is OFF");
+        fs::create_dir_all(root.join(".obsidian")).unwrap();
+        fs::write(root.join(".obsidian/app.json"), r#"{"alwaysUpdateLinks":true}"#).unwrap();
+        set_app_bool_in(&root, "strictLineBreaks", true).unwrap();
+        assert!(app_bool_in(&root, "strictLineBreaks"));
+        assert!(link_consent_in(&root), "the other key survived");
+        set_app_bool_in(&root, "strictLineBreaks", false).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(root.join(".obsidian/app.json")).unwrap()).unwrap();
+        assert_eq!(v["strictLineBreaks"], serde_json::Value::Bool(false), "stock keeps the key on false");
+        assert_eq!(v["alwaysUpdateLinks"], serde_json::Value::Bool(true));
     }
 
     #[test]
