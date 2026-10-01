@@ -537,6 +537,11 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
            padding: 0 10px; flex: 0 1 auto; min-width: 0; overflow: hidden }   /* R22: shrinkable, was flex-shrink:0 */
 .modebtn:hover { color: var(--text-chrome) }
 .modebtn svg { width: 16px; height: 16px; display: block }
+/* graphhdr REQ-5: the ⋮ "More options" button — same muted glyph, right of the toggle */
+.morebtn { background: none; border: 0; color: var(--text-chrome-muted); cursor: pointer;
+           padding: 0 8px; flex: 0 1 auto; min-width: 0; overflow: hidden }
+.morebtn:hover { color: var(--text-chrome) }
+.morebtn svg { width: 16px; height: 16px; display: block }
 .tab { width: 120px; min-width: 0; flex-shrink: 1; overflow: hidden; display: flex; align-items: center;
        gap: 6px; padding: 0 8px; background: var(--bg-surface); color: var(--text-chrome-muted);
        cursor: pointer; font-size: 12px; border-right: 2px solid var(--bg-ribbon) }   /* R22: overflow:hidden — the 16px close button + 16px padding cannot fit a 2px tab, so clip */

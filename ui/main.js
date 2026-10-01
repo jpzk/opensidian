@@ -225,7 +225,9 @@ function placeRToggle() {
   clearTimeout(rtT);
   rtT = setTimeout(() => {
     rtT = null;
-    const r = b.getBoundingClientRect(), mb = host && host.classList.contains("tabbar") ? host.querySelector(".modebtn") : null;
+    // graphhdr: mb = the header action IMMEDIATELY left of #rtoggle — the ⋮ now (always
+    // shown); the mode toggle is hidden on graph/empty views and sits left of the ⋮.
+    const r = b.getBoundingClientRect(), mb = host && host.classList.contains("tabbar") ? host.querySelector(".morebtn") : null;
     const m = mb ? mb.getBoundingClientRect() : null;
     const f = x => Math.round(x);
     rtInfo = "rt:" + f(r.left) + "-" + f(r.right) + (m ? "|mb:" + f(m.left) + "-" + f(m.right) : "");
@@ -1840,7 +1842,11 @@ function mkGroup() {
       '<button class="navbtn navfwd" title="Navigate forward" disabled>' +
         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5l7 7-7 7"/></svg></button>' +
     '</div><div class="tabs"></div>' +
-    '<button class="modebtn" title="toggle reading view (Ctrl+E)"></button></div>' +
+    '<button class="modebtn"></button>' +
+    // graphhdr REQ-5: stock's ⋮ "More options" (lucide-more-vertical) at the header's
+    // right end on EVERY main-area view kind; its menu depends on the kind (hdrMenu).
+    '<button class="morebtn" title="More options" aria-label="More options">' +
+      '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></button></div>' +
     '<div class="content">' +
       '<canvas class="graph" hidden></canvas>' +
       '<div class="ac" hidden></div>' +
@@ -1856,7 +1862,7 @@ function mkGroup() {
     '</div>';
   g.pane = pane;
   const q = s => pane.querySelector(s);
-  g.tabsEl = q(".tabs"); g.modebtn = q(".modebtn"); g.content = q(".content");
+  g.tabsEl = q(".tabs"); g.modebtn = q(".modebtn"); g.morebtn = q(".morebtn"); g.content = q(".content");
   g.navback = q(".navback"); g.navfwd = q(".navfwd");
   g.graph = q(".graph");
   g.acEl = q(".ac"); g.status = q(".status");
@@ -1868,7 +1874,10 @@ function mkGroup() {
   g.lgInc.onchange = () => lgSet(g);
   g.lgOut.onchange = () => lgSet(g);
   pane.addEventListener("mousedown", () => focusGroup(g), true);  // R6.3: click focuses
-  g.modebtn.onclick = () => cmdToggleMode(g);
+  // graphhdr REQ-4: Ctrl+Click = stock's "open to the right" (a linked pane in the OTHER mode)
+  g.modebtn.onclick = e => (e.ctrlKey || e.metaKey) ? modeOpenRight(g) : cmdToggleMode(g);
+  g.morebtn.onmousedown = e => e.stopPropagation();   // the document mousedown closes menus; this button OPENS one
+  g.morebtn.onclick = e => { if (menuEl && menuEl.dataset.hdr === String(g.id)) { closeMenu(); return; } hdrMenu(e, g); };
   // R4X.2 (navbtn): the buttons walk THIS pane's history through the R19
   // model (histGo — same entry point as Alt+Left/Right, mouse 8/9, palette).
   // A disabled button never fires (native disabled), matching stock's
@@ -3621,17 +3630,32 @@ async function closeAllTabs(g) {           // Close all: the GROUP SURVIVES (col
     await loadActive(g);
   });
 }
-function tabMenu(e, g, i) {
+/* graphhdr REQ-5/9..12: the view header's ⋮ "More options" menu. Stock builds it
+   from the VIEW, not the tab: the tab menu's view rows minus the tab-only ones
+   (close group, Pin, Link with tab..., Move to new window). Measured 1.13.7
+   (docs/graphhdr/recon.md): markdown = the note rows; global graph = Split
+   right, Split down, ---, Copy screenshot, Bookmark...; local graph = the same
+   without Bookmark...; empty tab = Split right, Split down. One builder for
+   both menus, so a row wired (or disabled with a reason) in one is the same in
+   the other. Census: [mt:hdr-<kind>:<label>] names the pane's view. */
+function hdrMenu(e, g) { tabMenu(e, g, g.active, true); }
+function tabMenu(e, g, i, hdr) {
   e.preventDefault();
   closeMenu();
   const m = document.createElement("div");
   m.className = "ctxmenu";
-  const tab = g.tabs[i];
+  const tab = i >= 0 ? g.tabs[i] : null;
   // stamp the menu with the tab the hit test actually handed us -> census [mt:kind:label].
   // gg/lg tabs carry no note, so they publish their kind and an empty label. Separators and ':'
   // are stripped so a note named 'a:b]' cannot forge a token.
-  m.dataset.mt = (tab.kind || "note") + ":" +
-    (tab.kind ? "" : String(tab.name).split("/").pop().replace(/[|\]:]/g, ""));
+  m.dataset.mt = (hdr ? "hdr-" : "") + (tab ? (tab.kind || "note") : "empty") + ":" +
+    (!tab || tab.kind ? "" : String(tab.name).split("/").pop().replace(/[|\]:]/g, ""));
+  const place = () => {                  // a header menu drops from its button (stock), a tab menu at the pointer
+    if (!hdr) { placeMenu(m, e.clientX, e.clientY); return; }
+    m.dataset.hdr = String(g.id);
+    const r = g.morebtn.getBoundingClientRect();
+    placeMenu(m, Math.round(r.left), Math.round(r.bottom + 2));
+  };
   /* item(label, fn) wires a row; item(label, null, why) renders it DISABLED with
      `why` (the missing subsystem) as the hover title; chk adds the radio marker
      as an ELEMENT so textContent — and therefore [menu:] — stays stock's label. */
@@ -3676,8 +3700,15 @@ function tabMenu(e, g, i) {
       if (!m.children.length) item("(no other folder)");
     });
   };
+  if (hdr && !tab) {                     // graphhdr REQ-11: the empty tab's ⋮ — a split of an empty pane is an empty pane
+    item("Split right", () => { closeMenu(); splitGroup(g, "row", -1); });
+    item("Split down",  () => { closeMenu(); splitGroup(g, "col", -1); });
+    place();
+    return;
+  }
   // ---- group 1, the close group. R38.31: the SET is the absence rule ----
   const n = g.tabs.length, rightmost = i === n - 1;
+  if (!hdr) {
   item("Close", () => { closeMenu(); closeTab(g, i); });                        // WIRED: closeTab — flushes, focus to the NEXT tab (R38.3)
   if (n > 1) {
     item("Close others", () => { closeMenu(); closeOtherTabs(g, i); });         // WIRED (R38.4)
@@ -3690,6 +3721,7 @@ function tabMenu(e, g, i) {
      what lets Reading view / Find... / Rename... keep taking the group. */
   if (i !== g.active) { placeMenu(m, e.clientX, e.clientY); return; }
   sep();
+  }                                      // !hdr: the close group is a TAB verb — stock's ⋮ has none
   const pinRow = () => item(tab.pinned ? "Unpin" : "Pin", () => { closeMenu(); togglePin(g, tab); });   // WIRED (R38.7)
   const linkRow = () => isLinked(g, tab, i)
     ? item("Unlink tab", () => { closeMenu(); unlinkTab(g, tab); })             // WIRED: R6.8, unchanged — stock wording in a stock slot
@@ -3698,26 +3730,28 @@ function tabMenu(e, g, i) {
     /* ---- R38.30: a GRAPH tab gets a DIFFERENT menu, assembled from the view
        type — 11 rows with a second tab in the group, 8 alone. It drops every
        row that needs a file behind the tab and adds Copy screenshot. ---- */
-    pinRow(); linkRow();
-    sep();
-    item("Move to new window", null, DIS_WIN);
+    if (!hdr) {
+      pinRow(); linkRow();
+      sep();
+      item("Move to new window", null, DIS_WIN);
+    }
     item("Split right", () => { closeMenu(); splitGroup(g, "row", i); });
     item("Split down",  () => { closeMenu(); splitGroup(g, "col", i); });
     sep();
     item("Copy screenshot", null, "Missing subsystem: canvas-to-clipboard — no programmatic clipboard write exists in this tree (ui/editor.js writes only inside real copy events) and the graph view has no canvas-to-PNG step");
-    item("Bookmark...", null, "Missing subsystem: bookmarks of non-file views — a bookmark here is a note name on disk (R9.4) and a graph tab has no note behind it");
-    placeMenu(m, e.clientX, e.clientY);
+    if (!hdr || tab.kind !== "lg")        // graphhdr REQ-10: stock's LOCAL graph ⋮ has no Bookmark... row
+      item("Bookmark...", null, "Missing subsystem: bookmarks of non-file views — a bookmark here is a note name on disk (R9.4) and a graph tab has no note behind it");
+    place();
     return;
   }
   // ---- group 2 (5 rows) ----
-  pinRow();
-  linkRow();
+  if (!hdr) { pinRow(); linkRow(); }
   item("Backlinks in document", null, "Missing subsystem: an in-document backlinks section — stock appends backlinks to the BOTTOM OF THE NOTE PANE; ours is a right-sidebar pane (R27), a different surface");
   item("Reading view", () => { closeMenu(); setMode(g, "reading"); }, null, tab.mode === "reading");     // WIRED: setMode (R38.10)
   item("Source mode",  () => { closeMenu(); setMode(g, "source"); },  null, tab.mode === "source");      // WIRED: setMode — the ✓ is the R12.4 radio, now a marker element
   // ---- group 3 (4 rows) ----
   sep();
-  item("Move to new window", null, DIS_WIN);
+  if (!hdr) item("Move to new window", null, DIS_WIN);
   item("Split right", () => { closeMenu(); splitGroup(g, "row", i); });         // WIRED: R6.2 — row 11 now, not row 1 (R38.12)
   item("Split down",  () => { closeMenu(); splitGroup(g, "col", i); });         // WIRED: R6.2 (R38.13)
   item("Open in new window", null, DIS_WIN + " — and this row COPIES the tab where the one above MOVES it (measured), so the two stay distinct");
@@ -3749,7 +3783,7 @@ function tabMenu(e, g, i) {
   // ---- group 9 (1 row) ----
   sep();
   item("Delete file", () => { closeMenu(); askDelete(tab.name); }).className = "del";   // WIRED: askDelete — stock's row is the link-COUNTING confirmation, not an unlink (R38.29)
-  placeMenu(m, e.clientX, e.clientY);   /* R22: viewport-clamped by MEASURED size */
+  place();   /* R22: viewport-clamped by MEASURED size */
 }
 async function togglePin(g, tab) {      // R38.7: the flag + the tab-bar glyph; Close stays enabled on a pinned tab (measured)
   tab.pinned = !tab.pinned;
@@ -3868,6 +3902,13 @@ function updateModeBtn(g) {
   const tb = g.active >= 0 ? g.tabs[g.active] : null;
   const m = tb ? tb.mode : "livepreview";
   g.modebtn.innerHTML = m === "reading" ? ICON_PEN : ICON_BOOK;   // R20 (#3)/#16: stock shows pen/book only — TWO states; source vs LP lives in the tab menu radio + its own command
+  // graphhdr REQ-6/7/8: stock renders the mode toggle ONLY for a markdown view — a
+  // global graph, a local graph and an empty tab have no editing/reading mode.
+  g.modebtn.hidden = !tb || !!tb.kind;
+  // graphhdr REQ-3: stock's three-line tooltip for the CURRENT mode
+  g.modebtn.title = m === "reading"
+    ? "Current view: reading\nClick to edit\nCtrl+Click to open to the right"
+    : "Current view: editing\nClick to read\nCtrl+Click to open to the right";
 }
 
 function applyMode(g) {  // exactly ONE of lp / preview fills the pane
@@ -3888,6 +3929,20 @@ async function cmdToggleMode(g) {  // #16: Ctrl+E / the view-header icon = EDIT 
   // leaving reading lands in the sub-mode you left from (tab.src is untouched by
   // the reading flag) -> source -> reading -> source, like stock
   await setMode(g, tab.read ? (tab.src ? "source" : "livepreview") : "reading");
+}
+/* graphhdr REQ-4: Ctrl+Click on the mode toggle. Stock 1.13.7 (recon 60/61):
+   the original pane is UNCHANGED, a NEW pane opens split to the right showing the
+   same note in the OTHER mode, LINKED to the original (R13 link group), and it is
+   the active pane. Same sub-mode bit (src) rides along, like a split. */
+async function modeOpenRight(g) {
+  g = g || fg();
+  if (!g || g.active < 0 || g.graphOn) return;
+  const tab = g.tabs[g.active];
+  if (tab.kind) return;             // no mode toggle on a non-markdown view (REQ-6/7/8)
+  await flushSave(g);
+  const t = Object.assign(mkTab(tab.name), { src: !!tab.src, read: !tab.read });
+  await splitWith(g, "row", t);
+  linkTabs(tab, t);
 }
 async function cmdToggleSource(g) {  // stock "Toggle Live Preview/Source mode": flips the OTHER bit
   g = g || fg();
@@ -5785,6 +5840,11 @@ function edTask() {
 // listtoggle R1/R3: the note tab in an editing mode (LP or Source — the op is
 // text-only, R5 [Q15]); reading view is excluded [Q14]. Both the palette filter
 // and the run guard use it, so a user-bound chord is a no-op in reading view.
+function mdActive() {           // graphhdr REQ-14: the active view is a markdown note (any mode)
+  const g = state && fg();
+  const t = g && g.active >= 0 ? g.tabs[g.active] : null;
+  return !!(t && !t.kind && !g.graphOn);
+}
 function edEditable() {
   const g = state && fg();
   const t = g && g.active >= 0 ? g.tabs[g.active] : null;
@@ -6480,7 +6540,7 @@ const CMDS = [
   ["editor:toggle-numbered-list", "Toggle numbered list",             [],                       () => edList("numbered"), edEditable],
   ["editor:toggle-comments",   "Toggle comment",                      ["ctrl+/"],               () => edWrap("%%", "comment")],
   ["editor:toggle-italics",    "Toggle italic",                       ["ctrl+i"],               () => edWrap("*")],
-  ["markdown:toggle-preview",  "Toggle reading view",                 ["ctrl+e"],               () => cmdToggleMode()],
+  ["markdown:toggle-preview",  "Toggle reading view",                 ["ctrl+e"],               () => cmdToggleMode(), mdActive],   // graphhdr REQ-14: stock offers it only on a markdown view
   ["editor:toggle-source",     "Toggle Live Preview/Source mode",     [],                       () => cmdToggleSource()],
   ["workspace:undo-close-pane","Undo close tab",                      ["ctrl+shift+t"],         async () => { await undoCloseTab(); }],
   ["workspace:split-vertical", "Split right",                         [],                       () => splitGroup(fg(), "row", fg().active)],
@@ -8559,6 +8619,35 @@ function wfHdrTok() {
   }
   return out.join("|");
 }
+/* graphhdr census [hdra:<i>:<kind>:<act>,<act>|...] — one entry per pane in the
+   same document order as [hdr:], kind = note|gg|lg|unk|empty (the ACTIVE view),
+   act = every VISIBLE header action, right of the tabs, in DOM order, each with
+   its client centre: mode-edit@x,y / mode-read@x,y (the toggle; the word is the
+   CURRENT view, read from the tooltip's first line, so the stock tooltip is
+   asserted too) and more@x,y (the ⋮). A graph pane that still shows a toggle
+   reads `gg:mode-edit@…,more@…` and the smoke fails on it. */
+function hdrActTok() {
+  const out = [];
+  let i = 0;
+  for (const p of document.querySelectorAll("#main .pane")) {
+    i++;
+    const g = p._g, tb = g && g.active >= 0 ? g.tabs[g.active] : null;
+    const kind = tb ? (tb.kind || "note") : "empty";
+    const acts = [];
+    for (const b of p.querySelectorAll(":scope > .tabbar > .modebtn, :scope > .tabbar > .morebtn")) {
+      const r = b.getBoundingClientRect();
+      if (b.hidden || r.width < 1 || r.height < 1) continue;
+      const c = "@" + Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2);
+      if (b.classList.contains("morebtn")) acts.push("more" + c);
+      else {
+        const t = b.title || "";
+        acts.push((t.startsWith("Current view: reading") ? "mode-read" : t.startsWith("Current view: editing") ? "mode-edit" : "mode-?") + c);
+      }
+    }
+    out.push(i + ":" + kind + ":" + (acts.join(",") || "-"));
+  }
+  return out.join("|");
+}
 async function wfToggleMax() {
   try { wfMax = await inv("win_toggle_max"); } catch (e) { noteErr(e); }
   updateTitle();
@@ -8766,7 +8855,7 @@ function wfTok() {
   const g = document.querySelectorAll("#wrz i").length;
   const a = document.activeElement;
   const k = a && a.id && a.id.indexOf("wf-") === 0 ? a.id : "-";
-  return " [wf:" + b + (wfArmed ? "d" : "-") + g + "] [wfm:" + (wfMax ? 1 : 0) + "] [wfk:" + k + "] [wfg:" + wfLast + "] [wfl:" + wfLogA.join(">") + "] [wfp:" + wfProto + "] [wfd:" + wfEv.dn + "," + wfEv.up + "," + wfEv.cx + "," + wfEv.lc + "," + wfEv.mvb + "] [hdr:" + wfHdrTok() + "]";
+  return " [wf:" + b + (wfArmed ? "d" : "-") + g + "] [wfm:" + (wfMax ? 1 : 0) + "] [wfk:" + k + "] [wfg:" + wfLast + "] [wfl:" + wfLogA.join(">") + "] [wfp:" + wfProto + "] [wfd:" + wfEv.dn + "," + wfEv.up + "," + wfEv.cx + "," + wfEv.lc + "," + wfEv.mvb + "] [hdr:" + wfHdrTok() + "] [hdra:" + hdrActTok() + "]";
 }
 wfArm();
 
