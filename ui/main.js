@@ -1151,6 +1151,60 @@ function sfontTok() {
   };
   return " [sfont:t" + fs("#tree .trow") + "b" + fs("#bmlist .bmrow") + "r" + fs(".rlist > :not(.rempty)") + "]";
 }
+/* listlinks (docs/listlinks/recon.md REQ-n): [lstl:k=v,...] the reading-view
+   list/link geometry of the listlinks fixture, read off the live DOM — only
+   while the focused leaf is READING a note whose preview carries the fixture's
+   body h1 "Lists of links" ("" otherwise, so it costs nothing elsewhere).
+   x values are relative to the li's TEXT x (left of its first painted glyph,
+   a Range rect — what stock's recon measured against); pseudo-element boxes
+   (bullet, ordered marker, indent guide) come from getComputedStyle's
+   RESOLVED left/right/width of the positioned ::before against the li/ul box.
+   "-" = not measurable (missing element / auto inset) — the phase dies on it. */
+function llTok() {
+  const g = fg();
+  if (!g || !g.preview || !isReading(g)) return "";
+  const P = g.preview;
+  if (![...P.querySelectorAll("h1")].some(h => h.textContent.trim() === "Lists of links")) return "";
+  const h2 = c => [...P.querySelectorAll("h2")].find(e => e.textContent.trim().startsWith(c + " "));
+  const sec = c => { let n = h2(c); n = n && n.nextElementSibling;
+    while (n && !/^(UL|OL)$/.test(n.tagName)) { if (/^H[1-6]$/.test(n.tagName)) return null; n = n.nextElementSibling; }
+    return n; };
+  const lis = l => l ? [...l.children].filter(e => e.tagName === "LI") : [];
+  const f = v => Number.isFinite(v) ? String(Math.round(v * 10) / 10) : "-";
+  const tx = li => {
+    if (!li) return NaN;
+    const w = document.createTreeWalker(li, NodeFilter.SHOW_TEXT, { acceptNode: t => t.parentElement.closest("li") === li && t.textContent.trim() ? 1 : 3 });
+    const t = w.nextNode(); if (!t) return NaN;
+    const r = document.createRange(); r.selectNodeContents(t);
+    const rc = [...r.getClientRects()].find(q => q.width > 0); return rc ? rc.left : NaN;
+  };
+  const top = li => li ? li.getBoundingClientRect().top : NaN;
+  const pse = el => { const s = getComputedStyle(el, "::before"); return s.content === "none" || s.display === "none" ? null : s; };
+  const bc = li => { const s = li && pse(li); if (!s) return NaN; return li.getBoundingClientRect().left + parseFloat(s.left) + parseFloat(s.width) / 2 - tx(li); };
+  const o = [];
+  const A = lis(sec("A")), C = sec("C"), D = sec("D"), F = lis(sec("F")), G = lis(sec("G")), H = lis(sec("H")), I = lis(sec("I")), K = sec("K"), L = lis(sec("L"));
+  const hA = h2("A");
+  o.push("ap=" + f(top(A[1]) - top(A[0])), "ab=" + f(bc(A[0])), "aw=" + f(A[0] && pse(A[0]) ? parseFloat(pse(A[0]).width) : NaN),
+         "at=" + f(tx(A[0]) - (hA ? hA.getBoundingClientRect().left : NaN)));
+  o.push("cw=" + (C ? C.querySelectorAll("a.wiki[data-note]").length : "-"), "cr=" + (C ? lis(C).filter(li => li.textContent.includes("](")).length : "-"));
+  const ex = D ? [...D.querySelectorAll("a.ext")] : [], e0 = ex[0] && getComputedStyle(ex[0]);
+  o.push("dx=" + ex.length, "dpr=" + f(e0 ? parseFloat(e0.paddingRight) : NaN), "dbs=" + f(e0 ? parseFloat(e0.backgroundSize) : NaN),
+         "dbi=" + (e0 && e0.backgroundImage !== "none" ? 1 : 0), "dbp=" + (e0 ? e0.backgroundPosition.replace(/\s+/g, "_") : "-"));
+  const f2 = F[0] && lis(F[0].querySelector(":scope > ul, :scope > ol")), f3 = f2 && f2[0] && lis(f2[0].querySelector(":scope > ul, :scope > ol"));
+  const nu = F[0] && F[0].querySelector(":scope > ul, :scope > ol"), gs = nu && pse(nu);
+  o.push("f1=" + f(tx(f2 && f2[0]) - tx(F[0])), "f2=" + f(tx(f3 && f3[0]) - tx(f2 && f2[0])), "fb=" + f(bc(f2 && f2[0])),
+         "fg=" + f(gs ? nu.getBoundingClientRect().left + parseFloat(gs.left) - tx(F[0]) : NaN), "fgw=" + f(gs ? parseFloat(gs.width) : NaN));
+  const om = li => { const s = li && pse(li); if (!s) return NaN; return li.getBoundingClientRect().right - parseFloat(s.right) - tx(li); };
+  o.push("go1=" + f(om(G[0])), "go2=" + f(om(G[1])), "gt=" + (G[0] && pse(G[0]) && /tabular-nums/.test(pse(G[0]).fontVariantNumeric) ? 1 : 0));
+  const cb = H[0] && H[0].querySelector(":scope > input[type=checkbox]"), cr = cb && cb.getBoundingClientRect();
+  o.push("hb=" + f(cr ? cr.left - tx(H[0]) : NaN), "hw=" + f(cr ? cr.width : NaN), "hn=" + (H[0] && !pse(H[0]) ? 1 : 0));
+  o.push("ip=" + f(top(I[1]) - top(I[0])), "ib=" + f(bc(I[0])), "it=" + f(tx(I[0]) - tx(A[0])));
+  const ku = K && K.querySelector("a.wiki-unresolved"), ks = ku && getComputedStyle(ku);
+  const al = c => { const m = /([\d.]+)\s*\)\s*$/.exec(c || ""); return /\/|rgba|,.*,.*,/.test(c || "") && m ? parseFloat(m[1]) : 1; };
+  o.push("ks=" + (ks ? ks.fontStyle : "-"), "ka=" + f(ks ? al(ks.textDecorationColor) : NaN));
+  o.push("lp=" + f(top(L[1]) - top(L[0])));
+  return " [lstl:" + o.join(",") + "]";
+}
 /* collapseall R1/R2: flip ONE group's fold. Pure view state — no inv(), so the
    bookmarks.json bytes cannot move (the phase sha256s the file around it). */
 function bmFoldToggle(key) {
