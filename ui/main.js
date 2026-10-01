@@ -566,6 +566,9 @@ function tjTok() {
    third of its ACTIVE tab (a narrow tab's centre is its close button) and a point 14px inside the bottom-left of its content;
    a blank point in the file explorer: below its last row, else the header's
    reserved blank slot (- if neither is painted). */
+// census refresh for [tj:ae]: a click on a non-focusable surface (the explorer) blurs
+// the editor without any handler that repaints the title — the token would go stale.
+document.addEventListener("focusout", () => { if (rightOpen && rTab === "toc") setTimeout(updateTitle, 0); }, true);
 function tjxyTok() {
   if (!rightOpen || rTab !== "toc") return "";
   const c = r => Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2);
