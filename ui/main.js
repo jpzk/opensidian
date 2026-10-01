@@ -8001,7 +8001,14 @@ function slbCtl() {
     catch (err) { say("Strict line breaks: " + String(err && err.message || err)); return; }
     slbOn = want;
     d.classList.toggle("on", slbOn); d.setAttribute("aria-checked", String(slbOn));
-    for (const g of groups()) if (isReading(g)) await preview(g);
+    for (const g of groups()) {
+      if (isReading(g)) await preview(g);
+      // a RETAINED reading view in an inactive tab is swapped back in without a
+      // render (R20), so it must re-render on activation (measured: the phase's
+      // second pass landed on LB01's retained OFF render)
+      for (const t of g.tabs)
+        if (!t.kind && t !== g.tabs[g.active] && t.mode === "reading" && t.view && t.view.loaded) t.stale = true;
+    }
     updateTitle();
   };
   d.onmousedown = ev => ev.stopPropagation();
