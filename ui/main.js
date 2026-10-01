@@ -3149,7 +3149,7 @@ function updateTitle() {          // pane/focus census in the window title (head
       // never see a theme's value. That is DESIGN §3 cause (1), arriving with
       // the declarations it follows; item 6 owns causes 2-4.
       const cs = getComputedStyle(document.body), tokv = n => cs.getPropertyValue(n).trim().toLowerCase();
-      // themematch: --accent-blue is now var(--text-accent) = hsl(calc(...)), which
+      // themematch: --accent-blue is now var(--text-accent) = an hsl-of-calc expression, which
       // getPropertyValue hands back UNRESOLVED. Resolve it the way the graph's own
       // palette() does (a probe's computed colour) so the token is the colour drawn.
       const tokc = n => { const raw = tokv(n), pr = document.createElement("span");
