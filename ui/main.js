@@ -3090,8 +3090,12 @@ function updateTitle() {          // pane/focus census in the window title (head
           const i = ys[w] === "-" ? n.data.indexOf(w) : -1;
           if (i < 0) continue;
           const rr = document.createRange(); rr.setStart(n, i); rr.setEnd(n, i + w.length);
-          const q = rr.getClientRects()[0];
-          if (q && q.height) ys[w] = Math.round(q.top);
+          // the WIDEST rect: WebKit hands a zero-width box at the END of the previous
+          // line first when the word follows a "\n" inside a <pre> (measured: code
+          // block, Alpha and Beta both reported on row 1)
+          let q = null;
+          for (const c of rr.getClientRects()) if (c.height && (!q || c.width > q.width)) q = c;
+          if (q && q.width) ys[w] = Math.round(q.top);
         }
       }
       const bk = rvq(rvp, "pre, table, .math-display");
