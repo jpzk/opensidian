@@ -2258,6 +2258,28 @@ fn set_css_theme(v: State<Vault>, name: String) -> Result<(), String> {
     themefs::set_css_theme(&root, &name)
 }
 
+/* ---- goal fontwheel: stock "Quick font size adjustment" (recon.md REQ-14).
+   Two scalars in the vault's small appearance.json — the get_theme/set_theme
+   class, OUT_OF_SCOPE_CMD in perf-coverage.sh like get_css_theme. */
+#[derive(serde::Serialize)]
+struct QuickFont {
+    size: f64,
+    action: bool,
+}
+
+#[tauri::command]
+fn get_quickfont(v: State<Vault>) -> Result<QuickFont, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    let (size, action) = themefs::quickfont(&root);
+    Ok(QuickFont { size, action })
+}
+
+#[tauri::command]
+fn set_quickfont(v: State<Vault>, size: Option<i64>, action: Option<bool>) -> Result<(), String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    themefs::set_quickfont(&root, size, action)
+}
+
 /// themeone item 4 (C3): what the LAST seeding pass decided, for the
 /// `[bseed:w<n>k<n>f<n>]` census token. Read-only and side-effect free —
 /// seeding happens at boot / on the vault switch, never because something
@@ -4172,6 +4194,7 @@ fn main() {
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
             themes_scan, theme_css, get_css_theme, set_css_theme, theme_seed_report, vault_css_watch,
+            get_quickfont, set_quickfont,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
             win_rect, win_gesture, win_move_proto, win_drag_start, win_minimize, win_toggle_max, win_close,
             tab_removed,

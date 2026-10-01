@@ -120,6 +120,46 @@ pub fn set_snippet_enabled(root: &Path, label: &str, on: bool) -> Result<(), Str
 }
 
 // ---------------------------------------------------------------------------
+// goal fontwheel (docs/ctrlzoom/recon.md REQ-1/2/4/5/14): stock's "Quick font
+// size adjustment". Two keys in the SAME appearance.json: "baseFontSize"
+// (number, px; absent = 16) and "baseFontSizeAction" (bool). Stock's default
+// is OFF (key absent); OPERATOR EXCEPTION REQ-2: opensidian treats an ABSENT
+// key as ON, an explicit false is honoured.
+pub const BFS_DEFAULT: f64 = 16.0;
+pub const BFS_MIN: f64 = 10.0;
+pub const BFS_MAX: f64 = 30.0;
+
+/// (baseFontSize clamped 10..=30, baseFontSizeAction with absent = ON)
+pub fn quickfont(root: &Path) -> (f64, bool) {
+    let m = read_appearance(root).unwrap_or_default();
+    let bfs = m
+        .get("baseFontSize")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(BFS_DEFAULT)
+        .clamp(BFS_MIN, BFS_MAX);
+    let act = m.get("baseFontSizeAction").and_then(|v| v.as_bool()).unwrap_or(true);
+    (bfs, act)
+}
+
+/// Write either key (None = leave it). Stock writes the size as an integer and
+/// the action as a bool; a write where nothing changes is skipped.
+pub fn set_quickfont(root: &Path, size: Option<i64>, action: Option<bool>) -> Result<(), String> {
+    let mut m = read_appearance(root)?; // Err = refuse, never overwrite
+    let before = m.clone();
+    if let Some(s) = size {
+        let s = s.clamp(BFS_MIN as i64, BFS_MAX as i64);
+        m.insert("baseFontSize".into(), Value::from(s));
+    }
+    if let Some(a) = action {
+        m.insert("baseFontSizeAction".into(), Value::Bool(a));
+    }
+    if m == before {
+        return Ok(());
+    }
+    write_appearance(root, &m)
+}
+
+// ---------------------------------------------------------------------------
 // Part 3 (ledger item 4): the snippet listing + loader — R3.
 //
 // The oracle (docs/recon-themes/probe-stock-vault.sh §4, T3 RESULT 2):
@@ -930,6 +970,32 @@ mod tests {
         assert!(enabled_snippets(&root).is_empty());
         assert!(read_appearance(&root).unwrap().is_empty());
         assert!(!root.join(APPEARANCE_FILE).exists(), "a read must not create the file");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// fontwheel REQ-2/5/14: absent keys = (16, ON) — the operator exception;
+    /// explicit false honoured; writes clamp 10..30, land as stock's integer +
+    /// bool, keep other keys, and a no-change write leaves the bytes alone.
+    #[test]
+    fn themefs_quickfont_defaults_clamp_and_round_trip() {
+        let root = tmp_vault("qfs");
+        assert_eq!(quickfont(&root), (16.0, true), "absent = 16 px, ON (REQ-2 exception)");
+        assert!(!root.join(APPEARANCE_FILE).exists(), "a read must not create the file");
+        fs::write(root.join(APPEARANCE_FILE), r#"{"cssTheme": "X"}"#).unwrap();
+        set_quickfont(&root, Some(18), Some(true)).unwrap();
+        let v: Value = serde_json::from_str(&bytes(&root)).unwrap();
+        assert_eq!(v["baseFontSize"], serde_json::json!(18));
+        assert_eq!(v["baseFontSizeAction"], serde_json::json!(true));
+        assert_eq!(v["cssTheme"], "X");
+        set_quickfont(&root, Some(99), None).unwrap();
+        assert_eq!(quickfont(&root), (30.0, true));
+        set_quickfont(&root, Some(-4), Some(false)).unwrap();
+        assert_eq!(quickfont(&root), (10.0, false), "explicit false honoured");
+        let b = bytes(&root);
+        set_quickfont(&root, Some(10), Some(false)).unwrap();
+        assert_eq!(bytes(&root), b, "no-change write is byte-identical");
+        fs::write(root.join(APPEARANCE_FILE), r#"{"baseFontSize": 77}"#).unwrap();
+        assert_eq!(quickfont(&root).0, 30.0, "hand-edited out-of-range value clamps on read");
         let _ = fs::remove_dir_all(&root);
     }
 

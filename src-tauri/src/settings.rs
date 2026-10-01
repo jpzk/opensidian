@@ -66,6 +66,13 @@ const BACKED: &[(&str, &str, &str)] = &[
     // key, default off). main.rs reads it on every reading render and writes it
     // by merge (strict_line_breaks / set_strict_line_breaks); APP_KEYS below.
     ("editor", "Strict line breaks", "strictLineBreaks"),
+    // goal fontwheel (docs/ctrlzoom/recon.md REQ-1): stock's Appearance > Font
+    // "Quick font size adjustment" toggle, the vault's appearance.json
+    // "baseFontSizeAction" (themefs::quickfont / set_quickfont; absent = ON,
+    // the operator exception REQ-2). Its partner "baseFontSize" is written by
+    // the Ctrl+wheel gesture, not by a row — stock's "Font size" slider stays
+    // an inert transcription.
+    ("appearance", "Quick font size adjustment", "baseFontSizeAction"),
 ];
 
 /// Keys that back a settings row and live in the VAULT's .obsidian/app.json,
@@ -77,7 +84,7 @@ pub const APP_KEYS: &[&str] = &["strictLineBreaks"];
 /// (stock's file, byte-wise round-trip — src-tauri/src/themefs.rs), not in
 /// ~/.opensidian.json. Same invariant as CONFIG_KEYS, different home:
 /// `vault_keys_are_all_touched_by_themefs` pins this list to the source.
-pub const VAULT_KEYS: &[&str] = &["enabledCssSnippets", "cssTheme"];
+pub const VAULT_KEYS: &[&str] = &["enabledCssSnippets", "cssTheme", "baseFontSizeAction", "baseFontSize"];
 
 /// nav entry -> tab id used in structure.tsv's first column
 const OPTIONS_TABS: &[(&str, &str)] = &[
@@ -344,7 +351,10 @@ mod tests {
         // docs/goal/themeone progress.md as R30 requires.
         // 5 -> 6 (goal/linebreak REQ-1): Editor > "Strict line breaks" is backed
         // by app.json strictLineBreaks. Recorded in goal/linebreak progress.md.
-        assert_eq!(enabled, 6, "enabled-row count changed — say why in progress.md (R30)");
+        // 6 -> 7 (goal fontwheel, rebased onto linebreak): Appearance > "Quick font size adjustment" is
+        // live on baseFontSizeAction (recon.md REQ-1), recorded in
+        // /workspace/goal/fontwheel/progress.md as R30 requires.
+        assert_eq!(enabled, 7, "enabled-row count changed — say why in progress.md (R30)");
     }
 
     /// a key is "real" only if main.rs actually reads or writes it

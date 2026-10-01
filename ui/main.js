@@ -3113,7 +3113,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   // a drag is up, [mv:<old>><new>/<files linking in>] for the last completed move.
   if (dragTok) md += " [dragt:" + dragTok.replace(/[[\]|]/g, "").slice(0, 120) + "]";
   if (mvTok) md += " [mv:" + mvTok.replace(/[[\]|]/g, "").slice(0, 120) + "]";
-  md += " [zoom:" + zoomTok + "]";   // R36: always present — a probe must be able to read "still at 100%"
+  md += " [zoom:" + zoomTok + "]" + qfsTok();   // fontwheel [qfs:] beside it. R36: always present — a probe must be able to read "still at 100%"
   // R15.2 font probe: bundled @font-face entries that actually LOADED (lazy: a face loads when text first uses it) -> [fonts:SourceCodePro/400/normal|...]
   { const fl = document.fonts ? [...document.fonts].filter(f => f.status === "loaded").map(f => f.family.replace(/[" ]/g, "") + "/" + f.weight + "/" + f.style) : [];
     if (fl.length) md += " [fonts:" + fl.join("|") + "]"; }
@@ -6154,6 +6154,7 @@ async function loadVaultCss() {
   vaultSnips = []; vaultSnipsOn = [];
   vaultThemesScan = { listed: [], excluded: [] }; vaultTheme = "";
   vaultSeedTok = "-";
+  await qfsLoad();                   // fontwheel: the vault's baseFontSize before first paint of a note (REQ-14)
   try {
     vaultThemesScan = await inv("themes_scan");
     // R6: LOUD where stock silently excludes — every broken theme dir says
@@ -6271,6 +6272,73 @@ inv("zoom_get").then(z => {
   zoomTok = z.factor.toFixed(4) + "@" + z.level;
   if (typeof state !== "undefined" && state) updateTitle();
 }, () => { /* a backend that cannot answer is not a reason to blank the census */ });
+/* ---------- goal fontwheel: stock "Quick font size adjustment" ----------
+   docs/ctrlzoom/recon.md REQ-1..16. Ctrl+wheel over a markdown view (.lp —
+   live preview AND source, .lp.src — or .preview) moves the vault's
+   appearance.json "baseFontSize" by 1 px per notch, clamped 10..30, while
+   "baseFontSizeAction" is on. OPERATOR EXCEPTION (REQ-2): an absent key reads
+   ON here (stock: off) — themefs::quickfont owns that rule, not this file.
+   This is NOT a second zoom: it moves only --font-text-size (text of the
+   markdown views), never webkit zoom (R36 above, REQ-16), and Ctrl+0 stays
+   the interface-zoom reset (REQ-6).
+   Every Ctrl+wheel is preventDefault'ed, ON or OFF, everywhere (stock never
+   scrolls on Ctrl+wheel: REQ-3/8/9/12) — except a <canvas>, whose own wheel
+   handler (graph view, cv.onwheel) zooms the graph with or without Ctrl
+   (REQ-10). The size goes on body's inline style the way stock's does, so a
+   theme's --font-text-size cannot shadow it; at the default 16 the inline
+   property is REMOVED, leaving the stylesheet/theme value in charge (and the
+   typo phase's root-level probe chord meaningful on a fresh vault). */
+const QFS_DEF = 16, QFS_MIN = 10, QFS_MAX = 30;
+let qfsSize = QFS_DEF, qfsAct = true, qfsSteps = 0;
+let qfsSave = Promise.resolve();          // writes are SERIALISED: a 3-notch burst must land 3 steps, in order (REQ-13)
+function qfsApply() {
+  const b = document.body;
+  if (qfsSize === QFS_DEF) b.style.removeProperty("--font-text-size");
+  else b.style.setProperty("--font-text-size", qfsSize + "px");
+}
+async function qfsLoad() {                // vault entry / switch: the vault's own record, or the defaults
+  qfsSize = QFS_DEF; qfsAct = true;
+  try { const q = await inv("get_quickfont"); qfsSize = Math.round(q.size); qfsAct = !!q.action; } catch { }
+  qfsApply();
+}
+function qfsPersist(args) {
+  qfsSave = qfsSave.then(() => inv("set_quickfont", args)).catch(e => say("font size not saved — " + errStr(e), "theme"));
+}
+function qfsSetAction(on) {               // the Settings ▸ Appearance toggle
+  qfsAct = !!on;
+  qfsPersist({ size: null, action: qfsAct });
+  updateTitle();
+}
+window.addEventListener("wheel", e => {
+  if (!e.ctrlKey) return;                                   // plain wheel: untouched (REQ-15)
+  const t = e.target instanceof Element ? e.target : null;
+  if (t && t.closest("canvas")) return;                     // graph keeps its own wheel (REQ-10)
+  e.preventDefault();                                       // never scroll on Ctrl+wheel (REQ-3/8/9/12)
+  if (!qfsAct || !e.deltaY) return;
+  const sc = t && t.closest(".lp, .preview");
+  if (!sc || (settingsOpen && t.closest("#settings"))) return;
+  const next = Math.max(QFS_MIN, Math.min(QFS_MAX, qfsSize + (e.deltaY < 0 ? 1 : -1)));
+  if (next === qfsSize) return;                             // clamped: nothing to write (REQ-5)
+  // keep the TOP VISIBLE LINE while the text grows/shrinks (REQ-8): anchor on
+  // the element under the scroller's top edge and restore its offset after
+  const r = sc.getBoundingClientRect();
+  let a = document.elementFromPoint(r.left + Math.min(40, r.width / 2), r.top + 2);
+  if (a && (!sc.contains(a) || a === sc)) a = null;
+  const before = a ? a.getBoundingClientRect().top : 0;
+  qfsSize = next; qfsSteps++;
+  qfsApply();
+  if (a && a.isConnected) sc.scrollTop += a.getBoundingClientRect().top - before;
+  qfsPersist({ size: qfsSize, action: null });
+  updateTitle();
+}, { passive: false });
+/* [qfs:<baseFontSize>,<action 1|0>,<steps>,<computed .lp font-size of the
+   focused leaf or ->] — the phase asserts the MEASURED size, not our belief */
+function qfsTok() {
+  const g = typeof fg === "function" ? fg() : null;
+  const el = g && (g.lp && g.lp.offsetParent ? g.lp : g.preview && g.preview.offsetParent ? g.preview : null);
+  const px = el ? getComputedStyle(el).fontSize : "-";
+  return " [qfs:" + qfsSize + "," + (qfsAct ? 1 : 0) + "," + qfsSteps + "," + px + "]";
+}
 /* R14 undo close tab — newest last. tabclose: an entry is now an OBJECT
    {name, text, cause}, not a bare name, because the stack is also this app's
    only rescue buffer. A tab removed by the watcher cannot be flushed (the file
@@ -7864,13 +7932,23 @@ function snavlTok() {
    nav entry, else tag#id). Instrument only: repaint the census on focus moves so a
    phase can assert keyboard navigation of the nav. */
 document.addEventListener("focusin", () => { if (settingsOpen) updateTitle(); });
+/* [sqf:<centre x>,<centre y>,<on 1|0>] — the Quick font size toggle (Appearance
+   ▸ Font, fontwheel REQ-1), published like [ssn:] so the phase clicks its
+   measured rect and reads its drawn state. */
+function sqfTok() {
+  const d = document.getElementById("sqfs");
+  if (!d || !d.isConnected) return "";
+  const b = d.getBoundingClientRect();
+  return " [sqf:" + Math.round(b.left + b.width / 2) + "," + Math.round(b.top + b.height / 2) + "," +
+         (d.classList.contains("on") ? 1 : 0) + "]";
+}
 function setTok() {
   if (!SMODEL) return "";
   const e = SMODEL.rows.reduce((n, r) => n + (r.enabled ? 1 : 0), 0);
   return " [set:" + SMODEL.nav.length + "/" + SMODEL.rows.length + "/" + e + "]" +
          snavlTok() +
          " [spane:" + sPane + "/" + sRowsShown + "/" + sEnabledShown + "]" +
-         svtTok() + ssnTok() + slbTok() +
+         svtTok() + ssnTok() + slbTok() + sqfTok() +
          (sfpMs >= 0 ? " [sfp:" + sfpMs + "/" + sfpMax + "/" +
                        (Math.round(sfpSum / sfpN * 100) / 100) + "/" + sfpN + "]" : "") +
          (sfpW >= 0 ? " [sfpw:" + sfpW + "/" + sfpWMax + "]" : "");
@@ -8140,6 +8218,13 @@ function sctl(r) {                            // the control cell for one row, o
   if (r.key === "cssTheme") return themeCtl();            // themefs R5: stock's Themes row, stock's semantics
   if (r.key === "enabledCssSnippets") return snipCtl();   // themefs R3, same live-control rule
   if (r.key === "strictLineBreaks") return slbCtl();      // goal/linebreak REQ-1: stock's Editor toggle
+  if (r.key === "baseFontSizeAction") {                   // fontwheel REQ-1: stock's toggle, live
+    const d = document.createElement("div");
+    d.className = "sctl toggle" + (qfsAct ? " on" : ""); d.id = "sqfs";
+    d.appendChild(document.createElement("i"));
+    d.onclick = () => { qfsSetAction(!qfsAct); d.classList.toggle("on", qfsAct); };
+    return d;
+  }
   const d = document.createElement("div");
   d.className = "sctl " + r.control;
   const parts = (t, cls) => t.split(" / ").forEach(p => {
