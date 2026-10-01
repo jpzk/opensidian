@@ -9496,3 +9496,7 @@ function nobTok() {
   }
   return t;
 }
+/* [nobnav:] is read off the census, and nothing republished it when #snav
+   scrolled (the other settings phases find nav entries by OCR, not by token),
+   so an entry below the fold stayed "-" however far the driver wheeled. Probe-only. */
+document.addEventListener("scroll", e => { if (nobProbe && e.target && e.target.id === "snav") updateTitle(); }, true);
