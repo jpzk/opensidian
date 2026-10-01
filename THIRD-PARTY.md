@@ -65,11 +65,11 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ---
 
-## Minimal (Obsidian theme, test fixture)
+## Minimal (community theme, test fixture)
 
 **Used in:** `docs/fixtures/themefs/vault-minimal/.obsidian/themes/Minimal/`
 — a REAL community theme committed as a test fixture (goal themefs,
-criterion 1: a vault carrying a theme installed by stock Obsidian 1.13.7's
+criterion 1: a vault carrying a theme installed by stock app 1.13.7's
 own community-theme installer must open in opensidian with that theme
 applied). The fixture is exactly what stock wrote:
 `manifest.json` (version 9.0.2) and `theme.css` (264,778 bytes,
@@ -121,7 +121,7 @@ by convergence, e.g.:
 --checkbox-margin-inline-start: calc(var(--space-unit) * 3)
 ```
 
-Obsidian is proprietary software. These values are not ours to ship and were
+The stock app is proprietary software. These values are not ours to ship and were
 not obtained by the black-box recon this project otherwise requires. Of the 48
 custom properties compared, **46 are identical and 2 differ**.
 
