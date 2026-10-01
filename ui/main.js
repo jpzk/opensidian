@@ -1056,7 +1056,8 @@ function renderBm() {
     // a GROUP row opens nothing — a click on its chevron, label or row background
     // TOGGLES its fold (collapseall R1, M5 / recon-bmcollapse). A FILE row opens.
     row.onclick = grp ? () => { if (bmClickEaten()) return; bmFoldToggle(key); }
-                      : () => { if (bmClickEaten()) return; openInTab(r.name); };   // bmdrag: a drop's click opens nothing
+                      : e => { if (bmClickEaten()) return; rowOpen(r.name, e); };   // bmdrag: a drop's click opens nothing; opentab REQ-2/3/5/7
+    if (!grp) row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); rowOpen(r.name, e); } };   // opentab REQ-6
     row.oncontextmenu = e => (grp ? bmGroupMenu(e, ix, r.name) : bmRowMenu(e, r.name, ix));
     row.addEventListener("mousedown", e => bmDragStart(e, ix));   // bmdrag: every row drags, groups included (recon case 5)
     box.appendChild(row);
@@ -1130,7 +1131,7 @@ function bmRowMenu(e, nm, ix) {             // right-click a FILE .bmrow -> stoc
      change anything. That is also why phase_bmmenu — which runs on a FLAT list
      and asserts [mdis:3|5|6] — keeps passing unedited (criterion 8). */
   const hasGrp = bmTree.some(r => r.kind === "g");
-  item("Open in new tab",   () => openInTab(nm));                          // WIRED: openInTab — the row's own click (R9.5); an already-open note is activated, not duplicated
+  item("Open in new tab",   () => openNewTab(nm));                         // WIRED: openNewTab — right of the active tab, focused, never deduped (opentab REQ-8/9/14, stock c20)
   item("Open to the right", () => splitWith(fg(), "row", mkTab(nm)));      // WIRED: splitWith — the verb behind the tab menu's "Split right" (M7/R6.2), carrying a fresh tab of this note
   item("Open in new window", null, "Single-window app: there is no second window to open into");   // NOT WIRED
   sep();
@@ -1593,6 +1594,12 @@ function noteMenu(e, nm) {                 // right-click a tree note row
     d.onclick = () => { closeMenu(); fn(); };
     m.appendChild(d);
   };
+  /* opentab REQ-10/11/12/16: stock 1.13.7's file menu opens with this group (stock/c07-b.json) */
+  { const { item, sep } = bmMenuItems(m);
+    item("Open in new tab",    () => openNewTab(nm));                     // WIRED: REQ-11
+    item("Open to the right",  () => splitWith(fg(), "row", mkTab(nm)));  // WIRED: REQ-12, the bookmark menu's verb
+    item("Open in new window", null, "Single-window app: there is no second window to open into");   // REQ-16 EXCEPTION
+    sep(); }
   mkItem(bmCache.includes(nm) ? "Remove bookmark" : "Bookmark", () => toggleBm(nm));
   /* R24.7: Delete lives HERE, on the explorer row, because that is where the
      user is when they decide a note is finished — and it opens a question, not
@@ -2807,6 +2814,11 @@ function updateTitle() {          // pane/focus census in the window title (head
     for (const h of groups()) for (const t of h.tabs)
       if (t.pinned) pn.push(String(t.name).split("/").pop().replace(/[[\]|]/g, ""));
     if (pn.length) lg += " [pin:" + pn.join("|") + "]";
+    // opentab: [tord:a|b*|c] = the FOCUSED group's tab strip left to right, * = active —
+    // where a new tab lands (REQ-9) and a duplicate tab (REQ-3/8) become assertable headlessly.
+    const tg = fg();
+    if (tg && tg.tabs.length) lg += " [tord:" + tg.tabs.map((t, i) =>
+      String(t.kind ? t.kind : t.name).split("/").pop().replace(/[[\]|*]/g, "") + (i === tg.active ? "*" : "")).join("|") + "]";
   }
   // R8.10: focused tab's view mode -> [mode:lp|src|read]; when the lp raw
   // row is active, [mode:lp:<l0>] exposes its block start line (headless probe)
@@ -4571,6 +4583,34 @@ async function openInTab(name, via = "tab") {   // explorer click -> FOCUSED gro
   });
 }
 
+/* opentab (docs/opentab/requirements.md): stock 1.13.7 opens a note from the
+   file explorer and from bookmarks like this (black-box, display :150):
+   - plain click REPLACES the active tab's note, even when the note is already
+     open in another tab (REQ-1/2/3, no dedup); a PINNED active tab is never
+     replaced, the note opens in a new tab (REQ-5); no tab at all -> one tab.
+   - middle click, Ctrl/Cmd click and menu "Open in new tab" open a NEW tab
+     IMMEDIATELY RIGHT of the active one, focused, never deduped (REQ-6..9,11,14).
+   rowOpen is the one seam the two row kinds share. */
+async function openNewTab(name) {
+  const g = fg();
+  await act("note_open", { note: name, via: "newtab", tabs: g.tabs.length }, async sp => {
+    await flushSave(g);
+    const at = g.active >= 0 ? g.active + 1 : g.tabs.length;
+    g.tabs.splice(at, 0, mkTab(name));
+    g.active = at;
+    await loadActive(g);
+    Object.assign(sp.attrs, { mode: g.tabs[g.active].mode, bytes: g.editor.value.length, lines: g.lpLines || 0 });
+  });
+}
+async function rowOpen(name, ev) {
+  if (ev && (ev.button === 1 || ev.ctrlKey || ev.metaKey)) return openNewTab(name);
+  const g = fg();
+  const t = g.active >= 0 ? g.tabs[g.active] : null;
+  if (t && t.pinned) return openNewTab(name);                 // REQ-5
+  if (t && t.kind) return openInTab(name);                   // a graph/special tab is not a note slot: keep the old push
+  if (t && t.name === name) { await flushSave(g); return; }  // REQ-4: already showing it
+  return navigate(g, name);                                  // REQ-1/2/3 (+ R13.3 linked members follow)
+}
 async function navigate(g, name, anchor) { // wikilink / graph click: replace g's ACTIVE tab, push history
   navInfo = "";
   await act("note_open", { note: name, via: "link", tabs: g.tabs.length }, async sp => {
@@ -4970,7 +5010,8 @@ function renderNode(node, prefix, depth, out) {
       '<span class="tn"></span>';
     row.querySelector(".tn").textContent = nm.split("/").pop();
     row.dataset.note = nm;
-    row.onclick = () => { if (treeClickEaten()) return; openInTab(nm); };
+    row.onclick = e => { if (treeClickEaten()) return; rowOpen(nm, e); };     // opentab REQ-1/3/5/7: replace in place; ctrl = new tab
+    row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); rowOpen(nm, e); } };   // opentab REQ-6: middle = new tab
     row.oncontextmenu = e => noteMenu(e, nm);   // R9.4: bookmark toggle
     row.addEventListener("mousedown", e => treeDragStart(e, nm));   // R24.6: drag onto a folder row = move
     treeRows.set(nm, row);
