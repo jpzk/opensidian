@@ -1244,9 +1244,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
    (docs/listlinks/recon.md REQ-n). .preview only; live preview untouched. */
 .preview ul > li::before { inset-inline-start: calc(-12.8px - var(--list-bullet-size) / 2) }   /* REQ-1: dot centre = text x - 12.8 */
 .preview li > p { margin-block: 0 }                                                         /* REQ-13: loose list == tight */
-.preview ol { list-style: decimal outside }                                                 /* REQ-11: native ::marker, right-aligned to the text */
-.preview ol > li::before { content: none }
-.preview ol > li::marker { font-variant-numeric: tabular-nums }
+.preview ol > li::before { inset-inline-start: auto; inset-inline-end: calc(100% + 6px); font-variant-numeric: tabular-nums; white-space: nowrap }   /* REQ-11: right-aligned, tabular; "." ink right = text ink - 7 (native ::marker sits 5px further left in WebKitGTK) */
 .preview ul > li > input[type=checkbox] { margin-inline-start: calc(var(--checkbox-size) * -1.5 + 1px);   /* REQ-12: box ink 523, text ink 546 */
   margin-inline-end: calc(0.6em - 1px); top: calc(0.2em - 1px) }
 .preview a.ext { padding-inline-end: 0.9em; background-repeat: no-repeat; background-position: 100% 4px; background-size: 0.825em;   /* REQ-6 */
