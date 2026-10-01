@@ -1842,7 +1842,7 @@ function mkGroup() {
       '<button class="navbtn navfwd" title="Navigate forward" disabled>' +
         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5l7 7-7 7"/></svg></button>' +
     '</div><div class="tabs"></div>' +
-    '<button class="modebtn"></button>' +
+    '<button class="modebtn" hidden></button>' +   // graphhdr: born hidden — updateModeBtn shows it once a NOTE is active (a split with no tab never renders tabs)
     // graphhdr REQ-5: stock's ⋮ "More options" (lucide-more-vertical) at the header's
     // right end on EVERY main-area view kind; its menu depends on the kind (hdrMenu).
     '<button class="morebtn" title="More options" aria-label="More options">' +
