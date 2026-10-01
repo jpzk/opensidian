@@ -7838,10 +7838,30 @@ function sgeoTok() {
   }
   return t;
 }
+/* [snavl:<child>|<child>|...] (goal/noplugins) — #snav's RENDERED children in
+   DOM order, while settings is open: a group heading as "H=<text>", an entry as
+   its text, anything else (a separator, a stray node) as "?<className>"; spaces
+   become "_". It is read off the DOM, not the model, so the phase sees exactly
+   what the nav paints: which entries exist, which headings head them, and
+   whether a heading (or a dangling separator) is left with nothing under it. */
+function snavlTok() {
+  if (!settingsOpen) return "";
+  const n = $("snav");
+  if (!n) return "";
+  const out = [];
+  for (const c of n.children) {
+    const t = String(c.textContent || "").trim().replace(/[[\]|]/g, "").replace(/\s+/g, "_");
+    if (c.classList.contains("snavh")) out.push("H=" + t);
+    else if (c.classList.contains("snavi")) out.push(t);
+    else out.push("?" + (c.className || c.tagName.toLowerCase()));
+  }
+  return " [snavl:" + out.join("|") + "]";
+}
 function setTok() {
   if (!SMODEL) return "";
   const e = SMODEL.rows.reduce((n, r) => n + (r.enabled ? 1 : 0), 0);
   return " [set:" + SMODEL.nav.length + "/" + SMODEL.rows.length + "/" + e + "]" +
+         snavlTok() +
          " [spane:" + sPane + "/" + sRowsShown + "/" + sEnabledShown + "]" +
          svtTok() + ssnTok() + slbTok() +
          (sfpMs >= 0 ? " [sfp:" + sfpMs + "/" + sfpMax + "/" +
@@ -7871,8 +7891,8 @@ function closeSettings() {
   $("settings").hidden = true;
   updateTitle();
 }
-/* the left nav, 1:1 with stock's order and grouping (Options 1-9, then the
-   Core plugins group) — built ONCE from the model, never re-created on a tab
+/* the left nav, stock's order and grouping (Options 1-7; the Core/Community plugins
+   entries and the Core plugins group are gone, goal/noplugins) — built ONCE from the model, never re-created on a tab
    switch: selection is a class toggle, so clicking a nav entry costs one pane
    build and nothing else. */
 function buildSettingsNav() {
@@ -7895,7 +7915,7 @@ function buildSettingsNav() {
   }
   nav.dataset.built = "1";
 }
-/* `id` is a pane id from the model ("general", "hotkeys", "cp-dailynotes", ...);
+/* `id` is a pane id from the model ("general", "hotkeys", ...);
    a stock ENTRY NAME is accepted too, so older call sites keep working. */
 function showSettingsPage(id) {
   const e = SMODEL.nav.find(n => n.id === id) || SMODEL.nav.find(n => n.entry === id);
@@ -7907,7 +7927,7 @@ function showSettingsPage(id) {
   sRowsShown = rows.length;
   sEnabledShown = rows.filter(r => r.enabled).length;
   if (pane !== "hotkeys") {
-    if (!rows.length) {                     // per-core-plugin panes: nav entry + empty pane (brief §2 OUT)
+    if (!rows.length) {                     // fallback only: since goal/noplugins every nav pane has rows
       const d = document.createElement("div"); d.className = "sempty";
       d.textContent = (e ? e.entry : pane) + " — nothing to configure yet.";
       pg.appendChild(d);
@@ -8183,41 +8203,11 @@ function sicons(v) {
   }
   return d;
 }
-/* CHROME rows: the transcript marks a pane's non-setting furniture with a
-   parenthesised label — "(search field)" at the top of Core plugins, the
-   "(security blurb)" card on Community plugins. Stock draws them as part of the
-   pane, not as a label/description row, so they get their own shape here.
-   They are keyless, therefore disabled, therefore inert like everything else. */
-function schrome(r) {
-  if (r.label === "(search field)") {
-    const d = document.createElement("div"); d.className = "ssearch dis";
-    d.setAttribute("aria-disabled", "true"); d.title = SDIS_TITLE;
-    d.textContent = r.desc.replace(/ placeholder$/, "");
-    return d;
-  }
-  if (r.label === "(security blurb)") {
-    const wrap = document.createElement("div"); wrap.className = "sblurbwrap";
-    const m = r.desc.match(/^(.*?)\s*\+ \d+ cards \((.*)\)$/);
-    const p = document.createElement("div"); p.className = "sblurb";
-    p.textContent = m ? m[1] : r.desc;
-    wrap.appendChild(p);
-    if (m) {                                  // stock's 2x2 grid of security cells
-      const g = document.createElement("div"); g.className = "sgrid";
-      for (const t of m[2].split(" / ")) {
-        const c = document.createElement("div"); c.className = "scell"; c.textContent = t;
-        g.appendChild(c);
-      }
-      wrap.appendChild(g);
-    }
-    return wrap;
-  }
-  return null;
-}
 function buildSettingsRows(pg, rows, pane) {
-  /* Core plugins is stock's LIST pane, not a settings-card pane: denser rows
-     (52 px for a one-line description, measurements.txt LIST PANE) and a search
-     field at the top instead of a section heading. */
-  pg.className = "rows" + (pane === "coreplugins" ? " list" : "");
+  /* goal/noplugins: the one LIST pane (Core plugins: denser rows + a search
+     field) and the CHROME rows (its "(search field)", Community plugins'
+     "(security blurb)") went with their panes — no remaining pane has either. */
+  pg.className = "rows";
   let section = null, card = null;   // null !== "" so the first row always opens a card
   for (const r of rows) {
     const sec = r.section || "";
@@ -8226,8 +8216,6 @@ function buildSettingsRows(pg, rows, pane) {
       if (sec) { const h = document.createElement("div"); h.className = "ssec"; h.textContent = sec; pg.appendChild(h); }
       card = document.createElement("div"); card.className = "scard"; pg.appendChild(card);
     }
-    const ch = schrome(r);                    // furniture, not a setting row
-    if (ch) { card.appendChild(ch); continue; }
     const row = document.createElement("div");
     row.className = "srow" + (r.enabled ? "" : " dis");
     if (!r.enabled) { row.setAttribute("aria-disabled", "true"); row.title = SDIS_TITLE; }

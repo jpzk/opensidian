@@ -88,9 +88,21 @@ const OPTIONS_TABS: &[(&str, &str)] = &[
     ("Files and links", "fileslinks"),
     ("Hotkeys", "hotkeys"),
     ("Keychain", "keychain"),
-    ("Core plugins", "coreplugins"),
-    ("Community plugins", "community"),
 ];
+
+/* goal/noplugins (operator 2026-10-01: "remove the core and community plugin
+   items in the settings menu. all of them also the sub section."). A
+   DELIBERATE deviation from stock 1.13.7. The recon transcript stays the
+   untouched stock oracle (nav.tsv still lists them, structure.tsv still holds
+   their rows); the model simply does not carry them. Nothing is lost: every
+   row on these panes was keyless (none is in BACKED) and the per-plugin panes
+   had no rows at all — docs/noplugins/inventory.md has the census and the
+   grep evidence. */
+/// nav names dropped from the model: matches the two Options ENTRIES and the
+/// "Core plugins" GROUP (heading + every entry under it)
+pub const REMOVED_NAV: &[&str] = &["Core plugins", "Community plugins"];
+/// structure.tsv tabs whose rows are dropped with their nav entries
+pub const REMOVED_TABS: &[&str] = &["coreplugins", "community"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -188,6 +200,9 @@ fn parse_rows() -> Vec<Row> {
         if f.len() != 7 {
             continue; // shape is pinned by `transcript_shape_is_exactly_seven_columns`
         }
+        if REMOVED_TABS.contains(&f[0]) {
+            continue; // goal/noplugins: no nav entry opens these panes any more
+        }
         let control = match Control::parse(f[4]) {
             Some(c) => c,
             None => continue, // pinned by `every_control_word_is_known`
@@ -225,6 +240,9 @@ fn parse_nav() -> Vec<NavEntry> {
         let f: Vec<&str> = line.split('\t').collect();
         if f.len() != 3 {
             continue;
+        }
+        if REMOVED_NAV.contains(&f[0]) || REMOVED_NAV.contains(&f[2]) {
+            continue; // goal/noplugins: the group heading, its entries, and the two Options entries
         }
         let Ok(order) = f[1].parse::<u32>() else { continue };
         let id = match OPTIONS_TABS.iter().find(|(e, _)| *e == f[2]) {
@@ -277,8 +295,13 @@ mod tests {
         for l in &data {
             assert_eq!(l.split('\t').count(), 7, "not 7 columns: {l}");
         }
-        assert_eq!(data.len(), rows().len(), "a transcript line was silently dropped");
-        assert_eq!(rows().len(), 105, "row count changed — update R30 and the smoke census");
+        // the transcript itself is still stock's 105 rows (the oracle is untouched);
+        // the model drops exactly the plugin panes' rows and nothing else (goal/noplugins)
+        assert_eq!(data.len(), 105, "the stock recon transcript changed — it is the oracle, keep it");
+        let dropped = data.iter().filter(|l| REMOVED_TABS.contains(&l.split('\t').next().unwrap_or(""))).count();
+        assert_eq!(dropped, 34, "31 Core plugins rows + 3 Community plugins rows");
+        assert_eq!(data.len() - dropped, rows().len(), "a transcript line was silently dropped");
+        assert_eq!(rows().len(), 71, "row count changed — update R30 and the smoke census");
     }
 
     #[test]
@@ -376,15 +399,35 @@ mod tests {
     #[test]
     fn nav_is_stock_order_and_complete() {
         let opts: Vec<&NavEntry> = nav().iter().filter(|n| n.group == "Options").collect();
-        assert_eq!(opts.len(), 9, "stock 1.13.7 shows 9 Options entries");
+        // stock 1.13.7 shows 9 Options entries + a Core plugins group of 10;
+        // goal/noplugins keeps the first 7 Options entries in stock's order
+        assert_eq!(opts.len(), 7, "General..Keychain");
         assert_eq!(opts[0].entry, "General");
-        assert_eq!(opts[8].entry, "Community plugins");
-        for (g, n) in [("Options", 9usize), ("Core plugins", 10)] {
-            let mut seen: Vec<u32> = nav().iter().filter(|e| e.group == g).map(|e| e.order).collect();
-            seen.sort_unstable();
-            assert_eq!(seen, (1..=n as u32).collect::<Vec<u32>>(), "{g} order is not 1..{n}");
+        assert_eq!(opts[6].entry, "Keychain");
+        let mut seen: Vec<u32> = opts.iter().map(|e| e.order).collect();
+        seen.sort_unstable();
+        assert_eq!(seen, (1..=7u32).collect::<Vec<u32>>(), "Options order is not 1..7");
+        assert_eq!(nav().len(), 7, "nav entry count changed — update the smoke census");
+    }
+
+    /// goal/noplugins: no plugin entry, no plugin group heading, no plugin pane
+    /// row survives in the model, while the stock oracle still carries all of them
+    #[test]
+    fn no_plugin_nav_entries_groups_or_rows() {
+        for n in nav() {
+            assert_eq!(n.group, "Options", "a second nav group {:?} survived (its heading would render)", n.group);
+            assert!(!REMOVED_NAV.contains(&n.entry), "plugin nav entry {:?} survived", n.entry);
+            assert!(!n.id.starts_with("cp-") && !REMOVED_TABS.contains(&n.id.as_str()), "plugin pane id {:?}", n.id);
+            assert!(!n.entry.to_lowercase().contains("plugin"), "nav entry {:?} mentions plugins", n.entry);
         }
-        assert_eq!(nav().len(), 19, "nav entry count changed — update the smoke census");
+        for r in rows() {
+            assert!(!REMOVED_TABS.contains(&r.tab), "row {}/{} of a removed pane survived", r.tab, r.label);
+        }
+        // the oracle is kept, not edited: the removal is this filter, not a recon change
+        assert_eq!(NAV_TSV.lines().filter(|l| l.starts_with("Core plugins\t")).count(), 10);
+        assert!(NAV_TSV.contains("Options\t9\tCommunity plugins"));
+        // nothing live was lost: the 5 enabled rows all sit on kept panes
+        assert!(rows().iter().filter(|r| r.enabled).all(|r| nav().iter().any(|n| n.id == r.tab)));
     }
 
     #[test]

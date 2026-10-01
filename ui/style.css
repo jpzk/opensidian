@@ -931,22 +931,11 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .sctl.nav { color: var(--text-chrome-faint) }
 .sbtn { padding: 4px 10px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 4px; white-space: nowrap }
 .sbtn.acc { background: var(--accent-mauve); border-color: var(--accent-mauve); color: var(--bg-ribbon) }
-/* LIST pane (Core plugins). Measured off $RECON/shots/17-coreplugins-0.png via
-   $RECON/measure-list.sh: separators at y=283,352,404,457,509,562,614,682,735,787
-   => 52 px for a one-line row, +16 px per extra description line; the search
-   field is 30 px tall and sits on the row inset, 8 px above the first row. */
-#spage.rows.list .srow { min-height: 52px; padding: 8px 17px }
-.ssearch { height: 30px; box-sizing: border-box; margin: 16px 17px 8px; padding: 0 10px;
-           background: var(--bg-sidebar); border: 1px solid var(--border); border-radius: 4px;
-           color: var(--text-chrome-faint); font-size: 13px; line-height: 28px; opacity: .5; pointer-events: none }
 .sicons { flex: none; display: flex; align-items: center; gap: 19px; color: var(--text-chrome-faint) }
 .sico { width: 16px; height: 16px; display: flex; align-items: center; justify-content: center;
         text-align: center; font-size: 15px; line-height: 16px }
-/* Community plugins' security card: paragraph + stock's 2x2 grid of cells. */
-.sblurbwrap { padding: 16px 17px; border-bottom: 1px solid var(--bg-surface) }
-.sblurb { font-size: 13px; line-height: 18px; color: var(--text-chrome-muted) }
-.sgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 24px; margin-top: 12px }
-.scell { font-size: 13px; color: var(--text-chrome) }
+/* goal/noplugins: the Core plugins LIST pane (.list rows, .ssearch) and the
+   Community plugins security card (.sblurb*, .sgrid, .scell) left with their panes. */
 .srow.linkrow { min-height: 44px }
 .sempty { color: var(--text-chrome-faint) }
 #hkbar { display: flex; align-items: center; gap: 6px; height: 28px }
