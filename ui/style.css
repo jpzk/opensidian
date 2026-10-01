@@ -86,6 +86,7 @@ body {
   --background-secondary-alt: #313244;                        /* no ramp row measured */
   --ribbon-background: #282828;                               /* no ramp row measured; value: themelight audit, stock dark ribbon px 40.40.40 */
   --background-modifier-border: var(--color-base-30, #45475a);/* T6b: base-30 = 3486 px = --divider-color/--background-modifier-border */
+  --indentation-guide-color: rgba(255, 255, 255, 0.12);   /* listlinks REQ-9: stock dark guide = gray 55 on bg 28 */
   --text-normal: var(--color-base-100, #dadada);              /* R15.14: --text-normal: var(--color-base-100) */
   --text-muted: var(--color-base-70, #b3b3b3);                /* R15.14 */
   --text-faint: var(--color-base-50, #666666);                /* R15.14 */
@@ -275,6 +276,7 @@ body:where(.theme-light) {
   --background-secondary-alt: #e5e5e5;
   --ribbon-background: #f6f6f6;
   --background-modifier-border: var(--color-base-30, #e4e4e4);
+  --indentation-guide-color: rgba(0, 0, 0, 0.12);         /* listlinks REQ-9: stock light guide = gray 224 on bg 255 */
   --text-normal: var(--color-base-100, #222222);
   --text-muted: var(--color-base-70, #5c5c5c);
   --text-faint: var(--color-base-50, #ababab);
@@ -1237,6 +1239,21 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
    `cursor` on a form control; the census phase reads the live value either way.
    LP's box is NOT named here — live preview is editable and unchanged. */
 .preview input[type=checkbox] { cursor: default }
+/* goal/listlinks — reading view list/link geometry vs stock 1.13.7
+   (docs/listlinks/recon.md REQ-n). .preview only; live preview untouched. */
+.preview ul > li::before { inset-inline-start: calc(-12.8px - var(--list-bullet-size) / 2) }   /* REQ-1: dot centre = text x - 12.8 */
+.preview li > p { margin-block: 0 }                                                         /* REQ-13: loose list == tight */
+.preview ol { list-style: decimal outside }                                                 /* REQ-11: native ::marker, right-aligned to the text */
+.preview ol > li::before { content: none }
+.preview ol > li::marker { font-variant-numeric: tabular-nums }
+.preview ul > li > input[type=checkbox] { margin-inline-start: calc(var(--checkbox-size) * -1.5 + 1px);   /* REQ-12: box ink 523, text ink 546 */
+  margin-inline-end: calc(0.6em - 1px); top: calc(0.2em - 1px) }
+.preview a.ext { padding-inline-end: 0.9em; background-repeat: no-repeat; background-position: 100% 4px; background-size: 0.825em;   /* REQ-6 */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238a8a8a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 3h6v6'/%3E%3Cpath d='M10 14 21 3'/%3E%3Cpath d='M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6'/%3E%3C/svg%3E") }
+.preview a.wiki-unresolved { font-style: normal; text-decoration-color: color-mix(in srgb, currentColor 30%, transparent) }   /* REQ-15 */
+.preview li > :is(ul, ol) { position: relative }                                            /* REQ-9: indent guide at parent text x - 13 */
+.preview li > :is(ul, ol)::before { content: ""; position: absolute; inset-inline-start: -13px; top: 0; bottom: 0; width: 1px;
+  background: var(--indentation-guide-color); pointer-events: none }
 /* LP: the task li has no list margin (stock: the checkbox sits in the text flow after the hidden "- " widget); box at +7, text at +27 */
 .lp li:has(> input[type=checkbox]) { margin-inline-start: 0 }
 .lp ul > li > input[type=checkbox] { margin-inline-start: calc(var(--checkbox-margin-inline-start) - 2px); margin-inline-end: calc(0.6em - 4px) }

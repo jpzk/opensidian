@@ -1509,7 +1509,7 @@ fn link_label(note: &str, anchor: &str, alias: &str, reading: bool) -> String {
 /// scan coalesced text for [[wikilinks]], emitting escaped anchors (H1 fix).
 /// data-note = note part (empty = same note), data-anchor = heading text or
 /// ^blockid (no leading '#') so the frontend can scroll after navigating.
-fn linkify(buf: &str, notes: &[String], imgs: &[String], reading: bool, evs: &mut Vec<Event>) {
+fn linkify(buf: &str, notes: &[String], imgs: &[String], reading: bool, urls: bool, evs: &mut Vec<Event>) {
     let mut rest = buf;
     while let Some(i) = rest.find("[[") {
         let Some(j) = rest[i + 2..].find("]]") else { break };
@@ -1519,13 +1519,13 @@ fn linkify(buf: &str, notes: &[String], imgs: &[String], reading: bool, evs: &mu
         // be emitted as text. Only IMAGE extensions take this branch — a note
         // embed `![[Second Note]]` stays the link it is today (req 410).
         if i > 0 && rest.as_bytes()[i - 1] == b'!' && anchor.is_empty() && is_img_target(note) {
-            tagify(&rest[..i - 1], evs);
+            tagify_urls(&rest[..i - 1], urls, evs);
             let alt = if alias.is_empty() { note } else { alias };
             evs.push(Event::Html(image_html(imgs, note, alt).into()));
             rest = &rest[i + 2 + j + 2..];
             continue;
         }
-        tagify(&rest[..i], evs);
+        tagify_urls(&rest[..i], urls, evs);
         let cls = if note.is_empty() || resolve(notes, l).is_some() {
             "wiki"
         } else {
@@ -1543,7 +1543,7 @@ fn linkify(buf: &str, notes: &[String], imgs: &[String], reading: bool, evs: &mu
         rest = &rest[i + 2 + j + 2..];
     }
     if !rest.is_empty() {
-        tagify(rest, evs);
+        tagify_urls(rest, urls, evs);
     }
 }
 
@@ -1558,6 +1558,102 @@ fn split_block_id(s: &str) -> Option<(&str, &str)> {
         return None;
     }
     Some((&t[..i], id))
+}
+
+/// listlinks REQ-4: bare `http://` / `https://` URLs in plain text -> (start,
+/// end) byte spans, GFM extended-autolink style: the URL starts at the string
+/// start or after whitespace / `(` / `*` / `_` / `~` / `"`, runs to the next
+/// whitespace or `<`, then sheds trailing `?!.,:;*_~'"` and any `)` that has no
+/// matching `(` inside the URL. Only ever fed text that is not code and not
+/// inside a link (render_with_br passes `urls=false` there), so a URL in a code
+/// span or in a link label stays literal.
+fn url_spans(s: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while from < s.len() {
+        let hit = ["https://", "http://"]
+            .iter()
+            .filter_map(|p| s[from..].find(p).map(|i| from + i))
+            .min();
+        let Some(a) = hit else { break };
+        let ok_before = a == 0
+            || s[..a].chars().next_back().is_some_and(|c| c.is_whitespace() || matches!(c, '(' | '*' | '_' | '~' | '"'));
+        let mut b = s[a..].find(|c: char| c.is_whitespace() || c == '<').map_or(s.len(), |i| a + i);
+        loop {
+            let t = &s[a..b];
+            match t.chars().next_back() {
+                Some('?' | '!' | '.' | ',' | ':' | ';' | '*' | '_' | '~' | '\'' | '"') => b -= 1,
+                Some(')') if t.matches(')').count() > t.matches('(').count() => b -= 1,
+                _ => break,
+            }
+        }
+        let scheme = if s[a..].starts_with("https://") { 8 } else { 7 };
+        if ok_before && b > a + scheme {
+            out.push((a, b));
+            from = b;
+        } else {
+            from = a + scheme;
+        }
+    }
+    out
+}
+
+/// listlinks REQ-3: the target of a scheme-less markdown link `[label](Note.md)`
+/// as a wikilink token `note#anchor` — %XX decoded, a trailing `.md` dropped,
+/// `./` prefix dropped. Never becomes an href (S1): the anchor it feeds is
+/// `href="#"` + data-note, exactly like a wikilink.
+fn md_link_target(dest: &str) -> String {
+    let b = dest.as_bytes();
+    let mut v = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = |c: u8| (c as char).to_digit(16);
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
+                v.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        v.push(b[i]);
+        i += 1;
+    }
+    let d = String::from_utf8_lossy(&v).into_owned();
+    let d = d.strip_prefix("./").unwrap_or(&d).to_string();
+    let (note, anchor) = match d.find('#') {
+        Some(i) => (d[..i].to_string(), d[i..].to_string()),
+        None => (d, String::new()),
+    };
+    let note = note.strip_suffix(".md").map(str::to_string).unwrap_or(note);
+    format!("{note}{anchor}")
+}
+
+/// listlinks REQ-3 guard: which scheme-less markdown link targets may become an
+/// internal link. No ':' anywhere (a scheme in disguise stays S1 literal text),
+/// no absolute path, no `..` segment (a note link never walks out of the vault;
+/// those stay literal text exactly as before).
+fn md_link_internal_ok(dest: &str) -> bool {
+    let d = md_link_target(dest);
+    !dest.is_empty()
+        && !dest.contains(':')
+        && !d.contains(':')
+        && !d.starts_with('/')
+        && !d.starts_with('\\')
+        && !d.split(['/', '\\']).any(|s| s == "..")
+}
+
+/// text -> Text / bare-URL anchors (REQ-4, when `urls`) / tag pills
+fn tagify_urls(buf: &str, urls: bool, evs: &mut Vec<Event>) {
+    let mut at = 0;
+    if urls {
+        for (a, b) in url_spans(buf) {
+            tagify(&buf[at..a], evs);
+            let u = esc(&buf[a..b]);
+            evs.push(Event::Html(format!("<a href=\"{u}\" class=\"ext\" rel=\"noopener\">{u}</a>").into()));
+            at = b;
+        }
+    }
+    tagify(&buf[at..], evs);
 }
 
 /// tags: inline #tag -> pill anchor (label + data-tag escaped like wikilinks).
@@ -1773,13 +1869,13 @@ fn render_with_br(content: &str, notes: &[String], imgs: &[String], reading: boo
                     );
                     match if block_end { split_block_id(&buf) } else { None } {
                         Some((text, id)) => {
-                            linkify(text, notes, imgs, reading, &mut evs);
+                            linkify(text, notes, imgs, reading, demoted.iter().all(Option::is_some), &mut evs);
                             let id = esc(id);
                             evs.push(Event::Html(
                                 format!("<span class=\"blockid\" data-bid=\"{id}\">^{id}</span>").into(),
                             ));
                         }
-                        None => linkify(&buf, notes, imgs, reading, &mut evs),
+                        None => linkify(&buf, notes, imgs, reading, demoted.iter().all(Option::is_some), &mut evs),
                     }
                     buf.clear();
                 }
@@ -1806,6 +1902,28 @@ fn render_with_br(content: &str, notes: &[String], imgs: &[String], reading: boo
                         if ext_ok(&dest_url, false) {
                             let t = if title.is_empty() { String::new() } else { format!(" title=\"{}\"", esc(&title)) };
                             evs.push(Event::Html(format!("<a href=\"{}\" class=\"ext\" rel=\"noopener\"{t}>", esc(&dest_url)).into()));
+                            demoted.push(None);
+                        } else if url_scheme(&dest_url).is_none()
+                            && md_link_internal_ok(&dest_url)
+                            && !matches!(link_type, LinkType::Autolink | LinkType::Email)
+                        {
+                            // listlinks REQ-3: `[label](Note.md)` is an INTERNAL link
+                            // (stock: same styling/click as a wikilink). It becomes our
+                            // wikilink anchor — href="#", target only in data-note —
+                            // so S1 still never mints a relative href the webview
+                            // could navigate the app window to.
+                            let l = md_link_target(&dest_url);
+                            let (note, anchor, _) = link_parts(&l);
+                            let cls = if note.is_empty() || resolve(notes, &l).is_some() { "wiki" } else { "wiki wiki-unresolved" };
+                            let t = if title.is_empty() { String::new() } else { format!(" title=\"{}\"", esc(&title)) };
+                            evs.push(Event::Html(
+                                format!(
+                                    "<a href=\"#\" class=\"{cls}\" data-note=\"{}\" data-anchor=\"{}\"{t}>",
+                                    esc(note),
+                                    esc(anchor.trim_start_matches('#'))
+                                )
+                                .into(),
+                            ));
                             demoted.push(None);
                         } else {
                             let auto = matches!(link_type, LinkType::Autolink | LinkType::Email);
@@ -1866,7 +1984,7 @@ fn render_with_br(content: &str, notes: &[String], imgs: &[String], reading: boo
         }
     }
     if !buf.is_empty() {
-        linkify(&buf, notes, imgs, reading, &mut evs);
+        linkify(&buf, notes, imgs, reading, demoted.iter().all(Option::is_some), &mut evs);
     }
     let mut out = String::new();
     html::push_html(&mut out, evs.into_iter());
@@ -4902,13 +5020,14 @@ mod tests {
     #[test]
     fn render_drops_bad_schemes_to_text() {
         // S1: javascript:/data:/file:/vbscript:/relative -> literal text, no anchor at all
+        // (listlinks REQ-3: an in-vault note target `[x](Note.md)` / `[x](#h)` is now an
+        // INTERNAL wiki anchor with href="#" — see md_links_render_internal; `..` stays literal)
         for src in [
             "[js](javascript:alert(1))",
             "[d](data:text/html,<b>x</b>)",
             "[f](file:///etc/passwd)",
             "[v](vbscript:msgbox)",
             "[r](../../etc/passwd)",
-            "[frag](#h)",
             "[sp]( javascript:alert(1))",
             "[tab](java\tscript:alert(1))",
             "<javascript:alert(1)>",
@@ -4930,6 +5049,53 @@ mod tests {
         assert!(h.contains(r#"class="wiki""#) && h.contains(r#"class="tag""#), "{h}");
     }
 
+
+    /// listlinks REQ-3: `[label](Note.md)` renders as the SAME anchor a wikilink
+    /// gets — class wiki, href="#", target only in data-note. MUTATE TO CHECK:
+    /// drop the `md_link_internal_ok` branch in render_with_br -> raw text, RED.
+    #[test]
+    fn md_links_render_internal() {
+        let notes = vec!["Alpha".to_string(), "sub/My Note".to_string()];
+        let h = render_with("- [md alpha](Alpha.md)", &notes, &[], true);
+        assert!(h.contains(r##"<a href="#" class="wiki" data-note="Alpha" data-anchor="">md alpha</a>"##), "{h}");
+        let h = render_with("[n](sub/My%20Note.md#Head)", &notes, &[], true);
+        assert!(h.contains(r##"class="wiki" data-note="sub/My Note" data-anchor="Head">n</a>"##), "{h}");
+        let h = render_with("[g](Ghost.md)", &notes, &[], true);
+        assert!(h.contains(r#"class="wiki wiki-unresolved" data-note="Ghost""#), "{h}");
+        let h = render_with("[here](#Top)", &notes, &[], true);
+        assert!(h.contains(r##"class="wiki" data-note="" data-anchor="Top">here</a>"##), "{h}");
+        // never an href to the target, never a traversal
+        for src in ["[r](../../etc/passwd)", "[r](/etc/passwd)", "[r](a/../../b.md)", "[c](a%3Ab.md)"] {
+            let h = render_with(src, &notes, &[], true);
+            assert!(!h.contains("<a "), "anchor for {src}: {h}");
+        }
+        let h = render_with(r#"[<b>](x"><s>.md)"#, &notes, &[], true);
+        assert!(!h.contains("<b>") && !h.contains("<s>"), "{h}");
+    }
+
+    /// listlinks REQ-4: bare http(s) URLs in text are external links (stock
+    /// autolinks them); not in code, not inside another link's label, trailing
+    /// punctuation is not part of the URL. MUTATE TO CHECK: pass urls=false
+    /// everywhere -> plain text, RED.
+    #[test]
+    fn bare_urls_autolink() {
+        let h = render_with("- https://example.com", &[], &[], true);
+        assert!(h.contains(r#"<a href="https://example.com" class="ext" rel="noopener">https://example.com</a>"#), "{h}");
+        let h = render_with("see http://a.b/c?d=1&e=2. then (https://x.y/z_(w)) end", &[], &[], true);
+        assert!(h.contains(r#"href="http://a.b/c?d=1&amp;e=2""#), "{h}");
+        assert!(h.contains(r#">http://a.b/c?d=1&amp;e=2</a>. then"#), "{h}");
+        assert!(h.contains(r#"href="https://x.y/z_(w)""#), "{h}");
+        let h = render_with("`https://code.example` and\n\n```\nhttps://block.example\n```", &[], &[], true);
+        assert!(!h.contains("<a "), "code autolinked: {h}");
+        let h = render_with("[label https://in.label](https://dest.example)", &[], &[], true);
+        assert_eq!(h.matches("<a ").count(), 1, "nested anchor: {h}");
+        let h = render_with("xhttps://no.example and https:// and #tag https://t.example/#frag", &[], &[], true);
+        assert_eq!(h.matches("class=\"ext\"").count(), 1, "{h}");
+        assert!(h.contains(r#"class="tag" data-tag="tag""#), "{h}");
+        assert!(h.contains(r#"href="https://t.example/#frag""#), "{h}");
+        let h = render_with(r#"https://e.example/"><script>"#, &[], &[], true);
+        assert!(!h.contains("<script>"), "{h}");
+    }
     #[test]
     fn open_external_rejects_non_http() {
         for u in ["javascript:alert(1)", "file:///etc/passwd", "data:text/html,x", "vbscript:x", "../x", "#h", "", "ftp://a.b"] {
