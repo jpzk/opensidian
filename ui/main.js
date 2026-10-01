@@ -7855,8 +7855,15 @@ function snavlTok() {
     else if (c.classList.contains("snavi")) out.push(t);
     else out.push("?" + (c.className || c.tagName.toLowerCase()));
   }
-  return " [snavl:" + out.join("|") + "]";
+  const a = document.activeElement;
+  const f = a && a.classList && a.classList.contains("snavi") ? a.dataset.pane :
+            a ? (a.tagName.toLowerCase() + (a.id ? "#" + a.id : "")) : "-";
+  return " [snavl:" + out.join("|") + "] [snavf:" + f + "]";
 }
+/* [snavf:] = where keyboard focus sits while settings is open (pane id of a focused
+   nav entry, else tag#id). Instrument only: repaint the census on focus moves so a
+   phase can assert keyboard navigation of the nav. */
+document.addEventListener("focusin", () => { if (settingsOpen) updateTitle(); });
 function setTok() {
   if (!SMODEL) return "";
   const e = SMODEL.rows.reduce((n, r) => n + (r.enabled ? 1 : 0), 0);
