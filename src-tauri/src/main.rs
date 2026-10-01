@@ -4307,7 +4307,7 @@ fn main() {
             list_notes, list_images, read_note, write_note, create_note, render, render_blocks, block_lines, highlight_blocks, graph, graph_local, vault_get, set_vault,
             create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, tags, tag_counts,
-            get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, smoke_css,
+            get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, smoke_css,
             read_workspace, write_workspace, get_win_geom, set_win_geom,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
@@ -7728,4 +7728,12 @@ mod tests {
             "the rejection must name the cause it refused, or the log cannot identify the bad caller"
         );
     }
+}
+/// stock-name goal, criterion 3 — the [nob:] user-facing-string census
+/// (ui/main.js nobTok) is a test-only instrument, OFF unless
+/// OPENSIDIAN_NOBPROBE=1. Same reason as type_probe: with it off no census
+/// string changes and a shipped build never walks its DOM for the word.
+#[tauri::command]
+fn nob_probe() -> bool {
+    std::env::var("OPENSIDIAN_NOBPROBE").as_deref() == Ok("1")
 }

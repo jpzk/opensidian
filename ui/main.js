@@ -9426,3 +9426,73 @@ function fTok(g) {
   }
   return t;
 }
+/* ---------- stock-name goal, criterion 3: [nob:] user-facing-string census ----------
+   No string the app RENDERS names the stock app; the one
+   allowed form is the literal vault config dir (NOB_OK below, a path the user
+   must recognise, e.g. the settings placeholder). This walks the live DOM:
+   every text node and every human-facing attribute, hidden or shown (a
+   hidden menu/pane string is one click from the screen) — plus the two data
+   tables the UI renders panes FROM (the settings model, the command
+   registry), so a pane the driver did not open is still covered. The note
+   body, the file tree and the picker's vault paths are VAULT/USER content,
+   not app strings, and are skipped (that also bounds the walk to the
+   chrome, like the R22 ovf probe).
+     [nob:<text nodes>/<attrs>/<model strings>|<hits>|ok=<n>|<where=text;...>]
+                               ok = strings whose only match is that dir
+     [nobxy:row=x,y|tab=x,y]   first explorer row + the focused pane's active
+                               tab (click points for the driver's menus)
+     [nobnav:<pane>@x,y|...]   while settings is open: every nav entry's
+                               centre, "-" when scrolled out of #snav
+   The needle is spelled out on purpose: this is the instrument that looks
+   for the word (the goal's exceptions list, class PROBE).
+   TEST-ONLY: inert unless the backend says OPENSIDIAN_NOBPROBE=1 (main.rs
+   nob_probe, precedent type_probe) — no other phase's census changes and a
+   shipped build never runs the walk. */
+let nobProbe = false;
+inv("nob_probe").then(v => { nobProbe = !!v; if (nobProbe) updateTitle(); }).catch(() => {});
+const NOB_RE = /obsidian/i, NOB_OK = /\.obsidian\b/gi;
+const NOB_SKIP = ".lp,.preview,.editor,#tree,#p-recent,#p-dirs";   // + the picker's vault paths (user content)
+const NOB_ATTRS = ["title", "aria-label", "aria-description", "placeholder", "alt", "label"];
+function nobTok() {
+  if (!nobProbe) return "";
+  const hits = [];
+  let nok = 0;                       // strings whose ONLY match is the allowed config-dir literal
+  const chk = (where, s) => {
+    if (typeof s !== "string" || !NOB_RE.test(s)) return;
+    if (!NOB_RE.test(s.replace(NOB_OK, ""))) { nok++; return; }
+    hits.push(where + "=" + s.replace(/[[\]|;]/g, " ").replace(/\s+/g, " ").trim().slice(0, 60));
+  };
+  let nt = 0, na = 0, nm = 0;
+  const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  for (let t; (t = tw.nextNode());) {
+    const p = t.parentElement;
+    if (!p || p.closest("script,style," + NOB_SKIP)) continue;
+    nt++; chk("text<" + ovfName(p) + ">", t.data);
+  }
+  for (const e of document.body.querySelectorAll("*")) {
+    if (e.closest(NOB_SKIP)) continue;
+    for (const k of NOB_ATTRS) if (e.hasAttribute(k)) { na++; chk("@" + k + "<" + ovfName(e) + ">", e.getAttribute(k)); }
+    if (e.tagName === "INPUT" || e.tagName === "TEXTAREA" || e.tagName === "OPTION") { na++; chk("value<" + ovfName(e) + ">", e.value); }
+  }
+  if (SMODEL) {
+    for (const n of SMODEL.nav) { nm += 2; chk("snav", n.entry); chk("snavh", n.group); }
+    for (const r of SMODEL.rows) for (const k of ["section", "label", "desc", "default_shown"]) if (typeof r[k] === "string") { nm++; chk("srow:" + r.tab + "." + k, r[k]); }
+  }
+  for (const c of CMDS) { nm++; chk("cmd:" + c.id, c.name); }
+  const c = r => Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2);
+  const vis = e => !!e && e.getClientRects().length > 0;
+  const row = [...document.querySelectorAll("#tree .trow.note")].find(vis);
+  const tab = document.querySelector("#main .pane.focused .tabs .tab.active") || document.querySelector("#main .tabs .tab.active");
+  let tabxy = "-";
+  if (vis(tab)) { const r = tab.getBoundingClientRect(); tabxy = Math.round(r.left + Math.min(18, r.width / 3)) + "," + Math.round(r.top + r.height / 2); }
+  let t = " [nob:" + nt + "/" + na + "/" + nm + "|" + hits.length + "|ok=" + nok + "|" + hits.slice(0, 4).join(";") + "]" +
+          " [nobxy:row=" + (row ? c(row.getBoundingClientRect()) : "-") + "|tab=" + tabxy + "]";
+  if (settingsOpen) {
+    const N = $("snav").getBoundingClientRect();
+    t += " [nobnav:" + [...$("snav").querySelectorAll(".snavi")].map(d => {
+      const r = d.getBoundingClientRect();
+      return d.dataset.pane + "@" + (r.height && r.top >= N.top && r.bottom <= N.bottom ? c(r) : "-");
+    }).join("|") + "]";
+  }
+  return t;
+}
