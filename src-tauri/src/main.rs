@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-// opensidian, an Obsidian-compatible markdown notes app.
+// opensidian, a vault-compatible markdown notes app.
 // Copyright (C) 2026 Jendrik Poloczek
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This program comes with ABSOLUTELY NO WARRANTY. It is free software, and you
@@ -1154,7 +1154,7 @@ fn set_sidebar_w(w: u64) {
 /* ---------- R28 WORKSPACE PERSISTENCE: the two files, and why they are two ----
    R28.1  the LAYOUT lives inside the vault, in stock's own file and stock's own
           shape: <vault>/.obsidian/workspace.json. A vault carries its own
-          session, so a vault opened by stock Obsidian and back again (R28.16)
+          session, so a vault opened by the stock app and back again (R28.16)
           finds the tabs where it left them.
    R28.2  the WINDOW GEOMETRY does NOT live there. It goes in ~/.opensidian.json
           ("win"), beside the other machine-scoped settings (sidebar_w, theme,
@@ -2290,7 +2290,7 @@ fn set_theme(theme: String) {
 /* ---- themefs R3 (snippets): thin commands over src-tauri/src/themefs.rs ----
    The vault-CSS axis lives in the VAULT's own .obsidian/appearance.json
    (stock's file, byte-wise round-trip — themefs.rs), never in ~/.opensidian.json:
-   pointing opensidian at a vault must find the choice Obsidian already made.
+   pointing opensidian at a vault must find the choice the stock app already made.
    Every refusal string is user-visible (the frontend puts it on the notice
    banner) and names the file — R6: loud where stock is silent. */
 
@@ -2509,7 +2509,7 @@ fn spawn_css_reload(app: tauri::AppHandle) {
 }
 
 /* R14: custom hotkeys, persisted as "hotkeys" in ~/.opensidian.json in the stock
-   Obsidian shape {"<cmd id>":[{"modifiers":["Mod","Shift"],"key":"G"}]}:
+   shape {"<cmd id>":[{"modifiers":["Mod","Shift"],"key":"G"}]}:
    [] = default removed, absent id = stock default. The frontend registry
    (ui/main.js CMDS) is the single source of truth for ids + defaults. */
 #[tauri::command]
@@ -2733,7 +2733,7 @@ fn search_inner(v: &State<Vault>, query: &str) -> Vec<SearchHit> {
     search_docs(v.index.lock().unwrap().docs(), query)
 }
 
-/* R9.4 bookmarks live in vault/.obsidian/bookmarks.json — Obsidian's OWN
+/* R9.4 bookmarks live in vault/.obsidian/bookmarks.json — the stock app's OWN
    file, read and written in stock 1.13.7's schema, because opensidian is a
    drop-in replacement (operator decision 2026-09-19, goal bmcompat). The
    shape is MEASURED, not remembered — docs/recon-bmcompat/README.md, every
@@ -2768,7 +2768,7 @@ const BM_NEW_GROUP: &str = "Untitled group";
 
 /// what a node carries that our model does not AUTHOR: stock's ctime
 /// (preserved verbatim; minted only for nodes we create) and every key a
-/// newer Obsidian wrote that we do not know — kept in FILE order
+/// newer stock app wrote that we do not know — kept in FILE order
 /// (serde_json's preserve_order) and re-emitted after the keys we do author,
 /// which is where stock itself re-serialises them (32-editdone).
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -3602,7 +3602,7 @@ fn spawn_watcher(app: tauri::AppHandle) {
    The window ships with `decorations: false` (tauri.conf.json), so there is no
    WM titlebar AND no WM resize border: every affordance the frame used to
    provide has to come from here, driven by #wframe / the resize handles in
-   ui/. Stock Obsidian does the same (recon: its window reports
+   ui/. The stock app does the same (recon: its window reports
    _NET_FRAME_EXTENTS 0,0,0,0 under openbox while showing its own strip).
 
    WHY WE MOVE AND RESIZE THE WINDOW OURSELVES instead of handing the gesture

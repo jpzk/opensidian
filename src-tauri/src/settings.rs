@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*! R30 — the settings row DATA TABLE.
 
-feedback #19 wants stock Obsidian's settings structure 1:1, with every control
+feedback #19 wants the stock app's settings structure 1:1, with every control
 whose behaviour does not exist rendered consistently disabled. The invariant
 that keeps that from rotting is:
 

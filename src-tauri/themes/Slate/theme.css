@@ -6,7 +6,7 @@
 
    COLOUR PROVENANCE: docs/palette-slate/SOURCE.md, in full, with a numbered
    rule (R1-R9) behind every assignment. Values marked (upstream) are published
-   in the Obsidian CSS-variables reference (docs.obsidian.md, Foundations/
+   in the stock CSS-variables reference (docs.obsidian.md, Foundations/
    Colors); values marked (derived) are computed from published ones by
    docs/palette-slate/derive.sh. The NAME is ours and the values are theirs: a
    colour value may travel, a trademark may not. Every hex carries a

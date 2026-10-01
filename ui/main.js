@@ -1,4 +1,4 @@
-// opensidian, an Obsidian-compatible markdown notes app.
+// opensidian, a vault-compatible markdown notes app.
 // Copyright (C) 2026 Jendrik Poloczek
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This program comes with ABSOLUTELY NO WARRANTY. It is free software, and you
@@ -2092,7 +2092,7 @@ function renderLayout() {         // boot / vault switch only — every later ch
 
 /* ---------- R28 WORKSPACE PERSISTENCE: quit, relaunch, your layout is there ---
    The file is the vault's own `.obsidian/workspace.json`, in STOCK's shape
-   (R28.1/R28.16) — an opensidian vault stays openable by stock Obsidian and back.
+   (R28.1/R28.16) — an opensidian vault stays openable by the stock app and back.
    Shape, as measured off a stock vault:
      { main:  { id, type:"split", direction:"vertical"|"horizontal",
                 children: [ { id, type:"tabs", currentTab?, dimension?,
@@ -3253,7 +3253,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   // the assertion of record in the phase; this token is how it knows WHICH
   // theme the pixels it just sampled are supposed to be.
   const themeTok = " [theme:" + (document.documentElement.getAttribute("data-theme") || "unset") + "]";
-  // R1 (themecsp): stock Obsidian marks the mode as a CLASS on <body>
+  // R1 (themecsp): the stock app marks the mode as a CLASS on <body>
   // (.theme-dark / .theme-light); T6 measured a stock-shaped rule keys off
   // body.theme-dark, which our :root[data-theme] shadows. We emit BOTH so
   // stock-shaped CSS can match. This token reads the body class back OFF THE
@@ -5193,7 +5193,7 @@ function buildTree(folders, notes) {
   return root;
 }
 
-/* ux-2 obsidian parity: chevron rotates via .open, folder icon, indent-guide
+/* ux-2 stock parity: chevron rotates via .open, folder icon, indent-guide
    spans (.tg) instead of padding math. Row height fixed 31px in CSS — the
    full smoke suite clicks tree rows at pitch 31 (sub=82), do not change it. */
 const TREE_CHEV =
@@ -5865,7 +5865,7 @@ function cmdQuickSwitch() {
    (Ctrl+P), the keymap dispatcher and Settings ▸ Hotkeys. Chords are
    normalised "ctrl+alt+shift+<key>" (e.key lowercased, Mod = Ctrl on Linux).
    User overrides live in hkUser {id: [chords]} ([] = default removed) and are
-   persisted to ~/.opensidian.json "hotkeys" in the stock Obsidian shape. ---------- */
+   persisted to ~/.opensidian.json "hotkeys" in the stock shape. ---------- */
 const edField = () => (state && fg() ? acField(fg()) : null);
 function edEdit(fn) {   // fn(value, selStart, selEnd) -> [value, selStart, selEnd]; fires input
   const ta = edField();
@@ -6018,7 +6018,7 @@ let themeStored = false;                   // a user chose: the system stops dec
 function applyTheme(t) {
   themeMode = t === "light" ? "light" : "dark";
   document.documentElement.setAttribute("data-theme", themeMode);
-  // R1 (themecsp): ALSO emit stock Obsidian's mode marker as a class on <body>
+  // R1 (themecsp): ALSO emit the stock app's mode marker as a class on <body>
   // (.theme-dark / .theme-light), next to our :root[data-theme]. Stock-shaped
   // CSS keys off body.theme-dark (T6), which our root attribute shadows; without
   // this marker no stock CSS can ever apply. body exists (main.js loads at the

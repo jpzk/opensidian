@@ -7,7 +7,7 @@
  *   - the dark palette is Catppuccin Mocha (MIT). GPL-compatible; the notice
  *     travels with it in THIRD-PARTY.md, which is the licence's one condition.
  *   - 46 custom-property values are byte-identical to an extract of the
- *     PROPRIETARY Obsidian bundle. A licence grants rights the grantor holds,
+ *     PROPRIETARY stock-app bundle. A licence grants rights the grantor holds,
  *     and we do not hold these. The GPL header above does not make them ours;
  *     if anything it asserts a right we cannot back. They are disclosed in
  *     THIRD-PARTY.md and the releases carrying them are marked prerelease.
@@ -423,7 +423,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 #bmdropline { position: fixed; height: 3px; background: var(--bm-drop-line); z-index: 98; pointer-events: none }
 .bmrow.bmdrop-into, .bmrow.bmdrop-into:hover { background: var(--bm-drop-into-bg); color: var(--bm-drop-into-fg) }
 .bmrow.bmdrop-src, .bmrow.bmdrop-src:hover { background: var(--bm-drop-src-bg) }
-/* ux-2 obsidian parity. HEIGHT MUST STAY 31px — smoke clicks rows at pitch 31 */
+/* ux-2 stock parity. HEIGHT MUST STAY 31px — smoke clicks rows at pitch 31 */
 .trow { height: 31px; display: flex; align-items: center; cursor: pointer;
         margin: 0 8px; padding: 0 4px; border-radius: 5px;
         font-size: var(--sidebar-font-size); color: var(--nav-item-color) }   /* themematch: stock tree ink = --nav-item-color (muted), not body ink */
@@ -1036,7 +1036,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .hkbtn:hover { background: var(--border) }
 .hkbtn, .hkx, #sclose { display: inline-flex; align-items: center; justify-content: center }
 .hkbtn svg, .hkx svg, #sclose svg { display: block }
-/* ---------- R15 TYPOGRAPHY (docs/requirements.md §15): stock Obsidian 1.13.7 app.css values, dark-theme tokens ---------- */
+/* ---------- R15 TYPOGRAPHY (docs/requirements.md §15): stock 1.13.7 app.css values, dark-theme tokens ---------- */
 /* R15.2 bundled fonts (ui/fonts/, scripts/fetch-fonts.sh): same family names / weight ranges / font-display as stock */
 @font-face { font-family: 'Source Code Pro'; font-weight: normal; font-style: normal; font-display: swap; src: url(fonts/SourceCodePro-Regular.ttf) }
 @font-face { font-family: 'Source Code Pro'; font-weight: normal; font-style: italic; font-display: swap; src: url(fonts/SourceCodePro-Italic.ttf) }
@@ -1384,7 +1384,7 @@ body.floorrelayout #main { padding-right: 1px }
 /* ---------- R33 frameless window: the app draws its own frame ----------
    tauri.conf.json ships `decorations: false`: there is no WM title bar and no WM
    resize border, so every affordance the frame provided lives here.
-   #wframe is the title bar's replacement. Stock Obsidian does NOT stack a strip
+   #wframe is the title bar's replacement. The stock app does NOT stack a strip
    above its tabs — it puts the window controls inside the top chrome row (recon
    under openbox, 1100px-wide window: minimise centred at right-113, maximise at
    right-70, close at right-26, row 40px tall). This strip keeps those three x

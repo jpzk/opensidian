@@ -188,7 +188,7 @@ pub fn build_graph(notes: &[String], links: &[&[String]]) -> Graph {
     Graph { nodes, edges }
 }
 
-/// tag char set (Obsidian): unicode letters/digits, '-', '_', '/'
+/// tag char set (stock): unicode letters/digits, '-', '_', '/'
 fn is_tag_char(c: char) -> bool {
     c.is_alphanumeric() || c == '-' || c == '_' || c == '/'
 }
