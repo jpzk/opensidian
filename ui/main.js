@@ -1197,7 +1197,8 @@ function llTok() {
   const om = li => { const s = li && pse(li); if (!s) return NaN; return li.getBoundingClientRect().right - parseFloat(s.right) - tx(li); };
   o.push("go1=" + f(om(G[0])), "go2=" + f(om(G[1])), "gt=" + (G[0] && pse(G[0]) && /tabular-nums/.test(pse(G[0]).fontVariantNumeric) ? 1 : 0));
   const cb = H[0] && H[0].querySelector(":scope > input[type=checkbox]"), cr = cb && cb.getBoundingClientRect();
-  o.push("hb=" + f(cr ? cr.left - tx(H[0]) : NaN), "hw=" + f(cr ? cr.width : NaN), "hn=" + (H[0] && !pse(H[0]) ? 1 : 0));
+  const col = hA ? hA.getBoundingClientRect().left : NaN;   // stock DOM x is relative to the sizer = the h2 left edge
+  o.push("hb=" + f(cr ? cr.left - col : NaN), "ht=" + f(tx(H[0]) - col), "hw=" + f(cr ? cr.width : NaN), "hn=" + (H[0] && !pse(H[0]) ? 1 : 0));
   o.push("ip=" + f(top(I[1]) - top(I[0])), "ib=" + f(bc(I[0])), "it=" + f(tx(I[0]) - tx(A[0])));
   const ku = K && K.querySelector("a.wiki-unresolved"), ks = ku && getComputedStyle(ku);
   const al = c => { const m = /([\d.]+)\s*\)\s*$/.exec(c || ""); return /\/|rgba|,.*,.*,/.test(c || "") && m ? parseFloat(m[1]) : 1; };
