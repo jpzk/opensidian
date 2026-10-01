@@ -25,3 +25,5 @@ CENSUS.push(() => bmAddTok());   // bmactive: [modal:bmadd] [bmadd:<note>|<group
 CENSUS.push(() => wsTok());          // wsrestore (R28): [wstabs:] every tab+mode of every group, [ws:writes,restored,dropped]
 CENSUS.push(() => " [rtabs:" + [...document.querySelectorAll("#rtabs > button.stab[id^='rtab-']")].map(b => b.id.slice(5)).join("|") + "]");   // wsrestore R20.3: the right tab strip in DOM order, always bl|out|tags|toc (content panes only; a stored sidebar graph/localgraph leaf is preserved in the file, never rendered)
 CENSUS.push(() => $("picker").hidden ? "" : " [precent:" + [...document.querySelectorAll("#p-recent li span")].map(s => s.textContent.replace(/[[\]|]/g, "")).join("|") + "]");   // brand (goal opensidian): the vault picker's recent rows (full paths) while it shows — proves the migrated vault list
+CENSUS.push(() => tjTok());   // tocjump: the outline's own note leaf [tj:<note>|top:|car:|st:|ae:] read even while a graph/other pane is focused
+CENSUS.push(() => tjxyTok());   // tocjump: painted click points [tjxy:] — outline rows by line, each pane's active tab + content corner, an empty explorer point

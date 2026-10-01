@@ -528,6 +528,58 @@ function tocSync() {                       // highlight the heading at the viewp
   if (info !== rpInfo) { rpInfo = info; updateTitle(); }
 }
 $("main").addEventListener("scroll", tocSync, true);   // scroll doesn't bubble: capture
+/* tocjump census [tj:<note>|top:<l>|car:<l>|st:<px>|ae:<where>] — the outline's
+   OWN note leaf (rLeaf, the leaf rNote() renders), read whatever group is
+   focused: top = first source line visible in that leaf's view (lp) or the line
+   of the heading at its top (reading), car = its lp caret line (-1 none),
+   st = scrollTop, ae = where DOM focus is (lp|rv = that leaf's view, g<i>:<kind>
+   = another pane's group i, side|rside|body|<tag>). [tj:<note>|bg] = the leaf
+   is a background tab. Only while the outline tab is showing. */
+function tjTok() {
+  if (!rightOpen || rTab !== "toc" || !rLeaf) return "";
+  const { g, t } = rLeaf, nm = String(t.name).replace(/[[\]|]/g, "");
+  if (g.tabs[g.active] !== t) return " [tj:" + nm + "|bg]";
+  let top = 0, st = 0;
+  if (isLp(t.mode)) {
+    st = g.lp.scrollTop; let i = 0;
+    for (const r of g.lp.children) { if (r.offsetTop - g.lp.offsetTop <= st + 2) top = i; i++; }
+  } else {
+    st = g.preview.scrollTop; let k = -1;
+    g.preview.querySelectorAll("h1,h2,h3,h4,h5,h6").forEach((el, i) => { if (el.offsetTop - g.preview.offsetTop <= st + 2) k = i; });
+    top = k >= 0 && tocHeads[k] ? tocHeads[k].line : 0;
+  }
+  const car = g.lpActive ? g.lpActive.l0 : -1, a = document.activeElement;
+  let ae = a ? a.tagName.toLowerCase() : "-";
+  if (a && (a === g.lp || g.lp.contains(a))) ae = "lp";
+  else if (a && g.preview.contains(a)) ae = "rv";
+  else if (a && a.closest) {
+    const p = a.closest(".pane"), h = p && p._g;
+    if (h) { const x = h.tabs[h.active]; ae = "g" + (groups().indexOf(h) + 1) + ":" + (x ? x.kind || "note" : "-"); }
+    else if (a.closest("#side")) ae = "side";
+    else if (a.closest("#rside")) ae = "rside";
+  }
+  return " [tj:" + nm + "|top:" + top + "|car:" + car + "|st:" + Math.round(st) + "|ae:" + ae + "]";
+}
+/* tocjump geometry [tjxy:toc=<line>@x,y;...|p<i>=tabx,taby/cx,cy;...|tree=x,y|-]
+   — PAINTED points the phase clicks (no literal x,y in a phase): each visible
+   outline row's text centre by source line; per pane (census order) the centre
+   of its ACTIVE tab and a point 14px inside the bottom-left of its content;
+   an empty point in the file explorer below its last row (- if it is full). */
+function tjxyTok() {
+  if (!rightOpen || rTab !== "toc") return "";
+  const c = r => Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2);
+  const rows = [...document.querySelectorAll("#toclist .tocrow")].filter(r => r.getClientRects().length)
+    .map(r => r.dataset.line + "@" + c(r.querySelector(".tn").getBoundingClientRect()));
+  const ps = [...document.querySelectorAll("#main .pane")].map((p, i) => {
+    const a = p.querySelector(".tabs .tab.active"), r = p._g && p._g.content ? p._g.content.getBoundingClientRect() : null;
+    return "p" + (i + 1) + "=" + (a ? c(a.getBoundingClientRect()) : "-") + "/" + (r ? Math.round(r.left + 14) + "," + Math.round(r.bottom - 14) : "-");
+  });
+  const tr = $("tree"), T = tr.getBoundingClientRect();
+  let lb = T.top;
+  for (const e of tr.querySelectorAll("*")) { const r = e.getBoundingClientRect(); if (r.height && r.bottom > lb) lb = r.bottom; }
+  const tree = T.bottom - lb > 24 ? Math.round(T.left + T.width / 2) + "," + Math.round((lb + T.bottom) / 2) : "-";
+  return " [tjxy:toc=" + rows.join(";") + "|" + ps.join(";") + "|tree=" + tree + "]";
+}
 /* ux-4: left sidebar drag-resize (clamped 150-600, ribbon is 44px);
    width persisted as sidebar_w in ~/.opensidian.json on mouseup */
 $("ldiv").onmousedown = e => {
