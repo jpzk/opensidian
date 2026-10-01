@@ -3177,6 +3177,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   const tokq = s => String(s == null ? "" : s).replace(/[[\]|]/g, "").slice(0, 80);
   const modal = modalKind ? " [modal:" + modalKind + "]" +
                             (mdNew ? " [mdnew:" + tokq(mdNew) + "]" : "")   // C4: the create-this-note affordance is on screen
+                          + (modalKind === "cp" ? " [cpl:" + mdItems.map(it => tokq(it.label)).join("|") + "]" : "")   // graphhdr REQ-14: the palette rows actually OFFERED
     : ($("rnbox") && !$("rnbox").hidden ? " [modal:rn]" : "")  // m5 fuzzy modal / rename prompt
     + ($("anew") && !$("anew").hidden ? " [modal:att]" : "")   // R31.7 Insert attachment prompt
     + (settingsOpen ? " [modal:settings]" + setTok() + hkInfo : "")   // R14 hotkeys + R30 settings probe
@@ -3393,6 +3394,15 @@ async function splitGroup(g, dir, ti) {  // duplicate g's tab ti into a new sibl
     raw.id = id; delete raw.group;
     return splitWith(g, dir, { kind: "unk", name: src.name, utype: src.utype, raw, lid: id, mode: "source", hist: [], hpos: -1 });
   }
+  // graphhdr REQ-9/10: Split right/down on a GRAPH (⋮ or tab menu) duplicates the
+  // VIEW — a new global graph, or a local graph of the same centre/options
+  // (unlinked: the new leaf is a plain tab). It used to fall through to mkTab and
+  // open a NOTE named "Graph view".
+  if (src && src.kind === "gg")
+    return splitWith(g, dir, { kind: "gg", name: "Graph view", mode: "source", hist: [], hpos: -1 });
+  if (src && src.kind === "lg")
+    return splitWith(g, dir, { kind: "lg", name: src.name, center: src.center, depth: src.depth,
+                               inc: src.inc, out: src.out, opts: src.opts, mode: "source", hist: [], hpos: 0 });
   const t = src ? Object.assign(mkTab(src.name), { src: !!src.src, mode: src.mode }) : null;   // #16: BOTH bits ride along (sub-mode survives a split of a reading tab)
   await splitWith(g, dir, t);
 }
@@ -8619,13 +8629,13 @@ function wfHdrTok() {
   }
   return out.join("|");
 }
-/* graphhdr census [hdra:<i>:<kind>:<act>,<act>|...] — one entry per pane in the
+/* graphhdr census [hdra:<i>:<kind>:<act>+<act>|...] — one entry per pane in the
    same document order as [hdr:], kind = note|gg|lg|unk|empty (the ACTIVE view),
    act = every VISIBLE header action, right of the tabs, in DOM order, each with
    its client centre: mode-edit@x,y / mode-read@x,y (the toggle; the word is the
    CURRENT view, read from the tooltip's first line, so the stock tooltip is
    asserted too) and more@x,y (the ⋮). A graph pane that still shows a toggle
-   reads `gg:mode-edit@…,more@…` and the smoke fails on it. */
+   reads `gg:mode-edit@…+more@…` and the smoke fails on it. */
 function hdrActTok() {
   const out = [];
   let i = 0;
@@ -8644,7 +8654,7 @@ function hdrActTok() {
         acts.push((t.startsWith("Current view: reading") ? "mode-read" : t.startsWith("Current view: editing") ? "mode-edit" : "mode-?") + c);
       }
     }
-    out.push(i + ":" + kind + ":" + (acts.join(",") || "-"));
+    out.push(i + ":" + kind + ":" + (acts.join("+") || "-"));
   }
   return out.join("|");
 }
