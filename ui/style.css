@@ -114,9 +114,12 @@ body {
   --text-accent: var(--color-accent-1);
   --text-accent-hover: var(--color-accent-2);
   --interactive-accent: var(--color-accent);
-  /* selection: stock dark 63.48.99 over 28 = the triple at alpha .32;
+  /* selection: stock paints --interactive-accent at alpha .33 (dark) / .2 (light):
+     fitted to stock px over 4 themes (default 63.48.99 over 28, Wasp 106.89.42
+     over 36, 1984 89.12.114 over 13) — Wasp/1984 declare only --interactive-accent
+     and stock still tints selection with it, so the triple is the wrong source.
      tag pill: stock 39.34.50 dark / 244.241.254 light = the triple at .1 */
-  --text-selection: hsla(var(--accent-h), var(--accent-s), var(--accent-l), .32);
+  --text-selection: color-mix(in srgb, var(--interactive-accent) 33%, transparent);
   --tag-background: hsla(var(--accent-h), var(--accent-s), var(--accent-l), .1);
   /* ---- chrome surfaces stock names (themelight audit, stock dark px):
      active tree row 54 over sidebar 40 and the selected palette row 43 over
@@ -283,10 +286,13 @@ body:where(.theme-light) {
   --color-accent-2: hsl(calc(var(--accent-h) - 3), calc(var(--accent-s) * 1.02), calc(var(--accent-l) * 1.15));
   --text-accent: var(--color-accent);
   --interactive-accent: var(--color-accent-1);
-  /* stock light selection 234.227.253 over 255 = the triple at .18; tree
+  /* stock light selection 234.227.253 over 255 = --interactive-accent at .2
+     (Wasp 206.195.168 over 196, 1984 231.184.246 over 228 agree); tree
      row 229 over 246 and palette row 238 over 255 = black at .067; tab strip
      and title 252; focused field border 189 */
-  --text-selection: hsla(var(--accent-h), var(--accent-s), var(--accent-l), .18);
+  --text-selection: color-mix(in srgb, var(--interactive-accent) 20%, transparent);
+  /* stock light search/filter field paper (Wasp light: 255 field on a 196 page) */
+  --background-modifier-form-field: #ffffff;
   --background-modifier-hover: rgba(0, 0, 0, .067);
   --background-modifier-border-focus: #bdbdbd;
   --tab-container-background: #fcfcfc;
@@ -601,7 +607,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .preview a.wiki-unresolved { color: var(--link-unresolved); font-style: italic }
 .lp a.ext, .preview a.ext { color: var(--accent-blue); text-decoration: underline; cursor: pointer }  /* S1: external link, opens via xdg-open */
 /* tags: inline #tag pills (stock: small rounded accent-tinted chip) */
-.lp a.tag, .preview a.tag { color: var(--accent-blue); background: var(--tag-bg);
+.lp a.tag, .preview a.tag { color: var(--tag-color, var(--accent-blue)); background: var(--tag-bg);
   border-radius: 999px; padding: 0 7px; font-size: .85em; text-decoration: none;
   cursor: pointer; white-space: nowrap }
 .lp a.tag:hover, .preview a.tag:hover { background: var(--tag-bg-hover) }
@@ -911,7 +917,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .lp .wl:hover, .lp .lt:hover, .lp .url:hover { color: var(--text-accent-hover) }   /* themematch: stock link hover ink */
 .lp a.wiki { text-decoration: none }
 .lp.src .wl, .lp.src .lt, .lp.src .url { text-decoration: underline }
-.lp .tag { color: var(--accent-blue); background: var(--tag-bg); border-radius: 999px; padding: 0 4px }
+.lp .tag { color: var(--tag-color, var(--accent-blue)); background: var(--tag-bg); border-radius: 999px; padding: 0 4px }
 .lp .task, .lp .hr, .lp .tbl { font-family: var(--font-monospace) }
 .lp .fence { display: block; font-family: var(--font-monospace); font-size: 13px; background: var(--bg-surface);
              padding: 0 8px; white-space: pre; overflow-x: auto }
@@ -995,7 +1001,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .srow.linkrow { min-height: 44px }
 .sempty { color: var(--text-chrome-faint) }
 #hkbar { display: flex; align-items: center; gap: 6px; height: 28px }
-#hkfilter { flex: 1; height: 28px; box-sizing: border-box; background: var(--bg-sidebar); color: var(--text-chrome);
+#hkfilter { flex: 1; height: 28px; box-sizing: border-box; background: var(--background-modifier-form-field, var(--bg-sidebar)); color: var(--text-chrome);
             border: 1px solid var(--border); border-radius: 4px; padding: 0 8px; outline: none; font-size: 13px }
 #hkfilter:focus { border-color: var(--background-modifier-border-focus) }   /* themematch: stock focused search field border */
 #hkclear { color: var(--text-chrome-faint); cursor: pointer; width: 16px; text-align: center }

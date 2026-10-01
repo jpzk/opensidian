@@ -1844,7 +1844,7 @@ function mkGroup() {
     '<div class="content">' +
       '<canvas class="graph" hidden></canvas>' +
       '<div class="ac" hidden></div>' +
-      '<div class="status" hidden><span class="st-bl"></span><span class="st-wc"></span><span class="st-cc"></span></div>' +
+      '<div class="status status-bar" hidden><span class="st-bl"></span><span class="st-wc"></span><span class="st-cc"></span></div>' +
       '<button class="lggear" title="local graph settings" hidden>' +
         '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"/></svg></button>' +
       '<div class="lgpop" hidden>' +

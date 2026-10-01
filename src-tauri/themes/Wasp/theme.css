@@ -19,7 +19,7 @@ body.theme-dark {
   --bg-sidebar: #19191a;         /* (upstream) --background-secondary, dark */
   --bg-ribbon: #131314;          /* (derived) --background-secondary dark at 75%, so the strip stays an edge — SOURCE.md #3 */
   --bg-surface: #3d3d3e;         /* (upstream) --background-secondary-alt, dark */
-  --bg-elevated: #313132;        /* (derived) midpoint of --background-primary and --background-secondary-alt, dark — SOURCE.md #5 */
+  --bg-elevated: #242425;        /* (stock) = --modal-background <- --background-primary, dark: stock paints the palette card with it (themelight audit pal 36.36.37) */
   --bg-banner-error: #640212;    /* (upstream) --text-highlight-bg, dark */
   --bg-button-plain: #bdae94;    /* (upstream) --text-faint, dark, as the raised control's paper — SOURCE.md #7 */
   --bg-button-primary: #f8c538;  /* (upstream) --interactive-accent, dark */
@@ -57,6 +57,12 @@ body.theme-dark {
   --interactive-accent: #f8c538;              /* (upstream) --interactive-accent, dark */
   /* ---- the theme's signature: orange headings, the yellow ring ---- */
   --text-heading: #e0e0e1;       /* (upstream) --text-title-h1, dark */
+  --h1-color: #e0e0e1;          /* the same heading ink under stock's per-level names, so stock paints the Wasp heading too (themelight audit h1) */
+  --h2-color: #e0e0e1;
+  --h3-color: #e0e0e1;
+  --h4-color: #e0e0e1;
+  --h5-color: #e0e0e1;
+  --h6-color: #e0e0e1;
   --frame-color: #f8c538;        /* (upstream) --background-modifier-border, dark */
   --frame-width: 2.78vh;         /* (measured) reference.png: 30px of 1080 on all four sides; no nibble, unchanged */
 
@@ -79,7 +85,7 @@ body.theme-light {
   --bg-sidebar: #c4c4c5;         /* (upstream) --background-secondary, light */
   --bg-ribbon: #bebebf;          /* (measured) reference.png 30,114, the inactive tab's underline; = --pre-code, light */
   --bg-surface: #ededee;         /* (upstream) --background-primary, light */
-  --bg-elevated: #ededee;        /* (upstream) --background-primary, light */
+  --bg-elevated: #c4c4c5;        /* (stock) = --modal-background <- --background-primary (#c4c4c5 here), light: themelight audit, stock palette card 196.196.197 */
   --bg-banner-error: #bfb2b5;    /* (derived) --text-a at 10% over --background-secondary, light — SOURCE.md #6 */
   --bg-button-plain: #707071;    /* (upstream) --background-secondary-alt, light */
   --bg-button-primary: #f8c538;  /* (upstream) --interactive-accent, light; (measured) reference.png 97,304 */
@@ -117,6 +123,12 @@ body.theme-light {
   --interactive-accent: #f8c538;              /* (upstream) --interactive-accent, light */
   /* ---- the theme's signature: orange headings, the yellow ring ---- */
   --text-heading: #d49336;       /* (upstream) --text-title-h1, light; (measured) reference.png 193,299, "Heading 1" */
+  --h1-color: #d49336;          /* the same heading ink under stock's per-level names, so stock paints the Wasp heading too (themelight audit h1) */
+  --h2-color: #d49336;
+  --h3-color: #d49336;
+  --h4-color: #d49336;
+  --h5-color: #d49336;
+  --h6-color: #d49336;
   --frame-color: #f2b713;        /* (measured) reference.png 10,10 — 176,400 px = the 30px ring exactly; upstream --background-modifier-border differs, the picture wins */
   --frame-width: 2.78vh;         /* (measured) reference.png: 30px of 1080 on all four sides; no nibble, unchanged */
 

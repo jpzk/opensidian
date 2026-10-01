@@ -513,6 +513,12 @@ pub fn bridge_css(sanitized: &str) -> String {
 pub const STOCK_DEFAULTS: &[(&str, &str)] = &[
     // palette / switcher / graph options / settings card background
     ("--modal-background", "--background-primary"),
+    // goal themematch: stock paints the tab strip and the title area from
+    // --tab-container-background, which stock derives from
+    // --background-secondary-alt (themelight audit, stock px of every theme
+    // that declares it: Slate light 228 = #e4e4e5, 1984 light 194.196.225 =
+    // #c2c4e1, 1984 dark #1b1f57, Wasp dark #3d3d3e, Wasp light #ededee).
+    ("--tab-container-background", "--background-secondary-alt"),
 ];
 
 /// Generate the stock-default sheet for one theme's SANITIZED css. Empty
@@ -1530,7 +1536,7 @@ mod tests {
         let s = sanitize_css(SOLARIZED).expect("the committed fixture must sanitize");
         assert_eq!(
             stock_defaults_css(&s.css),
-            "body.theme-dark, body.theme-light {\n  --modal-background: var(--background-primary);\n}\n"
+            "body.theme-dark, body.theme-light {\n  --modal-background: var(--background-primary);\n  --tab-container-background: var(--background-secondary-alt);\n}\n"
         );
     }
 
