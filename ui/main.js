@@ -490,9 +490,21 @@ async function rOutline(n) {
   build(box, 0, 0);
   tocSync();
 }
+/* tocjump: the outline belongs to rLeaf (the note leaf rNote() rendered it for),
+   NOT to the focused group — with the linked local graph focused, fg() is the
+   graph tab (t.kind) and the old fg()-based lookup returned without jumping.
+   tocLeaf() = that note leaf while it is its group's active tab, else null. */
+function tocLeaf() {
+  rTrack();
+  if (!rLeaf) return null;
+  const { g, t } = rLeaf;
+  return g.tabs[g.active] === t && !t.kind ? { g, t } : null;
+}
 async function tocGo(line) {               // scroll + focus the heading at `line`
-  const g = fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
-  if (!t || t.kind) return;
+  const L = tocLeaf();
+  if (!L) return;
+  const { g, t } = L;
+  if (fg() !== g) focusGroup(g);           // stock 1.13.7: the active leaf moves to the note (docs/tocjump/stock/OBSERVED.md 06,16)
   if (isLp(t.mode)) {                     // R12: source mode = lp with reveal
     await lpMove(g, line, 0, "heading");   // raw row = the heading, caret on it
     const row = g.lp.children[line];                // R17: one row per source line
@@ -506,8 +518,9 @@ async function tocGo(line) {               // scroll + focus the heading at `lin
 }
 function tocSync() {                       // highlight the heading at the viewport top
   if (!rightOpen || rTab !== "toc" || !tocHeads.length) return;
-  const g = fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
-  if (!t || t.kind) return;
+  const L = tocLeaf();                     // tocjump: the outline's own note, whatever is focused
+  if (!L) return;
+  const { g, t } = L;
   let top = 0;                             // first visible source line
   if (isLp(t.mode)) {
     const st = g.lp.scrollTop + 2;
