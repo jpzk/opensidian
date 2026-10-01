@@ -8423,6 +8423,9 @@ function hkKey(e) {                          // keyboard while settings is open
 }
 $("sclose").onclick = closeSettings;
 $("settings").onmousedown = e => { if (e.target === $("settings")) closeSettings(); };
+// [sqf:] (and every other settings rect token) is a PAINTED position: a scrolled
+// pane moves it, so the census follows the scroll (scroll doesn't bubble: capture)
+$("settings").addEventListener("scroll", () => { if (settingsOpen) updateTitle(); }, true);
 
 /* ---------- R33 frameless window: the app IS the title bar ----------
    With `decorations: false` there is no WM frame, so moving, resizing,
