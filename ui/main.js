@@ -6332,12 +6332,16 @@ window.addEventListener("wheel", e => {
   updateTitle();
 }, { passive: false });
 /* [qfs:<baseFontSize>,<action 1|0>,<steps>,<computed .lp font-size of the
-   focused leaf or ->] — the phase asserts the MEASURED size, not our belief */
+   focused leaf or ->@<centre x,y of the focused pane's content or ->] — the
+   phase asserts the MEASURED size, not our belief, and wheels at the PAINTED
+   centre (note body or graph canvas), never a literal */
 function qfsTok() {
   const g = typeof fg === "function" ? fg() : null;
   const el = g && (g.lp && g.lp.offsetParent ? g.lp : g.preview && g.preview.offsetParent ? g.preview : null);
   const px = el ? getComputedStyle(el).fontSize : "-";
-  return " [qfs:" + qfsSize + "," + (qfsAct ? 1 : 0) + "," + qfsSteps + "," + px + "]";
+  const cr = g && g.content ? g.content.getBoundingClientRect() : null;
+  const at = cr && cr.width ? Math.round(cr.left + cr.width / 2) + "," + Math.round(cr.top + cr.height / 2) : "-";
+  return " [qfs:" + qfsSize + "," + (qfsAct ? 1 : 0) + "," + qfsSteps + "," + px + "@" + at + "]";
 }
 /* R14 undo close tab — newest last. tabclose: an entry is now an OBJECT
    {name, text, cause}, not a bare name, because the stack is also this app's
