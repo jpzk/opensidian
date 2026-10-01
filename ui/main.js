@@ -562,9 +562,10 @@ function tjTok() {
 }
 /* tocjump geometry [tjxy:toc=<line>@x,y;...|p<i>=tabx,taby/cx,cy;...|tree=x,y|-]
    — PAINTED points the phase clicks (no literal x,y in a phase): each visible
-   outline row's text centre by source line; per pane (census order) the centre
-   of its ACTIVE tab and a point 14px inside the bottom-left of its content;
-   an empty point in the file explorer below its last row (- if it is full). */
+   outline row's text centre by source line; per pane (census order) a point in the left
+   third of its ACTIVE tab (a narrow tab's centre is its close button) and a point 14px inside the bottom-left of its content;
+   a blank point in the file explorer: below its last row, else the header's
+   reserved blank slot (- if neither is painted). */
 function tjxyTok() {
   if (!rightOpen || rTab !== "toc") return "";
   const c = r => Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2);
@@ -572,12 +573,15 @@ function tjxyTok() {
     .map(r => r.dataset.line + "@" + c(r.querySelector(".tn").getBoundingClientRect()));
   const ps = [...document.querySelectorAll("#main .pane")].map((p, i) => {
     const a = p.querySelector(".tabs .tab.active"), r = p._g && p._g.content ? p._g.content.getBoundingClientRect() : null;
-    return "p" + (i + 1) + "=" + (a ? c(a.getBoundingClientRect()) : "-") + "/" + (r ? Math.round(r.left + 14) + "," + Math.round(r.bottom - 14) : "-");
+    const ar = a ? a.getBoundingClientRect() : null;   // tab point = left third: the centre of a narrow tab is its close button
+    return "p" + (i + 1) + "=" + (ar ? Math.round(ar.left + Math.min(18, ar.width / 3)) + "," + Math.round(ar.top + ar.height / 2) : "-") + "/" + (r ? Math.round(r.left + 14) + "," + Math.round(r.bottom - 14) : "-");
   });
   const tr = $("tree"), T = tr.getBoundingClientRect();
   let lb = T.top;
   for (const e of tr.querySelectorAll("*")) { const r = e.getBoundingClientRect(); if (r.height && r.bottom > lb) lb = r.bottom; }
-  const tree = T.bottom - lb > 24 ? Math.round(T.left + T.width / 2) + "," + Math.round((lb + T.bottom) / 2) : "-";
+  const hs = document.querySelector("#pane-files .hslot"), H = hs ? hs.getBoundingClientRect() : null;   // a full tree has no blank: the explorer header's reserved blank slot, a no-op click inside the pane
+  const tree = T.bottom - lb > 24 ? Math.round(T.left + T.width / 2) + "," + Math.round((lb + T.bottom) / 2)
+    : H && H.width ? c(H) : "-";
   return " [tjxy:toc=" + rows.join(";") + "|" + ps.join(";") + "|tree=" + tree + "]";
 }
 /* ux-4: left sidebar drag-resize (clamped 150-600, ribbon is 44px);
