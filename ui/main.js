@@ -8128,9 +8128,14 @@ async function enterVault() {
 // tab.base = the bytes we last loaded from / saved to disk. bufOf(g) = the
 // editor model with an open lp raw row folded in (no side effects), so
 // dirty == bufOf(g) !== base even while the raw row is still being typed in.
-function setBase(g) {
-  const t = g.active >= 0 ? g.tabs[g.active] : null;
-  if (t && !t.kind) t.base = bufOf(g);
+// typing: base is the bytes WRITTEN, never "the model after the write". The
+// model keeps moving while read_note/write_note are in flight; a BackSpace that
+// landed there made base = written minus its last char, and the next save read
+// the disk as "base + 1 char" = an R11.3 external append and put the deleted
+// letter back at the end (docs/typing/cause.md). `t` is the tab that was
+// written, captured before the awaits, so a tab switch cannot misattribute it.
+function setBase(t, written) {
+  if (t && !t.kind) t.base = written;
 }
 /* F1 probe: the focused tab holds bytes that are NOT on disk. A failed save
    must leave this token standing (setBase is skipped) — that is the whole
@@ -8150,7 +8155,16 @@ function bufOf(g) {          // R17: the model IS the buffer (g.editor is its mi
 // as onVaultChanged before writing: an external append on top of our base is
 // folded in (buf + tail), anything else keeps the buffer. One read per debounced
 // save — never on the keystroke path.
-async function saveBuf(g) {
+// typing: one save at a time per group. Two overlapping saves (debounce +
+// flushSave) could land their writes and their setBase in either order,
+// leaving base != disk — the same resurrect class as above. Chained, every
+// save reads the disk the previous one wrote.
+function saveBuf(g) {
+  const p = (g.saveQ || Promise.resolve()).then(() => saveBuf1(g));
+  g.saveQ = p.catch(() => false);
+  return p;
+}
+async function saveBuf1(g) {
   const n = curOf(g);
   if (!n) return false;
   const t = g.active >= 0 ? g.tabs[g.active] : null;
@@ -8169,7 +8183,7 @@ async function saveBuf(g) {
     }
   }
   if (!await saveNote(n, buf)) return false;   // F1: a failed save leaves the tab DIRTY, banner up
-  setBase(g);
+  setBase(t, buf);
   return true;
 }
 // R11.2: replace the ACTIVE tab's text in place — caret line/col + scroll kept
