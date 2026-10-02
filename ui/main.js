@@ -6807,7 +6807,7 @@ function fontsTok() {
   return " [ffam:" + ffirst(document.body) + "," + ffirst(document.querySelector(".tab")) + "," +
          ffirst(document.querySelector(".trow")) + "|" + ffirst(el) + "|" + ffirst(code) + "]" +
          " [fovr:" + cnt("--font-interface-override") + "," + cnt("--font-text-override") + "," +
-         cnt("--font-monospace-override") + "," + getComputedStyle(document.body).color.replace(/\s/g, "") + "]";
+         cnt("--font-monospace-override") + "," + getComputedStyle(document.body).color.replace(/\s/g, "").replace(/,/g, "/") + "]";
 }
 /* settings-only geometry: [sfr:<kind>,<cx>,<cy>,<row value>] per font row,
    [sfs:<range left>,<range right>,<cy>,<value>,<reset cx>,<reset disabled 1|0>]
