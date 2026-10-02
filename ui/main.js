@@ -334,14 +334,14 @@ async function rBacklinks(n) {
         if (i % 2) el.textContent = part;
         d.appendChild(el);
       });
-      d.onclick = () => navigate(fg(), b.note);
+      sideRow(d, b.note);
       kids.appendChild(d);
     }
     row.querySelector(".tc").onclick = e => {
       e.stopPropagation();
       row.classList.toggle("open"); kids.hidden = !row.classList.contains("open");
     };
-    row.onclick = () => navigate(fg(), b.note);
+    sideRow(row, b.note);
     box.appendChild(row); box.appendChild(kids);
   }
   // R10.5 Unlinked mentions: plain-text hits of this note's name in other
@@ -374,8 +374,8 @@ async function rBacklinks(n) {
       const mk = document.createElement("mark"); mk.textContent = t.slice(i, i + m.len); d.appendChild(mk);
       d.appendChild(document.createTextNode(t.slice(i + m.len)));
     } else d.textContent = t;
-    d.onclick = () => navigate(fg(), m.note);
-    row.onclick = () => navigate(fg(), m.note);
+    sideRow(d, m.note);
+    sideRow(row, m.note);
     row.querySelector(".ullink").onclick = async e => {
       e.stopPropagation();
       /* F1 (lostwrite-ui): Link REWRITES A NOTE ON DISK, so it is a write seam and
@@ -442,6 +442,34 @@ function olxyTok() {
   });
   return " [olxy:" + Object.keys(K).map(k => k + "=" + K[k].join(";")).join("|") + "]";
 }
+/* outlinks (docs/outlinks/recon.md): ONE seam for every right-sidebar row that opens
+   a note — Outgoing (resolved + unresolved), Backlinks linked title/line, unlinked
+   title/line. The panes describe rLeaf (the note leaf, tocLeaf() rule), NOT fg():
+   with the linked local graph focused, fg() is the graph tab and navigate(fg())
+   rewrote it (record run, Measured on main). Stock 1.13.7:
+   - plain click: rLeaf's group becomes active, rLeaf navigates in place (history
+     push), linkSync re-centres the linked graph, keyboard focus in its editor
+     (REQ-1..6 — focus was body even with the note focused);
+   - ctrl/meta/middle: new tab right of the ACTIVE leaf, in the active group (REQ-7);
+   - unresolved outgoing: created first, then the plain path (REQ-8);
+   - no note leaf to follow: rowOpen semantics on the active leaf (REQ-10). */
+async function sideOpen(name, ev, create) {
+  if (create && await createNote(name) === "err") return;    // "exists" = a racing create: just open it
+  if (ev && (ev.button === 1 || ev.ctrlKey || ev.metaKey)) return openNewTab(name);
+  const L = tocLeaf();
+  if (!L) return rowOpen(name);
+  const { g } = L;
+  if (fg() !== g) focusGroup(g);
+  await navigate(g, name);
+  const t = g.tabs[g.active];
+  if (t && isLp(t.mode) && g.lp && g.lp.isConnected) g.lp.focus({ preventScroll: true });
+  updateTitle();
+}
+function sideRow(el, name, create) {
+  el.onclick = e => { if (!e.defaultPrevented) sideOpen(name, e, create); };
+  el.onauxclick = e => { if (e.button === 1 && !e.target.closest("button")) { e.preventDefault(); sideOpen(name, e, create); } };
+  el.onmousedown = e => { if (e.button === 1) e.preventDefault(); };   // no autoscroll cursor
+}
 // Outgoing links: resolved rows navigate, unresolved rows are greyed
 async function rOutgoing(n) {
   const box = $("outlist"), head = $("outhead");
@@ -455,7 +483,7 @@ async function rOutgoing(n) {
     const d = document.createElement("div");
     d.className = "outrow" + (o.target ? "" : " unresolved"); d.dataset.ol = (o.target ? "o:" + o.target : "u:" + o.text);
     d.textContent = o.text;
-    if (o.target) d.onclick = () => navigate(fg(), o.target);
+    sideRow(d, o.target || o.text, !o.target);
     box.appendChild(d);
   }
 }
