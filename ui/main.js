@@ -44,6 +44,20 @@ function noteErr(m) {
 window.addEventListener("error", e => noteErr(e.message));
 window.addEventListener("unhandledrejection", e => noteErr(e.reason && e.reason.message || e.reason));
 let vaultPath = null, pmode = null, bpath = null;
+let bootNote = null;   // vaultarg: the rejected-argument reason, taken once from boot_notice
+/* vaultarg census: [vault:<open vault|->] always; [vargerr:<reason>] while that
+   reason is ON SCREEN (picker error line, or the notice banner it was said into).
+   Full path, `[ ] |` stripped so a folder name cannot forge a token. */
+function vargTok() {
+  const q = s => String(s).replace(/[[\]|]/g, "");
+  let t = " [vault:" + q(vaultPath || "-") + "]";
+  if (bootNote) {
+    const shown = !$("picker").hidden ? $("p-err").textContent
+      : (noticeSrc === "vaultarg" ? noticeTxt : "");
+    if (shown === bootNote) t += " [vargerr:" + q(bootNote) + "]";
+  }
+  return t;
+}
 
 /* ---------- pane model (M6 / R6.1): split tree, leaves = tab groups ----------
    Layout = Split | Group
@@ -7898,8 +7912,13 @@ $("vswitch").onclick = showPicker;
   const rt = await inv("get_rside_tab").catch(() => null);   // rsidebar
   await hkLoad();                                             // R14 custom hotkeys
   await setRTab(RPANES[rt] ? rt : "bl", false);
+  // vaultarg (README §5): a rejected `opensidian <dir>` argument is shown ONCE —
+  // the notice banner when a vault opened, the picker's error line otherwise.
+  // textContent only (say / p-err), never HTML.
+  bootNote = await inv("boot_notice").catch(() => null);
   vaultPath = await inv("vault_get");
   if (vaultPath) await enterVault(); else showPicker();
+  if (bootNote) { if (vaultPath) say(bootNote, "vaultarg"); else { $("p-err").textContent = bootNote; updateTitle(); } }
   // R30 / T2: the table AND the nav DOM are warmed off the open path — the nav is
   // 19 entries that never change, so building it at boot into the hidden modal
   // takes the only unavoidable DOM work out of the open keystroke. The pane stays

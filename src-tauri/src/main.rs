@@ -1276,12 +1276,7 @@ fn set_vault(v: State<Vault>, path: String, otel: Option<perf::Ctx>) -> Result<S
 
 fn set_vault_inner(v: &State<Vault>, path: &str) -> Result<String, String> {
     let p = PathBuf::from(path.trim());
-    if !picker_allows(&p) {
-        return Err(format!("not allowed as a vault: {}", p.display())); // S4
-    }
-    if !p.is_dir() {
-        return Err(format!("not a directory: {}", p.display()));
-    }
+    vault_rules(&p)?; // S4 + is_dir — shared with the argv boot (vaultarg)
     if !sandbox::allows(&p) {
         persist_vault(&p); // next boot confines to this one instead
         return Err(format!("sandboxed to {} — vault saved, restart opensidian to open it", sandbox::confined_to().unwrap().display()));
@@ -1435,6 +1430,96 @@ fn picker_allows(p: &Path) -> bool {
         }
     }
     !DENY.iter().any(|d| p.starts_with(d))
+}
+
+/* ---- vaultarg: `opensidian <dir>` opens <dir> (contract docs/vaultarg/README.md) ----
+   argv is untrusted: read raw (args_os, no parser crate), canonicalized ONCE,
+   then the SAME rules the picker's set_vault applies (vault_rules). Resolved in
+   main() BEFORE sandbox::enforce so landlock confines to the argument's vault. */
+
+/// the checks set_vault applies to a path, shared with the argv boot (README §4)
+fn vault_rules(p: &Path) -> Result<(), String> {
+    if !picker_allows(p) {
+        return Err(format!("not allowed as a vault: {}", p.display())); // S4
+    }
+    if !p.is_dir() {
+        return Err(format!("not a directory: {}", p.display()));
+    }
+    Ok(())
+}
+
+/// README §1: flags (leading '-') are ignored; the FIRST other arg is the
+/// candidate, further ones are ignored. Pure: returns the stderr notes too.
+fn argv_pick(args: &[std::ffi::OsString]) -> (Option<std::ffi::OsString>, Vec<String>) {
+    let mut cand = None;
+    let mut notes = Vec::new();
+    for a in args {
+        let lossy = a.to_string_lossy();
+        if lossy.starts_with('-') {
+            notes.push(format!("ignoring flag '{lossy}'"));
+        } else if cand.is_none() {
+            cand = Some(a.clone());
+        } else {
+            notes.push(format!("ignoring extra argument '{lossy}'"));
+        }
+    }
+    (cand, notes)
+}
+
+/// README §3-§5: argv candidate -> canonical vault dir, or the reason it is
+/// not one. Creates nothing, persists nothing.
+fn resolve_vault_arg(a: &std::ffi::OsStr) -> Result<PathBuf, String> {
+    let s = a.to_str().ok_or_else(|| "not valid UTF-8".to_string())?;
+    if s.is_empty() {
+        return Err("empty path".into());
+    }
+    let p = fs::canonicalize(s).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => "does not exist".to_string(),
+        _ => e.to_string(),
+    })?;
+    vault_rules(&p)?;
+    if !sandbox::allows(&p) {
+        return Err("outside the sandbox".into());
+    }
+    Ok(p)
+}
+
+/// the one-shot in-app reason for a rejected vault argument (README §5)
+static BOOT_NOTICE: Mutex<Option<String>> = Mutex::new(None);
+
+/// vaultarg: the UI takes the rejected-argument reason ONCE at boot
+#[tauri::command]
+fn boot_notice() -> Option<String> {
+    BOOT_NOTICE.lock().ok().and_then(|mut g| g.take())
+}
+
+/// README §2 precedence for the argument: VAULT_DIR set -> ignored; valid ->
+/// persisted + returned; invalid -> reason on stderr + BOOT_NOTICE, None.
+fn argv_vault(args: &[std::ffi::OsString], env_set: bool) -> Option<PathBuf> {
+    let (cand, notes) = argv_pick(args);
+    for n in notes {
+        eprintln!("opensidian: {n}");
+    }
+    let a = cand?;
+    if env_set {
+        eprintln!("opensidian: VAULT_DIR is set, ignoring vault argument '{}'", a.to_string_lossy());
+        return None;
+    }
+    match resolve_vault_arg(&a) {
+        Ok(p) => {
+            eprintln!("opensidian: vault argument opens {}", p.display());
+            persist_vault(&p);
+            Some(p)
+        }
+        Err(r) => {
+            let m = format!("vault argument '{}' not opened: {r}", a.to_string_lossy());
+            eprintln!("opensidian: {m}");
+            if let Ok(mut g) = BOOT_NOTICE.lock() {
+                *g = Some(m);
+            }
+            None
+        }
+    }
 }
 
 #[tauri::command]
@@ -4185,10 +4270,14 @@ fn main() {
     //   RUSTIDIAN_OTELSINK_CHILD    -> OPENSIDIAN_OTELSINK_CHILD (test only)
     //   localStorage rustidian.graphRenderer -> opensidian.graphRenderer (hidden dev knob)
     migrate::run_home(&PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())));
-    // VAULT_DIR (probes/tests) wins; else last persisted vault if still a dir (R1.6)
-    let init = std::env::var("VAULT_DIR")
-        .ok()
-        .map(PathBuf::from)
+    // VAULT_DIR (probes/tests) wins; else the argv vault (vaultarg, README §2) —
+    // resolved HERE, before sandbox::enforce below; else last persisted vault if
+    // still a dir (R1.6)
+    let env_vault = std::env::var("VAULT_DIR").ok().map(PathBuf::from);
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let arg_vault = argv_vault(&args, env_vault.is_some());
+    let init = env_vault
+        .or(arg_vault)
         .or_else(|| read_cfg().0.map(PathBuf::from).filter(|p| p.is_dir()));
     // R18.1: open the telemetry sink BEFORE the sandbox closes. Landlock filters
     // path lookups, not open descriptors, and OPENSIDIAN_OTEL routinely names a
@@ -4305,7 +4394,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, read_note, write_note, create_note, render, render_blocks, block_lines, highlight_blocks, graph, graph_local, vault_get, set_vault,
-            create_vault, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
+            create_vault, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, smoke_css,
             read_workspace, write_workspace, get_win_geom, set_win_geom,
@@ -6758,6 +6847,49 @@ mod tests {
         assert_eq!(list_dirs("/etc".into()), Vec::<String>::new());
         assert_eq!(list_dirs("/proc".into()), Vec::<String>::new());
         assert!(list_dirs("/".into()).iter().any(|d| d == "tmp"));
+    }
+
+    /// vaultarg README §1: flags skipped, first non-flag is the candidate,
+    /// extra non-flags are noted, no args -> no candidate
+    #[test]
+    fn vaultarg_pick_first_non_flag() {
+        use std::ffi::OsString;
+        let o = |v: &[&str]| v.iter().map(OsString::from).collect::<Vec<_>>();
+        assert_eq!(argv_pick(&o(&[])), (None, vec![]));
+        let (c, n) = argv_pick(&o(&["--foo", "/a b", "-x", "/c"]));
+        assert_eq!(c, Some(OsString::from("/a b")));
+        assert_eq!(n, vec!["ignoring flag '--foo'", "ignoring flag '-x'", "ignoring extra argument '/c'"]);
+        let (c, _) = argv_pick(&o(&["./-dash"]));
+        assert_eq!(c, Some(OsString::from("./-dash")));
+    }
+
+    /// vaultarg README §3-§5: canonical dir ok (incl. spaces+unicode and `..`);
+    /// missing / file / denied / empty / non-UTF-8 rejected and NOTHING created
+    #[test]
+    fn vaultarg_resolve_rules() {
+        let root = tmp_vault("vaultarg");
+        let sp = root.join("my vault ünï 🗒");
+        fs::create_dir_all(&sp).unwrap();
+        let canon = fs::canonicalize(&sp).unwrap();
+        assert_eq!(resolve_vault_arg(sp.as_os_str()), Ok(canon.clone()));
+        let dotted = sp.join("..").join("my vault ünï 🗒");
+        assert_eq!(resolve_vault_arg(dotted.as_os_str()), Ok(canon));
+        let missing = root.join("nope");
+        assert_eq!(resolve_vault_arg(missing.as_os_str()), Err("does not exist".into()));
+        assert!(!missing.exists(), "a missing vault argument must not be created");
+        let file = root.join("f.md");
+        fs::write(&file, "x").unwrap();
+        let e = resolve_vault_arg(file.as_os_str()).unwrap_err();
+        assert!(e.starts_with("not a directory"), "{e}");
+        assert!(!file.join(".obsidian").exists());
+        assert!(resolve_vault_arg(std::ffi::OsStr::new("/etc")).unwrap_err().starts_with("not allowed"));
+        assert_eq!(resolve_vault_arg(std::ffi::OsStr::new("")), Err("empty path".into()));
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let bad = std::ffi::OsStr::from_bytes(b"/tmp/\xff\xfe");
+            assert_eq!(resolve_vault_arg(bad), Err("not valid UTF-8".into()));
+        }
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// S5: a 33 MiB sparse note is skipped by the walk and unreadable
