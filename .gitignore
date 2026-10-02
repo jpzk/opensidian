@@ -137,3 +137,10 @@ dist/
 # recon-wsrestore: criterion A1 requires every cited stock shot (Q1-Q6) to be
 # committed and NOT ignored — the shots are the evidence a reviewer opens.
 !docs/recon-wsrestore/**/*.png
+
+# Goal-local helper scripts (recon probes, negctl controls, rigs) are NEVER tracked
+# (operator 2026-10-02: purged from history, kept local only). Anything the gate
+# runs belongs under scripts/ (fixtures: scripts/fixtures/). Ship a local helper
+# to the box with /workspace/bin/hz/hz-ship.sh, not with git.
+docs/**/*.sh
+notes/**/*.sh
