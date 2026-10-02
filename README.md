@@ -1,5 +1,5 @@
 # opensidian
-Open-source, vault-compatible markdown notes app. Rust + Tauri v2, no Electron, no npm. AI-built experiment under heavy development — don't trust, verify.
+Open-source, vault-compatible markdown notes app. Rust + Tauri v2, no Electron, no npm. AI-built experiment under heavy development - don't trust, verify. We're looking for Linux distribution maintainers. 
 
 ## Features
 - live preview, source and reading modes
