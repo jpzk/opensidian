@@ -320,14 +320,14 @@ async function rBacklinks(n) {
   if (!bl.length) rEmpty(box, "No backlinks found.");
   for (const b of bl) {
     const row = document.createElement("div");
-    row.className = "blnote open";
+    row.className = "blnote open"; row.dataset.ol = "bt:" + b.note;
     row.innerHTML = '<span class="tc">' + CHEV + '</span><span class="bln"></span><span class="scount"></span>';
     row.querySelector(".bln").textContent = b.note;
     row.querySelector(".scount").textContent = b.lines.length;
     const kids = document.createElement("div");
     for (const [ln, text] of b.lines) {
       const d = document.createElement("div");
-      d.className = "blline";
+      d.className = "blline"; d.dataset.ol = "bl:" + b.note;
       d.title = "line " + (ln + 1);
       text.split(/(\[\[[^\]]*\]\])/).forEach((part, i) => {
         const el = i % 2 ? document.createElement("mark") : document.createTextNode(part);
@@ -352,22 +352,22 @@ async function rBacklinks(n) {
   rpInfo = "bl:" + bl.length + "|ul:" + ul.length;
   if (!n) return;
   const uh = document.createElement("div");
-  uh.className = "rhead ulhead" + (ulOpen ? " open" : "");
+  uh.className = "rhead ulhead" + (ulOpen ? " open" : ""); uh.dataset.ol = "uh:" + (ulOpen ? "open" : "shut");
   uh.innerHTML = '<span class="tc">' + CHEV + '</span>Unlinked mentions<span class="scount"></span>';
   uh.querySelector(".scount").textContent = ul.length;
   const ub = document.createElement("div");
   ub.hidden = !ulOpen;
-  uh.onclick = () => { ulOpen = !ulOpen; uh.classList.toggle("open", ulOpen); ub.hidden = !ulOpen; };
+  uh.onclick = () => { ulOpen = !ulOpen; uh.classList.toggle("open", ulOpen); uh.dataset.ol = "uh:" + (ulOpen ? "open" : "shut"); ub.hidden = !ulOpen; updateTitle(); };
   box.appendChild(uh); box.appendChild(ub);
   if (!ul.length) return rEmpty(ub, "No unlinked mentions found.");
   for (const m of ul) {
     const row = document.createElement("div");
-    row.className = "blnote ulnote";
+    row.className = "blnote ulnote"; row.dataset.ol = "ut:" + m.note;
     row.innerHTML = '<span class="bln"></span><button class="ullink">Link</button>';
     row.querySelector(".bln").textContent = m.note;
     row.title = "line " + (m.line + 1);
     const d = document.createElement("div");
-    d.className = "blline";
+    d.className = "blline"; d.dataset.ol = "ul:" + m.note;
     const t = m.text, i = t.toLowerCase().indexOf(n.split("/").pop().toLowerCase());
     if (i >= 0) {
       d.appendChild(document.createTextNode(t.slice(0, i)));
@@ -398,6 +398,50 @@ async function rBacklinks(n) {
     ub.appendChild(row); ub.appendChild(d);
   }
 }
+/* outlinks census (docs/outlinks/recon.md). [olf:<note>|ae:<where>] = the note leaf the
+   right-sidebar panes describe (rLeaf) and where DOM focus is (aeWhere, same codes as
+   [tj:ae]); [olf:<note>|bg] while that leaf is a background tab. [olxy:...] = PAINTED
+   click points of the Backlinks / Outgoing rows (no literal x,y in a phase):
+   o=<note>@x,y outgoing resolved, u=<text>@ unresolved, bt=/bl= backlinks linked
+   title/line, ut=/ul= unlinked title/line, ';'-joined per kind. Only while the right
+   sidebar shows Backlinks or Outgoing. */
+function aeWhere(g) {
+  const a = document.activeElement;
+  let ae = a ? a.tagName.toLowerCase() : "-";
+  if (g && a && (a === g.lp || g.lp.contains(a))) ae = "lp";
+  else if (g && a && g.preview.contains(a)) ae = "rv";
+  else if (a && a.closest) {
+    const p = a.closest(".pane"), h = p && p._g;
+    if (h) { const x = h.tabs[h.active]; ae = "g" + (groups().indexOf(h) + 1) + ":" + (x ? x.kind || "note" : "-"); }
+    else if (a.closest("#side")) ae = "side";
+    else if (a.closest("#rside")) ae = "rside";
+  }
+  return ae;
+}
+function olfTok() {
+  if (!rightOpen || (rTab !== "bl" && rTab !== "out") || !rLeaf) return "";
+  const { g, t } = rLeaf, nm = String(t.name).replace(/[[\]|]/g, "");
+  if (g.tabs[g.active] !== t) return " [olf:" + nm + "|bg]";
+  return " [olf:" + nm + "|ae:" + aeWhere(g) + "]";
+}
+// census refresh for [olf:ae] — same reason as the [tj:ae] listener below
+document.addEventListener("focusout", () => { if (rightOpen && (rTab === "bl" || rTab === "out")) setTimeout(updateTitle, 0); }, true);
+function olxyTok() {
+  if (!rightOpen || (rTab !== "bl" && rTab !== "out")) return "";
+  const c = e => { const r = e.getBoundingClientRect(); return Math.round(r.left + Math.min(r.width / 2, 40)) + "," + Math.round(r.top + r.height / 2); };
+  const K = { o: [], u: [], bt: [], bl: [], ut: [], ul: [], uh: [], p: [] };
+  for (const e of document.querySelectorAll("#rside [data-ol]")) {
+    if (!e.getClientRects().length) continue;
+    const s = e.dataset.ol, i = s.indexOf(":"), k = s.slice(0, i), n = s.slice(i + 1), at = e.querySelector(".bln") || e;
+    K[k].push(String(n).replace(/[[\]|;@=]/g, "") + "@" + c(at));
+  }
+  // p=<i>@tabx,taby/cx,cy per pane (census order): left third of its ACTIVE tab, 14px inside its content's bottom-left (the tjxy rule)
+  document.querySelectorAll("#main .pane").forEach((p, i) => {
+    const a = p.querySelector(".tabs .tab.active"), ar = a ? a.getBoundingClientRect() : null, r = p._g && p._g.content ? p._g.content.getBoundingClientRect() : null;
+    K.p.push((i + 1) + "@" + (ar ? Math.round(ar.left + Math.min(18, ar.width / 3)) + "," + Math.round(ar.top + ar.height / 2) : "-") + "/" + (r ? Math.round(r.left + 14) + "," + Math.round(r.bottom - 14) : "-"));
+  });
+  return " [olxy:" + Object.keys(K).map(k => k + "=" + K[k].join(";")).join("|") + "]";
+}
 // Outgoing links: resolved rows navigate, unresolved rows are greyed
 async function rOutgoing(n) {
   const box = $("outlist"), head = $("outhead");
@@ -409,7 +453,7 @@ async function rOutgoing(n) {
   if (!out.length) return rEmpty(box, "No outgoing links.");
   for (const o of out) {
     const d = document.createElement("div");
-    d.className = "outrow" + (o.target ? "" : " unresolved");
+    d.className = "outrow" + (o.target ? "" : " unresolved"); d.dataset.ol = (o.target ? "o:" + o.target : "u:" + o.text);
     d.textContent = o.text;
     if (o.target) d.onclick = () => navigate(fg(), o.target);
     box.appendChild(d);

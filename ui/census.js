@@ -33,3 +33,5 @@ CENSUS.push(() => { const P = document.querySelector("#main .pane.focused") || d
 CENSUS.push(() => llTok());   // listlinks: [lstl:k=v,...] reading-view list/link geometry of the listlinks fixture (docs/listlinks/recon.md REQ-n), only while that fixture is read
 CENSUS.push(() => nobTok());   // stock-name goal, criterion 3: [nob:] every rendered text node + human attribute + settings/command tables, hits of the stock app name (literal config-dir path allowed; test-only, OPENSIDIAN_NOBPROBE=1); [nobxy:] [nobnav:] click points
 CENSUS.push(() => vargTok());   // vaultarg: [vault:<open vault, full path|->] + [vargerr:<reason>] while a rejected `opensidian <arg>` reason is on screen (docs/vaultarg/README.md §5)
+CENSUS.push(() => olfTok());   // outlinks: [olf:<note>|ae:<where>] the right-sidebar panes' own note leaf + DOM focus, read whatever leaf is focused
+CENSUS.push(() => olxyTok());   // outlinks: painted click points [olxy:o=|u=|bt=|bl=|ut=|ul=] of the Outgoing / Backlinks rows
