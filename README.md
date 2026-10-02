@@ -14,10 +14,10 @@ Open-source, vault-compatible markdown notes app. Rust + Tauri v2, no Electron, 
 ## Install
 **slim** (needs `libwebkit2gtk-4.1`):
 
-    curl -LO https://github.com/jpzk/opensidian/releases/download/v0.18/opensidian-0.18-x86_64-slim.AppImage
-    chmod +x opensidian-0.18-x86_64-slim.AppImage && ./opensidian-0.18-x86_64-slim.AppImage
+    curl -LO https://github.com/jpzk/opensidian/releases/download/v0.1/opensidian-0.1-x86_64-slim.AppImage
+    chmod +x opensidian-0.1-x86_64-slim.AppImage && ./opensidian-0.1-x86_64-slim.AppImage
 
-**portable** (no system deps): [opensidian-0.18-x86_64-portable.AppImage](https://github.com/jpzk/opensidian/releases/download/v0.18/opensidian-0.18-x86_64-portable.AppImage)
+**portable** (no system deps): [opensidian-0.1-x86_64-portable.AppImage](https://github.com/jpzk/opensidian/releases/download/v0.1/opensidian-0.1-x86_64-portable.AppImage)
 
 Opt-in Landlock sandbox: `OPENSIDIAN_LANDLOCK=1`.
 
