@@ -18,6 +18,7 @@ use std::sync::Mutex;
 use tauri::State;
 
 mod builtins;
+mod datefmt;
 mod index;
 mod migrate;
 mod outline;
