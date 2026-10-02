@@ -38,19 +38,19 @@ Two AppImage flavors on the [latest release](https://github.com/jpzk/opensidian/
 Needs `libwebkit2gtk-4.1` installed (`apt install libwebkit2gtk-4.1-0` /
 `dnf install webkit2gtk4.1`) — the AppImage tells you if it's missing:
 
-    curl -LO https://github.com/jpzk/opensidian/releases/download/v0.17/opensidian-0.17-x86_64-slim.AppImage
-    chmod +x opensidian-0.17-x86_64-slim.AppImage
-    ./opensidian-0.17-x86_64-slim.AppImage
+    curl -LO https://github.com/jpzk/opensidian/releases/download/v0.18/opensidian-0.18-x86_64-slim.AppImage
+    chmod +x opensidian-0.18-x86_64-slim.AppImage
+    ./opensidian-0.18-x86_64-slim.AppImage
 
 **portable** (~110MB) — bundles the entire webkit/gtk closure, zero system deps:
 
-    curl -LO https://github.com/jpzk/opensidian/releases/download/v0.17/opensidian-0.17-x86_64-portable.AppImage
-    chmod +x opensidian-0.17-x86_64-portable.AppImage
-    ./opensidian-0.17-x86_64-portable.AppImage
+    curl -LO https://github.com/jpzk/opensidian/releases/download/v0.18/opensidian-0.18-x86_64-portable.AppImage
+    chmod +x opensidian-0.18-x86_64-portable.AppImage
+    ./opensidian-0.18-x86_64-portable.AppImage
 
 No FUSE on your box (containers, minimal VMs)? Run either without mounting:
 
-    ./opensidian-0.17-x86_64-slim.AppImage --appimage-extract-and-run
+    ./opensidian-0.18-x86_64-slim.AppImage --appimage-extract-and-run
 
 ## Landlock (opt-in)
 
