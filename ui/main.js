@@ -7918,7 +7918,11 @@ $("vswitch").onclick = showPicker;
   bootNote = await inv("boot_notice").catch(() => null);
   vaultPath = await inv("vault_get");
   if (vaultPath) await enterVault(); else showPicker();
-  if (bootNote) { if (vaultPath) say(bootNote, "vaultarg"); else { $("p-err").textContent = bootNote; updateTitle(); } }
+  if (bootNote) { if (vaultPath) say(bootNote, "vaultarg"); else {
+    // the BOOT picker's window stays untitled by the census (no 'panes:', see
+    // loadRecent) — so the reason is published as "opensidian [vault:-]
+    // [vargerr:...]" only, never the pane census
+    $("p-err").textContent = bootNote; document.title = "opensidian" + vargTok(); } }
   // R30 / T2: the table AND the nav DOM are warmed off the open path — the nav is
   // 19 entries that never change, so building it at boot into the hidden modal
   // takes the only unavoidable DOM work out of the open keystroke. The pane stays
