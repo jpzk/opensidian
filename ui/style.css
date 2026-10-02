@@ -316,7 +316,16 @@ body:where(.theme-light) {
 }
 /* THEME TOKENS END */
 * { box-sizing: border-box; margin: 0 }
-body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
+/* goal fontset REQ-9: stock's token chain, declared ON BODY because that is where
+   the Settings rows write their inline --font-<kind>-override (a chain on :root
+   would resolve before it ever saw them). Unset overrides are the "??" family no
+   font matches, as in stock, so each chain falls through to its default stack;
+   chrome keeps its old system-ui stack, text and code their R15 stacks. */
+body { --font-interface-override: "??"; --font-text-override: "??"; --font-monospace-override: "??";
+       --font-interface: var(--font-interface-override), system-ui, sans-serif;
+       --font-text: var(--font-text-override), var(--font-default);
+       --font-monospace: var(--font-monospace-override), var(--font-monospace-default) }
+body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
        /* the wasp ring: a THEME that declares --frame-width/--frame-color paints it here; every other theme resolves to 0 (colour irrelevant at 0 width) — docs/palette-wasp/SOURCE.md "The frame" */
        border: var(--frame-width, 0) solid var(--frame-color, currentColor);
        background: var(--bg-base); color: var(--text-chrome) }
@@ -999,6 +1008,38 @@ body { display: flex; height: 100vh; font: 14px/1.5 system-ui, sans-serif;
 .sctl.slider .trk { width: 150px; height: 4px; border-radius: 2px; background: var(--border); display: inline-block }
 .sctl.color .sw { width: 22px; height: 22px; border-radius: 4px; background: var(--accent-mauve); display: inline-block }
 .sctl.nav { color: var(--text-chrome-faint) }
+/* goal fontset: the three live font rows (whole row opens the chooser), the
+   live Font size slider, and the chooser sub-page (docs/fontset/recon.md
+   REQ-1..7, REQ-16). Same tokens as the rest of the pane. */
+.srow.live { cursor: pointer }
+.srow.live:hover { background: var(--bg-surface) }
+.sctl.nav.live .nv { margin-right: 4px; color: var(--text-chrome-muted) }
+.sctl.slider.live { gap: 10px }
+.sctl.slider.live .val { min-width: 18px; text-align: right; color: var(--text-chrome-muted) }
+.frange { width: 150px; margin: 0; accent-color: var(--interactive-accent); cursor: pointer }
+.fbtn { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px;
+        padding: 0; border: 0; border-radius: 4px; background: none; color: var(--text-chrome-faint); cursor: pointer }
+.fbtn:hover { background: var(--bg-surface); color: var(--text-chrome) }
+.fbtn[aria-disabled="true"] { opacity: .4; cursor: default; pointer-events: none }
+.fgrip { cursor: grab }
+#spage.fontpage .fhead { display: flex; align-items: center; gap: 8px; margin-bottom: 8px }
+.fback { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0;
+         border: 0; border-radius: 4px; background: none; color: var(--text-chrome); cursor: pointer }
+.fback:hover { background: var(--bg-surface) }
+.ftitle { font-size: 16px; font-weight: 600; color: var(--text-chrome) }
+.fdesc { margin: 0 0 16px }
+.fselcard { margin-bottom: 16px }
+.fselcard[hidden] { display: none }
+.frow { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 8px 17px; box-sizing: border-box;
+        border-bottom: 1px solid var(--bg-surface) }
+.scard > .frow:last-child { border-bottom: 0 }
+.fcand { cursor: pointer }
+.fcand:hover { background: var(--bg-surface) }
+.fsearch { display: block; width: calc(100% - 24px); margin: 12px; height: 30px; box-sizing: border-box; padding: 0 8px;
+           background: var(--bg-sidebar); color: var(--text-chrome); border: 1px solid var(--border); border-radius: 4px;
+           font: inherit; outline: none }
+.fsearch:focus { border-color: var(--border-focus-ring) }
+.fcands { max-height: 360px; overflow-y: auto; border-top: 1px solid var(--bg-surface) }
 .sbtn { padding: 4px 10px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 4px; white-space: nowrap }
 .sbtn.acc { background: var(--interactive-accent); border-color: var(--interactive-accent); color: var(--bg-ribbon) }
 .sicons { flex: none; display: flex; align-items: center; gap: 19px; color: var(--text-chrome-faint) }
@@ -1460,7 +1501,7 @@ body.floorrelayout #main { padding-right: 1px }
 .findrow { display: flex; align-items: center; gap: 4px; min-width: 0 }
 .findq { width: 160px; min-width: 0; padding: 2px 6px; border-radius: 4px;
          border: 1px solid var(--border); background: var(--bg-base);
-         color: var(--text-chrome); font: 12px/1.5 system-ui, sans-serif; outline: none }
+         color: var(--text-chrome); font: 12px/1.5 var(--font-interface); outline: none }
 .findq:focus { border-color: var(--border-focus-ring) }
 .findcount { min-width: 46px; text-align: center; white-space: nowrap;
              color: var(--text-chrome-muted); font-size: 12px }

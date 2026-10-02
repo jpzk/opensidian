@@ -134,7 +134,10 @@ pub fn quickfont(root: &Path) -> (f64, bool) {
     let m = read_appearance(root).unwrap_or_default();
     let bfs = m
         .get("baseFontSize")
-        .and_then(|v| v.as_f64())
+        // stock reads a numeric STRING as its number ("18" -> 18, recon S7);
+        // anything else non-numeric ("abc") is the default 16 (recon D5)
+        .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.trim().parse::<f64>().ok())))
+        .filter(|f| f.is_finite())
         .unwrap_or(BFS_DEFAULT)
         .clamp(BFS_MIN, BFS_MAX);
     let act = m.get("baseFontSizeAction").and_then(|v| v.as_bool()).unwrap_or(true);
@@ -157,6 +160,64 @@ pub fn set_quickfont(root: &Path, size: Option<i64>, action: Option<bool>) -> Re
         return Ok(());
     }
     write_appearance(root, &m)
+}
+
+// ---------------------------------------------------------------------------
+// goal fontset (docs/fontset/recon.md REQ-8/11/13/14, D1/D3): stock's three
+// font rows. Keys in the SAME appearance.json, each a ","-joined string of
+// family names exactly as the user (or a hand edit) wrote it — the FILE keeps
+// the value verbatim (REQ-14 "file values never normalised"); parsing and
+// sanitising happen at APPLY time (ui/main.js fontCss), never here.
+// Reset = "" with the key KEPT (REQ-13). Unknown keys survive (D1).
+pub const FONT_KEYS: [(&str, &str); 3] = [
+    ("interface", "interfaceFontFamily"),
+    ("text", "textFontFamily"),
+    ("monospace", "monospaceFontFamily"),
+];
+
+fn font_key(kind: &str) -> Result<&'static str, String> {
+    FONT_KEYS
+        .iter()
+        .find(|(k, _)| *k == kind)
+        .map(|(_, key)| *key)
+        .ok_or_else(|| format!("unknown font kind {kind:?}"))
+}
+
+/// (kind, raw value) for the three keys; absent or non-string = "".
+pub fn fonts(root: &Path) -> Vec<(&'static str, String)> {
+    let m = read_appearance(root).unwrap_or_default();
+    FONT_KEYS
+        .iter()
+        .map(|(kind, key)| (*kind, m.get(*key).and_then(|v| v.as_str()).unwrap_or("").to_string()))
+        .collect()
+}
+
+/// Merge-write one font key. A no-change write leaves the bytes alone.
+pub fn set_font(root: &Path, kind: &str, value: &str) -> Result<(), String> {
+    let key = font_key(kind)?;
+    let mut m = read_appearance(root)?; // Err = refuse, never overwrite
+    if m.get(key).and_then(|v| v.as_str()) == Some(value) {
+        return Ok(());
+    }
+    m.insert(key.into(), Value::String(value.into()));
+    write_appearance(root, &m)
+}
+
+/// D2: the candidate list = the families `fc-list : family` prints (fixed
+/// argv, no shell; first name of each comma-separated alias line) + the two
+/// families the app bundles, de-duplicated case-insensitively and sorted
+/// case-insensitively (REQ-5). fc-list missing/failing = the bundled two only.
+pub fn parse_fc_families(out: &str) -> Vec<String> {
+    let mut v: Vec<String> = out
+        .lines()
+        .filter_map(|l| l.split(',').next())
+        .map(|s| s.trim().replace('\\', ""))
+        .filter(|s| !s.is_empty() && !s.chars().any(|c| c.is_control()))
+        .chain(["Inter".to_string(), "Source Code Pro".to_string()])
+        .collect();
+    v.sort_by_key(|s| s.to_lowercase());
+    v.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    v
 }
 
 // ---------------------------------------------------------------------------
@@ -1002,7 +1063,51 @@ mod tests {
         assert_eq!(bytes(&root), b, "no-change write is byte-identical");
         fs::write(root.join(APPEARANCE_FILE), r#"{"baseFontSize": 77}"#).unwrap();
         assert_eq!(quickfont(&root).0, 30.0, "hand-edited out-of-range value clamps on read");
+        fs::write(root.join(APPEARANCE_FILE), r#"{"baseFontSize": "18"}"#).unwrap();
+        assert_eq!(quickfont(&root).0, 18.0, "numeric string read as its number (S7)");
+        fs::write(root.join(APPEARANCE_FILE), r#"{"baseFontSize": "abc"}"#).unwrap();
+        assert_eq!(quickfont(&root).0, 16.0, "non-numeric = default 16 (D5)");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// fontset REQ-8/13/14 + D1: three keys, verbatim values, reset keeps the
+    /// key as "", unknown keys survive, unknown kind refused, no-change write
+    /// leaves the bytes alone.
+    #[test]
+    fn themefs_fonts_round_trip_verbatim_and_keep_unknown_keys() {
+        let root = tmp_vault("fonts");
+        assert!(fonts(&root).iter().all(|(_, v)| v.is_empty()));
+        assert!(!root.join(APPEARANCE_FILE).exists(), "a read must not create the file");
+        fs::write(root.join(APPEARANCE_FILE), r#"{"zzUnknown": 1, "baseFontSize": 18}"#).unwrap();
+        set_font(&root, "interface", "DejaVu Serif,Nimbus Sans").unwrap();
+        let hostile = "Evil\"; } body { color: red } x{a:\"";
+        set_font(&root, "text", hostile).unwrap();
+        set_font(&root, "monospace", "Liberation Mono").unwrap();
+        let v: Value = serde_json::from_str(&bytes(&root)).unwrap();
+        assert_eq!(v["interfaceFontFamily"], "DejaVu Serif,Nimbus Sans");
+        assert_eq!(v["textFontFamily"], hostile, "the file keeps the value as written");
+        assert_eq!(v["monospaceFontFamily"], "Liberation Mono");
+        assert_eq!(v["zzUnknown"], 1, "D1: unknown key kept");
+        assert_eq!(v["baseFontSize"], 18);
+        let b = bytes(&root);
+        set_font(&root, "monospace", "Liberation Mono").unwrap();
+        assert_eq!(bytes(&root), b, "no-change write is byte-identical");
+        set_font(&root, "interface", "").unwrap();
+        let v: Value = serde_json::from_str(&bytes(&root)).unwrap();
+        assert_eq!(v["interfaceFontFamily"], "", "REQ-13: reset keeps the key as \"\"");
+        assert!(set_font(&root, "bogus", "x").is_err());
+        assert_eq!(fonts(&root)[1], ("text", hostile.to_string()));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn themefs_fc_families_parse_sort_dedup() {
+        let out = "DejaVu Sans,DejaVu Sans Light\nnoto sans\nInter\n\nZed\\-Mono\nBad\u{7}Name\n";
+        assert_eq!(
+            parse_fc_families(out),
+            vec!["DejaVu Sans", "Inter", "noto sans", "Source Code Pro", "Zed-Mono"]
+        );
+        assert_eq!(parse_fc_families(""), vec!["Inter", "Source Code Pro"]);
     }
 
     /// the first deviation creates the file carrying only that deviation —

@@ -3263,7 +3263,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   // a drag is up, [mv:<old>><new>/<files linking in>] for the last completed move.
   if (dragTok) md += " [dragt:" + dragTok.replace(/[[\]|]/g, "").slice(0, 120) + "]";
   if (mvTok) md += " [mv:" + mvTok.replace(/[[\]|]/g, "").slice(0, 120) + "]";
-  md += " [zoom:" + zoomTok + "]" + qfsTok();   // fontwheel [qfs:] beside it. R36: always present — a probe must be able to read "still at 100%"
+  md += " [zoom:" + zoomTok + "]" + qfsTok() + fontsTok();   // fontwheel [qfs:] beside it. R36: always present — a probe must be able to read "still at 100%"
   // R15.2 font probe: bundled @font-face entries that actually LOADED (lazy: a face loads when text first uses it) -> [fonts:SourceCodePro/400/normal|...]
   { const fl = document.fonts ? [...document.fonts].filter(f => f.status === "loaded").map(f => f.family.replace(/[" ]/g, "") + "/" + f.weight + "/" + f.style) : [];
     if (fl.length) md += " [fonts:" + fl.join("|") + "]"; }
@@ -6399,6 +6399,7 @@ async function loadVaultCss() {
   vaultThemesScan = { listed: [], excluded: [] }; vaultTheme = "";
   vaultSeedTok = "-";
   await qfsLoad();                   // fontwheel: the vault's baseFontSize before first paint of a note (REQ-14)
+  await fontLoad();                  // fontset REQ-11: the vault's three font overrides, same moment
   try {
     vaultThemesScan = await inv("themes_scan");
     // R6: LOUD where stock silently excludes — every broken theme dir says
@@ -6569,10 +6570,9 @@ window.addEventListener("wheel", e => {
   let a = document.elementFromPoint(r.left + Math.min(40, r.width / 2), r.top + 2);
   if (a && (!sc.contains(a) || a === sc)) a = null;
   const before = a ? a.getBoundingClientRect().top : 0;
-  qfsSize = next; qfsSteps++;
-  qfsApply();
+  qfsSteps++;
+  qfsSet(next);                                             // fontset REQ-19: the slider's setter too
   if (a && a.isConnected) sc.scrollTop += a.getBoundingClientRect().top - before;
-  qfsPersist({ size: qfsSize, action: null });
   updateTitle();
 }, { passive: false });
 /* [qfs:<baseFontSize>,<action 1|0>,<steps>,<computed .lp font-size of the
@@ -6586,6 +6586,261 @@ function qfsTok() {
   const cr = g && g.content ? g.content.getBoundingClientRect() : null;
   const at = cr && cr.width ? Math.round(cr.left + cr.width / 2) + "," + Math.round(cr.top + cr.height / 2) : "-";
   return " [qfs:" + qfsSize + "," + (qfsAct ? 1 : 0) + "," + qfsSteps + "," + px + "@" + at + "]";
+}
+/* the ONE setter of baseFontSize (goal fontset REQ-19: one source of truth).
+   Ctrl+wheel, the Settings ▸ Appearance ▸ Font size slider and its Restore
+   default all land here: clamp 10..30, apply to body --font-text-size, persist
+   through the same serialised set_quickfont queue, repaint an open slider.
+   Returns false when the clamped value is the current one (nothing written). */
+function qfsSet(n) {
+  const next = Math.max(QFS_MIN, Math.min(QFS_MAX, Math.round(Number(n))));
+  if (!Number.isFinite(next) || next === qfsSize) return false;
+  qfsSize = next;
+  qfsApply();
+  qfsPersist({ size: qfsSize, action: null });
+  fszSync();
+  return true;
+}
+/* ---------- goal fontset: stock's Interface / Text / Monospace font rows ----------
+   docs/fontset/recon.md REQ-1..15, D1..D4. Each kind is a ","-joined list of
+   family names in the vault's appearance.json (interfaceFontFamily /
+   textFontFamily / monospaceFontFamily), kept VERBATIM in the file (REQ-14);
+   the list is parsed and SANITISED here at apply time (D3) and lands as body
+   inline --font-<kind>-override, which style.css's body chain puts IN FRONT
+   of the default stack (REQ-9). Edited in an in-Settings sub-page (REQ-3..7)
+   reached from the three chevron rows; every edit applies live and writes
+   at once (REQ-10). */
+const FONT_KINDS = [["interface", "Interface font", "interfaceFontFamily"],
+                    ["text", "Text font", "textFontFamily"],
+                    ["monospace", "Monospace font", "monospaceFontFamily"]];
+const FONT_BY_KEY = Object.fromEntries(FONT_KINDS.map(k => [k[2], k]));
+const FONT_NOTDET = "This font is not detected on your system.";
+let fontVal = { interface: "", text: "", monospace: "" };   // raw file strings, verbatim
+let fontFams = null;                 // D2 candidates (fc-list + bundled), fetched on first chooser open
+let fontSave = Promise.resolve();    // writes serialised, like qfsSave
+let fontPage = null, fontQuery = ""; // the open chooser's kind, its search text
+function fontNames(raw) {            // REQ-14 parse: split ",", trim, drop empties, keep order
+  return String(raw || "").split(",").map(s => s.trim()).filter(Boolean);
+}
+/* D3, THE sanitiser — the only road from a user/file string to CSS. Quotes,
+   backslash, ; { } < > ( ) [ ] and every control char (newline included) are
+   DROPPED, so no name can close its string, end the declaration, open a block
+   or spell url(…); what is left is wrapped in "…" and handed to
+   style.setProperty, never concatenated into a stylesheet. */
+function fontSafe(n) {
+  return String(n).replace(/["'\;{}<>()[\]\u0000-\u001f\u007f]/g, "").replace(/\s+/g, " ").trim();
+}
+function fontCss(raw) {
+  return fontNames(raw).map(fontSafe).filter(Boolean).map(n => '"' + n + '"').join(", ");
+}
+function fontApply() {
+  const b = document.body.style;
+  for (const [k] of FONT_KINDS) {
+    const v = fontCss(fontVal[k]);
+    // stock also mirrors the text font into --font-print-override (F6)
+    for (const p of k === "text" ? ["--font-text-override", "--font-print-override"] : ["--font-" + k + "-override"]) {
+      if (v) b.setProperty(p, v); else b.removeProperty(p);   // REQ-13: empty = override REMOVED
+    }
+  }
+}
+async function fontLoad() {          // vault entry / switch (REQ-11)
+  fontVal = { interface: "", text: "", monospace: "" };
+  try { const f = await inv("get_fonts"); for (const [k] of FONT_KINDS) fontVal[k] = String(f[k] || ""); } catch { }
+  fontApply();
+}
+function fontSet(kind, names) {      // live apply + immediate write (REQ-10, REQ-13)
+  fontVal[kind] = names.join(",");
+  fontApply();
+  const value = fontVal[kind];
+  fontSave = fontSave.then(() => inv("set_font", { kind, value })).catch(e => say("font not saved — " + errStr(e), "theme"));
+}
+function fontRerender() { renderFontSel(); renderFontCands(); updateTitle(); }
+function fontSetR(kind, names) { fontSet(kind, names); fontRerender(); }
+function fontDetected(n) {
+  const l = n.toLowerCase();
+  return !!fontFams && fontFams.some(f => f.toLowerCase() === l);
+}
+function fontRowValue(kind) {        // REQ-2
+  const n = fontNames(fontVal[kind]);
+  return n.length === 0 ? "" : n.length === 1 ? n[0] : n.length + " fonts";
+}
+const FSVG = {
+  back: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3 5 8l5 5"/></svg>',
+  del: '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4h11M6 4V2.5h4V4M4 4l.7 9.5h6.6L12 4M6.8 6.5v4.5M9.2 6.5v4.5"/></svg>',
+  grip: '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><circle cx="6" cy="4" r="1.2"/><circle cx="10" cy="4" r="1.2"/><circle cx="6" cy="8" r="1.2"/><circle cx="10" cy="8" r="1.2"/><circle cx="6" cy="12" r="1.2"/><circle cx="10" cy="12" r="1.2"/></svg>',
+  reset: '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8a5 5 0 1 0 1.5-3.6"/><path d="M3 2.5v3h3"/></svg>',
+};
+function fel(tag, cls, txt) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (txt != null) e.textContent = txt;
+  return e;
+}
+async function showFontPage(kind) {  // REQ-3: a sub-page INSIDE Settings
+  if (!fontFams) { try { fontFams = await inv("font_families"); } catch { fontFams = ["Inter", "Source Code Pro"]; } }
+  if (!settingsOpen) return;
+  fontPage = kind; fontQuery = "";
+  const label = FONT_KINDS.find(k => k[0] === kind)[1];
+  const pg = $("spage"); pg.innerHTML = ""; pg.className = "rows fontpage";
+  const hd = fel("div", "fhead");
+  const back = fel("button", "fback"); back.id = "fback"; back.innerHTML = FSVG.back; back.title = "Back";
+  back.onclick = fontBack;
+  hd.append(back, fel("div", "ftitle", label));
+  const desc = fel("div", "sdesc fdesc"); desc.id = "fdesc";
+  const sel = fel("div", "scard fselcard"); sel.id = "fsel";
+  const sc = fel("div", "scard fsearchcard");
+  const inp = fel("input", "fsearch"); inp.id = "fsearch"; inp.placeholder = "Enter font name...";
+  inp.spellcheck = false; inp.autocomplete = "off";
+  inp.oninput = () => { fontQuery = inp.value; renderFontCands(); updateTitle(); };
+  const cands = fel("div", "fcands"); cands.id = "fcands";
+  sc.append(inp, cands);
+  pg.append(hd, desc, sel, sc);
+  renderFontSel(); renderFontCands();
+  inp.focus();
+  updateTitle();
+}
+function fontBack() {
+  const kind = fontPage;
+  fontPage = null;
+  showSettingsPage("appearance");
+  const r = document.querySelector('#spage .srow[data-font="' + kind + '"]');
+  if (r) r.scrollIntoView({ block: "center" });
+  updateTitle();
+}
+function renderFontSel() {           // REQ-4 description + REQ-7 selected rows
+  const names = fontNames(fontVal[fontPage]);
+  $("fdesc").textContent = names.length
+    ? "The first font from this list that is available on your system will be applied."
+    : "No custom font is applied right now. Add one below.";
+  const box = $("fsel"); box.innerHTML = ""; box.hidden = !names.length;
+  names.forEach((n, i) => {
+    const row = fel("div", "frow fselrow"); row.dataset.i = i;
+    const info = fel("div", "sinfo");
+    const nm = fel("div", "slabel fname", n); nm.style.fontFamily = fontCss(n) || "inherit";
+    info.appendChild(nm);
+    if (!fontDetected(n)) info.appendChild(fel("div", "sdesc", FONT_NOTDET));
+    const del = fel("button", "fbtn fdel"); del.innerHTML = FSVG.del; del.title = "Delete";
+    del.onclick = () => { const v = fontNames(fontVal[fontPage]); v.splice(i, 1); fontSetR(fontPage, v); };
+    const grip = fel("span", "fbtn fgrip"); grip.innerHTML = FSVG.grip; grip.title = "Drag to rearrange";
+    grip.onmousedown = ev => {       // D4: press on a handle, release over another row = move there
+      ev.preventDefault();
+      const up = e2 => {
+        document.removeEventListener("mouseup", up);
+        const t = e2.target instanceof Element ? e2.target.closest(".fselrow") : null;
+        if (!t || !fontPage) return;
+        const j = Number(t.dataset.i), v = fontNames(fontVal[fontPage]);
+        if (j === i || !(j >= 0 && j < v.length)) return;
+        v.splice(j, 0, v.splice(i, 1)[0]);
+        fontSetR(fontPage, v);
+      };
+      document.addEventListener("mouseup", up);
+    };
+    row.append(info, del, grip);
+    box.appendChild(row);
+  });
+}
+function renderFontCands() {         // REQ-5/6: alphabetical, selected hidden, typed row first
+  const list = $("fcands"); if (!list) return;
+  list.innerHTML = "";
+  const have = new Set(fontNames(fontVal[fontPage]).map(n => n.toLowerCase()));
+  const q = fontQuery.trim(), ql = q.toLowerCase();
+  const add = name => { const v = fontNames(fontVal[fontPage]); v.push(name); fontSetR(fontPage, v); };
+  if (q && !(fontFams || []).some(f => f.toLowerCase() === ql)) {
+    const row = fel("div", "frow fcand ftyped");
+    const info = fel("div", "sinfo");
+    info.append(fel("div", "slabel fname", q), fel("div", "sdesc", FONT_NOTDET));
+    row.appendChild(info); row.dataset.name = q;
+    row.onclick = () => add(q);
+    list.appendChild(row);
+  }
+  for (const f of fontFams || []) {
+    if (have.has(f.toLowerCase())) continue;
+    if (ql && !f.toLowerCase().includes(ql)) continue;
+    const row = fel("div", "frow fcand"); row.dataset.name = f;
+    const nm = fel("div", "slabel fname", f); nm.style.fontFamily = fontCss(f) || "inherit";
+    row.appendChild(nm);
+    row.onclick = () => add(f);
+    list.appendChild(row);
+  }
+}
+/* Font size row (REQ-16..18): [Restore default] + value + native range 10..30
+   step 1. Applies and saves on CHANGE (release / key), not on drag input
+   (REQ-17) — through qfsSet, the same setter Ctrl+wheel uses (REQ-19). */
+function fszCtl() {
+  const d = fel("div", "sctl slider live");
+  const rs = fel("button", "fbtn freset"); rs.id = "sfszreset"; rs.innerHTML = FSVG.reset; rs.title = "Restore default";
+  const val = fel("span", "val"); val.id = "sfszval";
+  const r = fel("input", "frange"); r.id = "sfsz"; r.type = "range";
+  r.min = QFS_MIN; r.max = QFS_MAX; r.step = 1;
+  r.oninput = () => { val.textContent = r.value; };
+  r.onchange = () => { qfsSet(r.value); fszSync(); updateTitle(); };
+  rs.onclick = () => { if (qfsSet(QFS_DEF)) updateTitle(); };   // REQ-18: writes 16, key kept; no-op (aria-disabled) at 16
+  d.append(rs, val, r);
+  fszSync(d);
+  return d;
+}
+function fszSync(root) {
+  const q = s => root ? root.querySelector(s) : document.querySelector(s);
+  const r = q("#sfsz"), val = q("#sfszval"), rs = q("#sfszreset");
+  if (!r) return;
+  r.value = String(qfsSize); val.textContent = String(qfsSize);
+  rs.setAttribute("aria-disabled", qfsSize === QFS_DEF ? "true" : "false");
+}
+/* census. [ffam:<chrome body>,<tab header>,<explorer row>|<note text>|<code span>]
+   = the FIRST REAL family each element's computed font-family resolves to
+   ("??" placeholders skipped, "-" = no such element), and
+   [fovr:<families in each body override i,t,m>,<body colour>] — what the
+   hostile-name assertion reads: one family, colour unchanged. Always present. */
+function ffirst(el) {
+  if (!el) return "-";
+  for (const p of getComputedStyle(el).fontFamily.split(",")) {
+    const n = p.trim().replace(/^["']|["']$/g, "");
+    if (n && n !== "??") return n.replace(/[[\]|,]/g, "_");
+  }
+  return "-";
+}
+function fontsTok() {
+  const g = typeof fg === "function" ? fg() : null;
+  const el = g && (g.lp && g.lp.offsetParent ? g.lp : g.preview && g.preview.offsetParent ? g.preview : null);
+  const code = el ? el.querySelector("code, .code") : null;
+  const cnt = p => { const v = document.body.style.getPropertyValue(p).trim(); return v ? v.split(/"\s*,\s*"/).length : 0; };
+  return " [ffam:" + ffirst(document.body) + "," + ffirst(document.querySelector(".tab")) + "," +
+         ffirst(document.querySelector(".trow")) + "|" + ffirst(el) + "|" + ffirst(code) + "]" +
+         " [fovr:" + cnt("--font-interface-override") + "," + cnt("--font-text-override") + "," +
+         cnt("--font-monospace-override") + "," + getComputedStyle(document.body).color.replace(/\s/g, "") + "]";
+}
+/* settings-only geometry: [sfr:<kind>,<cx>,<cy>,<row value>] per font row,
+   [sfs:<range left>,<range right>,<cy>,<value>,<reset cx>,<reset disabled 1|0>]
+   for the slider, and on the chooser [fch:<kind>,<n selected>,<back cx,cy>,
+   <search cx,cy>] + [fcd:<name>@<cx>,<cy>|…] (first 6 visible candidates,
+   typed row prefixed "*") + [fsl:<name>@<delete cx>,<cy>,<grip cx>|…]. */
+function fontSetTok() {
+  const R = e => e.getBoundingClientRect();
+  const cx = b => Math.round(b.left + b.width / 2), cy = b => Math.round(b.top + b.height / 2);
+  const cl = s => String(s).replace(/[[\]|@,]/g, "_");
+  let t = "";
+  for (const [k] of FONT_KINDS) {
+    const r = document.querySelector('#spage .srow[data-font="' + k + '"]');
+    if (r) t += " [sfr:" + k + "," + cx(R(r)) + "," + cy(R(r)) + "," + cl(fontRowValue(k)) + "]";
+  }
+  const s = $("sfsz");
+  if (s && s.isConnected) {
+    const b = R(s), rs = $("sfszreset");
+    t += " [sfs:" + Math.round(b.left) + "," + Math.round(b.right) + "," + cy(b) + "," + s.value + "," +
+         cx(R(rs)) + "," + (rs.getAttribute("aria-disabled") === "true" ? 1 : 0) + "]";
+  }
+  if (fontPage && $("fsearch")) {
+    t += " [fch:" + fontPage + "," + fontNames(fontVal[fontPage]).length + "," + cx(R($("fback"))) + "," +
+         cy(R($("fback"))) + "," + cx(R($("fsearch"))) + "," + cy(R($("fsearch"))) + "]";
+    const cs = [...document.querySelectorAll("#fcands .fcand")].slice(0, 6)
+      .map(e => (e.classList.contains("ftyped") ? "*" : "") + cl(e.dataset.name) + "@" + cx(R(e)) + "," + cy(R(e)));
+    t += " [fcd:" + cs.join("|") + "]";
+    const ss = [...document.querySelectorAll("#fsel .fselrow")]
+      .map(e => cl(e.querySelector(".fname").textContent) + "@" + cx(R(e.querySelector(".fdel"))) + "," +
+                cy(R(e)) + "," + cx(R(e.querySelector(".fgrip"))));
+    t += " [fsl:" + ss.join("|") + "]";
+  }
+  return t;
 }
 /* R14 undo close tab — newest last. tabclose: an entry is now an OBJECT
    {name, text, cause}, not a bare name, because the stack is also this app's
@@ -8209,7 +8464,7 @@ function setTok() {
   return " [set:" + SMODEL.nav.length + "/" + SMODEL.rows.length + "/" + e + "]" +
          snavlTok() +
          " [spane:" + sPane + "/" + sRowsShown + "/" + sEnabledShown + "]" +
-         svtTok() + ssnTok() + slbTok() + sqfTok() +
+         svtTok() + ssnTok() + slbTok() + sqfTok() + fontSetTok() +
          (sfpMs >= 0 ? " [sfp:" + sfpMs + "/" + sfpMax + "/" +
                        (Math.round(sfpSum / sfpN * 100) / 100) + "/" + sfpN + "]" : "") +
          (sfpW >= 0 ? " [sfpw:" + sfpW + "/" + sfpWMax + "]" : "");
@@ -8226,7 +8481,7 @@ async function openSettings() {
   updateTitle();   // the R22 overflow probe, and that is the instrument's cost, not the modal's
 }
 function closeSettings() {
-  settingsOpen = false; hkRec = null;
+  settingsOpen = false; hkRec = null; fontPage = null;
   /* THE PANE'S OWN MENU GOES WITH IT (goal/theme-1984). Appearance ▸ Themes
      opens a .ctxmenu anchored to a control INSIDE this modal; .ctxmenu is
      position:fixed at z-index 60, so a menu left open when the modal is hidden
@@ -8264,6 +8519,7 @@ function buildSettingsNav() {
 /* `id` is a pane id from the model ("general", "hotkeys", ...);
    a stock ENTRY NAME is accepted too, so older call sites keep working. */
 function showSettingsPage(id) {
+  fontPage = null;                      // fontset: any pane switch leaves the font chooser
   const e = SMODEL.nav.find(n => n.id === id) || SMODEL.nav.find(n => n.entry === id);
   const pane = e ? e.id : "hotkeys";
   sPane = pane;
@@ -8479,6 +8735,14 @@ function sctl(r) {                            // the control cell for one row, o
   if (r.key === "cssTheme") return themeCtl();            // themefs R5: stock's Themes row, stock's semantics
   if (r.key === "enabledCssSnippets") return snipCtl();   // themefs R3, same live-control rule
   if (r.key === "strictLineBreaks") return slbCtl();      // goal/linebreak REQ-1: stock's Editor toggle
+  if (FONT_BY_KEY[r.key]) {                               // fontset REQ-1/2: chevron + live row value
+    const d = document.createElement("div"); d.className = "sctl nav live";
+    const v = fontRowValue(FONT_BY_KEY[r.key][0]);
+    if (v) { const s = document.createElement("span"); s.className = "nv"; s.textContent = v; d.appendChild(s); }
+    d.appendChild(document.createTextNode("\u203a"));
+    return d;
+  }
+  if (r.key === "baseFontSize") return fszCtl();          // fontset REQ-16: the live slider
   if (r.key === "baseFontSizeAction") {                   // fontwheel REQ-1: stock's toggle, live
     const d = document.createElement("div");
     d.className = "sctl toggle" + (qfsAct ? " on" : ""); d.id = "sqfs";
@@ -8592,6 +8856,11 @@ function buildSettingsRows(pg, rows, pane) {
     if (ic) row.appendChild(ic);
     const c = sctl(r);
     if (c) row.appendChild(c);
+    if (FONT_BY_KEY[r.key]) {                 // fontset REQ-1: the WHOLE row opens the chooser
+      const kind = FONT_BY_KEY[r.key][0];
+      row.dataset.font = kind; row.classList.add("live");
+      row.onclick = () => showFontPage(kind);
+    }
     card.appendChild(row);
   }
 }

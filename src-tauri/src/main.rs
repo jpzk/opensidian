@@ -2514,6 +2514,39 @@ fn set_quickfont(v: State<Vault>, size: Option<i64>, action: Option<bool>) -> Re
     themefs::set_quickfont(&root, size, action)
 }
 
+/* ---- goal fontset: stock's Interface / Text / Monospace font rows
+   (docs/fontset/recon.md REQ-8..15). get_fonts/set_font: three strings in the
+   vault's small appearance.json — the get_quickfont class, OUT_OF_SCOPE_CMD in
+   perf-coverage.sh. font_families shells out to fc-list (fixed argv, no
+   shell, D2) and grows with the installed fonts, so it is span-timed. */
+#[tauri::command]
+fn get_fonts(v: State<Vault>) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    Ok(themefs::fonts(&root).into_iter().map(|(k, s)| (k.to_string(), s)).collect())
+}
+
+#[tauri::command]
+fn set_font(v: State<Vault>, kind: String, value: String) -> Result<(), String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    themefs::set_font(&root, &kind, &value)
+}
+
+#[tauri::command]
+fn font_families() -> Vec<String> {
+    span_timed!("font_families", {
+        let out = std::process::Command::new("fc-list")
+            .args([":", "family"])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        themefs::parse_fc_families(&out)
+    })
+}
+
 /// themeone item 4 (C3): what the LAST seeding pass decided, for the
 /// `[bseed:w<n>k<n>f<n>]` census token. Read-only and side-effect free —
 /// seeding happens at boot / on the vault switch, never because something
@@ -4432,7 +4465,7 @@ fn main() {
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
             themes_scan, theme_css, get_css_theme, set_css_theme, theme_seed_report, vault_css_watch,
-            get_quickfont, set_quickfont,
+            get_quickfont, set_quickfont, get_fonts, set_font, font_families,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
             win_rect, win_gesture, win_move_proto, win_drag_start, win_minimize, win_toggle_max, win_close,
             tab_removed, insert_datetime,
