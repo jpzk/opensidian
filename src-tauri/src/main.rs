@@ -1191,6 +1191,36 @@ fn read_workspace(v: State<Vault>) -> Option<serde_json::Value> {
     )
 }
 
+/// goal insdate (docs/insdate/recon.md): the text "Templates: Insert current
+/// date/time" puts at the caret. `kind` is "date" or "time"; `tm` is the
+/// webview's LOCAL clock (the only side that knows the zone without a tz
+/// library). The format comes from .obsidian/templates.json keys dateFormat /
+/// timeFormat, re-read on EVERY call (edits honoured without restart) and
+/// NEVER written (REQ-4): this fn has no write path. A key that is missing,
+/// not a string, or "" falls back to stock's default for that key alone
+/// (REQ-3); an unreadable / unparseable file reads as "no keys".
+#[tauri::command]
+fn insert_datetime(v: State<Vault>, kind: String, tm: datefmt::Tm) -> Result<String, String> {
+    let (key, default) = match kind.as_str() {
+        "date" => ("dateFormat", "YYYY-MM-DD"),
+        "time" => ("timeFormat", "HH:mm"),
+        _ => return Err(format!("insert_datetime: unknown kind {kind:?}")),
+    };
+    // SPANNED: a disk read + JSON parse on a keypress path.
+    Ok(span_timed!("insert_datetime", {
+        let fmt = cur_vault(&v).and_then(|root| templates_format(&root, key));
+        datefmt::render(fmt.as_deref(), default, &tm)
+    }))
+}
+
+/// read-only lookup of one string key in <vault>/.obsidian/templates.json
+fn templates_format(root: &Path, key: &str) -> Option<String> {
+    let p = root.join(".obsidian").join("templates.json");
+    let s = read_capped(&p)?;
+    let j: serde_json::Value = serde_json::from_str(&s).ok()?;
+    j.get(key)?.as_str().map(str::to_owned)
+}
+
 /// R28.3: called WHILE THE APP RUNS (see wsFlush in ui/main.js), not at exit.
 /// There is deliberately no exit handler anywhere in this feature: a handler
 /// that runs on a clean quit is exactly the mechanism a `kill -9`, an OOM kill
@@ -4405,7 +4435,7 @@ fn main() {
             get_quickfont, set_quickfont,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
             win_rect, win_gesture, win_move_proto, win_drag_start, win_minimize, win_toggle_max, win_close,
-            tab_removed,
+            tab_removed, insert_datetime,
             zoom, zoom_get,
             settings::settings_model
         ])
@@ -4522,6 +4552,40 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("sub")).unwrap();
         root
+    }
+
+    /* goal insdate REQ-3/REQ-4: templates.json is read per key, never written. */
+    #[test]
+    fn templates_json_is_read_per_key_and_never_written() {
+        let root = tmp_vault("insdate");
+        let t = datefmt::Tm { y: 2026, mo: 10, d: 2, h: 8, mi: 14, s: 5, ms: 0, off: 0, epoch_ms: 1790928845000 };
+        let both = |r: &Path| {
+            (
+                datefmt::render(templates_format(r, "dateFormat").as_deref(), "YYYY-MM-DD", &t),
+                datefmt::render(templates_format(r, "timeFormat").as_deref(), "HH:mm", &t),
+            )
+        };
+        // no .obsidian at all: defaults, and nothing gets created
+        assert_eq!(both(&root), ("2026-10-02".into(), "08:14".into()));
+        assert!(!root.join(".obsidian").exists(), "a read created .obsidian");
+        fs::create_dir_all(root.join(".obsidian")).unwrap();
+        let p = root.join(".obsidian").join("templates.json");
+        let cases: [(&str, (&str, &str)); 6] = [
+            (r#"{"dateFormat":"DD/MM/YYYY"}"#, ("02/10/2026", "08:14")),
+            (r#"{"dateFormat":"","timeFormat":""}"#, ("2026-10-02", "08:14")),
+            (r#"{"dateFormat":"dddd, MMMM Do YYYY","timeFormat":"h:mm A"}"#, ("Friday, October 2nd 2026", "8:14 AM")),
+            (r#"{"dateFormat":7,"timeFormat":null}"#, ("2026-10-02", "08:14")),
+            ("{not json", ("2026-10-02", "08:14")),
+            (r#"{"folder":"tpl","timeFormat":"[at] HH"}"#, ("2026-10-02", "at 08")),
+        ];
+        for (body, (d, tt)) in cases {
+            fs::write(&p, body).unwrap();
+            let m0 = fs::metadata(&p).unwrap().modified().unwrap();
+            assert_eq!(both(&root), (d.to_string(), tt.to_string()), "{body}");
+            assert_eq!(fs::read_to_string(&p).unwrap(), body, "templates.json changed");
+            assert_eq!(fs::metadata(&p).unwrap().modified().unwrap(), m0, "templates.json touched");
+        }
+        let _ = fs::remove_dir_all(&root);
     }
 
     fn ix_graph(ix: &Index) -> Graph {

@@ -6001,6 +6001,32 @@ function edEditable() {
   const t = g && g.active >= 0 ? g.tabs[g.active] : null;
   return !!(t && !t.kind && t.mode !== "reading");
 }
+/* goal insdate (docs/insdate/recon.md): "Templates: Insert current date/time".
+   Visible only on a note tab in LP/Source with no graph over it (REQ-10..12),
+   no default chord (REQ-13). The string is formatted in Rust from the
+   webview's LOCAL clock + .obsidian/templates.json (read-only, REQ-3/4) and
+   goes in through the editor MODEL at the selection HEAD — the moving end —
+   without replacing the selection (REQ-5, REQ-8); caret after it (REQ-6);
+   own undo kind, so it is ONE step, never merged with typing (REQ-7). */
+const edInsertable = () => mdActive() && edEditable();
+async function edInsertNow(kind) {
+  if (!edInsertable()) return;
+  const g = fg(), t = g.tabs[g.active];
+  const s = Ed.sel(g);
+  const h = Ed.focusPos(g) || (s && s.b);
+  if (!h) return;
+  const d = new Date();
+  const tm = { y: d.getFullYear(), mo: d.getMonth() + 1, d: d.getDate(), h: d.getHours(), mi: d.getMinutes(),
+    s: d.getSeconds(), ms: d.getMilliseconds(), off: -d.getTimezoneOffset(), epoch_ms: d.getTime() };
+  const L0 = Ed.lines(g).slice();
+  const txt = await inv("insert_datetime", { kind, tm });
+  // the IPC round trip yielded: land only on the SAME tab, still editable,
+  // with the text unchanged — otherwise the head we took is stale
+  if (fg() !== g || g.tabs[g.active] !== t || !edInsertable()) return;
+  const L = Ed.lines(g);
+  if (L.length !== L0.length || L.some((x, i) => x !== L0[i])) return;
+  Ed.replace(g, { a: h, b: h, empty: true }, txt, "insdate");
+}
 function edList(kind) {        // one Ed.snap inside Ed.toggleList = ONE undo step [Q12 q12-undo*]
   if (!edEditable()) return;
   const g = fg(), s = Ed.sel(g);
@@ -6689,6 +6715,10 @@ const CMDS = [
   // "Toggle bullet list" -> no command, no write [Q14 q14-reading].
   ["editor:toggle-bullet-list",   "Toggle bullet list",               [],                       () => edList("bullet"),   edEditable],
   ["editor:toggle-numbered-list", "Toggle numbered list",             [],                       () => edList("numbered"), edEditable],
+  // goal insdate REQ-1/REQ-13: stock's names, NO default chord; hidden where
+  // stock hides them (reading view, graph, no note — REQ-10..12).
+  ["templates:insert-current-date", "Templates: Insert current date", [],                     () => edInsertNow("date"), edInsertable],
+  ["templates:insert-current-time", "Templates: Insert current time", [],                     () => edInsertNow("time"), edInsertable],
   ["editor:toggle-comments",   "Toggle comment",                      ["ctrl+/"],               () => edWrap("%%", "comment")],
   ["editor:toggle-italics",    "Toggle italic",                       ["ctrl+i"],               () => edWrap("*")],
   ["markdown:toggle-preview",  "Toggle reading view",                 ["ctrl+e"],               () => cmdToggleMode(), mdActive],   // graphhdr REQ-14: stock offers it only on a markdown view
