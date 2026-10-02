@@ -10,8 +10,9 @@ dist/
 # inline-title), which is how a goal ends up building in a peer's tree.
 .goalenv
 
-# The test/gate harness (scripts/), the recon + design docs (docs/) and the
-# working notes (notes/) are NOT part of this repository (operator 2026-10-02).
+# The test/gate harness (scripts/), the recon + design docs (docs/), the
+# working notes (notes/) and the coordinator box scripts (bin/) are NOT part
+# of this repository (operator 2026-10-02).
 # They are versioned in a separate, local-only harness repo and appear here as
 # symlinks into its worktree. No trailing slash: a symlink is not a directory to
 # gitignore, and a directory-only pattern would let `git add -A` pick the links up.
@@ -19,3 +20,4 @@ dist/
 /scripts
 /docs
 /notes
+/bin
