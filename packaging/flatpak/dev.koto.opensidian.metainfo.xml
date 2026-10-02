@@ -26,11 +26,11 @@
   </developer>
   <launchable type="desktop-id">dev.koto.opensidian.desktop</launchable>
   <!-- Flathub requires at least one screenshot, fetched over the network from
-       a URL that resolves. This one is the committed launch shot; it resolves
+       a URL that resolves. This one is the committed launch shot (packaging/flatpak/screenshots/); it resolves
        only once the repo is public and this branch is on main. -->
   <screenshots>
     <screenshot type="default">
-      <image>https://raw.githubusercontent.com/jpzk/opensidian/main/docs/recon-flatpak/shots/L-flatpak-editor.png</image>
+      <image>https://raw.githubusercontent.com/jpzk/opensidian/main/packaging/flatpak/screenshots/L-flatpak-editor.png</image>
       <caption>The tabbed editor with a vault open</caption>
     </screenshot>
   </screenshots>
