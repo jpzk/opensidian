@@ -21,5 +21,13 @@ Open-source, vault-compatible markdown notes app. Rust + Tauri v2, no Electron, 
 
 Opt-in Landlock sandbox: `OPENSIDIAN_LANDLOCK=1`.
 
+## Build from source
+Debian/Ubuntu deps, then Rust (tested on 1.98.0):
+
+    sudo apt install build-essential libssl-dev libwebkit2gtk-4.1-dev \
+      libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+    git clone https://github.com/jpzk/opensidian && cd opensidian/src-tauri
+    cargo build --release --locked   # -> target/release/opensidian
+
 ## Licence
 GPL-3.0-or-later ([LICENSE](LICENSE)). Read [THIRD-PARTY.md](THIRD-PARTY.md) before redistributing.
