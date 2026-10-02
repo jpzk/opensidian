@@ -1,0 +1,18 @@
+# case q08-sp2n — stock 1.13.7, display :136, 2026-09-25T15:16:44Z
+# fixture (printf %b):   alpha\n  beta\n  gamma\n
+# steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle numbered list|d after
+--- before: q08-sp2n.md (23 bytes, md5 b9b53a0e51c9370d20cbc85b404d5a17) cat -A ---
+  alpha$
+  beta$
+  gamma$
+--- end ---
+> key ctrl+Home shift+Down shift+Down shift+End
+> palette: Toggle numbered list
+shot q08-sp2n-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q08-sp2n.md (32 bytes, md5 3806eca1418d94ded2a4eb9cdd0ab9bc) cat -A ---
+  1. alpha$
+  2. beta$
+  3. gamma$
+--- end ---

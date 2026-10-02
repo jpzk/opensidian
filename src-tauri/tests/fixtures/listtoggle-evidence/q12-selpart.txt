@@ -1,0 +1,24 @@
+# case q12-selpart — stock 1.13.7, display :136, 2026-09-25T15:24:57Z
+# fixture (printf %b): alpha\nbeta\ngamma\n
+# steps: k ctrl+Home Right Right shift+Down shift+Down|p Toggle numbered list|d after|t Z|d sel
+--- before: q12-selpart.md (17 bytes, md5 6c7831c26f0d0a5f807006854aa682f4) cat -A ---
+alpha$
+beta$
+gamma$
+--- end ---
+> key ctrl+Home Right Right shift+Down shift+Down
+> palette: Toggle numbered list
+shot q12-selpart-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q12-selpart.md (26 bytes, md5 565d0f8c1519b02dba704c6f9f258756) cat -A ---
+1. alpha$
+2. beta$
+3. gamma$
+--- end ---
+> type Z
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- sel: q12-selpart.md (11 bytes, md5 0b74ec72cbc7891c1699babfd6b7d76b) cat -A ---
+1. alZamma$
+--- end ---

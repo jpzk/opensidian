@@ -1,0 +1,18 @@
+# case q07-blankn — stock 1.13.7, display :136, 2026-09-25T15:16:04Z
+# fixture (printf %b): alpha\n\nbeta\n
+# steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle numbered list|d after
+--- before: q07-blankn.md (12 bytes, md5 b3fd073d2e868269fe58da8382f39d66) cat -A ---
+alpha$
+$
+beta$
+--- end ---
+> key ctrl+Home shift+Down shift+Down shift+End
+> palette: Toggle numbered list
+shot q07-blankn-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q07-blankn.md (18 bytes, md5 d749cf19d4ad7b5304109123b9c27dee) cat -A ---
+1. alpha$
+$
+2. beta$
+--- end ---

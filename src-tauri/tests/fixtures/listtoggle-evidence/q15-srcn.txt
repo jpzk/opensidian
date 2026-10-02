@@ -1,0 +1,24 @@
+# case q15-srcn — stock 1.13.7, display :136, 2026-09-25T15:29:22Z
+# fixture (printf %b): alpha\n\tbeta\n\tgamma\ndelta\n
+# steps: p Toggle Live Preview/Source mode|k ctrl+Home shift+Down shift+Down shift+Down shift+End|p Toggle numbered list|d after|p Toggle Live Preview/Source mode
+--- before: q15-srcn.md (25 bytes, md5 e21c0ac17c4ce192ab4aa067ce823848) cat -A ---
+alpha$
+^Ibeta$
+^Igamma$
+delta$
+--- end ---
+> palette: Toggle Live Preview/Source mode
+shot q15-srcn-pal-1.png
+> key ctrl+Home shift+Down shift+Down shift+Down shift+End
+> palette: Toggle numbered list
+shot q15-srcn-pal-2.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q15-srcn.md (37 bytes, md5 5ce433cf103cadfed1d7c67745313440) cat -A ---
+1. alpha$
+^I1. beta$
+^I2. gamma$
+2. delta$
+--- end ---
+> palette: Toggle Live Preview/Source mode
+shot q15-srcn-pal-3.png

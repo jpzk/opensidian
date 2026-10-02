@@ -1,0 +1,20 @@
+# case q13-follow — stock 1.13.7, display :136, 2026-09-25T15:26:56Z
+# fixture (printf %b): 1. one\ntwo\n2. three\n3. four\n
+# steps: k ctrl+Home Down|p Toggle numbered list|d after
+--- before: q13-follow.md (28 bytes, md5 c0e82f4658fc9f204d6d2c687eaa3db6) cat -A ---
+1. one$
+two$
+2. three$
+3. four$
+--- end ---
+> key ctrl+Home Down
+> palette: Toggle numbered list
+shot q13-follow-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q13-follow.md (31 bytes, md5 0214e3313e845726db03c69d073626e7) cat -A ---
+1. one$
+2. two$
+3. three$
+4. four$
+--- end ---

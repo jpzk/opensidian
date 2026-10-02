@@ -1,0 +1,25 @@
+# case q15-srcfm — stock 1.13.7, display :136, 2026-09-25T15:30:47Z
+# fixture (printf %b): ---\na: 1\n---\nbody\n
+# steps: p Toggle Live Preview/Source mode|k ctrl+Home shift+Down shift+Down shift+Down shift+End|v sel|p Toggle bullet list|d after|p Toggle Live Preview/Source mode
+--- before: q15-srcfm.md (18 bytes, md5 b975a88a5f53fb66c8380deb967d2a8b) cat -A ---
+---$
+a: 1$
+---$
+body$
+--- end ---
+> palette: Toggle Live Preview/Source mode
+shot q15-srcfm-pal-1.png
+> key ctrl+Home shift+Down shift+Down shift+Down shift+End
+shot q15-srcfm-sel.png
+> palette: Toggle bullet list
+shot q15-srcfm-pal-2.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q15-srcfm.md (26 bytes, md5 57c22ee79f3a2ee5fd072bff0b72db8f) cat -A ---
+- ---$
+- a: 1$
+- ---$
+- body$
+--- end ---
+> palette: Toggle Live Preview/Source mode
+shot q15-srcfm-pal-3.png

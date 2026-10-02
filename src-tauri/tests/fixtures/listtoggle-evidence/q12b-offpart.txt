@@ -1,0 +1,24 @@
+# case q12b-offpart — stock 1.13.7, display :136, 2026-09-25T15:51:20Z
+# fixture (printf %b): 1. alpha\n2. beta\n3. gamma\n
+# steps: k ctrl+Home Right Right Right Right Right shift+Down shift+Down|p Toggle numbered list|d after|t Z|d sel
+--- before: q12b-offpart.md (26 bytes, md5 565d0f8c1519b02dba704c6f9f258756) cat -A ---
+1. alpha$
+2. beta$
+3. gamma$
+--- end ---
+> key ctrl+Home Right Right Right Right Right shift+Down shift+Down
+> palette: Toggle numbered list
+shot q12b-offpart-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q12b-offpart.md (17 bytes, md5 6c7831c26f0d0a5f807006854aa682f4) cat -A ---
+alpha$
+beta$
+gamma$
+--- end ---
+> type Z
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- sel: q12b-offpart.md (8 bytes, md5 575b31782b10ab07aca09456eb628631) cat -A ---
+alZamma$
+--- end ---

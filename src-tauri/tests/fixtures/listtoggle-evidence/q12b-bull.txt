@@ -1,0 +1,24 @@
+# case q12b-bull — stock 1.13.7, display :136, 2026-09-25T15:49:45Z
+# fixture (printf %b): alpha\nbeta\ngamma\n
+# steps: k ctrl+Home Right Right shift+Down shift+Down|p Toggle bullet list|d after|t Z|d sel
+--- before: q12b-bull.md (17 bytes, md5 6c7831c26f0d0a5f807006854aa682f4) cat -A ---
+alpha$
+beta$
+gamma$
+--- end ---
+> key ctrl+Home Right Right shift+Down shift+Down
+> palette: Toggle bullet list
+shot q12b-bull-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q12b-bull.md (23 bytes, md5 071ea15a31745d8810ae288a3fde1a44) cat -A ---
+- alpha$
+- beta$
+- gamma$
+--- end ---
+> type Z
+save: landed ~1600 ms after the poll began
+stable: no further write in 3 s
+--- sel: q12b-bull.md (10 bytes, md5 6790db3826cc6527d7ff98937659a9c8) cat -A ---
+- alZamma$
+--- end ---

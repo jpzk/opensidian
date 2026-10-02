@@ -1,0 +1,18 @@
+# case q09-taskn — stock 1.13.7, display :136, 2026-09-25T15:17:24Z
+# fixture (printf %b): - [ ] alpha\n- [x] beta\n- [ ] gamma\n
+# steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle numbered list|d after
+--- before: q09-taskn.md (35 bytes, md5 80b364cf82f70fb2172dff2f5f40bda6) cat -A ---
+- [ ] alpha$
+- [x] beta$
+- [ ] gamma$
+--- end ---
+> key ctrl+Home shift+Down shift+Down shift+End
+> palette: Toggle numbered list
+shot q09-taskn-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q09-taskn.md (26 bytes, md5 565d0f8c1519b02dba704c6f9f258756) cat -A ---
+1. alpha$
+2. beta$
+3. gamma$
+--- end ---

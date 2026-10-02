@@ -1,0 +1,18 @@
+# case q09-headb — stock 1.13.7, display :136, 2026-09-25T15:18:42Z
+# fixture (printf %b): # alpha\nbeta\ngamma\n
+# steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle bullet list|d after
+--- before: q09-headb.md (19 bytes, md5 0e8357bf4cab86f5792e230c1cc1c712) cat -A ---
+# alpha$
+beta$
+gamma$
+--- end ---
+> key ctrl+Home shift+Down shift+Down shift+End
+> palette: Toggle bullet list
+shot q09-headb-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q09-headb.md (25 bytes, md5 39e30be9c914ee00f297e36ac4f89329) cat -A ---
+- # alpha$
+- beta$
+- gamma$
+--- end ---

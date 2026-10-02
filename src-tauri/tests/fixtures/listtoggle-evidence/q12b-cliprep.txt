@@ -1,0 +1,24 @@
+# case q12b-cliprep — stock 1.13.7, display :136, 2026-09-25T15:53:10Z
+# fixture (printf %b): alpha\nbeta\ngamma\n
+# steps: k ctrl+Home Right Right shift+Down shift+Down|p Toggle numbered list|d after|c clip
+--- before: q12b-cliprep.md (17 bytes, md5 6c7831c26f0d0a5f807006854aa682f4) cat -A ---
+alpha$
+beta$
+gamma$
+--- end ---
+> key ctrl+Home Right Right shift+Down shift+Down
+> palette: Toggle numbered list
+shot q12b-cliprep-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q12b-cliprep.md (26 bytes, md5 565d0f8c1519b02dba704c6f9f258756) cat -A ---
+1. alpha$
+2. beta$
+3. gamma$
+--- end ---
+> key ctrl+c
+--- clip: clipboard (16 bytes) cat -A ---
+pha$
+2. beta$
+3. g
+--- end ---

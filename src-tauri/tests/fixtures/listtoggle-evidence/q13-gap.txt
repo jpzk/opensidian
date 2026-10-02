@@ -1,0 +1,18 @@
+# case q13-gap — stock 1.13.7, display :136, 2026-09-25T15:37:10Z
+# fixture (printf %b): 1. one\nplain\ntwo\n
+# steps: k ctrl+Home Down Down|p Toggle numbered list|d after
+--- before: q13-gap.md (17 bytes, md5 5b5d323dc54ae54f51fb022df726a4de) cat -A ---
+1. one$
+plain$
+two$
+--- end ---
+> key ctrl+Home Down Down
+> palette: Toggle numbered list
+shot q13-gap-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q13-gap.md (20 bytes, md5 a54c05a19f47e60f4f0b793c9f8abc5b) cat -A ---
+1. one$
+plain$
+2. two$
+--- end ---

@@ -1,0 +1,18 @@
+# case q04-offparen — stock 1.13.7, display :136, 2026-09-25T15:21:09Z
+# fixture (printf %b): 1) alpha\n2) beta\n3) gamma\n
+# steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle numbered list|d after
+--- before: q04-offparen.md (26 bytes, md5 385e6b8dc532cb54571cb11f8eee6089) cat -A ---
+1) alpha$
+2) beta$
+3) gamma$
+--- end ---
+> key ctrl+Home shift+Down shift+Down shift+End
+> palette: Toggle numbered list
+shot q04-offparen-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q04-offparen.md (17 bytes, md5 6c7831c26f0d0a5f807006854aa682f4) cat -A ---
+alpha$
+beta$
+gamma$
+--- end ---

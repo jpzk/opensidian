@@ -1,0 +1,18 @@
+# case q16-checktask — stock 1.13.7, display :136, 2026-09-25T15:28:33Z
+# fixture (printf %b): - [ ] alpha\n- [ ] beta\n- [ ] gamma\n
+# steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle checkbox status|d after
+--- before: q16-checktask.md (35 bytes, md5 149fddb3fbc1e06c1163ce5969472092) cat -A ---
+- [ ] alpha$
+- [ ] beta$
+- [ ] gamma$
+--- end ---
+> key ctrl+Home shift+Down shift+Down shift+End
+> palette: Toggle checkbox status
+shot q16-checktask-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q16-checktask.md (35 bytes, md5 d994f24bb5a5db5f4b4055448788a26f) cat -A ---
+- [x] alpha$
+- [x] beta$
+- [x] gamma$
+--- end ---

@@ -1,0 +1,18 @@
+# case q05-mostn — stock 1.13.7, display :136, 2026-09-25T15:14:45Z
+# fixture (printf %b): 1. alpha\n2. beta\ngamma\n
+# steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle numbered list|d after
+--- before: q05-mostn.md (23 bytes, md5 4ac7ea347a9b5fcd3828c84282e546f3) cat -A ---
+1. alpha$
+2. beta$
+gamma$
+--- end ---
+> key ctrl+Home shift+Down shift+Down shift+End
+> palette: Toggle numbered list
+shot q05-mostn-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q05-mostn.md (26 bytes, md5 565d0f8c1519b02dba704c6f9f258756) cat -A ---
+1. alpha$
+2. beta$
+3. gamma$
+--- end ---

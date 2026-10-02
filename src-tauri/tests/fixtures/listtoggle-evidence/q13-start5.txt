@@ -1,0 +1,18 @@
+# case q13-start5 — stock 1.13.7, display :136, 2026-09-25T15:27:15Z
+# fixture (printf %b): 5. one\ntwo\nthree\n
+# steps: k ctrl+Home Down shift+Down shift+End|p Toggle numbered list|d after
+--- before: q13-start5.md (17 bytes, md5 aa4c5e99adfad4d330687ac38f30260b) cat -A ---
+5. one$
+two$
+three$
+--- end ---
+> key ctrl+Home Down shift+Down shift+End
+> palette: Toggle numbered list
+shot q13-start5-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q13-start5.md (23 bytes, md5 cb0718b6076785e4c844a543afd91b6c) cat -A ---
+5. one$
+6. two$
+7. three$
+--- end ---

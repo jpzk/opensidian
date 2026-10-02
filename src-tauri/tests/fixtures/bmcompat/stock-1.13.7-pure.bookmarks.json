@@ -1,0 +1,28 @@
+{
+  "items": [
+    {
+      "type": "file",
+      "ctime": 1789851379753,
+      "path": "Projects/Roadmap.md"
+    },
+    {
+      "type": "group",
+      "ctime": 1789851498913,
+      "items": [
+        {
+          "type": "file",
+          "ctime": 1789851462235,
+          "path": "Zettel/Atomic Notes.md",
+          "title": "ZettelAlpha"
+        },
+        {
+          "type": "group",
+          "ctime": 1789851534667,
+          "items": [],
+          "title": "Untitled group"
+        }
+      ],
+      "title": "Work"
+    }
+  ]
+}

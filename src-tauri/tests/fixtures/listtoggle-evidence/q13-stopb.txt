@@ -1,0 +1,20 @@
+# case q13-stopb — stock 1.13.7, display :136, 2026-09-25T15:37:30Z
+# fixture (printf %b): 1. a\ntwo\n- b\n5. c\n
+# steps: k ctrl+Home Down|p Toggle numbered list|d after
+--- before: q13-stopb.md (18 bytes, md5 334a8ab5c309234f16c2ed42086930c0) cat -A ---
+1. a$
+two$
+- b$
+5. c$
+--- end ---
+> key ctrl+Home Down
+> palette: Toggle numbered list
+shot q13-stopb-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q13-stopb.md (21 bytes, md5 6e0b7fe7b93592e33471d69d03d06d17) cat -A ---
+1. a$
+2. two$
+- b$
+5. c$
+--- end ---

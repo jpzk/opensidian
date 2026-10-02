@@ -945,7 +945,7 @@ mod tests {
     use std::path::PathBuf;
 
     /// the committed stock-written fixture — docs/fixtures/themefs/README.md
-    const STOCK: &str = include_str!("../../docs/fixtures/themefs/stock-1.13.7.appearance.json");
+    const STOCK: &str = include_str!("../tests/fixtures/themefs/stock-1.13.7.appearance.json");
 
     fn tmp_vault(tag: &str) -> PathBuf {
         let root =
@@ -1564,7 +1564,7 @@ mod tests {
     /// THIS file moves our chrome, so it is the fixture the generator is
     /// proved against, through the same sanitize step the loader uses.
     const MINIMAL: &str =
-        include_str!("../../docs/fixtures/themefs/vault-minimal/.obsidian/themes/Minimal/theme.css");
+        include_str!("../tests/fixtures/themefs/Minimal/theme.css");
 
     #[test]
     fn themefs_bridge_minimal_fixture_emits_the_full_set() {
@@ -1631,7 +1631,7 @@ mod tests {
     // ---- goal overlaytheme: stock defaults (#vault-stockdef) ---------------
 
     const SOLARIZED: &str = include_str!(
-        "../../docs/fixtures/themeone/vault-solarized/.obsidian/themes/Solarized/theme.css"
+        "../tests/fixtures/themeone/Solarized/theme.css"
     );
 
     #[test]

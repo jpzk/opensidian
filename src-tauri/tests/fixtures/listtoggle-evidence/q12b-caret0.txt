@@ -1,0 +1,26 @@
+# case q12b-caret0 — stock 1.13.7, display :136, 2026-09-25T15:58:47Z
+# fixture (printf %b): alpha\nbeta\ngamma\n
+# steps: k ctrl+Home Down|p Toggle bullet list|d after|t Z|d caret
+--- before: q12b-caret0.md (17 bytes, md5 6c7831c26f0d0a5f807006854aa682f4) cat -A ---
+alpha$
+beta$
+gamma$
+--- end ---
+> key ctrl+Home Down
+> palette: Toggle bullet list
+shot q12b-caret0-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q12b-caret0.md (19 bytes, md5 4f01de5acc610e5e4f3efddef1dbdf12) cat -A ---
+alpha$
+- beta$
+gamma$
+--- end ---
+> type Z
+save: landed ~1600 ms after the poll began
+stable: no further write in 3 s
+--- caret: q12b-caret0.md (20 bytes, md5 3d4c9e32379be52c69a182133cb96bd4) cat -A ---
+alpha$
+- Zbeta$
+gamma$
+--- end ---

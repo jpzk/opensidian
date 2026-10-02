@@ -1,0 +1,110 @@
+# stock app 1.13.7 settings structure, transcribed BLACK-BOX from $RECON/shots/*.png
+# (1400x900 window, default vault, no account, no community plugins installed)
+# columns: tab <TAB> section <TAB> label <TAB> description <TAB> control <TAB> default_shown <TAB> shot
+# control vocabulary: toggle | dropdown | slider | text | button | buttons | nav | color | none
+# "nav" = row is a link into a sub-pane (right chevron). "none" = informational row, no control.
+general	-	Version 1.13.7	Installer version: 1.13.7 | Read the changelog.	button	Check for updates	10-general-0
+general	-	Automatic updates	Turn this off to prevent the app from checking for updates.	toggle	on	10-general-0
+general	-	Receive early access versions	Auto-update to the latest early access version. These versions include new features but may be less stable.	none	-	10-general-0
+general	-	Language	Change the display language. | Learn how to add a new language to Opensidian.	dropdown	English	10-general-0
+general	-	Help	Learn how to use Opensidian and get help from the community.	button	Open	10-general-0
+general	Account	Your account	You're not logged in right now. An account is only needed for Opensidian Sync, Opensidian Publish, and early access versions.	buttons	Log in / Sign up	10-general-1
+general	Account	Commercial license	Help keep Opensidian 100% user-supported. | Learn more	buttons	Activate / Purchase	10-general-1
+general	Advanced	Notify if startup takes longer than expected	Diagnose issues with your app by seeing what is causing the app to load slowly.	toggle	off	10-general-1
+general	Advanced	Command line interface	Allow interactions with Opensidian from the command line.	toggle	off	10-general-1
+general	Advanced	Hardware acceleration	Turns on Hardware Acceleration, which uses your GPU to make Opensidian smoother. If you turn this off, app performance will be severely degraded.	toggle	on	10-general-1
+appearance	-	Base color scheme	Choose Opensidian's default color scheme.	dropdown	Adapt to system	11-appearance-0
+appearance	-	Accent color	Choose the accent color used throughout the app.	color	(purple) + reset	11-appearance-0
+appearance	-	Themes	Manage installed themes and browse community themes.	dropdown	Default + Manage button	11-appearance-0
+appearance	-	Current community themes	You currently have 0 themes installed.	none	-	11-appearance-0
+appearance	-	CSS snippets	Manage your collection of CSS files for tweaking the app's appearance.	nav	0 enabled	11-appearance-0
+appearance	Font	Interface font	Set base font for all of Opensidian.	nav	-	11-appearance-1
+appearance	Font	Text font	Set font for editing and reading views.	nav	-	11-appearance-1
+appearance	Font	Monospace font	Set font for places like code blocks and frontmatter.	nav	-	11-appearance-1
+appearance	Font	Font size	Font size in pixels that affects editing and reading views.	slider	16 + reset	11-appearance-1
+appearance	Font	Quick font size adjustment	Adjust the font size using Ctrl + Scroll, or using the trackpad pinch-zoom gesture.	toggle	off	11-appearance-1
+appearance	Advanced	Custom app icon	Set a custom icon for the app	button	Choose	11-appearance-1
+community	-	(security blurb)	Community plugins, like any other software you install, could potentially cause data integrity and security issues. Plugin security is important to us. Here's what we do: + 4 cards (Code review / Open source / Peer audit / Report mechanism)	none	-	18-community-0
+community	-	Allow community plugins	Plugins can execute arbitrary code on your device. We recommend backing up your data before enabling them.	button	Exit Restricted mode (accent-filled)	18-community-0
+community	-	Learn more about plugin security	(external link row)	none	-	18-community-0
+interface	-	Show tab title bar	Display the header at the top of every tab.	toggle	on	12-interface-0
+interface	-	Show ribbon	Display vertical toolbar on the side of the window.	toggle	on	12-interface-0
+interface	-	Ribbon menu configuration	Configure what commands appear in the ribbon menu.	nav	-	12-interface-0
+interface	Advanced	Zoom level	Controls the overall zoom level of the app.	slider	100% + reset	12-interface-0
+interface	Advanced	Native menus	Menus throughout the app will match the operating system. They will not be affected by your theme.	toggle	off	12-interface-0
+interface	Advanced	Window frame style	Determines the styling of the title bar of Opensidian windows. Requires a full restart to take effect.	dropdown	Hidden (default)	12-interface-0
+interface	Advanced	Open settings in new window	Open settings in its own window instead of embedded in the app.	toggle	on	12-interface-0
+editor	-	Default view for new tabs	The default view that a new Markdown tab gets opened in.	dropdown	Editing view	13-editor-0
+editor	-	Default editing mode	The default editing mode a new tab will start with.	dropdown	Live Preview	13-editor-0
+editor	-	Show editing mode in status bar	Show the editing mode toggle in the status bar.	toggle	on	13-editor-0
+editor	Display	Inline title	Display the filename as an editable title inline with the file contents.	toggle	on	13-editor-0
+editor	Display	Readable line length	Limit maximum line length. Less content fits onscreen, but long blocks of text are more readable.	toggle	on	13-editor-0
+editor	Display	Strict line breaks	Markdown specs ignore single line breaks in reading view. Turn this off to make single line breaks visible.	toggle	off	13-editor-0
+editor	Display	Properties in document	Choose how properties are displayed at the top of notes. Select "source" to show properties as raw YAML.	dropdown	Visible	13-editor-0
+editor	Display	Fold heading	Lets you fold all content under a heading.	toggle	on	13-editor-1
+editor	Display	Fold indent	Lets you fold part of an indentation, such as lists.	toggle	on	13-editor-1
+editor	Display	Line numbers	Show line numbers in the gutter.	toggle	off	13-editor-1
+editor	Display	Indentation guides	Show vertical relationship lines between list items.	toggle	on	13-editor-1
+editor	Display	Right-to-left (RTL)	Sets the default text direction of notes to right-to-left.	toggle	off	13-editor-1
+editor	Display	Show Mermaid diagrams in notes	Render flowcharts, sequence diagrams, and other diagrams from "mermaid" code blocks.	toggle	off	13-editor-1
+editor	Behavior	Spellcheck	Turn on the spellchecker.	toggle	on + gear button	13-editor-2
+editor	Behavior	Spellcheck languages	Choose the languages for the spellchecker to use.	dropdown	chip "English (United States)" + "+" dropdown	13-editor-2
+editor	Behavior	Auto-pair brackets	Pair brackets and quotes automatically.	toggle	on	13-editor-2
+editor	Behavior	Auto-pair Markdown syntax	Pair symbols automatically for bold, italic, code, and more.	toggle	on	13-editor-2
+editor	Behavior	Smart lists	Automatically set indentation and place list items correctly.	toggle	on	13-editor-2
+editor	Behavior	Indent using tabs	Use tabs to indent by pressing the "Tab" key. Turn this off to indent using 4 spaces.	toggle	on	13-editor-2
+editor	Behavior	Indent visual width	Number of spaces a tab character will render as.	slider	4 + reset	13-editor-2
+editor	Advanced	Convert pasted HTML to Markdown	Automatically convert HTML to Markdown when pasting and drag-and-drop from web pages. Use Ctrl/Cmd+Shift+V to paste HTML without converting.	toggle	on	13-editor-3
+editor	Advanced	Vim key bindings	Use Vim key bindings when editing.	toggle	off	13-editor-3
+fileslinks	-	Default file to open	Choose which file to open when the app starts.	dropdown	Last opened	14-fileslinks-0
+fileslinks	-	Always focus new tabs	When you open a link in a new tab, switch to it immediately.	toggle	on	14-fileslinks-0
+fileslinks	-	Default location for new notes	Where newly created notes are placed.	dropdown	Vault folder	14-fileslinks-0
+fileslinks	-	Default location for new attachments	Where newly added attachments are placed.	dropdown	Vault folder	14-fileslinks-0
+fileslinks	Links	New link format	What links to insert when auto-generating internal links.	dropdown	Shortest path when possible	14-fileslinks-0
+fileslinks	Links	Automatically update internal links	Turn off to be prompted to update links after renaming a file.	toggle	off	14-fileslinks-0
+fileslinks	Links	Use [[Wikilinks]]	Auto-generate Wikilinks for [[links]] and ![[images]] instead of Markdown links and images. Disable this option to generate Markdown links instead.	toggle	on	14-fileslinks-0
+fileslinks	Links	Show all file types	Show files with any extension even if Opensidian can't open them natively, so you can link to them and see them in File Explorer and Quick Switcher.	toggle	off	14-fileslinks-1
+fileslinks	Trash	Confirm before deleting files	Avoid accidentally deleting files.	toggle	on	14-fileslinks-1
+fileslinks	Trash	Delete attachments when deleting files	Automatically remove attachments linked to the deleted file if they're not used elsewhere.	dropdown	Ask each time	14-fileslinks-1
+fileslinks	Trash	Deleted files	What happens to a file after you delete it.	dropdown	Move to system trash	14-fileslinks-1
+fileslinks	Advanced	Excluded files	Excluded files will be hidden in Search, Graph View, and Unlinked Mentions, less noticeable in Quick Switcher and link suggestions.	nav	-	14-fileslinks-2
+fileslinks	Advanced	Override config folder	Use a different config folder than the default one. Must start with a dot.	text	placeholder ".obsidian"	14-fileslinks-2
+fileslinks	Advanced	Allow URI callbacks	Enable the use of x-callback-url through x-success or x-error when handling Opensidian URIs. | Learn more	toggle	off	14-fileslinks-2
+fileslinks	Advanced	Rebuild vault cache	Rebuilding the cache could take a few seconds to a few minutes depending on the size of your vault. | Learn more (description rendered in WARNING ORANGE)	button	Rebuild	14-fileslinks-2
+hotkeys	-	(filter field)	Filter... placeholder, keyboard-icon button at its right edge	text	empty	15-hotkeys-0
+hotkeys	-	(scope chips)	All / Assigned / Assigned by me / Unassigned — "All" is accent-filled, the rest outlined	buttons	All selected	15-hotkeys-0
+hotkeys	-	(command rows)	one row per command, LABEL LEFT + binding chip right ("Blank" muted when unbound, e.g. "Ctrl + ;" with an x when bound) + a round "+" button	list	Add alias / Add cursor above / Add cursor below / Add embed / Add file property(Ctrl + ;) / Add internal link / Add tag / Backlinks: ... (alphabetical, one row per command, 32px pitch)	15-hotkeys-0
+keychain	Secrets	(pane header)	"Secrets" heading with a "+" button at the right of the heading row	button	+	16-keychain-0
+keychain	Secrets	(find field)	Find secret... placeholder	text	empty	16-keychain-0
+keychain	Secrets	Encryption not available	Encryption is provided by your operating system's secret store. Without a secret store, your secrets will be stored without encryption. | Learn more	none	warning callout (orange title + tinted background)	16-keychain-0
+coreplugins	-	(search field)	Search plugins... placeholder	text	empty	17-coreplugins-0
+coreplugins	-	Audio recorder	Record audio notes and save them as attachments.	toggle	off	17-coreplugins-0
+coreplugins	-	Backlinks	Show links from other files to the current file. Backlinks can be shown in a separate view or at the bottom of the note.	toggle	on + gear + plus	17-coreplugins-0
+coreplugins	-	Bases	Create custom views that let you edit, sort, and filter files using their properties.	toggle	on + plus	17-coreplugins-0
+coreplugins	-	Bookmarks	Save shortcuts to files, searches, headings, and graphs.	toggle	on + plus	17-coreplugins-0
+coreplugins	-	Canvas	Arrange and connect notes on an infinite canvas.	toggle	on + gear + plus	17-coreplugins-0
+coreplugins	-	Command palette	Use Cmd/Ctrl+P and begin typing to invoke a command.	toggle	on + gear + plus	17-coreplugins-0
+coreplugins	-	Daily notes	Create or open today's daily note.	toggle	on + gear + plus	17-coreplugins-0
+coreplugins	-	File recovery	Restore recent snapshots to recover from accidental data loss. Snapshots are only saved for Markdown files.	toggle	on + gear	17-coreplugins-0
+coreplugins	-	Files	Browse the files and folders in your vault.	toggle	on + plus	17-coreplugins-0
+coreplugins	-	Footnotes view	Show a list of footnotes from the current note.	toggle	off	17-coreplugins-0
+coreplugins	-	Format converter	Convert Markdown from other apps to Opensidian format.	toggle	off	17-coreplugins-1
+coreplugins	-	Graph view	Visualize the relationships between your notes.	toggle	on + plus	17-coreplugins-1
+coreplugins	-	Note composer	Merge two notes or split one into two.	toggle	on + gear + plus	17-coreplugins-1
+coreplugins	-	Outgoing links	Show outgoing links and detect unlinked mentions of other notes in the current note.	toggle	on	17-coreplugins-1
+coreplugins	-	Outline	Show the table of contents for the current note.	toggle	on + plus	17-coreplugins-1
+coreplugins	-	Page preview	Hover an internal link to preview its content. In editor mode, press Ctrl/Cmd while hovering.	toggle	on + gear	17-coreplugins-1
+coreplugins	-	Properties view	Show the metadata for your files in the sidebar.	toggle	on + plus	17-coreplugins-1
+coreplugins	-	Publish	Host your notes online as a website, wiki or documentation.	toggle	off	17-coreplugins-1
+coreplugins	-	Quick switcher	Jump to other files with your keyboard.	toggle	on + gear + plus	17-coreplugins-1
+coreplugins	-	Random note	Open a random note to rediscover or review.	toggle	off	17-coreplugins-1
+coreplugins	-	Search	Search for a keyword in all the notes.	toggle	on + plus	17-coreplugins-1
+coreplugins	-	Slash commands	Trigger commands in the editor by using the forward slash key.	toggle	off	17-coreplugins-2
+coreplugins	-	Slides	Create a presentation by using "---" to separate slides.	toggle	off	17-coreplugins-2
+coreplugins	-	Sync	Synchronize your files through Opensidian Sync.	toggle	on + gear + plus	17-coreplugins-2
+coreplugins	-	Tags view	Show a list of all tags and their number of occurrences.	toggle	on + plus	17-coreplugins-2
+coreplugins	-	Templates	Insert template content from a folder of template files.	toggle	on + gear	17-coreplugins-2
+coreplugins	-	Unique note creator	Create notes with unique timestamp prefixes, for workflows like zettelkasten or slip box.	toggle	off	17-coreplugins-2
+coreplugins	-	Web viewer	Open external links to web pages inside Opensidian.	toggle	off	17-coreplugins-2
+coreplugins	-	Word count	Show word count in the status bar.	toggle	on	17-coreplugins-2
+coreplugins	-	Workspaces	Save and load workspace layouts.	toggle	off	17-coreplugins-2

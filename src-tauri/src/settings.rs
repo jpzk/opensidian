@@ -22,9 +22,9 @@ inert) — see ui/main.js. Implementing a setting later = one line here.
 use std::sync::OnceLock;
 
 /// the recon transcript — the row table itself (see docs/stock-settings-recon/)
-pub const STRUCTURE_TSV: &str = include_str!("../../docs/stock-settings-recon/structure.tsv");
+pub const STRUCTURE_TSV: &str = include_str!("../data/stock-settings/structure.tsv");
 /// stock's left nav, in stock's order
-pub const NAV_TSV: &str = include_str!("../../docs/stock-settings-recon/nav.tsv");
+pub const NAV_TSV: &str = include_str!("../data/stock-settings/nav.tsv");
 
 /// Keys that really exist in ~/.opensidian.json handling (main.rs cfg_value()).
 /// `config_keys_are_all_read_or_written_by_main` pins this list to the source.

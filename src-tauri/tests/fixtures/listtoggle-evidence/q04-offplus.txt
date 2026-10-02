@@ -1,0 +1,18 @@
+# case q04-offplus — stock 1.13.7, display :136, 2026-09-25T15:20:49Z
+# fixture (printf %b): + alpha\n+ beta\n+ gamma\n
+# steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle bullet list|d after
+--- before: q04-offplus.md (23 bytes, md5 716a6f2d5f765ebcedb8f6581a39284d) cat -A ---
++ alpha$
++ beta$
++ gamma$
+--- end ---
+> key ctrl+Home shift+Down shift+Down shift+End
+> palette: Toggle bullet list
+shot q04-offplus-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q04-offplus.md (17 bytes, md5 6c7831c26f0d0a5f807006854aa682f4) cat -A ---
+alpha$
+beta$
+gamma$
+--- end ---

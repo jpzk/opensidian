@@ -1,0 +1,25 @@
+# case q12-selb — stock 1.13.7, display :136, 2026-09-25T15:24:06Z
+# fixture (printf %b): alpha\nbeta\ngamma\n
+# steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle bullet list|d after|v sel|t Z|d sel
+--- before: q12-selb.md (17 bytes, md5 6c7831c26f0d0a5f807006854aa682f4) cat -A ---
+alpha$
+beta$
+gamma$
+--- end ---
+> key ctrl+Home shift+Down shift+Down shift+End
+> palette: Toggle bullet list
+shot q12-selb-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q12-selb.md (23 bytes, md5 071ea15a31745d8810ae288a3fde1a44) cat -A ---
+- alpha$
+- beta$
+- gamma$
+--- end ---
+shot q12-selb-sel.png
+> type Z
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- sel: q12-selb.md (4 bytes, md5 0ee7f6245350df347dd9785d2d4371d5) cat -A ---
+- Z$
+--- end ---

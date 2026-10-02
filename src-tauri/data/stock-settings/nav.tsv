@@ -1,0 +1,22 @@
+# stock 1.13.7 left nav, default vault, verified against shots/01-open.png (top)
+# and shots/19-navbottom.png (scrolled to bottom: Templates is the last entry).
+# columns: group_heading <TAB> order <TAB> entry
+Options	1	General
+Options	2	Appearance
+Options	3	Interface
+Options	4	Editor
+Options	5	Files and links
+Options	6	Hotkeys
+Options	7	Keychain
+Options	8	Core plugins
+Options	9	Community plugins
+Core plugins	1	Backlinks
+Core plugins	2	Canvas
+Core plugins	3	Command palette
+Core plugins	4	Daily notes
+Core plugins	5	File recovery
+Core plugins	6	Note composer
+Core plugins	7	Page preview
+Core plugins	8	Quick switcher
+Core plugins	9	Sync
+Core plugins	10	Templates

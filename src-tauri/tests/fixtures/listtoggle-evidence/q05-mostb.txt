@@ -1,0 +1,18 @@
+# case q05-mostb — stock 1.13.7, display :136, 2026-09-25T15:14:26Z
+# fixture (printf %b): - alpha\n- beta\ngamma\n
+# steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle bullet list|d after
+--- before: q05-mostb.md (21 bytes, md5 a6492cccf71a36496dde8bea861b29c0) cat -A ---
+- alpha$
+- beta$
+gamma$
+--- end ---
+> key ctrl+Home shift+Down shift+Down shift+End
+> palette: Toggle bullet list
+shot q05-mostb-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q05-mostb.md (23 bytes, md5 071ea15a31745d8810ae288a3fde1a44) cat -A ---
+- alpha$
+- beta$
+- gamma$
+--- end ---

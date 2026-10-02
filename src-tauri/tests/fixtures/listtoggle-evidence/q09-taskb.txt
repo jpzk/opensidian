@@ -1,0 +1,18 @@
+# case q09-taskb — stock 1.13.7, display :136, 2026-09-25T15:17:44Z
+# fixture (printf %b): - [ ] alpha\n- [x] beta\n- [ ] gamma\n
+# steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle bullet list|d after
+--- before: q09-taskb.md (35 bytes, md5 80b364cf82f70fb2172dff2f5f40bda6) cat -A ---
+- [ ] alpha$
+- [x] beta$
+- [ ] gamma$
+--- end ---
+> key ctrl+Home shift+Down shift+Down shift+End
+> palette: Toggle bullet list
+shot q09-taskb-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q09-taskb.md (23 bytes, md5 071ea15a31745d8810ae288a3fde1a44) cat -A ---
+- alpha$
+- beta$
+- gamma$
+--- end ---

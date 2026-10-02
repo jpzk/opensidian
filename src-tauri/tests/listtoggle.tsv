@@ -2,7 +2,8 @@
 # listtoggle unit table (spec R4, acceptance A2): ONE ROW PER MEASURED CASE.
 # The bytes are NOT copied here: tests/listtoggle.rs reads the fixture (before)
 # and stock 1.13.7's after-bytes straight out of
-# docs/recon-listtoggle/evidence/<case>.txt, and checks that the palette command
+# tests/fixtures/listtoggle-evidence/<case>.txt (a copy of the harness's
+# docs/recon-listtoggle/evidence), and checks that the palette command
 # this row names is the one the evidence recorded. A sel/caret dump in the
 # evidence (stock typed "Z" over its selection after the command) is asserted
 # by typing "Z" over OUR mapped selection; an undo dump must equal "before".

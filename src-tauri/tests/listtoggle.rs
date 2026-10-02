@@ -31,7 +31,7 @@ fn uncat(block: &[&str]) -> String {
 struct Case { before: String, blocks: Vec<(String, String)>, steps: String, palettes: Vec<String> }
 
 fn load(name: &str) -> Case {
-    let p = root().join("docs/recon-listtoggle/evidence").join(format!("{name}.txt"));
+    let p = root().join("src-tauri/tests/fixtures/listtoggle-evidence").join(format!("{name}.txt"));
     let t = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
     let lines: Vec<&str> = t.lines().collect();
     let (mut blocks, mut steps, mut palettes) = (Vec::new(), String::new(), Vec::new());
@@ -157,7 +157,7 @@ fn listtoggle_table() {
     }
     // completeness: every evidence case is a row or a named exclusion
     let mut cases = 0;
-    let ev = std::fs::read_dir(root().join("docs/recon-listtoggle/evidence")).unwrap();
+    let ev = std::fs::read_dir(root().join("src-tauri/tests/fixtures/listtoggle-evidence")).unwrap();
     for e in ev {
         let n = e.unwrap().file_name().to_string_lossy().trim_end_matches(".txt").to_string();
         let excluded = n == "q01-ids" || n == "q14-reading" || n.starts_with("q16-");

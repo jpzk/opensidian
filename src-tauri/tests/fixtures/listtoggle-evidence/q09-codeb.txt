@@ -1,0 +1,18 @@
+# case q09-codeb — stock 1.13.7, display :136, 2026-09-25T15:20:08Z
+# fixture (printf %b): \0140\0140\0140\nalpha\n\0140\0140\0140\n
+# steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle bullet list|d after
+--- before: q09-codeb.md (14 bytes, md5 4da85ab595a9b286fa4882412441d1c6) cat -A ---
+```$
+alpha$
+```$
+--- end ---
+> key ctrl+Home shift+Down shift+Down shift+End
+> palette: Toggle bullet list
+shot q09-codeb-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q09-codeb.md (20 bytes, md5 a4bbbab665b192fc4c57cc340aeadbe7) cat -A ---
+- ```$
+- alpha$
+- ```$
+--- end ---

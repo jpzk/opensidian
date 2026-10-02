@@ -1,0 +1,22 @@
+# case q12b-clipone — stock 1.13.7, display :136, 2026-09-25T15:53:51Z
+# fixture (printf %b): alpha\nbeta\ngamma\n
+# steps: k ctrl+Home Right shift+Right shift+Right|p Toggle numbered list|d after|c clip
+--- before: q12b-clipone.md (17 bytes, md5 6c7831c26f0d0a5f807006854aa682f4) cat -A ---
+alpha$
+beta$
+gamma$
+--- end ---
+> key ctrl+Home Right shift+Right shift+Right
+> palette: Toggle numbered list
+shot q12b-clipone-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q12b-clipone.md (20 bytes, md5 f7bebae74088af97d8f0ff6ebf7ca510) cat -A ---
+1. alpha$
+beta$
+gamma$
+--- end ---
+> key ctrl+c
+--- clip: clipboard (2 bytes) cat -A ---
+lp
+--- end ---

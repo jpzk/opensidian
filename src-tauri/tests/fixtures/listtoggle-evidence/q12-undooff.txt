@@ -1,0 +1,26 @@
+# case q12-undooff — stock 1.13.7, display :136, 2026-09-25T15:26:12Z
+# fixture (printf %b): - alpha\n- beta\n- gamma\n
+# steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle bullet list|d after|k ctrl+z|d undo
+--- before: q12-undooff.md (23 bytes, md5 071ea15a31745d8810ae288a3fde1a44) cat -A ---
+- alpha$
+- beta$
+- gamma$
+--- end ---
+> key ctrl+Home shift+Down shift+Down shift+End
+> palette: Toggle bullet list
+shot q12-undooff-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q12-undooff.md (17 bytes, md5 6c7831c26f0d0a5f807006854aa682f4) cat -A ---
+alpha$
+beta$
+gamma$
+--- end ---
+> key ctrl+z
+save: landed ~1500 ms after the poll began
+stable: no further write in 3 s
+--- undo: q12-undooff.md (23 bytes, md5 071ea15a31745d8810ae288a3fde1a44) cat -A ---
+- alpha$
+- beta$
+- gamma$
+--- end ---

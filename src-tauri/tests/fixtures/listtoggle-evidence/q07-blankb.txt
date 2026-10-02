@@ -1,0 +1,18 @@
+# case q07-blankb — stock 1.13.7, display :136, 2026-09-25T15:15:44Z
+# fixture (printf %b): alpha\n\nbeta\n
+# steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle bullet list|d after
+--- before: q07-blankb.md (12 bytes, md5 b3fd073d2e868269fe58da8382f39d66) cat -A ---
+alpha$
+$
+beta$
+--- end ---
+> key ctrl+Home shift+Down shift+Down shift+End
+> palette: Toggle bullet list
+shot q07-blankb-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q07-blankb.md (16 bytes, md5 ae605e2ebc1d29fc1ad6378ccb89f049) cat -A ---
+- alpha$
+$
+- beta$
+--- end ---

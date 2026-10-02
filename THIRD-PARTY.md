@@ -67,19 +67,19 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ## Minimal (community theme, test fixture)
 
-**Used in:** `docs/fixtures/themefs/vault-minimal/.obsidian/themes/Minimal/`
-— a REAL community theme committed as a test fixture (goal themefs,
-criterion 1: a vault carrying a theme installed by stock app 1.13.7's
-own community-theme installer must open in opensidian with that theme
-applied). The fixture is exactly what stock wrote:
-`manifest.json` (version 9.0.2) and `theme.css` (264,778 bytes,
-md5 `b73d22cec0325a10785d8ed6f21013b1`). Provenance and the install
-transcript: `docs/fixtures/themefs/README.md`.
+**Used in:** `src-tauri/tests/fixtures/themefs/Minimal/` — a REAL community
+theme carried as a `cargo test` fixture only (it is `include_str!`d by tests
+in `src-tauri/src/themefs.rs` and is NOT compiled into the app). It is exactly
+what stock app 1.13.7's own community-theme installer wrote: `manifest.json`
+(version 9.0.2) and `theme.css` (264,778 bytes, md5
+`b73d22cec0325a10785d8ed6f21013b1`). The install transcript and screenshots
+that prove that provenance are kept in the maintainer's local test harness and
+are not distributed with this repository.
 
 **Upstream:** https://github.com/kepano/obsidian-minimal
 **Licence:** MIT (full text also at
-`docs/fixtures/themefs/LICENSE-obsidian-minimal`, fetched from the upstream
-repository the day the fixture was made)
+`src-tauri/tests/fixtures/themefs/Minimal/LICENSE-obsidian-minimal`, fetched
+from the upstream repository the day the fixture was made)
 
 ```
 MIT License
@@ -104,6 +104,21 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+---
+
+## Solarized (community theme, test fixture)
+
+**Used in:** `src-tauri/tests/fixtures/themeone/Solarized/` — a REAL community
+theme carried as a `cargo test` fixture only (`include_str!`d by a test in
+`src-tauri/src/themefs.rs`; NOT compiled into the app). Installed by stock app
+1.13.7's own community-theme installer: `manifest.json` (version 1.1.5) and
+`theme.css` (11,856 bytes, md5 `3acabef0cc88d3e2fad5b7cda0b6c5b4`).
+
+**Upstream:** https://github.com/harmtemolder/obsidian-solarized
+**Licence:** MIT — full upstream text at
+`src-tauri/tests/fixtures/themeone/Solarized/LICENSE-obsidian-solarized`
+(copyright line as upstream states it: "Copyright (c) 2020 Steven Martin").
 
 ---
 
@@ -133,5 +148,5 @@ This is disclosed, not resolved. Releases carrying it are marked **prerelease**
 and must not be presented as a general-availability build. Resolving it means
 re-deriving each of the 46 values from measurement or from an independent
 source, and recording that provenance. A provenance check that enforces this
-for NEW values exists on the unmerged `goal/theme-mode` branch
-(`scripts/theme-provenance-verify.sh`) and is not part of this tag.
+for NEW values exists, unmerged, in the maintainer's local test harness (which
+is not distributed with this repository) and is not part of this tag.

@@ -1,0 +1,18 @@
+# case q05-mixn — stock 1.13.7, display :136, 2026-09-25T15:14:07Z
+# fixture (printf %b): - alpha\nbeta\n1. gamma\n
+# steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle numbered list|d after
+--- before: q05-mixn.md (22 bytes, md5 06ba78d7b35e61bf8685c2537de206b9) cat -A ---
+- alpha$
+beta$
+1. gamma$
+--- end ---
+> key ctrl+Home shift+Down shift+Down shift+End
+> palette: Toggle numbered list
+shot q05-mixn-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q05-mixn.md (26 bytes, md5 565d0f8c1519b02dba704c6f9f258756) cat -A ---
+1. alpha$
+2. beta$
+3. gamma$
+--- end ---

@@ -1,0 +1,18 @@
+# case q08-nestoff — stock 1.13.7, display :136, 2026-09-25T15:21:52Z
+# fixture (printf %b): 1. alpha\n\t1. beta\n2. gamma\n
+# steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle numbered list|d after
+--- before: q08-nestoff.md (27 bytes, md5 723939023ec805e1fa8e45420d0e5e47) cat -A ---
+1. alpha$
+^I1. beta$
+2. gamma$
+--- end ---
+> key ctrl+Home shift+Down shift+Down shift+End
+> palette: Toggle numbered list
+shot q08-nestoff-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q08-nestoff.md (18 bytes, md5 bc5d798856d3075259b4e23f384e331c) cat -A ---
+alpha$
+^Ibeta$
+gamma$
+--- end ---

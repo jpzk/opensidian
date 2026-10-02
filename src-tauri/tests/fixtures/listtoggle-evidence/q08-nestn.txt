@@ -1,0 +1,20 @@
+# case q08-nestn — stock 1.13.7, display :136, 2026-09-25T15:17:04Z
+# fixture (printf %b): alpha\n\tbeta\n\tgamma\ndelta\n
+# steps: k ctrl+Home shift+Down shift+Down shift+Down shift+End|p Toggle numbered list|d after
+--- before: q08-nestn.md (25 bytes, md5 e21c0ac17c4ce192ab4aa067ce823848) cat -A ---
+alpha$
+^Ibeta$
+^Igamma$
+delta$
+--- end ---
+> key ctrl+Home shift+Down shift+Down shift+Down shift+End
+> palette: Toggle numbered list
+shot q08-nestn-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q08-nestn.md (37 bytes, md5 5ce433cf103cadfed1d7c67745313440) cat -A ---
+1. alpha$
+^I1. beta$
+^I2. gamma$
+2. delta$
+--- end ---

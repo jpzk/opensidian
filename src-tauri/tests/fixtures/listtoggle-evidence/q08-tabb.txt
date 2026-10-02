@@ -1,0 +1,18 @@
+# case q08-tabb — stock 1.13.7, display :136, 2026-09-25T15:16:24Z
+# fixture (printf %b): \talpha\n\tbeta\n\tgamma\n
+# steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle bullet list|d after
+--- before: q08-tabb.md (20 bytes, md5 183c0cc3abc99ae9eb57b846487d2821) cat -A ---
+^Ialpha$
+^Ibeta$
+^Igamma$
+--- end ---
+> key ctrl+Home shift+Down shift+Down shift+End
+> palette: Toggle bullet list
+shot q08-tabb-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q08-tabb.md (26 bytes, md5 4e8f16aeb8ccf9653b6fadd3c003e843) cat -A ---
+^I- alpha$
+^I- beta$
+^I- gamma$
+--- end ---

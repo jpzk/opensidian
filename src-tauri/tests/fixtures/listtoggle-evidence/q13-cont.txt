@@ -1,0 +1,18 @@
+# case q13-cont — stock 1.13.7, display :136, 2026-09-25T15:26:37Z
+# fixture (printf %b): 1. one\ntwo\nthree\n
+# steps: k ctrl+Home Down shift+Down shift+End|p Toggle numbered list|d after
+--- before: q13-cont.md (17 bytes, md5 c5dce288dac284e568c7576d12536699) cat -A ---
+1. one$
+two$
+three$
+--- end ---
+> key ctrl+Home Down shift+Down shift+End
+> palette: Toggle numbered list
+shot q13-cont-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q13-cont.md (23 bytes, md5 fd2700c982d2fc0cb3117a2d47aa5811) cat -A ---
+1. one$
+2. two$
+3. three$
+--- end ---

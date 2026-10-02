@@ -1,0 +1,26 @@
+# case q12b-one — stock 1.13.7, display :136, 2026-09-25T15:50:56Z
+# fixture (printf %b): alpha\nbeta\ngamma\n
+# steps: k ctrl+Home Right shift+Right shift+Right|p Toggle numbered list|d after|t Z|d sel
+--- before: q12b-one.md (17 bytes, md5 6c7831c26f0d0a5f807006854aa682f4) cat -A ---
+alpha$
+beta$
+gamma$
+--- end ---
+> key ctrl+Home Right shift+Right shift+Right
+> palette: Toggle numbered list
+shot q12b-one-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q12b-one.md (20 bytes, md5 f7bebae74088af97d8f0ff6ebf7ca510) cat -A ---
+1. alpha$
+beta$
+gamma$
+--- end ---
+> type Z
+save: landed ~1600 ms after the poll began
+stable: no further write in 3 s
+--- sel: q12b-one.md (19 bytes, md5 a1f069fdadb8dc4b9e7acd0c5ce8b82b) cat -A ---
+1. aZha$
+beta$
+gamma$
+--- end ---

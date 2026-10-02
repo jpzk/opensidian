@@ -1,0 +1,20 @@
+# case q10-col0 — stock 1.13.7, display :136, 2026-09-25T15:22:32Z
+# fixture (printf %b): alpha\nbeta\ngamma\ndelta\n
+# steps: k ctrl+Home shift+Down shift+Down shift+Down|p Toggle bullet list|d after
+--- before: q10-col0.md (23 bytes, md5 534b842880f2c70043bfc08a0c889f56) cat -A ---
+alpha$
+beta$
+gamma$
+delta$
+--- end ---
+> key ctrl+Home shift+Down shift+Down shift+Down
+> palette: Toggle bullet list
+shot q10-col0-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q10-col0.md (31 bytes, md5 4dc6fea705032f90981c0d38001cf004) cat -A ---
+- alpha$
+- beta$
+- gamma$
+- delta$
+--- end ---

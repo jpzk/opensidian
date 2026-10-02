@@ -1,0 +1,20 @@
+# case q13-stopdeep — stock 1.13.7, display :136, 2026-09-25T15:37:51Z
+# fixture (printf %b): 1. a\ntwo\n\t7. x\n5. c\n
+# steps: k ctrl+Home Down|p Toggle numbered list|d after
+--- before: q13-stopdeep.md (20 bytes, md5 f0554771dc9a5e51661ea2bd411fd48a) cat -A ---
+1. a$
+two$
+^I7. x$
+5. c$
+--- end ---
+> key ctrl+Home Down
+> palette: Toggle numbered list
+shot q13-stopdeep-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q13-stopdeep.md (23 bytes, md5 bbf2a66258d4a87db60a682bf8b74de8) cat -A ---
+1. a$
+2. two$
+^I7. x$
+3. c$
+--- end ---

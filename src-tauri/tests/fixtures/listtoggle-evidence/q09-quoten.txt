@@ -1,0 +1,18 @@
+# case q09-quoten — stock 1.13.7, display :136, 2026-09-25T15:18:23Z
+# fixture (printf %b): > alpha\n> beta\n> gamma\n
+# steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle numbered list|d after
+--- before: q09-quoten.md (23 bytes, md5 10871e1e43d402cfee6f935f8f2de059) cat -A ---
+> alpha$
+> beta$
+> gamma$
+--- end ---
+> key ctrl+Home shift+Down shift+Down shift+End
+> palette: Toggle numbered list
+shot q09-quoten-pal-1.png
+save: landed ~1700 ms after the poll began
+stable: no further write in 3 s
+--- after: q09-quoten.md (32 bytes, md5 1bef5f2e6d8c5508015dd367a1db0cb7) cat -A ---
+> 1. alpha$
+> 2. beta$
+> 3. gamma$
+--- end ---
