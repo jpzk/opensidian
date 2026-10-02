@@ -453,7 +453,7 @@ function olxyTok() {
    - ctrl/meta/middle: new tab right of the ACTIVE leaf, in the active group (REQ-7);
    - unresolved outgoing: created first, then the plain path (REQ-8);
    - no note leaf to follow: rowOpen semantics on the active leaf (REQ-10). */
-async function sideOpen(name, ev, create) {
+async function sideNav(name, ev, create) {
   if (create && await createNote(name) === "err") return;    // "exists" = a racing create: just open it
   if (ev && (ev.button === 1 || ev.ctrlKey || ev.metaKey)) return openNewTab(name);
   const L = tocLeaf();
@@ -466,8 +466,8 @@ async function sideOpen(name, ev, create) {
   updateTitle();
 }
 function sideRow(el, name, create) {
-  el.onclick = e => { if (!e.defaultPrevented) sideOpen(name, e, create); };
-  el.onauxclick = e => { if (e.button === 1 && !e.target.closest("button")) { e.preventDefault(); sideOpen(name, e, create); } };
+  el.onclick = e => { if (!e.defaultPrevented) sideNav(name, e, create); };
+  el.onauxclick = e => { if (e.button === 1 && !e.target.closest("button")) { e.preventDefault(); sideNav(name, e, create); } };
   el.onmousedown = e => { if (e.button === 1) e.preventDefault(); };   // no autoscroll cursor
 }
 // Outgoing links: resolved rows navigate, unresolved rows are greyed
