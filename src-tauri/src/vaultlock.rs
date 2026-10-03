@@ -143,8 +143,22 @@ pub fn held_in(dir: &Path, canon: &Path) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// "the lock is free again" checks retry for up to 3 s: a sibling test that
+    /// spawns a process forks our WHOLE fd table, and until that child execs
+    /// (O_CLOEXEC) it shares the open file description that holds the flock.
+    /// Observed in the gate (262 tests in parallel). Busy assertions stay strict.
+    pub(crate) fn acquire_eventually(dir: &Path, canon: &Path) -> Result<VaultLock, LockErr> {
+        let t0 = std::time::Instant::now();
+        loop {
+            match acquire_in(dir, canon) {
+                Err(LockErr::Busy(_)) if t0.elapsed().as_secs() < 3 => std::thread::sleep(std::time::Duration::from_millis(25)),
+                r => return r,
+            }
+        }
+    }
 
     fn tmp(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("vlock-{tag}-{}-{:?}", std::process::id(), std::thread::current().id()));
@@ -173,8 +187,7 @@ mod tests {
         fs::create_dir_all(&b).unwrap();
         let _lb = acquire_in(&locks, &b.canonicalize().unwrap()).expect("other vault is free");
         drop(first);
-        assert!(!held_in(&locks, &canon), "released on drop");
-        let _again = acquire_in(&locks, &canon).expect("free again after the holder dropped");
+        let _again = acquire_eventually(&locks, &canon).expect("free again after the holder dropped");
         assert_eq!(fs::read_to_string(lock_file(&locks, &canon)).unwrap().trim_end(), canon.to_str().unwrap());
     }
 
@@ -190,12 +203,11 @@ mod tests {
         fs::create_dir_all(&locks).unwrap();
         let lf = lock_file(&locks, &canon);
         let ready = d.join("ready");
-        let mut child = std::process::Command::new("flock")
-            .arg("-x")
-            .arg(&lf)
-            .arg("sh")
+        // sh takes the lock on fd 9 and EXECS sleep: the lock holder is the one
+        // pid we kill (flock(1) as a parent would leave sh+sleep holding it).
+        let mut child = std::process::Command::new("sh")
             .arg("-c")
-            .arg(format!("touch '{}'; sleep 30", ready.display()))
+            .arg(format!("exec 9>'{}'; flock -x 9; touch '{}'; exec sleep 30", lf.display(), ready.display()))
             .spawn()
             .expect("flock(1) present");
         let t0 = std::time::Instant::now();
@@ -207,7 +219,7 @@ mod tests {
         let _ = child.kill();
         let _ = child.wait();
         assert!(matches!(r, Err(LockErr::Busy(_))), "a lock held by another process must refuse, got {r:?}");
-        acquire_in(&locks, &canon).expect("free once that process is gone");
+        acquire_eventually(&locks, &canon).expect("free once that process is gone");
     }
 
     #[test]

@@ -8208,6 +8208,7 @@ mod vaultbleed_tests {
         assert!(cur_vault(&v2).is_none(), "refused bind claims no root");
         assert!(cur_notes(&v2).is_empty(), "refused bind builds no index");
         drop(v1); // the first window exits
+        vaultlock::tests::acquire_eventually(&locks, &a.canonicalize().unwrap()).map(drop).expect("lock free");
         bind_vault_locked(&v2, &alias, &locks).expect("free once the holder is gone");
         let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&locks));
     }
