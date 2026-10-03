@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /* vaultbleed B — ONE BACKEND PER VAULT. A second process on a vault that is
    already open in another window must not run a second index/watcher on it.
 

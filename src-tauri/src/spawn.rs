@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /* vaultbleed A — ONE VAULT PER PROCESS. "Open another vault" never re-roots this
    process (the root is a OnceLock, main.rs bind_vault); it starts a NEW process
    of the same app on that vault: `opensidian <dir>`.
