@@ -1,19 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-// opensidian, a vault-compatible markdown notes app            // item 14: a switch-started window whose UI never calls switch_ready
-            // is still shown (and frees the old window) after SWITCH_FALLBACK
-            if SWITCHED.get().is_some() {
-                let h = app.handle().clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(SWITCH_FALLBACK);
-                    if !SWITCH_DONE.load(std::sync::atomic::Ordering::SeqCst) {
-                        eprintln!("[vaultwin] switch: UI did not report ready in {SWITCH_FALLBACK:?}; showing anyway");
-                        use tauri::Manager;
-                        let st = h.state::<Vault>();
-                        switch_ready(h.clone(), st);
-                    }
-                });
-            }
-.
+// opensidian, a vault-compatible markdown notes app.
 // Copyright (C) 2026 Jendrik Poloczek
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This program comes with ABSOLUTELY NO WARRANTY. It is free software, and you
@@ -4684,6 +4670,20 @@ fn main() {
         .manage(ZoomLevel(Mutex::new(read_zoom_cfg())))
         .setup(|app| {
             spawn_watcher(app.handle().clone());
+            // item 14: a switch-started window whose UI never calls switch_ready
+            // is still shown (and frees the old window) after SWITCH_FALLBACK
+            if SWITCHED.get().is_some() {
+                let h = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(SWITCH_FALLBACK);
+                    if !SWITCH_DONE.load(std::sync::atomic::Ordering::SeqCst) {
+                        eprintln!("[vaultwin] switch: UI did not report ready in {SWITCH_FALLBACK:?}; showing anyway");
+                        use tauri::Manager;
+                        let st = h.state::<Vault>();
+                        switch_ready(h.clone(), st);
+                    }
+                });
+            }
             // R33.6b: probe the LIVE session once, HERE — setup runs on the GTK
             // main thread with the display already open, and GDK may not be
             // touched from the command threads where win_drag_start runs.
