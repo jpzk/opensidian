@@ -1927,7 +1927,7 @@ async function saveNote(name, content) {    // true == the bytes are on disk
 async function leaveVault() {
   if (!state) return;
   for (const h of groups()) {
-    try { await flushSave(h); h.flushedAt = tgSeq; }   // tabclose: witness for the session-replace record
+    try { await flushSave(h); }
     finally { clearTimeout(h.saveT); h.saveT = null; }
   }
   // R28: the LAYOUT timer is process-wide, so the loop above cannot reach it.
@@ -2446,7 +2446,8 @@ async function wsFlush(force) {
 /* A VAULT SWITCH IS A HARD BOUNDARY FOR THE LAYOUT WRITER, and it needs its own
    function because leaveVault's existing loop disarms `saveT` per group — it
    knows nothing about the single process-wide layout timer. Three things have
-   to happen, in this order, BEFORE `set_vault` swaps the root:
+   to happen, in this order, BEFORE this process exits for a switch (vaultbleed:
+   a switch is a new process now; nothing swaps a root):
      1. flush what is pending, so leaving a vault persists the layout you had
         (R28.3 is "while running", and a switch is not an exit);
      2. await any write already in flight, because clearTimeout cannot recall an
@@ -5139,12 +5140,11 @@ for (const ev of ["mousedown", "mouseup", "auxclick", "click"])
    WHY a tab went — and dropTab() below cancels the pending save first, so a
    spurious close is silent data loss of everything typed inside the debounce.
 
-   So: there are exactly FOUR places in this file that remove a tab from a
+   So: there are exactly THREE places in this file that remove a tab from a
    group, and every one of them now names its cause here.
      closeTab()      user-close     (close glyph :1763, ctrl+w, delete dialog)
      dropTab()       external-delete / external-rename (the watcher)
      collapseGroup() pane-collapse  (R6.5 — the group follows its last tab)
-     enterVault()    session-replace (the whole layout is thrown away)
    The cause set is CLOSED and mirrored in src-tauri/src/main.rs
    (TAB_REMOVAL_CAUSES); an unknown cause is an error on both sides, because
    "something else removed it" is exactly the answer that was missing.
@@ -5160,7 +5160,7 @@ for (const ev of ["mousedown", "mouseup", "auxclick", "click"])
    undo-close rescue buffer because writing them was not allowed (R11.4: the
    file is gone). dirty=1 flushed=0 preserved=0 is the F-class defect, stated at
    the moment it happens instead of reconstructed from a bug report. */
-const TAB_CAUSES = ["user-close", "external-delete", "external-rename", "pane-collapse", "session-replace"];
+const TAB_CAUSES = ["user-close", "external-delete", "external-rename", "pane-collapse"];
 let tgSeq = 0, tgHist = [];        // census [tgn:<seq>] [tg:<cause>:<d>:<note>|...]
 /* A note name is user data and the census is a bracket-delimited string, so the
    same stripping the bookmark census uses applies: a note called "x] [dirty:0"
@@ -8042,13 +8042,13 @@ async function loadRecent() {
     li.innerHTML = "<b></b><span></span>";
     li.querySelector("b").textContent = base(p);
     li.querySelector("span").textContent = p;
-    li.onclick = async () => {
-      await leaveVault();                    // F2: flush + disarm BEFORE the root swaps
-      try { vaultPath = await inv("set_vault", { path: p }); }
-      catch (err) { $("p-err").textContent = String(err); return; }
-      $("picker").hidden = true;
-      await enterVault();
-    };
+    li.onclick = () => openVault(p, true);  // boot picker: bind; open window: SWITCH (new process)
+    if (vaultPath) {                         // vaultbleed: "open in new window" keeps this one
+      const nw = document.createElement("button");
+      nw.className = "p-newwin"; nw.title = "Open in new window"; nw.textContent = "⧉";
+      nw.onclick = e => { e.stopPropagation(); openVault(p, false); };
+      li.appendChild(nw);
+    }
     ul.appendChild(li);
   }
   if (vaultPath) { try { updateTitle(); } catch (_) {} }   // brand: publish [precent:] once the rows exist (async); never at the boot picker, whose window must stay untitled by the census
@@ -8076,6 +8076,8 @@ async function enterMode(m) {
   $("p-sub").hidden = false;
   $("p-name").hidden = m !== "create";
   $("p-go").textContent = m === "create" ? "Create vault" : "Open this folder";
+  $("p-gonew").hidden = !vaultPath;          // vaultbleed: open/create in a NEW window, keep this one
+  $("p-gonew").textContent = m === "create" ? "Create in new window" : "Open in new window";
   $("p-err").textContent = "";
   await browseTo(await inv("home_dir"));
   (m === "create" ? $("p-name") : $("p-path")).focus();
@@ -8086,31 +8088,47 @@ $("p-back").onclick = showPicker;
 $("p-close").onclick = () => { $("picker").hidden = true; };
 $("p-path").onkeydown = e => { if (e.key === "Enter") browseTo($("p-path").value.trim()); };
 $("p-name").onkeydown = e => { if (e.key === "Enter") $("p-go").click(); };
-$("p-go").onclick = async () => {
-  await leaveVault();                        // F2: flush + disarm BEFORE the root swaps
-  try {
-    vaultPath = pmode === "create"
-      ? await inv("create_vault", { parent: bpath, name: $("p-name").value })
-      : await inv("set_vault", { path: bpath });
-  } catch (err) { $("p-err").textContent = String(err); return; }
-  $("picker").hidden = true;
-  await enterVault();
-};
-async function enterVault() {
-  // F2 backstop: whatever route got us here, no timer from the old vault may
-  // survive into this one (leaveVault flushes; this only guarantees disarm).
-  // tabclose: every tab of the OLD layout disappears on the next line, without
-  // passing dropTab or closeTab. Unrecorded, this path could account for any
-  // number of "it closed by itself" reports, so it names itself too.
-  if (state) for (const h of groups()) {
-    for (const t of h.tabs) tabGone("session-replace", t, { dirty: false, flushed: h.flushedAt !== undefined, via: "enterVault", tabsLeft: 0 });
-    clearTimeout(h.saveT); h.saveT = null;
+/* vaultbleed A — ONE VAULT PER PROCESS. The boot picker (no vault yet) binds
+   the picked vault ONCE and enters it. Once a vault is open this window never
+   changes vault: every other vault opens in a NEW PROCESS (open_vault_window).
+   replace=true is "switch": flush every buffer + the layout into THIS vault,
+   then the backend spawns the new process and exits this one. On a refused
+   spawn nothing was lost (the flush is harmless) and the window stays. */
+async function openVault(p, replace) {
+  $("p-err").textContent = "";
+  if (!vaultPath) {
+    try { vaultPath = await inv("pick_vault", { path: p }); }
+    catch (err) { $("p-err").textContent = String(err); return; }
+    $("picker").hidden = true;
+    await enterVault();
+    return;
   }
-  // ...including the process-wide layout timer, and the dedupe/id memory that
-  // belongs to the file we just stopped looking at. Disarm only — a route that
-  // reached here WITHOUT leaveVault has no vault left to flush into safely.
-  if (wsT) { clearTimeout(wsT); wsT = null; }
-  wsLast = ""; wsIds = {};
+  if (replace) await leaveVault();           // F2: A's bytes on A's disk BEFORE this process exits
+  try { await inv("open_vault_window", { path: p, replace }); }
+  catch (err) { $("p-err").textContent = String(err); return; }
+  $("picker").hidden = true;
+}
+async function pickerGo(replace) {
+  let p = bpath;
+  if (pmode === "create") {
+    try {
+      if (!vaultPath) {                      // boot picker: create AND bind, once
+        vaultPath = await inv("create_vault", { parent: bpath, name: $("p-name").value });
+        $("picker").hidden = true;
+        await enterVault();
+        return;
+      }
+      p = await inv("create_vault_dir", { parent: bpath, name: $("p-name").value });
+    } catch (err) { $("p-err").textContent = String(err); return; }
+  }
+  await openVault(p, replace);
+}
+$("p-go").onclick = () => pickerGo(true);
+$("p-gonew").onclick = () => pickerGo(false);
+async function enterVault() {
+  // vaultbleed: entered ONCE per process — there is no previous vault to tear
+  // down (the session-replace path died with the in-process switch).
+  if (state) throw new Error("enterVault: this process already has a vault");
   $("vswitch").innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>' + base(vaultPath);
   collapsed = new Set();
   bmFolds = new Set();               // collapseall: folds are per vault and in memory (R6)

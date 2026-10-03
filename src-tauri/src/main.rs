@@ -25,6 +25,7 @@ mod outline;
 mod perf;
 mod sandbox;
 mod settings;
+mod spawn;
 mod srcmode;
 mod themefs;
 mod watcher;
@@ -1272,7 +1273,7 @@ fn write_workspace(
 ) -> Result<(), String> {
     // THE WRITE IS VAULT-SCOPED, and that argument is the whole point of it.
     // A layout write is ARMED by a mutation in one vault and EXECUTED up to
-    // WS_MS later, plus an IPC hop; `set_vault` can land in that window. If
+    // WS_MS later, plus an IPC hop; (pre-vaultbleed) `set_vault` could land in that window. If
     // this command resolved the destination from `cur_vault` alone — as it did
     // until the dloss phase caught it — a switch from A to B would write A's
     // tabs into B's `.obsidian/workspace.json`, and on the next launch B would
@@ -1332,12 +1333,14 @@ fn recent_vaults() -> Vec<String> {
     span_timed!("recent_vaults", read_cfg().1.into_iter().filter(|p| Path::new(p).is_dir()).collect())
 }
 
+/// the BOOT picker's one bind (vaultbleed: Err once this process has a vault —
+/// an open window opens other vaults with open_vault_window, a new process)
 #[tauri::command]
-fn set_vault(v: State<Vault>, path: String, otel: Option<perf::Ctx>) -> Result<String, String> {
-    span_timed!(otel => "set_vault", set_vault_inner(&v, &path))
+fn pick_vault(v: State<Vault>, path: String, otel: Option<perf::Ctx>) -> Result<String, String> {
+    span_timed!(otel => "pick_vault", pick_vault_inner(&v, &path))
 }
 
-fn set_vault_inner(v: &State<Vault>, path: &str) -> Result<String, String> {
+fn pick_vault_inner(v: &State<Vault>, path: &str) -> Result<String, String> {
     let p = PathBuf::from(path.trim());
     vault_rules(&p)?; // S4 + is_dir — shared with the argv boot (vaultarg)
     if !sandbox::allows(&p) {
@@ -1369,33 +1372,71 @@ fn seed_new_vault(dir: &Path) -> std::io::Result<()> {
     fs::write(dir.join(NEW_VAULT_SEED_NAME), NEW_VAULT_SEED)
 }
 
+/// validate + mkdir + seed a NEW vault directory. Binds nothing: the boot
+/// picker binds it (create_vault), an open window hands it to a new process
+/// (create_vault_dir -> open_vault_window).
+fn make_vault_dir(parent: &str, name: &str) -> Result<PathBuf, String> {
+    let name = name.trim();
+    if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
+        return Err("invalid vault name".into());
+    }
+    let p = PathBuf::from(parent.trim()).join(name);
+    if !picker_allows(&p) {
+        return Err(format!("not allowed as a vault: {}", p.display())); // S4
+    }
+    if p.exists() {
+        return Err(format!("already exists: {}", p.display()));
+    }
+    if !sandbox::allows(Path::new(parent.trim())) {
+        return Err(format!("sandboxed to {} — create the folder outside opensidian, then pick it and restart", sandbox::confined_to().unwrap().display()));
+    }
+    fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+    seed_new_vault(&p).map_err(|e| e.to_string())?;
+    Ok(p)
+}
+
+/// boot picker only: create AND bind (the one bind of this process).
 #[tauri::command]
 fn create_vault(v: State<Vault>, parent: String, name: String) -> Result<String, String> {
     span_timed!("create_vault", {
-        let name = name.trim();
-        if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
-            return Err("invalid vault name".into());
-        }
-        let p = PathBuf::from(parent.trim()).join(name);
-        if !picker_allows(&p) {
-            return Err(format!("not allowed as a vault: {}", p.display())); // S4
-        }
-        if p.exists() {
-            return Err(format!("already exists: {}", p.display()));
-        }
-        if !sandbox::allows(Path::new(parent.trim())) {
-            return Err(format!("sandboxed to {} — create the folder outside opensidian, then pick it and restart", sandbox::confined_to().unwrap().display()));
-        }
         if let Some(cur) = cur_vault(&v) {
             // vaultbleed: never re-root a live process (checked before any disk write)
             return Err(format!("this window already has a vault open ({}); create the new vault from a new window", cur.display()));
         }
-        fs::create_dir_all(&p).map_err(|e| e.to_string())?;
-        seed_new_vault(&p).map_err(|e| e.to_string())?;
+        let p = make_vault_dir(&parent, &name)?;
         bind_vault(&v, &p)?;
         persist_vault(&p);
         Ok(p.display().to_string())
     })
+}
+
+/// an OPEN window's "create vault": make the directory only; the UI then opens
+/// it with open_vault_window. This process's root never changes.
+#[tauri::command]
+fn create_vault_dir(parent: String, name: String) -> Result<String, String> {
+    span_timed!("create_vault_dir", make_vault_dir(&parent, &name).map(|p| p.display().to_string()))
+}
+
+/* vaultbleed A: "open another vault" from an open window = a NEW PROCESS on it
+   (spawn.rs). `replace` = "switch vault": the UI has already flushed every
+   buffer and the layout (leaveVault) before calling, so after a successful
+   spawn this process exits; on a failed spawn it stays, untouched. Returns the
+   new pid. Opening THIS window's own vault is refused (nothing to open). */
+#[tauri::command]
+fn open_vault_window(app: tauri::AppHandle, v: State<Vault>, path: String, replace: bool) -> Result<u32, String> {
+    let p = PathBuf::from(path.trim());
+    vault_rules(&p)?;
+    if let Some(cur) = cur_vault(&v) {
+        if p.canonicalize().ok() == cur.canonicalize().ok() {
+            return Err(format!("{} is the vault of this window", p.display()));
+        }
+    }
+    let pid = spawn::open_in_new_process(&p)?;
+    if replace {
+        eprintln!("[vaultwin] switch: pid={} exits after spawning pid={pid}", std::process::id());
+        app.exit(0);
+    }
+    Ok(pid)
 }
 
 /// otel (R18): frontend spans (ui/otel.js) arrive in ONE batch per 250ms — [{name, traceId, spanId,
@@ -1501,10 +1542,10 @@ fn picker_allows(p: &Path) -> bool {
 
 /* ---- vaultarg: `opensidian <dir>` opens <dir> (contract docs/vaultarg/README.md) ----
    argv is untrusted: read raw (args_os, no parser crate), canonicalized ONCE,
-   then the SAME rules the picker's set_vault applies (vault_rules). Resolved in
+   then the SAME rules the picker's pick_vault applies (vault_rules). Resolved in
    main() BEFORE sandbox::enforce so landlock confines to the argument's vault. */
 
-/// the checks set_vault applies to a path, shared with the argv boot (README §4)
+/// the checks pick_vault applies to a path, shared with the argv boot (README §4)
 fn vault_rules(p: &Path) -> Result<(), String> {
     if !picker_allows(p) {
         return Err(format!("not allowed as a vault: {}", p.display())); // S4
@@ -3911,7 +3952,7 @@ fn win_rect(win: tauri::Window) -> Result<WinRect, String> {
 /// (`$OUT/app-*.log` under the smoke rig, stderr for a real user) where a
 /// reviewer can grep it long after the window is closed.
 ///
-/// `cause` is CLOSED, exactly five values — an unknown one is an error, never a
+/// `cause` is CLOSED, exactly four values — an unknown one is an error, never a
 /// silent pass-through, because "some other path removed it" is precisely the
 /// diagnosis that was missing:
 ///   user-close       the user asked: close glyph, ctrl+w, middle click, the
@@ -3919,7 +3960,6 @@ fn win_rect(win: tauri::Window) -> Result<WinRect, String> {
 ///   external-delete  the watcher saw the file vanish from the vault
 ///   external-rename  the watcher paired the vanished file with a new name
 ///   pane-collapse    the group went with its last tab (R6.5)
-///   session-replace  the whole layout was thrown away (vault switch)
 /// `dirty` and `flushed` are the F-class half: a removal with dirty=1
 /// flushed=0 IS the data loss, stated in the log at the moment it happens.
 #[tauri::command]
@@ -3950,10 +3990,10 @@ fn tab_removed(
 }
 
 /// The closed set, shared by the command above and the UI (ui/main.js keeps the
-/// same five strings in TAB_CAUSES; a test in this file pins them together so
+/// same four strings in TAB_CAUSES; a test in this file pins them together so
 /// the two lists cannot drift apart unnoticed).
-const TAB_REMOVAL_CAUSES: [&str; 5] =
-    ["user-close", "external-delete", "external-rename", "pane-collapse", "session-replace"];
+const TAB_REMOVAL_CAUSES: [&str; 4] =
+    ["user-close", "external-delete", "external-rename", "pane-collapse"]; // vaultbleed: session-replace died with the in-process vault switch
 
 #[tauri::command]
 fn win_gesture(
@@ -4506,8 +4546,8 @@ fn main() {
             .expect("img response")
         })
         .invoke_handler(tauri::generate_handler![
-            list_notes, list_images, read_note, write_note, create_note, render, render_blocks, block_lines, highlight_blocks, graph, graph_local, vault_get, set_vault,
-            create_vault, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
+            list_notes, list_images, read_note, write_note, create_note, render, render_blocks, block_lines, highlight_blocks, graph, graph_local, vault_get, pick_vault,
+            create_vault, create_vault_dir, open_vault_window, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, smoke_css,
             read_workspace, write_workspace, get_win_geom, set_win_geom,
