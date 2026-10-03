@@ -7972,13 +7972,18 @@ mod tests {
             "async function closeTab(",
             "async function dropTab(",
             "async function collapseGroup(",
-            "async function enterVault(",
         ] {
             assert!(
                 body_of(header).contains("tabGone("),
                 "`{header}` removes tabs without recording a cause — that is the blind spot this instrumentation exists to close"
             );
         }
+        // vaultbleed: enterVault used to throw a whole layout away (session-replace).
+        // One vault per process now: it runs once and refuses a second entry, so it
+        // removes no tab and there is no fifth cause to record.
+        let ev = body_of("async function enterVault(");
+        assert!(ev.contains("if (state) throw"), "enterVault must refuse a second entry (one vault per process)");
+        assert!(!ev.contains("tabGone("), "enterVault removes no tab any more");
 
         // 3. and nothing else takes a tab out of a group. THREE splices, each
         //    accounted for by name: two destroy the tab (closeTab, dropTab)
