@@ -1481,8 +1481,12 @@ async fn open_vault_window(app: tauri::AppHandle, win: tauri::Window, v: State<'
         }
     }
     let sw = if replace {
-        let r = win_rect(win)?;
-        Some(spawn::Switch { x: r.x.round() as i32, y: r.y.round() as i32, w: r.w.round() as u32, h: r.h.round() as u32, max: r.max, token: spawn::new_token() })
+        let r = switch_rect(&win)?;
+        let sw = spawn::Switch { x: r.x.round() as i32, y: r.y.round() as i32, w: r.w.round() as u32, h: r.h.round() as u32, max: r.max, token: spawn::new_token() };
+        // never hand the child a flag it would drop: it would open unswitched,
+        // never mark ready, and this window would hang until SWITCH_WAIT
+        sw.check().map_err(|e| format!("cannot switch: this window's geometry is unreadable ({e})"))?;
+        Some(sw)
     } else {
         None
     };
@@ -4096,6 +4100,26 @@ fn win_rect(win: tauri::Window) -> Result<WinRect, String> {
         max: win.is_maximized().map_err(|e| e.to_string())?,
         dec: win.is_decorated().map_err(|e| e.to_string())?,
     })
+}
+
+/// The rect a switch hands the new window. tao caches the OUTER rect from
+/// GdkWindow::frame_extents at each configure event; a configure that lands
+/// while the window is not yet mapped stores frame_extents = 1x1@0,0 and, if
+/// no later configure comes, that sticks (measured on the box: switch #5 of the
+/// vaultbleed phase, a switch-started window, rect=1x1@0,0). The INNER rect
+/// comes from the configure event itself and is always real. This app's window
+/// is undecorated (R33: outer == inner), so the inner rect is exact here; for a
+/// decorated window it is off by the frame, still far better than 1x1.
+fn switch_rect(win: &tauri::Window) -> Result<WinRect, String> {
+    let r = win_rect(win.clone())?;
+    if spawn::plausible_size(r.w, r.h) {
+        return Ok(r);
+    }
+    let sf = win.scale_factor().map_err(|e| e.to_string())?;
+    let p = win.inner_position().map_err(|e| e.to_string())?.to_logical::<f64>(sf);
+    let s = win.inner_size().map_err(|e| e.to_string())?.to_logical::<f64>(sf);
+    eprintln!("[vaultwin] switch: outer rect {}x{}@{},{} is not a window; using the inner rect {}x{}@{},{}", r.w, r.h, r.x, r.y, s.width, s.height, p.x, p.y);
+    Ok(WinRect { x: p.x, y: p.y, w: s.width, h: s.height, ..r })
 }
 
 /// Apply one step of a move/resize gesture. The UI sends the ANCHOR rect

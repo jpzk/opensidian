@@ -88,7 +88,7 @@ impl Switch {
         if !span.contains(&self.x) || !span.contains(&self.y) {
             return Err("--switch: position out of range".into());
         }
-        if !(100..=20_000).contains(&self.w) || !(100..=20_000).contains(&self.h) {
+        if !plausible_size(self.w as f64, self.h as f64) {
             return Err("--switch: size out of range".into());
         }
         if self.token.is_empty() || self.token.len() > 64 || !self.token.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
@@ -96,6 +96,12 @@ impl Switch {
         }
         Ok(())
     }
+}
+
+/// a size a real window can have (the --switch bound; also how the old window
+/// tells a cached 1x1 frame rect from a real one, main.rs switch_rect)
+pub fn plausible_size(w: f64, h: f64) -> bool {
+    (100.0..=20_000.0).contains(&w) && (100.0..=20_000.0).contains(&h)
 }
 
 /// a fresh token: our pid + the clock (unique per switch; the child's lock
@@ -228,6 +234,16 @@ mod tests {
 
     fn os(v: &[&str]) -> Vec<OsString> {
         v.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn switch_rect_1x1_is_not_a_window() {
+        // the cached frame rect tao can be left with (vaultbleed phase switch #5)
+        assert!(!plausible_size(1.0, 1.0));
+        assert!(plausible_size(1000.0, 760.0));
+        let sw = Switch { x: 0, y: 0, w: 1, h: 1, max: false, token: "1-a".into() };
+        assert!(sw.check().is_err(), "the old window must refuse to hand this to a child");
+        assert!(Switch { w: 1000, h: 760, ..sw }.check().is_ok());
     }
 
     #[test]
