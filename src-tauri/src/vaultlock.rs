@@ -50,7 +50,7 @@ pub const DUP_MSG: &str = "already open in another window";
 /// the held lock; dropping it (process exit) releases the flock
 #[derive(Debug)]
 pub struct VaultLock {
-    _f: File,
+    f: File,
     pub path: PathBuf,
 }
 
@@ -68,6 +68,28 @@ impl std::fmt::Display for LockErr {
             LockErr::Io(e) => write!(f, "vault lock: {e}"),
         }
     }
+}
+
+
+impl VaultLock {
+    /// item 14 (spawn.rs, the switch handshake): append `ready <token>` to the
+    /// lock file through the fd this process already holds. Only the holder
+    /// writes here, and acquire_in truncates, so a line from an earlier holder
+    /// never survives into a new one.
+    pub fn mark_ready(&self, token: &str) -> std::io::Result<()> {
+        use std::io::{Seek, SeekFrom};
+        let mut f = &self.f;
+        f.seek(SeekFrom::End(0))?;
+        f.write_all(format!("ready {token}\n").as_bytes())?;
+        f.flush()
+    }
+}
+
+/// has the holder of `canon`'s lock marked `token` ready? (the old window's
+/// probe; a missing file / no line = not yet)
+pub fn ready_in(dir: &Path, canon: &Path, token: &str) -> bool {
+    let want = format!("ready {token}");
+    fs::read_to_string(lock_file(dir, canon)).map(|s| s.lines().any(|l| l == want)).unwrap_or(false)
 }
 
 /// directory the lock files live in (pure: the caller reads the environment)
@@ -125,7 +147,7 @@ pub fn acquire_in(dir: &Path, canon: &Path) -> Result<VaultLock, LockErr> {
     }
     // label for humans; we own the lock, so nobody else writes it concurrently
     let _ = f.set_len(0).and_then(|_| f.write_all(canon.as_os_str().as_bytes())).and_then(|_| f.write_all(b"\n"));
-    Ok(VaultLock { _f: f, path: lf })
+    Ok(VaultLock { f, path: lf })
 }
 
 /// is the vault held by some OTHER open lock right now? (a probe for the UI's
@@ -246,5 +268,27 @@ pub(crate) mod tests {
         let c1 = v.canonicalize().unwrap();
         let c2 = via_dotdot.canonicalize().unwrap();
         assert_eq!(lock_file(&d, &c1), lock_file(&d, &c2));
+    }
+
+    /// item 14: the holder's `ready <token>` is what the old window waits for;
+    /// a new holder starts clean (a stale ready from the previous one never
+    /// matches), and only the exact token counts.
+    #[test]
+    fn vaultlock_ready_marker_is_per_holder_and_per_token() {
+        let d = tmp("ready");
+        let v = d.join("B");
+        fs::create_dir_all(&v).unwrap();
+        let canon = v.canonicalize().unwrap();
+        let locks = d.join("locks");
+        assert!(!ready_in(&locks, &canon, "t1"), "no lock file yet");
+        let l = acquire_in(&locks, &canon).unwrap();
+        assert!(!ready_in(&locks, &canon, "t1"));
+        l.mark_ready("t1").unwrap();
+        assert!(ready_in(&locks, &canon, "t1"));
+        assert!(!ready_in(&locks, &canon, "t"), "prefix of the token is not the token");
+        assert!(!ready_in(&locks, &canon, "t2"));
+        drop(l);
+        let _l2 = acquire_eventually(&locks, &canon).unwrap();
+        assert!(!ready_in(&locks, &canon, "t1"), "a new holder truncates the old ready line");
     }
 }

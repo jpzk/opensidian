@@ -8104,8 +8104,13 @@ async function openVault(p, replace) {
     return;
   }
   if (replace) await leaveVault();           // F2: A's bytes on A's disk BEFORE this process exits
+  // item 14: a switch resolves only once the NEW window is shown at our rect
+  // and painted (the backend then exits this process). Until then this window
+  // stays on screen but takes no input: an edit typed now would land after
+  // the flush above and die with the process.
+  if (replace) document.body.inert = true;
   try { await inv("open_vault_window", { path: p, replace }); }
-  catch (err) { $("p-err").textContent = String(err); return; }
+  catch (err) { document.body.inert = false; $("p-err").textContent = String(err); return; }
   $("picker").hidden = true;
 }
 async function pickerGo(replace) {
@@ -8125,6 +8130,17 @@ async function pickerGo(replace) {
 }
 $("p-go").onclick = () => pickerGo(true);
 $("p-gonew").onclick = () => pickerGo(false);
+/* item 14: a window started by a switch is created HIDDEN at the old window's
+   rect (main.rs). Once the vault is entered: show it, let two frames paint,
+   then tell the old window it may exit (switch_ready). A no-op in the backend
+   for every other window. */
+async function switchReveal() {
+  try {
+    await inv("switch_show");
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    await inv("switch_ready");
+  } catch (e) { /* the backend fallback reveals it anyway */ }
+}
 async function enterVault() {
   // vaultbleed: entered ONCE per process — there is no previous vault to tear
   // down (the session-replace path died with the in-process switch).
@@ -8156,6 +8172,7 @@ async function enterVault() {
   }
   perf.mark("boot", 0, { notes: names.length });   // perf: page start -> vault ready (first note rendered)
   wsGeomTouch();   // R28.2: the rectangle is recorded once per session OUTSIDE the vault, resize or no resize
+  switchReveal();   // item 14: a switch-started window shows itself only now, at the old window's rect
 }
 /* ---------- R11 external edits (backend watcher -> `vault-changed`) ---------- */
 // tab.base = the bytes we last loaded from / saved to disk. bufOf(g) = the

@@ -42,7 +42,13 @@ pub const ARG: &str = "--opensidian-spawner";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Req {
-    Open { path: String },
+    /// `switch`: item 14 — the old window's rect + handoff token (spawn::Switch),
+    /// re-validated here; absent = a plain "open in new window"
+    Open {
+        path: String,
+        #[serde(default)]
+        switch: Option<crate::spawn::Switch>,
+    },
     Create { parent: String, name: String },
     Cfg { ops: Vec<Op> },
     ReadCfg,
@@ -60,7 +66,7 @@ pub enum Resp {
 /// what the helper does for each request — main.rs implements it with the
 /// live vault rules; tests implement it with fakes.
 pub trait Handler {
-    fn open(&self, p: &Path) -> Result<u32, String>;
+    fn open(&self, p: &Path, sw: Option<&crate::spawn::Switch>) -> Result<u32, String>;
     fn create(&self, parent: &str, name: &str) -> Result<PathBuf, String>;
     fn cfg(&self, ops: &[Op]) -> Result<(), String>;
     fn read_cfg(&self) -> Value;
@@ -68,7 +74,10 @@ pub trait Handler {
 
 pub fn handle(h: &dyn Handler, req: Req) -> Resp {
     match req {
-        Req::Open { path } => h.open(Path::new(&path)).map(Resp::Pid).unwrap_or_else(Resp::Err),
+        Req::Open { path, switch } => match switch.as_ref().map(crate::spawn::Switch::check).transpose() {
+            Ok(_) => h.open(Path::new(&path), switch.as_ref()).map(Resp::Pid).unwrap_or_else(Resp::Err),
+            Err(e) => Resp::Err(e),
+        },
         Req::Create { parent, name } => h.create(&parent, &name).map(|p| Resp::Path(p.display().to_string())).unwrap_or_else(Resp::Err),
         Req::Cfg { ops } => h.cfg(&ops).map(|_| Resp::Done).unwrap_or_else(Resp::Err),
         Req::ReadCfg => Resp::Value(h.read_cfg()),
@@ -114,8 +123,8 @@ impl Client {
         serde_json::from_str(&back).map_err(|e| format!("spawner: bad reply: {e}"))
     }
 
-    pub fn open(&self, p: &Path) -> Result<u32, String> {
-        match self.call(&Req::Open { path: p.display().to_string() })? {
+    pub fn open(&self, p: &Path, sw: Option<&crate::spawn::Switch>) -> Result<u32, String> {
+        match self.call(&Req::Open { path: p.display().to_string(), switch: sw.cloned() })? {
             Resp::Pid(n) => Ok(n),
             Resp::Err(e) => Err(e),
             r => Err(format!("spawner: unexpected {r:?}")),
@@ -204,8 +213,9 @@ mod tests {
         log: RefCell<Vec<String>>,
     }
     impl Handler for Fake {
-        fn open(&self, p: &Path) -> Result<u32, String> {
-            self.log.borrow_mut().push(format!("open {}", p.display()));
+        fn open(&self, p: &Path, sw: Option<&crate::spawn::Switch>) -> Result<u32, String> {
+            let tail = sw.map(|s| format!(" switch {}x{}@{},{} max={} {}", s.w, s.h, s.x, s.y, s.max, s.token)).unwrap_or_default();
+            self.log.borrow_mut().push(format!("open {}{tail}", p.display()));
             if p.ends_with("busy") { Err("already open in another window".into()) } else { Ok(4242) }
         }
         fn create(&self, parent: &str, name: &str) -> Result<PathBuf, String> {
@@ -231,8 +241,13 @@ mod tests {
             f.log.into_inner()
         });
         let c = Client::new(a.try_clone().unwrap()).unwrap();
-        assert_eq!(c.open(Path::new("/v/b")), Ok(4242));
-        assert_eq!(c.open(Path::new("/v/busy")), Err("already open in another window".into()));
+        assert_eq!(c.open(Path::new("/v/b"), None), Ok(4242));
+        // item 14: the switch geometry + token reach the handler intact; a bad one is refused before it
+        let sw = crate::spawn::Switch { x: 5, y: 6, w: 800, h: 600, max: false, token: "9-a".into() };
+        assert_eq!(c.open(Path::new("/v/c"), Some(&sw)), Ok(4242));
+        let bad = crate::spawn::Switch { token: "../x".into(), ..sw.clone() };
+        assert!(c.open(Path::new("/v/d"), Some(&bad)).unwrap_err().contains("bad token"));
+        assert_eq!(c.open(Path::new("/v/busy"), None), Err("already open in another window".into()));
         assert_eq!(c.create("/v", "new"), Ok("/v/new".into()));
         assert_eq!(c.cfg(&[Op::PushRecent("/v/b".into())]), Ok(()));
         assert_eq!(c.read_cfg(), Ok(serde_json::json!({"last": "/v/a"})));
@@ -246,7 +261,7 @@ mod tests {
         drop(c);
         drop(a); // EOF -> the server returns
         let log = srv.join().unwrap();
-        assert_eq!(log, vec!["open /v/b".to_string(), "open /v/busy".into(), format!("cfg {:?}", [Op::PushRecent("/v/b".into())])]);
+        assert_eq!(log, vec!["open /v/b".to_string(), "open /v/c switch 800x600@5,6 max=false 9-a".into(), "open /v/busy".into(), format!("cfg {:?}", [Op::PushRecent("/v/b".into())])]);
     }
 
     /// a dead helper is an Err for the caller, never a hang or a panic.
@@ -255,6 +270,6 @@ mod tests {
         let (a, b) = UnixStream::pair().unwrap();
         drop(b);
         let c = Client::new(a).unwrap();
-        assert!(c.open(Path::new("/v/b")).unwrap_err().contains("spawner gone"));
+        assert!(c.open(Path::new("/v/b"), None).unwrap_err().contains("spawner gone"));
     }
 }

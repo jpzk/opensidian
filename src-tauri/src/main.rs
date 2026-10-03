@@ -1,5 +1,19 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-// opensidian, a vault-compatible markdown notes app.
+// opensidian, a vault-compatible markdown notes app            // item 14: a switch-started window whose UI never calls switch_ready
+            // is still shown (and frees the old window) after SWITCH_FALLBACK
+            if SWITCHED.get().is_some() {
+                let h = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(SWITCH_FALLBACK);
+                    if !SWITCH_DONE.load(std::sync::atomic::Ordering::SeqCst) {
+                        eprintln!("[vaultwin] switch: UI did not report ready in {SWITCH_FALLBACK:?}; showing anyway");
+                        use tauri::Manager;
+                        let st = h.state::<Vault>();
+                        switch_ready(h.clone(), st);
+                    }
+                });
+            }
+.
 // Copyright (C) 2026 Jendrik Poloczek
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This program comes with ABSOLUTELY NO WARRANTY. It is free software, and you
@@ -1462,12 +1476,17 @@ fn create_vault_dir(parent: String, name: String) -> Result<String, String> {
 }
 
 /* vaultbleed A: "open another vault" from an open window = a NEW PROCESS on it
-   (spawn.rs). `replace` = "switch vault": the UI has already flushed every
-   buffer and the layout (leaveVault) before calling, so after a successful
-   spawn this process exits; on a failed spawn it stays, untouched. Returns the
-   new pid. Opening THIS window's own vault is refused (nothing to open). */
+   (spawn.rs). `replace` = "switch vault" (item 14, spawn.rs THE SWITCH
+   HANDSHAKE): the UI has already flushed every buffer and the layout to disk
+   (leaveVault) before calling; the child gets this window's rect and a token,
+   and this process exits only once the child has marked ready (window shown at
+   that rect, painted) — or on timeout while the child is still alive. A child
+   that dies first (or a refused spawn) leaves this window untouched, with the
+   error returned. Returns the new pid. Opening THIS window's own vault is
+   refused (nothing to open). async: the wait must not block the GTK thread
+   this window keeps painting on. */
 #[tauri::command]
-fn open_vault_window(app: tauri::AppHandle, v: State<Vault>, path: String, replace: bool) -> Result<u32, String> {
+async fn open_vault_window(app: tauri::AppHandle, win: tauri::Window, v: State<'_, Vault>, path: String, replace: bool) -> Result<u32, String> {
     let p = PathBuf::from(path.trim());
     vault_rules(&p)?;
     if let Some(cur) = cur_vault(&v) {
@@ -1475,32 +1494,108 @@ fn open_vault_window(app: tauri::AppHandle, v: State<Vault>, path: String, repla
             return Err(format!("{} is the vault of this window", p.display()));
         }
     }
-    let pid = match spawner::client() {
+    let sw = if replace {
+        let r = win_rect(win)?;
+        Some(spawn::Switch { x: r.x.round() as i32, y: r.y.round() as i32, w: r.w.round() as u32, h: r.h.round() as u32, max: r.max, token: spawn::new_token() })
+    } else {
+        None
+    };
+    let (p2, sw2) = (p.clone(), sw.clone());
+    let pid = tauri::async_runtime::spawn_blocking(move || match spawner::client() {
         // vaultbleed D: a child of a confined window would be confined to THIS
         // vault for life (landlock is inherited) — the unconfined spawner
         // starts it, after the same checks (LiveSpawner::open)
-        Some(c) => c.open(&p)?,
-        None => spawn_checked(&p)?,
-    };
-    if replace {
-        eprintln!("[vaultwin] switch: pid={} exits after spawning pid={pid}", std::process::id());
-        app.exit(0);
+        Some(c) => c.open(&p2, sw2.as_ref()),
+        None => spawn_checked(&p2, sw2.as_ref()),
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let Some(sw) = sw else { return Ok(pid) };
+    let canon = p.canonicalize().map_err(|e| e.to_string())?;
+    let me = std::process::id();
+    eprintln!("[vaultwin] switch: pid={me} waits for pid={pid} token={} rect={}x{}@{},{} max={}", sw.token, sw.w, sw.h, sw.x, sw.y, sw.max);
+    let t0 = std::time::Instant::now();
+    let tok = sw.token.clone();
+    let got = tauri::async_runtime::spawn_blocking(move || {
+        let dir = vaultlock::env_lock_dir();
+        spawn::await_ready(|| vaultlock::ready_in(&dir, &canon, &tok), || spawn::alive(pid), SWITCH_WAIT, std::time::Duration::from_millis(25))
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let ms = t0.elapsed().as_millis();
+    match got {
+        spawn::Handoff::Died => {
+            eprintln!("[vaultwin] switch: pid={pid} exited before it was ready ({ms}ms); pid={me} stays");
+            Err(format!("the window for {} did not start; this window stays open", p.display()))
+        }
+        h => {
+            eprintln!("[vaultwin] switch: handoff {h:?} after {ms}ms; pid={me} exits after pid={pid}");
+            app.exit(0);
+            Ok(pid)
+        }
     }
-    Ok(pid)
+}
+
+/// how long a switching window waits for the new one before it exits anyway
+/// (the child's own fallback shows + marks ready at SWITCH_FALLBACK)
+const SWITCH_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+const SWITCH_FALLBACK: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// this process was started by a switch (`--switch=` in argv, main())
+static SWITCHED: OnceLock<spawn::Switch> = OnceLock::new();
+static SWITCH_SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SWITCH_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// item 14, child side, step 1: put the (hidden) window at the old window's
+/// rect and show it. Idempotent; a no-op for a window not started by a switch
+/// (that one is visible from the config already).
+#[tauri::command]
+fn switch_show(app: tauri::AppHandle) {
+    let Some(sw) = SWITCHED.get() else { return };
+    if SWITCH_SHOWN.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    use tauri::Manager;
+    if let Some(w) = app.webview_windows().values().next() {
+        let _ = w.set_position(tauri::LogicalPosition::new(sw.x as f64, sw.y as f64));
+        let _ = w.set_size(tauri::LogicalSize::new(sw.w as f64, sw.h as f64));
+        if sw.max {
+            let _ = w.maximize();
+        }
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+    eprintln!("[vaultwin] switch: pid={} shown at {}x{}@{},{} max={}", std::process::id(), sw.w, sw.h, sw.x, sw.y, sw.max);
+}
+
+/// item 14, child side, step 2 (the UI calls it after two painted frames):
+/// tell the old window it may go — `ready <token>` in OUR vault lock file.
+#[tauri::command]
+fn switch_ready(app: tauri::AppHandle, v: State<Vault>) {
+    let Some(sw) = SWITCHED.get() else { return };
+    switch_show(app);
+    if SWITCH_DONE.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    match v.lock.get().map(|l| l.mark_ready(&sw.token)) {
+        Some(Ok(())) => eprintln!("[vaultwin] switch: pid={} ready token={}", std::process::id(), sw.token),
+        Some(Err(e)) => eprintln!("[vaultwin] switch: ready not written ({e}); the old window exits on its timeout"),
+        None => eprintln!("[vaultwin] switch: no vault lock held; the old window exits on its timeout"),
+    }
 }
 
 /// vault_rules + the lock probe + spawn: the ONE path that starts a window on
 /// another vault, run in-process (unconfined) or by the spawner (confined).
 /// vaultbleed B: refuse up front instead of spawning a child that would refuse
 /// (and, for a switch, after this window had already exited).
-fn spawn_checked(p: &Path) -> Result<u32, String> {
+fn spawn_checked(p: &Path, sw: Option<&spawn::Switch>) -> Result<u32, String> {
     vault_rules(p)?;
     if let Ok(c) = p.canonicalize() {
         if vaultlock::held_in(&vaultlock::env_lock_dir(), &c) {
             return Err(format!("{} is {}", p.display(), vaultlock::DUP_MSG));
         }
     }
-    spawn::open_in_new_process(p)
+    spawn::open_in_new_process(p, sw)
 }
 
 /// vaultbleed D: what the unconfined spawner (spawner.rs) does for a confined
@@ -1509,8 +1604,8 @@ fn spawn_checked(p: &Path) -> Result<u32, String> {
 struct LiveSpawner;
 
 impl spawner::Handler for LiveSpawner {
-    fn open(&self, p: &Path) -> Result<u32, String> {
-        spawn_checked(p)
+    fn open(&self, p: &Path, sw: Option<&spawn::Switch>) -> Result<u32, String> {
+        spawn_checked(p, sw)
     }
     fn create(&self, parent: &str, name: &str) -> Result<PathBuf, String> {
         make_vault_dir(parent, name)
@@ -4506,7 +4601,12 @@ fn main() {
     // resolved HERE, before sandbox::enforce below; else last persisted vault if
     // still a dir (R1.6)
     let env_vault = std::env::var("VAULT_DIR").ok().map(PathBuf::from);
-    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    // item 14: a switch-started window carries the old window's rect + token
+    // (spawn::Switch); it is split out here so argv_pick never sees the flag
+    let (switched, args, sw_err) = spawn::take_switch(std::env::args_os().skip(1).collect());
+    if let Some(e) = sw_err {
+        eprintln!("opensidian: {e} — ignored, the window opens normally");
+    }
     let arg_vault = argv_vault(&args, env_vault.is_some());
     let init = env_vault
         .or(arg_vault)
@@ -4562,6 +4662,22 @@ fn main() {
                 std::process::exit(1);
             }
         }
+    }
+    // item 14: the window is created HIDDEN at the old window's rect (no frame
+    // at the config default); switch_show/switch_ready reveal it once the UI
+    // has entered the vault, SWITCH_FALLBACK reveals it if the UI never does.
+    // Only a window that actually holds its vault takes part in a switch.
+    let mut ctx = tauri::generate_context!();
+    if let (Some(sw), Some(_)) = (switched, &init) {
+        if let Some(wc) = ctx.config_mut().app.windows.first_mut() {
+            wc.visible = false;
+            wc.x = Some(sw.x as f64);
+            wc.y = Some(sw.y as f64);
+            wc.width = sw.w as f64;
+            wc.height = sw.h as f64;
+        }
+        eprintln!("[vaultwin] switch: pid={} starts hidden at {}x{}@{},{} max={}", std::process::id(), sw.w, sw.h, sw.x, sw.y, sw.max);
+        let _ = SWITCHED.set(sw);
     }
     tauri::Builder::default()
         .manage(vault)
@@ -4650,7 +4766,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, read_note, write_note, create_note, render, render_blocks, block_lines, highlight_blocks, graph, graph_local, vault_get, pick_vault,
-            create_vault, create_vault_dir, open_vault_window, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
+            create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, smoke_css,
             read_workspace, write_workspace, get_win_geom, set_win_geom,
@@ -4664,7 +4780,7 @@ fn main() {
             zoom, zoom_get,
             settings::settings_model
         ])
-        .run(tauri::generate_context!())
+        .run(ctx)
         .expect("tauri run");
 }
 

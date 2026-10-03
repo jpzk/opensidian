@@ -470,7 +470,7 @@ mod tests {
         locks: PathBuf,
     }
     impl crate::spawner::Handler for TestSpawner {
-        fn open(&self, p: &Path) -> Result<u32, String> {
+        fn open(&self, p: &Path, _sw: Option<&crate::spawn::Switch>) -> Result<u32, String> {
             // the spawner can see what the confined window cannot
             fs::read(p.join("secret.md")).map(|_| 7).map_err(|e| e.to_string())
         }
@@ -523,7 +523,7 @@ mod tests {
                 errno(fs::write(&cfg2, "{}")),
             );
             let via = (
-                c.open(&b2),
+                c.open(&b2, None),
                 c.cfg(&[Op::PushRecent(b2.display().to_string())]),
                 c.read_cfg().map(|v| v["last"].clone()),
                 c.create(&base2.display().to_string(), "C").is_ok(),
