@@ -9886,6 +9886,38 @@ function fTok(g) {
   }
   return t;
 }
+/* vaultbleed item 7 — [vbl:<seq>|t=<tags>|n=<notes>|s=<search hits>|b=<backlinks of Hub>|p=<peek errno>]
+   What THIS window's vault answers, refreshed every 500ms and on focus:
+   tag_counts (the tag pane's source), list_notes (the note list), search for
+   the fixture's shared word "vbshared", backlinks_ctx("Hub"), plus the DOM
+   tag pane's rows when it is rendered (folded into t=). The phase seeds
+   vault-unique names (onlyA/onlyB/onlyC) and greps one window's token for the
+   other vaults' names: a hit = bleed. seq proves the read is fresh.
+   TEST-ONLY: inert unless the backend says OPENSIDIAN_VBPROBE=1 (vb_probe). */
+let vblState = null, vblSeq = 0, vblBusy = false;
+async function vblRun() {
+  if (vblBusy || !vaultPath) return;
+  vblBusy = true;
+  try {
+    const clean = s => String(s).replace(/[[\]|,]/g, " ").trim();
+    const [p, tc, ns, sh, bl] = await Promise.all([
+      inv("vb_probe"), inv("tag_counts").catch(() => ({})), inv("list_notes").catch(() => []),
+      inv("search", { query: "vbshared" }).catch(() => []), inv("backlinks_ctx", { name: "Hub" }).catch(() => [])]);
+    if (p == null) { vblState = null; return; }
+    const dom = [...document.querySelectorAll("#taglist .tagrow")].map(e => e.dataset.tag || "");   // the tag pane as painted, when it was rendered
+    const tags = [...new Set([...Object.keys(tc || {}), ...dom].map(clean).filter(Boolean))].sort();
+    vblState = " [vbl:" + (++vblSeq) + "|t=" + tags.join(",") + "|n=" + (ns || []).map(clean).sort().join(",") +
+      "|s=" + [...new Set((sh || []).map(h => clean(h.note)))].sort().join(",") +
+      "|b=" + (bl || []).map(b => clean(b.note)).sort().join(",") + "|p=" + p + "]";
+    updateTitle();
+  } finally { vblBusy = false; }
+}
+function vblTok() { return vblState || ""; }
+inv("vb_probe").then(v => {
+  if (v == null) return;
+  setInterval(vblRun, 500);
+  window.addEventListener("focus", () => vblRun());
+}).catch(() => {});
 /* ---------- stock-name goal, criterion 3: [nob:] user-facing-string census ----------
    No string the app RENDERS names the stock app; the one
    allowed form is the literal vault config dir (NOB_OK below, a path the user

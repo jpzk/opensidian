@@ -4768,7 +4768,7 @@ fn main() {
             list_notes, list_images, read_note, write_note, create_note, render, render_blocks, block_lines, highlight_blocks, graph, graph_local, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, tags, tag_counts,
-            get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, smoke_css,
+            get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, vb_probe, smoke_css,
             read_workspace, write_workspace, get_win_geom, set_win_geom,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
@@ -8271,6 +8271,34 @@ mod tests {
             "the rejection must name the cause it refused, or the log cannot identify the bad caller"
         );
     }
+}
+/// vaultbleed item 7 — the [vbl:] census (ui/main.js vblTok) is a test-only
+/// instrument, OFF unless OPENSIDIAN_VBPROBE=1 (same contract as nob_probe).
+/// Returns None when off. When OPENSIDIAN_VBPROBE_PEEK=<dir> is set, it also
+/// tries to list <dir> from THIS process and reports the errno (0 = readable)
+/// — the phase points each window at the OTHER vault, so under
+/// OPENSIDIAN_LANDLOCK=1 a confined window must answer 13 (EACCES).
+#[tauri::command]
+fn vb_probe() -> Option<String> {
+    if std::env::var("OPENSIDIAN_VBPROBE").as_deref() != Ok("1") {
+        return None;
+    }
+    let Some(dir) = std::env::var_os("OPENSIDIAN_VBPROBE_PEEK").filter(|d| !d.is_empty()) else {
+        return Some("-".into());
+    };
+    let dir = std::path::PathBuf::from(dir);
+    let errno = match std::fs::read_dir(&dir) {
+        Ok(_) => 0,
+        Err(e) => e.raw_os_error().unwrap_or(-1),
+    };
+    eprintln!(
+        "[vbprobe] pid={} read_dir {}: errno {}{}",
+        std::process::id(),
+        dir.display(),
+        errno,
+        if errno == 13 { " (EACCES)" } else { "" }
+    );
+    Some(errno.to_string())
 }
 /// stock-name goal, criterion 3 — the [nob:] user-facing-string census
 /// (ui/main.js nobTok) is a test-only instrument, OFF unless

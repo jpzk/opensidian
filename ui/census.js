@@ -38,3 +38,4 @@ CENSUS.push(() => nobTok());   // stock-name goal, criterion 3: [nob:] every ren
 CENSUS.push(() => vargTok());   // vaultarg: [vault:<open vault, full path|->] + [vargerr:<reason>] while a rejected `opensidian <arg>` reason is on screen (docs/vaultarg/README.md §5)
 CENSUS.push(() => olfTok());   // outlinks: [olf:<note>|ae:<where>] the right-sidebar panes' own note leaf + DOM focus, read whatever leaf is focused
 CENSUS.push(() => olxyTok());   // outlinks: painted click points [olxy:o=|u=|bt=|bl=|ut=|ul=] of the Outgoing / Backlinks rows
+CENSUS.push(() => vblTok());   // vaultbleed item 7: [vbl:<seq>|t=|n=|s=|b=|p=] this window's tags, notes, "vbshared" search hits, backlinks of Hub, peek errno — the phase greps it for the OTHER vaults' names (test-only, OPENSIDIAN_VBPROBE=1)
