@@ -18,6 +18,7 @@ use std::sync::{Mutex, OnceLock};
 use tauri::State;
 
 mod builtins;
+mod cfgstore;
 mod datefmt;
 mod index;
 mod migrate;
@@ -1166,12 +1167,23 @@ fn cfg_path() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())).join(".opensidian.json")
 }
 
-/// whole config as a Value — extra keys (sidebar_w, ...) survive rewrites
+/// whole config as a Value, read under the shared cfg lock (cfgstore.rs)
 fn cfg_value() -> serde_json::Value {
-    fs::read_to_string(cfg_path())
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_else(|| serde_json::json!({}))
+    cfgstore::read_value_in(&vaultlock::env_lock_dir(), &cfg_path())
+}
+
+/* vaultbleed C: the ONLY way anything writes ~/.opensidian.json. N windows = N
+   processes write it; cfgstore does the locked read-modify-write + atomic
+   rename. A call site names the key it changes, never a whole Value it read
+   earlier (that read is stale by the time another window has written). */
+fn cfg_update(ops: &[cfgstore::Op]) {
+    if let Err(e) = cfgstore::update_in(&vaultlock::env_lock_dir(), &cfg_path(), ops) {
+        eprintln!("config write failed: {e}");
+    }
+}
+
+fn cfg_set(k: &str, x: serde_json::Value) {
+    cfg_update(&[cfgstore::Op::Set(k.into(), x)]);
 }
 
 fn read_cfg() -> (Option<String>, Vec<String>) {
@@ -1184,22 +1196,11 @@ fn read_cfg() -> (Option<String>, Vec<String>) {
     (last, list)
 }
 
-/// MRU push: dedup, newest first, capped at 8 — pure for testability
-fn push_recent(mut list: Vec<String>, path: &str) -> Vec<String> {
-    list.retain(|x| x != path);
-    list.insert(0, path.to_string());
-    list.truncate(8);
-    list
-}
+#[cfg(test)]
+use cfgstore::push_recent;
 
 fn persist_vault(p: &Path) {
-    let s = p.display().to_string();
-    let (_, list) = read_cfg();
-    let list = push_recent(list, &s);
-    let mut v = cfg_value(); // keep sidebar_w & future keys
-    v["last"] = serde_json::json!(s);
-    v["list"] = serde_json::json!(list);
-    let _ = fs::write(cfg_path(), v.to_string());
+    cfg_update(&[cfgstore::Op::PushRecent(p.display().to_string())]);
 }
 
 /* ux-4: left sidebar width persistence (clamped 150-600, default 200 total
@@ -1211,9 +1212,7 @@ fn get_sidebar_w() -> Option<u64> {
 
 #[tauri::command]
 fn set_sidebar_w(w: u64) {
-    let mut v = cfg_value();
-    v["sidebar_w"] = serde_json::json!(w.clamp(150, 600));
-    let _ = fs::write(cfg_path(), v.to_string());
+    cfg_set("sidebar_w", serde_json::json!(w.clamp(150, 600)));
 }
 
 /* ---------- R28 WORKSPACE PERSISTENCE: the two files, and why they are two ----
@@ -1354,9 +1353,7 @@ fn get_win_geom() -> Option<serde_json::Value> {
 
 #[tauri::command]
 fn set_win_geom(x: i64, y: i64, w: u64, h: u64) {
-    let mut v = cfg_value();
-    v["win"] = serde_json::json!({ "x": x, "y": y, "w": w, "h": h });
-    let _ = fs::write(cfg_path(), v.to_string());
+    cfg_set("win", serde_json::json!({ "x": x, "y": y, "w": w, "h": h }));
 }
 
 #[tauri::command]
@@ -2470,9 +2467,7 @@ fn get_rside_tab() -> Option<String> {
 
 #[tauri::command]
 fn set_rside_tab(tab: String) {
-    let mut v = cfg_value();
-    v["rside_tab"] = serde_json::json!(tab);
-    let _ = fs::write(cfg_path(), v.to_string());
+    cfg_set("rside_tab", serde_json::json!(tab));
 }
 
 /* THEME: the chosen mode, persisted as "theme" in ~/.opensidian.json through the
@@ -2495,9 +2490,7 @@ fn set_theme(theme: String) {
     if theme != "dark" && theme != "light" {
         return; // never let a typo'd mode into the file: it would read back as "no choice"
     }
-    let mut v = cfg_value();
-    v["theme"] = serde_json::json!(theme);
-    let _ = fs::write(cfg_path(), v.to_string());
+    cfg_set("theme", serde_json::json!(theme));
 }
 
 /* THE PALETTE AXIS IS GONE (themeone item 8 / R2). It used to live here as
@@ -2783,9 +2776,7 @@ fn get_hotkeys() -> serde_json::Value {
 
 #[tauri::command]
 fn set_hotkeys(map: serde_json::Value) {
-    let mut v = cfg_value();
-    v["hotkeys"] = hotkeys_clean(map);
-    let _ = fs::write(cfg_path(), v.to_string());
+    cfg_set("hotkeys", hotkeys_clean(map));
 }
 
 /// keep only well-formed entries (id -> [{modifiers:[str], key:str}]) so a
@@ -4420,9 +4411,7 @@ fn read_zoom_cfg() -> f64 {
 }
 
 fn set_zoom_cfg(level: f64) {
-    let mut v = cfg_value();
-    v["zoom"] = serde_json::json!(level);
-    let _ = fs::write(cfg_path(), v.to_string());
+    cfg_set("zoom", serde_json::json!(level));
 }
 
 fn main() {
