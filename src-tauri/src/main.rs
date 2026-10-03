@@ -26,6 +26,7 @@ mod perf;
 mod sandbox;
 mod settings;
 mod spawn;
+mod vaultlock;
 mod srcmode;
 mod themefs;
 mod watcher;
@@ -45,6 +46,9 @@ use index::{link_parts, links_in, resolve, tag_spans, Graph, Index};
 struct Vault {
     root: OnceLock<PathBuf>,
     index: Mutex<Index>,
+    /// vaultbleed B: the flock that makes this the ONLY backend on the vault
+    /// (vaultlock.rs); held until the process exits
+    lock: OnceLock<vaultlock::VaultLock>,
 }
 
 fn cur_vault(v: &Vault) -> Option<PathBuf> {
@@ -81,9 +85,36 @@ fn cur_notes(v: &Vault) -> Vec<String> {
 /// bind — a second picker click, a create_vault in an open vault — is Err and
 /// changes nothing; only then is the index built for the claimed root.
 fn bind_vault(v: &Vault, p: &Path) -> Result<(), String> {
-    v.root
-        .set(p.to_path_buf())
-        .map_err(|_| format!("this window already has a vault open ({}); open {} in a new window", cur_vault(v).unwrap().display(), p.display()))?;
+    bind_vault_locked(v, p, &vaultlock::env_lock_dir()).map_err(|e| e.to_string())
+}
+
+#[derive(Debug)]
+enum BindErr {
+    Bound(PathBuf, PathBuf),
+    Lock(vaultlock::LockErr),
+}
+impl std::fmt::Display for BindErr {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            BindErr::Bound(cur, p) => write!(f, "this window already has a vault open ({}); open {} in a new window", cur.display(), p.display()),
+            BindErr::Lock(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+/// bind_vault with the lock directory named (tests pass a private one).
+/// Order: refuse if bound -> take the vault's flock (Busy = open in another
+/// process, vaultbleed B) -> claim the root. The lock is stored only after the
+/// root claim succeeded; a failed claim drops (releases) it.
+fn bind_vault_locked(v: &Vault, p: &Path, lock_dir: &Path) -> Result<(), BindErr> {
+    if let Some(cur) = cur_vault(v) {
+        return Err(BindErr::Bound(cur, p.to_path_buf()));
+    }
+    let canon = p.canonicalize().map_err(|e| BindErr::Lock(vaultlock::LockErr::Io(format!("{}: {e}", p.display()))))?;
+    let lk = vaultlock::acquire_in(lock_dir, &canon).map_err(BindErr::Lock)?;
+    v.root.set(p.to_path_buf()).map_err(|_| BindErr::Bound(cur_vault(v).unwrap(), p.to_path_buf()))?;
+    eprintln!("[vaultlock] pid={} holds {} ({})", std::process::id(), canon.display(), lk.path.display());
+    let _ = v.lock.set(lk);
     // R3 (item 4): seed before the index walk, so the frontend's themes_scan —
     // which runs after this returns — sees the built-ins as ordinary theme
     // dirs. Seeding writes only paths that do not exist (builtins.rs).
@@ -1429,6 +1460,13 @@ fn open_vault_window(app: tauri::AppHandle, v: State<Vault>, path: String, repla
     if let Some(cur) = cur_vault(&v) {
         if p.canonicalize().ok() == cur.canonicalize().ok() {
             return Err(format!("{} is the vault of this window", p.display()));
+        }
+    }
+    // vaultbleed B: refuse up front instead of spawning a child that would
+    // refuse (and, for a switch, after this window had already exited)
+    if let Ok(c) = p.canonicalize() {
+        if vaultlock::held_in(&vaultlock::env_lock_dir(), &c) {
+            return Err(format!("{} is {}", p.display(), vaultlock::DUP_MSG));
         }
     }
     let pid = spawn::open_in_new_process(&p)?;
@@ -4456,9 +4494,21 @@ fn main() {
     // perf-index: one walk + read now, so the first note_open is already warm.
     // vaultbleed: the argv/last-vault boot binds through the SAME set-once
     // bind_vault the picker uses (seed + index build happen inside it).
-    let vault = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()) };
+    let vault = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new() };
     if let Some(p) = &init {
-        bind_vault(&vault, p).expect("fresh Vault is unbound");
+        // vaultbleed B: a vault already open in another process is refused —
+        // no second backend, no window; the other window stays the only one.
+        match bind_vault_locked(&vault, p, &vaultlock::env_lock_dir()) {
+            Ok(()) => {}
+            Err(BindErr::Lock(e @ vaultlock::LockErr::Busy(_))) => {
+                eprintln!("opensidian: {e}; not starting a second backend on it (exit {})", vaultlock::DUP_EXIT);
+                std::process::exit(vaultlock::DUP_EXIT);
+            }
+            Err(e) => {
+                eprintln!("opensidian: cannot open vault {}: {e}", p.display());
+                std::process::exit(1);
+            }
+        }
     }
     tauri::Builder::default()
         .manage(vault)
@@ -8084,7 +8134,7 @@ mod vaultbleed_tests {
         root
     }
     fn vault_at(p: &Path) -> Arc<Vault> {
-        let v = Arc::new(Vault { root: OnceLock::new(), index: Mutex::new(Index::default()) });
+        let v = Arc::new(Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new() });
         bind_vault(&v, p).unwrap();
         v
     }
@@ -8138,6 +8188,28 @@ mod vaultbleed_tests {
         assert!(bind_vault(&v, &a).is_err(), "re-binding the SAME vault is Err too");
         assert_clean(&v, &a, "onlyB", &["onlyB-note"], "after refused bind");
         let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&b));
+    }
+
+    #[test]
+    fn vaultbleed_second_backend_on_an_open_vault_is_refused() {
+        // B: two Vaults (= two processes' backends) on ONE directory. The
+        // second bind is refused by the flock BEFORE it claims a root or builds
+        // an index; a second spelling of the path keys the same lock.
+        let a = mk("dup-a", &[("onlyA-note", "seed #onlyA\n")]);
+        let locks = std::env::temp_dir().join(format!("opensidian-vb-locks-{}", std::process::id()));
+        let v1 = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new() };
+        bind_vault_locked(&v1, &a, &locks).expect("first backend binds");
+        let v2 = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new() };
+        let alias = a.join("..").join(a.file_name().unwrap());
+        match bind_vault_locked(&v2, &alias, &locks) {
+            Err(BindErr::Lock(vaultlock::LockErr::Busy(_))) => {}
+            other => panic!("second backend on an open vault must be Busy, got {other:?}"),
+        }
+        assert!(cur_vault(&v2).is_none(), "refused bind claims no root");
+        assert!(cur_notes(&v2).is_empty(), "refused bind builds no index");
+        drop(v1); // the first window exits
+        bind_vault_locked(&v2, &alias, &locks).expect("free once the holder is gone");
+        let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&locks));
     }
 
     /* THE OPERATOR'S REPORT, the race c7479c7 lost (red on 2d05542, see
