@@ -52,6 +52,10 @@ pub enum Req {
     Create { parent: String, name: String },
     Cfg { ops: Vec<Op> },
     ReadCfg,
+    /// the picker's directory listing for a confined window, which has NO
+    /// right to list anything outside its vault (crit 5: the other vault's
+    /// directory is EACCES). Same S4 rules (picker_allows), names only.
+    ListDirs { path: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -59,6 +63,7 @@ pub enum Resp {
     Pid(u32),
     Path(String),
     Value(Value),
+    Names(Vec<String>),
     Done,
     Err(String),
 }
@@ -70,6 +75,7 @@ pub trait Handler {
     fn create(&self, parent: &str, name: &str) -> Result<PathBuf, String>;
     fn cfg(&self, ops: &[Op]) -> Result<(), String>;
     fn read_cfg(&self) -> Value;
+    fn list_dirs(&self, path: &str) -> Vec<String>;
 }
 
 pub fn handle(h: &dyn Handler, req: Req) -> Resp {
@@ -81,6 +87,7 @@ pub fn handle(h: &dyn Handler, req: Req) -> Resp {
         Req::Create { parent, name } => h.create(&parent, &name).map(|p| Resp::Path(p.display().to_string())).unwrap_or_else(Resp::Err),
         Req::Cfg { ops } => h.cfg(&ops).map(|_| Resp::Done).unwrap_or_else(Resp::Err),
         Req::ReadCfg => Resp::Value(h.read_cfg()),
+        Req::ListDirs { path } => Resp::Names(h.list_dirs(&path)),
     }
 }
 
@@ -150,6 +157,14 @@ impl Client {
     pub fn read_cfg(&self) -> Result<Value, String> {
         match self.call(&Req::ReadCfg)? {
             Resp::Value(v) => Ok(v),
+            Resp::Err(e) => Err(e),
+            r => Err(format!("spawner: unexpected {r:?}")),
+        }
+    }
+
+    pub fn list_dirs(&self, path: &str) -> Result<Vec<String>, String> {
+        match self.call(&Req::ListDirs { path: path.into() })? {
+            Resp::Names(v) => Ok(v),
             Resp::Err(e) => Err(e),
             r => Err(format!("spawner: unexpected {r:?}")),
         }
@@ -228,6 +243,10 @@ mod tests {
         fn read_cfg(&self) -> Value {
             serde_json::json!({"last": "/v/a"})
         }
+        fn list_dirs(&self, path: &str) -> Vec<String> {
+            self.log.borrow_mut().push(format!("ls {path}"));
+            vec!["A".into(), "B".into()]
+        }
     }
 
     /// every request kind round-trips over a real socketpair, errors come back
@@ -251,6 +270,7 @@ mod tests {
         assert_eq!(c.create("/v", "new"), Ok("/v/new".into()));
         assert_eq!(c.cfg(&[Op::PushRecent("/v/b".into())]), Ok(()));
         assert_eq!(c.read_cfg(), Ok(serde_json::json!({"last": "/v/a"})));
+        assert_eq!(c.list_dirs("/v"), Ok(vec!["A".to_string(), "B".into()]));
         {
             let mut g = c.io.lock().unwrap();
             g.1.write_all(b"not json\n").unwrap();
@@ -261,7 +281,7 @@ mod tests {
         drop(c);
         drop(a); // EOF -> the server returns
         let log = srv.join().unwrap();
-        assert_eq!(log, vec!["open /v/b".to_string(), "open /v/c switch 800x600@5,6 max=false 9-a".into(), "open /v/busy".into(), format!("cfg {:?}", [Op::PushRecent("/v/b".into())])]);
+        assert_eq!(log, vec!["open /v/b".to_string(), "open /v/c switch 800x600@5,6 max=false 9-a".into(), "open /v/busy".into(), format!("cfg {:?}", [Op::PushRecent("/v/b".into())]), "ls /v".into()]);
     }
 
     /// a dead helper is an Err for the caller, never a hang or a panic.

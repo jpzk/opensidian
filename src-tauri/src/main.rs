@@ -1606,6 +1606,9 @@ impl spawner::Handler for LiveSpawner {
     fn read_cfg(&self) -> serde_json::Value {
         cfgstore::read_value_in(&vaultlock::env_lock_dir(), &cfg_path())
     }
+    fn list_dirs(&self, path: &str) -> Vec<String> {
+        list_dirs_here(path)
+    }
 }
 
 /// otel (R18): frontend spans (ui/otel.js) arrive in ONE batch per 250ms — [{name, traceId, spanId,
@@ -1828,7 +1831,21 @@ fn open_external(url: String) -> Result<(), String> {
 
 #[tauri::command]
 fn list_dirs(path: String) -> Vec<String> {
-    span_timed!("list_dirs", {
+    span_timed!("list_dirs", match spawner::client() {
+        // vaultbleed D: a confined window has no right to list outside its
+        // vault (no $HOME ReadDir — it was recursive, so it listed every
+        // other vault too); the unconfined spawner lists for its picker
+        Some(c) => c.list_dirs(&path).unwrap_or_else(|e| {
+            eprintln!("[spawner] list_dirs {path}: {e}");
+            vec![]
+        }),
+        None => list_dirs_here(&path),
+    })
+}
+
+/// the picker listing itself (S4 rules), in-process or in the spawner
+fn list_dirs_here(path: &str) -> Vec<String> {
+    {
         if !picker_allows(Path::new(&path)) {
             return vec![]; // S4: the picker just shows ".." there
         }
@@ -1842,7 +1859,7 @@ fn list_dirs(path: String) -> Vec<String> {
             .collect();
         v.sort();
         v
-    })
+    }
 }
 
 

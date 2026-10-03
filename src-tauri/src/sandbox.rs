@@ -52,7 +52,8 @@ fn env_path(k: &str) -> Option<PathBuf> {
    Paths under /media are not granted either; /run/media happens to be
    reachable because /run is already RW for the X11/dbus sockets.
    Widening further is an OPERATOR decision, one line away, deliberately not
-   taken here. $HOME itself keeps ReadDir only (the picker lists, never reads). */
+   taken here. $HOME gets NO right at all (vaultbleed: a ReadDir rule is recursive
+   and listed every other vault); a confined picker lists through the spawner. */
 pub const DROP_READ_DIRS: [&str; 3] = ["Pictures", "Downloads", "Desktop"];
 
 /// The read-only half of the ruleset, AS DATA. This kernel has no Landlock
@@ -161,8 +162,10 @@ pub fn ruleset_plan(disabled: bool, home: &Path, vault: &Path) -> Option<Ruleset
     Some(RulesetPlan {
         read: read_roots(home),
         write: write_roots(home, vault),
-        // picker may list dirs under $HOME, never read files there
-        list_only: vec![home.to_path_buf()],
+        // vaultbleed: NOTHING list-only. A ReadDir rule on $HOME is inherited
+        // by every directory beneath it, i.e. it listed every other vault; a
+        // confined window's picker lists through the spawner instead
+        list_only: vec![],
     })
 }
 
@@ -347,8 +350,10 @@ mod tests {
         let p = ruleset_plan(false, home, vault).expect("switch is off");
         assert_eq!(p.read, read_roots(home), "plan.read must BE read_roots()");
         assert_eq!(p.write, write_roots(home, vault), "plan.write must BE write_roots()");
-        // $HOME is ReadDir-only — listable for the picker, never readable
-        assert_eq!(p.list_only, vec![home.to_path_buf()]);
+        // vaultbleed crit 5: NO list-only $HOME — ReadDir is inherited by every
+        // directory beneath, so it listed every other vault; the picker of a
+        // confined window lists through the spawner (Req::ListDirs)
+        assert!(p.list_only.is_empty(), "{:?}", p.list_only);
         assert!(!p.read.contains(&home.to_path_buf()) && !p.write.contains(&home.to_path_buf()));
     }
 
@@ -463,7 +468,7 @@ mod tests {
     /* vaultbleed D — THE SPAWNER UNDER A REAL RULESET. The serving thread is
        started BEFORE the confined thread restricts itself (restrict_self is
        per-thread), so it stands where the real spawner process stands:
-       outside the domain. Everything lives under $HOME (list-only), NOT /tmp
+       outside the domain. Everything lives under $HOME (no rights), NOT /tmp
        (a write root, where nothing would be refused and nothing proved). */
     struct TestSpawner {
         cfg: PathBuf,
@@ -483,6 +488,11 @@ mod tests {
         }
         fn read_cfg(&self) -> serde_json::Value {
             crate::cfgstore::read_value_in(&self.locks, &self.cfg)
+        }
+        fn list_dirs(&self, path: &str) -> Vec<String> {
+            let mut v: Vec<String> = fs::read_dir(path).into_iter().flatten().flatten().filter_map(|e| e.file_name().into_string().ok()).collect();
+            v.sort();
+            v
         }
     }
 
@@ -521,12 +531,16 @@ mod tests {
                 errno(fs::write(b2.join("bleed.md"), "x")),
                 errno(fs::read(&cfg2).map(|_| ())),
                 errno(fs::write(&cfg2, "{}")),
+                // crit 5: the other vault's DIRECTORY, and $HOME above it
+                errno(fs::read_dir(&b2).map(|_| ())),
+                errno(fs::read_dir(&base2).map(|_| ())),
             );
             let via = (
                 c.open(&b2, None),
                 c.cfg(&[Op::PushRecent(b2.display().to_string())]),
                 c.read_cfg().map(|v| v["last"].clone()),
                 c.create(&base2.display().to_string(), "C").is_ok(),
+                c.list_dirs(&b2.display().to_string()),
             );
             Some((direct, via))
         })
@@ -539,13 +553,14 @@ mod tests {
         match res {
             None => eprintln!("landlock unsupported here — test skipped"),
             Some((direct, via)) => {
-                eprintln!("[spawner-ll] direct errno (read B, write B, read cfg, write cfg) = {direct:?}");
-                assert_eq!(direct, (Some(13), Some(13), Some(13), Some(13)), "a confined window must get EACCES on the other vault AND on the config");
+                eprintln!("[spawner-ll] direct errno (read B, write B, read cfg, write cfg, list B, list base) = {direct:?}");
+                assert_eq!(direct, (Some(13), Some(13), Some(13), Some(13), Some(13), Some(13)), "a confined window must get EACCES on the other vault (files AND its directory), the config, and listing above it");
                 assert!(!bleed);
                 assert_eq!(via.0, Ok(7), "open of another vault via the spawner");
                 assert_eq!(via.1, Ok(()), "config write via the spawner");
                 assert_eq!(via.2, Ok(serde_json::json!(b.display().to_string())), "config read via the spawner sees the write");
                 assert!(via.3 && c_made, "create-vault via the spawner");
+                assert_eq!(via.4, Ok(vec!["secret.md".to_string()]), "the picker lists through the spawner");
             }
         }
     }
@@ -595,7 +610,7 @@ mod tests {
             fs::write(vault.join("M.md"), "y").expect("vault writable");
             let moved = fs::rename(vault.join("M.md"), vault.join("sub/M.md"));
             // and the confinement is UNCHANGED: REFER may not carry a file into
-            // a hierarchy that does not grant it. $HOME is ReadDir-only, so a
+            // a hierarchy that does not grant it. $HOME has no right at all, so a
             // rename into it must still be refused — with EACCES, not EXDEV.
             // (NOT /tmp as the target: /tmp is itself a write root, where a
             // copy was always permitted, and a move that lands there proves
