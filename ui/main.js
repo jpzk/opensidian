@@ -8081,6 +8081,7 @@ async function enterMode(m) {
   $("p-err").textContent = "";
   await browseTo(await inv("home_dir"));
   (m === "create" ? $("p-name") : $("p-path")).focus();
+  if (vaultPath) { try { updateTitle(); } catch (_) {} }   // item 14: publish [pbtn:] for the sub-mode buttons (never at the boot picker)
 }
 $("p-create").onclick = () => enterMode("create");
 $("p-open").onclick = () => enterMode("open");
