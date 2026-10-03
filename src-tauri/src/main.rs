@@ -14,7 +14,7 @@
 use pulldown_cmark::{html, Event, LinkType, Options, Parser, Tag, TagEnd};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use tauri::State;
 
 mod builtins;
@@ -33,14 +33,21 @@ use index::{link_parts, links_in, resolve, tag_spans, Graph, Index};
 /* perf-index: root + in-memory Index (src/index.rs). The index replaces the
    perf-lp NoteCache: names, contents, links and backlink edges live in RAM,
    built once per vault open and kept == disk by write_note/rename_note.
-   search/graph/backlinks/render never touch the filesystem. */
+   search/graph/backlinks/render never touch the filesystem.
+
+   vaultbleed (operator 2026-10-03, SEVERE): ONE VAULT PER PROCESS, FOR THE
+   PROCESS'S LIFETIME. `root` is a OnceLock: bound at most once (argv boot or
+   the picker), never re-rooted. Opening/switching to another vault spawns a
+   new process. With no second root ever reachable, the watcher, the css
+   watch and every command can only ever see this one vault — bleed is
+   impossible by construction, not by locking discipline. */
 struct Vault {
-    root: Mutex<Option<PathBuf>>,
+    root: OnceLock<PathBuf>,
     index: Mutex<Index>,
 }
 
 fn cur_vault(v: &Vault) -> Option<PathBuf> {
-    v.root.lock().unwrap().clone()
+    v.root.get().cloned()
 }
 
 /* vaultbleed: a named point INSIDE a root+index critical path, where a test
@@ -48,7 +55,7 @@ fn cur_vault(v: &Vault) -> Option<PathBuf> {
    it up. Production: a no-op the optimiser deletes. Tests: a thread-local
    closure (thread-local, so parallel cargo tests never see each other's hook).
    The hook always runs with NO vault lock held — a test hook that switches the
-   vault must be able to take every lock open_vault takes. */
+   vault must be able to take every lock bind_vault takes. */
 #[cfg(test)]
 thread_local! {
     static VAULT_HOOK: std::cell::RefCell<Option<Box<dyn FnMut(&'static str)>>> = std::cell::RefCell::new(None);
@@ -68,17 +75,21 @@ fn cur_notes(v: &Vault) -> Vec<String> {
     v.index.lock().unwrap().names().to_vec()
 }
 
-/// open a vault: swap root + rebuild the index (one walk, one read per note)
-fn open_vault(v: &Vault, p: &Path) {
-    // R3 (item 4): the vault SWITCH seeds too, and before the index walk, so
-    // the frontend's themes_scan — which runs after this returns — sees the
-    // built-ins as ordinary theme dirs on the new root. Seeding writes only
-    // paths that do not exist (builtins.rs), so switching back and forth over
-    // an already-seeded vault writes nothing.
+/// bind this process to its vault — the ONE place the root is assigned. The
+/// root is claimed first (OnceLock::set is the atomic set-once), so a second
+/// bind — a second picker click, a create_vault in an open vault — is Err and
+/// changes nothing; only then is the index built for the claimed root.
+fn bind_vault(v: &Vault, p: &Path) -> Result<(), String> {
+    v.root
+        .set(p.to_path_buf())
+        .map_err(|_| format!("this window already has a vault open ({}); open {} in a new window", cur_vault(v).unwrap().display(), p.display()))?;
+    // R3 (item 4): seed before the index walk, so the frontend's themes_scan —
+    // which runs after this returns — sees the built-ins as ordinary theme
+    // dirs. Seeding writes only paths that do not exist (builtins.rs).
     builtins::seed_and_record(p);
     let ix = span_timed!("index_build", Index::build(p), serde_json::json!({"notes": 0}));
     *v.index.lock().unwrap() = ix;
-    *v.root.lock().unwrap() = Some(p.to_path_buf());
+    Ok(())
 }
 /// component-wise traversal check: only plain, non-hidden components allowed
 fn safe_rel(name: &str) -> Option<PathBuf> {
@@ -1333,8 +1344,8 @@ fn set_vault_inner(v: &State<Vault>, path: &str) -> Result<String, String> {
         persist_vault(&p); // next boot confines to this one instead
         return Err(format!("sandboxed to {} — vault saved, restart opensidian to open it", sandbox::confined_to().unwrap().display()));
     }
+    bind_vault(v, &p)?; // Err once bound: a live process is never re-rooted
     persist_vault(&p);
-    open_vault(v, &p);
     Ok(p.display().to_string())
 }
 
@@ -1375,10 +1386,14 @@ fn create_vault(v: State<Vault>, parent: String, name: String) -> Result<String,
         if !sandbox::allows(Path::new(parent.trim())) {
             return Err(format!("sandboxed to {} — create the folder outside opensidian, then pick it and restart", sandbox::confined_to().unwrap().display()));
         }
+        if let Some(cur) = cur_vault(&v) {
+            // vaultbleed: never re-root a live process (checked before any disk write)
+            return Err(format!("this window already has a vault open ({}); create the new vault from a new window", cur.display()));
+        }
         fs::create_dir_all(&p).map_err(|e| e.to_string())?;
         seed_new_vault(&p).map_err(|e| e.to_string())?;
+        bind_vault(&v, &p)?;
         persist_vault(&p);
-        open_vault(&v, &p);
         Ok(p.display().to_string())
     })
 }
@@ -3711,7 +3726,8 @@ fn bm_drag(v: State<Vault>, ix: usize, parent: Option<usize>, pos: usize) -> Res
 /* R11 watcher thread: every TICK_MS walk the vault (stat only), diff against
    the last snapshot, reconcile candidates with the Index under its lock
    (src/watcher.rs), emit `vault-changed` when anything external happened.
-   A root switch (set_vault/create_vault) just reseeds the snapshot silently.
+   The root is bound once (bind_vault); the first tick after the picker binds
+   it just seeds the snapshot silently.
    Idle cost = one read_dir walk + one stat per note per tick, no reads. */
 fn spawn_watcher(app: tauri::AppHandle) {
     use tauri::{Emitter, Manager};
@@ -4397,13 +4413,15 @@ fn main() {
     // writes inside the vault, so it must survive the same confinement a
     // user's own write does. If it does not, the failure is on the console and
     // in the [bseed:] census token, and the vault still opens.
+    // perf-index: one walk + read now, so the first note_open is already warm.
+    // vaultbleed: the argv/last-vault boot binds through the SAME set-once
+    // bind_vault the picker uses (seed + index build happen inside it).
+    let vault = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()) };
     if let Some(p) = &init {
-        builtins::seed_and_record(p);
+        bind_vault(&vault, p).expect("fresh Vault is unbound");
     }
-    // perf-index: one walk + read now, so the first note_open is already warm
-    let index = init.as_deref().map(Index::build).unwrap_or_default();
     tauri::Builder::default()
-        .manage(Vault { index: Mutex::new(index), root: Mutex::new(init) })
+        .manage(vault)
         .manage(ZoomLevel(Mutex::new(read_zoom_cfg())))
         .setup(|app| {
             spawn_watcher(app.handle().clone());
@@ -4474,7 +4492,7 @@ fn main() {
         // an escape is indistinguishable from a typo (R29.5).
         .register_uri_scheme_protocol(IMG_SCHEME, |ctx, req| {
             use tauri::Manager;
-            let root = ctx.app_handle().state::<Vault>().root.lock().unwrap().clone();
+            let root = cur_vault(&ctx.app_handle().state::<Vault>());
             let target = req.uri().path().trim_start_matches('/').to_string();
             match root.as_deref().and_then(|r| serve_image(r, &target)) {
                 Some((mime, body)) => tauri::http::Response::builder()
@@ -8021,8 +8039,8 @@ mod vaultbleed_tests {
         root
     }
     fn vault_at(p: &Path) -> Arc<Vault> {
-        let v = Arc::new(Vault { root: Mutex::new(None), index: Mutex::new(Index::default()) });
-        open_vault(&v, p);
+        let v = Arc::new(Vault { root: OnceLock::new(), index: Mutex::new(Index::default()) });
+        bind_vault(&v, p).unwrap();
         v
     }
     fn set_hook(f: impl FnMut(&'static str) + 'static) {
@@ -8031,14 +8049,16 @@ mod vaultbleed_tests {
     fn clear_hook() {
         VAULT_HOOK.with(|h| *h.borrow_mut() = None);
     }
-    /// switch to `to` the FIRST time the path reaches `at`, then never again
-    fn switch_once_at(v: &Arc<Vault>, at: &'static str, to: &Path) {
-        let (v, to) = (v.clone(), to.to_path_buf());
+    /// TRY to re-root to `to` the FIRST time the path reaches `at` — exactly
+    /// where c7479c7's open_vault swapped root+index under the watcher. Every
+    /// attempt's result is pushed to `log`; set-once must make each one Err.
+    fn try_switch_once_at(v: &Arc<Vault>, at: &'static str, to: &Path, log: &std::rc::Rc<std::cell::RefCell<Vec<Result<(), String>>>>) {
+        let (v, to, log) = (v.clone(), to.to_path_buf(), log.clone());
         let mut fired = false;
         set_hook(move |p| {
             if p == at && !fired {
                 fired = true;
-                open_vault(&v, &to);
+                log.borrow_mut().push(bind_vault(&v, &to));
             }
         });
     }
@@ -8061,55 +8081,67 @@ mod vaultbleed_tests {
         assert_eq!(tc, disk.tag_counts(), "{ctx}: tag_counts != disk");
     }
 
-    /* THE OPERATOR'S REPORT, deterministic. 20 A->B->A rounds; on every leg
-       the vault being LEFT has a note modified (leaveVault's flush guarantees
-       exactly that on the switch tick), and the switch lands between the
-       watcher's walk of the old root and its index lock. */
+    /* set-once, the type-level guarantee: a second bind is Err and changes
+       neither the root nor the index. */
+    #[test]
+    fn vaultbleed_root_is_set_once_second_bind_is_err() {
+        let a = mk("so-a", &[("onlyA-note", "seed #onlyA\n")]);
+        let b = mk("so-b", &[("onlyB-note", "seed #onlyB\n")]);
+        let v = vault_at(&a);
+        let e = bind_vault(&v, &b).expect_err("second bind must be Err");
+        assert!(e.contains("already has a vault open"), "{e}");
+        assert!(bind_vault(&v, &a).is_err(), "re-binding the SAME vault is Err too");
+        assert_clean(&v, &a, "onlyB", &["onlyB-note"], "after refused bind");
+        let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&b));
+    }
+
+    /* THE OPERATOR'S REPORT, the race c7479c7 lost (red on 2d05542, see
+       progress.md): 20 rounds, A modified + an A-only note added each round,
+       and a switch to B attempted between the watcher's walk of A and its
+       index lock. Now every attempt is refused, and both the tick and a
+       steady tick after it leave A's index == A's disk with nothing of B. */
     #[test]
     fn vaultbleed_watcher_tick_never_reconciles_the_old_vault_into_the_new() {
         let a = mk("wa", &[("onlyA-note", "seed #onlyA\n"), ("shared", "a side\n")]);
         let b = mk("wb", &[("onlyB-note", "seed #onlyB\n"), ("shared", "b side\n")]);
         let v = vault_at(&a);
+        let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let mut prev = None;
         watch_tick(&v, &mut prev); // baseline A
         for i in 0..20 {
-            // A is modified (and grows a new A-only note) during the switch
             fs::write(a.join("onlyA-note.md"), format!("edit {} #onlyA\n", "x".repeat(i + 1))).unwrap();
             fs::write(a.join(format!("onlyA-new{i}.md")), "#onlyA fresh\n").unwrap();
-            switch_once_at(&v, "watch_tick:pre_lock", &b);
+            fs::write(b.join("onlyB-note.md"), format!("edit {} #onlyB\n", "y".repeat(i + 1))).unwrap();
+            try_switch_once_at(&v, "watch_tick:pre_lock", &b, &log);
             let ch = watch_tick(&v, &mut prev);
             clear_hook();
-            let ctx = format!("round {i} A->B");
-            let fresh = format!("onlyA-new{i}");
-            assert_clean(&v, &b, "onlyA", &["onlyA-note", fresh.as_str()], &ctx);
-            assert!(!ch.modified.iter().chain(&ch.added).any(|n| n.starts_with("onlyA")), "{ctx}: vault-changed names A notes while B is open: {ch:?}");
-            watch_tick(&v, &mut prev); // a steady tick on B must stay clean too
-            assert_clean(&v, &b, "onlyA", &["onlyA-note"], &format!("{ctx} +1 tick"));
-            // ... and back: B modified during the B->A switch
-            fs::write(b.join("onlyB-note.md"), format!("edit {} #onlyB\n", "y".repeat(i + 1))).unwrap();
-            switch_once_at(&v, "watch_tick:pre_lock", &a);
+            let ctx = format!("round {i}");
+            assert_clean(&v, &a, "onlyB", &["onlyB-note"], &ctx);
+            assert!(!ch.modified.iter().chain(&ch.added).any(|n| n.starts_with("onlyB")), "{ctx}: vault-changed names B notes: {ch:?}");
             watch_tick(&v, &mut prev);
-            clear_hook();
-            assert_clean(&v, &a, "onlyB", &["onlyB-note"], &format!("round {i} B->A"));
-            watch_tick(&v, &mut prev);
-            assert_clean(&v, &a, "onlyB", &["onlyB-note"], &format!("round {i} B->A +1 tick"));
+            assert_clean(&v, &a, "onlyB", &["onlyB-note"], &format!("{ctx} +1 tick"));
         }
+        let log = log.borrow();
+        assert_eq!(log.len(), 20, "the hook fired once per round");
+        assert!(log.iter().all(|r| r.is_err()), "a live process was re-rooted: {log:?}");
         let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&b));
     }
 
-    /* The same class on the command side: write_note reads the root, then
-       takes the index lock. A switch in between must not leave the open
-       vault's index holding a note its disk does not have. */
+    /* The command side: write_note reads the root, then takes the index lock.
+       A switch attempted in between is refused; A's write lands in A only. */
     #[test]
     fn vaultbleed_write_note_racing_a_switch_keeps_index_equal_to_disk() {
         let a = mk("na", &[("onlyA-note", "seed #onlyA\n")]);
         let b = mk("nb", &[("onlyB-note", "seed #onlyB\n")]);
         let v = vault_at(&a);
-        switch_once_at(&v, "write_note:pre_lock", &b);
-        let _ = write_note_inner(&v, "onlyA-note", "typed in A #onlyA\n");
+        let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        try_switch_once_at(&v, "write_note:pre_lock", &b, &log);
+        write_note_inner(&v, "onlyA-note", "typed in A #onlyA\n").unwrap();
         clear_hook();
-        assert_clean(&v, &b, "onlyA", &["onlyA-note"], "write_note raced set_vault");
-        // and A's bytes never reached B's disk
+        assert_eq!(log.borrow().len(), 1, "hook fired");
+        assert!(log.borrow()[0].is_err(), "write_note's switch window re-rooted the process");
+        assert_clean(&v, &a, "onlyB", &["onlyB-note"], "write_note vs refused switch");
+        assert_eq!(fs::read_to_string(a.join("onlyA-note.md")).unwrap(), "typed in A #onlyA\n");
         assert!(!b.join("onlyA-note.md").exists(), "write_note wrote A's note into B on disk");
         let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&b));
     }
