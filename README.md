@@ -21,6 +21,14 @@ Open-source, vault-compatible markdown notes app. Rust + Tauri v2, no Electron, 
 
 Opt-in Landlock sandbox: `OPENSIDIAN_LANDLOCK=1`.
 
+### Tested distributions
+v0.1 slim AppImage, fresh install, launched and rendered (2026-10-03):
+
+- **Fedora 44**: works. `sudo dnf install webkit2gtk4.1` (tested 2.54.0)
+- **Ubuntu 26.04 LTS**: works. `sudo apt install libwebkit2gtk-4.1-0` (tested 2.52.6)
+
+Without FUSE, run it with `--appimage-extract` and start `squashfs-root/AppRun`.
+
 ## Verify your download
 `SHA256SUMS` is signed with key `A6E6 9ED6 BC47 79F3 2817  2148 4CC1 AFDE 15B6 4EA3`:
 
