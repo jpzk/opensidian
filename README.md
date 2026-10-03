@@ -21,6 +21,15 @@ Open-source, vault-compatible markdown notes app. Rust + Tauri v2, no Electron, 
 
 Opt-in Landlock sandbox: `OPENSIDIAN_LANDLOCK=1`.
 
+## Verify your download
+`SHA256SUMS` is signed with key `A6E6 9ED6 BC47 79F3 2817  2148 4CC1 AFDE 15B6 4EA3`:
+
+    curl -LO https://github.com/jpzk/opensidian/releases/download/v0.1/SHA256SUMS \
+         -LO https://github.com/jpzk/opensidian/releases/download/v0.1/SHA256SUMS.asc
+    gpg --keyserver hkps://keys.openpgp.org --recv-keys A6E69ED6BC4779F3281721484CC1AFDE15B64EA3
+    gpg --verify SHA256SUMS.asc SHA256SUMS
+    sha256sum -c --ignore-missing SHA256SUMS
+
 ## Build from source
 Debian/Ubuntu deps, then Rust (tested on 1.98.0):
 
