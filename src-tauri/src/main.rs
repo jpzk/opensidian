@@ -8460,8 +8460,25 @@ mod vaultbleed_tests {
         assert!(cur_vault(&v2).is_none(), "refused bind claims no root");
         assert!(cur_notes(&v2).is_empty(), "refused bind builds no index");
         drop(v1); // the first window exits
-        vaultlock::tests::acquire_eventually(&locks, &a.canonicalize().unwrap()).map(drop).expect("lock free");
-        bind_vault_locked(&v2, &alias, &locks).expect("free once the holder is gone");
+        // RETRY THE BIND ITSELF, same 3 s / 25 ms budget as acquire_eventually.
+        // The old probe-then-bind lost a race (gate rg-1791056354, bd724f7):
+        // a sibling test forking while the PROBE held its flock gives the child
+        // a copy of that open file description until its exec closes it
+        // (CLOEXEC), so the bind right after the probe's drop read Busy. A
+        // refused bind claims nothing (asserted above), so retrying is clean.
+        let t0 = std::time::Instant::now();
+        loop {
+            match bind_vault_locked(&v2, &alias, &locks) {
+                Err(BindErr::Lock(vaultlock::LockErr::Busy(_))) if t0.elapsed().as_secs() < 3 => {
+                    std::thread::sleep(std::time::Duration::from_millis(25))
+                }
+                r => {
+                    r.expect("free once the holder is gone");
+                    break;
+                }
+            }
+        }
+        assert!(cur_vault(&v2).is_some(), "the second backend owns the vault once the first is gone");
         let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&locks));
     }
 
