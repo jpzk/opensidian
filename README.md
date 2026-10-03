@@ -19,7 +19,7 @@ Open-source, vault-compatible markdown notes app. Rust + Tauri v2, no Electron, 
 
 **portable** (no system deps): [opensidian-0.1-x86_64-portable.AppImage](https://github.com/jpzk/opensidian/releases/download/v0.1/opensidian-0.1-x86_64-portable.AppImage)
 
-**flatpak** (pulls the GNOME 49 runtime from Flathub on first install):
+**flatpak** (tested on Fedora 44 and Ubuntu 26.04; pulls the GNOME 49 runtime from Flathub on first install):
 
     curl -LO https://github.com/jpzk/opensidian/releases/download/v0.1/opensidian-0.1-x86_64.flatpak
     flatpak install opensidian-0.1-x86_64.flatpak
