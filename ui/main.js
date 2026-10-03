@@ -3303,7 +3303,7 @@ function updateTitle() {          // pane/focus census in the window title (head
       // getPropertyValue hands back UNRESOLVED. Resolve it the way the graph's own
       // palette() does (a probe's computed colour) so the token is the colour drawn.
       // goal/themes4: and FALL BACK the way palette() does. A theme's text the browser
-      // refuses (Solarized's --accent-h is "17.57deg", so our hsl(calc(var(--accent-h) - 3), …)
+      // refuses (Solarized's --accent-h is "17.57deg", so our derived accent, a calc() on --accent-h minus 3,
       // is an invalid calc) is not what the graph draws — palette() then takes the same
       // token off :root, our own block. The census must name THAT colour, not the refused text.
       const csR = getComputedStyle(document.documentElement);
@@ -7405,7 +7405,7 @@ async function startGraph(g, cfg) {
   // draw threw, no GL renderer, every graph phase dead — d374a32).
   const PAL_VAR = { hi: "--accent-yellow", ctr: "--accent-green", node: "--accent-blue", edge: "--border", bg: "--graph-bg" };
   // goal/themes4: a THIRD rung for the node colour. Solarized declares --accent-h on :root as
-  // "17.57deg", so the derived --color-accent-1 (hsl(calc(var(--accent-h) - 3), …), the shape
+  // "17.57deg", so the derived --color-accent-1 (a calc() on --accent-h minus 3, the shape
   // stock uses too) is an invalid calc on body AND on :root — both rungs above refuse it and
   // the graph had no node colour at all. --color-accent is the un-derived base accent every
   // theme and our own block define; it is what the theme means by "accent".
