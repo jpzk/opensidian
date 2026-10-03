@@ -1491,15 +1491,23 @@ async fn open_vault_window(app: tauri::AppHandle, win: tauri::Window, v: State<'
         None
     };
     let (p2, sw2) = (p.clone(), sw.clone());
-    let pid = tauri::async_runtime::spawn_blocking(move || match spawner::client() {
-        // vaultbleed D: a child of a confined window would be confined to THIS
-        // vault for life (landlock is inherited) — the unconfined spawner
-        // starts it, after the same checks (LiveSpawner::open)
-        Some(c) => c.open(&p2, sw2.as_ref()),
-        None => spawn_checked(&p2, sw2.as_ref()),
-    })
-    .await
-    .map_err(|e| e.to_string())??;
+    // vsfix: the span times the SPAWN (lock probe + fork/exec, in-process or
+    // through the spawner) — the part this window owns. A switch's wait for the
+    // child below is the child's boot + first paint, bounded by SWITCH_WAIT and
+    // logged with its own ms by [vaultwin]; timing it here would warn on every
+    // switch about work this process does not do.
+    let pid = span_timed!(
+        "open_vault_window",
+        tauri::async_runtime::spawn_blocking(move || match spawner::client() {
+            // vaultbleed D: a child of a confined window would be confined to THIS
+            // vault for life (landlock is inherited) — the unconfined spawner
+            // starts it, after the same checks (LiveSpawner::open)
+            Some(c) => c.open(&p2, sw2.as_ref()),
+            None => spawn_checked(&p2, sw2.as_ref()),
+        })
+        .await
+        .map_err(|e| e.to_string())
+    )??;
     let Some(sw) = sw else { return Ok(pid) };
     let canon = p.canonicalize().map_err(|e| e.to_string())?;
     let me = std::process::id();
@@ -1546,15 +1554,19 @@ fn switch_show(app: tauri::AppHandle) {
         return;
     }
     use tauri::Manager;
-    if let Some(w) = app.webview_windows().values().next() {
-        let _ = w.set_position(tauri::LogicalPosition::new(sw.x as f64, sw.y as f64));
-        let _ = w.set_size(tauri::LogicalSize::new(sw.w as f64, sw.h as f64));
-        if sw.max {
-            let _ = w.maximize();
+    // vsfix: the span times the window placement + show (WM round trips the
+    // user waits on during a switch); the early returns above are flag reads
+    span_timed!("switch_show", {
+        if let Some(w) = app.webview_windows().values().next() {
+            let _ = w.set_position(tauri::LogicalPosition::new(sw.x as f64, sw.y as f64));
+            let _ = w.set_size(tauri::LogicalSize::new(sw.w as f64, sw.h as f64));
+            if sw.max {
+                let _ = w.maximize();
+            }
+            let _ = w.show();
+            let _ = w.set_focus();
         }
-        let _ = w.show();
-        let _ = w.set_focus();
-    }
+    });
     eprintln!("[vaultwin] switch: pid={} shown at {}x{}@{},{} max={}", std::process::id(), sw.w, sw.h, sw.x, sw.y, sw.max);
 }
 
@@ -1567,7 +1579,8 @@ fn switch_ready(app: tauri::AppHandle, v: State<Vault>) {
     if SWITCH_DONE.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return;
     }
-    match v.lock.get().map(|l| l.mark_ready(&sw.token)) {
+    // vsfix: the span times the lock-file write the old window is polling for
+    match span_timed!("switch_ready", v.lock.get().map(|l| l.mark_ready(&sw.token))) {
         Some(Ok(())) => eprintln!("[vaultwin] switch: pid={} ready token={}", std::process::id(), sw.token),
         Some(Err(e)) => eprintln!("[vaultwin] switch: ready not written ({e}); the old window exits on its timeout"),
         None => eprintln!("[vaultwin] switch: no vault lock held; the old window exits on its timeout"),
@@ -8328,10 +8341,11 @@ fn vb_probe() -> Option<String> {
         return Some("-".into());
     };
     let dir = std::path::PathBuf::from(dir);
-    let errno = match std::fs::read_dir(&dir) {
+    // vsfix: a directory read on the UI's census path; timed like list_dirs
+    let errno = span_timed!("vb_probe", match std::fs::read_dir(&dir) {
         Ok(_) => 0,
         Err(e) => e.raw_os_error().unwrap_or(-1),
-    };
+    });
     eprintln!(
         "[vbprobe] pid={} read_dir {}: errno {}{}",
         std::process::id(),
