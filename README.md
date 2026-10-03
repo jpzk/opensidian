@@ -71,6 +71,37 @@ Tested 2026-10-03 on fresh Ubuntu 26.04 LTS and Fedora 44 with Rust 1.98.0
 ## Licence
 GPL-3.0-or-later ([LICENSE](LICENSE)). Read [THIRD-PARTY.md](THIRD-PARTY.md) before redistributing.
 
+## Themes
+Themes are plain files in your vault, laid out the same way Obsidian lays them out, so most Obsidian
+community themes work as they are.
+
+Four community themes ship with the app, unmodified: **AnuPpuccin**, **Material Gruvbox**, **Minimal**
+and **Solarized** (authors, pinned versions and licences in [THIRD-PARTY.md](THIRD-PARTY.md)). Next to
+them is **(Default)**, opensidian's own look. The four are copied into `<vault>/.obsidian/themes/` the
+first time you open a vault. Files you already have are never overwritten, and themes from earlier
+versions (1984, Slate, Wasp) stay in vaults that already have them. Seeding never picks a theme for
+you: a new vault starts on (Default).
+
+Minimal is built for the Style Settings plugin. opensidian doesn't support plugins, so Minimal runs
+with its default settings.
+
+Install a theme:
+
+1. Create a folder named after the theme in `<vault>/.obsidian/themes/`, e.g. `.obsidian/themes/Things/`.
+2. Put the theme's `manifest.json` and `theme.css` in that folder. The `"name"` in `manifest.json`
+   has to match the folder name exactly.
+3. Pick it in **Settings ▸ Appearance ▸ Themes**, or from the command palette (`Ctrl+P` ▸ "Use theme: …").
+   Your choice is saved as `cssTheme` in `.obsidian/appearance.json`. **(Default)** switches back.
+
+If a theme folder is broken (no or unparsable `manifest.json`, wrong name, no `theme.css`), the dropdown
+lists it greyed out with the reason and the app keeps painting Default. Dark/light mode still applies on
+top of whichever theme you pick.
+
+CSS snippets: put `<name>.css` in `<vault>/.obsidian/snippets/` and switch it on in
+**Settings ▸ Appearance ▸ CSS snippets**. Snippets apply on top of the theme, in the order you turned them on.
+
+Changes to theme and snippet files reload live. You don't need to restart.
+
 ## AI disclosure
 
 opensidian was built predominantly with AI models. Nearly all of the code, the design docs, and this README were written by Claude (Anthropic's models, via Claude Code) working from prompts, reviews, and corrections by a single human maintainer. The human decided what to build and what the trust model must guarantee, read and pushed back on the output, and ran it; the models wrote most of the lines. Commit messages record the design rationale in the same way — many were drafted by the model and edited by the maintainer.
