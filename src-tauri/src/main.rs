@@ -39,17 +39,37 @@ struct Vault {
     index: Mutex<Index>,
 }
 
-fn cur_vault(v: &State<Vault>) -> Option<PathBuf> {
+fn cur_vault(v: &Vault) -> Option<PathBuf> {
     v.root.lock().unwrap().clone()
 }
 
+/* vaultbleed: a named point INSIDE a root+index critical path, where a test
+   can land a vault switch deterministically instead of hoping a sleep lines
+   it up. Production: a no-op the optimiser deletes. Tests: a thread-local
+   closure (thread-local, so parallel cargo tests never see each other's hook).
+   The hook always runs with NO vault lock held — a test hook that switches the
+   vault must be able to take every lock open_vault takes. */
+#[cfg(test)]
+thread_local! {
+    static VAULT_HOOK: std::cell::RefCell<Option<Box<dyn FnMut(&'static str)>>> = std::cell::RefCell::new(None);
+}
+#[inline(always)]
+fn vault_hook(_at: &'static str) {
+    #[cfg(test)]
+    VAULT_HOOK.with(|h| {
+        if let Some(f) = h.borrow_mut().as_mut() {
+            f(_at)
+        }
+    });
+}
+
 /// sorted note list from the index (empty when no vault open)
-fn cur_notes(v: &State<Vault>) -> Vec<String> {
+fn cur_notes(v: &Vault) -> Vec<String> {
     v.index.lock().unwrap().names().to_vec()
 }
 
 /// open a vault: swap root + rebuild the index (one walk, one read per note)
-fn open_vault(v: &State<Vault>, p: &Path) {
+fn open_vault(v: &Vault, p: &Path) {
     // R3 (item 4): the vault SWITCH seeds too, and before the index walk, so
     // the frontend's themes_scan — which runs after this returns — sees the
     // built-ins as ordinary theme dirs on the new root. Seeding writes only
@@ -670,8 +690,9 @@ fn write_note(v: State<Vault>, name: String, content: String, otel: Option<perf:
     span_timed!(otel => "write_note", write_note_inner(&v, &name, &content), serde_json::json!({"bytes": bytes}))
 }
 
-fn write_note_inner(v: &State<Vault>, name: &str, content: &str) -> Result<(), String> {
+fn write_note_inner(v: &Vault, name: &str, content: &str) -> Result<(), String> {
     let root = cur_vault(v).ok_or("no vault open")?;
+    vault_hook("write_note:pre_lock");
     // R11: lock BEFORE the write — the watcher reads+compares under this
     // lock, so it never sees our bytes on disk without them in the index
     let mut ix = v.index.lock().unwrap();
@@ -3698,53 +3719,63 @@ fn spawn_watcher(app: tauri::AppHandle) {
         let mut prev: Option<(PathBuf, watcher::Snapshot)> = None;
         loop {
             std::thread::sleep(std::time::Duration::from_millis(watcher::TICK_MS));
-            let v = app.state::<Vault>();
-            let Some(root) = cur_vault(&v) else { prev = None; continue };
-            let mut cur = watcher::snapshot(&root);
-            let change = match &prev {
-                Some((r, s)) if *r == root => {
-                    let mut d = watcher::diff(s, &cur);
-                    /* THE S1 GUARD (goal/tabclose). A removal is the only
-                       change class that DESTROYS state the user cannot get
-                       back from the event: the UI closes those tabs (R11.4)
-                       and whatever was inside the save debounce goes with
-                       them. A walk that came back short produces exactly the
-                       same Diff as a mass delete, so a claimed removal is
-                       CONFIRMED before it is believed — a second walk, then an
-                       lstat per name still claimed gone. Both cost nothing on
-                       a tick that claims no removal, which is every idle
-                       tick. */
-                    if !d.removed.is_empty() {
-                        let claimed = d.removed.len();
-                        let mut c2 = watcher::snapshot(&root);
-                        let mut d2 = watcher::diff(s, &c2);
-                        let healed = watcher::heal_short_walk(&root, &mut c2, &mut d2);
-                        if d2.removed.len() < claimed {
-                            eprintln!(
-                                "[tabclose] SHORT WALK REJECTED claimed={claimed} confirmed={} restat_healed={:?} kept={:?}",
-                                d2.removed.len(),
-                                healed,
-                                d2.removed
-                            );
-                        }
-                        cur = c2;
-                        d = d2;
-                    }
-                    if d.added.is_empty() && d.removed.is_empty() && d.modified.is_empty() {
-                        watcher::Change::default()
-                    } else {
-                        let mut ix = v.index.lock().unwrap();
-                        span_timed!("watcher_reconcile", watcher::reconcile(&root, &d, &mut ix))
-                    }
-                }
-                _ => watcher::Change::default(),
-            };
-            prev = Some((root, cur));
+            let change = watch_tick(&app.state::<Vault>(), &mut prev);
             if !change.is_empty() {
                 let _ = app.emit("vault-changed", &change);
             }
         }
     });
+}
+
+/// One watcher tick, Tauri-free so cargo tests can drive it against a real
+/// Vault (vaultbleed). Returns what the UI is told; `prev` is the baseline.
+fn watch_tick(v: &Vault, prev: &mut Option<(PathBuf, watcher::Snapshot)>) -> watcher::Change {
+    let Some(root) = cur_vault(v) else {
+        *prev = None;
+        return watcher::Change::default();
+    };
+    let mut cur = watcher::snapshot(&root);
+    let change = match &*prev {
+        Some((r, s)) if *r == root => {
+            let mut d = watcher::diff(s, &cur);
+            /* THE S1 GUARD (goal/tabclose). A removal is the only
+               change class that DESTROYS state the user cannot get
+               back from the event: the UI closes those tabs (R11.4)
+               and whatever was inside the save debounce goes with
+               them. A walk that came back short produces exactly the
+               same Diff as a mass delete, so a claimed removal is
+               CONFIRMED before it is believed — a second walk, then an
+               lstat per name still claimed gone. Both cost nothing on
+               a tick that claims no removal, which is every idle
+               tick. */
+            if !d.removed.is_empty() {
+                let claimed = d.removed.len();
+                let mut c2 = watcher::snapshot(&root);
+                let mut d2 = watcher::diff(s, &c2);
+                let healed = watcher::heal_short_walk(&root, &mut c2, &mut d2);
+                if d2.removed.len() < claimed {
+                    eprintln!(
+                        "[tabclose] SHORT WALK REJECTED claimed={claimed} confirmed={} restat_healed={:?} kept={:?}",
+                        d2.removed.len(),
+                        healed,
+                        d2.removed
+                    );
+                }
+                cur = c2;
+                d = d2;
+            }
+            if d.added.is_empty() && d.removed.is_empty() && d.modified.is_empty() {
+                watcher::Change::default()
+            } else {
+                vault_hook("watch_tick:pre_lock");
+                let mut ix = v.index.lock().unwrap();
+                span_timed!("watcher_reconcile", watcher::reconcile(&root, &d, &mut ix))
+            }
+        }
+        _ => watcher::Change::default(),
+    };
+    *prev = Some((root, cur));
+    change
 }
 
 /* ---------- R33 frameless window: the app draws its own frame ----------
@@ -7966,4 +7997,120 @@ mod tests {
 #[tauri::command]
 fn nob_probe() -> bool {
     std::env::var("OPENSIDIAN_NOBPROBE").as_deref() == Ok("1")
+}
+
+/* vaultbleed (operator 2026-10-03, SEVERE): "i see tags from another vault in
+   my sidebar that has been opened before". These tests land a vault switch at
+   the exact instant a root+index critical path is between "I read the root"
+   and "I hold the index" (vault_hook), and assert the one invariant the bug
+   breaks: the in-memory index of the vault that is OPEN equals that vault's
+   disk — nothing that exists only in the other vault, in tag_counts, in the
+   note list, or in search. */
+#[cfg(test)]
+mod vaultbleed_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn mk(tag: &str, files: &[(&str, &str)]) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("opensidian-vb-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        for (n, c) in files {
+            fs::write(root.join(format!("{n}.md")), c).unwrap();
+        }
+        root
+    }
+    fn vault_at(p: &Path) -> Arc<Vault> {
+        let v = Arc::new(Vault { root: Mutex::new(None), index: Mutex::new(Index::default()) });
+        open_vault(&v, p);
+        v
+    }
+    fn set_hook(f: impl FnMut(&'static str) + 'static) {
+        VAULT_HOOK.with(|h| *h.borrow_mut() = Some(Box::new(f)));
+    }
+    fn clear_hook() {
+        VAULT_HOOK.with(|h| *h.borrow_mut() = None);
+    }
+    /// switch to `to` the FIRST time the path reaches `at`, then never again
+    fn switch_once_at(v: &Arc<Vault>, at: &'static str, to: &Path) {
+        let (v, to) = (v.clone(), to.to_path_buf());
+        let mut fired = false;
+        set_hook(move |p| {
+            if p == at && !fired {
+                fired = true;
+                open_vault(&v, &to);
+            }
+        });
+    }
+    /// the invariant: open vault's index == its disk, and none of `foreign`
+    /// (tags / note names / a search word that exist ONLY in the other vault)
+    /// is visible through tag_counts, the note list or search.
+    fn assert_clean(v: &Vault, want_root: &Path, foreign_tag: &str, foreign_notes: &[&str], ctx: &str) {
+        let root = cur_vault(v).expect("a vault is open");
+        assert_eq!(root, want_root, "{ctx}: wrong vault open");
+        let ix = v.index.lock().unwrap();
+        let disk = Index::build(&root);
+        let tc = ix.tag_counts();
+        assert!(!tc.contains_key(foreign_tag), "{ctx}: tag_counts of {} carries #{foreign_tag}: {tc:?}", root.display());
+        for n in foreign_notes {
+            assert!(!ix.names().iter().any(|x| x == n), "{ctx}: note list of {} carries {n}: {:?}", root.display(), ix.names());
+        }
+        let hits = search_docs(ix.docs(), foreign_tag);
+        assert!(hits.is_empty(), "{ctx}: search '{foreign_tag}' in {} hit {:?}", root.display(), hits.iter().map(|h| &h.note).collect::<Vec<_>>());
+        assert_eq!(ix.names(), disk.names(), "{ctx}: note list != disk");
+        assert_eq!(tc, disk.tag_counts(), "{ctx}: tag_counts != disk");
+    }
+
+    /* THE OPERATOR'S REPORT, deterministic. 20 A->B->A rounds; on every leg
+       the vault being LEFT has a note modified (leaveVault's flush guarantees
+       exactly that on the switch tick), and the switch lands between the
+       watcher's walk of the old root and its index lock. */
+    #[test]
+    fn vaultbleed_watcher_tick_never_reconciles_the_old_vault_into_the_new() {
+        let a = mk("wa", &[("onlyA-note", "seed #onlyA\n"), ("shared", "a side\n")]);
+        let b = mk("wb", &[("onlyB-note", "seed #onlyB\n"), ("shared", "b side\n")]);
+        let v = vault_at(&a);
+        let mut prev = None;
+        watch_tick(&v, &mut prev); // baseline A
+        for i in 0..20 {
+            // A is modified (and grows a new A-only note) during the switch
+            fs::write(a.join("onlyA-note.md"), format!("edit {} #onlyA\n", "x".repeat(i + 1))).unwrap();
+            fs::write(a.join(format!("onlyA-new{i}.md")), "#onlyA fresh\n").unwrap();
+            switch_once_at(&v, "watch_tick:pre_lock", &b);
+            let ch = watch_tick(&v, &mut prev);
+            clear_hook();
+            let ctx = format!("round {i} A->B");
+            let fresh = format!("onlyA-new{i}");
+            assert_clean(&v, &b, "onlyA", &["onlyA-note", fresh.as_str()], &ctx);
+            assert!(!ch.modified.iter().chain(&ch.added).any(|n| n.starts_with("onlyA")), "{ctx}: vault-changed names A notes while B is open: {ch:?}");
+            watch_tick(&v, &mut prev); // a steady tick on B must stay clean too
+            assert_clean(&v, &b, "onlyA", &["onlyA-note"], &format!("{ctx} +1 tick"));
+            // ... and back: B modified during the B->A switch
+            fs::write(b.join("onlyB-note.md"), format!("edit {} #onlyB\n", "y".repeat(i + 1))).unwrap();
+            switch_once_at(&v, "watch_tick:pre_lock", &a);
+            watch_tick(&v, &mut prev);
+            clear_hook();
+            assert_clean(&v, &a, "onlyB", &["onlyB-note"], &format!("round {i} B->A"));
+            watch_tick(&v, &mut prev);
+            assert_clean(&v, &a, "onlyB", &["onlyB-note"], &format!("round {i} B->A +1 tick"));
+        }
+        let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&b));
+    }
+
+    /* The same class on the command side: write_note reads the root, then
+       takes the index lock. A switch in between must not leave the open
+       vault's index holding a note its disk does not have. */
+    #[test]
+    fn vaultbleed_write_note_racing_a_switch_keeps_index_equal_to_disk() {
+        let a = mk("na", &[("onlyA-note", "seed #onlyA\n")]);
+        let b = mk("nb", &[("onlyB-note", "seed #onlyB\n")]);
+        let v = vault_at(&a);
+        switch_once_at(&v, "write_note:pre_lock", &b);
+        let _ = write_note_inner(&v, "onlyA-note", "typed in A #onlyA\n");
+        clear_hook();
+        assert_clean(&v, &b, "onlyA", &["onlyA-note"], "write_note raced set_vault");
+        // and A's bytes never reached B's disk
+        assert!(!b.join("onlyA-note.md").exists(), "write_note wrote A's note into B on disk");
+        let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&b));
+    }
 }
