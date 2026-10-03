@@ -669,7 +669,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
         border-top: 1px solid var(--bg-surface) }
 .ptext { flex: 1; display: flex; flex-direction: column }
 .ptext span { color: var(--text-chrome-muted); font-size: 12px }
-.prow button, #p-go { background: var(--bg-button-primary); color: var(--text-on-accent); border: 0;
+.prow button, #p-go, #p-gonew { background: var(--bg-button-primary); color: var(--text-on-accent); border: 0;
         border-radius: 5px; padding: 8px 18px; cursor: pointer }
 #p-back { background: var(--bg-surface); color: var(--text-chrome); border: 0; border-radius: 5px;
           padding: 8px 18px; cursor: pointer }
@@ -685,10 +685,14 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 /* R1.6 recent-vault rows: empty list collapses to just the top border */
 #p-recent { list-style: none; border-top: 1px solid var(--bg-surface); margin: 0; padding: 4px 0;
             max-height: 150px; overflow-y: auto }
-#p-recent li { padding: 6px 10px; cursor: pointer; border-radius: 5px;
+#p-recent li { padding: 6px 10px; cursor: pointer; border-radius: 5px; position: relative;
                display: flex; flex-direction: column; font-size: 13px }
 #p-recent li:hover { background: var(--bg-surface) }
 #p-recent li span { color: var(--text-chrome-muted); font-size: 11px }
+/* vaultbleed: "open in new window" on a recent row (only in an open vault) */
+#p-recent .p-newwin { position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+            background: none; border: 0; color: var(--text-chrome-muted); cursor: pointer; font-size: 15px }
+#p-recent .p-newwin:hover { color: var(--text-chrome) }
 #p-close { position: absolute; top: 10px; right: 12px; background: none;
            border: 0; color: var(--text-chrome-muted); font-size: 15px; cursor: pointer }
 #bar button svg, #bmbar button svg { width: 16px; height: 16px; display: block; margin: 0 auto }

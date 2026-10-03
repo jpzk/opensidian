@@ -2,8 +2,7 @@
 /* Landlock self-sandbox — OFF by default (operator 2026-09-30); OPENSIDIAN_LANDLOCK=1 opts in,
    OPENSIDIAN_NO_LANDLOCK=1 forces it off and wins over the opt-in. When enabled it is applied once in main()
    BEFORE tauri spawns webkit, so every thread/child process inherits it:
-   filesystem writes are confined to the vault, ~/.opensidian.json and the
-   caches webkit/mesa/fontconfig need; the rest of the system is read-only
+   filesystem writes are confined to the vault and the caches webkit/mesa/fontconfig need; the rest of the system is read-only
    and $HOME is not readable as a whole — dir listing only (for the picker),
    plus READ on the three R31.12 drop-source folders (see DROP_READ_DIRS),
    which is what makes drag & drop of an image possible at all.
@@ -53,7 +52,8 @@ fn env_path(k: &str) -> Option<PathBuf> {
    Paths under /media are not granted either; /run/media happens to be
    reachable because /run is already RW for the X11/dbus sockets.
    Widening further is an OPERATOR decision, one line away, deliberately not
-   taken here. $HOME itself keeps ReadDir only (the picker lists, never reads). */
+   taken here. $HOME gets NO right at all (vaultbleed: a ReadDir rule is recursive
+   and listed every other vault); a confined picker lists through the spawner. */
 pub const DROP_READ_DIRS: [&str; 3] = ["Pictures", "Downloads", "Desktop"];
 
 /// The read-only half of the ruleset, AS DATA. This kernel has no Landlock
@@ -79,14 +79,13 @@ pub fn read_roots(home: &Path) -> Vec<PathBuf> {
 
 /// The read-write half, as data for the same reason. A drop source is NEVER in
 /// here: opensidian copies out of those folders and never writes into them.
-pub fn write_roots(home: &Path, vault: &Path, cfg: &Path) -> Vec<PathBuf> {
+pub fn write_roots(home: &Path, vault: &Path) -> Vec<PathBuf> {
     // webkit/mesa/fontconfig scratch + sockets (X11, wayland, dbus, shm, gpu)
     let mut rw: Vec<PathBuf> = ["/tmp", "/dev", "/run", "/var/tmp"].iter().map(PathBuf::from).collect();
     rw.extend([
         home.join(".cache"),
         home.join(".local/share/dev.koto.opensidian"),
         vault.to_path_buf(),
-        cfg.to_path_buf(),
     ]);
     rw
 }
@@ -156,29 +155,27 @@ pub struct RulesetPlan {
 /// tests as threads in ONE process, so a `set_var` here would race
 /// `confines_reads_to_vault` (which calls `enforce`) and make the suite
 /// flaky-green. The env read itself is `no_landlock_requested()`, one line.
-pub fn ruleset_plan(disabled: bool, home: &Path, vault: &Path, cfg: &Path) -> Option<RulesetPlan> {
+pub fn ruleset_plan(disabled: bool, home: &Path, vault: &Path) -> Option<RulesetPlan> {
     if disabled {
         return None;
     }
     Some(RulesetPlan {
         read: read_roots(home),
-        write: write_roots(home, vault, cfg),
-        // picker may list dirs under $HOME, never read files there
-        list_only: vec![home.to_path_buf()],
+        write: write_roots(home, vault),
+        // vaultbleed: NOTHING list-only. A ReadDir rule on $HOME is inherited
+        // by every directory beneath it, i.e. it listed every other vault; a
+        // confined window's picker lists through the spawner instead
+        list_only: vec![],
     })
 }
 
-pub fn enforce(vault: &Path, cfg: &Path) -> Result<RulesetStatus, Box<dyn std::error::Error>> {
+pub fn enforce(vault: &Path) -> Result<RulesetStatus, Box<dyn std::error::Error>> {
     let off = no_landlock_requested();
     if off {
         return Ok(RulesetStatus::NotEnforced);
     }
     let vault = vault.canonicalize()?;
     let home = env_path("HOME").unwrap_or_else(|| PathBuf::from("/"));
-    // config file must exist before the rule can point at it
-    if !cfg.exists() {
-        std::fs::write(cfg, "{}")?;
-    }
     let abi = ABI::V1;
     /* R24 — MOVING A FILE BETWEEN TWO DIRECTORIES IS A LANDLOCK RIGHT OF ITS OWN.
        ABI v1 has no REFER, and a v1 ruleset denies EVERY cross-directory
@@ -208,7 +205,7 @@ pub fn enforce(vault: &Path, cfg: &Path) -> Result<RulesetStatus, Box<dyn std::e
     let refer = AccessFs::Refer;
     // ONE source of truth: the vectors below are the tested ones, or the tests
     // are testing a ruleset the kernel never sees.
-    let plan = match ruleset_plan(off, &home, &vault, cfg) {
+    let plan = match ruleset_plan(off, &home, &vault) {
         Some(p) => p,
         None => return Ok(RulesetStatus::NotEnforced),
     };
@@ -265,7 +262,7 @@ mod tests {
     #[test]
     fn ro_vec_does_not_widen_to_all_of_home() {
         let home = Path::new("/home/u");
-        let (ro, rw) = (read_roots(home), write_roots(home, Path::new("/home/u/vault"), Path::new("/home/u/.opensidian.json")));
+        let (ro, rw) = (read_roots(home), write_roots(home, Path::new("/home/u/vault")));
         assert!(!ro.contains(&home.to_path_buf()), "$HOME itself must never be readable: {ro:?}");
         // no granted root may be an ancestor of a secret-bearing dotfile
         for secret in [".ssh/id_ed25519", ".gnupg/secring.gpg", ".aws/credentials", ".netrc", ".bash_history", ".mozilla/firefox"] {
@@ -287,8 +284,10 @@ mod tests {
     fn rw_vec_is_the_vault_not_the_drop_sources() {
         let home = Path::new("/home/u");
         let (vault, cfg) = (home.join("vault"), home.join(".opensidian.json"));
-        let rw = write_roots(home, &vault, &cfg);
-        assert!(rw.contains(&vault) && rw.contains(&cfg), "{rw:?}");
+        let rw = write_roots(home, &vault);
+        // vaultbleed D: the config is NOT a rule (inode-bound rule vs atomic rename) —
+        // a confined window reaches it only through the unconfined spawner
+        assert!(rw.contains(&vault) && !rw.contains(&cfg), "{rw:?}");
         for d in DROP_READ_DIRS {
             assert!(!rw.contains(&home.join(d)), "~/{d} must be READ-only: {rw:?}");
         }
@@ -305,9 +304,9 @@ mod tests {
     /// would sandbox itself in the very configuration documented as "off".
     #[test]
     fn ruleset_plan_is_none_when_the_no_landlock_switch_is_set() {
-        let (home, vault, cfg) = (Path::new("/home/u"), Path::new("/home/u/vault"), Path::new("/home/u/.opensidian.json"));
-        assert_eq!(ruleset_plan(true, home, vault, cfg), None, "the off-switch must build no ruleset at all");
-        assert!(ruleset_plan(false, home, vault, cfg).is_some(), "switch not set to off: a ruleset must be built (main() only calls this when landlock_enabled())");
+        let (home, vault) = (Path::new("/home/u"), Path::new("/home/u/vault"));
+        assert_eq!(ruleset_plan(true, home, vault), None, "the off-switch must build no ruleset at all");
+        assert!(ruleset_plan(false, home, vault).is_some(), "switch not set to off: a ruleset must be built (main() only calls this when landlock_enabled())");
         // ...and the switch is that variable, spelled once (main.rs reads it
         // through no_landlock_requested(), features.md names the same string).
         assert_eq!(NO_LANDLOCK_ENV, "OPENSIDIAN_NO_LANDLOCK");
@@ -347,12 +346,14 @@ mod tests {
     /// hands the kernel, or these tests guard a vector nobody applies.
     #[test]
     fn ruleset_plan_is_built_from_the_same_vectors_enforce_applies() {
-        let (home, vault, cfg) = (Path::new("/home/u"), Path::new("/home/u/vault"), Path::new("/home/u/.opensidian.json"));
-        let p = ruleset_plan(false, home, vault, cfg).expect("switch is off");
+        let (home, vault) = (Path::new("/home/u"), Path::new("/home/u/vault"));
+        let p = ruleset_plan(false, home, vault).expect("switch is off");
         assert_eq!(p.read, read_roots(home), "plan.read must BE read_roots()");
-        assert_eq!(p.write, write_roots(home, vault, cfg), "plan.write must BE write_roots()");
-        // $HOME is ReadDir-only — listable for the picker, never readable
-        assert_eq!(p.list_only, vec![home.to_path_buf()]);
+        assert_eq!(p.write, write_roots(home, vault), "plan.write must BE write_roots()");
+        // vaultbleed crit 5: NO list-only $HOME — ReadDir is inherited by every
+        // directory beneath, so it listed every other vault; the picker of a
+        // confined window lists through the spawner (Req::ListDirs)
+        assert!(p.list_only.is_empty(), "{:?}", p.list_only);
         assert!(!p.read.contains(&home.to_path_buf()) && !p.write.contains(&home.to_path_buf()));
     }
 
@@ -361,14 +362,14 @@ mod tests {
     /// system — a widening here is the one that turns the sandbox into
     /// decoration, and it is the mutation in docs/negctl-lands control B.
     #[test]
-    fn ruleset_plan_confines_writes_to_the_vault_cfg_and_named_scratch() {
+    fn ruleset_plan_confines_writes_to_the_vault_and_named_scratch() {
         let (home, vault, cfg) = (Path::new("/home/u"), Path::new("/home/u/vault"), Path::new("/home/u/.opensidian.json"));
-        let w = ruleset_plan(false, home, vault, cfg).expect("switch is off").write;
-        assert!(w.contains(&vault.to_path_buf()) && w.contains(&cfg.to_path_buf()), "{w:?}");
+        let w = ruleset_plan(false, home, vault).expect("switch is off").write;
+        assert!(w.contains(&vault.to_path_buf()) && !w.contains(&cfg.to_path_buf()), "{w:?}");
         let allowed: Vec<PathBuf> = ["/tmp", "/dev", "/run", "/var/tmp"]
             .iter()
             .map(PathBuf::from)
-            .chain([home.join(".cache"), home.join(".local/share/dev.koto.opensidian"), vault.to_path_buf(), cfg.to_path_buf()])
+            .chain([home.join(".cache"), home.join(".local/share/dev.koto.opensidian"), vault.to_path_buf()])
             .collect();
         assert_eq!(w, allowed, "the writable set grew or shrank — say so in features.md before changing it");
         // no writable root may CONTAIN the home dir, the vault's parent or /
@@ -385,8 +386,8 @@ mod tests {
     /// upgrades it to RW, since landlock unions the rules for a path).
     #[test]
     fn ruleset_plan_read_only_roots_are_not_also_writable() {
-        let (home, vault, cfg) = (Path::new("/home/u"), Path::new("/home/u/vault"), Path::new("/home/u/.opensidian.json"));
-        let p = ruleset_plan(false, home, vault, cfg).expect("switch is off");
+        let (home, vault) = (Path::new("/home/u"), Path::new("/home/u/vault"));
+        let p = ruleset_plan(false, home, vault).expect("switch is off");
         for r in &p.read {
             assert!(!p.write.contains(r), "{r:?} is in BOTH halves — read-only is a lie for it");
         }
@@ -443,9 +444,9 @@ mod tests {
         fs::create_dir_all(tmp.join("vault")).unwrap();
         let probe = home.join(format!(".opensidian-probe-{}", std::process::id()));
         fs::write(&probe, "secret").unwrap();
-        let (vault, cfg, probe2) = (tmp.join("vault"), tmp.join("cfg.json"), probe.clone());
+        let (vault, probe2) = (tmp.join("vault"), probe.clone());
         let res = std::thread::spawn(move || {
-            if enforce(&vault, &cfg).is_err() {
+            if enforce(&vault).is_err() {
                 return None; // kernel without landlock (e.g. this firecracker guest)
             }
             fs::write(vault.join("a.md"), "x").expect("vault writable");
@@ -461,6 +462,106 @@ mod tests {
         match res {
             None => eprintln!("landlock unsupported here — test skipped"),
             Some(r) => assert_eq!(r, (false, false, true, true, false)),
+        }
+    }
+
+    /* vaultbleed D — THE SPAWNER UNDER A REAL RULESET. The serving thread is
+       started BEFORE the confined thread restricts itself (restrict_self is
+       per-thread), so it stands where the real spawner process stands:
+       outside the domain. Everything lives under $HOME (no rights), NOT /tmp
+       (a write root, where nothing would be refused and nothing proved). */
+    struct TestSpawner {
+        cfg: PathBuf,
+        locks: PathBuf,
+    }
+    impl crate::spawner::Handler for TestSpawner {
+        fn open(&self, p: &Path, _sw: Option<&crate::spawn::Switch>) -> Result<u32, String> {
+            // the spawner can see what the confined window cannot
+            fs::read(p.join("secret.md")).map(|_| 7).map_err(|e| e.to_string())
+        }
+        fn create(&self, parent: &str, name: &str) -> Result<PathBuf, String> {
+            let p = Path::new(parent).join(name);
+            fs::create_dir(&p).map(|_| p).map_err(|e| e.to_string())
+        }
+        fn cfg(&self, ops: &[crate::cfgstore::Op]) -> Result<(), String> {
+            crate::cfgstore::update_in(&self.locks, &self.cfg, ops).map(|_| ())
+        }
+        fn read_cfg(&self) -> serde_json::Value {
+            crate::cfgstore::read_value_in(&self.locks, &self.cfg)
+        }
+        fn list_dirs(&self, path: &str) -> Vec<String> {
+            let mut v: Vec<String> = fs::read_dir(path).into_iter().flatten().flatten().filter_map(|e| e.file_name().into_string().ok()).collect();
+            v.sort();
+            v
+        }
+    }
+
+    #[test]
+    fn a_confined_window_reaches_the_config_and_other_vaults_only_through_the_spawner() {
+        if reexec_alone("sandbox::tests::a_confined_window_reaches_the_config_and_other_vaults_only_through_the_spawner") {
+            return;
+        }
+        use crate::cfgstore::Op;
+        let home = env_path("HOME").expect("HOME");
+        let base = home.join(format!(".opensidian-ll-sp-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let (a, b) = (base.join("A"), base.join("B"));
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        fs::write(b.join("secret.md"), "B's note").unwrap();
+        let (cfg, locks) = (base.join(".opensidian.json"), base.join("locks"));
+        // an unconfined window wrote the config first: rename -> a fresh inode
+        crate::cfgstore::update_in(&locks, &cfg, &[Op::PushRecent(a.display().to_string())]).unwrap();
+        let (mine, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+        let h = TestSpawner { cfg: cfg.clone(), locks };
+        let srv = std::thread::spawn(move || {
+            crate::spawner::serve(std::io::BufReader::new(theirs.try_clone().unwrap()), theirs, &h)
+        });
+        let (a2, b2, cfg2, base2) = (a.clone(), b.clone(), cfg.clone(), base.clone());
+        let res = std::thread::spawn(move || {
+            let c = crate::spawner::Client::new(mine).unwrap();
+            match enforce(&a2) {
+                Err(_) | Ok(RulesetStatus::NotEnforced) => return None,
+                Ok(_) => {}
+            }
+            let errno = |r: std::io::Result<()>| r.err().and_then(|e| e.raw_os_error());
+            fs::write(a2.join("own.md"), "x").expect("own vault writable");
+            let direct = (
+                errno(fs::read(b2.join("secret.md")).map(|_| ())),
+                errno(fs::write(b2.join("bleed.md"), "x")),
+                errno(fs::read(&cfg2).map(|_| ())),
+                errno(fs::write(&cfg2, "{}")),
+                // crit 5: the other vault's DIRECTORY, and $HOME above it
+                errno(fs::read_dir(&b2).map(|_| ())),
+                errno(fs::read_dir(&base2).map(|_| ())),
+            );
+            let via = (
+                c.open(&b2, None),
+                c.cfg(&[Op::PushRecent(b2.display().to_string())]),
+                c.read_cfg().map(|v| v["last"].clone()),
+                c.create(&base2.display().to_string(), "C").is_ok(),
+                c.list_dirs(&b2.display().to_string()),
+            );
+            Some((direct, via))
+        })
+        .join()
+        .unwrap();
+        srv.join().unwrap(); // the confined end dropped -> EOF -> served out
+        let c_made = base.join("C").is_dir();
+        let bleed = b.join("bleed.md").exists();
+        let _ = fs::remove_dir_all(&base);
+        match res {
+            None => eprintln!("landlock unsupported here — test skipped"),
+            Some((direct, via)) => {
+                eprintln!("[spawner-ll] direct errno (read B, write B, read cfg, write cfg, list B, list base) = {direct:?}");
+                assert_eq!(direct, (Some(13), Some(13), Some(13), Some(13), Some(13), Some(13)), "a confined window must get EACCES on the other vault (files AND its directory), the config, and listing above it");
+                assert!(!bleed);
+                assert_eq!(via.0, Ok(7), "open of another vault via the spawner");
+                assert_eq!(via.1, Ok(()), "config write via the spawner");
+                assert_eq!(via.2, Ok(serde_json::json!(b.display().to_string())), "config read via the spawner sees the write");
+                assert!(via.3 && c_made, "create-vault via the spawner");
+                assert_eq!(via.4, Ok(vec!["secret.md".to_string()]), "the picker lists through the spawner");
+            }
         }
     }
 
@@ -497,10 +598,10 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(tmp.join("vault/.trash")).unwrap();
         fs::create_dir_all(tmp.join("vault/sub")).unwrap();
-        let (vault, cfg) = (tmp.join("vault"), tmp.join("cfg.json"));
+        let vault = tmp.join("vault");
         let home = env_path("HOME").expect("HOME");
         let res = std::thread::spawn(move || {
-            if enforce(&vault, &cfg).is_err() {
+            if enforce(&vault).is_err() {
                 return None; // kernel without landlock
             }
             fs::write(vault.join("N.md"), "x").expect("vault writable");
@@ -509,7 +610,7 @@ mod tests {
             fs::write(vault.join("M.md"), "y").expect("vault writable");
             let moved = fs::rename(vault.join("M.md"), vault.join("sub/M.md"));
             // and the confinement is UNCHANGED: REFER may not carry a file into
-            // a hierarchy that does not grant it. $HOME is ReadDir-only, so a
+            // a hierarchy that does not grant it. $HOME has no right at all, so a
             // rename into it must still be refused — with EACCES, not EXDEV.
             // (NOT /tmp as the target: /tmp is itself a write root, where a
             // copy was always permitted, and a move that lands there proves

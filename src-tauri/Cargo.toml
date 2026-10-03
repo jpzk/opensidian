@@ -1,6 +1,6 @@
 [package]
 name = "opensidian"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 
@@ -33,3 +33,10 @@ gdkx11 = "=0.18.2"
 # fetches and trusts nothing new. Test-only: the shipped binary is unchanged.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 javascriptcore-rs = "=1.1.2"
+
+# goal themes4 — builtins.rs pins every vendored theme file by sha256. sha2
+# 0.10.9 is ALREADY in Cargo.lock (tauri's own build-time dependency); `=`
+# pins it to that locked version, so this fetches and trusts nothing new.
+# Test-only: the shipped binary is unchanged.
+[dev-dependencies]
+sha2 = "=0.10.9"

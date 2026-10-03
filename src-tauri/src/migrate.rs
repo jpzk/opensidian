@@ -20,6 +20,29 @@
    so neither the old file's location nor the write roots constrain it. The
    bookmark row runs per vault, lazily, from read_bm_tree (the vault is a
    write root, so it works under Landlock too). */
+
+/* LEGACY BUILT-IN THEMES (goal themes4, operator 2026-10-03). v0.1 seeded three
+   in-house themes into every vault it opened; v0.2 ships four upstream themes
+   instead (builtins.rs). THE DECISION, and why nothing in this file runs for it:
+
+   - The old "palette" key in ~/.opensidian.json was already dead before this
+     goal (main.rs, "THE PALETTE AXIS IS GONE"): unread, round-tripped, never
+     applied. Nothing to migrate.
+   - A vault's CHOICE lives in stock's own `.obsidian/appearance.json`
+     (`cssTheme`). It is NOT rewritten: that file is shared with the stock app
+     and we round-trip it byte-wise (themefs.rs), so an upgrade must not edit
+     it behind the user's back.
+   - The vault still has the old theme dir (every vault v0.1 opened does,
+     because seeding wrote it and seeding never deletes): it stays an ordinary
+     third-party theme — listed, chosen, painted, exactly as before.
+   - The dir is gone: the name is unlisted, and the existing rule "an unlisted
+     cssTheme paints Default" (main.rs vault_css_watch; ui/main.js) applies —
+     i.e. it maps to "" (Default) without writing anything, and reappears the
+     moment the user drops the folder back in.
+   So the mapping "old value -> Default unless the dir exists" is the scan's
+   own predicate; the tests below pin each leg through the production paths
+   (seed_builtin_themes, themes_scan, css_theme) so a later change to seeding
+   or listing that broke an upgraded vault is a red unit test. */
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -193,6 +216,84 @@ mod tests {
         assert_eq!(vault_bookmarks(&v), Some(v.join(NEW_BM)));
         assert_eq!(fs::read(v.join(NEW_BM)).unwrap(), b"Other\n".to_vec(), "new wins");
         assert_eq!(fs::read(v.join(OLD_BM)).unwrap(), b"Ideas\n".to_vec(), "old untouched");
+        let _ = fs::remove_dir_all(&v);
+    }
+
+    // ---- legacy built-in themes (goal themes4) — see the header above ----
+
+    /// names the v0.1 binary seeded; test INPUTS only (lint-themes B skips
+    /// test modules): no production code knows these names any more.
+    const LEGACY: [&str; 3] = ["1984", "Slate", "Wasp"];
+
+    fn legacy_vault(tag: &str, with_dirs: bool) -> PathBuf {
+        let v = tmp(tag);
+        fs::create_dir_all(v.join(".obsidian")).unwrap();
+        fs::write(v.join(".obsidian/appearance.json"), b"{\n  \"cssTheme\": \"Wasp\"\n}").unwrap();
+        if with_dirs {
+            for n in LEGACY {
+                let d = v.join(".obsidian/themes").join(n);
+                fs::create_dir_all(&d).unwrap();
+                let m = format!("{{\"name\":\"{n}\",\"version\":\"0.1.0\",\"minAppVersion\":\"0.0.0\",\"author\":\"opensidian\"}}");
+                fs::write(d.join("manifest.json"), m).unwrap();
+                fs::write(d.join("theme.css"), "body.theme-dark { --background-primary: #010203; }\n").unwrap();
+            }
+        }
+        v
+    }
+
+    /// Upgrade leg 1: the vault still holds the v0.1-seeded dirs. Seeding the
+    /// v0.2 built-ins leaves every legacy byte AND mtime alone, the legacy
+    /// themes stay LISTED, and the choice in appearance.json is untouched —
+    /// so the user's `Wasp` keeps painting after the upgrade.
+    #[test]
+    fn legacy_theme_dirs_survive_the_upgrade_and_stay_chosen() {
+        let v = legacy_vault("legacy-kept", true);
+        let snap = |v: &Path| {
+            LEGACY
+                .iter()
+                .flat_map(|n| ["manifest.json", "theme.css"].map(|f| v.join(".obsidian/themes").join(n).join(f)))
+                .map(|p| (fs::read(&p).unwrap(), fs::metadata(&p).unwrap().modified().unwrap()))
+                .collect::<Vec<_>>()
+        };
+        let before = snap(&v);
+        let app_before = fs::read(v.join(".obsidian/appearance.json")).unwrap();
+        let rep = crate::builtins::seed_builtin_themes(&v);
+        assert!(rep.failed.is_empty(), "{rep:?}");
+        assert_eq!(rep.wrote.len(), crate::builtins::BUILTIN_THEMES.len(), "the new four are added: {rep:?}");
+        for n in LEGACY {
+            assert!(!rep.wrote.iter().chain(&rep.kept).any(|w| w == n), "seeding must not even consider {n}");
+        }
+        assert_eq!(snap(&v), before, "a legacy theme's bytes or mtime changed");
+        assert_eq!(fs::read(v.join(".obsidian/appearance.json")).unwrap(), app_before, "appearance.json rewritten");
+        let s = crate::themefs::themes_scan(&v);
+        for n in LEGACY {
+            assert!(s.listed.iter().any(|l| l == n), "{n} must stay listed: {s:?}");
+        }
+        assert_eq!(s.listed.len(), 3 + crate::builtins::BUILTIN_THEMES.len(), "{s:?}");
+        assert_eq!(crate::themefs::css_theme(&v), "Wasp", "the choice is kept");
+        let _ = fs::remove_dir_all(&v);
+    }
+
+    /// Upgrade leg 2: the dir is gone. The choice is NOT rewritten (stock's
+    /// file), and the name is not listed — which is exactly the condition
+    /// under which the frontend paints Default. Dropping the folder back in
+    /// lists it again with no other step.
+    #[test]
+    fn a_legacy_choice_without_its_dir_resolves_to_default_without_a_write() {
+        let v = legacy_vault("legacy-gone", false);
+        let app_before = fs::read(v.join(".obsidian/appearance.json")).unwrap();
+        crate::builtins::seed_builtin_themes(&v);
+        let s = crate::themefs::themes_scan(&v);
+        assert!(!s.listed.iter().any(|l| l == "Wasp"), "a theme with no dir cannot be listed: {s:?}");
+        assert_eq!(s.listed.len(), crate::builtins::BUILTIN_THEMES.len(), "{s:?}");
+        assert_eq!(crate::themefs::css_theme(&v), "Wasp", "the stored choice is left as the user/stock wrote it");
+        assert_eq!(fs::read(v.join(".obsidian/appearance.json")).unwrap(), app_before, "appearance.json rewritten");
+        // reversible: the folder comes back -> the choice is live again
+        let d = v.join(".obsidian/themes/Wasp");
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("manifest.json"), r#"{"name":"Wasp","version":"0.1.0","minAppVersion":"0.0.0","author":"x"}"#).unwrap();
+        fs::write(d.join("theme.css"), "body.theme-dark { --background-primary: #010203; }\n").unwrap();
+        assert!(crate::themefs::themes_scan(&v).listed.iter().any(|l| l == "Wasp"));
         let _ = fs::remove_dir_all(&v);
     }
 }

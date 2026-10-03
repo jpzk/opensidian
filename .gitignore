@@ -21,3 +21,8 @@ dist/
 /docs
 /notes
 /bin
+
+# goal/agent scratch — never tracked (purged from history 2026-10-03)
+/progress.md
+/.goalenv
+/x

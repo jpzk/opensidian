@@ -1927,7 +1927,7 @@ async function saveNote(name, content) {    // true == the bytes are on disk
 async function leaveVault() {
   if (!state) return;
   for (const h of groups()) {
-    try { await flushSave(h); h.flushedAt = tgSeq; }   // tabclose: witness for the session-replace record
+    try { await flushSave(h); }
     finally { clearTimeout(h.saveT); h.saveT = null; }
   }
   // R28: the LAYOUT timer is process-wide, so the loop above cannot reach it.
@@ -2446,7 +2446,8 @@ async function wsFlush(force) {
 /* A VAULT SWITCH IS A HARD BOUNDARY FOR THE LAYOUT WRITER, and it needs its own
    function because leaveVault's existing loop disarms `saveT` per group — it
    knows nothing about the single process-wide layout timer. Three things have
-   to happen, in this order, BEFORE `set_vault` swaps the root:
+   to happen, in this order, BEFORE this process exits for a switch (vaultbleed:
+   a switch is a new process now; nothing swaps a root):
      1. flush what is pending, so leaving a vault persists the layout you had
         (R28.3 is "while running", and a switch is not an exit);
      2. await any write already in flight, because clearTimeout cannot recall an
@@ -3302,11 +3303,19 @@ function updateTitle() {          // pane/focus census in the window title (head
       // themematch: --accent-blue is now var(--text-accent) = an hsl-of-calc expression, which
       // getPropertyValue hands back UNRESOLVED. Resolve it the way the graph's own
       // palette() does (a probe's computed colour) so the token is the colour drawn.
-      const tokc = n => { const raw = tokv(n), pr = document.createElement("span");
+      // goal/themes4: and FALL BACK the way palette() does. A theme's text the browser
+      // refuses (Solarized's --accent-h is "17.57deg", so our derived accent, a calc() on --accent-h minus 3,
+      // is an invalid calc) is not what the graph draws — palette() then takes the same
+      // token off :root, our own block. The census must name THAT colour, not the refused text.
+      const csR = getComputedStyle(document.documentElement);
+      const res = raw => { const pr = document.createElement("span");
         pr.style.cssText = "position:absolute;left:-9999px;visibility:hidden"; pr.style.color = raw;
+        if (!pr.style.color) return "";
         document.body.appendChild(pr); const out = getComputedStyle(pr).color.trim().toLowerCase(); pr.remove();
-        return pr.style.color ? out : raw; };
-      gpx = " [gl:" + ((fgr && fgr.graphRenderer) || "none") + "] [graphbg:" + tokc("--graph-bg") + "] [graphnode:" + tokc("--accent-blue") + "]";
+        return out; };
+      const tokc = (n, alt) => { const raw = tokv(n);   // the same three rungs as palette() (PAL_ALT)
+        return res(raw) || res(csR.getPropertyValue(n).trim().toLowerCase()) || (alt ? res(tokv(alt)) : "") || raw; };
+      gpx = " [gl:" + ((fgr && fgr.graphRenderer) || "none") + "] [graphbg:" + tokc("--graph-bg") + "] [graphnode:" + tokc("--accent-blue", "--color-accent") + "]";
       const cvEl = fgr && fgr.graph;
       if (cvEl && !cvEl.hidden) {
         const r = cvEl.getBoundingClientRect();
@@ -5131,12 +5140,11 @@ for (const ev of ["mousedown", "mouseup", "auxclick", "click"])
    WHY a tab went — and dropTab() below cancels the pending save first, so a
    spurious close is silent data loss of everything typed inside the debounce.
 
-   So: there are exactly FOUR places in this file that remove a tab from a
+   So: there are exactly THREE places in this file that remove a tab from a
    group, and every one of them now names its cause here.
      closeTab()      user-close     (close glyph :1763, ctrl+w, delete dialog)
      dropTab()       external-delete / external-rename (the watcher)
      collapseGroup() pane-collapse  (R6.5 — the group follows its last tab)
-     enterVault()    session-replace (the whole layout is thrown away)
    The cause set is CLOSED and mirrored in src-tauri/src/main.rs
    (TAB_REMOVAL_CAUSES); an unknown cause is an error on both sides, because
    "something else removed it" is exactly the answer that was missing.
@@ -5152,7 +5160,7 @@ for (const ev of ["mousedown", "mouseup", "auxclick", "click"])
    undo-close rescue buffer because writing them was not allowed (R11.4: the
    file is gone). dirty=1 flushed=0 preserved=0 is the F-class defect, stated at
    the moment it happens instead of reconstructed from a bug report. */
-const TAB_CAUSES = ["user-close", "external-delete", "external-rename", "pane-collapse", "session-replace"];
+const TAB_CAUSES = ["user-close", "external-delete", "external-rename", "pane-collapse"];
 let tgSeq = 0, tgHist = [];        // census [tgn:<seq>] [tg:<cause>:<d>:<note>|...]
 /* A note name is user data and the census is a bracket-delimited string, so the
    same stripping the bookmark census uses applies: a note called "x] [dirty:0"
@@ -7396,6 +7404,12 @@ async function startGraph(g, cfg) {
   // so a reassigning palette() handed the warm-up frame the old, empty map (undefined bg,
   // draw threw, no GL renderer, every graph phase dead — d374a32).
   const PAL_VAR = { hi: "--accent-yellow", ctr: "--accent-green", node: "--accent-blue", edge: "--border", bg: "--graph-bg" };
+  // goal/themes4: a THIRD rung for the node colour. Solarized declares --accent-h on :root as
+  // "17.57deg", so the derived --color-accent-1 (a calc() on --accent-h minus 3, the shape
+  // stock uses too) is an invalid calc on body AND on :root — both rungs above refuse it and
+  // the graph had no node colour at all. --color-accent is the un-derived base accent every
+  // theme and our own block define; it is what the theme means by "accent".
+  const PAL_ALT = { node: "--color-accent" };
   const RGB = {};
   let pal = null, palKey = null;
   const palette = () => {
@@ -7410,7 +7424,8 @@ async function startGraph(g, cfg) {
       // empty token, a wide-gamut serialisation), fall back to the SAME token off :root,
       // which is our own block and always plain. Never empty, never transparent (DESIGN §7).
       const themeText = cs.getPropertyValue(PAL_VAR[k]).trim();
-      const v = cssColor(themeText) || cssColor(csRoot.getPropertyValue(PAL_VAR[k]).trim()) || themeText;
+      const v = cssColor(themeText) || cssColor(csRoot.getPropertyValue(PAL_VAR[k]).trim())
+        || (PAL_ALT[k] ? cssColor(cs.getPropertyValue(PAL_ALT[k]).trim()) : null) || themeText;
       p[k] = v; RGB[v] = chan01(v);                       // null only if BOTH were unreadable
     }
     probe.remove();
@@ -8027,13 +8042,13 @@ async function loadRecent() {
     li.innerHTML = "<b></b><span></span>";
     li.querySelector("b").textContent = base(p);
     li.querySelector("span").textContent = p;
-    li.onclick = async () => {
-      await leaveVault();                    // F2: flush + disarm BEFORE the root swaps
-      try { vaultPath = await inv("set_vault", { path: p }); }
-      catch (err) { $("p-err").textContent = String(err); return; }
-      $("picker").hidden = true;
-      await enterVault();
-    };
+    li.onclick = () => openVault(p, true);  // boot picker: bind; open window: SWITCH (new process)
+    if (vaultPath) {                         // vaultbleed: "open in new window" keeps this one
+      const nw = document.createElement("button");
+      nw.className = "p-newwin"; nw.title = "Open in new window"; nw.textContent = "⧉";
+      nw.onclick = e => { e.stopPropagation(); openVault(p, false); };
+      li.appendChild(nw);
+    }
     ul.appendChild(li);
   }
   if (vaultPath) { try { updateTitle(); } catch (_) {} }   // brand: publish [precent:] once the rows exist (async); never at the boot picker, whose window must stay untitled by the census
@@ -8061,41 +8076,77 @@ async function enterMode(m) {
   $("p-sub").hidden = false;
   $("p-name").hidden = m !== "create";
   $("p-go").textContent = m === "create" ? "Create vault" : "Open this folder";
+  $("p-gonew").hidden = !vaultPath;          // vaultbleed: open/create in a NEW window, keep this one
+  $("p-gonew").textContent = m === "create" ? "Create in new window" : "Open in new window";
   $("p-err").textContent = "";
   await browseTo(await inv("home_dir"));
   (m === "create" ? $("p-name") : $("p-path")).focus();
+  if (vaultPath) { try { updateTitle(); } catch (_) {} }   // item 14: publish [pbtn:] for the sub-mode buttons (never at the boot picker)
 }
 $("p-create").onclick = () => enterMode("create");
 $("p-open").onclick = () => enterMode("open");
 $("p-back").onclick = showPicker;
+$("p-recent").addEventListener("scroll", () => { if (vaultPath) { try { updateTitle(); } catch (_) {} } }, { passive: true });   // item 14: [prow:] follows the list scroll
 $("p-close").onclick = () => { $("picker").hidden = true; };
 $("p-path").onkeydown = e => { if (e.key === "Enter") browseTo($("p-path").value.trim()); };
 $("p-name").onkeydown = e => { if (e.key === "Enter") $("p-go").click(); };
-$("p-go").onclick = async () => {
-  await leaveVault();                        // F2: flush + disarm BEFORE the root swaps
-  try {
-    vaultPath = pmode === "create"
-      ? await inv("create_vault", { parent: bpath, name: $("p-name").value })
-      : await inv("set_vault", { path: bpath });
-  } catch (err) { $("p-err").textContent = String(err); return; }
-  $("picker").hidden = true;
-  await enterVault();
-};
-async function enterVault() {
-  // F2 backstop: whatever route got us here, no timer from the old vault may
-  // survive into this one (leaveVault flushes; this only guarantees disarm).
-  // tabclose: every tab of the OLD layout disappears on the next line, without
-  // passing dropTab or closeTab. Unrecorded, this path could account for any
-  // number of "it closed by itself" reports, so it names itself too.
-  if (state) for (const h of groups()) {
-    for (const t of h.tabs) tabGone("session-replace", t, { dirty: false, flushed: h.flushedAt !== undefined, via: "enterVault", tabsLeft: 0 });
-    clearTimeout(h.saveT); h.saveT = null;
+/* vaultbleed A — ONE VAULT PER PROCESS. The boot picker (no vault yet) binds
+   the picked vault ONCE and enters it. Once a vault is open this window never
+   changes vault: every other vault opens in a NEW PROCESS (open_vault_window).
+   replace=true is "switch": flush every buffer + the layout into THIS vault,
+   then the backend spawns the new process and exits this one. On a refused
+   spawn nothing was lost (the flush is harmless) and the window stays. */
+async function openVault(p, replace) {
+  $("p-err").textContent = "";
+  if (!vaultPath) {
+    try { vaultPath = await inv("pick_vault", { path: p }); }
+    catch (err) { $("p-err").textContent = String(err); return; }
+    $("picker").hidden = true;
+    await enterVault();
+    return;
   }
-  // ...including the process-wide layout timer, and the dedupe/id memory that
-  // belongs to the file we just stopped looking at. Disarm only — a route that
-  // reached here WITHOUT leaveVault has no vault left to flush into safely.
-  if (wsT) { clearTimeout(wsT); wsT = null; }
-  wsLast = ""; wsIds = {};
+  if (replace) await leaveVault();           // F2: A's bytes on A's disk BEFORE this process exits
+  // item 14: a switch resolves only once the NEW window is shown at our rect
+  // and painted (the backend then exits this process). Until then this window
+  // stays on screen but takes no input: an edit typed now would land after
+  // the flush above and die with the process.
+  if (replace) document.body.inert = true;
+  try { await inv("open_vault_window", { path: p, replace }); }
+  catch (err) { document.body.inert = false; $("p-err").textContent = String(err); return; }
+  $("picker").hidden = true;
+}
+async function pickerGo(replace) {
+  let p = bpath;
+  if (pmode === "create") {
+    try {
+      if (!vaultPath) {                      // boot picker: create AND bind, once
+        vaultPath = await inv("create_vault", { parent: bpath, name: $("p-name").value });
+        $("picker").hidden = true;
+        await enterVault();
+        return;
+      }
+      p = await inv("create_vault_dir", { parent: bpath, name: $("p-name").value });
+    } catch (err) { $("p-err").textContent = String(err); return; }
+  }
+  await openVault(p, replace);
+}
+$("p-go").onclick = () => pickerGo(true);
+$("p-gonew").onclick = () => pickerGo(false);
+/* item 14: a window started by a switch is created HIDDEN at the old window's
+   rect (main.rs). Once the vault is entered: show it, let two frames paint,
+   then tell the old window it may exit (switch_ready). A no-op in the backend
+   for every other window. */
+async function switchReveal() {
+  try {
+    await inv("switch_show");
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    await inv("switch_ready");
+  } catch (e) { /* the backend fallback reveals it anyway */ }
+}
+async function enterVault() {
+  // vaultbleed: entered ONCE per process — there is no previous vault to tear
+  // down (the session-replace path died with the in-process switch).
+  if (state) throw new Error("enterVault: this process already has a vault");
   $("vswitch").innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>' + base(vaultPath);
   collapsed = new Set();
   bmFolds = new Set();               // collapseall: folds are per vault and in memory (R6)
@@ -8123,6 +8174,7 @@ async function enterVault() {
   }
   perf.mark("boot", 0, { notes: names.length });   // perf: page start -> vault ready (first note rendered)
   wsGeomTouch();   // R28.2: the rectangle is recorded once per session OUTSIDE the vault, resize or no resize
+  switchReveal();   // item 14: a switch-started window shows itself only now, at the old window's rect
 }
 /* ---------- R11 external edits (backend watcher -> `vault-changed`) ---------- */
 // tab.base = the bytes we last loaded from / saved to disk. bufOf(g) = the
@@ -9834,6 +9886,38 @@ function fTok(g) {
   }
   return t;
 }
+/* vaultbleed item 7 — [vbl:<seq>|t=<tags>|n=<notes>|s=<search hits>|b=<backlinks of Hub>|p=<peek errno>]
+   What THIS window's vault answers, refreshed every 500ms and on focus:
+   tag_counts (the tag pane's source), list_notes (the note list), search for
+   the fixture's shared word "vbshared", backlinks_ctx("Hub"), plus the DOM
+   tag pane's rows when it is rendered (folded into t=). The phase seeds
+   vault-unique names (onlyA/onlyB/onlyC) and greps one window's token for the
+   other vaults' names: a hit = bleed. seq proves the read is fresh.
+   TEST-ONLY: inert unless the backend says OPENSIDIAN_VBPROBE=1 (vb_probe). */
+let vblState = null, vblSeq = 0, vblBusy = false;
+async function vblRun() {
+  if (vblBusy || !vaultPath) return;
+  vblBusy = true;
+  try {
+    const clean = s => String(s).replace(/[[\]|,]/g, " ").trim();
+    const [p, tc, ns, sh, bl] = await Promise.all([
+      inv("vb_probe"), inv("tag_counts").catch(() => ({})), inv("list_notes").catch(() => []),
+      inv("search", { query: "vbshared" }).catch(() => []), inv("backlinks_ctx", { name: "Hub" }).catch(() => [])]);
+    if (p == null) { vblState = null; return; }
+    const dom = [...document.querySelectorAll("#taglist .tagrow")].map(e => e.dataset.tag || "");   // the tag pane as painted, when it was rendered
+    const tags = [...new Set([...Object.keys(tc || {}), ...dom].map(clean).filter(Boolean))].sort();
+    vblState = " [vbl:" + (++vblSeq) + "|t=" + tags.join(",") + "|n=" + (ns || []).map(clean).sort().join(",") +
+      "|s=" + [...new Set((sh || []).map(h => clean(h.note)))].sort().join(",") +
+      "|b=" + (bl || []).map(b => clean(b.note)).sort().join(",") + "|p=" + p + "]";
+    updateTitle();
+  } finally { vblBusy = false; }
+}
+function vblTok() { return vblState || ""; }
+inv("vb_probe").then(v => {
+  if (v == null) return;
+  setInterval(vblRun, 500);
+  window.addEventListener("focus", () => vblRun());
+}).catch(() => {});
 /* ---------- stock-name goal, criterion 3: [nob:] user-facing-string census ----------
    No string the app RENDERS names the stock app; the one
    allowed form is the literal vault config dir (NOB_OK below, a path the user

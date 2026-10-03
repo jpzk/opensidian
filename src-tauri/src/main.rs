@@ -14,10 +14,11 @@
 use pulldown_cmark::{html, Event, LinkType, Options, Parser, Tag, TagEnd};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use tauri::State;
 
 mod builtins;
+mod cfgstore;
 mod datefmt;
 mod index;
 mod migrate;
@@ -25,6 +26,9 @@ mod outline;
 mod perf;
 mod sandbox;
 mod settings;
+mod spawn;
+mod spawner;
+mod vaultlock;
 mod srcmode;
 mod themefs;
 mod watcher;
@@ -33,32 +37,93 @@ use index::{link_parts, links_in, resolve, tag_spans, Graph, Index};
 /* perf-index: root + in-memory Index (src/index.rs). The index replaces the
    perf-lp NoteCache: names, contents, links and backlink edges live in RAM,
    built once per vault open and kept == disk by write_note/rename_note.
-   search/graph/backlinks/render never touch the filesystem. */
+   search/graph/backlinks/render never touch the filesystem.
+
+   vaultbleed (operator 2026-10-03, SEVERE): ONE VAULT PER PROCESS, FOR THE
+   PROCESS'S LIFETIME. `root` is a OnceLock: bound at most once (argv boot or
+   the picker), never re-rooted. Opening/switching to another vault spawns a
+   new process. With no second root ever reachable, the watcher, the css
+   watch and every command can only ever see this one vault — bleed is
+   impossible by construction, not by locking discipline. */
 struct Vault {
-    root: Mutex<Option<PathBuf>>,
+    root: OnceLock<PathBuf>,
     index: Mutex<Index>,
+    /// vaultbleed B: the flock that makes this the ONLY backend on the vault
+    /// (vaultlock.rs); held until the process exits
+    lock: OnceLock<vaultlock::VaultLock>,
 }
 
-fn cur_vault(v: &State<Vault>) -> Option<PathBuf> {
-    v.root.lock().unwrap().clone()
+fn cur_vault(v: &Vault) -> Option<PathBuf> {
+    v.root.get().cloned()
+}
+
+/* vaultbleed: a named point INSIDE a root+index critical path, where a test
+   can land a vault switch deterministically instead of hoping a sleep lines
+   it up. Production: a no-op the optimiser deletes. Tests: a thread-local
+   closure (thread-local, so parallel cargo tests never see each other's hook).
+   The hook always runs with NO vault lock held — a test hook that switches the
+   vault must be able to take every lock bind_vault takes. */
+#[cfg(test)]
+thread_local! {
+    static VAULT_HOOK: std::cell::RefCell<Option<Box<dyn FnMut(&'static str)>>> = std::cell::RefCell::new(None);
+}
+#[inline(always)]
+fn vault_hook(_at: &'static str) {
+    #[cfg(test)]
+    VAULT_HOOK.with(|h| {
+        if let Some(f) = h.borrow_mut().as_mut() {
+            f(_at)
+        }
+    });
 }
 
 /// sorted note list from the index (empty when no vault open)
-fn cur_notes(v: &State<Vault>) -> Vec<String> {
+fn cur_notes(v: &Vault) -> Vec<String> {
     v.index.lock().unwrap().names().to_vec()
 }
 
-/// open a vault: swap root + rebuild the index (one walk, one read per note)
-fn open_vault(v: &State<Vault>, p: &Path) {
-    // R3 (item 4): the vault SWITCH seeds too, and before the index walk, so
-    // the frontend's themes_scan — which runs after this returns — sees the
-    // built-ins as ordinary theme dirs on the new root. Seeding writes only
-    // paths that do not exist (builtins.rs), so switching back and forth over
-    // an already-seeded vault writes nothing.
+/// bind this process to its vault — the ONE place the root is assigned. The
+/// root is claimed first (OnceLock::set is the atomic set-once), so a second
+/// bind — a second picker click, a create_vault in an open vault — is Err and
+/// changes nothing; only then is the index built for the claimed root.
+fn bind_vault(v: &Vault, p: &Path) -> Result<(), String> {
+    bind_vault_locked(v, p, &vaultlock::env_lock_dir()).map_err(|e| e.to_string())
+}
+
+#[derive(Debug)]
+enum BindErr {
+    Bound(PathBuf, PathBuf),
+    Lock(vaultlock::LockErr),
+}
+impl std::fmt::Display for BindErr {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            BindErr::Bound(cur, p) => write!(f, "this window already has a vault open ({}); open {} in a new window", cur.display(), p.display()),
+            BindErr::Lock(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+/// bind_vault with the lock directory named (tests pass a private one).
+/// Order: refuse if bound -> take the vault's flock (Busy = open in another
+/// process, vaultbleed B) -> claim the root. The lock is stored only after the
+/// root claim succeeded; a failed claim drops (releases) it.
+fn bind_vault_locked(v: &Vault, p: &Path, lock_dir: &Path) -> Result<(), BindErr> {
+    if let Some(cur) = cur_vault(v) {
+        return Err(BindErr::Bound(cur, p.to_path_buf()));
+    }
+    let canon = p.canonicalize().map_err(|e| BindErr::Lock(vaultlock::LockErr::Io(format!("{}: {e}", p.display()))))?;
+    let lk = vaultlock::acquire_in(lock_dir, &canon).map_err(BindErr::Lock)?;
+    v.root.set(p.to_path_buf()).map_err(|_| BindErr::Bound(cur_vault(v).unwrap(), p.to_path_buf()))?;
+    eprintln!("[vaultlock] pid={} holds {} ({})", std::process::id(), canon.display(), lk.path.display());
+    let _ = v.lock.set(lk);
+    // R3 (item 4): seed before the index walk, so the frontend's themes_scan —
+    // which runs after this returns — sees the built-ins as ordinary theme
+    // dirs. Seeding writes only paths that do not exist (builtins.rs).
     builtins::seed_and_record(p);
     let ix = span_timed!("index_build", Index::build(p), serde_json::json!({"notes": 0}));
     *v.index.lock().unwrap() = ix;
-    *v.root.lock().unwrap() = Some(p.to_path_buf());
+    Ok(())
 }
 /// component-wise traversal check: only plain, non-hidden components allowed
 fn safe_rel(name: &str) -> Option<PathBuf> {
@@ -670,8 +735,9 @@ fn write_note(v: State<Vault>, name: String, content: String, otel: Option<perf:
     span_timed!(otel => "write_note", write_note_inner(&v, &name, &content), serde_json::json!({"bytes": bytes}))
 }
 
-fn write_note_inner(v: &State<Vault>, name: &str, content: &str) -> Result<(), String> {
+fn write_note_inner(v: &Vault, name: &str, content: &str) -> Result<(), String> {
     let root = cur_vault(v).ok_or("no vault open")?;
+    vault_hook("write_note:pre_lock");
     // R11: lock BEFORE the write — the watcher reads+compares under this
     // lock, so it never sees our bytes on disk without them in the index
     let mut ix = v.index.lock().unwrap();
@@ -1102,12 +1168,34 @@ fn cfg_path() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())).join(".opensidian.json")
 }
 
-/// whole config as a Value — extra keys (sidebar_w, ...) survive rewrites
+/// whole config as a Value, read under the shared cfg lock (cfgstore.rs)
 fn cfg_value() -> serde_json::Value {
-    fs::read_to_string(cfg_path())
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_else(|| serde_json::json!({}))
+    // vaultbleed D: a confined window has no rule on the config (sandbox.rs) — ask the spawner
+    if let Some(c) = spawner::client() {
+        return c.read_cfg().unwrap_or_else(|e| {
+            eprintln!("config read failed: {e}");
+            serde_json::json!({})
+        });
+    }
+    cfgstore::read_value_in(&vaultlock::env_lock_dir(), &cfg_path())
+}
+
+/* vaultbleed C: the ONLY way anything writes ~/.opensidian.json. N windows = N
+   processes write it; cfgstore does the locked read-modify-write + atomic
+   rename. A call site names the key it changes, never a whole Value it read
+   earlier (that read is stale by the time another window has written). */
+fn cfg_update(ops: &[cfgstore::Op]) {
+    let r = match spawner::client() {
+        Some(c) => c.cfg(ops), // confined: the unconfined spawner applies the Ops
+        None => cfgstore::update_in(&vaultlock::env_lock_dir(), &cfg_path(), ops).map(|_| ()),
+    };
+    if let Err(e) = r {
+        eprintln!("config write failed: {e}");
+    }
+}
+
+fn cfg_set(k: &str, x: serde_json::Value) {
+    cfg_update(&[cfgstore::Op::Set(k.into(), x)]);
 }
 
 fn read_cfg() -> (Option<String>, Vec<String>) {
@@ -1120,22 +1208,11 @@ fn read_cfg() -> (Option<String>, Vec<String>) {
     (last, list)
 }
 
-/// MRU push: dedup, newest first, capped at 8 — pure for testability
-fn push_recent(mut list: Vec<String>, path: &str) -> Vec<String> {
-    list.retain(|x| x != path);
-    list.insert(0, path.to_string());
-    list.truncate(8);
-    list
-}
+#[cfg(test)]
+use cfgstore::push_recent;
 
 fn persist_vault(p: &Path) {
-    let s = p.display().to_string();
-    let (_, list) = read_cfg();
-    let list = push_recent(list, &s);
-    let mut v = cfg_value(); // keep sidebar_w & future keys
-    v["last"] = serde_json::json!(s);
-    v["list"] = serde_json::json!(list);
-    let _ = fs::write(cfg_path(), v.to_string());
+    cfg_update(&[cfgstore::Op::PushRecent(p.display().to_string())]);
 }
 
 /* ux-4: left sidebar width persistence (clamped 150-600, default 200 total
@@ -1147,9 +1224,7 @@ fn get_sidebar_w() -> Option<u64> {
 
 #[tauri::command]
 fn set_sidebar_w(w: u64) {
-    let mut v = cfg_value();
-    v["sidebar_w"] = serde_json::json!(w.clamp(150, 600));
-    let _ = fs::write(cfg_path(), v.to_string());
+    cfg_set("sidebar_w", serde_json::json!(w.clamp(150, 600)));
 }
 
 /* ---------- R28 WORKSPACE PERSISTENCE: the two files, and why they are two ----
@@ -1240,7 +1315,7 @@ fn write_workspace(
 ) -> Result<(), String> {
     // THE WRITE IS VAULT-SCOPED, and that argument is the whole point of it.
     // A layout write is ARMED by a mutation in one vault and EXECUTED up to
-    // WS_MS later, plus an IPC hop; `set_vault` can land in that window. If
+    // WS_MS later, plus an IPC hop; (pre-vaultbleed) `set_vault` could land in that window. If
     // this command resolved the destination from `cur_vault` alone — as it did
     // until the dloss phase caught it — a switch from A to B would write A's
     // tabs into B's `.obsidian/workspace.json`, and on the next launch B would
@@ -1290,9 +1365,7 @@ fn get_win_geom() -> Option<serde_json::Value> {
 
 #[tauri::command]
 fn set_win_geom(x: i64, y: i64, w: u64, h: u64) {
-    let mut v = cfg_value();
-    v["win"] = serde_json::json!({ "x": x, "y": y, "w": w, "h": h });
-    let _ = fs::write(cfg_path(), v.to_string());
+    cfg_set("win", serde_json::json!({ "x": x, "y": y, "w": w, "h": h }));
 }
 
 #[tauri::command]
@@ -1300,20 +1373,22 @@ fn recent_vaults() -> Vec<String> {
     span_timed!("recent_vaults", read_cfg().1.into_iter().filter(|p| Path::new(p).is_dir()).collect())
 }
 
+/// the BOOT picker's one bind (vaultbleed: Err once this process has a vault —
+/// an open window opens other vaults with open_vault_window, a new process)
 #[tauri::command]
-fn set_vault(v: State<Vault>, path: String, otel: Option<perf::Ctx>) -> Result<String, String> {
-    span_timed!(otel => "set_vault", set_vault_inner(&v, &path))
+fn pick_vault(v: State<Vault>, path: String, otel: Option<perf::Ctx>) -> Result<String, String> {
+    span_timed!(otel => "pick_vault", pick_vault_inner(&v, &path))
 }
 
-fn set_vault_inner(v: &State<Vault>, path: &str) -> Result<String, String> {
+fn pick_vault_inner(v: &State<Vault>, path: &str) -> Result<String, String> {
     let p = PathBuf::from(path.trim());
     vault_rules(&p)?; // S4 + is_dir — shared with the argv boot (vaultarg)
     if !sandbox::allows(&p) {
         persist_vault(&p); // next boot confines to this one instead
         return Err(format!("sandboxed to {} — vault saved, restart opensidian to open it", sandbox::confined_to().unwrap().display()));
     }
+    bind_vault(v, &p)?; // Err once bound: a live process is never re-rooted
     persist_vault(&p);
-    open_vault(v, &p);
     Ok(p.display().to_string())
 }
 
@@ -1337,29 +1412,216 @@ fn seed_new_vault(dir: &Path) -> std::io::Result<()> {
     fs::write(dir.join(NEW_VAULT_SEED_NAME), NEW_VAULT_SEED)
 }
 
+/// validate + mkdir + seed a NEW vault directory. Binds nothing: the boot
+/// picker binds it (create_vault), an open window hands it to a new process
+/// (create_vault_dir -> open_vault_window).
+fn make_vault_dir(parent: &str, name: &str) -> Result<PathBuf, String> {
+    let name = name.trim();
+    if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
+        return Err("invalid vault name".into());
+    }
+    let p = PathBuf::from(parent.trim()).join(name);
+    if !picker_allows(&p) {
+        return Err(format!("not allowed as a vault: {}", p.display())); // S4
+    }
+    if p.exists() {
+        return Err(format!("already exists: {}", p.display()));
+    }
+    if !sandbox::allows(Path::new(parent.trim())) {
+        return Err(format!("sandboxed to {} — create the folder outside opensidian, then pick it and restart", sandbox::confined_to().unwrap().display()));
+    }
+    fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+    seed_new_vault(&p).map_err(|e| e.to_string())?;
+    Ok(p)
+}
+
+/// boot picker only: create AND bind (the one bind of this process).
 #[tauri::command]
 fn create_vault(v: State<Vault>, parent: String, name: String) -> Result<String, String> {
     span_timed!("create_vault", {
-        let name = name.trim();
-        if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
-            return Err("invalid vault name".into());
+        if let Some(cur) = cur_vault(&v) {
+            // vaultbleed: never re-root a live process (checked before any disk write)
+            return Err(format!("this window already has a vault open ({}); create the new vault from a new window", cur.display()));
         }
-        let p = PathBuf::from(parent.trim()).join(name);
-        if !picker_allows(&p) {
-            return Err(format!("not allowed as a vault: {}", p.display())); // S4
-        }
-        if p.exists() {
-            return Err(format!("already exists: {}", p.display()));
-        }
-        if !sandbox::allows(Path::new(parent.trim())) {
-            return Err(format!("sandboxed to {} — create the folder outside opensidian, then pick it and restart", sandbox::confined_to().unwrap().display()));
-        }
-        fs::create_dir_all(&p).map_err(|e| e.to_string())?;
-        seed_new_vault(&p).map_err(|e| e.to_string())?;
+        let p = make_vault_dir(&parent, &name)?;
+        bind_vault(&v, &p)?;
         persist_vault(&p);
-        open_vault(&v, &p);
         Ok(p.display().to_string())
     })
+}
+
+/// an OPEN window's "create vault": make the directory only; the UI then opens
+/// it with open_vault_window. This process's root never changes.
+#[tauri::command]
+fn create_vault_dir(parent: String, name: String) -> Result<String, String> {
+    span_timed!("create_vault_dir", match spawner::client() {
+        // confined: the new folder is outside this vault — the spawner makes it
+        Some(c) => c.create(&parent, &name),
+        None => make_vault_dir(&parent, &name).map(|p| p.display().to_string()),
+    })
+}
+
+/* vaultbleed A: "open another vault" from an open window = a NEW PROCESS on it
+   (spawn.rs). `replace` = "switch vault" (item 14, spawn.rs THE SWITCH
+   HANDSHAKE): the UI has already flushed every buffer and the layout to disk
+   (leaveVault) before calling; the child gets this window's rect and a token,
+   and this process exits only once the child has marked ready (window shown at
+   that rect, painted) — or on timeout while the child is still alive. A child
+   that dies first (or a refused spawn) leaves this window untouched, with the
+   error returned. Returns the new pid. Opening THIS window's own vault is
+   refused (nothing to open). async: the wait must not block the GTK thread
+   this window keeps painting on. */
+#[tauri::command]
+async fn open_vault_window(app: tauri::AppHandle, win: tauri::Window, v: State<'_, Vault>, path: String, replace: bool) -> Result<u32, String> {
+    let p = PathBuf::from(path.trim());
+    vault_rules(&p)?;
+    if let Some(cur) = cur_vault(&v) {
+        if p.canonicalize().ok() == cur.canonicalize().ok() {
+            return Err(format!("{} is the vault of this window", p.display()));
+        }
+    }
+    let sw = if replace {
+        let r = switch_rect(&win)?;
+        let sw = spawn::Switch { x: r.x.round() as i32, y: r.y.round() as i32, w: r.w.round() as u32, h: r.h.round() as u32, max: r.max, token: spawn::new_token() };
+        // never hand the child a flag it would drop: it would open unswitched,
+        // never mark ready, and this window would hang until SWITCH_WAIT
+        sw.check().map_err(|e| format!("cannot switch: this window's geometry is unreadable ({e})"))?;
+        Some(sw)
+    } else {
+        None
+    };
+    let (p2, sw2) = (p.clone(), sw.clone());
+    // vsfix: the span times the SPAWN (lock probe + fork/exec, in-process or
+    // through the spawner) — the part this window owns. A switch's wait for the
+    // child below is the child's boot + first paint, bounded by SWITCH_WAIT and
+    // logged with its own ms by [vaultwin]; timing it here would warn on every
+    // switch about work this process does not do.
+    let pid = span_timed!(
+        "open_vault_window",
+        tauri::async_runtime::spawn_blocking(move || match spawner::client() {
+            // vaultbleed D: a child of a confined window would be confined to THIS
+            // vault for life (landlock is inherited) — the unconfined spawner
+            // starts it, after the same checks (LiveSpawner::open)
+            Some(c) => c.open(&p2, sw2.as_ref()),
+            None => spawn_checked(&p2, sw2.as_ref()),
+        })
+        .await
+        .map_err(|e| e.to_string())
+    )??;
+    let Some(sw) = sw else { return Ok(pid) };
+    let canon = p.canonicalize().map_err(|e| e.to_string())?;
+    let me = std::process::id();
+    eprintln!("[vaultwin] switch: pid={me} waits for pid={pid} token={} rect={}x{}@{},{} max={}", sw.token, sw.w, sw.h, sw.x, sw.y, sw.max);
+    let t0 = std::time::Instant::now();
+    let tok = sw.token.clone();
+    let got = tauri::async_runtime::spawn_blocking(move || {
+        let dir = vaultlock::env_lock_dir();
+        spawn::await_ready(|| vaultlock::ready_in(&dir, &canon, &tok), || spawn::alive(pid), SWITCH_WAIT, std::time::Duration::from_millis(25))
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let ms = t0.elapsed().as_millis();
+    match got {
+        spawn::Handoff::Died => {
+            eprintln!("[vaultwin] switch: pid={pid} exited before it was ready ({ms}ms); pid={me} stays");
+            Err(format!("the window for {} did not start; this window stays open", p.display()))
+        }
+        h => {
+            eprintln!("[vaultwin] switch: handoff {h:?} after {ms}ms; pid={me} exits after pid={pid}");
+            app.exit(0);
+            Ok(pid)
+        }
+    }
+}
+
+/// how long a switching window waits for the new one before it exits anyway
+/// (the child's own fallback shows + marks ready at SWITCH_FALLBACK)
+const SWITCH_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+const SWITCH_FALLBACK: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// this process was started by a switch (`--switch=` in argv, main())
+static SWITCHED: OnceLock<spawn::Switch> = OnceLock::new();
+static SWITCH_SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SWITCH_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// item 14, child side, step 1: put the (hidden) window at the old window's
+/// rect and show it. Idempotent; a no-op for a window not started by a switch
+/// (that one is visible from the config already).
+#[tauri::command]
+fn switch_show(app: tauri::AppHandle) {
+    let Some(sw) = SWITCHED.get() else { return };
+    if SWITCH_SHOWN.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    use tauri::Manager;
+    // vsfix: the span times the window placement + show (WM round trips the
+    // user waits on during a switch); the early returns above are flag reads
+    span_timed!("switch_show", {
+        if let Some(w) = app.webview_windows().values().next() {
+            let _ = w.set_position(tauri::LogicalPosition::new(sw.x as f64, sw.y as f64));
+            let _ = w.set_size(tauri::LogicalSize::new(sw.w as f64, sw.h as f64));
+            if sw.max {
+                let _ = w.maximize();
+            }
+            let _ = w.show();
+            let _ = w.set_focus();
+        }
+    });
+    eprintln!("[vaultwin] switch: pid={} shown at {}x{}@{},{} max={}", std::process::id(), sw.w, sw.h, sw.x, sw.y, sw.max);
+}
+
+/// item 14, child side, step 2 (the UI calls it after two painted frames):
+/// tell the old window it may go — `ready <token>` in OUR vault lock file.
+#[tauri::command]
+fn switch_ready(app: tauri::AppHandle, v: State<Vault>) {
+    let Some(sw) = SWITCHED.get() else { return };
+    switch_show(app);
+    if SWITCH_DONE.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    // vsfix: the span times the lock-file write the old window is polling for
+    match span_timed!("switch_ready", v.lock.get().map(|l| l.mark_ready(&sw.token))) {
+        Some(Ok(())) => eprintln!("[vaultwin] switch: pid={} ready token={}", std::process::id(), sw.token),
+        Some(Err(e)) => eprintln!("[vaultwin] switch: ready not written ({e}); the old window exits on its timeout"),
+        None => eprintln!("[vaultwin] switch: no vault lock held; the old window exits on its timeout"),
+    }
+}
+
+/// vault_rules + the lock probe + spawn: the ONE path that starts a window on
+/// another vault, run in-process (unconfined) or by the spawner (confined).
+/// vaultbleed B: refuse up front instead of spawning a child that would refuse
+/// (and, for a switch, after this window had already exited).
+fn spawn_checked(p: &Path, sw: Option<&spawn::Switch>) -> Result<u32, String> {
+    vault_rules(p)?;
+    if let Ok(c) = p.canonicalize() {
+        if vaultlock::held_in(&vaultlock::env_lock_dir(), &c) {
+            return Err(format!("{} is {}", p.display(), vaultlock::DUP_MSG));
+        }
+    }
+    spawn::open_in_new_process(p, sw)
+}
+
+/// vaultbleed D: what the unconfined spawner (spawner.rs) does for a confined
+/// window. Every check runs HERE again — the request comes from a process the
+/// sandbox exists to distrust.
+struct LiveSpawner;
+
+impl spawner::Handler for LiveSpawner {
+    fn open(&self, p: &Path, sw: Option<&spawn::Switch>) -> Result<u32, String> {
+        spawn_checked(p, sw)
+    }
+    fn create(&self, parent: &str, name: &str) -> Result<PathBuf, String> {
+        make_vault_dir(parent, name)
+    }
+    fn cfg(&self, ops: &[cfgstore::Op]) -> Result<(), String> {
+        cfgstore::update_in(&vaultlock::env_lock_dir(), &cfg_path(), ops).map(|_| ())
+    }
+    fn read_cfg(&self) -> serde_json::Value {
+        cfgstore::read_value_in(&vaultlock::env_lock_dir(), &cfg_path())
+    }
+    fn list_dirs(&self, path: &str) -> Vec<String> {
+        list_dirs_here(path)
+    }
 }
 
 /// otel (R18): frontend spans (ui/otel.js) arrive in ONE batch per 250ms — [{name, traceId, spanId,
@@ -1465,10 +1727,10 @@ fn picker_allows(p: &Path) -> bool {
 
 /* ---- vaultarg: `opensidian <dir>` opens <dir> (contract docs/vaultarg/README.md) ----
    argv is untrusted: read raw (args_os, no parser crate), canonicalized ONCE,
-   then the SAME rules the picker's set_vault applies (vault_rules). Resolved in
+   then the SAME rules the picker's pick_vault applies (vault_rules). Resolved in
    main() BEFORE sandbox::enforce so landlock confines to the argument's vault. */
 
-/// the checks set_vault applies to a path, shared with the argv boot (README §4)
+/// the checks pick_vault applies to a path, shared with the argv boot (README §4)
 fn vault_rules(p: &Path) -> Result<(), String> {
     if !picker_allows(p) {
         return Err(format!("not allowed as a vault: {}", p.display())); // S4
@@ -1582,7 +1844,21 @@ fn open_external(url: String) -> Result<(), String> {
 
 #[tauri::command]
 fn list_dirs(path: String) -> Vec<String> {
-    span_timed!("list_dirs", {
+    span_timed!("list_dirs", match spawner::client() {
+        // vaultbleed D: a confined window has no right to list outside its
+        // vault (no $HOME ReadDir — it was recursive, so it listed every
+        // other vault too); the unconfined spawner lists for its picker
+        Some(c) => c.list_dirs(&path).unwrap_or_else(|e| {
+            eprintln!("[spawner] list_dirs {path}: {e}");
+            vec![]
+        }),
+        None => list_dirs_here(&path),
+    })
+}
+
+/// the picker listing itself (S4 rules), in-process or in the spawner
+fn list_dirs_here(path: &str) -> Vec<String> {
+    {
         if !picker_allows(Path::new(&path)) {
             return vec![]; // S4: the picker just shows ".." there
         }
@@ -1596,7 +1872,7 @@ fn list_dirs(path: String) -> Vec<String> {
             .collect();
         v.sort();
         v
-    })
+    }
 }
 
 
@@ -2355,9 +2631,7 @@ fn get_rside_tab() -> Option<String> {
 
 #[tauri::command]
 fn set_rside_tab(tab: String) {
-    let mut v = cfg_value();
-    v["rside_tab"] = serde_json::json!(tab);
-    let _ = fs::write(cfg_path(), v.to_string());
+    cfg_set("rside_tab", serde_json::json!(tab));
 }
 
 /* THEME: the chosen mode, persisted as "theme" in ~/.opensidian.json through the
@@ -2380,9 +2654,7 @@ fn set_theme(theme: String) {
     if theme != "dark" && theme != "light" {
         return; // never let a typo'd mode into the file: it would read back as "no choice"
     }
-    let mut v = cfg_value();
-    v["theme"] = serde_json::json!(theme);
-    let _ = fs::write(cfg_path(), v.to_string());
+    cfg_set("theme", serde_json::json!(theme));
 }
 
 /* THE PALETTE AXIS IS GONE (themeone item 8 / R2). It used to live here as
@@ -2394,7 +2666,7 @@ fn set_theme(theme: String) {
    list of themes that the vault's themes/ directory could not extend.
 
    AN EXISTING ~/.opensidian.json IS NOT REWRITTEN. cfg_value() parses the whole
-   object and every writer round-trips it, so a "palette":"1984" left by an
+   object and every writer round-trips it, so a "palette" key left by an
    older build stays in the file, unread, and can never read back as a choice:
    nothing looks it up, so there is no dead palette to apply. It is not deleted
    either — a downgrade keeps working, and unknown keys are the user's, not
@@ -2668,9 +2940,7 @@ fn get_hotkeys() -> serde_json::Value {
 
 #[tauri::command]
 fn set_hotkeys(map: serde_json::Value) {
-    let mut v = cfg_value();
-    v["hotkeys"] = hotkeys_clean(map);
-    let _ = fs::write(cfg_path(), v.to_string());
+    cfg_set("hotkeys", hotkeys_clean(map));
 }
 
 /// keep only well-formed entries (id -> [{modifiers:[str], key:str}]) so a
@@ -3690,7 +3960,8 @@ fn bm_drag(v: State<Vault>, ix: usize, parent: Option<usize>, pos: usize) -> Res
 /* R11 watcher thread: every TICK_MS walk the vault (stat only), diff against
    the last snapshot, reconcile candidates with the Index under its lock
    (src/watcher.rs), emit `vault-changed` when anything external happened.
-   A root switch (set_vault/create_vault) just reseeds the snapshot silently.
+   The root is bound once (bind_vault); the first tick after the picker binds
+   it just seeds the snapshot silently.
    Idle cost = one read_dir walk + one stat per note per tick, no reads. */
 fn spawn_watcher(app: tauri::AppHandle) {
     use tauri::{Emitter, Manager};
@@ -3698,53 +3969,63 @@ fn spawn_watcher(app: tauri::AppHandle) {
         let mut prev: Option<(PathBuf, watcher::Snapshot)> = None;
         loop {
             std::thread::sleep(std::time::Duration::from_millis(watcher::TICK_MS));
-            let v = app.state::<Vault>();
-            let Some(root) = cur_vault(&v) else { prev = None; continue };
-            let mut cur = watcher::snapshot(&root);
-            let change = match &prev {
-                Some((r, s)) if *r == root => {
-                    let mut d = watcher::diff(s, &cur);
-                    /* THE S1 GUARD (goal/tabclose). A removal is the only
-                       change class that DESTROYS state the user cannot get
-                       back from the event: the UI closes those tabs (R11.4)
-                       and whatever was inside the save debounce goes with
-                       them. A walk that came back short produces exactly the
-                       same Diff as a mass delete, so a claimed removal is
-                       CONFIRMED before it is believed — a second walk, then an
-                       lstat per name still claimed gone. Both cost nothing on
-                       a tick that claims no removal, which is every idle
-                       tick. */
-                    if !d.removed.is_empty() {
-                        let claimed = d.removed.len();
-                        let mut c2 = watcher::snapshot(&root);
-                        let mut d2 = watcher::diff(s, &c2);
-                        let healed = watcher::heal_short_walk(&root, &mut c2, &mut d2);
-                        if d2.removed.len() < claimed {
-                            eprintln!(
-                                "[tabclose] SHORT WALK REJECTED claimed={claimed} confirmed={} restat_healed={:?} kept={:?}",
-                                d2.removed.len(),
-                                healed,
-                                d2.removed
-                            );
-                        }
-                        cur = c2;
-                        d = d2;
-                    }
-                    if d.added.is_empty() && d.removed.is_empty() && d.modified.is_empty() {
-                        watcher::Change::default()
-                    } else {
-                        let mut ix = v.index.lock().unwrap();
-                        span_timed!("watcher_reconcile", watcher::reconcile(&root, &d, &mut ix))
-                    }
-                }
-                _ => watcher::Change::default(),
-            };
-            prev = Some((root, cur));
+            let change = watch_tick(&app.state::<Vault>(), &mut prev);
             if !change.is_empty() {
                 let _ = app.emit("vault-changed", &change);
             }
         }
     });
+}
+
+/// One watcher tick, Tauri-free so cargo tests can drive it against a real
+/// Vault (vaultbleed). Returns what the UI is told; `prev` is the baseline.
+fn watch_tick(v: &Vault, prev: &mut Option<(PathBuf, watcher::Snapshot)>) -> watcher::Change {
+    let Some(root) = cur_vault(v) else {
+        *prev = None;
+        return watcher::Change::default();
+    };
+    let mut cur = watcher::snapshot(&root);
+    let change = match &*prev {
+        Some((r, s)) if *r == root => {
+            let mut d = watcher::diff(s, &cur);
+            /* THE S1 GUARD (goal/tabclose). A removal is the only
+               change class that DESTROYS state the user cannot get
+               back from the event: the UI closes those tabs (R11.4)
+               and whatever was inside the save debounce goes with
+               them. A walk that came back short produces exactly the
+               same Diff as a mass delete, so a claimed removal is
+               CONFIRMED before it is believed — a second walk, then an
+               lstat per name still claimed gone. Both cost nothing on
+               a tick that claims no removal, which is every idle
+               tick. */
+            if !d.removed.is_empty() {
+                let claimed = d.removed.len();
+                let mut c2 = watcher::snapshot(&root);
+                let mut d2 = watcher::diff(s, &c2);
+                let healed = watcher::heal_short_walk(&root, &mut c2, &mut d2);
+                if d2.removed.len() < claimed {
+                    eprintln!(
+                        "[tabclose] SHORT WALK REJECTED claimed={claimed} confirmed={} restat_healed={:?} kept={:?}",
+                        d2.removed.len(),
+                        healed,
+                        d2.removed
+                    );
+                }
+                cur = c2;
+                d = d2;
+            }
+            if d.added.is_empty() && d.removed.is_empty() && d.modified.is_empty() {
+                watcher::Change::default()
+            } else {
+                vault_hook("watch_tick:pre_lock");
+                let mut ix = v.index.lock().unwrap();
+                span_timed!("watcher_reconcile", watcher::reconcile(&root, &d, &mut ix))
+            }
+        }
+        _ => watcher::Change::default(),
+    };
+    *prev = Some((root, cur));
+    change
 }
 
 /* ---------- R33 frameless window: the app draws its own frame ----------
@@ -3851,6 +4132,26 @@ fn win_rect(win: tauri::Window) -> Result<WinRect, String> {
     })
 }
 
+/// The rect a switch hands the new window. tao caches the OUTER rect from
+/// GdkWindow::frame_extents at each configure event; a configure that lands
+/// while the window is not yet mapped stores frame_extents = 1x1@0,0 and, if
+/// no later configure comes, that sticks (measured on the box: switch #5 of the
+/// vaultbleed phase, a switch-started window, rect=1x1@0,0). The INNER rect
+/// comes from the configure event itself and is always real. This app's window
+/// is undecorated (R33: outer == inner), so the inner rect is exact here; for a
+/// decorated window it is off by the frame, still far better than 1x1.
+fn switch_rect(win: &tauri::Window) -> Result<WinRect, String> {
+    let r = win_rect(win.clone())?;
+    if spawn::plausible_size(r.w, r.h) {
+        return Ok(r);
+    }
+    let sf = win.scale_factor().map_err(|e| e.to_string())?;
+    let p = win.inner_position().map_err(|e| e.to_string())?.to_logical::<f64>(sf);
+    let s = win.inner_size().map_err(|e| e.to_string())?.to_logical::<f64>(sf);
+    eprintln!("[vaultwin] switch: outer rect {}x{}@{},{} is not a window; using the inner rect {}x{}@{},{}", r.w, r.h, r.x, r.y, s.width, s.height, p.x, p.y);
+    Ok(WinRect { x: p.x, y: p.y, w: s.width, h: s.height, ..r })
+}
+
 /// Apply one step of a move/resize gesture. The UI sends the ANCHOR rect
 /// (win_rect at pointerdown) and the cumulative delta, so the geometry is
 /// absolute at every step and a dropped event cannot make the window drift.
@@ -3864,7 +4165,7 @@ fn win_rect(win: tauri::Window) -> Result<WinRect, String> {
 /// (`$OUT/app-*.log` under the smoke rig, stderr for a real user) where a
 /// reviewer can grep it long after the window is closed.
 ///
-/// `cause` is CLOSED, exactly five values — an unknown one is an error, never a
+/// `cause` is CLOSED, exactly four values — an unknown one is an error, never a
 /// silent pass-through, because "some other path removed it" is precisely the
 /// diagnosis that was missing:
 ///   user-close       the user asked: close glyph, ctrl+w, middle click, the
@@ -3872,7 +4173,6 @@ fn win_rect(win: tauri::Window) -> Result<WinRect, String> {
 ///   external-delete  the watcher saw the file vanish from the vault
 ///   external-rename  the watcher paired the vanished file with a new name
 ///   pane-collapse    the group went with its last tab (R6.5)
-///   session-replace  the whole layout was thrown away (vault switch)
 /// `dirty` and `flushed` are the F-class half: a removal with dirty=1
 /// flushed=0 IS the data loss, stated in the log at the moment it happens.
 #[tauri::command]
@@ -3903,10 +4203,10 @@ fn tab_removed(
 }
 
 /// The closed set, shared by the command above and the UI (ui/main.js keeps the
-/// same five strings in TAB_CAUSES; a test in this file pins them together so
+/// same four strings in TAB_CAUSES; a test in this file pins them together so
 /// the two lists cannot drift apart unnoticed).
-const TAB_REMOVAL_CAUSES: [&str; 5] =
-    ["user-close", "external-delete", "external-rename", "pane-collapse", "session-replace"];
+const TAB_REMOVAL_CAUSES: [&str; 4] =
+    ["user-close", "external-delete", "external-rename", "pane-collapse"]; // vaultbleed: session-replace died with the in-process vault switch
 
 #[tauri::command]
 fn win_gesture(
@@ -4295,9 +4595,7 @@ fn read_zoom_cfg() -> f64 {
 }
 
 fn set_zoom_cfg(level: f64) {
-    let mut v = cfg_value();
-    v["zoom"] = serde_json::json!(level);
-    let _ = fs::write(cfg_path(), v.to_string());
+    cfg_set("zoom", serde_json::json!(level));
 }
 
 fn main() {
@@ -4305,6 +4603,11 @@ fn main() {
     // WARMUP_MS) is measured from here, so anything that runs before this stamp
     // would be judged against a start time it predates.
     perf::mark_start();
+    // vaultbleed D: `opensidian --opensidian-spawner` is the unconfined helper a
+    // confined window started (spawner.rs) — it serves fd 0 and is nothing else
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(spawner::ARG)) {
+        std::process::exit(spawner::run(&LiveSpawner));
+    }
     // perf-console: state the rule on the console BEFORE anything can breach it.
     // ONE line, printed unconditionally (breach or not), so "unusually long" is a
     // number you can read off the console instead of a promise in a comment. It is
@@ -4338,7 +4641,12 @@ fn main() {
     // resolved HERE, before sandbox::enforce below; else last persisted vault if
     // still a dir (R1.6)
     let env_vault = std::env::var("VAULT_DIR").ok().map(PathBuf::from);
-    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    // item 14: a switch-started window carries the old window's rect + token
+    // (spawn::Switch); it is split out here so argv_pick never sees the flag
+    let (switched, args, sw_err) = spawn::take_switch(std::env::args_os().skip(1).collect());
+    if let Some(e) = sw_err {
+        eprintln!("opensidian: {e} — ignored, the window opens normally");
+    }
     let arg_vault = argv_vault(&args, env_vault.is_some());
     let init = env_vault
         .or(arg_vault)
@@ -4353,9 +4661,19 @@ fn main() {
     // OPENSIDIAN_NO_LANDLOCK wins. Both switches are named ONCE, in sandbox.rs.
     if sandbox::landlock_enabled() {
         if let Some(p) = &init {
-            match sandbox::enforce(p, &cfg_path()) {
+            // vaultbleed D: the unconfined spawner, started BEFORE the ruleset
+            // closes (an exec after enforce() is confined for life)
+            let helper = spawner::start();
+            match sandbox::enforce(p) {
                 Ok(s) => eprintln!("landlock: {s:?}"),
                 Err(e) => eprintln!("landlock: off ({e})"),
+            }
+            match helper {
+                // only a CONFINED window routes through it; otherwise the
+                // Client drops here, the spawner reads EOF and exits
+                Ok(c) if sandbox::confined_to().is_some() => spawner::install(c),
+                Ok(_) => {}
+                Err(e) => eprintln!("[spawner] not started ({e}) — this confined window cannot open another vault or write the config"),
             }
         }
     } else {
@@ -4366,16 +4684,60 @@ fn main() {
     // writes inside the vault, so it must survive the same confinement a
     // user's own write does. If it does not, the failure is on the console and
     // in the [bseed:] census token, and the vault still opens.
+    // perf-index: one walk + read now, so the first note_open is already warm.
+    // vaultbleed: the argv/last-vault boot binds through the SAME set-once
+    // bind_vault the picker uses (seed + index build happen inside it).
+    let vault = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new() };
     if let Some(p) = &init {
-        builtins::seed_and_record(p);
+        // vaultbleed B: a vault already open in another process is refused —
+        // no second backend, no window; the other window stays the only one.
+        match bind_vault_locked(&vault, p, &vaultlock::env_lock_dir()) {
+            Ok(()) => {}
+            Err(BindErr::Lock(e @ vaultlock::LockErr::Busy(_))) => {
+                eprintln!("opensidian: {e}; not starting a second backend on it (exit {})", vaultlock::DUP_EXIT);
+                std::process::exit(vaultlock::DUP_EXIT);
+            }
+            Err(e) => {
+                eprintln!("opensidian: cannot open vault {}: {e}", p.display());
+                std::process::exit(1);
+            }
+        }
     }
-    // perf-index: one walk + read now, so the first note_open is already warm
-    let index = init.as_deref().map(Index::build).unwrap_or_default();
+    // item 14: the window is created HIDDEN at the old window's rect (no frame
+    // at the config default); switch_show/switch_ready reveal it once the UI
+    // has entered the vault, SWITCH_FALLBACK reveals it if the UI never does.
+    // Only a window that actually holds its vault takes part in a switch.
+    let mut ctx = tauri::generate_context!();
+    if let (Some(sw), Some(_)) = (switched, &init) {
+        if let Some(wc) = ctx.config_mut().app.windows.first_mut() {
+            wc.visible = false;
+            wc.x = Some(sw.x as f64);
+            wc.y = Some(sw.y as f64);
+            wc.width = sw.w as f64;
+            wc.height = sw.h as f64;
+        }
+        eprintln!("[vaultwin] switch: pid={} starts hidden at {}x{}@{},{} max={}", std::process::id(), sw.w, sw.h, sw.x, sw.y, sw.max);
+        let _ = SWITCHED.set(sw);
+    }
     tauri::Builder::default()
-        .manage(Vault { index: Mutex::new(index), root: Mutex::new(init) })
+        .manage(vault)
         .manage(ZoomLevel(Mutex::new(read_zoom_cfg())))
         .setup(|app| {
             spawn_watcher(app.handle().clone());
+            // item 14: a switch-started window whose UI never calls switch_ready
+            // is still shown (and frees the old window) after SWITCH_FALLBACK
+            if SWITCHED.get().is_some() {
+                let h = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(SWITCH_FALLBACK);
+                    if !SWITCH_DONE.load(std::sync::atomic::Ordering::SeqCst) {
+                        eprintln!("[vaultwin] switch: UI did not report ready in {SWITCH_FALLBACK:?}; showing anyway");
+                        use tauri::Manager;
+                        let st = h.state::<Vault>();
+                        switch_ready(h.clone(), st);
+                    }
+                });
+            }
             // R33.6b: probe the LIVE session once, HERE — setup runs on the GTK
             // main thread with the display already open, and GDK may not be
             // touched from the command threads where win_drag_start runs.
@@ -4443,7 +4805,7 @@ fn main() {
         // an escape is indistinguishable from a typo (R29.5).
         .register_uri_scheme_protocol(IMG_SCHEME, |ctx, req| {
             use tauri::Manager;
-            let root = ctx.app_handle().state::<Vault>().root.lock().unwrap().clone();
+            let root = cur_vault(&ctx.app_handle().state::<Vault>());
             let target = req.uri().path().trim_start_matches('/').to_string();
             match root.as_deref().and_then(|r| serve_image(r, &target)) {
                 Some((mime, body)) => tauri::http::Response::builder()
@@ -4457,10 +4819,10 @@ fn main() {
             .expect("img response")
         })
         .invoke_handler(tauri::generate_handler![
-            list_notes, list_images, read_note, write_note, create_note, render, render_blocks, block_lines, highlight_blocks, graph, graph_local, vault_get, set_vault,
-            create_vault, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
+            list_notes, list_images, read_note, write_note, create_note, render, render_blocks, block_lines, highlight_blocks, graph, graph_local, vault_get, pick_vault,
+            create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, tags, tag_counts,
-            get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, smoke_css,
+            get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, vb_probe, smoke_css,
             read_workspace, write_workspace, get_win_geom, set_win_geom,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
@@ -4472,7 +4834,7 @@ fn main() {
             zoom, zoom_get,
             settings::settings_model
         ])
-        .run(tauri::generate_context!())
+        .run(ctx)
         .expect("tauri run");
 }
 
@@ -7883,13 +8245,18 @@ mod tests {
             "async function closeTab(",
             "async function dropTab(",
             "async function collapseGroup(",
-            "async function enterVault(",
         ] {
             assert!(
                 body_of(header).contains("tabGone("),
                 "`{header}` removes tabs without recording a cause — that is the blind spot this instrumentation exists to close"
             );
         }
+        // vaultbleed: enterVault used to throw a whole layout away (session-replace).
+        // One vault per process now: it runs once and refuses a second entry, so it
+        // removes no tab and there is no fifth cause to record.
+        let ev = body_of("async function enterVault(");
+        assert!(ev.contains("if (state) throw"), "enterVault must refuse a second entry (one vault per process)");
+        assert!(!ev.contains("tabGone("), "enterVault removes no tab any more");
 
         // 3. and nothing else takes a tab out of a group. THREE splices, each
         //    accounted for by name: two destroy the tab (closeTab, dropTab)
@@ -7959,6 +8326,35 @@ mod tests {
         );
     }
 }
+/// vaultbleed item 7 — the [vbl:] census (ui/main.js vblTok) is a test-only
+/// instrument, OFF unless OPENSIDIAN_VBPROBE=1 (same contract as nob_probe).
+/// Returns None when off. When OPENSIDIAN_VBPROBE_PEEK=<dir> is set, it also
+/// tries to list <dir> from THIS process and reports the errno (0 = readable)
+/// — the phase points each window at the OTHER vault, so under
+/// OPENSIDIAN_LANDLOCK=1 a confined window must answer 13 (EACCES).
+#[tauri::command]
+fn vb_probe() -> Option<String> {
+    if std::env::var("OPENSIDIAN_VBPROBE").as_deref() != Ok("1") {
+        return None;
+    }
+    let Some(dir) = std::env::var_os("OPENSIDIAN_VBPROBE_PEEK").filter(|d| !d.is_empty()) else {
+        return Some("-".into());
+    };
+    let dir = std::path::PathBuf::from(dir);
+    // vsfix: a directory read on the UI's census path; timed like list_dirs
+    let errno = span_timed!("vb_probe", match std::fs::read_dir(&dir) {
+        Ok(_) => 0,
+        Err(e) => e.raw_os_error().unwrap_or(-1),
+    });
+    eprintln!(
+        "[vbprobe] pid={} read_dir {}: errno {}{}",
+        std::process::id(),
+        dir.display(),
+        errno,
+        if errno == 13 { " (EACCES)" } else { "" }
+    );
+    Some(errno.to_string())
+}
 /// stock-name goal, criterion 3 — the [nob:] user-facing-string census
 /// (ui/main.js nobTok) is a test-only instrument, OFF unless
 /// OPENSIDIAN_NOBPROBE=1. Same reason as type_probe: with it off no census
@@ -7966,4 +8362,174 @@ mod tests {
 #[tauri::command]
 fn nob_probe() -> bool {
     std::env::var("OPENSIDIAN_NOBPROBE").as_deref() == Ok("1")
+}
+
+/* vaultbleed (operator 2026-10-03, SEVERE): "i see tags from another vault in
+   my sidebar that has been opened before". These tests land a vault switch at
+   the exact instant a root+index critical path is between "I read the root"
+   and "I hold the index" (vault_hook), and assert the one invariant the bug
+   breaks: the in-memory index of the vault that is OPEN equals that vault's
+   disk — nothing that exists only in the other vault, in tag_counts, in the
+   note list, or in search. */
+#[cfg(test)]
+mod vaultbleed_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn mk(tag: &str, files: &[(&str, &str)]) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("opensidian-vb-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        for (n, c) in files {
+            fs::write(root.join(format!("{n}.md")), c).unwrap();
+        }
+        root
+    }
+    fn vault_at(p: &Path) -> Arc<Vault> {
+        let v = Arc::new(Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new() });
+        bind_vault(&v, p).unwrap();
+        v
+    }
+    fn set_hook(f: impl FnMut(&'static str) + 'static) {
+        VAULT_HOOK.with(|h| *h.borrow_mut() = Some(Box::new(f)));
+    }
+    fn clear_hook() {
+        VAULT_HOOK.with(|h| *h.borrow_mut() = None);
+    }
+    /// TRY to re-root to `to` the FIRST time the path reaches `at` — exactly
+    /// where c7479c7's open_vault swapped root+index under the watcher. Every
+    /// attempt's result is pushed to `log`; set-once must make each one Err.
+    fn try_switch_once_at(v: &Arc<Vault>, at: &'static str, to: &Path, log: &std::rc::Rc<std::cell::RefCell<Vec<Result<(), String>>>>) {
+        let (v, to, log) = (v.clone(), to.to_path_buf(), log.clone());
+        let mut fired = false;
+        set_hook(move |p| {
+            if p == at && !fired {
+                fired = true;
+                log.borrow_mut().push(bind_vault(&v, &to));
+            }
+        });
+    }
+    /// the invariant: open vault's index == its disk, and none of `foreign`
+    /// (tags / note names / a search word that exist ONLY in the other vault)
+    /// is visible through tag_counts, the note list or search.
+    fn assert_clean(v: &Vault, want_root: &Path, foreign_tag: &str, foreign_notes: &[&str], ctx: &str) {
+        let root = cur_vault(v).expect("a vault is open");
+        assert_eq!(root, want_root, "{ctx}: wrong vault open");
+        let ix = v.index.lock().unwrap();
+        let disk = Index::build(&root);
+        let tc = ix.tag_counts();
+        assert!(!tc.contains_key(foreign_tag), "{ctx}: tag_counts of {} carries #{foreign_tag}: {tc:?}", root.display());
+        for n in foreign_notes {
+            assert!(!ix.names().iter().any(|x| x == n), "{ctx}: note list of {} carries {n}: {:?}", root.display(), ix.names());
+        }
+        let hits = search_docs(ix.docs(), foreign_tag);
+        assert!(hits.is_empty(), "{ctx}: search '{foreign_tag}' in {} hit {:?}", root.display(), hits.iter().map(|h| &h.note).collect::<Vec<_>>());
+        assert_eq!(ix.names(), disk.names(), "{ctx}: note list != disk");
+        assert_eq!(tc, disk.tag_counts(), "{ctx}: tag_counts != disk");
+    }
+
+    /* set-once, the type-level guarantee: a second bind is Err and changes
+       neither the root nor the index. */
+    #[test]
+    fn vaultbleed_root_is_set_once_second_bind_is_err() {
+        let a = mk("so-a", &[("onlyA-note", "seed #onlyA\n")]);
+        let b = mk("so-b", &[("onlyB-note", "seed #onlyB\n")]);
+        let v = vault_at(&a);
+        let e = bind_vault(&v, &b).expect_err("second bind must be Err");
+        assert!(e.contains("already has a vault open"), "{e}");
+        assert!(bind_vault(&v, &a).is_err(), "re-binding the SAME vault is Err too");
+        assert_clean(&v, &a, "onlyB", &["onlyB-note"], "after refused bind");
+        let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&b));
+    }
+
+    #[test]
+    fn vaultbleed_second_backend_on_an_open_vault_is_refused() {
+        // B: two Vaults (= two processes' backends) on ONE directory. The
+        // second bind is refused by the flock BEFORE it claims a root or builds
+        // an index; a second spelling of the path keys the same lock.
+        let a = mk("dup-a", &[("onlyA-note", "seed #onlyA\n")]);
+        let locks = std::env::temp_dir().join(format!("opensidian-vb-locks-{}", std::process::id()));
+        let v1 = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new() };
+        bind_vault_locked(&v1, &a, &locks).expect("first backend binds");
+        let v2 = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new() };
+        let alias = a.join("..").join(a.file_name().unwrap());
+        match bind_vault_locked(&v2, &alias, &locks) {
+            Err(BindErr::Lock(vaultlock::LockErr::Busy(_))) => {}
+            other => panic!("second backend on an open vault must be Busy, got {other:?}"),
+        }
+        assert!(cur_vault(&v2).is_none(), "refused bind claims no root");
+        assert!(cur_notes(&v2).is_empty(), "refused bind builds no index");
+        drop(v1); // the first window exits
+        // RETRY THE BIND ITSELF, same 3 s / 25 ms budget as acquire_eventually.
+        // The old probe-then-bind lost a race (gate rg-1791056354, bd724f7):
+        // a sibling test forking while the PROBE held its flock gives the child
+        // a copy of that open file description until its exec closes it
+        // (CLOEXEC), so the bind right after the probe's drop read Busy. A
+        // refused bind claims nothing (asserted above), so retrying is clean.
+        let t0 = std::time::Instant::now();
+        loop {
+            match bind_vault_locked(&v2, &alias, &locks) {
+                Err(BindErr::Lock(vaultlock::LockErr::Busy(_))) if t0.elapsed().as_secs() < 3 => {
+                    std::thread::sleep(std::time::Duration::from_millis(25))
+                }
+                r => {
+                    r.expect("free once the holder is gone");
+                    break;
+                }
+            }
+        }
+        assert!(cur_vault(&v2).is_some(), "the second backend owns the vault once the first is gone");
+        let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&locks));
+    }
+
+    /* THE OPERATOR'S REPORT, the race c7479c7 lost (red on 2d05542, see
+       progress.md): 20 rounds, A modified + an A-only note added each round,
+       and a switch to B attempted between the watcher's walk of A and its
+       index lock. Now every attempt is refused, and both the tick and a
+       steady tick after it leave A's index == A's disk with nothing of B. */
+    #[test]
+    fn vaultbleed_watcher_tick_never_reconciles_the_old_vault_into_the_new() {
+        let a = mk("wa", &[("onlyA-note", "seed #onlyA\n"), ("shared", "a side\n")]);
+        let b = mk("wb", &[("onlyB-note", "seed #onlyB\n"), ("shared", "b side\n")]);
+        let v = vault_at(&a);
+        let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut prev = None;
+        watch_tick(&v, &mut prev); // baseline A
+        for i in 0..20 {
+            fs::write(a.join("onlyA-note.md"), format!("edit {} #onlyA\n", "x".repeat(i + 1))).unwrap();
+            fs::write(a.join(format!("onlyA-new{i}.md")), "#onlyA fresh\n").unwrap();
+            fs::write(b.join("onlyB-note.md"), format!("edit {} #onlyB\n", "y".repeat(i + 1))).unwrap();
+            try_switch_once_at(&v, "watch_tick:pre_lock", &b, &log);
+            let ch = watch_tick(&v, &mut prev);
+            clear_hook();
+            let ctx = format!("round {i}");
+            assert_clean(&v, &a, "onlyB", &["onlyB-note"], &ctx);
+            assert!(!ch.modified.iter().chain(&ch.added).any(|n| n.starts_with("onlyB")), "{ctx}: vault-changed names B notes: {ch:?}");
+            watch_tick(&v, &mut prev);
+            assert_clean(&v, &a, "onlyB", &["onlyB-note"], &format!("{ctx} +1 tick"));
+        }
+        let log = log.borrow();
+        assert_eq!(log.len(), 20, "the hook fired once per round");
+        assert!(log.iter().all(|r| r.is_err()), "a live process was re-rooted: {log:?}");
+        let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&b));
+    }
+
+    /* The command side: write_note reads the root, then takes the index lock.
+       A switch attempted in between is refused; A's write lands in A only. */
+    #[test]
+    fn vaultbleed_write_note_racing_a_switch_keeps_index_equal_to_disk() {
+        let a = mk("na", &[("onlyA-note", "seed #onlyA\n")]);
+        let b = mk("nb", &[("onlyB-note", "seed #onlyB\n")]);
+        let v = vault_at(&a);
+        let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        try_switch_once_at(&v, "write_note:pre_lock", &b, &log);
+        write_note_inner(&v, "onlyA-note", "typed in A #onlyA\n").unwrap();
+        clear_hook();
+        assert_eq!(log.borrow().len(), 1, "hook fired");
+        assert!(log.borrow()[0].is_err(), "write_note's switch window re-rooted the process");
+        assert_clean(&v, &a, "onlyB", &["onlyB-note"], "write_note vs refused switch");
+        assert_eq!(fs::read_to_string(a.join("onlyA-note.md")).unwrap(), "typed in A #onlyA\n");
+        assert!(!b.join("onlyA-note.md").exists(), "write_note wrote A's note into B on disk");
+        let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&b));
+    }
 }
