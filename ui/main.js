@@ -7,18 +7,7 @@
 /* otel (R18): every invoke carries the innermost open UI action span as the
    `otel` arg, so backend spans nest under it (commands without the param
    ignore it). ui/otel.js owns ids, buffering and the 250ms batched IPC. */
-/* vaultbleed: every command that WRITES note bytes into the vault names the
-   vault this window believes is open; the backend refuses it ("vault
-   switched") if the root moved in between, so a save/create/rename issued
-   for vault A can never land in vault B. vaultPath is read at CALL time. */
-const VAULT_WRITES = new Set(["write_note", "create_note", "move_note", "update_links",
-  "rename_note", "delete_note", "link_mention", "attach_files"]);
-const inv = (c, a) => {
-  const x = otel.ctx();
-  let args = x ? Object.assign({ otel: x }, a) : a;
-  if (VAULT_WRITES.has(c) && vaultPath) args = Object.assign({ vault: vaultPath }, args);
-  return window.__TAURI__.core.invoke(c, args);
-};
+const inv = (c, a) => { const x = otel.ctx(); return window.__TAURI__.core.invoke(c, x ? Object.assign({ otel: x }, a) : a); };
 /* perf-spans shim over otel: mark(name, t0, extra) = a span that started at
    t0 and ends now; push(name, ms, extra) = an already-measured span (graph
    frames); both no-ops once the backend said telemetry is off. */
@@ -8122,11 +8111,6 @@ async function enterVault() {
   // reached here WITHOUT leaveVault has no vault left to flush into safely.
   if (wsT) { clearTimeout(wsT); wsT = null; }
   wsLast = ""; wsIds = {};
-  // vaultbleed: per-VAULT memory that nothing else resets. closedTabs is the
-  // undo-close RESCUE buffer: carried over, Ctrl+Shift+T in B would create_note
-  // A's rescued bytes INTO B's disk. mruList is written to B's workspace.json as
-  // lastOpenFiles (wsDoc) whenever B's file has none to replace it with.
-  closedTabs = []; mruList = [];
   $("vswitch").innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>' + base(vaultPath);
   collapsed = new Set();
   bmFolds = new Set();               // collapseall: folds are per vault and in memory (R6)
@@ -8152,11 +8136,6 @@ async function enterVault() {
     if (names.length) await openInTab(names[0], "boot");
     else renderTabs(g);
   }
-  // vaultbleed: panes that paint VAULT-WIDE data must repaint from B even when
-  // no note opens (an empty B used to keep A's tag pane): the right pane
-  // (tags / backlinks / outline) and a standing search query.
-  await rPanesRefresh();
-  if ($("sinput").value.trim()) await runSearch();
   perf.mark("boot", 0, { notes: names.length });   // perf: page start -> vault ready (first note rendered)
   wsGeomTouch();   // R28.2: the rectangle is recorded once per session OUTSIDE the vault, resize or no resize
 }

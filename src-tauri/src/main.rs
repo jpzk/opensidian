@@ -1,11 +1,4 @@
-#![cfg_att    // ONE lock for both lists: two index locks in one expression is a deadlock
-    // on a non-reentrant Mutex, not a style question. vaultbleed: the root the
-    // linebreak setting (goal/linebreak) is read from comes from the SAME lock,
-    // so a render never pairs B's note list with A's app.json. One small
-    // app.json read under the lock — the price of not mixing two vaults.
-    let (ix, root, _) = vault_lock(&v);
-    let soft_br = !root.is_some_and(|r| app_bool_in(&r, "strictLineBreaks"));
-(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 // opensidian, a vault-compatible markdown notes app.
 // Copyright (C) 2026 Jendrik Poloczek
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -21,7 +14,6 @@
 use pulldown_cmark::{html, Event, LinkType, Options, Parser, Tag, TagEnd};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use tauri::State;
 
@@ -45,45 +37,6 @@ use index::{link_parts, links_in, resolve, tag_spans, Graph, Index};
 struct Vault {
     root: Mutex<Option<PathBuf>>,
     index: Mutex<Index>,
-    /* vaultbleed: bumped on every vault open. THE RULE that makes root, index
-       and epoch one value: all three are WRITTEN only while the index lock is
-       held (open_vault), so anyone holding the index lock reads a consistent
-       triple (vault_lock). Before this, open_vault swapped index then root
-       with no common lock, and the watcher (root read -> walk -> index lock)
-       reconciled vault A's diff into vault B's index: the operator's "tags
-       from another vault in my sidebar". */
-    epoch: AtomicU64,
-}
-
-impl Vault {
-    fn new(root: Option<PathBuf>, index: Index) -> Vault {
-        Vault { root: Mutex::new(root), index: Mutex::new(index), epoch: AtomicU64::new(0) }
-    }
-}
-
-/// The index, plus the root and epoch it belongs to — read UNDER the index
-/// lock, which is the lock every root/epoch write holds. Every path that
-/// touches the disk of the root AND the index goes through here, never
-/// cur_vault() followed by a second lock.
-fn vault_lock(v: &Vault) -> (std::sync::MutexGuard<'_, Index>, Option<PathBuf>, u64) {
-    let ix = v.index.lock().unwrap();
-    let root = v.root.lock().unwrap().clone();
-    let e = v.epoch.load(Ordering::SeqCst);
-    (ix, root, e)
-}
-
-/// vaultbleed disk guard: a command that WRITES into the vault may carry the
-/// vault the caller believes is open (`vault`, the UI's vaultPath). If the
-/// root moved since, the write is refused — bytes typed in A never land in B.
-/// None = legacy caller, no check (every UI write path sends it).
-const VAULT_SWITCHED: &str = "vault switched";
-fn vault_is(root: &Path, vault: Option<&str>) -> Result<(), String> {
-    match vault {
-        // vaultPath is what set_vault/vault_get RETURNED (root.display()), so
-        // a lossy (non-UTF-8) root still matches its own display string
-        Some(w) if Path::new(w.trim()) != root && root.display().to_string() != w.trim() => Err(VAULT_SWITCHED.into()),
-        _ => Ok(()),
-    }
 }
 
 fn cur_vault(v: &Vault) -> Option<PathBuf> {
@@ -124,14 +77,8 @@ fn open_vault(v: &Vault, p: &Path) {
     // an already-seeded vault writes nothing.
     builtins::seed_and_record(p);
     let ix = span_timed!("index_build", Index::build(p), serde_json::json!({"notes": 0}));
-    // vaultbleed: index, root and epoch change in ONE critical section (the
-    // index lock; lock order is always index -> root), so no reader can pair
-    // B's index with A's root, and a watcher tick that started on A sees the
-    // epoch move before it may touch the index.
-    let mut g = v.index.lock().unwrap();
-    *g = ix;
+    *v.index.lock().unwrap() = ix;
     *v.root.lock().unwrap() = Some(p.to_path_buf());
-    v.epoch.fetch_add(1, Ordering::SeqCst);
 }
 /// component-wise traversal check: only plain, non-hidden components allowed
 fn safe_rel(name: &str) -> Option<PathBuf> {
@@ -647,26 +594,15 @@ async fn attach_files(
     v: State<'_, Vault>,
     note: String,
     paths: Vec<PathBuf>,
-    vault: Option<String>,
     otel: Option<perf::Ctx>,
 ) -> Result<Attached, String> {
-    // vaultbleed: pin (root, epoch) together; the copy runs WITHOUT the index
-    // lock (it can be large), so the epoch decides afterwards whether these
-    // images still belong to the open vault's index. If the vault switched,
-    // the files are on the OLD vault's disk — where its next open indexes them.
-    let (root, e0) = {
-        let (_ix, root, e) = vault_lock(&v);
-        (root.ok_or("no vault open")?, e)
-    };
-    vault_is(&root, vault.as_deref())?;
+    let root = cur_vault(&v).ok_or("no vault open")?;
     let n = paths.len();
     let a = span_timed!(otel => "attach_files", attach_drop(&root, &note, &paths), serde_json::json!({"files": n}))
         .map_err(|e| e.say())?;
-    let (mut ix, _, e) = vault_lock(&v);
-    if e == e0 {
-        for rel in &a.copied {
-            ix.add_image(rel);
-        }
+    let mut ix = v.index.lock().unwrap();
+    for rel in &a.copied {
+        ix.add_image(rel);
     }
     Ok(a)
 }
@@ -749,20 +685,17 @@ fn read_note(v: State<Vault>, name: String, otel: Option<perf::Ctx>) -> String {
 // F1 (dataloss-audit): the Result is the product. A save that did not land
 // MUST reach the UI — a swallowed ENOSPC/EROFS costs every edit of a session.
 #[tauri::command]
-fn write_note(v: State<Vault>, name: String, content: String, vault: Option<String>, otel: Option<perf::Ctx>) -> Result<(), String> {
+fn write_note(v: State<Vault>, name: String, content: String, otel: Option<perf::Ctx>) -> Result<(), String> {
     let bytes = content.len();
-    span_timed!(otel => "write_note", write_note_inner(&v, vault.as_deref(), &name, &content), serde_json::json!({"bytes": bytes}))
+    span_timed!(otel => "write_note", write_note_inner(&v, &name, &content), serde_json::json!({"bytes": bytes}))
 }
 
-fn write_note_inner(v: &Vault, vault: Option<&str>, name: &str, content: &str) -> Result<(), String> {
+fn write_note_inner(v: &Vault, name: &str, content: &str) -> Result<(), String> {
+    let root = cur_vault(v).ok_or("no vault open")?;
     vault_hook("write_note:pre_lock");
     // R11: lock BEFORE the write — the watcher reads+compares under this
-    // lock, so it never sees our bytes on disk without them in the index.
-    // vaultbleed: the root is read UNDER that lock (vault_lock), never before
-    // it, and a caller that names a vault no longer open is refused.
-    let (mut ix, root, _) = vault_lock(v);
-    let root = root.ok_or("no vault open")?;
-    vault_is(&root, vault)?;
+    // lock, so it never sees our bytes on disk without them in the index
+    let mut ix = v.index.lock().unwrap();
     write_note_in(&root, &mut ix, name, content)
 }
 
@@ -837,10 +770,9 @@ const EXISTS: &str = "exists";
    (git checkout, sync client, the 1000ms-stale index) can land a real file
    between the check and the truncate. */
 #[tauri::command]
-fn create_note(v: State<Vault>, name: String, content: Option<String>, vault: Option<String>, otel: Option<perf::Ctx>) -> Result<(), String> {
-    let (mut ix, root, _) = vault_lock(&v); // vaultbleed: root read under the index lock
-    let root = root.ok_or("no vault open")?;
-    vault_is(&root, vault.as_deref())?;
+fn create_note(v: State<Vault>, name: String, content: Option<String>, otel: Option<perf::Ctx>) -> Result<(), String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    let mut ix = v.index.lock().unwrap();
     // feedback #20: an ABSENT content is an EMPTY note, not a seeded one. The
     // default lives here as well as at ui/main.js createNote so that neither
     // side can re-mint "# name" on its own; a new note is zero bytes on disk.
@@ -972,10 +904,9 @@ struct Blast {
    radius to put in the prompt. Inbound links are untouched until the caller
    answers with update_links. */
 #[tauri::command]
-fn move_note(v: State<Vault>, old: String, new: String, vault: Option<String>, otel: Option<perf::Ctx>) -> Result<Blast, String> {
-    let (mut ix, root, _) = vault_lock(&v); // vaultbleed: root read under the index lock
-    let root = root.ok_or("no vault open")?;
-    vault_is(&root, vault.as_deref())?;
+fn move_note(v: State<Vault>, old: String, new: String, otel: Option<perf::Ctx>) -> Result<Blast, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    let mut ix = v.index.lock().unwrap();
     let (links, files) = span_timed!(otel => "move_note", move_note_in(&root, &mut ix, &old, &new))?;
     Ok(Blast { links, files })
 }
@@ -984,10 +915,9 @@ fn move_note(v: State<Vault>, old: String, new: String, vault: Option<String>, o
    that rewrote links without this call could not be told from one that did,
    and the phase's negative control is exactly that difference. */
 #[tauri::command]
-fn update_links(v: State<Vault>, old: String, new: String, vault: Option<String>, otel: Option<perf::Ctx>) -> Result<usize, String> {
-    let (mut ix, root, _) = vault_lock(&v); // vaultbleed: root read under the index lock
-    let root = root.ok_or("no vault open")?;
-    vault_is(&root, vault.as_deref())?;
+fn update_links(v: State<Vault>, old: String, new: String, otel: Option<perf::Ctx>) -> Result<usize, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    let mut ix = v.index.lock().unwrap();
     Ok(span_timed!(otel => "update_links", update_links_in(&root, &mut ix, &old, &new)))
 }
 
@@ -1089,10 +1019,9 @@ fn set_strict_line_breaks(v: State<Vault>, on: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn rename_note(v: State<Vault>, old: String, new: String, vault: Option<String>, otel: Option<perf::Ctx>) -> Result<(), String> {
-    let (mut ix, root, _) = vault_lock(&v); // vaultbleed: root read under the index lock
-    let root = root.ok_or("no vault open")?;
-    vault_is(&root, vault.as_deref())?;
+fn rename_note(v: State<Vault>, old: String, new: String, otel: Option<perf::Ctx>) -> Result<(), String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    let mut ix = v.index.lock().unwrap();
     span_timed!(otel => "rename_note", rename_in(&root, &mut ix, &old, &new))
 }
 
@@ -1177,10 +1106,9 @@ fn delete_note_in(root: &Path, ix: &mut Index, name: &str) -> Result<String, Str
 /// count the dialog states comes from `backlinks_ctx` (links per line, files
 /// per note) — no second counter for this path, and none is added here.
 #[tauri::command]
-fn delete_note(v: State<Vault>, name: String, vault: Option<String>, otel: Option<perf::Ctx>) -> Result<String, String> {
-    let (mut ix, root, _) = vault_lock(&v); // vaultbleed: root read under the index lock
-    let root = root.ok_or("no vault open")?;
-    vault_is(&root, vault.as_deref())?;
+fn delete_note(v: State<Vault>, name: String, otel: Option<perf::Ctx>) -> Result<String, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    let mut ix = v.index.lock().unwrap();
     span_timed!(otel => "delete_note", delete_note_in(&root, &mut ix, &name))
 }
 
@@ -2265,13 +2193,11 @@ fn block_lines(content: String) -> Vec<u32> {
 
 #[tauri::command]
 fn render(v: State<Vault>, content: String, otel: Option<perf::Ctx>) -> String {
-    // ONE lock for both lists: two index locks in one expression is a deadlock
-    // on a non-reentrant Mutex, not a style question. vaultbleed: the root the
-    // linebreak setting (goal/linebreak) is read from comes from the SAME lock,
-    // so a render never pairs B's note list with A's app.json — one small
-    // app.json read under the lock is the price of never mixing two vaults.
-    let (ix, root, _) = vault_lock(&v);
-    let soft_br = !root.is_some_and(|r| app_bool_in(&r, "strictLineBreaks"));
+    // goal/linebreak: the setting is read BEFORE the index lock (root is its own mutex)
+    let soft_br = !cur_vault(&v).is_some_and(|r| app_bool_in(&r, "strictLineBreaks"));
+    // ONE lock for both lists: two `v.index.lock()` calls in one expression is
+    // a deadlock on a non-reentrant Mutex, not a style question.
+    let ix = v.index.lock().unwrap();
     span_timed!(otel => "render", render_with_br(&content, ix.names(), ix.images(), true, soft_br), serde_json::json!({"bytes": content.len()}))
 }
 
@@ -2413,11 +2339,10 @@ fn unlinked_mentions(v: State<Vault>, name: String) -> Vec<Mention> {
 
 /// Link button: wrap the matched text in [[ ]] in `note` and save it
 #[tauri::command]
-fn link_mention(v: State<Vault>, note: String, target: String, line: u32, col: u32, len: u32, vault: Option<String>) -> Result<(), String> {
+fn link_mention(v: State<Vault>, note: String, target: String, line: u32, col: u32, len: u32) -> Result<(), String> {
     span_timed!("link_mention", {
-        let (mut ix, root, _) = vault_lock(&v); // vaultbleed: root read under the index lock
-        let root = root.ok_or("no vault open")?;
-        vault_is(&root, vault.as_deref())?;
+        let root = cur_vault(&v).ok_or("no vault open")?;
+        let mut ix = v.index.lock().unwrap();
         link_mention_in(&root, &mut ix, &note, &target, line, col, len)
     })
 }
@@ -2676,15 +2601,12 @@ struct CssReloadCfg {
     snippets: Vec<String>,
     gen: u64,
     alive: bool,
-    /// vaultbleed: the vault epoch the frontend declared this set FOR
-    epoch: u64,
 }
 static CSS_RELOAD: Mutex<CssReloadCfg> = Mutex::new(CssReloadCfg {
     theme: String::new(),
     snippets: Vec::new(),
     gen: 0,
     alive: false,
-    epoch: 0,
 });
 
 #[tauri::command]
@@ -2694,12 +2616,8 @@ fn vault_css_watch(
     theme: String,
     snippets: Vec<String>,
 ) -> Result<(), String> {
-    let (have_vault, e) = {
-        let (_ix, root, e) = vault_lock(&v);
-        (root.is_some(), e)
-    };
+    let have_vault = cur_vault(&v).is_some();
     let mut st = CSS_RELOAD.lock().unwrap();
-    st.epoch = e;
     st.theme = theme;
     st.snippets = snippets;
     st.gen += 1;
@@ -2712,44 +2630,24 @@ fn vault_css_watch(
     Ok(())
 }
 
-/// vaultbleed: the root a css watch set may be derived on — only the root of
-/// the vault open the frontend declared it for.
-fn css_watch_root(declared: u64, current: u64, root: Option<PathBuf>) -> Option<PathBuf> {
-    if declared == current {
-        root
-    } else {
-        None
-    }
-}
-
 fn spawn_css_reload(app: tauri::AppHandle) {
     use tauri::{Emitter, Manager};
     std::thread::spawn(move || {
         let mut gen = 0u64; // != any bumped gen, so the first tick derives
-        let mut seen_epoch = u64::MAX; // != any epoch, same reason
         let mut watched: Vec<(themefs::WatchedFile, themefs::ReloadFp)> = Vec::new();
         loop {
             std::thread::sleep(std::time::Duration::from_millis(themefs::RELOAD_TICK_MS));
-            let (g, theme, snippets, declared) = {
+            let (g, theme, snippets) = {
                 let st = CSS_RELOAD.lock().unwrap();
-                (st.gen, st.theme.clone(), st.snippets.clone(), st.epoch)
+                (st.gen, st.theme.clone(), st.snippets.clone())
             };
-            let (root, ve) = {
-                let vs = app.state::<Vault>();
-                let (_ix, root, e) = vault_lock(&vs);
-                (root, e)
-            };
-            if g != gen || ve != seen_epoch {
+            if g != gen {
                 gen = g;
-                seen_epoch = ve;
                 // a config move is a USER action the frontend already
-                // applied — reseed the fingerprints silently, emit nothing.
-                // vaultbleed: a set declared for ANOTHER vault open (the
-                // switch happened, the frontend has not re-declared yet)
-                // watches nothing — never the old root's files, never the
-                // new root's files under the old vault's theme names.
-                watched = match css_watch_root(declared, ve, root) {
-                    Some(r) => themefs::watch_set(&r, &theme, &snippets)
+                // applied — reseed the fingerprints silently, emit nothing
+                let root = cur_vault(&app.state::<Vault>());
+                watched = match &root {
+                    Some(r) => themefs::watch_set(r, &theme, &snippets)
                         .into_iter()
                         .map(|w| {
                             let fp = themefs::reload_fp(&w.path);
@@ -3818,7 +3716,7 @@ fn bm_drag(v: State<Vault>, ix: usize, parent: Option<usize>, pos: usize) -> Res
 fn spawn_watcher(app: tauri::AppHandle) {
     use tauri::{Emitter, Manager};
     std::thread::spawn(move || {
-        let mut prev: Option<WatchBase> = None;
+        let mut prev: Option<(PathBuf, watcher::Snapshot)> = None;
         loop {
             std::thread::sleep(std::time::Duration::from_millis(watcher::TICK_MS));
             let change = watch_tick(&app.state::<Vault>(), &mut prev);
@@ -3829,31 +3727,16 @@ fn spawn_watcher(app: tauri::AppHandle) {
     });
 }
 
-/// the watcher's baseline: WHICH vault open (root + epoch) it walked, and what
-/// it saw. A diff is only ever taken against a baseline of the same epoch.
-type WatchBase = (PathBuf, u64, watcher::Snapshot);
-
 /// One watcher tick, Tauri-free so cargo tests can drive it against a real
 /// Vault (vaultbleed). Returns what the UI is told; `prev` is the baseline.
-///
-/// vaultbleed: the tick pins (root, epoch) at its start, walks WITHOUT any
-/// lock, and re-checks the epoch once it HOLDS the index lock — the lock
-/// open_vault bumps the epoch under. A switch anywhere in between means the
-/// diff describes a vault that is no longer open: it is dropped, the baseline
-/// is cleared, and the next tick reseeds on the new root silently (exactly
-/// what a switch between two ticks always did). Never reconciled, never emitted.
-fn watch_tick(v: &Vault, prev: &mut Option<WatchBase>) -> watcher::Change {
-    let (root, e0) = {
-        let (_ix, root, e) = vault_lock(v);
-        (root, e)
-    };
-    let Some(root) = root else {
+fn watch_tick(v: &Vault, prev: &mut Option<(PathBuf, watcher::Snapshot)>) -> watcher::Change {
+    let Some(root) = cur_vault(v) else {
         *prev = None;
         return watcher::Change::default();
     };
     let mut cur = watcher::snapshot(&root);
     let change = match &*prev {
-        Some((r, pe, s)) if *r == root && *pe == e0 => {
+        Some((r, s)) if *r == root => {
             let mut d = watcher::diff(s, &cur);
             /* THE S1 GUARD (goal/tabclose). A removal is the only
                change class that DESTROYS state the user cannot get
@@ -3882,30 +3765,17 @@ fn watch_tick(v: &Vault, prev: &mut Option<WatchBase>) -> watcher::Change {
                 d = d2;
             }
             if d.added.is_empty() && d.removed.is_empty() && d.modified.is_empty() {
-                Some(watcher::Change::default())
+                watcher::Change::default()
             } else {
                 vault_hook("watch_tick:pre_lock");
-                let (mut ix, _, e) = vault_lock(v);
-                if e != e0 {
-                    eprintln!("[vaultbleed] watcher tick on {} dropped: vault switched mid-tick (epoch {e0} -> {e})", root.display());
-                    None
-                } else {
-                    Some(span_timed!("watcher_reconcile", watcher::reconcile(&root, &d, &mut ix)))
-                }
+                let mut ix = v.index.lock().unwrap();
+                span_timed!("watcher_reconcile", watcher::reconcile(&root, &d, &mut ix))
             }
         }
-        _ => Some(watcher::Change::default()),
+        _ => watcher::Change::default(),
     };
-    match change {
-        Some(c) => {
-            *prev = Some((root, e0, cur));
-            c
-        }
-        None => {
-            *prev = None; // stale: the vault switched mid-tick
-            watcher::Change::default()
-        }
-    }
+    *prev = Some((root, cur));
+    change
 }
 
 /* ---------- R33 frameless window: the app draws its own frame ----------
@@ -4533,7 +4403,7 @@ fn main() {
     // perf-index: one walk + read now, so the first note_open is already warm
     let index = init.as_deref().map(Index::build).unwrap_or_default();
     tauri::Builder::default()
-        .manage(Vault::new(init, index))
+        .manage(Vault { index: Mutex::new(index), root: Mutex::new(init) })
         .manage(ZoomLevel(Mutex::new(read_zoom_cfg())))
         .setup(|app| {
             spawn_watcher(app.handle().clone());
@@ -8151,7 +8021,7 @@ mod vaultbleed_tests {
         root
     }
     fn vault_at(p: &Path) -> Arc<Vault> {
-        let v = Arc::new(Vault::new(None, Index::default()));
+        let v = Arc::new(Vault { root: Mutex::new(None), index: Mutex::new(Index::default()) });
         open_vault(&v, p);
         v
     }
@@ -8227,95 +8097,20 @@ mod vaultbleed_tests {
         let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&b));
     }
 
-    /* The same class on the command side: write_note used to read the root,
-       then take the index lock. A switch in between must not leave the open
-       vault's index holding a note its disk does not have, and a save the UI
-       issued for vault A must never land in vault B (the disk-safety half). */
+    /* The same class on the command side: write_note reads the root, then
+       takes the index lock. A switch in between must not leave the open
+       vault's index holding a note its disk does not have. */
     #[test]
     fn vaultbleed_write_note_racing_a_switch_keeps_index_equal_to_disk() {
         let a = mk("na", &[("onlyA-note", "seed #onlyA\n")]);
         let b = mk("nb", &[("onlyB-note", "seed #onlyB\n")]);
         let v = vault_at(&a);
         switch_once_at(&v, "write_note:pre_lock", &b);
-        let r = write_note_inner(&v, Some(a.to_str().unwrap()), "onlyA-note", "typed in A #onlyA\n");
+        let _ = write_note_inner(&v, "onlyA-note", "typed in A #onlyA\n");
         clear_hook();
-        assert_eq!(r, Err(VAULT_SWITCHED.to_string()), "a save addressed to A must be refused once B is open");
         assert_clean(&v, &b, "onlyA", &["onlyA-note"], "write_note raced set_vault");
         // and A's bytes never reached B's disk
         assert!(!b.join("onlyA-note.md").exists(), "write_note wrote A's note into B on disk");
-        // a save addressed to the vault that IS open still lands (no false refusals)
-        write_note_inner(&v, Some(b.to_str().unwrap()), "onlyB-note", "typed in B #onlyB\n").unwrap();
-        assert_eq!(fs::read_to_string(b.join("onlyB-note.md")).unwrap(), "typed in B #onlyB\n");
-        assert_clean(&v, &b, "onlyA", &["onlyA-note"], "after a legit B save");
         let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&b));
-    }
-
-    #[test]
-    fn vaultbleed_vault_is_refuses_only_a_different_vault() {
-        let r = Path::new("/v/b");
-        assert!(vault_is(r, None).is_ok(), "legacy caller (no vault named) is not refused");
-        assert!(vault_is(r, Some("/v/b")).is_ok());
-        assert!(vault_is(r, Some(" /v/b ")).is_ok(), "set_vault trims, so does the guard");
-        assert_eq!(vault_is(r, Some("/v/a")), Err(VAULT_SWITCHED.to_string()));
-    }
-
-    /* open_vault's swap is ONE critical section: whoever holds the index lock
-       sees root and epoch of the same open. Before the fix the index was
-       swapped first and the root after, under two locks. */
-    #[test]
-    fn vaultbleed_open_vault_moves_root_index_and_epoch_together() {
-        let a = mk("oa", &[("onlyA-note", "#onlyA\n")]);
-        let b = mk("ob", &[("onlyB-note", "#onlyB\n")]);
-        let v = vault_at(&a);
-        let (e_a, root_a) = {
-            let (ix, r, e) = vault_lock(&v);
-            assert!(ix.names().iter().any(|n| n == "onlyA-note"));
-            (e, r)
-        };
-        assert_eq!(root_a.as_deref(), Some(a.as_path()));
-        open_vault(&v, &b);
-        let (ix, r, e) = vault_lock(&v);
-        assert_eq!(r.as_deref(), Some(b.as_path()));
-        assert!(e > e_a, "every open bumps the epoch");
-        assert!(!ix.names().iter().any(|n| n == "onlyA-note"));
-        drop(ix);
-        let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&b));
-    }
-
-    /* the css poller derives its watch set only on the root of the vault
-       open the frontend declared it for (vault_css_watch records the epoch) */
-    #[test]
-    fn vaultbleed_css_watch_set_never_derives_on_another_vault_open() {
-        let p = PathBuf::from("/v/b");
-        assert_eq!(css_watch_root(3, 3, Some(p.clone())), Some(p.clone()));
-        assert_eq!(css_watch_root(2, 3, Some(p.clone())), None, "declared for the previous open -> watch nothing");
-        assert_eq!(css_watch_root(3, 3, None), None);
-    }
-
-    /* STRUCTURAL GUARD for the whole class: no function may read the root
-       with cur_vault() AND take the index lock — that pair is exactly the
-       window the operator's bug lived in. Root+index users go through
-       vault_lock(). Same idiom as f20 (count the source, not the comments). */
-    #[test]
-    fn vaultbleed_no_function_pairs_cur_vault_with_a_second_index_lock() {
-        let src = include_str!("main.rs");
-        let code: String = src
-            .lines()
-            .filter(|l| !l.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let mut bad = Vec::new();
-        for body in code.split("\nfn ").chain(code.split("\nasync fn ")).skip(1) {
-            let name: String = body.chars().take_while(|c| *c != '(').collect();
-            let body = body.split("\n}\n").next().unwrap_or("");
-            let reads_root = body.contains(&format!("{}(&v)", "cur_vault")) || body.contains(&format!("{}(v)", "cur_vault"));
-            let locks_ix = body.contains(&format!("v.{}.lock()", "index"));
-            if reads_root && locks_ix {
-                bad.push(name);
-            }
-        }
-        bad.sort();
-        bad.dedup();
-        assert!(bad.is_empty(), "root read outside the index lock in: {bad:?} — use vault_lock()");
     }
 }
