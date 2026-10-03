@@ -1,4 +1,6 @@
-<img width="800" height="574" alt="github" src="https://github.com/user-attachments/assets/307dda12-e574-4ad9-9085-91d5a8686107" />
+
+<img width="800" height="574" alt="GH" src="https://github.com/user-attachments/assets/fff70236-3976-4b87-b3e0-f1ec2aca1e10" />
+
 
 # opensidian
 Open-source, vault-compatible markdown notes app. Rust + Tauri v2, no Electron, no npm. AI-built experiment under heavy development - don't trust, verify. We're looking for Linux distribution maintainers. 
