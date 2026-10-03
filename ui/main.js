@@ -3312,9 +3312,9 @@ function updateTitle() {          // pane/focus census in the window title (head
         if (!pr.style.color) return "";
         document.body.appendChild(pr); const out = getComputedStyle(pr).color.trim().toLowerCase(); pr.remove();
         return out; };
-      const tokc = n => { const raw = tokv(n);
-        return res(raw) || res(csR.getPropertyValue(n).trim().toLowerCase()) || raw; };
-      gpx = " [gl:" + ((fgr && fgr.graphRenderer) || "none") + "] [graphbg:" + tokc("--graph-bg") + "] [graphnode:" + tokc("--accent-blue") + "]";
+      const tokc = (n, alt) => { const raw = tokv(n);   // the same three rungs as palette() (PAL_ALT)
+        return res(raw) || res(csR.getPropertyValue(n).trim().toLowerCase()) || (alt ? res(tokv(alt)) : "") || raw; };
+      gpx = " [gl:" + ((fgr && fgr.graphRenderer) || "none") + "] [graphbg:" + tokc("--graph-bg") + "] [graphnode:" + tokc("--accent-blue", "--color-accent") + "]";
       const cvEl = fgr && fgr.graph;
       if (cvEl && !cvEl.hidden) {
         const r = cvEl.getBoundingClientRect();
@@ -7404,6 +7404,12 @@ async function startGraph(g, cfg) {
   // so a reassigning palette() handed the warm-up frame the old, empty map (undefined bg,
   // draw threw, no GL renderer, every graph phase dead — d374a32).
   const PAL_VAR = { hi: "--accent-yellow", ctr: "--accent-green", node: "--accent-blue", edge: "--border", bg: "--graph-bg" };
+  // goal/themes4: a THIRD rung for the node colour. Solarized declares --accent-h on :root as
+  // "17.57deg", so the derived --color-accent-1 (hsl(calc(var(--accent-h) - 3), …), the shape
+  // stock uses too) is an invalid calc on body AND on :root — both rungs above refuse it and
+  // the graph had no node colour at all. --color-accent is the un-derived base accent every
+  // theme and our own block define; it is what the theme means by "accent".
+  const PAL_ALT = { node: "--color-accent" };
   const RGB = {};
   let pal = null, palKey = null;
   const palette = () => {
@@ -7418,7 +7424,8 @@ async function startGraph(g, cfg) {
       // empty token, a wide-gamut serialisation), fall back to the SAME token off :root,
       // which is our own block and always plain. Never empty, never transparent (DESIGN §7).
       const themeText = cs.getPropertyValue(PAL_VAR[k]).trim();
-      const v = cssColor(themeText) || cssColor(csRoot.getPropertyValue(PAL_VAR[k]).trim()) || themeText;
+      const v = cssColor(themeText) || cssColor(csRoot.getPropertyValue(PAL_VAR[k]).trim())
+        || (PAL_ALT[k] ? cssColor(cs.getPropertyValue(PAL_ALT[k]).trim()) : null) || themeText;
       p[k] = v; RGB[v] = chan01(v);                       // null only if BOTH were unreadable
     }
     probe.remove();
