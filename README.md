@@ -19,13 +19,19 @@ Open-source, vault-compatible markdown notes app. Rust + Tauri v2, no Electron, 
 
 **portable** (no system deps): [opensidian-0.1-x86_64-portable.AppImage](https://github.com/jpzk/opensidian/releases/download/v0.1/opensidian-0.1-x86_64-portable.AppImage)
 
+**flatpak** (pulls the GNOME 49 runtime from Flathub on first install):
+
+    curl -LO https://github.com/jpzk/opensidian/releases/download/v0.1/opensidian-0.1-x86_64.flatpak
+    flatpak install opensidian-0.1-x86_64.flatpak
+    flatpak run dev.koto.opensidian
+
 Opt-in Landlock sandbox: `OPENSIDIAN_LANDLOCK=1`.
 
 ### Tested distributions
-v0.1 slim AppImage, fresh install, launched and rendered (2026-10-03):
+v0.1 on fresh installs, launched and rendered (2026-10-03):
 
-- **Fedora 44**: works. `sudo dnf install webkit2gtk4.1` (tested 2.54.0)
-- **Ubuntu 26.04 LTS**: works. `sudo apt install libwebkit2gtk-4.1-0` (tested 2.52.6)
+- **Fedora 44**: slim works with `sudo dnf install webkit2gtk4.1` (tested 2.54.0); flatpak works (`sudo dnf install flatpak`)
+- **Ubuntu 26.04 LTS**: slim works with `sudo apt install libwebkit2gtk-4.1-0` (tested 2.52.6); flatpak works (`sudo apt install flatpak`)
 
 Without FUSE, run it with `--appimage-extract` and start `squashfs-root/AppRun`.
 
