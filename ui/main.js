@@ -3302,10 +3302,18 @@ function updateTitle() {          // pane/focus census in the window title (head
       // themematch: --accent-blue is now var(--text-accent) = an hsl-of-calc expression, which
       // getPropertyValue hands back UNRESOLVED. Resolve it the way the graph's own
       // palette() does (a probe's computed colour) so the token is the colour drawn.
-      const tokc = n => { const raw = tokv(n), pr = document.createElement("span");
+      // goal/themes4: and FALL BACK the way palette() does. A theme's text the browser
+      // refuses (Solarized's --accent-h is "17.57deg", so our hsl(calc(var(--accent-h) - 3), …)
+      // is an invalid calc) is not what the graph draws — palette() then takes the same
+      // token off :root, our own block. The census must name THAT colour, not the refused text.
+      const csR = getComputedStyle(document.documentElement);
+      const res = raw => { const pr = document.createElement("span");
         pr.style.cssText = "position:absolute;left:-9999px;visibility:hidden"; pr.style.color = raw;
+        if (!pr.style.color) return "";
         document.body.appendChild(pr); const out = getComputedStyle(pr).color.trim().toLowerCase(); pr.remove();
-        return pr.style.color ? out : raw; };
+        return out; };
+      const tokc = n => { const raw = tokv(n);
+        return res(raw) || res(csR.getPropertyValue(n).trim().toLowerCase()) || raw; };
       gpx = " [gl:" + ((fgr && fgr.graphRenderer) || "none") + "] [graphbg:" + tokc("--graph-bg") + "] [graphnode:" + tokc("--accent-blue") + "]";
       const cvEl = fgr && fgr.graph;
       if (cvEl && !cvEl.hidden) {
