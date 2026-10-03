@@ -1137,17 +1137,17 @@ mod tests {
             return;
         };
         let base = std::env::temp_dir().join(format!("opensidian-otelsink-{}", std::process::id()));
-        let (vault, cfg) = (base.join("vault"), base.join("cfg.json"));
+        let vault = base.join("vault");
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&vault).unwrap();
         // outside every write root, like the gate's $OUT
         let sink_path = home.join(format!(".opensidian-otel-sink-{}.jsonl", std::process::id()));
         let _ = std::fs::remove_file(&sink_path);
         let pre = OpenOptions::new().create(true).append(true).open(&sink_path).expect("pre-open (before enforce)");
-        let (sp, v2, c2) = (sink_path.clone(), vault.clone(), cfg.clone());
+        let (sp, v2) = (sink_path.clone(), vault.clone());
         // restrict_self is per-thread: enforce in a child, keep the parent free to clean up
         let res = std::thread::spawn(move || {
-            match sandbox::enforce(&v2, &c2) {
+            match sandbox::enforce(&v2) {
                 Err(e) => {
                     eprintln!("otel sink test SKIPPED: this kernel cannot enforce landlock ({e})");
                     None

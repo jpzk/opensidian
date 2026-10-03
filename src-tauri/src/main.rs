@@ -27,6 +27,7 @@ mod perf;
 mod sandbox;
 mod settings;
 mod spawn;
+mod spawner;
 mod vaultlock;
 mod srcmode;
 mod themefs;
@@ -1169,6 +1170,13 @@ fn cfg_path() -> PathBuf {
 
 /// whole config as a Value, read under the shared cfg lock (cfgstore.rs)
 fn cfg_value() -> serde_json::Value {
+    // vaultbleed D: a confined window has no rule on the config (sandbox.rs) — ask the spawner
+    if let Some(c) = spawner::client() {
+        return c.read_cfg().unwrap_or_else(|e| {
+            eprintln!("config read failed: {e}");
+            serde_json::json!({})
+        });
+    }
     cfgstore::read_value_in(&vaultlock::env_lock_dir(), &cfg_path())
 }
 
@@ -1177,7 +1185,11 @@ fn cfg_value() -> serde_json::Value {
    rename. A call site names the key it changes, never a whole Value it read
    earlier (that read is stale by the time another window has written). */
 fn cfg_update(ops: &[cfgstore::Op]) {
-    if let Err(e) = cfgstore::update_in(&vaultlock::env_lock_dir(), &cfg_path(), ops) {
+    let r = match spawner::client() {
+        Some(c) => c.cfg(ops), // confined: the unconfined spawner applies the Ops
+        None => cfgstore::update_in(&vaultlock::env_lock_dir(), &cfg_path(), ops).map(|_| ()),
+    };
+    if let Err(e) = r {
         eprintln!("config write failed: {e}");
     }
 }
@@ -1442,7 +1454,11 @@ fn create_vault(v: State<Vault>, parent: String, name: String) -> Result<String,
 /// it with open_vault_window. This process's root never changes.
 #[tauri::command]
 fn create_vault_dir(parent: String, name: String) -> Result<String, String> {
-    span_timed!("create_vault_dir", make_vault_dir(&parent, &name).map(|p| p.display().to_string()))
+    span_timed!("create_vault_dir", match spawner::client() {
+        // confined: the new folder is outside this vault — the spawner makes it
+        Some(c) => c.create(&parent, &name),
+        None => make_vault_dir(&parent, &name).map(|p| p.display().to_string()),
+    })
 }
 
 /* vaultbleed A: "open another vault" from an open window = a NEW PROCESS on it
@@ -1459,19 +1475,52 @@ fn open_vault_window(app: tauri::AppHandle, v: State<Vault>, path: String, repla
             return Err(format!("{} is the vault of this window", p.display()));
         }
     }
-    // vaultbleed B: refuse up front instead of spawning a child that would
-    // refuse (and, for a switch, after this window had already exited)
-    if let Ok(c) = p.canonicalize() {
-        if vaultlock::held_in(&vaultlock::env_lock_dir(), &c) {
-            return Err(format!("{} is {}", p.display(), vaultlock::DUP_MSG));
-        }
-    }
-    let pid = spawn::open_in_new_process(&p)?;
+    let pid = match spawner::client() {
+        // vaultbleed D: a child of a confined window would be confined to THIS
+        // vault for life (landlock is inherited) — the unconfined spawner
+        // starts it, after the same checks (LiveSpawner::open)
+        Some(c) => c.open(&p)?,
+        None => spawn_checked(&p)?,
+    };
     if replace {
         eprintln!("[vaultwin] switch: pid={} exits after spawning pid={pid}", std::process::id());
         app.exit(0);
     }
     Ok(pid)
+}
+
+/// vault_rules + the lock probe + spawn: the ONE path that starts a window on
+/// another vault, run in-process (unconfined) or by the spawner (confined).
+/// vaultbleed B: refuse up front instead of spawning a child that would refuse
+/// (and, for a switch, after this window had already exited).
+fn spawn_checked(p: &Path) -> Result<u32, String> {
+    vault_rules(p)?;
+    if let Ok(c) = p.canonicalize() {
+        if vaultlock::held_in(&vaultlock::env_lock_dir(), &c) {
+            return Err(format!("{} is {}", p.display(), vaultlock::DUP_MSG));
+        }
+    }
+    spawn::open_in_new_process(p)
+}
+
+/// vaultbleed D: what the unconfined spawner (spawner.rs) does for a confined
+/// window. Every check runs HERE again — the request comes from a process the
+/// sandbox exists to distrust.
+struct LiveSpawner;
+
+impl spawner::Handler for LiveSpawner {
+    fn open(&self, p: &Path) -> Result<u32, String> {
+        spawn_checked(p)
+    }
+    fn create(&self, parent: &str, name: &str) -> Result<PathBuf, String> {
+        make_vault_dir(parent, name)
+    }
+    fn cfg(&self, ops: &[cfgstore::Op]) -> Result<(), String> {
+        cfgstore::update_in(&vaultlock::env_lock_dir(), &cfg_path(), ops).map(|_| ())
+    }
+    fn read_cfg(&self) -> serde_json::Value {
+        cfgstore::read_value_in(&vaultlock::env_lock_dir(), &cfg_path())
+    }
 }
 
 /// otel (R18): frontend spans (ui/otel.js) arrive in ONE batch per 250ms — [{name, traceId, spanId,
@@ -4419,6 +4468,11 @@ fn main() {
     // WARMUP_MS) is measured from here, so anything that runs before this stamp
     // would be judged against a start time it predates.
     perf::mark_start();
+    // vaultbleed D: `opensidian --opensidian-spawner` is the unconfined helper a
+    // confined window started (spawner.rs) — it serves fd 0 and is nothing else
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(spawner::ARG)) {
+        std::process::exit(spawner::run(&LiveSpawner));
+    }
     // perf-console: state the rule on the console BEFORE anything can breach it.
     // ONE line, printed unconditionally (breach or not), so "unusually long" is a
     // number you can read off the console instead of a promise in a comment. It is
@@ -4467,10 +4521,21 @@ fn main() {
     // OPENSIDIAN_NO_LANDLOCK wins. Both switches are named ONCE, in sandbox.rs.
     if sandbox::landlock_enabled() {
         if let Some(p) = &init {
-            match sandbox::enforce(p, &cfg_path()) {
+            // vaultbleed D: the unconfined spawner, started BEFORE the ruleset
+            // closes (an exec after enforce() is confined for life)
+            let helper = spawner::start();
+            match sandbox::enforce(p) {
                 Ok(s) => eprintln!("landlock: {s:?}"),
                 Err(e) => eprintln!("landlock: off ({e})"),
             }
+            match helper {
+                // only a CONFINED window routes through it; otherwise the
+                // Client drops here, the spawner reads EOF and exits
+                Ok(c) if sandbox::confined_to().is_some() => spawner::install(c),
+                Ok(_) => {}
+                Err(e) => eprintln!("[spawner] not started ({e}) — this confined window cannot open another vault or write the config"),
+            }
+        }
         }
     } else {
         eprintln!("{}", sandbox::OFF_LINE);
