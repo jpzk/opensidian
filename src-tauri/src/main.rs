@@ -4536,7 +4536,6 @@ fn main() {
                 Err(e) => eprintln!("[spawner] not started ({e}) — this confined window cannot open another vault or write the config"),
             }
         }
-        }
     } else {
         eprintln!("{}", sandbox::OFF_LINE);
     }
