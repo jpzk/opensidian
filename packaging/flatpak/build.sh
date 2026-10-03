@@ -49,6 +49,8 @@ echo "[$(date +%H:%M:%S)] 3/5 building (offline)"
 flatpak-builder --disable-download --disable-updates --force-clean \
   --state-dir="$ROOT/state" --repo="$ROOT/repo" "$ROOT/build" "$MAN"
 echo "[$(date +%H:%M:%S)] 4/5 exporting bundle"
-flatpak build-bundle "$ROOT/repo" "$ROOT/opensidian.flatpak" dev.koto.opensidian master
+# --runtime-repo: the bundle names flathub, so `flatpak install` can fetch org.gnome.Platform//49 itself.
+flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
+  "$ROOT/repo" "$ROOT/opensidian.flatpak" dev.koto.opensidian master
 ls -l "$ROOT/opensidian.flatpak"
 echo "[$(date +%H:%M:%S)] 5/5 done"
