@@ -39,12 +39,28 @@ Without FUSE, run it with `--appimage-extract` and start `squashfs-root/AppRun`.
     sha256sum -c --ignore-missing SHA256SUMS
 
 ## Build from source
-Debian/Ubuntu deps, then Rust (tested on 1.98.0):
+Tested 2026-10-03 on fresh Ubuntu 26.04 LTS and Fedora 44 with Rust 1.98.0
+(build ~2.5 min on 4 cores, binary runs and renders on both).
 
-    sudo apt install build-essential libssl-dev libwebkit2gtk-4.1-dev \
-      libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
-    git clone https://github.com/jpzk/opensidian && cd opensidian/src-tauri
-    cargo build --release --locked   # -> target/release/opensidian
+1. System deps. Ubuntu/Debian:
+
+       sudo apt install build-essential libssl-dev libwebkit2gtk-4.1-dev \
+         libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+
+   Fedora:
+
+       sudo dnf install gcc gcc-c++ make openssl-devel webkit2gtk4.1-devel \
+         gtk3-devel libappindicator-gtk3-devel librsvg2-devel
+
+2. Rust, if you don't have it (distro rustc is often older than 1.98):
+
+       curl --proto '=https' -sSf https://sh.rustup.rs | sh -s -- --default-toolchain 1.98.0
+       . "$HOME/.cargo/env"
+
+3. Build:
+
+       git clone https://github.com/jpzk/opensidian && cd opensidian/src-tauri
+       cargo build --release --locked   # -> target/release/opensidian
 
 ## Licence
 GPL-3.0-or-later ([LICENSE](LICENSE)). Read [THIRD-PARTY.md](THIRD-PARTY.md) before redistributing.
