@@ -2394,7 +2394,7 @@ fn set_theme(theme: String) {
    list of themes that the vault's themes/ directory could not extend.
 
    AN EXISTING ~/.opensidian.json IS NOT REWRITTEN. cfg_value() parses the whole
-   object and every writer round-trips it, so a "palette":"1984" left by an
+   object and every writer round-trips it, so a "palette" key left by an
    older build stays in the file, unread, and can never read back as a choice:
    nothing looks it up, so there is no dead palette to apply. It is not deleted
    either — a downgrade keeps working, and unknown keys are the user's, not

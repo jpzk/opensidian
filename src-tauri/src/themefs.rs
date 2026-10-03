@@ -1677,18 +1677,29 @@ mod tests {
     }
 
     #[test]
-    fn themefs_stockdef_builtins_emit_but_their_own_layer3_wins() {
-        // R3: every built-in declares --bg-elevated itself (a later cascade
-        // layer than style.css), so the derived --modal-background can never
-        // reach its elevated surfaces — asserted here so a built-in that
-        // stops declaring it is a red test, not a silent colour change
-        for css in [
-            include_str!("../themes/1984/theme.css"),
-            include_str!("../themes/Slate/theme.css"),
-            include_str!("../themes/Wasp/theme.css"),
-        ] {
-            let s = sanitize_css(css).expect("built-ins sanitize");
-            assert!(declares(&s.css, "--bg-elevated"), "a built-in dropped --bg-elevated");
+    fn themefs_stockdef_builtins_drive_the_bridge_and_the_stock_defaults() {
+        // goal themes4: the built-ins are upstream themes now. None of them
+        // declares our own --bg-elevated (the old in-house three did, which is
+        // what this test used to pin) — what each DOES declare is stock's
+        // --background-primary and NOT --modal-background, so (a) the bridge
+        // carries --bg-base, i.e. the theme moves our chrome, and (b) the
+        // stock-default sheet derives --modal-background from it, i.e. the
+        // theme reaches our elevated surfaces (palette, switcher, settings).
+        // A built-in for which either stops holding is a red test here, not a
+        // half-themed window found by a screenshot.
+        for t in crate::builtins::BUILTIN_THEMES {
+            let s = sanitize_css(t.css).expect("built-ins sanitize");
+            assert!(declares(&s.css, "--background-primary"), "{}: no --background-primary", t.name);
+            assert!(
+                bridge_css(&s.css).contains("--bg-base: var(--background-primary);"),
+                "{}: the bridge does not move our chrome",
+                t.name
+            );
+            assert!(
+                stock_defaults_css(&s.css).contains("--modal-background: var(--background-primary);"),
+                "{}: elevated surfaces would keep the Default literal",
+                t.name
+            );
         }
     }
 }

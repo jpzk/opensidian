@@ -2,3 +2,5 @@
 ui/census.js merge=union
 # every goal appends its own recon-shots negation block; union keeps both (append-only, like census.js)
 .gitignore merge=union
+# built-in themes are byte-exact upstream files (sha256-pinned in builtins.rs): never normalise line endings
+src-tauri/themes/** -text
