@@ -16,7 +16,7 @@ final dump — docs/fixtures/themefs/README.md does the arithmetic). That is
 exactly serde_json `to_string_pretty`'s layout, the same equivalence bmcompat
 proved for bookmarks.json (main.rs bm_emit).
 
-Keys WE author: `cssTheme` (directory name, `""` = built-in Default — T2) and
+Keys WE author: `cssTheme` (directory name, `""` = no choice recorded — T2; painted as the default theme) and
 `enabledCssSnippets` (array of pane labels = basename minus `.css`, in enable
 order, disable REMOVES the entry — T3 RESULT 3). Every other key rides
 through byte-wise: read bytes → parse with preserve_order (Cargo.toml locks
@@ -61,8 +61,8 @@ fn write_appearance(root: &Path, map: &Map<String, Value>) -> Result<(), String>
     fs::write(root.join(APPEARANCE_FILE), body).map_err(|e| e.to_string())
 }
 
-/// `cssTheme`: the active theme's DIRECTORY name; `""` or absent = built-in
-/// Default (T2 — Default is written as `""`, never as a name).
+/// `cssTheme`: the active theme's DIRECTORY name; `""` or absent = no choice
+/// recorded, which the frontend paints as its default theme (AnuPpuccin).
 pub fn css_theme(root: &Path) -> String {
     read_appearance(root)
         .ok()
@@ -913,8 +913,8 @@ pub fn reload_fp(p: &Path) -> ReloadFp {
 }
 
 /// Derive the watched file set from what is APPLIED: the active theme's
-/// theme.css (the caller passes "" when nothing is painting — an unlisted
-/// cssTheme paints Default and must not be watched), then each enabled
+/// theme.css (the caller passes the theme that PAINTS, "" when none does —
+/// an unlisted cssTheme paints the default theme, not itself), then each enabled
 /// snippet's file in enable order. A name the path rules refuse (traversal
 /// shapes — the pickers never produce one) or a file ABSENT at derivation
 /// time is silently not watched: absence here is stock's asymmetry (new

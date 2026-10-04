@@ -15,12 +15,11 @@ it is checkable: the assets are OUTSIDE `src-tauri/src` and `ui/`, so item 9's
 `scripts/lint-themes.sh` can grep both trees for palette colour literals and
 palette id tables and find none.
 
-WHY THERE IS NO "Default" ASSET. `default` is the ABSENCE of a theme — stock's
-`cssTheme: ""` — and its colours are `ui/style.css`'s own `:root` fallbacks,
-which item 5 keeps as the defined failure direction R4 demands. A `Default`
-theme file would be a SECOND definition of the default that could drift from
-the first; `palette.rs` said so before this goal existed and inverting the
-dependency does not change it.
+THE DEFAULT IS ANUPPUCCIN, NOT A "Default" ASSET (goal anudefault). An empty
+or absent `cssTheme` paints AnuPpuccin (ui/main.js DEFAULT_THEME / effTheme),
+which seeding below writes into every vault; there is no Default row in either
+picker. `ui/style.css`'s own `:root` values remain the base every theme layers
+over, and what paints if the AnuPpuccin dir is gone or refused.
 
 THE BUILT-INS ARE THIRD-PARTY THEMES, VERBATIM (goal themes4, operator
 2026-10-03: "replace 1984/Slate/Wasp" with Minimal, Material Gruvbox,

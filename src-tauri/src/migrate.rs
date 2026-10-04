@@ -36,8 +36,8 @@
      because seeding wrote it and seeding never deletes): it stays an ordinary
      third-party theme — listed, chosen, painted, exactly as before.
    - The dir is gone: the name is unlisted, and the existing rule "an unlisted
-     cssTheme paints Default" (main.rs vault_css_watch; ui/main.js) applies —
-     i.e. it maps to "" (Default) without writing anything, and reappears the
+     cssTheme paints the default theme" (main.rs vault_css_watch; ui/main.js) applies —
+     i.e. it paints the default theme (AnuPpuccin) without writing anything, and reappears the
      moment the user drops the folder back in.
    So the mapping "old value -> Default unless the dir exists" is the scan's
    own predicate; the tests below pin each leg through the production paths
@@ -276,7 +276,7 @@ mod tests {
 
     /// Upgrade leg 2: the dir is gone. The choice is NOT rewritten (stock's
     /// file), and the name is not listed — which is exactly the condition
-    /// under which the frontend paints Default. Dropping the folder back in
+    /// under which the frontend paints the default theme (AnuPpuccin). Dropping the folder back in
     /// lists it again with no other step.
     #[test]
     fn a_legacy_choice_without_its_dir_resolves_to_default_without_a_write() {

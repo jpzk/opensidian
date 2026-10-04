@@ -42,7 +42,7 @@ const BACKED: &[(&str, &str, &str)] = &[
     ("hotkeys", "(scope chips)", "hotkeys"),
     ("hotkeys", "(command rows)", "hotkeys"),
     // themefs R5. Stock's Appearance > Themes row IS the active-theme picker —
-    // a dropdown showing "Default" or the installed theme's name, wired to the
+    // a dropdown showing the painting theme (AnuPpuccin for an empty cssTheme), wired to the
     // vault's own appearance.json "cssTheme" (T1/T2) — so with vault themes
     // real (src-tauri/src/themefs.rs themes_scan/load_theme, the oracle's
     // predicate), the drop-in charter puts that picker back on stock's row.

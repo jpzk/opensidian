@@ -2843,8 +2843,8 @@ fn theme_seed_report() -> builtins::SeedReport {
    the applied state moved, never by scanning on a tick.
 
    vault_css_watch is the frontend declaring what is APPLIED — it owns the
-   listed/painting decision (an unlisted cssTheme paints Default and must
-   not be watched), so the backend does not re-guess it. The command itself
+   listed/painting decision (an unlisted or empty cssTheme paints the
+   default theme, which is what gets watched), so the backend does not re-guess it. The command itself
    touches memory only (OUT_OF_SCOPE_CMD, reason in perf-coverage.sh); the
    derivation and the stats happen on the poller thread. */
 struct CssReloadCfg {

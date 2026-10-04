@@ -3394,8 +3394,8 @@ function updateTitle() {          // pane/focus census in the window title (head
   // really in the head (a refused/unlisted cssTheme reads "none": the census
   // reports what is painting, not what the config wishes were)
   const vthemeTok = " [vtheme:" +
-    (document.getElementById("vault-theme") && vaultTheme
-      ? String(vaultTheme).replace(/[[\]|]/g, "").slice(0, 40) : "none") + "]";
+    (document.getElementById("vault-theme") && effTheme()
+      ? String(effTheme()).replace(/[[\]|]/g, "").slice(0, 40) : "none") + "]";
   // themefs item 6: hot reloads APPLIED this session — the phase's latency
   // clock (edit the file, poll the title until this bumps, subtract; the
   // pixels are then proved separately with getComputedStyle/thmpx).
@@ -6220,11 +6220,17 @@ async function bootTheme() {
 let vaultSnips = [], vaultSnipsOn = [], snipEls = new Map();
 /* ---- themefs R5: the vault THEME (stock's .obsidian/themes/<Name>/) ----
    vaultThemesScan is the backend's oracle-predicate result: {listed:[names],
-   excluded:[{dir,file,reason,message}]}. vaultTheme mirrors cssTheme ("" =
-   built-in Default). The theme's <style id="vault-theme"> sits BEFORE every
+   excluded:[{dir,file,reason,message}]}. vaultTheme mirrors cssTheme verbatim;
+   effTheme() is what PAINTS: the listed cssTheme, else (empty, absent or
+   unlisted) DEFAULT_THEME when the vault lists it, else "" (base sheet only).
+   The config is never rewritten to say so — the default is a reading of "",
+   not a write. The theme's <style id="vault-theme"> sits BEFORE every
    [data-snip] element (DESIGN §5: snippets compose on top of the theme —
    T3 RESULT 4); the #vault-bridge element (item 8) insertBefores it. */
 let vaultThemesScan = { listed: [], excluded: [] }, vaultTheme = "";
+const DEFAULT_THEME = "AnuPpuccin";   // seeded into every vault (builtins.rs)
+const effTheme = () => (vaultTheme && vaultThemesScan.listed.includes(vaultTheme)) ? vaultTheme
+  : (vaultThemesScan.listed.includes(DEFAULT_THEME) ? DEFAULT_THEME : "");
 let vaultBridgeAliases = 0;   // census [vbridge:<n>] — item 8 alias rows painting
 /* themeone item 4 (C3): the boot's SEEDING decision, as the backend reported
    it — wrote / kept / failed counts, census [bseed:w<n>k<n>f<n>]. Read after
@@ -6332,12 +6338,13 @@ function themeRemove() {
 }
 /* pick a theme (the settings control's route): file FIRST — a refused write
    (unparseable appearance.json) must not paint a choice that will not
-   survive the next boot — then the DOM. "" = Default: remove, inject nothing. */
+   survive the next boot — then the DOM, through effTheme (so a "" write,
+   which no picker offers any more, still paints the default theme). */
 async function chooseVaultTheme(name) {
   try { await inv("set_css_theme", { name }); }
   catch (e) { say(String(e), "theme"); return; }
   vaultTheme = name;
-  if (name) await themeInject(name); else themeRemove();
+  { const t = effTheme(); if (t) await themeInject(t); else themeRemove(); }
   renderThemeCtl();
   armCssReload();                        // item 6: the watched set follows what is applied
   if (state) updateTitle();
@@ -6423,12 +6430,9 @@ async function loadVaultCss() {
     vaultSeedTok = "w" + s.wrote.length + "k" + s.kept.length + "f" + s.failed.length;
     for (const f of s.failed) say("theme seed failed — " + f, "theme");  // R6: loud
   } catch { vaultSeedTok = "-"; }
-  // apply ONLY what the predicate lists: cssTheme naming an unlisted theme
-  // paints the Default (its dir, if present, already said WHY above; an
-  // absent dir is stock's silent normal — the oracle flags "!!" either way)
-  if (vaultTheme && vaultThemesScan.listed.includes(vaultTheme)) {
-    await themeInject(vaultTheme);
-  }
+  // apply ONLY what the predicate lists: an empty, absent or unlisted cssTheme
+  // paints the default theme (effTheme; an unlisted dir already said WHY above)
+  { const t = effTheme(); if (t) await themeInject(t); }
   try {
     vaultSnips = await inv("snippets_scan");
     // a stale enabled entry whose file is gone is skipped silently — the array
@@ -6453,7 +6457,7 @@ async function loadVaultCss() {
    when a user action lands here, never because a tick discovered a file. */
 let vaultCssReloads = 0;                 // census [creload:<n>] — the phase's latency clock
 function armCssReload() {
-  const theme = (vaultTheme && vaultThemesScan.listed.includes(vaultTheme)) ? vaultTheme : "";
+  const theme = effTheme();
   inv("vault_css_watch", { theme, snippets: vaultSnipsOn.slice() }).catch(() => {});
 }
 async function onVaultCssChanged(ch) {
@@ -6461,7 +6465,7 @@ async function onVaultCssChanged(ch) {
   if (ch.kind === "theme") {
     // stale-event guard: the poller's word is never newer than this side's
     // own state — only the theme that IS painting gets re-injected
-    if (ch.name !== vaultTheme || !vaultThemesScan.listed.includes(ch.name)) return;
+    if (ch.name !== effTheme()) return;
     await themeInject(ch.name);
   } else if (ch.kind === "snippet") {
     if (!vaultSnipsOn.includes(ch.name)) return;
@@ -7064,12 +7068,13 @@ function chordOf(e) {                       // keydown -> normalised chord (null
    CMDS gives: the set is the vault's, not the build's. They are appended after
    the registry so every fixed command keeps the position a user has learned,
    and they carry no hint because they carry no chord.
-   `(Default)` is offered like any other, and is stock's "" — the absence of a
-   theme, not a theme named Default; chooseVaultTheme("") is what the dropdown
-   sends for the same row, which is the point: ONE function, and neither route
-   can drift into a second definition of what selecting a theme means. */
+   There is no Default row (removed, goal anudefault): an empty cssTheme
+   paints DEFAULT_THEME, which is listed like any other theme.
+   chooseVaultTheme(name) is what the dropdown sends for the same row, which is
+   the point: ONE function, and neither route can drift into a second
+   definition of what selecting a theme means. */
 function cpItems() {
-  const themes = [["Default", ""]].concat(vaultThemesScan.listed.map(n => [n, n]));
+  const themes = vaultThemesScan.listed.map(n => [n, n]);
   return CMDS.filter(c => !c.when || c.when()).map(c => ({ label: c.name, hint: hkChords(c).map(chordLabel).join(", "), run: c.run }))
     .concat(themes.map(([label, name]) => ({
       label: "Use theme: " + label,
@@ -8714,11 +8719,12 @@ function slbTok() {
 }
 /* ---- Appearance ▸ Themes: the settings-UI route onto the VAULT theme
    (themefs R5) — stock's own row, stock's own semantics: a dropdown showing
-   the active cssTheme ("Default" when ""), listing (Default) + EXACTLY the
+   the theme that PAINTS (effTheme: an empty cssTheme shows DEFAULT_THEME;
+   the Default row was removed, goal anudefault), listing EXACTLY the
    oracle-predicate set (DESIGN §9), the excluded dirs rendered inert with
    their reason so the pane shows WHY a broken theme is not offered. Same
    ctxmenu construction as snipCtl, same reason ([menu:] census). */
-const themeCtlLabel = () => vaultTheme || "Default";
+const themeCtlLabel = () => effTheme() || "none";
 function themeCtl() {
   const d = document.createElement("div");
   d.className = "sctl dropdown live";
@@ -8748,10 +8754,8 @@ function openThemeMenu(anchor) {
     if (on) it.onclick = on;
     return it;
   };
-  m.appendChild(mk((vaultTheme === "" ? "✓ " : "") + "(Default)",
-    () => { closeMenu(); chooseVaultTheme(""); }));
   for (const name of vaultThemesScan.listed) {
-    m.appendChild(mk((name === vaultTheme ? "✓ " : "") + name,
+    m.appendChild(mk((name === effTheme() ? "✓ " : "") + name,
       () => { closeMenu(); chooseVaultTheme(name); }));
   }
   // inert-with-reason (DESIGN §9): visible, not clickable — no handler
