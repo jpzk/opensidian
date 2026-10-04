@@ -12,20 +12,15 @@ Open-source, vault-compatible markdown notes app. Rust + Tauri v2, no Electron, 
 - themes, fonts, hotkeys; open a vault with `opensidian <folder>`
 
 ## Install
-**slim** (needs `libwebkit2gtk-4.1`):
+Linux x86_64. Download one:
 
-    curl -LO https://github.com/jpzk/opensidian/releases/download/v0.3/opensidian-0.3-x86_64-slim.AppImage
-    chmod +x opensidian-0.3-x86_64-slim.AppImage && ./opensidian-0.3-x86_64-slim.AppImage
+| Download | Choose it if |
+|---|---|
+| [slim AppImage](https://github.com/jpzk/opensidian/releases/download/v0.3/opensidian-0.3-x86_64-slim.AppImage) | you want the smallest file and already have WebKitGTK 4.1 installed (see below) |
+| [portable AppImage](https://github.com/jpzk/opensidian/releases/download/v0.3/opensidian-0.3-x86_64-portable.AppImage) | you want nothing to install: WebKit is bundled (needs only the X11/GL/font libraries every desktop has) |
+| [Flatpak](https://github.com/jpzk/opensidian/releases/download/v0.3/opensidian-0.3-x86_64.flatpak) | you want it sandboxed; pulls the GNOME 49 runtime from Flathub on first install |
 
-**portable** (bundles WebKit; needs the X11/GL/font libraries any desktop has): [opensidian-0.3-x86_64-portable.AppImage](https://github.com/jpzk/opensidian/releases/download/v0.3/opensidian-0.3-x86_64-portable.AppImage)
-
-**flatpak** (tested on Fedora 44 and Ubuntu 26.04; pulls the GNOME 49 runtime from Flathub on first install):
-
-    curl -LO https://github.com/jpzk/opensidian/releases/download/v0.3/opensidian-0.3-x86_64.flatpak
-    flatpak install opensidian-0.3-x86_64.flatpak
-    flatpak run dev.koto.opensidian
-
-Opt-in Landlock sandbox: `OPENSIDIAN_LANDLOCK=1`.
+AppImage: `chmod +x opensidian-*.AppImage && ./opensidian-*.AppImage`. Flatpak: `flatpak install opensidian-0.3-x86_64.flatpak && flatpak run dev.koto.opensidian`. Opt-in Landlock sandbox: `OPENSIDIAN_LANDLOCK=1`.
 
 ### Tested distributions
 v0.3 on fresh installs, launched and rendered (2026-10-04):
