@@ -84,6 +84,13 @@ pub const BUILTIN_THEMES: &[BuiltinTheme] = &[
 ];
 // THEME ASSETS END
 
+/// The theme an empty or absent `cssTheme` paints (goal anudefault): the FIRST
+/// row of [`BUILTIN_THEMES`], so it is always shipped and always seeded, and its
+/// name is spelled only in that list (scripts/lint-themes.sh rule B). Which theme
+/// it is, is pinned by test `default_theme_is_anuppuccin`. The UI learns it from
+/// [`SeedReport::default_theme`] — `ui/main.js` never spells a theme id.
+pub const DEFAULT_THEME: &str = BUILTIN_THEMES[0].name;
+
 /// Is `name` one of ours? (For the settings pane, to mark a row; it is NOT a
 /// privileged load path — after seeding a built-in is an ordinary file on disk
 /// with no second code path. The seeding step below does not consult it: it
@@ -131,7 +138,7 @@ somewhere else is present, so it is kept, not clobbered.
 /// What one seeding pass did, per theme. Serialized to the UI for the
 /// `[bseed:w<n>k<n>f<n>]` census token, so a gate phase can read the boot's
 /// decision off the window title instead of trusting a log line.
-#[derive(Debug, Default, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SeedReport {
     /// themes that had at least one missing file, now written
     pub wrote: Vec<String>,
@@ -140,11 +147,20 @@ pub struct SeedReport {
     /// `<name>: <io error>` — a vault we could not write to (read-only mount,
     /// a symlinked dir outside the landlock roots). Loud, never silent.
     pub failed: Vec<String>,
+    /// [`DEFAULT_THEME`], carried here so the UI never spells a theme id:
+    /// what `ui/main.js` effTheme paints for an empty `cssTheme`
+    pub default_theme: &'static str,
+}
+
+impl Default for SeedReport {
+    fn default() -> Self {
+        Self::empty()
+    }
 }
 
 impl SeedReport {
     const fn empty() -> Self {
-        SeedReport { wrote: Vec::new(), kept: Vec::new(), failed: Vec::new() }
+        SeedReport { wrote: Vec::new(), kept: Vec::new(), failed: Vec::new(), default_theme: DEFAULT_THEME }
     }
     /// the stderr line, and the shape the census token carries
     pub fn line(&self) -> String {
@@ -216,6 +232,11 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
 
+    #[test]
+    fn default_theme_is_anuppuccin() {
+        assert_eq!(DEFAULT_THEME, "AnuPpuccin", "the default theme moved: the first BUILTIN_THEMES row is what an empty cssTheme paints");
+        assert_eq!(SeedReport::default().default_theme, DEFAULT_THEME);
+    }
 
     fn tmp_vault(tag: &str) -> PathBuf {
         let root =

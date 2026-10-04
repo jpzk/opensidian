@@ -6293,7 +6293,7 @@ let vaultSnips = [], vaultSnipsOn = [], snipEls = new Map();
    [data-snip] element (DESIGN §5: snippets compose on top of the theme —
    T3 RESULT 4); the #vault-bridge element (item 8) insertBefores it. */
 let vaultThemesScan = { listed: [], excluded: [] }, vaultTheme = "";
-const DEFAULT_THEME = "AnuPpuccin";   // seeded into every vault (builtins.rs)
+let DEFAULT_THEME = "";   // builtins.rs DEFAULT_THEME, learned from theme_seed_report (no theme id is spelled in ui/ — lint-themes B)
 const effTheme = () => (vaultTheme && vaultThemesScan.listed.includes(vaultTheme)) ? vaultTheme
   : (vaultThemesScan.listed.includes(DEFAULT_THEME) ? DEFAULT_THEME : "");
 let vaultBridgeAliases = 0;   // census [vbridge:<n>] — item 8 alias rows painting
@@ -6492,6 +6492,7 @@ async function loadVaultCss() {
   // backend that could not answer must read as "-" and not as w0k0f0.
   try {
     const s = await inv("theme_seed_report");
+    if (typeof s.default_theme === "string") DEFAULT_THEME = s.default_theme;
     vaultSeedTok = "w" + s.wrote.length + "k" + s.kept.length + "f" + s.failed.length;
     for (const f of s.failed) say("theme seed failed — " + f, "theme");  // R6: loud
   } catch { vaultSeedTok = "-"; }
