@@ -83,7 +83,7 @@ const cur = () => (state && fg() ? curOf(fg()) : null);
 const isReading = g => { const t = g.active >= 0 ? g.tabs[g.active] : null; return !!t && !t.kind && t.mode === "reading"; };
 // R19: per-tab history = [{n: note, s: scrollTop}], hpos = cursor; a nav pushes at
 // hpos+1 and drops the forward slice (browser semantics, docs/requirements.md R19)
-// R12.4 / feedback #16: a leaf carries TWO ORTHOGONAL BITS, exactly as stock
+// R12.4 / feedback #16: a leaf carries TWO ORTHOGONAL BITS, exactly as Obsidian
 // persists them in .obsidian/workspace.json ({"mode":"source|preview","source":
 // true|false}):  tab.read = READING vs EDITING, tab.src = Source vs Live Preview.
 // The view-header icon and Ctrl+E flip the FIRST one only (two states); the tab
@@ -182,14 +182,14 @@ function cmdToggleSide() {
 }
 
 /* R20 (#4): the right sidebar holds the list panes only (Backlinks | Outgoing
-   links | Tags | Outline), like stock; the local graph is a main-area tab view
+   links | Tags | Outline), like Obsidian; the local graph is a main-area tab view
    (palette 'Open local graph', Ctrl+Shift+G, ribbon).
-   lgpanes (recon docs/recon-lgpanes, stock 1.13.7): the panes render the
+   lgpanes (recon docs/recon-lgpanes, Obsidian 1.13.7): the panes render the
    note of the most recently focused NOTE LEAF (rLeaf, a tab object, so it
    follows that leaf when it navigates) — not the graph's t.center:
    - a note tab focused          -> that note (and it becomes rLeaf);
    - a LOCAL graph tab focused   -> rLeaf's current note, null if none yet
-     (shots 04, 17: stock keeps the last note; a node click navigates the
+     (shots 04, 17: Obsidian keeps the last note; a node click navigates the
      linked leaf, so the panes then show the clicked note, shot 08);
    - GLOBAL graph / other views  -> null, the panes empty (shot 16, Q4).
    rTrack() runs from updateTitle too, so rLeaf is current while the right
@@ -213,7 +213,7 @@ async function rgFollow() {                // active note changed -> panes follo
   rPanesRefresh();
 }
 /* R20 (#3): #rtoggle is an in-flow flex item, never position:fixed — in #rtabs
-   while the right sidebar is open (stock: the toggle lives in the sidebar's
+   while the right sidebar is open (Obsidian: the toggle lives in the sidebar's
    header), else at the END of the top-right pane's tabbar after .modebtn, so
    the two can never overlap at any width. Called after every layout change.
    [rt:x0-x1|mb:x0-x1] census (rects, read 60ms after paint = outside every
@@ -345,7 +345,7 @@ async function rBacklinks(n) {
     box.appendChild(row); box.appendChild(kids);
   }
   // R10.5 Unlinked mentions: plain-text hits of this note's name in other
-  // notes (collapsed like stock); each row = the line with the hit marked +
+  // notes (collapsed like Obsidian); each row = the line with the hit marked +
   // a Link button that wraps it in [[ ]] on disk (the hit then migrates up
   // to Linked mentions on the pane's next refresh)
   const ul = n ? await inv("unlinked_mentions", { name: n }).catch(() => []) : [];
@@ -446,7 +446,7 @@ function olxyTok() {
    a note — Outgoing (resolved + unresolved), Backlinks linked title/line, unlinked
    title/line. The panes describe rLeaf (the note leaf, tocLeaf() rule), NOT fg():
    with the linked local graph focused, fg() is the graph tab and navigate(fg())
-   rewrote it (record run, Measured on main). Stock 1.13.7:
+   rewrote it (record run, Measured on main). Obsidian 1.13.7:
    - plain click: rLeaf's group becomes active, rLeaf navigates in place (history
      push), linkSync re-centres the linked graph, keyboard focus in its editor
      (REQ-1..6 — focus was body even with the note focused);
@@ -592,7 +592,7 @@ async function tocGo(line) {               // scroll + focus the heading at `lin
   const L = tocLeaf();
   if (!L) return;
   const { g, t } = L;
-  if (fg() !== g) focusGroup(g);           // stock 1.13.7: the active leaf moves to the note (docs/tocjump/stock/OBSERVED.md 06,16)
+  if (fg() !== g) focusGroup(g);           // Obsidian 1.13.7: the active leaf moves to the note (docs/tocjump recon, shots 06,16)
   if (isLp(t.mode)) {                     // R12: source mode = lp with reveal
     await lpMove(g, line, 0, "heading");   // raw row = the heading, caret on it
     const row = g.lp.children[line];                // R17: one row per source line
@@ -735,17 +735,17 @@ function setPane(p) {
 }
 
 /* ============ R25.13a..m — CLICKING A SEARCH RESULT ============
-   Every rule below was MEASURED against stock 1.13.7 first; the measurements,
+   Every rule below was MEASURED against Obsidian 1.13.7 first; the measurements,
    with a shot each, are docs/recon-srclick/README.md (C1-C12) and the rules
    they produced are R25.13a-m in docs/requirements.md. Nothing here is a guess:
-   what stock does that we do not yet do is listed LATER in that README, not
+   what Obsidian does that we do not yet do is listed LATER in that README, not
    approximated.
 
    The one non-obvious fact, and the reason the payload grew an `offset`
-   (src-tauri/src/main.rs, search_hits_carry_absolute_utf16_offsets): stock
+   (src-tauri/src/main.rs, search_hits_carry_absolute_utf16_offsets): Obsidian
    records a hit as an ABSOLUTE CHARACTER OFFSET into the file as indexed, not
    as a line number and not as a string to re-find. Delete five lines above a
-   match and stock jumps to the same offset, which is now other text (C12,
+   match and Obsidian jumps to the same offset, which is now other text (C12,
    shots 58-61). So the frontend NEVER re-searches the buffer — a second search
    that can disagree with the first is exactly the bug the brief forbids — it
    maps the backend's offset into the current text and lands wherever it lands.
@@ -825,7 +825,7 @@ function scMarks(g) {
 /* paint the set with the SAME per-text-node right-to-left walk the find bar
    uses (fWrap): a match that straddles a rendered <strong> becomes two spans,
    and no offset is invalidated mid-walk. Only the lp surface is painted —
-   R25.13k measured that stock paints NO highlight in the reading renderer. */
+   R25.13k measured that Obsidian paints NO highlight in the reading renderer. */
 function scPaint(g) {
   for (const sc of [g.lp, g.preview]) {
     if (!sc) continue;
@@ -882,7 +882,7 @@ async function scJump(g, hits) {
   if (!t || t.kind || !hits.length) return;
   const h0 = hits[0], p = scLC(g, h0.offset);
   if (t.mode === "reading") {
-    // R25.13k: a hit click NEVER changes the view mode. In reading mode stock
+    // R25.13k: a hit click NEVER changes the view mode. In reading mode Obsidian
     // scrolls the PREVIEW renderer to centre the occurrence and does nothing
     // else — no highlight, no caret (shots 51-53). The preview's text offsets
     // are the rendered ones, so the occurrence is located with the find bar's
@@ -946,7 +946,7 @@ function scPreviewEl(g, h) {
    is NEITHER reused NOR focused (shots 04-10). R25.13i: Ctrl+click and MIDDLE
    click open a NEW tab in the active group and activate it; Shift+click and
    Alt+click are plain clicks; every variant performs the full jump.
-   Ctrl+Alt+click (stock: a new split pane) is LATER — see the README. */
+   Ctrl+Alt+click (Obsidian: a new split pane) is LATER — see the README. */
 async function scOpen(g, note, ev) {
   const newTab = !!(ev && (ev.ctrlKey || ev.metaKey || ev.button === 1)) && !(ev && ev.altKey);
   if (newTab) {
@@ -1085,7 +1085,7 @@ function srGeom() {
 }
 
 /* R9.4 bookmarks: tree-row context menu toggles; rust persists the tree in
-   vault/.obsidian/bookmarks.json (stock's own file, R4X.10). census [bm:N] while the pane shows —
+   vault/.obsidian/bookmarks.json (Obsidian's own file, R4X.10). census [bm:N] while the pane shows —
    N counts the .bmrow nodes actually PAINTED in #bmlist, so an assertion on
    it fails if renderBm() stops repainting even while the model is correct.
 
@@ -1094,16 +1094,16 @@ function srGeom() {
    entry per painted row, in the same order as the file on disk — so the UI never
    walks a tree and cannot invent an order the file does not have. Every
    structural command is addressed by the row's INDEX into that vector, never by
-   title: two sibling groups may carry the same title (measured on stock,
+   title: two sibling groups may carry the same title (measured on Obsidian,
    docs/recon-bmfolder/05-nest.png), so a title is not a key.
    bmCache stays the FLAT name list every other caller asks `includes()` of
    (tab menu, note menu, R9.6 rename) — derived from bmTree, never fetched. */
 let bmCache = [];                         // the `f` rows' names, pre-order (== list_bookmarks)
 let bmTree = [];                          // the PAINTED rows: [{kind:"f"|"g", depth, name, label}]
-let bmRenaming = null;                    // row index whose label is an inline editor (stock's Rename, 07-nest-named.png)
+let bmRenaming = null;                    // row index whose label is an inline editor (Obsidian's Rename, 07-nest-named.png)
 /* collapseall R1/R6: the COLLAPSED bookmark groups, keyed by the group's title
    path from the top level ("Work\u001fInner"). IN MEMORY ONLY, like the explorer's
-   `collapsed` Set: stock keeps its folds in Electron localStorage
+   `collapsed` Set: Obsidian keeps its folds in Electron localStorage
    ("<vaultId>-bookmarks-folds"), never in bookmarks.json (recon-bmcollapse Q1-Q5),
    and R2 forbids a fold from writing that file — so nothing here calls inv().
    Persisting the folds is todo id:bmcollapsebuild (spec R6). A group not in the
@@ -1111,7 +1111,7 @@ let bmRenaming = null;                    // row index whose label is an inline 
 let bmFolds = new Set();
 let bmEdit = null;                        // the open Edit bookmark modal: {ix, name, opts}
 let revealInfo = "";                      // bmmenu: [bmrv:<name>] after "Reveal file in navigation" (bmReveal), cleared by setPane
-const BM_INDENT = 17;                     // px per depth level — MEASURED on stock (14-saved.png), icon and label both shift
+const BM_INDENT = 17;                     // px per depth level — matched to Obsidian's indent (14-saved.png), icon and label both shift
 const BM_PAD = 12;                        // .bmrow's own left padding (style.css), depth 0
 const bmRows = () => document.querySelectorAll("#bmlist .bmrow").length;
 /* collapseall: a row inside a collapsed group stays IN the DOM (class .bmhide,
@@ -1135,7 +1135,7 @@ const bmNames = () => Array.from(document.querySelectorAll("#bmlist .bmrow"))
 const bmShape = () => Array.from(document.querySelectorAll("#bmlist .bmrow"))
   .map(r => (r.classList.contains("bmgrp") ? "g" : "f") + (r.dataset.bmd || "0")).join("|");
 /* R4X.6 [bmi:<px>] — the painted INDENT STEP, measured between the SHALLOWEST
-   and DEEPEST painted row's content (the icon, which stock shifts too) and
+   and DEEPEST painted row's content (the icon, which Obsidian shifts too) and
    divided by the depth difference. A class that is applied but paints no offset
    passes [bmt:] and fails this. Empty when fewer than two depths are painted. */
 function bmIndentTok() {
@@ -1152,10 +1152,10 @@ function bmIndentTok() {
   return " [bmi:" + Math.round((hi.x - lo.x) / (hi.d - lo.d)) + "]";
 }
 /* R4X.8 [bmren:<text in the inline editor>] — Rename opens an editor IN the row
-   and the model is untouched until Return (stock: the dump still says "Untitled
+   and the model is untouched until Return (Obsidian: the dump still says "Untitled
    group" while the box reads "Inner", 07-nest-named.png -> 08-nest-commit.png).
    Without this token a phase cannot tell "the editor is open" from "the rename
-   already committed", which is exactly the difference stock draws. */
+   already committed", which is exactly the difference Obsidian draws. */
 const bmRenTok = () => (bmRenaming === null ? "" :
   " [bmren:" + String(($("bmren") && $("bmren").value) || "").replace(/[|\]]/g, "") + "]");
 function bmSync() {                        // the flat view every non-pane caller uses
@@ -1169,11 +1169,11 @@ const BM_ICON_GROUP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor
 function renderBm() {
   const box = $("bmlist");
   box.textContent = "";
-  box.oncontextmenu = e => { if (e.target === box) bmPaneMenu(e); };   // the pane BACKGROUND: stock's one-item "New group" (02-emptymenu.png)
+  box.oncontextmenu = e => { if (e.target === box) bmPaneMenu(e); };   // the pane BACKGROUND: Obsidian's one-item "New group" (02-emptymenu.png)
   if (!bmTree.length) {
     const d = document.createElement("div");
     d.className = "sempty"; d.textContent = "No bookmarks.";
-    d.oncontextmenu = e => bmEmptyMenu(e);   // bmmenu: stock's one-item "New group" menu, disabled on THIS line — see bmEmptyMenu
+    d.oncontextmenu = e => bmEmptyMenu(e);   // bmmenu: Obsidian's one-item "New group" menu, disabled on THIS line — see bmEmptyMenu
     box.appendChild(d);
   }
   const anc = [];                          // collapseall: the open ancestor chain {depth, key, folded}
@@ -1208,7 +1208,7 @@ function renderBm() {
       };
       row.appendChild(inp);
     } else {
-      // R4X.17: the backend computes the painted label by stock's measured rule
+      // R4X.17: the backend computes the painted label by Obsidian's measured rule
       // (title when typed, else basename — recon-bmcompat 30-afterinject.png);
       // r.name stays the full extensionless name the click opens by.
       row.append(r.label ?? (grp ? r.name : r.name.split("/").pop()));
@@ -1229,7 +1229,7 @@ function renderBm() {
    explorer .trow, bookmark .bmrow and right-strip .rlist row in the DOM ("-"
    when that kind has no row rendered). Read off getComputedStyle, not off the CSS
    text, so a theme or a stray rule that overrides --sidebar-font-size shows up
-   here. The gate phase `sfont` asserts t==b==13 (stock Q1) and r==t. */
+   here. The gate phase `sfont` asserts t==b==13 (recon Q1) and r==t. */
 function sfontTok() {
   const fs = sel => {            // first row IN THE DOM: Files and Bookmarks share one slot, so
     const el = document.querySelector(sel);   // one of the two is always [hidden] — computed style still resolves there
@@ -1242,7 +1242,7 @@ function sfontTok() {
    while the focused leaf is READING a note whose preview carries the fixture's
    body h1 "Lists of links" ("" otherwise, so it costs nothing elsewhere).
    x values are relative to the li's TEXT x (left of its first painted glyph,
-   a Range rect — what stock's recon measured against); pseudo-element boxes
+   a Range rect — what the recon measured against); pseudo-element boxes
    (bullet, ordered marker, indent guide) come from getComputedStyle's
    RESOLVED left/right/width of the positioned ::before against the li/ul box.
    "-" = not measurable (missing element / auto inset) — the phase dies on it. */
@@ -1395,7 +1395,7 @@ function llTok() {
   const om = li => { const s = li && pse(li); if (!s) return NaN; return li.getBoundingClientRect().right - parseFloat(s.right) - tx(li); };
   o.push("go1=" + f(om(G[0])), "go2=" + f(om(G[1])), "gt=" + (G[0] && pse(G[0]) && /tabular-nums/.test(pse(G[0]).fontVariantNumeric) ? 1 : 0));
   const cb = H[0] && H[0].querySelector(":scope > input[type=checkbox]"), cr = cb && cb.getBoundingClientRect();
-  const col = hA ? hA.getBoundingClientRect().left : NaN;   // stock DOM x is relative to the sizer = the h2 left edge
+  const col = hA ? hA.getBoundingClientRect().left : NaN;   // Obsidian DOM x is relative to the sizer = the h2 left edge
   o.push("hb=" + f(cr ? cr.left - col : NaN), "ht=" + f(tx(H[0]) - col), "hw=" + f(cr ? cr.width : NaN), "hn=" + (H[0] && !pse(H[0]) ? 1 : 0));
   o.push("ip=" + f(top(I[1]) - top(I[0])), "ib=" + f(bc(I[0])), "it=" + f(tx(I[0]) - tx(A[0])));
   const ku = K && K.querySelector("a.wiki-unresolved"), ks = ku && getComputedStyle(ku);
@@ -1452,13 +1452,13 @@ function bmGeom() {
   const pitch = k.length > 1 ? k[1].getBoundingClientRect().top - a.top : a.height;
   return " [bmg:" + Math.round(a.left + a.width / 2) + "," + Math.round(a.top + a.height / 2) + "," + Math.round(pitch) + "]";
 }
-/* ---------- bmmenu: the bookmark-row context menu, stock 1.13.7's list ----------
+/* ---------- bmmenu: the bookmark-row context menu, Obsidian 1.13.7's list ----------
    THE SPEC is docs/recon-bmmenu/README.md — seven items, three separators, measured
    on the box against /srv/reference/obsidian.AppImage (sha256 e0d8e0a6…72663). Not
    one label below is from memory; the README's WIRED / NOT WIRED section names the
-   function behind each row. Rows stock has that this tree has no backing for are
+   function behind each row. Rows Obsidian has that this tree has no backing for are
    shown DISABLED the way the settings rows are (R30 note below SDIS_TITLE: .dis +
-   aria-disabled + pointer-events:none, a stated reason in the hover title) — stock
+   aria-disabled + pointer-events:none, a stated reason in the hover title) — Obsidian
    itself has no disabled style to copy, and inventing a second one would be worse.
    Separators are real children (div.sep) so the census reads the list EXACTLY as
    the README writes it: [menu:…|Open in new window|---|Rename|…]. */
@@ -1473,7 +1473,7 @@ function bmMenuItems(m) {
   const sep = () => { const d = document.createElement("div"); d.className = "sep"; m.appendChild(d); };
   return { item, sep };
 }
-function bmRowMenu(e, nm, ix) {             // right-click a FILE .bmrow -> stock's file-bookmark menu
+function bmRowMenu(e, nm, ix) {             // right-click a FILE .bmrow -> Obsidian's file-bookmark menu
   e.preventDefault();
   e.stopPropagation();
   closeMenu();
@@ -1487,7 +1487,7 @@ function bmRowMenu(e, nm, ix) {             // right-click a FILE .bmrow -> stoc
      change anything. That is also why phase_bmmenu — which runs on a FLAT list
      and asserts [mdis:3|5|6] — keeps passing unedited (criterion 8). */
   const hasGrp = bmTree.some(r => r.kind === "g");
-  item("Open in new tab",   () => openNewTab(nm));                         // WIRED: openNewTab — right of the active tab, focused, never deduped (opentab REQ-8/9/14, stock c20)
+  item("Open in new tab",   () => openNewTab(nm));                         // WIRED: openNewTab — right of the active tab, focused, never deduped (opentab REQ-8/9/14, Obsidian c20)
   item("Open to the right", () => splitWith(fg(), "row", mkTab(nm)));      // WIRED: splitWith — the verb behind the tab menu's "Split right" (M7/R6.2), carrying a fresh tab of this note
   item("Open in new window", null, "Single-window app: there is no second window to open into");   // NOT WIRED
   sep();
@@ -1500,7 +1500,7 @@ function bmRowMenu(e, nm, ix) {             // right-click a FILE .bmrow -> stoc
   item("Remove", () => { if (bmCache.includes(nm)) toggleBm(nm); });       // WIRED: toggleBm — the same toggle the explorer-row / tab menus use (R9.4 / R20.4); guarded so it can only REMOVE
   placeMenu(m, e.clientX, e.clientY);      // R22: viewport-clamped by measured size — the same seam as noteMenu/tabMenu
 }
-/* ---------- bmfolder: the GROUP-row menu, stock 1.13.7's list ----------
+/* ---------- bmfolder: the GROUP-row menu, Obsidian 1.13.7's list ----------
    SEVEN items, TWO separators, verbatim and in order off the pixels of
    docs/recon-bmfolder/04-groupmenu.png (re-measured on 23-del-menu.png for a
    group that HAS children: the same seven, no confirmation item). It differs
@@ -1513,13 +1513,13 @@ function bmGroupMenu(e, ix, title) {
   const m = document.createElement("div");
   m.className = "ctxmenu";
   const { item, sep } = bmMenuItems(m);
-  const OPEN_WHY = "A group holds NAMES, not a note (R9.4) — there is nothing behind this row to open; stock's own behaviour here is UNMEASURED (docs/recon-bmfolder/README.md)";
+  const OPEN_WHY = "A group holds NAMES, not a note (R9.4) — there is nothing behind this row to open; the behaviour to match here is UNMEASURED (docs/recon-bmfolder/README.md)";
   item("Open in new tab",    null, OPEN_WHY);                              // NOT WIRED
   item("Open to the right",  null, OPEN_WHY);                              // NOT WIRED
   item("Open in new window", null, "Single-window app: there is no second window to open into");   // NOT WIRED
   sep();
   item("Rename", () => bmGroupRenameStart(ix));                            // WIRED: inline editor in the row (07-nest-named.png -> 08-nest-commit.png)
-  item("Bookmark the active tab...", () => openBmAdd(ix));                // WIRED (bmactive): stock's "Add bookmark" modal, docs/recon-bmactive F1/F2
+  item("Bookmark the active tab...", () => openBmAdd(ix));                // WIRED (bmactive): Obsidian's "Add bookmark" modal, docs/recon-bmactive F1/F2
   item("New group", () => bmGroupNew(ix));                                 // WIRED: nests INSIDE this group (04-groupmenu.png -> 05-nest.png)
   sep();
   item("Remove", () => bmGroupDelete(ix));                                 // WIRED: takes the SUBTREE, no confirmation (23-del-menu.png -> 24-deleted.png)
@@ -1529,13 +1529,13 @@ function bmGroupMenu(e, ix, title) {
   m.dataset.mt = "bmgroup:" + String(title).replace(/[|\]]/g, "");
   placeMenu(m, e.clientX, e.clientY);
 }
-function bmEmptyMenu(e) {                  // right-click the "No bookmarks." LINE -> stock's one-item menu
+function bmEmptyMenu(e) {                  // right-click the "No bookmarks." LINE -> Obsidian's one-item menu
   e.preventDefault();
   e.stopPropagation();
   closeMenu();
   const m = document.createElement("div");
   m.className = "ctxmenu";
-  /* DELIBERATE DELTA, and the doc says so: stock enables New group here
+  /* DELIBERATE DELTA, and the doc says so: Obsidian enables New group here
      (02-emptymenu.png). phase_bmmenu asserts [menu:New group] [mdis:1] on this
      exact line and criterion 8 forbids editing it, so THIS line keeps its
      committed answer. The affordance is not lost: the same right-click anywhere
@@ -1543,7 +1543,7 @@ function bmEmptyMenu(e) {                  // right-click the "No bookmarks." LI
   bmMenuItems(m).item("New group", null, "Not from the empty-state line — right-click the pane background below it to create a group");
   placeMenu(m, e.clientX, e.clientY);
 }
-function bmPaneMenu(e) {                   // right-click the pane BACKGROUND -> stock's one-item "New group" (02-emptymenu.png)
+function bmPaneMenu(e) {                   // right-click the pane BACKGROUND -> Obsidian's one-item "New group" (02-emptymenu.png)
   e.preventDefault();
   e.stopPropagation();
   closeMenu();
@@ -1553,7 +1553,7 @@ function bmPaneMenu(e) {                   // right-click the pane BACKGROUND ->
   m.dataset.mt = "bmpane:";
   placeMenu(m, e.clientX, e.clientY);
 }
-/* Reveal file in navigation: stock switches the left sidebar to Files and puts the
+/* Reveal file in navigation: Obsidian switches the left sidebar to Files and puts the
    focus ring on that note's row — no tab opens, the editor is untouched (recon
    10-reveal.png). The ring is .revealed on the explorer row (one at a time); the
    census publishes [bmrv:<name>] so a driver asserts the HANDLER ran, not merely
@@ -1606,7 +1606,7 @@ function bmGroupRenameCommit(ix, title) { bmRenaming = null; return bmApply("bm_
      none              — drag live, no legal target: over the source row or
        its own descendants NOTHING paints, and mouseup calls NOTHING — the
        refusal never even reaches the backend (recon case 6; the file is
-       asserted on BYTES because stock rewrites identical bytes there).
+       asserted on BYTES because Obsidian rewrites identical bytes there).
    Groups drag exactly like files, the whole subtree moves intact (case 5).
    Spring-load (case 4: a COLLAPSED group under a held hover opens mid-drag,
    takes the drop as a prepend, stays open). collapseall R5 makes groups
@@ -1768,13 +1768,13 @@ function bmDragStart(e, ix) {
   window.addEventListener("mouseup", up);
 }
 /* ---------- R4X.7 the Edit bookmark modal — the MOVE route ----------
-   Stock's `Edit...` opens a modal whose `Bookmark group` dropdown lists the
+   Obsidian's `Edit...` opens a modal whose `Bookmark group` dropdown lists the
    existing groups by TITLE with nesting shown by indentation (12-groupdd.png),
    and picking one + Save relocates the bookmark, first among that group's
    children, without touching the note on disk (14-saved.png).
-   THE ONE DELIBERATE DELTA: option 0 is a TOP-LEVEL entry. Stock's chooser has
+   THE ONE DELIBERATE DELTA: option 0 is a TOP-LEVEL entry. Obsidian's chooser has
    no such option — measured three ways (16-dd2.png, 18-dd-up-shot.png,
-   19-crop.png) — so in stock this route cannot move a bookmark back OUT and
+   19-crop.png) — so in Obsidian this route cannot move a bookmark back OUT and
    only drag-and-drop can. Drag is goal bmdrag; criterion 2 needs both
    directions through the menu, so opensidian ships the superset and records it. */
 const BM_TOP = "(top level)";
@@ -1790,7 +1790,7 @@ function bmParentOf(ix) {                  // the row index of the group this ro
 }
 function openBmEdit(ix) {
   const r = bmTree[ix];
-  if (!r || r.kind !== "f") return;        // a group row has no Edit... in stock's menu either
+  if (!r || r.kind !== "f") return;        // a group row has no Edit... in Obsidian's menu either
   const opts = bmGroupOpts();
   bmEdit = { ix, name: r.name, opts };
   const sel = $("bme-grp");
@@ -1798,7 +1798,7 @@ function openBmEdit(ix) {
   opts.forEach((o, i) => {
     const op = document.createElement("option");
     op.value = String(i);
-    op.textContent = "  ".repeat(o.depth) + o.title;   // nesting shown by indentation, like stock's chooser
+    op.textContent = "  ".repeat(o.depth) + o.title;   // nesting shown by indentation, like Obsidian's chooser
     sel.appendChild(op);
   });
   const p = bmParentOf(ix);
@@ -1839,7 +1839,7 @@ function bmEditTok() {
          bmEdit.opts.map(o => q(o.title)).join("|") + "] [bmex:" + xs + "]";
 }
 /* ---------- bmactive: "Bookmark the active tab..." — the SAME card, Add mode ----------
-   THE SPEC is docs/recon-bmactive/README.md (stock 1.13.7, black box):
+   THE SPEC is docs/recon-bmactive/README.md (Obsidian 1.13.7, black box):
    F1 the modal is "Add bookmark": Path (read-only basename), Title (EMPTY, the
       basename as placeholder, FOCUSED), Bookmark group (preset to the group
       right-clicked), Cancel / Save, an X. So it is #bmebox with the Title row
@@ -1848,9 +1848,9 @@ function bmEditTok() {
       written only when typed (bm_add_in, the one serializer does the bytes).
    F3 an already-bookmarked note is DUPLICATED, never moved: no lookup here.
    F4/F7 the active tab is the last-focused MAIN leaf: rTrack() (lgpanes), not
-      rNote() — rNote maps a local graph to its note, and stock NO-OPS on a local
+      rNote() — rNote maps a local graph to its note, and Obsidian NO-OPS on a local
       graph and on an empty tab (our zero-tab pane). A GLOBAL graph is the one
-      deliberate delta (spec B2): stock writes a type:"graph" item this pane
+      deliberate delta (spec B2): Obsidian writes a type:"graph" item this pane
       cannot paint, so we refuse VISIBLY and write nothing.
    F6 Cancel / Escape / X write nothing: closing never calls inv().
    bmAdd is its own state (not bmEdit) so R4X.7's [modal:bmedit] census stays
@@ -1858,7 +1858,7 @@ function bmEditTok() {
 let bmAdd = null;                          // the open Add bookmark modal: {name, opts}
 function openBmAdd(gix) {
   const t = rTrack();
-  if (!t) return;                          // a pane with no tab = stock's empty tab: no-op (108-emptyitem)
+  if (!t) return;                          // a pane with no tab = Obsidian's empty tab: no-op (108-emptyitem)
   if (t.kind === "gg") { say("Bookmarking a graph view is not supported: the bookmarks pane cannot show a graph bookmark"); return; }
   if (t.kind) return;                      // local graph (and any non-note view): no-op (102-lgitem)
   const opts = bmGroupOpts();
@@ -1950,7 +1950,7 @@ function noteMenu(e, nm) {                 // right-click a tree note row
     d.onclick = () => { closeMenu(); fn(); };
     m.appendChild(d);
   };
-  /* opentab REQ-10/11/12/16: stock 1.13.7's file menu opens with this group (stock/c07-b.json) */
+  /* opentab REQ-10/11/12/16: Obsidian 1.13.7's file menu opens with this group (recon c07-b.json) */
   { const { item, sep } = bmMenuItems(m);
     item("Open in new tab",    () => openNewTab(nm));                     // WIRED: REQ-11
     item("Open to the right",  () => splitWith(fg(), "row", mkTab(nm)));  // WIRED: REQ-12, the bookmark menu's verb
@@ -1983,9 +1983,9 @@ function noteMenu(e, nm) {                 // right-click a tree note row
    so unlike a JS-side notesCache test there is no window for another writer
    (git checkout, sync client, the 1000ms-stale index) to land a real file
    between check and truncate. "exists" is not an error here: every creation
-   path means "take me to Foo", so the caller opens the existing note (stock
+   path means "take me to Foo", so the caller opens the existing note (Obsidian
    behaviour); nothing is overwritten either way. -> "ok" | "exists" | "err" */
-/* feedback #20: creation materializes NOTHING. Stock's brand-new note is a
+/* feedback #20: creation materializes NOTHING. Obsidian's brand-new note is a
    ZERO-BYTE file (recon Q1: Ctrl+N -> Untitled.md, wc -c = 0); the big title
    the user sees is the INLINE TITLE — a render of the FILENAME (mkInlineTitle)
    that lives in no file. This is the single seam all four creation paths share,
@@ -2114,9 +2114,9 @@ function mkGroup() {
   pane._g = g;                                   // R20: gOf(el) — event-time group lookup
   pane.innerHTML =
     // R4X.1 (navbtn): Back/Forward live at the LEFT edge of the view header,
-    // before the tabs — stock 1.13.7 measured placement (docs/recon-navbtn
+    // before the tabs — Obsidian 1.13.7 measured placement (docs/recon-navbtn
     // §1: back then forward, thin chevrons, ~28px apart, left of the title).
-    // Stock's titlebar variant is NOT copied: our titlebar is a gated surface
+    // Obsidian's titlebar variant is NOT copied: our titlebar is a gated surface
     // (phases hdrdragwm/wmframe) — divergence recorded in the recon README.
     '<div class="tabbar"><div class="navbtns">' +
       '<button class="navbtn navback" title="Navigate back" disabled>' +
@@ -2125,7 +2125,7 @@ function mkGroup() {
         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5l7 7-7 7"/></svg></button>' +
     '</div><div class="tabs"></div>' +
     '<button class="modebtn" hidden></button>' +   // graphhdr: born hidden — updateModeBtn shows it once a NOTE is active (a split with no tab never renders tabs)
-    // graphhdr REQ-5: stock's ⋮ "More options" (lucide-more-vertical) at the header's
+    // graphhdr REQ-5: Obsidian's ⋮ "More options" (lucide-more-vertical) at the header's
     // right end on EVERY main-area view kind; its menu depends on the kind (hdrMenu).
     '<button class="morebtn" title="More options" aria-label="More options">' +
       '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></button></div>' +
@@ -2156,18 +2156,18 @@ function mkGroup() {
   g.lgInc.onchange = () => lgSet(g);
   g.lgOut.onchange = () => lgSet(g);
   pane.addEventListener("mousedown", () => focusGroup(g), true);  // R6.3: click focuses
-  // graphhdr REQ-4: Ctrl+Click = stock's "open to the right" (a linked pane in the OTHER mode)
+  // graphhdr REQ-4: Ctrl+Click = Obsidian's "open to the right" (a linked pane in the OTHER mode)
   g.modebtn.onclick = e => (e.ctrlKey || e.metaKey) ? modeOpenRight(g) : cmdToggleMode(g);
   g.morebtn.onmousedown = e => e.stopPropagation();   // the document mousedown closes menus; this button OPENS one
   g.morebtn.onclick = e => { if (menuEl && menuEl.dataset.hdr === String(g.id)) { closeMenu(); return; } hdrMenu(e, g); };
   // R4X.2 (navbtn): the buttons walk THIS pane's history through the R19
   // model (histGo — same entry point as Alt+Left/Right, mouse 8/9, palette).
-  // A disabled button never fires (native disabled), matching stock's
+  // A disabled button never fires (native disabled), matching Obsidian's
   // measured no-op (docs/recon-navbtn §2); histGo's own range guard backs
   // that up even if the disabled paint were ever stale.
   g.navback.onclick = () => histGo(-1, g);
   g.navfwd.onclick = () => histGo(1, g);
-  // R4X.5: plain right-click drops the history menu (navHistMenu — stock's
+  // R4X.5: plain right-click drops the history menu (navHistMenu — Obsidian's
   // measured gesture, docs/recon-navbtn §4); a disabled button opens nothing.
   g.navback.oncontextmenu = e => navHistMenu(e, g, -1, g.navback);
   g.navfwd.oncontextmenu = e => navHistMenu(e, g, 1, g.navfwd);
@@ -2175,7 +2175,7 @@ function mkGroup() {
   return g;
 }
 
-/* R20 (#d) per-tab VIEW retention (stock keeps every leaf's view alive):
+/* R20 (#d) per-tab VIEW retention (Obsidian keeps every leaf's view alive):
    view = { editor (hidden model textarea), lp, preview, lp* state, loaded }.
    Every note tab owns one; all of a group's views live in .content, the
    active one shown, the rest display:none. Switching tabs = attachView
@@ -2196,7 +2196,7 @@ function mkView(g) {
   v.lines = [""];                                 // R17: the MODEL (source of truth)
   Ed.mount(v);                                    // R17: lp is the contenteditable view
   // R17: click below the last row (empty pane space) = caret at the end of
-  // the note, like stock; rows themselves get the native caret placement
+  // the note, like Obsidian; rows themselves get the native caret placement
   lp.addEventListener("mousedown", e => {
     const g = v.g;
     /* R25.13f: a POINTER CLICK inside this editor is one of the three things
@@ -2318,9 +2318,9 @@ function renderLayout() {         // boot / vault switch only — every later ch
 }
 
 /* ---------- R28 WORKSPACE PERSISTENCE: quit, relaunch, your layout is there ---
-   The file is the vault's own `.obsidian/workspace.json`, in STOCK's shape
-   (R28.1/R28.16) — an opensidian vault stays openable by the stock app and back.
-   Shape, as measured off a stock vault:
+   The file is the vault's own `.obsidian/workspace.json`, in OBSIDIAN's shape
+   (R28.1/R28.16) — an opensidian vault stays openable by Obsidian and back.
+   Shape, as measured off an Obsidian vault:
      { main:  { id, type:"split", direction:"vertical"|"horizontal",
                 children: [ { id, type:"tabs", currentTab?, dimension?,
                               children: [ { id, type:"leaf",
@@ -2331,13 +2331,13 @@ function renderLayout() {         // boot / vault switch only — every later ch
        active: <the focused LEAF's id>,
        lastOpenFiles: [names, newest first] }
    Two shape details that are not decoration:
-     R28.5  `currentTab` is OMITTED when it is 0 — stock writes it only when a
+     R28.5  `currentTab` is OMITTED when it is 0 — Obsidian writes it only when a
             tab other than the first is active, and a file that carries it
-            anyway is a file stock did not write.
+            anyway is a file Obsidian did not write.
      R28.6  a split child's size is a PERCENTAGE (`dimension`), never pixels, so
             a layout restored into a differently sized window keeps its
             PROPORTIONS instead of overflowing or leaving a gap.
-   `direction` is stock's, and it is the OPPOSITE word to ours: stock's
+   `direction` is Obsidian's, and it is the OPPOSITE word to ours: Obsidian's
    "vertical" split stands its children side by side (our dir:"row"), its
    "horizontal" stacks them (our dir:"col"). Translated in exactly two places
    (wsNode and wsNodeIn) so the confusion cannot spread.
@@ -2352,39 +2352,39 @@ let wsDropped = 0;       // R28.17: leaves whose file was gone, dropped instead 
 let wsT = null, wsLast = "", wsIds = {}, wsInFlight = null;
 let wsGrp = {};          // W3: link-group key ("L<link>" | "G<group id>") -> the 16-hex `group` value on file
 /* W4 (F6, frozen): what this app does not understand it hands back unchanged.
-     wsExtra   top-level keys other than WS_TOP, in file order (stock drops
+     wsExtra   top-level keys other than WS_TOP, in file order (Obsidian drops
                them; keeping them is the documented safe divergence)
-     wsSideRaw the left / right sidebar subtree AS READ. Stock keeps several
+     wsSideRaw the left / right sidebar subtree AS READ. Obsidian keeps several
                leaves per sidebar (file-explorer+search+bookmarks; backlink+
                outgoing+localgraph+tag+all-properties+outline; `width`) and
                opensidian shows one pane at a time: writing only that one leaf
-               would delete the rest from a stock vault opened here once
+               would delete the rest from an Obsidian vault opened here once
      wsSide0   the pane each sidebar showed right after the restore. While it
                is unchanged the file's currentTab stands — it may name a leaf
-               there is no pane for here (a stock sidebar local graph) */
+               there is no pane for here (an Obsidian sidebar local graph) */
 let wsExtra = null, wsSideRaw = {}, wsSide0 = {};
 const WS_TOP = ["main", "left", "right", "active", "lastOpenFiles"];
 const WS_KNOWN = new Set(["markdown", "graph", "localgraph", "empty"]);
 const wsClone = o => JSON.parse(JSON.stringify(o));
-const wsId = () => {     // stock's ids are 16 hex chars; the VALUE is opaque, only stability matters
+const wsId = () => {     // Obsidian's ids are 16 hex chars; the VALUE is opaque, only stability matters
   let s = "";
   for (let i = 0; i < 16; i++) s += ((Math.random() * 16) | 0).toString(16);
   return s;
 };
 const wsIdOf = (o, k) => (o[k] || (o[k] = wsId()));
-// Stock stores VAULT PATHS WITH THE EXTENSION ("file": "sub/A.md", lastOpenFiles
+// Obsidian stores VAULT PATHS WITH THE EXTENSION ("file": "sub/A.md", lastOpenFiles
 // ["sub/A.md"]); a tab here is named without it. Convert at the file boundary
-// only — a bare name in a leaf is a file stock would not open (gate 1247154).
+// only — a bare name in a leaf is a file Obsidian would not open (gate 1247154).
 const wsPathOut = n => n + ".md";
 const wsPathIn = f => (typeof f === "string" && f.endsWith(".md")) ? f.slice(0, -3) : f;
 // W2 (F1/F2): the two graph views are leaves too — global graph and local graph
-// persist with stock's type/state; any other kind (none today) is not written.
+// persist with Obsidian's type/state; any other kind (none today) is not written.
 const wsPersistable = t => !!t && typeof t.name === "string" &&
   (!t.kind || t.kind === "gg" || (t.kind === "unk" && !!t.raw) || (t.kind === "lg" && typeof t.center === "string" && !!t.center));
 const WS_GICON = "lucide-git-fork";
-// F2: `options` is 23 keys of stock graph settings. Only three mean anything
+// F2: `options` is 23 keys of Obsidian graph settings. Only three mean anything
 // here (depth, incoming, outgoing); the rest ride along OPAQUE in t.opts so a
-// stock file loses nothing by passing through (W2 frozen: round-tripped as-is).
+// Obsidian file loses nothing by passing through (W2 frozen: round-tripped as-is).
 function wsLgOpts(t) {
   const o = Object.assign({}, t.opts && typeof t.opts === "object" ? t.opts : {});
   o.localJumps = t.depth; o.localBacklinks = !!t.inc; o.localForelinks = !!t.out;
@@ -2396,14 +2396,14 @@ function wsLeaf(t) {
     delete l.group;
     return l;
   }
-  if (t.kind === "gg")                       // F1: state is EMPTY in stock
+  if (t.kind === "gg")                       // F1: state is EMPTY in Obsidian
     return { id: wsIdOf(t, "lid"), type: "leaf",
              state: { type: "graph", state: {}, icon: WS_GICON, title: "Graph view" } };
   if (t.kind === "lg")                       // F2: main-area lg is bound to its stored file
     return { id: wsIdOf(t, "lid"), type: "leaf",
              state: { type: "localgraph", state: { file: wsPathOut(t.center), options: wsLgOpts(t) },
                       icon: WS_GICON, title: "Graph of " + titleOf(t.center) } };
-  // R28.9: the per-tab view mode, in stock's two orthogonal bits (see modeBits).
+  // R28.9: the per-tab view mode, in Obsidian's two orthogonal bits (see modeBits).
   // Without it every tab that was READING comes back as an editor.
   const st = t.read
     ? { file: wsPathOut(t.name), mode: "preview", source: !!t.src }
@@ -2411,8 +2411,8 @@ function wsLeaf(t) {
   return { id: wsIdOf(t, "lid"), type: "leaf",
            state: { type: "markdown", state: st, icon: "lucide-file", title: titleOf(t.name) } };
 }
-/* W3 (F3, stock 1.13.7): LINKED LEAVES CARRY A SHARED `group` (16 hex, opaque)
-   on every member, and stock restores them linked. Two link models live here:
+/* W3 (F3, Obsidian 1.13.7): LINKED LEAVES CARRY A SHARED `group` (16 hex, opaque)
+   on every member, and Obsidian restores them linked. Two link models live here:
    manual links (t.link, R13 — a tab-level set) and the lg auto-link (t.linkId =
    a PANE id, R7.3 — the graph follows whatever tab is active in that pane). On
    file both become one `group` value:
@@ -2423,7 +2423,7 @@ function wsLeaf(t) {
    An lg whose partner is not a note (a graph is focused there) writes no group:
    a group of one links nothing. The hex is minted once per key and remembered
    (wsGrp), and wsLinksIn seeds it from the file, so a restore writes back the
-   bytes it read (stock: byte-identical across relaunch). */
+   bytes it read (Obsidian: byte-identical across relaunch). */
 function wsLkPartner(pid) {
   const h = groups().find(x => x.id === pid);
   const pt = h && h.active >= 0 ? h.tabs[h.active] : null;
@@ -2454,7 +2454,7 @@ function wsNode(node) {
   const act = node.active >= 0 ? tabs.indexOf(node.tabs[node.active]) : -1;
   const o = { id: wsIdOf(node, "wid"), type: "tabs", children: tabs.map(t => {
     const l = wsLeaf(t), k = wsGroupKey(t, node);
-    if (k) l.group = wsIdOf(wsGrp, k);      // F3: stock writes `group` after `state`, on EVERY member
+    if (k) l.group = wsIdOf(wsGrp, k);      // F3: Obsidian writes `group` after `state`, on EVERY member
     return l;
   }) };
   if (act > 0) o.currentTab = act;          // R28.5: 0 is written by its ABSENCE
@@ -2464,17 +2464,17 @@ function wsSide(which) {
   const open = which === "left" ? sideOpen : rightOpen;
   const view = which === "left" ? (WS_VIEW_L[sidePane] || "file-explorer") : (WS_VIEW_R[rTab] || "backlink");
   // R28.11: a sidebar leaf carries its OWN view state, not just which pane is
-  // showing. Stock's search leaf comes back still holding its query, so the
-  // query travels in the leaf's state where stock puts it.
+  // showing. Obsidian's search leaf comes back still holding its query, so the
+  // query travels in the leaf's state where Obsidian puts it.
   const lst = which === "left" && sidePane === "search" ? { query: $("sinput").value } : {};
   if (wsSideRaw[which]) return wsSideKeep(which, view, open, lst);
   const o = { id: wsIdOf(wsIds, which), type: "split", direction: "horizontal",
               children: [{ id: wsIdOf(wsIds, which + "tabs"), type: "tabs",
                            children: [{ id: wsIdOf(wsIds, which + "leaf"), type: "leaf",
                                         state: { type: view, state: lst } }] }] };
-  // R28.10: the key is ABSENT when the sidebar is open, not `false` — stock
+  // R28.10: the key is ABSENT when the sidebar is open, not `false` — Obsidian
   // writes `collapsed` only for a collapsed sidebar, and a file carrying
-  // `collapsed: false` is a file stock did not write.
+  // `collapsed: false` is a file Obsidian did not write.
   if (!open) o.collapsed = true;
   return o;
 }
@@ -2519,7 +2519,7 @@ function wsDoc() {
     left: wsSide("left"),
     right: wsSide("right"),
   };
-  // W4: unknown top-level keys, where stock puts its own extra key (left-ribbon)
+  // W4: unknown top-level keys, where Obsidian puts its own extra key (left-ribbon)
   if (wsExtra) for (const k of Object.keys(wsExtra)) d[k] = wsClone(wsExtra[k]);
   return Object.assign(d, {
     active: wsPersistable(ft) ? wsIdOf(ft, "lid") : "",   // R28.12: focus lands on the NAMED leaf
@@ -2608,7 +2608,7 @@ async function wsLeave() {
    The inverse of wsDoc(), and deliberately written as a SEPARATE pair of
    functions rather than a generic walker: the two directions disagree about
    what is authoritative. Writing trusts the live model; READING trusts nothing
-   — the file may have been written by stock, by an older opensidian, by a half
+   — the file may have been written by Obsidian, by an older opensidian, by a half
    finished sync, or by a text editor. Every branch below therefore has a "this
    is not what I expected" exit that returns null, and a null anywhere means
    DROP THAT SUBTREE, never "fail the restore" (R28.17).
@@ -2623,7 +2623,7 @@ async function wsLeave() {
                                                 divider they cannot remove
      nothing restorable at all               -> false, and the caller takes the
                                                 ordinary first-launch path (R28.13)
-   R28.8 IS AN EXPLICIT NON-GOAL: stock does not restore scroll position and
+   R28.8 IS AN EXPLICIT NON-GOAL: Obsidian does not restore scroll position and
    neither does this. Cloning the absence is the requirement — no hpos/scroll
    value is read here, and none is written by wsLeaf(). */
 function wsGraphIn(leaf, have) {
@@ -2651,7 +2651,7 @@ function wsTabIn(leaf, have) {
     return wsGraphIn(leaf, have);
   // W4 (F6): a leaf type this app has no view for (canvas, pdf, a plugin's view)
   // is KEPT as a placeholder tab carrying the leaf verbatim — id, slot, type,
-  // state — the way stock keeps a disabled plugin's leaf ("Plugin no longer
+  // state — the way Obsidian keeps a disabled plugin's leaf ("Plugin no longer
   // active"). Nothing about it is checked: its file is not ours to judge.
   const ty = leaf && leaf.state && leaf.state.type;
   if (typeof ty === "string" && ty && !WS_KNOWN.has(ty) && typeof leaf.id === "string" && leaf.id) {
@@ -2662,10 +2662,10 @@ function wsTabIn(leaf, have) {
   }
   const st = leaf && leaf.state && leaf.state.state;
   const f = wsPathIn(st && st.file);
-  if (typeof f !== "string" || !f) return null;      // stock's `empty` leaf carries no file
+  if (typeof f !== "string" || !f) return null;      // Obsidian's `empty` leaf carries no file
   if (!have.has(f)) { wsDropped++; return null; }     // R28.17 / R28.14
   const t = mkTab(f);
-  // R28.9: the two orthogonal bits back out of stock's two keys — the exact
+  // R28.9: the two orthogonal bits back out of Obsidian's two keys — the exact
   // inverse of wsLeaf(). Assigned to t.read/t.src rather than through the
   // t.mode setter, because that setter is deliberately not symmetric (setting
   // "reading" leaves the source bit alone) and would silently lose one bit.
@@ -2721,7 +2721,7 @@ function wsNodeIn(node, have) {
     if (!kids.length) return null;
     if (kids.length === 1) return kids[0];
     const tot = dims.reduce((a, b) => a + b, 0) || kids.length;
-    const out = { dir: node.direction === "vertical" ? "row" : "col",   // stock's word is the OPPOSITE of ours
+    const out = { dir: node.direction === "vertical" ? "row" : "col",   // Obsidian's word is the OPPOSITE of ours
                   children: kids, fractions: dims.map(d => d / tot) };
     if (typeof node.id === "string" && node.id) out.wid = node.id;      // R28.4
     return out;
@@ -2996,7 +2996,7 @@ function wsTok() {
         (x.kind ? x.kind : titleOf(x.name)) + ":" + (x.kind ? "-" : (MODE_ABBR[x.mode] || "?"))).join(",")).join("|") + "]" +
        " [ws:" + wsWrites + "," + wsRestored + "," + wsDropped + "]" + wsUnkTok();
 }
-// W4: the kept-but-unviewable leaves, by stock type, in layout order; the
+// W4: the kept-but-unviewable leaves, by Obsidian type, in layout order; the
 // right-sidebar leaf types as they will be written (only while a file supplied them)
 function wsUnkTok() {
   const u = [];
@@ -3022,9 +3022,9 @@ function censusToks() {
    read off the DOM of BOTH panes (hidden panes keep their DOM), so a phase asserts
    fold state without pixels. C|E = what that pane's header toggle would do NOW
    (R4, M3): Collapse while anything is expanded, else Expand. A pane with NOTHING
-   to fold has no state to derive it from, and stock then flips the label as a
+   to fold has no state to derive it from, and Obsidian then flips the label as a
    FLAG on every click (recon-collapseall Q5, 42/46/47): the explorer's flag
-   starts on Expand (stock's folders start collapsed, 40-q5-fe-flat.png), the
+   starts on Expand (Obsidian's folders start collapsed, 40-q5-fe-flat.png), the
    bookmarks' on Collapse (43-q5-bm-flat.png). Reset per vault (enterVault). */
 let feCaFlag = "E", bmCaFlag = "C";
 const feFoldRows = () => document.querySelectorAll("#tree .trow.folder");
@@ -3072,7 +3072,7 @@ function foldTok() {
 /* collapseall R4: the header toggle's face. Title = the NEXT action (M3); glyph
    chevrons-IN (pointing at each other) when the next action is Collapse, chevrons-
    OUT when it is Expand (recon-collapseall Q3: a glyph flip, NO state highlight —
-   the hover background every #bar button has is all stock paints). Written only
+   the hover background every #bar button has is all Obsidian paints). Written only
    when it changes: updateTitle runs this on every census tick. */
 const CA_IN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 20l5-5 5 5M7 4l5 5 5-5"/></svg>';
 const CA_OUT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 15l5 5 5-5M7 9l5-5 5 5"/></svg>';
@@ -3321,7 +3321,7 @@ function updateTitle() {          // pane/focus census in the window title (head
           "|img=" + rvc(rvq(rvp, "img")) +
           "|lprow=" + rvc(rvq(rvl, ".lprow")) + "]";
     /* rvcursor criterion 3 -> [rvsel:<chars>|<x0>,<y>,<x1>] — the SELECTION
-       CAPABILITY, which is a different question from the cursor SHAPE: stock
+       CAPABILITY, which is a different question from the cursor SHAPE: Obsidian
        ships the I-beam over reading-view prose, and the I-beam is the
        affordance that says "this text can be selected", so removing it is
        exactly the change that could quietly take selectability with it.
@@ -3368,7 +3368,7 @@ function updateTitle() {          // pane/focus census in the window title (head
           "|p=" + (rvp ? rvsx : "-") + "]";
     /* goal/linebreak -> [rvab:<yA>,<yB>,<br>,<blk>] — the DOM measurement the
        `linebreak` phase asserts (docs/linebreak/recon.md, the same ruler the
-       stock recon used): the painted row (Range client-rect top, px) of the
+       Obsidian recon used): the painted row (Range client-rect top, px) of the
        FIRST "Alpha" and the first "Beta" in this pane's reading view ("-" =
        absent / not painted), the number of <br> in the view, and the first
        code/table/math block as <tag>:<height>:<br inside> ("-" = none).
@@ -3489,11 +3489,11 @@ function updateTitle() {          // pane/focus census in the window title (head
   // the assertion of record in the phase; this token is how it knows WHICH
   // theme the pixels it just sampled are supposed to be.
   const themeTok = " [theme:" + (document.documentElement.getAttribute("data-theme") || "unset") + "]";
-  // R1 (themecsp): the stock app marks the mode as a CLASS on <body>
-  // (.theme-dark / .theme-light); T6 measured a stock-shaped rule keys off
+  // R1 (themecsp): Obsidian marks the mode as a CLASS on <body>
+  // (.theme-dark / .theme-light); T6 measured an Obsidian-shaped rule keys off
   // body.theme-dark, which our :root[data-theme] shadows. We emit BOTH so
-  // stock-shaped CSS can match. This token reads the body class back OFF THE
-  // DOM (not off themeMode) so a phase can assert the marker stock CSS sees.
+  // Obsidian-shaped CSS can match. This token reads the body class back OFF THE
+  // DOM (not off themeMode) so a phase can assert the marker Obsidian CSS sees.
   const bodyCls = document.body ? document.body.classList : null;
   const thmTok = " [thm:" + (bodyCls && bodyCls.contains("theme-dark") ? "dark"
                           : bodyCls && bodyCls.contains("theme-light") ? "light" : "unset") + "]";
@@ -3504,7 +3504,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   // the name off the injected <style> element, so it says what is painting
   // rather than what an attribute wishes were painting.
   // themecsp crit 5: with the rig applicator active (OPENSIDIAN_SMOKE_CSS), publish
-  // body's COMPUTED background-color so a phase can prove a stock-shaped rule
+  // body's COMPUTED background-color so a phase can prove an Obsidian-shaped rule
   // targeting body.theme-dark won a pixel (getComputedStyle before/after). Off
   // (empty) on every normal run, so no pre-existing phase's census changes.
   const thmpxTok = (smokeCssOn && document.body)
@@ -3542,7 +3542,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   // pixels are then proved separately with getComputedStyle/thmpx).
   const creloadTok = " [creload:" + vaultCssReloads + "]";
   // themefs item 8: alias rows the R4 bridge is painting (0 = no #vault-bridge
-  // element — no theme, or a theme declaring none of the aliased stock names)
+  // element — no theme, or a theme declaring none of the aliased Obsidian names)
   const vbridgeTok = " [vbridge:" + vaultBridgeAliases + "]";
   // themeone item 6 (R5 causes 3+4): the ROOT ATTRIBUTE the graph's cache key
   // and its MutationObserver both read — "<generation>:<name>", "-" before the
@@ -3563,16 +3563,16 @@ function updateTitle() {          // pane/focus census in the window title (head
   // classes, so one instrument answers both halves of "how far does a vault
   // theme reach":
   //   1-3  body / #side / #wframe — the R4 ALIAS BRIDGE's points
-  //        (--bg-base / --bg-sidebar / --titlebar-bg): a stock name the
+  //        (--bg-base / --bg-sidebar / --titlebar-bg): an Obsidian name the
   //        BRIDGE_ALIASES table names, emitted as a var() row.
   //   4    #bar button (--bg-surface) — the INVERSION's point. No bridge row
   //        aliases it and none ever will: since item 5, style.css declares
   //        `--bg-surface: var(--background-secondary-alt)` on BODY (layer 2),
-  //        so a theme declaring that stock name on body.theme-dark wins the
+  //        so a theme declaring that Obsidian name on body.theme-dark wins the
   //        cascade on the same element and reaches our chrome with no table
   //        in the path. This field was "must NOT move" before item 5; it is
   //        "must move" now, which is the whole R4 thesis as a pixel.
-  //   5    #mbox (--bg-elevated) — LAYER 3, ours alone: no stock name sits
+  //   5    #mbox (--bg-elevated) — LAYER 3, ours alone: no Obsidian name sits
   //        behind it (style.css ships the literal), so neither route can
   //        carry a theme there. The containment half of the old field-4
   //        assert lives here now. #mbox is static in index.html under
@@ -3833,7 +3833,7 @@ function placeMenu(m, x, y) {
   document.body.appendChild(m);
   m.dataset.x = x; m.dataset.y = y;
   menuEl = m;
-  /* R38: stock's note-tab menu is 28 rows + 8 separators ≈ 820 px, TALLER than
+  /* R38: Obsidian's note-tab menu is long, TALLER than
      the 700 px smoke window, so .ctxmenu's overflow:auto scrolls it and the
      bottom rows (Reveal file in navigation, Delete file) sit below the viewport
      until it does. [mgy:] is measured from the live rects, so it stays true —
@@ -3869,21 +3869,21 @@ for (const ev of ["mousedown", "click"])
   }, true);
 
 const DIS_WIN = "Missing subsystem: a second OS window — single-window tauri app, and no backend command creates one";
-/* ---------- R38: THE TAB CONTEXT MENU — stock 1.13.7's list, measured ----------
+/* ---------- R38: THE TAB CONTEXT MENU — Obsidian 1.13.7's list, measured ----------
    THE SPEC is docs/requirements.md §36 (R38) + docs/recon-tabmenu/README.md's
    WIRED / NOT WIRED split: 28 rows in 9 groups on an ACTIVE NOTE tab, 11 on a
-   graph tab, and three ABSENCE rules (R38.31) — stock's grammar for an
+   graph tab, and three ABSENCE rules (R38.31) — Obsidian's grammar for an
    inapplicable row is that the row is NOT THERE (R38.2: across 12 measured
    menus not one row was greyed), so our disabled treatment is reserved for the
    rows we cannot WIRE, each carrying its missing subsystem in the hover title
    (the rule bmRowMenu already established). Nothing below is from memory: the
    labels, the group boundaries and every effect were measured on the box
-   against obsidian.AppImage sha256 e0d8e0a6…72663, one fresh stock instance per
+   against the reference AppImage, one fresh instance per
    performed row (docs/recon-tabmenu/effects/, shots/eff-*).
    SUPERSEDES the six-item menu (Split right first) and, with it, R12.4's
-   "Live preview / Source mode" pair: stock has NO Live preview row, so the ✓
+   "Live preview / Source mode" pair: Obsidian has NO Live preview row, so the ✓
    moves out of the label TEXT into a span.chk marker element and the rendered
-   label set equals stock's character for character (R38.10). */
+   label set equals Obsidian's character for character (R38.10). */
 const ICON_CHK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"' +
   ' stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5L13 5"/></svg>';
 const ICON_PIN = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"' +
@@ -3905,9 +3905,9 @@ async function closeTabsAfter(g, i) {      // Close tabs after: target + everyth
   const keep = g.tabs[i];
   for (let j = g.tabs.length - 1; j > i; j--) await closeTab(g, j);
   const k = g.tabs.indexOf(keep);
-  // focus: the target if the active tab was one of the doomed ones (stock's
+  // focus: the target if the active tab was one of the doomed ones (Obsidian's
   // survivor rule). A surviving active tab LEFT of the target keeps focus —
-  // stock's behaviour in that case is UNMEASURED and is not guessed here.
+  // Obsidian's behaviour in that case is UNMEASURED and is not guessed here.
   if (k >= 0 && g.active < 0) { g.active = k; await loadActive(g); }
 }
 async function closeAllTabs(g) {           // Close all: the GROUP SURVIVES (collapseGroup must not run)
@@ -3916,11 +3916,11 @@ async function closeAllTabs(g) {           // Close all: the GROUP SURVIVES (col
   if (!g.tabs.length) return;
   /* The last tab cannot go through closeTab: with more than one group that path
      is R6.5's "empty group leaves the tree" and the group would be REMOVED,
-     which is exactly what stock does not do (R38.6). Same teardown, no collapse.
-     DEVIATION, stated: stock leaves an empty leaf whose tab reads `New tab`; we
+     which is exactly what Obsidian does not do (R38.6). Same teardown, no collapse.
+     DEVIATION, stated: Obsidian leaves an empty leaf whose tab reads `New tab`; we
      have no empty-tab entity (a tab is a note name), so the group survives with
      ZERO tabs — observably [tabs:0] with the pane still there, one tab row
-     fewer than stock. docs/recon-tabmenu/README.md records it. */
+     fewer than Obsidian. docs/recon-tabmenu/README.md records it. */
   const t = g.tabs[0];
   await act("pane_close", { note: t.name, kind: t.kind || "note", pane_removed: false, groups: groups().length, tabs: 0 }, async () => {
     if (!t.kind) closedTabs.push(t.name);  // R14: undo close tab still works on the last one
@@ -3931,7 +3931,7 @@ async function closeAllTabs(g) {           // Close all: the GROUP SURVIVES (col
     await loadActive(g);
   });
 }
-/* graphhdr REQ-5/9..12: the view header's ⋮ "More options" menu. Stock builds it
+/* graphhdr REQ-5/9..12: the view header's ⋮ "More options" menu. Obsidian builds it
    from the VIEW, not the tab: the tab menu's view rows minus the tab-only ones
    (close group, Pin, Link with tab..., Move to new window). Measured 1.13.7
    (docs/graphhdr/recon.md): markdown = the note rows; global graph = Split
@@ -3951,7 +3951,7 @@ function tabMenu(e, g, i, hdr) {
   // are stripped so a note named 'a:b]' cannot forge a token.
   m.dataset.mt = (hdr ? "hdr-" : "") + (tab ? (tab.kind || "note") : "empty") + ":" +
     (!tab || tab.kind ? "" : String(tab.name).split("/").pop().replace(/[|\]:]/g, ""));
-  const place = () => {                  // a header menu drops from its button (stock), a tab menu at the pointer
+  const place = () => {                  // a header menu drops from its button (Obsidian), a tab menu at the pointer
     if (!hdr) { placeMenu(m, e.clientX, e.clientY); return; }
     m.dataset.hdr = String(g.id);
     const r = g.morebtn.getBoundingClientRect();
@@ -3959,7 +3959,7 @@ function tabMenu(e, g, i, hdr) {
   };
   /* item(label, fn) wires a row; item(label, null, why) renders it DISABLED with
      `why` (the missing subsystem) as the hover title; chk adds the radio marker
-     as an ELEMENT so textContent — and therefore [menu:] — stays stock's label. */
+     as an ELEMENT so textContent — and therefore [menu:] — stays Obsidian's label. */
   const item = (label, fn, why, chk) => {
     const d = document.createElement("div");
     if (chk !== undefined) {             // a RADIO row: the gutter is reserved whether or not this one is the active mode
@@ -3991,7 +3991,7 @@ function tabMenu(e, g, i, hdr) {
     }
     if (!any) item("(no other tabs)");
   });
-  const pickFolder = async () => {       // R38.16: stock opens a modal folder SUGGESTER; ours is the same in-place list
+  const pickFolder = async () => {       // R38.16: Obsidian opens a modal folder SUGGESTER; ours is the same in-place list
     let fl = [];
     try { fl = await inv("list_folders"); } catch (err) { fl = []; }
     const here = tab.name.includes("/") ? tab.name.slice(0, tab.name.lastIndexOf("/")) : "";
@@ -4022,10 +4022,10 @@ function tabMenu(e, g, i, hdr) {
      what lets Reading view / Find... / Rename... keep taking the group. */
   if (i !== g.active) { placeMenu(m, e.clientX, e.clientY); return; }
   sep();
-  }                                      // !hdr: the close group is a TAB verb — stock's ⋮ has none
+  }                                      // !hdr: the close group is a TAB verb — Obsidian's ⋮ has none
   const pinRow = () => item(tab.pinned ? "Unpin" : "Pin", () => { closeMenu(); togglePin(g, tab); });   // WIRED (R38.7)
   const linkRow = () => isLinked(g, tab, i)
-    ? item("Unlink tab", () => { closeMenu(); unlinkTab(g, tab); })             // WIRED: R6.8, unchanged — stock wording in a stock slot
+    ? item("Unlink tab", () => { closeMenu(); unlinkTab(g, tab); })             // WIRED: R6.8, unchanged — Obsidian's wording in Obsidian's slot
     : item("Link with tab...", pick);
   if (tab.kind) {
     /* ---- R38.30: a GRAPH tab gets a DIFFERENT menu, assembled from the view
@@ -4040,14 +4040,14 @@ function tabMenu(e, g, i, hdr) {
     item("Split down",  () => { closeMenu(); splitGroup(g, "col", i); });
     sep();
     item("Copy screenshot", null, "Missing subsystem: canvas-to-clipboard — no programmatic clipboard write exists in this tree (ui/editor.js writes only inside real copy events) and the graph view has no canvas-to-PNG step");
-    if (!hdr || tab.kind !== "lg")        // graphhdr REQ-10: stock's LOCAL graph ⋮ has no Bookmark... row
+    if (!hdr || tab.kind !== "lg")        // graphhdr REQ-10: Obsidian's LOCAL graph ⋮ has no Bookmark... row
       item("Bookmark...", null, "Missing subsystem: bookmarks of non-file views — a bookmark here is a note name on disk (R9.4) and a graph tab has no note behind it");
     place();
     return;
   }
   // ---- group 2 (5 rows) ----
   if (!hdr) { pinRow(); linkRow(); }
-  item("Backlinks in document", null, "Missing subsystem: an in-document backlinks section — stock appends backlinks to the BOTTOM OF THE NOTE PANE; ours is a right-sidebar pane (R27), a different surface");
+  item("Backlinks in document", null, "Missing subsystem: an in-document backlinks section, appended to the BOTTOM OF THE NOTE PANE; ours is a right-sidebar pane (R27), a different surface");
   item("Reading view", () => { closeMenu(); setMode(g, "reading"); }, null, tab.mode === "reading");     // WIRED: setMode (R38.10)
   item("Source mode",  () => { closeMenu(); setMode(g, "source"); },  null, tab.mode === "source");      // WIRED: setMode — the ✓ is the R12.4 radio, now a marker element
   // ---- group 3 (4 rows) ----
@@ -4060,10 +4060,10 @@ function tabMenu(e, g, i, hdr) {
   sep();
   item("Rename...", () => { closeMenu(); focusGroup(g); cmdRename(); });        // WIRED: R24.2/R34 rename + the prompted link update
   item("Move file to...", pickFolder);                                          // WIRED: moveNoteTo behind the in-place folder list (R38.16)
-  item(bmCache.includes(tab.name) ? "Remove bookmark" : "Bookmark...",          // WIRED: toggleBm — stock's wording, our flat-list toggle (R38.17/R20.4)
+  item(bmCache.includes(tab.name) ? "Remove bookmark" : "Bookmark...",          // WIRED: toggleBm — Obsidian's wording, our flat-list toggle (R38.17/R20.4)
     () => { closeMenu(); toggleBm(tab.name); });
-  item("Merge entire file with...", null, "Missing subsystem: file merge — no command concatenates one note into another, and stock's is a suggester with four modifier behaviours");
-  item("Add file property", null, "Missing subsystem: a frontmatter property model — stock writes a Properties block at the top of the note; there is no frontmatter parser or editor here");
+  item("Merge entire file with...", null, "Missing subsystem: file merge — no command concatenates one note into another (a suggester with four modifier behaviours)");
+  item("Add file property", null, "Missing subsystem: a frontmatter property model, which writes a Properties block at the top of the note; there is no frontmatter parser or editor here");
   item("Export to PDF...", null, "Missing subsystem: a PDF pipeline — no renderer and no page-size/margin model; PDF export is an explicit project non-goal");
   // ---- group 5 (2 rows) ----
   sep();
@@ -4071,11 +4071,11 @@ function tabMenu(e, g, i, hdr) {
   item("Replace...", () => { closeMenu(); fOpenRep(g); });                      // WIRED: R26 replace row
   // ---- group 6 (1 row) ----
   sep();
-  item("Copy path", null, "Missing subsystems: submenu panels in ctxmenu (stock keeps the parent menu OPEN beside a child panel; ours can only rebuild itself in place) and a programmatic clipboard write (the only clipboard access in the tree is inside real copy/paste events, ui/editor.js)");
+  item("Copy path", null, "Missing subsystems: submenu panels in ctxmenu (the parent menu stays OPEN beside a child panel; ours can only rebuild itself in place) and a programmatic clipboard write (the only clipboard access in the tree is inside real copy/paste events, ui/editor.js)");
   // ---- group 7 (2 rows) ----
   sep();
   item("Open version history", null, "Missing subsystem: file history — nothing here keeps a revision of a note to show changes from or restore");
-  item("Open linked view", null, "Missing subsystem: submenu panels in ctxmenu — four of stock's five children already have backends here (R7 local graph, backlinks, outgoing, outline), so this is the highest-value row in this list");
+  item("Open linked view", null, "Missing subsystem: submenu panels in ctxmenu — four of its five children already have backends here (R7 local graph, backlinks, outgoing, outline), so this is the highest-value row in this list");
   // ---- group 8 (3 rows) ----
   sep();
   item("Open in default app", null, "Missing subsystem: a file-path opener — open_external takes a URL, not a vault path");
@@ -4083,7 +4083,7 @@ function tabMenu(e, g, i, hdr) {
   item("Reveal file in navigation", () => { closeMenu(); bmReveal(tab.name); });  // WIRED: bmReveal — the identical verb bmRowMenu wires, publishes [bmrv:] (R38.28)
   // ---- group 9 (1 row) ----
   sep();
-  item("Delete file", () => { closeMenu(); askDelete(tab.name); }).className = "del";   // WIRED: askDelete — stock's row is the link-COUNTING confirmation, not an unlink (R38.29)
+  item("Delete file", () => { closeMenu(); askDelete(tab.name); }).className = "del";   // WIRED: askDelete — Obsidian's row is the link-COUNTING confirmation, not an unlink (R38.29)
   place();   /* R22: viewport-clamped by MEASURED size */
 }
 async function togglePin(g, tab) {      // R38.7: the flag + the tab-bar glyph; Close stays enabled on a pinned tab (measured)
@@ -4202,11 +4202,11 @@ function mswTok() {
 function updateModeBtn(g) {
   const tb = g.active >= 0 ? g.tabs[g.active] : null;
   const m = tb ? tb.mode : "livepreview";
-  g.modebtn.innerHTML = m === "reading" ? ICON_PEN : ICON_BOOK;   // R20 (#3)/#16: stock shows pen/book only — TWO states; source vs LP lives in the tab menu radio + its own command
-  // graphhdr REQ-6/7/8: stock renders the mode toggle ONLY for a markdown view — a
+  g.modebtn.innerHTML = m === "reading" ? ICON_PEN : ICON_BOOK;   // R20 (#3)/#16: Obsidian shows pen/book only — TWO states; source vs LP lives in the tab menu radio + its own command
+  // graphhdr REQ-6/7/8: Obsidian renders the mode toggle ONLY for a markdown view — a
   // global graph, a local graph and an empty tab have no editing/reading mode.
   g.modebtn.hidden = !tb || !!tb.kind;
-  // graphhdr REQ-3: stock's three-line tooltip for the CURRENT mode
+  // graphhdr REQ-3: Obsidian's three-line tooltip for the CURRENT mode
   g.modebtn.title = m === "reading"
     ? "Current view: reading\nClick to edit\nCtrl+Click to open to the right"
     : "Current view: editing\nClick to read\nCtrl+Click to open to the right";
@@ -4228,10 +4228,10 @@ async function cmdToggleMode(g) {  // #16: Ctrl+E / the view-header icon = EDIT 
   const tab = g.tabs[g.active];
   if (tab.kind) return;             // graph tabs (lg/gg) have no view mode
   // leaving reading lands in the sub-mode you left from (tab.src is untouched by
-  // the reading flag) -> source -> reading -> source, like stock
+  // the reading flag) -> source -> reading -> source, like Obsidian
   await setMode(g, tab.read ? (tab.src ? "source" : "livepreview") : "reading");
 }
-/* graphhdr REQ-4: Ctrl+Click on the mode toggle. Stock 1.13.7 (recon 60/61):
+/* graphhdr REQ-4: Ctrl+Click on the mode toggle. Obsidian 1.13.7 (recon 60/61):
    the original pane is UNCHANGED, a NEW pane opens split to the right showing the
    same note in the OTHER mode, LINKED to the original (R13 link group), and it is
    the active pane. Same sub-mode bit (src) rides along, like a split. */
@@ -4245,7 +4245,7 @@ async function modeOpenRight(g) {
   await splitWith(g, "row", t);
   linkTabs(tab, t);
 }
-async function cmdToggleSource(g) {  // stock "Toggle Live Preview/Source mode": flips the OTHER bit
+async function cmdToggleSource(g) {  // Obsidian "Toggle Live Preview/Source mode": flips the OTHER bit
   g = g || fg();
   if (!g || g.active < 0 || g.graphOn) return;
   const tab = g.tabs[g.active];
@@ -4307,7 +4307,7 @@ function renderTabs(g) {
     ttl.className = "t";
     const chain = isLinked(g, tab, i);
     // R38.7: a PINNED tab carries a pin glyph in FRONT of the label, the way
-    // stock paints it (shots/m3-pinned-tabbar.png). It is a marker element, not
+    // Obsidian paints it (shots/m3-pinned-tabbar.png). It is a marker element, not
     // text, so [tabs:]/[note:] and every label assertion are unchanged.
     if (tab.pinned) { const p = document.createElement("span"); p.className = "pin"; p.innerHTML = ICON_PIN; d.appendChild(p); }
     ttl.textContent = (chain ? "\u{1F517} " : "") + tab.name.split("/").pop();
@@ -4423,12 +4423,12 @@ function tabDragStart(e, g, i) {
 }
 
 /* #20 (R32): the big title a note shows is its FILENAME, rendered — never
-   bytes in the file (stock calls it the inline title; a new note is zero
+   bytes in the file (Obsidian calls it the inline title; a new note is zero
    bytes). It is published as data-title on the two SCROLLERS and drawn by a
    ::before in ui/style.css, deliberately NOT as a DOM child: ui/editor.js
    indexes model rows positionally (g.lp.children[l], editor.js:491), so a
    prepended element would shift every line index by one and break the caret.
-   Inside the scroller = it scrolls with the content, like stock, and adds no
+   Inside the scroller = it scrolls with the content, like Obsidian, and adds no
    scroll container (R22.2's allowlist is unchanged). No name -> attribute
    REMOVED, so an empty pane keeps its y-origin. */
 const titleOf = name => (name ? name.split("/").pop().replace(/\.md$/i, "") : "");
@@ -4583,7 +4583,7 @@ function openTitleEdit(g, host, x, y) {
     sel.removeAllRanges(); sel.addRange(r);
   }
   el.addEventListener("keydown", onTitleKey);
-  el.addEventListener("input", onTitleInput);   // R34.12/R34.13: refuse WHILE typing, as stock does
+  el.addEventListener("input", onTitleInput);   // R34.12/R34.13: refuse WHILE typing, as Obsidian does
   el.addEventListener("blur", () => closeTitleEdit());
   host.addEventListener("scroll", onTitleScroll);
   updateTitle();
@@ -4621,7 +4621,7 @@ function onTitleKey(e) {
   e.stopPropagation();                       // a filename contains characters the R14 keymap binds
 }
 
-/* R34.1 — ENTER RENAMES THE FILE. The order is stock's, measured, and it is
+/* R34.1 — ENTER RENAMES THE FILE. The order is Obsidian's, measured, and it is
    not negotiable: the file moves FIRST (move_note), the links are still stale
    at that instant (R34.2), and only THEN is the question asked. The refusals
    come before any of it and produce a visible notice instead of a rename.
@@ -4633,7 +4633,7 @@ function onTitleKey(e) {
                          "/" is a rejected character, never a move into a folder
      existing name    -> notice, BOX STAYS OPEN       (R34.12, E4/E5)
      otherwise        -> move now, ask after          (R34.1/R34.2)
-   The UI's collision check is a COURTESY (stock shows its notice before Enter);
+   The UI's collision check is a COURTESY (Obsidian shows its notice before Enter);
    the one that counts is create_new/O_EXCL in move_note_in, and a move_note
    error is surfaced, never swallowed.
 
@@ -4647,7 +4647,7 @@ function onTitleKey(e) {
    test (the rust side is asserted with `.md`-less keys) and to phase `title`
    (which never presses Enter). The `rename` phase caught it on the first run;
    that is what an end-to-end phase is FOR. */
-const TITLE_ILLEGAL = /[\\/:*?"<>|]/;        // stock's own set (R34.13, read at 250%)
+const TITLE_ILLEGAL = /[\\/:*?"<>|]/;        // Obsidian's illegal set (R34.13)
 async function commitTitleEdit() {
   if (!titling) return;
   const { g, el, name, orig } = titling;
@@ -4663,7 +4663,7 @@ async function commitTitleEdit() {
 }
 
 /* R24.3 — THE RENAME TAIL, AND THE ONLY ONE. "After a rename that has incoming
-   links, stock shows the Update links modal ... because `Automatically update
+   links, Obsidian shows the Update links modal ... because `Automatically update
    internal links` is OFF by default" — R24.3 says nothing about WHICH rename
    surface, and the app has two: the inline title (R34) and F2 / "Rename file"
    (cmdRename). Until now only the title road asked; F2 called `rename_note`,
@@ -4718,7 +4718,7 @@ function say(msg, src) {                     // R34.12/R34.13: a refusal is VISI
   updateTitle();
 }
 
-/* R34.12/R34.13 — the refusal is measured on stock BEFORE Enter: the notice
+/* R34.12/R34.13 — the refusal is measured on Obsidian BEFORE Enter: the notice
    "There's already a file with the same name" is on screen while the title box
    still holds `Dup`, and Enter then does nothing (E4/E5). So the check runs on
    every keystroke, and it RETRACTS when the name becomes legal again — a notice
@@ -4740,8 +4740,8 @@ function titleCheck() {
 function onTitleInput() { titleCheck(); updateTitle(); }
 
 /* R34.5 — the counted sentence, rendered from the radius move_note counted
-   BEFORE the move. Stock's fixture was plural on both numbers ("4 links in 1
-   file"); the SINGULAR form was never observed, so the n!==1 pluralisation is
+   BEFORE the move. The recon fixture was plural on both numbers (links and
+   files); the SINGULAR form was never observed, so the n!==1 pluralisation is
    OURS and is flagged as such in docs/requirements.md R34.5. */
 const ulSentence = (links, files) =>
   "This will affect " + links + (links === 1 ? " link" : " links") +
@@ -4777,7 +4777,7 @@ async function ulAnswer(kind) {
   if (!ulPending) return;
   const { old, nn } = ulPending;
   closeUpdateLinks();
-  if (kind === "no") return;                 // renamed file, stale links — stock's shape (R34.2)
+  if (kind === "no") return;                 // renamed file, stale links — Obsidian's shape (R34.2)
   if (kind === "always") {
     try { await inv("set_link_consent", { on: true }); }   // R34.8: remembered in the VAULT
     catch (err) { say(String(err && err.message || err)); }
@@ -5061,7 +5061,7 @@ async function openInTab(name, via = "tab") {   // explorer click -> FOCUSED gro
   });
 }
 
-/* opentab (docs/opentab/requirements.md): stock 1.13.7 opens a note from the
+/* opentab (docs/opentab/requirements.md): Obsidian 1.13.7 opens a note from the
    file explorer and from bookmarks like this (black-box, display :150):
    - plain click REPLACES the active tab's note, even when the note is already
      open in another tab (REQ-1/2/3, no dedup); a PINNED active tab is never
@@ -5110,7 +5110,7 @@ async function navigate(g, name, anchor) { // wikilink / graph click: replace g'
 }
 
 /* R10.2: after opening the note, scroll to the #heading / #^block target and
-   flash it ~2 s. LP centers the row (stock), reading/source put it at the
+   flash it ~2 s. LP centers the row (Obsidian), reading/source put it at the
    top. Unresolvable anchor -> note stays at the top. [nav:<anchor>@<line>]
    in the census reports the line that was hit (headless probe). */
 let navInfo = "";
@@ -5202,7 +5202,7 @@ function navBtnSync() {
   }
 }
 /* R4X.5 (navbtn): right-click on a nav button drops that stack as a menu
-   BELOW the button — stock 1.13.7 measured (docs/recon-navbtn §4): the back
+   BELOW the button — Obsidian 1.13.7 measured (docs/recon-navbtn §4): the back
    menu lists the back stack most-recent-first, the forward menu the forward
    stack nearest-first, the CURRENT entry marked by EXCLUSION (never listed,
    no checkmark), a file icon per row. Selecting a row is a move WITHIN the
@@ -5247,7 +5247,7 @@ function navHistMenu(e, g, dir, btn) {
     d.onclick = () => { closeMenu(); histGo(i - tab.hpos, h); };   // delta read at CLICK time
     m.appendChild(d);
   }
-  const r = btn.getBoundingClientRect();          // stock: panel below the button, left-aligned (§4)
+  const r = btn.getBoundingClientRect();          // Obsidian: panel below the button, left-aligned (§4)
   placeMenu(m, Math.round(r.left), Math.round(r.bottom) + 2);
 }
 async function histGo(d, from) {
@@ -5443,7 +5443,7 @@ function buildTree(folders, notes) {
   return root;
 }
 
-/* ux-2 stock parity: chevron rotates via .open, folder icon, indent-guide
+/* ux-2 Obsidian parity: chevron rotates via .open, folder icon, indent-guide
    spans (.tg) instead of padding math. Row height fixed 31px in CSS — the
    full smoke suite clicks tree rows at pitch 31 (sub=82), do not change it. */
 const TREE_CHEV =
@@ -5981,7 +5981,7 @@ function qsItems() {                 // switcher source: MRU first, rest a-z
 /* listtoggle A3 (found by the gate phase, not by reading): the palette input
    TAKES the DOM selection, so a palette command that reads the editor
    selection (Ed.sel) found none and was a silent no-op — "Toggle bullet list"
-   run from Ctrl+P changed no byte. Stock runs palette commands against the
+   run from Ctrl+P changed no byte. Obsidian runs palette commands against the
    selection the editor had when the palette opened (evidence/q02-bullet.txt:
    select 3 lines, palette, all 3 toggled). So snapshot it at open and put it
    back, anchor and focus, just before a command RUNS. Escape is unchanged. */
@@ -6034,7 +6034,7 @@ function mdFilter() {
 }
 /* C4 (R5.1): the switcher's dead end. A query that matches no note used to
    paint the single dead word "No matches" — the only move left was Escape and
-   Ctrl+N with the name retyped. Stock creates the note on Shift+Enter and opens
+   Ctrl+N with the name retyped. Obsidian creates the note on Shift+Enter and opens
    it, so offer that action here.
    GATED ON kind "qs": renderModal() is SHARED with the COMMAND PALETTE
    ([modal:cp], mdSrc = cmdItems), where "create a note" is not an answer to an
@@ -6115,7 +6115,7 @@ function cmdQuickSwitch() {
    (Ctrl+P), the keymap dispatcher and Settings ▸ Hotkeys. Chords are
    normalised "ctrl+alt+shift+<key>" (e.key lowercased, Mod = Ctrl on Linux).
    User overrides live in hkUser {id: [chords]} ([] = default removed) and are
-   persisted to ~/.opensidian.json "hotkeys" in the stock shape. ---------- */
+   persisted to ~/.opensidian.json "hotkeys" in the Obsidian shape. ---------- */
 const edField = () => (state && fg() ? acField(fg()) : null);
 function edEdit(fn) {   // fn(value, selStart, selEnd) -> [value, selStart, selEnd]; fires input
   const ta = edField();
@@ -6143,7 +6143,7 @@ const edLine = fn => edEdit((v, a, b) => {  // fn(line) -> line | null (= delete
   if (nl == null) { const cut = l1 < v.length ? l1 + 1 : Math.max(0, l0 - 1); return [v.slice(0, l0) + v.slice(l1 + 1), Math.min(l0, cut), Math.min(l0, cut)]; }
   return [v.slice(0, l0) + nl + v.slice(l1), l0 + Math.min(nl.length, a - l0 + nl.length - (l1 - l0)), l0 + Math.min(nl.length, b - l0 + nl.length - (l1 - l0))];
 });
-// R17.4 M46-M51 "Toggle checkbox status": a MODEL op (one row patched, stock
+// R17.4 M46-M51 "Toggle checkbox status": a MODEL op (one row patched, Obsidian
 // caret rule), not a whole-document rewrite through the textarea shim.
 function edTask() {
   const g = state && fg();
@@ -6227,7 +6227,7 @@ function dropSay(msg) {           // R31.5 a refusal is VISIBLE or it is a bug r
   if (msg) dropT = setTimeout(() => { $("dropmsg").hidden = true; }, 4000);
 }
 /* R31.6 READING VIEW HAS NO CARET, so a drop there cannot "insert at the
-   cursor". Stock's behaviour is UNVERIFIED (recon could not drive a drop, and
+   cursor". Obsidian's behaviour is UNVERIFIED (recon could not drive a drop, and
    the paste oracle is edit-only), and the brief's rule for an unverified
    answer is: refuse, visibly. Copying the file in anyway and inserting it
    somewhere we guessed is the worse failure — it writes to the vault for an
@@ -6294,10 +6294,10 @@ let themeStored = false;                   // a user chose: the system stops dec
 function applyTheme(t) {
   themeMode = t === "light" ? "light" : "dark";
   document.documentElement.setAttribute("data-theme", themeMode);
-  // R1 (themecsp): ALSO emit the stock app's mode marker as a class on <body>
-  // (.theme-dark / .theme-light), next to our :root[data-theme]. Stock-shaped
+  // R1 (themecsp): ALSO emit Obsidian's mode marker as a class on <body>
+  // (.theme-dark / .theme-light), next to our :root[data-theme]. Obsidian-shaped
   // CSS keys off body.theme-dark (T6), which our root attribute shadows; without
-  // this marker no stock CSS can ever apply. body exists (main.js loads at the
+  // this marker no Obsidian CSS can ever apply. body exists (main.js loads at the
   // end of <body>); guard anyway so an early call never throws.
   if (document.body) {
     document.body.classList.toggle("theme-dark", themeMode === "dark");
@@ -6345,7 +6345,7 @@ async function bootTheme() {
 
    The operator asked for one axis. So the three palettes became real THEME
    FILES (src-tauri/themes/, seeded onto the vault's .obsidian/themes/ by
-   builtins.rs), and the ONE thing that selects a theme is stock's cssTheme
+   builtins.rs), and the ONE thing that selects a theme is Obsidian's cssTheme
    picker — `chooseVaultTheme` above. Everything that used to call
    choosePalette now calls that: the Appearance ▸ Themes dropdown, and the
    Ctrl+P "Use theme: <name>" entries (cpItems, which builds one per LISTED
@@ -6361,7 +6361,7 @@ async function bootTheme() {
    prefers-color-scheme decides" (R6). Mode and theme compose exactly the way
    mode and palette did: a theme declares body.theme-dark and body.theme-light
    blocks, and the mode class picks which one paints. */
-/* ---------- themefs R3: vault CSS snippets (stock's files, T3) ----------
+/* ---------- themefs R3: vault CSS snippets (Obsidian's files, T3) ----------
    A snippet is <vault>/.obsidian/snippets/<label>.css, toggled by the
    enabledCssSnippets array in the vault's own appearance.json — the backend
    (src-tauri/src/themefs.rs) owns the listing predicate, the byte-wise config
@@ -6374,7 +6374,7 @@ async function bootTheme() {
    first [data-snip] element, and #vault-bridge (item 8) insertBefores
    #vault-theme. */
 let vaultSnips = [], vaultSnipsOn = [], snipEls = new Map();
-/* ---- themefs R5: the vault THEME (stock's .obsidian/themes/<Name>/) ----
+/* ---- themefs R5: the vault THEME (Obsidian's .obsidian/themes/<Name>/) ----
    vaultThemesScan is the backend's oracle-predicate result: {listed:[names],
    excluded:[{dir,file,reason,message}]}. vaultTheme mirrors cssTheme verbatim;
    effTheme() is what PAINTS: the listed cssTheme, else (empty, absent or
@@ -6405,8 +6405,8 @@ let vaultSeedTok = "-";
    `data-vtheme` here, and the attribute then enters the cache key (cause 3)
    and the existing attributeFilter (cause 4).
    THE GENERATION COUNTER IS NOT DECORATION. A hot reload rewrites the SAME
-   theme's bytes under the SAME name (T4 RESULT 2 measured stock repainting an
-   edit to the active theme in 0.14-0.34 s); a name-only attribute would be
+   theme's bytes under the SAME name (T4 RESULT 2 measured Obsidian repainting an
+   edit to the active theme within a second); a name-only attribute would be
    unchanged across that write, the MutationObserver would not fire, and the
    graph would keep painting the pre-edit colours. The counter changes on every
    inject and every remove, so "same name, new bytes" is a different value.
@@ -6436,7 +6436,7 @@ async function themeInject(name) {
     // item 8, the R4 alias bridge (DESIGN §5/§7): #vault-bridge sits BEFORE
     // #vault-theme so the theme out-cascades its own aliases. GENERATED by
     // the backend from the same sanitized bytes: empty when the theme
-    // declares none of the aliased stock names — then NO element exists and
+    // declares none of the aliased Obsidian names — then NO element exists and
     // the DOM stays byte-identical to the palette baseline. Same in-place
     // swap discipline as the theme element (hot reload comes through here).
     const bcss = r.bridge || "";
@@ -6562,7 +6562,7 @@ function snipRemove(label) {
 }
 /* vault entry (and vault SWITCH: the old vault's CSS must not survive into
    the new one, so this clears before it loads). Failure to scan is not a
-   notice: no vault / no snippets dir is stock's silent normal (T0). */
+   notice: no vault / no snippets dir is Obsidian's silent normal (T0). */
 async function loadVaultCss() {
   for (const l of [...snipEls.keys()]) snipRemove(l);
   themeRemove();
@@ -6573,7 +6573,7 @@ async function loadVaultCss() {
   await fontLoad();                  // fontset REQ-11: the vault's three font overrides, same moment
   try {
     vaultThemesScan = await inv("themes_scan");
-    // R6: LOUD where stock silently excludes — every broken theme dir says
+    // R6: LOUD where Obsidian silently excludes — every broken theme dir says
     // its one message (dir + reason, authored in themefs.rs) at scan time.
     for (const x of vaultThemesScan.excluded) say(x.message, "theme");
     vaultTheme = await inv("get_css_theme");
@@ -6593,7 +6593,7 @@ async function loadVaultCss() {
   try {
     vaultSnips = await inv("snippets_scan");
     // a stale enabled entry whose file is gone is skipped silently — the array
-    // is stock's own record and may outlive the file (unmeasured; re-measure
+    // is Obsidian's own record and may outlive the file (unmeasured; re-measure
     // against /srv/reference/obsidian.AppImage if a gate ever makes it matter)
     vaultSnipsOn = (await inv("snippets_enabled")).filter(l => vaultSnips.includes(l));
   } catch { vaultSnips = []; vaultSnipsOn = []; }
@@ -6610,7 +6610,7 @@ async function loadVaultCss() {
    the listed/painting decision, so an unlisted cssTheme is declared as ""
    (Default paints, nothing to watch). Nothing here writes: criterion 4
    asserts appearance.json's bytes across an edit. NEW files are not live
-   (stock's asymmetry, T4 RESULT 4 / T3 RESULT 5): the watch set moves only
+   (Obsidian's asymmetry, T4 RESULT 4 / T3 RESULT 5): the watch set moves only
    when a user action lands here, never because a tick discovered a file. */
 let vaultCssReloads = 0;                 // census [creload:<n>] — the phase's latency clock
 function armCssReload() {
@@ -6686,19 +6686,19 @@ inv("zoom_get").then(z => {
   zoomTok = z.factor.toFixed(4) + "@" + z.level;
   if (typeof state !== "undefined" && state) updateTitle();
 }, () => { /* a backend that cannot answer is not a reason to blank the census */ });
-/* ---------- goal fontwheel: stock "Quick font size adjustment" ----------
+/* ---------- goal fontwheel: Obsidian "Quick font size adjustment" ----------
    docs/ctrlzoom/recon.md REQ-1..16. Ctrl+wheel over a markdown view (.lp —
    live preview AND source, .lp.src — or .preview) moves the vault's
    appearance.json "baseFontSize" by 1 px per notch, clamped 10..30, while
    "baseFontSizeAction" is on. OPERATOR EXCEPTION (REQ-2): an absent key reads
-   ON here (stock: off) — themefs::quickfont owns that rule, not this file.
+   ON here (Obsidian: off) — themefs::quickfont owns that rule, not this file.
    This is NOT a second zoom: it moves only --font-text-size (text of the
    markdown views), never webkit zoom (R36 above, REQ-16), and Ctrl+0 stays
    the interface-zoom reset (REQ-6).
-   Every Ctrl+wheel is preventDefault'ed, ON or OFF, everywhere (stock never
+   Every Ctrl+wheel is preventDefault'ed, ON or OFF, everywhere (Obsidian never
    scrolls on Ctrl+wheel: REQ-3/8/9/12) — except a <canvas>, whose own wheel
    handler (graph view, cv.onwheel) zooms the graph with or without Ctrl
-   (REQ-10). The size goes on body's inline style the way stock's does, so a
+   (REQ-10). The size goes on body's inline style the way Obsidian's does, so a
    theme's --font-text-size cannot shadow it; at the default 16 the inline
    property is REMOVED, leaving the stylesheet/theme value in charge (and the
    typo phase's root-level probe chord meaningful on a fresh vault). */
@@ -6770,7 +6770,7 @@ function qfsSet(n) {
   fszSync();
   return true;
 }
-/* ---------- goal fontset: stock's Interface / Text / Monospace font rows ----------
+/* ---------- goal fontset: Obsidian's Interface / Text / Monospace font rows ----------
    docs/fontset/recon.md REQ-1..15, D1..D4. Each kind is a ","-joined list of
    family names in the vault's appearance.json (interfaceFontFamily /
    textFontFamily / monospaceFontFamily), kept VERBATIM in the file (REQ-14);
@@ -6806,7 +6806,7 @@ function fontApply() {
   const b = document.body.style;
   for (const [k] of FONT_KINDS) {
     const v = fontCss(fontVal[k]);
-    // stock also mirrors the text font into --font-print-override (F6)
+    // Obsidian also mirrors the text font into --font-print-override (F6)
     for (const p of k === "text" ? ["--font-text-override", "--font-print-override"] : ["--font-" + k + "-override"]) {
       if (v) b.setProperty(p, v); else b.removeProperty(p);   // REQ-13: empty = override REMOVED
     }
@@ -7126,26 +7126,26 @@ const CMDS = [
   ["workspace:edit-file-title","Rename file",                         ["f2"],                   cmdRename],
   ["editor:save-file",         "Save current file",                   ["ctrl+s"],               cmdSave],
   ["global-search:open",       "Search in all files",                 ["ctrl+shift+f"],         () => { if (!sideOpen) cmdToggleSide(); setPane("search"); }],
-  // R26.1: find INSIDE the note. Stock's id and name, and stock's chord — the
+  // R26.1: find INSIDE the note. Obsidian's id and name, and Obsidian's chord — the
   // vault-wide search above (R25) is a different requirement in a different
   // pane and keeps Ctrl+Shift+F.
   ["editor:open-search",       "Search current file",                 ["ctrl+f"],               () => fOpen(fg())],
   ["editor:open-search-replace", "Search & replace current file",     ["ctrl+h"],               () => fOpenRep(fg())],
   ["editor:toggle-bold",       "Toggle bold",                         ["ctrl+b"],               () => edWrap("**")],
   ["editor:toggle-checklist-status", "Toggle checkbox status",        ["ctrl+l"],               () => edTask()],
-  // listtoggle R1: stock's ids and names, NO default chord (Settings ▸ Hotkeys
-  // reads Blank on stock, docs/recon-listtoggle Q1 q01-ids). The 5th field is
-  // the palette's visibility test: stock hides both in reading view — palette
+  // listtoggle R1: Obsidian's ids and names, NO default chord (Settings ▸ Hotkeys
+  // reads Blank on Obsidian, docs/recon-listtoggle Q1 q01-ids). The 5th field is
+  // the palette's visibility test: Obsidian hides both in reading view — palette
   // "Toggle bullet list" -> no command, no write [Q14 q14-reading].
   ["editor:toggle-bullet-list",   "Toggle bullet list",               [],                       () => edList("bullet"),   edEditable],
   ["editor:toggle-numbered-list", "Toggle numbered list",             [],                       () => edList("numbered"), edEditable],
-  // goal insdate REQ-1/REQ-13: stock's names, NO default chord; hidden where
-  // stock hides them (reading view, graph, no note — REQ-10..12).
+  // goal insdate REQ-1/REQ-13: Obsidian's names, NO default chord; hidden where
+  // Obsidian hides them (reading view, graph, no note — REQ-10..12).
   ["templates:insert-current-date", "Templates: Insert current date", [],                     () => edInsertNow("date"), edInsertable],
   ["templates:insert-current-time", "Templates: Insert current time", [],                     () => edInsertNow("time"), edInsertable],
   ["editor:toggle-comments",   "Toggle comment",                      ["ctrl+/"],               () => edWrap("%%", "comment")],
   ["editor:toggle-italics",    "Toggle italic",                       ["ctrl+i"],               () => edWrap("*")],
-  ["markdown:toggle-preview",  "Toggle reading view",                 ["ctrl+e"],               () => cmdToggleMode(), mdActive],   // graphhdr REQ-14: stock offers it only on a markdown view
+  ["markdown:toggle-preview",  "Toggle reading view",                 ["ctrl+e"],               () => cmdToggleMode(), mdActive],   // graphhdr REQ-14: Obsidian offers it only on a markdown view
   ["editor:toggle-source",     "Toggle Live Preview/Source mode",     [],                       () => cmdToggleSource()],
   ["workspace:undo-close-pane","Undo close tab",                      ["ctrl+shift+t"],         async () => { await undoCloseTab(); }],
   ["workspace:split-vertical", "Split right",                         [],                       () => splitGroup(fg(), "row", fg().active)],
@@ -7153,12 +7153,12 @@ const CMDS = [
   ["app:toggle-left-sidebar",  "Toggle left sidebar",                 [],                       cmdToggleSide],
   ["app:toggle-right-sidebar", "Toggle right sidebar",                [],                       () => cmdToggleRight()],
   ["app:switch-vault",         "Switch vault",                        [],                       showPicker],
-  // R36: stock lists exactly these three, with NO hotkey text beside them
+  // R36: Obsidian lists exactly these three, with NO hotkey text beside them
   // (recon-zoom shot 01) — built-in bindings it does not surface as rebindable
   // rows. Ours ARE in the one registry, so the palette, the keymap and
   // Settings ▸ Hotkeys all read the same line. The chord is the PLAIN '=' key:
   // Ctrl+plus, Ctrl+Shift+= and Ctrl+KP_Add were each measured as no-ops on
-  // stock (notes/recon-zoom.txt), and binding "plus" is negative control N2.
+  // Obsidian (notes/recon-zoom.txt), and binding "plus" is negative control N2.
   ["window:zoom-in",           "Zoom in",                             ["ctrl+="],               () => cmdZoom("in")],
   ["window:zoom-out",          "Zoom out",                            ["ctrl+-"],               () => cmdZoom("out")],
   ["window:reset-zoom",        "Reset zoom",                          ["ctrl+0"],               () => cmdZoom("reset")],
@@ -7172,21 +7172,21 @@ function hkConflicts() {                    // chord -> [cmd ids] with 2+ owners
   for (const c of CMDS) for (const ch of hkChords(c)) (by[ch] = by[ch] || []).push(c.id);
   return Object.fromEntries(Object.entries(by).filter(([, v]) => v.length > 1));
 }
-function hkRebuild() {                      // last-defined wins on conflicts (stock behaviour)
+function hkRebuild() {                      // last-defined wins on conflicts (Obsidian behaviour)
   keymap = {};
   for (const c of CMDS) for (const ch of hkChords(c)) keymap[ch] = c;
 }
 hkRebuild();
-// stock shape <-> chord strings. e.key names round-trip through KEYNAMES.
+// Obsidian shape <-> chord strings. e.key names round-trip through KEYNAMES.
 const KEYNAMES = { arrowleft: "ArrowLeft", arrowright: "ArrowRight", arrowup: "ArrowUp", arrowdown: "ArrowDown",
   pageup: "PageUp", pagedown: "PageDown", tab: "Tab", enter: "Enter", escape: "Escape", backspace: "Backspace",
   delete: "Delete", home: "Home", end: "End", insert: "Insert", " ": "Space" };
-function chordToStock(ch) {
+function chordToFile(ch) {
   const p = ch.split("+"); const k = p.pop();
   const mods = p.map(m => ({ ctrl: "Mod", alt: "Alt", shift: "Shift" }[m])).filter(Boolean);
   return { modifiers: mods, key: k.length === 1 || /^f\d+$/.test(k) ? k.toUpperCase() : KEYNAMES[k] || k };
 }
-function stockToChord(o) {
+function fileToChord(o) {
   const m = new Set((o.modifiers || []).map(x => x.toLowerCase()));
   const k = (o.key === "Space" ? " " : String(o.key || "")).toLowerCase();
   return ((m.has("mod") || m.has("ctrl")) ? "ctrl+" : "") + (m.has("alt") ? "alt+" : "") + (m.has("shift") ? "shift+" : "") + k;
@@ -7195,11 +7195,11 @@ async function hkLoad() {
   const m = await inv("get_hotkeys").catch(() => ({}));
   hkUser = {};
   const known = new Set(CMDS.map(c => c.id));
-  for (const [id, arr] of Object.entries(m || {})) if (known.has(id)) hkUser[id] = arr.map(stockToChord);
+  for (const [id, arr] of Object.entries(m || {})) if (known.has(id)) hkUser[id] = arr.map(fileToChord);
   hkRebuild();
 }
 function hkSave() {
-  const map = Object.fromEntries(Object.entries(hkUser).map(([id, chs]) => [id, chs.map(chordToStock)]));
+  const map = Object.fromEntries(Object.entries(hkUser).map(([id, chs]) => [id, chs.map(chordToFile)]));
   inv("set_hotkeys", { map }).catch(() => {});
   hkRebuild();
 }
@@ -7272,14 +7272,14 @@ async function applyRename(old, nn) {   // post-rename bookkeeping (F2 / cmdRena
 
 /* ux-3 is GONE (#20 / R32.5). It used to rename the note — and rewrite every
    inbound [[link]] vault-wide — whenever a committed edit changed the note's
-   first-line body H1. Recon on stock 1.13.7 (inline-title/09, progress.md Q4)
+   first-line body H1. Recon on Obsidian 1.13.7 (inline-title/09, progress.md Q4)
    measured the opposite: typing into a note's first-line `# Rename Me` grew
-   the file 40 -> 49 bytes and the FILENAME NEVER MOVED. Stock renames from the
+   the file and the FILENAME NEVER MOVED. Obsidian renames from the
    inline TITLE, and then raises an "Update links" modal (Always update / Just
    once / Do not update) — it never silently rewrites a vault. So a body-H1
    edit that mutates the user's filename and every note that links to it was
    opensidian's own invention, not parity, and it is the riskiest write in the
-   app. It is deleted: editing a body H1 now does what stock does — edits text.
+   app. It is deleted: editing a body H1 now does what Obsidian does — edits text.
    The rename path is F2 / "Rename file" -> cmdRename below (phase `m5` asserts
    it lands on disk); phase `ux` step 2 asserts the negative half (a body-H1
    edit leaves the filename and every inbound link alone, and the bytes land). */
@@ -7368,7 +7368,7 @@ document.addEventListener("keydown", e => {
   if (bmAdd) return;                       // bmactive: and its Add mode (Escape = Cancel, Enter = Save, typing = the Title input)
   if (titleEditing()) return;              // R34.1: so does the title box (a filename contains chords)
   if (e.key === "Escape") {
-    if (menuEl) { closeMenu(); return; }   // bmmenu: stock closes an open context menu on Escape (recon 15-escape.png); the guards above keep settings' own Escape (R14) first
+    if (menuEl) { closeMenu(); return; }   // bmmenu: Obsidian closes an open context menu on Escape (recon 15-escape.png); the guards above keep settings' own Escape (R14) first
     if (modalKind) { closeModal(); return; }
     if (!$("rnbox").hidden) { $("rnbox").hidden = true; updateTitle(); return; }
     /* R26.14 FROM THE NOTE. The bar's own two inputs close it in their own
@@ -7539,11 +7539,11 @@ async function startGraph(g, cfg) {
   //
   // OFF BODY, NOT documentElement — DESIGN §3 cause (1), and the single reason the
   // graph was not themed at all. A theme's declarations land on `body.theme-dark` /
-  // `body.theme-light` (T6 measured stock putting the mode class on BODY, and our
+  // `body.theme-light` (T6 measured Obsidian putting the mode class on BODY, and our
   // stylesheet now declares there too); custom properties inherit, so a lookup on
   // <body> sees the theme's value when it exists and our :root-side fallback when it
   // does not, while a lookup on <html> can only ever see ours. T9 confirmed a
-  // <canvas> cannot be painted by a custom property at all — stock READS the computed
+  // <canvas> cannot be painted by a custom property at all — Obsidian READS the computed
   // value and fills with it — so the element we read off is the whole contract.
   // bg is the fifth: --graph-bg, the canvas background on BOTH draw paths (the 2D fill
   // and the WebGL clear colour) — ui/graph-gl.js holds no colour of its own.
@@ -7568,7 +7568,7 @@ async function startGraph(g, cfg) {
   const PAL_VAR = { hi: "--accent-yellow", ctr: "--accent-green", node: "--accent-blue", edge: "--border", bg: "--graph-bg" };
   // goal/themes4: a THIRD rung for the node colour. Solarized declares --accent-h on :root as
   // "17.57deg", so the derived --color-accent-1 (a calc() on --accent-h minus 3, the shape
-  // stock uses too) is an invalid calc on body AND on :root — both rungs above refuse it and
+  // Obsidian uses too) is an invalid calc on body AND on :root — both rungs above refuse it and
   // the graph had no node colour at all. --color-accent is the un-derived base accent every
   // theme and our own block define; it is what the theme means by "accent".
   const PAL_ALT = { node: "--color-accent" };
@@ -7613,16 +7613,16 @@ async function startGraph(g, cfg) {
   g.graphRenderer = glr ? "gl" : "2d";   // census [gl:] — which draw path painted the shot
   perf.mark("graph_renderer", rT0, { renderer: glr ? "gl" : "2d", reason, webgl: glr ? glr.info.webgl : 0, ...gpu });
   const gr = await fetchP;
-  // R16 GRAPH FIT (stock-faithful, docs/requirements.md R16): the sim runs in
+  // R16 GRAPH FIT (Obsidian-faithful, docs/requirements.md R16): the sim runs in
   // UNBOUNDED world coords with the origin at the canvas centre; camera opens
   // at scale 1 (1 world unit = 1 px) centred on the origin — no fit-to-view,
   // no viewport clamp: a big vault overflows the canvas and the user pans/zooms
   // (R16.4). screen = world*scale + t.
   const view = { scale: 1, tx: cv.width / 2, ty: cv.height / 2, notch: 0 };
-  // stock force defaults (R16.1). REPEL_K/REPEL_P: per-node many-body strength
+  // Obsidian force defaults (R16.1). REPEL_K/REPEL_P: per-node many-body strength
   // = repel * REPEL_K * N^REPEL_P, calibrated offline (goal/graphfit/sim) so
   // the 12-node vault settles ~35-45% of the canvas wide and the 500-note star
-  // to a ~2300-unit disc with ~80 nodes inside a 1080x764 view (stock: 79).
+  // to a ~2300-unit disc with ~80 nodes inside the smoke window's view.
   const F = { center: 0.52, repel: 10, link: 1, dist: 250 }, REPEL_K = 7.5, REPEL_P = 0.36;
   // d3-force style phyllotaxis seed (deterministic: smoke coords repeat)
   const seed = i => { const r = 10 * Math.sqrt(i + 0.5), t = i * 2.399963; return [r * Math.cos(t), r * Math.sin(t)]; };
@@ -7633,7 +7633,7 @@ async function startGraph(g, cfg) {
   const toWorld = (sx, sy) =>
     [(sx - view.tx) / view.scale, (sy - view.ty) / view.scale];
   // adjacency (hover) + undirected unique link list for the spring force;
-  // node radius (R16.2, fit on stock deg-1 7.5px / deg-499 29.5px): 6.5 + sqrt(deg)
+  // node radius (R16.2, fit to the recon's small and large degrees): 6.5 + sqrt(deg)
   const adj = N.map(() => new Set());
   let links = [];                       // [{a, b, bias, k}] d3 link semantics
   const rebuild = () => {
@@ -7809,8 +7809,8 @@ async function startGraph(g, cfg) {
       b.vx -= dx * l.bias; b.vy -= dy * l.bias; a.vx += dx * (1 - l.bias); a.vy += dy * (1 - l.bias);
     }
     // many-body repulsion. Per-node strength = REPEL_K * Repel force * N^0.25:
-    // calibrated on two stock layouts (docs/requirements.md R16 — N=12 cloud
-    // ~550px wide, N=500 uniform disc ~2300 world units across, 79 visible)
+    // calibrated on two recon layouts (docs/requirements.md R16 — a 12-node cloud
+    // and a 500-note uniform disc)
     const root = bhBuild(), k = alpha * F.repel * REPEL_K * Math.pow(N.length, REPEL_P);
     for (const a of N) bhApply(a, root, k);
     // center force (R16.1: 0.52): centroid pulled toward the origin (d3 forceCenter shape)
@@ -8061,7 +8061,7 @@ async function startGraph(g, cfg) {
     });
     ro.observe(cv);
   }
-  // wheel: cursor-anchored zoom, stock 0.9 per notch out / 1/0.9 in (R16.5);
+  // wheel: cursor-anchored zoom, 0.9 per notch out / 1/0.9 in (R16.5);
   // scale is derived from a notch counter so 3 out + 3 in is EXACTLY 1.00
   cv.onwheel = e => {
     e.preventDefault();
@@ -8312,7 +8312,7 @@ async function enterVault() {
   $("vswitch").innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>' + base(vaultPath);
   collapsed = new Set();
   bmFolds = new Set();               // collapseall: folds are per vault and in memory (R6)
-  feCaFlag = "E"; bmCaFlag = "C";    // collapseall Q5: the empty-pane label flags start where stock's do
+  feCaFlag = "E"; bmCaFlag = "C";    // collapseall Q5: the empty-pane label flags start where Obsidian's do
   // R28.7: read the layout BEFORE the first render. renderLayout -> updateTitle
   // -> wsTouch arms a 400ms write, so reading later would race a write of the
   // empty boot layout over the file we came here to restore.
@@ -8522,7 +8522,7 @@ $("vswitch").onclick = showPicker;
    [hkrec:<id>] while recording, [hkc:N] conflicting commands. ---------- */
 let settingsOpen = false, hkChip = "all", hkRec = null, hkInfo = "";
 /* R30 (feedback #19): the nav tree and the row lists are a DATA TABLE in Rust
-   (src-tauri/src/settings.rs = the black-box recon transcript of stock 1.13.7).
+   (src-tauri/src/settings.rs = the black-box recon transcript of Obsidian 1.13.7).
    The frontend authors NO structure: it fetches `settings_model` once and
    renders it. Prefetched at boot, so opening the modal does synchronous work
    only — T2's 100 ms first-paint ceiling has no round trip inside it.
@@ -8725,7 +8725,7 @@ function closeSettings() {
   $("settings").hidden = true;
   updateTitle();
 }
-/* the left nav, stock's order and grouping (Options 1-7; the Core/Community plugins
+/* the left nav, Obsidian's order and grouping (Options 1-7; the Core/Community plugins
    entries and the Core plugins group are gone, goal/noplugins) — built ONCE from the model, never re-created on a tab
    switch: selection is a class toggle, so clicking a nav entry costs one pane
    build and nothing else. */
@@ -8750,7 +8750,7 @@ function buildSettingsNav() {
   nav.dataset.built = "1";
 }
 /* `id` is a pane id from the model ("general", "hotkeys", ...);
-   a stock ENTRY NAME is accepted too, so older call sites keep working. */
+   an Obsidian ENTRY NAME is accepted too, so older call sites keep working. */
 function showSettingsPage(id) {
   fontPage = null;                      // fontset: any pane switch leaves the font chooser
   const e = SMODEL.nav.find(n => n.id === id) || SMODEL.nav.find(n => n.entry === id);
@@ -8783,8 +8783,8 @@ function showSettingsPage(id) {
   inp.focus();
 }
 /* R30 ROWS — the Options-tab panes, built from the data table, never from HTML.
-   Stock has no disabled style to copy (recon Q4: where a control does not apply
-   stock REMOVES it), so ours is invented ONCE, here, and applied to every row
+   Obsidian has no disabled style to copy (recon Q4: where a control does not apply
+   Obsidian REMOVES it), so ours is invented ONCE, here, and applied to every row
    the table does not back with a real config key:
      - .dis + aria-disabled="true": it reads as disabled, it is not merely grey
      - the control is a DIV, never a form element — there is no tab stop to take
@@ -8800,8 +8800,8 @@ const SDIS_TITLE = "Not implemented yet";
    paletteCtl / renderPaletteCtl / openPaletteMenu, the settings-UI route onto
    the palette axis. Deleted rather than hidden — settings.rs's BACKED table
    no longer names that row, so it renders the way every other unimplemented
-   row does (stock's inert status line), and this pane now publishes EXACTLY
-   ONE theme control: themeCtl, on stock's own Themes row.
+   row does (Obsidian's inert status line), and this pane now publishes EXACTLY
+   ONE theme control: themeCtl, on Obsidian's own Themes row.
    The two routes that reach theme selection — Ctrl+P "Use theme: <name>" and
    that dropdown — share chooseVaultTheme(), so neither can drift into a
    second definition of what selecting a theme means. That was the argument
@@ -8810,7 +8810,7 @@ const SDIS_TITLE = "Not implemented yet";
 /* ---- Appearance ▸ CSS snippets: the settings-UI route onto the vault's
    snippet toggles (themefs R3). Same construction as themeCtl and for the
    same reason: the ONE menu widget the census can see ([menu:]), not a native
-   popup. The text is the live count, the shape stock's own row shows
+   popup. The text is the live count, the shape Obsidian's own row shows
    ("0 enabled"); toggling goes through toggleSnippet(), the same function the
    injection path uses, so the pane and the <head> cannot disagree. */
 const snipCtlLabel = () => vaultSnipsOn.length + " enabled";
@@ -8833,11 +8833,11 @@ function renderSnipCtl() {
   if (d) d.textContent = snipCtlLabel();
 }
 /* ---- Editor ▸ Display ▸ Strict line breaks (goal/linebreak REQ-1/REQ-2,
-   docs/linebreak/recon.md). Stock's row, stock's key: the VAULT's
+   docs/linebreak/recon.md). Obsidian's row, Obsidian's key: the VAULT's
    .obsidian/app.json "strictLineBreaks", default off. The disk is the truth —
    Rust's `render` reads it on every reading render — so this control only
    writes it, mirrors it, and re-renders every open reading view at once
-   (stock re-renders without a reopen, REQ-2). slbOn is refreshed on every
+   (Obsidian re-renders without a reopen, REQ-2). slbOn is refreshed on every
    settings open, so a hand edit of app.json shows up on the next open. */
 let slbOn = false;
 function slbCtl() {
@@ -8879,7 +8879,7 @@ function slbTok() {
   return " [slb:" + (slbOn ? 1 : 0) + "," + Math.round(b.left + b.width / 2) + "," + Math.round(b.top + b.height / 2) + "]";
 }
 /* ---- Appearance ▸ Themes: the settings-UI route onto the VAULT theme
-   (themefs R5) — stock's own row, stock's own semantics: a dropdown showing
+   (themefs R5) — Obsidian's own row, Obsidian's own semantics: a dropdown showing
    the theme that PAINTS (effTheme: an empty cssTheme shows DEFAULT_THEME;
    the Default row was removed, goal anudefault), listing EXACTLY the
    oracle-predicate set (DESIGN §9), the excluded dirs rendered inert with
@@ -8933,7 +8933,7 @@ function openSnipMenu(anchor) {
   const m = document.createElement("div");
   m.className = "ctxmenu";
   if (!vaultSnips.length) {
-    // absent snippets/ is stock's silent normal (T0): an empty menu entry,
+    // absent snippets/ is Obsidian's silent normal (T0): an empty menu entry,
     // deliberately not a notice and not a directory-creating button (yet)
     const it = document.createElement("div");
     it.textContent = "(no snippets)";
@@ -8953,7 +8953,7 @@ let sRowsShown = 0, sEnabledShown = 0;
 function sctl(r) {                            // the control cell for one row, or null
   const v = r.default_shown === "-" ? "" : r.default_shown;
   /* THE LIVE DROPDOWNS (themefs R5/R3). Everything else in this pane is a
-     transcription of stock's pixels with no handler; a row is rendered live
+     transcription of Obsidian's pixels with no handler; a row is rendered live
      only when settings.rs BACKED names its real key (cssTheme /
      enabledCssSnippets — the palette key left that table with its axis,
      themeone item 7). None uses a
@@ -8963,9 +8963,9 @@ function sctl(r) {                            // the control cell for one row, o
      app's own .ctxmenu instead — the same widget the tab menu uses, published
      in the census as [menu:<labels>] with measured geometry, so the
      settings-UI route is drivable and assertable like every other menu. */
-  if (r.key === "cssTheme") return themeCtl();            // themefs R5: stock's Themes row, stock's semantics
+  if (r.key === "cssTheme") return themeCtl();            // themefs R5: Obsidian's Themes row, Obsidian's semantics
   if (r.key === "enabledCssSnippets") return snipCtl();   // themefs R3, same live-control rule
-  if (r.key === "strictLineBreaks") return slbCtl();      // goal/linebreak REQ-1: stock's Editor toggle
+  if (r.key === "strictLineBreaks") return slbCtl();      // goal/linebreak REQ-1: Obsidian's Editor toggle
   if (FONT_BY_KEY[r.key]) {                               // fontset REQ-1/2: chevron + live row value
     const d = document.createElement("div"); d.className = "sctl nav live";
     const v = fontRowValue(FONT_BY_KEY[r.key][0]);
@@ -8974,7 +8974,7 @@ function sctl(r) {                            // the control cell for one row, o
     return d;
   }
   if (r.key === "baseFontSize") return fszCtl();          // fontset REQ-16: the live slider
-  if (r.key === "baseFontSizeAction") {                   // fontwheel REQ-1: stock's toggle, live
+  if (r.key === "baseFontSizeAction") {                   // fontwheel REQ-1: Obsidian's toggle, live
     const d = document.createElement("div");
     d.className = "sctl toggle" + (qfsAct ? " on" : ""); d.id = "sqfs";
     d.appendChild(document.createElement("i"));
@@ -8987,7 +8987,7 @@ function sctl(r) {                            // the control cell for one row, o
     const s = document.createElement("span"); s.className = cls; s.textContent = p; d.appendChild(s);
   });
   switch (r.control) {
-    case "none": return null;                 // stock shows label + description and nothing else
+    case "none": return null;                 // Obsidian shows label + description and nothing else
     case "toggle":
       if (/^on\b/.test(v)) d.classList.add("on");       // "on", "on + gear + plus", ...
       d.appendChild(document.createElement("i"));       // the knob
@@ -9006,7 +9006,7 @@ function sctl(r) {                            // the control cell for one row, o
       d.append(n, t);
       break;
     }
-    case "button": case "buttons":            // "(accent-filled)" = stock's one filled button
+    case "button": case "buttons":            // "(accent-filled)" = Obsidian's one filled button
       parts(v.replace(" (accent-filled)", ""), "sbtn" + (v.includes("(accent-filled)") ? " acc" : ""));
       break;
     case "nav":
@@ -9018,7 +9018,7 @@ function sctl(r) {                            // the control cell for one row, o
   }
   return d;
 }
-/* stock's plugin rows carry a gear ("options") and/or a plus ("add to sidebar")
+/* Obsidian's plugin rows carry a gear ("options") and/or a plus ("add to sidebar")
    glyph LEFT of the toggle — transcribed in default_shown as "on + gear + plus".
    The gear is DRAWN (inline SVG, built with createElementNS): the bundled fonts
    have no U+2699, so a text gear renders as nothing at all — which is how the
@@ -9059,7 +9059,7 @@ function buildSettingsRows(pg, rows, pane) {
   let section = null, card = null;   // null !== "" so the first row always opens a card
   for (const r of rows) {
     const sec = r.section || "";
-    if (sec !== section) {                    // a new section = its own heading + card, like stock
+    if (sec !== section) {                    // a new section = its own heading + card, like Obsidian
       section = sec;
       if (sec) { const h = document.createElement("div"); h.className = "ssec"; h.textContent = sec; pg.appendChild(h); }
       card = document.createElement("div"); card.className = "scard"; pg.appendChild(card);
@@ -9069,12 +9069,12 @@ function buildSettingsRows(pg, rows, pane) {
     if (!r.enabled) { row.setAttribute("aria-disabled", "true"); row.title = SDIS_TITLE; }
     const info = document.createElement("div"); info.className = "sinfo";
     const lb = document.createElement("div"); lb.className = "slabel"; lb.textContent = r.label;
-    const link = r.desc === "(external link row)";   // stock's bare link line, no description
+    const link = r.desc === "(external link row)";   // Obsidian's bare link line, no description
     if (link) { lb.classList.add("slink"); row.classList.add("linkrow"); }
     info.appendChild(lb);
     if (!link && r.desc && r.desc !== "-") {
       const ds = document.createElement("div"); ds.className = "sdesc";
-      r.desc.split(" | ").forEach((p, i) => {   // " | " marks stock's inline link tail
+      r.desc.split(" | ").forEach((p, i) => {   // " | " marks Obsidian's inline link tail
         const s = document.createElement("span");
         if (i) s.className = "slink";
         s.textContent = (i ? " " : "") + p;
@@ -9207,7 +9207,7 @@ $("settings").addEventListener("scroll", () => { if (settingsOpen) updateTitle()
    "THE LINE THAT CHOOSES THE PATH" in wfBegin.
 
    THE DRAG REGION is the empty part of ANY pane header (the strip itself and the
-   background of a tab bar, never a tab or a button) — stock drags by the same
+   background of a tab bar, never a tab or a button) — Obsidian drags by the same
    empty tab-row space, in every pane, and R37 extends this region from the top
    row to all of them. It USED to end at `top <= 2`, i.e. the top row only: a
    split pane's own tab bar, halfway down the window, did nothing at all. That is
@@ -9313,7 +9313,7 @@ function wfHdrTok() {
    same document order as [hdr:], kind = note|gg|lg|unk|empty (the ACTIVE view),
    act = every VISIBLE header action, right of the tabs, in DOM order, each with
    its client centre: mode-edit@x,y / mode-read@x,y (the toggle; the word is the
-   CURRENT view, read from the tooltip's first line, so the stock tooltip is
+   CURRENT view, read from the tooltip's first line, so the Obsidian tooltip is
    asserted too) and more@x,y (the ⋮). A graph pane that still shows a toggle
    reads `gg:mode-edit@…+more@…` and the smoke fails on it. */
 function hdrActTok() {
@@ -9497,7 +9497,7 @@ function wfArm() {
     const take = () => { ev.preventDefault(); ev.stopPropagation(); };
     /* TWO chords, and the second one is not belt-and-braces: it is the only one that
        works on a real desktop. Alt+Space is the classic window-menu chord, which is
-       exactly why window managers GRAB it — openbox 3.6's stock rc.xml binds
+       exactly why window managers GRAB it — openbox 3.6's default rc.xml binds
        `A-space` to its client-menu (/etc/xdg/openbox/rc.xml:245), so the key never
        reaches the app when a WM is running, and the smoke phase measured precisely
        that ("Alt+Space did not move keyboard focus onto the frame strip", under
@@ -9550,7 +9550,7 @@ function wfTok() {
 wfArm();
 
 /* ================= R26: FIND INSIDE A NOTE (Ctrl+F) =================
-   Stock's in-note find bar, cloned. What the requirement rows buy, and where
+   Obsidian's in-note find bar, cloned. What the requirement rows buy, and where
    each one lives in this block:
      R26.1  Ctrl+F opens the bar and FOCUS LANDS IN THE INPUT      -> fOpen
      R26.2  five elements and no more: input, count, prev, next, close -> fBar
@@ -9582,7 +9582,7 @@ function fState(g) {
   return g.find;
 }
 /* ---- R26.21–R26.24: THE READING-VIEW QUIRKS, cloned, not improved ----
-   In reading view stock's find is a DIFFERENT, smaller thing, and the brief is
+   In reading view Obsidian's find is a DIFFERENT, smaller thing, and the brief is
    explicit that the quirks are the requirement:
      R26.21 the bar is REDUCED — the two navigation arrows are gone
      R26.23 it searches the RENDERED text, so markup the renderer consumed
@@ -9645,7 +9645,7 @@ function fBar(g) {                     // the bar's DOM, built once per pane
   const bar = document.createElement("div");
   bar.className = "findbar";
   bar.hidden = true;
-  /* R26.2: EXACTLY these five children of .findrow. R26.5 records that stock
+  /* R26.2: EXACTLY these five children of .findrow. R26.5 records that Obsidian
      deliberately offers no case / whole-word / regex toggles — the census
      publishes [fels:] so an added sixth control fails the phase, which is the
      only way "and no more" can be a testable claim rather than a wish. */
@@ -9729,7 +9729,7 @@ function fEdit(g, e) {
   return true;
 }
 /* R26.4: case-insensitive SUBSTRING, always, over the source lines. Matches do
-   not overlap (stock's counter counts the same runs its Enter walks). */
+   not overlap (Obsidian's counter counts the same runs its Enter walks). */
 function fScan(g) {
   const st = fState(g), out = [];
   const q = st.q.toLowerCase();
@@ -9975,7 +9975,7 @@ function fOpen(g) {                    // R26.1
   st.open = true;
   bar.hidden = false;
   /* Ctrl+F is FIND. Re-pressing it over an open replace bar drops back to the
-     find row (stock: the replace row is a mode you enter deliberately). */
+     find row (Obsidian: the replace row is a mode you enter deliberately). */
   st.rep = false;
   bar.querySelector(".reprow").hidden = true;
   fShape(g);                           // R26.21: reduced in reading view, full in the editor
@@ -9984,7 +9984,7 @@ function fOpen(g) {                    // R26.1
   fSync(g, true);
   fReveal(g);
   inp.focus();
-  inp.select();                        // a re-press replaces the previous query, stock-style
+  inp.select();                        // a re-press replaces the previous query, Obsidian-style
   updateTitle();
 }
 function fClose(g, atMatch) {          // R26.14
@@ -10083,8 +10083,8 @@ inv("vb_probe").then(v => {
   setInterval(vblRun, 500);
   window.addEventListener("focus", () => vblRun());
 }).catch(() => {});
-/* ---------- stock-name goal, criterion 3: [nob:] user-facing-string census ----------
-   No string the app RENDERS names the stock app; the one
+/* ---------- noobsidian goal, criterion 3: [nob:] user-facing-string census ----------
+   No string the app RENDERS names the reference app; the one
    allowed form is the literal vault config dir (NOB_OK below, a path the user
    must recognise, e.g. the settings placeholder). This walks the live DOM:
    every text node and every human-facing attribute, hidden or shown (a
