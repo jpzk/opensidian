@@ -8571,6 +8571,8 @@ function ssnTok() {
    box can move (centred, viewport-relative, R1) without a phase noticing.
      [sbox:x,y,w,h]   #sbox's rect                    (A2 asserts its margins)
      [snav:x,y,w,h]   #snav, the scrolling nav column (OCR crop, wheel target)
+     [snavb:r,g,b]    #snav's computed border-right-color, the colour its
+                      last column paints (a theme sets it, the gate reads it)
      [srow1:ctlx,cy,bodyx]   rows panes: the first .srow's control-cell centre
                       x, its centre y, and its body (.sinfo) centre x
      [shkf:cx,cy]     Hotkeys: the filter input
@@ -8588,6 +8590,8 @@ function sgeoTok() {
   const rc = b => Math.round(b.left) + "," + Math.round(b.top) + "," + Math.round(b.width) + "," + Math.round(b.height);
   const sb = R($("sbox")), nv = R($("snav"));
   let t = " [sbox:" + rc(sb) + "] [snav:" + rc(nv) + "]";
+  const nb = $("snav") ? (getComputedStyle($("snav")).borderRightColor.match(/\d+(\.\d+)?/g) || []).slice(0, 3).join(",") : "";
+  if (nb) t += " [snavb:" + nb + "]";
   const row = document.querySelector("#spage .srow");
   if (row) {
     const rb = R(row), cb = R(row.querySelector(".sctl")) || rb, ib = R(row.querySelector(".sinfo")) || rb;
