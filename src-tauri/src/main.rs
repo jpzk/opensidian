@@ -6311,7 +6311,7 @@ mod tests {
     #[test]
     fn r4x_row_labels_follow_stocks_measured_rule() {
         let orig: &str =
-            include_str!("../tests/fixtures/bmcompat/stock-1.13.7-pure.bookmarks.json");
+            include_str!("../tests/fixtures/bmcompat/obsidian-format-pure.bookmarks.json");
         let t = parse_bm_tree(orig);
         let rows = bm_rows_of(&t);
         assert_eq!(
@@ -6338,7 +6338,7 @@ mod tests {
     #[test]
     fn r4x_criterion4_stock_fixture_unknown_keys_round_trip_byte_wise() {
         let orig: &str =
-            include_str!("../tests/fixtures/bmcompat/stock-1.13.7-unknown-keys.bookmarks.json");
+            include_str!("../tests/fixtures/bmcompat/obsidian-format-unknown-keys.bookmarks.json");
         let root = tmp_vault("bm-c4-fixture");
         fs::create_dir_all(root.join(".obsidian")).unwrap();
         fs::write(root.join(BM_FILE), orig).unwrap();
@@ -6400,7 +6400,7 @@ mod tests {
     #[test]
     fn r4x_criterion4_move_through_the_drop_path_round_trips_byte_wise() {
         let orig: &str =
-            include_str!("../tests/fixtures/bmcompat/stock-1.13.7-unknown-keys.bookmarks.json");
+            include_str!("../tests/fixtures/bmcompat/obsidian-format-unknown-keys.bookmarks.json");
         let root = tmp_vault("bm-c4-move");
         fs::create_dir_all(root.join(".obsidian")).unwrap();
         fs::write(root.join(BM_FILE), orig).unwrap();

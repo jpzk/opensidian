@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*! R30 — the settings row DATA TABLE.
 
-feedback #19 wants the stock app's settings structure 1:1, with every control
+feedback #19 wants Obsidian's settings structure 1:1, with every control
 whose behaviour does not exist rendered consistently disabled. The invariant
 that keeps that from rotting is:
 
     a row is ENABLED if and only if it names a config key that really exists.
 
 So the rows are DATA, not hand-written HTML. And the data is not hand-written
-Rust either: it is the black-box recon transcript
-`docs/stock-settings-recon/structure.tsv` (105 rows read off screenshots of
-stock 1.13.7) embedded with `include_str!` and parsed once. One source of
-truth for the pixels we copied and for the table we render; editing the
+Rust either: it is a black-box transcript of the settings rows,
+`data/settings-layout/structure.tsv`, embedded with `include_str!` and parsed
+once. One source of truth for the table we render; editing the
 transcript re-renders the pane, and the tests below walk it.
 
 Backing is declared in exactly one place, `BACKED`. Everything absent from it
@@ -21,10 +20,10 @@ inert) — see ui/main.js. Implementing a setting later = one line here.
 
 use std::sync::OnceLock;
 
-/// the recon transcript — the row table itself (see docs/stock-settings-recon/)
-pub const STRUCTURE_TSV: &str = include_str!("../data/stock-settings/structure.tsv");
-/// stock's left nav, in stock's order
-pub const NAV_TSV: &str = include_str!("../data/stock-settings/nav.tsv");
+/// the settings row table itself (data/settings-layout/structure.tsv)
+pub const STRUCTURE_TSV: &str = include_str!("../data/settings-layout/structure.tsv");
+/// the settings left nav, in Obsidian's order
+pub const NAV_TSV: &str = include_str!("../data/settings-layout/nav.tsv");
 
 /// Keys that really exist in ~/.opensidian.json handling (main.rs cfg_value()).
 /// `config_keys_are_all_read_or_written_by_main` pins this list to the source.

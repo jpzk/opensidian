@@ -945,7 +945,7 @@ mod tests {
     use std::path::PathBuf;
 
     /// the committed stock-written fixture — docs/fixtures/themefs/README.md
-    const STOCK: &str = include_str!("../tests/fixtures/themefs/stock-1.13.7.appearance.json");
+    const STOCK: &str = include_str!("../tests/fixtures/themefs/obsidian-format.appearance.json");
 
     fn tmp_vault(tag: &str) -> PathBuf {
         let root =

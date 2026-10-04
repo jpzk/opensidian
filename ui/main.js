@@ -8791,9 +8791,8 @@ function showSettingsPage(id) {
        away, no default activation to suppress, and no handler is attached
      - pointer-events:none (style.css) so click and hover do nothing either
      - ONE hover string for all of them (SDIS_TITLE), no per-row "coming soon"
-   Geometry comes from docs/stock-settings-recon/measurements.txt: 76 px row with
-   a one-line description, +16 px per extra line, 17 px card inset, 1 px
-   separator, controls at the card's right edge. The palette stays opensidian's
+   Row geometry (row height per description line, card inset, separator,
+   controls at the card's right edge) lives in style.css under R30. The palette stays opensidian's
    dark theme — that delta is recorded in R30. */
 const SDIS_TITLE = "Not implemented yet";
 /* THE PALETTE CONTROL IS DELETED (themeone item 7 / C1 / R1). A second live

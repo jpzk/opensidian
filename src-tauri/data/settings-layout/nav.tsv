@@ -1,4 +1,4 @@
-# stock 1.13.7 left nav, default vault, verified against shots/01-open.png (top)
+# Obsidian's settings left nav order, default vault, verified against shots/01-open.png (top)
 # and shots/19-navbottom.png (scrolled to bottom: Templates is the last entry).
 # columns: group_heading <TAB> order <TAB> entry
 Options	1	General

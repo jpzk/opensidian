@@ -958,9 +958,9 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 .snavi:hover { background: var(--bg-surface) }
 .snavi.sel { background: var(--border) }
 #spage { flex: 1; min-width: 0; padding: 16px; box-sizing: border-box; display: flex; flex-direction: column }
-/* R30 row panes. Measured off stock 1.13.7 (docs/stock-settings-recon/measurements.txt):
-   card inset 17px, 76px row with a one-line description (+16px per extra line),
-   1px separator inset to the card, controls flush right. #spage was already an
+/* R30 row panes: card inset, a fixed row height for a one-line description
+   growing per extra line, a separator inset to the card, controls flush right
+   so the rows line up with Obsidian's settings layout. #spage was already an
    allowed R22 scroll container; #snav declares overflow-y and is registered in
    OVF_SCROLL / R22.2 as well (R30.13). */
 #spage.rows { display: block; overflow-y: auto; padding: 16px 20px }

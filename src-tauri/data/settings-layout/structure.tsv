@@ -1,4 +1,4 @@
-# stock app 1.13.7 settings structure, transcribed BLACK-BOX from $RECON/shots/*.png
+# Obsidian settings structure, transcribed BLACK-BOX from $RECON/shots/*.png
 # (1400x900 window, default vault, no account, no community plugins installed)
 # columns: tab <TAB> section <TAB> label <TAB> description <TAB> control <TAB> default_shown <TAB> shot
 # control vocabulary: toggle | dropdown | slider | text | button | buttons | nav | color | none
