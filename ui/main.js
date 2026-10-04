@@ -4256,6 +4256,10 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
   const tab = g.tabs[g.active];
   const mswT0 = performance.now();               // R35 perf: the command, before any DOM work
   const keep = g.lpActive ? caretLC(g) : null;   // R12.4: caret survives lp<->src
+  // caretkeep: the caret is remembered PER TAB whenever an edit mode is left, so
+  // edit -> reading -> edit lands where it was (it read null on the way back and
+  // the caret went to line 0). Per tab: two tabs / split panes never share it.
+  if (keep) tab.caret = { n: curOf(g), lc: keep };   // keyed to the NOTE: an in-place navigate must not inherit it
   const mswA0 = performance.now();
   const anchor = ssAnchor(g);                    // R35: read the top SOURCE LINE from the OLD view, before anything flips
   let mswSsMs = performance.now() - mswA0;
@@ -4264,10 +4268,17 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
   hideAc();
   applyMode(g);
   if (tab.mode === "reading") await preview(g);
-  if (tab.mode === "livepreview") await lpRender(g, -1, 0, true);  // mode switch: full rebuild
-  if (tab.mode === "source") {      // caret where it was, else end of note
-    const L = Ed.lines(g);
-    await lpRender(g, keep ? keep[0] : L.length - 1, keep ? keep[1] : L[L.length - 1].length, true);
+  if (tab.mode === "livepreview" || tab.mode === "source") {   // mode switch: full rebuild
+    // caret where it was (this switch, else the tab's remembered one), clamped to
+    // the note AS IT IS NOW: an external edit in reading view may have shortened it.
+    // Nothing remembered: livepreview = no caret, source = end of note.
+    const L = Ed.lines(g), want = keep || (tab.caret && tab.caret.n === curOf(g) ? tab.caret.lc : null);
+    if (want) {
+      const l = Math.max(0, Math.min(want[0], L.length - 1));
+      const c = Math.max(0, Math.min(want[1], (L[l] || "").length));
+      await lpRender(g, l, c, true);
+    } else if (tab.mode === "livepreview") await lpRender(g, -1, 0, true);
+    else await lpRender(g, L.length - 1, L[L.length - 1].length, true);
   }
   // R35: the destination is rendered — place the SAME source line at the top of
   // it, through its own geometry. AFTER the caret work above on purpose: source
