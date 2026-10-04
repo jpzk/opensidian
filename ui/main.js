@@ -1402,7 +1402,36 @@ function llTok() {
   const al = c => { const m = /([\d.]+)\s*\)\s*$/.exec(c || ""); return /\/|rgba|,.*,.*,/.test(c || "") && m ? parseFloat(m[1]) : 1; };
   o.push("ks=" + (ks ? ks.fontStyle : "-"), "ka=" + f(ks ? al(ks.textDecorationColor) : NaN));
   o.push("lp=" + f(top(L[1]) - top(L[0])));
-  return " [lstl:" + o.join(",") + "]";
+  return " [lstl:" + o.join(",") + "]" + llWant(P, A[0], cb);
+}
+/* [lstw:p=,s=,w=,b=,hb=] — what [lstl:] should measure, read off the live tokens
+   (resolved through a probe inside the preview, so a theme override applies):
+   p row pitch = the li's computed line-height + --list-spacing above and below,
+   s nested step = --list-indent, w bullet = --list-bullet-size, b task box =
+   --checkbox-size, hb task box x = task text x - box - the box's own inline-end
+   margin (in the column frame [lstl:] uses). */
+function llWant(P, li, cb) {
+  const f = v => Number.isFinite(v) ? String(Math.round(v * 10) / 10) : "-";
+  const pr = document.createElement("div");
+  pr.style.cssText = "position:absolute;visibility:hidden;pointer-events:none;height:0;padding:0;border:0;" +
+    "width:var(--list-bullet-size);margin-inline-start:var(--list-indent);min-width:var(--checkbox-size);padding-block-start:var(--list-spacing)";
+  P.appendChild(pr);
+  const ps = getComputedStyle(pr);
+  const sp = parseFloat(ps.paddingBlockStart), s = parseFloat(ps.marginInlineStart), w = parseFloat(ps.width), b = parseFloat(ps.minWidth);
+  pr.remove();
+  const p = li ? parseFloat(getComputedStyle(li).lineHeight) + 2 * sp : NaN;
+  let hb = NaN;
+  if (cb) {
+    const H0 = cb.parentElement, w0 = document.createTreeWalker(H0, NodeFilter.SHOW_TEXT, { acceptNode: t => t.parentElement.closest("li") === H0 && t.textContent.trim() ? 1 : 3 });
+    const t = w0.nextNode();
+    if (t) {
+      const r = document.createRange(); r.selectNodeContents(t);
+      const rc = [...r.getClientRects()].find(q => q.width > 0);
+      const hA = [...P.querySelectorAll("h2")].find(e => e.textContent.trim().startsWith("A "));
+      if (rc && hA) hb = rc.left - hA.getBoundingClientRect().left - b - parseFloat(getComputedStyle(cb).marginInlineEnd);
+    }
+  }
+  return " [lstw:p=" + f(p) + ",s=" + f(s) + ",w=" + f(w) + ",b=" + f(b) + ",hb=" + f(hb) + "]";
 }
 /* collapseall R1/R2: flip ONE group's fold. Pure view state — no inv(), so the
    bookmarks.json bytes cannot move (the phase sha256s the file around it). */
