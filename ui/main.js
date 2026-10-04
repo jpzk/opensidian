@@ -1413,11 +1413,11 @@ function llTok() {
 function llWant(P, li, cb) {
   const f = v => Number.isFinite(v) ? String(Math.round(v * 10) / 10) : "-";
   const pr = document.createElement("div");
-  pr.style.cssText = "position:absolute;visibility:hidden;pointer-events:none;height:0;padding:0;border:0;" +
-    "width:var(--list-bullet-size);margin-inline-start:var(--list-indent);min-width:var(--checkbox-size);padding-block-start:var(--list-spacing)";
+  pr.style.cssText = "position:absolute;visibility:hidden;pointer-events:none;padding:0;border:0;" +
+    "width:var(--list-bullet-size);height:var(--checkbox-size);margin-inline-start:var(--list-indent);padding-block-start:var(--list-spacing)";
   P.appendChild(pr);
   const ps = getComputedStyle(pr);
-  const sp = parseFloat(ps.paddingBlockStart), s = parseFloat(ps.marginInlineStart), w = parseFloat(ps.width), b = parseFloat(ps.minWidth);
+  const sp = parseFloat(ps.paddingBlockStart), s = parseFloat(ps.marginInlineStart), w = parseFloat(ps.width), b = parseFloat(ps.height);
   pr.remove();
   const p = li ? parseFloat(getComputedStyle(li).lineHeight) + 2 * sp : NaN;
   let hb = NaN;
