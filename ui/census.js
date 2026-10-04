@@ -40,3 +40,4 @@ CENSUS.push(() => olfTok());   // outlinks: [olf:<note>|ae:<where>] the right-si
 CENSUS.push(() => olxyTok());   // outlinks: painted click points [olxy:o=|u=|bt=|bl=|ut=|ul=] of the Outgoing / Backlinks rows
 CENSUS.push(() => vblTok());   // vaultbleed item 7: [vbl:<seq>|t=|n=|s=|b=|p=] this window's tags, notes, "vbshared" search hits, backlinks of Hub, peek errno — the phase greps it for the OTHER vaults' names (test-only, OPENSIDIAN_VBPROBE=1)
 CENSUS.push(() => tywTok());   // anudefault: [tyw:] R15 typo-fixture WANT values off the live DOM (caps, pitch, marker/box/text x, code box + bg, bq border) — phase typo measures pixels against these, never typed numbers
+CENSUS.push(() => ttlTok());   // anutrain: [ttl:] inline-title WANT geometry (ink top/bottom, cap, first body row ink top) off the live DOM of the title fixtures — phase title measures pixels against these

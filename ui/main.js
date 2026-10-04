@@ -1311,6 +1311,53 @@ function tywTok() {
   put(P + "_BQ_TEXT_X_ABS", inkx("Blockquote Hxg"));
   return " [tyw:" + (rd ? "read" : "lp") + "|" + o.join("|") + "]";
 }
+/* goal anutrain — [ttl:<view>|TOP=|BOT=|CAP=|BODY=] inline-title WANT geometry,
+   read off the live DOM of the title fixtures ("Title Fixture", "Title Zero")
+   in whichever view shows them. Phase title compares its pixel rows against
+   these, never against typed numbers: change --h1-* or a spacing token and the
+   expectation follows. All values are client-px y (the phase subtracts its
+   crop origin). The title is the scroller's ::before (no DOM node), so its
+   baseline comes from the box top + half-leading + the font's ascent:
+     base = boxTop + (lineHeight - (asc + desc)) / 2 + asc
+   TOP/BOT = ink top/bottom of the whole string, CAP = the first glyph's ascent.
+   BODY = ink top of the first visible text row under it, from its Range rect
+   the same way (rect top + half its slack + ascent - the run's ink ascent);
+   "-" when the note has no text (the zero-byte fixture). */
+let ttlCanvas = null;
+function ttlTok() {
+  const g = fg();
+  if (!g || g.active < 0) return "";
+  const R = isReading(g) ? g.preview : g.lp;
+  const t = R && R.dataset.title;
+  if (!t || !/^Title (Fixture|Zero)$/.test(t) || !R.getClientRects().length) return "";
+  const s = getComputedStyle(R, "::before");
+  if (s.content === "none" || s.display === "none") return "";
+  const ctx = (ttlCanvas = ttlCanvas || document.createElement("canvas")).getContext("2d");
+  const fnt = c => c.fontStyle + " " + c.fontWeight + " " + c.fontSize + " " + c.fontFamily;
+  const f = v => Number.isFinite(v) ? String(Math.round(v * 100) / 100) : "-";
+  const rr = R.getBoundingClientRect(), rs = getComputedStyle(R);
+  const top = rr.top + R.clientTop + parseFloat(rs.paddingTop) - R.scrollTop + (parseFloat(s.marginTop) || 0);
+  ctx.font = fnt(s);
+  const m = ctx.measureText(t), asc = m.fontBoundingBoxAscent, dsc = m.fontBoundingBoxDescent;
+  let L = parseFloat(s.lineHeight); if (!Number.isFinite(L)) L = asc + dsc;
+  const base = top + (L - (asc + dsc)) / 2 + asc;
+  const o = ["TOP=" + f(base - m.actualBoundingBoxAscent), "BOT=" + f(base + m.actualBoundingBoxDescent),
+             "CAP=" + f(ctx.measureText(t[0]).actualBoundingBoxAscent)];
+  let body = NaN;
+  const w = document.createTreeWalker(R, NodeFilter.SHOW_TEXT);
+  for (let n; (n = w.nextNode());) {
+    const i = n.data.search(/\S/); if (i < 0) continue;
+    const txt = n.data.slice(i).replace(/\s+$/, ""), r = document.createRange();
+    r.setStart(n, i); r.setEnd(n, i + txt.length);
+    const rc = [...r.getClientRects()].find(q => q.width > 0); if (!rc) continue;
+    ctx.font = fnt(getComputedStyle(n.parentElement));
+    const b = ctx.measureText(txt), a2 = b.fontBoundingBoxAscent, d2 = b.fontBoundingBoxDescent;
+    body = rc.top + (rc.height - (a2 + d2)) / 2 + a2 - b.actualBoundingBoxAscent;
+    break;
+  }
+  o.push("BODY=" + f(body));
+  return " [ttl:" + (isReading(g) ? "read" : "lp") + "|" + o.join("|") + "]";
+}
 function llTok() {
   const g = fg();
   if (!g || !g.preview || !isReading(g)) return "";
