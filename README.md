@@ -14,21 +14,13 @@ Open-source, vault-compatible markdown notes app. Rust + Tauri v2, no Electron, 
 ## Install
 Linux x86_64. Download one:
 
-| Download | Choose it if |
-|---|---|
-| [slim AppImage](https://github.com/jpzk/opensidian/releases/download/v0.3/opensidian-0.3-x86_64-slim.AppImage) | you want the smallest file and already have WebKitGTK 4.1 installed (see below) |
-| [portable AppImage](https://github.com/jpzk/opensidian/releases/download/v0.3/opensidian-0.3-x86_64-portable.AppImage) | you want nothing to install: WebKit is bundled (needs only the X11/GL/font libraries every desktop has) |
-| [Flatpak](https://github.com/jpzk/opensidian/releases/download/v0.3/opensidian-0.3-x86_64.flatpak) | you want it sandboxed; pulls the GNOME 49 runtime from Flathub on first install |
+| Download | Choose it if | Tested on (fresh install, 2026-10-04) |
+|---|---|---|
+| [slim AppImage](https://github.com/jpzk/opensidian/releases/download/v0.3/opensidian-0.3-x86_64-slim.AppImage) | you want the smallest file and have WebKitGTK 4.1 | Fedora 44 (`sudo dnf install webkit2gtk4.1`), Ubuntu 26.04 LTS (`sudo apt install libwebkit2gtk-4.1-0`) |
+| [portable AppImage](https://github.com/jpzk/opensidian/releases/download/v0.3/opensidian-0.3-x86_64-portable.AppImage) | you want nothing to install: WebKit is bundled (needs only the X11/GL/font libraries every desktop has) | Fedora 44, Ubuntu 26.04 LTS |
+| [Flatpak](https://github.com/jpzk/opensidian/releases/download/v0.3/opensidian-0.3-x86_64.flatpak) | you want it sandboxed; pulls the GNOME 49 runtime from Flathub on first install | Fedora 44, Ubuntu 26.04 LTS (`flatpak` package installed) |
 
-AppImage: `chmod +x opensidian-*.AppImage && ./opensidian-*.AppImage`. Flatpak: `flatpak install opensidian-0.3-x86_64.flatpak && flatpak run dev.koto.opensidian`. Opt-in Landlock sandbox: `OPENSIDIAN_LANDLOCK=1`.
-
-### Tested distributions
-v0.3 on fresh installs, launched and rendered (2026-10-04):
-
-- **Fedora 44**: slim works with `sudo dnf install webkit2gtk4.1` (tested 2.54.0); flatpak works (`sudo dnf install flatpak`)
-- **Ubuntu 26.04 LTS**: slim works with `sudo apt install libwebkit2gtk-4.1-0` (tested 2.52.6); flatpak works (`sudo apt install flatpak`)
-
-Without FUSE, run it with `--appimage-extract` and start `squashfs-root/AppRun`.
+AppImage: `chmod +x opensidian-*.AppImage && ./opensidian-*.AppImage` (without FUSE: `--appimage-extract`, then run `squashfs-root/AppRun`). Flatpak: `flatpak install opensidian-0.3-x86_64.flatpak && flatpak run dev.koto.opensidian`. Opt-in Landlock sandbox: `OPENSIDIAN_LANDLOCK=1`.
 
 ## Verify your download
 `SHA256SUMS` is signed with key `A6E6 9ED6 BC47 79F3 2817  2148 4CC1 AFDE 15B6 4EA3`:
