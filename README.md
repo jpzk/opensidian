@@ -14,21 +14,21 @@ Open-source, vault-compatible markdown notes app. Rust + Tauri v2, no Electron, 
 ## Install
 **slim** (needs `libwebkit2gtk-4.1`):
 
-    curl -LO https://github.com/jpzk/opensidian/releases/download/v0.2/opensidian-0.2-x86_64-slim.AppImage
-    chmod +x opensidian-0.2-x86_64-slim.AppImage && ./opensidian-0.2-x86_64-slim.AppImage
+    curl -LO https://github.com/jpzk/opensidian/releases/download/v0.3/opensidian-0.3-x86_64-slim.AppImage
+    chmod +x opensidian-0.3-x86_64-slim.AppImage && ./opensidian-0.3-x86_64-slim.AppImage
 
-**portable** (bundles WebKit; needs the X11/GL/font libraries any desktop has): [opensidian-0.2-x86_64-portable.AppImage](https://github.com/jpzk/opensidian/releases/download/v0.2/opensidian-0.2-x86_64-portable.AppImage)
+**portable** (bundles WebKit; needs the X11/GL/font libraries any desktop has): [opensidian-0.3-x86_64-portable.AppImage](https://github.com/jpzk/opensidian/releases/download/v0.3/opensidian-0.3-x86_64-portable.AppImage)
 
 **flatpak** (tested on Fedora 44 and Ubuntu 26.04; pulls the GNOME 49 runtime from Flathub on first install):
 
-    curl -LO https://github.com/jpzk/opensidian/releases/download/v0.2/opensidian-0.2-x86_64.flatpak
-    flatpak install opensidian-0.2-x86_64.flatpak
+    curl -LO https://github.com/jpzk/opensidian/releases/download/v0.3/opensidian-0.3-x86_64.flatpak
+    flatpak install opensidian-0.3-x86_64.flatpak
     flatpak run dev.koto.opensidian
 
 Opt-in Landlock sandbox: `OPENSIDIAN_LANDLOCK=1`.
 
 ### Tested distributions
-v0.2 on fresh installs, launched and rendered (2026-10-03):
+v0.3 on fresh installs, launched and rendered (2026-10-04):
 
 - **Fedora 44**: slim works with `sudo dnf install webkit2gtk4.1` (tested 2.54.0); flatpak works (`sudo dnf install flatpak`)
 - **Ubuntu 26.04 LTS**: slim works with `sudo apt install libwebkit2gtk-4.1-0` (tested 2.52.6); flatpak works (`sudo apt install flatpak`)
@@ -38,8 +38,8 @@ Without FUSE, run it with `--appimage-extract` and start `squashfs-root/AppRun`.
 ## Verify your download
 `SHA256SUMS` is signed with key `A6E6 9ED6 BC47 79F3 2817  2148 4CC1 AFDE 15B6 4EA3`:
 
-    curl -LO https://github.com/jpzk/opensidian/releases/download/v0.2/SHA256SUMS \
-         -LO https://github.com/jpzk/opensidian/releases/download/v0.2/SHA256SUMS.asc
+    curl -LO https://github.com/jpzk/opensidian/releases/download/v0.3/SHA256SUMS \
+         -LO https://github.com/jpzk/opensidian/releases/download/v0.3/SHA256SUMS.asc
     gpg --keyserver hkps://keys.openpgp.org --recv-keys A6E69ED6BC4779F3281721484CC1AFDE15B64EA3
     gpg --verify SHA256SUMS.asc SHA256SUMS
     sha256sum -c --ignore-missing SHA256SUMS
