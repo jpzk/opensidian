@@ -1246,6 +1246,71 @@ function sfontTok() {
    (bullet, ordered marker, indent guide) come from getComputedStyle's
    RESOLVED left/right/width of the positioned ::before against the li/ul box.
    "-" = not measurable (missing element / auto inset) — the phase dies on it. */
+/* goal anudefault — [tyw:] R15 typography WANT values, read off the live DOM of
+   the typo fixture (docs/fixtures/typo.md) in whichever view shows it. Phase
+   typo compares its pixel measurements against these, never against typed
+   numbers: change a token, a theme or a font and the expectation follows.
+   Keys match scripts/typo-measure.sh output. Absolute client px for x keys
+   (*X_ABS, the phase subtracts its measured h1 ink x), ink-adjusted with the
+   glyph's own bearing (canvas measureText at the element's computed font);
+   caps = actualBoundingBoxAscent of "H"/"P"; boxes = border-box rects. */
+let tywCanvas = null;
+function tywTok() {
+  const g = fg();
+  if (!g || g.active < 0) return "";
+  const rd = isReading(g), R = rd ? g.preview : g.lp;
+  if (!R || !R.textContent.includes("Heading one Hxg")) return "";
+  const ctx = (tywCanvas = tywCanvas || document.createElement("canvas")).getContext("2d");
+  const fnt = el => { const s = getComputedStyle(el); return s.fontStyle + " " + s.fontWeight + " " + s.fontSize + " " + s.fontFamily; };
+  const met = (el, ch) => { ctx.font = fnt(el); return ctx.measureText(ch); };
+  const find = s => { const w = document.createTreeWalker(R, NodeFilter.SHOW_TEXT);
+    for (let t; (t = w.nextNode());) { const i = t.data.indexOf(s); if (i >= 0) { const r = document.createRange(); r.setStart(t, i); r.setEnd(t, i + s.length); return { r, el: t.parentElement }; } }
+    return null; };
+  const f = v => Number.isFinite(v) ? String(Math.round(v * 100) / 100) : "-";
+  const o = [], put = (k, v) => o.push(k + "=" + f(v));
+  const inkx = s => { const h = find(s); if (!h) return NaN; const rc = [...h.r.getClientRects()].find(q => q.width > 0); return rc ? rc.left - met(h.el, s[0]).actualBoundingBoxLeft : NaN; };
+  const P = rd ? "READING" : "LP";
+  // caps (H1..H6 "Heading", P "Paragraph"), the h1 ink x
+  ["one", "two", "three", "four", "five", "six"].forEach((n, i) => { const h = find("Heading " + n + " Hxg"); put("H" + (i + 1) + "_CAP", h ? met(h.el, "H").actualBoundingBoxAscent : NaN); });
+  put("CX_ABS", inkx("Heading one Hxg"));
+  const p1 = find("Paragraph one Hxg");
+  put("P_CAP", p1 ? met(p1.el, "P").actualBoundingBoxAscent : NaN);
+  // pitch: first two distinct line tops of paragraph one (its whole text node)
+  if (p1) { const r = document.createRange(); r.selectNodeContents(p1.r.startContainer);
+    const tops = [...new Set([...r.getClientRects()].filter(q => q.width > 0).map(q => Math.round(q.top * 100) / 100))].sort((a, b) => a - b);
+    put("P_PITCH", tops.length > 1 ? tops[1] - tops[0] : NaN); } else put("P_PITCH", NaN);
+  // ::before box of a marker host (absolute pseudo): left/top resolve against the nearest positioned ancestor
+  const pbox = el => { if (!el) return null; const s = getComputedStyle(el, "::before"); if (s.content === "none" || s.display === "none") return null;
+    let cb = el; while (cb && getComputedStyle(cb).position === "static") cb = cb.parentElement; if (!cb) return null;
+    const c = cb.getBoundingClientRect(), w = parseFloat(s.width), x = s.left !== "auto" ? c.left + cb.clientLeft + parseFloat(s.left) : c.right - cb.clientLeft - parseFloat(s.right) - w;
+    return { x, w, h: parseFloat(s.height), s }; };
+  const host = s => { const h = find(s); return h ? (rd ? h.el.closest("li") : h.el.closest(".lprow")) : null; };
+  const bul = s => { const H = host(s); return rd ? pbox(H) : pbox(H && H.querySelector(".mk.lim")); };
+  const b1 = bul("Bullet one Hxg"), b2 = bul("Nested bullet one Hxg");
+  put(P + "_UL_BULLET_X_ABS", b1 ? b1.x : NaN); put("UL_BULLET_W", b1 ? b1.w : NaN); put("UL_BULLET_H", b1 ? b1.h : NaN);
+  put(P + "_UL_TEXT_X_ABS", inkx("Bullet one Hxg"));
+  put(P + "_UL_NEST_BULLET_X_ABS", b2 ? b2.x : NaN); put(P + "_UL_NEST_TEXT_X_ABS", inkx("Nested bullet one Hxg"));
+  // ordered: reading = right-aligned ::before "1." (tabular "1" centred in its advance); LP = the literal "1." text
+  let ol = NaN; const oh = host("Numbered one Hxg");
+  if (rd) { const b = pbox(oh); if (b) { ctx.font = b.s.fontStyle + " " + b.s.fontWeight + " " + b.s.fontSize + " " + b.s.fontFamily;
+      const one = ctx.measureText("1"), adv = b.w - ctx.measureText(".").width; ol = b.x + Math.max(0, adv - one.width) / 2 - one.actualBoundingBoxLeft; } }
+  else if (oh) { const mk = oh.querySelector(".mk"); if (mk) { const w = document.createTreeWalker(mk, NodeFilter.SHOW_TEXT); let t; while ((t = w.nextNode()) && !/\d/.test(t.data)); if (t) { const i = t.data.search(/\d/), r = document.createRange(); r.setStart(t, i); r.setEnd(t, i + 1); ol = r.getBoundingClientRect().left - met(t.parentElement, t.data[i]).actualBoundingBoxLeft; } } }
+  put(P + "_OL_NUM_X_ABS", ol); put(P + "_OL_TEXT_X_ABS", inkx("Numbered one Hxg"));
+  // task: the unchecked box ("Open task one"), border-box rect
+  const th = host("Open task one Hxg"), cb = th && th.querySelector("input[type=checkbox]"), cr = cb && cb.getBoundingClientRect();
+  put(P + "_TASK_BOX_X_ABS", cr ? cr.left : NaN); put("TASK_BOX_W", cr ? cr.width : NaN); put("TASK_BOX_H", cr ? cr.height : NaN);
+  put(P + "_TASK_TEXT_X_ABS", inkx("Open task one Hxg"));
+  // inline code box + its painted background (the measurer floods on it)
+  const ch = find("code span Hxg"), ce = ch && ch.el.closest("code");
+  put("CODE_H", ce ? ce.getBoundingClientRect().height : NaN);
+  const bgc = ce ? (getComputedStyle(ce).backgroundColor.match(/[\d.]+/g) || []) : [];
+  o.push("CODE_BG=" + (bgc.length >= 3 ? "#" + bgc.slice(0, 3).map(v => (+v | 0).toString(16).padStart(2, "0")).join("") : "-"));
+  // blockquote: border box x + inline-start border width, text ink
+  const qh = find("Blockquote Hxg"), qe = qh && qh.el.closest(rd ? "blockquote" : ".bq");
+  put("BQ_BORDER_X_ABS", qe ? qe.getBoundingClientRect().left : NaN); put("BQ_BORDER_W", qe ? parseFloat(getComputedStyle(qe).borderInlineStartWidth) : NaN);
+  put(P + "_BQ_TEXT_X_ABS", inkx("Blockquote Hxg"));
+  return " [tyw:" + (rd ? "read" : "lp") + "|" + o.join("|") + "]";
+}
 function llTok() {
   const g = fg();
   if (!g || !g.preview || !isReading(g)) return "";
