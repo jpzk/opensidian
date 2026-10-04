@@ -59,36 +59,13 @@ Tested 2026-10-03 on fresh Ubuntu 26.04 LTS and Fedora 44 with Rust 1.98.0
 GPL-3.0-or-later ([LICENSE](LICENSE)). Read [THIRD-PARTY.md](THIRD-PARTY.md) before redistributing.
 
 ## Themes
-Themes are plain files in your vault, laid out the same way Obsidian lays them out, so most Obsidian
-community themes work as they are.
+Most Obsidian community themes work as they are. Ships with **AnuPpuccin** (default), **Material Gruvbox**,
+**Minimal** and **Solarized**, unmodified ([THIRD-PARTY.md](THIRD-PARTY.md)).
 
-Four community themes ship with the app, unmodified: **AnuPpuccin**, **Material Gruvbox**, **Minimal**
-and **Solarized** (authors, pinned versions and licences in [THIRD-PARTY.md](THIRD-PARTY.md)). **AnuPpuccin is the
-default**: a vault with no theme chosen (a new vault, or an older one whose `cssTheme` is empty) opens
-in it. The four are copied into `<vault>/.obsidian/themes/` the first time you open a vault. Files you
-already have are never overwritten, and themes from earlier versions (1984, Slate, Wasp) stay in vaults
-that already have them.
-
-Minimal is built for the Style Settings plugin. opensidian doesn't support plugins, so Minimal runs
-with its default settings.
-
-Install a theme:
-
-1. Create a folder named after the theme in `<vault>/.obsidian/themes/`, e.g. `.obsidian/themes/Things/`.
-2. Put the theme's `manifest.json` and `theme.css` in that folder. The `"name"` in `manifest.json`
-   has to match the folder name exactly.
-3. Pick it in **Settings ▸ Appearance ▸ Themes**, or from the command palette (`Ctrl+P` ▸ "Use theme: …").
-   Your choice is saved as `cssTheme` in `.obsidian/appearance.json`. Pick **AnuPpuccin** to go back to
-   the default.
-
-If a theme folder is broken (no or unparsable `manifest.json`, wrong name, no `theme.css`), the dropdown
-lists it greyed out with the reason and the app keeps painting AnuPpuccin. Dark/light mode still applies on
-top of whichever theme you pick.
-
-CSS snippets: put `<name>.css` in `<vault>/.obsidian/snippets/` and switch it on in
-**Settings ▸ Appearance ▸ CSS snippets**. Snippets apply on top of the theme, in the order you turned them on.
-
-Changes to theme and snippet files reload live. You don't need to restart.
+To add one, put its `manifest.json` and `theme.css` in `<vault>/.obsidian/themes/<Name>/` (folder name =
+`"name"` in the manifest) and pick it in **Settings ▸ Appearance ▸ Themes**. CSS snippets go in
+`.obsidian/snippets/`. Both reload live. A broken theme shows greyed out with the reason, and the app
+stays on AnuPpuccin.
 
 ## Donate
 
