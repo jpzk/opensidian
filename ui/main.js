@@ -4255,7 +4255,11 @@ async function cmdToggleSource(g) {  // stock "Toggle Live Preview/Source mode":
 async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu radio / palette / the Ctrl+E edit<->reading toggle
   const tab = g.tabs[g.active];
   const mswT0 = performance.now();               // R35 perf: the command, before any DOM work
-  const keep = g.lpActive ? caretLC(g) : null;   // R12.4: caret survives lp<->src
+  // R12.4: caret survives lp<->src. Read ONLY out of an edit mode and only a REAL
+  // caret: g.lpActive outlives reading view, and caretLC() falls back to [0,0]
+  // when the selection is elsewhere (the palette input) — that [0,0] is the bug.
+  const kc = isLp(tab.mode) && g.lpActive ? Ed.caret(g) : null;
+  const keep = kc ? [kc.l, kc.c] : null;
   // caretkeep: the caret is remembered PER TAB whenever an edit mode is left, so
   // edit -> reading -> edit lands where it was (it read null on the way back and
   // the caret went to line 0). Per tab: two tabs / split panes never share it.
