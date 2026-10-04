@@ -188,7 +188,7 @@ pub fn build_graph(notes: &[String], links: &[&[String]]) -> Graph {
     Graph { nodes, edges }
 }
 
-/// tag char set (stock): unicode letters/digits, '-', '_', '/'
+/// tag char set (as in Obsidian): unicode letters/digits, '-', '_', '/'
 fn is_tag_char(c: char) -> bool {
     c.is_alphanumeric() || c == '-' || c == '_' || c == '/'
 }
@@ -407,7 +407,7 @@ fn walk(dir: &Path, base: &Path, out: &mut Vec<String>, imgs: &mut Vec<String>) 
     }
 }
 
-/// R29.8: the extensions v1 treats as vault images — stock's list minus `svg`
+/// R29.8: the extensions v1 treats as vault images — Obsidian's list minus `svg`
 /// (scriptable, no sanitizer here), `bmp`, `avif` (scope). main.rs::IMG_TYPES
 /// maps the SAME set to Content-Types and a unit test pins the two together:
 /// a name the index resolves but the byte server refuses is a broken image.
@@ -624,9 +624,9 @@ impl Index {
         self.rewrite_to(old, new)
     }
 
-    /* R34.2: the two halves of `rename`, separately callable — because stock
+    /* R34.2: the two halves of `rename`, separately callable — because Obsidian
        renames the FILE on Enter and only then ASKS about the links. Between
-       move_key and rewrite_to the vault is in the state stock leaves it in
+       move_key and rewrite_to the vault is in the state Obsidian leaves it in
        when you answer "no": the note has its new name and every inbound
        [[old]] still says old. That state is legal, so it gets its own API
        instead of being a half-finished rename. */

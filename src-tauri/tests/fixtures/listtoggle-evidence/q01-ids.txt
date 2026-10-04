@@ -1,4 +1,4 @@
-# case q01-ids — stock 1.13.7, 2026-09-25T15:33:42Z: Settings > Hotkeys, filter 'list', '+' on 'Toggle bullet list' -> Ctrl+Alt+Shift+B, '+' on 'Toggle numbered list' -> Ctrl+Alt+Shift+N; then the vault's hotkeys.json (oracle for the command ids)
+# case q01-ids — Obsidian 1.13.7, 2026-09-25T15:33:42Z: Settings > Hotkeys, filter 'list', '+' on 'Toggle bullet list' -> Ctrl+Alt+Shift+B, '+' on 'Toggle numbered list' -> Ctrl+Alt+Shift+N; then the vault's hotkeys.json (oracle for the command ids)
 --- /srv/tmp/listtoggle/recon/vault/.obsidian/hotkeys.json cat -A ---
 {$
   "editor:toggle-bullet-list": [$

@@ -1,4 +1,4 @@
-# case q04-offparen — stock 1.13.7, display :136, 2026-09-25T15:21:09Z
+# case q04-offparen — Obsidian 1.13.7, display :136, 2026-09-25T15:21:09Z
 # fixture (printf %b): 1) alpha\n2) beta\n3) gamma\n
 # steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle numbered list|d after
 --- before: q04-offparen.md (26 bytes, md5 385e6b8dc532cb54571cb11f8eee6089) cat -A ---

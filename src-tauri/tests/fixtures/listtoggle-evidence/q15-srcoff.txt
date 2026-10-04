@@ -1,4 +1,4 @@
-# case q15-srcoff — stock 1.13.7, display :136, 2026-09-25T15:30:17Z
+# case q15-srcoff — Obsidian 1.13.7, display :136, 2026-09-25T15:30:17Z
 # fixture (printf %b): 1. alpha\n2. beta\n3. gamma\n
 # steps: p Toggle Live Preview/Source mode|k ctrl+Home shift+Down shift+Down shift+End|p Toggle numbered list|d after|p Toggle Live Preview/Source mode
 --- before: q15-srcoff.md (26 bytes, md5 565d0f8c1519b02dba704c6f9f258756) cat -A ---

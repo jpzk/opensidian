@@ -1,4 +1,4 @@
-# case q12b-cliplast — stock 1.13.7, display :136, 2026-09-25T15:55:38Z
+# case q12b-cliplast — Obsidian 1.13.7, display :136, 2026-09-25T15:55:38Z
 # fixture (printf %b): alpha\nbeta\ngamma\n
 # steps: k ctrl+Home shift+Down shift+Down shift+End shift+Left|p Toggle numbered list|d after|c clip
 --- before: q12b-cliplast.md (17 bytes, md5 6c7831c26f0d0a5f807006854aa682f4) cat -A ---

@@ -1,4 +1,4 @@
-# case q12b-bull — stock 1.13.7, display :136, 2026-09-25T15:49:45Z
+# case q12b-bull — Obsidian 1.13.7, display :136, 2026-09-25T15:49:45Z
 # fixture (printf %b): alpha\nbeta\ngamma\n
 # steps: k ctrl+Home Right Right shift+Down shift+Down|p Toggle bullet list|d after|t Z|d sel
 --- before: q12b-bull.md (17 bytes, md5 6c7831c26f0d0a5f807006854aa682f4) cat -A ---

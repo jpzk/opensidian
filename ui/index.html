@@ -11,10 +11,9 @@
 <link rel="stylesheet" href="style.css"></head>
 <body>
 <!-- R33 frameless window: the window ships with decorations:false, so THIS is the
-     title bar. The stock app does the same thing and puts its controls INSIDE the
-     top chrome row (recon under openbox: centres measured at right-113 minimise,
-     right-70 maximise, right-26 close, strip 40px tall) — so does this strip, over
-     the tab row, and the row underneath reserves its width (.wfinset). The empty
+     title bar. The window controls sit INSIDE the top chrome row, as in Obsidian,
+     so this strip lies over the tab row, and the row underneath reserves its
+     width (.wfinset). The empty
      part of the top row is the drag region; double-click it to maximise. -->
 <div id="wframe">
   <button id="wf-min" title="Minimise" aria-label="Minimise window"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M1.5 6h9"/></svg></button>
@@ -40,7 +39,7 @@
     <div id="bar">
       <button id="newbtn" title="New note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-9z"/><path d="M14 3v6h6"/><path d="M12 12v6M9 15h6"/></svg></button>
       <button id="newfolderbtn" title="New folder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7V5a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v6M9 14h6"/></svg></button>
-      <!-- collapseall R3: stock 1.13.7 order (recon-collapseall Q1): New note, New folder, [Change sort order], [Auto-reveal current file], Collapse/Expand all. The two middle slots are RESERVED (out of scope, spec R3) so the toggle is the 5th slot, as in stock. -->
+      <!-- collapseall R3: Obsidian's order (recon-collapseall Q1): New note, New folder, [Change sort order], [Auto-reveal current file], Collapse/Expand all. The two middle slots are RESERVED (out of scope, spec R3) so the toggle is the 5th slot, as in Obsidian. -->
       <span class="hslot" aria-hidden="true"></span><span class="hslot" aria-hidden="true"></span>
       <button id="fecabtn" class="cabtn" title="Collapse all"></button>
     </div>
@@ -52,7 +51,7 @@
     <div id="sresults"></div>
   </div>
   <div id="pane-bm" class="spane" hidden>
-    <!-- collapseall R3: stock's bookmarks header (recon-collapseall Q1): [Bookmark the active tab], [New group], Collapse/Expand all, [Show search filter] — the toggle is the 3rd of 4; the other three slots are RESERVED (spec R3). -->
+    <!-- collapseall R3: Obsidian's bookmarks header (recon-collapseall Q1): [Bookmark the active tab], [New group], Collapse/Expand all, [Show search filter] — the toggle is the 3rd of 4; the other three slots are RESERVED (spec R3). -->
     <div id="bmbar" class="hbar"><span class="hslot" aria-hidden="true"></span><span class="hslot" aria-hidden="true"></span><button id="bmcabtn" class="cabtn" title="Collapse all"></button><span class="hslot" aria-hidden="true"></span></div>
     <div id="bmlist"></div>
   </div>
@@ -115,7 +114,7 @@
 </div></div>
 <div id="rnbox" hidden><input id="rninput" spellcheck="false" autocomplete="off" placeholder="new name"></div>
 <!-- R34.4-R34.7 "Update links": the PROMPT that sits BETWEEN the rename and the
-     link rewrite. Copy is stock's, read off the recon shots: the title is
+     link rewrite. The wording follows Obsidian's prompt: the title is
      "Update links", the body is a question, and #ulsay states the counted blast
      radius ("This will affect 4 links in 1 file.") which is computed BEFORE the
      prompt (move_note returns it). Three buttons, "Always update" first and
@@ -146,11 +145,11 @@
     <button id="del-yes">Delete</button>
   </div>
 </div></div>
-<!-- R4X.7 "Edit bookmark" — stock's route for moving a bookmark BETWEEN groups
+<!-- R4X.7 "Edit bookmark" — Obsidian's route for moving a bookmark BETWEEN groups
      (docs/recon-bmfolder/11-edit.png … 14-saved.png). Path is read-only because
      a bookmark IS the vault-relative name (R9.4) and there is no per-bookmark
      title in this model; the chooser is the whole dialog. ONE deliberate delta,
-     argued in docs/bookmark-groups.md: option 0 is "(top level)", which stock's
+     argued in docs/bookmark-groups.md: option 0 is "(top level)", which Obsidian's
      chooser does not have (16-dd2.png / 18-dd-up-shot.png / 19-crop.png) — so
      here the menu route moves a bookmark OUT of a group as well as in. -->
 <div id="bmebox" hidden><div id="bmecard">
@@ -164,7 +163,7 @@
     <button id="bme-yes">Save</button>
   </div>
 </div></div>
-<!-- R34.12/R34.13: a refusal is VISIBLE. Stock puts a notice on screen and
+<!-- R34.12/R34.13: a refusal is VISIBLE. Obsidian puts a notice on screen and
      renames nothing; a refusal nobody can see is indistinguishable from a
      rename that silently did nothing. -->
 <div id="notice" hidden></div>

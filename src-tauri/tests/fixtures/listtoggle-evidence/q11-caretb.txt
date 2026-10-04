@@ -1,4 +1,4 @@
-# case q11-caretb — stock 1.13.7, display :136, 2026-09-25T15:22:52Z
+# case q11-caretb — Obsidian 1.13.7, display :136, 2026-09-25T15:22:52Z
 # fixture (printf %b): alpha\nbeta\ngamma\n
 # steps: k ctrl+Home Down Right Right|p Toggle bullet list|d after|t Z|d caret
 --- before: q11-caretb.md (17 bytes, md5 6c7831c26f0d0a5f807006854aa682f4) cat -A ---

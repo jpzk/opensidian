@@ -1,4 +1,4 @@
-# case q06-b2n — stock 1.13.7, display :136, 2026-09-25T15:15:05Z
+# case q06-b2n — Obsidian 1.13.7, display :136, 2026-09-25T15:15:05Z
 # fixture (printf %b): - alpha\n- beta\n- gamma\n
 # steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle numbered list|d after
 --- before: q06-b2n.md (23 bytes, md5 071ea15a31745d8810ae288a3fde1a44) cat -A ---

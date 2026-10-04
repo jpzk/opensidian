@@ -1,4 +1,4 @@
-# case q04-offplus — stock 1.13.7, display :136, 2026-09-25T15:20:49Z
+# case q04-offplus — Obsidian 1.13.7, display :136, 2026-09-25T15:20:49Z
 # fixture (printf %b): + alpha\n+ beta\n+ gamma\n
 # steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle bullet list|d after
 --- before: q04-offplus.md (23 bytes, md5 716a6f2d5f765ebcedb8f6581a39284d) cat -A ---

@@ -811,7 +811,7 @@ app and copied VERBATIM (byte-for-byte, unmodified) into a vault's `.obsidian/th
 time it is opened.
 
 **Built-in theme + test fixture.** The same bytes are also the `cargo test` fixture
-`src-tauri/tests/fixtures/themefs/Minimal/` — exactly what stock app 1.13.7's own community-theme
+`src-tauri/tests/fixtures/themefs/Minimal/` — exactly what Obsidian 1.13.7's own community-theme
 installer wrote (version 9.0.2, `theme.css` 264,778 bytes, md5 `b73d22cec0325a10785d8ed6f21013b1`);
 a test pins built-in == fixture. Minimal is designed for the Style Settings plugin, which opensidian
 does not support; its defaults are used.
@@ -858,7 +858,7 @@ app and copied VERBATIM (byte-for-byte, unmodified) into a vault's `.obsidian/th
 time it is opened.
 
 **Built-in theme + test fixture.** The same bytes are also the `cargo test` fixture
-`src-tauri/tests/fixtures/themeone/Solarized/` (installed by stock app 1.13.7's community-theme
+`src-tauri/tests/fixtures/themeone/Solarized/` (installed by Obsidian 1.13.7's community-theme
 installer, version 1.1.5).
 
 **Upstream:** https://github.com/harmtemolder/obsidian-solarized at commit `11cc702755b912abcedbebb6328a32ffddc03eff`

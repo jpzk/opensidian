@@ -1,4 +1,4 @@
-# case q11-caretoff — stock 1.13.7, display :136, 2026-09-25T15:23:41Z
+# case q11-caretoff — Obsidian 1.13.7, display :136, 2026-09-25T15:23:41Z
 # fixture (printf %b): - alpha\n- beta\n- gamma\n
 # steps: k ctrl+Home Down Right Right Right Right|p Toggle bullet list|d after|t Z|d caret
 --- before: q11-caretoff.md (23 bytes, md5 071ea15a31745d8810ae288a3fde1a44) cat -A ---

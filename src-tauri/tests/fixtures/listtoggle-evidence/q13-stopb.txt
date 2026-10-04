@@ -1,4 +1,4 @@
-# case q13-stopb — stock 1.13.7, display :136, 2026-09-25T15:37:30Z
+# case q13-stopb — Obsidian 1.13.7, display :136, 2026-09-25T15:37:30Z
 # fixture (printf %b): 1. a\ntwo\n- b\n5. c\n
 # steps: k ctrl+Home Down|p Toggle numbered list|d after
 --- before: q13-stopb.md (18 bytes, md5 334a8ab5c309234f16c2ed42086930c0) cat -A ---

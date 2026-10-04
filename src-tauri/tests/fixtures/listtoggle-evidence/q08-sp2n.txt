@@ -1,4 +1,4 @@
-# case q08-sp2n — stock 1.13.7, display :136, 2026-09-25T15:16:44Z
+# case q08-sp2n — Obsidian 1.13.7, display :136, 2026-09-25T15:16:44Z
 # fixture (printf %b):   alpha\n  beta\n  gamma\n
 # steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle numbered list|d after
 --- before: q08-sp2n.md (23 bytes, md5 b9b53a0e51c9370d20cbc85b404d5a17) cat -A ---

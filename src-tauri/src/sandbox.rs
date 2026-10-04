@@ -45,7 +45,7 @@ fn env_path(k: &str) -> Option<PathBuf> {
    DECISION (narrowest of the three options in the brief): grant READ on the
    three XDG dirs a user actually drags images out of, and nothing more.
    NOT all of $HOME: that hands ~/.ssh, ~/.gnupg, ~/.aws and every
-   token-bearing dotfile to a webkit process, and "still better than stock
+   token-bearing dotfile to a webkit process, and "still better than Obsidian
    1.13.7, which has no sandbox" is not a reason to leak keys.
    COST, stated plainly: a drop from anywhere else — ~/work/shots, ~/tmp, a
    second disk under /mnt — is REFUSED with a permission error, not copied.

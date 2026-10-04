@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jendrik Poloczek
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* goal insdate — "Templates: Insert current date/time" formats the clock with
-   a moment.js format string (stock bundles moment 2.29, en locale). No date
+   a moment.js format string (Obsidian bundles moment 2.29, en locale). No date
    crate (goal criterion 7): this is a port of moment's FORMAT path only —
    expandFormat (long-date tokens), the formattingTokens tokenizer and the en
    token functions — over a broken-down LOCAL time handed in by the webview
@@ -13,7 +13,7 @@
        w[o|w]?|W[o|W]?|Qo?|N{1,5}|YYYYYY|YYYYY|YYYY|YY|y{2,4}|yo?|
        gg(ggg?)?|GG(GGG?)?|e|E|a|A|hh?|HH?|kk?|mm?|ss?|S{1,9}|x|X|zz?|ZZ?|.)
    Note the character class [o|w]: "w|" is ONE token that is not a format
-   function, so it prints literally — that is why stock's "w|ww" survey shows
+   function, so it prints literally — that is why the "w|ww" survey shows
    "w|40" while a lone "w" is the locale week. Unknown tokens print with
    backslashes removed; a [..] prints its contents; a line terminator is
    matched by nothing and so is dropped (JS '.' semantics). */
@@ -38,7 +38,7 @@ pub struct Tm {
 pub const DEFAULT_DATE: &str = "YYYY-MM-DD";
 pub const DEFAULT_TIME: &str = "HH:mm";
 
-/// Stock: a missing or "" key falls back to the default, per key (REQ-3).
+/// As in Obsidian: a missing or "" key falls back to the default, per key (REQ-3).
 pub fn render(fmt: Option<&str>, default: &str, t: &Tm) -> String {
     match fmt {
         Some(f) if !f.is_empty() => format(f, t),
@@ -418,12 +418,12 @@ mod tests {
         Tm { y, mo, d, h, mi, s, ms, off: 0, epoch_ms }
     }
 
-    /// The survey run on stock 1.13.7 (docs/insdate/stock/formats.log, RUN
+    /// The survey run on Obsidian 1.13.7 (the insdate formats.log, RUN
     /// survey c01): box clock Fri 2026-10-02 08:19:03.502 UTC. Byte-for-byte.
     #[test]
-    fn stock_survey_44_tokens() {
+    fn obsidian_survey_44_tokens() {
         let t = utc(2026, 10, 2, 8, 19, 3, 502);
-        assert_eq!(t.epoch_ms, 1_790_929_143_502, "civil -> epoch agrees with stock's x");
+        assert_eq!(t.epoch_ms, 1_790_929_143_502, "civil -> epoch agrees with the survey's x");
         let f = "YYYY|YY|M|MM|MMM|MMMM|D|DD|Do|DDD|DDDD|d|dd|ddd|dddd|E|e|w|ww|W|WW|Q|H|HH|h|hh|k|kk|m|mm|s|ss|S|SSS|A|a|X|x|Z|ZZ|gggg|GGGG|[lit]|qbfj|LT|L|LL";
         assert_eq!(
             format(f, &t),
@@ -434,10 +434,10 @@ mod tests {
         assert_eq!(format("h:mm:ss a [o'clock] qbfj", &t), "8:19:18 am o'clock qbfj");
     }
 
-    /// RUN survey2 (formats.log): the tokens beyond the first 44, stock clock
+    /// RUN survey2 (formats.log): the tokens beyond the first 44, survey clock
     /// 08:29:13.484 for the date and 08:29:28.605 (x = 1790929768605) for the time.
     #[test]
-    fn stock_survey2_more_tokens_and_escapes() {
+    fn obsidian_survey2_more_tokens_and_escapes() {
         let t = utc(2026, 10, 2, 8, 29, 13, 484);
         let f = "w W Mo DDDo do wo Wo Qo N NN NNN NNNN NNNNN y yo yy yyyy Y YYYYY YYYYYY gg ggggg GG GGGGG hmm hmmss Hmm Hmmss SS SSSS SSSSSSSSS z zz LTS LLL LLLL l ll lll llll ggg";
         assert_eq!(
@@ -563,7 +563,7 @@ mod tests {
         assert_eq!(format("[x\ny]", &t), "x\ny", "but survives inside []");
     }
 
-    /// Stock (formats.log RUN empty / partial): a missing or "" key formats
+    /// As in Obsidian (formats.log RUN empty / partial): a missing or "" key formats
     /// with the default — per key. format("") itself is "".
     #[test]
     fn empty_format_uses_default() {

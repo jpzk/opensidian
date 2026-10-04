@@ -40,38 +40,38 @@ const BACKED: &[(&str, &str, &str)] = &[
     ("hotkeys", "(filter field)", "hotkeys"),
     ("hotkeys", "(scope chips)", "hotkeys"),
     ("hotkeys", "(command rows)", "hotkeys"),
-    // themefs R5. Stock's Appearance > Themes row IS the active-theme picker —
+    // themefs R5. Obsidian's Appearance > Themes row IS the active-theme picker —
     // a dropdown showing the painting theme (AnuPpuccin for an empty cssTheme), wired to the
     // vault's own appearance.json "cssTheme" (T1/T2) — so with vault themes
     // real (src-tauri/src/themefs.rs themes_scan/load_theme, the oracle's
-    // predicate), the drop-in charter puts that picker back on stock's row.
+    // predicate), the drop-in charter puts that picker back on Obsidian's row.
     // THIS IS NOW THE ONLY THEME CONTROL IN THE PANE (themeone item 7 / C1).
     // The PALETTE axis (goal/theme-1984) used to park a SECOND live dropdown
     // one row down, on "Current community themes" — a recorded delta from
-    // stock. It is gone: its colours ship as theme files the row above
-    // selects, so that row goes back to stock's inert status line and the
+    // Obsidian. It is gone: its colours ship as theme files the row above
+    // selects, so that row goes back to Obsidian's inert status line and the
     // pane publishes exactly one theme control. "Base color scheme" one row
     // above stays disabled: that is the MODE axis and its control is Ctrl+P.
     ("appearance", "Themes", "cssTheme"),
-    // themefs R3. Stock's Appearance > CSS snippets row manages the vault's
+    // themefs R3. Obsidian's Appearance > CSS snippets row manages the vault's
     // .obsidian/snippets/*.css toggles, persisted in the VAULT's own
     // appearance.json "enabledCssSnippets" array (T3) — a vault file, not a
     // ~/.opensidian.json key, so it lives in VAULT_KEYS below and is really
     // read/written by src-tauri/src/themefs.rs (enabled_snippets /
     // set_snippet_enabled), pinned by `vault_keys_are_all_touched_by_themefs`.
     ("appearance", "CSS snippets", "enabledCssSnippets"),
-    // goal/linebreak REQ-1. Stock's Editor > Display "Strict line breaks" toggle,
-    // wired to the VAULT's .obsidian/app.json "strictLineBreaks" (stock's file and
+    // goal/linebreak REQ-1. Obsidian's Editor > Display "Strict line breaks" toggle,
+    // wired to the VAULT's .obsidian/app.json "strictLineBreaks" (Obsidian's file and
     // key, default off). main.rs reads it on every reading render and writes it
     // by merge (strict_line_breaks / set_strict_line_breaks); APP_KEYS below.
     ("editor", "Strict line breaks", "strictLineBreaks"),
-    // goal fontwheel (docs/ctrlzoom/recon.md REQ-1): stock's Appearance > Font
+    // goal fontwheel (docs/ctrlzoom/recon.md REQ-1): Obsidian's Appearance > Font
     // "Quick font size adjustment" toggle, the vault's appearance.json
     // "baseFontSizeAction" (themefs::quickfont / set_quickfont; absent = ON,
     // the operator exception REQ-2). Its partner "baseFontSize" is written by
     // the Ctrl+wheel gesture AND (goal fontset) by the "Font size" slider below.
     ("appearance", "Quick font size adjustment", "baseFontSizeAction"),
-    // goal fontset (docs/fontset/recon.md REQ-1..21): stock's three font rows open the
+    // goal fontset (docs/fontset/recon.md REQ-1..21): Obsidian's three font rows open the
     // in-Settings chooser sub-page over the vault's appearance.json font keys
     // (themefs::fonts / set_font), and the Font size slider is live on the SAME
     // "baseFontSize" the Ctrl+wheel gesture writes — one source of truth (REQ-19).
@@ -87,7 +87,7 @@ const BACKED: &[(&str, &str, &str)] = &[
 pub const APP_KEYS: &[&str] = &["strictLineBreaks"];
 
 /// Keys that back a settings row but live in the VAULT's .obsidian/appearance.json
-/// (stock's file, byte-wise round-trip — src-tauri/src/themefs.rs), not in
+/// (Obsidian's file, byte-wise round-trip — src-tauri/src/themefs.rs), not in
 /// ~/.opensidian.json. Same invariant as CONFIG_KEYS, different home:
 /// `vault_keys_are_all_touched_by_themefs` pins this list to the source.
 pub const VAULT_KEYS: &[&str] = &[
@@ -113,8 +113,8 @@ const OPTIONS_TABS: &[(&str, &str)] = &[
 
 /* goal/noplugins (operator 2026-10-01: "remove the core and community plugin
    items in the settings menu. all of them also the sub section."). A
-   DELIBERATE deviation from stock 1.13.7. The recon transcript stays the
-   untouched stock oracle (nav.tsv still lists them, structure.tsv still holds
+   DELIBERATE deviation from Obsidian 1.13.7. The recon transcript stays the
+   untouched Obsidian oracle (nav.tsv still lists them, structure.tsv still holds
    their rows); the model simply does not carry them. Nothing is lost: every
    row on these panes was keyless (none is in BACKED) and the per-plugin panes
    had no rows at all — docs/noplugins/inventory.md has the census and the
@@ -167,7 +167,7 @@ pub struct Row {
     pub label: &'static str,
     pub desc: &'static str,
     pub control: Control,
-    /// what stock showed as the value — rendered as dead text on disabled rows
+    /// what Obsidian showed as the value — rendered as dead text on disabled rows
     pub default_shown: &'static str,
     /// the recon screenshot this row was transcribed from
     pub shot: &'static str,
@@ -316,9 +316,9 @@ mod tests {
         for l in &data {
             assert_eq!(l.split('\t').count(), 7, "not 7 columns: {l}");
         }
-        // the transcript itself is still stock's 105 rows (the oracle is untouched);
+        // the transcript itself is still Obsidian's 105 rows (the oracle is untouched);
         // the model drops exactly the plugin panes' rows and nothing else (goal/noplugins)
-        assert_eq!(data.len(), 105, "the stock recon transcript changed — it is the oracle, keep it");
+        assert_eq!(data.len(), 105, "the Obsidian recon transcript changed — it is the oracle, keep it");
         let dropped = data.iter().filter(|l| REMOVED_TABS.contains(&l.split('\t').next().unwrap_or(""))).count();
         assert_eq!(dropped, 34, "31 Core plugins rows + 3 Community plugins rows");
         assert_eq!(data.len() - dropped, rows().len(), "a transcript line was silently dropped");
@@ -424,10 +424,10 @@ mod tests {
     }
 
     #[test]
-    fn nav_is_stock_order_and_complete() {
+    fn nav_is_obsidian_order_and_complete() {
         let opts: Vec<&NavEntry> = nav().iter().filter(|n| n.group == "Options").collect();
-        // stock 1.13.7 shows 9 Options entries + a Core plugins group of 10;
-        // goal/noplugins keeps the first 7 Options entries in stock's order
+        // Obsidian 1.13.7 shows 9 Options entries + a Core plugins group of 10;
+        // goal/noplugins keeps the first 7 Options entries in Obsidian's order
         assert_eq!(opts.len(), 7, "General..Keychain");
         assert_eq!(opts[0].entry, "General");
         assert_eq!(opts[6].entry, "Keychain");
@@ -438,7 +438,7 @@ mod tests {
     }
 
     /// goal/noplugins: no plugin entry, no plugin group heading, no plugin pane
-    /// row survives in the model, while the stock oracle still carries all of them
+    /// row survives in the model, while the Obsidian oracle still carries all of them
     #[test]
     fn no_plugin_nav_entries_groups_or_rows() {
         for n in nav() {

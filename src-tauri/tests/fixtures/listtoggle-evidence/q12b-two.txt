@@ -1,4 +1,4 @@
-# case q12b-two — stock 1.13.7, display :136, 2026-09-25T15:50:09Z
+# case q12b-two — Obsidian 1.13.7, display :136, 2026-09-25T15:50:09Z
 # fixture (printf %b): alpha\nbeta\ngamma\n
 # steps: k ctrl+Home Right Right shift+Down|p Toggle numbered list|d after|t Z|d sel
 --- before: q12b-two.md (17 bytes, md5 6c7831c26f0d0a5f807006854aa682f4) cat -A ---

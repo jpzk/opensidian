@@ -1,4 +1,4 @@
-# case q12b-clipind — stock 1.13.7, display :136, 2026-09-25T15:55:58Z
+# case q12b-clipind — Obsidian 1.13.7, display :136, 2026-09-25T15:55:58Z
 # fixture (printf %b): \talpha\n\tbeta\n\tgamma\n
 # steps: k ctrl+Home shift+Down shift+Down shift+End shift+Left shift+Left shift+Left|p Toggle bullet list|d after|c clip
 --- before: q12b-clipind.md (20 bytes, md5 183c0cc3abc99ae9eb57b846487d2821) cat -A ---

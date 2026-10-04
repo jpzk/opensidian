@@ -1,4 +1,4 @@
-# case q10-col0 — stock 1.13.7, display :136, 2026-09-25T15:22:32Z
+# case q10-col0 — Obsidian 1.13.7, display :136, 2026-09-25T15:22:32Z
 # fixture (printf %b): alpha\nbeta\ngamma\ndelta\n
 # steps: k ctrl+Home shift+Down shift+Down shift+Down|p Toggle bullet list|d after
 --- before: q10-col0.md (23 bytes, md5 534b842880f2c70043bfc08a0c889f56) cat -A ---

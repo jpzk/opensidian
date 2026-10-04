@@ -1,4 +1,4 @@
-# case q12-undon — stock 1.13.7, display :136, 2026-09-25T15:25:47Z
+# case q12-undon — Obsidian 1.13.7, display :136, 2026-09-25T15:25:47Z
 # fixture (printf %b): alpha\nbeta\ngamma\n
 # steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle numbered list|d after|k ctrl+z|d undo
 --- before: q12-undon.md (17 bytes, md5 6c7831c26f0d0a5f807006854aa682f4) cat -A ---

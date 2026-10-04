@@ -1,4 +1,4 @@
-# case q12b-cliprep — stock 1.13.7, display :136, 2026-09-25T15:53:10Z
+# case q12b-cliprep — Obsidian 1.13.7, display :136, 2026-09-25T15:53:10Z
 # fixture (printf %b): alpha\nbeta\ngamma\n
 # steps: k ctrl+Home Right Right shift+Down shift+Down|p Toggle numbered list|d after|c clip
 --- before: q12b-cliprep.md (17 bytes, md5 6c7831c26f0d0a5f807006854aa682f4) cat -A ---

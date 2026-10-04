@@ -1,4 +1,4 @@
-# case q07-offb — stock 1.13.7, display :136, 2026-09-25T15:21:32Z
+# case q07-offb — Obsidian 1.13.7, display :136, 2026-09-25T15:21:32Z
 # fixture (printf %b): - alpha\n\n- beta\n
 # steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle bullet list|d after
 --- before: q07-offb.md (16 bytes, md5 ae605e2ebc1d29fc1ad6378ccb89f049) cat -A ---

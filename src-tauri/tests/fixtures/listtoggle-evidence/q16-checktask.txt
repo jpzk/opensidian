@@ -1,4 +1,4 @@
-# case q16-checktask — stock 1.13.7, display :136, 2026-09-25T15:28:33Z
+# case q16-checktask — Obsidian 1.13.7, display :136, 2026-09-25T15:28:33Z
 # fixture (printf %b): - [ ] alpha\n- [ ] beta\n- [ ] gamma\n
 # steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle checkbox status|d after
 --- before: q16-checktask.md (35 bytes, md5 149fddb3fbc1e06c1163ce5969472092) cat -A ---

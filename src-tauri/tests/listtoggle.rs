@@ -4,8 +4,8 @@
 //! Runs the REAL `Ed.listToggle` out of ui/editor.js in JavaScriptCore — the
 //! engine the webview itself runs it in (javascriptcore-rs is webkit2gtk's own
 //! transitive dep, pinned `=` to the locked version: no new crate) — against one
-//! row per measured stock 1.13.7 case. Expected bytes come from the committed
-//! evidence dumps, never from this file, so a row cannot drift from what stock
+//! row per case measured in Obsidian 1.13.7. Expected bytes come from the committed
+//! evidence dumps, never from this file, so a row cannot drift from what Obsidian
 //! wrote. See tests/listtoggle.tsv for the row format.
 #![cfg(target_os = "linux")]
 
@@ -147,7 +147,7 @@ fn listtoggle_table() {
                 "before" => continue,
                 "after" => &after,
                 "sel" | "caret" => &typed,
-                "clip" => &clip,        // stock's Ctrl+C right after the command = the selection itself
+                "clip" => &clip,        // Obsidian's Ctrl+C right after the command = the selection itself
                 "undo" => &c.before,   // R3's Ctrl+Z is the gate's job; here: the dump is the fixture
                 other => panic!("{name}: unknown dump {other:?}"),
             };

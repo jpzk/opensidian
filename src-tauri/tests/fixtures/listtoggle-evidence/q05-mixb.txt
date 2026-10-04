@@ -1,4 +1,4 @@
-# case q05-mixb — stock 1.13.7, display :136, 2026-09-25T15:13:48Z
+# case q05-mixb — Obsidian 1.13.7, display :136, 2026-09-25T15:13:48Z
 # fixture (printf %b): - alpha\nbeta\n1. gamma\n
 # steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle bullet list|d after
 --- before: q05-mixb.md (22 bytes, md5 06ba78d7b35e61bf8685c2537de206b9) cat -A ---

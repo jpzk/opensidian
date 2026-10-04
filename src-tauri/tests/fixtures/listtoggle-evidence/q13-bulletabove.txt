@@ -1,4 +1,4 @@
-# case q13-bulletabove — stock 1.13.7, display :136, 2026-09-25T15:27:34Z
+# case q13-bulletabove — Obsidian 1.13.7, display :136, 2026-09-25T15:27:34Z
 # fixture (printf %b): - one\ntwo\nthree\n
 # steps: k ctrl+Home Down shift+Down shift+End|p Toggle numbered list|d after
 --- before: q13-bulletabove.md (16 bytes, md5 c70cb008967b482252468bf15132ad16) cat -A ---

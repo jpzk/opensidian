@@ -1,4 +1,4 @@
-# case q16-check3 — stock 1.13.7, display :136, 2026-09-25T15:28:13Z
+# case q16-check3 — Obsidian 1.13.7, display :136, 2026-09-25T15:28:13Z
 # fixture (printf %b): alpha\nbeta\ngamma\n
 # steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle checkbox status|d after
 --- before: q16-check3.md (17 bytes, md5 6c7831c26f0d0a5f807006854aa682f4) cat -A ---

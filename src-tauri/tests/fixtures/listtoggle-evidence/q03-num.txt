@@ -1,4 +1,4 @@
-# case q03-num — stock 1.13.7, display :136, 2026-09-25T15:12:11Z
+# case q03-num — Obsidian 1.13.7, display :136, 2026-09-25T15:12:11Z
 # fixture (printf %b): alpha\nbeta\ngamma\n
 # steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle numbered list|d after
 --- before: q03-num.md (17 bytes, md5 6c7831c26f0d0a5f807006854aa682f4) cat -A ---

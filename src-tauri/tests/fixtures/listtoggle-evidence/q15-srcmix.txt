@@ -1,4 +1,4 @@
-# case q15-srcmix — stock 1.13.7, display :136, 2026-09-25T15:29:49Z
+# case q15-srcmix — Obsidian 1.13.7, display :136, 2026-09-25T15:29:49Z
 # fixture (printf %b): - [ ] alpha\nbeta\n1. gamma\n
 # steps: p Toggle Live Preview/Source mode|k ctrl+Home shift+Down shift+Down shift+End|p Toggle bullet list|d after|p Toggle Live Preview/Source mode
 --- before: q15-srcmix.md (26 bytes, md5 7517741cf86e4182a3b0efc6f34be76d) cat -A ---

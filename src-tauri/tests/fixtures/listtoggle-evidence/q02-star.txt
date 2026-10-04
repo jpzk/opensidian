@@ -1,4 +1,4 @@
-# case q02-star — stock 1.13.7, display :136, 2026-09-25T15:11:52Z
+# case q02-star — Obsidian 1.13.7, display :136, 2026-09-25T15:11:52Z
 # fixture (printf %b): * one\n\nalpha\nbeta\ngamma\n
 # steps: k ctrl+Home Down Down shift+Down shift+Down shift+End|p Toggle bullet list|d after
 --- before: q02-star.md (24 bytes, md5 12f3d60cfbd4ee4e6e1a86d60882fb99) cat -A ---

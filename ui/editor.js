@@ -30,7 +30,7 @@ const Ed = {
   // carrying .rv, g.lp._rvs = their "<l>.<s>-<e>:<kind>" labels for the census),
   // so two panes never clear each other's reveal.
   composing: false,
-  UNDO_IDLE_MS: 2000,   // R17.8: idle gap that CLOSES an undo group (~2s, stock)
+  UNDO_IDLE_MS: 2000,   // R17.8: idle gap that CLOSES an undo group
 
   /* ---------- model ---------- */
   lines(g) { const v = g.view; if (!v.lines) v.lines = [""]; return v.lines; },
@@ -139,7 +139,7 @@ const Ed = {
       const rest = t.slice(lm[0].length);
       if (ind) row.appendChild(Ed.t(ind));
       // the marker glyphs and their trailing space are SEPARATE hidden spans:
-      // R15.10 gives .lim the stock marker advance as a box (bullet drawn
+      // R15.10 gives .lim a fixed marker advance as a box (bullet drawn
       // inside it), and the space must not sit in that box or a wide "10."
       // would push the text right by its width. textContent is unchanged.
       const li0 = Ed.mk(lm[1], "lim"), li1 = Ed.mk(" ", "lisp");
@@ -1021,13 +1021,13 @@ const Ed = {
     Ed.after(g, l, s.b.c >= it.pre.length ? s.b.c + dc : s.b.c);
   },
   /* listtoggle R1-R5: "Toggle bullet list" / "Toggle numbered list" over a
-     SELECTION (stock 1.13.7 measured, docs/recon-listtoggle/README.md; spec
+     SELECTION (Obsidian 1.13.7 measured, docs/recon-listtoggle/README.md; spec
      §4 frozen). Unlike toggleCheck this acts on EVERY line the selection
      touches — a selection ending at column 0 of line N still includes N [Q10].
      Ed.listToggle is PURE (lines + selection in -> lines + selection out, or
      null for a no-op) so the unit table (src-tauri/tests/listtoggle.{tsv,rs}, cargo test) can run
      it without a DOM; Ed.toggleList is the thin view wrapper (one undo step).
-     Own marker parser, NOT Ed.info: stock treats "N)" as numbered [Q4
+     Own marker parser, NOT Ed.info: Obsidian treats "N)" as numbered [Q4
      q04-offparen] and Ed.info does not, and widening Ed.info would change
      Enter/indent continuation, which nothing here measured. */
   ltParse(line) {
@@ -1113,7 +1113,7 @@ const Ed = {
     if (r.a.l !== r.b.l || r.a.c !== r.b.c) Ed.extendTo(g, r.b.l, r.b.c);
   },
   /* rvtask R3 — THE task-status byte op, shared by Ctrl+L (toggleCheck) and the
-     reading-view click. Stock 1.13.7 (docs/recon-rvtask Q1/Q2): the status char
+     reading-view click. Obsidian 1.13.7 (docs/recon-rvtask Q1/Q2): the status char
      of the item's "[?]" flips ' ' -> 'x' and ANYTHING else (x X / - > ?) -> ' '.
      One byte, this line only; indent, quote prefix, list marker and the text are
      returned untouched. null = not a task item (nothing to flip). */
@@ -1124,7 +1124,7 @@ const Ed = {
   },
   /* rvtask R3: a reading-view checkbox click on SOURCE line l (the renderer's
      data-line). Goes through the note's editor model like any edit: one undo
-     entry per reading-view SESSION (stock Q6: one Ctrl+Z undoes every toggle
+     entry per reading-view SESSION (Obsidian Q6: one Ctrl+Z undoes every toggle
      made since entering reading view), the model -> bridge sync, and the normal
      debounced save (scheduleSave; saveBuf owns the watcher-echo guard). The
      session ends when the pane's mode is applied again (Ed.rvEnd from
@@ -1467,7 +1467,7 @@ const Ed = {
       ["- a\n  cont", 1, 6, 0, "- a\n  cont\n- ", 2, 2],                                 // M24 continuation line
       ["- alpha", 0, 7, 1, "- alpha\n  ", 1, 2],                                         // M26 soft break
     ];
-    // rvtask R3: the shared status-byte op, stock Q1/Q2/Q3 byte for byte
+    // rvtask R3: the shared status-byte op, Obsidian Q1/Q2/Q3 byte for byte
     const ft = [
       ["- [ ] a", "- [x] a"], ["- [x] a", "- [ ] a"], ["- [X] a", "- [ ] a"],
       ["- [/] a", "- [ ] a"], ["- [-] a", "- [ ] a"], ["- [>] a", "- [ ] a"], ["- [?] a", "- [ ] a"],
@@ -1493,7 +1493,7 @@ const Ed = {
       }
       /* R17.2/R17.3/R17.4 on the MODEL: [before, l, c, op, after, l, c] straight
          off the MUST list. Where a MUST caret column exceeds the raw line length
-         it is clamped (stock counts a leading TAB as two columns; this engine
+         it is clamped (Obsidian counts a leading TAB as two columns; this engine
          counts raw characters — same caret, different unit). */
       const kc = [
         ["- a\n- b", 1, 3, "tab", "- a\n\t- b", 1, 4],                                   // M27
@@ -1684,7 +1684,7 @@ document.addEventListener("selectionchange", () => {
    0-based FILE line, so duplicate / nested / quoted / numbered items map
    exactly (spec R2). The native toggle is cancelled — the MODEL decides the
    state (Ed.rvToggle), then the pane re-renders from it at once, with the
-   scroll put back (R4, stock Q5 keeps it). Keyboard (stock Q9: Tab to the box,
+   scroll put back (R4, Obsidian Q5 keeps it). Keyboard (Obsidian Q9: Tab to the box,
    Space) arrives here too: Space on a focused checkbox IS a click event. */
 document.addEventListener("click", e => {
   const cb = e.target;

@@ -1,4 +1,4 @@
-# case q09-quoteb — stock 1.13.7, display :136, 2026-09-25T15:18:04Z
+# case q09-quoteb — Obsidian 1.13.7, display :136, 2026-09-25T15:18:04Z
 # fixture (printf %b): > alpha\n> beta\n> gamma\n
 # steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle bullet list|d after
 --- before: q09-quoteb.md (23 bytes, md5 10871e1e43d402cfee6f935f8f2de059) cat -A ---

@@ -1,4 +1,4 @@
-# case q12b-clipmid0 — stock 1.13.7, display :136, 2026-09-25T15:57:43Z
+# case q12b-clipmid0 — Obsidian 1.13.7, display :136, 2026-09-25T15:57:43Z
 # fixture (printf %b): alpha\nbeta\ngamma\n
 # steps: k ctrl+Home Right Right shift+Down shift+Down shift+Home|p Toggle numbered list|d after|c clip
 --- before: q12b-clipmid0.md (17 bytes, md5 6c7831c26f0d0a5f807006854aa682f4) cat -A ---

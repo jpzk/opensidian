@@ -1,4 +1,4 @@
-# case q14-reading — stock 1.13.7, display :136, 2026-09-25T15:31:15Z
+# case q14-reading — Obsidian 1.13.7, display :136, 2026-09-25T15:31:15Z
 # fixture (printf %b): alpha\nbeta\ngamma\n
 # steps: k ctrl+e|s 1|v reading|p Toggle bullet list|d after|k Escape|k ctrl+e
 --- before: q14-reading.md (17 bytes, md5 6c7831c26f0d0a5f807006854aa682f4) cat -A ---

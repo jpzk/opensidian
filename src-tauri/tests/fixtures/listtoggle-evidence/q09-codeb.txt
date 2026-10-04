@@ -1,4 +1,4 @@
-# case q09-codeb — stock 1.13.7, display :136, 2026-09-25T15:20:08Z
+# case q09-codeb — Obsidian 1.13.7, display :136, 2026-09-25T15:20:08Z
 # fixture (printf %b): \0140\0140\0140\nalpha\n\0140\0140\0140\n
 # steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle bullet list|d after
 --- before: q09-codeb.md (14 bytes, md5 4da85ab595a9b286fa4882412441d1c6) cat -A ---

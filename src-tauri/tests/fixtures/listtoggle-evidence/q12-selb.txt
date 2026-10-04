@@ -1,4 +1,4 @@
-# case q12-selb — stock 1.13.7, display :136, 2026-09-25T15:24:06Z
+# case q12-selb — Obsidian 1.13.7, display :136, 2026-09-25T15:24:06Z
 # fixture (printf %b): alpha\nbeta\ngamma\n
 # steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle bullet list|d after|v sel|t Z|d sel
 --- before: q12-selb.md (17 bytes, md5 6c7831c26f0d0a5f807006854aa682f4) cat -A ---

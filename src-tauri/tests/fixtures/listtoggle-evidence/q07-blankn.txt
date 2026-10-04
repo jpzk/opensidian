@@ -1,4 +1,4 @@
-# case q07-blankn — stock 1.13.7, display :136, 2026-09-25T15:16:04Z
+# case q07-blankn — Obsidian 1.13.7, display :136, 2026-09-25T15:16:04Z
 # fixture (printf %b): alpha\n\nbeta\n
 # steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle numbered list|d after
 --- before: q07-blankn.md (12 bytes, md5 b3fd073d2e868269fe58da8382f39d66) cat -A ---

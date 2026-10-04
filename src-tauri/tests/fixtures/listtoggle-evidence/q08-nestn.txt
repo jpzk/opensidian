@@ -1,4 +1,4 @@
-# case q08-nestn — stock 1.13.7, display :136, 2026-09-25T15:17:04Z
+# case q08-nestn — Obsidian 1.13.7, display :136, 2026-09-25T15:17:04Z
 # fixture (printf %b): alpha\n\tbeta\n\tgamma\ndelta\n
 # steps: k ctrl+Home shift+Down shift+Down shift+Down shift+End|p Toggle numbered list|d after
 --- before: q08-nestn.md (25 bytes, md5 e21c0ac17c4ce192ab4aa067ce823848) cat -A ---

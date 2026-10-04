@@ -1,4 +1,4 @@
-# case q13-cont — stock 1.13.7, display :136, 2026-09-25T15:26:37Z
+# case q13-cont — Obsidian 1.13.7, display :136, 2026-09-25T15:26:37Z
 # fixture (printf %b): 1. one\ntwo\nthree\n
 # steps: k ctrl+Home Down shift+Down shift+End|p Toggle numbered list|d after
 --- before: q13-cont.md (17 bytes, md5 c5dce288dac284e568c7576d12536699) cat -A ---

@@ -1,4 +1,4 @@
-# case q12b-clipcol0 — stock 1.13.7, display :136, 2026-09-25T15:54:56Z
+# case q12b-clipcol0 — Obsidian 1.13.7, display :136, 2026-09-25T15:54:56Z
 # fixture (printf %b): alpha\nbeta\ngamma\n
 # steps: k ctrl+Home shift+Down shift+Down|p Toggle bullet list|d after|c clip
 --- before: q12b-clipcol0.md (17 bytes, md5 6c7831c26f0d0a5f807006854aa682f4) cat -A ---

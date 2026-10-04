@@ -7,7 +7,7 @@ expected obsidian theme folder we would write them out and use them from
 there. no hardcoded themes in the source code."
 
 So the colours live in `src-tauri/themes/<Name>/{manifest.json,theme.css}` —
-ordinary theme directories in stock's own layout — and this module does the
+ordinary theme directories in Obsidian's own layout — and this module does the
 one thing a binary still has to do: carry those bytes so the app can WRITE
 them out on a vault that has no themes (ledger item 4). `include_str!` embeds
 the asset; it does not re-declare it. The distinction is the whole point and
@@ -46,7 +46,7 @@ use std::sync::Mutex;
 
 /// One shipped theme: the bytes of a real theme directory. `name` is BOTH the
 /// directory name and the manifest's `name`, because `themefs::themes_scan`
-/// (the oracle's predicate, measured from stock in recon T1/T7) lists a theme
+/// (the oracle's predicate, measured from Obsidian in recon T1/T7) lists a theme
 /// only when those two agree.
 pub struct BuiltinTheme {
     pub name: &'static str,
@@ -101,7 +101,7 @@ pub fn is_builtin(name: &str) -> bool {
 
 /* ============================ R3 — SEEDING ================================
 The one thing in this app that writes into `.obsidian/themes/`. The scan
-itself still creates NOTHING (T1/T3 RESULT 1: stock creates neither `themes/`
+itself still creates NOTHING (T1/T3 RESULT 1: Obsidian creates neither `themes/`
 nor `snippets/`), so seeding is a separate, explicit boot step and it is named
 as one, on stderr, every time it runs.
 
@@ -126,7 +126,7 @@ Read against C3's three legs, which is why it is a file and not a flag:
 
 A USER EDIT SURVIVES, because an existing file is never opened. The cost of
 that rule, stated plainly: a built-in the user deliberately deleted returns on
-the next boot — the same thing stock does with a vault's config files, and the
+the next boot — the same thing Obsidian does with a vault's config files, and the
 direction that cannot lose bytes. An edit that makes the theme unlistable is
 NOT repaired either; `themes_scan` already reports it with a reason (R6), and
 guessing that a broken manifest was not meant would mean overwriting it.
@@ -256,7 +256,7 @@ mod tests {
     }
 
     /// THE criterion of ledger item 3 (C3's first leg): our OWN listing
-    /// predicate — the one measured off stock — accepts every asset we ship.
+    /// predicate — the one measured off Obsidian — accepts every asset we ship.
     /// A built-in that the scan would exclude is a built-in the picker never
     /// shows, and the failure would only surface on a user's disk.
     #[test]
@@ -274,7 +274,7 @@ mod tests {
     /// The predicate's two halves, asserted directly so a failure says WHICH:
     /// the manifest parses as an object, and its `name` is the directory name.
     #[test]
-    fn builtin_manifests_carry_stocks_shape_and_name_their_directory() {
+    fn builtin_manifests_carry_the_community_shape_and_name_their_directory() {
         for t in BUILTIN_THEMES {
             let v: serde_json::Value = serde_json::from_str(t.manifest)
                 .unwrap_or_else(|e| panic!("{}: manifest.json does not parse: {e}", t.name));
@@ -285,7 +285,7 @@ mod tests {
                 "{}: manifest name must equal the directory name",
                 t.name
             );
-            // stock's own theme manifests carry these (docs/fixtures/themefs/
+            // community theme manifests carry these (docs/fixtures/themefs/
             // vault-minimal/.obsidian/themes/Minimal/manifest.json)
             for k in ["version", "minAppVersion", "author"] {
                 assert!(o.contains_key(k), "{}: manifest has no {k:?}", t.name);
@@ -333,9 +333,9 @@ mod tests {
 
        What is TRUE now, and checked instead: each asset is the pinned upstream
        file byte for byte (below), the listing predicate accepts it (above),
-       the sanitizer accepts it (above), and it declares the stock names our
-       chrome bridge and stock-default sheet are driven by (themefs.rs,
-       `themefs_stockdef_builtins_drive_the_bridge_and_the_stock_defaults`). */
+       the sanitizer accepts it (above), and it declares the Obsidian variable names our
+       chrome bridge and derived-default sheet are driven by (themefs.rs,
+       `themefs_derivdef_builtins_drive_the_bridge_and_the_derived_defaults`). */
 
     /// (directory/manifest name, upstream repo, pinned commit,
     ///  sha256(manifest.json), sha256(theme.css)) — the bytes fetched from
@@ -407,11 +407,11 @@ mod tests {
         );
     }
 
-    /// The built-in Minimal and the cargo fixture installed by stock 1.13.7
+    /// The built-in Minimal and the cargo fixture installed by Obsidian 1.13.7
     /// (tests/fixtures/themefs/Minimal, the bridge tests' input) are the SAME
     /// bytes — one upstream release, not two copies that can drift apart.
     #[test]
-    fn builtin_minimal_is_byte_identical_to_the_stock_installed_fixture() {
+    fn builtin_minimal_is_byte_identical_to_the_installed_fixture() {
         let m = BUILTIN_THEMES.iter().find(|t| t.name == "Minimal").expect("Minimal ships");
         assert_eq!(m.manifest, include_str!("../tests/fixtures/themefs/Minimal/manifest.json"));
         assert_eq!(m.css, include_str!("../tests/fixtures/themefs/Minimal/theme.css"));

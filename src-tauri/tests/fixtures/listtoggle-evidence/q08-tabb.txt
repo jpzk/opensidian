@@ -1,4 +1,4 @@
-# case q08-tabb — stock 1.13.7, display :136, 2026-09-25T15:16:24Z
+# case q08-tabb — Obsidian 1.13.7, display :136, 2026-09-25T15:16:24Z
 # fixture (printf %b): \talpha\n\tbeta\n\tgamma\n
 # steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle bullet list|d after
 --- before: q08-tabb.md (20 bytes, md5 183c0cc3abc99ae9eb57b846487d2821) cat -A ---

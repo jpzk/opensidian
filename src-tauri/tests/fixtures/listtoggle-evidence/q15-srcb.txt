@@ -1,4 +1,4 @@
-# case q15-srcb — stock 1.13.7, display :136, 2026-09-25T15:28:54Z
+# case q15-srcb — Obsidian 1.13.7, display :136, 2026-09-25T15:28:54Z
 # fixture (printf %b): alpha\nbeta\ngamma\n
 # steps: p Toggle Live Preview/Source mode|v src|k ctrl+Home shift+Down shift+Down shift+End|p Toggle bullet list|d after|p Toggle Live Preview/Source mode
 --- before: q15-srcb.md (17 bytes, md5 6c7831c26f0d0a5f807006854aa682f4) cat -A ---

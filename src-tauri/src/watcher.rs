@@ -9,7 +9,7 @@
 //! pair with identical content is reported as a rename ONLY when the pairing
 //! is unambiguous (one candidate on each side, non-blank bytes); otherwise it
 //! is delete+create, because a guessed rename retitles one tab and closes
-//! another with nothing behind the choice (the stock app treats a rename as
+//! another with nothing behind the choice (Obsidian treats a rename as
 //! delete+create too — the UI does the same, the pair is just not
 //! double-counted). A claimed REMOVAL is never believed on the walk's word:
 //! the tick re-walks and stats it (heal_short_walk), because a short walk and

@@ -1,4 +1,4 @@
-# case q13-offmid — stock 1.13.7, display :136, 2026-09-25T15:27:54Z
+# case q13-offmid — Obsidian 1.13.7, display :136, 2026-09-25T15:27:54Z
 # fixture (printf %b): 1. a\n2. b\n3. c\n4. d\n
 # steps: k ctrl+Home Down shift+Down shift+End|p Toggle numbered list|d after
 --- before: q13-offmid.md (20 bytes, md5 40669fc2edfdf27c03bf7317588ac584) cat -A ---

@@ -1,4 +1,4 @@
-# case q09-headb — stock 1.13.7, display :136, 2026-09-25T15:18:42Z
+# case q09-headb — Obsidian 1.13.7, display :136, 2026-09-25T15:18:42Z
 # fixture (printf %b): # alpha\nbeta\ngamma\n
 # steps: k ctrl+Home shift+Down shift+Down shift+End|p Toggle bullet list|d after
 --- before: q09-headb.md (19 bytes, md5 0e8357bf4cab86f5792e230c1cc1c712) cat -A ---

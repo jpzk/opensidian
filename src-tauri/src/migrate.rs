@@ -28,8 +28,8 @@
    - The old "palette" key in ~/.opensidian.json was already dead before this
      goal (main.rs, "THE PALETTE AXIS IS GONE"): unread, round-tripped, never
      applied. Nothing to migrate.
-   - A vault's CHOICE lives in stock's own `.obsidian/appearance.json`
-     (`cssTheme`). It is NOT rewritten: that file is shared with the stock app
+   - A vault's CHOICE lives in Obsidian's own `.obsidian/appearance.json`
+     (`cssTheme`). It is NOT rewritten: that file is shared with Obsidian
      and we round-trip it byte-wise (themefs.rs), so an upgrade must not edit
      it behind the user's back.
    - The vault still has the old theme dir (every vault v0.1 opened does,
@@ -274,7 +274,7 @@ mod tests {
         let _ = fs::remove_dir_all(&v);
     }
 
-    /// Upgrade leg 2: the dir is gone. The choice is NOT rewritten (stock's
+    /// Upgrade leg 2: the dir is gone. The choice is NOT rewritten (Obsidian's
     /// file), and the name is not listed — which is exactly the condition
     /// under which the frontend paints the default theme (AnuPpuccin). Dropping the folder back in
     /// lists it again with no other step.
@@ -286,7 +286,7 @@ mod tests {
         let s = crate::themefs::themes_scan(&v);
         assert!(!s.listed.iter().any(|l| l == "Wasp"), "a theme with no dir cannot be listed: {s:?}");
         assert_eq!(s.listed.len(), crate::builtins::BUILTIN_THEMES.len(), "{s:?}");
-        assert_eq!(crate::themefs::css_theme(&v), "Wasp", "the stored choice is left as the user/stock wrote it");
+        assert_eq!(crate::themefs::css_theme(&v), "Wasp", "the stored choice is left as the user/Obsidian wrote it");
         assert_eq!(fs::read(v.join(".obsidian/appearance.json")).unwrap(), app_before, "appearance.json rewritten");
         // reversible: the folder comes back -> the choice is live again
         let d = v.join(".obsidian/themes/Wasp");
