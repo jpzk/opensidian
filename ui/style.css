@@ -28,14 +28,14 @@
 /* THE INVERSION (themeone item 5, DESIGN §2 "INVERT, do not extend").
    Three layers, and the direction of every arrow is the whole point:
 
-     LAYER 1  stock's names, derived from stock's ramp — the values live HERE
+     LAYER 1  Obsidian's theme names, on a ramp — the values live HERE
      LAYER 2  our names, each RESOLVED FROM the layer-1 name it corresponds to
-     LAYER 3  ours alone: no stock name was measured for these
+     LAYER 3  ours alone: no Obsidian theme name exists for these
 
-   WHY body AND NOT :root. T6 RESULT 3 measured stock's mode switch as a CLASS
-   ON <body>, and T6b/C measured that the SAME declaration on html changes
-   nothing (the same sentinel-magenta declaration on html -> 0 px, on body ->
-   650344 px). A theme therefore declares on body.theme-dark / body.theme-light.
+   WHY body AND NOT :root. T6 RESULT 3 found Obsidian's mode switch is a CLASS
+   ON <body>, and T6b/C found that the SAME declaration on html changes
+   nothing (a sentinel declaration paints on body, not on html).
+   A theme therefore declares on body.theme-dark / body.theme-light.
    Custom-property substitution happens on the element that CARRIES the
    declaration, so a chain written at :root would substitute :root's own value
    and could never see the theme's — inheriting the RESULT, not the lookup.
@@ -53,16 +53,16 @@
    follows whatever layer 1 says in this mode); only layers 1 and 3 have a
    light variant. The old cascade hazard — "add a token to one palette variant
    and not the other" — is gone with the palette blocks that caused it.
-   The light selector is body.theme-light, the SAME specificity (0,1,1) stock
+   The light selector is body.theme-light, the SAME specificity (0,1,1) Obsidian
    themes use, so a theme's own light rules tie with ours and win on order
    (#vault-theme is injected into <head> after this stylesheet, main.js
    themeInject). The old :root[data-theme="light"] was (0,2,0) and OUT-RANKED
-   every stock-shaped light rule a theme could write — that shadowing is what
+   every Obsidian-shaped light rule a theme could write — that shadowing is what
    main.js:4698 warned about, and it ends here. */
 /* THEME TOKENS BEGIN */
 body {
-  /* ======================= LAYER 1 — STOCK'S NAMES ========================
-     Stock ships a TWO-layer palette (T6b): a low-level --color-* ramp and
+  /* ======================= LAYER 1 — OBSIDIAN'S THEME NAMES ===========
+     The theme format has a TWO-layer palette (T6b): a low-level --color-* ramp and
      semantic names derived from it, and a real third-party theme commonly
      enters at the ramp and never spells the semantic name. So each row below
      is `var(<ramp name>, <our literal>)` where the ramp pairing is EVIDENCED,
@@ -70,33 +70,29 @@ body {
      none: it hands a surface to a name we never measured.
      Evidence key — T6b = docs/recon-themes/logs/t6b-cascade.log, where the
      ramp row produced the SAME pixel count as the semantic name it feeds;
-     R15.14 = docs/requirements.md, stock's own derivation as recorded there;
+     R15.14 = docs/requirements.md, the derivation as recorded there;
      T9 = docs/recon-themes/README.md (the graph canvas). */
-  --background-primary: var(--color-base-00, #1c1c1c);        /* T6b: base-00 = 650344 px = --background-primary; value: themelight BEFORE audit, stock dark body px 28.28.28 */
-  --background-primary-alt: var(--color-base-10, #232323);    /* T6b: base-10 = 5620 px = the code/alt surface */
-  --background-secondary: #282828;                            /* no ramp row measured; value: themelight audit, stock dark side/status px 40.40.40 */
+  --background-primary: var(--color-base-00, #1c1c1c);        /* T6b: base-00 = --background-primary; value: themelight audit */
+  --background-primary-alt: var(--color-base-10, #232323);    /* T6b: base-10 = the code/alt surface */
+  --background-secondary: #282828;                            /* no ramp row measured; value: themelight audit */
   --background-secondary-alt: #313244;                        /* no ramp row measured */
-  --ribbon-background: #282828;                               /* no ramp row measured; value: themelight audit, stock dark ribbon px 40.40.40 */
-  --background-modifier-border: var(--color-base-30, #45475a);/* T6b: base-30 = 3486 px = --divider-color/--background-modifier-border */
-  --indentation-guide-color: rgba(255, 255, 255, 0.12);   /* listlinks REQ-9: stock dark guide = gray 55 on bg 28 */
+  --ribbon-background: #282828;                               /* no ramp row measured; value: themelight audit */
+  --background-modifier-border: var(--color-base-30, #45475a);/* T6b: base-30 = --divider-color/--background-modifier-border */
+  --indentation-guide-color: rgba(255, 255, 255, 0.12);   /* listlinks REQ-9: a faint guide on the note surface */
   --text-normal: var(--color-base-100, #dadada);              /* R15.14: --text-normal: var(--color-base-100) */
   --text-muted: var(--color-base-70, #b3b3b3);                /* R15.14 */
   --text-faint: var(--color-base-50, #666666);                /* R15.14 */
-  --text-error: var(--color-red, #f5c2c7);                    /* T6b: color-red = 23 px = --text-error */
-  /* ---- THE ACCENT CHAIN (goal themematch). Stock derives every accent
-     surface from ONE triple, --accent-h/-s/-l, through --color-accent and two
-     shifted steps. The step factors below are FITTED to stock pixels
-     (docs/themelight/before, default theme, stock_px column), not read from
-     any bundle:
-       dark  link/tag ink   166.138.249 = triple at h-3, s x1.02, l x1.15
-       dark  link hover     197.182.252 = triple at h-5, s x1.05, l x1.29
-       dark  toggle/button  138.92.245  = the triple itself
-       light link/tag ink   138.92.245  = the triple itself
-       light toggle/check   152.115.247 = triple at h-1, s x1.01, l x1.075
-       light link hover     166.138.249 = the dark step-1 shift
+  --text-error: var(--color-red, #f5c2c7);                    /* T6b: color-red = --text-error */
+  /* ---- THE ACCENT CHAIN (goal themematch). Obsidian themes derive every
+     accent surface from ONE triple, --accent-h/-s/-l, through --color-accent
+     and two shifted steps. The step factors below are FITTED in the
+     themelight audit (docs/themelight/before, default theme), not read from
+     any bundle: step 1 paints link/tag ink (dark) and link hover (light),
+     step 2 paints link hover (dark); the triple itself paints toggles and
+     buttons (dark) and link/tag ink (light).
      A theme that sets only the triple (Minimal does, on body) therefore moves
      links, tags, toggles, buttons, checkboxes and selection together, as in
-     stock. The old row was a hardcoded blue link colour: the operator's
+     Obsidian. The old row was a hardcoded blue link colour: the operator's
      "accent colours are off". */
   --accent-h: 258;
   --accent-s: 88%;
@@ -107,18 +103,15 @@ body {
   --text-accent: var(--color-accent-1);
   --text-accent-hover: var(--color-accent-2);
   --interactive-accent: var(--color-accent);
-  /* selection: stock paints --interactive-accent at alpha .33 (dark) / .2 (light):
-     fitted to stock px over 4 themes (default 63.48.99 over 28, Wasp 106.89.42
-     over 36, 1984 89.12.114 over 13) — Wasp/1984 declare only --interactive-accent
-     and stock still tints selection with it, so the triple is the wrong source.
-     tag pill: stock 39.34.50 dark / 244.241.254 light = the triple at .1 */
+  /* selection: --interactive-accent at alpha .33 (dark) / .2 (light), fitted in
+     the themelight audit over 4 themes — Wasp/1984 declare only
+     --interactive-accent and Obsidian still tints selection with it, so the
+     triple is the wrong source. tag pill: the triple at .1 */
   --text-selection: color-mix(in srgb, var(--interactive-accent) 33%, transparent);
   --tag-background: hsla(var(--accent-h), var(--accent-s), var(--accent-l), .1);
-  /* ---- chrome surfaces stock names (themelight audit, stock dark px):
-     active tree row 54 over sidebar 40 and the selected palette row 43 over
-     28 are the SAME white veil (alpha .067); tab strip + title 51; active tab
-     = the note surface; the focused search field's border 85; file tree ink
-     = --text-muted (179). */
+  /* ---- chrome surfaces under Obsidian's theme names (themelight audit):
+     the active tree row and the selected palette row are the SAME white veil;
+     the active tab = the note surface; file tree ink = --text-muted. */
   --background-modifier-hover: rgba(255, 255, 255, .067);
   --background-modifier-border-focus: #555555;
   --nav-item-color: var(--text-muted);
@@ -129,7 +122,7 @@ body {
   --text-highlight-bg: rgba(249,226,175,.35);
   /* ============ LAYER 2 — OUR NAMES, RESOLVED FROM LAYER 1 ================
      One definition per surface. These rows carry NO colour: the value is
-     wherever the stock name landed on this element. Pairings are the ones the
+     wherever the layer-1 name landed on this element. Pairings are the ones the
      item-3 generator emitted into the built-in assets (scripts/gen-builtin-
      themes.sh, "THE MAPPING TABLE"), which is the same table read backwards.
      THREE PAIRS COLLAPSED HERE, and the default's pixels moved because of it:
@@ -155,13 +148,12 @@ body {
   --text-banner-error: var(--text-error);
   --accent-blue: var(--text-accent);
   /* THE GRAPH CANVAS (2D fill + WebGL clear). MEASURED, not chosen: T9
-     (docs/recon-themes/README.md, "which stock name paints the GRAPH VIEW
-     canvas background") painted stock's graph with --background-primary in
-     BOTH graphs and BOTH modes — global dark 228790 px, local dark 149269 px,
-     global light 216693 px, local light 148213 px of sentinel, each filling
-     its pane — while --graph-bg itself moved 0 px there, i.e. it is OUR name
+     (docs/recon-themes/README.md, "which theme name paints the GRAPH VIEW
+     canvas background") found Obsidian's graph painted with --background-primary
+     in BOTH graphs and BOTH modes, each filling its pane — while --graph-bg
+     itself moved nothing there, i.e. it is OUR name
      and no theme will ever spell it. So the row belongs HERE, in layer 2, and
-     not in layer 3 where item 5 parked it: one hop to the stock name, and
+     not in layer 3 where item 5 parked it: one hop to the layer-1 name, and
      because --background-primary is itself var(--color-base-00, ...), a theme
      that enters at the RAMP and never spells a semantic name reaches the
      canvas too. That is the Solarized-class entry point T9 measured, and it
@@ -174,15 +166,15 @@ body {
      the hole it sits in — and made every theme wrong, because a theme that
      repaints the editor background does not repaint our ribbon. */
   --graph-bg: var(--background-primary);
-  --accent-red: var(--color-red, #f38ba8);   /* ramp only: stock's --color-red IS this surface (T6b), and no semantic name of ours sits between */
+  --accent-red: var(--color-red, #f38ba8);   /* ramp only: the theme format's --color-red IS this surface (T6b), and no semantic name of ours sits between */
   --tag-bg: var(--tag-background);
   --highlight-yellow: var(--text-highlight-bg);
   /* ---- R15.10-13 CONTENT COLOURS, MOVED HERE FROM :root (typo regression) --
-     These seven rows derive a content-area colour from a layer-1 stock name,
+     These seven rows derive a content-area colour from a layer-1 theme name,
      so they are layer 2 by definition and they have to be DECLARED where
      layer 1 is. They used to sit in the R15 typography block at `:root`
      (html) with the rest of that block, which was correct while layer 1 also
-     lived at `:root` — item 5 moved layer 1 onto `body` (a stock theme
+     lived at `:root` — item 5 moved layer 1 onto `body` (an Obsidian theme
      declares on body.theme-dark / body.theme-light, T6 RESULT 3), and a
      `var()` naming a property the element does not have resolves to the
      GUARANTEED-INVALID value, not to a fallback that was never written. So
@@ -190,7 +182,7 @@ body {
      down: `background-color: var(--code-background)` and
      `border-inline-start: 2px solid var(--blockquote-border-color)` are then
      INVALID AT COMPUTED-VALUE TIME and drop out entirely. That is what the
-     gate measured: CODE_H=1 (no code box to trim — stock 22) and
+     gate measured: CODE_H=1 (no code box to trim at all) and
      BQ_BORDER_W / LP_BQ_TEXT_X empty (no blockquote border to find).
      The metric half of the R15 block (sizes, weights, indents, radii) names
      no colour and stays at `:root`, where the fonts and the layout numbers
@@ -205,12 +197,12 @@ body {
   --code-background: var(--bg-surface);
   --blockquote-border-color: var(--text-accent);
   /* ==================== LAYER 3 — OURS ALONE =============================
-     An editor has surfaces a stock recon never showed painting through any
+     An editor has surfaces the theme recon never showed painting through any
      name we probed (a ribbon ink, an elevated popover, a faint rule, the
      scrims and shadows, the bookmark drop feedback). They keep OUR names and
      OUR values, which is legal for any theme file to declare — the built-in
      assets declare every one of them, and a third-party theme may too. */
-  --bg-elevated: var(--modal-background, var(--background-primary));   /* stock palette card = the note surface (audit pal: 28 dark, 255 light) */
+  --bg-elevated: var(--modal-background, var(--background-primary));   /* palette card = the note surface (themelight audit) */
   --bg-banner-error: #45283c;
   --bg-button-plain: #e0e0e0;
   --bg-button-default: #fff;   /* the focused (default) answer in the rename/delete prompts. Ours, not --text-on-accent: a theme with a light accent sets that one DARK (AnuPpuccin: its base), which painted the default button in the label colour */
@@ -223,7 +215,7 @@ body {
   --text-on-accent: #fff;
   --text-quiet: #bac2de;
   --link-unresolved: #7c86c8;
-  --link-unresolved-underline: color-mix(in srgb, currentColor 30%, transparent);   /* listlinks REQ-15: stock underline = link colour at 0.3 alpha */
+  --link-unresolved-underline: color-mix(in srgb, currentColor 30%, transparent);   /* listlinks REQ-15: underline = link colour at 0.3 alpha */
   --accent-mauve: var(--color-accent, #cba6f7);
   --accent-yellow: #f9e2af;
   --accent-green: #a6e3a1;
@@ -233,7 +225,7 @@ body {
   --shadow-modal: rgba(0,0,0,.5);
   --shadow-drop: #0008;
   --accent-blue-veil: rgba(137,180,250,.22);
-  /* ---- bmdrag drop feedback: values MEASURED on stock (docs/recon-bmdrag) —
+  /* ---- bmdrag drop feedback: values MEASURED in the bmdrag recon (docs/recon-bmdrag) —
      the gap indicator line (cases 1/3), the onto-a-group row fill + its ink
      (case 2), and the dragged row's own fill (case 1). ---- */
   --bm-drop-line: #9873F7;
@@ -244,8 +236,8 @@ body {
   --transparent: transparent;
 }
 /* ---------------------------------------------------------------------------
-   LIGHT. Every value below was SAMPLED from a pixel of a running stock instance
-   in its light theme (moonstone) — shot file + x,y per value in
+   LIGHT. Every value below was SAMPLED from a pixel of a running Obsidian
+   instance in its light theme — shot file + x,y per value in
    notes/theme/provenance.txt, sampler and shots in notes/theme/light-sample/.
    Nothing here was invented, eyeballed or read out of a bundle.
    A token absent from this block KEEPS its value above on purpose: alpha
@@ -255,39 +247,37 @@ body {
    resolves against whatever layer 1 says on this element, so re-declaring it
    per mode could only introduce a disagreement.
    --------------------------------------------------------------------------- */
-/* body:where(.theme-light) = (0,0,1), NOT body.theme-light (0,1,1): stock
+/* body:where(.theme-light) = (0,0,1), NOT body.theme-light (0,1,1): Obsidian
    ships its light palette at .theme-light and a theme wins over it ON ORDER. Minimal 9.0.2
    declares at .theme-light, so body.theme-light out-ranked every light row it
-   wrote (themelight BEFORE: Minimal light text 34 vs stock 15, links blue).
+   wrote (themelight BEFORE: Minimal's light text and links lost to ours).
    Ours now ties the dark block (body, 0,0,1) and wins it on order; every
    theme rule (.theme-light, body.theme-light, or body after this sheet)
    beats it. :where() keeps the lint-colors selector shape (^body). */
 body:where(.theme-light) {
-  /* ---- layer 1: stock's names ---- */
+  /* ---- layer 1: Obsidian's theme names ---- */
   --background-primary: var(--color-base-00, #ffffff);
   --background-primary-alt: var(--color-base-10, #fafafa);
   --background-secondary: #f6f6f6;
   --background-secondary-alt: #e5e5e5;
   --ribbon-background: #f6f6f6;
   --background-modifier-border: var(--color-base-30, #e4e4e4);
-  --indentation-guide-color: rgba(0, 0, 0, 0.12);         /* listlinks REQ-9: stock light guide = gray 224 on bg 255 */
+  --indentation-guide-color: rgba(0, 0, 0, 0.12);         /* listlinks REQ-9: a faint guide on the note surface */
   --text-normal: var(--color-base-100, #222222);
   --text-muted: var(--color-base-70, #5c5c5c);
   --text-faint: var(--color-base-50, #ababab);
   --text-error: var(--color-red, #e93147);
   --text-highlight-bg: #ffec99;
-  /* the accent chain in light (factors fitted to stock light px, see the
-     dark block): ink = the triple, fills = step 1, hover = step 2 */
+  /* the accent chain in light (factors fitted in the themelight audit, see
+     the dark block): ink = the triple, fills = step 1, hover = step 2 */
   --color-accent-1: hsl(calc(var(--accent-h) - 1), calc(var(--accent-s) * 1.01), calc(var(--accent-l) * 1.075));
   --color-accent-2: hsl(calc(var(--accent-h) - 3), calc(var(--accent-s) * 1.02), calc(var(--accent-l) * 1.15));
   --text-accent: var(--color-accent);
   --interactive-accent: var(--color-accent-1);
-  /* stock light selection 234.227.253 over 255 = --interactive-accent at .2
-     (Wasp 206.195.168 over 196, 1984 231.184.246 over 228 agree); tree
-     row 229 over 246 and palette row 238 over 255 = black at .067; tab strip
-     and title 252; focused field border 189 */
+  /* light selection = --interactive-accent at .2 (Wasp and 1984 agree); the
+     tree row and palette row hover = black at .067 */
   --text-selection: color-mix(in srgb, var(--interactive-accent) 20%, transparent);
-  /* stock light search/filter field paper (Wasp light: 255 field on a 196 page) */
+  /* light search/filter field paper: white even on a tinted page (Wasp light) */
   --background-modifier-form-field: #ffffff;
   --background-modifier-hover: rgba(0, 0, 0, .067);
   --background-modifier-border-focus: #bdbdbd;
@@ -309,10 +299,10 @@ body:where(.theme-light) {
 }
 /* THEME TOKENS END */
 * { box-sizing: border-box; margin: 0 }
-/* goal fontset REQ-9: stock's token chain, declared ON BODY because that is where
+/* goal fontset REQ-9: Obsidian's font token chain, declared ON BODY because that is where
    the Settings rows write their inline --font-<kind>-override (a chain on :root
    would resolve before it ever saw them). Unset overrides are the "??" family no
-   font matches, as in stock, so each chain falls through to its default stack;
+   font matches, as in Obsidian, so each chain falls through to its default stack;
    chrome keeps its old system-ui stack, text and code their R15 stacks. */
 body { --font-interface-override: "??"; --font-text-override: "??"; --font-monospace-override: "??";
        --font-interface: var(--font-interface-override), system-ui, sans-serif;
@@ -353,9 +343,9 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 #ldiv:hover, #ldiv:active { background: var(--border-strong) }
 #ldiv[hidden] { display: none }
 /* collapseall R3: #bmbar is the bookmarks pane header, built the same as #bar so
-   both toggles paint alike; .hslot = a RESERVED stock slot (sort / auto-reveal /
+   both toggles paint alike; .hslot = a RESERVED header slot (sort / auto-reveal /
    add bookmark / new group / search filter — out of scope, spec R3): it takes a
-   button's width and paints nothing, so the toggle sits in stock's slot ORDER.
+   button's width and paints nothing, so the toggle sits in Obsidian's slot ORDER.
    #bar keeps its height (the tree's first row stays at y=82, R8). */
 #bar, #bmbar { display: flex; gap: 4px; padding: 6px; flex-shrink: 0 }
 .hslot { flex: 1; min-width: 0 }
@@ -376,7 +366,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
           padding: 0 4px; border-radius: 4px }
 #sclear:hover { color: var(--text-chrome); background: var(--bg-surface) }
 #sresults { flex: 1; overflow-y: auto; font-size: 12px }
-.sgroup { padding: 5px 8px 2px; color: var(--text-chrome); font-weight: 600; font-size: var(--sidebar-font-size);   /* sidefont: stock file rows = Q1; .shit snippets keep 12px */
+.sgroup { padding: 5px 8px 2px; color: var(--text-chrome); font-weight: 600; font-size: var(--sidebar-font-size);   /* sidefont: file rows = Q1; .shit snippets keep 12px */
           cursor: pointer; white-space: nowrap; overflow: hidden;
           text-overflow: ellipsis }
 .sgroup:hover { background: var(--bg-surface) }
@@ -400,7 +390,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 .bmrow .bmstar svg { width: 13px; height: 13px }
 /* bmfolder: a GROUP row. The chevron sits in the same icon slot as a file row's
    bookmark glyph, so a group and a file at the same depth put their labels at
-   the same x (measured on stock, docs/recon-bmfolder/14-saved.png). The DEPTH
+   the same x, as in Obsidian (docs/recon-bmfolder). The DEPTH
    is painted as padding-left on the row itself (renderBm: 12px + 17px/level), so
    the content shifts while the row background still spans the whole pane. */
 .bmrow .bmchev { color: var(--text-chrome-dim); display: flex }
@@ -414,9 +404,9 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
                 border: 1px solid var(--border-focus-ring); border-radius: 3px;
                 font: inherit; padding: 0 4px; outline: none }
 .bmrow:hover { background: var(--bg-surface) }
-/* bmdrag drop feedback — geometry as MEASURED on stock (docs/recon-bmdrag/
-   README): the between-rows/background indicator is a 3px line spanning the
-   pane (cases 1/3 — stock's own render wobbles a pixel on subpixel offset, so
+/* bmdrag drop feedback — geometry as MEASURED in the bmdrag recon
+   (docs/recon-bmdrag/README): the between-rows/background indicator is a 3px line spanning the
+   pane (cases 1/3 — Obsidian's own render wobbles a pixel on subpixel offset, so
    phases assert colour+position, never AA), onto-a-group is a full-row fill
    with NO line (case 2), and the dragged row keeps its fill while the drag is
    live (case 1). Colours live in the theme-token block (lint-colors). AFTER
@@ -425,10 +415,10 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 #bmdropline { position: fixed; height: 3px; background: var(--bm-drop-line); z-index: 98; pointer-events: none }
 .bmrow.bmdrop-into, .bmrow.bmdrop-into:hover { background: var(--bm-drop-into-bg); color: var(--bm-drop-into-fg) }
 .bmrow.bmdrop-src, .bmrow.bmdrop-src:hover { background: var(--bm-drop-src-bg) }
-/* ux-2 stock parity. HEIGHT MUST STAY 31px — smoke clicks rows at pitch 31 */
+/* ux-2 Obsidian parity. HEIGHT MUST STAY 31px — smoke clicks rows at pitch 31 */
 .trow { height: 31px; display: flex; align-items: center; cursor: pointer;
         margin: 0 8px; padding: 0 4px; border-radius: 5px;
-        font-size: var(--sidebar-font-size); color: var(--nav-item-color) }   /* themematch: stock tree ink = --nav-item-color (muted), not body ink */
+        font-size: var(--sidebar-font-size); color: var(--nav-item-color) }   /* themematch: tree ink = --nav-item-color (muted), not body ink */
 .trow:hover { background: var(--bg-surface) }
 .trow.active { background: var(--nav-item-background-active); color: var(--nav-item-color-active) }
 .tkids.collapsed { display: none }   /* R20: collapsed folder = its .tkids box hidden, rows stay built */
@@ -463,7 +453,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 #rpane-graph[hidden] { display: none }
 .rhead { padding: 6px 10px 4px; font-size: 12px; font-weight: 600; color: var(--text-chrome) }
 .rhead .scount { color: var(--text-chrome-dim); font-weight: 400; margin-left: 4px }
-.rlist { flex: 1; overflow-y: auto; font-size: var(--sidebar-font-size) }   /* sidefont: stock backlinks/outgoing/outline rows = Q1 (docs/recon-sidefont Q3) */
+.rlist { flex: 1; overflow-y: auto; font-size: var(--sidebar-font-size) }   /* sidefont: backlinks/outgoing/outline rows = Q1 (docs/recon-sidefont Q3) */
 .rempty { padding: 8px 10px; color: var(--text-chrome-dim) }
 .blnote { padding: 4px 8px; color: var(--text-chrome); cursor: pointer; display: flex;
           align-items: center; gap: 4px; white-space: nowrap; overflow: hidden }
@@ -473,7 +463,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 .blnote.open .tc svg { transform: rotate(90deg) }
 .blnote .bln { flex: 1; overflow: hidden; text-overflow: ellipsis }
 .blnote .scount { color: var(--text-chrome-dim) }
-.blline { padding: 2px 8px 2px 24px; color: var(--text-chrome-muted); cursor: pointer; font-size: 12px;   /* sidefont: context SNIPPET, stock 12px < Q1 (Q3) */
+.blline { padding: 2px 8px 2px 24px; color: var(--text-chrome-muted); cursor: pointer; font-size: 12px;   /* sidefont: context SNIPPET, smaller than Q1 (Q3) */
           white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
 .blline:hover { background: var(--bg-surface) }
 .blline mark { background: none; color: var(--accent-yellow) }
@@ -525,10 +515,10 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
    overflow:hidden all the way down, so a pane squeezed to a few px clips the
    strip instead of pushing #main (and the window) wider than the viewport. */
 .tabbar { display: flex; height: 32px; background: var(--tab-container-background); flex-shrink: 0;
-          min-width: 0; overflow: hidden; user-select: none }   /* R18: a missed tab grab must not start a text-selection DnD (stock: tab strip unselectable) */
+          min-width: 0; overflow: hidden; user-select: none }   /* R18: a missed tab grab must not start a text-selection DnD (Obsidian: tab strip unselectable) */
 .tabs { display: flex; flex: 1 1 0; min-width: 0; overflow: hidden }
 /* R4X.1 (navbtn): Back/Forward at the header's left edge (docs/recon-navbtn §1—§3).
-   Stock: enabled = dark glyph, disabled = light grey, hover paints a rounded
+   Obsidian: enabled = dark glyph, disabled = light grey, hover paints a rounded
    light rect ONLY when enabled; the title tooltip shows in both states.
    R22: shrinkable + overflow:hidden so a squeezed pane clips, never overflows. */
 .navbtns { display: flex; align-items: center; flex: 0 1 auto; min-width: 0;
@@ -550,7 +540,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 .tab { width: 120px; min-width: 0; flex-shrink: 1; overflow: hidden; display: flex; align-items: center;
        gap: 6px; padding: 0 8px; background: var(--bg-surface); color: var(--text-chrome-muted);
        cursor: pointer; font-size: 12px; border-right: 2px solid var(--bg-ribbon) }   /* R22: overflow:hidden — the 16px close button + 16px padding cannot fit a 2px tab, so clip */
-.tab.active { background: var(--tab-background-active); color: var(--text-chrome) }   /* themematch: stock active tab = the note surface */
+.tab.active { background: var(--tab-background-active); color: var(--text-chrome) }   /* themematch: active tab = the note surface */
 .tab .t { flex: 1 1 auto; min-width: 0; overflow: hidden;
           text-overflow: ellipsis; white-space: nowrap }
 /* ux-1: close button — flex-none so ellipsized titles can never crush it,
@@ -605,9 +595,9 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
    already had one — the brief's :734/:736 were their numbers before this
    comment grew above them; a.wiki itself is :752).
    Live preview (.lp / .lprow, :725) keeps `cursor: text` and source mode
-   is untouched: those views ARE editable. Divergence from stock 1.13.7, which
+   is untouched: those views ARE editable. Divergence from Obsidian, which
    shows the I-beam over reading-view text, is recorded in
-   docs/recon-rvcursor/STOCK.md; the operator ask is the requirement. */
+   docs/recon-rvcursor/; the operator ask is the requirement. */
 .preview { flex: 1 1 0; min-width: 0; overflow-y: auto; overflow-x: hidden;
            cursor: default }   /* R22 */
 /* one rule covers both wikilink states: the unresolved anchor carries
@@ -616,7 +606,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 .preview a.wiki { color: var(--accent-blue); cursor: pointer }
 .preview a.wiki-unresolved { color: var(--link-unresolved); font-style: italic }
 .lp a.ext, .preview a.ext { color: var(--accent-blue); text-decoration: underline; cursor: pointer }  /* S1: external link, opens via xdg-open */
-/* tags: inline #tag pills (stock: small rounded accent-tinted chip) */
+/* tags: inline #tag pills (small rounded accent-tinted chip) */
 .lp a.tag, .preview a.tag { color: var(--tag-color, var(--accent-blue)); background: var(--tag-bg);
   border-radius: 999px; padding: 0 7px; font-size: .85em; text-decoration: none;
   cursor: pointer; white-space: nowrap }
@@ -703,16 +693,16 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 .ctxmenu div:hover { background: var(--border) }
 /* bmmenu (docs/recon-bmmenu/README.md): the bookmark-row menu has separators and
    rows this tree cannot back. .sep is a real child so the census reads "---" where
-   stock draws a rule; .dis is the settings rows' disabled treatment (R30 note in
-   main.js, "stock has no disabled style") applied to a menu row: muted, inert,
+   Obsidian draws a rule; .dis is the settings rows' disabled treatment (R30 note in
+   main.js) applied to a menu row: muted, inert,
    reason in the hover title. */
 .ctxmenu div.sep { padding: 0; height: 1px; margin: 5px 0; background: var(--border); cursor: default; pointer-events: none }
 .ctxmenu div.dis { color: var(--text-chrome-muted); cursor: default; pointer-events: none }   /* no :hover rule needed: pointer-events:none means the row never hovers (and lint-colors bans "transparent") */
-/* R38 (docs/recon-tabmenu/README.md): the tab menu's radio rows. Stock has no
+/* R38 (docs/recon-tabmenu/README.md): the tab menu's radio rows. Obsidian has no
    `Live preview` row and no ✓ in any label, so R12.4's mark is an ELEMENT
    (span.chk) rather than text in the label — the rendered label set then equals
-   stock's character for character while the radio state stays visible, and
-   [menu:] (textContent) reads stock's wording. The gutter is reserved on EVERY
+   Obsidian's character for character while the radio state stays visible, and
+   [menu:] (textContent) reads Obsidian's wording. The gutter is reserved on EVERY
    row of these two so the labels do not shift when the mark moves. */
 .ctxmenu div.chkrow { padding-left: 4px }
 .ctxmenu .chk { display: inline-block; width: 12px; height: 12px; margin-right: 4px; vertical-align: -1px }
@@ -722,12 +712,12 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
    stay the bare note labels. */
 .ctxmenu .mi { display: inline-block; width: 12px; height: 12px; margin-right: 6px; vertical-align: -1px; color: var(--text-chrome-muted) }
 .ctxmenu .mi svg { width: 12px; height: 12px; display: block }
-/* R38.29: `Delete file` is the ONE non-default-coloured row in stock's menu (measured red, hex eb4655 — recorded in docs/requirements.md R38.29, not repeated as a literal here) */
+/* R38.29: `Delete file` is the ONE non-default-coloured row in the menu (red, see docs/requirements.md R38.29) */
 .ctxmenu div.del { color: var(--accent-red) }
 /* R38.7: the pin glyph rides in FRONT of a pinned tab's label (shots/m3-pinned-tabbar.png) */
 .tab .pin { flex: 0 0 auto; display: flex; align-items: center; color: var(--text-chrome-muted); margin-right: 3px }
 .tab .pin svg { width: 11px; height: 11px; display: block }
-/* "Reveal file in navigation": stock puts a focus ring on the explorer row, no selection (recon 10-reveal.png) */
+/* "Reveal file in navigation": a focus ring on the explorer row, no selection (recon 10-reveal.png) */
 .trow.revealed { outline: 2px solid var(--border-focus-ring); outline-offset: -2px }
 /* M8 local graph (R7.5): per-pane settings gear + popover */
 .lggear { position: absolute; top: 8px; right: 10px; z-index: 7;
@@ -769,7 +759,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 #mlist { max-height: 320px; min-height: 0; flex: 0 1 auto; overflow-y: auto }
 #mlist .mrow { display: flex; justify-content: space-between; align-items: center;
                padding: 6px 14px; cursor: pointer; font-size: 13px; color: var(--text-chrome) }
-#mlist .mrow.sel, #mlist .mrow:hover { background: var(--background-modifier-hover) }   /* themematch: stock selected suggestion */
+#mlist .mrow.sel, #mlist .mrow:hover { background: var(--background-modifier-hover) }   /* themematch: selected suggestion */
 #mlist .mhint { color: var(--text-chrome-faint); font-size: 11px; margin-left: 12px; white-space: nowrap }
 #mlist .mempty { padding: 8px 14px; color: var(--text-chrome-faint); font-size: 12px }
 
@@ -786,9 +776,8 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
    compute — and it does not have to: updateTitle() publishes the button
    centres as [ulx:...] (the R33.13 idiom — smoke READS the geometry, never
    hard-codes it).
-   The fills are stock's MEASURED values, kept verbatim so the same pixel
-   discriminator works on their screenshots and ours: on D2-modal.png the
-   default button is the brightest fill on the row (--bg-button-default), its two
+   The fills keep the pixel discriminator that works on the recon
+   screenshots and ours: the default button is the brightest fill on the row (--bg-button-default), its two
    neighbours a step darker (--bg-button-plain), with a --border-focus-ring row
    under it (docs/recon-title-rename/btn-analysis.log).
    The ring is what makes "which button is default" measurable in PIXELS
@@ -807,9 +796,9 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 #ulbtns button { box-sizing: border-box; height: 30px; border: 0; border-radius: 5px;
                  background: var(--bg-button-plain); color: var(--bg-base); font-size: 13px; font-weight: 500;
                  cursor: pointer; outline: none; padding: 0 }
-#ul-always { width: 102px }      /* stock: [588-690] on y=455 */
-#ul-once   { width: 68px }       /* stock: [709-777] */
-#ul-no     { width: 101px }      /* stock: [796-897] */
+#ul-always { width: 102px }
+#ul-once   { width: 68px }
+#ul-no     { width: 101px }
 #ulbtns button:focus { background: var(--bg-button-default); box-shadow: 0 0 0 2px var(--border-focus-ring) }
 
 /* R24.7 delete confirmation — deliberately the Update-links card's geometry
@@ -839,7 +828,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 
 /* R4X.7 Edit bookmark — the #delbox shape again (one modal geometry in this app,
    not three that drift): fixed overlay, 480px card, buttons bottom-right with
-   Save last and accented. Stock's card is 558x280 centred (11-edit.png); ours
+   Save last and accented. Ours
    inherits the house modal rather than growing a second one, and the phase
    clicks by the MEASURED [bmex:] centres, never by a constant. */
 #bmebox { position: fixed; inset: 0; z-index: 70; background: var(--scrim);
@@ -865,7 +854,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 #bme-yes { background: var(--accent-blue); color: var(--bg-base) }   /* the accented, non-destructive default, like .ullink */
 #bmebtns button:focus { box-shadow: 0 0 0 2px var(--border-focus-ring) }
 /* bmactive: the SAME card in "Add bookmark" mode (recon-bmactive F1, 03-modal.png):
-   a Title row between Path and Bookmark group, and stock's X close top-right.
+   a Title row between Path and Bookmark group, and an X close top-right.
    Both are hidden in Edit mode so R4X.7's card is unchanged. */
 #bmecard { position: relative }
 .bmerow[hidden], #bme-x[hidden] { display: none }
@@ -887,7 +876,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 /* R10.3 block ids: grey superscript label in LP, hidden in reading view */
 .lp .blockid { font-size: .7em; color: var(--text-chrome-dim); vertical-align: super; margin-left: 4px; user-select: none }
 .preview .blockid { display: none }
-/* R10.2 navigation target flash (~2 s fade, stock yellow) */
+/* R10.2 navigation target flash (~2 s fade, yellow) */
 .navflash { background: var(--highlight-yellow) }
 .navflash.fade { background: var(--transparent); transition: background 1.5s ease-out }
 .ac .acb { float: right; margin-left: 14px; color: var(--text-chrome-dim); font-size: 11px; line-height: 20px }
@@ -928,7 +917,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 .lp .hl { background: var(--highlight-yellow) }
 .lp .code { font-family: var(--font-monospace); font-size: var(--code-size); background: var(--code-background); border-radius: var(--code-radius) }
 .lp .wl, .lp .lt, .lp .url { color: var(--accent-blue) }
-.lp .wl:hover, .lp .lt:hover, .lp .url:hover { color: var(--text-accent-hover) }   /* themematch: stock link hover ink */
+.lp .wl:hover, .lp .lt:hover, .lp .url:hover { color: var(--text-accent-hover) }   /* themematch: link hover ink */
 .lp a.wiki { text-decoration: none }
 .lp.src .wl, .lp.src .lt, .lp.src .url { text-decoration: underline }
 .lp .tag { color: var(--tag-color, var(--accent-blue)); background: var(--tag-bg); border-radius: 999px; padding: 0 4px }
@@ -936,8 +925,8 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 .lp .fence { display: block; font-family: var(--font-monospace); font-size: 13px; background: var(--bg-surface);
              padding: 0 8px; white-space: pre; overflow-x: auto }
 .lp .bq { color: inherit }   /* geometry (border + padding) is R15.13 below */
-/* R14 settings modal (Ctrl+,) — setcenter R1/R2: centred on both axes by flex, stock
-   1.13.7 size rule min(90vw,1100) x min(85vh,1000); recentres on resize with no JS.
+/* R14 settings modal (Ctrl+,) — setcenter R1/R2: centred on both axes by flex,
+   sized by the viewport-relative rule below; recentres on resize with no JS.
    Phases never click it by literal coordinate: they read the census [sbox:] [snav:] ... */
 #settings { position: fixed; inset: 0; z-index: 55; background: var(--scrim-strong);
   display: flex; align-items: center; justify-content: center; box-sizing: border-box }
@@ -978,10 +967,10 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
    not clickable, aria-disabled in the DOM — grey paint is the least of it. */
 .srow.dis { cursor: default }
 .srow.dis .slabel { color: var(--text-chrome-muted) }
-.srow.dis .slabel.slink { color: var(--accent-blue) }   /* a link line stays a link line when disabled (stock underlines it) */
+.srow.dis .slabel.slink { color: var(--accent-blue) }   /* a link line stays a link line when disabled (Obsidian underlines it) */
 .srow.linkrow .slabel { text-decoration: underline }
-/* themematch: a disabled CONTROL keeps stock paint (stock has no disabled
-   style, recon Q4) — the muted label, aria-disabled and the title carry it */
+/* themematch: a disabled CONTROL keeps its normal paint (Obsidian has no
+   disabled style, recon Q4) — the muted label, aria-disabled and the title carry it */
 .srow.dis .sctl { pointer-events: none }
 .srow.dis .sicons { opacity: .5; pointer-events: none }
 .sctl { flex: none; display: flex; align-items: center; gap: 8px; color: var(--text-chrome); font-size: 13px }
@@ -993,7 +982,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
                  border: 1px solid var(--border); border-radius: 4px; white-space: nowrap; overflow: hidden }
 /* .live = the one dropdown in this pane with a handler behind it (Appearance ▸
    Themes; the palette axis that used to sit beside it is gone — themeone item 7). Every other control here is a transcription of
-   stock with no behaviour, rendered inert; this one gets the affordances that
+   Obsidian's settings with no behaviour, rendered inert; this one gets the affordances that
    inertness withholds — a pointer, a hover, and a visible focus ring, because
    it IS a tab stop. */
 .sctl.dropdown.live { cursor: pointer; background: var(--bg-surface) }
@@ -1049,7 +1038,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 #hkbar { display: flex; align-items: center; gap: 6px; height: 28px }
 #hkfilter { flex: 1; height: 28px; box-sizing: border-box; background: var(--background-modifier-form-field, var(--bg-sidebar)); color: var(--text-chrome);
             border: 1px solid var(--border); border-radius: 4px; padding: 0 8px; outline: none; font-size: 13px }
-#hkfilter:focus { border-color: var(--background-modifier-border-focus) }   /* themematch: stock focused search field border */
+#hkfilter:focus { border-color: var(--background-modifier-border-focus) }   /* themematch: focused search field border */
 #hkclear { color: var(--text-chrome-faint); cursor: pointer; width: 16px; text-align: center }
 #hkchips { display: flex; gap: 6px; height: 24px; margin: 8px 0; align-items: center }
 .hkchip { padding: 2px 10px; border-radius: 999px; background: var(--bg-surface); color: var(--text-chrome); cursor: pointer; font-size: 12px; line-height: 16px }
@@ -1074,8 +1063,8 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 .hkbtn:hover { background: var(--border) }
 .hkbtn, .hkx, #sclose { display: inline-flex; align-items: center; justify-content: center }
 .hkbtn svg, .hkx svg, #sclose svg { display: block }
-/* ---------- R15 TYPOGRAPHY (docs/requirements.md §15): stock 1.13.7 app.css values, dark-theme tokens ---------- */
-/* R15.2 bundled fonts (ui/fonts/, scripts/fetch-fonts.sh): same family names / weight ranges / font-display as stock */
+/* ---------- R15 TYPOGRAPHY (docs/requirements.md §15): dark-theme tokens ---------- */
+/* R15.2 bundled fonts (ui/fonts/, scripts/fetch-fonts.sh): same family names / weight ranges / font-display as Obsidian */
 @font-face { font-family: 'Source Code Pro'; font-weight: normal; font-style: normal; font-display: swap; src: url(fonts/SourceCodePro-Regular.ttf) }
 @font-face { font-family: 'Source Code Pro'; font-weight: normal; font-style: italic; font-display: swap; src: url(fonts/SourceCodePro-Italic.ttf) }
 @font-face { font-family: 'Source Code Pro'; font-weight: bold; font-style: normal; font-display: swap; src: url(fonts/SourceCodePro-Bold.ttf) }
@@ -1083,7 +1072,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 @font-face { font-family: "Inter"; font-style: normal; font-weight: 100 900; font-display: swap; src: url(fonts/Inter-Variable.woff2) }
 @font-face { font-family: "Inter"; font-style: italic; font-weight: 100 900; font-display: swap; src: url(fonts/Inter-Variable-Italic.woff2) }
 :root {
-  /* R15.1 literal stacks (system-ui resolves first on Linux -> Noto Sans, like stock; code -> bundled Source Code Pro) */
+  /* R15.1 literal stacks (system-ui resolves first on Linux -> Noto Sans, like Obsidian; code -> bundled Source Code Pro) */
   --font-default: ui-sans-serif, -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", "Google Sans Flex", Roboto, "Inter Variable", "Inter", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", sans-serif;
   --font-monospace-default: ui-monospace, SFMono-Regular, "Cascadia Mono", "Roboto Mono", "DejaVu Sans Mono", "Liberation Mono", Menlo, Monaco, "Consolas", "Source Code Pro", monospace;
   --font-text: var(--font-default); --font-interface: var(--font-default); --font-monospace: var(--font-monospace-default);
@@ -1118,16 +1107,16 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
   --radius-s: 4px; --size-4-6: 24px; --size-4-8: 32px; --file-line-width: calc(var(--space-unit) * 180); --file-margins: var(--size-4-8);
   /* sidefont: ONE size for every sidebar list row — explorer .trow, bookmarks
      .bmrow, the right-strip .rlist rows, search .sgroup file rows. 13px is
-     stock 1.13.7's measured value (docs/recon-sidefont/README.md Q1/Q3/Q5), and
-     stock's text-font slider never moves it (Q4), so it is a standalone UI
+     the recon value (docs/recon-sidefont/README.md Q1/Q3/Q5), and
+     Obsidian's text-font slider never moves it (Q4), so it is a standalone UI
      size, NOT derived from --font-text-size. Snippet lines (.shit, .blline)
-     are 12px in stock and keep their own size. Published as [sfont:t<>b<>r<>]. */
+     are smaller and keep their own size. Published as [sfont:t<>b<>r<>]. */
   --sidebar-font-size: 13px;
 }
-@supports (font-variation-settings: normal) {   /* stock: graded heading weights on variable fonts */
+@supports (font-variation-settings: normal) {   /* graded heading weights on variable fonts */
   :root { --h2-weight: 680; --h3-weight: 660; --h4-weight: 640; --h5-weight: 620; --h6-weight: 600 }
 }
-/* note column: 16px/1.5 text, 700px readable line length centred, 32px file margins (stock .markdown-preview-sizer)
+/* note column: 16px/1.5 text, 700px readable line length centred, 32px file margins
    R22: the side margins are min(32px, 5% of the pane) — padding does NOT shrink,
    so a literal 32px on each side makes the note pane 64px wide minimum and
    pushes the whole window past the viewport in a narrow split. 5% >= 32px for
@@ -1138,16 +1127,16 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
                 padding: var(--file-margins) min(var(--file-margins), 5%) }
 .lp > *, .preview > * { max-width: var(--file-line-width); margin-inline: auto }
 /* #20 INLINE TITLE (R32): the big title of a note is its FILENAME, rendered —
-   it lives in no file. Measured against stock 1.13.7 (progress.md Q3): the
-   title is pixel-identical to a body h1 (1048 ink px vs 1048, same trim box)
-   and the block it adds above the content is 44 px = 31.07 line box
-   (25.89px * 1.2) + 12.94 margin-bottom (0.5em). NOTHING above it: the title
+   it lives in no file. Measured against Obsidian (progress.md Q3): the
+   title is pixel-identical to a body h1 (same ink, same trim box) and the
+   block it adds above the content is one h1 line box + a 0.5em
+   margin-bottom. NOTHING above it: the title
    takes the content column's own y-origin.
    It is a ::before, NOT a DOM child, and that is load-bearing: ui/editor.js
    indexes model rows POSITIONALLY (rowAt = g.lp.children[l], editor.js:491),
    so a real element prepended to .lp would shift every line index by one.
    A pseudo-element also cannot hold a caret. R32.5 called that "non-editable
-   by construction" and accepted it as the delta from stock; R34 reverses that
+   by construction" and accepted it as the delta from Obsidian; R34 reverses that
    half — see the R34.15 block below for the mechanism that gives the title a
    caret while the ::before, and therefore every row index, stays put.
    Fed by data-title (ui/main.js setInlineTitle); the ATTRIBUTE selector is
@@ -1198,7 +1187,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
    .titlewrap is the POSITIONER (the scroller's content box, full width, fed
    pixel values by titleBox()); .titleedit is the text column. It no longer
    "repeats the ::before's type declarations verbatim" — that sentence stood
-   here while the two surfaces differed by 3.236px, a font family and a text
+   here while the two surfaces differed in size, font family and text
    colour, which is R34.18's whole lesson: the type is now declared ONCE, in a
    selector list both surfaces are in, and the agreement is MEASURED by
    `scripts/smoke.sh fast titletype` (computed style off the live DOM + ink off
@@ -1212,10 +1201,10 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
    the inherited value — so identical declarations produce different type when
    the two elements sit in different contexts, which is exactly what happened:
      .lp[data-title]::before  inherits .lp  -> --font-text / --font-text-size
-                              (style.css `.lp, .preview`) -> 1.974 x 16 = 31.584px
+                              (style.css `.lp, .preview`) -> --h1-size x 16px
      .titleedit               inherits .content, which sets no type at all, so
                               it fell through to `body { font: 14px/1.5 system-ui }`
-                              and `color: var(--text-chrome)` -> 1.974 x 14 = 27.636px,
+                              and `color: var(--text-chrome)` -> --h1-size x 14px,
                               a different family, and the CHROME text colour.
    .titleedit cannot be moved inside .lp to inherit it — an editable node in the
    scroller is `g.lp.children[i]` and shifts every positional row index
@@ -1241,7 +1230,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 .lp h6, .preview h6 { font-size: var(--h6-size); font-weight: var(--h6-weight); line-height: var(--h6-line-height); letter-spacing: var(--h6-letter-spacing) }
 .lp b, .lp strong, .preview b, .preview strong { font-weight: var(--bold-weight) }
 .lp em, .preview em { font-style: italic }
-/* R15.9 reading-mode block spacing (stock .markdown-rendered); LP spacing comes from the blank-line rows */
+/* R15.9 reading-mode block spacing; LP spacing comes from the blank-line rows */
 .preview :is(p, ul, ol, table, pre, blockquote) { margin-block: var(--p-spacing) }
 .preview :is(h1, h2, h3, h4, h5, h6) { margin-block: var(--p-spacing) }
 .preview :is(p, pre, table, ul, ol) + :is(h1, h2, h3, h4, h5, h6) { margin-top: var(--heading-spacing) }
@@ -1253,7 +1242,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 .preview ul > li, .preview ol > li { margin-inline-start: 3ch }
 .preview ul ul > li, .preview ol ol > li, .preview ul ol > li, .preview ol ul > li { margin-inline-start: var(--list-indent) }
 .lp li::marker, .preview li::marker { color: var(--list-marker-color) }
-/* markers are ::before pseudo-elements (not ::marker): stock draws its own .list-bullet / number so the x offsets are exact.
+/* markers are ::before pseudo-elements (not ::marker): drawing our own bullet / number means the x offsets are exact.
    ol keeps the decimal numbering via the built-in list-item counter (honours <ol start>); the box sits 2px left of the h1 "H" ink. */
 .lp ul, .preview ul, .lp ol, .preview ol { list-style: none }
 .lp ul > li::before, .preview ul > li::before { content: ""; position: absolute; width: var(--list-bullet-size); height: var(--list-bullet-size);
@@ -1265,7 +1254,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 .lp li:has(> input[type=checkbox])::before, .preview li:has(> input[type=checkbox])::before { display: none }
 .lp li:has(> input[type=checkbox]), .preview li:has(> input[type=checkbox]) { list-style: none }
 .lp li:has(> input[type=checkbox]:checked),
-/* rvtask Q5: stock strikes only "[x]"/"[X]" in a BULLET list — a custom status ("[/]" "[-]" …)
+/* rvtask Q5: Obsidian strikes only "[x]"/"[X]" in a BULLET list — a custom status ("[/]" "[-]" …)
    and an ORDERED-list task are filled but not struck. data-task comes from the renderer. */
 .preview ul > li:is([data-task="x"], [data-task="X"]) {
   text-decoration: var(--checklist-done-decoration); color: var(--checklist-done-color) }
@@ -1274,18 +1263,18 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
   position: relative; top: 0.2em; margin-inline-end: 0.6em; cursor: pointer; vertical-align: baseline }
 .preview ul > li > input[type=checkbox] { margin-inline-start: calc(var(--checkbox-size) * -1.5 - 1px) }   /* box at +3 (h1-ink relative) */
 /* rvcursor + rvtask R1: the READING-VIEW task box is now ENABLED and toggles
-   the source line (rvtask R3), but it keeps the ordinary ARROW — stock 1.13.7
-   measures cursor:default on it, hovered too (docs/recon-rvtask README Q10,
+   the source line (rvtask R3), but it keeps the ordinary ARROW — Obsidian
+   shows cursor:default on it, hovered too (docs/recon-rvtask README Q10,
    spec K1). Declared, not inherited, because a UA sheet may set its own
    `cursor` on a form control; the census phase reads the live value either way.
    LP's box is NOT named here — live preview is editable and unchanged. */
 .preview input[type=checkbox] { cursor: default }
-/* goal/listlinks — reading view list/link geometry vs stock 1.13.7
+/* goal/listlinks — reading view list/link geometry
    (docs/listlinks/recon.md REQ-n). .preview only; live preview untouched. */
 .preview ul > li::before { inset-inline-start: calc(-12.8px - var(--list-bullet-size) / 2) }   /* REQ-1: dot centre = text x - 12.8 */
 .preview li > p { margin-block: 0 }                                                         /* REQ-13: loose list == tight */
 .preview ol > li::before { inset-inline-start: auto; inset-inline-end: calc(100% + 6px); font-variant-numeric: tabular-nums; white-space: nowrap }   /* REQ-11: right-aligned, tabular; "." ink right = text ink - 7 (native ::marker sits 5px further left in WebKitGTK) */
-.preview ul > li > input[type=checkbox] { margin-inline-start: calc(var(--checkbox-size) * -1.5);   /* REQ-12: stock's own -1.5 x size, end 0.6em: DOM box->text 23.8 (stock 24); ink box 522 / text 546 (stock 523/546) and +4 h1-relative in typo (stock ref +3) — both within 1px; see recon.md AFTER "two stock frames" */
+.preview ul > li > input[type=checkbox] { margin-inline-start: calc(var(--checkbox-size) * -1.5);   /* REQ-12: -1.5 x size, end 0.6em — within 1px of the recon; see docs/listlinks/recon.md AFTER */
   margin-inline-end: 0.6em; top: calc(0.2em - 1px) }
 .preview a.ext { padding-inline-end: 0.9em; background-repeat: no-repeat; background-position: 100% 4px; background-size: 0.825em;   /* REQ-6 */
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238a8a8a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 3h6v6'/%3E%3Cpath d='M10 14 21 3'/%3E%3Cpath d='M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6'/%3E%3C/svg%3E") }
@@ -1293,7 +1282,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 .preview li > :is(ul, ol) { position: relative }                                            /* REQ-9: indent guide at parent text x - 13 */
 .preview li > :is(ul, ol)::before { content: ""; position: absolute; inset-inline-start: -13px; top: 0; bottom: 0; width: 1px;
   background: var(--indentation-guide-color); pointer-events: none }
-/* LP: the task li has no list margin (stock: the checkbox sits in the text flow after the hidden "- " widget); box at +7, text at +27 */
+/* LP: the task li has no list margin (the checkbox sits in the text flow after the hidden "- " widget); box at +7, text at +27 */
 .lp li:has(> input[type=checkbox]) { margin-inline-start: 0 }
 .lp ul > li > input[type=checkbox] { margin-inline-start: calc(var(--checkbox-margin-inline-start) - 2px); margin-inline-end: calc(0.6em - 4px) }
 .lp input[type=checkbox]:hover, .preview input[type=checkbox]:hover { border-color: var(--text-muted) }
@@ -1310,16 +1299,16 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 /* R15.13 blockquote: 2px accent inline-start border, 24px padding, no margin (LP: 14px text offset) */
 .lp blockquote, .preview blockquote { border-inline-start: var(--blockquote-border-thickness) solid var(--blockquote-border-color);
   padding: 0 0 0 var(--size-4-6); margin-inline: 0; font-style: normal; color: inherit; background: var(--transparent);
-  position: relative; inset-inline-start: 2px }   /* stock border sits on the h1 "H" ink x; the content box is 2px left of it */
+  position: relative; inset-inline-start: 2px }   /* the border sits on the h1 "H" ink x; the content box is 2px left of it */
 .preview > blockquote { margin-inline: auto }    /* keep the 700px column centring (the rule above outranks .preview > *) */
 .preview blockquote > :first-child { margin-top: 0 }
 .preview blockquote > :last-child { margin-bottom: 0 }
 .lp blockquote { padding-inline-start: 11px }
 /* R15.10-13 in LIVE PREVIEW, on the R17 flat row DOM (ui/editor.js emits ONE
    div.lprow per source line — there is no ul/ol/li/blockquote to select, so
-   the semantic rules above are reading-mode only). The stock offsets are
+   the semantic rules above are reading-mode only). The reading-view offsets are
    reproduced on the row's own parts, never by absolute positioning against
-   the row: the hidden marker span KEEPS ITS BOX (min-width = the stock
+   the row: the hidden marker span KEEPS ITS BOX (min-width = the
    marker advance) and draws the bullet inside it, so a nested item's literal
    indent — real text in the row — shifts marker and text together for free.
    Revealing the markers (.cur row / source mode) drops the box: the source
@@ -1342,7 +1331,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
   display: inline; min-width: 0; padding: 0; color: var(--text-chrome-dim) }
 .lp.src .li > .mk.lim::before, .lp .li > .mk.lim.rv::before { content: none }
 /* R15.13 blockquote in LP: the span.bq is the line's block box — border ink on
-   the h1 "H" ink x (+2 from the column), text 11px past it (stock LP: +14) */
+   the h1 "H" ink x (+2 from the column), text 11px past it */
 .lp .bq { display: block; margin-inline-start: 2px;
   border-inline-start: var(--blockquote-border-thickness) solid var(--blockquote-border-color);
   padding-inline-start: 11px }
@@ -1424,13 +1413,12 @@ body.floorrelayout #main { padding-right: 1px }
 /* ---------- R33 frameless window: the app draws its own frame ----------
    tauri.conf.json ships `decorations: false`: there is no WM title bar and no WM
    resize border, so every affordance the frame provided lives here.
-   #wframe is the title bar's replacement. The stock app does NOT stack a strip
-   above its tabs — it puts the window controls inside the top chrome row (recon
-   under openbox, 1100px-wide window: minimise centred at right-113, maximise at
-   right-70, close at right-26, row 40px tall). This strip keeps those three x
-   centres (44px hit areas at right 4/48/92) but is 32px tall, because that is
-   opensidian's tab-row height — a 40px strip would shift every baseline in the
-   suite for 8px of fidelity.
+   #wframe is the title bar's replacement. Obsidian does NOT stack a strip
+   above its tabs — it puts the window controls inside the top chrome row
+   (recon under openbox). This strip keeps the controls at the right edge
+   (44px hit areas at right 4/48/92) and is 32px tall, because that is
+   opensidian's tab-row height — a taller strip would shift every baseline in
+   the suite.
    position:fixed, z-index above the picker / settings / modal overlays: a window
    you cannot close while a modal is open is a broken interaction. The row under
    the strip reserves its width (.wfinset, set by placeRToggle) instead of being
@@ -1439,13 +1427,13 @@ body.floorrelayout #main { padding-right: 1px }
           /* --titlebar-bg is DEFINED only by the item-8 R4 bridge (a vault
              theme declaring --titlebar-background-focused); without a bridge
              the var is undefined and the fallback keeps the theme's ribbon */
-          z-index: 200; background: var(--titlebar-bg, var(--tab-container-background)); user-select: none }   /* themematch: stock title area continues the tab strip */
+          z-index: 200; background: var(--titlebar-bg, var(--tab-container-background)); user-select: none }   /* themematch: the title area continues the tab strip */
 #wframe button { position: absolute; top: 0; width: 44px; height: 32px; padding: 0;
                  background: none; border: 0; color: var(--text-chrome-muted); cursor: pointer;
                  display: flex; align-items: center; justify-content: center }
-#wf-min { right: 92px }        /* stock: centre at right-113 -> 92+22 = right-114 */
-#wf-max { right: 48px }        /* stock: right-70  -> 48+22 = right-70 */
-#wf-close { right: 4px }       /* stock: right-26  -> 4+22  = right-26 */
+#wf-min { right: 92px }
+#wf-max { right: 48px }
+#wf-close { right: 4px }
 #wframe button:hover { background: var(--bg-surface); color: var(--text-chrome) }
 #wf-close:hover { background: var(--accent-red); color: var(--bg-ribbon) }
 /* R33.4 keyboard: every control is a real <button>, so Tab reaches it and
@@ -1471,7 +1459,7 @@ body.floorrelayout #main { padding-right: 1px }
 /* R33.3 resize: eight invisible grips. The layer is pointer-events:none so only
    the grips themselves take a press; they paint nothing, so no screenshot
    baseline and no pixel probe moves. The north grip stops at the control strip
-   (right:140px) — stock has no top-edge resize at all, and a 4px band over the
+   (right:140px) — Obsidian has no top-edge resize at all, and a 4px band over the
    buttons would eat clicks aimed at close. */
 #wrz { position: fixed; inset: 0; z-index: 210; pointer-events: none }
 #wrz i { position: absolute; display: block; pointer-events: auto }
@@ -1485,7 +1473,7 @@ body.floorrelayout #main { padding-right: 1px }
 #wrz i[data-d="sw"] { bottom: 0; left: 0; width: 12px; height: 12px; cursor: sw-resize }
 
 /* ---- R26 find bar (Ctrl+F), one per pane -----------------------------------
-   Floats over the note column at the top right, the way stock's does. It is a
+   Floats over the note column at the top right, the way Obsidian's does. It is a
    child of .content (position:relative), NOT of .lp: Ed's positional contract
    is "model line l IS g.lp.children[l], with nothing else in that list", and a
    bar inside the scroller would be row 0 for every caret computation.
@@ -1514,22 +1502,21 @@ body.floorrelayout #main { padding-right: 1px }
 /* R26.8: every match is marked; the current one is the one you are standing on. */
 span.fmk { background: var(--highlight-yellow); border-radius: 2px }
 span.fmk.fcur { background: var(--tag-bg-hover); outline: 1px solid var(--accent-yellow) }
-/* R25.13d: the search-result flash. Measured on stock 1.13.7 as class
-   `is-flashing`, a translucent yellow wash, NO animation and NO timer (C4,
-   shots 19-25); stock's exact literal is recorded in docs/recon-srclick/
-   README.md, NOT copied here — a hardcoded colour is a colour no theme can
+/* R25.13d: the search-result flash. Obsidian marks it with the class
+   `is-flashing`, a translucent yellow wash, NO animation and NO timer (C4);
+   no colour literal is copied here — a hardcoded colour is a colour no theme can
    reach (scripts/lint-colors.sh). The class name is the measurement's; the
    value is this app's yellow highlight token, the same one .fmk and .navflash
    use, so the flash follows every theme. */
 span.is-flashing { background: var(--highlight-yellow) }
 /* W4 (goal wsrestore): a leaf this app has no view for (canvas, pdf, a plugin's
-   view) is kept in the layout as a placeholder tab, like stock's "Plugin no
-   longer active". The message fills the pane the editor would. */
+   view) is kept in the layout as a placeholder tab, like Obsidian's
+   unavailable-plugin view. The message fills the pane the editor would. */
 .unkview { flex: 1 1 0; display: flex; flex-direction: column; align-items: center;
            justify-content: center; gap: 6px; color: var(--text-muted); padding: 24px;
            text-align: center; user-select: text }
 .unkview[hidden] { display: none }
 .unkview .unkt { font-size: 1.1em; color: var(--text-normal, inherit) }
-/* themematch: stock paints text selection from --text-selection (the accent
-   triple at .18 light / .32 dark); without this the engine default blue showed */
+/* themematch: text selection paints from --text-selection (the accent
+   at .2 light / .33 dark, see the tokens); without this the engine default blue showed */
 ::selection { background-color: var(--text-selection) }
