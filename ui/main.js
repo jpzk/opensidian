@@ -8574,7 +8574,8 @@ function ssnTok() {
      [srow1:ctlx,cy,bodyx]   rows panes: the first .srow's control-cell centre
                       x, its centre y, and its body (.sinfo) centre x
      [shkf:cx,cy]     Hotkeys: the filter input
-     [shkc:cx,cy]     Hotkeys: the Conflicts chip (only while it is shown)
+     [shkc:cx,cy,fx]  Hotkeys: the Conflicts chip (only while it is shown);
+                      fx = a fill-only x: mid left padding, no glyph ink
      [shk<N>:x,y,w,h,addx,rsx,xx]   Hotkeys rows 1-2: the row rect, then the
                       centre x of its add ⊕, restore ↺ and LAST chip's ✕
                       (0 = no chip); the centre y is y+h/2
@@ -8596,7 +8597,7 @@ function sgeoTok() {
   if (f && f.isConnected) {
     t += " [shkf:" + cx(R(f)) + "," + cy(R(f)) + "]";
     const cc = document.querySelector("#hkchips .hkchip.conf");
-    if (cc) t += " [shkc:" + cx(R(cc)) + "," + cy(R(cc)) + "]";
+    if (cc) { const b = R(cc); t += " [shkc:" + cx(b) + "," + cy(b) + "," + Math.round(b.left + parseFloat(getComputedStyle(cc).paddingLeft) / 2) + "]"; }
     const rows = document.querySelectorAll("#hklist .hkrow");
     for (let i = 0; i < 2 && i < rows.length; i++) {
       const xs = rows[i].querySelectorAll(".hkx");
