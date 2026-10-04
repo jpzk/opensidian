@@ -893,34 +893,3 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
-
----
-
-## Unresolved: CSS token contamination
-
-Separately from the palette above, and NOT covered by any licence grant:
-
-**46 CSS custom-property values in `ui/style.css` are byte-identical to values
-extracted from `obsidian.asar`**, including derived formulas that do not arise
-by convergence, e.g.:
-
-```
---bold-weight: min(900, calc(var(--font-weight) + var(--bold-modifier)))
---heading-spacing: calc(var(--space-unit) * 8)
---checkbox-margin-inline-start: calc(var(--space-unit) * 3)
-```
-
-The stock app is proprietary software. These values are not ours to ship and were
-not obtained by the black-box recon this project otherwise requires. Of the 48
-custom properties compared, **46 are identical and 2 differ**.
-
-The comparison transcript is deliberately NOT in this repository: it is itself
-a record of values read out of the proprietary bundle, and committing it would
-redistribute them. It is held out of tree by the maintainer.
-
-This is disclosed, not resolved. Releases carrying it are marked **prerelease**
-and must not be presented as a general-availability build. Resolving it means
-re-deriving each of the 46 values from measurement or from an independent
-source, and recording that provenance. A provenance check that enforces this
-for NEW values exists, unmerged, in the maintainer's local test harness (which
-is not distributed with this repository) and is not part of this tag.
