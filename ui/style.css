@@ -1,19 +1,11 @@
 /*
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * WITH ONE CARVE-OUT, AND IT IS NOT DECORATIVE. This file is not wholly ours
- * to license. Two sets of values in it come from elsewhere:
- *
- *   - the dark palette is Catppuccin Mocha (MIT). GPL-compatible; the notice
- *     travels with it in THIRD-PARTY.md, which is the licence's one condition.
- *   - 46 custom-property values are byte-identical to an extract of the
- *     PROPRIETARY stock-app bundle. A licence grants rights the grantor holds,
- *     and we do not hold these. The GPL header above does not make them ours;
- *     if anything it asserts a right we cannot back. They are disclosed in
- *     THIRD-PARTY.md and the releases carrying them are marked prerelease.
- *
- * Re-derive those 46 from measurement and this caveat goes away. Until then,
- * do not read the header above as covering every line below it.
+ * One set of values here comes from elsewhere: the dark palette is
+ * Catppuccin Mocha (MIT). GPL-compatible; the notice travels with it in
+ * THIRD-PARTY.md, which is the licence's one condition. The content-column
+ * typography and spacing tokens are opensidian's own; their derivation is
+ * in TOKENS.md.
  */
 /*  MERGE UNION (goal/theme-mode <- main): this file had an add-vs-add
  *  conflict at its very top. main added the SPDX/licence header above;
@@ -1096,6 +1088,8 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
   --font-text: var(--font-default); --font-interface: var(--font-default); --font-monospace: var(--font-monospace-default);
   /* R15.4-6 */
   --font-text-size: 16px; --font-smaller: 0.9em; --line-height-normal: 1.55; --line-height-tight: 1.25;
+  /* ONE spacing unit for the content column (TOKENS.md): every margin, indent, radius and width below is a multiple of it */
+  --space-unit: 0.25rem;
   --font-weight: 400; --bold-modifier: 250; --bold-weight: min(900, calc(var(--font-weight) + var(--bold-modifier)));
   /* R15.7-9 headings */
   --h1-size: 1.974em; --h2-size: 1.762em; --h3-size: 1.574em; --h4-size: 1.405em; --h5-size: 1.254em; --h6-size: 1.12em;
@@ -1106,7 +1100,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
   --h4-letter-spacing: -0.009em; --h5-letter-spacing: -0.006em; --h6-letter-spacing: -0.003em;
   --p-spacing: calc(var(--space-unit) * 5); --p-spacing-empty: var(--space-unit); --heading-spacing: calc(var(--space-unit) * 8);
   /* R15.10-13 lists / checkbox / code / blockquote */
-  --indent-unit: 0.5625em; --indent-size: 4; --list-indent: calc(var(--space-unit) * 7);
+  --list-indent: calc(var(--space-unit) * 7);
   --list-indent-editing: calc(var(--space-unit) * 2); --list-spacing: calc(var(--space-unit) / 2); --list-bullet-size: calc(var(--space-unit) * 1.5); --list-bullet-radius: calc(var(--list-bullet-size) / 2);
   --checkbox-size: calc(var(--space-unit) * 3.5); --checkbox-radius: calc(var(--space-unit) * 0.75);
   --checkbox-margin-inline-start: calc(var(--space-unit) * 3); --checklist-done-decoration: line-through 0.06em;
@@ -1116,7 +1110,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
      "R15.10-13 CONTENT COLOURS" comment in the body token block at the top of
      this file: --list-marker-color, --checkbox-border-color, --checkbox-color,
      --checkbox-marker-color, --checklist-done-color, --code-background,
-     --blockquote-border-color. Each derives from a layer-1 stock name, layer 1
+     --blockquote-border-color. Each derives from a layer-2/3 name of ours, which
      is declared on body, and a var() naming a property this element does not
      have is guaranteed-invalid, not a fallback. Keep this block colour-free. */
   /* R15.14 dark tokens (content area only — app chrome keeps its own token layer): --text-normal / --text-muted / --text-faint / --background-primary(-alt) / --interactive-accent all live in the ONE token block at the top of this file */
