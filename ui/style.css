@@ -213,6 +213,7 @@ body {
   --bg-elevated: var(--modal-background, var(--background-primary));   /* stock palette card = the note surface (audit pal: 28 dark, 255 light) */
   --bg-banner-error: #45283c;
   --bg-button-plain: #e0e0e0;
+  --bg-button-default: #fff;   /* the focused (default) answer in the rename/delete prompts. Ours, not --text-on-accent: a theme with a light accent sets that one DARK (AnuPpuccin: its base), which painted the default button in the label colour */
   --border-strong: #585b70;
   --border-focus-ring: #bdbdbd;
   --rule-faint: #31324499;
@@ -787,7 +788,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
    hard-codes it).
    The fills are stock's MEASURED values, kept verbatim so the same pixel
    discriminator works on their screenshots and ours: on D2-modal.png the
-   default button is the brightest fill on the row (--text-on-accent), its two
+   default button is the brightest fill on the row (--bg-button-default), its two
    neighbours a step darker (--bg-button-plain), with a --border-focus-ring row
    under it (docs/recon-title-rename/btn-analysis.log).
    The ring is what makes "which button is default" measurable in PIXELS
@@ -809,7 +810,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 #ul-always { width: 102px }      /* stock: [588-690] on y=455 */
 #ul-once   { width: 68px }       /* stock: [709-777] */
 #ul-no     { width: 101px }      /* stock: [796-897] */
-#ulbtns button:focus { background: var(--text-on-accent); box-shadow: 0 0 0 2px var(--border-focus-ring) }
+#ulbtns button:focus { background: var(--bg-button-default); box-shadow: 0 0 0 2px var(--border-focus-ring) }
 
 /* R24.7 delete confirmation — deliberately the Update-links card's geometry
    (same scrim, same 480px card, same button row), so this app maintains ONE
@@ -834,7 +835,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 #del-no  { width: 101px }
 #del-yes { width: 101px; background: var(--text-banner-error); color: var(--bg-base) }
 #delbtns button:focus { box-shadow: 0 0 0 2px var(--border-focus-ring) }
-#del-no:focus { background: var(--text-on-accent) }
+#del-no:focus { background: var(--bg-button-default) }
 
 /* R4X.7 Edit bookmark — the #delbox shape again (one modal geometry in this app,
    not three that drift): fixed overlay, 480px card, buttons bottom-right with
