@@ -431,12 +431,17 @@ pub fn theme_path(root: &Path, name: &str) -> Result<PathBuf, String> {
 /// message) when mask declarations were stripped — R4X.4, DESIGN §6's
 /// `theme <name>:` origin). Err = the R6-loud refusal naming the FILE
 /// (bad name, unreadable, sanitizer refusal).
+///
+/// A bundled theme still on disk exactly as shipped (builtins::is_pinned) is
+/// stripped the same way but says nothing: its mask declarations are known,
+/// and a notice on every fresh vault is noise. Any other bytes still speak.
 pub fn load_theme(root: &Path, name: &str) -> Result<(String, Option<String>), String> {
     let p = theme_path(root, name)?;
     let file = format!("theme {name}/theme.css");
     let src = fs::read_to_string(&p).map_err(|e| format!("{file}: cannot read: {e}"))?;
     let s = sanitize_css(&src).map_err(|e| format!("{file}: {e}"))?;
-    let msg = (s.stripped > 0).then(|| mask_strip_message(&format!("theme {name}"), s.stripped));
+    let quiet = crate::builtins::is_pinned(name, &src);
+    let msg = (s.stripped > 0 && !quiet).then(|| mask_strip_message(&format!("theme {name}"), s.stripped));
     Ok((s.css, msg))
 }
 
@@ -1472,6 +1477,30 @@ mod tests {
         fs::write(d.join("theme.css"), ".a { /* unclosed").unwrap();
         let e2 = load_theme(&root, "Masky").unwrap_err();
         assert!(e2.starts_with("theme Masky/theme.css: cannot parse safely:"), "got {e2:?}");
+    }
+
+    #[test]
+    fn themes_load_theme_bundled_as_shipped_strips_quietly_an_edited_copy_speaks() {
+        let root = tmp_vault("thpinned");
+        crate::builtins::seed_builtin_themes(&root);
+        let mut masked = 0;
+        for t in crate::builtins::BUILTIN_THEMES {
+            let (css, msg) = load_theme(&root, t.name).unwrap();
+            assert_eq!(msg, None, "bundled {} as shipped must not raise the strip notice", t.name);
+            let n = sanitize_css(t.css).unwrap().stripped;
+            if n == 0 {
+                continue;
+            }
+            masked += 1;
+            // the stripping itself is unchanged: same output as the sanitizer
+            assert_eq!(css, sanitize_css(t.css).unwrap().css);
+            // one byte off the pinned asset = the user's file: it speaks again
+            let p = theme_path(&root, t.name).unwrap();
+            fs::write(&p, format!("{}\n", t.css)).unwrap();
+            let (_, msg) = load_theme(&root, t.name).unwrap();
+            assert_eq!(msg, Some(mask_strip_message(&format!("theme {}", t.name), n)));
+        }
+        assert!(masked >= 1, "no bundled theme carries a mask declaration; this test proves nothing");
     }
 
     // ---- Part 5: the hot-reload watch set (item 6, DESIGN §8) ----

@@ -99,6 +99,16 @@ pub fn is_builtin(name: &str) -> bool {
     BUILTIN_THEMES.iter().any(|t| t.name == name)
 }
 
+/// Are `css` the exact bytes this binary ships for the built-in `name`? Used by
+/// `themefs::load_theme` for ONE thing: the R4X.4 strip notice is not raised for
+/// a bundled theme we ship as-is (we know its mask declarations; telling the user
+/// on every fresh vault is noise). The stripping itself is unchanged. Bytes, not
+/// the name: a user-edited copy, or a third-party theme that happens to share a
+/// name, is the user's file and still says what was stripped.
+pub fn is_pinned(name: &str, css: &str) -> bool {
+    BUILTIN_THEMES.iter().any(|t| t.name == name && t.css == css)
+}
+
 /* ============================ R3 — SEEDING ================================
 The one thing in this app that writes into `.obsidian/themes/`. The scan
 itself still creates NOTHING (T1/T3 RESULT 1: Obsidian creates neither `themes/`
