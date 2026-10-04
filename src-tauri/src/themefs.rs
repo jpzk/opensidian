@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-/*! themefs — themes and snippets are FILES IN THE VAULT, stock's files.
+/*! themefs — themes and snippets are FILES IN THE VAULT, in Obsidian's format.
 
 Design: docs/themefs/DESIGN.md. Recon: docs/recon-themes/README.md (T1–T8);
-the oracle is docs/recon-themes/probe-stock-vault.sh. Everything here is pure
+the oracle is the recon-themes probe. Everything here is pure
 functions over paths/bytes — unit-testable without a display; main.rs wraps
 them in thin tauri commands (DESIGN §1).
 
 THIS FILE, part 1 (ledger item 2): the `.obsidian/appearance.json` round-trip.
 
-The file is STOCK'S file (T2): one flat JSON object, a sparse deviation
-record — absent key = default, absent FILE = every default. Stock rewrites it
+The file is Obsidian's format (T2): one flat JSON object, a sparse deviation
+record — absent key = default, absent FILE = every default. Obsidian rewrites it
 in full on every change, pretty-printed with 2-space indent, `": "` separator
 and NO trailing newline (the T2 log's own size line: 180 B for the six-key
 final dump — docs/fixtures/themefs/README.md does the arithmetic). That is
@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 
 pub const APPEARANCE_FILE: &str = ".obsidian/appearance.json";
 
-/// Read the flat object. ABSENT file is Ok(empty map) — stock treats absence
+/// Read the flat object. ABSENT file is Ok(empty map) — Obsidian treats absence
 /// as "every default" and does not create the file until a deviation (T2).
 /// A file that EXISTS but does not parse as a JSON object is an Err: the
 /// caller must refuse to write over bytes it cannot read (the loud-failure
@@ -52,7 +52,7 @@ pub fn read_appearance(root: &Path) -> Result<Map<String, Value>, String> {
     }
 }
 
-/// The ONE serializer: stock's layout (2-space indent, ": " separator, no
+/// The ONE serializer: Obsidian's layout (2-space indent, ": " separator, no
 /// trailing newline). Nothing else may turn the map into bytes.
 fn write_appearance(root: &Path, map: &Map<String, Value>) -> Result<(), String> {
     let body = serde_json::to_string_pretty(&Value::Object(map.clone()))
@@ -71,7 +71,7 @@ pub fn css_theme(root: &Path) -> String {
 }
 
 /// Write `cssTheme`. preserve_order's insert keeps an existing key's position
-/// and appends a new one at the end — both are what stock's own rewrites show
+/// and appends a new one at the end — both are what Obsidian's own rewrites show
 /// (T2: keys appear in first-deviation order and stay put).
 pub fn set_css_theme(root: &Path, name: &str) -> Result<(), String> {
     let mut m = read_appearance(root)?; // Err = refuse, never overwrite
@@ -97,7 +97,7 @@ pub fn enabled_snippets(root: &Path) -> Vec<String> {
 /// Toggle one snippet label. Measured semantics (T3 RESULT 3): enabling
 /// APPENDS (array is enable order), disabling REMOVES the entry — disabled is
 /// not recorded as `false`, it is simply not listed. Enabling twice is one
-/// entry. When the last entry is disabled the KEY stays as `[]`: stock was
+/// entry. When the last entry is disabled the KEY stays as `[]`: Obsidian was
 /// only measured removing ENTRIES, never observed on the last-entry case, and
 /// keeping a present key is the smaller mutation (re-measure against
 /// /srv/reference/obsidian.AppImage if a gate ever makes this matter).
@@ -120,9 +120,9 @@ pub fn set_snippet_enabled(root: &Path, label: &str, on: bool) -> Result<(), Str
 }
 
 // ---------------------------------------------------------------------------
-// goal fontwheel (docs/ctrlzoom/recon.md REQ-1/2/4/5/14): stock's "Quick font
+// goal fontwheel (docs/ctrlzoom/recon.md REQ-1/2/4/5/14): Obsidian's "Quick font
 // size adjustment". Two keys in the SAME appearance.json: "baseFontSize"
-// (number, px; absent = 16) and "baseFontSizeAction" (bool). Stock's default
+// (number, px; absent = 16) and "baseFontSizeAction" (bool). Obsidian's default
 // is OFF (key absent); OPERATOR EXCEPTION REQ-2: opensidian treats an ABSENT
 // key as ON, an explicit false is honoured.
 pub const BFS_DEFAULT: f64 = 16.0;
@@ -134,7 +134,7 @@ pub fn quickfont(root: &Path) -> (f64, bool) {
     let m = read_appearance(root).unwrap_or_default();
     let bfs = m
         .get("baseFontSize")
-        // stock reads a numeric STRING as its number ("18" -> 18, recon S7);
+        // Obsidian reads a numeric STRING as its number ("18" -> 18, recon S7);
         // anything else non-numeric ("abc") is the default 16 (recon D5)
         .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.trim().parse::<f64>().ok())))
         .filter(|f| f.is_finite())
@@ -144,7 +144,7 @@ pub fn quickfont(root: &Path) -> (f64, bool) {
     (bfs, act)
 }
 
-/// Write either key (None = leave it). Stock writes the size as an integer and
+/// Write either key (None = leave it). Obsidian writes the size as an integer and
 /// the action as a bool; a write where nothing changes is skipped.
 pub fn set_quickfont(root: &Path, size: Option<i64>, action: Option<bool>) -> Result<(), String> {
     let mut m = read_appearance(root)?; // Err = refuse, never overwrite
@@ -163,7 +163,7 @@ pub fn set_quickfont(root: &Path, size: Option<i64>, action: Option<bool>) -> Re
 }
 
 // ---------------------------------------------------------------------------
-// goal fontset (docs/fontset/recon.md REQ-8/11/13/14, D1/D3): stock's three
+// goal fontset (docs/fontset/recon.md REQ-8/11/13/14, D1/D3): the three
 // font rows. Keys in the SAME appearance.json, each a ","-joined string of
 // family names exactly as the user (or a hand edit) wrote it — the FILE keeps
 // the value verbatim (REQ-14 "file values never normalised"); parsing and
@@ -223,7 +223,7 @@ pub fn parse_fc_families(out: &str) -> Vec<String> {
 // ---------------------------------------------------------------------------
 // Part 3 (ledger item 4): the snippet listing + loader — R3.
 //
-// The oracle (docs/recon-themes/probe-stock-vault.sh §4, T3 RESULT 2):
+// The oracle (the recon-themes probe §4, T3 RESULT 2):
 // top-level `<vault>/.obsidian/snippets/*.css` ONLY. `*.css` is a sh glob, so
 // the rule it encodes is: no dotfiles (the glob never matches a leading `.`),
 // exact-case `.css` suffix, subdirectories NEVER recursed (a directory —
@@ -231,7 +231,7 @@ pub fn parse_fc_families(out: &str) -> Vec<String> {
 // label is the basename minus `.css`. Absent snippets/ directory is SILENT
 // NORMAL (T0, T3 RESULT 1): empty list, no message, nothing created.
 
-/// List snippet labels for a vault, sorted bytewise (deterministic — stock's
+/// List snippet labels for a vault, sorted bytewise (deterministic — Obsidian's
 /// on-screen order was not measured; re-measure if a gate ever compares it).
 pub fn list_snippets(root: &Path) -> Vec<String> {
     let dir = root.join(".obsidian").join("snippets");
@@ -275,7 +275,7 @@ pub fn snippet_path(root: &Path, label: &str) -> Result<PathBuf, String> {
 /// Read + sanitize ONE snippet for injection. Ok = (css, Some(loud message)
 /// when mask declarations were stripped — R4X.4). Err = the R6-loud refusal,
 /// always naming the FILE and the reason (bad label, unreadable, sanitizer
-/// refusal), because stock silently excludes and this loader must not.
+/// refusal), because Obsidian silently excludes and this loader must not.
 pub fn load_snippet(root: &Path, label: &str) -> Result<(String, Option<String>), String> {
     let p = snippet_path(root, label)?;
     let origin = format!("snippet {label}.css");
@@ -289,7 +289,7 @@ pub fn load_snippet(root: &Path, label: &str) -> Result<(String, Option<String>)
 // ---------------------------------------------------------------------------
 // Part 4 (ledger item 5): the theme listing + loader — R5.
 //
-// The oracle (docs/recon-themes/probe-stock-vault.sh §3, T1/T7):
+// The oracle (the recon-themes probe §3, T1/T7):
 //
 //     LISTED  <=>  manifest.json parses as a JSON object     (T7 RESULT 3)
 //             AND  it has a non-empty "name"                 (T1 RESULT 2)
@@ -302,7 +302,7 @@ pub fn load_snippet(root: &Path, label: &str) -> Result<(String, Option<String>)
 // carry the FIRST failing reason, exactly as the oracle's `why` is only ever
 // set once (a dir with a bad manifest AND no theme.css reports the manifest).
 // Absent themes/ directory is SILENT NORMAL (T0): empty scan, no message,
-// nothing created. Stock silently excludes; we are LOUD (R6): every exclusion
+// nothing created. Obsidian silently excludes; we are LOUD (R6): every exclusion
 // carries a user-visible message naming the theme dir and the reason, the
 // five DESIGN §3 strings verbatim.
 
@@ -343,7 +343,7 @@ fn manifest_name(m: &Map<String, Value>) -> Option<String> {
 
 /// List theme directories for a vault — the oracle's predicate, verbatim.
 /// `listed` and `excluded` are each sorted bytewise (deterministic; the
-/// oracle's glob order is collation order, unmeasured on-screen in stock).
+/// oracle's glob order is collation order, not compared on-screen).
 pub fn themes_scan(root: &Path) -> ThemesScan {
     let td = root.join(".obsidian").join("themes");
     let rd = match fs::read_dir(&td) {
@@ -443,22 +443,22 @@ pub fn load_theme(root: &Path, name: &str) -> Result<(String, Option<String>), S
 // ---------------------------------------------------------------------------
 // item 8: the R4 MINIMAL alias bridge (DESIGN §7) — GENERATED, never static.
 //
-// A vault theme is stock-shaped CSS: it declares stock's custom properties
+// A vault theme is Obsidian-format CSS: it declares Obsidian's custom properties
 // (`--background-primary`, ...) on `.theme-dark`/`.theme-light`. Our CHROME
 // paints from our own tokens (`--bg-base`, `--text-chrome`, ...), so without
-// a bridge a stock theme moves the note column (which already reads stock
+// a bridge such a theme moves the note column (which already reads those
 // names, R15.14) but never the chrome. The bridge is ONE generated <style>
 // (#vault-bridge, before #vault-theme — DESIGN §5) of alias rows
-// `--ours: var(--stock)` scoped to `body.theme-dark, body.theme-light`.
+// `--ours: var(--theirs)` scoped to `body.theme-dark, body.theme-light`.
 //
-// WHY GENERATED (DESIGN §7): a static alias whose stock source the theme
+// WHY GENERATED (DESIGN §7): a static alias whose source name the theme
 // never declares resolves the var() against OUR OWN `:root` values — at best
 // a no-op, at worst (`--background-primary: var(--bg-base)` lives in
 // style.css) a self-reference. So a row is emitted ONLY when the theme's
-// sanitized CSS textually DECLARES the stock name. No declared names → empty
+// sanitized CSS textually DECLARES the source name. No declared names → empty
 // string → no element → the DOM is byte-identical to the palette baseline.
 //
-// WHY body AND NOT :root: the alias must LOSE to the theme for the stock
+// WHY body AND NOT :root: the alias must LOSE to the theme for the source
 // name and WIN over the palette for ours. Declarations land on different
 // elements: palettes/`:root` set tokens on <html>; the bridge sets ours on
 // <body>. An element's OWN declaration always beats an inherited one, and an
@@ -476,24 +476,24 @@ pub fn load_theme(root: &Path, name: &str) -> Result<(String, Option<String>), S
 // Custom property names are CASE-SENSITIVE (CSS Variables 1 §2), so the
 // match is exact-case.
 
-/// Stock name → our chrome token(s). The MINIMAL set (DESIGN §7): enough to
-/// make a real stock theme visibly move our chrome, each row a measured
+/// Theme property name → our chrome token(s). The MINIMAL set (DESIGN §7): enough to
+/// make a real vault theme visibly move our chrome, each row a measured
 /// surface (T5 RESULT 1, and iter-8's census of what Minimal 9.0.2 declares).
 /// EVERY alias is a promise — the full T5 surface is a follow-up in
 /// docs/themefs/README.md, deliberately NOT promised here.
 pub const BRIDGE_ALIASES: &[(&str, &[&str])] = &[
-    // stock's base surface → body/main background (style.css: body{background})
+    // the theme's base surface → body/main background (style.css: body{background})
     ("--background-primary", &["--bg-base"]),
-    // stock's sidebar surface → our sidebar AND ribbon (both are "secondary"
-    // chrome surfaces; stock paints its ribbon from background-secondary too)
+    // the theme's sidebar surface → our sidebar AND ribbon (both are "secondary"
+    // chrome surfaces; themes paint the ribbon from background-secondary too)
     ("--background-secondary", &["--bg-sidebar", "--bg-ribbon"]),
-    // stock's body ink → chrome ink (body{color:var(--text-chrome)})
+    // the theme's body ink → chrome ink (body{color:var(--text-chrome)})
     ("--text-normal", &["--text-chrome"]),
     ("--text-muted", &["--text-chrome-muted"]),
-    // stock's accent → the primary button chrome (content already reads
+    // the theme's accent → the primary button chrome (content already reads
     // --interactive-accent directly; this moves the chrome side)
     ("--interactive-accent", &["--bg-button-primary"]),
-    // stock's titlebar → #wframe, via its dedicated hook: style.css paints
+    // the theme's titlebar → #wframe, via its dedicated hook: style.css paints
     // #wframe with var(--titlebar-bg, var(--bg-ribbon)) — undefined without
     // a bridge (fallback = the palette's ribbon), defined only here
     ("--titlebar-background-focused", &["--titlebar-bg"]),
@@ -528,13 +528,13 @@ fn declares(css: &str, name: &str) -> bool {
 }
 
 /// Generate the bridge for one theme's SANITIZED css. Empty string = no
-/// bridge element (the theme declares none of the aliased stock names).
+/// bridge element (the theme declares none of the aliased source names).
 pub fn bridge_css(sanitized: &str) -> String {
     let mut rows = String::new();
-    for (stock, ours) in BRIDGE_ALIASES {
-        if declares(sanitized, stock) {
+    for (name, ours) in BRIDGE_ALIASES {
+        if declares(sanitized, name) {
             for o in *ours {
-                rows.push_str(&format!("  {o}: var({stock});\n"));
+                rows.push_str(&format!("  {o}: var({name});\n"));
             }
         }
     }
@@ -546,21 +546,21 @@ pub fn bridge_css(sanitized: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// goal overlaytheme: STOCK DEFAULTS (#vault-stockdef) — generated, never static.
+// goal overlaytheme: DERIVED DEFAULTS (#vault-derivdef) — generated, never static.
 //
-// Layer 3 of style.css now reads a few STOCK names that ours never declares
+// Layer 3 of style.css now reads a few theme property names that ours never declares
 // (docs/recon-overlaytheme R1 table, MAPPED rows): `--bg-elevated:
-// var(--modal-background, #26263a)`. Stock itself defines those names from its
+// var(--modal-background, #26263a)`. Obsidian itself defines those names from its
 // base ramp — Q1 measured the chain `--modal-background` <- `--background-
-// primary` (a theme that sets only --background-primary repaints stock's
+// primary` (a theme that sets only --background-primary repaints Obsidian's
 // palette, switcher, graph options and settings card). A third-party theme
 // therefore usually declares the SOURCE and never the derived name, so
 // without this sheet the var() falls back to our literal and nothing moves.
 //
-// This is NOT an alias row (the bridge's `--ours: var(--stock)`): it declares
-// a STOCK name from another stock name, exactly as stock's own app.css would.
+// This is NOT an alias row (the bridge's `--ours: var(--theirs)`): it declares
+// one theme property from another, the derivation the theme format implies.
 // It rides its own element so the bridge keeps meaning "alias rows" (census
-// [vbridge:<n>] counts the bridge's var()s — a stock default is not one).
+// [vbridge:<n>] counts the bridge's var()s — a derived default is not one).
 //
 // A row is emitted ONLY when the theme DECLARES the source AND does NOT
 // declare the target: a theme that sets --modal-background itself must win
@@ -570,23 +570,22 @@ pub fn bridge_css(sanitized: &str) -> String {
 // bridge. Scope matches the bridge (body theme classes): the source resolves
 // on <body>, where the theme's `.theme-dark/.theme-light` rule lands.
 
-/// (target stock name, source stock name) — Q1 of docs/recon-overlaytheme.
-pub const STOCK_DEFAULTS: &[(&str, &str)] = &[
+/// (target property, source property) — Q1 of docs/recon-overlaytheme.
+pub const DERIVED_DEFAULTS: &[(&str, &str)] = &[
     // palette / switcher / graph options / settings card background
     ("--modal-background", "--background-primary"),
-    // goal themematch: stock paints the tab strip and the title area from
-    // --tab-container-background, which stock derives from
-    // --background-secondary-alt (themelight audit, stock px of every theme
-    // that declares it: Slate light 228 = #e4e4e5, 1984 light 194.196.225 =
-    // #c2c4e1, 1984 dark #1b1f57, Wasp dark #3d3d3e, Wasp light #ededee).
+    // goal themematch: the tab strip and the title area paint from
+    // --tab-container-background, which the theme format derives from
+    // --background-secondary-alt (themelight audit: every theme that
+    // declares the source expects its tab strip to follow it).
     ("--tab-container-background", "--background-secondary-alt"),
 ];
 
-/// Generate the stock-default sheet for one theme's SANITIZED css. Empty
+/// Generate the derived-default sheet for one theme's SANITIZED css. Empty
 /// string = no element.
-pub fn stock_defaults_css(sanitized: &str) -> String {
+pub fn derived_defaults_css(sanitized: &str) -> String {
     let mut rows = String::new();
-    for (target, source) in STOCK_DEFAULTS {
+    for (target, source) in DERIVED_DEFAULTS {
         if declares(sanitized, source) && !declares(sanitized, target) {
             rows.push_str(&format!("  {target}: var({source});\n"));
         }
@@ -865,8 +864,8 @@ pub fn sanitize_css(src: &str) -> Result<Sanitized, String> {
 // ---------------------------------------------------------------------------
 // Part 5 (ledger item 6): hot reload — DESIGN §8, criterion 4.
 //
-// Stock's bar: an edit to the ACTIVE theme.css or an ENABLED snippet repaints
-// in 0.14–0.34 s, no restart, and appearance.json is NOT rewritten (T4). The
+// The bar: an edit to the ACTIVE theme.css or an ENABLED snippet repaints
+// within a fraction of a second, no restart, and appearance.json is NOT rewritten (T4). The
 // vault watcher ticks at 1000 ms (watcher.rs TICK_MS) — it cannot meet that
 // bar — so main.rs runs a DEDICATED poller at RELOAD_TICK_MS over AT MOST the
 // files this derivation names, alive only while the set is non-empty. On an
@@ -874,14 +873,14 @@ pub fn sanitize_css(src: &str) -> Result<Sanitized, String> {
 // commands (theme_css / snippet_css) and re-injects that ONE element. Nothing
 // on this path writes: criterion 4 asserts appearance.json's bytes.
 //
-// Stock's asymmetry, kept (T4 RESULT 4, T3 RESULT 5): a NEW theme directory
+// The asymmetry, kept (T4 RESULT 4, T3 RESULT 5): a NEW theme directory
 // or snippet file is NOT live. The watch set is derived from what is APPLIED
 // (the painting theme + the enabled snippets), and only from files that exist
 // at derivation time — discovery refreshes on the next user action, never on
 // a tick.
 
 /// the dedicated hot-reload poll interval: ≤100 ms detection + one repaint
-/// keeps us inside stock's measured 0.14–0.34 s bar (DESIGN §8)
+/// keeps a repaint well under a second, the bar DESIGN §8 sets
 pub const RELOAD_TICK_MS: u64 = 100;
 
 /// event kinds — ui/main.js onVaultCssChanged matches these strings
@@ -917,7 +916,7 @@ pub fn reload_fp(p: &Path) -> ReloadFp {
 /// an unlisted cssTheme paints the default theme, not itself), then each enabled
 /// snippet's file in enable order. A name the path rules refuse (traversal
 /// shapes — the pickers never produce one) or a file ABSENT at derivation
-/// time is silently not watched: absence here is stock's asymmetry (new
+/// time is silently not watched: absence here is the same asymmetry (new
 /// files are not live), not an error — the apply path already said anything
 /// loud there was to say.
 pub fn watch_set(root: &Path, theme: &str, snippets: &[String]) -> Vec<WatchedFile> {
@@ -944,8 +943,8 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    /// the committed stock-written fixture — docs/fixtures/themefs/README.md
-    const STOCK: &str = include_str!("../tests/fixtures/themefs/obsidian-format.appearance.json");
+    /// the committed Obsidian-written fixture — docs/fixtures/themefs/README.md
+    const FIXTURE: &str = include_str!("../tests/fixtures/themefs/obsidian-format.appearance.json");
 
     fn tmp_vault(tag: &str) -> PathBuf {
         let root =
@@ -964,21 +963,21 @@ mod tests {
     /// byte-wise assertion below stands on this one.
     #[test]
     fn themefs_fixture_matches_the_t2_log() {
-        assert_eq!(STOCK.len(), 180, "t2-appearance.log: '--- appearance.json  180 B'");
-        assert_eq!(STOCK.as_bytes().last(), Some(&b'}'), "no trailing newline");
-        assert!(STOCK.contains("\"cssTheme\": \"T1noauthor\""));
+        assert_eq!(FIXTURE.len(), 180, "t2-appearance.log: '--- appearance.json  180 B'");
+        assert_eq!(FIXTURE.as_bytes().last(), Some(&b'}'), "no trailing newline");
+        assert!(FIXTURE.contains("\"cssTheme\": \"T1noauthor\""));
     }
 
     /// an edit-free read -> write round trip must not change one byte:
     /// layout included (2-space indent, ": " separator, no trailing newline,
-    /// key order as stock wrote it).
+    /// key order as Obsidian wrote it).
     #[test]
     fn themefs_edit_free_round_trip_is_byte_identical() {
         let root = tmp_vault("rt");
-        fs::write(root.join(APPEARANCE_FILE), STOCK).unwrap();
+        fs::write(root.join(APPEARANCE_FILE), FIXTURE).unwrap();
         let m = read_appearance(&root).unwrap();
         write_appearance(&root, &m).unwrap();
-        assert_eq!(bytes(&root), STOCK, "no-edit round trip changed bytes");
+        assert_eq!(bytes(&root), FIXTURE, "no-edit round trip changed bytes");
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -990,10 +989,10 @@ mod tests {
     #[test]
     fn themefs_criterion2_one_edit_changes_one_line_byte_wise() {
         let root = tmp_vault("c2");
-        fs::write(root.join(APPEARANCE_FILE), STOCK).unwrap();
+        fs::write(root.join(APPEARANCE_FILE), FIXTURE).unwrap();
         set_css_theme(&root, "Minimal").unwrap();
-        assert_eq!(STOCK.matches("\"cssTheme\": \"T1noauthor\",").count(), 1);
-        let want = STOCK.replacen(
+        assert_eq!(FIXTURE.matches("\"cssTheme\": \"T1noauthor\",").count(), 1);
+        let want = FIXTURE.replacen(
             "\"cssTheme\": \"T1noauthor\",",
             "\"cssTheme\": \"Minimal\",",
             1,
@@ -1001,7 +1000,7 @@ mod tests {
         assert_eq!(bytes(&root), want, "one edit changes one line and nothing else");
         // the same fact spelled key by key, so a failure names the loss:
         let v: Value = serde_json::from_str(&bytes(&root)).unwrap();
-        let o: Value = serde_json::from_str(STOCK).unwrap();
+        let o: Value = serde_json::from_str(FIXTURE).unwrap();
         for k in ["theme", "baseFontSize", "baseFontSizeAction", "interfaceFontFamily", "accentColor"] {
             assert_eq!(v[k], o[k], "unauthored key {k} must ride through");
         }
@@ -1027,9 +1026,9 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// ABSENT file = every default, and reads never materialise it (T2: stock
-    /// writes it on deviation; T0's `{}` at vault creation is stock's act in
-    /// stock's vault, not a duty of ours — DESIGN §2).
+    /// ABSENT file = every default, and reads never materialise it (T2: Obsidian
+    /// writes it on deviation; T0's `{}` at vault creation is Obsidian's act in
+    /// its own vault, not a duty of ours — DESIGN §2).
     #[test]
     fn themefs_absent_file_reads_default_and_is_not_created() {
         let root = tmp_vault("absent");
@@ -1041,7 +1040,7 @@ mod tests {
     }
 
     /// fontwheel REQ-2/5/14: absent keys = (16, ON) — the operator exception;
-    /// explicit false honoured; writes clamp 10..30, land as stock's integer +
+    /// explicit false honoured; writes clamp 10..30, land as an integer +
     /// bool, keep other keys, and a no-change write leaves the bytes alone.
     #[test]
     fn themefs_quickfont_defaults_clamp_and_round_trip() {
@@ -1306,7 +1305,7 @@ mod tests {
     fn themefs_snips_absent_dir_is_silent_normal() {
         let root = tmp_vault("snipabsent");
         assert!(list_snippets(&root).is_empty());
-        // T0: listing must not CREATE the directory stock never creates
+        // T0: listing must not CREATE the directory Obsidian never creates
         assert!(!root.join(".obsidian").join("snippets").exists());
     }
 
@@ -1370,7 +1369,7 @@ mod tests {
         assert!(!root.join(".obsidian").join("themes").exists(), "scan must not create");
     }
 
-    /// probe-stock-vault.sh case 3, all five shapes + a valid dir, one scan.
+    /// the recon-themes probe's case 3, all five shapes + a valid dir, one scan.
     /// The five reasons are DESIGN §3's strings verbatim; message = dir-prefixed.
     #[test]
     fn themes_predicate_matches_the_oracle_case3() {
@@ -1502,7 +1501,7 @@ mod tests {
         assert!(w[1].path.ends_with(".obsidian/snippets/b.css"));
     }
 
-    /// stock's asymmetry: a file ABSENT at derivation time is not watched —
+    /// the asymmetry: a file ABSENT at derivation time is not watched —
     /// a new file appearing later is NOT live (T4 RESULT 4, T3 RESULT 5);
     /// and names the path rules refuse are silently not watched (the apply
     /// path already refused them loudly).
@@ -1559,7 +1558,7 @@ mod tests {
 
     // ---- item 8: the R4 minimal alias bridge (generated) -------------------
 
-    /// the REAL theme fixture, installed by stock 1.13.7 itself (item 9,
+    /// the REAL theme fixture, installed by Obsidian 1.13.7 itself (item 9,
     /// docs/fixtures/themefs/README.md) — the bridge's whole point is that
     /// THIS file moves our chrome, so it is the fixture the generator is
     /// proved against, through the same sanitize step the loader uses.
@@ -1568,13 +1567,13 @@ mod tests {
 
     #[test]
     fn themefs_bridge_minimal_fixture_emits_the_full_set() {
-        let s = sanitize_css(MINIMAL).expect("the stock-installed fixture must sanitize");
+        let s = sanitize_css(MINIMAL).expect("the Obsidian-installed fixture must sanitize");
         let b = bridge_css(&s.css);
         assert!(
             b.starts_with("body.theme-dark, body.theme-light {\n"),
             "bridge scope is the body theme classes (own-decl beats inheritance): {b}"
         );
-        // Minimal 9.0.2 declares every stock name in the minimal set (measured
+        // Minimal 9.0.2 declares every source name in the minimal set (measured
         // iter 8: primary 3 / secondary 6 / normal 1 / muted 1 / accent 2 /
         // titlebar-focused 4 declarations) — all seven alias rows must emit.
         for row in [
@@ -1592,7 +1591,7 @@ mod tests {
 
     #[test]
     fn themefs_bridge_absent_when_nothing_declared() {
-        // no stock names → empty string → the frontend injects NO element and
+        // no source names → empty string → the frontend injects NO element and
         // the DOM stays byte-identical to the palette baseline (DESIGN §7)
         assert_eq!(bridge_css(".x { color: red; background: blue }"), "");
         assert_eq!(bridge_css(""), "");
@@ -1600,7 +1599,7 @@ mod tests {
 
     #[test]
     fn themefs_bridge_usage_is_not_a_declaration() {
-        // reading a stock name is not defining it: an alias emitted for a
+        // reading a source name is not defining it: an alias emitted for a
         // mere var() reference would resolve against our own :root values
         assert_eq!(bridge_css("a { color: var(--background-primary) }"), "");
         // a LONGER identifier is a different property
@@ -1628,62 +1627,62 @@ mod tests {
         assert_eq!(bridge_css(".theme-dark { --TEXT-NORMAL: #fff }"), "");
     }
 
-    // ---- goal overlaytheme: stock defaults (#vault-stockdef) ---------------
+    // ---- goal overlaytheme: derived defaults (#vault-derivdef) ---------------
 
     const SOLARIZED: &str = include_str!(
         "../tests/fixtures/themeone/Solarized/theme.css"
     );
 
     #[test]
-    fn themefs_stockdef_solarized_fixture_derives_modal_background() {
+    fn themefs_derivdef_solarized_fixture_derives_modal_background() {
         // the goal's fixture declares --background-primary (both modes) and
         // never --modal-background: the row must emit, scoped like the bridge
         let s = sanitize_css(SOLARIZED).expect("the committed fixture must sanitize");
         assert_eq!(
-            stock_defaults_css(&s.css),
+            derived_defaults_css(&s.css),
             "body.theme-dark, body.theme-light {\n  --modal-background: var(--background-primary);\n  --tab-container-background: var(--background-secondary-alt);\n}\n"
         );
     }
 
     #[test]
-    fn themefs_stockdef_absent_without_the_source() {
+    fn themefs_derivdef_absent_without_the_source() {
         // no source -> no sheet -> the Layer 3 fallback literal paints (R2)
-        assert_eq!(stock_defaults_css(""), "");
-        assert_eq!(stock_defaults_css(".theme-dark { --text-normal: #fff }"), "");
+        assert_eq!(derived_defaults_css(""), "");
+        assert_eq!(derived_defaults_css(".theme-dark { --text-normal: #fff }"), "");
         // reading the source is not declaring it
-        assert_eq!(stock_defaults_css("a { color: var(--background-primary) }"), "");
+        assert_eq!(derived_defaults_css("a { color: var(--background-primary) }"), "");
         // a longer identifier is a different property
-        assert_eq!(stock_defaults_css(".theme-dark { --background-primary-alt: #fff }"), "");
+        assert_eq!(derived_defaults_css(".theme-dark { --background-primary-alt: #fff }"), "");
     }
 
     #[test]
-    fn themefs_stockdef_theme_own_target_wins() {
+    fn themefs_derivdef_theme_own_target_wins() {
         // a theme that sets --modal-background itself keeps its own value:
         // emitting the default would out-specify its .theme-dark rule
         assert_eq!(
-            stock_defaults_css(".theme-dark { --background-primary: #000; --modal-background: #111 }"),
+            derived_defaults_css(".theme-dark { --background-primary: #000; --modal-background: #111 }"),
             ""
         );
     }
 
     #[test]
-    fn themefs_stockdef_is_not_a_bridge_row() {
+    fn themefs_derivdef_is_not_a_bridge_row() {
         // the bridge's alias census ([vbridge:<n>]) must not change: a theme
         // declaring only --background-primary still yields exactly ONE alias
         let css = ".theme-dark { --background-primary: #002b36 }";
         assert_eq!(bridge_css(css).matches("var(").count(), 1);
         assert!(!bridge_css(css).contains("--modal-background"));
-        assert!(stock_defaults_css(css).contains("--modal-background: var(--background-primary);"));
+        assert!(derived_defaults_css(css).contains("--modal-background: var(--background-primary);"));
     }
 
     #[test]
-    fn themefs_stockdef_builtins_drive_the_bridge_and_the_stock_defaults() {
+    fn themefs_derivdef_builtins_drive_the_bridge_and_the_derived_defaults() {
         // goal themes4: the built-ins are upstream themes now. None of them
         // declares our own --bg-elevated (the old in-house three did, which is
-        // what this test used to pin) — what each DOES declare is stock's
+        // what this test used to pin) — what each DOES declare is
         // --background-primary and NOT --modal-background, so (a) the bridge
         // carries --bg-base, i.e. the theme moves our chrome, and (b) the
-        // stock-default sheet derives --modal-background from it, i.e. the
+        // derived-default sheet derives --modal-background from it, i.e. the
         // theme reaches our elevated surfaces (palette, switcher, settings).
         // A built-in for which either stops holding is a red test here, not a
         // half-themed window found by a screenshot.
@@ -1696,7 +1695,7 @@ mod tests {
                 t.name
             );
             assert!(
-                stock_defaults_css(&s.css).contains("--modal-background: var(--background-primary);"),
+                derived_defaults_css(&s.css).contains("--modal-background: var(--background-primary);"),
                 "{}: elevated surfaces would keep the Default literal",
                 t.name
             );

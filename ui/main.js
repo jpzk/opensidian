@@ -6449,19 +6449,19 @@ async function themeInject(name) {
       }
       br.textContent = bcss;
     } else if (br) br.remove();
-    // goal overlaytheme: the STOCK-DEFAULT sheet (#vault-stockdef) — stock
-    // names derived from stock names the theme declared (--modal-background
+    // goal overlaytheme: the DERIVED-DEFAULT sheet (#vault-derivdef) — theme
+    // properties derived from properties the theme declared (--modal-background
     // <- --background-primary, docs/recon-overlaytheme Q1), so Layer 3's
     // var(--modal-background, <literal>) follows a theme that only set the
     // source. Its own element, NOT the bridge: it is not an alias row and
     // must not move [vbridge:]. Empty -> no element (R2). Sits first, before
     // the bridge and the theme, so the theme out-cascades it.
-    const scss = r.stockdef || "";
-    let sd = document.getElementById("vault-stockdef");
+    const scss = r.derivdef || "";
+    let sd = document.getElementById("vault-derivdef");
     if (scss) {
       if (!sd) {
         sd = document.createElement("style");
-        sd.id = "vault-stockdef";
+        sd.id = "vault-derivdef";
         document.head.insertBefore(sd, document.getElementById("vault-bridge") || el);
       }
       sd.textContent = scss;
@@ -6487,7 +6487,7 @@ function themeRemove() {
   // theme does would hand the chrome to a var() nobody declares (item 8)
   const br = document.getElementById("vault-bridge");
   if (br) br.remove();
-  const sd = document.getElementById("vault-stockdef");   // goal overlaytheme
+  const sd = document.getElementById("vault-derivdef");   // goal overlaytheme
   if (sd) sd.remove();
   vaultBridgeAliases = 0;
   vthemeMark("");   // item 6: "no theme, as of generation n" — a new key, and a repaint

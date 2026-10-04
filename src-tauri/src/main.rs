@@ -181,7 +181,7 @@ fn note_path(v: &State<Vault>, name: &str, create: bool) -> Option<PathBuf> {
    /etc and /usr for reading and sandbox.rs:94 reports it unsupported on this
    kernel; it is defence in depth that is currently absent.                */
 
-/// R29.8: what v1 serves — stock's list minus `svg` (scriptable, and we have
+/// R29.8: what v1 serves — Obsidian's list minus `svg` (scriptable, and we have
 /// no sanitizer), `bmp` and `avif` (scope only). ext -> Content-Type.
 const IMG_TYPES: [(&str, &str); 5] = [
     ("png", "image/png"),
@@ -228,7 +228,7 @@ fn pct_decode(s: &str) -> Option<String> {
 }
 
 /// R29.5 containment: a vault-relative image target -> the canonical file to
-/// read, or None (serve nothing, say nothing — stock does not leak whether an
+/// read, or None (serve nothing, say nothing — Obsidian does not leak whether an
 /// out-of-vault file exists, see R29.5).
 ///
 /// Order matters, every step earns its place:
@@ -361,7 +361,7 @@ fn is_img_target(target: &str) -> bool {
                   vault root (the note_path_in shape), so vault/attachments ->
                   /home/user cannot turn a drop into a write outside the vault.
      S5 NO OVER — create_new(), i.e. O_EXCL: never exists()-then-write, and
-                  never an overwrite. Data loss outranks stock parity (rule of
+                  never an overwrite. Data loss outranks Obsidian parity (rule of
                   order): the collision gets a new name, the old file stays.
      CAP        — MAX_IMG_BYTES on the source metadata BEFORE the copy, and
                   again on the stream, so a file that grows mid-copy cannot
@@ -441,7 +441,7 @@ struct Attached {
     refused: Vec<String>,  // human sentences, already formatted
 }
 
-/// R31.3 the attachment folder: stock's default is the VAULT ROOT (recon
+/// R31.3 the attachment folder: Obsidian's default is the VAULT ROOT (recon
 /// 2026-09-12: `.obsidian/app.json` is `{}` and the file lands at the root).
 /// `attachmentFolderPath` is honoured when it is a plain vault-relative folder;
 /// a note-relative `./sub` value is NOT supported in v1 and falls back to the
@@ -491,7 +491,7 @@ fn attach_name(p: &Path) -> Option<String> {
     (rel.components().count() == 1 && rel.as_os_str() == name).then(|| name.to_string())
 }
 
-/// R31.4 collision: stock appends ` <n>` to the STEM, keeping the extension
+/// R31.4 collision: Obsidian appends ` <n>` to the STEM, keeping the extension
 /// (recon: `Pasted image ... .png` -> `... 1.png` -> `... 2.png`). Never an
 /// overwrite (S5), so this is a create_new() loop, not an exists() test.
 fn free_dest(dir: &Path, name: &str) -> Result<(PathBuf, String, fs::File), Refused> {
@@ -937,14 +937,14 @@ fn update_links_in(root: &Path, ix: &mut Index, old: &str, new: &str) -> usize {
 }
 
 /// R34.3: what the Update links modal states — "This will affect {links}
-/// link[s] in {files} file[s]". files==0 means stock shows NO modal.
+/// link[s] in {files} file[s]". files==0 means Obsidian shows NO modal.
 #[derive(serde::Serialize)]
 struct Blast {
     links: usize,
     files: usize,
 }
 
-/* R34.1: the title-rename backend. The file moves NOW (stock renames on
+/* R34.1: the title-rename backend. The file moves NOW (Obsidian renames on
    Enter, before any question is asked) and the caller is handed the blast
    radius to put in the prompt. Inbound links are untouched until the caller
    answers with update_links. */
@@ -967,7 +967,7 @@ fn update_links(v: State<Vault>, old: String, new: String, otel: Option<perf::Ct
 }
 
 /* R34.8 — CONSENT IS REMEMBERED IN THE VAULT, not in the session. Measured on
-   stock: answering `Always update` wrote `.obsidian/app.json` =
+   Obsidian: answering `Always update` wrote `.obsidian/app.json` =
    {"alwaysUpdateLinks": true} (31 bytes, committed as
    docs/recon-title-rename/D-app.json-after-always-update) and the SECOND
    rename in the same session raised no modal while still rewriting all four
@@ -978,7 +978,7 @@ fn link_consent_in(root: &Path) -> bool {
 }
 
 /// one boolean key of the vault's `.obsidian/app.json`. Absent, unparsable or
-/// not a bool = false, which is stock's default for every key read this way
+/// not a bool = false, which is Obsidian's default for every key read this way
 /// (alwaysUpdateLinks, strictLineBreaks).
 fn app_bool_in(root: &Path, key: &str) -> bool {
     let cfg = fs::read_to_string(root.join(".obsidian/app.json")).unwrap_or_default();
@@ -1046,9 +1046,9 @@ fn set_link_consent(v: State<Vault>, on: bool) -> Result<(), String> {
     set_link_consent_in(&root, on)
 }
 
-/* goal/linebreak REQ-1 — stock's Settings > Editor > Display "Strict line
-   breaks" (docs/linebreak/recon.md). Stock's key, stock's file:
-   `<vault>/.obsidian/app.json` "strictLineBreaks", default false (stock's
+/* goal/linebreak REQ-1 — Obsidian's Settings > Editor > Display "Strict line
+   breaks" (docs/linebreak/recon.md). Obsidian's key, Obsidian's file:
+   `<vault>/.obsidian/app.json` "strictLineBreaks", default false (Obsidian's
    app.json is `{}` until the toggle is first clicked; the key then stays,
    true/false). Read off disk on every reading render (`render` below), so a
    toggle, another window or a hand edit all take effect on the next render. */
@@ -1080,7 +1080,7 @@ fn rename_note(v: State<Vault>, old: String, new: String, otel: Option<perf::Ctx
    resolving and render faded. That faded link IS the notification; rewriting
    the linking notes would destroy the user's text to hide a fact.
 
-   WHERE IT GOES. Stock says "moved to your system trash". This app cannot
+   WHERE IT GOES. Obsidian says "moved to your system trash". This app cannot
    honestly say that: `sandbox.rs::write_roots` grants write access to /tmp,
    /dev, /run, /var/tmp, ~/.cache, ~/.local/share/dev.koto.opensidian, the vault
    and the config file — and to nothing else. ~/.local/share/Trash is NOT in
@@ -1088,7 +1088,7 @@ fn rename_note(v: State<Vault>, old: String, new: String, otel: Option<perf::Ctx
    XDG trash move is EACCES, and widening the ruleset to reach a directory full
    of other applications' deleted files is a security decision, not a file-ops
    one. The destination is therefore the vault's own `.trash/` — which is
-   stock's other documented option, is inside the one directory we may already
+   Obsidian's other documented option, is inside the one directory we may already
    write, and is on the SAME FILESYSTEM as the note, so the move is one
    rename(2): atomic, never a copy, and it cannot half-delete a note by filling
    a disk. `walk()` (index.rs:374) skips every dot-prefixed entry and
@@ -1228,9 +1228,9 @@ fn set_sidebar_w(w: u64) {
 }
 
 /* ---------- R28 WORKSPACE PERSISTENCE: the two files, and why they are two ----
-   R28.1  the LAYOUT lives inside the vault, in stock's own file and stock's own
+   R28.1  the LAYOUT lives inside the vault, in Obsidian's own file and Obsidian's own
           shape: <vault>/.obsidian/workspace.json. A vault carries its own
-          session, so a vault opened by the stock app and back again (R28.16)
+          session, so a vault opened by Obsidian and back again (R28.16)
           finds the tabs where it left them.
    R28.2  the WINDOW GEOMETRY does NOT live there. It goes in ~/.opensidian.json
           ("win"), beside the other machine-scoped settings (sidebar_w, theme,
@@ -1272,7 +1272,7 @@ fn read_workspace(v: State<Vault>) -> Option<serde_json::Value> {
 /// library). The format comes from .obsidian/templates.json keys dateFormat /
 /// timeFormat, re-read on EVERY call (edits honoured without restart) and
 /// NEVER written (REQ-4): this fn has no write path. A key that is missing,
-/// not a string, or "" falls back to stock's default for that key alone
+/// not a string, or "" falls back to Obsidian's default for that key alone
 /// (REQ-3); an unreadable / unparseable file reads as "no keys".
 #[tauri::command]
 fn insert_datetime(v: State<Vault>, kind: String, tm: datefmt::Tm) -> Result<String, String> {
@@ -1393,17 +1393,16 @@ fn pick_vault_inner(v: &State<Vault>, path: &str) -> Result<String, String> {
 }
 
 /* feedback #20 [R32.6]: the starter note a NEW vault is seeded with. Recon
-   against stock 1.13.7 (2026-09-12, shots $RECON/shots5/E0-E9): stock's own
-   create-vault flow writes exactly one file, `Welcome.md`, 203 bytes, and it
-   carries NO heading — it opens on prose ("This is your new *vault*.") while
-   the big "Welcome" on screen is the INLINE TITLE, the filename rendered.
+   (2026-09-12): Obsidian's create-vault flow writes exactly one file,
+   `Welcome.md`, and it carries NO heading — the big "Welcome" on screen is
+   the INLINE TITLE, the filename rendered.
    So the `# Welcome` line opensidian used to seed was redundant the moment the
    inline title landed: it drew the word twice, once from the filename and
    once from bytes we wrote ourselves.
    Seeding CONTENT is deliberate and stays (R1.2) — it is NOT note creation,
    which materializes zero bytes (`create_note`). The prose is opensidian's own;
-   only the heading is dropped. Deliberate delta from stock: we keep a trailing
-   newline (stock's seed ends without one) because a text file should end in \n. */
+   only the heading is dropped. We keep a trailing newline because a text file
+   should end in \n. */
 const NEW_VAULT_SEED_NAME: &str = "Welcome.md";
 const NEW_VAULT_SEED: &str =
     "This is your new vault. Notes are plain Markdown files.\nLink them with [[Wiki Links]].\n";
@@ -1677,7 +1676,7 @@ fn type_probe() -> bool {
 ///   NOT a CSS loader: no product feature calls this, it is inert without the env
 ///   var, a shipped build never sets it, and it takes an absolute path the OPERATOR
 ///   chose (the test rig), never a vault-relative or user-influenced name. The
-///   census then publishes body's computed style so a phase can prove a stock-shaped
+///   census then publishes body's computed style so a phase can prove an Obsidian-shaped
 ///   rule won a pixel (crit 5). Precedent: type_probe (OPENSIDIAN_TYPEPROBE), main.rs.
 #[tauri::command]
 fn smoke_css() -> Option<String> {
@@ -1688,7 +1687,7 @@ fn smoke_css() -> Option<String> {
 /// F2 (dataloss-audit) test hook: the vault-switch race lives INSIDE the save
 /// debounce window, so at 250ms it is not mechanically reproducible.
 /// OPENSIDIAN_SAVE_MS widens the window for the smoke; every normal run gets
-/// the stock 250ms (the env var is absent, and out-of-range values are ignored).
+/// the default 250ms (the env var is absent, and out-of-range values are ignored).
 #[tauri::command]
 fn save_debounce_ms() -> u64 {
     std::env::var("OPENSIDIAN_SAVE_MS")
@@ -1885,7 +1884,7 @@ fn esc(s: &str) -> String {
 }
 
 /// R10.1 link label: alias wins; `[[#H]]` shows "H"; otherwise the raw target
-/// (LP keeps the '#', reading view joins with " > " like stock)
+/// (LP keeps the '#', reading view joins with " > " like Obsidian)
 fn link_label(note: &str, anchor: &str, alias: &str, reading: bool) -> String {
     if !alias.is_empty() {
         alias.to_string()
@@ -1940,7 +1939,7 @@ fn linkify(buf: &str, notes: &[String], imgs: &[String], reading: bool, urls: bo
 }
 
 /// R10.3 block id: ` ^id` (letters/digits/-) at the very end of a block ->
-/// (text without it, id). Stock hides it in reading view, shows a small grey
+/// (text without it, id). Obsidian hides it in reading view, shows a small grey
 /// label in LP — both via CSS on span.blockid.
 fn split_block_id(s: &str) -> Option<(&str, &str)> {
     let t = s.trim_end();
@@ -2105,7 +2104,7 @@ fn is_remote_img(url: &str) -> bool {
 /// rvtask R2 (notes/req-rvtask.md §4): reading-view task boxes.
 ///
 /// Each box carries `data-line` = the 0-based FILE line of its "[" — not a
-/// block index, not stock's section-relative number (§3 Q4) — so the click path
+/// block index, not Obsidian's section-relative number (§3 Q4) — so the click path
 /// can patch exactly that line: a duplicate task maps by position, a nested /
 /// quoted / callout / numbered one by its own line (Q3). The status byte is read
 /// from the SOURCE, so "[X]" stays distinguishable from "[x]" (data-task), and
@@ -2190,12 +2189,12 @@ fn render_with(content: &str, notes: &[String], imgs: &[String], reading: bool) 
     render_with_br(content, notes, imgs, reading, false)
 }
 
-/// goal/linebreak REQ-3..14: `soft_br` = stock's reading view with "Strict line
+/// goal/linebreak REQ-3..14: `soft_br` = Obsidian's reading view with "Strict line
 /// breaks" OFF (its default): a SOFT break inside a paragraph, list item,
 /// quote or emphasis renders as `<br>`, i.e. its own row. Only `SoftBreak`
 /// events are touched: code blocks (Text), tables (no soft breaks), `$$` math
 /// (one DisplayMath event) and headings never carry one, which is exactly
-/// stock's REQ-16 "unaffected" set. Live preview passes false (REQ-17: it
+/// Obsidian's REQ-16 "unaffected" set. Live preview passes false (REQ-17: it
 /// shows source lines; its blocks never render a multi-line paragraph).
 fn render_with_br(content: &str, notes: &[String], imgs: &[String], reading: bool, soft_br: bool) -> String {
     // Security (docs/security-review.md H1): .md files are untrusted, so raw
@@ -2218,7 +2217,7 @@ fn render_with_br(content: &str, notes: &[String], imgs: &[String], reading: boo
     opts.remove(Options::ENABLE_SMART_PUNCTUATION);
     // rvtask R2: reading view only — every task checkbox carries the 0-based FILE line of
     // its "[" (duplicates / nested / quoted / numbered map exactly), custom statuses
-    // ("[/]" "[-]" ...) are tasks too (stock Q2), and the li gets data-task + is-checked (Q5).
+    // ("[/]" "[-]" ...) are tasks too (Obsidian Q2), and the li gets data-task + is-checked (Q5).
     let mut tk = TaskScan::new(content, reading);
     let mut buf_at = 0usize; // source offset of buf's first byte
     for (ev, range) in Parser::new_ext(content, opts).into_offset_iter() {
@@ -2279,7 +2278,7 @@ fn render_with_br(content: &str, notes: &[String], imgs: &[String], reading: boo
                     Event::Start(Tag::Item) if reading => {
                         tk.item_at(evs.len());
                     }
-                    // goal/linebreak: stock's non-strict reading view (see render_with_br)
+                    // goal/linebreak: Obsidian's non-strict reading view (see render_with_br)
                     Event::SoftBreak if soft_br => {
                         evs.push(Event::HardBreak);
                         continue;
@@ -2300,7 +2299,7 @@ fn render_with_br(content: &str, notes: &[String], imgs: &[String], reading: boo
                             && !matches!(link_type, LinkType::Autolink | LinkType::Email)
                         {
                             // listlinks REQ-3: `[label](Note.md)` is an INTERNAL link
-                            // (stock: same styling/click as a wikilink). It becomes our
+                            // (Obsidian: same styling/click as a wikilink). It becomes our
                             // wikilink anchor — href="#", target only in data-note —
                             // so S1 still never mints a relative href the webview
                             // could navigate the app window to.
@@ -2381,7 +2380,7 @@ fn render_with_br(content: &str, notes: &[String], imgs: &[String], reading: boo
     let mut out = String::new();
     html::push_html(&mut out, evs.into_iter());
     // R15.11: pulldown-cmark emits "<input .../>\n" for task markers; that newline is a rendered space (~4px) between the
-    // custom checkbox box and the text, which stock does not have (box->text = 16px box + margin only).
+    // custom checkbox box and the text, which the design does not want (box->text = box + margin only).
     out.replace("type=\"checkbox\"/>\n", "type=\"checkbox\"/>").replace("checked=\"\"/>\n", "checked=\"\"/>")
 }
 
@@ -2661,7 +2660,7 @@ fn set_theme(theme: String) {
    get_palette/set_palette over a "palette" key in ~/.opensidian.json, a SECOND
    theme axis beside the mode. The operator asked for one axis and one axis
    only, and the colours it selected now ship as real theme FILES
-   (src-tauri/themes/, seeded by builtins.rs), chosen through stock's own
+   (src-tauri/themes/, seeded by builtins.rs), chosen through Obsidian's own
    cssTheme picker — so a Rust table of palette ids would be a second, private
    list of themes that the vault's themes/ directory could not extend.
 
@@ -2677,10 +2676,10 @@ fn set_theme(theme: String) {
    contract, including "absent = prefers-color-scheme decides" (R6). */
 /* ---- themefs R3 (snippets): thin commands over src-tauri/src/themefs.rs ----
    The vault-CSS axis lives in the VAULT's own .obsidian/appearance.json
-   (stock's file, byte-wise round-trip — themefs.rs), never in ~/.opensidian.json:
-   pointing opensidian at a vault must find the choice the stock app already made.
+   (Obsidian's file, byte-wise round-trip — themefs.rs), never in ~/.opensidian.json:
+   pointing opensidian at a vault must find the choice Obsidian already made.
    Every refusal string is user-visible (the frontend puts it on the notice
-   banner) and names the file — R6: loud where stock is silent. */
+   banner) and names the file — R6: loud where Obsidian is silent. */
 
 
 /// what the frontend injects for one snippet or theme: the sanitized bytes
@@ -2693,9 +2692,9 @@ struct VaultCss {
     css: String,
     message: Option<String>,
     bridge: Option<String>,
-    /// goal overlaytheme: the stock-default sheet (themefs::stock_defaults_css),
-    /// themes only — stock names derived from stock names (#vault-stockdef)
-    stockdef: Option<String>,
+    /// goal overlaytheme: the derived-default sheet (themefs::derived_defaults_css),
+    /// themes only — theme properties derived from theme properties (#vault-derivdef)
+    derivdef: Option<String>,
 }
 
 #[tauri::command]
@@ -2715,7 +2714,7 @@ fn snippet_css(v: State<Vault>, label: String, otel: Option<perf::Ctx>) -> Resul
     let root = cur_vault(&v).ok_or("no vault open")?;
     let (css, message) =
         span_timed!(otel => "snippet_css", themefs::load_snippet(&root, &label))?;
-    Ok(VaultCss { css, message, bridge: None, stockdef: None })
+    Ok(VaultCss { css, message, bridge: None, derivdef: None })
 }
 
 #[tauri::command]
@@ -2725,7 +2724,7 @@ fn set_snippet_enabled(v: State<Vault>, label: String, on: bool) -> Result<(), S
 }
 
 /* ---- themefs R5 (themes): the listing predicate is the oracle's, verbatim
-   (probe-stock-vault.sh §3 — themefs::themes_scan). themes_scan/theme_css
+   (the recon-themes probe §3 — themefs::themes_scan). themes_scan/theme_css
    are INSTRUMENTED (a directory walk that grows with the user's installed
    themes; a user-sized CSS file through the R4X.4 sanitizer); get_css_theme/
    set_css_theme are the get_theme class homed in vault config — one scalar in
@@ -2747,9 +2746,9 @@ fn theme_css(v: State<Vault>, name: String, otel: Option<perf::Ctx>) -> Result<V
     // the SAME sanitized bytes the frontend is about to inject, so the bridge
     // can never describe a different file than the one painting
     let bridge = Some(themefs::bridge_css(&css));
-    // goal overlaytheme: stock defaults ride the same response, same bytes
-    let stockdef = Some(themefs::stock_defaults_css(&css));
-    Ok(VaultCss { css, message, bridge, stockdef })
+    // goal overlaytheme: derived defaults ride the same response, same bytes
+    let derivdef = Some(themefs::derived_defaults_css(&css));
+    Ok(VaultCss { css, message, bridge, derivdef })
 }
 
 #[tauri::command]
@@ -2764,7 +2763,7 @@ fn set_css_theme(v: State<Vault>, name: String) -> Result<(), String> {
     themefs::set_css_theme(&root, &name)
 }
 
-/* ---- goal fontwheel: stock "Quick font size adjustment" (recon.md REQ-14).
+/* ---- goal fontwheel: Obsidian "Quick font size adjustment" (recon.md REQ-14).
    Two scalars in the vault's small appearance.json — the get_theme/set_theme
    class, OUT_OF_SCOPE_CMD in perf-coverage.sh like get_css_theme. */
 #[derive(serde::Serialize)]
@@ -2786,7 +2785,7 @@ fn set_quickfont(v: State<Vault>, size: Option<i64>, action: Option<bool>) -> Re
     themefs::set_quickfont(&root, size, action)
 }
 
-/* ---- goal fontset: stock's Interface / Text / Monospace font rows
+/* ---- goal fontset: Obsidian's Interface / Text / Monospace font rows
    (docs/fontset/recon.md REQ-8..15). get_fonts/set_font: three strings in the
    vault's small appearance.json — the get_quickfont class, OUT_OF_SCOPE_CMD in
    perf-coverage.sh. font_families shells out to fc-list (fixed argv, no
@@ -2830,8 +2829,8 @@ fn theme_seed_report() -> builtins::SeedReport {
 }
 
 /* ---- themefs item 6: hot reload (DESIGN §8, criterion 4) ----------------
-   The R11 vault watcher ticks at 1000 ms — it cannot meet stock's measured
-   0.14–0.34 s repaint bar (T4) — so the APPLIED vault CSS gets its own
+   The R11 vault watcher ticks at 1000 ms — it cannot meet the sub-second
+   repaint bar (T4) — so the APPLIED vault CSS gets its own
    poller: at most the painting theme.css + the enabled snippet files
    (themefs::watch_set), one (mtime, len) stat each per RELOAD_TICK_MS,
    ALIVE ONLY while that set is non-empty. On a fingerprint move it emits
@@ -2839,7 +2838,7 @@ fn theme_seed_report() -> builtins::SeedReport {
    sanitizing commands (theme_css / snippet_css) and re-injects that ONE
    element. Nothing on this path writes — criterion 4 asserts
    appearance.json's bytes across an edit — and NEW files are not live
-   (stock's asymmetry): the set is re-derived only when vault_css_watch says
+   (Obsidian's asymmetry): the set is re-derived only when vault_css_watch says
    the applied state moved, never by scanning on a tick.
 
    vault_css_watch is the frontend declaring what is APPLIED — it owns the
@@ -2929,9 +2928,9 @@ fn spawn_css_reload(app: tauri::AppHandle) {
     });
 }
 
-/* R14: custom hotkeys, persisted as "hotkeys" in ~/.opensidian.json in the stock
+/* R14: custom hotkeys, persisted as "hotkeys" in ~/.opensidian.json in Obsidian's
    shape {"<cmd id>":[{"modifiers":["Mod","Shift"],"key":"G"}]}:
-   [] = default removed, absent id = stock default. The frontend registry
+   [] = default removed, absent id = Obsidian default. The frontend registry
    (ui/main.js CMDS) is the single source of truth for ids + defaults. */
 #[tauri::command]
 fn get_hotkeys() -> serde_json::Value {
@@ -2991,7 +2990,7 @@ struct SearchHit {
     line: u32, // 0-based source line; 0 with snippet==note means a NAME match
     snippet: String,
     /// R25.13m: a hit is an ABSOLUTE OFFSET into the file AS INDEXED, not a
-    /// line number — measured against stock in docs/recon-srclick/README.md
+    /// line number — measured against Obsidian in docs/recon-srclick/README.md
     /// C12, where deleting lines above a match moved the jump by exactly the
     /// characters removed and never re-found the text. The frontend jumps by
     /// this, so it must be in the SAME unit a JS string is indexed in: UTF-16
@@ -3077,7 +3076,7 @@ fn search_docs<'a>(docs: impl IntoIterator<Item = (&'a str, &'a str, &'a [String
                     // a tag-only hit points at a LINE, not at a span: offset =
                     // the line start, len = 0, so R25.13d paints nothing and
                     // the jump still lands on the line. Pointing at the matched
-                    // #tag span itself is LATER — unmeasured (stock has no
+                    // #tag span itself is LATER — unmeasured (Obsidian has no
                     // tag: grammar to measure against), never guessed.
                     out.push(SearchHit { note: name.to_string(), line: i as u32, snippet: l.trim().chars().take(200).collect(), offset: base, len: 0 });
                 }
@@ -3152,8 +3151,8 @@ fn search_inner(v: &State<Vault>, query: &str) -> Vec<SearchHit> {
     search_docs(v.index.lock().unwrap().docs(), query)
 }
 
-/* R9.4 bookmarks live in vault/.obsidian/bookmarks.json — the stock app's OWN
-   file, read and written in stock 1.13.7's schema, because opensidian is a
+/* R9.4 bookmarks live in vault/.obsidian/bookmarks.json — Obsidian's OWN
+   file, read and written in Obsidian 1.13.7's schema, because opensidian is a
    drop-in replacement (operator decision 2026-09-19, goal bmcompat). The
    shape is MEASURED, not remembered — docs/recon-bmcompat/README.md, every
    claim named after its capture:
@@ -3164,16 +3163,16 @@ fn search_inner(v: &State<Vault>, query: &str) -> Vec<SearchHit> {
      { "type": "group", "ctime": N, "items": [...], "title": "Work" }
 
    2-space indent, NO trailing newline (last byte `}`), key order per TYPE,
-   nesting is `items` and nothing else. Stock's `path` is our R9.4 name +
+   nesting is `items` and nothing else. Obsidian's `path` is our R9.4 name +
    ".md" (recon §6): the name stays the model, the ".md" is spelled only at
    this file boundary. A file entry whose path is NOT *.md, and any entry of
-   a type we do not model (stock's `search`, a future 1.14 type) rides
+   a type we do not model (Obsidian's `search`, a future 1.14 type) rides
    through read -> edit -> write as an OPAQUE value, content-equal. UNKNOWN
-   KEYS ROUND-TRIP (criterion 4): stock itself preserves per-entry keys it
+   KEYS ROUND-TRIP (criterion 4): Obsidian itself preserves per-entry keys it
    does not recognise and drops top-level ones (recon §5, 32-editdone); we
    preserve BOTH — never the app that lost someone's future 1.14 key.
 
-   The old v0.12/v1 dotfile is IGNORED whenever stock's file exists: never
+   The old v0.12/v1 dotfile is IGNORED whenever Obsidian's file exists: never
    read, never written, never deleted (criterion 5's one sentence, as
    behaviour — r4x_a_pre_existing_opensidian_bookmarks_file_is_ignored).
    AMENDED by goal opensidian (2026-09-30, rename migration): in a vault with
@@ -3181,15 +3180,15 @@ fn search_inner(v: &State<Vault>, query: &str) -> Vec<SearchHit> {
    .opensidian-bookmarks (migrate.rs) and READ in its v0.12 grammar, so a
    v0.15 user's bookmarks survive the upgrade. read_bm_tree, below. */
 const BM_FILE: &str = ".obsidian/bookmarks.json";
-/// stock's default for a freshly created group, MEASURED, not remembered
+/// Obsidian's default for a freshly created group, MEASURED, not remembered
 /// (docs/recon-bmfolder/README.md, `03-newgroup.png`).
 const BM_NEW_GROUP: &str = "Untitled group";
 
-/// what a node carries that our model does not AUTHOR: stock's ctime
+/// what a node carries that our model does not AUTHOR: Obsidian's ctime
 /// (preserved verbatim; minted only for nodes we create) and every key a
-/// newer stock app wrote that we do not know — kept in FILE order
+/// newer Obsidian wrote that we do not know — kept in FILE order
 /// (serde_json's preserve_order) and re-emitted after the keys we do author,
-/// which is where stock itself re-serialises them (32-editdone).
+/// which is where Obsidian itself re-serialises them (32-editdone).
 #[derive(Debug, Clone, PartialEq, Default)]
 struct BmExtra {
     ctime: Option<serde_json::Number>,
@@ -3197,7 +3196,7 @@ struct BmExtra {
 }
 
 impl BmExtra {
-    /// a node we create gets its ctime exactly as stock mints one: unix
+    /// a node we create gets its ctime exactly as Obsidian mints one: unix
     /// millis (26-moved.bookmarks.json).
     fn now() -> Self {
         let ms = std::time::SystemTime::now()
@@ -3211,11 +3210,11 @@ impl BmExtra {
 #[derive(Debug, Clone, PartialEq)]
 enum BmNode {
     /// a bookmarked note: `name` is the R9.4 vault-relative NAME; on disk it
-    /// is stock's `path` = name + ".md". `title` is stock's optional display
+    /// is Obsidian's `path` = name + ".md". `title` is Obsidian's optional display
     /// alias — we never author one, we never lose one.
     File { name: String, title: Option<String>, x: BmExtra },
     Group { title: String, items: Vec<BmNode>, x: BmExtra },
-    /// an entry our model cannot express — stock's `search`, a non-.md path,
+    /// an entry our model cannot express — Obsidian's `search`, a non-.md path,
     /// a future type. Not painted, not addressable, written back verbatim.
     Opaque(serde_json::Value),
 }
@@ -3238,7 +3237,7 @@ struct BmRow {
     kind: String,
     depth: usize,
     name: String,
-    /// the TEXT the row paints — stock's measured rule (R4X.17, recon-bmcompat
+    /// the TEXT the row paints — Obsidian's measured rule (R4X.17, recon-bmcompat
     /// §5 shot 30-afterinject.png): a file row is labelled by its `title` when
     /// it has one, by the basename of the name when it has none; a group row
     /// by its title. `name` stays the click/open key; `label` is only paint.
@@ -3248,7 +3247,7 @@ struct BmRow {
 /* the ONE parser, and it is TOLERANT by construction: a body that is not
    JSON, or whose `items` is not an array, reads as the EMPTY tree; an entry
    we cannot model reads as Opaque and is CARRIED, never dropped. There is no
-   version branch — the only format this parser has ever read is stock's. */
+   version branch — the only format this parser has ever read is Obsidian's. */
 fn parse_bm_tree(body: &str) -> Vec<BmNode> {
     let v: serde_json::Value = match serde_json::from_str(body) {
         Ok(v) => v,
@@ -3272,7 +3271,7 @@ fn bm_node_of(v: &serde_json::Value) -> BmNode {
     let ctime = obj.get("ctime").and_then(|c| c.as_number()).cloned();
     match obj.get("type").and_then(|t| t.as_str()).unwrap_or("") {
         "file" => {
-            // stock's `path` is our name + ".md" (recon §6); any other path
+            // Obsidian's `path` is our name + ".md" (recon §6); any other path
             // (canvas, pdf, bare) is not expressible as an R9.4 name -> opaque
             let name = match obj
                 .get("path")
@@ -3325,14 +3324,14 @@ fn bm_node_of(v: &serde_json::Value) -> BmNode {
 
 fn read_bm_tree(root: &Path) -> Vec<BmNode> {
     match fs::read_to_string(root.join(BM_FILE)) {
-        // stock's file exists: it is THE store, and every dotfile is ignored
+        // Obsidian's file exists: it is THE store, and every dotfile is ignored
         Ok(body) => parse_bm_tree(&body),
-        // no stock file yet: a vault that only ever saw v0.12..v0.15 bookmarks
+        // no Obsidian file yet: a vault that only ever saw v0.12..v0.15 bookmarks
         // may carry them in the old dotfile. Rename migration (migrate.rs):
         // .rustidian-bookmarks is copied to .opensidian-bookmarks if the new
         // one is absent, and the new one is READ in the v0.12 line grammar.
         // Nothing is written to .obsidian/ here — the first bookmark EDIT
-        // writes stock's file, and from then on stock's file wins.
+        // writes Obsidian's file, and from then on Obsidian's file wins.
         Err(_) => migrate::vault_bookmarks(root)
             .and_then(|p| fs::read_to_string(p).ok())
             .map(|b| parse_legacy_bm(&b))
@@ -3383,11 +3382,11 @@ fn parse_legacy_bm(body: &str) -> Vec<BmNode> {
     root
 }
 
-/* the ONE serializer. bm_value_of spells the KEY ORDER stock writes — per
+/* the ONE serializer. bm_value_of spells the KEY ORDER Obsidian writes — per
    type: file = type,ctime,path[,title]; group = type,ctime,items,title;
-   unknown keys AFTER the authored ones, in file order, which is where stock
+   unknown keys AFTER the authored ones, in file order, which is where Obsidian
    itself re-serialises them (32-editdone.bookmarks.json) — and serde_json's
-   pretty printer spells the layout stock uses: 2-space indent, ": "
+   pretty printer spells the layout Obsidian uses: 2-space indent, ": "
    separator, NO trailing newline (32-editdone.bookmarks.json, last byte `}`
    — od -c verified at fixture-commit time).
    Nothing else may turn a tree into bytes. */
@@ -3439,7 +3438,7 @@ fn bm_emit(tree: &[BmNode], top: &[(String, serde_json::Value)]) -> String {
 }
 
 /// the TOP-LEVEL keys we do not author, read back off the current file so a
-/// write preserves them. Stock DROPS these (recon §5); we keep them — the
+/// write preserves them. Obsidian DROPS these (recon §5); we keep them — the
 /// strictly more conservative choice — re-emitted after `items`.
 fn bm_top_extra(root: &Path) -> Vec<(String, serde_json::Value)> {
     let body = fs::read_to_string(root.join(BM_FILE)).unwrap_or_default();
@@ -3510,7 +3509,7 @@ fn bm_rows_of(tree: &[BmNode]) -> Vec<BmRow> {
 }
 
 /* Rows are addressed by INDEX into that pre-order vector, never by title: two
-   sibling groups may carry the same title — measured on stock, `05-nest.png` —
+   sibling groups may carry the same title — measured on Obsidian, `05-nest.png` —
    so a title is not a key. bm_path_of turns a row index into the chain of
    child indices that reaches it. */
 fn bm_path_of(tree: &[BmNode], ix: usize) -> Option<Vec<usize>> {
@@ -3611,7 +3610,7 @@ fn bm_group_rename_in(tree: &mut Vec<BmNode>, ix: usize, title: &str) -> Result<
     }
 }
 
-/* R4X.3 — delete takes the SUBTREE and re-parents nothing, copied from stock
+/* R4X.3 — delete takes the SUBTREE and re-parents nothing, copied from Obsidian
    deliberately (`23-del-menu.png` -> `24-deleted.png`), and it deletes NAMES:
    the notes behind them are still on disk afterwards. */
 fn bm_group_delete_in(tree: &mut Vec<BmNode>, ix: usize) -> Result<(), String> {
@@ -3623,7 +3622,7 @@ fn bm_group_delete_in(tree: &mut Vec<BmNode>, ix: usize) -> Result<(), String> {
     bm_take(tree, &p).map(|_| ()).ok_or_else(|| "no such row".to_string())
 }
 
-/* `into: None` is the SUPERSET over stock (doc §4): move back out, to the end
+/* `into: None` is the SUPERSET over Obsidian (doc §4): move back out, to the end
    of the top level. Both endpoints are resolved BEFORE the detach, because
    removing a row renumbers its siblings. */
 fn bm_move_in_tree(tree: &mut Vec<BmNode>, ix: usize, into: Option<usize>) -> Result<(), String> {
@@ -3665,7 +3664,7 @@ fn bm_move_in_tree(tree: &mut Vec<BmNode>, ix: usize, into: Option<usize>) -> Re
 /* bmactive — "Bookmark the active tab..." on a GROUP row (recon-bmactive F2/F3):
    a NEW file item, appended as the LAST child of the target group (after any
    nested group), fresh ctime, `title` only when the user typed one. An already
-   bookmarked note is DUPLICATED, never moved (F3: stock does exactly that, in
+   bookmarked note is DUPLICATED, never moved (F3: Obsidian does exactly that, in
    the same group, another group and from the top level). `into: None` is the
    R4X.7 chooser's "(top level)" superset: the end of the top level. */
 fn bm_add_in(tree: &mut Vec<BmNode>, into: Option<usize>, name: &str, title: Option<&str>) -> Result<(), String> {
@@ -3696,7 +3695,7 @@ fn bm_add_in(tree: &mut Vec<BmNode>, into: Option<usize>, name: &str, title: Opt
 
 /* bmdrag — the two painted<->raw maps the drag commit needs. Rows and slots in
    the PANE number only painted nodes, but bm_path_of's paths and the items
-   vecs are RAW: an Opaque node (the stock fixture's search entry, anything the
+   vecs are RAW: an Opaque node (the Obsidian-written fixture's search entry, anything the
    model cannot express) occupies a raw index the pane never shows. A drop
    names a PAINTED slot, so it must be translated before Vec::insert or a
    fixture carrying opaques lands the row one off. */
@@ -3722,7 +3721,7 @@ fn bm_raw_slot(list: &[BmNode], pos: usize) -> usize {
    so this fn shares its helpers and its refusal predicate and inserts at
    `pos`, a PAINTED slot among `parent`'s children (parent None = top level).
    A refusal Err returns BEFORE bm_apply ever writes: the file is not touched,
-   not even rewritten with identical bytes — recon-bmdrag case 6 measured stock
+   not even rewritten with identical bytes — recon-bmdrag case 6 measured Obsidian
    bumping mtime on a refused drop, so the phase asserts BYTES and both pass.
    Both endpoints are resolved BEFORE the detach, then two fixups, because
    removing the source renumbers (a) a destination group sitting after it at
@@ -4032,7 +4031,7 @@ fn watch_tick(v: &Vault, prev: &mut Option<(PathBuf, watcher::Snapshot)>) -> wat
    The window ships with `decorations: false` (tauri.conf.json), so there is no
    WM titlebar AND no WM resize border: every affordance the frame used to
    provide has to come from here, driven by #wframe / the resize handles in
-   ui/. The stock app does the same (recon: its window reports
+   ui/. Obsidian does the same (recon: its window reports
    _NET_FRAME_EXTENTS 0,0,0,0 under openbox while showing its own strip).
 
    WHY WE MOVE AND RESIZE THE WINDOW OURSELVES instead of handing the gesture
@@ -4506,30 +4505,23 @@ fn win_close(win: tauri::Window) -> Result<(), String> {
    and `scripts/smoke.sh fast zoom` measures three NON-TEXT boundaries, so N1
    is RED.
 
-   EVERY CONSTANT BELOW IS MEASURED OFF STOCK 1.13.7, BLACK-BOX, NOT CHOSEN
-   (notes/recon-zoom.txt on :46; recon-zoom/drive-clamps.sh + clamps.log on :54;
-   the readout is the sidebar/editor boundary x on the scanline y=400):
-     STEP   one press = HALF an Electron zoom level, factor 1.2^level:
-            348 -> 381 -> 417 going in, 318 going out.
-            381/348 = 1.0948 vs 1.2^0.5  = 1.0954
-            417/348 = 1.1983 vs 1.2^1.0  = 1.2
-            318/348 = 0.9138 vs 1.2^-0.5 = 0.9129     (<= 0.1% apart)
-            i.e. +9.54% / -8.71% per press. NOT 10%, NOT 20%.
-     CEILING +6 presses = level +3.0 (1.728x): the sidebar edge stops at 598
-            and presses 7..12 changed NOTHING AT ALL (pixel diff 0, six times).
-     FLOOR  -5 presses = level -2.5 (0.6339x): edge stops at 222, presses
-            6..10 pixel-diff 0. The range is ASYMMETRIC; that is what stock
-            does, so it is what we do.
+   EVERY CONSTANT BELOW FOLLOWS OBSIDIAN'S OBSERVABLE ZOOM, BLACK-BOX, NOT
+   CHOSEN (the recon-zoom notes and drive script hold the method):
+     STEP   one press = HALF an Electron zoom level, factor 1.2^level —
+            not 10%, not 20%.
+     CEILING +6 presses = level +3.0; further presses change nothing.
+     FLOOR  -5 presses = level -2.5; further presses change nothing. The
+            range is ASYMMETRIC on purpose, matching Obsidian.
      RESET  Ctrl+0 after the ceiling returned the screen to a frame that is
             PIXEL-IDENTICAL to the baseline (diff 0), so reset means the
             original value, not "some neutral value" (negative control N3). */
-/// Electron's zoom base — stock scales by this per whole level (recon-zoom).
+/// Electron's zoom base — Obsidian scales by this per whole level (recon-zoom).
 const ZOOM_BASE: f64 = 1.2;
-/// one keypress = half a level (measured 9.54% in / 8.71% out).
+/// one keypress = half a level.
 const ZOOM_STEP: f64 = 0.5;
-/// measured ceiling: 6 presses in, then stock stops (recon-zoom/clamps.log).
+/// measured ceiling: 6 presses in, then Obsidian stops (recon-zoom/clamps.log).
 const ZOOM_MAX: f64 = 3.0;
-/// measured floor: 5 presses out, then stock stops (same log).
+/// measured floor: 5 presses out, then Obsidian stops (same log).
 const ZOOM_MIN: f64 = -2.5;
 
 /// zoom level -> the scale factor webkit is asked for.
@@ -4537,7 +4529,7 @@ fn zoom_factor(level: f64) -> f64 {
     ZOOM_BASE.powf(level)
 }
 
-/// `action` -> the level it lands on, clamped to the measured stock range.
+/// `action` -> the level it lands on, clamped to the measured range.
 /// Pure on purpose: the clamp is the part that can silently be wrong, and this
 /// way it is unit-testable without a webview or a display.
 fn zoom_next(level: f64, action: &str) -> Option<f64> {
@@ -4755,10 +4747,8 @@ fn main() {
             // R36.4 the persisted zoom is applied HERE, before the first paint the
             // user sees, and not from JS: a webview that boots at 100% and is
             // rescaled after the UI script runs shows one frame at the wrong size
-            // on every start. Stock persists it too (recon-zoom/clamps.log:
-            // ~/.config/obsidian/<vault-id>.json "zoom":1 after two presses in —
-            // stock's own file stores the LEVEL, which is also the third
-            // independent confirmation that one press is half a level).
+            // on every start. Obsidian persists it too, as a LEVEL
+            // (recon-zoom), which also confirms one press is half a level.
             let lvl = read_zoom_cfg();
             if lvl != 0.0 {
                 use tauri::Manager;
@@ -4849,7 +4839,7 @@ mod tests {
        the ceiling. */
     #[test]
     fn zoom_step_is_half_an_electron_level() {
-        // one press in = +9.54%, one press out = -8.71% (measured off stock)
+        // one press in or out = half an Electron level
         assert!((zoom_factor(zoom_next(0.0, "in").unwrap()) - 1.0954).abs() < 0.0005);
         assert!((zoom_factor(zoom_next(0.0, "out").unwrap()) - 0.9129).abs() < 0.0005);
         // two presses in = exactly one Electron level = 1.2
@@ -4858,15 +4848,15 @@ mod tests {
     }
 
     #[test]
-    fn zoom_clamps_match_the_measured_stock_range() {
-        // ceiling: stock stopped after 6 presses in (level +3.0, 1.728x)
+    fn zoom_clamps_match_the_measured_range() {
+        // ceiling: 6 presses in (level +3.0, 1.728x)
         let mut l = 0.0;
         for _ in 0..12 {
             l = zoom_next(l, "in").unwrap();
         }
         assert_eq!(l, 3.0);
         assert!((zoom_factor(l) - 1.728).abs() < 1e-9);
-        // floor: stock stopped after 5 presses out (level -2.5, 0.6339x)
+        // floor: 5 presses out (level -2.5, 0.6339x)
         let mut l = 0.0;
         for _ in 0..12 {
             l = zoom_next(l, "out").unwrap();
@@ -4992,7 +4982,7 @@ mod tests {
        vault, because a unit test cannot tell you which path the running app
        used. */
     #[test]
-    fn the_layout_file_is_the_stock_path_inside_the_vault() {
+    fn the_layout_file_is_the_obsidian_path_inside_the_vault() {
         let root = tmp_vault("wspath");
         assert_eq!(workspace_path(&root), root.join(".obsidian").join("workspace.json"));
         // a hidden component => never a note, never watched, never indexed
@@ -5017,7 +5007,7 @@ mod tests {
     /// W5: a write that FAILS must leave the previous layout byte-identical.
     /// The failure is forced at the temp: a directory squats on
     /// workspace.json.tmp, so File::create fails before the target is touched.
-    /// A truncate-in-place writer (stock, F5) would already have emptied it.
+    /// A truncate-in-place writer (Obsidian, F5) would already have emptied it.
     #[test]
     fn w5_a_failed_layout_write_leaves_the_old_file_intact() {
         let root = tmp_vault("wsfail");
@@ -5545,7 +5535,7 @@ mod tests {
                 assert!(!h.contains(IMG_SCHEME), "{t} produced a url: {h}");
             }
         }
-        // R29.4: missing -> stock's banner, verbatim, and NO element to load
+        // R29.4: missing -> Obsidian's banner, verbatim, and NO element to load
         for m in ["![](nope.png)", "![[nope.png]]"] {
             let h = rmd(m);
             assert!(h.contains("\u{201c}nope.png\u{201d} could not be found."), "{m}: {h}");
@@ -5622,7 +5612,7 @@ mod tests {
         assert!(!h.contains("<b>") && !h.contains("<s>"), "{h}");
     }
 
-    /// listlinks REQ-4: bare http(s) URLs in text are external links (stock
+    /// listlinks REQ-4: bare http(s) URLs in text are external links (Obsidian
     /// autolinks them); not in code, not inside another link's label, trailing
     /// punctuation is not part of the URL. MUTATE TO CHECK: pass urls=false
     /// everywhere -> plain text, RED.
@@ -5854,7 +5844,7 @@ mod tests {
 
     /// R25.13m: every hit carries the ABSOLUTE UTF-16 offset of the match in
     /// the file as indexed, plus its length, and `content[offset..offset+len]`
-    /// IS the match. Measured against stock in docs/recon-srclick C12, where
+    /// IS the match. Measured against Obsidian in docs/recon-srclick C12, where
     /// the jump moved by exactly the characters deleted above it and never
     /// re-found the text — so the frontend must jump by this number and never
     /// search again. The unit is UTF-16 code units because that is how the
@@ -6076,7 +6066,7 @@ mod tests {
         let mut ix = Index::build(&root);
         rename_in(&root, &mut ix, "Old", "New").unwrap();
         let after = bm_bytes(&root);
-        // the ONLY difference is the renamed entry's path value (stock schema:
+        // the ONLY difference is the renamed entry's path value (Obsidian schema:
         // the entry is a JSON object now, not a bare line)
         assert_eq!(
             String::from_utf8(before).unwrap().replace("\"path\": \"Old.md\"", "\"path\": \"New.md\""),
@@ -6119,12 +6109,12 @@ mod tests {
     }
 
     /* ---- R4X: bookmark GROUPS (goal bmfolder, docs/bookmark-groups.md),
-       stored in stock's schema since goal bmcompat. The file is the contract:
+       stored in Obsidian's schema since goal bmcompat. The file is the contract:
        the tests below assert on the BYTES or on the painted row vector,
        because criterion 3's smoke phase asserts on the same file from
        shell. */
 
-    /// seed a TREE and read the file straight back: stock 1.13.7's schema
+    /// seed a TREE and read the file straight back: Obsidian 1.13.7's schema
     /// round-trips through the one serializer — key order per type, 2-space
     /// indent, no trailing newline — byte-deterministic under fixed ctimes.
     #[test]
@@ -6184,7 +6174,7 @@ mod tests {
                 "  ]\n",
                 "}"
             ),
-            "stock's exact layout: docs/recon-bmcompat captures 26-moved/32-editdone"
+            "Obsidian's exact layout: docs/recon-bmcompat captures 26-moved/32-editdone"
         );
         assert_eq!(read_bm_tree(&root), tree, "read(write(t)) == t, ctime included");
         // the derived flat view is the `f` payloads in pre-order, and that is
@@ -6211,7 +6201,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// criterion 5's one sentence, as behaviour: once stock's
+    /// criterion 5's one sentence, as behaviour: once Obsidian's
     /// .obsidian/bookmarks.json exists, a dotfile (old OR new name) is
     /// IGNORED — never read, never written, never deleted.
     #[test]
@@ -6222,11 +6212,11 @@ mod tests {
         fs::write(root.join(BM_FILE), "{\n  \"items\": []\n}").unwrap();
         fs::write(root.join(".opensidian-bookmarks"), v012).unwrap();
         fs::write(root.join(".rustidian-bookmarks"), v012).unwrap();
-        assert!(read_bookmarks(&root).is_empty(), "stock's file wins; the dotfiles are not read");
+        assert!(read_bookmarks(&root).is_empty(), "Obsidian's file wins; the dotfiles are not read");
         let mut t = read_bm_tree(&root);
         bm_toggle_in(&mut t, "Ideas");
         write_bm_tree(&root, &t).unwrap();
-        assert_eq!(read_bookmarks(&root), vec!["Ideas"], "bookmarks live in the stock file");
+        assert_eq!(read_bookmarks(&root), vec!["Ideas"], "bookmarks live in Obsidian's file");
         for f in [".opensidian-bookmarks", ".rustidian-bookmarks"] {
             assert_eq!(fs::read(root.join(f)).unwrap(), v012.to_vec(), "{f} byte-for-byte untouched");
         }
@@ -6234,11 +6224,11 @@ mod tests {
     }
 
     /// rename migration (goal opensidian): a v0.15 vault with ONLY the old
-    /// .rustidian-bookmarks and no stock file — the dotfile is copied to
+    /// .rustidian-bookmarks and no Obsidian file — the dotfile is copied to
     /// .opensidian-bookmarks, read in the v0.12 grammar (groups, depth), the
-    /// old file stays byte-identical, and the first EDIT writes stock's file.
+    /// old file stays byte-identical, and the first EDIT writes Obsidian's file.
     #[test]
-    fn rename_old_bookmarks_dotfile_carries_over_then_stock_takes_over() {
+    fn rename_old_bookmarks_dotfile_carries_over_then_the_vault_file_takes_over() {
         let root = tmp_vault("bm-rename");
         let v012 = b"Ideas\n:g:Work\n\tA-LP\n\t:f::colon\nTop\n";
         fs::write(root.join(".rustidian-bookmarks"), v012).unwrap();
@@ -6250,12 +6240,12 @@ mod tests {
         let mut t = t;
         bm_toggle_in(&mut t, "Top");
         write_bm_tree(&root, &t).unwrap();
-        assert_eq!(read_bookmarks(&root), vec!["Ideas", "A-LP", ":colon"], "edit lands in stock's file");
+        assert_eq!(read_bookmarks(&root), vec!["Ideas", "A-LP", ":colon"], "edit lands in Obsidian's file");
         assert_eq!(fs::read(root.join(".rustidian-bookmarks")).unwrap(), v012.to_vec(), "old untouched");
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// both dotfiles, no stock file: the NEW one wins.
+    /// both dotfiles, no Obsidian file: the NEW one wins.
     #[test]
     fn rename_both_bookmark_dotfiles_new_wins() {
         let root = tmp_vault("bm-both");
@@ -6266,7 +6256,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// entries our model cannot express — stock's `search`, a non-.md path —
+    /// entries our model cannot express — Obsidian's `search`, a non-.md path —
     /// ride through read -> edit -> write VERBATIM, invisible to the pane
     /// (recon §5: dropping someone else's entry is data loss in their app).
     #[test]
@@ -6301,15 +6291,15 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// R4X.17 — the painted LABEL follows stock's measured rule
+    /// R4X.17 — the painted LABEL follows Obsidian's measured rule
     /// (docs/recon-bmcompat/README.md §5, shots/30-afterinject.png): a file
     /// row is labelled by its `title` when it has one (`ZettelAlpha`, not
     /// `Atomic Notes`), by the basename of the name when it has none
     /// (`Roadmap`, not `Projects/Roadmap`); a group by its title. The input
-    /// is the committed pure fixture stock itself wrote, and `name` — the
+    /// is the committed pure fixture Obsidian itself wrote, and `name` — the
     /// key a click opens by — keeps the full extensionless path throughout.
     #[test]
-    fn r4x_row_labels_follow_stocks_measured_rule() {
+    fn r4x_row_labels_follow_the_measured_rule() {
         let orig: &str =
             include_str!("../tests/fixtures/bmcompat/obsidian-format-pure.bookmarks.json");
         let t = parse_bm_tree(orig);
@@ -6317,7 +6307,7 @@ mod tests {
         assert_eq!(
             rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),
             vec!["Roadmap", "Work", "ZettelAlpha", "Untitled group"],
-            "labels must be what stock paints (30-afterinject.png)"
+            "labels must be what Obsidian paints (30-afterinject.png)"
         );
         assert_eq!(
             rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
@@ -6327,7 +6317,7 @@ mod tests {
     }
 
     /// criterion 4, and it is BYTE-WISE: the input is the committed fixture
-    /// stock 1.13.7 itself wrote while CARRYING keys it does not recognise
+    /// Obsidian 1.13.7 itself wrote while CARRYING keys it does not recognise
     /// (docs/fixtures/bmcompat/README.md — capture 32-editdone, sha ea9f2f6e…).
     /// Read it, apply ONE edit through the model, write it back: the file on
     /// disk is the fixture with exactly ONE line changed — the edited title —
@@ -6336,7 +6326,7 @@ mod tests {
     /// `ctime`) is proved present and unchanged by byte equality, not by a
     /// checklist of the keys we DO author.
     #[test]
-    fn r4x_criterion4_stock_fixture_unknown_keys_round_trip_byte_wise() {
+    fn r4x_criterion4_fixture_unknown_keys_round_trip_byte_wise() {
         let orig: &str =
             include_str!("../tests/fixtures/bmcompat/obsidian-format-unknown-keys.bookmarks.json");
         let root = tmp_vault("bm-c4-fixture");
@@ -6344,7 +6334,7 @@ mod tests {
         fs::write(root.join(BM_FILE), orig).unwrap();
 
         // read -> write with NO edit first: the output is byte-identical to
-        // what stock wrote, layout included (2-space indent, no trailing
+        // what Obsidian wrote, layout included (2-space indent, no trailing
         // newline, key order per type, unknowns after authored keys)
         let t = read_bm_tree(&root);
         write_bm_tree(&root, &t).unwrap();
@@ -6382,7 +6372,7 @@ mod tests {
     }
 
     /// R4X.n (bmdrag, criterion 4) — the r4x_criterion4 pattern applied to a
-    /// MOVE: the input is the same fixture stock 1.13.7 wrote while carrying
+    /// MOVE: the input is the same fixture Obsidian 1.13.7 wrote while carrying
     /// keys it does not recognise, and the edit is `bm_drag_in_tree` — the
     /// drop path — not a field edit. Three drags, each proved BYTE-WISE by
     /// string surgery on the fixture itself (relocate the entry's text block,
@@ -6478,8 +6468,8 @@ mod tests {
         assert_eq!(snap(&t), before);
     }
 
-    /// criterion 4's decision beyond stock: a TOP-LEVEL key we do not author
-    /// survives our write even though stock itself would drop it (recon §5 —
+    /// criterion 4's decision beyond Obsidian: a TOP-LEVEL key we do not author
+    /// survives our write even though Obsidian itself would drop it (recon §5 —
     /// we are strictly more conservative than the app we replace).
     #[test]
     fn r4x_top_level_unknown_keys_survive_a_write() {
@@ -6526,7 +6516,7 @@ mod tests {
     /// bmactive F2/F3/F5 (docs/recon-bmactive): the group menu's add appends a
     /// FILE item as the LAST child (after a nested group), writes `title` only
     /// when typed, duplicates an already-bookmarked note, lands in a nested
-    /// group, and the bytes are stock's 14-saved.json modulo ctime.
+    /// group, and the bytes are Obsidian's 14-saved.json modulo ctime.
     #[test]
     fn bmactive_add_appends_last_child_duplicates_and_nests() {
         let seed = r#"{"items":[{"type":"file","ctime":1789000000002,"path":"Second Note.md"},{"type":"group","ctime":1789000000010,"items":[{"type":"file","ctime":1789000000001,"path":"Ideas.md"},{"type":"group","ctime":1789000000011,"items":[],"title":"Inner"}],"title":"Work"}]}"#;
@@ -6540,8 +6530,8 @@ mod tests {
             for p in it { o.push_str("\"ctime\": N"); o.push_str(&p[p.find(|c: char| !c.is_ascii_digit()).unwrap()..]); }
             o
         };
-        let stock = "{\n  \"items\": [\n    {\n      \"type\": \"file\",\n      \"ctime\": 1789000000002,\n      \"path\": \"Second Note.md\"\n    },\n    {\n      \"type\": \"group\",\n      \"ctime\": 1789000000010,\n      \"items\": [\n        {\n          \"type\": \"file\",\n          \"ctime\": 1789000000001,\n          \"path\": \"Ideas.md\"\n        },\n        {\n          \"type\": \"group\",\n          \"ctime\": 1789000000011,\n          \"items\": [],\n          \"title\": \"Inner\"\n        },\n        {\n          \"type\": \"file\",\n          \"ctime\": 1790400709390,\n          \"path\": \"Edit Recon.md\"\n        }\n      ],\n      \"title\": \"Work\"\n    }\n  ]\n}";
-        assert_eq!(ct(&out), ct(stock), "stock 14-saved.json modulo ctime");
+        let want = "{\n  \"items\": [\n    {\n      \"type\": \"file\",\n      \"ctime\": 1789000000002,\n      \"path\": \"Second Note.md\"\n    },\n    {\n      \"type\": \"group\",\n      \"ctime\": 1789000000010,\n      \"items\": [\n        {\n          \"type\": \"file\",\n          \"ctime\": 1789000000001,\n          \"path\": \"Ideas.md\"\n        },\n        {\n          \"type\": \"group\",\n          \"ctime\": 1789000000011,\n          \"items\": [],\n          \"title\": \"Inner\"\n        },\n        {\n          \"type\": \"file\",\n          \"ctime\": 1790400709390,\n          \"path\": \"Edit Recon.md\"\n        }\n      ],\n      \"title\": \"Work\"\n    }\n  ]\n}";
+        assert_eq!(ct(&out), ct(want), "14-saved.json modulo ctime");
         // nested: Inner is painted row 3 -> lands INSIDE Inner (F5)
         bm_add_in(&mut t, Some(3), "Welcome", None).unwrap();
         // duplicate into Work, with a typed title (F3 + F2 title key after path)
@@ -6560,11 +6550,11 @@ mod tests {
     }
 
     /// the four structural operations, addressed by ROW INDEX (titles are not
-    /// keys: stock allows two sibling groups with the same title).
+    /// keys: Obsidian allows two sibling groups with the same title).
     #[test]
     fn r4x_group_new_rename_delete_and_move_by_row_index() {
         let mut t: Vec<BmNode> = vec![BmNode::file("A"), BmNode::file("B")];
-        // new group at the top level, with stock's default name
+        // new group at the top level, with Obsidian's default name
         bm_group_new_in(&mut t, None).unwrap();
         assert_eq!(bm_rows_of(&t)[2].name, "Untitled group");
         // ...and a second one, nested in the first — two groups, same title
@@ -6851,7 +6841,7 @@ mod tests {
 
     /// R34.1 + R34.2: the move renames the FILE and NOT ONE inbound link.
     /// This is the backend shape of "never rewrite links without the prompt":
-    /// after move_note_in the vault is in stock's answer-was-no state.
+    /// after move_note_in the vault is in Obsidian's answer-was-no state.
     #[test]
     fn move_note_renames_the_file_and_rewrites_no_link() {
         let root = r34_vault("move");
@@ -6931,7 +6921,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// R34.3: zero inbound links => (0, 0) => stock shows NO modal. The
+    /// R34.3: zero inbound links => (0, 0) => Obsidian shows NO modal. The
     /// count is what suppresses the prompt, so it gets its own assertion.
     #[test]
     fn move_note_blast_radius_is_zero_when_nothing_links_in() {
@@ -7081,7 +7071,7 @@ mod tests {
     #[test]
     fn strict_line_breaks_round_trips_in_app_json() {
         let root = r34_vault("strictlb");
-        assert!(!app_bool_in(&root, "strictLineBreaks"), "stock default is OFF");
+        assert!(!app_bool_in(&root, "strictLineBreaks"), "Obsidian default is OFF");
         fs::create_dir_all(root.join(".obsidian")).unwrap();
         fs::write(root.join(".obsidian/app.json"), r#"{"alwaysUpdateLinks":true}"#).unwrap();
         set_app_bool_in(&root, "strictLineBreaks", true).unwrap();
@@ -7090,7 +7080,7 @@ mod tests {
         set_app_bool_in(&root, "strictLineBreaks", false).unwrap();
         let v: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(root.join(".obsidian/app.json")).unwrap()).unwrap();
-        assert_eq!(v["strictLineBreaks"], serde_json::Value::Bool(false), "stock keeps the key on false");
+        assert_eq!(v["strictLineBreaks"], serde_json::Value::Bool(false), "Obsidian keeps the key on false");
         assert_eq!(v["alwaysUpdateLinks"], serde_json::Value::Bool(true));
     }
 
@@ -7498,7 +7488,7 @@ mod tests {
     }
 
     /* feedback #20 [acceptance 1]: a brand-new note materializes NOTHING.
-       Recon Q1 against stock 1.13.7: Ctrl+N produces `Untitled.md` whose
+       Recon Q1 against Obsidian 1.13.7: Ctrl+N produces `Untitled.md` whose
        `wc -c` is 0, and a second one `Untitled 1.md`, also 0. The big title
        the user sees is the INLINE TITLE — the FILENAME, rendered — so the
        bytes on disk are empty. Asserted on disk (metadata len) AND in the
@@ -7509,7 +7499,7 @@ mod tests {
         let mut ix = Index::build(&root);
         create_note_in(&root, &mut ix, "Untitled", "").unwrap();
         let p = root.join("Untitled.md");
-        assert_eq!(fs::metadata(&p).unwrap().len(), 0, "stock's new note is ZERO bytes");
+        assert_eq!(fs::metadata(&p).unwrap().len(), 0, "Obsidian's new note is ZERO bytes");
         assert_eq!(fs::read_to_string(&p).unwrap(), "");
         assert_eq!(ix.content("Untitled"), Some(""), "the index copy is empty too");
         // the path-qualified path is where the old code seeded the BASENAME
@@ -7523,10 +7513,9 @@ mod tests {
 
     /* feedback #20 [R32.6]: the NEW-VAULT seed is starter CONTENT, not note
        creation — it stays (R1.2) — but it must not re-mint the title as bytes.
-       Recon, stock 1.13.7, its own create-vault flow (shots5/E9): one file,
-       `Welcome.md`, 203 bytes, first line `This is your new *vault*.` — no
-       heading anywhere in it; the big "Welcome" is the inline title drawn from
-       the filename. This test pins our seed to that SHAPE: a non-empty starter
+       Recon, Obsidian 1.13.7, its own create-vault flow (shots5/E9): one file,
+       `Welcome.md`, prose only — no heading anywhere in it; the big "Welcome"
+       is the inline title drawn from the filename. This test pins our seed to that SHAPE: a non-empty starter
        note whose bytes contain no ATX heading at all, and in particular not
        the vault-name heading we used to write. */
     #[test]
@@ -7534,7 +7523,7 @@ mod tests {
         let root = tmp_vault("f20seed");
         seed_new_vault(&root).unwrap();
         let p = root.join(NEW_VAULT_SEED_NAME);
-        assert_eq!(p.file_name().unwrap(), "Welcome.md", "stock seeds Welcome.md");
+        assert_eq!(p.file_name().unwrap(), "Welcome.md", "Obsidian seeds Welcome.md");
         let got = fs::read_to_string(&p).unwrap();
         assert_eq!(got, NEW_VAULT_SEED, "the seed on disk is the constant, byte for byte");
         // starter content is deliberate — this is NOT the zero-byte new-note path
@@ -7547,7 +7536,7 @@ mod tests {
             );
         }
         assert!(!got.contains("# Welcome"), "the redundant `# Welcome` is gone");
-        assert!(got.ends_with('\n'), "known delta from stock: our seed ends with a newline");
+        assert!(got.ends_with('\n'), "known delta from Obsidian: our seed ends with a newline");
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -7594,7 +7583,7 @@ mod tests {
 
     /* feedback #20 [acceptance 2]: an EXISTING note is NOT ours to tidy.
        Now that the big title is the filename, a note whose body still starts
-       with `# Foo` shows the title twice — exactly what stock does (recon Q6),
+       with `# Foo` shows the title twice — exactly what Obsidian does (recon Q6),
        and exactly what we must leave alone. The rule of order puts data loss
        above every fidelity argument: a "migration" that strips a redundant
        heading rewrites bytes the user typed, so none may exist.
@@ -7794,13 +7783,13 @@ mod tests {
     }
 
     /// R31.1/R31.2/R31.3: one dropped png is COPIED (never moved) into the
-    /// vault root and the inserted text is stock's wikilink embed, byte exact.
+    /// vault root and the inserted text is Obsidian's wikilink embed, byte exact.
     #[test]
-    fn drop_copies_the_file_and_returns_the_stock_link() {
+    fn drop_copies_the_file_and_returns_the_wikilink_embed() {
         let (root, srcd) = drop_vault("drop-happy");
         let s = src_file(&srcd, "cat.png", b"\x89PNG\r\n\x1a\nCAT");
         let a = attach_drop(&root, "Note", &[s.clone()]).unwrap();
-        assert_eq!(a.text, "![[cat.png]]", "R31.2: stock inserts ![[name]] and nothing else");
+        assert_eq!(a.text, "![[cat.png]]", "R31.2: Obsidian inserts ![[name]] and nothing else");
         assert_eq!(a.copied, vec!["cat.png".to_string()]);
         assert!(a.refused.is_empty());
         assert_eq!(fs::read(root.join("cat.png")).unwrap(), b"\x89PNG\r\n\x1a\nCAT");
@@ -7812,11 +7801,11 @@ mod tests {
     }
 
     /// R31.4 + S5: three drops of the SAME name give `cat.png`, `cat 1.png`,
-    /// `cat 2.png` (stock's convention, verified against 1.13.7), and the
+    /// `cat 2.png` (Obsidian's convention, verified against 1.13.7), and the
     /// earlier files are BYTE-IDENTICAL afterwards. A drop that overwrites a
     /// file the user already had is data loss, which outranks everything.
     #[test]
-    fn drop_never_overwrites_and_renames_like_stock() {
+    fn drop_never_overwrites_and_renames_like_obsidian() {
         let (root, srcd) = drop_vault("drop-coll");
         fs::write(root.join("cat.png"), b"ALREADY-MINE").unwrap();
         let s = src_file(&srcd, "cat.png", b"\x89PNGnew");
@@ -7877,7 +7866,7 @@ mod tests {
     }
 
     /// S4: the EXTENSION allowlist decides what is copied (IMG_TYPES == the
-    /// list img_path_in serves), never a content sniff. svg included: stock
+    /// list img_path_in serves), never a content sniff. svg included: Obsidian
     /// renders it after sanitizing, we have no sanitizer (R29.8).
     #[test]
     fn drop_refuses_everything_outside_img_types() {
@@ -7959,7 +7948,7 @@ mod tests {
         // 3. positive control: a plain subfolder is honoured and created
         set("files/img");
         let b = attach_drop(&root, "Note", &[s.clone()]).unwrap();
-        assert_eq!(b.text, "![[cat.png]]", "the LINK stays the basename (stock)");
+        assert_eq!(b.text, "![[cat.png]]", "the LINK stays the basename (Obsidian)");
         assert_eq!(b.copied, vec!["files/img/cat.png".to_string()], "the INDEX key is the relative path");
         assert!(root.join("files/img/cat.png").is_file());
         let _ = fs::remove_dir_all(&root);
@@ -8355,7 +8344,7 @@ fn vb_probe() -> Option<String> {
     );
     Some(errno.to_string())
 }
-/// stock-name goal, criterion 3 — the [nob:] user-facing-string census
+/// the reference-name goal, criterion 3 — the [nob:] user-facing-string census
 /// (ui/main.js nobTok) is a test-only instrument, OFF unless
 /// OPENSIDIAN_NOBPROBE=1. Same reason as type_probe: with it off no census
 /// string changes and a shipped build never walks its DOM for the word.
