@@ -30,9 +30,9 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 
-/// test seam: a named point between resolving a parent and using it, so a
-/// test can swap a directory for a symlink deterministically. Production: a
-/// no-op the optimiser deletes. Thread-local, so parallel tests never collide.
+// test seam: a named point between resolving a parent and using it, so a
+// test can swap a directory for a symlink deterministically. Production: a
+// no-op the optimiser deletes. Thread-local, so parallel tests never collide.
 #[cfg(test)]
 thread_local! {
     static HOOK: std::cell::RefCell<Option<Box<dyn FnMut(&'static str)>>> = std::cell::RefCell::new(None);
