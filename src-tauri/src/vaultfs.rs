@@ -47,7 +47,7 @@ fn hook(_at: &'static str) {
     });
 }
 #[cfg(test)]
-fn set_hook(f: Option<Box<dyn FnMut(&'static str)>>) {
+pub(crate) fn set_hook(f: Option<Box<dyn FnMut(&'static str)>>) {
     HOOK.with(|h| *h.borrow_mut() = f);
 }
 

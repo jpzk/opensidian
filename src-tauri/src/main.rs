@@ -164,7 +164,10 @@ fn note_path_in(root: &Path, name: &str, create: bool) -> Option<PathBuf> {
         if !a.canonicalize().ok()?.starts_with(&croot) {
             return None;
         }
-        fs::create_dir_all(&dir).ok()?;
+        // audit #6: mkdirat component by component from the vault dir fd,
+        // O_NOFOLLOW at every step — a dir swapped for a symlink after the
+        // ancestor check above is refused, not walked through
+        vaultfs::mkdir_p(root, rel.parent().unwrap_or(Path::new(""))).ok()?;
     }
     let cdir = dir.canonicalize().ok()?;
     if !cdir.starts_with(&croot) {
@@ -480,7 +483,7 @@ fn attach_dir(root: &Path) -> Result<(PathBuf, Option<String>), DropErr> {
     if !a.canonicalize().map_err(|_| DropErr::BadAttachDir)?.starts_with(&croot) {
         return Err(DropErr::BadAttachDir);
     }
-    fs::create_dir_all(&dir).map_err(|_| DropErr::BadAttachDir)?;
+    vaultfs::mkdir_p(root, &rel).map_err(|_| DropErr::BadAttachDir)?;
     let cdir = dir.canonicalize().map_err(|_| DropErr::BadAttachDir)?;
     if !cdir.starts_with(&croot) || !cdir.is_dir() {
         return Err(DropErr::BadAttachDir);
@@ -503,14 +506,16 @@ fn attach_name(p: &Path) -> Option<String> {
 /// R31.4 collision: Obsidian appends ` <n>` to the STEM, keeping the extension
 /// (recon: `Pasted image ... .png` -> `... 1.png` -> `... 2.png`). Never an
 /// overwrite (S5), so this is a create_new() loop, not an exists() test.
-fn free_dest(dir: &Path, name: &str) -> Result<(PathBuf, String, fs::File), Refused> {
+/// `dir` is vault-RELATIVE: the claim is an openat(O_EXCL|O_NOFOLLOW) under
+/// the vault dir fd, parents walked no-follow (audit #6).
+fn free_dest(vfs: &vaultfs::Vault, dir: &Path, name: &str) -> Result<(PathBuf, String, fs::File), Refused> {
     let (stem, ext) = match name.rsplit_once('.') {
         Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
         _ => (name.to_string(), String::new()),
     };
     for n in 0..1000 {
         let cand = if n == 0 { name.to_string() } else { format!("{stem} {n}{ext}") };
-        match fs::OpenOptions::new().write(true).create_new(true).open(dir.join(&cand)) {
+        match vfs.create_new(&dir.join(&cand), false) {
             Ok(f) => return Ok((dir.join(&cand), cand, f)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(Refused::Io(e.to_string())),
@@ -520,7 +525,7 @@ fn free_dest(dir: &Path, name: &str) -> Result<(PathBuf, String, fs::File), Refu
 }
 
 /// copy at most MAX_IMG_BYTES + 1 bytes; Err leaves NOTHING behind.
-fn copy_capped(src: &Path, dst: &Path, mut out: fs::File) -> Result<u64, Refused> {
+fn copy_capped(src: &Path, vfs: &vaultfs::Vault, dst: &Path, mut out: fs::File) -> Result<u64, Refused> {
     use std::io::{Read, Write};
     // free_dest already created `dst` with O_EXCL, so EVERY exit from here on
     // must unlink it — a failed drop that leaves an empty `cat.png` in the
@@ -528,7 +533,7 @@ fn copy_capped(src: &Path, dst: &Path, mut out: fs::File) -> Result<u64, Refused
     let mut f = match fs::File::open(src) {
         Ok(f) => f,
         Err(e) => {
-            let _ = fs::remove_file(dst);
+            let _ = vfs.unlink(dst);
             // R31.12: the sandbox only grants READ on the drop-source folders,
             // so EACCES here is the expected answer for a file anywhere else.
             // Say THAT, not "could not be copied (os error 13)" — a refusal
@@ -547,22 +552,22 @@ fn copy_capped(src: &Path, dst: &Path, mut out: fs::File) -> Result<u64, Refused
             Ok(0) => break,
             Ok(n) => n,
             Err(e) => {
-                let _ = fs::remove_file(dst);
+                let _ = vfs.unlink(dst);
                 return Err(Refused::Io(e.to_string()));
             }
         };
         total += n as u64;
         if total > MAX_IMG_BYTES {
-            let _ = fs::remove_file(dst);           // a file that GREW mid-copy
+            let _ = vfs.unlink(dst);           // a file that GREW mid-copy
             return Err(Refused::TooBig(total));
         }
         if let Err(e) = out.write_all(&buf[..n]) {
-            let _ = fs::remove_file(dst);
+            let _ = vfs.unlink(dst);
             return Err(Refused::Io(e.to_string()));
         }
     }
     if let Err(e) = out.sync_all() {
-        let _ = fs::remove_file(dst);
+        let _ = vfs.unlink(dst);
         return Err(Refused::Io(e.to_string()));
     }
     Ok(total)
@@ -582,13 +587,16 @@ fn attach_drop(root: &Path, note: &str, paths: &[PathBuf]) -> Result<Attached, D
     }
     let (dir, notice) = attach_dir(root)?;
     let croot = root.canonicalize().map_err(|_| DropErr::BadAttachDir)?;
-    let rel_dir = dir.strip_prefix(&croot).ok().map(|d| d.display().to_string()).unwrap_or_default();
+    let rel_path = dir.strip_prefix(&croot).map_err(|_| DropErr::BadAttachDir)?.to_path_buf();
+    let rel_dir = rel_path.display().to_string();
+    // audit #6: every create/unlink below is relative to this dir fd
+    let vfs = vaultfs::Vault::open(root).map_err(|_| DropErr::BadAttachDir)?;
     let mut out = Attached::default();
     out.refused.extend(notice);
     let mut links: Vec<String> = Vec::new();
     for p in paths {
         let shown = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| p.display().to_string());
-        match attach_one(&dir, p) {
+        match attach_one(&vfs, &rel_path, p) {
             Ok(name) => {
                 links.push(format!("![[{name}]]"));
                 out.copied.push(if rel_dir.is_empty() { name.clone() } else { format!("{rel_dir}/{name}") });
@@ -601,7 +609,7 @@ fn attach_drop(root: &Path, note: &str, paths: &[PathBuf]) -> Result<Attached, D
 }
 
 /// one dropped path -> the name it got in the attachment folder
-fn attach_one(dir: &Path, p: &Path) -> Result<String, Refused> {
+fn attach_one(vfs: &vaultfs::Vault, dir: &Path, p: &Path) -> Result<String, Refused> {
     let raw = p.to_string_lossy();
     // R31.8 / R29.10: a browser drag delivers a URL, never a file. Downloading
     // it would be a network fetch caused by a note, which is forbidden — and
@@ -629,8 +637,8 @@ fn attach_one(dir: &Path, p: &Path) -> Result<String, Refused> {
     if !fs::symlink_metadata(&src).map(|m| m.is_file()).unwrap_or(false) {
         return Err(Refused::NotAFile);
     }
-    let (dst, name, fh) = free_dest(dir, &name)?;
-    copy_capped(&src, &dst, fh)?;
+    let (dst, name, fh) = free_dest(vfs, dir, &name)?;
+    copy_capped(&src, vfs, &dst, fh)?;
     Ok(name)
 }
 
@@ -705,10 +713,9 @@ fn create_dir(v: State<Vault>, name: String) -> Result<(), String> {
         let root = cur_vault(&v).ok_or("no vault open")?;
         let rel = safe_rel(&name).ok_or("invalid folder name")?;
         // perf-index: an empty dir holds no notes -> index unchanged.
-        // S2: mkdir via note_path_in (create) so it never crosses a symlinked dir
-        note_path_in(&root, &format!("{}/x", rel.display()), true)
-            .map(|_| ())
-            .ok_or_else(|| "outside vault".to_string())
+        // S2 / audit #6: mkdirat per component from the vault dir fd, O_NOFOLLOW
+        // at every step, so it never crosses a symlinked dir
+        vaultfs::mkdir_p(&root, &rel).map_err(|_| "outside vault".to_string())
     })
 }
 
@@ -866,10 +873,12 @@ fn move_note_in(root: &Path, ix: &mut Index, old: &str, new: &str) -> Result<(us
     let (okey, nkey) = (orel.display().to_string(), nrel.display().to_string());
     // counted BEFORE the move, off the freshly-resynced index
     let radius = ix.rename_blast(&okey, &nkey);
-    fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&np)
+    // audit #6: claim (O_EXCL|O_NOFOLLOW) + renameat, both relative to parent
+    // dir fds walked no-follow from the vault root; a refused rename unlinks
+    // its own claim. No path is re-resolved between the check and the move.
+    let (ofr, nfr) = (note_rel(old).ok_or("invalid name")?, note_rel(new).ok_or("invalid name")?);
+    vaultfs::Vault::open(root)
+        .and_then(|vfs| vfs.move_file(&ofr, &nfr))
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::AlreadyExists {
                 "target exists".to_string()
@@ -877,10 +886,6 @@ fn move_note_in(root: &Path, ix: &mut Index, old: &str, new: &str) -> Result<(us
                 e.to_string()
             }
         })?;
-    if let Err(e) = fs::rename(&op, &np) {
-        let _ = fs::remove_file(&np); // never leave a stray claim behind
-        return Err(e.to_string());
-    }
     // index==disk invariant: if the key is somehow missing, seed it from the
     // moved file rather than dropping the note
     let fallback = if ix.content(&okey).is_none() { fs::read_to_string(&np).ok() } else { None };
@@ -1077,44 +1082,35 @@ fn rename_note(v: State<Vault>, old: String, new: String, otel: Option<perf::Ctx
    and a unit test pins the bookmarks file byte-identical across a delete. */
 const TRASH_DIR: &str = ".trash";
 
-/// `<vault>/.trash/<base>.md`, suffixed `.1`, `.2`, ... when that name is
-/// already taken — deleting two notes that share a basename (`a/Note` and
-/// `b/Note`) must not silently overwrite the first one's only remaining copy.
-fn trash_dest(tdir: &Path, base: &str) -> PathBuf {
-    let first = tdir.join(format!("{base}.md"));
-    if !first.exists() {
-        return first;
-    }
-    for i in 1..10_000 {
-        let p = tdir.join(format!("{base}.{i}.md"));
-        if !p.exists() {
-            return p;
-        }
-    }
-    tdir.join(format!("{base}.{}.md", std::process::id()))
-}
-
 /// Returns the vault-relative path the note now occupies inside the trash —
 /// what the UI reports, and what a test reads the original bytes back from.
 fn delete_note_in(root: &Path, ix: &mut Index, name: &str) -> Result<String, String> {
     let rel = safe_rel(name).ok_or("invalid name")?;
     let key = rel.display().to_string();
+    let frel = note_rel(name).ok_or("invalid name")?;
     // S2: confined to the vault, and never through a symlinked leaf/parent
     let p = note_path_in(root, name, false).ok_or("invalid name")?;
     if !p.is_file() {
         return Err("no such note".into());
     }
-    let tdir = root.join(TRASH_DIR);
-    fs::create_dir_all(&tdir).map_err(|e| format!("cannot open the vault trash: {e}"))?;
-    let base = rel.file_name().ok_or("invalid name")?.to_string_lossy().into_owned();
-    let dest = trash_dest(&tdir, &base);
-    // one rename(2) inside the vault: the note is either where it was or in the
-    // trash, never in neither place and never in two
-    fs::rename(&p, &dest).map_err(|e| e.to_string())?;
-    // index==disk: the key is gone, so every inbound link stops resolving and
-    // R24.9's faded rendering appears. No other note is read, written or parsed.
-    ix.remove(&key);
-    Ok(dest.strip_prefix(root).unwrap_or(&dest).display().to_string())
+    let tdir = Path::new(TRASH_DIR);
+    // audit #6: a symlinked (or swapped) .trash is refused, never written through
+    vaultfs::Vault::open(root)
+        .and_then(|vfs| {
+            vfs.mkdir_p(tdir)?;
+            let base = rel.file_name().map(|b| b.to_string_lossy().into_owned()).unwrap_or_default();
+            // one renameat inside the vault onto a name CLAIMED with O_EXCL
+            // (`base.md`, `base.1.md`, ...): the note is either where it was or
+            // in the trash, never in neither place, never over another copy
+            vfs.trash(&frel, tdir, &base, "md")
+        })
+        .map(|dest| {
+            // index==disk: the key is gone, so every inbound link stops resolving
+            // and R24.9's faded rendering appears. No other note is touched.
+            ix.remove(&key);
+            dest.display().to_string()
+        })
+        .map_err(|e| format!("cannot move the note to the vault trash: {e}"))
 }
 
 /// R24.7: the explorer's Delete, behind the confirmation the UI raises. The
@@ -7266,6 +7262,82 @@ mod tests {
         let names: Vec<_> = fs::read_dir(&outside).unwrap().map(|e| e.unwrap().file_name()).collect();
         assert_eq!(names, ["app.json"], "nothing created behind the symlink");
         assert_eq!(fs::read_to_string(outside.join("app.json")).unwrap(), "{}");
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    /// audit #6: delete-to-trash, move, mkdir and attachment drop refuse a
+    /// symlinked directory in the vault and create NOTHING behind it.
+    #[test]
+    fn vaultfs_trash_move_mkdir_drop_refuse_symlinked_dirs() {
+        use std::os::unix::fs::symlink;
+        let root = tmp_vault("vfs-mv");
+        let outside = std::env::temp_dir().join(format!("opensidian-vfs-mv-out-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(root.join("N.md"), "trash me").unwrap();
+        fs::write(root.join("M.md"), "move me").unwrap();
+        symlink(&outside, root.join(".trash")).unwrap();
+        symlink(&outside, root.join("out")).unwrap();
+        let mut ix = Index::build(&root);
+        assert!(delete_note_in(&root, &mut ix, "N").is_err(), "symlinked .trash");
+        assert_eq!(fs::read_to_string(root.join("N.md")).unwrap(), "trash me");
+        assert!(ix.content("N").is_some(), "a refused delete keeps the index key");
+        assert!(move_note_in(&root, &mut ix, "M", "out/M").is_err(), "symlinked move target dir");
+        assert!(move_note_in(&root, &mut ix, "M", "out/deep/M").is_err(), "symlinked ancestor");
+        assert_eq!(fs::read_to_string(root.join("M.md")).unwrap(), "move me");
+        assert!(vaultfs::mkdir_p(&root, Path::new("out/x")).is_err(), "create_dir");
+        assert!(note_path_in(&root, "out/x/N", true).is_none());
+        let names: Vec<_> = fs::read_dir(&outside).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert!(names.is_empty(), "created behind a symlink: {names:?}");
+        // positive control: real dirs work through the same calls
+        fs::remove_file(root.join(".trash")).unwrap();
+        assert_eq!(delete_note_in(&root, &mut ix, "N").unwrap(), ".trash/N.md");
+        assert_eq!(fs::read_to_string(root.join(".trash/N.md")).unwrap(), "trash me");
+        fs::write(root.join("N.md"), "second").unwrap();
+        let mut ix = Index::build(&root);
+        assert_eq!(delete_note_in(&root, &mut ix, "N").unwrap(), ".trash/N.1.md", "never overwrites");
+        move_note_in(&root, &mut ix, "M", "real/deep/M").unwrap();
+        assert_eq!(fs::read_to_string(root.join("real/deep/M.md")).unwrap(), "move me");
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    /// audit #6, the race: the trash dir (and a move's target dir) is swapped
+    /// for a symlink AFTER it was resolved. The rename goes through the held
+    /// dir fd, so the note lands in the moved real dir — never outside.
+    #[test]
+    fn vaultfs_dir_swapped_mid_trash_and_move_never_leaves_the_vault() {
+        use std::os::unix::fs::symlink;
+        let root = tmp_vault("vfs-race");
+        let outside = std::env::temp_dir().join(format!("opensidian-vfs-race-out-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(root.join("N.md"), "trash me").unwrap();
+        fs::write(root.join("M.md"), "move me").unwrap();
+        fs::create_dir_all(root.join(".trash")).unwrap();
+        let swap = |at: &'static str, dir: &'static str| {
+            let (r, o) = (root.clone(), outside.clone());
+            let mut done = false;
+            vaultfs::set_hook(Some(Box::new(move |p| {
+                if p == at && !done {
+                    done = true;
+                    fs::rename(r.join(dir), r.join(format!("{dir}-moved"))).unwrap();
+                    symlink(&o, r.join(dir)).unwrap();
+                }
+            })));
+        };
+        let mut ix = Index::build(&root);
+        swap("trash:resolved", ".trash");
+        let r = delete_note_in(&root, &mut ix, "N");
+        swap("move_file:claimed", "sub");
+        let m = move_note_in(&root, &mut ix, "M", "sub/M");
+        vaultfs::set_hook(None);
+        assert!(r.is_ok() && m.is_ok(), "{r:?} {m:?}");
+        let names: Vec<_> = fs::read_dir(&outside).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert!(names.is_empty(), "a byte landed OUTSIDE the vault: {names:?}");
+        assert_eq!(fs::read_to_string(root.join(".trash-moved/N.md")).unwrap(), "trash me");
+        assert_eq!(fs::read_to_string(root.join("sub-moved/M.md")).unwrap(), "move me");
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&outside);
     }
