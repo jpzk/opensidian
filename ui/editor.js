@@ -219,11 +219,16 @@ const Ed = {
   inline(g, box, s) {
     let plain = "";
     const flush = () => { if (plain) { box.appendChild(Ed.t(plain)); plain = ""; } };
+    // tagSpans is sorted and disjoint and i only moves forward, so one cursor
+    // replaces a per-char tags.find (O(chars x tags): a 50k-tag line froze
+    // live preview — audit #11). Spans skipped by another construct are passed.
     const tags = Ed.tagSpans(s);
+    let ti = 0;
     let i = 0;
     while (i < s.length) {
       const rest = s.slice(i);
-      const tg = tags.find(x => x[0] === i);
+      while (ti < tags.length && tags[ti][0] < i) ti++;
+      const tg = ti < tags.length && tags[ti][0] === i ? tags[ti] : null;
       if (tg) {                                                  // #tag pill
         flush();
         const a = Ed.el("a", "tag");
