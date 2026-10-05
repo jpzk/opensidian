@@ -1571,6 +1571,7 @@ fn switch_show(app: tauri::AppHandle) {
             let _ = w.set_position(tauri::LogicalPosition::new(sw.x as f64, sw.y as f64));
             let _ = w.set_size(tauri::LogicalSize::new(sw.w as f64, sw.h as f64));
             if sw.max {
+                #[cfg(not(target_os = "android"))] // androidfeas: no maximize on mobile
                 let _ = w.maximize();
             }
             let _ = w.show();
@@ -4296,7 +4297,7 @@ fn win_gesture(
                 // the user drag twice; every later press takes the "wm"/"wayland"
                 // branch in wfBegin without any of this running again.
                 eprintln!("[win_drag] the session ignores client positioning — handing this press over mid-gesture");
-                win.start_dragging().map_err(|e| e.to_string())?;
+                af_start_dragging(&win)?; // androidfeas: shim, no start_dragging on mobile
             }
         }
     }
@@ -4477,7 +4478,7 @@ fn win_drag_start(win: tauri::Window, proto: tauri::State<'_, DragProto>) -> Res
             // jump over the measurement, so the FAILING handover — the slow one
             // worth seeing — would be the one case that emits no span.
             if p != "none" {
-                win.start_dragging().map_err(|e| e.to_string()).map(|()| p.to_string())
+                af_start_dragging(&win).map(|()| p.to_string()) // androidfeas: shim
             } else {
                 Ok(p.to_string())
             }
@@ -4486,15 +4487,25 @@ fn win_drag_start(win: tauri::Window, proto: tauri::State<'_, DragProto>) -> Res
     )
 }
 
+// androidfeas: tauri::Window has no start_dragging on mobile
+#[cfg(not(target_os = "android"))]
+fn af_start_dragging(w: &tauri::Window) -> Result<(), String> { w.start_dragging().map_err(|e| e.to_string()) }
+#[cfg(target_os = "android")]
+fn af_start_dragging(_w: &tauri::Window) -> Result<(), String> { Err("android: no window drag".into()) }
+
 #[tauri::command]
 fn win_minimize(win: tauri::Window) -> Result<(), String> {
-    win.minimize().map_err(|e| e.to_string())
+    #[cfg(target_os = "android")] // androidfeas: no minimize on mobile
+    { let _ = win; return Ok(()); }
+    #[cfg(not(target_os = "android"))]
+    return win.minimize().map_err(|e| e.to_string());
 }
 
 /// maximise <-> restore; returns the state it left the window in
 #[tauri::command]
 fn win_toggle_max(win: tauri::Window) -> Result<bool, String> {
     let m = win.is_maximized().map_err(|e| e.to_string())?;
+    #[cfg(not(target_os = "android"))] // androidfeas: no (un)maximize on mobile
     if m {
         win.unmaximize().map_err(|e| e.to_string())?;
     } else {
