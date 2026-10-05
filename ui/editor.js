@@ -1319,7 +1319,7 @@ const Ed = {
     const s = Ed.sel(g);
     if (!s) return;
     const sp = typeof otel !== "undefined" && otel.begin
-      ? otel.begin("key_to_paint", { key: e.inputType, note_lines: g.lpLines || 0, note: (typeof curOf === "function" && curOf(g)) || "" })
+      ? otel.begin("key_to_paint", { key: e.inputType, note_lines: g.lpLines || 0 })
       : null;
     e.preventDefault();
     switch (e.inputType) {

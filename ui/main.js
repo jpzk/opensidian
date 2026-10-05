@@ -250,7 +250,7 @@ function placeRToggle() {
 }
 async function cmdToggleRight() {
   if (!state) return;
-  await act("pane_toggle_right", { open: !rightOpen, rtab: rTab, note: cur() || "" }, () => {
+  await act("pane_toggle_right", { open: !rightOpen, rtab: rTab }, () => {
     rightOpen = !rightOpen;
     $("rside").hidden = $("rdiv").hidden = !rightOpen;
     $("rtoggle").title = rightOpen ? "Collapse right sidebar" : "Expand right sidebar";
@@ -1046,7 +1046,7 @@ async function runSearch() {
     box.appendChild(row);
   }
   updateTitle();
-  perf.mark("search", st0, { q, hits: hits.length });
+  perf.mark("search", st0, { q_len: q.length, hits: hits.length });
   otel.paint(searchSp, { hits: hits.length }); searchSp = null;   // R18 search_type: keystroke -> results painted
 }
 /* [srg:<centre x>|Q<y>|G<y>|H<y>|H<y>…] — the PAINTED geometry of the search
@@ -1437,7 +1437,7 @@ function llWant(P, li, cb) {
    bookmarks.json bytes cannot move (the phase sha256s the file around it). */
 function bmFoldToggle(key) {
   if (key == null || bmRenaming !== null) return;
-  return act("bm_fold", { group: key.split("\u001f").join("/"), open: bmFolds.has(key) }, () => {
+  return act("bm_fold", { depth: key.split("\u001f").length, open: bmFolds.has(key) }, () => {
     bmFolds.has(key) ? bmFolds.delete(key) : bmFolds.add(key);
     renderBm();
   });
@@ -1665,7 +1665,7 @@ function bmDragStart(e, ix) {
   const springFire = key => {
     spring = 0;
     if (!ghost || !bmFolds.has(key)) return;
-    act("bm_spring", { group: key.split("\u001f").join("/") }, () => {
+    act("bm_spring", { depth: key.split("\u001f").length }, () => {
       bmFolds.delete(key);                 // in memory only — the file is never written (R2)
       clearFb();
       renderBm();                          // repaints: every cached rect/element is now stale
@@ -2007,7 +2007,7 @@ async function writeNote(name, content) {   // every save funnels here so graphs
   const t0 = perf.now();
   await inv("write_note", { name, content });   // F1: REJECTS if the bytes did not land
   await afterWrite(name);
-  perf.mark("save", t0, { note: name, bytes: content.length });
+  perf.mark("save", t0, { bytes: content.length });
 }
 async function afterWrite(name) {           // bookkeeping shared by write + create
   markStale(name);                          // R20: inactive tabs on this note re-read on activation
@@ -3701,7 +3701,7 @@ async function splitGroup(g, dir, ti) {  // duplicate g's tab ti into a new sibl
 async function splitWith(g, dir, tab) {  // insert a new sibling group carrying `tab`
   const parent = findParent(state.root, g);
   if (!parent) return;
-  await act("pane_split", { dir, groups: groups().length + 1, note: tab ? tab.name : "" }, async () => {
+  await act("pane_split", { dir, groups: groups().length + 1 }, async () => {
   const ng = mkGroup();
   if (tab) { ng.tabs.push(tab); ng.active = 0; }
   if (parent.children.length === 1) {    // lone child: re-aim the split
@@ -3922,7 +3922,7 @@ async function closeAllTabs(g) {           // Close all: the GROUP SURVIVES (col
      ZERO tabs — observably [tabs:0] with the pane still there, one tab row
      fewer than Obsidian. docs/recon-tabmenu/README.md records it. */
   const t = g.tabs[0];
-  await act("pane_close", { note: t.name, kind: t.kind || "note", pane_removed: false, groups: groups().length, tabs: 0 }, async () => {
+  await act("pane_close", { kind: t.kind || "note", pane_removed: false, groups: groups().length, tabs: 0 }, async () => {
     if (!t.kind) closedTabs.push(t.name);  // R14: undo close tab still works on the last one
     unlinkTab(g, t, true);
     dropView(t);
@@ -4397,7 +4397,7 @@ function tabDragStart(e, g, i) {
     clearHl();
     if (ghost) { const s = getSelection(); if (s && !s.isCollapsed) s.removeAllRanges(); }
     if (!ghost || !t) return;                // plain click, or dropped nowhere
-    await act("tab_drop", { kind: t.kind, groups: groups().length, note: g.tabs[i] ? g.tabs[i].name : "" }, async () => {   // R20: pane/tab nodes MOVE, no layout rebuild
+    await act("tab_drop", { kind: t.kind, groups: groups().length }, async () => {   // R20: pane/tab nodes MOVE, no layout rebuild
     await flushSave(g);
     const tab = g.tabs.splice(i, 1)[0];
     if (!tab) return;
@@ -5040,7 +5040,7 @@ async function lgFollow(src) {
 
 async function switchTab(g, i) {
   if (i === g.active) return;
-  await act("tab_switch", { note: g.tabs[i].name, kind: g.tabs[i].kind || "note", tabs: g.tabs.length }, async () => {
+  await act("tab_switch", { kind: g.tabs[i].kind || "note", tabs: g.tabs.length }, async () => {
     await flushSave(g);
     g.active = i;
     await loadActive(g);
@@ -5051,7 +5051,7 @@ async function openInTab(name, via = "tab") {   // explorer click -> FOCUSED gro
   const g = fg();
   const lt = g.active >= 0 ? g.tabs[g.active] : null;
   if (lt && !lt.kind && lt.link != null && lt.name !== name) return navigate(g, name);  // R13.3: a linked member navigates in place
-  await act("note_open", { note: name, via, tabs: g.tabs.length }, async sp => {
+  await act("note_open", { via, tabs: g.tabs.length }, async sp => {
     await flushSave(g);
     const i = g.tabs.findIndex(x => x.name === name);
     if (i >= 0) g.active = i;
@@ -5071,7 +5071,7 @@ async function openInTab(name, via = "tab") {   // explorer click -> FOCUSED gro
    rowOpen is the one seam the two row kinds share. */
 async function openNewTab(name) {
   const g = fg();
-  await act("note_open", { note: name, via: "newtab", tabs: g.tabs.length }, async sp => {
+  await act("note_open", { via: "newtab", tabs: g.tabs.length }, async sp => {
     await flushSave(g);
     const at = g.active >= 0 ? g.active + 1 : g.tabs.length;
     // an INSERT at `at`, written without splice: the tabclose census (main.rs test
@@ -5094,7 +5094,7 @@ async function rowOpen(name, ev) {
 }
 async function navigate(g, name, anchor) { // wikilink / graph click: replace g's ACTIVE tab, push history
   navInfo = "";
-  await act("note_open", { note: name, via: "link", tabs: g.tabs.length }, async sp => {
+  await act("note_open", { via: "link", tabs: g.tabs.length }, async sp => {
     await flushSave(g);
     if (g.active < 0) { g.tabs.push(mkTab(name)); g.active = 0; }
     else {
@@ -5262,7 +5262,7 @@ async function histGo(d, from) {
   if (tab.kind) return;
   const p = tab.hpos + d;
   if (p < 0 || p >= tab.hist.length) return;
-  const sp = otel.begin("history_nav", { dir: d < 0 ? "back" : "forward", from: tab.name, note: tab.hist[p].n, pos: p, len: tab.hist.length });
+  const sp = otel.begin("history_nav", { dir: d < 0 ? "back" : "forward", pos: p, len: tab.hist.length });
   await flushSave(g);
   tab.hist[tab.hpos].s = scrollOf(g);
   tab.hpos = p;
@@ -5271,7 +5271,7 @@ async function histGo(d, from) {
   // re-centres in loadActive -> lgFollow -> graphRefresh; its settling is animation and
   // is measured by that group's own graph_settle span, never by history_nav.
   const lgh = groups().find(h => { const t = h.active >= 0 ? h.tabs[h.active] : null; return t && t.kind === "lg" && t.linkId === g.id && t.center !== tab.name; });
-  if (lgh) { otel.cancel(lgh.settleSp); lgh.settleSp = otel.begin("graph_settle", { node: tab.name, from: "history", nodes: 0 }); }
+  if (lgh) { otel.cancel(lgh.settleSp); lgh.settleSp = otel.begin("graph_settle", { from: "history", nodes: 0 }); }
   await loadActive(g);
   const s = tab.hist[p].s;
   if (s) { if (tab.mode === "reading") g.preview.scrollTop = s; else if (isLp(tab.mode)) g.lp.scrollTop = s; else g.editor.scrollTop = s; }
@@ -5392,7 +5392,7 @@ function tcxTok() {
    timer. It is a parameter now, so the one path that must not write says so. */
 async function closeTab(g, i, cause, via, noFlush) {
   const rm = g.tabs.length === 1 && groups().length > 1;      // R6.5: last tab -> the pane goes too
-  await act("pane_close", { note: g.tabs[i].name, kind: g.tabs[i].kind || "note", pane_removed: rm, groups: groups().length, tabs: g.tabs.length - 1 }, async () => {
+  await act("pane_close", { kind: g.tabs[i].kind || "note", pane_removed: rm, groups: groups().length, tabs: g.tabs.length - 1 }, async () => {
   // tabclose: recorded BEFORE the flush, with the dirty state the user's
   // keystrokes actually left — after flushSave() every tab is clean and the
   // log would claim there was never anything at risk.
@@ -5472,7 +5472,7 @@ function renderNode(node, prefix, depth, out) {
     row.dataset.folder = full;                  // R24.6: the drop target's identity, off the DOM
     const kids = document.createElement("div");
     kids.className = "tkids" + (open ? "" : " collapsed");
-    row.onclick = () => act("folder_toggle", { folder: full, open: collapsed.has(full), notes: node.dirs.get(d).notes.length, rows: kids.childElementCount }, () => {
+    row.onclick = () => act("folder_toggle", { depth: full.split("/").length, open: collapsed.has(full), notes: node.dirs.get(d).notes.length, rows: kids.childElementCount }, () => {
       const o = collapsed.has(full);
       o ? collapsed.delete(full) : collapsed.add(full);
       row.classList.toggle("open", o);
@@ -5602,7 +5602,7 @@ async function moveNoteTo(nm, folder) {
   const nn = folder ? folder + "/" + base : base;
   if (nn === nm) return;
   if (notesCache.includes(nn)) { say("There's already a file with the same name"); return; }
-  await act("note_move", { note: nm, to: folder, dest: nn }, async () => {
+  await act("note_move", { to_root: !folder, depth: nn.split("/").length }, async () => {
     // the bytes of any open buffer of THIS note land before the file moves —
     // a debounced save that fires after the rename would write the old path
     for (const g of groups()) if (curOf(g) === nm) await flushSave(g);
@@ -5667,7 +5667,7 @@ async function lpRender(g, activeL = -1, col = 0, full = false) {
 function lpCommit(g) { if (g && g.view && g.view.lines) Ed.sync(g); }   // model -> save bridge
 async function lpMove(g, line, col, why) {     // R18 span kept: caret move -> paint
   return act("lp_commit", { why, from: g.lpActive ? g.lpActive.l0 : -1, to: line,
-                            note_lines: g.lpLines || 0, note: curOf(g) || "" },
+                            note_lines: g.lpLines || 0 },
              () => { Ed.place(g, line, col); return Promise.resolve(); });
 }
 async function lpEdit(g, line, col) { await lpMove(g, line, col, "click"); }
@@ -8126,8 +8126,8 @@ async function startGraph(g, cfg) {
     // first paint of the response (note painted + graph redrawn at the new centre). The sim
     // settling afterwards is animation: it gets its own informational span graph_settle.
     // Global graph clicks turn the tab into the note (no re-centre): note_open only.
-    const rsp = cfg.center() ? otel.begin("graph_recenter", { node: hit.n, from: cfg.center(), nodes: N.length, edges: gr.edges.length }) : null;
-    if (rsp) { otel.cancel(g.settleSp); g.settleSp = otel.begin("graph_settle", { node: hit.n, from: cfg.center(), nodes: N.length }); }
+    const rsp = cfg.center() ? otel.begin("graph_recenter", { nodes: N.length, edges: gr.edges.length }) : null;
+    if (rsp) { otel.cancel(g.settleSp); g.settleSp = otel.begin("graph_settle", { from: "recenter", nodes: N.length }); }
     await cfg.onClick(hit.n);
     if (rsp) otel.paint(rsp, { nodes: N.length, edges: gr.edges.length });
     if (g.settleSp && quiet) { otel.end(g.settleSp, { nodes: N.length, edges: gr.edges.length, reheat: false }); g.settleSp = null; }   // centre unchanged / nothing to settle

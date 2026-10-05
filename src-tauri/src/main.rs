@@ -2981,7 +2981,7 @@ fn graph_inner(v: &State<Vault>) -> Graph {
 fn graph_local(v: State<Vault>, center: String, depth: usize, inc: bool, out: bool, otel: Option<perf::Ctx>) -> Graph {
     span_timed!(otel => "graph_fetch",
         v.index.lock().unwrap().graph().local(&center, depth.min(5), inc, out),
-        serde_json::json!({ "center": center, "depth": depth }))
+        serde_json::json!({ "depth": depth }))
 }
 
 #[derive(serde::Serialize, Debug, PartialEq)]
