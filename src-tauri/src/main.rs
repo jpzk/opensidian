@@ -2599,8 +2599,14 @@ fn unlinked_in(ix: &Index, name: &str) -> Vec<Mention> {
         if n == name {
             continue;
         }
-        for (line, col, len) in index::mentions_in(c, base) {
-            let text = c.lines().nth(line as usize).unwrap_or("").trim().chars().take(200).collect();
+        let hits = index::mentions_in(c, base);
+        if hits.is_empty() {
+            continue;
+        }
+        // one line table per note, not a lines().nth() walk per hit (editordos #12)
+        let lines: Vec<&str> = c.lines().collect();
+        for (line, col, len) in hits {
+            let text = lines.get(line as usize).copied().unwrap_or("").trim().chars().take(200).collect();
             out.push(Mention { note: n.to_string(), line, col, len, text });
         }
     }

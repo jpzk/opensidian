@@ -785,10 +785,17 @@ pub fn mentions_in(content: &str, base: &str) -> Vec<(u32, u32, u32)> {
                 None => break,
             }
         }
+        // hits arrive in increasing offset and the spans are sorted and
+        // disjoint, so one moving span cursor answers "inside a [[..]]?" —
+        // linear in hits + spans (goal editordos #12: was every span per hit)
+        let mut si = 0;
         let mut at = 0;
         while let Some(i) = hay[at..].find(needle) {
             let i = at + i;
-            if !spans.iter().any(|&(a, b)| i >= a && i < b) {
+            while si < spans.len() && spans[si].1 <= i {
+                si += 1;
+            }
+            if !(si < spans.len() && i >= spans[si].0) {
                 out.push((ln as u32, i as u32, needle.len() as u32));
             }
             at = i + needle.len().max(1);
