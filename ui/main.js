@@ -344,6 +344,7 @@ async function rBacklinks(n) {
     sideRow(row, b.note);
     box.appendChild(row); box.appendChild(kids);
   }
+  const UL_SHOW = 200;
   // R10.5 Unlinked mentions: plain-text hits of this note's name in other
   // notes (collapsed like Obsidian); each row = the line with the hit marked +
   // a Link button that wraps it in [[ ]] on disk (the hit then migrates up
@@ -360,7 +361,9 @@ async function rBacklinks(n) {
   uh.onclick = () => { ulOpen = !ulOpen; uh.classList.toggle("open", ulOpen); uh.dataset.ol = "uh:" + (ulOpen ? "open" : "shut"); ub.hidden = !ulOpen; updateTitle(); };
   box.appendChild(uh); box.appendChild(ub);
   if (!ul.length) return rEmpty(ub, "No unlinked mentions found.");
-  for (const m of ul) {
+  // audit #12: a note named in 75k places used to build 75k rows here (~2 s, even
+  // collapsed). The count above stays exact; the list shows the first UL_SHOW.
+  for (const m of ul.slice(0, UL_SHOW)) {
     const row = document.createElement("div");
     row.className = "blnote ulnote"; row.dataset.ol = "ut:" + m.note;
     row.innerHTML = '<span class="bln"></span><button class="ullink">Link</button>';
@@ -396,6 +399,12 @@ async function rBacklinks(n) {
       await rBacklinks(n); updateTitle();
     };
     ub.appendChild(row); ub.appendChild(d);
+  }
+  if (ul.length > UL_SHOW) {
+    const more = document.createElement("div");
+    more.className = "rempty ulmore";
+    more.textContent = "\u2026 and " + (ul.length - UL_SHOW) + " more";
+    ub.appendChild(more);
   }
 }
 /* outlinks census (docs/outlinks/recon.md). [olf:<note>|ae:<where>] = the note leaf the
@@ -595,7 +604,7 @@ async function tocGo(line) {               // scroll + focus the heading at `lin
   if (fg() !== g) focusGroup(g);           // Obsidian 1.13.7: the active leaf moves to the note (docs/tocjump recon, shots 06,16)
   if (isLp(t.mode)) {                     // R12: source mode = lp with reveal
     await lpMove(g, line, 0, "heading");   // raw row = the heading, caret on it
-    const row = g.lp.children[line];                // R17: one row per source line
+    const row = Ed.rowAt(g, line);                 // R17: one row per source line
     if (row) g.lp.scrollTop = row.offsetTop - g.lp.offsetTop;
   } else {
     const k = tocHeads.findIndex(h => h.line === line);
@@ -899,7 +908,7 @@ async function scJump(g, hits) {
   // match is never selected, and a selection that was live is replaced by it.
   await lpMove(g, p.l, p.c, "search");
   scMarks(g);                              // the caret move re-rendered the touched rows
-  const row = g.lp.children[p.l];
+  const row = Ed.rowAt(g, p.l);
   // The four numbers R25.13c's rule is MADE of, published beside the result it
   // produced: the smoke phase recomputes
   //   clamp(rowTop - (clientHeight - rowHeight)/2, 0, scrollHeight - clientHeight)
@@ -5156,7 +5165,7 @@ async function navAnchor(g, anchor) {
   navInfo = "nav:" + anchor + "@" + line;
   if (line < 0) return updateTitle();
   if (isLp(t.mode)) {
-    const row = g.lp.children[line];                // R17: one row per source line
+    const row = Ed.rowAt(g, line);                 // R17: one row per source line
     if (row) {
       g.lp.scrollTop = row.offsetTop - g.lp.offsetTop - (g.lp.clientHeight - row.offsetHeight) / 2;
       flash(row);
