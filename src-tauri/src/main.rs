@@ -4590,6 +4590,16 @@ fn set_zoom_cfg(level: f64) {
     cfg_set("zoom", serde_json::json!(level));
 }
 
+/// S1: the one origin the window may navigate to. Tauri v2 on Linux serves
+/// frontendDist as `tauri://localhost` — exact scheme, exact host, no port.
+/// Matching on the host alone admitted http(s)://tauri.localhost:<any port>
+/// (any local server answering that name), and matching on the scheme alone
+/// admitted tauri://<any host>. The image scheme is a subresource (<img src>),
+/// never a navigation target, so it is not listed.
+fn nav_allowed(u: &tauri::Url) -> bool {
+    u.scheme() == "tauri" && u.host_str() == Some("localhost") && u.port().is_none()
+}
+
 fn main() {
     // FIRST STATEMENT IN THE PROCESS, deliberately: the warm-up window (perf.rs,
     // WARMUP_MS) is measured from here, so anything that runs before this stamp
@@ -4785,7 +4795,7 @@ fn main() {
         // on_navigation applies to every webview of the app.
         .plugin(
             tauri::plugin::Builder::<tauri::Wry, ()>::new("navguard")
-                .on_navigation(|_, u| u.scheme() == "tauri" || u.host_str() == Some("tauri.localhost"))
+                .on_navigation(|_, u| nav_allowed(u))
                 .build(),
         )
         // R29: image bytes reach the webview on our own scheme, so the
@@ -4831,6 +4841,37 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn nav(s: &str) -> bool {
+        nav_allowed(&tauri::Url::parse(s).unwrap())
+    }
+
+    #[test]
+    fn appguard_nav_app_origin_allowed() {
+        assert!(nav("tauri://localhost"));
+        assert!(nav("tauri://localhost/index.html"));
+        assert!(nav("tauri://localhost/#/note"));
+    }
+
+    #[test]
+    fn appguard_nav_lookalikes_refused() {
+        for u in [
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+            "https://tauri.localhost:1234",
+            "tauri://evil",
+            "tauri://localhost:8080",
+            "tauri://localhost.evil",
+            "http://localhost:8080",
+            "http://localhost",
+            "https://example.com",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "opensidian-img://localhost/a.png",
+        ] {
+            assert!(!nav(u), "{u} must be refused");
+        }
+    }
 
     /* R36: the numbers the keys land on. These tests are not decoration — the
        step and the two clamps are the whole behavioural content of zoom, and
