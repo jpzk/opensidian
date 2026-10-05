@@ -138,6 +138,14 @@ fn safe_rel(name: &str) -> Option<PathBuf> {
     (!out.as_os_str().is_empty()).then_some(out)
 }
 
+/// the vault-relative FILE path of note `name` (`sub/N` -> `sub/N.md`), built
+/// the way note_path_in builds it, for the fd-relative writers in vaultfs
+fn note_rel(name: &str) -> Option<PathBuf> {
+    let rel = safe_rel(name)?;
+    let leaf = format!("{}.md", rel.file_name()?.to_string_lossy());
+    Some(rel.with_file_name(leaf))
+}
+
 /// S2 vault confinement: canonical parent must live under the canonical root
 /// and the leaf must not be a symlink. `create` makes missing parents (what
 /// write/rename need) — but only after the deepest EXISTING ancestor proved
@@ -750,23 +758,17 @@ fn write_note_inner(v: &Vault, name: &str, content: &str) -> Result<(), String> 
    the index is upserted only after the bytes are on disk (index == disk). */
 fn write_note_in(root: &Path, ix: &mut Index, name: &str, content: &str) -> Result<(), String> {
     let rel = safe_rel(name).ok_or("invalid name")?;
-    // S2: parents created + confined inside note_path_in (None = outside vault)
-    let p = note_path_in(root, name, true).ok_or("outside vault")?;
-    write_atomic(&p, content)?;
+    let frel = note_rel(name).ok_or("invalid name")?;
+    // F3 + audit #2/#4: durable replace through the vault dir fd — parents
+    // made with mkdirat and walked with O_NOFOLLOW (a symlinked or swapped
+    // parent is refused), a RANDOM O_EXCL sibling temp (a planted `X.md.tmp`
+    // symlink is never opened), fsync, renameat in the same parent fd.
+    // Failure leaves the OLD file intact.
+    vaultfs::write_atomic(root, &frel, content.as_bytes()).map_err(|e| e.to_string())?;
     // index == disk: reparse this note, patch its outgoing edges
     // (a NEW key triggers a full in-memory edge rebuild inside upsert)
     ix.upsert(&rel.display().to_string(), content);
     Ok(())
-}
-
-/* F3 dataloss: durable replace, std only. A truncating fs::write releases the
-   old bytes at open(2) time, so a crash or ENOSPC mid-write leaves a zero-byte
-   or half-written note; and without fsync even a returned write is only page
-   cache. Write a SIBLING temp (same directory => same filesystem => the rename
-   is atomic; ".tmp" is not ".md", so notes_of and the watcher never index it),
-   fsync it, then rename over the target. Failure leaves the OLD file intact. */
-fn write_atomic(p: &Path, content: &str) -> Result<(), String> {
-    write_atomic_ext(p, content, "md.tmp")
 }
 
 /* The same durable replace for a file that is not a note. R28.3 writes the
@@ -829,11 +831,10 @@ fn create_note(v: State<Vault>, name: String, content: Option<String>, otel: Opt
 fn create_note_in(root: &Path, ix: &mut Index, name: &str, content: &str) -> Result<(), String> {
     use std::io::Write;
     let rel = safe_rel(name).ok_or("invalid name")?;
-    let p = note_path_in(root, name, true).ok_or("outside vault")?;
-    let mut f = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&p)
+    let frel = note_rel(name).ok_or("invalid name")?;
+    // O_EXCL|O_NOFOLLOW relative to a parent walked without following links
+    let mut f = vaultfs::Vault::open(root)
+        .and_then(|v| v.create_new(&frel, true))
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::AlreadyExists { EXISTS.to_string() } else { e.to_string() }
         })?;
@@ -926,12 +927,15 @@ fn update_links_in(root: &Path, ix: &mut Index, old: &str, new: &str) -> usize {
     let okey = safe_rel(old).map(|p| p.display().to_string()).unwrap_or_default();
     let nkey = safe_rel(new).map(|p| p.display().to_string()).unwrap_or_default();
     let mut wrote = 0;
+    let Ok(vfs) = vaultfs::Vault::open(root) else { return 0 };
     for (n, c) in ix.rewrite_to(&okey, &nkey) {
-        // S2: never write through a symlink swapped in since the walk
-        if let Some(p) = note_path_in(root, &n, false) {
-            if fs::write(&p, c).is_ok() {
-                wrote += 1;
-            }
+        // audit #1: no path re-resolution between check and write. Only an
+        // EXISTING regular note is rewritten (a symlinked leaf, a symlinked or
+        // swapped parent are skipped); the write itself is the fd-relative
+        // atomic replace, which refuses the same things again at write time.
+        let Some(frel) = note_rel(&n) else { continue };
+        if vfs.is_file(&frel) && vfs.write_atomic(&frel, c.as_bytes(), false).is_ok() {
+            wrote += 1;
         }
     }
     wrote
@@ -7219,6 +7223,62 @@ mod tests {
         assert_eq!(l[0], "/v9");
     }
 
+    /// audit #1: the consented link rewrite writes fd-relative and skips a
+    /// note that became a symlink after the index saw it
+    #[test]
+    fn vaultfs_link_rewrite_skips_a_note_swapped_for_a_symlink() {
+        use std::os::unix::fs::symlink;
+        let root = tmp_vault("vfs-links");
+        let outside = std::env::temp_dir().join(format!("opensidian-vfs-links-out-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("Victim.md"), "untouched [[Old]]").unwrap();
+        fs::write(root.join("Old.md"), "o").unwrap();
+        fs::write(root.join("A.md"), "[[Old]]").unwrap();
+        fs::write(root.join("sub/B.md"), "[[Old|b]]").unwrap();
+        fs::write(root.join("C.md"), "[[Old]] c").unwrap();
+        let mut ix = Index::build(&root);
+        move_note_in(&root, &mut ix, "Old", "New").unwrap();
+        // after the index saw C as a real note, C becomes a symlink outward
+        fs::remove_file(root.join("C.md")).unwrap();
+        symlink(outside.join("Victim.md"), root.join("C.md")).unwrap();
+        let wrote = update_links_in(&root, &mut ix, "Old", "New");
+        assert_eq!(wrote, 2, "only the two real notes are rewritten");
+        assert_eq!(fs::read_to_string(root.join("A.md")).unwrap(), "[[New]]");
+        assert_eq!(fs::read_to_string(root.join("sub/B.md")).unwrap(), "[[New|b]]");
+        assert_eq!(fs::read_to_string(outside.join("Victim.md")).unwrap(), "untouched [[Old]]");
+        assert!(fs::symlink_metadata(root.join("C.md")).unwrap().file_type().is_symlink());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    /// audit #2/#4 at the command core: save + new note never follow a planted
+    /// temp symlink or a symlinked parent
+    #[test]
+    fn vaultfs_note_save_and_create_refuse_symlinks() {
+        use std::os::unix::fs::symlink;
+        let root = tmp_vault("vfs-save");
+        let outside = std::env::temp_dir().join(format!("opensidian-vfs-save-out-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("target"), "OUT").unwrap();
+        fs::write(root.join("X.md"), "x").unwrap();
+        symlink(outside.join("target"), root.join("X.md.tmp")).unwrap();
+        symlink(&outside, root.join("link")).unwrap();
+        let mut ix = Index::build(&root);
+        write_note_in(&root, &mut ix, "X", "SAVED").unwrap();
+        assert_eq!(fs::read_to_string(root.join("X.md")).unwrap(), "SAVED");
+        assert_eq!(fs::read_to_string(outside.join("target")).unwrap(), "OUT");
+        assert!(write_note_in(&root, &mut ix, "link/N", "n").is_err());
+        assert!(create_note_in(&root, &mut ix, "link/M", "m").is_err());
+        assert!(create_note_in(&root, &mut ix, "link/deep/M", "m").is_err());
+        assert!(ix.content("link/N").is_none() && ix.content("link/M").is_none());
+        let names: Vec<_> = fs::read_dir(&outside).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, ["target"], "nothing created outside the vault");
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
     /// S2: symlinked dir + file inside the vault are invisible: not indexed,
     /// not snapshotted, not readable, not writable, not creatable-through
     #[test]
@@ -7554,18 +7614,19 @@ mod tests {
             .unwrap()
             .filter_map(|e| e.ok())
             .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|n| n.ends_with(".tmp"))
+            .filter(|n| n.ends_with(".tmp") || n.ends_with('~'))
             .collect();
         assert!(stray.is_empty(), "temp left behind: {stray:?}");
-        // the temp is a SIBLING (same dir => same filesystem => atomic rename):
-        // block that exact path and the save fails with the OLD note intact,
-        // where a truncating write would already have destroyed it.
+        // audit #2: the temp name is NOT predictable any more — something
+        // squatting the old fixed `Keep.md.tmp` neither blocks the save nor
+        // is touched by it
         fs::write(root.join("Keep.md"), "KEEP").unwrap();
         fs::create_dir(root.join("Keep.md.tmp")).unwrap();
         let mut ix2 = Index::build(&root);
-        assert!(write_note_in(&root, &mut ix2, "Keep", "LOST").is_err());
-        assert_eq!(fs::read_to_string(root.join("Keep.md")).unwrap(), "KEEP");
-        assert_eq!(ix2.content("Keep"), Some("KEEP"));
+        write_note_in(&root, &mut ix2, "Keep", "SAVED").unwrap();
+        assert_eq!(fs::read_to_string(root.join("Keep.md")).unwrap(), "SAVED");
+        assert!(root.join("Keep.md.tmp").is_dir());
+        assert_eq!(ix2.content("Keep"), Some("SAVED"));
         let _ = fs::remove_dir_all(&root);
     }
 
