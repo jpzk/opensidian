@@ -2587,19 +2587,24 @@ struct Mention {
 fn unlinked_mentions(v: State<Vault>, name: String) -> Vec<Mention> {
     span_timed!("unlinked_mentions", {
         let ix = v.index.lock().unwrap();
-        let base = name.rsplit('/').next().unwrap_or(&name);
-        let mut out = Vec::new();
-        for (n, c, _) in ix.docs() {
-            if n == name {
-                continue;
-            }
-            for (line, col, len) in index::mentions_in(c, base) {
-                let text = c.lines().nth(line as usize).unwrap_or("").trim().chars().take(200).collect();
-                out.push(Mention { note: n.to_string(), line, col, len, text });
-            }
-        }
-        out
+        unlinked_in(&ix, &name)
     })
+}
+
+/// the pure core of `unlinked_mentions` (goal editordos: testable without Tauri)
+fn unlinked_in(ix: &Index, name: &str) -> Vec<Mention> {
+    let base = name.rsplit('/').next().unwrap_or(name);
+    let mut out = Vec::new();
+    for (n, c, _) in ix.docs() {
+        if n == name {
+            continue;
+        }
+        for (line, col, len) in index::mentions_in(c, base) {
+            let text = c.lines().nth(line as usize).unwrap_or("").trim().chars().take(200).collect();
+            out.push(Mention { note: n.to_string(), line, col, len, text });
+        }
+    }
+    out
 }
 
 /// Link button: wrap the matched text in [[ ]] in `note` and save it
@@ -5343,6 +5348,53 @@ mod tests {
         assert!(b.contains("not ^mid here</p>") && b.contains("code ^c</code>"), "{b}");
         assert_eq!(split_block_id("x ^bad id"), None);
         assert_eq!(split_block_id("x ^ok-1  "), Some(("x", "ok-1")));
+    }
+
+    /* goal editordos #12 (audit: unlinked mentions quadratic in occurrences).
+       The SAME hostile shape as scripts/fixtures/editordos-seed.sh `mentions`:
+       100000 occurrences of the title — 50000 on ONE line where every other one
+       sits inside a [[..]] span (the per-hit span check), plus 50000 one-hit
+       lines (the per-hit line lookup). Time bounds are for a DEBUG test build. */
+    fn editordos_hostile_mentions() -> String {
+        let mut c = String::from("# ED Mentions\n\n");
+        for _ in 0..25_000 {
+            c.push_str("EdTarget [[EdTarget]] ");
+        }
+        c.push('\n');
+        for i in 0..50_000 {
+            c.push_str(&format!("line {i} EdTarget\n"));
+        }
+        c
+    }
+
+    #[test]
+    fn editordos_mentions_in_hostile_note() {
+        let c = editordos_hostile_mentions();
+        let t = std::time::Instant::now();
+        let hits = index::mentions_in(&c, "EdTarget");
+        let ms = t.elapsed().as_millis();
+        eprintln!("[editordos] mentions_in: 100000 occurrences -> {} hits in {ms} ms", hits.len());
+        assert!(ms < 1000, "mentions_in took {ms} ms on the hostile note");
+        assert_eq!(hits.len(), 75_000);
+        assert_eq!(hits[0], (2, 0, 8));
+        assert_eq!(hits[1], (2, 22, 8)); // the one at col 11 is inside [[EdTarget]]
+        assert_eq!(*hits.last().unwrap(), (3 + 49_999, 11, 8));
+    }
+
+    #[test]
+    fn editordos_unlinked_in_hostile_note() {
+        let mut ix = Index::default();
+        ix.upsert("EdTarget", "# EdTarget\n");
+        ix.upsert("ED-Mentions", &editordos_hostile_mentions());
+        let t = std::time::Instant::now();
+        let out = unlinked_in(&ix, "EdTarget");
+        let ms = t.elapsed().as_millis();
+        eprintln!("[editordos] unlinked_in: {} mentions in {ms} ms", out.len());
+        assert!(ms < 2000, "unlinked_in took {ms} ms on the hostile note");
+        assert!(!out.is_empty());
+        assert!(out.iter().all(|m| m.note == "ED-Mentions"));
+        let last = out.last().unwrap();
+        assert_eq!(last.text, format!("line {} EdTarget", last.line - 3));
     }
 
     #[test]
