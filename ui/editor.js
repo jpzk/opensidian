@@ -424,8 +424,27 @@ const Ed = {
   imgRel(target) {                             // vault-relative path from the image list, or null
     const dec = Ed.pctDec(target) ?? target;   // image_html's unwrap_or_else(target)
     if (!dec || typeof imgsCache === "undefined") return null;
-    const suf = "/" + dec;
-    return imgsCache.find(x => x === dec || x.endsWith(suf)) ?? null;
+    return Ed.imgIdx().get(dec) ?? null;
+  },
+  // audit #10: imgRel used to scan the whole image list per embed (images x
+  // embeds). Same answer, one Map: every path is keyed by itself and by each
+  // suffix that starts after a '/', the value being the FIRST path in list order
+  // that has that key — exactly what find(x => x === dec || x.endsWith("/" + dec))
+  // returned. Rebuilt only when refreshTree swaps in a new list (identity check).
+  _imgIdxOf: null, _imgIdx: null,
+  imgIdx() {
+    if (Ed._imgIdxOf !== imgsCache) {
+      const m = new Map();
+      for (const x of imgsCache) {
+        if (!m.has(x)) m.set(x, x);
+        for (let j = x.indexOf("/"); j >= 0; j = x.indexOf("/", j + 1)) {
+          const k = x.slice(j + 1);
+          if (k && !m.has(k)) m.set(k, x);
+        }
+      }
+      Ed._imgIdx = m; Ed._imgIdxOf = imgsCache;
+    }
+    return Ed._imgIdx;
   },
   imgSrc(target) {
     const rel = Ed.imgRel(target);

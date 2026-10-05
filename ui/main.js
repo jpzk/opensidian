@@ -3130,6 +3130,13 @@ function bmCollapseAll() {
     renderBm();
   });
 }
+// one pending rAF for every image load/error in a frame (audit #10, see the [xi:] probe)
+let xiPending = false;
+function xiAgain() {
+  if (xiPending) return;
+  xiPending = true;
+  requestAnimationFrame(() => { xiPending = false; updateTitle(); });
+}
 function updateTitle() {          // pane/focus census in the window title (headless probe)
   rTrack();                       // lgpanes: keep rLeaf current even with the right sidebar closed
   const ps = [...document.querySelectorAll("#main .pane")];
@@ -3278,12 +3285,13 @@ function updateTitle() {          // pane/focus census in the window title (head
       // sit there saying "0 loaded" forever, which a poll cannot tell from "blocked".
       // Re-publish once per element when its bytes land (or fail): one-shot, so this can
       // never become a title loop.
+      // audit #10: one rAF per FRAME, not per image — 20k images loading used to queue
+      // 20k updateTitle calls, each re-walking all 20k <img> (images^2).
       for (const i of ims) {
         if (i.dataset.xiw || i.complete) continue;
         i.dataset.xiw = "1";
-        const again = () => requestAnimationFrame(updateTitle);
-        i.addEventListener("load", again, { once: true });
-        i.addEventListener("error", again, { once: true });
+        i.addEventListener("load", xiAgain, { once: true });
+        i.addEventListener("error", xiAgain, { once: true });
       }
       const xi = s => String(s == null ? "" : s).replace(/[[\]|]/g, "").slice(0, 100);
       md += " [xi:" + ims.length + "/" + ims.filter(i => i.naturalWidth > 0).length + "/" + nmiss +
