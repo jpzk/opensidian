@@ -40,7 +40,6 @@ deletes (see migrate.rs for the legacy rule).
 // is scoped to this file.
 #![allow(dead_code)]
 
-use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -190,23 +189,36 @@ static LAST_SEED: Mutex<SeedReport> = Mutex::new(SeedReport::empty());
 /// errors are collected, never propagated — a vault we cannot seed still
 /// opens, and the scan then simply lists whatever IS there.
 pub fn seed_builtin_themes(root: &Path) -> SeedReport {
-    let td = root.join(".obsidian").join("themes");
+    // audit #5: every check and write is relative to the vault dir fd and
+    // walks `.obsidian/themes/<n>` no-follow — a symlinked `.obsidian` (or
+    // themes dir) is refused, never seeded through. "present" = a REGULAR
+    // file; a symlink there counts as missing and its write is then refused.
     let mut rep = SeedReport::default();
+    let vault = match crate::vaultfs::Vault::open(root) {
+        Ok(v) => v,
+        Err(e) => {
+            for t in BUILTIN_THEMES {
+                rep.failed.push(format!("{}: {e}", t.name));
+            }
+            return rep;
+        }
+    };
+    let td = Path::new(".obsidian").join("themes");
     for t in BUILTIN_THEMES {
         let d = td.join(t.name);
         let files: [(&str, &str); 2] = [("manifest.json", t.manifest), ("theme.css", t.css)];
-        let missing: Vec<&(&str, &str)> = files.iter().filter(|(f, _)| !d.join(f).exists()).collect();
+        let missing: Vec<&(&str, &str)> = files.iter().filter(|(f, _)| !vault.is_file(&d.join(f))).collect();
         if missing.is_empty() {
             rep.kept.push(t.name.to_string());
             continue;
         }
-        if let Err(e) = fs::create_dir_all(&d) {
+        if let Err(e) = vault.mkdir_p(&d) {
             rep.failed.push(format!("{}: {e}", t.name));
             continue;
         }
         let mut err = None;
         for (f, bytes) in missing {
-            if let Err(e) = fs::write(d.join(f), bytes) {
+            if let Err(e) = vault.write_atomic(&d.join(f), bytes.as_bytes(), false) {
                 err = Some(format!("{}/{f}: {e}", t.name));
                 break;
             }

@@ -771,41 +771,18 @@ fn write_note_in(root: &Path, ix: &mut Index, name: &str, content: &str) -> Resu
     Ok(())
 }
 
-/* The same durable replace for a file that is not a note. R28.3 writes the
-   session layout WHILE THE APP RUNS, i.e. repeatedly, under a `kill -9` that
-   may land at any instant — exactly the crash window this function exists to
-   close, so the layout takes the note path's guarantees rather than a second,
-   weaker copy of them. The temp SUFFIX is the only thing that differs: for a
-   note it must not be ".md" (notes_of and the watcher index those); for
-   workspace.json it must not be ".json" for the same reason a reader must
-   never see a half-written layout. */
-fn write_atomic_ext(p: &Path, content: &str, tmp_ext: &str) -> Result<(), String> {
-    use std::io::Write;
-    let tmp = p.with_extension(tmp_ext);
-    let r = (|| -> std::io::Result<()> {
-        let mut f = fs::File::create(&tmp)?;
-        f.write_all(content.as_bytes())?;
-        f.sync_all()?;
-        drop(f);
-        fs::rename(&tmp, p)
-    })();
-    if r.is_err() {
-        let _ = fs::remove_file(&tmp); // never leave a stray temp behind
-    }
-    r.map_err(|e| e.to_string())
-}
+/* R28.3 + W5 + audit #2/#5: the session layout is written WHILE THE APP RUNS,
+   repeatedly, under a `kill -9` that may land at any instant, so it takes the
+   note path's guarantees: vault-dir-fd relative, `.obsidian` walked with
+   O_NOFOLLOW (a symlinked `.obsidian` is refused, never written through), a
+   RANDOM O_EXCL dot-temp (never a predictable `workspace.json.tmp` a planted
+   symlink could redirect, never a `.json` a reader could pick up half-written),
+   fsync, renameat, then the parent-directory fsync so the rename itself is
+   DURABLE on ext4/xfs. A failure leaves the previous layout intact. */
+const WS_REL: &str = ".obsidian/workspace.json";
 
-/* W5 (req-wsrestore): the rename above is atomic, but on ext4/xfs it is not
-   DURABLE until the directory entry is on disk. A power cut after rename()
-   returns can come back with the name still on the OLD inode, or (the first
-   write into a fresh .obsidian/) with no file at all. fsync the parent
-   directory so the new layout survives the crash R28.3 is about. Only the
-   layout takes this second fsync: it runs on the async pool (W6), off every
-   note path, so notes keep write_atomic's single fsync and its latency. */
-fn write_atomic_durable(p: &Path, content: &str, tmp_ext: &str) -> Result<(), String> {
-    write_atomic_ext(p, content, tmp_ext)?;
-    let d = p.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    fs::File::open(d).and_then(|f| f.sync_all()).map_err(|e| e.to_string())
+fn write_layout_in(root: &Path, content: &str) -> Result<(), String> {
+    vaultfs::write_atomic_durable(root, Path::new(WS_REL), content.as_bytes()).map_err(|e| e.to_string())
 }
 
 /// F4 dataloss: the error a create returns when the note is already there.
@@ -1007,10 +984,7 @@ fn set_link_consent_in(root: &Path, on: bool) -> Result<(), String> {
 /// merge ONE boolean key into app.json — the refusal and temp+fsync+rename
 /// rules above hold for every key written through here
 fn set_app_bool_in(root: &Path, key: &str, on: bool) -> Result<(), String> {
-    use std::io::Write;
-    let dir = root.join(".obsidian");
-    let p = dir.join("app.json");
-    let cur = fs::read_to_string(&p).unwrap_or_default();
+    let cur = fs::read_to_string(root.join(".obsidian/app.json")).unwrap_or_default();
     let mut v = if cur.trim().is_empty() {
         serde_json::json!({})
     } else {
@@ -1021,19 +995,10 @@ fn set_app_bool_in(root: &Path, key: &str, on: bool) -> Result<(), String> {
     }
     v.as_object_mut().unwrap().insert(key.into(), serde_json::Value::Bool(on));
     let body = serde_json::to_string(&v).map_err(|e| e.to_string())?;
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let tmp = dir.join("app.json.tmp");
-    let r = (|| -> std::io::Result<()> {
-        let mut f = fs::File::create(&tmp)?;
-        f.write_all(body.as_bytes())?;
-        f.sync_all()?;
-        drop(f);
-        fs::rename(&tmp, &p)
-    })();
-    if r.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    r.map_err(|e| e.to_string())
+    // audit #2/#5: through the vault dir fd — `.obsidian` walked no-follow
+    // (a symlinked `.obsidian` is refused), random O_EXCL temp (no fixed
+    // `app.json.tmp` a planted symlink could redirect), fsync, renameat
+    vaultfs::write_atomic(root, Path::new(".obsidian/app.json"), body.as_bytes()).map_err(|e| e.to_string())
 }
 
 /// R34.8: does the vault already carry the user's answer? `true` -> the UI
@@ -1349,11 +1314,7 @@ fn write_workspace(
                     root.display()
                 ));
             }
-            let p = workspace_path(&root);
-            if let Some(d) = p.parent() {
-                fs::create_dir_all(d).map_err(|e| e.to_string())?;
-            }
-            write_atomic_durable(&p, &layout.to_string(), "json.tmp")
+            write_layout_in(&root, &layout.to_string())
         })(),
         serde_json::json!({ "bytes": layout.to_string().len() })
     )
@@ -3515,8 +3476,8 @@ fn bm_top_extra(root: &Path) -> Vec<(String, serde_json::Value)> {
 fn write_bm_tree(root: &Path, tree: &[BmNode]) -> Result<(), String> {
     let top = bm_top_extra(root); // preserved BEFORE the file is replaced
     let body = bm_emit(tree, &top);
-    fs::create_dir_all(root.join(".obsidian")).map_err(|e| e.to_string())?;
-    fs::write(root.join(BM_FILE), body).map_err(|e| e.to_string())
+    // audit #5: vault-dir-fd relative, `.obsidian` never followed as a symlink
+    vaultfs::write_atomic(root, Path::new(BM_FILE), body.as_bytes()).map_err(|e| e.to_string())
 }
 
 /* DERIVED VIEW: the `f` payloads in pre-order — exactly what list_bookmarks
@@ -5098,58 +5059,61 @@ mod tests {
     fn a_layout_write_is_atomic_and_leaves_no_json_temp_behind() {
         let root = tmp_vault("wsatomic");
         let p = workspace_path(&root);
-        fs::create_dir_all(p.parent().unwrap()).unwrap();
-        write_atomic_ext(&p, "{\"main\":{}}", "json.tmp").unwrap();
+        write_layout_in(&root, "{\"main\":{}}").unwrap();
         assert_eq!(fs::read_to_string(&p).unwrap(), "{\"main\":{}}");
-        // the temp is a sibling that no longer exists, and it was never a .json
-        // a reader could have picked up half-written
-        assert!(!p.with_extension("json.tmp").exists());
+        // the temp is gone, and it never was a .json a reader could pick up
+        let names: Vec<_> = fs::read_dir(p.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, ["workspace.json"], "no temp left beside the layout");
         // a second write replaces rather than appends
-        write_atomic_ext(&p, "{\"main\":{\"type\":\"split\"}}", "json.tmp").unwrap();
+        write_layout_in(&root, "{\"main\":{\"type\":\"split\"}}").unwrap();
         assert_eq!(fs::read_to_string(&p).unwrap(), "{\"main\":{\"type\":\"split\"}}");
     }
 
-    /// W5: a write that FAILS must leave the previous layout byte-identical.
-    /// The failure is forced at the temp: a directory squats on
-    /// workspace.json.tmp, so File::create fails before the target is touched.
-    /// A truncate-in-place writer (Obsidian, F5) would already have emptied it.
+    /// W5 + audit #5: a write that FAILS must leave the previous layout
+    /// byte-identical. The failure is forced by a symlinked `.obsidian`: the
+    /// no-follow walk refuses it, so the layout it points at is never touched.
     #[test]
     fn w5_a_failed_layout_write_leaves_the_old_file_intact() {
+        use std::os::unix::fs::symlink;
         let root = tmp_vault("wsfail");
-        let p = workspace_path(&root);
-        fs::create_dir_all(p.parent().unwrap()).unwrap();
-        write_atomic_durable(&p, "{\"old\":1}", "json.tmp").unwrap();
-        let squat = p.with_extension("json.tmp");
-        fs::create_dir(&squat).unwrap();
-        assert!(write_atomic_durable(&p, "{\"new\":2}", "json.tmp").is_err());
-        assert_eq!(fs::read_to_string(&p).unwrap(), "{\"old\":1}");
-        // the cleanup must not have eaten the squatter either (remove_file on a dir fails)
-        assert!(squat.is_dir());
+        let outside = std::env::temp_dir().join(format!("opensidian-wsfail-out-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("workspace.json"), "{\"old\":1}").unwrap();
+        symlink(&outside, root.join(".obsidian")).unwrap();
+        assert!(write_layout_in(&root, "{\"new\":2}").is_err());
+        assert_eq!(fs::read_to_string(outside.join("workspace.json")).unwrap(), "{\"old\":1}");
+        let names: Vec<_> = fs::read_dir(&outside).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, ["workspace.json"], "no temp created through the symlink");
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
     }
 
-    /// W5: a temp left behind by a crash between create and rename (kill -9 in
-    /// the window) must not block the next write: create truncates it, the
-    /// rename consumes it, and no stale half-layout survives.
+    /// W5 + audit #2: a leftover `workspace.json.tmp` (the old fixed temp name,
+    /// e.g. from a crash, or PLANTED as a symlink) neither blocks the next
+    /// write nor is followed: the temp name is random and O_EXCL.
     #[test]
     fn w5_a_stale_temp_from_a_crash_is_replaced_not_obeyed() {
+        use std::os::unix::fs::symlink;
         let root = tmp_vault("wsstale");
         let p = workspace_path(&root);
         fs::create_dir_all(p.parent().unwrap()).unwrap();
-        fs::write(p.with_extension("json.tmp"), "{\"half\":").unwrap();
-        write_atomic_durable(&p, "{\"main\":{}}", "json.tmp").unwrap();
+        let victim = root.join("Victim.md");
+        fs::write(&victim, "keep").unwrap();
+        symlink(&victim, p.with_extension("json.tmp")).unwrap();
+        write_layout_in(&root, "{\"main\":{}}").unwrap();
         assert_eq!(fs::read_to_string(&p).unwrap(), "{\"main\":{}}");
-        assert!(!p.with_extension("json.tmp").exists());
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "keep", "planted temp symlink not followed");
     }
 
     /// W5: the first write into a vault with no .obsidian yet — the directory
-    /// fsync runs on the directory write_workspace just created.
+    /// is created (mkdirat) and fsynced by the write itself.
     #[test]
     fn w5_first_layout_write_into_a_fresh_dir_is_durable_and_readable() {
         let root = tmp_vault("wsfresh");
         let p = workspace_path(&root);
         assert!(!p.parent().unwrap().exists());
-        fs::create_dir_all(p.parent().unwrap()).unwrap();
-        write_atomic_durable(&p, "{}", "json.tmp").unwrap();
+        write_layout_in(&root, "{}").unwrap();
         assert_eq!(fs::read_to_string(&p).unwrap(), "{}");
     }
 
@@ -7089,7 +7053,8 @@ mod tests {
         let v: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(root.join(".obsidian/app.json")).unwrap()).unwrap();
         assert_eq!(v["attachmentFolderPath"], "files");
-        assert!(!root.join(".obsidian/app.json.tmp").exists(), "no stray temp left behind");
+        let names: Vec<_> = fs::read_dir(root.join(".obsidian")).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, ["app.json"], "no stray temp left behind");
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -7275,6 +7240,32 @@ mod tests {
         assert!(ix.content("link/N").is_none() && ix.content("link/M").is_none());
         let names: Vec<_> = fs::read_dir(&outside).unwrap().map(|e| e.unwrap().file_name()).collect();
         assert_eq!(names, ["target"], "nothing created outside the vault");
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    /// audit #5 at the command core: with `.obsidian` swapped for a symlink
+    /// out of the vault, EVERY config writer refuses — app.json, the layout,
+    /// bookmarks, appearance.json and the built-in theme seed — and nothing
+    /// is created or changed behind the link
+    #[test]
+    fn vaultfs_symlinked_obsidian_refuses_every_config_write() {
+        use std::os::unix::fs::symlink;
+        let root = tmp_vault("vfs-obs");
+        let outside = std::env::temp_dir().join(format!("opensidian-vfs-obs-out-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("app.json"), "{}").unwrap();
+        symlink(&outside, root.join(".obsidian")).unwrap();
+        assert!(set_app_bool_in(&root, "alwaysUpdateLinks", true).is_err(), "app.json");
+        assert!(write_layout_in(&root, "{}").is_err(), "workspace.json");
+        assert!(write_bm_tree(&root, &[]).is_err(), "bookmarks.json");
+        assert!(themefs::set_css_theme(&root, "Minimal").is_err(), "appearance.json");
+        let rep = builtins::seed_builtin_themes(&root);
+        assert!(rep.wrote.is_empty() && rep.kept.is_empty(), "theme seed: {rep:?}");
+        let names: Vec<_> = fs::read_dir(&outside).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, ["app.json"], "nothing created behind the symlink");
+        assert_eq!(fs::read_to_string(outside.join("app.json")).unwrap(), "{}");
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&outside);
     }

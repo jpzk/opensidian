@@ -57,8 +57,9 @@ pub fn read_appearance(root: &Path) -> Result<Map<String, Value>, String> {
 fn write_appearance(root: &Path, map: &Map<String, Value>) -> Result<(), String> {
     let body = serde_json::to_string_pretty(&Value::Object(map.clone()))
         .map_err(|e| e.to_string())?;
-    fs::create_dir_all(root.join(".obsidian")).map_err(|e| e.to_string())?;
-    fs::write(root.join(APPEARANCE_FILE), body).map_err(|e| e.to_string())
+    // audit #5: vault-dir-fd relative; a symlinked `.obsidian` is refused, the
+    // replace is a random O_EXCL temp + fsync + renameat (never a torn file)
+    crate::vaultfs::write_atomic(root, Path::new(APPEARANCE_FILE), body.as_bytes()).map_err(|e| e.to_string())
 }
 
 /// `cssTheme`: the active theme's DIRECTORY name; `""` or absent = no choice
