@@ -7306,7 +7306,8 @@ mod tests {
         symlink(&root, root.join("a/loop")).unwrap(); // a/loop -> vault root: a cycle
         symlink(root.join("a"), root.join("a/b/up")).unwrap(); // a/b/up -> a
         symlink(&outside, root.join("out")).unwrap(); // a link out of the vault
-        assert_eq!(list_folders_in(&root), vec!["a".to_string(), "a/b".to_string()]);
+        // tmp_vault pre-creates sub/; no loop, up, out, .hidden
+        assert_eq!(list_folders_in(&root), vec!["a".to_string(), "a/b".to_string(), "sub".to_string()]);
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&outside);
     }
