@@ -466,13 +466,16 @@ const Ed = {
       return s;
     }
     const im = Ed.el("img", "vimg");
-    im.setAttribute("src", src);               // attribute, not property: the
-    im.setAttribute("alt", alt || "");         // agreement assertion compares raw attrs
     // audit #10: fetch on approach, not at render. Every opensidian-img request is
     // answered on the UI process's main loop, so 20k eager embeds queued 20k
     // round trips there and starved everything else for seconds after the note
     // had rendered (measured: note_open span 362 ms, title seen 3 s later).
+    // ORDER MATTERS: setting src starts the fetch with whatever loading mode the
+    // element has AT THAT MOMENT, so lazy must be set first (lazy-after-src left
+    // all 20000 loaded at open, [xi:20000/20000/0]).
     im.setAttribute("loading", "lazy");
+    im.setAttribute("src", src);               // attribute, not property: the
+    im.setAttribute("alt", alt || "");         // agreement assertion compares raw attrs
     im.contentEditable = "false";
     im.draggable = false;
     return im;
