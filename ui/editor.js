@@ -97,7 +97,10 @@ const Ed = {
   },
 
   // block-level prefix (heading / quote / hr / table / list / task), then inline
-  block(g, row, s) {
+  // nesting cap for "> > > ...": deeper markers render as plain text, so a
+  // hostile 200k-">" line costs 32 frames, not 200k (audit #13)
+  BQ_MAX: 32,
+  block(g, row, s, d = 0) {
     const ind = s.match(/^[ \t]*/)[0], t = s.slice(ind.length);
     const h = /^(#{1,6}) /.exec(t);
     if (h && !ind) {
@@ -123,7 +126,8 @@ const Ed = {
       let rest = t.slice(1);
       if (rest.startsWith(" ")) { const m1 = Ed.mk(" "); box.appendChild(m1); qm.push(m1); rest = rest.slice(1); }
       Ed.tok(qm, qm, "bq");
-      Ed.block(g, box, rest);                                   // "> - a": list inside the quote
+      if (d + 1 < Ed.BQ_MAX) Ed.block(g, box, rest, d + 1);     // "> - a": list inside the quote
+      else Ed.inline(g, box, rest);                             // past the cap: the rest is text
       row.appendChild(box);
       return;
     }
