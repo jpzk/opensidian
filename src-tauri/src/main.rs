@@ -4633,6 +4633,12 @@ fn nav_allowed(u: &tauri::Url) -> bool {
     u.scheme() == "tauri" && u.host_str() == Some("localhost") && u.port().is_none()
 }
 
+// androidfeas SPIKE: mobile entry point (lib target); desktop still enters via main()
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    main()
+}
+
 fn main() {
     // FIRST STATEMENT IN THE PROCESS, deliberately: the warm-up window (perf.rs,
     // WARMUP_MS) is measured from here, so anything that runs before this stamp

@@ -4,6 +4,14 @@ version = "0.3.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 
+# androidfeas SPIKE: Tauri mobile loads the app as a shared library. The lib
+# target reuses main.rs as its crate root so all `crate::` paths resolve
+# unchanged; run() below is the mobile entry point.
+[lib]
+name = "opensidian_lib"
+path = "src/main.rs"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [build-dependencies]
 tauri-build = { version = "2.1", features = [] }
 
