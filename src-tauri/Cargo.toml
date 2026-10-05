@@ -16,6 +16,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 pulldown-cmark = "0.13"
 landlock = "=0.4.7"
+# vaultfs: openat/renameat/mkdirat/unlinkat with O_NOFOLLOW so vault writes never
+# follow a symlink. ALREADY in Cargo.lock (transitive via tauri/landlock); `=`
+# pins it to that exact version, so the lock gains no package.
+libc = "=0.2.189"
 
 # R33.6b — the POSITIVE session test behind the two-path drag (win_move_proto).
 # Both crates are ALREADY in Cargo.lock as tauri's own transitive deps (tauri ->

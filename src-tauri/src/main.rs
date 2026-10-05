@@ -31,6 +31,7 @@ mod spawner;
 mod vaultlock;
 mod srcmode;
 mod themefs;
+mod vaultfs;
 mod watcher;
 use index::{link_parts, links_in, resolve, tag_spans, Graph, Index};
 

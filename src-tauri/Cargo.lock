@@ -2154,6 +2154,7 @@ dependencies = [
  "gdkx11",
  "javascriptcore-rs",
  "landlock",
+ "libc",
  "pulldown-cmark",
  "serde",
  "serde_json",
