@@ -6069,6 +6069,18 @@ async function qsCreateNote(name) {
   if (r === "err") return;              // no tab for a note that is not on disk
   await openInTab(name);                // "exists" (racing writer) -> open it, untouched
 }
+/* audit #10 (measured on the 20k-embed note): one title publish costs ~170 ms
+   when the note in live preview is huge (the census reads layout across the
+   page), and the switcher republished on EVERY keystroke — typing a 9-letter
+   name queued ~3 s of census work and Return waited behind it. Coalesce the
+   per-keystroke republish 30 ms, the same shape Ed.census() and the reading
+   view's selectionchange use: [mdnew:] still lands, once per burst. Opening
+   and closing the modal still publish synchronously. */
+let mdTitleT = null;
+function mdTitleSoon() {
+  if (mdTitleT) return;
+  mdTitleT = setTimeout(() => { mdTitleT = null; updateTitle(); }, 30);
+}
 function renderModal() {
   const box = $("mlist");
   box.innerHTML = "";
@@ -6084,7 +6096,7 @@ function renderModal() {
       d.onmousedown = async e => { e.preventDefault(); const n = mdNew; closeModal(); await qsCreateNote(n); };
     } else { d.className = "mempty"; d.textContent = "No matches"; }
     box.appendChild(d);
-    return updateTitle();
+    return mdTitleSoon();
   }
   mdItems.forEach((it, i) => {
     const d = document.createElement("div");
@@ -6096,7 +6108,7 @@ function renderModal() {
     d.onmousedown = async e => { e.preventDefault(); await mdRun(it, e); };
     box.appendChild(d);
   });
-  updateTitle();   // C4: mdFilter() runs on every keystroke — republish [mdnew:]
+  mdTitleSoon();   // C4: mdFilter() runs on every keystroke — republish [mdnew:]
 }
 $("minput").oninput = mdFilter;
 $("minput").onkeydown = async e => {
