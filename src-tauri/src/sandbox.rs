@@ -8,7 +8,19 @@
    which is what makes drag & drop of an image possible at all.
    Best-effort: kernels without Landlock (< 5.13 / LSM disabled) run as
    before (stderr says why). Threads restrict only
-   themselves, hence "once, at boot" — switching vaults needs a restart. */
+   themselves, hence "once, at boot" — switching vaults needs a restart.
+   FIRST RUN (audit #3): a boot with the switch on but NO vault (no argv, no
+   VAULT_DIR, no last vault) has nothing to confine to, so no ruleset is
+   built and the boot picker runs unconfined. It must not bind the picked
+   vault in THAT process: enforcing later, from the pick_vault command thread,
+   would confine that one thread and leave tokio, GTK and webkit unrestricted.
+   So pick_vault/create_vault save the choice and RESTART into it: a fresh
+   process booted on that vault confines itself before webkit, the normal path.
+   The old window hands over with the same switch handshake as "switch vault"
+   and exits (main.rs hand_off). The unconfined process never reads or writes
+   the vault, with one exception: create_vault makes the new folder and its
+   Welcome.md seed before the restart. That is the folder the user asked for.
+   boot_pick_must_restart() is that decision as a pure function. */
 use landlock::{
     path_beneath_rules, Access, AccessFs, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset,
     RulesetAttr, RulesetCreatedAttr, RulesetStatus, ABI,
@@ -129,6 +141,15 @@ pub fn landlock_enabled() -> bool {
         std::env::var_os(LANDLOCK_ENV).as_deref(),
         std::env::var_os(NO_LANDLOCK_ENV).as_deref(),
     )
+}
+
+/// Audit #3, see the module comment. Decides what a boot picker that has no
+/// vault bound yet does with the vault the user picked. true means restart
+/// into it, because the switch is on and this process is not confined, and
+/// binding here would open the vault unconfined. false means bind it here:
+/// either the sandbox is off, or this process is already confined.
+pub fn boot_pick_must_restart(landlock_on: bool, confined: bool) -> bool {
+    landlock_on && !confined
 }
 
 /// The ruleset opensidian hands the kernel, AS DATA — the three vectors and the
@@ -634,6 +655,63 @@ mod tests {
                 assert_eq!(trashed, None, "moving a note into the vault's .trash was refused by our own ruleset (18 = EXDEV = the REFER grant is gone)");
                 assert_eq!(moved, None, "moving a note into a vault subfolder was refused by our own ruleset (18 = EXDEV)");
                 assert!(!escaped, "a note was moved OUT of the vault — REFER widened the confinement");
+            }
+        }
+    }
+
+    /* AUDIT #3: the first-run picker. With the switch on and no boot vault,
+       the picked vault must be handed to a fresh process. The restarted
+       process is already confined, so it binds and does not restart again,
+       which means there is no restart loop. With the switch off nothing
+       changes. */
+    #[test]
+    fn appguard_landlock_boot_pick_restarts_only_when_unconfined() {
+        assert!(boot_pick_must_restart(true, false), "switch on, unconfined picker: binding here opens the vault unconfined");
+        assert!(!boot_pick_must_restart(true, true), "the restarted process is confined: it binds (no restart loop)");
+        assert!(!boot_pick_must_restart(false, false), "switch off: the picker binds as before");
+        assert!(!boot_pick_must_restart(false, true));
+    }
+
+    /* AUDIT #3, what the restart buys. This is the restarted process: its own
+       process, booted on the picked vault, with enforce() run before anything
+       else. A write inside the vault lands. A write to $HOME, or into another
+       vault under $HOME, is refused with EACCES. Before the fix, the picked
+       vault was bound in the unconfined picker process, where both writes
+       succeed. */
+    #[test]
+    fn appguard_landlock_restarted_process_cannot_write_outside_vault() {
+        if reexec_alone("sandbox::tests::appguard_landlock_restarted_process_cannot_write_outside_vault") {
+            return;
+        }
+        let home = env_path("HOME").expect("HOME");
+        let pid = std::process::id();
+        let tmp = std::env::temp_dir().join(format!("opensidian-agll-{pid}"));
+        let other = home.join(format!("opensidian-agll-other-{pid}"));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("picked")).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        let (vault, home2, other2) = (tmp.join("picked"), home.clone(), other.clone());
+        let res = std::thread::spawn(move || {
+            match enforce(&vault) {
+                Ok(RulesetStatus::NotEnforced) | Err(_) => return None,
+                Ok(s) => eprintln!("appguard_landlock: enforced {s:?}"),
+            }
+            let inside = fs::write(vault.join("Welcome.md"), "x").map_err(|e| e.raw_os_error());
+            let home_w = fs::write(home2.join(".opensidian-agll-w"), "x").map_err(|e| e.raw_os_error());
+            let other_w = fs::write(other2.join("Stolen.md"), "x").map_err(|e| e.raw_os_error());
+            Some((inside, home_w, other_w))
+        })
+        .join()
+        .unwrap();
+        let _ = fs::remove_file(home.join(".opensidian-agll-w"));
+        let _ = fs::remove_dir_all(&other);
+        let _ = fs::remove_dir_all(&tmp);
+        match res {
+            None => eprintln!("landlock unsupported here — test skipped"),
+            Some((inside, home_w, other_w)) => {
+                assert_eq!(inside, Ok(()), "the picked vault must be writable in the restarted process");
+                assert_eq!(home_w, Err(Some(13)), "a write to $HOME must be EACCES");
+                assert_eq!(other_w, Err(Some(13)), "a write into another vault under $HOME must be EACCES");
             }
         }
     }

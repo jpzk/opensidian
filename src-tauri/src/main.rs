@@ -1376,13 +1376,20 @@ fn recent_vaults() -> Vec<String> {
 /// the BOOT picker's one bind (vaultbleed: Err once this process has a vault —
 /// an open window opens other vaults with open_vault_window, a new process)
 #[tauri::command]
-fn pick_vault(v: State<Vault>, path: String, otel: Option<perf::Ctx>) -> Result<String, String> {
-    span_timed!(otel => "pick_vault", pick_vault_inner(&v, &path))
+fn pick_vault(app: tauri::AppHandle, win: tauri::Window, v: State<Vault>, path: String, otel: Option<perf::Ctx>) -> Result<String, String> {
+    span_timed!(otel => "pick_vault", pick_vault_inner(&app, &win, &v, &path))
 }
 
-fn pick_vault_inner(v: &State<Vault>, path: &str) -> Result<String, String> {
+fn pick_vault_inner(app: &tauri::AppHandle, win: &tauri::Window, v: &State<Vault>, path: &str) -> Result<String, String> {
     let p = PathBuf::from(path.trim());
     vault_rules(&p)?; // S4 + is_dir — shared with the argv boot (vaultarg)
+    if let Some(cur) = cur_vault(v) {
+        // checked BEFORE the restart decision: a bound process never restarts here
+        return Err(BindErr::Bound(cur, p).to_string());
+    }
+    if sandbox::boot_pick_must_restart(sandbox::landlock_enabled(), sandbox::confined_to().is_some()) {
+        return restart_into(app, win, &p); // audit #3: never bind unconfined
+    }
     if !sandbox::allows(&p) {
         persist_vault(&p); // next boot confines to this one instead
         return Err(format!("sandboxed to {} — vault saved, restart opensidian to open it", sandbox::confined_to().unwrap().display()));
@@ -1436,13 +1443,18 @@ fn make_vault_dir(parent: &str, name: &str) -> Result<PathBuf, String> {
 
 /// boot picker only: create AND bind (the one bind of this process).
 #[tauri::command]
-fn create_vault(v: State<Vault>, parent: String, name: String) -> Result<String, String> {
+fn create_vault(app: tauri::AppHandle, win: tauri::Window, v: State<Vault>, parent: String, name: String) -> Result<String, String> {
     span_timed!("create_vault", {
         if let Some(cur) = cur_vault(&v) {
             // vaultbleed: never re-root a live process (checked before any disk write)
             return Err(format!("this window already has a vault open ({}); create the new vault from a new window", cur.display()));
         }
         let p = make_vault_dir(&parent, &name)?;
+        if sandbox::boot_pick_must_restart(sandbox::landlock_enabled(), sandbox::confined_to().is_some()) {
+            // audit #3: the folder + seed are made here (sandbox.rs module comment),
+            // everything after that happens in the confined process
+            return restart_into(&app, &win, &p);
+        }
         bind_vault(&v, &p)?;
         persist_vault(&p);
         Ok(p.display().to_string())
@@ -1479,16 +1491,7 @@ async fn open_vault_window(app: tauri::AppHandle, win: tauri::Window, v: State<'
             return Err(format!("{} is the vault of this window", p.display()));
         }
     }
-    let sw = if replace {
-        let r = switch_rect(&win)?;
-        let sw = spawn::Switch { x: r.x.round() as i32, y: r.y.round() as i32, w: r.w.round() as u32, h: r.h.round() as u32, max: r.max, token: spawn::new_token() };
-        // never hand the child a flag it would drop: it would open unswitched,
-        // never mark ready, and this window would hang until SWITCH_WAIT
-        sw.check().map_err(|e| format!("cannot switch: this window's geometry is unreadable ({e})"))?;
-        Some(sw)
-    } else {
-        None
-    };
+    let sw = if replace { Some(switch_of(&win)?) } else { None };
     let (p2, sw2) = (p.clone(), sw.clone());
     // vsfix: the span times the SPAWN (lock probe + fork/exec, in-process or
     // through the spawner) — the part this window owns. A switch's wait for the
@@ -1508,6 +1511,22 @@ async fn open_vault_window(app: tauri::AppHandle, win: tauri::Window, v: State<'
         .map_err(|e| e.to_string())
     )??;
     let Some(sw) = sw else { return Ok(pid) };
+    await_switch(&app, &p, pid, &sw).await
+}
+
+/// item 14: the Switch that hands THIS window's rect to the child
+fn switch_of(win: &tauri::Window) -> Result<spawn::Switch, String> {
+    let r = switch_rect(win)?;
+    let sw = spawn::Switch { x: r.x.round() as i32, y: r.y.round() as i32, w: r.w.round() as u32, h: r.h.round() as u32, max: r.max, token: spawn::new_token() };
+    // never hand the child a flag it would drop: it would open unswitched,
+    // never mark ready, and this window would hang until SWITCH_WAIT
+    sw.check().map_err(|e| format!("cannot switch: this window's geometry is unreadable ({e})"))?;
+    Ok(sw)
+}
+
+/// item 14, old window side: wait for the switched child `pid` on `p` to mark
+/// ready, then exit this process. Err (and this window stays) if it died first.
+async fn await_switch(app: &tauri::AppHandle, p: &Path, pid: u32, sw: &spawn::Switch) -> Result<u32, String> {
     let canon = p.canonicalize().map_err(|e| e.to_string())?;
     let me = std::process::id();
     eprintln!("[vaultwin] switch: pid={me} waits for pid={pid} token={} rect={}x{}@{},{} max={}", sw.token, sw.w, sw.h, sw.x, sw.y, sw.max);
@@ -1531,6 +1550,46 @@ async fn open_vault_window(app: tauri::AppHandle, win: tauri::Window, v: State<'
             Ok(pid)
         }
     }
+}
+
+/// a boot-picker restart is in flight: a second pick is refused, not doubled
+static RESTARTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/* audit #3 (sandbox.rs module comment): the boot picker of an UNCONFINED
+   process with Landlock on never binds. It saves the choice and starts a fresh
+   process on `p`. That process confines itself before webkit and takes over
+   this window's rect with the "switch vault" handshake, and then this process
+   exits. pick_vault is a sync command on the GTK thread, so the wait for the
+   child runs on the async runtime, and the command returns at once with an Err
+   that the picker shows while the child boots. If the child dies, this window
+   stays and the error goes to stderr. Nothing in the vault is read or written
+   in this process. */
+fn restart_into(app: &tauri::AppHandle, win: &tauri::Window, p: &Path) -> Result<String, String> {
+    use std::sync::atomic::Ordering::SeqCst;
+    if RESTARTING.swap(true, SeqCst) {
+        return Err("already opening a vault in a sandboxed window".into());
+    }
+    let started = switch_of(win).and_then(|sw| {
+        persist_vault(p); // the restarted process, and every later boot, opens it confined
+        // unconfined process: no spawner, spawn directly (same checks)
+        spawn_checked(p, Some(&sw)).map(|pid| (pid, sw))
+    });
+    let (pid, sw) = match started {
+        Ok(x) => x,
+        Err(e) => {
+            RESTARTING.store(false, SeqCst);
+            return Err(e);
+        }
+    };
+    eprintln!("[landlock] boot pick: unconfined picker restarts into {} (pid={pid})", p.display());
+    let (app2, p2) = (app.clone(), p.to_path_buf());
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = await_switch(&app2, &p2, pid, &sw).await {
+            eprintln!("[landlock] boot pick: {e}");
+            RESTARTING.store(false, SeqCst);
+        }
+    });
+    Err(format!("opening {} in a sandboxed window…", p.display()))
 }
 
 /// how long a switching window waits for the new one before it exits anyway
