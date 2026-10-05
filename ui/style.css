@@ -898,6 +898,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
    the R17.6 divergence this replaced.
    Because a hidden marker is display:none the caret can never land in it. */
 .lp .lprow { white-space: pre-wrap; overflow-wrap: anywhere }
+.lp .lprow.lzy { height: calc(var(--line-height-normal, 1.55) * 1em) }   /* audit #10/#12: a lazy row placeholder (Ed.lzy) holds one line of height */
 .lp .mk { display: none }
 .lp.src .mk, .lp .mk.rv { display: inline; color: var(--text-chrome-dim) }
 .lp:focus, .lp .lprow:focus { outline: none }

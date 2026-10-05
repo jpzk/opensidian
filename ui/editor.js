@@ -216,7 +216,16 @@ const Ed = {
   },
 
   // inline markers, longest-opener-wins, unmatched markers fall through as text
+  // a line past INLINE_MAX chars is decorated up to the cap and the rest is
+  // plain text: one 575k-char line of 25k [[links]] built 25k anchors at open
+  // (audit #10/#12), the same bound BQ_MAX puts on quote depth (#13)
+  INLINE_MAX: 20000,
   inline(g, box, s) {
+    if (s.length > Ed.INLINE_MAX) {
+      Ed.inline(g, box, s.slice(0, Ed.INLINE_MAX));
+      box.appendChild(Ed.t(s.slice(Ed.INLINE_MAX)));
+      return;
+    }
     let plain = "";
     const flush = () => { if (plain) { box.appendChild(Ed.t(plain)); plain = ""; } };
     // tagSpans is sorted and disjoint and i only moves forward, so one cursor
@@ -539,7 +548,39 @@ const Ed = {
      per child, phase `title` section F asserts both are unchanged, and
      docs/negctl-title-rename/README.md (control T1) is the committed run where
      making the box a child reads `[te:…/5]` on a 4-line note and goes red. */
-  rowAt(g, l) { return g.lp.children[l] || null; },
+  rowAt(g, l) { const r = g.lp.children[l] || null; return r && r._lzy ? Ed.wake(g, l) : r; },
+  /* LAZY ROWS (audit #10/#12). A 75k-line note used to build, lay out and census
+     75k rows at open (~3.4 s on the box). Past LAZY_AT lines a row that is not
+     near the top or the caret is a placeholder: an empty div.lprow.lzy one line
+     tall (style.css). It is still the child at its index, so the positional
+     contract above holds and rowAt() is the one door: it builds the real row
+     the first time anything addresses that line. wakeView() builds what a
+     scroll brings into view. The model (Ed.lines) is the truth either way —
+     copy, save and select-all read the model, never the placeholder. */
+  LAZY_AT: 2000, LAZY_HEAD: 300, LAZY_NEAR: 100,
+  lzy() { const r = document.createElement("div"); r.className = "lprow lzy"; r._lzy = true; return r; },
+  wake(g, l) {
+    const r = g.lp.children[l];
+    if (!r || !r._lzy) return r || null;
+    const f = Ed.row(g, Ed.lines(g)[l], l);
+    r.replaceWith(f);
+    return f;
+  },
+  wakeView(g) {                                  // build the placeholders in (and near) the viewport
+    const lp = g && g.lp, rows = lp && lp.children;
+    if (!rows || !rows.length || !lp._lzy) return;
+    for (let pass = 0; pass < 3; pass++) {
+      const base = rows[0].offsetTop, top = lp.scrollTop, bot = top + 2 * (lp.clientHeight || 800);
+      let lo = 0, hi = rows.length - 1;
+      while (lo < hi) { const m = (lo + hi + 1) >> 1; if (rows[m].offsetTop - base <= top) lo = m; else hi = m - 1; }
+      const todo = [];
+      for (let i = Math.max(0, lo - 40); i < rows.length && rows[i].offsetTop - base <= bot; i++)
+        if (rows[i]._lzy) todo.push(i);
+      if (!todo.length) return;
+      for (const i of todo) Ed.wake(g, i);       // one batch, then re-measure: built rows may wrap taller
+      if (typeof scHits === "function" && scHits(g).length) scMarks(g);   // the search flash covers built rows too
+    }
+  },
   indexOf(row) { return row && row.parentNode ? Array.prototype.indexOf.call(row.parentNode.children, row) : -1; },
   rowOf(node) {
     if (!node) return null;
@@ -792,9 +833,16 @@ const Ed = {
     let touched = 0;
     if (full || !old || lp.children.length !== old.length) {
       const frag = document.createDocumentFragment();
-      for (let i = 0; i < L.length; i++) frag.appendChild(Ed.row(g, L[i], i));
+      // audit #10/#12: past LAZY_AT lines only the head and the caret's
+      // neighbourhood are built; the rest are one-line placeholders (Ed.lzy)
+      // that rowAt() and a scroll build on demand
+      const lazy = L.length > Ed.LAZY_AT, near = caret != null && caret >= 0 ? caret : 0;
+      for (let i = 0; i < L.length; i++)
+        frag.appendChild(!lazy || i < Ed.LAZY_HEAD || Math.abs(i - near) < Ed.LAZY_NEAR ? Ed.row(g, L[i], i) : Ed.lzy());
       lp.textContent = "";
       lp.appendChild(frag);
+      lp._lzy = lazy;
+      if (lazy) requestAnimationFrame(() => Ed.wakeView(g));
       touched = L.length;
     } else {
       let p = 0, s = 0;
@@ -1267,6 +1315,10 @@ const Ed = {
       Ed.heal(G());
     });
     lp.addEventListener("blur", () => { if (typeof hideAc === "function") setTimeout(hideAc, 100); });
+    lp.addEventListener("scroll", () => {       // lazy rows: build what scrolls into view, once per frame
+      if (!lp._lzy || lp._lzyRaf) return;
+      lp._lzyRaf = requestAnimationFrame(() => { lp._lzyRaf = 0; Ed.wakeView(G()); });
+    }, { passive: true });
   },
   // a row the browser edited behind our back -> take its text as the truth
   heal(g) {
