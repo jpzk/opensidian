@@ -1597,6 +1597,21 @@ Ed.placeOffset = function (g, o) {        // document char offset -> caret
   while (l < L.length - 1 && o > L[l].length) { o -= L[l].length + 1; l++; }
   Ed.place(g, l, o);
 };
+/* The FIRST client rect of selectNodeContents(row).getClientRects(), without
+   asking for all the others. A range's rects come in document order — a
+   top-level child element's border boxes, then the text rects inside it — so
+   the first child that paints anything owns rect 0. The whole-row read built
+   one rect per pill and per text run: on a 50000-#tag line that is ~100k
+   rects on every census, i.e. on every keystroke (audit #11). */
+Ed.firstRect = function (row, r) {
+  for (const n of row.childNodes) {
+    let rc = null;
+    if (n.nodeType === 1) rc = n.getClientRects();
+    if (!rc || !rc.length) { r.selectNodeContents(n); rc = r.getClientRects(); }   // text / display:contents
+    if (rc.length) return rc[0];
+  }
+  return null;
+};
 /* Headless probe (R17 smoke): the geometry the `edit` phase clicks with.
    [edx:<left>] + [ery:<centre y per row>] let a test address a SOURCE LINE
    instead of guessing a pixel — row heights differ per line (headings, list
@@ -1627,9 +1642,8 @@ Ed.geom = function (g) {
        there lands on the pseudo-element, not on column 2. Range client rects
        skip display:none text and generated content, so this is the only
        honest "visual start of this source line". */
-    r.selectNodeContents(rows[i]);
-    const rc = r.getClientRects();
-    xs += (i ? "," : "") + Math.round(rc.length ? rc[0].left : q.left);
+    const r0 = Ed.firstRect(rows[i], r);
+    xs += (i ? "," : "") + Math.round(r0 ? r0.left : q.left);
   }
   return " [edx:" + Math.round(b.left) + "] [erx:" + xs + "] [ery:" + ys + "]"
     + (cb ? " [ecb:" + cb + "]" : "");
@@ -1738,10 +1752,9 @@ Ed.rvTaskTok = () => {
       if (q.bottom <= lb.top) continue;
       if (q.top >= lb.bottom) break;
       if (rows[i].querySelector("input")) continue;
-      r.selectNodeContents(rows[i]);
-      const rc = r.getClientRects();
-      if (!rc.length || !rc[0].width) continue;
-      return " [rvtaskex:" + Math.round(rc[0].left + 2) + "," + Math.round(q.top + q.height / 2) + "]";
+      const r0 = Ed.firstRect(rows[i], r);
+      if (!r0 || !r0.width) continue;
+      return " [rvtaskex:" + Math.round(r0.left + 2) + "," + Math.round(q.top + q.height / 2) + "]";
     }
     return "";
   }
