@@ -125,10 +125,42 @@ pub fn run_home(home: &Path) {
 }
 
 /// the per-vault row: returns the bookmark dotfile to read, if any.
+/// NOT `carry`: the vault is untrusted input, and carry's predictable
+/// `.part-<pid>` + fs::copy + fs::rename follow a planted symlink. Same rule
+/// (new wins, old never written), but: ANY entry at the new name wins (a
+/// symlink is not replaced), the old file is opened O_NOFOLLOW and capped,
+/// and the new one lands via vaultfs (random O_EXCL temp + renameat on the
+/// vault-root fd).
 pub fn vault_bookmarks(vault: &Path) -> Option<PathBuf> {
     let (o, n) = (vault.join(OLD_BM), vault.join(NEW_BM));
-    report("bookmarks", &o, &n, carry(&o, &n));
-    n.is_file().then_some(n)
+    report("bookmarks", &o, &n, carry_vault_file(vault, OLD_BM, NEW_BM));
+    fs::symlink_metadata(&n).ok().filter(|m| m.is_file()).map(|_| n)
+}
+
+const MAX_BM_BYTES: u64 = 4 * 1024 * 1024;
+
+fn carry_vault_file(vault: &Path, old: &str, new: &str) -> io::Result<Carry> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    if fs::symlink_metadata(vault.join(new)).is_ok() {
+        return Ok(Carry::NewWins);
+    }
+    let f = match fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(vault.join(old)) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Carry::Neither),
+        Err(e) => return Err(e), // ELOOP: a symlinked old dotfile is not carried
+    };
+    let m = f.metadata()?;
+    if !m.is_file() {
+        return Ok(Carry::Neither);
+    }
+    let mut bytes = Vec::new();
+    f.take(MAX_BM_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_BM_BYTES {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "bookmark dotfile too large"));
+    }
+    crate::vaultfs::write_atomic(vault, Path::new(new), &bytes)?;
+    Ok(Carry::Copied)
 }
 
 #[cfg(test)]
@@ -217,6 +249,39 @@ mod tests {
         assert_eq!(fs::read(v.join(NEW_BM)).unwrap(), b"Other\n".to_vec(), "new wins");
         assert_eq!(fs::read(v.join(OLD_BM)).unwrap(), b"Ideas\n".to_vec(), "old untouched");
         let _ = fs::remove_dir_all(&v);
+    }
+
+    /// hostile vault: the per-vault carry never writes through a symlink and
+    /// never copies an outside file in. (a) NEW_BM is a dangling symlink to an
+    /// outside path -> it "wins", nothing is created there; (b) OLD_BM is a
+    /// symlink to an outside secret -> not carried; (c) a planted symlink at
+    /// the old predictable scratch name is left alone.
+    #[test]
+    fn vaultfs_vault_bookmark_carry_refuses_symlinks() {
+        let v = tmp("bmlink");
+        let out = tmp("bmlink-out");
+        // (a)
+        fs::write(v.join(OLD_BM), b"Ideas\n").unwrap();
+        std::os::unix::fs::symlink(out.join("planted"), v.join(NEW_BM)).unwrap();
+        assert_eq!(vault_bookmarks(&v), None);
+        assert!(fs::symlink_metadata(out.join("planted")).is_err(), "nothing written through NEW_BM link");
+        fs::remove_file(v.join(NEW_BM)).unwrap();
+        // (c) old scheme's scratch name, pointed outside
+        let part = v.join(NEW_BM).with_extension(format!("part-{}", std::process::id()));
+        std::os::unix::fs::symlink(out.join("victim"), &part).unwrap();
+        assert_eq!(vault_bookmarks(&v), Some(v.join(NEW_BM)));
+        assert_eq!(fs::read(v.join(NEW_BM)).unwrap(), b"Ideas\n".to_vec());
+        assert!(fs::symlink_metadata(out.join("victim")).is_err(), "scratch link not followed");
+        assert!(fs::symlink_metadata(&part).unwrap().file_type().is_symlink(), "planted link untouched");
+        // (b)
+        let v2 = tmp("bmlink2");
+        fs::write(out.join("secret"), b"SECRET\n").unwrap();
+        std::os::unix::fs::symlink(out.join("secret"), v2.join(OLD_BM)).unwrap();
+        assert_eq!(vault_bookmarks(&v2), None);
+        assert!(fs::symlink_metadata(v2.join(NEW_BM)).is_err(), "outside bytes not carried into the vault");
+        for d in [&v, &v2, &out] {
+            let _ = fs::remove_dir_all(d);
+        }
     }
 
     // ---- legacy built-in themes (goal themes4) — see the header above ----
