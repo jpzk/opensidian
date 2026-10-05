@@ -142,7 +142,6 @@ pub struct Dir {
 /// the vault root, opened once
 pub struct Vault {
     root: Dir,
-    croot: PathBuf,
 }
 
 impl Vault {
@@ -150,12 +149,7 @@ impl Vault {
         let croot = root.canonicalize()?;
         let c = cstr(croot.as_os_str())?;
         let root = Dir { fd: open_dir_at(libc::AT_FDCWD, &c)? };
-        Ok(Vault { root, croot })
-    }
-
-    /// the canonical root this handle was opened on
-    pub fn path(&self) -> &Path {
-        &self.croot
+        Ok(Vault { root })
     }
 
     /// walk `comps` from the root, one openat(O_NOFOLLOW|O_DIRECTORY) per
@@ -387,8 +381,19 @@ pub fn mkdir_p(root: &Path, rel: &Path) -> io::Result<()> {
 
 /// tree walk that never descends a symlinked directory (audit #9) — the same
 /// boundary the note index draws with symlink_metadata. `out` gets every
-/// non-hidden real directory's vault-relative path, depth first.
+/// non-hidden real directory's vault-relative path, depth first. Real dirs
+/// cannot cycle; MAX_WALK_DEPTH still bounds the recursion (stack) against
+/// a deliberately deep tree.
 pub fn walk_real_dirs(dir: &Path, base: &Path, out: &mut Vec<String>) {
+    walk_real_dirs_at(dir, base, out, 0)
+}
+
+pub const MAX_WALK_DEPTH: usize = 256;
+
+fn walk_real_dirs_at(dir: &Path, base: &Path, out: &mut Vec<String>, depth: usize) {
+    if depth >= MAX_WALK_DEPTH {
+        return;
+    }
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     for e in rd.flatten() {
         if e.file_name().as_bytes().first() == Some(&b'.') {
@@ -403,7 +408,7 @@ pub fn walk_real_dirs(dir: &Path, base: &Path, out: &mut Vec<String>) {
         if let Ok(rel) = p.strip_prefix(base) {
             out.push(rel.display().to_string());
         }
-        walk_real_dirs(&p, base, out);
+        walk_real_dirs_at(&p, base, out, depth + 1);
     }
 }
 
@@ -504,6 +509,19 @@ mod tests {
         let mut v = Vec::new();
         walk_real_dirs(&root, &root, &mut v);
         assert_eq!(v, vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn vaultfs_deep_real_tree_walk_is_depth_bounded() {
+        let (root, _out) = fresh("deep");
+        let mut d = root.clone();
+        for _ in 0..(MAX_WALK_DEPTH + 10) {
+            d.push("d");
+        }
+        fs::create_dir_all(&d).unwrap();
+        let mut v = Vec::new();
+        walk_real_dirs(&root, &root, &mut v);
+        assert_eq!(v.len(), MAX_WALK_DEPTH, "one entry per level, capped");
     }
 
     #[test]

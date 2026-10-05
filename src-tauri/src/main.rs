@@ -679,31 +679,21 @@ fn read_capped(p: &Path) -> Option<String> {
     fs::read_to_string(p).ok()
 }
 
-fn walk_dirs(dir: &Path, base: &Path, out: &mut Vec<String>) {
-    let Ok(rd) = fs::read_dir(dir) else { return };
-    for e in rd.flatten() {
-        let name = e.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') {
-            continue;
-        }
-        let p = e.path();
-        if p.is_dir() {
-            if let Ok(rel) = p.strip_prefix(base) {
-                out.push(rel.display().to_string());
-            }
-            walk_dirs(&p, base, out);
-        }
-    }
+// folder tree for the sidebar. vaultfs::walk_real_dirs never descends a
+// symlinked directory (audit #9): a `loop -> .` link or a link out of the
+// vault is simply not a folder here, same boundary as the note index.
+fn list_folders_in(root: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    vaultfs::walk_real_dirs(root, root, &mut out);
+    out.sort();
+    out
 }
 
 #[tauri::command]
 fn list_folders(v: State<Vault>) -> Vec<String> {
     span_timed!("list_folders", {
         let Some(root) = cur_vault(&v) else { return vec![] };
-        let mut out = Vec::new();
-        walk_dirs(&root, &root, &mut out);
-        out.sort();
-        out
+        list_folders_in(&root)
     })
 }
 
@@ -7299,6 +7289,24 @@ mod tests {
         assert_eq!(delete_note_in(&root, &mut ix, "N").unwrap(), ".trash/N.1.md", "never overwrites");
         move_note_in(&root, &mut ix, "M", "real/deep/M").unwrap();
         assert_eq!(fs::read_to_string(root.join("real/deep/M.md")).unwrap(), "move me");
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    /// audit #9: the sidebar folder walk never descends a symlinked dir
+    #[test]
+    fn vaultfs_list_folders_skips_symlinked_dirs_and_cycles() {
+        use std::os::unix::fs::symlink;
+        let root = tmp_vault("vfs-lf");
+        let outside = std::env::temp_dir().join(format!("opensidian-vfs-lf-out-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(outside.join("secret")).unwrap();
+        fs::create_dir_all(root.join("a/b")).unwrap();
+        fs::create_dir_all(root.join(".hidden/x")).unwrap();
+        symlink(&root, root.join("a/loop")).unwrap(); // a/loop -> vault root: a cycle
+        symlink(root.join("a"), root.join("a/b/up")).unwrap(); // a/b/up -> a
+        symlink(&outside, root.join("out")).unwrap(); // a link out of the vault
+        assert_eq!(list_folders_in(&root), vec!["a".to_string(), "a/b".to_string()]);
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&outside);
     }
