@@ -7546,6 +7546,7 @@ function gfPanel(g) {              // built once per group, lives in .content be
       if (g.gfApply) g.gfApply({ [r[0]]: x });
       p.querySelector('[data-k="' + r[0] + '"] .slider-value').textContent = gfFmt(r, x);
       gfSave({ [r[1]]: x });
+      updateTitle();               // census [gff:]/[gfs:] follow the thumb while it is held
     };
   }
   g.content.appendChild(p);
