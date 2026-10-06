@@ -7648,13 +7648,17 @@ async function startGraph(g, cfg) {
   // no viewport clamp: a big vault overflows the canvas and the user pans/zooms
   // (R16.4). screen = world*scale + t.
   const view = { scale: 1, tx: cv.width / 2, ty: cv.height / 2, notch: 0 };
-  // Obsidian force defaults (R16.1). REPEL_K/REPEL_P: per-node many-body strength
-  // = repel * REPEL_K * N^REPEL_P, calibrated offline (goal/graphfit/sim) so
-  // the 12-node vault settles ~35-45% of the canvas wide and the 500-note star
-  // to a ~2300-unit disc with ~80 nodes inside the smoke window's view.
-  const F = { center: 0.52, repel: 10, link: 1, dist: 250 }, REPEL_K = 7.5, REPEL_P = 0.36;
-  // d3-force style phyllotaxis seed (deterministic: smoke coords repeat)
-  const seed = i => { const r = 10 * Math.sqrt(i + 0.5), t = i * 2.399963; return [r * Math.cos(t), r * Math.sin(t)]; };
+  // Obsidian force defaults (R16.1) and the gains that turn a slider value into
+  // the per-step constant of the measured model (docs/recon-graphforce, PLAN s.0):
+  //   repel  per-node strength = repel * REPEL_K * N^REPEL_P  (700 * N^-0.15 at 10)
+  //   link   strength = link * LINK_K / min(deg)               (0.5 at 1)
+  //   centre per-node pull  v -= p * center * CENTER_K * alpha (0.04 at 0.5187)
+  // Repulsion SHRINKS with N, as measured on stock; the old +0.36 exponent grew
+  // the n200 cloud +72% past it.
+  const F = { center: 0.5187, repel: 10, link: 1, dist: 250 }, REPEL_K = 70, REPEL_P = -0.15, LINK_K = 0.5, CENTER_K = 0.0771;
+  // d3-force style phyllotaxis seed (deterministic: smoke coords repeat). Radius
+  // 66*sqrt(i+.5): mean radius ~44*sqrt(N), stock's measured first frame.
+  const seed = i => { const r = 66 * Math.sqrt(i + 0.5), t = i * 2.399963; return [r * Math.cos(t), r * Math.sin(t)]; };
   const N = gr.nodes.map((nd, i) => {
     const [x, y] = seed(i);
     return { n: nd.name, resolved: nd.resolved, x, y, vx: 0, vy: 0, deg: 0, r: 6.5 };
@@ -7674,7 +7678,7 @@ async function startGraph(g, cfg) {
       const di = N[i].deg, dj = N[j].deg;
       // strength = Link force / min(deg) (d3 default: hubs are not yanked by
       // every leaf), bias = share of the correction the far end takes
-      links.push({ a: i, b: j, bias: di / (di + dj), k: F.link / Math.min(di, dj) });
+      links.push({ a: i, b: j, bias: di / (di + dj), k: F.link * LINK_K / Math.min(di, dj) });
     } });
   };
   rebuild();
@@ -7749,9 +7753,11 @@ async function startGraph(g, cfg) {
     rcSnap = { prev, pf: pfHit, w: waited, a0: alpha, c: cfg.center() };
     g.reheat(0.3);   // R19: d3 restart semantics — alpha 0.3, not 1: settle the new nodes without scattering the old ones
   };
-  // sim heat (d3-force shaped): forces scale by alpha, which decays per PHYSICS
-  // STEP toward 0 (alpha += -alpha*ALPHA_DECAY; 0.001 after 300 steps) and
-  // physics freezes below 0.001. Physics steps are wall-clock-locked at PH_HZ/s
+  // sim heat (d3-force shaped): forces scale by alpha, which moves per PHYSICS
+  // STEP toward alphaTarget (alpha += (alphaTarget-alpha)*ALPHA_DECAY, at the
+  // TOP of the step) — 0 normally, 0.3 while a node is held (d3 drag). With the
+  // target 0, physics freezes below ALPHA_MIN. PH_HZ 60 and ALPHA_DECAY .028 are
+  // the measured stock model (docs/recon-graphforce). Physics steps are wall-clock-locked at PH_HZ/s
   // (substepped inside rAF): a throttled/headless rAF must not stretch settle.
   // Catch-up is bounded TWICE, and the bound is the frame-time budget: at most
   // PH_STEP_CAP steps of sim time may be owed at the top of a frame
@@ -7775,8 +7781,8 @@ async function startGraph(g, cfg) {
   // perf-graph: the rAF loop is NOT unconditional — it runs while physics is
   // hot (alpha > ALPHA_MIN and kinetic energy above eps) and stops otherwise
   // (CPU 0); wake() restarts it on refresh (reheat), pan, zoom, hover, resize, close.
-  const PH_HZ = 120, PH_STEP_CAP = 7, PH_BUDGET_MS = 40, ALPHA_MIN = 0.001, ALPHA_DECAY = 1 - Math.pow(0.001, 1 / 300);
-  let alpha = 1, phAcc = 0, phLast = performance.now();
+  const PH_HZ = 60, PH_STEP_CAP = 7, PH_BUDGET_MS = 40, ALPHA_MIN = 0.001, ALPHA_DECAY = 0.028;
+  let alpha = 1, alphaTarget = 0, phAcc = 0, phLast = performance.now();
   // settled = total kinetic energy (sum v^2) under 0.0025 px^2/step per node
   // (mean speed < 0.05 px/step, invisible) for 10 consecutive steps, or physics frozen
   let calm = 0, quiet = false;          // quiet: physics halted until the next reheat
@@ -7829,6 +7835,11 @@ async function startGraph(g, cfg) {
   }
   function physStep() {
     if (!N.length) return;
+    alpha += (alphaTarget - alpha) * ALPHA_DECAY;   // top of the step, as the model does
+    // many-body repulsion FIRST (the link term reads p+v after it). Per-node
+    // strength = Repel force * REPEL_K * N^REPEL_P (docs/recon-graphforce PLAN s.0)
+    const root = bhBuild(), k = alpha * F.repel * REPEL_K * Math.pow(N.length, REPEL_P);
+    for (const a of N) bhApply(a, root, k);
     // link: spring to F.dist (R16.1: 250), d3 semantics (strength/bias per link)
     for (const l of links) {
       const a = N[l.a], b = N[l.b];
@@ -7837,26 +7848,17 @@ async function startGraph(g, cfg) {
       dx *= k; dy *= k;
       b.vx -= dx * l.bias; b.vy -= dy * l.bias; a.vx += dx * (1 - l.bias); a.vy += dy * (1 - l.bias);
     }
-    // many-body repulsion. Per-node strength = REPEL_K * Repel force * N^0.25:
-    // calibrated on two recon layouts (docs/requirements.md R16 — a 12-node cloud
-    // and a 500-note uniform disc)
-    const root = bhBuild(), k = alpha * F.repel * REPEL_K * Math.pow(N.length, REPEL_P);
-    for (const a of N) bhApply(a, root, k);
-    // center force (R16.1: 0.52): centroid pulled toward the origin (d3 forceCenter shape)
-    let sx = 0, sy = 0;
-    for (const p of N) { sx += p.x; sy += p.y; }
-    sx = sx / N.length * F.center; sy = sy / N.length * F.center;
+    // centre: a per-node, alpha-scaled velocity pull toward the origin (stock S3:
+    // centre max pulls the cloud IN, which translating the centroid never could)
+    const ck = F.center * CENTER_K * alpha;
     for (const p of N) {
-      p.x -= sx; p.y -= sy;
-      p.vx *= 0.6; p.vy *= 0.6; p.x += p.vx; p.y += p.vy;   // velocity decay 0.4 (d3 default)
-      // C3 PIN (d3 forceSimulation semantics): a node the user dropped carries
-      // fx/fy and is CLAMPED back onto it after every force — including the
-      // centre force's whole-cloud translation above, which is what would
-      // otherwise drift it away from the drop point. The layout reflows
-      // AROUND it; it does not move again until it is dragged again.
+      p.vx -= p.x * ck; p.vy -= p.y * ck;
+      p.vx *= 0.7; p.vy *= 0.7; p.x += p.vx; p.y += p.vy;   // velocity decay 0.3 (measured)
+      // C3 PIN, only WHILE HELD (d3 drag semantics): the held node carries fx/fy
+      // and is clamped onto it after every force; release clears fx/fy and the
+      // node is free again (stock S2: it springs back ~75 units).
       if (p.fx != null) { p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0; }
     }
-    alpha += -alpha * ALPHA_DECAY;
   }
   // C5 (B26-B29, R19.2/R19.3): the two halves of the re-centre continuity record. Every field
   // is a measurement of the node objects the renderer is about to draw — never a variable the
@@ -8017,14 +8019,15 @@ async function startGraph(g, cfg) {
     const phT0 = perf.now();
     while (phAcc >= 1 / PH_HZ) {
       phAcc -= 1 / PH_HZ;
-      if (!quiet && alpha > ALPHA_MIN) { physStep(); steps++; }
+      if (!quiet && (alpha > ALPHA_MIN || alphaTarget > 0)) { physStep(); steps++; }
       if (steps && perf.now() - phT0 >= PH_BUDGET_MS) { phAcc = 0; break; }   // wall-clock backstop: a costlier step (bigger N) must not lengthen the frame
     }
     const fT1 = perf.now();
     if (!quiet && (steps || alpha <= ALPHA_MIN)) {
       ke = kinetic();
       calm = ke < 0.0025 * N.length ? calm + 1 : 0;
-      if (calm >= 10 || alpha <= ALPHA_MIN) {
+      // PLAN item 7: never freeze while a node is HELD (alphaTarget > 0)
+      if (alphaTarget === 0 && (calm >= 10 || alpha <= ALPHA_MIN)) {
         quiet = true;
         // R19 (HARD RULE 100ms): graph_recenter ends at the first PAINT of the new centre
         // (see cv.onclick); what happens after that is ANIMATION and is measured here as its
@@ -8102,10 +8105,31 @@ async function startGraph(g, cfg) {
     view.tx = mx - wx * s; view.ty = my - wy * s; view.scale = s;
     redraw();
   };
-  // C3: mousedown HIT TESTS. On a node the drag moves the NODE (pinned via
-  // fx/fy, so releasing keeps the drop position); on empty canvas it pans the
-  // camera exactly as it always did. Click w/o movement still navigates.
+  // C3: mousedown HIT TESTS. On a node the drag moves the NODE, pinned via
+  // fx/fy only WHILE HELD (R16.6, operator 2026-10-06: a released node is FREE
+  // and settles back under the forces, as stock's does); on empty canvas it
+  // pans the camera exactly as it always did. Click w/o movement still navigates.
   let drag = null, moved = false;
+  // release: unpin the held node and drop the d3 alphaTarget back to 0, so the
+  // sim cools from where it is (alpha ~0.3) instead of freezing the node. Every
+  // way a hold can end goes through here: mouseup on the canvas, the pointer
+  // leaving it, a mouseup anywhere else in the window, and window blur (a
+  // release outside the window delivers no mouseup at all).
+  // Pins exist only while held, so release clears EVERY pin in N: a refresh
+  // during the hold (C3 carry) swaps in a new node object that carries fx/fy,
+  // and that copy must be freed too.
+  const release = () => {
+    drag = null;
+    if (window.__graphHeld === release) window.__graphHeld = null;
+    for (const q of N) if (q.fx != null) q.fx = q.fy = null;
+    if (alphaTarget !== 0) { alphaTarget = 0; calm = 0; quiet = false; g.graphSettled = false; if (g.simGen === gen) wake(); }
+  };
+  if (!window.__graphRelWired) {        // once per window; whichever graph holds a node registers itself
+    window.__graphRelWired = true;
+    const rel = () => { const f = window.__graphHeld; if (f) f(); };
+    window.addEventListener("mouseup", rel, true);
+    window.addEventListener("blur", rel);
+  }
   cv.onmousedown = e => {
     const r = cv.getBoundingClientRect();
     const [wx, wy] = toWorld(e.clientX - r.left, e.clientY - r.top);
@@ -8123,11 +8147,18 @@ async function startGraph(g, cfg) {
           // NODE drag. Pin on the first real movement, not on mousedown: a bare
           // click must not stick a node it never moved. Pointer px -> world
           // units via the camera scale, so a zoomed-out drag still tracks.
-          const p = drag.node;
+          let p = drag.node;
+          if (!N.includes(p)) {          // a refresh swapped the node objects mid-hold: follow by name
+            p = drag.node = N.find(q => q.n === p.n);
+            if (!p) { release(); return; }
+          }
           if (p.fx == null) { p.fx = p.x; p.fy = p.y; }
+          window.__graphHeld = release;
           p.fx += dx / view.scale; p.fy += dy / view.scale;
           p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0;
-          g.reheat(0.3);                 // d3 alphaTarget: the neighbours follow the node out
+          // d3 drag: alphaTarget 0.3 while held, the neighbours follow the node out
+          // (PLAN item 8: not reheat — alpha CLIMBS toward the target, as stock's)
+          if (alphaTarget !== 0.3 || quiet) { alphaTarget = 0.3; calm = 0; quiet = false; g.graphSettled = false; wake(); }
         } else {
           view.tx += dx; view.ty += dy;  // EMPTY canvas: camera pan, unchanged
         }
@@ -8141,8 +8172,8 @@ async function startGraph(g, cfg) {
     if (h !== hov) { hov = h; redraw(); }
     cv.style.cursor = hov >= 0 ? "pointer" : "";
   };
-  cv.onmouseup = () => { drag = null; };
-  cv.onmouseleave = () => { drag = null; if (hov >= 0) { hov = -1; redraw(); } cv.style.cursor = ""; };
+  cv.onmouseup = () => { release(); };
+  cv.onmouseleave = () => { release(); if (hov >= 0) { hov = -1; redraw(); } cv.style.cursor = ""; };
   cv.onclick = async e => {
     if (moved) { moved = false; return; }               // was a pan, not a click
     const r = cv.getBoundingClientRect();
