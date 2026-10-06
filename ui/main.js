@@ -7851,6 +7851,12 @@ async function startGraph(g, cfg) {
     // centre: a per-node, alpha-scaled velocity pull toward the origin (stock S3:
     // centre max pulls the cloud IN, which translating the centroid never could)
     const ck = F.center * CENTER_K * alpha;
+    // plus a d3 forceCenter translation (positions only, radius unchanged): the per-node pull
+    // is alpha-scaled and the sim stops on calm, so after a re-centre adds a node on one side
+    // the cloud stopped ~40px off the pane centre and an end node sat outside a split pane
+    let sx = 0, sy = 0, nf = 0;
+    for (const p of N) if (p.fx == null) { sx += p.x; sy += p.y; nf++; }
+    if (nf) { sx /= nf; sy /= nf; for (const p of N) if (p.fx == null) { p.x -= sx; p.y -= sy; } }
     for (const p of N) {
       p.vx -= p.x * ck; p.vy -= p.y * ck;
       p.vx *= 0.7; p.vy *= 0.7; p.x += p.vx; p.y += p.vy;   // velocity decay 0.3 (measured)
