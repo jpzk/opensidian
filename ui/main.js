@@ -2074,16 +2074,25 @@ async function saveNote(name, content) {    // true == the bytes are on disk
    action, and A's own edits never reach A. Every path that leaves a vault
    flushes first and then clears the handle UNCONDITIONALLY: losing a 250ms
    burst is strictly better than writing it into the wrong vault. */
+/* vbswitch (symptom 1): -> the notes whose bytes did NOT reach disk. A failed
+   flush used to be ignored here and the switch went on to exit this process,
+   taking the typed edit with it (saveNote had put the banner up on a window
+   about to vanish). openVault now refuses to leave while any buffer is still
+   dirty after its flush. */
 async function leaveVault() {
-  if (!state) return;
+  if (!state) return [];
+  const lost = [];
   for (const h of groups()) {
     try { await flushSave(h); }
+    catch (e) { /* an IPC fault: the buffer reads dirty below */ }
     finally { clearTimeout(h.saveT); h.saveT = null; }
+    if (bufDirty(h)) lost.push(curOf(h) || "?");
   }
   // R28: the LAYOUT timer is process-wide, so the loop above cannot reach it.
   // Same rule as the buffers — flush into the vault we are leaving, then make
   // sure nothing from it can still fire into the next one.
   try { await wsLeave(); } catch (e) { /* a layout is never worth blocking a switch */ }
+  return lost;
 }
 
 /* -> true iff bytes reached DISK in this call (false = nothing needed writing,
@@ -8522,12 +8531,24 @@ async function openVault(p, replace) {
     await enterVault();
     return;
   }
-  if (replace) await leaveVault();           // F2: A's bytes on A's disk BEFORE this process exits
+  // vbswitch: inert BEFORE the flush. It used to be set after leaveVault
+  // returned, so a key that landed during the flush awaits armed a save in a
+  // process that was about to exit. And a flush that failed now stops the
+  // switch: this window stays, the edit stays in its buffer, banner up.
+  if (replace) {
+    document.body.inert = true;
+    const lost = await leaveVault();         // F2: A's bytes on A's disk BEFORE this process exits
+    if (lost.length) {
+      document.body.inert = false;
+      console.error("[vaultwin] switch refused: unsaved " + lost.join(", "));
+      $("p-err").textContent = "Not switching: " + lost.join(", ") + " could not be saved to this vault (see the banner). This window stays open with the edit.";
+      return;
+    }
+  }
   // item 14: a switch resolves only once the NEW window is shown at our rect
   // and painted (the backend then exits this process). Until then this window
   // stays on screen but takes no input: an edit typed now would land after
   // the flush above and die with the process.
-  if (replace) document.body.inert = true;
   try { await inv("open_vault_window", { path: p, replace }); }
   catch (err) { document.body.inert = false; $("p-err").textContent = String(err); return; }
   $("picker").hidden = true;
