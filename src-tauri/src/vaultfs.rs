@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /* vaultfs — every write the app makes INSIDE a vault goes through here.
 
    The vault's contents are not ours: a sync client, a shared folder or a
