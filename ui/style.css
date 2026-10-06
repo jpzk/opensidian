@@ -743,8 +743,15 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 .graph-controls { position: absolute; top: 12px; right: 12px; z-index: 7; width: 240px;
   max-width: calc(100% - 24px); max-height: calc(100% - 24px); overflow-x: hidden; overflow-y: auto; box-sizing: border-box;
   background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px;
-  box-shadow: 0 4px 16px var(--shadow-drop); padding: 6px 0 8px; font-size: 13px; color: var(--text-chrome) }
+  padding: 6px 0 8px; font-size: 13px; color: var(--text-chrome) }
 .graph-controls[hidden] { display: none }
+/* The card's shadow is switched on (.gf-lit, startGraph) once the sim first comes to rest, not
+   with the card: the first paint of ANY box-shadow here stalls the main thread ~460 ms one-off on
+   the box (WebKitGTK; no panel / no shadow: first motion 310 / 370 ms after ctrl+g, shadow
+   0 4px 16px: 820, 0 2px 6px: 680, blur 0: 490, drop-shadow filter: 780, own layer: 780-880),
+   so a card shadowed at open froze the sim's first 500 ms and S1 settle read +31..36% vs stock.
+   Painted after rest, the same one-off stall lands on a still graph. */
+.graph-controls.gf-lit { box-shadow: 0 4px 16px var(--shadow-drop) }
 .graph-controls .gf-btns { display: flex; justify-content: flex-end; gap: 2px; padding: 0 6px }
 .graph-controls .gf-btn { width: 26px; height: 26px; padding: 5px; border: 0; border-radius: 4px; background: none;
   color: var(--text-muted); cursor: pointer; line-height: 0; box-sizing: border-box }

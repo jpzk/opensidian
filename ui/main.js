@@ -8168,7 +8168,7 @@ async function startGraph(g, cfg) {
     if (rcSnap) { rcRecord(); updateTitle(); }   // C5: once, on the first paint after a re-centre
     perf.push("graph_draw", perf.now() - dT0, { renderer: glr ? "gl" : "2d", nodes: N.length, edges: gr.edges.length, ...gpu });
   }
-  let firstFrame = true, running = false, dirty = true;
+  let firstFrame = true, running = false, dirty = true, shadeNow = false;
   const gen = ++simGen; g.simGen = gen;   // a newer startGraph on this canvas retires this sim
   function step() {
     if (g.simGen !== gen) return;
@@ -8200,7 +8200,12 @@ async function startGraph(g, cfg) {
     if (steps) perf.push("graph_frame", perf.now() - fT0, { nodes: N.length, steps, phys: +(fT1 - fT0).toFixed(1), ke: +ke.toFixed(2), alpha: +alpha.toFixed(3) });
     if (quiet) {                       // settled: loop ends, CPU -> 0; publish node coords to the census
       running = false; perf.flush();
-      if (!g.graphSettled || drew) { g.graphSettled = true; updateTitle(); }  // pan/zoom moves screen coords
+      if (shadeNow) {                  // Forces card shadow just switched on (settleTest): its first paint
+        shadeNow = false;              // stalls ~460 ms, so "settled" is published from the NEXT frame,
+        requestAnimationFrame(() => {  // after that paint — a screenshot taken on the census sees the shadow
+          if (g.simGen === gen && !running) { g.graphSettled = true; updateTitle(); }
+        });
+      } else if (!g.graphSettled || drew) { g.graphSettled = true; updateTitle(); }  // pan/zoom moves screen coords
       return;
     }
     g.sim = requestAnimationFrame(step);
@@ -8219,6 +8224,8 @@ async function startGraph(g, cfg) {
         if (g.settleSp) { otel.end(g.settleSp, { nodes: N.length, edges: gr.edges.length, ke: +ke.toFixed(3), alpha: +alpha.toFixed(3) }); g.settleSp = null; }
         if (!settledMark) {
           settledMark = true;
+          // Forces card: shadow on at first rest, not at open (ui/style.css .gf-lit — its first paint is a one-off main-thread stall)
+          if (g.gfp && !g.gfp.hidden && !g.gfp.classList.contains("gf-lit")) { g.gfp.classList.add("gf-lit"); shadeNow = true; }
           perf.mark("graph_open_settle", openT0, { nodes: N.length, ke: +ke.toFixed(3), alpha: +alpha.toFixed(3) });
           if (pref.loseCtx && glr) setTimeout(() => { if (glr && g.simGen === gen) glr.loseContext(); }, 300);   // smoke hook: WEBGL_lose_context after settle
         }
