@@ -7839,7 +7839,10 @@ async function startGraph(g, cfg) {
     pn = 0;
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (const p of N) { if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x; if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y; }
-    const root = cell(x0, y0, Math.max(x1 - x0, y1 - y0) + 1);
+    // d3 quadtree cover(): root anchored at floor(min), side the smallest power of two that holds the extent
+    const rx = Math.floor(x0), ry = Math.floor(y0); let rs = 1;
+    while (rx + rs <= x1 || ry + rs <= y1) rs *= 2;
+    const root = cell(rx, ry, rs);
     for (const p of N) {
       let c = root, depth = 0;
       for (;;) {
