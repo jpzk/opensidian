@@ -36,5 +36,5 @@ Only the latest release gets security fixes.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| v0.3    | :white_check_mark: |
-| < v0.3  | :x:                |
+| v0.4    | :white_check_mark: |
+| < v0.4  | :x:                |
