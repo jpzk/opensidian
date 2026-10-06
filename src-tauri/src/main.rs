@@ -1028,6 +1028,73 @@ fn set_strict_line_breaks(v: State<Vault>, on: bool) -> Result<(), String> {
     set_app_bool_in(&root, "strictLineBreaks", on)
 }
 
+/* goal graphparity — the graph view's Forces panel (docs/recon-graphpanel). Obsidian's
+   file, Obsidian's keys: `<vault>/.obsidian/graph.json` holds centerStrength,
+   repelStrength, linkStrength, linkDistance (numbers), close and collapse-forces
+   (bools), next to keys we do not own (search, showTags, colorGroups, scale, ...).
+   Same rules as app.json: a MERGE into the parsed object (a stock-written file
+   round-trips), an unparsable or non-object file is REFUSED rather than replaced,
+   and the write goes through the vault dir fd (no-follow `.obsidian`, random temp,
+   renameat). Only the six owned keys, each with its own type, are accepted. */
+const GRAPH_REL: &str = ".obsidian/graph.json";
+const GRAPH_NUM_KEYS: [&str; 4] = ["centerStrength", "repelStrength", "linkStrength", "linkDistance"];
+const GRAPH_BOOL_KEYS: [&str; 2] = ["close", "collapse-forces"];
+
+/// the whole graph.json object; absent / unreadable / unparsable / not an object = {}
+fn graph_settings_in(root: &Path) -> serde_json::Value {
+    read_capped(&root.join(GRAPH_REL))
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .filter(|v| v.is_object())
+        .unwrap_or_else(|| serde_json::json!({}))
+}
+
+fn set_graph_settings_in(root: &Path, patch: &serde_json::Value) -> Result<(), String> {
+    let p = patch.as_object().ok_or("graph settings patch is not an object")?;
+    for (k, val) in p {
+        let ok = if GRAPH_NUM_KEYS.contains(&k.as_str()) {
+            val.as_f64().is_some_and(f64::is_finite)
+        } else if GRAPH_BOOL_KEYS.contains(&k.as_str()) {
+            val.is_boolean()
+        } else {
+            return Err(format!("graph.json: key {k:?} is not ours to write"));
+        };
+        if !ok {
+            return Err(format!("graph.json: bad value for {k:?}"));
+        }
+    }
+    let cur = read_capped(&root.join(GRAPH_REL)).unwrap_or_default();
+    let mut v = if cur.trim().is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_str::<serde_json::Value>(&cur).map_err(|e| format!("graph.json is not JSON ({e}) — refusing to overwrite it"))?
+    };
+    let o = v.as_object_mut().ok_or("graph.json is not a JSON object — refusing to overwrite it")?;
+    for (k, val) in p {
+        o.insert(k.clone(), val.clone());
+    }
+    let body = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+    vaultfs::mkdir_p(root, Path::new(".obsidian")).map_err(|e| e.to_string())?;
+    vaultfs::write_atomic(root, Path::new(GRAPH_REL), body.as_bytes()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn graph_settings(v: State<Vault>) -> serde_json::Value {
+    cur_vault(&v).map(|r| graph_settings_in(&r)).unwrap_or_else(|| serde_json::json!({}))
+}
+
+/// vault-scoped like write_workspace: a save armed in vault A and landing after a
+/// switch to B is stale and dropped, never written into B's graph.json
+#[tauri::command(async)]
+fn set_graph_settings(v: State<Vault>, vault: String, patch: serde_json::Value) -> Result<(), String> {
+    span_timed!("set_graph_settings", (|| {
+        let root = cur_vault(&v).ok_or("no vault open")?;
+        if root != PathBuf::from(&vault) {
+            return Err(format!("stale graph settings write: from {vault}, current vault is {}", root.display()));
+        }
+        set_graph_settings_in(&root, &patch)
+    })())
+}
+
 #[tauri::command]
 fn rename_note(v: State<Vault>, old: String, new: String, otel: Option<perf::Ctx>) -> Result<(), String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
@@ -4843,7 +4910,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, read_note, write_note, create_note, render, render_blocks, block_lines, highlight_blocks, graph, graph_local, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, tags, tag_counts,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, vb_probe, smoke_css,
             read_workspace, write_workspace, get_win_geom, set_win_geom,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme,
@@ -7178,6 +7245,46 @@ mod tests {
         }
         // live preview's entry point is the strict (CommonMark) render
         assert_eq!(render_with("Alpha\nBeta", &notes, &[], false), render_with_br("Alpha\nBeta", &notes, &[], false, false));
+    }
+
+    /// goal graphparity: graph.json Forces keys MERGE into a stock-written file (foreign
+    /// keys and their types survive), the file is created with `.obsidian` when absent
+    #[test]
+    fn graphforces_merge_preserves_foreign_keys() {
+        let root = r34_vault("graphforces-merge");
+        assert_eq!(graph_settings_in(&root), serde_json::json!({}), "absent file reads as {{}}");
+        let _ = fs::remove_dir_all(root.join(".obsidian"));
+        set_graph_settings_in(&root, &serde_json::json!({"linkDistance": 30, "close": false})).unwrap();
+        assert_eq!(graph_settings_in(&root)["linkDistance"], serde_json::json!(30));
+        fs::write(root.join(GRAPH_REL), r#"{"search":"tag:#x","showTags":true,"colorGroups":[{"query":"a"}],"scale":0.8,"repelStrength":10}"#).unwrap();
+        set_graph_settings_in(&root, &serde_json::json!({"repelStrength": 20, "centerStrength": 0.25, "collapse-forces": false})).unwrap();
+        let v = graph_settings_in(&root);
+        assert_eq!(v["repelStrength"], serde_json::json!(20));
+        assert_eq!(v["centerStrength"], serde_json::json!(0.25));
+        assert_eq!(v["collapse-forces"], serde_json::json!(false));
+        assert_eq!(v["search"], serde_json::json!("tag:#x"));
+        assert_eq!(v["showTags"], serde_json::json!(true));
+        assert_eq!(v["colorGroups"], serde_json::json!([{"query":"a"}]));
+        assert_eq!(v["scale"], serde_json::json!(0.8));
+    }
+
+    /// an unparsable or non-object graph.json is refused, not replaced; foreign
+    /// keys and wrongly typed values are refused before anything is written
+    #[test]
+    fn graphforces_refuses_bad_file_and_bad_patch() {
+        let root = r34_vault("graphforces-refuse");
+        fs::create_dir_all(root.join(".obsidian")).unwrap();
+        for bad in ["{not json", "[1,2]"] {
+            fs::write(root.join(GRAPH_REL), bad).unwrap();
+            assert!(set_graph_settings_in(&root, &serde_json::json!({"linkStrength": 0.5})).is_err());
+            assert_eq!(fs::read_to_string(root.join(GRAPH_REL)).unwrap(), bad, "file untouched");
+            assert_eq!(graph_settings_in(&root), serde_json::json!({}));
+        }
+        fs::write(root.join(GRAPH_REL), "{}").unwrap();
+        assert!(set_graph_settings_in(&root, &serde_json::json!({"search": "x"})).is_err(), "not our key");
+        assert!(set_graph_settings_in(&root, &serde_json::json!({"linkDistance": "250"})).is_err(), "number as string");
+        assert!(set_graph_settings_in(&root, &serde_json::json!({"close": 1})).is_err(), "bool as number");
+        assert_eq!(fs::read_to_string(root.join(GRAPH_REL)).unwrap(), "{}");
     }
 
     /// goal/linebreak REQ-1: strictLineBreaks lives in app.json, default false,

@@ -3428,6 +3428,7 @@ function updateTitle() {          // pane/focus census in the window title (head
     if (fl.length) md += " [fonts:" + fl.join("|") + "]"; }
   let gg = ft && ft.kind === "gg" ? " [gg]" : "";  // R9.7: global graph tab focused
   if (gg) { const pt = posTok(fg()); if (pt) gg += " [ggpos:" + pt + "]"; }
+  if (gg) gg += gfTok(fg());        // Forces panel: [gff:] live F, [gfp:] card state/rect, [gfb:]/[gfs:] click targets
   // GRAPH THEME census (goal graphtheme). [graphbg:]/[graphnode:] are a FRESH read of the
   // stylesheet off the root element — deliberately NOT the graph's own cached palette: the
   // defect under test is a cache that outlives a palette switch, and a token read from that
@@ -5004,6 +5005,7 @@ async function loadActive(g) {
     cancelAnimationFrame(g.sim);    // clean restart on tab switches
     await startGraph(g, {
       fetch: () => inv("graph"),
+      forces: true,                 // goal graphparity: stock's graph-controls card (Forces)
       center: () => null,
       onClick: async n => {         // node click: this tab BECOMES the note
         const tt = g.active >= 0 ? g.tabs[g.active] : null;
@@ -7467,6 +7469,123 @@ $("apath").onkeydown = async e => {
   if (p) await attachDrop([p]);
 };
 
+/* ---------- graph Forces panel (goal graphparity, docs/recon-graphpanel) ----------
+   Stock's graph-controls card in the GLOBAL graph view's top-right corner: open by default,
+   x closes it to a gear, reset + close in the first row, one collapsible Forces section
+   (collapsed by default) with the four sliders. Each `input` applies the value to the live
+   sim (F), reheats and saves — stock does all three while the thumb is still held. The
+   values are VAULT state: <vault>/.obsidian/graph.json, stock's own keys, merged by the
+   backend (set_graph_settings, vaultfs) so the keys we do not own survive. Out of scope
+   (recon follow-ups): Filters, Groups, Display, the timelapse button, `scale`. */
+const GF_ROWS = [   // [F key, graph.json key, label, min, max, step, default, readout decimals]
+  ["center", "centerStrength", "Center force", 0, 1, "any", 0.518713248970312, 2],
+  ["repel", "repelStrength", "Repel force", 0, 20, "any", 10, 2],
+  ["link", "linkStrength", "Link force", 0, 1, "any", 1, 2],
+  ["dist", "linkDistance", "Link distance", 30, 500, 1, 250, 0],
+];
+// gfCfg = the vault's graph.json as last read/written, keyed by vault so a switch rereads it
+let gfCfg = null, gfSaveT = null, gfPatch = {};
+async function gfLoad() {
+  if (gfCfg && gfCfg.vault === vaultPath) return gfCfg;
+  let o = {};
+  try { o = (await inv("graph_settings")) || {}; } catch (_) {}
+  gfCfg = { vault: vaultPath, close: o.close === true, coll: o["collapse-forces"] !== false, v: {} };
+  for (const [k, jk, , lo, hi, , def] of GF_ROWS) {
+    const x = o[jk];
+    gfCfg.v[k] = typeof x === "number" && isFinite(x) ? Math.min(hi, Math.max(lo, x)) : def;
+  }
+  return gfCfg;
+}
+function gfSave(patch) {           // coalesced 120 ms: the file holds the value once the drag ends
+  Object.assign(gfPatch, patch);
+  clearTimeout(gfSaveT);
+  const v = vaultPath;
+  gfSaveT = setTimeout(() => {
+    const p = gfPatch; gfPatch = {};
+    if (v !== vaultPath) return;   // switched under us: the backend would refuse it anyway
+    inv("set_graph_settings", { vault: v, patch: p }).catch(err => say("Graph settings: " + String(err && err.message || err)));
+  }, 120);
+}
+const gfFmt = (r, x) => r[7] ? x.toFixed(r[7]) : String(Math.round(x));
+const GF_ICON = {
+  reset: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',
+  close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>',
+  gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></svg>',
+  chev: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>',
+};
+function gfPanel(g) {              // built once per group, lives in .content beside the canvas
+  if (g.gfp) return g.gfp;
+  const p = document.createElement("div");
+  p.className = "graph-controls"; p.hidden = true;
+  p.innerHTML =
+    '<div class="gf-btns"><button class="gf-btn mod-reset" aria-label="Restore default settings" title="Restore default settings">' + GF_ICON.reset + '</button>' +
+    '<button class="gf-btn mod-close" aria-label="Close" title="Close">' + GF_ICON.close + '</button></div>' +
+    '<button class="gf-btn mod-open" aria-label="Open graph settings" title="Open graph settings">' + GF_ICON.gear + '</button>' +
+    '<div class="graph-control-section mod-forces"><div class="gf-head"><span class="collapse-icon">' + GF_ICON.chev + '</span>' +
+    '<header class="graph-control-section-header">Forces</header></div><div class="gf-body">' +
+    GF_ROWS.map(r => '<div class="setting-item mod-slider" data-k="' + r[0] + '"><div class="setting-item-name">' + r[2] + '</div>' +
+      '<div class="gf-ctl"><span class="slider-value"></span><input class="slider" type="range" min="' + r[3] + '" max="' + r[4] +
+      '" step="' + r[5] + '"></div></div>').join("") + '</div></div>';
+  p.onmousedown = e => e.stopPropagation();
+  p.onwheel = e => e.stopPropagation();
+  const q = s => p.querySelector(s);
+  q(".mod-close").onclick = () => { gfCfg.close = true; gfShow(g); gfSave({ close: true }); updateTitle(); };
+  q(".mod-open").onclick = () => { gfCfg.close = false; gfShow(g); gfSave({ close: false }); updateTitle(); };
+  q(".gf-head").onclick = () => { gfCfg.coll = !gfCfg.coll; gfShow(g); gfSave({ "collapse-forces": gfCfg.coll }); updateTitle(); };
+  q(".mod-reset").onclick = () => {   // values only: the collapse state stays (recon "Reset")
+    const patch = {};
+    for (const r of GF_ROWS) { gfCfg.v[r[0]] = r[6]; patch[r[1]] = r[6]; }
+    if (g.gfApply) g.gfApply(gfCfg.v);
+    gfSync(g); gfSave(patch); updateTitle();
+  };
+  for (const r of GF_ROWS) {
+    const inp = p.querySelector('[data-k="' + r[0] + '"] input');
+    inp.oninput = () => {
+      const x = Math.min(r[4], Math.max(r[3], +inp.value));
+      gfCfg.v[r[0]] = x;
+      if (g.gfApply) g.gfApply({ [r[0]]: x });
+      p.querySelector('[data-k="' + r[0] + '"] .slider-value').textContent = gfFmt(r, x);
+      gfSave({ [r[1]]: x });
+    };
+  }
+  g.content.appendChild(p);
+  return (g.gfp = p);
+}
+function gfShow(g) {
+  const p = g.gfp; if (!p || !gfCfg) return;
+  p.classList.toggle("is-close", gfCfg.close);
+  p.querySelector(".mod-forces").classList.toggle("is-collapsed", gfCfg.coll);
+}
+function gfSync(g) {               // sliders + readouts <- the live sim's F (a probe hotkey moves F too)
+  const p = g.gfp; if (!p || p.hidden) return;
+  const F = g.gfF ? g.gfF() : gfCfg.v;
+  for (const r of GF_ROWS) {
+    const row = p.querySelector('[data-k="' + r[0] + '"]');
+    row.querySelector("input").value = String(F[r[0]]);
+    row.querySelector(".slider-value").textContent = gfFmt(r, F[r[0]]);
+  }
+}
+/* census: [gff:center,repel,link,dist] = the LIVE sim's F; [gfp:open|close,<1 collapsed|0>,x,y,w,h];
+   [gfb:reset@x,y|close@x,y|open@x,y|forces@x,y] centres of the visible controls;
+   [gfs:<k>@x0,x1,y|...] each visible slider's track ends + centre y. All window px. */
+function gfTok(g) {
+  const p = g && g.gfp;
+  if (!p || p.hidden || !g.gfF) return "";
+  const F = g.gfF(), R = e => e.getBoundingClientRect(), c = e => { const b = R(e); return Math.round(b.left + b.width / 2) + "," + Math.round(b.top + b.height / 2); };
+  const b = R(p);
+  let t = " [gff:" + GF_ROWS.map(r => +F[r[0]].toFixed(4)).join(",") + "] [gfp:" + (gfCfg.close ? "close" : "open") + "," + (gfCfg.coll ? 1 : 0) + "," +
+    [b.left, b.top, b.width, b.height].map(Math.round).join(",") + "]";
+  const bs = [];
+  for (const [n, s] of [["reset", ".mod-reset"], ["close", ".mod-close"], ["open", ".mod-open"], ["forces", ".gf-head"]]) {
+    const e = p.querySelector(s); if (e && e.offsetParent) bs.push(n + "@" + c(e));
+  }
+  t += " [gfb:" + bs.join("|") + "]";
+  if (!gfCfg.close && !gfCfg.coll) t += " [gfs:" + GF_ROWS.map(r => {
+    const s = R(p.querySelector('[data-k="' + r[0] + '"] input'));
+    return r[0] + "@" + Math.round(s.left) + "," + Math.round(s.right) + "," + Math.round(s.top + s.height / 2);
+  }).join("|") + "]";
+  return t;
+}
 /* ---------- graph (per group: one sim instance per group) ----------
    startGraph(g, cfg) is the shared canvas sim (M4): hover/zoom/pan/unresolved.
    cfg = { fetch: async () -> {nodes, edges},   node/edge supplier
@@ -7488,6 +7607,7 @@ function showEditor(g) {
   perf.flush();                    // ship buffered graph_frame samples of the closed sim
   g.graph.hidden = true; if (g.glcv) g.glcv.hidden = true;
   g.lggear.hidden = true; g.lgpop.hidden = true;
+  if (g.gfp) g.gfp.hidden = true; g.gfF = null; g.gfApply = null;   // Forces panel belongs to the global graph view
   applyMode(g);
 }
 $("graphbtn").onclick = cmdGlobalGraph;
@@ -7515,6 +7635,7 @@ async function startGraph(g, cfg) {
   const cv = g.graph; cv.hidden = false;
   cv.width = cv.clientWidth; cv.height = cv.clientHeight;
   const fetchP = cfg.fetch(), prefP = graphRendererPref();   // backend works while the renderer comes up
+  const gfP = cfg.forces ? gfLoad() : null;                  // Forces panel: the vault's graph.json, read beside the fetch
   const ctx = cv.getContext("2d");
   // graph-webgl: DEFAULT draw path is WebGL (ui/graph-gl.js) on a .graphgl canvas BEHIND cv
   // (nodes + edges); cv stays on top for events, labels (Canvas 2D text) and the 2D fallback.
@@ -7657,6 +7778,7 @@ async function startGraph(g, cfg) {
   // the n200 cloud 16% under stock, a flat 420 (= the fit at n30) holds n4/n30/n200 within
   // 15% (docs/recon-graphforce/data/impl). The old +0.36 exponent grew n200 +72%.
   const F = { center: 0.5187, repel: 10, link: 1, dist: 250 }, REPEL_K = 42.03, REPEL_P = 0, LINK_K = 0.5, CENTER_K = 0.0771;
+  if (gfP) Object.assign(F, (await gfP).v);   // global graph: the saved Forces sliders (graph.json), else the defaults above
   // Seed: a random disk of radius 66*sqrt(n) (mean radius 44*sqrt(n), stock's measured first
   // frame), radius STRATIFIED by index (node i in the ring of area (i, i+1)/n) at a random angle,
   // drawn in index order from ONE Park-Miller stream (fixed seed), so smoke coordinates still repeat
@@ -8121,6 +8243,18 @@ async function startGraph(g, cfg) {
     redraw();
   };
   g.reheat = (a = 0.5) => { calm = 0; kePeak = 0; quiet = false; g.graphSettled = false; alpha = Math.max(alpha, a); wake(); };
+  // Forces panel (global graph only): sliders -> F + reheat; any reheat re-syncs the sliders to F,
+  // so a value set another way (the recon rig's probe hotkeys) shows on the panel too
+  if (cfg.forces) {
+    const rh = g.reheat;
+    g.reheat = a => { rh(a); gfSync(g); };
+    g.gfF = () => F;
+    g.gfApply = o => { for (const k in o) F[k] = o[k]; if ("link" in o) rebuild(); g.reheat(); };
+    gfPanel(g).hidden = false; gfShow(g); gfSync(g);
+  } else {
+    g.gfF = null; g.gfApply = null;
+    if (g.gfp) g.gfp.hidden = true;
+  }
   g.graphNodes = () => {              // census: node screen coords (window px) for the graphnav smoke
     const r = cv.getBoundingClientRect();
     return N.map(p => ({ n: p.n, x: Math.round(r.left + p.x * view.scale + view.tx), y: Math.round(r.top + p.y * view.scale + view.ty) }));
