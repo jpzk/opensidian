@@ -1079,7 +1079,7 @@ fn set_graph_settings_in(root: &Path, patch: &serde_json::Value) -> Result<(), S
 
 #[tauri::command]
 fn graph_settings(v: State<Vault>) -> serde_json::Value {
-    cur_vault(&v).map(|r| graph_settings_in(&r)).unwrap_or_else(|| serde_json::json!({}))
+    span_timed!("graph_settings", cur_vault(&v).map(|r| graph_settings_in(&r)).unwrap_or_else(|| serde_json::json!({})))
 }
 
 /// vault-scoped like write_workspace: a save armed in vault A and landing after a
