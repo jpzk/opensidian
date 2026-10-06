@@ -7567,7 +7567,7 @@ function gfSync(g) {               // sliders + readouts <- the live sim's F (a 
 }
 /* census: [gff:center,repel,link,dist] = the LIVE sim's F; [gfp:open|close,<1 collapsed|0>,x,y,w,h];
    [gfb:reset@x,y|close@x,y|open@x,y|forces@x,y] centres of the visible controls;
-   [gfs:<k>@x0,x1,y|...] each visible slider's track ends + centre y. All window px. */
+   [gfs:<k>@x0,x1,y,<readout>|...] each visible slider's track ends, centre y, the readout shown. All window px. */
 function gfTok(g) {
   const p = g && g.gfp;
   if (!p || p.hidden || !g.gfF) return "";
@@ -7581,8 +7581,8 @@ function gfTok(g) {
   }
   t += " [gfb:" + bs.join("|") + "]";
   if (!gfCfg.close && !gfCfg.coll) t += " [gfs:" + GF_ROWS.map(r => {
-    const s = R(p.querySelector('[data-k="' + r[0] + '"] input'));
-    return r[0] + "@" + Math.round(s.left) + "," + Math.round(s.right) + "," + Math.round(s.top + s.height / 2);
+    const row = p.querySelector('[data-k="' + r[0] + '"]'), s = R(row.querySelector("input"));
+    return r[0] + "@" + Math.round(s.left) + "," + Math.round(s.right) + "," + Math.round(s.top + s.height / 2) + "," + row.querySelector(".slider-value").textContent;
   }).join("|") + "]";
   return t;
 }
