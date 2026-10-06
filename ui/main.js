@@ -7650,19 +7650,45 @@ async function startGraph(g, cfg) {
   const view = { scale: 1, tx: cv.width / 2, ty: cv.height / 2, notch: 0 };
   // Obsidian force defaults (R16.1) and the gains that turn a slider value into
   // the per-step constant of the measured model (docs/recon-graphforce, PLAN s.0):
-  //   repel  per-node strength = repel * REPEL_K * N^REPEL_P  (700 * N^-0.15 at 10)
+  //   repel  per-node strength = repel * REPEL_K * N^REPEL_P  (420 at 10, any N)
   //   link   strength = link * LINK_K / min(deg)               (0.5 at 1)
   //   centre per-node pull  v -= p * center * CENTER_K * alpha (0.04 at 0.5187)
-  // Repulsion SHRINKS with N, as measured on stock; the old +0.36 exponent grew
-  // the n200 cloud +72% past it.
-  const F = { center: 0.5187, repel: 10, link: 1, dist: 250 }, REPEL_K = 70, REPEL_P = -0.15, LINK_K = 0.5, CENTER_K = 0.0771;
-  // d3-force style phyllotaxis seed (deterministic: smoke coords repeat). Radius
-  // 66*sqrt(i+.5): mean radius ~44*sqrt(N), stock's measured first frame.
-  const seed = i => { const r = 66 * Math.sqrt(i + 0.5), t = i * 2.399963; return [r * Math.cos(t), r * Math.sin(t)]; };
+  // The recon fit was 700*N^-0.15; on the implementation (Barnes-Hut, random seed) that left
+  // the n200 cloud 16% under stock, a flat 420 (= the fit at n30) holds n4/n30/n200 within
+  // 15% (docs/recon-graphforce/data/impl). The old +0.36 exponent grew n200 +72%.
+  const F = { center: 0.5187, repel: 10, link: 1, dist: 250 }, REPEL_K = 42.03, REPEL_P = 0, LINK_K = 0.5, CENTER_K = 0.0771;
+  // Seed: a random disk of radius 66*sqrt(n) (mean radius 44*sqrt(n), stock's measured first
+  // frame), radius STRATIFIED by index (node i in the ring of area (i, i+1)/n) at a random angle,
+  // drawn in index order from ONE Park-Miller stream (fixed seed), so smoke coordinates still repeat
+  // (keying a fresh stream by the index made the angles an arithmetic progression: a spiral again).
+  // Stock seeds randomly too. The old golden-angle spiral put siblings 137 degrees apart and the
+  // tree never untangled (n200 hop corr 0.24, stock 0.42); a uniform disk
+  // left n4 one ring short of stock's spread and its first-step peak halved the settle time.
+  // seedS 1 was PICKED from a sweep of 9 seeds (docs/recon-graphforce/data/impl/SEEDS.md): stock is
+  // one random draw per case and n4's settle is bimodal across seeds, so the stream is a sample, not a fit
+  let seedS = 1;
+  const rnd = () => (seedS = seedS * 16807 % 2147483647) / 2147483647;
+  // each node is pulled SEED_BLEND of the way toward its already-placed neighbours (lower index),
+  // so a child starts near its parent and the tree is not seeded tangled; mean radius then rescaled
+  // to 44*sqrt(n), stock's measured first frame
+  const SEED_BLEND = 0.7, nbr = gr.nodes.map(() => []);
+  for (const [i, j] of gr.edges) { if (j < i) nbr[i].push(j); else if (i < j) nbr[j].push(i); }
+  const seeded = [];
+  const seed = i => {
+    let x, y; { const r = 66 * Math.sqrt(i + rnd()), t = 2 * Math.PI * rnd(); x = r * Math.cos(t); y = r * Math.sin(t); }
+    if (nbr[i].length) { let mx = 0, my = 0; for (const j of nbr[i]) { mx += seeded[j][0]; my += seeded[j][1]; }
+      x += (mx / nbr[i].length - x) * SEED_BLEND; y += (my / nbr[i].length - y) * SEED_BLEND; }
+    return (seeded[i] = [x, y]);
+  };
   const N = gr.nodes.map((nd, i) => {
     const [x, y] = seed(i);
     return { n: nd.name, resolved: nd.resolved, x, y, vx: 0, vy: 0, deg: 0, r: 6.5 };
   });
+  // the seed disk is centred on the origin: the centroid translation below would otherwise
+  // snap an off-centre seed in one step (a jump stock never makes)
+  if (N.length) { const cx = N.reduce((s, p) => s + p.x, 0) / N.length, cy = N.reduce((s, p) => s + p.y, 0) / N.length; for (const p of N) { p.x -= cx; p.y -= cy; }
+    const mr = N.reduce((s, p) => s + Math.hypot(p.x, p.y), 0) / N.length, f = mr > 0 ? 44 * Math.sqrt(N.length) / mr : 1;
+    for (const p of N) { p.x *= f; p.y *= f; } }
   const toWorld = (sx, sy) =>
     [(sx - view.tx) / view.scale, (sy - view.ty) / view.scale];
   // adjacency (hover) + undirected unique link list for the spring force;
@@ -7783,9 +7809,13 @@ async function startGraph(g, cfg) {
   // (CPU 0); wake() restarts it on refresh (reheat), pan, zoom, hover, resize, close.
   const PH_HZ = 60, PH_STEP_CAP = 7, PH_BUDGET_MS = 40, ALPHA_MIN = 0.001, ALPHA_DECAY = 0.028;
   let alpha = 1, alphaTarget = 0, phAcc = 0, phLast = performance.now();
-  // settled = total kinetic energy (sum v^2) under 0.0025 px^2/step per node
-  // (mean speed < 0.05 px/step, invisible) for 10 consecutive steps, or physics frozen
-  let calm = 0, quiet = false;          // quiet: physics halted until the next reheat
+  // settled = total kinetic energy (sum v^2) under CALM_KE x its peak since the last reheat
+  // (rms speed < ~0.6% of the peak) for 10 consecutive steps, or physics frozen. Relative,
+  // because stock creeps on after a small reheat: the old absolute 0.0025 px^2/step froze an S2
+  // release at 1.9 s vs stock 2.8 s, and a low absolute one kept the open sim running past 3.5 s
+  // (docs/recon-graphforce/data/impl). Floor 1e-6 px^2/step per node.
+  const CALM_KE = 4e-5;
+  let calm = 0, kePeak = 0, quiet = false;   // quiet: physics halted until the next reheat; kePeak: max KE since it
   let settledMark = false;              // graph_open_settle mark fires once per open
   const kinetic = () => { let k = 0; for (const p of N) k += p.vx * p.vx + p.vy * p.vy; return k; };
   // Barnes-Hut quadtree (theta 0.8) for the many-body repulsion (d3 shape:
@@ -7853,10 +7883,12 @@ async function startGraph(g, cfg) {
     const ck = F.center * CENTER_K * alpha;
     // plus a d3 forceCenter translation (positions only, radius unchanged): the per-node pull
     // is alpha-scaled and the sim stops on calm, so after a re-centre adds a node on one side
-    // the cloud stopped ~40px off the pane centre and an end node sat outside a split pane
-    let sx = 0, sy = 0, nf = 0;
-    for (const p of N) if (p.fx == null) { sx += p.x; sy += p.y; nf++; }
-    if (nf) { sx /= nf; sy /= nf; for (const p of N) if (p.fx == null) { p.x -= sx; p.y -= sy; } }
+    // the cloud stopped ~40px off the pane centre and an end node sat outside a split pane.
+    // The centroid counts a held node too (d3: forceCenter moves every node, fx snaps it back),
+    // else its release shifts the free centroid by offset/N in one step (S2: a 248 u/s jolt).
+    let sx = 0, sy = 0;
+    for (const p of N) { sx += p.x; sy += p.y; }
+    if (N.length) { sx /= N.length; sy /= N.length; for (const p of N) if (p.fx == null) { p.x -= sx; p.y -= sy; } }
     for (const p of N) {
       p.vx -= p.x * ck; p.vy -= p.y * ck;
       p.vx *= 0.7; p.vy *= 0.7; p.x += p.vx; p.y += p.vy;   // velocity decay 0.3 (measured)
@@ -8017,6 +8049,7 @@ async function startGraph(g, cfg) {
     const now = performance.now();
     if (firstFrame) {
       firstFrame = false;
+      phLast = now; phAcc = 0;   // the sim clock starts at the first frame: the time spent building the view before it is not owed as a 6-step burst
       if (g.perfT0) { perf.mark("graph_open", g.perfT0, { nodes: N.length, edges: gr.edges.length }); g.perfT0 = null; }
     }
     const fT0 = perf.now(); let steps = 0, ke = -1;
@@ -8031,7 +8064,8 @@ async function startGraph(g, cfg) {
     const fT1 = perf.now();
     if (!quiet && (steps || alpha <= ALPHA_MIN)) {
       ke = kinetic();
-      calm = ke < 0.0025 * N.length ? calm + 1 : 0;
+      if (ke > kePeak) kePeak = ke;
+      calm = ke < Math.max(CALM_KE * kePeak, 1e-6 * N.length) ? calm + 1 : 0;
       // PLAN item 7: never freeze while a node is HELD (alphaTarget > 0)
       if (alphaTarget === 0 && (calm >= 10 || alpha <= ALPHA_MIN)) {
         quiet = true;
@@ -8083,7 +8117,7 @@ async function startGraph(g, cfg) {
     perf.mark("graph_renderer", perf.now(), { renderer: "2d", reason: "contextlost", webgl: 0, ...gpu });
     redraw();
   };
-  g.reheat = (a = 0.5) => { calm = 0; quiet = false; g.graphSettled = false; alpha = Math.max(alpha, a); wake(); };
+  g.reheat = (a = 0.5) => { calm = 0; kePeak = 0; quiet = false; g.graphSettled = false; alpha = Math.max(alpha, a); wake(); };
   g.graphNodes = () => {              // census: node screen coords (window px) for the graphnav smoke
     const r = cv.getBoundingClientRect();
     return N.map(p => ({ n: p.n, x: Math.round(r.left + p.x * view.scale + view.tx), y: Math.round(r.top + p.y * view.scale + view.ty) }));
@@ -8128,7 +8162,7 @@ async function startGraph(g, cfg) {
     drag = null;
     if (window.__graphHeld === release) window.__graphHeld = null;
     for (const q of N) if (q.fx != null) q.fx = q.fy = null;
-    if (alphaTarget !== 0) { alphaTarget = 0; calm = 0; quiet = false; g.graphSettled = false; if (g.simGen === gen) wake(); }
+    if (alphaTarget !== 0) { alphaTarget = 0; calm = 0; kePeak = 0; quiet = false; g.graphSettled = false; if (g.simGen === gen) wake(); }
   };
   if (!window.__graphRelWired) {        // once per window; whichever graph holds a node registers itself
     window.__graphRelWired = true;
@@ -8164,7 +8198,7 @@ async function startGraph(g, cfg) {
           p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0;
           // d3 drag: alphaTarget 0.3 while held, the neighbours follow the node out
           // (PLAN item 8: not reheat — alpha CLIMBS toward the target, as stock's)
-          if (alphaTarget !== 0.3 || quiet) { alphaTarget = 0.3; calm = 0; quiet = false; g.graphSettled = false; wake(); }
+          if (alphaTarget !== 0.3 || quiet) { alphaTarget = 0.3; calm = 0; kePeak = 0; quiet = false; g.graphSettled = false; wake(); }
         } else {
           view.tx += dx; view.ty += dy;  // EMPTY canvas: camera pan, unchanged
         }
