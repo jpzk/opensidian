@@ -8182,14 +8182,32 @@ async function startGraph(g, cfg) {
     if (rcSnap && rcSnap.vraw === undefined) rcPre();   // C5: before this frame's physics
     phAcc = Math.min(phAcc + (now - phLast) / 1000, PH_STEP_CAP / PH_HZ); phLast = now;
     const phT0 = perf.now();
+    // The settle test runs after EVERY physics step, not once per frame: counted per frame,
+    // "10 calm" meant 10..70 steps depending on how many steps each frame happened to carry
+    // (wall clock), so the sim froze at a timing-dependent step and two runs of the same
+    // vault came to rest in different places (graphgl gl vs 2d 9.97% px, gate 14:25/14:40).
+    // Per step, the stop is a pure function of the step sequence: same seed, same layout.
     while (phAcc >= 1 / PH_HZ) {
       phAcc -= 1 / PH_HZ;
-      if (!quiet && (alpha > ALPHA_MIN || alphaTarget > 0)) { physStep(); steps++; }
+      if (!quiet && (alpha > ALPHA_MIN || alphaTarget > 0)) { physStep(); steps++; ke = settleTest(); }
+      if (quiet) { phAcc = 0; break; }
       if (steps && perf.now() - phT0 >= PH_BUDGET_MS) { phAcc = 0; break; }   // wall-clock backstop: a costlier step (bigger N) must not lengthen the frame
     }
     const fT1 = perf.now();
-    if (!quiet && (steps || alpha <= ALPHA_MIN)) {
-      ke = kinetic();
+    if (!quiet && !steps && alpha <= ALPHA_MIN) ke = settleTest();
+    const drew = steps || dirty;
+    if (drew) { draw(); dirty = false; }
+    if (steps) perf.push("graph_frame", perf.now() - fT0, { nodes: N.length, steps, phys: +(fT1 - fT0).toFixed(1), ke: +ke.toFixed(2), alpha: +alpha.toFixed(3) });
+    if (quiet) {                       // settled: loop ends, CPU -> 0; publish node coords to the census
+      running = false; perf.flush();
+      if (!g.graphSettled || drew) { g.graphSettled = true; updateTitle(); }  // pan/zoom moves screen coords
+      return;
+    }
+    g.sim = requestAnimationFrame(step);
+  }
+  function settleTest() {              // after one physics step: kinetic energy vs its peak; may set quiet
+    const ke = kinetic();
+    {
       if (ke > kePeak) kePeak = ke;
       calm = ke < Math.max(CALM_KE * kePeak, 1e-6 * N.length) ? calm + 1 : 0;
       // PLAN item 7: never freeze while a node is HELD (alphaTarget > 0)
@@ -8206,15 +8224,7 @@ async function startGraph(g, cfg) {
         }
       }
     }
-    const drew = steps || dirty;
-    if (drew) { draw(); dirty = false; }
-    if (steps) perf.push("graph_frame", perf.now() - fT0, { nodes: N.length, steps, phys: +(fT1 - fT0).toFixed(1), ke: +ke.toFixed(2), alpha: +alpha.toFixed(3) });
-    if (quiet) {                       // settled: loop ends, CPU -> 0; publish node coords to the census
-      running = false; perf.flush();
-      if (!g.graphSettled || drew) { g.graphSettled = true; updateTitle(); }  // pan/zoom moves screen coords
-      return;
-    }
-    g.sim = requestAnimationFrame(step);
+    return ke;
   }
   const wake = () => {                  // (re)start the loop; a stopped loop draws once and exits
     if (running) return;
