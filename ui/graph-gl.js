@@ -37,20 +37,22 @@
   const EVS = PROJ + `
     attribute vec2 a_corner;                 // x: along the segment (-1 = p0 end), y: across
     attribute vec2 a_p0; attribute vec2 a_p1; attribute vec4 a_col;
-    varying float v_d; varying float v_l; varying float v_len; varying vec4 v_col;
+    uniform float u_hw;                      // half link width, px (graphctx Display: 0.5 x Link thickness)
+    varying float v_d; varying float v_l; varying float v_len; varying vec4 v_col; varying float v_hw;
     void main() {
       vec2 s0 = a_p0 * u_scale + u_t, s1 = a_p1 * u_scale + u_t;
       vec2 dv = s1 - s0; float len = length(dv);
       vec2 dir = len > 1e-3 ? dv / len : vec2(1.0, 0.0), nrm = vec2(-dir.y, dir.x);
       float along = mix(-1.5, len + 1.5, a_corner.x * 0.5 + 0.5);   // 1.5px apron past both caps
-      gl_Position = proj(s0 + dir * along + nrm * a_corner.y * 1.5);
-      v_d = a_corner.y * 1.5; v_l = along; v_len = len; v_col = a_col;
+      float ap = u_hw + 1.0;                 // half-width + 1px apron (1.5 at width 1)
+      gl_Position = proj(s0 + dir * along + nrm * a_corner.y * ap);
+      v_d = a_corner.y * ap; v_l = along; v_len = len; v_col = a_col; v_hw = u_hw;
     }`;
   const EFS = `
     precision mediump float;
-    varying float v_d; varying float v_l; varying float v_len; varying vec4 v_col;
+    varying float v_d; varying float v_l; varying float v_len; varying vec4 v_col; varying float v_hw;
     void main() {
-      float cov = clamp(1.0 - abs(v_d), 0.0, 1.0)                           // 1px core, tent falloff
+      float cov = clamp(v_hw + 0.5 - abs(v_d), 0.0, 1.0)                    // width-2*v_hw core, 1px falloff (width 1: the old tent)
                 * clamp(v_l + 0.5, 0.0, 1.0) * clamp(v_len - v_l + 0.5, 0.0, 1.0);   // butt caps
       gl_FragColor = vec4(v_col.rgb, v_col.a * cov);
     }`;
@@ -86,7 +88,7 @@
     const loc = (p, n) => gl.getAttribLocation(p, n), uni = (p, n) => gl.getUniformLocation(p, n);
     const N = { corner: loc(np, "a_corner"), res: uni(np, "u_res"), scale: uni(np, "u_scale"), t: uni(np, "u_t"),
                 attrs: [[loc(np, "a_pos"), 2, 0], [loc(np, "a_r"), 1, 8], [loc(np, "a_ring"), 1, 12], [loc(np, "a_col"), 4, 16]] };
-    const E = { corner: loc(ep, "a_corner"), res: uni(ep, "u_res"), scale: uni(ep, "u_scale"), t: uni(ep, "u_t"),
+    const E = { corner: loc(ep, "a_corner"), res: uni(ep, "u_res"), scale: uni(ep, "u_scale"), t: uni(ep, "u_t"), hw: uni(ep, "u_hw"),
                 attrs: [[loc(ep, "a_p0"), 2, 0], [loc(ep, "a_p1"), 2, 8], [loc(ep, "a_col"), 4, 16]] };
     const quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, quad);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
@@ -96,6 +98,7 @@
     const pass = (P, prg, buf, data, n, view, w, h) => {
       gl.useProgram(prg);
       gl.uniform2f(P.res, w, h); gl.uniform1f(P.scale, view.scale); gl.uniform2f(P.t, view.tx, view.ty);
+      if (P.hw) gl.uniform1f(P.hw, hw);
       gl.bindBuffer(gl.ARRAY_BUFFER, quad);
       gl.enableVertexAttribArray(P.corner); gl.vertexAttribPointer(P.corner, 2, gl.FLOAT, false, 0, 0); inst.div(P.corner, 0);
       gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, data.subarray(0, n * 8), gl.DYNAMIC_DRAW);
@@ -104,13 +107,14 @@
       for (const [a] of P.attrs) { inst.div(a, 0); gl.disableVertexAttribArray(a); }
       gl.disableVertexAttribArray(P.corner);
     };
-    let lost = false;
+    let lost = false, hw = 0.5;
     cv.addEventListener("webglcontextlost", e => { e.preventDefault(); if (lost) return; lost = true; onLost && onLost(); }, false);
     const R = {
       kind: "gl", info, get lost() { return lost; },
-      // draw(w, h, view, nodes: Float32Array [x y r ring r g b a]*n, nCount, edges: Float32Array [x0 y0 x1 y1 r g b a]*e, eCount, bg: [r g b])
-      draw(w, h, view, nodes, nCount, edges, eCount, bg) {
+      // draw(w, h, view, nodes: Float32Array [x y r ring r g b a]*n, nCount, edges: Float32Array [x0 y0 x1 y1 r g b a]*e, eCount, bg: [r g b], lw: link width px, default 1)
+      draw(w, h, view, nodes, nCount, edges, eCount, bg, lw) {
         if (lost) return false;
+        hw = 0.5 * (lw > 0 ? lw : 1);
         if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
         gl.viewport(0, 0, w, h);
         // bg is the resolved [r,g,b] main.js got from the browser. If resolution failed for

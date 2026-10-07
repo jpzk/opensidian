@@ -797,6 +797,10 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 .graph-controls .graph-color-button-container { padding: 6px 12px }
 .graph-controls .gc-newgroup { width: 100%; height: 30px; font: inherit; font-size: 13px; border: 0; border-radius: 4px; cursor: pointer;
   color: var(--text-on-accent); background: var(--interactive-accent) }
+/* graphctx Display (R§4.5): Animate = a 78x30 button, right aligned, in a row without a name */
+.graph-controls .gc-animate .setting-item-control { display: flex; justify-content: flex-end }
+.graph-controls .gc-animate-btn { width: 78px; height: 30px; font: inherit; font-size: 13px; border: 0; border-radius: 4px; cursor: pointer;
+  color: var(--text-normal, inherit); background: var(--interactive-normal, var(--border)) }
 
 /* m5: shared fuzzy modal (quick switcher Ctrl+O / command palette Ctrl+P) */
 /* R22: the overlay is the flex box, #mbox is its item — the 90px top offset is

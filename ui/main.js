@@ -7558,12 +7558,20 @@ const GC_FTOG = [   // Filters toggles both graphs share: [settings key, label, 
   ["hideUnresolved", "Existing files only", false, ""],
   ["showOrphans", "Orphans", true, "gc-global"],
 ];
+const GC_DROWS = [  // Display sliders (R§4.2-4.4): [d key, settings key, label, min, max, step, default, readout decimals]
+  ["fade", "textFadeMultiplier", "Text fade threshold", -3, 3, 0.1, 0, 2],
+  ["size", "nodeSizeMultiplier", "Node size", 0.1, 5, "any", 1, 2],
+  ["line", "lineSizeMultiplier", "Link thickness", 0.1, 5, "any", 1, 2],
+];
+const GC_DDEF = { arrow: false, fade: 0, size: 1, line: 1 };   // Display defaults (R§4.6): what an unbound graph draws with
 function gcParse(o) {              // settings object (graph.json / local options) -> card state, clamped, stock defaults
   const st = { close: o.close === true, cs: {}, v: {}, f: { search: typeof o.search === "string" ? o.search : "" } };
   for (const [k, , def] of GC_FTOG) st.f[k] = typeof o[k] === "boolean" ? o[k] : def;
   // colorGroups (R§3.3): kept as stored, rows in order; a malformed row is dropped
   st.groups = Array.isArray(o.colorGroups) ? o.colorGroups.filter(r => r && typeof r === "object")
     .map(r => ({ query: typeof r.query === "string" ? r.query : "", rgb: r.color && Number.isInteger(r.color.rgb) ? r.color.rgb & 0xffffff : 0 })) : [];
+  st.d = { arrow: o.showArrow === true };   // Display (GC22-GC25)
+  for (const [k, jk, , lo, hi, , def] of GC_DROWS) { const x = o[jk]; st.d[k] = typeof x === "number" && isFinite(x) ? Math.min(hi, Math.max(lo, x)) : def; }
   for (const [k, , , ck] of GC_SECS) st.cs[k] = o[ck] !== false;   // every section collapsed by default (R§5 L0)
   for (const [k, jk, , lo, hi, , def] of GF_ROWS) {
     const x = o[jk];
@@ -7647,7 +7655,8 @@ function gfPanel(g) {              // built once per group, lives in .content be
             GC_LTOG.map(r => gcToggle(r[0], r[2], "gc-local")).join("") +
             GC_FTOG.map(r => gcToggle(r[0], r[1], r[3])).join(""),
     groups: '<div class="gc-groups"></div><div class="graph-color-button-container"><button class="mod-cta gc-newgroup">New group</button></div>',
-    display: "",
+    display: gcToggle("showArrow", "Arrows") + GC_DROWS.map(r => gcSlider(r[0], r[2], r[3], r[4], r[5])).join("") +
+             '<div class="setting-item gc-animate"><div class="setting-item-control"><button class="gc-animate-btn">Animate</button></div></div>',
     forces: GF_ROWS.map(r => gcSlider(r[0], r[2], r[3], r[4], r[5])).join(""),
   };
   p.innerHTML =
@@ -7681,11 +7690,13 @@ function gfPanel(g) {              // built once per group, lives in .content be
     for (const [k, , def] of GC_FTOG) if (s.kind === "gg" || k !== "showOrphans") { s.st.f[k] = def; patch[k] = def; }
     if (s.kind === "lg") { s.st.f.search = ""; patch.search = ""; }
     s.st.groups = []; patch.colorGroups = [];   // R§3.9: reset removes every colour group
+    s.st.d = Object.assign({}, GC_DDEF); patch.showArrow = false;   // R§4.6 (D9): arrows off, fade 0, node 1, link 1
+    for (const r of GC_DROWS) patch[r[1]] = r[6];
     if (s.kind === "lg") {
       s.t.depth = 1; s.t.inc = true; s.t.out = true;
       Object.assign(patch, { localJumps: 1, localBacklinks: true, localForelinks: true });
     }
-    s.save(patch); gfSync(g); updateTitle();
+    s.save(patch); gfSync(g); if (g.graphRedraw) g.graphRedraw(); updateTitle();
     if (g.graphRefresh) { await g.graphRefresh(); updateTitle(); }
   };
   for (const r of GF_ROWS) {
@@ -7700,6 +7711,31 @@ function gfPanel(g) {              // built once per group, lives in .content be
       updateTitle();               // census [gff:]/[gfs:] follow the thumb while it is held
     };
   }
+  for (const r of GC_DROWS) {      // Display sliders (GC23-GC25, GC27): repaint live, no reheat, persisted at once
+    const row = q('[data-k="' + r[0] + '"]'), inp = row.querySelector("input");
+    inp.oninput = () => {
+      const s = sc(); if (!s) return;
+      const x = Math.min(r[4], Math.max(r[3], +inp.value));
+      s.st.d[r[0]] = x;
+      row.querySelector(".slider-value").textContent = gfFmt(r, x);
+      s.save({ [r[1]]: x });
+      if (g.graphRedraw) g.graphRedraw();
+      updateTitle();
+    };
+  }
+  { // Arrows (GC22)
+    const box = q('[data-k="showArrow"] .checkbox-container');
+    const flip = () => {
+      const s = sc(); if (!s) return;
+      s.st.d.arrow = !s.st.d.arrow; box.classList.toggle("is-enabled", s.st.d.arrow);
+      s.save({ showArrow: s.st.d.arrow });
+      if (g.graphRedraw) g.graphRedraw();
+      updateTitle();
+    };
+    box.onclick = flip;
+    box.onkeydown = e => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); flip(); } };
+  }
+  q(".gc-animate-btn").onclick = () => { if (g.graphAnimate) g.graphAnimate(); };   // GC26: timelapse, not persisted
   { // local Depth (R§5.1/5.2): integer 1..5, re-filters the neighbourhood live
     const row = q('[data-k="depth"]'), inp = row.querySelector("input");
     inp.oninput = async () => {
@@ -7850,6 +7886,12 @@ function gfSync(g) {               // controls + readouts <- the live sim's F (a
   }
   { const inp = p.querySelector('[data-k="search"] input'); if (document.activeElement !== inp) inp.value = s.st.f.search; }
   gcGroupsRender(g);
+  for (const r of GC_DROWS) {
+    const row = p.querySelector('[data-k="' + r[0] + '"]');
+    row.querySelector("input").value = String(s.st.d[r[0]]);
+    row.querySelector(".slider-value").textContent = gfFmt(r, s.st.d[r[0]]);
+  }
+  p.querySelector('[data-k="showArrow"] .checkbox-container').classList.toggle("is-enabled", !!s.st.d.arrow);
   for (const [k] of GC_FTOG) p.querySelector('[data-k="' + k + '"] .checkbox-container').classList.toggle("is-enabled", !!s.st.f[k]);
   if (s.kind === "lg") {
     const row = p.querySelector('[data-k="depth"]');
@@ -7876,7 +7918,8 @@ function gfTok(g, pre = "gf") {
   for (const [n, sel] of [["reset", ".mod-reset"], ["close", ".mod-close"], ["open", ".mod-open"],
                           ...GC_SECS.map(([k]) => [k, '[data-s="' + k + '"] .gf-head']),
                           ...GC_LTOG.map(([f]) => [f, '[data-k="' + f + '"] .checkbox-container']),
-                          ...GC_FTOG.map(([k]) => [k, '[data-k="' + k + '"] .checkbox-container']), ["search", '[data-k="search"] input']]) {
+                          ...GC_FTOG.map(([k]) => [k, '[data-k="' + k + '"] .checkbox-container']), ["search", '[data-k="search"] input'],
+                          ["showArrow", '[data-k="showArrow"] .checkbox-container'], ["animate", ".gc-animate-btn"]]) {
     const e = p.querySelector(sel); if (vis(e)) bs.push(n + "@" + c(e));
   }
   p.querySelectorAll(".graph-color-group").forEach((row, i) => {   // Groups rows: gq<i> query, gc<i> swatch, gx<i> delete
@@ -7893,6 +7936,11 @@ function gfTok(g, pre = "gf") {
   t += " [" + pre + "q:search=" + s.st.f.search.replace(/[[]|,]/g, "") + "," + GC_FTOG.map(([k]) => k + "=" + (s.st.f[k] ? 1 : 0)).join(",") + "]";
   // graphctx Groups [<p>g:<i>=<query>#rrggbb|...] in row order (query with []|,# stripped), empty = no group
   t += " [" + pre + "g:" + s.st.groups.map((r, i) => i + "=" + r.query.replace(/[[\]|,#]/g, "") + gcHex(r.rgb)).join("|") + "]";
+  // graphctx Display [<p>d:arrow=0,fade=0.00,size=1.00,line=1.00,anim=<drawn>/<n>,lab=<1 labels drawn|0>] — the stored values, what the
+  // last frame drew (anim: nodes revealed by the timelapse, n/n when none runs) and whether that frame drew labels
+  { const a = g.graphAnimState ? g.graphAnimState() : null;
+    t += " [" + pre + "d:arrow=" + (s.st.d.arrow ? 1 : 0) + "," + GC_DROWS.map(r => r[0] + "=" + s.st.d[r[0]].toFixed(2)).join(",") +
+      (a ? ",anim=" + a.shown + "/" + a.n + ",lab=" + (a.lab ? 1 : 0) : "") + "]"; }
   if (s.kind === "lg") t += " [" + pre + "t:" + GC_LTOG.map(([f]) => f + "=" + (s.t[f] ? 1 : 0)).join(",") + "]";
   return t;
 }
@@ -7941,7 +7989,7 @@ const graphRendererPref = () => graphPrefP || (graphPrefP = inv("graph_renderer_
   return { renderer: r === "gl" || r === "2d" ? r : null, loseCtx: !!(p && p.lose_ctx) };
 }));
 function showEditor(g) {
-  g.graphOn = false; g.graphRefresh = null; g.graphRedraw = null; g.graphRc = null; cancelAnimationFrame(g.sim); g.graphRenderer = null;
+  g.graphOn = false; g.graphRefresh = null; g.graphRedraw = null; g.graphAnimate = null; g.graphAnimState = null; g.graphRc = null; cancelAnimationFrame(g.sim); g.graphRenderer = null;
   if (g.ro) { g.ro.disconnect(); g.ro = null; }
   if (g.attrObs) { g.attrObs.disconnect(); g.attrObs = null; }
   perf.flush();                    // ship buffered graph_frame samples of the closed sim
@@ -8175,7 +8223,8 @@ async function startGraph(g, cfg) {
   };
   rebuild();
   let hov = -1;
-  const hitTest = (x, y) => N.findIndex(p => (p.x - x) ** 2 + (p.y - y) ** 2 < (p.r + 4) ** 2);
+  const dsp = () => g.gcScope && g.gcScope.st.d ? g.gcScope.st.d : GC_DDEF;   // graphctx Display (GC22-GC25): what this frame draws with
+  const hitTest = (x, y) => { const ns = dsp().size; return N.findIndex(p => (p.x - x) ** 2 + (p.y - y) ** 2 < (p.r * ns + 4) ** 2); };
   // C5 (B26-B29, R19.2/R19.3): the re-centre CONTINUITY record. graphRefresh snapshots the
   // real pre-refresh node objects; the first frame after the swap (rcPre) and its first PAINT
   // (rcRecord) measure the LIVE N[] against that snapshot and publish it once as [lgrc:].
@@ -8440,6 +8489,16 @@ async function startGraph(g, cfg) {
   // (x y r ring rgba) and an edge instance array (x0 y0 x1 y1 rgba) for graph-gl.js; cv then
   // carries only the labels. Arrays grow on demand and are reused across frames.
   let nArr = new Float32Array(0), eArr = new Float32Array(0);
+  // graphctx GC26 Animate (R§4.5): a timelapse — the graph restarts empty and N[0..shown) appear in
+  // vault order over ANIM_MS; shown = n·√(t/ANIM_MS) (stock: 6 of 11 at 0.5 s, all by ~2 s). Not persisted.
+  const ANIM_MS = 2000;
+  let animT0 = -1, animLast = -1, animLab = true, animPub = 0;
+  const animShown = () => {
+    if (animT0 < 0) return (animLast = N.length);
+    const k = (performance.now() - animT0) / ANIM_MS;
+    if (k >= 1) { animT0 = -1; return (animLast = N.length); }
+    return (animLast = Math.min(N.length, Math.floor(N.length * Math.sqrt(k))));
+  };
   function draw() {
     const dT0 = perf.now();
     const P = palette();               // one token read per frame, none per node
@@ -8453,29 +8512,45 @@ async function startGraph(g, cfg) {
     // hover: hovered node + its edges/neighbors lit accent, rest faded
     const litE = ([i, j]) => hov < 0 || i === hov || j === hov;
     const litN = i => hov < 0 || i === hov || adj[hov].has(i);
-    ctx.lineWidth = 1;
+    const D = dsp(), NS = D.size, shown = animShown();   // Display: node size, link thickness, arrows; the timelapse reveals N[0..shown)
+    ctx.lineWidth = D.line;
     let ec = 0;
+    // an arrow (GC22) = two strokes from the tip, which sits on the target's rim; world units, grows with link thickness
+    const AL = 5 + 2 * D.line, AC = Math.cos(0.45), AS = Math.sin(0.45);
+    const wings = (A, B) => {
+      const dx = B.x - A.x, dy = B.y - A.y, l = Math.hypot(dx, dy) || 1, ux = dx / l, uy = dy / l, rb = B.r * NS + 1;
+      const tx = B.x - ux * rb, ty = B.y - uy * rb;
+      return [tx, ty, tx - AL * (ux * AC - uy * AS), ty - AL * (uy * AC + ux * AS), tx - AL * (ux * AC + uy * AS), ty - AL * (uy * AC - ux * AS)];
+    };
     const edgePass = (lit, col, a) => {
       if (glr) {                       // gl: dim pass first, lit pass on top (same order as the 2D strokes)
         const c = RGB[col];
-        for (const ed of gr.edges) {
-          if (litE(ed) !== lit) continue;
-          const A = N[ed[0]], B = N[ed[1]], o = ec * 8;
-          eArr[o] = A.x; eArr[o + 1] = A.y; eArr[o + 2] = B.x; eArr[o + 3] = B.y;
+        const put = (x0, y0, x1, y1) => {
+          const o = ec * 8;
+          eArr[o] = x0; eArr[o + 1] = y0; eArr[o + 2] = x1; eArr[o + 3] = y1;
           eArr[o + 4] = c[0]; eArr[o + 5] = c[1]; eArr[o + 6] = c[2]; eArr[o + 7] = a;
           ec++;
+        };
+        for (const ed of gr.edges) {
+          if (litE(ed) !== lit || ed[0] >= shown || ed[1] >= shown) continue;
+          const A = N[ed[0]], B = N[ed[1]];
+          put(A.x, A.y, B.x, B.y);
+          if (D.arrow) { const w = wings(A, B); put(w[0], w[1], w[2], w[3]); put(w[0], w[1], w[4], w[5]); }
         }
         return;
       }
       ctx.globalAlpha = a; ctx.strokeStyle = col; ctx.beginPath();
       let any = false;
       for (const ed of gr.edges) {
-        if (litE(ed) !== lit) continue;
-        ctx.moveTo(N[ed[0]].x, N[ed[0]].y); ctx.lineTo(N[ed[1]].x, N[ed[1]].y); any = true;
+        if (litE(ed) !== lit || ed[0] >= shown || ed[1] >= shown) continue;
+        const A = N[ed[0]], B = N[ed[1]];
+        ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); any = true;
+        if (D.arrow) { const w = wings(A, B); ctx.moveTo(w[2], w[3]); ctx.lineTo(w[0], w[1]); ctx.lineTo(w[4], w[5]); }
       }
       if (any) ctx.stroke();
     };
-    if (glr && eArr.length < gr.edges.length * 8) eArr = new Float32Array(gr.edges.length * 8 + 800);
+    const EPE = D.arrow ? 24 : 8;      // gl floats per edge: the segment (+ two wing segments)
+    if (glr && eArr.length < gr.edges.length * EPE) eArr = new Float32Array(gr.edges.length * EPE + 800);
     if (hov >= 0) { edgePass(false, P.edge, 0.12); edgePass(true, P.hi, 1); }
     else edgePass(true, P.edge, 1);
     ctx.textAlign = "center"; ctx.font = "12px sans-serif";
@@ -8486,6 +8561,7 @@ async function startGraph(g, cfg) {
     const [wx0, wy0] = toWorld(0, 0), [wx1, wy1] = toWorld(cv.width, cv.height), pad = 40 / view.scale;
     for (let i = 0; i < N.length; i++) {
       const p = N[i], isC = cn !== null && p.n === cn;
+      if (i >= shown) continue;
       if (p.x < wx0 - pad || p.x > wx1 + pad || p.y < wy0 - pad || p.y > wy1 + pad) continue;
       const a = litN(i) ? (p.resolved ? 1 : 0.55) : 0.12;
       const col = i === hov ? P.hi : isC ? P.ctr : p.kind === 2 ? P.tag : p.kind === 3 ? gcNodeCol(GS, p) || P.att : gcNodeCol(GS, p) || P.node;
@@ -8495,7 +8571,9 @@ async function startGraph(g, cfg) {
       if (!gp) groups.set(key, gp = { col, a, res: p.resolved, dr: isC ? 4 : 0, idx: [] });
       gp.idx.push(i);
     }
-    const labels = view.scale > 0.73;   // R16.5: labels hidden at scale <= 0.73 (Text fade 0)
+    // R16.5: labels hidden at scale <= 0.73 at Text fade 0; each +1 of fade doubles that threshold (3 hides them at scale 1, -3 keeps them to 0.09)
+    const labels = view.scale > 0.73 * Math.pow(2, D.fade);
+    animLab = labels;
     if (glr) {
       if (nArr.length < N.length * 8) nArr = new Float32Array(N.length * 8 + 800);
       let nc = 0;
@@ -8503,18 +8581,18 @@ async function startGraph(g, cfg) {
         const c = RGB[gp.col], ring = gp.res ? 0 : 1.5;
         for (const i of gp.idx) {
           const p = N[i], o = nc * 8;
-          nArr[o] = p.x; nArr[o + 1] = p.y; nArr[o + 2] = p.r + gp.dr + ring / 2; nArr[o + 3] = ring;   // 2D strokes straddle the radius
+          nArr[o] = p.x; nArr[o + 1] = p.y; nArr[o + 2] = (p.r + gp.dr) * NS + ring / 2; nArr[o + 3] = ring;   // 2D strokes straddle the radius
           nArr[o + 4] = c[0]; nArr[o + 5] = c[1]; nArr[o + 6] = c[2]; nArr[o + 7] = gp.a; nc++;
         }
-        if (labels) { ctx.globalAlpha = gp.a; ctx.fillStyle = gp.col; for (const i of gp.idx) { const p = N[i]; ctx.fillText(p.n, p.x, p.y - p.r - gp.dr - 4); } }
+        if (labels) { ctx.globalAlpha = gp.a; ctx.fillStyle = gp.col; for (const i of gp.idx) { const p = N[i]; ctx.fillText(p.n, p.x, p.y - (p.r + gp.dr) * NS - 4); } }
       }
-      glr.draw(cv.width, cv.height, view, nArr, nc, eArr, ec, RGB[P.bg]);   // bg: the clear colour, from the token like every other colour here
+      glr.draw(cv.width, cv.height, view, nArr, nc, eArr, ec, RGB[P.bg], D.line);   // bg: the clear colour, from the token like every other colour here
     } else for (const gp of groups.values()) {
       ctx.globalAlpha = gp.a; ctx.beginPath();
-      for (const i of gp.idx) { const p = N[i], r = p.r + gp.dr; ctx.moveTo(p.x + r, p.y); ctx.arc(p.x, p.y, r, 0, 7); }
+      for (const i of gp.idx) { const p = N[i], r = (p.r + gp.dr) * NS; ctx.moveTo(p.x + r, p.y); ctx.arc(p.x, p.y, r, 0, 7); }
       if (gp.res) { ctx.fillStyle = gp.col; ctx.fill(); }
       else { ctx.lineWidth = 1.5; ctx.strokeStyle = gp.col; ctx.stroke(); ctx.lineWidth = 1; } // hollow = unresolved
-      if (labels) { ctx.fillStyle = gp.col; for (const i of gp.idx) { const p = N[i]; ctx.fillText(p.n, p.x, p.y - p.r - gp.dr - 4); } }
+      if (labels) { ctx.fillStyle = gp.col; for (const i of gp.idx) { const p = N[i]; ctx.fillText(p.n, p.x, p.y - (p.r + gp.dr) * NS - 4); } }
     }
     ctx.globalAlpha = 1;
     if (rcSnap) { rcRecord(); updateTitle(); }   // C5: once, on the first paint after a re-centre
@@ -8547,10 +8625,12 @@ async function startGraph(g, cfg) {
     }
     const fT1 = perf.now();
     if (!quiet && !steps && alpha <= ALPHA_MIN) ke = settleTest();
-    const drew = steps || dirty;
+    const anim = animT0 >= 0;          // a running timelapse draws every frame, settled or not
+    const drew = steps || dirty || anim;
     if (drew) { draw(); dirty = false; }
+    if (anim && (animT0 < 0 || now - animPub >= 100)) { animPub = now; updateTitle(); }   // census [gfd:] anim=k/n follows the reveal
     if (steps) perf.push("graph_frame", perf.now() - fT0, { nodes: N.length, steps, phys: +(fT1 - fT0).toFixed(1), ke: +ke.toFixed(2), alpha: +alpha.toFixed(3) });
-    if (quiet) {                       // settled: loop ends, CPU -> 0; publish node coords to the census
+    if (quiet && animT0 < 0) {         // settled: loop ends, CPU -> 0; publish node coords to the census
       running = false; perf.flush();
       if (shadeNow) {                  // Forces card shadow just switched on (settleTest): its first paint
         shadeNow = false;              // stalls ~460 ms, so "settled" is published from the NEXT frame,
@@ -8592,6 +8672,8 @@ async function startGraph(g, cfg) {
   };
   const redraw = () => { dirty = true; wake(); };
   g.graphRedraw = () => { if (g.simGen === gen) redraw(); };   // graphctx: a group colour edit repaints, no refetch
+  g.graphAnimate = () => { if (g.simGen !== gen) return; animT0 = performance.now(); animPub = 0; g.reheat(1); updateTitle(); };   // GC26
+  g.graphAnimState = () => g.simGen === gen ? { shown: animLast < 0 ? N.length : animLast, n: N.length, lab: animLab } : null;
   // THEME / PALETTE -> REPAINT (goal graphtheme). The loop stops once the sim is quiet (CPU -> 0),
   // so a settled graph paints nothing until something wakes it — a mode or palette switch used to
   // leave the old colours on screen until the next hover or pan, whatever the cache did. The graph
