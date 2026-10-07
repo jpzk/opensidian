@@ -7750,7 +7750,7 @@ function gfPanel(g) {              // built once per group, lives in .content be
     const box = q(".gc-groups");
     const save = s => s.save({ colorGroups: s.st.groups.map(r => ({ query: r.query, color: { a: 1, rgb: r.rgb } })) });
     const rowI = e => { const row = e.target.closest(".graph-color-group"); return row ? +row.dataset.i : -1; };
-    q(".gc-newgroup").onclick = () => {   // R§3.2: colour of group i = hsl(40°·i, 60%, 60%)
+    q(".gc-newgroup").onclick = () => {   // R§3.2: colour of group i = hue 40°·i, saturation 60%, lightness 60%
       const s = sc(); if (!s) return;
       s.st.groups.push({ query: "", rgb: gcHslRgb(40 * s.st.groups.length, 0.6, 0.6) });
       save(s); gcGroupsRender(g); updateTitle();   // an empty query colours nothing (R§3.6): no refetch
@@ -7808,10 +7808,9 @@ function gcHslRgb(h, s, l) {       // hsl -> 24-bit int (stock's default group c
   return (f(0) << 16) | (f(8) << 8) | f(4);
 }
 const gcHex = rgb => "#" + (rgb & 0xffffff).toString(16).padStart(6, "0");
-const gcRgbCss = rgb => "rgb(" + ((rgb >> 16) & 255) + ", " + ((rgb >> 8) & 255) + ", " + (rgb & 255) + ")";
-function gcNodeCol(GS, p) {     // a file node (note / attachment) in a colour group -> its fill (rgb() string, keyed into the graph RGB map by draw)
+function gcNodeCol(GS, p) {     // a file node (note / attachment) in a colour group -> its fill (a CSS colour string, keyed into the graph RGB map by draw)
   if (!GS || p.col < 0 || !(p.kind === 0 || p.kind === 3) || !GS[p.col]) return null;
-  return gcRgbCss(GS[p.col].rgb);
+  return gcHex(GS[p.col].rgb);
 }
 function gcGroupsRender(g) {       // rows <- scope; a row whose query box has focus keeps it (typing is not interrupted)
   const p = g.gfp, s = g.gcScope; if (!p || !s) return;
@@ -8488,7 +8487,7 @@ async function startGraph(g, cfg) {
       if (p.x < wx0 - pad || p.x > wx1 + pad || p.y < wy0 - pad || p.y > wy1 + pad) continue;
       const a = litN(i) ? (p.resolved ? 1 : 0.55) : 0.12;
       const col = i === hov ? P.hi : isC ? P.ctr : p.kind === 2 ? P.tag : p.kind === 3 ? gcNodeCol(GS, p) || P.att : gcNodeCol(GS, p) || P.node;
-      if (!(col in RGB)) RGB[col] = chan01(col);   // a group colour is not a palette token: key it for the GL path (palette() empties RGB on a theme switch; this refills)
+      if (!(col in RGB)) RGB[col] = col[0] === "#" ? [1, 3, 5].map(k => parseInt(col.slice(k, k + 2), 16) / 255) : chan01(col);   // a group colour (gcHex) is not a palette token: key it for the GL path (palette() empties RGB on a theme switch; this refills)
       const key = col + a + (p.resolved ? "r" : "u") + (isC ? "c" : "");
       let gp = groups.get(key);
       if (!gp) groups.set(key, gp = { col, a, res: p.resolved, dr: isC ? 4 : 0, idx: [] });
