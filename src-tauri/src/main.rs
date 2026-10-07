@@ -429,15 +429,16 @@ fn is_pdf_target(target: &str) -> bool {
 /// `pdf_path_in` (the R29.5 rule) BEFORE a byte is read; parsed on the one
 /// pdf-render worker. None = missing / escaped / broken — the UI paints one
 /// placeholder for all three, so an escape is indistinguishable from a typo.
+/// Timed (perf-coverage): the span covers the worker queue wait + the parse,
+/// i.e. what the frame waits for before it can size itself.
 #[tauri::command]
-async fn pdf_info(v: State<'_, Vault>, path: String) -> Result<Option<pdf::Info>, String> {
+async fn pdf_info(v: State<'_, Vault>, path: String, otel: Option<perf::Ctx>) -> Result<Option<pdf::Info>, String> {
     let Some(p) = cur_vault(&v).and_then(|r| pdf_path_in(&r, &path)) else { return Ok(None) };
     let (tx, rx) = std::sync::mpsc::channel();
     pdf::queue_info(p, Box::new(move |i| {
         let _ = tx.send(i);
     }));
-    tauri::async_runtime::spawn_blocking(move || rx.recv().ok().flatten())
-        .await
+    span_timed!(otel => "pdf_info", tauri::async_runtime::spawn_blocking(move || rx.recv().ok().flatten()).await)
         .map_err(|e| e.to_string())
 }
 
