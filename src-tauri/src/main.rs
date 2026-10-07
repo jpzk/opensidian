@@ -4228,8 +4228,28 @@ fn win_rect(win: tauri::Window) -> Result<WinRect, String> {
 /// comes from the configure event itself and is always real. This app's window
 /// is undecorated (R33: outer == inner), so the inner rect is exact here; for a
 /// decorated window it is off by the frame, still far better than 1x1.
+///
+/// vbgeom: BOTH caches can be poisoned, and the inner one is not "always real".
+/// openbox manages a window by reparenting it into a NEW frame created at
+/// 1x1@0,0 and only then sizing and placing that frame; GDK turns a
+/// ConfigureNotify into root coordinates with a live XTranslateCoordinates and
+/// tao reads frame_extents live at that moment. A configure handled inside that
+/// gap caches outer 1x1@0,0 AND inner @0,0; when the placement keeps the
+/// position the client asked for, openbox sends no synthetic ConfigureNotify, so
+/// nothing ever corrects it (release gate 835dff70: "outer rect 1x1@0,0 is not a
+/// window; using the inner rect 1000x760@0,0" -> the child opened at 0,0). So
+/// the rect is read LIVE from the X server first (live_rect) — by switch time
+/// the frame is long placed — and the caches are only the fallback.
 fn switch_rect(win: &tauri::Window) -> Result<WinRect, String> {
     let r = win_rect(win.clone())?;
+    if let Some((x, y, w, h)) = live_rect(win) {
+        if spawn::plausible_size(w, h) {
+            if (x, y, w, h) != (r.x, r.y, r.w, r.h) {
+                eprintln!("[vaultwin] switch: live rect {w}x{h}@{x},{y} (cached outer {}x{}@{},{})", r.w, r.h, r.x, r.y);
+            }
+            return Ok(WinRect { x, y, w, h, ..r });
+        }
+    }
     if spawn::plausible_size(r.w, r.h) {
         return Ok(r);
     }
@@ -4238,6 +4258,36 @@ fn switch_rect(win: &tauri::Window) -> Result<WinRect, String> {
     let s = win.inner_size().map_err(|e| e.to_string())?.to_logical::<f64>(sf);
     eprintln!("[vaultwin] switch: outer rect {}x{}@{},{} is not a window; using the inner rect {}x{}@{},{}", r.w, r.h, r.x, r.y, s.width, s.height, p.x, p.y);
     Ok(WinRect { x: p.x, y: p.y, w: s.width, h: s.height, ..r })
+}
+
+/// vbgeom: the window's outer rect in logical px, asked of the X server NOW
+/// (gdk_window_get_frame_extents queries the frame chain live; GDK divides by
+/// its window scale, which is tauri's scale factor). GDK is main-thread only and
+/// the switch runs on an async worker, so the read is posted to the main thread
+/// and awaited; None (no GdkWindow, main thread busy past 2 s) -> the caller
+/// falls back to tao's cached rects.
+#[cfg(target_os = "linux")]
+fn live_rect(win: &tauri::Window) -> Option<(f64, f64, f64, f64)> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let w2 = win.clone();
+    win.run_on_main_thread(move || {
+        let r = (|| {
+            use gdk::glib::prelude::ObjectExt;
+            use gdk::prelude::*;
+            let gw = w2.gtk_window().ok()?;
+            let gdkw = gw.property::<Option<gdk::Window>>("window")?;
+            let f = gdkw.frame_extents();
+            Some((f.x() as f64, f.y() as f64, f.width() as f64, f.height() as f64))
+        })();
+        let _ = tx.send(r);
+    })
+    .ok()?;
+    rx.recv_timeout(std::time::Duration::from_secs(2)).ok().flatten()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn live_rect(_win: &tauri::Window) -> Option<(f64, f64, f64, f64)> {
+    None
 }
 
 /// Apply one step of a move/resize gesture. The UI sends the ANCHOR rect
