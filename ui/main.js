@@ -7685,23 +7685,33 @@ function gcScopeLg(t) {
    Groups are all at their defaults — then the plain cached graph / graph_local answer, so an
    untouched graph keeps its exact old fetch (and perf). Local: Neighbor links (t.inter, GC15)
    rides along either way — graph_view interlinks / graph_local interlinks. */
-function gcOpts(st, t) {
+function gcOpts(st, t, force) {
   const f = st.f, gq = st.groups.map(r => r.query);
-  const plain = !f.search.trim() && GC_FTOG.every(([k, , def]) => (t && k === "showOrphans") || f[k] === def) && !gq.some(q => q.trim());
+  const plain = !force && !f.search.trim() && GC_FTOG.every(([k, , def]) => (t && k === "showOrphans") || f[k] === def) && !gq.some(q => q.trim());
   if (plain) return null;
   const o = { search: f.search, showTags: f.showTags, showAttachments: f.showAttachments, hideUnresolved: f.hideUnresolved, groups: gq };
   if (t) Object.assign(o, { center: t.center, depth: t.depth, inc: t.inc, out: t.out, interlinks: !!t.inter });
   else o.showOrphans = f.showOrphans;
   return o;
 }
+/* the plain graph / graph_local answer draws an embedded attachment (![[pic.png]]) as an
+   unresolved node; with Attachments off stock hides it (R§2.3, R§5.5) — graph_view knows the
+   vault's attachment files, so an unresolved name with an extension re-asks it with the
+   default options. Notes-only vaults keep the plain fetch. */
+const gcEmbedGhost = g => !!g && Array.isArray(g.nodes) && g.nodes.some(n => !n.resolved && n.name.includes("."));
 async function gcFetchGg() {
-  const o = gcOpts((await gfLoad()));
-  return o ? inv("graph_view", { opts: o }) : inv("graph");
+  const st = await gfLoad(), o = gcOpts(st);
+  if (o) return inv("graph_view", { opts: o });
+  const g = await inv("graph");
+  return gcEmbedGhost(g) ? inv("graph_view", { opts: gcOpts(st, undefined, true) }) : g;
 }
 function gcFetchLg(t, center) {
-  const o = gcOpts(gcScopeLg(t).st, Object.assign({}, t, { center }));
-  return o ? inv("graph_view", { opts: o }) : inv("graph_local", { center, depth: t.depth, inc: t.inc, out: t.out, interlinks: !!t.inter });
+  const st = gcScopeLg(t).st, tc = Object.assign({}, t, { center }), o = gcOpts(st, tc);
+  if (o) return inv("graph_view", { opts: o });
+  return inv("graph_local", { center, depth: t.depth, inc: t.inc, out: t.out, interlinks: !!t.inter })
+    .then(g => gcEmbedGhost(g) ? inv("graph_view", { opts: gcOpts(st, tc, true) }) : g);
 }
+
 const gfFmt = (r, x) => r[7] ? x.toFixed(r[7]) : String(Math.round(x));
 const GF_ICON = {
   reset: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',
