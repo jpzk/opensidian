@@ -588,7 +588,11 @@ const Ed = {
     };
     zo.onclick = () => setZoom(zoom / 1.25);
     zi.onclick = () => setZoom(zoom * 1.25);
-    const setCounter = (cur, of) => { cnt.dataset.counter = cur + " of " + of; s.dataset.cur = String(cur); };
+    const setCounter = (cur, of) => {
+      cnt.dataset.counter = cur + " of " + of;
+      s.dataset.cur = String(cur); s.dataset.of = String(parseInt(of, 10) || 0);
+      if (typeof xiAgain === "function") xiAgain();        // census [pf:] re-publishes (one rAF)
+    };
     setCounter(of0(), 0);
     function of0() { return +s.dataset.page || 1; }
     new ResizeObserver(() => Ed.pdfSize(s)).observe(s);
@@ -613,7 +617,11 @@ const Ed = {
           const im = e.target;
           io.unobserve(im);
           const px = Math.min(2048, Math.ceil(box.clientWidth * zoom * (window.devicePixelRatio || 1) / 64) * 64 || 640);
-          im.onload = () => { if (+im.dataset.n === want) s.classList.add("is-loaded"); };
+          im.onload = () => {
+            if (+im.dataset.n !== want) return;
+            s.classList.add("is-loaded");
+            if (typeof xiAgain === "function") xiAgain();
+          };
           im.setAttribute("src", Ed.IMG_SCHEME + "://localhost/" + s.dataset.pdf + "?page=" + im.dataset.n + "&w=" + px);
         }
       }, { root: box, rootMargin: "100% 0px" });
@@ -642,7 +650,7 @@ const Ed = {
         const top = box.scrollTop + box.clientHeight / 2;
         let cur = 1;
         for (const im of pages) { if (im.offsetTop <= top) cur = +im.dataset.n; else break; }
-        setCounter(cur, total);
+        if (String(cur) !== s.dataset.cur) setCounter(cur, total);
       }, { passive: true });
     });
   },

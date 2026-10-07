@@ -3295,8 +3295,8 @@ function updateTitle() {          // pane/focus census in the window title (head
   // byte (getAttribute, not .src: the property is absolutised and would hide a disagreement).
   if (md && ft && !ft.kind && fg()) {
     const rv = ft.mode === "reading" ? fg().preview : fg().lp;
-    const ims = rv ? [...rv.querySelectorAll("img")] : [];
-    const nmiss = rv ? rv.querySelectorAll(".imgmiss").length : 0;
+    const ims = rv ? [...rv.querySelectorAll("img:not(.pdf-page)")] : [];      // pdfembed: frame pages are [pf:]'s
+    const nmiss = rv ? rv.querySelectorAll(".imgmiss:not(.pdfmiss)").length : 0;
     if (ims.length || nmiss) {
       // the title only MOVES in updateTitle (see noteErr's note), and an image decodes
       // asynchronously — so at render time every naturalWidth is 0 and the census would
@@ -3314,6 +3314,30 @@ function updateTitle() {          // pane/focus census in the window title (head
       const xi = s => String(s == null ? "" : s).replace(/[[\]|]/g, "").slice(0, 100);
       md += " [xi:" + ims.length + "/" + ims.filter(i => i.naturalWidth > 0).length + "/" + nmiss +
             ims.slice(0, 3).map(i => "|" + xi(i.getAttribute("src"))).join("") + "]";
+    }
+  }
+  // pdfembed probe: the focused note view's PDF frames ->
+  // [pf:<frames>/<miss>|<w>x<h>+<x>+<y>p<cur>/<of><L|->|...] (first 4 frames). The box is the
+  // frame's own (viewport px) (getBoundingClientRect, rounded), cur = the page at the middle
+  // of the frame's view, L = the requested page's PNG decoded (is-loaded). <miss>
+  // counts the "could not be found" banners for pdf targets (span.pdfmiss).
+  // Published from each engine's OWN DOM, so the smoke can hold RV and LP to the
+  // same numbers. Re-published by Ed.pdfFill (xiAgain) as frames load / scroll.
+  if (md && ft && !ft.kind && fg()) {
+    const rv = ft.mode === "reading" ? fg().preview : fg().lp;
+    const fr = rv ? [...rv.querySelectorAll("span.pdf-embed")] : [];
+    const pm = rv ? rv.querySelectorAll(".pdfmiss").length : 0;
+    if (fr.length || pm) {
+      md += " [pf:" + fr.length + "/" + pm + fr.slice(0, 4).map(s => {
+        const r = s.getBoundingClientRect();
+        return "|" + Math.round(r.width) + "x" + Math.round(r.height) + "+" + Math.round(r.left) + "+" + Math.round(r.top) + "p" + (s.dataset.cur || "0") + "/" +
+          (s.dataset.of || "0") + (s.classList.contains("is-loaded") ? "L" : "-");
+      }).join("");
+      if (pm) {                                        // |m<w>x<h>: the first banner's box
+        const r = rv.querySelector(".pdfmiss").getBoundingClientRect();
+        md += "|m" + Math.round(r.width) + "x" + Math.round(r.height);
+      }
+      md += "]";
     }
   }
   /* rvcursor census -> [rvc:p=default|h1=default|wiki=pointer|wikiu=pointer|ext=pointer|
