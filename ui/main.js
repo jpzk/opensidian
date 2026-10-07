@@ -7782,6 +7782,8 @@ async function startGraph(g, cfg) {
   // (R16.4). screen = world*scale + t.
   // ax/ay/wx/wy: the zoom ANCHOR — the cursor (canvas px) of the last wheel notch and the world
   // point under it. Kept while the cursor stays put, cleared by a pan (see cv.onwheel).
+  // cv.onwheel is the ONLY writer of view.scale (no fit/reset button, key or restore path sets it),
+  // and the local graph shares this startGraph, so the recon §1 bound there covers every view.
   const view = { scale: 1, tx: cv.width / 2, ty: cv.height / 2, notch: 0, ax: null, ay: null, wx: 0, wy: 0 };
   // Obsidian force defaults (R16.1) and the gains that turn a slider value into
   // the per-step constant of the measured model (docs/recon-graphforce, PLAN s.0):
