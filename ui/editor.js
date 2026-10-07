@@ -523,17 +523,17 @@ const Ed = {
     return i >= 0 && t.slice(i + 1).toLowerCase() === "pdf";
   },
   pdfFrag(frag) {
-    let page = 1, h = null;
+    let page = 1, h = null, pg = false;
     for (const kv of frag.replace(/^#+/, "").split("&")) {
       const e = kv.indexOf("=");
       if (e < 0) continue;
       const k = kv.slice(0, e), v = kv.slice(e + 1);
       if (!/^[0-9]{1,6}$/.test(v)) continue;
       const n = parseInt(v, 10);
-      if (k === "page" && n >= 1) page = n;
+      if (k === "page" && n >= 1) { page = n; pg = true; }
       else if (k === "height" && n >= 1) h = n;
     }
-    return { page, h };
+    return { page, h, pg };
   },
   pdfEl(target, frag, alt) {
     const dec = Ed.pctDec(target) ?? target;
@@ -550,6 +550,10 @@ const Ed = {
     s.dataset.page = String(f.page);
     s.dataset.height = f.h === null ? "" : String(f.h);
     s.dataset.alt = alt || "";
+    // live preview only (pdfEl is the LP builder; reading view never sets it):
+    // stock LP sizes #page=N&height=H at H flat, no toolbar add (recon v-pagehgt:
+    // LP 700x300, RV 700x338; #height=H alone is H + 38 in both)
+    if (f.pg && f.h !== null) s.dataset.lpflat = "1";
     s.contentEditable = "false";
     s.tabIndex = -1;
     Ed.pdfFill(s);
@@ -557,11 +561,11 @@ const Ed = {
   },
   PDF_TOOLBAR: 39, PDF_STOCK_AR: 792 / 612,
   // stock (recon README "Default frame size"): frame = w x aspect(page 1) + 20,
-  // #height=N -> N + 38. Broken -> 800, like stock.
+  // #height=N -> N + 38 (LP #page=&height=N -> N, stock quirk). Broken -> 800, like stock.
   pdfSize(s) {
     const w = s.clientWidth;
     if (!w) return;
-    const h = s.dataset.height ? +s.dataset.height + 38
+    const h = s.dataset.height ? +s.dataset.height + (s.dataset.lpflat ? 0 : 38)
       : s.classList.contains("mod-broken") ? 800
       : Math.round(w * (s._pdfAr || Ed.PDF_STOCK_AR) + 20);
     if (s.style.height !== h + "px") s.style.height = h + "px";
