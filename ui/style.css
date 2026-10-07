@@ -780,6 +780,22 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
   border-radius: 50%; background: var(--text-chrome); transition: transform 0.1s }
 .graph-controls .checkbox-container.is-enabled { background: var(--interactive-accent) }
 .graph-controls .checkbox-container.is-enabled::after { transform: translateX(16px) }
+/* graphctx Groups (R§3.1): one row per colour group — query input, round swatch, delete (x); "New group" below */
+.graph-controls .graph-color-group { display: flex; align-items: center; gap: 6px; padding: 3px 12px }
+.graph-controls .graph-color-group input[type=text] { flex: 1 1 auto; min-width: 0; height: 28px; padding: 0 8px; box-sizing: border-box; font: inherit; font-size: 13px;
+  color: var(--text-normal, inherit); background: var(--background-modifier-form-field, var(--bg-elevated)); border: 1px solid var(--border); border-radius: 4px }
+.graph-controls .graph-color-group input[type=color] { flex: 0 0 auto; width: 22px; height: 18px; padding: 0; border: 0; border-radius: 50%;
+  background: none; cursor: grab; overflow: hidden }
+.graph-controls .graph-color-group input[type=color]::-webkit-color-swatch-wrapper { padding: 0 }
+.graph-controls .graph-color-group input[type=color]::-webkit-color-swatch { border: 0; border-radius: 50% }
+.graph-controls .graph-color-group.gc-drag { opacity: 0.5 }
+.graph-controls .graph-color-group .clickable-icon { flex: 0 0 auto; width: 26px; height: 26px; padding: 5px; box-sizing: border-box; border-radius: 4px;
+  color: var(--text-muted); cursor: pointer; line-height: 0 }
+.graph-controls .graph-color-group .clickable-icon:hover { background: var(--border); color: var(--text-chrome) }
+.graph-controls .graph-color-group .clickable-icon svg { width: 16px; height: 16px; display: block }
+.graph-controls .graph-color-button-container { padding: 6px 12px }
+.graph-controls .gc-newgroup { width: 100%; height: 30px; font: inherit; font-size: 13px; border: 0; border-radius: 4px; cursor: pointer;
+  color: var(--text-on-accent, #fff); background: var(--interactive-accent) }
 
 /* m5: shared fuzzy modal (quick switcher Ctrl+O / command palette Ctrl+P) */
 /* R22: the overlay is the flex box, #mbox is its item — the 90px top offset is

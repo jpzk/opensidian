@@ -7646,7 +7646,8 @@ function gfPanel(g) {              // built once per group, lives in .content be
             gcSlider("depth", "Depth", 1, 5, 1, "mod-local-jumps gc-local") +
             GC_LTOG.map(r => gcToggle(r[0], r[2], "gc-local")).join("") +
             GC_FTOG.map(r => gcToggle(r[0], r[1], r[3])).join(""),
-    groups: "", display: "",
+    groups: '<div class="gc-groups"></div><div class="graph-color-button-container"><button class="mod-cta gc-newgroup">New group</button></div>',
+    display: "",
     forces: GF_ROWS.map(r => gcSlider(r[0], r[2], r[3], r[4], r[5])).join(""),
   };
   p.innerHTML =
@@ -7679,6 +7680,7 @@ function gfPanel(g) {              // built once per group, lives in .content be
     if (g.gfApply) g.gfApply(s.st.v);
     for (const [k, , def] of GC_FTOG) if (s.kind === "gg" || k !== "showOrphans") { s.st.f[k] = def; patch[k] = def; }
     if (s.kind === "lg") { s.st.f.search = ""; patch.search = ""; }
+    s.st.groups = []; patch.colorGroups = [];   // R§3.9: reset removes every colour group
     if (s.kind === "lg") {
       s.t.depth = 1; s.t.inc = true; s.t.out = true;
       Object.assign(patch, { localJumps: 1, localBacklinks: true, localForelinks: true });
@@ -7744,8 +7746,86 @@ function gfPanel(g) {              // built once per group, lives in .content be
     box.onclick = flip;
     box.onkeydown = e => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); flip(); } };
   }
+  { // Groups (GC17-GC21, R§3): rows rendered by gcGroupsRender; events delegated so a re-render keeps them
+    const box = q(".gc-groups");
+    const save = s => s.save({ colorGroups: s.st.groups.map(r => ({ query: r.query, color: { a: 1, rgb: r.rgb } })) });
+    const rowI = e => { const row = e.target.closest(".graph-color-group"); return row ? +row.dataset.i : -1; };
+    q(".gc-newgroup").onclick = () => {   // R§3.2: colour of group i = hsl(40°·i, 60%, 60%)
+      const s = sc(); if (!s) return;
+      s.st.groups.push({ query: "", rgb: gcHslRgb(40 * s.st.groups.length, 0.6, 0.6) });
+      save(s); gcGroupsRender(g); updateTitle();   // an empty query colours nothing (R§3.6): no refetch
+      const ins = box.querySelectorAll('input[type="text"]'); if (ins.length) ins[ins.length - 1].focus();
+    };
+    box.addEventListener("input", async e => {
+      const s = sc(), i = rowI(e); if (!s || i < 0 || !s.st.groups[i]) return;
+      if (e.target.type === "text") {      // query: the matched set changes -> refetch (graph_view computes col[])
+        s.st.groups[i].query = e.target.value; save(s); updateTitle();
+        await refresh();
+      } else if (e.target.type === "color") {   // colour: same matched set, repaint only
+        s.st.groups[i].rgb = parseInt(e.target.value.slice(1), 16) & 0xffffff; save(s);
+        if (g.graphRedraw) g.graphRedraw();
+        updateTitle();
+      }
+    });
+    box.addEventListener("keydown", e => { if (e.target.type === "text" && (!(e.ctrlKey || e.metaKey) || /^[acvxyz]$/i.test(e.key))) e.stopPropagation(); });
+    box.addEventListener("click", async e => {
+      if (gcDragEat) { gcDragEat = false; if (e.target.type === "color") { e.preventDefault(); return; } }
+      if (!e.target.closest(".gc-del")) return;
+      const s = sc(), i = rowI(e); if (!s || i < 0) return;
+      s.st.groups.splice(i, 1); save(s); gcGroupsRender(g); updateTitle();   // R§3.7: gone at once, next match shows
+      await refresh();
+    });
+    // R§3.8 reorder: drag a row's swatch; a press that moves > 4 px is a drag (no picker), else the picker opens
+    box.addEventListener("mousedown", e => {
+      if (e.button !== 0 || e.target.type !== "color") return;
+      const s = sc(), i = rowI(e); if (!s || i < 0) return;
+      const y0 = e.clientY, row = e.target.closest(".graph-color-group");
+      let drag = false;
+      const mv = ev => { if (!drag && Math.abs(ev.clientY - y0) > 4) { drag = true; row.classList.add("gc-drag"); } };
+      const up = async ev => {
+        document.removeEventListener("mousemove", mv, true); document.removeEventListener("mouseup", up, true);
+        row.classList.remove("gc-drag");
+        if (!drag) return;
+        gcDragEat = true; setTimeout(() => { gcDragEat = false; }, 300);
+        const rows = [...box.querySelectorAll(".graph-color-group")];
+        let to = 0;   // the new slot = how many OTHER rows sit above the release point
+        for (const r of rows) { if (r === row) continue; const b = r.getBoundingClientRect(); if (ev.clientY > b.top + b.height / 2) to++; }
+        if (to === i) return;
+        const [m] = s.st.groups.splice(i, 1); s.st.groups.splice(to, 0, m);
+        save(s); gcGroupsRender(g); updateTitle();
+        await refresh();                 // precedence follows the order (R§3.5)
+      };
+      document.addEventListener("mousemove", mv, true); document.addEventListener("mouseup", up, true);
+    });
+  }
   g.content.appendChild(p);
   return (g.gfp = p);
+}
+let gcDragEat = false;             // the click that ends a swatch drag must not open the colour picker
+function gcHslRgb(h, s, l) {       // hsl -> 24-bit int (stock's default group colours, R§3.2)
+  const k = n => (n + h / 30) % 12, a = s * Math.min(l, 1 - l);
+  const f = n => Math.round(255 * (l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1))));
+  return (f(0) << 16) | (f(8) << 8) | f(4);
+}
+const gcHex = rgb => "#" + (rgb & 0xffffff).toString(16).padStart(6, "0");
+const gcRgbCss = rgb => "rgb(" + ((rgb >> 16) & 255) + ", " + ((rgb >> 8) & 255) + ", " + (rgb & 255) + ")";
+function gcNodeCol(GS, p) {     // a file node (note / attachment) in a colour group -> its fill (rgb() string, keyed into the graph RGB map by draw)
+  if (!GS || p.col < 0 || !(p.kind === 0 || p.kind === 3) || !GS[p.col]) return null;
+  return gcRgbCss(GS[p.col].rgb);
+}
+function gcGroupsRender(g) {       // rows <- scope; a row whose query box has focus keeps it (typing is not interrupted)
+  const p = g.gfp, s = g.gcScope; if (!p || !s) return;
+  const box = p.querySelector(".gc-groups"), G = s.st.groups;
+  const rows = box.querySelectorAll(".graph-color-group");
+  const same = rows.length === G.length && G.every((r, i) => rows[i].querySelector('input[type="text"]').value === r.query &&
+    rows[i].querySelector('input[type="color"]').value === gcHex(r.rgb));
+  if (same) return;
+  box.innerHTML = G.map((r, i) => '<div class="graph-color-group" data-i="' + i + '"><input type="text" placeholder="Enter query..." spellcheck="false">' +
+    '<input type="color" aria-label="Click to change color&#10;Drag to reorder groups"><div class="clickable-icon gc-del" aria-label="Delete group" title="Delete group">' + GF_ICON.close + '</div></div>').join("");
+  box.querySelectorAll(".graph-color-group").forEach((row, i) => {
+    row.querySelector('input[type="text"]').value = G[i].query;
+    row.querySelector('input[type="color"]').value = gcHex(G[i].rgb);
+  });
 }
 function gcBind(g, scope) {        // point the group's ONE card at a scope and show it
   const p = gfPanel(g);
@@ -7768,6 +7848,7 @@ function gfSync(g) {               // controls + readouts <- the live sim's F (a
     row.querySelector(".slider-value").textContent = gfFmt(r, F[r[0]]);
   }
   { const inp = p.querySelector('[data-k="search"] input'); if (document.activeElement !== inp) inp.value = s.st.f.search; }
+  gcGroupsRender(g);
   for (const [k] of GC_FTOG) p.querySelector('[data-k="' + k + '"] .checkbox-container').classList.toggle("is-enabled", !!s.st.f[k]);
   if (s.kind === "lg") {
     const row = p.querySelector('[data-k="depth"]');
@@ -7797,6 +7878,10 @@ function gfTok(g, pre = "gf") {
                           ...GC_FTOG.map(([k]) => [k, '[data-k="' + k + '"] .checkbox-container']), ["search", '[data-k="search"] input']]) {
     const e = p.querySelector(sel); if (vis(e)) bs.push(n + "@" + c(e));
   }
+  p.querySelectorAll(".graph-color-group").forEach((row, i) => {   // Groups rows: gq<i> query, gc<i> swatch, gx<i> delete
+    for (const [n, sel] of [["gq", 'input[type="text"]'], ["gc", 'input[type="color"]'], ["gx", ".gc-del"]]) { const e = row.querySelector(sel); if (vis(e)) bs.push(n + i + "@" + c(e)); }
+  });
+  { const e = p.querySelector(".gc-newgroup"); if (vis(e)) bs.push("newgroup@" + c(e)); }
   t += " [" + pre + "b:" + bs.join("|") + "]";
   const ss = [...p.querySelectorAll(".mod-slider")].filter(row => vis(row.querySelector("input"))).map(row => {
     const r = R(row.querySelector("input"));
@@ -7805,6 +7890,8 @@ function gfTok(g, pre = "gf") {
   if (ss.length) t += " [" + pre + "s:" + ss.join("|") + "]";
   // graphctx Filters state [<p>q:search=<query>,showTags=0,...] (query with []| stripped)
   t += " [" + pre + "q:search=" + s.st.f.search.replace(/[[]|,]/g, "") + "," + GC_FTOG.map(([k]) => k + "=" + (s.st.f[k] ? 1 : 0)).join(",") + "]";
+  // graphctx Groups [<p>g:<i>=<query>#rrggbb|...] in row order (query with []|,# stripped), empty = no group
+  t += " [" + pre + "g:" + s.st.groups.map((r, i) => i + "=" + r.query.replace(/[[\]|,#]/g, "") + gcHex(r.rgb)).join("|") + "]";
   if (s.kind === "lg") t += " [" + pre + "t:" + GC_LTOG.map(([f]) => f + "=" + (s.t[f] ? 1 : 0)).join(",") + "]";
   return t;
 }
@@ -7853,7 +7940,7 @@ const graphRendererPref = () => graphPrefP || (graphPrefP = inv("graph_renderer_
   return { renderer: r === "gl" || r === "2d" ? r : null, loseCtx: !!(p && p.lose_ctx) };
 }));
 function showEditor(g) {
-  g.graphOn = false; g.graphRefresh = null; g.graphRc = null; cancelAnimationFrame(g.sim); g.graphRenderer = null;
+  g.graphOn = false; g.graphRefresh = null; g.graphRedraw = null; g.graphRc = null; cancelAnimationFrame(g.sim); g.graphRenderer = null;
   if (g.ro) { g.ro.disconnect(); g.ro = null; }
   if (g.attrObs) { g.attrObs.disconnect(); g.attrObs = null; }
   perf.flush();                    // ship buffered graph_frame samples of the closed sim
@@ -8112,9 +8199,15 @@ async function startGraph(g, cfg) {
     // touched no link) must not reheat — the layout stays a pure function of the vault, so two
     // opens land on identical positions (smoke graphgl compares gl vs 2d frames pixel-wise)
     const same = g2.nodes.length === N.length && g2.edges.length === gr.edges.length &&
-      g2.nodes.every((nd, i) => nd.name === N[i].n && nd.resolved === N[i].resolved && gnKind(nd) === N[i].kind && (g2.col ? g2.col[i] : -1) === N[i].col) &&
+      g2.nodes.every((nd, i) => nd.name === N[i].n && nd.resolved === N[i].resolved && gnKind(nd) === N[i].kind) &&
       g2.edges.every((e, i) => e[0] === gr.edges[i][0] && e[1] === gr.edges[i][1]);
-    if (same) return;
+    if (same) {                     // graphctx GC19: a colour-group edit changes only col[] — recolour in place, no reheat, no layout move
+      let recol = false;
+      for (let i = 0; i < N.length; i++) { const c = g2.col ? g2.col[i] : -1; if (c !== N[i].col) { N[i].col = c; recol = true; } }
+      gr.col = g2.col;
+      if (recol) redraw();
+      return;
+    }
     const old = new Map(N.map(p => [p.n, p]));
     // C5: plain-value copy of the REAL pre-refresh nodes, taken before the swap. These
     // objects leave N below and are never stepped again, but copy anyway so the frames that
@@ -8387,13 +8480,15 @@ async function startGraph(g, cfg) {
     ctx.textAlign = "center"; ctx.font = "12px sans-serif";
     const cn = cfg.center();          // M8: center node larger + accent (R7.1)
     const groups = new Map();         // key -> { col, a, res, dr, idx: [] }
+    const GS = g.gcScope ? g.gcScope.st.groups : null;   // graphctx GC19: p.col = first matching colour group (graph_view)
     // world-space cull: nodes outside the viewport are not drawn (R16.4 overflow)
     const [wx0, wy0] = toWorld(0, 0), [wx1, wy1] = toWorld(cv.width, cv.height), pad = 40 / view.scale;
     for (let i = 0; i < N.length; i++) {
       const p = N[i], isC = cn !== null && p.n === cn;
       if (p.x < wx0 - pad || p.x > wx1 + pad || p.y < wy0 - pad || p.y > wy1 + pad) continue;
       const a = litN(i) ? (p.resolved ? 1 : 0.55) : 0.12;
-      const col = i === hov ? P.hi : isC ? P.ctr : p.kind === 2 ? P.tag : p.kind === 3 ? P.att : P.node;
+      const col = i === hov ? P.hi : isC ? P.ctr : p.kind === 2 ? P.tag : p.kind === 3 ? gcNodeCol(GS, p) || P.att : gcNodeCol(GS, p) || P.node;
+      if (!(col in RGB)) RGB[col] = chan01(col);   // a group colour is not a palette token: key it for the GL path (palette() empties RGB on a theme switch; this refills)
       const key = col + a + (p.resolved ? "r" : "u") + (isC ? "c" : "");
       let gp = groups.get(key);
       if (!gp) groups.set(key, gp = { col, a, res: p.resolved, dr: isC ? 4 : 0, idx: [] });
@@ -8495,6 +8590,7 @@ async function startGraph(g, cfg) {
     g.sim = requestAnimationFrame(step);
   };
   const redraw = () => { dirty = true; wake(); };
+  g.graphRedraw = () => { if (g.simGen === gen) redraw(); };   // graphctx: a group colour edit repaints, no refetch
   // THEME / PALETTE -> REPAINT (goal graphtheme). The loop stops once the sim is quiet (CPU -> 0),
   // so a settled graph paints nothing until something wakes it — a mode or palette switch used to
   // leave the old colours on screen until the next hover or pan, whatever the cache did. The graph
