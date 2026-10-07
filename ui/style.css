@@ -724,6 +724,8 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 .ctxmenu .mi svg { width: 12px; height: 12px; display: block }
 /* R38.29: `Delete file` is the ONE non-default-coloured row in the menu (red, see docs/requirements.md R38.29) */
 .ctxmenu div.del { color: var(--accent-red) }
+/* graphctx GC29 (recon-graphctx §6.1): the graph node menu opens with the file basename as an inert label row (stock .menu-item.is-label) */
+.ctxmenu div.mlbl { color: var(--text-chrome-muted); font-size: 12px; cursor: default; pointer-events: none }
 /* R38.7: the pin glyph rides in FRONT of a pinned tab's label (shots/m3-pinned-tabbar.png) */
 .tab .pin { flex: 0 0 auto; display: flex; align-items: center; color: var(--text-chrome-muted); margin-right: 3px }
 .tab .pin svg { width: 11px; height: 11px; display: block }

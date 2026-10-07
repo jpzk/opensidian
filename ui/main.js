@@ -2015,6 +2015,73 @@ function noteMenu(e, nm) {                 // right-click a tree note row
   placeMenu(m, e.clientX, e.clientY);   /* R22: viewport-clamped by measured size */
 }
 
+/* graphctx GC29-GC31 (recon-graphctx §6): right-click a graph node. Stock opens its FILE
+   menu at the pointer for a resolved note (global and local alike) and for an attachment
+   (the same menu minus "Merge entire file with..."); a ghost, a tag node and the empty
+   canvas open nothing. The first row is the file's basename as an inert label, then
+   stock's groups with a rule between them: [Open in new tab, Open in new window]
+   [Move file to..., Bookmark..., Merge entire file with...] [Copy path] [Open linked view]
+   [Open in default app, Show in system explorer, Reveal file in navigation] [Delete file].
+   GC29: a row we cannot back is OMITTED, never shown dead, and a group left empty takes
+   its rule with it. Every verb here is note-only (open / move / bookmark / reveal /
+   delete address a .md by name), so an attachment's menu is its label row alone until
+   an attachment backend exists. [mt:gnode:<gg|lg>:<kind>:<name>] names the node the
+   browser's hit test handed us, so a phase asserts the menu of the node it aimed at. */
+function graphNodeMenu(e, hit, scope) {
+  e.preventDefault();
+  e.stopPropagation();
+  closeMenu();
+  const nm = hit.n, note = hit.kind === 0;
+  const m = document.createElement("div");
+  m.className = "ctxmenu";
+  const { item, sep } = bmMenuItems(m);
+  const label = () => {
+    const d = document.createElement("div");
+    d.className = "mlbl";
+    d.textContent = nm.split("/").pop();
+    m.appendChild(d);
+  };
+  label();
+  const groupsOf = [];
+  if (note) {
+    groupsOf.push([["Open in new tab", () => openNewTab(nm)]]);                       // WIRED: openNewTab (opentab REQ-8/9)
+    groupsOf.push([["Move file to...", null],                                          // WIRED below: moveNoteTo behind the in-place folder list (R38.16)
+                   [bmCache.includes(nm) ? "Remove bookmark" : "Bookmark...", () => toggleBm(nm)]]);   // WIRED: toggleBm (R20.4)
+    groupsOf.push([["Reveal file in navigation", () => bmReveal(nm)]]);                // WIRED: bmReveal (R38.28)
+    groupsOf.push([["Delete file", () => askDelete(nm), "del"]]);                      // WIRED: askDelete, the link-counting confirmation (R38.29)
+  }
+  const pickFolder = async () => {
+    let fl = [];
+    try { fl = await inv("list_folders"); } catch (err) { fl = []; }
+    const here = nm.includes("/") ? nm.slice(0, nm.lastIndexOf("/")) : "";
+    m.innerHTML = "";
+    label();
+    sep();
+    if (here) item("(vault root)", () => moveNoteTo(nm, ""));
+    for (const f of fl) if (f !== here) item(f, () => moveNoteTo(nm, f));
+    if (m.children.length === 2) item("(no other folder)", () => {});
+    setTimeout(() => clampMenu(m), 0);
+    updateTitle();
+  };
+  for (const grp of groupsOf) {
+    sep();
+    for (const [l, fn, cls] of grp) {
+      if (l === "Move file to...") {
+        const d = document.createElement("div");
+        d.textContent = l;
+        d.onmousedown = ev => ev.stopPropagation();
+        d.onclick = () => pickFolder();          // the menu stays open and becomes the folder list
+        m.appendChild(d);
+        continue;
+      }
+      item(l, fn);
+      if (cls) m.lastChild.className = cls;
+    }
+  }
+  m.dataset.mt = "gnode:" + scope + ":" + (note ? "note" : "att") + ":" + nm.replace(/[|\]:]/g, "");
+  placeMenu(m, e.clientX, e.clientY);   /* R22: viewport-clamped by measured size */
+}
+
 // R23 (feedback #15) built this helper because the four creation paths
 // disagreed about the new note's body: cmdNewNote seeded an H1 of the note's
 // own name inline, while the three INDIRECT paths (an unresolved wikilink
@@ -8765,6 +8832,7 @@ async function startGraph(g, cfg) {
     window.addEventListener("blur", rel);
   }
   cv.onmousedown = e => {
+    if (e.button !== 0) return;          // graphctx GC29: a right press opens the node menu; it neither drags nor pans
     const r = cv.getBoundingClientRect();
     const [wx, wy] = toWorld(e.clientX - r.left, e.clientY - r.top);
     const i = hitTest(wx, wy);
@@ -8808,6 +8876,14 @@ async function startGraph(g, cfg) {
   };
   cv.onmouseup = () => { release(); };
   cv.onmouseleave = () => { release(); if (hov >= 0) { hov = -1; redraw(); } cv.style.cursor = ""; };
+  cv.oncontextmenu = e => {               // graphctx GC29-GC31: the file menu on a note / attachment node, nothing elsewhere
+    e.preventDefault();
+    const r = cv.getBoundingClientRect();
+    const [x, y] = toWorld(e.clientX - r.left, e.clientY - r.top);
+    const hit = N[hitTest(x, y)];
+    if (!hit || !hit.resolved || (hit.kind !== 0 && hit.kind !== 3)) return;   // GC31: empty canvas, ghost, tag
+    graphNodeMenu(e, hit, cfg.center() ? "lg" : "gg");
+  };
   cv.onclick = async e => {
     if (moved) { moved = false; return; }               // was a pan, not a click
     const r = cv.getBoundingClientRect();
