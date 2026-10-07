@@ -5741,6 +5741,9 @@ function extClick(e, a) {   // `a` unused: kept for the Ed.extClick(e, a) signat
 async function preview(g) {
   const src = g.editor.value;
   g.preview.innerHTML = await inv("render", { content: src });
+  // pdfembed: the renderer emits an empty span.pdf-embed (data-* only); the
+  // frame is built by the ONE builder live preview uses too (editor.js Ed.pdfFill)
+  for (const s of g.preview.querySelectorAll("span.pdf-embed")) Ed.pdfFill(s);
   // R35: the block -> source line map for THIS html, from the renderer's own
   // parser. Stored next to the html it describes and re-read on every render:
   // a stale map would scroll the reading view to the wrong block, which is

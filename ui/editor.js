@@ -282,6 +282,19 @@ const Ed = {
           Ed.tok(em, emk, "img");
           i += wl[0].length; continue;
         }
+        // pdfembed `![[f.pdf#page=3|a]]`: mirrors linkify()'s pdf branch — bang
+        // present, pdf extension on the NOTE part; the anchor is page/height.
+        if (wl[1] === "!" && Ed.isPdf(hash >= 0 ? target.slice(0, hash) : target)) {
+          const em = [], emk = [];
+          const eadd = (el, isMk) => { em.push(el); if (isMk) emk.push(el); box.appendChild(el); };
+          eadd(Ed.mk("![["), true);
+          eadd(Ed.mk(raw, "img"), true);
+          eadd(Ed.mk("]]"), true);
+          const note = hash >= 0 ? target.slice(0, hash) : target;
+          eadd(Ed.pdfEl(note, hash >= 0 ? target.slice(hash) : "", bar >= 0 ? label : note), false);
+          Ed.tok(em, emk, "img");
+          i += wl[0].length; continue;
+        }
         const parts = [], mks = [];
         const add = (el, isMk) => { parts.push(el); if (isMk) mks.push(el); box.appendChild(el); };
         add(Ed.mk(wl[1] + "[["), true);
@@ -316,7 +329,9 @@ const Ed = {
           add(Ed.mk("![", "img"), true);
           if (im[1]) add(Ed.mk(im[1], "img"), true);
           add(Ed.mk("](" + im[2] + ")", "img"), true);
-          add(Ed.imgEl(im[2], im[1], rem), false);
+          const ph = im[2].indexOf("#"), pp = ph >= 0 ? im[2].slice(0, ph) : im[2];
+          add(!rem && Ed.isPdf(pp) ? Ed.pdfEl(pp, ph >= 0 ? im[2].slice(ph) : "", im[1])   // image_html's pdf split
+                                   : Ed.imgEl(im[2], im[1], rem), false);
           Ed.tok(parts, mks, "img");
           i += 1 + im[0].length; continue;
         }
@@ -488,6 +503,148 @@ const Ed = {
     im.contentEditable = "false";
     im.draggable = false;
     return im;
+  },
+
+  /* ---------- pdfembed: PDF EMBEDS (both engines) ----------
+     Mirrors of the Rust side, one function each (R29.7):
+       Ed.isPdf    <- is_pdf_target   (extension "pdf", any case)
+       Ed.pdfFrag  <- pdf_frag        (#page=N&height=N, strict decimal)
+       Ed.pdfEl    <- pdf_html        (path from the INDEX list, never the target)
+     The element is the SAME span both engines emit; Ed.pdfFill builds the
+     frame inside it and is the ONE frame builder (reading view calls it on the
+     rendered html, live preview on the element it just made). The frame holds
+     NO text node: an LP row's textContent must stay === its source line, so the
+     toolbar counter and the broken note are painted by CSS from attributes.
+     Pages are PNGs rasterised by the Rust worker (opensidian-img ?page=&w=),
+     requested only when they scroll near the frame's view — never PDF bytes,
+     never a PDF viewer, so no PDF action can run here (README security design). */
+  isPdf(t) {
+    const i = t.lastIndexOf(".");
+    return i >= 0 && t.slice(i + 1).toLowerCase() === "pdf";
+  },
+  pdfFrag(frag) {
+    let page = 1, h = null;
+    for (const kv of frag.replace(/^#+/, "").split("&")) {
+      const e = kv.indexOf("=");
+      if (e < 0) continue;
+      const k = kv.slice(0, e), v = kv.slice(e + 1);
+      if (!/^[0-9]{1,6}$/.test(v)) continue;
+      const n = parseInt(v, 10);
+      if (k === "page" && n >= 1) page = n;
+      else if (k === "height" && n >= 1) h = n;
+    }
+    return { page, h };
+  },
+  pdfEl(target, frag, alt) {
+    const dec = Ed.pctDec(target) ?? target;
+    const rel = Ed.imgRel(target);
+    if (rel === null || !Ed.isPdf(rel)) {
+      const s = Ed.el("span", "imgmiss pdfmiss");
+      s.dataset.miss = dec;
+      s.contentEditable = "false";
+      return s;
+    }
+    const f = Ed.pdfFrag(frag || "");
+    const s = Ed.el("span", "internal-embed pdf-embed");
+    s.dataset.pdf = Ed.pctEnc(rel);
+    s.dataset.page = String(f.page);
+    s.dataset.height = f.h === null ? "" : String(f.h);
+    s.dataset.alt = alt || "";
+    s.contentEditable = "false";
+    s.tabIndex = -1;
+    Ed.pdfFill(s);
+    return s;
+  },
+  PDF_TOOLBAR: 39, PDF_STOCK_AR: 792 / 612,
+  // stock (recon README "Default frame size"): frame = w x aspect(page 1) + 20,
+  // #height=N -> N + 38. Broken -> 800, like stock.
+  pdfSize(s) {
+    const w = s.clientWidth;
+    if (!w) return;
+    const h = s.dataset.height ? +s.dataset.height + 38
+      : s.classList.contains("mod-broken") ? 800
+      : Math.round(w * (s._pdfAr || Ed.PDF_STOCK_AR) + 20);
+    if (s.style.height !== h + "px") s.style.height = h + "px";
+  },
+  pdfFill(s) {
+    if (s._pdfFilled) return;
+    s._pdfFilled = true;
+    const bar = Ed.el("div", "pdf-toolbar");
+    const zo = Ed.el("button", "pdf-zoom-out"), zi = Ed.el("button", "pdf-zoom-in");
+    zo.type = zi.type = "button";
+    zo.setAttribute("aria-label", "Zoom out"); zi.setAttribute("aria-label", "Zoom in");
+    const cnt = Ed.el("span", "pdf-counter");
+    bar.append(cnt, zo, zi);
+    const box = Ed.el("div", "pdf-container");
+    s.append(bar, box);
+    // an LP row is contenteditable: clicks in the frame must not move the caret
+    s.addEventListener("mousedown", e => { if (e.button === 0) e.stopPropagation(); });
+    bar.addEventListener("mousedown", e => { e.preventDefault(); e.stopPropagation(); });
+    let zoom = 1, pages = [];
+    const setZoom = z => {
+      zoom = Math.min(4, Math.max(0.25, z));
+      s.dataset.zoom = String(zoom);
+      for (const im of pages) im.style.width = (zoom * 100) + "%";
+    };
+    zo.onclick = () => setZoom(zoom / 1.25);
+    zi.onclick = () => setZoom(zoom * 1.25);
+    const setCounter = (cur, of) => { cnt.dataset.counter = cur + " of " + of; s.dataset.cur = String(cur); };
+    setCounter(of0(), 0);
+    function of0() { return +s.dataset.page || 1; }
+    new ResizeObserver(() => Ed.pdfSize(s)).observe(s);
+    Ed.pdfSize(s);
+    if (typeof inv !== "function") return;
+    inv("pdf_info", { path: s.dataset.pdf }).then(info => {
+      if (!info || !info.pages) {
+        s.classList.add("mod-broken");
+        setCounter(0, 0);
+        Ed.pdfSize(s);
+        return;
+      }
+      const sz = info.sizes || [];
+      const ar = sz[0] && sz[0][0] > 0 ? sz[0][1] / sz[0][0] : Ed.PDF_STOCK_AR;
+      s._pdfAr = Math.min(10, Math.max(0.1, ar));
+      Ed.pdfSize(s);
+      const n = sz.length || 0;           // pdf.rs caps the list (MAX_LISTED)
+      const want = Math.min(of0(), n);
+      const io = new IntersectionObserver(es => {
+        for (const e of es) {
+          if (!e.isIntersecting) continue;
+          const im = e.target;
+          io.unobserve(im);
+          const px = Math.min(2048, Math.ceil(box.clientWidth * zoom * (window.devicePixelRatio || 1) / 64) * 64 || 640);
+          im.onload = () => { if (+im.dataset.n === want) s.classList.add("is-loaded"); };
+          im.setAttribute("src", Ed.IMG_SCHEME + "://localhost/" + s.dataset.pdf + "?page=" + im.dataset.n + "&w=" + px);
+        }
+      }, { root: box, rootMargin: "100% 0px" });
+      for (let i = 0; i < n; i++) {
+        const im = Ed.el("img", "pdf-page");
+        const [pw, ph] = sz[i];
+        im.dataset.n = String(i + 1);
+        im.style.aspectRatio = (pw > 0 && ph > 0 ? pw + " / " + ph : "612 / 792");
+        im.setAttribute("alt", "");
+        im.draggable = false;
+        box.appendChild(im);
+        pages.push(im);
+      }
+      setZoom(zoom);
+      const total = info.pages > n ? info.pages + " (first " + n + " shown)" : String(info.pages);
+      setCounter(want, total);
+      const go = () => { if (pages[want - 1]) box.scrollTop = pages[want - 1].offsetTop; };
+      requestAnimationFrame(() => { go(); for (const im of pages) io.observe(im); });
+      // the frame's height settles after attach (LP builds rows detached):
+      // re-aim at #page on every resize until the USER moves the frame
+      let user = false;
+      for (const ev of ["wheel", "pointerdown", "keydown", "touchstart"])
+        box.addEventListener(ev, () => { user = true; }, { passive: true });
+      new ResizeObserver(() => { if (!user) go(); }).observe(box);
+      box.addEventListener("scroll", () => {
+        const top = box.scrollTop + box.clientHeight / 2;
+        let cur = 1;
+        for (const im of pages) { if (im.offsetTop <= top) cur = +im.dataset.n; else break; }
+        setCounter(cur, total);
+      }, { passive: true });
+    });
   },
 
   /* ---------- token map: source col <-> DOM offset ---------- */

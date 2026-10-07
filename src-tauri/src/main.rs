@@ -345,6 +345,12 @@ fn image_html(imgs: &[String], target: &str, alt: &str) -> String {
             "<span class=\"imgmiss\">\u{201c}{REMOTE_IMG_LABEL}\u{201d} could not be found.</span>"
         );
     }
+    // pdfembed: `![](f.pdf)` / `![](f.pdf#page=3)` — the fragment is the
+    // embed's page/height, not part of the path.
+    let (path, frag) = target.split_once('#').unwrap_or((target, ""));
+    if is_pdf_target(path) {
+        return pdf_html(imgs, path, frag, alt);
+    }
     let dec = pct_decode(target).unwrap_or_else(|| target.to_string());
     match index::resolve(imgs, &dec).map(|i| &imgs[i]) {
         Some(rel) => format!(
@@ -355,6 +361,49 @@ fn image_html(imgs: &[String], target: &str, alt: &str) -> String {
         None => format!(
             "<span class=\"imgmiss\">\u{201c}{}\u{201d} could not be found.</span>",
             esc(target)
+        ),
+    }
+}
+
+/// pdfembed: `#page=N`, `#height=N`, `#page=N&height=N` -> (page, height).
+/// Strict decimal, unknown keys and junk ignored; page defaults to 1, height to
+/// None (the UI then sizes the frame from page 1's aspect, stock's rule).
+fn pdf_frag(frag: &str) -> (usize, Option<u32>) {
+    let (mut page, mut h) = (1usize, None);
+    for kv in frag.trim_start_matches('#').split('&') {
+        let Some((k, v)) = kv.split_once('=') else { continue };
+        if v.is_empty() || v.len() > 6 || !v.bytes().all(|c| c.is_ascii_digit()) { continue }
+        let n: u32 = v.parse().unwrap_or(0);
+        match k {
+            "page" if n >= 1 => page = n as usize,
+            "height" if n >= 1 => h = Some(n),
+            _ => {}
+        }
+    }
+    (page, h)
+}
+
+/// pdfembed: the html for ONE PDF embed — both syntaxes, same resolver as
+/// `image_html` (index::resolve over the SAME list; pdfs ride Index::images()).
+/// The span carries NO text: the UI (ui/editor.js Ed.pdfFill) builds the frame
+/// from data-* and `pdf_info`, so reading view and live preview paint one
+/// element. data-pdf is the INDEX's path, never the note's target. Unresolved
+/// -> the R29.4-style banner (`pdfmiss` sizes it like stock's 37 px one).
+fn pdf_html(imgs: &[String], target: &str, frag: &str, alt: &str) -> String {
+    let dec = pct_decode(target).unwrap_or_else(|| target.to_string());
+    match index::resolve(imgs, &dec).map(|i| &imgs[i]).filter(|r| is_pdf_target(r)) {
+        Some(rel) => {
+            let (page, h) = pdf_frag(frag);
+            format!(
+                "<span class=\"internal-embed pdf-embed\" data-pdf=\"{}\" data-page=\"{page}\" data-height=\"{}\" data-alt=\"{}\"></span>",
+                pct_encode(rel),
+                h.map(|h| h.to_string()).unwrap_or_default(),
+                esc(alt)
+            )
+        }
+        None => format!(
+            "<span class=\"imgmiss pdfmiss\">\u{201c}{}\u{201d} could not be found.</span>",
+            esc(&dec)
         ),
     }
 }
@@ -2031,6 +2080,15 @@ fn linkify(buf: &str, notes: &[String], imgs: &[String], reading: bool, urls: bo
             tagify_urls(&rest[..i - 1], urls, evs);
             let alt = if alias.is_empty() { note } else { alias };
             evs.push(Event::Html(image_html(imgs, note, alt).into()));
+            rest = &rest[i + 2 + j + 2..];
+            continue;
+        }
+        // pdfembed `![[f.pdf]]`, `![[f.pdf#page=3]]`, `![[f.pdf#height=400|a]]`:
+        // unlike an image the anchor is allowed — it IS the page/height.
+        if i > 0 && rest.as_bytes()[i - 1] == b'!' && is_pdf_target(note) {
+            tagify_urls(&rest[..i - 1], urls, evs);
+            let alt = if alias.is_empty() { note } else { alias };
+            evs.push(Event::Html(pdf_html(imgs, note, anchor, alt).into()));
             rest = &rest[i + 2 + j + 2..];
             continue;
         }
@@ -8514,6 +8572,42 @@ mod tests {
 
     /// a multi-file drop: every file copied, ORDER preserved, one link per
     /// line; and the two whole-drop failures (empty drop, no note open).
+    /// pdfembed item 8: both syntaxes, every recon variant, through the real
+    /// renderer. One element, data-* only, path from the INDEX; missing and
+    /// escaping targets take the same banner; images and note embeds unchanged.
+    #[test]
+    fn pdf_embeds_render_one_frame_span_per_variant() {
+        let imgs: Vec<String> =
+            ["multipage.pdf", "with spaces.pdf", "sub/inner.pdf", "pic.png"].iter().map(|s| s.to_string()).collect();
+        let r = |md: &str| render_with(md, &[], &imgs, true);
+        let span = |p: &str, pg: usize, h: &str, alt: &str| format!(
+            "<span class=\"internal-embed pdf-embed\" data-pdf=\"{p}\" data-page=\"{pg}\" data-height=\"{h}\" data-alt=\"{alt}\"></span>");
+        assert!(r("![[multipage.pdf]]").contains(&span("multipage.pdf", 1, "", "multipage.pdf")));
+        assert!(r("![[multipage.pdf#page=3]]").contains(&span("multipage.pdf", 3, "", "multipage.pdf")));
+        assert!(r("![[multipage.pdf#height=400]]").contains(&span("multipage.pdf", 1, "400", "multipage.pdf")));
+        assert!(r("![[multipage.pdf#page=4&height=300]]").contains(&span("multipage.pdf", 4, "300", "multipage.pdf")));
+        assert!(r("![[multipage.pdf|my alias]]").contains(&span("multipage.pdf", 1, "", "my alias")));
+        assert!(r("![](multipage.pdf)").contains(&span("multipage.pdf", 1, "", "")));
+        assert!(r("![](multipage.pdf#page=3)").contains(&span("multipage.pdf", 3, "", "")));
+        assert!(r("![[with spaces.pdf]]").contains(&span("with%20spaces.pdf", 1, "", "with spaces.pdf")));
+        assert!(r("![](with%20spaces.pdf)").contains(&span("with%20spaces.pdf", 1, "", "")));
+        assert!(r("![[inner.pdf]]").contains(&span("sub/inner.pdf", 1, "", "inner.pdf")));
+        assert!(r("![[sub/inner.pdf]]").contains(&span("sub/inner.pdf", 1, "", "sub/inner.pdf")));
+        // junk fragments fall back to page 1 / default height, never into the attribute
+        assert!(r("![[multipage.pdf#page=x&height=4a0]]").contains(&span("multipage.pdf", 1, "", "multipage.pdf")));
+        for (md, name) in [("![[nope.pdf]]", "nope.pdf"), ("![[../outside.pdf]]", "../outside.pdf"), ("![](nope.pdf#page=2)", "nope.pdf")] {
+            let h = r(md);
+            assert!(h.contains(&format!("<span class=\"imgmiss pdfmiss\">\u{201c}{name}\u{201d} could not be found.</span>")), "{md}: {h}");
+            assert!(!h.contains("pdf-embed"), "{md}: {h}");
+        }
+        // a plain link to a pdf is a link, an image is still an image, https pdf is remote
+        assert!(!r("[[multipage.pdf]]").contains("pdf-embed"));
+        assert!(r("![[pic.png]]").contains("<img class=\"vimg\""));
+        assert!(!r("![](https://x.test/a.pdf)").contains("pdf-embed"));
+        assert_eq!(pdf_frag("#page=0&height=0"), (1, None));
+        assert_eq!(pdf_frag("page=9999999"), (1, None));
+    }
+
     #[test]
     fn drop_handles_multi_file_empty_and_noteless_drops() {
         let (root, srcd) = drop_vault("drop-multi");
