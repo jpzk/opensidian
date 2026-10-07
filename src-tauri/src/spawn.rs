@@ -185,8 +185,13 @@ pub fn launcher(in_flatpak: bool, appimage: Option<OsString>, exe: PathBuf) -> L
     }
 }
 
-/// the flatpak command name: packaging/flatpak/dev.koto.opensidian.yml `command:`
-pub const FLATPAK_COMMAND: &str = "opensidian";
+/// the flatpak command as an ABSOLUTE path inside the sandbox: the manifest's
+/// `command: opensidian`, installed to /app/bin. Not the bare name: the Spawn
+/// portal starts the new sandbox with the env `flatpak run` saved from the HOST
+/// (run-environ), so its PATH has no /app/bin and bwrap's execvp("opensidian")
+/// fails (measured flatpak 1.17.6, Fedora 44 GNOME session: "bwrap: execvp opensidian: No such
+/// file or directory", every switch and new window died in 200 ms).
+pub const FLATPAK_COMMAND: &str = "/app/bin/opensidian";
 
 /// (program, args) for "open `vault` in a new process" — pure, unit-tested.
 /// A switch puts `--switch=...` BEFORE the vault (argv_pick takes the first
@@ -270,10 +275,12 @@ mod tests {
         assert_eq!(l, Launcher::Flatpak);
         let (p, a) = argv(&l, Path::new("/home/u/B"), None);
         assert_eq!(p, OsString::from("flatpak-spawn"));
-        assert_eq!(a, os(&["opensidian", "/home/u/B"]), "no --host: the portal spawns a new sandbox of the same app");
-        // the command name is the manifest's `command:`
+        assert_eq!(a, os(&["/app/bin/opensidian", "/home/u/B"]), "no --host: the portal spawns a new sandbox of the same app");
+        // the path is the manifest's `command:` where the manifest installs it
         let m = include_str!("../../packaging/flatpak/dev.koto.opensidian.yml");
-        assert!(m.lines().any(|l| l.trim() == format!("command: {FLATPAK_COMMAND}")), "manifest command drifted");
+        let name = Path::new(FLATPAK_COMMAND).file_name().unwrap().to_str().unwrap();
+        assert!(m.lines().any(|l| l.trim() == format!("command: {name}")), "manifest command drifted");
+        assert!(m.lines().any(|l| l.trim().starts_with("- install ") && l.trim().ends_with(&format!(" {FLATPAK_COMMAND}"))), "manifest install path drifted");
     }
 
     #[test]
