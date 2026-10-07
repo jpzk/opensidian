@@ -413,10 +413,15 @@ fn walk(dir: &Path, base: &Path, out: &mut Vec<String>, imgs: &mut Vec<String>) 
 /// a name the index resolves but the byte server refuses is a broken image.
 pub const IMG_EXTS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
 
-/// vault-relative path of `p` when its extension is an R29.8 image, else None
+/// pdfembed: PDFs are embeddable vault members too (`![[f.pdf]]`). They ride
+/// the SAME list as images (one walk, one symlink policy, one resolver), and
+/// main.rs serves them only rendered (`pdf_path_in`), never as raw bytes.
+pub const EMBED_ONLY_EXTS: [&str; 1] = ["pdf"];
+
+/// vault-relative path of `p` when its extension is an R29.8 image or a PDF, else None
 fn img_rel(p: &Path, base: &Path, name: &str) -> Option<String> {
     let ext = name.rsplit_once('.')?.1.to_ascii_lowercase();
-    if !IMG_EXTS.contains(&ext.as_str()) {
+    if !IMG_EXTS.contains(&ext.as_str()) && !EMBED_ONLY_EXTS.contains(&ext.as_str()) {
         return None;
     }
     let dir = p.parent().and_then(|d| d.strip_prefix(base).ok())?;
