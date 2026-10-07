@@ -91,18 +91,22 @@ impl GraphCache {
     }
 
     /// R7.2 neighbourhood of `center` (same shape as the old JS lgFilter):
-    /// BFS `depth` hops over outgoing (`out`) / incoming (`inc`) edges, keeps
-    /// EVERY edge among the surviving nodes, node order = discovery order,
-    /// indices remapped. Unknown centre -> empty graph.
-    pub fn local(&self, center: &str, depth: usize, inc: bool, out: bool) -> Graph {
+    /// BFS `depth` hops over outgoing (`out`) / incoming (`inc`) edges, node
+    /// order = discovery order, indices remapped. `inter` (stock "Neighbor
+    /// links", graphctx GC15) keeps EVERY edge among the surviving nodes; off
+    /// keeps only edges that cross BFS layers (out1 -> in1 at depth 1 is gone).
+    /// Unknown centre -> empty graph.
+    pub fn local(&self, center: &str, depth: usize, inc: bool, out: bool, inter: bool) -> Graph {
         let Some(ci) = self.graph.nodes.iter().position(|n| n.name == center) else {
             return Graph::default();
         };
         let mut keep = vec![usize::MAX; self.graph.nodes.len()];
+        let mut dist = vec![usize::MAX; self.graph.nodes.len()];
         let mut order = vec![ci];
         keep[ci] = 0;
+        dist[ci] = 0;
         let mut frontier = vec![ci];
-        for _ in 0..depth {
+        for d in 1..=depth {
             if frontier.is_empty() {
                 break;
             }
@@ -111,6 +115,7 @@ impl GraphCache {
                 let mut visit = |j: usize, next: &mut Vec<usize>| {
                     if keep[j] == usize::MAX {
                         keep[j] = order.len();
+                        dist[j] = d;
                         order.push(j);
                         next.push(j);
                     }
@@ -135,6 +140,7 @@ impl GraphCache {
                 .edges
                 .iter()
                 .filter(|(a, b)| keep[*a] != usize::MAX && keep[*b] != usize::MAX)
+                .filter(|(a, b)| inter || dist[*a] != dist[*b])
                 .map(|(a, b)| (keep[*a], keep[*b]))
                 .collect(),
         }

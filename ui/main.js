@@ -2428,7 +2428,7 @@ const WS_GICON = "lucide-git-fork";
 // Obsidian file loses nothing by passing through (W2 frozen: round-tripped as-is).
 function wsLgOpts(t) {
   const o = Object.assign({}, t.opts && typeof t.opts === "object" ? t.opts : {});
-  o.localJumps = t.depth; o.localBacklinks = !!t.inc; o.localForelinks = !!t.out;
+  o.localJumps = t.depth; o.localBacklinks = !!t.inc; o.localForelinks = !!t.out; o.localInterlinks = !!t.inter;
   return o;
 }
 function wsLeaf(t) {
@@ -2680,7 +2680,7 @@ function wsGraphIn(leaf, have) {
     const o = st.options && typeof st.options === "object" && !Array.isArray(st.options) ? st.options : {};
     const d = Number.isInteger(o.localJumps) ? Math.min(5, Math.max(1, o.localJumps)) : 1;
     t = { kind: "lg", name: "Graph of " + c.split("/").pop(), center: c, depth: d,
-          inc: o.localBacklinks !== false, out: o.localForelinks !== false,
+          inc: o.localBacklinks !== false, out: o.localForelinks !== false, inter: o.localInterlinks === true,
           opts: o, mode: "source", hist: [], hpos: 0 };
   }
   if (typeof leaf.id === "string" && leaf.id) t.lid = leaf.id;   // R28.4
@@ -3746,7 +3746,7 @@ async function splitGroup(g, dir, ti) {  // duplicate g's tab ti into a new sibl
     return splitWith(g, dir, { kind: "gg", name: "Graph view", mode: "source", hist: [], hpos: -1 });
   if (src && src.kind === "lg")
     return splitWith(g, dir, { kind: "lg", name: src.name, center: src.center, depth: src.depth,
-                               inc: src.inc, out: src.out, opts: src.opts, mode: "source", hist: [], hpos: 0 });
+                               inc: src.inc, out: src.out, inter: src.inter, opts: src.opts, mode: "source", hist: [], hpos: 0 });
   const t = src ? Object.assign(mkTab(src.name), { src: !!src.src, mode: src.mode }) : null;   // #16: BOTH bits ride along (sub-mode survives a split of a reading tab)
   await splitWith(g, dir, t);
 }
@@ -7548,9 +7548,10 @@ const GC_SECS = [   // [section key, class, header, collapse key] in stock order
   ["display", "mod-display", "Display", "collapse-display"],
   ["forces", "mod-forces", "Forces", "collapse-forces"],
 ];
-const GC_LTOG = [   // local-only Filters toggles: [tab field, options key, label] (R§5.1, R§5.3)
+const GC_LTOG = [   // local-only Filters toggles: [tab field, options key, label] (R§5.1, R§5.3, R§5.4)
   ["inc", "localBacklinks", "Incoming links"],
   ["out", "localForelinks", "Outgoing links"],
+  ["inter", "localInterlinks", "Neighbor links"],   // GC15: default off = only links that cross BFS layers
 ];
 const GC_FTOG = [   // Filters toggles both graphs share: [settings key, label, default, class] (R§2.2-2.5, R§5.1); Orphans is global only (GC12)
   ["showTags", "Tags", false, ""],
@@ -7615,14 +7616,14 @@ function gcScopeLg(t) {
 }
 /* graph_view options (src-tauri graphq::ViewOpts) for a card state, or null when Filters and
    Groups are all at their defaults — then the plain cached graph / graph_local answer, so an
-   untouched graph keeps its exact old fetch (and perf). Local: interlinks stays true until the
-   Neighbor links toggle lands (graph_local keeps every edge among the kept nodes). */
+   untouched graph keeps its exact old fetch (and perf). Local: Neighbor links (t.inter, GC15)
+   rides along either way — graph_view interlinks / graph_local interlinks. */
 function gcOpts(st, t) {
   const f = st.f, gq = st.groups.map(r => r.query);
   const plain = !f.search.trim() && GC_FTOG.every(([k, , def]) => (t && k === "showOrphans") || f[k] === def) && !gq.some(q => q.trim());
   if (plain) return null;
   const o = { search: f.search, showTags: f.showTags, showAttachments: f.showAttachments, hideUnresolved: f.hideUnresolved, groups: gq };
-  if (t) Object.assign(o, { center: t.center, depth: t.depth, inc: t.inc, out: t.out, interlinks: true });
+  if (t) Object.assign(o, { center: t.center, depth: t.depth, inc: t.inc, out: t.out, interlinks: !!t.inter });
   else o.showOrphans = f.showOrphans;
   return o;
 }
@@ -7632,7 +7633,7 @@ async function gcFetchGg() {
 }
 function gcFetchLg(t, center) {
   const o = gcOpts(gcScopeLg(t).st, Object.assign({}, t, { center }));
-  return o ? inv("graph_view", { opts: o }) : inv("graph_local", { center, depth: t.depth, inc: t.inc, out: t.out });
+  return o ? inv("graph_view", { opts: o }) : inv("graph_local", { center, depth: t.depth, inc: t.inc, out: t.out, interlinks: !!t.inter });
 }
 const gfFmt = (r, x) => r[7] ? x.toFixed(r[7]) : String(Math.round(x));
 const GF_ICON = {
@@ -7693,8 +7694,8 @@ function gfPanel(g) {              // built once per group, lives in .content be
     s.st.d = Object.assign({}, GC_DDEF); patch.showArrow = false;   // R§4.6 (D9): arrows off, fade 0, node 1, link 1
     for (const r of GC_DROWS) patch[r[1]] = r[6];
     if (s.kind === "lg") {
-      s.t.depth = 1; s.t.inc = true; s.t.out = true;
-      Object.assign(patch, { localJumps: 1, localBacklinks: true, localForelinks: true });
+      s.t.depth = 1; s.t.inc = true; s.t.out = true; s.t.inter = false;
+      Object.assign(patch, { localJumps: 1, localBacklinks: true, localForelinks: true, localInterlinks: false });
     }
     s.save(patch); gfSync(g); if (g.graphRedraw) g.graphRedraw(); updateTitle();
     if (g.graphRefresh) { await g.graphRefresh(); updateTitle(); }
@@ -7950,15 +7951,17 @@ function gfTok(g, pre = "gf") {
    set of every graph leaf, names sorted (kind 0 note, 1 unresolved, 2 tag, 3 attachment, ^c<i> = first
    matching colour group i). Names only up to 60 nodes; a larger graph publishes the count. */
 function gfnTok() {
-  const out = [];
+  const out = [], eo = [];
   for (const h of groups()) {
     const t = h.active >= 0 ? h.tabs[h.active] : null;
     if (!t || (t.kind !== "gg" && t.kind !== "lg") || !h.graphOn || !h.graphNodes) continue;
     const L = h.graphNodes();
     const names = L.length > 60 ? "" : ":" + L.map(p => p.n.replace(/[[]|,^]/g, "") + "^" + p.kind + (p.col >= 0 ? "c" + p.col : "")).sort().join(",");
     out.push(t.kind + "@" + h.id + "=" + L.length + names);
+    if (h.graphEdges) eo.push(t.kind + "@" + h.id + "=" + h.graphEdges());
   }
-  return out.length ? " [gfn:" + out.join("|") + "]" : "";
+  // [gfe:<kind>@<group id>=<links drawn>|...] beside it
+  return out.length ? " [gfn:" + out.join("|") + "]" + (eo.length ? " [gfe:" + eo.join("|") + "]" : "") : "";
 }
 function gcnTok() {
   const vis = e => !!e && e.getClientRects().length > 0, out = [];
@@ -8708,6 +8711,7 @@ async function startGraph(g, cfg) {
     g.gfF = null; g.gfApply = null;
     gcUnbind(g);
   }
+  g.graphEdges = () => gr.edges.length;   // census [gfe:] (GC15 changes the link count, not the node set)
   g.graphNodes = () => {              // census: node screen coords (window px) for the graphnav smoke
     const r = cv.getBoundingClientRect();
     return N.map(p => ({ n: p.n, kind: p.kind, col: p.col, x: Math.round(r.left + p.x * view.scale + view.tx), y: Math.round(r.top + p.y * view.scale + view.ty) }));

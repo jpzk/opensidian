@@ -3112,9 +3112,10 @@ fn graph_inner(v: &State<Vault>) -> Graph {
 /// R19 (feedback #5): local-graph neighbourhood cut in Rust from the cached
 /// adjacency — the UI no longer pulls the whole vault graph per recentre.
 #[tauri::command]
-fn graph_local(v: State<Vault>, center: String, depth: usize, inc: bool, out: bool, otel: Option<perf::Ctx>) -> Graph {
+/// `interlinks` absent = every edge among the kept nodes (the pre-graphctx answer).
+fn graph_local(v: State<Vault>, center: String, depth: usize, inc: bool, out: bool, interlinks: Option<bool>, otel: Option<perf::Ctx>) -> Graph {
     span_timed!(otel => "graph_fetch",
-        v.index.lock().unwrap().graph().local(&center, depth.min(5), inc, out),
+        v.index.lock().unwrap().graph().local(&center, depth.min(5), inc, out, interlinks.unwrap_or(true)),
         serde_json::json!({ "depth": depth }))
 }
 
@@ -5421,14 +5422,16 @@ mod tests {
         assert_eq!(ix.graph().out[0], [1, 4]); // A -> B, Ghost
         assert_eq!(ix.graph().inc[2], [1, 3]); // B, D -> C
         // local: depth 1 out+in around B = B, C, A; edges among them keep every direction
-        let l = ix.graph().local("B", 1, true, true);
+        let l = ix.graph().local("B", 1, true, true, true);
+        // neighbour links off: C->A joins two depth-1 nodes and is dropped
+        assert_eq!(edge_names(&ix.graph().local("B", 1, true, true, false)).len(), 2);
         assert_eq!(l.nodes.iter().map(|n| n.name.as_str()).collect::<Vec<_>>(), ["B", "C", "A"]);
         assert_eq!(edge_names(&l).len(), 3); // A->B, B->C, C->A
-        let l = ix.graph().local("B", 1, false, true); // outgoing only
+        let l = ix.graph().local("B", 1, false, true, true); // outgoing only
         assert_eq!(l.nodes.len(), 2);
-        let l = ix.graph().local("B", 2, true, true); // 2 hops reach D + Ghost
+        let l = ix.graph().local("B", 2, true, true, true); // 2 hops reach D + Ghost
         assert_eq!(l.nodes.len(), 5);
-        assert!(ix.graph().local("Nope", 1, true, true).nodes.is_empty());
+        assert!(ix.graph().local("Nope", 1, true, true, true).nodes.is_empty());
         // plain save (links unchanged) keeps the cache; a link edit / new note / remove rebuilds it
         ix.upsert("D", "[[C]] more text");
         assert!(ix.graph.is_some());
