@@ -3463,6 +3463,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   if (gg) { const pt = posTok(fg()); if (pt) gg += " [ggpos:" + pt + "]"; }
   if (gg) gg += gfTok(fg());        // Forces panel: [gff:] live F, [gfp:] card state/rect, [gfb:]/[gfs:] click targets
   gg += gcnTok();                  // graphctx GC1: settings surfaces per graph leaf
+  gg += gfnTok();                  // graphctx GC4-GC11: drawn node set per graph leaf
   // GRAPH THEME census (goal graphtheme). [graphbg:]/[graphnode:] are a FRESH read of the
   // stylesheet off the root element — deliberately NOT the graph's own cached palette: the
   // defect under test is a cache that outlives a palette switch, and a token read from that
@@ -5039,7 +5040,7 @@ async function loadActive(g) {
   if (t && t.kind === "gg") {       // R9.7: global graph as a main tab
     cancelAnimationFrame(g.sim);    // clean restart on tab switches
     await startGraph(g, {
-      fetch: () => inv("graph"),
+      fetch: gcFetchGg,              // graphctx GC4-GC11: graph_view when a filter/group is set
       scope: gcScopeGg,             // graphparity/graphctx: the leaf's ONE graph-controls card, bound to graph.json
       center: () => null,
       onClick: async n => {         // node click: this tab BECOMES the note
@@ -7551,8 +7552,18 @@ const GC_LTOG = [   // local-only Filters toggles: [tab field, options key, labe
   ["inc", "localBacklinks", "Incoming links"],
   ["out", "localForelinks", "Outgoing links"],
 ];
+const GC_FTOG = [   // Filters toggles both graphs share: [settings key, label, default, class] (R§2.2-2.5, R§5.1); Orphans is global only (GC12)
+  ["showTags", "Tags", false, ""],
+  ["showAttachments", "Attachments", false, ""],
+  ["hideUnresolved", "Existing files only", false, ""],
+  ["showOrphans", "Orphans", true, "gc-global"],
+];
 function gcParse(o) {              // settings object (graph.json / local options) -> card state, clamped, stock defaults
-  const st = { close: o.close === true, cs: {}, v: {} };
+  const st = { close: o.close === true, cs: {}, v: {}, f: { search: typeof o.search === "string" ? o.search : "" } };
+  for (const [k, , def] of GC_FTOG) st.f[k] = typeof o[k] === "boolean" ? o[k] : def;
+  // colorGroups (R§3.3): kept as stored, rows in order; a malformed row is dropped
+  st.groups = Array.isArray(o.colorGroups) ? o.colorGroups.filter(r => r && typeof r === "object")
+    .map(r => ({ query: typeof r.query === "string" ? r.query : "", rgb: r.color && Number.isInteger(r.color.rgb) ? r.color.rgb & 0xffffff : 0 })) : [];
   for (const [k, , , ck] of GC_SECS) st.cs[k] = o[ck] !== false;   // every section collapsed by default (R§5 L0)
   for (const [k, jk, , lo, hi, , def] of GF_ROWS) {
     const x = o[jk];
@@ -7587,6 +7598,27 @@ function gcScopeLg(t) {
     t.opts = Object.assign({}, t.opts && typeof t.opts === "object" ? t.opts : {}, patch);
   } };
 }
+/* graph_view options (src-tauri graphq::ViewOpts) for a card state, or null when Filters and
+   Groups are all at their defaults — then the plain cached graph / graph_local answer, so an
+   untouched graph keeps its exact old fetch (and perf). Local: interlinks stays true until the
+   Neighbor links toggle lands (graph_local keeps every edge among the kept nodes). */
+function gcOpts(st, t) {
+  const f = st.f, gq = st.groups.map(r => r.query);
+  const plain = !f.search.trim() && GC_FTOG.every(([k, , def]) => (t && k === "showOrphans") || f[k] === def) && !gq.some(q => q.trim());
+  if (plain) return null;
+  const o = { search: f.search, showTags: f.showTags, showAttachments: f.showAttachments, hideUnresolved: f.hideUnresolved, groups: gq };
+  if (t) Object.assign(o, { center: t.center, depth: t.depth, inc: t.inc, out: t.out, interlinks: true });
+  else o.showOrphans = f.showOrphans;
+  return o;
+}
+async function gcFetchGg() {
+  const o = gcOpts((await gfLoad()));
+  return o ? inv("graph_view", { opts: o }) : inv("graph");
+}
+function gcFetchLg(t, center) {
+  const o = gcOpts(gcScopeLg(t).st, Object.assign({}, t, { center }));
+  return o ? inv("graph_view", { opts: o }) : inv("graph_local", { center, depth: t.depth, inc: t.inc, out: t.out });
+}
 const gfFmt = (r, x) => r[7] ? x.toFixed(r[7]) : String(Math.round(x));
 const GF_ICON = {
   reset: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',
@@ -7603,8 +7635,10 @@ function gfPanel(g) {              // built once per group, lives in .content be
   const p = document.createElement("div");
   p.className = "graph-controls"; p.hidden = true;
   const body = {
-    filter: gcSlider("depth", "Depth", 1, 5, 1, "mod-local-jumps gc-local") +
-            GC_LTOG.map(r => gcToggle(r[0], r[2], "gc-local")).join(""),
+    filter: '<div class="setting-item mod-search-setting" data-k="search"><input type="search" placeholder="Search files..." spellcheck="false"></div>' +
+            gcSlider("depth", "Depth", 1, 5, 1, "mod-local-jumps gc-local") +
+            GC_LTOG.map(r => gcToggle(r[0], r[2], "gc-local")).join("") +
+            GC_FTOG.map(r => gcToggle(r[0], r[1], r[3])).join(""),
     groups: "", display: "",
     forces: GF_ROWS.map(r => gcSlider(r[0], r[2], r[3], r[4], r[5])).join(""),
   };
@@ -7617,6 +7651,13 @@ function gfPanel(g) {              // built once per group, lives in .content be
   p.onmousedown = e => e.stopPropagation();
   p.onwheel = e => e.stopPropagation();
   const q = s => p.querySelector(s), sc = () => g.gcScope;
+  const refresh = async () => {   // Filters edits: ONE refresh in flight; edits meanwhile rerun it once with the latest state (no stale out-of-order set)
+    if (g.gcBusy) { g.gcDirty = true; return; }
+    g.gcBusy = true;
+    try { do { g.gcDirty = false; if (g.graphRefresh) await g.graphRefresh(); } while (g.gcDirty); }
+    finally { g.gcBusy = false; }
+    updateTitle();
+  };
   q(".mod-close").onclick = () => { const s = sc(); if (!s) return; s.st.close = true; gfShow(g); s.save({ close: true }); updateTitle(); };
   q(".mod-open").onclick = () => { const s = sc(); if (!s) return; s.st.close = false; gfShow(g); gfSync(g); s.save({ close: false }); updateTitle(); };
   for (const [k, , , ck] of GC_SECS)
@@ -7629,12 +7670,14 @@ function gfPanel(g) {              // built once per group, lives in .content be
     const patch = {};
     for (const r of GF_ROWS) { s.st.v[r[0]] = r[6]; patch[r[1]] = r[6]; }
     if (g.gfApply) g.gfApply(s.st.v);
+    for (const [k, , def] of GC_FTOG) if (s.kind === "gg" || k !== "showOrphans") { s.st.f[k] = def; patch[k] = def; }
+    if (s.kind === "lg") { s.st.f.search = ""; patch.search = ""; }
     if (s.kind === "lg") {
       s.t.depth = 1; s.t.inc = true; s.t.out = true;
       Object.assign(patch, { localJumps: 1, localBacklinks: true, localForelinks: true });
     }
     s.save(patch); gfSync(g); updateTitle();
-    if (s.kind === "lg" && g.graphRefresh) { await g.graphRefresh(); updateTitle(); }
+    if (g.graphRefresh) { await g.graphRefresh(); updateTitle(); }
   };
   for (const r of GF_ROWS) {
     const row = p.querySelector('[data-k="' + r[0] + '"]'), inp = row.querySelector("input");
@@ -7672,6 +7715,28 @@ function gfPanel(g) {              // built once per group, lives in .content be
     box.onclick = flip;
     box.onkeydown = e => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); flip(); } };
   }
+  { // Search (GC4): filters on every input, persisted at once (R§2.1)
+    const inp = q('[data-k="search"] input');
+    inp.oninput = async () => {
+      const s = sc(); if (!s) return;
+      if (s.st.f.search === inp.value) return;
+      s.st.f.search = inp.value; s.save({ search: inp.value }); updateTitle();
+      await refresh();
+    };
+    // typing here is not a hotkey; app chords (ctrl+w, ctrl+g ...) still reach the app, text-edit chords stay in the box
+    inp.onkeydown = e => { if (!(e.ctrlKey || e.metaKey) || /^[acvxyz]$/i.test(e.key)) e.stopPropagation(); };
+  }
+  for (const [k] of GC_FTOG) {     // Tags / Attachments / Existing files only / Orphans (GC8-GC11)
+    const box = q('[data-k="' + k + '"] .checkbox-container');
+    const flip = async () => {
+      const s = sc(); if (!s || (k === "showOrphans" && s.kind === "lg")) return;
+      s.st.f[k] = !s.st.f[k]; box.classList.toggle("is-enabled", s.st.f[k]);
+      s.save({ [k]: s.st.f[k] }); updateTitle();
+      await refresh();
+    };
+    box.onclick = flip;
+    box.onkeydown = e => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); flip(); } };
+  }
   g.content.appendChild(p);
   return (g.gfp = p);
 }
@@ -7695,6 +7760,8 @@ function gfSync(g) {               // controls + readouts <- the live sim's F (a
     row.querySelector("input").value = String(F[r[0]]);
     row.querySelector(".slider-value").textContent = gfFmt(r, F[r[0]]);
   }
+  { const inp = p.querySelector('[data-k="search"] input'); if (document.activeElement !== inp) inp.value = s.st.f.search; }
+  for (const [k] of GC_FTOG) p.querySelector('[data-k="' + k + '"] .checkbox-container').classList.toggle("is-enabled", !!s.st.f[k]);
   if (s.kind === "lg") {
     const row = p.querySelector('[data-k="depth"]');
     row.querySelector("input").value = String(s.t.depth);
@@ -7719,7 +7786,8 @@ function gfTok(g, pre = "gf") {
   const bs = [];
   for (const [n, sel] of [["reset", ".mod-reset"], ["close", ".mod-close"], ["open", ".mod-open"],
                           ...GC_SECS.map(([k]) => [k, '[data-s="' + k + '"] .gf-head']),
-                          ...GC_LTOG.map(([f]) => [f, '[data-k="' + f + '"] .checkbox-container'])]) {
+                          ...GC_LTOG.map(([f]) => [f, '[data-k="' + f + '"] .checkbox-container']),
+                          ...GC_FTOG.map(([k]) => [k, '[data-k="' + k + '"] .checkbox-container']), ["search", '[data-k="search"] input']]) {
     const e = p.querySelector(sel); if (vis(e)) bs.push(n + "@" + c(e));
   }
   t += " [" + pre + "b:" + bs.join("|") + "]";
@@ -7728,11 +7796,27 @@ function gfTok(g, pre = "gf") {
     return row.dataset.k + "@" + Math.round(r.left) + "," + Math.round(r.right) + "," + Math.round(r.top + r.height / 2) + "," + row.querySelector(".slider-value").textContent;
   });
   if (ss.length) t += " [" + pre + "s:" + ss.join("|") + "]";
+  // graphctx Filters state [<p>q:search=<query>,showTags=0,...] (query with []| stripped)
+  t += " [" + pre + "q:search=" + s.st.f.search.replace(/[[]|,]/g, "") + "," + GC_FTOG.map(([k]) => k + "=" + (s.st.f[k] ? 1 : 0)).join(",") + "]";
   if (s.kind === "lg") t += " [" + pre + "t:" + GC_LTOG.map(([f]) => f + "=" + (s.t[f] ? 1 : 0)).join(",") + "]";
   return t;
 }
 /* GC1 census: [gcn:<kind>@<group id>=<n>|...] for every group showing a graph, n = the
    settings surfaces VISIBLE in that leaf: graph-controls cards + any legacy gear/popover. */
+/* graphctx GC4-GC11 census: [gfn:<kind>@<group id>=<n>:<name>^<node kind>,...|...] the DRAWN node
+   set of every graph leaf, names sorted (kind 0 note, 1 unresolved, 2 tag, 3 attachment, ^c<i> = first
+   matching colour group i). Names only up to 60 nodes; a larger graph publishes the count. */
+function gfnTok() {
+  const out = [];
+  for (const h of groups()) {
+    const t = h.active >= 0 ? h.tabs[h.active] : null;
+    if (!t || (t.kind !== "gg" && t.kind !== "lg") || !h.graphOn || !h.graphNodes) continue;
+    const L = h.graphNodes();
+    const names = L.length > 60 ? "" : ":" + L.map(p => p.n.replace(/[[]|,^]/g, "") + "^" + p.kind + (p.col >= 0 ? "c" + p.col : "")).sort().join(",");
+    out.push(t.kind + "@" + h.id + "=" + L.length + names);
+  }
+  return out.length ? " [gfn:" + out.join("|") + "]" : "";
+}
 function gcnTok() {
   const vis = e => !!e && e.getClientRects().length > 0, out = [];
   for (const h of groups()) {
@@ -7872,7 +7956,7 @@ async function startGraph(g, cfg) {
   // place, never reassigned: `RGB[palette().bg]` evaluates the base RGB BEFORE the call,
   // so a reassigning palette() handed the warm-up frame the old, empty map (undefined bg,
   // draw threw, no GL renderer, every graph phase dead — d374a32).
-  const PAL_VAR = { hi: "--accent-yellow", ctr: "--accent-green", node: "--accent-blue", edge: "--border", bg: "--graph-bg" };
+  const PAL_VAR = { hi: "--accent-yellow", ctr: "--accent-green", node: "--accent-blue", edge: "--border", bg: "--graph-bg", tag: "--graph-node-tag", att: "--graph-node-attachment" };
   // goal/themes4: a THIRD rung for the node colour. Solarized declares --accent-h on :root as
   // "17.57deg", so the derived --color-accent-1 (a calc() on --accent-h minus 3, the shape
   // Obsidian uses too) is an invalid calc on body AND on :root — both rungs above refuse it and
@@ -7962,7 +8046,7 @@ async function startGraph(g, cfg) {
   };
   const N = gr.nodes.map((nd, i) => {
     const [x, y] = seed(i);
-    return { n: nd.name, resolved: nd.resolved, x, y, vx: 0, vy: 0, deg: 0, r: 6.5 };
+    return { n: nd.name, resolved: nd.resolved, kind: nd.kind | 0, col: gr.col ? gr.col[i] : -1, x, y, vx: 0, vy: 0, deg: 0, r: 6.5 };
   });
   // the seed disk is centred on the origin: the centroid translation below would otherwise
   // snap an off-centre seed in one step (a jump stock never makes)
@@ -8014,7 +8098,7 @@ async function startGraph(g, cfg) {
     // touched no link) must not reheat — the layout stays a pure function of the vault, so two
     // opens land on identical positions (smoke graphgl compares gl vs 2d frames pixel-wise)
     const same = g2.nodes.length === N.length && g2.edges.length === gr.edges.length &&
-      g2.nodes.every((nd, i) => nd.name === N[i].n && nd.resolved === N[i].resolved) &&
+      g2.nodes.every((nd, i) => nd.name === N[i].n && nd.resolved === N[i].resolved && (nd.kind | 0) === N[i].kind && (g2.col ? g2.col[i] : -1) === N[i].col) &&
       g2.edges.every((e, i) => e[0] === gr.edges[i][0] && e[1] === gr.edges[i][1]);
     if (same) return;
     const old = new Map(N.map(p => [p.n, p]));
@@ -8023,12 +8107,13 @@ async function startGraph(g, cfg) {
     // read the record compare against numbers that cannot have moved under them.
     const prev = new Map();
     for (const [nm, o] of old) prev.set(nm, { x: o.x, y: o.y, vx: o.vx, vy: o.vy, pin: o.fx != null });
-    const N2 = g2.nodes.map(nd => {
+    const N2 = g2.nodes.map((nd, i) => {
+      const kind = nd.kind | 0, col = g2.col ? g2.col[i] : -1;   // graphctx: node kind (0 note 1 ghost 2 tag 3 attachment) + first matching group
       const o = old.get(nd.name);
       // C3: a survivor keeps its PIN too (fx/fy) — a save must not unstick a node
       // the user dropped somewhere on purpose.
-      return o ? { n: nd.name, resolved: nd.resolved, x: o.x, y: o.y, vx: o.vx, vy: o.vy, fx: o.fx, fy: o.fy, deg: 0, r: 6.5 }
-               : { n: nd.name, resolved: nd.resolved, x: null, y: null, vx: 0, vy: 0, deg: 0, r: 6.5 };
+      return o ? { n: nd.name, resolved: nd.resolved, kind, col, x: o.x, y: o.y, vx: o.vx, vy: o.vy, fx: o.fx, fy: o.fy, deg: 0, r: 6.5 }
+               : { n: nd.name, resolved: nd.resolved, kind, col, x: null, y: null, vx: 0, vy: 0, deg: 0, r: 6.5 };
     });
     // R19 warm start (feedback #5): survivors keep position + velocity; a NEW
     // node is seeded one link length (F.dist) from its first surviving
@@ -8049,7 +8134,7 @@ async function startGraph(g, cfg) {
       p.x = nb.x + F.dist * Math.cos(ang); p.y = nb.y + F.dist * Math.sin(ang);
     });
     N.length = 0; N.push(...N2);
-    gr.edges = g2.edges;
+    gr.edges = g2.edges; gr.col = g2.col;
     rebuild();
     hov = -1;
     // C5: a0 is the sim's REAL alpha before the restart — a graph can go quiet with alpha
@@ -8294,7 +8379,7 @@ async function startGraph(g, cfg) {
       const p = N[i], isC = cn !== null && p.n === cn;
       if (p.x < wx0 - pad || p.x > wx1 + pad || p.y < wy0 - pad || p.y > wy1 + pad) continue;
       const a = litN(i) ? (p.resolved ? 1 : 0.55) : 0.12;
-      const col = i === hov ? P.hi : isC ? P.ctr : P.node;
+      const col = i === hov ? P.hi : isC ? P.ctr : p.kind === 2 ? P.tag : p.kind === 3 ? P.att : P.node;
       const key = col + a + (p.resolved ? "r" : "u") + (isC ? "c" : "");
       let gp = groups.get(key);
       if (!gp) groups.set(key, gp = { col, a, res: p.resolved, dr: isC ? 4 : 0, idx: [] });
@@ -8432,7 +8517,7 @@ async function startGraph(g, cfg) {
   }
   g.graphNodes = () => {              // census: node screen coords (window px) for the graphnav smoke
     const r = cv.getBoundingClientRect();
-    return N.map(p => ({ n: p.n, x: Math.round(r.left + p.x * view.scale + view.tx), y: Math.round(r.top + p.y * view.scale + view.ty) }));
+    return N.map(p => ({ n: p.n, kind: p.kind, col: p.col, x: Math.round(r.left + p.x * view.scale + view.tx), y: Math.round(r.top + p.y * view.scale + view.ty) }));
   };
   running = true; step();
   // canvas resized (pane split / window): keep the bitmap crisp, redraw (world unchanged)
@@ -8532,6 +8617,7 @@ async function startGraph(g, cfg) {
     const [x, y] = toWorld(e.clientX - r.left, e.clientY - r.top);
     const hit = N[hitTest(x, y)];
     if (!hit) return;
+    if (hit.kind === 2 || hit.kind === 3) return;      // graphctx: tag / attachment nodes are not notes (their menus: GC29-GC31)
     if (!hit.resolved)                                  // ghost node: create then open (M3 path)
       await createNote(hit.n);
     // R19 (HARD RULE 100ms): the CLICK is the interaction — graph_recenter measures it to the
@@ -8556,13 +8642,13 @@ async function startGraph(g, cfg) {
 async function showLocalGraph(g, t) {  // t = the localgraph tab (kind:"lg")
   cancelAnimationFrame(g.sim);         // clean restart on tab switches
   await startGraph(g, {
-    fetch: () => inv("graph_local", { center: t.center, depth: t.depth, inc: t.inc, out: t.out }),   // R19: served from the index adjacency cache
+    fetch: () => gcFetchLg(t, t.center),   // R19: served from the index adjacency cache; graphctx: graph_view when a filter is set
     center: () => t.center,
     scope: () => gcScopeLg(t),         // graphctx GC1: the leaf's ONE card, bound to this tab's options
     onClick: async n => {              // R7.4: navigate the LINKED group; lgFollow re-centers
       const lk = groups().find(x => x.id === t.linkId);
       // R19: the next neighbourhood is fetched IN PARALLEL with the note (graphRefresh picks it up)
-      g.prefetch = { n, p: inv("graph_local", { center: n, depth: t.depth, inc: t.inc, out: t.out }) };
+      g.prefetch = { n, p: gcFetchLg(t, n) };
       if (lk) await navigate(lk, n);
       await linkSync(t, n);          // R13.3: manual members follow too
     },

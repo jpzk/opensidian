@@ -166,6 +166,8 @@ body {
      the hole it sits in — and made every theme wrong, because a theme that
      repaints the editor background does not repaint our ribbon. */
   --graph-bg: var(--background-primary);
+  --graph-node-tag: var(--accent-green);         /* graphctx GC8: tag nodes (stock #08B94E) */
+  --graph-node-attachment: var(--accent-yellow); /* graphctx GC9: attachment nodes */
   --accent-red: var(--color-red, #f38ba8);   /* ramp only: the theme format's --color-red IS this surface (T6b), and no semantic name of ours sits between */
   --tag-bg: var(--tag-background);
   --highlight-yellow: var(--text-highlight-bg);
@@ -759,6 +761,9 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 .graph-controls .graph-control-section-header { font-weight: 600 }
 .graph-controls .graph-control-section.is-collapsed .gf-body { display: none }
 .graph-controls:not(.is-local) .gc-local { display: none }   /* local-only Filters rows (Depth, link directions: R§5.1) */
+.graph-controls.is-local .gc-global { display: none }   /* global-only Filters rows (Orphans: GC12) */
+.graph-controls .mod-search-setting input { width: 100%; box-sizing: border-box; height: 28px; padding: 0 8px; font: inherit; font-size: 13px;
+  color: var(--text-normal, inherit); background: var(--background-modifier-form-field, var(--bg-elevated)); border: 1px solid var(--border); border-radius: 4px }
 .graph-controls .gf-body:empty { display: none }
 .graph-controls .setting-item { padding: 6px 12px; min-width: 0 }
 .graph-controls .setting-item-name { margin-bottom: 4px }
