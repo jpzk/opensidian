@@ -595,7 +595,9 @@ const Ed = {
     };
     setCounter(of0(), 0);
     function of0() { return +s.dataset.page || 1; }
-    new ResizeObserver(() => Ed.pdfSize(s)).observe(s);
+    // resize in the NEXT frame: setting the height inside the observer callback
+    // is a resize the same delivery cannot report (the "ResizeObserver loop" error)
+    new ResizeObserver(() => requestAnimationFrame(() => Ed.pdfSize(s))).observe(s);
     Ed.pdfSize(s);
     if (typeof inv !== "function") return;
     inv("pdf_info", { path: s.dataset.pdf }).then(info => {
