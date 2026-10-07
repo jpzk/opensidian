@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# opensidian — binary .deb control template (Debian 13 / Ubuntu 26.04).
+# Filled in by bin/hz/deb-build.sh (harness): @VERSION@, @INSTALLED_SIZE@ and
+# @DEPENDS@. Depends is NOT written by hand: it is dpkg-shlibdeps' shlibs:Depends
+# for the wrapped release binary (DT_NEEDED -> libwebkit2gtk-4.1-0, libgtk-3-0t64, ...).
+# Comment lines (#) are stripped before the file becomes DEBIAN/control.
+Package: opensidian
+Version: @VERSION@
+Architecture: amd64
+Maintainer: jpzk <jendrik@madewithtea.com>
+Installed-Size: @INSTALLED_SIZE@
+Depends: @DEPENDS@
+Section: editors
+Priority: optional
+Homepage: https://github.com/jpzk/opensidian
+Description: Local-first markdown vault editor
+ opensidian is a local-first markdown editor for a folder of plain files (a
+ vault): tabbed editing, wiki links, a graph view and custom themes. It keeps
+ your notes as files on disk and never needs a network connection.

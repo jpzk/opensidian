@@ -1,0 +1,6 @@
+opensidian (@VERSION@) unstable; urgency=medium
+
+  * Release @VERSION@: wraps the byte-identical release binary that the
+    AppImages carry (no second compile). See the GitHub release notes.
+
+ -- jpzk <jendrik@madewithtea.com>  @DATE@
