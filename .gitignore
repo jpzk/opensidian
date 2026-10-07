@@ -26,3 +26,5 @@ dist/
 /progress.md
 /.goalenv
 /x
+# committed launcher icons: renders of packaging/linux/opensidian.svg (render-icons.sh)
+!packaging/linux/icons/*.png
