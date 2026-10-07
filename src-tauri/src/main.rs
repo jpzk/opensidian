@@ -21,6 +21,7 @@ mod appid;
 mod builtins;
 mod cfgstore;
 mod datefmt;
+mod graphq;
 mod index;
 mod migrate;
 mod outline;
@@ -3093,6 +3094,40 @@ fn graph_local(v: State<Vault>, center: String, depth: usize, inc: bool, out: bo
         serde_json::json!({ "depth": depth }))
 }
 
+/// graphctx: the graph a view DRAWS — Filters (search, tags, attachments,
+/// existing-only, orphans; local depth + link directions + neighbour links)
+/// applied in Rust over the cached graph, plus per node the index of the first
+/// matching colour group (-1 none). docs/graphctx-requirements.md GC4-GC20.
+#[derive(serde::Serialize)]
+struct GraphView {
+    #[serde(flatten)]
+    g: index::Graph,
+    col: Vec<i32>,
+}
+
+#[tauri::command]
+fn graph_view(v: State<Vault>, opts: graphq::ViewOpts, otel: Option<perf::Ctx>) -> GraphView {
+    span_timed!(otel => "graph_view", graph_view_in(&v, &opts), serde_json::json!({ "local": opts.center.is_some() }))
+}
+
+fn graph_view_in(v: &Vault, o: &graphq::ViewOpts) -> GraphView {
+    let root = cur_vault(v);
+    let mut ix = v.index.lock().unwrap();
+    ix.graph();
+    let ix = &*ix;
+    let g = &ix.graph.as_ref().expect("graph cache built above").graph;
+    // the vault walk for attachments only when one can be on screen: the toggle is
+    // on, or some unresolved target names a file with an extension (an embed)
+    let atts = match &root {
+        Some(r) if o.show_attachments || g.nodes.iter().any(|n| !n.resolved && n.name.contains('.')) => index::attachments_of(r),
+        _ => Vec::new(),
+    };
+    let names = ix.names();
+    let doc = |i: usize| (ix.content(&names[i]).unwrap_or(""), ix.tags(&names[i]));
+    let (g, col) = graphq::view(g, &doc, &atts, o, o.center.as_deref());
+    GraphView { g, col }
+}
+
 #[derive(serde::Serialize, Debug, PartialEq)]
 struct SearchHit {
     note: String,
@@ -4983,7 +5018,7 @@ fn main() {
             .expect("img response")
         })
         .invoke_handler(tauri::generate_handler![
-            list_notes, list_images, read_note, write_note, create_note, render, render_blocks, block_lines, highlight_blocks, graph, graph_local, vault_get, pick_vault,
+            list_notes, list_images, read_note, write_note, create_note, render, render_blocks, block_lines, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, vb_probe, smoke_css,

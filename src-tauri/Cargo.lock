@@ -2156,6 +2156,7 @@ dependencies = [
  "landlock",
  "libc",
  "pulldown-cmark",
+ "regex",
  "serde",
  "serde_json",
  "sha2",

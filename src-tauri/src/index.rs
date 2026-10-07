@@ -55,6 +55,14 @@ pub struct Index {
 pub struct GNode {
     pub name: String,
     pub resolved: bool,
+    /// graphctx: 0 note, 1 unresolved, 2 tag, 3 attachment (graphq::K_*); only the
+    /// filtered view (graph_view) sets 2/3, so the plain graph JSON is unchanged
+    #[serde(skip_serializing_if = "is_zero")]
+    pub kind: u8,
+}
+
+fn is_zero(k: &u8) -> bool {
+    *k == 0
 }
 
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
@@ -141,7 +149,7 @@ impl GraphCache {
 pub fn build_graph(notes: &[String], links: &[&[String]]) -> Graph {
     let mut nodes: Vec<GNode> = notes
         .iter()
-        .map(|n| GNode { name: n.clone(), resolved: true })
+        .map(|n| GNode { name: n.clone(), resolved: true, kind: 0 })
         .collect();
     let mut full: HashMap<&str, usize> = HashMap::with_capacity(notes.len());
     let mut base: HashMap<&str, usize> = HashMap::new();
@@ -174,7 +182,7 @@ pub fn build_graph(notes: &[String], links: &[&[String]]) -> Graph {
                 None => match ghosts.get(l) {
                     Some(&j) => j,
                     None => {
-                        nodes.push(GNode { name: l.to_string(), resolved: false });
+                        nodes.push(GNode { name: l.to_string(), resolved: false, kind: 0 });
                         ghosts.insert(l.to_string(), nodes.len() - 1);
                         nodes.len() - 1
                     }
@@ -425,6 +433,37 @@ fn img_rel(p: &Path, base: &Path, name: &str) -> Option<String> {
     } else {
         format!("{}/{name}", dir.display())
     })
+}
+
+/// graphctx: every non-markdown vault file (attachment), vault-relative WITH the
+/// extension, sorted — same dotfile + no-symlink policy as `walk`. Only the
+/// filtered graph view asks, and only when an attachment can be on screen.
+pub fn attachments_of(root: &Path) -> Vec<String> {
+    fn go(dir: &Path, base: &Path, out: &mut Vec<String>) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            let p = e.path();
+            let Ok(m) = fs::symlink_metadata(&p) else { continue };
+            if m.is_symlink() {
+                continue;
+            }
+            if m.is_dir() {
+                go(&p, base, out);
+            } else if !name.ends_with(".md") {
+                if let Ok(rel) = p.strip_prefix(base) {
+                    out.push(rel.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    go(root, root, &mut out);
+    out.sort();
+    out
 }
 
 /// sorted note names under root (the one and only vault walk)
