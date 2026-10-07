@@ -727,24 +727,6 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 .tab .pin svg { width: 11px; height: 11px; display: block }
 /* "Reveal file in navigation": a focus ring on the explorer row, no selection (recon 10-reveal.png) */
 .trow.revealed { outline: 2px solid var(--border-focus-ring); outline-offset: -2px }
-/* M8 local graph (R7.5): per-pane settings gear + popover */
-.lggear { position: absolute; top: 8px; right: 10px; z-index: 7;
-          background: var(--bg-surface); color: var(--text-chrome); border: 0; border-radius: 4px;
-          padding: 4px 6px; cursor: pointer; font-size: 14px; line-height: 0 }
-.lggear svg { width: 16px; height: 16px; display: block }  /* inline svg: U+2699 gear tofu'd under webkit2gtk (like ux-1) */
-.lggear:hover { background: var(--border) }
-.lggear[hidden] { display: none }
-.lgpop { position: absolute; top: 38px; right: 10px; z-index: 8;
-         background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 6px;
-         padding: 10px 12px; display: flex; flex-direction: column; gap: 6px;
-         font-size: 12px; box-shadow: 0 4px 16px var(--shadow-drop);
-         /* R22: never wider/taller than the pane it floats in */
-         max-width: calc(100% - 20px); max-height: calc(100% - 48px); overflow: hidden; box-sizing: border-box }
-.lgpop[hidden] { display: none }
-.lgpop label { display: flex; align-items: center; gap: 6px; white-space: nowrap; min-width: 0; overflow: hidden }
-/* R22: the slider control paints its thumb 2px past a 16px box (scrollHeight 18
-   vs clientHeight 16) — the box is 16px by design, so it clips its own internals */
-.lgpop input[type=range] { width: 150px; max-width: 100%; height: 16px; margin: 0; overflow: hidden }
 /* goal graphparity: the global graph's Forces card (docs/recon-graphpanel). Open: 240 wide,
    12px in from the view's top-right corner; closed (.is-close): a gear column. R22: never
    wider/taller than the pane it floats in — the body scrolls instead. */
@@ -760,27 +742,39 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
    so a card shadowed at open froze the sim's first 500 ms and S1 settle read +31..36% vs stock.
    Painted after rest, the same one-off stall lands on a still graph. */
 .graph-controls.gf-lit { box-shadow: 0 4px 16px var(--shadow-drop) }
-.graph-controls .gf-btns { display: flex; justify-content: flex-end; gap: 2px; padding: 0 6px }
+/* graphctx GC2: reset + close float in the FIRST section's header row (stock), not a row of their own */
+.graph-controls .gf-btns { position: absolute; top: 6px; right: 6px; z-index: 1; display: flex; gap: 2px }
 .graph-controls .gf-btn { width: 26px; height: 26px; padding: 5px; border: 0; border-radius: 4px; background: none;
   color: var(--text-muted); cursor: pointer; line-height: 0; box-sizing: border-box }
 .graph-controls .gf-btn:hover { background: var(--border); color: var(--text-chrome) }
 .graph-controls .gf-btn svg { width: 16px; height: 16px; display: block }
 .graph-controls .mod-open { display: none }
 .graph-controls.is-close { width: 44px; padding: 6px 0 }
-.graph-controls.is-close .gf-btns, .graph-controls.is-close .mod-forces { display: none }
+.graph-controls.is-close .gf-btns, .graph-controls.is-close .graph-control-section { display: none }
 .graph-controls.is-close .mod-open { display: block; width: 30px; margin: 0 auto }
 .graph-controls .gf-head { display: flex; align-items: center; gap: 4px; padding: 4px 12px; cursor: pointer; user-select: none }
 .graph-controls .collapse-icon { line-height: 0; color: var(--text-muted); transition: transform 0.1s; transform: rotate(90deg) }
 .graph-controls .collapse-icon svg { width: 14px; height: 14px; display: block }
-.graph-controls .mod-forces.is-collapsed .collapse-icon { transform: none }
+.graph-controls .graph-control-section.is-collapsed .collapse-icon { transform: none }
 .graph-controls .graph-control-section-header { font-weight: 600 }
-.graph-controls .mod-forces.is-collapsed .gf-body { display: none }
+.graph-controls .graph-control-section.is-collapsed .gf-body { display: none }
+.graph-controls:not(.is-local) .gc-local { display: none }   /* local-only Filters rows (Depth, link directions: R§5.1) */
+.graph-controls .gf-body:empty { display: none }
 .graph-controls .setting-item { padding: 6px 12px; min-width: 0 }
 .graph-controls .setting-item-name { margin-bottom: 4px }
 .graph-controls .gf-ctl { display: flex; align-items: center; gap: 8px; min-width: 0 }
 .graph-controls .slider-value { flex: 0 0 auto; min-width: 28px; font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums }
-/* R22: the range control paints its thumb past a 16px box — it clips its own internals (as .lgpop) */
+/* R22: the range control paints its thumb past a 16px box — it clips its own internals */
 .graph-controls input.slider { flex: 1 1 auto; min-width: 0; height: 16px; margin: 0; overflow: hidden; accent-color: var(--interactive-accent) }
+/* graphctx: stock's toggle (div.checkbox-container, .is-enabled = on), right of the setting's name */
+.graph-controls .mod-toggle { display: flex; align-items: center; justify-content: space-between; gap: 8px }
+.graph-controls .mod-toggle .setting-item-name { margin-bottom: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.graph-controls .checkbox-container { flex: 0 0 auto; position: relative; width: 34px; height: 18px; border-radius: 9px;
+  background: var(--border); cursor: pointer; transition: background 0.1s }
+.graph-controls .checkbox-container::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px;
+  border-radius: 50%; background: var(--text-chrome); transition: transform 0.1s }
+.graph-controls .checkbox-container.is-enabled { background: var(--interactive-accent) }
+.graph-controls .checkbox-container.is-enabled::after { transform: translateX(16px) }
 
 /* m5: shared fuzzy modal (quick switcher Ctrl+O / command palette Ctrl+P) */
 /* R22: the overlay is the flex box, #mbox is its item — the 90px top offset is

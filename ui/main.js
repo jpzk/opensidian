@@ -2187,14 +2187,6 @@ function mkGroup() {
       '<canvas class="graph" hidden></canvas>' +
       '<div class="ac" hidden></div>' +
       '<div class="status status-bar" hidden><span class="st-bl"></span><span class="st-wc"></span><span class="st-cc"></span></div>' +
-      '<button class="lggear" title="local graph settings" hidden>' +
-        '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"/></svg></button>' +
-      '<div class="lgpop" hidden>' +
-        '<label>Depth <span class="lgdv">1</span></label>' +
-        '<input class="lgdepth" type="range" min="1" max="5" step="1" value="1">' +
-        '<label><input class="lginc" type="checkbox" checked> Incoming links</label>' +
-        '<label><input class="lgout" type="checkbox" checked> Outgoing links</label>' +
-      '</div>' +
     '</div>';
   g.pane = pane;
   const q = s => pane.querySelector(s);
@@ -2203,12 +2195,6 @@ function mkGroup() {
   g.graph = q(".graph");
   g.acEl = q(".ac"); g.status = q(".status");
   g.stBl = q(".st-bl"); g.stWc = q(".st-wc"); g.stCc = q(".st-cc");
-  g.lggear = q(".lggear"); g.lgpop = q(".lgpop"); g.lgDv = q(".lgdv");
-  g.lgDepth = q(".lgdepth"); g.lgInc = q(".lginc"); g.lgOut = q(".lgout");
-  g.lggear.onclick = () => { g.lgpop.hidden = !g.lgpop.hidden; };
-  g.lgDepth.oninput = () => lgSet(g);
-  g.lgInc.onchange = () => lgSet(g);
-  g.lgOut.onchange = () => lgSet(g);
   pane.addEventListener("mousedown", () => focusGroup(g), true);  // R6.3: click focuses
   // graphhdr REQ-4: Ctrl+Click = Obsidian's "open to the right" (a linked pane in the OTHER mode)
   g.modebtn.onclick = e => (e.ctrlKey || e.metaKey) ? modeOpenRight(g) : cmdToggleMode(g);
@@ -3216,6 +3202,7 @@ function updateTitle() {          // pane/focus census in the window title (head
       if (lk && curOf(lk)) lg += " [lgl:" + curOf(lk) + "]";
       const pt = h.tabs[h.active] === t ? posTok(h) : "";
       if (pt) lg += " [lgpos:" + pt + "]";
+      if (h.tabs[h.active] === t) lg += gfTok(h, "lf");   // graphctx: the local leaf's card ([lff:]/[lfp:]/[lfb:]/[lfs:]/[lfc:]/[lft:])
       // C5: the last re-centre's continuity record (see rcRecord) — first-frame evidence that
       // the survivors kept their place and their motion, that the new node was seeded beside
       // a placed neighbour, that the restart was warm and the neighbourhood was prefetched.
@@ -3475,6 +3462,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   let gg = ft && ft.kind === "gg" ? " [gg]" : "";  // R9.7: global graph tab focused
   if (gg) { const pt = posTok(fg()); if (pt) gg += " [ggpos:" + pt + "]"; }
   if (gg) gg += gfTok(fg());        // Forces panel: [gff:] live F, [gfp:] card state/rect, [gfb:]/[gfs:] click targets
+  gg += gcnTok();                  // graphctx GC1: settings surfaces per graph leaf
   // GRAPH THEME census (goal graphtheme). [graphbg:]/[graphnode:] are a FRESH read of the
   // stylesheet off the root element — deliberately NOT the graph's own cached palette: the
   // defect under test is a cache that outlives a palette switch, and a token read from that
@@ -5052,7 +5040,7 @@ async function loadActive(g) {
     cancelAnimationFrame(g.sim);    // clean restart on tab switches
     await startGraph(g, {
       fetch: () => inv("graph"),
-      forces: true,                 // goal graphparity: stock's graph-controls card (Forces)
+      scope: gcScopeGg,             // graphparity/graphctx: the leaf's ONE graph-controls card, bound to graph.json
       center: () => null,
       onClick: async n => {         // node click: this tab BECOMES the note
         const tt = g.active >= 0 ? g.tabs[g.active] : null;
@@ -7534,31 +7522,51 @@ $("apath").onkeydown = async e => {
   if (p) await attachDrop([p]);
 };
 
-/* ---------- graph Forces panel (goal graphparity, docs/recon-graphpanel) ----------
-   Stock's graph-controls card in the GLOBAL graph view's top-right corner: open by default,
-   x closes it to a gear, reset + close in the first row, one collapsible Forces section
-   (collapsed by default) with the four sliders. Each `input` applies the value to the live
-   sim (F), reheats and saves — stock does all three while the thumb is still held. The
-   values are VAULT state: <vault>/.obsidian/graph.json, stock's own keys, merged by the
-   backend (set_graph_settings, vaultfs) so the keys we do not own survive. Out of scope
-   (recon follow-ups): Filters, Groups, Display, the timelapse button, `scale`. */
-const GF_ROWS = [   // [F key, graph.json key, label, min, max, step, default, readout decimals]
+/* ---------- graph controls card (goals graphparity + graphctx; harness docs/recon-graphpanel,
+   docs/recon-graphctx, docs/graphctx-requirements.md) ----------
+   ONE `.graph-controls` card per graph leaf, global AND local (GC1) — the old local-graph
+   gear + popover (.lggear/.lgpop) is gone, it was the second menu the operator saw on a
+   global graph opened in a pane that had shown a local graph. Stock shell: open by default,
+   x closes it to a gear, reset + close float in the FIRST section's header row, four
+   collapsible sections in stock order Filters, Groups, Display, Forces (GC2), each collapse
+   state stored (GC3). The card is bound to a SCOPE:
+     global: <vault>/.obsidian/graph.json via the backend (set_graph_settings merges, foreign
+             keys survive) — gfCfg, debounced gfSave;
+     local:  the localgraph tab's options (t.opts, written to workspace.json by wsLgOpts),
+             graph.json untouched (R§5) — depth/inc/out stay canonical on t.depth/t.inc/t.out.
+   Every slider applies on `input` (stock applies while the thumb is held), reheats, saves. */
+const GF_ROWS = [   // [F key, settings key, label, min, max, step, default, readout decimals]
   ["center", "centerStrength", "Center force", 0, 1, "any", 0.518713248970312, 2],
   ["repel", "repelStrength", "Repel force", 0, 20, "any", 10, 2],
   ["link", "linkStrength", "Link force", 0, 1, "any", 1, 2],
   ["dist", "linkDistance", "Link distance", 30, 500, 1, 250, 0],
 ];
+const GC_SECS = [   // [section key, class, header, collapse key] in stock order (R§1, R§5)
+  ["filter", "mod-filter", "Filters", "collapse-filter"],
+  ["groups", "mod-color-groups", "Groups", "collapse-color-groups"],
+  ["display", "mod-display", "Display", "collapse-display"],
+  ["forces", "mod-forces", "Forces", "collapse-forces"],
+];
+const GC_LTOG = [   // local-only Filters toggles: [tab field, options key, label] (R§5.1, R§5.3)
+  ["inc", "localBacklinks", "Incoming links"],
+  ["out", "localForelinks", "Outgoing links"],
+];
+function gcParse(o) {              // settings object (graph.json / local options) -> card state, clamped, stock defaults
+  const st = { close: o.close === true, cs: {}, v: {} };
+  for (const [k, , , ck] of GC_SECS) st.cs[k] = o[ck] !== false;   // every section collapsed by default (R§5 L0)
+  for (const [k, jk, , lo, hi, , def] of GF_ROWS) {
+    const x = o[jk];
+    st.v[k] = typeof x === "number" && isFinite(x) ? Math.min(hi, Math.max(lo, x)) : def;
+  }
+  return st;
+}
 // gfCfg = the vault's graph.json as last read/written, keyed by vault so a switch rereads it
 let gfCfg = null, gfSaveT = null, gfPatch = {};
 async function gfLoad() {
   if (gfCfg && gfCfg.vault === vaultPath) return gfCfg;
   let o = {};
   try { o = (await inv("graph_settings")) || {}; } catch (_) {}
-  gfCfg = { vault: vaultPath, close: o.close === true, coll: o["collapse-forces"] !== false, v: {} };
-  for (const [k, jk, , lo, hi, , def] of GF_ROWS) {
-    const x = o[jk];
-    gfCfg.v[k] = typeof x === "number" && isFinite(x) ? Math.min(hi, Math.max(lo, x)) : def;
-  }
+  gfCfg = Object.assign({ vault: vaultPath }, gcParse(o));
   return gfCfg;
 }
 function gfSave(patch) {           // coalesced 120 ms: the file holds the value once the drag ends
@@ -7571,6 +7579,14 @@ function gfSave(patch) {           // coalesced 120 ms: the file holds the value
     inv("set_graph_settings", { vault: v, patch: p }).catch(err => say("Graph settings: " + String(err && err.message || err)));
   }, 120);
 }
+// scopes: what a card edits. gg -> graph.json; lg -> the tab's own options (workspace.json)
+async function gcScopeGg() { return { kind: "gg", st: await gfLoad(), save: gfSave }; }
+function gcScopeLg(t) {
+  if (!t.gc) t.gc = gcParse(t.opts && typeof t.opts === "object" ? t.opts : {});
+  return { kind: "lg", t, st: t.gc, save: patch => {   // the layout write is armed by updateTitle -> wsTouch
+    t.opts = Object.assign({}, t.opts && typeof t.opts === "object" ? t.opts : {}, patch);
+  } };
+}
 const gfFmt = (r, x) => r[7] ? x.toFixed(r[7]) : String(Math.round(x));
 const GF_ICON = {
   reset: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',
@@ -7578,79 +7594,155 @@ const GF_ICON = {
   gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></svg>',
   chev: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>',
 };
-function gfPanel(g) {              // built once per group, lives in .content beside the canvas
+const gcSlider = (k, label, lo, hi, step, cls) => '<div class="setting-item mod-slider' + (cls ? " " + cls : "") + '" data-k="' + k + '"><div class="setting-item-name">' + label + '</div>' +
+  '<div class="gf-ctl"><span class="slider-value"></span><input class="slider" type="range" min="' + lo + '" max="' + hi + '" step="' + step + '"></div></div>';
+const gcToggle = (k, label, cls) => '<div class="setting-item mod-toggle' + (cls ? " " + cls : "") + '" data-k="' + k + '"><div class="setting-item-name">' + label + '</div>' +
+  '<div class="checkbox-container" role="switch" tabindex="0"></div></div>';
+function gfPanel(g) {              // built once per group, lives in .content beside the canvas; gcBind points it at a scope
   if (g.gfp) return g.gfp;
   const p = document.createElement("div");
   p.className = "graph-controls"; p.hidden = true;
+  const body = {
+    filter: gcSlider("depth", "Depth", 1, 5, 1, "mod-local-jumps gc-local") +
+            GC_LTOG.map(r => gcToggle(r[0], r[2], "gc-local")).join(""),
+    groups: "", display: "",
+    forces: GF_ROWS.map(r => gcSlider(r[0], r[2], r[3], r[4], r[5])).join(""),
+  };
   p.innerHTML =
     '<div class="gf-btns"><button class="gf-btn mod-reset" aria-label="Restore default settings" title="Restore default settings">' + GF_ICON.reset + '</button>' +
     '<button class="gf-btn mod-close" aria-label="Close" title="Close">' + GF_ICON.close + '</button></div>' +
     '<button class="gf-btn mod-open" aria-label="Open graph settings" title="Open graph settings">' + GF_ICON.gear + '</button>' +
-    '<div class="graph-control-section mod-forces"><div class="gf-head"><span class="collapse-icon">' + GF_ICON.chev + '</span>' +
-    '<header class="graph-control-section-header">Forces</header></div><div class="gf-body">' +
-    GF_ROWS.map(r => '<div class="setting-item mod-slider" data-k="' + r[0] + '"><div class="setting-item-name">' + r[2] + '</div>' +
-      '<div class="gf-ctl"><span class="slider-value"></span><input class="slider" type="range" min="' + r[3] + '" max="' + r[4] +
-      '" step="' + r[5] + '"></div></div>').join("") + '</div></div>';
+    GC_SECS.map(([k, cls, h]) => '<div class="tree-item graph-control-section ' + cls + '" data-s="' + k + '"><div class="gf-head"><span class="collapse-icon">' + GF_ICON.chev + '</span>' +
+      '<header class="graph-control-section-header">' + h + '</header></div><div class="gf-body">' + body[k] + '</div></div>').join("");
   p.onmousedown = e => e.stopPropagation();
   p.onwheel = e => e.stopPropagation();
-  const q = s => p.querySelector(s);
-  q(".mod-close").onclick = () => { gfCfg.close = true; gfShow(g); gfSave({ close: true }); updateTitle(); };
-  q(".mod-open").onclick = () => { gfCfg.close = false; gfShow(g); gfSave({ close: false }); updateTitle(); };
-  q(".gf-head").onclick = () => { gfCfg.coll = !gfCfg.coll; gfShow(g); gfSave({ "collapse-forces": gfCfg.coll }); updateTitle(); };
-  q(".mod-reset").onclick = () => {   // values only: the collapse state stays (recon "Reset")
+  const q = s => p.querySelector(s), sc = () => g.gcScope;
+  q(".mod-close").onclick = () => { const s = sc(); if (!s) return; s.st.close = true; gfShow(g); s.save({ close: true }); updateTitle(); };
+  q(".mod-open").onclick = () => { const s = sc(); if (!s) return; s.st.close = false; gfShow(g); gfSync(g); s.save({ close: false }); updateTitle(); };
+  for (const [k, , , ck] of GC_SECS)
+    q('[data-s="' + k + '"] .gf-head').onclick = () => {
+      const s = sc(); if (!s) return;
+      s.st.cs[k] = !s.st.cs[k]; gfShow(g); gfSync(g); s.save({ [ck]: s.st.cs[k] }); updateTitle();
+    };
+  q(".mod-reset").onclick = async () => {   // global: Forces values only so far (recon "Reset"); local: every local option it holds (R§5.10)
+    const s = sc(); if (!s) return;
     const patch = {};
-    for (const r of GF_ROWS) { gfCfg.v[r[0]] = r[6]; patch[r[1]] = r[6]; }
-    if (g.gfApply) g.gfApply(gfCfg.v);
-    gfSync(g); gfSave(patch); updateTitle();
+    for (const r of GF_ROWS) { s.st.v[r[0]] = r[6]; patch[r[1]] = r[6]; }
+    if (g.gfApply) g.gfApply(s.st.v);
+    if (s.kind === "lg") {
+      s.t.depth = 1; s.t.inc = true; s.t.out = true;
+      Object.assign(patch, { localJumps: 1, localBacklinks: true, localForelinks: true });
+    }
+    s.save(patch); gfSync(g); updateTitle();
+    if (s.kind === "lg" && g.graphRefresh) { await g.graphRefresh(); updateTitle(); }
   };
   for (const r of GF_ROWS) {
-    const inp = p.querySelector('[data-k="' + r[0] + '"] input');
+    const row = p.querySelector('[data-k="' + r[0] + '"]'), inp = row.querySelector("input");
     inp.oninput = () => {
+      const s = sc(); if (!s) return;
       const x = Math.min(r[4], Math.max(r[3], +inp.value));
-      gfCfg.v[r[0]] = x;
+      s.st.v[r[0]] = x;
       if (g.gfApply) g.gfApply({ [r[0]]: x });
-      p.querySelector('[data-k="' + r[0] + '"] .slider-value').textContent = gfFmt(r, x);
-      gfSave({ [r[1]]: x });
+      row.querySelector(".slider-value").textContent = gfFmt(r, x);
+      s.save({ [r[1]]: x });
       updateTitle();               // census [gff:]/[gfs:] follow the thumb while it is held
     };
+  }
+  { // local Depth (R§5.1/5.2): integer 1..5, re-filters the neighbourhood live
+    const row = q('[data-k="depth"]'), inp = row.querySelector("input");
+    inp.oninput = async () => {
+      const s = sc(); if (!s || s.kind !== "lg") return;
+      const d = Math.min(5, Math.max(1, Math.round(+inp.value)));
+      row.querySelector(".slider-value").textContent = String(d);
+      if (d === s.t.depth) return;
+      s.t.depth = d; s.save({ localJumps: d }); updateTitle();
+      if (g.graphRefresh) await g.graphRefresh();
+      updateTitle();               // republish [lg:center@depth]
+    };
+  }
+  for (const [f, ok] of GC_LTOG) {   // Incoming / Outgoing links (R§5.3)
+    const box = q('[data-k="' + f + '"] .checkbox-container');
+    const flip = async () => {
+      const s = sc(); if (!s || s.kind !== "lg") return;
+      s.t[f] = !s.t[f]; box.classList.toggle("is-enabled", s.t[f]);
+      s.save({ [ok]: s.t[f] }); updateTitle();
+      if (g.graphRefresh) await g.graphRefresh();
+      updateTitle();
+    };
+    box.onclick = flip;
+    box.onkeydown = e => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); flip(); } };
   }
   g.content.appendChild(p);
   return (g.gfp = p);
 }
-function gfShow(g) {
-  const p = g.gfp; if (!p || !gfCfg) return;
-  p.classList.toggle("is-close", gfCfg.close);
-  p.querySelector(".mod-forces").classList.toggle("is-collapsed", gfCfg.coll);
+function gcBind(g, scope) {        // point the group's ONE card at a scope and show it
+  const p = gfPanel(g);
+  g.gcScope = scope;
+  p.classList.toggle("is-local", scope.kind === "lg");
+  p.hidden = false; gfShow(g); gfSync(g);
 }
-function gfSync(g) {               // sliders + readouts <- the live sim's F (a probe hotkey moves F too)
-  const p = g.gfp; if (!p || p.hidden) return;
-  const F = g.gfF ? g.gfF() : gfCfg.v;
+function gcUnbind(g) { g.gcScope = null; if (g.gfp) g.gfp.hidden = true; }
+function gfShow(g) {
+  const p = g.gfp, s = g.gcScope; if (!p || !s) return;
+  p.classList.toggle("is-close", s.st.close);
+  for (const [k] of GC_SECS) p.querySelector('[data-s="' + k + '"]').classList.toggle("is-collapsed", s.st.cs[k]);
+}
+function gfSync(g) {               // controls + readouts <- the live sim's F (a probe hotkey moves F too) and the scope
+  const p = g.gfp, s = g.gcScope; if (!p || p.hidden || !s) return;
+  const F = g.gfF ? g.gfF() : s.st.v;
   for (const r of GF_ROWS) {
     const row = p.querySelector('[data-k="' + r[0] + '"]');
     row.querySelector("input").value = String(F[r[0]]);
     row.querySelector(".slider-value").textContent = gfFmt(r, F[r[0]]);
   }
-}
-/* census: [gff:center,repel,link,dist] = the LIVE sim's F; [gfp:open|close,<1 collapsed|0>,x,y,w,h];
-   [gfb:reset@x,y|close@x,y|open@x,y|forces@x,y] centres of the visible controls;
-   [gfs:<k>@x0,x1,y,<readout>|...] each visible slider's track ends, centre y, the readout shown. All window px. */
-function gfTok(g) {
-  const p = g && g.gfp;
-  if (!p || p.hidden || !g.gfF) return "";
-  const F = g.gfF(), R = e => e.getBoundingClientRect(), c = e => { const b = R(e); return Math.round(b.left + b.width / 2) + "," + Math.round(b.top + b.height / 2); };
-  const b = R(p);
-  let t = " [gff:" + GF_ROWS.map(r => +F[r[0]].toFixed(4)).join(",") + "] [gfp:" + (gfCfg.close ? "close" : "open") + "," + (gfCfg.coll ? 1 : 0) + "," +
-    [b.left, b.top, b.width, b.height].map(Math.round).join(",") + "]";
-  const bs = [];
-  for (const [n, s] of [["reset", ".mod-reset"], ["close", ".mod-close"], ["open", ".mod-open"], ["forces", ".gf-head"]]) {
-    const e = p.querySelector(s); if (e && e.offsetParent) bs.push(n + "@" + c(e));
+  if (s.kind === "lg") {
+    const row = p.querySelector('[data-k="depth"]');
+    row.querySelector("input").value = String(s.t.depth);
+    row.querySelector(".slider-value").textContent = String(s.t.depth);
+    for (const [f] of GC_LTOG) p.querySelector('[data-k="' + f + '"] .checkbox-container').classList.toggle("is-enabled", !!s.t[f]);
   }
-  t += " [gfb:" + bs.join("|") + "]";
-  if (!gfCfg.close && !gfCfg.coll) t += " [gfs:" + GF_ROWS.map(r => {
-    const row = p.querySelector('[data-k="' + r[0] + '"]'), s = R(row.querySelector("input"));
-    return r[0] + "@" + Math.round(s.left) + "," + Math.round(s.right) + "," + Math.round(s.top + s.height / 2) + "," + row.querySelector(".slider-value").textContent;
-  }).join("|") + "]";
+}
+/* census, per card (prefix gf = the focused global graph, lf = a local graph leaf):
+   [<p>f:center,repel,link,dist] = the LIVE sim's F; [<p>p:open|close,<forces collapsed 1|0>,x,y,w,h];
+   [<p>b:name@x,y|...] centres of the visible controls (reset, close, open, the four section
+   heads filter/groups/display/forces, local toggles inc/out); [<p>s:<k>@x0,x1,y,<readout>|...]
+   every visible slider's track ends, centre y, the readout shown; [<p>c:f,g,d,F] the four
+   section collapse bits; [<p>t:inc=1,out=0] local toggle states. All window px. */
+function gfTok(g, pre = "gf") {
+  const p = g && g.gfp, s = g && g.gcScope;
+  if (!p || p.hidden || !s || !g.gfF) return "";
+  const F = g.gfF(), R = e => e.getBoundingClientRect(), c = e => { const b = R(e); return Math.round(b.left + b.width / 2) + "," + Math.round(b.top + b.height / 2); };
+  const b = R(p), vis = e => !!e && e.getClientRects().length > 0;
+  let t = " [" + pre + "f:" + GF_ROWS.map(r => +F[r[0]].toFixed(4)).join(",") + "] [" + pre + "p:" + (s.st.close ? "close" : "open") + "," + (s.st.cs.forces ? 1 : 0) + "," +
+    [b.left, b.top, b.width, b.height].map(Math.round).join(",") + "]";
+  t += " [" + pre + "c:" + GC_SECS.map(([k]) => s.st.cs[k] ? 1 : 0).join(",") + "]";
+  const bs = [];
+  for (const [n, sel] of [["reset", ".mod-reset"], ["close", ".mod-close"], ["open", ".mod-open"],
+                          ...GC_SECS.map(([k]) => [k, '[data-s="' + k + '"] .gf-head']),
+                          ...GC_LTOG.map(([f]) => [f, '[data-k="' + f + '"] .checkbox-container'])]) {
+    const e = p.querySelector(sel); if (vis(e)) bs.push(n + "@" + c(e));
+  }
+  t += " [" + pre + "b:" + bs.join("|") + "]";
+  const ss = [...p.querySelectorAll(".mod-slider")].filter(row => vis(row.querySelector("input"))).map(row => {
+    const r = R(row.querySelector("input"));
+    return row.dataset.k + "@" + Math.round(r.left) + "," + Math.round(r.right) + "," + Math.round(r.top + r.height / 2) + "," + row.querySelector(".slider-value").textContent;
+  });
+  if (ss.length) t += " [" + pre + "s:" + ss.join("|") + "]";
+  if (s.kind === "lg") t += " [" + pre + "t:" + GC_LTOG.map(([f]) => f + "=" + (s.t[f] ? 1 : 0)).join(",") + "]";
   return t;
+}
+/* GC1 census: [gcn:<kind>@<group id>=<n>|...] for every group showing a graph, n = the
+   settings surfaces VISIBLE in that leaf: graph-controls cards + any legacy gear/popover. */
+function gcnTok() {
+  const vis = e => !!e && e.getClientRects().length > 0, out = [];
+  for (const h of groups()) {
+    const t = h.active >= 0 ? h.tabs[h.active] : null;
+    if (!t || (t.kind !== "gg" && t.kind !== "lg") || !h.graphOn) continue;
+    const n = [...h.content.querySelectorAll('.graph-controls, .lggear, .lgpop, [title*="graph settings" i]')].filter(vis)
+      .filter((e, i, a) => !a.some(x => x !== e && x.contains(e))).length;   // the gear INSIDE an open card is not a second surface
+    out.push(t.kind + "@" + h.id + "=" + n);
+  }
+  return out.length ? " [gcn:" + out.join("|") + "]" : "";
 }
 /* ---------- graph (per group: one sim instance per group) ----------
    startGraph(g, cfg) is the shared canvas sim (M4): hover/zoom/pan/unresolved.
@@ -7672,8 +7764,7 @@ function showEditor(g) {
   if (g.attrObs) { g.attrObs.disconnect(); g.attrObs = null; }
   perf.flush();                    // ship buffered graph_frame samples of the closed sim
   g.graph.hidden = true; if (g.glcv) g.glcv.hidden = true;
-  g.lggear.hidden = true; g.lgpop.hidden = true;
-  if (g.gfp) g.gfp.hidden = true; g.gfF = null; g.gfApply = null;   // Forces panel belongs to the global graph view
+  gcUnbind(g); g.gfF = null; g.gfApply = null;   // the graph-controls card belongs to a graph view
   applyMode(g);
 }
 $("graphbtn").onclick = cmdGlobalGraph;
@@ -7701,7 +7792,7 @@ async function startGraph(g, cfg) {
   const cv = g.graph; cv.hidden = false;
   cv.width = cv.clientWidth; cv.height = cv.clientHeight;
   const fetchP = cfg.fetch(), prefP = graphRendererPref();   // backend works while the renderer comes up
-  const gfP = cfg.forces ? gfLoad() : null;                  // Forces panel: the vault's graph.json, read beside the fetch
+  const gcP = cfg.scope ? Promise.resolve(cfg.scope()) : null;   // graph-controls scope: graph.json (read beside the fetch) or the lg tab's options
   const ctx = cv.getContext("2d");
   // graph-webgl: DEFAULT draw path is WebGL (ui/graph-gl.js) on a .graphgl canvas BEHIND cv
   // (nodes + edges); cv stays on top for events, labels (Canvas 2D text) and the 2D fallback.
@@ -7844,7 +7935,8 @@ async function startGraph(g, cfg) {
   // the n200 cloud 16% under stock, a flat 420 (= the fit at n30) holds n4/n30/n200 within
   // 15% (docs/recon-graphforce/data/impl). The old +0.36 exponent grew n200 +72%.
   const F = { center: 0.5187, repel: 10, link: 1, dist: 250 }, REPEL_K = 42.03, REPEL_P = 0, LINK_K = 0.5, CENTER_K = 0.0771;
-  if (gfP) Object.assign(F, (await gfP).v);   // global graph: the saved Forces sliders (graph.json), else the defaults above
+  const gcS = gcP ? await gcP : null;
+  if (gcS) Object.assign(F, gcS.st.v);   // the card's saved Forces (graph.json / local options), else the defaults above
   // Seed: a random disk of radius 66*sqrt(n) (mean radius 44*sqrt(n), stock's measured first
   // frame), radius STRATIFIED by index (node i in the ring of area (i, i+1)/n) at a random angle,
   // drawn in index order from ONE Park-Miller stream (fixed seed), so smoke coordinates still repeat
@@ -8326,17 +8418,17 @@ async function startGraph(g, cfg) {
     redraw();
   };
   g.reheat = (a = 0.5) => { calm = 0; kePeak = 0; quiet = false; g.graphSettled = false; alpha = Math.max(alpha, a); wake(); };
-  // Forces panel (global graph only): sliders -> F + reheat; any reheat re-syncs the sliders to F,
-  // so a value set another way (the recon rig's probe hotkeys) shows on the panel too
-  if (cfg.forces) {
+  // graph-controls card (global AND local, GC1): sliders -> F + reheat; any reheat re-syncs the
+  // sliders to F, so a value set another way (the recon rig's probe hotkeys) shows on the card too
+  if (gcS) {
     const rh = g.reheat;
     g.reheat = a => { rh(a); gfSync(g); };
     g.gfF = () => F;
     g.gfApply = o => { for (const k in o) F[k] = o[k]; if ("link" in o) rebuild(); g.reheat(); };
-    gfPanel(g).hidden = false; gfShow(g); gfSync(g);
+    gcBind(g, gcS);
   } else {
     g.gfF = null; g.gfApply = null;
-    if (g.gfp) g.gfp.hidden = true;
+    gcUnbind(g);
   }
   g.graphNodes = () => {              // census: node screen coords (window px) for the graphnav smoke
     const r = cv.getBoundingClientRect();
@@ -8466,6 +8558,7 @@ async function showLocalGraph(g, t) {  // t = the localgraph tab (kind:"lg")
   await startGraph(g, {
     fetch: () => inv("graph_local", { center: t.center, depth: t.depth, inc: t.inc, out: t.out }),   // R19: served from the index adjacency cache
     center: () => t.center,
+    scope: () => gcScopeLg(t),         // graphctx GC1: the leaf's ONE card, bound to this tab's options
     onClick: async n => {              // R7.4: navigate the LINKED group; lgFollow re-centers
       const lk = groups().find(x => x.id === t.linkId);
       // R19: the next neighbourhood is fetched IN PARALLEL with the note (graphRefresh picks it up)
@@ -8474,18 +8567,6 @@ async function showLocalGraph(g, t) {  // t = the localgraph tab (kind:"lg")
       await linkSync(t, n);          // R13.3: manual members follow too
     },
   });
-  g.lgDepth.value = t.depth; g.lgDv.textContent = t.depth;
-  g.lgInc.checked = t.inc; g.lgOut.checked = t.out;
-  g.lggear.hidden = false;             // R7.5: settings popover entry
-}
-
-async function lgSet(g) {              // R7.5: popover changed -> re-filter live
-  const t = g.active >= 0 ? g.tabs[g.active] : null;
-  if (!t || t.kind !== "lg") return;
-  t.depth = +g.lgDepth.value; t.inc = g.lgInc.checked; t.out = g.lgOut.checked;
-  g.lgDv.textContent = t.depth;
-  if (g.graphRefresh) await g.graphRefresh();
-  updateTitle();                       // republish [lg:center@depth]
 }
 
 async function cmdLocalGraph() {       // R7.2: local graph of focused note -> new right split
