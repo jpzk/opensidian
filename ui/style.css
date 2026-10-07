@@ -789,6 +789,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 .graph-controls .graph-color-group input[type=color]::-webkit-color-swatch-wrapper { padding: 0 }
 .graph-controls .graph-color-group input[type=color]::-webkit-color-swatch { border: 0; border-radius: 50% }
 .graph-controls .graph-color-group.gc-drag { opacity: 0.5 }
+.graph-controls .graph-color-group input[type=color] { -webkit-user-drag: none; user-select: none }
 .graph-controls .graph-color-group .clickable-icon { flex: 0 0 auto; width: 26px; height: 26px; padding: 5px; box-sizing: border-box; border-radius: 4px;
   color: var(--text-muted); cursor: pointer; line-height: 0 }
 .graph-controls .graph-color-group .clickable-icon:hover { background: var(--border); color: var(--text-chrome) }

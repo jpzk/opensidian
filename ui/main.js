@@ -7779,6 +7779,7 @@ function gfPanel(g) {              // built once per group, lives in .content be
     box.addEventListener("mousedown", e => {
       if (e.button !== 0 || e.target.type !== "color") return;
       const s = sc(), i = rowI(e); if (!s || i < 0) return;
+      e.preventDefault();               // no native drag session (it ate the mouseup: the row stayed dragged); the click still opens the picker
       const y0 = e.clientY, row = e.target.closest(".graph-color-group");
       let drag = false;
       const mv = ev => { if (!drag && Math.abs(ev.clientY - y0) > 4) { drag = true; row.classList.add("gc-drag"); } };
@@ -7797,6 +7798,7 @@ function gfPanel(g) {              // built once per group, lives in .content be
       };
       document.addEventListener("mousemove", mv, true); document.addEventListener("mouseup", up, true);
     });
+    box.addEventListener("dragstart", e => e.preventDefault());
   }
   g.content.appendChild(p);
   return (g.gfp = p);
