@@ -7573,12 +7573,19 @@ function gcParse(o) {              // settings object (graph.json / local option
 }
 // gfCfg = the vault's graph.json as last read/written, keyed by vault so a switch rereads it
 let gfCfg = null, gfSaveT = null, gfPatch = {};
+let gfLoading = null;              // one read in flight: the card scope and the fetch must share ONE state object
 async function gfLoad() {
   if (gfCfg && gfCfg.vault === vaultPath) return gfCfg;
-  let o = {};
-  try { o = (await inv("graph_settings")) || {}; } catch (_) {}
-  gfCfg = Object.assign({ vault: vaultPath }, gcParse(o));
-  return gfCfg;
+  const v = vaultPath;
+  if (gfLoading && gfLoading.v === v) return gfLoading.p;
+  const p = (async () => {
+    let o = {};
+    try { o = (await inv("graph_settings")) || {}; } catch (_) {}
+    if (v === vaultPath && !(gfCfg && gfCfg.vault === v)) gfCfg = Object.assign({ vault: v }, gcParse(o));
+    return gfCfg && gfCfg.vault === v ? gfCfg : Object.assign({ vault: v }, gcParse(o));
+  })();
+  gfLoading = { v, p };
+  try { return await p; } finally { if (gfLoading && gfLoading.p === p) gfLoading = null; }
 }
 function gfSave(patch) {           // coalesced 120 ms: the file holds the value once the drag ends
   Object.assign(gfPatch, patch);
@@ -8041,8 +8048,12 @@ async function startGraph(g, cfg) {
   const SEED_BLEND = 0.7, nbr = gr.nodes.map(() => []);
   for (const [i, j] of gr.edges) { if (j < i) nbr[i].push(j); else if (i < j) nbr[j].push(i); }
   const seeded = [];
-  const seed = i => {
+  // seed(i, free): free = a node a REFRESH adds with no placed neighbour — nbr/seeded describe the
+  // FIRST graph, so its index there is another node (or past the end: an unlinked attachment
+  // threw "nbr[i] is undefined" and the refresh never drew); it takes the bare phyllotaxis slot
+  const seed = (i, free) => {
     let x, y; { const r = 66 * Math.sqrt(i + rnd()), t = 2 * Math.PI * rnd(); x = r * Math.cos(t); y = r * Math.sin(t); }
+    if (free) return [x, y];
     if (nbr[i].length) { let mx = 0, my = 0; for (const j of nbr[i]) { mx += seeded[j][0]; my += seeded[j][1]; }
       x += (mx / nbr[i].length - x) * SEED_BLEND; y += (my / nbr[i].length - y) * SEED_BLEND; }
     return (seeded[i] = [x, y]);
@@ -8129,7 +8140,7 @@ async function startGraph(g, cfg) {
     N2.forEach((p, i) => {
       if (p.x !== null) return;
       const e = g2.edges.find(([a, b]) => (a === i && N2[b].x !== null) || (b === i && N2[a].x !== null));
-      if (!e) { [p.x, p.y] = seed(i); return; }
+      if (!e) { [p.x, p.y] = seed(i, true); return; }
       const nb = N2[e[0] === i ? e[1] : e[0]];
       let ang = Math.atan2(nb.y - cy, nb.x - cx);
       if (!Number.isFinite(ang) || (nb.x === cx && nb.y === cy)) ang = i * 2.399963;
