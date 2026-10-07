@@ -4756,8 +4756,9 @@ fn main() {
     // also the whole quiet-case output of the feature: healthy run = this line, no
     // warnings. The ceiling itself is pinned in perf.rs; env can only tighten it.
     eprintln!("{}", perf::slow_banner());
-    // wmclass: Wayland app_id + X11 WM_CLASS = dev.koto.opensidian, set BEFORE
-    // GTK starts, so GNOME groups every window under the launcher (appid.rs).
+    // wmclass: Wayland app_id + X11 WM_CLASS instance = dev.koto.opensidian, set
+    // BEFORE GTK starts, so GNOME groups every window under the launcher; the X11
+    // class follows after gtk_init via appid::plugin() (appid.rs).
     appid::apply();
     // RENAME MIGRATION (goal opensidian): old -> new table in migrate.rs —
     //   ~/.rustidian.json -> ~/.opensidian.json,
@@ -4865,6 +4866,7 @@ fn main() {
         let _ = SWITCHED.set(sw);
     }
     tauri::Builder::default()
+        .plugin(appid::plugin())
         .manage(vault)
         .manage(ZoomLevel(Mutex::new(read_zoom_cfg())))
         .setup(|app| {
