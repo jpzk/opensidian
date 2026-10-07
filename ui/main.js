@@ -7834,6 +7834,9 @@ function gcnTok() {
            center: () -> name|null,             drawn larger + accent (M8 localgraph)
            onClick: async name -> void }        navigation target on node click */
 let simGen = 0;                    // perf-graph: sim generation counter (see startGraph)
+// graphctx: node kind 0 note, 1 unresolved, 2 tag, 3 attachment. The plain graph / graph_local
+// JSON omits kind (serde skips 0), so an unresolved node there is kind 1 by its flag.
+const gnKind = nd => nd.kind ? nd.kind : nd.resolved ? 0 : 1;
 // graph-webgl: draw-path preference. env OPENSIDIAN_GRAPH_RENDERER=gl|2d (backend) beats the
 // hidden localStorage setting opensidian.graphRenderer; OPENSIDIAN_GRAPH_LOSE_CTX=1 is the smoke
 // hook that loses the GL context once the sim has settled (fallback must keep drawing).
@@ -8046,7 +8049,7 @@ async function startGraph(g, cfg) {
   };
   const N = gr.nodes.map((nd, i) => {
     const [x, y] = seed(i);
-    return { n: nd.name, resolved: nd.resolved, kind: nd.kind | 0, col: gr.col ? gr.col[i] : -1, x, y, vx: 0, vy: 0, deg: 0, r: 6.5 };
+    return { n: nd.name, resolved: nd.resolved, kind: gnKind(nd), col: gr.col ? gr.col[i] : -1, x, y, vx: 0, vy: 0, deg: 0, r: 6.5 };
   });
   // the seed disk is centred on the origin: the centroid translation below would otherwise
   // snap an off-centre seed in one step (a jump stock never makes)
@@ -8098,7 +8101,7 @@ async function startGraph(g, cfg) {
     // touched no link) must not reheat — the layout stays a pure function of the vault, so two
     // opens land on identical positions (smoke graphgl compares gl vs 2d frames pixel-wise)
     const same = g2.nodes.length === N.length && g2.edges.length === gr.edges.length &&
-      g2.nodes.every((nd, i) => nd.name === N[i].n && nd.resolved === N[i].resolved && (nd.kind | 0) === N[i].kind && (g2.col ? g2.col[i] : -1) === N[i].col) &&
+      g2.nodes.every((nd, i) => nd.name === N[i].n && nd.resolved === N[i].resolved && gnKind(nd) === N[i].kind && (g2.col ? g2.col[i] : -1) === N[i].col) &&
       g2.edges.every((e, i) => e[0] === gr.edges[i][0] && e[1] === gr.edges[i][1]);
     if (same) return;
     const old = new Map(N.map(p => [p.n, p]));
@@ -8108,7 +8111,7 @@ async function startGraph(g, cfg) {
     const prev = new Map();
     for (const [nm, o] of old) prev.set(nm, { x: o.x, y: o.y, vx: o.vx, vy: o.vy, pin: o.fx != null });
     const N2 = g2.nodes.map((nd, i) => {
-      const kind = nd.kind | 0, col = g2.col ? g2.col[i] : -1;   // graphctx: node kind (0 note 1 ghost 2 tag 3 attachment) + first matching group
+      const kind = gnKind(nd), col = g2.col ? g2.col[i] : -1;   // graphctx: node kind (0 note 1 ghost 2 tag 3 attachment) + first matching group
       const o = old.get(nd.name);
       // C3: a survivor keeps its PIN too (fx/fy) — a save must not unstick a node
       // the user dropped somewhere on purpose.

@@ -1058,8 +1058,28 @@ fn readable_line_length(v: State<Vault>) -> bool {
    and the write goes through the vault dir fd (no-follow `.obsidian`, random temp,
    renameat). Only the six owned keys, each with its own type, are accepted. */
 const GRAPH_REL: &str = ".obsidian/graph.json";
-const GRAPH_NUM_KEYS: [&str; 4] = ["centerStrength", "repelStrength", "linkStrength", "linkDistance"];
-const GRAPH_BOOL_KEYS: [&str; 2] = ["close", "collapse-forces"];
+/// graph.json keys the graph-controls card writes (stock names, docs/recon-graphctx §8); any
+/// other key is stock's / a plugin's and is refused, never written
+const GRAPH_NUM_KEYS: [&str; 7] = [
+    "centerStrength", "repelStrength", "linkStrength", "linkDistance",
+    "textFadeMultiplier", "nodeSizeMultiplier", "lineSizeMultiplier",
+];
+const GRAPH_BOOL_KEYS: [&str; 10] = [
+    "close", "collapse-filter", "collapse-color-groups", "collapse-display", "collapse-forces",
+    "showTags", "showAttachments", "hideUnresolved", "showOrphans", "showArrow",
+];
+/// colorGroups (R§3.3): `[{query: string, color: {a: number, rgb: 24-bit int}}]`
+fn graph_groups_ok(v: &serde_json::Value) -> bool {
+    v.as_array().is_some_and(|a| {
+        a.iter().all(|r| {
+            r.get("query").is_some_and(|q| q.is_string())
+                && r.get("color").is_some_and(|c| {
+                    c.get("a").and_then(|x| x.as_f64()).is_some_and(f64::is_finite)
+                        && c.get("rgb").and_then(|x| x.as_u64()).is_some_and(|x| x <= 0xff_ffff)
+                })
+        })
+    })
+}
 
 /// the whole graph.json object; absent / unreadable / unparsable / not an object = {}
 fn graph_settings_in(root: &Path) -> serde_json::Value {
@@ -1076,6 +1096,10 @@ fn set_graph_settings_in(root: &Path, patch: &serde_json::Value) -> Result<(), S
             val.as_f64().is_some_and(f64::is_finite)
         } else if GRAPH_BOOL_KEYS.contains(&k.as_str()) {
             val.is_boolean()
+        } else if k == "search" {
+            val.is_string()
+        } else if k == "colorGroups" {
+            graph_groups_ok(val)
         } else {
             return Err(format!("graph.json: key {k:?} is not ours to write"));
         };
@@ -7376,6 +7400,12 @@ mod tests {
         assert_eq!(v["showTags"], serde_json::json!(true));
         assert_eq!(v["colorGroups"], serde_json::json!([{"query":"a"}]));
         assert_eq!(v["scale"], serde_json::json!(0.8));
+        // graphctx: the Filters / Groups / Display keys are ours now
+        let g = serde_json::json!([{"query": "tag:#a", "color": {"a": 1, "rgb": 16711680}}]);
+        set_graph_settings_in(&root, &serde_json::json!({"search": "x", "showOrphans": false, "colorGroups": g, "nodeSizeMultiplier": 2.5, "collapse-filter": false})).unwrap();
+        let v = graph_settings_in(&root);
+        assert_eq!((v["search"].clone(), v["showOrphans"].clone(), v["colorGroups"].clone()), (serde_json::json!("x"), serde_json::json!(false), g));
+        assert_eq!((v["nodeSizeMultiplier"].clone(), v["scale"].clone()), (serde_json::json!(2.5), serde_json::json!(0.8)));
     }
 
     /// an unparsable or non-object graph.json is refused, not replaced; foreign
@@ -7391,7 +7421,10 @@ mod tests {
             assert_eq!(graph_settings_in(&root), serde_json::json!({}));
         }
         fs::write(root.join(GRAPH_REL), "{}").unwrap();
-        assert!(set_graph_settings_in(&root, &serde_json::json!({"search": "x"})).is_err(), "not our key");
+        assert!(set_graph_settings_in(&root, &serde_json::json!({"scale": 1})).is_err(), "not our key");
+        assert!(set_graph_settings_in(&root, &serde_json::json!({"search": 1})).is_err(), "search not a string");
+        assert!(set_graph_settings_in(&root, &serde_json::json!({"colorGroups": [{"query": "a"}]})).is_err(), "group without colour");
+        assert!(set_graph_settings_in(&root, &serde_json::json!({"colorGroups": [{"query": "a", "color": {"a": 1, "rgb": 16777216}}]})).is_err(), "rgb past 24 bits");
         assert!(set_graph_settings_in(&root, &serde_json::json!({"linkDistance": "250"})).is_err(), "number as string");
         assert!(set_graph_settings_in(&root, &serde_json::json!({"close": 1})).is_err(), "bool as number");
         assert_eq!(fs::read_to_string(root.join(GRAPH_REL)).unwrap(), "{}");
