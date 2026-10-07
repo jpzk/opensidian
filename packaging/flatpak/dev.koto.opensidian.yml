@@ -68,8 +68,12 @@ modules:
     build-commands:
       - cargo --offline build --release --manifest-path src-tauri/Cargo.toml
       - install -Dm755 src-tauri/target/release/opensidian /app/bin/opensidian
-      - install -Dm644 src-tauri/icons/icon.png
-        /app/share/icons/hicolor/128x128/apps/dev.koto.opensidian.png
+      # launcher icon = the official logo (packaging/linux/render-icons.sh renders
+      # the PNGs from opensidian.svg; the svg itself is the scalable icon)
+      - for s in 128 256 512; do install -Dm644 packaging/linux/icons/$s.png
+        /app/share/icons/hicolor/${s}x${s}/apps/dev.koto.opensidian.png; done
+      - install -Dm644 packaging/linux/opensidian.svg
+        /app/share/icons/hicolor/scalable/apps/dev.koto.opensidian.svg
       - install -Dm644 packaging/flatpak/dev.koto.opensidian.desktop
         /app/share/applications/dev.koto.opensidian.desktop
       - install -Dm644 packaging/flatpak/dev.koto.opensidian.metainfo.xml
