@@ -17,6 +17,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use tauri::State;
 
+mod appid;
 mod builtins;
 mod cfgstore;
 mod datefmt;
@@ -4755,6 +4756,9 @@ fn main() {
     // also the whole quiet-case output of the feature: healthy run = this line, no
     // warnings. The ceiling itself is pinned in perf.rs; env can only tighten it.
     eprintln!("{}", perf::slow_banner());
+    // wmclass: Wayland app_id + X11 WM_CLASS = dev.koto.opensidian, set BEFORE
+    // GTK starts, so GNOME groups every window under the launcher (appid.rs).
+    appid::apply();
     // RENAME MIGRATION (goal opensidian): old -> new table in migrate.rs —
     //   ~/.rustidian.json -> ~/.opensidian.json,
     //   <vault>/.rustidian-bookmarks -> <vault>/.opensidian-bookmarks (per vault, read_bm_tree),

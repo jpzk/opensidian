@@ -6,3 +6,4 @@ Exec=opensidian
 Icon=dev.koto.opensidian
 Terminal=false
 Categories=Utility;TextEditor;
+StartupWMClass=dev.koto.opensidian
