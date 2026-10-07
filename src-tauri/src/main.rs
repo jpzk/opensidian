@@ -1029,6 +1029,25 @@ fn set_strict_line_breaks(v: State<Vault>, on: bool) -> Result<(), String> {
     set_app_bool_in(&root, "strictLineBreaks", on)
 }
 
+/* goal/minimalmargin — Obsidian's Settings > Editor > Display "Readable line
+   length": `<vault>/.obsidian/app.json` "readableLineLength". Unlike the keys
+   above its default is ON (stock 1.13.7 recon: a vault without the key paints
+   the bounded column, docs/recon-minimalmargin). The UI mirrors it as the
+   `is-readable-line-width` class on every note view, which is the class the
+   themes (Minimal 9.0.2) key their column width and file margins on. */
+fn readable_line_length_in(root: &Path) -> bool {
+    let cfg = fs::read_to_string(root.join(".obsidian/app.json")).unwrap_or_default();
+    serde_json::from_str::<serde_json::Value>(&cfg)
+        .ok()
+        .and_then(|v| v.get("readableLineLength").and_then(|b| b.as_bool()))
+        .unwrap_or(true)
+}
+
+#[tauri::command]
+fn readable_line_length(v: State<Vault>) -> bool {
+    cur_vault(&v).map_or(true, |r| readable_line_length_in(&r))
+}
+
 /* goal graphparity — the graph view's Forces panel (docs/recon-graphpanel). Obsidian's
    file, Obsidian's keys: `<vault>/.obsidian/graph.json` holds centerStrength,
    repelStrength, linkStrength, linkDistance (numbers), close and collapse-forces
@@ -4966,7 +4985,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, read_note, write_note, create_note, render, render_blocks, block_lines, highlight_blocks, graph, graph_local, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, graph_settings, set_graph_settings, tags, tag_counts,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, vb_probe, smoke_css,
             read_workspace, write_workspace, get_win_geom, set_win_geom,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme,
@@ -7359,6 +7378,23 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(root.join(".obsidian/app.json")).unwrap()).unwrap();
         assert_eq!(v["strictLineBreaks"], serde_json::Value::Bool(false), "Obsidian keeps the key on false");
         assert_eq!(v["alwaysUpdateLinks"], serde_json::Value::Bool(true));
+    }
+
+    /// goal/minimalmargin: readableLineLength defaults ON (absent key, absent or
+    /// unparsable app.json) and follows an explicit bool either way
+    #[test]
+    fn readable_line_length_defaults_on() {
+        let root = r34_vault("rlw");
+        assert!(readable_line_length_in(&root), "no app.json = Obsidian default ON");
+        fs::create_dir_all(root.join(".obsidian")).unwrap();
+        fs::write(root.join(".obsidian/app.json"), "{}").unwrap();
+        assert!(readable_line_length_in(&root), "absent key = ON");
+        fs::write(root.join(".obsidian/app.json"), r#"{"readableLineLength":false}"#).unwrap();
+        assert!(!readable_line_length_in(&root));
+        fs::write(root.join(".obsidian/app.json"), r#"{"readableLineLength":true}"#).unwrap();
+        assert!(readable_line_length_in(&root));
+        fs::write(root.join(".obsidian/app.json"), "not json").unwrap();
+        assert!(readable_line_length_in(&root), "unparsable = default ON");
     }
 
     #[test]

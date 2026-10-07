@@ -75,6 +75,7 @@ function leaves(node, out = []) {
   return out;
 }
 const groups = () => (state ? leaves(state.root) : []);
+let rlwOn = true;   // goal/minimalmargin: app.json readableLineLength mirror (rlwLoad, near loadVaultCss); declared up here because mkView reads it
 const fg = () => state.focused;
 const curOf = g => (g.active >= 0 ? g.tabs[g.active].name : null);
 const cur = () => (state && fg() ? curOf(fg()) : null);
@@ -1263,6 +1264,41 @@ function sfontTok() {
    (*X_ABS, the phase subtracts its measured h1 ink x), ink-adjusted with the
    glyph's own bearing (canvas measureText at the element's computed font);
    caps = actualBoundingBoxAscent of "H"/"P"; boxes = border-box rects. */
+/* goal/minimalmargin: [nmw:] — the note column's geometry and the computed
+   styles that size it, off the live DOM of the focused group's visible view.
+     <read|lp>|rlw=<0|1>|pane=<l>,<r>|sb=<scrollbar px>|col=<l>,<r>
+     |lgap=|rgap=|colw=|pad=<t>,<r>,<b>,<l>|mw=<computed max-width of the column>
+     |lw=<--line-width>|mxw=<--max-width>|fm=<--file-margins>|flw=<--file-line-width>
+   pane = the view's border box (the pane border is its left edge; its right
+   edge includes the scrollbar, as stock's measured right gap does). col = the
+   widest in-flow block child (every block child is the column: max-width +
+   auto inline margins); lgap = col.l - pane.l, rgap = pane.r - col.r — the same
+   definitions as the recon's pixel measurer. Spaces in var values -> "_". */
+function nmwTok() {
+  const g = state && fg();
+  if (!g || g.active < 0 || g.graphOn) return "";
+  const rd = isReading(g), R = rd ? g.preview : g.lp;
+  if (!R || !R.getClientRects().length) return "";
+  const p = R.getBoundingClientRect(), cs = getComputedStyle(R);
+  let col = null, colEl = null, n = 0;
+  for (const c of R.children) {
+    if (++n > 400) break;
+    const st = getComputedStyle(c);
+    if (st.display !== "block" || st.position === "absolute" || st.position === "fixed") continue;
+    const r = c.getBoundingClientRect();
+    if (r.width > 0 && (!col || r.width > col.width + 0.5)) { col = r; colEl = c; }
+  }
+  if (!col) return "";
+  const v = k => (cs.getPropertyValue(k).trim() || "-").replace(/\s+/g, "_").replace(/[|\]]/g, "");
+  const px = x => Math.round(x * 10) / 10;
+  return " [nmw:" + (rd ? "read" : "lp") + "|rlw=" + (R.classList.contains("is-readable-line-width") ? 1 : 0) +
+         "|pane=" + px(p.left) + "," + px(p.right) + "|sb=" + px(R.offsetWidth - R.clientWidth - R.clientLeft * 2) +
+         "|col=" + px(col.left) + "," + px(col.right) +
+         "|lgap=" + px(col.left - p.left) + "|rgap=" + px(p.right - col.right) + "|colw=" + px(col.width) +
+         "|pad=" + [cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft].map(s => px(parseFloat(s))).join(",") +
+         "|mw=" + getComputedStyle(colEl).maxWidth.replace(/\s+/g, "_") +
+         "|lw=" + v("--line-width") + "|mxw=" + v("--max-width") + "|fm=" + v("--file-margins") + "|flw=" + v("--file-line-width") + "]";
+}
 let tywCanvas = null;
 function tywTok() {
   const g = fg();
@@ -2210,6 +2246,7 @@ function mkView(g) {
   ed.placeholder = "# write markdown, link with [[Note]]";
   const lp = document.createElement("div"); lp.className = "lp";
   const pv = document.createElement("div"); pv.className = "preview";
+  lp.classList.toggle("is-readable-line-width", rlwOn); pv.classList.toggle("is-readable-line-width", rlwOn);   // minimalmargin
   v.editor = ed; v.lp = lp; v.preview = pv;
   v.lines = [""];                                 // R17: the MODEL (source of truth)
   Ed.mount(v);                                    // R17: lp is the contenteditable view
@@ -4588,6 +4625,7 @@ function openTitleEdit(g, host, x, y) {
   if (!b || b.height <= 0) return false;
   const wrap = document.createElement("div");
   wrap.className = "titlewrap";
+  if (host.classList.contains("is-readable-line-width")) wrap.classList.add("is-readable-line-width");   // minimalmargin: same bounded column as the ::before it replaces
   const el = document.createElement("div");
   el.className = "titleedit";
   el.contentEditable = "plaintext-only";     // one line of text, no markup, no paste-in HTML
@@ -6600,6 +6638,23 @@ function snipRemove(label) {
   if (el) el.remove();
   snipEls.delete(label);
 }
+/* ---- goal/minimalmargin: Editor > Display > "Readable line length" ----------
+   The vault's .obsidian/app.json "readableLineLength" (default ON — stock 1.13.7
+   paints a bounded column in a vault without the key). Mirrored as the class
+   stock puts on its note view, `is-readable-line-width`, on every .lp/.preview
+   we own (retained views of inactive tabs included): ui/style.css sizes the
+   column off it, and a theme keys its own margins on it (Minimal 9.0.2:
+   `.is-readable-line-width { --file-margins: 1rem 0 0 0 }`). Read on vault
+   entry, alongside the vault's CSS. */
+function rlwApply() {
+  const els = new Set(document.querySelectorAll(".lp, .preview"));
+  for (const g of groups()) for (const t of g.tabs) if (t.view) { els.add(t.view.lp); els.add(t.view.preview); }
+  for (const e of els) e.classList.toggle("is-readable-line-width", rlwOn);
+}
+async function rlwLoad() {
+  try { rlwOn = (await inv("readable_line_length")) !== false; } catch { rlwOn = true; }
+  rlwApply();
+}
 /* vault entry (and vault SWITCH: the old vault's CSS must not survive into
    the new one, so this clears before it loads). Failure to scan is not a
    notice: no vault / no snippets dir is Obsidian's silent normal (T0). */
@@ -6611,6 +6666,7 @@ async function loadVaultCss() {
   vaultSeedTok = "-";
   await qfsLoad();                   // fontwheel: the vault's baseFontSize before first paint of a note (REQ-14)
   await fontLoad();                  // fontset REQ-11: the vault's three font overrides, same moment
+  await rlwLoad();                   // minimalmargin: readableLineLength -> .is-readable-line-width, before first paint of a note
   try {
     vaultThemesScan = await inv("themes_scan");
     // R6: LOUD where Obsidian silently excludes — every broken theme dir says

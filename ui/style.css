@@ -234,6 +234,11 @@ body {
   --bm-drop-src-bg: rgba(152,115,247,.28);
   --tag-bg-hover: rgba(137,180,250,.3);
   --transparent: transparent;
+  /* minimalmargin: the note scroller's 12px scrollbar (.lp/.preview). Sampled from
+     stock 1.13.7 Default dark, docs/recon-minimalmargin/stock/stock-default-dark-rlwoff-read-900.png
+     x=889 y=400 (thumb) / x=884 (track = page). Obsidian's names: themes override them. */
+  --scrollbar-bg: transparent;
+  --scrollbar-thumb-bg: #323233;
 }
 /* ---------------------------------------------------------------------------
    LIGHT. Every value below was SAMPLED from a pixel of a running Obsidian
@@ -295,6 +300,8 @@ body:where(.theme-light) {
   --link-unresolved: #ad8cf8;
   --accent-mauve: var(--color-accent, #8a5cf5);
   --accent-yellow: #ec7500;
+  /* minimalmargin: scrollbar thumb, stock-default-light-rlwoff-read-900.png x=889 y=400 */
+  --scrollbar-thumb-bg: #e5e5e5;
   --accent-green: #08b94e;
 }
 /* THEME TOKENS END */
@@ -566,7 +573,8 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 .pane.drop-edge::after { content: ""; position: absolute; top: 32px; right: 0;
                          bottom: 0; width: 40px; pointer-events: none;
                          background: var(--accent-blue-veil) }
-.content { flex: 1 1 0; display: flex; min-width: 0; min-height: 0; position: relative }   /* R22: min-width:0 */
+.content { flex: 1 1 0; display: flex; min-width: 0; min-height: 0; position: relative;
+            container: notepane / inline-size }   /* R22: min-width:0. minimalmargin: the query container of the narrow-pane margin clamp (.lp/.preview padding) */
 /* R8.8: one of .editor/.lp/.preview fills the pane (JS toggles display) —
    the old permanent editor|preview side-by-side layout is gone */
 .editor { flex: 1 1 0; min-width: 0;   /* R22 */ background: var(--bg-base); color: var(--text-chrome); border: 0;
@@ -1141,7 +1149,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
      is declared on body, and a var() naming a property this element does not
      have is guaranteed-invalid, not a fallback. Keep this block colour-free. */
   /* R15.14 dark tokens (content area only — app chrome keeps its own token layer): --text-normal / --text-muted / --text-faint / --background-primary(-alt) / --interactive-accent all live in the ONE token block at the top of this file */
-  --radius-s: 4px; --size-4-6: 24px; --size-4-8: 32px; --file-line-width: calc(var(--space-unit) * 180); --file-margins: var(--size-4-8);
+  --radius-s: 4px; --size-4-6: 24px; --size-4-8: 32px; --file-line-width: 700px; --file-margins: var(--size-4-8);
   /* sidefont: ONE size for every sidebar list row — explorer .trow, bookmarks
      .bmrow, the right-strip .rlist rows, search .sgroup file rows. 13px is
      the recon value (docs/recon-sidefont/README.md Q1/Q3/Q5), and
@@ -1154,15 +1162,40 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
   :root { --h2-weight: 680; --h3-weight: 660; --h4-weight: 640; --h5-weight: 620; --h6-weight: 600 }
 }
 /* note column: 16px/1.5 text, 700px readable line length centred, 32px file margins
-   R22: the side margins are min(32px, 5% of the pane) — padding does NOT shrink,
-   so a literal 32px on each side makes the note pane 64px wide minimum and
-   pushes the whole window past the viewport in a narrow split. 5% >= 32px for
-   any pane >= 640px, so every normal size (and every R15 measurement) is
-   byte-identical; only a pane squeezed below 640px sees smaller margins. */
+   goal/minimalmargin (docs/recon-minimalmargin, stock 1.13.7 measured black-box):
+   - the column is bounded ONLY while the vault's app.json "readableLineLength"
+     is on (default on). ui/main.js mirrors it as `.is-readable-line-width` on
+     each .lp/.preview — the class stock puts on its view and the one themes key
+     on. Off = the column fills the pane between the file margins.
+   - bounded width = min(--line-width, --max-width) when a theme declares them
+     (Minimal 9.0.2: 40rem, 88%), else --file-line-width (stock Default: 700px,
+     measured; was 720px here). Minimal applies the same pair through stock-DOM
+     selectors (.markdown-preview-sizer > div, .cm-content > div) that our DOM
+     cannot match — so the pair is read here, on our own column.
+   - padding is ONE var(--file-margins), any 1-4 value form, like stock. The old
+     `min(var(--file-margins), 5%)` went invalid-at-computed-time on Minimal's
+     `.is-readable-line-width { --file-margins: 1rem 0 0 0 }`.
+   R22: padding does NOT shrink, so a literal 32px on each side makes the note
+   pane 64px wide minimum and pushes the window past the viewport in a narrow
+   split. Below a 640px pane (where 5% < 32px) OUR default margins clamp to 5%;
+   it is declared at :where() specificity, so a theme's own --file-margins wins. */
 .lp, .preview { font-family: var(--font-text); font-size: var(--font-text-size); line-height: var(--line-height-normal);
                 color: var(--text-normal);
-                padding: var(--file-margins) min(var(--file-margins), 5%) }
-.lp > *, .preview > * { max-width: var(--file-line-width); margin-inline: auto }
+                padding: var(--file-margins) }
+@container notepane (max-width: 639.98px) {
+  :where(.lp, .preview) { --file-margins: var(--size-4-8) 5% }
+}
+.is-readable-line-width { --note-column: min(var(--line-width, var(--file-line-width)), var(--max-width, 100%)) }
+.lp > *, .preview > * { max-width: var(--note-column, none); margin-inline: auto }
+/* stock's note scroller carries a 12px classic scrollbar (track transparent,
+   thumb inset 2px left / 3px right) — measured in the recon shots at x 884..895
+   of a 896px window; the column centres in what is left of the pane. WebKitGTK
+   would otherwise paint a zero-width overlay bar and centre 6px further right. */
+.lp::-webkit-scrollbar, .preview::-webkit-scrollbar { width: 12px; background-color: var(--scrollbar-bg) }
+.lp::-webkit-scrollbar-thumb, .preview::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb-bg); background-clip: padding-box;
+  border-style: solid; border-color: var(--scrollbar-bg); border-width: 0 3px 0 2px; border-radius: 6px; min-height: 45px }
+.lp::-webkit-scrollbar-thumb:active, .preview::-webkit-scrollbar-thumb:active { background-color: var(--scrollbar-active-thumb-bg, var(--scrollbar-thumb-bg)) }
 /* #20 INLINE TITLE (R32): the big title of a note is its FILENAME, rendered —
    it lives in no file. Measured against Obsidian (progress.md Q3): the
    title is pixel-identical to a body h1 (same ink, same trim box) and the
@@ -1198,7 +1231,7 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
    one lucky value. What makes em resolve identically on both is .titlewrap
    carrying the note column's own type context — see the rule below it. */
 .lp[data-title]::before, .preview[data-title]::before, .titleedit {
-  display: block; max-width: var(--file-line-width); margin-inline: auto;
+  display: block; max-width: var(--note-column, none); margin-inline: auto;
   font-size: var(--h1-size); font-weight: var(--h1-weight);
   line-height: var(--h1-line-height); letter-spacing: var(--h1-letter-spacing);
   color: inherit; overflow-wrap: anywhere; white-space: pre-wrap; cursor: text;
