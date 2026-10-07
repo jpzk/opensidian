@@ -44,3 +44,11 @@ javascriptcore-rs = "=1.1.2"
 # Test-only: the shipped binary is unchanged.
 [dev-dependencies]
 sha2 = "=0.10.9"
+
+# Release binaries ship STRIPPED (symbol table removed at link time). The one release
+# compile is wrapped byte-identical into the AppImages, rpm and deb; Debian policy 10.1
+# (lintian E: unstripped-binary-or-object) and Fedora both expect stripped binaries, and
+# stripping AFTER the compile would break the one-compile-one-sha proof. Panics still
+# print their message and location; only symbolised backtraces are lost.
+[profile.release]
+strip = "symbols"
