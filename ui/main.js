@@ -4463,12 +4463,17 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
   // R12.4: caret survives lp<->src. Read ONLY out of an edit mode and only a REAL
   // caret: g.lpActive outlives reading view, and caretLC() falls back to [0,0]
   // when the selection is elsewhere (the palette input) — that [0,0] is the bug.
-  const kc = isLp(tab.mode) && g.lpActive ? Ed.caret(g) : null;
+  // modeswitch: the whole SELECTION survives, not only its caret end. ks = the
+  // model range (a <= b); the caret is its moving end (focus, else b) and the
+  // other end is the anchor — a backward selection comes back backward.
+  const ks = isLp(tab.mode) && g.lpActive ? Ed.sel(g) : null;
+  const kc = ks ? (Ed.focusPos(g) || ks.b) : null;
   const keep = kc ? [kc.l, kc.c] : null;
+  const ka = ks && !ks.empty ? (kc.l === ks.a.l && kc.c === ks.a.c ? ks.b : ks.a) : null;
   // caretkeep: the caret is remembered PER TAB whenever an edit mode is left, so
   // edit -> reading -> edit lands where it was (it read null on the way back and
   // the caret went to line 0). Per tab: two tabs / split panes never share it.
-  if (keep) tab.caret = { n: curOf(g), lc: keep };   // keyed to the NOTE: an in-place navigate must not inherit it
+  if (keep) tab.caret = { n: curOf(g), lc: keep, an: ka ? [ka.l, ka.c] : null };   // keyed to the NOTE: an in-place navigate must not inherit it
   const mswA0 = performance.now();
   const anchor = ssAnchor(g);                    // R35: read the top SOURCE LINE from the OLD view, before anything flips
   let mswSsMs = performance.now() - mswA0;
@@ -4483,11 +4488,16 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
     // caret where it was (this switch, else the tab's remembered one), clamped to
     // the note AS IT IS NOW: an external edit in reading view may have shortened it.
     // Nothing remembered: livepreview = no caret, source = end of note.
-    const L = Ed.lines(g), want = keep || (tab.caret && tab.caret.n === curOf(g) ? tab.caret.lc : null);
+    const mem = tab.caret && tab.caret.n === curOf(g) ? tab.caret : null;
+    const L = Ed.lines(g), want = keep || (mem ? mem.lc : null), wa = keep ? (ka ? [ka.l, ka.c] : null) : (mem ? mem.an : null);
+    const clampLC = p => { const l = Math.max(0, Math.min(p[0], L.length - 1)); return [l, Math.max(0, Math.min(p[1], (L[l] || "").length))]; };
     if (want) {
-      const l = Math.max(0, Math.min(want[0], L.length - 1));
-      const c = Math.max(0, Math.min(want[1], (L[l] || "").length));
+      const [l, c] = clampLC(want);
       await lpRender(g, l, c, true);
+      if (wa) {                                  // modeswitch: re-span the selection anchor -> caret
+        const [al, ac] = clampLC(wa);
+        if (al !== l || ac !== c) { Ed.place(g, al, ac); Ed.extendTo(g, l, c); }
+      }
     } else if (tab.mode === "livepreview") await lpRender(g, -1, 0, true);
     else await lpRender(g, L.length - 1, L[L.length - 1].length, true);
   }
