@@ -444,32 +444,45 @@ async fn pdf_info(v: State<'_, Vault>, path: String, otel: Option<perf::Ctx>) ->
         .map_err(|e| e.to_string())
 }
 
-/* ---- R31 drop-to-attach (feedback #18) ---------------------------------
+/* ---- R31 drop-to-attach (feedback #18), MOVE since osdrop -----------------
    A drop is the FIRST user-driven write of arbitrary bytes into the vault, so
    everything R29 built (read-side containment) is only half of what is needed
    here. The whole behaviour lives in `attach_drop` below: it takes the vault,
-   the note being edited and the dropped paths, copies what it is allowed to
-   copy and RETURNS the text to insert. The Tauri command and the
-   WindowEvent::DragDrop handler are pass-throughs, because an OS drop cannot
-   be synthesized in a test (xdotool has no XDND) — the tests and the smoke
-   phase drive this function, and only the wry->handler transport is untested.
+   the note being edited and the dropped paths, MOVES what it is allowed to
+   move and RETURNS the text to insert. The Tauri command and the
+   WindowEvent::DragDrop handler are pass-throughs. The transport (a real XDND
+   drag from another X client -> wry/WebKitGTK -> WindowEvent::DragDrop ->
+   `drop-files` -> attach_files) is exercised end to end by the release-
+   mandatory gate phase `osdrop`, which drags with real pointer input.
+
+   MOVE, not copy (osdrop, operator 2026-10-08: "it should move the file to the
+   vault"), and safely — vaultfs::import_move: stage under a hidden random name
+   (same filesystem: link(2), no bytes copied; otherwise: copy, fsync, verify
+   size + sha256 against the source), commit with renameat2(RENAME_NOREPLACE),
+   fsync the directory, and only THEN unlink the source. Any failure before the
+   commit leaves the source intact and nothing visible in the vault. A source
+   that cannot be removed after the commit (a read-only drop folder under
+   Landlock) stays, and the UI says so: a duplicate, never a loss.
 
    Order of the checks is the design, each earns its place:
      S1 SOURCE  — a file manager can hand us anything: canonicalize, and refuse
-                  a symlink / dir / fifo / socket / device outright.
+                  a symlink / dir / fifo / socket / device outright; re-checked
+                  on the opened fd (O_NOFOLLOW) and by inode before the unlink.
      S3 NAME    — the basename is ATTACKER-CONTROLLED TEXT, not a name just
                   because the OS produced it: safe_rel + NUL + control chars.
-     S4 TYPE    — the EXTENSION allowlist decides what is copied (IMG_TYPES),
-                  never a content sniff; img_path_in decides what is served.
+     S4 TYPE    — the EXTENSION allowlist decides what is moved (IMG_TYPES),
+                  never a content sniff; img_path_in decides what is served. A
+                  refused file is never opened for write, renamed or unlinked.
      S2 DEST    — the attachment dir is canonicalized against the canonical
                   vault root (the note_path_in shape), so vault/attachments ->
                   /home/user cannot turn a drop into a write outside the vault.
-     S5 NO OVER — create_new(), i.e. O_EXCL: never exists()-then-write, and
-                  never an overwrite. Data loss outranks Obsidian parity (rule of
-                  order): the collision gets a new name, the old file stays.
-     CAP        — MAX_IMG_BYTES on the source metadata BEFORE the copy, and
-                  again on the stream, so a file that grows mid-copy cannot
-                  smuggle bytes past the cap.                              */
+     S5 NO OVER — renameat2(RENAME_NOREPLACE) (link(2) where a filesystem lacks
+                  it): never exists()-then-write, and never an overwrite. Data
+                  loss outranks Obsidian parity (rule of order): the collision
+                  gets a new name, the old file stays.
+     CAP        — MAX_IMG_BYTES on the source metadata BEFORE anything, and
+                  again on the stream when copying, so a file that grows
+                  mid-copy cannot smuggle bytes past the cap.              */
 
 /// R31.1 the ONE name an OS drop reaches the UI under. Not `tauri://drag-drop`
 /// (Tauri's own, which also fires for hover/leave and carries a pointer
@@ -512,12 +525,12 @@ impl Refused {
                 sandbox::DROP_READ_DIRS.iter().map(|d| format!("~/{d}")).collect::<Vec<_>>().join(", ")
             ),
             Refused::NoFreeName => format!("{name}: no free file name left in the attachment folder"),
-            Refused::Io(e) => format!("{name}: could not be copied ({e})"),
+            Refused::Io(e) => format!("{name}: could not be moved ({e})"),
         }
     }
 }
 
-/// R31 whole-drop failure: nothing was copied and there is nothing to insert.
+/// R31 whole-drop failure: nothing was moved and there is nothing to insert.
 #[derive(Debug, PartialEq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 enum DropErr {
@@ -543,6 +556,7 @@ struct Attached {
     text: String,          // "" = insert nothing
     copied: Vec<String>,   // vault-relative paths, in drop order
     refused: Vec<String>,  // human sentences, already formatted
+    kept: Vec<String>,     // osdrop: attached, but the original could not be removed (sentences)
 }
 
 /// R31.3 the attachment folder: Obsidian's default is the VAULT ROOT (recon
@@ -597,79 +611,24 @@ fn attach_name(p: &Path) -> Option<String> {
 
 /// R31.4 collision: Obsidian appends ` <n>` to the STEM, keeping the extension
 /// (recon: `Pasted image ... .png` -> `... 1.png` -> `... 2.png`). Never an
-/// overwrite (S5), so this is a create_new() loop, not an exists() test.
-/// `dir` is vault-RELATIVE: the claim is an openat(O_EXCL|O_NOFOLLOW) under
-/// the vault dir fd, parents walked no-follow (audit #6).
-fn free_dest(vfs: &vaultfs::Vault, dir: &Path, name: &str) -> Result<(PathBuf, String, fs::File), Refused> {
+/// overwrite (S5): these are only CANDIDATES — vaultfs::import_move commits
+/// with renameat2(RENAME_NOREPLACE), so a taken name is skipped by the kernel,
+/// never by an exists() test.
+fn cand_names(name: &str) -> impl Iterator<Item = String> {
     let (stem, ext) = match name.rsplit_once('.') {
         Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
         _ => (name.to_string(), String::new()),
     };
-    for n in 0..1000 {
-        let cand = if n == 0 { name.to_string() } else { format!("{stem} {n}{ext}") };
-        match vfs.create_new(&dir.join(&cand), false) {
-            Ok(f) => return Ok((dir.join(&cand), cand, f)),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(Refused::Io(e.to_string())),
-        }
-    }
-    Err(Refused::NoFreeName)
+    let name = name.to_string();
+    (0..1000).map(move |n| if n == 0 { name.clone() } else { format!("{stem} {n}{ext}") })
 }
 
-/// copy at most MAX_IMG_BYTES + 1 bytes; Err leaves NOTHING behind.
-fn copy_capped(src: &Path, vfs: &vaultfs::Vault, dst: &Path, mut out: fs::File) -> Result<u64, Refused> {
-    use std::io::{Read, Write};
-    // free_dest already created `dst` with O_EXCL, so EVERY exit from here on
-    // must unlink it — a failed drop that leaves an empty `cat.png` in the
-    // vault is worse than the refusal it reports.
-    let mut f = match fs::File::open(src) {
-        Ok(f) => f,
-        Err(e) => {
-            let _ = vfs.unlink(dst);
-            // R31.12: the sandbox only grants READ on the drop-source folders,
-            // so EACCES here is the expected answer for a file anywhere else.
-            // Say THAT, not "could not be copied (os error 13)" — a refusal
-            // that misdescribes its cause is the bug trap (g) is about.
-            return Err(if e.kind() == std::io::ErrorKind::PermissionDenied {
-                Refused::Unreadable
-            } else {
-                Refused::Io(e.to_string())
-            });
-        }
-    };
-    let mut buf = [0u8; 64 * 1024];
-    let mut total: u64 = 0;
-    loop {
-        let n = match f.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(e) => {
-                let _ = vfs.unlink(dst);
-                return Err(Refused::Io(e.to_string()));
-            }
-        };
-        total += n as u64;
-        if total > MAX_IMG_BYTES {
-            let _ = vfs.unlink(dst);           // a file that GREW mid-copy
-            return Err(Refused::TooBig(total));
-        }
-        if let Err(e) = out.write_all(&buf[..n]) {
-            let _ = vfs.unlink(dst);
-            return Err(Refused::Io(e.to_string()));
-        }
-    }
-    if let Err(e) = out.sync_all() {
-        let _ = vfs.unlink(dst);
-        return Err(Refused::Io(e.to_string()));
-    }
-    Ok(total)
-}
-
-/// R31 THE function. Copies every droppable image into the vault's attachment
-/// folder and returns the markdown to insert at the cursor. Never moves, never
-/// symlinks, never overwrites. The caller inserts the text and teaches the
+/// R31 THE function. MOVES every droppable image into the vault's attachment
+/// folder (osdrop, operator 2026-10-08: "move the file to the vault") and
+/// returns the markdown to insert. Never symlinks, never overwrites, and a
+/// refused file is never touched. The caller inserts the text and teaches the
 /// index the new images (R29.11: the index is what both renderers resolve
-/// against, so a copied file that is not in the index would not paint).
+/// against, so a moved file that is not in the index would not paint).
 fn attach_drop(root: &Path, note: &str, paths: &[PathBuf]) -> Result<Attached, DropErr> {
     if paths.is_empty() {
         return Err(DropErr::Empty);
@@ -681,7 +640,7 @@ fn attach_drop(root: &Path, note: &str, paths: &[PathBuf]) -> Result<Attached, D
     let croot = root.canonicalize().map_err(|_| DropErr::BadAttachDir)?;
     let rel_path = dir.strip_prefix(&croot).map_err(|_| DropErr::BadAttachDir)?.to_path_buf();
     let rel_dir = rel_path.display().to_string();
-    // audit #6: every create/unlink below is relative to this dir fd
+    // audit #6: every create/rename/unlink below is relative to this dir fd
     let vfs = vaultfs::Vault::open(root).map_err(|_| DropErr::BadAttachDir)?;
     let mut out = Attached::default();
     out.refused.extend(notice);
@@ -689,9 +648,12 @@ fn attach_drop(root: &Path, note: &str, paths: &[PathBuf]) -> Result<Attached, D
     for p in paths {
         let shown = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| p.display().to_string());
         match attach_one(&vfs, &rel_path, p) {
-            Ok(name) => {
+            Ok((name, kept)) => {
                 links.push(format!("![[{name}]]"));
                 out.copied.push(if rel_dir.is_empty() { name.clone() } else { format!("{rel_dir}/{name}") });
+                if let Some(why) = kept {
+                    out.kept.push(format!("{shown}: copied, the original could not be removed ({why})"));
+                }
             }
             Err(r) => out.refused.push(r.say(&shown)),
         }
@@ -700,8 +662,9 @@ fn attach_drop(root: &Path, note: &str, paths: &[PathBuf]) -> Result<Attached, D
     Ok(out)
 }
 
-/// one dropped path -> the name it got in the attachment folder
-fn attach_one(vfs: &vaultfs::Vault, dir: &Path, p: &Path) -> Result<String, Refused> {
+/// one dropped path -> (the name it got in the attachment folder, Some(why) when
+/// the source had to stay where it was)
+fn attach_one(vfs: &vaultfs::Vault, dir: &Path, p: &Path) -> Result<(String, Option<String>), Refused> {
     let raw = p.to_string_lossy();
     // R31.8 / R29.10: a browser drag delivers a URL, never a file. Downloading
     // it would be a network fetch caused by a note, which is forbidden — and
@@ -729,9 +692,26 @@ fn attach_one(vfs: &vaultfs::Vault, dir: &Path, p: &Path) -> Result<String, Refu
     if !fs::symlink_metadata(&src).map(|m| m.is_file()).unwrap_or(false) {
         return Err(Refused::NotAFile);
     }
-    let (dst, name, fh) = free_dest(vfs, dir, &name)?;
-    copy_capped(&src, vfs, &dst, fh)?;
-    Ok(name)
+    // S1 again, by fd, S5 and CAP: vaultfs re-checks the opened source and
+    // commits with NOREPLACE; every Err leaves the source untouched.
+    use vaultfs::ImportErr as E;
+    let im = vfs.import_move(&src, dir, &mut cand_names(&name), MAX_IMG_BYTES).map_err(|e| match e {
+        // R31.12: the sandbox only grants READ on the drop-source folders, so
+        // EACCES here is the expected answer for a file anywhere else. Say
+        // THAT, not "os error 13" — a refusal that misdescribes its cause is
+        // the bug trap (g) is about.
+        E::OpenSrc(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Refused::Unreadable,
+        E::OpenSrc(e) | E::Io(e) => Refused::Io(e.to_string()),
+        E::NotRegular => Refused::NotAFile,
+        E::TooBig(n) => Refused::TooBig(n),
+        E::Changed => Refused::Io("the file changed while it was being moved".into()),
+        E::NoFreeName => Refused::NoFreeName,
+    })?;
+    eprintln!("[osdrop] {} -> {} ({}, source {:?})", src.display(), im.name, im.how, im.src);
+    Ok((im.name, match im.src {
+        vaultfs::SrcFate::Removed => None,
+        vaultfs::SrcFate::Kept(why) => Some(why),
+    }))
 }
 
 /* R31 THE WRAPPER — 7 statements, no behaviour. An OS drop is delivered by
@@ -5092,13 +5072,15 @@ fn main() {
             Ok(())
         })
         // R31.1 THE DROP HANDLER — 4 lines of body, no behaviour, no I/O, no policy.
+        // Proven end to end by gate phase `osdrop` (a real XDND drag, real pointer).
         // wry delivers a real XDND drop to Rust and Tauri hands it to us as
         // WindowEvent::DragDrop (tauri-runtime-wry-2.11.4:4889: for a window's
         // own content webview the drop is a SYNTHESIZED WINDOW event, not a
         // webview one), so the DOM never sees a DataTransfer carrying files —
         // faking a DOM drop in JS would test a path production does not have.
         // Which note is open and where the caret sits is webview state, so this
-        // re-emits the paths under ONE name the UI owns (`drop-files`) and
+        // re-emits [paths, x, y] under ONE name the UI owns (`drop-files`; x/y =
+        // where it landed, physical px, so the embed goes at the drop point) and
         // stops: every rule — source checks, name checks, the cap, containment,
         // no-overwrite — lives in `attach_drop`, reached through `attach_files`.
         // Caveat, stated because it is real: `emit` serializes to JSON, so a
@@ -5107,9 +5089,9 @@ fn main() {
         // `tauri://drag-drop` payload has. Such a file is never attached, never
         // half-attached; R31.10.
         .on_window_event(|w, e| {
-            if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = e {
+            if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, position }) = e {
                 use tauri::Emitter;
-                let _ = w.emit(DROP_EVENT, paths);
+                let _ = w.emit(DROP_EVENT, (paths, position.x, position.y));
             }
         })
         // S1: the window is the app, never a browser — every navigation off the
@@ -8446,10 +8428,10 @@ mod tests {
 
     /* ---- R31 drop-to-attach (feedback #18) -----------------------------
        These hammer `attach_drop`, the ONE function the drop handler wraps.
-       WHAT THEY DO NOT COVER, stated once here and in docs/features.md: the
-       wry/GTK -> `tauri://drag-drop` transport. An OS drop cannot be
-       synthesized (xdotool has no XDND), so faking a DOM drag event would
-       test a code path that does not exist in production.               */
+       The wry/GTK -> WindowEvent::DragDrop transport is NOT unit-testable (it
+       needs a display and a second X client); the release-mandatory gate phase
+       `osdrop` drags a real file from a real XDND source with real pointer
+       input. Faking a DOM drag event here would test a path production lacks. */
 
     /// a 40x40-ish png-shaped blob; content is never sniffed (S4), the
     /// EXTENSION decides, so the bytes only have to be recognisable again.
@@ -8469,10 +8451,10 @@ mod tests {
         (root, src)
     }
 
-    /// R31.1/R31.2/R31.3: one dropped png is COPIED (never moved) into the
+    /// R31.1/R31.2/R31.3 + osdrop: one dropped png is MOVED into the
     /// vault root and the inserted text is Obsidian's wikilink embed, byte exact.
     #[test]
-    fn drop_copies_the_file_and_returns_the_wikilink_embed() {
+    fn drop_moves_the_file_and_returns_the_wikilink_embed() {
         let (root, srcd) = drop_vault("drop-happy");
         let s = src_file(&srcd, "cat.png", b"\x89PNG\r\n\x1a\nCAT");
         let a = attach_drop(&root, "Note", &[s.clone()]).unwrap();
@@ -8480,7 +8462,8 @@ mod tests {
         assert_eq!(a.copied, vec!["cat.png".to_string()]);
         assert!(a.refused.is_empty());
         assert_eq!(fs::read(root.join("cat.png")).unwrap(), b"\x89PNG\r\n\x1a\nCAT");
-        assert!(s.exists(), "R31.1: the source is COPIED, never moved");
+        assert!(!s.exists(), "osdrop: the source is MOVED, its old name is gone");
+        assert!(a.kept.is_empty(), "{:?}", a.kept);
         // and the byte server will serve exactly what we wrote (R29 reused)
         assert_eq!(serve_image(&root, "cat.png").unwrap().1, b"\x89PNG\r\n\x1a\nCAT".to_vec());
         let _ = fs::remove_dir_all(&root);
@@ -8495,10 +8478,11 @@ mod tests {
     fn drop_never_overwrites_and_renames_like_obsidian() {
         let (root, srcd) = drop_vault("drop-coll");
         fs::write(root.join("cat.png"), b"ALREADY-MINE").unwrap();
-        let s = src_file(&srcd, "cat.png", b"\x89PNGnew");
-        let a1 = attach_drop(&root, "Note", &[s.clone()]).unwrap();
-        let a2 = attach_drop(&root, "Note", &[s.clone()]).unwrap();
-        let a3 = attach_drop(&root, "Note", &[s.clone()]).unwrap();
+        // a move consumes the source, so each drop brings a fresh one
+        let s = || src_file(&srcd, "cat.png", b"\x89PNGnew");
+        let a1 = attach_drop(&root, "Note", &[s()]).unwrap();
+        let a2 = attach_drop(&root, "Note", &[s()]).unwrap();
+        let a3 = attach_drop(&root, "Note", &[s()]).unwrap();
         assert_eq!((a1.text.as_str(), a2.text.as_str(), a3.text.as_str()),
                    ("![[cat 1.png]]", "![[cat 2.png]]", "![[cat 3.png]]"));
         assert_eq!(fs::read(root.join("cat.png")).unwrap(), b"ALREADY-MINE",
@@ -8659,6 +8643,7 @@ mod tests {
         let _ = fs::remove_dir_all(&outside);
         fs::create_dir_all(&outside).unwrap();
         let s = src_file(&srcd, "cat.png", b"\x89PNGcat");
+        let again = || src_file(&srcd, "cat.png", b"\x89PNGcat");   // a move consumes it
         fs::create_dir_all(root.join(".obsidian")).unwrap();
         let set = |v: &str| fs::write(root.join(".obsidian/app.json"), format!("{{\"attachmentFolderPath\":\"{v}\"}}")).unwrap();
         // 1. a symlinked attachment dir: refused, and NOTHING is written outside
@@ -8666,6 +8651,7 @@ mod tests {
         set("att");
         assert_eq!(attach_drop(&root, "Note", &[s.clone()]), Err(DropErr::BadAttachDir));
         assert_eq!(fs::read_dir(&outside).unwrap().count(), 0, "a byte landed OUTSIDE the vault");
+        assert!(s.exists(), "a refused drop must not touch the source");
         // 2. traversal in the config value: not supported -> vault root + a
         //    VISIBLE notice, never a silent write somewhere else
         set("../evil");
@@ -8675,13 +8661,155 @@ mod tests {
         assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
         // 3. positive control: a plain subfolder is honoured and created
         set("files/img");
-        let b = attach_drop(&root, "Note", &[s.clone()]).unwrap();
+        let b = attach_drop(&root, "Note", &[again()]).unwrap();
         assert_eq!(b.text, "![[cat.png]]", "the LINK stays the basename (Obsidian)");
         assert_eq!(b.copied, vec!["files/img/cat.png".to_string()], "the INDEX key is the relative path");
         assert!(root.join("files/img/cat.png").is_file());
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&srcd);
         let _ = fs::remove_dir_all(&outside);
+    }
+
+    /* ---- osdrop: MOVE, and what an interrupted move leaves behind -------
+       Criterion: an injected failure before the final rename leaves the
+       source intact and NO file (visible or hidden temp) in the vault, on the
+       same-filesystem road (link(2)) AND the cross-filesystem road (copy +
+       fsync + verify). The cross-fs case is a REAL second filesystem: the
+       source lives on /dev/shm (tmpfs) and the vault in temp_dir; the test
+       FAILS rather than skips if they share a device, because a cross-fs claim
+       proven on one filesystem is not proven. */
+    fn sha(p: &Path) -> Vec<u8> {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(fs::read(p).unwrap()).to_vec()
+    }
+    fn listing(d: &Path) -> Vec<String> {
+        let mut v: Vec<String> = fs::read_dir(d).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
+        v.sort();
+        v
+    }
+    fn dev_of(p: &Path) -> u64 {
+        use std::os::unix::fs::MetadataExt;
+        fs::metadata(p).unwrap().dev()
+    }
+    fn shm_src(tag: &str) -> PathBuf {
+        let d = PathBuf::from(format!("/dev/shm/opensidian-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+    const BODY: &[u8] = b"\x89PNG\r\n\x1a\nosdrop-body-0123456789";
+
+    /// the two roads, each proven by WHICH road it took, not just by the result
+    #[test]
+    fn osdrop_import_moves_by_link_on_one_fs_and_by_verified_copy_across() {
+        let (root, srcd) = drop_vault("osd-roads");
+        assert_eq!(dev_of(&root), dev_of(&srcd), "fixture: vault and source dir must share a filesystem");
+        let vfs = vaultfs::Vault::open(&root).unwrap();
+        let s = src_file(&srcd, "one.png", BODY);
+        let want = sha(&s);
+        let im = vfs.import_move(&s.canonicalize().unwrap(), Path::new(""), &mut cand_names("one.png"), MAX_IMG_BYTES).unwrap();
+        assert_eq!((im.name.as_str(), im.how, &im.src), ("one.png", "link", &vaultfs::SrcFate::Removed));
+        assert!(!s.exists());
+        assert_eq!(sha(&root.join("one.png")), want);
+        // cross-fs: /dev/shm is tmpfs on every box this runs on
+        let shm = shm_src("osd-roads");
+        assert_ne!(dev_of(&shm), dev_of(&root), "/dev/shm and {} share a device — no second filesystem, cross-fs NOT proven", root.display());
+        let s2 = src_file(&shm, "two.png", BODY);
+        let im = vfs.import_move(&s2, Path::new(""), &mut cand_names("two.png"), MAX_IMG_BYTES).unwrap();
+        assert_eq!((im.name.as_str(), im.how, &im.src), ("two.png", "copy", &vaultfs::SrcFate::Removed));
+        assert!(!s2.exists(), "cross-fs: the source must be gone after a committed move");
+        assert_eq!(sha(&root.join("two.png")), want, "cross-fs: vault copy not byte-identical");
+        assert_eq!(listing(&root), vec!["Note.md", "one.png", "sub", "two.png"], "no temp left behind");
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&srcd);
+        let _ = fs::remove_dir_all(&shm);
+    }
+
+    /// THE crash-safety criterion: a fault before the final rename, on both roads
+    #[test]
+    fn osdrop_injected_failure_before_commit_leaves_source_intact_and_no_partial_file() {
+        let shm = shm_src("osd-crash");
+        // (road, fault point, source dir is another fs?, force the copy road on one fs?)
+        let cases: [(&str, &'static str, bool, bool); 5] = [
+            ("same-fs link", "import:staged", false, false),
+            ("same-fs copy", "import:copying", false, true),
+            ("same-fs copy", "import:staged", false, true),
+            ("cross-fs copy", "import:copying", true, false),
+            ("cross-fs copy", "import:staged", true, false),
+        ];
+        for (road, at, cross, force) in cases {
+            let (root, srcd) = drop_vault("osd-crash");
+            let sdir = if cross { shm.clone() } else { srcd.clone() };
+            assert_eq!(dev_of(&sdir) != dev_of(&root), cross, "{road}: fixture filesystem layout is wrong");
+            // a large-enough body that the copy road writes more than one chunk
+            let mut big = BODY.to_vec();
+            big.resize(200 * 1024, 0x5a);
+            let s = src_file(&sdir, "cat photo ü.png", &big);
+            let want = sha(&s);
+            let before = listing(&root);
+            vaultfs::set_force_copy(force);
+            vaultfs::set_fault(Some(at));
+            let a = attach_drop(&root, "Note", &[s.clone()]);
+            vaultfs::set_fault(None);
+            vaultfs::set_force_copy(false);
+            let a = a.unwrap();
+            assert_eq!(a.text, "", "{road}@{at}: an interrupted move inserted a link");
+            assert!(a.copied.is_empty(), "{road}@{at}: {:?}", a.copied);
+            assert_eq!(a.refused.len(), 1, "{road}@{at}: {:?}", a.refused);
+            assert!(a.refused[0].contains("injected fault"), "{road}@{at}: {:?}", a.refused);
+            assert!(s.exists(), "{road}@{at}: the SOURCE is gone after a failed move — data loss");
+            assert_eq!(sha(&s), want, "{road}@{at}: the source bytes changed");
+            assert_eq!(listing(&root), before, "{road}@{at}: a partial/temp file was left in the vault");
+            // and the same file, un-faulted, then moves fine (the failure left no residue that blocks it)
+            let ok = attach_drop(&root, "Note", &[s.clone()]).unwrap();
+            assert_eq!(ok.text, "![[cat photo ü.png]]", "{road}: {:?}", ok.refused);
+            assert!(!s.exists(), "{road}: retry did not move");
+            assert_eq!(sha(&root.join("cat photo ü.png")), want, "{road}: retry not byte-identical");
+            let _ = fs::remove_dir_all(&root);
+            let _ = fs::remove_dir_all(&srcd);
+        }
+        let _ = fs::remove_dir_all(&shm);
+    }
+
+    /// after the commit the vault file is complete; a source that cannot be
+    /// removed STAYS and the user is told — a duplicate, never a loss
+    #[test]
+    fn osdrop_unremovable_source_is_kept_and_reported() {
+        let (root, srcd) = drop_vault("osd-kept");
+        let s = src_file(&srcd, "k.png", BODY);
+        vaultfs::set_fault(Some("import:unlink-src"));
+        let a = attach_drop(&root, "Note", &[s.clone()]);
+        vaultfs::set_fault(None);
+        let a = a.unwrap();
+        assert_eq!(a.text, "![[k.png]]");
+        assert!(s.exists(), "the source could not be removed, so it must still be there");
+        assert_eq!(fs::read(root.join("k.png")).unwrap(), BODY);
+        assert_eq!(a.kept.len(), 1, "{:?}", a.kept);
+        assert!(a.kept[0].contains("could not be removed"), "{:?}", a.kept);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&srcd);
+    }
+
+    /// a refused type is never touched, and a collision on the cross-fs road
+    /// gets a new name without overwriting
+    #[test]
+    fn osdrop_refused_untouched_and_crossfs_collision_renames() {
+        let (root, _srcd) = drop_vault("osd-ref");
+        let shm = shm_src("osd-ref");
+        let pdf = src_file(&shm, "doc.pdf", b"%PDF-1.7 not an image");
+        let pdf_sha = sha(&pdf);
+        fs::write(root.join("dup.png"), b"MINE").unwrap();
+        let png = src_file(&shm, "dup.png", BODY);
+        let a = attach_drop(&root, "Note", &[pdf.clone(), png.clone()]).unwrap();
+        assert_eq!(a.text, "![[dup 1.png]]", "{:?}", a.refused);
+        assert_eq!(a.refused.len(), 1);
+        assert_eq!(sha(&pdf), pdf_sha, "a REFUSED file was modified");
+        assert!(!png.exists());
+        assert_eq!(fs::read(root.join("dup.png")).unwrap(), b"MINE", "collision overwrote");
+        assert_eq!(fs::read(root.join("dup 1.png")).unwrap(), BODY);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&shm);
+        let _ = fs::remove_dir_all(&_srcd);
     }
 
     /// a multi-file drop: every file copied, ORDER preserved, one link per
@@ -8789,10 +8917,10 @@ mod tests {
     /// would notice, because ui/ is not a cargo input (docs/features.md trap).
     ///
     /// It also pins the handler as a PASS-THROUGH, which is the structural
-    /// claim the whole design rests on: an OS drop cannot be synthesized in a
-    /// test, so the part that IS tested must be the part that has the
-    /// behaviour (`attach_drop`). A handler that grows a body is that claim
-    /// quietly becoming false — this test fails at 9 lines.
+    /// claim the whole design rests on: the unit tests reach the behaviour
+    /// (`attach_drop`) directly, and the transport is the gate phase osdrop's,
+    /// so a handler with behaviour would be behaviour no unit test reaches.
+    /// A handler that grows a body fails this test at 9 lines.
     #[test]
     fn the_drop_handler_is_a_pass_through_and_the_ui_listens_for_the_same_name() {
         let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();

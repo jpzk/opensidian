@@ -2138,7 +2138,7 @@ let saveErr = "";
 /* R31.9 last drop outcome, declared up here with saveErr so updateTitle (below)
    can never read it through a temporal-dead-zone. The drop code itself is in
    the R31 section further down. */
-let dropTok = "", dropT = null;
+let dropTok = "", dropT = null, dropAtTok = "";
 /* R24.6 explorer drag-to-move, declared here for the same reason as dropTok:
    updateTitle() reads both and runs from load-time code ABOVE the explorer
    section, where a `let` in its own section would be a temporal-dead-zone
@@ -3542,6 +3542,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   // Deliberately not derived from the banner (which times out): "no drop yet"
   // and "a drop whose banner faded" must not look the same to a probe.
   if (dropTok) md += " [drop:" + dropTok.replace(/[[\]|]/g, "") + "]";
+  if (dropAtTok) md += " [dropat:" + dropAtTok + "]";   // osdrop: where the last REAL drop put the caret
   // R24.6 explorer drag-to-move: [dragt:<dest or - >:<the chip's own text>] while
   // a drag is up, [mv:<old>><new>/<files linking in>] for the last completed move.
   if (dragTok) md += " [dragt:" + dragTok.replace(/[[\]|]/g, "").slice(0, 120) + "]";
@@ -6389,13 +6390,37 @@ function dropSay(msg) {           // R31.5 a refusal is VISIBLE or it is a bug r
   // off a banner that merely timed out.
   if (msg) dropT = setTimeout(() => { $("dropmsg").hidden = true; }, 4000);
 }
+/* osdrop: a REAL OS drop carries WHERE it landed (DragDropEvent::Drop.position,
+   physical px in the webview). The embed goes THERE, like stock: the pane
+   under the pointer gets focus, and the caret moves to the text position under
+   the pointer (caretRangeFromPoint -> Ed.pos, the same DOM->model map a click
+   uses). Below the last row = the end of the note (R17's click rule). Returns
+   false — and changes nothing — when the point is not in an editable note, so
+   the caller falls back to the focused editor's caret. Census [dropat:l.c]. */
+function dropAt(at) {
+  if (!at || !Number.isFinite(at.x) || !Number.isFinite(at.y)) return false;
+  const k = window.devicePixelRatio || 1, x = at.x / k, y = at.y / k;
+  const el = document.elementFromPoint(x, y);
+  const pane = el && el.closest ? el.closest(".pane") : null, g = pane ? pane._g : null;
+  if (!g) return false;
+  focusGroup(g);
+  const t = g.active >= 0 ? g.tabs[g.active] : null;
+  if (!t || t.kind || t.mode === "reading" || !g.lp || !g.lp.contains(el)) return false;
+  const r = document.caretRangeFromPoint ? document.caretRangeFromPoint(x, y) : null;
+  let p = r && g.lp.contains(r.startContainer) ? Ed.pos(g, r.startContainer, r.startOffset) : null;
+  if (!p || el === g.lp) { const L = Ed.lines(g); p = { l: L.length - 1, c: L[L.length - 1].length }; }
+  Ed.place(g, p.l, p.c);
+  dropAtTok = p.l + "." + p.c;
+  return true;
+}
 /* R31.6 READING VIEW HAS NO CARET, so a drop there cannot "insert at the
    cursor". Obsidian's behaviour is UNVERIFIED (recon could not drive a drop, and
    the paste oracle is edit-only), and the brief's rule for an unverified
    answer is: refuse, visibly. Copying the file in anyway and inserting it
    somewhere we guessed is the worse failure — it writes to the vault for an
    action the user cannot see the result of. */
-async function attachDrop(paths) {
+async function attachDrop(paths, at) {
+  if (at) dropAt(at);              // osdrop: a real drop inserts at the drop point
   if (!state || !fg()) return dropSay("open a note first");
   const g = fg(), t = g.active >= 0 ? g.tabs[g.active] : null;
   if (!t || t.kind) return dropSay("open a note first");
@@ -6410,7 +6435,7 @@ async function attachDrop(paths) {
   if (a.copied.length) await refreshTree();
   if (a.text) edEdit((v, s, e2) => [v.slice(0, s) + a.text + v.slice(e2), s + a.text.length, s + a.text.length]);
   dropTok = a.copied.length + "/" + a.refused.length;
-  dropSay(a.refused.join("\n"));
+  dropSay(a.refused.concat(a.kept || []).join("\n"));
   updateTitle();
 }
 /* R31.7 "Insert attachment" — the keyboard road to the SAME attach a drop
@@ -9332,7 +9357,8 @@ async function onVaultChanged(c) {
 window.__TAURI__.event.listen("vault-changed", e => onVaultChanged(e.payload));
 window.__TAURI__.event.listen("vault-css-changed", e => onVaultCssChanged(e.payload));  // themefs item 6: hot reload
 // R31.1: a real OS drop arrives here, from Rust, never from a DOM drop event.
-window.__TAURI__.event.listen("drop-files", e => attachDrop(e.payload || []));
+// osdrop: the payload is [paths, x, y] (main.rs R31.1), x/y physical px in the webview
+window.__TAURI__.event.listen("drop-files", e => { const p = e.payload || []; attachDrop(p[0] || [], { x: p[1], y: p[2] }); });
 
 $("vswitch").onclick = showPicker;
 
