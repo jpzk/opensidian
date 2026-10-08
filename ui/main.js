@@ -4416,15 +4416,39 @@ function updateModeBtn(g) {
     : "Current view: editing\nClick to read\nCtrl+Click to open to the right";
 }
 
-function applyMode(g) {  // exactly ONE of lp / preview fills the pane
+function applyMode(g, keep) {  // exactly ONE of lp / preview fills the pane
   if (typeof Ed !== "undefined" && Ed.rvEnd) Ed.rvEnd(g);   // rvtask R3: a mode change closes the reading-view undo step
   const m = g.active >= 0 ? g.tabs[g.active].mode : "livepreview";
   g.editor.style.display = "none";          // R12: the model textarea never shows; source = lp + reveal
   g.lp.style.display = isLp(m) ? "" : "none";
   g.lp.classList.toggle("src", m === "source");
   g.preview.style.display = m === "reading" ? "" : "none";
+  // modeswitch opt6: the view the edit <-> reading switch LEAVES (setMode passes
+  // it as `keep`) stays laid out instead of display:none — hidden, out of flow,
+  // at the same width — so the switch back re-shows it without WebKit laying
+  // out the whole note again (30k: ~0.9 s each way, the ss / lp steps). Every
+  // other applyMode (note open, tab switch) drops any kept view to display:none,
+  // and so does a pane width change (vkWatch): a kept view never costs a
+  // relayout the old code would not have paid.
+  g.lp.classList.remove("vkeep"); g.preview.classList.remove("vkeep");
+  if (keep && (keep === g.lp || keep === g.preview) && keep.style.display === "none") {
+    keep.style.display = ""; keep.classList.add("vkeep");
+    vkWatch(g);
+  }
   updateModeBtn(g);
 }
+function vkWatch(g) {   // modeswitch opt6: a pane width change drops the kept view (see applyMode)
+  const C = g.content;
+  C._vkW = C.clientWidth;
+  if (C._vkRO) return;
+  C._vkRO = new ResizeObserver(() => {
+    if (C.clientWidth === C._vkW) return;
+    C._vkW = C.clientWidth;
+    for (const el of C.querySelectorAll(":scope > .vkeep")) { el.classList.remove("vkeep"); el.style.display = "none"; }
+  });
+  C._vkRO.observe(C);
+}
+const vkShown = el => !!el && !!el.offsetParent && !el.classList.contains("vkeep");   // opt6: offsetParent alone counts a kept (hidden) view
 
 async function cmdToggleMode(g) {  // #16: Ctrl+E / the view-header icon = EDIT <-> READING, two states, nothing else
   g = g || fg();
@@ -4483,9 +4507,10 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
   // were built from — the rows stay in g.lp (display:none) while reading shows.
   if (mode === "reading" && isLp(tab.mode) && g.view && g.view.rowSrc)
     g.lp._msk = { n: curOf(g), notes: notesCache, imgs: imgsCache, rows: g.view.rowSrc, len: g.lp.children.length };
+  const leave = (mode === "reading") !== (tab.mode === "reading") ? (tab.mode === "reading" ? g.preview : g.lp) : null;   // opt6: the view this switch leaves
   tab.mode = mode;
   hideAc();
-  applyMode(g);
+  applyMode(g, leave);
   mswpMark("apply");
   if (tab.mode === "reading") await preview(g, true);
   if (tab.mode === "livepreview" || tab.mode === "source") {   // mode switch: full rebuild
@@ -5951,7 +5976,7 @@ function extClick(e, a) {   // `a` unused: kept for the Ed.extClick(e, a) signat
 // opt2 observer counted that as a touch: every warm edit -> reading was a miss.
 // Only a style attribute on #preview ITSELF is ignored; any other record (a child,
 // a text, data-title, a class) still marks it dirty.
-const pvTouched = (P, recs) => recs.some(r => r.target !== P || r.type !== "attributes" || r.attributeName !== "style");
+const pvTouched = (P, recs) => recs.some(r => r.target !== P || r.type !== "attributes" || (r.attributeName !== "style" && r.attributeName !== "class"));   // opt6: + the vkeep class flip
 async function preview(g, sw) {   // sw: called by setMode (the edit -> reading switch)
   const src = g.editor.value, P = g.preview;
   // modeswitch opt2: the reading DOM is RETAINED while the pane shows the edit
@@ -7070,7 +7095,7 @@ window.addEventListener("wheel", e => {
    centre (note body or graph canvas), never a literal */
 function qfsTok() {
   const g = typeof fg === "function" ? fg() : null;
-  const el = g && (g.lp && g.lp.offsetParent ? g.lp : g.preview && g.preview.offsetParent ? g.preview : null);
+  const el = g && (vkShown(g.lp) ? g.lp : vkShown(g.preview) ? g.preview : null);
   const px = el ? getComputedStyle(el).fontSize : "-";
   const cr = g && g.content ? g.content.getBoundingClientRect() : null;
   const at = cr && cr.width ? Math.round(cr.left + cr.width / 2) + "," + Math.round(cr.top + cr.height / 2) : "-";
@@ -7290,7 +7315,7 @@ function ffirst(el) {
 }
 function fontsTok() {
   const g = typeof fg === "function" ? fg() : null;
-  const el = g && (g.lp && g.lp.offsetParent ? g.lp : g.preview && g.preview.offsetParent ? g.preview : null);
+  const el = g && (vkShown(g.lp) ? g.lp : vkShown(g.preview) ? g.preview : null);
   const code = el ? el.querySelector("code, .code") : null;
   const cnt = p => { const v = document.body.style.getPropertyValue(p).trim(); return v ? v.split(/"\s*,\s*"/).length : 0; };
   return " [ffam:" + ffirst(document.body) + "," + ffirst(document.querySelector(".tab")) + "," +

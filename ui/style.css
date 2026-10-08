@@ -610,6 +610,9 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
    docs/recon-rvcursor/; the operator ask is the requirement. */
 .preview { flex: 1 1 0; min-width: 0; overflow-y: auto; overflow-x: hidden;
            cursor: default }   /* R22 */
+/* modeswitch opt6: the view the edit <-> reading switch left stays LAID OUT (ui/main.js
+   applyMode): out of flow over the same box, same width, never painted, never hit. */
+.content > .vkeep { position: absolute; inset: 0; visibility: hidden; pointer-events: none; z-index: -1 }
 /* one rule covers both wikilink states: the unresolved anchor carries
    `class="wiki wiki-unresolved"` (main.rs:1336-1343), never wiki-unresolved
    alone — :733 adds only colour + italic */
