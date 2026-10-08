@@ -2578,6 +2578,20 @@ fn render(v: State<Vault>, content: String, otel: Option<perf::Ctx>) -> String {
     span_timed!(otel => "render", render_with_br(&content, ix.names(), ix.images(), true, soft_br), serde_json::json!({"bytes": content.len()}))
 }
 
+/// modeswitch opt4: the reading view's two asks in ONE round trip. The cost of
+/// `render` + `block_lines` on a big note is the IPC, not the parse: on the
+/// 30k-line fixture the JS side waited ~1.1 s + ~1.0 s while Rust's own spans
+/// stayed under the 100 ms slow ceiling (render 122-131 ms logged, block_lines
+/// never). Every ask ships the whole note across the bridge, so asking once
+/// halves that. Same functions, same options, so the html and the map are
+/// exactly what the two separate commands return.
+#[tauri::command]
+fn render_view(v: State<Vault>, content: String, otel: Option<perf::Ctx>) -> (String, Vec<u32>) {
+    let soft_br = !cur_vault(&v).is_some_and(|r| app_bool_in(&r, "strictLineBreaks"));
+    let ix = v.index.lock().unwrap();
+    span_timed!(otel => "render_view", (render_with_br(&content, ix.names(), ix.images(), true, soft_br), block_lines_of(&content)), serde_json::json!({"bytes": content.len()}))
+}
+
 /// pure core of render_blocks: every block rendered against the same note list
 fn render_blocks_with(blocks: &[String], notes: &[String], imgs: &[String]) -> Vec<String> {
     blocks.iter().map(|b| render_with(b, notes, imgs, false)).collect()
@@ -5043,7 +5057,7 @@ fn main() {
             .expect("img response")
         })
         .invoke_handler(tauri::generate_handler![
-            list_notes, list_images, read_note, write_note, create_note, render, render_blocks, block_lines, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
+            list_notes, list_images, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, vb_probe, smoke_css,

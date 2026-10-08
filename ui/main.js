@@ -5972,7 +5972,12 @@ async function preview(g) {
   // AFTER innerHTML handed the event loop to WebKit, which laid out the whole
   // new document before the reply was read (measured: ~1 s of the 30k-line
   // switch billed to a pure parse).
-  const [pvHtml, pvL] = await Promise.all([inv("render", { content: src }), inv("block_lines", { content: src })]);
+  // modeswitch opt4: and ONE ask, not two. Rust runs sync commands one after
+  // the other, so Promise.all bought no overlap (opt1: render 1253 + blines
+  // 864 ms on 30k), and each ask shipped the whole note across the bridge
+  // while the parse itself stays under 100 ms. render_view = render +
+  // block_lines, same parser, same options, one transfer.
+  const [pvHtml, pvL] = await inv("render_view", { content: src });
   mswpMark("render");
   g.preview.innerHTML = pvHtml;
   mswpMark("html");
