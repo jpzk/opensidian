@@ -331,6 +331,11 @@ async function rBacklinks(n) {
   rbN++;                                  // [rpn:] — counted at ENTRY: the bug is calling it at all
   const box = $("bllist"), head = $("blhead");
   box.textContent = ""; head.textContent = "";
+  /* perfhunt P3: both queries leave NOW, the unlinked-mentions round trip no
+     longer waits behind the linked one (it queued behind the note open's own
+     work and doubled the pane's latency on every open). Same two read-only
+     queries, same answers, same render order below. */
+  const ulP = n ? inv("unlinked_mentions", { name: n }).catch(() => []) : null;
   const bl = n ? await inv("backlinks_ctx", { name: n }) : [];
   head.textContent = "Linked mentions"; rpInfo = "bl:" + bl.length;
   const c = document.createElement("span");
@@ -367,7 +372,7 @@ async function rBacklinks(n) {
   // notes (collapsed like Obsidian); each row = the line with the hit marked +
   // a Link button that wraps it in [[ ]] on disk (the hit then migrates up
   // to Linked mentions on the pane's next refresh)
-  const ul = n ? await inv("unlinked_mentions", { name: n }).catch(() => []) : [];
+  const ul = ulP ? await ulP : [];
   rpInfo = "bl:" + bl.length + "|ul:" + ul.length;
   if (!n) return;
   const uh = document.createElement("div");
