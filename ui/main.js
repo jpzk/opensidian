@@ -4479,6 +4479,10 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
   let mswSsMs = performance.now() - mswA0;
   await flushSave(g);
   mswpMark("flush");
+  // modeswitch opt3: leaving an edit mode for reading, remember what the lp rows
+  // were built from — the rows stay in g.lp (display:none) while reading shows.
+  if (mode === "reading" && isLp(tab.mode) && g.view && g.view.rowSrc)
+    g.lp._msk = { n: curOf(g), notes: notesCache, imgs: imgsCache, rows: g.view.rowSrc, len: g.lp.children.length };
   tab.mode = mode;
   hideAc();
   applyMode(g);
@@ -4488,18 +4492,28 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
     // caret where it was (this switch, else the tab's remembered one), clamped to
     // the note AS IT IS NOW: an external edit in reading view may have shortened it.
     // Nothing remembered: livepreview = no caret, source = end of note.
+    // modeswitch opt3: back from reading onto the SAME rows (same note, same
+    // note/image lists the rows resolved links against, nobody re-rendered them
+    // since: rowSrc identity) = no full rebuild. Ed.render's patch path still
+    // diffs the model against those rows, so an edit made meanwhile is patched.
+    // lp vs source is a class on g.lp, not a different row build.
+    const mk = g.lp._msk; g.lp._msk = null;
+    const reuse = !!mk && mk.n === curOf(g) && mk.notes === notesCache && mk.imgs === imgsCache
+      && g.view && g.view.rowSrc === mk.rows && g.lp.children.length === mk.len;
+    if (reuse) for (const el of (g.lp._rv || [])) el.classList.remove("rv");   // the patch path forgets the old reveal set
+    const full = !reuse;
     const mem = tab.caret && tab.caret.n === curOf(g) ? tab.caret : null;
     const L = Ed.lines(g), want = keep || (mem ? mem.lc : null), wa = keep ? (ka ? [ka.l, ka.c] : null) : (mem ? mem.an : null);
     const clampLC = p => { const l = Math.max(0, Math.min(p[0], L.length - 1)); return [l, Math.max(0, Math.min(p[1], (L[l] || "").length))]; };
     if (want) {
       const [l, c] = clampLC(want);
-      await lpRender(g, l, c, true);
+      await lpRender(g, l, c, full);
       if (wa) {                                  // modeswitch: re-span the selection anchor -> caret
         const [al, ac] = clampLC(wa);
         if (al !== l || ac !== c) { Ed.place(g, al, ac); Ed.extendTo(g, l, c); }
       }
-    } else if (tab.mode === "livepreview") await lpRender(g, -1, 0, true);
-    else await lpRender(g, L.length - 1, L[L.length - 1].length, true);
+    } else if (tab.mode === "livepreview") await lpRender(g, -1, 0, full);
+    else await lpRender(g, L.length - 1, L[L.length - 1].length, full);
   }
   mswpMark("lp");
   // R35: the destination is rendered — place the SAME source line at the top of
