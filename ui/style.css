@@ -431,9 +431,6 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 .trow:hover { background: var(--bg-surface) }
 .trow.active { background: var(--nav-item-background-active); color: var(--nav-item-color-active) }
 .tkids.collapsed { display: none }   /* R20: collapsed folder = its .tkids box hidden, rows stay built */
-/* perfhunt P2: an off-screen LEAF folder box skips layout + paint; JS sets its
-   exact height (rows x 31px) as contain-intrinsic-height, width stays the flow width */
-.tkids.cv { content-visibility: auto; contain-intrinsic-width: none }
 .trow .tn { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden;
             text-overflow: ellipsis }
 .trow .tg { flex: 0 0 14px; align-self: stretch; position: relative }

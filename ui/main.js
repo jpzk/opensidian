@@ -5814,21 +5814,7 @@ function renderNode(node, prefix, depth, out) {
       updateTitle();                            // collapseall: [fold:] moves with every folder toggle
     });
     out.appendChild(row);
-    const sub = node.dirs.get(d);
-    renderNode(sub, full, depth + 1, kids);
-    /* perfhunt P2: a LEAF folder's box (notes only, no subfolder) skips style,
-       layout and paint while it is off screen (content-visibility:auto, CSS
-       .tkids.cv). With every folder open the 10k vault keeps ~10k rows live, and
-       one folder toggle or a wheel tick re-laid all of them (folder_toggle
-       ~300 ms, explorer frame p95 ~180 ms). The placeholder height is EXACT —
-       rows are a fixed 31 px and a leaf box only changes when refreshTree
-       rebuilds it — so every offset, scrollbar and scrollIntoView target is
-       the same as a fully laid-out box. Folders holding subfolders are left
-       alone: collapsing a nested folder would make a fixed estimate stale. */
-    if (!sub.dirs.size && sub.notes.length) {
-      kids.classList.add("cv");
-      kids.style.containIntrinsicHeight = sub.notes.length * 31 + "px";
-    }
+    renderNode(node.dirs.get(d), full, depth + 1, kids);
     out.appendChild(kids);
   }
   for (const nm of [...node.notes].sort()) {
