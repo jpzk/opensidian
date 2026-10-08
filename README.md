@@ -10,6 +10,11 @@ Open-source, vault-compatible markdown notes app. Rust + Tauri v2, no Electron, 
 - [[wikilinks]], backlinks, tags, graph view
 - tabs, splits, search, quick switcher, command palette, bookmarks
 - themes, fonts, hotkeys; open a vault with `opensidian <folder>`
+- drag an image (png, jpg, gif, webp) from your file manager onto a note: the
+  file is **moved** into the vault (not copied) and `![[name]]` is inserted
+  where you dropped it. The original is removed only after the vault copy is
+  complete and on disk; a name that already exists gets a new one, never
+  overwritten. Other file types are refused and left where they are.
 
 ## Install
 Linux x86_64. Download one:

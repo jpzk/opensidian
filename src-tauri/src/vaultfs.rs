@@ -52,6 +52,67 @@ pub(crate) fn set_hook(f: Option<Box<dyn FnMut(&'static str)>>) {
     HOOK.with(|h| *h.borrow_mut() = f);
 }
 
+/* osdrop crash-injection seam (tests only): `fault(at)` is an Err at exactly
+   the named step, so a test can prove what an interrupted import leaves behind.
+   In a release build it is `hook(at); Ok(())` — no branch, no state. */
+#[cfg(test)]
+thread_local! {
+    static FAULT: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+    static FORCE_COPY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+fn fault(at: &'static str) -> io::Result<()> {
+    #[cfg(test)]
+    if FAULT.with(|f| f.get()) == Some(at) {
+        return Err(io::Error::other(format!("injected fault at {at}")));
+    }
+    hook(at);
+    Ok(())
+}
+#[cfg(test)]
+pub(crate) fn set_fault(at: Option<&'static str>) {
+    FAULT.with(|f| f.set(at));
+}
+/// tests only: take the cross-filesystem (copy) road even on one filesystem
+#[cfg(test)]
+pub(crate) fn set_force_copy(on: bool) {
+    FORCE_COPY.with(|f| f.set(on));
+}
+fn force_copy() -> bool {
+    #[cfg(test)]
+    return FORCE_COPY.with(|f| f.get());
+    #[cfg(not(test))]
+    false
+}
+
+/// osdrop: what happened to the SOURCE once the vault file was committed
+#[derive(Debug, PartialEq)]
+pub enum SrcFate {
+    Removed,      // a move: the source name is gone
+    Kept(String), // committed + verified in the vault, but the source could not be removed (why)
+}
+
+/// osdrop: why an import did not happen. The source is intact in every case.
+#[derive(Debug)]
+pub enum ImportErr {
+    OpenSrc(io::Error), // could not open the source (EACCES = the sandbox)
+    NotRegular,         // a symlink, dir, fifo, device ... (or became one)
+    TooBig(u64),        // over the cap, by metadata or by the bytes read
+    Changed,            // the source changed identity or content during the import
+    NoFreeName,         // every candidate name was taken
+    Io(io::Error),      // staging / verify / commit failed
+}
+
+#[derive(Debug)]
+pub struct Imported {
+    pub name: String,      // the leaf it got in the vault
+    pub src: SrcFate,
+    pub how: &'static str, // "link" (same filesystem) | "copy" (crossed one)
+}
+
+fn fs_lstat(p: &CString) -> io::Result<libc::stat> {
+    stat_at(libc::AT_FDCWD, p)
+}
+
 fn refused(rel: &Path, why: &str) -> io::Error {
     let e = io::Error::new(io::ErrorKind::PermissionDenied, format!("refused: {why}: {}", rel.display()));
     eprintln!("[vaultfs] {e}");
@@ -364,6 +425,184 @@ impl Vault {
             return Ok(tdir.join(name));
         }
         Err(io::Error::new(io::ErrorKind::AlreadyExists, "no free name in the trash"))
+
+    /* osdrop — MOVE a file from OUTSIDE the vault into `dir` (vault-relative),
+       never overwriting, crash-safe. The ONE primitive drop-to-attach stands on.
+       Invariant: until the final rename succeeds the source is untouched and the
+       vault holds no new visible name; after it, the vault file is complete and
+       durable, and only THEN is the source name removed.
+         1. open the source O_NOFOLLOW, fstat: regular file, <= cap. That fd is
+            the identity every later step is checked against (dev, ino).
+         2. STAGE under a random dot-name (tmp_name: no index/watcher sees it):
+            same filesystem -> linkat(src, tmp): no byte is copied, then the tmp's
+                               (dev, ino) must equal the opened fd's — a source
+                               swapped for a symlink/other file since step 1 is
+                               refused, not imported.
+            otherwise (EXDEV, EPERM from protected_hardlinks, EXDEV from a
+            Landlock refer denial, ...) -> copy at most cap bytes into an O_EXCL
+                               tmp, fsync it, then VERIFY: the source fd's size and
+                               mtime did not change, and the tmp read back from disk
+                               has the source's size and sha256.
+         3. renameat2(tmp, name, RENAME_NOREPLACE) over the candidate names
+            (EEXIST -> next name; a filesystem without NOREPLACE -> linkat, which
+            also refuses an existing name), then fsync the directory.
+         4. remove the source name, only if it still IS the file we imported.
+       Any error in 1-3 unlinks the tmp and returns Err with the source intact. An
+       error in 4 is not a failure of the import: the vault file is committed and
+       verified, the source simply stays (SrcFate::Kept, e.g. a read-only drop
+       folder under Landlock) — a duplicate, never a loss. */
+    pub fn import_move(&self, src: &Path, dir: &Path, names: &mut dyn Iterator<Item = String>, cap: u64) -> Result<Imported, ImportErr> {
+        use sha2::{Digest, Sha256};
+        use std::os::unix::fs::OpenOptionsExt;
+        let d = self.dir(dir, false).map_err(ImportErr::Io)?;
+        let dfd = d.fd.as_raw_fd();
+        // 1. the source, by fd
+        let mut sf = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open(src)
+            .map_err(|e| if e.raw_os_error() == Some(libc::ELOOP) { ImportErr::NotRegular } else { ImportErr::OpenSrc(e) })?;
+        let st0 = fstat(sf.as_raw_fd()).map_err(ImportErr::Io)?;
+        if !is_reg(&st0) {
+            return Err(ImportErr::NotRegular);
+        }
+        if st0.st_size as u64 > cap {
+            return Err(ImportErr::TooBig(st0.st_size as u64));
+        }
+        let mut names = names.peekable();
+        let first = names.peek().cloned().ok_or(ImportErr::NoFreeName)?;
+        let tmp = tmp_name(OsStr::new(&first)).map_err(ImportErr::Io)?;
+        let csrc = cstr(src.as_os_str()).map_err(ImportErr::Io)?;
+        let unstage = || unsafe { libc::unlinkat(dfd, tmp.as_ptr(), 0) };
+        // 2. stage
+        let linked = !force_copy()
+            // SAFETY: NUL-terminated names, valid dir fd; flags 0 = never follow a symlink at src
+            && cvt(unsafe { libc::linkat(libc::AT_FDCWD, csrc.as_ptr(), dfd, tmp.as_ptr(), 0) }).is_ok();
+        let how = if linked {
+            let r = stat_at(dfd, &tmp).map_err(ImportErr::Io).and_then(|t| {
+                if (t.st_dev, t.st_ino) == (st0.st_dev, st0.st_ino) && is_reg(&t) { Ok(()) } else { Err(ImportErr::Changed) }
+            });
+            if let Err(e) = r.and_then(|_| fault("import:staged").map_err(ImportErr::Io)) {
+                unstage();
+                return Err(e);
+            }
+            "link"
+        } else {
+            // SAFETY: valid fd + NUL-terminated name; fd owned by the File below
+            let raw = cvt(unsafe {
+                libc::openat(dfd, tmp.as_ptr(), libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC, 0o600 as libc::c_uint)
+            })
+            .map_err(ImportErr::Io)?;
+            let mut out = unsafe { File::from_raw_fd(raw) };
+            let r = (|| -> Result<(), ImportErr> {
+                let mut h = Sha256::new();
+                let mut buf = vec![0u8; 64 * 1024];
+                let mut total: u64 = 0;
+                loop {
+                    let n = sf.read(&mut buf).map_err(ImportErr::Io)?;
+                    if n == 0 {
+                        break;
+                    }
+                    total += n as u64;
+                    if total > cap {
+                        return Err(ImportErr::TooBig(total));     // grew mid-copy
+                    }
+                    h.update(&buf[..n]);
+                    out.write_all(&buf[..n]).map_err(ImportErr::Io)?;
+                    fault("import:copying").map_err(ImportErr::Io)?;
+                }
+                // SAFETY: valid fd
+                cvt(unsafe { libc::fchmod(out.as_raw_fd(), (0o666 & !umask()) as libc::mode_t) }).map_err(ImportErr::Io)?;
+                out.sync_all().map_err(ImportErr::Io)?;
+                // VERIFY: the source did not change under us ...
+                let st1 = fstat(sf.as_raw_fd()).map_err(ImportErr::Io)?;
+                if st1.st_size != st0.st_size || (st1.st_mtime, st1.st_mtime_nsec) != (st0.st_mtime, st0.st_mtime_nsec) || total != st0.st_size as u64 {
+                    return Err(ImportErr::Changed);
+                }
+                // ... and what is ON DISK is what we read, byte for byte
+                use std::io::Seek;
+                out.seek(std::io::SeekFrom::Start(0)).map_err(ImportErr::Io)?;
+                let mut h2 = Sha256::new();
+                let mut back: u64 = 0;
+                loop {
+                    let n = out.read(&mut buf).map_err(ImportErr::Io)?;
+                    if n == 0 {
+                        break;
+                    }
+                    back += n as u64;
+                    h2.update(&buf[..n]);
+                }
+                if back != total || h2.finalize() != h.finalize() {
+                    return Err(ImportErr::Io(io::Error::other("verify: the staged copy does not match the source")));
+                }
+                fault("import:staged").map_err(ImportErr::Io)
+            })();
+            drop(out);
+            if let Err(e) = r {
+                unstage();
+                return Err(e);
+            }
+            "copy"
+        };
+        // 3. commit under the first free name — never over an existing one
+        let mut committed = None;
+        for cand in names {
+            if cand.is_empty() || cand.contains('/') || cand.starts_with('.') {
+                continue;
+            }
+            let cn = match cstr(OsStr::new(&cand)) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            // SAFETY: valid fd + NUL-terminated names
+            let r = cvt(unsafe { libc::renameat2(dfd, tmp.as_ptr(), dfd, cn.as_ptr(), libc::RENAME_NOREPLACE) });
+            let r = match r {
+                Err(e) if matches!(e.raw_os_error(), Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EOPNOTSUPP)) => {
+                    // no NOREPLACE here: link(2) refuses an existing name too
+                    cvt(unsafe { libc::linkat(dfd, tmp.as_ptr(), dfd, cn.as_ptr(), 0) }).map(|_| {
+                        unstage();
+                    })
+                }
+                r => r.map(|_| ()),
+            };
+            match r {
+                Ok(()) => {
+                    committed = Some(cand);
+                    break;
+                }
+                Err(e) if e.raw_os_error() == Some(libc::EEXIST) => continue,
+                Err(e) => {
+                    unstage();
+                    return Err(ImportErr::Io(e));
+                }
+            }
+        }
+        let Some(name) = committed else {
+            unstage();
+            return Err(ImportErr::NoFreeName);
+        };
+        // SAFETY: valid fd. The new name is durable before the source goes.
+        let _ = unsafe { libc::fsync(dfd) };
+        // 4. remove the source — only if the path still names the file we imported
+        let fate = match fs_lstat(&csrc) {
+            Ok(s) if (s.st_dev, s.st_ino) == (st0.st_dev, st0.st_ino) => {
+                match fault("import:unlink-src").and_then(|_| cvt(unsafe { libc::unlink(csrc.as_ptr()) })) {
+                    Ok(_) => {
+                        if let Some(p) = src.parent() {
+                            if let Ok(pd) = File::open(p) {
+                                let _ = pd.sync_all();
+                            }
+                        }
+                        SrcFate::Removed
+                    }
+                    Err(e) => SrcFate::Kept(e.to_string()),
+                }
+            }
+            Ok(_) => SrcFate::Kept("the source was replaced during the move".into()),
+            Err(e) => SrcFate::Kept(e.to_string()),
+        };
+        Ok(Imported { name, src: fate, how })
+    }
     }
 }
 
