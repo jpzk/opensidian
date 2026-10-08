@@ -25,6 +25,7 @@ mod graphq;
 mod index;
 mod migrate;
 mod outline;
+mod pdf;
 mod perf;
 mod sandbox;
 mod settings;
@@ -257,13 +258,27 @@ fn pct_decode(s: &str) -> Option<String> {
 ///  5. the LEAF must not be a symlink — that is the symlink-inside-the-vault-
 ///     pointing-out case, which canonicalizing the dir alone would not catch.
 fn img_path_in(root: &Path, target: &str) -> Option<PathBuf> {
+    contained_in(root, target, |ext| IMG_TYPES.iter().any(|(e, _)| *e == ext), MAX_IMG_BYTES)
+}
+
+/// pdfembed: the R29.5 rule, verbatim, for the ONE other embeddable type. Same
+/// function body as `img_path_in` (`contained_in`), only the allowlist (`pdf`)
+/// and the cap (`pdf::MAX_PDF_BYTES`) differ — so a PDF embed cannot escape by
+/// any route an image embed cannot (README "security design": `../`, `%2e%2e`,
+/// absolute, hidden, symlinked leaf, symlinked dir out of the vault).
+fn pdf_path_in(root: &Path, target: &str) -> Option<PathBuf> {
+    contained_in(root, target, |ext| ext == pdf::PDF_EXT, pdf::MAX_PDF_BYTES)
+}
+
+/// the shared body of `img_path_in` / `pdf_path_in` (steps 1-5 above).
+fn contained_in(root: &Path, target: &str, ext_ok: impl Fn(&str) -> bool, cap: u64) -> Option<PathBuf> {
     let dec = pct_decode(target)?;
     if dec.contains('\0') {
         return None;
     }
     let rel = safe_rel(&dec)?;
     let ext = rel.extension()?.to_str()?.to_ascii_lowercase();
-    if !IMG_TYPES.iter().any(|(e, _)| *e == ext) {
+    if !ext_ok(&ext) {
         return None;
     }
     let croot = root.canonicalize().ok()?;
@@ -273,7 +288,7 @@ fn img_path_in(root: &Path, target: &str) -> Option<PathBuf> {
     }
     let p = cdir.join(rel.file_name()?);
     let m = fs::symlink_metadata(&p).ok()?;
-    if m.is_symlink() || !m.is_file() || m.len() > MAX_IMG_BYTES {
+    if m.is_symlink() || !m.is_file() || m.len() > cap {
         return None;
     }
     Some(p)
@@ -332,6 +347,12 @@ fn image_html(imgs: &[String], target: &str, alt: &str) -> String {
             "<span class=\"imgmiss\">\u{201c}{REMOTE_IMG_LABEL}\u{201d} could not be found.</span>"
         );
     }
+    // pdfembed: `![](f.pdf)` / `![](f.pdf#page=3)` — the fragment is the
+    // embed's page/height, not part of the path.
+    let (path, frag) = target.split_once('#').unwrap_or((target, ""));
+    if is_pdf_target(path) {
+        return pdf_html(imgs, path, frag, alt);
+    }
     let dec = pct_decode(target).unwrap_or_else(|| target.to_string());
     match index::resolve(imgs, &dec).map(|i| &imgs[i]) {
         Some(rel) => format!(
@@ -346,12 +367,81 @@ fn image_html(imgs: &[String], target: &str, alt: &str) -> String {
     }
 }
 
+/// pdfembed: `#page=N`, `#height=N`, `#page=N&height=N` -> (page, height).
+/// Strict decimal, unknown keys and junk ignored; page defaults to 1, height to
+/// None (the UI then sizes the frame from page 1's aspect, stock's rule).
+fn pdf_frag(frag: &str) -> (usize, Option<u32>) {
+    let (mut page, mut h) = (1usize, None);
+    for kv in frag.trim_start_matches('#').split('&') {
+        let Some((k, v)) = kv.split_once('=') else { continue };
+        if v.is_empty() || v.len() > 6 || !v.bytes().all(|c| c.is_ascii_digit()) { continue }
+        let n: u32 = v.parse().unwrap_or(0);
+        match k {
+            "page" if n >= 1 => page = n as usize,
+            "height" if n >= 1 => h = Some(n),
+            _ => {}
+        }
+    }
+    (page, h)
+}
+
+/// pdfembed: the html for ONE PDF embed — both syntaxes, same resolver as
+/// `image_html` (index::resolve over the SAME list; pdfs ride Index::images()).
+/// The span carries NO text: the UI (ui/editor.js Ed.pdfFill) builds the frame
+/// from data-* and `pdf_info`, so reading view and live preview paint one
+/// element. data-pdf is the INDEX's path, never the note's target. Unresolved
+/// -> the R29.4-style banner (`pdfmiss` sizes it like stock's 37 px one).
+fn pdf_html(imgs: &[String], target: &str, frag: &str, alt: &str) -> String {
+    let dec = pct_decode(target).unwrap_or_else(|| target.to_string());
+    match index::resolve(imgs, &dec).map(|i| &imgs[i]).filter(|r| is_pdf_target(r)) {
+        Some(rel) => {
+            let (page, h) = pdf_frag(frag);
+            format!(
+                "<span class=\"internal-embed pdf-embed\" data-pdf=\"{}\" data-page=\"{page}\" data-height=\"{}\" data-alt=\"{}\"></span>",
+                pct_encode(rel),
+                h.map(|h| h.to_string()).unwrap_or_default(),
+                esc(alt)
+            )
+        }
+        None => format!(
+            "<span class=\"imgmiss pdfmiss\">\u{201c}{}\u{201d} could not be found.</span>",
+            esc(&dec)
+        ),
+    }
+}
+
 /// is this wikilink target an image embed (`![[pic.png]]`) rather than a NOTE
 /// embed (`![[Second Note]]`, out of scope — requirements.md:410)?
 fn is_img_target(target: &str) -> bool {
     target
         .rsplit_once('.')
         .is_some_and(|(_, e)| index::IMG_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+}
+
+/// pdfembed: is this embed target a PDF (`![[f.pdf]]`, `![](f.pdf)`)? Same
+/// extension test as `is_img_target`, one other allowlist.
+fn is_pdf_target(target: &str) -> bool {
+    target
+        .rsplit_once('.')
+        .is_some_and(|(_, e)| e.eq_ignore_ascii_case(pdf::PDF_EXT))
+}
+
+/// pdfembed: page count + page sizes (pt) for a vault-relative PDF path, for
+/// the frame's "N of M" and its per-page box sizes. Read-only; contained by
+/// `pdf_path_in` (the R29.5 rule) BEFORE a byte is read; parsed on the one
+/// pdf-render worker. None = missing / escaped / broken — the UI paints one
+/// placeholder for all three, so an escape is indistinguishable from a typo.
+/// Timed (perf-coverage): the span covers the worker queue wait + the parse,
+/// i.e. what the frame waits for before it can size itself.
+#[tauri::command]
+async fn pdf_info(v: State<'_, Vault>, path: String, otel: Option<perf::Ctx>) -> Result<Option<pdf::Info>, String> {
+    let Some(p) = cur_vault(&v).and_then(|r| pdf_path_in(&r, &path)) else { return Ok(None) };
+    let (tx, rx) = std::sync::mpsc::channel();
+    pdf::queue_info(p, Box::new(move |i| {
+        let _ = tx.send(i);
+    }));
+    span_timed!(otel => "pdf_info", tauri::async_runtime::spawn_blocking(move || rx.recv().ok().flatten()).await)
+        .map_err(|e| e.to_string())
 }
 
 /* ---- R31 drop-to-attach (feedback #18) ---------------------------------
@@ -2036,6 +2126,15 @@ fn linkify(buf: &str, notes: &[String], imgs: &[String], reading: bool, urls: bo
             tagify_urls(&rest[..i - 1], urls, evs);
             let alt = if alias.is_empty() { note } else { alias };
             evs.push(Event::Html(image_html(imgs, note, alt).into()));
+            rest = &rest[i + 2 + j + 2..];
+            continue;
+        }
+        // pdfembed `![[f.pdf]]`, `![[f.pdf#page=3]]`, `![[f.pdf#height=400|a]]`:
+        // unlike an image the anchor is allowed — it IS the page/height.
+        if i > 0 && rest.as_bytes()[i - 1] == b'!' && is_pdf_target(note) {
+            tagify_urls(&rest[..i - 1], urls, evs);
+            let alt = if alias.is_empty() { note } else { alias };
+            evs.push(Event::Html(pdf_html(imgs, note, anchor, alt).into()));
             rest = &rest[i + 2 + j + 2..];
             continue;
         }
@@ -5027,11 +5126,36 @@ fn main() {
         // than a runtime scope config. Out-of-vault targets get a bodiless 404 —
         // the renderer paints R29.4's "could not be found" banner either way, so
         // an escape is indistinguishable from a typo (R29.5).
-        .register_uri_scheme_protocol(IMG_SCHEME, |ctx, req| {
+        //
+        // pdfembed: the SAME scheme carries PDF pages as PNG
+        // (`<path>.pdf?page=N&w=PX`, pdf.rs). Asynchronous so a page render runs
+        // on the one pdf-render worker, never on this (the UI) thread; images
+        // still answer inline exactly as before.
+        .register_asynchronous_uri_scheme_protocol(IMG_SCHEME, |ctx, req, responder| {
             use tauri::Manager;
             let root = cur_vault(&ctx.app_handle().state::<Vault>());
             let target = req.uri().path().trim_start_matches('/').to_string();
-            match root.as_deref().and_then(|r| serve_image(r, &target)) {
+            if is_pdf_target(&target) {
+                let not_found = || tauri::http::Response::builder().status(404).body(Vec::new()).expect("pdf 404");
+                let q = pdf::parse_query(req.uri().query());
+                let p = root.as_deref().and_then(|r| pdf_path_in(r, &target));
+                let (Some((page, w)), Some(p)) = (q, p) else {
+                    return responder.respond(not_found());
+                };
+                return pdf::queue_render(p, page, w, Box::new(move |png| {
+                    responder.respond(match png {
+                        Some(b) => tauri::http::Response::builder()
+                            .status(200)
+                            .header("Content-Type", "image/png")
+                            .header("X-Content-Type-Options", "nosniff")
+                            .header("Cache-Control", "no-store")
+                            .body(b.to_vec())
+                            .expect("pdf png response"),
+                        None => not_found(),
+                    })
+                }));
+            }
+            let res = match root.as_deref().and_then(|r| serve_image(r, &target)) {
                 Some((mime, body)) => tauri::http::Response::builder()
                     .status(200)
                     .header("Content-Type", mime)
@@ -5040,7 +5164,8 @@ fn main() {
                     .body(body),
                 None => tauri::http::Response::builder().status(404).body(Vec::new()),
             }
-            .expect("img response")
+            .expect("img response");
+            responder.respond(res)
         })
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, read_note, write_note, create_note, render, render_blocks, block_lines, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
@@ -5055,7 +5180,7 @@ fn main() {
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
             win_rect, win_gesture, win_move_proto, win_drag_start, win_minimize, win_toggle_max, win_close,
             tab_removed, insert_datetime,
-            zoom, zoom_get,
+            zoom, zoom_get, pdf_info,
             settings::settings_model
         ])
         .run(ctx)
@@ -8440,12 +8565,53 @@ mod tests {
         let a = attach_drop(&root, "Note", &paths).unwrap();
         assert_eq!(a.text, "", "a disguised payload is still refused: the extension decides");
         assert_eq!(a.refused.len(), 7, "{:?}", a.refused);
+        // pdfembed semantics: a PDF is now an EMBEDDABLE vault member, but
+        // dropping one is still not an IMAGE attach (README "security design":
+        // the drop path keeps its allowlist; only the embed path learned pdf).
         assert!(a.refused[0].contains(".pdf is not an image"), "{:?}", a.refused);
         assert!(a.refused[5].contains("is not an image"), "{:?}", a.refused);
+        // ...and the PDF EMBED path accepts a contained .pdf that the IMAGE
+        // byte server still refuses: the two allowlists stay disjoint, so a
+        // .pdf is never served as raw bytes.
+        fs::write(root.join("doc.pdf"), pdf::tests::mini_pdf(2)).unwrap();
+        fs::create_dir_all(root.join("sub dir")).unwrap();
+        fs::write(root.join("sub dir/In Sub.PDF"), pdf::tests::mini_pdf(1)).unwrap();
+        let croot = root.canonicalize().unwrap();
+        assert_eq!(pdf_path_in(&root, "doc.pdf"), Some(croot.join("doc.pdf")));
+        assert_eq!(pdf_path_in(&root, "sub%20dir/In%20Sub.PDF"), Some(croot.join("sub dir/In Sub.PDF")));
+        assert_eq!(img_path_in(&root, "doc.pdf"), None, "the image server never serves a pdf");
+        assert_eq!(serve_image(&root, "doc.pdf"), None);
+        assert_eq!(pdf_path_in(&root, "Note.md"), None, "the pdf path serves pdfs only");
+        assert_eq!(pdf_path_in(&root, "nope.pdf"), None);
+        // the index lists the pdf as an embeddable member, in its subfolder
+        let ix = Index::build(&root);
+        assert!(ix.images().contains(&"doc.pdf".to_string()), "{:?}", ix.images());
+        assert!(ix.images().contains(&"sub dir/In Sub.PDF".to_string()), "{:?}", ix.images());
+        // escapes: ../outside.pdf (raw and %-encoded), absolute, hidden, and a
+        // symlinked .pdf leaf / dir pointing OUT of the vault -> nothing
+        let outside = root.parent().unwrap().join(format!("outside-{}.pdf", std::process::id()));
+        fs::write(&outside, pdf::tests::mini_pdf(1)).unwrap();
+        let oname = outside.file_name().unwrap().to_str().unwrap().to_string();
+        std::os::unix::fs::symlink(&outside, root.join("link.pdf")).unwrap();
+        std::os::unix::fs::symlink(root.parent().unwrap(), root.join("up")).unwrap();
+        for t in [
+            format!("../{oname}"),
+            format!("%2e%2e/{oname}"),
+            format!("%2E%2E%2F{oname}"),
+            outside.display().to_string(),
+            format!("up/{oname}"),
+            "link.pdf".to_string(),
+            ".hidden.pdf".to_string(),
+            "doc.pdf%00.png".to_string(),
+        ] {
+            assert_eq!(pdf_path_in(&root, &t), None, "escaped the vault: {t:?}");
+        }
+        assert!(!Index::build(&root).images().iter().any(|i| i.contains("link") || i.starts_with("up/")));
         // and the positive control in the same test: png/jpg/jpeg/gif/webp pass
         let ok: Vec<PathBuf> = IMG_TYPES.iter().map(|(e, _)| src_file(&srcd, &format!("ok.{e}"), b"\x89PNGok")).collect();
         let b = attach_drop(&root, "Note", &ok).unwrap();
         assert_eq!(b.copied.len(), IMG_TYPES.len(), "{:?}", b.refused);
+        let _ = fs::remove_file(&outside);
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&srcd);
     }
@@ -8520,6 +8686,42 @@ mod tests {
 
     /// a multi-file drop: every file copied, ORDER preserved, one link per
     /// line; and the two whole-drop failures (empty drop, no note open).
+    /// pdfembed item 8: both syntaxes, every recon variant, through the real
+    /// renderer. One element, data-* only, path from the INDEX; missing and
+    /// escaping targets take the same banner; images and note embeds unchanged.
+    #[test]
+    fn pdf_embeds_render_one_frame_span_per_variant() {
+        let imgs: Vec<String> =
+            ["multipage.pdf", "with spaces.pdf", "sub/inner.pdf", "pic.png"].iter().map(|s| s.to_string()).collect();
+        let r = |md: &str| render_with(md, &[], &imgs, true);
+        let span = |p: &str, pg: usize, h: &str, alt: &str| format!(
+            "<span class=\"internal-embed pdf-embed\" data-pdf=\"{p}\" data-page=\"{pg}\" data-height=\"{h}\" data-alt=\"{alt}\"></span>");
+        assert!(r("![[multipage.pdf]]").contains(&span("multipage.pdf", 1, "", "multipage.pdf")));
+        assert!(r("![[multipage.pdf#page=3]]").contains(&span("multipage.pdf", 3, "", "multipage.pdf")));
+        assert!(r("![[multipage.pdf#height=400]]").contains(&span("multipage.pdf", 1, "400", "multipage.pdf")));
+        assert!(r("![[multipage.pdf#page=4&height=300]]").contains(&span("multipage.pdf", 4, "300", "multipage.pdf")));
+        assert!(r("![[multipage.pdf|my alias]]").contains(&span("multipage.pdf", 1, "", "my alias")));
+        assert!(r("![](multipage.pdf)").contains(&span("multipage.pdf", 1, "", "")));
+        assert!(r("![](multipage.pdf#page=3)").contains(&span("multipage.pdf", 3, "", "")));
+        assert!(r("![[with spaces.pdf]]").contains(&span("with%20spaces.pdf", 1, "", "with spaces.pdf")));
+        assert!(r("![](with%20spaces.pdf)").contains(&span("with%20spaces.pdf", 1, "", "")));
+        assert!(r("![[inner.pdf]]").contains(&span("sub/inner.pdf", 1, "", "inner.pdf")));
+        assert!(r("![[sub/inner.pdf]]").contains(&span("sub/inner.pdf", 1, "", "sub/inner.pdf")));
+        // junk fragments fall back to page 1 / default height, never into the attribute
+        assert!(r("![[multipage.pdf#page=x&height=4a0]]").contains(&span("multipage.pdf", 1, "", "multipage.pdf")));
+        for (md, name) in [("![[nope.pdf]]", "nope.pdf"), ("![[../outside.pdf]]", "../outside.pdf"), ("![](nope.pdf#page=2)", "nope.pdf")] {
+            let h = r(md);
+            assert!(h.contains(&format!("<span class=\"imgmiss pdfmiss\">\u{201c}{name}\u{201d} could not be found.</span>")), "{md}: {h}");
+            assert!(!h.contains("pdf-embed"), "{md}: {h}");
+        }
+        // a plain link to a pdf is a link, an image is still an image, https pdf is remote
+        assert!(!r("[[multipage.pdf]]").contains("pdf-embed"));
+        assert!(r("![[pic.png]]").contains("<img class=\"vimg\""));
+        assert!(!r("![](https://x.test/a.pdf)").contains("pdf-embed"));
+        assert_eq!(pdf_frag("#page=0&height=0"), (1, None));
+        assert_eq!(pdf_frag("page=9999999"), (1, None));
+    }
+
     #[test]
     fn drop_handles_multi_file_empty_and_noteless_drops() {
         let (root, srcd) = drop_vault("drop-multi");

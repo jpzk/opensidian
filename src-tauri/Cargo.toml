@@ -19,6 +19,12 @@ pulldown-cmark = "0.13"
 # Cargo.lock at 1.13.1 (a transitive dep of the tauri tree); `=` pins that version,
 # so the lock gains no package.
 regex = "=1.13.1"
+# pdfembed — PDF embeds rasterised in Rust (pure Rust, Apache-2.0 OR MIT, no JS /
+# action / form engine). Published 2026-06-05, sha256 c4caa128…f56d; the +32 crates
+# it brings are listed with date/licence/sha in harness docs/recon-pdfembed/data/
+# renderer-crates.txt, all >= 6 weeks old, resolved with --precise pins (never
+# "latest"). Design: harness docs/recon-pdfembed/README.md "security design".
+hayro = "=0.7.1"
 landlock = "=0.4.7"
 # vaultfs: openat/renameat/mkdirat/unlinkat with O_NOFOLLOW so vault writes never
 # follow a symlink. ALREADY in Cargo.lock (transitive via tauri/landlock); `=`

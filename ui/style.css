@@ -1612,3 +1612,34 @@ span.is-flashing { background: var(--highlight-yellow) }
 /* themematch: text selection paints from --text-selection (the accent
    at .2 light / .33 dark, see the tokens); without this the engine default blue showed */
 ::selection { background-color: var(--text-selection) }
+
+/* ---------- pdfembed: PDF EMBED FRAME (both engines, one element) ----------
+   Stock geometry from recon (harness docs/recon-pdfembed/README.md): full
+   column width, 1 px border, 39 px toolbar, height set inline by Ed.pdfSize
+   (w x aspect(page 1) + 20, or #height=N + 38). Text in the frame is painted
+   from attributes: an LP row must hold no text node its source does not. */
+.lp .pdf-embed, .preview .pdf-embed {
+  display: flex; flex-direction: column; width: 100%; box-sizing: border-box; margin: 8px 0;
+  border: 1px solid var(--border); border-radius: 4px; overflow: hidden; background: var(--bg-surface);
+  user-select: none; text-indent: 0; white-space: normal }
+.pdf-embed .pdf-toolbar {
+  flex: 0 0 39px; height: 39px; box-sizing: border-box; display: flex; align-items: center; gap: 6px;
+  padding: 0 8px; border-bottom: 1px solid var(--border); color: var(--text-chrome-muted); font-size: 13px }
+.pdf-embed .pdf-counter { flex: 1 1 auto }
+.pdf-embed .pdf-counter::before { content: attr(data-counter) }
+.pdf-embed .pdf-toolbar button {
+  width: 26px; height: 26px; padding: 0; border: 0; border-radius: 4px; background: none;
+  color: inherit; font-size: 16px; line-height: 26px; cursor: pointer }
+.pdf-embed .pdf-toolbar button:hover { background: var(--bg-base) }
+.pdf-embed .pdf-zoom-out::before { content: "\2212" }
+.pdf-embed .pdf-zoom-in::before { content: "+" }
+.pdf-embed .pdf-container {
+  position: relative; flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 0 }
+.pdf-embed .pdf-page { display: block; flex: 0 0 auto; width: 100%; height: auto; max-width: none;
+  margin: 0 auto; background: none }
+.pdf-embed.mod-broken .pdf-container::before {
+  content: "This PDF could not be rendered."; margin: auto; color: var(--text-chrome-muted); font-size: 14px }
+/* stock's missing-file banner is 37 px tall; the R29.4 banner shrunk to match */
+.lp .imgmiss.pdfmiss, .preview .imgmiss.pdfmiss { padding: 8px 16px }
+.lp.src .pdf-embed { display: none }
