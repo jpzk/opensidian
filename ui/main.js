@@ -3528,6 +3528,8 @@ function updateTitle() {          // pane/focus census in the window title (head
     if (fl.length) md += " [fonts:" + fl.join("|") + "]"; }
   let gg = ft && ft.kind === "gg" ? " [gg]" : "";  // R9.7: global graph tab focused
   if (gg) { const pt = posTok(fg()); if (pt) gg += " [ggpos:" + pt + "]"; }
+  // goal graphzoom: [ggz:s,tx,ty,notch] [ggzb:x0,y0,x1,y1,n] once settled (any node count) — see g.graphZoom
+  if (gg) { const h = fg(); if (h.graphOn && h.graphSettled && h.graphZoom) { const z = h.graphZoom(); gg += " [ggz:" + z.z + "]" + (z.b ? " [ggzb:" + z.b + "]" : ""); } }
   if (gg) gg += gfTok(fg());        // Forces panel: [gff:] live F, [gfp:] card state/rect, [gfb:]/[gfs:] click targets
   gg += gcnTok();                  // graphctx GC1: settings surfaces per graph leaf
   gg += gfnTok();                  // graphctx GC4-GC11: drawn node set per graph leaf
@@ -8235,7 +8237,11 @@ async function startGraph(g, cfg) {
   // at scale 1 (1 world unit = 1 px) centred on the origin — no fit-to-view,
   // no viewport clamp: a big vault overflows the canvas and the user pans/zooms
   // (R16.4). screen = world*scale + t.
-  const view = { scale: 1, tx: cv.width / 2, ty: cv.height / 2, notch: 0 };
+  // ax/ay/wx/wy: the zoom ANCHOR — the cursor (canvas px) of the last wheel notch and the world
+  // point under it. Kept while the cursor stays put, cleared by a pan (see cv.onwheel).
+  // cv.onwheel is the ONLY writer of view.scale (no fit/reset button, key or restore path sets it),
+  // and the local graph shares this startGraph, so the recon §1 bound there covers every view.
+  const view = { scale: 1, tx: cv.width / 2, ty: cv.height / 2, notch: 0, ax: null, ay: null, wx: 0, wy: 0 };
   // Obsidian force defaults (R16.1) and the gains that turn a slider value into
   // the per-step constant of the measured model (docs/recon-graphforce, PLAN s.0):
   //   repel  per-node strength = repel * REPEL_K * N^REPEL_P  (420 at 10, any N)
@@ -8285,6 +8291,11 @@ async function startGraph(g, cfg) {
     for (const p of N) { p.x *= f; p.y *= f; } }
   const toWorld = (sx, sy) =>
     [(sx - view.tx) / view.scale, (sy - view.ty) / view.scale];
+  // node radius far out (harness docs/recon-graphzoom/README.md §5): stock scales a node by
+  // 1/sqrt(scale) below 1, so its ON-SCREEN radius is r*sqrt(scale) (7.6 px at 1, 3.5 at 0.2,
+  // 1.8 at 0.067), no minimum; at and above 1 it is world-constant. Drawn, hit-tested and
+  // censused with the same factor.
+  const nodeK = () => view.scale < 1 ? 1 / Math.sqrt(view.scale) : 1;
   // adjacency (hover) + undirected unique link list for the spring force;
   // node radius (R16.2, fit to the recon's small and large degrees): 6.5 + sqrt(deg)
   const adj = N.map(() => new Set());
@@ -8304,7 +8315,9 @@ async function startGraph(g, cfg) {
   rebuild();
   let hov = -1;
   const dsp = () => g.gcScope && g.gcScope.st.d ? g.gcScope.st.d : GC_DDEF;   // graphctx Display (GC22-GC25): what this frame draws with
-  const hitTest = (x, y) => { const ns = dsp().size; return N.findIndex(p => (p.x - x) ** 2 + (p.y - y) ** 2 < (p.r * ns + 4) ** 2); };
+  // radius = r · Display node size · zoom factor (harness docs/recon-graphzoom/README.md §9: stock's
+  // nodeScale does not depend on nodeSizeMultiplier — the two multiply)
+  const hitTest = (x, y) => { const k = dsp().size * nodeK(); return N.findIndex(p => (p.x - x) ** 2 + (p.y - y) ** 2 < (p.r * k + 4) ** 2); };
   // C5 (B26-B29, R19.2/R19.3): the re-centre CONTINUITY record. graphRefresh snapshots the
   // real pre-refresh node objects; the first frame after the swap (rcPre) and its first PAINT
   // (rcRecord) measure the LIVE N[] against that snapshot and publish it once as [lgrc:].
@@ -8592,7 +8605,7 @@ async function startGraph(g, cfg) {
     // hover: hovered node + its edges/neighbors lit accent, rest faded
     const litE = ([i, j]) => hov < 0 || i === hov || j === hov;
     const litN = i => hov < 0 || i === hov || adj[hov].has(i);
-    const D = dsp(), NS = D.size, shown = animShown();   // Display: node size, link thickness, arrows; the timelapse reveals N[0..shown)
+    const D = dsp(), NS = D.size * nodeK(), shown = animShown();   // Display: node size (x the graphzoom radius factor, recon-graphzoom §9), link thickness, arrows; the timelapse reveals N[0..shown)
     ctx.lineWidth = D.line;
     let ec = 0;
     // an arrow (GC22) = two strokes from the tip, which sits on the target's rim; world units, grows with link thickness
@@ -8651,8 +8664,12 @@ async function startGraph(g, cfg) {
       if (!gp) groups.set(key, gp = { col, a, res: p.resolved, dr: isC ? 4 : 0, idx: [] });
       gp.idx.push(i);
     }
-    // R16.5: labels hidden at scale <= 0.73 at Text fade 0; each +1 of fade doubles that threshold (3 hides them at scale 1, -3 keeps them to 0.09)
-    const labels = view.scale > 0.73 * Math.pow(2, D.fade);
+    // label fade (harness docs/recon-graphzoom/README.md §4 + §9): stock's text alpha is exactly
+    // clamp(1 + log2 scale - textFadeMultiplier, 0, 1) — at Text fade 0 full at >= 1, half at 0.707,
+    // gone at <= 0.5; each +1 of the graphctx Display slider (recon-graphctx §4.2) shifts the curve
+    // one octave in (3 hides labels at scale 1, -3 keeps them to 1/16). Replaces both the old hard
+    // cut at 0.73·2^fade and graphzoom's fade-0-only curve. LOD: at alpha 0 no fillText runs at all.
+    const la = Math.min(1, Math.max(0, 1 + Math.log2(view.scale) - D.fade)), labels = la > 0;
     animLab = labels;
     if (glr) {
       if (nArr.length < N.length * 8) nArr = new Float32Array(N.length * 8 + 800);
@@ -8664,7 +8681,7 @@ async function startGraph(g, cfg) {
           nArr[o] = p.x; nArr[o + 1] = p.y; nArr[o + 2] = (p.r + gp.dr) * NS + ring / 2; nArr[o + 3] = ring;   // 2D strokes straddle the radius
           nArr[o + 4] = c[0]; nArr[o + 5] = c[1]; nArr[o + 6] = c[2]; nArr[o + 7] = gp.a; nc++;
         }
-        if (labels) { ctx.globalAlpha = gp.a; ctx.fillStyle = gp.col; for (const i of gp.idx) { const p = N[i]; ctx.fillText(p.n, p.x, p.y - (p.r + gp.dr) * NS - 4); } }
+        if (labels) { ctx.globalAlpha = gp.a * la; ctx.fillStyle = gp.col; for (const i of gp.idx) { const p = N[i]; ctx.fillText(p.n, p.x, p.y - (p.r + gp.dr) * NS - 4); } }
       }
       glr.draw(cv.width, cv.height, view, nArr, nc, eArr, ec, RGB[P.bg], D.line);   // bg: the clear colour, from the token like every other colour here
     } else for (const gp of groups.values()) {
@@ -8672,7 +8689,7 @@ async function startGraph(g, cfg) {
       for (const i of gp.idx) { const p = N[i], r = (p.r + gp.dr) * NS; ctx.moveTo(p.x + r, p.y); ctx.arc(p.x, p.y, r, 0, 7); }
       if (gp.res) { ctx.fillStyle = gp.col; ctx.fill(); }
       else { ctx.lineWidth = 1.5; ctx.strokeStyle = gp.col; ctx.stroke(); ctx.lineWidth = 1; } // hollow = unresolved
-      if (labels) { ctx.fillStyle = gp.col; for (const i of gp.idx) { const p = N[i]; ctx.fillText(p.n, p.x, p.y - (p.r + gp.dr) * NS - 4); } }
+      if (labels) { ctx.globalAlpha = gp.a * la; ctx.fillStyle = gp.col; for (const i of gp.idx) { const p = N[i]; ctx.fillText(p.n, p.x, p.y - (p.r + gp.dr) * NS - 4); } }
     }
     ctx.globalAlpha = 1;
     if (rcSnap) { rcRecord(); updateTitle(); }   // C5: once, on the first paint after a re-centre
@@ -8806,15 +8823,42 @@ async function startGraph(g, cfg) {
   }
   // wheel: cursor-anchored zoom, 0.9 per notch out / 1/0.9 in (R16.5);
   // scale is derived from a notch counter so 3 out + 3 in is EXACTLY 1.00
+  // BOUND (goal graphzoom, harness docs/recon-graphzoom/README.md §1): stock clamps its scale to the
+  // CONSTANT range [1/128, 8], the same on a 200- and a 5000-note vault — not "fit all + margin".
+  // We take that rule as measured: the notch lattice runs to GZ_OUT/GZ_IN and the last notch on each
+  // side is clamped onto stock's exact limit (0.9^47 = 0.0071 -> 1/128, 0.9^-20 = 8.2 -> 8). The old
+  // [-15, 15] cap (min 0.205) could not show a 10k-note graph whole; at 1/128 a 5000-note graph
+  // is a ~80 px blob (§1), so no vault we can open overflows it. s is a pure function of the notch,
+  // finite and > 0 at both ends. A notch past a bound changes nothing but still redraws.
+  // Factor: stock steps x2/3 per notch (§2); we keep 0.9 (R16.5) — finer steps, same bounds.
+  // ANCHOR: deliberate divergence from stock (§3/§8): stock anchors zoom-OUT at the pane centre,
+  // we keep the cursor anchored both ways (R16.5). The world point under the cursor is held
+  // (view.wx/wy) across notches at the same cursor position instead of being re-derived from the
+  // last tx/ty (float drift), so N in + N out at a still cursor lands on the IDENTICAL view (stock does
+  // not round-trip once clamped, §2) and the anchor error is 0 up to one multiply.
+  const GZ_OUT = 47, GZ_IN = -20, GZ_MIN = 1 / 128, GZ_MAX = 8;
+  const notchScale = n => n === 0 ? 1 : Math.min(GZ_MAX, Math.max(GZ_MIN, Math.pow(0.9, n)));
   cv.onwheel = e => {
     e.preventDefault();
     const r = cv.getBoundingClientRect();
     const mx = e.clientX - r.left, my = e.clientY - r.top;
-    const [wx, wy] = toWorld(mx, my);
-    view.notch = Math.max(-15, Math.min(15, view.notch + (e.deltaY < 0 ? -1 : 1)));   // 0.9^15 ~ 0.2 .. 0.9^-15 ~ 4.9
-    const s = view.notch === 0 ? 1 : Math.pow(0.9, view.notch);
-    view.tx = mx - wx * s; view.ty = my - wy * s; view.scale = s;
+    if (view.ax !== mx || view.ay !== my) { [view.wx, view.wy] = toWorld(mx, my); view.ax = mx; view.ay = my; }
+    view.notch = Math.max(GZ_IN, Math.min(GZ_OUT, view.notch + (e.deltaY < 0 ? -1 : 1)));
+    const s = notchScale(view.notch);
+    view.tx = mx - view.wx * s; view.ty = my - view.wy * s; view.scale = s;
     redraw();
+  };
+  // census [ggz:s,tx,ty,notch] (canvas px, full precision) and [ggzb:x0,y0,x1,y1,n] — the window-px
+  // box of every DRAWN node disc (radius as draw() paints it), n = node count. Smoke phase graphzoom.
+  g.graphZoom = () => {
+    const r = cv.getBoundingClientRect(), k = dsp().size * nodeK();   // drawn radius: Display node size x zoom factor (recon-graphzoom §9)
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const p of N) {
+      const sx = r.left + p.x * view.scale + view.tx, sy = r.top + p.y * view.scale + view.ty, rr = p.r * k * view.scale;
+      if (sx - rr < x0) x0 = sx - rr; if (sy - rr < y0) y0 = sy - rr; if (sx + rr > x1) x1 = sx + rr; if (sy + rr > y1) y1 = sy + rr;
+    }
+    return { z: view.scale + "," + view.tx + "," + view.ty + "," + view.notch,
+             b: N.length ? Math.floor(x0) + "," + Math.floor(y0) + "," + Math.ceil(x1) + "," + Math.ceil(y1) + "," + N.length : "" };
   };
   // C3: mousedown HIT TESTS. On a node the drag moves the NODE, pinned via
   // fx/fy only WHILE HELD (R16.6, operator 2026-10-06: a released node is FREE
@@ -8872,7 +8916,7 @@ async function startGraph(g, cfg) {
           // (PLAN item 8: not reheat — alpha CLIMBS toward the target, as stock's)
           if (alphaTarget !== 0.3 || quiet) { alphaTarget = 0.3; calm = 0; kePeak = 0; quiet = false; g.graphSettled = false; wake(); }
         } else {
-          view.tx += dx; view.ty += dy;  // EMPTY canvas: camera pan, unchanged
+          view.tx += dx; view.ty += dy; view.ax = null;  // EMPTY canvas: camera pan, unchanged; drops the zoom anchor
         }
         drag.x = e.clientX; drag.y = e.clientY;
         redraw();
