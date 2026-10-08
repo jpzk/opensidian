@@ -4313,8 +4313,92 @@ function mswEnd(t0, ss) {
     updateTitle();
   }, 0));
 }
+/* ---------- modeswitch probe (goal/modeswitch, PASSIVE: reads clocks + geometry only) ----------
+   [msw:] above starts at setMode; the user feels the switch from the INPUT. This
+   probe arms on the input itself (capture-phase Ctrl+E keydown / header-icon
+   click, event.timeStamp) and ends at the first frame of a STABLE paint: the
+   destination view's scrollHeight/scrollTop/clientHeight/children unchanged for
+   two rAF frames in a row (a lazy row wake-up or a late layout shift resets it).
+     [msi:<seq>:<dir>:<in>:<total>:<steps>:<top>:<maxgap>]
+       dir   e2r | r2e   (edit -> reading / reading -> edit; sub-mode in <in>)
+       in    key | clk | cmd (no input armed: palette / menu)
+       total input -> stable paint, ms
+       steps ev,flush,apply,render,html,blines,wire,lp,ss,layout,paint,settle (ms,
+             '~' separated) — where the switch spends its time
+       top   ssAnchor of the destination after the switch (scroll oracle)
+       maxgap longest frame gap while settling (long-task proxy)
+     [pvh:<fnv1a of #preview innerHTML>/<children>] — reading output fingerprint,
+       computed AFTER the measurement closes (never inside it).
+   Steps are marked with mswpMark(name); a mark outside an armed switch is free. */
+const mswp = { arm: null, cur: null, seq: 0, tok: "", pvh: "" };
+const mswpTs = e => {   // event.timeStamp is a DOMHighResTimeStamp in WebKit; refuse anything that is not
+  const n = performance.now(), t = e && e.timeStamp;
+  return typeof t === "number" && t > 0 && t <= n + 1 && n - t < 5000 ? t : n;
+};
+window.addEventListener("keydown", e => {
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === "e" || e.key === "E"))
+    mswp.arm = { kind: "key", t0: mswpTs(e) };
+}, true);
+window.addEventListener("click", e => {
+  if (e.target && e.target.closest && e.target.closest(".modebtn") && !e.ctrlKey && !e.metaKey)
+    mswp.arm = { kind: "clk", t0: mswpTs(e) };
+}, true);
+function mswpBegin(from, to) {
+  const now = performance.now();
+  const a = mswp.arm && now - mswp.arm.t0 < 3000 ? mswp.arm : { kind: "cmd", t0: now };
+  mswp.arm = null;
+  const dir = to === "reading" ? "e2r" : from === "reading" ? "r2e" : "e2e";
+  mswp.cur = { kind: a.kind, t0: a.t0, dir: dir + (to === "reading" ? (from === "source" ? "s" : "l") : (to === "source" ? "s" : "l")),
+               last: now, st: { ev: now - a.t0 } };
+}
+function mswpMark(name) {
+  const c = mswp.cur; if (!c) return;
+  const n = performance.now();
+  c.st[name] = (c.st[name] || 0) + (n - c.last); c.last = n;
+}
+function mswpWatch(g) {   // after setMode's synchronous work: force the layout, then rAF until stable
+  const c = mswp.cur; if (!c) return;
+  mswp.cur = null;
+  const t = g.active >= 0 ? g.tabs[g.active] : null;
+  const el = t && t.mode === "reading" ? g.preview : g.lp;
+  c.last = performance.now();
+  const sig = () => el.scrollHeight + ":" + el.scrollTop + ":" + el.clientHeight + ":" + el.childElementCount;
+  let prev = sig(); const tL = performance.now(); c.st.layout = tL - c.last;
+  let stable = 0, frames = 0, tCand = 0, tPaint = 0, lastF = tL, maxgap = 0;
+  const done = () => {
+    const end = tCand, R = x => Math.round(x * 10) / 10, s = c.st;
+    s.paint = tPaint - tL; s.settle = end - tPaint;
+    const steps = ["ev", "flush", "apply", "render", "html", "blines", "wire", "lp", "ss", "layout", "paint", "settle"]
+      .map(k => R(s[k] || 0)).join("~");
+    const top = ssAnchor(g);
+    mswp.seq++;
+    mswp.tok = " [msi:" + mswp.seq + ":" + c.dir + ":" + c.kind + ":" + R(end - c.t0) + ":" + steps + ":" +
+               (top == null ? "-" : Math.round(top * 100) / 100) + ":" + R(maxgap) + "]";
+    if (t && t.mode === "reading") {   // fingerprint, outside the measured window
+      const h = g.preview.innerHTML; let x = 0x811c9dc5;
+      for (let i = 0; i < h.length; i++) { x ^= h.charCodeAt(i); x = Math.imul(x, 0x01000193); }
+      mswp.pvh = " [pvh:" + (x >>> 0).toString(16) + "/" + g.preview.children.length + "]";
+    } else mswp.pvh = "";
+    updateTitle();
+  };
+  const frame = ts => {
+    frames++;
+    const n = performance.now(); maxgap = Math.max(maxgap, n - lastF); lastF = n;
+    setTimeout(() => {               // after this frame's paint (the [msw:] rAF -> task pattern)
+      const p = performance.now();
+      if (!tPaint) tPaint = p;
+      const s = sig();
+      if (s === prev) { if (!stable) tCand = p; stable++; }
+      else { prev = s; stable = 0; tCand = 0; }
+      if (stable >= 2 || frames > 600) { if (!tCand) tCand = p; done(); }
+      else requestAnimationFrame(frame);
+    }, 0);
+  };
+  requestAnimationFrame(frame);
+}
 function mswTok() {
-  return (mswMs >= 0 ? " [msw:" + mswMs + "/" + mswMax + "/" + mswR(mswSum / mswN) + "/" + mswN + "]" : "") +
+  return mswp.tok + mswp.pvh +
+         (mswMs >= 0 ? " [msw:" + mswMs + "/" + mswMax + "/" + mswR(mswSum / mswN) + "/" + mswN + "]" : "") +
          (mswW >= 0 ? " [mswk:" + mswW + "/" + mswWMax + "]" : "") +
          (mswSs >= 0 ? " [mswss:" + mswSs + "/" + mswSsMax + "]" : "");
 }
@@ -4375,6 +4459,7 @@ async function cmdToggleSource(g) {  // Obsidian "Toggle Live Preview/Source mod
 async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu radio / palette / the Ctrl+E edit<->reading toggle
   const tab = g.tabs[g.active];
   const mswT0 = performance.now();               // R35 perf: the command, before any DOM work
+  mswpBegin(tab.mode, mode);                     // modeswitch probe (passive)
   // R12.4: caret survives lp<->src. Read ONLY out of an edit mode and only a REAL
   // caret: g.lpActive outlives reading view, and caretLC() falls back to [0,0]
   // when the selection is elsewhere (the palette input) — that [0,0] is the bug.
@@ -4388,9 +4473,11 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
   const anchor = ssAnchor(g);                    // R35: read the top SOURCE LINE from the OLD view, before anything flips
   let mswSsMs = performance.now() - mswA0;
   await flushSave(g);
+  mswpMark("flush");
   tab.mode = mode;
   hideAc();
   applyMode(g);
+  mswpMark("apply");
   if (tab.mode === "reading") await preview(g);
   if (tab.mode === "livepreview" || tab.mode === "source") {   // mode switch: full rebuild
     // caret where it was (this switch, else the tab's remembered one), clamped to
@@ -4404,6 +4491,7 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
     } else if (tab.mode === "livepreview") await lpRender(g, -1, 0, true);
     else await lpRender(g, L.length - 1, L[L.length - 1].length, true);
   }
+  mswpMark("lp");
   // R35: the destination is rendered — place the SAME source line at the top of
   // it, through its own geometry. AFTER the caret work above on purpose: source
   // mode's Ed.place() scrolls the caret into view, and the scroll the USER chose
@@ -4412,6 +4500,8 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
   ssRestore(g, anchor);
   mswSsMs += performance.now() - mswR0;
   mswEnd(mswT0, mswSsMs);
+  mswpMark("ss");
+  mswpWatch(g);
   fModeSwitched(g);   // R26.21/R26.23: an open find bar re-shapes and re-scans for the new surface
   updateTitle();
 }
@@ -5834,13 +5924,17 @@ function extClick(e, a) {   // `a` unused: kept for the Ed.extClick(e, a) signat
 }
 async function preview(g) {
   const src = g.editor.value;
-  g.preview.innerHTML = await inv("render", { content: src });
+  const pvHtml = await inv("render", { content: src });
+  mswpMark("render");
+  g.preview.innerHTML = pvHtml;
+  mswpMark("html");
   // R35: the block -> source line map for THIS html, from the renderer's own
   // parser. Stored next to the html it describes and re-read on every render:
   // a stale map would scroll the reading view to the wrong block, which is
   // exactly the silent wrongness this feature exists to avoid (ssAnchor /
   // ssRestore refuse to act when its length does not match #preview's).
   g.pvLines = await inv("block_lines", { content: src });
+  mswpMark("blines");
   for (const a of g.preview.querySelectorAll("a.tag"))
     a.onclick = e => { e.preventDefault(); tagSearch(a.dataset.tag); };
   for (const a of g.preview.querySelectorAll("a.wiki"))
@@ -5858,6 +5952,7 @@ async function preview(g) {
         if (an) await navAnchor(g, an);
       } else navigate(g, n, an);
     };
+  mswpMark("wire");
 }
 
 function scheduleSave(g) {
