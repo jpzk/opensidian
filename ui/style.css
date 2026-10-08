@@ -613,9 +613,13 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 /* modeswitch opt6: the view the edit <-> reading switch left stays LAID OUT (ui/main.js
    applyMode): out of flow over the same box, same width, never painted, never hit.
    opt8: while a view is kept BOTH views are out of flow over that box (.vk2), so a toggle
-   changes no containing block, only which view hides. */
+   changes no containing block, only which view hides.
+   opt10: the kept view hides by being moved off the pane (transform, NOT inherited) instead of
+   visibility:hidden + pointer-events:none — flipping an inherited property re-resolved the style
+   of every descendant (o9 probe, 30k: ~550 ms forced style recalc per toggle). Off the pane it
+   is neither painted nor hit; its layout and scroll offset stay. */
 .content.vk2 > .lp, .content.vk2 > .preview { position: absolute; inset: 0 }
-.content > .vkeep { visibility: hidden; pointer-events: none; z-index: -1 }
+.content > .vkeep { transform: translateX(-200vw) }
 /* one rule covers both wikilink states: the unresolved anchor carries
    `class="wiki wiki-unresolved"` (main.rs:1336-1343), never wiki-unresolved
    alone — :733 adds only colour + italic */
