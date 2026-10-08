@@ -2145,9 +2145,16 @@ async function writeNote(name, content) {   // every save funnels here so graphs
 }
 async function afterWrite(name) {           // bookkeeping shared by write + create
   markStale(name);                          // R20: inactive tabs on this note re-read on activation
-  if (!notesCache.includes(name)) await refreshTree();   // R20: a NEW note is the only save that changes the tree
+  const fresh = !notesCache.includes(name);
+  if (fresh) await refreshTree();           // R20: a NEW note is the only save that changes the tree
   for (const g of groups()) if (g.graphOn && g.graphRefresh) await g.graphRefresh();
-  if (rightOpen) rSchedule();               // rsidebar: list panes refresh (200ms)
+  /* perfhunt P9: the Backlinks tab of note X lists OTHER notes only (linked
+     mentions skip self-links, unlinked_in skips X itself), so saving X — an
+     existing note, no tree change — cannot change what it shows. Typing in X
+     autosaved every few keys and each save re-ran the pane (huge: ~120 ms JS
+     + ~75 ms layout, landing in the next keystroke's frame). Any other tab,
+     any other note, a NEW note: refresh as before. */
+  if (rightOpen && (fresh || rTab !== "bl" || name !== rpNote || rpNote === "-")) rSchedule();   // rsidebar: list panes refresh (200ms)
 }
 
 /* F1 (dataloss-audit): a save that did not land must be VISIBLE and must not
