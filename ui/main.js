@@ -4430,10 +4430,16 @@ function applyMode(g, keep) {  // exactly ONE of lp / preview fills the pane
   // other applyMode (note open, tab switch) drops any kept view to display:none,
   // and so does a pane width change (vkWatch): a kept view never costs a
   // relayout the old code would not have paid.
+  // opt8: while a view is kept, BOTH views sit out of flow over the same box (.content.vk2),
+  // so a toggle swaps only which one hides — neither ever changes its containing block
+  // (opt6 flipped the shown view absolute -> in flow and the left one back on every toggle:
+  // a full relayout of both, ~600 ms of the 30k apply step).
   g.lp.classList.remove("vkeep"); g.preview.classList.remove("vkeep");
-  if (keep && (keep === g.lp || keep === g.preview) && keep.style.display === "none") {
+  const vk = !!keep && (keep === g.lp || keep === g.preview) && keep.style.display === "none";
+  g.content.classList.toggle("vk2", vk);
+  if (vk) {
     keep.style.display = ""; keep.classList.add("vkeep");
-    // opt7: .vkeep only hides by opacity — a caret left inside the kept view must not keep typing into it
+    // a caret left inside the hidden kept view must not keep typing into it
     const ae = document.activeElement; if (ae && keep.contains(ae) && ae.blur) ae.blur();
     vkWatch(g);
   }
@@ -4447,6 +4453,7 @@ function vkWatch(g) {   // modeswitch opt6: a pane width change drops the kept v
     if (C.clientWidth === C._vkW) return;
     C._vkW = C.clientWidth;
     for (const el of C.querySelectorAll(":scope > .vkeep")) { el.classList.remove("vkeep"); el.style.display = "none"; }
+    C.classList.remove("vk2");
   });
   C._vkRO.observe(C);
 }

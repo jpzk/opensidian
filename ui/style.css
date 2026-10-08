@@ -612,10 +612,10 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
            cursor: default }   /* R22 */
 /* modeswitch opt6: the view the edit <-> reading switch left stays LAID OUT (ui/main.js
    applyMode): out of flow over the same box, same width, never painted, never hit.
-   opt7: hidden by opacity (NOT inherited) under the shown view (z-index -1, which covers the
-   same box and takes every hit) — visibility / pointer-events are INHERITED, so flipping them
-   restyled every descendant of both views on each toggle (30k: ~650 ms in the apply step). */
-.content > .vkeep { position: absolute; inset: 0; opacity: 0; z-index: -1 }
+   opt8: while a view is kept BOTH views are out of flow over that box (.vk2), so a toggle
+   changes no containing block, only which view hides. */
+.content.vk2 > .lp, .content.vk2 > .preview { position: absolute; inset: 0 }
+.content > .vkeep { visibility: hidden; pointer-events: none; z-index: -1 }
 /* one rule covers both wikilink states: the unresolved anchor carries
    `class="wiki wiki-unresolved"` (main.rs:1336-1343), never wiki-unresolved
    alone — :733 adds only colour + italic */
