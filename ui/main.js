@@ -4433,6 +4433,8 @@ function applyMode(g, keep) {  // exactly ONE of lp / preview fills the pane
   g.lp.classList.remove("vkeep"); g.preview.classList.remove("vkeep");
   if (keep && (keep === g.lp || keep === g.preview) && keep.style.display === "none") {
     keep.style.display = ""; keep.classList.add("vkeep");
+    // opt7: .vkeep only hides by opacity — a caret left inside the kept view must not keep typing into it
+    const ae = document.activeElement; if (ae && keep.contains(ae) && ae.blur) ae.blur();
     vkWatch(g);
   }
   updateModeBtn(g);
