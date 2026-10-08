@@ -5752,6 +5752,44 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// perfhunt P7: the parallel read in Index::build (above its 256-note
+    /// threshold) yields the same names, contents, links and backlinks as a
+    /// serial read of the same files — including an unreadable note (empty).
+    #[test]
+    fn index_build_parallel_matches_serial() {
+        let root = tmp_vault("ixpar");
+        for i in 0..600 {
+            let d = if i % 3 == 0 { "sub/" } else { "" };
+            let body = format!("n{i} [[n{}]] [[n{}|x]] #t{}\n", (i * 7) % 600, (i + 1) % 600, i % 5);
+            fs::write(root.join(format!("{d}n{i}.md")), body).unwrap();
+        }
+        fs::create_dir_all(root.join("bad.md")).unwrap(); // a dir, not a note
+        let ix = Index::build(&root);
+        let names = index::notes_of(&root);
+        assert_eq!(ix.names(), names.as_slice());
+        let mut want_bl: std::collections::HashMap<String, Vec<String>> = Default::default();
+        for n in &names {
+            let c = fs::read_to_string(root.join(format!("{n}.md"))).unwrap_or_default();
+            assert_eq!(ix.content(n), Some(c.as_str()), "{n}");
+            let m = index::parse(c);
+            assert_eq!(ix.links(n), m.links.as_slice(), "{n}");
+            for l in &m.links {
+                if let Some(j) = resolve(&names, l) {
+                    if names[j] != *n {
+                        want_bl.entry(names[j].clone()).or_default().push(n.clone());
+                    }
+                }
+            }
+        }
+        for n in &names {
+            let mut w = want_bl.remove(n).unwrap_or_default();
+            w.sort();
+            w.dedup();
+            assert_eq!(ix.backlinks(n), w, "{n}");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// perfhunt P5: the cached suffix map answers exactly what resolve()'s
     /// scan answers, for every probe — exact names, basenames, deeper
     /// suffixes, the first-sorted tie-break, empty / doubled-slash oddities.

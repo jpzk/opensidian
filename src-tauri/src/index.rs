@@ -500,6 +500,36 @@ pub fn attachments_of(root: &Path) -> Vec<String> {
     out
 }
 
+/// perfhunt P7: read + parse every note on all cores. Index::build used to
+/// read and parse 50k notes one after another on one thread (boot and vault
+/// switch wait for it). Same bytes per note (read_to_string, unreadable ->
+/// ""), same parse; contiguous chunks keep the input order, and the caller
+/// collects into the BTreeMap anyway. std::thread::scope only, no new crate.
+fn read_parse_all(root: &Path, notes: Vec<String>) -> Vec<(String, NoteMeta)> {
+    let one = |n: String| {
+        let c = fs::read_to_string(format!("{}.md", root.join(&n).display())).unwrap_or_default();
+        let m = parse(c);
+        (n, m)
+    };
+    let k = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(1).min(8);
+    if k < 2 || notes.len() < 256 {
+        return notes.into_iter().map(one).collect();
+    }
+    let per = notes.len().div_ceil(k);
+    let mut chunks: Vec<Vec<String>> = Vec::with_capacity(k);
+    let mut it = notes.into_iter().peekable();
+    while it.peek().is_some() {
+        chunks.push(it.by_ref().take(per).collect());
+    }
+    std::thread::scope(|s| {
+        let hs: Vec<_> = chunks
+            .into_iter()
+            .map(|c| s.spawn(move || c.into_iter().map(one).collect::<Vec<_>>()))
+            .collect();
+        hs.into_iter().flat_map(|h| h.join().expect("index read worker")).collect()
+    })
+}
+
 /// sorted note names under root (the one and only vault walk)
 pub fn notes_of(root: &Path) -> Vec<String> {
     let mut out = Vec::new();
@@ -518,11 +548,7 @@ impl Index {
         notes.sort();
         imgs.sort();
         ix.images = imgs;
-        for n in notes {
-            let c = fs::read_to_string(format!("{}.md", root.join(&n).display()))
-                .unwrap_or_default();
-            ix.notes.insert(n, parse(c));
-        }
+        ix.notes = read_parse_all(root, notes).into_iter().collect();
         ix.refresh_names();
         ix.rebuild_backlinks();
         ix
