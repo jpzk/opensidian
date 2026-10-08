@@ -5934,16 +5934,20 @@ function extClick(e, a) {   // `a` unused: kept for the Ed.extClick(e, a) signat
 }
 async function preview(g) {
   const src = g.editor.value;
-  const pvHtml = await inv("render", { content: src });
-  mswpMark("render");
-  g.preview.innerHTML = pvHtml;
-  mswpMark("html");
   // R35: the block -> source line map for THIS html, from the renderer's own
   // parser. Stored next to the html it describes and re-read on every render:
   // a stale map would scroll the reading view to the wrong block, which is
   // exactly the silent wrongness this feature exists to avoid (ssAnchor /
   // ssRestore refuse to act when its length does not match #preview's).
-  g.pvLines = await inv("block_lines", { content: src });
+  // modeswitch: BOTH asks go out before the DOM write. Awaiting block_lines
+  // AFTER innerHTML handed the event loop to WebKit, which laid out the whole
+  // new document before the reply was read (measured: ~1 s of the 30k-line
+  // switch billed to a pure parse).
+  const [pvHtml, pvL] = await Promise.all([inv("render", { content: src }), inv("block_lines", { content: src })]);
+  mswpMark("render");
+  g.preview.innerHTML = pvHtml;
+  mswpMark("html");
+  g.pvLines = pvL;
   mswpMark("blines");
   for (const a of g.preview.querySelectorAll("a.tag"))
     a.onclick = e => { e.preventDefault(); tagSearch(a.dataset.tag); };
