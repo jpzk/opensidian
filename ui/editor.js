@@ -412,8 +412,28 @@ const Ed = {
   resolves(n) {
     if (!n) return true;
     if (typeof notesCache === "undefined" || !notesCache.length) return true;
-    return notesCache.some(x => x === n || x.endsWith("/" + n) ||
-                                x === n + ".md" || x.endsWith("/" + n + ".md"));
+    return Ed.resSet().has(n);
+  },
+  /* perfhunt P8: resolves() used to scan every vault note per rendered
+     wikilink (4 string tests x 50k names; an unresolved link always paid the
+     full scan), so a note open on a big vault cost ms per link. The answer is
+     a set lookup: n passes the old test iff n is some x, or x's tail after one
+     of its '/', or the same of x minus a trailing ".md". Built once per
+     notesCache array — refreshTree() is its only writer and always assigns a
+     NEW array, so identity is the invalidation. */
+  resSet() {
+    if (Ed._resFor === notesCache) return Ed._res;
+    const s = new Set();
+    const tails = y => {
+      s.add(y);
+      for (let p = y.indexOf("/"); p >= 0; p = y.indexOf("/", p + 1)) s.add(y.slice(p + 1));
+    };
+    for (const x of notesCache) {
+      tails(x);
+      if (x.endsWith(".md")) tails(x.slice(0, -3));
+    }
+    Ed._res = s; Ed._resFor = notesCache;
+    return s;
   },
 
   /* ---------- R29 IMAGE EMBEDS (live preview half) ----------
@@ -456,6 +476,7 @@ const Ed = {
   // that has that key — exactly what find(x => x === dec || x.endsWith("/" + dec))
   // returned. Rebuilt only when refreshTree swaps in a new list (identity check).
   _imgIdxOf: null, _imgIdx: null,
+  _res: null, _resFor: null,     // perfhunt P8: resSet() cache, keyed by the notesCache array
   imgIdx() {
     if (Ed._imgIdxOf !== imgsCache) {
       const m = new Map();
