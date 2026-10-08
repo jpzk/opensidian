@@ -5752,6 +5752,26 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// perfhunt P4: the whole-note ASCII prefilter answers exactly what the
+    /// per-line scan answers — misses, case-folded hits at both ends of the
+    /// note, and the non-ASCII notes it must leave to the exact path.
+    #[test]
+    fn mentions_in_prefilter_is_exact() {
+        use index::mentions_in;
+        assert!(mentions_in("nothing here\nat all", "Link Target").is_empty());
+        assert_eq!(mentions_in("LINK TARGET", "Link Target"), [(0, 0, 11)]);
+        assert_eq!(mentions_in("x\nyy link targeT", "Link Target"), [(1, 3, 11)]);
+        assert!(mentions_in("Link Targe", "Link Target").is_empty());
+        // non-ASCII note: the exact path, unchanged — a length-changing fold
+        // (U+212A KELVIN SIGN -> 'k') keeps the case-sensitive line match
+        assert!(mentions_in("\u{212A}ey", "key").is_empty());
+        assert!(mentions_in("\u{212A} key", "Key").is_empty());
+        assert_eq!(mentions_in("\u{212A} Key", "Key"), [(0, 4, 3)]);
+        assert_eq!(mentions_in("café key", "Key"), [(0, 6, 3)]);
+        // non-ASCII needle: exact path
+        assert_eq!(mentions_in("a Café b", "café"), [(0, 2, 5)]);
+    }
+
     /// rvtask R2 / A3: every reading-view task box carries the 0-based FILE line
     /// of its "[" — duplicates by position, nested / quoted / callout / numbered
     /// by their own line; custom statuses are checked tasks (Q2); LP unchanged.

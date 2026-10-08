@@ -810,6 +810,17 @@ pub fn mentions_in(content: &str, base: &str) -> Vec<(u32, u32, u32)> {
         return out;
     }
     let lb = base.to_lowercase();
+    // perfhunt P4: the Backlinks pane asks this of EVERY note in the vault on
+    // every note open, and almost none of them mention the name. An all-ASCII
+    // note whose bytes do not contain the ASCII needle case-insensitively has
+    // no hit below (for ASCII, to_lowercase is byte-for-byte the ASCII fold and
+    // a line is a substring of the note), so it is answered with one byte scan
+    // instead of a lowercased copy of each line. Any non-ASCII byte in the note
+    // or the needle takes the exact path unchanged (Unicode folds such as
+    // U+212A KELVIN SIGN -> 'k' are not ASCII folds).
+    if lb.is_ascii() && content.is_ascii() && !ascii_ci_contains(content.as_bytes(), lb.as_bytes()) {
+        return out;
+    }
     let mut fence = false;
     for (ln, line) in content.lines().enumerate() {
         let t = line.trim_start_matches(' ');
@@ -852,6 +863,26 @@ pub fn mentions_in(content: &str, base: &str) -> Vec<(u32, u32, u32)> {
         }
     }
     out
+}
+
+/// perfhunt P4: does `hay` contain `needle` under ASCII case folding?
+/// `needle` must already be ASCII-lowercase. Empty needle: true.
+fn ascii_ci_contains(hay: &[u8], needle: &[u8]) -> bool {
+    let Some((&f, rest)) = needle.split_first() else { return true };
+    let fu = f.to_ascii_uppercase();
+    if hay.len() < needle.len() {
+        return false;
+    }
+    let last = hay.len() - needle.len();
+    let mut i = 0;
+    while i <= last {
+        let b = hay[i];
+        if (b == f || b == fu) && hay[i + 1..i + needle.len()].eq_ignore_ascii_case(rest) {
+            return true;
+        }
+        i += 1;
+    }
+    false
 }
 
 /// wrap the (line, col, len) slice in [[ ]] — None if the slice no longer
