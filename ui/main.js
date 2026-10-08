@@ -5933,7 +5933,22 @@ function extClick(e, a) {   // `a` unused: kept for the Ed.extClick(e, a) signat
   e.preventDefault(); e.stopPropagation();
 }
 async function preview(g) {
-  const src = g.editor.value;
+  const src = g.editor.value, P = g.preview;
+  // modeswitch opt2: the reading DOM is RETAINED while the pane shows the edit
+  // view, so edit -> reading with nothing changed re-shows it instead of a
+  // render IPC + innerHTML + a full relayout. "Nothing changed" = every input
+  // of Rust's render (the text, the note + image lists it resolves against,
+  // strict line breaks) is the one this DOM was built from, AND no one touched
+  // the DOM since (a MutationObserver: find marks, a callout fold, a reading-
+  // view task tick all count) — any doubt is a miss, and a miss is the old path.
+  const k = P._pvk;
+  if (k && k.src === src && k.notes === notesCache && k.imgs === imgsCache && k.slb === slbOn
+      && !P._pvDirty && !P._pvObs.takeRecords().length) {
+    g.pvLines = k.lines;
+    mswpMark("render"); mswpMark("html"); mswpMark("blines"); mswpMark("wire");
+    return;
+  }
+  P._pvk = null;
   // R35: the block -> source line map for THIS html, from the renderer's own
   // parser. Stored next to the html it describes and re-read on every render:
   // a stale map would scroll the reading view to the wrong block, which is
@@ -5966,6 +5981,15 @@ async function preview(g) {
         if (an) await navAnchor(g, an);
       } else navigate(g, n, an);
     };
+  // modeswitch opt2: arm the retained-DOM key. Our own innerHTML above is the
+  // last write: drop its records synchronously, from here on any record = dirty.
+  if (!P._pvObs) {
+    P._pvObs = new MutationObserver(() => { P._pvDirty = true; });
+    P._pvObs.observe(P, { subtree: true, childList: true, attributes: true, characterData: true });
+  }
+  P._pvObs.takeRecords(); P._pvDirty = false;
+  if (g.preview === P && g.editor.value === src)
+    P._pvk = { src, notes: notesCache, imgs: imgsCache, slb: slbOn, lines: pvL };
   mswpMark("wire");
 }
 
