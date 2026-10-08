@@ -4487,7 +4487,7 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
   hideAc();
   applyMode(g);
   mswpMark("apply");
-  if (tab.mode === "reading") await preview(g);
+  if (tab.mode === "reading") await preview(g, true);
   if (tab.mode === "livepreview" || tab.mode === "source") {   // mode switch: full rebuild
     // caret where it was (this switch, else the tab's remembered one), clamped to
     // the note AS IT IS NOW: an external edit in reading view may have shortened it.
@@ -5946,7 +5946,13 @@ async function wikiClick(e, a) {
 function extClick(e, a) {   // `a` unused: kept for the Ed.extClick(e, a) signature
   e.preventDefault(); e.stopPropagation();
 }
-async function preview(g) {
+// modeswitch opt5: did anything but the pane's own show/hide touch the retained
+// reading DOM? applyMode flips #preview's inline display on every switch, and the
+// opt2 observer counted that as a touch: every warm edit -> reading was a miss.
+// Only a style attribute on #preview ITSELF is ignored; any other record (a child,
+// a text, data-title, a class) still marks it dirty.
+const pvTouched = (P, recs) => recs.some(r => r.target !== P || r.type !== "attributes" || r.attributeName !== "style");
+async function preview(g, sw) {   // sw: called by setMode (the edit -> reading switch)
   const src = g.editor.value, P = g.preview;
   // modeswitch opt2: the reading DOM is RETAINED while the pane shows the edit
   // view, so edit -> reading with nothing changed re-shows it instead of a
@@ -5957,7 +5963,7 @@ async function preview(g) {
   // view task tick all count) — any doubt is a miss, and a miss is the old path.
   const k = P._pvk;
   if (k && k.src === src && k.notes === notesCache && k.imgs === imgsCache && k.slb === slbOn
-      && !P._pvDirty && !P._pvObs.takeRecords().length) {
+      && !P._pvDirty && !pvTouched(P, P._pvObs.takeRecords())) {
     g.pvLines = k.lines;
     mswpMark("render"); mswpMark("html"); mswpMark("blines"); mswpMark("wire");
     return;
@@ -5977,9 +5983,19 @@ async function preview(g) {
   // 864 ms on 30k), and each ask shipped the whole note across the bridge
   // while the parse itself stays under 100 ms. render_view = render +
   // block_lines, same parser, same options, one transfer.
+  // modeswitch opt5: on the switch, the pane must not show the OLD reading DOM
+  // while Rust renders: applyMode just un-hid it, so WebKit laid out that stale
+  // document (30k: ~1 s) during the await and then threw it away for the new
+  // html (the cold first toggle, with an empty #preview, measured render 200 ms;
+  // every later one 1150-1370 ms). Hidden until the new html is in; setMode
+  // restores the scroll position after, so nothing visible is lost. Only on
+  // the switch: an in-place re-render keeps its scrollTop.
+  const hide = sw && P.firstChild && P.style.display !== "none";
+  if (hide) P.style.display = "none";
   const [pvHtml, pvL] = await inv("render_view", { content: src });
   mswpMark("render");
   g.preview.innerHTML = pvHtml;
+  if (hide && g.preview === P && isReading(g)) P.style.display = "";
   mswpMark("html");
   g.pvLines = pvL;
   mswpMark("blines");
@@ -6003,7 +6019,7 @@ async function preview(g) {
   // modeswitch opt2: arm the retained-DOM key. Our own innerHTML above is the
   // last write: drop its records synchronously, from here on any record = dirty.
   if (!P._pvObs) {
-    P._pvObs = new MutationObserver(() => { P._pvDirty = true; });
+    P._pvObs = new MutationObserver(r => { if (pvTouched(P, r)) P._pvDirty = true; });
     P._pvObs.observe(P, { subtree: true, childList: true, attributes: true, characterData: true });
   }
   P._pvObs.takeRecords(); P._pvDirty = false;
