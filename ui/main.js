@@ -4441,6 +4441,12 @@ function applyMode(g, keep) {  // exactly ONE of lp / preview fills the pane
     keep.style.display = ""; keep.classList.add("vkeep");
     // a caret left inside the hidden kept view must not keep typing into it
     const ae = document.activeElement; if (ae && keep.contains(ae) && ae.blur) ae.blur();
+    // opt10 hides it off the pane, which (unlike visibility:hidden) leaves it focusable:
+    // a Tab / programmatic focus landing inside a kept view is refused the same way
+    if (!keep._vkFocus) {
+      keep._vkFocus = true;
+      keep.addEventListener("focusin", e => { if (keep.classList.contains("vkeep") && e.target.blur) e.target.blur(); });
+    }
     vkWatch(g);
   }
   updateModeBtn(g);
