@@ -31,6 +31,20 @@ async function act(name, attrs, fn) {
   try { return await fn(sp); }
   finally { Promise.resolve(otel.paint(sp)).finally(() => { actN--; }); }
 }
+/* perfhunt: pspan(name, attrs, fn) = an act()-shaped span (begin .. PAINT) for
+   the flows act() never covered, WITHOUT touching actN — a measurement must not
+   change when the layout writer yields. fn may be sync or async; its result and
+   its errors pass through unchanged. */
+function pspan(name, attrs, fn) {
+  const sp = otel.begin(name, attrs);
+  let r;
+  try { r = fn(sp); }
+  finally { if (!(r && typeof r.then === "function")) otel.paint(sp); }
+  if (r && typeof r.then === "function") { const done = () => otel.paint(sp); r.then(done, done); }
+  return r;
+}
+/* perfhunt: first_paint = page start -> first committed frame (boot ends at the first note rendered) */
+requestAnimationFrame(() => setTimeout(() => perf.mark("first_paint", 0), 0));
 const $ = id => document.getElementById(id);
 /* R20: an uncaught error / rejected action left the UI mid-mutation and the
    census silently STALE (the title only moves in updateTitle) — smoke then
@@ -67,6 +81,7 @@ function vargTok() {
    state.focused is THE focused group (R6.3): explorer clicks, Ctrl+N,
    keymap and the graph button all target it; clicking a pane focuses it. */
 let state = null;                 // { root: Split, focused: Group }
+let lgT0 = 0;                     // perfhunt: pending local-graph open time (cmdLocalGraph -> startGraph)
 let gidSeq = 1;
 
 function leaves(node, out = []) {
@@ -302,10 +317,12 @@ async function rPanesRefresh() {
   if (!rightOpen) return;
   const n = rNote();
   rpNote = n || "-";                       // census [rpnote:] — the note the panes render
-  if (rTab === "bl") await rBacklinks(n);
-  else if (rTab === "out") await rOutgoing(n);
-  else if (rTab === "toc") await rOutline(n);
-  else if (rTab === "tags") await rTags();
+  await pspan("rpane_refresh", { tab: rTab }, async () => {   // perfhunt: right pane re-render -> paint
+    if (rTab === "bl") await rBacklinks(n);
+    else if (rTab === "out") await rOutgoing(n);
+    else if (rTab === "toc") await rOutline(n);
+    else if (rTab === "tags") await rTags();
+  });
   updateTitle();
 }
 // Backlinks: "Linked mentions N" + one expandable row per linking note; the
@@ -4983,12 +5000,16 @@ async function commitTitleEdit() {
    `rename_note` survives as the composite the rust unit tests exercise
    (rename_in); the UI no longer calls it, because nothing the USER does may
    rewrite another note without an answer. */
-async function renameThenAsk(old, nn) {
+function renameThenAsk(old, nn) {        // perfhunt: rename = move + bookkeeping (+ the consented rewrite) -> paint
+  return pspan("rename", {}, sp => renameThenAsk0(old, nn, sp));
+}
+async function renameThenAsk0(old, nn, sp) {
   let blast;
   try { blast = await inv("move_note", { old, new: nn }); }
   catch (err) { say(String(err && err.message || err)); updateTitle(); return false; }
   await applyRename(old, nn);
   const links = blast && blast.links || 0, files = blast && blast.files || 0;
+  sp.attrs.links = links; sp.attrs.files = files;
   if (!files) { updateTitle(); return true; }   // R34.3: nothing links in -> NO modal, ever
   let consent = false;
   try { consent = await inv("link_consent"); } catch (err) { consent = false; }
@@ -5064,7 +5085,10 @@ function closeUpdateLinks() {
   if (g && g.lp && g.lp.isConnected) g.lp.focus({ preventScroll: true });
   updateTitle();
 }
-async function runUpdateLinks(old, nn) {     // the CONSENTED half, and the only caller of update_links
+function runUpdateLinks(old, nn) {          // perfhunt: rename_links = link rewrite + tree refresh -> paint
+  return pspan("rename_links", {}, () => runUpdateLinks0(old, nn));
+}
+async function runUpdateLinks0(old, nn) {    // the CONSENTED half, and the only caller of update_links
   try { await inv("update_links", { old, new: nn }); }
   catch (err) { say(String(err && err.message || err)); }
   // Bookkeeping ONLY, deliberately: the rewrite changed text in OTHER notes, and
@@ -6466,7 +6490,8 @@ function renderModal() {
   });
   mdTitleSoon();   // C4: mdFilter() runs on every keystroke — republish [mdnew:]
 }
-$("minput").oninput = mdFilter;
+$("minput").oninput = () => pspan(modalKind === "cp" ? "cp_type" : "qs_type",   // perfhunt: keystroke -> results painted
+  { q_len: $("minput").value.length, notes: notesCache.length }, () => mdFilter());
 $("minput").onkeydown = async e => {
   if (e.key === "ArrowDown" || e.key === "ArrowUp") {
     e.preventDefault();
@@ -6485,7 +6510,8 @@ $("minput").onkeydown = async e => {
 };
 $("modal").onmousedown = e => { if (e.target === $("modal")) closeModal(); };
 function cmdQuickSwitch() {
-  modalKind === "qs" ? closeModal() : openModal("qs", qsItems);
+  modalKind === "qs" ? closeModal()
+    : pspan("qs_open", { notes: notesCache.length }, () => openModal("qs", qsItems));   // perfhunt: Ctrl+O -> list painted
 }
 /* ---------- R14: command registry = the ONE source of truth for the palette
    (Ctrl+P), the keymap dispatcher and Settings ▸ Hotkeys. Chords are
@@ -6713,9 +6739,11 @@ function applyTheme(t) {
    file sidebar_w / rside_tab / hotkeys already live in. Fire-and-forget: a failed
    write must not undo the theme the user is looking at. */
 function chooseTheme(t) {
-  applyTheme(t);
-  themeStored = true;
-  inv("set_theme", { theme: themeMode }).catch(() => {});
+  pspan("theme_switch", { to: t === "light" ? "light" : "dark" }, () => {   // perfhunt: choice -> repaint
+    applyTheme(t);
+    themeStored = true;
+    inv("set_theme", { theme: themeMode }).catch(() => {});
+  });
 }
 function cmdToggleTheme() { chooseTheme(themeMode === "dark" ? "light" : "dark"); }
 /* LIVE system change, documented behaviour: the desktop flipping light<->dark
@@ -8360,6 +8388,8 @@ async function cmdGlobalGraph() {  // R9.7: ribbon icon opens GLOBAL graph as a 
 }
 async function startGraph(g, cfg) {
   g.graphOn = true; g.graphSettled = false;
+  if (!g.perfT0 && lgT0) g.perfT0 = lgT0;   // perfhunt: a local graph is opened from its SOURCE group; the split hands the click time over
+  lgT0 = 0;
   const openT0 = g.perfT0 || perf.now();   // perf: graph_open_settle = open -> kinetic energy below eps
   hideAc();
   g.status.hidden = true;
@@ -8967,7 +8997,7 @@ async function startGraph(g, cfg) {
     if (firstFrame) {
       firstFrame = false;
       phLast = now; phAcc = 0;   // the sim clock starts at the first frame: the time spent building the view before it is not owed as a 6-step burst
-      if (g.perfT0) { perf.mark("graph_open", g.perfT0, { nodes: N.length, edges: gr.edges.length }); g.perfT0 = null; }
+      if (g.perfT0) { perf.mark("graph_open", g.perfT0, { nodes: N.length, edges: gr.edges.length, kind: (g.tabs[g.active] || {}).kind || "-" }); g.perfT0 = null; }
     }
     const fT0 = perf.now(); let steps = 0, ke = -1;
     if (rcSnap && rcSnap.vraw === undefined) rcPre();   // C5: before this frame's physics
@@ -9252,6 +9282,7 @@ async function cmdLocalGraph() {       // R7.2: local graph of focused note -> n
   const t0 = g.active >= 0 ? g.tabs[g.active] : null;
   const center = curOf(g);
   if (!center || (t0 && t0.kind === "lg")) return;
+  lgT0 = perf.now();                   // perfhunt: graph_open kind:lg = click -> first sim frame (handed to the new group in startGraph)
   await flushSave(g);
   const t = { kind: "lg", name: "Graph of " + center.split("/").pop(),
               center, depth: 1, inc: true, out: true, linkId: g.id,
@@ -9351,7 +9382,9 @@ async function openVault(p, replace) {
   // switch: this window stays, the edit stays in its buffer, banner up.
   if (replace) {
     document.body.inert = true;
+    const lvSp = otel.begin("vault_leave", {});   // perfhunt: switch, this window's half (flush); the handoff is the backend's [vaultwin] ms
     const lost = await leaveVault();         // F2: A's bytes on A's disk BEFORE this process exits
+    otel.end(lvSp, { lost: lost.length }); otel.flush();   // ship it now: this process exits at the handoff
     if (lost.length) {
       document.body.inert = false;
       console.error("[vaultwin] switch refused: unsaved " + lost.join(", "));
@@ -11248,3 +11281,32 @@ function nobTok() {
    scrolled (the other settings phases find nav entries by OCR, not by token),
    so an entry below the fold stayed "-" however far the driver wheeled. Probe-only. */
 document.addEventListener("scroll", e => { if (nobProbe && e.target && e.target.id === "snav") updateTitle(); }, true);
+/* perfhunt: scroll smoothness probe. Scrolling has no action to wrap, so a
+   burst of scroll events (any scroller, capture phase) arms a rAF loop that
+   records frame intervals until 250 ms pass without a scroll event, then emits
+   ONE span per burst: ms = p95 frame interval, attrs = frames, p50/max interval,
+   long = frames over 50 ms, where = explorer | note | other. Read-only: it
+   touches no DOM and stops when the burst does. */
+(function () {
+  let on = false, last = 0, prev = 0, ivs = [], where = "other";
+  function frame(t) {
+    if (prev) ivs.push(t - prev);
+    prev = t;
+    if (performance.now() - last < 250) return requestAnimationFrame(frame);
+    on = false;
+    if (ivs.length) {
+      const s = ivs.slice().sort((a, b) => a - b), q = p => s[Math.min(s.length - 1, Math.floor(p * s.length))];
+      const r = x => Math.round(x * 100) / 100;
+      perf.push("scroll_burst", r(q(0.95)), { where, frames: s.length, p50: r(q(0.5)), max: r(s[s.length - 1]),
+                                             long: s.filter(x => x > 50).length });
+    }
+    ivs = []; prev = 0;
+  }
+  document.addEventListener("scroll", e => {
+    last = performance.now();
+    if (on) return;
+    const el = e.target && e.target.closest ? e.target : null;
+    where = el && el.closest("#tree") ? "explorer" : el && el.closest("#main") ? "note" : "other";
+    on = true; requestAnimationFrame(frame);
+  }, { capture: true, passive: true });
+})();
