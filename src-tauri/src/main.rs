@@ -5752,6 +5752,31 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// perfhunt P5: the cached suffix map answers exactly what resolve()'s
+    /// scan answers, for every probe — exact names, basenames, deeper
+    /// suffixes, the first-sorted tie-break, empty / doubled-slash oddities.
+    #[test]
+    fn suffix_map_matches_resolve_scan() {
+        let mut notes: Vec<String> = [
+            "A", "a/b/c", "b/c", "c", "x/c", "x//c", "café/Ünï", "Ünï", "d/e/f/g", "e/f/g",
+            "B", "b", "z/B", "deep/a/b/c",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        notes.sort();
+        let m = index::suffix_map(&notes);
+        let probes = [
+            "A", "B", "b", "c", "b/c", "a/b/c", "/c", "//c", "x/c", "Ünï", "café/Ünï", "g",
+            "f/g", "e/f/g", "d/e/f/g", "/g", "Ghost", "a/b", "deep", "a", "c/", "",
+        ];
+        for p in probes {
+            let want = resolve(&notes, p);
+            let got = if p.is_empty() { None } else { m.get(p).copied() };
+            assert_eq!(got, want, "probe {p:?}");
+        }
+    }
+
     /// perfhunt P4: the whole-note ASCII prefilter answers exactly what the
     /// per-line scan answers — misses, case-folded hits at both ends of the
     /// note, and the non-ASCII notes it must leave to the exact path.

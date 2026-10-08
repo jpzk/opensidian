@@ -41,6 +41,10 @@ pub struct Index {
     backlinks: HashMap<String, Vec<String>>,
     /// sorted keys, cached: render_md/resolve want a &[String]
     names: Vec<String>,
+    /// perfhunt P5: resolve()'s answer for every link a name can answer, kept
+    /// with `names` (see `suffix_map`) — add_edge/drop_edge look a link up
+    /// here instead of scanning every name per link
+    res: HashMap<String, usize>,
     /// R29.6: sorted vault-relative image paths (with extension). NOT notes —
     /// they never enter `notes`, they only answer "does this embed resolve?"
     /// for BOTH renderers, so the two agree by construction.
@@ -367,6 +371,25 @@ pub fn link_parts(l: &str) -> (&str, &str, &str) {
     (note, anchor, alias)
 }
 
+/// perfhunt P5: every link text `l` that resolve(names, l) answers, mapped to
+/// that answer. resolve picks the FIRST name x (sorted order) with x == l or
+/// x ending in "/l" — i.e. l is x itself or the part of x after one of its
+/// '/'. So each name contributes itself plus the tail after each '/', and the
+/// lowest index wins per key. Any l not in the map has no such x: None, as
+/// resolve. Rebuilt with `names` (O(total path depth)); rebuild_backlinks
+/// went from one scan of every name per link (O(links x notes): ~10^9 string
+/// compares on a 50k vault, three times per rename) to one lookup per link.
+pub fn suffix_map(names: &[String]) -> HashMap<String, usize> {
+    let mut m: HashMap<String, usize> = HashMap::with_capacity(names.len() * 2);
+    for (i, x) in names.iter().enumerate() {
+        m.entry(x.clone()).or_insert(i);
+        for (p, _) in x.match_indices('/') {
+            m.entry(x[p + 1..].to_string()).or_insert(i);
+        }
+    }
+    m
+}
+
 /// wikilinks resolve by full relative path or basename (first sorted match);
 /// the raw token may carry #anchor / |alias — only the note part is matched
 pub fn resolve(notes: &[String], l: &str) -> Option<usize> {
@@ -573,6 +596,16 @@ impl Index {
 
     fn refresh_names(&mut self) {
         self.names = self.notes.keys().cloned().collect();
+        self.res = suffix_map(&self.names);
+    }
+
+    /// resolve(&self.names, l) from the cached map (same answer, O(1))
+    fn resolve_ix(&self, l: &str) -> Option<usize> {
+        let l = link_parts(l).0;
+        if l.is_empty() {
+            return None;
+        }
+        self.res.get(l).copied()
     }
 
     /// R19: cached graph (built on first use after any edge change)
@@ -601,7 +634,7 @@ impl Index {
     }
 
     fn add_edge(&mut self, src: &str, link: &str) {
-        let Some(j) = resolve(&self.names, link) else { return };
+        let Some(j) = self.resolve_ix(link) else { return };
         let tgt = self.names[j].clone();
         if tgt == src {
             return;
@@ -613,7 +646,7 @@ impl Index {
     }
 
     fn drop_edge(&mut self, src: &str, link: &str) {
-        let Some(j) = resolve(&self.names, link) else { return };
+        let Some(j) = self.resolve_ix(link) else { return };
         let tgt = &self.names[j];
         if let Some(v) = self.backlinks.get_mut(tgt) {
             v.retain(|x| x != src);
