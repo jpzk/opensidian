@@ -1031,7 +1031,26 @@ const Ed = {
     v.rowSrc = L.slice();
     v.note = typeof curOf === "function" ? curOf(g) : null;
     if (caret != null && caret >= 0) Ed.place(g, caret, col || 0);
-    else Ed.reveal(g, null);
+    else {
+      Ed.reveal(g, null);
+      /* caret00: a rebuild WITHOUT a caret request must not strand the live
+         selection. Removing the row that held it moves the DOM boundary onto
+         the parent (DOM "remove" steps: the range becomes (.lp, index)), so
+         after an in-place note change with the editor focused (history
+         back/forward, follow link: loadActive -> lpRender(g, -1, 0, true))
+         the caret position is .lp ITSELF, between block rows. That position
+         has no line box: the range has no client rect and WebKit paints the
+         caret at the editor box's corner — the "caret at (0,0) of the note".
+         Re-seat it in a real row: document start after a full rebuild (a new
+         note), the row the boundary now points at after a patch. Focus is
+         left as it is (place(..., false)): this keeps a caret, it never
+         takes one. */
+      const s = window.getSelection();
+      if (s && s.rangeCount && (s.anchorNode === lp || s.focusNode === lp) && lp.children.length) {
+        const p = full || touched === L.length ? { l: 0, c: 0 } : (Ed.pos(g, lp, s.focusOffset) || { l: 0, c: 0 });
+        Ed.place(g, p.l, p.c, false);
+      }
+    }
     if (typeof perf !== "undefined" && perf.mark)
       // R18: this is the JS row patch, NOT the old per-keystroke Rust render.
       // "lp_render" stays reserved for the IPC span (docs/perf.md '## EDITOR':
@@ -1913,6 +1932,45 @@ Ed.caretXY = function (g) {               // caret rect relative to the pane box
   }
   return [r.left - pr.left, r.bottom - pr.top];
 };
+/* caret00: [crt:] — where the DOM selection puts the caret of the focused
+   pane's editor, against the box it must never sit at the corner of.
+     [crt:<k>|<x>,<y>,<h>|lp=<x>,<y>|col=<x0>,<x1>|t0=<x>,<y>|ae=<0|1>|<l>.<c>]
+   k   = what the selection's focus node is: txt (a painted text node), hid (a
+         text node with no box — inside a display:none marker), br (a row's
+         <br>), row (a row element), lp (the editor ITSELF — no row chosen),
+         out (the selection is outside this editor), none (no selection)
+   x,y,h = the collapsed range's first client rect (0,0,0 = the engine has no
+         rect for that position); lp = the content-box origin of the scroller
+         (client px, scroll applied); col = row 0's box (the text column);
+         t0 = the first painted glyph of the note (document position 0);
+         ae = the editor holds DOM focus; l.c = the model position, or "-". */
+Ed.crtTok = function () {
+  const g = typeof fg === "function" ? fg() : null, lp = g && g.lp;
+  if (!lp || !lp.isConnected || !lp.getClientRects().length) return "";
+  const R = Math.round, s = window.getSelection(), cs = getComputedStyle(lp), b = lp.getBoundingClientRect();
+  const ox = R(b.left + lp.clientLeft + parseFloat(cs.paddingLeft)), oy = R(b.top + lp.clientTop + parseFloat(cs.paddingTop) - lp.scrollTop);
+  let k = "none", x = 0, y = 0, h = 0, lc = "-";
+  if (s && s.rangeCount && s.focusNode) {
+    const n = s.focusNode;
+    if (!lp.contains(n)) k = "out";
+    else {
+      k = n === lp ? "lp" : n.nodeType === 3 ? (n.parentElement && n.parentElement.getClientRects().length ? "txt" : "hid")
+        : n.nodeName === "BR" ? "br" : n.classList && n.classList.contains("lprow") ? "row" : "el";
+      const r = document.createRange();
+      try { r.setStart(n, s.focusOffset); r.collapse(true); } catch (_) { /* a stale offset: no rect */ }
+      const q = r.getClientRects(), c = q.length ? q[0] : r.getBoundingClientRect();
+      x = R(c.left); y = R(c.top); h = R(c.height);
+      const p = Ed.pos(g, n, s.focusOffset);
+      if (p) lc = p.l + "." + p.c;
+    }
+  }
+  const r0 = lp.children[0], cb = r0 ? r0.getBoundingClientRect() : null;
+  const t0 = r0 ? Ed.firstRect(r0, document.createRange()) : null;
+  return " [crt:" + k + "|" + x + "," + y + "," + h + "|lp=" + ox + "," + oy
+    + "|col=" + (cb ? R(cb.left) + "," + R(cb.right) : "-")
+    + "|t0=" + (t0 ? R(t0.left) + "," + R(t0.top) : cb ? R(cb.left) + "," + R(cb.top) : "-")
+    + "|ae=" + (document.activeElement === lp ? 1 : 0) + "|" + lc + "]";
+};
 
 /* R17.6/R17.7: reveal follows the SELECTION, per token. Selection moves the
    browser handles natively (arrows, clicks, drag-select) land here — no
@@ -1926,6 +1984,8 @@ document.addEventListener("selectionchange", () => {
   const s = window.getSelection();
   if (!s || !s.anchorNode) return;
   const row = Ed.rowOf(s.anchorNode);
+  // caret00: a selection ON the editor element (no row) republishes [crt:] too
+  if (!row && s.anchorNode.classList && s.anchorNode.classList.contains("lp")) { Ed.census(); return; }
   const lp = row ? row.parentElement : null;
   if (!lp || !lp.classList.contains("lp")) return;
   const pane = lp.closest(".pane"), g = pane ? pane._g : null;
