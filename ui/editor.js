@@ -860,7 +860,26 @@ const Ed = {
     v.rowSrc = L.slice();
     v.note = typeof curOf === "function" ? curOf(g) : null;
     if (caret != null && caret >= 0) Ed.place(g, caret, col || 0);
-    else Ed.reveal(g, null);
+    else {
+      Ed.reveal(g, null);
+      /* caret00: a rebuild WITHOUT a caret request must not strand the live
+         selection. Removing the row that held it moves the DOM boundary onto
+         the parent (DOM "remove" steps: the range becomes (.lp, index)), so
+         after an in-place note change with the editor focused (history
+         back/forward, follow link: loadActive -> lpRender(g, -1, 0, true))
+         the caret position is .lp ITSELF, between block rows. That position
+         has no line box: the range has no client rect and WebKit paints the
+         caret at the editor box's corner — the "caret at (0,0) of the note".
+         Re-seat it in a real row: document start after a full rebuild (a new
+         note), the row the boundary now points at after a patch. Focus is
+         left as it is (place(..., false)): this keeps a caret, it never
+         takes one. */
+      const s = window.getSelection();
+      if (s && s.rangeCount && (s.anchorNode === lp || s.focusNode === lp) && lp.children.length) {
+        const p = full || touched === L.length ? { l: 0, c: 0 } : (Ed.pos(g, lp, s.focusOffset) || { l: 0, c: 0 });
+        Ed.place(g, p.l, p.c, false);
+      }
+    }
     if (typeof perf !== "undefined" && perf.mark)
       // R18: this is the JS row patch, NOT the old per-keystroke Rust render.
       // "lp_render" stays reserved for the IPC span (docs/perf.md '## EDITOR':
