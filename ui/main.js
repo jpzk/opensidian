@@ -4421,7 +4421,7 @@ function applyMode(g, keep) {  // exactly ONE of lp / preview fills the pane
   const m = g.active >= 0 ? g.tabs[g.active].mode : "livepreview";
   g.editor.style.display = "none";          // R12: the model textarea never shows; source = lp + reveal
   g.lp.style.display = isLp(m) ? "" : "none";
-  g.lp.classList.toggle("src", m === "source");
+  if (m !== "reading") g.lp.classList.toggle("src", m === "source");   // opt10b: reading keeps the lp sub-mode class — flipping .lp.src restyled + relaid the kept 30k lp both ways
   g.preview.style.display = m === "reading" ? "" : "none";
   // modeswitch opt6: the view the edit <-> reading switch LEAVES (setMode passes
   // it as `keep`) stays laid out instead of display:none — hidden, out of flow,
