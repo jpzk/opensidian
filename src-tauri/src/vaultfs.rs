@@ -113,6 +113,36 @@ fn fs_lstat(p: &CString) -> io::Result<libc::stat> {
     stat_at(libc::AT_FDCWD, p)
 }
 
+/// both files re-read from offset 0 and compared whole: equal length, equal bytes
+fn same_bytes(a: &mut File, b: &mut File) -> io::Result<bool> {
+    use std::io::{Seek, SeekFrom};
+    a.seek(SeekFrom::Start(0))?;
+    b.seek(SeekFrom::Start(0))?;
+    let (mut x, mut y) = (vec![0u8; 64 * 1024], vec![0u8; 64 * 1024]);
+    loop {
+        let n = fill(a, &mut x)?;
+        let m = fill(b, &mut y)?;
+        if n != m || x[..n] != y[..m] {
+            return Ok(false);
+        }
+        if n == 0 {
+            return Ok(true);
+        }
+    }
+}
+
+/// read until `buf` is full or EOF (a short read is not the end of the file)
+fn fill(f: &mut File, buf: &mut [u8]) -> io::Result<usize> {
+    let mut n = 0;
+    while n < buf.len() {
+        match f.read(&mut buf[n..])? {
+            0 => break,
+            k => n += k,
+        }
+    }
+    Ok(n)
+}
+
 fn refused(rel: &Path, why: &str) -> io::Error {
     let e = io::Error::new(io::ErrorKind::PermissionDenied, format!("refused: {why}: {}", rel.display()));
     eprintln!("[vaultfs] {e}");
@@ -425,6 +455,7 @@ impl Vault {
             return Ok(tdir.join(name));
         }
         Err(io::Error::new(io::ErrorKind::AlreadyExists, "no free name in the trash"))
+    }
 
     /* osdrop — MOVE a file from OUTSIDE the vault into `dir` (vault-relative),
        never overwriting, crash-safe. The ONE primitive drop-to-attach stands on.
@@ -442,7 +473,7 @@ impl Vault {
             Landlock refer denial, ...) -> copy at most cap bytes into an O_EXCL
                                tmp, fsync it, then VERIFY: the source fd's size and
                                mtime did not change, and the tmp read back from disk
-                               has the source's size and sha256.
+                               is byte-identical to the source (both re-read).
          3. renameat2(tmp, name, RENAME_NOREPLACE) over the candidate names
             (EEXIST -> next name; a filesystem without NOREPLACE -> linkat, which
             also refuses an existing name), then fsync the directory.
@@ -452,7 +483,6 @@ impl Vault {
        verified, the source simply stays (SrcFate::Kept, e.g. a read-only drop
        folder under Landlock) — a duplicate, never a loss. */
     pub fn import_move(&self, src: &Path, dir: &Path, names: &mut dyn Iterator<Item = String>, cap: u64) -> Result<Imported, ImportErr> {
-        use sha2::{Digest, Sha256};
         use std::os::unix::fs::OpenOptionsExt;
         let d = self.dir(dir, false).map_err(ImportErr::Io)?;
         let dfd = d.fd.as_raw_fd();
@@ -495,7 +525,6 @@ impl Vault {
             .map_err(ImportErr::Io)?;
             let mut out = unsafe { File::from_raw_fd(raw) };
             let r = (|| -> Result<(), ImportErr> {
-                let mut h = Sha256::new();
                 let mut buf = vec![0u8; 64 * 1024];
                 let mut total: u64 = 0;
                 loop {
@@ -507,7 +536,6 @@ impl Vault {
                     if total > cap {
                         return Err(ImportErr::TooBig(total));     // grew mid-copy
                     }
-                    h.update(&buf[..n]);
                     out.write_all(&buf[..n]).map_err(ImportErr::Io)?;
                     fault("import:copying").map_err(ImportErr::Io)?;
                 }
@@ -519,20 +547,10 @@ impl Vault {
                 if st1.st_size != st0.st_size || (st1.st_mtime, st1.st_mtime_nsec) != (st0.st_mtime, st0.st_mtime_nsec) || total != st0.st_size as u64 {
                     return Err(ImportErr::Changed);
                 }
-                // ... and what is ON DISK is what we read, byte for byte
-                use std::io::Seek;
-                out.seek(std::io::SeekFrom::Start(0)).map_err(ImportErr::Io)?;
-                let mut h2 = Sha256::new();
-                let mut back: u64 = 0;
-                loop {
-                    let n = out.read(&mut buf).map_err(ImportErr::Io)?;
-                    if n == 0 {
-                        break;
-                    }
-                    back += n as u64;
-                    h2.update(&buf[..n]);
-                }
-                if back != total || h2.finalize() != h.finalize() {
+                // ... and what is ON DISK is the source, byte for byte: both
+                // re-read from offset 0 and compared whole (stronger than a
+                // size + digest compare, and no hashing crate in the binary)
+                if !same_bytes(&mut sf, &mut out).map_err(ImportErr::Io)? {
                     return Err(ImportErr::Io(io::Error::other("verify: the staged copy does not match the source")));
                 }
                 fault("import:staged").map_err(ImportErr::Io)
@@ -602,7 +620,6 @@ impl Vault {
             Err(e) => SrcFate::Kept(e.to_string()),
         };
         Ok(Imported { name, src: fate, how })
-    }
     }
 }
 
