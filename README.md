@@ -27,8 +27,6 @@ Linux x86_64. Download one:
 | [RPM](https://github.com/jpzk/opensidian/releases/download/v0.6.1/opensidian-0.6.1-x86_64.rpm) | you run Fedora and want a system package with a menu entry and icon; dnf pulls WebKitGTK 4.1 for you | Fedora 44 (`sudo dnf install ./opensidian-0.6.1-x86_64.rpm`) |
 | [DEB](https://github.com/jpzk/opensidian/releases/download/v0.6.1/opensidian-0.6.1-x86_64.deb) | you run Debian or Ubuntu and want a system package with a menu entry and icon; apt pulls WebKitGTK 4.1 for you | Debian 13, Ubuntu 26.04 LTS (`sudo apt install ./opensidian-0.6.1-x86_64.deb`) |
 
-AppImage: `chmod +x opensidian-*.AppImage && ./opensidian-*.AppImage` (without FUSE: `--appimage-extract`, then run `squashfs-root/AppRun`). Flatpak: `flatpak install opensidian-0.6.1-x86_64.flatpak && flatpak run dev.koto.opensidian`. RPM: `sudo dnf install ./opensidian-0.6.1-x86_64.rpm`, remove with `sudo dnf remove opensidian`. DEB: `sudo apt install ./opensidian-0.6.1-x86_64.deb`, remove with `sudo apt purge opensidian`. The rpm and deb are unsigned, so check them against the signed `SHA256SUMS` below. Opt-in Landlock sandbox: `OPENSIDIAN_LANDLOCK=1`.
-
 ## Verify your download
 `SHA256SUMS` is signed with key `A6E6 9ED6 BC47 79F3 2817  2148 4CC1 AFDE 15B6 4EA3`:
 
