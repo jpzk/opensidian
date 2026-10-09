@@ -4340,8 +4340,92 @@ function mswEnd(t0, ss) {
     updateTitle();
   }, 0));
 }
+/* ---------- modeswitch probe (goal/modeswitch, PASSIVE: reads clocks + geometry only) ----------
+   [msw:] above starts at setMode; the user feels the switch from the INPUT. This
+   probe arms on the input itself (capture-phase Ctrl+E keydown / header-icon
+   click, event.timeStamp) and ends at the first frame of a STABLE paint: the
+   destination view's scrollHeight/scrollTop/clientHeight/children unchanged for
+   two rAF frames in a row (a lazy row wake-up or a late layout shift resets it).
+     [msi:<seq>:<dir>:<in>:<total>:<steps>:<top>:<maxgap>]
+       dir   e2r | r2e   (edit -> reading / reading -> edit; sub-mode in <in>)
+       in    key | clk | cmd (no input armed: palette / menu)
+       total input -> stable paint, ms
+       steps ev,flush,apply,render,html,blines,wire,lp,ss,layout,paint,settle (ms,
+             '~' separated) — where the switch spends its time
+       top   ssAnchor of the destination after the switch (scroll oracle)
+       maxgap longest frame gap while settling (long-task proxy)
+     [pvh:<fnv1a of #preview innerHTML>/<children>] — reading output fingerprint,
+       computed AFTER the measurement closes (never inside it).
+   Steps are marked with mswpMark(name); a mark outside an armed switch is free. */
+const mswp = { arm: null, cur: null, seq: 0, tok: "", pvh: "" };
+const mswpTs = e => {   // event.timeStamp is a DOMHighResTimeStamp in WebKit; refuse anything that is not
+  const n = performance.now(), t = e && e.timeStamp;
+  return typeof t === "number" && t > 0 && t <= n + 1 && n - t < 5000 ? t : n;
+};
+window.addEventListener("keydown", e => {
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === "e" || e.key === "E"))
+    mswp.arm = { kind: "key", t0: mswpTs(e) };
+}, true);
+window.addEventListener("click", e => {
+  if (e.target && e.target.closest && e.target.closest(".modebtn") && !e.ctrlKey && !e.metaKey)
+    mswp.arm = { kind: "clk", t0: mswpTs(e) };
+}, true);
+function mswpBegin(from, to) {
+  const now = performance.now();
+  const a = mswp.arm && now - mswp.arm.t0 < 3000 ? mswp.arm : { kind: "cmd", t0: now };
+  mswp.arm = null;
+  const dir = to === "reading" ? "e2r" : from === "reading" ? "r2e" : "e2e";
+  mswp.cur = { kind: a.kind, t0: a.t0, dir: dir + (to === "reading" ? (from === "source" ? "s" : "l") : (to === "source" ? "s" : "l")),
+               last: now, st: { ev: now - a.t0 } };
+}
+function mswpMark(name) {
+  const c = mswp.cur; if (!c) return;
+  const n = performance.now();
+  c.st[name] = (c.st[name] || 0) + (n - c.last); c.last = n;
+}
+function mswpWatch(g) {   // after setMode's synchronous work: force the layout, then rAF until stable
+  const c = mswp.cur; if (!c) return;
+  mswp.cur = null;
+  const t = g.active >= 0 ? g.tabs[g.active] : null;
+  const el = t && t.mode === "reading" ? g.preview : g.lp;
+  c.last = performance.now();
+  const sig = () => el.scrollHeight + ":" + el.scrollTop + ":" + el.clientHeight + ":" + el.childElementCount;
+  let prev = sig(); const tL = performance.now(); c.st.layout = tL - c.last;
+  let stable = 0, frames = 0, tCand = 0, tPaint = 0, lastF = tL, maxgap = 0;
+  const done = () => {
+    const end = tCand, R = x => Math.round(x * 10) / 10, s = c.st;
+    s.paint = tPaint - tL; s.settle = end - tPaint;
+    const steps = ["ev", "flush", "apply", "render", "html", "blines", "wire", "lp", "ss", "layout", "paint", "settle"]
+      .map(k => R(s[k] || 0)).join("~");
+    const top = ssAnchor(g);
+    mswp.seq++;
+    mswp.tok = " [msi:" + mswp.seq + ":" + c.dir + ":" + c.kind + ":" + R(end - c.t0) + ":" + steps + ":" +
+               (top == null ? "-" : Math.round(top * 100) / 100) + ":" + R(maxgap) + "]";
+    if (t && t.mode === "reading") {   // fingerprint, outside the measured window
+      const h = g.preview.innerHTML; let x = 0x811c9dc5;
+      for (let i = 0; i < h.length; i++) { x ^= h.charCodeAt(i); x = Math.imul(x, 0x01000193); }
+      mswp.pvh = " [pvh:" + (x >>> 0).toString(16) + "/" + g.preview.children.length + "]";
+    } else mswp.pvh = "";
+    updateTitle();
+  };
+  const frame = ts => {
+    frames++;
+    const n = performance.now(); maxgap = Math.max(maxgap, n - lastF); lastF = n;
+    setTimeout(() => {               // after this frame's paint (the [msw:] rAF -> task pattern)
+      const p = performance.now();
+      if (!tPaint) tPaint = p;
+      const s = sig();
+      if (s === prev) { if (!stable) tCand = p; stable++; }
+      else { prev = s; stable = 0; tCand = 0; }
+      if (stable >= 2 || frames > 600) { if (!tCand) tCand = p; done(); }
+      else requestAnimationFrame(frame);
+    }, 0);
+  };
+  requestAnimationFrame(frame);
+}
 function mswTok() {
-  return (mswMs >= 0 ? " [msw:" + mswMs + "/" + mswMax + "/" + mswR(mswSum / mswN) + "/" + mswN + "]" : "") +
+  return mswp.tok + mswp.pvh +
+         (mswMs >= 0 ? " [msw:" + mswMs + "/" + mswMax + "/" + mswR(mswSum / mswN) + "/" + mswN + "]" : "") +
          (mswW >= 0 ? " [mswk:" + mswW + "/" + mswWMax + "]" : "") +
          (mswSs >= 0 ? " [mswss:" + mswSs + "/" + mswSsMax + "]" : "");
 }
@@ -4359,15 +4443,54 @@ function updateModeBtn(g) {
     : "Current view: editing\nClick to read\nCtrl+Click to open to the right";
 }
 
-function applyMode(g) {  // exactly ONE of lp / preview fills the pane
+function applyMode(g, keep) {  // exactly ONE of lp / preview fills the pane
   if (typeof Ed !== "undefined" && Ed.rvEnd) Ed.rvEnd(g);   // rvtask R3: a mode change closes the reading-view undo step
   const m = g.active >= 0 ? g.tabs[g.active].mode : "livepreview";
   g.editor.style.display = "none";          // R12: the model textarea never shows; source = lp + reveal
   g.lp.style.display = isLp(m) ? "" : "none";
-  g.lp.classList.toggle("src", m === "source");
+  if (m !== "reading") g.lp.classList.toggle("src", m === "source");   // opt10b: reading keeps the lp sub-mode class — flipping .lp.src restyled + relaid the kept 30k lp both ways
   g.preview.style.display = m === "reading" ? "" : "none";
+  // modeswitch opt6: the view the edit <-> reading switch LEAVES (setMode passes
+  // it as `keep`) stays laid out instead of display:none — hidden, out of flow,
+  // at the same width — so the switch back re-shows it without WebKit laying
+  // out the whole note again (30k: ~0.9 s each way, the ss / lp steps). Every
+  // other applyMode (note open, tab switch) drops any kept view to display:none,
+  // and so does a pane width change (vkWatch): a kept view never costs a
+  // relayout the old code would not have paid.
+  // opt8: while a view is kept, BOTH views sit out of flow over the same box (.content.vk2),
+  // so a toggle swaps only which one hides — neither ever changes its containing block
+  // (opt6 flipped the shown view absolute -> in flow and the left one back on every toggle:
+  // a full relayout of both, ~600 ms of the 30k apply step).
+  g.lp.classList.remove("vkeep"); g.preview.classList.remove("vkeep");
+  const vk = !!keep && (keep === g.lp || keep === g.preview) && keep.style.display === "none";
+  g.content.classList.toggle("vk2", vk);
+  if (vk) {
+    keep.style.display = ""; keep.classList.add("vkeep");
+    // a caret left inside the hidden kept view must not keep typing into it
+    const ae = document.activeElement; if (ae && keep.contains(ae) && ae.blur) ae.blur();
+    // opt10 hides it off the pane, which (unlike visibility:hidden) leaves it focusable:
+    // a Tab / programmatic focus landing inside a kept view is refused the same way
+    if (!keep._vkFocus) {
+      keep._vkFocus = true;
+      keep.addEventListener("focusin", e => { if (keep.classList.contains("vkeep") && e.target.blur) e.target.blur(); });
+    }
+    vkWatch(g);
+  }
   updateModeBtn(g);
 }
+function vkWatch(g) {   // modeswitch opt6: a pane width change drops the kept view (see applyMode)
+  const C = g.content;
+  C._vkW = C.clientWidth;
+  if (C._vkRO) return;
+  C._vkRO = new ResizeObserver(() => {
+    if (C.clientWidth === C._vkW) return;
+    C._vkW = C.clientWidth;
+    for (const el of C.querySelectorAll(":scope > .vkeep")) { el.classList.remove("vkeep"); el.style.display = "none"; }
+    C.classList.remove("vk2");
+  });
+  C._vkRO.observe(C);
+}
+const vkShown = el => !!el && !!el.offsetParent && !el.classList.contains("vkeep");   // opt6: offsetParent alone counts a kept (hidden) view
 
 async function cmdToggleMode(g) {  // #16: Ctrl+E / the view-header icon = EDIT <-> READING, two states, nothing else
   g = g || fg();
@@ -4402,35 +4525,64 @@ async function cmdToggleSource(g) {  // Obsidian "Toggle Live Preview/Source mod
 async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu radio / palette / the Ctrl+E edit<->reading toggle
   const tab = g.tabs[g.active];
   const mswT0 = performance.now();               // R35 perf: the command, before any DOM work
+  mswpBegin(tab.mode, mode);                     // modeswitch probe (passive)
   // R12.4: caret survives lp<->src. Read ONLY out of an edit mode and only a REAL
   // caret: g.lpActive outlives reading view, and caretLC() falls back to [0,0]
   // when the selection is elsewhere (the palette input) — that [0,0] is the bug.
-  const kc = isLp(tab.mode) && g.lpActive ? Ed.caret(g) : null;
+  // modeswitch: the whole SELECTION survives, not only its caret end. ks = the
+  // model range (a <= b); the caret is its moving end (focus, else b) and the
+  // other end is the anchor — a backward selection comes back backward.
+  const ks = isLp(tab.mode) && g.lpActive ? Ed.sel(g) : null;
+  const kc = ks ? (Ed.focusPos(g) || ks.b) : null;
   const keep = kc ? [kc.l, kc.c] : null;
+  const ka = ks && !ks.empty ? (kc.l === ks.a.l && kc.c === ks.a.c ? ks.b : ks.a) : null;
   // caretkeep: the caret is remembered PER TAB whenever an edit mode is left, so
   // edit -> reading -> edit lands where it was (it read null on the way back and
   // the caret went to line 0). Per tab: two tabs / split panes never share it.
-  if (keep) tab.caret = { n: curOf(g), lc: keep };   // keyed to the NOTE: an in-place navigate must not inherit it
+  if (keep) tab.caret = { n: curOf(g), lc: keep, an: ka ? [ka.l, ka.c] : null };   // keyed to the NOTE: an in-place navigate must not inherit it
   const mswA0 = performance.now();
   const anchor = ssAnchor(g);                    // R35: read the top SOURCE LINE from the OLD view, before anything flips
   let mswSsMs = performance.now() - mswA0;
   await flushSave(g);
+  mswpMark("flush");
+  // modeswitch opt3: leaving an edit mode for reading, remember what the lp rows
+  // were built from — the rows stay in g.lp (display:none) while reading shows.
+  if (mode === "reading" && isLp(tab.mode) && g.view && g.view.rowSrc)
+    g.lp._msk = { n: curOf(g), notes: notesCache, imgs: imgsCache, rows: g.view.rowSrc, len: g.lp.children.length };
+  const leave = (mode === "reading") !== (tab.mode === "reading") ? (tab.mode === "reading" ? g.preview : g.lp) : null;   // opt6: the view this switch leaves
   tab.mode = mode;
   hideAc();
-  applyMode(g);
-  if (tab.mode === "reading") await preview(g);
+  applyMode(g, leave);
+  mswpMark("apply");
+  if (tab.mode === "reading") await preview(g, true);
   if (tab.mode === "livepreview" || tab.mode === "source") {   // mode switch: full rebuild
     // caret where it was (this switch, else the tab's remembered one), clamped to
     // the note AS IT IS NOW: an external edit in reading view may have shortened it.
     // Nothing remembered: livepreview = no caret, source = end of note.
-    const L = Ed.lines(g), want = keep || (tab.caret && tab.caret.n === curOf(g) ? tab.caret.lc : null);
+    // modeswitch opt3: back from reading onto the SAME rows (same note, same
+    // note/image lists the rows resolved links against, nobody re-rendered them
+    // since: rowSrc identity) = no full rebuild. Ed.render's patch path still
+    // diffs the model against those rows, so an edit made meanwhile is patched.
+    // lp vs source is a class on g.lp, not a different row build.
+    const mk = g.lp._msk; g.lp._msk = null;
+    const reuse = !!mk && mk.n === curOf(g) && mk.notes === notesCache && mk.imgs === imgsCache
+      && g.view && g.view.rowSrc === mk.rows && g.lp.children.length === mk.len;
+    if (reuse) for (const el of (g.lp._rv || [])) el.classList.remove("rv");   // the patch path forgets the old reveal set
+    const full = !reuse;
+    const mem = tab.caret && tab.caret.n === curOf(g) ? tab.caret : null;
+    const L = Ed.lines(g), want = keep || (mem ? mem.lc : null), wa = keep ? (ka ? [ka.l, ka.c] : null) : (mem ? mem.an : null);
+    const clampLC = p => { const l = Math.max(0, Math.min(p[0], L.length - 1)); return [l, Math.max(0, Math.min(p[1], (L[l] || "").length))]; };
     if (want) {
-      const l = Math.max(0, Math.min(want[0], L.length - 1));
-      const c = Math.max(0, Math.min(want[1], (L[l] || "").length));
-      await lpRender(g, l, c, true);
-    } else if (tab.mode === "livepreview") await lpRender(g, -1, 0, true);
-    else await lpRender(g, L.length - 1, L[L.length - 1].length, true);
+      const [l, c] = clampLC(want);
+      await lpRender(g, l, c, full);
+      if (wa) {                                  // modeswitch: re-span the selection anchor -> caret
+        const [al, ac] = clampLC(wa);
+        if (al !== l || ac !== c) { Ed.place(g, al, ac); Ed.extendTo(g, l, c); }
+      }
+    } else if (tab.mode === "livepreview") await lpRender(g, -1, 0, full);
+    else await lpRender(g, L.length - 1, L[L.length - 1].length, full);
   }
+  mswpMark("lp");
   // R35: the destination is rendered — place the SAME source line at the top of
   // it, through its own geometry. AFTER the caret work above on purpose: source
   // mode's Ed.place() scrolls the caret into view, and the scroll the USER chose
@@ -4439,6 +4591,8 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
   ssRestore(g, anchor);
   mswSsMs += performance.now() - mswR0;
   mswEnd(mswT0, mswSsMs);
+  mswpMark("ss");
+  mswpWatch(g);
   fModeSwitched(g);   // R26.21/R26.23: an open find bar re-shapes and re-scans for the new surface
   updateTitle();
 }
@@ -5859,18 +6013,66 @@ async function wikiClick(e, a) {
 function extClick(e, a) {   // `a` unused: kept for the Ed.extClick(e, a) signature
   e.preventDefault(); e.stopPropagation();
 }
-async function preview(g) {
-  const src = g.editor.value;
-  g.preview.innerHTML = await inv("render", { content: src });
-  // pdfembed: the renderer emits an empty span.pdf-embed (data-* only); the
-  // frame is built by the ONE builder live preview uses too (editor.js Ed.pdfFill)
-  for (const s of g.preview.querySelectorAll("span.pdf-embed")) Ed.pdfFill(s);
+// modeswitch opt5: did anything but the pane's own show/hide touch the retained
+// reading DOM? applyMode flips #preview's inline display on every switch, and the
+// opt2 observer counted that as a touch: every warm edit -> reading was a miss.
+// Only a style attribute on #preview ITSELF is ignored; any other record (a child,
+// a text, data-title, a class) still marks it dirty.
+const pvTouched = (P, recs) => recs.some(r => r.target !== P || r.type !== "attributes" || (r.attributeName !== "style" && r.attributeName !== "class"));   // opt6: + the vkeep class flip
+async function preview(g, sw) {   // sw: called by setMode (the edit -> reading switch)
+  const src = g.editor.value, P = g.preview;
+  // modeswitch opt2: the reading DOM is RETAINED while the pane shows the edit
+  // view, so edit -> reading with nothing changed re-shows it instead of a
+  // render IPC + innerHTML + a full relayout. "Nothing changed" = every input
+  // of Rust's render (the text, the note + image lists it resolves against,
+  // strict line breaks) is the one this DOM was built from, AND no one touched
+  // the DOM since (a MutationObserver: find marks, a callout fold, a reading-
+  // view task tick all count) — any doubt is a miss, and a miss is the old path.
+  const k = P._pvk;
+  if (k && k.src === src && k.notes === notesCache && k.imgs === imgsCache && k.slb === slbOn
+      && !P._pvDirty && !pvTouched(P, P._pvObs.takeRecords())) {
+    g.pvLines = k.lines;
+    mswpMark("render"); mswpMark("html"); mswpMark("blines"); mswpMark("wire");
+    return;
+  }
+  P._pvk = null;
   // R35: the block -> source line map for THIS html, from the renderer's own
   // parser. Stored next to the html it describes and re-read on every render:
   // a stale map would scroll the reading view to the wrong block, which is
   // exactly the silent wrongness this feature exists to avoid (ssAnchor /
   // ssRestore refuse to act when its length does not match #preview's).
-  g.pvLines = await inv("block_lines", { content: src });
+  // modeswitch: BOTH asks go out before the DOM write. Awaiting block_lines
+  // AFTER innerHTML handed the event loop to WebKit, which laid out the whole
+  // new document before the reply was read (measured: ~1 s of the 30k-line
+  // switch billed to a pure parse).
+  // modeswitch opt4: and ONE ask, not two. Rust runs sync commands one after
+  // the other, so Promise.all bought no overlap (opt1: render 1253 + blines
+  // 864 ms on 30k), and each ask shipped the whole note across the bridge
+  // while the parse itself stays under 100 ms. render_view = render +
+  // block_lines, same parser, same options, one transfer.
+  // modeswitch opt5: on the switch, the pane must not show the OLD reading DOM
+  // while Rust renders: applyMode just un-hid it, so WebKit laid out that stale
+  // document (30k: ~1 s) during the await and then threw it away for the new
+  // html (the cold first toggle, with an empty #preview, measured render 200 ms;
+  // every later one 1150-1370 ms). Hidden until the new html is in; setMode
+  // restores the scroll position after, so nothing visible is lost. Only on
+  // the switch: an in-place re-render keeps its scrollTop.
+  const hide = sw && P.firstChild && P.style.display !== "none";
+  if (hide) P.style.display = "none";
+  const [pvHtml, pvL] = await inv("render_view", { content: src });
+  mswpMark("render");
+  g.preview.innerHTML = pvHtml;
+  if (hide && g.preview === P && isReading(g)) P.style.display = "";
+  // pdfembed: the renderer emits an empty span.pdf-embed (data-* only); the
+  // frame is built by the ONE builder live preview uses too (editor.js Ed.pdfFill).
+  // After the un-hide (Ed.pdfSize reads clientWidth). Its async page loads write
+  // into #preview after the observer is armed below, so a note with a PDF frame
+  // marks the retained DOM dirty and the next switch takes the full render: the
+  // pre-modeswitch path, never a stale view.
+  for (const s of g.preview.querySelectorAll("span.pdf-embed")) Ed.pdfFill(s);
+  mswpMark("html");
+  g.pvLines = pvL;
+  mswpMark("blines");
   for (const a of g.preview.querySelectorAll("a.tag"))
     a.onclick = e => { e.preventDefault(); tagSearch(a.dataset.tag); };
   for (const a of g.preview.querySelectorAll("a.wiki"))
@@ -5888,6 +6090,16 @@ async function preview(g) {
         if (an) await navAnchor(g, an);
       } else navigate(g, n, an);
     };
+  // modeswitch opt2: arm the retained-DOM key. Our own innerHTML above is the
+  // last write: drop its records synchronously, from here on any record = dirty.
+  if (!P._pvObs) {
+    P._pvObs = new MutationObserver(r => { if (pvTouched(P, r)) P._pvDirty = true; });
+    P._pvObs.observe(P, { subtree: true, childList: true, attributes: true, characterData: true });
+  }
+  P._pvObs.takeRecords(); P._pvDirty = false;
+  if (g.preview === P && g.editor.value === src)
+    P._pvk = { src, notes: notesCache, imgs: imgsCache, slb: slbOn, lines: pvL };
+  mswpMark("wire");
 }
 
 function scheduleSave(g) {
@@ -6956,7 +7168,7 @@ window.addEventListener("wheel", e => {
    centre (note body or graph canvas), never a literal */
 function qfsTok() {
   const g = typeof fg === "function" ? fg() : null;
-  const el = g && (g.lp && g.lp.offsetParent ? g.lp : g.preview && g.preview.offsetParent ? g.preview : null);
+  const el = g && (vkShown(g.lp) ? g.lp : vkShown(g.preview) ? g.preview : null);
   const px = el ? getComputedStyle(el).fontSize : "-";
   const cr = g && g.content ? g.content.getBoundingClientRect() : null;
   const at = cr && cr.width ? Math.round(cr.left + cr.width / 2) + "," + Math.round(cr.top + cr.height / 2) : "-";
@@ -7176,7 +7388,7 @@ function ffirst(el) {
 }
 function fontsTok() {
   const g = typeof fg === "function" ? fg() : null;
-  const el = g && (g.lp && g.lp.offsetParent ? g.lp : g.preview && g.preview.offsetParent ? g.preview : null);
+  const el = g && (vkShown(g.lp) ? g.lp : vkShown(g.preview) ? g.preview : null);
   const code = el ? el.querySelector("code, .code") : null;
   const cnt = p => { const v = document.body.style.getPropertyValue(p).trim(); return v ? v.split(/"\s*,\s*"/).length : 0; };
   return " [ffam:" + ffirst(document.body) + "," + ffirst(document.querySelector(".tab")) + "," +
