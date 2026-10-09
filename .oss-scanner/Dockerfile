@@ -4,7 +4,7 @@
 # available during this build; the scan itself runs offline, so everything is fetched here.
 
 # Pinned toolchain (Rust 1.98.0, the version the README documents) on Debian 13, a tested distro.
-FROM rust:1.98.0-slim-trixie@sha256:17d1ba895198f9934c6314ec5346a0d5115372f3243390c3d731e242f35c2f27
+FROM docker.io/library/rust:1.98.0-slim-trixie@sha256:17d1ba895198f9934c6314ec5346a0d5115372f3243390c3d731e242f35c2f27
 
 ENV DEBIAN_FRONTEND=noninteractive
 # Build deps from README "Build from source", plus Xvfb so the app and tests can run headless.
