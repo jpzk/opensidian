@@ -14,9 +14,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       xvfb xauth dbus-x11 \
     && rm -rf /var/lib/apt/lists/*
 
+# Unprivileged build/test user: two tests (refused-write injection via chmod 0555, and the
+# folder picker denying /root) are meaningless as root, which ignores file modes and has HOME=/root.
+RUN useradd --create-home --uid 1000 --shell /bin/sh scanner \
+    && chown -R scanner:scanner "$CARGO_HOME"
+
 # scanner contract: the checkout lives inside the image, at /src
-COPY . /src
+COPY --chown=scanner:scanner . /src
 WORKDIR /src/src-tauri
+USER scanner
 
 # Release build as shipped, but with debug info, no symbol stripping and frame pointers.
 ENV CARGO_PROFILE_RELEASE_DEBUG=true \
@@ -33,5 +39,9 @@ RUN (xvfb-run -a cargo test --release --locked || echo "WARNING: cargo test repo
 
 # From here on there is no network: cargo must use what was fetched above.
 ENV CARGO_NET_OFFLINE=true
+
+# Back to root so the scanner can add its own tooling layers. Run the tests as the build user:
+#   runuser -u scanner -- sh -c "cd /src/src-tauri && xvfb-run -a cargo test --release --locked"
+USER root
 # The app binary: /src/src-tauri/target/release/opensidian (run under xvfb-run, e.g.
 # `xvfb-run -a target/release/opensidian /path/to/vault`).
