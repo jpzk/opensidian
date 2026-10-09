@@ -21,6 +21,10 @@ RUN useradd --create-home --uid 1000 --shell /bin/sh scanner \
 
 # scanner contract: the checkout lives inside the image, at /src
 COPY --chown=scanner:scanner . /src
+# The scanner works as root in /src (owned by scanner): let root use git there, and give it one
+# command that runs the tests correctly (see .oss-scanner/run-tests.sh).
+RUN git config --system --add safe.directory /src \
+    && install -m 755 /src/.oss-scanner/run-tests.sh /usr/local/bin/opensidian-test
 WORKDIR /src/src-tauri
 USER scanner
 
@@ -40,8 +44,8 @@ RUN (xvfb-run -a cargo test --release --locked || echo "WARNING: cargo test repo
 # From here on there is no network: cargo must use what was fetched above.
 ENV CARGO_NET_OFFLINE=true
 
-# Back to root so the scanner can add its own tooling layers. Run the tests as the build user:
-#   runuser -u scanner -- sh -c "cd /src/src-tauri && xvfb-run -a cargo test --release --locked"
+# Back to root so the scanner can add its own tooling layers. Run the tests with:
+#   opensidian-test            (drops to user scanner with HOME=/home/scanner; extra args go to cargo test)
 USER root
 # The app binary: /src/src-tauri/target/release/opensidian (run under xvfb-run, e.g.
 # `xvfb-run -a target/release/opensidian /path/to/vault`).
