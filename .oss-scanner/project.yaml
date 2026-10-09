@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# OSS Scanner enrolment for Opensidian. Copy to projects/opensidian/project.yaml in
+# https://github.com/anthropics/oss-scanner when opening the enrolment PR.
+
+# The git repository to scan, pinned to the main branch.
+repo: https://github.com/jpzk/opensidian#main
+
+# Reports and build problems go here (the address published in SECURITY.md).
+primary_contact: jendrik@madewithtea.com
+
+homepage: https://opensidian.org
+
+disabled: false
+
+# Build recipe, kept in this repository so it can change without a PR to oss-scanner.
+dockerfile: .oss-scanner/Dockerfile
