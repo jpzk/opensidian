@@ -30,11 +30,13 @@ Linux x86_64. Download one:
 ## Verify your download
 `SHA256SUMS` is signed with key `A6E6 9ED6 BC47 79F3 2817  2148 4CC1 AFDE 15B6 4EA3`:
 
-    curl -LO https://github.com/jpzk/opensidian/releases/download/v0.6.1/SHA256SUMS \
-         -LO https://github.com/jpzk/opensidian/releases/download/v0.6.1/SHA256SUMS.asc
-    gpg --keyserver hkps://keys.openpgp.org --recv-keys A6E69ED6BC4779F3281721484CC1AFDE15B64EA3
-    gpg --verify SHA256SUMS.asc SHA256SUMS
-    sha256sum -c --ignore-missing SHA256SUMS
+```sh
+curl -LO https://github.com/jpzk/opensidian/releases/download/v0.6.1/SHA256SUMS \
+     -LO https://github.com/jpzk/opensidian/releases/download/v0.6.1/SHA256SUMS.asc
+gpg --keyserver hkps://keys.openpgp.org --recv-keys A6E69ED6BC4779F3281721484CC1AFDE15B64EA3
+gpg --verify SHA256SUMS.asc SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
+```
 
 ## Build from source
 Tested 2026-10-03 on fresh Ubuntu 26.04 LTS and Fedora 44 with Rust 1.98.0
@@ -42,23 +44,31 @@ Tested 2026-10-03 on fresh Ubuntu 26.04 LTS and Fedora 44 with Rust 1.98.0
 
 1. System deps. Ubuntu/Debian:
 
-       sudo apt install build-essential libssl-dev libwebkit2gtk-4.1-dev \
-         libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+   ```sh
+   sudo apt install build-essential libssl-dev libwebkit2gtk-4.1-dev \
+     libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+   ```
 
    Fedora:
 
-       sudo dnf install gcc gcc-c++ make openssl-devel webkit2gtk4.1-devel \
-         gtk3-devel libappindicator-gtk3-devel librsvg2-devel
+   ```sh
+   sudo dnf install gcc gcc-c++ make openssl-devel webkit2gtk4.1-devel \
+     gtk3-devel libappindicator-gtk3-devel librsvg2-devel
+   ```
 
 2. Rust, if you don't have it (distro rustc is often older than 1.98):
 
-       curl --proto '=https' -sSf https://sh.rustup.rs | sh -s -- --default-toolchain 1.98.0
-       . "$HOME/.cargo/env"
+   ```sh
+   curl --proto '=https' -sSf https://sh.rustup.rs | sh -s -- --default-toolchain 1.98.0
+   . "$HOME/.cargo/env"
+   ```
 
 3. Build:
 
-       git clone https://github.com/jpzk/opensidian && cd opensidian/src-tauri
-       cargo build --release --locked   # -> target/release/opensidian
+   ```sh
+   git clone https://github.com/jpzk/opensidian && cd opensidian/src-tauri
+   cargo build --release --locked   # -> target/release/opensidian
+   ```
 
 ## Licence
 GPL-3.0-or-later ([LICENSE](LICENSE)). Read [THIRD-PARTY.md](THIRD-PARTY.md) before redistributing.
