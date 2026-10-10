@@ -42,3 +42,4 @@ CENSUS.push(() => tywTok());   // anudefault: [tyw:] R15 typo-fixture WANT value
 CENSUS.push(() => ttlTok());   // anutrain: [ttl:] inline-title WANT geometry (ink top/bottom, cap, first body row ink top) off the live DOM of the title fixtures — phase title measures pixels against these
 CENSUS.push(() => nmwTok());   // minimalmargin: [nmw:] note column geometry (pane edges, scrollbar, column, gaps) + the computed padding / max-width / --line-width / --max-width / --file-margins / --file-line-width that size it — phase notemargin asserts these against the stock recon numbers
 CENSUS.push(() => Ed.crtTok());   // caret00: [crt:] the focused editor's DOM caret (focus node kind, client rect) vs the scroller content-box origin, the text column and document position 0
+CENSUS.push(() => tfoldTok());   // treefold: [tfold:fe=<open folders>;bm=<collapsed item-<ctime>>] each fold by name, off the painted DOM (gate phase treefold)

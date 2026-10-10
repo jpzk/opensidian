@@ -2866,12 +2866,18 @@ fn mint_vault_id() -> Option<String> {
     Some(b.iter().map(|x| format!("{x:02x}")).collect())
 }
 
+/// mint false (the load path) only READS: opening a vault writes nothing to
+/// ~/.opensidian.json (vaultarg: a VAULT_DIR boot or a refused argument persists
+/// nothing). The id is minted when the first fold record is actually written.
 #[tauri::command]
-fn vault_id(v: State<Vault>) -> Option<String> {
+fn vault_id(v: State<Vault>, mint: Option<bool>) -> Option<String> {
     let root = cur_vault(&v)?;
     let key = fs::canonicalize(&root).unwrap_or(root).display().to_string();
     if let Some(id) = cfg_value()["vault_ids"][key.as_str()].as_str() {
         return Some(id.to_string());
+    }
+    if !mint.unwrap_or(false) {
+        return None;
     }
     cfg_update(&[cfgstore::Op::InsertIn("vault_ids".into(), key.clone(), serde_json::json!(mint_vault_id()?))]);
     // re-read: a racing window may have won the insert, its id is THE id

@@ -1214,6 +1214,7 @@ function renderBm() {
     if (grp) anc.push({ depth: r.depth, name: r.name, folded });
     row.className = "bmrow" + (grp ? " bmgrp" : "") + (folded ? " bmfold" : "") + (hide ? " bmhide" : "");
     if (grp) row.dataset.bmk = key;
+    if (grp && r.ctime) row.dataset.bmid = "item-" + r.ctime;   // treefold: stock's fold id, read by [tfold:]
     row.dataset.bmd = String(r.depth);
     row.style.paddingLeft = (BM_PAD + r.depth * BM_INDENT) + "px";   // content shifts, background still spans the pane (14-saved.png)
     row.title = r.name;
@@ -5778,10 +5779,12 @@ let unfold = new Set();
    5000 ms timer (stock lands ~5.4 s after the click), every change inside the
    window rides it. A record equal to the last one read/written is skipped. No
    exit handler (R28.3: SIGKILL/OOM skip it anyway); leaveVault flushes, because
-   a switch exits this process before the timer could fire. lsVid null = the id
-   could not be had (no config reachable): folds stay in memory, as before. */
+   a switch exits this process before the timer could fire. lsOn = a vault is in;
+   lsVid null with lsOn = this vault has no id YET (opening a vault never writes the
+   config, vaultarg): the first flush mints it. lsVid still null after that = no
+   config reachable: folds stay in memory, as before. */
 const LS_MS = 5000;
-let lsVid = null, lsTimer = 0, lsLast = new Map();
+let lsVid = null, lsOn = false, lsDirty = false, lsTimer = 0, lsLast = new Map();   // lsDirty: a fold changed since the last flush
 /* bookmarks: the ids read from disk wait in lsBmPend until the first bookmark_rows of
    this vault (refreshBm) maps each "item-<ctime>" to the group's title-path key that
    bmFolds and renderBm use. Until then the bookmarks record is NOT flushed (an
@@ -5815,17 +5818,32 @@ function bmGroupIds() {
 // stock's record: COLLAPSED groups, flat, nested included, tree order; a group with no
 // ctime has no stock id and folds in memory only
 const lsBmRec = () => [...new Set(bmGroupIds().filter(g => g.id && bmFolds.has(g.key)).map(g => g.id))];
+/* treefold census [tfold:fe=<open folders>;bm=<collapsed group ids>] read off the PAINTED
+   DOM (.trow.folder.open / .bmrow.bmgrp.bmfold), not off the Sets: per item, so a gate
+   asserts each fold by name. Folders in stock's record order, groups in tree order;
+   "[]|;" stripped so a folder name cannot forge a token. */
+function tfoldTok() {
+  const cl = s => String(s).replace(/[[\]|;]/g, "");
+  const fe = [...document.querySelectorAll("#tree .trow.folder.open")].map(r => r.dataset.folder).filter(Boolean).sort(lsPathCmp);
+  const bm = [...document.querySelectorAll("#bmlist .bmrow.bmgrp.bmfold")].map(r => r.dataset.bmid).filter(Boolean);
+  return " [tfold:fe=" + fe.map(cl).join("|") + ";bm=" + bm.map(cl).join("|") + "]";
+}
 function lsBmResolve() {
-  if (lsBmReady || !lsVid) return;
+  if (lsBmReady || !lsOn) return;
   lsBmReady = true;
   if (lsBmPend) for (const g of bmGroupIds()) if (g.id && lsBmPend.has(g.id)) bmFolds.add(g.key);
   lsBmPend = null;
 }
 function lsTouch() {
-  if (lsVid && !lsTimer) lsTimer = setTimeout(lsFlush, LS_MS);
+  if (!lsOn) return;
+  lsDirty = true;
+  if (!lsTimer) lsTimer = setTimeout(lsFlush, LS_MS);
 }
 async function lsFlush() {
   clearTimeout(lsTimer); lsTimer = 0;
+  if (!lsOn || !lsDirty) return;    // nothing toggled: no write, and no id minted (leaveVault calls this)
+  lsDirty = false;
+  if (!lsVid) { try { lsVid = await inv("vault_id", { mint: true }); } catch (e) { lsVid = null; } }
   if (!lsVid) return;
   const recs = [[lsKeyFe(), lsFeRec()]];
   if (lsBmReady) recs.push([lsKeyBm(), lsBmRec()]);
@@ -5843,8 +5861,9 @@ async function lsLoad() {
   clearTimeout(lsTimer); lsTimer = 0; lsLast = new Map();
   unfold = new Set();
   lsBmPend = null; lsBmReady = false;
-  try { lsVid = await inv("vault_id"); } catch (e) { lsVid = null; }
-  if (!lsVid) return;
+  lsOn = false; lsDirty = false;
+  try { lsVid = await inv("vault_id", { mint: false }); lsOn = true; } catch (e) { lsVid = null; }
+  if (!lsVid) return;            // no id = no record can exist: stock default (all folders collapsed)
   const fe = await inv("ls_get", { key: lsKeyFe() }).catch(() => null);
   if (Array.isArray(fe)) {
     for (const p of fe) if (typeof p === "string" && p) unfold.add(p);
