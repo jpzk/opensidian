@@ -351,15 +351,24 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 #ldiv { flex: 0 0 6px; margin-left: -6px; z-index: 3; cursor: col-resize }
 #ldiv:hover, #ldiv:active { background: var(--border-strong) }
 #ldiv[hidden] { display: none }
-/* collapseall R3: #bmbar is the bookmarks pane header, built the same as #bar so
-   both toggles paint alike; .hslot = a RESERVED header slot (sort / auto-reveal /
-   add bookmark / new group / search filter — out of scope, spec R3): it takes a
-   button's width and paints nothing, so the toggle sits in Obsidian's slot ORDER.
+/* collapseall R3: #bar is the explorer header; .hslot = a RESERVED header slot
+   (sort / auto-reveal — out of scope, spec R3): it takes a button's width and
+   paints nothing, so the toggle sits in Obsidian's slot ORDER. #bmbar shares the
+   base rule and is restyled to stock below (bmcollbtn).
    #bar keeps its height (the tree's first row stays at y=82, R8). */
 #bar, #bmbar { display: flex; gap: 4px; padding: 6px; flex-shrink: 0 }
 .hslot { flex: 1; min-width: 0 }
 #bar button, #bmbar button { flex: 1; min-width: 0; background: var(--bg-surface); color: var(--text-chrome); border: 0;
               padding: 4px; cursor: pointer; border-radius: 4px }
+/* bmcollbtn: the bookmarks header is stock's ONE row of 4 visible icon buttons
+   (notes/stock.md): compact (28 px wide), 32 px pitch, centred as a group, bare
+   glyph at rest, a rounded hover square. Row height unchanged (24 px buttons in
+   6 px padding), so #bmlist's first row does not move. */
+#bmbar { justify-content: center }
+#bmbar button { flex: 0 0 28px; padding: 4px 6px; background: none; color: var(--text-chrome-muted) }
+#bmbar button:hover { background: var(--bg-surface); color: var(--text-chrome) }
+#bmbar button[aria-disabled="true"] { opacity: .45; cursor: default }
+#bmbar button[aria-disabled="true"]:hover { background: none; color: var(--text-chrome-muted) }
 #fnew { padding: 2px 6px }
 #fname { width: 100%; background: var(--bg-sidebar); color: var(--text-chrome);
          border: 1px solid var(--border); border-radius: 4px; padding: 4px 6px;

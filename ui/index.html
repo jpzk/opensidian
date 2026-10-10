@@ -51,8 +51,8 @@
     <div id="sresults"></div>
   </div>
   <div id="pane-bm" class="spane" hidden>
-    <!-- collapseall R3: Obsidian's bookmarks header (recon-collapseall Q1): [Bookmark the active tab], [New group], Collapse/Expand all, [Show search filter] — the toggle is the 3rd of 4; the other three slots are RESERVED (spec R3). -->
-    <div id="bmbar" class="hbar"><span class="hslot" aria-hidden="true"></span><span class="hslot" aria-hidden="true"></span><button id="bmcabtn" class="cabtn" title="Collapse all"></button><span class="hslot" aria-hidden="true"></span></div>
+    <!-- bmcollbtn: Obsidian's bookmarks header (docs/recon-bmcollbtn, notes/stock.md): ONE row of 4 visible icons, centred, 32 px pitch — [Bookmark the active tab...], [New group], Collapse/Expand all, [Show search filter]. The toggle is the 3rd VISIBLE icon, as in stock. -->
+    <div id="bmbar" class="hbar"><button id="bmaddbtn" title="Bookmark the active tab..."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/><path d="M12 7v6M9 10h6"/></svg></button><button id="bmgrpbtn" title="New group"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v6M9 14h6"/></svg></button><button id="bmcabtn" class="cabtn" title="Collapse all"></button><button id="bmfltbtn" aria-disabled="true" title="Show search filter (not available yet: the bookmarks pane has no filter)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg></button></div>
     <div id="bmlist"></div>
   </div>
   <div id="vswitch" title="switch vault"></div>
