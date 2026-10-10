@@ -3644,6 +3644,8 @@ function updateTitle() {          // pane/focus census in the window title (head
   const tokq = s => String(s == null ? "" : s).replace(/[[\]|]/g, "").slice(0, 80);
   const modal = modalKind ? " [modal:" + modalKind + "]" +
                             (mdNew ? " [mdnew:" + tokq(mdNew) + "]" : "")   // C4: the create-this-note affordance is on screen
+                          + (mdNew && $("mlist").querySelector(".mcreate") ? " [mdhint:" + tokq($("mlist").querySelector(".mcreate").textContent) + "]" : "")   // qscreate: the create row's hint, as painted
+                          + ($("mfoot") && !$("mfoot").hidden ? " [mfoot:" + [...$("mfoot").children].map(s => tokq(s.textContent)).join("|") + "]" : "")   // qscreate: stock's instructions row, as painted
                           + (modalKind === "cp" ? " [cpl:" + mdItems.map(it => tokq(it.label)).join("|") + "]" : "")   // graphhdr REQ-14: the palette rows actually OFFERED
     : ($("rnbox") && !$("rnbox").hidden ? " [modal:rn]" : "")  // m5 fuzzy modal / rename prompt
     + ($("anew") && !$("anew").hidden ? " [modal:att]" : "")   // R31.7 Insert attachment prompt
@@ -6411,7 +6413,8 @@ function openModal(kind, src) {
   mdEdSel = kind === "cp" ? edSelSnap() : null;   // BEFORE minput.focus() takes the selection
   modalKind = kind; mdSrc = src;
   $("minput").value = "";
-  $("minput").placeholder = kind === "qs" ? "Open note..." : "Run command...";
+  $("minput").placeholder = kind === "qs" ? (qsCreateOff ? "Open note..." : "Find or create a note...") : "Run command...";
+  qsFoot(kind === "qs");
   $("modal").hidden = false;
   mdFilter();
   $("minput").focus();
@@ -6455,12 +6458,50 @@ let mdNew = "";
    to Ideas.md and open the empty one, which reads as "my note lost its
    contents". So resolve the typed name against the tree case-insensitively
    FIRST and open the note that is already there. */
-async function qsCreateNote(name) {
-  const hit = notesCache.find(n => n.toLowerCase() === name.toLowerCase());
-  if (hit) return await openInTab(hit);
-  const r = await createNote(name);
+/* goal qscreate (stock 1.13.7 recon, /workspace/goal/qscreate/notes/stock.md):
+   WHERE the note lands is the backend's qs_new_name (src-tauri/src/qscreate.rs:
+   app.json newFileLocation root|current|folder, '/' = root-relative path, '#…'
+   cut, '\ :' refused with stock's notice). HOW it opens is the chord:
+   "cur" = the focused tab (Enter / Shift+Enter), "tab" = a new tab
+   (Ctrl[+Shift]+Enter), "right" = a new split to the right (Ctrl+Alt+Enter). */
+let qsCreateOff = false;   // negctl-qscreate seam: true = the pre-goal root-only, Shift-only create
+async function qsOpenHow(n, how) {
+  if (how === "right") return await splitWith(fg(), "row", mkTab(n));
+  if (how === "tab") return await openNewTab(n);
+  if (qsCreateOff) return await openInTab(n);
+  await rowOpen(n);                     // stock c03: Enter REPLACES the current tab (pinned -> new tab)
+}
+function qsActiveNote() {
+  const g = state && fg(); const t = g && g.active >= 0 ? g.tabs[g.active] : null;
+  return t && !t.kind ? t.name : null;
+}
+async function qsCreateNote(name, how = "cur") {
+  const ci = s => notesCache.find(n => n.toLowerCase() === s.toLowerCase());
+  let hit = ci(name);
+  if (hit) return await qsOpenHow(hit, how);   // the typed name IS a note (stock c13): open it, no file
+  let target = name;
+  if (!qsCreateOff) {
+    try { target = await inv("qs_new_name", { query: name, active: qsActiveNote() }); }
+    catch (e) { const m = errStr(e); if (m) say(m, "qs"); return; }   // stock c11: notice, no file
+    hit = ci(target);
+    if (hit) return await qsOpenHow(hit, how);
+  }
+  const r = await createNote(target);
   if (r === "err") return;              // no tab for a note that is not on disk
-  await openInTab(name);                // "exists" (racing writer) -> open it, untouched
+  await qsOpenHow(target, how);         // "exists" (racing writer) -> open it, untouched
+}
+const QS_FOOT = [["↑↓", " to navigate"], ["↵", " to open"], ["ctrl ↵", " to open in new tab"],
+  ["ctrl alt ↵", " to open to the right"], ["shift ↵", " to create"], ["esc", " to dismiss"]];
+function qsFoot(on) {                   // stock's static instructions row (r1 c00..c02), switcher only
+  const f = $("mfoot");
+  if (!f) return;
+  f.hidden = !on || qsCreateOff;
+  if (f.hidden || f.childElementCount) return;
+  for (const [k, t] of QS_FOOT) {
+    const s = document.createElement("span"); s.className = "mfi";
+    const b = document.createElement("b"); b.textContent = k;
+    s.append(b, t); f.appendChild(s);
+  }
 }
 /* audit #10 (measured on the 20k-embed note): one title publish costs ~170 ms
    when the note in live preview is huge (the census reads layout across the
@@ -6483,10 +6524,11 @@ function renderModal() {
     const d = document.createElement("div");
     if (mdNew) {
       d.className = "mrow sel";
-      const l = document.createElement("span"); l.textContent = 'Create "' + mdNew + '"';
-      const h = document.createElement("span"); h.className = "mhint"; h.textContent = "Shift+Enter";
+      // stock r1 c01: the row IS the typed text, hint "Enter to create" (accent)
+      const l = document.createElement("span"); l.textContent = qsCreateOff ? 'Create "' + mdNew + '"' : mdNew;
+      const h = document.createElement("span"); h.className = "mhint mcreate"; h.textContent = qsCreateOff ? "Shift+Enter" : "Enter to create";
       d.append(l, h);
-      d.onmousedown = async e => { e.preventDefault(); const n = mdNew; closeModal(); await qsCreateNote(n); };
+      d.onmousedown = async e => { e.preventDefault(); const n = mdNew; closeModal(); await qsCreateNote(n, e.ctrlKey ? (e.altKey ? "right" : "tab") : "cur"); };
     } else { d.className = "mempty"; d.textContent = "No matches"; }
     box.appendChild(d);
     return mdTitleSoon();
@@ -6511,6 +6553,24 @@ $("minput").onkeydown = async e => {
     if (!mdItems.length) return;
     mdSel = (mdSel + (e.key === "ArrowDown" ? 1 : mdItems.length - 1)) % mdItems.length;
     renderModal();
+  } else if (e.key === "Enter" && modalKind === "qs" && !qsCreateOff) {
+    /* goal qscreate, every chord measured on stock (notes/stock.md r1 c03..c13):
+       Shift+Enter creates ALWAYS (even beside a partial match; an exact name opens
+       it); a plain Enter creates only when nothing matches; Ctrl = new tab, Ctrl+Alt
+       = split right; Alt+Enter on the create row does nothing but dismiss. */
+    e.preventDefault();
+    const how = e.ctrlKey ? (e.altKey ? "right" : "tab") : "cur";
+    const q = $("minput").value.trim();
+    const it = mdItems[mdSel];
+    if (e.shiftKey && q) { closeModal(); return await qsCreateNote(q, how); }
+    if (it) {
+      if (how === "right") { closeModal(); return await splitWith(fg(), "row", mkTab(it.label)); }
+      return await mdRun(it, e);
+    }
+    if (!mdNew) return;
+    const n = mdNew; closeModal();
+    if (e.altKey && !e.ctrlKey) return;   // stock c08: no file, nothing opened
+    return await qsCreateNote(n, how);
   } else if (e.key === "Enter") {
     e.preventDefault();
     const it = mdItems[mdSel];
