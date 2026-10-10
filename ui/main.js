@@ -6461,12 +6461,9 @@ let mdNew = "";
 let qsCreateOff = false;   // negctl-qscreate seam: true = the pre-goal root-only, Shift-only create
 async function qsOpenHow(n, how) {
   if (how === "right") return await splitWith(fg(), "row", mkTab(n));
-  if (how === "tab") {
-    const g = fg();
-    g.tabs.push(mkTab(n)); g.active = g.tabs.length - 1;
-    return await loadActive(g);
-  }
-  await openInTab(n);
+  if (how === "tab") return await openNewTab(n);
+  if (qsCreateOff) return await openInTab(n);
+  await rowOpen(n);                     // stock c03: Enter REPLACES the current tab (pinned -> new tab)
 }
 function qsActiveNote() {
   const g = state && fg(); const t = g && g.active >= 0 ? g.tabs[g.active] : null;
