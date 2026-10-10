@@ -3228,12 +3228,25 @@ function cabTok(id, name) {
    every folder path goes into `collapsed`, so re-opening a parent shows its
    children still shut, recon Q2 05-fe-open-projects.png); else expand ALL. Same
    zero-IPC DOM flip as a single folder click (renderNode), no tree rebuild. */
+/* bmcollbtn: [bmhdr:i/n|title|x0-x1,y0-y1] — the toggle's index among the
+   VISIBLE bookmarks-header icons (stock: 3/4), its live title (the tooltip text,
+   read from the DOM, not from pixels), and the header row's painted rect, so a
+   phase asserts the toggle sits IN the top row at stock's position. */
+function bmHdrTok() {
+  const bar = $("bmbar"), btn = $("bmcabtn");
+  if (!bar || !btn) return "";
+  const r = bar.getBoundingClientRect();
+  if (!r.width || !r.height) return "";
+  const vis = [...bar.children].filter(e => { const q = e.getBoundingClientRect(); return e.tagName === "BUTTON" && q.width && q.height && getComputedStyle(e).visibility !== "hidden"; });
+  return " [bmhdr:" + (vis.indexOf(btn) + 1) + "/" + vis.length + "|" + btn.title + "|" +
+    Math.round(r.left) + "-" + Math.round(r.right) + "," + Math.round(r.top) + "-" + Math.round(r.bottom) + "]";
+}
 /* updateTitle hook: repaint both toggle faces from the live state, then publish
    their rects (after the face is set, so the rect is the one a click will hit). */
 function caSync() {
   caFace($("fecabtn"), feCaState().lab);
   caFace($("bmcabtn"), bmCaState().lab);
-  return cabTok("fecabtn", "fecab") + cabTok("bmcabtn", "bmcab");
+  return cabTok("fecabtn", "fecab") + cabTok("bmcabtn", "bmcab") + bmHdrTok();
 }
 function feCollapseAll() {
   const s = feCaState();
@@ -7867,6 +7880,9 @@ $("sclear").onclick = () => {
 $("newbtn").onclick = cmdNewNote;
 $("fecabtn").onclick = () => feCollapseAll();   // collapseall R3/R4: explorer header, 5th slot
 $("bmcabtn").onclick = () => bmCollapseAll();   // collapseall R3/R4: bookmarks header, 3rd of 4
+$("bmaddbtn").onclick = () => openBmAdd(null);  // bmcollbtn: header icon 1 = "Bookmark the active tab...", top level preselected (bmactive modal)
+$("bmgrpbtn").onclick = () => bmGroupNew(null); // bmcollbtn: header icon 2 = "New group" at the end of the top level, as the pane-background menu
+$("bmfltbtn").onclick = () => say("Show search filter: not available yet — the bookmarks pane has no filter");   // bmcollbtn: header icon 4, visible for stock order, stated not silent
 $("newfolderbtn").onclick = () => {
   const box = $("fnew");
   box.hidden = !box.hidden;
