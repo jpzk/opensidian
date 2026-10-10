@@ -1122,7 +1122,9 @@ fn readable_line_length(v: State<Vault>) -> bool {
 /* goal graphparity — the graph view's Forces panel (docs/recon-graphpanel). Obsidian's
    file, Obsidian's keys: `<vault>/.obsidian/graph.json` holds centerStrength,
    repelStrength, linkStrength, linkDistance (numbers), close and collapse-forces
-   (bools), next to keys we do not own (search, showTags, colorGroups, scale, ...).
+   (bools), next to keys we do not own (search, showTags, colorGroups, ...). goal ggkeep: `scale` (the
+   graph zoom, a positive number) is ours too — stock writes it on every zoom and a fresh graph
+   view opens at it (notes/stock.md of the ggkeep goal).
    Same rules as app.json: a MERGE into the parsed object (a stock-written file
    round-trips), an unparsable or non-object file is REFUSED rather than replaced,
    and the write goes through the vault dir fd (no-follow `.obsidian`, random temp,
@@ -1166,6 +1168,8 @@ fn set_graph_settings_in(root: &Path, patch: &serde_json::Value) -> Result<(), S
             val.as_f64().is_some_and(f64::is_finite)
         } else if GRAPH_BOOL_KEYS.contains(&k.as_str()) {
             val.is_boolean()
+        } else if k == "scale" {
+            val.as_f64().is_some_and(|x| x.is_finite() && x > 0.0)
         } else if k == "search" {
             val.is_string()
         } else if k == "colorGroups" {
@@ -7613,6 +7617,10 @@ mod tests {
         let v = graph_settings_in(&root);
         assert_eq!((v["search"].clone(), v["showOrphans"].clone(), v["colorGroups"].clone()), (serde_json::json!("x"), serde_json::json!(false), g));
         assert_eq!((v["nodeSizeMultiplier"].clone(), v["scale"].clone()), (serde_json::json!(2.5), serde_json::json!(0.8)));
+        // ggkeep: the zoom is ours too, and merges like the rest
+        set_graph_settings_in(&root, &serde_json::json!({"scale": 2.25})).unwrap();
+        let v = graph_settings_in(&root);
+        assert_eq!((v["scale"].clone(), v["search"].clone(), v["nodeSizeMultiplier"].clone()), (serde_json::json!(2.25), serde_json::json!("x"), serde_json::json!(2.5)));
     }
 
     /// an unparsable or non-object graph.json is refused, not replaced; foreign
@@ -7628,7 +7636,10 @@ mod tests {
             assert_eq!(graph_settings_in(&root), serde_json::json!({}));
         }
         fs::write(root.join(GRAPH_REL), "{}").unwrap();
-        assert!(set_graph_settings_in(&root, &serde_json::json!({"scale": 1})).is_err(), "not our key");
+        assert!(set_graph_settings_in(&root, &serde_json::json!({"frobnicate": 1})).is_err(), "not our key");
+        for bad in [serde_json::json!(0), serde_json::json!(-1.5), serde_json::json!("2")] {
+            assert!(set_graph_settings_in(&root, &serde_json::json!({"scale": bad})).is_err(), "scale must be a positive number");
+        }
         assert!(set_graph_settings_in(&root, &serde_json::json!({"search": 1})).is_err(), "search not a string");
         assert!(set_graph_settings_in(&root, &serde_json::json!({"colorGroups": [{"query": "a"}]})).is_err(), "group without colour");
         assert!(set_graph_settings_in(&root, &serde_json::json!({"colorGroups": [{"query": "a", "color": {"a": 1, "rgb": 16777216}}]})).is_err(), "rgb past 24 bits");
