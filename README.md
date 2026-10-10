@@ -10,11 +10,11 @@ Open-source and non-profit under GPLv3, vault-compatible cross-platform markdown
 - [[wikilinks]], backlinks, tags, graph view
 - tabs, splits, search, quick switcher, command palette, bookmarks
 - themes, fonts, hotkeys; open a vault with `opensidian <folder>`
-- drag an image (png, jpg, gif, webp) or a PDF from your file manager onto a note: the
-  file is **moved** into the vault (not copied) and `![[name]]` is inserted
-  where you dropped it. The original is removed only after the vault copy is
-  complete and on disk; a name that already exists gets a new one, never
-  overwritten. A .pdf must really be a PDF (it starts with `%PDF-`); other file
+- drag an image (png, jpg, gif, webp) or a PDF from your file manager onto a note:
+  an image is **moved** into the vault (the original is removed only after the
+  vault copy is complete and on disk), a PDF is **copied** (the original stays,
+  as in Obsidian), and `![[name]]` is inserted where you dropped it. A name that
+  already exists gets a new one, never overwritten. A .pdf must really be a PDF (it starts with `%PDF-`); other file
   types are refused and left where they are.
 
 ## Install

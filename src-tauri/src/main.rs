@@ -220,17 +220,21 @@ const REMOTE_IMG_LABEL: &str = "remote image";
 const MAX_IMG_BYTES: u64 = 32 * 1024 * 1024;
 
 /// pdfdrop: what an OS drop may attach, per type -> (cap, the bytes the OPENED
-/// source must start with). Images: IMG_TYPES at MAX_IMG_BYTES and no content
+/// source must start with, keep the source = COPY instead of move). Images: IMG_TYPES at MAX_IMG_BYTES and no content
 /// check (R31 S4, unchanged). PDF: pdf::MAX_PDF_BYTES, because pdf::load refuses
 /// anything bigger, so a larger drop cap would move into the vault a file the
 /// embed then cannot show; and `%PDF-` at offset 0, checked by vaultfs on the fd
 /// it imports from (a check by path first would re-open the path: TOCTOU).
-fn drop_rule(ext: &str) -> Option<(u64, &'static [u8])> {
+/// Move vs copy: images MOVE (osdrop, operator 2026-10-08). A PDF is COPIED,
+/// because stock 1.13.7 copies a PDF dropped from the file manager (source left
+/// in place, byte-identical file in the attachment folder) and the pdfdrop brief
+/// says to match stock where it differs from our image move.
+fn drop_rule(ext: &str) -> Option<(u64, &'static [u8], bool)> {
     if IMG_TYPES.iter().any(|(e, _)| *e == ext) {
-        return Some((MAX_IMG_BYTES, b""));
+        return Some((MAX_IMG_BYTES, b"", false));
     }
     if ext == pdf::PDF_EXT {
-        return Some((pdf::MAX_PDF_BYTES, b"%PDF-"));
+        return Some((pdf::MAX_PDF_BYTES, b"%PDF-", true));
     }
     None
 }
@@ -646,7 +650,8 @@ fn cand_names(name: &str) -> impl Iterator<Item = String> {
 }
 
 /// R31 THE function. MOVES every droppable image into the vault's attachment
-/// folder (osdrop, operator 2026-10-08: "move the file to the vault") and
+/// folder (osdrop, operator 2026-10-08: "move the file to the vault"), COPIES a
+/// PDF (pdfdrop: stock copies it; drop_rule) and
 /// returns the markdown to insert. Never symlinks, never overwrites, and a
 /// refused file is never touched. The caller inserts the text and teaches the
 /// index the new images (R29.11: the index is what both renderers resolve
@@ -696,7 +701,7 @@ fn attach_one(vfs: &vaultfs::Vault, dir: &Path, p: &Path) -> Result<(String, Opt
     }
     let name = attach_name(p).ok_or(Refused::BadName)?;
     let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
-    let Some((cap, magic)) = drop_rule(&ext) else {
+    let Some((cap, magic, keep_src)) = drop_rule(&ext) else {
         return Err(Refused::BadExt(ext));
     };
     // S1: symlink_metadata, so a symlinked source is REFUSED and not followed
@@ -717,7 +722,7 @@ fn attach_one(vfs: &vaultfs::Vault, dir: &Path, p: &Path) -> Result<(String, Opt
     // S1 again, by fd, S5 and CAP: vaultfs re-checks the opened source and
     // commits with NOREPLACE; every Err leaves the source untouched.
     use vaultfs::ImportErr as E;
-    let im = vfs.import_move(&src, dir, &mut cand_names(&name), cap, magic).map_err(|e| match e {
+    let im = vfs.import_move(&src, dir, &mut cand_names(&name), cap, magic, keep_src).map_err(|e| match e {
         // R31.12: the sandbox only grants READ on the drop-source folders, so
         // EACCES here is the expected answer for a file anywhere else. Say
         // THAT, not "os error 13" — a refusal that misdescribes its cause is
@@ -732,7 +737,7 @@ fn attach_one(vfs: &vaultfs::Vault, dir: &Path, p: &Path) -> Result<(String, Opt
     })?;
     eprintln!("[osdrop] {} -> {} ({}, source {:?})", src.display(), im.name, im.how, im.src);
     Ok((im.name, match im.src {
-        vaultfs::SrcFate::Removed => None,
+        vaultfs::SrcFate::Removed | vaultfs::SrcFate::Copied => None,
         vaultfs::SrcFate::Kept(why) => Some(why),
     }))
 }
@@ -8829,7 +8834,7 @@ mod tests {
         let vfs = vaultfs::Vault::open(&root).unwrap();
         let s = src_file(&srcd, "one.png", BODY);
         let want = sha(&s);
-        let im = vfs.import_move(&s.canonicalize().unwrap(), Path::new(""), &mut cand_names("one.png"), MAX_IMG_BYTES, b"").unwrap();
+        let im = vfs.import_move(&s.canonicalize().unwrap(), Path::new(""), &mut cand_names("one.png"), MAX_IMG_BYTES, b"", false).unwrap();
         assert_eq!((im.name.as_str(), im.how, &im.src), ("one.png", "link", &vaultfs::SrcFate::Removed));
         assert!(!s.exists());
         assert_eq!(sha(&root.join("one.png")), want);
@@ -8837,7 +8842,7 @@ mod tests {
         let shm = shm_src("osd-roads");
         assert_ne!(dev_of(&shm), dev_of(&root), "/dev/shm and {} share a device — no second filesystem, cross-fs NOT proven", root.display());
         let s2 = src_file(&shm, "two.png", BODY);
-        let im = vfs.import_move(&s2, Path::new(""), &mut cand_names("two.png"), MAX_IMG_BYTES, b"").unwrap();
+        let im = vfs.import_move(&s2, Path::new(""), &mut cand_names("two.png"), MAX_IMG_BYTES, b"", false).unwrap();
         assert_eq!((im.name.as_str(), im.how, &im.src), ("two.png", "copy", &vaultfs::SrcFate::Removed));
         assert!(!s2.exists(), "cross-fs: the source must be gone after a committed move");
         assert_eq!(sha(&root.join("two.png")), want, "cross-fs: vault copy not byte-identical");
@@ -8934,12 +8939,14 @@ mod tests {
         let _ = fs::remove_dir_all(&_srcd);
     }
 
-    /// pdfdrop: a real PDF dropped on a note is MOVED like an image (same fs:
-    /// link road; across: verified copy), byte identical, `![[x.pdf]]` inserted,
-    /// indexed so the embed resolves; .PDF in caps is the same type; collisions
-    /// take `stem N.pdf` and never overwrite.
+    /// pdfdrop: a real PDF dropped on a note is COPIED, as stock 1.13.7 does (an
+    /// image is moved): the source stays, byte-identical and NOT hard-linked to the
+    /// vault file (same filesystem too — a link would be one inode, not a copy);
+    /// `![[x.pdf]]` inserted, indexed so the embed resolves; .PDF in caps is the
+    /// same type; collisions take `stem N.pdf` (stock: `recon-a 1.pdf`) and never
+    /// overwrite.
     #[test]
-    fn pdfdrop_moves_a_pdf_on_both_roads_and_indexes_it() {
+    fn pdfdrop_copies_a_pdf_on_both_filesystems_and_indexes_it() {
         let (root, srcd) = drop_vault("pdfd-ok");
         let body = pdf::tests::mini_pdf(2);
         let s = src_file(&srcd, "paper.pdf", &body);
@@ -8948,8 +8955,15 @@ mod tests {
         assert!(a.refused.is_empty(), "{:?}", a.refused);
         assert_eq!(a.text, "![[paper.pdf]]");
         assert_eq!(a.copied, vec!["paper.pdf".to_string()]);
-        assert!(!s.exists(), "a PDF drop is a MOVE, same as an image");
+        assert!(s.exists(), "a PDF drop is a COPY (stock): the source must stay");
+        assert_eq!(sha(&s), want, "the source was modified");
         assert_eq!(sha(&root.join("paper.pdf")), want);
+        {
+            use std::os::unix::fs::MetadataExt;
+            let (ms, mv) = (fs::metadata(&s).unwrap(), fs::metadata(root.join("paper.pdf")).unwrap());
+            assert_ne!((ms.dev(), ms.ino()), (mv.dev(), mv.ino()), "same-fs PDF copy is a hard link, not a copy");
+            assert_eq!(ms.nlink(), 1, "the source gained a link");
+        }
         assert_eq!(pdf_path_in(&root, "paper.pdf"), Some(root.canonicalize().unwrap().join("paper.pdf")));
         // cross-fs + collision + upper-case extension
         let shm = shm_src("pdfd-ok");
@@ -8958,13 +8972,20 @@ mod tests {
         let a = attach_drop(&root, "Note", &[s2.clone(), s3.clone()]).unwrap();
         assert!(a.refused.is_empty(), "{:?}", a.refused);
         assert_eq!(a.text, "![[paper 1.pdf]]\n![[SCAN.PDF]]");
-        assert!(!s2.exists() && !s3.exists());
+        assert!(s2.exists() && s3.exists(), "cross-fs PDF drop removed a source");
         assert_eq!(sha(&root.join("paper.pdf")), want, "the collision overwrote the first pdf");
         assert_eq!(sha(&root.join("paper 1.pdf")), want);
         assert_eq!(sha(&root.join("SCAN.PDF")), want);
         let mut ix = Index::build(&root);
         ix.add_image("paper 1.pdf");
         assert!(ix.images().contains(&"paper 1.pdf".to_string()), "{:?}", ix.images());
+        // one drop, both kinds: the image is MOVED, the PDF beside it COPIED
+        let png = src_file(&srcd, "fig.png", BODY);
+        let p4 = src_file(&srcd, "notes.pdf", &body);
+        let a = attach_drop(&root, "Note", &[png.clone(), p4.clone()]).unwrap();
+        assert_eq!(a.text, "![[fig.png]]\n![[notes.pdf]]", "{:?}", a.refused);
+        assert!(!png.exists() && p4.exists(), "image must move, pdf must stay");
+        assert!(a.kept.is_empty(), "a PDF copy is not a failed move: {:?}", a.kept);
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&srcd);
         let _ = fs::remove_dir_all(&shm);
@@ -9000,7 +9021,7 @@ mod tests {
         assert_eq!(listing(&root), before, "a refused pdf left something in the vault");
         // the primitive itself: BadMagic, source intact
         let vfs = vaultfs::Vault::open(&root).unwrap();
-        let r = vfs.import_move(&srcs[0], Path::new(""), &mut cand_names("fake.pdf"), pdf::MAX_PDF_BYTES, b"%PDF-");
+        let r = vfs.import_move(&srcs[0], Path::new(""), &mut cand_names("fake.pdf"), pdf::MAX_PDF_BYTES, b"%PDF-", true);
         assert!(matches!(r, Err(vaultfs::ImportErr::BadMagic)), "{r:?}");
         assert!(srcs[0].exists());
         let _ = fs::remove_dir_all(&root);
@@ -9023,7 +9044,7 @@ mod tests {
         assert!(a.refused[0].contains("over the 256 MB limit"), "{:?}", a.refused);
         assert!(big.exists() && !root.join("big.pdf").exists());
         let vfs = vaultfs::Vault::open(&root).unwrap();
-        let r = vfs.import_move(&big, Path::new(""), &mut cand_names("big.pdf"), pdf::MAX_PDF_BYTES, b"%PDF-");
+        let r = vfs.import_move(&big, Path::new(""), &mut cand_names("big.pdf"), pdf::MAX_PDF_BYTES, b"%PDF-", true);
         assert!(matches!(r, Err(vaultfs::ImportErr::TooBig(_))), "{r:?}");
         // 33 MiB: over MAX_IMG_BYTES, under MAX_PDF_BYTES -> moved
         let mid = src_file(&srcd, "mid.pdf", b"%PDF-1.7\n");

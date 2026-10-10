@@ -89,6 +89,7 @@ fn force_copy() -> bool {
 pub enum SrcFate {
     Removed,      // a move: the source name is gone
     Kept(String), // committed + verified in the vault, but the source could not be removed (why)
+    Copied,       // pdfdrop: a COPY was asked for (stock copies a dropped PDF): the source is left as it was
 }
 
 /// osdrop: why an import did not happen. The source is intact in every case.
@@ -501,8 +502,12 @@ impl Vault {
        Any error in 1-3 unlinks the tmp and returns Err with the source intact. An
        error in 4 is not a failure of the import: the vault file is committed and
        verified, the source simply stays (SrcFate::Kept, e.g. a read-only drop
-       folder under Landlock) — a duplicate, never a loss. */
-    pub fn import_move(&self, src: &Path, dir: &Path, names: &mut dyn Iterator<Item = String>, cap: u64, magic: &[u8]) -> Result<Imported, ImportErr> {
+       folder under Landlock) — a duplicate, never a loss.
+       pdfdrop: keep_src = true is the COPY variant (stock 1.13.7 copies a dropped PDF, measured by OS drag):
+       step 2 always takes the verified-copy road (never linkat: a hard link is not a copy)
+       and step 4 is skipped — SrcFate::Copied. Steps 1 and 3 (fd identity, cap, magic,
+       NOREPLACE) are the same. */
+    pub fn import_move(&self, src: &Path, dir: &Path, names: &mut dyn Iterator<Item = String>, cap: u64, magic: &[u8], keep_src: bool) -> Result<Imported, ImportErr> {
         use std::os::unix::fs::OpenOptionsExt;
         let d = self.dir(dir, false).map_err(ImportErr::Io)?;
         let dfd = d.fd.as_raw_fd();
@@ -528,7 +533,10 @@ impl Vault {
         let csrc = cstr(src.as_os_str()).map_err(ImportErr::Io)?;
         let unstage = || unsafe { libc::unlinkat(dfd, tmp.as_ptr(), 0) };
         // 2. stage
-        let linked = !force_copy()
+        // keep_src: never the link road — a hard link would make the "copy" the SAME inode as
+        // the source, so an edit to either would change both. A copy is bytes, verified.
+        let linked = !keep_src
+            && !force_copy()
             // SAFETY: NUL-terminated names, valid dir fd; flags 0 = never follow a symlink at src
             && cvt(unsafe { libc::linkat(libc::AT_FDCWD, csrc.as_ptr(), dfd, tmp.as_ptr(), 0) }).is_ok();
         let how = if linked {
@@ -624,6 +632,9 @@ impl Vault {
         };
         // SAFETY: valid fd. The new name is durable before the source goes.
         let _ = unsafe { libc::fsync(dfd) };
+        if keep_src {
+            return Ok(Imported { name, src: SrcFate::Copied, how });
+        }
         // 4. remove the source — only if the path still names the file we imported
         let fate = match fs_lstat(&csrc) {
             Ok(s) if (s.st_dev, s.st_ino) == (st0.st_dev, st0.st_ino) => {
