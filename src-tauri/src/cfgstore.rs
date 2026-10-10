@@ -46,6 +46,11 @@ pub enum Op {
     Set(String, Value),
     /// "last" = path, and path moved to the front of "list" (dedup, capped)
     PushRecent(String),
+    /// winsize: v[key][subkey] gets the FIELDS of the object (it must be one);
+    /// every other field of that record, every other subkey and every other key
+    /// stay as they are on disk. Two windows on two vaults never drop each
+    /// other's records, and keys we do not write (stock's devTools/zoom) survive.
+    MergeIn(String, String, Value),
 }
 
 /// MRU push: dedup, newest first, capped — pure for testability
@@ -70,6 +75,20 @@ pub fn apply(v: &mut Value, ops: &[Op]) {
                     .unwrap_or_default();
                 v["last"] = serde_json::json!(p);
                 v["list"] = serde_json::json!(push_recent(list, p));
+            }
+            Op::MergeIn(k, sub, obj) => {
+                if !v[k.as_str()].is_object() {
+                    v[k.as_str()] = serde_json::json!({});
+                }
+                let rec = &mut v[k.as_str()][sub.as_str()];
+                if !rec.is_object() {
+                    *rec = serde_json::json!({});
+                }
+                if let (Some(dst), Some(src)) = (rec.as_object_mut(), obj.as_object()) {
+                    for (f, x) in src {
+                        dst.insert(f.clone(), x.clone());
+                    }
+                }
             }
         }
     }
@@ -186,6 +205,36 @@ mod tests {
         assert!(v["hotkeys"].is_object(), "{v}");
         let strays: Vec<_> = fs::read_dir(&d).unwrap().flatten().map(|e| e.file_name()).filter(|n| n.to_string_lossy().contains(".tmp.")).collect();
         assert!(strays.is_empty(), "temp left behind: {strays:?}");
+    }
+
+    #[test]
+    fn cfgstore_merge_in_keeps_unknown_fields_other_records_and_other_keys() {
+        let d = tmp("mergein");
+        let (cfg, locks) = (d.join(".opensidian.json"), d.join("locks"));
+        fs::write(&cfg, r#"{"theme":"light","windows":{"/a":{"x":1,"y":2,"width":3,"height":4,"isMaximized":false,"devTools":true},"/b":{"x":9}}}"#).unwrap();
+        let rec = serde_json::json!({"x":10,"y":20,"width":800,"height":600,"isMaximized":true});
+        update_in(&locks, &cfg, &[Op::MergeIn("windows".into(), "/a".into(), rec)]).unwrap();
+        let v = read_value_in(&locks, &cfg);
+        assert_eq!(v["windows"]["/a"], serde_json::json!({"x":10,"y":20,"width":800,"height":600,"isMaximized":true,"devTools":true}), "{v}");
+        assert_eq!(v["windows"]["/b"], serde_json::json!({"x":9}), "{v}");
+        assert_eq!(v["theme"], "light");
+        // a partial record (Wayland: no position) leaves the old x/y alone
+        update_in(&locks, &cfg, &[Op::MergeIn("windows".into(), "/a".into(), serde_json::json!({"width":500}))]).unwrap();
+        let v = read_value_in(&locks, &cfg);
+        assert_eq!((v["windows"]["/a"]["x"].as_i64(), v["windows"]["/a"]["width"].as_i64()), (Some(10), Some(500)), "{v}");
+    }
+
+    #[test]
+    fn cfgstore_merge_in_creates_key_and_record_and_replaces_non_objects() {
+        let mut v = serde_json::json!({"windows":"garbage"});
+        apply(&mut v, &[Op::MergeIn("windows".into(), "/a".into(), serde_json::json!({"width":5}))]);
+        assert_eq!(v, serde_json::json!({"windows":{"/a":{"width":5}}}));
+        let mut v = serde_json::json!({"windows":{"/a":7}});
+        apply(&mut v, &[Op::MergeIn("windows".into(), "/a".into(), serde_json::json!({"width":5}))]);
+        assert_eq!(v["windows"]["/a"], serde_json::json!({"width":5}));
+        let mut v = serde_json::json!({});
+        apply(&mut v, &[Op::MergeIn("windows".into(), "/b".into(), serde_json::json!({"x":1}))]);
+        assert_eq!(v, serde_json::json!({"windows":{"/b":{"x":1}}}));
     }
 
     #[test]
