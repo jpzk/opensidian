@@ -1095,12 +1095,15 @@ fn set_link_consent(v: State<Vault>, on: bool) -> Result<(), String> {
 /// show (empty string = nothing to create, no notice).
 #[tauri::command]
 fn qs_new_name(v: State<Vault>, query: String, active: Option<String>) -> Result<String, String> {
-    let root = cur_vault(&v).ok_or("no vault open")?;
-    match qscreate::resolve_in(&root, &query, active.as_deref()) {
-        qscreate::QsName::Create(n) => Ok(n),
-        qscreate::QsName::Refused(m) => Err(m.to_string()),
-        qscreate::QsName::Empty => Err(String::new()),
-    }
+    // judged span: reads app.json and stats the candidate path(s) on disk
+    span_timed!("qs_new_name", {
+        let root = cur_vault(&v).ok_or("no vault open")?;
+        match qscreate::resolve_in(&root, &query, active.as_deref()) {
+            qscreate::QsName::Create(n) => Ok(n),
+            qscreate::QsName::Refused(m) => Err(m.to_string()),
+            qscreate::QsName::Empty => Err(String::new()),
+        }
+    })
 }
 
 #[tauri::command]
