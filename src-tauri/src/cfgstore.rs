@@ -1,6 +1,4 @@
-                    if matches!(o.get(k.as_str()), None | Some(Value::Null)) {
-                        o.insert(k.clone(), x.clone());
-                    }// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 /* vaultbleed C — ~/.opensidian.json IS SHARED BY N PROCESSES NOW.
    One vault per process means two windows = two writers of the per-user config
    (recent vaults, last vault, theme, zoom, hotkeys, window geometry, ...). The
@@ -87,8 +85,9 @@ pub fn apply(v: &mut Value, ops: &[Op]) {
                 let o = v[p.as_str()].as_object_mut().expect("object");
                 if matches!(op, Op::SetIn(..)) {
                     o.insert(k.clone(), x.clone());
-                } else {
-                    o.entry(k.clone()).or_insert_with(|| x.clone());
+                } else if matches!(o.get(k.as_str()), None | Some(Value::Null)) {
+                    // a null left by a hand edit counts as absent
+                    o.insert(k.clone(), x.clone());
                 }
             }
         }
