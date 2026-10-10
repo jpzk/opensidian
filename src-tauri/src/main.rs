@@ -5317,7 +5317,7 @@ fn main() {
             list_notes, list_images, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
-            get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, vb_probe, smoke_css,
+            get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
             read_workspace, write_workspace,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
@@ -9616,6 +9616,13 @@ fn vb_probe() -> Option<String> {
 #[tauri::command]
 fn nob_probe() -> bool {
     std::env::var("OPENSIDIAN_NOBPROBE").as_deref() == Ok("1")
+}
+/// startscr — the [psg:] opening-screen geometry census (ui/main.js psgTok) is
+/// a test-only instrument, OFF unless OPENSIDIAN_PSGPROBE=1 (same contract as
+/// nob_probe): with it off the boot picker keeps its bare "opensidian" title.
+#[tauri::command]
+fn psg_probe() -> bool {
+    std::env::var("OPENSIDIAN_PSGPROBE").as_deref() == Ok("1")
 }
 
 /* vaultbleed (operator 2026-10-03, SEVERE): "i see tags from another vault in
