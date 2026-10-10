@@ -2520,6 +2520,11 @@ const WS_GICON = "lucide-git-fork";
 function wsLgOpts(t) {
   const o = Object.assign({}, t.opts && typeof t.opts === "object" ? t.opts : {});
   o.localJumps = t.depth; o.localBacklinks = !!t.inc; o.localForelinks = !!t.out; o.localInterlinks = !!t.inter;
+  // ggpanel: stock's local leaf options always state the whole panel layout (close + the four
+  // collapse-*), from creation on (recon goal/ggpanel L1/L2) — fill what the tab has not written yet
+  const gc = t.gc || gcParse(o);
+  if (typeof o.close !== "boolean") o.close = !!gc.close;
+  for (const [k, , , ck] of GC_SECS) if (typeof o[ck] !== "boolean") o[ck] = !!gc.cs[k];
   return o;
 }
 function wsLeaf(t) {
@@ -7963,7 +7968,10 @@ async function gfLoad() {
   const p = (async () => {
     let o = {};
     try { o = (await inv("graph_settings")) || {}; } catch (_) {}
-    if (v === vaultPath && !(gfCfg && gfCfg.vault === v)) gfCfg = Object.assign({ vault: v }, gcParse(o));
+    // ggpanel: the panel keys graph.json does not hold yet — stock writes close + the four collapse-* the
+    // first time a graph view opens (recon goal/ggpanel G1), so a fresh vault's file states the panel layout
+    if (v === vaultPath && !(gfCfg && gfCfg.vault === v))
+      gfCfg = Object.assign({ vault: v, gcMiss: ["close", ...GC_SECS.map(r => r[3])].filter(k => typeof o[k] !== "boolean") }, gcParse(o));
     return gfCfg && gfCfg.vault === v ? gfCfg : Object.assign({ vault: v }, gcParse(o));
   })();
   gfLoading = { v, p };
@@ -7980,7 +7988,15 @@ function gfSave(patch) {           // coalesced 120 ms: the file holds the value
   }, 120);
 }
 // scopes: what a card edits. gg -> graph.json; lg -> the tab's own options (workspace.json)
-async function gcScopeGg() { return { kind: "gg", st: await gfLoad(), save: gfSave }; }
+async function gcScopeGg() {
+  const st = await gfLoad();
+  if (st.gcMiss && st.gcMiss.length) {   // ggpanel: state the panel layout in graph.json on the first open (stock G1)
+    const patch = {};
+    for (const k of st.gcMiss) patch[k] = k === "close" ? st.close : st.cs[GC_SECS.find(r => r[3] === k)[0]];
+    st.gcMiss = []; gfSave(patch);
+  }
+  return { kind: "gg", st, save: gfSave };
+}
 function gcScopeLg(t) {
   if (!t.gc) t.gc = gcParse(t.opts && typeof t.opts === "object" ? t.opts : {});
   return { kind: "lg", t, st: t.gc, save: patch => {   // the layout write is armed by updateTitle -> wsTouch
