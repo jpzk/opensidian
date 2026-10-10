@@ -11317,3 +11317,62 @@ document.addEventListener("scroll", e => { if (nobProbe && e.target && e.target.
     on = true; requestAnimationFrame(frame);
   }, { capture: true, passive: true });
 })();
+
+/* startscr — [psg:] opening-screen geometry census (test-only instrument for the
+   gate phase "startscr"). While the picker is up at the BOOT picker (no vault),
+   the window title is "opensidian [psg:...]" — never the pane census, so no
+   'panes:' reader mistakes the picker for a vault. Fields, ';'-separated,
+   rects as client-px "x,y,w,h" (0.1 px), "-" = absent/hidden:
+     vp=WxH  mode=main|create|open  theme=<data-theme>
+     logo=<rect>,<naturalWidth>   title=<#ptname rect>   text=<#ptname text>
+     card=<#pcard rect>
+     btn=<button rect>@<.prow rect>/...      every visible .prow action button
+     pb=<button rect>@<#p-btns rect>/...     every visible #p-btns button
+     ovf=<n>,<first offenders>  elements in #picker whose content is wider
+         than their box (scrollWidth > clientWidth + 1, incl. clipped button
+         labels) or whose box leaves #pcard / the viewport horizontally
+   TEST-ONLY: inert unless the backend says OPENSIDIAN_PSGPROBE=1 (main.rs
+   psg_probe, precedent nob_probe) — a shipped build keeps its bare title. */
+let psgProbe = false, psgLast = "";
+function psgR(e) {
+  if (!e || !e.getClientRects().length) return "-";
+  const r = e.getBoundingClientRect();
+  if (!r.width && !r.height) return "-";
+  return [r.left, r.top, r.width, r.height].map(v => Math.round(v * 10) / 10).join(",");
+}
+function psgTok() {
+  const pk = $("picker");
+  const vis = e => e && e.getClientRects().length > 0;
+  const card = $("pcard"), cr = card.getBoundingClientRect();
+  const logo = $("plogo"), name = $("ptname") || $("ptitle");
+  const txt = (name.textContent || "").replace(/[[\]|;@\/]/g, " ").trim();
+  const mode = $("p-sub").hidden ? "main" : (pmode || "sub");
+  const btn = [...document.querySelectorAll("#p-actions .prow")].map(row => {
+    const b = row.querySelector("button");
+    return vis(b) ? psgR(b) + "@" + psgR(row) : null;
+  }).filter(Boolean).join("/") || "-";
+  const pbw = $("p-btns");
+  const pb = vis(pbw) ? [...pbw.querySelectorAll("button")].filter(vis).map(b => psgR(b) + "@" + psgR(pbw)).join("/") || "-" : "-";
+  const bad = [];
+  for (const e of [document.documentElement, document.body, ...pk.querySelectorAll("*")]) {
+    if (!vis(e) && e !== document.documentElement && e !== document.body) continue;
+    if (e.tagName === "UL" && e.id === "p-dirs" && !e.children.length) continue;
+    const r = e.getBoundingClientRect();
+    const why = e.scrollWidth > e.clientWidth + 1 && e.clientWidth > 0 ? "sw" + e.scrollWidth + ">" + e.clientWidth
+      : e !== card && card.contains(e) && (r.left < cr.left - 0.5 || r.right > cr.right + 0.5) ? "card"
+      : (r.left < -0.5 || r.right > innerWidth + 0.5) ? "vp" : "";
+    if (why) bad.push(ovfName(e).replace(/[[\]|;@\/]/g, "") + ":" + why);
+  }
+  return " [psg:vp=" + innerWidth + "x" + innerHeight + ";mode=" + mode +
+    ";theme=" + (document.documentElement.getAttribute("data-theme") || "unset") +
+    ";logo=" + (logo ? psgR(logo) + "," + (logo.naturalWidth || 0) : "-") +
+    ";title=" + psgR(name) + ";text=" + txt + ";card=" + psgR(card) +
+    ";btn=" + btn + ";pb=" + pb + ";ovf=" + bad.length + "," + bad.slice(0, 4).join(",").slice(0, 160) + "]";
+}
+function psgPublish() {
+  if (!psgProbe || vaultPath || $("picker").hidden) return;
+  const t = "opensidian" + vargTok() + psgTok();
+  if (t === psgLast) return;
+  psgLast = t; document.title = t; pushTitle(t);
+}
+inv("psg_probe").then(v => { psgProbe = !!v; if (psgProbe) setInterval(psgPublish, 200); }).catch(() => {});
