@@ -3547,6 +3547,11 @@ struct BmRow {
     /// it has one, by the basename of the name when it has none; a group row
     /// by its title. `name` stays the click/open key; `label` is only paint.
     label: String,
+    /// treefold: a GROUP's ctime as text, so the UI can key its fold record
+    /// "item-<ctime>" like stock's `<vaultId>-bookmarks-folds`. None for files and
+    /// for a group without a numeric ctime (folds in memory only, not persisted).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ctime: Option<String>,
 }
 
 /* the ONE parser, and it is TOLERANT by construction: a body that is not
@@ -3796,10 +3801,11 @@ fn bm_rows_in(nodes: &[BmNode], depth: usize, out: &mut Vec<BmRow>) {
                 let label = title
                     .clone()
                     .unwrap_or_else(|| name.rsplit('/').next().unwrap_or(name).to_string());
-                out.push(BmRow { kind: "f".into(), depth, name: name.clone(), label });
+                out.push(BmRow { kind: "f".into(), depth, name: name.clone(), label, ctime: None });
             }
-            BmNode::Group { title, items, .. } => {
-                out.push(BmRow { kind: "g".into(), depth, name: title.clone(), label: title.clone() });
+            BmNode::Group { title, items, x } => {
+                let ctime = x.ctime.as_ref().map(|c| c.to_string());
+                out.push(BmRow { kind: "g".into(), depth, name: title.clone(), label: title.clone(), ctime });
                 bm_rows_in(items, depth + 1, out);
             }
             BmNode::Opaque(_) => {} // preserved on disk, never painted
@@ -6878,6 +6884,29 @@ mod tests {
             vec!["Projects/Roadmap", "Work", "Zettel/Atomic Notes", "Untitled group"],
             "names keep the full extensionless path — the label is only paint"
         );
+    }
+
+    /// treefold: a group row carries its ctime as text (the UI's fold id is
+    /// "item-<ctime>", stock's `<vaultId>-bookmarks-folds` id); a file row and a
+    /// group without a numeric ctime carry none and the JSON omits the key.
+    #[test]
+    fn treefold_group_rows_carry_their_ctime() {
+        let t = parse_bm_tree(
+            r#"{"items":[{"type":"group","ctime":1789000000010,"title":"G1","items":[
+                {"type":"file","ctime":1789000000011,"path":"a.md"},
+                {"type":"group","ctime":1789000000020,"title":"G2","items":[]}]},
+              {"type":"group","title":"Bare","items":[]},
+              {"type":"group","ctime":"x","title":"Odd","items":[]}]}"#,
+        );
+        let rows = bm_rows_of(&t);
+        assert_eq!(
+            rows.iter().map(|r| r.ctime.as_deref()).collect::<Vec<_>>(),
+            vec![Some("1789000000010"), None, Some("1789000000020"), None, None]
+        );
+        let j = serde_json::to_value(&rows).unwrap();
+        assert_eq!(j[0]["ctime"], "1789000000010");
+        assert!(j[1].get("ctime").is_none(), "a file row has no ctime key");
+        assert!(j[3].get("ctime").is_none(), "a ctime-less group has no ctime key");
     }
 
     /// criterion 4, and it is BYTE-WISE: the input is the committed fixture

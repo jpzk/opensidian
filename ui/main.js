@@ -1501,6 +1501,7 @@ function bmFoldToggle(key) {
   if (key == null || bmRenaming !== null) return;
   return act("bm_fold", { depth: key.split("\u001f").length, open: bmFolds.has(key) }, () => {
     bmFolds.has(key) ? bmFolds.delete(key) : bmFolds.add(key);
+    lsTouch();                             // treefold: the fold record, not bookmarks.json (R2 holds)
     renderBm();
   });
 }
@@ -1630,7 +1631,7 @@ function bmReveal(nm) {
   revealInfo = r ? nm.replace(/[|\]:]/g, "") : "";
   updateTitle();
 }
-async function refreshBm() { bmTree = await inv("bookmark_rows"); bmSync(); renderBm(); }
+async function refreshBm() { bmTree = await inv("bookmark_rows"); lsBmResolve(); bmSync(); renderBm(); }
 async function toggleBm(nm) {
   await inv("toggle_bookmark", { name: nm });   // by NAME (R9.4/R20.4): ON appends at the top level, OFF removes at any depth
   await refreshBm();                            // the TREE is the model the pane paints — never patch bmCache behind it
@@ -1729,6 +1730,7 @@ function bmDragStart(e, ix) {
     if (!ghost || !bmFolds.has(key)) return;
     act("bm_spring", { depth: key.split("\u001f").length }, () => {
       bmFolds.delete(key);                 // in memory only — the file is never written (R2)
+      lsTouch();                           // treefold: the record follows the painted folds
       clearFb();
       renderBm();                          // repaints: every cached rect/element is now stale
       cacheZones();
@@ -3263,6 +3265,7 @@ function bmCollapseAll() {
     if (!s.n) { bmCaFlag = bmCaFlag === "C" ? "E" : "C"; updateTitle(); return; }
     if (s.lab === "C") for (const r of bmGroupRows()) bmFolds.add(r.dataset.bmk);
     else bmFolds.clear();
+    lsTouch();
     renderBm();
   });
 }
@@ -5779,6 +5782,11 @@ let unfold = new Set();
    could not be had (no config reachable): folds stay in memory, as before. */
 const LS_MS = 5000;
 let lsVid = null, lsTimer = 0, lsLast = new Map();
+/* bookmarks: the ids read from disk wait in lsBmPend until the first bookmark_rows of
+   this vault (refreshBm) maps each "item-<ctime>" to the group's title-path key that
+   bmFolds and renderBm use. Until then the bookmarks record is NOT flushed (an
+   explorer toggle in that window must not overwrite it with an empty list). */
+let lsBmPend = null, lsBmReady = false;
 const lsKeyFe = () => lsVid + "-file-explorer-unfold";
 const lsKeyBm = () => lsVid + "-bookmarks-folds";
 // stock's record order: path components compared case-insensitively (its A11 expand-all
@@ -5792,13 +5800,36 @@ function lsPathCmp(a, b) {
   return x.length - y.length;
 }
 const lsFeRec = () => [...unfold].sort(lsPathCmp);
+// every painted group in tree order: {key: renderBm's title path, id: "item-<ctime>" or null}
+function bmGroupIds() {
+  const out = [], anc = [];
+  for (const r of bmTree) {
+    while (anc.length && anc[anc.length - 1].depth >= r.depth) anc.pop();
+    if (r.kind !== "g") continue;
+    const key = anc.map(a => a.name).concat(r.name).join("\u001f");
+    anc.push({ depth: r.depth, name: r.name });
+    out.push({ key, id: r.ctime ? "item-" + r.ctime : null });
+  }
+  return out;
+}
+// stock's record: COLLAPSED groups, flat, nested included, tree order; a group with no
+// ctime has no stock id and folds in memory only
+const lsBmRec = () => [...new Set(bmGroupIds().filter(g => g.id && bmFolds.has(g.key)).map(g => g.id))];
+function lsBmResolve() {
+  if (lsBmReady || !lsVid) return;
+  lsBmReady = true;
+  if (lsBmPend) for (const g of bmGroupIds()) if (g.id && lsBmPend.has(g.id)) bmFolds.add(g.key);
+  lsBmPend = null;
+}
 function lsTouch() {
   if (lsVid && !lsTimer) lsTimer = setTimeout(lsFlush, LS_MS);
 }
 async function lsFlush() {
   clearTimeout(lsTimer); lsTimer = 0;
   if (!lsVid) return;
-  for (const [k, v] of [[lsKeyFe(), lsFeRec()]]) {
+  const recs = [[lsKeyFe(), lsFeRec()]];
+  if (lsBmReady) recs.push([lsKeyBm(), lsBmRec()]);
+  for (const [k, v] of recs) {
     const s = JSON.stringify(v);
     if (lsLast.get(k) === s) continue;
     lsLast.set(k, s);
@@ -5811,12 +5842,18 @@ async function lsFlush() {
 async function lsLoad() {
   clearTimeout(lsTimer); lsTimer = 0; lsLast = new Map();
   unfold = new Set();
+  lsBmPend = null; lsBmReady = false;
   try { lsVid = await inv("vault_id"); } catch (e) { lsVid = null; }
   if (!lsVid) return;
   const fe = await inv("ls_get", { key: lsKeyFe() }).catch(() => null);
   if (Array.isArray(fe)) {
     for (const p of fe) if (typeof p === "string" && p) unfold.add(p);
     lsLast.set(lsKeyFe(), JSON.stringify(fe));
+  }
+  const bm = await inv("ls_get", { key: lsKeyBm() }).catch(() => null);
+  if (Array.isArray(bm)) {
+    lsBmPend = new Set(bm.filter(x => typeof x === "string" && x));
+    lsLast.set(lsKeyBm(), JSON.stringify(bm));
   }
 }
 
