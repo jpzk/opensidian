@@ -89,6 +89,7 @@ fn force_copy() -> bool {
 pub enum SrcFate {
     Removed,      // a move: the source name is gone
     Kept(String), // committed + verified in the vault, but the source could not be removed (why)
+    Copied,       // pdfdrop: a COPY was asked for (stock copies a dropped PDF): the source is left as it was
 }
 
 /// osdrop: why an import did not happen. The source is intact in every case.
@@ -97,6 +98,7 @@ pub enum ImportErr {
     OpenSrc(io::Error), // could not open the source (EACCES = the sandbox)
     NotRegular,         // a symlink, dir, fifo, device ... (or became one)
     TooBig(u64),        // over the cap, by metadata or by the bytes read
+    BadMagic,           // pdfdrop: the opened source does not start with the type's magic bytes
     Changed,            // the source changed identity or content during the import
     NoFreeName,         // every candidate name was taken
     Io(io::Error),      // staging / verify / commit failed
@@ -111,6 +113,23 @@ pub struct Imported {
 
 fn fs_lstat(p: &CString) -> io::Result<libc::stat> {
     stat_at(libc::AT_FDCWD, p)
+}
+
+/// pdfdrop: does the OPEN file start with `magic`? pread at offset 0, so the fd's
+/// cursor is untouched for the copy that follows; a short file is a mismatch.
+fn starts_with_at0(f: &File, magic: &[u8]) -> io::Result<bool> {
+    use std::os::unix::fs::FileExt;
+    let mut head = vec![0u8; magic.len()];
+    let mut n = 0;
+    while n < head.len() {
+        match f.read_at(&mut head[n..], n as u64) {
+            Ok(0) => return Ok(false),
+            Ok(k) => n += k,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(head == magic)
 }
 
 /// both files re-read from offset 0 and compared whole: equal length, equal bytes
@@ -464,6 +483,8 @@ impl Vault {
        durable, and only THEN is the source name removed.
          1. open the source O_NOFOLLOW, fstat: regular file, <= cap. That fd is
             the identity every later step is checked against (dev, ino).
+            pdfdrop: if `magic` is non-empty, the first magic.len() bytes OF THAT FD
+            (pread, offset 0) must equal it, else BadMagic before anything is staged.
          2. STAGE under a random dot-name (tmp_name: no index/watcher sees it):
             same filesystem -> linkat(src, tmp): no byte is copied, then the tmp's
                                (dev, ino) must equal the opened fd's — a source
@@ -481,8 +502,12 @@ impl Vault {
        Any error in 1-3 unlinks the tmp and returns Err with the source intact. An
        error in 4 is not a failure of the import: the vault file is committed and
        verified, the source simply stays (SrcFate::Kept, e.g. a read-only drop
-       folder under Landlock) — a duplicate, never a loss. */
-    pub fn import_move(&self, src: &Path, dir: &Path, names: &mut dyn Iterator<Item = String>, cap: u64) -> Result<Imported, ImportErr> {
+       folder under Landlock) — a duplicate, never a loss.
+       pdfdrop: keep_src = true is the COPY variant (stock 1.13.7 copies a dropped PDF, measured by OS drag):
+       step 2 always takes the verified-copy road (never linkat: a hard link is not a copy)
+       and step 4 is skipped — SrcFate::Copied. Steps 1 and 3 (fd identity, cap, magic,
+       NOREPLACE) are the same. */
+    pub fn import_move(&self, src: &Path, dir: &Path, names: &mut dyn Iterator<Item = String>, cap: u64, magic: &[u8], keep_src: bool) -> Result<Imported, ImportErr> {
         use std::os::unix::fs::OpenOptionsExt;
         let d = self.dir(dir, false).map_err(ImportErr::Io)?;
         let dfd = d.fd.as_raw_fd();
@@ -499,13 +524,19 @@ impl Vault {
         if st0.st_size as u64 > cap {
             return Err(ImportErr::TooBig(st0.st_size as u64));
         }
+        if !magic.is_empty() && !starts_with_at0(&sf, magic).map_err(ImportErr::Io)? {
+            return Err(ImportErr::BadMagic);
+        }
         let mut names = names.peekable();
         let first = names.peek().cloned().ok_or(ImportErr::NoFreeName)?;
         let tmp = tmp_name(OsStr::new(&first)).map_err(ImportErr::Io)?;
         let csrc = cstr(src.as_os_str()).map_err(ImportErr::Io)?;
         let unstage = || unsafe { libc::unlinkat(dfd, tmp.as_ptr(), 0) };
         // 2. stage
-        let linked = !force_copy()
+        // keep_src: never the link road — a hard link would make the "copy" the SAME inode as
+        // the source, so an edit to either would change both. A copy is bytes, verified.
+        let linked = !keep_src
+            && !force_copy()
             // SAFETY: NUL-terminated names, valid dir fd; flags 0 = never follow a symlink at src
             && cvt(unsafe { libc::linkat(libc::AT_FDCWD, csrc.as_ptr(), dfd, tmp.as_ptr(), 0) }).is_ok();
         let how = if linked {
@@ -601,6 +632,9 @@ impl Vault {
         };
         // SAFETY: valid fd. The new name is durable before the source goes.
         let _ = unsafe { libc::fsync(dfd) };
+        if keep_src {
+            return Ok(Imported { name, src: SrcFate::Copied, how });
+        }
         // 4. remove the source — only if the path still names the file we imported
         let fate = match fs_lstat(&csrc) {
             Ok(s) if (s.st_dev, s.st_ino) == (st0.st_dev, st0.st_ino) => {
