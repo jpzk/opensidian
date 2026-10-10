@@ -2981,23 +2981,9 @@ function wsSidesIn(doc) {
 }
 /* R28.2 — THE WINDOW RECTANGLE GOES SOMEWHERE ELSE. Not in the vault: a vault
    synced between a laptop and a desktop would otherwise carry one machine's
-   window size to the other and the two would overwrite each other on every
-   launch. It is written to ~/.opensidian.json ("win") beside sidebar_w / theme /
-   zoom, which are machine facts for the same reason. Throttled on resize, and
-   deliberately NOT applied at startup — WHERE the geometry lives is the
-   requirement; restoring it is a row nobody has written. */
-let wgT = null;
-function wsGeomTouch() {
-  if (wgT) return;
-  wgT = setTimeout(async () => {
-    wgT = null;
-    try {
-      const r = await inv("win_rect");
-      await inv("set_win_geom", { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.w), h: Math.round(r.h) });
-    } catch (e) { /* geometry is a convenience; it never breaks a session */ }
-  }, 700);
-}
-window.addEventListener("resize", wsGeomTouch);
+   window size to the other. Goal winsize moved it to Rust entirely: saved on a
+   clean close to ~/.opensidian.json "windows"[<vault>] in stock's schema and
+   restored before the first show (src-tauri/src/winsize.rs). Nothing here. */
 
 /* ---------- R22 layout census: [ovf:<dw>,<dh>,<n>] ----------
    R22 (no scrollbars, ever): at EVERY window size the app chrome fits
@@ -9465,7 +9451,6 @@ async function enterVault() {
     else renderTabs(g);
   }
   perf.mark("boot", 0, { notes: names.length });   // perf: page start -> vault ready (first note rendered)
-  wsGeomTouch();   // R28.2: the rectangle is recorded once per session OUTSIDE the vault, resize or no resize
   switchReveal();   // item 14: a switch-started window shows itself only now, at the old window's rect
 }
 /* ---------- R11 external edits (backend watcher -> `vault-changed`) ---------- */

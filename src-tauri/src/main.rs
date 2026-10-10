@@ -36,6 +36,7 @@ mod srcmode;
 mod themefs;
 mod vaultfs;
 mod watcher;
+mod winsize;
 use index::{link_parts, links_in, resolve, tag_spans, Graph, Index};
 
 /* perf-index: root + in-memory Index (src/index.rs). The index replaces the
@@ -1488,20 +1489,6 @@ fn write_workspace(
     )
 }
 
-/// R28.2: the window rectangle, stored OUTSIDE the vault. Read back by nothing
-/// in this feature on purpose — where it is kept is the requirement; restoring
-/// it is a separate row nobody has written yet (see docs/negctl-wspace).
-#[tauri::command]
-fn get_win_geom() -> Option<serde_json::Value> {
-    let v = cfg_value();
-    v.get("win").filter(|w| w.is_object()).cloned()
-}
-
-#[tauri::command]
-fn set_win_geom(x: i64, y: i64, w: u64, h: u64) {
-    cfg_set("win", serde_json::json!({ "x": x, "y": y, "w": w, "h": h }));
-}
-
 #[tauri::command]
 fn recent_vaults() -> Vec<String> {
     span_timed!("recent_vaults", read_cfg().1.into_iter().filter(|p| Path::new(p).is_dir()).collect())
@@ -1680,6 +1667,15 @@ async fn await_switch(app: &tauri::AppHandle, p: &Path, pid: u32, sw: &spawn::Sw
         }
         h => {
             eprintln!("[vaultwin] switch: handoff {h:?} after {ms}ms; pid={me} exits after pid={pid}");
+            // goal winsize: app.exit fires no CloseRequested — save this vault's rect
+            // here (the switch rect is the live one, switch_rect)
+            {
+                use tauri::Manager;
+                if let Some(w) = app.webview_windows().values().next() {
+                    let r = WinRect { x: sw.x as f64, y: sw.y as f64, w: sw.w as f64, h: sw.h as f64, max: sw.max, dec: false };
+                    winsize_save(&w.as_ref().window(), r, "switch");
+                }
+            }
             app.exit(0);
             Ok(pid)
         }
@@ -1735,6 +1731,95 @@ const SWITCH_FALLBACK: std::time::Duration = std::time::Duration::from_secs(8);
 static SWITCHED: OnceLock<spawn::Switch> = OnceLock::new();
 static SWITCH_SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static SWITCH_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/* goal winsize (winsize.rs has the rules and the stock evidence pointers).
+   WIN_REC: this vault's saved record + the config default size, read in main()
+   before the Builder; set => the window is created hidden and winsize_restore
+   places + shows it in setup. A switch-started window never reads it (the old
+   window's rect wins). WIN_TRACK: the last normal (not maximized) bounds. */
+static WIN_REC: OnceLock<(serde_json::Value, (f64, f64))> = OnceLock::new();
+static WIN_TRACK: Mutex<winsize::Track> = Mutex::new(winsize::Track::new());
+
+/// the record's key: the canonical vault path
+fn winsize_key(p: &Path) -> String {
+    p.canonicalize().unwrap_or_else(|_| p.to_path_buf()).display().to_string()
+}
+
+/// setup: sanitise the record against the monitors' work areas, then size,
+/// place (or centre), show, maximize — before the user sees a frame.
+fn winsize_restore(w: &tauri::WebviewWindow, rec: &serde_json::Value, default: (f64, f64), wayland: bool) {
+    let mut ms = w.available_monitors().unwrap_or_default();
+    if let Ok(Some(p)) = w.primary_monitor() {
+        ms.sort_by_key(|m| m.name() != p.name()); // primary first (stable)
+    }
+    let mons: Vec<winsize::Rect> = ms
+        .iter()
+        .map(|m| {
+            let a = m.work_area();
+            let (p, s) = (a.position.to_logical::<f64>(m.scale_factor()), a.size.to_logical::<f64>(m.scale_factor()));
+            winsize::Rect { x: p.x, y: p.y, w: s.width, h: s.height }
+        })
+        .collect();
+    let plan = winsize::sanitise(Some(rec), &mons, default, wayland);
+    let _ = w.set_size(tauri::LogicalSize::new(plan.w, plan.h));
+    match plan.pos {
+        Some((x, y)) => {
+            let _ = w.set_position(tauri::LogicalPosition::new(x, y));
+            WIN_TRACK.lock().unwrap_or_else(|e| e.into_inner()).see(winsize::Rect { x, y, w: plan.w, h: plan.h });
+        }
+        None => {
+            let _ = w.center();
+        }
+    }
+    let _ = w.show();
+    if plan.max {
+        let _ = w.maximize();
+    }
+    eprintln!("[winsize] restore pid={} why={} rect={}x{}@{:?} max={} mons={:?}", std::process::id(), plan.why, plan.w, plan.h, plan.pos, plan.max, mons);
+}
+
+/// Moved/Resized: remember the normal bounds; CloseRequested: save (stock's
+/// timing — a clean close only, so a SIGKILL loses the change as it does there)
+fn winsize_event(w: &tauri::Window, e: &tauri::WindowEvent) {
+    match e {
+        tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+            let off = |r: tauri::Result<bool>| r.unwrap_or(true);
+            if !off(w.is_visible().map(|v| !v)) && !off(w.is_maximized()) && !off(w.is_fullscreen()) && !off(w.is_minimized()) {
+                if let Ok(r) = win_rect(w.clone()) {
+                    WIN_TRACK.lock().unwrap_or_else(|e| e.into_inner()).see(winsize::Rect { x: r.x, y: r.y, w: r.w, h: r.h });
+                }
+            }
+        }
+        // main thread: the cached rect (live_rect hops to the main thread and waits)
+        tauri::WindowEvent::CloseRequested { .. } => match win_rect(w.clone()) {
+            Ok(r) => winsize_save(w, r, "close"),
+            Err(e) => eprintln!("[winsize] save skipped: rect unreadable ({e})"),
+        },
+        _ => {}
+    }
+}
+
+/// write this window's record for its vault (MergeIn: stock's extra keys and
+/// every other vault's record survive). Maximized/fullscreen: stock S7 — a
+/// maximized window saves its NORMAL bounds, a fullscreen one its current rect.
+fn winsize_save(w: &tauri::Window, cur: WinRect, why: &str) {
+    use tauri::Manager;
+    let Some(root) = cur_vault(&w.state::<Vault>()) else { return };
+    let key = winsize_key(&root);
+    let wayland = w.try_state::<DragProto>().map(|p| !p.x11).unwrap_or(false);
+    let now = winsize::Rect { x: cur.x, y: cur.y, w: cur.w, h: cur.h };
+    let track = WIN_TRACK.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let full = w.is_fullscreen().unwrap_or(false);
+    let r = if cur.max && !full { track.normal(Some(now)) } else { Some(now) };
+    let r = r.filter(|r| spawn::plausible_size(r.w, r.h)).or_else(|| track.normal(None));
+    let Some(r) = r else {
+        eprintln!("[winsize] save skipped why={why}: no plausible rect ({}x{}@{},{})", cur.w, cur.h, cur.x, cur.y);
+        return;
+    };
+    let rec = winsize::record(r, cur.max, wayland);
+    cfg_update(&[cfgstore::Op::MergeIn(winsize::KEY.into(), key.clone(), rec.clone())]);
+    eprintln!("[winsize] save pid={} why={why} vault={key} rec={rec}", std::process::id());
+}
 
 /// item 14, child side, step 1: put the (hidden) window at the old window's
 /// rect and show it. Idempotent; a no-op for a window not started by a switch
@@ -5036,6 +5121,14 @@ fn main() {
         }
         eprintln!("[vaultwin] switch: pid={} starts hidden at {}x{}@{},{} max={}", std::process::id(), sw.w, sw.h, sw.x, sw.y, sw.max);
         let _ = SWITCHED.set(sw);
+    } else if let Some(p) = &init {
+        // goal winsize: a saved record for this vault => start hidden, setup
+        // places it (winsize_restore). No record => the config default, as before.
+        let rec = cfg_value()[winsize::KEY].get(winsize_key(p)).cloned();
+        if let (Some(rec), Some(wc)) = (rec, ctx.config_mut().app.windows.first_mut()) {
+            wc.visible = false;
+            let _ = WIN_REC.set((rec, (wc.width, wc.height)));
+        }
     }
     tauri::Builder::default()
         .plugin(appid::plugin())
@@ -5069,7 +5162,14 @@ fn main() {
                     proto.moveresize,
                     drag_path(proto.x11, proto.moveresize, None)
                 );
+                let wayland = !proto.x11;
                 app.manage(proto);
+                // goal winsize: before the first show (the window was created hidden)
+                if let (None, Some((rec, default))) = (SWITCHED.get(), WIN_REC.get()) {
+                    if let Some(w) = app.webview_windows().values().next() {
+                        winsize_restore(w, rec, *default, wayland);
+                    }
+                }
             }
             // R36.4 the persisted zoom is applied HERE, before the first paint the
             // user sees, and not from JS: a webview that boots at 100% and is
@@ -5103,6 +5203,7 @@ fn main() {
         // `tauri://drag-drop` payload has. Such a file is never attached, never
         // half-attached; R31.10.
         .on_window_event(|w, e| {
+            winsize_event(w, e); // goal winsize: track + save on close (not the drop)
             if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, position }) = e {
                 use tauri::Emitter;
                 let _ = w.emit(DROP_EVENT, (paths, position.x, position.y));
@@ -5168,7 +5269,7 @@ fn main() {
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, vb_probe, smoke_css,
-            read_workspace, write_workspace, get_win_geom, set_win_geom,
+            read_workspace, write_workspace,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
             themes_scan, theme_css, get_css_theme, set_css_theme, theme_seed_report, vault_css_watch,
