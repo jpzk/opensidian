@@ -2871,31 +2871,36 @@ fn mint_vault_id() -> Option<String> {
 /// nothing). The id is minted when the first fold record is actually written.
 #[tauri::command]
 fn vault_id(v: State<Vault>, mint: Option<bool>) -> Option<String> {
-    let root = cur_vault(&v)?;
-    let key = fs::canonicalize(&root).unwrap_or(root).display().to_string();
-    if let Some(id) = cfg_value()["vault_ids"][key.as_str()].as_str() {
-        return Some(id.to_string());
-    }
-    if !mint.unwrap_or(false) {
-        return None;
-    }
-    cfg_update(&[cfgstore::Op::InsertIn("vault_ids".into(), key.clone(), serde_json::json!(mint_vault_id()?))]);
-    // re-read: a racing window may have won the insert, its id is THE id
-    cfg_value()["vault_ids"][key.as_str()].as_str().map(str::to_string)
+    span_timed!("vault_id", (|| -> Option<String> {
+        let root = cur_vault(&v)?;
+        let key = fs::canonicalize(&root).unwrap_or(root).display().to_string();
+        if let Some(id) = cfg_value()["vault_ids"][key.as_str()].as_str() {
+            return Some(id.to_string());
+        }
+        if !mint.unwrap_or(false) {
+            return None;
+        }
+        cfg_update(&[cfgstore::Op::InsertIn("vault_ids".into(), key.clone(), serde_json::json!(mint_vault_id()?))]);
+        // re-read: a racing window may have won the insert, its id is THE id
+        cfg_value()["vault_ids"][key.as_str()].as_str().map(str::to_string)
+    })())
 }
 
 #[tauri::command]
 fn ls_get(key: String) -> Option<serde_json::Value> {
-    cfg_value()[LS].get(key.as_str()).filter(|x| !x.is_null()).cloned()
+    span_timed!("ls_get", cfg_value()[LS].get(key.as_str()).filter(|x| !x.is_null()).cloned())
 }
 
 #[tauri::command]
 fn ls_set(key: String, value: serde_json::Value) -> Result<(), String> {
-    if key.is_empty() || key.len() > 256 {
-        return Err("bad key".into());
-    }
-    cfg_update(&[cfgstore::Op::SetIn(LS.into(), key, value)]);
-    Ok(())
+    let n = value.as_array().map_or(0, Vec::len);
+    span_timed!("ls_set", (|| -> Result<(), String> {
+        if key.is_empty() || key.len() > 256 {
+            return Err("bad key".into());
+        }
+        cfg_update(&[cfgstore::Op::SetIn(LS.into(), key, value)]);
+        Ok(())
+    })(), serde_json::json!({"items": n}))
 }
 
 /// active right-sidebar tab, persisted as rside_tab in ~/.opensidian.json
