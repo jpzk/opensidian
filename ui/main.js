@@ -2520,6 +2520,11 @@ const WS_GICON = "lucide-git-fork";
 function wsLgOpts(t) {
   const o = Object.assign({}, t.opts && typeof t.opts === "object" ? t.opts : {});
   o.localJumps = t.depth; o.localBacklinks = !!t.inc; o.localForelinks = !!t.out; o.localInterlinks = !!t.inter;
+  // ggpanel: stock's local leaf options always state the whole panel layout (close + the four
+  // collapse-*), from creation on (recon goal/ggpanel L1/L2) — fill what the tab has not written yet
+  const gc = t.gc || gcParse(o);
+  if (typeof o.close !== "boolean") o.close = !!gc.close;
+  for (const [k, , , ck] of GC_SECS) if (typeof o[ck] !== "boolean") o[ck] = !!gc.cs[k];
   return o;
 }
 function wsLeaf(t) {
