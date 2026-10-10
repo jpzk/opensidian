@@ -9560,6 +9560,12 @@ function base(p) { return p.replace(/\/+$/, "").split("/").pop() || p; }
 function showPicker() {
   pmode = null;
   $("picker").hidden = false;
+  // respinperf: the startscr logo loads when a picker SHOWS, not at every boot. As
+  // <img src> in the hidden picker it was fetched during page load of every vault
+  // window and delayed the first census title ~100 ms (perfhunt big win_ms,
+  // A/B in goal respinperf notes/bisect.md).
+  const lg = $("plogo");
+  if (lg && !lg.getAttribute("src")) lg.src = lg.dataset.src;
   $("p-actions").style.display = "";
   $("p-sub").hidden = true;
   $("p-err").textContent = "";
