@@ -672,6 +672,9 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
           margin-bottom: 20px; letter-spacing: 0.5px }
 #plogo { width: 36px; height: 36px; flex-shrink: 0; display: block }   /* ~2x the cap height */
 #ptname { display: block; min-width: 0 }
+/* startscr: #p-actions spans 10px into the card padding on both sides (padding gives the rows back
+   the content edges) so #p-recent, which reaches into that band, never overflows its parent */
+#p-actions { margin: 0 -10px; padding: 0 10px }
 .prow { display: flex; align-items: center; gap: 12px; padding: 14px 0;
         border-top: 1px solid var(--bg-surface) }
 .ptext { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow-wrap: anywhere }   /* long text wraps, never squeezes the button */
