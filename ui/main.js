@@ -1214,6 +1214,7 @@ function renderBm() {
     if (grp) anc.push({ depth: r.depth, name: r.name, folded });
     row.className = "bmrow" + (grp ? " bmgrp" : "") + (folded ? " bmfold" : "") + (hide ? " bmhide" : "");
     if (grp) row.dataset.bmk = key;
+    if (grp && r.ctime) row.dataset.bmid = "item-" + r.ctime;   // treefold: stock's fold id, read by [tfold:]
     row.dataset.bmd = String(r.depth);
     row.style.paddingLeft = (BM_PAD + r.depth * BM_INDENT) + "px";   // content shifts, background still spans the pane (14-saved.png)
     row.title = r.name;
@@ -1501,6 +1502,7 @@ function bmFoldToggle(key) {
   if (key == null || bmRenaming !== null) return;
   return act("bm_fold", { depth: key.split("\u001f").length, open: bmFolds.has(key) }, () => {
     bmFolds.has(key) ? bmFolds.delete(key) : bmFolds.add(key);
+    lsTouch();                             // treefold: the fold record, not bookmarks.json (R2 holds)
     renderBm();
   });
 }
@@ -1630,7 +1632,7 @@ function bmReveal(nm) {
   revealInfo = r ? nm.replace(/[|\]:]/g, "") : "";
   updateTitle();
 }
-async function refreshBm() { bmTree = await inv("bookmark_rows"); bmSync(); renderBm(); }
+async function refreshBm() { bmTree = await inv("bookmark_rows"); lsBmResolve(); bmSync(); renderBm(); }
 async function toggleBm(nm) {
   await inv("toggle_bookmark", { name: nm });   // by NAME (R9.4/R20.4): ON appends at the top level, OFF removes at any depth
   await refreshBm();                            // the TREE is the model the pane paints — never patch bmCache behind it
@@ -1729,6 +1731,7 @@ function bmDragStart(e, ix) {
     if (!ghost || !bmFolds.has(key)) return;
     act("bm_spring", { depth: key.split("\u001f").length }, () => {
       bmFolds.delete(key);                 // in memory only — the file is never written (R2)
+      lsTouch();                           // treefold: the record follows the painted folds
       clearFb();
       renderBm();                          // repaints: every cached rect/element is now stale
       cacheZones();
@@ -2219,6 +2222,7 @@ async function leaveVault() {
   // Same rule as the buffers — flush into the vault we are leaving, then make
   // sure nothing from it can still fire into the next one.
   try { await wsLeave(); } catch (e) { /* a layout is never worth blocking a switch */ }
+  try { await lsFlush(); } catch (e) { /* treefold: the fold records go to the vault we leave, same rule */ }
   return lost;
 }
 
@@ -3216,8 +3220,8 @@ function cabTok(id, name) {
   return " [" + name + ":" + Math.round(r.left) + "-" + Math.round(r.right) + "," + Math.round(r.top + r.height / 2) + "]";
 }
 /* collapseall R4, explorer: any folder expanded -> collapse ALL (nested included:
-   every folder path goes into `collapsed`, so re-opening a parent shows its
-   children still shut, recon Q2 05-fe-open-projects.png); else expand ALL. Same
+   every folder path leaves `unfold` (treefold: the record becomes [], as stock's
+   A10), so re-opening a parent shows its children still shut, recon Q2 05-fe-open-projects.png); else expand ALL. Same
    zero-IPC DOM flip as a single folder click (renderNode), no tree rebuild. */
 /* bmcollbtn: [bmhdr:i/n|title|x0-x1,y0-y1] — the toggle's index among the
    VISIBLE bookmarks-header icons (stock: 3/4), its live title (the tooltip text,
@@ -3244,13 +3248,16 @@ function feCollapseAll() {
   return act("fe_foldall", { action: s.lab, folders: s.n, collapsed: s.c }, () => {
     if (!s.n) { feCaFlag = feCaFlag === "C" ? "E" : "C"; updateTitle(); return; }
     const shut = s.lab === "C";
+    // treefold: stock writes [] on collapse-all (A10) and every folder on expand-all (A11)
+    unfold.clear();
     for (const row of feFoldRows()) {
       const full = row.dataset.folder;
-      shut ? collapsed.add(full) : collapsed.delete(full);
+      if (!shut) unfold.add(full);
       row.classList.toggle("open", !shut);
       const kids = row.nextElementSibling;
       if (kids && kids.classList.contains("tkids")) kids.classList.toggle("collapsed", shut);
     }
+    lsTouch();
     updateTitle();
   });
 }
@@ -3263,6 +3270,7 @@ function bmCollapseAll() {
     if (!s.n) { bmCaFlag = bmCaFlag === "C" ? "E" : "C"; updateTitle(); return; }
     if (s.lab === "C") for (const r of bmGroupRows()) bmFolds.add(r.dataset.bmk);
     else bmFolds.clear();
+    lsTouch();
     renderBm();
   });
 }
@@ -5765,7 +5773,116 @@ async function closeTab(g, i, cause, via, noFlush) {
 }
 
 /* ---------- explorer tree ---------- */
-let collapsed = new Set();
+/* treefold: the EXPANDED folder paths, stock's polarity. Stock keeps them in its
+   Electron localStorage as "<vaultId>-file-explorer-unfold" = JSON array of
+   vault-relative folder paths, default (key absent) = every folder COLLAPSED,
+   nesting independent (a hidden child keeps its entry), collapse-all -> [],
+   expand-all -> every folder (goal treefold notes/stock.md). Ours: the same key
+   and array in ~/.opensidian.json "localStorage" (ls_get/ls_set, main.rs), so
+   this Set IS the persisted record — never pruned on a parent collapse. */
+let unfold = new Set();
+
+/* treefold: write-behind for the fold records. THROTTLE, not debounce (R28.3:
+   continuous toggling must not starve the write): the first change arms ONE
+   5000 ms timer (stock lands ~5.4 s after the click), every change inside the
+   window rides it. A record equal to the last one read/written is skipped. No
+   exit handler (R28.3: SIGKILL/OOM skip it anyway); leaveVault flushes, because
+   a switch exits this process before the timer could fire. lsOn = a vault is in;
+   lsVid null with lsOn = this vault has no id YET (opening a vault never writes the
+   config, vaultarg): the first flush mints it. lsVid still null after that = no
+   config reachable: folds stay in memory, as before. */
+const LS_MS = 5000;
+let lsVid = null, lsOn = false, lsDirty = false, lsTimer = 0, lsLast = new Map();   // lsDirty: a fold changed since the last flush
+/* bookmarks: the ids read from disk wait in lsBmPend until the first bookmark_rows of
+   this vault (refreshBm) maps each "item-<ctime>" to the group's title-path key that
+   bmFolds and renderBm use. Until then the bookmarks record is NOT flushed (an
+   explorer toggle in that window must not overwrite it with an empty list). */
+let lsBmPend = null, lsBmReady = false;
+const lsKeyFe = () => lsVid + "-file-explorer-unfold";
+const lsKeyBm = () => lsVid + "-bookmarks-folds";
+// stock's record order: path components compared case-insensitively (its A11 expand-all
+// record ["a","a/b","a/b/c","Projects","x","Zettel"]), parent before child
+function lsPathCmp(a, b) {
+  const x = a.split("/"), y = b.split("/");
+  for (let i = 0; i < Math.min(x.length, y.length); i++) {
+    const c = x[i].toLowerCase() < y[i].toLowerCase() ? -1 : x[i].toLowerCase() > y[i].toLowerCase() ? 1 : x[i] < y[i] ? -1 : x[i] > y[i] ? 1 : 0;
+    if (c) return c;
+  }
+  return x.length - y.length;
+}
+const lsFeRec = () => [...unfold].sort(lsPathCmp);
+// every painted group in tree order: {key: renderBm's title path, id: "item-<ctime>" or null}
+function bmGroupIds() {
+  const out = [], anc = [];
+  for (const r of bmTree) {
+    while (anc.length && anc[anc.length - 1].depth >= r.depth) anc.pop();
+    if (r.kind !== "g") continue;
+    const key = anc.map(a => a.name).concat(r.name).join("\u001f");
+    anc.push({ depth: r.depth, name: r.name });
+    out.push({ key, id: r.ctime ? "item-" + r.ctime : null });
+  }
+  return out;
+}
+// stock's record: COLLAPSED groups, flat, nested included, tree order; a group with no
+// ctime has no stock id and folds in memory only
+const lsBmRec = () => [...new Set(bmGroupIds().filter(g => g.id && bmFolds.has(g.key)).map(g => g.id))];
+/* treefold census [tfold:fe=<open folders>;bm=<collapsed group ids>] read off the PAINTED
+   DOM (.trow.folder.open / .bmrow.bmgrp.bmfold), not off the Sets: per item, so a gate
+   asserts each fold by name. Folders in stock's record order, groups in tree order;
+   "[]|;" stripped so a folder name cannot forge a token. */
+function tfoldTok() {
+  const cl = s => String(s).replace(/[[\]|;]/g, "");
+  const fe = [...document.querySelectorAll("#tree .trow.folder.open")].map(r => r.dataset.folder).filter(Boolean).sort(lsPathCmp);
+  const bm = [...document.querySelectorAll("#bmlist .bmrow.bmgrp.bmfold")].map(r => r.dataset.bmid).filter(Boolean);
+  return " [tfold:fe=" + fe.map(cl).join("|") + ";bm=" + bm.map(cl).join("|") + "]";
+}
+function lsBmResolve() {
+  if (lsBmReady || !lsOn) return;
+  lsBmReady = true;
+  if (lsBmPend) for (const g of bmGroupIds()) if (g.id && lsBmPend.has(g.id)) bmFolds.add(g.key);
+  lsBmPend = null;
+}
+function lsTouch() {
+  if (!lsOn) return;
+  lsDirty = true;
+  if (!lsTimer) lsTimer = setTimeout(lsFlush, LS_MS);
+}
+async function lsFlush() {
+  clearTimeout(lsTimer); lsTimer = 0;
+  if (!lsOn || !lsDirty) return;    // nothing toggled: no write, and no id minted (leaveVault calls this)
+  lsDirty = false;
+  if (!lsVid) { try { lsVid = await inv("vault_id", { mint: true }); } catch (e) { lsVid = null; } }
+  if (!lsVid) return;
+  const recs = [[lsKeyFe(), lsFeRec()]];
+  if (lsBmReady) recs.push([lsKeyBm(), lsBmRec()]);
+  for (const [k, v] of recs) {
+    const s = JSON.stringify(v);
+    if (lsLast.get(k) === s) continue;
+    lsLast.set(k, s);
+    try { await inv("ls_set", { key: k, value: v }); }
+    catch (e) { lsLast.delete(k); console.error("[treefold] fold record not written: " + e); }
+  }
+}
+// enterVault: this vault's records, BEFORE the first tree render (a fold painted
+// open and then shut would be a visible flash and a [fold:] lie in between)
+async function lsLoad() {
+  clearTimeout(lsTimer); lsTimer = 0; lsLast = new Map();
+  unfold = new Set();
+  lsBmPend = null; lsBmReady = false;
+  lsOn = false; lsDirty = false;
+  try { lsVid = await inv("vault_id", { mint: false }); lsOn = true; } catch (e) { lsVid = null; }
+  if (!lsVid) return;            // no id = no record can exist: stock default (all folders collapsed)
+  const fe = await inv("ls_get", { key: lsKeyFe() }).catch(() => null);
+  if (Array.isArray(fe)) {
+    for (const p of fe) if (typeof p === "string" && p) unfold.add(p);
+    lsLast.set(lsKeyFe(), JSON.stringify(fe));
+  }
+  const bm = await inv("ls_get", { key: lsKeyBm() }).catch(() => null);
+  if (Array.isArray(bm)) {
+    lsBmPend = new Set(bm.filter(x => typeof x === "string" && x));
+    lsLast.set(lsKeyBm(), JSON.stringify(bm));
+  }
+}
 
 function buildTree(folders, notes) {
   const root = { dirs: new Map(), notes: [] };
@@ -5800,7 +5917,7 @@ const treeGuides = d => '<span class="tg"></span>'.repeat(d);
 function renderNode(node, prefix, depth, out) {
   for (const d of [...node.dirs.keys()].sort()) {
     const full = prefix ? prefix + "/" + d : d;
-    const open = !collapsed.has(full);
+    const open = unfold.has(full);             // treefold: stock default = collapsed
     const row = document.createElement("div");
     row.className = "trow folder" + (open ? " open" : "");
     row.innerHTML = treeGuides(depth) +
@@ -5814,9 +5931,10 @@ function renderNode(node, prefix, depth, out) {
     row.dataset.folder = full;                  // R24.6: the drop target's identity, off the DOM
     const kids = document.createElement("div");
     kids.className = "tkids" + (open ? "" : " collapsed");
-    row.onclick = () => act("folder_toggle", { depth: full.split("/").length, open: collapsed.has(full), notes: node.dirs.get(d).notes.length, rows: kids.childElementCount }, () => {
-      const o = collapsed.has(full);
-      o ? collapsed.delete(full) : collapsed.add(full);
+    row.onclick = () => act("folder_toggle", { depth: full.split("/").length, open: !unfold.has(full), notes: node.dirs.get(d).notes.length, rows: kids.childElementCount }, () => {
+      const o = !unfold.has(full);              // o = it was collapsed, so it opens now
+      o ? unfold.add(full) : unfold.delete(full);
+      lsTouch();
       row.classList.toggle("open", o);
       kids.classList.toggle("collapsed", !o);
       updateTitle();                            // collapseall: [fold:] moves with every folder toggle
@@ -9577,8 +9695,8 @@ async function enterVault() {
   // down (the session-replace path died with the in-process switch).
   if (state) throw new Error("enterVault: this process already has a vault");
   $("vswitch").innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>' + base(vaultPath);
-  collapsed = new Set();
-  bmFolds = new Set();               // collapseall: folds are per vault and in memory (R6)
+  bmFolds = new Set();               // collapseall: folds are per vault (R6)
+  await lsLoad();                    // treefold: this vault's persisted folds, before the first tree render
   feCaFlag = "E"; bmCaFlag = "C";    // collapseall Q5: the empty-pane label flags start where Obsidian's do
   // R28.7: read the layout BEFORE the first render. renderLayout -> updateTitle
   // -> wsTouch arms a 400ms write, so reading later would race a write of the

@@ -2983,6 +2983,60 @@ fn link_mention_in(
     write_note_in(root, ix, note, &nc)
 }
 
+/* treefold: our equivalent of stock's Electron localStorage (notes: goal treefold
+   DESIGN). Stock keeps per-user, outside-the-vault UI state such as
+   "<vaultId>-file-explorer-unfold" and "<vaultId>-bookmarks-folds" in a flat
+   string map namespaced by a 16-hex vault id. Ours: the SAME key strings in the
+   sub-object "localStorage" of ~/.opensidian.json, values as native JSON, written
+   through cfgstore (locked merge of ONE key: N vault windows never clobber each
+   other, unknown keys round-trip). The id lives in "vault_ids"[<canonical root>],
+   minted once with insert-if-absent, so racing windows agree on it. */
+const LS: &str = "localStorage";
+
+fn mint_vault_id() -> Option<String> {
+    use std::io::Read;
+    let mut b = [0u8; 8];
+    fs::File::open("/dev/urandom").ok()?.read_exact(&mut b).ok()?;
+    Some(b.iter().map(|x| format!("{x:02x}")).collect())
+}
+
+/// mint false (the load path) only READS: opening a vault writes nothing to
+/// ~/.opensidian.json (vaultarg: a VAULT_DIR boot or a refused argument persists
+/// nothing). The id is minted when the first fold record is actually written.
+#[tauri::command]
+fn vault_id(v: State<Vault>, mint: Option<bool>) -> Option<String> {
+    span_timed!("vault_id", (|| -> Option<String> {
+        let root = cur_vault(&v)?;
+        let key = fs::canonicalize(&root).unwrap_or(root).display().to_string();
+        if let Some(id) = cfg_value()["vault_ids"][key.as_str()].as_str() {
+            return Some(id.to_string());
+        }
+        if !mint.unwrap_or(false) {
+            return None;
+        }
+        cfg_update(&[cfgstore::Op::InsertIn("vault_ids".into(), key.clone(), serde_json::json!(mint_vault_id()?))]);
+        // re-read: a racing window may have won the insert, its id is THE id
+        cfg_value()["vault_ids"][key.as_str()].as_str().map(str::to_string)
+    })())
+}
+
+#[tauri::command]
+fn ls_get(key: String) -> Option<serde_json::Value> {
+    span_timed!("ls_get", cfg_value()[LS].get(key.as_str()).filter(|x| !x.is_null()).cloned())
+}
+
+#[tauri::command]
+fn ls_set(key: String, value: serde_json::Value) -> Result<(), String> {
+    let n = value.as_array().map_or(0, Vec::len);
+    span_timed!("ls_set", (|| -> Result<(), String> {
+        if key.is_empty() || key.len() > 256 {
+            return Err("bad key".into());
+        }
+        cfg_update(&[cfgstore::Op::SetIn(LS.into(), key, value)]);
+        Ok(())
+    })(), serde_json::json!({"items": n}))
+}
+
 /// active right-sidebar tab, persisted as rside_tab in ~/.opensidian.json
 #[tauri::command]
 fn get_rside_tab() -> Option<String> {
@@ -3638,6 +3692,11 @@ struct BmRow {
     /// it has one, by the basename of the name when it has none; a group row
     /// by its title. `name` stays the click/open key; `label` is only paint.
     label: String,
+    /// treefold: a GROUP's ctime as text, so the UI can key its fold record
+    /// "item-<ctime>" like stock's `<vaultId>-bookmarks-folds`. None for files and
+    /// for a group without a numeric ctime (folds in memory only, not persisted).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ctime: Option<String>,
 }
 
 /* the ONE parser, and it is TOLERANT by construction: a body that is not
@@ -3887,10 +3946,11 @@ fn bm_rows_in(nodes: &[BmNode], depth: usize, out: &mut Vec<BmRow>) {
                 let label = title
                     .clone()
                     .unwrap_or_else(|| name.rsplit('/').next().unwrap_or(name).to_string());
-                out.push(BmRow { kind: "f".into(), depth, name: name.clone(), label });
+                out.push(BmRow { kind: "f".into(), depth, name: name.clone(), label, ctime: None });
             }
-            BmNode::Group { title, items, .. } => {
-                out.push(BmRow { kind: "g".into(), depth, name: title.clone(), label: title.clone() });
+            BmNode::Group { title, items, x } => {
+                let ctime = x.ctime.as_ref().map(|c| c.to_string());
+                out.push(BmRow { kind: "g".into(), depth, name: title.clone(), label: title.clone(), ctime });
                 bm_rows_in(items, depth + 1, out);
             }
             BmNode::Opaque(_) => {} // preserved on disk, never painted
@@ -5319,7 +5379,7 @@ fn main() {
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
             read_workspace, write_workspace,
-            outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme,
+            outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
             themes_scan, theme_css, get_css_theme, set_css_theme, theme_seed_report, vault_css_watch,
             get_quickfont, set_quickfont, get_fonts, set_font, font_families,
@@ -6985,6 +7045,29 @@ mod tests {
             vec!["Projects/Roadmap", "Work", "Zettel/Atomic Notes", "Untitled group"],
             "names keep the full extensionless path — the label is only paint"
         );
+    }
+
+    /// treefold: a group row carries its ctime as text (the UI's fold id is
+    /// "item-<ctime>", stock's `<vaultId>-bookmarks-folds` id); a file row and a
+    /// group without a numeric ctime carry none and the JSON omits the key.
+    #[test]
+    fn treefold_group_rows_carry_their_ctime() {
+        let t = parse_bm_tree(
+            r#"{"items":[{"type":"group","ctime":1789000000010,"title":"G1","items":[
+                {"type":"file","ctime":1789000000011,"path":"a.md"},
+                {"type":"group","ctime":1789000000020,"title":"G2","items":[]}]},
+              {"type":"group","title":"Bare","items":[]},
+              {"type":"group","ctime":"x","title":"Odd","items":[]}]}"#,
+        );
+        let rows = bm_rows_of(&t);
+        assert_eq!(
+            rows.iter().map(|r| r.ctime.as_deref()).collect::<Vec<_>>(),
+            vec![Some("1789000000010"), None, Some("1789000000020"), None, None]
+        );
+        let j = serde_json::to_value(&rows).unwrap();
+        assert_eq!(j[0]["ctime"], "1789000000010");
+        assert!(j[1].get("ctime").is_none(), "a file row has no ctime key");
+        assert!(j[3].get("ctime").is_none(), "a ctime-less group has no ctime key");
     }
 
     /// criterion 4, and it is BYTE-WISE: the input is the committed fixture

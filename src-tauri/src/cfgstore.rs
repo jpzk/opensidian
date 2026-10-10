@@ -51,6 +51,13 @@ pub enum Op {
     /// stay as they are on disk. Two windows on two vaults never drop each
     /// other's records, and keys we do not write (stock's devTools/zoom) survive.
     MergeIn(String, String, Value),
+    /// treefold: set ONE key inside the object at top-level `parent` (created if
+    /// absent or not an object); every other key in it round-trips. Two vault
+    /// windows writing their own "<vaultId>-..." keys never clobber each other.
+    SetIn(String, String, Value),
+    /// treefold: like SetIn, but only if `parent.key` is absent — first writer
+    /// wins (vault_ids: two windows minting an id for one fresh vault agree).
+    InsertIn(String, String, Value),
 }
 
 /// MRU push: dedup, newest first, capped — pure for testability
@@ -88,6 +95,18 @@ pub fn apply(v: &mut Value, ops: &[Op]) {
                     for (f, x) in src {
                         dst.insert(f.clone(), x.clone());
                     }
+                }
+            }
+            Op::SetIn(p, k, x) | Op::InsertIn(p, k, x) => {
+                if !v[p.as_str()].is_object() {
+                    v[p.as_str()] = serde_json::json!({});
+                }
+                let o = v[p.as_str()].as_object_mut().expect("object");
+                if matches!(op, Op::SetIn(..)) {
+                    o.insert(k.clone(), x.clone());
+                } else if matches!(o.get(k.as_str()), None | Some(Value::Null)) {
+                    // a null left by a hand edit counts as absent
+                    o.insert(k.clone(), x.clone());
                 }
             }
         }
@@ -315,5 +334,49 @@ mod tests {
         let v = read_value_in(&locks, &cfg);
         assert_eq!(v["list"], serde_json::json!(["/mine", "/other"]), "{v}");
         assert_eq!(v["other"], 1, "{v}");
+    }
+
+    /// treefold: SetIn merges one key into a sub-object; siblings, unknown keys
+    /// and every top-level key round-trip, a non-object parent is replaced
+    #[test]
+    fn cfgstore_set_in_merges_one_key_and_keeps_the_rest() {
+        let d = tmp("setin");
+        let (cfg, locks) = (d.join(".opensidian.json"), d.join("locks"));
+        fs::write(&cfg, r#"{"theme":"dark","localStorage":{"aaaa-file-explorer-unfold":["x"],"foreign":"keep"}}"#).unwrap();
+        update_in(&locks, &cfg, &[Op::SetIn("localStorage".into(), "bbbb-bookmarks-folds".into(), serde_json::json!(["item-1"]))]).unwrap();
+        update_in(&locks, &cfg, &[Op::SetIn("localStorage".into(), "aaaa-file-explorer-unfold".into(), serde_json::json!([]))]).unwrap();
+        let v = read_value_in(&locks, &cfg);
+        assert_eq!(v["theme"], "dark", "{v}");
+        assert_eq!(v["localStorage"], serde_json::json!({"aaaa-file-explorer-unfold": [], "foreign": "keep", "bbbb-bookmarks-folds": ["item-1"]}), "{v}");
+        let mut w = serde_json::json!({"localStorage": 7});
+        apply(&mut w, &[Op::SetIn("localStorage".into(), "k".into(), serde_json::json!(1))]);
+        assert_eq!(w, serde_json::json!({"localStorage": {"k": 1}}));
+    }
+
+    /// treefold: InsertIn is insert-if-absent — the first id minted for a vault
+    /// wins, a later (racing) mint is a no-op; null counts as absent
+    #[test]
+    fn cfgstore_insert_in_first_writer_wins() {
+        let mut v = serde_json::json!({"vault_ids": {"/v/b": null}});
+        apply(&mut v, &[Op::InsertIn("vault_ids".into(), "/v/a".into(), serde_json::json!("1111"))]);
+        apply(&mut v, &[Op::InsertIn("vault_ids".into(), "/v/a".into(), serde_json::json!("2222"))]);
+        apply(&mut v, &[Op::InsertIn("vault_ids".into(), "/v/b".into(), serde_json::json!("3333"))]);
+        assert_eq!(v["vault_ids"], serde_json::json!({"/v/a": "1111", "/v/b": "3333"}));
+        // two "windows" racing through the real locked path on one file
+        let d = tmp("insin");
+        let (cfg, locks) = (d.join(".opensidian.json"), d.join("locks"));
+        let hs: Vec<_> = (0..8)
+            .map(|i| {
+                let (cfg, locks) = (cfg.clone(), locks.clone());
+                std::thread::spawn(move || update_in(&locks, &cfg, &[Op::InsertIn("vault_ids".into(), "/v/c".into(), serde_json::json!(format!("id{i}")))]).unwrap())
+            })
+            .collect();
+        hs.into_iter().for_each(|h| {
+            h.join().unwrap();
+        });
+        let first = read_value_in(&locks, &cfg)["vault_ids"]["/v/c"].clone();
+        assert!(first.as_str().is_some_and(|s| s.starts_with("id")), "{first}");
+        update_in(&locks, &cfg, &[Op::InsertIn("vault_ids".into(), "/v/c".into(), serde_json::json!("late"))]).unwrap();
+        assert_eq!(read_value_in(&locks, &cfg)["vault_ids"]["/v/c"], first);
     }
 }
