@@ -26,6 +26,7 @@ mod index;
 mod migrate;
 mod outline;
 mod pdf;
+mod qscreate;
 mod perf;
 mod sandbox;
 mod settings;
@@ -1089,6 +1090,19 @@ fn set_link_consent(v: State<Vault>, on: bool) -> Result<(), String> {
    app.json is `{}` until the toggle is first clicked; the key then stays,
    true/false). Read off disk on every reading render (`render` below), so a
    toggle, another window or a hand edit all take effect on the next render. */
+/// goal qscreate: the vault-relative name the quick switcher creates for `query`
+/// (stock newFileLocation rules, src-tauri/src/qscreate.rs). Err = the notice to
+/// show (empty string = nothing to create, no notice).
+#[tauri::command]
+fn qs_new_name(v: State<Vault>, query: String, active: Option<String>) -> Result<String, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    match qscreate::resolve_in(&root, &query, active.as_deref()) {
+        qscreate::QsName::Create(n) => Ok(n),
+        qscreate::QsName::Refused(m) => Err(m.to_string()),
+        qscreate::QsName::Empty => Err(String::new()),
+    }
+}
+
 #[tauri::command]
 fn strict_line_breaks(v: State<Vault>) -> bool {
     cur_vault(&v).is_some_and(|r| app_bool_in(&r, "strictLineBreaks"))
@@ -5166,7 +5180,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, vb_probe, smoke_css,
             read_workspace, write_workspace, get_win_geom, set_win_geom,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme,

@@ -838,6 +838,13 @@ body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
 #mlist .mrow.sel, #mlist .mrow:hover { background: var(--background-modifier-hover) }   /* themematch: selected suggestion */
 #mlist .mhint { color: var(--text-chrome-faint); font-size: 11px; margin-left: 12px; white-space: nowrap }
 #mlist .mempty { padding: 8px 14px; color: var(--text-chrome-faint); font-size: 12px }
+/* goal qscreate: stock's create hint is accent-coloured, and its static instructions
+   row sits under the list (notes/stock.md r1 c00..c02), wrapping as needed */
+#mlist .mhint.mcreate { color: var(--text-accent) }
+#mfoot { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 2px 14px; padding: 8px 14px;
+         border-top: 1px solid var(--border); font-size: 11px; color: var(--text-chrome-faint) }
+#mfoot[hidden] { display: none }
+#mfoot b { font-weight: 600; color: var(--text-chrome) }
 
 /* m5 F2 rename inline prompt */
 #rnbox { position: fixed; top: max(0px, min(90px, 100vh - 60px)); left: 50%; transform: translateX(-50%);   /* R22: never below the bottom edge */
