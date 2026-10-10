@@ -3579,6 +3579,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   if (gg) { const pt = posTok(fg()); if (pt) gg += " [ggpos:" + pt + "]"; }
   // goal graphzoom: [ggz:s,tx,ty,notch] [ggzb:x0,y0,x1,y1,n] once settled (any node count) — see g.graphZoom
   if (gg) { const h = fg(); if (h.graphOn && h.graphSettled && h.graphZoom) { const z = h.graphZoom(); gg += " [ggz:" + z.z + "]" + (z.b ? " [ggzb:" + z.b + "]" : ""); } }
+  if (gg) { const h = fg(); if (h.graphOn && h.ggkTok) gg += " [ggk:" + h.ggkTok + "]"; }   // ggkeep: the first frame after a (re)start, settled or not — see startGraph
   if (gg) gg += gfTok(fg());        // Forces panel: [gff:] live F, [gfp:] card state/rect, [gfb:]/[gfs:] click targets
   gg += gcnTok();                  // graphctx GC1: settings surfaces per graph leaf
   gg += gfnTok();                  // graphctx GC4-GC11: drawn node set per graph leaf
@@ -5317,14 +5318,15 @@ async function loadActive(g) {
     return;
   }
   if (t && t.kind === "gg") {       // R9.7: global graph as a main tab
-    cancelAnimationFrame(g.sim);    // clean restart on tab switches
+    cancelAnimationFrame(g.sim);    // the sim is restarted, but from the tab's KEPT layout + camera (ggkeep)
     await startGraph(g, {
+      keep: t,                      // ggkeep: the tab carries its live layout across a switch (t.gk)
       fetch: gcFetchGg,              // graphctx GC4-GC11: graph_view when a filter/group is set
       scope: gcScopeGg,             // graphparity/graphctx: the leaf's ONE graph-controls card, bound to graph.json
       center: () => null,
       onClick: async n => {         // node click: this tab BECOMES the note
         const tt = g.active >= 0 ? g.tabs[g.active] : null;
-        if (tt && tt.kind === "gg") { delete tt.kind; modeBits(tt); }   // #16: it is a NOTE tab now — give it the two mode bits
+        if (tt && tt.kind === "gg") { delete tt.kind; delete tt.gk; modeBits(tt); }   // #16: it is a NOTE tab now — give it the two mode bits; ggkeep: its kept graph goes with the kind
         await navigate(g, n);
       },
     });
@@ -7935,6 +7937,7 @@ const GC_DROWS = [  // Display sliders (R§4.2-4.4): [d key, settings key, label
 const GC_DDEF = { arrow: false, fade: 0, size: 1, line: 1 };   // Display defaults (R§4.6): what an unbound graph draws with
 function gcParse(o) {              // settings object (graph.json / local options) -> card state, clamped, stock defaults
   const st = { close: o.close === true, cs: {}, v: {}, f: { search: typeof o.search === "string" ? o.search : "" } };
+  st.scale = typeof o.scale === "number" && isFinite(o.scale) && o.scale > 0 ? o.scale : 1;   // ggkeep: the zoom a fresh graph view opens at (stock writes it on every zoom)
   for (const [k, , def] of GC_FTOG) st.f[k] = typeof o[k] === "boolean" ? o[k] : def;
   // colorGroups (R§3.3): kept as stored, rows in order; a malformed row is dropped
   st.groups = Array.isArray(o.colorGroups) ? o.colorGroups.filter(r => r && typeof r === "object")
@@ -8358,6 +8361,7 @@ function gcnTok() {
            center: () -> name|null,             drawn larger + accent (M8 localgraph)
            onClick: async name -> void }        navigation target on node click */
 let simGen = 0;                    // perf-graph: sim generation counter (see startGraph)
+let ggkSeq = 0;                    // ggkeep: census [ggk:] start counter (see startGraph, first frame)
 // graphctx: node kind 0 note, 1 unresolved, 2 tag, 3 attachment. The plain graph / graph_local
 // JSON omits kind (serde skips 0), so an unresolved node there is kind 1 by its flag.
 const gnKind = nd => nd.kind ? nd.kind : nd.resolved ? 0 : 1;
@@ -8540,9 +8544,12 @@ async function startGraph(g, cfg) {
   // (R16.4). screen = world*scale + t.
   // ax/ay/wx/wy: the zoom ANCHOR — the cursor (canvas px) of the last wheel notch and the world
   // point under it. Kept while the cursor stays put, cleared by a pan (see cv.onwheel).
-  // cv.onwheel is the ONLY writer of view.scale (no fit/reset button, key or restore path sets it),
+  // cv.onwheel is the ONLY writer of view.scale besides the two ggkeep restores (the tab's own
+  // last view on a switch back, and graph.json scale snapped to a notch on a fresh open); no fit/reset button or key sets it,
   // and the local graph shares this startGraph, so the recon §1 bound there covers every view.
   const view = { scale: 1, tx: cv.width / 2, ty: cv.height / 2, notch: 0, ax: null, ay: null, wx: 0, wy: 0 };
+  const GZ_OUT = 47, GZ_IN = -20, GZ_MIN = 1 / 128, GZ_MAX = 8;   // the wheel lattice, see cv.onwheel
+  const notchScale = n => n === 0 ? 1 : Math.min(GZ_MAX, Math.max(GZ_MIN, Math.pow(0.9, n)));
   // Obsidian force defaults (R16.1) and the gains that turn a slider value into
   // the per-step constant of the measured model (docs/recon-graphforce, PLAN s.0):
   //   repel  per-node strength = repel * REPEL_K * N^REPEL_P  (420 at 10, any N)
@@ -8590,6 +8597,29 @@ async function startGraph(g, cfg) {
   if (N.length) { const cx = N.reduce((s, p) => s + p.x, 0) / N.length, cy = N.reduce((s, p) => s + p.y, 0) / N.length; for (const p of N) { p.x -= cx; p.y -= cy; }
     const mr = N.reduce((s, p) => s + Math.hypot(p.x, p.y), 0) / N.length, f = mr > 0 ? 44 * Math.sqrt(N.length) / mr : 1;
     for (const p of N) { p.x *= f; p.y *= f; } }
+  // ggkeep: a global-graph TAB keeps its layout across a tab switch. Leaving the tab retires
+  // this sim (showEditor / the next startGraph cancel it), but the closure's N[] and view are
+  // still referenced from the tab (t.gk, registered below), frozen at their last step. Coming
+  // back, survivors take their kept x/y/vx/vy BY NAME and the camera takes the kept view, so
+  // the first frame after the switch is the frame the user left — no seed disk, no explosion.
+  // prevK is a plain-value copy of that frozen state: the restore reads it, and the first frame
+  // measures itself against it for the census token [ggk:] (see draw / graphKeepTok).
+  const kt = cfg.keep || null, kg = kt && kt.gk && kt.gk.N ? kt.gk : null;
+  const prevK = kg ? { pos: new Map(kg.N.map(p => [p.n, { x: p.x, y: p.y, vx: p.vx, vy: p.vy }])),
+                       v: Object.assign({}, kg.view), st: kg.st() } : null;
+  // ggkeep: a FRESH global graph (open, reopen, split, restart) opens at graph.json scale with the
+  // pan centred, like stock (notes/stock.md: positions and pan are not kept there, the zoom is).
+  // The stored value is snapped to the nearest wheel notch so the lattice invariant holds (stock
+  // steps x1.5, we step 0.9: a stock-written 2.25 opens at 0.9^-8 = 2.32).
+  if (!prevK && gcS && gcS.kind === "gg" && gcS.st.scale !== 1) {
+    view.notch = Math.max(GZ_IN, Math.min(GZ_OUT, Math.round(Math.log(gcS.st.scale) / Math.log(0.9))));
+    view.scale = notchScale(view.notch);
+  }
+  let kept = 0;
+  if (prevK) {
+    for (const p of N) { const o = prevK.pos.get(p.n); if (o) { p.x = o.x; p.y = o.y; p.vx = o.vx; p.vy = o.vy; kept++; } }
+    Object.assign(view, prevK.v);
+  }
   const toWorld = (sx, sy) =>
     [(sx - view.tx) / view.scale, (sy - view.ty) / view.scale];
   // node radius far out (harness docs/recon-graphzoom/README.md §5): stock scales a node by
@@ -8733,6 +8763,16 @@ async function startGraph(g, cfg) {
   const CALM_KE = 4e-5;
   let calm = 0, kePeak = 0, quiet = false;   // quiet: physics halted until the next reheat; kePeak: max KE since it
   let settledMark = false;              // graph_open_settle mark fires once per open
+  // ggkeep: the sim HEAT comes back with the layout. A tab left at rest comes back at rest (quiet,
+  // the first frame draws once and the loop stops, CPU 0); a tab left mid-settle resumes at the
+  // alpha it had, never at 1. A node the vault grew while the tab was away has no kept slot: it
+  // was seeded above, so the sim is warmed to 0.3 (the refresh restart) to place it.
+  if (prevK) {
+    alpha = prevK.st.alpha; calm = prevK.st.calm; kePeak = prevK.st.kePeak;
+    quiet = prevK.st.quiet; settledMark = prevK.st.settledMark;
+    if (kept < N.length || kept < prevK.pos.size) { alpha = Math.max(alpha, 0.3); calm = 0; kePeak = 0; quiet = false; }   // grew or shrank while away
+  }
+  if (kt) kt.gk = { N, view, st: () => ({ alpha, calm, kePeak, quiet: quiet && alphaTarget === 0, settledMark }) };
   const kinetic = () => { let k = 0; for (const p of N) k += p.vx * p.vx + p.vy * p.vy; return k; };
   // Barnes-Hut quadtree (theta 0.8) for the many-body repulsion (d3 shape:
   // dv = REPEL*alpha*dx/d^2, i.e. |dv| ~ 1/d). The force is long-range, so a
@@ -9003,6 +9043,25 @@ async function startGraph(g, cfg) {
     const now = performance.now();
     if (firstFrame) {
       firstFrame = false;
+      // ggkeep census [ggk:seq,r,n,dev,cam] — published by THIS frame, before its physics, so a
+      // shell that reads the title after a tab switch sees what the first frame drew, not a
+      // settled frame later. seq: this start's number (a gate tells a fresh start from the last
+      // one); r 1 = the tab came back with a kept layout; n = nodes; dev = max screen-px distance
+      // of any node from where the left frame drew it ("-" with nothing kept); cam 1 = camera
+      // (scale, tx, ty) identical to the left frame. The explosion-from-origin the operator saw
+      // reads r 0 / dev in the hundreds.
+      if (kt) {
+        let dev = -1;
+        if (prevK) for (const p of N) {
+          const o = prevK.pos.get(p.n); if (!o) continue;
+          const d = Math.hypot(p.x * view.scale + view.tx - (o.x * prevK.v.scale + prevK.v.tx),
+                               p.y * view.scale + view.ty - (o.y * prevK.v.scale + prevK.v.ty));
+          if (d > dev) dev = d;
+        }
+        const cam = prevK && view.scale === prevK.v.scale && view.tx === prevK.v.tx && view.ty === prevK.v.ty ? 1 : 0;
+        g.ggkTok = ++ggkSeq + "," + (kept ? 1 : 0) + "," + N.length + "," + (dev < 0 ? "-" : dev.toFixed(2)) + "," + cam;
+        updateTitle();
+      }
       phLast = now; phAcc = 0;   // the sim clock starts at the first frame: the time spent building the view before it is not owed as a 6-step burst
       if (g.perfT0) { perf.mark("graph_open", g.perfT0, { nodes: N.length, edges: gr.edges.length, kind: (g.tabs[g.active] || {}).kind || "-" }); g.perfT0 = null; }
     }
@@ -9137,8 +9196,7 @@ async function startGraph(g, cfg) {
   // (view.wx/wy) across notches at the same cursor position instead of being re-derived from the
   // last tx/ty (float drift), so N in + N out at a still cursor lands on the IDENTICAL view (stock does
   // not round-trip once clamped, §2) and the anchor error is 0 up to one multiply.
-  const GZ_OUT = 47, GZ_IN = -20, GZ_MIN = 1 / 128, GZ_MAX = 8;
-  const notchScale = n => n === 0 ? 1 : Math.min(GZ_MAX, Math.max(GZ_MIN, Math.pow(0.9, n)));
+  // (GZ_* and notchScale: declared with view, above — the fresh-open zoom reads them too)
   cv.onwheel = e => {
     e.preventDefault();
     const r = cv.getBoundingClientRect();
@@ -9147,6 +9205,7 @@ async function startGraph(g, cfg) {
     view.notch = Math.max(GZ_IN, Math.min(GZ_OUT, view.notch + (e.deltaY < 0 ? -1 : 1)));
     const s = notchScale(view.notch);
     view.tx = mx - view.wx * s; view.ty = my - view.wy * s; view.scale = s;
+    if (gcS && gcS.kind === "gg" && gcS.st.scale !== s) { gcS.st.scale = s; gcS.save({ scale: s }); }   // ggkeep: stock persists the zoom (graph.json scale)
     redraw();
   };
   // census [ggz:s,tx,ty,notch] (canvas px, full precision) and [ggzb:x0,y0,x1,y1,n] — the window-px
