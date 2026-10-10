@@ -2849,6 +2849,49 @@ fn link_mention_in(
     write_note_in(root, ix, note, &nc)
 }
 
+/* treefold: our equivalent of stock's Electron localStorage (notes: goal treefold
+   DESIGN). Stock keeps per-user, outside-the-vault UI state such as
+   "<vaultId>-file-explorer-unfold" and "<vaultId>-bookmarks-folds" in a flat
+   string map namespaced by a 16-hex vault id. Ours: the SAME key strings in the
+   sub-object "localStorage" of ~/.opensidian.json, values as native JSON, written
+   through cfgstore (locked merge of ONE key: N vault windows never clobber each
+   other, unknown keys round-trip). The id lives in "vault_ids"[<canonical root>],
+   minted once with insert-if-absent, so racing windows agree on it. */
+const LS: &str = "localStorage";
+
+fn mint_vault_id() -> Option<String> {
+    use std::io::Read;
+    let mut b = [0u8; 8];
+    fs::File::open("/dev/urandom").ok()?.read_exact(&mut b).ok()?;
+    Some(b.iter().map(|x| format!("{x:02x}")).collect())
+}
+
+#[tauri::command]
+fn vault_id(v: State<Vault>) -> Option<String> {
+    let root = cur_vault(&v)?;
+    let key = fs::canonicalize(&root).unwrap_or(root).display().to_string();
+    if let Some(id) = cfg_value()["vault_ids"][key.as_str()].as_str() {
+        return Some(id.to_string());
+    }
+    cfg_update(&[cfgstore::Op::InsertIn("vault_ids".into(), key.clone(), serde_json::json!(mint_vault_id()?))]);
+    // re-read: a racing window may have won the insert, its id is THE id
+    cfg_value()["vault_ids"][key.as_str()].as_str().map(str::to_string)
+}
+
+#[tauri::command]
+fn ls_get(key: String) -> Option<serde_json::Value> {
+    cfg_value()[LS].get(key.as_str()).filter(|x| !x.is_null()).cloned()
+}
+
+#[tauri::command]
+fn ls_set(key: String, value: serde_json::Value) -> Result<(), String> {
+    if key.is_empty() || key.len() > 256 {
+        return Err("bad key".into());
+    }
+    cfg_update(&[cfgstore::Op::SetIn(LS.into(), key, value)]);
+    Ok(())
+}
+
 /// active right-sidebar tab, persisted as rside_tab in ~/.opensidian.json
 #[tauri::command]
 fn get_rside_tab() -> Option<String> {
@@ -5169,7 +5212,7 @@ fn main() {
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, vb_probe, smoke_css,
             read_workspace, write_workspace, get_win_geom, set_win_geom,
-            outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, get_theme, set_theme,
+            outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
             themes_scan, theme_css, get_css_theme, set_css_theme, theme_seed_report, vault_css_watch,
             get_quickfont, set_quickfont, get_fonts, set_font, font_families,
