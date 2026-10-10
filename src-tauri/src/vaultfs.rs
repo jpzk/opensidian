@@ -97,6 +97,7 @@ pub enum ImportErr {
     OpenSrc(io::Error), // could not open the source (EACCES = the sandbox)
     NotRegular,         // a symlink, dir, fifo, device ... (or became one)
     TooBig(u64),        // over the cap, by metadata or by the bytes read
+    BadMagic,           // pdfdrop: the opened source does not start with the type's magic bytes
     Changed,            // the source changed identity or content during the import
     NoFreeName,         // every candidate name was taken
     Io(io::Error),      // staging / verify / commit failed
@@ -111,6 +112,23 @@ pub struct Imported {
 
 fn fs_lstat(p: &CString) -> io::Result<libc::stat> {
     stat_at(libc::AT_FDCWD, p)
+}
+
+/// pdfdrop: does the OPEN file start with `magic`? pread at offset 0, so the fd's
+/// cursor is untouched for the copy that follows; a short file is a mismatch.
+fn starts_with_at0(f: &File, magic: &[u8]) -> io::Result<bool> {
+    use std::os::unix::fs::FileExt;
+    let mut head = vec![0u8; magic.len()];
+    let mut n = 0;
+    while n < head.len() {
+        match f.read_at(&mut head[n..], n as u64) {
+            Ok(0) => return Ok(false),
+            Ok(k) => n += k,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(head == magic)
 }
 
 /// both files re-read from offset 0 and compared whole: equal length, equal bytes
@@ -464,6 +482,8 @@ impl Vault {
        durable, and only THEN is the source name removed.
          1. open the source O_NOFOLLOW, fstat: regular file, <= cap. That fd is
             the identity every later step is checked against (dev, ino).
+            pdfdrop: if `magic` is non-empty, the first magic.len() bytes OF THAT FD
+            (pread, offset 0) must equal it, else BadMagic before anything is staged.
          2. STAGE under a random dot-name (tmp_name: no index/watcher sees it):
             same filesystem -> linkat(src, tmp): no byte is copied, then the tmp's
                                (dev, ino) must equal the opened fd's — a source
@@ -482,7 +502,7 @@ impl Vault {
        error in 4 is not a failure of the import: the vault file is committed and
        verified, the source simply stays (SrcFate::Kept, e.g. a read-only drop
        folder under Landlock) — a duplicate, never a loss. */
-    pub fn import_move(&self, src: &Path, dir: &Path, names: &mut dyn Iterator<Item = String>, cap: u64) -> Result<Imported, ImportErr> {
+    pub fn import_move(&self, src: &Path, dir: &Path, names: &mut dyn Iterator<Item = String>, cap: u64, magic: &[u8]) -> Result<Imported, ImportErr> {
         use std::os::unix::fs::OpenOptionsExt;
         let d = self.dir(dir, false).map_err(ImportErr::Io)?;
         let dfd = d.fd.as_raw_fd();
@@ -498,6 +518,9 @@ impl Vault {
         }
         if st0.st_size as u64 > cap {
             return Err(ImportErr::TooBig(st0.st_size as u64));
+        }
+        if !magic.is_empty() && !starts_with_at0(&sf, magic).map_err(ImportErr::Io)? {
+            return Err(ImportErr::BadMagic);
         }
         let mut names = names.peekable();
         let first = names.peek().cloned().ok_or(ImportErr::NoFreeName)?;
