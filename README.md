@@ -18,7 +18,10 @@ Open-source and non-profit under GPLv3, vault-compatible cross-platform markdown
   types are refused and left where they are.
 
 ## Install
-Linux x86_64. Download one:
+
+### Linux x86_64 — packages
+
+Download one:
 
 | Download | Choose it if | Tested on (fresh install, 2026-10-09) |
 |---|---|---|
@@ -27,6 +30,12 @@ Linux x86_64. Download one:
 | [Flatpak](https://github.com/jpzk/opensidian/releases/download/v0.6.2/opensidian-0.6.2-x86_64.flatpak) | you want it sandboxed; pulls the GNOME 49 runtime from Flathub on first install | Fedora 44, Ubuntu 26.04 LTS (`flatpak` package installed) |
 | [RPM](https://github.com/jpzk/opensidian/releases/download/v0.6.2/opensidian-0.6.2-x86_64.rpm) | you run Fedora and want a system package with a menu entry and icon; dnf pulls WebKitGTK 4.1 for you | Fedora 44 (`sudo dnf install ./opensidian-0.6.2-x86_64.rpm`) |
 | [DEB](https://github.com/jpzk/opensidian/releases/download/v0.6.2/opensidian-0.6.2-x86_64.deb) | you run Debian or Ubuntu and want a system package with a menu entry and icon; apt pulls WebKitGTK 4.1 for you | Debian 13, Ubuntu 26.04 LTS (`sudo apt install ./opensidian-0.6.2-x86_64.deb`) |
+
+### Nix & NixOS
+
+```sh
+nix profile add github:jpzk/opensidian
+```
 
 ## Verify your download
 `SHA256SUMS` is signed with key `A6E6 9ED6 BC47 79F3 2817  2148 4CC1 AFDE 15B6 4EA3`:
@@ -70,6 +79,25 @@ Tested 2026-10-03 on fresh Ubuntu 26.04 LTS and Fedora 44 with Rust 1.98.0
    git clone https://github.com/jpzk/opensidian && cd opensidian/src-tauri
    cargo build --release --locked   # -> target/release/opensidian
    ```
+
+## Nix
+The repo ships a flake (Nix 2.4+). It pins nixpkgs unstable and builds with
+`--locked` against `src-tauri/Cargo.lock`, so the toolchain and every crate
+are pinned.
+
+```sh
+nix run .     # build and run
+nix build .   # -> result/bin/opensidian, with the desktop file installed
+nix develop   # dev shell: Rust 1.98 (as pinned above), rust-analyzer,
+              # clippy, rustfmt and all native deps; then:
+              #   cd src-tauri && cargo test --locked
+```
+
+On NixOS, the `spawn::tests::switch_alive_probe_reads_proc` test fails:
+it hardcodes `/bin/true`, which does not exist there. The flock/landlock
+integration tests also need a wider sandbox than the Nix build sandbox
+grants, which is why the flake runs `cargo test` from the dev shell and
+not as a flake check.
 
 ## Licence
 GPL-3.0-or-later ([LICENSE](LICENSE)). Read [THIRD-PARTY.md](THIRD-PARTY.md) before redistributing.
