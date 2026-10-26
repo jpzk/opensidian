@@ -16,15 +16,16 @@ BASEV=${V%%-*}
 if grep -q "<release version=\"$V\"" packaging/flatpak/dev.koto.opensidian.metainfo.xml; then :
 elif [ "$BASEV" != "$V" ]; then say "WARNING: prerelease $V — metainfo <release> not bumped (allowed only for a -suffixed tag)"
 else die "metainfo <release> is not $V"; fi
+# elfutils: flatpak-builder Recommends it (eu-strip/eu-elfcompress) and fails without it under --no-install-recommends.
 # apt from the snapshot ONLY: a sources file of its own, used with the stock lists disabled for this call
 SL=$(mktemp); trap 'rm -f "$SL"' EXIT
 for s in noble noble-updates noble-security; do printf 'deb [check-valid-until=no] https://snapshot.ubuntu.com/ubuntu/%s %s main universe\n' "$UBUNTU_SNAPSHOT" "$s"; done > "$SL"
 AOPT=(-o Dir::Etc::sourcelist="$SL" -o Dir::Etc::sourceparts=/nonexistent -o Acquire::Check-Valid-Until=false)
 say "apt (snapshot $UBUNTU_SNAPSHOT): flatpak=$FLATPAK_VER flatpak-builder=$FLATPAK_BUILDER_VER"
 { sudo apt-get -q "${AOPT[@]}" update && sudo DEBIAN_FRONTEND=noninteractive apt-get -y -q "${AOPT[@]}" --no-install-recommends --allow-downgrades install \
-    "flatpak=$FLATPAK_VER" "flatpak-builder=$FLATPAK_BUILDER_VER"; } > "${TMPDIR:-/tmp}/flatpak-apt.log" 2>&1 \
+    "flatpak=$FLATPAK_VER" "flatpak-builder=$FLATPAK_BUILDER_VER" elfutils; } > "${TMPDIR:-/tmp}/flatpak-apt.log" 2>&1 \
   || { tail -30 "${TMPDIR:-/tmp}/flatpak-apt.log"; die "apt"; }
-say "$(flatpak --version), $(flatpak-builder --version)"
+say "$(flatpak --version), $(flatpak-builder --version), elfutils $(dpkg-query -W -f="${Version}" elfutils) (eu-strip for flatpak-builder; version frozen by the snapshot)"
 flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 pin(){ # <ref> <commit>
   flatpak --user install -y --noninteractive flathub "$1" >/dev/null
