@@ -26,7 +26,7 @@ say "apt (snapshot $UBUNTU_SNAPSHOT): flatpak=$FLATPAK_VER flatpak-builder=$FLAT
 { sudo apt-get -q "${AOPT[@]}" update && sudo DEBIAN_FRONTEND=noninteractive apt-get -y -q "${AOPT[@]}" --no-install-recommends --allow-downgrades install \
     "flatpak=$FLATPAK_VER" "flatpak-builder=$FLATPAK_BUILDER_VER" elfutils librsvg2-common; } > "${TMPDIR:-/tmp}/flatpak-apt.log" 2>&1 \
   || { tail -30 "${TMPDIR:-/tmp}/flatpak-apt.log"; die "apt"; }
-say "$(flatpak --version), $(flatpak-builder --version), elfutils $(dpkg-query -W -f="${Version}" elfutils) (eu-strip for flatpak-builder; version frozen by the snapshot)"
+say "$(flatpak --version), $(flatpak-builder --version), elfutils $(dpkg-query -W -f='${Version}' elfutils) (eu-strip for flatpak-builder; version frozen by the snapshot)"
 flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 pin(){ # <ref> <commit>
   flatpak --user install -y --noninteractive flathub "$1" >/dev/null
@@ -40,7 +40,7 @@ pin runtime/org.gnome.Sdk/x86_64/49 "$FP_SDK_COMMIT"
 pin runtime/org.freedesktop.Sdk.Extension.rust-stable/x86_64/25.08 "$FP_RUST_COMMIT"
 # --disable-rofiles-fuse via a PATH shim (build.sh stays byte-identical to the box's): rofiles-fuse only
 # guards the build cache against in-place writes; compose read the rofiles mount with file-read-error (run 40311653097).
-SHIM=$(mktemp -d); printf '#!/bin/sh\nexec /usr/bin/flatpak-builder --disable-rofiles-fuse "$@"\n' > "$SHIM/flatpak-builder"; chmod +x "$SHIM/flatpak-builder"
+SHIM=$(mktemp -d); printf '#!/bin/sh\ncase " $* " in *" --show-manifest "*) exec /usr/bin/flatpak-builder "$@";; esac\nexec /usr/bin/flatpak-builder --disable-rofiles-fuse "$@"\n' > "$SHIM/flatpak-builder"; chmod +x "$SHIM/flatpak-builder"
 if ! PATH="$SHIM:$PATH" sh packaging/flatpak/build.sh > "${TMPDIR:-/tmp}/flatpak-build.log" 2>&1; then
   grep -v -E '^(Downloading|Fetching) |^\s*$' "${TMPDIR:-/tmp}/flatpak-build.log" | tail -60
   say "build.sh failed — appstreamcli compose report on the app dir:"
