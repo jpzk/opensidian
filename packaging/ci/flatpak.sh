@@ -18,7 +18,7 @@ elif [ "$BASEV" != "$V" ]; then say "WARNING: prerelease $V — metainfo <releas
 else die "metainfo <release> is not $V"; fi
 # apt from the snapshot ONLY: a sources file of its own, used with the stock lists disabled for this call
 SL=$(mktemp); trap 'rm -f "$SL"' EXIT
-printf 'deb [check-valid-until=no] https://snapshot.ubuntu.com/ubuntu/%s noble noble-updates noble-security main universe\n' "$UBUNTU_SNAPSHOT" > "$SL"
+for s in noble noble-updates noble-security; do printf 'deb [check-valid-until=no] https://snapshot.ubuntu.com/ubuntu/%s %s main universe\n' "$UBUNTU_SNAPSHOT" "$s"; done > "$SL"
 AOPT=(-o Dir::Etc::sourcelist="$SL" -o Dir::Etc::sourceparts=/nonexistent -o Acquire::Check-Valid-Until=false)
 say "apt (snapshot $UBUNTU_SNAPSHOT): flatpak=$FLATPAK_VER flatpak-builder=$FLATPAK_BUILDER_VER"
 { sudo apt-get -q "${AOPT[@]}" update && sudo DEBIAN_FRONTEND=noninteractive apt-get -y -q "${AOPT[@]}" --no-install-recommends --allow-downgrades install \
