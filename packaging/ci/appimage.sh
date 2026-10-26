@@ -52,6 +52,9 @@ podman run --rm --network=host -v "$R:/src" -v "$CA:/host-ca.crt:ro" -w /src \
     say "appimage $F"
     APPIMAGETOOL=$T BROTLI_CACHE=/tmp/brotli bash packaging/ci/build-appimage.sh $F "$V" 2>&1 | tail -4
   done
+  # LAST LINE OF DEFENCE (harness release.sh): the portable AppImage must bundle a post-fix
+  # libbrotlidec (CVE-2026-111497); the OK line names the exact sha256 and ships in the logs.
+  bash packaging/ci/brotli-check.sh "dist/opensidian-$V-x86_64-portable.AppImage" | tee dist/brotli-check.txt
   # the container runs as root and leaves root-owned files; hand them back to the host user
   chown -R "$(stat -c %u:%g /src)" dist src-tauri/target
 '

@@ -1,0 +1,166 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# release: build the 5 release assets on GitHub-HOSTED runners, write SHA256SUMS, attest all
+# six files (SLSA build provenance, Sigstore-signed via the workflow's OIDC identity) and
+# upload them to a DRAFT prerelease. Nothing here publishes: the operator GPG-signs
+# SHA256SUMS as before, the box runs distro-matrix + appimage-smoke on THESE bytes, and the
+# coordinator's finalize.sh publishes only if the signature, the hashes AND `gh attestation
+# verify` of every asset (exact command in packaging/ci/VERIFY.md: this repo, this workflow as
+# signer, GitHub-hosted runners only) pass.
+# Supply chain: every action pinned by full commit SHA (tag + release date in the comment,
+# each released <= 2026-09-14); build inputs pinned in packaging/ci/pins.env (container
+# digests, frozen apt snapshots, rust 1.98.0, flatpak runtimes by commit). GitHub-hosted runners only.
+# Permissions: none at the top; the build jobs read the repo; ONLY the release job may mint
+# an OIDC token, write attestations and create the draft — and it never checks out or runs
+# repository code, it only sums, attests and uploads what the build jobs produced.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: appimage + rpm + deb
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 120
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: checkout
+        # actions/checkout v7.0.1, released 2026-07-20 (commit 2026-07-17)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: version check
+        run: |
+          set -euo pipefail
+          V=${TAG#v}; BASEV=${V%%-*}
+          [[ $V =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "::error::tag $TAG is not vX.Y.Z[-suffix]"; exit 1; }
+          CV=$(sed -n 's/^version = "\(.*\)"$/\1/p' src-tauri/Cargo.toml | head -1)
+          if [ "$CV" = "$V" ]; then echo "Cargo version $CV == tag"
+          elif [ "$BASEV" != "$V" ]; then echo "::warning::prerelease tag $TAG: Cargo version $CV not bumped (allowed only for a -suffixed tag)"
+          else echo "::error::Cargo version $CV != tag $V"; exit 1; fi
+          echo "V=$V" >> "$GITHUB_ENV"
+      - name: appimage (slim + portable, one cargo build, brotli-check)
+        run: bash packaging/ci/appimage.sh "$V"
+      - name: rpm (fedora 44, same binary)
+        run: CI_CACHE="$RUNNER_TEMP/ci-cache" TMPDIR="$RUNNER_TEMP" bash packaging/ci/rpm.sh . "$V" "dist/opensidian-$V-x86_64-slim.AppImage"
+      - name: deb (debian 13, same binary)
+        run: TMPDIR="$RUNNER_TEMP" bash packaging/ci/deb.sh . "$V" "dist/opensidian-$V-x86_64-slim.AppImage"
+      - name: upload
+        # actions/upload-artifact v7.0.1, released 2026-04-10
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: assets-bin
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            dist/opensidian-${{ env.V }}-x86_64-slim.AppImage
+            dist/opensidian-${{ env.V }}-x86_64-portable.AppImage
+            dist/opensidian-${{ env.V }}-x86_64.rpm
+            dist/opensidian-${{ env.V }}-x86_64.deb
+      - name: upload build logs
+        if: always()
+        # actions/upload-artifact v7.0.1, released 2026-04-10
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: logs-bin
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            dist/brotli-check.txt
+            dist/rpm-*/
+            dist/deb-*/
+
+  flatpak:
+    name: flatpak
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 120
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: checkout
+        # actions/checkout v7.0.1, released 2026-07-20 (commit 2026-07-17)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: flatpak (GNOME 49 + rust-stable 25.08, runtimes pinned by commit)
+        run: |
+          set -euo pipefail
+          V=${TAG#v}; echo "V=$V" >> "$GITHUB_ENV"
+          TMPDIR="$RUNNER_TEMP" bash packaging/ci/flatpak.sh "$V"
+      - name: upload
+        # actions/upload-artifact v7.0.1, released 2026-04-10
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: assets-flatpak
+          if-no-files-found: error
+          retention-days: 7
+          path: dist/opensidian-${{ env.V }}-x86_64.flatpak
+
+  release:
+    name: SHA256SUMS + attest + draft
+    needs: [build, flatpak]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write      # create the draft + upload assets
+      id-token: write      # OIDC token for the Sigstore signing certificate
+      attestations: write  # store the provenance attestation
+    timeout-minutes: 30
+    env:
+      TAG: ${{ github.ref_name }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: download
+        # actions/download-artifact v8.0.1, released 2026-03-11
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: assets-*
+          merge-multiple: true
+          path: dist
+      - name: SHA256SUMS
+        run: |
+          set -euo pipefail
+          V=${TAG#v}; echo "V=$V" >> "$GITHUB_ENV"
+          cd dist
+          A=(opensidian-$V-x86_64-slim.AppImage opensidian-$V-x86_64-portable.AppImage opensidian-$V-x86_64.flatpak opensidian-$V-x86_64.rpm opensidian-$V-x86_64.deb)
+          for f in "${A[@]}"; do [ -s "$f" ] || { echo "::error::missing $f"; exit 1; }; done
+          [ "$(ls | wc -l)" = 5 ] || { echo "::error::unexpected files in dist: $(ls)"; exit 1; }
+          sha256sum "${A[@]}" > SHA256SUMS
+          cat SHA256SUMS
+      - name: attest (all 5 assets + SHA256SUMS)
+        # actions/attest-build-provenance v4.2.2, released 2026-08-06 (wraps actions/attest v4.2.1 @508db95d, 2026-07-29)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-path: |
+            dist/opensidian-${{ env.V }}-x86_64-slim.AppImage
+            dist/opensidian-${{ env.V }}-x86_64-portable.AppImage
+            dist/opensidian-${{ env.V }}-x86_64.flatpak
+            dist/opensidian-${{ env.V }}-x86_64.rpm
+            dist/opensidian-${{ env.V }}-x86_64.deb
+            dist/SHA256SUMS
+      - name: draft prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # never touch an existing release (draft or published) for this tag
+          N=$(gh api "repos/$GH_REPO/releases?per_page=100" --paginate --jq ".[] | select(.tag_name == env.TAG) | .id" | wc -l)
+          [ "$N" = 0 ] || { echo "::error::a release for $TAG already exists ($N) — not touching it"; exit 1; }
+          cd dist
+          printf 'opensidian %s\n\nBuilt by .github/workflows/release.yml on GitHub-hosted runners (run %s).\n\nVerify:\n    gpg --verify SHA256SUMS.asc SHA256SUMS && sha256sum -c SHA256SUMS\n    gh attestation verify <asset> --repo %s --signer-workflow %s/.github/workflows/release.yml\n(full check incl. the runner flag: packaging/ci/VERIFY.md)\n' \
+            "$TAG" "$GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID" "$GH_REPO" "$GH_REPO" > notes.md
+          gh release create "$TAG" --verify-tag --draft --prerelease --title "$TAG" --notes-file notes.md \
+            opensidian-$V-x86_64-slim.AppImage opensidian-$V-x86_64-portable.AppImage opensidian-$V-x86_64.flatpak \
+            opensidian-$V-x86_64.rpm opensidian-$V-x86_64.deb SHA256SUMS
+          echo "DRAFT $TAG created — not published"
