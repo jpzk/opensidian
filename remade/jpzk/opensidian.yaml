@@ -1,0 +1,20 @@
+# Target path in replicraft/remade:
+#   apps/frontend/remade-wiki/src/content/catalog/projects/jpzk/opensidian.yaml
+slug: opensidian
+name: Opensidian
+authors: [jpzk]
+repository: https://github.com/jpzk/opensidian
+website: https://opensidian.org
+originals: [obsidian]
+category: productivity
+languages:
+  - Rust
+  - JavaScript
+platforms:
+  - Linux
+status: experimental
+compatibility: partial
+license: GPL-3.0
+summary: Independent Rust + Tauri reimplementation of Obsidian that opens existing Markdown vaults.
+description: Independently developed reimplementation of Obsidian's observable behaviour, built with Rust and Tauri v2. Opens existing Obsidian Markdown vaults in place and provides live preview, source and reading modes, wikilinks, backlinks, tags, graph view, tabs and splits, search, quick switcher, command palette, bookmarks, themes, hotkeys and a community plugin browser (restricted mode on by default). Contains no Obsidian code. Not affiliated with or endorsed by Obsidian or Dynalist Inc.
+limitations: Linux x86_64 only for now; macOS, Windows and mobile builds are not released. Community plugin API coverage is partial, so some plugins may not work. Obsidian Sync and Publish are not reimplemented. Under heavy development.
