@@ -23,6 +23,9 @@ use std::sync::{Mutex, OnceLock};
 use tauri::State;
 
 mod appid;
+// goal android: config/lock/vault paths in app-private storage (android only)
+#[cfg(any(target_os = "android", test))]
+mod appdirs;
 mod builtins;
 pub mod canvasfs;
 mod cfgstore;
@@ -1616,7 +1619,12 @@ fn vault_get(v: State<Vault>) -> Option<String> {
 /* R1.6 vault persistence: ~/.opensidian.json {"last": path, "list": [paths]}.
    Written only on explicit open/create — VAULT_DIR boots (probes) never touch it. */
 fn cfg_path() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())).join(".opensidian.json")
+    // goal android: <app_config_dir>/opensidian.json (appdirs.rs)
+    #[cfg(target_os = "android")]
+    let p = appdirs::cfg_path();
+    #[cfg(not(target_os = "android"))]
+    let p = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())).join(".opensidian.json");
+    p
 }
 
 /// whole config as a Value, read under the shared cfg lock (cfgstore.rs)
@@ -2190,7 +2198,15 @@ fn spawn_checked(p: &Path, sw: Option<&spawn::Switch>) -> Result<u32, String> {
             return Err(format!("{} is {}", p.display(), vaultlock::DUP_MSG));
         }
     }
-    spawn::open_in_new_process(p, sw)
+    // goal android: ONE process, ONE vault — no second window process on a phone
+    #[cfg(target_os = "android")]
+    let r = {
+        let _ = sw;
+        Err("open in new window: not supported on android".to_string())
+    };
+    #[cfg(not(target_os = "android"))]
+    let r = spawn::open_in_new_process(p, sw);
+    r
 }
 
 /// vaultbleed D: what the unconfined spawner (spawner.rs) does for a confined
@@ -2412,7 +2428,12 @@ fn argv_vault(args: &[std::ffi::OsString], env_set: bool) -> Option<PathBuf> {
 
 #[tauri::command]
 fn home_dir() -> String {
-    std::env::var("HOME").unwrap_or_else(|_| "/".into())
+    // goal android: no $HOME — the picker starts in app-private storage
+    #[cfg(target_os = "android")]
+    let h = appdirs::get().map(|d| d.data.display().to_string()).unwrap_or_else(|| "/".into());
+    #[cfg(not(target_os = "android"))]
+    let h = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+    h
 }
 
 /// S1: the only way an external URL leaves the app — the webview never
@@ -2425,10 +2446,22 @@ fn check_external(url: &str) -> Result<(), String> {
 #[tauri::command]
 fn open_external(url: String) -> Result<(), String> {
     check_external(&url)?;
+    xdg_open(std::ffi::OsStr::new(&url))
+}
+
+/// goal android: the ONE place the app hands something to the desktop opener.
+/// android has no xdg-open (an Intent is the next goal's work): a plain Err.
+#[cfg(target_os = "android")]
+fn xdg_open(_arg: &std::ffi::OsStr) -> Result<(), String> {
+    Err("xdg-open: not supported on android yet".into())
+}
+
+#[cfg(not(target_os = "android"))]
+fn xdg_open(arg: &std::ffi::OsStr) -> Result<(), String> {
     // std::process::Command only — no shell, no opener plugin. Missing xdg-open
     // (headless smoke, minimal hosts) is a plain Err, never a fallback.
     std::process::Command::new("xdg-open")
-        .arg(&url)
+        .arg(arg)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -3906,8 +3939,19 @@ fn desk_shell(v: State<Vault>, op: String, target: String) -> Result<(), String>
         _ => return Err(format!("EINVAL: unknown shell op {op}")),
     };
     eprintln!("[desk] shell {op} {}", arg.to_string_lossy());
+    desk_xdg_open(&arg)
+}
+
+/// goal android: no xdg-open on a phone — the plugin shell op is a plain Err
+#[cfg(target_os = "android")]
+fn desk_xdg_open(_arg: &std::ffi::OsStr) -> Result<(), String> {
+    Err("ENOENT: xdg-open: not supported on android yet".into())
+}
+
+#[cfg(not(target_os = "android"))]
+fn desk_xdg_open(arg: &std::ffi::OsStr) -> Result<(), String> {
     std::process::Command::new("xdg-open")
-        .arg(&arg)
+        .arg(arg)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -6104,7 +6148,54 @@ fn set_zoom_cfg(level: f64) {
 /// admitted tauri://<any host>. The image scheme is a subresource (<img src>),
 /// never a navigation target, so it is not listed.
 fn nav_allowed(u: &tauri::Url) -> bool {
+    // goal android: Tauri serves the app as http://tauri.localhost on android
+    // (useHttpsScheme unset); tauri://localhost is the linux origin
+    if cfg!(target_os = "android") {
+        return u.scheme() == "http" && u.host_str() == Some("tauri.localhost") && u.port().is_none();
+    }
     u.scheme() == "tauri" && u.host_str() == Some("localhost") && u.port().is_none()
+}
+
+/// goal android: the phone's boot, run FIRST in setup() — before the window
+/// exists, so the UI's first vault_get already sees the vault. Paths come from
+/// Tauri (app_config_dir / app_data_dir = app-private storage), the sample
+/// vault is seeded on first run, and it binds through the same bind_vault as
+/// desktop. Any failure is logged and the app still opens (on the picker).
+#[cfg(target_os = "android")]
+fn android_boot(app: &tauri::App) {
+    use tauri::Manager;
+    let (config, data) = match (app.path().app_config_dir(), app.path().app_data_dir()) {
+        (Ok(c), Ok(d)) => (c, d),
+        (c, d) => {
+            eprintln!("[android] no app dirs: config={c:?} data={d:?}");
+            return;
+        }
+    };
+    if let Err(e) = fs::create_dir_all(&config) {
+        eprintln!("[android] {}: {e}", config.display());
+    }
+    appdirs::set(appdirs::Dirs { config: config.clone(), data: data.clone() });
+    // the last vault if it is still there, else the seeded sample
+    let last = read_cfg().0.map(PathBuf::from).filter(|p| p.is_dir());
+    let vault = match last {
+        Some(p) => p,
+        None => {
+            let v = appdirs::vault_dir(&data);
+            match appdirs::seed(&v) {
+                Ok(seeded) => eprintln!("[android] sample vault {} (seeded now: {seeded})", v.display()),
+                Err(e) => {
+                    eprintln!("[android] seed {}: {e}", v.display());
+                    return;
+                }
+            }
+            v
+        }
+    };
+    match bind_vault(&app.state::<Vault>(), &vault) {
+        Ok(()) => persist_vault(&vault),
+        Err(e) => eprintln!("[android] cannot open vault {}: {e}", vault.display()),
+    }
+    eprintln!("[android] config {} vault {}", cfg_path().display(), vault.display());
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -6115,6 +6206,8 @@ pub fn run() {
     perf::mark_start();
     // vaultbleed D: `opensidian --opensidian-spawner` is the unconfined helper a
     // confined window started (spawner.rs) — it serves fd 0 and is nothing else
+    // goal android: no landlock, so no spawner — and no argv on a phone
+    #[cfg(not(target_os = "android"))]
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(spawner::ARG)) {
         std::process::exit(spawner::run(&LiveSpawner));
     }
@@ -6150,6 +6243,8 @@ pub fn run() {
     //   RUSTIDIAN_LL_ALONE          -> OPENSIDIAN_LL_ALONE (test only)
     //   RUSTIDIAN_OTELSINK_CHILD    -> OPENSIDIAN_OTELSINK_CHILD (test only)
     //   localStorage rustidian.graphRenderer -> opensidian.graphRenderer (hidden dev knob)
+    // goal android: nothing to migrate (no $HOME, no rustidian ever shipped there)
+    #[cfg(not(target_os = "android"))]
     migrate::run_home(&PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())));
     // VAULT_DIR (probes/tests) wins; else the argv vault (vaultarg, README §2) —
     // resolved HERE, before sandbox::enforce below; else last persisted vault if
@@ -6173,6 +6268,9 @@ pub fn run() {
     // landlock: OPT-IN since 2026-09-30 (operator). OPENSIDIAN_LANDLOCK=1 confines
     // the whole process tree to the vault before webkit spawns;
     // OPENSIDIAN_NO_LANDLOCK wins. Both switches are named ONCE, in sandbox.rs.
+    // goal android: compiled out — the app sandbox (SELinux untrusted_app + a
+    // private uid) already confines us, and the vault is bound in setup().
+    #[cfg(not(target_os = "android"))]
     if sandbox::landlock_enabled() {
         if let Some(p) = &init {
             // vaultbleed D: the unconfined spawner, started BEFORE the ruleset
@@ -6252,6 +6350,8 @@ pub fn run() {
         .manage(vault)
         .manage(ZoomLevel(Mutex::new(read_zoom_cfg())))
         .setup(move |app| {
+            #[cfg(target_os = "android")]
+            android_boot(app);
             if let Some(wc) = &page_conf {
                 page_window(app.handle(), wc)?;
             }

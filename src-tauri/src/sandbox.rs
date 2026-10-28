@@ -137,6 +137,10 @@ pub fn landlock_switch(opt_in: Option<&std::ffi::OsStr>, no: Option<&std::ffi::O
 
 /// Should main() build a ruleset? Reads both env vars, spelled once each.
 pub fn landlock_enabled() -> bool {
+    // goal android: never — enforce() is compiled out of run() there
+    if cfg!(target_os = "android") {
+        return false;
+    }
     landlock_switch(
         std::env::var_os(LANDLOCK_ENV).as_deref(),
         std::env::var_os(NO_LANDLOCK_ENV).as_deref(),
