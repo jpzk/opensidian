@@ -2080,10 +2080,12 @@ fn winsize_restore(w: &tauri::WebviewWindow, rec: &serde_json::Value, default: (
             WIN_TRACK.lock().unwrap_or_else(|e| e.into_inner()).see(winsize::Rect { x, y, w: plan.w, h: plan.h });
         }
         None => {
+            #[cfg(not(target_os = "android"))] // android: no window placement on mobile
             let _ = w.center();
         }
     }
     let _ = w.show();
+    #[cfg(not(target_os = "android"))] // android: the window is always full-screen
     if plan.max {
         let _ = w.maximize();
     }

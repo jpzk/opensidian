@@ -175,6 +175,17 @@ fn cstr(s: &OsStr) -> io::Result<CString> {
     CString::new(s.as_bytes()).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in path"))
 }
 
+/// renameat2(dfd, from, dfd, to, RENAME_NOREPLACE). Android: the raw syscall, because bionic
+/// only exports renameat2() from API 30 and minSdk is 24; a kernel without it returns
+/// ENOSYS/EINVAL and the caller falls back to linkat exactly as on an old desktop kernel.
+/// SAFETY: dfd is a valid directory fd, from/to are NUL-terminated.
+unsafe fn renameat_noreplace(dfd: libc::c_int, from: *const libc::c_char, to: *const libc::c_char) -> libc::c_int {
+    #[cfg(not(target_os = "android"))]
+    return libc::renameat2(dfd, from, dfd, to, libc::RENAME_NOREPLACE);
+    #[cfg(target_os = "android")]
+    return libc::syscall(libc::SYS_renameat2, dfd, from, dfd, to, libc::RENAME_NOREPLACE as libc::c_uint) as libc::c_int;
+}
+
 fn cvt(r: libc::c_int) -> io::Result<libc::c_int> {
     if r < 0 { Err(io::Error::last_os_error()) } else { Ok(r) }
 }
@@ -607,7 +618,7 @@ impl Vault {
                 Err(_) => continue,
             };
             // SAFETY: valid fd + NUL-terminated names
-            let r = cvt(unsafe { libc::renameat2(dfd, tmp.as_ptr(), dfd, cn.as_ptr(), libc::RENAME_NOREPLACE) });
+            let r = cvt(unsafe { renameat_noreplace(dfd, tmp.as_ptr(), cn.as_ptr()) });
             let r = match r {
                 Err(e) if matches!(e.raw_os_error(), Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EOPNOTSUPP)) => {
                     // no NOREPLACE here: link(2) refuses an existing name too
