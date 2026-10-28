@@ -22,7 +22,8 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "=0.4.13"
 arbitrary = "=1.4.2"
-# the pure modules only (src-tauri/src/lib.rs, lib name opensidian_lib)
+# the pure modules (canvasfs, datefmt, graphq, index, outline, vaultfs) from the
+# app lib (src-tauri/src/lib.rs, lib name opensidian_lib, rlib)
 opensidian = { path = "../src-tauri" }
 
 [workspace]

@@ -559,7 +559,7 @@ mod tests {
     /// a key is "real" only if main.rs actually reads or writes it
     #[test]
     fn config_keys_are_all_read_or_written_by_main() {
-        let src = include_str!("main.rs");
+        let src = include_str!("lib.rs");
         for k in CONFIG_KEYS {
             assert!(
                 src.contains(&format!("[\"{k}\"]")),
@@ -585,7 +585,7 @@ mod tests {
     /// the app.json keys: main.rs really reads AND writes each one
     #[test]
     fn app_keys_are_all_touched_by_main() {
-        let src = include_str!("main.rs");
+        let src = include_str!("lib.rs");
         for k in APP_KEYS {
             assert!(
                 src.matches(&format!("\"{k}\"")).count() >= 2,
