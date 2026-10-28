@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#![cfg_attr(target_os = "android", allow(dead_code))] // goal android: desktop-only path, compiled out of run()
 /* Landlock self-sandbox — OFF by default (operator 2026-09-30); OPENSIDIAN_LANDLOCK=1 opts in,
    OPENSIDIAN_NO_LANDLOCK=1 forces it off and wins over the opt-in. When enabled it is applied once in main()
    BEFORE tauri spawns webkit, so every thread/child process inherits it:

@@ -2212,6 +2212,7 @@ fn spawn_checked(p: &Path, sw: Option<&spawn::Switch>) -> Result<u32, String> {
 /// vaultbleed D: what the unconfined spawner (spawner.rs) does for a confined
 /// window. Every check runs HERE again — the request comes from a process the
 /// sandbox exists to distrust.
+#[cfg_attr(target_os = "android", allow(dead_code))] // goal android: no spawner
 struct LiveSpawner;
 
 impl spawner::Handler for LiveSpawner {
