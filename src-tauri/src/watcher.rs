@@ -453,6 +453,7 @@ mod tests {
     /// healed back into the baseline, and a note replaced by a SYMLINK counts
     /// as still there (snapshot skips symlinks — dropping the tab because we
     /// refuse to follow a link would lose the buffer for nothing).
+    #[cfg(unix)]
     #[test]
     fn heal_short_walk_confirms_every_claimed_removal() {
         let root = tmp("heal");
