@@ -6556,7 +6556,9 @@ fn main() {
         .expect("tauri run");
 }
 
-#[cfg(test)]
+// Unix-only: many cases need symlink(2) / MetadataExt / mkfifo. Linux CI and
+// developer hosts still run the full table; Windows builds the bin without it.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
@@ -11432,13 +11434,17 @@ mod vaultbleed_tests {
         fs::write(b.join(".obsidian/app.json"), "{\"strictLineBreaks\":true}").unwrap();
         ensure_app_json(&b);
         assert_eq!(fs::read_to_string(b.join(".obsidian/app.json")).unwrap(), "{\"strictLineBreaks\":true}");
-        let c = mk("appjson-link", &[("n", "x\n")]);
-        let outside = c.with_extension("outside.json");
-        fs::create_dir_all(c.join(".obsidian")).unwrap();
-        std::os::unix::fs::symlink(&outside, c.join(".obsidian/app.json")).unwrap();
-        ensure_app_json(&c);
-        assert!(!outside.exists(), "a dangling app.json symlink is not written through");
-        let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&b), fs::remove_dir_all(&c));
+        #[cfg(unix)]
+        {
+            let c = mk("appjson-link", &[("n", "x\n")]);
+            let outside = c.with_extension("outside.json");
+            fs::create_dir_all(c.join(".obsidian")).unwrap();
+            std::os::unix::fs::symlink(&outside, c.join(".obsidian/app.json")).unwrap();
+            ensure_app_json(&c);
+            assert!(!outside.exists(), "a dangling app.json symlink is not written through");
+            let _ = fs::remove_dir_all(&c);
+        }
+        let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&b));
     }
 
     #[test]

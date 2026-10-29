@@ -276,6 +276,7 @@ mod tests {
         let _ = fs::remove_dir_all(&r); // reason: test cleanup
     }
 
+    #[cfg(unix)]
     #[test]
     fn ghpaste_symlink_refused() {
         let r = vault("sym");
