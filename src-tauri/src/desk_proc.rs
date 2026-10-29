@@ -281,6 +281,10 @@ fn build(sp: &Spec) -> Command {
     #[cfg(unix)]
     {
         c.process_group(0);
+    }
+    // prctl(PDEATHSIG) + close_range are Linux-only; skip on macOS/other unix.
+    #[cfg(target_os = "linux")]
+    {
         // SAFETY: async-signal-safe syscalls only, between fork and exec
         unsafe {
             c.pre_exec(|| {

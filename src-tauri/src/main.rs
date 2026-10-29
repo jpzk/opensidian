@@ -425,7 +425,7 @@ fn media_mime(ext: &str) -> Option<&'static str> {
 /// openat(O_NOFOLLOW) per component, and check the OPENED fd is a regular
 /// file (O_NONBLOCK so a FIFO cannot hang the open). No path is re-resolved
 /// between the check and the read.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn media_open(root: &Path, rel: &Path) -> Option<fs::File> {
     use std::ffi::CString;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -459,9 +459,8 @@ fn media_open(root: &Path, rel: &Path) -> Option<fs::File> {
     f.metadata().ok()?.is_file().then_some(f)
 }
 
-/// Windows: vaultfs walks with OPEN_REPARSE_POINT and refuses reparse points
-/// (the local equivalent of O_NOFOLLOW).
-#[cfg(windows)]
+/// Non-Linux: vaultfs backend open_read (Windows reparse-safe / macOS path-walk).
+#[cfg(not(target_os = "linux"))]
 fn media_open(root: &Path, rel: &Path) -> Option<fs::File> {
     let v = vaultfs::Vault::open(root).ok()?;
     v.open_read(rel).ok().filter(|f| f.metadata().map(|m| m.is_file()).unwrap_or(false))
@@ -2317,8 +2316,10 @@ fn save_debounce_ms() -> u64 {
 /// That must be allowed (it is how absolute paths look); denying Prefix made
 /// every Windows vault argument fail with "not allowed as a vault".
 fn picker_allows(p: &Path) -> bool {
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     const DENY: [&str; 8] = ["/proc", "/sys", "/dev", "/etc", "/usr", "/boot", "/root", "/var"];
+    #[cfg(target_os = "macos")]
+    const DENY: [&str; 5] = ["/System", "/Library", "/private/var", "/private/etc", "/dev"];
     #[cfg(windows)]
     const DENY: [&str; 4] = [
         r"C:\Windows",
@@ -4044,7 +4045,7 @@ fn desk_shell_open(arg: &std::ffi::OsStr) -> Result<(), String> {
     win_shell_execute(arg, "open").map_err(|e| format!("ENOENT: {e}"))
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(target_os = "macos")]
 fn desk_shell_open(arg: &std::ffi::OsStr) -> Result<(), String> {
     std::process::Command::new("open")
         .arg(arg)
@@ -4058,6 +4059,11 @@ fn desk_shell_open(arg: &std::ffi::OsStr) -> Result<(), String> {
             });
         })
         .map_err(|e| format!("ENOENT: open: {e}"))
+}
+
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+fn desk_shell_open(_arg: &std::ffi::OsStr) -> Result<(), String> {
+    Err("ENOENT: no OS opener on this platform".into())
 }
 
 /* ---- themefs R5 (themes): the listing predicate is the oracle's, verbatim
@@ -6002,7 +6008,7 @@ static QUIT_ARMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool
 static QUIT_ASKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static QUIT_T0: OnceLock<std::time::Instant> = OnceLock::new();
 /// write end of the SIGTERM self-pipe (-1 = no handler installed); Linux only
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 static TERM_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
 #[derive(Debug, PartialEq, Eq)]
@@ -6024,7 +6030,7 @@ fn quit_step(armed: bool, already_asked: bool) -> QuitStep {
 
 /// SIGTERM back to its default disposition and re-raised: the exit status a
 /// TERM'd process has always had
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn term_default() -> ! {
     unsafe {
         libc::signal(libc::SIGTERM, libc::SIG_DFL);
@@ -6033,9 +6039,10 @@ fn term_default() -> ! {
     std::process::exit(143)
 }
 
-#[cfg(windows)]
+#[cfg(not(target_os = "linux"))]
 fn term_default() -> ! {
-    // No POSIX SIGTERM on Windows; the console Ctrl handler is separate.
+    // Windows: no POSIX SIGTERM. macOS: CloseRequested still runs quit_event;
+    // the Linux self-pipe handler is not installed here.
     std::process::exit(143)
 }
 
@@ -6100,7 +6107,7 @@ fn quit_ready(app: tauri::AppHandle, dirty: Option<u32>) {
     app.exit(0);
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 extern "C" fn on_term(_: libc::c_int) {
     // async-signal-safe: one write(2) to the self-pipe, nothing else
     let fd = TERM_FD.load(std::sync::atomic::Ordering::SeqCst);
@@ -6113,7 +6120,7 @@ extern "C" fn on_term(_: libc::c_int) {
 /// SIGTERM -> self-pipe -> a plain thread -> quit_request. The handler itself
 /// only writes one byte; a caught disposition resets to default across exec, so
 /// processes we spawn (desk_proc) keep the stock SIGTERM.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn install_term(app: tauri::AppHandle) {
     let mut fds = [0 as libc::c_int; 2];
     if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
@@ -6145,8 +6152,8 @@ fn install_term(app: tauri::AppHandle) {
     });
 }
 
-/// Windows has no POSIX SIGTERM; window CloseRequested still runs quit_event.
-#[cfg(windows)]
+/// Non-Linux: window CloseRequested still runs quit_event; no SIGTERM self-pipe.
+#[cfg(not(target_os = "linux"))]
 fn install_term(_app: tauri::AppHandle) {}
 
 /* ---------- R36 INTERFACE ZOOM (operator, 2026-09-14: "interface wide zoom,
