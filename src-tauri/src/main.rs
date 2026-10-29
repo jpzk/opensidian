@@ -428,6 +428,7 @@ fn media_mime(ext: &str) -> Option<&'static str> {
 /// openat(O_NOFOLLOW) per component, and check the OPENED fd is a regular
 /// file (O_NONBLOCK so a FIFO cannot hang the open). No path is re-resolved
 /// between the check and the read.
+#[cfg(unix)]
 fn media_open(root: &Path, rel: &Path) -> Option<fs::File> {
     use std::ffi::CString;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -459,6 +460,14 @@ fn media_open(root: &Path, rel: &Path) -> Option<fs::File> {
     }
     let f = fs::File::from(open_at(dir.as_raw_fd(), leaf, libc::O_RDONLY | libc::O_NONBLOCK)?);
     f.metadata().ok()?.is_file().then_some(f)
+}
+
+/// Windows: vaultfs walks with OPEN_REPARSE_POINT and refuses reparse points
+/// (the local equivalent of O_NOFOLLOW).
+#[cfg(windows)]
+fn media_open(root: &Path, rel: &Path) -> Option<fs::File> {
+    let v = vaultfs::Vault::open(root).ok()?;
+    v.open_read(rel).ok().filter(|f| f.metadata().map(|m| m.is_file()).unwrap_or(false))
 }
 
 /// cvf-mediasrv (ruling 1.2): rename ONE media file inside the vault — the
@@ -1614,7 +1623,21 @@ fn vault_get(v: State<Vault>) -> Option<String> {
 /* R1.6 vault persistence: ~/.opensidian.json {"last": path, "list": [paths]}.
    Written only on explicit open/create — VAULT_DIR boots (probes) never touch it. */
 fn cfg_path() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())).join(".opensidian.json")
+    PathBuf::from(user_home()).join(".opensidian.json")
+}
+
+/// `$HOME` on Unix; `%USERPROFILE%` (then `$HOME`) on Windows.
+fn user_home() -> String {
+    #[cfg(windows)]
+    {
+        std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_else(|_| ".".into())
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var("HOME").unwrap_or_else(|_| "/".into())
+    }
 }
 
 /// whole config as a Value, read under the shared cfg lock (cfgstore.rs)
@@ -2292,27 +2315,49 @@ fn save_debounce_ms() -> u64 {
 /// Deny system trees and any dot-component (hidden dirs, `..`); /workspace
 /// and $HOME stay browsable even when they sit under a denied prefix (e.g.
 /// HOME=/root). /, /home, /mnt, /media, /run/media, /tmp remain open.
+///
+/// Windows: `fs::canonicalize` yields `\\?\D:\...` with a `Prefix` component.
+/// That must be allowed (it is how absolute paths look); denying Prefix made
+/// every Windows vault argument fail with "not allowed as a vault".
 fn picker_allows(p: &Path) -> bool {
+    #[cfg(unix)]
     const DENY: [&str; 8] = ["/proc", "/sys", "/dev", "/etc", "/usr", "/boot", "/root", "/var"];
+    #[cfg(windows)]
+    const DENY: [&str; 4] = [
+        r"C:\Windows",
+        r"C:\Program Files",
+        r"C:\Program Files (x86)",
+        r"C:\ProgramData",
+    ];
     if !p.is_absolute() {
         return false;
     }
     if p.components().any(|c| match c {
         Component::Normal(s) => s.to_string_lossy().starts_with('.'),
-        Component::RootDir => false,
-        _ => true, // `..`, `.`, prefixes
+        Component::RootDir | Component::Prefix(_) => false,
+        _ => true, // `..`, `.`
     }) {
         return false;
     }
     if p.starts_with("/workspace") {
         return true;
     }
-    if let Ok(h) = std::env::var("HOME") {
-        if h.len() > 1 && p.starts_with(&h) {
-            return true;
-        }
+    let home = user_home();
+    if home.len() > 1 && p.starts_with(&home) {
+        return true;
     }
-    !DENY.iter().any(|d| p.starts_with(d))
+    #[cfg(windows)]
+    {
+        // canonicalize uses the \\?\ verbatim form; strip it for deny-prefix checks
+        let s = p.to_string_lossy();
+        let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
+        let lower = s.to_ascii_lowercase();
+        return !DENY.iter().any(|d| lower.starts_with(&d.to_ascii_lowercase()));
+    }
+    #[cfg(not(windows))]
+    {
+        !DENY.iter().any(|d| p.starts_with(d))
+    }
 }
 
 /* ---- vaultarg: `opensidian <dir>` opens <dir> (contract docs/vaultarg/README.md) ----
@@ -2407,7 +2452,7 @@ fn argv_vault(args: &[std::ffi::OsString], env_set: bool) -> Option<PathBuf> {
 
 #[tauri::command]
 fn home_dir() -> String {
-    std::env::var("HOME").unwrap_or_else(|_| "/".into())
+    user_home()
 }
 
 /// S1: the only way an external URL leaves the app — the webview never
@@ -2420,16 +2465,61 @@ fn check_external(url: &str) -> Result<(), String> {
 #[tauri::command]
 fn open_external(url: String) -> Result<(), String> {
     check_external(&url)?;
-    // std::process::Command only — no shell, no opener plugin. Missing xdg-open
+    // std::process::Command only — no shell, no opener plugin. Missing helper
     // (headless smoke, minimal hosts) is a plain Err, never a fallback.
+    open_external_os(&url)
+}
+
+#[cfg(target_os = "linux")]
+fn open_external_os(url: &str) -> Result<(), String> {
     std::process::Command::new("xdg-open")
-        .arg(&url)
+        .arg(url)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("xdg-open: {e}"))
+}
+
+#[cfg(windows)]
+fn open_external_os(url: &str) -> Result<(), String> {
+    // `start` treats the first quoted arg as a window title — empty title, then URL.
+    // No `cmd /C` string concatenation of user bytes into a shell script; each
+    // piece is its own argv slot (same shape as xdg-open on Linux).
+    std::process::Command::new("cmd")
+        .args(["/C", "start", "", url])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("start: {e}"))
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn open_external_os(url: &str) -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("open: {e}"))
+}
+
+/// Toggle the WebView inspector (plugin `console.log`, network, DOM). Needs the
+/// `devtools` Cargo feature in release; debug builds always allow it.
+#[tauri::command]
+fn toggle_devtools(win: tauri::WebviewWindow) -> bool {
+    if win.is_devtools_open() {
+        win.close_devtools();
+        false
+    } else {
+        win.open_devtools();
+        true
+    }
 }
 
 #[tauri::command]
@@ -5890,9 +5980,18 @@ fn probe_drag_proto() -> DragProto {
 
 #[cfg(not(target_os = "linux"))]
 fn probe_drag_proto() -> DragProto {
-    // Nothing is measured off this platform, so claim nothing: the geometry path
-    // is the one this repo has evidence for.
-    DragProto { x11: true, moveresize: false, pos: Mutex::new(PosProbe::default()) }
+    // Windows / macOS: native caption drag via start_dragging() is smooth; the
+    // app-set-geometry path exists for Linux Xvfb (no WM). Seed the empirical
+    // half as "position not honoured" so drag_path -> "wm" and win_drag_start
+    // hands the press to the OS (tao maps that to SC_MOVE / platform drag).
+    DragProto {
+        x11: true,
+        moveresize: true,
+        pos: Mutex::new(PosProbe {
+            honoured: Some(false),
+            ..PosProbe::default()
+        }),
+    }
 }
 
 /// Which mechanism will move this window — "wm" | "wayland" | "none".
@@ -6092,7 +6191,8 @@ const QUIT_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 static QUIT_ARMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static QUIT_ASKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static QUIT_T0: OnceLock<std::time::Instant> = OnceLock::new();
-/// write end of the SIGTERM self-pipe (-1 = no handler installed)
+/// write end of the SIGTERM self-pipe (-1 = no handler installed); Linux only
+#[cfg(unix)]
 static TERM_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
 #[derive(Debug, PartialEq, Eq)]
@@ -6114,11 +6214,18 @@ fn quit_step(armed: bool, already_asked: bool) -> QuitStep {
 
 /// SIGTERM back to its default disposition and re-raised: the exit status a
 /// TERM'd process has always had
+#[cfg(unix)]
 fn term_default() -> ! {
     unsafe {
         libc::signal(libc::SIGTERM, libc::SIG_DFL);
         libc::raise(libc::SIGTERM);
     }
+    std::process::exit(143)
+}
+
+#[cfg(windows)]
+fn term_default() -> ! {
+    // No POSIX SIGTERM on Windows; the console Ctrl handler is separate.
     std::process::exit(143)
 }
 
@@ -6183,6 +6290,7 @@ fn quit_ready(app: tauri::AppHandle, dirty: Option<u32>) {
     app.exit(0);
 }
 
+#[cfg(unix)]
 extern "C" fn on_term(_: libc::c_int) {
     // async-signal-safe: one write(2) to the self-pipe, nothing else
     let fd = TERM_FD.load(std::sync::atomic::Ordering::SeqCst);
@@ -6195,6 +6303,7 @@ extern "C" fn on_term(_: libc::c_int) {
 /// SIGTERM -> self-pipe -> a plain thread -> quit_request. The handler itself
 /// only writes one byte; a caught disposition resets to default across exec, so
 /// processes we spawn (desk_proc) keep the stock SIGTERM.
+#[cfg(unix)]
 fn install_term(app: tauri::AppHandle) {
     let mut fds = [0 as libc::c_int; 2];
     if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
@@ -6225,6 +6334,10 @@ fn install_term(app: tauri::AppHandle) {
         }
     });
 }
+
+/// Windows has no POSIX SIGTERM; window CloseRequested still runs quit_event.
+#[cfg(windows)]
+fn install_term(_app: tauri::AppHandle) {}
 
 /* ---------- R36 INTERFACE ZOOM (operator, 2026-09-14: "interface wide zoom,
    not only text") ----------------------------------------------------------
@@ -6327,14 +6440,24 @@ fn set_zoom_cfg(level: f64) {
     cfg_set("zoom", serde_json::json!(level));
 }
 
-/// S1: the one origin the window may navigate to. Tauri v2 on Linux serves
-/// frontendDist as `tauri://localhost` — exact scheme, exact host, no port.
+/// S1: the one origin the window may navigate to.
+/// - Linux/macOS: `tauri://localhost` (no port)
+/// - Windows/Android WebView2: `http://tauri.localhost` (or `https://` if
+///   useHttpsScheme); refusing that left a blank document (`<html><head></head>
+///   <body></body></html>`) because on_navigation blocked the first load.
 /// Matching on the host alone admitted http(s)://tauri.localhost:<any port>
 /// (any local server answering that name), and matching on the scheme alone
 /// admitted tauri://<any host>. The image scheme is a subresource (<img src>),
 /// never a navigation target, so it is not listed.
 fn nav_allowed(u: &tauri::Url) -> bool {
-    u.scheme() == "tauri" && u.host_str() == Some("localhost") && u.port().is_none()
+    if u.port().is_some() {
+        return false;
+    }
+    match (u.scheme(), u.host_str()) {
+        ("tauri", Some("localhost")) => true,
+        ("http" | "https", Some("tauri.localhost")) => true,
+        _ => false,
+    }
 }
 
 fn main() {
@@ -6379,7 +6502,7 @@ fn main() {
     //   RUSTIDIAN_LL_ALONE          -> OPENSIDIAN_LL_ALONE (test only)
     //   RUSTIDIAN_OTELSINK_CHILD    -> OPENSIDIAN_OTELSINK_CHILD (test only)
     //   localStorage rustidian.graphRenderer -> opensidian.graphRenderer (hidden dev knob)
-    migrate::run_home(&PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())));
+    migrate::run_home(&PathBuf::from(user_home()));
     // VAULT_DIR (probes/tests) wins; else the argv vault (vaultarg, README §2) —
     // resolved HERE, before sandbox::enforce below; else last persisted vault if
     // still a dir (R1.6)
@@ -6535,6 +6658,19 @@ fn main() {
                     let _ = w.set_zoom(zoom_factor(lvl));
                 }
             }
+            // DevTools: open at boot when OPENSIDIAN_DEVTOOLS=1 (any build), or
+            // always in debug so `cargo run` is ready for plugin console work.
+            {
+                use tauri::Manager;
+                let want = std::env::var_os("OPENSIDIAN_DEVTOOLS")
+                    .map(|v| v != "0" && !v.is_empty())
+                    .unwrap_or(cfg!(debug_assertions));
+                if want {
+                    if let Some(w) = app.webview_windows().values().next() {
+                        w.open_devtools();
+                    }
+                }
+            }
             Ok(())
         })
         // R31.1 THE DROP HANDLER — 4 lines of body, no behaviour, no I/O, no policy.
@@ -6656,7 +6792,7 @@ fn main() {
             updates::update_check,
             themes_scan, theme_css, get_css_theme, set_css_theme, theme_seed_report, vault_css_watch,
             get_quickfont, set_quickfont, get_fonts, set_font, font_families,
-            get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
+            get_hotkeys, set_hotkeys, open_external, toggle_devtools, save_debounce_ms, attach_files,
             win_rect, win_gesture, win_move_proto, win_drag_start, win_minimize, win_toggle_max, win_close, quit_arm, quit_ready,
             tab_removed, insert_datetime,
             zoom, zoom_get, pdf_info,
@@ -6766,14 +6902,18 @@ mod tests {
         assert!(nav("tauri://localhost"));
         assert!(nav("tauri://localhost/index.html"));
         assert!(nav("tauri://localhost/#/note"));
+        // Windows WebView2 asset origin (Tauri v2)
+        assert!(nav("http://tauri.localhost"));
+        assert!(nav("http://tauri.localhost/index.html"));
+        assert!(nav("https://tauri.localhost"));
+        assert!(nav("https://tauri.localhost/index.html"));
     }
 
     #[test]
     fn appguard_nav_lookalikes_refused() {
         for u in [
-            "http://tauri.localhost",
-            "https://tauri.localhost",
             "https://tauri.localhost:1234",
+            "http://tauri.localhost:8080",
             "tauri://evil",
             "tauri://localhost:8080",
             "tauri://localhost.evil",
@@ -10136,6 +10276,7 @@ mod tests {
 
     /// S4: picker commands refuse system trees and dot-components, keep the
     /// roots the folder picker offers
+    #[cfg(unix)]
     #[test]
     fn picker_denies_system_paths_allows_user_roots() {
         for p in ["/etc", "/proc", "/etc/ssh", "/proc/self", "/sys", "/dev", "/usr/bin", "/boot", "/root", "/var/log",
