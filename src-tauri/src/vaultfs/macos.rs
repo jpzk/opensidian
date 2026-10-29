@@ -7,9 +7,14 @@
    p_chmod uses std::os::unix PermissionsExt. */
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Darwin O_NONBLOCK — a FIFO in vault content with no writer must not hang open().
+const O_NONBLOCK: i32 = 0x0004;
+/// Darwin O_NOFOLLOW — open must not follow a symlink leaf.
+const O_NOFOLLOW: i32 = 0x0100;
 
 // Compiled under debug_assertions too (not just cfg(test)): since lib.rs the
 // bin's tests (main.rs) link vaultfs as a DEPENDENCY, where cfg(test) is off.
@@ -96,18 +101,22 @@ fn is_symlink(path: &Path) -> io::Result<bool> {
 }
 
 fn open_nofollow(path: &Path, write: bool) -> io::Result<File> {
-    if is_symlink(path)? {
-        return Err(refused(path, "symlink in vault path"));
+    match fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_symlink() => return Err(refused(path, "symlink in vault path")),
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
     }
     let mut o = OpenOptions::new();
+    o.custom_flags(O_NONBLOCK | O_NOFOLLOW);
     o.read(true);
     if write {
         o.write(true);
     }
     let f = o.open(path)?;
     let meta = f.metadata()?;
-    if meta.file_type().is_symlink() {
-        return Err(refused(path, "symlink in vault path"));
+    if !meta.is_file() && !meta.is_dir() {
+        return Err(refused(path, "not a regular file or directory"));
     }
     Ok(f)
 }
@@ -419,6 +428,7 @@ impl Vault {
         let d = self.dir(dir, false).map_err(ImportErr::Io)?;
         let mut sf = OpenOptions::new()
             .read(true)
+            .custom_flags(O_NONBLOCK | O_NOFOLLOW)
             .open(src)
             .map_err(|e| {
                 if e.kind() == io::ErrorKind::PermissionDenied {
@@ -488,30 +498,30 @@ impl Vault {
                 continue;
             }
             let dest = d.path.join(&cand);
+            // CREATE_NEW claim first so a taken name (or a dangling symlink leaf)
+            // is skipped; then rename over our placeholder only.
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .custom_flags(O_NOFOLLOW)
+                .open(&dest)
+            {
+                Ok(f) => drop(f),
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => {
+                    unstage();
+                    return Err(ImportErr::Io(e));
+                }
+            }
             match fs::rename(&tmp, &dest) {
                 Ok(()) => {
-                    // On Windows rename over existing replaces — refuse if dest existed as reparse
                     committed = Some(cand);
                     break;
                 }
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(e) => {
-                    // try create_new claim then rename
-                    match OpenOptions::new().write(true).create_new(true).open(&dest) {
-                        Ok(f) => {
-                            drop(f);
-                            let _ = fs::remove_file(&dest);
-                            if fs::rename(&tmp, &dest).is_ok() {
-                                committed = Some(cand);
-                                break;
-                            }
-                        }
-                        Err(e2) if e2.kind() == io::ErrorKind::AlreadyExists => continue,
-                        Err(_) => {
-                            unstage();
-                            return Err(ImportErr::Io(e));
-                        }
-                    }
+                    let _ = fs::remove_file(&dest);
+                    unstage();
+                    return Err(ImportErr::Io(e));
                 }
             }
         }
@@ -523,10 +533,15 @@ impl Vault {
         if keep_src {
             return Ok(Imported { name, src: SrcFate::Copied, how });
         }
-        let fate = match OpenOptions::new().read(true).open(src).and_then(|f| {
-            let m = f.metadata()?;
-            Ok((m.dev(), m.ino()))
-        }) {
+        let fate = match OpenOptions::new()
+            .read(true)
+            .custom_flags(O_NONBLOCK | O_NOFOLLOW)
+            .open(src)
+            .and_then(|f| {
+                let m = f.metadata()?;
+                Ok((m.dev(), m.ino()))
+            })
+        {
             Ok(id) if id == id0 => match fault("import:unlink-src").and_then(|_| fs::remove_file(src)) {
                 Ok(()) => SrcFate::Removed,
                 Err(e) => SrcFate::Kept(e.to_string()),
@@ -612,32 +627,34 @@ impl Vault {
     fn p_open(&self, rel: &Path, append: bool) -> io::Result<File> {
         let (d, leaf) = self.parent(rel, false)?;
         let full = d.path.join(&leaf);
-        if full.exists() {
-            let meta = fs::symlink_metadata(&full)?;
-            if meta.file_type().is_symlink() {
-                return Err(refused(rel, "symlink in vault path"));
+        // Always lstat: Path::exists() follows links, so a dangling symlink
+        // would skip the refusal and create the target outside the vault.
+        match fs::symlink_metadata(&full) {
+            Ok(m) if m.file_type().is_symlink() => return Err(refused(rel, "symlink in vault path")),
+            Ok(m) if !m.is_file() => return Err(refused(rel, "not a regular file")),
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                if !append {
+                    return Err(e);
+                }
             }
-            if !meta.is_file() {
-                return Err(refused(rel, "not a regular file"));
-            }
+            Err(e) => return Err(e),
         }
         let mut o = OpenOptions::new();
-        o.read(true).write(true);
+        o.read(true).custom_flags(O_NOFOLLOW | O_NONBLOCK);
         if append {
-            o.append(true).create(true);
-        } else {
-            o.create(true);
+            o.write(true).append(true).create(true);
         }
         let f = o.open(&full)?;
         let meta = f.metadata()?;
-        if meta.file_type().is_symlink() || !meta.is_file() {
+        if !meta.is_file() {
             return Err(refused(rel, "not a regular file"));
         }
         Ok(f)
     }
 
     pub fn p_read(&self, rel: &Path, cap: u64) -> io::Result<Vec<u8>> {
-        let mut f = self.p_open(rel, false)?;
+        let mut f = self.open_read(rel)?;
         let n = f.metadata()?.len();
         if n > cap {
             return Err(io::Error::new(io::ErrorKind::Other, format!("file too large ({n} > {cap} bytes)")));
