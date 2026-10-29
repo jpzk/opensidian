@@ -41,7 +41,6 @@
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 /// exit status of a boot that found its vault already open elsewhere
@@ -103,11 +102,37 @@ pub fn lock_dir(flatpak_id: Option<OsString>, xdg_runtime: Option<OsString>, hom
     }
 }
 
+/// Windows: `%LOCALAPPDATA%\dev.koto.opensidian\locks` (no XDG / Flatpak).
+#[cfg(windows)]
+pub fn env_lock_dir() -> PathBuf {
+    if let Some(la) = std::env::var_os("LOCALAPPDATA") {
+        return PathBuf::from(la).join("dev.koto.opensidian").join("locks");
+    }
+    let home = user_home();
+    home.join("AppData").join("Local").join("dev.koto.opensidian").join("locks")
+}
+
+#[cfg(not(windows))]
 pub fn env_lock_dir() -> PathBuf {
     let in_flatpak = Path::new("/.flatpak-info").exists();
     let id = if in_flatpak { std::env::var_os("FLATPAK_ID") } else { None };
-    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| "/".into()));
+    let home = user_home();
     lock_dir(id, std::env::var_os("XDG_RUNTIME_DIR"), &home)
+}
+
+fn user_home() -> PathBuf {
+    #[cfg(windows)]
+    {
+        PathBuf::from(
+            std::env::var_os("USERPROFILE")
+                .or_else(|| std::env::var_os("HOME"))
+                .unwrap_or_else(|| ".".into()),
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| "/".into()))
+    }
 }
 
 fn fnv1a64(b: &[u8]) -> u64 {
@@ -121,7 +146,7 @@ fn fnv1a64(b: &[u8]) -> u64 {
 
 /// lock file for a CANONICAL vault path
 pub fn lock_file(dir: &Path, canon: &Path) -> PathBuf {
-    dir.join(format!("vault-{:016x}.lock", fnv1a64(canon.as_os_str().as_bytes())))
+    dir.join(format!("vault-{:016x}.lock", fnv1a64(canon.as_os_str().as_encoded_bytes())))
 }
 
 fn open(dir: &Path, canon: &Path) -> Result<(File, PathBuf), LockErr> {
@@ -147,7 +172,10 @@ pub fn acquire_in(dir: &Path, canon: &Path) -> Result<VaultLock, LockErr> {
         Err(fs::TryLockError::Error(e)) => return Err(LockErr::Io(format!("{}: {e}", lf.display()))),
     }
     // label for humans; we own the lock, so nobody else writes it concurrently
-    let _ = f.set_len(0).and_then(|_| f.write_all(canon.as_os_str().as_bytes())).and_then(|_| f.write_all(b"\n"));
+    let _ = f
+        .set_len(0)
+        .and_then(|_| f.write_all(canon.as_os_str().as_encoded_bytes()))
+        .and_then(|_| f.write_all(b"\n"));
     Ok(VaultLock { f, path: lf })
 }
 
@@ -165,7 +193,7 @@ pub fn held_in(dir: &Path, canon: &Path) -> bool {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) mod tests {
     use super::*;
 

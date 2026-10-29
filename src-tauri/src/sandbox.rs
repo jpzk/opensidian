@@ -21,10 +21,19 @@
    the vault, with one exception: create_vault makes the new folder and its
    Welcome.md seed before the restart. That is the folder the user asked for.
    boot_pick_must_restart() is that decision as a pure function. */
+#[cfg(target_os = "linux")]
 use landlock::{
     path_beneath_rules, Access, AccessFs, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset,
     RulesetAttr, RulesetCreatedAttr, RulesetStatus, ABI,
 };
+#[cfg(not(target_os = "linux"))]
+/// Stand-in for landlock::RulesetStatus off Linux (no LSM).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RulesetStatus {
+    NotEnforced,
+}
+#[cfg(target_os = "linux")]
+pub use landlock::RulesetStatus;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -136,11 +145,19 @@ pub fn landlock_switch(opt_in: Option<&std::ffi::OsStr>, no: Option<&std::ffi::O
 }
 
 /// Should main() build a ruleset? Reads both env vars, spelled once each.
+/// Off Linux Landlock does not exist: always false (env ignored).
 pub fn landlock_enabled() -> bool {
-    landlock_switch(
-        std::env::var_os(LANDLOCK_ENV).as_deref(),
-        std::env::var_os(NO_LANDLOCK_ENV).as_deref(),
-    )
+    #[cfg(not(target_os = "linux"))]
+    {
+        return false;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        landlock_switch(
+            std::env::var_os(LANDLOCK_ENV).as_deref(),
+            std::env::var_os(NO_LANDLOCK_ENV).as_deref(),
+        )
+    }
 }
 
 /// Audit #3, see the module comment. Decides what a boot picker that has no
@@ -190,6 +207,12 @@ pub fn ruleset_plan(disabled: bool, home: &Path, vault: &Path) -> Option<Ruleset
     })
 }
 
+#[cfg(not(target_os = "linux"))]
+pub fn enforce(_vault: &Path) -> Result<RulesetStatus, Box<dyn std::error::Error>> {
+    Ok(RulesetStatus::NotEnforced)
+}
+
+#[cfg(target_os = "linux")]
 pub fn enforce(vault: &Path) -> Result<RulesetStatus, Box<dyn std::error::Error>> {
     let off = no_landlock_requested();
     if off {
@@ -254,7 +277,7 @@ pub fn enforce(vault: &Path) -> Result<RulesetStatus, Box<dyn std::error::Error>
     Ok(status.ruleset)
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use std::fs;

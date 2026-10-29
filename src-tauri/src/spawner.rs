@@ -32,10 +32,15 @@
 use crate::cfgstore::Op;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, Write};
+#[cfg(unix)]
+use std::io::BufReader;
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
+#[cfg(unix)]
+use std::sync::Mutex;
 
 /// argv[1] that turns this binary into the spawner (and nothing else)
 pub const ARG: &str = "--opensidian-spawner";
@@ -109,10 +114,16 @@ pub fn serve(r: impl BufRead, mut w: impl Write, h: &dyn Handler) {
 
 /// the confined window's end. One request in flight at a time (Mutex), so
 /// replies cannot cross between tauri command threads.
+#[cfg(unix)]
 pub struct Client {
     io: Mutex<(BufReader<UnixStream>, UnixStream)>,
 }
 
+/// Off Unix there is no landlock helper; Client is never installed.
+#[cfg(not(unix))]
+pub struct Client;
+
+#[cfg(unix)]
 impl Client {
     pub fn new(s: UnixStream) -> std::io::Result<Client> {
         Ok(Client { io: Mutex::new((BufReader::new(s.try_clone()?), s)) })
@@ -171,6 +182,25 @@ impl Client {
     }
 }
 
+#[cfg(not(unix))]
+impl Client {
+    pub fn open(&self, _p: &Path, _sw: Option<&crate::spawn::Switch>) -> Result<u32, String> {
+        Err("spawner unused without landlock".into())
+    }
+    pub fn create(&self, _parent: &str, _name: &str) -> Result<String, String> {
+        Err("spawner unused without landlock".into())
+    }
+    pub fn cfg(&self, _ops: &[Op]) -> Result<(), String> {
+        Err("spawner unused without landlock".into())
+    }
+    pub fn read_cfg(&self) -> Result<Value, String> {
+        Err("spawner unused without landlock".into())
+    }
+    pub fn list_dirs(&self, _path: &str) -> Result<Vec<String>, String> {
+        Err("spawner unused without landlock".into())
+    }
+}
+
 static CLIENT: OnceLock<Client> = OnceLock::new();
 
 /// Some = this process is confined and must go through the helper.
@@ -186,6 +216,7 @@ pub fn install(c: Client) {
 
 /// start the helper: this binary, argv[1] = ARG, stdin = its socket end.
 /// MUST run before sandbox::enforce (an exec after it is confined for life).
+#[cfg(unix)]
 pub fn start() -> Result<Client, String> {
     use std::os::fd::OwnedFd;
     let (mine, theirs) = UnixStream::pair().map_err(|e| format!("socketpair: {e}"))?;
@@ -203,7 +234,13 @@ pub fn start() -> Result<Client, String> {
     Client::new(mine).map_err(|e| e.to_string())
 }
 
+#[cfg(not(unix))]
+pub fn start() -> Result<Client, String> {
+    Err("spawner unused without landlock".into())
+}
+
 /// the helper's main: serve fd 0 until EOF.
+#[cfg(unix)]
 pub fn run(h: &dyn Handler) -> i32 {
     use std::os::fd::FromRawFd;
     // SAFETY: fd 0 is the socketpair end start() handed us; nothing else owns it.
@@ -219,7 +256,13 @@ pub fn run(h: &dyn Handler) -> i32 {
     0
 }
 
-#[cfg(test)]
+#[cfg(not(unix))]
+pub fn run(_h: &dyn Handler) -> i32 {
+    eprintln!("[spawner] not available on this platform");
+    2
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::cell::RefCell;
