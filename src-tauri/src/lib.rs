@@ -6157,6 +6157,31 @@ fn nav_allowed(u: &tauri::Url) -> bool {
     u.scheme() == "tauri" && u.host_str() == Some("localhost") && u.port().is_none()
 }
 
+/// android hot reload: a DEBUG build whose tauri config was merged with
+/// `build.frontendDist = http://<host>:<port>` (harness hot-reload.sh conf,
+/// never the repo config) loads ui/ from that origin; navguard must let exactly
+/// that origin through or the WebView never leaves about:blank. Release builds
+/// compile this to `false`, and the repo's frontendDist is a path, not a URL.
+fn dev_frontend_nav<R: tauri::Runtime>(w: &tauri::Webview<R>, u: &tauri::Url) -> bool {
+    #[cfg(debug_assertions)]
+    {
+        use tauri::Manager;
+        if let Some(tauri::utils::config::FrontendDist::Url(f)) = w.config().build.frontend_dist.as_ref() {
+            return dev_origin_matches(f, u);
+        }
+    }
+    let _ = (w, u);
+    false
+}
+
+/// same scheme + host + port, and plain http to an IP literal only (the tailnet
+/// address of the VM serving ui/), so a config typo cannot open a public site.
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
+fn dev_origin_matches(frontend: &tauri::Url, u: &tauri::Url) -> bool {
+    let ip_host = matches!(frontend.host(), Some(url::Host::Ipv4(_)) | Some(url::Host::Ipv6(_)));
+    ip_host && frontend.scheme() == "http" && u.scheme() == "http" && u.host() == frontend.host() && u.port_or_known_default() == frontend.port_or_known_default()
+}
+
 /// goal android: the phone's boot, run FIRST in setup() — before the window
 /// exists, so the UI's first vault_get already sees the vault. Paths come from
 /// Tauri (app_config_dir / app_data_dir = app-private storage), the sample
@@ -6440,7 +6465,7 @@ pub fn run() {
         // on_navigation applies to every webview of the app.
         .plugin(
             tauri::plugin::Builder::<tauri::Wry, ()>::new("navguard")
-                .on_navigation(|_, u| nav_allowed(u))
+                .on_navigation(|w, u| nav_allowed(u) || dev_frontend_nav(w, u))
                 .build(),
         )
         // R29: image bytes reach the webview on our own scheme, so the
