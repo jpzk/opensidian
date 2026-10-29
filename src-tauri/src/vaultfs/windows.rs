@@ -18,6 +18,9 @@ const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
 const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+// No FILE_SHARE_DELETE: a held directory cannot be renamed/deleted out from under us.
+const FILE_SHARE_READ: u32 = 0x0000_0001;
+const FILE_SHARE_WRITE: u32 = 0x0000_0002;
 
 // Compiled under debug_assertions too (not just cfg(test)): since lib.rs the
 // bin's tests (main.rs) link vaultfs as a DEPENDENCY, where cfg(test) is off.
@@ -113,6 +116,7 @@ fn open_nofollow(path: &Path, write: bool) -> io::Result<File> {
     if write {
         o.write(true);
     }
+    o.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
     o.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS);
     let f = o.open(path)?;
     let meta = f.metadata()?;
@@ -185,22 +189,15 @@ fn tmp_name(leaf: &std::ffi::OsStr) -> io::Result<String> {
 }
 
 fn getrandom_fill(buf: &mut [u8]) -> io::Result<()> {
-    // Prefer std's getrandom via File::open of a crypto provider isn't portable;
-    // use a mix of pid + time as last resort is weak — use Windows RtlGenRandom
-    // via the `getrandom` crate is not in deps. BCryptGenRandom via windows-sys
-    // would need a dep feature. Use std::hash of Instant + pid (good enough for
-    // unpredictable temp sibling names under O_EXCL / CREATE_NEW).
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    std::process::id().hash(&mut h);
-    SystemTime::now().hash(&mut h);
-    std::thread::current().id().hash(&mut h);
-    let mut n = h.finish();
-    for b in buf.iter_mut() {
-        *b = (n & 0xff) as u8;
-        n = n.rotate_left(8) ^ h.finish().wrapping_mul(0x9e37);
-        std::thread::current().id().hash(&mut h);
+    // RtlGenRandom (SystemFunction036) — no new crate; already linked via the
+    // Windows SDK. Temp sibling names must not be guessable across processes.
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn SystemFunction036(buf: *mut u8, len: u32) -> u8;
+    }
+    let ok = unsafe { SystemFunction036(buf.as_mut_ptr(), buf.len() as u32) };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
     }
     Ok(())
 }
@@ -235,9 +232,12 @@ fn same_bytes(a: &mut File, b: &mut File) -> io::Result<bool> {
     }
 }
 
-/// Placeholder: Windows has no dir fd; Dir holds the verified absolute path.
+/// Windows has no dir fd; Dir holds the verified absolute path plus open
+/// handles for every walked component so a junction cannot be swapped in
+/// (sharing without DELETE + live handles).
 pub struct Dir {
     path: PathBuf,
+    _held: Vec<File>,
 }
 
 pub struct Vault {
@@ -261,11 +261,12 @@ impl Vault {
 
     fn walk(&self, rel: &Path, comps: &[&std::ffi::OsStr], create: bool) -> io::Result<Dir> {
         let mut cur = self.root.clone();
-        let _ = open_dir_nofollow(&cur)?;
+        let mut held: Vec<File> = Vec::with_capacity(comps.len() + 1);
+        held.push(open_dir_nofollow(&cur)?);
         for c in comps {
             cur.push(c);
             match open_dir_nofollow(&cur) {
-                Ok(_) => {}
+                Ok(f) => held.push(f),
                 Err(e) if e.kind() == io::ErrorKind::NotFound && create => {
                     fs::create_dir(&cur).or_else(|e2| {
                         if e2.kind() == io::ErrorKind::AlreadyExists {
@@ -274,12 +275,12 @@ impl Vault {
                             Err(e2)
                         }
                     })?;
-                    open_dir_nofollow(&cur).map_err(|e| self.why(rel, e))?;
+                    held.push(open_dir_nofollow(&cur).map_err(|e| self.why(rel, e))?);
                 }
                 Err(e) => return Err(self.why(rel, e)),
             }
         }
-        Ok(Dir { path: cur })
+        Ok(Dir { path: cur, _held: held })
     }
 
     fn why(&self, rel: &Path, e: io::Error) -> io::Error {
@@ -292,7 +293,10 @@ impl Vault {
 
     pub fn dir(&self, rel: &Path, create: bool) -> io::Result<Dir> {
         if rel.as_os_str().is_empty() {
-            return Ok(Dir { path: self.root.clone() });
+            return Ok(Dir {
+                path: self.root.clone(),
+                _held: vec![open_dir_nofollow(&self.root)?],
+            });
         }
         let comps = parts(rel)?;
         self.walk(rel, &comps, create)
@@ -525,30 +529,31 @@ impl Vault {
                 continue;
             }
             let dest = d.path.join(&cand);
+            // fs::rename on Windows replaces an existing name. Claim with
+            // CREATE_NEW first (same as move_file/trash) so a taken name is
+            // skipped; rename then only overwrites our zero-byte placeholder.
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(&dest)
+            {
+                Ok(f) => drop(f),
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => {
+                    unstage();
+                    return Err(ImportErr::Io(e));
+                }
+            }
             match fs::rename(&tmp, &dest) {
                 Ok(()) => {
-                    // On Windows rename over existing replaces — refuse if dest existed as reparse
                     committed = Some(cand);
                     break;
                 }
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(e) => {
-                    // try create_new claim then rename
-                    match OpenOptions::new().write(true).create_new(true).open(&dest) {
-                        Ok(f) => {
-                            drop(f);
-                            let _ = fs::remove_file(&dest);
-                            if fs::rename(&tmp, &dest).is_ok() {
-                                committed = Some(cand);
-                                break;
-                            }
-                        }
-                        Err(e2) if e2.kind() == io::ErrorKind::AlreadyExists => continue,
-                        Err(_) => {
-                            unstage();
-                            return Err(ImportErr::Io(e));
-                        }
-                    }
+                    let _ = fs::remove_file(&dest);
+                    unstage();
+                    return Err(ImportErr::Io(e));
                 }
             }
         }
@@ -651,21 +656,23 @@ impl Vault {
     fn p_open(&self, rel: &Path, append: bool) -> io::Result<File> {
         let (d, leaf) = self.parent(rel, false)?;
         let full = d.path.join(&leaf);
-        if full.exists() {
-            let meta = fs::symlink_metadata(&full)?;
-            if is_reparse(&meta) {
-                return Err(refused(rel, "symlink in vault path"));
+        // Always lstat: Path::exists() follows links, so a dangling reparse
+        // would skip the refusal and create the target outside the vault.
+        match fs::symlink_metadata(&full) {
+            Ok(m) if is_reparse(&m) => return Err(refused(rel, "symlink in vault path")),
+            Ok(m) if !m.is_file() => return Err(refused(rel, "not a regular file")),
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                if !append {
+                    return Err(e);
+                }
             }
-            if !meta.is_file() {
-                return Err(refused(rel, "not a regular file"));
-            }
+            Err(e) => return Err(e),
         }
         let mut o = OpenOptions::new();
         o.read(true).write(true).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
         if append {
             o.append(true).create(true);
-        } else {
-            o.create(true);
         }
         let f = o.open(&full)?;
         let meta = f.metadata()?;
@@ -676,7 +683,8 @@ impl Vault {
     }
 
     pub fn p_read(&self, rel: &Path, cap: u64) -> io::Result<Vec<u8>> {
-        let mut f = self.p_open(rel, false)?;
+        // Read-only open — never create or request write access.
+        let mut f = self.open_read(rel)?;
         let n = f.metadata()?.len();
         if n > cap {
             return Err(io::Error::new(io::ErrorKind::Other, format!("file too large ({n} > {cap} bytes)")));

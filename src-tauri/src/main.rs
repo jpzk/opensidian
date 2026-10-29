@@ -2484,17 +2484,48 @@ fn open_external_os(url: &str) -> Result<(), String> {
 
 #[cfg(windows)]
 fn open_external_os(url: &str) -> Result<(), String> {
-    // `start` treats the first quoted arg as a window title — empty title, then URL.
-    // No `cmd /C` string concatenation of user bytes into a shell script; each
-    // piece is its own argv slot (same shape as xdg-open on Linux).
-    std::process::Command::new("cmd")
-        .args(["/C", "start", "", url])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("start: {e}"))
+    // ShellExecuteW: the URL is ONE LPCWSTR parameter — never passed through
+    // cmd.exe, so `&` / `|` / `"` in a note link cannot be re-parsed as a command.
+    win_shell_execute(std::ffi::OsStr::new(url), "open")
+}
+
+/// Open a path or URL with the Windows shell (no cmd.exe command line).
+#[cfg(windows)]
+fn win_shell_execute(target: &std::ffi::OsStr, op: &str) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name = "shell32")]
+    extern "system" {
+        fn ShellExecuteW(
+            hwnd: *mut core::ffi::c_void,
+            op: *const u16,
+            file: *const u16,
+            params: *const u16,
+            dir: *const u16,
+            show: i32,
+        ) -> isize;
+    }
+    let wide = |s: &std::ffi::OsStr| {
+        let mut v: Vec<u16> = s.encode_wide().collect();
+        v.push(0);
+        v
+    };
+    let (file, operation) = (wide(target), wide(std::ffi::OsStr::new(op)));
+    // SAFETY: NUL-terminated wide strings outlive the call; unused args are null.
+    let r = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            operation.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            1, // SW_SHOWNORMAL
+        )
+    };
+    // ShellExecute returns a value > 32 on success.
+    if (r as usize) <= 32 {
+        return Err(format!("ShellExecuteW: {r}"));
+    }
+    Ok(())
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
@@ -4106,6 +4137,28 @@ async fn desk_shell(win: tauri::Window, v: State<'_, Vault>, op: String, target:
         eprintln!("[desk] shell {op} {}: {e}", t.arg);
     }
     r
+}
+
+#[cfg(windows)]
+fn desk_shell_open(arg: &std::ffi::OsStr) -> Result<(), String> {
+    // Same ShellExecuteW path as open_external — never cmd.exe.
+    win_shell_execute(arg, "open").map_err(|e| format!("ENOENT: {e}"))
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn desk_shell_open(arg: &std::ffi::OsStr) -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg(arg)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|mut c| {
+            std::thread::spawn(move || {
+                let _ = c.wait();
+            });
+        })
+        .map_err(|e| format!("ENOENT: open: {e}"))
 }
 
 /* ---- themefs R5 (themes): the listing predicate is the oracle's, verbatim
@@ -6455,6 +6508,10 @@ fn nav_allowed(u: &tauri::Url) -> bool {
     }
     match (u.scheme(), u.host_str()) {
         ("tauri", Some("localhost")) => true,
+        // WebView2 custom protocol origin — Windows only. On Linux, *.localhost
+        // is loopback; allowing http(s)://tauri.localhost would admit any local
+        // server answering that name on 80/443.
+        #[cfg(windows)]
         ("http" | "https", Some("tauri.localhost")) => true,
         _ => false,
     }
@@ -6904,11 +6961,16 @@ mod tests {
         assert!(nav("tauri://localhost"));
         assert!(nav("tauri://localhost/index.html"));
         assert!(nav("tauri://localhost/#/note"));
-        // Windows WebView2 asset origin (Tauri v2)
-        assert!(nav("http://tauri.localhost"));
-        assert!(nav("http://tauri.localhost/index.html"));
-        assert!(nav("https://tauri.localhost"));
-        assert!(nav("https://tauri.localhost/index.html"));
+        // http(s)://tauri.localhost is Windows/WebView2 only (gated in nav_allowed).
+        if cfg!(windows) {
+            assert!(nav("http://tauri.localhost"));
+            assert!(nav("http://tauri.localhost/index.html"));
+            assert!(nav("https://tauri.localhost"));
+            assert!(nav("https://tauri.localhost/index.html"));
+        } else {
+            assert!(!nav("http://tauri.localhost"));
+            assert!(!nav("https://tauri.localhost"));
+        }
     }
 
     #[test]

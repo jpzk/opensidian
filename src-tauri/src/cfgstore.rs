@@ -161,7 +161,11 @@ fn write_renamed(t: &Path, bytes: &[u8]) -> std::io::Result<()> {
         f.sync_all()?;
         drop(f);
         fs::rename(&tmp, t)?;
-        File::open(dir).and_then(|d| d.sync_all())
+        // FlushFileBuffers on a directory handle is ACCESS_DENIED on Windows;
+        // treating that as a rename failure forced a truncating in-place rewrite.
+        #[cfg(unix)]
+        File::open(dir).and_then(|d| d.sync_all())?;
+        Ok(())
     })();
     if r.is_err() {
         let _ = fs::remove_file(&tmp);
@@ -186,7 +190,7 @@ pub fn update_in(lock_dir: &Path, cfg: &Path, ops: &[Op]) -> Result<Wrote, Strin
     match write_renamed(&t, &bytes) {
         Ok(()) => Ok(Wrote::Renamed),
         // EPERM, EACCES, EXDEV: the sandbox refused the create/rename, not the write
-        Err(e) if e.kind() == io::ErrorKind::PermissionDenied || matches!(e.raw_os_error(), Some(1 | 13 | 18)) => {
+        Err(e) if matches!(e.raw_os_error(), Some(1 | 13 | 18)) => {
             write_in_place(&t, &bytes).map(|_| Wrote::InPlace).map_err(|e2| format!("{}: {e2} (rename: {e})", t.display()))
         }
         Err(e) => Err(format!("{}: {e}", t.display())),
