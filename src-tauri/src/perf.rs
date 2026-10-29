@@ -1152,7 +1152,7 @@ mod tests {
                     eprintln!("otel sink test SKIPPED: this kernel cannot enforce landlock ({e})");
                     None
                 }
-                Ok(landlock::RulesetStatus::NotEnforced) => {
+                Ok(sandbox::RulesetStatus::NotEnforced) => {
                     eprintln!("otel sink test SKIPPED: landlock reported NotEnforced on this kernel");
                     None
                 }

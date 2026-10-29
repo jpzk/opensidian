@@ -51,7 +51,9 @@ pub const OLD_CFG: &str = ".rustidian.json";
 pub const NEW_CFG: &str = ".opensidian.json";
 pub const OLD_BM: &str = ".rustidian-bookmarks";
 pub const NEW_BM: &str = ".opensidian-bookmarks";
+#[cfg_attr(windows, allow(dead_code))]
 pub const OLD_DATA: &str = ".local/share/dev.koto.rustidian";
+#[cfg_attr(windows, allow(dead_code))]
 pub const NEW_DATA: &str = ".local/share/dev.koto.opensidian";
 
 /// what `carry` did — the unit tests and the console line read this.
@@ -100,7 +102,15 @@ fn copy_dir(from: &Path, to: &Path) -> io::Result<()> {
         if ft.is_dir() {
             copy_dir(&src, &dst)?;
         } else if ft.is_symlink() {
+            #[cfg(unix)]
             std::os::unix::fs::symlink(fs::read_link(&src)?, &dst)?;
+            #[cfg(windows)]
+            {
+                // recreate as best-effort; privilege may be required for symlinks
+                let t = fs::read_link(&src)?;
+                let _ = std::os::windows::fs::symlink_file(&t, &dst)
+                    .or_else(|_| std::os::windows::fs::symlink_dir(&t, &dst));
+            }
         } else {
             fs::copy(&src, &dst)?;
         }
@@ -120,8 +130,19 @@ fn report(what: &str, old: &Path, new: &Path, r: io::Result<Carry>) {
 pub fn run_home(home: &Path) {
     let (o, n) = (home.join(OLD_CFG), home.join(NEW_CFG));
     report("config", &o, &n, carry(&o, &n));
-    let (o, n) = (home.join(OLD_DATA), home.join(NEW_DATA));
-    report("data", &o, &n, carry(&o, &n));
+    #[cfg(windows)]
+    {
+        let base = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join("AppData").join("Local"));
+        let (o, n) = (base.join("dev.koto.rustidian"), base.join("dev.koto.opensidian"));
+        report("data", &o, &n, carry(&o, &n));
+    }
+    #[cfg(not(windows))]
+    {
+        let (o, n) = (home.join(OLD_DATA), home.join(NEW_DATA));
+        report("data", &o, &n, carry(&o, &n));
+    }
 }
 
 /// the per-vault row: returns the bookmark dotfile to read, if any.
@@ -141,14 +162,38 @@ const MAX_BM_BYTES: u64 = 4 * 1024 * 1024;
 
 fn carry_vault_file(vault: &Path, old: &str, new: &str) -> io::Result<Carry> {
     use std::io::Read;
-    use std::os::unix::fs::OpenOptionsExt;
     if fs::symlink_metadata(vault.join(new)).is_ok() {
         return Ok(Carry::NewWins);
     }
-    let f = match fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(vault.join(old)) {
-        Ok(f) => f,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Carry::Neither),
-        Err(e) => return Err(e), // ELOOP: a symlinked old dotfile is not carried
+    let oldp = vault.join(old);
+    #[cfg(unix)]
+    let f = {
+        use std::os::unix::fs::OpenOptionsExt;
+        match fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(&oldp)
+        {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Carry::Neither),
+            Err(e) => return Err(e), // ELOOP: a symlinked old dotfile is not carried
+        }
+    };
+    #[cfg(windows)]
+    let f = {
+        let meta = match fs::symlink_metadata(&oldp) {
+            Ok(m) => m,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Carry::Neither),
+            Err(e) => return Err(e),
+        };
+        if meta.file_type().is_symlink() {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "symlink old bookmark not carried"));
+        }
+        match fs::File::open(&oldp) {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Carry::Neither),
+            Err(e) => return Err(e),
+        }
     };
     let m = f.metadata()?;
     if !m.is_file() {
@@ -163,7 +208,7 @@ fn carry_vault_file(vault: &Path, old: &str, new: &str) -> io::Result<Carry> {
     Ok(Carry::Copied)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

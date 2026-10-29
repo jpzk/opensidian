@@ -33,8 +33,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
-use std::os::unix::ffi::OsStrExt;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 /// MRU cap of the recent-vaults list
@@ -122,7 +121,7 @@ fn target(cfg: &Path) -> PathBuf {
 pub fn lock_file(lock_dir: &Path, cfg: &Path) -> PathBuf {
     let t = target(cfg);
     let mut h: u64 = 0xcbf29ce484222325;
-    for &b in t.as_os_str().as_bytes() {
+    for &b in t.as_os_str().as_encoded_bytes() {
         h ^= b as u64;
         h = h.wrapping_mul(0x100000001b3);
     }
@@ -187,14 +186,14 @@ pub fn update_in(lock_dir: &Path, cfg: &Path, ops: &[Op]) -> Result<Wrote, Strin
     match write_renamed(&t, &bytes) {
         Ok(()) => Ok(Wrote::Renamed),
         // EPERM, EACCES, EXDEV: the sandbox refused the create/rename, not the write
-        Err(e) if matches!(e.raw_os_error(), Some(1 | 13 | 18)) => {
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied || matches!(e.raw_os_error(), Some(1 | 13 | 18)) => {
             write_in_place(&t, &bytes).map(|_| Wrote::InPlace).map_err(|e2| format!("{}: {e2} (rename: {e})", t.display()))
         }
         Err(e) => Err(format!("{}: {e}", t.display())),
     } // lf dropped here -> unlock, after the bytes are on disk
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
