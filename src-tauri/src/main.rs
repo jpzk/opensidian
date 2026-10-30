@@ -21,6 +21,7 @@ mod appid;
 mod builtins;
 use opensidian_lib::canvasfs;
 mod cfgstore;
+mod census; // census-gate (#30): the window-title census is opt-in (OPENSIDIAN_CENSUS=1 / devui)
 use opensidian_lib::datefmt;
 use opensidian_lib::graphq;
 use opensidian_lib::index;
@@ -41,6 +42,8 @@ mod spawner;
 mod desk_http;
 mod desk_net;
 mod desk_proc;
+#[cfg(feature = "devui")]
+mod devui; // goal devui: DEV-ONLY UI hot reload, never in a default/release build
 mod vaultlock;
 mod srcmode;
 mod themefs;
@@ -2777,6 +2780,102 @@ impl<'a> TaskScan<'a> {
     }
 }
 
+/// deep-tasks QE16: Obsidian comments `%%...%%` (inline or across lines) render as
+/// nothing in the reading view and in a plugin's MarkdownRenderer.render — stock shows
+/// a tasks group heading "%%3%%Normal priority" as "Normal priority". The comment's
+/// bytes are dropped but its newlines are kept, so every line number the render maps
+/// (task checkboxes, block lines) still names the same source line. Fenced code and
+/// inline code spans keep their `%%`; an unclosed `%%` stays literal text.
+fn strip_comments(src: &str) -> std::borrow::Cow<'_, str> {
+    if !src.contains("%%") {
+        return std::borrow::Cow::Borrowed(src);
+    }
+    let mut out = String::with_capacity(src.len());
+    let mut fence: Option<(u8, usize)> = None; // (fence char, run length) while inside a fence
+    let mut open: Option<(usize, usize)> = None; // (out len, src offset) at an open comment
+    let mut line_at = 0usize;
+    for line in src.split_inclusive('\n') {
+        let b = line.as_bytes();
+        if open.is_none() {
+            let ind = b.iter().take_while(|&&c| c == b' ').count();
+            let run = |ch: u8| b[ind..].iter().take_while(|&&c| c == ch).count();
+            if ind <= 3 {
+                if let Some((ch, n)) = fence {
+                    if run(ch) >= n && line[ind + run(ch)..].trim().is_empty() {
+                        fence = None;
+                    }
+                    out.push_str(line);
+                    line_at += line.len();
+                    continue;
+                }
+                let ch = b.get(ind).copied().unwrap_or(0);
+                if (ch == b'`' || ch == b'~') && run(ch) >= 3 {
+                    fence = Some((ch, run(ch)));
+                    out.push_str(line);
+                    line_at += line.len();
+                    continue;
+                }
+            } else if fence.is_some() {
+                out.push_str(line);
+                line_at += line.len();
+                continue;
+            }
+        }
+        let mut i = 0usize;
+        while i < b.len() {
+            if open.is_some() {
+                if b[i..].starts_with(b"%%") {
+                    open = None;
+                    i += 2;
+                } else {
+                    if b[i] == b'\n' {
+                        out.push('\n');
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+            if b[i] == b'`' {
+                // inline code span: a backtick run closed by a run of the same length on this line
+                let n = b[i..].iter().take_while(|&&c| c == b'`').count();
+                let mut j = i + n;
+                let mut close = None;
+                while j < b.len() {
+                    if b[j] == b'`' {
+                        let m = b[j..].iter().take_while(|&&c| c == b'`').count();
+                        if m == n {
+                            close = Some(j + m);
+                            break;
+                        }
+                        j += m;
+                    } else {
+                        j += 1;
+                    }
+                }
+                let end = close.unwrap_or(i + n);
+                out.push_str(&line[i..end]);
+                i = end;
+                continue;
+            }
+            if b[i..].starts_with(b"%%") {
+                open = Some((out.len(), line_at + i));
+                i += 2;
+                continue;
+            }
+            // copy one whole UTF-8 char
+            let w = line[i..].chars().next().map_or(1, char::len_utf8);
+            out.push_str(&line[i..i + w]);
+            i += w;
+        }
+        line_at += line.len();
+    }
+    if let Some((len, at)) = open {
+        out.truncate(len);
+        out.push_str(&src[at..]);
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 /// reading=true: heading links join with " > " (R10.1). Block ids are emitted
 /// as span.blockid in both modes; CSS decides visibility.
 fn render_with(content: &str, notes: &[String], imgs: &[String], reading: bool) -> String {
@@ -2791,6 +2890,9 @@ fn render_with(content: &str, notes: &[String], imgs: &[String], reading: bool) 
 /// Obsidian's REQ-16 "unaffected" set. Live preview passes false (REQ-17: it
 /// shows source lines; its blocks never render a multi-line paragraph).
 fn render_with_br(content: &str, notes: &[String], imgs: &[String], reading: bool, soft_br: bool) -> String {
+    // deep-tasks QE16: the reading render drops %%comments%% (newlines kept, so line maps hold)
+    let stripped = if reading { strip_comments(content) } else { std::borrow::Cow::Borrowed(content) };
+    let content: &str = &stripped;
     // Security (docs/security-review.md H1): .md files are untrusted, so raw
     // HTML events are demoted to text (push_html escapes Text). Wikilinks are
     // linkified at the EVENT level — label and data-note attr escaped — so our
@@ -3034,9 +3136,15 @@ fn block_lines_of(content: &str) -> Vec<u32> {
     out
 }
 
+/// the reading view's block map: from the text the reading render keeps, i.e. with its
+/// %%comments%% dropped (a comment-only paragraph renders no element, so it takes no slot)
+fn reading_block_lines(content: &str) -> Vec<u32> {
+    block_lines_of(&strip_comments(content))
+}
+
 #[tauri::command]
 fn block_lines(content: String) -> Vec<u32> {
-    span_timed!("block_lines", block_lines_of(&content))
+    span_timed!("block_lines", reading_block_lines(&content))
 }
 
 #[tauri::command]
@@ -3060,7 +3168,7 @@ fn render(v: State<Vault>, content: String, otel: Option<perf::Ctx>) -> String {
 fn render_view(v: State<Vault>, content: String, otel: Option<perf::Ctx>) -> (String, Vec<u32>) {
     let soft_br = !cur_vault(&v).is_some_and(|r| app_bool_in(&r, "strictLineBreaks"));
     let ix = v.index.lock().unwrap();
-    span_timed!(otel => "render_view", (render_with_br(&content, ix.names(), ix.images(), true, soft_br), block_lines_of(&content)), serde_json::json!({"bytes": content.len()}))
+    span_timed!(otel => "render_view", (render_with_br(&content, ix.names(), ix.images(), true, soft_br), reading_block_lines(&content)), serde_json::json!({"bytes": content.len()}))
 }
 
 /// pure core of render_blocks: every block rendered against the same note list
@@ -3530,15 +3638,21 @@ fn vfs_sync(h: &tauri::AppHandle, req: &tauri::http::Request<Vec<u8>>) -> PageRe
 /// the app window, from the config entry, with page_csp on its responses
 fn page_window(app: &tauri::AppHandle, wc: &tauri::utils::config::WindowConfig) -> tauri::Result<()> {
     let h = app.clone();
-    tauri::WebviewWindowBuilder::from_config(app, wc)?
-        .on_web_resource_request(move |req, res| {
-            if req.uri().path() == VFS_SYNC_PATH {
-                *res = vfs_sync(&h, &req);
-            } else {
-                page_csp(&h, res)
-            }
-        })
-        .build()?;
+    let b = tauri::WebviewWindowBuilder::from_config(app, wc)?;
+    // census-gate: the title census exists only when opted in (census.rs); off = no script, no flag
+    let b = if census::on() { b.initialization_script(census::INIT_JS) } else { b };
+    #[cfg(feature = "devui")]
+    let b = if devui::root().is_some() { b.initialization_script(devui::INIT_JS) } else { b };
+    b.on_web_resource_request(move |req, res| {
+        if req.uri().path() == VFS_SYNC_PATH {
+            *res = vfs_sync(&h, &req);
+        } else {
+            #[cfg(feature = "devui")]
+            devui::serve(req.uri().path(), res);
+            page_csp(&h, res)
+        }
+    })
+    .build()?;
     Ok(())
 }
 
@@ -5160,7 +5274,7 @@ fn watch_tick(v: &Vault, prev: &mut Option<(PathBuf, watcher::Snapshot)>) -> wat
                 let claimed = d.removed.len();
                 let mut c2 = watcher::snapshot(&root);
                 let mut d2 = watcher::diff(s, &c2);
-                let healed = watcher::heal_short_walk(&root, &mut c2, &mut d2);
+                let healed = watcher::heal_short_walk(&root, s, &mut c2, &mut d2);
                 if d2.removed.len() < claimed {
                     eprintln!(
                         "[tabclose] SHORT WALK REJECTED claimed={claimed} confirmed={} restat_healed={:?} kept={:?}",
@@ -5172,13 +5286,24 @@ fn watch_tick(v: &Vault, prev: &mut Option<(PathBuf, watcher::Snapshot)>) -> wat
                 cur = c2;
                 d = d2;
             }
-            if d.added.is_empty() && d.removed.is_empty() && d.modified.is_empty() {
+            let mut c = if d.added.is_empty() && d.removed.is_empty() && d.modified.is_empty() {
                 watcher::Change::default()
             } else {
                 vault_hook("watch_tick:pre_lock");
                 let mut ix = v.index.lock().unwrap();
                 span_timed!("watcher_reconcile", watcher::reconcile(&root, &d, &mut ix))
+            };
+            // GHOSTS (media CVR-B-063): our own create that an outside delete
+            // removed before any walk listed it is in no Diff; ask the Index.
+            let ghosts = {
+                let mut ix = v.index.lock().unwrap();
+                watcher::sweep_ghosts(&root, &cur, &mut ix)
+            };
+            if !ghosts.is_empty() {
+                eprintln!("[watch] GHOSTS removed={ghosts:?} (created here, deleted outside before a walk)");
+                c.removed.extend(ghosts);
             }
+            c
         }
         _ => watcher::Change::default(),
     };
@@ -6112,6 +6237,8 @@ fn main() {
                 page_window(app.handle(), wc)?;
             }
             spawn_watcher(app.handle().clone());
+            #[cfg(feature = "devui")]
+            devui::start(app.handle().clone()); // goal devui: no-op without OPENSIDIAN_DEV_UI
             install_term(app.handle().clone()); // tab-dataloss: SIGTERM flushes, bounded
             // item 14: a switch-started window whose UI never calls switch_ready
             // is still shown (and frees the old window) after SWITCH_FALLBACK
@@ -6431,6 +6558,10 @@ mod tests {
         // a line-1 start is line 1, not line 0 (1-based, like the fixture markers)
         assert_eq!(block_lines_of("only\n"), vec![1]);
         assert_eq!(block_lines_of(""), Vec::<u32>::new());
+        // the reading map skips a %%comment%% the reading render drops (both reading entrypoints use it)
+        assert_eq!(reading_block_lines("%%hidden%%\n# Visible\n"), vec![2]);
+        assert_eq!(reading_block_lines("a\n\n%%x\ny%%\n\nb\n"), vec![1, 6]);
+        assert!(!render_with("%%hidden%%\n# Visible\n", &[], &[], true).contains("<p>"));
     }
 
     #[test]
@@ -6685,6 +6816,29 @@ mod tests {
         rename_in(&root, &mut ix, "Old", "New").unwrap();
         assert_eq!(fs::read_to_string(root.join("L.md")).unwrap(), "x [[New#h|alias]] y");
         assert_eq!(ix.backlinks("New"), ["L"]);
+        let _ = fs::remove_dir_all(&root);
+        // [[Old.md]] is the note Old: counted in the blast radius and rewritten keeping its .md
+        assert_eq!(
+            rewrite_links("[[Old.md]] [[Old.md#h|a]] [[sub/Old.md]] [[Older.md]]", "sub/Old", "sub/New", true),
+            ("[[New.md]] [[New.md#h|a]] [[sub/New.md]] [[Older.md]]".to_string(), true)
+        );
+        let root = tmp_vault("ramd");
+        fs::write(root.join("sub/Old.md"), "# h").unwrap();
+        fs::write(root.join("L.md"), "x [[Old.md]] [[sub/Old.md|o]] y").unwrap();
+        let mut ix = Index::build(&root);
+        assert_eq!(ix.rename_blast("sub/Old", "sub/New"), (2, 1));
+        rename_in(&root, &mut ix, "sub/Old", "sub/New").unwrap();
+        assert_eq!(fs::read_to_string(root.join("L.md")).unwrap(), "x [[New.md]] [[sub/New.md|o]] y");
+        let _ = fs::remove_dir_all(&root);
+        // a note whose basename IS "Old.md" owns [[Old.md]]: left alone
+        let root = tmp_vault("ramd2");
+        fs::write(root.join("Old.md"), "").unwrap();
+        fs::write(root.join("Old.md.md"), "").unwrap();
+        fs::write(root.join("L.md"), "[[Old.md]] [[Old]]").unwrap();
+        let mut ix = Index::build(&root);
+        assert_eq!(ix.rename_blast("Old", "New"), (1, 1));
+        rename_in(&root, &mut ix, "Old", "New").unwrap();
+        assert_eq!(fs::read_to_string(root.join("L.md")).unwrap(), "[[Old.md]] [[New]]");
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -7090,6 +7244,19 @@ mod tests {
         assert!(h.contains(r#"class="wiki" data-note="Ideas""#));
         assert!(h.contains(r#"class="wiki" data-note="Nested""#)); // basename resolve
         assert!(h.contains(r#"class="wiki wiki-unresolved" data-note="Nope""#));
+    }
+
+    #[test]
+    fn render_resolves_md_suffixed_link() {
+        // plug-top5: dataview renders its file links as [[Projects/Alpha.md|Alpha]]; Obsidian resolves
+        // a target written with its .md extension to that note
+        let notes = vec!["Projects/Alpha".to_string()];
+        let h = render_md("[[Projects/Alpha.md|Alpha]] [[Alpha.md]] [[Nope.md]] [[.md]]", &notes);
+        assert!(h.contains(r#"class="wiki" data-note="Projects/Alpha.md""#), "{h}");
+        assert!(h.contains(r#"class="wiki" data-note="Alpha.md""#), "{h}");
+        assert!(h.contains(r#"class="wiki wiki-unresolved" data-note="Nope.md""#), "{h}");
+        assert_eq!(index::resolve(&notes, "Projects/Alpha.md"), Some(0));
+        assert_eq!(index::resolve(&notes, ".md"), None);
     }
 
     #[test]
@@ -7524,6 +7691,11 @@ mod tests {
         assert!(!g.nodes[3].resolved);
         // A->B, A->Ghost (deduped), B->Ghost, B->sub/C
         assert_eq!(g.edges, vec![(0, 1), (0, 3), (1, 3), (1, 2)]);
+        // [[C.md]] / [[sub/C.md]] are the note sub/C (as the renderer and backlinks resolve them), not a ghost
+        let docs = vec![("A".to_string(), "[[C.md]] [[sub/C.md]] [[Nope.md]]".to_string()), ("sub/C".to_string(), String::new())];
+        let g = graph_of(&docs);
+        assert_eq!(g.nodes.iter().map(|n| (n.name.as_str(), n.resolved)).collect::<Vec<_>>(), vec![("A", true), ("sub/C", true), ("Nope.md", false)]);
+        assert_eq!(g.edges, vec![(0, 1), (0, 2)]);
     }
 
     #[test]
@@ -8820,6 +8992,26 @@ mod tests {
         assert!(rename_in(&root, &mut ix, "Ghost", "X").is_err()); // missing source
         assert!(rename_in(&root, &mut ix, "B", "../esc").is_err()); // traversal blocked
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// deep-tasks QE16: %%comments%% vanish from the reading render (inline and across
+    /// lines, newlines kept), code keeps them, an unclosed %% stays text.
+    #[test]
+    fn reading_render_drops_obsidian_comments() {
+        assert_eq!(strip_comments("%%3%%Normal priority"), "Normal priority");
+        assert_eq!(strip_comments("a %%x%% b %%y%%c"), "a  b c");
+        assert_eq!(strip_comments("a\n%%\nhid\nden\n%%\nb\n"), "a\n\n\n\n\nb\n");
+        assert_eq!(strip_comments("`%%k%%` %%x%%z"), "`%%k%%` z");
+        assert_eq!(strip_comments("```\n%%k%%\n```\n%%x%%y"), "```\n%%k%%\n```\ny");
+        assert_eq!(strip_comments("50%% off"), "50%% off");
+        assert_eq!(strip_comments("é%%ü%%ß"), "éß");
+        let h = render_with("## %%3%%Normal priority", &[], &[], true);
+        assert!(h.contains(">Normal priority</h2>") && !h.contains("%%"), "{h}");
+        // live preview blocks are source-faithful: untouched
+        assert!(render_with("%%3%%x", &[], &[], false).contains("%%3%%x"));
+        // task checkbox line numbers survive a multi-line comment above
+        let t = render_with("%%\na\n%%\n- [ ] t\n", &[], &[], true);
+        assert!(t.contains("data-line=\"3\""), "{t}");
     }
 
     /// goal/linebreak REQ-3..16: a soft break is a `<br>` in the non-strict
@@ -11201,6 +11393,30 @@ mod vaultbleed_tests {
         let _ = fs::remove_dir_all(&a);
     }
 
+    /* media CVR-B-063 flake: the canvas "Create new note" button makes
+       Nope/missing.md (create_note: disk + index), then the phase's
+       `rm -rf Nope` runs before the next tick walked it. Both walks lack the
+       file, so the tick used to report nothing and the note stayed in the
+       index (and the UI) for good. */
+    #[test]
+    fn own_create_removed_outside_before_the_next_tick_is_reported() {
+        let a = mk("ghost", &[("A", "a\n")]);
+        let v = vault_at(&a);
+        let mut prev = None;
+        watch_tick(&v, &mut prev); // baseline
+        {
+            let mut ix = v.index.lock().unwrap();
+            create_note_in(&a, &mut ix, "Nope/missing", "").unwrap();
+        }
+        fs::remove_dir_all(a.join("Nope")).unwrap();
+        let ch = watch_tick(&v, &mut prev);
+        assert_eq!(ch.removed, ["Nope/missing"], "the tick must report the vanished create: {ch:?}");
+        assert!(!cur_notes(&v).iter().any(|n| n == "Nope/missing"), "index still holds it: {:?}", cur_notes(&v));
+        let ch2 = watch_tick(&v, &mut prev);
+        assert!(ch2.is_empty(), "a steady tick reports nothing: {ch2:?}");
+        let _ = fs::remove_dir_all(&a);
+    }
+
     /* The command side: write_note reads the root, then takes the index lock.
        A switch attempted in between is refused; A's write lands in A only. */
     #[test]
@@ -11218,5 +11434,46 @@ mod vaultbleed_tests {
         assert_eq!(fs::read_to_string(a.join("onlyA-note.md")).unwrap(), "typed in A #onlyA\n");
         assert!(!b.join("onlyA-note.md").exists(), "write_note wrote A's note into B on disk");
         let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&b));
+    }
+}
+
+/// goal devui — the release guard's in-tree half: the dev-only UI hot reload can
+/// never ride along in a default (= release) build.
+#[cfg(test)]
+mod devui_guard {
+    const CARGO_TOML: &str = include_str!("../Cargo.toml");
+    const MAIN_RS: &str = include_str!("main.rs");
+
+    /// `devui` is declared, and `[features] default` does not name it
+    #[test]
+    fn devui_guard_not_a_default_feature() {
+        let feats = CARGO_TOML.split("\n[features]\n").nth(1).expect("[features] table").split("\n[").next().unwrap();
+        let def = feats.lines().find(|l| l.trim_start().starts_with("default")).expect("default = [...]");
+        assert!(!def.contains("devui"), "devui must not be a default feature: {def}");
+        assert!(feats.lines().any(|l| l.trim() == "devui = []"), "devui feature declared without deps");
+    }
+
+    /// every main.rs line that reaches the devui module sits directly under a
+    /// `#[cfg(feature = "devui")]`, so without the feature there is no code path into it
+    #[test]
+    fn devui_guard_every_call_site_is_gated() {
+        let (gate, path, decl) = ("#[cfg(feature = \"devui\")]", concat!("devui", "::"), concat!("mod ", "devui;"));
+        let lines: Vec<&str> = MAIN_RS.lines().collect();
+        let mut n = 0;
+        for (i, l) in lines.iter().enumerate() {
+            let code = l.split("//").next().unwrap();
+            if code.contains(path) || code.trim() == decl {
+                n += 1;
+                assert!(i > 0 && lines[i - 1].trim() == gate, "main.rs:{} reaches devui ungated: {l}", i + 1);
+            }
+        }
+        assert_eq!(n, 4, "devui call sites (mod, init script, serve, start)");
+    }
+
+    /// the default build: no devui code path
+    #[cfg(not(feature = "devui"))]
+    #[test]
+    fn devui_guard_default_build_has_no_devui() {
+        assert!(!cfg!(feature = "devui"));
     }
 }

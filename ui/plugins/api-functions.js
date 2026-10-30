@@ -59,10 +59,90 @@
       "zap": P('<path d="M13 2L3 14h9l-1 8 10-12h-9z"/>'),
       "link": P('<path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/>'),
       "refresh-cw": P('<path d="M21 2v6h-6M3 22v-6h6M3.5 9a9 9 0 0 1 15-3.4L21 8M3 16l2.5 2.4A9 9 0 0 0 20.5 15"/>'),
+      "filter": P('<path d="M22 3H2l8 9.46V19l4 2v-8.54z"/>'),
       "copy": P('<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>'),
       "external-link": P('<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/>'),
       "image": P('<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>'),
       "palette": P('<circle cx="12" cy="12" r="10"/><circle cx="8" cy="10" r="1"/><circle cx="12" cy="7" r="1"/><circle cx="16" cy="10" r="1"/>'),
+      // plug-top5: obsidian-git's source control view (its buttons name these through data-icon)
+      "minus": P('<path d="M5 12h14"/>'),
+      "minus-circle": P('<circle cx="12" cy="12" r="10"/><path d="M8 12h8"/>'),
+      "arrow-up-circle": P('<circle cx="12" cy="12" r="10"/><path d="M12 16V8M8 12l4-4 4 4"/>'),
+      "upload": P('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>'),
+      "download": P('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>'),
+      "undo": P('<path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-15-6.7L3 13"/>'),
+      "go-to-file": P('<path d="M14 3H6a2 2 0 0 0-2 2v4M14 3v6h6M14 3l6 6v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-1"/><path d="M2 15h10M9 12l3 3-3 3"/>'),
+      // plug-top5: excalidraw's view header actions, side tool panel and menus
+      "save": P('<path d="M5 3h11l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M7 3v5h8V3M7 21v-7h10v7"/>'),
+      "presentation": P('<path d="M2 4h20M4 4v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V4M12 16v5M8 21h8"/>'),
+      "maximize-2": P('<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>'),
+      "minimize-2": P('<path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/>'),
+      "circle-plus": P('<circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/>'),
+      "square-pen": P('<path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18 2l4 4-10 10H8v-4z"/>'),
+      "rotate-ccw": P('<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>'),
+      "monitor-play": P('<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4M10 7l5 3-5 3z"/>'),
+      "layout-dashboard": P('<rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>'),
+      "file-code": P('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M10 13l-2 2 2 2M14 13l2 2-2 2"/>'),
+      "book-open-text": P('<path d="M2 4h6a4 4 0 0 1 4 4v13a3 3 0 0 0-3-3H2zM22 4h-6a4 4 0 0 0-4 4v13a3 3 0 0 1 3-3h7z"/><path d="M16 9h3M16 13h3M5 9h3M5 13h3"/>'),
+      "swatch-book": P('<path d="M11 17a4 4 0 0 1-8 0V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2z"/><path d="M16.7 13H19a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H7M11 8l2.3-2.3a2 2 0 0 1 2.8 0l2.8 2.8a2 2 0 0 1 0 2.8L9.9 20.2"/><circle cx="7" cy="17" r="1"/>'),
+      "locate-fixed": P('<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="3"/><path d="M2 12h3M19 12h3M12 2v3M12 19v3"/>'),
+      "hash": P('<path d="M4 9h16M4 15h16M10 3L8 21M16 3l-2 18"/>'),
+      "file-output": P('<path d="M4 7V4a2 2 0 0 1 2-2h8l6 6v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2"/><path d="M14 2v6h6M2 15h8M7 12l3 3-3 3"/>'),
+      "copy-plus": P('<rect x="8" y="8" width="14" height="14" rx="2"/><path d="M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2M15 12v6M12 15h6"/>'),
+      "clipboard-copy": P('<rect x="8" y="2" width="8" height="4" rx="1"/><path d="M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2M16 4h2a2 2 0 0 1 2 2v4M21 14H11M15 10l-4 4 4 4"/>'),
+      /* plug-val E-ICONS: lucide names the top-5 plugins draw (excalidraw getIconAsJSX side stack / tools / hamburger /
+         settings, git + tasks + templater buttons) that fell back to the square. Paths: lucide-static 1.38.0 (ISC);
+         github / twitter / youtube from lucide-static 0.460.0 (ISC, brand icons left lucide in 1.x). document /
+         checkmark / check-in-circle / reset are the legacy aliases (file / check / circle-check / rotate-ccw). */
+      "book-open": P('<path d="M12 5v16"/><path d="M20.001 19A2 2 0 0022 17V5a2 2 0 00-1.999-2L16 3.002A5 5 0 0012 5a5 5 0 00-4-2H4a2 2 0 00-2 2v12a2 2 0 001.999 2H8a5 5 0 014 2 5 5 0 014-2z"/>'),
+      "bookmark": P('<path d="M17 3a2 2 0 0 1 2 2v15a1 1 0 0 1-1.496.868l-4.512-2.578a2 2 0 0 0-1.984 0l-4.512 2.578A1 1 0 0 1 5 20V5a2 2 0 0 1 2-2z"/>'),
+      "camera": P('<path d="M13.997 4a2 2 0 0 1 1.76 1.05l.486.9A2 2 0 0 0 18.003 7H20a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h1.997a2 2 0 0 0 1.759-1.048l.489-.904A2 2 0 0 1 10.004 4z"/><circle cx="12" cy="13" r="3"/>'),
+      "code-xml": P('<path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/>'),
+      "crop": P('<path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/>'),
+      "file-audio": P('<path d="M4 6.835V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.706.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2h-.343"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M2 19a2 2 0 0 1 4 0v1a2 2 0 0 1-4 0v-4a6 6 0 0 1 12 0v4a2 2 0 0 1-4 0v-1a2 2 0 0 1 4 0"/>'),
+      "file-code-2": P('<path d="M4 12.15V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.706.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2h-3.35"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="m5 16-3 3 3 3"/><path d="m9 22 3-3-3-3"/>'),
+      "file-code-corner": P('<path d="M4 12.15V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.706.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2h-3.35"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="m5 16-3 3 3 3"/><path d="m9 22 3-3-3-3"/>'),
+      "file-input": P('<path d="M4 11V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.706.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-1"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M2 15h10"/><path d="m9 18 3-3-3-3"/>'),
+      "file-plus": P('<path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M9 15h6"/><path d="M12 18v-6"/>'),
+      "file-symlink": P('<path d="M4 11V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.706.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h7"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="m10 18 3-3-3-3"/>'),
+      "ghost": P('<path d="M15 10v1"/><path d="M7.528 20.472a1.6 1.6 0 012.277 0l1.057 1.056a1.6 1.6 0 002.276 0l1.057-1.056a1.6 1.6 0 012.277 0l1.114 1.114a1.4 1.4 0 002.414-1V10a8 8 0 00-16 0v10.586a1.4 1.4 0 002.414 1z"/><path d="M9 10v1"/>'),
+      "github": P('<path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/>'),
+      "glasses": P('<circle cx="6" cy="15" r="4"/><circle cx="18" cy="15" r="4"/><path d="M14 15a2 2 0 0 0-2-2 2 2 0 0 0-2 2"/><path d="M2.5 13 5 7c.7-1.3 1.4-2 3-2"/><path d="M21.5 13 19 7c-.7-1.3-1.5-2-3-2"/>'),
+      "globe": P('<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>'),
+      "graduation-cap": P('<path d="M21.42 10.922a1 1 0 0 0-.019-1.838L12.83 5.18a2 2 0 0 0-1.66 0L2.6 9.08a1 1 0 0 0 0 1.832l8.57 3.908a2 2 0 0 0 1.66 0z"/><path d="M22 10v6"/><path d="M6 12.5V16a6 3 0 0 0 12 0v-3.5"/>'),
+      "heart": P('<path d="M2 9.5a5.5 5.5 0 0 1 9.591-3.676.56.56 0 0 0 .818 0A5.49 5.49 0 0 1 22 9.5c0 2.29-1.5 4-3 5.5l-5.492 5.313a2 2 0 0 1-3 .019L5 15c-1.5-1.5-3-3.2-3-5.5"/>'),
+      "image-down": P('<path d="M10.3 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10l-3.1-3.1a2 2 0 0 0-2.814.014L6 21"/><path d="m14 19 3 3v-5.5"/><path d="m17 22 3-3"/><circle cx="9" cy="9" r="2"/>'),
+      "layout-template": P('<rect width="18" height="7" x="3" y="3" rx="1"/><rect width="9" height="7" x="3" y="14" rx="1"/><rect width="5" height="7" x="16" y="14" rx="1"/>'),
+      "maximize": P('<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>'),
+      "megaphone": P('<path d="M11 6a13 13 0 0 0 8.4-2.8A1 1 0 0 1 21 4v12a1 1 0 0 1-1.6.8A13 13 0 0 0 11 14H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z"/><path d="M6 14a12 12 0 0 0 2.4 7.2 2 2 0 0 0 3.2-2.4A8 8 0 0 1 10 14"/><path d="M8 6v8"/>'),
+      "minimize": P('<path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/>'),
+      "monitor-cog": P('<path d="M12 17v4"/><path d="m14.305 7.53.923-.382"/><path d="m15.228 4.852-.923-.383"/><path d="m16.852 3.228-.383-.924"/><path d="m16.852 8.772-.383.923"/><path d="m19.148 3.228.383-.924"/><path d="m19.53 9.696-.382-.924"/><path d="m20.772 4.852.924-.383"/><path d="m20.772 7.148.924.383"/><path d="M22 13v2a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7"/><path d="M8 21h8"/><circle cx="18" cy="6" r="3"/>'),
+      "pen-line": P('<path d="M13 21h8"/><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/>'),
+      "scan": P('<path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/>'),
+      "sigma": P('<path d="M18 7V5a1 1 0 0 0-1-1H6.5a.5.5 0 0 0-.4.8l4.5 6a2 2 0 0 1 0 2.4l-4.5 6a.5.5 0 0 0 .4.8H17a1 1 0 0 0 1-1v-2"/>'),
+      "text-select": P('<path d="M14 21h1"/><path d="M14 3h1"/><path d="M19 3a2 2 0 0 1 2 2"/><path d="M21 14v1"/><path d="M21 19a2 2 0 0 1-2 2"/><path d="M21 9v1"/><path d="M3 14v1"/><path d="M3 9v1"/><path d="M5 21a2 2 0 0 1-2-2"/><path d="M5 3a2 2 0 0 0-2 2"/><path d="M7 12h10"/><path d="M7 16h6"/><path d="M7 8h8"/><path d="M9 21h1"/><path d="M9 3h1"/>'),
+      "twitter": P('<path d="M22 4s-.7 2.1-2 3.4c1.6 10-9.4 17.3-18 11.6 2.2.1 4.4-.6 6-2C3 15.5.5 9.6 3 5c2.2 2.6 5.6 4.1 9 4-.9-4.2 4-6.6 7-3.8 1.1 0 3-1.2 3-1.2z"/>'),
+      "youtube": P('<path d="M2.5 17a24.12 24.12 0 0 1 0-10 2 2 0 0 1 1.4-1.4 49.56 49.56 0 0 1 16.2 0A2 2 0 0 1 21.5 7a24.12 24.12 0 0 1 0 10 2 2 0 0 1-1.4 1.4 49.55 49.55 0 0 1-16.2 0A2 2 0 0 1 2.5 17"/><path d="m10 15 5-3-5-3z"/>'),
+      "arrow-up-right": P('<path d="M7 7h10v10"/><path d="M7 17 17 7"/>'),
+      "clipboard-paste": P('<path d="M11 14h10"/><path d="M16 4h2a2 2 0 0 1 2 2v1.344"/><path d="m17 18 4-4-4-4"/><path d="M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 1.793-1.113"/><rect x="8" y="2" width="8" height="4" rx="1"/>'),
+      "clipboard-type": P('<rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M9 12v-1h6v1"/><path d="M11 17h2"/><path d="M12 11v6"/>'),
+      "diff": P('<path d="M12 3v14"/><path d="M5 10h14"/><path d="M5 21h14"/>'),
+      "file-x": P('<path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="m14.5 12.5-5 5"/><path d="m9.5 12.5 5 5"/>'),
+      "git-pull-request": P('<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" x2="6" y1="9" y2="21"/>'),
+      "history": P('<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>'),
+      "scissors": P('<circle cx="6" cy="6" r="3"/><path d="M8.12 8.12 12 12"/><path d="M20 4 8.12 15.88"/><circle cx="6" cy="18" r="3"/><path d="M14.8 14.8 20 20"/>'),
+      "text-cursor": P('<path d="M17 22h-1a4 4 0 0 1-4-4V6a4 4 0 0 1 4-4h1"/><path d="M7 22h1a4 4 0 0 0 4-4"/><path d="M7 2h1a4 4 0 0 1 4 4"/>'),
+      "circle-check": P('<circle cx="12" cy="12" r="10"/><path d="m16 9-5.5 5.5L8 12"/>'),
+      "document": P('<path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/>'),
+      "checkmark": P('<path d="M20 6 9 17l-5-5"/>'),
+      "check-in-circle": P('<circle cx="12" cy="12" r="10"/><path d="m16 9-5.5 5.5L8 12"/>'),
+      "reset": P('<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>'),
+      /* obsidian-git status bar / conflict icons (lucide-static 1.38.0 circle-alert, git-branch, git-commit-horizontal,
+         circle-pause under their pre-1.0 names the plugin uses) */
+      "alert-circle": P('<circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/>'),
+      "git-branch": P('<path d="M15 6a9 9 0 0 0-9 9V3"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/>'),
+      "git-commit": P('<circle cx="12" cy="12" r="3"/><line x1="3" x2="9" y1="12" y2="12"/><line x1="15" x2="21" y1="12" y2="12"/>'),
+      "pause-circle": P('<circle cx="12" cy="12" r="10"/><line x1="10" x2="10" y1="15" y2="9"/><line x1="14" x2="14" y1="15" y2="9"/>'),
     };
     const custom = new Map();           // addIcon: name -> svg inner content (viewBox 0 0 100 100)
     const DEFAULT_ICON = P('<rect x="4" y="4" width="16" height="16" rx="3"/>');
@@ -237,28 +317,281 @@
   });
   reg("fns:yaml", function (K) {
     const { host, be } = K;
-    function parseScalar(v) {
-      v = v.trim();
-      if (!v) return null;
-      if ((v[0] === '"' && v.endsWith('"')) || (v[0] === "'" && v.endsWith("'"))) return v.slice(1, -1);
-      if (v[0] === "[" && v.endsWith("]")) return v.slice(1, -1).split(",").map(x => parseScalar(x)).filter(x => x !== null);
-      if (/^(true|false)$/i.test(v)) return /^true$/i.test(v);
-      if (/^(null|~)$/i.test(v)) return null;
-      if (/^-?\d+(\.\d+)?$/.test(v)) return Number(v);
+    /* YAML 1.2 core schema over block mappings / sequences (nested by indentation), flow [..] {..}, quoted keys and
+       scalars, | > block scalars. Invalid documents throw YAMLParseError (duplicate key, unclosed flow or quote,
+       bad indentation), so a note with broken frontmatter has none, as in stock. */
+    function plainScalar(v) {
+      if (v === "") return null;
+      // every pattern below starts with one of these characters: other text skips nine regex tests (many short items)
+      if (!"nNtTfF~0123456789+-.".includes(v[0])) return v;
+      if (/^(null|Null|NULL|~)$/.test(v)) return null;
+      if (/^(true|True|TRUE)$/.test(v)) return true;
+      if (/^(false|False|FALSE)$/.test(v)) return false;
+      if (/^[-+]?[0-9]+$/.test(v)) return Number(v);
+      if (/^0x[0-9a-fA-F]+$/.test(v)) return parseInt(v.slice(2), 16);
+      if (/^0o[0-7]+$/.test(v)) return parseInt(v.slice(2), 8);
+      if (/^[-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)?$/.test(v)) return Number(v);
+      if (/^[-+]?\.(inf|Inf|INF)$/.test(v)) return v[0] === "-" ? -Infinity : Infinity;
+      if (/^\.(nan|NaN|NAN)$/.test(v)) return NaN;
       return v;
     }
-    function parseYaml(src) {   // the frontmatter subset: key: scalar | [a, b] | block list
-      const o = {}; let key = null;
-      for (const raw of String(src).split("\n")) {
-        const l = raw.replace(/\r$/, "");
-        if (!l.trim() || /^\s*#/.test(l)) continue;
-        let m;
-        if (key && (m = l.match(/^\s*-\s*(.*)$/))) { if (!Array.isArray(o[key])) o[key] = []; const v = parseScalar(m[1]); if (v !== null) o[key].push(v); continue; }
-        if ((m = l.match(/^([^\s:#][^:]*?)\s*:(?:\s+(.*))?$/))) { key = m[1].trim(); o[key] = parseScalar(m[2] || ""); continue; }
+    function parseYaml(src) {
+      const lines = String(src).replace(/\r\n?/g, "\n").split("\n"), n = lines.length;
+      // vl / vc: the line an inline "- " item continues on (sequence below) and the column its content starts at
+      let i = 0, vl = -1, vc = 0;
+      const err = (m, at = i) => { const e = new Error(m + " (line " + (at + 1) + ")"); e.name = "YAMLParseError"; return e; };
+      const UNTERM = {}, anchors = Object.create(null);
+      const indent = l => l.match(/^ */)[0].length;
+      // the current line's indentation: an inline item ('- - x', '- k: v') reads its content as a line indented to its column
+      const lead = () => i === vl ? vc : indent(lines[i]);
+      const skip = () => { while (i < n && (/^\s*$/.test(lines[i]) || /^\s*#/.test(lines[i]))) i++; };
+      const isSeq = t => /^-(\s|$)/.test(t);
+      const noComment = s => { const m = s.match(/(^|\s)#/); return (m ? s.slice(0, m.index) : s).trim(); };
+      /* A quoted or flow value may span lines. B = { s, more }: B.s is a window on the value folded so far and
+         B.more(keep, esc) drops the first keep characters of the window (text the caller has consumed), then folds
+         the next line onto it (false when the document ended; the caller then moves its index back by keep). The
+         scanners below pull a line only when they run off the end of B.s and carry on from where they stopped, so a
+         multi-line value is scanned once. The window holds about one line: growing one string by a line and then
+         indexing it copies the whole string (V8 flattens the rope), so a window over the whole value made every
+         fold cost the length folded so far (quadratic in the line count: a note of short lines froze the UI). */
+      const X = { n: "\n", t: "\t", r: "\r", 0: "\0", a: "\x07", b: "\b", e: "\x1b", f: "\f", v: "\v", " ": " ", "/": "/", '"': '"', "\\": "\\", N: "\x85", _: "\xa0" };
+      function quoted(B, p) {   // -> [value, index after the closing quote]; throws UNTERM
+        const q = B.s[p]; let v = ""; p++;
+        for (;;) {
+          if (p >= B.s.length) { if (B.more && B.more(p)) { p = 0; continue; } throw UNTERM; }
+          const s = B.s, c = s[p];
+          if (q === "'") { if (c === "'") { if (s[p + 1] === "'") { v += "'"; p += 2; continue; } return [v, p + 1]; } v += c; p++; continue; }
+          if (c === '"') return [v, p + 1];
+          if (c !== "\\") { v += c; p++; continue; }
+          const e = s[p + 1];
+          // a backslash ending the line: fold, then read the window from that backslash again (an escaped break drops it)
+          if (e === undefined) { if (B.more && B.more(p, true)) { p = 0; continue; } throw UNTERM; }
+          if (e in X) { v += X[e]; p += 2; continue; }
+          const w = { x: 2, u: 4, U: 8 }[e], h = w && s.slice(p + 2, p + 2 + w);
+          if (!w || !/^[0-9a-fA-F]+$/.test(h) || h.length !== w) throw err("bad escape \\" + e);
+          // a \U past U+10FFFF names no character: a parse error (String.fromCodePoint would throw a raw RangeError)
+          const cp = parseInt(h, 16); if (cp > 0x10ffff) throw err("bad escape \\" + e + h);
+          v += String.fromCodePoint(cp); p += 2 + w;
+        }
       }
-      return o;
+      function flow(B) {        // one flow collection starting at B.s[0]; throws UNTERM when it runs off the end
+        let p = 0;
+        // ws / the plain scalar test character codes (a regex per character was most of a long flow value's time);
+        // non-ASCII still goes through /\s/, so the whitespace set is unchanged
+        const isWs = (s, p) => { const c = s.charCodeAt(p); return c === 32 || (c >= 9 && c <= 13) || (c > 127 && /\s/.test(s[p])); };
+        const ws = () => { const s = B.s; while (p < s.length && isWs(s, p)) p++; };
+        const need = () => {    // skip whitespace, folding lines until there is a character to read; UNTERM at the end
+          ws(); while (p >= B.s.length) { if (!(B.more && B.more(p))) throw UNTERM; p = 0; ws(); }
+        };
+        function item(inMap) {
+          need();
+          const c = B.s[p];
+          if (c === "[") { p++; const a = []; need(); if (B.s[p] === "]") { p++; return a; }
+            for (;;) { a.push(item(false)); need();
+              if (B.s[p] === ",") { p++; need(); if (B.s[p] === "]") { p++; return a; } continue; }
+              if (B.s[p] === "]") { p++; return a; } throw err("bad flow sequence"); } }
+          if (c === "{") { p++; const o = {}; need(); if (B.s[p] === "}") { p++; return o; }
+            for (;;) { const k = item(true); need();
+              // a plain value that ends its line folds the next one in (it may go on there); a duplicate key is still
+              // reported at the line the value started on, as before (the fold is not part of the error position)
+              let v = null, at = i; if (B.s[p] === ":") { p++; need(); at = i; const c = B.s[p]; v = item(false); if (/[\[{"']/.test(c)) at = i; ws(); }
+              const ks = String(k); if (Object.prototype.hasOwnProperty.call(o, ks)) throw err("duplicated mapping key " + ks, at); o[ks] = v;
+              need();
+              if (B.s[p] === ",") { p++; need(); if (B.s[p] === "}") { p++; return o; } continue; }
+              if (B.s[p] === "}") { p++; return o; } throw err("bad flow mapping"); } }
+          if (c === '"' || c === "'") { const [v, e] = quoted(B, p); p = e; return v; }
+          let st = p, acc = "";
+          for (;;) {   // a plain scalar that reaches the end of the line goes on with the folded next line
+            const s = B.s;
+            for (; p < s.length; p++) {   // stops at , [ ] { } and at a ":" before whitespace, , ] } or the end
+              const c = s.charCodeAt(p);
+              if (c === 44 || c === 91 || c === 93 || c === 123 || c === 125) break;
+              if (c === 58 && (p + 1 >= s.length || ",]}".includes(s[p + 1]) || isWs(s, p + 1))) break;
+            }
+            if (p < s.length) break;
+            const part = s.slice(st, p);   // the window drops what was read, so the scalar so far is kept here
+            if (!(B.more && B.more(p))) break;
+            acc += part; st = p = 0;
+          }
+          return plainScalar((acc + B.s.slice(st, p)).trim());
+        }
+        const v = item(false); ws();
+        if (p < B.s.length && B.s[p] !== "#") throw err("content after flow collection");
+        return v;
+      }
+      const KEY_HEAD = /^([^\s#\-?:,\[\]{}&*!|>'"%@`]|[-?:][^\s])/, KEY_COLON = /:(\s|$)/g;
+      function keyOf(t) {        // "key: rest" -> [key, rest]; null when t is not a mapping entry
+        let k, p;
+        if (t[0] === '"' || t[0] === "'") { try { [k, p] = quoted({ s: t }, 0); } catch (e) { if (e === UNTERM) return null; throw e; } }
+        else {
+          // the key runs to the first ": " / ":" at the end of the line (whitespace before it trimmed) and holds no "#".
+          // A linear scan: a lazy regex with a lookahead here backtracked quadratically over long runs of spaces.
+          const h = KEY_HEAD.exec(t); if (!h) return null;
+          KEY_COLON.lastIndex = h[0].length; const c = KEY_COLON.exec(t); if (!c) return null;
+          if (t.lastIndexOf("#", c.index) >= h[0].length) return null;
+          p = c.index; while (p > h[0].length && /\s/.test(t[p - 1])) p--;
+          k = t.slice(0, p).trim();
+        }
+        const m = t.slice(p).match(/^\s*:(\s+|$)/);
+        return m ? [k, t.slice(p + m[0].length)] : null;
+      }
+      function inline(s, ind) {  // a scalar or flow value that starts on the current (already consumed) line
+        if (s[0] === '"' || s[0] === "'" || s[0] === "[" || s[0] === "{") {
+          // pre: the folded character just before the window (what the window dropped ended with)
+          const dq = s[0] === '"', B = { s, pre: "", more(keep, esc) {
+            if (i >= n) return false;
+            // line folding (stock): an empty line is "\n" with no space before the next text; a double-quoted line
+            // ending in an unescaped backslash escapes the break (next line joins with no space: "b\" + "c" -> "bc").
+            // esc: quoted() stopped on that backslash (it is B.s[keep], the window's last character); a backslash
+            // the scanner reads at the end of a line is unescaped exactly when the run of them there is odd
+            const t = lines[i].trim(), u = B.s, last = u.length ? u[u.length - 1] : B.pre;
+            if (dq && esc) B.s = u.slice(keep, -1) + t;
+            else B.s = u.slice(keep) + (t ? (last === "\n" ? t : " " + t) : "\n");
+            if (keep > 0) B.pre = u[keep - 1];
+            i++; return true;
+          } };
+          try {
+            if (!dq && s[0] !== "'") return flow(B);
+            const [v, e] = quoted(B, 0), rest = B.s.slice(e).trim();
+            if (rest && rest[0] !== "#") throw err("content after quoted scalar");
+            return v;
+          } catch (e) {
+            if (e !== UNTERM) throw e;
+            throw err(s[0] === "[" || s[0] === "{" ? "unclosed flow collection" : "unclosed quoted scalar");
+          }
+        }
+        // multi-line plain scalar: continuation lines indented past ind fold to one space, each empty line in between
+        // is a "\n" (stock: "p: first\n  second\n\n  third" -> "first second\nthird"); trailing empty lines are not part of it
+        let v = noComment(s), nl = 0;
+        while (i < n) {
+          const l = lines[i];
+          if (!l.trim()) { nl++; i++; continue; }
+          if (/^\s*#/.test(l) || indent(l) <= ind) break;
+          const t = l.trim(); if (keyOf(t)) throw err("mapping values are not allowed here");
+          v += (nl ? "\n".repeat(nl) : " ") + noComment(t); nl = 0; i++;
+        }
+        i -= nl;
+        return plainScalar(v);
+      }
+      function block(head, ind) {   // | or > with chomping indicator; content = following lines indented past ind
+        const lit = head[0] === "|", chomp = /-/.test(head) ? "-" : /\+/.test(head) ? "+" : "";
+        // explicit indentation indicator (|2, >1-): content indent = ind + digit, extra spaces stay in the text
+        // (stock: "i: |2" over "    four sp" -> "  four sp\n"); without it the first content line sets the indent
+        const ii = head.match(/^[|>][-+]?([1-9])/), body = []; let bi = ii ? ind + Number(ii[1]) : -1;
+        while (i < n) {
+          const l = lines[i];
+          if (l.trim()) { const d = indent(l); if (d <= ind) break; if (bi < 0) bi = d; if (d < bi) break; body.push(l.slice(bi)); }
+          else body.push("");
+          i++;
+        }
+        let tail = 0; while (body.length && body[body.length - 1] === "") { body.pop(); tail++; }
+        let out = lit ? body.join("\n") : "";
+        if (!lit) for (let k = 0; k < body.length; k++) {   // folded: breaks become spaces; blank / more-indented lines keep theirs
+          const l = body[k], q = body[k - 1];
+          out += k === 0 ? l : l === "" ? "\n" : q === "" ? l : /^\s/.test(l) || /^\s/.test(q) ? "\n" + l : " " + l;
+        }
+        if (!body.length) return chomp === "+" ? "\n".repeat(tail) : "";
+        return chomp === "-" ? out : chomp === "+" ? out + "\n".repeat(tail + 1) : out + "\n";
+      }
+      function value(rest, ind, item) {   // the value after "key:" (or "- " when item) at indentation ind
+        let t = rest.trim(), anc = null, tag = null, m;
+        for (;;) {   // node properties: &anchor and !tag, in either order
+          if ((m = t.match(/^&([^\s,\[\]{}]+)(\s+|$)/))) { anc = m[1]; t = t.slice(m[0].length); continue; }
+          if ((m = t.match(/^(![^\s,\[\]{}]*)(\s+|$)/))) { tag = m[1]; t = t.slice(m[0].length); continue; }
+          break;
+        }
+        if ((m = t.match(/^\*([^\s,\[\]{}]+)\s*(#.*)?$/))) {
+          if (!Object.prototype.hasOwnProperty.call(anchors, m[1])) throw err("unidentified alias " + m[1]);
+          return anchors[m[1]];
+        }
+        let v;
+        if (!t || t[0] === "#") {
+          skip(); v = null;
+          if (i < n) {
+            const d = lead(), s = lines[i].slice(d);
+            if (d > ind) v = node(d);
+            else if (d === ind && !item && isSeq(s)) v = sequence(d);
+          }
+        } else if (/^[|>][-+0-9]*(\s+#.*)?$/.test(t)) v = block(t, ind);
+        else v = tag === "!!str" && !/^["'\[{]/.test(t) ? noComment(t) : inline(t, ind);
+        if (tag === "!!str" && v !== null && typeof v !== "object") v = String(v);
+        if (anc !== null) anchors[anc] = v;
+        return v;
+      }
+      function mapping(ind) {
+        const o = {};
+        for (;;) {
+          skip(); if (i >= n) return o;
+          const d = lead(); if (d < ind) return o;
+          if (d > ind) throw err("bad indentation of a mapping entry");
+          const t = lines[i].slice(d); if (isSeq(t)) return o;
+          const kv = keyOf(t); if (!kv) throw err("can not read a block mapping entry");
+          if (Object.prototype.hasOwnProperty.call(o, kv[0])) throw err("duplicated mapping key " + kv[0]);
+          i++; o[kv[0]] = value(kv[1], d);
+        }
+      }
+      function sequence(ind) {
+        const a = [];
+        for (;;) {
+          skip(); if (i >= n) return a;
+          const d = lead(); if (d < ind) return a;
+          if (d > ind) throw err("bad indentation of a sequence entry");
+          const t = lines[i].slice(d); if (!isSeq(t)) return a;
+          const sp = t.slice(1).match(/^\s*/)[0].length, col = d + 1 + sp, rest = t.slice(1 + sp);
+          // the item's content is a node at col on this same line: lines[i].slice(col) is rest already, so only its
+          // indentation is recorded (PR #33 review: rebuilding the line per level cost O(line) per level, quadratic
+          // time and one line copy per level held for a single line of nested "- - - ...")
+          if (rest && (isSeq(rest) || (rest[0] !== "#" && keyOf(rest)))) { vl = i; vc = col; a.push(node(col)); continue; }
+          i++; a.push(value(rest, d, true));
+        }
+      }
+      function node(ind) {
+        const t = lines[i].slice(ind);
+        if (isSeq(t)) return sequence(ind);
+        if (keyOf(t)) return mapping(ind);
+        i++; return inline(t.trim(), ind - 1);
+      }
+      skip(); if (i >= n) return null;
+      // nesting past the JS stack (a line of "- - - ..." with no item limit) is a parse error, not a raw RangeError
+      let v; try { v = node(indent(lines[i])); } catch (e) { if (e instanceof RangeError) throw err("nesting too deep"); throw e; }
+      skip();
+      if (i < n) throw err("end of the stream or a document separator is expected");
+      return v;
     }
-    const stringifyYaml = o => Object.keys(o || {}).map(k => k + ": " + (Array.isArray(o[k]) ? "[" + o[k].join(", ") + "]" : o[k] == null ? "" : String(o[k]))).join("\n") + "\n";
+    /* block-style YAML like the frontmatter a vault keeps: lists as `key:` + `  - item` lines (excalidraw's
+       converted-note `tags:`), nested maps indented two spaces, plain scalars unless quoting is needed */
+    function yScal(v) {
+      if (v === null || v === undefined) return "null";
+      if (typeof v === "number") return Number.isFinite(v) ? String(v) : v !== v ? ".nan" : v > 0 ? ".inf" : "-.inf";
+      if (typeof v === "boolean") return String(v);
+      if (v instanceof Date) return v.toISOString();
+      const s = String(v);
+      // PR #33 review: plain only when parseYaml reads it back as this string (plainScalar is the one rule for
+      // "1.", "1.e5", "0o17", "+.inf"); the regex keeps quoting the YAML 1.1 words and 1_000 other parsers read
+      const plain = s !== "" && s === s.trim() && !/[\n\r\t]/.test(s) && !/^[-?:,\[\]{}#&*!|>'"%@`]/.test(s)
+        && !/: |:$| #/.test(s) && typeof plainScalar(s) === "string" && !/^(true|false|yes|no|on|off|null|~|[-+]?(\d[\d_]*)?\.?\d+([eE][-+]?\d+)?|0x[0-9a-f]+|\.(inf|nan))$/i.test(s);
+      return plain ? s : JSON.stringify(s);
+    }
+    const isMap = v => v !== null && typeof v === "object" && !Array.isArray(v) && !(v instanceof Date);
+    function yBlock(o, ind) {
+      let out = "";
+      for (const k of Object.keys(o)) {
+        const v = o[k], key = ind + (/^[\w][\w .\/-]*$/.test(k) && k === k.trim() ? k : JSON.stringify(k)) + ":";
+        if (v === undefined || typeof v === "function") continue;
+        if (Array.isArray(v)) {
+          if (!v.length) { out += key + " []\n"; continue; }
+          out += key + "\n";
+          for (const x of v) out += ind + "  - " + yItem(x) + "\n";
+        } else if (isMap(v)) out += Object.keys(v).length ? key + "\n" + yBlock(v, ind + "  ") : key + " {}\n";
+        else out += key + " " + yScal(v) + "\n";
+      }
+      return out;
+    }
+    // PR #33 review: a top-level list renders its items as yBlock's lists do (a map or list item as flow JSON,
+    // not "[object Object]" / "a,b") and an empty one as [], not an empty document
+    const yItem = x => isMap(x) || Array.isArray(x) ? JSON.stringify(x) : yScal(x);
+    const stringifyYaml = o => isMap(o) ? yBlock(o, "")
+      : Array.isArray(o) ? (o.length ? o.map(x => "- " + yItem(x)).join("\n") + "\n" : "[]\n") : yScal(o) + "\n";
     Object.assign(K, { parseYaml, stringifyYaml });
   });
   reg("fns:links", function (K) {

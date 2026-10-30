@@ -186,10 +186,12 @@ pub fn build_graph(notes: &[String], links: &[&[String]]) -> Graph {
             let hit = if l.contains('/') {
                 resolve(notes, l)
             } else {
-                match (full.get(l), base.get(l)) {
+                let look = |l: &str| match (full.get(l), base.get(l)) {
                     (Some(a), Some(b)) => Some(*a.min(b)),
                     (a, b) => a.or(b).copied(),
-                }
+                };
+                // [[Alpha.md]] is the note Alpha, as resolve() and the backlinks have it
+                look(l).or_else(|| md_stem(l).and_then(look))
             };
             let j = match hit {
                 Some(j) => j,
@@ -394,6 +396,12 @@ pub fn suffix_map(names: &[String]) -> HashMap<String, usize> {
     m
 }
 
+/// a link target written with the note's .md extension, without it ("Alpha.md" -> "Alpha"); None
+/// when there is no such suffix or nothing is left before it
+fn md_stem(l: &str) -> Option<&str> {
+    l.strip_suffix(".md").filter(|s| !s.is_empty() && !s.ends_with('/'))
+}
+
 /// wikilinks resolve by full relative path or basename (first sorted match);
 /// the raw token may carry #anchor / |alias — only the note part is matched
 pub fn resolve(notes: &[String], l: &str) -> Option<usize> {
@@ -404,8 +412,12 @@ pub fn resolve(notes: &[String], l: &str) -> Option<usize> {
     // one suffix alloc per call — it used to be one per note per link, so a
     // write_note on a 9KB note walked ~50k allocs (2ms debug); graph paid it
     // per edge too
-    let suffix = format!("/{l}");
-    notes.iter().position(|x| *x == l || x.ends_with(&suffix))
+    let hit = |l: &str| {
+        let suffix = format!("/{l}");
+        notes.iter().position(|x| *x == l || x.ends_with(&suffix))
+    };
+    // plug-top5: [[Alpha.md]] (dataview writes its file links that way) is the note Alpha
+    hit(l).or_else(|| md_stem(l).and_then(hit))
 }
 
 fn walk(dir: &Path, base: &Path, out: &mut Vec<String>, imgs: &mut Vec<String>) {
@@ -559,7 +571,6 @@ impl Index {
         ix
     }
 
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.notes.len()
     }
@@ -636,7 +647,7 @@ impl Index {
         if l.is_empty() {
             return None;
         }
-        self.res.get(l).copied()
+        self.res.get(l).copied().or_else(|| md_stem(l).and_then(|s| self.res.get(s).copied()))
     }
 
     /// R19: cached graph (built on first use after any edge change)
@@ -761,10 +772,10 @@ impl Index {
     /// after the key moved: rewrite [[old]] -> [[new]] everywhere. Returns
     /// (name, new content) for every note whose text changed.
     pub fn rewrite_to(&mut self, old: &str, new: &str) -> Vec<(String, String)> {
-        let bn_ok = bn_ok_in(&self.names, old, new);
+        let (bn_ok, md_ok) = (bn_ok_in(&self.names, old, new), md_ok_in(&self.names, old, new));
         let mut changed = Vec::new();
         for (n, m) in self.notes.iter_mut() {
-            let (nc, hits) = rewrite_links_n(&m.content, old, new, bn_ok);
+            let (nc, hits) = rewrite_links_n(&m.content, old, new, bn_ok, md_ok);
             if hits > 0 {
                 m.links = links_in(&nc);
                 m.content = nc.clone();
@@ -789,10 +800,10 @@ impl Index {
             .cloned()
             .chain(std::iter::once(new.to_string()))
             .collect();
-        let bn_ok = bn_ok_in(&names, old, new);
+        let (bn_ok, md_ok) = (bn_ok_in(&names, old, new), md_ok_in(&names, old, new));
         let (mut links, mut files) = (0usize, 0usize);
         for m in self.notes.values() {
-            let (_, hits) = rewrite_links_n(&m.content, old, new, bn_ok);
+            let (_, hits) = rewrite_links_n(&m.content, old, new, bn_ok, md_ok);
             if hits > 0 {
                 links += hits;
                 files += 1;
@@ -871,20 +882,33 @@ fn bn_ok_in(names: &[String], old: &str, new: &str) -> bool {
     })
 }
 
+/// [[Old.md]] links (the note's .md written out) are safe to rewrite only when no note's basename IS
+/// "Old.md" or "New.md": [[Old.md]] would name that note, and the rewritten [[New.md]] would too
+fn md_ok_in(names: &[String], old: &str, new: &str) -> bool {
+    let ob = format!("{}.md", old.rsplit('/').next().unwrap_or(old));
+    let nb = format!("{}.md", new.rsplit('/').next().unwrap_or(new));
+    !names.iter().any(|n| {
+        let b = n.rsplit('/').next().unwrap_or(n);
+        b == ob || b == nb
+    })
+}
+
 /* vault-wide wikilink rewrite on rename (F2 / rename_note). [[Old]] -> [[New]],
    [[Old|alias]] keeps alias, [[Old#h]] keeps anchor. Basename-style links
    ([[A]] for sub/A) stay basename-style; full-path links get the full new
    path. bn_ok=false disables basename matching (caller found ANOTHER note
-   with the same basename — those links now resolve elsewhere, leave them). */
+   with the same basename — those links now resolve elsewhere, leave them).
+   [[Old.md]] (the extension written out, as dataview does) is the same note:
+   it becomes [[New.md]], unless md_ok=false (md_ok_in found a note named so). */
 pub fn rewrite_links(s: &str, old: &str, new: &str, bn_ok: bool) -> (String, bool) {
-    let (out, hits) = rewrite_links_n(s, old, new, bn_ok);
+    let (out, hits) = rewrite_links_n(s, old, new, bn_ok, true);
     (out, hits > 0)
 }
 
 /// same rewrite, but returns HOW MANY links it replaced — R34.3's "N links in
 /// M files" is this number summed, never an estimate from a backlink list (a
 /// note that links [[Old]] three times is one backlink and three links).
-pub fn rewrite_links_n(s: &str, old: &str, new: &str, bn_ok: bool) -> (String, usize) {
+pub fn rewrite_links_n(s: &str, old: &str, new: &str, bn_ok: bool, md_ok: bool) -> (String, usize) {
     let ob = old.rsplit('/').next().unwrap_or(old);
     let nb = new.rsplit('/').next().unwrap_or(new);
     let (mut out, mut changed) = (String::new(), 0usize);
@@ -896,17 +920,23 @@ pub fn rewrite_links_n(s: &str, old: &str, new: &str, bn_ok: bool) -> (String, u
         let inner = &rest[..b];
         rest = &rest[b + 2..];
         let (base, anchor, alias) = link_parts(inner);
+        let stem = if md_ok { md_stem(base) } else { None };
         let rep = if base == old {
-            Some(new)
+            Some((new, ""))
         } else if bn_ok && base == ob {
-            Some(nb)
+            Some((nb, ""))
+        } else if stem == Some(old) {
+            Some((new, ".md"))
+        } else if bn_ok && stem == Some(ob) {
+            Some((nb, ".md"))
         } else {
             None
         };
         match rep {
-            Some(r) => {
+            Some((r, ext)) => {
                 changed += 1;
                 out.push_str(r);
+                out.push_str(ext);
                 out.push_str(anchor);
                 if inner.contains('|') {
                     out.push('|');

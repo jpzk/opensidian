@@ -12,6 +12,12 @@
 // lines here are append-only; change a token by changing the function it calls.
 // Tokens are appended AFTER every inline token (end of the title), in this
 // file's line order; a token that throws is published as [cerr:<index>].
+// census-gate (issue #30): the census is a TEST/DEV probe. ON only when the process was started
+// with OPENSIDIAN_CENSUS=1 (or is a devui build): src-tauri/src/census.rs then injects a frozen
+// window.__OS_CENSUS before any page script. OFF (every shipped launch) updateTitle() takes the
+// lite path (ui/main.js utLite): no token here or inline is built, no layout is read, the
+// native title is the plain "note - vault - Opensidian".
+const CENSUS_ON = window.__OS_CENSUS === true;
 var CENSUS = [];
 CENSUS.push(() => { const L = CMDS.filter(c => c.id === "editor:toggle-bullet-list" || c.id === "editor:toggle-numbered-list"); return " [lt:" + L.length + "/" + L.filter(c => !c.when || c.when()).length + "]"; });   // listtoggle: both list commands registered / offered by the palette (editing view only)
 CENSUS.push(() => sgeoTok());   // setcenter R3: settings modal geometry [sbox:] [snav:] [srow1:] [shkf:] [shkc:] [shk1/2:] (only while settings is open)
@@ -53,3 +59,7 @@ CENSUS.push(() => canvasTok());   // canvas-core: [cvrow:] explorer .canvas rows
 CENSUS.push(() => Ed.kroTok());   // top10-func lpcaret: [kro:<keys re-placed>/<ms the last keydown waited>] printable keys typed BEFORE a click that reached the page after it (WebKitGTK key/mouse queues), typed at the pre-click caret
 CENSUS.push(() => cclTok());   // caret-color: [ccl:car=|cur=|drop=|bg=] the focused editor's computed caret-color (.cm-content), the border-left-color of a .cm-cursor and a .cm-dropCursor probe in its scroller, and its background composited to the first opaque ancestor (r.g.b each) — gate phase caretcolor
 CENSUS.push(() => buiTok());   // bug-ui (#9 #11 #12 #14): [bui:cur=|upd=|sel=|bmsrc=|pcx=|scx=] settings clickables' computed cursor, selection during a bookmark drag, picker vs settings close button geometry/glyph — gate phase bugui
+CENSUS.push(() => sgearTok());   // settings-gear (#29): [sgear:vis|x,y,w,h|bar=x,y,w,h|nm=right,ell|fit|f=0|1] the Settings gear beside the vault switcher — gate phase sgear
+CENSUS.push(() => { const P = document.querySelector("#main .pane.focused") || document.querySelector("#main .pane"), E = P && [...P.querySelectorAll(".cm-editor")].find(e => e.getClientRects().length > 0); if (!E) return ""; const G = [...E.querySelectorAll(".cm-gutter")]; return " [pgut:" + G.length + (G.length ? ":" + G.map(g => { const r = g.getBoundingClientRect(), m = g.querySelectorAll(".cm-gutterElement"); return ((g.className.replace(/\bcm-gutter\b/, "").trim().split(/\s+/)[0]) || "-") + "=" + Math.round(r.width) + "w/" + m.length + "/" + ((m[1] && m[1].textContent) || "").replace(/[[\]|\s]+/g, "_").slice(0, 24); }).join("|") : "") + "]"; });   // deep-git G3: [pgut:n:<class>=<w>w/<markers>/<2nd marker text>] the focused note editor's CM6 gutters (plugin gutters: obsidian-git line author)
+CENSUS.push(() => { const L = document.getElementById("mlist"), M = document.getElementById("modal"); if (!L || !M || M.hidden) return ""; return " [mls:" + Math.round(L.scrollTop) + "/" + L.scrollHeight + "/" + L.clientHeight + "/" + L.querySelectorAll(".mrow").length + "]"; });   // deep-git P1: [mls:scrollTop/scrollHeight/clientHeight/rows] the open fuzzy modal list (palette wheel scroll)
+CENSUS.push(() => { const I = document.getElementById("minput"), M = document.getElementById("modal"); if (!I || !M || M.hidden) return ""; return " [mdq:" + I.value.replace(/[[\]|]/g, "_").slice(0, 60) + "]"; });   // deep-git P2: [mdq:<text>] the open fuzzy modal's typed query (first typed char dropped?)

@@ -975,12 +975,40 @@ pub fn plugin_err(op: &str, path: &str, e: &io::Error) -> String {
     format!("{code}: {e}, {op} '{p}'")
 }
 
+/// a plugin path naming the REAL vault dir (what `git rev-parse --path-format=absolute`
+/// prints, obsidian-git reads .git/info/exclude by it) -> the same path vault-relative.
+/// Root itself -> "". Anything else is returned as given (plugin_rel still refuses it).
+/// The rest still goes through plugin_rel, so "<root>/../x" is a dot component, refused.
+pub fn plugin_unroot<'a>(root: &Path, path: &'a str) -> std::borrow::Cow<'a, str> {
+    if !path.starts_with('/') {
+        return path.into();
+    }
+    let canon = root.canonicalize().ok();
+    for r in std::iter::once(root).chain(canon.as_deref()) {
+        let Some(r) = r.to_str() else { continue };
+        let r = r.trim_end_matches('/');
+        if r.is_empty() {
+            continue;
+        }
+        if path == r {
+            return "".into();
+        }
+        if let Some(rest) = path.strip_prefix(r).and_then(|t| t.strip_prefix('/')) {
+            return rest.to_string().into();
+        }
+    }
+    path.into()
+}
+
 /// the whole plugin fs surface, one op at a time. `data` is base64 (bytes
 /// cross the IPC as text; binary and UTF-8 alike). Ops not named here do not
 /// exist: no fd, stream, watch, chown, link or realpath. chmod is not an op
 /// here either: it is plugin_chmod, which checks the vault's trust itself.
 pub fn plugin_op(root: &Path, op: &str, path: &str, to: Option<&str>, data: Option<&str>, recursive: bool) -> Result<serde_json::Value, String> {
     use serde_json::json;
+    let path: &str = &plugin_unroot(root, path);
+    let to_own = to.map(|t| plugin_unroot(root, t).into_owned());
+    let to = to_own.as_deref();
     let e = |x: io::Error| plugin_err(op, path, &x);
     let rel = plugin_rel(path).map_err(e)?;
     let need = |rel: &Path| if rel.as_os_str().is_empty() { Err(plugin_err(op, path, &refused(rel, "the vault root itself"))) } else { Ok(()) };
@@ -1023,7 +1051,7 @@ pub fn plugin_chmod(root: &Path, trusted: bool, path: &str, mode: u32) -> Result
     if !trusted {
         return Err(format!("EPERM: restricted mode, plugin chmod is off, chmod '{}'", path.replace('\0', "\\0")));
     }
-    let rel = plugin_rel(path).map_err(e)?;
+    let rel = plugin_rel(&plugin_unroot(root, path)).map_err(e)?;
     if rel.as_os_str().is_empty() {
         return Err(e(refused(&rel, "the vault root itself")));
     }
@@ -1237,6 +1265,21 @@ mod tests {
         assert_eq!(b64_encode(b"Man"), "TWFu");
         assert_eq!(b64_encode(b"Ma"), "TWE=");
         assert!(b64_decode("@@").is_none());
+    }
+
+    #[test]
+    fn pvfs_real_vault_path_is_the_vault_relative_one() {
+        let (root, out) = fresh("pvfs-unroot");
+        fs::create_dir_all(root.join(".git/info")).unwrap();
+        fs::write(root.join(".git/info/exclude"), "# x\n").unwrap();
+        let abs = format!("{}/.git/info/exclude", root.display());
+        pop(&root, "append", &abs, None, Some(b"a.sh\n")).unwrap();
+        assert_eq!(fs::read_to_string(root.join(".git/info/exclude")).unwrap(), "# x\na.sh\n");
+        assert_eq!(b64_decode(pop(&root, "read", &abs, None, None).unwrap().as_str().unwrap()).unwrap(), b"# x\na.sh\n");
+        assert_eq!(plugin_unroot(&root, &root.display().to_string()), "");
+        for bad in [format!("{}/../outside/f", root.display()), format!("{}x/f", root.display()), format!("{}/f", out.display()), "/etc/passwd".into()] {
+            assert!(pop(&root, "read", &bad, None, None).unwrap_err().starts_with("EPERM"), "{bad}");
+        }
     }
 
     #[test]

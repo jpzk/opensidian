@@ -104,6 +104,13 @@ function leaves(node, out = []) {
 const groups = () => (state ? leaves(state.root) : []);
 let rlwOn = true;   // goal/minimalmargin: app.json readableLineLength mirror (rlwLoad, near loadVaultCss); declared up here because mkView reads it
 const fg = () => state.focused;
+// a visible text field outside group g's editor holds the keyboard (quick switcher, palette, rename prompt, settings)
+function typingElsewhere(g) {
+  const a = document.activeElement;
+  if (!a || a === document.body || (g.lp && g.lp.contains(a))) return false;
+  if (!(a.matches && a.matches("input, textarea, [contenteditable=''], [contenteditable='true']"))) return false;
+  return a.getClientRects().length > 0;
+}
 /* plugin-views: the plugin host (ui/plugins/views.js) sets PVHOST when a plugin registers a view
    type; loadActive asks it to mount a kept "unk" tab of that type (and to hide it again). */
 let PVHOST = null;
@@ -3292,6 +3299,7 @@ addEventListener("resize", () => {                 // the census must follow the
    key_to_paint span. */
 let rvSelT = null;
 document.addEventListener("selectionchange", () => {
+  if (!CENSUS_ON) return;        // census-gate: only republishes [rvsel:]
   const s = window.getSelection(), n = s && s.anchorNode;
   if (!n) return;
   const e = n.nodeType === 1 ? n : n.parentNode;
@@ -3471,6 +3479,7 @@ function bmCollapseAll() {
 // one pending rAF for every image load/error in a frame (audit #10, see the [xi:] probe)
 let xiPending = false;
 function xiAgain() {
+  if (!CENSUS_ON) return;        // census-gate: only republishes [xi:]/[pf:]
   if (xiPending) return;
   xiPending = true;
   requestAnimationFrame(() => { xiPending = false; updateTitle(); });
@@ -3526,8 +3535,43 @@ function updateTitleNow() {      // flush: publish the census in this task
   try { utBuild(); }
   finally { const t1 = performance.now(); utCost = t1 - t0; utLast = t1; utRan = true; utArm(); }
 }
+/* census-gate (issue #30): the title path with the census OFF (CENSUS_ON false, ui/census.js —
+   every launch without OPENSIDIAN_CENSUS=1). utBuild returns here right after rTrack(), so no
+   inline or registered token is built and no layout is read. What still runs is every NON-census
+   side effect the census build carried (DESIGN.md, goal census-gate):
+   - navBtnSync(): back/forward .disabled per pane (the census build ran it before [nvb:]);
+   - caFace() of both collapse-all toggles (caSync, ui/census.js, without its rects);
+   - the plugin host's censusTick(): focusTick (file-open / active-leaf-change) + EA.tick;
+   - wsTouch(): R28.3, every mutation funnels through updateTitle — arm the layout write.
+   The title is the plain "<note> - <vault> - Opensidian", written (DOM + one setTitle IPC) only
+   when it CHANGES, so a keystroke costs no IPC. */
+let utPlain = "";
+function utLite() {
+  navBtnSync();
+  caFace($("fecabtn"), feCaState().lab);
+  caFace($("bmcabtn"), bmCaState().lab);
+  const H = window.__osPluginHost;
+  if (H && H.censusTick) { try { H.censusTick(); } catch (e) { console.error("[plugin] tick:", e); } }
+  const g = fg(), tb = g && g.active >= 0 ? g.tabs[g.active] : null;
+  const nm = tb ? (!tb.kind ? String(tb.name || "").split("/").pop().replace(/\.md$/i, "") : String(tb.title || "")) : "";
+  const vn = String(vaultPath || "").replace(/[\\/]+$/, "").split(/[\\/]/).pop();
+  const t = (nm ? nm + " - " : "") + (vn ? vn + " - " : "") + "Opensidian";
+  if (t !== utPlain) { utPlain = t; document.title = t; pushTitle(t); }
+  wsTouch();
+}
 function utBuild() {             // pane/focus census in the window title (headless probe)
-  rTrack();                      // lgpanes: keep rLeaf current even with the right sidebar closed
+  /* No layout yet (boot, before the first vault load sets `state`): there is nothing
+     to publish. Every updateTitle() caller used to be guarded one by one (the R33.6b
+     scars in wfArm/wfTitleSafe); the settings-gear focus/blur listeners and
+     onVaultChanged are not, and on a boot where one of them fires first the read
+     of state.root below threw "null is not an object (evaluating 'state.root')"
+     into window.onerror. noteErr latches the FIRST error as [jserr:] for the whole
+     session, so a later phase that asserts "no JS error" (panedrag's header click,
+     wspace R28.13, fileops) went red on a boot-time throw it did not cause.
+     Guard the one place that reads it, so no future caller can bring it back. */
+  if (!state) return;
+  rTrack();                     // lgpanes: keep rLeaf current even with the right sidebar closed
+  if (!CENSUS_ON) return utLite();   // census-gate (issue #30): shipped builds stop HERE — no token, no layout read, no census title
   const ps = [...document.querySelectorAll("#main .pane")];
   const nf = document.querySelectorAll("#main .pane.focused").length;
   const fx = (state.root.fractions || []).map(f => f.toFixed(2)).join(",");
@@ -4784,6 +4828,11 @@ function applyMode(g, keep) {  // exactly ONE of lp / preview fills the pane
   g.editor.style.display = "none";          // R12: the model textarea never shows; source = lp + reveal
   g.lp.style.display = isLp(m) ? "" : "none";
   if (m !== "reading") g.lp.classList.toggle("src", m === "source");   // opt10b: reading keeps the lp sub-mode class — flipping .lp.src restyled + relaid the kept 30k lp both ways
+  /* plug-top5: plugin code blocks render in lp only. goal mt-fix: not in the lp a reading view keeps laid out either —
+     a widget there is a second, stale copy of every dataview/tasks block (rendered before a setting changed, never
+     refreshed on a vault change) beside the reading view's live one; it is rebuilt fresh on the way back to edit. */
+  const cbk = m === "reading" ? "r" : m === "source" ? "s" : "l";
+  if (g.lp._cbk !== cbk) { g.lp._cbk = cbk; if (Ed.cbHook && Ed.cbFx && Ed.cm(g)) Ed.cm(g).dispatch({ effects: Ed.cbFx.of(null) }); }
   g.preview.style.display = m === "reading" ? "" : "none";
   // modeswitch opt6: the view the edit <-> reading switch LEAVES (setMode passes
   // it as `keep`) stays laid out instead of display:none — hidden, out of flow,
@@ -4894,6 +4943,7 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
   try {
   tab.mode = mode;
   hideAc();
+  if (typeof Ed.closeSuggest === "function") Ed.closeSuggest();   // FZ-E30.2: a plugin suggest does not outlive the edit mode
   applyMode(g, leave);
   mswpMark("apply");
   if (tab.mode === "reading") await preview(g, true);
@@ -4921,7 +4971,7 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
         const [al, ac] = clampLC(wa);
         if (al !== l || ac !== c) { Ed.place(g, al, ac); Ed.extendTo(g, l, c); }
       }
-    } else if (tab.mode === "livepreview") await lpRender(g, -1, 0, full);
+    } else if (tab.mode === "livepreview") { await lpRender(g, -1, 0, full); Ed.home(g, 0, 0); }   // plug-top5: stock reading -> edit (nothing remembered) = caret 0:0, focused; goal mt-fix: no raw row opens
     else await lpRender(g, L.length - 1, L[L.length - 1].length, full);
   }
   mswpMark("lp");
@@ -5773,7 +5823,15 @@ async function loadActive(g) {
     v.name = n;
     if (t) { t.base = g.editor.value; t.stale = false; v.loaded = true; }  // R11: disk base
     if (m === "reading") await preview(g);
-    else if (isLp(m)) await lpRender(g, -1, 0, true);
+    else if (isLp(m)) {
+      await lpRender(g, -1, 0, true);
+      // plug-top5: a freshly opened note has its caret at the top, focused when it is the focused pane
+      // (stock 1.13.7: open from the file tree, then type = text lands at 0:0). Plugins that only
+      // redraw on a selection change (dataview inline queries in Live Preview) see that change.
+      // goal mt-fix: focus only if nothing else took the keyboard while the note loaded — a big note's render can end
+      // after the user opened the quick switcher (or any prompt); stealing focus then sent the typed query into the note
+      if (n && Ed.cm(g)) Ed.home(g, 0, 0, g === fg() && !typingElsewhere(g));   // goal mt-fix: the caret only — no raw row opens on open ([mode:lp])
+    }
   } else if (v.scrollTop) g.lp.scrollTop = v.scrollTop;
   renderTabs(g);
   treeHighlight();
@@ -6810,7 +6868,7 @@ async function wikiClick(e, a) {
   e.preventDefault(); e.stopPropagation();
   const g = gOf(a);
   if (!g) return;
-  const n = a.dataset.note || curOf(g), an = a.dataset.anchor;   // R10: [[#H]] = this note
+  const n = wikiTarget(a) || curOf(g), an = wikiAnchor(a);   // R10: [[#H]] = this note
   if (await cvLinkOpen(n, an)) return;      // cvf-links CVR-A-096: [[X.canvas]] opens the canvas, never makes X.canvas.md
   if (a.classList.contains("wiki-unresolved")) await createNote(n);
   if (e.ctrlKey) {                            // R6.4: new tab, same group
@@ -6903,26 +6961,20 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   mswpMark("blines");
   for (const a of g.preview.querySelectorAll("a.tag"))
     a.onclick = e => { e.preventDefault(); tagSearch(a.dataset.tag); };
-  for (const a of g.preview.querySelectorAll("a.wiki"))
-    a.onclick = async e => {
-      e.preventDefault();
-      const g = gOf(a);                              // R20: event-time group (retained views move)
-      const n = a.dataset.note || curOf(g), an = a.dataset.anchor;  // R10: [[#H]] = this note
-      if (await cvLinkOpen(n, an)) return;          // cvf-links CVR-A-096: [[X.canvas]] opens the canvas
-      if (a.classList.contains("wiki-unresolved"))   // R3.5: click creates the note
-        await createNote(n);
-      if (e.ctrlKey) {                               // R6.4: open in NEW TAB, same group
-        await flushSave(g);
-        g.tabs.push(mkTab(n));
-        g.active = g.tabs.length - 1;
-        await loadActive(g);
-        if (an) await navAnchor(g, an);
-      } else navigate(g, n, an);
-    };
+  for (const a of g.preview.querySelectorAll("a.wiki")) a.onclick = e => pvWikiClick(a, e);
+  // plug-top5: links a plugin renders AFTER this wiring (code-block processors: dataview's file links)
+  // follow too — one delegated listener per preview element, only for links nobody wired
+  if (!P._pvWiki) {
+    P._pvWiki = true;
+    P.addEventListener("click", e => {
+      const a = e.target && e.target.closest && e.target.closest("a.wiki, a.internal-link");
+      if (a && !a.onclick && P.contains(a)) pvWikiClick(a, e);
+    });
+  }
   // plugin-views item 7: plugin code-block / post processors over the fresh html. Before the
   // observer is armed, so their synchronous output is part of the retained DOM; async writes
   // later mark it dirty (the next switch re-renders). Not awaited: a slow plugin never holds the switch.
-  if (PPOST) try { PPOST.run(P, curOf(g), g.active >= 0 ? g.tabs[g.active] : null).catch(e => console.error("[plugin] markdown processors:", e)); } catch (e) { console.error(e); }
+  if (PPOST) try { PPOST.run(P, curOf(g), g.active >= 0 ? g.tabs[g.active] : null, src, pvL).catch(e => console.error("[plugin] markdown processors:", e)); } catch (e) { console.error(e); }
   // modeswitch opt2: arm the retained-DOM key. Our own innerHTML above is the
   // last write: drop its records synchronously, from here on any record = dirty.
   if (!P._pvObs) {
@@ -6933,6 +6985,36 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   if (g.preview === P && g.editor.value === src)
     P._pvk = { src, notes: notesCache, imgs: imgsCache, slb: slbOn, lines: pvL, pp: PPOST ? PPOST.gen : 0 };
   mswpMark("wire");
+}
+
+// a wiki link click in the reading view, also for links a plugin rendered into it. plug-top5: a target
+// written with its .md extension ([[Projects/Beta.md]], dataview's file links) is that note
+// PR #33 review: a link with no data-note (one a plugin built: a.internal-link[data-href="Note#H"], or "#H" for
+// this note) takes its note from the part of data-href before "#" and its anchor from the part after
+function wikiTarget(a) {
+  const n = a.dataset.note != null ? a.dataset.note : String(a.dataset.href || "").split("#")[0];
+  return /[^/]\.md$/.test(n) ? n.slice(0, -3) : n;
+}
+function wikiAnchor(a) {
+  if (a.dataset.anchor) return a.dataset.anchor;
+  if (a.dataset.note != null) return "";
+  const h = String(a.dataset.href || ""), i = h.indexOf("#");
+  return i >= 0 ? h.slice(i + 1) : "";
+}
+async function pvWikiClick(a, e) {
+  e.preventDefault();
+  const g = gOf(a) || fg();                      // R20: event-time group (retained views move)
+  const n = wikiTarget(a) || curOf(g), an = wikiAnchor(a);  // R10: [[#H]] = this note
+  if (await cvLinkOpen(n, an)) return;          // cvf-links CVR-A-096: [[X.canvas]] opens the canvas
+  if (a.classList.contains("wiki-unresolved"))   // R3.5: click creates the note
+    await createNote(n);
+  if (e.ctrlKey) {                               // R6.4: open in NEW TAB, same group
+    await flushSave(g);
+    g.tabs.push(mkTab(n));
+    g.active = g.tabs.length - 1;
+    await loadActive(g);
+    if (an) await navAnchor(g, an);
+  } else navigate(g, n, an);
 }
 
 function scheduleSave(g) {
@@ -7316,7 +7398,8 @@ function mdFilter() {
   mdItems = mdSrc().map((it, i) => [fuzzy(q, it.label), i, it])
     .filter(([s]) => s >= 0)
     .sort((a, b) => a[0] - b[0] || a[1] - b[1])  // ties keep source (MRU) order
-    .slice(0, 10).map(([, , it]) => it);
+    .slice(0, modalKind === "cp" ? Infinity : 10)   // plug-val: stock lists EVERY matching command (scrolls); the switcher keeps 10
+    .map(([, , it]) => it);
   mdSel = 0;
   renderModal();
 }
@@ -7402,6 +7485,7 @@ function qsFoot(on) {                   // stock's static instructions row (r1 c
    and closing the modal still publish synchronously. */
 let mdTitleT = null;
 function mdTitleSoon() {
+  if (!CENSUS_ON) return;        // census-gate: only republishes [mdnew:]
   if (mdTitleT) return;
   mdTitleT = setTimeout(() => { mdTitleT = null; updateTitle(); }, 30);
 }
@@ -7432,6 +7516,7 @@ function renderModal() {
     d.append(l, h);
     d.onmousedown = async e => { e.preventDefault(); await mdRun(it, e); };
     box.appendChild(d);
+    if (i === mdSel) d.scrollIntoView({ block: "nearest" });   // arrowing past the visible rows scrolls the list
   });
   mdTitleSoon();   // C4: mdFilter() runs on every keystroke — republish [mdnew:]
 }
@@ -8228,6 +8313,7 @@ function folderMenu(e, f) {                 // right-click an explorer folder ro
   if (CV_FOLDERMENU_FULL) folderMenuFull(item, sep, f);
   else item("New canvas", () => cmdNewCanvas(f));
   m.dataset.mt = "folder:" + String(f).replace(/[|\]]/g, "");
+  if (PMENU && PMENU.folderMenu) PMENU.folderMenu(m, f);   // plug-val: workspace "file-menu" rows for the TFolder, after a rule
   placeMenu(m, e.clientX, e.clientY);
 }
 /* ---------- R14: command registry = the ONE source of truth for the palette
@@ -9565,7 +9651,7 @@ $("rninput").onkeydown = async e => {
   await renameThenAsk(old, nn);
 };
 
-if (document.fonts) document.fonts.addEventListener("loadingdone", () => updateTitle());   // R15.2: republish [fonts:] once a lazy @font-face lands
+if (CENSUS_ON && document.fonts) document.fonts.addEventListener("loadingdone", () => updateTitle());   // R15.2: republish [fonts:] once a lazy @font-face lands
 
 /* perf (INTEGRATE): compositor FLOOR probe — N no-op 1px repaints driven through
    the SAME act() -> otel.paint() path every interaction uses, so each op can be
@@ -10122,6 +10208,9 @@ function gfTok(g, pre = "gf") {
   });
   { const e = p.querySelector(".gc-newgroup"); if (vis(e)) bs.push("newgroup@" + c(e)); }
   t += " [" + pre + "b:" + bs.join("|") + "]";
+  // #28 [gswatch:<w>x<h>,...] ([lswatch:] local) every VISIBLE Groups-row swatch, border box in CSS px (2 dp), row order — a circle has w == h
+  { const sw = [...p.querySelectorAll(".graph-color-group input[type=\"color\"]")].filter(vis).map(e => { const b = R(e); return +b.width.toFixed(2) + "x" + +b.height.toFixed(2); });
+    if (sw.length) t += " [" + pre[0] + "swatch:" + sw.join(",") + "]"; }
   const ss = [...p.querySelectorAll(".mod-slider")].filter(row => vis(row.querySelector("input"))).map(row => {
     const r = R(row.querySelector("input"));
     return row.dataset.k + "@" + Math.round(r.left) + "," + Math.round(r.right) + "," + Math.round(r.top + r.height / 2) + "," + row.querySelector(".slider-value").textContent;
@@ -10955,6 +11044,12 @@ async function startGraph(g, cfg) {
     if (steps) perf.push("graph_frame", perf.now() - fT0, { nodes: N.length, steps, phys: +(fT1 - fT0).toFixed(1), ke: +ke.toFixed(2), alpha: +alpha.toFixed(3) });
     if (quiet && animT0 < 0) {         // settled: loop ends, CPU -> 0; publish node coords to the census
       running = false;
+      // #28: WebKitGTK shows a WebGL canvas ONE frame behind (measured: after a hover-out the GL layer
+      // still showed the hover frame while the 2D labels did not; a Groups colour edit left the nodes
+      // in the old colour). A loop that stops right after a draw would leave its last frame unseen, so
+      // a settled GL loop draws the same frame once more on the next animation frame — nothing new to show,
+      // it only pushes the real last frame onto the screen.
+      if (drew && glr) requestAnimationFrame(() => { if (g.simGen === gen && !running && glr) draw(); });
       // graphperf: a ggkeep tab left at rest comes back QUIET, so its very first frame lands here —
       // inside the tab_switch paint. v0.6.1 restarted hot and settled ~2 s later, outside it.
       // State is set now; the title + span flush are published after the next frame (afterPaint).
@@ -11696,8 +11791,30 @@ async function quitFlush(why) {
   inv("quit_ready", { dirty: lost.length }).catch(() => {});
 }
 TAURI.event.listen("app-quit", e => quitFlush(e.payload || "quit")).then(() => inv("quit_arm")).catch(() => {});
+/* plug-val G1: window.close() closes the app window as in stock (obsidian-git "commit-and-sync and
+   close" calls it). The webview's own close only blanks the page and leaves the window up, and the
+   page has no window-close permission (capabilities: core:default), so this takes the close
+   button's path (win_close): CloseRequested, then the quit flush above. */
+window.close = () => { inv("win_close").catch(e => console.error("[window.close]", e)); };
 
 $("vswitch").onclick = showPicker;
+/* settings-gear (#29): the gear beside the vault switcher opens Settings — the SAME path as the
+   Settings command / Ctrl+, (cmdSettings, so the R30.12 open timing holds). A native <button>:
+   Tab reaches it, Enter / Space press it. It only ever OPENS (the modal covers it while open). */
+$("sgear").onclick = () => { if (!settingsOpen) cmdSettings(); };
+$("sgear").addEventListener("focus", () => updateTitle());   // f= is read off the DOM: publish it when it changes
+$("sgear").addEventListener("blur", () => updateTitle());
+/* [sgear:<visible 0|1>|x,y,w,h|bar=x,y,w,h|nm=<name right edge>,<ell|fit>|f=<focused 0|1>] — the gear's
+   painted rect, the vault bar's rect it must sit inside, where the vault name stops (must be <= the
+   gear's left edge) and whether it is ellipsized, and DOM focus (the keyboard path). */
+function sgearTok() {
+  const g = $("sgear"), b = $("vbar"), n = $("vswitch");
+  if (!g || !b || !n) return "";
+  const R = e => { const r = e.getBoundingClientRect(); return [r.x, r.y, r.width, r.height].map(Math.round).join(","); };
+  const r = g.getBoundingClientRect(), vis = r.width > 0 && r.height > 0 && getComputedStyle(g).visibility !== "hidden" ? 1 : 0;
+  return " [sgear:" + vis + "|" + R(g) + "|bar=" + R(b) + "|nm=" + Math.round(n.getBoundingClientRect().right) + "," + (n.scrollWidth > n.clientWidth ? "ell" : "fit") +
+    "|f=" + (document.activeElement === g ? 1 : 0) + "]";
+}
 
 (async () => {
   await bootTheme();             // the root attribute is set synchronously inside
@@ -11723,7 +11840,7 @@ $("vswitch").onclick = showPicker;
     // the BOOT picker's window stays untitled by the census (no 'panes:', see
     // loadRecent) — so the reason is published as "opensidian [vault:-]
     // [vargerr:...]" only, never the pane census
-    $("p-err").textContent = bootNote; const pt = "Opensidian" + vargTok(); document.title = pt; pushTitle(pt); } }
+    $("p-err").textContent = bootNote; const pt = CENSUS_ON ? "Opensidian" + vargTok() : "Opensidian"; /* census-gate */ document.title = pt; pushTitle(pt); } }
   // R30 / T2: the table AND the nav DOM are warmed off the open path — the nav is
   // 19 entries that never change, so building it at boot into the hidden modal
   // takes the only unavoidable DOM work out of the open keystroke. The pane stays
@@ -12111,6 +12228,7 @@ function sactCtl(r) {
                                 glyph-centre offset from the button centre, right/top inset in its card */
 let buiSelMax = 0, buiPress = 0;
 document.addEventListener("selectionchange", () => {
+  if (!CENSUS_ON) return;        // census-gate: feeds [bui:sel=] only
   const n = String(getSelection() || "").length;
   if (n > buiSelMax) buiSelMax = n;
 });
@@ -13675,7 +13793,7 @@ function psgTok() {
     ";btn=" + btn + ";pb=" + pb + ";ovf=" + bad.length + "," + bad.slice(0, 4).join(",").slice(0, 160) + "]";
 }
 function psgPublish() {
-  if (!psgProbe || vaultPath || $("picker").hidden) return;
+  if (!CENSUS_ON || !psgProbe || vaultPath || $("picker").hidden) return;   // census-gate: a census title, never without OPENSIDIAN_CENSUS=1
   const t = "Opensidian" + vargTok() + psgTok() + sbarTok();   // noscroll: the boot picker's root/element scrollbars too (the pane census never runs here)
   if (t === psgLast) return;
   psgLast = t; document.title = t; pushTitle(t);

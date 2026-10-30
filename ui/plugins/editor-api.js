@@ -28,6 +28,8 @@
   function install(ctx) {
     const EdG = typeof Ed !== "undefined" ? Ed : null;
     if (!S || !V || !EdG) return null;
+    // ED-3: every doc change a plugin makes through the Editor API is marked, so editor.js can group its undo steps as stock does
+    const PE = () => EdG.PLUGIN_EDIT ? [EdG.PLUGIN_EDIT.of(true)] : [];
     const app = () => ctx.app(), ws = () => ctx.app().workspace;
 
     /* ---------------------------------------------------------------- Editor */
@@ -76,11 +78,11 @@
       somethingSelected() { return this.cm.state.selection.ranges.some(r => !r.empty); }
       replaceSelection(text, origin) {
         const tr = this.cm.state.replaceSelection(String(text == null ? "" : text));
-        this.cm.dispatch(tr, { userEvent: origin ? String(origin) : "input" });
+        this.cm.dispatch(tr, { userEvent: origin ? String(origin) : "input", annotations: PE() });
       }
       replaceRange(text, from, to, origin) {
         const a = this.posToOffset(from), b = to ? this.posToOffset(to) : a;
-        this.cm.dispatch({ changes: { from: Math.min(a, b), to: Math.max(a, b), insert: String(text == null ? "" : text) }, userEvent: origin ? String(origin) : undefined });
+        this.cm.dispatch({ changes: { from: Math.min(a, b), to: Math.max(a, b), insert: String(text == null ? "" : text) }, userEvent: origin ? String(origin) : undefined, annotations: PE() });
       }
       getRange(from, to) { const a = this.posToOffset(from), b = this.posToOffset(to); return this.cm.state.sliceDoc(Math.min(a, b), Math.max(a, b)); }
       wordAt(pos) { const w = this.cm.state.wordAt(this.posToOffset(pos)); return w ? { from: this.offsetToPos(w.from), to: this.offsetToPos(w.to) } : null; }
@@ -103,7 +105,7 @@
         const selOf = () => S.EditorSelection.create(sels.map(s => S.EditorSelection.range(this.posToOffset(s.from), this.posToOffset(s.to || s.from))), 0);
         if (tx.changes && tx.changes.length) {
           const ch = tx.changes.map(c => { const a = this.posToOffset(c.from), b = c.to ? this.posToOffset(c.to) : a; return { from: Math.min(a, b), to: Math.max(a, b), insert: String(c.text == null ? "" : c.text) }; });
-          this.cm.dispatch({ changes: ch, userEvent: ue });
+          this.cm.dispatch({ changes: ch, userEvent: ue, annotations: PE() });
         }
         if (sels && sels.length) this.cm.dispatch({ selection: selOf() });
         if (tx.replaceSelection != null) this.replaceSelection(tx.replaceSelection, origin);   // replaces the selections just set (or the current ones)
@@ -311,7 +313,9 @@
       for (const g of ctx.groups()) { if (g.view && g.view.cm) out.add(g.view); for (const t of g.tabs || []) if (t.view && t.view.cm) out.add(t.view); }
       return [...out];
     }
-    const activeTabView = () => { const g = ctx.focused(); return g && g.active >= 0 && tabOf(g.view) ? g.view : null; };
+    // plug-val: the view must hold the ACTIVE tab: a graph tab (any non-note tab) in front of a note leaves g.view on the
+    // note, and stock then has no active editor (editor-only commands drop out of the palette)
+    const activeTabView = () => { const g = ctx.focused(); const t = g && g.active >= 0 ? tabOf(g.view) : null; return t && (!Array.isArray(g.tabs) || g.tabs[g.active] === t) ? g.view : null; };
 
     /* ------------------------------------------------- the info StateFields */
     const infoField = S.StateField.define({ create: () => null, update: v => v });
@@ -335,12 +339,19 @@
     const exts = [];          // {ext, owner}
     const suggests = [];      // EditorSuggest instances
     let active = false;       // a plugin has loaded: views carry the base hooks
+    const UEV = ["input", "delete", "os", "move"];   // FZ-E30.2: the user-edit families that run onTrigger
     const hasEv = n => { const w = ws(), a = w && w._ev && w._ev.get(n); return !!(a && a.length); };
     function hooks(v) {
       return [
         V.EditorView.updateListener.of(u => {
           if (u.docChanged && hasEv("editor-change")) { const mv = viewFor(v); if (mv) queueMicrotask(() => ws().trigger("editor-change", mv.editor, mv)); }
-          if (suggests.length && (u.docChanged || u.selectionSet)) queueMicrotask(() => suggestCheck(v, u.docChanged));
+          // FZ-E30.2: only an edit that carries a userEvent (typing, delete, the editor's own os.* edits, a
+          // plugin write whose origin is one of those) runs the suggests' onTrigger, as in stock. A bare editor-API write (Tasks "Toggle
+          // task done" -> setLine) has none: it is treated like a caret move and opens nothing. tr.isUserEvent, not
+          // tr.annotation(S.Transaction.userEvent): the editor's state module is not the plugins' copy (S), so the
+          // annotation type differs and the lookup always missed (dv6 r1: typing opened nothing)
+          const typed = u.docChanged && u.transactions.some(tr => UEV.some(k => tr.isUserEvent(k)));
+          if (suggests.length && (u.docChanged || u.selectionSet)) queueMicrotask(() => suggestCheck(v, typed));
         }),
         V.EditorView.domEventHandlers({
           paste: e => { const mv = viewFor(v); if (mv && hasEv("editor-paste")) ws().trigger("editor-paste", e, mv.editor, mv); return e.defaultPrevented; },
@@ -349,10 +360,104 @@
         S.Prec.highest(V.EditorView.domEventHandlers({ keydown: e => suggestKey(v, e) })),
       ];
     }
+    /* a plugin StreamLanguage as a highlight overlay. In Obsidian the note's language is itself a
+       StreamLanguage over the CM5 "hypermd" mode, so a plugin that redefines that mode as an overlay
+       (Templater 2.25.0: customOverlayMode(getMode("hypermd"), templater) at Prec.high) only adds
+       token classes on top of markdown. Here the note keeps its lezer markdown tree (mdLang, which
+       wins the language facet), so such a StreamLanguage would never run: it is bridged instead to
+       a view plugin that runs its stream parser over the lines up to the viewport end and marks
+       every token with the CM5 class names (style "a b" -> cm-a cm-b on the token, "line-x" /
+       "line-background-x" -> class x on the line), under a .cm-s-obsidian editor as in Obsidian.
+       Obsidian combines the two modes without combineTokens, so where the plugin's mode styles a
+       token the markdown style is dropped there: no code span, emphasis or link inside a Templater
+       command (a `string` in <% %> stays one JS string). The base "hypermd" is the null mode here,
+       so every styled token is the plugin's: its ranges are published per line (Ed.lpOpaque) and
+       Live Preview leaves its markdown decorations out of them. */
+    const streamOv = new WeakMap();
+    const OV_LINES = 20000;      // past this many lines before the viewport: start fresh at the viewport
+    function streamOverlay(sl) {
+      let ov = streamOv.get(sl);
+      if (ov) return ov;
+      const p = sl.streamParser, SS = window.CodeMirror && window.CodeMirror.StringStream;
+      if (!p || typeof p.token !== "function" || !SS) { streamOv.set(sl, []); return []; }
+      const skip = { null: 1, undefined: 1, "": 1 };
+      function style(s, lineCls, from, to, marks) {
+        if (!s) return;
+        const cls = [];
+        for (const t of String(s).split(/\s+/)) {
+          if (skip[t]) continue;
+          const m = /^line-(?:background-)?(.+)$/.exec(t);
+          if (m) lineCls.add(m[1]); else cls.push("cm-" + t);
+        }
+        if (cls.length && to > from) marks.push(V.Decoration.mark({ class: cls.join(" "), attributes: { "data-os-ov": "" } }).range(from, to));
+      }
+      const views = new WeakMap();   // view -> {doc, vf, vt, deco, opq}: one tokenizer pass shared by the overlay and LP
+      function get(view) {
+        const doc = view.state.doc, vp = view.viewport;
+        let c = views.get(view);
+        if (!c || c.doc !== doc || c.vf !== vp.from || c.vt !== vp.to) { c = Object.assign({ doc, vf: vp.from, vt: vp.to }, build(view)); views.set(view, c); }
+        return c;
+      }
+      function build(view) {
+        const doc = view.state.doc, vp = view.viewport, out = [], opq = new Map();
+        const first = doc.lineAt(vp.from).number, last = doc.lineAt(vp.to).number;
+        let n = first > OV_LINES ? first : 1, st;
+        try { st = p.startState((L.indentUnit && view.state.facet(L.indentUnit).length) || 4); } catch (e) { console.error("[plugin] stream overlay startState:", e); return { deco: V.Decoration.none, opq }; }
+        for (; n <= last; n++) {
+          const line = doc.line(n), lineCls = new Set(), marks = [], vis = n >= first, rs = [];
+          try {
+            if (!line.length) { if (p.blankLine) style(p.blankLine(st, 4), lineCls, 0, 0, marks); }
+            else {
+              const ss = new SS(line.text, view.state.tabSize);
+              let stuck = 0;
+              while (!ss.eol()) {
+                ss.start = ss.pos;
+                const s = p.token(ss, st);
+                if (ss.pos <= ss.start) { if (++stuck > 3) break; continue; }
+                stuck = 0;
+                if (vis) {
+                  const k = marks.length;
+                  style(s, lineCls, line.from + ss.start, line.from + ss.pos, marks);
+                  if (marks.length > k) { const l = rs[rs.length - 1]; if (l && l[1] === ss.start) l[1] = ss.pos; else rs.push([ss.start, ss.pos]); }
+                }
+              }
+            }
+          } catch (e) { console.error("[plugin] stream overlay token:", e); return { deco: V.Decoration.none, opq: new Map() }; }
+          if (!vis) continue;
+          if (rs.length) opq.set(n, rs);
+          for (const c of lineCls) out.push(V.Decoration.line({ class: c, attributes: { "data-os-ovl": "" } }).range(line.from));
+          for (const m of marks) out.push(m);
+        }
+        return { deco: V.Decoration.set(out, true), opq };
+      }
+      ov = [V.EditorView.editorAttributes.of({ class: "cm-s-obsidian" }), V.ViewPlugin.fromClass(class {
+        constructor(view) { this.decorations = get(view).deco; }
+        update(u) { if (u.docChanged || u.viewportChanged) this.decorations = get(u.view).deco; }
+      }, { decorations: x => x.decorations })];
+      ov._opq = view => get(view).opq;
+      streamOv.set(sl, ov);
+      return ov;
+    }
+    let liveOv = new Set();      // the overlays the current plugin extensions bridge (rebuilt by pxExt)
+    /* Ed.lpOpaque(view): Map line number -> [[from, to] line-relative, ...] of plugin-styled tokens, or null */
+    EdG.lpOpaque = function (view) {
+      if (!liveOv.size) return null;
+      let m = null;
+      for (const f of liveOv) for (const [n, rs] of f(view)) { m = m || new Map(); m.set(n, (m.get(n) || []).concat(rs)); }
+      return m;
+    };
+    function bridge(e, d) {
+      if (!e || typeof e !== "object" || d > 8) return e;
+      if (Array.isArray(e)) { let ch = false; const r = e.map(x => { const y = bridge(x, d + 1); if (y !== x) ch = true; return y; }); return ch ? r : e; }
+      if (L && L.StreamLanguage && e instanceof L.StreamLanguage) { const o = streamOverlay(e); if (o._opq) liveOv.add(o._opq); return o; }
+      if ("inner" in e && "prec" in e) { const y = bridge(e.inner, d + 1); return y === e.inner ? e : y; }   // Prec.*(x)
+      return e;
+    }
     EdG.pxExt = function (v) {
       if (!active) return [];
       const out = [infoField.init(() => infoFor(v)), lpField.init(() => isLp(v)), edField.init(() => v.cm || null), edFill, livePreviewState, hooks(v), mdLang()];
-      for (const x of exts) out.push(x.ext);
+      liveOv = new Set();
+      for (const x of exts) out.push(bridge(x.ext, 0));
       return out;
     };
     /* the note's syntax tree, for plugins that walk it (syntaxTree(state)): while a plugin is
@@ -388,7 +493,11 @@
           return -1;
         } }],
       };
-      try { mdLangExt = new L.Language(L.defineLanguageFacet(), LM.markdownLanguage.parser.configure([code]), [], "markdown").extension; }
+      // Prec.highest: the language facet keeps its FIRST value, and Templater 2.25.0 registers a
+      // Prec.high StreamLanguage (its CM5 "templater" overlay; with no CM5 javascript mode here it
+      // is the null mode = a flat, nodeless tree) that would otherwise displace this tree for every
+      // plugin that reads it (plug-top5: dataview inline queries never rendered in Live Preview)
+      try { mdLangExt = S.Prec.highest(new L.Language(L.defineLanguageFacet(), LM.markdownLanguage.parser.configure([code]), [], "markdown").extension); }
       catch (e) { console.error("[plugin] markdown syntax tree:", e); mdLangExt = []; }
       return mdLangExt;
     }
@@ -539,6 +648,8 @@
       return () => removeSuggest(s);
     }
     const currentSuggest = () => openS || null;
+    // FZ-E30.2: a leaf leaving its edit mode (setMode -> reading) closes an open suggest, as stock does
+    EdG.closeSuggest = () => { const s = openS; openS = null; reqN++; if (s) closeS(s); };
     function setCurrentSuggest(s) { const c = openS; openS = s || null; if (c && c !== openS) closeS(c); }
 
     /* ------------------------------------------- live-preview flag follows the mode */
@@ -549,14 +660,18 @@
       if (f !== undefined && f !== isLp(v)) v.cm.dispatch({ effects: lpFx.of(isLp(v)) });
     }
     // [pext:x<exts>,s<suggests>,v<views carrying the base hooks>,d=<value><count>+... of the [data-os-probe]
-    // nodes drawn in the focused editor (a gate probe tags its decorations with it; "0" = none),o<suggest items open>]
+    // nodes drawn in the focused editor (a gate probe tags its decorations with it; "0" = none),o<suggest items open>,
+    // ov<stream overlay token spans>/<overlay-classed lines> in the focused editor (only while some are drawn)]
     function tok() {
       if (!active) return "";
       const v = activeTabView(), m = {}; let nv = 0;
       for (const w of allViews()) if (w.cm.state.field(infoField, false) !== undefined) nv++;
       if (v && v.cm) for (const n of v.cm.contentDOM.querySelectorAll("[data-os-probe]")) { const k = String(n.getAttribute("data-os-probe")).replace(/[^A-Za-z0-9]/g, "").slice(0, 8); m[k] = (m[k] || 0) + 1; }
       const d = Object.keys(m).sort().map(k => k + m[k]).join("+") || "0";
-      return " [pext:x" + exts.length + ",s" + suggests.length + ",v" + nv + ",d=" + d + ",o" + (openS && openS.isOpen ? openS._items.length : 0) + (bad ? ",bad" + bad : "") + "]";
+      const ovs = v && v.cm ? v.cm.contentDOM.querySelectorAll("[data-os-ov]").length : 0, ovl = v && v.cm ? v.cm.contentDOM.querySelectorAll("[data-os-ovl]").length : 0;
+      // om<N>: markdown LP marks (code/em/strong/link) nested with an overlay token span — 0 as in Obsidian
+      const om = ovs && v && v.cm ? v.cm.contentDOM.querySelectorAll("[data-os-ov] :is(code,em,strong,a,.mk), :is(code,em,strong,a,.mk) [data-os-ov]").length : 0;
+      return " [pext:x" + exts.length + ",s" + suggests.length + ",v" + nv + ",d=" + d + ",o" + (openS && openS.isOpen ? openS._items.length : 0) + (bad ? ",bad" + bad : "") + (ovs || ovl ? ",ov" + ovs + "/" + ovl + ",om" + om : "") + "]";
     }
 
     return {
@@ -698,18 +813,39 @@
        registers one, so a vault without such plugins pays nothing; gen bumps on
        every (un)register so the reading view's retained DOM is re-rendered. */
     const MDP = { post: [], code: new Map(), gen: 0, used: false };
-    function mdpChanged() { MDP.gen++; MDP.used = true; try { PPOST = (MDP.post.length || MDP.code.size || embPluginExts()) ? PP : null; } catch (_) {} touch(); }
+    function mdpChanged() { MDP.gen++; MDP.used = true; try { PPOST = (MDP.post.length || MDP.code.size || embPluginExts()) ? PP : null; } catch (_) {} cbHookSet(); touch(); }
+    // plug-top5: the Live Preview side of the code-block processors (editor.js Ed.cbField): a fence
+    // of a registered language renders as one block widget; each widget owns its render's children
+    let cbT = 0;
+    function cbHookSet() {
+      try {
+        if (typeof Ed === "undefined" || !Ed) return;
+        if (!Ed.cbHook) Ed.cbHook = {
+          any: () => MDP.code.size > 0,
+          has: lang => MDP.code.has(lang),
+          gen: () => MDP.gen,
+          render(lang, src, el, sourcePath) {
+            const p = MDP.code.get(lang);
+            if (!p) return null;
+            const h = new Component(); h.load();
+            runCode(lang, p, src, el, mdCtx(sourcePath, h));
+            return () => h.unload();
+          },
+        };
+        if (Ed.cbRefresh) { clearTimeout(cbT); cbT = setTimeout(() => { try { Ed.cbRefresh(); } catch (e) { console.error(e); } }, 0); }   // a plugin registers several in a row: one rebuild
+      } catch (e) { console.error(e); }
+    }
     // main.js tabGone: a closed tab unloads its reading embed children, even once no processor or plugin
     // embed is left (PPOST null by then). Armed by embHolder, the only maker of tab-owned children:
     // this part runs from api.js before main.js has declared PTABGONE, so it cannot be set here.
     const armTabGone = () => { try { if (PTABGONE !== embRelease) PTABGONE = embRelease; } catch (_) {} };
     const pathOf = n => (n ? n + ".md" : "");   // the app names notes without ".md"
-    function mdCtx(sourcePath, holder) {
+    function mdCtx(sourcePath, holder, sec) {
       let fm; try { const c = K.metadataCache.getCache(sourcePath); fm = c ? c.frontmatter : undefined; } catch (_) {}
       return {
         docId: sourcePath, sourcePath, frontmatter: fm,
         addChild: ch => { holder.addChild(ch); return ch; },
-        getSectionInfo: () => null,
+        getSectionInfo: el => (sec ? sec(el) : null),
       };
     }
     function runCode(lang, p, src, el, ctx) {
@@ -817,11 +953,11 @@
        (oracle: stock 1.13.7 hands them the element passed to render, not one call per block);
        the reading view (PP.run) hands them every top-level block. `nodes` limits the code
        block scan to what this render added. */
-    async function mdProcess(root, sourcePath, holder, whole, nodes, embHold) {
+    async function mdProcess(root, sourcePath, holder, whole, nodes, embHold, sec) {
       const pend = embedPass(nodes || [root], sourcePath, embHold || holder, whole ? true : undefined);
       if (pend.length) await Promise.all(pend);
       if (!MDP.code.size && !MDP.post.length) return;
-      const ctx = mdCtx(sourcePath, holder);
+      const ctx = mdCtx(sourcePath, holder, sec);
       if (MDP.code.size) for (const f of fences(nodes || root, null)) { const p = MDP.code.get(f.lang); if (p) codeBlock(f, p, ctx); }
       if (!MDP.post.length) return;
       const posts = MDP.post.slice().sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
@@ -849,12 +985,38 @@
       e.prev = e.cur; e.cur = new Component(); e.cur.load();
       return e.cur;
     }
-    const PP = {   // main.js preview(): PPOST.run(pane, note, tab) after the reading html is in
+    /* plug-top5: ctx.getSectionInfo(el) in the reading view = {text, lineStart, lineEnd} of the top-level
+       block el is (or sits in): text = the whole note source, lines 0-based, lineEnd = the block's last
+       non-blank line. From the renderer's own block -> 1-based start line map (main.js preview: pvLines,
+       one entry per top-level element), taken when the html went in, so a block a plugin inserts or
+       replaces later does not shift the others (a replaced block falls back to its position while the
+       pane still has one element per entry). Obsidian Tasks reads it to locate the tasks it re-renders
+       in the reading view (its checkbox then writes the done date into that source line). */
+    function secMap(P, src, lines) {
+      if (typeof src !== "string" || !Array.isArray(lines) || !P || P.children.length !== lines.length) return null;
+      const L = src.split("\n"), at = new Map();
+      [...P.children].forEach((c, k) => at.set(c, k));
+      const span = k => {
+        const s = lines[k] - 1;
+        let e = (k + 1 < lines.length ? lines[k + 1] - 1 : L.length) - 1;
+        while (e > s && !/\S/.test(L[e] || "")) e--;
+        return { text: src, lineStart: s, lineEnd: e };
+      };
+      return el => {
+        let n = el;
+        while (n && n.parentElement && n.parentElement !== P) n = n.parentElement;
+        if (!n || n.parentElement !== P) return null;
+        let k = at.get(n);
+        if (k === undefined && P.children.length === lines.length) k = [...P.children].indexOf(n);
+        return k === undefined || k < 0 ? null : span(k);
+      };
+    }
+    const PP = {   // main.js preview(): PPOST.run(pane, note, tab, src, lines) after the reading html is in
       get gen() { return MDP.gen; },
-      run(P, note, tab) {
+      run(P, note, tab, src, lines) {
         if (P._ppHold) try { P._ppHold.unload(); } catch (e) { console.error(e); }
         const h = P._ppHold = new Component(); h.load();
-        return mdProcess(P, pathOf(note), h, false, null, embPluginExts() ? embHolder(tab, note) : null);
+        return mdProcess(P, pathOf(note), h, false, null, embPluginExts() ? embHolder(tab, note) : null, secMap(P, src, lines));
       },
       release: embRelease,
     };
@@ -863,7 +1025,7 @@
       if (!MDP.used) return "";
       const r = document.querySelectorAll(".preview [class^='block-language-'], .preview [class*=' block-language-']").length;
       if (!MDP.post.length && !MDP.code.size && !r) return "";
-      return " [pmd:p" + MDP.post.length + "|c" + [...MDP.code.keys()].join("+") + "|r" + r + "]";
+      return " [pmd:p" + MDP.post.length + "|c" + [...MDP.code.keys()].join("+") + "|r" + r + "]" + (typeof Ed !== "undefined" && Ed.cbCensus ? Ed.cbCensus() : "");
     }
     const prop = (C, name, def) => Object.defineProperty(C.prototype, name, {   // see protoField in the editor-api closure
       configurable: true, enumerable: false, get() { return typeof def === "function" ? def() : def; },
@@ -877,6 +1039,23 @@
       static async render(app_, markdown, el, sourcePath, component) {
         const html = await K.inv("render", { content: String(markdown == null ? "" : markdown) });
         const t = document.createElement("div"); t.innerHTML = html;
+        // plug-val: only the blocks go in, not the newlines between them: stock hands back "happy" as ONE
+        // <p> child, and dataview unwraps a lone <p> (childNodes.length == 1) to render an inline field
+        // inside a Live Preview line; a trailing "\n" text node left the <p> block and broke the line
+        for (const n of [...t.childNodes]) if (n.nodeType === 3 && !/\S/.test(n.data)) n.remove();
+        // deep-dataview FD11: a wiki link a plugin renders is a.internal-link[data-href = linktext] as in stock
+        // 1.13.7 (dataview result links; plugins select and click them by that class), is-unresolved when the
+        // target is missing; a.wiki stays for the app's own link wiring
+        for (const a of t.querySelectorAll("a.wiki")) {
+          const lt = (a.dataset.note || "") + (a.dataset.anchor ? "#" + a.dataset.anchor : "");
+          a.classList.add("internal-link");
+          if (a.classList.contains("wiki-unresolved")) a.classList.add("is-unresolved");
+          // FD9: an un-aliased heading/block link reads "Note > Heading" as in stock (dataview file.outlinks)
+          const nb = (a.dataset.note || "").replace(/\.md$/i, "");
+          if (nb && a.dataset.anchor && (a.textContent === lt || a.textContent === nb + "#" + a.dataset.anchor)) a.textContent = nb + " > " + a.dataset.anchor;
+          a.setAttribute("data-href", lt);   // href stays "#": a relative href would navigate the webview from a
+                                             // plugin view nobody wired (stock routes it through its own handler)
+        }
         const added = [...t.childNodes];
         while (t.firstChild) el.appendChild(t.firstChild);
         await mdProcess(el, sourcePath || "", component instanceof Component ? component : new Component(), true, added);
