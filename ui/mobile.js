@@ -98,6 +98,21 @@
     const r = e.target && e.target.closest && e.target.closest("#tree .trow");
     if (r && !r.classList.contains("folder")) setTimeout(closeDrawer, 0);
   });
+  /* opening a note from the drawer must not raise the keyboard (main.js focuses the editor once the file loads):
+     focus landing in #main is dropped until the user touches #main themselves, or 3 s pass */
+  let quietUntil = 0;
+  const main = $m("main");
+  $m("side").addEventListener("click", e => {
+    const r = e.target && e.target.closest && e.target.closest("#tree .trow");
+    if (!r || r.classList.contains("folder")) return;
+    quietUntil = Date.now() + 3000;
+    const a = document.activeElement; if (a && main.contains(a)) a.blur();
+  }, true);
+  main.addEventListener("pointerdown", () => { quietUntil = 0; }, true);
+  main.addEventListener("touchstart", () => { quietUntil = 0; }, { capture: true, passive: true });
+  main.addEventListener("focusin", e => {
+    if (Date.now() < quietUntil && e.target && e.target.blur) e.target.blur();
+  });
   // swipes: mid-screen right opens, left closes; a touch that starts in the edge zone belongs to the OS
   let t0 = null;
   document.addEventListener("touchstart", e => {

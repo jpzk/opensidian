@@ -1987,3 +1987,8 @@ body.is-mobile #mtabs:not([hidden]) { display: block; position: fixed; z-index: 
 body.is-mobile #mtabs .m-tab { padding: 12px 16px; color: var(--text-chrome); white-space: nowrap; overflow: hidden;
   text-overflow: ellipsis }
 body.is-mobile #mtabs .m-tab.active { background: var(--bg-surface); font-weight: 600 }
+/* a header menu drops from #mhdr's More options button; capped to the room below the header so clampMenu never has
+   to lift it over its own anchor (landscape: the menu was ~400 px tall in a 448 px viewport and covered the button,
+   so a second tap on More options landed on "Reading view") */
+body.is-mobile .ctxmenu { max-height: calc(100vh - var(--safe-top, 0px) - var(--m-hdr) - var(--safe-bottom, 0px) - 8px);
+  -webkit-overflow-scrolling: touch }
