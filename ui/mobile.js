@@ -15,6 +15,7 @@
    - #side .m-pill  (android-p1a M4.2) one drawer view at a time: Files, Search, Tags, All properties, Bookmarks
    - #rside (M4.6) a mid-screen swipe left opens main.js's right sidebar as a right overlay drawer: Backlinks,
             Outgoing links, Outline behind a pill + a footer with the note's word and character counts
+   - #msheet (M5.1) Menu opens the ribbon actions as a bottom sheet; Settings > Interface configures them
    - landscape (M3.3) the header and the nav float over the note (CSS only)
    - #mtabs minimal tab switcher
    - window.__mobileBack: called by MainActivity's OnBackPressedCallback; closes the innermost layer
@@ -262,7 +263,7 @@
   document.addEventListener("touchstart", e => {
     const t = e.touches[0];
     t0 = e.touches.length === 1 && t.clientX > EDGE && t.clientX < innerWidth - EDGE &&
-         !(e.target.closest && e.target.closest("#modal, #settings, .ctxmenu, #mtabs, #mnav, #mhdr, canvas"))
+         !(e.target.closest && e.target.closest("#modal, #settings, .ctxmenu, #mtabs, #msheet, #mnav, #mhdr, canvas"))
       ? { x: t.clientX, y: t.clientY, lx: t.clientX, ly: t.clientY } : null;
   }, { passive: true, capture: true });
   document.addEventListener("touchmove", e => {
@@ -302,6 +303,78 @@
     tabsBox.hidden = false; nTabs.classList.add("on");
   };
 
+
+  // ---- M5.1 Menu -> the ribbon as a bottom sheet (#msheet): the ribbon's actions, the ones ticked in Settings >
+  // Interface > Ribbon menu configuration (phone-only, localStorage). Stock has 7; daily note + template have no core
+  // plugin here and Bases is out of scope, so ours are the 4 our ribbon + palette carry.
+  const RIBBON = [
+    ["Open quick switcher", () => typeof cmdQuickSwitch === "function" && cmdQuickSwitch(),
+      '<path d="M5 12h14M13 6l6 6-6 6"/>'],
+    ["Open graph view", () => typeof cmdGlobalGraph === "function" && cmdGlobalGraph(),
+      '<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="8" r="2.5"/><circle cx="10" cy="18" r="2.5"/><path d="M8 7l8 1M7.5 8.5l2 7M16.5 10l-5 6"/>'],
+    ["Create new canvas", () => typeof cmdNewCanvas === "function" && cmdNewCanvas(typeof cvNewCanvasFolder === "function" ? cvNewCanvasFolder() : undefined),
+      '<rect x="3" y="3" width="7" height="6" rx="1"/><rect x="14" y="13" width="7" height="8" rx="1"/><path d="M10 6h4a3 3 0 0 1 3 3v4"/>'],
+    ["Open command palette", () => {
+      if (typeof cmdPalette === "function") cmdPalette();
+      const i = $m("minput"); if (i && document.activeElement === i) i.blur();   // no keyboard over the list
+    }, '<path d="M4 17l6-5-6-5M12 19h8"/>'],
+  ];
+  const RKEY = "os.mobile.ribbonOff";
+  const ribOff = () => { try { return new Set(JSON.parse(localStorage.getItem(RKEY) || "[]")); } catch (e) { return new Set(); } };
+  const setRibOff = s => { try { localStorage.setItem(RKEY, JSON.stringify([...s])); } catch (e) { /* storage off: this session only */ } };
+  const sheet = document.createElement("div");
+  sheet.id = "msheet"; sheet.hidden = true;
+  document.body.append(sheet);
+  const sheetOpen = () => !sheet.hidden;
+  function closeSheet() { sheet.hidden = true; document.body.classList.remove("m-sheet"); }
+  const openSheet = () => {
+    closeTabs(); closeDrawer(); closeRight();
+    if (typeof closeMenu === "function") closeMenu();
+    sheet.textContent = "";
+    const off = ribOff();
+    for (const [label, run, icon] of RIBBON) {
+      if (off.has(label)) continue;
+      const it = document.createElement("div");
+      it.className = "m-sheetitem"; it.dataset.act = label;
+      it.innerHTML = svg(icon) + "<span></span>";
+      it.lastChild.textContent = label;
+      it.onclick = async () => { closeSheet(); await run(); sync(); };
+      sheet.append(it);
+    }
+    if (!sheet.children.length) {
+      const d = document.createElement("div"); d.className = "m-sheetempty";
+      d.textContent = "No ribbon actions. Settings > Interface > Ribbon menu configuration.";
+      sheet.append(d);
+    }
+    sheet.hidden = false; document.body.classList.add("m-sheet");
+  };
+  scrim.addEventListener("click", closeSheet);
+  // Settings > Interface: "Ribbon menu configuration", one checkbox row per action (appended after main.js's rows)
+  if (typeof window.showSettingsPage === "function") {
+    const origPage = window.showSettingsPage;
+    window.showSettingsPage = function () {
+      const r = origPage.apply(this, arguments);
+      if (typeof sPane !== "undefined" && sPane === "interface") {
+        const pg = $m("spage"), box = document.createElement("div");
+        box.className = "m-ribcfg";
+        box.innerHTML = '<div class="m-ribh">Ribbon menu configuration</div><div class="m-ribd">The actions the bottom-bar Menu opens. Untick one to leave it out.</div>';
+        const off = ribOff();
+        for (const [label] of RIBBON) {
+          const row = document.createElement("label");
+          row.className = "m-ribrow"; row.dataset.act = label;
+          const cb = document.createElement("input");
+          cb.type = "checkbox"; cb.checked = !off.has(label);
+          cb.onchange = () => { const s = ribOff(); cb.checked ? s.delete(label) : s.add(label); setRibOff(s); };
+          const t = document.createElement("span"); t.textContent = label;
+          row.append(t, cb);
+          box.append(row);
+        }
+        if (pg) pg.append(box);
+      }
+      return r;
+    };
+  }
+
   // ---- bottom nav actions
   nBack.onclick = () => { if (typeof histGo === "function") histGo(-1); };
   nFwd.onclick = () => { if (typeof histGo === "function") histGo(1); };
@@ -317,11 +390,7 @@
     sync();
   };
   nTabs.onclick = () => tabsBox.hidden ? openTabs() : closeTabs();
-  nMenu.onclick = () => {
-    closeTabs(); closeDrawer();
-    if (typeof cmdPalette === "function") cmdPalette();
-    const i = $m("minput"); if (i && document.activeElement === i) i.blur();   // no keyboard over the list; back closes it
-  };
+  nMenu.onclick = () => sheetOpen() ? closeSheet() : openSheet();
 
   // a second tap on ⋮ closes its menu: main.js's document-capture mousedown would close it first and the click would
   // then reopen it, so the press on the open menu's own button stops at the window and the click toggles
@@ -342,6 +411,7 @@
     }
     const op = pills.find(P => P.isOpen());
     if (op) { op.close(); return "pill"; }
+    if (sheetOpen()) { closeSheet(); return "sheet"; }
     if (!tabsBox.hidden) { closeTabs(); return "tabs"; }
     if (rOpenNow()) { closeRight(); return "rdrawer"; }
     if (drawerOpen()) { closeDrawer(); return "drawer"; }
