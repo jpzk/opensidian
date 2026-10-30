@@ -1931,3 +1931,59 @@ span.is-flashing { background: var(--highlight-yellow) }
 /* gh-icons #20: inline monochrome glyph in an icon-only button (replaces a text pictograph);
    inline at 12px, on the text's middle, so the button keeps its line box */
 svg.gi { width: 12px; height: 12px; vertical-align: -2px; display: inline-block; pointer-events: none }
+/* android-p0: phone UI mode (ui/mobile.js sets body.is-mobile on an Android WebView only; nothing below applies on
+   the desktop). Our own values: 48 px header and 56 px bottom bar = one comfortable thumb target (>= 44 px) plus
+   padding; drawer 84% of the width (a 16% strip of the note stays visible as the tap-to-close target), capped at
+   400 px so landscape keeps most of the note in view. --safe-* are the system-bar + cutout insets in css px,
+   pushed by MainActivity; the bars pad themselves so every control sits inside the safe area, while #main keeps
+   the full viewport width and pads its content instead. */
+body.is-mobile { --m-hdr: 48px; --m-nav: 56px; --m-drawer: min(84vw, 400px) }
+body.is-mobile .app-container { flex-direction: column;
+  padding-top: var(--safe-top, 0px); padding-bottom: var(--safe-bottom, 0px) }
+body.is-mobile #wframe, body.is-mobile #wrz, body.is-mobile #ribbon, body.is-mobile #ldiv,
+body.is-mobile #rdiv, body.is-mobile #rside { display: none !important }
+body.is-mobile #main { order: 1; flex: 1 1 0; min-height: 0; width: 100%; box-sizing: border-box;
+  padding-left: var(--safe-left, 0px); padding-right: var(--safe-right, 0px); touch-action: pan-y pinch-zoom }
+/* one pane at a time: the focused one; its header is #mhdr, so the pane's own tab strip goes */
+body.is-mobile #main .pane:not(.focused) { display: none }
+body.is-mobile #main .pane > .tabbar { display: none }
+#mhdr, #mnav, #mscrim, #mtabs { display: none }
+body.is-mobile #mhdr { order: 0; display: flex; align-items: center; flex: 0 0 var(--m-hdr); height: var(--m-hdr);
+  box-sizing: border-box; padding: 0 calc(var(--safe-right, 0px) + 4px) 0 calc(var(--safe-left, 0px) + 4px);
+  background: var(--tab-container-background); border-bottom: 1px solid var(--border); user-select: none }
+body.is-mobile #mhdr .m-title { flex: 1 1 0; min-width: 0; text-align: center; font-weight: 600; font-size: 15px;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--text-chrome); padding: 0 6px }
+body.is-mobile #mhdr .m-tools { display: flex; align-items: center; flex: 0 0 auto }
+body.is-mobile #mhdr button:not([hidden]) { display: flex; align-items: center; justify-content: center;
+  width: 44px; height: 44px; padding: 0; flex: 0 0 auto; background: none; border: 0; border-radius: 8px;
+  color: var(--text-chrome-muted) }
+body.is-mobile #mhdr button svg { width: 20px; height: 20px; display: block }
+body.is-mobile #mnav { order: 2; display: flex; align-items: center; justify-content: space-around;
+  flex: 0 0 var(--m-nav); height: var(--m-nav); box-sizing: border-box;
+  margin: 0 calc(var(--safe-right, 0px) + 8px) 4px calc(var(--safe-left, 0px) + 8px);
+  background: var(--bg-surface); border: 1px solid var(--border); border-radius: 28px; user-select: none }
+body.is-mobile #mnav button { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px;
+  padding: 0; background: none; border: 0; border-radius: 22px; color: var(--text-chrome) }
+body.is-mobile #mnav button:disabled { color: var(--text-chrome-muted); opacity: .45 }
+body.is-mobile #mnav button svg { width: 20px; height: 20px; display: block }
+body.is-mobile #mnav .m-tabs { font-weight: 600; font-size: 13px; width: 30px; height: 26px; margin: 9px 7px;
+  border: 1.6px solid currentColor; border-radius: 7px }
+body.is-mobile #mnav .m-tabs.on { background: var(--border) }
+/* the drawer: #side lifted out of the row as a fixed overlay; display:none while closed (no hit target, no
+   text a tap-by-text could land on) */
+body.is-mobile #side { display: none !important }
+body.is-mobile.m-drawer #side { display: flex !important; position: fixed; z-index: 41; left: 0; top: 0; bottom: 0;
+  width: var(--m-drawer) !important; max-width: none; box-sizing: border-box;
+  padding: var(--safe-top, 0px) 0 var(--safe-bottom, 0px) var(--safe-left, 0px);
+  box-shadow: 0 0 24px rgba(0, 0, 0, .25); animation: m-slide .18s ease-out }
+@keyframes m-slide { from { transform: translateX(-100%) } to { transform: none } }
+body.is-mobile.m-drawer #mscrim { display: block; position: fixed; inset: 0; z-index: 40; background: var(--scrim) }
+body.is-mobile #side #stabs .stab { flex-basis: 44px; width: 44px; padding: 8px }
+body.is-mobile #mtabs:not([hidden]) { display: block; position: fixed; z-index: 42;
+  left: calc(var(--safe-left, 0px) + 8px); right: calc(var(--safe-right, 0px) + 8px);
+  bottom: calc(var(--safe-bottom, 0px) + var(--m-nav) + 12px); max-height: 60vh; overflow-y: auto;
+  background: var(--bg-base); border: 1px solid var(--border); border-radius: 12px; padding: 6px 0;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, .25) }
+body.is-mobile #mtabs .m-tab { padding: 12px 16px; color: var(--text-chrome); white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis }
+body.is-mobile #mtabs .m-tab.active { background: var(--bg-surface); font-weight: 600 }
