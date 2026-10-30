@@ -330,6 +330,7 @@
   /* opening a note from the drawer must not raise the keyboard (main.js focuses the editor once the file loads):
      focus landing in #main is dropped until the user touches #main themselves, or 3 s pass */
   let quietUntil = 0;
+  const quiet = () => { quietUntil = Date.now() + 3000; const a = document.activeElement; if (a && $m("main").contains(a)) a.blur(); };
   const main = $m("main");
   $m("side").addEventListener("click", e => {
     const r = e.target && e.target.closest && e.target.closest("#tree .trow");
@@ -388,6 +389,7 @@
       const dir = !t.kind && t.name ? String(t.name).split("/").slice(0, -1).join("/") : "";
       d.querySelector(".m-card-sub").textContent = dir || (t.kind ? "" : "/");
       d.onclick = async () => {
+        quiet();                               // the tab's load must not raise the keyboard
         closeTabs();
         if (typeof focusGroup === "function") focusGroup(g);
         if (typeof switchTab === "function") await switchTab(g, i);
@@ -404,7 +406,7 @@
     const bar = document.createElement("div");
     bar.className = "m-tbar";
     const add = btn("m-tnew", "New tab", svg('<path d="M12 5v14M5 12h14"/>'));
-    add.onclick = async () => { closeTabs(); if (typeof cmdNewTab === "function") await cmdNewTab(); sync(); };
+    add.onclick = async () => { closeTabs(); quiet(); if (typeof cmdNewTab === "function") await cmdNewTab(); sync(); };
     const cnt = document.createElement("div");
     cnt.className = "m-tcount"; cnt.textContent = list.length + (list.length === 1 ? " tab" : " tabs");
     const done = btn("m-tdone", "Done", "Done");
@@ -470,8 +472,11 @@
     const origPage = window.showSettingsPage;
     window.showSettingsPage = function () {
       const r = origPage.apply(this, arguments);
-      if (typeof sPane !== "undefined" && sPane === "interface") {
-        const pg = $m("spage"), box = document.createElement("div");
+      // re-entrant: a plugin settings tab (plugins/settings.js) calls showSettingsPage from inside the outer call,
+      // so the outer return finds the inner call's box already there — one box per page
+      const pg0 = $m("spage");
+      if (typeof sPane !== "undefined" && sPane === "interface" && !(pg0 && pg0.querySelector(".m-ribcfg"))) {
+        const pg = pg0, box = document.createElement("div");
         box.className = "m-ribcfg";
         box.innerHTML = '<div class="m-ribh">Ribbon menu configuration</div><div class="m-ribd">The actions the bottom-bar Menu opens. Untick one to leave it out.</div>';
         const off = ribOff();
