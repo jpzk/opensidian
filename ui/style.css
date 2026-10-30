@@ -2010,3 +2010,20 @@ body.is-mobile .m-pillmenu:not([hidden]) { position: absolute; bottom: calc(100%
   box-shadow: 0 4px 14px var(--shadow-popover) }
 body.is-mobile .m-pillitem { padding: 12px 18px; font-size: 15px; color: var(--text-chrome) }
 body.is-mobile .m-pillitem.checked { font-weight: 600; background: var(--bg-surface) }
+/* android-p1a M3.3: landscape — the header and the nav float over the content: the header row is transparent (its
+   buttons keep a chip), the nav is a centred pill above the bottom edge; the note scrollers pad so the first and last
+   lines can scroll clear of them. Portrait keeps the P0 bars. */
+@media (orientation: landscape) {
+  body.is-mobile .app-container { position: relative }
+  body.is-mobile #mhdr { position: absolute; z-index: 30; top: var(--safe-top, 0px); left: 0; right: 0;
+    background: transparent; border-bottom: 0; pointer-events: none }
+  body.is-mobile #mhdr > * { pointer-events: auto }
+  body.is-mobile #mhdr button:not([hidden]) { background: color-mix(in srgb, var(--bg-base) 82%, transparent) }
+  body.is-mobile #mhdr .m-title { flex: 0 1 auto; margin: 0 auto; border-radius: 8px;
+    background: color-mix(in srgb, var(--bg-base) 82%, transparent) }
+  body.is-mobile #mnav { position: fixed; z-index: 30; left: 50%; transform: translateX(-50%);
+    bottom: calc(var(--safe-bottom, 0px) + 8px); width: min(52vw, 440px); margin: 0;
+    box-shadow: 0 2px 12px var(--shadow-popover) }
+  body.is-mobile #main .lp, body.is-mobile #main .preview { padding-top: calc(var(--m-hdr) + 4px);
+    padding-bottom: calc(var(--m-nav) + 20px) }
+}
