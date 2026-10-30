@@ -719,6 +719,13 @@
     /* [plg:] census: restricted flag, per plugin state, and what is registered
        right now — cmds / ribbon / status / tabs counts summed over loaded
        plugins, so an unload phase can assert they drop to 0. */
+    /* census-gate (issue #30): the two NON-census side effects censusTok carries, for the
+       census-OFF title path (ui/main.js utLite) — plugins still see file-open /
+       active-leaf-change and editorLivePreviewField still follows the leaf mode. */
+    function censusTick() {
+      if (K.st.modelOn) focusTick();
+      if (EA) EA.tick();
+    }
     function censusTok() {
       if (K.st.modelOn) focusTick();   // file-open / active-leaf-change detection (workspace section)
       if (!be || (!K.st.trusted && !host.status.size)) return K.st.trusted ? "" : " [plg:R]";
@@ -875,6 +882,6 @@
     Object.defineProperty(app, "customCss", { value: new CustomCss(), enumerable: true, configurable: true, writable: true });
     Object.defineProperty(app, "hotkeyManager", { value: K.hotkeyManager, enumerable: true, configurable: true, writable: true });
 
-    Object.assign(K, { boot, censusTok, disable, enable, refresh, saveEnabled, setEnabled, setRestricted });
+    Object.assign(K, { boot, censusTick, censusTok, disable, enable, refresh, saveEnabled, setEnabled, setRestricted });
   });
 })();

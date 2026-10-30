@@ -41,7 +41,7 @@ fuzz_target!(|data: &[u8]| {
     }
 
     if !name.is_empty() {
-        let (same, n) = index::rewrite_links_n(content, name, name, true);
+        let (same, n) = index::rewrite_links_n(content, name, name, true, true);
         assert!(same == content, "{n} hits: rewrite {name:?}->{name:?} changed the text");
         let _ = index::rewrite_links(content, name, "renamed/target", true);
     }

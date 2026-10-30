@@ -203,7 +203,10 @@
     dataUrls();
     try { delete window.__TAURI__; } catch (_) {}
     if ("__TAURI__" in window) { try { Object.defineProperty(window, "__TAURI__", { value: undefined, writable: false, configurable: false }); } catch (_) {} }
-    const facade = Object.freeze({ censusTok: () => (host.censusTok ? host.censusTok() : "") + sealTok() });
+    /* census-gate (issue #30): censusTick = censusTok's two non-census side effects, for the
+       census-OFF title path. NON-enumerable, so the narrowed facade still has ONE key and
+       [pseal:0,1] (phase plgsample) keeps meaning "narrowed to {censusTok}". */
+    const facade = Object.freeze(Object.defineProperty({ censusTok: () => (host.censusTok ? host.censusTok() : "") + sealTok() }, "censusTick", { value: () => { if (host.censusTick) host.censusTick(); }, enumerable: false }));
     try { Object.defineProperty(window, "__osPluginHost", { value: facade, configurable: false, writable: false, enumerable: false }); } catch (e) { console.error("[plugin] seal host:", e); }
     /* cp-unrestricted (stock parity): the seal runs only before the first plugin script,
        and plugin scripts are served only for a trusted vault. Stock's page has Node

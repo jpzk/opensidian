@@ -68,7 +68,7 @@
     FuzzySuggestModal, GuardedFileSystemAdapter, ItemView, Keymap, MarkdownRenderChild, MarkdownRenderer, MarkdownView, Menu, MenuItem, Modal, 
     MomentFormatComponent, Notice, Platform, PlatformGuarded, Plugin, PluginSettingTab, Scope, SearchComponent, Setting, SettingGroup, SettingPage, 
     SettingTab, SliderComponent, SuggestModal, TAbstractFile, TFile, TFolder, TextAreaComponent, TextComponent, TextFileView, ToggleComponent, 
-    ValueComponent, Vault, View, WorkspaceLeaf, addIcon, app, boot, bridge, censusTok, debounce, disable, enable, getAllTags, getIcon, getIconIds, 
+    ValueComponent, Vault, View, WorkspaceLeaf, addIcon, app, boot, bridge, censusTick, censusTok, debounce, disable, enable, getAllTags, getIcon, getIconIds, 
     getLinkpath, htmlToMarkdown, normalizePath, parseFrontMatterAliases, parseFrontMatterEntry, parseFrontMatterTags, parseLinktext, parseYaml, 
     prepareFuzzySearch, prepareSimpleSearch, refresh, registry, removeIcon, renderMatches, requestUrl, requireApiVersion, sanitizeHTMLToDom, setEnabled, 
     setIcon, setRestricted, setting, stringifyYaml } = K;
@@ -125,7 +125,7 @@
   host.api = api;
   host.apiGuarded = apiGuarded;
   Object.assign(host, {
-    app, boot, enable, disable, setEnabled, setRestricted, refresh, censusTok,
+    app, boot, enable, disable, setEnabled, setRestricted, refresh, censusTok, censusTick,
     tabs: () => setting.pluginTabs.slice(),
     state: () => ({ trusted: K.st.trusted, enabled: K.st.enabledIds.slice(), installed: Object.assign({}, K.st.manifests), loaded: [...registry.keys()] }),
     bridge,         // NOT frozen (freeze is shallow): item 5 sets bridge.editor = () => {editor, view} | null

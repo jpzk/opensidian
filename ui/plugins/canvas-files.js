@@ -75,6 +75,28 @@
         if (c) for (const n of c.nodes.values()) if (n.data.type === "file" && n.data.file === path && n._cvf && n._cvf.kind === "note" && !n.isEditing) try { n.renderContent(); } catch (e) { console.error(e); }
       }
     });
+    /* a card's file vanished or moved away (an external rm -rf of its folder, a delete, a rename): every card
+       naming that path, or a path under that folder, repaints, as in stock — the card turns into the missing-file
+       card without reopening the board. Not on "create": the missing card's own Create button repaints its node
+       (canvas-media.js create), and a second repaint mid-flow would cancel its editor focus. A card the user is
+       editing is left alone. */
+    const repaintUnder = p => {
+      if (!p) return;
+      const pre = p + "/";
+      let leaves = [];
+      try { leaves = app.workspace.getLeavesOfType("canvas"); } catch (_) { leaves = []; }
+      for (const l of leaves) {
+        const c = l.view && l.view.canvas;
+        if (c) for (const n of c.nodes.values()) {
+          const fp = n.data.type === "file" ? String(n.data.file || "") : "";
+          if (fp && (fp === p || fp.startsWith(pre)) && !n.isEditing) try { n.renderContent(); } catch (e) { console.error(e); }
+        }
+      }
+    };
+    app.vault.on("delete", f => repaintUnder(f && f.path));
+    // PR #33 review: a rename also repaints the cards at its destination, so a missing-file card naming that path
+    // turns into the file (the model has the new path when "rename" fires). No Create-button flow renames
+    app.vault.on("rename", (f, old) => { repaintUnder(typeof old === "string" ? old : ""); if (f && f.path !== old) repaintUnder(f.path); });
   }
 
   /* ------------------------------------------------ file cards */

@@ -157,14 +157,23 @@ pub fn snapshot(root: &Path) -> Snapshot {
 
    Cost: one lstat per CLAIMED removal, on ticks that claim one. A steady-state
    tick claims none and pays nothing. */
-pub fn heal_short_walk(root: &Path, cur: &mut Snapshot, d: &mut Diff) -> Vec<String> {
+pub fn heal_short_walk(root: &Path, prev: &Snapshot, cur: &mut Snapshot, d: &mut Diff) -> Vec<String> {
     let mut healed: Vec<String> = Vec::new();
     for n in &d.removed {
-        let Ok(m) = fs::symlink_metadata(note_file(root, n)) else { continue }; // really gone
-        // put the name back into the baseline with a TRUTHFUL fingerprint, so
-        // the next tick neither re-reports it as added nor misses a real edit
-        let t = m.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        cur.insert(n.clone(), (t, m.len()));
+        let meta = match fs::symlink_metadata(note_file(root, n)) {
+            // put the name back into the baseline with a TRUTHFUL fingerprint, so
+            // the next tick neither re-reports it as added nor misses a real edit
+            Ok(m) => (m.modified().unwrap_or(SystemTime::UNIX_EPOCH), m.len()),
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => continue, // really gone
+            // PR #33 review: an lstat refused (a folder made unreadable) says nothing about the note, as in
+            // sweep_ghosts: it keeps its previous baseline entry, so it is not reported removed (its tab stays)
+            // and a later tick looks again
+            Err(_) => match prev.get(n) {
+                Some(m) => *m,
+                None => continue,
+            },
+        };
+        cur.insert(n.clone(), meta);
         healed.push(n.clone());
     }
     if !healed.is_empty() {
@@ -247,6 +256,40 @@ pub fn reconcile(root: &Path, d: &Diff, ix: &mut Index) -> Change {
     c
 }
 
+/* ---------- GHOSTS: our own create, deleted from outside before a walk saw it ----------
+   create_note / write_note put a new note into the Index under the index lock.
+   If something outside removes it (an `rm -rf` of the folder the app just made)
+   BEFORE the next tick walks the vault, the file is in neither the previous
+   walk nor this one: diff() reports nothing, reconcile() never runs, and the
+   note lives on in the Index and in the UI's file model until a restart. The
+   UI then treats the file as present, e.g. a canvas card shows it as a note
+   card instead of the missing-file card (media CVR-B-063, flaky because it
+   depends on whether a tick lands between the create and the rm).
+   So the tick also asks the Index: a name it holds that this walk did not
+   list AND that lstat cannot find is gone, and is reported as removed.
+   Caller holds the index lock. A note created after the walk is on disk, so
+   lstat finds it and it is kept; a short walk (S1) is healed the same way.
+   Cost: one map lookup per Index name per tick (the walk itself lstats every
+   note). Not a length compare: the walk can list a name the Index lacks (an
+   outside add whose read failed in reconcile), so equal counts do not mean
+   equal sets and a ghost hid behind it for good. */
+pub fn sweep_ghosts(root: &Path, cur: &Snapshot, ix: &mut Index) -> Vec<String> {
+    // gone = lstat says it does not exist; any other error (a folder made unreadable) keeps the note, whose
+    // removal would close its tab while the file is still there
+    let gone = |p: &Path| {
+        matches!(fs::symlink_metadata(p), Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory))
+    };
+    let ghosts: Vec<String> = ix
+        .names()
+        .iter()
+        .filter(|n| !cur.contains_key(n.as_str()) && gone(&note_file(root, n)))
+        .cloned()
+        .collect();
+    for g in &ghosts {
+        ix.remove(g);
+    }
+    ghosts
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,6 +320,58 @@ mod tests {
         assert_eq!(d.removed, vec!["sub/D"]);
         assert_eq!(d.modified, vec!["B", "C"]); // mtime-only and len-only both count
         assert_eq!(diff(&cur, &cur), Diff::default());
+    }
+
+    /// GHOSTS (media CVR-B-063): our create, then an external rm -rf of its
+    /// folder, both between two walks. The walks agree (nothing to diff), so
+    /// only the Index can say the note is gone.
+    #[test]
+    fn own_create_deleted_outside_before_a_walk_is_reported_removed() {
+        let root = tmp("ghost");
+        w(&root, "A", "alpha\n");
+        let mut ix = Index::build(&root);
+        let s0 = snapshot(&root);
+        fs::create_dir_all(root.join("Nope")).unwrap();
+        w(&root, "Nope/missing", "");
+        ix.upsert("Nope/missing", ""); // create_note: disk + index under the lock
+        fs::remove_dir_all(root.join("Nope")).unwrap(); // the outside rm -rf, before any walk
+        let s1 = snapshot(&root);
+        assert_eq!(diff(&s0, &s1), Diff::default(), "the walks alone see nothing");
+        assert_eq!(sweep_ghosts(&root, &s1, &mut ix), vec!["Nope/missing".to_string()]);
+        assert_eq!(ix.content("Nope/missing"), None);
+        assert_eq!(ix.content("A"), Some("alpha\n"));
+        // a note created after the walk is on disk: not a ghost
+        w(&root, "B", "b\n");
+        ix.upsert("B", "b\n");
+        assert!(sweep_ghosts(&root, &s1, &mut ix).is_empty());
+        assert_eq!(ix.content("B"), Some("b\n"));
+        // steady state: nothing to sweep
+        let s2 = snapshot(&root);
+        assert!(sweep_ghosts(&root, &s2, &mut ix).is_empty());
+        // the walk lists an outside note the Index lacks while one of ours is gone: same COUNT, different names
+        fs::create_dir_all(root.join("Nope")).unwrap();
+        w(&root, "Nope/ours", "");
+        ix.upsert("Nope/ours", "");
+        fs::remove_dir_all(root.join("Nope")).unwrap();
+        w(&root, "Outside", "o\n");
+        let s3 = snapshot(&root);
+        assert_eq!(s3.len(), ix.len());
+        assert_eq!(sweep_ghosts(&root, &s3, &mut ix), vec!["Nope/ours".to_string()]);
+        // a folder made unreadable from outside: the walk cannot list the note and lstat is refused, not
+        // NotFound, so the note is kept (root ignores the mode bits: nothing to check then)
+        use std::os::unix::fs::PermissionsExt;
+        fs::create_dir_all(root.join("Locked")).unwrap();
+        w(&root, "Locked/n", "");
+        ix.upsert("Locked/n", "");
+        fs::set_permissions(root.join("Locked"), fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::symlink_metadata(note_file(&root, "Locked/n")).is_err() {
+            let s4 = snapshot(&root);
+            assert!(!s4.contains_key("Locked/n"));
+            assert!(sweep_ghosts(&root, &s4, &mut ix).is_empty());
+            assert_eq!(ix.content("Locked/n"), Some(""));
+        }
+        fs::set_permissions(root.join("Locked"), fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -329,7 +424,7 @@ mod tests {
         // THE GUARD: four claims, four files on disk, zero removals survive —
         // and the baseline gets the missed names back with real fingerprints
         let mut cur = short.clone();
-        let healed = heal_short_walk(&root, &mut cur, &mut d);
+        let healed = heal_short_walk(&root, &full, &mut cur, &mut d);
         assert_eq!(healed, ["B", "C", "sub/D", "sub/E"]);
         assert!(d.removed.is_empty());
         assert_eq!(cur.keys().cloned().collect::<Vec<_>>(), full.keys().cloned().collect::<Vec<_>>());
@@ -347,7 +442,7 @@ mod tests {
         let mut d2 = diff(&full, &after);
         assert_eq!(d2.removed, ["B"]);
         let mut cur2 = after.clone();
-        assert!(heal_short_walk(&root, &mut cur2, &mut d2).is_empty());
+        assert!(heal_short_walk(&root, &full, &mut cur2, &mut d2).is_empty());
         assert_eq!(d2.removed, ["B"]);
         assert_eq!(reconcile(&root, &d2, &mut ix).removed, ["B"]);
         let _ = fs::remove_dir_all(&root);
@@ -466,11 +561,49 @@ mod tests {
         // the walk claims all three (Here was simply missed)
         let mut d = Diff { removed: vec!["Gone".into(), "Here".into(), "Linked".into()], ..Diff::default() };
         let mut cur = Snapshot::new();
-        let healed = heal_short_walk(&root, &mut cur, &mut d);
+        let healed = heal_short_walk(&root, &full, &mut cur, &mut d);
         assert_eq!(healed, ["Here", "Linked"]);
         assert_eq!(d.removed, ["Gone"]);
         assert_eq!(cur.keys().cloned().collect::<Vec<_>>(), ["Here", "Linked"]);
         assert_eq!(cur.get("Here"), full.get("Here")); // truthful fingerprint
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// PR #33 review: a note whose folder became unreadable is neither listed
+    /// by the walk nor lstat-able, and the refusal is not NotFound: the claimed
+    /// removal is withdrawn and the note keeps its PREVIOUS fingerprint, so the
+    /// tick reconciles no removal (its tab stays) and the next tick retries.
+    /// Root ignores the mode bits: then the lstat succeeds and there is nothing
+    /// to check.
+    #[test]
+    fn heal_short_walk_keeps_a_note_it_cannot_stat() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tmp("healperm");
+        w(&root, "A", "a\n");
+        fs::create_dir_all(root.join("Locked")).unwrap();
+        w(&root, "Locked/n", "n\n");
+        let full = snapshot(&root);
+        let mut ix = Index::build(&root);
+        fs::set_permissions(root.join("Locked"), fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::symlink_metadata(note_file(&root, "Locked/n")).is_err() {
+            let mut cur = snapshot(&root);
+            assert!(!cur.contains_key("Locked/n"));
+            let mut d = diff(&full, &cur);
+            assert_eq!(d.removed, ["Locked/n"]);
+            let healed = heal_short_walk(&root, &full, &mut cur, &mut d);
+            assert_eq!(healed, ["Locked/n"]);
+            assert!(d.removed.is_empty());
+            assert_eq!(cur.get("Locked/n"), full.get("Locked/n")); // the previous entry, not a placeholder
+            assert!(reconcile(&root, &d, &mut ix).is_empty());
+            assert_eq!(ix.names(), ["A", "Locked/n"]);
+            // a note the previous snapshot never had is not invented
+            let mut d2 = Diff { removed: vec!["Locked/other".into()], ..Diff::default() };
+            assert!(heal_short_walk(&root, &full, &mut cur, &mut d2).is_empty());
+            assert_eq!(d2.removed, ["Locked/other"]);
+        }
+        fs::set_permissions(root.join("Locked"), fs::Permissions::from_mode(0o755)).unwrap();
+        // readable again: the next walk agrees with the kept baseline, no change at all
+        assert_eq!(diff(&full, &snapshot(&root)), Diff::default());
         let _ = fs::remove_dir_all(&root);
     }
 

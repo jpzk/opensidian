@@ -22,6 +22,7 @@ const Ed = {
   cur: null,            // {g, l} row currently holding the caret (census/geometry)
   _tk: null,            // R17.6 token map under construction (Ed.row owns it)
   UNDO_IDLE_MS: 2000,   // R17.8: idle gap that CLOSES an undo group
+  PLUGIN_JOIN_MS: 500,  // ED-3: a plugin edit this soon after its previous one joins that undo step
 
   /* ---------- inline renderer: one row per source line ---------- */
   el(tag, cls) { const e = document.createElement(tag); if (cls) e.className = cls; return e; },
@@ -131,13 +132,18 @@ const Ed = {
       row.appendChild(li1);
       row.classList.add("li");
       if (/\d/.test(lm[1])) row.classList.add("ord");
-      const task = /^\[([ xX])\] /.exec(rest);
+      // deep-tasks: any one status character is a task (Obsidian Tasks "[/]" "[-]" ...); only a BULLET
+      // "[x]"/"[X]" line is struck as done (tkx), as the reading view does (rvtask Q5)
+      // FZ-E18.7: inside a quote (d > 0) "- [ ] " is a plain list item, as in stock Live Preview: no
+      // checkbox, so no click can toggle (stock writes nothing there)
+      const task = d === 0 ? /^\[([^\]\n])\] /.exec(rest) : null;
       if (task) {
         row.classList.add("tk");
+        if (/[xX]/.test(task[1]) && !/\d/.test(lm[1])) row.classList.add("tkx");
         const cb = Ed.el("input", "tbox");
         cb.type = "checkbox"; cb.checked = task[1] !== " ";
         cb.contentEditable = "false";
-        cb.addEventListener("mousedown", e => Ed.toggleTask(e, row));
+        Ed.taskBox(cb);
         row.appendChild(cb);
         const tm = Ed.mk("[" + task[1] + "] ", "task");
         row.appendChild(tm);
@@ -1455,7 +1461,7 @@ Ed.rvTaskTok = () => {
    reason the context menu refreshes it on its own scroll). Debounced: one
    title write per settled scroll, not per wheel tick. */
 let rvTaskScT = null;
-document.addEventListener("scroll", e => {
+if (CENSUS_ON) document.addEventListener("scroll", e => {   // census-gate: census-only listener, not registered when OFF
   const t = e.target;
   if (!t || !t.classList || !t.classList.contains("preview")) return;
   clearTimeout(rvTaskScT);
@@ -1476,6 +1482,14 @@ document.addEventListener("scroll", e => {
    ====================================================================== */
 const CM6 = window.__osModules || {};
 const CMs = CM6["@codemirror/state"], CMv = CM6["@codemirror/view"], CMc = CM6["@codemirror/commands"];
+/* ED-3: a plugin Editor-API edit carries Ed.PLUGIN_EDIT; Ed.EDIT_KIND remembers the kind + time of the last
+   doc change so the undo grouping below can join a plugin's follow-up edit to its own previous one */
+Ed.PLUGIN_EDIT = CMs && CMs.Annotation.define();
+Ed.HOME_SEL = CMs && CMs.Annotation.define();   // goal mt-fix: Ed.home selection (no raw row)
+Ed.EDIT_KIND = CMs && CMs.StateField.define({
+  create: () => ({ k: "", t: 0 }),
+  update: (v, tr) => !tr.docChanged ? v : { k: tr.annotation(Ed.PLUGIN_EDIT) ? "plugin" : tr.isUserEvent("input.type") ? "type" : "other", t: tr.annotation(CMs.Transaction.time) || Date.now() },
+});
 Object.assign(Ed, {
   cm(g) { return g && g.view && g.view.cm || null; },
   view(g) { return Ed.cm(g); },                        // the Obsidian Editor shim's accessor (ui/plugins/editor-api.js)
@@ -1590,6 +1604,15 @@ Object.assign(Ed, {
     if (focus !== false && !cm.hasFocus) cm.focus();
     Ed.mark(g, Ed.focusPos(g).l);
   },
+  /* goal mt-fix: the caret at (line,col) WITHOUT opening the raw row there — a freshly opened note (and reading ->
+     edit) puts the caret at 0:0, focused, as in stock, so typing lands at the top and plugins see the selection
+     change (dataview inline queries, templater cursor); the row only opens once the user moves or types. */
+  home(g, l, c, focus) {
+    const cm = Ed.cm(g); if (!cm) return;
+    cm.dispatch({ selection: { anchor: Ed.off(g, l, c) }, annotations: Ed.HOME_SEL ? [Ed.HOME_SEL.of(true)] : [] });
+    if (focus !== false && !cm.hasFocus) cm.focus();
+    Ed.mark(g, -1);
+  },
   extendTo(g, l, c) {
     const cm = Ed.cm(g); if (!cm) return;
     cm.dispatch({ selection: { anchor: cm.state.selection.main.anchor, head: Ed.off(g, l, c) } });
@@ -1695,9 +1718,18 @@ Object.assign(Ed, {
       CMc.history({ newGroupDelay: Ed.UNDO_IDLE_MS }),
       // R17.8: only an uninterrupted TYPING burst coalesces; every other edit
       // kind (CM6's own paste/drop/cut included) is its own undo step
-      CMs.EditorState.transactionExtender.of(tr => tr.docChanged && !tr.isUserEvent("input.type")
-        && !tr.isUserEvent("undo") && !tr.isUserEvent("redo") && tr.annotation(CMc.isolateHistory) == null
-        ? { annotations: CMc.isolateHistory.of("full") } : null),
+      // ED-3: a plugin's Editor-API edit opens its own step, and its follow-up edit within
+      // PLUGIN_JOIN_MS (Obsidian's CM6 newGroupDelay) joins it, as in stock: templater's
+      // insert + cursor jump undo as ONE step; typing after a plugin edit starts a new one
+      Ed.EDIT_KIND,
+      CMs.EditorState.transactionExtender.of(tr => {
+        if (!tr.docChanged || tr.isUserEvent("undo") || tr.isUserEvent("redo") || tr.annotation(CMc.isolateHistory) != null) return null;
+        const last = tr.startState.field(Ed.EDIT_KIND, false), plug = !!tr.annotation(Ed.PLUGIN_EDIT);
+        if (plug) return last && last.k === "plugin" && (tr.annotation(CMs.Transaction.time) || Date.now()) - last.t < Ed.PLUGIN_JOIN_MS
+          ? null : { annotations: CMc.isolateHistory.of("before") };
+        if (tr.isUserEvent("input.type")) return last && last.k === "plugin" ? { annotations: CMc.isolateHistory.of("before") } : null;
+        return { annotations: CMc.isolateHistory.of("full") };
+      }),
       // the editor's own keys (Ed.onKey) are a keymap `any` binding, not a keydown
       // handler: CM6 merges every keymap's commands for a key into one run list in
       // precedence order, so a plugin binding at a higher precedence
@@ -1762,7 +1794,11 @@ Object.assign(Ed, {
         perf.mark("ed_patch", t0, { lines: d.lines, patched: n, full: n >= d.lines && d.lines > 3 });
       }
     }
-    if (u.selectionSet || u.docChanged) { const p = Ed.focusPos(g); Ed.mark(g, p ? p.l : -1); }
+    // goal mt-fix: the caret Ed.home placed (note open, reading -> edit) opens no raw row: [mode:lp] stays bare
+    if (u.selectionSet || u.docChanged) {
+      if (!u.docChanged && Ed.HOME_SEL && u.transactions.some(t => t.annotation(Ed.HOME_SEL))) Ed.census();
+      else { const p = Ed.focusPos(g); Ed.mark(g, p ? p.l : -1); }
+    }
   },
   /* keys CM6 does not own: Enter (list continuation), Backspace/Delete (model
      deletes), Tab, Home/End, raw-column arrows, undo/redo, select-all — the
@@ -2119,7 +2155,7 @@ Ed.lpExt = function (v, G) {
       // widget events — so the task checkbox clone gets its own toggle (R8.6)
       const c = this.el.cloneNode(true);
       const cb = c.matches && c.matches("input.tbox") ? c : (c.querySelector ? c.querySelector("input.tbox") : null);
-      if (cb) cb.addEventListener("mousedown", e => Ed.toggleTask(e));
+      if (cb) Ed.taskBox(cb);
       return c;
     }
     ignoreEvent() { return true; }
@@ -2129,6 +2165,9 @@ Ed.lpExt = function (v, G) {
   const build = view => {
     const g = G(), st = view.state, doc = st.doc, sel = st.selection.main, out = [], labels = [];
     const cur = doc.lineAt(sel.head).number;
+    // plugin overlay tokens (a Templater command) take no markdown decoration, as in Obsidian
+    const opq = Ed.lpOpaque ? Ed.lpOpaque(view) : null;
+    const hit = (rs, s, e) => { for (const r of rs) if (s < r[1] && e > r[0]) return true; return false; };
     let last = -1;
     for (const { from, to } of view.visibleRanges) {
       let pos = from;
@@ -2137,7 +2176,7 @@ Ed.lpExt = function (v, G) {
         pos = ln.to + 1;
         if (ln.number <= last) continue;
         last = ln.number;
-        const P = Ed.lpParse(g, ln.text);
+        const P = Ed.lpParse(g, ln.text), ors = opq && opq.get(ln.number);
         let rv = null;
         if (sel.from <= ln.to && sel.to >= ln.from) {
           const lo = Math.max(sel.from, ln.from) - ln.from, hi = Math.min(sel.to, ln.to) - ln.from;
@@ -2148,12 +2187,13 @@ Ed.lpExt = function (v, G) {
           }
         }
         const fl = g && g._fl && g._fl.l === ln.number - 1 ? (g._fl.fade ? " navflash fade" : " navflash") : "";
-        out.push(ld(P.cls + (ln.number === cur ? " cur" : "") + fl).range(ln.from));
+        const whole = ors && ln.length > 0 && ors.some(r => r[0] <= 0 && r[1] >= ln.length);
+        out.push(ld((whole ? Ed.lpParse(g, "x").cls : P.cls) + (ln.number === cur ? " cur" : "") + fl).range(ln.from));
         for (let i = 0; i < P.els.length; i++) {
           const x = P.els[i];
-          if (x.e > x.s) out.push((rv && rv.has(i) ? x.rv : x.d).range(ln.from + x.s, ln.from + x.e));
+          if (x.e > x.s && !(ors && hit(ors, x.s, x.e))) out.push((rv && rv.has(i) ? x.rv : x.d).range(ln.from + x.s, ln.from + x.e));
         }
-        for (const w of P.wid) out.push(Decoration.widget({ widget: new Leaf(ln.text, w.k, w.el), side: 1 }).range(ln.from + w.pos));
+        for (const w of P.wid) if (!(ors && ors.some(r => r[0] < w.pos && w.pos < r[1]))) out.push(Decoration.widget({ widget: new Leaf(ln.text, w.k, w.el), side: 1 }).range(ln.from + w.pos));
       }
     }
     if (g && g.view === v && g.lp) {
@@ -2165,7 +2205,7 @@ Ed.lpExt = function (v, G) {
   const plugin = ViewPlugin.fromClass(class {
     constructor(view) { this.decorations = build(view); }
     update(u) {
-      if (u.docChanged || u.selectionSet || u.viewportChanged || u.transactions.some(t => t.effects.some(e => e.is(bust))))
+      if (u.docChanged || u.selectionSet || u.viewportChanged || u.transactions.some(t => t.reconfigured || t.effects.some(e => e.is(bust))))
         this.decorations = build(u.view);
     }
   }, { decorations: p => p.decorations });
@@ -2182,7 +2222,116 @@ Ed.lpExt = function (v, G) {
       return e.defaultPrevented;
     },
   });
-  return [plugin, clicks];
+  return [plugin, clicks, Ed.cbField(v, G, bust)];
+};
+/* ---------- plugin CODE BLOCKS in Live Preview (plug-top5) ----------
+   A fenced block whose language a plugin registered a code-block processor for
+   (registerMarkdownCodeBlockProcessor: dataview, tasks, ...) shows in Live Preview
+   as the processor's output, not as source: the whole fence (opening line ..
+   closing line) is one block widget, div.block-language-L handed to the processor
+   with (source, el, ctx) the way the reading view does it. A selection touching
+   the fence reveals the source; source mode never renders. Ed.cbHook is set by
+   ui/plugins/editor-api.js (null = no plugin loaded: nothing is scanned). Block
+   decorations must come from a StateField (CM6 refuses them from a ViewPlugin). */
+Ed.cbHook = null;
+Ed.cbFx = null;
+Ed.CB_FENCE = /^ {0,3}(`{3,}|~{3,})[ \t]*([^\s`{]*)(.*)$/;
+// every closed fence of doc -> [{from, to, lang, src}] (cached on the doc: a caret move re-scans nothing)
+Ed.cbFences = function (doc) {
+  if (Ed._cbDoc === doc) return Ed._cbOut;
+  const out = [];
+  let open = null, li = -1;   // li: content column of the list item the following lines may belong to (-1: none)
+  const LI = /^([ \t]*)([-*+]|\d{1,9}[.)])([ \t]+)\S/;
+  for (let i = 1; i <= doc.lines; i++) {
+    const ln = doc.line(i), t = ln.text;
+    if (!open) {
+      // deep-dataview FD14: a fence indented under a list item is that item's code block (stock Live Preview
+      // renders it; one in a blockquote stays source, as stock). Indent stripped from the fence and its lines.
+      const lm = LI.exec(t), ws = /^[ \t]*/.exec(t)[0].length;
+      if (lm) { li = lm[1].length + lm[2].length + lm[3].length; continue; }
+      if (t.trim() && li >= 0 && ws < li) li = -1;
+      const ind = li >= 0 && ws >= li && ws < li + 4 ? li : 0, m = Ed.CB_FENCE.exec(ind ? t.slice(ind) : t);
+      if (m && !(m[1][0] === "`" && m[3].includes("`"))) open = { ch: m[1][0], n: m[1].length, lang: m[2], from: ln.from, l0: i, ind };
+      continue;
+    }
+    const m = Ed.CB_FENCE.exec(open.ind ? t.replace(new RegExp("^[ \\t]{0," + open.ind + "}"), "") : t);
+    if (m && m[1][0] === open.ch && m[1].length >= open.n && !m[2] && !m[3].trim()) {
+      let src = i - 1 > open.l0 ? doc.sliceString(doc.line(open.l0 + 1).from, doc.line(i - 1).to) : "";
+      if (open.ind) src = src.split("\n").map(s => s.replace(new RegExp("^[ \\t]{0," + open.ind + "}"), "")).join("\n");
+      if (open.lang) out.push({ from: open.from, to: ln.to, lang: open.lang, src });
+      open = null;
+    }
+  }
+  Ed._cbDoc = doc; Ed._cbOut = out;
+  return out;
+};
+// a processor was (un)registered: every editor rebuilds its code-block widgets
+Ed.cbRefresh = function () {
+  if (!Ed.cbFx || !CMv || !CMv.EditorView) return;
+  for (const el of document.querySelectorAll(".cm-editor")) {
+    const cm = CMv.EditorView.findFromDOM(el);
+    if (cm) try { cm.dispatch({ effects: Ed.cbFx.of(null) }); } catch (e) { console.error(e); }
+  }
+};
+// leaf.rebuildView on a note in Live Preview: that editor's code-block widgets render again from
+// scratch (stock rebuilds the whole view, so a dataview TABLE re-runs its query with refresh off)
+Ed.cbRebuild = function (v) {
+  if (!v || !v.cm || !Ed.cbFx) return;
+  v._cbRb = (v._cbRb || 0) + 1;
+  try { v.cm.dispatch({ effects: Ed.cbFx.of(null) }); } catch (e) { console.error(e); }
+};
+Ed.cbField = function (v, G, bust) {
+  const { Decoration, WidgetType, EditorView } = CMv;
+  if (!Ed.cbFx) Ed.cbFx = CMs.StateEffect.define();
+  class CB extends WidgetType {
+    constructor(lang, src, path, gen) { super(); this.lang = lang; this.src = src; this.path = path; this.gen = gen; }
+    eq(o) { return o.lang === this.lang && o.src === this.src && o.path === this.path && o.gen === this.gen; }
+    toDOM() {
+      const w = Ed.el("div", "cm-preview-code-block cm-embed-block markdown-rendered cm-lang-" + this.lang);
+      const el = Ed.el("div", "block-language-" + this.lang);
+      w.appendChild(el);
+      // the widget ignores editor events (ignoreEvent): its wiki links follow here (dataview file links)
+      w.addEventListener("click", e => {
+        const a = e.target && e.target.closest && e.target.closest("a.wiki, a.internal-link");
+        if (a && w.contains(a) && typeof wikiClick === "function") wikiClick(e, a);
+      });
+      const h = Ed.cbHook;
+      if (h) try { w._cbOff = h.render(this.lang, this.src, el, this.path); } catch (e) { console.error("[plugin] code block " + this.lang + ":", e); }
+      return w;
+    }
+    destroy(dom) { if (dom && dom._cbOff) try { dom._cbOff(); } catch (e) { console.error(e); } }
+    ignoreEvent() { return true; }
+  }
+  const build = st => {
+    const h = Ed.cbHook;
+    if (!h || !h.any()) return Decoration.none;
+    const g = G();
+    const tb = g && g.view === v && g.active >= 0 ? g.tabs[g.active] : null;   // goal mt-fix: the lp a reading view keeps laid out renders none
+    if (!g || (v.lp && v.lp.classList.contains("src")) || (tb && tb.mode === "reading")) return Decoration.none;
+    const blocks = Ed.cbFences(st.doc);
+    if (!blocks.length) return Decoration.none;
+    const n = typeof curOf === "function" && g.view === v ? curOf(g) : v.note, path = n ? n + ".md" : "", gen = h.gen() + "/" + (v._cbRb || 0), out = [];
+    for (const b of blocks) {
+      if (!h.has(b.lang)) continue;
+      if (st.selection.ranges.some(r => r.from <= b.to && r.to >= b.from)) continue;   // caret in the fence: its source shows
+      out.push(Decoration.replace({ widget: new CB(b.lang, b.src, path, gen), block: true }).range(b.from, b.to));
+    }
+    return Decoration.set(out, true);
+  };
+  const field = CMs.StateField.define({
+    create: st => { try { return build(st); } catch (e) { console.error(e); return Decoration.none; } },
+    update(d, tr) {
+      if (tr.docChanged || tr.selection || tr.effects.some(e => e.is(bust) || e.is(Ed.cbFx)))
+        try { return build(tr.state); } catch (e) { console.error(e); return Decoration.none; }
+      return d;
+    },
+    provide: f => EditorView.decorations.from(f),
+  });
+  return field;
+};
+Ed.cbCensus = function () {   // [lpcb:N] rendered plugin code blocks in live-preview editors (only once one exists)
+  const n = document.querySelectorAll(".cm-editor .cm-preview-code-block").length;
+  return n ? " [lpcb:" + n + "]" : "";
 };
 /* ---------- MARKS painted by main.js (find bar "fd", search jump "sc") ----------
    A named DecorationSet per view, replaced whole by Ed.hl and mapped through
@@ -2231,15 +2380,22 @@ Ed.hl = function (g, k, ranges) {
   }
   cm.dispatch({ effects: v._hlFx.of({ k, d: CMv.Decoration.set(out, true) }) });
 };
-// a task checkbox (an LP widget): toggle "[ ]" <-> "[x]" on ITS line, one undo step
+// a task checkbox (an LP widget): mousedown keeps the caret off the line (the raw "[ ]" must not
+// reveal under the pointer); the toggle runs on click, once the event has bubbled through the
+// editor, so a plugin editor extension's own click handler (Obsidian Tasks: done date, recurrence)
+// takes it with preventDefault as in stock; untaken, Ed.toggleTask flips the line itself
+Ed.taskBox = function (cb) {
+  cb.addEventListener("mousedown", e => { e.preventDefault(); e.stopPropagation(); });
+  cb.addEventListener("click", e => setTimeout(() => { if (!e.defaultPrevented) Ed.toggleTask(e); }, 0));
+};
+// toggle "[ ]" <-> "[x]" on the checkbox's line, one undo step
 Ed.toggleTask = function (e) {
-  e.preventDefault(); e.stopPropagation();
   const box = e.target, pane = box && box.closest ? box.closest(".pane") : null, g = pane ? pane._g : null, cm = Ed.cm(g);
   if (!cm) return;
   let l;
   try { l = cm.state.doc.lineAt(cm.posAtDOM(box, 0)).number - 1; } catch (_) { return; }
   const L = Ed.lines(g);
   Ed.snap(g, "task");
-  L[l] = L[l].replace(/^(\s*(?:[-*+]|\d+\.) )\[( |[xX])\]/, (_, p, ch) => p + (ch === " " ? "[x]" : "[ ]"));
+  L[l] = L[l].replace(/^(\s*(?:[-*+]|\d+\.) )\[([^\]\n])\]/, (_, p, ch) => p + (ch === " " ? "[x]" : "[ ]"));
   Ed.commit(g);
 };

@@ -1,6 +1,6 @@
 [package]
 name = "opensidian"
-version = "0.9.1"
+version = "0.9.2"
 edition = "2021"
 license = "GPL-3.0-or-later"
 
@@ -10,6 +10,14 @@ license = "GPL-3.0-or-later"
 [lib]
 name = "opensidian_lib"
 path = "src/lib.rs"
+
+# goal devui — DEV-ONLY UI hot reload (src/devui.rs). NOT in default and never to be:
+# a default build compiles none of it (main.rs gates every call site), test
+# devui_guard asserts both, and the box release guard refuses a binary carrying
+# devui::MARKER. No dependency: it uses only std + tauri, already linked.
+[features]
+default = []
+devui = []
 
 [build-dependencies]
 tauri-build = { version = "2.1", features = [] }
@@ -107,3 +115,14 @@ strip = "symbols"
 # scripts/glib-vendor-check.sh before every release.
 [patch.crates-io]
 glib = { path = "vendor/glib-0.18.5" }
+
+# goal devui — the fast DEV loop profile (`cargo build --profile devfast --features devui`):
+# deps optimised once and cached, the app crate unoptimised + incremental, no debuginfo.
+# Dev-only; [profile.release] above is untouched.
+[profile.devfast]
+inherits = "dev"
+debug = 0
+incremental = true
+
+[profile.devfast.package."*"]
+opt-level = 2

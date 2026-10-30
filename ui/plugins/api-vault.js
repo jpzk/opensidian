@@ -68,6 +68,16 @@
       for (const p of imgs || []) { ensureFile(p); keep.add(p); }
       for (const p of cvs || []) { ensureFile(p); keep.add(p); }
       for (const p of media || []) { ensureFile(p); keep.add(p); }   // goal cv-journeys: audio / video (canvasfs media) are files a card plays
+      /* plug-val: every other non-hidden file (a .js user script, .json, .txt) is a TFile too, as in stock: one
+         confined-fs listing per folder (templater tp.user: Scripts/hello.js must be a child of its TFolder) */
+      try {
+        const lists = await Promise.all(["", ...(folders || [])].map(d => core.list(d).then(r => [d, r], () => [d, []])));
+        for (const [d, r] of lists) for (const [n, k] of r || []) {
+          if (k === "folder" || n.startsWith(".")) continue;
+          const p = joinRel(d, n);
+          if (!keep.has(p)) { ensureFile(p); keep.add(p); }
+        }
+      } catch (_) {}
       for (const [p, f] of [...files]) if (!keep.has(p) && files.get(p) === f) removeTree(f);
     }
     /* goal cv-journeys: the image / PDF / audio / video files only (notes are the watcher's, canvases the Canvas view's):
@@ -229,28 +239,93 @@
     host.vfs = core;                 // for node-modules.js only; the seal hides host from plugins
 
     const joinRel = (dir, n) => (dir ? dir + "/" : "") + n;
+    /* plug-val G2: a DataAdapter path is vault-relative in stock (getFullPath = basePath + "/" + p),
+       so "/.git" names <vault>/.git (obsidian-git asks adapter.exists("/.git")). Only the adapter
+       strips the leading "/": "/vault/..." keeps its meaning and the fs facade (core) stays verbatim,
+       so require("fs") still has "/etc" refused by Rust. */
+    const ap = p => { const s = String(p == null ? "" : p); return s === VROOT || s.startsWith(VROOT + "/") ? s : s.replace(/^\/+/, ""); };
+    /* deep-templater ED-4: in stock a DataAdapter write to a new vault path puts the file in the vault model before the
+       promise resolves and fires "create" (tp.app.vault.getAllLoadedFiles() lists EX/w1.txt right after
+       `await adapter.write("EX/w1.txt", ...)`; templater startup templates write files that way). The watcher reports
+       none of these writes. A note goes through changed() so the app's own tree and the metadata cache see it too;
+       hidden paths (.obsidian/...) stay out of the model, as in stock. Existing files are left to their own events. */
+    async function adapterMade(p, size, folder) {
+      if (!K.st.filesOn) return;
+      const r = vrel(ap(p)).replace(/\/+$/, "");
+      if (!r || r.split("/").some(s => s.startsWith(".")) || files.has(r)) return;
+      if (folder) { const f = ensureFolder(r); vault.trigger("create", f); return; }
+      const n = noteOf(r);
+      if (n != null) { await changed({ added: [n] }); return; }
+      const [f, made] = ensureFile(r); f.stat.size = size || 0;
+      if (made) vault.trigger("create", f);
+    }
+    /* PR #33 review: the other half of adapterMade. A file the adapter removes or renames leaves / moves in the vault
+       model at once too (getFileByPath / getFiles no longer report a removed tmp.txt), with stock's "delete" /
+       "rename"; a note goes through changed() so the app's tabs and tree follow. A path not in the model: nothing to
+       drop, and a rename onto a visible path is a new file there (adapterMade). */
+    const adapterRel = p => vrel(ap(p)).replace(/\/+$/, "");
+    const notesIn = f => { const out = []; const go = x => { if (x instanceof TFolder) x.children.forEach(go); else { const n = noteOf(x.path); if (n != null) out.push(n); } }; go(f); return out; };
+    async function adapterGone(p) {
+      if (!K.st.filesOn) return;
+      const r = adapterRel(p), f = r && files.get(r);
+      if (!f) return;
+      const notes = notesIn(f), all = [];
+      const go = x => { all.push(x); if (x instanceof TFolder) x.children.forEach(go); }; go(f);
+      if (f instanceof TFile && notes.length) { await changed({ removed: notes }); return; }
+      removeTree(f);
+      // PR #33 review: a note in the tree gets metadataCache "deleted" here, as applyChange gives a removed note (the
+      // changed() below finds no model entry left to fire it for)
+      for (const x of all.reverse()) { if (x instanceof TFile && noteOf(x.path) != null) metadataCache.trigger("deleted", x, null); vault.trigger("delete", x); }
+      if (notes.length) await changed({ removed: notes });
+    }
+    async function adapterMoved(a, b) {
+      if (!K.st.filesOn) return;
+      const ra = adapterRel(a), rb = adapterRel(b), f = ra && files.get(ra);
+      const hidden = !rb || rb.split("/").some(s => s.startsWith("."));
+      const kindKept = f && (f instanceof TFolder || (noteOf(ra) != null) === (noteOf(rb) != null));
+      if (!f || hidden || !kindKept) {   // out of the model, into a hidden path, or a note <-> non-note: a delete + a create
+        if (f) await adapterGone(a);
+        if (!hidden) { const st = await core.stat(ap(b)).catch(() => null); await adapterMade(b, st && st.size, st && st.type === "folder"); }
+        return;
+      }
+      // PR #33 review: a rename onto a path in the model replaced that file on disk; it leaves the model (with its
+      // "delete") first, so the moved entry is the only one there (getFiles reported both)
+      const g = files.get(rb); if (g && g !== f) await adapterGone(b);
+      if (f instanceof TFile && noteOf(ra) != null) { await changed({ renamed: [[noteOf(ra), noteOf(rb)]] }); return; }
+      const before = notesIn(f), moved = [];
+      const go = x => { moved.push([x, x.path]); if (x instanceof TFolder) x.children.forEach(go); }; go(f);
+      movePath(f, rb);
+      for (const [x, o] of moved) vault.trigger("rename", x, o);
+      if (before.length) await changed({ renamed: before.map(o => [o, rb + o.slice(ra.length)]) });
+    }
     class DataAdapter {
       getName() { return K.st.vaultName; }
-      async exists(p) { return core.exists(p); }
+      async exists(p) { return core.exists(ap(p)); }
       async stat(p) {
-        try { return await core.stat(p); } catch (e) { if (e.code === "ENOENT") return null; throw e; }
+        try { return await core.stat(ap(p)); } catch (e) { if (e.code === "ENOENT") return null; throw e; }
       }
       async list(p) {
+        p = ap(p);
         const d = vrel(p).replace(/\/+$/, ""), out = { files: [], folders: [] };
         for (const [n, k] of await core.list(p)) (k === "folder" ? out.folders : out.files).push(joinRel(d, n));
         return out;
       }
-      async read(p) { return td.decode(await core.read(p)); }
-      async readBinary(p) { const u = await core.read(p); return u.buffer.slice(u.byteOffset, u.byteOffset + u.byteLength); }
-      async write(p, data) { await core.write(p, String(data)); }
-      async writeBinary(p, data) { await core.write(p, toBytes(data)); }
-      async append(p, data) { await core.append(p, String(data)); }
-      async appendBinary(p, data) { await core.append(p, toBytes(data)); }
+      async read(p) { return td.decode(await core.read(ap(p))); }
+      async readBinary(p) { const u = await core.read(ap(p)); return u.buffer.slice(u.byteOffset, u.byteOffset + u.byteLength); }
+      /* deep-git + deep-templater: a file the adapter writes is in the vault model at once, as in stock. obsidian-git writes
+         its conflict list with adapter.write and opens it with openLinkText right after (before the watcher reports it);
+         templater startup templates write files and list them via getAllLoadedFiles right after. adapterMade covers both:
+         visible paths only, a file already in the model is left to the watcher, notes go through changed({added}). */
+      async write(p, data) { const s = String(data); await core.write(ap(p), s); await adapterMade(p, te.encode(s).byteLength); }
+      async writeBinary(p, data) { const u = toBytes(data); await core.write(ap(p), u); await adapterMade(p, u.byteLength); }
+      async append(p, data) { const s = String(data); await core.append(ap(p), s); await adapterMade(p, te.encode(s).byteLength); }
+      async appendBinary(p, data) { const u = toBytes(data); await core.append(ap(p), u); await adapterMade(p, u.byteLength); }
       async process(p, fn) { const out = fn(await this.read(p)); await this.write(p, out); return out; }
       getResourcePath() { return ""; }
-      async mkdir(p) { await core.mkdir(p, true); }
+      async mkdir(p) { await core.mkdir(ap(p), true); await adapterMade(p, 0, true); }
       async trashSystem() { return false; }       // no system trash: callers fall back to trashLocal
       async trashLocal(p) {
+        p = ap(p);
         await core.mkdir(".trash", true);
         const base = vrel(p).split("/").pop();
         let to = ".trash/" + base;
@@ -258,6 +333,7 @@
         await core.rename(p, to);
       }
       async rmdir(p, recursive) {
+        p = ap(p);
         if (recursive) {
           for (const [n, k] of await core.list(p)) {
             const c = joinRel(vrel(p).replace(/\/+$/, ""), n);
@@ -266,9 +342,9 @@
         }
         await core.rmdir(p);
       }
-      async remove(p) { await core.unlink(p); }
-      async rename(a, b) { await core.rename(a, b); }
-      async copy(a, b) { await core.copy(a, b); }
+      async remove(p) { await core.unlink(ap(p)); await adapterGone(p); }
+      async rename(a, b) { await core.rename(ap(a), ap(b)); await adapterMoved(a, b); }
+      async copy(a, b) { await core.copy(ap(a), ap(b)); const st = await core.stat(ap(b)).catch(() => null); await adapterMade(b, st && st.size); }
     }
     const nodeErr = (Ctor, code, msg) => { const e = new Ctor(msg); e.code = code; return e; };
     const posixResolve = p => {
@@ -303,7 +379,7 @@
     class FileSystemAdapter extends DataAdapter {
       get basePath() { return VROOT; }
       getBasePath() { return VROOT; }
-      getFullPath(p) { const r = vrel(p); return r ? VROOT + "/" + r : VROOT; }
+      getFullPath(p) { const r = vrel(ap(p)); return r ? VROOT + "/" + r : VROOT; }
       getFilePath(p) { return "file://" + this.getFullPath(p); }
       /* top5-func: stock's desktop adapter carries its fs module (templater reads adapter.fs). Here it
          is the same vault-confined facade require("fs") gives (ui/plugins/node-modules.js): paths are
@@ -323,11 +399,14 @@
     const adapter = new FileSystemAdapter();
 
     /* Vault: the typings' class; app.vault is its one instance. recurseChildren
-       is the static walk calendar's daily-notes index uses (depth-first, root first). */
+       is the static walk calendar's daily-notes index uses. deep-dataview: stock's own walk, root first,
+       then a stack that a folder's children are appended to in order and popped from the end, so the LAST
+       child is visited first. getFiles / getMarkdownFiles are this walk in stock, and dataview indexes the
+       vault in that order, so result rows that tie keep stock's order. */
     class Vault extends Events {
       static recurseChildren(root, cb) {
-        const st = root ? [root] : [];
-        while (st.length) { const f = st.pop(); cb(f); if (f instanceof TFolder) for (let i = f.children.length - 1; i >= 0; i--) st.push(f.children[i]); }
+        let st = [root];
+        while (st.length > 0) { const f = st.pop(); if (f) { cb(f); if (f instanceof TFolder) st = st.concat(f.children); } }
       }
     }
     const vault = new Vault();
@@ -342,8 +421,8 @@
       getAbstractFileByPath(p) { const n = normalizePath(p); return n === "/" ? vroot : files.get(n) || null; },
       getFileByPath(p) { const f = vault.getAbstractFileByPath(p); return f instanceof TFile ? f : null; },
       getFolderByPath(p) { const f = vault.getAbstractFileByPath(p); return f instanceof TFolder ? f : null; },
-      getFiles() { return [...files.values()].filter(f => f instanceof TFile); },
-      getMarkdownFiles() { return [...files.values()].filter(f => f instanceof TFile && f.extension === "md"); },
+      getFiles() { const a = []; Vault.recurseChildren(vroot, f => { if (f instanceof TFile) a.push(f); }); return a; },
+      getMarkdownFiles() { const a = []; Vault.recurseChildren(vroot, f => { if (f instanceof TFile && f.extension === "md") a.push(f); }); return a; },
       getAllLoadedFiles() { return [vroot, ...files.values()]; },
       getAllFolders(includeRoot) { const a = [...files.values()].filter(f => f instanceof TFolder); return includeRoot ? [vroot, ...a] : a; },
       async read(f) {
@@ -486,7 +565,23 @@
         let j = 1, o = lines[0].length + 1;
         for (; j < lines.length; j++) { if (/^(---|\.\.\.)\s*$/.test(lineEnd(lines[j]))) break; o += lines[j].length + 1; }
         if (j < lines.length) {
-          out.frontmatter = parseYaml(lines.slice(1, j).join("\n"));
+          let fm; try { fm = parseYaml(lines.slice(1, j).join("\n")); } catch (_) { fm = undefined; }   // invalid or empty YAML: no frontmatter
+          if (fm && typeof fm === "object" && !Array.isArray(fm)) {
+            out.frontmatter = fm;
+            // an *alias is the SAME object as its anchor, so the frontmatter can be a shared-node graph: each object is walked
+            // once (its links are reported under the first key that reaches it), else doubled aliases (aN: [*a(N-1), *a(N-1)])
+            // made the walk exponential in the line count
+            const fl = [], seen = new Set(), walk = (v, k) => {   // properties whose whole value is a [[wikilink]]
+              if (typeof v === "string") {
+                const m = v.match(/^\[\[([^\[\]]+)\]\]$/);
+                if (m) { const b = m[1].indexOf("|"), link = b < 0 ? m[1] : m[1].slice(0, b); fl.push({ key: k, link, original: v, displayText: b < 0 ? link.split("#").filter(Boolean).join(" > ") : m[1].slice(b + 1) }); }
+              } else if (!v || typeof v !== "object" || seen.has(v)) return;
+              else if (seen.add(v), Array.isArray(v)) v.forEach((x, n) => walk(x, k + "." + n));
+              else for (const s of Object.keys(v)) walk(v[s], k + "." + s);
+            };
+            for (const k of Object.keys(fm)) walk(fm[k], k);
+            if (fl.length) out.frontmatterLinks = fl;
+          }
           out.frontmatterPosition = { start: pos(0, 0, 0), end: pos(j, 3, o + 3) };
           out.sections = [{ type: "yaml", position: out.frontmatterPosition }];
           off = o + lines[j].length + 1; i = j + 1;
@@ -637,6 +732,16 @@
         open("paragraph", i, off); ext(i, off, len);
       }
       close();
+      {   // block ids: a list item, or a paragraph / quote / table / math section, whose last line ends in " ^id" ->
+          // blocks[id] = { id, position } (lower-cased, the item / section span); resolveSubpath "#^id" reads it
+        const bl = {}, idAt = ln => { const m = String(lines[ln] == null ? "" : lines[ln]).replace(/\r$/, "").match(/(?:^|\s)\^([A-Za-z0-9-]+)[ \t]*$/); return m ? m[1].toLowerCase() : null; };
+        for (const it of items) { const id = idAt(it.position.end.line); if (id && !bl[id]) bl[id] = { id, position: it.position }; }
+        for (const s of sections) {
+          if (!/^(paragraph|blockquote|callout|table|math)$/.test(s.type)) continue;
+          const id = idAt(s.position.end.line); if (id && !bl[id]) bl[id] = { id, position: s.position };
+        }
+        if (Object.keys(bl).length) out.blocks = bl;
+      }
       if (sections.length) out.sections = sections;
       if (items.length) out.listItems = items;
     }
@@ -667,7 +772,7 @@
       for (const f of batch) {
         if (files.get(f.path) !== f) continue;
         let txt; try { txt = await inv("read_note", { name: noteOf(f.path) }); } catch (_) { continue; }
-        const c = parseMeta(txt); caches.set(f.path, c); f.stat.size = txt.length;
+        const c = parseMeta(txt); caches.set(f.path, c); f.stat.size = new TextEncoder().encode(txt).byteLength;
         metadataCache.trigger("changed", f, txt, c);
         metadataCache.trigger("resolve", f);   // its links resolve on demand (resolveLink), so they are resolved now: dataview re-indexes a file on "resolve"
       }
@@ -680,7 +785,7 @@
       for (let k = 0; k < all.length; k += 16) {
         await Promise.all(all.slice(k, k + 16).map(async f => {
           if (caches.has(f.path)) return;
-          try { const t = await inv("read_note", { name: noteOf(f.path) }); caches.set(f.path, parseMeta(t)); f.stat.size = t.length; } catch (_) {}
+          try { const t = await inv("read_note", { name: noteOf(f.path) }); caches.set(f.path, parseMeta(t)); f.stat.size = new TextEncoder().encode(t).byteLength; } catch (_) {}
         }));
         await new Promise(r => setTimeout(r, 0));
       }
@@ -1342,6 +1447,11 @@
     };
     class App {     // typings expose App as a class; plugins only ever receive `app`
       isDarkMode() { return document.body.classList.contains("theme-dark"); }
+      // the base color scheme's name, the same value a vault's .obsidian/appearance.json "theme" holds:
+      // "obsidian" (dark) or "moonstone" (light). obsidian-git's
+      // line author gutter calls window.app.getTheme() while it paints each marker; without it the
+      // gutter's view plugin crashed and no gutter was drawn (deep-git G3)
+      getTheme() { return this.isDarkMode() ? "obsidian" : "moonstone"; }
     }
     Object.setPrototypeOf(app, App.prototype);
     metadataTypeManager.app = app;

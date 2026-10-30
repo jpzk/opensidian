@@ -83,6 +83,20 @@ body {
   --text-muted: var(--color-base-70, #b3b3b3);                /* R15.14 */
   --text-faint: var(--color-base-50, #666666);                /* R15.14 */
   --text-error: var(--color-red, #f5c2c7);                    /* T6b: color-red = --text-error */
+  --text-warning: var(--color-orange, #e9973f);               /* deep-templater F10: dark literal = Obsidian dark orange, not measured here */
+  /* code token names (deep-templater F24; light values measured, see body.theme-light;
+     dark literals = Obsidian's dark palette, not measured here) */
+  --code-normal: var(--text-normal);
+  --code-comment: var(--text-faint);
+  --code-function: var(--color-yellow, #e0de71);
+  --code-important: var(--color-orange, #e9973f);
+  --code-keyword: var(--color-pink, #fa99cd);
+  --code-operator: var(--color-red, #fb464c);
+  --code-property: var(--color-cyan, #53dfdd);
+  --code-punctuation: var(--text-muted);
+  --code-string: var(--color-green, #44cf6e);
+  --code-tag: var(--color-red, #fb464c);
+  --code-value: var(--color-purple, #a882ff);
   /* ---- THE ACCENT CHAIN (goal themematch). Obsidian themes derive every
      accent surface from ONE triple, --accent-h/-s/-l, through --color-accent
      and two shifted steps. The step factors below are FITTED in the
@@ -303,7 +317,23 @@ body:where(.theme-light) {
   --text-muted: var(--color-base-70, #5c5c5c);
   --text-faint: var(--color-base-50, #ababab);
   --text-error: var(--color-red, #e93147);
+  --text-warning: var(--color-orange, #ec7500);               /* deep-templater F10: stock 1.13.7 pixel of templater's device-only note (edge/ev/stock-r1-F10-tab2.png) */
   --text-highlight-bg: #ffec99;
+  /* the code token names (deep-templater F24): plugin highlighters paint with them,
+     templater's <% %> commands most visibly (var(--code-property, #d4d4d4) etc.), and
+     without them they took their dark fallbacks on a light page. Values = stock
+     1.13.7 pixels on the same note (hz-artifacts/boxd/deep-templater/fuzz/ev/stock-c1058.png). */
+  --code-normal: var(--text-normal);
+  --code-comment: var(--text-faint);
+  --code-function: var(--color-yellow, #e0ac00);
+  --code-important: var(--color-orange, #ec7500);
+  --code-keyword: var(--color-pink, #d53984);
+  --code-operator: var(--color-red, #e93147);
+  --code-property: var(--color-cyan, #00bfbc);
+  --code-punctuation: var(--text-muted);
+  --code-string: var(--color-green, #08b94e);
+  --code-tag: var(--color-red, #e93147);
+  --code-value: var(--color-purple, #7852ee);
   /* the accent chain in light (factors fitted in the themelight audit, see
      the dark block): ink = the triple, fills = step 1, hover = step 2 */
   --color-accent-1: hsl(calc(var(--accent-h) - 1), calc(var(--accent-s) * 1.01), calc(var(--accent-l) * 1.075));
@@ -521,9 +551,16 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .trow.folder { font-weight: 500 }
 .trow .ttag { flex: 0 0 auto; margin-left: 6px; padding: 0 4px; border-radius: 3px;   /* goal canvas-core: the CANVAS tag on a .canvas row */
              font-size: 0.7em; letter-spacing: .04em; color: var(--text-chrome-dim); background: var(--bg-surface) }
-#vswitch { padding: 6px 12px; border-top: 1px solid var(--bg-surface); color: var(--text-chrome-muted);
+/* settings-gear (#29): the footer row holds the switcher (flexes, ellipsizes) and the Settings gear (fixed 26px). */
+#vbar { display: flex; align-items: center; flex: 0 0 auto; min-width: 0; border-top: 1px solid var(--bg-surface) }
+#vswitch { flex: 1 1 auto; min-width: 0; padding: 6px 4px 6px 12px; color: var(--text-chrome-muted);
            cursor: pointer; font-size: 12px; white-space: nowrap;
            overflow: hidden; text-overflow: ellipsis }
+#sgear { flex: 0 0 26px; width: 26px; height: 24px; margin-right: 6px; padding: 0; border: 0; border-radius: 4px;
+         background: none; color: var(--text-chrome-muted); cursor: pointer; display: flex; align-items: center; justify-content: center }
+#sgear:hover { background: var(--bg-surface); color: var(--text-chrome) }
+#sgear:focus-visible { outline: 2px solid var(--border-focus-ring); outline-offset: -2px }
+#sgear svg { width: 15px; height: 15px; display: block }
 #vswitch:hover { background: var(--bg-surface) }
 #main { flex: 1; display: flex; min-width: 0 }
 /* R9.6 right sidebar: localgraph of the active note, resizable divider */
@@ -900,10 +937,12 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .graph-controls .graph-color-group { display: flex; align-items: center; gap: 6px; padding: 3px 12px }
 .graph-controls .graph-color-group input[type=text] { flex: 1 1 auto; min-width: 0; height: 28px; padding: 0 8px; box-sizing: border-box; font: inherit; font-size: 13px;
   color: var(--text-normal, inherit); background: var(--background-modifier-form-field, var(--bg-elevated)); border: 1px solid var(--border); border-radius: 4px }
-.graph-controls .graph-color-group input[type=color] { flex: 0 0 auto; width: 22px; height: 18px; padding: 0; border: 0; border-radius: 50%;
-  background: none; cursor: grab; overflow: hidden }
+/* #28: a true circle, 18 px like stock — fixed equal sides, never squashed by a narrow card (no shrink, aspect 1) */
+.graph-controls .graph-color-group input[type=color] { flex: 0 0 auto; box-sizing: border-box; width: var(--gc-swatch, 18px); height: var(--gc-swatch, 18px);
+  min-width: var(--gc-swatch, 18px); min-height: var(--gc-swatch, 18px); max-width: var(--gc-swatch, 18px); max-height: var(--gc-swatch, 18px); aspect-ratio: 1 / 1;
+  margin: 0; padding: 0; border: 0; border-radius: 50%; background: none; cursor: grab; overflow: hidden }
 .graph-controls .graph-color-group input[type=color]::-webkit-color-swatch-wrapper { padding: 0 }
-.graph-controls .graph-color-group input[type=color]::-webkit-color-swatch { border: 0; border-radius: 50% }
+.graph-controls .graph-color-group input[type=color]::-webkit-color-swatch { border: 0; border-radius: 50%; width: 100%; height: 100%; box-sizing: border-box }
 .graph-controls .graph-color-group.gc-drag { opacity: 0.5 }
 .graph-controls .graph-color-group input[type=color] { -webkit-user-drag: none; user-select: none }
 .graph-controls .graph-color-group .clickable-icon { flex: 0 0 auto; width: 26px; height: 26px; padding: 5px; box-sizing: border-box; border-radius: 4px;
@@ -1298,6 +1337,12 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
      is declared on body, and a var() naming a property this element does not
      have is guaranteed-invalid, not a fallback. Keep this block colour-free. */
   /* R15.14 dark tokens (content area only — app chrome keeps its own token layer): --text-normal / --text-muted / --text-faint / --background-primary(-alt) / --interactive-accent all live in the ONE token block at the top of this file */
+  /* Obsidian's spacing scale: plugin styles size from it (excalidraw sets
+     --editor-container-padding: var(--size-4-2), which places its top toolbar
+     and side button stack; unset, both collapse to the left edge) */
+  --size-2-1: 2px; --size-2-2: 4px; --size-2-3: 6px; --size-4-1: 4px; --size-4-2: 8px;
+  --size-4-3: 12px; --size-4-4: 16px; --size-4-5: 20px; --size-4-9: 36px;
+  --size-4-12: 48px; --size-4-16: 64px; --size-4-18: 72px;
   --radius-s: 4px; --size-4-6: 24px; --size-4-8: 32px; --file-line-width: 700px; --file-margins: var(--size-4-8);
   /* sidefont: ONE size for every sidebar list row — explorer .trow, bookmarks
      .bmrow, the right-strip .rlist rows, search .sgroup file rows. 13px is
@@ -1469,12 +1514,18 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
   inset-inline-start: calc(14px - 3ch); top: calc(var(--list-spacing) + 0.6em) }
 .lp ol > li::before, .preview ol > li::before { content: counter(list-item) "."; position: absolute; color: var(--list-marker-color);
   pointer-events: none; inset-inline-start: calc(12px - 3ch); top: var(--list-spacing) }
+/* plug-top5: a plugin code block rendered in Live Preview (editor.js Ed.cbField) lays out like the reading view:
+   CM6 line wrapping (overflow-wrap: anywhere) would shrink its table columns to one word, and a list needs the indent its marker sits in */
+.lp .cm-preview-code-block { white-space: normal; overflow-wrap: normal; word-break: normal; cursor: default }
+.lp .cm-preview-code-block ul > li, .lp .cm-preview-code-block ol > li { margin-inline-start: 3ch }
 /* R15.11 task list: custom 16px box r4 1px faint border, accent fill + masked tick; no bullet; done = strike + muted */
 .lp li:has(> input[type=checkbox])::before, .preview li:has(> input[type=checkbox])::before { display: none }
 .lp li:has(> input[type=checkbox]), .preview li:has(> input[type=checkbox]) { list-style: none }
-.lp li:has(> input[type=checkbox]:checked),
 /* rvtask Q5: Obsidian strikes only "[x]"/"[X]" in a BULLET list — a custom status ("[/]" "[-]" …)
-   and an ORDERED-list task are filled but not struck. data-task comes from the renderer. */
+   and an ORDERED-list task are filled but not struck. data-task comes from the renderer.
+   deep-tasks: the same rule in Live Preview — a rendered list in a widget (Obsidian Tasks query block)
+   by its data-task, and an editor task line by its row class tkx (editor.js, bullet "[x]" only) */
+.lp ul > li:is([data-task="x"], [data-task="X"]), .lp .tkx,
 .preview ul > li:is([data-task="x"], [data-task="X"]) {
   text-decoration: var(--checklist-done-decoration); color: var(--checklist-done-color) }
 .lp input[type=checkbox], .preview input[type=checkbox] { -webkit-appearance: none; appearance: none; border-radius: var(--checkbox-radius);
@@ -1513,7 +1564,8 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 /* R15.12 inline code: Source Code Pro 0.875em on the alt background, r4, 0.15em 0.3em */
 .lp code, .preview code { font-family: var(--font-monospace); font-size: var(--code-size); background-color: var(--code-background);
   border-radius: var(--code-radius); padding: 0.15em 0.3em; -webkit-box-decoration-break: clone; box-decoration-break: clone; color: var(--text-normal) }
-.lp pre, .preview pre { font-family: var(--font-monospace); font-size: var(--code-size); background-color: var(--code-background); border-radius: var(--code-radius); padding: 0.5em 1em; overflow-x: auto }
+.lp pre, .preview pre { font-family: var(--font-monospace); font-size: var(--code-size); background-color: var(--code-background); border-radius: var(--code-radius); padding: 0.5em 1em; overflow-x: auto;
+  white-space: var(--code-white-space, pre-wrap) }   /* deep-tasks QE10b: stock .markdown-rendered pre wraps (--code-white-space: pre-wrap) */
 .lp pre code, .preview pre code { padding: 0; background: none; font-size: inherit }
 /* R15.13 blockquote: 2px accent inline-start border, 24px padding, no margin (LP: 14px text offset) */
 .lp blockquote, .preview blockquote { border-inline-start: var(--blockquote-border-thickness) solid var(--blockquote-border-color);
@@ -1538,7 +1590,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
   border-radius: var(--list-bullet-radius); background: var(--list-marker-color) }
 .lp .li.ord > .mk.lim { min-width: 32px; padding-inline-start: 15px; color: var(--list-marker-color) }
 .lp .li.ord > .mk.lim::before { content: none }
-.lp .tk > .mk.lim { display: none }                             /* a task row draws a checkbox, not a bullet */
+.lp .tk:not(.ord) > .mk.lim { display: none }                           /* a task row draws a checkbox, not a bullet */
 .lp .tk > .mk.lim::before { content: none }
 /* the selector must out-specify `.lp input[type=checkbox]` above (0,2,1): an
    attribute selector weighs as much as a class, so a bare `.lp .tbox` loses */

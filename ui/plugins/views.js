@@ -287,12 +287,22 @@
         for (const g of M().groups()) for (const t of g.tabs) live.add(t);
         for (const [t, r] of [...recs]) if (!live.has(t) && !r.side) closeRec(r);
       }
-      async function openTabView(g, t, at, active) {   // insert t into g at `at` (no splice: tabclose census)
+      async function openTabView(g, t, at, active, guard) {   // insert t into g at `at` (no splice: tabclose census)
         if (typeof flushSave === "function") try { await flushSave(g); } catch (_) {}
+        // PR #33 review: `guard` runs after the last await before the switch (nothing can type in between); false = nothing inserted
+        if (guard && !guard()) return false;
         g.tabs.push(t);
         if (at < g.tabs.length - 1) { g.tabs.copyWithin(at + 1, at); g.tabs[at] = t; }
         if (active !== false || g.active < 0) { g.active = g.tabs.indexOf(t); if (typeof focusGroup === "function") try { focusGroup(g); } catch (_) {} if (typeof loadActive === "function") await loadActive(g); }
         else if (typeof renderTabs === "function") renderTabs(g);
+        return true;
+      }
+      async function noteSaved(g, t0) {   // true only when t0 provably holds no edits the disk lacks
+        // bufDirty/flushSave only see the group's ACTIVE buffer: an inactive note tab whose last save failed may still
+        // carry edits nothing here can check or write, so it is never treated as saved (the view opens after it instead)
+        if (activeTab(g) !== t0) return false;
+        if (typeof bufDirty !== "function" || !bufDirty(g)) return true;
+        try { return !!(await flushSave(g)); } catch (_) { return false; }
       }
       async function closeTabOf(t) {
         const g = groupOfTab(t); if (!g) { const r = recs.get(t); if (r) closeRec(r); return; }
@@ -647,6 +657,7 @@
           } else {
             const v = this.view, pm = v && v.previewMode;
             if (pm && typeof pm.rerender === "function") pm.rerender(true);
+            try { if (typeof Ed !== "undefined" && Ed && Ed.cbRebuild) Ed.cbRebuild(v && v._tv); } catch (e) { console.error(e); }
           }
           this.setEphemeralState(es);
         }
@@ -685,12 +696,25 @@
           await splitWith(g, split, t);
           if (prev && prev !== M().fg() && M().groups().indexOf(prev) >= 0 && typeof focusGroup === "function") try { focusGroup(prev); } catch (_) {}
         }
-        else if (t0 && !t0.kind && active && !leaf._nt && PV_INPLACE.has(type)) {
+        // PR #33 review: a PINNED note leaf is never replaced (as getLeaf and the "replace" open above): the view opens in a
+        // new tab after it and the note stays
+        // PR #33 review: the note goes with no flush of its own (closeTab noFlush, and it is no longer the active tab), so
+        // its edits are written first; a write that fails keeps the note (the view opens after it, as on a pinned note)
+        else if (t0 && !t0.kind && !t0.pinned && active && !leaf._nt && (PV_INPLACE.has(type) || (state && state.file))) {
           // cvf-links CVR-A-096: a canvas opened from a NOTE leaf (a [[X.canvas]] link / embed click) replaces the
-          // note in the same tab, as stock: the canvas tab goes in right after it, then the note tab goes (count unchanged)
-          await openTabView(g, t, at, true);
-          const j = g.tabs.indexOf(t0);
-          if (j >= 0 && typeof closeTab === "function") await closeTab(g, j, "plugin-detach", "plugin", true);
+          // note in the same tab, as stock: the canvas tab goes in right after it, then the note tab goes (count unchanged).
+          // Any file view opened on the note's own leaf does the same (Excalidraw "create new drawing - in the current
+          // active window" turns the note leaf into its drawing view: stock keeps one tab, not the note plus the drawing).
+          // PR #33 review: the save captures the buffer before its I/O, so keys typed while it is in flight are not in it:
+          // the note goes only if it is still the shown tab and clean at the switch itself (the guard runs after the last await)
+          if (await noteSaved(g, t0) && await openTabView(g, t, at, true, () => activeTab(g) === t0 && !(typeof bufDirty === "function" && bufDirty(g)))) {
+            const j = g.tabs.indexOf(t0);
+            if (j >= 0 && typeof closeTab === "function") await closeTab(g, j, "plugin-detach", "plugin", true);
+          }
+          // PR #33 review: not saved (F1 banner up) or edited since: the note stays the ACTIVE tab, dirty where the next
+          // save, the dirty census and leaveVault/quit (active tabs only) see it; the view opens after it, not shown.
+          // A note that was not the shown tab (noteSaved false, e6aec6f7) keeps it as before: the view opens after it, shown
+          else await openTabView(g, t, at, activeTab(g) !== t0);
         }
         else if (t0 && !active && !leaf._nt) {
           // a leaf already showing something changes view in place: the active leaf stays where it is (stock);
@@ -858,7 +882,7 @@
         pane.appendChild(view.containerEl);
         const before = c.before ? byId(c.before) : null;
         if (before && before.parentNode === strip) strip.insertBefore(btn, before); else strip.appendChild(btn);
-        const vs = byId("vswitch");
+        const vs = byId("vbar") || byId("vswitch");   // settings-gear: the footer is #vbar (switcher + gear); panes go above it
         if (leaf._side === "left" && vs && vs.parentNode === host) host.insertBefore(pane, vs); else host.appendChild(pane);
         const r = { leaf, view, type, pid: ty ? ty.pid : null, side: leaf._side, opened: null, btn, pane, icon: null };
         sides.push(r);
@@ -1497,6 +1521,49 @@
        is added — not even the rule — when no handler adds a row. "editor-menu"
        opens a menu of plugin rows only, and only once bridge.editor yields an
        Editor. */
+    /* plug-val E43: MenuItem.setSection(). Stock orders a file/folder menu by section
+       (open, action-primary, action, info, view, system, "", danger; a rule between two
+       sections) and a plugin row joins its section's group: excalidraw's "New drawing"
+       (action-primary) sits under New note..New base, git's rows (action) after Bookmark.
+       When every core row of the host menu has a known section, the menu is rebuilt in
+       section order; an unknown core row keeps the old append-after-a-rule layout. */
+    const SEC_RANK = ["title", "open", "action-primary", "action", "info", "view", "system", "", "danger"];
+    const CORE_SEC = {
+      "Open in new tab": "open", "Open to the right": "open", "Open in new window": "open",
+      "New note": "action-primary", "New folder": "action-primary", "New canvas": "action-primary", "New base": "action-primary",
+      "Make a copy": "action", "Move folder to...": "action", "Move file to...": "action", "Search in folder": "action",
+      "Bookmark": "action", "Bookmark...": "action", "Remove bookmark": "action", "Merge entire file with...": "action",
+      "Copy path": "info", "Show in system explorer": "system", "Open in default app": "system",
+      "Rename...": "danger", "Delete": "danger",
+    };
+    function sectionLayout(m, items, isSep) {
+      const core = [...m.children].filter(c => !c.classList.contains("sep"));
+      const secOf = c => { const t = (c.textContent || "").trim(); return Object.prototype.hasOwnProperty.call(CORE_SEC, t) ? CORE_SEC[t] : null; };
+      if (!core.length || core.some(c => secOf(c) === null)) return false;
+      const rows = core.map(c => ({ el: c, sec: secOf(c) }));
+      // PR #33 review: a plugin's own separator between two of its rows that land side by side in one section stays
+      // a rule there (a section change draws one anyway); it is not dropped with the rest of the separator items
+      let sepAfter = null, last = null;
+      for (const x of items) {
+        if (isSep(x)) { sepAfter = last; continue; }
+        if (!x) continue;
+        const r = { el: x.dom, sec: String(x.section || ""), afterSep: sepAfter };
+        rows.push(r); last = r; sepAfter = null;
+      }
+      const extra = [];   // plugin sections stock does not name: after "", before danger, first-seen order
+      for (const r of rows) if (!SEC_RANK.includes(r.sec) && !extra.includes(r.sec)) extra.push(r.sec);
+      const order = [...SEC_RANK.slice(0, -1), ...extra, "danger"];
+      const rank = s => order.indexOf(s);
+      rows.forEach((r, i) => { r.i = i; });
+      rows.sort((a, b) => rank(a.sec) - rank(b.sec) || a.i - b.i);
+      m.textContent = "";
+      let prev = null, prow = null;
+      for (const r of rows) {
+        if (prev !== null && (r.sec !== prev || (r.afterSep && r.afterSep === prow))) { const s = document.createElement("div"); s.className = "sep"; m.appendChild(s); }
+        m.appendChild(r.el); prev = r.sec; prow = r;
+      }
+      return true;
+    }
     function menuHook(name, m, args) {
       const a = workspace._ev.get(name);
       if (!a || !a.length) return 0;
@@ -1509,6 +1576,7 @@
       while (it.length && isSep(it[it.length - 1])) it.pop();
       const n = it.filter(x => x && !isSep(x)).length;
       if (!n) return 0;
+      if (sectionLayout(m, it, isSep)) return n;
       if (m.childElementCount) { const s = document.createElement("div"); s.className = "sep"; m.appendChild(s); }
       for (const x of it) {
         if (isSep(x)) { const s = document.createElement("div"); s.className = "sep"; m.appendChild(s); }
@@ -1520,6 +1588,11 @@
       fileMenu(m, name, source) {
         const f = files.get(name + ".md");
         return f instanceof TFile ? menuHook("file-menu", m, [f, source || "file-explorer-context-menu", null]) : 0;
+      },
+      /* an explorer FOLDER row: "file-menu" with its TFolder (templater "Create new note from template") */
+      folderMenu(m, path) {
+        const f = files.get(normalizePath(String(path || "")));
+        return f instanceof K.TFolder ? menuHook("file-menu", m, [f, "file-explorer-context-menu", null]) : 0;
       },
       editorMenu(e) {
         const x = bridge.editor ? bridge.editor() : null;

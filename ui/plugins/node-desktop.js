@@ -1782,6 +1782,81 @@
     close(cb) { if (cb) this.once("close", () => cb()); this.end(); }
   }
 
+  /* git-watch: fs.watch / fs.promises.watch (obsidian-git waits on its askpass helper's answer file with
+     `for await (const e of fsp.watch(dir, {signal}))`). No inotify reaches the page: the watcher polls
+     the confined fs (list + stat of the watched dir, or the one watched file) every WATCH_MS and reports
+     Node's events: "rename" for a name that appeared or went away, "change" for a size/mtime change;
+     filename is the entry's base name. recursive watches the top level only. An abort signal ends the
+     iterator with AbortError (fs.watch: emits "close"). Paths are the facade's ("/vault/x" or "x"). */
+  const WATCH_MS = 250;
+  /* PR #33 review: the FIRST snapshot keeps a stat / list failure of the watched path (ENOENT, EPERM from the VFS), so
+     the watch reports it as Node's does (fs.promises.watch: the iterator throws; fs.watch: "error") instead of polling
+     an empty snapshot forever. A later poll still reads a vanished path as empty ("rename" for what went away). */
+  async function watchSnap(p, first) {
+    const m = new Map(), sig = s => s.type + ":" + s.size + ":" + s.mtime, keep = e => { throw e; };
+    const st = await host.vfs.stat(p).catch(first ? keep : () => null);
+    if (!st) return m;
+    if (st.type !== "folder") { m.set(String(p).replace(/\/+$/, "").split("/").pop(), sig(st)); return m; }
+    for (const [n] of await host.vfs.list(p).catch(first ? keep : () => [])) {
+      const s = await host.vfs.stat(String(p).replace(/\/+$/, "") + "/" + n).catch(() => null);
+      if (s) m.set(n, sig(s));
+    }
+    return m;
+  }
+  const watchDiff = (a, b) => {
+    const ev = [];
+    for (const [n, s] of b) if (!a.has(n)) ev.push({ eventType: "rename", filename: n }); else if (a.get(n) !== s) ev.push({ eventType: "change", filename: n });
+    for (const n of a.keys()) if (!b.has(n)) ev.push({ eventType: "rename", filename: n });
+    return ev;
+  };
+  function watchP(p, o) {
+    p = pathArg(p); o = o && typeof o === "object" ? o : {};
+    const sig = o.signal, q = [];
+    let prev = null, wake = null, done = false, err = null, timer = 0;
+    const stop = e => { if (done) return; done = true; err = e || null; clearTimeout(timer); if (wake) { const w = wake; wake = null; w(); } };
+    const poll = async () => {
+      if (done) return;
+      let cur;
+      try { cur = await watchSnap(p, !prev); } catch (e) { stop(e); return; }
+      if (prev) for (const e of watchDiff(prev, cur)) q.push(e);
+      prev = cur;
+      if (q.length && wake) { const w = wake; wake = null; w(); }
+      if (!done) timer = setTimeout(poll, WATCH_MS);
+    };
+    if (sig) { if (sig.aborted) stop(abortErr()); else sig.addEventListener("abort", () => stop(abortErr()), { once: true }); }
+    if (!done) poll();
+    const it = {
+      async next() {
+        for (;;) {
+          if (q.length) return { value: q.shift(), done: false };
+          if (done) { if (err) { const e = err; err = null; throw e; } return { value: undefined, done: true }; }
+          await new Promise(r => { wake = r; });
+        }
+      },
+      async return() { stop(null); return { value: undefined, done: true }; },
+      async throw(e) { stop(null); throw e; },
+      [Symbol.asyncIterator]() { return this; },
+    };
+    return it;
+  }
+  class FSWatcher extends EmitterBase {
+    constructor(p, o, l) {
+      super();
+      this._ac = new AbortController();
+      const sig = o && o.signal;
+      if (sig) { if (sig.aborted) this._ac.abort(); else sig.addEventListener("abort", () => this.close(), { once: true }); }
+      if (typeof l === "function") this.on("change", l);
+      const it = watchP(p, Object.assign({}, o, { signal: this._ac.signal }));
+      (async () => { try { for (;;) { const r = await it.next(); if (r.done) break; this.emit("change", r.value.eventType, r.value.filename); } } catch (e) {
+        // closed (AbortError), or the watched path could not be read at the start: Node's watcher reports that as "error"
+        if (e && e.name !== "AbortError" && !this._closed) { if (this.listenerCount("error")) this.emit("error", e); else console.error("[desktop] fs.watch:", e); }
+      } })();
+    }
+    close() { if (this._closed) return; this._closed = true; this._ac.abort(); later(() => this.emit("close")); }
+    ref() { return this; } unref() { return this; }
+  }
+  const watchCb = function watch(p, o, l) { if (typeof o === "function") { l = o; o = {}; } if (typeof o === "string") o = { encoding: o }; return new FSWatcher(p, o, l); };
+
   const fsMore = Object.freeze({
     realpathSync, realpath: Object.assign(asCb(realS), { native: asCb(realS) }),
     readlinkSync: readlinkS, readlink: asCb(readlinkS),
@@ -1797,9 +1872,11 @@
     createWriteStream: (p, o) => new WriteStream(p, o),
     ReadStream, WriteStream,
     symlinkSync: policyLink("symlinkSync"), symlink: policyLink("symlink"),
+    watch: watchCb, FSWatcher,
     linkSync: policyLink("linkSync"), link: policyLink("link"),
   });
   const fsPromisesMore = Object.freeze({
+    watch: watchP,
     realpath: asP(realS), readlink: asP(readlinkS),
     open: (p, f, m) => { try { return Promise.resolve(new FileHandle(openS(p, f, m))); } catch (e) { return Promise.reject(e); } },
     symlink: policyLink("symlink"), link: policyLink("link"),
