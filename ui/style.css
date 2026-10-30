@@ -1992,3 +1992,21 @@ body.is-mobile #mtabs .m-tab.active { background: var(--bg-surface); font-weight
    so a second tap on More options landed on "Reading view") */
 body.is-mobile .ctxmenu { max-height: calc(100vh - var(--safe-top, 0px) - var(--m-hdr) - var(--safe-bottom, 0px) - 8px);
   -webkit-overflow-scrolling: touch }
+/* android-p1a M4.2: the drawer shows ONE view; the pill at its foot switches it (ui/mobile.js) */
+body.is-mobile #side #stabs { display: none !important }
+body.is-mobile #side .m-view:not([hidden]) { flex: 1 1 0; min-height: 0; overflow-y: auto }
+body.is-mobile #m-vtags > #rpane-tags { display: flex !important; flex: 1 1 0; min-height: 0 }
+body.is-mobile #side .rhead { display: flex; align-items: center; gap: 6px; padding: 10px 14px 6px; font-weight: 600 }
+body.is-mobile #side .tagrow { padding: 8px 14px; font-size: 15px }
+body.is-mobile #side .m-proprow { justify-content: space-between }
+body.is-mobile .m-pillbar { position: relative; flex: 0 0 auto; display: flex; justify-content: center; padding: 8px 0 6px }
+body.is-mobile .m-pill { display: flex; align-items: center; gap: 6px; min-height: 36px; padding: 6px 16px;
+  border-radius: 18px; border: 1px solid var(--border); background: var(--bg-surface); color: var(--text-chrome);
+  font-size: 14px; font-weight: 600 }
+body.is-mobile .m-pill.on { background: var(--border) }
+body.is-mobile .m-pill svg { width: 16px; height: 16px }
+body.is-mobile .m-pillmenu:not([hidden]) { position: absolute; bottom: calc(100% - 2px); left: 12px; right: 12px;
+  z-index: 3; background: var(--bg-base); border: 1px solid var(--border); border-radius: 12px; padding: 4px 0;
+  box-shadow: 0 4px 14px var(--shadow-popover) }
+body.is-mobile .m-pillitem { padding: 12px 18px; font-size: 15px; color: var(--text-chrome) }
+body.is-mobile .m-pillitem.checked { font-weight: 600; background: var(--bg-surface) }

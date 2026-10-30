@@ -75,21 +75,112 @@
 
   const live = () => { try { return typeof state !== "undefined" && state && fg(); } catch (e) { return null; } };
 
+
+  // ---- M4.2 drawer view switcher: ONE view at a time behind a pill at the drawer's foot (no #stabs strip on a phone).
+  // Files / Search / Bookmarks are main.js's own panes (setPane); Tags (the right sidebar's #rpane-tags, moved here,
+  // painted by rTags) and All properties (property_counts) are phone-only views that never enter sidePane, so the
+  // persisted workspace.json pane stays one desktop knows.
+  const VIEWS = [["files", "Files"], ["search", "Search"], ["tags", "Tags"], ["props", "All properties"], ["bm", "Bookmarks"]];
+  const side = $m("side");
+  const vTags = document.createElement("div");
+  vTags.id = "m-vtags"; vTags.className = "spane m-view"; vTags.hidden = true;
+  const rTagsPane = $m("rpane-tags");
+  if (rTagsPane) vTags.append(rTagsPane);
+  const vProps = document.createElement("div");
+  vProps.id = "m-vprops"; vProps.className = "spane m-view"; vProps.hidden = true;
+  vProps.innerHTML = '<div class="rhead">All properties<span class="scount"></span></div><div class="rlist m-proplist"></div>';
+  const pillBar = document.createElement("div");
+  pillBar.className = "m-pillbar";
+  const pill = document.createElement("button");
+  pill.className = "m-pill"; pill.setAttribute("aria-label", "Switch view");
+  const pillTxt = document.createElement("span");
+  pill.append(pillTxt);
+  pill.insertAdjacentHTML("beforeend", svg('<path d="M6 15l6-6 6 6"/>'));
+  const pillMenu = document.createElement("div");
+  pillMenu.className = "m-pillmenu"; pillMenu.hidden = true;
+  for (const [k, label] of VIEWS) {
+    const it = document.createElement("div");
+    it.className = "m-pillitem"; it.dataset.view = k; it.textContent = label;
+    it.onclick = e => { e.stopPropagation(); closePill(); setView(k); };
+    pillMenu.append(it);
+  }
+  pillBar.append(pillMenu, pill);
+  const vbar = $m("vbar");
+  for (const n of [vTags, vProps]) side.insertBefore(n, vbar);
+  side.insertBefore(pillBar, vbar);
+  for (const id of ["pane-files", "pane-search", "pane-bm"]) { const p = $m(id); if (p) p.classList.add("m-view"); }
+  let mview = typeof sidePane !== "undefined" ? sidePane : "files";
+  const pillOpen = () => !pillMenu.hidden;
+  function closePill() { pillMenu.hidden = true; pill.classList.remove("on"); }
+  pill.onclick = e => {
+    e.stopPropagation();
+    if (pillOpen()) return closePill();
+    for (const it of pillMenu.children) it.classList.toggle("checked", it.dataset.view === mview);
+    pillMenu.hidden = false; pill.classList.add("on");
+  };
+  document.addEventListener("click", e => { if (pillOpen() && !pillBar.contains(e.target)) closePill(); }, true);
+  const label = k => (VIEWS.find(v => v[0] === k) || VIEWS[0])[1];
+  const own = k => k === "tags" || k === "props";
+  async function paintProps() {
+    const counts = await (typeof inv === "function" ? inv("property_counts") : Promise.resolve({})).catch(() => ({}));
+    const list = vProps.querySelector(".m-proplist"), names = Object.keys(counts);
+    vProps.querySelector(".scount").textContent = names.length;
+    list.textContent = "";
+    if (!names.length) { const d = document.createElement("div"); d.className = "rempty"; d.textContent = "No properties."; list.append(d); return; }
+    names.sort((a, b) => counts[b] - counts[a] || a.localeCompare(b));
+    for (const n of names) {
+      const r = document.createElement("div");
+      r.className = "tagrow m-proprow"; r.dataset.prop = n;
+      r.innerHTML = '<span class="tn"></span><span class="scount"></span>';
+      r.firstChild.textContent = n; r.lastChild.textContent = counts[n];
+      list.append(r);
+    }
+  }
+  const paintOwn = k => {
+    if (k === "tags" && typeof rTags === "function") { if (rTagsPane) rTagsPane.hidden = false; rTags(); }
+    if (k === "props") paintProps();
+  };
+  function setView(k) {
+    if (!VIEWS.some(v => v[0] === k)) k = "files";
+    if (own(k)) {
+      for (const id of ["pane-files", "pane-search", "pane-bm"]) { const p = $m(id); if (p) p.hidden = true; }
+      mview = k;
+      vTags.hidden = k !== "tags"; vProps.hidden = k !== "props";
+      paintOwn(k);
+    } else {
+      mview = k;                        // before setPane: the wrapper below reads it
+      if (typeof setPane === "function") setPane(k);
+    }
+    pillTxt.textContent = label(mview);
+  }
+  // any main.js setPane (tagSearch, a command) is the drawer's view too: the phone views step aside
+  if (typeof window.setPane === "function") {
+    const origPane = window.setPane;
+    window.setPane = function (p) {
+      const r = origPane.apply(this, arguments);
+      mview = p; vTags.hidden = true; vProps.hidden = true; pillTxt.textContent = label(p);
+      return r;
+    };
+  }
+  pillTxt.textContent = label(mview);
+
   // ---- drawer (M4.1 M4.3 M9.2)
-  let paneBefore = null;               // the sidebar pane to restore when a Search-opened drawer closes
+  let paneBefore = null;               // the drawer view to restore when a Search-opened drawer closes
   const drawerOpen = () => document.body.classList.contains("m-drawer");
   const openDrawer = pane => {
     closeTabs();
     if (typeof closeMenu === "function") closeMenu();
-    if (pane && typeof setPane === "function" && sidePane !== pane) { paneBefore = sidePane; setPane(pane); }
+    if (pane && mview !== pane) { paneBefore = mview; setView(pane); }
+    else if (own(mview)) paintOwn(mview);   // tags / properties: repaint from the index on every open
     document.body.classList.add("m-drawer");
   };
   const closeDrawer = () => {
     if (!drawerOpen()) return;
+    closePill();
     document.body.classList.remove("m-drawer");
+    if (paneBefore) { setView(paneBefore); paneBefore = null; }
     const a = document.activeElement;
     if (a && $m("side").contains(a)) a.blur();
-    if (paneBefore && typeof setPane === "function") { setPane(paneBefore); paneBefore = null; }
   };
   expand.onclick = () => drawerOpen() ? closeDrawer() : openDrawer();
   scrim.onclick = closeDrawer;
@@ -194,6 +285,7 @@
       t.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true }));
       return "prompt";
     }
+    if (pillOpen()) { closePill(); return "pill"; }
     if (!tabsBox.hidden) { closeTabs(); return "tabs"; }
     if (drawerOpen()) { closeDrawer(); return "drawer"; }
     const g = live();
