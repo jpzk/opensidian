@@ -16,6 +16,7 @@
    - #rside (M4.6) a mid-screen swipe left opens main.js's right sidebar as a right overlay drawer: Backlinks,
             Outgoing links, Outline behind a pill + a footer with the note's word and character counts
    - #msheet (M5.1) Menu opens the ribbon actions as a bottom sheet; Settings > Interface configures them
+   - #vswitch (M1.1) the vault name opens a vault list (.m-vaultmenu) + "Manage vaults..." -> full-screen #picker
    - landscape (M3.3) the header and the nav float over the note (CSS only)
    - #mtabs (M6.1) full-screen tab switcher: cards (title, close x, active outlined) + a bar: +, count, Done
    - window.__mobileBack: called by MainActivity's OnBackPressedCallback; closes the innermost layer
@@ -189,7 +190,7 @@
   };
   const closeDrawer = () => {
     if (!drawerOpen()) return;
-    closePill();
+    closePill(); closeVmenu();
     document.body.classList.remove("m-drawer");
     if (paneBefore) { setView(paneBefore); paneBefore = null; }
     const a = document.activeElement;
@@ -234,6 +235,64 @@
     if (typeof rightOpen !== "undefined" && rightOpen && typeof cmdToggleRight === "function") cmdToggleRight();
   };
   scrim.addEventListener("click", closeRight);
+
+  // ---- M1.1 the vault name in the drawer opens a vault list (known vaults, the current one ticked, then "Manage
+  // vaults...") above the vault bar; "Manage vaults..." opens the vault manager (main.js's #picker) as a full-screen
+  // page over everything. The manager's known-vaults list always carries the current vault.
+  const vmenu = document.createElement("div");
+  vmenu.className = "m-vaultmenu"; vmenu.hidden = true;
+  side.insertBefore(vmenu, vbar);
+  const vmenuOpen = () => !vmenu.hidden;
+  function closeVmenu() { vmenu.hidden = true; }
+  const vname = p => (typeof base === "function" ? base(p) : String(p).split(/[\\/]/).filter(Boolean).pop() || String(p));
+  const known = async () => {
+    let ps = [];
+    try { ps = typeof inv === "function" ? await inv("recent_vaults") : []; } catch (e) { ps = []; }
+    const cur = typeof vaultPath !== "undefined" ? vaultPath : null;
+    if (cur && !ps.includes(cur)) ps = [cur, ...ps];
+    return { ps, cur };
+  };
+  const openManager = () => {
+    closeVmenu(); closeDrawer();
+    if (typeof showPicker === "function") showPicker();
+  };
+  const vswitch = $m("vswitch");
+  if (vswitch) vswitch.onclick = async e => {
+    e.stopPropagation();
+    if (vmenuOpen()) return closeVmenu();
+    const { ps, cur } = await known();
+    vmenu.textContent = "";
+    for (const p of ps) {
+      const it = document.createElement("div");
+      it.className = "m-vaultitem" + (p === cur ? " checked" : ""); it.title = p;
+      it.textContent = vname(p);
+      it.onclick = ev => { ev.stopPropagation(); closeVmenu(); if (p !== cur && typeof openVault === "function") openVault(p, true); };
+      vmenu.append(it);
+    }
+    const m = document.createElement("div");
+    m.className = "m-vaultitem m-vaultmanage"; m.textContent = "Manage vaults...";
+    m.onclick = ev => { ev.stopPropagation(); openManager(); };
+    vmenu.append(m);
+    vmenu.hidden = false;
+  };
+  document.addEventListener("click", e => { if (vmenuOpen() && !vmenu.contains(e.target) && e.target !== vswitch) closeVmenu(); }, true);
+  if (typeof window.loadRecent === "function") {
+    const origRecent = window.loadRecent;
+    window.loadRecent = async function () {
+      const r = await origRecent.apply(this, arguments);
+      const ul = $m("p-recent"), cur = typeof vaultPath !== "undefined" ? vaultPath : null;
+      if (ul && cur && ![...ul.children].some(li => li.querySelector("span") && li.querySelector("span").textContent === cur)) {
+        const li = document.createElement("li");
+        li.className = "m-curvault";
+        li.innerHTML = "<b></b><span></span>";
+        li.querySelector("b").textContent = vname(cur);
+        li.querySelector("span").textContent = cur;
+        li.onclick = () => { const pk = $m("picker"); if (pk) pk.hidden = true; };   // the open vault: just go back to it
+        ul.prepend(li);
+      }
+      return r;
+    };
+  }
   // a row tapped in the right drawer opens its note: the drawer gets out of the way
   rside.addEventListener("click", e => {
     if (e.target.closest && e.target.closest(".blline, .outrow, .tocrow")) { quietUntil = Date.now() + 3000; setTimeout(closeRight, 0); }
@@ -441,6 +500,7 @@
       t.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true }));
       return "prompt";
     }
+    if (vmenuOpen()) { closeVmenu(); return "vaults"; }
     const op = pills.find(P => P.isOpen());
     if (op) { op.close(); return "pill"; }
     if (sheetOpen()) { closeSheet(); return "sheet"; }

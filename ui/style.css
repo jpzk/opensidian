@@ -2080,3 +2080,18 @@ body.is-mobile .m-ribcfg .m-ribd { color: var(--text-chrome-muted); font-size: 1
 body.is-mobile .m-ribcfg .m-ribrow { display: flex; align-items: center; justify-content: space-between; padding: 10px 0;
   border-top: 1px solid var(--bg-surface) }
 body.is-mobile .m-ribcfg .m-ribrow input { width: 20px; height: 20px }
+/* android-p1a M1.1: the drawer's vault list (above the vault bar) and the vault manager as a full-screen page */
+body.is-mobile .m-vaultmenu:not([hidden]) { position: absolute; z-index: 4; left: 10px; right: 10px;
+  bottom: calc(var(--safe-bottom, 0px) + 48px); background: var(--bg-base); border: 1px solid var(--border);
+  border-radius: 12px; padding: 4px 0; box-shadow: 0 4px 14px var(--shadow-popover); max-height: 50vh; overflow-y: auto }
+body.is-mobile .m-vaultitem { padding: 12px 18px 12px 38px; font-size: 15px; color: var(--text-chrome); position: relative;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+body.is-mobile .m-vaultitem.checked { font-weight: 600 }
+body.is-mobile .m-vaultitem.checked::before { content: "✓"; position: absolute; left: 14px }
+body.is-mobile .m-vaultitem.m-vaultmanage { border-top: 1px solid var(--bg-surface); color: var(--text-chrome-muted) }
+body.is-mobile #picker { z-index: 46; align-items: stretch; justify-content: stretch;
+  padding: var(--safe-top, 0px) var(--safe-right, 0px) var(--safe-bottom, 0px) var(--safe-left, 0px); box-sizing: border-box }
+body.is-mobile #picker[hidden] { display: none }
+body.is-mobile #pcard { width: 100%; max-width: none; border-radius: 0; box-sizing: border-box; overflow-y: auto;
+  padding: 20px 18px }
+body.is-mobile #p-close:not([hidden]) { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px }
