@@ -197,7 +197,12 @@
     if (!tabsBox.hidden) { closeTabs(); return "tabs"; }
     if (drawerOpen()) { closeDrawer(); return "drawer"; }
     const g = live();
-    if (g && typeof navState === "function" && navState(g).b) { histGo(-1); return "history"; }
+    if (g && typeof navState === "function" && navState(g).b) {
+      // the note back-navigation loads must not raise the keyboard either (same rule as a drawer tap)
+      quietUntil = Date.now() + 3000;
+      const a = document.activeElement; if (a && main.contains(a)) a.blur();
+      histGo(-1); return "history";
+    }
     return "root";
   };
 
