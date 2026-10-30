@@ -5,7 +5,9 @@ feedback #19 wants Obsidian's settings structure 1:1, with every control
 whose behaviour does not exist rendered consistently disabled. The invariant
 that keeps that from rotting is:
 
-    a row is ENABLED if and only if it names a config key that really exists.
+```text
+a row is ENABLED if and only if it names a config key that really exists.
+```
 
 So the rows are DATA, not hand-written HTML. And the data is not hand-written
 Rust either: it is a black-box transcript of the settings rows,
