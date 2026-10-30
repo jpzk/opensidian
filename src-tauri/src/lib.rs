@@ -1932,6 +1932,27 @@ async fn open_vault_window(app: tauri::AppHandle, win: tauri::Window, v: State<'
             return Err(format!("{} is the vault of this window", p.display()));
         }
     }
+    // goal android p1a (M1.1/M1.2): one process, one vault, no second window. A switch records the
+    // vault as the last one (android_boot binds it) and the UI then relaunches the app
+    // (MainActivity bridge restart()); the old process exits with the buffers already flushed.
+    #[cfg(target_os = "android")]
+    let r = {
+        let _ = (&app, &win);
+        if replace {
+            persist_vault(&p);
+            Ok(std::process::id())
+        } else {
+            Err("open in new window: not supported on android".to_string())
+        }
+    };
+    #[cfg(not(target_os = "android"))]
+    let r = open_vault_process(&app, &win, &p, replace).await;
+    r
+}
+
+#[cfg(not(target_os = "android"))]
+async fn open_vault_process(app: &tauri::AppHandle, win: &tauri::Window, p: &Path, replace: bool) -> Result<u32, String> {
+    let (app, win, p) = (app.clone(), win.clone(), p.to_path_buf());
     let sw = if replace { Some(switch_of(&win)?) } else { None };
     let (p2, sw2) = (p.clone(), sw.clone());
     // vsfix: the span times the SPAWN (lock probe + fork/exec, in-process or
@@ -1956,6 +1977,7 @@ async fn open_vault_window(app: tauri::AppHandle, win: tauri::Window, v: State<'
 }
 
 /// item 14: the Switch that hands THIS window's rect to the child
+#[cfg_attr(target_os = "android", allow(dead_code))] // android p1a: a switch relaunches the app (open_vault_window)
 fn switch_of(win: &tauri::Window) -> Result<spawn::Switch, String> {
     let r = switch_rect(win)?;
     let sw = spawn::Switch { x: r.x.round() as i32, y: r.y.round() as i32, w: r.w.round() as u32, h: r.h.round() as u32, max: r.max, token: spawn::new_token() };
@@ -1967,6 +1989,7 @@ fn switch_of(win: &tauri::Window) -> Result<spawn::Switch, String> {
 
 /// item 14, old window side: wait for the switched child `pid` on `p` to mark
 /// ready, then exit this process. Err (and this window stays) if it died first.
+#[cfg_attr(target_os = "android", allow(dead_code))] // android p1a: no child window to wait for
 async fn await_switch(app: &tauri::AppHandle, p: &Path, pid: u32, sw: &spawn::Switch) -> Result<u32, String> {
     let canon = p.canonicalize().map_err(|e| e.to_string())?;
     let me = std::process::id();
@@ -5493,6 +5516,7 @@ fn win_rect(win: tauri::Window) -> Result<WinRect, String> {
 /// window; using the inner rect 1000x760@0,0" -> the child opened at 0,0). So
 /// the rect is read LIVE from the X server first (live_rect) — by switch time
 /// the frame is long placed — and the caches are only the fallback.
+#[cfg_attr(target_os = "android", allow(dead_code))] // android p1a: only a desktop switch reads the rect
 fn switch_rect(win: &tauri::Window) -> Result<WinRect, String> {
     let r = win_rect(win.clone())?;
     if let Some((x, y, w, h)) = live_rect(win) {

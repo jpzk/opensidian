@@ -11546,6 +11546,8 @@ async function openVault(p, replace) {
   // the flush above and die with the process.
   try { await inv("open_vault_window", { path: p, replace }); }
   catch (err) { document.body.inert = false; $("p-err").textContent = String(err); return; }
+  // android p1a: one process per vault — the backend recorded the vault as the last one; the app relaunches on it
+  if (replace && window.__osAndroid && typeof window.__osAndroid.restart === "function") { window.__osAndroid.restart(); return; }
   $("picker").hidden = true;
 }
 async function pickerGo(replace) {

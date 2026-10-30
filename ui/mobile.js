@@ -293,6 +293,31 @@
       return r;
     };
   }
+  // M1.2: in the vault manager a whole action row is the button. "Open folder as vault" = the SYSTEM folder picker
+  // (MainActivity bridge, Storage Access Framework): the grant is persisted and the picked folder opens as the vault
+  // (a vault switch = the app relaunches on it). Reading a folder outside the app needs "All files access": without
+  // it the row says so and opens the system setting; picking again after the grant opens the folder.
+  const droid = window.__osAndroid;
+  window.__mobileTrees = () => { try { return droid ? JSON.parse(droid.trees()) : []; } catch (e) { return []; } };
+  const prowOf = id => { const b = $m(id); return b && b.closest(".prow"); };
+  const perr = t => { const e = $m("p-err"); if (e) e.textContent = t; };
+  const openRow = prowOf("p-open"), createRow = prowOf("p-create");
+  if (createRow) createRow.addEventListener("click", e => { if (e.target.id !== "p-create") $m("p-create").click(); });
+  if (openRow) openRow.addEventListener("click", e => {
+    if (!droid) { if (e.target.id !== "p-open") $m("p-open").click(); return; }
+    e.stopPropagation(); e.preventDefault(); perr(""); droid.pickTree();
+  }, true);
+  window.__mobileTreePicked = (uri, path) => {
+    if (!uri) return;                                    // picker backed out: the manager stays as it was
+    if (!path) return perr("That folder has no file path on this phone; pick a folder on the device storage.");
+    if (!droid.allFiles()) {
+      perr("Allow \"All files access\" for Opensidian, then open the folder again.");
+      return droid.requestAllFiles();
+    }
+    const cur = typeof vaultPath !== "undefined" ? vaultPath : null;
+    if (path === cur) { const pk = $m("picker"); if (pk) pk.hidden = true; return; }
+    if (typeof openVault === "function") openVault(path, true);
+  };
   // a row tapped in the right drawer opens its note: the drawer gets out of the way
   rside.addEventListener("click", e => {
     if (e.target.closest && e.target.closest(".blline, .outrow, .tocrow")) { quietUntil = Date.now() + 3000; setTimeout(closeRight, 0); }
