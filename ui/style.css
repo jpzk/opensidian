@@ -1979,14 +1979,31 @@ body.is-mobile.m-drawer #side { display: flex !important; position: fixed; z-ind
 @keyframes m-slide { from { transform: translateX(-100%) } to { transform: none } }
 body.is-mobile.m-drawer #mscrim { display: block; position: fixed; inset: 0; z-index: 40; background: var(--scrim) }
 body.is-mobile #side #stabs .stab { flex-basis: 44px; width: 44px; padding: 8px }
-body.is-mobile #mtabs:not([hidden]) { display: block; position: fixed; z-index: 42;
-  left: calc(var(--safe-left, 0px) + 8px); right: calc(var(--safe-right, 0px) + 8px);
-  bottom: calc(var(--safe-bottom, 0px) + var(--m-nav) + 12px); max-height: 60vh; overflow-y: auto;
-  background: var(--bg-base); border: 1px solid var(--border); border-radius: 12px; padding: 6px 0;
-  box-shadow: 0 4px 24px rgba(0, 0, 0, .25) }
-body.is-mobile #mtabs .m-tab { padding: 12px 16px; color: var(--text-chrome); white-space: nowrap; overflow: hidden;
-  text-overflow: ellipsis }
-body.is-mobile #mtabs .m-tab.active { background: var(--bg-surface); font-weight: 600 }
+/* android-p1a M6.1: the tab switcher is a full-screen page — a grid of cards, a bottom bar (+, count, Done) */
+body.is-mobile #mtabs:not([hidden]) { display: flex; flex-direction: column; position: fixed; z-index: 45; inset: 0;
+  box-sizing: border-box; background: var(--bg-sidebar);
+  padding: var(--safe-top, 0px) var(--safe-right, 0px) var(--safe-bottom, 0px) var(--safe-left, 0px) }
+body.is-mobile #mtabs .m-cards { flex: 1 1 0; min-height: 0; overflow-y: auto; display: grid; align-content: start;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; padding: 14px }
+body.is-mobile #mtabs .m-card { box-sizing: border-box; min-height: 120px; display: flex; flex-direction: column;
+  background: var(--bg-base); border: 1px solid var(--border); border-radius: 12px; overflow: hidden }
+body.is-mobile #mtabs .m-card.active { border: 3px solid var(--interactive-accent, var(--text-chrome)) }
+body.is-mobile #mtabs .m-card-head { display: flex; align-items: center; gap: 4px; padding: 6px 4px 6px 12px;
+  border-bottom: 1px solid var(--bg-surface) }
+body.is-mobile #mtabs .m-card-title { flex: 1 1 0; min-width: 0; font-weight: 600; font-size: 14px; color: var(--text-chrome);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 6px 0 }
+body.is-mobile #mtabs .m-card-x { flex: 0 0 36px; width: 36px; height: 36px; display: flex; align-items: center;
+  justify-content: center; padding: 0; background: none; border: 0; border-radius: 18px; color: var(--text-chrome-muted) }
+body.is-mobile #mtabs .m-card-x svg { width: 16px; height: 16px }
+body.is-mobile #mtabs .m-card-sub { padding: 8px 12px; font-size: 12px; color: var(--text-chrome-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+body.is-mobile #mtabs .m-tbar { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 12px 8px; border-top: 1px solid var(--border); background: var(--bg-base) }
+body.is-mobile #mtabs .m-tbar button { min-width: 44px; height: 44px; display: flex; align-items: center;
+  justify-content: center; padding: 0 12px; background: none; border: 0; border-radius: 22px; color: var(--text-chrome);
+  font-size: 15px; font-weight: 600 }
+body.is-mobile #mtabs .m-tbar svg { width: 22px; height: 22px }
+body.is-mobile #mtabs .m-tcount { color: var(--text-chrome-muted); font-size: 14px }
 /* a header menu drops from #mhdr's More options button; capped to the room below the header so clampMenu never has
    to lift it over its own anchor (landscape: the menu was ~400 px tall in a 448 px viewport and covered the button,
    so a second tap on More options landed on "Reading view") */

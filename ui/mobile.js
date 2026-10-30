@@ -17,7 +17,7 @@
             Outgoing links, Outline behind a pill + a footer with the note's word and character counts
    - #msheet (M5.1) Menu opens the ribbon actions as a bottom sheet; Settings > Interface configures them
    - landscape (M3.3) the header and the nav float over the note (CSS only)
-   - #mtabs minimal tab switcher
+   - #mtabs (M6.1) full-screen tab switcher: cards (title, close x, active outlined) + a bar: +, count, Done
    - window.__mobileBack: called by MainActivity's OnBackPressedCallback; closes the innermost layer
             (menu > settings/modal/prompt > tab switcher > drawer > note history) and never exits the app
    - window.__mobileSafe(t, r, b, l): MainActivity pushes the system-bar + cutout insets (css px) -> --safe-* */
@@ -281,25 +281,57 @@
   document.addEventListener("touchend", swipeEnd, { passive: true, capture: true });
   document.addEventListener("touchcancel", swipeEnd, { passive: true, capture: true });
 
-  // ---- tab switcher
+  // ---- M6.1 full-screen tab switcher: one card per open tab (title + close x, the active one outlined) and a bottom
+  // bar: + (a new tab), the tab count, Done. Cards keep [data-tab] = "<group id>:<index>".
   const allTabs = () => (typeof groups === "function" ? groups() : []).flatMap(g => g.tabs.map((t, i) => ({ g, i, t })));
   function closeTabs() { tabsBox.hidden = true; nTabs.classList.remove("on"); }
-  const openTabs = () => {
-    closeDrawer(); closeRight();
+  const tabTitle = (g, i, t) => {
+    const el = g.tabsEl && g.tabsEl.querySelectorAll(".tab")[i], s = el ? el.textContent.trim() : "";
+    return s || (t.kind ? (({ gg: "Graph view", lg: "Local graph" })[t.kind] || t.kind) : String(t.name).split("/").pop().replace(/\.md$/, ""));
+  };
+  const paintTabs = () => {
     tabsBox.textContent = "";
-    for (const { g, i, t } of allTabs()) {
+    const cards = document.createElement("div");
+    cards.className = "m-cards";
+    const list = allTabs();
+    for (const { g, i, t } of list) {
       const d = document.createElement("div");
-      d.className = "m-tab" + (g === live() && i === g.active ? " active" : "");
+      d.className = "m-card" + (g === live() && i === g.active ? " active" : "");
       d.dataset.tab = g.id + ":" + i;
-      d.textContent = t.kind ? (({ gg: "Graph view", lg: "Local graph" })[t.kind] || t.kind) : String(t.name).split("/").pop();
+      d.innerHTML = '<div class="m-card-head"><div class="m-card-title"></div><button class="m-card-x" aria-label="Close tab">' +
+        svg('<path d="M6 6l12 12M18 6L6 18"/>') + '</button></div><div class="m-card-sub"></div>';
+      d.querySelector(".m-card-title").textContent = tabTitle(g, i, t);
+      const dir = !t.kind && t.name ? String(t.name).split("/").slice(0, -1).join("/") : "";
+      d.querySelector(".m-card-sub").textContent = dir || (t.kind ? "" : "/");
       d.onclick = async () => {
         closeTabs();
         if (typeof focusGroup === "function") focusGroup(g);
         if (typeof switchTab === "function") await switchTab(g, i);
         sync();
       };
-      tabsBox.append(d);
+      d.querySelector(".m-card-x").onclick = async e => {
+        e.stopPropagation();
+        if (typeof closeTab === "function") await closeTab(g, i);
+        sync();
+        if (!tabsBox.hidden) paintTabs();      // the switcher stays, one card fewer
+      };
+      cards.append(d);
     }
+    const bar = document.createElement("div");
+    bar.className = "m-tbar";
+    const add = btn("m-tnew", "New tab", svg('<path d="M12 5v14M5 12h14"/>'));
+    add.onclick = async () => { closeTabs(); if (typeof cmdNewTab === "function") await cmdNewTab(); sync(); };
+    const cnt = document.createElement("div");
+    cnt.className = "m-tcount"; cnt.textContent = list.length + (list.length === 1 ? " tab" : " tabs");
+    const done = btn("m-tdone", "Done", "Done");
+    done.onclick = closeTabs;
+    bar.append(add, cnt, done);
+    tabsBox.append(cards, bar);
+    const a = cards.querySelector(".m-card.active"); if (a) a.scrollIntoView({ block: "nearest" });
+  };
+  const openTabs = () => {
+    closeDrawer(); closeRight(); closeSheet();
+    paintTabs();
     tabsBox.hidden = false; nTabs.classList.add("on");
   };
 
