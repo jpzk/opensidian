@@ -102,8 +102,9 @@ fn js_str(s: &str) -> String { serde_json::to_string(s).unwrap() }
 fn listtoggle_table() {
     let ed = std::fs::read_to_string(root().join("ui/editor.js")).unwrap();
     let ctx = javascriptcore::Context::new();
-    // editor.js's only load-time DOM touch is one selectionchange listener
-    ctx.evaluate("var window = {}; var document = { addEventListener() {} };");
+    // editor.js's only load-time DOM touch is one selectionchange listener; CENSUS_ON comes from ui/census.js, which
+    // index.html loads before editor.js — off, as in a shipped build (issue #30)
+    ctx.evaluate("var window = {}; var document = { addEventListener() {} }; var CENSUS_ON = false;");
     ctx.evaluate(&ed);
     if let Some(e) = ctx.exception() { panic!("editor.js did not load: {}", e.to_str()); }
     assert_eq!(ctx.evaluate("typeof Ed.listToggle").unwrap().to_str().as_str(), "function",
