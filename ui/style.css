@@ -1941,7 +1941,7 @@ body.is-mobile { --m-hdr: 48px; --m-nav: 56px; --m-drawer: min(84vw, 400px) }
 body.is-mobile .app-container { flex-direction: column;
   padding-top: var(--safe-top, 0px); padding-bottom: var(--safe-bottom, 0px) }
 body.is-mobile #wframe, body.is-mobile #wrz, body.is-mobile #ribbon, body.is-mobile #ldiv,
-body.is-mobile #rdiv, body.is-mobile #rside { display: none !important }
+body.is-mobile #rdiv, body.is-mobile:not(.m-rdrawer) #rside { display: none !important }
 body.is-mobile #main { order: 1; flex: 1 1 0; min-height: 0; width: 100%; box-sizing: border-box;
   padding-left: var(--safe-left, 0px); padding-right: var(--safe-right, 0px); touch-action: pan-y pinch-zoom }
 /* one pane at a time: the focused one; its header is #mhdr, so the pane's own tab strip goes */
@@ -2027,3 +2027,18 @@ body.is-mobile .m-pillitem.checked { font-weight: 600; background: var(--bg-surf
   body.is-mobile #main .lp, body.is-mobile #main .preview { padding-top: calc(var(--m-hdr) + 4px);
     padding-bottom: calc(var(--m-nav) + 20px) }
 }
+/* android-p1a M4.6: the right drawer — #rside as an overlay from the right, one view behind the pill, a footer */
+body.is-mobile.m-rdrawer #rside { display: flex !important; flex-direction: column; position: fixed; z-index: 41;
+  right: 0; top: 0; bottom: 0; left: auto; width: var(--m-drawer) !important; max-width: none; box-sizing: border-box;
+  padding: var(--safe-top, 0px) var(--safe-right, 0px) var(--safe-bottom, 0px) 0; background: var(--bg-sidebar);
+  box-shadow: 0 0 24px rgba(0, 0, 0, .25); animation: m-rslide .18s ease-out }
+@keyframes m-rslide { from { transform: translateX(100%) } to { transform: none } }
+body.is-mobile.m-rdrawer #mscrim { display: block; position: fixed; inset: 0; z-index: 40; background: var(--scrim) }
+body.is-mobile #rside #rtabs { display: none !important }
+body.is-mobile #rside .m-view:not([hidden]) { flex: 1 1 0; min-height: 0; overflow-y: auto }
+body.is-mobile #rside .rhead { display: flex; align-items: center; gap: 6px; padding: 10px 14px 6px; font-weight: 600 }
+body.is-mobile #rside .blline, body.is-mobile #rside .outrow, body.is-mobile #rside .tocrow { padding-top: 6px; padding-bottom: 6px }
+body.is-mobile .m-rfoot { flex: 0 0 auto; padding: 6px 14px 10px; text-align: center; color: var(--text-chrome-muted);
+  font-size: 13px; border-top: 1px solid var(--bg-surface) }
+body.is-mobile .m-rfoot .m-rname { color: var(--text-chrome); font-weight: 600; overflow: hidden; white-space: nowrap;
+  text-overflow: ellipsis }

@@ -12,6 +12,10 @@
    - #mnav  bottom pill: Navigate back, Navigate forward, Search, New note, Tabs (open-tab count), Menu (palette)
    - #side  becomes a slide-in overlay drawer over #mscrim; a mid-screen swipe right opens it, left closes it;
             touches starting within EDGE css px of either screen edge are left to the OS (its back gesture)
+   - #side .m-pill  (android-p1a M4.2) one drawer view at a time: Files, Search, Tags, All properties, Bookmarks
+   - #rside (M4.6) a mid-screen swipe left opens main.js's right sidebar as a right overlay drawer: Backlinks,
+            Outgoing links, Outline behind a pill + a footer with the note's word and character counts
+   - landscape (M3.3) the header and the nav float over the note (CSS only)
    - #mtabs minimal tab switcher
    - window.__mobileBack: called by MainActivity's OnBackPressedCallback; closes the innermost layer
             (menu > settings/modal/prompt > tab switcher > drawer > note history) and never exits the app
@@ -89,37 +93,45 @@
   const vProps = document.createElement("div");
   vProps.id = "m-vprops"; vProps.className = "spane m-view"; vProps.hidden = true;
   vProps.innerHTML = '<div class="rhead">All properties<span class="scount"></span></div><div class="rlist m-proplist"></div>';
-  const pillBar = document.createElement("div");
-  pillBar.className = "m-pillbar";
-  const pill = document.createElement("button");
-  pill.className = "m-pill"; pill.setAttribute("aria-label", "Switch view");
-  const pillTxt = document.createElement("span");
-  pill.append(pillTxt);
-  pill.insertAdjacentHTML("beforeend", svg('<path d="M6 15l6-6 6 6"/>'));
-  const pillMenu = document.createElement("div");
-  pillMenu.className = "m-pillmenu"; pillMenu.hidden = true;
-  for (const [k, label] of VIEWS) {
-    const it = document.createElement("div");
-    it.className = "m-pillitem"; it.dataset.view = k; it.textContent = label;
-    it.onclick = e => { e.stopPropagation(); closePill(); setView(k); };
-    pillMenu.append(it);
-  }
-  pillBar.append(pillMenu, pill);
+  // a view switcher pill + its list (left drawer here, right drawer M4.6): pick(k) switches, cur() names the view
+  const pills = [];
+  const makePill = (views, pick, cur) => {
+    const bar = document.createElement("div");
+    bar.className = "m-pillbar";
+    const b = document.createElement("button");
+    b.className = "m-pill"; b.setAttribute("aria-label", "Switch view");
+    const txt = document.createElement("span");
+    b.append(txt);
+    b.insertAdjacentHTML("beforeend", svg('<path d="M6 15l6-6 6 6"/>'));
+    const menu = document.createElement("div");
+    menu.className = "m-pillmenu"; menu.hidden = true;
+    const P = { bar, txt, isOpen: () => !menu.hidden, close: () => { menu.hidden = true; b.classList.remove("on"); },
+      label: k => (views.find(v => v[0] === k) || views[0])[1], set: k => { txt.textContent = P.label(k); } };
+    for (const [k, label] of views) {
+      const it = document.createElement("div");
+      it.className = "m-pillitem"; it.dataset.view = k; it.textContent = label;
+      it.onclick = e => { e.stopPropagation(); P.close(); pick(k); };
+      menu.append(it);
+    }
+    b.onclick = e => {
+      e.stopPropagation();
+      if (P.isOpen()) return P.close();
+      for (const it of menu.children) it.classList.toggle("checked", it.dataset.view === cur());
+      menu.hidden = false; b.classList.add("on");
+    };
+    bar.append(menu, b);
+    pills.push(P);
+    return P;
+  };
+  document.addEventListener("click", e => { for (const P of pills) if (P.isOpen() && !P.bar.contains(e.target)) P.close(); }, true);
+  const lp = makePill(VIEWS, k => setView(k), () => mview);
+  const pillBar = lp.bar;
   const vbar = $m("vbar");
   for (const n of [vTags, vProps]) side.insertBefore(n, vbar);
   side.insertBefore(pillBar, vbar);
   for (const id of ["pane-files", "pane-search", "pane-bm"]) { const p = $m(id); if (p) p.classList.add("m-view"); }
   let mview = typeof sidePane !== "undefined" ? sidePane : "files";
-  const pillOpen = () => !pillMenu.hidden;
-  function closePill() { pillMenu.hidden = true; pill.classList.remove("on"); }
-  pill.onclick = e => {
-    e.stopPropagation();
-    if (pillOpen()) return closePill();
-    for (const it of pillMenu.children) it.classList.toggle("checked", it.dataset.view === mview);
-    pillMenu.hidden = false; pill.classList.add("on");
-  };
-  document.addEventListener("click", e => { if (pillOpen() && !pillBar.contains(e.target)) closePill(); }, true);
-  const label = k => (VIEWS.find(v => v[0] === k) || VIEWS[0])[1];
+  const closePill = lp.close;
   const own = k => k === "tags" || k === "props";
   async function paintProps() {
     const counts = await (typeof inv === "function" ? inv("property_counts") : Promise.resolve({})).catch(() => ({}));
@@ -151,24 +163,24 @@
       mview = k;                        // before setPane: the wrapper below reads it
       if (typeof setPane === "function") setPane(k);
     }
-    pillTxt.textContent = label(mview);
+    lp.set(mview);
   }
   // any main.js setPane (tagSearch, a command) is the drawer's view too: the phone views step aside
   if (typeof window.setPane === "function") {
     const origPane = window.setPane;
     window.setPane = function (p) {
       const r = origPane.apply(this, arguments);
-      mview = p; vTags.hidden = true; vProps.hidden = true; pillTxt.textContent = label(p);
+      mview = p; vTags.hidden = true; vProps.hidden = true; lp.set(p);
       return r;
     };
   }
-  pillTxt.textContent = label(mview);
+  lp.set(mview);
 
   // ---- drawer (M4.1 M4.3 M9.2)
   let paneBefore = null;               // the drawer view to restore when a Search-opened drawer closes
   const drawerOpen = () => document.body.classList.contains("m-drawer");
   const openDrawer = pane => {
-    closeTabs();
+    closeTabs(); closeRight();
     if (typeof closeMenu === "function") closeMenu();
     if (pane && mview !== pane) { paneBefore = mview; setView(pane); }
     else if (own(mview)) paintOwn(mview);   // tags / properties: repaint from the index on every open
@@ -184,6 +196,47 @@
   };
   expand.onclick = () => drawerOpen() ? closeDrawer() : openDrawer();
   scrim.onclick = closeDrawer;
+
+  // ---- M4.6 right drawer: a mid-screen swipe LEFT (no drawer open) slides #rside in from the right as an overlay.
+  // It IS main.js's right sidebar (cmdToggleRight: rightOpen, the panes, their refresh on note change); the phone
+  // hides its icon strip and shows ONE view behind a pill (Backlinks / Outgoing links / Outline) and a footer with the
+  // active note's name and its word + character counts (the desktop status-bar rule: \S+ runs, editor text length).
+  const RVIEWS = [["bl", "Backlinks"], ["out", "Outgoing links"], ["toc", "Outline"]];
+  const rside = $m("rside");
+  const rcur = () => (typeof rTab !== "undefined" && RVIEWS.some(v => v[0] === rTab)) ? rTab : "bl";
+  const rp = makePill(RVIEWS, async k => { if (typeof setRTab === "function") await setRTab(k); rp.set(k); rFoot(); }, rcur);
+  const rfoot = document.createElement("div");
+  rfoot.className = "m-rfoot";
+  rfoot.innerHTML = '<div class="m-rname"></div><div class="m-rcount"></div>';
+  for (const k of ["bl", "out", "toc"]) { const p = $m("rpane-" + k); if (p) p.classList.add("m-view"); }
+  rside.append(rp.bar, rfoot);
+  function rFoot() {
+    const g = live(), n = g && typeof curOf === "function" ? curOf(g) : null;
+    const v = g && g.editor && n ? g.editor.value : "", w = (v.match(/\S+/g) || []).length;
+    rfoot.firstChild.textContent = n ? String(n).split("/").pop().replace(/\.md$/, "") : "";
+    rfoot.lastChild.textContent = n ? w + (w === 1 ? " word, " : " words, ") + v.length + (v.length === 1 ? " character" : " characters") : "";
+  }
+  const rOpenNow = () => document.body.classList.contains("m-rdrawer");
+  const openRight = async () => {
+    closeTabs(); closeDrawer();
+    if (typeof closeMenu === "function") closeMenu();
+    if (typeof rightOpen !== "undefined" && !rightOpen && typeof cmdToggleRight === "function") await cmdToggleRight();
+    if (typeof setRTab === "function") await setRTab(rcur(), false);
+    rp.set(rcur()); rFoot();
+    document.body.classList.add("m-rdrawer");
+  };
+  const closeRight = () => {
+    if (!rOpenNow()) return;
+    rp.close();
+    document.body.classList.remove("m-rdrawer");
+    const a = document.activeElement; if (a && rside.contains(a)) a.blur();
+    if (typeof rightOpen !== "undefined" && rightOpen && typeof cmdToggleRight === "function") cmdToggleRight();
+  };
+  scrim.addEventListener("click", closeRight);
+  // a row tapped in the right drawer opens its note: the drawer gets out of the way
+  rside.addEventListener("click", e => {
+    if (e.target.closest && e.target.closest(".blline, .outrow, .tocrow")) { quietUntil = Date.now() + 3000; setTimeout(closeRight, 0); }
+  });
   // M4.3: a file opened from the drawer opens in the current tab (rowOpen, main.js) and the drawer closes
   $m("side").addEventListener("click", e => {
     const r = e.target && e.target.closest && e.target.closest("#tree .trow");
@@ -219,8 +272,10 @@
     if (!t0) return;
     const dx = t0.lx - t0.x, dy = t0.ly - t0.y; t0 = null;
     if (Math.abs(dx) < 60 || Math.abs(dy) > Math.abs(dx) * 0.6) return;
-    if (dx > 0 && !drawerOpen() && !(typeof modalKind !== "undefined" && modalKind)) openDrawer();
-    else if (dx < 0 && drawerOpen()) closeDrawer();
+    const modal = typeof modalKind !== "undefined" && modalKind;
+    if (dx > 0) { if (rOpenNow()) closeRight(); else if (!drawerOpen() && !modal) openDrawer(); }
+    else if (drawerOpen()) closeDrawer();
+    else if (!rOpenNow() && !modal) openRight();
   };
   document.addEventListener("touchend", swipeEnd, { passive: true, capture: true });
   document.addEventListener("touchcancel", swipeEnd, { passive: true, capture: true });
@@ -229,7 +284,7 @@
   const allTabs = () => (typeof groups === "function" ? groups() : []).flatMap(g => g.tabs.map((t, i) => ({ g, i, t })));
   function closeTabs() { tabsBox.hidden = true; nTabs.classList.remove("on"); }
   const openTabs = () => {
-    closeDrawer();
+    closeDrawer(); closeRight();
     tabsBox.textContent = "";
     for (const { g, i, t } of allTabs()) {
       const d = document.createElement("div");
@@ -285,8 +340,10 @@
       t.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true }));
       return "prompt";
     }
-    if (pillOpen()) { closePill(); return "pill"; }
+    const op = pills.find(P => P.isOpen());
+    if (op) { op.close(); return "pill"; }
     if (!tabsBox.hidden) { closeTabs(); return "tabs"; }
+    if (rOpenNow()) { closeRight(); return "rdrawer"; }
     if (drawerOpen()) { closeDrawer(); return "drawer"; }
     const g = live();
     if (g && typeof navState === "function" && navState(g).b) {
