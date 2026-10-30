@@ -33,8 +33,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
-use std::os::unix::ffi::OsStrExt;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 /// MRU cap of the recent-vaults list
@@ -122,7 +121,7 @@ fn target(cfg: &Path) -> PathBuf {
 pub fn lock_file(lock_dir: &Path, cfg: &Path) -> PathBuf {
     let t = target(cfg);
     let mut h: u64 = 0xcbf29ce484222325;
-    for &b in t.as_os_str().as_bytes() {
+    for &b in t.as_os_str().as_encoded_bytes() {
         h ^= b as u64;
         h = h.wrapping_mul(0x100000001b3);
     }
@@ -162,7 +161,11 @@ fn write_renamed(t: &Path, bytes: &[u8]) -> std::io::Result<()> {
         f.sync_all()?;
         drop(f);
         fs::rename(&tmp, t)?;
-        File::open(dir).and_then(|d| d.sync_all())
+        // FlushFileBuffers on a directory handle is ACCESS_DENIED on Windows;
+        // treating that as a rename failure forced a truncating in-place rewrite.
+        #[cfg(unix)]
+        File::open(dir).and_then(|d| d.sync_all())?;
+        Ok(())
     })();
     if r.is_err() {
         let _ = fs::remove_file(&tmp);
@@ -194,7 +197,7 @@ pub fn update_in(lock_dir: &Path, cfg: &Path, ops: &[Op]) -> Result<Wrote, Strin
     } // lf dropped here -> unlock, after the bytes are on disk
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::fs::symlink;

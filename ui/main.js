@@ -58,6 +58,8 @@ function pspan(name, attrs, fn) {
 /* perfhunt: first_paint = page start -> first committed frame (boot ends at the first note rendered) */
 requestAnimationFrame(() => setTimeout(() => perf.mark("first_paint", 0), 0));
 const $ = id => document.getElementById(id);
+/* Windows caption polish (#wframe hover / close) — UA only; no IPC. */
+if (/\bWindows\b/i.test(navigator.userAgent || "")) document.documentElement.classList.add("os-win");
 /* R20: an uncaught error / rejected action left the UI mid-mutation and the
    census silently STALE (the title only moves in updateTitle) — smoke then
    reports the symptom, never the cause. Surface it as [jserr:...]. */
@@ -9312,6 +9314,7 @@ async function undoCloseTab() {
 const CV_PALETTE_HIDE_OFF = true;
 const CMDS = [
   ["app:open-settings",        "Open settings",                       ["ctrl+,"],               () => cmdSettings()],
+  ["app:toggle-devtools",      "Toggle developer tools",              ["f12"],                  () => inv("toggle_devtools").catch(noteErr)],
   // R14: the theme switch is a registry entry like any other — no bespoke
   // keystroke, no menu item of its own. It ships with NO default chord on
   // purpose: the palette is the road, so the smoke phase has to drive the real
@@ -9452,10 +9455,23 @@ function chordOf(e) {                       // keydown -> normalised chord (null
   if (["Control", "Alt", "Shift", "Meta"].includes(e.key)) return null;
   let k = e.key.toLowerCase();
   if (e.code === "Tab") k = "tab";   // X11 shift+tab arrives as ISO_Left_Tab
+  // Physical key codes — WebView2 / AZERTY often disagree with e.key for
+  // punctuation (Ctrl+, on FR was dead; settings unreachable without a button).
+  if (e.code === "Comma") k = ",";
+  else if (e.code === "Period") k = ".";
+  else if (e.code === "Slash") k = "/";
+  else if (e.code === "Equal") k = "=";
+  else if (e.code === "Minus") k = "-";
+  else if (e.code === "Semicolon") k = ";";
+  else if (e.code === "BracketLeft") k = "[";
+  else if (e.code === "BracketRight") k = "]";
+  else if (e.code === "Backquote") k = "`";
+  // Physical F-keys: prefer e.code so WebView2 never hands a locale glyph for F12.
+  if (/^F\d+$/.test(e.code)) k = e.code.toLowerCase();
   // Xvfb/xdotool synthesize every F-key with a spurious Mod1 latch (alt:true
   // on F1..F12, clean on letters) — drop alt for function keys so F2 binds.
   const alt = e.altKey && !/^F\d+$/.test(e.code);
-  return (e.ctrlKey ? "ctrl+" : "") + (alt ? "alt+" : "") + (e.shiftKey ? "shift+" : "") + k;
+  return (e.ctrlKey || e.metaKey ? "ctrl+" : "") + (alt ? "alt+" : "") + (e.shiftKey ? "shift+" : "") + k;
 }
 /* palette source: the registry w/ current hotkey hints, PLUS one "Use theme:
    <name>" item per theme this vault actually offers (themeone item 7).
@@ -9654,6 +9670,7 @@ document.addEventListener("keydown", e => {
 
 $("stab-files").onclick = () => setPane("files");
 $("collapsebtn").onclick = cmdToggleSide;
+$("settingsbtn").onclick = () => cmdSettings();
 $("stab-search").onclick = () => setPane("search");
 $("stab-bm").onclick = () => setPane("bm");
 $("sinput").oninput = () => {              // debounce 60ms (was 150: sized for the disk-walking search; the index answers in ~1ms, the DOM for ~400 hits in a few ms)

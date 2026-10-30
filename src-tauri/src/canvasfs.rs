@@ -119,7 +119,7 @@ pub fn media(root: &Path) -> Vec<String> {
 fn exists(v: &Vault, rel: &Path) -> io::Result<bool> {
     match v.p_stat(rel) {
         Ok(_) => Ok(true),
-        Err(e) if e.kind() == io::ErrorKind::NotFound || matches!(e.raw_os_error(), Some(libc::ENOENT)) => Ok(false),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(e) => Err(e),
     }
 }
@@ -339,7 +339,6 @@ pub fn op(root: &Path, op: &str, path: &str, data: Option<&str>) -> Result<Value
     }
 }
 
-
 /* canvas_attach: a NEW image file inside the vault, written from base64 bytes
    (export as image, pasted / dropped images). The byte twin of `create` above,
    and in the same class: vault-confined, never trust-gated, never an overwrite.
@@ -407,7 +406,7 @@ pub fn attach(root: &Path, path: &str, data_b64: &str) -> Result<String, String>
     Ok(rel.to_string_lossy().into_owned())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::fs;

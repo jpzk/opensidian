@@ -26,6 +26,7 @@
    so no codec crate is needed. */
 use std::collections::HashMap;
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -131,6 +132,7 @@ pub struct Chunk {
     pub done: bool,
 }
 
+#[cfg(unix)]
 pub fn sig_name(n: i32) -> &'static str {
     match n {
         libc::SIGHUP => "SIGHUP",
@@ -148,6 +150,12 @@ pub fn sig_name(n: i32) -> &'static str {
     }
 }
 
+#[cfg(not(unix))]
+pub fn sig_name(_n: i32) -> &'static str {
+    "SIGTERM"
+}
+
+#[cfg(unix)]
 pub fn sig_num(name: &str) -> Option<i32> {
     Some(match name.trim_start_matches("SIG").to_ascii_uppercase().as_str() {
         "HUP" => libc::SIGHUP,
@@ -164,6 +172,16 @@ pub fn sig_num(name: &str) -> Option<i32> {
     })
 }
 
+#[cfg(not(unix))]
+pub fn sig_num(name: &str) -> Option<i32> {
+    // Windows has no POSIX signals; map names to opaque codes for kill().
+    Some(match name.trim_start_matches("SIG").to_ascii_uppercase().as_str() {
+        "KILL" => 9,
+        "" | "TERM" | "INT" | "HUP" | "QUIT" | "ABRT" => 15,
+        _ => return None,
+    })
+}
+
 impl Run {
     pub fn pid(&self) -> i32 {
         self.pid
@@ -174,8 +192,31 @@ impl Run {
         if self.st.lock().unwrap_or_else(|e| e.into_inner()).reaped {
             return false;
         }
-        // SAFETY: plain syscall on our child's own group (process_group(0))
-        unsafe { libc::kill(-self.pid, sig) == 0 }
+        #[cfg(unix)]
+        {
+            // SAFETY: plain syscall on our child's own group (process_group(0))
+            return unsafe { libc::kill(-self.pid, sig) == 0 };
+        }
+        #[cfg(windows)]
+        {
+            let _ = sig;
+            #[link(name = "kernel32")]
+            extern "system" {
+                fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut core::ffi::c_void;
+                fn CloseHandle(h: *mut core::ffi::c_void) -> i32;
+                fn TerminateProcess(h: *mut core::ffi::c_void, code: u32) -> i32;
+            }
+            const PROCESS_TERMINATE: u32 = 0x0001;
+            unsafe {
+                let h = OpenProcess(PROCESS_TERMINATE, 0, self.pid as u32);
+                if h.is_null() {
+                    return false;
+                }
+                let ok = TerminateProcess(h, 1) != 0;
+                CloseHandle(h);
+                ok
+            }
+        }
     }
 
     pub fn write(&self, data: &[u8]) -> Result<(), String> {
@@ -229,22 +270,30 @@ pub struct Spec {
 
 fn build(sp: &Spec) -> Command {
     let mut c = Command::new(&sp.file);
-    c.args(&sp.args).current_dir(&sp.cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
+    c.args(&sp.args)
+        .current_dir(&sp.cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     for (k, v) in &sp.env {
         c.env(k, v);
     }
-    // SAFETY: async-signal-safe syscalls only, between fork and exec
-    unsafe {
-        c.pre_exec(|| {
-            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong, 0, 0, 0);
-            if libc::getppid() == 1 {
-                return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
-            }
-            // CLOEXEC, not close: std reports a failed exec (ENOENT) over its own cloexec
-            // pipe, which a plain close_range would cut (spawn would "succeed")
-            libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 4u32 /* CLOSE_RANGE_CLOEXEC */);
-            Ok(())
-        });
+    #[cfg(unix)]
+    {
+        c.process_group(0);
+        // SAFETY: async-signal-safe syscalls only, between fork and exec
+        unsafe {
+            c.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong, 0, 0, 0);
+                if libc::getppid() == 1 {
+                    return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
+                }
+                // CLOEXEC, not close: std reports a failed exec (ENOENT) over its own cloexec
+                // pipe, which a plain close_range would cut (spawn would "succeed")
+                libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 4u32 /* CLOSE_RANGE_CLOEXEC */);
+                Ok(())
+            });
+        }
     }
     c
 }
@@ -318,7 +367,14 @@ pub fn start(sp: Spec) -> Result<Arc<Run>, String> {
         let mut s = r.st.lock().unwrap_or_else(|e| e.into_inner());
         if let Ok(st) = st {
             s.exit = st.code();
-            s.signal = st.signal();
+            #[cfg(unix)]
+            {
+                s.signal = st.signal();
+            }
+            #[cfg(not(unix))]
+            {
+                s.signal = None;
+            }
         }
         s.reaped = true;
         drop(s);
@@ -353,7 +409,7 @@ pub fn forget(id: u64) {
 pub fn kill_all() {
     let all: Vec<Arc<Run>> = runs().lock().unwrap_or_else(|e| e.into_inner()).drain().map(|(_, r)| r).collect();
     for r in all {
-        r.kill(libc::SIGKILL);
+        r.kill(sig_num("KILL").unwrap_or(9));
         r.end();
     }
 }
@@ -394,6 +450,7 @@ mod tests {
     }
 
 
+    #[cfg(unix)]
     #[test]
     fn desk_open_target_is_vault_confined_and_symlink_safe() {
         let base = std::env::temp_dir().join(format!("desk-vot-{}", std::process::id()));
@@ -424,6 +481,7 @@ mod tests {
         assert_eq!(latin1_to_bytes(&bytes_to_latin1(&all)), all);
     }
 
+    #[cfg(unix)]
     #[test]
     fn desk_spawn_runs_in_cwd_with_env_stdin_and_exit_code() {
         let d = std::env::temp_dir();
@@ -439,6 +497,7 @@ mod tests {
         assert_eq!((c.exit, c.signal), (Some(3), None));
     }
 
+    #[cfg(unix)]
     #[test]
     fn desk_kill_reports_the_signal_and_missing_exe_is_enoent() {
         let r = start(spec("/bin/sleep", &["30"], &std::env::temp_dir())).unwrap();

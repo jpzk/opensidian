@@ -15,7 +15,9 @@ path = "src/lib.rs"
 tauri-build = { version = "2.1", features = [] }
 
 [dependencies]
-tauri = { version = "2.5", features = [] }
+# `devtools`: inspector in release too (toggle via F12 / OPENSIDIAN_DEVTOOLS=1).
+# Debug builds already expose it; the feature is what WebView2 needs in --release.
+tauri = { version = "2.5", features = ["devtools"] }
 serde = { version = "1", features = ["derive"] }
 # preserve_order: unknown keys and opaque entries in .obsidian/bookmarks.json
 # must round-trip in FILE order (goal bmcompat, criterion 4) — indexmap 2.x
@@ -32,11 +34,6 @@ regex = "=1.13.1"
 # renderer-crates.txt, all >= 6 weeks old, resolved with --precise pins (never
 # "latest"). Design: harness docs/recon-pdfembed/README.md "security design".
 hayro = "=0.7.1"
-landlock = "=0.4.7"
-# vaultfs: openat/renameat/mkdirat/unlinkat with O_NOFOLLOW so vault writes never
-# follow a symlink. ALREADY in Cargo.lock (transitive via tauri/landlock); `=`
-# pins it to that exact version, so the lock gains no package.
-libc = "=0.2.189"
 
 # cp-browser — the plugin store (plugin_store.rs). NO NEW CRATE: both are
 # ALREADY in Cargo.lock as tauri/webkit dependencies, `=` pins the locked version.
@@ -63,6 +60,12 @@ ed25519-compact = { version = "=2.4.2", default-features = false }
 # that is not tauri's gdk would hand us a DIFFERENT GdkDisplay type and the
 # downcast that detects X11-vs-Wayland would silently answer "wayland" everywhere.
 [target.'cfg(target_os = "linux")'.dependencies]
+# vaultfs: openat/renameat/mkdirat/unlinkat with O_NOFOLLOW so vault writes never
+# follow a symlink. ALREADY in Cargo.lock (transitive via tauri/landlock); `=`
+# pins it to that exact version, so the lock gains no package.
+libc = "=0.2.189"
+# Landlock self-sandbox (sandbox.rs). Linux-only LSM; never built on Windows.
+landlock = "=0.4.7"
 gdk = "=0.18.2"
 gdkx11 = "=0.18.2"
 # cp-browser: the plugin store's HTTPS client is libsoup 3 — the library webkit2gtk
@@ -76,6 +79,11 @@ soup3 = "=0.5.0"
 # nothing new. MIT OR Apache-2.0.
 dbus = "=0.9.12"
 # ---- cp-secrets (end) ----
+
+# Windows plugin-store HTTPS (plugin_store.rs). reqwest 0.13.4 is ALREADY in
+# Cargo.lock (tauri transitive); rustls-tls avoids soup3/native OpenSSL. Pin `=`.
+[target.'cfg(windows)'.dependencies]
+reqwest = { version = "=0.13.4", default-features = false, features = ["blocking", "rustls", "charset"] }
 
 # listtoggle A2 — the unit table runs ui/editor.js in JavaScriptCore, the engine
 # the webview runs it in. javascriptcore-rs 1.1.2 is ALREADY in Cargo.lock as
