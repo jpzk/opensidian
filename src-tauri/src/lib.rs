@@ -4061,6 +4061,21 @@ fn set_quickfont(v: State<Vault>, size: Option<i64>, action: Option<bool>) -> Re
     themefs::set_quickfont(&root, size, action)
 }
 
+/* ---- android-p2a M12.5: the phone's Settings > Interface > Full screen lives in the vault's appearance.json as
+   autoFullScreen (absent = on), so it survives a cleared WebView and travels with the vault. SPANNED: a disk read
+   (+ the write's fsync) on a Settings tap. */
+#[tauri::command]
+fn get_autofs(v: State<Vault>) -> Result<bool, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    Ok(span_timed!("get_autofs", themefs::auto_full_screen(&root)))
+}
+
+#[tauri::command]
+fn set_autofs(v: State<Vault>, on: bool) -> Result<(), String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    span_timed!("set_autofs", themefs::set_auto_full_screen(&root, on))
+}
+
 /* ---- goal fontset: Obsidian's Interface / Text / Monospace font rows
    (docs/fontset/recon.md REQ-8..15). get_fonts/set_font: three strings in the
    vault's small appearance.json — the get_quickfont class, OUT_OF_SCOPE_CMD in
@@ -6587,7 +6602,7 @@ pub fn run() {
             plugin_store::store_list, plugin_store::store_detail, plugin_store::store_install, plugin_store::store_uninstall,
             updates::update_check,
             themes_scan, theme_css, get_css_theme, set_css_theme, theme_seed_report, vault_css_watch,
-            get_quickfont, set_quickfont, get_fonts, set_font, font_families,
+            get_quickfont, set_quickfont, get_autofs, set_autofs, get_fonts, set_font, font_families,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
             win_rect, win_gesture, win_move_proto, win_drag_start, win_minimize, win_toggle_max, win_close, quit_arm, quit_ready,
             tab_removed, insert_datetime,

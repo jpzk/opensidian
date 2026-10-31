@@ -597,25 +597,51 @@
   // ---- M11.2 Settings > Interface, mobile-only rows above the ribbon configuration: Full screen (the header and nav
   // hide while a note scrolls down, come back on a scroll up), Floating navigation (the nav is a pill over the note in
   // portrait too; landscape always floats, M3.3), Sliding sidebars (an open left drawer pushes the note instead of
-  // covering it). Stored in localStorage os.m.iface; body classes m-fs / m-float / m-slide. Defaults = all off.
+  // covering it). Stored in localStorage os.m.iface; body classes m-fs / m-float / m-slide. Defaults off, except
+  // Full screen: the vault's appearance.json autoFullScreen, absent = on (M12.5).
   const IKEY = "os.m.iface";
   const IFACE = [
     ["fullscreen", "Full screen", "Hide the header and the navigation bar while scrolling down a note.", "m-fs"],
     ["floatnav", "Floating navigation", "Show the navigation bar as a floating pill over the note.", "m-float"],
     ["slide", "Sliding sidebars", "An open sidebar pushes the note aside instead of covering it.", "m-slide"],
   ];
-  const ifGet = () => { try { return JSON.parse(localStorage.getItem(IKEY) || "{}") || {}; } catch (e) { return {}; } };
+  // android-p2a M12.5: Full screen is the VAULT's .obsidian/appearance.json autoFullScreen (get_autofs / set_autofs;
+  // a missing key = ON, stock's default). localStorage only caches it for the first paint before the vault answers.
+  let fsV = null;
+  const ifRaw = () => { try { return JSON.parse(localStorage.getItem(IKEY) || "{}") || {}; } catch (e) { return {}; } };
+  const ifGet = () => {
+    const s = ifRaw();
+    s.fullscreen = fsV !== null ? fsV : (typeof s.fullscreen === "boolean" ? s.fullscreen : true);
+    return s;
+  };
+  const fsSync = v => {
+    fsV = !!v;
+    const s = ifRaw(); s.fullscreen = fsV;
+    try { localStorage.setItem(IKEY, JSON.stringify(s)); } catch (e) { /* cache only */ }
+    const cb = document.querySelector("#spage .m-ifrow[data-k=fullscreen] input");
+    if (cb) cb.checked = fsV;
+    ifApply();
+  };
+  const fsLoad = async (n = 0) => {      // the vault opens after this script runs: retry until it answers
+    if (typeof inv !== "function") return;
+    try { fsSync(await inv("get_autofs")); } catch (e) { if (n < 80) setTimeout(() => fsLoad(n + 1), 250); }
+  };
   const ifApply = () => {
     const s = ifGet();
     for (const [k, , , cls] of IFACE) document.body.classList.toggle(cls, !!s[k]);
     if (!s.fullscreen) document.body.classList.remove("m-fshide");
   };
   const ifSet = (k, v) => {
-    const s = ifGet(); s[k] = !!v;
+    if (k === "fullscreen") {
+      fsV = !!v;
+      if (typeof inv === "function") inv("set_autofs", { on: fsV }).catch(() => { /* refused: this session only */ });
+    }
+    const s = ifRaw(); s[k] = !!v;
     try { localStorage.setItem(IKEY, JSON.stringify(s)); } catch (e) { /* storage off: this session only */ }
     ifApply();
   };
   ifApply();
+  fsLoad();
   // Full screen: a note scroller moving down past the first screenful hides the bars, any move up shows them
   const fsLast = new WeakMap();
   document.addEventListener("scroll", e => {
