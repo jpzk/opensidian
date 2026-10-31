@@ -43,10 +43,18 @@
   // (innerHeight stays), only visualViewport shrinks to the keyboard's top edge, so bottom-docked UI pads by it.
   const vv = window.visualViewport;
   const kbPx = () => vv ? Math.max(0, Math.round(innerHeight - vv.height)) : 0;
+  // M15.6 once the WebView itself is panned (vv.offsetTop > 0) the visual viewport grows back towards innerHeight while
+  // the keyboard is still up (landscape walk past the keyboard: vvh 424 + vvt 24 = innerHeight). The keyboard height
+  // seen unpanned is remembered per orientation, and a pan with a field focused keeps the keyboard state on.
+  const kbSeen = {};
+  const kbKey = () => (innerWidth > innerHeight ? "land" : "port");
   const setKb = () => {
-    const k = kbPx();
+    const k = kbPx(), a = document.activeElement;
+    if (vv && vv.offsetTop < 1 && k > 80) kbSeen[kbKey()] = k;
+    const typing = !!(a && a !== document.body && (a.isContentEditable || /^(INPUT|TEXTAREA)$/.test(a.tagName)));
+    const up = k > 80 || !!(vv && vv.offsetTop >= 1 && typing && kbSeen[kbKey()]);
     document.documentElement.style.setProperty("--m-kb", k + "px");
-    document.body.classList.toggle("m-kb", k > 80);
+    document.body.classList.toggle("m-kb", up);
     // the WebView also PANS the visual viewport (offsetTop > 0) to reveal a focused field, and that pan is not
     // undoable from JS: overlays that must sit on the keyboard follow the visual viewport itself (--m-vvt/--m-vvh)
     document.documentElement.style.setProperty("--m-vvt", (vv ? vv.offsetTop : 0) + "px");
@@ -507,6 +515,57 @@
     sheet.hidden = false; document.body.classList.add("m-sheet");
   };
   scrim.addEventListener("click", closeSheet);
+  // ---- M11.2 Settings > Interface, mobile-only rows above the ribbon configuration: Full screen (the header and nav
+  // hide while a note scrolls down, come back on a scroll up), Floating navigation (the nav is a pill over the note in
+  // portrait too; landscape always floats, M3.3), Sliding sidebars (an open left drawer pushes the note instead of
+  // covering it). Stored in localStorage os.m.iface; body classes m-fs / m-float / m-slide. Defaults = all off.
+  const IKEY = "os.m.iface";
+  const IFACE = [
+    ["fullscreen", "Full screen", "Hide the header and the navigation bar while scrolling down a note.", "m-fs"],
+    ["floatnav", "Floating navigation", "Show the navigation bar as a floating pill over the note.", "m-float"],
+    ["slide", "Sliding sidebars", "An open sidebar pushes the note aside instead of covering it.", "m-slide"],
+  ];
+  const ifGet = () => { try { return JSON.parse(localStorage.getItem(IKEY) || "{}") || {}; } catch (e) { return {}; } };
+  const ifApply = () => {
+    const s = ifGet();
+    for (const [k, , , cls] of IFACE) document.body.classList.toggle(cls, !!s[k]);
+    if (!s.fullscreen) document.body.classList.remove("m-fshide");
+  };
+  const ifSet = (k, v) => {
+    const s = ifGet(); s[k] = !!v;
+    try { localStorage.setItem(IKEY, JSON.stringify(s)); } catch (e) { /* storage off: this session only */ }
+    ifApply();
+  };
+  ifApply();
+  // Full screen: a note scroller moving down past the first screenful hides the bars, any move up shows them
+  const fsLast = new WeakMap();
+  document.addEventListener("scroll", e => {
+    const el = e.target;
+    if (!(el instanceof Element) || !el.matches("#main .cm-scroller, #main .preview, #main .lp")) return;
+    const y = el.scrollTop, p = fsLast.has(el) ? fsLast.get(el) : y; fsLast.set(el, y);
+    if (!document.body.classList.contains("m-fs")) return;
+    if (y < 24 || y - p < -6) document.body.classList.remove("m-fshide");
+    else if (y - p > 6) document.body.classList.add("m-fshide");
+  }, true);
+  const ifRows = () => {
+    const box = document.createElement("div");
+    box.className = "m-ifcfg";
+    const s = ifGet();
+    for (const [k, name, desc] of IFACE) {
+      const row = document.createElement("label");
+      row.className = "m-ifrow"; row.dataset.k = k;
+      const t = document.createElement("div"); t.className = "m-iftxt";
+      const h = document.createElement("div"); h.className = "m-ifh"; h.textContent = name;
+      const d = document.createElement("div"); d.className = "m-ifd"; d.textContent = desc;
+      t.append(h, d);
+      const cb = document.createElement("input");
+      cb.type = "checkbox"; cb.checked = !!s[k];
+      cb.onchange = () => ifSet(k, cb.checked);
+      row.append(t, cb);
+      box.append(row);
+    }
+    return box;
+  };
   // Settings > Interface: "Ribbon menu configuration", one checkbox row per action (appended after main.js's rows)
   if (typeof window.showSettingsPage === "function") {
     const origPage = window.showSettingsPage;
@@ -530,7 +589,7 @@
           row.append(t, cb);
           box.append(row);
         }
-        if (pg) pg.append(box);
+        if (pg) { pg.prepend(ifRows()); pg.append(box); }   // the phone rows first: reachable without a scroll
       }
       return r;
     };
@@ -571,6 +630,58 @@
   // ---- M7.1 header More options -> a bottom sheet: main.js builds the note menu, the phone drops its window / split /
   // OS-shell rows (no such surfaces on a phone), puts Close (the active tab) first and docks it to the screen bottom
   const DESK_ROW = /^(Split right|Split down|Move to new window|Open in new window|Show in system explorer|Open in default app|Copy screenshot)$/;
+  // M15.1 the Add bookmark card as a bottom sheet on the visual viewport (CSS); the Title field focused with the IME
+  // raised by the native bridge (a focus outside a direct tap on the field does not raise it on Android)
+  const bmSheet = () => {
+    openBmAdd(null);
+    const f = $m("bme-title"), d = window.__osAndroid;
+    if (!f || $m("bmebox").hidden) return;
+    f.focus();
+    if (d && d.showIme) d.showIme();
+    const keep = () => { if (!$m("bmebox").hidden && document.activeElement === f) f.scrollIntoView({ block: "nearest" }); };
+    setTimeout(keep, 350); setTimeout(keep, 800);
+  };
+  // M15.3 the folder suggester on the #modal machinery (docked to the visual viewport, M7.2): every folder but the
+  // note's own, "/" = the vault root; a row runs moveNoteTo. Generic modal kind "mv" -> Enter = the selected row.
+  const mvSheet = async nm => {
+    let fl = [];
+    try { fl = await inv("list_folders"); } catch (e) { fl = []; }
+    const here = nm.includes("/") ? nm.slice(0, nm.lastIndexOf("/")) : "";
+    const items = [];
+    if (here) items.push({ label: "/", hint: "", run: () => moveNoteTo(nm, "") });
+    for (const f of fl) if (f && f !== here) items.push({ label: f, hint: "", run: () => moveNoteTo(nm, f) });
+    openModal("mv", () => items);
+    const f = $m("minput"), d = window.__osAndroid;
+    f.placeholder = "Type a folder";
+    if (typeof qsFoot === "function") qsFoot(false);
+    if (d && d.showIme && document.activeElement === f) d.showIme();
+  };
+  // M15.2 the rename prompt is a sheet on the keyboard's top edge: a "Rename" heading, the one-line field, Cancel / Save.
+  // Cancel / Save replay Escape / Enter on the field, so the note and the canvas rename paths stay main.js's; a press
+  // keeps the field focused (the keyboard stays up until the sheet closes).
+  const rnbox = $m("rnbox"), rnin = $m("rninput");
+  if (rnbox && rnin && !rnbox.querySelector(".m-rnhead")) {
+    const hd = document.createElement("div"); hd.className = "m-rnhead"; hd.textContent = "Rename";
+    const bt = document.createElement("div"); bt.className = "m-rnbtns";
+    const mk = (label, key, cls) => {
+      const b = document.createElement("button"); b.type = "button"; b.textContent = label; b.className = cls;
+      b.addEventListener("mousedown", e => e.preventDefault());
+      b.addEventListener("click", e => { e.preventDefault(); e.stopPropagation();
+        rnin.dispatchEvent(new KeyboardEvent("keydown", { key, code: key, bubbles: true, cancelable: true })); });
+      return b;
+    };
+    bt.append(mk("Cancel", "Escape", "m-rnno"), mk("Save", "Enter", "m-rnyes"));
+    rnbox.prepend(hd); rnbox.append(bt);
+    if (typeof window.cmdRename === "function") {
+      const origRename = window.cmdRename;
+      window.cmdRename = function () {
+        const r = origRename.apply(this, arguments);
+        const d = window.__osAndroid;
+        if (!rnbox.hidden && document.activeElement === rnin && d && d.showIme) d.showIme();
+        return r;
+      };
+    }
+  }
   const origHdrMenu = window.hdrMenu;
   if (typeof origHdrMenu === "function") window.hdrMenu = function (e, g) {
     const r = origHdrMenu.apply(this, arguments);
@@ -585,6 +696,14 @@
       c.onclick = () => { const i = g.active; closeMenu(); closeTab(g, i); };
       m.prepend(c);
     }
+    // M15.1: "Bookmark..." opens the Add bookmark sheet (Title focused, keyboard up) instead of a silent toggle
+    for (const d of [...m.children]) if (d.textContent.trim() === "Bookmark..." && !d.classList.contains("dis") &&
+        typeof openBmAdd === "function") d.onclick = () => { closeMenu(); bmSheet(); };
+    // M15.3: "Move file to..." opens a folder suggester (Type a folder) docked above the keyboard instead of the
+    // in-place folder list inside the menu; Enter takes the top match, a row tap takes that folder
+    const mvTab = g && g.tabs && g.tabs[g.active];
+    for (const d of [...m.children]) if (d.textContent.trim() === "Move file to..." && mvTab && !mvTab.kind &&
+        typeof moveNoteTo === "function") d.onclick = () => { closeMenu(); mvSheet(mvTab.name); };
     let prev = true;                     // drop leading / doubled / trailing separators the removals left behind
     for (const d of [...m.children]) { const s = d.classList.contains("sep"); if (s && prev) d.remove(); else prev = s; }
     if (m.lastElementChild && m.lastElementChild.classList.contains("sep")) m.lastElementChild.remove();
@@ -645,8 +764,82 @@
     if (tbar.hidden === on) tbar.hidden = !on;
   };
   document.addEventListener("focusin", tbSync); document.addEventListener("focusout", () => setTimeout(tbSync, 0));
-  if (vv) vv.addEventListener("resize", tbSync);
+  if (vv) { vv.addEventListener("resize", tbSync); vv.addEventListener("scroll", tbSync); }
   addEventListener("resize", tbSync);
+  // M15.6 the caret line stays above the toolbar: the IME does not shrink the layout, so the note's scroller runs on
+  // under the keyboard and neither CM6 nor the WebView keeps the caret above the toolbar (the WebView pans just enough
+  // to show the caret at the keyboard edge, which also pushes the header off-screen). While the toolbar is up, after a
+  // caret move / keystroke / viewport change, scroll the caret's scroller so the caret line ends above the toolbar top
+  // (visual viewport bottom - toolbar - 8px) and starts below the header (or the visual viewport top).
+  // CM6's own scrollIntoView (run in the same frame as a caret move, before the WebView decides to pan) keeps the caret
+  // clear of the keyboard + toolbar through a scrollMargins extension added once per editor view
+  const cmV = (window.__osModules || {})["@codemirror/view"], cmS = (window.__osModules || {})["@codemirror/state"];
+  const cmDone = new WeakSet();
+  const cmMargins = c => {
+    if (!c || cmDone.has(c) || !cmV || !cmS || !cmV.EditorView.scrollMargins) return;
+    cmDone.add(c);
+    c.dispatch({ effects: cmS.StateEffect.appendConfig.of(cmV.EditorView.scrollMargins.of(() => {
+      const kh = kbSeen[kbKey()];
+      return document.body.classList.contains("m-edkb") && kh ? { bottom: kh + (tbar.offsetHeight || 44) + 8 } : {};
+    })) });
+  };
+  const caretFollow = () => {
+    if (!document.body.classList.contains("m-edkb") || typeof Ed === "undefined") return;
+    const g = fg(), c = g && Ed.cm(g); if (!c) return;
+    const k = c.coordsAtPos(c.state.selection.main.head); if (!k) return;
+    let sc = c.contentDOM.parentElement;
+    while (sc && sc !== document.body && !(sc.scrollHeight > sc.clientHeight + 1 && /(auto|scroll)/.test(getComputedStyle(sc).overflowY))) sc = sc.parentElement;
+    if (!sc || sc === document.body) return;
+    cmMargins(c);
+    // the target is the UNPANNED band (header bottom .. keyboard top seen unpanned - toolbar): a caret kept there gives
+    // the WebView no reason to pan, and a pan once started only grows (vv reports past the WebView while panned)
+    const kh = kbSeen[kbKey()], vb = kh ? innerHeight - kh : (vv ? vv.offsetTop + vv.height : innerHeight);
+    const h = document.querySelector("#mhdr"), hb = h && h.getClientRects().length ? h.getBoundingClientRect().bottom : 0;
+    const top = hb + 4, bot = vb - (tbar.offsetHeight || 44) - 8;
+    if (k.bottom > bot) sc.scrollTop += Math.ceil(k.bottom - bot);
+    else if (k.top < top && bot - top > k.bottom - k.top) sc.scrollTop -= Math.ceil(top - k.top);
+  };
+  let cfT = 0;
+  const caretSoon = () => { if (cfT) return; cfT = requestAnimationFrame(() => requestAnimationFrame(() => { cfT = 0; caretFollow(); })); };
+  document.addEventListener("selectionchange", caretSoon);
+  document.addEventListener("input", caretSoon, true);
+  document.addEventListener("keyup", caretSoon, true);
+  if (vv) { vv.addEventListener("resize", caretSoon); vv.addEventListener("scroll", caretSoon); }
+  document.addEventListener("focusin", () => { setTimeout(caretSoon, 300); setTimeout(caretSoon, 700); });
+
+  // M15.12 a rotation keeps the caret: the IME restarts its input on the configuration change and commits the word
+  // around the caret, which lands the caret at that word's end — a selection-only change that lands a few ms BEFORE
+  // the orientation event. The editor selections are kept with their time; at the flip the newest one older than
+  // 250 ms (on the same, textually unchanged document) is put back and held for 1.5 s while the text stays unchanged.
+  let rsHist = [], rsGuard = null, rsOri = kbKey();
+  const rsCm = () => (typeof Ed !== "undefined" && typeof fg === "function" && fg() ? Ed.cm(fg()) : null);
+  const rsFix = () => {
+    const c = rsCm(); if (!rsGuard || !c) return;
+    if (performance.now() > rsGuard.until || c !== rsGuard.c || !c.state.doc.eq(rsGuard.doc)) { rsGuard = null; return; }
+    const s = c.state.selection.main;
+    if (s.anchor !== rsGuard.a || s.head !== rsGuard.h) c.dispatch({ selection: { anchor: rsGuard.a, head: rsGuard.h } });
+  };
+  const rsNote = () => {
+    if (rsGuard) { rsFix(); return; }
+    const c = rsCm(); if (!c) return;
+    const s = c.state.selection.main, l = rsHist[rsHist.length - 1];
+    if (l && l.c === c && l.doc === c.state.doc && l.a === s.anchor && l.h === s.head) return;
+    rsHist.push({ c, doc: c.state.doc, a: s.anchor, h: s.head, t: performance.now() });
+    if (rsHist.length > 8) rsHist.shift();
+  };
+  document.addEventListener("selectionchange", rsNote);
+  document.addEventListener("keyup", rsNote, true);
+  const rsFlip = () => {
+    const o = kbKey(); if (o === rsOri) return; rsOri = o;
+    const c = rsCm(), now = performance.now(); if (!c) return;
+    let p = null;
+    for (let i = rsHist.length - 1; i >= 0; i--) if (rsHist[i].t < now - 250) { p = rsHist[i]; break; }
+    if (!p || p.c !== c || !p.doc.eq(c.state.doc)) return;
+    rsGuard = Object.assign({}, p, { until: now + 1500 });
+    for (const t of [0, 100, 250, 500, 900, 1400]) setTimeout(rsFix, t);
+  };
+  addEventListener("resize", rsFlip);
+  if (screen.orientation) screen.orientation.addEventListener("change", rsFlip);
 
 
   // ---- M10.3 Settings on a phone: one column. Opening shows the tab list alone (body.m-snav); a tab shows its page
@@ -673,6 +866,16 @@
     };
   }
   const sPageOpen = () => document.body.classList.contains("m-spage");
+  // ---- M11.1 the phone Settings header carries a back arrow at its left (the desktop X is hidden): on a page it
+  // returns to the tab list, on the list it closes Settings — the same steps as the OS back.
+  const shead = $m("shead");
+  if (shead && !shead.querySelector(".m-sback")) {
+    const sb = document.createElement("button");
+    sb.className = "m-sback"; sb.type = "button"; sb.setAttribute("aria-label", "Back"); sb.title = "Back";
+    sb.innerHTML = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>';
+    sb.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); sPageOpen() ? sMode(false) : closeSettings(); });
+    shead.prepend(sb);
+  }
   // ---- M10.1 / M10.2: the OS back (key or edge gesture) unwinds the innermost layer; at the root it is a no-op
   window.__mobileBack = () => {
     if (typeof menuEl !== "undefined" && menuEl) { closeMenu(); return "menu"; }

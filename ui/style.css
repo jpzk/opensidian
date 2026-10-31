@@ -2139,3 +2139,67 @@ body.is-mobile #snav { width: 100%; border-right: 0 }
 body.is-mobile #snav .snavi { padding: 12px calc(16px + var(--safe-right, 0px)) 12px calc(16px + var(--safe-left, 0px)) }
 body.is-mobile #spage { width: 100%; padding: 16px calc(16px + var(--safe-right, 0px)) 16px calc(16px + var(--safe-left, 0px)) }
 body.is-mobile.m-snav #spage, body.is-mobile.m-spage #snav { display: none !important }
+/* android-p1c M11.1: the phone Settings header = back arrow top-left, then the title; the desktop close X is hidden */
+body.is-mobile #shead { justify-content: flex-start; gap: 8px; padding-left: calc(4px + var(--safe-left, 0px)) }
+body.is-mobile #sclose { display: none !important }
+body.is-mobile #shead .m-sback { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px;
+  background: none; border: 0; padding: 0; color: var(--text-chrome); cursor: pointer }
+body.is-mobile #shead .m-sback svg { display: block }
+/* android-p1c M11.2: the mobile Interface rows (Full screen, Floating navigation, Sliding sidebars) and their effects */
+body.is-mobile .m-ifcfg { margin: 6px 0 4px }
+body.is-mobile .m-ifrow { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0;
+  border-bottom: 1px solid var(--bg-surface) }
+body.is-mobile .m-ifrow .m-ifh { font-weight: 600; font-size: 15px }
+body.is-mobile .m-ifrow .m-ifd { color: var(--text-chrome-muted); font-size: 13px; padding-top: 2px }
+body.is-mobile .m-ifrow input { flex: 0 0 auto; width: 22px; height: 22px }
+body.is-mobile.m-fs.m-fshide #mhdr, body.is-mobile.m-fs.m-fshide #mnav { display: none !important }
+@media (orientation: portrait) {
+  body.is-mobile.m-float .app-container { position: relative }
+  body.is-mobile.m-float #mnav { position: fixed; z-index: 30; left: 50%; transform: translateX(-50%);
+  bottom: calc(var(--safe-bottom, 0px) + 8px); width: min(84vw, 440px); margin: 0; border-radius: 28px;
+  box-shadow: 0 2px 12px var(--shadow-popover) }
+  body.is-mobile.m-float #main .lp, body.is-mobile.m-float #main .preview { padding-bottom: calc(var(--m-nav) + 20px) }
+}
+body.is-mobile.m-slide #main, body.is-mobile.m-slide #mhdr { transition: transform .18s ease-out }
+body.is-mobile.m-slide.m-drawer #main, body.is-mobile.m-slide.m-drawer #mhdr { transform: translateX(var(--m-drawer)) }
+/* android-p1c M15.1: the Add bookmark card is a bottom sheet on the visual viewport (the keyboard's top edge), full
+   width, label above field, a 44px Title field; the card scrolls if the band is shorter than the card */
+body.is-mobile #bmebox { inset: auto 0; top: var(--m-vvt, 0px); height: var(--m-vvh, 100vh); justify-content: flex-end;
+  padding: calc(var(--safe-top, 0px) + 4px) 0 0 }
+body.is-mobile #bmecard { width: 100%; max-width: none; max-height: 100%; overflow-y: auto; border-radius: 12px 12px 0 0;
+  border-width: 1px 0 0; padding: 10px calc(16px + var(--safe-right, 0px)) 10px calc(16px + var(--safe-left, 0px)) }
+body.is-mobile #bmetitle { margin-bottom: 2px; padding-right: 40px }
+body.is-mobile #bme-x { width: 44px; height: 44px; top: 0; right: calc(4px + var(--safe-right, 0px)); line-height: 44px }
+body.is-mobile .bmerow { margin-top: 6px }
+body.is-mobile #bmecard input, body.is-mobile #bmecard select { flex: 1 1 auto; width: auto; min-width: 0; height: 40px; font-size: 16px }
+body.is-mobile #bmebtns { margin-top: 10px }
+body.is-mobile #bmebtns button { height: 40px; font-size: 15px }
+/* landscape: the band above the keyboard is ~140px, so the card is two rows: heading + Cancel/Save, then Title +
+   group side by side; the read-only Path (the Title placeholder already names the note) and the X (= Cancel) hide */
+@media (orientation: landscape) {
+  body.is-mobile #bmecard { display: grid; grid-template-columns: 1fr 1fr; grid-template-areas: "h b" "t g"; column-gap: 16px;
+    align-items: center; width: 84vw; margin: 0 auto }
+  body.is-mobile #bmetitle { grid-area: h; margin: 0 }
+  body.is-mobile #bmebtns { grid-area: b; margin: 0 }
+  body.is-mobile #bme-trow { grid-area: t }
+  body.is-mobile #bmecard > .bmerow:nth-child(5) { grid-area: g }
+  body.is-mobile #bmecard > .bmerow:nth-child(3), body.is-mobile #bme-x { display: none }
+}
+/* android-p1c M15.2: the rename prompt is a bottom sheet on the visual viewport (the keyboard's top edge): heading,
+   a one-line 44px field, Cancel / Save. Desktop keeps the bare inline prompt (.m-rnhead / .m-rnbtns hidden). */
+.m-rnhead, .m-rnbtns { display: none }
+body.is-mobile #rnbox { top: calc(var(--m-vvt, 0px) + var(--m-vvh, 100vh)); left: 0; right: 0; width: auto; max-width: none;
+  transform: translateY(-100%); border-radius: 12px 12px 0 0; border-width: 1px 0 0;
+  padding: 8px calc(16px + var(--safe-right, 0px)) 10px calc(16px + var(--safe-left, 0px)) }
+body.is-mobile #rnbox .m-rnhead { display: block; font-size: 17px; font-weight: 600; padding: 2px 0 8px; color: var(--text-chrome) }
+body.is-mobile #rninput { height: 44px; font-size: 16px; border: 1px solid var(--border); border-radius: 6px }
+body.is-mobile #rnbox .m-rnbtns { display: flex; justify-content: flex-end; gap: 10px; margin-top: 10px }
+body.is-mobile .m-rnbtns button { height: 40px; min-width: 96px; border: 0; border-radius: 6px; font-size: 15px; font-weight: 500;
+  background: var(--bg-button-plain); color: var(--bg-base); cursor: pointer }
+body.is-mobile .m-rnbtns .m-rnyes { background: var(--accent-blue) }
+@media (orientation: landscape) { body.is-mobile #rnbox { left: 15vw; right: 15vw } }
+/* android-p1c M15.6: landscape — the 21 toolbar buttons share the width in one row (no sideways scroll) */
+@media (orientation: landscape) {
+  body.is-mobile.m-edkb #mtoolbar:not([hidden]) { overflow-x: hidden; gap: 0 }
+  body.is-mobile #mtoolbar .m-tbtn { flex: 1 1 0; width: auto; min-width: 0 }
+}
