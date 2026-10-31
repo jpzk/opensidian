@@ -6329,6 +6329,8 @@ async function closeTab(g, i, cause, via, noFlush) {
     return collapseGroup(g, "closeTab");
   if (g.active >= g.tabs.length) g.active = g.tabs.length - 1;
   else if (i < g.active) g.active--;
+  // android-p2b M6.5: on a phone, closing the active tab activates its left neighbour (stock mobile); desktop unchanged
+  else if (i === g.active && i > 0 && document.body.classList.contains("is-phone")) g.active--;
   await loadActive(g);
   });
 }

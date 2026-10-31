@@ -463,7 +463,7 @@
   document.addEventListener("touchstart", e => {
     const t = e.touches[0];
     t0 = e.touches.length === 1 && t.clientX > EDGE && t.clientX < innerWidth - EDGE &&
-         !(e.target.closest && e.target.closest("#modal, #settings, .ctxmenu, #mtabs, #msheet, #mnav, #mhdr, canvas"))
+         !(e.target.closest && e.target.closest("#modal, #settings, .ctxmenu, #mtabs, #msheet, .m-asheet, #mascrim, #mnav, #mhdr, canvas"))
       ? { x: t.clientX, y: t.clientY, lx: t.clientX, ly: t.clientY, top: atTop(e.target) } : null;
   }, { passive: true, capture: true });
   document.addEventListener("touchmove", e => {
@@ -540,8 +540,11 @@
     bar.className = "m-tbar";
     const add = btn("m-tnew", "New tab", svg('<path d="M12 5v14M5 12h14"/>'));
     add.onclick = async () => { closeTabs(); quiet(); if (typeof cmdNewEmptyTab === "function") await cmdNewEmptyTab(); sync(); };   // M12.3: + opens an EMPTY tab (stock mobile)
-    const cnt = document.createElement("div");
-    cnt.className = "m-tcount"; cnt.textContent = list.length + (list.length === 1 ? " tab" : " tabs");
+    const cnt = document.createElement("button");   // M6.2: the count opens the tab-count sheet
+    cnt.className = "m-tcount"; cnt.setAttribute("aria-label", "Tab options");
+    cnt.append(list.length + (list.length === 1 ? " tab" : " tabs"));
+    cnt.insertAdjacentHTML("beforeend", svg('<path d="M7 10l5 5 5-5"/>'));
+    cnt.onclick = e => { e.stopPropagation(); tcountSheet(list.length); };
     const done = btn("m-tdone", "Done", "Done");
     done.onclick = closeTabs;
     bar.append(add, cnt, done);
@@ -766,12 +769,12 @@
     if (typeof qsFoot === "function") qsFoot(false);
     if (d && d.showIme && document.activeElement === f) d.showIme();
   };
-  // M15.2 the rename prompt is a sheet on the keyboard's top edge: a "Rename" heading, the one-line field, Cancel / Save.
+  // M15.2 the rename prompt is a sheet on the keyboard's top edge: a "Note title" heading (stock mobile, M7.4), the one-line field, Cancel / Save.
   // Cancel / Save replay Escape / Enter on the field, so the note and the canvas rename paths stay main.js's; a press
   // keeps the field focused (the keyboard stays up until the sheet closes).
   const rnbox = $m("rnbox"), rnin = $m("rninput");
   if (rnbox && rnin && !rnbox.querySelector(".m-rnhead")) {
-    const hd = document.createElement("div"); hd.className = "m-rnhead"; hd.textContent = "Rename";
+    const hd = document.createElement("div"); hd.className = "m-rnhead"; hd.textContent = "Note title";
     const bt = document.createElement("div"); bt.className = "m-rnbtns";
     const mk = (label, key, cls) => {
       const b = document.createElement("button"); b.type = "button"; b.textContent = label; b.className = cls;
@@ -1148,6 +1151,7 @@
     if (rowRn) { rowRn.cancel(); return "rename"; }
     if (typeof titling !== "undefined" && titling) { closeTitleEdit(); return "title"; }
     if (typeof menuEl !== "undefined" && menuEl) { closeMenu(); return "menu"; }
+    if (asOpen()) { closeAS(); return "asheet"; }
     if (typeof settingsOpen !== "undefined" && settingsOpen && sPageOpen()) { sMode(false); return "settings-page"; }
     if (typeof settingsOpen !== "undefined" && settingsOpen) { closeSettings(); return "settings"; }
     if (typeof modalKind !== "undefined" && modalKind) { closeModal(); return "modal"; }
@@ -1194,7 +1198,8 @@
   document.addEventListener("dblclick", e => { if (inEd(e.target)) { e.preventDefault(); dblCaret(e); } }, true);
   // main.js's document contextmenu listener cancels the event (desktop: no native menu, the plugin editor-menu). In a
   // phone note a long-press keeps the platform selection (handles + copy/paste) and opens no app menu.
-  window.addEventListener("contextmenu", e => { if (inEd(e.target)) e.stopImmediatePropagation(); }, true);
+  // android-p2b M7.7: a long-press ON an internal link opens its action sheet instead (no selection, the caret stays)
+  window.addEventListener("contextmenu", e => { if (!inEd(e.target)) return; e.stopImmediatePropagation(); if (linkSheetAt(e)) e.preventDefault(); }, true);
 
   // ---- M9.5 background + resume keeps the place in the note: the active note's caret is saved when the app goes to
   // the background, and the first load of that note after a cold start (the OS killed the backgrounded process) puts
@@ -1222,6 +1227,325 @@
       }
       return r;
     };
+  }
+
+  // ---- android-p2b: ONE bottom action sheet (.m-asheet) for the Files sort orders (M4.5), the long-press file /
+  // folder / link sheets (M7.5 M7.6 M7.7) and the tab-count sheet (M6.2): a drag handle, an optional title and sub
+  // line, then items (label, icon, red, checked) and separators. Back or a tap on its own scrim closes the sheet
+  // alone: the drawer or the tab switcher under it stays.
+  const asScrim = document.createElement("div");
+  asScrim.id = "mascrim"; asScrim.hidden = true;
+  const asBox = document.createElement("div");
+  asBox.className = "m-asheet"; asBox.hidden = true; asBox.setAttribute("role", "menu");
+  document.body.append(asScrim, asBox);
+  const asOpen = () => !asBox.hidden;
+  function closeAS() { asBox.hidden = true; asScrim.hidden = true; }
+  asScrim.addEventListener("click", e => { e.stopPropagation(); closeAS(); });
+  function openAS(o) {
+    asBox.textContent = "";
+    const div = (cls, t) => { const d = document.createElement("div"); d.className = cls; if (t != null) d.textContent = t; return d; };
+    asBox.append(div("m-ashandle"));
+    if (o.title) asBox.append(div("m-astitle", o.title));
+    if (o.sub) asBox.append(div("m-assub", o.sub));
+    for (const it of o.items) {
+      if (it === "sep") { if (asBox.lastChild && !asBox.lastChild.classList.contains("m-assep")) asBox.append(div("m-assep")); continue; }
+      const d = div("m-asitem" + (it.red ? " m-red" : ""));
+      d.setAttribute("role", it.checked == null ? "menuitem" : "menuitemradio");
+      if (it.checked != null) d.setAttribute("aria-checked", it.checked ? "true" : "false");
+      d.innerHTML = (it.icon ? svg(it.icon) : "") + "<span></span>" + (it.checked ? svg('<path d="M5 12l5 5L20 7"/>') : "");
+      d.querySelector("span").textContent = it.label;
+      d.onclick = async e => { e.stopPropagation(); closeAS(); await it.run(); sync(); };
+      asBox.append(d);
+    }
+    if (asBox.lastChild.classList.contains("m-assep")) asBox.lastChild.remove();
+    asBox.scrollTop = 0;
+    asBox.hidden = false; asScrim.hidden = false;
+  }
+
+  // the vault's files and folders with their times (m_stats, mobilefs.rs): the drawer counts, the time sort orders
+  let stCache = null;
+  const mStats = async () => {
+    if (!stCache) { try { stCache = typeof inv === "function" ? await inv("m_stats") : null; } catch (e) { stCache = null; } }
+    return stCache || [];
+  };
+  const plural = (n, w) => n + " " + w + (n === 1 ? "" : "s");
+  const countLine = (st, dir) => {
+    const pre = dir ? dir + "/" : "";
+    const sub = st.filter(e => !dir || e.path.startsWith(pre));
+    return plural(sub.filter(e => !e.dir).length, "file") + ", " + plural(sub.filter(e => e.dir).length, "folder");
+  };
+
+  // ---- M4.4 the drawer's foot: the vault name + a chevron (the vault list, M1.1), "N files, M folders" and the
+  // Settings gear. main.js's own #vbar (#vswitch + #sgear, their handlers) moves into it; below the view pill.
+  const dfoot = document.createElement("div");
+  dfoot.className = "m-dfoot";
+  const dcount = document.createElement("div");
+  dcount.className = "m-dcount";
+  if (vbar) {
+    side.insertBefore(dfoot, vbar);
+    dfoot.append(vbar, dcount);
+    const chev = document.createElement("span");
+    chev.className = "m-dchev"; chev.innerHTML = svg('<path d="M7 10l5 5 5-5"/>');
+    chev.onclick = e => { e.stopPropagation(); if (vswitch && !vmenuOpen()) vswitch.click(); };
+    vbar.insertBefore(chev, $m("sgear"));
+  }
+  const paintCount = async () => { dcount.textContent = countLine(await mStats(), ""); };
+
+  // ---- M4.5 the Files view's sort orders (stock's six, phone only, localStorage os.m.sort): a sort button in the
+  // Files toolbar (the slot main.js reserves for it) opens them as a bottom sheet. Folders stay above the notes; the
+  // name orders sort the folders too, the time orders keep them A to Z. Created time = the birth time where the
+  // platform has one; on Android it is the modified time (mobilefs.rs).
+  const SORTS = [["alphabetical", "File name (A to Z)"], ["alphabeticalReverse", "File name (Z to A)"],
+    ["byModifiedTime", "Modified time (new to old)"], ["byModifiedTimeReverse", "Modified time (old to new)"],
+    ["byCreatedTime", "Created time (new to old)"], ["byCreatedTimeReverse", "Created time (old to new)"]];
+  const SKEY = "os.m.sort";
+  const sortKey = () => { try { const k = localStorage.getItem(SKEY); return SORTS.some(s => s[0] === k) ? k : "alphabetical"; } catch (e) { return "alphabetical"; } };
+  const up = s => s.replace(/[a-z]/g, c => c.toUpperCase());
+  const byName = (a, b) => { const x = up(a), y = up(b); return x < y ? -1 : x > y ? 1 : a < b ? -1 : a > b ? 1 : 0; };
+  const rowPath = r => r.dataset.note != null ? r.dataset.note + ".md" : r.dataset.canvas || r.dataset.file || "";
+  const rowName = r => { const n = r.querySelector(".tn"); return n ? n.textContent : ""; };
+  async function applySort() {
+    const tree = $m("tree"), k = sortKey();
+    if (!tree) return;
+    const time = /Time/.test(k), rev = /Reverse$/.test(k), cre = /Created/.test(k);
+    const tm = new Map(time ? (await mStats()).map(e => [e.path, cre ? e.ctime : e.mtime]) : []);
+    const nc = (a, b) => byName(rowName(a), rowName(b));
+    const sortBox = box => {
+      const kids = [...box.children], dirs = [], files = [];
+      for (let i = 0; i < kids.length; i++) {
+        const r = kids[i];
+        if (!r.classList.contains("trow")) return;          // a row being renamed or anything unknown: leave the box
+        if (r.classList.contains("folder")) {
+          const t = kids[i + 1] && kids[i + 1].classList.contains("tkids") ? kids[++i] : null;
+          dirs.push([r, t]);
+        } else files.push(r);
+      }
+      dirs.sort((a, b) => (k === "alphabeticalReverse" ? -1 : 1) * nc(a[0], b[0]));
+      files.sort((a, b) => {
+        if (!time) return (rev ? -1 : 1) * nc(a, b);
+        const d = (tm.get(rowPath(a)) || 0) - (tm.get(rowPath(b)) || 0);
+        return d ? (rev ? d : -d) : nc(a, b);
+      });
+      for (const [r, t] of dirs) { box.append(r); if (t) { box.append(t); sortBox(t); } }
+      for (const r of files) box.append(r);
+    };
+    sortBox(tree);
+  }
+  const sortB = btn("m-sortbtn", "Change sort order", svg('<path d="M3 6h11M3 12h8M3 18h5M17 4v16M14 17l3 3 3-3"/>'));
+  sortB.onclick = e => {
+    e.stopPropagation();
+    const cur = sortKey();
+    const items = [];
+    SORTS.forEach(([k, label], i) => {
+      if (i && i % 2 === 0) items.push("sep");                // name | modified | created
+      items.push({ label, checked: k === cur, run: async () => {
+        try { localStorage.setItem(SKEY, k); } catch (err) { /* storage off: this session only */ }
+        stCache = null; await applySort();
+      } });
+    });
+    openAS({ items });
+  };
+  { const fb = $m("bar"), hs = fb && fb.querySelector(".hslot"); if (hs) hs.replaceWith(sortB); else if (fb) fb.append(sortB); }
+  if (typeof window.refreshTree === "function") {
+    const origTree = window.refreshTree;
+    window.refreshTree = async function () {
+      const r = await origTree.apply(this, arguments);
+      stCache = null;
+      await applySort();
+      if (drawerOpen()) paintCount();
+      return r;
+    };
+  }
+  // every drawer open re-reads the times (a note saved since changes its modified-time place) and the counts
+  new MutationObserver(() => {
+    const o = drawerOpen();
+    if (o && !dfoot.dataset.open) { stCache = null; paintCount(); applySort(); }
+    dfoot.dataset.open = o ? "1" : "";
+  }).observe(document.body, { attributes: true, attributeFilter: ["class"] });
+
+  // ---- M6.2 the switcher's count opens New tab / Undo close tab / Close N tabs (N > 1). Close N tabs leaves one empty
+  // New tab (stock); every closed note goes on the undo-close list.
+  function tcountSheet(n) {
+    const items = [
+      { label: "New tab", icon: '<path d="M12 5v14M5 12h14"/>', run: async () => {
+        closeTabs(); quiet(); if (typeof cmdNewEmptyTab === "function") await cmdNewEmptyTab(); } },
+      { label: "Undo close tab", icon: '<path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>', run: async () => {
+        quiet(); if (typeof undoCloseTab === "function") await undoCloseTab(); sync(); if (!tabsBox.hidden) paintTabs(); } },
+    ];
+    if (n > 1) items.push("sep", { label: "Close " + n + " tabs", red: true, icon: '<path d="M6 6l12 12M18 6L6 18"/>', run: async () => {
+      closeTabs(); quiet();
+      if (typeof closeAllTabs === "function") for (const g of [...groups()].reverse()) await closeAllTabs(g);
+      if (typeof cmdNewEmptyTab === "function") await cmdNewEmptyTab();
+    } });
+    openAS({ items });
+  }
+
+  // ---- M7.5 / M7.6 a Files-row long-press opens a bottom action sheet (stock mobile) instead of the desktop menu at
+  // the finger; the long-press leaves no text selection behind. File: "Created at <birth time>" (= modified time on
+  // Android, mobilefs.rs), Open in new tab | Make a copy, Move file to..., Bookmark... | Copy path | Share | Rename...
+  // (in the row, M10.4), Delete. Folder: titled "<folder>" over "N files, M folders" (recursive, dot entries out),
+  // New note, New folder, New canvas | Search in folder | Copy path | Rename... (in the row), Delete (to .trash).
+  // Not offered (no backend yet): Merge entire file with..., Open version history, folder Make a copy / Move folder to...
+  const noSel = () => { const s = getSelection(); if (s) s.removeAllRanges(); };
+  const pad2 = n => String(n).padStart(2, "0");
+  const ymdhm = ms => { const d = new Date(ms); return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()) + " " + pad2(d.getHours()) + ":" + pad2(d.getMinutes()); };
+  async function copyText(s) {
+    try { await navigator.clipboard.writeText(s); return; } catch (e) { /* fall back to a copy event */ }
+    const t = document.createElement("textarea"); t.value = s; t.style.cssText = "position:fixed;left:-9999px;top:0";
+    document.body.append(t); t.select(); try { document.execCommand("copy"); } catch (e) { /* nothing to copy into */ }
+    t.remove(); noSel();
+  }
+  async function copyNote(nm) {
+    let body = "";
+    try { body = await inv("read_note", { name: nm }); } catch (e) { return; }
+    for (let i = 1; i < 100; i++) {
+      const r = await createNote(nm + " " + i, body);
+      if (r === "exists") continue;
+      if (r === "ok" && typeof window.refreshTree === "function") await window.refreshTree();
+      return;
+    }
+  }
+  if (typeof window.noteMenu === "function") window.noteMenu = async function (e, nm) {
+    if (e) { e.preventDefault(); e.stopPropagation(); }
+    if (typeof closeMenu === "function") closeMenu();
+    noSel(); setTimeout(noSel, 60);
+    const row = e && e.target && e.target.closest ? e.target.closest("#tree .trow") : null;
+    const st = (await mStats()).find(x => x.path === nm + ".md");
+    const items = [
+      { label: "Open in new tab", icon: '<path d="M12 5v14M5 12h14"/>', run: () => openNewTab(nm) }, "sep",
+      { label: "Make a copy", icon: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/>', run: () => copyNote(nm) },
+      { label: "Move file to...", icon: '<path d="M3 7h6l2 2h10v10H3z"/>', run: () => mvSheet(nm) },
+      { label: "Bookmark...", icon: '<path d="M6 4h12v16l-6-4-6 4z"/>', run: async () => { await rowOpen(nm); bmSheet(); } }, "sep",
+      { label: "Copy path", icon: '<path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/>', run: () => copyText(nm + ".md") }];
+    const d = window.__osAndroid;
+    if (d && d.share) items.push("sep", { label: "Share", icon: '<path d="M12 3v12M7 8l5-5 5 5"/><path d="M5 14v6h14v-6"/>', run: async () => {
+      let t = ""; try { t = await inv("read_note", { name: nm }); } catch (er) { t = ""; }
+      d.share(nm.split("/").pop(), t); } });
+    items.push("sep",
+      { label: "Rename...", icon: '<path d="M4 20h4L19 9l-4-4L4 16z"/>', run: () => { if (row && row.isConnected) rowRename(row, nm); } },
+      { label: "Delete", red: true, icon: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>', run: () => askDelete(nm) });
+    openAS({ title: st ? "Created at " + ymdhm(st.ctime) : null, items });
+  };
+  // a folder row renamed in place, as M10.4 does for a note row: Enter = m_folder rename (one move on disk), the open
+  // tabs below it follow; Escape, blur and back cancel
+  function folderRename(row, f) {
+    const tn = row.querySelector(".tn"); if (!tn || rowRn) return;
+    const old = f.split("/").pop(), dir = f.slice(0, f.length - old.length);
+    const inp = document.createElement("input");
+    inp.type = "text"; inp.className = "m-trn"; inp.value = old; inp.spellcheck = false;
+    inp.setAttribute("autocapitalize", "off"); inp.setAttribute("enterkeyhint", "done");
+    tn.hidden = true; tn.after(inp);
+    let done = false;
+    const end = async ok => {
+      if (done) return; done = true; rowRn = null;
+      const nn = inp.value.trim();
+      inp.remove(); tn.hidden = false;
+      if (!ok || !nn || nn === old || /[\\/]/.test(nn)) return;
+      for (const g of groups()) await flushSave(g);
+      try { await inv("m_folder", { op: "rename", path: f, to: dir + nn }); } catch (er) { return; }
+      for (const g of groups()) for (const t of g.tabs) if (!t.kind && t.name && t.name.startsWith(f + "/")) t.name = dir + nn + t.name.slice(f.length);
+      stCache = null; await window.refreshTree(); if (typeof updateTitle === "function") updateTitle();
+    };
+    inp.addEventListener("keydown", ev => {
+      ev.stopPropagation();
+      if (ev.key === "Enter") { ev.preventDefault(); end(true); }
+      else if (ev.key === "Escape") { ev.preventDefault(); end(false); }
+    });
+    inp.addEventListener("blur", () => end(false));
+    for (const k of ["click", "mousedown", "contextmenu", "touchstart"]) inp.addEventListener(k, ev => ev.stopPropagation());
+    rowRn = { cancel: () => end(false) };
+    inp.focus(); inp.select();
+    const d = window.__osAndroid; if (d && d.showIme) d.showIme();
+  }
+  if (typeof window.folderMenu === "function") window.folderMenu = async function (e, f) {
+    if (e) { e.preventDefault(); e.stopPropagation(); }
+    if (typeof closeMenu === "function") closeMenu();
+    noSel(); setTimeout(noSel, 60);
+    const row = e && e.target && e.target.closest ? e.target.closest("#tree .trow") : null;
+    const below = (await mStats()).filter(x => x.path.startsWith(f + "/"));
+    const nf = below.filter(x => !x.dir).length, nd = below.filter(x => x.dir).length;
+    const items = [], ico = { "New note": '<path d="M6 3h8l4 4v14H6z"/><path d="M12 11v6M9 14h6"/>',
+      "New folder": '<path d="M3 7h6l2 2h10v10H3z"/><path d="M12 12v4M10 14h4"/>', "New canvas": '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 4v16"/>' };
+    // main.js's own folder rows (New note / New folder / New canvas), the wired ones only
+    if (typeof folderMenuFull === "function") folderMenuFull((label, fn) => { if (fn && ico[label]) items.push({ label, icon: ico[label], run: fn }); }, () => {}, f);
+    items.push("sep",
+      { label: "Search in folder", icon: '<circle cx="11" cy="11" r="6"/><path d="M20 20l-4-4"/>', run: () => {
+        if (typeof sideOpen !== "undefined" && !sideOpen && typeof cmdToggleSide === "function") cmdToggleSide();
+        if (typeof setPane === "function") setPane("search");
+        const s = $m("sinput"); if (s) { s.value = 'path:"' + f + '" '; s.focus(); if (typeof runSearch === "function") runSearch(); } } },
+      "sep", { label: "Copy path", icon: '<path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/>', run: () => copyText(f) },
+      "sep", { label: "Rename...", icon: '<path d="M4 20h4L19 9l-4-4L4 16z"/>', run: () => { if (row && row.isConnected) folderRename(row, f); } },
+      { label: "Delete", red: true, icon: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>', run: () => openAS({ title: "Delete folder",
+        sub: f + " and " + plural(nf, "file") + " in it go to the vault's .trash", items: [
+          { label: "Delete", red: true, run: async () => {
+            for (const g of groups()) { await flushSave(g); for (let i = g.tabs.length - 1; i >= 0; i--) { const t = g.tabs[i];
+              if (!t.kind && t.name && t.name.startsWith(f + "/")) await closeTab(g, i); } }
+            try { await inv("m_folder", { op: "trash", path: f }); } catch (er) { return; }
+            stCache = null; await window.refreshTree(); } },
+          { label: "Cancel", run: () => {} }] }) });
+    openAS({ title: f.split("/").pop(), sub: plural(nf, "file") + ", " + plural(nd, "folder"), items });
+  };
+
+  // ---- M7.7 a long-press on an internal link [[target]] in the editor: a bottom sheet titled with the target, Open
+  // link, Open in new tab | Edit link | Copy path, Rename..., Move file to... | Share. The long-press makes no text
+  // selection, leaves the caret where it was and raises no keyboard. Not offered: Bookmark... (it bookmarks the ACTIVE
+  // note in this app), splits and windows (no such surfaces on a phone).
+  function linkSheetAt(e) {
+    const g = typeof fg === "function" ? fg() : null, cm = g && typeof Ed !== "undefined" && Ed.cm ? Ed.cm(g) : null;
+    if (!cm) return false;
+    const pos = cm.posAtCoords({ x: e.clientX, y: e.clientY });
+    if (pos == null) return false;
+    const ln = cm.state.doc.lineAt(pos), re = /\[\[([^\]\n]+)\]\]/g;
+    let m, hit = null;
+    while ((m = re.exec(ln.text))) { const a = ln.from + m.index, b = a + m[0].length; if (pos >= a && pos <= b) { hit = { a, b, inner: m[1] }; break; } }
+    if (!hit) return false;
+    const n = hit.inner.split("|")[0].split("#")[0].trim();
+    if (!n) return false;
+    noSel(); setTimeout(noSel, 60);
+    const goNew = async () => { await flushSave(g); g.tabs.push(mkTab(n)); g.active = g.tabs.length - 1; await loadActive(g); };
+    const items = [
+      { label: "Open link", icon: '<path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v6H4V6h6"/>', run: () => navigate(g, n) },
+      { label: "Open in new tab", icon: '<path d="M12 5v14M5 12h14"/>', run: goNew }, "sep",
+      { label: "Edit link", icon: '<path d="M4 20h4L19 9l-4-4L4 16z"/>', run: () => {
+        const s = hit.a + 2, t = s + hit.inner.split("|")[0].length;
+        cm.focus(); cm.dispatch({ selection: { anchor: s, head: t }, scrollIntoView: true });
+        const d = window.__osAndroid; if (d && d.showIme) d.showIme(); } }, "sep",
+      { label: "Copy path", icon: '<path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/>', run: () => copyText(n + ".md") },
+      { label: "Rename...", icon: '<path d="M4 20h4L19 9l-4-4L4 16z"/>', run: async () => { await navigate(g, n); cmdRename(); } },
+      { label: "Move file to...", icon: '<path d="M3 7h6l2 2h10v10H3z"/>', run: () => mvSheet(n) }];
+    const d = window.__osAndroid;
+    if (d && d.share) items.push("sep", { label: "Share", icon: '<path d="M12 3v12M7 8l5-5 5 5"/><path d="M5 14v6h14v-6"/>', run: async () => {
+      let t = ""; try { t = await inv("read_note", { name: n }); } catch (er) { t = ""; }
+      d.share(n.split("/").pop(), t); } });
+    openAS({ title: n.split("/").pop(), items });
+    return true;
+  }
+
+  // ---- M6.3 / M6.6 the empty New tab (the switcher's +, Close N tabs) shows stock mobile's New tab view: three big
+  // buttons, Create new note (a new note IN this tab), Go to file (the quick switcher) and Close (this tab; the previous
+  // one becomes active, M6.5). main.js paints its desktop "No file is open" line; the phone swaps in the buttons.
+  function newTabView(g) {
+    const t = g && g.active >= 0 ? g.tabs[g.active] : null;
+    if (!t || !isEmptyTab(t) || !g.unkEl || g.unkEl.hidden || g.unkEl.querySelector(".m-ntview")) return;
+    const box = document.createElement("div"); box.className = "m-ntview";
+    const mk = (label, run) => { const b = document.createElement("button"); b.type = "button"; b.className = "m-ntbtn";
+      b.textContent = label; b.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); run(); }); box.append(b); };
+    mk("Create new note", async () => {
+      let name = "Untitled-" + Date.now() % 10000, r = await createNote(name);
+      for (let i = 2; r === "exists" && i < 100; i++) { name = "Untitled-" + Date.now() % 10000 + "-" + i; r = await createNote(name); }
+      if (r !== "ok") return;
+      const i = g.tabs.indexOf(t); if (i < 0) return;
+      const nt = mkTab(name); nt.lid = t.lid; g.tabs[i] = nt; g.active = i;
+      if (typeof window.refreshTree === "function") await window.refreshTree();
+      await loadActive(g);
+    });
+    mk("Go to file", () => cmdQuickSwitch());
+    mk("Close", () => { const i = g.tabs.indexOf(t); if (i >= 0) closeTab(g, i); });
+    g.unkEl.textContent = ""; g.unkEl.append(box);
+  }
+  if (typeof window.loadActive === "function") {
+    const origLoad = window.loadActive;
+    window.loadActive = async function (g) { const r = await origLoad.apply(this, arguments); newTabView(g); return r; };
   }
 
   // ---- keep the header + nav in step with the focused pane

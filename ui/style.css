@@ -2081,6 +2081,43 @@ body.is-mobile .m-sheetitem { display: flex; align-items: center; gap: 14px; pad
 body.is-mobile .m-sheetitem:active { background: var(--bg-surface) }
 body.is-mobile .m-sheetitem svg { width: 20px; height: 20px; flex: 0 0 20px; color: var(--text-chrome-muted) }
 body.is-mobile .m-sheetempty { padding: 14px; color: var(--text-chrome-muted) }
+/* android-p2b: the action sheet (ui/mobile.js openAS) — sort orders, long-press sheets, tab-count sheet. Above the
+   drawer (41) and the tab switcher (45); its own scrim, so a tap beside it closes the sheet alone */
+body.is-mobile #mascrim:not([hidden]) { position: fixed; inset: 0; z-index: 46; background: var(--scrim) }
+body.is-mobile .m-asheet:not([hidden]) { display: block; position: fixed; z-index: 47; left: 0; right: 0; bottom: 0;
+  box-sizing: border-box; max-height: 75vh; overflow-y: auto; background: var(--bg-base);
+  border-radius: 16px 16px 0 0; border-top: 1px solid var(--border); box-shadow: 0 -4px 18px var(--shadow-popover);
+  padding: 6px calc(var(--safe-right, 0px) + 8px) calc(var(--safe-bottom, 0px) + 10px) calc(var(--safe-left, 0px) + 8px);
+  animation: m-up .16s ease-out }
+@media (orientation: landscape) { body.is-mobile .m-asheet:not([hidden]) { left: 20vw; right: 20vw } }
+body.is-mobile .m-ashandle { width: 36px; height: 4px; margin: 2px auto 8px; border-radius: 2px; background: var(--border) }
+/* android-p2b M6.3 M6.6: the empty New tab's three big buttons (stock mobile's New tab view), centred in the pane */
+body.is-mobile .unkview .m-ntview { display: flex; flex-direction: column; align-items: stretch; gap: 12px; width: min(320px, 80%); margin: 18vh auto 0 }
+body.is-mobile .m-ntbtn { min-height: 48px; font-size: 16px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg-alt, var(--bg-base)); color: var(--text-chrome) }
+@media (orientation: landscape) { body.is-mobile .unkview .m-ntview { margin-top: 6vh } }
+body.is-mobile .m-astitle { padding: 4px 14px 0; font-weight: 600; font-size: 16px; color: var(--text-chrome);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+body.is-mobile .m-assub { padding: 2px 14px 8px; font-size: 13px; color: var(--text-chrome-muted) }
+body.is-mobile .m-asitem { display: flex; align-items: center; gap: 14px; min-height: 44px; box-sizing: border-box;
+  padding: 10px 14px; border-radius: 10px; font-size: 15px; color: var(--text-chrome) }
+body.is-mobile .m-asitem span { flex: 1 1 auto; min-width: 0 }
+body.is-mobile .m-asitem:active { background: var(--bg-surface) }
+body.is-mobile .m-asitem svg { width: 20px; height: 20px; flex: 0 0 20px; color: var(--text-chrome-muted) }
+body.is-mobile .m-asitem.m-red, body.is-mobile .m-asitem.m-red svg { color: var(--text-error, #e5484d) }
+body.is-mobile .m-assep { height: 1px; margin: 6px 8px; background: var(--bg-surface) }
+/* M4.4 the drawer's foot: the vault bar (name + chevron, gear) and the counts, flush with the screen bottom */
+body.is-mobile.m-drawer #side { padding-bottom: 0 }
+body.is-mobile .m-dfoot { flex: 0 0 auto; border-top: 1px solid var(--bg-surface);
+  padding: 4px 6px calc(var(--safe-bottom, 0px) + 8px) 2px }
+body.is-mobile .m-dfoot #vbar { border-top: 0; height: auto; min-height: 44px }
+body.is-mobile .m-dfoot #vswitch { flex: 0 1 auto; font-size: 15px; font-weight: 600; color: var(--text-chrome) }
+body.is-mobile .m-dfoot .m-dchev { flex: 1 1 auto; display: flex; align-items: center; color: var(--text-chrome-muted) }
+body.is-mobile .m-dfoot .m-dchev svg { width: 16px; height: 16px }
+body.is-mobile .m-dfoot #sgear { flex: 0 0 44px; width: 44px; height: 44px }
+body.is-mobile .m-dfoot #sgear svg { width: 20px; height: 20px; margin: auto }
+body.is-mobile .m-dcount { padding: 0 12px; font-size: 13px; color: var(--text-chrome-muted) }
+body.is-mobile #mtabs .m-tcount { gap: 4px }
+body.is-mobile #mtabs .m-tcount svg { width: 16px; height: 16px }
 body.is-mobile .m-ribcfg { margin: 18px 0 8px }
 body.is-mobile .m-ribcfg .m-ribh { font-weight: 600; font-size: 15px; padding: 6px 0 }
 body.is-mobile .m-ribcfg .m-ribd { color: var(--text-chrome-muted); font-size: 13px; padding-bottom: 8px }
