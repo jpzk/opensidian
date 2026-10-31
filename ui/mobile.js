@@ -569,6 +569,61 @@
     return r;
   };
 
+  // ---- M8.1 the editing toolbar: a full-width, sideways-scrolling row pinned to the soft keyboard's top edge while
+  // the note editor has focus (body.m-edkb). Its buttons run the registry's own commands or one CM6 transaction; a
+  // press never takes focus from the editor, so the keyboard stays up.
+  const tbar = document.createElement("div");
+  tbar.id = "mtoolbar"; tbar.setAttribute("role", "toolbar"); tbar.hidden = true;
+  const cmdRun = id => { const c = typeof CMDS !== "undefined" && CMDS.find(x => x.id === id); if (c && (!c.when || c.when())) c.run(); };
+  const tg = () => (typeof edEditable === "function" && edEditable() ? fg() : null);
+  const tbWrap = m => {                // a collapsed caret gets the empty pair with the caret inside (stock), else toggle
+    const g = tg(); if (!g) return;
+    const s = Ed.sel(g);
+    if (s && s.empty) { Ed.replace(g, s, m + m, "wrap"); Ed.place(g, s.a.l, s.a.c + m.length); }
+    else edWrap(m);
+  };
+  const tbLine = (re, next) => { if (tg()) edLine(l => { const m = re.exec(l), p = m ? m[0] : ""; return next(p) + l.slice(p.length); }); };
+  const TB = [
+    ["Undo", '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>', () => { const g = tg(); if (g) Ed.undo(g); }],
+    ["Redo", '<path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>', () => { const g = tg(); if (g) Ed.redo(g); }],
+    ["Bold", '<path d="M6 12h9a4 4 0 0 1 0 8H6V4h8a4 4 0 0 1 0 8"/>', () => tbWrap("**")],
+    ["Italic", '<path d="M19 4h-9M14 20H5M15 4 9 20"/>', () => tbWrap("*")],
+    ["Strikethrough", '<path d="M16 4H9a3 3 0 0 0-2.83 4M14 12a4 4 0 0 1 0 8H6M4 12h16"/>', () => tbWrap("~~")],
+    ["Highlight", '<path d="m9 11-6 6v3h9l3-3"/><path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4"/>', () => tbWrap("==")],
+    ["Code", '<path d="m16 18 6-6-6-6M8 6l-6 6 6 6"/>', () => tbWrap("`")],
+    ["Heading", '<path d="M6 12h12M6 20V4M18 20V4"/>', () => tbLine(/^#{1,6} /, p => p.length >= 7 ? "" : "#".repeat(p ? p.length : 1) + " ")],
+    ["Insert internal link", '<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>', () => cmdRun("editor:insert-wikilink")],
+    ["Insert Markdown link", '<path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>', () => cmdRun("editor:insert-link")],
+    ["Add tag", '<path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/>', () => cmdRun("editor:insert-tag")],
+    ["Checklist", '<rect x="3" y="5" width="6" height="6" rx="1"/><path d="m3 17 2 2 4-4M13 6h8M13 12h8M13 18h8"/>', () => cmdRun("editor:toggle-checklist-status")],
+    ["Bullet list", '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>', () => cmdRun("editor:toggle-bullet-list")],
+    ["Numbered list", '<path d="M10 6h11M10 12h11M10 18h11M4 6h1v4M4 10h2M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"/>', () => cmdRun("editor:toggle-numbered-list")],
+    ["Quote", '<path d="M3 21c3 0 7-1 7-8V5H3v7h4M14 21c3 0 7-1 7-8V5h-7v7h4"/>', () => tbLine(/^> /, p => p ? "" : "> ")],
+    ["Indent", '<path d="m3 8 4 4-4 4M21 12H11M21 6H11M21 18H11"/>', () => { const g = tg(), s = g && Ed.sel(g); if (s) Ed.indent(g, s, false); }],
+    ["Unindent", '<path d="m7 8-4 4 4 4M21 12H11M21 6H11M21 18H11"/>', () => { const g = tg(), s = g && Ed.sel(g); if (s) Ed.indent(g, s, true); }],
+    ["Insert current date", '<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>', () => cmdRun("templates:insert-current-date")],
+    ["Open command palette", '<path d="m4 17 6-6-6-6M12 19h8"/>', () => cmdRun("command-palette:open")],
+    ["Hide keyboard", '<rect x="2" y="4" width="20" height="12" rx="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M7 12h10M9 20l3 2 3-2"/>', () => { const a = document.activeElement; if (a) a.blur(); }],
+    ["Settings", '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3 14H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 10 3.1V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 21 10h.1a2 2 0 1 1 0 4H21a1.7 1.7 0 0 0-1.6 1z"/>',
+      () => { if (typeof sPane !== "undefined") sPane = "interface"; if (typeof settingsOpen !== "undefined" && !settingsOpen) cmdSettings(); }],
+  ];
+  for (const [label, d, run] of TB) {
+    const b = btn("m-tbtn", label, svg(d));
+    for (const ev of ["pointerdown", "mousedown"]) b.addEventListener(ev, e => e.preventDefault());   // the editor keeps focus
+    b.addEventListener("click", e => { e.preventDefault(); run(); later(); });
+    tbar.append(b);
+  }
+  document.body.append(tbar);
+  const edFocused = () => { const a = document.activeElement; return !!(a && a.closest && a.closest("#main .cm-content")); };
+  const tbSync = () => {
+    const on = document.body.classList.contains("m-kb") && edFocused();
+    document.body.classList.toggle("m-edkb", on);
+    if (tbar.hidden === on) tbar.hidden = !on;
+  };
+  document.addEventListener("focusin", tbSync); document.addEventListener("focusout", () => setTimeout(tbSync, 0));
+  if (vv) vv.addEventListener("resize", tbSync);
+  addEventListener("resize", tbSync);
+
   // ---- M10.1 / M10.2: the OS back (key or edge gesture) unwinds the innermost layer; at the root it is a no-op
   window.__mobileBack = () => {
     if (typeof menuEl !== "undefined" && menuEl) { closeMenu(); return "menu"; }
