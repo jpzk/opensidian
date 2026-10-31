@@ -387,6 +387,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
                  cursor: pointer; border-radius: 4px }
 #ribbon button:hover { background: var(--bg-surface); color: var(--text-chrome) }
 #ribbon button svg { width: 18px; height: 18px; display: block }
+#settingsbtn { margin-top: auto }
 /* R22: the sidebars keep their nominal width but SHRINK (never past 40% of the
    window each) instead of forcing the body wider than the viewport — 44 + 156
    + 260 = 460px of fixed chrome does not fit a 320px window. overflow:hidden
@@ -1655,6 +1656,14 @@ body.floorrelayout #main { padding-right: 1px }
 #wf-close { right: 4px }
 #wframe button:hover { background: var(--bg-surface); color: var(--text-chrome) }
 #wf-close:hover { background: var(--accent-red); color: var(--bg-ribbon) }
+/* Windows: caption buttons read closer to DWM (flat fill, red close, no radius). */
+html.os-win #wframe { width: 138px; height: 32px; background: transparent }
+html.os-win #wframe button { width: 46px; height: 32px; border-radius: 0; color: var(--text-chrome) }
+html.os-win #wf-min { right: 92px }
+html.os-win #wf-max { right: 46px }
+html.os-win #wf-close { right: 0 }
+html.os-win #wframe button:hover { background: color-mix(in srgb, var(--text-chrome) 10%, transparent) }
+html.os-win #wf-close:hover { background: #e81123; color: #fff }
 /* R33.4 keyboard: every control is a real <button>, so Tab reaches it and
    Enter/Space activates it — the focus ring has to be visible or "operable by
    keyboard" is a claim nobody can see. */

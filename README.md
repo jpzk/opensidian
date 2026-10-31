@@ -67,6 +67,12 @@ Tested 2026-10-03 on fresh Ubuntu 26.04 LTS and Fedora 44 with Rust 1.98.0
    cargo build --release --locked   # -> target/release/opensidian
    ```
 
+**Windows (MSVC / WebView2):** same `cargo build --release --locked` with Visual Studio
+Build Tools and the WebView2 Runtime. Experimental — no MSI / signed release yet.
+
+**macOS:** same cargo command; experimental path-walk vaultfs (not the Linux openat
+backend). Not packaged or notarized — builds from source only.
+
 ## Nix
 The repo ships a flake (Nix 2.4+). It pins nixpkgs unstable and builds with
 `--locked` against `src-tauri/Cargo.lock`, so the toolchain and every crate
