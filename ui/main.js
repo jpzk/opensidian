@@ -5654,12 +5654,22 @@ async function askDelete(nm) {
   try { bl = await inv("backlinks_ctx", { name: nm }); }
   catch (err) { bl = []; }                   // a count we could not take must not block the delete
   const files = bl.length, lines = bl.reduce((a, b) => a + b.lines.length, 0);
-  openDelete(nm, files, lines);
+  // android-p2a M7.8: the phone sheet counts LINKS (Obsidian mobile wording), not lines — every [[nm…]] on those lines
+  const esc = nm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), re = new RegExp("\\[\\[" + esc + "(?=[\\]|#^])", "gi");
+  const links = bl.reduce((a, b) => a + b.lines.reduce((c, l) => c + Math.max(1, (String(l[1]).match(re) || []).length), 0), 0);
+  openDelete(nm, files, lines, links);
 }
-function openDelete(nm, files, lines) {
+function openDelete(nm, files, lines, links) {
   delPending = { name: nm, files, lines };
-  $("delq").textContent = "Are you sure you want to delete " + nm + "? It will be moved to .trash in this vault.";
-  $("delsay").textContent = delSentence(files, lines);
+  if (document.body.classList.contains("is-mobile")) {
+    const n = links == null ? lines : links;
+    $("delq").textContent = "Are you sure you want to delete “" + nm + ".md”? It will be moved to .trash in this vault.";
+    $("delsay").textContent = n ? "There " + (n === 1 ? "is currently 1 link" : "are currently " + n + " links") + " pointing to this file."
+                                : "There are no links pointing to this file.";
+  } else {
+    $("delq").textContent = "Are you sure you want to delete " + nm + "? It will be moved to .trash in this vault.";
+    $("delsay").textContent = delSentence(files, lines);
+  }
   $("delbox").hidden = false;
   $("del-no").focus();                       // the DEFAULT is Cancel — see style.css
   updateTitle();

@@ -2203,3 +2203,11 @@ body.is-mobile .m-rnbtns .m-rnyes { background: var(--accent-blue) }
   body.is-mobile.m-edkb #mtoolbar:not([hidden]) { overflow-x: hidden; gap: 0 }
   body.is-mobile #mtoolbar .m-tbtn { flex: 1 1 0; width: auto; min-width: 0 }
 }
+
+/* android-p2a M7.8: on the phone the delete confirmation is a bottom sheet — flush with the viewport bottom,
+   full width, the system nav bar inset inside its padding; the desktop modal is untouched */
+body.is-mobile #delbox { justify-content: flex-end; padding: 0 }
+body.is-mobile #delcard { width: 100%; max-width: 100%; border-radius: 14px 14px 0 0; border-width: 1px 0 0;
+  padding: 18px calc(20px + var(--safe-right, 0px)) calc(16px + var(--safe-bottom, 0px)) calc(20px + var(--safe-left, 0px)) }
+body.is-mobile #delbtns { justify-content: stretch }
+body.is-mobile #delbtns button { flex: 1 1 0; height: 44px; font-size: 15px }
