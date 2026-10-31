@@ -642,9 +642,35 @@
   if (vv) vv.addEventListener("resize", tbSync);
   addEventListener("resize", tbSync);
 
+
+  // ---- M10.3 Settings on a phone: one column. Opening shows the tab list alone (body.m-snav); a tab shows its page
+  // alone (body.m-spage, #shead names it); back on a page returns to the list, back on the list closes Settings.
+  const sMode = page => {
+    document.body.classList.toggle("m-spage", !!page); document.body.classList.toggle("m-snav", !page);
+    const h = document.querySelector("#shead > span"), s = document.querySelector("#snav .snavi.sel");
+    if (h) h.textContent = page && s ? s.textContent.trim() : "Settings";
+  };
+  let sOpening = false;
+  if (typeof window.openSettings === "function") {
+    const origOpen = window.openSettings;
+    window.openSettings = async function () {
+      sOpening = true;
+      try { return await origOpen.apply(this, arguments); } finally { sOpening = false; if (settingsOpen) sMode(false); }
+    };
+  }
+  if (typeof window.showSettingsPage === "function") {
+    const origShow = window.showSettingsPage;
+    window.showSettingsPage = function () {
+      const r = origShow.apply(this, arguments);
+      if (!sOpening && typeof settingsOpen !== "undefined" && settingsOpen) sMode(true);
+      return r;
+    };
+  }
+  const sPageOpen = () => document.body.classList.contains("m-spage");
   // ---- M10.1 / M10.2: the OS back (key or edge gesture) unwinds the innermost layer; at the root it is a no-op
   window.__mobileBack = () => {
     if (typeof menuEl !== "undefined" && menuEl) { closeMenu(); return "menu"; }
+    if (typeof settingsOpen !== "undefined" && settingsOpen && sPageOpen()) { sMode(false); return "settings-page"; }
     if (typeof settingsOpen !== "undefined" && settingsOpen) { closeSettings(); return "settings"; }
     if (typeof modalKind !== "undefined" && modalKind) { closeModal(); return "modal"; }
     const box = ["rnbox", "ulbox", "delbox", "bmebox", "picker"].map($m).find(b => b && !b.hidden);

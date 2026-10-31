@@ -2128,3 +2128,14 @@ body.is-mobile #mtoolbar .m-tbtn { flex: 0 0 auto; display: flex; align-items: c
 body.is-mobile #mtoolbar .m-tbtn:active { background: var(--bg-base) }
 body.is-mobile #mtoolbar .m-tbtn svg { width: 20px; height: 20px; display: block }
 body.is-mobile.m-edkb .cm-scroller { scroll-padding-bottom: 52px }
+/* android-p1b M10.3: phone Settings is one full-screen column — the tab list alone (body.m-snav), or one tab's page
+   alone (body.m-spage, #shead names it); the OS back steps page -> list -> closed (mobile.js __mobileBack) */
+body.is-mobile #settings { padding: 0; background: var(--bg-elevated) }
+body.is-mobile #sbox { padding: var(--safe-top, 0px) 0 var(--safe-bottom, 0px) 0; width: 100%; height: 100%; max-width: none; max-height: none; border: 0; border-radius: 0;
+  box-shadow: none; font-size: 15px }
+body.is-mobile #shead { height: 48px; padding: 0 calc(16px + var(--safe-right, 0px)) 0 calc(16px + var(--safe-left, 0px)); font-size: 17px }
+body.is-mobile #sclose { font-size: 18px; min-width: 44px; min-height: 44px }
+body.is-mobile #snav { width: 100%; border-right: 0 }
+body.is-mobile #snav .snavi { padding: 12px calc(16px + var(--safe-right, 0px)) 12px calc(16px + var(--safe-left, 0px)) }
+body.is-mobile #spage { width: 100%; padding: 16px calc(16px + var(--safe-right, 0px)) 16px calc(16px + var(--safe-left, 0px)) }
+body.is-mobile.m-snav #spage, body.is-mobile.m-spage #snav { display: none !important }
