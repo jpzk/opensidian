@@ -362,20 +362,38 @@
   });
   // swipes: mid-screen right opens, left closes; a touch that starts in the edge zone belongs to the OS
   let t0 = null;
+  // M9.1: a touch that starts in a note editor already scrolled to its top may be a pull-down (Quick Action)
+  const atTop = el => { const s = el && el.closest && el.closest("#main .cm-scroller"); return !!s && s.scrollTop <= 0; };
   document.addEventListener("touchstart", e => {
     const t = e.touches[0];
     t0 = e.touches.length === 1 && t.clientX > EDGE && t.clientX < innerWidth - EDGE &&
          !(e.target.closest && e.target.closest("#modal, #settings, .ctxmenu, #mtabs, #msheet, #mnav, #mhdr, canvas"))
-      ? { x: t.clientX, y: t.clientY, lx: t.clientX, ly: t.clientY } : null;
+      ? { x: t.clientX, y: t.clientY, lx: t.clientX, ly: t.clientY, top: atTop(e.target) } : null;
   }, { passive: true, capture: true });
   document.addEventListener("touchmove", e => {
-    if (t0) { const t = e.touches[0]; t0.lx = t.clientX; t0.ly = t.clientY; }
-  }, { passive: true, capture: true });
+    if (!t0) return;
+    const t = e.touches[0]; t0.lx = t.clientX; t0.ly = t.clientY;
+    // M9.1: a downward pull at the top has nothing to scroll; cancel it so Chromium does not make it a scroll
+    // gesture — only then is its touchend a user activation, which the palette field needs to raise the keyboard
+    const dy = t0.ly - t0.y;
+    if (t0.top && dy > 0 && Math.abs(t0.lx - t0.x) <= dy && e.cancelable) e.preventDefault();
+  }, { passive: false, capture: true });
   const swipeEnd = () => {
     if (!t0) return;
-    const dx = t0.lx - t0.x, dy = t0.ly - t0.y; t0 = null;
-    if (Math.abs(dx) < 60 || Math.abs(dy) > Math.abs(dx) * 0.6) return;
+    const dx = t0.lx - t0.x, dy = t0.ly - t0.y; const top = t0.top; t0 = null;
     const modal = typeof modalKind !== "undefined" && modalKind;
+    // M9.1 pull-down in a note at its top -> command palette (keyboard up). Quick Action not configurable (PARTIAL).
+    if (top && dy > 120 && Math.abs(dx) < dy / 2) {
+      if (!modal && !drawerOpen() && !rOpenNow() && typeof cmdPalette === "function") {
+        cmdPalette();
+        // a focus from a drag's touchend: Android raises the IME only for a tap, so the app asks for it (native
+        // MainActivity showIme). Without the bridge the field stays focused and a tap raises the keyboard.
+        const f = document.getElementById("minput"), d = window.__osAndroid;
+        if (f && d && d.showIme && document.activeElement === f) d.showIme();
+      }
+      return;
+    }
+    if (Math.abs(dx) < 60 || Math.abs(dy) > Math.abs(dx) * 0.6) return;
     if (dx > 0) { if (rOpenNow()) closeRight(); else if (!drawerOpen() && !modal) openDrawer(); }
     else if (drawerOpen()) closeDrawer();
     else if (!rOpenNow() && !modal) openRight();
