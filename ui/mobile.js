@@ -971,8 +971,14 @@
   };
   let edKbUp = false;                  // the editor's keyboard, as last seen while the editor had focus
   const edKbSeen = () => { if (edFocused()) edKbUp = document.body.classList.contains("m-kb"); };
-  document.addEventListener("focusin", edKbSeen);
-  if (vv) vv.addEventListener("resize", () => setTimeout(edKbSeen, 50));
+  // focus coming back from the palette (or any modal) brings the MODAL's keyboard along: it is not the editor's, so
+  // Toggle keyboard (run as the palette closes) must still see the state from before the palette
+  // (landscape: the hand-back also resizes/pans the visual viewport, so the viewport listener honours the same window)
+  let modalOut = 0;
+  const kbSettled = () => Date.now() - modalOut > 800;
+  document.addEventListener("focusout", e => { if (e.target && e.target.closest && e.target.closest("#modal")) modalOut = Date.now(); });
+  document.addEventListener("focusin", () => { if (kbSettled()) edKbSeen(); });
+  if (vv) vv.addEventListener("resize", () => setTimeout(() => { if (kbSettled()) edKbSeen(); }, 50));
   const bridge = () => window.__osAndroid || null;
   const toggleKb = () => setTimeout(() => {   // after the palette has closed and handed focus back
     const d = bridge(), g = typeof fg === "function" ? fg() : null;
@@ -997,7 +1003,13 @@
     add("mobile:configure-toolbar", "Configure mobile toolbar", () => openIfaceAt(".m-tbcfg"));
     add("mobile:configure-quick-action", "Configure mobile Quick Action", () => openIfaceAt(".m-qacfg"));
     add("mobile:toggle-keyboard", "Toggle keyboard", toggleKb, noteActive);
-    add("workspace:show-tab-overview", "Show tab overview", () => openTabs());
+    // the overview is a full-screen layer: once the palette has handed focus back to the editor, the keyboard goes
+    // down (else the first OS back only hides the keyboard and the overview stays)
+    add("workspace:show-tab-overview", "Show tab overview", () => { openTabs(); setTimeout(() => {
+      if (tabsBox.hidden) return;
+      const a = document.activeElement; if (a && a !== document.body) a.blur();
+      const d = bridge(); if (d && d.hideIme) d.hideIme();
+    }, 300); });
     add("mobile:share", "Share", share, () => noteActive() && !!(bridge() && bridge().share));
     const wc = CMDS.find(c => c.id === "window:close");
     if (wc) wc.when = () => false;
