@@ -24,6 +24,8 @@
    - window.__mobileSafe(t, r, b, l): MainActivity pushes the system-bar + cutout insets (css px) -> --safe-* */
 (() => {
   if (!/Android/.test(navigator.userAgent)) return;
+  // M14.1: the Quick Action and the two config sections are built further down (toolbar block); used earlier
+  let qaGet = () => "command-palette:open", tbCfgBox = null, qaCfgBox = null;
   const EDGE = 24, $m = id => document.getElementById(id);
   document.body.classList.add("is-mobile", "is-phone");
 
@@ -475,10 +477,12 @@
     if (!t0) return;
     const dx = t0.lx - t0.x, dy = t0.ly - t0.y; const top = t0.top; t0 = null;
     const modal = typeof modalKind !== "undefined" && modalKind;
-    // M9.1 pull-down in a note at its top -> command palette (keyboard up). Quick Action not configurable (PARTIAL).
+    // M9.1 pull-down in a note at its top -> the Quick Action (M14.1: Settings > Interface > Mobile Quick Action,
+    // default the command palette) with the keyboard up when it opens a field.
     if (top && dy > 120 && Math.abs(dx) < dy / 2) {
       if (!modal && !drawerOpen() && !rOpenNow() && typeof cmdPalette === "function") {
-        cmdPalette();
+        const qa = qaGet();
+        if (qa === "command-palette:open") cmdPalette(); else cmdRun(qa);
         // a focus from a drag's touchend: Android raises the IME only for a tap, so the app asks for it (native
         // MainActivity showIme). Without the bridge the field stays focused and a tap raises the keyboard.
         const f = document.getElementById("minput"), d = window.__osAndroid;
@@ -694,7 +698,7 @@
           row.append(t, cb);
           box.append(row);
         }
-        if (pg) { pg.prepend(ifRows()); pg.append(box); }   // the phone rows first: reachable without a scroll
+        if (pg) { pg.prepend(ifRows()); pg.append(box); if (tbCfgBox) pg.append(tbCfgBox()); if (qaCfgBox) pg.append(qaCfgBox()); }   // the phone rows first: reachable without a scroll
       }
       return r;
     };
@@ -855,13 +859,105 @@
     ["Settings", '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3 14H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 10 3.1V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 21 10h.1a2 2 0 1 1 0 4H21a1.7 1.7 0 0 0-1.6 1z"/>',
       () => { if (typeof sPane !== "undefined") sPane = "interface"; if (typeof settingsOpen !== "undefined" && !settingsOpen) cmdSettings(); }],
   ];
+  const tbBtn = new Map();
   for (const [label, d, run] of TB) {
     const b = btn("m-tbtn", label, svg(d));
     for (const ev of ["pointerdown", "mousedown"]) b.addEventListener(ev, e => e.preventDefault());   // the editor keeps focus
     b.addEventListener("click", e => { e.preventDefault(); run(); later(); });
-    tbar.append(b);
+    tbar.append(b); tbBtn.set(label, b);
   }
   document.body.append(tbar);
+  // ---- android-p2a M14.1: the mobile-only palette commands (stock mobile's names) + their two Settings sections
+  //  - Configure mobile toolbar / Configure mobile Quick Action -> Settings > Interface, scrolled to the section:
+  //    "Mobile toolbar" (one checkbox per toolbar button, localStorage os.m.tboff) and "Mobile Quick Action" (what
+  //    the pull-down at a note's top runs, localStorage os.m.qa, default the command palette)
+  //  - Show tab overview -> the tab switcher; Share -> the active note's text to the Android share sheet (bridge)
+  //  - Toggle keyboard -> the editor's keyboard as it was before the palette opened: up -> hidden (bridge hideIme),
+  //    down -> the editor focused with the keyboard shown (bridge showIme)
+  // M14.2: the phone has one window, so "Close window" is not offered.
+  const TBOFF = "os.m.tboff", QAK = "os.m.qa";
+  const tbOff = () => { try { return new Set(JSON.parse(localStorage.getItem(TBOFF) || "[]")); } catch (e) { return new Set(); } };
+  const tbApply = () => { const off = tbOff(); for (const [l, b] of tbBtn) b.style.display = off.has(l) ? "none" : ""; };
+  tbApply();
+  const QA = [["command-palette:open", "Open command palette"], ["switcher:open", "Open quick switcher"],
+    ["global-search:open", "Search in all files"], ["file-explorer:new-file", "Create new note"]];
+  qaGet = () => { const k = localStorage.getItem(QAK); return QA.some(x => x[0] === k) ? k : QA[0][0]; };
+  tbCfgBox = () => {
+    const box = document.createElement("div");
+    box.className = "m-ribcfg m-tbcfg";
+    box.innerHTML = '<div class="m-ribh">Mobile toolbar</div><div class="m-ribd">The buttons above the keyboard while you edit a note. Untick one to leave it out.</div>';
+    const off = tbOff();
+    for (const [label] of TB) {
+      const row = document.createElement("label");
+      row.className = "m-ribrow"; row.dataset.tb = label;
+      const cb = document.createElement("input");
+      cb.type = "checkbox"; cb.checked = !off.has(label);
+      cb.onchange = () => {
+        const s = tbOff(); cb.checked ? s.delete(label) : s.add(label);
+        try { localStorage.setItem(TBOFF, JSON.stringify([...s])); } catch (e) { /* this session only */ }
+        tbApply();
+      };
+      const t = document.createElement("span"); t.textContent = label;
+      row.append(t, cb); box.append(row);
+    }
+    return box;
+  };
+  qaCfgBox = () => {
+    const box = document.createElement("div");
+    box.className = "m-ribcfg m-qacfg";
+    box.innerHTML = '<div class="m-ribh">Mobile Quick Action</div><div class="m-ribd">What a pull-down at the top of a note runs.</div>';
+    const cur = qaGet();
+    for (const [id, label] of QA) {
+      const row = document.createElement("label");
+      row.className = "m-ribrow"; row.dataset.qa = id;
+      const rb = document.createElement("input");
+      rb.type = "radio"; rb.name = "m-qa"; rb.checked = id === cur;
+      rb.onchange = () => { if (rb.checked) try { localStorage.setItem(QAK, id); } catch (e) { /* this session only */ } };
+      const t = document.createElement("span"); t.textContent = label;
+      row.append(t, rb); box.append(row);
+    }
+    return box;
+  };
+  const openIfaceAt = sel => {
+    if (typeof sPane !== "undefined") sPane = "interface";
+    if (typeof settingsOpen !== "undefined" && !settingsOpen && typeof cmdSettings === "function") cmdSettings();
+    if (typeof showSettingsPage === "function") window.showSettingsPage("interface");
+    setTimeout(() => { const e = document.querySelector("#spage " + sel); if (e) e.scrollIntoView({ block: "start" }); }, 120);
+  };
+  let edKbUp = false;                  // the editor's keyboard, as last seen while the editor had focus
+  const edKbSeen = () => { if (edFocused()) edKbUp = document.body.classList.contains("m-kb"); };
+  document.addEventListener("focusin", edKbSeen);
+  if (vv) vv.addEventListener("resize", () => setTimeout(edKbSeen, 50));
+  const bridge = () => window.__osAndroid || null;
+  const toggleKb = () => setTimeout(() => {   // after the palette has closed and handed focus back
+    const d = bridge(), g = typeof fg === "function" ? fg() : null;
+    if (edKbUp) {
+      edKbUp = false;
+      if (d && d.hideIme) d.hideIme(); else { const a = document.activeElement; if (a) a.blur(); }
+    } else {
+      edKbUp = true;
+      if (g && typeof Ed !== "undefined") Ed.focus(g);
+      if (d && d.showIme) d.showIme();
+    }
+  }, 300);
+  const noteActive = () => { const g = typeof fg === "function" && typeof state !== "undefined" && state ? fg() : null;
+    const t = g && g.active >= 0 ? g.tabs[g.active] : null; return !!(t && !t.kind); };
+  const share = () => {
+    const d = bridge(), g = fg(), n = curOf(g);
+    if (!d || !d.share || !n) return;
+    d.share(String(n).split("/").pop(), g.editor ? g.editor.value : "");
+  };
+  if (typeof CMDS !== "undefined") {
+    const add = (id, name, run, when) => CMDS.push({ id, name, def: [], run, when });
+    add("mobile:configure-toolbar", "Configure mobile toolbar", () => openIfaceAt(".m-tbcfg"));
+    add("mobile:configure-quick-action", "Configure mobile Quick Action", () => openIfaceAt(".m-qacfg"));
+    add("mobile:toggle-keyboard", "Toggle keyboard", toggleKb, noteActive);
+    add("workspace:show-tab-overview", "Show tab overview", () => openTabs());
+    add("mobile:share", "Share", share, () => noteActive() && !!(bridge() && bridge().share));
+    const wc = CMDS.find(c => c.id === "window:close");
+    if (wc) wc.when = () => false;
+    CMDS.sort((a, b) => a.name.localeCompare(b.name));
+  }
   const edFocused = () => { const a = document.activeElement; return !!(a && a.closest && a.closest("#main .cm-content")); };
   const tbSync = () => {
     const on = document.body.classList.contains("m-kb") && edFocused();
