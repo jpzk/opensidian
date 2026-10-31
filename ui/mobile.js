@@ -363,7 +363,13 @@
   // swipes: mid-screen right opens, left closes; a touch that starts in the edge zone belongs to the OS
   let t0 = null;
   // M9.1: a touch that starts in a note editor already scrolled to its top may be a pull-down (Quick Action)
-  const atTop = el => { const s = el && el.closest && el.closest("#main .cm-scroller"); return !!s && s.scrollTop <= 0; };
+  // the note body or its pane blank around it (landscape pads the top of .lp under the floating header)
+  const atTop = el => {
+    const c = el && el.closest && el.closest("#main .pane .content"); if (!c) return false;
+    const s = [...c.querySelectorAll(".cm-scroller")].find(x => x.getClientRects().length);
+    const lp = el.closest(".lp");
+    return !!s && s.scrollTop <= 0 && (!lp || lp.scrollTop <= 0);
+  };
   document.addEventListener("touchstart", e => {
     const t = e.touches[0];
     t0 = e.touches.length === 1 && t.clientX > EDGE && t.clientX < innerWidth - EDGE &&
@@ -696,8 +702,58 @@
     return "root";
   };
 
+  // ---- M9.3 double-tap in a note = a caret at the tap (no word select); long-press = the WebView's own selection.
+  // CM6 leaves touch selection to the platform, so the word select comes from the WebView: the second tap's mousedown
+  // is swallowed and, once the gesture has settled, the selection is collapsed to the tapped position.
+  const inEd = t => t instanceof Element && !!t.closest("#main .cm-editor");
+  const dblCaret = e => {
+    const g = live(), c = g && Ed.cm(g);
+    if (!c) return;
+    const p = c.posAtCoords({ x: e.clientX, y: e.clientY });
+    if (p == null) return;
+    c.dispatch({ selection: { anchor: p } }); c.focus();
+  };
+  document.addEventListener("mousedown", e => {
+    if (e.detail < 2 || !inEd(e.target)) return;
+    e.preventDefault();
+    const x = e.clientX, y = e.clientY;
+    for (const ms of [0, 120, 350]) setTimeout(() => dblCaret({ clientX: x, clientY: y }), ms);
+  }, true);
+  document.addEventListener("dblclick", e => { if (inEd(e.target)) { e.preventDefault(); dblCaret(e); } }, true);
+  // main.js's document contextmenu listener cancels the event (desktop: no native menu, the plugin editor-menu). In a
+  // phone note a long-press keeps the platform selection (handles + copy/paste) and opens no app menu.
+  window.addEventListener("contextmenu", e => { if (inEd(e.target)) e.stopImmediatePropagation(); }, true);
+
+  // ---- M9.5 background + resume keeps the place in the note: the active note's caret is saved when the app goes to
+  // the background, and the first load of that note after a cold start (the OS killed the backgrounded process) puts
+  // it back, unfocused (no keyboard on launch). Tabs and the active note come back through workspace.json already.
+  const CKEY = "os.m.caret";
+  const saveCaret = () => {
+    const g = live(), c = g && Ed.cm(g), t = g && g.tabs[g.active];
+    if (!c || !t || t.kind) return;
+    try { localStorage.setItem(CKEY, JSON.stringify({ v: vaultPath, n: t.name, a: c.state.selection.main.anchor, h: c.state.selection.main.head })); } catch (e) { /* storage off */ }
+  };
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") saveCaret(); });
+  window.addEventListener("pagehide", saveCaret);
+  let caretBack = null;
+  try { caretBack = JSON.parse(localStorage.getItem(CKEY) || "null"); } catch (e) { /* none */ }
+  setTimeout(() => { caretBack = null; }, 60000);   // a restore is for the launch, not a later open of that note
+  if (caretBack && typeof window.loadActive === "function") {
+    const origLoad = window.loadActive;
+    window.loadActive = async function (g) {
+      const r = await origLoad.apply(this, arguments);
+      const s = caretBack, t = g && g.tabs[g.active], c = t && !t.kind && Ed.cm(g);
+      if (s && c && s.v === vaultPath && s.n === t.name) {
+        caretBack = null;
+        const L = c.state.doc.length;
+        c.dispatch({ selection: { anchor: Math.min(s.a, L), head: Math.min(s.h, L) }, scrollIntoView: true });
+      }
+      return r;
+    };
+  }
+
   // ---- keep the header + nav in step with the focused pane
-  let parked = null;                   // the pane whose .modebtn/.morebtn currently sit in #mhdr
+  let parked = null;                  // the pane whose .modebtn/.morebtn currently sit in #mhdr
   function sync() {
     const g = live();
     if (!g) return;
