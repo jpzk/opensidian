@@ -52,6 +52,7 @@ mod desk_net;
 mod desk_proc;
 #[cfg(feature = "devui")]
 mod devui; // goal devui: DEV-ONLY UI hot reload, never in a default/release build
+mod mobilefs; // android-p2b: phone drawer counts, sort times, folder rename / trash
 mod vaultlock;
 mod srcmode;
 mod themefs;
@@ -1615,6 +1616,34 @@ fn delete_note(v: State<Vault>, name: String, otel: Option<perf::Ctx>) -> Result
     let root = cur_vault(&v).ok_or("no vault open")?;
     let mut ix = v.index.lock().unwrap();
     span_timed!(otel => "delete_note", delete_note_in(&root, &mut ix, &name))
+}
+
+/* android-p2b (mobilefs.rs): the phone drawer's counts, the Files sort orders, the long-press
+   sheets' "Created at" and the folder sheet's Rename... / Delete. Called by ui/mobile.js only. */
+#[tauri::command]
+fn m_stats(v: State<Vault>) -> Vec<serde_json::Value> {
+    let Some(root) = cur_vault(&v) else { return vec![] };
+    mobilefs::stats(&root)
+}
+
+#[tauri::command]
+fn m_folder(v: State<Vault>, op: String, path: String, to: Option<String>) -> Result<String, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    let rel = safe_rel(&path).ok_or("invalid folder")?;
+    let mut ix = v.index.lock().unwrap();
+    let r = match op.as_str() {
+        "rename" => {
+            let to = safe_rel(to.as_deref().unwrap_or("")).ok_or("invalid folder name")?;
+            mobilefs::folder_rename(&root, &rel, &to).map(|_| to.display().to_string())
+        }
+        "trash" => mobilefs::folder_trash(&root, &rel),
+        _ => Err(format!("m_folder: unknown op {op:?}")),
+    };
+    // the notes below the folder moved: resync the index from disk (as move_note_in does)
+    if r.is_ok() {
+        *ix = Index::build(&root);
+    }
+    r
 }
 
 #[tauri::command]
@@ -6591,7 +6620,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, canvas_io, canvas_attach, paste_image, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts, property_counts,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, m_stats, m_folder, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts, property_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
             read_workspace, write_workspace,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
