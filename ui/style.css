@@ -2068,6 +2068,13 @@ body.is-mobile #msheet:not([hidden]) { display: block; position: fixed; z-index:
   animation: m-up .16s ease-out }
 @keyframes m-up { from { transform: translateY(100%) } to { transform: none } }
 @media (orientation: landscape) { body.is-mobile #msheet:not([hidden]) { left: 20vw; right: 20vw } }
+/* M7.1: the header More options menu docks to the screen bottom (placeMenu's inline left/top are overridden) */
+body.is-mobile .ctxmenu.m-bsheet { left: 0 !important; right: 0; top: auto !important; bottom: 0; box-sizing: border-box;
+  max-width: none; max-height: 70vh; overflow-y: auto; border-radius: 16px 16px 0 0; border-width: 1px 0 0;
+  box-shadow: 0 -4px 18px var(--shadow-popover);
+  padding: 8px var(--safe-right, 0px) calc(var(--safe-bottom, 0px) + 8px) var(--safe-left, 0px) }
+body.is-mobile .ctxmenu.m-bsheet div:not(.sep) { padding: 12px 18px; font-size: 15px }
+@media (orientation: landscape) { body.is-mobile .ctxmenu.m-bsheet { left: 20vw !important; right: 20vw } }
 body.is-mobile.m-sheet #mscrim { display: block; position: fixed; inset: 0; z-index: 40; background: var(--scrim) }
 body.is-mobile .m-sheetitem { display: flex; align-items: center; gap: 14px; padding: 13px 14px; border-radius: 10px;
   font-size: 15px; color: var(--text-chrome) }

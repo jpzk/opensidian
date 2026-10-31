@@ -519,6 +519,31 @@
     if (typeof menuEl !== "undefined" && menuEl && e.target.closest && e.target.closest("#mhdr .morebtn")) e.stopPropagation();
   }, true);
 
+  // ---- M7.1 header More options -> a bottom sheet: main.js builds the note menu, the phone drops its window / split /
+  // OS-shell rows (no such surfaces on a phone), puts Close (the active tab) first and docks it to the screen bottom
+  const DESK_ROW = /^(Split right|Split down|Move to new window|Open in new window|Show in system explorer|Open in default app|Copy screenshot)$/;
+  const origHdrMenu = window.hdrMenu;
+  if (typeof origHdrMenu === "function") window.hdrMenu = function (e, g) {
+    const r = origHdrMenu.apply(this, arguments);
+    const m = typeof menuEl !== "undefined" ? menuEl : null;
+    if (!m || !m.dataset.hdr) return r;
+    m.classList.add("m-bsheet");
+    for (const d of [...m.children]) if (!d.classList.contains("sep") && DESK_ROW.test(d.textContent.trim())) d.remove();
+    if (g && g.active >= 0 && g.tabs[g.active] && typeof closeTab === "function") {
+      const sp = document.createElement("div"); sp.className = "sep"; m.prepend(sp);
+      const c = document.createElement("div"); c.textContent = "Close";
+      c.onmousedown = ev => ev.stopPropagation();
+      c.onclick = () => { const i = g.active; closeMenu(); closeTab(g, i); };
+      m.prepend(c);
+    }
+    let prev = true;                     // drop leading / doubled / trailing separators the removals left behind
+    for (const d of [...m.children]) { const s = d.classList.contains("sep"); if (s && prev) d.remove(); else prev = s; }
+    if (m.lastElementChild && m.lastElementChild.classList.contains("sep")) m.lastElementChild.remove();
+    m.scrollTop = 0;
+    if (typeof updateTitle === "function") updateTitle();      // census [menu:] spells the phone rows
+    return r;
+  };
+
   // ---- M10.1 / M10.2: the OS back (key or edge gesture) unwinds the innermost layer; at the root it is a no-op
   window.__mobileBack = () => {
     if (typeof menuEl !== "undefined" && menuEl) { closeMenu(); return "menu"; }
