@@ -1053,7 +1053,10 @@
     // the WebView no reason to pan, and a pan once started only grows (vv reports past the WebView while panned)
     const kh = kbSeen[kbKey()], vb = kh ? innerHeight - kh : (vv ? vv.offsetTop + vv.height : innerHeight);
     const h = document.querySelector("#mhdr"), hb = h && h.getClientRects().length ? h.getBoundingClientRect().bottom : 0;
-    const top = hb + 4, bot = vb - (tbar.offsetHeight || 44) - 8;
+    // once panned, the top `pan` css px of the layout sit under the status bar; with Full screen hiding #mhdr (M12.5)
+    // nothing else keeps the caret below that edge (on screen the WebView shows vv's bottom at the keyboard top)
+    const pan = kh && vv ? Math.max(0, vv.offsetTop + vv.height - vb) : 0;
+    const top = Math.max(hb, pan) + 4, bot = vb - (tbar.offsetHeight || 44) - 8;
     if (k.bottom > bot) sc.scrollTop += Math.ceil(k.bottom - bot);
     else if (k.top < top && bot - top > k.bottom - k.top) sc.scrollTop -= Math.ceil(top - k.top);
   };
