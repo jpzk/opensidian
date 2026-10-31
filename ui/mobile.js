@@ -39,6 +39,23 @@
   };
   try { const c = JSON.parse(localStorage.getItem(okey()) || "null"); if (Array.isArray(c)) setSafe(...c); } catch (e) { /* none cached */ }
 
+  // ---- M7.2 / M7.3 / M8.1: the soft keyboard's height (css px) -> --m-kb. The IME does not resize this WebView
+  // (innerHeight stays), only visualViewport shrinks to the keyboard's top edge, so bottom-docked UI pads by it.
+  const vv = window.visualViewport;
+  const kbPx = () => vv ? Math.max(0, Math.round(innerHeight - vv.height)) : 0;
+  const setKb = () => {
+    const k = kbPx();
+    document.documentElement.style.setProperty("--m-kb", k + "px");
+    document.body.classList.toggle("m-kb", k > 80);
+    // the WebView also PANS the visual viewport (offsetTop > 0) to reveal a focused field, and that pan is not
+    // undoable from JS: overlays that must sit on the keyboard follow the visual viewport itself (--m-vvt/--m-vvh)
+    document.documentElement.style.setProperty("--m-vvt", (vv ? vv.offsetTop : 0) + "px");
+    document.documentElement.style.setProperty("--m-vvh", (vv ? vv.height : innerHeight) + "px");
+  };
+  if (vv) { vv.addEventListener("resize", setKb); vv.addEventListener("scroll", setKb); }
+  addEventListener("resize", setKb);
+  setKb();
+
   const svg = d => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + d + "</svg>";
   const btn = (cls, label, icon) => {
     const b = document.createElement("button");
@@ -433,8 +450,7 @@
     ["Create new canvas", () => typeof cmdNewCanvas === "function" && cmdNewCanvas(typeof cvNewCanvasFolder === "function" ? cvNewCanvasFolder() : undefined),
       '<rect x="3" y="3" width="7" height="6" rx="1"/><rect x="14" y="13" width="7" height="8" rx="1"/><path d="M10 6h4a3 3 0 0 1 3 3v4"/>'],
     ["Open command palette", () => {
-      if (typeof cmdPalette === "function") cmdPalette();
-      const i = $m("minput"); if (i && document.activeElement === i) i.blur();   // no keyboard over the list
+      if (typeof cmdPalette === "function") cmdPalette();   // M7.3: docked above the keyboard, which stays up
     }, '<path d="M4 17l6-5-6-5M12 19h8"/>'],
   ];
   const RKEY = "os.mobile.ribbonOff";
@@ -518,6 +534,15 @@
   window.addEventListener("mousedown", e => {
     if (typeof menuEl !== "undefined" && menuEl && e.target.closest && e.target.closest("#mhdr .morebtn")) e.stopPropagation();
   }, true);
+
+  // ---- M7.2: a quick switcher row REPLACES the active note on a phone (the explorer-tap rule, rowOpen: pinned / a
+  // special tab still get a new tab), instead of desktop's push of a new tab; no new tab piles up behind the switcher.
+  const origQsItems = window.qsItems;
+  if (typeof origQsItems === "function" && typeof rowOpen === "function") window.qsItems = function () {
+    return origQsItems.apply(this, arguments).map(it =>
+      typeof notesCache !== "undefined" && notesCache.includes(it.label)
+        ? Object.assign({}, it, { run: ev => rowOpen(it.label, ev) }) : it);
+  };
 
   // ---- M7.1 header More options -> a bottom sheet: main.js builds the note menu, the phone drops its window / split /
   // OS-shell rows (no such surfaces on a phone), puts Close (the active tab) first and docks it to the screen bottom
