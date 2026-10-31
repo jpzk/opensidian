@@ -861,7 +861,12 @@
     const origShow = window.showSettingsPage;
     window.showSettingsPage = function () {
       const r = origShow.apply(this, arguments);
-      if (!sOpening && typeof settingsOpen !== "undefined" && settingsOpen) sMode(true);
+      if (!sOpening && typeof settingsOpen !== "undefined" && settingsOpen) {
+        sMode(true);
+        // a tab opens at its top: #spage is one element reused for every tab, and while it was hidden behind the
+        // list it kept the previous tab's scroll offset (an Interface page opened scrolled past its own rows)
+        const pg = $m("spage"); if (pg) pg.scrollTop = 0;
+      }
       return r;
     };
   }
