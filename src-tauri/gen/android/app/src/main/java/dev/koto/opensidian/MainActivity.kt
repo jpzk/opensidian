@@ -10,6 +10,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.DocumentsContract
 import android.provider.Settings
+import android.view.inputmethod.InputMethodManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import androidx.activity.OnBackPressedCallback
@@ -99,6 +100,15 @@ class MainActivity : TauriActivity() {
 
   inner class Bridge {
     @JavascriptInterface fun pickTree() { ui.post { pickTree.launch(null) } }
+    // M9.1: the page focused a field from a gesture that was not a tap (a pull-down), which Android does not raise
+    // the keyboard for; show it for the focused WebView
+    @JavascriptInterface fun showIme() {
+      ui.post {
+        val w = web ?: return@post
+        w.requestFocus()
+        (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(w, 0)
+      }
+    }
     @JavascriptInterface fun trees(): String =
       JSONArray(contentResolver.persistedUriPermissions.map { it.uri.toString() }).toString()
     @JavascriptInterface fun allFiles(): Boolean = this@MainActivity.allFiles()
