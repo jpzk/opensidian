@@ -1144,7 +1144,13 @@ fn write_note_in(root: &Path, ix: &mut Index, name: &str, content: &str) -> Resu
    symlink could redirect, never a `.json` a reader could pick up half-written),
    fsync, renameat, then the parent-directory fsync so the rename itself is
    DURABLE on ext4/xfs. A failure leaves the previous layout intact. */
+/* android-p2a M12.1: the PHONE keeps its layout in Obsidian mobile's own file, .obsidian/workspace-mobile.json, and
+   never writes the desktop's workspace.json: a vault synced between a phone and a desktop must not have the phone's
+   one-column layout overwrite the desktop session (stock mobile writes workspace-mobile.json only). */
+#[cfg(not(target_os = "android"))]
 const WS_REL: &str = ".obsidian/workspace.json";
+#[cfg(target_os = "android")]
+const WS_REL: &str = ".obsidian/workspace-mobile.json";
 
 fn write_layout_in(root: &Path, content: &str) -> Result<(), String> {
     vaultfs::write_atomic_durable(root, Path::new(WS_REL), content.as_bytes()).map_err(|e| e.to_string())
@@ -1701,7 +1707,7 @@ fn set_sidebar_w(w: u64) {
    R11 watcher never sees these writes — the layout cannot masquerade as a note
    and a save cannot trigger a vault-changed storm. */
 fn workspace_path(root: &Path) -> PathBuf {
-    root.join(".obsidian").join("workspace.json")
+    root.join(WS_REL)   // M12.1: workspace-mobile.json on android, the one path both the read and the write use
 }
 
 /// R28.13: a missing, unreadable or UNPARSEABLE layout is reported as ABSENT,

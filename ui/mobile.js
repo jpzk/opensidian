@@ -151,7 +151,7 @@
     return P;
   };
   document.addEventListener("click", e => { for (const P of pills) if (P.isOpen() && !P.bar.contains(e.target)) P.close(); }, true);
-  const lp = makePill(VIEWS, k => setView(k), () => mview);
+  const lp = makePill(VIEWS, k => { setView(k); wsPick(k); }, () => mview);
   const pillBar = lp.bar;
   const vbar = $m("vbar");
   for (const n of [vTags, vProps]) side.insertBefore(n, vbar);
@@ -260,6 +260,85 @@
     if (typeof rightOpen !== "undefined" && rightOpen && typeof cmdToggleRight === "function") cmdToggleRight();
   };
   scrim.addEventListener("click", closeRight);
+
+  // ---- android-p2a M12.2 / M12.3: the phone's layout file is .obsidian/workspace-mobile.json (src-tauri WS_REL on
+  // android) in stock mobile's shape. main.js builds its desktop-shaped doc (wsDoc) and hands it to out(), which
+  // returns: main = ONE tabs group in a vertical split (no dimension); left / right = "mobile-drawer" holding EVERY
+  // drawer view as a leaf + currentTab (the view showing) and no width / collapsed (drawer open/closed is not
+  // persisted); right views bound to the active note; left-ribbon.hiddenItems; active = the focused leaf, which is a
+  // LEFT DRAWER VIEW right after the user picks one in the pill (stock) and goes back to the note's leaf as soon as
+  // the main area changes. sidesIn() is the inverse on restore (view, search query, leaf ids, a drawer-view active).
+  const LV = [["files", "file-explorer", "Files", "lucide-folder-closed"], ["search", "search", "Search", "lucide-search"],
+    ["tags", "tag", "Tags", "lucide-tags"], ["props", "all-properties", "All properties", "lucide-archive"],
+    ["bm", "bookmarks", "Bookmarks", "lucide-bookmark"]];
+  const RV = [["bl", "backlink", "Backlinks", "links-coming-in"], ["out", "outgoing-link", "Outgoing links", "links-going-out"],
+    ["toc", "outline", "Outline", "lucide-list"]];
+  const wsm = { ids: {}, act: null, key: null };
+  const wmid = k => wsm.ids[k] || (wsm.ids[k] = typeof wsId === "function" ? wsId() : Math.random().toString(16).slice(2, 18));
+  const wsKey = () => {            // what the main area shows: focused leaf id + newest note (a change drops a drawer active)
+    const g = typeof fg === "function" && typeof state !== "undefined" && state ? fg() : null;
+    const t = g && g.active >= 0 ? g.tabs[g.active] : null;
+    const id = t ? (typeof wsIdOf === "function" ? wsIdOf(t, "lid") : t.lid || "") : "";
+    return id + "|" + ((typeof mruList !== "undefined" && mruList[0]) || "");
+  };
+  function wsPick(k) {             // the user picked a left drawer view: it is the active leaf (stock), persisted
+    const v = LV.find(x => x[0] === k);
+    if (!v) return;
+    wsm.act = wmid("l:" + v[1]); wsm.key = wsKey();
+    if (typeof wsTouch === "function") wsTouch();
+  }
+  window.__wsMobile = {
+    out(d, af) {
+      const tabs = [];
+      (function walk(n) {
+        if (!n || typeof n !== "object") return;
+        if (n.type === "tabs") tabs.push(n); else if (Array.isArray(n.children)) n.children.forEach(walk);
+      })(d.main);
+      const kids = [].concat(...tabs.map(t => t.children || []));
+      const g = { id: tabs.length ? tabs[0].id : wmid("tabs"), type: "tabs", children: kids };
+      const ai = kids.findIndex(l => l && l.id === d.active);
+      if (ai > 0) g.currentTab = ai;                       // R28.5: 0 by its absence
+      const sq = $m("sinput") ? $m("sinput").value : "";
+      const left = { id: wmid("left"), type: "mobile-drawer",
+        children: LV.map(([, ty, ti, ic]) => ({ id: wmid("l:" + ty), type: "leaf",
+          state: { type: ty, state: ty === "search" ? { query: sq } : {}, icon: ic, title: ti } })),
+        currentTab: Math.max(0, LV.findIndex(v => v[0] === mview)) };
+      const rk = rcur();
+      const right = { id: wmid("right"), type: "mobile-drawer",
+        children: RV.map(([, ty, ti, ic]) => ({ id: wmid("r:" + ty), type: "leaf",
+          state: { type: ty, state: af ? { file: af } : {}, icon: ic, title: ti } })),
+        currentTab: Math.max(0, RV.findIndex(v => v[0] === rk)) };
+      let active = d.active;
+      if (wsm.act && wsm.key === wsKey()) active = wsm.act; else wsm.act = null;
+      const o = { main: { id: d.main && d.main.id || wmid("main"), type: "split", direction: "vertical", children: [g] },
+        left, right,
+        "left-ribbon": d["left-ribbon"] && typeof d["left-ribbon"] === "object" ? d["left-ribbon"] : { hiddenItems: {} },
+        active, lastOpenFiles: d.lastOpenFiles };
+      if (!o["left-ribbon"].hiddenItems || typeof o["left-ribbon"].hiddenItems !== "object") o["left-ribbon"].hiddenItems = {};
+      for (const k of Object.keys(d)) if (!(k in o)) o[k] = d[k];   // W4: unknown top-level keys ride through
+      return o;
+    },
+    sidesIn(doc) {
+      const L = doc.left, R = doc.right;
+      if (L && L.type === "mobile-drawer" && Array.isArray(L.children)) {
+        if (typeof L.id === "string") wsm.ids.left = L.id;
+        for (const l of L.children) if (l && l.state && typeof l.id === "string") wsm.ids["l:" + l.state.type] = l.id;
+        const cl = L.children[Number.isInteger(L.currentTab) ? L.currentTab : 0];
+        const v = cl && cl.state && LV.find(x => x[1] === cl.state.type);
+        if (v && v[0] !== mview) setView(v[0]);
+        const q = v && v[0] === "search" && cl.state.state && cl.state.state.query;
+        if (typeof q === "string" && q && $m("sinput")) { $m("sinput").value = q; if (typeof runSearch === "function") runSearch(); }
+        if (typeof doc.active === "string" && L.children.some(l => l && l.id === doc.active)) { wsm.act = doc.active; wsm.key = wsKey(); }
+      }
+      if (R && R.type === "mobile-drawer" && Array.isArray(R.children)) {
+        if (typeof R.id === "string") wsm.ids.right = R.id;
+        for (const l of R.children) if (l && l.state && typeof l.id === "string") wsm.ids["r:" + l.state.type] = l.id;
+        const cr = R.children[Number.isInteger(R.currentTab) ? R.currentTab : 0];
+        const v = cr && cr.state && RV.find(x => x[1] === cr.state.type);
+        if (v && typeof setRTab === "function") Promise.resolve(setRTab(v[0], false)).catch(() => {});
+      }
+    },
+  };
 
   // ---- M1.1 the vault name in the drawer opens a vault list (known vaults, the current one ticked, then "Manage
   // vaults...") above the vault bar; "Manage vaults..." opens the vault manager (main.js's #picker) as a full-screen
@@ -455,7 +534,7 @@
     const bar = document.createElement("div");
     bar.className = "m-tbar";
     const add = btn("m-tnew", "New tab", svg('<path d="M12 5v14M5 12h14"/>'));
-    add.onclick = async () => { closeTabs(); quiet(); if (typeof cmdNewTab === "function") await cmdNewTab(); sync(); };
+    add.onclick = async () => { closeTabs(); quiet(); if (typeof cmdNewEmptyTab === "function") await cmdNewEmptyTab(); sync(); };   // M12.3: + opens an EMPTY tab (stock mobile)
     const cnt = document.createElement("div");
     cnt.className = "m-tcount"; cnt.textContent = list.length + (list.length === 1 ? " tab" : " tabs");
     const done = btn("m-tdone", "Done", "Done");

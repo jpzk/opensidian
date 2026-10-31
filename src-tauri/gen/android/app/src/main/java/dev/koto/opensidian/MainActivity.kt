@@ -109,6 +109,21 @@ class MainActivity : TauriActivity() {
         (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(w, 0)
       }
     }
+    // android-p2a M14.1 "Toggle keyboard": the palette runs it with the keyboard up -> hide it for the WebView
+    @JavascriptInterface fun hideIme() {
+      ui.post {
+        val w = web ?: return@post
+        (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(w.windowToken, 0)
+      }
+    }
+    // android-p2a M14.1 "Share": the note's text (+ its name as the subject) to the Android share sheet
+    @JavascriptInterface fun share(title: String, text: String) {
+      ui.post {
+        val send = Intent(Intent.ACTION_SEND).setType("text/plain")
+          .putExtra(Intent.EXTRA_SUBJECT, title).putExtra(Intent.EXTRA_TEXT, text)
+        startActivity(Intent.createChooser(send, title))
+      }
+    }
     @JavascriptInterface fun trees(): String =
       JSONArray(contentResolver.persistedUriPermissions.map { it.uri.toString() }).toString()
     @JavascriptInterface fun allFiles(): Boolean = this@MainActivity.allFiles()
