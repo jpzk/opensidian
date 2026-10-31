@@ -26,6 +26,7 @@
   if (!/Android/.test(navigator.userAgent)) return;
   // M14.1: the Quick Action and the two config sections are built further down (toolbar block); used earlier
   let qaGet = () => "command-palette:open", tbCfgBox = null, qaCfgBox = null;
+  let rowRn = null;   // android-p2a M10.4: the live inline row rename { cancel }
   const EDGE = 24, $m = id => document.getElementById(id);
   document.body.classList.add("is-mobile", "is-phone");
 
@@ -791,6 +792,50 @@
       };
     }
   }
+  // android-p2a M10.4: Rename from a Files-row long-press edits the name IN the row (stock) instead of the sheet.
+  // Enter renames through renameThenAsk (the title road: move, then the link prompt); Escape, blur and system back
+  // cancel — the field goes, the row's name is back, nothing moves on disk.
+  const origNoteMenu = window.noteMenu;
+  if (typeof origNoteMenu === "function") window.noteMenu = function (e, nm) {
+    const r = origNoteMenu.apply(this, arguments);
+    const row = e && e.target && e.target.closest ? e.target.closest("#tree .trow.note") : null;
+    const m = typeof menuEl !== "undefined" ? menuEl : null;
+    if (row && m) m.addEventListener("click", ev => {
+      const it = [...m.querySelectorAll("*")].find(d => d.onclick && /^Rename/.test(d.textContent.trim()));
+      if (!it || !it.contains(ev.target)) return;
+      ev.preventDefault(); ev.stopImmediatePropagation();
+      closeMenu(); rowRename(row, nm);
+    }, true);
+    return r;
+  };
+  function rowRename(row, nm) {
+    const tn = row.querySelector(".tn"); if (!tn || rowRn) return;
+    const old = nm.split("/").pop(), dir = nm.slice(0, nm.length - old.length);
+    const inp = document.createElement("input");
+    inp.type = "text"; inp.className = "m-trn"; inp.value = old; inp.spellcheck = false;
+    inp.setAttribute("autocapitalize", "off"); inp.setAttribute("enterkeyhint", "done");
+    tn.hidden = true; tn.after(inp);
+    let done = false;
+    const end = async ok => {
+      if (done) return; done = true; rowRn = null;
+      const nn = inp.value.trim();
+      inp.remove(); tn.hidden = false;
+      if (!ok || !nn || nn === old || /[\\/]/.test(nn)) return;
+      const g = fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
+      if (t && !t.kind && t.name === nm && typeof flushSave === "function") await flushSave(g);
+      await renameThenAsk(nm, dir + nn);
+    };
+    inp.addEventListener("keydown", ev => {
+      ev.stopPropagation();
+      if (ev.key === "Enter") { ev.preventDefault(); end(true); }
+      else if (ev.key === "Escape") { ev.preventDefault(); end(false); }
+    });
+    inp.addEventListener("blur", () => end(false));
+    for (const k of ["click", "mousedown", "contextmenu", "touchstart"]) inp.addEventListener(k, ev => ev.stopPropagation());
+    rowRn = { cancel: () => end(false) };
+    inp.focus(); inp.select();
+    const d = window.__osAndroid; if (d && d.showIme) d.showIme();
+  }
   const origHdrMenu = window.hdrMenu;
   if (typeof origHdrMenu === "function") window.hdrMenu = function (e, g) {
     const r = origHdrMenu.apply(this, arguments);
@@ -1084,6 +1129,9 @@
   }
   // ---- M10.1 / M10.2: the OS back (key or edge gesture) unwinds the innermost layer; at the root it is a no-op
   window.__mobileBack = () => {
+    // android-p2a M10.4: back during an inline rename CANCELS it (the drawer row editor, the inline title): no move
+    if (rowRn) { rowRn.cancel(); return "rename"; }
+    if (typeof titling !== "undefined" && titling) { closeTitleEdit(); return "title"; }
     if (typeof menuEl !== "undefined" && menuEl) { closeMenu(); return "menu"; }
     if (typeof settingsOpen !== "undefined" && settingsOpen && sPageOpen()) { sMode(false); return "settings-page"; }
     if (typeof settingsOpen !== "undefined" && settingsOpen) { closeSettings(); return "settings"; }

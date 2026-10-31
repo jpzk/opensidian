@@ -2211,3 +2211,7 @@ body.is-mobile #delcard { width: 100%; max-width: 100%; border-radius: 14px 14px
   padding: 18px calc(20px + var(--safe-right, 0px)) calc(16px + var(--safe-bottom, 0px)) calc(20px + var(--safe-left, 0px)) }
 body.is-mobile #delbtns { justify-content: stretch }
 body.is-mobile #delbtns button { flex: 1 1 0; height: 44px; font-size: 15px }
+/* android-p2a M10.4: the inline rename field in a Files row takes the name's place, same line box */
+body.is-mobile #tree .m-trn { flex: 1 1 auto; min-width: 0; box-sizing: border-box; height: 100%; max-height: 28px;
+  margin: 0; padding: 0 4px; border: 1px solid var(--border-focus-ring); border-radius: 4px; outline: none;
+  font: inherit; color: inherit; background: var(--bg-base) }
