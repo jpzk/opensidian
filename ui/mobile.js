@@ -533,7 +533,8 @@
     else if (!rOpenNow() && !modal) openRight();
   };
   document.addEventListener("touchend", swipeEnd, { passive: true, capture: true });
-  document.addEventListener("touchcancel", swipeEnd, { passive: true, capture: true });
+  // PR #38 F10: a cancelled touch (the OS or a scroll took it) is not a swipe: drop it, never act on its last point
+  document.addEventListener("touchcancel", () => { t0 = null; }, { passive: true, capture: true });
 
   // ---- M9.4 a two-finger pinch over a note is the quick font size: spreading grows the text, pinching in shrinks it
   // (the vault's appearance.json baseFontSize through qfsSet, the one setter Ctrl+wheel and the slider use; clamped
@@ -810,8 +811,9 @@
   }
 
   // ---- bottom nav actions
-  nBack.onclick = () => { if (typeof histGo === "function") histGo(-1); };
-  nFwd.onclick = () => { if (typeof histGo === "function") histGo(1); };
+  // PR #38 F6: history back / forward is the quiet-focus rule too (m6-1): the note it opens must not raise the IME
+  nBack.onclick = () => { quiet(); if (typeof histGo === "function") histGo(-1); };
+  nFwd.onclick = () => { quiet(); if (typeof histGo === "function") histGo(1); };
   hBack.onclick = nBack.onclick; hFwd.onclick = nFwd.onclick;
   nSearch.onclick = () => {
     openDrawer("search");
@@ -1258,6 +1260,9 @@
   };
   addEventListener("resize", rsFlip);
   if (screen.orientation) screen.orientation.addEventListener("change", rsFlip);
+  // PR #38 F7: the guard undoes only the IME's own commit; a touch in the note after the flip is the user's caret, so it ends the guard
+  main.addEventListener("touchstart", () => { rsGuard = null; }, { capture: true, passive: true });
+  main.addEventListener("pointerdown", () => { rsGuard = null; }, true);
 
 
   // ---- M10.3 Settings on a phone: one column. Opening shows the tab list alone (body.m-snav); a tab shows its page

@@ -2340,6 +2340,9 @@ body.is-mobile.is-tablet.m-pinr.m-rdrawer #main, body.is-mobile.is-tablet.m-pinr
    150px inside the card (a nested scroller), it runs at full length below Create new vault / Open folder as vault and
    the card scrolls; in landscape the list starts at the bottom edge and a swipe brings the rest up (stock's look) */
 body.is-mobile #p-recent { max-height: none; overflow-y: visible }
+/* PR #38 F11: the phone has one window (open_vault_window replace:false is an error on Android), so the vault manager
+   offers no "Open in new window" / "Create in new window": not the row's ⧉ and not the picker's second button */
+body.is-mobile #p-recent .p-newwin, body.is-mobile #p-gonew { display: none !important }
 body.is-mobile #pcard { overscroll-behavior: contain }
 @media (orientation: landscape) { body.is-mobile #ptitle { margin-bottom: 10px } }
 /* android-p3b M15.10: with many known vaults the radio list overflows the vault dialog in landscape (80vh of ~450 css
