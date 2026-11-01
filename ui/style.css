@@ -2342,3 +2342,7 @@ body.is-mobile.is-tablet.m-pinr.m-rdrawer #main, body.is-mobile.is-tablet.m-pinr
 body.is-mobile #p-recent { max-height: none; overflow-y: visible }
 body.is-mobile #pcard { overscroll-behavior: contain }
 @media (orientation: landscape) { body.is-mobile #ptitle { margin-bottom: 10px } }
+/* android-p3b M15.10: with many known vaults the radio list overflows the vault dialog in landscape (80vh of ~450 css
+   px); "Manage vaults..." stays pinned at the dialog's bottom edge while the radio rows scroll under it, so the way to
+   the manager is always on screen */
+body.is-mobile .m-vaultitem.m-vaultmanage { position: sticky; bottom: 0; background: var(--bg-base); z-index: 1 }
