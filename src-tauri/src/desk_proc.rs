@@ -464,23 +464,123 @@ pub fn trust_plan(on: bool, seen: u64, trusted_now: impl FnOnce() -> bool) -> (b
 
 /* ---- G3 (PR #41): electron shell / app.openWithDefaultApp hand a target to xdg-open,
    which runs whatever the desktop maps it to: a .desktop file's Exec=, an executable or a
-   script (by mime handler), an AppImage, a jar — and a custom scheme (steam:, file:, any
+   script (by mime handler), an AppImage, a jar — and a custom scheme (steam:, any
    x-scheme-handler an app registered) runs that handler. Telling a harmless local file
    from one that runs code is not decidable here (mime sniffing, user handlers, the exec
-   bit, a symlink the plugin swaps after the check), so this does not try: EVERY local
-   target (op path / vault / reveal, and op external with any scheme but http, https,
-   mailto) is asked exactly like a spawn — program xdg-open, the target in full — and
-   like every spawn it is asked each time (no answer is remembered between runs).
-   http(s) and mailto URLs go to the browser / mail client unasked, as before. */
+   bit), so this does not try: EVERY local target (op path / vault / reveal, a file: URL,
+   and op external with any scheme but http, https, mailto) is asked exactly like a spawn —
+   program xdg-open, the target in full — and like every spawn it is asked each time (no
+   answer is remembered between runs). http(s) and mailto URLs go to the browser / mail
+   client unasked, as before.
+   P4 (PR #42, CodeAnt): the dialog approves a PATHNAME, and the plugin can rewrite the
+   vault while the dialog is open — replace the file (another inode) or swap a symlink to a
+   .desktop/script in. So a local target is resolved BEFORE asking (canonicalize: every
+   symlink followed, the dialog shows the final path, and that final path — never the
+   plugin's spelling — is what xdg-open gets), its identity is recorded (lstat: dev, ino,
+   mode, size, mtime), and after Allow `Local::recheck` lstats the same path again right
+   before the exec (desk_shell, under the lifecycle lock): any difference — another inode,
+   a symlink where the file was, changed contents/size/mtime, gone — refuses with EPERM and
+   nothing is opened. A file: URL is turned into its path (percent-decoded) and goes the
+   same way, so it cannot route around the binding.
+   RESIDUAL WINDOW (not closable from here): between that recheck and xdg-open's OWN open of
+   the path (xdg-open is a separate program that opens by name, and hands the name on to
+   the handler it picks) the plugin can still swap the file; this narrows the race from
+   "as long as the user reads the dialog" to the few milliseconds of fork/exec of xdg-open,
+   but does not remove it. Closing it would need opening by fd (no xdg-open interface for
+   that). Custom-scheme URLs (steam:, obsidian:, ...) name no file: nothing to bind, asked
+   as text. */
 pub enum ShellOpen {
     /// an http(s)/mailto URL: opened without asking
     Url(String),
-    /// anything else: the spawn consent dialog first, then xdg-open <this>
-    Ask(String),
+    /// anything else: the spawn consent dialog first, then xdg-open <arg> after Local::recheck
+    Ask(Local),
+}
+
+/// what one stat of the target says it is (lstat: a symlink is its own identity)
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ident {
+    dev: u64,
+    ino: u64,
+    mode: u32,
+    size: u64,
+    mtime: (i64, i64),
+}
+
+fn ident_of(p: &Path) -> Result<Ident, String> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::symlink_metadata(p).map_err(|e| format!("ENOENT: {}: {e}", p.display()))?;
+    Ok(Ident { dev: m.dev(), ino: m.ino(), mode: m.mode(), size: m.size(), mtime: (m.mtime(), m.mtime_nsec()) })
+}
+
+/// a target the dialog asks about: `arg` is what the dialog shows and what xdg-open gets;
+/// `ident` is the recorded identity of a local file (None for a custom-scheme URL)
+pub struct Local {
+    pub arg: String,
+    ident: Option<Ident>,
+}
+
+impl Local {
+    /// an http(s)/mailto URL handed on unasked: no file to bind
+    pub fn url(u: String) -> Local {
+        Local { arg: u, ident: None }
+    }
+
+    fn file(p: PathBuf, target: &str) -> Result<Local, String> {
+        let real = p.canonicalize().map_err(|_| format!("ENOENT: no such file or directory, '{target}'"))?;
+        let ident = ident_of(&real)?;
+        let arg = real.into_os_string().into_string().map_err(|_| format!("EINVAL: not a UTF-8 path: {target}"))?;
+        Ok(Local { arg, ident: Some(ident) })
+    }
+
+    /// P4: right before the exec — the path the user allowed is still the very same file
+    pub fn recheck(&self) -> Result<(), String> {
+        let Some(was) = &self.ident else { return Ok(()) };
+        match ident_of(Path::new(&self.arg)) {
+            Ok(now) if &now == was => Ok(()),
+            Ok(_) => Err(format!("EPERM: {} changed after it was allowed (replaced, swapped for a symlink, or rewritten); not opened", self.arg)),
+            Err(_) => Err(format!("EPERM: {} is gone since it was allowed; not opened", self.arg)),
+        }
+    }
+}
+
+/// file:[//[localhost]]/abs/path[?q][#f] -> /abs/path, percent-decoded; anything else is EINVAL
+fn file_url_path(target: &str) -> Result<PathBuf, String> {
+    let bad = || format!("EINVAL: not a local file: URL: {target}");
+    let rest = &target[5..]; // "file:" (any case) checked by the caller
+    let rest = rest.split(['?', '#']).next().unwrap_or("");
+    let path = match rest.strip_prefix("//") {
+        Some(r) => {
+            let (host, p) = r.split_at(r.find('/').unwrap_or(r.len()));
+            if !(host.is_empty() || host.eq_ignore_ascii_case("localhost")) {
+                return Err(bad());
+            }
+            p
+        }
+        None => rest,
+    };
+    if !path.starts_with('/') {
+        return Err(bad());
+    }
+    let b = path.as_bytes();
+    let (mut out, mut i) = (Vec::with_capacity(b.len()), 0);
+    while i < b.len() {
+        if b[i] == b'%' {
+            let h = b.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok()).ok_or_else(bad)?;
+            out.push(h);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    let s = String::from_utf8(out).map_err(|_| bad())?;
+    if s.contains('\0') {
+        return Err(bad());
+    }
+    Ok(PathBuf::from(s))
 }
 
 pub fn shell_target(root: &Path, op: &str, target: &str) -> Result<ShellOpen, String> {
-    let local = |p: PathBuf| p.into_os_string().into_string().map(ShellOpen::Ask).map_err(|_| format!("EINVAL: not a UTF-8 path: {target}"));
     match op {
         "external" => {
             let scheme = target.split(':').next().unwrap_or("");
@@ -489,21 +589,31 @@ pub fn shell_target(root: &Path, op: &str, target: &str) -> Result<ShellOpen, St
             if !ok {
                 return Err(format!("EINVAL: not a URL: {target}"));
             }
-            if matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https" | "mailto") {
-                Ok(ShellOpen::Url(target.to_string()))
-            } else {
-                Ok(ShellOpen::Ask(target.to_string()))
+            match scheme.to_ascii_lowercase().as_str() {
+                "http" | "https" | "mailto" => Ok(ShellOpen::Url(target.to_string())),
+                "file" => Local::file(file_url_path(target)?, target).map(ShellOpen::Ask),
+                _ => Ok(ShellOpen::Ask(Local { arg: target.to_string(), ident: None })),
             }
         }
-        "path" => local(map_cwd(root, Some(target))),
+        "path" => Local::file(map_cwd(root, Some(target)), target).map(ShellOpen::Ask),
         // app.openWithDefaultApp: vault paths only, symlinks resolved and confined to the vault
-        "vault" => local(vault_open_target(root, target)?),
+        "vault" => Local::file(vault_open_target(root, target)?, target).map(ShellOpen::Ask),
         "reveal" => {
             let p = map_cwd(root, Some(target));
-            local(p.parent().map(|d| d.to_path_buf()).unwrap_or(p))
+            Local::file(p.parent().map(|d| d.to_path_buf()).unwrap_or(p), target).map(ShellOpen::Ask)
         }
         _ => Err(format!("EINVAL: unknown shell op {op}")),
     }
+}
+
+/* P4: the exec of xdg-open itself — the identity recheck, then `exec` (the caller's
+   fork of xdg-open with t.arg), nothing in between (desk_shell calls it under the
+   lifecycle lock, after the trust recheck). A changed target returns the EPERM and
+   `exec` is never called. (The process is built by the caller: the only
+   command builder in this file is fn build — consent-nobypass S1.) */
+pub fn shell_spawn<R>(t: &Local, exec: impl FnOnce(&str) -> Result<R, String>) -> Result<R, String> {
+    t.recheck()?;
+    exec(&t.arg)
 }
 
 #[cfg(test)]
@@ -790,13 +900,13 @@ mod tests {
         ];
         for (op, t) in asked {
             match shell_target(&base, op, t) {
-                Ok(ShellOpen::Ask(a)) => assert!(!a.is_empty(), "{op} {t}"),
+                Ok(ShellOpen::Ask(a)) => assert!(!a.arg.is_empty(), "{op} {t}"),
                 Ok(ShellOpen::Url(u)) => panic!("{op} {t}: handed to xdg-open unasked as {u}"),
                 Err(e) => panic!("{op} {t}: {e}"),
             }
         }
         match shell_target(&base, "path", "/vault/run.desktop") {
-            Ok(ShellOpen::Ask(a)) => assert_eq!(a, base.join("run.desktop").to_string_lossy(), "the dialog names the real target in full"),
+            Ok(ShellOpen::Ask(a)) => assert_eq!(a.arg, real.join("run.desktop").to_string_lossy(), "the dialog names the real target in full"),
             _ => panic!("path not asked"),
         }
         for u in ["https://example.org/a?b=c", "http://127.0.0.1:8080/", "HTTPS://x.org", "mailto:a@b.org"] {
@@ -804,6 +914,76 @@ mod tests {
         }
         assert!(shell_target(&base, "external", "/etc/passwd").is_err(), "not a URL");
         assert!(shell_target(&base, "vault", "../x").is_err(), "vault escape");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* P4 (PR #42, CodeAnt): the dialog approves a path; a target replaced (another inode)
+       or swapped for a symlink while the dialog is open is refused, not opened. The
+       "dialog" is the hook between shell_target (what is asked) and shell_spawn (what
+       runs): it runs the swap to completion before the answer, so the order is forced —
+       no sleeps. The opener is a stub script that logs every target it is handed. */
+    #[test]
+    fn desk_p4_target_swapped_between_ask_and_run_is_not_opened() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!("desk-p4-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("v")).unwrap();
+        let vault = base.join("v");
+        let log = base.join("opened.log");
+        let opener = base.join("opener");
+        std::fs::write(&opener, format!("#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{}'\n", log.display())).unwrap();
+        std::fs::set_permissions(&opener, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(vault.join("Welcome.md"), "# hi\n").unwrap();
+        std::fs::write(vault.join("evil.desktop"), "[Desktop Entry]\nType=Application\nExec=touch /tmp/pwn\n").unwrap();
+        let real = vault.canonicalize().unwrap();
+        let opened = || std::fs::read_to_string(&log).unwrap_or_default();
+        // ask (shell_target), the user reads the dialog (`dialog` hook), Allow, run (shell_spawn)
+        let ask_then_run = |op: &str, target: &str, dialog: &dyn Fn()| -> Result<String, String> {
+            let t = match shell_target(&vault, op, target)? {
+                ShellOpen::Ask(t) => t,
+                ShellOpen::Url(u) => panic!("{op} {target}: not asked ({u})"),
+            };
+            dialog();
+            let mut c = shell_spawn(&t, |arg| Command::new(&opener).arg(arg).spawn().map_err(|e| e.to_string()))?;
+            assert!(c.wait().unwrap().success(), "the stub opener failed");
+            Ok(t.arg)
+        };
+        let welcome = real.join("Welcome.md").to_string_lossy().into_owned();
+
+        // control: nothing changes while the dialog is open -> opened (the stub works)
+        assert_eq!(ask_then_run("path", "/vault/Welcome.md", &|| {}).as_deref(), Ok(welcome.as_str()));
+        assert_eq!(opened(), format!("{welcome}\n"), "control: the untouched target reached the opener");
+
+        // (a) replaced by another inode (write a new file, rename it over the asked path)
+        let r = ask_then_run("path", "/vault/Welcome.md", &|| {
+            std::fs::write(vault.join(".swap"), "[Desktop Entry]\nExec=touch /tmp/pwn\n").unwrap();
+            std::fs::rename(vault.join(".swap"), vault.join("Welcome.md")).unwrap();
+        });
+        assert!(matches!(&r, Err(e) if e.starts_with("EPERM")), "(a) a replaced target was not refused: {r:?}");
+
+        // (b) swapped for a symlink to a .desktop (through openWithDefaultApp's vault op)
+        let r = ask_then_run("vault", "Welcome.md", &|| {
+            std::fs::remove_file(vault.join("Welcome.md")).unwrap();
+            std::os::unix::fs::symlink(vault.join("evil.desktop"), vault.join("Welcome.md")).unwrap();
+        });
+        assert!(matches!(&r, Err(e) if e.starts_with("EPERM")), "(b) a target swapped for a symlink was not refused: {r:?}");
+
+        // (c) the same through a file: URL (openExternal): no route around the binding
+        std::fs::remove_file(vault.join("Welcome.md")).unwrap();
+        std::fs::write(vault.join("Welcome.md"), "# hi\n").unwrap();
+        let url = format!("file://{}", welcome.replace(' ', "%20"));
+        let r = ask_then_run("external", &url, &|| {
+            std::fs::write(vault.join(".swap"), "#!/bin/sh\n").unwrap();
+            std::fs::rename(vault.join(".swap"), vault.join("Welcome.md")).unwrap();
+        });
+        assert!(matches!(&r, Err(e) if e.starts_with("EPERM")), "(c) a file: URL target replaced was not refused: {r:?}");
+
+        // (d) a target that already WAS a symlink: the dialog names (and xdg-open gets) the final path
+        std::os::unix::fs::symlink(vault.join("evil.desktop"), vault.join("link.md")).unwrap();
+        let shown = ask_then_run("path", "/vault/link.md", &|| {}).unwrap();
+        assert_eq!(shown, real.join("evil.desktop").to_string_lossy(), "(d) the dialog does not name the symlink's final target");
+
+        assert_eq!(opened(), format!("{welcome}\n{shown}\n"), "a refused target reached the opener");
         let _ = std::fs::remove_dir_all(&base);
     }
 }

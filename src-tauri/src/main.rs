@@ -3932,24 +3932,29 @@ async fn desk_http_request(v: State<'_, Vault>, req: desk_http::Req) -> Result<d
    target maps to (.desktop Exec=, scripts, executables, custom scheme handlers), so every
    target but an http(s)/mailto URL is asked first through the spawn dialog — program
    xdg-open (resolved like any spawn), the target in full, asked every time — and Deny is
-   EPERM with nothing started (desk_proc::shell_target says which). async: the dialog. */
+   EPERM with nothing started (desk_proc::shell_target says which). async: the dialog.
+   P4 (PR #42): the dialog shows the target's final path (symlinks resolved), its identity
+   (dev/ino/mode/size/mtime) is recorded before asking, and desk_proc::shell_spawn re-checks
+   it right before the exec: a file replaced or swapped for a symlink while the dialog was
+   open is refused (EPERM), not opened. RESIDUAL WINDOW: from that recheck to xdg-open's own
+   open of the path (fork/exec of xdg-open, then its handler opens by name) a swap is still
+   possible — xdg-open has no open-by-fd interface; see desk_proc::ShellOpen. */
 #[tauri::command]
 async fn desk_shell(win: tauri::Window, v: State<'_, Vault>, op: String, target: String) -> Result<(), String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
     if !plugins::is_trusted(&cfg_value(), &root) {
         return Err("EPERM: restricted mode, plugins cannot use the shell".into());
     }
-    let (file, arg, cwd) = match desk_proc::shell_target(&root, &op, &target)? {
-        desk_proc::ShellOpen::Url(url) => (std::path::PathBuf::from("xdg-open"), url, None),
-        desk_proc::ShellOpen::Ask(arg) => {
-            let sp = desk_proc::Spec { file: "xdg-open".into(), args: vec![arg], cwd: root.clone(), env: vec![], argv0: None };
+    let (file, t, cwd) = match desk_proc::shell_target(&root, &op, &target)? {
+        desk_proc::ShellOpen::Url(url) => (std::path::PathBuf::from("xdg-open"), desk_proc::Local::url(url), None),
+        desk_proc::ShellOpen::Ask(t) => {
+            let sp = desk_proc::Spec { file: "xdg-open".into(), args: vec![t.arg.clone()], cwd: root.clone(), env: vec![], argv0: None };
             let sp = consent::resolve(sp)?; // the absolute xdg-open the dialog names is the one that runs
             if !consent::ask(win, consent::Kind::Spawn, consent::spawn_question(&sp)).await {
-                eprintln!("[desk] shell {op} {:?}: denied by the user", sp.args[0]);
-                return Err(format!("EPERM: open {} denied by the user", sp.args[0]));
+                eprintln!("[desk] shell {op} {:?}: denied by the user", t.arg);
+                return Err(format!("EPERM: open {} denied by the user", t.arg));
             }
-            let arg = sp.args.into_iter().next().unwrap_or_default();
-            (std::path::PathBuf::from(sp.file), arg, Some(sp.cwd))
+            (std::path::PathBuf::from(sp.file), t, Some(sp.cwd))
         }
     };
     // the flip may have gone OFF while the question was open (F5: under the lifecycle lock)
@@ -3957,20 +3962,24 @@ async fn desk_shell(win: tauri::Window, v: State<'_, Vault>, op: String, target:
     if !plugins::is_trusted(&cfg_value(), &root) {
         return Err("EPERM: restricted mode, plugins cannot use the shell".into());
     }
-    eprintln!("[desk] shell {op} {arg}");
-    let mut cmd = std::process::Command::new(&file);
-    cmd.arg(&arg).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-    if let Some(d) = &cwd {
-        cmd.current_dir(d);
+    eprintln!("[desk] shell {op} {}", t.arg);
+    // P4: identity recheck + exec, nothing in between
+    let r = desk_proc::shell_spawn(&t, |arg| {
+        let mut cmd = std::process::Command::new(&file);
+        cmd.arg(arg).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        if let Some(d) = &cwd {
+            cmd.current_dir(d);
+        }
+        cmd.spawn().map_err(|e| format!("ENOENT: xdg-open: {e}"))
+    })
+    .map(|mut c| {
+        std::thread::spawn(move || {
+            let _ = c.wait();   // reap it, no zombie
+        });
+    });
+    if let Err(e) = &r {
+        eprintln!("[desk] shell {op} {}: {e}", t.arg);
     }
-    let r = cmd
-        .spawn()
-        .map(|mut c| {
-            std::thread::spawn(move || {
-                let _ = c.wait();   // reap it, no zombie
-            });
-        })
-        .map_err(|e| format!("ENOENT: xdg-open: {e}"));
     drop(life);
     r
 }

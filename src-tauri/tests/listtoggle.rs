@@ -103,8 +103,9 @@ fn listtoggle_table() {
     let ed = std::fs::read_to_string(root().join("ui/editor.js")).unwrap();
     let ctx = javascriptcore::Context::new();
     // editor.js installs two document listeners at load: a "click" listener (rvtask reading-view checkboxes) and a
-    // "scroll" listener registered only when CENSUS_ON (census-gate); the no-op document.addEventListener stub
-    // absorbs both. (It installs no selectionchange listener — that one is main.js's.) Its window "mousedown" /
+    // "scroll" listener registered only when CENSUS_ON (census-gate). This test sets CENSUS_ON = false, so only the
+    // click listener is installed, and the no-op document.addEventListener stub absorbs it; the scroll listener is
+    // never registered here. (It installs no selectionchange listener — that one is main.js's.) Its window "mousedown" /
     // "keydown" listeners are skipped because this window stub has no addEventListener. CENSUS_ON comes from
     // ui/census.js, which index.html loads before editor.js — off, as in a shipped build (issue #30)
     ctx.evaluate("var window = {}; var document = { addEventListener() {} }; var CENSUS_ON = false;");
