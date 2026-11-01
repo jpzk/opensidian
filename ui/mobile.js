@@ -922,6 +922,7 @@
     else edWrap(m);
   };
   const tbLine = (re, next) => { if (tg()) edLine(l => { const m = re.exec(l), p = m ? m[0] : ""; return next(p) + l.slice(p.length); }); };
+  const TB_CFG = "Configure mobile toolbar";
   const TB = [
     ["Undo", '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>', () => { const g = tg(); if (g) Ed.undo(g); }],
     ["Redo", '<path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>', () => { const g = tg(); if (g) Ed.redo(g); }],
@@ -943,8 +944,11 @@
     ["Insert current date", '<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>', () => cmdRun("templates:insert-current-date")],
     ["Open command palette", '<path d="m4 17 6-6-6-6M12 19h8"/>', () => cmdRun("command-palette:open")],
     ["Hide keyboard", '<rect x="2" y="4" width="20" height="12" rx="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M7 12h10M9 20l3 2 3-2"/>', () => { const a = document.activeElement; if (a) a.blur(); }],
-    ["Settings", '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3 14H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 10 3.1V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 21 10h.1a2 2 0 1 1 0 4H21a1.7 1.7 0 0 0-1.6 1z"/>',
-      () => { if (typeof sPane !== "undefined") sPane = "interface"; if (typeof settingsOpen !== "undefined" && !settingsOpen) cmdSettings(); }],
+    // M8.2: the last button is stock's wrench, "Configure mobile toolbar": the keyboard goes down and Settings opens
+    // straight on Interface at its Mobile section (back = the Settings tab list, back again = the note). Not offered
+    // in Manage toolbar options, so the way back to the toolbar settings cannot be switched off.
+    [TB_CFG, '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>',
+      () => { const a = document.activeElement; if (a) a.blur(); const d = window.__osAndroid; if (d && d.hideIme) d.hideIme(); openIfaceAt(".m-mobcfg"); }],
   ];
   const tbBtn = new Map();
   for (const [label, d, run] of TB) {
@@ -1002,6 +1006,7 @@
     box.className = "m-ribcfg m-tbcfg";
     const off = tbOff();
     for (const [label] of TB) {
+      if (label === TB_CFG) continue;
       const row = document.createElement("label");
       row.className = "m-ribrow"; row.dataset.tb = label;
       const cb = document.createElement("input");
@@ -1037,9 +1042,13 @@
       mRow("m-tbrow", "Configure mobile toolbar", "Choose the buttons on the toolbar above the keyboard.", "Manage toolbar options", tbSub));
     return box;
   };
-  const openIfaceAt = sel => {
+  // openSettings is async and ends on the tab list, so the page is shown only once it has finished opening
+  // (shown during the open, the list replaced it again and Settings sat on the list)
+  const openIfaceAt = async sel => {
     if (typeof sPane !== "undefined") sPane = "interface";
-    if (typeof settingsOpen !== "undefined" && !settingsOpen && typeof cmdSettings === "function") cmdSettings();
+    if (typeof settingsOpen !== "undefined" && !settingsOpen) {
+      if (typeof window.openSettings === "function") await window.openSettings(); else if (typeof cmdSettings === "function") cmdSettings();
+    }
     if (typeof showSettingsPage === "function") window.showSettingsPage("interface");
     setTimeout(() => { const e = document.querySelector("#spage " + sel); if (e) e.scrollIntoView({ block: "start" }); }, 120);
   };
