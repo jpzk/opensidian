@@ -1871,7 +1871,26 @@
   // title, so TalkBack and the OS accessibility tree name it. Labels we set follow later title changes (the reading /
   // editing .modebtn flips its title); a label the code set itself is never touched.
   const A11Y = "button,[role=button],[role=tab],[role=menuitem],[role=radio],[role=checkbox],.clickable-icon";
+  // PR #38 F12: the phone's own click-only rows (view-switcher items, tab cards, ribbon sheet actions, vault manager
+  // rows) are divs / lis: give each a role and a tab stop, and Enter / Space activates the focused row like a tap, so
+  // TalkBack and a hardware keyboard reach them. A role or tabindex the code set itself is kept.
+  const ROWS = [[".m-pillmenu", "menu", false], [".m-pillitem", "menuitem", true], [".m-card", "button", true],
+    [".m-sheetitem", "button", true], ["#p-recent li", "button", true]];
+  const ROWSEL = ROWS.filter(r => r[2]).map(r => r[0]).join(",");
+  const rows = root => {
+    for (const [sel, role, focus] of ROWS) for (const e of root.querySelectorAll ? root.querySelectorAll(sel) : []) {
+      if (!e.hasAttribute("role")) e.setAttribute("role", role);
+      if (focus && !e.hasAttribute("tabindex")) e.tabIndex = 0;
+    }
+  };
+  document.addEventListener("keydown", e => {
+    if ((e.key !== "Enter" && e.key !== " ") || e.repeat) return;
+    const t = e.target;
+    if (!t || !t.matches || !t.matches(ROWSEL)) return;   // only the row itself: its inner button keeps its own keys
+    e.preventDefault(); e.stopPropagation(); t.click();
+  }, true);
   const a11y = root => {
+    rows(root);
     const els = root.querySelectorAll ? [...root.querySelectorAll(A11Y)] : [];
     if (root.matches && root.matches(A11Y)) els.push(root);
     for (const e of els) {
