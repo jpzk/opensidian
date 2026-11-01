@@ -1743,6 +1743,15 @@ fn persist_vault(p: &Path) {
     cfg_update(&[cfgstore::Op::PushRecent(p.display().to_string())]);
 }
 
+/// goal android (PR #38 F3): the vault switch's persist, with the write's outcome. Android has no
+/// spawner (one unconfined process), so this is cfgstore's own locked update on the app-private config.
+#[cfg(target_os = "android")]
+fn persist_vault_checked(p: &Path) -> Result<(), String> {
+    cfgstore::update_in(&vaultlock::env_lock_dir(), &cfg_path(), &[cfgstore::Op::PushRecent(p.display().to_string())])
+        .map(|_| ())
+        .map_err(|e| format!("could not record {} as the vault to open: {e}", p.display()))
+}
+
 /* ux-4: left sidebar width persistence (clamped 150-600, default 200 total
    = 44 ribbon + 156 #side stays when the key is absent) */
 #[tauri::command]
@@ -2008,8 +2017,10 @@ async fn open_vault_window(app: tauri::AppHandle, win: tauri::Window, v: State<'
     let r = {
         let _ = (&app, &win);
         if replace {
-            persist_vault(&p);
-            Ok(std::process::id())
+            // PR #38 F3: the relaunch binds whatever the config says is the last vault. A write that
+            // failed would relaunch the app on the OLD vault with no word to the user: return the
+            // error instead (the UI shows it and does not call restart()).
+            persist_vault_checked(&p).map(|_| std::process::id())
         } else {
             Err("open in new window: not supported on android".to_string())
         }
@@ -6490,7 +6501,14 @@ pub fn run() {
         .manage(ZoomLevel(Mutex::new(read_zoom_cfg())))
         .setup(move |app| {
             #[cfg(target_os = "android")]
-            android_boot(app);
+            {
+                android_boot(app);
+                // PR #38 F8: .manage(ZoomLevel) above read the config before android_boot knew where it
+                // lives (appdirs unset -> {} -> 0.0), so the first zoom stepped from 0 and overwrote the
+                // saved level. Re-read it now that the config path is set.
+                use tauri::Manager;
+                *app.state::<ZoomLevel>().0.lock().unwrap() = read_zoom_cfg();
+            }
             if let Some(wc) = &page_conf {
                 page_window(app.handle(), wc)?;
             }
