@@ -58,6 +58,11 @@ pub enum Op {
     /// treefold: like SetIn, but only if `parent.key` is absent — first writer
     /// wins (vault_ids: two windows minting an id for one fresh vault agree).
     InsertIn(String, String, Value),
+    /// android-p3a M1.4 (phone vault manager): drop `path` from "list" ("last" is left alone: the open vault is
+    /// never forgotten, mobilefs refuses it before this op is built)
+    ListRemove(String),
+    /// android-p3a M1.4: `from` renamed on disk to `to`: replaced in place in "list" (and in "last" if it was it)
+    ListRename(String, String),
 }
 
 /// MRU push: dedup, newest first, capped — pure for testability
@@ -95,6 +100,22 @@ pub fn apply(v: &mut Value, ops: &[Op]) {
                     for (f, x) in src {
                         dst.insert(f.clone(), x.clone());
                     }
+                }
+            }
+            Op::ListRemove(p) | Op::ListRename(p, _) => {
+                let to = if let Op::ListRename(_, t) = op { Some(t) } else { None };
+                let list: Vec<String> = v["list"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                let list: Vec<String> = match to {
+                    Some(t) => list.into_iter().map(|x| if x == *p { t.clone() } else { x }).collect(),
+                    None => list.into_iter().filter(|x| x != p).collect(),
+                };
+                v["list"] = serde_json::json!(list);
+                let was_last = v["last"].as_str() == Some(p.as_str());
+                if let (Some(t), true) = (to, was_last) {
+                    v["last"] = serde_json::json!(t);
                 }
             }
             Op::SetIn(p, k, x) | Op::InsertIn(p, k, x) => {
@@ -378,5 +399,18 @@ mod tests {
         assert!(first.as_str().is_some_and(|s| s.starts_with("id")), "{first}");
         update_in(&locks, &cfg, &[Op::InsertIn("vault_ids".into(), "/v/c".into(), serde_json::json!("late"))]).unwrap();
         assert_eq!(read_value_in(&locks, &cfg)["vault_ids"]["/v/c"], first);
+    }
+
+    #[test]
+    fn cfgstore_list_remove_and_rename_keep_order_and_last() {
+        let mut v = serde_json::json!({"last":"/a","list":["/a","/b","/c"],"theme":"dark"});
+        apply(&mut v, &[Op::ListRename("/b".into(), "/b2".into())]);
+        assert_eq!(v["list"], serde_json::json!(["/a", "/b2", "/c"]));
+        assert_eq!(v["last"], "/a");
+        apply(&mut v, &[Op::ListRemove("/b2".into())]);
+        assert_eq!(v["list"], serde_json::json!(["/a", "/c"]));
+        apply(&mut v, &[Op::ListRename("/a".into(), "/z".into())]);
+        assert_eq!((v["last"].as_str(), v["theme"].as_str()), (Some("/z"), Some("dark")));
+        assert_eq!(v["list"], serde_json::json!(["/z", "/c"]));
     }
 }

@@ -2090,6 +2090,15 @@ body.is-mobile .m-asheet:not([hidden]) { display: block; position: fixed; z-inde
   padding: 6px calc(var(--safe-right, 0px) + 8px) calc(var(--safe-bottom, 0px) + 10px) calc(var(--safe-left, 0px) + 8px);
   animation: m-up .16s ease-out }
 @media (orientation: landscape) { body.is-mobile .m-asheet:not([hidden]) { left: 20vw; right: 20vw } }
+/* android-p3a M1.4: the vault manager row page fills the screen (stock: a page, not a sheet); its rename form */
+body.is-mobile .m-asheet.m-vpage:not([hidden]) { top: 0; max-height: none; border-radius: 0; border-top: 0;
+  padding-top: calc(var(--safe-top, 0px) + 12px) }
+body.is-mobile .m-asheet.m-vpage .m-ashandle { display: none }
+body.is-mobile .m-asheet.m-vpage .m-assub { word-break: break-all }
+body.is-mobile #p-recent li { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none }
+body.is-mobile .m-asinput { display: block; width: calc(100% - 28px); margin: 8px 14px; box-sizing: border-box; min-height: 40px; font-size: 16px }
+body.is-mobile .m-asbtns { display: flex; justify-content: flex-end; gap: 10px; padding: 4px 14px 6px }
+body.is-mobile .m-asbtns button { min-height: 40px; min-width: 88px; font-size: 15px }
 body.is-mobile .m-ashandle { width: 36px; height: 4px; margin: 2px auto 8px; border-radius: 2px; background: var(--border) }
 /* android-p2b M6.3 M6.6: the empty New tab's three big buttons (stock mobile's New tab view), centred in the pane */
 body.is-mobile .unkview .m-ntview { display: flex; flex-direction: column; align-items: stretch; gap: 12px; width: min(320px, 80%); margin: 18vh auto 0 }

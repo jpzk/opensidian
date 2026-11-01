@@ -1646,6 +1646,40 @@ fn m_folder(v: State<Vault>, op: String, path: String, to: Option<String>) -> Re
     r
 }
 
+/* android-p3a M1.4 (mobilefs.rs): the phone vault manager row page. "forget" drops a known vault from the list and
+   touches no file; "rename" renames its folder (a new name next to it) and the list entry; "delete" removes the folder.
+   Never the open vault or a folder holding it. Called by ui/mobile.js only. */
+#[tauri::command]
+fn m_vault(v: State<Vault>, op: String, path: String, name: Option<String>) -> Result<String, String> {
+    let p = PathBuf::from(&path);
+    let cur = cur_vault(&v);
+    let known = read_cfg().1;
+    match op.as_str() {
+        "forget" => {
+            if !known.iter().any(|k| *k == path) {
+                return Err("not a known vault".into());
+            }
+            if cur.as_deref() == Some(p.as_path()) {
+                return Err("the open vault cannot be forgotten".into());
+            }
+            cfg_update(&[cfgstore::Op::ListRemove(path.clone())]);
+            Ok(path)
+        }
+        "rename" => {
+            let to = mobilefs::vault_rename(&p, name.as_deref().unwrap_or(""), &known, cur.as_deref())?;
+            let to = to.display().to_string();
+            cfg_update(&[cfgstore::Op::ListRename(path, to.clone())]);
+            Ok(to)
+        }
+        "delete" => {
+            mobilefs::vault_delete(&p, &known, cur.as_deref())?;
+            cfg_update(&[cfgstore::Op::ListRemove(path.clone())]);
+            Ok(path)
+        }
+        _ => Err(format!("m_vault: unknown op {op:?}")),
+    }
+}
+
 #[tauri::command]
 fn vault_get(v: State<Vault>) -> Option<String> {
     cur_vault(&v).map(|p| p.display().to_string())
@@ -6620,7 +6654,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, canvas_io, canvas_attach, paste_image, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, m_stats, m_folder, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts, property_counts,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, m_stats, m_folder, m_vault, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts, property_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
             read_workspace, write_workspace,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,

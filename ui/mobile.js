@@ -1358,7 +1358,7 @@
   function closeAS() { asBox.hidden = true; asScrim.hidden = true; }
   asScrim.addEventListener("click", e => { e.stopPropagation(); closeAS(); });
   function openAS(o) {
-    asBox.textContent = "";
+    asBox.textContent = ""; asBox.className = "m-asheet" + (o.cls ? " " + o.cls : "");
     const div = (cls, t) => { const d = document.createElement("div"); d.className = cls; if (t != null) d.textContent = t; return d; };
     asBox.append(div("m-ashandle"));
     if (o.title) asBox.append(div("m-astitle", o.title));
@@ -1376,6 +1376,58 @@
     if (asBox.lastChild.classList.contains("m-assep")) asBox.lastChild.remove();
     asBox.scrollTop = 0;
     asBox.hidden = false; asScrim.hidden = false;
+  }
+
+  // ---- android-p3a M1.4: a vault manager row opens its page (stock): the vault name, "This vault is located at
+  // <path>", then Open vault, Rename vault, Forget vault, Delete vault. Rename / Forget / Delete go through m_vault
+  // (mobilefs.rs), which refuses the open vault and any folder holding it; Forget only drops the list entry (the
+  // files stay), Delete asks first and removes the folder. The open vault's own row offers Open vault alone (= back
+  // to it). A long-press on a row does nothing (no menu, no selection). The page sits on the action sheet layer, so
+  // back closes it alone and the manager stays.
+  const reRecent = () => { try { if (typeof window.loadRecent === "function") window.loadRecent(); } catch (e) {} };
+  const vErr = t => { let e = asBox.querySelector(".m-aserr"); if (!e) { e = document.createElement("div"); e.className = "m-assub m-aserr"; asBox.append(e); } e.textContent = t; };
+  function vaultRename(p) {
+    openAS({ title: "Rename vault", items: [] });
+    const inp = document.createElement("input");
+    inp.className = "m-asinput"; inp.type = "text"; inp.value = vname(p); inp.setAttribute("aria-label", "Vault name");
+    const row = document.createElement("div"); row.className = "m-asbtns";
+    const mk = (t, f) => { const b = document.createElement("button"); b.type = "button"; b.textContent = t; b.onclick = e => { e.stopPropagation(); f(); }; return b; };
+    const go = async () => {
+      const n = inp.value.trim();
+      if (!n || n === vname(p)) return closeAS();
+      try { await inv("m_vault", { op: "rename", path: p, name: n }); } catch (er) { return vErr(String(er)); }
+      closeAS(); reRecent();
+    };
+    inp.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+    row.append(mk("Cancel", closeAS), mk("Rename", go));
+    asBox.append(inp, row);
+  }
+  function vaultPage(p) {
+    const cur = typeof vaultPath !== "undefined" ? vaultPath : null, isCur = p === cur;
+    const open = { label: "Open vault", icon: '<path d="M4 6h6l2 2h8v10H4z"/>', run: () => {
+      if (isCur || typeof openVault !== "function") { const pk = $m("picker"); if (pk) pk.hidden = true; return; }
+      openVault(p, true); } };
+    if (isCur) return openAS({ cls: "m-vpage", title: vname(p), sub: "This vault is located at " + p, items: [open] });
+    openAS({ cls: "m-vpage", title: vname(p), sub: "This vault is located at " + p, items: [open,
+      { label: "Rename vault", icon: '<path d="M4 20h4L19 9l-4-4L4 16z"/>', run: () => vaultRename(p) },
+      { label: "Forget vault", icon: '<path d="M6 6l12 12M18 6L6 18"/>', run: () => openAS({ title: "Forget vault",
+        sub: "Remove \"" + vname(p) + "\" from the vault list without deleting any files. The folder stays at " + p + ".",
+        items: [{ label: "Forget", run: async () => { try { await inv("m_vault", { op: "forget", path: p }); } catch (er) { return; } reRecent(); } },
+          { label: "Cancel", run: () => {} }] }) },
+      { label: "Delete vault", red: true, icon: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>', run: () => openAS({ title: "Delete vault",
+        sub: "Permanently delete the vault \"" + vname(p) + "\" and every file in it? This cannot be undone.",
+        items: [{ label: "Delete", red: true, run: async () => { try { await inv("m_vault", { op: "delete", path: p }); } catch (er) { return; } reRecent(); } },
+          { label: "Cancel", run: () => {} }] }) }] });
+  }
+  const precent = $m("p-recent");
+  if (precent) {
+    precent.addEventListener("contextmenu", e => { e.preventDefault(); e.stopPropagation(); }, true);
+    precent.addEventListener("click", e => {
+      const li = e.target.closest && e.target.closest("#p-recent li");
+      if (!li || e.target.closest(".p-newwin")) return;
+      const s = li.querySelector("span"); if (!s) return;
+      e.stopPropagation(); e.preventDefault(); vaultPage(s.textContent);
+    }, true);
   }
 
   // the vault's files and folders with their times (m_stats, mobilefs.rs): the drawer counts, the time sort orders

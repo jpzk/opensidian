@@ -89,6 +89,50 @@ pub fn folder_trash(root: &Path, rel: &Path) -> Result<String, String> {
     Err("no free name in .trash".into())
 }
 
+/* android-p3a M1.4: the vault manager's row page — Rename vault / Delete vault on a KNOWN vault that is NOT the open
+   one (Forget is a config op only, built in lib.rs). `known` = the config's vault list, `cur` = the open vault. Refused:
+   a path not in the list, the open vault, any folder that holds the open vault, a relative or shallow path (< 3
+   components: never "/" or "/home"), a symlink (symlink_metadata: the link itself, never its target). A new name is one
+   plain path component (no '/', not '.'/'..', not hidden) and must not exist next to the vault yet. */
+fn vault_guard(p: &Path, known: &[String], cur: Option<&Path>) -> Result<(), String> {
+    if !known.iter().any(|k| Path::new(k) == p) {
+        return Err("not a known vault".into());
+    }
+    if !p.is_absolute() || p.components().count() < 3 {
+        return Err("refusing a shallow vault path".into());
+    }
+    if cur.is_some_and(|c| c.starts_with(p)) {
+        return Err("the open vault cannot be renamed or deleted".into());
+    }
+    match std::fs::symlink_metadata(p) {
+        Ok(m) if m.file_type().is_dir() => Ok(()),
+        Ok(_) => Err("not a folder".into()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+pub fn vault_rename(p: &Path, name: &str, known: &[String], cur: Option<&Path>) -> Result<std::path::PathBuf, String> {
+    vault_guard(p, known, cur)?;
+    let n = name.trim();
+    if n.is_empty() || n.contains('/') || n.contains('\0') || n.starts_with('.') {
+        return Err("invalid vault name".into());
+    }
+    let to = p.parent().ok_or("invalid vault path")?.join(n);
+    if to == p {
+        return Ok(to);
+    }
+    if std::fs::symlink_metadata(&to).is_ok() {
+        return Err("a file or folder with that name already exists".into());
+    }
+    std::fs::rename(p, &to).map_err(|e| e.to_string())?;
+    Ok(to)
+}
+
+pub fn vault_delete(p: &Path, known: &[String], cur: Option<&Path>) -> Result<(), String> {
+    vault_guard(p, known, cur)?;
+    std::fs::remove_dir_all(p).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,5 +162,31 @@ mod tests {
         assert_eq!(folder_trash(&root, Path::new("z/b")).unwrap(), ".trash/b 1");
         assert!(folder_trash(&root, Path::new("z/n.md")).is_err());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vault_rename_delete_guards() {
+        let base = std::env::temp_dir().join(format!("mobilefs-v-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let (cur, tv) = (base.join("seed"), base.join("throw"));
+        fs::create_dir_all(cur.join("sub")).unwrap();
+        fs::create_dir_all(&tv).unwrap();
+        fs::write(tv.join("T.md"), "t").unwrap();
+        let s = |p: &Path| p.display().to_string();
+        let known = vec![s(&cur), s(&tv), s(&base), "/".into()];
+        let c = Some(cur.as_path());
+        assert!(vault_delete(&cur, &known, c).is_err(), "the open vault");
+        assert!(vault_delete(&base, &known, c).is_err(), "holds the open vault");
+        assert!(vault_delete(Path::new("/"), &known, c).is_err(), "shallow");
+        assert!(vault_delete(&cur.join("sub"), &known, c).is_err(), "not known");
+        assert!(vault_rename(&tv, "../x", &known, c).is_err());
+        assert!(vault_rename(&tv, ".h", &known, c).is_err());
+        assert!(vault_rename(&tv, "seed", &known, c).is_err(), "exists");
+        let to = vault_rename(&tv, "throw2", &known, c).unwrap();
+        assert_eq!(fs::read_to_string(to.join("T.md")).unwrap(), "t");
+        let known = vec![s(&cur), s(&to)];
+        vault_delete(&to, &known, c).unwrap();
+        assert!(!to.exists() && cur.join("sub").is_dir());
+        let _ = fs::remove_dir_all(&base);
     }
 }
