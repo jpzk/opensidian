@@ -3700,15 +3700,17 @@ async fn plugins_set(
         let life = desk_proc::lifecycle();
         desk_proc::trust_epoch(&life)
     };
-    let mut asked = None;
-    if trusted == Some(true) && !plugins::is_trusted(&cfg_value(), &root) {
+    // P1 (PR #42): every ON write carries `seen`, also when the vault was already trusted and
+    // nothing is asked — a trust-OFF landing after the is_trusted read makes it EAGAIN
+    let (ask, carries) = desk_proc::trust_plan(trusted == Some(true), seen, || plugins::is_trusted(&cfg_value(), &root));
+    if ask {
         let key = plugins::trust_key(&root);
         if !consent::ask(win, consent::Kind::Trust, consent::trust_question(&key)).await {
             eprintln!("[consent] trust {key:?}: cancelled, nothing written");
             return Ok(plugins_state_of(&root));
         }
-        asked = Some(seen);
     }
+    let asked = carries;
     span_timed!(otel => "plugins_set", (|| -> Result<serde_json::Value, String> {
         if let Some(t) = trusted {
             // F5/N5: held across (flag write, kill_all, close_all), the lock desk_proc_spawn holds

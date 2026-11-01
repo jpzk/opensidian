@@ -16,7 +16,7 @@
    every listener and connection (close_all). */
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
@@ -157,24 +157,49 @@ fn listen_err(host: &str, port: u16, e: &std::io::Error) -> String {
     format!("{code}: listen {host}:{port} {e}")
 }
 
-/* N5 (PR #41): what desk_net_listen runs. The lifecycle lock (desk_proc::lifecycle, the
-   one plugins_set holds across a trust-OFF: flag write, kill_all, close_all) is taken
-   BEFORE the trust check and held through the bind and the register, so a trust-OFF
-   either lands before the check (EPERM, nothing bound) or after the register (its
-   close_all closes this listener). listen and close_all demand a &Life for that. */
-pub fn listen_trusted(trusted: impl FnOnce() -> bool, host: &str, port: u16) -> Result<(u64, Arc<Srv>), String> {
-    let life = crate::desk_proc::lifecycle();
-    if !trusted() {
-        return Err("EPERM: restricted mode, plugins cannot open servers".into());
-    }
-    listen(host, port, &life)
+/* N5 (PR #41) + P2 (PR #42): what desk_net_listen runs. The lifecycle lock
+   (desk_proc::lifecycle, the one plugins_set holds across a trust-OFF: flag write,
+   kill_all, close_all) is taken BEFORE the deciding trust check and held through the bind
+   and the register, so a trust-OFF either lands before that check (EPERM, nothing bound)
+   or after the register (its close_all closes this listener). listen and close_all
+   demand a &Life for that.
+   P2: the host is resolved (to_socket_addrs: a DNS lookup that can take seconds) BEFORE
+   the lock, so a slow lookup never holds up a trust-OFF, kill_all or a spawn. Under the
+   lock run only (trust check, bind, register). A first, unlocked trust check precedes the
+   lookup, so a restricted vault's page cannot make the app resolve names it picks (a DNS
+   query is itself a way out); it decides nothing — the check under the lock does. */
+pub fn listen_trusted(trusted: impl FnMut() -> bool, host: &str, port: u16) -> Result<(u64, Arc<Srv>), String> {
+    listen_trusted_via(resolve, trusted, host, port)
 }
 
-/// bind host:port (Node: no host = all interfaces; "localhost" resolves) and start accepting
-fn listen(host: &str, port: u16, _life: &Life) -> Result<(u64, Arc<Srv>), String> {
+const NOT_TRUSTED: &str = "EPERM: restricted mode, plugins cannot open servers";
+
+/// Node: no host = all interfaces; "localhost" resolves
+fn resolve(h: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
+    Ok((h, port).to_socket_addrs().map_err(|e| format!("ENOTFOUND: listen {h}: {e}"))?.collect())
+}
+
+fn listen_trusted_via(
+    resolve: impl FnOnce(&str, u16) -> Result<Vec<SocketAddr>, String>,
+    mut trusted: impl FnMut() -> bool,
+    host: &str,
+    port: u16,
+) -> Result<(u64, Arc<Srv>), String> {
     let h = if host.is_empty() { "0.0.0.0" } else { host };
-    let addrs: Vec<_> = (h, port).to_socket_addrs().map_err(|e| format!("ENOTFOUND: listen {h}: {e}"))?.collect();
-    let l = TcpListener::bind(&addrs[..]).map_err(|e| listen_err(h, port, &e))?;
+    if !trusted() {
+        return Err(NOT_TRUSTED.into());
+    }
+    let addrs = resolve(h, port)?;
+    let life = crate::desk_proc::lifecycle();
+    if !trusted() {
+        return Err(NOT_TRUSTED.into());
+    }
+    listen(h, port, &addrs, &life)
+}
+
+/// bind the resolved addrs of h:port and start accepting
+fn listen(h: &str, port: u16, addrs: &[SocketAddr], _life: &Life) -> Result<(u64, Arc<Srv>), String> {
+    let l = TcpListener::bind(addrs).map_err(|e| listen_err(h, port, &e))?;
     l.set_nonblocking(true).map_err(|e| listen_err(h, port, &e))?;
     let la = l.local_addr().map_err(|e| listen_err(h, port, &e))?;
     let srv = Arc::new(Srv { closed: AtomicBool::new(false), st: Mutex::new(SrvSt::default()), cv: Condvar::new(), port: la.port(), address: la.ip().to_string() });
@@ -187,11 +212,30 @@ fn listen(host: &str, port: u16, _life: &Life) -> Result<(u64, Arc<Srv>), String
             while !s.closed.load(Ordering::SeqCst) {
                 match l.accept() {
                     Ok((sock, peer)) => {
+                        #[cfg(test)]
+                        accept_hook("accepted");
                         let _ = sock.set_nonblocking(false);
                         let _ = sock.set_nodelay(true);
                         let c = Arc::new(Conn { sock, st: Mutex::new(ConnSt::default()), cv: Condvar::new() });
                         let cid = next_id();
-                        reg().lock().unwrap_or_else(|e| e.into_inner()).conns.insert(cid, c.clone());
+                        // P3 (PR #42): the closed check and the insert are one step under the reg
+                        // lock, the lock close_all / close_srv mark `closed` under: a socket
+                        // accepted across a close is destroyed here, never registered
+                        let kept = {
+                            let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+                            if s.closed.load(Ordering::SeqCst) {
+                                false
+                            } else {
+                                r.conns.insert(cid, c.clone());
+                                true
+                            }
+                        };
+                        #[cfg(test)]
+                        accept_hook("decided");
+                        if !kept {
+                            c.destroy();
+                            break;
+                        }
                         std::thread::spawn(move || pump(c));
                         s.st.lock().unwrap_or_else(|e| e.into_inner()).pending.push(Accepted { id: cid, remote_address: peer.ip().to_string(), remote_port: peer.port() });
                         s.cv.notify_all();
@@ -215,7 +259,9 @@ pub fn conn(id: u64) -> Result<Arc<Conn>, String> {
 }
 
 pub fn close_srv(id: u64) {
-    if let Some(s) = reg().lock().unwrap_or_else(|e| e.into_inner()).srvs.remove(&id) {
+    // P3: marked closed under the reg lock, the lock the accept thread inserts under
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(s) = r.srvs.remove(&id) {
         s.close();
     }
 }
@@ -226,10 +272,18 @@ pub fn forget_conn(id: u64) {
     }
 }
 
-/// flip OFF: every listener and socket plugins opened goes away
+/* flip OFF: every listener and socket plugins opened goes away.
+   P3 (PR #42, Strix): every listener is marked closed INSIDE the reg lock, before the
+   drain. The accept thread checks `closed` and inserts under that same lock, so a socket
+   it accepted across this call is either in `conns` before the drain (and destroyed below)
+   or sees `closed` and destroys itself — it can never be registered after the drain and
+   outlive restricted mode (pump reading, socket commands addressing it by id). */
 pub fn close_all(_life: &Life) {
     let (s, c) = {
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        for s in r.srvs.values() {
+            s.closed.store(true, Ordering::SeqCst);
+        }
         (r.srvs.drain().map(|(_, s)| s).collect::<Vec<_>>(), r.conns.drain().map(|(_, c)| c).collect::<Vec<_>>())
     };
     for x in s {
@@ -237,6 +291,20 @@ pub fn close_all(_life: &Life) {
     }
     for x in c {
         x.destroy();
+    }
+}
+
+/* P3 test probe: the accept thread calls it right after accept() ("accepted") and right
+   after its insert-or-destroy decision ("decided"), so a test can run a trust-OFF at that
+   exact point and wait for the decision, with no timing. */
+#[cfg(test)]
+type Hook = Box<dyn Fn(&'static str) + Send>;
+#[cfg(test)]
+static ACCEPT_HOOK: Mutex<Option<Hook>> = Mutex::new(None);
+#[cfg(test)]
+fn accept_hook(at: &'static str) {
+    if let Some(h) = ACCEPT_HOOK.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        h(at);
     }
 }
 
@@ -254,7 +322,7 @@ mod tests {
     #[test]
     fn desk_net_listen_accept_read_write_end_close() {
         let _one = one();
-        let (sid, s) = listen("127.0.0.1", 0, &lifecycle()).unwrap();
+        let (sid, s) = lst("127.0.0.1", 0).unwrap();
         assert_eq!(s.address, "127.0.0.1");
         let mut cl = TcpStream::connect(("127.0.0.1", s.port)).unwrap();
         let b = s.accept(Duration::from_secs(3));
@@ -287,13 +355,13 @@ mod tests {
     #[test]
     fn desk_net_port_in_use_is_eaddrinuse_and_close_frees_it() {
         let _one = one();
-        let (sid, s) = listen("127.0.0.1", 0, &lifecycle()).unwrap();
-        let e = listen("127.0.0.1", s.port, &lifecycle()).err().unwrap();
+        let (sid, s) = lst("127.0.0.1", 0).unwrap();
+        let e = lst("127.0.0.1", s.port).err().unwrap();
         assert!(e.starts_with("EADDRINUSE: listen 127.0.0.1:"), "{e}");
         close_srv(sid);
         let mut ok = false;
         for _ in 0..40 {
-            if let Ok((id, _)) = listen("127.0.0.1", s.port, &lifecycle()) {
+            if let Ok((id, _)) = lst("127.0.0.1", s.port) {
                 close_srv(id);
                 ok = true;
                 break;
@@ -303,53 +371,140 @@ mod tests {
         assert!(ok, "port not freed after close");
     }
 
-    /* N5 (PR #41): a trust-OFF (flag write, close_all) arrives while a listen is between
-       its trust check and its bind. B is that trust-OFF, run on another thread from INSIDE
-       the check: it takes the lifecycle lock without blocking if it can. With the fix the
-       listen holds the lock there, so B cannot: it runs for real once listen_trusted
-       returns, and its close_all closes the new listener. If the check ran outside the
-       lock, B would run first, and the listener bound after it would stay up in
-       restricted mode. No sleep: the order is forced by where B runs. */
+    /* N5 (PR #41): a trust-OFF (flag write, close_all) arrives while a listen is between a
+       trust check and its bind. B is that trust-OFF, run on another thread from INSIDE
+       check number `at`: it takes the lifecycle lock without blocking if it can. P2 made
+       listen_trusted check twice (an early unlocked check before the DNS lookup, the
+       deciding one under the lock), so B is put into each check in turn. Wherever it lands,
+       no listener may stay up: with the deciding check under the lock, B either runs
+       before it (EPERM) or cannot get the lock and runs once listen_trusted returns, and
+       its close_all closes the new listener. If the deciding check ran outside the lock,
+       B would run between it and the bind, and that listener would stay up in restricted
+       mode. No sleep: the order is forced by where B runs. */
     #[test]
     fn desk_net_n5_listener_cannot_stay_bound_after_trust_off() {
         static TRUSTED: AtomicBool = AtomicBool::new(true);
         let _one = one();
-        TRUSTED.store(true, Ordering::SeqCst);
         let trust_off = |life: &Life| {
             TRUSTED.store(false, Ordering::SeqCst);
             close_all(life);
         };
-        let mut b_ran_inside = false;
-        let got = listen_trusted(
-            || {
-                let ok = TRUSTED.load(Ordering::SeqCst);
-                // B, now: only if the lock is free (other tests hold it for microseconds,
-                // so it is retried a bounded number of times; while held, it stays held)
-                b_ran_inside = std::thread::spawn(move || {
-                    for _ in 0..10_000 {
-                        if let Some(life) = try_lifecycle() {
-                            trust_off(&life);
-                            return true;
-                        }
-                        std::thread::yield_now();
+        for at in 1..=2 {
+            TRUSTED.store(true, Ordering::SeqCst);
+            let mut n = 0;
+            let mut b_ran = false;
+            let got = listen_trusted(
+                || {
+                    let ok = TRUSTED.load(Ordering::SeqCst);
+                    n += 1;
+                    if n == at {
+                        // B, now: only if the lock is free (other tests hold it for
+                        // microseconds, so it is retried a bounded number of times; while
+                        // this listen holds it, it stays held)
+                        b_ran = std::thread::spawn(move || {
+                            for _ in 0..10_000 {
+                                if let Some(life) = try_lifecycle() {
+                                    trust_off(&life);
+                                    return true;
+                                }
+                                std::thread::yield_now();
+                            }
+                            false
+                        })
+                        .join()
+                        .unwrap();
                     }
-                    false
-                })
-                .join()
-                .unwrap();
-                ok
+                    ok
+                },
+                "127.0.0.1",
+                0,
+            );
+            if !b_ran {
+                trust_off(&lifecycle()); // B waited for the lock: it runs after the register
+            }
+            match got {
+                Err(e) => assert!(e.starts_with("EPERM"), "B in check {at}: {e}"),
+                Ok((id, s)) => {
+                    let bound = srv(id).is_ok();
+                    let accepting = !s.accept(Duration::from_millis(10)).closed;
+                    close_srv(id);
+                    assert!(!bound && !accepting, "B in check {at}: a listener that passed its trust check stayed bound after trust-OFF (registered: {bound}, accepting: {accepting})");
+                }
+            }
+        }
+    }
+
+    /* P2 (PR #42, Greptile): the host lookup (to_socket_addrs, DNS, seconds when slow) runs
+       with the lifecycle lock NOT held — else a slow lookup holds up every trust-OFF,
+       kill_all and spawn. The stub resolver asks, at the moment it runs, whether this
+       thread holds the lock (desk_proc::held_here: set when a Life is taken, cleared when
+       it drops — no timing involved). The bind and the register still run under it. And a
+       restricted vault resolves nothing (a lookup it picks the name of is a way out). */
+    #[test]
+    fn desk_net_p2_host_lookup_does_not_hold_the_lifecycle_lock() {
+        use crate::desk_proc::held_here;
+        let _one = one();
+        let mut held_in_lookup = None;
+        let (id, s) = listen_trusted_via(
+            |h, p| {
+                held_in_lookup = Some(held_here());
+                resolve(h, p)
             },
+            || true,
             "127.0.0.1",
             0,
-        );
-        if !b_ran_inside {
-            trust_off(&lifecycle()); // B waited for the lock: it runs after the register
-        }
-        let (id, s) = got.expect("the check passed before the trust-OFF");
-        let bound = srv(id).is_ok();
-        let accepting = !s.accept(Duration::from_millis(10)).closed;
+        )
+        .expect("binds");
         close_srv(id);
-        assert!(!bound && !accepting, "a listener that passed its trust check stayed bound after trust-OFF (registered: {bound}, accepting: {accepting})");
-        assert!(!b_ran_inside, "the trust-OFF ran between the listen's trust check and its bind");
+        assert!(s.port != 0);
+        assert_eq!(held_in_lookup, Some(false), "the host lookup ran while holding the lifecycle lock");
+        let mut held_in_check = vec![];
+        let (id, _) = listen_trusted_via(resolve, || { held_in_check.push(held_here()); true }, "127.0.0.1", 0).unwrap();
+        close_srv(id);
+        assert_eq!(held_in_check.last(), Some(&true), "the deciding trust check ran without the lifecycle lock");
+        let mut looked_up = false;
+        let e = listen_trusted_via(|h, p| { looked_up = true; resolve(h, p) }, || false, "example.invalid", 0).err().unwrap();
+        assert!(e.starts_with("EPERM"), "{e}");
+        assert!(!looked_up, "a restricted vault made the app resolve a host");
+    }
+
+    /* P3 (PR #42, Strix, CWE-362): a connection the accept thread took right before a
+       trust-OFF. The hook runs the trust-OFF (close_all under the lifecycle lock) ON the
+       accept thread right after accept() returned the socket — the exact window: past the
+       loop's closed check, before the register. Then it reports the thread's
+       insert-or-destroy decision over a channel. That socket must not be registered (no
+       socket command can address it) and the client must see it closed. */
+    #[test]
+    fn desk_net_p3_conn_accepted_across_trust_off_does_not_survive() {
+        use std::sync::mpsc::channel;
+        let _one = one();
+        let (decided, wait_decided) = channel::<()>();
+        let decided = Mutex::new(decided);
+        *ACCEPT_HOOK.lock().unwrap() = Some(Box::new(move |at: &'static str| match at {
+            "accepted" => close_all(&lifecycle()),
+            _ => decided.lock().unwrap().send(()).unwrap(),
+        }));
+        let (sid, s) = lst("127.0.0.1", 0).unwrap();
+        let mut cl = TcpStream::connect(("127.0.0.1", s.port)).unwrap();
+        wait_decided.recv().unwrap();
+        *ACCEPT_HOOK.lock().unwrap() = None;
+        let left = reg().lock().unwrap().conns.len();
+        let batch = s.accept(Duration::from_millis(10));
+        close_srv(sid);
+        close_all(&lifecycle());
+        assert_eq!(left, 0, "a connection accepted across trust-OFF was registered after close_all drained the registry");
+        assert!(batch.closed && batch.conns.is_empty(), "{batch:?}");
+        // the client end: the socket was destroyed, so the read ends (EOF / reset), it does not hang
+        cl.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut b = [0u8; 1];
+        match cl.read(&mut b) {
+            Ok(0) => {}
+            Ok(n) => panic!("read {n} bytes from a socket that should be closed"),
+            Err(e) => assert!(!matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut), "the accepted socket is still open: {e}"),
+        }
+    }
+
+    fn lst(host: &str, port: u16) -> Result<(u64, Arc<Srv>), String> {
+        listen(host, port, &resolve(host, port)?, &lifecycle())
     }
 }

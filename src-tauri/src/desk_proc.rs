@@ -347,7 +347,31 @@ pub struct Life(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
 static LIFE: Mutex<()> = Mutex::new(());
 
 pub fn lifecycle() -> Life {
-    Life(LIFE.lock().unwrap_or_else(|e| e.into_inner()))
+    let g = LIFE.lock().unwrap_or_else(|e| e.into_inner());
+    #[cfg(test)]
+    HELD.with(|h| h.set(true));
+    Life(g)
+}
+
+/* P2 (PR #42): tests ask whether THIS thread holds the lifecycle lock right now (a Life
+   is !Send, so it lives and drops on the thread that took it). Lets a test assert, at an
+   exact point and with no timing, that slow work (a DNS lookup) runs outside the lock. */
+#[cfg(test)]
+thread_local! {
+    static HELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+impl Drop for Life {
+    fn drop(&mut self) {
+        HELD.with(|h| h.set(false));
+    }
+}
+
+/// true while this thread holds the lifecycle lock (the P2 test's probe)
+#[cfg(test)]
+pub fn held_here() -> bool {
+    HELD.with(|h| h.get())
 }
 
 /// the lock if it is free right now, None while another holder has it: lets a test put
@@ -355,8 +379,14 @@ pub fn lifecycle() -> Life {
 #[cfg(test)]
 pub fn try_lifecycle() -> Option<Life> {
     match LIFE.try_lock() {
-        Ok(g) => Some(Life(g)),
-        Err(std::sync::TryLockError::Poisoned(e)) => Some(Life(e.into_inner())),
+        Ok(g) => {
+            HELD.with(|h| h.set(true));
+            Some(Life(g))
+        }
+        Err(std::sync::TryLockError::Poisoned(e)) => {
+            HELD.with(|h| h.set(true));
+            Some(Life(e.into_inner()))
+        }
         Err(std::sync::TryLockError::WouldBlock) => None,
     }
 }
@@ -415,6 +445,21 @@ pub fn trust_write(asked: Option<u64>, _life: &Life) -> Result<(), String> {
     }
     TRUST_EPOCH.fetch_add(1, SeqCst);
     Ok(())
+}
+
+/* ---- P1 (PR #42, CodeAnt): what a plugins_set call decides before its write. `seen` is
+   the epoch read FIRST; `trusted_now` (the vault's trust flag) is read after it, outside
+   the lifecycle lock. A trust-OFF can land after that read and before the write takes the
+   lock — so EVERY ON write carries `seen`, asked or not: a vault that was already trusted
+   is not asked, but its write is still refused (EAGAIN, nothing written) when a flip came
+   in between, instead of silently writing trusted:true over the OFF. An OFF (or no trust
+   change) carries nothing: turning trust OFF is never refused. Returns (ask the user?,
+   the epoch for trust_write). */
+pub fn trust_plan(on: bool, seen: u64, trusted_now: impl FnOnce() -> bool) -> (bool, Option<u64>) {
+    if !on {
+        return (false, None);
+    }
+    (!trusted_now(), Some(seen))
 }
 
 /* ---- G3 (PR #41): electron shell / app.openWithDefaultApp hand a target to xdg-open,
@@ -639,10 +684,11 @@ mod tests {
     /* G1 (PR #41, Qodo #2): plugins_set ON reads the epoch, the trust dialog stays open,
        a trust-OFF (flag write, kill_all, close_all) runs meanwhile, then the user
        presses Trust. That answer is stale: trust_write refuses it, so the flag stays OFF.
-       An answer with no flip in between is written. (The only test that writes the epoch:
-       a second one running in parallel would make the first's answers stale.) */
+       An answer with no flip in between is written. (Tests that write the epoch run one at a
+       time, EPOCH_TESTS: one running in parallel would make the other's answers stale.) */
     #[test]
     fn desk_g1_a_stale_trust_answer_is_discarded() {
+        let _one = epoch_tests();
         let mut flag = false; // the vault's trust flag, as plugins_set writes it: OFF
         let seen = trust_epoch(&lifecycle()); // ON: read before the dialog opens
         {
@@ -666,6 +712,50 @@ mod tests {
         drop(life);
         // and the write moved the epoch on: that same answer again is stale
         assert!(trust_write(Some(seen), &lifecycle()).is_err(), "an answer outlived the write it caused");
+    }
+
+    /// the tests that write TRUST_EPOCH run one at a time
+    static EPOCH_TESTS: Mutex<()> = Mutex::new(());
+    fn epoch_tests() -> std::sync::MutexGuard<'static, ()> {
+        EPOCH_TESTS.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /* P1 (PR #42, CodeAnt): plugins_set ON for a vault that is ALREADY trusted: nothing is
+       asked. It reads the epoch, then is_trusted (true, outside the lock); a trust-OFF
+       (flag write, kill_all, close_all) lands right after that read; then the ON takes the
+       lock and writes. That write must be refused — else trusted:true is written over the
+       OFF, never asked. The order is the program order of this one thread (each step
+       takes and drops the lock as plugins_set's do), so nothing but the code decides. */
+    #[test]
+    fn desk_p1_trust_off_between_on_request_and_write_is_not_undone() {
+        let _one = epoch_tests();
+        let mut flag = true; // the vault is trusted
+        let seen = trust_epoch(&lifecycle()); // plugins_set ON: the epoch first
+        let (ask, carries) = trust_plan(true, seen, || flag); // then is_trusted: true
+        assert!(!ask, "an already trusted vault is asked again");
+        {
+            // the trust-OFF, between the is_trusted read and the ON's lock
+            let life = lifecycle();
+            trust_write(None, &life).expect("a trust-OFF is never refused");
+            flag = false;
+        }
+        {
+            // the ON request takes the lock and writes
+            let life = lifecycle();
+            if trust_write(carries, &life).is_ok() {
+                flag = true;
+            }
+        }
+        assert!(!flag, "a trust-OFF that landed between an ON request and its write was undone (trusted:true written, never asked)");
+        // no flip in between: the ON for an already trusted vault is written
+        let seen = trust_epoch(&lifecycle());
+        let (ask, carries) = trust_plan(true, seen, || true);
+        assert!(!ask);
+        trust_write(carries, &lifecycle()).expect("an ON with no flip in between is written");
+        // an OFF carries nothing and is never refused, whatever ran before it
+        assert_eq!(trust_plan(false, seen, || unreachable!("an OFF reads no trust flag")), (false, None));
+        // a vault that is not trusted is asked, and its write carries the epoch too
+        assert_eq!(trust_plan(true, seen, || false), (true, Some(seen)));
     }
 
     /* G3 (PR #41): every local target of the electron shell / openWithDefaultApp — a
