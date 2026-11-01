@@ -5,7 +5,9 @@
    `child_process` behind ui/plugins/node-desktop.js. Stock runs a plugin's
    spawn/exec with the user's own rights; so do we, with one gate: the vault is
    trusted (the restricted-mode flip, ~/.opensidian.json). main.rs checks that
-   on every spawn; there is no per-plugin consent.
+   on every spawn, and (spawn-consent, operator 2026-11-01, overriding the
+   2026-10-18 "no per-plugin consent" ruling for spawns) asks the user in a
+   native dialog (consent.rs) before EVERY start() — Deny = nothing forked.
 
    Process model, adapted from goal/td-desktop-caps desktop_claude.rs (our code)
    without its grants, broker dir, minimal env or output caps:

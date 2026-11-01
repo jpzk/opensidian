@@ -21,6 +21,7 @@ mod appid;
 mod builtins;
 use opensidian_lib::canvasfs;
 mod cfgstore;
+mod consent; // spawn-consent: native GTK prompts before trusting a vault and before every plugin spawn
 mod census; // census-gate (#30): the window-title census is opt-in (OPENSIDIAN_CENSUS=1 / devui)
 use opensidian_lib::datefmt;
 use opensidian_lib::graphq;
@@ -3673,16 +3674,30 @@ fn plugins_state(v: State<Vault>, otel: Option<perf::Ctx>) -> Result<serde_json:
     Ok(span_timed!(otel => "plugins_state", plugins_state_of(&root)))
 }
 
-/// restricted mode (trusted) and/or one enable toggle; answers the new state
+/// restricted mode (trusted) and/or one enable toggle; answers the new state.
+/// spawn-consent (a): any page script can invoke this, so turning trust ON
+/// for a vault that is not trusted yet is asked natively first
+/// (consent::TRUST_TITLE, the canonical vault path from Rust). Cancel = this
+/// call writes NOTHING (neither the flag nor an enable toggle in the same
+/// call) and answers the unchanged state. Turning trust OFF is never asked.
+/// async: tauri runs it off the main thread, which the open dialog needs.
 #[tauri::command]
-fn plugins_set(
-    v: State<Vault>,
+async fn plugins_set(
+    win: tauri::Window,
+    v: State<'_, Vault>,
     trusted: Option<bool>,
     id: Option<String>,
     on: Option<bool>,
     otel: Option<perf::Ctx>,
 ) -> Result<serde_json::Value, String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
+    if trusted == Some(true) && !plugins::is_trusted(&cfg_value(), &root) {
+        let key = plugins::trust_key(&root);
+        if !consent::ask(win, consent::Kind::Trust, consent::trust_text(&key)).await {
+            eprintln!("[consent] trust {key:?}: cancelled, nothing written");
+            return Ok(plugins_state_of(&root));
+        }
+    }
     span_timed!(otel => "plugins_set", (|| -> Result<serde_json::Value, String> {
         if let Some(t) = trusted {
             let key = plugins::trust_key(&root);
@@ -3742,10 +3757,16 @@ fn plugin_vfs(
 /* ---- cp-unrestricted: child_process for plugins (desk_proc.rs). Stock lets a
    plugin spawn with the user's rights once community plugins are on; the gate
    here is the same flip, checked on every spawn: an untrusted vault starts
-   nothing. read/write/end/kill act only on ids a spawn handed out. */
+   nothing. read/write/end/kill act only on ids a spawn handed out.
+   spawn-consent (b): on top of the flip, EVERY spawn is asked natively
+   (consent::SPAWN_TITLE) with the Spec desk_proc::start will run — program,
+   args after map_arg, cwd after map_cwd, env keys. Deny = EPERM, nothing
+   forked. scripts/consent-nobypass.sh fails the build if any path reaches
+   desk_proc::start without that question. */
 #[tauri::command]
-fn desk_proc_spawn(
-    v: State<Vault>,
+async fn desk_proc_spawn(
+    win: tauri::Window,
+    v: State<'_, Vault>,
     file: String,
     args: Option<Vec<String>>,
     cwd: Option<String>,
@@ -3757,6 +3778,14 @@ fn desk_proc_spawn(
     }
     let args: Vec<String> = args.unwrap_or_default().iter().map(|a| desk_proc::map_arg(&root, a)).collect();
     let sp = desk_proc::Spec { file, args, cwd: desk_proc::map_cwd(&root, cwd.as_deref()), env: env.unwrap_or_default().into_iter().collect() };
+    if !consent::ask(win, consent::Kind::Spawn, consent::spawn_text(&sp)).await {
+        eprintln!("[desk] spawn {} {:?} cwd={}: denied by the user", sp.file, sp.args, sp.cwd.display());
+        return Err(format!("EPERM: spawn {} denied by the user", sp.file));
+    }
+    // the flip may have gone OFF while the question was open (kill_all ran)
+    if !plugins::is_trusted(&cfg_value(), &root) {
+        return Err("EPERM: restricted mode, plugins cannot start programs".into());
+    }
     eprintln!("[desk] spawn {} {:?} cwd={}", sp.file, sp.args, sp.cwd.display());
     let run = span_timed!("desk_proc_spawn", desk_proc::start(sp))?;
     let pid = run.pid();
