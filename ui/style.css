@@ -2226,16 +2226,17 @@ body.is-mobile .bmerow { margin-top: 6px }
 body.is-mobile #bmecard input, body.is-mobile #bmecard select { flex: 1 1 auto; width: auto; min-width: 0; height: 40px; font-size: 16px }
 body.is-mobile #bmebtns { margin-top: 10px }
 body.is-mobile #bmebtns button { height: 40px; font-size: 15px }
-/* landscape: the band above the keyboard is ~140px, so the card is two rows: heading + Cancel/Save, then Title +
-   group side by side; the read-only Path (the Title placeholder already names the note) and the X (= Cancel) hide */
+/* landscape: the band above the keyboard is ~140px, so the card is two rows: heading + read-only Path + Cancel/Save,
+   then Title + group (two columns); the X (= Cancel) hides. M12.4: the Path stays on screen in both orientations */
 @media (orientation: landscape) {
-  body.is-mobile #bmecard { display: grid; grid-template-columns: 1fr 1fr; grid-template-areas: "h b" "t g"; column-gap: 16px;
+  body.is-mobile #bmecard { display: grid; grid-template-columns: 1fr 1fr auto; grid-template-areas: "h p b" "t g g"; column-gap: 16px;
     align-items: center; width: 84vw; margin: 0 auto }
   body.is-mobile #bmetitle { grid-area: h; margin: 0 }
   body.is-mobile #bmebtns { grid-area: b; margin: 0 }
   body.is-mobile #bme-trow { grid-area: t }
-  body.is-mobile #bmecard > .bmerow:nth-child(5) { grid-area: g }
-  body.is-mobile #bmecard > .bmerow:nth-child(3), body.is-mobile #bme-x { display: none }
+  body.is-mobile #bmecard > .bmerow:nth-child(3) { grid-area: p; margin-top: 0; gap: 8px }
+  body.is-mobile #bmecard > .bmerow:nth-child(5) { grid-area: g; gap: 8px }
+  body.is-mobile #bme-x { display: none }
 }
 /* android-p1c M15.2: the rename prompt is a bottom sheet on the visual viewport (the keyboard's top edge): heading,
    a one-line 44px field, Cancel / Save. Desktop keeps the bare inline prompt (.m-rnhead / .m-rnbtns hidden). */
