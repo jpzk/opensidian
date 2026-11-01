@@ -1258,6 +1258,42 @@
     sb.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); sPageOpen() ? sMode(false) : closeSettings(); });
     shead.prepend(sb);
   }
+  // ---- M11.4 the phone hides the desktop-only settings (stock mobile has none of them): Appearance loses Custom app
+  // icon, Interface loses Zoom level / Native menus / Window frame style / Open settings in new window, General loses
+  // the updater rows (Automatic updates, Receive early access versions) and the Version row's Check for updates button
+  // (the row stays, text only). A section heading left without a row goes with its card. DOM only, after main.js
+  // built the page, so settings.rs and the desktop census are untouched.
+  const SHIDE = {
+    appearance: ["Zoom level", "Window frame style", "Custom app icon"],
+    interface: ["Zoom level", "Native menus", "Window frame style", "Open settings in new window"],
+    general: ["Automatic updates", "Receive early access versions"],
+  };
+  const sHide = () => {
+    const pg = $m("spage"), hide = typeof sPane !== "undefined" && SHIDE[sPane];
+    if (!pg || !hide) return;
+    for (const lb of pg.querySelectorAll(".srow .slabel")) if (hide.includes(lb.textContent.trim())) lb.closest(".srow").remove();
+    for (const c of pg.querySelectorAll('.sctl[data-act="check_updates"]')) c.remove();
+    for (const card of pg.querySelectorAll(".scard")) {
+      if (card.querySelector(".srow")) continue;
+      const h = card.previousElementSibling;
+      if (h && h.classList.contains("ssec")) h.remove();
+      card.remove();
+    }
+  };
+  if (typeof window.showSettingsPage === "function") {
+    const origHide = window.showSettingsPage;
+    window.showSettingsPage = function () { const r = origHide.apply(this, arguments); sHide(); return r; };
+  }
+  // ---- M14.3 the command palette lists at most 100 commands while the query is empty (stock mobile's cap); every
+  // other command is one filter away. The quick switcher keeps main.js's own cap.
+  if (typeof window.mdFilter === "function") {
+    const origMdf = window.mdFilter;
+    window.mdFilter = function () {
+      const r = origMdf.apply(this, arguments);
+      if (modalKind === "cp" && !$m("minput").value.trim() && mdItems.length > 100) { mdItems = mdItems.slice(0, 100); renderModal(); }
+      return r;
+    };
+  }
   // ---- M10.1 / M10.2: the OS back (key or edge gesture) unwinds the innermost layer; at the root it is a no-op
   window.__mobileBack = () => {
     // android-p2a M10.4: back during an inline rename CANCELS it (the drawer row editor, the inline title): no move
