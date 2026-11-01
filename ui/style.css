@@ -2252,3 +2252,10 @@ body.is-mobile #delbtns button { flex: 1 1 0; height: 44px; font-size: 15px }
 body.is-mobile #tree .m-trn { flex: 1 1 auto; min-width: 0; box-sizing: border-box; height: 100%; max-height: 28px;
   margin: 0; padding: 0 4px; border: 1px solid var(--border-focus-ring); border-radius: 4px; outline: none;
   font: inherit; color: inherit; background: var(--bg-base) }
+/* android-p2c M15.4 M15.7: landscape — every bottom sheet (ribbon Menu, More options / long-press menus, action sheets)
+   is capped at two thirds of the height and scrolls; the drawers are ~45% of the width, still an overlay */
+@media (orientation: landscape) {
+  body.is-mobile { --m-drawer: 45vw }
+  body.is-mobile #msheet:not([hidden]), body.is-mobile .ctxmenu.m-bsheet, body.is-mobile .m-asheet:not([hidden]) {
+    max-height: 67vh; overflow-y: auto; overscroll-behavior: contain }
+}
