@@ -1666,4 +1666,27 @@
   for (const ev of ["click", "touchend", "keyup"]) document.addEventListener(ev, () => setTimeout(later, 30), true);
   new MutationObserver(later).observe($m("main"), { childList: true });   // a pane added / removed
   later();
+
+  // ---- M3.4 accessibility labels (we do better than stock, which leaves Search, +, the tab count and Menu bare):
+  // every icon control (its own text is empty or not a word: an svg, a count, a glyph) gets an aria-label from its
+  // title, so TalkBack and the OS accessibility tree name it. Labels we set follow later title changes (the reading /
+  // editing .modebtn flips its title); a label the code set itself is never touched.
+  const A11Y = "button,[role=button],[role=tab],[role=menuitem],[role=radio],[role=checkbox],.clickable-icon";
+  const a11y = root => {
+    const els = root.querySelectorAll ? [...root.querySelectorAll(A11Y)] : [];
+    if (root.matches && root.matches(A11Y)) els.push(root);
+    for (const e of els) {
+      const own = e.getAttribute("aria-label"), mine = e.hasAttribute("data-m-al");
+      if ((own && !mine) || e.hasAttribute("aria-labelledby")) continue;
+      if (/[A-Za-z]{2,}/.test((e.textContent || "").replace(/\s+/g, " "))) { if (mine) { e.removeAttribute("aria-label"); e.removeAttribute("data-m-al"); } continue; }
+      const t = (e.getAttribute("title") || "").trim();
+      if (t && own !== t) { e.setAttribute("aria-label", t); e.setAttribute("data-m-al", ""); }
+    }
+  };
+  let a11yDue = 0;
+  const a11yLater = () => { if (!a11yDue) a11yDue = requestAnimationFrame(() => { a11yDue = 0; a11y(document.body); }); };
+  // typing churns the editor DOM: those records carry no controls, skip them so a keystroke costs nothing here
+  new MutationObserver(rs => { if (rs.some(r => !(r.target.closest && r.target.closest(".cm-content")))) a11yLater(); })
+    .observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["title"] });
+  a11yLater();
 })();
