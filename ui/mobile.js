@@ -532,6 +532,28 @@
   document.addEventListener("touchend", swipeEnd, { passive: true, capture: true });
   document.addEventListener("touchcancel", swipeEnd, { passive: true, capture: true });
 
+  // ---- M9.4 a two-finger pinch over a note is the quick font size: spreading grows the text, pinching in shrinks it
+  // (the vault's appearance.json baseFontSize through qfsSet, the one setter Ctrl+wheel and the slider use; clamped
+  // 10..30, only while Quick font size adjustment is on). The page itself never zooms: the gesture is cancelled.
+  let pz = null;
+  const pdist = ts => Math.hypot(ts[0].clientX - ts[1].clientX, ts[0].clientY - ts[1].clientY);
+  document.addEventListener("touchstart", e => {
+    if (e.touches.length !== 2) { pz = null; return; }
+    const on = el => el && el.closest && el.closest("#main .lp, #main .preview");
+    const ok = typeof qfsSet === "function" && qfsAct && !settingsOpen &&
+      on(e.touches[0].target) && on(e.touches[1].target);
+    const d = pdist(e.touches);
+    pz = ok && d > 10 ? { d, s: qfsSize } : null;
+  }, { passive: true, capture: true });
+  document.addEventListener("touchmove", e => {
+    if (!pz || e.touches.length !== 2) return;
+    if (e.cancelable) e.preventDefault();
+    if (qfsSet(pz.s * pdist(e.touches) / pz.d)) updateTitle();
+  }, { passive: false, capture: true });
+  const pinchEnd = e => { if (e.touches.length < 2) pz = null; };
+  document.addEventListener("touchend", pinchEnd, { passive: true, capture: true });
+  document.addEventListener("touchcancel", pinchEnd, { passive: true, capture: true });
+
   // ---- M6.1 full-screen tab switcher: one card per open tab (title + close x, the active one outlined) and a bottom
   // bar: + (a new tab), the tab count, Done. Cards keep [data-tab] = "<group id>:<index>".
   const allTabs = () => (typeof groups === "function" ? groups() : []).flatMap(g => g.tabs.map((t, i) => ({ g, i, t })));
