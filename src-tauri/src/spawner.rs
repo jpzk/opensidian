@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#![cfg_attr(target_os = "android", allow(dead_code))] // goal android: desktop-only path, compiled out of run()
 /* vaultbleed D — THE UNCONFINED SPAWNER.
 
    Landlock is inherited and can only ever narrow: every child of a confined

@@ -621,6 +621,20 @@ impl Index {
         out
     }
 
+    /// android-p1a M4.2 "All properties": frontmatter key -> number of notes
+    /// carrying it. Top-level keys only (a line starting with neither space
+    /// nor `-` nor `#`, up to its first `:`). O(notes) from memory.
+    pub fn property_counts(&self) -> BTreeMap<String, usize> {
+        let mut out = BTreeMap::new();
+        for m in self.notes.values() {
+            let Some((yaml, _)) = frontmatter(&m.content) else { continue };
+            for k in frontmatter_keys(&yaml) {
+                *out.entry(k).or_insert(0) += 1;
+            }
+        }
+        out
+    }
+
     /// (name, content, tags) in sorted order — search's document stream
     pub fn docs(&self) -> impl Iterator<Item = (&str, &str, &[String])> {
         self.notes.iter().map(|(n, m)| (n.as_str(), m.content.as_str(), m.tags.as_slice()))
@@ -1050,4 +1064,30 @@ pub fn link_mention(content: &str, base: &str, line: u32, col: u32, len: u32) ->
     let nl = format!("{}[[{}]]{}", &l[..a], hit, &l[b..]);
     lines[line as usize] = &nl;
     Some(lines.join("\n"))
+}
+
+/// top-level frontmatter keys of one note, sorted + unique
+fn frontmatter_keys(yaml: &[&str]) -> Vec<String> {
+    let mut out: Vec<String> = yaml
+        .iter()
+        .filter(|l| !l.starts_with([' ', '\t', '-', '#']))
+        .filter_map(|l| l.split_once(':'))
+        .map(|(k, _)| k.trim().trim_matches(|c| c == '"' || c == '\'').to_string())
+        .filter(|k| !k.is_empty())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+#[cfg(test)]
+mod property_tests {
+    use super::*;
+
+    #[test]
+    fn keys_top_level_only() {
+        let (yaml, _) = frontmatter("---\ntags: [a, b]\nstatus: draft\nlist:\n  - x: 1\n- y\n---\nbody").unwrap();
+        assert_eq!(frontmatter_keys(&yaml), ["list", "status", "tags"]);
+        assert!(frontmatter("# no fm\nstatus: x").is_none());
+    }
 }

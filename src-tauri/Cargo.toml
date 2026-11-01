@@ -4,12 +4,15 @@ version = "0.9.2"
 edition = "2021"
 license = "GPL-3.0-or-later"
 
-# lib.rs: the pure parse/normalize modules (vaultfs, outline, index, graphq,
-# canvasfs, datefmt) as a tauri-free library so fuzz/ can link them. The bin
-# (main.rs) keeps its name "opensidian" and uses this lib.
+# lib.rs: the whole app as a library (goal android). Android loads it as
+# libopensidian_lib.so (cdylib) via tauri::mobile_entry_point on run(); the
+# desktop bin (main.rs, still named "opensidian") is a thin call into run(), and
+# fuzz/ links the pure parse/normalize modules from the rlib. staticlib (iOS
+# only) is deliberately not built.
 [lib]
 name = "opensidian_lib"
 path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
 
 # goal devui — DEV-ONLY UI hot reload (src/devui.rs). NOT in default and never to be:
 # a default build compiles none of it (main.rs gates every call site), test

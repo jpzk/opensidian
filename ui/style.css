@@ -1931,3 +1931,418 @@ span.is-flashing { background: var(--highlight-yellow) }
 /* gh-icons #20: inline monochrome glyph in an icon-only button (replaces a text pictograph);
    inline at 12px, on the text's middle, so the button keeps its line box */
 svg.gi { width: 12px; height: 12px; vertical-align: -2px; display: inline-block; pointer-events: none }
+/* android-p0: phone UI mode (ui/mobile.js sets body.is-mobile on an Android WebView only; nothing below applies on
+   the desktop). Our own values: 48 px header and 56 px bottom bar = one comfortable thumb target (>= 44 px) plus
+   padding; drawer 84% of the width (a 16% strip of the note stays visible as the tap-to-close target), capped at
+   400 px so landscape keeps most of the note in view. --safe-* are the system-bar + cutout insets in css px,
+   pushed by MainActivity; the bars pad themselves so every control sits inside the safe area, while #main keeps
+   the full viewport width and pads its content instead. */
+body.is-mobile { --m-hdr: 48px; --m-nav: 56px; --m-drawer: min(84vw, 400px) }
+body.is-mobile .app-container { flex-direction: column;
+  padding-top: var(--safe-top, 0px); padding-bottom: var(--safe-bottom, 0px) }
+body.is-mobile #wframe, body.is-mobile #wrz, body.is-mobile #ribbon, body.is-mobile #ldiv,
+body.is-mobile #rdiv, body.is-mobile:not(.m-rdrawer) #rside { display: none !important }
+body.is-mobile #main { order: 1; flex: 1 1 0; min-height: 0; width: 100%; box-sizing: border-box;
+  padding-left: var(--safe-left, 0px); padding-right: var(--safe-right, 0px); touch-action: pan-y pinch-zoom }
+/* one pane at a time: the focused one; its header is #mhdr, so the pane's own tab strip goes */
+body.is-mobile #main .pane:not(.focused) { display: none }
+body.is-mobile #main .pane > .tabbar { display: none }
+#mhdr, #mnav, #mscrim, #mtabs { display: none }
+body.is-mobile #mhdr { order: 0; display: flex; align-items: center; flex: 0 0 var(--m-hdr); height: var(--m-hdr);
+  box-sizing: border-box; padding: 0 calc(var(--safe-right, 0px) + 4px) 0 calc(var(--safe-left, 0px) + 4px);
+  background: var(--tab-container-background); border-bottom: 1px solid var(--border); user-select: none }
+body.is-mobile #mhdr .m-title { flex: 1 1 0; min-width: 0; text-align: center; font-weight: 600; font-size: 15px;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--text-chrome); padding: 0 6px }
+body.is-mobile #mhdr .m-tools { display: flex; align-items: center; flex: 0 0 auto }
+body.is-mobile #mhdr button:not([hidden]) { display: flex; align-items: center; justify-content: center;
+  width: 44px; height: 44px; padding: 0; flex: 0 0 auto; background: none; border: 0; border-radius: 8px;
+  color: var(--text-chrome-muted) }
+body.is-mobile #mhdr button svg { width: 20px; height: 20px; display: block }
+body.is-mobile #mnav { order: 2; display: flex; align-items: center; justify-content: space-around;
+  flex: 0 0 var(--m-nav); height: var(--m-nav); box-sizing: border-box;
+  margin: 0 calc(var(--safe-right, 0px) + 8px) 4px calc(var(--safe-left, 0px) + 8px);
+  background: var(--bg-surface); border: 1px solid var(--border); border-radius: 28px; user-select: none }
+body.is-mobile #mnav button { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px;
+  padding: 0; background: none; border: 0; border-radius: 22px; color: var(--text-chrome) }
+body.is-mobile #mnav button:disabled { color: var(--text-chrome-muted); opacity: .45 }
+body.is-mobile #mnav button svg { width: 20px; height: 20px; display: block }
+body.is-mobile #mnav .m-tabs { font-weight: 600; font-size: 13px; width: 30px; height: 26px; margin: 9px 7px;
+  border: 1.6px solid currentColor; border-radius: 7px }
+body.is-mobile #mnav .m-tabs.on { background: var(--border) }
+/* the drawer: #side lifted out of the row as a fixed overlay; display:none while closed (no hit target, no
+   text a tap-by-text could land on) */
+body.is-mobile #side { display: none !important }
+body.is-mobile.m-drawer #side { display: flex !important; position: fixed; z-index: 41; left: var(--safe-left, 0px); top: 0; bottom: 0;
+  width: var(--m-drawer) !important; max-width: none; box-sizing: border-box;
+  padding: var(--safe-top, 0px) 0 var(--safe-bottom, 0px) 0;
+  box-shadow: 0 0 24px rgba(0, 0, 0, .25); animation: m-slide .18s ease-out }
+@keyframes m-slide { from { transform: translateX(-100%) } to { transform: none } }
+body.is-mobile.m-drawer #mscrim { display: block; position: fixed; inset: 0; z-index: 40; background: var(--scrim) }
+body.is-mobile #side #stabs .stab { flex-basis: 44px; width: 44px; padding: 8px }
+/* android-p1a M6.1: the tab switcher is a full-screen page — a grid of cards, a bottom bar (+, count, Done) */
+body.is-mobile #mtabs:not([hidden]) { display: flex; flex-direction: column; position: fixed; z-index: 45; inset: 0;
+  box-sizing: border-box; background: var(--bg-sidebar);
+  padding: var(--safe-top, 0px) var(--safe-right, 0px) var(--safe-bottom, 0px) var(--safe-left, 0px) }
+body.is-mobile #mtabs .m-cards { flex: 1 1 0; min-height: 0; overflow-y: auto; display: grid; align-content: start;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; padding: 14px }
+body.is-mobile #mtabs .m-card { box-sizing: border-box; min-height: 120px; display: flex; flex-direction: column;
+  background: var(--bg-base); border: 1px solid var(--border); border-radius: 12px; overflow: hidden }
+body.is-mobile #mtabs .m-card.active { border: 3px solid var(--interactive-accent, var(--text-chrome)) }
+body.is-mobile #mtabs .m-card-head { display: flex; align-items: center; gap: 4px; padding: 6px 4px 6px 12px;
+  border-bottom: 1px solid var(--bg-surface) }
+body.is-mobile #mtabs .m-card-title { flex: 1 1 0; min-width: 0; font-weight: 600; font-size: 14px; color: var(--text-chrome);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 6px 0 }
+body.is-mobile #mtabs .m-card-x { flex: 0 0 36px; width: 36px; height: 36px; display: flex; align-items: center;
+  justify-content: center; padding: 0; background: none; border: 0; border-radius: 18px; color: var(--text-chrome-muted) }
+body.is-mobile #mtabs .m-card-x svg { width: 16px; height: 16px }
+body.is-mobile #mtabs .m-card-sub { padding: 8px 12px; font-size: 12px; color: var(--text-chrome-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+body.is-mobile #mtabs .m-tbar { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 12px 8px; border-top: 1px solid var(--border); background: var(--bg-base) }
+body.is-mobile #mtabs .m-tbar button { min-width: 44px; height: 44px; display: flex; align-items: center;
+  justify-content: center; padding: 0 12px; background: none; border: 0; border-radius: 22px; color: var(--text-chrome);
+  font-size: 15px; font-weight: 600 }
+body.is-mobile #mtabs .m-tbar svg { width: 22px; height: 22px }
+body.is-mobile #mtabs .m-tcount { color: var(--text-chrome-muted); font-size: 14px }
+/* a header menu drops from #mhdr's More options button; capped to the room below the header so clampMenu never has
+   to lift it over its own anchor (landscape: the menu was ~400 px tall in a 448 px viewport and covered the button,
+   so a second tap on More options landed on "Reading view") */
+body.is-mobile .ctxmenu { max-height: calc(100vh - var(--safe-top, 0px) - var(--m-hdr) - var(--safe-bottom, 0px) - 8px);
+  -webkit-overflow-scrolling: touch }
+/* android-p1a M4.2: the drawer shows ONE view; the pill at its foot switches it (ui/mobile.js) */
+body.is-mobile #side #stabs { display: none !important }
+body.is-mobile #side .m-view:not([hidden]) { flex: 1 1 0; min-height: 0; overflow-y: auto }
+body.is-mobile #m-vtags > #rpane-tags { display: flex !important; flex: 1 1 0; min-height: 0 }
+body.is-mobile #side .rhead { display: flex; align-items: center; gap: 6px; padding: 10px 14px 6px; font-weight: 600 }
+body.is-mobile #side .tagrow { padding: 8px 14px; font-size: 15px }
+body.is-mobile #side .m-proprow { justify-content: space-between }
+body.is-mobile .m-pillbar { position: relative; flex: 0 0 auto; display: flex; justify-content: center; padding: 8px 0 6px }
+body.is-mobile .m-pill { display: flex; align-items: center; gap: 6px; min-height: 36px; padding: 6px 16px;
+  border-radius: 18px; border: 1px solid var(--border); background: var(--bg-surface); color: var(--text-chrome);
+  font-size: 14px; font-weight: 600 }
+body.is-mobile .m-pill.on { background: var(--border) }
+body.is-mobile .m-pill svg { width: 16px; height: 16px }
+body.is-mobile .m-pillmenu:not([hidden]) { position: absolute; bottom: calc(100% - 2px); left: 12px; right: 12px;
+  z-index: 3; background: var(--bg-base); border: 1px solid var(--border); border-radius: 12px; padding: 4px 0;
+  box-shadow: 0 4px 14px var(--shadow-popover) }
+body.is-mobile .m-pillitem { padding: 12px 18px; font-size: 15px; color: var(--text-chrome) }
+body.is-mobile .m-pillitem.checked { font-weight: 600; background: var(--bg-surface) }
+/* android-p1a M3.3: landscape — the header and the nav float over the content: the header row is transparent (its
+   buttons keep a chip), the nav is a centred pill above the bottom edge; the note scrollers pad so the first and last
+   lines can scroll clear of them. Portrait keeps the P0 bars. */
+@media (orientation: landscape) {
+  body.is-mobile .app-container { position: relative }
+  body.is-mobile #mhdr { position: absolute; z-index: 30; top: var(--safe-top, 0px); left: 0; right: 0;
+    background: transparent; border-bottom: 0; pointer-events: none }
+  body.is-mobile #mhdr > * { pointer-events: auto }
+  body.is-mobile #mhdr button:not([hidden]) { background: color-mix(in srgb, var(--bg-base) 82%, transparent) }
+  body.is-mobile #mhdr .m-title { flex: 0 1 auto; margin: 0 auto; border-radius: 8px;
+    background: color-mix(in srgb, var(--bg-base) 82%, transparent) }
+  body.is-mobile #mnav { position: fixed; z-index: 30; left: 50%; transform: translateX(-50%);
+    bottom: calc(var(--safe-bottom, 0px) + 8px); width: min(52vw, 440px); margin: 0;
+    box-shadow: 0 2px 12px var(--shadow-popover) }
+  body.is-mobile #main .lp, body.is-mobile #main .preview { padding-top: calc(var(--m-hdr) + 4px);
+    padding-bottom: calc(var(--m-nav) + 20px) }
+}
+/* android-p1a M4.6: the right drawer — #rside as an overlay from the right, one view behind the pill, a footer */
+body.is-mobile.m-rdrawer #rside { display: flex !important; flex-direction: column; position: fixed; z-index: 41;
+  right: var(--safe-right, 0px); top: 0; bottom: 0; left: auto; width: var(--m-drawer) !important; max-width: none; box-sizing: border-box;
+  padding: var(--safe-top, 0px) 0 var(--safe-bottom, 0px) 0; background: var(--bg-sidebar);
+  box-shadow: 0 0 24px rgba(0, 0, 0, .25); animation: m-rslide .18s ease-out }
+@keyframes m-rslide { from { transform: translateX(100%) } to { transform: none } }
+body.is-mobile.m-rdrawer #mscrim { display: block; position: fixed; inset: 0; z-index: 40; background: var(--scrim) }
+body.is-mobile #rside #rtabs { display: none !important }
+body.is-mobile #rside .m-view:not([hidden]) { flex: 1 1 0; min-height: 0; overflow-y: auto }
+body.is-mobile #rside .rhead { display: flex; align-items: center; gap: 6px; padding: 10px 14px 6px; font-weight: 600 }
+body.is-mobile #rside .blline, body.is-mobile #rside .outrow, body.is-mobile #rside .tocrow { padding-top: 6px; padding-bottom: 6px }
+body.is-mobile .m-rfoot { flex: 0 0 auto; padding: 6px 14px 10px; text-align: center; color: var(--text-chrome-muted);
+  font-size: 13px; border-top: 1px solid var(--bg-surface) }
+body.is-mobile .m-rfoot .m-rname { color: var(--text-chrome); font-weight: 600; overflow: hidden; white-space: nowrap;
+  text-overflow: ellipsis }
+/* android-p1a M5.1: Menu -> the ribbon as a bottom sheet; its configuration in Settings > Interface */
+#msheet { display: none }
+body.is-mobile #msheet:not([hidden]) { display: block; position: fixed; z-index: 42; left: 0; right: 0; bottom: 0;
+  box-sizing: border-box; max-height: 70vh; overflow-y: auto; background: var(--bg-base);
+  border-radius: 16px 16px 0 0; border-top: 1px solid var(--border); box-shadow: 0 -4px 18px var(--shadow-popover);
+  padding: 10px calc(var(--safe-right, 0px) + 8px) calc(var(--safe-bottom, 0px) + 10px) calc(var(--safe-left, 0px) + 8px);
+  animation: m-up .16s ease-out }
+@keyframes m-up { from { transform: translateY(100%) } to { transform: none } }
+@media (orientation: landscape) { body.is-mobile #msheet:not([hidden]) { left: 20vw; right: 20vw } }
+/* M7.1: the header More options menu docks to the screen bottom (placeMenu's inline left/top are overridden) */
+body.is-mobile .ctxmenu.m-bsheet { left: 0 !important; right: 0; top: auto !important; bottom: 0; box-sizing: border-box;
+  max-width: none; max-height: 70vh; overflow-y: auto; border-radius: 16px 16px 0 0; border-width: 1px 0 0;
+  box-shadow: 0 -4px 18px var(--shadow-popover);
+  padding: 8px var(--safe-right, 0px) calc(var(--safe-bottom, 0px) + 8px) var(--safe-left, 0px) }
+body.is-mobile .ctxmenu.m-bsheet div:not(.sep) { padding: 12px 18px; font-size: 15px }
+@media (orientation: landscape) { body.is-mobile .ctxmenu.m-bsheet { left: 20vw !important; right: 20vw } }
+body.is-mobile.m-sheet #mscrim { display: block; position: fixed; inset: 0; z-index: 40; background: var(--scrim) }
+body.is-mobile .m-sheetitem { display: flex; align-items: center; gap: 14px; padding: 13px 14px; border-radius: 10px;
+  font-size: 15px; color: var(--text-chrome) }
+body.is-mobile .m-sheetitem:active { background: var(--bg-surface) }
+body.is-mobile .m-sheetitem svg { width: 20px; height: 20px; flex: 0 0 20px; color: var(--text-chrome-muted) }
+body.is-mobile .m-sheetempty { padding: 14px; color: var(--text-chrome-muted) }
+/* android-p2b: the action sheet (ui/mobile.js openAS) — sort orders, long-press sheets, tab-count sheet. Above the
+   drawer (41) and the tab switcher (45); its own scrim, so a tap beside it closes the sheet alone */
+body.is-mobile #mascrim:not([hidden]) { position: fixed; inset: 0; z-index: 46; background: var(--scrim) }
+body.is-mobile .m-asheet:not([hidden]) { display: block; position: fixed; z-index: 47; left: 0; right: 0; bottom: 0;
+  box-sizing: border-box; max-height: 75vh; overflow-y: auto; background: var(--bg-base);
+  border-radius: 16px 16px 0 0; border-top: 1px solid var(--border); box-shadow: 0 -4px 18px var(--shadow-popover);
+  padding: 6px calc(var(--safe-right, 0px) + 8px) calc(var(--safe-bottom, 0px) + 10px) calc(var(--safe-left, 0px) + 8px);
+  animation: m-up .16s ease-out }
+@media (orientation: landscape) { body.is-mobile .m-asheet:not([hidden]) { left: 20vw; right: 20vw } }
+/* android-p3a M1.4: the vault manager row page fills the screen (stock: a page, not a sheet); its rename form */
+body.is-mobile .m-asheet.m-vpage:not([hidden]) { top: 0; max-height: none; border-radius: 0; border-top: 0;
+  padding-top: calc(var(--safe-top, 0px) + 12px) }
+body.is-mobile .m-asheet.m-vpage .m-ashandle { display: none }
+body.is-mobile .m-asheet.m-vpage .m-assub { word-break: break-all }
+body.is-mobile #p-recent li { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none }
+body.is-mobile .m-asinput { display: block; width: calc(100% - 28px); margin: 8px 14px; box-sizing: border-box; min-height: 40px; font-size: 16px }
+body.is-mobile .m-asbtns { display: flex; justify-content: flex-end; gap: 10px; padding: 4px 14px 6px }
+body.is-mobile .m-asbtns button { min-height: 40px; min-width: 88px; font-size: 15px }
+body.is-mobile .m-ashandle { width: 36px; height: 4px; margin: 2px auto 8px; border-radius: 2px; background: var(--border) }
+/* android-p2b M6.3 M6.6: the empty New tab's three big buttons (stock mobile's New tab view), centred in the pane */
+body.is-mobile .unkview .m-ntview { display: flex; flex-direction: column; align-items: stretch; gap: 12px; width: min(320px, 80%); margin: 18vh auto 0 }
+body.is-mobile .m-ntbtn { min-height: 48px; font-size: 16px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg-alt, var(--bg-base)); color: var(--text-chrome) }
+@media (orientation: landscape) { body.is-mobile .unkview .m-ntview { margin-top: 6vh } }
+body.is-mobile .m-astitle { padding: 4px 14px 0; font-weight: 600; font-size: 16px; color: var(--text-chrome);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+body.is-mobile .m-assub { padding: 2px 14px 8px; font-size: 13px; color: var(--text-chrome-muted) }
+body.is-mobile .m-asitem { display: flex; align-items: center; gap: 14px; min-height: 44px; box-sizing: border-box;
+  padding: 10px 14px; border-radius: 10px; font-size: 15px; color: var(--text-chrome) }
+body.is-mobile .m-asitem span { flex: 1 1 auto; min-width: 0 }
+body.is-mobile .m-asitem:active { background: var(--bg-surface) }
+body.is-mobile .m-asitem svg { width: 20px; height: 20px; flex: 0 0 20px; color: var(--text-chrome-muted) }
+body.is-mobile .m-asitem.m-red, body.is-mobile .m-asitem.m-red svg { color: var(--text-error, #e5484d) }
+body.is-mobile .m-assep { height: 1px; margin: 6px 8px; background: var(--bg-surface) }
+/* M4.4 the drawer's foot: the vault bar (name + chevron, gear) and the counts, flush with the screen bottom */
+body.is-mobile.m-drawer #side { padding-bottom: 0 }
+body.is-mobile .m-dfoot { flex: 0 0 auto; border-top: 1px solid var(--bg-surface);
+  padding: 4px 6px calc(var(--safe-bottom, 0px) + 8px) 2px }
+body.is-mobile .m-dfoot #vbar { border-top: 0; height: auto; min-height: 44px }
+body.is-mobile .m-dfoot #vswitch { flex: 0 1 auto; font-size: 15px; font-weight: 600; color: var(--text-chrome) }
+body.is-mobile .m-dfoot .m-dchev { flex: 1 1 auto; display: flex; align-items: center; color: var(--text-chrome-muted) }
+body.is-mobile .m-dfoot .m-dchev svg { width: 16px; height: 16px }
+body.is-mobile .m-dfoot #sgear { flex: 0 0 44px; width: 44px; height: 44px }
+body.is-mobile .m-dfoot #sgear svg { width: 20px; height: 20px; margin: auto }
+body.is-mobile .m-dcount { padding: 0 12px; font-size: 13px; color: var(--text-chrome-muted) }
+body.is-mobile #mtabs .m-tcount { gap: 4px }
+body.is-mobile #mtabs .m-tcount svg { width: 16px; height: 16px }
+body.is-mobile .m-ribcfg { margin: 18px 0 8px }
+body.is-mobile .m-ribcfg .m-ribh { font-weight: 600; font-size: 15px; padding: 6px 0 }
+body.is-mobile .m-ribcfg .m-ribd { color: var(--text-chrome-muted); font-size: 13px; padding-bottom: 8px }
+body.is-mobile .m-ribcfg .m-ribrow { display: flex; align-items: center; justify-content: space-between; padding: 10px 0;
+  border-top: 1px solid var(--bg-surface) }
+body.is-mobile .m-ribcfg .m-ribrow input { width: 20px; height: 20px }
+/* android-p1a M1.1: the drawer's vault list (above the vault bar) and the vault manager as a full-screen page */
+.m-vdlg[hidden] { display: none }
+/* M1.3: centred single-choice vault dialog over a scrim (radio rows, then Manage vaults...) */
+body.is-mobile .m-vdlg:not([hidden]) { position: fixed; inset: 0; z-index: 47; display: flex; align-items: center;
+  justify-content: center; background: var(--scrim) }
+body.is-mobile .m-vaultmenu { width: min(86vw, 360px); box-sizing: border-box; background: var(--bg-base);
+  border-radius: 16px; padding: 8px 0; box-shadow: 0 4px 18px var(--shadow-popover); max-height: 80vh; overflow-y: auto }
+body.is-mobile .m-vaultitem { padding: 12px 18px 12px 44px; font-size: 15px; color: var(--text-chrome); position: relative;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+body.is-mobile .m-vaultitem.checked { font-weight: 600 }
+body.is-mobile .m-vaultitem[role=radio]::before { content: ""; position: absolute; left: 12px; top: 50%; width: 16px;
+  height: 16px; margin-top: -10px; border: 2px solid var(--text-chrome-muted); border-radius: 50%; box-sizing: content-box }
+body.is-mobile .m-vaultitem[aria-checked=true]::before { border-color: var(--interactive-accent, var(--text-chrome));
+  background: radial-gradient(circle, var(--interactive-accent, var(--text-chrome)) 0 45%, transparent 50%) }
+body.is-mobile .m-vaultitem.m-vaultmanage { border-top: 1px solid var(--bg-surface); color: var(--text-chrome-muted) }
+body.is-mobile #picker { z-index: 46; align-items: stretch; justify-content: stretch;
+  padding: var(--safe-top, 0px) var(--safe-right, 0px) var(--safe-bottom, 0px) var(--safe-left, 0px); box-sizing: border-box }
+body.is-mobile #picker[hidden] { display: none }
+body.is-mobile #pcard { width: 100%; max-width: none; border-radius: 0; box-sizing: border-box; overflow-y: auto;
+  padding: 20px 18px }
+body.is-mobile #p-close:not([hidden]) { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px }
+/* M7.2 / M7.3: quick switcher + command palette dock to the bottom, the field just above the soft keyboard
+   (--m-kb from visualViewport, mobile.js) and the result list above the field (thumb reach, like stock) */
+body.is-mobile #modal { justify-content: flex-end; inset: auto 0; top: var(--m-vvt, 0px); height: var(--m-vvh, 100vh);
+  padding: calc(var(--safe-top, 0px) + 8px) 0 var(--safe-bottom, 0px) }
+body.is-mobile.m-kb #modal { padding-bottom: 0 }   /* the visual viewport already ends at the keyboard top */
+body.is-mobile #mbox { width: 100%; max-width: none; flex-direction: column-reverse; border-radius: 12px 12px 0 0;
+  border-width: 1px 0 0; box-shadow: 0 -4px 18px var(--shadow-modal) }
+body.is-mobile #minput { border-bottom: 0; border-top: 1px solid var(--border); padding: 12px 16px; font-size: 16px }
+body.is-mobile #mlist { max-height: none; flex: 0 1 auto }
+body.is-mobile #mlist .mrow { padding: 10px 16px; font-size: 15px }
+body.is-mobile #mfoot { display: none }
+@media (orientation: landscape) { body.is-mobile #mbox { width: 60vw } }
+/* M8.1: the editing toolbar sits on the soft keyboard's top edge (the visual viewport's bottom, which the WebView may
+   have panned: --m-vvt/--m-vvh from mobile.js) while the note editor has focus; it scrolls sideways */
+#mtoolbar { display: none }
+body.is-mobile.m-edkb #mtoolbar:not([hidden]) { display: flex; position: fixed; z-index: 35; left: var(--safe-left, 0px); right: var(--safe-right, 0px);
+  top: calc(var(--m-vvt, 0px) + var(--m-vvh, 100vh) - 44px); height: 44px; box-sizing: border-box;
+  padding: 0 4px; align-items: center; gap: 2px;
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none; background: var(--bg-surface);
+  border-top: 1px solid var(--border); user-select: none; -webkit-user-select: none }
+body.is-mobile #mtoolbar::-webkit-scrollbar { display: none }
+body.is-mobile #mtoolbar .m-tbtn { flex: 0 0 auto; display: flex; align-items: center; justify-content: center;
+  width: 44px; height: 40px; padding: 0; background: none; border: 0; border-radius: 8px; color: var(--text-chrome) }
+body.is-mobile #mtoolbar .m-tbtn:active { background: var(--bg-base) }
+body.is-mobile #mtoolbar .m-tbtn svg { width: 20px; height: 20px; display: block }
+body.is-mobile.m-edkb .cm-scroller { scroll-padding-bottom: 52px }
+/* android-p1b M10.3: phone Settings is one full-screen column — the tab list alone (body.m-snav), or one tab's page
+   alone (body.m-spage, #shead names it); the OS back steps page -> list -> closed (mobile.js __mobileBack) */
+body.is-mobile #settings { padding: 0; background: var(--bg-elevated) }
+body.is-mobile #sbox { padding: var(--safe-top, 0px) 0 var(--safe-bottom, 0px) 0; width: 100%; height: 100%; max-width: none; max-height: none; border: 0; border-radius: 0;
+  box-shadow: none; font-size: 15px }
+body.is-mobile #shead { height: 48px; padding: 0 calc(16px + var(--safe-right, 0px)) 0 calc(16px + var(--safe-left, 0px)); font-size: 17px }
+body.is-mobile #sclose { font-size: 18px; min-width: 44px; min-height: 44px }
+body.is-mobile #snav { width: 100%; border-right: 0 }
+body.is-mobile #snav .snavi { padding: 12px calc(16px + var(--safe-right, 0px)) 12px calc(16px + var(--safe-left, 0px)) }
+body.is-mobile #spage { width: 100%; padding: 16px calc(16px + var(--safe-right, 0px)) 16px calc(16px + var(--safe-left, 0px)) }
+body.is-mobile.m-snav #spage, body.is-mobile.m-spage #snav { display: none !important }
+/* android-p1c M11.1: the phone Settings header = back arrow top-left, then the title; the desktop close X is hidden */
+body.is-mobile #shead { justify-content: flex-start; gap: 8px; padding-left: calc(4px + var(--safe-left, 0px)) }
+body.is-mobile #sclose { display: none !important }
+body.is-mobile #shead .m-sback { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px;
+  background: none; border: 0; padding: 0; color: var(--text-chrome); cursor: pointer }
+body.is-mobile #shead .m-sback svg { display: block }
+/* android-p1c M11.2: the mobile Interface rows (Full screen, Floating navigation, Sliding sidebars) and their effects */
+body.is-mobile .m-ifcfg { margin: 6px 0 4px }
+body.is-mobile .m-ifrow { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0;
+  border-bottom: 1px solid var(--bg-surface) }
+body.is-mobile .m-ifrow .m-ifh { font-weight: 600; font-size: 15px }
+body.is-mobile .m-ifrow .m-ifd { color: var(--text-chrome-muted); font-size: 13px; padding-top: 2px }
+body.is-mobile .m-ifrow input { flex: 0 0 auto; width: 22px; height: 22px }
+body.is-mobile.m-fs.m-fshide #mhdr, body.is-mobile.m-fs.m-fshide #mnav { display: none !important }
+@media (orientation: portrait) {
+  body.is-mobile.m-float .app-container { position: relative }
+  body.is-mobile.m-float #mnav { position: fixed; z-index: 30; left: 50%; transform: translateX(-50%);
+  bottom: calc(var(--safe-bottom, 0px) + 8px); width: min(84vw, 440px); margin: 0; border-radius: 28px;
+  box-shadow: 0 2px 12px var(--shadow-popover) }
+  body.is-mobile.m-float #main .lp, body.is-mobile.m-float #main .preview { padding-bottom: calc(var(--m-nav) + 20px) }
+}
+body.is-mobile.m-slide #main, body.is-mobile.m-slide #mhdr { transition: transform .18s ease-out }
+body.is-mobile.m-slide.m-drawer #main, body.is-mobile.m-slide.m-drawer #mhdr { transform: translateX(calc(var(--m-drawer) + var(--safe-left, 0px))) }   /* M15.11: the drawer starts at the left inset */
+/* android-p1c M15.1: the Add bookmark card is a bottom sheet on the visual viewport (the keyboard's top edge), full
+   width, label above field, a 44px Title field; the card scrolls if the band is shorter than the card */
+body.is-mobile #bmebox { inset: auto 0; top: var(--m-vvt, 0px); height: var(--m-vvh, 100vh); justify-content: flex-end;
+  padding: calc(var(--safe-top, 0px) + 4px) 0 0 }
+body.is-mobile #bmecard { width: 100%; max-width: none; max-height: 100%; overflow-y: auto; border-radius: 12px 12px 0 0;
+  border-width: 1px 0 0; padding: 10px calc(16px + var(--safe-right, 0px)) 10px calc(16px + var(--safe-left, 0px)) }
+body.is-mobile #bmetitle { margin-bottom: 2px; padding-right: 40px }
+body.is-mobile #bme-x { width: 44px; height: 44px; top: 0; right: calc(4px + var(--safe-right, 0px)); line-height: 44px }
+body.is-mobile .bmerow { margin-top: 6px }
+body.is-mobile #bmecard input, body.is-mobile #bmecard select { flex: 1 1 auto; width: auto; min-width: 0; height: 40px; font-size: 16px }
+body.is-mobile #bmebtns { margin-top: 10px }
+body.is-mobile #bmebtns button { height: 40px; font-size: 15px }
+/* landscape: the band above the keyboard is ~140px, so the card is two rows: heading + read-only Path + Cancel/Save,
+   then Title + group (two columns); the X (= Cancel) hides. M12.4: the Path stays on screen in both orientations */
+@media (orientation: landscape) {
+  body.is-mobile #bmecard { display: grid; grid-template-columns: 1fr 1fr auto; grid-template-areas: "h p b" "t g g"; column-gap: 16px;
+    align-items: center; width: 84vw; margin: 0 auto }
+  body.is-mobile #bmetitle { grid-area: h; margin: 0 }
+  body.is-mobile #bmebtns { grid-area: b; margin: 0 }
+  body.is-mobile #bme-trow { grid-area: t }
+  body.is-mobile #bmecard > .bmerow:nth-child(3) { grid-area: p; margin-top: 0; gap: 8px }
+  body.is-mobile #bmecard > .bmerow:nth-child(5) { grid-area: g; gap: 8px }
+  body.is-mobile #bme-x { display: none }
+}
+/* android-p1c M15.2: the rename prompt is a bottom sheet on the visual viewport (the keyboard's top edge): heading,
+   a one-line 44px field, Cancel / Save. Desktop keeps the bare inline prompt (.m-rnhead / .m-rnbtns hidden). */
+.m-rnhead, .m-rnbtns { display: none }
+body.is-mobile #rnbox { top: calc(var(--m-vvt, 0px) + var(--m-vvh, 100vh)); left: 0; right: 0; width: auto; max-width: none;
+  transform: translateY(-100%); border-radius: 12px 12px 0 0; border-width: 1px 0 0;
+  padding: 8px calc(16px + var(--safe-right, 0px)) 10px calc(16px + var(--safe-left, 0px)) }
+body.is-mobile #rnbox .m-rnhead { display: block; font-size: 17px; font-weight: 600; padding: 2px 0 8px; color: var(--text-chrome) }
+body.is-mobile #rninput { height: 44px; font-size: 16px; border: 1px solid var(--border); border-radius: 6px }
+body.is-mobile #rnbox .m-rnbtns { display: flex; justify-content: flex-end; gap: 10px; margin-top: 10px }
+body.is-mobile .m-rnbtns button { height: 40px; min-width: 96px; border: 0; border-radius: 6px; font-size: 15px; font-weight: 500;
+  background: var(--bg-button-plain); color: var(--bg-base); cursor: pointer }
+body.is-mobile .m-rnbtns .m-rnyes { background: var(--accent-blue) }
+@media (orientation: landscape) { body.is-mobile #rnbox { left: 15vw; right: 15vw } }
+/* android-p1c M15.6: landscape — the 21 toolbar buttons share the width in one row (no sideways scroll) */
+@media (orientation: landscape) {
+  body.is-mobile.m-edkb #mtoolbar:not([hidden]) { overflow-x: hidden; gap: 0 }
+  body.is-mobile #mtoolbar .m-tbtn { flex: 1 1 0; width: auto; min-width: 0 }
+}
+
+/* android-p2a M7.8: on the phone the delete confirmation is a bottom sheet — flush with the viewport bottom,
+   full width, the system nav bar inset inside its padding; the desktop modal is untouched */
+body.is-mobile #delbox { justify-content: flex-end; padding: 0 }
+body.is-mobile #delcard { width: 100%; max-width: 100%; border-radius: 14px 14px 0 0; border-width: 1px 0 0;
+  padding: 18px calc(20px + var(--safe-right, 0px)) calc(16px + var(--safe-bottom, 0px)) calc(20px + var(--safe-left, 0px)) }
+body.is-mobile #delbtns { justify-content: stretch }
+body.is-mobile #delbtns button { flex: 1 1 0; height: 44px; font-size: 15px }
+/* android-p2a M10.4: the inline rename field in a Files row takes the name's place, same line box */
+body.is-mobile #tree .m-trn { flex: 1 1 auto; min-width: 0; box-sizing: border-box; height: 100%; max-height: 28px;
+  margin: 0; padding: 0 4px; border: 1px solid var(--border-focus-ring); border-radius: 4px; outline: none;
+  font: inherit; color: inherit; background: var(--bg-base) }
+/* android-p2c M15.4 M15.7: landscape — every bottom sheet (ribbon Menu, More options / long-press menus, action sheets)
+   is capped at two thirds of the height and scrolls; the drawers are ~45% of the width, still an overlay */
+@media (orientation: landscape) {
+  body.is-mobile { --m-drawer: 45vw }
+  body.is-mobile #msheet:not([hidden]), body.is-mobile .ctxmenu.m-bsheet, body.is-mobile .m-asheet:not([hidden]) {
+    max-height: 67vh; overflow-y: auto; overscroll-behavior: contain }
+}
+/* M15.5: Settings > Hotkeys in landscape with the keyboard up on the filter: the page header goes so the filter and
+   its top match stay above the keyboard (the visual viewport is ~170 css px tall there) */
+@media (orientation: landscape) {
+  body.is-mobile.m-kb #sbox:has(#hkfilter:focus) #shead { display: none !important }
+  body.is-mobile.m-kb #sbox:has(#hkfilter:focus) #spage { padding-top: 6px }
+}
+/* M11.3: Settings > Interface > Mobile — two rows (title + description, a button on the right); the Quick Action
+   chooser (#modal, kind "qa") opens over Settings */
+body.is-mobile .m-mrow { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--bg-surface) }
+body.is-mobile .m-mrow .m-iftxt { flex: 1 1 auto; min-width: 0 }
+body.is-mobile .m-mrow .m-ifd { color: var(--text-chrome-muted); font-size: 13px; padding-top: 2px }
+body.is-mobile .m-mh { font-size: 15px; color: var(--text-chrome) }
+body.is-mobile .m-mbtn { flex: 0 0 auto; max-width: 45%; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--bg-surface); color: var(--text-chrome); font-size: 14px }
+body.is-mobile.m-qachoose #modal { z-index: 58 }
+/* M13.1 tablet (body.is-tablet, smallest width >= 600 css px): no bottom nav; the view header (static, also in
+   landscape) carries Navigate back / forward on its left; the focused pane's desktop tab strip shows under it with a
+   "New tab" + (its own nav buttons stay hidden: the header has them) */
+.tabbar .m-newtab { display: none }
+body.is-mobile:not(.is-tablet) #mhdr .m-hback, body.is-mobile:not(.is-tablet) #mhdr .m-hfwd { display: none !important }
+body.is-mobile.is-tablet #mhdr button:disabled { opacity: .4 }
+body.is-mobile.is-tablet #mnav { display: none !important }
+body.is-mobile.is-tablet #mhdr { position: static; background: var(--tab-container-background);
+  border-bottom: 1px solid var(--border); pointer-events: auto }
+body.is-mobile.is-tablet #main .pane.focused > .tabbar { display: flex; height: 40px }
+body.is-mobile.is-tablet #main .pane > .tabbar .navbtns { display: none }
+body.is-mobile.is-tablet #main .tab { width: 180px; font-size: 13px }
+body.is-mobile.is-tablet #main .tab .x { width: 24px; height: 24px }
+body.is-mobile.is-tablet .tabbar .m-newtab { display: flex; align-items: center; justify-content: center; flex: 0 0 auto;
+  width: 40px; padding: 0; background: none; border: 0; color: var(--text-chrome-muted) }
+body.is-mobile.is-tablet .tabbar .m-newtab svg { width: 18px; height: 18px; display: block }
+body.is-mobile.is-tablet #main .lp, body.is-mobile.is-tablet #main .preview { padding: var(--file-margins) }
+/* android-p3b M15.9: the tab switcher in landscape (phone) — a 2-column grid of wide short cards; the bar (+, count,
+   Done) stays pinned to the bottom and the grid scrolls under it (2 rows of 42vh overflow the band: the third card is
+   cut by the bar, stock's look) */
+@media (orientation: landscape) {
+  body.is-mobile:not(.is-tablet) #mtabs .m-cards { grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-auto-rows: max(120px, 42vh) }
+  body.is-mobile:not(.is-tablet) #mtabs .m-card { min-height: 0 }
+}
+/* android-p3b M13.2: tablet drawers — still overlays, each with a PIN button in its pill row (aria-pressed); the left
+   drawer carries the ribbon as a vertical column at its left edge. Pinned (body.m-pinl / m-pinr while that drawer is
+   open): no scrim, #main and the header start beside the drawer, a tap in the note keeps it open. Phone: neither. */
+body.is-mobile .m-pin, body.is-mobile .m-ribcol { display: none }
+body.is-mobile.is-tablet .m-pin { display: flex; align-items: center; justify-content: center; position: absolute;
+  right: 8px; top: 50%; transform: translateY(-50%); width: 36px; height: 36px; padding: 0; background: none; border: 0;
+  border-radius: 18px; color: var(--text-chrome-muted) }
+body.is-mobile.is-tablet .m-pin svg { width: 18px; height: 18px }
+body.is-mobile.is-tablet .m-pin[aria-pressed=true] { background: var(--border); color: var(--text-chrome) }
+body.is-mobile.is-tablet.m-drawer #side { padding-left: 52px }
+body.is-mobile.is-tablet.m-drawer #side .m-ribcol { display: flex; flex-direction: column; align-items: center; gap: 8px;
+  position: absolute; left: 0; top: var(--safe-top, 0px); bottom: var(--safe-bottom, 0px); width: 52px;
+  box-sizing: border-box; padding: 10px 0; background: var(--bg-ribbon); border-right: 1px solid var(--border) }
+body.is-mobile.is-tablet .m-ribcol button { flex: 0 0 auto; width: 40px; height: 40px; display: flex; align-items: center;
+  justify-content: center; padding: 0; background: none; border: 0; border-radius: 8px; color: var(--text-chrome-muted) }
+body.is-mobile.is-tablet .m-ribcol button svg { width: 20px; height: 20px }
+body.is-mobile.is-tablet.m-pinl.m-drawer #mscrim, body.is-mobile.is-tablet.m-pinr.m-rdrawer #mscrim { display: none !important }
+body.is-mobile.is-tablet.m-pinl.m-drawer #main, body.is-mobile.is-tablet.m-pinl.m-drawer #mhdr {
+  width: auto; margin-left: calc(var(--m-drawer) + var(--safe-left, 0px)); padding-left: 0; transform: none }
+body.is-mobile.is-tablet.m-pinr.m-rdrawer #main, body.is-mobile.is-tablet.m-pinr.m-rdrawer #mhdr {
+  width: auto; margin-right: calc(var(--m-drawer) + var(--safe-right, 0px)); padding-right: 0; transform: none }
+/* android-p3b M15.10: the vault manager (#picker) is ONE scroller on the phone: the known-vault list is not capped at
+   150px inside the card (a nested scroller), it runs at full length below Create new vault / Open folder as vault and
+   the card scrolls; in landscape the list starts at the bottom edge and a swipe brings the rest up (stock's look) */
+body.is-mobile #p-recent { max-height: none; overflow-y: visible }
+body.is-mobile #pcard { overscroll-behavior: contain }
+@media (orientation: landscape) { body.is-mobile #ptitle { margin-bottom: 10px } }
+/* android-p3b M15.10: with many known vaults the radio list overflows the vault dialog in landscape (80vh of ~450 css
+   px); "Manage vaults..." stays pinned at the dialog's bottom edge while the radio rows scroll under it, so the way to
+   the manager is always on screen */
+body.is-mobile .m-vaultitem.m-vaultmanage { position: sticky; bottom: 0; background: var(--bg-base); z-index: 1 }

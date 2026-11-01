@@ -1550,6 +1550,11 @@ Object.assign(Ed, {
     if (load) Ed.lpBust();
     if (v._pxI != null) v._ext[v._pxI] = Ed.PX.of(Ed.pxExt(v));   // editor-api: the fresh state carries the CURRENT plugin extensions
     v.cm.setState(CMs.EditorState.create({ doc: s, extensions: v._ext }));
+    // Android (CM6 drives the IME through an EditContext there, only there): setState swaps the doc but leaves the
+    // EditContext holding the PREVIOUS note's text, so the keyboard's next composition (a tap mid-word) was applied
+    // to the new note at the old note's offsets ("# Ideas\n-" became "# Welcome", saved). Hand it the new doc.
+    const ecm = v.cm.observer && v.cm.observer.editContext;
+    if (ecm && typeof ecm.reset === "function") { ecm.pendingContextChange = null; ecm.composing = null; ecm.reset(v.cm.state); }
     v._fresh = load ? v.cm.state : null;
     v._Ld = null; v._snap = null;
     Ed.sync(g);
