@@ -29,6 +29,9 @@ class MainActivity : TauriActivity() {
   private val ui = Handler(Looper.getMainLooper())
   private var safeJs = ""
   private var web: WebView? = null
+  // PR #38 F4: the safe-area pushes carry their own token, so an inset change cancels only the previous
+  // pushes and never a picker / keyboard / tree-result callback queued on the same Handler
+  private val safeTok = Any()
 
   // M1.2: "Open folder as vault" = the system folder picker (Storage Access Framework). The grant
   // is persisted; the tree is handed to the page as its filesystem path (the vault code is plain
@@ -63,9 +66,9 @@ class MainActivity : TauriActivity() {
   // the first insets usually arrive before the page has loaded mobile.js: repeat the push a few
   // times over the cold start; every later change (rotation) pushes again
   private fun pushSafe(webView: WebView) {
-    ui.removeCallbacksAndMessages(null)
+    ui.removeCallbacksAndMessages(safeTok)
     for (ms in longArrayOf(0, 300, 1000, 2500, 5000, 10000)) {
-      ui.postDelayed({ if (safeJs.isNotEmpty()) webView.evaluateJavascript(safeJs, null) }, ms)
+      ui.postDelayed({ if (safeJs.isNotEmpty()) webView.evaluateJavascript(safeJs, null) }, safeTok, ms)
     }
   }
 
@@ -73,11 +76,17 @@ class MainActivity : TauriActivity() {
 
   private fun onTree(uri: Uri?) {
     if (uri == null) { js("window.__mobileTreePicked&&window.__mobileTreePicked(null,null)"); return }
-    try {
-      contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+    // PR #38 F13: only a document TREE the picker granted us read+write, persistably, is accepted; anything
+    // else (a non-tree uri, a refused or partial grant) is reported to the page and never opened as a vault.
+    // (The request code is the Activity Result registry's own: a result for another request never reaches here.)
+    val rw = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+    val granted = DocumentsContract.isTreeUri(uri) && try {
+      contentResolver.takePersistableUriPermission(uri, rw)
+      contentResolver.persistedUriPermissions.any { it.uri == uri && it.isReadPermission && it.isWritePermission }
     } catch (e: SecurityException) {
-      android.util.Log.w("opensidian", "tree grant not persisted: $e")
+      android.util.Log.w("opensidian", "tree grant refused: $e"); false
     }
+    if (!granted) { js("window.__mobileTreePicked&&window.__mobileTreePicked(${JSONObject.quote(uri.toString())},null,\"nogrant\")"); return }
     val path = treePath(uri)
     js("window.__mobileTreePicked&&window.__mobileTreePicked(${JSONObject.quote(uri.toString())},${if (path == null) "null" else JSONObject.quote(path)})")
   }
@@ -155,9 +164,19 @@ class RestartActivity : android.app.Activity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     val old = intent.getIntExtra(PID, -1)
-    if (old > 0) android.os.Process.killProcess(old)
+    if (old > 0) {
+      android.os.Process.killProcess(old)
+      // PR #38 F5: the launcher starts only once the old app process is gone (its vault lock goes with it),
+      // up to 3 s; the new process's boot also waits for a lock still held (lib.rs run)
+      val t0 = android.os.SystemClock.uptimeMillis()
+      while (alive(old) && android.os.SystemClock.uptimeMillis() - t0 < 3000) Thread.sleep(20)
+      android.util.Log.i("opensidian", "restart: old pid $old ${if (alive(old)) "still alive" else "gone"} after ${android.os.SystemClock.uptimeMillis() - t0} ms")
+    }
     packageManager.getLaunchIntentForPackage(packageName)?.let { startActivity(Intent.makeRestartActivityTask(it.component)) }
     finish()
     Runtime.getRuntime().exit(0)
   }
+  // a zombie (exited, not yet reaped) reads an empty cmdline and has already dropped its fds and locks
+  private fun alive(pid: Int): Boolean =
+    try { java.io.File("/proc/$pid/cmdline").readText().trimEnd('\u0000') == packageName } catch (e: Exception) { false }
 }

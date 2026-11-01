@@ -6453,7 +6453,30 @@ pub fn run() {
     if let Some(p) = &init {
         // vaultbleed B: a vault already open in another process is refused —
         // no second backend, no window; the other window stays the only one.
-        match bind_vault_locked(&vault, p, &vaultlock::env_lock_dir()) {
+        // PR #38 F5: on android a vault switch relaunches the app (one process per vault), and the old process,
+        // or anything else still holding this vault on its way out, may not have let go of the lock yet: the
+        // boot waits up to 5 s for it before refusing (a refused bind claims no root and builds no index, so
+        // retrying is clean). Desktop keeps the immediate refusal (the other window is a real second window).
+        #[cfg(target_os = "android")]
+        let bound = {
+            let t0 = std::time::Instant::now();
+            loop {
+                match bind_vault_locked(&vault, p, &vaultlock::env_lock_dir()) {
+                    Err(BindErr::Lock(vaultlock::LockErr::Busy(_))) if t0.elapsed() < std::time::Duration::from_secs(5) => {
+                        std::thread::sleep(std::time::Duration::from_millis(50))
+                    }
+                    r => {
+                        if t0.elapsed() >= std::time::Duration::from_millis(50) {
+                            eprintln!("opensidian: waited {} ms for the vault lock", t0.elapsed().as_millis());
+                        }
+                        break r;
+                    }
+                }
+            }
+        };
+        #[cfg(not(target_os = "android"))]
+        let bound = bind_vault_locked(&vault, p, &vaultlock::env_lock_dir());
+        match bound {
             Ok(()) => {}
             Err(BindErr::Lock(e @ vaultlock::LockErr::Busy(_))) => {
                 eprintln!("opensidian: {e}; not starting a second backend on it (exit {})", vaultlock::DUP_EXIT);

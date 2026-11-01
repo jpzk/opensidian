@@ -448,8 +448,10 @@
     if (!droid) { if (e.target.id !== "p-open") $m("p-open").click(); return; }
     e.stopPropagation(); e.preventDefault(); perr(""); droid.pickTree();
   }, true);
-  window.__mobileTreePicked = (uri, path) => {
+  window.__mobileTreePicked = (uri, path, why) => {
     if (!uri) return;                                    // picker backed out: the manager stays as it was
+    // PR #38 F13: MainActivity accepts only a tree the picker granted read+write persistably
+    if (why === "nogrant") return perr("The folder picker did not grant access to that folder; pick it again and choose Allow.");
     if (!path) return perr("That folder has no file path on this phone; pick a folder on the device storage.");
     if (!droid.allFiles()) {
       perr("Allow \"All files access\" for Opensidian, then open the folder again.");
