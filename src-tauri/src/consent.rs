@@ -13,7 +13,9 @@
    Debug-quoted, so a newline or a control char cannot fake a line of the
    dialog). Buttons: Deny/Cancel is the default (Enter, Escape, the window's
    close button, a destroyed dialog, a lost main loop all answer NO); Allow/
-   Trust must be pressed. No "remember", no timeout, and no env var, cfg flag,
+   Trust must be pressed. The spawn prompt also offers "Allow for this
+   session" (operator STEER 13:32Z): it remembers (vault, resolved program)
+   in memory only — see Session below. No timeout, and no env var, cfg flag,
    feature or test hook that answers for the user — tests click the dialog
    (harness phase spawnconsent; scripts/consent-nobypass.sh guards the calls).
 
@@ -25,6 +27,7 @@
    time: a plugin spawning in a loop queues behind the open dialog instead of
    stacking windows. */
 use std::path::{Path, PathBuf};
+use std::collections::BTreeSet;
 use std::sync::Mutex;
 
 use crate::desk_proc::Spec;
@@ -109,40 +112,154 @@ pub fn spawn_text(sp: &Spec) -> String {
     t
 }
 
+/* "Allow for this session" (operator STEER 2026-11-01 13:32Z): the key is
+   (canonical vault, RESOLVED absolute program path after the PATH lookup) —
+   args are NOT part of it, and the dialog says so. The set lives ONLY here,
+   in process memory: never persisted, no IPC command reads or writes it
+   (session_allowed/session_remember are private; session_clear is the one
+   pub door, called by plugins_set when trust flips OFF next to
+   desk_proc::kill_all). A vault switch is a new process (vaultbleed), so it
+   starts empty there too. `epoch` bumps on every clear: an answer given in a
+   dialog that was open across a trust-OFF is not remembered. */
+struct Session {
+    epoch: u64,
+    set: BTreeSet<(String, PathBuf)>,
+}
+static SESSION_ALLOW: Mutex<Session> = Mutex::new(Session { epoch: 0, set: BTreeSet::new() });
+
+fn session() -> std::sync::MutexGuard<'static, Session> {
+    SESSION_ALLOW.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// trust flipped OFF: forget every "Allow for this session"
+pub fn session_clear() {
+    let mut s = session();
+    s.set.clear();
+    s.epoch += 1;
+    eprintln!("[consent] session allowlist cleared");
+}
+
+fn session_allowed(key: &(String, PathBuf)) -> bool {
+    session().set.contains(key)
+}
+
+/// remember `key`, unless the allowlist was cleared since `epoch` was read
+fn session_remember(key: (String, PathBuf), epoch: u64) {
+    let mut s = session();
+    if s.epoch == epoch {
+        s.set.insert(key);
+    }
+}
+
+/// what ask() puts on screen: the body, and for a spawn whose program
+/// resolves to an absolute path, the session key "Allow for this session"
+/// would remember (None = that button is not offered)
+pub struct Question {
+    text: String,
+    session: Option<(String, PathBuf)>,
+}
+
+pub fn trust_question(canon: &str) -> Question {
+    Question { text: trust_text(canon), session: None }
+}
+
+/// `vault` = plugins::trust_key(root), the canonical vault path
+pub fn spawn_question(vault: &str, sp: &Spec) -> Question {
+    let mut text = spawn_text(sp);
+    let session = resolve_program(sp).filter(|p| p.is_absolute()).map(|p| (vault.to_string(), p));
+    if let Some((_, p)) = &session {
+        text.push_str(&session_note(p));
+    }
+    Question { text, session }
+}
+
+/// the line that tells the user what the session button covers
+fn session_note(p: &Path) -> String {
+    format!(
+        "\n\n\"Allow for this session\" allows {} with any arguments until opensidian quits \
+         (or community plugins are turned off).",
+        shown(&p.to_string_lossy())
+    )
+}
+
+/// the dialog's answer. Only answer_of() makes Once/Session — from a GTK
+/// response the user produced by pressing that button.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Answer {
+    No,
+    Once,
+    Session,
+}
+
+/// response ids: Accept = Allow once / Trust, Other(SESSION_RESPONSE) = Allow
+/// for this session; everything else (Reject, DeleteEvent, None, ...) = No
+const SESSION_RESPONSE: u16 = 7;
+
+#[cfg(target_os = "linux")]
+fn answer_of(r: gtk::ResponseType, session_offered: bool) -> Answer {
+    match r {
+        gtk::ResponseType::Accept => Answer::Once,
+        gtk::ResponseType::Other(SESSION_RESPONSE) if session_offered => Answer::Session,
+        _ => Answer::No,
+    }
+}
+
 static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
-/// ask the user; true only when Allow/Trust was pressed. BLOCKS until the
-/// answer: call it from a worker thread, never the main thread (ask() does).
-fn ask_blocking(win: &tauri::Window, kind: Kind, text: String) -> bool {
+/// ask the user; true only when Allow/Trust was pressed now, or "Allow for
+/// this session" was pressed earlier for this exact (vault, program). BLOCKS
+/// until the answer: call it from a worker thread, never the main thread.
+fn ask_blocking(win: &tauri::Window, kind: Kind, q: Question) -> bool {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-    let (tx, rx) = std::sync::mpsc::channel::<bool>();
+    // checked under ONE_AT_A_TIME: a spawn queued behind the dialog that
+    // just allowed its program for the session does not ask again
+    if let Some(key) = &q.session {
+        if session_allowed(key) {
+            eprintln!("[consent] spawn {:?}: allowed for this session, not asked", key.1);
+            return true;
+        }
+    }
+    let epoch = session().epoch;
+    let (tx, rx) = std::sync::mpsc::channel::<Answer>();
     let w2 = win.clone();
-    if win.run_on_main_thread(move || show_dialog(&w2, kind, &text, tx)).is_err() {
+    let offered = q.session.is_some();
+    let text = q.text;
+    if win.run_on_main_thread(move || show_dialog(&w2, kind, &text, offered, tx)).is_err() {
         return false;
     }
-    // a dialog torn down without a response drops tx: recv errs -> NO
-    rx.recv().unwrap_or(false)
+    // a dialog torn down without a response drops tx: recv errs -> No
+    match rx.recv().unwrap_or(Answer::No) {
+        Answer::No => false,
+        Answer::Once => true,
+        Answer::Session => {
+            if let Some(key) = q.session {
+                eprintln!("[consent] spawn {:?}: allowed for this session", key.1);
+                session_remember(key, epoch);
+            }
+            true
+        }
+    }
 }
 
 /// the async front door the commands await. Any failure on the way = NO.
-pub async fn ask(win: tauri::Window, kind: Kind, text: String) -> bool {
+pub async fn ask(win: tauri::Window, kind: Kind, q: Question) -> bool {
     let what = match kind {
         Kind::Trust => "trust",
         Kind::Spawn => "spawn",
     };
     eprintln!("[consent] {what}: asking");
-    let yes = tauri::async_runtime::spawn_blocking(move || ask_blocking(&win, kind, text)).await.unwrap_or(false);
+    let yes = tauri::async_runtime::spawn_blocking(move || ask_blocking(&win, kind, q)).await.unwrap_or(false);
     eprintln!("[consent] {what}: {}", if yes { "allowed" } else { "denied" });
     yes
 }
 
 #[cfg(target_os = "linux")]
-fn show_dialog(win: &tauri::Window, kind: Kind, text: &str, tx: std::sync::mpsc::Sender<bool>) {
+fn show_dialog(win: &tauri::Window, kind: Kind, text: &str, session_offered: bool, tx: std::sync::mpsc::Sender<Answer>) {
     use gtk::prelude::*;
     let parent = win.gtk_window().ok();
     let (title, no, yes) = match kind {
         Kind::Trust => (TRUST_TITLE, "_Cancel", "_Trust"),
-        Kind::Spawn => (SPAWN_TITLE, "_Deny", "_Allow"),
+        Kind::Spawn => (SPAWN_TITLE, "_Deny", "Allow _once"),
     };
     // the message is plain text (gtk_message_dialog_new formats it with "%s"),
     // never markup: a page value cannot style or hide part of the prompt
@@ -156,12 +273,15 @@ fn show_dialog(win: &tauri::Window, kind: Kind, text: &str, tx: std::sync::mpsc:
     d.set_title(title);
     let _ = d.add_button(no, gtk::ResponseType::Reject);
     let _ = d.add_button(yes, gtk::ResponseType::Accept);
+    if session_offered {
+        let _ = d.add_button("Allow for this _session", gtk::ResponseType::Other(SESSION_RESPONSE));
+    }
     d.set_default_response(gtk::ResponseType::Reject);
     d.set_keep_above(true);
     let tx = std::cell::RefCell::new(Some(tx));
     d.connect_response(move |d, r| {
         if let Some(tx) = tx.borrow_mut().take() {
-            let _ = tx.send(r == gtk::ResponseType::Accept);
+            let _ = tx.send(answer_of(r, session_offered));
         }
         // SAFETY: the dialog is ours alone (no other Rust handle outlives this
         // handler); destroying a toplevel from its own response handler is the
@@ -174,8 +294,8 @@ fn show_dialog(win: &tauri::Window, kind: Kind, text: &str, tx: std::sync::mpsc:
 
 /// no native prompt on this platform = NO (nothing is trusted or started)
 #[cfg(not(target_os = "linux"))]
-fn show_dialog(_win: &tauri::Window, _kind: Kind, _text: &str, tx: std::sync::mpsc::Sender<bool>) {
-    let _ = tx.send(false);
+fn show_dialog(_win: &tauri::Window, _kind: Kind, _text: &str, _session_offered: bool, tx: std::sync::mpsc::Sender<Answer>) {
+    let _ = tx.send(Answer::No);
 }
 
 #[cfg(test)]
@@ -238,5 +358,48 @@ mod tests {
     #[test]
     fn trust_text_shows_the_canonical_path() {
         assert!(trust_text("/home/u/My Vault").contains("Vault: \"/home/u/My Vault\""));
+    }
+
+    #[test]
+    fn the_session_key_is_vault_and_resolved_path_not_args() {
+        let a = spawn_question("/v", &sp("/bin/sh", &["-c", "a"], "/"));
+        let b = spawn_question("/v", &sp("/bin/sh", &["-c", "b"], "/"));
+        assert_eq!(a.session, Some(("/v".to_string(), PathBuf::from("/bin/sh"))));
+        assert_eq!(a.session, b.session);
+        assert_ne!(a.session, spawn_question("/w", &sp("/bin/sh", &[], "/")).session);
+        assert!(a.text.contains("allows \"/bin/sh\" with any arguments until opensidian quits"), "{}", a.text);
+    }
+
+    #[test]
+    fn no_session_button_for_a_program_that_does_not_resolve() {
+        let q = spawn_question("/v", &sp("/nonexistent-consent/prog", &[], "/"));
+        assert_eq!(q.session, None);
+        assert!(!q.text.contains("Allow for this session"));
+        assert_eq!(trust_question("/v").session, None);
+    }
+
+    #[test]
+    fn a_clear_forgets_and_a_stale_epoch_is_not_remembered() {
+        let k = ("/consent-test-vault".to_string(), PathBuf::from(format!("/consent-test/{}", std::process::id())));
+        let e = session().epoch;
+        session_remember(k.clone(), e);
+        assert!(session_allowed(&k));
+        session_clear();
+        assert!(!session_allowed(&k));
+        // an answer from a dialog opened before the clear
+        session_remember(k.clone(), e);
+        assert!(!session_allowed(&k));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn only_the_session_button_answers_session_and_only_when_offered() {
+        use gtk::ResponseType as R;
+        assert_eq!(answer_of(R::Accept, false), Answer::Once);
+        assert_eq!(answer_of(R::Other(SESSION_RESPONSE), true), Answer::Session);
+        assert_eq!(answer_of(R::Other(SESSION_RESPONSE), false), Answer::No);
+        for r in [R::Reject, R::DeleteEvent, R::None, R::Cancel, R::Close, R::Ok, R::Yes, R::Other(8)] {
+            assert_eq!(answer_of(r, true), Answer::No, "{r:?}");
+        }
     }
 }

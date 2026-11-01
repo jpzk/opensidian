@@ -3693,7 +3693,7 @@ async fn plugins_set(
     let root = cur_vault(&v).ok_or("no vault open")?;
     if trusted == Some(true) && !plugins::is_trusted(&cfg_value(), &root) {
         let key = plugins::trust_key(&root);
-        if !consent::ask(win, consent::Kind::Trust, consent::trust_text(&key)).await {
+        if !consent::ask(win, consent::Kind::Trust, consent::trust_question(&key)).await {
             eprintln!("[consent] trust {key:?}: cancelled, nothing written");
             return Ok(plugins_state_of(&root));
         }
@@ -3704,6 +3704,7 @@ async fn plugins_set(
             cfg_update(&[cfgstore::Op::SetIn(plugins::TRUST_KEY.into(), key, serde_json::json!(t))]);
             if !t {
                 desk_proc::kill_all();   // flip OFF: what plugins started stops with them
+                consent::session_clear(); // ...and every "Allow for this session" is forgotten
                 desk_net::close_all();
             }
         }
@@ -3778,7 +3779,7 @@ async fn desk_proc_spawn(
     }
     let args: Vec<String> = args.unwrap_or_default().iter().map(|a| desk_proc::map_arg(&root, a)).collect();
     let sp = desk_proc::Spec { file, args, cwd: desk_proc::map_cwd(&root, cwd.as_deref()), env: env.unwrap_or_default().into_iter().collect() };
-    if !consent::ask(win, consent::Kind::Spawn, consent::spawn_text(&sp)).await {
+    if !consent::ask(win, consent::Kind::Spawn, consent::spawn_question(&plugins::trust_key(&root), &sp)).await {
         eprintln!("[desk] spawn {} {:?} cwd={}: denied by the user", sp.file, sp.args, sp.cwd.display());
         return Err(format!("EPERM: spawn {} denied by the user", sp.file));
     }
