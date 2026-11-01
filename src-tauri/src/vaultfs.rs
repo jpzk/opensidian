@@ -175,15 +175,16 @@ fn cstr(s: &OsStr) -> io::Result<CString> {
     CString::new(s.as_bytes()).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in path"))
 }
 
-/// renameat2(dfd, from, dfd, to, RENAME_NOREPLACE). Android: the raw syscall, because bionic
-/// only exports renameat2() from API 30 and minSdk is 24; a kernel without it returns
-/// ENOSYS/EINVAL and the caller falls back to linkat exactly as on an old desktop kernel.
+/// renameat2(dfd, from, dfd, to, RENAME_NOREPLACE) through libc on every target: Android's
+/// minSdk is 30, and bionic exports renameat2() from API 30 (PR #38 F2: no raw syscall, which the
+/// app seccomp filter of API 26-29 could answer with SIGSYS). The caller's linkat fallback stays
+/// for filesystems that refuse the flag with EINVAL/ENOSYS/EOPNOTSUPP on any API level (FUSE
+/// mounts such as Android 11+ shared storage without NOREPLACE support, vfat/sdcardfs, old
+/// desktop kernels).
 /// SAFETY: dfd is a valid directory fd, from/to are NUL-terminated.
+#[allow(clippy::unnecessary_cast)] // RENAME_NOREPLACE is c_uint on glibc, c_int on bionic
 unsafe fn renameat_noreplace(dfd: libc::c_int, from: *const libc::c_char, to: *const libc::c_char) -> libc::c_int {
-    #[cfg(not(target_os = "android"))]
-    return libc::renameat2(dfd, from, dfd, to, libc::RENAME_NOREPLACE);
-    #[cfg(target_os = "android")]
-    return libc::syscall(libc::SYS_renameat2, dfd, from, dfd, to, libc::RENAME_NOREPLACE as libc::c_uint) as libc::c_int;
+    libc::renameat2(dfd, from, dfd, to, libc::RENAME_NOREPLACE as libc::c_uint)
 }
 
 fn cvt(r: libc::c_int) -> io::Result<libc::c_int> {

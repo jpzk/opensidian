@@ -3,7 +3,6 @@ package dev.koto.opensidian
 
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
@@ -95,8 +94,9 @@ class MainActivity : TauriActivity() {
     return if (rel.isEmpty()) root else "$root/$rel"
   }
 
-  private fun allFiles(): Boolean =
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) Environment.isExternalStorageManager() else true
+  // PR #38 F1: minSdk is 30 (Android 11), so "All files access" is the one storage permission;
+  // there is no legacy READ/WRITE_EXTERNAL_STORAGE branch
+  private fun allFiles(): Boolean = Environment.isExternalStorageManager()
 
   inner class Bridge {
     @JavascriptInterface fun pickTree() { ui.post { pickTree.launch(null) } }
@@ -128,7 +128,6 @@ class MainActivity : TauriActivity() {
       JSONArray(contentResolver.persistedUriPermissions.map { it.uri.toString() }).toString()
     @JavascriptInterface fun allFiles(): Boolean = this@MainActivity.allFiles()
     @JavascriptInterface fun requestAllFiles() {
-      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
       ui.post {
         startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName")))
       }

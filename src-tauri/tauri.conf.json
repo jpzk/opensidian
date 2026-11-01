@@ -8,5 +8,5 @@
     "security": { "csp": "default-src 'self'; script-src 'self' opensidian-plugin: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: opensidian-img:; font-src 'self'; connect-src ipc: http://ipc.localhost" },
     "windows": [{ "title": "Opensidian", "width": 1100, "height": 700, "minWidth": 300, "minHeight": 200, "decorations": false }]
   },
-  "bundle": { "active": false }
+  "bundle": { "active": false, "android": { "minSdkVersion": 30 } }
 }
