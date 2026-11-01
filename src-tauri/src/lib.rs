@@ -162,6 +162,25 @@ fn bind_vault_locked(v: &Vault, p: &Path, lock_dir: &Path) -> Result<(), BindErr
     *v.seed.lock().unwrap() = Some(base);
     Ok(())
 }
+/// PR #38 F5: bind_vault_locked, retried while the lock is Busy for up to `wait`. On android a vault switch
+/// relaunches the app (one process per vault) and the old process, or anything else still holding the vault on
+/// its way out, may not have let go of the lock when the new one boots. A refused bind claims no root and
+/// builds no index, so retrying is clean. Desktop never calls this (its other window is a real second window).
+#[cfg_attr(not(any(target_os = "android", test)), allow(dead_code))]
+fn bind_vault_waiting(v: &Vault, p: &Path, lock_dir: &Path, wait: std::time::Duration) -> Result<(), BindErr> {
+    let t0 = std::time::Instant::now();
+    loop {
+        match bind_vault_locked(v, p, lock_dir) {
+            Err(BindErr::Lock(vaultlock::LockErr::Busy(_))) if t0.elapsed() < wait => std::thread::sleep(std::time::Duration::from_millis(50)),
+            r => {
+                if t0.elapsed() >= std::time::Duration::from_millis(50) {
+                    eprintln!("opensidian: waited {} ms for the vault lock", t0.elapsed().as_millis());
+                }
+                return r;
+            }
+        }
+    }
+}
 /// census C4 (make-md): an opened vault always carries `.obsidian/app.json` —
 /// stock materializes it on open, so a plugin that reads it straight through
 /// the adapter (make-md: adapter.read(configDir + "/app.json")) gets `{}` on a
@@ -6341,7 +6360,9 @@ fn android_boot(app: &tauri::App) {
             v
         }
     };
-    match bind_vault(&app.state::<Vault>(), &vault) {
+    // PR #38 F5: THIS is where the android process binds its vault (run()'s init is None here: the config path is
+    // only known once appdirs is set above), so the relaunch's wait for a lock still held lives here.
+    match bind_vault_waiting(&app.state::<Vault>(), &vault, &vaultlock::env_lock_dir(), std::time::Duration::from_secs(5)).map_err(|e| e.to_string()) {
         Ok(()) => persist_vault(&vault),
         Err(e) => eprintln!("[android] cannot open vault {}: {e}", vault.display()),
     }
@@ -6453,27 +6474,10 @@ pub fn run() {
     if let Some(p) = &init {
         // vaultbleed B: a vault already open in another process is refused —
         // no second backend, no window; the other window stays the only one.
-        // PR #38 F5: on android a vault switch relaunches the app (one process per vault), and the old process,
-        // or anything else still holding this vault on its way out, may not have let go of the lock yet: the
-        // boot waits up to 5 s for it before refusing (a refused bind claims no root and builds no index, so
-        // retrying is clean). Desktop keeps the immediate refusal (the other window is a real second window).
+        // PR #38 F5: on android init is normally None (no config path before android_boot); if a VAULT_DIR names one, it
+        // gets the same 5 s lock wait as android_boot. Desktop keeps the immediate refusal.
         #[cfg(target_os = "android")]
-        let bound = {
-            let t0 = std::time::Instant::now();
-            loop {
-                match bind_vault_locked(&vault, p, &vaultlock::env_lock_dir()) {
-                    Err(BindErr::Lock(vaultlock::LockErr::Busy(_))) if t0.elapsed() < std::time::Duration::from_secs(5) => {
-                        std::thread::sleep(std::time::Duration::from_millis(50))
-                    }
-                    r => {
-                        if t0.elapsed() >= std::time::Duration::from_millis(50) {
-                            eprintln!("opensidian: waited {} ms for the vault lock", t0.elapsed().as_millis());
-                        }
-                        break r;
-                    }
-                }
-            }
-        };
+        let bound = bind_vault_waiting(&vault, p, &vaultlock::env_lock_dir(), std::time::Duration::from_secs(5));
         #[cfg(not(target_os = "android"))]
         let bound = bind_vault_locked(&vault, p, &vaultlock::env_lock_dir());
         match bound {
@@ -11636,6 +11640,28 @@ mod vaultbleed_tests {
             }
         }
         assert!(cur_vault(&v2).is_some(), "the second backend owns the vault once the first is gone");
+        let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&locks));
+    }
+
+    #[test]
+    fn pr38_f5_boot_bind_waits_for_a_lock_released_late() {
+        // PR #38 F5 (android_boot): the relaunched process binds while the old holder still has the lock; the holder
+        // lets go 400 ms later. A zero wait is refused (the old behaviour: vault ''), a 5 s wait binds.
+        let a = mk("f5-late", &[("n", "x\n")]);
+        let locks = std::env::temp_dir().join(format!("opensidian-f5-locks-{}", std::process::id()));
+        let canon = a.canonicalize().unwrap();
+        let held = vaultlock::acquire_in(&locks, &canon).expect("holder takes the lock");
+        let v0 = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new(), seed: Mutex::new(None) };
+        assert!(matches!(bind_vault_waiting(&v0, &a, &locks, std::time::Duration::ZERO), Err(BindErr::Lock(vaultlock::LockErr::Busy(_)))));
+        assert!(cur_vault(&v0).is_none(), "refused bind claims no root");
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            drop(held);
+        });
+        let v = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new(), seed: Mutex::new(None) };
+        bind_vault_waiting(&v, &a, &locks, std::time::Duration::from_secs(5)).expect("binds once the late holder lets go");
+        assert!(cur_vault(&v).is_some());
+        t.join().unwrap();
         let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&locks));
     }
 
