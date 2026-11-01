@@ -338,15 +338,27 @@ pub fn start(sp: Spec, _life: &Life) -> Result<Arc<Run>, String> {
 
 /* ---- F5 (PR #41): one lock over the spawn and the trust-OFF lifecycles. desk_proc_spawn
    holds it across (trust recheck, start, register); plugins_set holds it across (flag
-   write OFF, kill_all, session clear). Without it a spawn whose recheck passed just
+   write OFF, kill_all, close_all). Without it a spawn whose recheck passed just
    before the flip could start and register AFTER kill_all ran, and outlive restricted
    mode. start, register and kill_all take a &Life, so none of them can be called
    without holding it. */
 pub struct Life(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
 
+static LIFE: Mutex<()> = Mutex::new(());
+
 pub fn lifecycle() -> Life {
-    static L: Mutex<()> = Mutex::new(());
-    Life(L.lock().unwrap_or_else(|e| e.into_inner()))
+    Life(LIFE.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// the lock if it is free right now, None while another holder has it: lets a test put
+/// the other side of a race at an exact point without a sleep (N4/N5)
+#[cfg(test)]
+pub fn try_lifecycle() -> Option<Life> {
+    match LIFE.try_lock() {
+        Ok(g) => Some(Life(g)),
+        Err(std::sync::TryLockError::Poisoned(e)) => Some(Life(e.into_inner())),
+        Err(std::sync::TryLockError::WouldBlock) => None,
+    }
 }
 
 /* ---- the live runs, keyed by an id the page holds */
@@ -384,7 +396,7 @@ pub fn kill_all(_life: &Life) {
    lock) before the trust dialog opens and hands it to trust_write() under the lock it
    writes the flag under. Every trust write — ON or OFF, asked or not — goes through
    trust_write and moves the epoch on, so an answer from a dialog that was open across
-   another flip (a trust-OFF with its kill_all + session clear, or another ON) is stale:
+   another flip (a trust-OFF with its kill_all + close_all, or another ON) is stale:
    it is discarded with an error and nothing is written. Only &Life holders touch it. */
 static TRUST_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -413,7 +425,7 @@ pub fn trust_write(asked: Option<u64>, _life: &Life) -> Result<(), String> {
    bit, a symlink the plugin swaps after the check), so this does not try: EVERY local
    target (op path / vault / reveal, and op external with any scheme but http, https,
    mailto) is asked exactly like a spawn — program xdg-open, the target in full — and
-   xdg-open is a launcher (consent::RUNNERS), so "Allow for this session" is never offered.
+   like every spawn it is asked each time (no answer is remembered between runs).
    http(s) and mailto URLs go to the browser / mail client unasked, as before. */
 pub enum ShellOpen {
     /// an http(s)/mailto URL: opened without asking
@@ -555,33 +567,40 @@ mod tests {
     }
 
     /* F5: a spawn whose trust recheck passed must not start + register after a trust-OFF
-       kill_all. Thread A is desk_proc_spawn (recheck, then a slow start, then register),
-       thread B is plugins_set OFF (flag write, kill_all) arriving while A is between its
-       recheck and its start. With the lock, B waits for A and kills A's child; without it
-       A's child starts after kill_all and stays registered. */
+       kill_all. Thread A is desk_proc_spawn (recheck, start, register), thread B is
+       plugins_set OFF (flag write, kill_all). N4 (PR #41): the order is forced, no sleep
+       decides it — B is started only once A holds the lock and its recheck passed; B
+       first proves it cannot take the lock then (try_lifecycle = None, while A sits
+       between recheck and start), tells A, and only then blocks on the lock for real.
+       A starts and registers only after that message, so B's kill_all can only come
+       after A's register, and must kill A's child. */
     #[test]
     fn desk_trust_off_cannot_slip_between_recheck_and_register() {
         use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc::channel;
         static TRUSTED: AtomicBool = AtomicBool::new(true);
         TRUSTED.store(true, Ordering::SeqCst);
-        let a = std::thread::spawn(|| {
+        let (b_tried, a_hears) = channel::<bool>();
+        let a = std::thread::spawn(move || {
             let life = lifecycle();
             if !TRUSTED.load(Ordering::SeqCst) {
                 return None;
             }
-            std::thread::sleep(Duration::from_millis(300)); // the recheck passed; start is slow
+            // the recheck passed: the trust-OFF arrives now
+            let b = std::thread::spawn(move || {
+                let got_in = try_lifecycle().is_some();
+                b_tried.send(got_in).unwrap();
+                let life = lifecycle();
+                TRUSTED.store(false, Ordering::SeqCst);
+                kill_all(&life);
+            });
+            let b_got_in = a_hears.recv().unwrap();
             let r = start(spec("/bin/sleep", &["30"], &std::env::temp_dir()), &life).unwrap();
-            Some((register(r.clone(), &life), r))
+            Some((register(r.clone(), &life), r, b, b_got_in))
         });
-        std::thread::sleep(Duration::from_millis(60));
-        let b = std::thread::spawn(|| {
-            let life = lifecycle();
-            TRUSTED.store(false, Ordering::SeqCst);
-            kill_all(&life);
-        });
-        let got = a.join().unwrap();
+        let (id, r, b, b_got_in) = a.join().unwrap().expect("A's recheck passed");
         b.join().unwrap();
-        let (id, r) = got.expect("A took the lock first and its recheck passed");
+        assert!(!b_got_in, "the trust-OFF took the lifecycle lock between A's recheck and its start");
         assert!(get(id).is_err(), "a child started across a trust-OFF is still registered");
         let (_, _, c) = drain(&r);
         assert_eq!(c.signal, Some("SIGKILL"), "the child started before the flip was killed by it");
@@ -618,7 +637,7 @@ mod tests {
     }
 
     /* G1 (PR #41, Qodo #2): plugins_set ON reads the epoch, the trust dialog stays open,
-       a trust-OFF (flag write, kill_all, session clear) runs meanwhile, then the user
+       a trust-OFF (flag write, kill_all, close_all) runs meanwhile, then the user
        presses Trust. That answer is stale: trust_write refuses it, so the flag stays OFF.
        An answer with no flip in between is written. (The only test that writes the epoch:
        a second one running in parallel would make the first's answers stale.) */
@@ -627,7 +646,7 @@ mod tests {
         let mut flag = false; // the vault's trust flag, as plugins_set writes it: OFF
         let seen = trust_epoch(&lifecycle()); // ON: read before the dialog opens
         {
-            // trust-OFF while the dialog is open (plugins_set also runs kill_all + session clear here)
+            // trust-OFF while the dialog is open (plugins_set also runs kill_all + close_all here)
             let life = lifecycle();
             trust_write(None, &life).unwrap();
         }

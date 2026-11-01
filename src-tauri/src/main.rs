@@ -3682,7 +3682,7 @@ fn plugins_state(v: State<Vault>, otel: Option<perf::Ctx>) -> Result<serde_json:
 /// call) and answers the unchanged state. Turning trust OFF is never asked.
 /// G1 (PR #41): the trust epoch is read before the dialog opens and checked under the
 /// lifecycle lock the flag is written under — a Trust answer from a dialog that was open
-/// across another flip (a trust-OFF: kill_all + session clear) is discarded with an
+/// across another flip (a trust-OFF: kill_all + close_all) is discarded with an
 /// error, nothing written (desk_proc::trust_write).
 /// async: tauri runs it off the main thread, which the open dialog needs.
 #[tauri::command]
@@ -3711,8 +3711,8 @@ async fn plugins_set(
     }
     span_timed!(otel => "plugins_set", (|| -> Result<serde_json::Value, String> {
         if let Some(t) = trusted {
-            // F5: held across (flag write, kill_all, session clear), the lock desk_proc_spawn holds
-            // across (trust recheck, start, register) — no spawn can land between the write and the kill
+            // F5/N5: held across (flag write, kill_all, close_all), the lock desk_proc_spawn holds
+            // across (trust recheck, start, register) and desk_net_listen across (check, bind, register) — no spawn can land between the write and the kill
             let life = desk_proc::lifecycle();
             let key = plugins::trust_key(&root);
             // G1: a Trust answer that went stale while its dialog was open writes nothing
@@ -3723,8 +3723,7 @@ async fn plugins_set(
             cfg_update(&[cfgstore::Op::SetIn(plugins::TRUST_KEY.into(), key, serde_json::json!(t))]);
             if !t {
                 desk_proc::kill_all(&life); // flip OFF: what plugins started stops with them
-                consent::session_clear(); // ...and every "Allow for this session" is forgotten
-                desk_net::close_all();
+                desk_net::close_all(&life); // N5: so do its listeners, under the lock desk_net_listen binds under
             }
         }
         if let (Some(id), Some(on)) = (id.as_deref(), on) {
@@ -3800,7 +3799,7 @@ async fn desk_proc_spawn(
     let sp = desk_proc::Spec { file, args, cwd: desk_proc::map_cwd(&root, cwd.as_deref()), env: env.unwrap_or_default().into_iter().collect(), argv0: None };
     consent::check_env(&sp)?; // F6: an env over the cap is refused, nothing asked
     let sp = consent::resolve(sp)?; // F1: file = the absolute path the dialog names and exec runs
-    if !consent::ask(win, consent::Kind::Spawn, consent::spawn_question(&plugins::trust_key(&root), &sp)).await {
+    if !consent::ask(win, consent::Kind::Spawn, consent::spawn_question(&sp)).await {
         eprintln!("[desk] spawn {} {:?} cwd={}: denied by the user", sp.file, sp.args, sp.cwd.display());
         return Err(format!("EPERM: spawn {} denied by the user", sp.file));
     }
@@ -3849,14 +3848,15 @@ fn desk_proc_kill(id: u64, signal: Option<String>) -> Result<bool, String> {
 /* ---- cp-unrestricted: TCP listeners for plugins (desk_net.rs) — node net /
    http servers (slides preview, local-rest-api). Same gate as child_process:
    the vault's trust flip, checked on every listen; socket ops act only on ids
-   a listener of this app handed out. */
+   a listener of this app handed out. N5 (PR #41): the check, the bind and the
+   register run under the lifecycle lock plugins_set holds across a trust-OFF
+   (flag write, close_all), so a listen that passed its check cannot register
+   after close_all and stay bound (desk_net::listen_trusted). */
 #[tauri::command]
 fn desk_net_listen(v: State<Vault>, host: Option<String>, port: u16) -> Result<serde_json::Value, String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
-    if !plugins::is_trusted(&cfg_value(), &root) {
-        return Err("EPERM: restricted mode, plugins cannot open servers".into());
-    }
-    let (id, s) = span_timed!("desk_net_listen", desk_net::listen(host.as_deref().unwrap_or(""), port))?;
+    let trusted = || plugins::is_trusted(&cfg_value(), &root);
+    let (id, s) = span_timed!("desk_net_listen", desk_net::listen_trusted(trusted, host.as_deref().unwrap_or(""), port))?;
     eprintln!("[desk] listen {}:{} id={id}", s.address, s.port);
     Ok(serde_json::json!({ "id": id, "port": s.port, "address": s.address }))
 }
@@ -3929,7 +3929,7 @@ async fn desk_http_request(v: State<'_, Vault>, req: desk_http::Req) -> Result<d
    vault (desk_proc::vault_open_target). G3 (PR #41): xdg-open runs whatever a local
    target maps to (.desktop Exec=, scripts, executables, custom scheme handlers), so every
    target but an http(s)/mailto URL is asked first through the spawn dialog — program
-   xdg-open (resolved like any spawn), the target in full, no session button — and Deny is
+   xdg-open (resolved like any spawn), the target in full, asked every time — and Deny is
    EPERM with nothing started (desk_proc::shell_target says which). async: the dialog. */
 #[tauri::command]
 async fn desk_shell(win: tauri::Window, v: State<'_, Vault>, op: String, target: String) -> Result<(), String> {
@@ -3942,7 +3942,7 @@ async fn desk_shell(win: tauri::Window, v: State<'_, Vault>, op: String, target:
         desk_proc::ShellOpen::Ask(arg) => {
             let sp = desk_proc::Spec { file: "xdg-open".into(), args: vec![arg], cwd: root.clone(), env: vec![], argv0: None };
             let sp = consent::resolve(sp)?; // the absolute xdg-open the dialog names is the one that runs
-            if !consent::ask(win, consent::Kind::Spawn, consent::spawn_question(&plugins::trust_key(&root), &sp)).await {
+            if !consent::ask(win, consent::Kind::Spawn, consent::spawn_question(&sp)).await {
                 eprintln!("[desk] shell {op} {:?}: denied by the user", sp.args[0]);
                 return Err(format!("EPERM: open {} denied by the user", sp.args[0]));
             }

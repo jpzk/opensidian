@@ -14,13 +14,10 @@
    scrolled, read-only, plain-text view of bounded size (F2); the env is capped
    before anything is asked (F6). Buttons: Deny/Cancel is the default (Enter,
    Escape, the window's close button, a destroyed dialog, a lost main loop all
-   answer NO); Allow/Trust must be pressed. The spawn prompt may also offer
-   "Allow for this session" (operator STEER 13:32Z), narrowed by F3/F4: it
-   remembers the EXACT run (vault, program, argv0, args, cwd, env) in memory
-   only, and is never offered for a program inside the vault (the plugin can
-   rewrite it) or for a shell / interpreter / git / env-style runner (it runs
-   whatever its input says). See Session below. No timeout, and no env var, cfg
-   flag, feature or test hook that answers for the user — tests click the
+   answer NO); Allow once / Trust must be pressed, for every question: there is
+   no session-wide answer and nothing is remembered between two runs
+   (PR #41 N2/N3). The app log gets the body with env VALUES masked (N1).
+   No timeout, and no env var, cfg flag, feature or test hook that answers for the user — tests click the
    dialog (harness phase spawnconsent; scripts/consent-nobypass.sh guards the
    calls).
 
@@ -31,8 +28,7 @@
    serving IPC and painting while the question is open. One question at a
    time: a plugin spawning in a loop queues behind the open dialog instead of
    stacking windows. */
-use std::collections::BTreeSet;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::desk_proc::Spec;
@@ -120,6 +116,24 @@ pub fn trust_text(canon: &str) -> String {
 
 /// the spawn prompt's body, from the resolved Spec desk_proc::start will run
 pub fn spawn_text(sp: &Spec) -> String {
+    spawn_body(sp, EnvValues::Shown)
+}
+
+/// N1: what the app log gets for that prompt: the same body, every env value
+/// replaced by a marker (names are kept: they say what was set, not what it holds)
+pub fn spawn_log(sp: &Spec) -> String {
+    spawn_body(sp, EnvValues::Hidden)
+}
+
+const ENV_VALUE_HIDDEN: &str = "(value not logged)";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EnvValues {
+    Shown,
+    Hidden,
+}
+
+fn spawn_body(sp: &Spec, env: EnvValues) -> String {
     let mut t = format!("A plugin wants to run a program.\n\nProgram: {}\n", shown(&sp.file));
     if let Some(a0) = &sp.argv0 {
         t.push_str(&format!("    (asked for {}; the file above is exactly what runs)\n", shown(a0)));
@@ -136,222 +150,79 @@ pub fn spawn_text(sp: &Spec) -> String {
     if !sp.env.is_empty() {
         t.push_str(&format!("Env set by the plugin ({}):\n", sp.env.len()));
         for (k, v) in &sp.env {
-            t.push_str(&format!("    {}={}\n", shown(k), shown(v)));
+            let v = if env == EnvValues::Shown { shown(v) } else { ENV_VALUE_HIDDEN.to_string() };
+            t.push_str(&format!("    {}={}\n", shown(k), v));
         }
     }
     t.push_str("\nIt will run with your user's rights.");
     t
 }
 
-/* "Allow for this session" (operator STEER 2026-11-01 13:32Z, narrowed by PR #41
-   F3/F4): the key is the EXACT run — canonical vault, absolute program, argv0,
-   args, cwd, env. Any difference (another arg, another cwd, an added
-   LD_PRELOAD) asks again, and the dialog says so. The set lives ONLY here, in
-   process memory: never persisted, no IPC command reads or writes it
-   (session_allowed/session_remember are private; session_clear is the one pub
-   door, called by plugins_set when trust flips OFF next to
-   desk_proc::kill_all). A vault switch is a new process (vaultbleed), so it
-   starts empty there too. `epoch` bumps on every clear: an answer given in a
-   dialog that was open across a trust-OFF is not remembered. */
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct SessionKey {
-    vault: String,
-    file: String,
-    argv0: Option<String>,
-    args: Vec<String>,
-    cwd: PathBuf,
-    env: Vec<(String, String)>,
-}
+/* No session-wide answer (PR #41 round 2, N2/N3, coordinator default
+   2026-11-01 19:20Z): every run a plugin asks for is asked, one by one, also
+   when the very same run was allowed a moment ago. There is no allowlist, no
+   key, nothing remembered between two questions — so nothing a plugin can
+   rewrite between runs (a program in the vault, a git hook, a script an
+   interpreter reads) can ride on an earlier answer. */
 
-struct Session {
-    epoch: u64,
-    set: BTreeSet<SessionKey>,
-}
-static SESSION_ALLOW: Mutex<Session> = Mutex::new(Session { epoch: 0, set: BTreeSet::new() });
-
-fn session() -> std::sync::MutexGuard<'static, Session> {
-    SESSION_ALLOW.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// trust flipped OFF: forget every "Allow for this session"
-pub fn session_clear() {
-    let mut s = session();
-    s.set.clear();
-    s.epoch += 1;
-    eprintln!("[consent] session allowlist cleared");
-}
-
-fn session_allowed(key: &SessionKey) -> bool {
-    session().set.contains(key)
-}
-
-/// remember `key`, unless the allowlist was cleared since `epoch` was read
-fn session_remember(key: SessionKey, epoch: u64) {
-    let mut s = session();
-    if s.epoch == epoch {
-        s.set.insert(key);
-    }
-}
-
-/// F4: programs whose behaviour is whatever their input says — shells,
-/// interpreters, git (hooks, aliases, config), env-style launchers, and the desktop
-/// openers (G3: xdg-open runs whatever its target maps to). Exact names,
-/// and interpreter stems followed only by a version ("python3.12", "lua5.4").
-const RUNNERS: &[&str] = &[
-    "sh", "bash", "zsh", "dash", "fish", "ksh", "mksh", "csh", "tcsh", "busybox", "git", "env", "xargs", "sudo", "doas",
-    "pkexec", "nohup", "nice", "timeout", "setsid", "stdbuf", "flock", "xdg-open", "gio", "kde-open", "kde-open5", "gnome-open",
-    "exo-open", "mimeopen", "gtk-launch",
-];
-const RUNNER_STEMS: &[&str] = &["python", "pypy", "node", "nodejs", "perl", "ruby", "php", "lua", "luajit", "deno", "bun", "tclsh", "wish", "pwsh"];
-
-fn is_runner(name: &str) -> bool {
-    RUNNERS.contains(&name)
-        || RUNNER_STEMS
-            .iter()
-            .any(|s| name.strip_prefix(s).is_some_and(|v| v.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-')))
-}
-
-/// ".." and "." removed without touching the disk
-fn lexical(p: &Path) -> PathBuf {
-    let mut o = PathBuf::new();
-    for c in p.components() {
-        match c {
-            Component::ParentDir => {
-                o.pop();
-            }
-            Component::CurDir => {}
-            c => o.push(c),
-        }
-    }
-    o
-}
-
-/// F3: the program file, or the directory entry naming it, lies inside the
-/// vault (lexically, through symlinks, or via a symlinked parent). A path that
-/// cannot be resolved counts as inside: when in doubt, no session.
-fn inside_vault(vault: &str, p: &Path) -> bool {
-    let v = Path::new(vault);
-    let vr = v.canonicalize().unwrap_or_else(|_| v.to_path_buf());
-    let real = p.canonicalize().ok();
-    let entry = p.parent().and_then(|d| d.canonicalize().ok()).zip(p.file_name()).map(|(d, n)| d.join(n));
-    [Some(lexical(p)), real, entry].iter().any(|x| x.as_ref().is_none_or(|x| x.starts_with(v) || x.starts_with(&vr)))
-}
-
-/// why "Allow for this session" is not offered for this resolved Spec, if not
-fn no_session_why(vault: &str, sp: &Spec) -> Option<&'static str> {
-    let p = Path::new(&sp.file);
-    if !p.is_absolute() {
-        return Some("the program path is not absolute");
-    }
-    if inside_vault(vault, p) {
-        return Some("the program is inside the vault, where a plugin can change it between runs");
-    }
-    let real = p.canonicalize().ok();
-    let names = [p.file_name(), real.as_deref().and_then(Path::file_name), sp.argv0.as_deref().map(Path::new).and_then(Path::file_name)];
-    if names.iter().flatten().any(|n| is_runner(&n.to_string_lossy())) {
-        return Some("it is a shell, an interpreter, git or a launcher, which runs whatever its input says");
-    }
-    None
-}
-
-/// what ask() puts on screen: the body, and for a spawn that qualifies, the
-/// exact-run key "Allow for this session" would remember (None = that button
-/// is not offered)
+/// what ask() puts on screen (`text`) and what the app log gets (`log`): the
+/// same body, except that the log never holds an env VALUE (N1: a plugin's env
+/// can carry tokens; names are logged, values are not)
 pub struct Question {
     text: String,
-    session: Option<SessionKey>,
+    log: String,
 }
 
 pub fn trust_question(canon: &str) -> Question {
-    Question { text: trust_text(canon), session: None }
+    let text = trust_text(canon);
+    Question { log: text.clone(), text }
 }
 
-/// the line that tells the user what the session button covers
-const SESSION_NOTE: &str = "\n\n\"Allow for this session\" lets exactly this run happen again without asking — this program, \
-     these arguments, this working directory and this environment, nothing else — until opensidian quits \
-     (or community plugins are turned off). Any difference asks again.";
-
-/// `vault` = plugins::trust_key(root), the canonical vault path; `sp` = the
-/// Spec after resolve() (absolute file)
-pub fn spawn_question(vault: &str, sp: &Spec) -> Question {
-    let mut text = spawn_text(sp);
-    let session = match no_session_why(vault, sp) {
-        None => {
-            text.push_str(SESSION_NOTE);
-            Some(SessionKey {
-                vault: vault.to_string(),
-                file: sp.file.clone(),
-                argv0: sp.argv0.clone(),
-                args: sp.args.clone(),
-                cwd: sp.cwd.clone(),
-                env: sp.env.clone(),
-            })
-        }
-        Some(why) => {
-            text.push_str(&format!("\n\n(No \"Allow for this session\" here: {why}.)"));
-            None
-        }
-    };
-    Question { text, session }
+/// `sp` = the Spec after resolve() (absolute file)
+pub fn spawn_question(sp: &Spec) -> Question {
+    Question { text: spawn_text(sp), log: spawn_log(sp) }
 }
 
-/// the dialog's answer. Only answer_of() makes Once/Session — from a GTK
-/// response the user produced by pressing that button.
+/// the dialog's answer. Only answer_of() makes Once — from a GTK response the
+/// user produced by pressing Allow once / Trust.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Answer {
     No,
     Once,
-    Session,
 }
 
-/// response ids: Accept = Allow once / Trust, Other(SESSION_RESPONSE) = Allow
-/// for this session; everything else (Reject, DeleteEvent, None, ...) = No
-const SESSION_RESPONSE: u16 = 7;
-
+/// Accept = Allow once / Trust; everything else (Reject, DeleteEvent, None, ...) = No
 #[cfg(target_os = "linux")]
-fn answer_of(r: gtk::ResponseType, session_offered: bool) -> Answer {
+fn answer_of(r: gtk::ResponseType) -> Answer {
     match r {
         gtk::ResponseType::Accept => Answer::Once,
-        gtk::ResponseType::Other(SESSION_RESPONSE) if session_offered => Answer::Session,
         _ => Answer::No,
     }
 }
 
 static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
-/// ask the user; true only when Allow/Trust was pressed now, or "Allow for
-/// this session" was pressed earlier for this exact run. BLOCKS until the
-/// answer: call it from a worker thread, never the main thread.
-fn ask_blocking(win: &tauri::Window, kind: Kind, q: Question) -> bool {
+/// one question, one at a time: `present` puts it in front of the user and hands
+/// the answer to the sender (false = it could not be presented = NO). Every call
+/// presents: there is no earlier answer that stands in for this one.
+fn ask_with(kind: Kind, q: Question, present: impl FnOnce(Kind, Question, std::sync::mpsc::Sender<Answer>) -> bool) -> bool {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-    // checked under ONE_AT_A_TIME: a spawn queued behind the dialog that
-    // just allowed this exact run for the session does not ask again
-    if let Some(key) = &q.session {
-        if session_allowed(key) {
-            eprintln!("[consent] spawn {:?}: allowed for this session, not asked", key.file);
-            return true;
-        }
-    }
-    let epoch = session().epoch;
     let (tx, rx) = std::sync::mpsc::channel::<Answer>();
-    let w2 = win.clone();
-    let offered = q.session.is_some();
-    let text = q.text;
-    if win.run_on_main_thread(move || show_dialog(&w2, kind, &text, offered, tx)).is_err() {
+    if !present(kind, q, tx) {
         return false;
     }
     // a dialog torn down without a response drops tx: recv errs -> No
-    match rx.recv().unwrap_or(Answer::No) {
-        Answer::No => false,
-        Answer::Once => true,
-        Answer::Session => {
-            if let Some(key) = q.session {
-                eprintln!("[consent] spawn {:?}: allowed for this session", key.file);
-                session_remember(key, epoch);
-            }
-            true
-        }
-    }
+    rx.recv().unwrap_or(Answer::No) == Answer::Once
+}
+
+/// ask the user; true only when Allow once / Trust was pressed for THIS
+/// question. BLOCKS until the answer: call it from a worker thread, never the
+/// main thread.
+fn ask_blocking(win: &tauri::Window, kind: Kind, q: Question) -> bool {
+    ask_with(kind, q, |kind, q, tx| {
+        let w2 = win.clone();
+        win.run_on_main_thread(move || show_dialog(&w2, kind, &q, tx)).is_ok()
+    })
 }
 
 /// the async front door the commands await. Any failure on the way = NO.
@@ -373,7 +244,7 @@ const BODY_W: i32 = 640;
 const BODY_H: i32 = 320;
 
 #[cfg(target_os = "linux")]
-fn show_dialog(win: &tauri::Window, kind: Kind, text: &str, session_offered: bool, tx: std::sync::mpsc::Sender<Answer>) {
+fn show_dialog(win: &tauri::Window, kind: Kind, q: &Question, tx: std::sync::mpsc::Sender<Answer>) {
     use gtk::prelude::*;
     let parent = win.gtk_window().ok();
     let (title, head, no, yes) = match kind {
@@ -392,7 +263,7 @@ fn show_dialog(win: &tauri::Window, kind: Kind, text: &str, session_offered: boo
     );
     d.set_title(title);
     let buf = gtk::TextBuffer::new(None::<&gtk::TextTagTable>);
-    buf.set_text(text);
+    buf.set_text(&q.text);
     let tv = gtk::TextView::with_buffer(&buf);
     tv.set_editable(false);
     tv.set_cursor_visible(false);
@@ -405,20 +276,17 @@ fn show_dialog(win: &tauri::Window, kind: Kind, text: &str, session_offered: boo
     sw.set_size_request(BODY_W, BODY_H);
     sw.add(&tv);
     d.content_area().add(&sw);
-    // what the view holds, read back from the widget: the harness asserts on it
-    let (s, e) = buf.bounds();
-    eprintln!("[consent] dialog text: {:?}", buf.text(&s, &e, false));
+    // N1: the log gets the body with every env VALUE masked (names, program, args and
+    // cwd stay: the harness asserts on them). The view itself holds q.text, in full.
+    eprintln!("[consent] dialog text: {:?}", q.log);
     let _ = d.add_button(no, gtk::ResponseType::Reject);
     let _ = d.add_button(yes, gtk::ResponseType::Accept);
-    if session_offered {
-        let _ = d.add_button("Allow for this _session", gtk::ResponseType::Other(SESSION_RESPONSE));
-    }
     d.set_default_response(gtk::ResponseType::Reject);
     d.set_keep_above(true);
     let tx = std::cell::RefCell::new(Some(tx));
     d.connect_response(move |d, r| {
         if let Some(tx) = tx.borrow_mut().take() {
-            let _ = tx.send(answer_of(r, session_offered));
+            let _ = tx.send(answer_of(r));
         }
         // SAFETY: the dialog is ours alone (no other Rust handle outlives this
         // handler); destroying a toplevel from its own response handler is the
@@ -435,7 +303,7 @@ fn show_dialog(win: &tauri::Window, kind: Kind, text: &str, session_offered: boo
 
 /// no native prompt on this platform = NO (nothing is trusted or started)
 #[cfg(not(target_os = "linux"))]
-fn show_dialog(_win: &tauri::Window, _kind: Kind, _text: &str, _session_offered: bool, tx: std::sync::mpsc::Sender<Answer>) {
+fn show_dialog(_win: &tauri::Window, _kind: Kind, _q: &Question, tx: std::sync::mpsc::Sender<Answer>) {
     let _ = tx.send(Answer::No);
 }
 
@@ -443,9 +311,6 @@ fn show_dialog(_win: &tauri::Window, _kind: Kind, _text: &str, _session_offered:
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
-
-    /// tests that touch the process-wide allowlist (remember/clear) run one at a time
-    static SESSION_TESTS: Mutex<()> = Mutex::new(());
 
     fn sp(file: &str, args: &[&str], cwd: &str) -> Spec {
         Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), env: vec![], argv0: None }
@@ -534,98 +399,6 @@ mod tests {
         assert!(trust_text("/home/u/My Vault").contains("Vault: \"/home/u/My Vault\""));
     }
 
-    // F3: a program inside the vault (directly, via a symlinked dir, via "..") gets no
-    // session button; the same program outside it does
-    #[test]
-    fn f3_no_session_for_a_program_inside_the_vault() {
-        let b = tree("f3");
-        let vault = plain(&b.join("vault").canonicalize().unwrap());
-        for p in [b.join("vault/fakeprog"), b.join("link/fakeprog"), b.join("bin/../vault/rel/fakeprog")] {
-            let q = spawn_question(&vault, &sp(&plain(&p), &[], &vault));
-            assert_eq!(q.session, None, "{p:?}");
-            assert!(q.text.contains("inside the vault"), "{}", q.text);
-            assert!(!q.text.contains("lets exactly this run"), "{}", q.text);
-        }
-        let q = spawn_question(&vault, &sp(&plain(&b.join("bin/fakeprog")), &[], &vault));
-        assert!(q.session.is_some());
-        let _ = std::fs::remove_dir_all(&b);
-    }
-
-    fn plain(p: &Path) -> String {
-        p.to_string_lossy().into_owned()
-    }
-
-    // F4: the session key is the exact run: another arg, cwd, argv0 or env var is
-    // another key; the dialog says so
-    #[test]
-    fn f4_the_session_key_is_the_exact_run() {
-        let b = tree("f4");
-        let prog = plain(&b.join("bin/fakeprog"));
-        let base = sp(&prog, &["a"], "/");
-        let k = |s: &Spec| spawn_question("/v", s).session.expect("offered");
-        let k0 = k(&base);
-        assert_eq!(k0, k(&sp(&prog, &["a"], "/")));
-        assert_ne!(k0, k(&sp(&prog, &["b"], "/")), "args");
-        assert_ne!(k0, k(&sp(&prog, &["a", "b"], "/")), "args");
-        assert_ne!(k0, k(&sp(&prog, &["a"], "/tmp")), "cwd");
-        let mut e = sp(&prog, &["a"], "/");
-        e.env.push(("LD_PRELOAD".into(), "/tmp/x.so".into()));
-        assert_ne!(k0, k(&e), "env");
-        let mut a0 = sp(&prog, &["a"], "/");
-        a0.argv0 = Some("other".into());
-        assert_ne!(k0, k(&a0), "argv0");
-        assert_ne!(k0, spawn_question("/w", &base).session.unwrap(), "vault");
-        assert!(spawn_question("/v", &base).text.contains("this program, these arguments, this working directory and this environment"));
-        let _s = SESSION_TESTS.lock().unwrap_or_else(|e| e.into_inner());
-        // remembered: the exact run hits, a changed one does not
-        let e0 = session().epoch;
-        session_remember(k0.clone(), e0);
-        assert!(session_allowed(&k0));
-        assert!(!session_allowed(&k(&sp(&prog, &["b"], "/"))));
-        assert!(!session_allowed(&k(&e)));
-        session_clear();
-        assert!(!session_allowed(&k0));
-        let _ = std::fs::remove_dir_all(&b);
-    }
-
-    // F4: shells, interpreters, git and launchers never get the session button —
-    // by the path's name, its real name, or the name asked for
-    #[test]
-    fn f4_no_session_for_shells_interpreters_and_git() {
-        let b = tree("f4r");
-        for n in ["sh", "bash", "git", "python3", "python3.12", "python", "node", "perl", "env", "xargs"] {
-            let f = b.join("bin").join(n);
-            std::fs::copy(b.join("bin/fakeprog"), &f).unwrap();
-            let q = spawn_question("/v", &sp(&plain(&f), &["-c", "x"], "/"));
-            assert_eq!(q.session, None, "{n}");
-            assert!(q.text.contains("shell, an interpreter, git"), "{}", q.text);
-        }
-        let ln = b.join("bin/innocent");
-        std::os::unix::fs::symlink(b.join("bin/bash"), &ln).unwrap();
-        assert_eq!(spawn_question("/v", &sp(&plain(&ln), &[], "/")).session, None, "symlink to bash");
-        let mut a0 = sp(&plain(&b.join("bin/fakeprog")), &[], "/");
-        a0.argv0 = Some("git".into());
-        assert_eq!(spawn_question("/v", &a0).session, None, "asked for git");
-        for n in ["pythonista", "nodes", "gitk", "shasum", "envoy"] {
-            assert!(!is_runner(n), "{n}");
-        }
-        let _ = std::fs::remove_dir_all(&b);
-    }
-
-    // G3: the desktop openers run whatever their target maps to — never a session answer
-    #[test]
-    fn g3_no_session_for_desktop_openers() {
-        let b = tree("g3o");
-        for n in ["xdg-open", "gio", "kde-open", "gtk-launch", "exo-open"] {
-            let f = b.join("bin").join(n);
-            std::fs::copy(b.join("bin/fakeprog"), &f).unwrap();
-            let q = spawn_question("/v", &sp(&plain(&f), &["/v/run.desktop"], "/v"));
-            assert_eq!(q.session, None, "{n}");
-            assert!(q.text.contains("/v/run.desktop"), "{}", q.text);
-        }
-        let _ = std::fs::remove_dir_all(&b);
-    }
-
     // F6: an env over the cap is refused before anything is asked
     #[test]
     fn f6_env_over_the_cap_is_refused() {
@@ -640,41 +413,59 @@ mod tests {
         assert!(check_env(&s).is_ok());
     }
 
+    // N1: the app log holds the env NAMES the plugin set, never their values; the
+    // dialog itself shows them in full
     #[test]
-    fn no_session_button_for_the_trust_prompt() {
-        assert_eq!(trust_question("/v").session, None);
+    fn n1_env_values_are_not_logged() {
+        let secret = "s3cr3t-token-n1-do-not-log";
+        let mut s = sp("/usr/bin/git", &["push", "origin"], "/v");
+        s.env.push(("GITHUB_TOKEN".into(), secret.into()));
+        s.env.push(("LD_PRELOAD".into(), "/tmp/x.so".into()));
+        let q = spawn_question(&s);
+        assert!(q.text.contains(&format!("    \"GITHUB_TOKEN\"=\"{secret}\"\n")), "{}", q.text);
+        assert!(!q.log.contains(secret), "an env value reached the log: {}", q.log);
+        assert!(!q.log.contains("/tmp/x.so"), "an env value reached the log: {}", q.log);
+        assert!(q.log.contains(&format!("    \"GITHUB_TOKEN\"={ENV_VALUE_HIDDEN}\n")), "{}", q.log);
+        assert!(q.log.contains("    \"LD_PRELOAD\"="), "{}", q.log);
+        // program, args and cwd are still logged (the harness reads them)
+        for x in ["Program: \"/usr/bin/git\"", "    \"push\"\n", "    \"origin\"\n", "Cwd: \"/v\""] {
+            assert!(q.log.contains(x), "{x} not logged: {}", q.log);
+        }
+        assert_eq!(trust_question("/v").log, trust_question("/v").text, "the trust body holds no env");
     }
 
+    // N2/N3: no session grant. The same run, asked twice and allowed the first time,
+    // is presented to the user again; nothing in the question mentions a session.
     #[test]
-    fn a_clear_forgets_and_a_stale_epoch_is_not_remembered() {
-        let k = SessionKey {
-            vault: "/consent-test-vault".into(),
-            file: format!("/consent-test/{}", std::process::id()),
-            argv0: None,
-            args: vec![],
-            cwd: "/".into(),
-            env: vec![],
-        };
-        let _s = SESSION_TESTS.lock().unwrap_or_else(|e| e.into_inner());
-        let e = session().epoch;
-        session_remember(k.clone(), e);
-        assert!(session_allowed(&k));
-        session_clear();
-        assert!(!session_allowed(&k));
-        // an answer from a dialog opened before the clear
-        session_remember(k.clone(), e);
-        assert!(!session_allowed(&k));
+    fn n2_an_identical_second_spawn_asks_again() {
+        let s = sp("/bin/true", &["x"], "/");
+        let mut presented = 0;
+        for _ in 0..3 {
+            let q = spawn_question(&s);
+            assert!(!q.text.to_lowercase().contains("session"), "{}", q.text);
+            let yes = ask_with(Kind::Spawn, q, |_, _, tx| {
+                presented += 1;
+                tx.send(Answer::Once).is_ok()
+            });
+            assert!(yes);
+        }
+        assert_eq!(presented, 3, "an identical run was allowed without being asked");
+        // a question that cannot be presented, or is torn down unanswered, is NO
+        assert!(!ask_with(Kind::Spawn, spawn_question(&s), |_, _, _| false));
+        assert!(!ask_with(Kind::Spawn, spawn_question(&s), |_, _, tx| {
+            drop(tx);
+            true
+        }));
+        assert!(!ask_with(Kind::Spawn, spawn_question(&s), |_, _, tx| tx.send(Answer::No).is_ok()));
     }
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn only_the_session_button_answers_session_and_only_when_offered() {
+    fn only_allow_once_or_trust_answers_yes() {
         use gtk::ResponseType as R;
-        assert_eq!(answer_of(R::Accept, false), Answer::Once);
-        assert_eq!(answer_of(R::Other(SESSION_RESPONSE), true), Answer::Session);
-        assert_eq!(answer_of(R::Other(SESSION_RESPONSE), false), Answer::No);
-        for r in [R::Reject, R::DeleteEvent, R::None, R::Cancel, R::Close, R::Ok, R::Yes, R::Other(8)] {
-            assert_eq!(answer_of(r, true), Answer::No, "{r:?}");
+        assert_eq!(answer_of(R::Accept), Answer::Once);
+        for r in [R::Reject, R::DeleteEvent, R::None, R::Cancel, R::Close, R::Ok, R::Yes, R::Other(7), R::Other(8)] {
+            assert_eq!(answer_of(r), Answer::No, "{r:?}");
         }
     }
 }

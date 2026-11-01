@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::desk_proc::bytes_to_latin1;
+use crate::desk_proc::{bytes_to_latin1, Life};
 
 fn next_id() -> u64 {
     static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -157,8 +157,21 @@ fn listen_err(host: &str, port: u16, e: &std::io::Error) -> String {
     format!("{code}: listen {host}:{port} {e}")
 }
 
+/* N5 (PR #41): what desk_net_listen runs. The lifecycle lock (desk_proc::lifecycle, the
+   one plugins_set holds across a trust-OFF: flag write, kill_all, close_all) is taken
+   BEFORE the trust check and held through the bind and the register, so a trust-OFF
+   either lands before the check (EPERM, nothing bound) or after the register (its
+   close_all closes this listener). listen and close_all demand a &Life for that. */
+pub fn listen_trusted(trusted: impl FnOnce() -> bool, host: &str, port: u16) -> Result<(u64, Arc<Srv>), String> {
+    let life = crate::desk_proc::lifecycle();
+    if !trusted() {
+        return Err("EPERM: restricted mode, plugins cannot open servers".into());
+    }
+    listen(host, port, &life)
+}
+
 /// bind host:port (Node: no host = all interfaces; "localhost" resolves) and start accepting
-pub fn listen(host: &str, port: u16) -> Result<(u64, Arc<Srv>), String> {
+fn listen(host: &str, port: u16, _life: &Life) -> Result<(u64, Arc<Srv>), String> {
     let h = if host.is_empty() { "0.0.0.0" } else { host };
     let addrs: Vec<_> = (h, port).to_socket_addrs().map_err(|e| format!("ENOTFOUND: listen {h}: {e}"))?.collect();
     let l = TcpListener::bind(&addrs[..]).map_err(|e| listen_err(h, port, &e))?;
@@ -214,7 +227,7 @@ pub fn forget_conn(id: u64) {
 }
 
 /// flip OFF: every listener and socket plugins opened goes away
-pub fn close_all() {
+pub fn close_all(_life: &Life) {
     let (s, c) = {
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
         (r.srvs.drain().map(|(_, s)| s).collect::<Vec<_>>(), r.conns.drain().map(|(_, c)| c).collect::<Vec<_>>())
@@ -230,11 +243,18 @@ pub fn close_all() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::desk_proc::latin1_to_bytes;
+    use crate::desk_proc::{latin1_to_bytes, lifecycle, try_lifecycle};
+
+    /// close_all drops EVERY listener: the tests of this module run one at a time
+    static NET_TESTS: Mutex<()> = Mutex::new(());
+    fn one() -> std::sync::MutexGuard<'static, ()> {
+        NET_TESTS.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     #[test]
     fn desk_net_listen_accept_read_write_end_close() {
-        let (sid, s) = listen("127.0.0.1", 0).unwrap();
+        let _one = one();
+        let (sid, s) = listen("127.0.0.1", 0, &lifecycle()).unwrap();
         assert_eq!(s.address, "127.0.0.1");
         let mut cl = TcpStream::connect(("127.0.0.1", s.port)).unwrap();
         let b = s.accept(Duration::from_secs(3));
@@ -266,13 +286,14 @@ mod tests {
 
     #[test]
     fn desk_net_port_in_use_is_eaddrinuse_and_close_frees_it() {
-        let (sid, s) = listen("127.0.0.1", 0).unwrap();
-        let e = listen("127.0.0.1", s.port).err().unwrap();
+        let _one = one();
+        let (sid, s) = listen("127.0.0.1", 0, &lifecycle()).unwrap();
+        let e = listen("127.0.0.1", s.port, &lifecycle()).err().unwrap();
         assert!(e.starts_with("EADDRINUSE: listen 127.0.0.1:"), "{e}");
         close_srv(sid);
         let mut ok = false;
         for _ in 0..40 {
-            if let Ok((id, _)) = listen("127.0.0.1", s.port) {
+            if let Ok((id, _)) = listen("127.0.0.1", s.port, &lifecycle()) {
                 close_srv(id);
                 ok = true;
                 break;
@@ -280,5 +301,55 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         assert!(ok, "port not freed after close");
+    }
+
+    /* N5 (PR #41): a trust-OFF (flag write, close_all) arrives while a listen is between
+       its trust check and its bind. B is that trust-OFF, run on another thread from INSIDE
+       the check: it takes the lifecycle lock without blocking if it can. With the fix the
+       listen holds the lock there, so B cannot: it runs for real once listen_trusted
+       returns, and its close_all closes the new listener. If the check ran outside the
+       lock, B would run first, and the listener bound after it would stay up in
+       restricted mode. No sleep: the order is forced by where B runs. */
+    #[test]
+    fn desk_net_n5_listener_cannot_stay_bound_after_trust_off() {
+        static TRUSTED: AtomicBool = AtomicBool::new(true);
+        let _one = one();
+        TRUSTED.store(true, Ordering::SeqCst);
+        let trust_off = |life: &Life| {
+            TRUSTED.store(false, Ordering::SeqCst);
+            close_all(life);
+        };
+        let mut b_ran_inside = false;
+        let got = listen_trusted(
+            || {
+                let ok = TRUSTED.load(Ordering::SeqCst);
+                // B, now: only if the lock is free (other tests hold it for microseconds,
+                // so it is retried a bounded number of times; while held, it stays held)
+                b_ran_inside = std::thread::spawn(move || {
+                    for _ in 0..10_000 {
+                        if let Some(life) = try_lifecycle() {
+                            trust_off(&life);
+                            return true;
+                        }
+                        std::thread::yield_now();
+                    }
+                    false
+                })
+                .join()
+                .unwrap();
+                ok
+            },
+            "127.0.0.1",
+            0,
+        );
+        if !b_ran_inside {
+            trust_off(&lifecycle()); // B waited for the lock: it runs after the register
+        }
+        let (id, s) = got.expect("the check passed before the trust-OFF");
+        let bound = srv(id).is_ok();
+        let accepting = !s.accept(Duration::from_millis(10)).closed;
+        close_srv(id);
+        assert!(!bound && !accepting, "a listener that passed its trust check stayed bound after trust-OFF (registered: {bound}, accepting: {accepting})");
+        assert!(!b_ran_inside, "the trust-OFF ran between the listen's trust check and its bind");
     }
 }
