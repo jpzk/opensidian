@@ -236,6 +236,42 @@ pub struct Spec {
     pub env: Vec<(String, String)>,
     /// argv[0] the child sees (the name the plugin asked for); None = file
     pub argv0: Option<String>,
+    /// Q1 (PR #42 round 4): the PATH the child runs with, cleaned by prepare() BEFORE the
+    /// lifecycle lock is taken. None = not prepared: start refuses, it never cleans one itself
+    pub path: Option<ChildPath>,
+}
+
+/* Q1 (PR #42 round 4, Greptile + Qodo + CodeAnt): cleaning a PATH canonicalizes every
+   entry (path_dir_ok) — filesystem lookups of plugin-chosen directories. An entry on a
+   stalled NFS/FUSE mount blocks there for as long as the mount does. This used to run in
+   build, i.e. inside start, i.e. while desk_proc_spawn held the lifecycle lock — and a
+   trust-OFF (plugins_set: flag write, kill_all, close_all) waits on that lock, so one
+   stalled PATH entry kept restricted mode from ever coming back. Now every lookup is done
+   by prepare() (spawn) and opener_path() (the shell opener) before the lock; under it only
+   the trust recheck, the fork/exec and the registration run. A ChildPath is made only in
+   this file (prepare, opener_path), so a Spec cannot carry an uncleaned PATH into start.
+   Still under the lock, inherently: the cwd check and the fork/exec itself (chdir + execve
+   of the absolute program the dialog named). */
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChildPath(OsString);
+
+impl ChildPath {
+    pub fn as_os_str(&self) -> &OsStr {
+        &self.0
+    }
+}
+
+/// Q1: the Spec with its child PATH cleaned — call BEFORE desk_proc::lifecycle().
+/// `inherited` = the app's PATH (std::env::var_os), used when the plugin sets none (S2)
+pub fn prepare(mut sp: Spec, inherited: Option<OsString>) -> Spec {
+    let p = child_path(&spec_path(&sp, inherited), &[sp.root.as_path(), sp.cwd.as_path()]);
+    sp.path = Some(ChildPath(p));
+    sp
+}
+
+/// Q1: the opener's PATH (the app's, cleaned; `root` = the vault) — call BEFORE the lock
+pub fn opener_path(ours: Option<OsString>, root: &Path) -> ChildPath {
+    ChildPath(child_path(&ours.unwrap_or_default(), &[root, Path::new(OPENER_CWD)]))
 }
 
 /* R4 (PR #42, Qodo): F1 already refuses an empty / "." / relative PATH entry when the
@@ -275,6 +311,8 @@ fn lexical(p: &Path) -> PathBuf {
 
 /// S3: may the child look programs up in `dir` (an absolute PATH entry)?
 fn path_dir_ok(dir: &Path, confine: &[&Path]) -> bool {
+    #[cfg(test)]
+    tests::q1_gate(dir);
     let mut forms = vec![lexical(dir)];
     if let Ok(c) = dir.canonicalize() {
         forms.push(c);
@@ -314,7 +352,7 @@ fn spec_path(sp: &Spec, inherited: Option<OsString>) -> OsString {
     sp.env.iter().rev().find(|(k, _)| k == "PATH").map(|(_, v)| OsString::from(v)).or(inherited).unwrap_or_default()
 }
 
-fn build(sp: &Spec, inherited: Option<OsString>) -> Command {
+fn build(sp: &Spec, path: &ChildPath) -> Command {
     let mut c = Command::new(&sp.file);
     if let Some(a0) = &sp.argv0 {
         c.arg0(a0);
@@ -323,8 +361,9 @@ fn build(sp: &Spec, inherited: Option<OsString>) -> Command {
     for (k, v) in &sp.env {
         c.env(k, v);
     }
-    // R4/S1-S3: the child's own PATH lookups never land in its cwd or the vault; always set
-    c.env("PATH", child_path(&spec_path(sp, inherited), &[sp.root.as_path(), sp.cwd.as_path()]));
+    // R4/S1-S3: the child's own PATH lookups never land in its cwd or the vault; always set.
+    // Q1: cleaned by prepare() before the lifecycle lock — no PATH entry is looked up here
+    c.env("PATH", path.as_os_str());
     // SAFETY: async-signal-safe syscalls only, between fork and exec
     unsafe {
         c.pre_exec(|| {
@@ -341,13 +380,13 @@ fn build(sp: &Spec, inherited: Option<OsString>) -> Command {
     c
 }
 
-fn fork(sp: Spec) -> std::io::Result<Child> {
+fn fork(sp: Spec, path: ChildPath) -> std::io::Result<Child> {
     let (tx, rx) = std::sync::mpsc::channel();
     forker()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .send(Box::new(move || {
-            let _ = tx.send(build(&sp, std::env::var_os("PATH")).spawn());
+            let _ = tx.send(build(&sp, &path).spawn());
         }))
         .map_err(|_| std::io::Error::other("fork thread gone"))?;
     rx.recv().map_err(|_| std::io::Error::other("fork thread gone"))?
@@ -386,8 +425,12 @@ pub fn start(sp: Spec, _life: &Life) -> Result<Arc<Run>, String> {
     if !sp.cwd.is_dir() {
         return Err(format!("ENOENT: spawn {} cwd {} is not a directory", sp.file, sp.cwd.display()));
     }
+    // Q1: the PATH was cleaned before the lock (prepare); unprepared = refused, never cleaned here
+    let Some(path) = sp.path.clone() else {
+        return Err(format!("EINVAL: spawn {}: child PATH not prepared before the lifecycle lock (desk_proc::prepare)", sp.file));
+    };
     let file = sp.file.clone();
-    let mut child = fork(sp).map_err(|e| spawn_err(&file, &e))?;
+    let mut child = fork(sp, path).map_err(|e| spawn_err(&file, &e))?;
     let run = Arc::new(Run {
         pid: child.id() as i32,
         stdin: Mutex::new(child.stdin.take()),
@@ -560,7 +603,7 @@ pub fn trust_plan(on: bool, seen: u64, trusted_now: impl FnOnce() -> bool) -> (b
    .desktop/script in. So a local target is resolved BEFORE asking (canonicalize: every
    symlink followed, the dialog shows the final path, and that final path — never the
    plugin's spelling — is what xdg-open gets), its identity is recorded (lstat: dev, ino,
-   mode, size, mtime), and after Allow `Local::recheck` lstats the same path again right
+   mode, size, mtime, ctime — Q2), and after Allow `Local::recheck` lstats the same path again right
    before the exec (desk_shell, under the lifecycle lock): any difference — another inode,
    a symlink where the file was, changed contents/size/mtime, gone — refuses with EPERM and
    nothing is opened. A file: URL is turned into its path (percent-decoded) and goes the
@@ -600,12 +643,17 @@ pub struct Ident {
     mode: u32,
     size: u64,
     mtime: (i64, i64),
+    /// Q2 (PR #42 round 4, CodeAnt): the inode change time. mtime can be set back by any
+    /// writer (utimensat / touch -d); ctime cannot be set from userspace: every write, chmod,
+    /// rename or utimensat moves it to "now". A same-size rewrite with its mtime restored
+    /// keeps (dev, ino, mode, size, mtime) — not ctime.
+    ctime: (i64, i64),
 }
 
 fn ident_of(p: &Path) -> Result<Ident, String> {
     use std::os::unix::fs::MetadataExt;
     let m = std::fs::symlink_metadata(p).map_err(|e| format!("ENOENT: {}: {e}", p.display()))?;
-    Ok(Ident { dev: m.dev(), ino: m.ino(), mode: m.mode(), size: m.size(), mtime: (m.mtime(), m.mtime_nsec()) })
+    Ok(Ident { dev: m.dev(), ino: m.ino(), mode: m.mode(), size: m.size(), mtime: (m.mtime(), m.mtime_nsec()), ctime: (m.ctime(), m.ctime_nsec()) })
 }
 
 /// a target the dialog asks about: `arg` is what the dialog shows and what xdg-open gets;
@@ -724,7 +772,7 @@ pub fn shell_target(root: &Path, op: &str, target: &str) -> Result<ShellOpen, St
    R4 (PR #42, Qodo): the opener is a script that looks up its helpers on PATH, so it
    runs in OPENER_CWD ("/", which plugins cannot write) — never the vault — with PATH
    cut to its absolute entries (child_path). `exec` gets both in a Launch and applies
-   them with Launch::apply; `ours` = the app's PATH (main.rs: std::env::var_os).
+   them with Launch::apply; the PATH is opener_path(the app's PATH), made before the lock (Q1).
    S1-S3 (PR #42 round 3): the same child_path as a spawn — bytes, /proc and /dev/fd and
    the vault (`root`) dropped, SAFE_PATH when nothing is left — and PATH is always set. */
 pub const OPENER_CWD: &str = "/";
@@ -743,10 +791,11 @@ impl Launch<'_> {
     }
 }
 
-pub fn shell_spawn<R>(t: &Local, ours: Option<OsString>, root: &Path, exec: impl FnOnce(Launch) -> Result<R, String>) -> Result<R, String> {
+/// Q1: the identity recheck and the exec, nothing else: `path` = opener_path(), computed
+/// before the caller took the lifecycle lock — no PATH entry is looked up in here
+pub fn shell_spawn<R>(t: &Local, path: ChildPath, exec: impl FnOnce(Launch) -> Result<R, String>) -> Result<R, String> {
     t.recheck()?;
-    let path = child_path(&ours.unwrap_or_default(), &[root, Path::new(OPENER_CWD)]);
-    exec(Launch { arg: &t.arg, cwd: Path::new(OPENER_CWD), path })
+    exec(Launch { arg: &t.arg, cwd: Path::new(OPENER_CWD), path: path.0 })
 }
 
 #[cfg(test)]
@@ -754,7 +803,83 @@ mod tests {
     use super::*;
 
     fn spec(file: &str, args: &[&str], cwd: &Path) -> Spec {
-        Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), root: cwd.into(), env: vec![], argv0: None }
+        Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), root: cwd.into(), env: vec![], argv0: None, path: None }
+    }
+
+    /// Q1: what desk_proc_spawn does before the lock — the child PATH cleaned from ours
+    fn ready(sp: Spec) -> Spec {
+        prepare(sp, std::env::var_os("PATH"))
+    }
+
+    /* Q1 test seam: path_dir_ok calls q1_gate(dir) first. While a test has armed it for
+       one marker directory, the lookup of THAT entry stands still — it reports "entered"
+       and waits for "go", like a canonicalize stuck on a stalled NFS/FUSE mount. Every
+       other entry (other tests running in parallel) passes straight through: the armed
+       pair is taken out of the mutex before waiting, so nobody waits on the mutex. */
+    type Q1Gate = (PathBuf, std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
+    static Q1_GATE: Mutex<Option<Q1Gate>> = Mutex::new(None);
+
+    pub(super) fn q1_gate(dir: &Path) {
+        let armed = {
+            let mut g = Q1_GATE.lock().unwrap_or_else(|e| e.into_inner());
+            if g.as_ref().is_some_and(|(d, _, _)| d == dir) { g.take() } else { None }
+        };
+        if let Some((_, entered, go)) = armed {
+            let _ = entered.send(());
+            let _ = go.recv();
+        }
+    }
+
+    /* Q1 (PR #42 round 4, Greptile + Qodo + CodeAnt): a PATH entry whose lookup hangs (a
+       stalled NFS/FUSE mount) must not hold the lifecycle lock — a trust-OFF waits on it.
+       Thread A runs desk_proc_spawn's sequence after Allow: the PATH cleaned (prepare), the
+       lock, the trust recheck, start, register. Its plugin PATH holds a marker entry whose
+       lookup stands still (q1_gate) until the test says go. While it stands still, the
+       trust-OFF (plugins_set: lock, flag OFF, kill_all) must get the lock — try_lifecycle,
+       no sleep, no timeout decides it — and afterwards A's recheck must refuse the spawn:
+       nothing started, nothing registered. The gate is released before any assert, so a
+       failure cannot leave A or the fork thread hanging. */
+    #[test]
+    fn desk_q1_a_stalled_path_entry_does_not_hold_the_lifecycle_lock() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc::channel;
+        static TRUSTED: AtomicBool = AtomicBool::new(true);
+        TRUSTED.store(true, Ordering::SeqCst);
+        let stalled = std::env::temp_dir().join(format!("desk-q1-stalled-{}", std::process::id()));
+        let (entered_tx, entered) = channel::<()>();
+        let (go, go_rx) = channel::<()>();
+        *Q1_GATE.lock().unwrap_or_else(|e| e.into_inner()) = Some((stalled.clone(), entered_tx, go_rx));
+        let mut sp = spec("/bin/sleep", &["30"], &std::env::temp_dir());
+        sp.env.push(("PATH".into(), format!("{}:/usr/bin:/bin", stalled.display())));
+        let a = std::thread::spawn(move || {
+            let sp = prepare(sp, None); // desk_proc_spawn: before the lock
+            let life = lifecycle();
+            if !TRUSTED.load(Ordering::SeqCst) {
+                return Err("EPERM: restricted mode".to_string());
+            }
+            let r = start(sp, &life)?;
+            Ok((register(r.clone(), &life), r))
+        });
+        entered.recv().expect("the stalled PATH entry was never looked up");
+        // the lookup stands still now: the trust-OFF
+        let off = try_lifecycle().map(|life| {
+            TRUSTED.store(false, Ordering::SeqCst);
+            kill_all(&life);
+        });
+        let _ = go.send(());
+        let got = a.join().unwrap();
+        if let Ok((id, r)) = &got {
+            r.kill(libc::SIGKILL);
+            forget(*id);
+        }
+        assert!(off.is_some(), "a trust-OFF could not take the lifecycle lock while a PATH entry lookup stood still");
+        assert!(got.is_err(), "the spawn started after a trust-OFF that landed while its PATH was being cleaned");
+        assert!(sp_never_cleaned_under_the_lock());
+    }
+
+    /// Q1: an unprepared Spec is refused by start — it never cleans a PATH under the lock
+    fn sp_never_cleaned_under_the_lock() -> bool {
+        start(spec("/bin/true", &[], &std::env::temp_dir()), &lifecycle()).is_err_and(|e| e.starts_with("EINVAL"))
     }
 
     fn drain(r: &Run) -> (Vec<u8>, Vec<u8>, Chunk) {
@@ -820,7 +945,7 @@ mod tests {
         let d = std::env::temp_dir();
         let mut sp = spec("/bin/sh", &["-c", "pwd; printf %s \"$DESK_T\"; cat; echo e >&2; exit 3"], &d);
         sp.env.push(("DESK_T".into(), "v1".into()));
-        let r = start(sp, &lifecycle()).unwrap();
+        let r = start(ready(sp), &lifecycle()).unwrap();
         r.write(b"in\xff").unwrap();
         r.end();
         let (o, e, c) = drain(&r);
@@ -832,12 +957,12 @@ mod tests {
 
     #[test]
     fn desk_kill_reports_the_signal_and_missing_exe_is_enoent() {
-        let r = start(spec("/bin/sleep", &["30"], &std::env::temp_dir()), &lifecycle()).unwrap();
+        let r = start(ready(spec("/bin/sleep", &["30"], &std::env::temp_dir())), &lifecycle()).unwrap();
         assert!(r.kill(libc::SIGTERM));
         let (_, _, c) = drain(&r);
         assert_eq!((c.exit, c.signal), (None, Some("SIGTERM")));
         assert!(!r.kill(libc::SIGTERM));
-        let e = start(spec("no-such-exe-desk", &[], &std::env::temp_dir()), &lifecycle()).err().unwrap();
+        let e = start(ready(spec("no-such-exe-desk", &[], &std::env::temp_dir())), &lifecycle()).err().unwrap();
         assert!(e.starts_with("ENOENT: spawn no-such-exe-desk"), "{e}");
         assert_eq!(sig_num("SIGKILL"), Some(libc::SIGKILL));
         assert_eq!(sig_num(""), Some(libc::SIGTERM));
@@ -847,7 +972,7 @@ mod tests {
     fn desk_argv0_is_the_asked_name_while_the_absolute_path_is_execd() {
         let mut sp = spec("/bin/cat", &["/proc/self/cmdline"], &std::env::temp_dir());
         sp.argv0 = Some("cat-as-asked".into());
-        let r = start(sp, &lifecycle()).unwrap();
+        let r = start(ready(sp), &lifecycle()).unwrap();
         r.end();
         let (o, _, c) = drain(&r);
         assert_eq!(o, b"cat-as-asked\0/proc/self/cmdline\0");
@@ -883,7 +1008,7 @@ mod tests {
                 kill_all(&life);
             });
             let b_got_in = a_hears.recv().unwrap();
-            let r = start(spec("/bin/sleep", &["30"], &std::env::temp_dir()), &life).unwrap();
+            let r = start(ready(spec("/bin/sleep", &["30"], &std::env::temp_dir())), &life).unwrap();
             Some((register(r.clone(), &life), r, b, b_got_in))
         });
         let (id, r, b, b_got_in) = a.join().unwrap().expect("A's recheck passed");
@@ -916,7 +1041,7 @@ mod tests {
             let sp = crate::consent::resolve(sp).unwrap();
             assert_eq!(sp.file, bin.join("fakeprog").to_string_lossy(), "PATH={path:?}");
             assert!(crate::consent::spawn_text(&sp).contains(&format!("Program: {:?}", sp.file)));
-            let r = start(sp, &lifecycle()).unwrap();
+            let r = start(ready(sp), &lifecycle()).unwrap();
             r.end();
             let (o, _, _) = drain(&r);
             assert_eq!(o, b"BIN\n", "PATH={path:?}: the vault's fakeprog ran");
@@ -1077,7 +1202,7 @@ mod tests {
                 ShellOpen::Url(u) => panic!("{op} {target}: not asked ({u})"),
             };
             dialog();
-            let mut c = shell_spawn(&t, None, &vault, |l| Command::new(&opener).arg(l.arg).spawn().map_err(|e| e.to_string()))?;
+            let mut c = shell_spawn(&t, opener_path(None, &vault), |l| Command::new(&opener).arg(l.arg).spawn().map_err(|e| e.to_string()))?;
             assert!(c.wait().unwrap().success(), "the stub opener failed");
             Ok(t.arg)
         };
@@ -1120,6 +1245,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /* Q2 (PR #42 round 4, CodeAnt): while the dialog is open the plugin rewrites the allowed
+       file IN PLACE (same inode, same size) and sets its mtime back (utimensat) — every
+       field P4 recorded (dev, ino, mode, size, mtime) is as before. ctime is not: the kernel
+       moves it on the write and on the utimensat, and nothing in userspace sets it back.
+       The rewrite is repeated until ctime has moved (the clock tick it is stamped with may
+       be coarse; a user reading a dialog is always slower than one tick) — that loop is the
+       only wait, and it ends on the kernel's own timestamp, not on a sleep. */
+    #[test]
+    fn desk_q2_a_same_size_rewrite_with_mtime_restored_is_refused() {
+        use std::os::unix::fs::MetadataExt;
+        let base = std::env::temp_dir().join(format!("desk-q2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let vault = base.join("v");
+        std::fs::create_dir_all(&vault).unwrap();
+        let note = vault.join("Note.md");
+        std::fs::write(&note, "# safe note\n").unwrap();
+        let t = match shell_target(&vault, "path", "/vault/Note.md").unwrap() {
+            ShellOpen::Ask(t) => t,
+            ShellOpen::Url(u) => panic!("not asked ({u})"),
+        };
+        t.recheck().expect("control: an untouched file passes the recheck");
+        let was = std::fs::symlink_metadata(&note).unwrap();
+        let mtime = was.modified().unwrap();
+        // the dialog is open: rewrite in place, same size, mtime set back
+        let t0 = std::time::Instant::now();
+        loop {
+            let f = std::fs::OpenOptions::new().write(true).open(&note).unwrap();
+            std::io::Write::write_all(&mut &f, b"#!/bin/sh -x").unwrap(); // 12 bytes, as before
+            f.set_modified(mtime).unwrap();
+            drop(f);
+            let now = std::fs::symlink_metadata(&note).unwrap();
+            if (now.ctime(), now.ctime_nsec()) != (was.ctime(), was.ctime_nsec()) {
+                break;
+            }
+            assert!(t0.elapsed() < Duration::from_secs(10), "ctime never moved");
+        }
+        let now = std::fs::symlink_metadata(&note).unwrap();
+        assert_eq!(std::fs::read(&note).unwrap(), b"#!/bin/sh -x", "the rewrite did not land");
+        assert_eq!((now.dev(), now.ino(), now.mode(), now.size(), now.mtime(), now.mtime_nsec()), (was.dev(), was.ino(), was.mode(), was.size(), was.mtime(), was.mtime_nsec()), "the rewrite did not keep dev/ino/mode/size/mtime");
+        let r = t.recheck();
+        assert!(matches!(&r, Err(e) if e.starts_with("EPERM")), "a same-size rewrite with its mtime restored passed the recheck: {r:?}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /* R1 (PR #42, Greptile): a DIRECTORY target (showItemInFolder -> reveal opens the
        parent dir; a folder through path) changes size/mtime whenever an entry in it is
        created — saving a sibling note while the dialog is open. Still the same directory:
@@ -1139,7 +1308,7 @@ mod tests {
                 ShellOpen::Url(u) => panic!("{op} {target}: not asked ({u})"),
             };
             dialog();
-            shell_spawn(&t, None, &vault, |l| Ok(l.arg.to_string()))
+            shell_spawn(&t, opener_path(None, &vault), |l| Ok(l.arg.to_string()))
         };
         // reveal(sub/a.md) opens sub/; a sibling is created, rewritten and renamed meanwhile
         let r = ask_then_run("reveal", "/vault/sub/a.md", &|| {
@@ -1232,7 +1401,7 @@ mod tests {
             ShellOpen::Ask(t) => t,
             ShellOpen::Url(u) => panic!("not asked ({u})"),
         };
-        let mut c = shell_spawn(&t, Some(dirty.clone().into()), &vault, |l| {
+        let mut c = shell_spawn(&t, opener_path(Some(dirty.clone().into()), &vault), |l| {
             let mut cmd = Command::new(&opener);
             l.apply(&mut cmd).spawn().map_err(|e| e.to_string())
         })
@@ -1247,7 +1416,7 @@ mod tests {
         // (b) a spawned child, cwd = the vault, the plugin's PATH with "." / "" / "bin" first
         let mut sp = spec("/bin/sh", &["-c", "printf %s \"$PATH\"; r4helper 2>/dev/null; exit 0"], &vault);
         sp.env.push(("PATH".into(), dirty));
-        let r = start(sp, &lifecycle()).unwrap();
+        let r = start(ready(sp), &lifecycle()).unwrap();
         r.end();
         let (o, _, ch) = drain(&r);
         assert_eq!(ch.exit, Some(0));
@@ -1275,7 +1444,7 @@ mod tests {
 
     /// the PATH a spawned child sees, after it tried to run `helper` by name
     fn child_sees(sp: Spec) -> String {
-        let r = start(sp, &lifecycle()).unwrap();
+        let r = start(ready(sp), &lifecycle()).unwrap();
         r.end();
         let (o, _, ch) = drain(&r);
         assert_eq!(ch.exit, Some(0));
@@ -1298,7 +1467,7 @@ mod tests {
             ShellOpen::Ask(t) => t,
             ShellOpen::Url(u) => panic!("not asked ({u})"),
         };
-        let got = shell_spawn(&t, Some("tools:.".into()), &vault, |l| Ok(l.path.clone())).unwrap();
+        let got = shell_spawn(&t, opener_path(Some("tools:.".into()), &vault), |l| Ok(l.path.clone())).unwrap();
         assert_eq!(got, SAFE_PATH, "the opener's PATH is not the safe default");
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -1306,14 +1475,15 @@ mod tests {
     /* S2 (PR #42 round 3, CodeAnt): the inherited PATH was read with std::env::var — a
        non-UTF-8 PATH gave None, nothing was set, and the child inherited the raw PATH
        (relative entries and all). It is now an OsString (var_os) filtered byte-wise, and
-       PATH is always set on the child. build takes the inherited value as a parameter, so
+       PATH is always set on the child. prepare takes the inherited value as a parameter, so
        this needs no process-wide env change. */
     #[test]
     fn desk_s2_a_non_utf8_inherited_path_is_cleaned_not_passed_through_raw() {
         let (base, vault, _) = helper_vault("s2", "s2helper");
         let inherited = OsString::from_vec(b"bin:/opt/s2\xffx:.::/usr/bin".to_vec());
         assert!(inherited.to_str().is_none(), "the test PATH must not be UTF-8");
-        let c = build(&spec("/bin/true", &[], &vault), Some(inherited));
+        let sp = prepare(spec("/bin/true", &[], &vault), Some(inherited));
+        let c = build(&sp, sp.path.as_ref().unwrap());
         let got = c.get_envs().find(|(k, _)| *k == OsStr::new("PATH")).map(|(_, v)| v.map(|v| v.to_os_string()));
         assert_eq!(got, Some(Some(OsString::from_vec(b"/opt/s2\xffx:/usr/bin".to_vec()))), "the child's PATH was not set to the cleaned bytes");
         let _ = std::fs::remove_dir_all(&base);
@@ -1369,7 +1539,7 @@ mod tests {
             ShellOpen::Ask(t) => t,
             ShellOpen::Url(u) => panic!("not asked ({u})"),
         };
-        let got = shell_spawn(&t, Some(format!("{v}/bin:/proc/self/cwd:/usr/bin").into()), &vault, |l| Ok(l.path.clone())).unwrap();
+        let got = shell_spawn(&t, opener_path(Some(format!("{v}/bin:/proc/self/cwd:/usr/bin").into()), &vault), |l| Ok(l.path.clone())).unwrap();
         assert_eq!(got, "/usr/bin", "the opener's PATH kept an entry into the vault");
         let _ = std::fs::remove_dir_all(&base);
     }

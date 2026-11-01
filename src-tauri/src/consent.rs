@@ -51,6 +51,8 @@ pub enum Kind {
 /// over our environment. Over either = the spawn is refused, nothing is asked.
 pub const ENV_MAX_VARS: usize = 64;
 pub const ENV_MAX_BYTES: usize = 16 * 1024;
+/// Q4: the most bytes program + args + cwd (each + 1) a spawn or an open may carry
+pub const RUN_MAX_BYTES: usize = 64 * 1024;
 
 /// one page-supplied value as the dialog shows it: Debug-quoted (escapes \n,
 /// \t, \u{..}, quotes) and NEVER cut (F2) — the user approves what they saw
@@ -58,8 +60,22 @@ fn shown(s: &str) -> String {
     format!("{s:?}")
 }
 
-/// F6: refuse an env over the cap before any dialog is built
+/// F6: refuse an env over the cap before any dialog is built.
+/// Q4 (PR #42 round 4, CodeAnt): the same for the run itself — program + args + cwd
+/// (each + 1) over RUN_MAX_BYTES is E2BIG before anything is resolved, built or asked:
+/// the dialog body (and its log copy) is built from these values in full (never cut,
+/// F2) before ask() admits a slot, so an unbounded request would be copied, quoted and
+/// laid out several times just to be refused with EBUSY or shown in a giant view.
 pub fn check_env(sp: &Spec) -> Result<(), String> {
+    let run: usize = sp.file.len() + 1 + sp.args.iter().map(|a| a.len() + 1).sum::<usize>() + sp.cwd.as_os_str().len() + 1;
+    if run > RUN_MAX_BYTES {
+        return Err(format!(
+            "E2BIG: spawn: the program, its {} args and the cwd ({} bytes) are over the cap ({} bytes); refused, nothing asked or started",
+            sp.args.len(),
+            run,
+            RUN_MAX_BYTES
+        ));
+    }
     let bytes: usize = sp.env.iter().map(|(k, v)| k.len() + v.len() + 2).sum();
     if sp.env.len() > ENV_MAX_VARS || bytes > ENV_MAX_BYTES {
         return Err(format!(
@@ -386,7 +402,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     fn sp(file: &str, args: &[&str], cwd: &str) -> Spec {
-        Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), root: cwd.into(), env: vec![], argv0: None }
+        Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), root: cwd.into(), env: vec![], argv0: None, path: None }
     }
 
     /// base/vault (the plugin's cwd, with its own `fakeprog`), base/bin (the real
@@ -484,6 +500,28 @@ mod tests {
         assert!(check_env(&s).unwrap_err().starts_with("E2BIG"), "bytes");
         s.env = vec![("OK".into(), "y".repeat(ENV_MAX_BYTES - 10))];
         assert!(check_env(&s).is_ok());
+    }
+
+    /* Q4 (PR #42 round 4, CodeAnt): program + args + cwd over RUN_MAX_BYTES is refused by
+       check_env — which desk_proc_spawn and desk_shell call before resolve and before the
+       question body is built or ask() is reached (consent-nobypass S6: check_env < ask) —
+       many small args or one huge one alike, an open's target too. At the cap it passes:
+       nothing a dialog shows is ever cut, the request is either shown in full or refused. */
+    #[test]
+    fn q4_a_run_over_the_size_cap_is_refused_before_anything_is_asked() {
+        let fixed = "/bin/true".len() + 1 + "/".len() + 1;
+        let mut s = sp("/bin/true", &[], "/");
+        s.args = vec!["a".repeat(RUN_MAX_BYTES - fixed - 1)];
+        assert!(check_env(&s).is_ok(), "a run exactly at the cap was refused");
+        s.args[0].push('a');
+        let e = check_env(&s).unwrap_err();
+        assert!(e.starts_with("E2BIG: spawn:") && e.contains("nothing asked"), "one arg over the cap: {e}");
+        s.args = vec!["x".into(); RUN_MAX_BYTES / 2];
+        assert!(check_env(&s).unwrap_err().starts_with("E2BIG"), "many small args over the cap");
+        // an open: the opener Spec desk_shell builds, the target as its one arg
+        let mut o = sp("xdg-open", &[], "/");
+        o.args = vec![format!("steam://{}", "r".repeat(RUN_MAX_BYTES))];
+        assert!(check_env(&o).unwrap_err().starts_with("E2BIG"), "an open over the cap");
     }
 
     // N1: the app log holds the env NAMES the plugin set, never their values; the
