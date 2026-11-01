@@ -2335,3 +2335,9 @@ body.is-mobile.is-tablet.m-pinl.m-drawer #main, body.is-mobile.is-tablet.m-pinl.
   width: auto; margin-left: calc(var(--m-drawer) + var(--safe-left, 0px)); padding-left: 0; transform: none }
 body.is-mobile.is-tablet.m-pinr.m-rdrawer #main, body.is-mobile.is-tablet.m-pinr.m-rdrawer #mhdr {
   width: auto; margin-right: calc(var(--m-drawer) + var(--safe-right, 0px)); padding-right: 0; transform: none }
+/* android-p3b M15.10: the vault manager (#picker) is ONE scroller on the phone: the known-vault list is not capped at
+   150px inside the card (a nested scroller), it runs at full length below Create new vault / Open folder as vault and
+   the card scrolls; in landscape the list starts at the bottom edge and a swipe brings the rest up (stock's look) */
+body.is-mobile #p-recent { max-height: none; overflow-y: visible }
+body.is-mobile #pcard { overscroll-behavior: contain }
+@media (orientation: landscape) { body.is-mobile #ptitle { margin-bottom: 10px } }
