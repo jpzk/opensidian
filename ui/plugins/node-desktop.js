@@ -660,8 +660,8 @@
   const desk = typeof host.desk === "function" ? host.desk : null;
   const deskErr = (e, file, args) => {
     const m = String(e && e.message || e);
-    const x = new Error(m.replace(/^(E[A-Z]+): (spawn \S+) .*/, "$2 $1"));
-    const c = /^([A-Z_]+):/.exec(m); x.code = c ? c[1] : "EIO"; x.errno = -1;
+    const x = new Error(m.replace(/^(E[A-Z0-9]+): (spawn \S+) .*/, "$2 $1"));
+    const c = /^([A-Z][A-Z0-9_]*):/.exec(m); x.code = c ? c[1] : "EIO"; x.errno = -1;
     x.syscall = "spawn " + file; x.path = file; x.spawnargs = args;
     return x;
   };

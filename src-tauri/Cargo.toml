@@ -73,6 +73,11 @@ ed25519-compact = { version = "=2.4.2", default-features = false }
 [target.'cfg(target_os = "linux")'.dependencies]
 gdk = "=0.18.2"
 gdkx11 = "=0.18.2"
+# spawn-consent: the native trust / run-program prompts (src/consent.rs) are
+# gtk::MessageDialog. gtk 0.18.2 is ALREADY in Cargo.lock (tauri -> tao -> gtk, the
+# toolkit the window is); `=` pins that locked version so gtk_window()'s type is
+# this crate's type. Fetches and trusts nothing new.
+gtk = "=0.18.2"
 # cp-browser: the plugin store's HTTPS client is libsoup 3 — the library webkit2gtk
 # already links (TLS = glib-networking, system CA store). soup3 0.5.0 (2023-08-01,
 # MIT) is webkit2gtk's own binding, ALREADY in Cargo.lock: no new crate, no new C lib.

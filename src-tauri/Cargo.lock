@@ -2377,6 +2377,7 @@ dependencies = [
  "ed25519-compact",
  "gdk",
  "gdkx11",
+ "gtk",
  "hayro",
  "javascriptcore-rs",
  "landlock",
