@@ -1314,7 +1314,7 @@ mod tests {
         let inherited = OsString::from_vec(b"bin:/opt/s2\xffx:.::/usr/bin".to_vec());
         assert!(inherited.to_str().is_none(), "the test PATH must not be UTF-8");
         let c = build(&spec("/bin/true", &[], &vault), Some(inherited));
-        let got = c.get_envs().find(|(k, _)| *k == *OsStr::new("PATH")).map(|(_, v)| v.map(|v| v.to_os_string()));
+        let got = c.get_envs().find(|(k, _)| *k == OsStr::new("PATH")).map(|(_, v)| v.map(|v| v.to_os_string()));
         assert_eq!(got, Some(Some(OsString::from_vec(b"/opt/s2\xffx:/usr/bin".to_vec()))), "the child's PATH was not set to the cleaned bytes");
         let _ = std::fs::remove_dir_all(&base);
     }
