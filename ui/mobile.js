@@ -241,6 +241,7 @@
     if (typeof closeMenu === "function") closeMenu();
     if (pane && mview !== pane) { paneBefore = mview; setView(pane); }
     else if (own(mview)) paintOwn(mview);   // tags / properties: repaint from the index on every open
+    paintRibcol();                          // M13.2: the tablet's ribbon column (CSS hides it on the phone)
     document.body.classList.add("m-drawer");
   };
   const closeDrawer = () => {
@@ -465,7 +466,7 @@
   // M4.3: a file opened from the drawer opens in the current tab (rowOpen, main.js) and the drawer closes
   $m("side").addEventListener("click", e => {
     const r = e.target && e.target.closest && e.target.closest("#tree .trow");
-    if (r && !r.classList.contains("folder")) setTimeout(closeDrawer, 0);
+    if (r && !r.classList.contains("folder") && !pinnedL()) setTimeout(closeDrawer, 0);   // M13.2: a pinned drawer stays
   });
   /* opening a note from the drawer must not raise the keyboard (main.js focuses the editor once the file loads):
      focus landing in #main is dropped until the user touches #main themselves, or 3 s pass */
@@ -662,6 +663,44 @@
     sheet.hidden = false; document.body.classList.add("m-sheet");
   };
   scrim.addEventListener("click", closeSheet);
+
+  // ---- android-p3b M13.2 tablet drawers (body.is-tablet): both stay overlays, each pill row carries a PIN button
+  // (aria-pressed); pinned, the drawer docks beside the note (CSS body.m-pinl / m-pinr: no scrim, #main starts at its
+  // edge) and a tap in the note or on a file row leaves it open. The left drawer carries the ribbon (RIBBON minus the
+  // ones turned off in Ribbon menu configuration) as a vertical column at its left edge. Leaving the tablet size
+  // (a fold, wm size reset) unpins.
+  const pinBtn = (cls, host) => {
+    const b = btn("m-pin", "Pin", svg('<path d="M9 4h6l-1 6 3 3H7l3-3zM12 13v7"/>'));
+    b.setAttribute("aria-pressed", "false");
+    b.onclick = e => {
+      e.stopPropagation();
+      const on = !document.body.classList.contains(cls);
+      document.body.classList.toggle(cls, on); b.setAttribute("aria-pressed", on ? "true" : "false");
+    };
+    host.append(b);
+    return b;
+  };
+  const pinL = pinBtn("m-pinl", pillBar), pinR = pinBtn("m-pinr", rp.bar);
+  function pinnedL() { return document.body.classList.contains("is-tablet") && document.body.classList.contains("m-pinl"); }
+  addEventListener("resize", () => {
+    if (document.body.classList.contains("is-tablet")) return;
+    document.body.classList.remove("m-pinl", "m-pinr");
+    pinL.setAttribute("aria-pressed", "false"); pinR.setAttribute("aria-pressed", "false");
+  });
+  var ribcol = document.createElement("div");   // var: openDrawer may run before this line (paintRibcol guards)
+  ribcol.className = "m-ribcol";
+  side.prepend(ribcol);
+  function paintRibcol() {
+    if (!ribcol) return;
+    ribcol.textContent = "";
+    const off = ribOff();
+    for (const [label, run, icon] of RIBBON) {
+      if (off.has(label)) continue;
+      const b = btn("", label, svg(icon));
+      b.onclick = async () => { if (!pinnedL()) closeDrawer(); await run(); sync(); };
+      ribcol.append(b);
+    }
+  }
   // ---- M11.2 Settings > Interface, mobile-only rows above the ribbon configuration: Full screen (the header and nav
   // hide while a note scrolls down, come back on a scroll up), Floating navigation (the nav is a pill over the note in
   // portrait too; landscape always floats, M3.3), Sliding sidebars (an open left drawer pushes the note instead of

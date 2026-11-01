@@ -2306,3 +2306,32 @@ body.is-mobile.is-tablet .tabbar .m-newtab { display: flex; align-items: center;
   width: 40px; padding: 0; background: none; border: 0; color: var(--text-chrome-muted) }
 body.is-mobile.is-tablet .tabbar .m-newtab svg { width: 18px; height: 18px; display: block }
 body.is-mobile.is-tablet #main .lp, body.is-mobile.is-tablet #main .preview { padding: var(--file-margins) }
+/* android-p3b M15.9: the tab switcher in landscape (phone) — a 2-column grid of wide short cards; the bar (+, count,
+   Done) stays pinned to the bottom and the grid scrolls under it (2 rows of 42vh overflow the band: the third card is
+   cut by the bar, stock's look) */
+@media (orientation: landscape) {
+  body.is-mobile:not(.is-tablet) #mtabs .m-cards { grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-auto-rows: max(120px, 42vh) }
+  body.is-mobile:not(.is-tablet) #mtabs .m-card { min-height: 0 }
+}
+/* android-p3b M13.2: tablet drawers — still overlays, each with a PIN button in its pill row (aria-pressed); the left
+   drawer carries the ribbon as a vertical column at its left edge. Pinned (body.m-pinl / m-pinr while that drawer is
+   open): no scrim, #main and the header start beside the drawer, a tap in the note keeps it open. Phone: neither. */
+body.is-mobile .m-pin, body.is-mobile .m-ribcol { display: none }
+body.is-mobile.is-tablet .m-pin { display: flex; align-items: center; justify-content: center; position: absolute;
+  right: 8px; top: 50%; transform: translateY(-50%); width: 36px; height: 36px; padding: 0; background: none; border: 0;
+  border-radius: 18px; color: var(--text-chrome-muted) }
+body.is-mobile.is-tablet .m-pin svg { width: 18px; height: 18px }
+body.is-mobile.is-tablet .m-pin[aria-pressed=true] { background: var(--border); color: var(--text-chrome) }
+body.is-mobile.is-tablet.m-drawer #side { padding-left: 52px }
+body.is-mobile.is-tablet.m-drawer #side .m-ribcol { display: flex; flex-direction: column; align-items: center; gap: 8px;
+  position: absolute; left: 0; top: var(--safe-top, 0px); bottom: var(--safe-bottom, 0px); width: 52px;
+  box-sizing: border-box; padding: 10px 0; background: var(--bg-ribbon); border-right: 1px solid var(--border) }
+body.is-mobile.is-tablet .m-ribcol button { flex: 0 0 auto; width: 40px; height: 40px; display: flex; align-items: center;
+  justify-content: center; padding: 0; background: none; border: 0; border-radius: 8px; color: var(--text-chrome-muted) }
+body.is-mobile.is-tablet .m-ribcol button svg { width: 20px; height: 20px }
+body.is-mobile.is-tablet.m-pinl.m-drawer #mscrim, body.is-mobile.is-tablet.m-pinr.m-rdrawer #mscrim { display: none !important }
+body.is-mobile.is-tablet.m-pinl.m-drawer #main, body.is-mobile.is-tablet.m-pinl.m-drawer #mhdr {
+  width: auto; margin-left: calc(var(--m-drawer) + var(--safe-left, 0px)); padding-left: 0; transform: none }
+body.is-mobile.is-tablet.m-pinr.m-rdrawer #main, body.is-mobile.is-tablet.m-pinr.m-rdrawer #mhdr {
+  width: auto; margin-right: calc(var(--m-drawer) + var(--safe-right, 0px)); padding-right: 0; transform: none }
