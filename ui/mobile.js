@@ -567,6 +567,11 @@
         sync();
         if (!tabsBox.hidden) paintTabs();      // the switcher stays, one card fewer
       };
+      d.addEventListener("contextmenu", e => {   // M6.4: a long-press on a card = the tab card sheet (not activated)
+        e.preventDefault(); e.stopPropagation();
+        noSel(); setTimeout(noSel, 60);
+        cardSheet(g, i, t);
+      });
       cards.append(d);
     }
     const bar = document.createElement("div");
@@ -1458,6 +1463,35 @@
       if (typeof cmdNewEmptyTab === "function") await cmdNewEmptyTab();
     } });
     openAS({ items });
+  }
+
+  // ---- M6.4 a long-press on a switcher card: Close, Close others, Close tabs after, Close all | Pin (Unpin) | Link
+  // with tab (Unlink tab when linked). The close rows keep desktop's absence rules (R38.4-6: Close others / Close all
+  // need a second tab in the group, Close tabs after a tab to the right). Link with tab lists the other open tabs in a
+  // second sheet. Back closes the sheet alone; the switcher stays and repaints after every action.
+  function cardSheet(g, i, t) {
+    const n = g.tabs.length, X = '<path d="M6 6l12 12M18 6L6 18"/>';
+    const after = async () => { quiet(); sync(); if (!tabsBox.hidden) paintTabs(); };
+    const at = () => g.tabs.indexOf(t);                // the index again at run time (a repaint may have shifted it)
+    const items = [{ label: "Close", icon: X, run: async () => { if (at() >= 0) await closeTab(g, at()); await after(); } }];
+    if (n > 1) items.push({ label: "Close others", icon: X, run: async () => { if (at() >= 0) await closeOtherTabs(g, at()); await after(); } });
+    if (i < n - 1) items.push({ label: "Close tabs after", icon: '<path d="M5 12h14M13 6l6 6-6 6"/>', run: async () => {
+      if (at() >= 0) await closeTabsAfter(g, at()); await after(); } });
+    if (n > 1) items.push({ label: "Close all", icon: X, red: true, run: async () => { await closeAllTabs(g); await after(); } });
+    items.push("sep", { label: t.pinned ? "Unpin" : "Pin", icon: '<path d="M12 17v5M8 3h8l-1 7 3 4H6l3-4z"/>', run: async () => {
+      await togglePin(g, t); await after(); } });
+    const linked = typeof isLinked === "function" && isLinked(g, t, i);
+    items.push(linked
+      ? { label: "Unlink tab", icon: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
+          run: async () => { unlinkTab(g, t); await after(); } }
+      : { label: "Link with tab", icon: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
+          run: () => {
+            const others = allTabs().filter(o => o.t !== t);
+            openAS({ title: "Link with tab", items: others.length
+              ? others.map(o => ({ label: tabTitle(o.g, o.i, o.t), run: async () => { linkTabs(t, o.t); await after(); } }))
+              : [{ label: "(no other tabs)", run: () => {} }] });
+          } });
+    openAS({ title: tabTitle(g, i, t), items });
   }
 
   // ---- M7.5 / M7.6 a Files-row long-press opens a bottom action sheet (stock mobile) instead of the desktop menu at
