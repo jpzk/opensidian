@@ -3700,10 +3700,13 @@ async fn plugins_set(
     }
     span_timed!(otel => "plugins_set", (|| -> Result<serde_json::Value, String> {
         if let Some(t) = trusted {
+            // F5: held across (flag write, kill_all, session clear), the lock desk_proc_spawn holds
+            // across (trust recheck, start, register) — no spawn can land between the write and the kill
+            let life = desk_proc::lifecycle();
             let key = plugins::trust_key(&root);
             cfg_update(&[cfgstore::Op::SetIn(plugins::TRUST_KEY.into(), key, serde_json::json!(t))]);
             if !t {
-                desk_proc::kill_all();   // flip OFF: what plugins started stops with them
+                desk_proc::kill_all(&life); // flip OFF: what plugins started stops with them
                 consent::session_clear(); // ...and every "Allow for this session" is forgotten
                 desk_net::close_all();
             }
@@ -3778,19 +3781,25 @@ async fn desk_proc_spawn(
         return Err("EPERM: restricted mode, plugins cannot start programs".into());
     }
     let args: Vec<String> = args.unwrap_or_default().iter().map(|a| desk_proc::map_arg(&root, a)).collect();
-    let sp = desk_proc::Spec { file, args, cwd: desk_proc::map_cwd(&root, cwd.as_deref()), env: env.unwrap_or_default().into_iter().collect() };
+    let sp = desk_proc::Spec { file, args, cwd: desk_proc::map_cwd(&root, cwd.as_deref()), env: env.unwrap_or_default().into_iter().collect(), argv0: None };
+    consent::check_env(&sp)?; // F6: an env over the cap is refused, nothing asked
+    let sp = consent::resolve(sp)?; // F1: file = the absolute path the dialog names and exec runs
     if !consent::ask(win, consent::Kind::Spawn, consent::spawn_question(&plugins::trust_key(&root), &sp)).await {
         eprintln!("[desk] spawn {} {:?} cwd={}: denied by the user", sp.file, sp.args, sp.cwd.display());
         return Err(format!("EPERM: spawn {} denied by the user", sp.file));
     }
-    // the flip may have gone OFF while the question was open (kill_all ran)
+    // F5: (recheck, start, register) under the lock plugins_set holds across a trust-OFF
+    // (flag write, kill_all): the flip may have gone OFF while the question was open
+    let life = desk_proc::lifecycle();
     if !plugins::is_trusted(&cfg_value(), &root) {
         return Err("EPERM: restricted mode, plugins cannot start programs".into());
     }
     eprintln!("[desk] spawn {} {:?} cwd={}", sp.file, sp.args, sp.cwd.display());
-    let run = span_timed!("desk_proc_spawn", desk_proc::start(sp))?;
+    let run = span_timed!("desk_proc_spawn", desk_proc::start(sp, &life))?;
     let pid = run.pid();
-    Ok(serde_json::json!({ "id": desk_proc::register(run), "pid": pid }))
+    let id = desk_proc::register(run, &life);
+    drop(life);
+    Ok(serde_json::json!({ "id": id, "pid": pid }))
 }
 
 #[tauri::command]

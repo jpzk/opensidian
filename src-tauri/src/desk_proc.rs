@@ -223,14 +223,21 @@ fn forker() -> &'static Mutex<std::sync::mpsc::Sender<Job>> {
 }
 
 pub struct Spec {
+    /// what is exec'd. main.rs sets it to the ABSOLUTE path consent::resolve found and the
+    /// dialog named (F1): the child never repeats a PATH lookup of its own
     pub file: String,
     pub args: Vec<String>,
     pub cwd: PathBuf,
     pub env: Vec<(String, String)>,
+    /// argv[0] the child sees (the name the plugin asked for); None = file
+    pub argv0: Option<String>,
 }
 
 fn build(sp: &Spec) -> Command {
     let mut c = Command::new(&sp.file);
+    if let Some(a0) = &sp.argv0 {
+        c.arg0(a0);
+    }
     c.args(&sp.args).current_dir(&sp.cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
     for (k, v) in &sp.env {
         c.env(k, v);
@@ -289,7 +296,7 @@ fn spawn_err(file: &str, e: &std::io::Error) -> String {
     format!("{code}: spawn {file} {e}")
 }
 
-pub fn start(sp: Spec) -> Result<Arc<Run>, String> {
+pub fn start(sp: Spec, _life: &Life) -> Result<Arc<Run>, String> {
     if sp.file.is_empty() {
         return Err("EINVAL: spawn: empty file".into());
     }
@@ -329,13 +336,26 @@ pub fn start(sp: Spec) -> Result<Arc<Run>, String> {
     Ok(run)
 }
 
+/* ---- F5 (PR #41): one lock over the spawn and the trust-OFF lifecycles. desk_proc_spawn
+   holds it across (trust recheck, start, register); plugins_set holds it across (flag
+   write OFF, kill_all, session clear). Without it a spawn whose recheck passed just
+   before the flip could start and register AFTER kill_all ran, and outlive restricted
+   mode. start, register and kill_all take a &Life, so none of them can be called
+   without holding it. */
+pub struct Life(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+pub fn lifecycle() -> Life {
+    static L: Mutex<()> = Mutex::new(());
+    Life(L.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
 /* ---- the live runs, keyed by an id the page holds */
 fn runs() -> &'static Mutex<HashMap<u64, Arc<Run>>> {
     static R: OnceLock<Mutex<HashMap<u64, Arc<Run>>>> = OnceLock::new();
     R.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub fn register(r: Arc<Run>) -> u64 {
+pub fn register(r: Arc<Run>, _life: &Life) -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     runs().lock().unwrap_or_else(|e| e.into_inner()).insert(id, r);
@@ -352,7 +372,7 @@ pub fn forget(id: u64) {
 }
 
 /// flip OFF: plugin code stops, and so does everything it started
-pub fn kill_all() {
+pub fn kill_all(_life: &Life) {
     let all: Vec<Arc<Run>> = runs().lock().unwrap_or_else(|e| e.into_inner()).drain().map(|(_, r)| r).collect();
     for r in all {
         r.kill(libc::SIGKILL);
@@ -365,7 +385,7 @@ mod tests {
     use super::*;
 
     fn spec(file: &str, args: &[&str], cwd: &Path) -> Spec {
-        Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), env: vec![] }
+        Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), env: vec![], argv0: None }
     }
 
     fn drain(r: &Run) -> (Vec<u8>, Vec<u8>, Chunk) {
@@ -431,7 +451,7 @@ mod tests {
         let d = std::env::temp_dir();
         let mut sp = spec("/bin/sh", &["-c", "pwd; printf %s \"$DESK_T\"; cat; echo e >&2; exit 3"], &d);
         sp.env.push(("DESK_T".into(), "v1".into()));
-        let r = start(sp).unwrap();
+        let r = start(sp, &lifecycle()).unwrap();
         r.write(b"in\xff").unwrap();
         r.end();
         let (o, e, c) = drain(&r);
@@ -443,14 +463,88 @@ mod tests {
 
     #[test]
     fn desk_kill_reports_the_signal_and_missing_exe_is_enoent() {
-        let r = start(spec("/bin/sleep", &["30"], &std::env::temp_dir())).unwrap();
+        let r = start(spec("/bin/sleep", &["30"], &std::env::temp_dir()), &lifecycle()).unwrap();
         assert!(r.kill(libc::SIGTERM));
         let (_, _, c) = drain(&r);
         assert_eq!((c.exit, c.signal), (None, Some("SIGTERM")));
         assert!(!r.kill(libc::SIGTERM));
-        let e = start(spec("no-such-exe-desk", &[], &std::env::temp_dir())).err().unwrap();
+        let e = start(spec("no-such-exe-desk", &[], &std::env::temp_dir()), &lifecycle()).err().unwrap();
         assert!(e.starts_with("ENOENT: spawn no-such-exe-desk"), "{e}");
         assert_eq!(sig_num("SIGKILL"), Some(libc::SIGKILL));
         assert_eq!(sig_num(""), Some(libc::SIGTERM));
+    }
+
+    #[test]
+    fn desk_argv0_is_the_asked_name_while_the_absolute_path_is_execd() {
+        let mut sp = spec("/bin/cat", &["/proc/self/cmdline"], &std::env::temp_dir());
+        sp.argv0 = Some("cat-as-asked".into());
+        let r = start(sp, &lifecycle()).unwrap();
+        r.end();
+        let (o, _, c) = drain(&r);
+        assert_eq!(o, b"cat-as-asked\0/proc/self/cmdline\0");
+        assert_eq!(c.exit, Some(0));
+    }
+
+    /* F5: a spawn whose trust recheck passed must not start + register after a trust-OFF
+       kill_all. Thread A is desk_proc_spawn (recheck, then a slow start, then register),
+       thread B is plugins_set OFF (flag write, kill_all) arriving while A is between its
+       recheck and its start. With the lock, B waits for A and kills A's child; without it
+       A's child starts after kill_all and stays registered. */
+    #[test]
+    fn desk_trust_off_cannot_slip_between_recheck_and_register() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static TRUSTED: AtomicBool = AtomicBool::new(true);
+        TRUSTED.store(true, Ordering::SeqCst);
+        let a = std::thread::spawn(|| {
+            let life = lifecycle();
+            if !TRUSTED.load(Ordering::SeqCst) {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(300)); // the recheck passed; start is slow
+            let r = start(spec("/bin/sleep", &["30"], &std::env::temp_dir()), &life).unwrap();
+            Some((register(r.clone(), &life), r))
+        });
+        std::thread::sleep(Duration::from_millis(60));
+        let b = std::thread::spawn(|| {
+            let life = lifecycle();
+            TRUSTED.store(false, Ordering::SeqCst);
+            kill_all(&life);
+        });
+        let got = a.join().unwrap();
+        b.join().unwrap();
+        let (id, r) = got.expect("A took the lock first and its recheck passed");
+        assert!(get(id).is_err(), "a child started across a trust-OFF is still registered");
+        let (_, _, c) = drain(&r);
+        assert_eq!(c.signal, Some("SIGKILL"), "the child started before the flip was killed by it");
+    }
+
+    /* F1 (PR #41): with PATH ":<bin>" or ".:<bin>" and the cwd in the vault, exec's own
+       lookup would take the empty / "." entry against the child's cwd and run the vault's
+       copy, while the dialog named <bin>/fakeprog. consent::resolve makes the file absolute
+       (the path the dialog names) and that is what runs. */
+    #[test]
+    fn desk_the_path_the_dialog_names_is_the_one_that_runs() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!("desk-f1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        for (dir, say) in [("vault", "VAULT"), ("bin", "BIN")] {
+            std::fs::create_dir_all(base.join(dir)).unwrap();
+            let f = base.join(dir).join("fakeprog");
+            std::fs::write(&f, format!("#!/bin/sh\necho {say}\n")).unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let bin = base.join("bin");
+        for path in [format!(":{}", bin.display()), format!(".:{}", bin.display())] {
+            let mut sp = spec("fakeprog", &[], &base.join("vault"));
+            sp.env.push(("PATH".into(), path.clone()));
+            let sp = crate::consent::resolve(sp).unwrap();
+            assert_eq!(sp.file, bin.join("fakeprog").to_string_lossy(), "PATH={path:?}");
+            assert!(crate::consent::spawn_text(&sp).contains(&format!("Program: {:?}", sp.file)));
+            let r = start(sp, &lifecycle()).unwrap();
+            r.end();
+            let (o, _, _) = drain(&r);
+            assert_eq!(o, b"BIN\n", "PATH={path:?}: the vault's fakeprog ran");
+        }
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
