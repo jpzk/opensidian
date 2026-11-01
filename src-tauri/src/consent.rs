@@ -520,7 +520,7 @@ mod tests {
         }
         for path in ["", ":", ".", "rel", "./", "::."] {
             assert_eq!(resolve_program(&with_path("fakeprog", &v, path)), None, "PATH={path:?}");
-            assert!(resolve(with_path("fakeprog", &v, path)).unwrap_err().starts_with("ENOENT: spawn fakeprog"), "PATH={path:?}");
+            assert!(resolve(with_path("fakeprog", &v, path)).err().expect("fakeprog resolved").starts_with("ENOENT: spawn fakeprog"), "PATH={path:?}");
         }
         // a name with a '/' is the child's cwd + name, made absolute
         assert_eq!(resolve_program(&with_path("./fakeprog", &v, "")), Some(v.join("./fakeprog")));
