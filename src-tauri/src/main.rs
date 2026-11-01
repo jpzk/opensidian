@@ -3705,7 +3705,7 @@ async fn plugins_set(
     let (ask, carries) = desk_proc::trust_plan(trusted == Some(true), seen, || plugins::is_trusted(&cfg_value(), &root));
     if ask {
         let key = plugins::trust_key(&root);
-        if !consent::ask(win, consent::Kind::Trust, consent::trust_question(&key)).await {
+        if !consent::ask(win, consent::Kind::Trust, consent::trust_question(&key)).await? {
             eprintln!("[consent] trust {key:?}: cancelled, nothing written");
             return Ok(plugins_state_of(&root));
         }
@@ -3801,7 +3801,7 @@ async fn desk_proc_spawn(
     let sp = desk_proc::Spec { file, args, cwd: desk_proc::map_cwd(&root, cwd.as_deref()), env: env.unwrap_or_default().into_iter().collect(), argv0: None };
     consent::check_env(&sp)?; // F6: an env over the cap is refused, nothing asked
     let sp = consent::resolve(sp)?; // F1: file = the absolute path the dialog names and exec runs
-    if !consent::ask(win, consent::Kind::Spawn, consent::spawn_question(&sp)).await {
+    if !consent::ask(win, consent::Kind::Spawn, consent::spawn_question(&sp)).await? {
         eprintln!("[desk] spawn {} {:?} cwd={}: denied by the user", sp.file, sp.args, sp.cwd.display());
         return Err(format!("EPERM: spawn {} denied by the user", sp.file));
     }
@@ -3938,23 +3938,29 @@ async fn desk_http_request(v: State<'_, Vault>, req: desk_http::Req) -> Result<d
    it right before the exec: a file replaced or swapped for a symlink while the dialog was
    open is refused (EPERM), not opened. RESIDUAL WINDOW: from that recheck to xdg-open's own
    open of the path (fork/exec of xdg-open, then its handler opens by name) a swap is still
-   possible — xdg-open has no open-by-fd interface; see desk_proc::ShellOpen. */
+   possible — xdg-open has no open-by-fd interface; see desk_proc::ShellOpen.
+   R1: a directory target is the same directory while (dev, ino, mode) are — a sibling saved
+   meanwhile does not refuse it. R4: xdg-open (asked or not) runs in "/" with PATH cut to its
+   absolute entries (desk_proc::Launch). R5: the question is consent::open_question — it names
+   the target, says opening it may run it, and does not claim a plugin asks. */
 #[tauri::command]
 async fn desk_shell(win: tauri::Window, v: State<'_, Vault>, op: String, target: String) -> Result<(), String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
     if !plugins::is_trusted(&cfg_value(), &root) {
         return Err("EPERM: restricted mode, plugins cannot use the shell".into());
     }
-    let (file, t, cwd) = match desk_proc::shell_target(&root, &op, &target)? {
-        desk_proc::ShellOpen::Url(url) => (std::path::PathBuf::from("xdg-open"), desk_proc::Local::url(url), None),
+    let (file, t) = match desk_proc::shell_target(&root, &op, &target)? {
+        desk_proc::ShellOpen::Url(url) => (std::path::PathBuf::from("xdg-open"), desk_proc::Local::url(url)),
         desk_proc::ShellOpen::Ask(t) => {
-            let sp = desk_proc::Spec { file: "xdg-open".into(), args: vec![t.arg.clone()], cwd: root.clone(), env: vec![], argv0: None };
+            // R4: the opener runs in "/" (desk_proc::OPENER_CWD), never the vault
+            let sp = desk_proc::Spec { file: "xdg-open".into(), args: vec![t.arg.clone()], cwd: desk_proc::OPENER_CWD.into(), env: vec![], argv0: None };
             let sp = consent::resolve(sp)?; // the absolute xdg-open the dialog names is the one that runs
-            if !consent::ask(win, consent::Kind::Spawn, consent::spawn_question(&sp)).await {
+            // R5: the open question (names the target, says it may run it; neutral about who asks)
+            if !consent::ask(win, consent::Kind::Spawn, consent::open_question(&sp, &t.arg)).await? {
                 eprintln!("[desk] shell {op} {:?}: denied by the user", t.arg);
                 return Err(format!("EPERM: open {} denied by the user", t.arg));
             }
-            (std::path::PathBuf::from(sp.file), t, Some(sp.cwd))
+            (std::path::PathBuf::from(sp.file), t)
         }
     };
     // the flip may have gone OFF while the question was open (F5: under the lifecycle lock)
@@ -3963,13 +3969,10 @@ async fn desk_shell(win: tauri::Window, v: State<'_, Vault>, op: String, target:
         return Err("EPERM: restricted mode, plugins cannot use the shell".into());
     }
     eprintln!("[desk] shell {op} {}", t.arg);
-    // P4: identity recheck + exec, nothing in between
-    let r = desk_proc::shell_spawn(&t, |arg| {
+    // P4: identity recheck + exec, nothing in between; R4: cwd "/", PATH absolute entries only
+    let r = desk_proc::shell_spawn(&t, std::env::var("PATH").ok(), |l| {
         let mut cmd = std::process::Command::new(&file);
-        cmd.arg(arg).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-        if let Some(d) = &cwd {
-            cmd.current_dir(d);
-        }
+        l.apply(&mut cmd).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
         cmd.spawn().map_err(|e| format!("ENOENT: xdg-open: {e}"))
     })
     .map(|mut c| {

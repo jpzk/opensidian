@@ -39,9 +39,10 @@ use serde::Serialize;
 /// the page-side name of the vault root (FileSystemAdapter.getBasePath)
 pub const VAULT_ALIAS: &str = "/vault";
 
-/// "/vault[/x]" -> root[/x]; relative or empty -> under root; other absolute -> as given
+/// "/vault[/x]" -> root[/x]; relative or empty -> under root; other absolute -> as given.
+/// R3 (PR #42): exactly "" / "." / "/vault" are special; nothing is trimmed (" a .md" is that name)
 pub fn map_cwd(root: &Path, cwd: Option<&str>) -> PathBuf {
-    let c = cwd.unwrap_or("").trim();
+    let c = cwd.unwrap_or(""); // R3: never trimmed — " a.md" and "a.md" are different paths
     if c.is_empty() || c == "." {
         return root.to_path_buf();
     }
@@ -71,7 +72,7 @@ pub fn map_arg(root: &Path, a: &str) -> String {
 /// (symlinks resolved) is outside the vault's real root is refused with EPERM. The target must
 /// exist (ENOENT otherwise), so the opener is never handed a name it would guess at.
 pub fn vault_open_target(root: &Path, target: &str) -> Result<PathBuf, String> {
-    let t = target.trim();
+    let t = target; // R3: never trimmed — a name with leading/trailing spaces is that name
     if t.contains('\0') {
         return Err(format!("EPERM: vault-escape refused: {target}"));
     }
@@ -233,6 +234,16 @@ pub struct Spec {
     pub argv0: Option<String>,
 }
 
+/* R4 (PR #42, Qodo): F1 already refuses an empty / "." / relative PATH entry when the
+   PROGRAM is looked up; the child does lookups of its own (xdg-open is a shell script
+   that finds gio, kde-open, ... on PATH; git finds its helpers; sh finds every command),
+   and exec resolves such an entry against the child's cwd — inside the vault, which
+   plugins write. So every child (spawn and shell opener) gets PATH with only its
+   absolute entries, in order. */
+pub fn child_path(path: &str) -> String {
+    path.split(':').filter(|d| d.starts_with('/')).collect::<Vec<_>>().join(":")
+}
+
 fn build(sp: &Spec) -> Command {
     let mut c = Command::new(&sp.file);
     if let Some(a0) = &sp.argv0 {
@@ -241,6 +252,10 @@ fn build(sp: &Spec) -> Command {
     c.args(&sp.args).current_dir(&sp.cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
     for (k, v) in &sp.env {
         c.env(k, v);
+    }
+    // R4: the child's own PATH lookups never land in its cwd (the vault)
+    if let Some(p) = sp.env.iter().rev().find(|(k, _)| k == "PATH").map(|(_, v)| v.clone()).or_else(|| std::env::var("PATH").ok()) {
+        c.env("PATH", child_path(&p));
     }
     // SAFETY: async-signal-safe syscalls only, between fork and exec
     unsafe {
@@ -532,14 +547,28 @@ impl Local {
         Ok(Local { arg, ident: Some(ident) })
     }
 
-    /// P4: right before the exec — the path the user allowed is still the very same file
+    /// P4: right before the exec — the path the user allowed is still the very same file.
+    /// R1 (PR #42, Greptile): a DIRECTORY (reveal opens the parent dir; a folder through
+    /// path/vault) is the same directory while (dev, ino, mode) are: its size/mtime change
+    /// whenever any entry in it is created, renamed or removed (saving a sibling note while
+    /// the dialog is open), which is not a swap. Files keep the full identity.
     pub fn recheck(&self) -> Result<(), String> {
         let Some(was) = &self.ident else { return Ok(()) };
         match ident_of(Path::new(&self.arg)) {
-            Ok(now) if &now == was => Ok(()),
+            Ok(now) if now.same_as(was) => Ok(()),
             Ok(_) => Err(format!("EPERM: {} changed after it was allowed (replaced, swapped for a symlink, or rewritten); not opened", self.arg)),
             Err(_) => Err(format!("EPERM: {} is gone since it was allowed; not opened", self.arg)),
         }
+    }
+}
+
+impl Ident {
+    /// R1: a directory is compared on (dev, ino, mode) only; anything else on all of it
+    fn same_as(&self, was: &Ident) -> bool {
+        if was.mode & libc::S_IFMT == libc::S_IFDIR {
+            return (self.dev, self.ino, self.mode) == (was.dev, was.ino, was.mode);
+        }
+        self == was
     }
 }
 
@@ -610,10 +639,34 @@ pub fn shell_target(root: &Path, op: &str, target: &str) -> Result<ShellOpen, St
    fork of xdg-open with t.arg), nothing in between (desk_shell calls it under the
    lifecycle lock, after the trust recheck). A changed target returns the EPERM and
    `exec` is never called. (The process is built by the caller: the only
-   command builder in this file is fn build — consent-nobypass S1.) */
-pub fn shell_spawn<R>(t: &Local, exec: impl FnOnce(&str) -> Result<R, String>) -> Result<R, String> {
+   command builder in this file is fn build — consent-nobypass S1.)
+   R4 (PR #42, Qodo): the opener is a script that looks up its helpers on PATH, so it
+   runs in OPENER_CWD ("/", which plugins cannot write) — never the vault — with PATH
+   cut to its absolute entries (child_path). `exec` gets both in a Launch and applies
+   them with Launch::apply; `ours` = the app's PATH (main.rs: std::env::var). */
+pub const OPENER_CWD: &str = "/";
+
+/// R4: what the opener is started with: its one argument (the allowed target), cwd, PATH
+pub struct Launch<'a> {
+    pub arg: &'a str,
+    pub cwd: &'static Path,
+    pub path: Option<String>,
+}
+
+impl Launch<'_> {
+    /// the target, the cwd and the cleaned PATH, onto the caller's opener Command
+    pub fn apply<'c>(&self, c: &'c mut Command) -> &'c mut Command {
+        c.arg(self.arg).current_dir(self.cwd);
+        if let Some(p) = &self.path {
+            c.env("PATH", p);
+        }
+        c
+    }
+}
+
+pub fn shell_spawn<R>(t: &Local, ours: Option<String>, exec: impl FnOnce(Launch) -> Result<R, String>) -> Result<R, String> {
     t.recheck()?;
-    exec(&t.arg)
+    exec(Launch { arg: &t.arg, cwd: Path::new(OPENER_CWD), path: ours.as_deref().map(child_path) })
 }
 
 #[cfg(test)]
@@ -944,7 +997,7 @@ mod tests {
                 ShellOpen::Url(u) => panic!("{op} {target}: not asked ({u})"),
             };
             dialog();
-            let mut c = shell_spawn(&t, |arg| Command::new(&opener).arg(arg).spawn().map_err(|e| e.to_string()))?;
+            let mut c = shell_spawn(&t, None, |l| Command::new(&opener).arg(l.arg).spawn().map_err(|e| e.to_string()))?;
             assert!(c.wait().unwrap().success(), "the stub opener failed");
             Ok(t.arg)
         };
@@ -984,6 +1037,143 @@ mod tests {
         assert_eq!(shown, real.join("evil.desktop").to_string_lossy(), "(d) the dialog does not name the symlink's final target");
 
         assert_eq!(opened(), format!("{welcome}\n{shown}\n"), "a refused target reached the opener");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* R1 (PR #42, Greptile): a DIRECTORY target (showItemInFolder -> reveal opens the
+       parent dir; a folder through path) changes size/mtime whenever an entry in it is
+       created — saving a sibling note while the dialog is open. Still the same directory:
+       opened. A directory replaced by another one (another inode) is still refused. The
+       "dialog" hook runs the change to completion before the answer: no sleeps. */
+    #[test]
+    fn desk_r1_directory_target_opens_after_a_sibling_file_changes_during_the_dialog() {
+        let base = std::env::temp_dir().join(format!("desk-r1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let vault = base.join("v");
+        std::fs::create_dir_all(vault.join("sub")).unwrap();
+        std::fs::write(vault.join("sub/a.md"), "a\n").unwrap();
+        let real = vault.canonicalize().unwrap();
+        let ask_then_run = |op: &str, target: &str, dialog: &dyn Fn()| -> Result<String, String> {
+            let t = match shell_target(&vault, op, target)? {
+                ShellOpen::Ask(t) => t,
+                ShellOpen::Url(u) => panic!("{op} {target}: not asked ({u})"),
+            };
+            dialog();
+            shell_spawn(&t, None, |l| Ok(l.arg.to_string()))
+        };
+        // reveal(sub/a.md) opens sub/; a sibling is created, rewritten and renamed meanwhile
+        let r = ask_then_run("reveal", "/vault/sub/a.md", &|| {
+            std::fs::write(real.join("sub/new.md"), "x".repeat(5000)).unwrap();
+            std::fs::rename(real.join("sub/new.md"), real.join("sub/moved.md")).unwrap();
+            std::fs::write(real.join("sub/a.md"), "a changed\n").unwrap();
+        });
+        assert_eq!(r.as_deref(), Ok(&*real.join("sub").to_string_lossy()), "reveal: a dir whose entries changed was refused");
+        // openPath of the vault folder itself, a file created at its top
+        let r = ask_then_run("path", "/vault", &|| std::fs::write(real.join("Saved.md"), "s\n").unwrap());
+        assert_eq!(r.as_deref(), Ok(&*real.to_string_lossy()), "path: a dir whose entries changed was refused");
+        // still bound: a directory replaced by another one is refused
+        let r = ask_then_run("path", "/vault/sub", &|| {
+            std::fs::rename(real.join("sub"), real.join("old-sub")).unwrap();
+            std::fs::create_dir(real.join("sub")).unwrap();
+        });
+        assert!(matches!(&r, Err(e) if e.starts_with("EPERM")), "a replaced directory was not refused: {r:?}");
+        // and a FILE keeps the full identity (P4): rewritten in place -> refused
+        std::fs::write(real.join("f.md"), "f\n").unwrap();
+        let r = ask_then_run("path", "/vault/f.md", &|| std::fs::write(real.join("f.md"), "rewritten, longer\n").unwrap());
+        assert!(matches!(&r, Err(e) if e.starts_with("EPERM")), "a rewritten file was not refused: {r:?}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* R3 (PR #42, CodeAnt): a path with leading / trailing spaces is that path — not
+       trimmed into another file (" a .md" must not open "a .md"), in shell targets
+       (path / vault / reveal) and in a spawn's cwd. */
+    #[test]
+    fn desk_r3_a_path_with_leading_or_trailing_spaces_is_not_altered() {
+        let base = std::env::temp_dir().join(format!("desk-r3-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let vault = base.join("v");
+        std::fs::create_dir_all(vault.join(" d ")).unwrap();
+        std::fs::create_dir_all(vault.join("d")).unwrap();
+        for n in [" a .md", "a .md", " d /x.md", "d/x.md"] {
+            std::fs::write(vault.join(n), n).unwrap();
+        }
+        let real = vault.canonicalize().unwrap();
+        let arg = |op: &str, t: &str| match shell_target(&vault, op, t) {
+            Ok(ShellOpen::Ask(l)) => l.arg,
+            Ok(ShellOpen::Url(u)) => panic!("{op} {t:?}: not asked ({u})"),
+            Err(e) => format!("ERR {e}"),
+        };
+        let p = |n: &str| real.join(n).to_string_lossy().into_owned();
+        assert_eq!(arg("path", "/vault/ a .md"), p(" a .md"), "path");
+        assert_eq!(arg("path", " a .md"), p(" a .md"), "path relative");
+        assert_eq!(arg("vault", " a .md"), p(" a .md"), "vault");
+        assert_eq!(arg("vault", "/vault/ a .md"), p(" a .md"), "vault alias");
+        assert_eq!(arg("reveal", "/vault/ d /x.md"), p(" d "), "reveal");
+        assert_eq!(arg("path", "a .md"), p("a .md"), "control");
+        // "a .md " (trailing space) does not exist: ENOENT, never "a .md"
+        assert!(arg("path", "/vault/a .md ").starts_with("ERR ENOENT"), "a trailing space was trimmed");
+        assert!(arg("vault", "a .md ").starts_with("ERR ENOENT"), "a trailing space was trimmed (vault)");
+        // a spawn's cwd
+        assert_eq!(map_cwd(&vault, Some(" d ")), vault.join(" d "));
+        assert_eq!(map_cwd(&vault, Some("/vault/ d ")), vault.join(" d "));
+        assert_eq!(map_cwd(&vault, Some(" ")), vault.join(" "));
+        assert_eq!(map_arg(&vault, "/vault/ a .md"), vault.join(" a .md").to_string_lossy());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* R4 (PR #42, Qodo): every child's own PATH lookups stay out of the vault. The
+       opener (xdg-open, a script that finds gio / kde-open on PATH) runs in "/" with PATH
+       cut to its absolute entries; a spawned child gets the same cleaning of the PATH it
+       runs with (the plugin's, or ours). The vault holds a fake helper that marks when it
+       runs; PATH puts "." and relative entries first. */
+    #[test]
+    fn desk_r4_opener_cwd_is_root_and_child_path_has_no_relative_entries() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!("desk-r4-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let vault = base.join("v");
+        std::fs::create_dir_all(vault.join("bin")).unwrap();
+        let mark = base.join("HELPER-RAN");
+        for h in ["r4helper", "bin/r4helper"] {
+            std::fs::write(vault.join(h), format!("#!/bin/sh\ntouch '{}'\n", mark.display())).unwrap();
+            std::fs::set_permissions(vault.join(h), std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::write(vault.join("Welcome.md"), "# hi\n").unwrap();
+        // the stub opener reports its cwd and PATH, then looks up a helper the way xdg-open does
+        let log = base.join("opener.log");
+        let opener = base.join("opener");
+        std::fs::write(&opener, format!("#!/bin/sh\nprintf '%s|%s\\n' \"$(pwd -P)\" \"$PATH\" >> '{}'\nr4helper 2>/dev/null\nexit 0\n", log.display())).unwrap();
+        std::fs::set_permissions(&opener, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(child_path(".::bin:/usr/bin:./x:/bin:"), "/usr/bin:/bin");
+        let dirty = ".::bin:/usr/bin:/bin".to_string();
+
+        // (a) the opener
+        let t = match shell_target(&vault, "path", "/vault/Welcome.md").unwrap() {
+            ShellOpen::Ask(t) => t,
+            ShellOpen::Url(u) => panic!("not asked ({u})"),
+        };
+        let mut c = shell_spawn(&t, Some(dirty.clone()), |l| {
+            let mut cmd = Command::new(&opener);
+            l.apply(&mut cmd).spawn().map_err(|e| e.to_string())
+        })
+        .unwrap();
+        assert!(c.wait().unwrap().success());
+        let got = std::fs::read_to_string(&log).unwrap();
+        let (cwd, path) = got.trim_end().split_once('|').unwrap();
+        assert_eq!(cwd, "/", "the opener's cwd is not /");
+        assert!(path.split(':').all(|d| d.starts_with('/')), "the opener's PATH has an empty/relative entry: {path:?}");
+        assert!(!mark.exists(), "the opener reached the vault's helper through PATH");
+
+        // (b) a spawned child, cwd = the vault, the plugin's PATH with "." / "" / "bin" first
+        let mut sp = spec("/bin/sh", &["-c", "printf %s \"$PATH\"; r4helper 2>/dev/null; exit 0"], &vault);
+        sp.env.push(("PATH".into(), dirty));
+        let r = start(sp, &lifecycle()).unwrap();
+        r.end();
+        let (o, _, ch) = drain(&r);
+        assert_eq!(ch.exit, Some(0));
+        let path = bytes_to_latin1(&o);
+        assert_eq!(path, "/usr/bin:/bin", "the child's PATH kept an empty/relative entry");
+        assert!(!mark.exists(), "the child reached the vault's helper through PATH");
         let _ = std::fs::remove_dir_all(&base);
     }
 }

@@ -27,8 +27,12 @@
    "response" signal — no nested gtk_dialog_run, so the main loop keeps
    serving IPC and painting while the question is open. One question at a
    time: a plugin spawning in a loop queues behind the open dialog instead of
-   stacking windows. */
+   stacking windows. R2 (PR #42, CodeAnt): every queued question parks a
+   blocking-pool thread, so the queue is bounded — at most MAX_IN_FLIGHT
+   questions (the one on screen + those behind it); one more is refused at once
+   with EBUSY, nothing asked, no thread taken (admit()). */
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use crate::desk_proc::Spec;
@@ -165,22 +169,58 @@ fn spawn_body(sp: &Spec, env: EnvValues) -> String {
    rewrite between runs (a program in the vault, a git hook, a script an
    interpreter reads) can ride on an earlier answer. */
 
+/* R5 (PR #42, Qodo): an open (electron shell openPath / showItemInFolder /
+   openExternal of a local or custom-scheme target, app.openWithDefaultApp) is not
+   "a plugin wants to run a program": the app's own "open in default app" goes the
+   same way, and a page script cannot be told apart from the app. So its question
+   says nothing about who asks, names the target, and says what opening it may do:
+   a program, script or .desktop file is RUN by the default opener. The opener
+   (the resolved xdg-open that runs) and its cwd stay in the body in full. */
+
+/// the open prompt's body. `sp` = the resolved opener Spec (file = absolute
+/// xdg-open, args = [target]), `target` = what the opener gets (the final path)
+pub fn open_text(sp: &Spec, target: &str) -> String {
+    format!(
+        "Open {t} with the default application?\n\n\
+         If it is a program, a script or a .desktop file, opening it can run it, \
+         with your user's rights.\n\n\
+         Target: {t}\n\
+         Program: {p}\n\
+         Cwd: {c}\n",
+        t = shown(target),
+        p = shown(&sp.file),
+        c = shown(&sp.cwd.to_string_lossy())
+    )
+}
+
 /// what ask() puts on screen (`text`) and what the app log gets (`log`): the
 /// same body, except that the log never holds an env VALUE (N1: a plugin's env
-/// can carry tokens; names are logged, values are not)
+/// can carry tokens; names are logged, values are not). `head` is the dialog's
+/// bold first line (ours, never page data).
 pub struct Question {
+    head: String,
     text: String,
     log: String,
 }
 
+const TRUST_HEAD: &str = "Turn on community plugins for this vault?";
+const SPAWN_HEAD: &str = "A plugin wants to run a program. Read all of it (scroll) before you answer.";
+const OPEN_HEAD: &str = "Open this with the default application? It may run it. Read all of it (scroll) before you answer.";
+
 pub fn trust_question(canon: &str) -> Question {
     let text = trust_text(canon);
-    Question { log: text.clone(), text }
+    Question { head: TRUST_HEAD.into(), log: text.clone(), text }
 }
 
 /// `sp` = the Spec after resolve() (absolute file)
 pub fn spawn_question(sp: &Spec) -> Question {
-    Question { text: spawn_text(sp), log: spawn_log(sp) }
+    Question { head: SPAWN_HEAD.into(), text: spawn_text(sp), log: spawn_log(sp) }
+}
+
+/// R5: an open through the default opener. `sp` = the resolved opener Spec (no env)
+pub fn open_question(sp: &Spec, target: &str) -> Question {
+    let text = open_text(sp, target);
+    Question { head: OPEN_HEAD.into(), log: text.clone(), text }
 }
 
 /// the dialog's answer. Only answer_of() makes Once — from a GTK response the
@@ -225,16 +265,48 @@ fn ask_blocking(win: &tauri::Window, kind: Kind, q: Question) -> bool {
     })
 }
 
-/// the async front door the commands await. Any failure on the way = NO.
-pub async fn ask(win: tauri::Window, kind: Kind, q: Question) -> bool {
+/// R2: the most questions in flight at once — the one on screen and the ones
+/// queued behind it (each holds a blocking-pool thread while it waits)
+pub const MAX_IN_FLIGHT: usize = 5;
+
+static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+/// R2: a place in the bounded queue; dropping it frees the place
+struct Slot(());
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// R2: a place in the queue, or EBUSY at once (nothing asked, no thread taken)
+/// when MAX_IN_FLIGHT questions are already open or queued
+fn admit() -> Result<Slot, String> {
+    IN_FLIGHT
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| (n < MAX_IN_FLIGHT).then_some(n + 1))
+        .map(|_| Slot(()))
+        .map_err(|n| format!("EBUSY: {n} consent questions are already open or waiting (at most {MAX_IN_FLIGHT}); refused, nothing asked"))
+}
+
+/// the async front door the commands await: Ok(true) only for Allow once /
+/// Trust; Ok(false) for every NO (any failure on the way included); Err(EBUSY)
+/// when the queue is full (R2) — then nothing was asked.
+pub async fn ask(win: tauri::Window, kind: Kind, q: Question) -> Result<bool, String> {
     let what = match kind {
         Kind::Trust => "trust",
         Kind::Spawn => "spawn",
     };
+    let slot = admit().inspect_err(|e| eprintln!("[consent] {what}: {e}"))?;
     eprintln!("[consent] {what}: asking");
-    let yes = tauri::async_runtime::spawn_blocking(move || ask_blocking(&win, kind, q)).await.unwrap_or(false);
+    let yes = tauri::async_runtime::spawn_blocking(move || {
+        let _slot = slot;
+        ask_blocking(&win, kind, q)
+    })
+    .await
+    .unwrap_or(false);
     eprintln!("[consent] {what}: {}", if yes { "allowed" } else { "denied" });
-    yes
+    Ok(yes)
 }
 
 /// the scrolled body's fixed size (F2/F6): the dialog never outgrows the screen
@@ -247,10 +319,11 @@ const BODY_H: i32 = 320;
 fn show_dialog(win: &tauri::Window, kind: Kind, q: &Question, tx: std::sync::mpsc::Sender<Answer>) {
     use gtk::prelude::*;
     let parent = win.gtk_window().ok();
-    let (title, head, no, yes) = match kind {
-        Kind::Trust => (TRUST_TITLE, "Turn on community plugins for this vault?", "_Cancel", "_Trust"),
-        Kind::Spawn => (SPAWN_TITLE, "A plugin wants to run a program. Read all of it (scroll) before you answer.", "_Deny", "Allow _once"),
+    let (title, no, yes) = match kind {
+        Kind::Trust => (TRUST_TITLE, "_Cancel", "_Trust"),
+        Kind::Spawn => (SPAWN_TITLE, "_Deny", "Allow _once"),
     };
+    let head = q.head.as_str();
     // the head is ours; the body (page values) goes into a read-only TextView
     // as plain text, never markup: a page value cannot style or hide part of
     // the prompt, and nothing is cut — the view scrolls (F2)
@@ -457,6 +530,78 @@ mod tests {
             true
         }));
         assert!(!ask_with(Kind::Spawn, spawn_question(&s), |_, _, tx| tx.send(Answer::No).is_ok()));
+    }
+
+    /* R2 (PR #42, CodeAnt): a held dialog and MAX_IN_FLIGHT - 1 requests queued behind
+       it fill the queue; the next request is refused with EBUSY at once — admit() never
+       blocks — and is never presented. Order is forced by channels: every request has its
+       place before the extra one comes; the first is on screen (its answer sender held
+       here). No sleeps. ask() runs exactly admit() then ask_with() on the slot. */
+    #[test]
+    fn r2_beyond_the_waiter_bound_a_request_gets_ebusy_at_once() {
+        use std::sync::mpsc::{channel, Sender};
+        let (shown_tx, shown_rx) = channel::<Sender<Answer>>();
+        let (placed_tx, placed_rx) = channel::<()>();
+        let mut hs = vec![];
+        for _ in 0..MAX_IN_FLIGHT {
+            let (shown_tx, placed_tx) = (shown_tx.clone(), placed_tx.clone());
+            hs.push(std::thread::spawn(move || {
+                let slot = admit().expect("a request within the bound was refused");
+                placed_tx.send(()).unwrap();
+                let _slot = slot;
+                ask_with(Kind::Spawn, spawn_question(&sp("/bin/true", &[], "/")), |_, _, tx| shown_tx.send(tx).is_ok())
+            }));
+        }
+        for _ in 0..MAX_IN_FLIGHT {
+            placed_rx.recv().unwrap();
+        }
+        let on_screen = shown_rx.recv().unwrap(); // one dialog up, the rest wait behind it
+        let extra = admit();
+        assert!(
+            matches!(&extra, Err(e) if e.starts_with("EBUSY")),
+            "request {} (dialog open, {} waiting) was not refused with EBUSY: {:?}",
+            MAX_IN_FLIGHT + 1,
+            MAX_IN_FLIGHT - 1,
+            extra.as_ref().map(|_| "a place in the queue")
+        );
+        drop(extra);
+        // the refused one was never presented: only the held one is on screen
+        assert!(shown_rx.try_recv().is_err(), "a second dialog is on screen");
+        drop(on_screen); // answer NO; each queued one comes up in turn and is answered NO
+        for _ in 1..MAX_IN_FLIGHT {
+            drop(shown_rx.recv().unwrap());
+        }
+        for h in hs {
+            assert!(!h.join().unwrap(), "a NO answered yes");
+        }
+        // every place was given back
+        assert!(admit().is_ok(), "the queue did not drain");
+    }
+
+    /* R5 (PR #42, Qodo): an open is asked with its own question — names the target and
+       says opening it can run it, neutral about who asks (the app's own "open in default
+       app" goes the same way); program and cwd stay in full. */
+    #[test]
+    fn r5_open_question_names_the_target_and_says_it_may_run_it() {
+        let s = sp("/usr/bin/xdg-open", &["/v/run me.desktop"], "/");
+        let q = open_question(&s, "/v/run me.desktop");
+        for t in [q.text.as_str(), q.head.as_str()] {
+            assert!(!t.contains("A plugin wants"), "{t}");
+            assert!(!t.to_lowercase().contains("plugin"), "the open question names a requester: {t}");
+        }
+        assert!(q.text.starts_with("Open \"/v/run me.desktop\" with the default application?"), "{}", q.text);
+        assert!(q.text.contains("opening it can run it"), "{}", q.text);
+        assert!(q.text.contains("program, a script or a .desktop file"), "{}", q.text);
+        assert!(q.text.contains("\nTarget: \"/v/run me.desktop\"\n"), "{}", q.text);
+        assert!(q.text.contains("\nProgram: \"/usr/bin/xdg-open\"\n"), "{}", q.text);
+        assert!(q.text.contains("\nCwd: \"/\"\n"), "{}", q.text);
+        assert!(q.head.contains("may run it"), "{}", q.head);
+        assert_eq!(q.log, q.text);
+        // a newline in the target cannot fake a line
+        let q = open_question(&s, "/v/x\nProgram: /safe");
+        assert_eq!(q.text.matches("\nProgram: ").count(), 1, "{}", q.text);
+        // the spawn question is unchanged
+        assert!(spawn_question(&s).text.starts_with("A plugin wants to run a program."));
     }
 
     #[cfg(target_os = "linux")]
