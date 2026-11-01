@@ -386,7 +386,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     fn sp(file: &str, args: &[&str], cwd: &str) -> Spec {
-        Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), env: vec![], argv0: None }
+        Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), root: cwd.into(), env: vec![], argv0: None }
     }
 
     /// base/vault (the plugin's cwd, with its own `fakeprog`), base/bin (the real

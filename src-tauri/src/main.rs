@@ -3798,7 +3798,7 @@ async fn desk_proc_spawn(
         return Err("EPERM: restricted mode, plugins cannot start programs".into());
     }
     let args: Vec<String> = args.unwrap_or_default().iter().map(|a| desk_proc::map_arg(&root, a)).collect();
-    let sp = desk_proc::Spec { file, args, cwd: desk_proc::map_cwd(&root, cwd.as_deref()), env: env.unwrap_or_default().into_iter().collect(), argv0: None };
+    let sp = desk_proc::Spec { file, args, cwd: desk_proc::map_cwd(&root, cwd.as_deref()), root: root.clone(), env: env.unwrap_or_default().into_iter().collect(), argv0: None };
     consent::check_env(&sp)?; // F6: an env over the cap is refused, nothing asked
     let sp = consent::resolve(sp)?; // F1: file = the absolute path the dialog names and exec runs
     if !consent::ask(win, consent::Kind::Spawn, consent::spawn_question(&sp)).await? {
@@ -3953,7 +3953,7 @@ async fn desk_shell(win: tauri::Window, v: State<'_, Vault>, op: String, target:
         desk_proc::ShellOpen::Url(url) => (std::path::PathBuf::from("xdg-open"), desk_proc::Local::url(url)),
         desk_proc::ShellOpen::Ask(t) => {
             // R4: the opener runs in "/" (desk_proc::OPENER_CWD), never the vault
-            let sp = desk_proc::Spec { file: "xdg-open".into(), args: vec![t.arg.clone()], cwd: desk_proc::OPENER_CWD.into(), env: vec![], argv0: None };
+            let sp = desk_proc::Spec { file: "xdg-open".into(), args: vec![t.arg.clone()], cwd: desk_proc::OPENER_CWD.into(), root: root.clone(), env: vec![], argv0: None };
             let sp = consent::resolve(sp)?; // the absolute xdg-open the dialog names is the one that runs
             // R5: the open question (names the target, says it may run it; neutral about who asks)
             if !consent::ask(win, consent::Kind::Spawn, consent::open_question(&sp, &t.arg)).await? {
@@ -3970,7 +3970,7 @@ async fn desk_shell(win: tauri::Window, v: State<'_, Vault>, op: String, target:
     }
     eprintln!("[desk] shell {op} {}", t.arg);
     // P4: identity recheck + exec, nothing in between; R4: cwd "/", PATH absolute entries only
-    let r = desk_proc::shell_spawn(&t, std::env::var("PATH").ok(), |l| {
+    let r = desk_proc::shell_spawn(&t, std::env::var_os("PATH"), &root, |l| {
         let mut cmd = std::process::Command::new(&file);
         l.apply(&mut cmd).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
         cmd.spawn().map_err(|e| format!("ENOENT: xdg-open: {e}"))

@@ -27,7 +27,9 @@
    Bytes cross the IPC as latin1 strings (one char per byte, lossless both ways),
    so no codec crate is needed. */
 use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -229,6 +231,8 @@ pub struct Spec {
     pub file: String,
     pub args: Vec<String>,
     pub cwd: PathBuf,
+    /// S3: the vault the child is started for: PATH entries inside it are dropped
+    pub root: PathBuf,
     pub env: Vec<(String, String)>,
     /// argv[0] the child sees (the name the plugin asked for); None = file
     pub argv0: Option<String>,
@@ -239,12 +243,78 @@ pub struct Spec {
    that finds gio, kde-open, ... on PATH; git finds its helpers; sh finds every command),
    and exec resolves such an entry against the child's cwd — inside the vault, which
    plugins write. So every child (spawn and shell opener) gets PATH with only its
-   absolute entries, in order. */
-pub fn child_path(path: &str) -> String {
-    path.split(':').filter(|d| d.starts_with('/')).collect::<Vec<_>>().join(":")
+   absolute entries, in order.
+   S1 (PR #42 round 3, Greptile): when nothing absolute is left (PATH "tools", ".", "") the
+   child gets SAFE_PATH — never an empty PATH, which sh and execvp read as "the cwd".
+   S2 (round 3, CodeAnt): the PATH is bytes (OsStr), filtered byte-wise; a non-UTF-8
+   inherited PATH is cleaned like any other, never passed through raw, and every child
+   gets PATH set explicitly.
+   S3 (round 3, CodeAnt): an absolute entry can still lead into the cwd or the vault:
+   /proc/self/cwd, /proc/<pid>/cwd, /proc/self/fd/N, /dev/fd/N, or a plain path under the
+   vault (PATH=/abs/vault/bin). Dropped: every entry under /proc or /dev/fd, and every
+   entry inside one of the `confine` roots (the vault, the child's cwd) — tested on its
+   lexical form (., .., // folded) and on its canonical form when it resolves. A confine
+   root of "/" confines nothing (the opener's cwd: plugins cannot write it). */
+pub const SAFE_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
+
+/// S3: `p` with "." and "//" folded and ".." popped, without touching the filesystem
+fn lexical(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::from("/");
+    for c in p.components() {
+        match c {
+            Component::Normal(n) => out.push(n),
+            Component::ParentDir => {
+                out.pop();
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
-fn build(sp: &Spec) -> Command {
+/// S3: may the child look programs up in `dir` (an absolute PATH entry)?
+fn path_dir_ok(dir: &Path, confine: &[&Path]) -> bool {
+    let mut forms = vec![lexical(dir)];
+    if let Ok(c) = dir.canonicalize() {
+        forms.push(c);
+    }
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for r in confine.iter().filter(|r| r.is_absolute()) {
+        roots.push(lexical(r));
+        if let Ok(c) = r.canonicalize() {
+            roots.push(c);
+        }
+    }
+    roots.retain(|r| r.as_os_str() != "/");
+    !forms.iter().any(|f| f.starts_with("/proc") || f.starts_with("/dev/fd") || roots.iter().any(|r| f.starts_with(r)))
+}
+
+/// R4 + S1-S3: the PATH a child runs with, from the PATH it would have had
+pub fn child_path(path: &OsStr, confine: &[&Path]) -> OsString {
+    let mut out: Vec<u8> = Vec::new();
+    for d in path.as_bytes().split(|b| *b == b':') {
+        if d.first() != Some(&b'/') || !path_dir_ok(Path::new(OsStr::from_bytes(d)), confine) {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(b':');
+        }
+        out.extend_from_slice(d);
+    }
+    if out.is_empty() {
+        return OsString::from(SAFE_PATH);
+    }
+    OsString::from_vec(out)
+}
+
+/// S2: what build's child PATH is cleaned from — the plugin's PATH, else the app's
+/// (`inherited`, read by the caller with var_os, never as a String)
+fn spec_path(sp: &Spec, inherited: Option<OsString>) -> OsString {
+    sp.env.iter().rev().find(|(k, _)| k == "PATH").map(|(_, v)| OsString::from(v)).or(inherited).unwrap_or_default()
+}
+
+fn build(sp: &Spec, inherited: Option<OsString>) -> Command {
     let mut c = Command::new(&sp.file);
     if let Some(a0) = &sp.argv0 {
         c.arg0(a0);
@@ -253,10 +323,8 @@ fn build(sp: &Spec) -> Command {
     for (k, v) in &sp.env {
         c.env(k, v);
     }
-    // R4: the child's own PATH lookups never land in its cwd (the vault)
-    if let Some(p) = sp.env.iter().rev().find(|(k, _)| k == "PATH").map(|(_, v)| v.clone()).or_else(|| std::env::var("PATH").ok()) {
-        c.env("PATH", child_path(&p));
-    }
+    // R4/S1-S3: the child's own PATH lookups never land in its cwd or the vault; always set
+    c.env("PATH", child_path(&spec_path(sp, inherited), &[sp.root.as_path(), sp.cwd.as_path()]));
     // SAFETY: async-signal-safe syscalls only, between fork and exec
     unsafe {
         c.pre_exec(|| {
@@ -279,7 +347,7 @@ fn fork(sp: Spec) -> std::io::Result<Child> {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .send(Box::new(move || {
-            let _ = tx.send(build(&sp).spawn());
+            let _ = tx.send(build(&sp, std::env::var_os("PATH")).spawn());
         }))
         .map_err(|_| std::io::Error::other("fork thread gone"))?;
     rx.recv().map_err(|_| std::io::Error::other("fork thread gone"))?
@@ -497,13 +565,26 @@ pub fn trust_plan(on: bool, seen: u64, trusted_now: impl FnOnce() -> bool) -> (b
    a symlink where the file was, changed contents/size/mtime, gone — refuses with EPERM and
    nothing is opened. A file: URL is turned into its path (percent-decoded) and goes the
    same way, so it cannot route around the binding.
-   RESIDUAL WINDOW (not closable from here): between that recheck and xdg-open's OWN open of
-   the path (xdg-open is a separate program that opens by name, and hands the name on to
-   the handler it picks) the plugin can still swap the file; this narrows the race from
-   "as long as the user reads the dialog" to the few milliseconds of fork/exec of xdg-open,
-   but does not remove it. Closing it would need opening by fd (no xdg-open interface for
-   that). Custom-scheme URLs (steam:, obsidian:, ...) name no file: nothing to bind, asked
-   as text. */
+   RESIDUAL WINDOW — S4 (PR #42 round 3, CodeAnt "High Risk" TOCTOU), documented, NOT
+   closed: Local::recheck compares identities by path, and xdg-open then opens the target
+   by NAME, twice over: its own mime lookup (xdg-mime / gio sniff the file) and then the
+   handler it starts, which opens the name again. A plugin that rewrites the vault (page
+   script through the app's file calls, or a child it was allowed to start) and wins the
+   race between the recheck and that later open makes the handler act on another file
+   than the one allowed — e.g. a .desktop or an executable script swapped in for a note.
+   The window is the fork/exec of xdg-open plus its mime lookup and the handler's start
+   (milliseconds up to about a second), no longer "as long as the user reads the dialog".
+   Why there is no fix inside this module: xdg-open takes only a pathname or URL. Handing
+   it a /proc/<pid>/fd/N magic link of an fd we verified (fstat) pins the inode but loses
+   the name: the mime type is guessed from the extension, a .desktop is recognised by its
+   name, a directory (reveal) shows a /proc path, and the link dies with the fd before the
+   handler has opened it. Handing it a private read-only copy outside the vault pins the
+   contents but breaks editing in place and cannot copy a directory. Holding off vault
+   writes for "a while" is a timing guess, and does not cover a running child. So: the
+   dialog names the canonical path, the identity is rechecked right before the exec, the
+   opener runs in "/" with a cleaned PATH, and this residual stays (pr2d.md, Known
+   limitations). Custom-scheme URLs (steam:, obsidian:, ...) name no file: nothing to
+   bind, asked as text. */
 pub enum ShellOpen {
     /// an http(s)/mailto URL: opened without asking
     Url(String),
@@ -643,30 +724,29 @@ pub fn shell_target(root: &Path, op: &str, target: &str) -> Result<ShellOpen, St
    R4 (PR #42, Qodo): the opener is a script that looks up its helpers on PATH, so it
    runs in OPENER_CWD ("/", which plugins cannot write) — never the vault — with PATH
    cut to its absolute entries (child_path). `exec` gets both in a Launch and applies
-   them with Launch::apply; `ours` = the app's PATH (main.rs: std::env::var). */
+   them with Launch::apply; `ours` = the app's PATH (main.rs: std::env::var_os).
+   S1-S3 (PR #42 round 3): the same child_path as a spawn — bytes, /proc and /dev/fd and
+   the vault (`root`) dropped, SAFE_PATH when nothing is left — and PATH is always set. */
 pub const OPENER_CWD: &str = "/";
 
 /// R4: what the opener is started with: its one argument (the allowed target), cwd, PATH
 pub struct Launch<'a> {
     pub arg: &'a str,
     pub cwd: &'static Path,
-    pub path: Option<String>,
+    pub path: OsString,
 }
 
 impl Launch<'_> {
     /// the target, the cwd and the cleaned PATH, onto the caller's opener Command
     pub fn apply<'c>(&self, c: &'c mut Command) -> &'c mut Command {
-        c.arg(self.arg).current_dir(self.cwd);
-        if let Some(p) = &self.path {
-            c.env("PATH", p);
-        }
-        c
+        c.arg(self.arg).current_dir(self.cwd).env("PATH", &self.path)
     }
 }
 
-pub fn shell_spawn<R>(t: &Local, ours: Option<String>, exec: impl FnOnce(Launch) -> Result<R, String>) -> Result<R, String> {
+pub fn shell_spawn<R>(t: &Local, ours: Option<OsString>, root: &Path, exec: impl FnOnce(Launch) -> Result<R, String>) -> Result<R, String> {
     t.recheck()?;
-    exec(Launch { arg: &t.arg, cwd: Path::new(OPENER_CWD), path: ours.as_deref().map(child_path) })
+    let path = child_path(&ours.unwrap_or_default(), &[root, Path::new(OPENER_CWD)]);
+    exec(Launch { arg: &t.arg, cwd: Path::new(OPENER_CWD), path })
 }
 
 #[cfg(test)]
@@ -674,7 +754,7 @@ mod tests {
     use super::*;
 
     fn spec(file: &str, args: &[&str], cwd: &Path) -> Spec {
-        Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), env: vec![], argv0: None }
+        Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), root: cwd.into(), env: vec![], argv0: None }
     }
 
     fn drain(r: &Run) -> (Vec<u8>, Vec<u8>, Chunk) {
@@ -997,7 +1077,7 @@ mod tests {
                 ShellOpen::Url(u) => panic!("{op} {target}: not asked ({u})"),
             };
             dialog();
-            let mut c = shell_spawn(&t, None, |l| Command::new(&opener).arg(l.arg).spawn().map_err(|e| e.to_string()))?;
+            let mut c = shell_spawn(&t, None, &vault, |l| Command::new(&opener).arg(l.arg).spawn().map_err(|e| e.to_string()))?;
             assert!(c.wait().unwrap().success(), "the stub opener failed");
             Ok(t.arg)
         };
@@ -1059,7 +1139,7 @@ mod tests {
                 ShellOpen::Url(u) => panic!("{op} {target}: not asked ({u})"),
             };
             dialog();
-            shell_spawn(&t, None, |l| Ok(l.arg.to_string()))
+            shell_spawn(&t, None, &vault, |l| Ok(l.arg.to_string()))
         };
         // reveal(sub/a.md) opens sub/; a sibling is created, rewritten and renamed meanwhile
         let r = ask_then_run("reveal", "/vault/sub/a.md", &|| {
@@ -1144,7 +1224,7 @@ mod tests {
         let opener = base.join("opener");
         std::fs::write(&opener, format!("#!/bin/sh\nprintf '%s|%s\\n' \"$(pwd -P)\" \"$PATH\" >> '{}'\nr4helper 2>/dev/null\nexit 0\n", log.display())).unwrap();
         std::fs::set_permissions(&opener, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert_eq!(child_path(".::bin:/usr/bin:./x:/bin:"), "/usr/bin:/bin");
+        assert_eq!(child_path(OsStr::new(".::bin:/usr/bin:./x:/bin:"), &[vault.as_path()]), "/usr/bin:/bin");
         let dirty = ".::bin:/usr/bin:/bin".to_string();
 
         // (a) the opener
@@ -1152,7 +1232,7 @@ mod tests {
             ShellOpen::Ask(t) => t,
             ShellOpen::Url(u) => panic!("not asked ({u})"),
         };
-        let mut c = shell_spawn(&t, Some(dirty.clone()), |l| {
+        let mut c = shell_spawn(&t, Some(dirty.clone().into()), &vault, |l| {
             let mut cmd = Command::new(&opener);
             l.apply(&mut cmd).spawn().map_err(|e| e.to_string())
         })
@@ -1174,6 +1254,123 @@ mod tests {
         let path = bytes_to_latin1(&o);
         assert_eq!(path, "/usr/bin:/bin", "the child's PATH kept an empty/relative entry");
         assert!(!mark.exists(), "the child reached the vault's helper through PATH");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// a vault whose helper `name` (in the vault and in vault/bin, vault/tools) marks when it runs
+    fn helper_vault(tag: &str, name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!("desk-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let vault = base.join("v");
+        let mark = base.join("HELPER-RAN");
+        for d in ["", "bin", "tools", "sub"] {
+            std::fs::create_dir_all(vault.join(d)).unwrap();
+            let h = vault.join(d).join(name);
+            std::fs::write(&h, format!("#!/bin/sh\ntouch '{}'\n", mark.display())).unwrap();
+            std::fs::set_permissions(&h, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        (base, vault, mark)
+    }
+
+    /// the PATH a spawned child sees, after it tried to run `helper` by name
+    fn child_sees(sp: Spec) -> String {
+        let r = start(sp, &lifecycle()).unwrap();
+        r.end();
+        let (o, _, ch) = drain(&r);
+        assert_eq!(ch.exit, Some(0));
+        bytes_to_latin1(&o)
+    }
+
+    /* S1 (PR #42 round 3, Greptile): a PATH with no absolute entry ("tools", ".", "") used to
+       be cut to "" — and sh / execvp read an empty PATH as the cwd, the vault. The child now
+       gets SAFE_PATH, a spawn and the opener alike, and the vault's helper is not reached. */
+    #[test]
+    fn desk_s1_a_path_without_absolute_entries_gives_the_safe_default_not_an_empty_path() {
+        let (base, vault, mark) = helper_vault("s1", "s1helper");
+        for p in ["tools", ".", "", "tools:.:bin"] {
+            let mut sp = spec("/bin/sh", &["-c", "printf %s \"$PATH\"; s1helper 2>/dev/null; exit 0"], &vault);
+            sp.env.push(("PATH".into(), p.into()));
+            assert_eq!(child_sees(sp), SAFE_PATH, "plugin PATH={p:?}: the child's PATH is not the safe default");
+            assert!(!mark.exists(), "plugin PATH={p:?}: the child reached the vault's helper");
+        }
+        let t = match shell_target(&vault, "path", "/vault/sub").unwrap() {
+            ShellOpen::Ask(t) => t,
+            ShellOpen::Url(u) => panic!("not asked ({u})"),
+        };
+        let got = shell_spawn(&t, Some("tools:.".into()), &vault, |l| Ok(l.path.clone())).unwrap();
+        assert_eq!(got, SAFE_PATH, "the opener's PATH is not the safe default");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* S2 (PR #42 round 3, CodeAnt): the inherited PATH was read with std::env::var — a
+       non-UTF-8 PATH gave None, nothing was set, and the child inherited the raw PATH
+       (relative entries and all). It is now an OsString (var_os) filtered byte-wise, and
+       PATH is always set on the child. build takes the inherited value as a parameter, so
+       this needs no process-wide env change. */
+    #[test]
+    fn desk_s2_a_non_utf8_inherited_path_is_cleaned_not_passed_through_raw() {
+        let (base, vault, _) = helper_vault("s2", "s2helper");
+        let inherited = OsString::from_vec(b"bin:/opt/s2\xffx:.::/usr/bin".to_vec());
+        assert!(inherited.to_str().is_none(), "the test PATH must not be UTF-8");
+        let c = build(&spec("/bin/true", &[], &vault), Some(inherited));
+        let got = c.get_envs().find(|(k, _)| *k == *OsStr::new("PATH")).map(|(_, v)| v.map(|v| v.to_os_string()));
+        assert_eq!(got, Some(Some(OsString::from_vec(b"/opt/s2\xffx:/usr/bin".to_vec()))), "the child's PATH was not set to the cleaned bytes");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* S3 (PR #42 round 3, CodeAnt): absolute entries that still lead into the cwd or the
+       vault — /proc/self/cwd, /proc/<pid>/cwd, /proc/self/fd/N, /dev/fd/N, a path under
+       the vault (plain, with "..", or through a symlink outside it), a path under the
+       child's cwd — are dropped; /usr/bin and /bin are kept, in order. */
+    #[test]
+    fn desk_s3_path_entries_leading_into_the_vault_or_cwd_are_dropped() {
+        use std::os::unix::fs::symlink;
+        let (base, vault, mark) = helper_vault("s3", "s3helper");
+        let elsewhere = base.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        symlink(vault.join("bin"), base.join("link")).unwrap();
+        let v = vault.display().to_string();
+        let cwd = base.join("cwd");
+        std::fs::create_dir_all(cwd.join("bin")).unwrap();
+        let bad = [
+            "/proc/self/cwd".to_string(),
+            "/proc/self/cwd/bin".into(),
+            format!("/proc/{}/cwd", std::process::id()),
+            "/proc/self/fd/3".into(),
+            "/dev/fd/3".into(),
+            "//proc/self/cwd".into(),
+            "/./dev/fd/4".into(),
+            format!("{v}/bin"),
+            format!("{v}/tools/"),
+            v.clone(),
+            format!("{}/../v/bin", base.join("elsewhere").display()),
+            base.join("link").display().to_string(),
+            cwd.join("bin").display().to_string(),
+        ];
+        let mut all = vec!["/bin".to_string()];
+        all.extend(bad.iter().cloned());
+        all.push(elsewhere.display().to_string());
+        all.push("/usr/bin".into());
+        let joined = all.join(":");
+        let want = format!("/bin:{}:/usr/bin", elsewhere.display());
+        assert_eq!(child_path(OsStr::new(&joined), &[vault.as_path(), cwd.as_path()]), OsString::from(&want));
+        for b in &bad {
+            assert_eq!(child_path(OsStr::new(&format!("{b}:/usr/bin")), &[vault.as_path(), cwd.as_path()]), "/usr/bin", "{b} was kept");
+        }
+        // a spawn: cwd in the vault, the plugin's PATH leads into it absolutely
+        let mut sp = spec("/bin/sh", &["-c", "printf %s \"$PATH\"; s3helper 2>/dev/null; exit 0"], &vault.join("sub"));
+        sp.root = vault.clone();
+        sp.env.push(("PATH".into(), format!("{v}/bin:/proc/self/cwd:/dev/fd/3:/usr/bin:/bin")));
+        assert_eq!(child_sees(sp), "/usr/bin:/bin", "the child's PATH kept an entry into the vault");
+        assert!(!mark.exists(), "the child reached the vault's helper through an absolute PATH entry");
+        // the opener: the app's PATH with an entry into the vault
+        let t = match shell_target(&vault, "path", "/vault/sub").unwrap() {
+            ShellOpen::Ask(t) => t,
+            ShellOpen::Url(u) => panic!("not asked ({u})"),
+        };
+        let got = shell_spawn(&t, Some(format!("{v}/bin:/proc/self/cwd:/usr/bin").into()), &vault, |l| Ok(l.path.clone())).unwrap();
+        assert_eq!(got, "/usr/bin", "the opener's PATH kept an entry into the vault");
         let _ = std::fs::remove_dir_all(&base);
     }
 }
