@@ -16,7 +16,7 @@
    - #rside (M4.6) a mid-screen swipe left opens main.js's right sidebar as a right overlay drawer: Backlinks,
             Outgoing links, Outline behind a pill + a footer with the note's word and character counts
    - #msheet (M5.1) Menu opens the ribbon actions as a bottom sheet; Settings > Interface configures them
-   - #vswitch (M1.1) the vault name opens a vault list (.m-vaultmenu) + "Manage vaults..." -> full-screen #picker
+   - #vswitch (M1.1/M1.3) the vault name opens a centred single-choice vault dialog (.m-vdlg) + "Manage vaults..." -> full-screen #picker
    - landscape (M3.3) the header and the nav float over the note (CSS only)
    - #mtabs (M6.1) full-screen tab switcher: cards (title, close x, active outlined) + a bar: +, count, Done
    - window.__mobileBack: called by MainActivity's OnBackPressedCallback; closes the innermost layer
@@ -25,7 +25,7 @@
 (() => {
   if (!/Android/.test(navigator.userAgent)) return;
   // M14.1: the Quick Action and the two config sections are built further down (toolbar block); used earlier
-  let qaGet = () => "command-palette:open", tbCfgBox = null, qaCfgBox = null;
+  let qaGet = () => "command-palette:open", mobCfgBox = null, tbSubOpen = () => false, tbSubClose = () => {};
   let rowRn = null;   // android-p2a M10.4: the live inline row rename { cancel }
   const EDGE = 24, $m = id => document.getElementById(id);
   document.body.classList.add("is-mobile", "is-phone");
@@ -51,6 +51,21 @@
   // seen unpanned is remembered per orientation, and a pan with a field focused keeps the keyboard state on.
   const kbSeen = {};
   const kbKey = () => (innerWidth > innerHeight ? "land" : "port");
+  // M15.5: an inline drawer rename (input.m-trn) with the keyboard up stays inside the visual viewport: its scroller
+  // gets bottom room for the keyboard and scrolls the row to the top of what is still visible (stock: the field and
+  // ~3 rows below it above the keyboard). The room goes when the rename ends.
+  function keepRn(a) {
+    if (!vv || !a || !a.isConnected) return;
+    let s = a.parentElement;
+    while (s && s !== document.body) { const o = getComputedStyle(s).overflowY; if (o === "auto" || o === "scroll") break; s = s.parentElement; }
+    if (!s || s === document.body) return;
+    const top = vv.offsetTop, bot = vv.offsetTop + vv.height, row = a.closest(".trow") || a, r = row.getBoundingClientRect();
+    if (r.top >= top + 2 && r.bottom <= bot - 2) return;
+    s.style.paddingBottom = Math.max(0, Math.round(innerHeight - bot)) + "px"; s.dataset.mRnPad = "1";
+    const g = s.getBoundingClientRect();
+    s.scrollTop += row.getBoundingClientRect().top - (Math.max(g.top, top) + 4);
+  }
+  const unRnPad = () => { for (const s of document.querySelectorAll("[data-m-rn-pad]")) { s.style.paddingBottom = ""; delete s.dataset.mRnPad; } };
   const setKb = () => {
     const k = kbPx(), a = document.activeElement;
     if (vv && vv.offsetTop < 1 && k > 80) kbSeen[kbKey()] = k;
@@ -62,6 +77,7 @@
     // undoable from JS: overlays that must sit on the keyboard follow the visual viewport itself (--m-vvt/--m-vvh)
     document.documentElement.style.setProperty("--m-vvt", (vv ? vv.offsetTop : 0) + "px");
     document.documentElement.style.setProperty("--m-vvh", (vv ? vv.height : innerHeight) + "px");
+    if (up && a && a.matches && a.matches("input.m-trn")) requestAnimationFrame(() => keepRn(a));
   };
   if (vv) { vv.addEventListener("resize", setKb); vv.addEventListener("scroll", setKb); }
   addEventListener("resize", setKb);
@@ -86,6 +102,17 @@
   tools.className = "m-tools";
   hdr.append(expand, title, tools);
   app.prepend(hdr);
+  // ---- M13.1 tablet (smallest width >= 600 css px, stock's sw600dp): body.is-tablet instead of is-phone — no bottom
+  // nav, Navigate back / forward in the view header's left, the pane's desktop tab strip (titles, the active tab's
+  // close x, a "New tab" +) under it; drawers stay overlays. Re-evaluated on every resize (a fold, wm size).
+  const hBack = btn("m-hback", "Navigate back", svg('<path d="M15 5l-7 7 7 7"/>'));
+  const hFwd = btn("m-hfwd", "Navigate forward", svg('<path d="M9 5l7 7-7 7"/>'));
+  hdr.insertBefore(hFwd, title); hdr.insertBefore(hBack, hFwd);
+  const tabletSync = () => {
+    const t = Math.min(screen.width, screen.height) >= 600 && innerWidth >= 600;
+    document.body.classList.toggle("is-tablet", t); document.body.classList.toggle("is-phone", !t);
+  };
+  tabletSync(); addEventListener("resize", tabletSync);
 
   // ---- M3.1 bottom navigation
   const nav = document.createElement("div");
@@ -346,11 +373,16 @@
   // ---- M1.1 the vault name in the drawer opens a vault list (known vaults, the current one ticked, then "Manage
   // vaults...") above the vault bar; "Manage vaults..." opens the vault manager (main.js's #picker) as a full-screen
   // page over everything. The manager's known-vaults list always carries the current vault.
+  // M1.3 (stock: a native single-choice dialog): the list is a centred dialog over a scrim, one radio row per vault,
+  // the current one checked, then "Manage vaults..."; back or a tap outside dismisses it and the drawer stays open.
+  const vdlg = document.createElement("div");
+  vdlg.className = "m-vdlg"; vdlg.hidden = true;
   const vmenu = document.createElement("div");
-  vmenu.className = "m-vaultmenu"; vmenu.hidden = true;
-  side.insertBefore(vmenu, vbar);
-  const vmenuOpen = () => !vmenu.hidden;
-  function closeVmenu() { vmenu.hidden = true; }
+  vmenu.className = "m-vaultmenu"; vmenu.setAttribute("role", "dialog"); vmenu.setAttribute("aria-modal", "true");
+  vmenu.setAttribute("aria-label", "Vaults");
+  vdlg.append(vmenu); document.body.append(vdlg);
+  const vmenuOpen = () => !vdlg.hidden;
+  function closeVmenu() { vdlg.hidden = true; }
   const vname = p => (typeof base === "function" ? base(p) : String(p).split(/[\\/]/).filter(Boolean).pop() || String(p));
   const known = async () => {
     let ps = [];
@@ -372,6 +404,7 @@
     for (const p of ps) {
       const it = document.createElement("div");
       it.className = "m-vaultitem" + (p === cur ? " checked" : ""); it.title = p;
+      it.setAttribute("role", "radio"); it.setAttribute("aria-checked", p === cur ? "true" : "false");
       it.textContent = vname(p);
       it.onclick = ev => { ev.stopPropagation(); closeVmenu(); if (p !== cur && typeof openVault === "function") openVault(p, true); };
       vmenu.append(it);
@@ -380,7 +413,7 @@
     m.className = "m-vaultitem m-vaultmanage"; m.textContent = "Manage vaults...";
     m.onclick = ev => { ev.stopPropagation(); openManager(); };
     vmenu.append(m);
-    vmenu.hidden = false;
+    vdlg.hidden = false;
   };
   document.addEventListener("click", e => { if (vmenuOpen() && !vmenu.contains(e.target) && e.target !== vswitch) closeVmenu(); }, true);
   if (typeof window.loadRecent === "function") {
@@ -702,7 +735,7 @@
           row.append(t, cb);
           box.append(row);
         }
-        if (pg) { pg.prepend(ifRows()); pg.append(box); if (tbCfgBox) pg.append(tbCfgBox()); if (qaCfgBox) pg.append(qaCfgBox()); }   // the phone rows first: reachable without a scroll
+        if (pg) { pg.prepend(ifRows()); pg.append(box); if (mobCfgBox) pg.append(mobCfgBox()); }   // the phone rows first: reachable without a scroll
       }
       return r;
     };
@@ -711,6 +744,7 @@
   // ---- bottom nav actions
   nBack.onclick = () => { if (typeof histGo === "function") histGo(-1); };
   nFwd.onclick = () => { if (typeof histGo === "function") histGo(1); };
+  hBack.onclick = nBack.onclick; hFwd.onclick = nFwd.onclick;
   nSearch.onclick = () => {
     openDrawer("search");
     const i = $m("sinput"); if (i) i.focus();
@@ -822,7 +856,7 @@
     const end = async ok => {
       if (done) return; done = true; rowRn = null;
       const nn = inp.value.trim();
-      inp.remove(); tn.hidden = false;
+      inp.remove(); tn.hidden = false; unRnPad();
       if (!ok || !nn || nn === old || /[\\/]/.test(nn)) return;
       const g = fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
       if (t && !t.kind && t.name === nm && typeof flushSave === "function") await flushSave(g);
@@ -916,9 +950,9 @@
   }
   document.body.append(tbar);
   // ---- android-p2a M14.1: the mobile-only palette commands (stock mobile's names) + their two Settings sections
-  //  - Configure mobile toolbar / Configure mobile Quick Action -> Settings > Interface, scrolled to the section:
-  //    "Mobile toolbar" (one checkbox per toolbar button, localStorage os.m.tboff) and "Mobile Quick Action" (what
-  //    the pull-down at a note's top runs, localStorage os.m.qa, default the command palette)
+  //  - Configure mobile toolbar / Configure mobile Quick Action -> Settings > Interface, scrolled to its "Mobile"
+  //    section (M11.3 below: the Quick Action row, localStorage os.m.qa, default the command palette; the toolbar
+  //    options page, one checkbox per toolbar button, localStorage os.m.tboff)
   //  - Show tab overview -> the tab switcher; Share -> the active note's text to the Android share sheet (bridge)
   //  - Toggle keyboard -> the editor's keyboard as it was before the palette opened: up -> hidden (bridge hideIme),
   //    down -> the editor focused with the keyboard shown (bridge showIme)
@@ -927,13 +961,40 @@
   const tbOff = () => { try { return new Set(JSON.parse(localStorage.getItem(TBOFF) || "[]")); } catch (e) { return new Set(); } };
   const tbApply = () => { const off = tbOff(); for (const [l, b] of tbBtn) b.style.display = off.has(l) ? "none" : ""; };
   tbApply();
-  const QA = [["command-palette:open", "Open command palette"], ["switcher:open", "Open quick switcher"],
-    ["global-search:open", "Search in all files"], ["file-explorer:new-file", "Create new note"]];
-  qaGet = () => { const k = localStorage.getItem(QAK); return QA.some(x => x[0] === k) ? k : QA[0][0]; };
-  tbCfgBox = () => {
+  // M11.3 (stock Settings > Interface > Mobile): a "Mobile" heading, then "Configure mobile Quick Action" (its
+  // description names the current command; "Configure" opens a command chooser — the palette's list, picking a row
+  // stores it instead of running it) and "Configure mobile toolbar" ("Manage toolbar options" swaps the page for the
+  // toolbar list, one checkbox per button; back returns to Interface). The Quick Action may be any command.
+  const QA0 = "command-palette:open";
+  const cmdOf = id => (typeof CMDS !== "undefined" && CMDS.find(c => c.id === id)) || null;
+  qaGet = () => { const k = localStorage.getItem(QAK); return k && cmdOf(k) ? k : QA0; };
+  const qaName = () => { const c = cmdOf(qaGet()); return c ? c.name : "Open command palette"; };
+  const qaDesc = () => "Choose the command a pull-down at the top of a note runs. The current command is set to “" + qaName() + "”.";
+  const mRow = (cls, name, desc, btn, run) => {
+    const row = document.createElement("div"); row.className = "m-mrow " + cls;
+    const t = document.createElement("div"); t.className = "m-iftxt";
+    const h = document.createElement("div"); h.className = "m-mh"; h.textContent = name;
+    const d = document.createElement("div"); d.className = "m-ifd"; d.textContent = desc;
+    t.append(h, d);
+    const b = document.createElement("button"); b.type = "button"; b.className = "m-mbtn"; b.textContent = btn;
+    b.onclick = e => { e.preventDefault(); e.stopPropagation(); run(row); };
+    row.append(t, b); return row;
+  };
+  const qaChoose = row => {
+    if (typeof openModal !== "function") return;
+    const items = () => CMDS.filter(c => !c.id.startsWith("mobile:configure-")).map(c => ({ label: c.name, hint: "", run: () => {
+      try { localStorage.setItem(QAK, c.id); } catch (e) { /* this session only */ }
+      const d = row.querySelector(".m-ifd"); if (d) d.textContent = qaDesc();
+    } }));
+    document.body.classList.add("m-qachoose");
+    openModal("qa", items);
+    $m("minput").placeholder = "Select a command...";
+  };
+  if ($m("modal")) new MutationObserver(() => { if ($m("modal").hidden) document.body.classList.remove("m-qachoose"); })
+    .observe($m("modal"), { attributes: true, attributeFilter: ["hidden"] });
+  const tbList = () => {
     const box = document.createElement("div");
     box.className = "m-ribcfg m-tbcfg";
-    box.innerHTML = '<div class="m-ribh">Mobile toolbar</div><div class="m-ribd">The buttons above the keyboard while you edit a note. Untick one to leave it out.</div>';
     const off = tbOff();
     for (const [label] of TB) {
       const row = document.createElement("label");
@@ -950,20 +1011,25 @@
     }
     return box;
   };
-  qaCfgBox = () => {
+  tbSubOpen = () => !!document.querySelector("#spage > .m-tbsub");
+  tbSubClose = () => {
+    const pg = $m("spage"), s = pg && pg.querySelector(":scope > .m-tbsub"); if (!s) return;
+    s.remove(); for (const c of pg.children) if (c.dataset.mTbHid) { c.hidden = false; delete c.dataset.mTbHid; }
+    const m = pg.querySelector(".m-mobcfg"); if (m) m.scrollIntoView({ block: "start" });
+  };
+  const tbSub = () => {
+    const pg = $m("spage"); if (!pg || tbSubOpen()) return;
+    for (const c of pg.children) if (!c.hidden) { c.hidden = true; c.dataset.mTbHid = "1"; }
+    const s = document.createElement("div"); s.className = "m-tbsub";
+    s.innerHTML = '<div class="m-ribh">Manage toolbar options</div><div class="m-ribd">The buttons above the keyboard while you edit a note. Untick one to leave it out.</div>';
+    s.append(tbList()); pg.append(s); pg.scrollTop = 0;
+  };
+  mobCfgBox = () => {
     const box = document.createElement("div");
-    box.className = "m-ribcfg m-qacfg";
-    box.innerHTML = '<div class="m-ribh">Mobile Quick Action</div><div class="m-ribd">What a pull-down at the top of a note runs.</div>';
-    const cur = qaGet();
-    for (const [id, label] of QA) {
-      const row = document.createElement("label");
-      row.className = "m-ribrow"; row.dataset.qa = id;
-      const rb = document.createElement("input");
-      rb.type = "radio"; rb.name = "m-qa"; rb.checked = id === cur;
-      rb.onchange = () => { if (rb.checked) try { localStorage.setItem(QAK, id); } catch (e) { /* this session only */ } };
-      const t = document.createElement("span"); t.textContent = label;
-      row.append(t, rb); box.append(row);
-    }
+    box.className = "m-ribcfg m-mobcfg";
+    box.innerHTML = '<div class="m-ribh">Mobile</div>';
+    box.append(mRow("m-qacfg", "Configure mobile Quick Action", qaDesc(), "Configure", qaChoose),
+      mRow("m-tbrow", "Configure mobile toolbar", "Choose the buttons on the toolbar above the keyboard.", "Manage toolbar options", tbSub));
     return box;
   };
   const openIfaceAt = sel => {
@@ -1003,8 +1069,8 @@
   };
   if (typeof CMDS !== "undefined") {
     const add = (id, name, run, when) => CMDS.push({ id, name, def: [], run, when });
-    add("mobile:configure-toolbar", "Configure mobile toolbar", () => openIfaceAt(".m-tbcfg"));
-    add("mobile:configure-quick-action", "Configure mobile Quick Action", () => openIfaceAt(".m-qacfg"));
+    add("mobile:configure-toolbar", "Configure mobile toolbar", () => openIfaceAt(".m-mobcfg"));
+    add("mobile:configure-quick-action", "Configure mobile Quick Action", () => openIfaceAt(".m-mobcfg"));
     add("mobile:toggle-keyboard", "Toggle keyboard", toggleKb, noteActive);
     // the overview is a full-screen layer: once the palette has handed focus back to the editor, the keyboard goes
     // down (else the first OS back only hides the keyboard and the overview stays)
@@ -1019,12 +1085,23 @@
     CMDS.sort((a, b) => a.name.localeCompare(b.name));
   }
   const edFocused = () => { const a = document.activeElement; return !!(a && a.closest && a.closest("#main .cm-content")); };
+  // M8.3 stock hides the mobile toolbar while a property is edited. Ours has no Properties widget: a note's properties
+  // are its leading YAML frontmatter (--- ... ---), edited as text, so the toolbar stays down while the caret is in it.
+  const caretInFm = () => {
+    const c = typeof Ed !== "undefined" && typeof fg === "function" && fg() ? Ed.cm(fg()) : null;
+    if (!c || !c.state) return false;
+    const d = c.state.doc; if (d.lines < 2 || d.line(1).text.trim() !== "---") return false;
+    const h = c.state.selection.main.head, n = Math.min(d.lines, 400);
+    for (let i = 2; i <= n; i++) if (d.line(i).text.trim() === "---") return h <= d.line(i).to;
+    return false;
+  };
   const tbSync = () => {
-    const on = document.body.classList.contains("m-kb") && edFocused();
+    const on = document.body.classList.contains("m-kb") && edFocused() && !caretInFm();
     document.body.classList.toggle("m-edkb", on);
     if (tbar.hidden === on) tbar.hidden = !on;
   };
   document.addEventListener("focusin", tbSync); document.addEventListener("focusout", () => setTimeout(tbSync, 0));
+  document.addEventListener("selectionchange", () => { if (edFocused()) tbSync(); });
   if (vv) { vv.addEventListener("resize", tbSync); vv.addEventListener("scroll", tbSync); }
   addEventListener("resize", tbSync);
   // M15.6 the caret line stays above the toolbar: the IME does not shrink the layout, so the note's scroller runs on
@@ -1152,6 +1229,9 @@
     if (typeof titling !== "undefined" && titling) { closeTitleEdit(); return "title"; }
     if (typeof menuEl !== "undefined" && menuEl) { closeMenu(); return "menu"; }
     if (asOpen()) { closeAS(); return "asheet"; }
+    // M11.3 the Quick Action chooser sits over Settings; the toolbar options page goes back to Interface
+    if (typeof modalKind !== "undefined" && modalKind === "qa") { closeModal(); return "modal"; }
+    if (typeof settingsOpen !== "undefined" && settingsOpen && tbSubOpen()) { tbSubClose(); return "settings-sub"; }
     if (typeof settingsOpen !== "undefined" && settingsOpen && sPageOpen()) { sMode(false); return "settings-page"; }
     if (typeof settingsOpen !== "undefined" && settingsOpen) { closeSettings(); return "settings"; }
     if (typeof modalKind !== "undefined" && modalKind) { closeModal(); return "modal"; }
@@ -1439,7 +1519,7 @@
     const end = async ok => {
       if (done) return; done = true; rowRn = null;
       const nn = inp.value.trim();
-      inp.remove(); tn.hidden = false;
+      inp.remove(); tn.hidden = false; unRnPad();
       if (!ok || !nn || nn === old || /[\\/]/.test(nn)) return;
       for (const g of groups()) await flushSave(g);
       try { await inv("m_folder", { op: "rename", path: f, to: dir + nn }); } catch (er) { return; }
@@ -1566,7 +1646,13 @@
     const tt = a ? a.textContent.trim() : "";
     if (title.textContent !== tt) title.textContent = tt;
     const s = typeof navState === "function" ? navState(g) : { b: false, f: false };
-    nBack.disabled = !s.b; nFwd.disabled = !s.f;
+    nBack.disabled = !s.b; nFwd.disabled = !s.f; hBack.disabled = !s.b; hFwd.disabled = !s.f;
+    const tbr = g.pane && g.pane.querySelector(":scope > .tabbar"), tbs = tbr && tbr.querySelector(":scope > .tabs");
+    if (tbs && !tbr.querySelector(":scope > .m-newtab")) {   // M13.1 the tablet strip's + (stock: an empty New tab)
+      const nb = btn("m-newtab", "New tab", svg('<path d="M12 5v14M5 12h14"/>'));
+      nb.onclick = async () => { if (typeof cmdNewEmptyTab === "function") await cmdNewEmptyTab(); sync(); };
+      tbs.after(nb);
+    }
     const n = String(document.querySelectorAll("#main .tabs .tab").length);
     if (nTabs.textContent !== n) nTabs.textContent = n;
   }

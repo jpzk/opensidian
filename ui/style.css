@@ -1972,9 +1972,9 @@ body.is-mobile #mnav .m-tabs.on { background: var(--border) }
 /* the drawer: #side lifted out of the row as a fixed overlay; display:none while closed (no hit target, no
    text a tap-by-text could land on) */
 body.is-mobile #side { display: none !important }
-body.is-mobile.m-drawer #side { display: flex !important; position: fixed; z-index: 41; left: 0; top: 0; bottom: 0;
+body.is-mobile.m-drawer #side { display: flex !important; position: fixed; z-index: 41; left: var(--safe-left, 0px); top: 0; bottom: 0;
   width: var(--m-drawer) !important; max-width: none; box-sizing: border-box;
-  padding: var(--safe-top, 0px) 0 var(--safe-bottom, 0px) var(--safe-left, 0px);
+  padding: var(--safe-top, 0px) 0 var(--safe-bottom, 0px) 0;
   box-shadow: 0 0 24px rgba(0, 0, 0, .25); animation: m-slide .18s ease-out }
 @keyframes m-slide { from { transform: translateX(-100%) } to { transform: none } }
 body.is-mobile.m-drawer #mscrim { display: block; position: fixed; inset: 0; z-index: 40; background: var(--scrim) }
@@ -2046,8 +2046,8 @@ body.is-mobile .m-pillitem.checked { font-weight: 600; background: var(--bg-surf
 }
 /* android-p1a M4.6: the right drawer — #rside as an overlay from the right, one view behind the pill, a footer */
 body.is-mobile.m-rdrawer #rside { display: flex !important; flex-direction: column; position: fixed; z-index: 41;
-  right: 0; top: 0; bottom: 0; left: auto; width: var(--m-drawer) !important; max-width: none; box-sizing: border-box;
-  padding: var(--safe-top, 0px) var(--safe-right, 0px) var(--safe-bottom, 0px) 0; background: var(--bg-sidebar);
+  right: var(--safe-right, 0px); top: 0; bottom: 0; left: auto; width: var(--m-drawer) !important; max-width: none; box-sizing: border-box;
+  padding: var(--safe-top, 0px) 0 var(--safe-bottom, 0px) 0; background: var(--bg-sidebar);
   box-shadow: 0 0 24px rgba(0, 0, 0, .25); animation: m-rslide .18s ease-out }
 @keyframes m-rslide { from { transform: translateX(100%) } to { transform: none } }
 body.is-mobile.m-rdrawer #mscrim { display: block; position: fixed; inset: 0; z-index: 40; background: var(--scrim) }
@@ -2125,13 +2125,19 @@ body.is-mobile .m-ribcfg .m-ribrow { display: flex; align-items: center; justify
   border-top: 1px solid var(--bg-surface) }
 body.is-mobile .m-ribcfg .m-ribrow input { width: 20px; height: 20px }
 /* android-p1a M1.1: the drawer's vault list (above the vault bar) and the vault manager as a full-screen page */
-body.is-mobile .m-vaultmenu:not([hidden]) { position: absolute; z-index: 4; left: 10px; right: 10px;
-  bottom: calc(var(--safe-bottom, 0px) + 48px); background: var(--bg-base); border: 1px solid var(--border);
-  border-radius: 12px; padding: 4px 0; box-shadow: 0 4px 14px var(--shadow-popover); max-height: 50vh; overflow-y: auto }
-body.is-mobile .m-vaultitem { padding: 12px 18px 12px 38px; font-size: 15px; color: var(--text-chrome); position: relative;
+.m-vdlg[hidden] { display: none }
+/* M1.3: centred single-choice vault dialog over a scrim (radio rows, then Manage vaults...) */
+body.is-mobile .m-vdlg:not([hidden]) { position: fixed; inset: 0; z-index: 47; display: flex; align-items: center;
+  justify-content: center; background: var(--scrim) }
+body.is-mobile .m-vaultmenu { width: min(86vw, 360px); box-sizing: border-box; background: var(--bg-base);
+  border-radius: 16px; padding: 8px 0; box-shadow: 0 4px 18px var(--shadow-popover); max-height: 80vh; overflow-y: auto }
+body.is-mobile .m-vaultitem { padding: 12px 18px 12px 44px; font-size: 15px; color: var(--text-chrome); position: relative;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
 body.is-mobile .m-vaultitem.checked { font-weight: 600 }
-body.is-mobile .m-vaultitem.checked::before { content: "✓"; position: absolute; left: 14px }
+body.is-mobile .m-vaultitem[role=radio]::before { content: ""; position: absolute; left: 12px; top: 50%; width: 16px;
+  height: 16px; margin-top: -10px; border: 2px solid var(--text-chrome-muted); border-radius: 50%; box-sizing: content-box }
+body.is-mobile .m-vaultitem[aria-checked=true]::before { border-color: var(--interactive-accent, var(--text-chrome));
+  background: radial-gradient(circle, var(--interactive-accent, var(--text-chrome)) 0 45%, transparent 50%) }
 body.is-mobile .m-vaultitem.m-vaultmanage { border-top: 1px solid var(--bg-surface); color: var(--text-chrome-muted) }
 body.is-mobile #picker { z-index: 46; align-items: stretch; justify-content: stretch;
   padding: var(--safe-top, 0px) var(--safe-right, 0px) var(--safe-bottom, 0px) var(--safe-left, 0px); box-sizing: border-box }
@@ -2154,9 +2160,9 @@ body.is-mobile #mfoot { display: none }
 /* M8.1: the editing toolbar sits on the soft keyboard's top edge (the visual viewport's bottom, which the WebView may
    have panned: --m-vvt/--m-vvh from mobile.js) while the note editor has focus; it scrolls sideways */
 #mtoolbar { display: none }
-body.is-mobile.m-edkb #mtoolbar:not([hidden]) { display: flex; position: fixed; z-index: 35; left: 0; right: 0;
+body.is-mobile.m-edkb #mtoolbar:not([hidden]) { display: flex; position: fixed; z-index: 35; left: var(--safe-left, 0px); right: var(--safe-right, 0px);
   top: calc(var(--m-vvt, 0px) + var(--m-vvh, 100vh) - 44px); height: 44px; box-sizing: border-box;
-  padding: 0 calc(var(--safe-right, 0px) + 4px) 0 calc(var(--safe-left, 0px) + 4px); align-items: center; gap: 2px;
+  padding: 0 4px; align-items: center; gap: 2px;
   overflow-x: auto; overflow-y: hidden; scrollbar-width: none; background: var(--bg-surface);
   border-top: 1px solid var(--border); user-select: none; -webkit-user-select: none }
 body.is-mobile #mtoolbar::-webkit-scrollbar { display: none }
@@ -2198,7 +2204,7 @@ body.is-mobile.m-fs.m-fshide #mhdr, body.is-mobile.m-fs.m-fshide #mnav { display
   body.is-mobile.m-float #main .lp, body.is-mobile.m-float #main .preview { padding-bottom: calc(var(--m-nav) + 20px) }
 }
 body.is-mobile.m-slide #main, body.is-mobile.m-slide #mhdr { transition: transform .18s ease-out }
-body.is-mobile.m-slide.m-drawer #main, body.is-mobile.m-slide.m-drawer #mhdr { transform: translateX(var(--m-drawer)) }
+body.is-mobile.m-slide.m-drawer #main, body.is-mobile.m-slide.m-drawer #mhdr { transform: translateX(calc(var(--m-drawer) + var(--safe-left, 0px))) }   /* M15.11: the drawer starts at the left inset */
 /* android-p1c M15.1: the Add bookmark card is a bottom sheet on the visual viewport (the keyboard's top edge), full
    width, label above field, a 44px Title field; the card scrolls if the band is shorter than the card */
 body.is-mobile #bmebox { inset: auto 0; top: var(--m-vvt, 0px); height: var(--m-vvh, 100vh); justify-content: flex-end;
@@ -2259,3 +2265,35 @@ body.is-mobile #tree .m-trn { flex: 1 1 auto; min-width: 0; box-sizing: border-b
   body.is-mobile #msheet:not([hidden]), body.is-mobile .ctxmenu.m-bsheet, body.is-mobile .m-asheet:not([hidden]) {
     max-height: 67vh; overflow-y: auto; overscroll-behavior: contain }
 }
+/* M15.5: Settings > Hotkeys in landscape with the keyboard up on the filter: the page header goes so the filter and
+   its top match stay above the keyboard (the visual viewport is ~170 css px tall there) */
+@media (orientation: landscape) {
+  body.is-mobile.m-kb #sbox:has(#hkfilter:focus) #shead { display: none !important }
+  body.is-mobile.m-kb #sbox:has(#hkfilter:focus) #spage { padding-top: 6px }
+}
+/* M11.3: Settings > Interface > Mobile — two rows (title + description, a button on the right); the Quick Action
+   chooser (#modal, kind "qa") opens over Settings */
+body.is-mobile .m-mrow { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--bg-surface) }
+body.is-mobile .m-mrow .m-iftxt { flex: 1 1 auto; min-width: 0 }
+body.is-mobile .m-mrow .m-ifd { color: var(--text-chrome-muted); font-size: 13px; padding-top: 2px }
+body.is-mobile .m-mh { font-size: 15px; color: var(--text-chrome) }
+body.is-mobile .m-mbtn { flex: 0 0 auto; max-width: 45%; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--bg-surface); color: var(--text-chrome); font-size: 14px }
+body.is-mobile.m-qachoose #modal { z-index: 58 }
+/* M13.1 tablet (body.is-tablet, smallest width >= 600 css px): no bottom nav; the view header (static, also in
+   landscape) carries Navigate back / forward on its left; the focused pane's desktop tab strip shows under it with a
+   "New tab" + (its own nav buttons stay hidden: the header has them) */
+.tabbar .m-newtab { display: none }
+body.is-mobile:not(.is-tablet) #mhdr .m-hback, body.is-mobile:not(.is-tablet) #mhdr .m-hfwd { display: none !important }
+body.is-mobile.is-tablet #mhdr button:disabled { opacity: .4 }
+body.is-mobile.is-tablet #mnav { display: none !important }
+body.is-mobile.is-tablet #mhdr { position: static; background: var(--tab-container-background);
+  border-bottom: 1px solid var(--border); pointer-events: auto }
+body.is-mobile.is-tablet #main .pane.focused > .tabbar { display: flex; height: 40px }
+body.is-mobile.is-tablet #main .pane > .tabbar .navbtns { display: none }
+body.is-mobile.is-tablet #main .tab { width: 180px; font-size: 13px }
+body.is-mobile.is-tablet #main .tab .x { width: 24px; height: 24px }
+body.is-mobile.is-tablet .tabbar .m-newtab { display: flex; align-items: center; justify-content: center; flex: 0 0 auto;
+  width: 40px; padding: 0; background: none; border: 0; color: var(--text-chrome-muted) }
+body.is-mobile.is-tablet .tabbar .m-newtab svg { width: 18px; height: 18px; display: block }
+body.is-mobile.is-tablet #main .lp, body.is-mobile.is-tablet #main .preview { padding: var(--file-margins) }
