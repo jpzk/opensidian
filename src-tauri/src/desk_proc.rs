@@ -380,6 +380,75 @@ pub fn kill_all(_life: &Life) {
     }
 }
 
+/* ---- G1 (PR #41, Qodo #2): the trust epoch. plugins_set reads it (under the lifecycle
+   lock) before the trust dialog opens and hands it to trust_write() under the lock it
+   writes the flag under. Every trust write — ON or OFF, asked or not — goes through
+   trust_write and moves the epoch on, so an answer from a dialog that was open across
+   another flip (a trust-OFF with its kill_all + session clear, or another ON) is stale:
+   it is discarded with an error and nothing is written. Only &Life holders touch it. */
+static TRUST_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn trust_epoch(_life: &Life) -> u64 {
+    TRUST_EPOCH.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// call under `life` right before writing the trust flag. `asked` = the epoch read before
+/// the trust dialog opened (None = nothing was asked). Err = a stale answer: write nothing.
+pub fn trust_write(asked: Option<u64>, _life: &Life) -> Result<(), String> {
+    use std::sync::atomic::Ordering::SeqCst;
+    if let Some(e) = asked {
+        if TRUST_EPOCH.load(SeqCst) != e {
+            return Err("EAGAIN: community plugins were switched while the trust question was open; that answer was discarded, nothing written — ask again".into());
+        }
+    }
+    TRUST_EPOCH.fetch_add(1, SeqCst);
+    Ok(())
+}
+
+/* ---- G3 (PR #41): electron shell / app.openWithDefaultApp hand a target to xdg-open,
+   which runs whatever the desktop maps it to: a .desktop file's Exec=, an executable or a
+   script (by mime handler), an AppImage, a jar — and a custom scheme (steam:, file:, any
+   x-scheme-handler an app registered) runs that handler. Telling a harmless local file
+   from one that runs code is not decidable here (mime sniffing, user handlers, the exec
+   bit, a symlink the plugin swaps after the check), so this does not try: EVERY local
+   target (op path / vault / reveal, and op external with any scheme but http, https,
+   mailto) is asked exactly like a spawn — program xdg-open, the target in full — and
+   xdg-open is a launcher (consent::RUNNERS), so "Allow for this session" is never offered.
+   http(s) and mailto URLs go to the browser / mail client unasked, as before. */
+pub enum ShellOpen {
+    /// an http(s)/mailto URL: opened without asking
+    Url(String),
+    /// anything else: the spawn consent dialog first, then xdg-open <this>
+    Ask(String),
+}
+
+pub fn shell_target(root: &Path, op: &str, target: &str) -> Result<ShellOpen, String> {
+    let local = |p: PathBuf| p.into_os_string().into_string().map(ShellOpen::Ask).map_err(|_| format!("EINVAL: not a UTF-8 path: {target}"));
+    match op {
+        "external" => {
+            let scheme = target.split(':').next().unwrap_or("");
+            let ok = target.contains(':') && scheme.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+                && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+            if !ok {
+                return Err(format!("EINVAL: not a URL: {target}"));
+            }
+            if matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https" | "mailto") {
+                Ok(ShellOpen::Url(target.to_string()))
+            } else {
+                Ok(ShellOpen::Ask(target.to_string()))
+            }
+        }
+        "path" => local(map_cwd(root, Some(target))),
+        // app.openWithDefaultApp: vault paths only, symlinks resolved and confined to the vault
+        "vault" => local(vault_open_target(root, target)?),
+        "reveal" => {
+            let p = map_cwd(root, Some(target));
+            local(p.parent().map(|d| d.to_path_buf()).unwrap_or(p))
+        }
+        _ => Err(format!("EINVAL: unknown shell op {op}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -545,6 +614,87 @@ mod tests {
             let (o, _, _) = drain(&r);
             assert_eq!(o, b"BIN\n", "PATH={path:?}: the vault's fakeprog ran");
         }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* G1 (PR #41, Qodo #2): plugins_set ON reads the epoch, the trust dialog stays open,
+       a trust-OFF (flag write, kill_all, session clear) runs meanwhile, then the user
+       presses Trust. That answer is stale: trust_write refuses it, so the flag stays OFF.
+       An answer with no flip in between is written. (The only test that writes the epoch:
+       a second one running in parallel would make the first's answers stale.) */
+    #[test]
+    fn desk_g1_a_stale_trust_answer_is_discarded() {
+        let mut flag = false; // the vault's trust flag, as plugins_set writes it: OFF
+        let seen = trust_epoch(&lifecycle()); // ON: read before the dialog opens
+        {
+            // trust-OFF while the dialog is open (plugins_set also runs kill_all + session clear here)
+            let life = lifecycle();
+            trust_write(None, &life).unwrap();
+        }
+        {
+            // the user presses Trust now
+            let life = lifecycle();
+            match trust_write(Some(seen), &life) {
+                Ok(()) => flag = true,
+                Err(e) => assert!(e.starts_with("EAGAIN"), "{e}"),
+            }
+        }
+        assert!(!flag, "a Trust answer from a dialog open across a trust-OFF was written");
+        // no flip in between: the answer is fresh and written
+        let seen = trust_epoch(&lifecycle());
+        let life = lifecycle();
+        trust_write(Some(seen), &life).expect("a fresh Trust answer is written");
+        drop(life);
+        // and the write moved the epoch on: that same answer again is stale
+        assert!(trust_write(Some(seen), &lifecycle()).is_err(), "an answer outlived the write it caused");
+    }
+
+    /* G3 (PR #41): every local target of the electron shell / openWithDefaultApp — a
+       .desktop file, a script, an executable, through path / vault / reveal, or a file: /
+       custom-scheme URL — is asked (consent dialog, program xdg-open) before xdg-open
+       sees it; http(s) and mailto URLs are not. */
+    #[test]
+    fn desk_g3_local_and_custom_scheme_opens_are_asked() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!("desk-g3-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("sub")).unwrap();
+        for (n, body) in [("run.desktop", "[Desktop Entry]\nType=Application\nExec=touch /tmp/pwn\n"), ("x.sh", "#!/bin/sh\ntouch /tmp/pwn\n"), ("sub/bin", "#!/bin/sh\n")] {
+            std::fs::write(base.join(n), body).unwrap();
+            std::fs::set_permissions(base.join(n), std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let real = base.canonicalize().unwrap();
+        let desk = format!("file://{}", real.join("run.desktop").display());
+        let asked: &[(&str, &str)] = &[
+            ("path", "/vault/run.desktop"),
+            ("path", "/vault/x.sh"),
+            ("path", "/vault/sub/bin"),
+            ("path", "/vault/sub"),
+            ("vault", "run.desktop"),
+            ("vault", "/vault/x.sh"),
+            ("reveal", "/vault/run.desktop/x"),
+            ("reveal", "/vault/sub/bin"),
+            ("external", &desk),
+            ("external", "FILE:///etc/passwd"),
+            ("external", "steam://run/1"),
+            ("external", "obsidian://open?vault=x"),
+        ];
+        for (op, t) in asked {
+            match shell_target(&base, op, t) {
+                Ok(ShellOpen::Ask(a)) => assert!(!a.is_empty(), "{op} {t}"),
+                Ok(ShellOpen::Url(u)) => panic!("{op} {t}: handed to xdg-open unasked as {u}"),
+                Err(e) => panic!("{op} {t}: {e}"),
+            }
+        }
+        match shell_target(&base, "path", "/vault/run.desktop") {
+            Ok(ShellOpen::Ask(a)) => assert_eq!(a, base.join("run.desktop").to_string_lossy(), "the dialog names the real target in full"),
+            _ => panic!("path not asked"),
+        }
+        for u in ["https://example.org/a?b=c", "http://127.0.0.1:8080/", "HTTPS://x.org", "mailto:a@b.org"] {
+            assert!(matches!(shell_target(&base, "external", u), Ok(ShellOpen::Url(ref x)) if x == u), "{u}: a web/mail URL is asked or changed");
+        }
+        assert!(shell_target(&base, "external", "/etc/passwd").is_err(), "not a URL");
+        assert!(shell_target(&base, "vault", "../x").is_err(), "vault escape");
         let _ = std::fs::remove_dir_all(&base);
     }
 }

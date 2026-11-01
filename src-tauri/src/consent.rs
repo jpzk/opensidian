@@ -194,11 +194,13 @@ fn session_remember(key: SessionKey, epoch: u64) {
 }
 
 /// F4: programs whose behaviour is whatever their input says — shells,
-/// interpreters, git (hooks, aliases, config), env-style launchers. Exact names,
+/// interpreters, git (hooks, aliases, config), env-style launchers, and the desktop
+/// openers (G3: xdg-open runs whatever its target maps to). Exact names,
 /// and interpreter stems followed only by a version ("python3.12", "lua5.4").
 const RUNNERS: &[&str] = &[
     "sh", "bash", "zsh", "dash", "fish", "ksh", "mksh", "csh", "tcsh", "busybox", "git", "env", "xargs", "sudo", "doas",
-    "pkexec", "nohup", "nice", "timeout", "setsid", "stdbuf", "flock",
+    "pkexec", "nohup", "nice", "timeout", "setsid", "stdbuf", "flock", "xdg-open", "gio", "kde-open", "kde-open5", "gnome-open",
+    "exo-open", "mimeopen", "gtk-launch",
 ];
 const RUNNER_STEMS: &[&str] = &["python", "pypy", "node", "nodejs", "perl", "ruby", "php", "lua", "luajit", "deno", "bun", "tclsh", "wish", "pwsh"];
 
@@ -606,6 +608,20 @@ mod tests {
         assert_eq!(spawn_question("/v", &a0).session, None, "asked for git");
         for n in ["pythonista", "nodes", "gitk", "shasum", "envoy"] {
             assert!(!is_runner(n), "{n}");
+        }
+        let _ = std::fs::remove_dir_all(&b);
+    }
+
+    // G3: the desktop openers run whatever their target maps to — never a session answer
+    #[test]
+    fn g3_no_session_for_desktop_openers() {
+        let b = tree("g3o");
+        for n in ["xdg-open", "gio", "kde-open", "gtk-launch", "exo-open"] {
+            let f = b.join("bin").join(n);
+            std::fs::copy(b.join("bin/fakeprog"), &f).unwrap();
+            let q = spawn_question("/v", &sp(&plain(&f), &["/v/run.desktop"], "/v"));
+            assert_eq!(q.session, None, "{n}");
+            assert!(q.text.contains("/v/run.desktop"), "{}", q.text);
         }
         let _ = std::fs::remove_dir_all(&b);
     }
