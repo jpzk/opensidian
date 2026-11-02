@@ -815,6 +815,42 @@ pub fn trust_write(asked: Option<u64>, _life: &Life) -> Result<(), String> {
     Ok(())
 }
 
+/* ---- DD1 (PR #42 round 13, Qodo): the callers that compute the vault's trust key BEFORE the
+   lifecycle lock (CC1/BB1: canonicalize of the root is a path lookup, kept out of the lock) —
+   desk_proc_spawn, desk_net_listen (listen_trusted) and desk_shell (shell_open) — only compare
+   that key under the lock. If the vault root is retargeted (a symlink swap) between their key
+   and the lock, a trust-OFF meanwhile writes OFF for the root's NEW key and runs kill_all +
+   close_all, and the delayed request then finds its OLD key still trusted and starts / binds /
+   opens AFTER that cleanup. So each of them reads the epoch with trust_epoch_now() BEFORE it
+   computes its key, and under the lock `seen.unmoved(&life)` refuses (EAGAIN, nothing started,
+   bound or opened) when any trust write — and every one moves the epoch (trust_write) — landed
+   since. An atomic load: no lock, no path lookup. */
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TrustSeen(u64);
+
+/// read with NO lock, before the caller computes its trust key (DD1)
+pub fn trust_epoch_now() -> TrustSeen {
+    TrustSeen(TRUST_EPOCH.load(std::sync::atomic::Ordering::SeqCst))
+}
+
+impl TrustSeen {
+    /// under `life`, before the trust-key comparison: Err when a trust write landed since the read
+    pub fn unmoved(self, _life: &Life) -> Result<(), String> {
+        if TRUST_EPOCH.load(std::sync::atomic::Ordering::SeqCst) != self.0 {
+            return Err("EAGAIN: community plugins were switched while this request was being prepared; nothing was started — try again".into());
+        }
+        Ok(())
+    }
+}
+
+/// the tests that write TRUST_EPOCH, and those whose request carries a TrustSeen (a write in a
+/// parallel test would make it EAGAIN), run one at a time
+#[cfg(test)]
+pub fn epoch_tests() -> std::sync::MutexGuard<'static, ()> {
+    static EPOCH_TESTS: Mutex<()> = Mutex::new(());
+    EPOCH_TESTS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /* ---- P1 (PR #42, CodeAnt): what a plugins_set call decides before its write. `seen` is
    the epoch read FIRST; `trusted_now` (the vault's trust flag) is read after it, outside
    the lifecycle lock. A trust-OFF can land after that read and before the write takes the
@@ -1136,10 +1172,12 @@ pub fn opener_spec(root: &Path, target: &str) -> Spec {
    the lock at once; the open then sees trust OFF and is refused (EPERM), nothing started. */
 /// BB1: desk_shell after Allow — `t.recheck()` (path lookups) before the lifecycle lock; under
 /// it `trusted()` (the flip may have gone OFF while the question was open, F5), then
-/// opener_exec. `path` = opener_path(), made before the lock too (Q1)
-pub fn shell_open<R>(t: &Local, opener: &Spec, path: ChildPath, trusted: impl FnOnce() -> bool, exec: impl FnOnce(Launch) -> Result<R, String>) -> Result<R, String> {
+/// opener_exec. `path` = opener_path(), made before the lock too (Q1). DD1: `seen` = the epoch
+/// read before `trusted`'s key was computed; a trust write since = EAGAIN, nothing opened
+pub fn shell_open<R>(seen: TrustSeen, t: &Local, opener: &Spec, path: ChildPath, trusted: impl FnOnce() -> bool, exec: impl FnOnce(Launch) -> Result<R, String>) -> Result<R, String> {
     t.recheck()?;
     let life = lifecycle();
+    seen.unmoved(&life)?;
     if !trusted() {
         return Err("EPERM: restricted mode, plugins cannot use the shell".into());
     }
@@ -1536,12 +1574,6 @@ mod tests {
         assert!(trust_write(Some(seen), &lifecycle()).is_err(), "an answer outlived the write it caused");
     }
 
-    /// the tests that write TRUST_EPOCH run one at a time
-    static EPOCH_TESTS: Mutex<()> = Mutex::new(());
-    fn epoch_tests() -> std::sync::MutexGuard<'static, ()> {
-        EPOCH_TESTS.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
     /* P1 (PR #42, CodeAnt): plugins_set ON for a vault that is ALREADY trusted: nothing is
        asked. It reads the epoch, then is_trusted (true, outside the lock); a trust-OFF
        (flag write, kill_all, close_all) lands right after that read; then the ON takes the
@@ -1634,6 +1666,7 @@ mod tests {
        no sleeps. The opener is a stub script that logs every target it is handed. */
     #[test]
     fn desk_p4_target_swapped_between_ask_and_run_is_not_opened() {
+        let _epoch = epoch_tests(); // DD1: shell_open carries a TrustSeen
         let base = std::env::temp_dir().join(format!("desk-p4-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("v")).unwrap();
@@ -1652,7 +1685,7 @@ mod tests {
                 ShellOpen::Url(u) => panic!("{op} {target}: not asked ({u})"),
             };
             dialog();
-            let mut c = shell_open(&t, &opener_at(&opener), opener_path(None, &vault), || true, |l| l.apply(&mut Command::new(l.program())).spawn().map_err(|e| e.to_string()))?;
+            let mut c = shell_open(trust_epoch_now(), &t, &opener_at(&opener), opener_path(None, &vault), || true, |l| l.apply(&mut Command::new(l.program())).spawn().map_err(|e| e.to_string()))?;
             assert!(c.wait().unwrap().success(), "the stub opener failed");
             Ok(t.arg)
         };
@@ -1782,6 +1815,7 @@ mod tests {
        "dialog" hook runs the change to completion before the answer: no sleeps. */
     #[test]
     fn desk_r1_directory_target_opens_after_a_sibling_file_changes_during_the_dialog() {
+        let _epoch = epoch_tests(); // DD1: shell_open carries a TrustSeen
         let base = std::env::temp_dir().join(format!("desk-r1-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let vault = base.join("v");
@@ -1794,7 +1828,7 @@ mod tests {
                 ShellOpen::Url(u) => panic!("{op} {target}: not asked ({u})"),
             };
             dialog();
-            shell_open(&t, &opener_at(Path::new("/bin/sh")), opener_path(None, &vault), || true, |l| Ok(l.arg.to_string()))
+            shell_open(trust_epoch_now(), &t, &opener_at(Path::new("/bin/sh")), opener_path(None, &vault), || true, |l| Ok(l.arg.to_string()))
         };
         // reveal(sub/a.md) opens sub/; a sibling is created, rewritten and renamed meanwhile
         let r = ask_then_run("reveal", "/vault/sub/a.md", &|| {
@@ -1863,6 +1897,7 @@ mod tests {
        runs; PATH puts "." and relative entries first. */
     #[test]
     fn desk_r4_opener_cwd_is_root_and_child_path_has_no_relative_entries() {
+        let _epoch = epoch_tests(); // DD1: shell_open carries a TrustSeen
         let base = std::env::temp_dir().join(format!("desk-r4-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
@@ -1890,7 +1925,7 @@ mod tests {
             ShellOpen::Ask(t) => t,
             ShellOpen::Url(u) => panic!("not asked ({u})"),
         };
-        let mut c = shell_open(&t, &opener_at(&opener), opener_path(Some(dirty.clone().into()), &vault), || true, |l| {
+        let mut c = shell_open(trust_epoch_now(), &t, &opener_at(&opener), opener_path(Some(dirty.clone().into()), &vault), || true, |l| {
             let mut cmd = Command::new(l.program()); // AA1: the held opener
             l.apply(&mut cmd).spawn().map_err(|e| e.to_string())
         })
@@ -1953,6 +1988,7 @@ mod tests {
        gets SAFE_PATH (canonical, W1), a spawn and the opener alike, and the vault's helper is not reached. */
     #[test]
     fn desk_s1_a_path_without_absolute_entries_gives_the_safe_default_not_an_empty_path() {
+        let _epoch = epoch_tests(); // DD1: shell_open carries a TrustSeen
         let (base, vault, mark) = helper_vault("s1", "s1helper");
         for p in ["tools", ".", "", "tools:.:bin"] {
             let mut sp = spec("/bin/sh", &["-c", "printf %s \"$PATH\"; s1helper 2>/dev/null; exit 0"], &vault);
@@ -1965,7 +2001,7 @@ mod tests {
             ShellOpen::Ask(t) => t,
             ShellOpen::Url(u) => panic!("not asked ({u})"),
         };
-        let got = shell_open(&t, &opener_at(Path::new("/bin/sh")), opener_path(Some("tools:.".into()), &vault), || true, |l| Ok(l.path.clone())).unwrap();
+        let got = shell_open(trust_epoch_now(), &t, &opener_at(Path::new("/bin/sh")), opener_path(Some("tools:.".into()), &vault), || true, |l| Ok(l.path.clone())).unwrap();
         assert!(s1_safe(&got.to_string_lossy(), &vault), "the opener's PATH {got:?} is empty or not absolute dirs outside the vault");
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -2057,6 +2093,7 @@ mod tests {
        child's cwd — are dropped; /usr/bin and /bin are kept, in order. */
     #[test]
     fn desk_s3_path_entries_leading_into_the_vault_or_cwd_are_dropped() {
+        let _epoch = epoch_tests(); // DD1: shell_open carries a TrustSeen
         use std::os::unix::fs::symlink;
         let (base, vault, mark) = helper_vault("s3", "s3helper");
         let elsewhere = base.join("elsewhere");
@@ -2104,7 +2141,7 @@ mod tests {
             ShellOpen::Ask(t) => t,
             ShellOpen::Url(u) => panic!("not asked ({u})"),
         };
-        let got = shell_open(&t, &opener_at(Path::new("/bin/sh")), opener_path(Some(format!("{v}/bin:/proc/self/cwd:/usr/bin").into()), &vault), || true, |l| Ok(l.path.clone())).unwrap();
+        let got = shell_open(trust_epoch_now(), &t, &opener_at(Path::new("/bin/sh")), opener_path(Some(format!("{v}/bin:/proc/self/cwd:/usr/bin").into()), &vault), || true, |l| Ok(l.path.clone())).unwrap();
         assert_eq!(got, "/usr/bin", "the opener's PATH kept an entry into the vault");
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -2170,6 +2207,7 @@ mod tests {
        helper is not reached. A missing entry is dropped. */
     #[test]
     fn desk_v1_a_path_symlink_to_proc_self_cwd_does_not_reach_the_childs_cwd() {
+        let _epoch = epoch_tests(); // DD1: shell_open carries a TrustSeen
         use std::os::unix::fs::symlink;
         let (base, vault, mark) = helper_vault("v1", "v1helper");
         let link = base.join("link");
@@ -2195,7 +2233,7 @@ mod tests {
             ShellOpen::Ask(t) => t,
             ShellOpen::Url(u) => panic!("not asked ({u})"),
         };
-        let got = shell_open(&t, &opener_at(Path::new("/bin/sh")), opener_path(Some(format!("{}:/usr/bin", links[0]).into()), &vault), || true, |l| Ok(l.path.clone())).unwrap();
+        let got = shell_open(trust_epoch_now(), &t, &opener_at(Path::new("/bin/sh")), opener_path(Some(format!("{}:/usr/bin", links[0]).into()), &vault), || true, |l| Ok(l.path.clone())).unwrap();
         assert_eq!(got, OsString::from(format!("{ours}:/usr/bin")), "the opener's PATH holds the link");
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -2228,6 +2266,7 @@ mod tests {
        control round with nothing replaced opens through the original. */
     #[test]
     fn desk_aa1_an_opener_replaced_while_the_dialog_is_open_is_never_the_one_run() {
+        let _epoch = epoch_tests(); // DD1: shell_open carries a TrustSeen
         let base = std::env::temp_dir().join(format!("desk-aa1-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("v")).unwrap();
@@ -2258,7 +2297,7 @@ mod tests {
                 _ => {}
             }
             // Allow: desk_shell's exec
-            let r = shell_open(&t, &sp, opener_path(None, &vault), || true, |l| {
+            let r = shell_open(trust_epoch_now(), &t, &sp, opener_path(None, &vault), || true, |l| {
                 let mut c = Command::new(l.program());
                 l.apply(&mut c).spawn().map_err(|e| opener_err(&sp.file, &e))
             })
@@ -2307,6 +2346,7 @@ mod tests {
        release A and fail. The gate is released before any assert. */
     #[test]
     fn desk_bb1_a_stalled_target_recheck_does_not_hold_the_lifecycle_lock() {
+        let _epoch = epoch_tests(); // DD1: shell_open carries a TrustSeen
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::mpsc::channel;
         static TRUSTED: AtomicBool = AtomicBool::new(true);
@@ -2329,7 +2369,7 @@ mod tests {
         *BB1_GATE.lock().unwrap_or_else(|e| e.into_inner()) = Some((PathBuf::from(&t.arg), entered_tx, go_rx));
         let path = opener_path(None, &vault); // desk_shell: before the lock (Q1)
         let a = std::thread::spawn(move || {
-            shell_open(&t, &sp, path, || TRUSTED.load(Ordering::SeqCst), |l| {
+            shell_open(trust_epoch_now(), &t, &sp, path, || TRUSTED.load(Ordering::SeqCst), |l| {
                 let mut c = Command::new(l.program());
                 l.apply(&mut c).spawn().map_err(|e| e.to_string())
             })

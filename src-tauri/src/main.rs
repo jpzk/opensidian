@@ -3818,11 +3818,15 @@ async fn desk_proc_spawn(
     // canonicalized entry by entry) happens HERE, before the lock: a stalled mount in a
     // plugin's PATH cannot hold up a trust-OFF waiting on the lifecycle lock
     let sp = desk_proc::prepare(sp, std::env::var_os("PATH"));
-    // CC1 (PR #42 round 12): so is the vault's trust key (canonicalize of the root)
+    // CC1 (PR #42 round 12): so is the vault's trust key (canonicalize of the root). DD1 (round 13):
+    // the trust epoch is read BEFORE that key; a trust write since (a trust-OFF for a root retargeted
+    // in between, its kill_all already run) makes this EAGAIN under the lock, nothing started
+    let seen = desk_proc::trust_epoch_now();
     let key = plugins::trust_key(&root);
     // F5: (recheck, start, register) under the lock plugins_set holds across a trust-OFF
     // (flag write, kill_all): the flip may have gone OFF while the question was open
     let life = desk_proc::lifecycle();
+    seen.unmoved(&life)?;
     if !plugins::is_trusted_key(&cfg_value(), &key) {
         return Err("EPERM: restricted mode, plugins cannot start programs".into());
     }
@@ -3875,10 +3879,13 @@ fn desk_net_listen(v: State<Vault>, host: Option<String>, port: u16) -> Result<s
     // CC1 (PR #42 round 12, CodeAnt): listen_trusted calls `trusted` a second time UNDER the
     // lifecycle lock (desk_net::listen_trusted_via). The trust key canonicalizes the vault root (a
     // path lookup: a stalled FUSE/NFS vault stands still in it), so it is computed HERE, before
-    // listen_trusted; the closure only reads the config and compares keys — the lock walks no path
+    // listen_trusted; the closure only reads the config and compares keys — the lock walks no path.
+    // DD1 (round 13): the trust epoch read BEFORE the key; listen_trusted refuses under the lock
+    // (EAGAIN, nothing bound) when a trust write landed since — e.g. a trust-OFF for a retargeted root
+    let seen = desk_proc::trust_epoch_now();
     let key = plugins::trust_key(&root);
     let trusted = || plugins::is_trusted_key(&cfg_value(), &key);
-    let (id, s) = span_timed!("desk_net_listen", desk_net::listen_trusted(trusted, host.as_deref().unwrap_or(""), port))?;
+    let (id, s) = span_timed!("desk_net_listen", desk_net::listen_trusted(seen, trusted, host.as_deref().unwrap_or(""), port))?;
     eprintln!("[desk] listen {}:{} id={id}", s.address, s.port);
     Ok(serde_json::json!({ "id": id, "port": s.port, "address": s.address }))
 }
@@ -3986,13 +3993,16 @@ async fn desk_shell(win: tauri::Window, v: State<'_, Vault>, op: String, target:
     // Q1 (PR #42 round 4): the opener's cleaned PATH (canonicalize of every entry) before the lock;
     // BB1: so is the vault's trust key (canonicalize of the root) — the lock walks no path
     let opener_path = desk_proc::opener_path(std::env::var_os("PATH"), &root);
+    // DD1 (round 13): the trust epoch BEFORE the key; shell_open refuses under the lock (EAGAIN,
+    // nothing opened) when a trust write landed since
+    let seen = desk_proc::trust_epoch_now();
     let key = plugins::trust_key(&root);
     eprintln!("[desk] shell {op} {}", t.arg);
     // BB1: shell_open = the target's identity recheck (a path lookup) BEFORE the lifecycle lock,
     // then under it the trust recheck (the flip may have gone OFF while the question was open, F5),
     // the opener's fd-only check and the exec. P4: R4: cwd "/", PATH absolute entries only.
     // AA1: the opener is exec'd by its held fd (l.program()), rechecked in pre_exec (l.apply)
-    let r = desk_proc::shell_open(&t, &opener, opener_path, || plugins::is_trusted_key(&cfg_value(), &key), |l| {
+    let r = desk_proc::shell_open(seen, &t, &opener, opener_path, || plugins::is_trusted_key(&cfg_value(), &key), |l| {
         let mut cmd = std::process::Command::new(l.program());
         l.apply(&mut cmd).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
         cmd.spawn().map_err(|e| desk_proc::opener_err(&opener.file, &e))

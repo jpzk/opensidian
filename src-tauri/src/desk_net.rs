@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::desk_proc::{bytes_to_latin1, Life};
+use crate::desk_proc::{bytes_to_latin1, Life, TrustSeen};
 
 fn next_id() -> u64 {
     static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -167,9 +167,11 @@ fn listen_err(host: &str, port: u16, e: &std::io::Error) -> String {
    the lock, so a slow lookup never holds up a trust-OFF, kill_all or a spawn. Under the
    lock run only (trust check, bind, register). A first, unlocked trust check precedes the
    lookup, so a restricted vault's page cannot make the app resolve names it picks (a DNS
-   query is itself a way out); it decides nothing — the check under the lock does. */
-pub fn listen_trusted(trusted: impl FnMut() -> bool, host: &str, port: u16) -> Result<(u64, Arc<Srv>), String> {
-    listen_trusted_via(resolve, trusted, host, port)
+   query is itself a way out); it decides nothing — the check under the lock does.
+   DD1 (PR #42 round 13): `seen` = the trust epoch read before `trusted`'s key was computed
+   (desk_proc::trust_epoch_now); under the lock a trust write since then = EAGAIN, nothing bound. */
+pub fn listen_trusted(seen: TrustSeen, trusted: impl FnMut() -> bool, host: &str, port: u16) -> Result<(u64, Arc<Srv>), String> {
+    listen_trusted_via(resolve, seen, trusted, host, port)
 }
 
 const NOT_TRUSTED: &str = "EPERM: restricted mode, plugins cannot open servers";
@@ -181,6 +183,7 @@ fn resolve(h: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
 
 fn listen_trusted_via(
     resolve: impl FnOnce(&str, u16) -> Result<Vec<SocketAddr>, String>,
+    seen: TrustSeen,
     mut trusted: impl FnMut() -> bool,
     host: &str,
     port: u16,
@@ -199,6 +202,7 @@ fn listen_trusted_via(
        be cancelled; neither is done. A literal IP host does no DNS at all. */
     let addrs = resolve(h, port)?;
     let life = crate::desk_proc::lifecycle();
+    seen.unmoved(&life)?; // DD1: a trust write since the key was computed
     if !trusted() {
         return Err(NOT_TRUSTED.into());
     }
@@ -321,7 +325,7 @@ fn accept_hook(at: &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::desk_proc::{latin1_to_bytes, lifecycle, try_lifecycle};
+    use crate::desk_proc::{epoch_tests, latin1_to_bytes, lifecycle, trust_epoch_now, try_lifecycle};
 
     /// close_all drops EVERY listener: the tests of this module run one at a time
     static NET_TESTS: Mutex<()> = Mutex::new(());
@@ -395,6 +399,7 @@ mod tests {
     fn desk_net_n5_listener_cannot_stay_bound_after_trust_off() {
         static TRUSTED: AtomicBool = AtomicBool::new(true);
         let _one = one();
+        let _epoch = epoch_tests(); // DD1: listen_trusted carries a TrustSeen
         let trust_off = |life: &Life| {
             TRUSTED.store(false, Ordering::SeqCst);
             close_all(life);
@@ -404,6 +409,7 @@ mod tests {
             let mut n = 0;
             let mut b_ran = false;
             let got = listen_trusted(
+                trust_epoch_now(),
                 || {
                     let ok = TRUSTED.load(Ordering::SeqCst);
                     n += 1;
@@ -454,12 +460,14 @@ mod tests {
     fn desk_net_p2_host_lookup_does_not_hold_the_lifecycle_lock() {
         use crate::desk_proc::held_here;
         let _one = one();
+        let _epoch = epoch_tests(); // DD1: listen_trusted carries a TrustSeen
         let mut held_in_lookup = None;
         let (id, s) = listen_trusted_via(
             |h, p| {
                 held_in_lookup = Some(held_here());
                 resolve(h, p)
             },
+            trust_epoch_now(),
             || true,
             "127.0.0.1",
             0,
@@ -469,11 +477,11 @@ mod tests {
         assert!(s.port != 0);
         assert_eq!(held_in_lookup, Some(false), "the host lookup ran while holding the lifecycle lock");
         let mut held_in_check = vec![];
-        let (id, _) = listen_trusted_via(resolve, || { held_in_check.push(held_here()); true }, "127.0.0.1", 0).unwrap();
+        let (id, _) = listen_trusted_via(resolve, trust_epoch_now(), || { held_in_check.push(held_here()); true }, "127.0.0.1", 0).unwrap();
         close_srv(id);
         assert_eq!(held_in_check.last(), Some(&true), "the deciding trust check ran without the lifecycle lock");
         let mut looked_up = false;
-        let e = listen_trusted_via(|h, p| { looked_up = true; resolve(h, p) }, || false, "example.invalid", 0).err().unwrap();
+        let e = listen_trusted_via(|h, p| { looked_up = true; resolve(h, p) }, trust_epoch_now(), || false, "example.invalid", 0).err().unwrap();
         assert!(e.starts_with("EPERM"), "{e}");
         assert!(!looked_up, "a restricted vault made the app resolve a host");
     }
@@ -556,6 +564,99 @@ mod tests {
             Ok(n) => panic!("read {n} bytes from a socket that should be closed"),
             Err(e) => assert!(!matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut), "the accepted socket is still open: {e}"),
         }
+    }
+
+    /* DD1 (PR #42 round 13, Qodo): a request computes the vault's trust key BEFORE the lifecycle
+       lock (CC1/BB1: canonicalize is a path lookup). If the root is retargeted after that, a
+       trust-OFF (trust_write + kill_all + close_all) writes OFF for the root's NEW key, and the
+       request's OLD key is still trusted when it compares it under the lock — it would start /
+       bind / open AFTER that cleanup. The fix: the epoch is read before the key, and under the
+       lock a trust write since then refuses (EAGAIN). (a) listen: the trust-OFF lands from the
+       resolve hook — after the request's key and its first check, before the lock — and the
+       `trusted` closure keeps answering true (the old key IS still trusted): EAGAIN, nothing
+       bound, and the closure is never consulted under the lock; the control round (no flip)
+       binds. (b) the same TrustSeen in desk_proc_spawn / shell_open: stale after a write, fresh
+       otherwise. (c) main.rs: every command comparing a precomputed key (is_trusted_key) reads
+       trust_epoch_now() BEFORE its trust_key and refuses on it under the lock. No sleeps. */
+    #[test]
+    fn desk_net_dd1_a_trust_write_between_the_key_and_the_lock_refuses() {
+        use crate::desk_proc::trust_write;
+        let _one = one();
+        let _epoch = epoch_tests();
+        for flip in [false, true] {
+            let seen = trust_epoch_now(); // desk_net_listen: before trust_key(&root)
+            let mut checks = 0;
+            let got = listen_trusted_via(
+                |h, p| {
+                    if flip {
+                        let life = lifecycle();
+                        trust_write(None, &life).unwrap(); // the trust-OFF (for the retargeted root's key)
+                        close_all(&life);
+                    }
+                    resolve(h, p)
+                },
+                seen,
+                || {
+                    checks += 1;
+                    true // is_trusted_key(old key): the OFF went to the other key
+                },
+                "127.0.0.1",
+                0,
+            );
+            match (flip, got) {
+                (false, Ok((id, s))) => {
+                    assert!(srv(id).is_ok() && s.port != 0, "control: not bound");
+                    close_srv(id);
+                    assert_eq!(checks, 2, "control: both trust checks ran");
+                }
+                (true, Err(e)) => {
+                    assert!(e.starts_with("EAGAIN"), "flip: {e}");
+                    assert_eq!(checks, 1, "flip: the old key was compared under the lock after the trust write");
+                }
+                (true, Ok((id, _))) => {
+                    close_srv(id);
+                    panic!("DD1: a listen whose key predates a trust-OFF bound after its close_all");
+                }
+                (false, Err(e)) => panic!("control: {e}"),
+            }
+        }
+        // (b) desk_proc_spawn / shell_open: `seen.unmoved(&life)?` right after lifecycle()
+        let seen = trust_epoch_now();
+        assert!(seen.unmoved(&lifecycle()).is_ok(), "no write since: refused");
+        trust_write(None, &lifecycle()).unwrap();
+        let e = seen.unmoved(&lifecycle()).unwrap_err();
+        assert!(e.starts_with("EAGAIN"), "{e}");
+        assert!(trust_epoch_now().unmoved(&lifecycle()).is_ok(), "a fresh read refused");
+        // (c) the callers, by their source (comments are not code)
+        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
+        let lines: Vec<&str> = src.lines().filter(|l| { let t = l.trim_start(); !(t.starts_with("//") || t.starts_with("/*") || t.starts_with('*')) }).collect();
+        let mut callers = vec![];
+        let mut i = 0;
+        while i < lines.len() {
+            if let Some(n) = lines[i].find("fn ").filter(|_| lines[i].contains('(') && (lines[i].starts_with("fn ") || lines[i].starts_with("async fn ") || lines[i].starts_with("pub"))) {
+                let name: String = lines[i][n + 3..].chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                let j = i + lines[i..].iter().position(|l| *l == "}").unwrap_or(lines.len() - i - 1);
+                let b = &lines[i..=j];
+                if b.iter().any(|l| l.contains("plugins::is_trusted_key(")) {
+                    let at = |p: &str| b.iter().position(|l| l.contains(p));
+                    let s = at("let seen = desk_proc::trust_epoch_now();").unwrap_or_else(|| panic!("{name}: compares a precomputed trust key, reads no trust epoch"));
+                    let k = at("let key = plugins::trust_key(&root);").unwrap_or_else(|| panic!("{name}: no precomputed key"));
+                    assert!(s < k, "{name}: the epoch is read after the trust key");
+                    // under the lock: in the command itself, or in the callee it hands `seen` to
+                    let locked = match (at("desk_proc::lifecycle()"), at("seen.unmoved(&life)?;")) {
+                        (Some(l), Some(u)) => l < u && k < l,
+                        _ => at("desk_net::listen_trusted(seen,").or(at("desk_proc::shell_open(seen,")).is_some_and(|c| k < c),
+                    };
+                    assert!(locked, "{name}: does not refuse on a moved epoch under the lock");
+                    callers.push(name);
+                }
+                i = j + 1;
+            } else {
+                i += 1;
+            }
+        }
+        callers.sort();
+        assert_eq!(callers, ["desk_net_listen", "desk_proc_spawn", "desk_shell"], "the callers comparing a precomputed key");
     }
 
     fn lst(host: &str, port: u16) -> Result<(u64, Arc<Srv>), String> {
