@@ -67,12 +67,13 @@ ed25519-compact = { version = "=2.4.2", default-features = false }
 # webview is already linked against and fetches nothing new; `=` because a gdk
 # that is not tauri's gdk would hand us a DIFFERENT GdkDisplay type and the
 # downcast that detects X11-vs-Wayland would silently answer "wayland" everywhere.
-[target.'cfg(target_os = "linux")'.dependencies]
-# vaultfs: openat/renameat/mkdirat/unlinkat with O_NOFOLLOW so vault writes never
-# follow a symlink. ALREADY in Cargo.lock (transitive via tauri/landlock); `=`
-# pins it to that exact version, so the lock gains no package.
+# vaultfs / desk_proc / migrate / pasteimg: openat, kill, etc. Needed on every
+# Unix (Linux + macOS). ALREADY in Cargo.lock; `=` pins the locked version.
+[target.'cfg(unix)'.dependencies]
 libc = "=0.2.189"
-# Landlock self-sandbox (sandbox.rs). Linux-only LSM; never built on Windows.
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Landlock self-sandbox (sandbox.rs). Linux-only LSM; never built on Windows/macOS.
 landlock = "=0.4.7"
 gdk = "=0.18.2"
 gdkx11 = "=0.18.2"
