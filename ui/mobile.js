@@ -448,18 +448,26 @@
     if (!droid) { if (e.target.id !== "p-open") $m("p-open").click(); return; }
     e.stopPropagation(); e.preventDefault(); perr(""); droid.pickTree();
   }, true);
+  // every step of a picked folder on its way to a vault switch, read by the m1-2 phase when a pick never became the
+  // vault (PR2isSMM: a picked, granted p1a-vault left the app on the manager with no error and no relaunch)
+  const pickLog = window.__mobilePickLog = [];
+  const pstep = s => { pickLog.push(Date.now() % 1e6 + " " + s); if (pickLog.length > 40) pickLog.shift(); };
   window.__mobileTreePicked = (uri, path, why) => {
+    pstep("picked uri=" + uri + " path=" + path + " why=" + (why || ""));
     if (!uri) return;                                    // picker backed out: the manager stays as it was
     // PR #38 F13: MainActivity accepts only a tree the picker granted read+write persistably
     if (why === "nogrant") return perr("The folder picker did not grant access to that folder; pick it again and choose Allow.");
     if (!path) return perr("That folder has no file path on this phone; pick a folder on the device storage.");
-    if (!droid.allFiles()) {
+    if (!droid.allFiles()) { pstep("no All files access");
       perr("Allow \"All files access\" for Opensidian, then open the folder again.");
       return droid.requestAllFiles();
     }
     const cur = typeof vaultPath !== "undefined" ? vaultPath : null;
     if (path === cur) { const pk = $m("picker"); if (pk) pk.hidden = true; return; }
-    if (typeof openVault === "function") openVault(path, true);
+    if (typeof openVault !== "function") return pstep("no openVault");
+    pstep("openVault " + path + " from " + cur);
+    Promise.resolve(openVault(path, true)).then(() => pstep("openVault returned, no relaunch, inert=" + document.body.inert),
+      e => pstep("openVault threw " + e));
   };
   // a row tapped in the right drawer opens its note: the drawer gets out of the way
   rside.addEventListener("click", e => {
