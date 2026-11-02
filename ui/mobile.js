@@ -577,7 +577,9 @@
       d.dataset.tab = g.id + ":" + i;
       d.innerHTML = '<div class="m-card-head"><div class="m-card-title"></div><button class="m-card-x" aria-label="Close tab">' +
         svg('<path d="M6 6l12 12M18 6L6 18"/>') + '</button></div><div class="m-card-sub"></div>';
-      d.querySelector(".m-card-title").textContent = tabTitle(g, i, t);
+      const title = tabTitle(g, i, t);
+      d.querySelector(".m-card-title").textContent = title;
+      d.setAttribute("aria-label", title);   // the card (role=button, F12) is named by its tab title, not by its whole text
       const dir = !t.kind && t.name ? String(t.name).split("/").slice(0, -1).join("/") : "";
       d.querySelector(".m-card-sub").textContent = dir || (t.kind ? "" : "/");
       d.onclick = async () => {
