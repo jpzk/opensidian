@@ -834,9 +834,12 @@ mod tests {
        stalled NFS/FUSE mount) must not hold the lifecycle lock — a trust-OFF waits on it.
        Thread A runs desk_proc_spawn's sequence after Allow: the PATH cleaned (prepare), the
        lock, the trust recheck, start, register. Its plugin PATH holds a marker entry whose
-       lookup stands still (q1_gate) until the test says go. While it stands still, the
-       trust-OFF (plugins_set: lock, flag OFF, kill_all) must get the lock — try_lifecycle,
-       no sleep, no timeout decides it — and afterwards A's recheck must refuse the spawn:
+       lookup stands still (q1_gate) until the test says go. A marks the moment it holds the
+       lock; while the lookup stands still that mark must be unset — exact, no sleep, no
+       timeout, and not fooled by another test holding the lock for a moment (a try_lock
+       was: it failed whenever a parallel test held it). The lookup may run on the fork
+       thread, so held_here (per thread) cannot tell. The trust-OFF (plugins_set: lock, flag
+       OFF, kill_all) then takes the lock, and afterwards A's recheck must refuse the spawn:
        nothing started, nothing registered. The gate is released before any assert, so a
        failure cannot leave A or the fork thread hanging. */
     #[test]
@@ -845,6 +848,8 @@ mod tests {
         use std::sync::mpsc::channel;
         static TRUSTED: AtomicBool = AtomicBool::new(true);
         TRUSTED.store(true, Ordering::SeqCst);
+        static A_LOCKED: AtomicBool = AtomicBool::new(false);
+        A_LOCKED.store(false, Ordering::SeqCst);
         let stalled = std::env::temp_dir().join(format!("desk-q1-stalled-{}", std::process::id()));
         let (entered_tx, entered) = channel::<()>();
         let (go, go_rx) = channel::<()>();
@@ -854,6 +859,7 @@ mod tests {
         let a = std::thread::spawn(move || {
             let sp = prepare(sp, None); // desk_proc_spawn: before the lock
             let life = lifecycle();
+            A_LOCKED.store(true, Ordering::SeqCst); // A holds the lifecycle lock from here
             if !TRUSTED.load(Ordering::SeqCst) {
                 return Err("EPERM: restricted mode".to_string());
             }
@@ -861,18 +867,22 @@ mod tests {
             Ok((register(r.clone(), &life), r))
         });
         entered.recv().expect("the stalled PATH entry was never looked up");
-        // the lookup stands still now: the trust-OFF
-        let off = try_lifecycle().map(|life| {
+        let held = A_LOCKED.load(Ordering::SeqCst);
+        // the lookup stands still now. If A holds the lock here, a trust-OFF would wait on it:
+        // release A and fail (taking the lock now would deadlock). Otherwise the trust-OFF
+        // takes the lock — blocking is safe, A does not hold it; other tests hold it briefly.
+        if !held {
+            let life = lifecycle();
             TRUSTED.store(false, Ordering::SeqCst);
             kill_all(&life);
-        });
+        }
         let _ = go.send(());
         let got = a.join().unwrap();
         if let Ok((id, r)) = &got {
             r.kill(libc::SIGKILL);
             forget(*id);
         }
-        assert!(off.is_some(), "a trust-OFF could not take the lifecycle lock while a PATH entry lookup stood still");
+        assert!(!held, "a PATH entry lookup stood still while A held the lifecycle lock");
         assert!(got.is_err(), "the spawn started after a trust-OFF that landed while its PATH was being cleaned");
         assert!(sp_never_cleaned_under_the_lock());
     }
