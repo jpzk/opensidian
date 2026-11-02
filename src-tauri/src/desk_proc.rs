@@ -242,6 +242,10 @@ pub struct Spec {
     /// Y1 (PR #42 round 8): `file`, held open since BEFORE the question (consent::resolve -> pin):
     /// the child execs this open file, never the pathname again. None = not pinned: start refuses
     pub prog: Option<Pinned>,
+    /// AA2 (PR #42 round 10): `cwd`, held open (O_PATH directory) since BEFORE the question
+    /// (consent::resolve -> pin_dir): the child enters THIS directory with fchdir, never the
+    /// pathname again. None = not pinned: start refuses
+    pub dir: Option<Pinned>,
 }
 
 /* Q1 (PR #42 round 4, Greptile + Qodo + CodeAnt): cleaning a PATH canonicalizes every
@@ -347,15 +351,53 @@ pub fn pin(file: &str) -> Result<Pinned, String> {
     Ok(Pinned { fd, ident })
 }
 
+/* AA2 (PR #42 round 10, CodeAnt): the cwd was kept as its canonical PATHNAME only, and the
+   child chdir'd to that name after Allow. A plugin that can write the cwd's parent (the
+   vault, a folder in it) renames the directory away during the dialog and makes a new one
+   at the same path: the child ran in the replacement — another directory than the one the
+   dialog named, with whatever files (a .git/config, a hook, a script the program reads by a
+   relative name) the plugin put there. Now, like the program (Y1):
+   - pin_dir(cwd), called by consent::resolve BEFORE the question, opens the canonical cwd
+     O_PATH|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC, requires the open object to be at exactly
+     that path (/proc/self/fd/N, as pin) and records its identity (fstat).
+   - start rechecks the identity (dev, ino, mode: a directory's size/mtime move whenever an
+     entry in it changes, R1) under the lifecycle lock, and the child's pre_exec does again
+     (fstat), then enters THAT directory with fchdir(fd) — async-signal-safe, no pathname
+     walked after the question. A directory renamed away keeps its inode: the child runs in
+     the original directory, never in one created at the old path. The fd is CLOEXEC: the
+     program does not inherit it. */
+/// AA2: hold the canonical cwd `dir` open from now until the exec. Refused: not openable,
+/// not a directory, or the open object is not at exactly `dir`
+pub fn pin_dir(dir: &Path) -> Result<Pinned, String> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    let c = std::ffi::CString::new(dir.as_os_str().as_bytes()).map_err(|_| format!("EINVAL: spawn: cwd {}: NUL in the path", dir.display()))?;
+    // SAFETY: c is a valid C string; the fd is owned from here on
+    let fd = unsafe { libc::open(c.as_ptr(), libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(format!("ENOENT: spawn: cwd {}: {}", dir.display(), std::io::Error::last_os_error()));
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let ident = fd_ident(fd.as_raw_fd()).ok_or_else(|| format!("ENOENT: spawn: cwd {}: {}", dir.display(), std::io::Error::last_os_error()))?;
+    if ident.mode & libc::S_IFMT != libc::S_IFDIR {
+        return Err(format!("ENOTDIR: spawn: cwd {} is not a directory", dir.display()));
+    }
+    let at = std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd())).map_err(|e| format!("ENOENT: spawn: cwd {}: {e}", dir.display()))?;
+    if at.as_os_str() != dir.as_os_str() {
+        return Err(format!("EAGAIN: spawn: cwd {}: the directory opened is {} (moved while it was opened); nothing asked", dir.display(), at.display()));
+    }
+    Ok(Pinned { fd, ident })
+}
+
 impl Pinned {
     fn raw(&self) -> std::os::fd::RawFd {
         use std::os::fd::AsRawFd;
         self.fd.as_raw_fd()
     }
 
-    /// Y1: the open file is still what it was when pinned (before the question)
+    /// Y1: the open file is still what it was when pinned (before the question).
+    /// AA2: a pinned directory is compared on (dev, ino, mode) (Ident::same_as, R1)
     fn unchanged(&self) -> bool {
-        fd_ident(self.raw()).is_some_and(|now| now == self.ident)
+        fd_ident(self.raw()).is_some_and(|now| now.same_as(&self.ident))
     }
 }
 
@@ -498,12 +540,16 @@ fn spec_path(sp: &Spec, inherited: Option<OsString>) -> OsString {
 
 /// Y1: exec runs `prog` (the file held open since before the question) through its fd;
 /// argv0 = the asked name, else the canonical path the dialog named
-fn build(sp: &Spec, path: &ChildPath, prog: &Pinned) -> Command {
+/// AA2: the child enters `dir` (the cwd held open since before the question) by fchdir,
+/// in pre_exec — no current_dir: the cwd's pathname is never walked again
+fn build(sp: &Spec, path: &ChildPath, prog: &Pinned, dir: &Pinned) -> Command {
     let n = prog.raw();
     let want = prog.ident.clone();
+    let d = dir.raw();
+    let dwant = dir.ident.clone();
     let mut c = Command::new(format!("/proc/self/fd/{n}"));
     c.arg0(sp.argv0.as_deref().unwrap_or(&sp.file));
-    c.args(&sp.args).current_dir(&sp.cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
+    c.args(&sp.args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
     for (k, v) in &sp.env {
         c.env(k, v);
     }
@@ -528,19 +574,27 @@ fn build(sp: &Spec, path: &ChildPath, prog: &Pinned) -> Command {
             if fd_ident(n).as_ref() != Some(&want) {
                 return Err(std::io::Error::from_raw_os_error(libc::EPERM));
             }
+            // AA2: the held cwd is still the directory pinned before the question (ESTALE ->
+            // EPERM "cwd changed"), and the child enters THAT directory: fchdir, no pathname
+            if !fd_ident(d).is_some_and(|now| now.same_as(&dwant)) {
+                return Err(std::io::Error::from_raw_os_error(libc::ESTALE));
+            }
+            if libc::fchdir(d) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
             Ok(())
         });
     }
     c
 }
 
-fn fork(sp: Spec, path: ChildPath, prog: Pinned) -> std::io::Result<Child> {
+fn fork(sp: Spec, path: ChildPath, prog: Pinned, dir: Pinned) -> std::io::Result<Child> {
     let (tx, rx) = std::sync::mpsc::channel();
     forker()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .send(Box::new(move || {
-            let _ = tx.send(build(&sp, &path, &prog).spawn());
+            let _ = tx.send(build(&sp, &path, &prog, &dir).spawn());
         }))
         .map_err(|_| std::io::Error::other("fork thread gone"))?;
     rx.recv().map_err(|_| std::io::Error::other("fork thread gone"))?
@@ -567,10 +621,18 @@ fn changed(file: &str) -> String {
     format!("EPERM: spawn {file}: the program changed after it was allowed (replaced, removed or rewritten); not run")
 }
 
+/// AA2: the pinned cwd is no longer the directory the question named
+fn cwd_changed(file: &str, cwd: &Path) -> String {
+    format!("EPERM: spawn {file}: the cwd {} changed after it was allowed; not run", cwd.display())
+}
+
 /// Node-style error text: "<CODE>: spawn <file> <reason>"
-fn spawn_err(file: &str, e: &std::io::Error) -> String {
+fn spawn_err(file: &str, cwd: &Path, e: &std::io::Error) -> String {
     if e.raw_os_error() == Some(libc::EPERM) {
         return changed(file); // the pre_exec identity check (Y1)
+    }
+    if e.raw_os_error() == Some(libc::ESTALE) {
+        return cwd_changed(file, cwd); // the pre_exec cwd check (AA2)
     }
     let code = match e.kind() {
         std::io::ErrorKind::NotFound => "ENOENT",
@@ -600,8 +662,17 @@ pub fn start(sp: Spec, _life: &Life) -> Result<Arc<Run>, String> {
     if !prog.unchanged() {
         return Err(changed(&sp.file));
     }
+    // AA2: the cwd was pinned before the question too (consent::resolve -> pin_dir); unpinned =
+    // refused. Still the same directory (again in pre_exec, which then fchdir's into it)
+    let Some(dir) = sp.dir.take() else {
+        return Err(format!("EINVAL: spawn {}: cwd not pinned before the question (desk_proc::pin_dir)", sp.file));
+    };
+    if !dir.unchanged() {
+        return Err(cwd_changed(&sp.file, &sp.cwd));
+    }
     let file = sp.file.clone();
-    let mut child = fork(sp, path, prog).map_err(|e| spawn_err(&file, &e))?;
+    let cwd = sp.cwd.clone();
+    let mut child = fork(sp, path, prog, dir).map_err(|e| spawn_err(&file, &cwd, &e))?;
     let run = Arc::new(Run {
         pid: child.id() as i32,
         stdin: Mutex::new(child.stdin.take()),
@@ -986,31 +1057,82 @@ pub fn shell_target(root: &Path, op: &str, target: &str) -> Result<ShellOpen, St
    the vault (`root`) dropped, SAFE_PATH (each entry checked, W1) when nothing is left — and PATH is always set. */
 pub const OPENER_CWD: &str = "/";
 
-/// R4: what the opener is started with: its one argument (the allowed target), cwd, PATH
+/* AA1 (PR #42 round 10, CodeAnt): consent::resolve pinned the opener (xdg-open) before the
+   question, as it pins every program (Y1) — and then desk_shell dropped that pin and exec'd
+   the xdg-open PATHNAME after Allow. A writable directory on the app's PATH ahead of /usr/bin
+   (~/.local/bin, say), or a swap of the file itself, could put another opener there while the
+   dialog was open. Now the opener is exec'd through its held fd exactly like a spawn: shell_spawn
+   takes the resolved opener Spec, refuses it unpinned (EINVAL) or changed since the question
+   (EPERM), and Launch gives the caller "/proc/self/fd/N" to build its Command from (program())
+   and, in apply(), the pre_exec that keeps N open across the exec (xdg-open is a #! script: the
+   kernel hands sh /proc/self/fd/N) and rechecks the open file's identity right before it (EPERM).
+   The unasked http(s)/mailto opener goes the same way (resolved and pinned, never by name). As
+   for a spawn, the O_PATH fd is inherited by xdg-open and what it starts. */
+/// R4: what the opener is started with: its one argument (the allowed target), cwd, PATH.
+/// AA1: and the opener itself — the file held open since before the question
 pub struct Launch<'a> {
     pub arg: &'a str,
     pub cwd: &'static Path,
     pub path: OsString,
+    prog: &'a Pinned,
+    argv0: &'a str,
 }
 
 impl Launch<'_> {
-    /// the target, the cwd and the cleaned PATH, onto the caller's opener Command
-    pub fn apply<'c>(&self, c: &'c mut Command) -> &'c mut Command {
-        c.arg(self.arg).current_dir(self.cwd).env("PATH", &self.path)
+    /// AA1: what the caller's opener Command is made from: the held opener's fd, never its name
+    pub fn program(&self) -> String {
+        format!("/proc/self/fd/{}", self.prog.raw())
     }
+
+    /// the target, the cwd and the cleaned PATH, onto the caller's opener Command (made from
+    /// program()). AA1: argv0 = the asked name; the held fd stays open across the exec, and the
+    /// open file is still the one pinned before the question — else EPERM, nothing exec'd
+    pub fn apply<'c>(&self, c: &'c mut Command) -> &'c mut Command {
+        let n = self.prog.raw();
+        let want = self.prog.ident.clone();
+        c.arg0(self.argv0).arg(self.arg).current_dir(self.cwd).env("PATH", &self.path);
+        // SAFETY: async-signal-safe syscalls only (fcntl, fstat), between fork and exec
+        unsafe {
+            c.pre_exec(move || {
+                if libc::fcntl(n, libc::F_SETFD, 0) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if fd_ident(n).as_ref() != Some(&want) {
+                    return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+                }
+                Ok(())
+            })
+        }
+    }
+}
+
+/// AA1: the opener's spawn error as Node text — the pre_exec identity check is EPERM
+pub fn opener_err(file: &str, e: &std::io::Error) -> String {
+    if e.raw_os_error() == Some(libc::EPERM) {
+        return format!("EPERM: open: the opener {file} changed after it was allowed; not run");
+    }
+    format!("ENOENT: xdg-open: {e}")
 }
 
 /// R4/Q4/Y2: the run an open is (asked: resolved, shown and run; a URL: run unasked) — xdg-open
 /// with the one target, in OPENER_CWD. Nothing resolved or pinned yet
 pub fn opener_spec(root: &Path, target: &str) -> Spec {
-    Spec { file: "xdg-open".into(), args: vec![target.to_string()], cwd: OPENER_CWD.into(), root: root.to_path_buf(), env: vec![], argv0: None, path: None, prog: None }
+    Spec { file: "xdg-open".into(), args: vec![target.to_string()], cwd: OPENER_CWD.into(), root: root.to_path_buf(), env: vec![], argv0: None, path: None, prog: None, dir: None }
 }
 
 /// Q1: the identity recheck and the exec, nothing else: `path` = opener_path(), computed
-/// before the caller took the lifecycle lock — no PATH entry is looked up in here
-pub fn shell_spawn<R>(t: &Local, path: ChildPath, exec: impl FnOnce(Launch) -> Result<R, String>) -> Result<R, String> {
+/// before the caller took the lifecycle lock — no PATH entry is looked up in here.
+/// AA1: `opener` = the opener Spec consent::resolve returned (pinned before the question);
+/// unpinned = EINVAL, its open file changed since = EPERM, nothing exec'd
+pub fn shell_spawn<R>(t: &Local, opener: &Spec, path: ChildPath, exec: impl FnOnce(Launch) -> Result<R, String>) -> Result<R, String> {
     t.recheck()?;
-    exec(Launch { arg: &t.arg, cwd: Path::new(OPENER_CWD), path: path.0 })
+    let Some(prog) = opener.prog.as_ref() else {
+        return Err(format!("EINVAL: open: the opener {} was not pinned before the question (desk_proc::pin)", opener.file));
+    };
+    if !prog.unchanged() {
+        return Err(format!("EPERM: open: the opener {} changed after it was allowed; not run", opener.file));
+    }
+    exec(Launch { arg: &t.arg, cwd: Path::new(OPENER_CWD), path: path.0, prog, argv0: opener.argv0.as_deref().unwrap_or(&opener.file) })
 }
 
 #[cfg(test)]
@@ -1018,7 +1140,7 @@ mod tests {
     use super::*;
 
     fn spec(file: &str, args: &[&str], cwd: &Path) -> Spec {
-        Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), root: cwd.into(), env: vec![], argv0: None, path: None, prog: None }
+        Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), root: cwd.into(), env: vec![], argv0: None, path: None, prog: None, dir: None }
     }
 
     /// Q1: what desk_proc_spawn does before the lock — the child PATH cleaned from ours.
@@ -1029,8 +1151,12 @@ mod tests {
 
     /// Y1: a test Spec not made by consent::resolve gets its program pinned as resolve would:
     /// file = the canonical path found (argv0 keeps the name it had, as resolve does);
-    /// one that is not found stays unpinned (start refuses it, EINVAL)
+    /// one that is not found stays unpinned (start refuses it, EINVAL). AA2: the cwd is
+    /// pinned the same way (canonical, as resolve does), when it is a directory
     fn pinned(mut sp: Spec) -> Spec {
+        if sp.dir.is_none() {
+            sp.dir = sp.cwd.canonicalize().ok().and_then(|c| pin_dir(&c).ok());
+        }
         if sp.prog.is_some() {
             return sp;
         }
@@ -1045,6 +1171,12 @@ mod tests {
             }
         }
         sp
+    }
+
+    /// AA1: an opener Spec as consent::resolve makes it for desk_shell: `p` canonical and pinned
+    fn opener_at(p: &Path) -> Spec {
+        let c = p.canonicalize().unwrap().to_string_lossy().into_owned();
+        Spec { prog: Some(pin(&c).unwrap()), ..spec(&c, &[], Path::new(OPENER_CWD)) }
     }
 
     /* Q1 test seam: path_dir_ok calls q1_gate(dir) first. While a test has armed it for
@@ -1444,7 +1576,7 @@ mod tests {
                 ShellOpen::Url(u) => panic!("{op} {target}: not asked ({u})"),
             };
             dialog();
-            let mut c = shell_spawn(&t, opener_path(None, &vault), |l| Command::new(&opener).arg(l.arg).spawn().map_err(|e| e.to_string()))?;
+            let mut c = shell_spawn(&t, &opener_at(&opener), opener_path(None, &vault), |l| l.apply(&mut Command::new(l.program())).spawn().map_err(|e| e.to_string()))?;
             assert!(c.wait().unwrap().success(), "the stub opener failed");
             Ok(t.arg)
         };
@@ -1586,7 +1718,7 @@ mod tests {
                 ShellOpen::Url(u) => panic!("{op} {target}: not asked ({u})"),
             };
             dialog();
-            shell_spawn(&t, opener_path(None, &vault), |l| Ok(l.arg.to_string()))
+            shell_spawn(&t, &opener_at(Path::new("/bin/sh")), opener_path(None, &vault), |l| Ok(l.arg.to_string()))
         };
         // reveal(sub/a.md) opens sub/; a sibling is created, rewritten and renamed meanwhile
         let r = ask_then_run("reveal", "/vault/sub/a.md", &|| {
@@ -1682,8 +1814,8 @@ mod tests {
             ShellOpen::Ask(t) => t,
             ShellOpen::Url(u) => panic!("not asked ({u})"),
         };
-        let mut c = shell_spawn(&t, opener_path(Some(dirty.clone().into()), &vault), |l| {
-            let mut cmd = Command::new(&opener);
+        let mut c = shell_spawn(&t, &opener_at(&opener), opener_path(Some(dirty.clone().into()), &vault), |l| {
+            let mut cmd = Command::new(l.program()); // AA1: the held opener
             l.apply(&mut cmd).spawn().map_err(|e| e.to_string())
         })
         .unwrap();
@@ -1757,7 +1889,7 @@ mod tests {
             ShellOpen::Ask(t) => t,
             ShellOpen::Url(u) => panic!("not asked ({u})"),
         };
-        let got = shell_spawn(&t, opener_path(Some("tools:.".into()), &vault), |l| Ok(l.path.clone())).unwrap();
+        let got = shell_spawn(&t, &opener_at(Path::new("/bin/sh")), opener_path(Some("tools:.".into()), &vault), |l| Ok(l.path.clone())).unwrap();
         assert!(s1_safe(&got.to_string_lossy(), &vault), "the opener's PATH {got:?} is empty or not absolute dirs outside the vault");
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -1837,7 +1969,7 @@ mod tests {
         let inherited = OsString::from_vec([b"bin:".as_slice(), odd.as_slice(), b":.::/usr/bin".as_slice()].concat());
         assert!(inherited.to_str().is_none(), "the test PATH must not be UTF-8");
         let sp = prepare(pinned(spec("/bin/true", &[], &vault)), Some(inherited));
-        let c = build(&sp, sp.path.as_ref().unwrap(), sp.prog.as_ref().unwrap());
+        let c = build(&sp, sp.path.as_ref().unwrap(), sp.prog.as_ref().unwrap(), sp.dir.as_ref().unwrap());
         let got = c.get_envs().find(|(k, _)| *k == OsStr::new("PATH")).map(|(_, v)| v.map(|v| v.to_os_string()));
         assert_eq!(got, Some(Some(OsString::from_vec([odd.as_slice(), b":/usr/bin".as_slice()].concat()))), "the child's PATH was not set to the cleaned bytes");
         let _ = std::fs::remove_dir_all(&base);
@@ -1896,7 +2028,7 @@ mod tests {
             ShellOpen::Ask(t) => t,
             ShellOpen::Url(u) => panic!("not asked ({u})"),
         };
-        let got = shell_spawn(&t, opener_path(Some(format!("{v}/bin:/proc/self/cwd:/usr/bin").into()), &vault), |l| Ok(l.path.clone())).unwrap();
+        let got = shell_spawn(&t, &opener_at(Path::new("/bin/sh")), opener_path(Some(format!("{v}/bin:/proc/self/cwd:/usr/bin").into()), &vault), |l| Ok(l.path.clone())).unwrap();
         assert_eq!(got, "/usr/bin", "the opener's PATH kept an entry into the vault");
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -1987,7 +2119,7 @@ mod tests {
             ShellOpen::Ask(t) => t,
             ShellOpen::Url(u) => panic!("not asked ({u})"),
         };
-        let got = shell_spawn(&t, opener_path(Some(format!("{}:/usr/bin", links[0]).into()), &vault), |l| Ok(l.path.clone())).unwrap();
+        let got = shell_spawn(&t, &opener_at(Path::new("/bin/sh")), opener_path(Some(format!("{}:/usr/bin", links[0]).into()), &vault), |l| Ok(l.path.clone())).unwrap();
         assert_eq!(got, OsString::from(format!("{ours}:/usr/bin")), "the opener's PATH holds the link");
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -2010,5 +2142,62 @@ mod tests {
                 Ok(_) => panic!("{pre}: a URL over the run-size cap is handed to xdg-open"),
             }
         }
+    }
+
+    /* AA1 (PR #42 round 10, CodeAnt): the opener is pinned by consent::resolve before the
+       question and exec'd through that held fd (Launch::program + apply, as desk_shell does),
+       never by its pathname. While the dialog is open the opener on disk is replaced — a new
+       file renamed over it, or the same file rewritten in place — then the user presses Allow.
+       The replacement must never run: the original runs, or the open is refused (EPERM). A
+       control round with nothing replaced opens through the original. */
+    #[test]
+    fn desk_aa1_an_opener_replaced_while_the_dialog_is_open_is_never_the_one_run() {
+        let base = std::env::temp_dir().join(format!("desk-aa1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("v")).unwrap();
+        std::fs::create_dir_all(base.join("bin")).unwrap();
+        let base = base.canonicalize().unwrap();
+        let vault = base.join("v");
+        std::fs::write(vault.join("Welcome.md"), "# hi\n").unwrap();
+        let (opener, next) = (base.join("bin/xdg-open"), base.join("bin/.next"));
+        let (log, mark) = (base.join("opened.log"), base.join("REPLACEMENT-OPENER-RAN"));
+        let replacement = format!("#!/bin/sh\ntouch '{}'\n", mark.display());
+        for how in ["none", "rename", "rewrite"] {
+            crate::testutil::write_exe(&opener, format!("#!/bin/sh\nprintf 'ORIGINAL %s\\n' \"$1\" >> '{}'\n", log.display())).unwrap();
+            let _ = std::fs::remove_file(&log);
+            let t = match shell_target(&vault, "path", "/vault/Welcome.md").unwrap() {
+                ShellOpen::Ask(t) => t,
+                ShellOpen::Url(u) => panic!("not asked ({u})"),
+            };
+            // desk_shell: the opener resolved (and pinned) before the question
+            let sp = crate::consent::resolve(Spec { file: opener.to_string_lossy().into_owned(), ..opener_spec(&vault, &t.arg) }).unwrap();
+            assert_eq!(sp.file, opener.to_string_lossy(), "the dialog names the opener");
+            // the dialog is open: the opener on disk is replaced
+            match how {
+                "rename" => {
+                    crate::testutil::write_exe(&next, &replacement).unwrap();
+                    std::fs::rename(&next, &opener).unwrap();
+                }
+                "rewrite" => crate::testutil::write_exe(&opener, &replacement).unwrap(), // same inode (cat >)
+                _ => {}
+            }
+            // Allow: desk_shell's exec
+            let r = shell_spawn(&t, &sp, opener_path(None, &vault), |l| {
+                let mut c = Command::new(l.program());
+                l.apply(&mut c).spawn().map_err(|e| opener_err(&sp.file, &e))
+            })
+            .map(|mut c| c.wait().unwrap().success());
+            let opened = std::fs::read_to_string(&log).unwrap_or_default();
+            assert!(!mark.exists(), "{how}: the opener replaced while the dialog was open ran after Allow ({r:?})");
+            match (how, r) {
+                ("none", r) => {
+                    assert_eq!(r, Ok(true), "control: the allowed opener did not run");
+                    assert_eq!(opened, format!("ORIGINAL {}\n", t.arg), "control: the allowed opener did not get the target");
+                }
+                (_, Ok(_)) => assert_eq!(opened, format!("ORIGINAL {}\n", t.arg), "{how}: something other than the allowed opener ran"),
+                (_, Err(e)) => assert!(e.starts_with("EPERM: open: the opener ") && e.contains("changed after it was allowed"), "{how}: {e}"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

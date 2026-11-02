@@ -1,4 +1,8 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(not(d    // AA1: the opener is exec'd by its held fd (l.program()), rechecked in pre_exec (l.apply)
+    let r = desk_proc::shell_spawn(&t, &opener, opener_path, |l| {
+        let mut cmd = std::process::Command::new(l.program());
+        cmd.spawn().map_err(|e| desk_proc::opener_err(&opener.file, &e))
+bug_assertions), windows_subsystem = "windows")]
 // opensidian, a vault-compatible markdown notes app.
 // Copyright (C) 2026 Jendrik Poloczek
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -3800,7 +3804,7 @@ async fn desk_proc_spawn(
         return Err("EPERM: restricted mode, plugins cannot start programs".into());
     }
     let args: Vec<String> = args.unwrap_or_default().iter().map(|a| desk_proc::map_arg(&root, a)).collect();
-    let sp = desk_proc::Spec { file, args, cwd: desk_proc::map_cwd(&root, cwd.as_deref()), root: root.clone(), env: env.unwrap_or_default().into_iter().collect(), argv0: None, path: None, prog: None };
+    let sp = desk_proc::Spec { file, args, cwd: desk_proc::map_cwd(&root, cwd.as_deref()), root: root.clone(), env: env.unwrap_or_default().into_iter().collect(), argv0: None, path: None, prog: None, dir: None };
     consent::check_env(&sp)?; // F6 + Q4: an env, or program + args + cwd, over the cap is refused, nothing asked
     let sp = consent::resolve(sp)?; // F1: file = the absolute path the dialog names and exec runs
     if !consent::ask(win, consent::Kind::Spawn, consent::spawn_question(&sp)).await? {
@@ -3955,23 +3959,22 @@ async fn desk_shell(win: tauri::Window, v: State<'_, Vault>, op: String, target:
     if !plugins::is_trusted(&cfg_value(), &root) {
         return Err("EPERM: restricted mode, plugins cannot use the shell".into());
     }
-    let (file, t) = match desk_proc::shell_target(&root, &op, &target)? {
-        desk_proc::ShellOpen::Url(url) => (std::path::PathBuf::from("xdg-open"), desk_proc::Local::url(url)),
+    let (opener, t) = match desk_proc::shell_target(&root, &op, &target)? {
+        // AA1 (PR #42 round 10): the unasked opener is resolved and pinned too, and exec'd by that fd
+        desk_proc::ShellOpen::Url(url) => (consent::resolve(desk_proc::opener_spec(&root, &url))?, desk_proc::Local::url(url)),
         desk_proc::ShellOpen::Ask(t) => {
             // R4: the opener runs in "/" (desk_proc::OPENER_CWD), never the vault
             let sp = desk_proc::opener_spec(&root, &t.arg);
             consent::check_env(&sp)?; // Q4: a target over the size cap is refused, nothing asked
             let sp = consent::resolve(sp)?; // the absolute xdg-open the dialog names is the one that runs
-            // Y1 (PR #42 round 8): resolve pins xdg-open too, but the opener is exec'd by that canonical
-            // path, not through the fd (desk_proc::build is spawn-only): xdg-open is found on the app's
-            // own absolute PATH entries, not a plugin-chosen path. RESIDUAL: a writable dir on the app's
-            // PATH ahead of /usr/bin (e.g. ~/.local/bin) could have xdg-open replaced between dialog and exec
+            // Y1/AA1: resolve pins xdg-open; shell_spawn execs THAT open file (its fd), never the
+            // pathname again — a file swapped in at the path during the dialog is never run (EPERM)
             // R5: the open question (names the target, says it may run it; neutral about who asks)
             if !consent::ask(win, consent::Kind::Spawn, consent::open_question(&sp, &t.arg)).await? {
                 eprintln!("[desk] shell {op} {:?}: denied by the user", t.arg);
                 return Err(format!("EPERM: open {} denied by the user", t.arg));
             }
-            (std::path::PathBuf::from(sp.file), t)
+            (sp, t)
         }
     };
     // Q1 (PR #42 round 4): the opener's cleaned PATH (canonicalize of every entry) before the lock
@@ -3982,11 +3985,12 @@ async fn desk_shell(win: tauri::Window, v: State<'_, Vault>, op: String, target:
         return Err("EPERM: restricted mode, plugins cannot use the shell".into());
     }
     eprintln!("[desk] shell {op} {}", t.arg);
-    // P4: identity recheck + exec, nothing in between; R4: cwd "/", PATH absolute entries only
-    let r = desk_proc::shell_spawn(&t, opener_path, |l| {
-        let mut cmd = std::process::Command::new(&file);
+    // P4: identity recheck + exec, nothing in between; R4: cwd "/", PATH absolute entries only.
+    // AA1: the opener is exec'd by its held fd (l.program()), rechecked in pre_exec (l.apply)
+    let r = desk_proc::shell_spawn(&t, &opener, opener_path, |l| {
+        let mut cmd = std::process::Command::new(l.program());
         l.apply(&mut cmd).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-        cmd.spawn().map_err(|e| format!("ENOENT: xdg-open: {e}"))
+        cmd.spawn().map_err(|e| desk_proc::opener_err(&opener.file, &e))
     })
     .map(|mut c| {
         std::thread::spawn(move || {

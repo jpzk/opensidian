@@ -247,6 +247,8 @@ fn listen(h: &str, port: u16, addrs: &[SocketAddr], _life: &Life) -> Result<(u64
                         std::thread::spawn(move || pump(c));
                         s.st.lock().unwrap_or_else(|e| e.into_inner()).pending.push(Accepted { id: cid, remote_address: peer.ip().to_string(), remote_port: peer.port() });
                         s.cv.notify_all();
+                        #[cfg(test)]
+                        accept_hook("pushed");
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(25)),
                     Err(_) => std::thread::sleep(Duration::from_millis(100)),
@@ -302,8 +304,8 @@ pub fn close_all(_life: &Life) {
     }
 }
 
-/* P3 test probe: the accept thread calls it right after accept() ("accepted") and right
-   after its insert-or-destroy decision ("decided"), so a test can run a trust-OFF at that
+/* P3 test probe: the accept thread calls it right after accept() ("accepted"), right
+   after its insert-or-destroy decision ("decided") and (AA3) after the pending push ("pushed"), so a test can run a trust-OFF at that
    exact point and wait for the decision, with no timing. */
 #[cfg(test)]
 type Hook = Box<dyn Fn(&'static str) + Send>;
@@ -503,6 +505,50 @@ mod tests {
         assert_eq!(left, 0, "a connection accepted across trust-OFF was registered after close_all drained the registry");
         assert!(batch.closed && batch.conns.is_empty(), "{batch:?}");
         // the client end: the socket was destroyed, so the read ends (EOF / reset), it does not hang
+        cl.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut b = [0u8; 1];
+        match cl.read(&mut b) {
+            Ok(0) => {}
+            Ok(n) => panic!("read {n} bytes from a socket that should be closed"),
+            Err(e) => assert!(!matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut), "the accepted socket is still open: {e}"),
+        }
+    }
+
+    /* AA3 (PR #42 round 10, CodeAnt nitpick "the lock ends before pending.push; close_all can
+       drain and destroy this connection in between"). Checked against the code: what makes a
+       connection reachable is its REGISTER (conns.insert, decided under the reg lock close_all
+       marks `closed` and drains under — P3), not the pending push. A trust-OFF in exactly the
+       bot's window — after the register, before the push — drains the registry and destroys the
+       socket; the push that follows only queues a dead id on a listener that is no longer
+       registered. The hook runs that trust-OFF on the accept thread right after the decision
+       ("decided") and reports the push ("pushed"): no timing. Nothing may survive: every id the
+       batch carries is unaddressable (EBADF), the listener is gone, the client sees the socket
+       closed. */
+    #[test]
+    fn desk_net_aa3_trust_off_between_register_and_pending_push_leaves_nothing_alive() {
+        use std::sync::mpsc::channel;
+        let _one = one();
+        let (pushed, wait_pushed) = channel::<()>();
+        let pushed = Mutex::new(pushed);
+        *ACCEPT_HOOK.lock().unwrap() = Some(Box::new(move |at: &'static str| match at {
+            "decided" => close_all(&lifecycle()),
+            "pushed" => pushed.lock().unwrap().send(()).unwrap(),
+            _ => {}
+        }));
+        let (sid, s) = lst("127.0.0.1", 0).unwrap();
+        let mut cl = TcpStream::connect(("127.0.0.1", s.port)).unwrap();
+        wait_pushed.recv().unwrap();
+        *ACCEPT_HOOK.lock().unwrap() = None;
+        let left = reg().lock().unwrap().conns.len();
+        let listed = srv(sid).is_ok();
+        let batch = s.accept(Duration::from_millis(10));
+        let live: Vec<u64> = batch.conns.iter().map(|a| a.id).filter(|id| conn(*id).is_ok()).collect();
+        close_srv(sid);
+        close_all(&lifecycle());
+        assert_eq!(left, 0, "a connection registered before a trust-OFF is still in the registry after close_all");
+        assert!(!listed, "the listener is still registered after close_all");
+        assert!(batch.closed, "{batch:?}");
+        assert!(live.is_empty(), "the batch hands out a live connection after trust-OFF: {live:?}");
         cl.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         let mut b = [0u8; 1];
         match cl.read(&mut b) {

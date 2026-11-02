@@ -166,7 +166,9 @@ pub fn resolve(sp: Spec) -> Result<Spec, String> {
     // Y1 (PR #42 round 8): the program is held open from HERE — before the question is built —
     // to the exec, which runs this open file (desk_proc::pin, desk_proc::build), never the name again
     let prog = Some(crate::desk_proc::pin(&sp.file)?);
-    Ok(Spec { prog, ..sp })
+    // AA2 (PR #42 round 10): the cwd too — held open from here, entered by fchdir on that fd
+    let dir = Some(crate::desk_proc::pin_dir(&sp.cwd)?);
+    Ok(Spec { prog, dir, ..sp })
 }
 
 /// the trust prompt's body. `canon` = plugins::trust_key (canonical vault path)
@@ -447,7 +449,7 @@ mod tests {
     use super::*;
 
     fn sp(file: &str, args: &[&str], cwd: &str) -> Spec {
-        Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), root: cwd.into(), env: vec![], argv0: None, path: None, prog: None }
+        Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), root: cwd.into(), env: vec![], argv0: None, path: None, prog: None, dir: None }
     }
 
     /// base/vault (the plugin's cwd, with its own `fakeprog`), base/bin (the real
@@ -805,6 +807,53 @@ mod tests {
         let got = run_allowed(s).unwrap();
         let want = format!("a b|c|{}|", base.join("work").display());
         assert!(got.starts_with(&want) && got.ends_with('|') && got.len() > want.len() + 1, "the #! script did not run with its args and cwd: {got:?}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* AA2 (PR #42 round 10, CodeAnt): the cwd is pinned by resolve (an O_PATH directory fd held
+       from before the question) and the child enters THAT directory with fchdir — the pathname
+       is never walked again. While the dialog is open the cwd is renamed away and a new
+       directory is made at the same path, with its own files. After Allow the child must run
+       in the original directory (now at the new name) or be refused (EPERM), never in the
+       replacement. A control round with nothing replaced runs in the cwd as named. */
+    #[test]
+    fn aa2_a_cwd_replaced_while_the_dialog_is_open_is_never_the_one_entered() {
+        let base = std::env::temp_dir().join(format!("consent-aa2-{}", std::process::id()));
+        for how in ["none", "swap"] {
+            let _ = std::fs::remove_dir_all(&base);
+            std::fs::create_dir_all(base.join("work")).unwrap();
+            let base = base.canonicalize().unwrap();
+            let (work, moved) = (base.join("work"), base.join("moved"));
+            std::fs::write(work.join("WHICH"), "ORIGINAL\n").unwrap();
+            let s = resolve(sp("/bin/sh", &["-c", "cat WHICH && touch RAN"], &work.to_string_lossy())).unwrap();
+            assert_eq!(s.cwd, work, "the dialog names the cwd");
+            let yes = ask_with(Kind::Spawn, spawn_question(&s), |_, _, tx| {
+                if how == "swap" {
+                    std::fs::rename(&work, &moved).unwrap();
+                    std::fs::create_dir(&work).unwrap();
+                    std::fs::write(work.join("WHICH"), "REPLACEMENT\n").unwrap();
+                }
+                tx.send(Answer::Once).is_ok()
+            });
+            assert!(yes, "{how}: Allow was not taken");
+            let got = run_allowed(s);
+            match how {
+                "none" => {
+                    assert_eq!(got.as_deref(), Ok("ORIGINAL\n"), "control: the allowed run did not run in its cwd");
+                    assert!(work.join("RAN").exists(), "control: the child did not run in the cwd");
+                }
+                _ => {
+                    assert!(!work.join("RAN").exists(), "the child ran in the directory made at the cwd's path during the dialog ({got:?})");
+                    match got {
+                        Ok(o) => {
+                            assert_eq!(o, "ORIGINAL\n", "the child read the replacement directory's files");
+                            assert!(moved.join("RAN").exists(), "the child did not run in the original directory");
+                        }
+                        Err(e) => assert!(e.starts_with("EPERM: spawn ") && e.contains("cwd"), "{e}"),
+                    }
+                }
+            }
+        }
         let _ = std::fs::remove_dir_all(&base);
     }
 }
