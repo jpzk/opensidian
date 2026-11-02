@@ -2,15 +2,7 @@
 // Copyright (C) 2026 Jendrik Poloczek
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* cp-unrestricted (operator ruling 2026-10-18, stock parity): the real
-   `child        let real = p.canonicalize().map_err(|_| format!("ENOENT: no such file or directory, '{target}'"))?;
-        Local::at(real, target)
-    }
-
-    /// Z2: the second half of `file`, once canonicalize has named `real`: its identity comes
-    /// from an O_NOFOLLOW fd (ident_of) — a symlink swapped in at `real` since is refused
-    fn at(real: PathBuf, target: &str) -> Result<Local, String> {
-        let ident = ident_of(&real)?;
-process` behind ui/plugins/node-desktop.js. Stock runs a plugin's
+   `child_process` behind ui/plugins/node-desktop.js. Stock runs a plugin's
    spawn/exec with the user's own rights; so do we, with one gate: the vault is
    trusted (the restricted-mode flip, ~/.opensidian.json). main.rs checks that
    on every spawn, and (spawn-consent, operator 2026-11-01, overriding the
