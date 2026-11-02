@@ -416,7 +416,6 @@ fn show_dialog(_win: &tauri::Window, _kind: Kind, _q: &Question, tx: std::sync::
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
     fn sp(file: &str, args: &[&str], cwd: &str) -> Spec {
         Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), root: cwd.into(), env: vec![], argv0: None, path: None }
@@ -430,8 +429,7 @@ mod tests {
         for (dir, say) in [("vault", "VAULT"), ("bin", "BIN"), ("vault/rel", "REL")] {
             std::fs::create_dir_all(base.join(dir)).unwrap();
             let f = base.join(dir).join("fakeprog");
-            std::fs::write(&f, format!("#!/bin/sh\necho {say}\n")).unwrap();
-            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+            crate::testutil::write_exe(&f, format!("#!/bin/sh\necho {say}\n")).unwrap();
         }
         std::os::unix::fs::symlink(base.join("vault"), base.join("link")).unwrap();
         base
@@ -552,8 +550,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let prog = d.join("v2prog");
-        std::fs::write(&prog, "#!/bin/sh\nexit 0\n").unwrap();
-        std::fs::set_permissions(&prog, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::testutil::write_exe(&prog, "#!/bin/sh\nexit 0\n").unwrap();
         let mut s = sp("v2prog", &[], "/");
         s.env = vec![("PATH".into(), d.display().to_string())];
         // control: a short run resolves to the absolute path

@@ -356,10 +356,49 @@ pub fn child_path(path: &OsStr, confine: &[&Path]) -> OsString {
         out.extend_from_slice(c.as_os_str().as_bytes());
     }
     if out.is_empty() {
-        return OsString::from(SAFE_PATH);
+        return safe_path(confine);
     }
     OsString::from_vec(out)
 }
+
+/* W1 (PR #42 round 6, CodeAnt): SAFE_PATH used to be emitted as written, unchecked — a vault
+   or cwd at/under /usr/local/bin, /usr/bin or /bin (or a vault symlinked to resolve there)
+   put plugin-writable dirs on the child's PATH. Each SAFE_PATH entry now goes through
+   path_dir_ok like any other entry (canonical form, /proc and /dev/fd, the confine roots),
+   and the child gets the survivors, canonical, without repeats (/bin is /usr/bin on a
+   merged /usr). When none survives the child gets NO_EXEC_PATH — never "", never an
+   unchecked entry. */
+/// W1: SAFE_PATH with every entry confinement-checked; NO_EXEC_PATH when none passes
+fn safe_path(confine: &[&Path]) -> OsString {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for d in SAFE_PATH.split(':') {
+        if let Some(c) = path_dir_ok(Path::new(d), confine) {
+            if !out.contains(&c) {
+                out.push(c);
+            }
+        }
+    }
+    if out.is_empty() {
+        return OsString::from(NO_EXEC_PATH);
+    }
+    let mut p: Vec<u8> = Vec::new();
+    for c in &out {
+        if !p.is_empty() {
+            p.push(b':');
+        }
+        p.extend_from_slice(c.as_os_str().as_bytes());
+    }
+    OsString::from_vec(p)
+}
+
+/* W1: the PATH of a child for which no directory is safe. It must be absolute (an empty or
+   relative entry is the cwd — the vault), must not be the vault or the cwd, and no lookup
+   through it may ever find a program. /dev/null meets all three on every Linux system: it
+   always exists and is a character device, never a directory, so it cannot be a vault or
+   a cwd, nothing can be created under it, and every "/dev/null/<name>" fails with ENOTDIR
+   — execvp and sh report "not found", nothing runs. (A made-up "/nonexistent" could be
+   created by root, and then be a vault.) */
+pub const NO_EXEC_PATH: &str = "/dev/null";
 
 /// S2: what build's child PATH is cleaned from — the plugin's PATH, else the app's
 /// (`inherited`, read by the caller with var_os, never as a String)
@@ -789,7 +828,7 @@ pub fn shell_target(root: &Path, op: &str, target: &str) -> Result<ShellOpen, St
    cut to its absolute entries (child_path). `exec` gets both in a Launch and applies
    them with Launch::apply; the PATH is opener_path(the app's PATH), made before the lock (Q1).
    S1-S3 (PR #42 round 3): the same child_path as a spawn — bytes, /proc and /dev/fd and
-   the vault (`root`) dropped, SAFE_PATH when nothing is left — and PATH is always set. */
+   the vault (`root`) dropped, SAFE_PATH (each entry checked, W1) when nothing is left — and PATH is always set. */
 pub const OPENER_CWD: &str = "/";
 
 /// R4: what the opener is started with: its one argument (the allowed target), cwd, PATH
@@ -1050,14 +1089,12 @@ mod tests {
        (the path the dialog names) and that is what runs. */
     #[test]
     fn desk_the_path_the_dialog_names_is_the_one_that_runs() {
-        use std::os::unix::fs::PermissionsExt;
         let base = std::env::temp_dir().join(format!("desk-f1-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         for (dir, say) in [("vault", "VAULT"), ("bin", "BIN")] {
             std::fs::create_dir_all(base.join(dir)).unwrap();
             let f = base.join(dir).join("fakeprog");
-            std::fs::write(&f, format!("#!/bin/sh\necho {say}\n")).unwrap();
-            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+            crate::testutil::write_exe(&f, format!("#!/bin/sh\necho {say}\n")).unwrap();
         }
         let bin = base.join("bin");
         for path in [format!(":{}", bin.display()), format!(".:{}", bin.display())] {
@@ -1157,13 +1194,11 @@ mod tests {
        sees it; http(s) and mailto URLs are not. */
     #[test]
     fn desk_g3_local_and_custom_scheme_opens_are_asked() {
-        use std::os::unix::fs::PermissionsExt;
         let base = std::env::temp_dir().join(format!("desk-g3-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("sub")).unwrap();
         for (n, body) in [("run.desktop", "[Desktop Entry]\nType=Application\nExec=touch /tmp/pwn\n"), ("x.sh", "#!/bin/sh\ntouch /tmp/pwn\n"), ("sub/bin", "#!/bin/sh\n")] {
-            std::fs::write(base.join(n), body).unwrap();
-            std::fs::set_permissions(base.join(n), std::fs::Permissions::from_mode(0o755)).unwrap();
+            crate::testutil::write_exe(base.join(n), body).unwrap();
         }
         let real = base.canonicalize().unwrap();
         let desk = format!("file://{}", real.join("run.desktop").display());
@@ -1207,15 +1242,13 @@ mod tests {
        no sleeps. The opener is a stub script that logs every target it is handed. */
     #[test]
     fn desk_p4_target_swapped_between_ask_and_run_is_not_opened() {
-        use std::os::unix::fs::PermissionsExt;
         let base = std::env::temp_dir().join(format!("desk-p4-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("v")).unwrap();
         let vault = base.join("v");
         let log = base.join("opened.log");
         let opener = base.join("opener");
-        std::fs::write(&opener, format!("#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{}'\n", log.display())).unwrap();
-        std::fs::set_permissions(&opener, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::testutil::write_exe(&opener, format!("#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{}'\n", log.display())).unwrap();
         std::fs::write(vault.join("Welcome.md"), "# hi\n").unwrap();
         std::fs::write(vault.join("evil.desktop"), "[Desktop Entry]\nType=Application\nExec=touch /tmp/pwn\n").unwrap();
         let real = vault.canonicalize().unwrap();
@@ -1402,7 +1435,6 @@ mod tests {
        runs; PATH puts "." and relative entries first. */
     #[test]
     fn desk_r4_opener_cwd_is_root_and_child_path_has_no_relative_entries() {
-        use std::os::unix::fs::PermissionsExt;
         let base = std::env::temp_dir().join(format!("desk-r4-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
@@ -1415,15 +1447,13 @@ mod tests {
         std::fs::create_dir_all(vault.join("bin")).unwrap();
         let mark = base.join("HELPER-RAN");
         for h in ["r4helper", "bin/r4helper"] {
-            std::fs::write(vault.join(h), format!("#!/bin/sh\ntouch '{}'\n", mark.display())).unwrap();
-            std::fs::set_permissions(vault.join(h), std::fs::Permissions::from_mode(0o755)).unwrap();
+            crate::testutil::write_exe(vault.join(h), format!("#!/bin/sh\ntouch '{}'\n", mark.display())).unwrap();
         }
         std::fs::write(vault.join("Welcome.md"), "# hi\n").unwrap();
         // the stub opener reports its cwd and PATH, then looks up a helper the way xdg-open does
         let log = base.join("opener.log");
         let opener = base.join("opener");
-        std::fs::write(&opener, format!("#!/bin/sh\nprintf '%s|%s\\n' \"$(pwd -P)\" \"$PATH\" >> '{}'\nr4helper 2>/dev/null\nexit 0\n", log.display())).unwrap();
-        std::fs::set_permissions(&opener, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::testutil::write_exe(&opener, format!("#!/bin/sh\nprintf '%s|%s\\n' \"$(pwd -P)\" \"$PATH\" >> '{}'\nr4helper 2>/dev/null\nexit 0\n", log.display())).unwrap();
         assert_eq!(child_path(OsStr::new(&format!(".::bin:/usr/bin:./x:{ok}:")), &[vault.as_path()]), OsString::from(format!("/usr/bin:{ok}")));
         let dirty = format!(".::bin:/usr/bin:{ok}");
 
@@ -1459,7 +1489,6 @@ mod tests {
 
     /// a vault whose helper `name` (in the vault and in vault/bin, vault/tools) marks when it runs
     fn helper_vault(tag: &str, name: &str) -> (PathBuf, PathBuf, PathBuf) {
-        use std::os::unix::fs::PermissionsExt;
         let base = std::env::temp_dir().join(format!("desk-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
@@ -1470,8 +1499,7 @@ mod tests {
         for d in ["", "bin", "tools", "sub"] {
             std::fs::create_dir_all(vault.join(d)).unwrap();
             let h = vault.join(d).join(name);
-            std::fs::write(&h, format!("#!/bin/sh\ntouch '{}'\n", mark.display())).unwrap();
-            std::fs::set_permissions(&h, std::fs::Permissions::from_mode(0o755)).unwrap();
+            crate::testutil::write_exe(&h, format!("#!/bin/sh\ntouch '{}'\n", mark.display())).unwrap();
         }
         (base, vault, mark)
     }
@@ -1485,16 +1513,24 @@ mod tests {
         bytes_to_latin1(&o)
     }
 
+    /// S1: a child PATH is never empty and holds only absolute dirs outside `vault` (the exact
+    /// value is W1's: desk_w1_the_safe_default_is_confinement_checked_and_never_empty)
+    fn s1_safe(p: &str, vault: &Path) -> bool {
+        let v = vault.canonicalize().unwrap();
+        !p.is_empty() && p.split(':').all(|e| e.starts_with('/') && !Path::new(e).starts_with(&v) && !Path::new(e).starts_with(vault))
+    }
+
     /* S1 (PR #42 round 3, Greptile): a PATH with no absolute entry ("tools", ".", "") used to
        be cut to "" — and sh / execvp read an empty PATH as the cwd, the vault. The child now
-       gets SAFE_PATH, a spawn and the opener alike, and the vault's helper is not reached. */
+       gets SAFE_PATH (canonical, W1), a spawn and the opener alike, and the vault's helper is not reached. */
     #[test]
     fn desk_s1_a_path_without_absolute_entries_gives_the_safe_default_not_an_empty_path() {
         let (base, vault, mark) = helper_vault("s1", "s1helper");
         for p in ["tools", ".", "", "tools:.:bin"] {
             let mut sp = spec("/bin/sh", &["-c", "printf %s \"$PATH\"; s1helper 2>/dev/null; exit 0"], &vault);
             sp.env.push(("PATH".into(), p.into()));
-            assert_eq!(child_sees(sp), SAFE_PATH, "plugin PATH={p:?}: the child's PATH is not the safe default");
+            let got = child_sees(sp);
+            assert!(s1_safe(&got, &vault), "plugin PATH={p:?}: the child's PATH {got:?} is empty or not absolute dirs outside the vault");
             assert!(!mark.exists(), "plugin PATH={p:?}: the child reached the vault's helper");
         }
         let t = match shell_target(&vault, "path", "/vault/sub").unwrap() {
@@ -1502,7 +1538,67 @@ mod tests {
             ShellOpen::Url(u) => panic!("not asked ({u})"),
         };
         let got = shell_spawn(&t, opener_path(Some("tools:.".into()), &vault), |l| Ok(l.path.clone())).unwrap();
-        assert_eq!(got, SAFE_PATH, "the opener's PATH is not the safe default");
+        assert!(s1_safe(&got.to_string_lossy(), &vault), "the opener's PATH {got:?} is empty or not absolute dirs outside the vault");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// W1: SAFE_PATH as the child gets it with nothing confining it — each entry
+    /// canonical (std, independent of child_path), repeats dropped, missing ones skipped
+    fn safe_canon() -> String {
+        let mut v: Vec<String> = Vec::new();
+        for d in SAFE_PATH.split(':') {
+            if let Ok(c) = Path::new(d).canonicalize() {
+                let s = c.display().to_string();
+                if !v.contains(&s) {
+                    v.push(s);
+                }
+            }
+        }
+        v.join(":")
+    }
+
+    /* W1 (PR #42 round 6, CodeAnt): when every entry was filtered, SAFE_PATH went to the child
+       unchecked — a vault or cwd at/under /usr/local/bin, /usr/bin or /bin (or a vault that is
+       a symlink resolving there) stayed on the child's PATH. Each SAFE_PATH entry is now
+       confinement-checked; when none passes the child gets NO_EXEC_PATH (/dev/null), never ""
+       and never an unchecked entry, and a program looked up by name is not found. */
+    #[test]
+    fn desk_w1_the_safe_default_is_confinement_checked_and_never_empty() {
+        let parts = |p: &OsString| p.to_string_lossy().split(':').map(String::from).collect::<Vec<_>>();
+        // a confine root AT a SAFE_PATH dir: that dir (and anything resolving into it) is dropped
+        for root in ["/usr/local/bin", "/usr/bin", "/bin"] {
+            let r = Path::new(root);
+            let got = child_path(OsStr::new("tools"), &[r]);
+            assert!(!got.is_empty(), "confine {root}: empty PATH");
+            let rc = r.canonicalize().ok();
+            for e in parts(&got) {
+                assert!(e.starts_with('/'), "confine {root}: relative entry {e:?} in {got:?}");
+                assert!(!Path::new(&e).starts_with(r), "confine {root}: {e:?} reached the child ({got:?})");
+                assert!(rc.as_ref().is_none_or(|c| !Path::new(&e).starts_with(c)), "confine {root}: {e:?} resolves into it ({got:?})");
+            }
+        }
+        // a vault that is a symlink resolving to /usr/bin: /usr/bin is not on the child's PATH
+        let base = std::env::temp_dir().join(format!("desk-w1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let link = base.join("vault");
+        std::os::unix::fs::symlink("/usr/bin", &link).unwrap();
+        let ub = Path::new("/usr/bin").canonicalize().unwrap();
+        let got = child_path(OsStr::new("."), &[link.as_path()]);
+        assert!(!got.is_empty(), "symlinked vault: empty PATH");
+        assert!(parts(&got).iter().all(|e| !Path::new(e).starts_with(&ub)), "symlinked vault -> /usr/bin: {got:?} holds it");
+        // every SAFE_PATH dir confined (vault /bin, cwd /usr): the no-exec fallback, never ""
+        assert_eq!(child_path(OsStr::new(""), &[Path::new("/bin"), Path::new("/usr")]), OsString::from(NO_EXEC_PATH));
+        let mut sp = spec("/bin/sh", &["-c", "printf %s \"$PATH\"; ls >/dev/null 2>&1 && echo FOUND; exit 0"], Path::new("/usr"));
+        sp.root = PathBuf::from("/bin");
+        sp.env.push(("PATH".into(), "tools".into()));
+        assert_eq!(child_sees(sp), NO_EXEC_PATH, "all SAFE_PATH dirs confined: the child's PATH is not the no-exec fallback (or a program was found)");
+        // the opener with its vault at /usr: no /usr dir on its PATH, and never ""
+        let got = opener_path(Some("tools".into()), Path::new("/usr"));
+        assert!(!got.as_os_str().is_empty(), "opener: empty PATH");
+        assert!(parts(&got.as_os_str().to_os_string()).iter().all(|e| e.starts_with('/') && !e.starts_with("/usr")), "opener, vault /usr: {got:?}");
+        // control: nothing confining -> the canonical SAFE_PATH
+        assert_eq!(child_path(OsStr::new("tools"), &[base.as_path()]), OsString::from(safe_canon()));
         let _ = std::fs::remove_dir_all(&base);
     }
 

@@ -43,6 +43,8 @@ mod spawner;
 mod desk_http;
 mod desk_net;
 mod desk_proc;
+#[cfg(test)]
+mod testutil; // shared unit-test helpers (write_exe: no ETXTBSY from a write fd a parallel fork inherited)
 #[cfg(feature = "devui")]
 mod devui; // goal devui: DEV-ONLY UI hot reload, never in a default/release build
 mod vaultlock;
