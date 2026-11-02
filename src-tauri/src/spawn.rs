@@ -157,13 +157,26 @@ pub fn await_ready(ready: impl Fn() -> bool, alive: impl Fn() -> bool, timeout: 
 }
 
 /// is `pid` a live (non-zombie) process?
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub fn alive(pid: u32) -> bool {
     match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
         // "pid (comm) S ..." — comm may hold spaces/parens: state follows the LAST ')'
         Ok(s) => s.rfind(')').and_then(|i| s[i + 1..].trim_start().chars().next()).is_some_and(|c| c != 'Z' && c != 'X'),
         Err(_) => false,
     }
+}
+
+/// Darwin has no /proc; kill(pid, 0) reports existence (ESRCH = gone).
+#[cfg(target_os = "macos")]
+pub fn alive(pid: u32) -> bool {
+    let pid = pid as libc::pid_t;
+    // SAFETY: signal 0 never delivers; only probes the process table.
+    let r = unsafe { libc::kill(pid, 0) };
+    if r == 0 {
+        return true;
+    }
+    // EPERM: exists but we cannot signal it — still alive for handoff.
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 #[cfg(windows)]
@@ -380,6 +393,7 @@ mod tests {
     }
 
     /// /proc liveness: we are alive, a reaped child is not, a zombie is not.
+    #[cfg(target_os = "linux")]
     #[test]
     fn switch_alive_probe_reads_proc() {
         assert!(alive(std::process::id()));

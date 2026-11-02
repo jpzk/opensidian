@@ -24,16 +24,16 @@
 #[cfg(target_os = "linux")]
 use landlock::{
     path_beneath_rules, Access, AccessFs, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset,
-    RulesetAttr, RulesetCreatedAttr, RulesetStatus, ABI,
+    RulesetAttr, RulesetCreatedAttr, ABI,
 };
+#[cfg(target_os = "linux")]
+pub use landlock::RulesetStatus;
 #[cfg(not(target_os = "linux"))]
 /// Stand-in for landlock::RulesetStatus off Linux (no LSM).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RulesetStatus {
     NotEnforced,
 }
-#[cfg(target_os = "linux")]
-pub use landlock::RulesetStatus;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
