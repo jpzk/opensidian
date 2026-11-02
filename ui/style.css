@@ -240,6 +240,8 @@ body {
   --shadow-popover: rgba(0,0,0,.55);
   --shadow-modal: rgba(0,0,0,.5);
   --shadow-drop: #0008;
+  --shadow-drawer: rgba(0,0,0,.25);                 /* android: the phone drawers' edge shadow */
+  --m-hdr-glass: color-mix(in srgb, var(--bg-base) 82%, transparent); /* android: the floating header's buttons + title over the note */
   --accent-blue-veil: rgba(137,180,250,.22);
   /* ---- bmdrag drop feedback: values MEASURED in the bmdrag recon (docs/recon-bmdrag) —
      the gap indicator line (cases 1/3), the onto-a-group row fill + its ink
@@ -1975,7 +1977,7 @@ body.is-mobile #side { display: none !important }
 body.is-mobile.m-drawer #side { display: flex !important; position: fixed; z-index: 41; left: var(--safe-left, 0px); top: 0; bottom: 0;
   width: var(--m-drawer) !important; max-width: none; box-sizing: border-box;
   padding: var(--safe-top, 0px) 0 var(--safe-bottom, 0px) 0;
-  box-shadow: 0 0 24px rgba(0, 0, 0, .25); animation: m-slide .18s ease-out }
+  box-shadow: 0 0 24px var(--shadow-drawer); animation: m-slide .18s ease-out }
 @keyframes m-slide { from { transform: translateX(-100%) } to { transform: none } }
 body.is-mobile.m-drawer #mscrim { display: block; position: fixed; inset: 0; z-index: 40; background: var(--scrim) }
 body.is-mobile #side #stabs .stab { flex-basis: 44px; width: 44px; padding: 8px }
@@ -2033,11 +2035,11 @@ body.is-mobile .m-pillitem.checked { font-weight: 600; background: var(--bg-surf
 @media (orientation: landscape) {
   body.is-mobile .app-container { position: relative }
   body.is-mobile #mhdr { position: absolute; z-index: 30; top: var(--safe-top, 0px); left: 0; right: 0;
-    background: transparent; border-bottom: 0; pointer-events: none }
+    background: var(--transparent); border-bottom: 0; pointer-events: none }
   body.is-mobile #mhdr > * { pointer-events: auto }
-  body.is-mobile #mhdr button:not([hidden]) { background: color-mix(in srgb, var(--bg-base) 82%, transparent) }
+  body.is-mobile #mhdr button:not([hidden]) { background: var(--m-hdr-glass) }
   body.is-mobile #mhdr .m-title { flex: 0 1 auto; margin: 0 auto; border-radius: 8px;
-    background: color-mix(in srgb, var(--bg-base) 82%, transparent) }
+    background: var(--m-hdr-glass) }
   body.is-mobile #mnav { position: fixed; z-index: 30; left: 50%; transform: translateX(-50%);
     bottom: calc(var(--safe-bottom, 0px) + 8px); width: min(52vw, 440px); margin: 0;
     box-shadow: 0 2px 12px var(--shadow-popover) }
@@ -2048,7 +2050,7 @@ body.is-mobile .m-pillitem.checked { font-weight: 600; background: var(--bg-surf
 body.is-mobile.m-rdrawer #rside { display: flex !important; flex-direction: column; position: fixed; z-index: 41;
   right: var(--safe-right, 0px); top: 0; bottom: 0; left: auto; width: var(--m-drawer) !important; max-width: none; box-sizing: border-box;
   padding: var(--safe-top, 0px) 0 var(--safe-bottom, 0px) 0; background: var(--bg-sidebar);
-  box-shadow: 0 0 24px rgba(0, 0, 0, .25); animation: m-rslide .18s ease-out }
+  box-shadow: 0 0 24px var(--shadow-drawer); animation: m-rslide .18s ease-out }
 @keyframes m-rslide { from { transform: translateX(100%) } to { transform: none } }
 body.is-mobile.m-rdrawer #mscrim { display: block; position: fixed; inset: 0; z-index: 40; background: var(--scrim) }
 body.is-mobile #rside #rtabs { display: none !important }
@@ -2112,7 +2114,7 @@ body.is-mobile .m-asitem { display: flex; align-items: center; gap: 14px; min-he
 body.is-mobile .m-asitem span { flex: 1 1 auto; min-width: 0 }
 body.is-mobile .m-asitem:active { background: var(--bg-surface) }
 body.is-mobile .m-asitem svg { width: 20px; height: 20px; flex: 0 0 20px; color: var(--text-chrome-muted) }
-body.is-mobile .m-asitem.m-red, body.is-mobile .m-asitem.m-red svg { color: var(--text-error, #e5484d) }
+body.is-mobile .m-asitem.m-red, body.is-mobile .m-asitem.m-red svg { color: var(--text-error) }
 body.is-mobile .m-assep { height: 1px; margin: 6px 8px; background: var(--bg-surface) }
 /* M4.4 the drawer's foot: the vault bar (name + chevron, gear) and the counts, flush with the screen bottom */
 body.is-mobile.m-drawer #side { padding-bottom: 0 }
@@ -2146,7 +2148,7 @@ body.is-mobile .m-vaultitem.checked { font-weight: 600 }
 body.is-mobile .m-vaultitem[role=radio]::before { content: ""; position: absolute; left: 12px; top: 50%; width: 16px;
   height: 16px; margin-top: -10px; border: 2px solid var(--text-chrome-muted); border-radius: 50%; box-sizing: content-box }
 body.is-mobile .m-vaultitem[aria-checked=true]::before { border-color: var(--interactive-accent, var(--text-chrome));
-  background: radial-gradient(circle, var(--interactive-accent, var(--text-chrome)) 0 45%, transparent 50%) }
+  background: radial-gradient(circle, var(--interactive-accent, var(--text-chrome)) 0 45%, var(--transparent) 50%) }
 body.is-mobile .m-vaultitem.m-vaultmanage { border-top: 1px solid var(--bg-surface); color: var(--text-chrome-muted) }
 body.is-mobile #picker { z-index: 46; align-items: stretch; justify-content: stretch;
   padding: var(--safe-top, 0px) var(--safe-right, 0px) var(--safe-bottom, 0px) var(--safe-left, 0px); box-sizing: border-box }
