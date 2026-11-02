@@ -836,8 +836,40 @@ pub fn plugin_err(op: &str, path: &str, e: &io::Error) -> String {
     format!("{code}: {e}, {op} '{p}'")
 }
 
+/// a plugin path naming the REAL vault dir (what `git rev-parse --path-format=absolute`
+/// prints, obsidian-git reads .git/info/exclude by it) -> the same path vault-relative.
+/// Root itself -> "". Anything else is returned as given (plugin_rel still refuses it).
+/// Absolute paths on Windows may use drive letters and either separator.
+pub fn plugin_unroot<'a>(root: &Path, path: &'a str) -> std::borrow::Cow<'a, str> {
+    let p = Path::new(path);
+    if !p.is_absolute() {
+        return path.into();
+    }
+    let canon = root.canonicalize().ok();
+    for r in std::iter::once(root).chain(canon.as_deref()) {
+        let Some(rs) = r.to_str() else { continue };
+        let rs = rs.trim_end_matches(['/', '\\']);
+        if rs.is_empty() {
+            continue;
+        }
+        if path.eq_ignore_ascii_case(rs) {
+            return "".into();
+        }
+        for sep in ['/', '\\'] {
+            let prefix = format!("{rs}{sep}");
+            if path.len() > prefix.len() && path[..prefix.len()].eq_ignore_ascii_case(&prefix) {
+                return path[prefix.len()..].replace('\\', "/").into();
+            }
+        }
+    }
+    path.into()
+}
+
 pub fn plugin_op(root: &Path, op: &str, path: &str, to: Option<&str>, data: Option<&str>, recursive: bool) -> Result<serde_json::Value, String> {
     use serde_json::json;
+    let path: &str = &plugin_unroot(root, path);
+    let to_own = to.map(|t| plugin_unroot(root, t).into_owned());
+    let to = to_own.as_deref();
     let e = |x: io::Error| plugin_err(op, path, &x);
     let rel = plugin_rel(path).map_err(e)?;
     let need = |rel: &Path| {
@@ -906,7 +938,7 @@ pub fn plugin_chmod(root: &Path, trusted: bool, path: &str, mode: u32) -> Result
     if !trusted {
         return Err(format!("EPERM: restricted mode, plugin chmod is off, chmod '{}'", path.replace('\0', "\\0")));
     }
-    let rel = plugin_rel(path).map_err(e)?;
+    let rel = plugin_rel(&plugin_unroot(root, path)).map_err(e)?;
     if rel.as_os_str().is_empty() {
         return Err(e(refused(&rel, "the vault root itself")));
     }
