@@ -14,13 +14,10 @@
    scrolled, read-only, plain-text view of bounded size (F2); the env is capped
    before anything is asked (F6). Buttons: Deny/Cancel is the default (Enter,
    Escape, the window's close button, a destroyed dialog, a lost main loop all
-   answer NO); Allow/Trust must be pressed. The spawn prompt may also offer
-   "Allow for this session" (operator STEER 13:32Z), narrowed by F3/F4: it
-   remembers the EXACT run (vault, program, argv0, args, cwd, env) in memory
-   only, and is never offered for a program inside the vault (the plugin can
-   rewrite it) or for a shell / interpreter / git / env-style runner (it runs
-   whatever its input says). See Session below. No timeout, and no env var, cfg
-   flag, feature or test hook that answers for the user — tests click the
+   answer NO); Allow once / Trust must be pressed, for every question: there is
+   no session-wide answer and nothing is remembered between two runs
+   (PR #41 N2/N3). The app log gets the body with env VALUES masked (N1).
+   No timeout, and no env var, cfg flag, feature or test hook that answers for the user — tests click the
    dialog (harness phase spawnconsent; scripts/consent-nobypass.sh guards the
    calls).
 
@@ -30,9 +27,12 @@
    "response" signal — no nested gtk_dialog_run, so the main loop keeps
    serving IPC and painting while the question is open. One question at a
    time: a plugin spawning in a loop queues behind the open dialog instead of
-   stacking windows. */
-use std::collections::BTreeSet;
-use std::path::{Component, Path, PathBuf};
+   stacking windows. R2 (PR #42, CodeAnt): every queued question parks a
+   blocking-pool thread, so the queue is bounded — at most MAX_IN_FLIGHT
+   questions (the one on screen + those behind it); one more is refused at once
+   with EBUSY, nothing asked, no thread taken (admit()). */
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use crate::desk_proc::Spec;
@@ -51,6 +51,8 @@ pub enum Kind {
 /// over our environment. Over either = the spawn is refused, nothing is asked.
 pub const ENV_MAX_VARS: usize = 64;
 pub const ENV_MAX_BYTES: usize = 16 * 1024;
+/// Q4: the most bytes program + args + cwd (each + 1) a spawn or an open may carry
+pub const RUN_MAX_BYTES: usize = 64 * 1024;
 
 /// one page-supplied value as the dialog shows it: Debug-quoted (escapes \n,
 /// \t, \u{..}, quotes) and NEVER cut (F2) — the user approves what they saw
@@ -58,8 +60,14 @@ fn shown(s: &str) -> String {
     format!("{s:?}")
 }
 
-/// F6: refuse an env over the cap before any dialog is built
+/// F6: refuse an env over the cap before any dialog is built.
+/// Q4 (PR #42 round 4, CodeAnt): the same for the run itself — program + args + cwd
+/// (each + 1) over RUN_MAX_BYTES is E2BIG before anything is resolved, built or asked:
+/// the dialog body (and its log copy) is built from these values in full (never cut,
+/// F2) before ask() admits a slot, so an unbounded request would be copied, quoted and
+/// laid out several times just to be refused with EBUSY or shown in a giant view.
 pub fn check_env(sp: &Spec) -> Result<(), String> {
+    check_run(sp)?;
     let bytes: usize = sp.env.iter().map(|(k, v)| k.len() + v.len() + 2).sum();
     if sp.env.len() > ENV_MAX_VARS || bytes > ENV_MAX_BYTES {
         return Err(format!(
@@ -74,6 +82,29 @@ pub fn check_env(sp: &Spec) -> Result<(), String> {
     Ok(())
 }
 
+/// Q4: program + args + cwd (each + 1) over RUN_MAX_BYTES = E2BIG.
+/// V2 (PR #42 round 5, Qodo + CodeAnt): check_env runs it on the request as the plugin
+/// sent it (cheap, before any lookup); resolve runs it AGAIN on the Spec it returns — the
+/// one the dialog shows and exec runs — since resolving a bare name to its absolute path
+/// (and argv0 keeping the name) makes the run longer than what was checked first
+fn check_run(sp: &Spec) -> Result<(), String> {
+    let run: usize = sp.file.len()
+        + 1
+        + sp.argv0.as_ref().map_or(0, |a| a.len() + 1)
+        + sp.args.iter().map(|a| a.len() + 1).sum::<usize>()
+        + sp.cwd.as_os_str().len()
+        + 1;
+    if run > RUN_MAX_BYTES {
+        return Err(format!(
+            "E2BIG: spawn: the program, its {} args and the cwd ({} bytes) are over the cap ({} bytes); refused, nothing asked or started",
+            sp.args.len(),
+            run,
+            RUN_MAX_BYTES
+        ));
+    }
+    Ok(())
+}
+
 /// F1: where the program is, found ONCE. A name with a '/' is taken relative
 /// to the CHILD's cwd (what exec would do). A bare name is looked up on PATH —
 /// the child's PATH if the plugin sets one, else ours — on ABSOLUTE entries
@@ -81,30 +112,65 @@ pub fn check_env(sp: &Spec) -> Result<(), String> {
 /// against the child's cwd (inside the vault, plugin-writable), so it is
 /// skipped. The result is absolute and is what desk_proc execs (resolve), so
 /// the dialog and the exec cannot disagree. None = not found.
+/* X1 (PR #42 round 7, Strix): like a PATH entry (V1), the PROGRAM path is resolved PER
+   PROCESS when it runs through a magic link: "<dir>/link/helper" with link ->
+   /proc/self/cwd (or /proc/thread-self/..., /proc/<pid>/{cwd,root,fd/N}, /dev/fd/N) names
+   <app cwd>/helper here, but the child chdirs to the cwd first and then execs the same
+   string — <child cwd = vault>/helper. So the program found here is CANONICALIZED here (no
+   symlink, no "..", no magic link left: the child execs exactly the file we checked and
+   the dialog names), and a canonical form still under /proc or /dev/fd is refused. A
+   candidate that does not canonicalize is not a candidate. The cwd is canonicalized the
+   same way by resolve() before the program is looked up against it. */
 pub fn resolve_program(sp: &Spec) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     let exe = |p: &Path| std::fs::metadata(p).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false);
+    let canon = |p: PathBuf| p.canonicalize().ok().filter(|c| c.is_absolute() && exe(c) && !magic(c));
     if sp.file.is_empty() {
         return None;
     }
     if sp.file.contains('/') {
         let p = Path::new(&sp.file);
         let p = if p.is_absolute() { p.to_path_buf() } else { sp.cwd.join(p) };
-        return (p.is_absolute() && exe(&p)).then_some(p);
+        return (p.is_absolute() && exe(&p)).then_some(p).and_then(canon);
     }
     let path = sp.env.iter().rev().find(|(k, _)| k == "PATH").map(|(_, v)| v.clone()).or_else(|| std::env::var("PATH").ok())?;
-    path.split(':').map(Path::new).filter(|d| d.is_absolute()).map(|d| d.join(&sp.file)).find(|p| exe(p))
+    path.split(':').map(Path::new).filter(|d| d.is_absolute()).map(|d| d.join(&sp.file)).filter(|p| exe(p)).find_map(canon)
+}
+
+/// X1: a canonical path that still names a per-process object (it could mean another
+/// file in the child): anything under /proc or /dev/fd
+fn magic(c: &Path) -> bool {
+    c.starts_with("/proc") || c.starts_with("/dev/fd")
+}
+
+/// X1: the cwd the child runs in, canonical (what the dialog shows); a cwd that does not
+/// canonicalize, is not a directory, or is still under /proc or /dev/fd = ENOENT
+fn resolve_cwd(cwd: &Path) -> Result<PathBuf, String> {
+    cwd.canonicalize()
+        .ok()
+        .filter(|c| c.is_absolute() && c.is_dir() && !magic(c))
+        .ok_or_else(|| format!("ENOENT: spawn: cwd {} is not a directory (resolved without symlinks, outside /proc and /dev/fd)", shown(&cwd.to_string_lossy())))
 }
 
 /// F1: the Spec that will run — file = the absolute path resolve_program found
 /// (the one the dialog names), argv0 = the name the plugin asked for. Not found
-/// = ENOENT, before anything is asked.
+/// = ENOENT, before anything is asked. X1: cwd = its canonical form, file canonical.
 pub fn resolve(sp: Spec) -> Result<Spec, String> {
+    #[cfg(test)]
+    crate::desk_proc::fs_work(); // BB2 probe
+    let sp = Spec { cwd: resolve_cwd(&sp.cwd)?, ..sp };
     let p = resolve_program(&sp)
         .ok_or_else(|| format!("ENOENT: spawn {} not found (bare names are looked up on absolute PATH entries only)", sp.file))?;
     let file = p.into_os_string().into_string().map_err(|_| format!("ENOENT: spawn {}: resolved path is not UTF-8", sp.file))?;
     let argv0 = if file != sp.file { Some(sp.file.clone()) } else { sp.argv0.clone() };
-    Ok(Spec { file, argv0, ..sp })
+    let sp = Spec { file, argv0, ..sp };
+    check_run(&sp)?; // V2: the cap holds for what is shown and run, not only what was sent
+    // Y1 (PR #42 round 8): the program is held open from HERE — before the question is built —
+    // to the exec, which runs this open file (desk_proc::pin, desk_proc::build), never the name again
+    let prog = Some(crate::desk_proc::pin(&sp.file)?);
+    // AA2 (PR #42 round 10): the cwd too — held open from here, entered by fchdir on that fd
+    let dir = Some(crate::desk_proc::pin_dir(&sp.cwd)?);
+    Ok(Spec { prog, dir, ..sp })
 }
 
 /// the trust prompt's body. `canon` = plugins::trust_key (canonical vault path)
@@ -120,6 +186,24 @@ pub fn trust_text(canon: &str) -> String {
 
 /// the spawn prompt's body, from the resolved Spec desk_proc::start will run
 pub fn spawn_text(sp: &Spec) -> String {
+    spawn_body(sp, EnvValues::Shown)
+}
+
+/// N1: what the app log gets for that prompt: the same body, every env value
+/// replaced by a marker (names are kept: they say what was set, not what it holds)
+pub fn spawn_log(sp: &Spec) -> String {
+    spawn_body(sp, EnvValues::Hidden)
+}
+
+const ENV_VALUE_HIDDEN: &str = "(value not logged)";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EnvValues {
+    Shown,
+    Hidden,
+}
+
+fn spawn_body(sp: &Spec, env: EnvValues) -> String {
     let mut t = format!("A plugin wants to run a program.\n\nProgram: {}\n", shown(&sp.file));
     if let Some(a0) = &sp.argv0 {
         t.push_str(&format!("    (asked for {}; the file above is exactly what runs)\n", shown(a0)));
@@ -136,232 +220,162 @@ pub fn spawn_text(sp: &Spec) -> String {
     if !sp.env.is_empty() {
         t.push_str(&format!("Env set by the plugin ({}):\n", sp.env.len()));
         for (k, v) in &sp.env {
-            t.push_str(&format!("    {}={}\n", shown(k), shown(v)));
+            let v = if env == EnvValues::Shown { shown(v) } else { ENV_VALUE_HIDDEN.to_string() };
+            t.push_str(&format!("    {}={}\n", shown(k), v));
         }
     }
     t.push_str("\nIt will run with your user's rights.");
     t
 }
 
-/* "Allow for this session" (operator STEER 2026-11-01 13:32Z, narrowed by PR #41
-   F3/F4): the key is the EXACT run — canonical vault, absolute program, argv0,
-   args, cwd, env. Any difference (another arg, another cwd, an added
-   LD_PRELOAD) asks again, and the dialog says so. The set lives ONLY here, in
-   process memory: never persisted, no IPC command reads or writes it
-   (session_allowed/session_remember are private; session_clear is the one pub
-   door, called by plugins_set when trust flips OFF next to
-   desk_proc::kill_all). A vault switch is a new process (vaultbleed), so it
-   starts empty there too. `epoch` bumps on every clear: an answer given in a
-   dialog that was open across a trust-OFF is not remembered. */
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct SessionKey {
-    vault: String,
-    file: String,
-    argv0: Option<String>,
-    args: Vec<String>,
-    cwd: PathBuf,
-    env: Vec<(String, String)>,
+/* No session-wide answer (PR #41 round 2, N2/N3, coordinator default
+   2026-11-01 19:20Z): every run a plugin asks for is asked, one by one, also
+   when the very same run was allowed a moment ago. There is no allowlist, no
+   key, nothing remembered between two questions — so nothing a plugin can
+   rewrite between runs (a program in the vault, a git hook, a script an
+   interpreter reads) can ride on an earlier answer. */
+
+/* R5 (PR #42, Qodo): an open (electron shell openPath / showItemInFolder /
+   openExternal of a local or custom-scheme target, app.openWithDefaultApp) is not
+   "a plugin wants to run a program": the app's own "open in default app" goes the
+   same way, and a page script cannot be told apart from the app. So its question
+   says nothing about who asks, names the target, and says what opening it may do:
+   a program, script or .desktop file is RUN by the default opener. The opener
+   (the resolved xdg-open that runs) and its cwd stay in the body in full. */
+
+/// the open prompt's body. `sp` = the resolved opener Spec (file = absolute
+/// xdg-open, args = [target]), `target` = what the opener gets (the final path)
+pub fn open_text(sp: &Spec, target: &str) -> String {
+    format!(
+        "Open {t} with the default application?\n\n\
+         If it is a program, a script or a .desktop file, opening it can run it, \
+         with your user's rights.\n\n\
+         Target: {t}\n\
+         Program: {p}\n\
+         Cwd: {c}\n",
+        t = shown(target),
+        p = shown(&sp.file),
+        c = shown(&sp.cwd.to_string_lossy())
+    )
 }
 
-struct Session {
-    epoch: u64,
-    set: BTreeSet<SessionKey>,
-}
-static SESSION_ALLOW: Mutex<Session> = Mutex::new(Session { epoch: 0, set: BTreeSet::new() });
-
-fn session() -> std::sync::MutexGuard<'static, Session> {
-    SESSION_ALLOW.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// trust flipped OFF: forget every "Allow for this session"
-pub fn session_clear() {
-    let mut s = session();
-    s.set.clear();
-    s.epoch += 1;
-    eprintln!("[consent] session allowlist cleared");
-}
-
-fn session_allowed(key: &SessionKey) -> bool {
-    session().set.contains(key)
-}
-
-/// remember `key`, unless the allowlist was cleared since `epoch` was read
-fn session_remember(key: SessionKey, epoch: u64) {
-    let mut s = session();
-    if s.epoch == epoch {
-        s.set.insert(key);
-    }
-}
-
-/// F4: programs whose behaviour is whatever their input says — shells,
-/// interpreters, git (hooks, aliases, config), env-style launchers. Exact names,
-/// and interpreter stems followed only by a version ("python3.12", "lua5.4").
-const RUNNERS: &[&str] = &[
-    "sh", "bash", "zsh", "dash", "fish", "ksh", "mksh", "csh", "tcsh", "busybox", "git", "env", "xargs", "sudo", "doas",
-    "pkexec", "nohup", "nice", "timeout", "setsid", "stdbuf", "flock",
-];
-const RUNNER_STEMS: &[&str] = &["python", "pypy", "node", "nodejs", "perl", "ruby", "php", "lua", "luajit", "deno", "bun", "tclsh", "wish", "pwsh"];
-
-fn is_runner(name: &str) -> bool {
-    RUNNERS.contains(&name)
-        || RUNNER_STEMS
-            .iter()
-            .any(|s| name.strip_prefix(s).is_some_and(|v| v.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-')))
-}
-
-/// ".." and "." removed without touching the disk
-fn lexical(p: &Path) -> PathBuf {
-    let mut o = PathBuf::new();
-    for c in p.components() {
-        match c {
-            Component::ParentDir => {
-                o.pop();
-            }
-            Component::CurDir => {}
-            c => o.push(c),
-        }
-    }
-    o
-}
-
-/// F3: the program file, or the directory entry naming it, lies inside the
-/// vault (lexically, through symlinks, or via a symlinked parent). A path that
-/// cannot be resolved counts as inside: when in doubt, no session.
-fn inside_vault(vault: &str, p: &Path) -> bool {
-    let v = Path::new(vault);
-    let vr = v.canonicalize().unwrap_or_else(|_| v.to_path_buf());
-    let real = p.canonicalize().ok();
-    let entry = p.parent().and_then(|d| d.canonicalize().ok()).zip(p.file_name()).map(|(d, n)| d.join(n));
-    [Some(lexical(p)), real, entry].iter().any(|x| x.as_ref().is_none_or(|x| x.starts_with(v) || x.starts_with(&vr)))
-}
-
-/// why "Allow for this session" is not offered for this resolved Spec, if not
-fn no_session_why(vault: &str, sp: &Spec) -> Option<&'static str> {
-    let p = Path::new(&sp.file);
-    if !p.is_absolute() {
-        return Some("the program path is not absolute");
-    }
-    if inside_vault(vault, p) {
-        return Some("the program is inside the vault, where a plugin can change it between runs");
-    }
-    let real = p.canonicalize().ok();
-    let names = [p.file_name(), real.as_deref().and_then(Path::file_name), sp.argv0.as_deref().map(Path::new).and_then(Path::file_name)];
-    if names.iter().flatten().any(|n| is_runner(&n.to_string_lossy())) {
-        return Some("it is a shell, an interpreter, git or a launcher, which runs whatever its input says");
-    }
-    None
-}
-
-/// what ask() puts on screen: the body, and for a spawn that qualifies, the
-/// exact-run key "Allow for this session" would remember (None = that button
-/// is not offered)
+/// what ask() puts on screen (`text`) and what the app log gets (`log`): the
+/// same body, except that the log never holds an env VALUE (N1: a plugin's env
+/// can carry tokens; names are logged, values are not). `head` is the dialog's
+/// bold first line (ours, never page data).
 pub struct Question {
+    head: String,
     text: String,
-    session: Option<SessionKey>,
+    log: String,
 }
+
+const TRUST_HEAD: &str = "Turn on community plugins for this vault?";
+const SPAWN_HEAD: &str = "A plugin wants to run a program. Read all of it (scroll) before you answer.";
+const OPEN_HEAD: &str = "Open this with the default application? It may run it. Read all of it (scroll) before you answer.";
 
 pub fn trust_question(canon: &str) -> Question {
-    Question { text: trust_text(canon), session: None }
+    let text = trust_text(canon);
+    Question { head: TRUST_HEAD.into(), log: text.clone(), text }
 }
 
-/// the line that tells the user what the session button covers
-const SESSION_NOTE: &str = "\n\n\"Allow for this session\" lets exactly this run happen again without asking — this program, \
-     these arguments, this working directory and this environment, nothing else — until opensidian quits \
-     (or community plugins are turned off). Any difference asks again.";
-
-/// `vault` = plugins::trust_key(root), the canonical vault path; `sp` = the
-/// Spec after resolve() (absolute file)
-pub fn spawn_question(vault: &str, sp: &Spec) -> Question {
-    let mut text = spawn_text(sp);
-    let session = match no_session_why(vault, sp) {
-        None => {
-            text.push_str(SESSION_NOTE);
-            Some(SessionKey {
-                vault: vault.to_string(),
-                file: sp.file.clone(),
-                argv0: sp.argv0.clone(),
-                args: sp.args.clone(),
-                cwd: sp.cwd.clone(),
-                env: sp.env.clone(),
-            })
-        }
-        Some(why) => {
-            text.push_str(&format!("\n\n(No \"Allow for this session\" here: {why}.)"));
-            None
-        }
-    };
-    Question { text, session }
+/// `sp` = the Spec after resolve() (absolute file)
+pub fn spawn_question(sp: &Spec) -> Question {
+    Question { head: SPAWN_HEAD.into(), text: spawn_text(sp), log: spawn_log(sp) }
 }
 
-/// the dialog's answer. Only answer_of() makes Once/Session — from a GTK
-/// response the user produced by pressing that button.
+/// R5: an open through the default opener. `sp` = the resolved opener Spec (no env)
+pub fn open_question(sp: &Spec, target: &str) -> Question {
+    let text = open_text(sp, target);
+    Question { head: OPEN_HEAD.into(), log: text.clone(), text }
+}
+
+/// the dialog's answer. Only answer_of() makes Once — from a GTK response the
+/// user produced by pressing Allow once / Trust.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Answer {
     No,
     Once,
-    Session,
 }
 
-/// response ids: Accept = Allow once / Trust, Other(SESSION_RESPONSE) = Allow
-/// for this session; everything else (Reject, DeleteEvent, None, ...) = No
-const SESSION_RESPONSE: u16 = 7;
-
+/// Accept = Allow once / Trust; everything else (Reject, DeleteEvent, None, ...) = No
 #[cfg(target_os = "linux")]
-fn answer_of(r: gtk::ResponseType, session_offered: bool) -> Answer {
+fn answer_of(r: gtk::ResponseType) -> Answer {
     match r {
         gtk::ResponseType::Accept => Answer::Once,
-        gtk::ResponseType::Other(SESSION_RESPONSE) if session_offered => Answer::Session,
         _ => Answer::No,
     }
 }
 
 static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
-/// ask the user; true only when Allow/Trust was pressed now, or "Allow for
-/// this session" was pressed earlier for this exact run. BLOCKS until the
-/// answer: call it from a worker thread, never the main thread.
-fn ask_blocking(win: &tauri::Window, kind: Kind, q: Question) -> bool {
+/// one question, one at a time: `present` puts it in front of the user and hands
+/// the answer to the sender (false = it could not be presented = NO). Every call
+/// presents: there is no earlier answer that stands in for this one.
+fn ask_with(kind: Kind, q: Question, present: impl FnOnce(Kind, Question, std::sync::mpsc::Sender<Answer>) -> bool) -> bool {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-    // checked under ONE_AT_A_TIME: a spawn queued behind the dialog that
-    // just allowed this exact run for the session does not ask again
-    if let Some(key) = &q.session {
-        if session_allowed(key) {
-            eprintln!("[consent] spawn {:?}: allowed for this session, not asked", key.file);
-            return true;
-        }
-    }
-    let epoch = session().epoch;
     let (tx, rx) = std::sync::mpsc::channel::<Answer>();
-    let w2 = win.clone();
-    let offered = q.session.is_some();
-    let text = q.text;
-    if win.run_on_main_thread(move || show_dialog(&w2, kind, &text, offered, tx)).is_err() {
+    if !present(kind, q, tx) {
         return false;
     }
     // a dialog torn down without a response drops tx: recv errs -> No
-    match rx.recv().unwrap_or(Answer::No) {
-        Answer::No => false,
-        Answer::Once => true,
-        Answer::Session => {
-            if let Some(key) = q.session {
-                eprintln!("[consent] spawn {:?}: allowed for this session", key.file);
-                session_remember(key, epoch);
-            }
-            true
-        }
+    rx.recv().unwrap_or(Answer::No) == Answer::Once
+}
+
+/// ask the user; true only when Allow once / Trust was pressed for THIS
+/// question. BLOCKS until the answer: call it from a worker thread, never the
+/// main thread.
+fn ask_blocking(win: &tauri::Window, kind: Kind, q: Question) -> bool {
+    ask_with(kind, q, |kind, q, tx| {
+        let w2 = win.clone();
+        win.run_on_main_thread(move || show_dialog(&w2, kind, &q, tx)).is_ok()
+    })
+}
+
+/// R2: the most questions in flight at once — the one on screen and the ones
+/// queued behind it (each holds a blocking-pool thread while it waits)
+pub const MAX_IN_FLIGHT: usize = 5;
+
+static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+/// R2: a place in the bounded queue; dropping it frees the place. BB2 (PR #42 round 11): the
+/// commands take it FIRST (admit), before any lookup or pin, and hand it to ask, which demands it
+pub struct Slot(());
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
-/// the async front door the commands await. Any failure on the way = NO.
-pub async fn ask(win: tauri::Window, kind: Kind, q: Question) -> bool {
+/// R2: a place in the queue, or EBUSY at once (nothing asked, no thread taken)
+/// when MAX_IN_FLIGHT questions are already open or queued. BB2: called before resolve / pin /
+/// shell_target, so a refused request has done no fs work and opened no fd
+pub fn admit() -> Result<Slot, String> {
+    IN_FLIGHT
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| (n < MAX_IN_FLIGHT).then_some(n + 1))
+        .map(|_| Slot(()))
+        .map_err(|n| format!("EBUSY: {n} consent questions are already open or waiting (at most {MAX_IN_FLIGHT}); refused, nothing asked"))
+        .inspect_err(|e| eprintln!("[consent] {e}"))
+}
+
+/// the async front door the commands await: Ok(true) only for Allow once /
+/// Trust; Ok(false) for every NO (any failure on the way included). BB2: `slot` = the place
+/// admit() gave the request before its resolve / pin / question building (R2's EBUSY is now
+/// admit's, at the top of the command: ask no longer admits itself)
+pub async fn ask(slot: Slot, win: tauri::Window, kind: Kind, q: Question) -> Result<bool, String> {
     let what = match kind {
         Kind::Trust => "trust",
         Kind::Spawn => "spawn",
     };
     eprintln!("[consent] {what}: asking");
-    let yes = tauri::async_runtime::spawn_blocking(move || ask_blocking(&win, kind, q)).await.unwrap_or(false);
+    let yes = tauri::async_runtime::spawn_blocking(move || {
+        let _slot = slot;
+        ask_blocking(&win, kind, q)
+    })
+    .await
+    .unwrap_or(false);
     eprintln!("[consent] {what}: {}", if yes { "allowed" } else { "denied" });
-    yes
+    Ok(yes)
 }
 
 /// the scrolled body's fixed size (F2/F6): the dialog never outgrows the screen
@@ -371,13 +385,14 @@ const BODY_W: i32 = 640;
 const BODY_H: i32 = 320;
 
 #[cfg(target_os = "linux")]
-fn show_dialog(win: &tauri::Window, kind: Kind, text: &str, session_offered: bool, tx: std::sync::mpsc::Sender<Answer>) {
+fn show_dialog(win: &tauri::Window, kind: Kind, q: &Question, tx: std::sync::mpsc::Sender<Answer>) {
     use gtk::prelude::*;
     let parent = win.gtk_window().ok();
-    let (title, head, no, yes) = match kind {
-        Kind::Trust => (TRUST_TITLE, "Turn on community plugins for this vault?", "_Cancel", "_Trust"),
-        Kind::Spawn => (SPAWN_TITLE, "A plugin wants to run a program. Read all of it (scroll) before you answer.", "_Deny", "Allow _once"),
+    let (title, no, yes) = match kind {
+        Kind::Trust => (TRUST_TITLE, "_Cancel", "_Trust"),
+        Kind::Spawn => (SPAWN_TITLE, "_Deny", "Allow _once"),
     };
+    let head = q.head.as_str();
     // the head is ours; the body (page values) goes into a read-only TextView
     // as plain text, never markup: a page value cannot style or hide part of
     // the prompt, and nothing is cut — the view scrolls (F2)
@@ -390,7 +405,7 @@ fn show_dialog(win: &tauri::Window, kind: Kind, text: &str, session_offered: boo
     );
     d.set_title(title);
     let buf = gtk::TextBuffer::new(None::<&gtk::TextTagTable>);
-    buf.set_text(text);
+    buf.set_text(&q.text);
     let tv = gtk::TextView::with_buffer(&buf);
     tv.set_editable(false);
     tv.set_cursor_visible(false);
@@ -403,20 +418,17 @@ fn show_dialog(win: &tauri::Window, kind: Kind, text: &str, session_offered: boo
     sw.set_size_request(BODY_W, BODY_H);
     sw.add(&tv);
     d.content_area().add(&sw);
-    // what the view holds, read back from the widget: the harness asserts on it
-    let (s, e) = buf.bounds();
-    eprintln!("[consent] dialog text: {:?}", buf.text(&s, &e, false));
+    // N1: the log gets the body with every env VALUE masked (names, program, args and
+    // cwd stay: the harness asserts on them). The view itself holds q.text, in full.
+    eprintln!("[consent] dialog text: {:?}", q.log);
     let _ = d.add_button(no, gtk::ResponseType::Reject);
     let _ = d.add_button(yes, gtk::ResponseType::Accept);
-    if session_offered {
-        let _ = d.add_button("Allow for this _session", gtk::ResponseType::Other(SESSION_RESPONSE));
-    }
     d.set_default_response(gtk::ResponseType::Reject);
     d.set_keep_above(true);
     let tx = std::cell::RefCell::new(Some(tx));
     d.connect_response(move |d, r| {
         if let Some(tx) = tx.borrow_mut().take() {
-            let _ = tx.send(answer_of(r, session_offered));
+            let _ = tx.send(answer_of(r));
         }
         // SAFETY: the dialog is ours alone (no other Rust handle outlives this
         // handler); destroying a toplevel from its own response handler is the
@@ -433,20 +445,16 @@ fn show_dialog(win: &tauri::Window, kind: Kind, text: &str, session_offered: boo
 
 /// no native prompt on this platform = NO (nothing is trusted or started)
 #[cfg(not(target_os = "linux"))]
-fn show_dialog(_win: &tauri::Window, _kind: Kind, _text: &str, _session_offered: bool, tx: std::sync::mpsc::Sender<Answer>) {
+fn show_dialog(_win: &tauri::Window, _kind: Kind, _q: &Question, tx: std::sync::mpsc::Sender<Answer>) {
     let _ = tx.send(Answer::No);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
-
-    /// tests that touch the process-wide allowlist (remember/clear) run one at a time
-    static SESSION_TESTS: Mutex<()> = Mutex::new(());
 
     fn sp(file: &str, args: &[&str], cwd: &str) -> Spec {
-        Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), env: vec![], argv0: None }
+        Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), root: cwd.into(), env: vec![], argv0: None, path: None, prog: None, dir: None }
     }
 
     /// base/vault (the plugin's cwd, with its own `fakeprog`), base/bin (the real
@@ -457,8 +465,7 @@ mod tests {
         for (dir, say) in [("vault", "VAULT"), ("bin", "BIN"), ("vault/rel", "REL")] {
             std::fs::create_dir_all(base.join(dir)).unwrap();
             let f = base.join(dir).join("fakeprog");
-            std::fs::write(&f, format!("#!/bin/sh\necho {say}\n")).unwrap();
-            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+            crate::testutil::write_exe(&f, format!("#!/bin/sh\necho {say}\n")).unwrap();
         }
         std::os::unix::fs::symlink(base.join("vault"), base.join("link")).unwrap();
         base
@@ -514,7 +521,7 @@ mod tests {
     fn f1_relative_path_entries_never_resolve_into_the_cwd() {
         let b = tree("f1");
         let (v, bin) = (b.join("vault"), b.join("bin"));
-        let real = bin.join("fakeprog");
+        let real = bin.join("fakeprog").canonicalize().unwrap(); // X1: the result is canonical
         for path in [format!(":{}", bin.display()), format!(".:{}", bin.display()), format!("rel:{}", bin.display()), format!("{}::", bin.display())] {
             assert_eq!(resolve_program(&with_path("fakeprog", &v, &path)), Some(real.clone()), "PATH={path:?}");
         }
@@ -523,91 +530,13 @@ mod tests {
             assert!(resolve(with_path("fakeprog", &v, path)).err().expect("fakeprog resolved").starts_with("ENOENT: spawn fakeprog"), "PATH={path:?}");
         }
         // a name with a '/' is the child's cwd + name, made absolute
-        assert_eq!(resolve_program(&with_path("./fakeprog", &v, "")), Some(v.join("./fakeprog")));
+        assert_eq!(resolve_program(&with_path("./fakeprog", &v, "")).map(|p| p.canonicalize().unwrap()), Some(v.join("fakeprog").canonicalize().unwrap()));
         let _ = std::fs::remove_dir_all(&b);
     }
 
     #[test]
     fn trust_text_shows_the_canonical_path() {
         assert!(trust_text("/home/u/My Vault").contains("Vault: \"/home/u/My Vault\""));
-    }
-
-    // F3: a program inside the vault (directly, via a symlinked dir, via "..") gets no
-    // session button; the same program outside it does
-    #[test]
-    fn f3_no_session_for_a_program_inside_the_vault() {
-        let b = tree("f3");
-        let vault = plain(&b.join("vault").canonicalize().unwrap());
-        for p in [b.join("vault/fakeprog"), b.join("link/fakeprog"), b.join("bin/../vault/rel/fakeprog")] {
-            let q = spawn_question(&vault, &sp(&plain(&p), &[], &vault));
-            assert_eq!(q.session, None, "{p:?}");
-            assert!(q.text.contains("inside the vault"), "{}", q.text);
-            assert!(!q.text.contains("lets exactly this run"), "{}", q.text);
-        }
-        let q = spawn_question(&vault, &sp(&plain(&b.join("bin/fakeprog")), &[], &vault));
-        assert!(q.session.is_some());
-        let _ = std::fs::remove_dir_all(&b);
-    }
-
-    fn plain(p: &Path) -> String {
-        p.to_string_lossy().into_owned()
-    }
-
-    // F4: the session key is the exact run: another arg, cwd, argv0 or env var is
-    // another key; the dialog says so
-    #[test]
-    fn f4_the_session_key_is_the_exact_run() {
-        let b = tree("f4");
-        let prog = plain(&b.join("bin/fakeprog"));
-        let base = sp(&prog, &["a"], "/");
-        let k = |s: &Spec| spawn_question("/v", s).session.expect("offered");
-        let k0 = k(&base);
-        assert_eq!(k0, k(&sp(&prog, &["a"], "/")));
-        assert_ne!(k0, k(&sp(&prog, &["b"], "/")), "args");
-        assert_ne!(k0, k(&sp(&prog, &["a", "b"], "/")), "args");
-        assert_ne!(k0, k(&sp(&prog, &["a"], "/tmp")), "cwd");
-        let mut e = sp(&prog, &["a"], "/");
-        e.env.push(("LD_PRELOAD".into(), "/tmp/x.so".into()));
-        assert_ne!(k0, k(&e), "env");
-        let mut a0 = sp(&prog, &["a"], "/");
-        a0.argv0 = Some("other".into());
-        assert_ne!(k0, k(&a0), "argv0");
-        assert_ne!(k0, spawn_question("/w", &base).session.unwrap(), "vault");
-        assert!(spawn_question("/v", &base).text.contains("this program, these arguments, this working directory and this environment"));
-        let _s = SESSION_TESTS.lock().unwrap_or_else(|e| e.into_inner());
-        // remembered: the exact run hits, a changed one does not
-        let e0 = session().epoch;
-        session_remember(k0.clone(), e0);
-        assert!(session_allowed(&k0));
-        assert!(!session_allowed(&k(&sp(&prog, &["b"], "/"))));
-        assert!(!session_allowed(&k(&e)));
-        session_clear();
-        assert!(!session_allowed(&k0));
-        let _ = std::fs::remove_dir_all(&b);
-    }
-
-    // F4: shells, interpreters, git and launchers never get the session button —
-    // by the path's name, its real name, or the name asked for
-    #[test]
-    fn f4_no_session_for_shells_interpreters_and_git() {
-        let b = tree("f4r");
-        for n in ["sh", "bash", "git", "python3", "python3.12", "python", "node", "perl", "env", "xargs"] {
-            let f = b.join("bin").join(n);
-            std::fs::copy(b.join("bin/fakeprog"), &f).unwrap();
-            let q = spawn_question("/v", &sp(&plain(&f), &["-c", "x"], "/"));
-            assert_eq!(q.session, None, "{n}");
-            assert!(q.text.contains("shell, an interpreter, git"), "{}", q.text);
-        }
-        let ln = b.join("bin/innocent");
-        std::os::unix::fs::symlink(b.join("bin/bash"), &ln).unwrap();
-        assert_eq!(spawn_question("/v", &sp(&plain(&ln), &[], "/")).session, None, "symlink to bash");
-        let mut a0 = sp(&plain(&b.join("bin/fakeprog")), &[], "/");
-        a0.argv0 = Some("git".into());
-        assert_eq!(spawn_question("/v", &a0).session, None, "asked for git");
-        for n in ["pythonista", "nodes", "gitk", "shasum", "envoy"] {
-            assert!(!is_runner(n), "{n}");
-        }
-        let _ = std::fs::remove_dir_all(&b);
     }
 
     // F6: an env over the cap is refused before anything is asked
@@ -624,41 +553,361 @@ mod tests {
         assert!(check_env(&s).is_ok());
     }
 
+    /* Q4 (PR #42 round 4, CodeAnt): program + args + cwd over RUN_MAX_BYTES is refused by
+       check_env — which desk_proc_spawn and desk_shell call before resolve and before the
+       question body is built or ask() is reached (consent-nobypass S6: check_env < ask) —
+       many small args or one huge one alike, an open's target too. At the cap it passes:
+       nothing a dialog shows is ever cut, the request is either shown in full or refused. */
     #[test]
-    fn no_session_button_for_the_trust_prompt() {
-        assert_eq!(trust_question("/v").session, None);
+    fn q4_a_run_over_the_size_cap_is_refused_before_anything_is_asked() {
+        let fixed = "/bin/true".len() + 1 + "/".len() + 1;
+        let mut s = sp("/bin/true", &[], "/");
+        s.args = vec!["a".repeat(RUN_MAX_BYTES - fixed - 1)];
+        assert!(check_env(&s).is_ok(), "a run exactly at the cap was refused");
+        s.args[0].push('a');
+        let e = check_env(&s).unwrap_err();
+        assert!(e.starts_with("E2BIG: spawn:") && e.contains("nothing asked"), "one arg over the cap: {e}");
+        s.args = vec!["x".into(); RUN_MAX_BYTES / 2];
+        assert!(check_env(&s).unwrap_err().starts_with("E2BIG"), "many small args over the cap");
+        // an open: the opener Spec desk_shell builds, the target as its one arg
+        let mut o = sp("xdg-open", &[], "/");
+        o.args = vec![format!("steam://{}", "r".repeat(RUN_MAX_BYTES))];
+        assert!(check_env(&o).unwrap_err().starts_with("E2BIG"), "an open over the cap");
     }
 
+    /* V2 (PR #42 round 5, Qodo + CodeAnt): check_env measures the request as sent, with
+       the bare program name; resolve then replaces it with its absolute path (and keeps the
+       name as argv0), so a request just under the cap became a run over it — shown and
+       exec'd. resolve now checks the cap on the Spec it returns: E2BIG, before the
+       question is built or asked (desk_proc_spawn / desk_shell: resolve < ask). */
     #[test]
-    fn a_clear_forgets_and_a_stale_epoch_is_not_remembered() {
-        let k = SessionKey {
-            vault: "/consent-test-vault".into(),
-            file: format!("/consent-test/{}", std::process::id()),
-            argv0: None,
-            args: vec![],
-            cwd: "/".into(),
-            env: vec![],
-        };
-        let _s = SESSION_TESTS.lock().unwrap_or_else(|e| e.into_inner());
-        let e = session().epoch;
-        session_remember(k.clone(), e);
-        assert!(session_allowed(&k));
-        session_clear();
-        assert!(!session_allowed(&k));
-        // an answer from a dialog opened before the clear
-        session_remember(k.clone(), e);
-        assert!(!session_allowed(&k));
+    fn v2_a_run_pushed_over_the_size_cap_by_resolve_is_refused_before_anything_is_asked() {
+        let d = std::env::temp_dir().join(format!("consent-v2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let prog = d.join("v2prog");
+        crate::testutil::write_exe(&prog, "#!/bin/sh\nexit 0\n").unwrap();
+        let mut s = sp("v2prog", &[], "/");
+        s.env = vec![("PATH".into(), d.display().to_string())];
+        // control: a short run resolves to the absolute path
+        let mut c = sp("v2prog", &["a"], "/");
+        c.env = s.env.clone();
+        let r = resolve(c).unwrap();
+        assert_eq!(Path::new(&r.file).canonicalize().unwrap(), prog.canonicalize().unwrap());
+        // exactly at the cap as sent: check_env lets it through ...
+        let fixed = "v2prog".len() + 1 + "/".len() + 1;
+        s.args = vec!["a".repeat(RUN_MAX_BYTES - fixed - 1)];
+        assert!(check_env(&s).is_ok(), "the request as sent is at the cap");
+        // ... and the resolved run (absolute path + argv0) is over it: refused
+        let e = resolve(s).map(|r| r.file).unwrap_err();
+        assert!(e.starts_with("E2BIG: spawn:") && e.contains("nothing asked"), "resolve let a run over the cap through: {e}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    // N1: the app log holds the env NAMES the plugin set, never their values; the
+    // dialog itself shows them in full
+    #[test]
+    fn n1_env_values_are_not_logged() {
+        let secret = "s3cr3t-token-n1-do-not-log";
+        let mut s = sp("/usr/bin/git", &["push", "origin"], "/v");
+        s.env.push(("GITHUB_TOKEN".into(), secret.into()));
+        s.env.push(("LD_PRELOAD".into(), "/tmp/x.so".into()));
+        let q = spawn_question(&s);
+        assert!(q.text.contains(&format!("    \"GITHUB_TOKEN\"=\"{secret}\"\n")), "{}", q.text);
+        assert!(!q.log.contains(secret), "an env value reached the log: {}", q.log);
+        assert!(!q.log.contains("/tmp/x.so"), "an env value reached the log: {}", q.log);
+        assert!(q.log.contains(&format!("    \"GITHUB_TOKEN\"={ENV_VALUE_HIDDEN}\n")), "{}", q.log);
+        assert!(q.log.contains("    \"LD_PRELOAD\"="), "{}", q.log);
+        // program, args and cwd are still logged (the harness reads them)
+        for x in ["Program: \"/usr/bin/git\"", "    \"push\"\n", "    \"origin\"\n", "Cwd: \"/v\""] {
+            assert!(q.log.contains(x), "{x} not logged: {}", q.log);
+        }
+        assert_eq!(trust_question("/v").log, trust_question("/v").text, "the trust body holds no env");
+    }
+
+    // N2/N3: no session grant. The same run, asked twice and allowed the first time,
+    // is presented to the user again; nothing in the question mentions a session.
+    #[test]
+    fn n2_an_identical_second_spawn_asks_again() {
+        let s = sp("/bin/true", &["x"], "/");
+        let mut presented = 0;
+        for _ in 0..3 {
+            let q = spawn_question(&s);
+            assert!(!q.text.to_lowercase().contains("session"), "{}", q.text);
+            let yes = ask_with(Kind::Spawn, q, |_, _, tx| {
+                presented += 1;
+                tx.send(Answer::Once).is_ok()
+            });
+            assert!(yes);
+        }
+        assert_eq!(presented, 3, "an identical run was allowed without being asked");
+        // a question that cannot be presented, or is torn down unanswered, is NO
+        assert!(!ask_with(Kind::Spawn, spawn_question(&s), |_, _, _| false));
+        assert!(!ask_with(Kind::Spawn, spawn_question(&s), |_, _, tx| {
+            drop(tx);
+            true
+        }));
+        assert!(!ask_with(Kind::Spawn, spawn_question(&s), |_, _, tx| tx.send(Answer::No).is_ok()));
+    }
+
+    /* R2 (PR #42, CodeAnt): a held dialog and MAX_IN_FLIGHT - 1 requests queued behind
+       it fill the queue; the next request is refused with EBUSY at once — admit() never
+       blocks — and is never presented. Order is forced by channels: every request has its
+       place before the extra one comes; the first is on screen (its answer sender held
+       here). No sleeps. ask() runs exactly admit() then ask_with() on the slot. */
+    #[test]
+    fn r2_beyond_the_waiter_bound_a_request_gets_ebusy_at_once() {
+        let _q = QUEUE.lock().unwrap_or_else(|e| e.into_inner()); // BB2: the one other test that fills it
+        use std::sync::mpsc::{channel, Sender};
+        let (shown_tx, shown_rx) = channel::<Sender<Answer>>();
+        let (placed_tx, placed_rx) = channel::<()>();
+        let mut hs = vec![];
+        for _ in 0..MAX_IN_FLIGHT {
+            let (shown_tx, placed_tx) = (shown_tx.clone(), placed_tx.clone());
+            hs.push(std::thread::spawn(move || {
+                let slot = admit().expect("a request within the bound was refused");
+                placed_tx.send(()).unwrap();
+                let _slot = slot;
+                ask_with(Kind::Spawn, spawn_question(&sp("/bin/true", &[], "/")), |_, _, tx| shown_tx.send(tx).is_ok())
+            }));
+        }
+        for _ in 0..MAX_IN_FLIGHT {
+            placed_rx.recv().unwrap();
+        }
+        let on_screen = shown_rx.recv().unwrap(); // one dialog up, the rest wait behind it
+        let extra = admit();
+        assert!(
+            matches!(&extra, Err(e) if e.starts_with("EBUSY")),
+            "request {} (dialog open, {} waiting) was not refused with EBUSY: {:?}",
+            MAX_IN_FLIGHT + 1,
+            MAX_IN_FLIGHT - 1,
+            extra.as_ref().map(|_| "a place in the queue")
+        );
+        drop(extra);
+        // the refused one was never presented: only the held one is on screen
+        assert!(shown_rx.try_recv().is_err(), "a second dialog is on screen");
+        drop(on_screen); // answer NO; each queued one comes up in turn and is answered NO
+        for _ in 1..MAX_IN_FLIGHT {
+            drop(shown_rx.recv().unwrap());
+        }
+        for h in hs {
+            assert!(!h.join().unwrap(), "a NO answered yes");
+        }
+        // every place was given back
+        assert!(admit().is_ok(), "the queue did not drain");
+    }
+
+    /* R5 (PR #42, Qodo): an open is asked with its own question — names the target and
+       says opening it can run it, neutral about who asks (the app's own "open in default
+       app" goes the same way); program and cwd stay in full. */
+    #[test]
+    fn r5_open_question_names_the_target_and_says_it_may_run_it() {
+        let s = sp("/usr/bin/xdg-open", &["/v/run me.desktop"], "/");
+        let q = open_question(&s, "/v/run me.desktop");
+        for t in [q.text.as_str(), q.head.as_str()] {
+            assert!(!t.contains("A plugin wants"), "{t}");
+            assert!(!t.to_lowercase().contains("plugin"), "the open question names a requester: {t}");
+        }
+        assert!(q.text.starts_with("Open \"/v/run me.desktop\" with the default application?"), "{}", q.text);
+        assert!(q.text.contains("opening it can run it"), "{}", q.text);
+        assert!(q.text.contains("program, a script or a .desktop file"), "{}", q.text);
+        assert!(q.text.contains("\nTarget: \"/v/run me.desktop\"\n"), "{}", q.text);
+        assert!(q.text.contains("\nProgram: \"/usr/bin/xdg-open\"\n"), "{}", q.text);
+        assert!(q.text.contains("\nCwd: \"/\"\n"), "{}", q.text);
+        assert!(q.head.contains("may run it"), "{}", q.head);
+        assert_eq!(q.log, q.text);
+        // a newline in the target cannot fake a line
+        let q = open_question(&s, "/v/x\nProgram: /safe");
+        assert_eq!(q.text.matches("\nProgram: ").count(), 1, "{}", q.text);
+        // the spawn question is unchanged
+        assert!(spawn_question(&s).text.starts_with("A plugin wants to run a program."));
     }
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn only_the_session_button_answers_session_and_only_when_offered() {
+    fn only_allow_once_or_trust_answers_yes() {
         use gtk::ResponseType as R;
-        assert_eq!(answer_of(R::Accept, false), Answer::Once);
-        assert_eq!(answer_of(R::Other(SESSION_RESPONSE), true), Answer::Session);
-        assert_eq!(answer_of(R::Other(SESSION_RESPONSE), false), Answer::No);
-        for r in [R::Reject, R::DeleteEvent, R::None, R::Cancel, R::Close, R::Ok, R::Yes, R::Other(8)] {
-            assert_eq!(answer_of(r, true), Answer::No, "{r:?}");
+        assert_eq!(answer_of(R::Accept), Answer::Once);
+        for r in [R::Reject, R::DeleteEvent, R::None, R::Cancel, R::Close, R::Ok, R::Yes, R::Other(7), R::Other(8)] {
+            assert_eq!(answer_of(r), Answer::No, "{r:?}");
         }
+    }
+
+    /// Y1 tests: run a resolved, allowed Spec as desk_proc_spawn does after Allow
+    /// (prepare, lifecycle, start); Ok(stdout) or the start error
+    fn run_allowed(s: Spec) -> Result<String, String> {
+        use crate::desk_proc::{lifecycle, prepare, start};
+        let r = start(prepare(s, std::env::var_os("PATH")), &lifecycle())?;
+        r.end();
+        let mut out = String::new();
+        for _ in 0..200 {
+            let c = r.read(std::time::Duration::from_millis(50));
+            out.push_str(&c.out);
+            if c.done {
+                return Ok(out);
+            }
+        }
+        panic!("child never finished");
+    }
+
+    /* Y1 (PR #42 round 8, CodeAnt): the program is pinned by resolve (held open before the
+       question) and the child execs that open file. While the dialog is open (the present
+       hook of ask_with = the dialog on screen) the program on disk is replaced — a new file
+       renamed over it, or the same file rewritten in place — then the user presses Allow.
+       The replacement must never run: the original runs, or the run is refused (EPERM: the
+       pinned file changed: rename/unlink and rewrite both move its ctime). A control round
+       with nothing replaced runs the original. */
+    #[test]
+    fn y1_a_program_replaced_while_the_dialog_is_open_is_never_the_one_run() {
+        let base = std::env::temp_dir().join(format!("consent-y1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("bin")).unwrap();
+        let base = base.canonicalize().unwrap();
+        let prog = base.join("bin/y1prog");
+        let next = base.join("bin/y1next");
+        let mark = base.join("REPLACEMENT-RAN");
+        let replacement = format!("#!/bin/sh\ntouch '{}'\necho REPLACEMENT\n", mark.display());
+        for how in ["none", "rename", "rewrite"] {
+            crate::testutil::write_exe(&prog, "#!/bin/sh\necho ORIGINAL\n").unwrap();
+            let s = resolve(sp(&prog.to_string_lossy(), &[], &base.to_string_lossy())).unwrap();
+            assert_eq!(s.file, prog.to_string_lossy(), "the dialog names the program");
+            let yes = ask_with(Kind::Spawn, spawn_question(&s), |_, _, tx| {
+                match how {
+                    "rename" => {
+                        crate::testutil::write_exe(&next, &replacement).unwrap();
+                        std::fs::rename(&next, &prog).unwrap();
+                    }
+                    "rewrite" => crate::testutil::write_exe(&prog, &replacement).unwrap(), // same inode (cat >)
+                    _ => {}
+                }
+                tx.send(Answer::Once).is_ok()
+            });
+            assert!(yes, "{how}: Allow was not taken");
+            let got = run_allowed(s);
+            assert!(!mark.exists(), "{how}: the program replaced while the dialog was open ran after Allow ({got:?})");
+            match (how, got) {
+                ("none", r) => assert_eq!(r.as_deref(), Ok("ORIGINAL\n"), "control: the allowed program did not run"),
+                (_, Ok(o)) => assert_eq!(o, "ORIGINAL\n", "{how}: something other than the allowed program ran"),
+                (_, Err(e)) => assert!(e.starts_with("EPERM: spawn ") && e.contains("changed after it was allowed"), "{how}: {e}"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* Y1: exec through the held fd keeps #! scripts working — the kernel hands the
+       interpreter /proc/self/fd/N, which stays open across the exec. A script program,
+       found by name on PATH like any plugin program, runs with its args and cwd. Only that it
+       runs is asserted, not how ($0 is /proc/self/fd/N under the fd exec, the program path
+       under an exec by name), so this test pins #! support and nothing else. */
+    #[test]
+    fn y1_a_hash_bang_script_program_still_runs() {
+        let base = std::env::temp_dir().join(format!("consent-y1s-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("bin")).unwrap();
+        std::fs::create_dir_all(base.join("work")).unwrap();
+        let base = base.canonicalize().unwrap();
+        crate::testutil::write_exe(base.join("bin/y1script"), "#!/bin/sh\nprintf '%s|' \"$1\" \"$2\" \"$(pwd)\" \"$0\"\n").unwrap();
+        let s = with_path("y1script", &base.join("work"), &base.join("bin").to_string_lossy());
+        let s = Spec { args: vec!["a b".into(), "c".into()], ..s };
+        let s = resolve(s).unwrap();
+        let got = run_allowed(s).unwrap();
+        let want = format!("a b|c|{}|", base.join("work").display());
+        assert!(got.starts_with(&want) && got.ends_with('|') && got.len() > want.len() + 1, "the #! script did not run with its args and cwd: {got:?}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* AA2 (PR #42 round 10, CodeAnt): the cwd is pinned by resolve (an O_PATH directory fd held
+       from before the question) and the child enters THAT directory with fchdir — the pathname
+       is never walked again. While the dialog is open the cwd is renamed away and a new
+       directory is made at the same path, with its own files. After Allow the child must run
+       in the original directory (now at the new name) or be refused (EPERM), never in the
+       replacement. A control round with nothing replaced runs in the cwd as named. */
+    #[test]
+    fn aa2_a_cwd_replaced_while_the_dialog_is_open_is_never_the_one_entered() {
+        let base = std::env::temp_dir().join(format!("consent-aa2-{}", std::process::id()));
+        for how in ["none", "swap"] {
+            let _ = std::fs::remove_dir_all(&base);
+            std::fs::create_dir_all(base.join("work")).unwrap();
+            let base = base.canonicalize().unwrap();
+            let (work, moved) = (base.join("work"), base.join("moved"));
+            std::fs::write(work.join("WHICH"), "ORIGINAL\n").unwrap();
+            let s = resolve(sp("/bin/sh", &["-c", "cat WHICH && touch RAN"], &work.to_string_lossy())).unwrap();
+            assert_eq!(s.cwd, work, "the dialog names the cwd");
+            let yes = ask_with(Kind::Spawn, spawn_question(&s), |_, _, tx| {
+                if how == "swap" {
+                    std::fs::rename(&work, &moved).unwrap();
+                    std::fs::create_dir(&work).unwrap();
+                    std::fs::write(work.join("WHICH"), "REPLACEMENT\n").unwrap();
+                }
+                tx.send(Answer::Once).is_ok()
+            });
+            assert!(yes, "{how}: Allow was not taken");
+            let got = run_allowed(s);
+            match how {
+                "none" => {
+                    assert_eq!(got.as_deref(), Ok("ORIGINAL\n"), "control: the allowed run did not run in its cwd");
+                    assert!(work.join("RAN").exists(), "control: the child did not run in the cwd");
+                }
+                _ => {
+                    assert!(!work.join("RAN").exists(), "the child ran in the directory made at the cwd's path during the dialog ({got:?})");
+                    match got {
+                        Ok(o) => {
+                            assert_eq!(o, "ORIGINAL\n", "the child read the replacement directory's files");
+                            assert!(moved.join("RAN").exists(), "the child did not run in the original directory");
+                        }
+                        Err(e) => assert!(e.starts_with("EPERM: spawn ") && e.contains("cwd"), "{e}"),
+                    }
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// R2/BB2: the tests that fill the question queue (IN_FLIGHT is process-wide) run one at a time
+    static QUEUE: Mutex<()> = Mutex::new(());
+
+    /* BB2 (PR #42 round 11, CodeAnt): the place in the question queue is taken FIRST, before
+       the target is looked up (shell_target: canonicalize, O_PATH open, fstat, readlink) and the
+       opener resolved and pinned (resolve: PATH walk, pin, pin_dir). With every place held, each
+       of N more opens — every op and target kind desk_shell takes — is EBUSY, and none of them
+       reached that work: the probe (desk_proc::fs_work, at the top of Local::file and resolve)
+       counts 0 on this thread. Control: with the places given back the same request does its
+       lookups (the probe moves) and gives its place back (a full set is admitted again). */
+    #[test]
+    fn bb2_beyond_the_bound_a_request_is_refused_before_any_lookup_or_pin() {
+        use crate::desk_proc::{fs_work_count, shell_prepare};
+        let _q = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+        let base = std::env::temp_dir().join(format!("consent-bb2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let vault = base.canonicalize().unwrap();
+        std::fs::write(vault.join("Note.md"), "# hi\n").unwrap();
+        let file_url = format!("file://{}", vault.join("Note.md").display());
+        let reqs: [(&str, &str); 6] = [("path", "/vault/Note.md"), ("vault", "Note.md"), ("reveal", "/vault/Note.md"), ("external", &file_url), ("external", "https://example.org/"), ("external", "steam://run/1")];
+        let held: Vec<Slot> = (0..MAX_IN_FLIGHT).map(|_| admit().expect("a place within the bound was refused")).collect();
+        let before = fs_work_count();
+        let mut got = vec![];
+        for _ in 0..3 {
+            for (op, t) in reqs {
+                got.push((op, t, shell_prepare(&vault, op, t).map(|p| p.ask)));
+            }
+        }
+        let work = fs_work_count() - before;
+        drop(held);
+        // control: a place free -> the same request is admitted and does its lookups
+        let c0 = fs_work_count();
+        let control = shell_prepare(&vault, "path", "/vault/Note.md").map(|p| p.ask);
+        let control_work = fs_work_count() - c0;
+        let again: Vec<_> = (0..MAX_IN_FLIGHT).map(|_| admit()).collect();
+        let all_back = again.iter().all(|s| s.is_ok());
+        drop(again);
+        let _ = std::fs::remove_dir_all(&base);
+        for (op, t, r) in &got {
+            assert!(matches!(r, Err(e) if e.starts_with("EBUSY")), "{op} {t}: with every place held the request was not refused with EBUSY: {r:?}");
+        }
+        assert_eq!(work, 0, "refused requests did {work} lookups/pins before being refused (want 0: the place comes first)");
+        assert!(control_work > 0, "control: an admitted request did no lookup ({control:?})");
+        assert!(!matches!(&control, Err(e) if e.starts_with("EBUSY")), "control: a request with a free place was refused: {control:?}");
+        assert!(all_back, "a place was not given back (control request or refused ones)");
     }
 }

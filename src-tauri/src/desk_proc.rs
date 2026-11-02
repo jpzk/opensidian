@@ -27,7 +27,9 @@
    Bytes cross the IPC as latin1 strings (one char per byte, lossless both ways),
    so no codec crate is needed. */
 use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -39,9 +41,10 @@ use serde::Serialize;
 /// the page-side name of the vault root (FileSystemAdapter.getBasePath)
 pub const VAULT_ALIAS: &str = "/vault";
 
-/// "/vault[/x]" -> root[/x]; relative or empty -> under root; other absolute -> as given
+/// "/vault[/x]" -> root[/x]; relative or empty -> under root; other absolute -> as given.
+/// R3 (PR #42): exactly "" / "." / "/vault" are special; nothing is trimmed (" a .md" is that name)
 pub fn map_cwd(root: &Path, cwd: Option<&str>) -> PathBuf {
-    let c = cwd.unwrap_or("").trim();
+    let c = cwd.unwrap_or(""); // R3: never trimmed — " a.md" and "a.md" are different paths
     if c.is_empty() || c == "." {
         return root.to_path_buf();
     }
@@ -71,7 +74,7 @@ pub fn map_arg(root: &Path, a: &str) -> String {
 /// (symlinks resolved) is outside the vault's real root is refused with EPERM. The target must
 /// exist (ENOENT otherwise), so the opener is never handed a name it would guess at.
 pub fn vault_open_target(root: &Path, target: &str) -> Result<PathBuf, String> {
-    let t = target.trim();
+    let t = target; // R3: never trimmed — a name with leading/trailing spaces is that name
     if t.contains('\0') {
         return Err(format!("EPERM: vault-escape refused: {target}"));
     }
@@ -223,28 +226,339 @@ fn forker() -> &'static Mutex<std::sync::mpsc::Sender<Job>> {
 }
 
 pub struct Spec {
-    /// what is exec'd. main.rs sets it to the ABSOLUTE path consent::resolve found and the
+    /// what is exec'd. main.rs sets it to the CANONICAL absolute path (X1) consent::resolve found and the
     /// dialog named (F1): the child never repeats a PATH lookup of its own
     pub file: String,
     pub args: Vec<String>,
     pub cwd: PathBuf,
+    /// S3: the vault the child is started for: PATH entries inside it are dropped
+    pub root: PathBuf,
     pub env: Vec<(String, String)>,
     /// argv[0] the child sees (the name the plugin asked for); None = file
     pub argv0: Option<String>,
+    /// Q1 (PR #42 round 4): the PATH the child runs with, cleaned by prepare() BEFORE the
+    /// lifecycle lock is taken. None = not prepared: start refuses, it never cleans one itself
+    pub path: Option<ChildPath>,
+    /// Y1 (PR #42 round 8): `file`, held open since BEFORE the question (consent::resolve -> pin):
+    /// the child execs this open file, never the pathname again. None = not pinned: start refuses
+    pub prog: Option<Pinned>,
+    /// AA2 (PR #42 round 10): `cwd`, held open (O_PATH directory) since BEFORE the question
+    /// (consent::resolve -> pin_dir): the child enters THIS directory with fchdir, never the
+    /// pathname again. None = not pinned: start refuses
+    pub dir: Option<Pinned>,
 }
 
-fn build(sp: &Spec) -> Command {
-    let mut c = Command::new(&sp.file);
-    if let Some(a0) = &sp.argv0 {
-        c.arg0(a0);
+/* Q1 (PR #42 round 4, Greptile + Qodo + CodeAnt): cleaning a PATH canonicalizes every
+   entry (path_dir_ok) — filesystem lookups of plugin-chosen directories. An entry on a
+   stalled NFS/FUSE mount blocks there for as long as the mount does. This used to run in
+   build, i.e. inside start, i.e. while desk_proc_spawn held the lifecycle lock — and a
+   trust-OFF (plugins_set: flag write, kill_all, close_all) waits on that lock, so one
+   stalled PATH entry kept restricted mode from ever coming back. Now every lookup is done
+   by prepare() (spawn) and opener_path() (the shell opener) before the lock; under it only
+   the trust recheck, the fork/exec and the registration run. A ChildPath is made only in
+   this file (prepare, opener_path), so a Spec cannot carry an uncleaned PATH into start.
+   Still under the lock, inherently: the cwd check and the fork/exec itself (chdir + execve
+   of the absolute program the dialog named). */
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChildPath(OsString);
+
+impl ChildPath {
+    pub fn as_os_str(&self) -> &OsStr {
+        &self.0
     }
-    c.args(&sp.args).current_dir(&sp.cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
+}
+
+/// Q1: the Spec with its child PATH cleaned — call BEFORE desk_proc::lifecycle().
+/// `inherited` = the app's PATH (std::env::var_os), used when the plugin sets none (S2)
+pub fn prepare(mut sp: Spec, inherited: Option<OsString>) -> Spec {
+    let p = child_path(&spec_path(&sp, inherited), &[sp.root.as_path(), sp.cwd.as_path()]);
+    sp.path = Some(ChildPath(p));
+    sp
+}
+
+/* Y1 (PR #42 round 8, CodeAnt): the program used to be checked by PATHNAME before the
+   dialog (resolve_program: canonical, executable) and exec'd by the same pathname after
+   Allow. Nothing held it in between: a plugin that can write the program's directory (a
+   helper in the vault, or any plugin-writable dir) renames another file over it while the
+   dialog is open, and Allow runs the replacement. Since we do the exec ourselves this is
+   closed, not narrowed:
+   - pin(file), called by consent::resolve BEFORE the question is built, opens the
+     canonical path O_PATH|O_NOFOLLOW|O_CLOEXEC, requires a regular file with an x bit
+     and that the kernel's own name for the open file (/proc/self/fd/N) is exactly `file`
+     (no directory on the way was swapped between canonicalize and open), and records its
+     identity (dev, ino, mode, size, mtime, ctime) by fstat.
+   - the child execs THAT open file: build gives exec "/proc/self/fd/N" (the fd's magic
+     link names the open file itself; rename/unlink of the path changes nothing), argv0 =
+     the name the dialog's run was asked under. No pathname of the program is resolved
+     after the question.
+   - right before the exec (start in the parent, under the lifecycle lock, and again in
+     the child's pre_exec, async-signal-safe fstat) the open file's identity must still
+     be the recorded one: a rewrite in place (same inode) moves size/mtime and always
+     ctime, and a rename over the path or an unlink drops the old inode's link count,
+     which moves ctime too — refused EPERM, nothing exec'd.
+   #! scripts: the kernel hands the interpreter "/proc/self/fd/N" as the script path, so
+   N stays open across the exec (pre_exec clears its FD_CLOEXEC; it is an O_PATH fd: it
+   can be reopened, not read or written as is). Consequences: a script's $0 is
+   "/proc/self/fd/N" (not its name), and the O_PATH fd is inherited by the program.
+   RESIDUAL: (1) between the child's fstat and the kernel's exec of the fd a writer of the
+   SAME inode (a plugin holding it open for writing from before) could change bytes; a
+   binary being exec'd while open for writing fails ETXTBSY, a script does not, and its
+   interpreter reads it after the exec. (2) the #! line's interpreter is found by the
+   kernel by its path; it is not pinned (the script's content, which names it, is). */
+pub struct Pinned {
+    fd: std::os::fd::OwnedFd,
+    ident: Ident,
+}
+
+/// Y1: fstat of an open fd as an Ident. Async-signal-safe (fstat, no allocation): pre_exec uses it
+fn fd_ident(fd: std::os::fd::RawFd) -> Option<Ident> {
+    let mut st = std::mem::MaybeUninit::<libc::stat>::zeroed();
+    // SAFETY: fstat writes a struct stat into st; read only on success
+    if unsafe { libc::fstat(fd, st.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    let st = unsafe { st.assume_init() };
+    Some(Ident {
+        dev: st.st_dev as u64,
+        ino: st.st_ino as u64,
+        mode: st.st_mode as u32,
+        size: st.st_size as u64,
+        mtime: (st.st_mtime as i64, st.st_mtime_nsec as i64),
+        ctime: (st.st_ctime as i64, st.st_ctime_nsec as i64),
+    })
+}
+
+/// Y1: hold `file` (an absolute canonical path, as consent::resolve found it) open from now
+/// until the exec. Refused: not openable, not a regular file with an x bit, or the open file
+/// is not at exactly `file` (a directory on the way was swapped after canonicalize).
+pub fn pin(file: &str) -> Result<Pinned, String> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    let c = std::ffi::CString::new(file).map_err(|_| format!("EINVAL: spawn {file}: NUL in the path"))?;
+    // SAFETY: c is a valid C string; the fd is owned from here on
+    let fd = unsafe { libc::open(c.as_ptr(), libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(format!("ENOENT: spawn {file}: {}", std::io::Error::last_os_error()));
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let ident = fd_ident(fd.as_raw_fd()).ok_or_else(|| format!("ENOENT: spawn {file}: {}", std::io::Error::last_os_error()))?;
+    if ident.mode & libc::S_IFMT != libc::S_IFREG || ident.mode & 0o111 == 0 {
+        return Err(format!("EACCES: spawn {file}: not a regular executable file"));
+    }
+    let at = std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd())).map_err(|e| format!("ENOENT: spawn {file}: {e}"))?;
+    if at.as_os_str() != OsStr::new(file) {
+        return Err(format!("EAGAIN: spawn {file}: the file opened is {} (moved while it was opened); nothing asked", at.display()));
+    }
+    Ok(Pinned { fd, ident })
+}
+
+/* AA2 (PR #42 round 10, CodeAnt): the cwd was kept as its canonical PATHNAME only, and the
+   child chdir'd to that name after Allow. A plugin that can write the cwd's parent (the
+   vault, a folder in it) renames the directory away during the dialog and makes a new one
+   at the same path: the child ran in the replacement — another directory than the one the
+   dialog named, with whatever files (a .git/config, a hook, a script the program reads by a
+   relative name) the plugin put there. Now, like the program (Y1):
+   - pin_dir(cwd), called by consent::resolve BEFORE the question, opens the canonical cwd
+     O_PATH|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC, requires the open object to be at exactly
+     that path (/proc/self/fd/N, as pin) and records its identity (fstat).
+   - start rechecks the identity (dev, ino, mode: a directory's size/mtime move whenever an
+     entry in it changes, R1) under the lifecycle lock, and the child's pre_exec does again
+     (fstat), then enters THAT directory with fchdir(fd) — async-signal-safe, no pathname
+     walked after the question. A directory renamed away keeps its inode: the child runs in
+     the original directory, never in one created at the old path. The fd is CLOEXEC: the
+     program does not inherit it. */
+/// AA2: hold the canonical cwd `dir` open from now until the exec. Refused: not openable,
+/// not a directory, or the open object is not at exactly `dir`
+pub fn pin_dir(dir: &Path) -> Result<Pinned, String> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    let c = std::ffi::CString::new(dir.as_os_str().as_bytes()).map_err(|_| format!("EINVAL: spawn: cwd {}: NUL in the path", dir.display()))?;
+    // SAFETY: c is a valid C string; the fd is owned from here on
+    let fd = unsafe { libc::open(c.as_ptr(), libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(format!("ENOENT: spawn: cwd {}: {}", dir.display(), std::io::Error::last_os_error()));
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let ident = fd_ident(fd.as_raw_fd()).ok_or_else(|| format!("ENOENT: spawn: cwd {}: {}", dir.display(), std::io::Error::last_os_error()))?;
+    if ident.mode & libc::S_IFMT != libc::S_IFDIR {
+        return Err(format!("ENOTDIR: spawn: cwd {} is not a directory", dir.display()));
+    }
+    let at = std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd())).map_err(|e| format!("ENOENT: spawn: cwd {}: {e}", dir.display()))?;
+    if at.as_os_str() != dir.as_os_str() {
+        return Err(format!("EAGAIN: spawn: cwd {}: the directory opened is {} (moved while it was opened); nothing asked", dir.display(), at.display()));
+    }
+    Ok(Pinned { fd, ident })
+}
+
+impl Pinned {
+    fn raw(&self) -> std::os::fd::RawFd {
+        use std::os::fd::AsRawFd;
+        self.fd.as_raw_fd()
+    }
+
+    /// Y1: the open file is still what it was when pinned (before the question).
+    /// AA2: a pinned directory is compared on (dev, ino, mode) (Ident::same_as, R1)
+    fn unchanged(&self) -> bool {
+        fd_ident(self.raw()).is_some_and(|now| now.same_as(&self.ident))
+    }
+}
+
+/// Q1: the opener's PATH (the app's, cleaned; `root` = the vault) — call BEFORE the lock
+pub fn opener_path(ours: Option<OsString>, root: &Path) -> ChildPath {
+    ChildPath(child_path(&ours.unwrap_or_default(), &[root, Path::new(OPENER_CWD)]))
+}
+
+/* R4 (PR #42, Qodo): F1 already refuses an empty / "." / relative PATH entry when the
+   PROGRAM is looked up; the child does lookups of its own (xdg-open is a shell script
+   that finds gio, kde-open, ... on PATH; git finds its helpers; sh finds every command),
+   and exec resolves such an entry against the child's cwd — inside the vault, which
+   plugins write. So every child (spawn and shell opener) gets PATH with only its
+   absolute entries, in order.
+   S1 (PR #42 round 3, Greptile): when nothing absolute is left (PATH "tools", ".", "") the
+   child gets SAFE_PATH — never an empty PATH, which sh and execvp read as "the cwd".
+   S2 (round 3, CodeAnt): the PATH is bytes (OsStr), filtered byte-wise; a non-UTF-8
+   inherited PATH is cleaned like any other, never passed through raw, and every child
+   gets PATH set explicitly.
+   S3 (round 3, CodeAnt): an absolute entry can still lead into the cwd or the vault:
+   /proc/self/cwd, /proc/<pid>/cwd, /proc/self/fd/N, /dev/fd/N, or a plain path under the
+   vault (PATH=/abs/vault/bin). Dropped: every entry under /proc or /dev/fd, and every
+   entry inside one of the `confine` roots (the vault, the child's cwd) — tested on its
+   lexical form (., .., // folded) and on its canonical form when it resolves. A confine
+   root of "/" confines nothing (the opener's cwd: plugins cannot write it). */
+pub const SAFE_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
+
+/// S3: `p` with "." and "//" folded and ".." popped, without touching the filesystem
+fn lexical(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::from("/");
+    for c in p.components() {
+        match c {
+            Component::Normal(n) => out.push(n),
+            Component::ParentDir => {
+                out.pop();
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/* V1 (PR #42 round 5, CodeAnt): magic links are resolved PER PROCESS. /proc/self/cwd,
+   /proc/thread-self/..., /proc/<pid>/{cwd,root,fd/N} and /dev/fd/N name a different
+   target in every process that follows them, so a symlink outside the vault pointing at
+   /proc/self/cwd (directly or through a chain) canonicalizes IN THE APP to the app's own
+   cwd — passing every check here — while the child, following the same link, lands in ITS
+   cwd: the vault. No check of the entry as written can see that. So the child never gets
+   the entry as written: it gets the entry's canonical form as resolved here (absolute, no
+   symlink or magic link left, so the child resolves it to the same directory we
+   checked), and the /proc, /dev/fd and vault/cwd rules are applied to that form (and the
+   lexical one). An entry that does not canonicalize (missing, not a dir we can resolve,
+   a loop) is dropped; one whose canonical form holds a ':' (it would split PATH) too. */
+/// S3 + V1: the directory the child may look programs up in for `dir` (an absolute PATH
+/// entry): its canonical form, or None = drop the entry
+fn path_dir_ok(dir: &Path, confine: &[&Path]) -> Option<PathBuf> {
+    #[cfg(test)]
+    tests::q1_gate(dir);
+    let canon = dir.canonicalize().ok().filter(|c| c.is_absolute() && !c.as_os_str().as_bytes().contains(&b':'))?;
+    let forms = [lexical(dir), canon.clone()];
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for r in confine.iter().filter(|r| r.is_absolute()) {
+        roots.push(lexical(r));
+        if let Ok(c) = r.canonicalize() {
+            roots.push(c);
+        }
+    }
+    roots.retain(|r| r.as_os_str() != "/");
+    let bad = forms.iter().any(|f| f.starts_with("/proc") || f.starts_with("/dev/fd") || roots.iter().any(|r| f.starts_with(r)));
+    (!bad).then_some(canon)
+}
+
+/// R4 + S1-S3 + V1: the PATH a child runs with, from the PATH it would have had — each
+/// kept entry in its canonical form (V1)
+pub fn child_path(path: &OsStr, confine: &[&Path]) -> OsString {
+    let mut out: Vec<u8> = Vec::new();
+    for d in path.as_bytes().split(|b| *b == b':') {
+        if d.first() != Some(&b'/') {
+            continue;
+        }
+        let Some(c) = path_dir_ok(Path::new(OsStr::from_bytes(d)), confine) else {
+            continue;
+        };
+        if !out.is_empty() {
+            out.push(b':');
+        }
+        out.extend_from_slice(c.as_os_str().as_bytes());
+    }
+    if out.is_empty() {
+        return safe_path(confine);
+    }
+    OsString::from_vec(out)
+}
+
+/* W1 (PR #42 round 6, CodeAnt): SAFE_PATH used to be emitted as written, unchecked — a vault
+   or cwd at/under /usr/local/bin, /usr/bin or /bin (or a vault symlinked to resolve there)
+   put plugin-writable dirs on the child's PATH. Each SAFE_PATH entry now goes through
+   path_dir_ok like any other entry (canonical form, /proc and /dev/fd, the confine roots),
+   and the child gets the survivors, canonical, without repeats (/bin is /usr/bin on a
+   merged /usr). When none survives the child gets NO_EXEC_PATH — never "", never an
+   unchecked entry. */
+/// W1: SAFE_PATH with every entry confinement-checked; NO_EXEC_PATH when none passes
+fn safe_path(confine: &[&Path]) -> OsString {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for d in SAFE_PATH.split(':') {
+        if let Some(c) = path_dir_ok(Path::new(d), confine) {
+            if !out.contains(&c) {
+                out.push(c);
+            }
+        }
+    }
+    if out.is_empty() {
+        return OsString::from(NO_EXEC_PATH);
+    }
+    let mut p: Vec<u8> = Vec::new();
+    for c in &out {
+        if !p.is_empty() {
+            p.push(b':');
+        }
+        p.extend_from_slice(c.as_os_str().as_bytes());
+    }
+    OsString::from_vec(p)
+}
+
+/* W1: the PATH of a child for which no directory is safe. It must be absolute (an empty or
+   relative entry is the cwd — the vault), must not be the vault or the cwd, and no lookup
+   through it may ever find a program. /dev/null meets all three on every Linux system: it
+   always exists and is a character device, never a directory, so it cannot be a vault or
+   a cwd, nothing can be created under it, and every "/dev/null/<name>" fails with ENOTDIR
+   — execvp and sh report "not found", nothing runs. (A made-up "/nonexistent" could be
+   created by root, and then be a vault.) */
+pub const NO_EXEC_PATH: &str = "/dev/null";
+
+/// S2: what build's child PATH is cleaned from — the plugin's PATH, else the app's
+/// (`inherited`, read by the caller with var_os, never as a String)
+fn spec_path(sp: &Spec, inherited: Option<OsString>) -> OsString {
+    sp.env.iter().rev().find(|(k, _)| k == "PATH").map(|(_, v)| OsString::from(v)).or(inherited).unwrap_or_default()
+}
+
+/// Y1: exec runs `prog` (the file held open since before the question) through its fd;
+/// argv0 = the asked name, else the canonical path the dialog named
+/// AA2: the child enters `dir` (the cwd held open since before the question) by fchdir,
+/// in pre_exec — no current_dir: the cwd's pathname is never walked again
+fn build(sp: &Spec, path: &ChildPath, prog: &Pinned, dir: &Pinned) -> Command {
+    let n = prog.raw();
+    let want = prog.ident.clone();
+    let d = dir.raw();
+    let dwant = dir.ident.clone();
+    let mut c = Command::new(format!("/proc/self/fd/{n}"));
+    c.arg0(sp.argv0.as_deref().unwrap_or(&sp.file));
+    c.args(&sp.args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
     for (k, v) in &sp.env {
         c.env(k, v);
     }
+    // R4/S1-S3: the child's own PATH lookups never land in its cwd or the vault; always set.
+    // Q1: cleaned by prepare() before the lifecycle lock — no PATH entry is looked up here
+    c.env("PATH", path.as_os_str());
     // SAFETY: async-signal-safe syscalls only, between fork and exec
     unsafe {
-        c.pre_exec(|| {
+        c.pre_exec(move || {
             libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong, 0, 0, 0);
             if libc::getppid() == 1 {
                 return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
@@ -252,19 +566,35 @@ fn build(sp: &Spec) -> Command {
             // CLOEXEC, not close: std reports a failed exec (ENOENT) over its own cloexec
             // pipe, which a plain close_range would cut (spawn would "succeed")
             libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 4u32 /* CLOSE_RANGE_CLOEXEC */);
+            // Y1: the program's fd survives the exec (a #! interpreter opens /proc/self/fd/N),
+            // and the open file is still the one pinned before the question — else EPERM, no exec
+            if libc::fcntl(n, libc::F_SETFD, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if fd_ident(n).as_ref() != Some(&want) {
+                return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+            }
+            // AA2: the held cwd is still the directory pinned before the question (ESTALE ->
+            // EPERM "cwd changed"), and the child enters THAT directory: fchdir, no pathname
+            if !fd_ident(d).is_some_and(|now| now.same_as(&dwant)) {
+                return Err(std::io::Error::from_raw_os_error(libc::ESTALE));
+            }
+            if libc::fchdir(d) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
             Ok(())
         });
     }
     c
 }
 
-fn fork(sp: Spec) -> std::io::Result<Child> {
+fn fork(sp: Spec, path: ChildPath, prog: Pinned, dir: Pinned) -> std::io::Result<Child> {
     let (tx, rx) = std::sync::mpsc::channel();
     forker()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .send(Box::new(move || {
-            let _ = tx.send(build(&sp).spawn());
+            let _ = tx.send(build(&sp, &path, &prog, &dir).spawn());
         }))
         .map_err(|_| std::io::Error::other("fork thread gone"))?;
     rx.recv().map_err(|_| std::io::Error::other("fork thread gone"))?
@@ -286,8 +616,24 @@ fn pump(r: Arc<Run>, mut src: impl Read, is_err: bool) {
     r.cv.notify_all();
 }
 
+/// Y1: the pinned program changed between the question and the exec
+fn changed(file: &str) -> String {
+    format!("EPERM: spawn {file}: the program changed after it was allowed (replaced, removed or rewritten); not run")
+}
+
+/// AA2: the pinned cwd is no longer the directory the question named
+fn cwd_changed(file: &str, cwd: &Path) -> String {
+    format!("EPERM: spawn {file}: the cwd {} changed after it was allowed; not run", cwd.display())
+}
+
 /// Node-style error text: "<CODE>: spawn <file> <reason>"
-fn spawn_err(file: &str, e: &std::io::Error) -> String {
+fn spawn_err(file: &str, cwd: &Path, e: &std::io::Error) -> String {
+    if e.raw_os_error() == Some(libc::EPERM) {
+        return changed(file); // the pre_exec identity check (Y1)
+    }
+    if e.raw_os_error() == Some(libc::ESTALE) {
+        return cwd_changed(file, cwd); // the pre_exec cwd check (AA2)
+    }
     let code = match e.kind() {
         std::io::ErrorKind::NotFound => "ENOENT",
         std::io::ErrorKind::PermissionDenied => "EACCES",
@@ -303,8 +649,30 @@ pub fn start(sp: Spec, _life: &Life) -> Result<Arc<Run>, String> {
     if !sp.cwd.is_dir() {
         return Err(format!("ENOENT: spawn {} cwd {} is not a directory", sp.file, sp.cwd.display()));
     }
+    // Q1: the PATH was cleaned before the lock (prepare); unprepared = refused, never cleaned here
+    let Some(path) = sp.path.clone() else {
+        return Err(format!("EINVAL: spawn {}: child PATH not prepared before the lifecycle lock (desk_proc::prepare)", sp.file));
+    };
+    // Y1: the program was pinned before the question (consent::resolve); unpinned = refused,
+    // never exec'd by name. Its open file must still be the one pinned (again in pre_exec)
+    let mut sp = sp;
+    let Some(prog) = sp.prog.take() else {
+        return Err(format!("EINVAL: spawn {}: program not pinned before the question (desk_proc::pin)", sp.file));
+    };
+    if !prog.unchanged() {
+        return Err(changed(&sp.file));
+    }
+    // AA2: the cwd was pinned before the question too (consent::resolve -> pin_dir); unpinned =
+    // refused. Still the same directory (again in pre_exec, which then fchdir's into it)
+    let Some(dir) = sp.dir.take() else {
+        return Err(format!("EINVAL: spawn {}: cwd not pinned before the question (desk_proc::pin_dir)", sp.file));
+    };
+    if !dir.unchanged() {
+        return Err(cwd_changed(&sp.file, &sp.cwd));
+    }
     let file = sp.file.clone();
-    let mut child = fork(sp).map_err(|e| spawn_err(&file, &e))?;
+    let cwd = sp.cwd.clone();
+    let mut child = fork(sp, path, prog, dir).map_err(|e| spawn_err(&file, &cwd, &e))?;
     let run = Arc::new(Run {
         pid: child.id() as i32,
         stdin: Mutex::new(child.stdin.take()),
@@ -338,15 +706,57 @@ pub fn start(sp: Spec, _life: &Life) -> Result<Arc<Run>, String> {
 
 /* ---- F5 (PR #41): one lock over the spawn and the trust-OFF lifecycles. desk_proc_spawn
    holds it across (trust recheck, start, register); plugins_set holds it across (flag
-   write OFF, kill_all, session clear). Without it a spawn whose recheck passed just
+   write OFF, kill_all, close_all). Without it a spawn whose recheck passed just
    before the flip could start and register AFTER kill_all ran, and outlive restricted
    mode. start, register and kill_all take a &Life, so none of them can be called
    without holding it. */
 pub struct Life(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
 
+static LIFE: Mutex<()> = Mutex::new(());
+
 pub fn lifecycle() -> Life {
-    static L: Mutex<()> = Mutex::new(());
-    Life(L.lock().unwrap_or_else(|e| e.into_inner()))
+    let g = LIFE.lock().unwrap_or_else(|e| e.into_inner());
+    #[cfg(test)]
+    HELD.with(|h| h.set(true));
+    Life(g)
+}
+
+/* P2 (PR #42): tests ask whether THIS thread holds the lifecycle lock right now (a Life
+   is !Send, so it lives and drops on the thread that took it). Lets a test assert, at an
+   exact point and with no timing, that slow work (a DNS lookup) runs outside the lock. */
+#[cfg(test)]
+thread_local! {
+    static HELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+impl Drop for Life {
+    fn drop(&mut self) {
+        HELD.with(|h| h.set(false));
+    }
+}
+
+/// true while this thread holds the lifecycle lock (the P2 test's probe)
+#[cfg(test)]
+pub fn held_here() -> bool {
+    HELD.with(|h| h.get())
+}
+
+/// the lock if it is free right now, None while another holder has it: lets a test put
+/// the other side of a race at an exact point without a sleep (N4/N5)
+#[cfg(test)]
+pub fn try_lifecycle() -> Option<Life> {
+    match LIFE.try_lock() {
+        Ok(g) => {
+            HELD.with(|h| h.set(true));
+            Some(Life(g))
+        }
+        Err(std::sync::TryLockError::Poisoned(e)) => {
+            HELD.with(|h| h.set(true));
+            Some(Life(e.into_inner()))
+        }
+        Err(std::sync::TryLockError::WouldBlock) => None,
+    }
 }
 
 /* ---- the live runs, keyed by an id the page holds */
@@ -380,12 +790,588 @@ pub fn kill_all(_life: &Life) {
     }
 }
 
+/* ---- G1 (PR #41, Qodo #2): the trust epoch. plugins_set reads it (under the lifecycle
+   lock) before the trust dialog opens and hands it to trust_write() under the lock it
+   writes the flag under. Every trust write — ON or OFF, asked or not — goes through
+   trust_write and moves the epoch on, so an answer from a dialog that was open across
+   another flip (a trust-OFF with its kill_all + close_all, or another ON) is stale:
+   it is discarded with an error and nothing is written. Only &Life holders touch it. */
+static TRUST_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn trust_epoch(_life: &Life) -> u64 {
+    TRUST_EPOCH.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// call under `life` right before writing the trust flag. `asked` = the epoch read before
+/// the trust dialog opened (None = nothing was asked). Err = a stale answer: write nothing.
+pub fn trust_write(asked: Option<u64>, _life: &Life) -> Result<(), String> {
+    use std::sync::atomic::Ordering::SeqCst;
+    if let Some(e) = asked {
+        if TRUST_EPOCH.load(SeqCst) != e {
+            return Err("EAGAIN: community plugins were switched while the trust question was open; that answer was discarded, nothing written — ask again".into());
+        }
+    }
+    TRUST_EPOCH.fetch_add(1, SeqCst);
+    Ok(())
+}
+
+/* ---- DD1 (PR #42 round 13, Qodo): the callers that compute the vault's trust key BEFORE the
+   lifecycle lock (CC1/BB1: canonicalize of the root is a path lookup, kept out of the lock) —
+   desk_proc_spawn, desk_net_listen (listen_trusted) and desk_shell (shell_open) — only compare
+   that key under the lock. If the vault root is retargeted (a symlink swap) between their key
+   and the lock, a trust-OFF meanwhile writes OFF for the root's NEW key and runs kill_all +
+   close_all, and the delayed request then finds its OLD key still trusted and starts / binds /
+   opens AFTER that cleanup. So each of them reads the epoch with trust_epoch_now() BEFORE it
+   computes its key, and under the lock `seen.unmoved(&life)` refuses (EAGAIN, nothing started,
+   bound or opened) when any trust write — and every one moves the epoch (trust_write) — landed
+   since. An atomic load: no lock, no path lookup. */
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TrustSeen(u64);
+
+/// read with NO lock, before the caller computes its trust key (DD1)
+pub fn trust_epoch_now() -> TrustSeen {
+    TrustSeen(TRUST_EPOCH.load(std::sync::atomic::Ordering::SeqCst))
+}
+
+impl TrustSeen {
+    /// under `life`, before the trust-key comparison: Err when a trust write landed since the read
+    pub fn unmoved(self, _life: &Life) -> Result<(), String> {
+        if TRUST_EPOCH.load(std::sync::atomic::Ordering::SeqCst) != self.0 {
+            return Err("EAGAIN: community plugins were switched while this request was being prepared; nothing was started — try again".into());
+        }
+        Ok(())
+    }
+}
+
+/// the tests that write TRUST_EPOCH, and those whose request carries a TrustSeen (a write in a
+/// parallel test would make it EAGAIN), run one at a time
+#[cfg(test)]
+pub fn epoch_tests() -> std::sync::MutexGuard<'static, ()> {
+    static EPOCH_TESTS: Mutex<()> = Mutex::new(());
+    EPOCH_TESTS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/* ---- P1 (PR #42, CodeAnt): what a plugins_set call decides before its write. `seen` is
+   the epoch read FIRST; `trusted_now` (the vault's trust flag) is read after it, outside
+   the lifecycle lock. A trust-OFF can land after that read and before the write takes the
+   lock — so EVERY ON write carries `seen`, asked or not: a vault that was already trusted
+   is not asked, but its write is still refused (EAGAIN, nothing written) when a flip came
+   in between, instead of silently writing trusted:true over the OFF. An OFF (or no trust
+   change) carries nothing: turning trust OFF is never refused. Returns (ask the user?,
+   the epoch for trust_write). */
+pub fn trust_plan(on: bool, seen: u64, trusted_now: impl FnOnce() -> bool) -> (bool, Option<u64>) {
+    if !on {
+        return (false, None);
+    }
+    (!trusted_now(), Some(seen))
+}
+
+/* ---- G3 (PR #41): electron shell / app.openWithDefaultApp hand a target to xdg-open,
+   which runs whatever the desktop maps it to: a .desktop file's Exec=, an executable or a
+   script (by mime handler), an AppImage, a jar — and a custom scheme (steam:, any
+   x-scheme-handler an app registered) runs that handler. Telling a harmless local file
+   from one that runs code is not decidable here (mime sniffing, user handlers, the exec
+   bit), so this does not try: EVERY local target (op path / vault / reveal, a file: URL,
+   and op external with any scheme but http, https, mailto) is asked exactly like a spawn —
+   program xdg-open, the target in full — and like every spawn it is asked each time (no
+   answer is remembered between runs). http(s) and mailto URLs go to the browser / mail
+   client unasked, as before.
+   P4 (PR #42, CodeAnt): the dialog approves a PATHNAME, and the plugin can rewrite the
+   vault while the dialog is open — replace the file (another inode) or swap a symlink to a
+   .desktop/script in. So a local target is resolved BEFORE asking (canonicalize: every
+   symlink followed, the dialog shows the final path, and that final path — never the
+   plugin's spelling — is what xdg-open gets), its identity is recorded (lstat: dev, ino,
+   mode, size, mtime, ctime — Q2), and after Allow `Local::recheck` lstats the same path again right
+   before the lock and the exec (desk_shell -> shell_open; BB1: outside the lifecycle lock): any difference — another inode,
+   a symlink where the file was, changed contents/size/mtime, gone — refuses with EPERM and
+   nothing is opened. A file: URL is turned into its path (percent-decoded) and goes the
+   same way, so it cannot route around the binding.
+   RESIDUAL WINDOW — S4 (PR #42 round 3, CodeAnt "High Risk" TOCTOU), documented, NOT
+   closed: Local::recheck compares identities by path, and xdg-open then opens the target
+   by NAME, twice over: its own mime lookup (xdg-mime / gio sniff the file) and then the
+   handler it starts, which opens the name again. A plugin that rewrites the vault (page
+   script through the app's file calls, or a child it was allowed to start) and wins the
+   race between the recheck and that later open makes the handler act on another file
+   than the one allowed — e.g. a .desktop or an executable script swapped in for a note.
+   The window is the fork/exec of xdg-open plus its mime lookup and the handler's start
+   (milliseconds up to about a second), no longer "as long as the user reads the dialog".
+   Why there is no fix inside this module: xdg-open takes only a pathname or URL. Handing
+   it a /proc/<pid>/fd/N magic link of an fd we verified (fstat) pins the inode but loses
+   the name: the mime type is guessed from the extension, a .desktop is recognised by its
+   name, a directory (reveal) shows a /proc path, and the link dies with the fd before the
+   handler has opened it. Handing it a private read-only copy outside the vault pins the
+   contents but breaks editing in place and cannot copy a directory. Holding off vault
+   writes for "a while" is a timing guess, and does not cover a running child. So: the
+   dialog names the canonical path, the identity is rechecked right before the exec, the
+   opener runs in "/" with a cleaned PATH, and this residual stays (pr2d.md, Known
+   limitations). Custom-scheme URLs (steam:, obsidian:, ...) name no file: nothing to
+   bind, asked as text. */
+pub enum ShellOpen {
+    /// an http(s)/mailto URL: opened without asking
+    Url(String),
+    /// anything else: the spawn consent dialog first, then xdg-open <arg> after Local::recheck
+    Ask(Local),
+}
+
+/// what one fstat of the target says it is (Z2: of an O_NOFOLLOW fd; a symlink there is refused, never its identity)
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ident {
+    dev: u64,
+    ino: u64,
+    mode: u32,
+    size: u64,
+    mtime: (i64, i64),
+    /// Q2 (PR #42 round 4, CodeAnt): the inode change time. mtime can be set back by any
+    /// writer (utimensat / touch -d); ctime cannot be set from userspace: every write, chmod,
+    /// rename or utimensat moves it to "now". A same-size rewrite with its mtime restored
+    /// keeps (dev, ino, mode, size, mtime) — not ctime.
+    ctime: (i64, i64),
+}
+
+/* Z2 (PR #42 round 9, CodeAnt): the identity of a local target is taken from the object
+   itself, not from a second path walk. canonicalize() and a later lstat() are two lookups;
+   a plugin swapping a symlink in at the canonical path between them got the SYMLINK's
+   identity recorded, the recheck then passed (the symlink was unchanged) and xdg-open
+   followed it to a target nobody was asked about. Now: open(p, O_PATH|O_NOFOLLOW|O_CLOEXEC)
+   (the last component is never followed), fstat THAT fd, refuse a symlink (S_IFLNK: the
+   object at p is a link, so p is no longer the canonical path that was shown), and refuse
+   when the opened object is not at exactly p (/proc/self/fd/N: a directory on the way was
+   swapped for a link after canonicalize — as Y1's pin does). The recheck runs this same
+   function, so a symlink at the allowed path is refused there too. */
+fn ident_of(p: &Path) -> Result<Ident, String> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(p.as_os_str().as_bytes()).map_err(|_| format!("EINVAL: {}: NUL in the path", p.display()))?;
+    // SAFETY: c is a valid C string; the fd is owned from here on
+    let fd = unsafe { libc::open(c.as_ptr(), libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(format!("ENOENT: {}: {}", p.display(), std::io::Error::last_os_error()));
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let id = fd_ident(fd.as_raw_fd()).ok_or_else(|| format!("ENOENT: {}: {}", p.display(), std::io::Error::last_os_error()))?;
+    if id.mode & libc::S_IFMT == libc::S_IFLNK {
+        return Err(format!("ELOOP: {} is a symlink (swapped in after it was resolved); not opened", p.display()));
+    }
+    let at = std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd())).map_err(|e| format!("ENOENT: {}: {e}", p.display()))?;
+    if at.as_os_str() != p.as_os_str() {
+        return Err(format!("EAGAIN: {}: the object opened is {} (a directory on the way was swapped); not opened", p.display(), at.display()));
+    }
+    Ok(id)
+}
+
+/// a target the dialog asks about: `arg` is what the dialog shows and what xdg-open gets;
+/// `ident` is the recorded identity of a local file (None for a custom-scheme URL)
+pub struct Local {
+    pub arg: String,
+    ident: Option<Ident>,
+}
+
+impl Local {
+    /// an http(s)/mailto URL handed on unasked: no file to bind
+    pub fn url(u: String) -> Local {
+        Local { arg: u, ident: None }
+    }
+
+    fn file(p: PathBuf, target: &str) -> Result<Local, String> {
+        #[cfg(test)]
+        fs_work(); // BB2 probe
+        let real = p.canonicalize().map_err(|_| format!("ENOENT: no such file or directory, '{target}'"))?;
+        Local::at(real, target)
+    }
+
+    /// Z2: the second half of `file`, once canonicalize has named `real`: its identity comes
+    /// from an O_NOFOLLOW fd (ident_of), never a second lookup that follows or lands on a
+    /// symlink — a symlink swapped in at `real` after canonicalize is refused here
+    fn at(real: PathBuf, target: &str) -> Result<Local, String> {
+        let ident = ident_of(&real)?;
+        let arg = real.into_os_string().into_string().map_err(|_| format!("EINVAL: not a UTF-8 path: {target}"))?;
+        Ok(Local { arg, ident: Some(ident) })
+    }
+
+    /// P4: right before the exec — the path the user allowed is still the very same file.
+    /// R1 (PR #42, Greptile): a DIRECTORY (reveal opens the parent dir; a folder through
+    /// path/vault) is the same directory while (dev, ino, mode) are: its size/mtime change
+    /// whenever any entry in it is created, renamed or removed (saving a sibling note while
+    /// the dialog is open), which is not a swap. Files keep the full identity.
+    pub fn recheck(&self) -> Result<(), String> {
+        let Some(was) = &self.ident else { return Ok(()) };
+        #[cfg(test)]
+        tests::bb1_gate(Path::new(&self.arg)); // BB1 probe: a lookup that stands still
+        match ident_of(Path::new(&self.arg)) {
+            Ok(now) if now.same_as(was) => Ok(()),
+            Ok(_) => Err(format!("EPERM: {} changed after it was allowed (replaced, swapped for a symlink, or rewritten); not opened", self.arg)),
+            Err(e) => Err(format!("EPERM: {} is gone or no longer the file allowed ({e}); not opened", self.arg)),
+        }
+    }
+}
+
+impl Ident {
+    /// R1: a directory is compared on (dev, ino, mode) only; anything else on all of it
+    fn same_as(&self, was: &Ident) -> bool {
+        if was.mode & libc::S_IFMT == libc::S_IFDIR {
+            return (self.dev, self.ino, self.mode) == (was.dev, was.ino, was.mode);
+        }
+        self == was
+    }
+}
+
+/// file:[//[localhost]]/abs/path[?q][#f] -> /abs/path, percent-decoded; anything else is EINVAL
+fn file_url_path(target: &str) -> Result<PathBuf, String> {
+    let bad = || format!("EINVAL: not a local file: URL: {target}");
+    let rest = &target[5..]; // "file:" (any case) checked by the caller
+    let rest = rest.split(['?', '#']).next().unwrap_or("");
+    let path = match rest.strip_prefix("//") {
+        Some(r) => {
+            let (host, p) = r.split_at(r.find('/').unwrap_or(r.len()));
+            if !(host.is_empty() || host.eq_ignore_ascii_case("localhost")) {
+                return Err(bad());
+            }
+            p
+        }
+        None => rest,
+    };
+    if !path.starts_with('/') {
+        return Err(bad());
+    }
+    let b = path.as_bytes();
+    let (mut out, mut i) = (Vec::with_capacity(b.len()), 0);
+    while i < b.len() {
+        if b[i] == b'%' {
+            let h = b.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok()).ok_or_else(bad)?;
+            out.push(h);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    let s = String::from_utf8(out).map_err(|_| bad())?;
+    if s.contains('\0') {
+        return Err(bad());
+    }
+    Ok(PathBuf::from(s))
+}
+
+pub fn shell_target(root: &Path, op: &str, target: &str) -> Result<ShellOpen, String> {
+    match op {
+        "external" => {
+            let scheme = target.split(':').next().unwrap_or("");
+            let ok = target.contains(':') && scheme.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+                && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+            if !ok {
+                return Err(format!("EINVAL: not a URL: {target}"));
+            }
+            match scheme.to_ascii_lowercase().as_str() {
+                "http" | "https" | "mailto" => {
+                    // Y2 (PR #42 round 8, CodeAnt): an unasked URL is held to the same run-size cap
+                    // (RUN_MAX_BYTES, E2BIG) as an asked open — counted on the same run, xdg-open +
+                    // the URL + cwd "/" — before anything is started
+                    crate::consent::check_env(&opener_spec(root, target))?;
+                    Ok(ShellOpen::Url(target.to_string()))
+                }
+                "file" => Local::file(file_url_path(target)?, target).map(ShellOpen::Ask),
+                _ => Ok(ShellOpen::Ask(Local { arg: target.to_string(), ident: None })),
+            }
+        }
+        "path" => Local::file(map_cwd(root, Some(target)), target).map(ShellOpen::Ask),
+        // app.openWithDefaultApp: vault paths only, symlinks resolved and confined to the vault
+        "vault" => Local::file(vault_open_target(root, target)?, target).map(ShellOpen::Ask),
+        "reveal" => {
+            let p = map_cwd(root, Some(target));
+            Local::file(p.parent().map(|d| d.to_path_buf()).unwrap_or(p), target).map(ShellOpen::Ask)
+        }
+        _ => Err(format!("EINVAL: unknown shell op {op}")),
+    }
+}
+
+/* P4: the exec of xdg-open itself — the identity recheck, then `exec` (the caller's
+   fork of xdg-open with t.arg), nothing but the lifecycle lock and the trust recheck in between (shell_open;
+   BB1: the recheck runs before the lock, the exec under it). A changed target returns the EPERM and
+   `exec` is never called. (The process is built by the caller: the only
+   command builder in this file is fn build — consent-nobypass S1.)
+   R4 (PR #42, Qodo): the opener is a script that looks up its helpers on PATH, so it
+   runs in OPENER_CWD ("/", which plugins cannot write) — never the vault — with PATH
+   cut to its absolute entries (child_path). `exec` gets both in a Launch and applies
+   them with Launch::apply; the PATH is opener_path(the app's PATH), made before the lock (Q1).
+   S1-S3 (PR #42 round 3): the same child_path as a spawn — bytes, /proc and /dev/fd and
+   the vault (`root`) dropped, SAFE_PATH (each entry checked, W1) when nothing is left — and PATH is always set. */
+pub const OPENER_CWD: &str = "/";
+
+/* AA1 (PR #42 round 10, CodeAnt): consent::resolve pinned the opener (xdg-open) before the
+   question, as it pins every program (Y1) — and then desk_shell dropped that pin and exec'd
+   the xdg-open PATHNAME after Allow. A writable directory on the app's PATH ahead of /usr/bin
+   (~/.local/bin, say), or a swap of the file itself, could put another opener there while the
+   dialog was open. Now the opener is exec'd through its held fd exactly like a spawn: opener_exec
+   takes the resolved opener Spec, refuses it unpinned (EINVAL) or changed since the question
+   (EPERM), and Launch gives the caller "/proc/self/fd/N" to build its Command from (program())
+   and, in apply(), the pre_exec that keeps N open across the exec (xdg-open is a #! script: the
+   kernel hands sh /proc/self/fd/N) and rechecks the open file's identity right before it (EPERM).
+   The unasked http(s)/mailto opener goes the same way (resolved and pinned, never by name). As
+   for a spawn, the O_PATH fd is inherited by xdg-open and what it starts. */
+/// R4: what the opener is started with: its one argument (the allowed target), cwd, PATH.
+/// AA1: and the opener itself — the file held open since before the question
+pub struct Launch<'a> {
+    pub arg: &'a str,
+    pub cwd: &'static Path,
+    pub path: OsString,
+    prog: &'a Pinned,
+    argv0: &'a str,
+}
+
+impl Launch<'_> {
+    /// AA1: what the caller's opener Command is made from: the held opener's fd, never its name
+    pub fn program(&self) -> String {
+        format!("/proc/self/fd/{}", self.prog.raw())
+    }
+
+    /// the target, the cwd and the cleaned PATH, onto the caller's opener Command (made from
+    /// program()). AA1: argv0 = the asked name; the held fd stays open across the exec, and the
+    /// open file is still the one pinned before the question — else EPERM, nothing exec'd
+    pub fn apply<'c>(&self, c: &'c mut Command) -> &'c mut Command {
+        let n = self.prog.raw();
+        let want = self.prog.ident.clone();
+        c.arg0(self.argv0).arg(self.arg).current_dir(self.cwd).env("PATH", &self.path);
+        // SAFETY: async-signal-safe syscalls only (fcntl, fstat), between fork and exec
+        unsafe {
+            c.pre_exec(move || {
+                if libc::fcntl(n, libc::F_SETFD, 0) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if fd_ident(n).as_ref() != Some(&want) {
+                    return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+                }
+                Ok(())
+            })
+        }
+    }
+}
+
+/// AA1: the opener's spawn error as Node text — the pre_exec identity check is EPERM
+pub fn opener_err(file: &str, e: &std::io::Error) -> String {
+    if e.raw_os_error() == Some(libc::EPERM) {
+        return format!("EPERM: open: the opener {file} changed after it was allowed; not run");
+    }
+    format!("ENOENT: xdg-open: {e}")
+}
+
+/// R4/Q4/Y2: the run an open is (asked: resolved, shown and run; a URL: run unasked) — xdg-open
+/// with the one target, in OPENER_CWD. Nothing resolved or pinned yet
+pub fn opener_spec(root: &Path, target: &str) -> Spec {
+    Spec { file: "xdg-open".into(), args: vec![target.to_string()], cwd: OPENER_CWD.into(), root: root.to_path_buf(), env: vec![], argv0: None, path: None, prog: None, dir: None }
+}
+
+/* BB1 (PR #42 round 11, CodeAnt): t.recheck() is a PATH walk of a vault path (open O_PATH,
+   fstat, readlink of /proc/self/fd/N — ident_of). It ran inside shell_spawn, which desk_shell
+   called under the lifecycle lock: a vault on a stalled FUSE/NFS mount held that lock for as
+   long as the lookup stood still, and a trust-OFF (plugins_set: lock, flag OFF, kill_all,
+   close_all) and every spawn waited behind it (the Q1 class, for the target instead of a PATH
+   entry). Now shell_open is desk_shell's whole sequence after Allow: the target recheck FIRST,
+   outside the lock and as late as possible before it; then the lock; under it only the trust
+   check, fd-only checks (fstat of the opener fd pinned before the question) and the fork
+   (opener_exec, which walks no path). A trust-OFF landing while the recheck stands still takes
+   the lock at once; the open then sees trust OFF and is refused (EPERM), nothing started. */
+/// BB1: desk_shell after Allow — `t.recheck()` (path lookups) before the lifecycle lock; under
+/// it `trusted()` (the flip may have gone OFF while the question was open, F5), then
+/// opener_exec. `path` = opener_path(), made before the lock too (Q1). DD1: `seen` = the epoch
+/// read before `trusted`'s key was computed; a trust write since = EAGAIN, nothing opened
+pub fn shell_open<R>(seen: TrustSeen, t: &Local, opener: &Spec, path: ChildPath, trusted: impl FnOnce() -> bool, exec: impl FnOnce(Launch) -> Result<R, String>) -> Result<R, String> {
+    t.recheck()?;
+    let life = lifecycle();
+    seen.unmoved(&life)?;
+    if !trusted() {
+        return Err("EPERM: restricted mode, plugins cannot use the shell".into());
+    }
+    let r = opener_exec(t, opener, path, &life, exec);
+    drop(life);
+    r
+}
+
+/// Q1/BB1: under the lifecycle lock — fd-only checks and the exec, no path looked up in here.
+/// AA1: `opener` = the opener Spec consent::resolve returned (pinned before the question);
+/// unpinned = EINVAL, its open file changed since = EPERM (fstat of the held fd), nothing exec'd
+fn opener_exec<R>(t: &Local, opener: &Spec, path: ChildPath, _life: &Life, exec: impl FnOnce(Launch) -> Result<R, String>) -> Result<R, String> {
+    let Some(prog) = opener.prog.as_ref() else {
+        return Err(format!("EINVAL: open: the opener {} was not pinned before the question (desk_proc::pin)", opener.file));
+    };
+    if !prog.unchanged() {
+        return Err(format!("EPERM: open: the opener {} changed after it was allowed; not run", opener.file));
+    }
+    exec(Launch { arg: &t.arg, cwd: Path::new(OPENER_CWD), path: path.0, prog, argv0: opener.argv0.as_deref().unwrap_or(&opener.file) })
+}
+
+/* BB2 (PR #42 round 11, CodeAnt): the bounded question queue (R2, EBUSY) was entered only in
+   consent::ask — after shell_target (canonicalize + O_PATH open + fstat + readlink of the
+   target) and consent::resolve (PATH walk, pin + pin_dir: two more opens), so a flood of
+   opens still did all of that fs work and fd churn before being refused. Now the place in the
+   queue (consent::admit, an RAII Slot) is taken FIRST; beyond MAX_IN_FLIGHT the request is
+   EBUSY with no lookup and no fd opened. The Slot rides along to consent::ask (which demands
+   it) and is freed on every exit (drop). An unasked http(s)/mailto URL takes a place too
+   while its opener is resolved, and gives it back right after. */
+/// BB2: what desk_shell does before the question: a place in the queue, then the target
+/// (shell_target), then the opener resolved and pinned (consent::resolve)
+pub struct ShellPrep {
+    pub slot: crate::consent::Slot,
+    pub opener: Spec,
+    pub target: Local,
+    /// false = an http(s)/mailto URL: opened unasked
+    pub ask: bool,
+}
+
+pub fn shell_prepare(root: &Path, op: &str, target: &str) -> Result<ShellPrep, String> {
+    let slot = crate::consent::admit()?;
+    let (opener, target, ask) = match shell_target(root, op, target)? {
+        // AA1 (PR #42 round 10): the unasked opener is resolved and pinned too, and exec'd by that fd
+        ShellOpen::Url(url) => (crate::consent::resolve(opener_spec(root, &url))?, Local::url(url), false),
+        ShellOpen::Ask(t) => {
+            // R4: the opener runs in "/" (OPENER_CWD), never the vault
+            let sp = opener_spec(root, &t.arg);
+            crate::consent::check_env(&sp)?; // Q4: a target over the size cap is refused, nothing asked
+            (crate::consent::resolve(sp)?, t, true) // the absolute xdg-open the dialog names is the one that runs
+        }
+    };
+    Ok(ShellPrep { slot, opener, target, ask })
+}
+
+/* BB2 test probe: every entry into pre-question fs work (shell_target's Local::file, consent::
+   resolve) counts on the calling thread, so a test can assert that a refused request did none */
+#[cfg(test)]
+thread_local! {
+    static FS_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub fn fs_work() {
+    FS_WORK.with(|c| c.set(c.get() + 1));
+}
+
+#[cfg(test)]
+pub fn fs_work_count() -> usize {
+    FS_WORK.with(|c| c.get())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn spec(file: &str, args: &[&str], cwd: &Path) -> Spec {
-        Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), env: vec![], argv0: None }
+        Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), root: cwd.into(), env: vec![], argv0: None, path: None, prog: None, dir: None }
+    }
+
+    /// Q1: what desk_proc_spawn does before the lock — the child PATH cleaned from ours.
+    /// Y1: and the program pinned (what consent::resolve does before the question)
+    fn ready(sp: Spec) -> Spec {
+        prepare(pinned(sp), std::env::var_os("PATH"))
+    }
+
+    /// Y1: a test Spec not made by consent::resolve gets its program pinned as resolve would:
+    /// file = the canonical path found (argv0 keeps the name it had, as resolve does);
+    /// one that is not found stays unpinned (start refuses it, EINVAL). AA2: the cwd is
+    /// pinned the same way (canonical, as resolve does), when it is a directory
+    fn pinned(mut sp: Spec) -> Spec {
+        if sp.dir.is_none() {
+            sp.dir = sp.cwd.canonicalize().ok().and_then(|c| pin_dir(&c).ok());
+        }
+        if sp.prog.is_some() {
+            return sp;
+        }
+        let found = crate::consent::resolve_program(&sp).and_then(|p| p.into_os_string().into_string().ok());
+        if let Some(c) = found {
+            if let Ok(p) = pin(&c) {
+                if c != sp.file && sp.argv0.is_none() {
+                    sp.argv0 = Some(sp.file.clone());
+                }
+                sp.file = c;
+                sp.prog = Some(p);
+            }
+        }
+        sp
+    }
+
+    /// AA1: an opener Spec as consent::resolve makes it for desk_shell: `p` canonical and pinned
+    fn opener_at(p: &Path) -> Spec {
+        let c = p.canonicalize().unwrap().to_string_lossy().into_owned();
+        Spec { prog: Some(pin(&c).unwrap()), ..spec(&c, &[], Path::new(OPENER_CWD)) }
+    }
+
+    /* Q1 test seam: path_dir_ok calls q1_gate(dir) first. While a test has armed it for
+       one marker directory, the lookup of THAT entry stands still — it reports "entered"
+       and waits for "go", like a canonicalize stuck on a stalled NFS/FUSE mount. Every
+       other entry (other tests running in parallel) passes straight through: the armed
+       pair is taken out of the mutex before waiting, so nobody waits on the mutex. */
+    type Q1Gate = (PathBuf, std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
+    static Q1_GATE: Mutex<Option<Q1Gate>> = Mutex::new(None);
+
+    pub(super) fn q1_gate(dir: &Path) {
+        let armed = {
+            let mut g = Q1_GATE.lock().unwrap_or_else(|e| e.into_inner());
+            if g.as_ref().is_some_and(|(d, _, _)| d == dir) { g.take() } else { None }
+        };
+        if let Some((_, entered, go)) = armed {
+            let _ = entered.send(());
+            let _ = go.recv();
+        }
+    }
+
+    /* Q1 (PR #42 round 4, Greptile + Qodo + CodeAnt): a PATH entry whose lookup hangs (a
+       stalled NFS/FUSE mount) must not hold the lifecycle lock — a trust-OFF waits on it.
+       Thread A runs desk_proc_spawn's sequence after Allow: the PATH cleaned (prepare), the
+       lock, the trust recheck, start, register. Its plugin PATH holds a marker entry whose
+       lookup stands still (q1_gate) until the test says go. A marks the moment it holds the
+       lock; while the lookup stands still that mark must be unset — exact, no sleep, no
+       timeout, and not fooled by another test holding the lock for a moment (a try_lock
+       was: it failed whenever a parallel test held it). The lookup may run on the fork
+       thread, so held_here (per thread) cannot tell. The trust-OFF (plugins_set: lock, flag
+       OFF, kill_all) then takes the lock, and afterwards A's recheck must refuse the spawn:
+       nothing started, nothing registered. The gate is released before any assert, so a
+       failure cannot leave A or the fork thread hanging. */
+    #[test]
+    fn desk_q1_a_stalled_path_entry_does_not_hold_the_lifecycle_lock() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc::channel;
+        static TRUSTED: AtomicBool = AtomicBool::new(true);
+        TRUSTED.store(true, Ordering::SeqCst);
+        static A_LOCKED: AtomicBool = AtomicBool::new(false);
+        A_LOCKED.store(false, Ordering::SeqCst);
+        let stalled = std::env::temp_dir().join(format!("desk-q1-stalled-{}", std::process::id()));
+        let (entered_tx, entered) = channel::<()>();
+        let (go, go_rx) = channel::<()>();
+        *Q1_GATE.lock().unwrap_or_else(|e| e.into_inner()) = Some((stalled.clone(), entered_tx, go_rx));
+        let mut sp = spec("/bin/sleep", &["30"], &std::env::temp_dir());
+        sp.env.push(("PATH".into(), format!("{}:/usr/bin:/bin", stalled.display())));
+        let a = std::thread::spawn(move || {
+            let sp = prepare(pinned(sp), None); // desk_proc_spawn: before the lock
+            let life = lifecycle();
+            A_LOCKED.store(true, Ordering::SeqCst); // A holds the lifecycle lock from here
+            if !TRUSTED.load(Ordering::SeqCst) {
+                return Err("EPERM: restricted mode".to_string());
+            }
+            let r = start(sp, &life)?;
+            Ok((register(r.clone(), &life), r))
+        });
+        entered.recv().expect("the stalled PATH entry was never looked up");
+        let held = A_LOCKED.load(Ordering::SeqCst);
+        // the lookup stands still now. If A holds the lock here, a trust-OFF would wait on it:
+        // release A and fail (taking the lock now would deadlock). Otherwise the trust-OFF
+        // takes the lock — blocking is safe, A does not hold it; other tests hold it briefly.
+        if !held {
+            let life = lifecycle();
+            TRUSTED.store(false, Ordering::SeqCst);
+            kill_all(&life);
+        }
+        let _ = go.send(());
+        let got = a.join().unwrap();
+        if let Ok((id, r)) = &got {
+            r.kill(libc::SIGKILL);
+            forget(*id);
+        }
+        assert!(!held, "a PATH entry lookup stood still while A held the lifecycle lock");
+        assert!(got.is_err(), "the spawn started after a trust-OFF that landed while its PATH was being cleaned");
+        assert!(sp_never_cleaned_under_the_lock());
+    }
+
+    /// Q1: an unprepared Spec is refused by start — it never cleans a PATH under the lock
+    fn sp_never_cleaned_under_the_lock() -> bool {
+        start(spec("/bin/true", &[], &std::env::temp_dir()), &lifecycle()).is_err_and(|e| e.starts_with("EINVAL"))
     }
 
     fn drain(r: &Run) -> (Vec<u8>, Vec<u8>, Chunk) {
@@ -451,7 +1437,7 @@ mod tests {
         let d = std::env::temp_dir();
         let mut sp = spec("/bin/sh", &["-c", "pwd; printf %s \"$DESK_T\"; cat; echo e >&2; exit 3"], &d);
         sp.env.push(("DESK_T".into(), "v1".into()));
-        let r = start(sp, &lifecycle()).unwrap();
+        let r = start(ready(sp), &lifecycle()).unwrap();
         r.write(b"in\xff").unwrap();
         r.end();
         let (o, e, c) = drain(&r);
@@ -463,13 +1449,15 @@ mod tests {
 
     #[test]
     fn desk_kill_reports_the_signal_and_missing_exe_is_enoent() {
-        let r = start(spec("/bin/sleep", &["30"], &std::env::temp_dir()), &lifecycle()).unwrap();
+        let r = start(ready(spec("/bin/sleep", &["30"], &std::env::temp_dir())), &lifecycle()).unwrap();
         assert!(r.kill(libc::SIGTERM));
         let (_, _, c) = drain(&r);
         assert_eq!((c.exit, c.signal), (None, Some("SIGTERM")));
         assert!(!r.kill(libc::SIGTERM));
-        let e = start(spec("no-such-exe-desk", &[], &std::env::temp_dir()), &lifecycle()).err().unwrap();
+        let e = crate::consent::resolve(spec("no-such-exe-desk", &[], &std::env::temp_dir())).map(|_| ()).unwrap_err();
         assert!(e.starts_with("ENOENT: spawn no-such-exe-desk"), "{e}");
+        let e = start(ready(spec("no-such-exe-desk", &[], &std::env::temp_dir())), &lifecycle()).err().unwrap();
+        assert!(e.starts_with("EINVAL: spawn no-such-exe-desk"), "{e}"); // Y1: never exec'd unpinned
         assert_eq!(sig_num("SIGKILL"), Some(libc::SIGKILL));
         assert_eq!(sig_num(""), Some(libc::SIGTERM));
     }
@@ -478,7 +1466,7 @@ mod tests {
     fn desk_argv0_is_the_asked_name_while_the_absolute_path_is_execd() {
         let mut sp = spec("/bin/cat", &["/proc/self/cmdline"], &std::env::temp_dir());
         sp.argv0 = Some("cat-as-asked".into());
-        let r = start(sp, &lifecycle()).unwrap();
+        let r = start(ready(sp), &lifecycle()).unwrap();
         r.end();
         let (o, _, c) = drain(&r);
         assert_eq!(o, b"cat-as-asked\0/proc/self/cmdline\0");
@@ -486,33 +1474,40 @@ mod tests {
     }
 
     /* F5: a spawn whose trust recheck passed must not start + register after a trust-OFF
-       kill_all. Thread A is desk_proc_spawn (recheck, then a slow start, then register),
-       thread B is plugins_set OFF (flag write, kill_all) arriving while A is between its
-       recheck and its start. With the lock, B waits for A and kills A's child; without it
-       A's child starts after kill_all and stays registered. */
+       kill_all. Thread A is desk_proc_spawn (recheck, start, register), thread B is
+       plugins_set OFF (flag write, kill_all). N4 (PR #41): the order is forced, no sleep
+       decides it — B is started only once A holds the lock and its recheck passed; B
+       first proves it cannot take the lock then (try_lifecycle = None, while A sits
+       between recheck and start), tells A, and only then blocks on the lock for real.
+       A starts and registers only after that message, so B's kill_all can only come
+       after A's register, and must kill A's child. */
     #[test]
     fn desk_trust_off_cannot_slip_between_recheck_and_register() {
         use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc::channel;
         static TRUSTED: AtomicBool = AtomicBool::new(true);
         TRUSTED.store(true, Ordering::SeqCst);
-        let a = std::thread::spawn(|| {
+        let (b_tried, a_hears) = channel::<bool>();
+        let a = std::thread::spawn(move || {
             let life = lifecycle();
             if !TRUSTED.load(Ordering::SeqCst) {
                 return None;
             }
-            std::thread::sleep(Duration::from_millis(300)); // the recheck passed; start is slow
-            let r = start(spec("/bin/sleep", &["30"], &std::env::temp_dir()), &life).unwrap();
-            Some((register(r.clone(), &life), r))
+            // the recheck passed: the trust-OFF arrives now
+            let b = std::thread::spawn(move || {
+                let got_in = try_lifecycle().is_some();
+                b_tried.send(got_in).unwrap();
+                let life = lifecycle();
+                TRUSTED.store(false, Ordering::SeqCst);
+                kill_all(&life);
+            });
+            let b_got_in = a_hears.recv().unwrap();
+            let r = start(ready(spec("/bin/sleep", &["30"], &std::env::temp_dir())), &life).unwrap();
+            Some((register(r.clone(), &life), r, b, b_got_in))
         });
-        std::thread::sleep(Duration::from_millis(60));
-        let b = std::thread::spawn(|| {
-            let life = lifecycle();
-            TRUSTED.store(false, Ordering::SeqCst);
-            kill_all(&life);
-        });
-        let got = a.join().unwrap();
+        let (id, r, b, b_got_in) = a.join().unwrap().expect("A's recheck passed");
         b.join().unwrap();
-        let (id, r) = got.expect("A took the lock first and its recheck passed");
+        assert!(!b_got_in, "the trust-OFF took the lifecycle lock between A's recheck and its start");
         assert!(get(id).is_err(), "a child started across a trust-OFF is still registered");
         let (_, _, c) = drain(&r);
         assert_eq!(c.signal, Some("SIGKILL"), "the child started before the flip was killed by it");
@@ -524,27 +1519,880 @@ mod tests {
        (the path the dialog names) and that is what runs. */
     #[test]
     fn desk_the_path_the_dialog_names_is_the_one_that_runs() {
-        use std::os::unix::fs::PermissionsExt;
         let base = std::env::temp_dir().join(format!("desk-f1-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         for (dir, say) in [("vault", "VAULT"), ("bin", "BIN")] {
             std::fs::create_dir_all(base.join(dir)).unwrap();
             let f = base.join(dir).join("fakeprog");
-            std::fs::write(&f, format!("#!/bin/sh\necho {say}\n")).unwrap();
-            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+            crate::testutil::write_exe(&f, format!("#!/bin/sh\necho {say}\n")).unwrap();
         }
         let bin = base.join("bin");
         for path in [format!(":{}", bin.display()), format!(".:{}", bin.display())] {
             let mut sp = spec("fakeprog", &[], &base.join("vault"));
             sp.env.push(("PATH".into(), path.clone()));
             let sp = crate::consent::resolve(sp).unwrap();
-            assert_eq!(sp.file, bin.join("fakeprog").to_string_lossy(), "PATH={path:?}");
+            assert_eq!(sp.file, bin.join("fakeprog").canonicalize().unwrap().to_string_lossy(), "PATH={path:?}");
             assert!(crate::consent::spawn_text(&sp).contains(&format!("Program: {:?}", sp.file)));
-            let r = start(sp, &lifecycle()).unwrap();
+            let r = start(ready(sp), &lifecycle()).unwrap();
             r.end();
             let (o, _, _) = drain(&r);
             assert_eq!(o, b"BIN\n", "PATH={path:?}: the vault's fakeprog ran");
         }
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* G1 (PR #41, Qodo #2): plugins_set ON reads the epoch, the trust dialog stays open,
+       a trust-OFF (flag write, kill_all, close_all) runs meanwhile, then the user
+       presses Trust. That answer is stale: trust_write refuses it, so the flag stays OFF.
+       An answer with no flip in between is written. (Tests that write the epoch run one at a
+       time, EPOCH_TESTS: one running in parallel would make the other's answers stale.) */
+    #[test]
+    fn desk_g1_a_stale_trust_answer_is_discarded() {
+        let _one = epoch_tests();
+        let mut flag = false; // the vault's trust flag, as plugins_set writes it: OFF
+        let seen = trust_epoch(&lifecycle()); // ON: read before the dialog opens
+        {
+            // trust-OFF while the dialog is open (plugins_set also runs kill_all + close_all here)
+            let life = lifecycle();
+            trust_write(None, &life).unwrap();
+        }
+        {
+            // the user presses Trust now
+            let life = lifecycle();
+            match trust_write(Some(seen), &life) {
+                Ok(()) => flag = true,
+                Err(e) => assert!(e.starts_with("EAGAIN"), "{e}"),
+            }
+        }
+        assert!(!flag, "a Trust answer from a dialog open across a trust-OFF was written");
+        // no flip in between: the answer is fresh and written
+        let seen = trust_epoch(&lifecycle());
+        let life = lifecycle();
+        trust_write(Some(seen), &life).expect("a fresh Trust answer is written");
+        drop(life);
+        // and the write moved the epoch on: that same answer again is stale
+        assert!(trust_write(Some(seen), &lifecycle()).is_err(), "an answer outlived the write it caused");
+    }
+
+    /* P1 (PR #42, CodeAnt): plugins_set ON for a vault that is ALREADY trusted: nothing is
+       asked. It reads the epoch, then is_trusted (true, outside the lock); a trust-OFF
+       (flag write, kill_all, close_all) lands right after that read; then the ON takes the
+       lock and writes. That write must be refused — else trusted:true is written over the
+       OFF, never asked. The order is the program order of this one thread (each step
+       takes and drops the lock as plugins_set's do), so nothing but the code decides. */
+    #[test]
+    fn desk_p1_trust_off_between_on_request_and_write_is_not_undone() {
+        let _one = epoch_tests();
+        let mut flag = true; // the vault is trusted
+        let seen = trust_epoch(&lifecycle()); // plugins_set ON: the epoch first
+        let (ask, carries) = trust_plan(true, seen, || flag); // then is_trusted: true
+        assert!(!ask, "an already trusted vault is asked again");
+        {
+            // the trust-OFF, between the is_trusted read and the ON's lock
+            let life = lifecycle();
+            trust_write(None, &life).expect("a trust-OFF is never refused");
+            flag = false;
+        }
+        {
+            // the ON request takes the lock and writes
+            let life = lifecycle();
+            if trust_write(carries, &life).is_ok() {
+                flag = true;
+            }
+        }
+        assert!(!flag, "a trust-OFF that landed between an ON request and its write was undone (trusted:true written, never asked)");
+        // no flip in between: the ON for an already trusted vault is written
+        let seen = trust_epoch(&lifecycle());
+        let (ask, carries) = trust_plan(true, seen, || true);
+        assert!(!ask);
+        trust_write(carries, &lifecycle()).expect("an ON with no flip in between is written");
+        // an OFF carries nothing and is never refused, whatever ran before it
+        assert_eq!(trust_plan(false, seen, || unreachable!("an OFF reads no trust flag")), (false, None));
+        // a vault that is not trusted is asked, and its write carries the epoch too
+        assert_eq!(trust_plan(true, seen, || false), (true, Some(seen)));
+    }
+
+    /* G3 (PR #41): every local target of the electron shell / openWithDefaultApp — a
+       .desktop file, a script, an executable, through path / vault / reveal, or a file: /
+       custom-scheme URL — is asked (consent dialog, program xdg-open) before xdg-open
+       sees it; http(s) and mailto URLs are not. */
+    #[test]
+    fn desk_g3_local_and_custom_scheme_opens_are_asked() {
+        let base = std::env::temp_dir().join(format!("desk-g3-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("sub")).unwrap();
+        for (n, body) in [("run.desktop", "[Desktop Entry]\nType=Application\nExec=touch /tmp/pwn\n"), ("x.sh", "#!/bin/sh\ntouch /tmp/pwn\n"), ("sub/bin", "#!/bin/sh\n")] {
+            crate::testutil::write_exe(base.join(n), body).unwrap();
+        }
+        let real = base.canonicalize().unwrap();
+        let desk = format!("file://{}", real.join("run.desktop").display());
+        let asked: &[(&str, &str)] = &[
+            ("path", "/vault/run.desktop"),
+            ("path", "/vault/x.sh"),
+            ("path", "/vault/sub/bin"),
+            ("path", "/vault/sub"),
+            ("vault", "run.desktop"),
+            ("vault", "/vault/x.sh"),
+            ("reveal", "/vault/run.desktop/x"),
+            ("reveal", "/vault/sub/bin"),
+            ("external", &desk),
+            ("external", "FILE:///etc/passwd"),
+            ("external", "steam://run/1"),
+            ("external", "obsidian://open?vault=x"),
+        ];
+        for (op, t) in asked {
+            match shell_target(&base, op, t) {
+                Ok(ShellOpen::Ask(a)) => assert!(!a.arg.is_empty(), "{op} {t}"),
+                Ok(ShellOpen::Url(u)) => panic!("{op} {t}: handed to xdg-open unasked as {u}"),
+                Err(e) => panic!("{op} {t}: {e}"),
+            }
+        }
+        match shell_target(&base, "path", "/vault/run.desktop") {
+            Ok(ShellOpen::Ask(a)) => assert_eq!(a.arg, real.join("run.desktop").to_string_lossy(), "the dialog names the real target in full"),
+            _ => panic!("path not asked"),
+        }
+        for u in ["https://example.org/a?b=c", "http://127.0.0.1:8080/", "HTTPS://x.org", "mailto:a@b.org"] {
+            assert!(matches!(shell_target(&base, "external", u), Ok(ShellOpen::Url(ref x)) if x == u), "{u}: a web/mail URL is asked or changed");
+        }
+        assert!(shell_target(&base, "external", "/etc/passwd").is_err(), "not a URL");
+        assert!(shell_target(&base, "vault", "../x").is_err(), "vault escape");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* P4 (PR #42, CodeAnt): the dialog approves a path; a target replaced (another inode)
+       or swapped for a symlink while the dialog is open is refused, not opened. The
+       "dialog" is the hook between shell_target (what is asked) and shell_open (what
+       runs): it runs the swap to completion before the answer, so the order is forced —
+       no sleeps. The opener is a stub script that logs every target it is handed. */
+    #[test]
+    fn desk_p4_target_swapped_between_ask_and_run_is_not_opened() {
+        let _epoch = epoch_tests(); // DD1: shell_open carries a TrustSeen
+        let base = std::env::temp_dir().join(format!("desk-p4-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("v")).unwrap();
+        let vault = base.join("v");
+        let log = base.join("opened.log");
+        let opener = base.join("opener");
+        crate::testutil::write_exe(&opener, format!("#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{}'\n", log.display())).unwrap();
+        std::fs::write(vault.join("Welcome.md"), "# hi\n").unwrap();
+        std::fs::write(vault.join("evil.desktop"), "[Desktop Entry]\nType=Application\nExec=touch /tmp/pwn\n").unwrap();
+        let real = vault.canonicalize().unwrap();
+        let opened = || std::fs::read_to_string(&log).unwrap_or_default();
+        // ask (shell_target), the user reads the dialog (`dialog` hook), Allow, run (shell_open)
+        let ask_then_run = |op: &str, target: &str, dialog: &dyn Fn()| -> Result<String, String> {
+            let t = match shell_target(&vault, op, target)? {
+                ShellOpen::Ask(t) => t,
+                ShellOpen::Url(u) => panic!("{op} {target}: not asked ({u})"),
+            };
+            dialog();
+            let mut c = shell_open(trust_epoch_now(), &t, &opener_at(&opener), opener_path(None, &vault), || true, |l| l.apply(&mut Command::new(l.program())).spawn().map_err(|e| e.to_string()))?;
+            assert!(c.wait().unwrap().success(), "the stub opener failed");
+            Ok(t.arg)
+        };
+        let welcome = real.join("Welcome.md").to_string_lossy().into_owned();
+
+        // control: nothing changes while the dialog is open -> opened (the stub works)
+        assert_eq!(ask_then_run("path", "/vault/Welcome.md", &|| {}).as_deref(), Ok(welcome.as_str()));
+        assert_eq!(opened(), format!("{welcome}\n"), "control: the untouched target reached the opener");
+
+        // (a) replaced by another inode (write a new file, rename it over the asked path)
+        let r = ask_then_run("path", "/vault/Welcome.md", &|| {
+            std::fs::write(vault.join(".swap"), "[Desktop Entry]\nExec=touch /tmp/pwn\n").unwrap();
+            std::fs::rename(vault.join(".swap"), vault.join("Welcome.md")).unwrap();
+        });
+        assert!(matches!(&r, Err(e) if e.starts_with("EPERM")), "(a) a replaced target was not refused: {r:?}");
+
+        // (b) swapped for a symlink to a .desktop (through openWithDefaultApp's vault op)
+        let r = ask_then_run("vault", "Welcome.md", &|| {
+            std::fs::remove_file(vault.join("Welcome.md")).unwrap();
+            std::os::unix::fs::symlink(vault.join("evil.desktop"), vault.join("Welcome.md")).unwrap();
+        });
+        assert!(matches!(&r, Err(e) if e.starts_with("EPERM")), "(b) a target swapped for a symlink was not refused: {r:?}");
+
+        // (c) the same through a file: URL (openExternal): no route around the binding
+        std::fs::remove_file(vault.join("Welcome.md")).unwrap();
+        std::fs::write(vault.join("Welcome.md"), "# hi\n").unwrap();
+        let url = format!("file://{}", welcome.replace(' ', "%20"));
+        let r = ask_then_run("external", &url, &|| {
+            std::fs::write(vault.join(".swap"), "#!/bin/sh\n").unwrap();
+            std::fs::rename(vault.join(".swap"), vault.join("Welcome.md")).unwrap();
+        });
+        assert!(matches!(&r, Err(e) if e.starts_with("EPERM")), "(c) a file: URL target replaced was not refused: {r:?}");
+
+        // (d) a target that already WAS a symlink: the dialog names (and xdg-open gets) the final path
+        std::os::unix::fs::symlink(vault.join("evil.desktop"), vault.join("link.md")).unwrap();
+        let shown = ask_then_run("path", "/vault/link.md", &|| {}).unwrap();
+        assert_eq!(shown, real.join("evil.desktop").to_string_lossy(), "(d) the dialog does not name the symlink's final target");
+
+        assert_eq!(opened(), format!("{welcome}\n{shown}\n"), "a refused target reached the opener");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* Q2 (PR #42 round 4, CodeAnt): while the dialog is open the plugin rewrites the allowed
+       file IN PLACE (same inode, same size) and sets its mtime back (utimensat) — every
+       field P4 recorded (dev, ino, mode, size, mtime) is as before. ctime is not: the kernel
+       moves it on the write and on the utimensat, and nothing in userspace sets it back.
+       The rewrite is repeated until ctime has moved (the clock tick it is stamped with may
+       be coarse; a user reading a dialog is always slower than one tick) — that loop is the
+       only wait, and it ends on the kernel's own timestamp, not on a sleep. */
+    #[test]
+    fn desk_q2_a_same_size_rewrite_with_mtime_restored_is_refused() {
+        use std::os::unix::fs::MetadataExt;
+        let base = std::env::temp_dir().join(format!("desk-q2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let vault = base.join("v");
+        std::fs::create_dir_all(&vault).unwrap();
+        let note = vault.join("Note.md");
+        std::fs::write(&note, "# safe note\n").unwrap();
+        let t = match shell_target(&vault, "path", "/vault/Note.md").unwrap() {
+            ShellOpen::Ask(t) => t,
+            ShellOpen::Url(u) => panic!("not asked ({u})"),
+        };
+        t.recheck().expect("control: an untouched file passes the recheck");
+        let was = std::fs::symlink_metadata(&note).unwrap();
+        let mtime = was.modified().unwrap();
+        // the dialog is open: rewrite in place, same size, mtime set back
+        let t0 = std::time::Instant::now();
+        loop {
+            let f = std::fs::OpenOptions::new().write(true).open(&note).unwrap();
+            std::io::Write::write_all(&mut &f, b"#!/bin/sh -x").unwrap(); // 12 bytes, as before
+            f.set_modified(mtime).unwrap();
+            drop(f);
+            let now = std::fs::symlink_metadata(&note).unwrap();
+            if (now.ctime(), now.ctime_nsec()) != (was.ctime(), was.ctime_nsec()) {
+                break;
+            }
+            assert!(t0.elapsed() < Duration::from_secs(10), "ctime never moved");
+        }
+        let now = std::fs::symlink_metadata(&note).unwrap();
+        assert_eq!(std::fs::read(&note).unwrap(), b"#!/bin/sh -x", "the rewrite did not land");
+        assert_eq!((now.dev(), now.ino(), now.mode(), now.size(), now.mtime(), now.mtime_nsec()), (was.dev(), was.ino(), was.mode(), was.size(), was.mtime(), was.mtime_nsec()), "the rewrite did not keep dev/ino/mode/size/mtime");
+        let r = t.recheck();
+        assert!(matches!(&r, Err(e) if e.starts_with("EPERM")), "a same-size rewrite with its mtime restored passed the recheck: {r:?}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* Z2 (PR #42 round 9, CodeAnt): canonicalize and the identity were two path lookups.
+       A plugin swapping a symlink in at the canonical path between them (here: right after
+       canonicalize named `real`, before Local::at takes the identity) got the link's own
+       identity recorded; the recheck then passed and xdg-open followed the link to a file
+       nobody was asked about. Both halves must refuse: the identity step, and the recheck
+       of a target whose recorded identity is the link's (what the lstat-based one kept). */
+    #[test]
+    fn desk_z2_a_symlink_swapped_in_at_the_canonical_path_is_refused() {
+        use std::os::unix::fs::MetadataExt;
+        let base = std::env::temp_dir().join(format!("desk-z2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (vault, outside) = (base.join("v"), base.join("o"));
+        std::fs::create_dir_all(&vault).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let note = vault.join("Note.md");
+        std::fs::write(&note, "# safe note\n").unwrap();
+        let secret = outside.join("payload.desktop");
+        std::fs::write(&secret, "[Desktop Entry]\nExec=sh -c id\n").unwrap();
+        let real = note.canonicalize().unwrap();
+        // control: the plain file is taken and passes its recheck
+        let t = Local::at(real.clone(), "/vault/Note.md").expect("control: a plain file is a target");
+        t.recheck().expect("control: an untouched file passes the recheck");
+        // the window: canonicalize named `real`; the plugin puts a symlink there
+        std::fs::rename(&note, vault.join("Note.md.bak")).unwrap();
+        std::os::unix::fs::symlink(&secret, &note).unwrap();
+        let r = Local::at(real.clone(), "/vault/Note.md");
+        assert!(matches!(&r, Err(e) if e.starts_with("ELOOP")), "a symlink swapped in at the canonical path was taken as the target: {:?}", r.map(|t| t.arg));
+        // the recheck of a target that recorded the link itself refuses it too
+        let m = std::fs::symlink_metadata(&note).unwrap();
+        let was = Ident { dev: m.dev(), ino: m.ino(), mode: m.mode(), size: m.size(), mtime: (m.mtime(), m.mtime_nsec()), ctime: (m.ctime(), m.ctime_nsec()) };
+        let t = Local { arg: real.to_str().unwrap().to_string(), ident: Some(was) };
+        let r = t.recheck();
+        assert!(matches!(&r, Err(e) if e.starts_with("EPERM")), "the recheck passed a symlink at the allowed path: {r:?}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* R1 (PR #42, Greptile): a DIRECTORY target (showItemInFolder -> reveal opens the
+       parent dir; a folder through path) changes size/mtime whenever an entry in it is
+       created — saving a sibling note while the dialog is open. Still the same directory:
+       opened. A directory replaced by another one (another inode) is still refused. The
+       "dialog" hook runs the change to completion before the answer: no sleeps. */
+    #[test]
+    fn desk_r1_directory_target_opens_after_a_sibling_file_changes_during_the_dialog() {
+        let _epoch = epoch_tests(); // DD1: shell_open carries a TrustSeen
+        let base = std::env::temp_dir().join(format!("desk-r1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let vault = base.join("v");
+        std::fs::create_dir_all(vault.join("sub")).unwrap();
+        std::fs::write(vault.join("sub/a.md"), "a\n").unwrap();
+        let real = vault.canonicalize().unwrap();
+        let ask_then_run = |op: &str, target: &str, dialog: &dyn Fn()| -> Result<String, String> {
+            let t = match shell_target(&vault, op, target)? {
+                ShellOpen::Ask(t) => t,
+                ShellOpen::Url(u) => panic!("{op} {target}: not asked ({u})"),
+            };
+            dialog();
+            shell_open(trust_epoch_now(), &t, &opener_at(Path::new("/bin/sh")), opener_path(None, &vault), || true, |l| Ok(l.arg.to_string()))
+        };
+        // reveal(sub/a.md) opens sub/; a sibling is created, rewritten and renamed meanwhile
+        let r = ask_then_run("reveal", "/vault/sub/a.md", &|| {
+            std::fs::write(real.join("sub/new.md"), "x".repeat(5000)).unwrap();
+            std::fs::rename(real.join("sub/new.md"), real.join("sub/moved.md")).unwrap();
+            std::fs::write(real.join("sub/a.md"), "a changed\n").unwrap();
+        });
+        assert_eq!(r.as_deref(), Ok(&*real.join("sub").to_string_lossy()), "reveal: a dir whose entries changed was refused");
+        // openPath of the vault folder itself, a file created at its top
+        let r = ask_then_run("path", "/vault", &|| std::fs::write(real.join("Saved.md"), "s\n").unwrap());
+        assert_eq!(r.as_deref(), Ok(&*real.to_string_lossy()), "path: a dir whose entries changed was refused");
+        // still bound: a directory replaced by another one is refused
+        let r = ask_then_run("path", "/vault/sub", &|| {
+            std::fs::rename(real.join("sub"), real.join("old-sub")).unwrap();
+            std::fs::create_dir(real.join("sub")).unwrap();
+        });
+        assert!(matches!(&r, Err(e) if e.starts_with("EPERM")), "a replaced directory was not refused: {r:?}");
+        // and a FILE keeps the full identity (P4): rewritten in place -> refused
+        std::fs::write(real.join("f.md"), "f\n").unwrap();
+        let r = ask_then_run("path", "/vault/f.md", &|| std::fs::write(real.join("f.md"), "rewritten, longer\n").unwrap());
+        assert!(matches!(&r, Err(e) if e.starts_with("EPERM")), "a rewritten file was not refused: {r:?}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* R3 (PR #42, CodeAnt): a path with leading / trailing spaces is that path — not
+       trimmed into another file (" a .md" must not open "a .md"), in shell targets
+       (path / vault / reveal) and in a spawn's cwd. */
+    #[test]
+    fn desk_r3_a_path_with_leading_or_trailing_spaces_is_not_altered() {
+        let base = std::env::temp_dir().join(format!("desk-r3-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let vault = base.join("v");
+        std::fs::create_dir_all(vault.join(" d ")).unwrap();
+        std::fs::create_dir_all(vault.join("d")).unwrap();
+        for n in [" a .md", "a .md", " d /x.md", "d/x.md"] {
+            std::fs::write(vault.join(n), n).unwrap();
+        }
+        let real = vault.canonicalize().unwrap();
+        let arg = |op: &str, t: &str| match shell_target(&vault, op, t) {
+            Ok(ShellOpen::Ask(l)) => l.arg,
+            Ok(ShellOpen::Url(u)) => panic!("{op} {t:?}: not asked ({u})"),
+            Err(e) => format!("ERR {e}"),
+        };
+        let p = |n: &str| real.join(n).to_string_lossy().into_owned();
+        assert_eq!(arg("path", "/vault/ a .md"), p(" a .md"), "path");
+        assert_eq!(arg("path", " a .md"), p(" a .md"), "path relative");
+        assert_eq!(arg("vault", " a .md"), p(" a .md"), "vault");
+        assert_eq!(arg("vault", "/vault/ a .md"), p(" a .md"), "vault alias");
+        assert_eq!(arg("reveal", "/vault/ d /x.md"), p(" d "), "reveal");
+        assert_eq!(arg("path", "a .md"), p("a .md"), "control");
+        // "a .md " (trailing space) does not exist: ENOENT, never "a .md"
+        assert!(arg("path", "/vault/a .md ").starts_with("ERR ENOENT"), "a trailing space was trimmed");
+        assert!(arg("vault", "a .md ").starts_with("ERR ENOENT"), "a trailing space was trimmed (vault)");
+        // a spawn's cwd
+        assert_eq!(map_cwd(&vault, Some(" d ")), vault.join(" d "));
+        assert_eq!(map_cwd(&vault, Some("/vault/ d ")), vault.join(" d "));
+        assert_eq!(map_cwd(&vault, Some(" ")), vault.join(" "));
+        assert_eq!(map_arg(&vault, "/vault/ a .md"), vault.join(" a .md").to_string_lossy());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* R4 (PR #42, Qodo): every child's own PATH lookups stay out of the vault. The
+       opener (xdg-open, a script that finds gio / kde-open on PATH) runs in "/" with PATH
+       cut to its absolute entries; a spawned child gets the same cleaning of the PATH it
+       runs with (the plugin's, or ours). The vault holds a fake helper that marks when it
+       runs; PATH puts "." and relative entries first. */
+    #[test]
+    fn desk_r4_opener_cwd_is_root_and_child_path_has_no_relative_entries() {
+        let _epoch = epoch_tests(); // DD1: shell_open carries a TrustSeen
+        let base = std::env::temp_dir().join(format!("desk-r4-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        // V1: kept entries come out canonical; every kept entry here already is
+        let base = base.canonicalize().unwrap();
+        let ok = base.join("okbin");
+        std::fs::create_dir_all(&ok).unwrap();
+        let ok = ok.display().to_string();
+        let vault = base.join("v");
+        std::fs::create_dir_all(vault.join("bin")).unwrap();
+        let mark = base.join("HELPER-RAN");
+        for h in ["r4helper", "bin/r4helper"] {
+            crate::testutil::write_exe(vault.join(h), format!("#!/bin/sh\ntouch '{}'\n", mark.display())).unwrap();
+        }
+        std::fs::write(vault.join("Welcome.md"), "# hi\n").unwrap();
+        // the stub opener reports its cwd and PATH, then looks up a helper the way xdg-open does
+        let log = base.join("opener.log");
+        let opener = base.join("opener");
+        crate::testutil::write_exe(&opener, format!("#!/bin/sh\nprintf '%s|%s\\n' \"$(pwd -P)\" \"$PATH\" >> '{}'\nr4helper 2>/dev/null\nexit 0\n", log.display())).unwrap();
+        assert_eq!(child_path(OsStr::new(&format!(".::bin:/usr/bin:./x:{ok}:")), &[vault.as_path()]), OsString::from(format!("/usr/bin:{ok}")));
+        let dirty = format!(".::bin:/usr/bin:{ok}");
+
+        // (a) the opener
+        let t = match shell_target(&vault, "path", "/vault/Welcome.md").unwrap() {
+            ShellOpen::Ask(t) => t,
+            ShellOpen::Url(u) => panic!("not asked ({u})"),
+        };
+        let mut c = shell_open(trust_epoch_now(), &t, &opener_at(&opener), opener_path(Some(dirty.clone().into()), &vault), || true, |l| {
+            let mut cmd = Command::new(l.program()); // AA1: the held opener
+            l.apply(&mut cmd).spawn().map_err(|e| e.to_string())
+        })
+        .unwrap();
+        assert!(c.wait().unwrap().success());
+        let got = std::fs::read_to_string(&log).unwrap();
+        let (cwd, path) = got.trim_end().split_once('|').unwrap();
+        assert_eq!(cwd, "/", "the opener's cwd is not /");
+        assert!(path.split(':').all(|d| d.starts_with('/')), "the opener's PATH has an empty/relative entry: {path:?}");
+        assert!(!mark.exists(), "the opener reached the vault's helper through PATH");
+
+        // (b) a spawned child, cwd = the vault, the plugin's PATH with "." / "" / "bin" first
+        let mut sp = spec("/bin/sh", &["-c", "printf %s \"$PATH\"; r4helper 2>/dev/null; exit 0"], &vault);
+        sp.env.push(("PATH".into(), dirty));
+        let r = start(ready(sp), &lifecycle()).unwrap();
+        r.end();
+        let (o, _, ch) = drain(&r);
+        assert_eq!(ch.exit, Some(0));
+        let path = bytes_to_latin1(&o);
+        assert_eq!(path, format!("/usr/bin:{ok}"), "the child's PATH kept an empty/relative entry");
+        assert!(!mark.exists(), "the child reached the vault's helper through PATH");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// a vault whose helper `name` (in the vault and in vault/bin, vault/tools) marks when it runs
+    fn helper_vault(tag: &str, name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let base = std::env::temp_dir().join(format!("desk-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        // V1: kept PATH entries come out canonical; dirs under this base already are
+        let base = base.canonicalize().unwrap();
+        let vault = base.join("v");
+        let mark = base.join("HELPER-RAN");
+        for d in ["", "bin", "tools", "sub"] {
+            std::fs::create_dir_all(vault.join(d)).unwrap();
+            let h = vault.join(d).join(name);
+            crate::testutil::write_exe(&h, format!("#!/bin/sh\ntouch '{}'\n", mark.display())).unwrap();
+        }
+        (base, vault, mark)
+    }
+
+    /// the PATH a spawned child sees, after it tried to run `helper` by name
+    fn child_sees(sp: Spec) -> String {
+        let r = start(ready(sp), &lifecycle()).unwrap();
+        r.end();
+        let (o, _, ch) = drain(&r);
+        assert_eq!(ch.exit, Some(0));
+        bytes_to_latin1(&o)
+    }
+
+    /// S1: a child PATH is never empty and holds only absolute dirs outside `vault` (the exact
+    /// value is W1's: desk_w1_the_safe_default_is_confinement_checked_and_never_empty)
+    fn s1_safe(p: &str, vault: &Path) -> bool {
+        let v = vault.canonicalize().unwrap();
+        !p.is_empty() && p.split(':').all(|e| e.starts_with('/') && !Path::new(e).starts_with(&v) && !Path::new(e).starts_with(vault))
+    }
+
+    /* S1 (PR #42 round 3, Greptile): a PATH with no absolute entry ("tools", ".", "") used to
+       be cut to "" — and sh / execvp read an empty PATH as the cwd, the vault. The child now
+       gets SAFE_PATH (canonical, W1), a spawn and the opener alike, and the vault's helper is not reached. */
+    #[test]
+    fn desk_s1_a_path_without_absolute_entries_gives_the_safe_default_not_an_empty_path() {
+        let _epoch = epoch_tests(); // DD1: shell_open carries a TrustSeen
+        let (base, vault, mark) = helper_vault("s1", "s1helper");
+        for p in ["tools", ".", "", "tools:.:bin"] {
+            let mut sp = spec("/bin/sh", &["-c", "printf %s \"$PATH\"; s1helper 2>/dev/null; exit 0"], &vault);
+            sp.env.push(("PATH".into(), p.into()));
+            let got = child_sees(sp);
+            assert!(s1_safe(&got, &vault), "plugin PATH={p:?}: the child's PATH {got:?} is empty or not absolute dirs outside the vault");
+            assert!(!mark.exists(), "plugin PATH={p:?}: the child reached the vault's helper");
+        }
+        let t = match shell_target(&vault, "path", "/vault/sub").unwrap() {
+            ShellOpen::Ask(t) => t,
+            ShellOpen::Url(u) => panic!("not asked ({u})"),
+        };
+        let got = shell_open(trust_epoch_now(), &t, &opener_at(Path::new("/bin/sh")), opener_path(Some("tools:.".into()), &vault), || true, |l| Ok(l.path.clone())).unwrap();
+        assert!(s1_safe(&got.to_string_lossy(), &vault), "the opener's PATH {got:?} is empty or not absolute dirs outside the vault");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// W1: SAFE_PATH as the child gets it with nothing confining it — each entry
+    /// canonical (std, independent of child_path), repeats dropped, missing ones skipped
+    fn safe_canon() -> String {
+        let mut v: Vec<String> = Vec::new();
+        for d in SAFE_PATH.split(':') {
+            if let Ok(c) = Path::new(d).canonicalize() {
+                let s = c.display().to_string();
+                if !v.contains(&s) {
+                    v.push(s);
+                }
+            }
+        }
+        v.join(":")
+    }
+
+    /* W1 (PR #42 round 6, CodeAnt): when every entry was filtered, SAFE_PATH went to the child
+       unchecked — a vault or cwd at/under /usr/local/bin, /usr/bin or /bin (or a vault that is
+       a symlink resolving there) stayed on the child's PATH. Each SAFE_PATH entry is now
+       confinement-checked; when none passes the child gets NO_EXEC_PATH (/dev/null), never ""
+       and never an unchecked entry, and a program looked up by name is not found. */
+    #[test]
+    fn desk_w1_the_safe_default_is_confinement_checked_and_never_empty() {
+        let parts = |p: &OsString| p.to_string_lossy().split(':').map(String::from).collect::<Vec<_>>();
+        // a confine root AT a SAFE_PATH dir: that dir (and anything resolving into it) is dropped
+        for root in ["/usr/local/bin", "/usr/bin", "/bin"] {
+            let r = Path::new(root);
+            let got = child_path(OsStr::new("tools"), &[r]);
+            assert!(!got.is_empty(), "confine {root}: empty PATH");
+            let rc = r.canonicalize().ok();
+            for e in parts(&got) {
+                assert!(e.starts_with('/'), "confine {root}: relative entry {e:?} in {got:?}");
+                assert!(!Path::new(&e).starts_with(r), "confine {root}: {e:?} reached the child ({got:?})");
+                assert!(rc.as_ref().is_none_or(|c| !Path::new(&e).starts_with(c)), "confine {root}: {e:?} resolves into it ({got:?})");
+            }
+        }
+        // a vault that is a symlink resolving to /usr/bin: /usr/bin is not on the child's PATH
+        let base = std::env::temp_dir().join(format!("desk-w1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let link = base.join("vault");
+        std::os::unix::fs::symlink("/usr/bin", &link).unwrap();
+        let ub = Path::new("/usr/bin").canonicalize().unwrap();
+        let got = child_path(OsStr::new("."), &[link.as_path()]);
+        assert!(!got.is_empty(), "symlinked vault: empty PATH");
+        assert!(parts(&got).iter().all(|e| !Path::new(e).starts_with(&ub)), "symlinked vault -> /usr/bin: {got:?} holds it");
+        // every SAFE_PATH dir confined (vault /bin, cwd /usr): the no-exec fallback, never ""
+        assert_eq!(child_path(OsStr::new(""), &[Path::new("/bin"), Path::new("/usr")]), OsString::from(NO_EXEC_PATH));
+        let mut sp = spec("/bin/sh", &["-c", "printf %s \"$PATH\"; ls >/dev/null 2>&1 && echo FOUND; exit 0"], Path::new("/usr"));
+        sp.root = PathBuf::from("/bin");
+        sp.env.push(("PATH".into(), "tools".into()));
+        assert_eq!(child_sees(sp), NO_EXEC_PATH, "all SAFE_PATH dirs confined: the child's PATH is not the no-exec fallback (or a program was found)");
+        // the opener with its vault at /usr: no /usr dir on its PATH, and never ""
+        let got = opener_path(Some("tools".into()), Path::new("/usr"));
+        assert!(!got.as_os_str().is_empty(), "opener: empty PATH");
+        assert!(parts(&got.as_os_str().to_os_string()).iter().all(|e| e.starts_with('/') && !e.starts_with("/usr")), "opener, vault /usr: {got:?}");
+        // control: nothing confining -> the canonical SAFE_PATH
+        assert_eq!(child_path(OsStr::new("tools"), &[base.as_path()]), OsString::from(safe_canon()));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* S2 (PR #42 round 3, CodeAnt): the inherited PATH was read with std::env::var — a
+       non-UTF-8 PATH gave None, nothing was set, and the child inherited the raw PATH
+       (relative entries and all). It is now an OsString (var_os) filtered byte-wise, and
+       PATH is always set on the child. prepare takes the inherited value as a parameter, so
+       this needs no process-wide env change. */
+    #[test]
+    fn desk_s2_a_non_utf8_inherited_path_is_cleaned_not_passed_through_raw() {
+        let (base, vault, _) = helper_vault("s2", "s2helper");
+        // V1: an entry is kept only if it resolves, so the non-UTF-8 dir exists
+        let odd = base.join(OsStr::from_bytes(b"s2\xffx"));
+        std::fs::create_dir_all(&odd).unwrap();
+        let odd = odd.into_os_string().into_vec();
+        let inherited = OsString::from_vec([b"bin:".as_slice(), odd.as_slice(), b":.::/usr/bin".as_slice()].concat());
+        assert!(inherited.to_str().is_none(), "the test PATH must not be UTF-8");
+        let sp = prepare(pinned(spec("/bin/true", &[], &vault)), Some(inherited));
+        let c = build(&sp, sp.path.as_ref().unwrap(), sp.prog.as_ref().unwrap(), sp.dir.as_ref().unwrap());
+        let got = c.get_envs().find(|(k, _)| *k == OsStr::new("PATH")).map(|(_, v)| v.map(|v| v.to_os_string()));
+        assert_eq!(got, Some(Some(OsString::from_vec([odd.as_slice(), b":/usr/bin".as_slice()].concat()))), "the child's PATH was not set to the cleaned bytes");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* S3 (PR #42 round 3, CodeAnt): absolute entries that still lead into the cwd or the
+       vault — /proc/self/cwd, /proc/<pid>/cwd, /proc/self/fd/N, /dev/fd/N, a path under
+       the vault (plain, with "..", or through a symlink outside it), a path under the
+       child's cwd — are dropped; /usr/bin and /bin are kept, in order. */
+    #[test]
+    fn desk_s3_path_entries_leading_into_the_vault_or_cwd_are_dropped() {
+        let _epoch = epoch_tests(); // DD1: shell_open carries a TrustSeen
+        use std::os::unix::fs::symlink;
+        let (base, vault, mark) = helper_vault("s3", "s3helper");
+        let elsewhere = base.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let first = base.join("first");
+        std::fs::create_dir_all(&first).unwrap();
+        let first = first.display().to_string();
+        symlink(vault.join("bin"), base.join("link")).unwrap();
+        let v = vault.display().to_string();
+        let cwd = base.join("cwd");
+        std::fs::create_dir_all(cwd.join("bin")).unwrap();
+        let bad = [
+            "/proc/self/cwd".to_string(),
+            "/proc/self/cwd/bin".into(),
+            format!("/proc/{}/cwd", std::process::id()),
+            "/proc/self/fd/3".into(),
+            "/dev/fd/3".into(),
+            "//proc/self/cwd".into(),
+            "/./dev/fd/4".into(),
+            format!("{v}/bin"),
+            format!("{v}/tools/"),
+            v.clone(),
+            format!("{}/../v/bin", base.join("elsewhere").display()),
+            base.join("link").display().to_string(),
+            cwd.join("bin").display().to_string(),
+        ];
+        let mut all = vec![first.clone()];
+        all.extend(bad.iter().cloned());
+        all.push(elsewhere.display().to_string());
+        all.push("/usr/bin".into());
+        let joined = all.join(":");
+        let want = format!("{first}:{}:/usr/bin", elsewhere.display());
+        assert_eq!(child_path(OsStr::new(&joined), &[vault.as_path(), cwd.as_path()]), OsString::from(&want));
+        for b in &bad {
+            assert_eq!(child_path(OsStr::new(&format!("{b}:/usr/bin")), &[vault.as_path(), cwd.as_path()]), "/usr/bin", "{b} was kept");
+        }
+        // a spawn: cwd in the vault, the plugin's PATH leads into it absolutely
+        let mut sp = spec("/bin/sh", &["-c", "printf %s \"$PATH\"; s3helper 2>/dev/null; exit 0"], &vault.join("sub"));
+        sp.root = vault.clone();
+        sp.env.push(("PATH".into(), format!("{v}/bin:/proc/self/cwd:/dev/fd/3:/usr/bin:{first}")));
+        assert_eq!(child_sees(sp), format!("/usr/bin:{first}"), "the child's PATH kept an entry into the vault");
+        assert!(!mark.exists(), "the child reached the vault's helper through an absolute PATH entry");
+        // the opener: the app's PATH with an entry into the vault
+        let t = match shell_target(&vault, "path", "/vault/sub").unwrap() {
+            ShellOpen::Ask(t) => t,
+            ShellOpen::Url(u) => panic!("not asked ({u})"),
+        };
+        let got = shell_open(trust_epoch_now(), &t, &opener_at(Path::new("/bin/sh")), opener_path(Some(format!("{v}/bin:/proc/self/cwd:/usr/bin").into()), &vault), || true, |l| Ok(l.path.clone())).unwrap();
+        assert_eq!(got, "/usr/bin", "the opener's PATH kept an entry into the vault");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* X1 (PR #42 round 7, Strix): the PROGRAM path, like a PATH entry (V1), runs through
+       a magic link per process: "<base>/link/<..×n><base>/app/x1helper" with link ->
+       /proc/self/cwd names, in the app, <app cwd>/..×n/... = <base>/app/x1helper (n = the
+       depth of the app's cwd: the ".." climb ends at "/"), an executable that says APP. In
+       the child, which chdirs to the vault first, the same string climbs from the vault
+       instead and lands in <base>/q/<base>/app/x1helper — a helper that touches the mark.
+       consent::resolve hands desk_proc the CANONICAL app-side file: that is what the
+       dialog names and what runs; the link is gone from it, and the vault's helper never
+       runs. The cwd comes out canonical too (a symlinked cwd is shown resolved), and a cwd
+       that is still under /proc after canonicalizing is refused before anything is asked. */
+    #[test]
+    fn desk_x1_a_program_path_through_proc_self_cwd_runs_the_canonical_app_side_file() {
+        use std::os::unix::fs::symlink;
+        let base = std::env::temp_dir().join(format!("desk-x1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("app")).unwrap();
+        let base = base.canonicalize().unwrap();
+        let mark = base.join("HELPER-RAN");
+        let n = std::env::current_dir().unwrap().canonicalize().unwrap().components().count() - 1;
+        let q = base.join("q");
+        let vault = (0..n).fold(q.clone(), |p, _| p.join("d"));
+        std::fs::create_dir_all(&vault).unwrap();
+        let rel = base.strip_prefix("/").unwrap();
+        let app = base.join("app/x1helper");
+        let evil = q.join(rel).join("app/x1helper");
+        std::fs::create_dir_all(evil.parent().unwrap()).unwrap();
+        crate::testutil::write_exe(&app, "#!/bin/sh\necho APP\n").unwrap();
+        crate::testutil::write_exe(&evil, format!("#!/bin/sh\ntouch '{}'\necho VAULT\n", mark.display())).unwrap();
+        let link = base.join("link");
+        symlink("/proc/self/cwd", &link).unwrap();
+        let file = format!("{}/{}{}", link.display(), "../".repeat(n), rel.join("app/x1helper").display());
+        assert!(Path::new(&file).is_file(), "test setup: {file} does not reach {} in the app", app.display());
+        let sp = crate::consent::resolve(spec(&file, &[], &vault)).unwrap();
+        assert_eq!(sp.file, app.display().to_string(), "resolve did not hand over the canonical app-side program");
+        assert!(!sp.file.contains("/proc") && !sp.file.contains("/link/"), "{}", sp.file);
+        assert_eq!(sp.argv0.as_deref(), Some(file.as_str()), "argv0 keeps the name the plugin asked for");
+        assert!(crate::consent::spawn_text(&sp).contains(&format!("Program: {:?}", sp.file)), "the dialog names another program");
+        let r = start(ready(sp), &lifecycle()).unwrap();
+        r.end();
+        let (o, _, _) = drain(&r);
+        assert_eq!(o, b"APP\n", "the child did not run the file the dialog named");
+        assert!(!mark.exists(), "the child ran the vault's helper through a link to /proc/self/cwd");
+        // the cwd: a symlink to the vault is shown and used resolved; one under /proc is refused
+        let vlink = base.join("vlink");
+        symlink(&vault, &vlink).unwrap();
+        let sp = crate::consent::resolve(spec("/bin/true", &[], &vlink)).unwrap();
+        assert_eq!(sp.cwd, vault, "the cwd is not canonical");
+        assert!(crate::consent::spawn_text(&sp).contains(&format!("Cwd: {:?}", vault.display().to_string())));
+        let e = crate::consent::resolve(spec("/bin/true", &[], Path::new("/proc/self"))).map(|s| s.cwd).unwrap_err();
+        assert!(e.starts_with("ENOENT: spawn: cwd"), "a cwd under /proc was not refused: {e}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* V1 (PR #42 round 5, CodeAnt): a PATH entry outside the vault that is a symlink to
+       /proc/self/cwd (directly, through a chain, or via /proc/thread-self/cwd) resolves to
+       the APP's cwd here and to the CHILD's cwd — the vault — in the child: magic links are
+       resolved per process. The child gets the entry's canonical form as resolved here, so
+       it never follows the link itself: its PATH does not hold the link, and the vault's
+       helper is not reached. A missing entry is dropped. */
+    #[test]
+    fn desk_v1_a_path_symlink_to_proc_self_cwd_does_not_reach_the_childs_cwd() {
+        let _epoch = epoch_tests(); // DD1: shell_open carries a TrustSeen
+        use std::os::unix::fs::symlink;
+        let (base, vault, mark) = helper_vault("v1", "v1helper");
+        let link = base.join("link");
+        symlink("/proc/self/cwd", &link).unwrap();
+        let chain = base.join("chain");
+        symlink(&link, &chain).unwrap();
+        let tlink = base.join("tlink");
+        symlink("/proc/thread-self/cwd", &tlink).unwrap();
+        let ours = std::env::current_dir().unwrap().canonicalize().unwrap().display().to_string();
+        let gone = base.join("missing").display().to_string();
+        let links = [link.display().to_string(), chain.display().to_string(), tlink.display().to_string()];
+        for l in &links {
+            // a spawn, cwd = the vault (where the vault's helper sits)
+            let mut sp = spec("/bin/sh", &["-c", "printf %s \"$PATH\"; v1helper 2>/dev/null; exit 0"], &vault);
+            sp.env.push(("PATH".into(), format!("{l}:{gone}:/usr/bin")));
+            let path = child_sees(sp);
+            assert!(!path.split(':').any(|d| d == l.as_str() || d == gone.as_str()), "{l}: the child's PATH holds the link (or a missing entry): {path:?}");
+            assert_eq!(path, format!("{ours}:/usr/bin"), "{l}: the child did not get the canonical form resolved in the app");
+            assert!(!mark.exists(), "{l}: the child reached the vault's helper through a link to /proc/self/cwd");
+        }
+        // the opener: the app's PATH with such a link
+        let t = match shell_target(&vault, "path", "/vault/sub").unwrap() {
+            ShellOpen::Ask(t) => t,
+            ShellOpen::Url(u) => panic!("not asked ({u})"),
+        };
+        let got = shell_open(trust_epoch_now(), &t, &opener_at(Path::new("/bin/sh")), opener_path(Some(format!("{}:/usr/bin", links[0]).into()), &vault), || true, |l| Ok(l.path.clone())).unwrap();
+        assert_eq!(got, OsString::from(format!("{ours}:/usr/bin")), "the opener's PATH holds the link");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* Y2 (PR #42 round 8, CodeAnt): an http(s)/mailto URL is handed to xdg-open unasked;
+       it is held to the same run-size cap as an asked open (consent::RUN_MAX_BYTES, counted
+       on xdg-open + the URL + cwd "/"): at the cap it is opened, one byte over it is E2BIG
+       from shell_target — before xdg-open is resolved or started. */
+    #[test]
+    fn desk_y2_an_oversized_url_is_refused_before_xdg_open() {
+        use crate::consent::RUN_MAX_BYTES;
+        let root = Path::new("/home/u/notes");
+        let fixed = "xdg-open".len() + 1 + 1 + OPENER_CWD.len() + 1; // program, the arg's +1, cwd
+        for pre in ["https://example.org/", "http://example.org/?q=", "mailto:"] {
+            let at = format!("{pre}{}", "a".repeat(RUN_MAX_BYTES - fixed - pre.len()));
+            assert!(matches!(shell_target(root, "external", &at), Ok(ShellOpen::Url(ref u)) if *u == at), "{pre}: a URL at the cap was not opened");
+            let over = format!("{at}a");
+            match shell_target(root, "external", &over) {
+                Err(e) => assert!(e.starts_with("E2BIG"), "{pre}: {e}"),
+                Ok(_) => panic!("{pre}: a URL over the run-size cap is handed to xdg-open"),
+            }
+        }
+    }
+
+    /* AA1 (PR #42 round 10, CodeAnt): the opener is pinned by consent::resolve before the
+       question and exec'd through that held fd (Launch::program + apply, as desk_shell does),
+       never by its pathname. While the dialog is open the opener on disk is replaced — a new
+       file renamed over it, or the same file rewritten in place — then the user presses Allow.
+       The replacement must never run: the original runs, or the open is refused (EPERM). A
+       control round with nothing replaced opens through the original. */
+    #[test]
+    fn desk_aa1_an_opener_replaced_while_the_dialog_is_open_is_never_the_one_run() {
+        let _epoch = epoch_tests(); // DD1: shell_open carries a TrustSeen
+        let base = std::env::temp_dir().join(format!("desk-aa1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("v")).unwrap();
+        std::fs::create_dir_all(base.join("bin")).unwrap();
+        let base = base.canonicalize().unwrap();
+        let vault = base.join("v");
+        std::fs::write(vault.join("Welcome.md"), "# hi\n").unwrap();
+        let (opener, next) = (base.join("bin/xdg-open"), base.join("bin/.next"));
+        let (log, mark) = (base.join("opened.log"), base.join("REPLACEMENT-OPENER-RAN"));
+        let replacement = format!("#!/bin/sh\ntouch '{}'\n", mark.display());
+        for how in ["none", "rename", "rewrite"] {
+            crate::testutil::write_exe(&opener, format!("#!/bin/sh\nprintf 'ORIGINAL %s\\n' \"$1\" >> '{}'\n", log.display())).unwrap();
+            let _ = std::fs::remove_file(&log);
+            let t = match shell_target(&vault, "path", "/vault/Welcome.md").unwrap() {
+                ShellOpen::Ask(t) => t,
+                ShellOpen::Url(u) => panic!("not asked ({u})"),
+            };
+            // desk_shell: the opener resolved (and pinned) before the question
+            let sp = crate::consent::resolve(Spec { file: opener.to_string_lossy().into_owned(), ..opener_spec(&vault, &t.arg) }).unwrap();
+            assert_eq!(sp.file, opener.to_string_lossy(), "the dialog names the opener");
+            // the dialog is open: the opener on disk is replaced
+            match how {
+                "rename" => {
+                    crate::testutil::write_exe(&next, &replacement).unwrap();
+                    std::fs::rename(&next, &opener).unwrap();
+                }
+                "rewrite" => crate::testutil::write_exe(&opener, &replacement).unwrap(), // same inode (cat >)
+                _ => {}
+            }
+            // Allow: desk_shell's exec
+            let r = shell_open(trust_epoch_now(), &t, &sp, opener_path(None, &vault), || true, |l| {
+                let mut c = Command::new(l.program());
+                l.apply(&mut c).spawn().map_err(|e| opener_err(&sp.file, &e))
+            })
+            .map(|mut c| c.wait().unwrap().success());
+            let opened = std::fs::read_to_string(&log).unwrap_or_default();
+            assert!(!mark.exists(), "{how}: the opener replaced while the dialog was open ran after Allow ({r:?})");
+            match (how, r) {
+                ("none", r) => {
+                    assert_eq!(r, Ok(true), "control: the allowed opener did not run");
+                    assert_eq!(opened, format!("ORIGINAL {}\n", t.arg), "control: the allowed opener did not get the target");
+                }
+                (_, Ok(_)) => assert_eq!(opened, format!("ORIGINAL {}\n", t.arg), "{how}: something other than the allowed opener ran"),
+                (_, Err(e)) => assert!(e.starts_with("EPERM: open: the opener ") && e.contains("changed after it was allowed"), "{how}: {e}"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* BB1 test seam: Local::recheck calls bb1_gate(its path) first. While a test has armed it
+       for one target path, the recheck of THAT path stands still — it reports whether this
+       thread holds the lifecycle lock right now (held_here: the recheck runs on the caller's
+       thread) and waits for "go", like an open/fstat stuck on a stalled FUSE/NFS vault. Every
+       other path passes straight through (the armed pair is taken out of the mutex first). */
+    type Bb1Gate = (PathBuf, std::sync::mpsc::Sender<bool>, std::sync::mpsc::Receiver<()>);
+    static BB1_GATE: Mutex<Option<Bb1Gate>> = Mutex::new(None);
+
+    pub(super) fn bb1_gate(p: &Path) {
+        let armed = {
+            let mut g = BB1_GATE.lock().unwrap_or_else(|e| e.into_inner());
+            if g.as_ref().is_some_and(|(d, _, _)| d == p) { g.take() } else { None }
+        };
+        if let Some((_, entered, go)) = armed {
+            let _ = entered.send(held_here());
+            let _ = go.recv();
+        }
+    }
+
+    /* BB1 (PR #42 round 11, CodeAnt): the target's identity recheck is a path lookup of a
+       vault path; it must not run under the lifecycle lock, or a stalled vault mount holds up a
+       trust-OFF (and every spawn). Thread A runs desk_shell's sequence after Allow (shell_open:
+       recheck, lock, trust recheck, opener_exec); its recheck stands still (bb1_gate) until the
+       test says go, and reports whether A held the lock at that moment — exact, no sleep, no
+       timeout. If it did not, the trust-OFF (plugins_set: lock, flag OFF) takes the lock now and
+       returns while the recheck still stands; afterwards A's open must be refused (EPERM,
+       restricted mode) and the opener never run. If it did, taking the lock would deadlock:
+       release A and fail. The gate is released before any assert. */
+    #[test]
+    fn desk_bb1_a_stalled_target_recheck_does_not_hold_the_lifecycle_lock() {
+        let _epoch = epoch_tests(); // DD1: shell_open carries a TrustSeen
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc::channel;
+        static TRUSTED: AtomicBool = AtomicBool::new(true);
+        TRUSTED.store(true, Ordering::SeqCst);
+        let base = std::env::temp_dir().join(format!("desk-bb1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("v")).unwrap();
+        let base = base.canonicalize().unwrap();
+        let vault = base.join("v");
+        std::fs::write(vault.join("Note.md"), "# hi\n").unwrap();
+        let (opener, log) = (base.join("opener"), base.join("opened.log"));
+        crate::testutil::write_exe(&opener, format!("#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{}'\n", log.display())).unwrap();
+        let t = match shell_target(&vault, "path", "/vault/Note.md").unwrap() {
+            ShellOpen::Ask(t) => t,
+            ShellOpen::Url(u) => panic!("not asked ({u})"),
+        };
+        let sp = opener_at(&opener);
+        let (entered_tx, entered) = channel::<bool>();
+        let (go, go_rx) = channel::<()>();
+        *BB1_GATE.lock().unwrap_or_else(|e| e.into_inner()) = Some((PathBuf::from(&t.arg), entered_tx, go_rx));
+        let path = opener_path(None, &vault); // desk_shell: before the lock (Q1)
+        let a = std::thread::spawn(move || {
+            shell_open(trust_epoch_now(), &t, &sp, path, || TRUSTED.load(Ordering::SeqCst), |l| {
+                let mut c = Command::new(l.program());
+                l.apply(&mut c).spawn().map_err(|e| e.to_string())
+            })
+            .map(|mut c| c.wait().map(|s| s.success()).unwrap_or(false))
+        });
+        let held = entered.recv().expect("the target was never rechecked");
+        // the recheck stands still now. The trust-OFF: only when A does not hold the lock
+        // (blocking is then safe; other tests hold it only briefly)
+        let off_returned = if !held {
+            let life = lifecycle();
+            TRUSTED.store(false, Ordering::SeqCst);
+            drop(life);
+            true
+        } else {
+            false
+        };
+        let _ = go.send(());
+        let got = a.join().unwrap();
+        let opened = std::fs::read_to_string(&log).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(!held, "the target's path recheck stood still while A held the lifecycle lock (a trust-OFF waits on it)");
+        assert!(off_returned, "the trust-OFF did not return while the recheck stood still");
+        assert!(matches!(&got, Err(e) if e.starts_with("EPERM: restricted mode")), "the open was not refused after a trust-OFF that landed during its recheck: {got:?}");
+        assert!(opened.is_empty(), "the opener ran after the trust-OFF: {opened:?}");
     }
 }
