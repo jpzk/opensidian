@@ -239,6 +239,9 @@ pub struct Spec {
     /// Q1 (PR #42 round 4): the PATH the child runs with, cleaned by prepare() BEFORE the
     /// lifecycle lock is taken. None = not prepared: start refuses, it never cleans one itself
     pub path: Option<ChildPath>,
+    /// Y1 (PR #42 round 8): `file`, held open since BEFORE the question (consent::resolve -> pin):
+    /// the child execs this open file, never the pathname again. None = not pinned: start refuses
+    pub prog: Option<Pinned>,
 }
 
 /* Q1 (PR #42 round 4, Greptile + Qodo + CodeAnt): cleaning a PATH canonicalizes every
@@ -267,6 +270,93 @@ pub fn prepare(mut sp: Spec, inherited: Option<OsString>) -> Spec {
     let p = child_path(&spec_path(&sp, inherited), &[sp.root.as_path(), sp.cwd.as_path()]);
     sp.path = Some(ChildPath(p));
     sp
+}
+
+/* Y1 (PR #42 round 8, CodeAnt): the program used to be checked by PATHNAME before the
+   dialog (resolve_program: canonical, executable) and exec'd by the same pathname after
+   Allow. Nothing held it in between: a plugin that can write the program's directory (a
+   helper in the vault, or any plugin-writable dir) renames another file over it while the
+   dialog is open, and Allow runs the replacement. Since we do the exec ourselves this is
+   closed, not narrowed:
+   - pin(file), called by consent::resolve BEFORE the question is built, opens the
+     canonical path O_PATH|O_NOFOLLOW|O_CLOEXEC, requires a regular file with an x bit
+     and that the kernel's own name for the open file (/proc/self/fd/N) is exactly `file`
+     (no directory on the way was swapped between canonicalize and open), and records its
+     identity (dev, ino, mode, size, mtime, ctime) by fstat.
+   - the child execs THAT open file: build gives exec "/proc/self/fd/N" (the fd's magic
+     link names the open file itself; rename/unlink of the path changes nothing), argv0 =
+     the name the dialog's run was asked under. No pathname of the program is resolved
+     after the question.
+   - right before the exec (start in the parent, under the lifecycle lock, and again in
+     the child's pre_exec, async-signal-safe fstat) the open file's identity must still
+     be the recorded one: a rewrite in place (same inode) moves size/mtime and always
+     ctime, and a rename over the path or an unlink drops the old inode's link count,
+     which moves ctime too — refused EPERM, nothing exec'd.
+   #! scripts: the kernel hands the interpreter "/proc/self/fd/N" as the script path, so
+   N stays open across the exec (pre_exec clears its FD_CLOEXEC; it is an O_PATH fd: it
+   can be reopened, not read or written as is). Consequences: a script's $0 is
+   "/proc/self/fd/N" (not its name), and the O_PATH fd is inherited by the program.
+   RESIDUAL: (1) between the child's fstat and the kernel's exec of the fd a writer of the
+   SAME inode (a plugin holding it open for writing from before) could change bytes; a
+   binary being exec'd while open for writing fails ETXTBSY, a script does not, and its
+   interpreter reads it after the exec. (2) the #! line's interpreter is found by the
+   kernel by its path; it is not pinned (the script's content, which names it, is). */
+pub struct Pinned {
+    fd: std::os::fd::OwnedFd,
+    ident: Ident,
+}
+
+/// Y1: fstat of an open fd as an Ident. Async-signal-safe (fstat, no allocation): pre_exec uses it
+fn fd_ident(fd: std::os::fd::RawFd) -> Option<Ident> {
+    let mut st = std::mem::MaybeUninit::<libc::stat>::zeroed();
+    // SAFETY: fstat writes a struct stat into st; read only on success
+    if unsafe { libc::fstat(fd, st.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    let st = unsafe { st.assume_init() };
+    Some(Ident {
+        dev: st.st_dev as u64,
+        ino: st.st_ino as u64,
+        mode: st.st_mode as u32,
+        size: st.st_size as u64,
+        mtime: (st.st_mtime as i64, st.st_mtime_nsec as i64),
+        ctime: (st.st_ctime as i64, st.st_ctime_nsec as i64),
+    })
+}
+
+/// Y1: hold `file` (an absolute canonical path, as consent::resolve found it) open from now
+/// until the exec. Refused: not openable, not a regular file with an x bit, or the open file
+/// is not at exactly `file` (a directory on the way was swapped after canonicalize).
+pub fn pin(file: &str) -> Result<Pinned, String> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    let c = std::ffi::CString::new(file).map_err(|_| format!("EINVAL: spawn {file}: NUL in the path"))?;
+    // SAFETY: c is a valid C string; the fd is owned from here on
+    let fd = unsafe { libc::open(c.as_ptr(), libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(format!("ENOENT: spawn {file}: {}", std::io::Error::last_os_error()));
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let ident = fd_ident(fd.as_raw_fd()).ok_or_else(|| format!("ENOENT: spawn {file}: {}", std::io::Error::last_os_error()))?;
+    if ident.mode & libc::S_IFMT != libc::S_IFREG || ident.mode & 0o111 == 0 {
+        return Err(format!("EACCES: spawn {file}: not a regular executable file"));
+    }
+    let at = std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd())).map_err(|e| format!("ENOENT: spawn {file}: {e}"))?;
+    if at.as_os_str() != OsStr::new(file) {
+        return Err(format!("EAGAIN: spawn {file}: the file opened is {} (moved while it was opened); nothing asked", at.display()));
+    }
+    Ok(Pinned { fd, ident })
+}
+
+impl Pinned {
+    fn raw(&self) -> std::os::fd::RawFd {
+        use std::os::fd::AsRawFd;
+        self.fd.as_raw_fd()
+    }
+
+    /// Y1: the open file is still what it was when pinned (before the question)
+    fn unchanged(&self) -> bool {
+        fd_ident(self.raw()).is_some_and(|now| now == self.ident)
+    }
 }
 
 /// Q1: the opener's PATH (the app's, cleaned; `root` = the vault) — call BEFORE the lock
@@ -406,11 +496,13 @@ fn spec_path(sp: &Spec, inherited: Option<OsString>) -> OsString {
     sp.env.iter().rev().find(|(k, _)| k == "PATH").map(|(_, v)| OsString::from(v)).or(inherited).unwrap_or_default()
 }
 
-fn build(sp: &Spec, path: &ChildPath) -> Command {
-    let mut c = Command::new(&sp.file);
-    if let Some(a0) = &sp.argv0 {
-        c.arg0(a0);
-    }
+/// Y1: exec runs `prog` (the file held open since before the question) through its fd;
+/// argv0 = the asked name, else the canonical path the dialog named
+fn build(sp: &Spec, path: &ChildPath, prog: &Pinned) -> Command {
+    let n = prog.raw();
+    let want = prog.ident.clone();
+    let mut c = Command::new(format!("/proc/self/fd/{n}"));
+    c.arg0(sp.argv0.as_deref().unwrap_or(&sp.file));
     c.args(&sp.args).current_dir(&sp.cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
     for (k, v) in &sp.env {
         c.env(k, v);
@@ -420,7 +512,7 @@ fn build(sp: &Spec, path: &ChildPath) -> Command {
     c.env("PATH", path.as_os_str());
     // SAFETY: async-signal-safe syscalls only, between fork and exec
     unsafe {
-        c.pre_exec(|| {
+        c.pre_exec(move || {
             libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong, 0, 0, 0);
             if libc::getppid() == 1 {
                 return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
@@ -428,19 +520,27 @@ fn build(sp: &Spec, path: &ChildPath) -> Command {
             // CLOEXEC, not close: std reports a failed exec (ENOENT) over its own cloexec
             // pipe, which a plain close_range would cut (spawn would "succeed")
             libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 4u32 /* CLOSE_RANGE_CLOEXEC */);
+            // Y1: the program's fd survives the exec (a #! interpreter opens /proc/self/fd/N),
+            // and the open file is still the one pinned before the question — else EPERM, no exec
+            if libc::fcntl(n, libc::F_SETFD, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if fd_ident(n).as_ref() != Some(&want) {
+                return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+            }
             Ok(())
         });
     }
     c
 }
 
-fn fork(sp: Spec, path: ChildPath) -> std::io::Result<Child> {
+fn fork(sp: Spec, path: ChildPath, prog: Pinned) -> std::io::Result<Child> {
     let (tx, rx) = std::sync::mpsc::channel();
     forker()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .send(Box::new(move || {
-            let _ = tx.send(build(&sp, &path).spawn());
+            let _ = tx.send(build(&sp, &path, &prog).spawn());
         }))
         .map_err(|_| std::io::Error::other("fork thread gone"))?;
     rx.recv().map_err(|_| std::io::Error::other("fork thread gone"))?
@@ -462,8 +562,16 @@ fn pump(r: Arc<Run>, mut src: impl Read, is_err: bool) {
     r.cv.notify_all();
 }
 
+/// Y1: the pinned program changed between the question and the exec
+fn changed(file: &str) -> String {
+    format!("EPERM: spawn {file}: the program changed after it was allowed (replaced, removed or rewritten); not run")
+}
+
 /// Node-style error text: "<CODE>: spawn <file> <reason>"
 fn spawn_err(file: &str, e: &std::io::Error) -> String {
+    if e.raw_os_error() == Some(libc::EPERM) {
+        return changed(file); // the pre_exec identity check (Y1)
+    }
     let code = match e.kind() {
         std::io::ErrorKind::NotFound => "ENOENT",
         std::io::ErrorKind::PermissionDenied => "EACCES",
@@ -483,8 +591,17 @@ pub fn start(sp: Spec, _life: &Life) -> Result<Arc<Run>, String> {
     let Some(path) = sp.path.clone() else {
         return Err(format!("EINVAL: spawn {}: child PATH not prepared before the lifecycle lock (desk_proc::prepare)", sp.file));
     };
+    // Y1: the program was pinned before the question (consent::resolve); unpinned = refused,
+    // never exec'd by name. Its open file must still be the one pinned (again in pre_exec)
+    let mut sp = sp;
+    let Some(prog) = sp.prog.take() else {
+        return Err(format!("EINVAL: spawn {}: program not pinned before the question (desk_proc::pin)", sp.file));
+    };
+    if !prog.unchanged() {
+        return Err(changed(&sp.file));
+    }
     let file = sp.file.clone();
-    let mut child = fork(sp, path).map_err(|e| spawn_err(&file, &e))?;
+    let mut child = fork(sp, path, prog).map_err(|e| spawn_err(&file, &e))?;
     let run = Arc::new(Run {
         pid: child.id() as i32,
         stdin: Mutex::new(child.stdin.take()),
@@ -802,7 +919,13 @@ pub fn shell_target(root: &Path, op: &str, target: &str) -> Result<ShellOpen, St
                 return Err(format!("EINVAL: not a URL: {target}"));
             }
             match scheme.to_ascii_lowercase().as_str() {
-                "http" | "https" | "mailto" => Ok(ShellOpen::Url(target.to_string())),
+                "http" | "https" | "mailto" => {
+                    // Y2 (PR #42 round 8, CodeAnt): an unasked URL is held to the same run-size cap
+                    // (RUN_MAX_BYTES, E2BIG) as an asked open — counted on the same run, xdg-open +
+                    // the URL + cwd "/" — before anything is started
+                    crate::consent::check_env(&opener_spec(root, target))?;
+                    Ok(ShellOpen::Url(target.to_string()))
+                }| "https" | "mailto" => Ok(ShellOpen::Url(target.to_string())),
                 "file" => Local::file(file_url_path(target)?, target).map(ShellOpen::Ask),
                 _ => Ok(ShellOpen::Ask(Local { arg: target.to_string(), ident: None })),
             }
@@ -845,6 +968,12 @@ impl Launch<'_> {
     }
 }
 
+/// R4/Q4/Y2: the run an open is (asked: resolved, shown and run; a URL: run unasked) — xdg-open
+/// with the one target, in OPENER_CWD. Nothing resolved or pinned yet
+pub fn opener_spec(root: &Path, target: &str) -> Spec {
+    Spec { file: "xdg-open".into(), args: vec![target.to_string()], cwd: OPENER_CWD.into(), root: root.to_path_buf(), env: vec![], argv0: None, path: None, prog: None }
+}
+
 /// Q1: the identity recheck and the exec, nothing else: `path` = opener_path(), computed
 /// before the caller took the lifecycle lock — no PATH entry is looked up in here
 pub fn shell_spawn<R>(t: &Local, path: ChildPath, exec: impl FnOnce(Launch) -> Result<R, String>) -> Result<R, String> {
@@ -857,12 +986,33 @@ mod tests {
     use super::*;
 
     fn spec(file: &str, args: &[&str], cwd: &Path) -> Spec {
-        Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), root: cwd.into(), env: vec![], argv0: None, path: None }
+        Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), root: cwd.into(), env: vec![], argv0: None, path: None, prog: None }
     }
 
-    /// Q1: what desk_proc_spawn does before the lock — the child PATH cleaned from ours
+    /// Q1: what desk_proc_spawn does before the lock — the child PATH cleaned from ours.
+    /// Y1: and the program pinned (what consent::resolve does before the question)
     fn ready(sp: Spec) -> Spec {
-        prepare(sp, std::env::var_os("PATH"))
+        prepare(pinned(sp), std::env::var_os("PATH"))
+    }
+
+    /// Y1: a test Spec not made by consent::resolve gets its program pinned as resolve would:
+    /// file = the canonical path found (argv0 keeps the name it had, as resolve does);
+    /// one that is not found stays unpinned (start refuses it, EINVAL)
+    fn pinned(mut sp: Spec) -> Spec {
+        if sp.prog.is_some() {
+            return sp;
+        }
+        let found = crate::consent::resolve_program(&sp).and_then(|p| p.into_os_string().into_string().ok());
+        if let Some(c) = found {
+            if let Ok(p) = pin(&c) {
+                if c != sp.file && sp.argv0.is_none() {
+                    sp.argv0 = Some(sp.file.clone());
+                }
+                sp.file = c;
+                sp.prog = Some(p);
+            }
+        }
+        sp
     }
 
     /* Q1 test seam: path_dir_ok calls q1_gate(dir) first. While a test has armed it for
@@ -911,7 +1061,7 @@ mod tests {
         let mut sp = spec("/bin/sleep", &["30"], &std::env::temp_dir());
         sp.env.push(("PATH".into(), format!("{}:/usr/bin:/bin", stalled.display())));
         let a = std::thread::spawn(move || {
-            let sp = prepare(sp, None); // desk_proc_spawn: before the lock
+            let sp = prepare(pinned(sp), None); // desk_proc_spawn: before the lock
             let life = lifecycle();
             A_LOCKED.store(true, Ordering::SeqCst); // A holds the lifecycle lock from here
             if !TRUSTED.load(Ordering::SeqCst) {
@@ -1026,8 +1176,10 @@ mod tests {
         let (_, _, c) = drain(&r);
         assert_eq!((c.exit, c.signal), (None, Some("SIGTERM")));
         assert!(!r.kill(libc::SIGTERM));
-        let e = start(ready(spec("no-such-exe-desk", &[], &std::env::temp_dir())), &lifecycle()).err().unwrap();
+        let e = crate::consent::resolve(spec("no-such-exe-desk", &[], &std::env::temp_dir())).map(|_| ()).unwrap_err();
         assert!(e.starts_with("ENOENT: spawn no-such-exe-desk"), "{e}");
+        let e = start(ready(spec("no-such-exe-desk", &[], &std::env::temp_dir())), &lifecycle()).err().unwrap();
+        assert!(e.starts_with("EINVAL: spawn no-such-exe-desk"), "{e}"); // Y1: never exec'd unpinned
         assert_eq!(sig_num("SIGKILL"), Some(libc::SIGKILL));
         assert_eq!(sig_num(""), Some(libc::SIGTERM));
     }
@@ -1616,8 +1768,8 @@ mod tests {
         let odd = odd.into_os_string().into_vec();
         let inherited = OsString::from_vec([b"bin:".as_slice(), odd.as_slice(), b":.::/usr/bin".as_slice()].concat());
         assert!(inherited.to_str().is_none(), "the test PATH must not be UTF-8");
-        let sp = prepare(spec("/bin/true", &[], &vault), Some(inherited));
-        let c = build(&sp, sp.path.as_ref().unwrap());
+        let sp = prepare(pinned(spec("/bin/true", &[], &vault)), Some(inherited));
+        let c = build(&sp, sp.path.as_ref().unwrap(), sp.prog.as_ref().unwrap());
         let got = c.get_envs().find(|(k, _)| *k == OsStr::new("PATH")).map(|(_, v)| v.map(|v| v.to_os_string()));
         assert_eq!(got, Some(Some(OsString::from_vec([odd.as_slice(), b":/usr/bin".as_slice()].concat()))), "the child's PATH was not set to the cleaned bytes");
         let _ = std::fs::remove_dir_all(&base);
@@ -1770,5 +1922,25 @@ mod tests {
         let got = shell_spawn(&t, opener_path(Some(format!("{}:/usr/bin", links[0]).into()), &vault), |l| Ok(l.path.clone())).unwrap();
         assert_eq!(got, OsString::from(format!("{ours}:/usr/bin")), "the opener's PATH holds the link");
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* Y2 (PR #42 round 8, CodeAnt): an http(s)/mailto URL is handed to xdg-open unasked;
+       it is held to the same run-size cap as an asked open (consent::RUN_MAX_BYTES, counted
+       on xdg-open + the URL + cwd "/"): at the cap it is opened, one byte over it is E2BIG
+       from shell_target — before xdg-open is resolved or started. */
+    #[test]
+    fn desk_y2_an_oversized_url_is_refused_before_xdg_open() {
+        use crate::consent::RUN_MAX_BYTES;
+        let root = Path::new("/home/u/notes");
+        let fixed = "xdg-open".len() + 1 + 1 + OPENER_CWD.len() + 1; // program, the arg's +1, cwd
+        for pre in ["https://example.org/", "http://example.org/?q=", "mailto:"] {
+            let at = format!("{pre}{}", "a".repeat(RUN_MAX_BYTES - fixed - pre.len()));
+            assert!(matches!(shell_target(root, "external", &at), Ok(ShellOpen::Url(ref u)) if *u == at), "{pre}: a URL at the cap was not opened");
+            let over = format!("{at}a");
+            match shell_target(root, "external", &over) {
+                Err(e) => assert!(e.starts_with("E2BIG"), "{pre}: {e}"),
+                Ok(_) => panic!("{pre}: a URL over the run-size cap is handed to xdg-open"),
+            }
+        }
     }
 }

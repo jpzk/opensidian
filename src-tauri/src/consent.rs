@@ -163,7 +163,10 @@ pub fn resolve(sp: Spec) -> Result<Spec, String> {
     let argv0 = if file != sp.file { Some(sp.file.clone()) } else { sp.argv0.clone() };
     let sp = Spec { file, argv0, ..sp };
     check_run(&sp)?; // V2: the cap holds for what is shown and run, not only what was sent
-    Ok(sp)
+    // Y1 (PR #42 round 8): the program is held open from HERE — before the question is built —
+    // to the exec, which runs this open file (desk_proc::pin, desk_proc::build), never the name again
+    let prog = Some(crate::desk_proc::pin(&sp.file)?);
+    Ok(Spec { prog, ..sp })
 }
 
 /// the trust prompt's body. `canon` = plugins::trust_key (canonical vault path)
@@ -444,7 +447,7 @@ mod tests {
     use super::*;
 
     fn sp(file: &str, args: &[&str], cwd: &str) -> Spec {
-        Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), root: cwd.into(), env: vec![], argv0: None, path: None }
+        Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), root: cwd.into(), env: vec![], argv0: None, path: None, prog: None }
     }
 
     /// base/vault (the plugin's cwd, with its own `fakeprog`), base/bin (the real
@@ -720,5 +723,87 @@ mod tests {
         for r in [R::Reject, R::DeleteEvent, R::None, R::Cancel, R::Close, R::Ok, R::Yes, R::Other(7), R::Other(8)] {
             assert_eq!(answer_of(r), Answer::No, "{r:?}");
         }
+    }
+
+    /// Y1 tests: run a resolved, allowed Spec as desk_proc_spawn does after Allow
+    /// (prepare, lifecycle, start); Ok(stdout) or the start error
+    fn run_allowed(s: Spec) -> Result<String, String> {
+        use crate::desk_proc::{lifecycle, prepare, start};
+        let r = start(prepare(s, std::env::var_os("PATH")), &lifecycle())?;
+        r.end();
+        let mut out = String::new();
+        for _ in 0..200 {
+            let c = r.read(std::time::Duration::from_millis(50));
+            out.push_str(&c.out);
+            if c.done {
+                return Ok(out);
+            }
+        }
+        panic!("child never finished");
+    }
+
+    /* Y1 (PR #42 round 8, CodeAnt): the program is pinned by resolve (held open before the
+       question) and the child execs that open file. While the dialog is open (the present
+       hook of ask_with = the dialog on screen) the program on disk is replaced — a new file
+       renamed over it, or the same file rewritten in place — then the user presses Allow.
+       The replacement must never run: the original runs, or the run is refused (EPERM: the
+       pinned file changed: rename/unlink and rewrite both move its ctime). A control round
+       with nothing replaced runs the original. */
+    #[test]
+    fn y1_a_program_replaced_while_the_dialog_is_open_is_never_the_one_run() {
+        let base = std::env::temp_dir().join(format!("consent-y1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("bin")).unwrap();
+        let base = base.canonicalize().unwrap();
+        let prog = base.join("bin/y1prog");
+        let next = base.join("bin/y1next");
+        let mark = base.join("REPLACEMENT-RAN");
+        let replacement = format!("#!/bin/sh\ntouch '{}'\necho REPLACEMENT\n", mark.display());
+        for how in ["none", "rename", "rewrite"] {
+            crate::testutil::write_exe(&prog, "#!/bin/sh\necho ORIGINAL\n").unwrap();
+            let s = resolve(sp(&prog.to_string_lossy(), &[], &base.to_string_lossy())).unwrap();
+            assert_eq!(s.file, prog.to_string_lossy(), "the dialog names the program");
+            let yes = ask_with(Kind::Spawn, spawn_question(&s), |_, _, tx| {
+                match how {
+                    "rename" => {
+                        crate::testutil::write_exe(&next, &replacement).unwrap();
+                        std::fs::rename(&next, &prog).unwrap();
+                    }
+                    "rewrite" => crate::testutil::write_exe(&prog, &replacement).unwrap(), // same inode (cat >)
+                    _ => {}
+                }
+                tx.send(Answer::Once).is_ok()
+            });
+            assert!(yes, "{how}: Allow was not taken");
+            let got = run_allowed(s);
+            assert!(!mark.exists(), "{how}: the program replaced while the dialog was open ran after Allow ({got:?})");
+            match (how, got) {
+                ("none", r) => assert_eq!(r.as_deref(), Ok("ORIGINAL\n"), "control: the allowed program did not run"),
+                (_, Ok(o)) => assert_eq!(o, "ORIGINAL\n", "{how}: something other than the allowed program ran"),
+                (_, Err(e)) => assert!(e.starts_with("EPERM: spawn ") && e.contains("changed after it was allowed"), "{how}: {e}"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* Y1: exec through the held fd keeps #! scripts working — the kernel hands the
+       interpreter /proc/self/fd/N, which stays open across the exec. A script program,
+       found by name on PATH like any plugin program, runs with its args and cwd; its $0 is
+       the pinned file (/proc/self/fd/N), whose content is the script that was asked about. */
+    #[test]
+    fn y1_a_hash_bang_script_program_still_runs() {
+        let base = std::env::temp_dir().join(format!("consent-y1s-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("bin")).unwrap();
+        std::fs::create_dir_all(base.join("work")).unwrap();
+        let base = base.canonicalize().unwrap();
+        crate::testutil::write_exe(base.join("bin/y1script"), "#!/bin/sh\nprintf '%s|' \"$1\" \"$2\" \"$(pwd)\"\nhead -n 2 \"$0\" | tail -n 1\n").unwrap();
+        let s = with_path("y1script", &base.join("work"), &base.join("bin").to_string_lossy());
+        let s = Spec { args: vec!["a b".into(), "c".into()], ..s };
+        let s = resolve(s).unwrap();
+        let got = run_allowed(s).unwrap();
+        let want = format!("a b|c|{}|printf '%s|' \"$1\" \"$2\" \"$(pwd)\"\n", base.join("work").display());
+        assert_eq!(got, want, "the #! script did not run with its args and cwd");
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

@@ -3800,7 +3800,7 @@ async fn desk_proc_spawn(
         return Err("EPERM: restricted mode, plugins cannot start programs".into());
     }
     let args: Vec<String> = args.unwrap_or_default().iter().map(|a| desk_proc::map_arg(&root, a)).collect();
-    let sp = desk_proc::Spec { file, args, cwd: desk_proc::map_cwd(&root, cwd.as_deref()), root: root.clone(), env: env.unwrap_or_default().into_iter().collect(), argv0: None, path: None };
+    let sp = desk_proc::Spec { file, args, cwd: desk_proc::map_cwd(&root, cwd.as_deref()), root: root.clone(), env: env.unwrap_or_default().into_iter().collect(), argv0: None, path: None, prog: None };
     consent::check_env(&sp)?; // F6 + Q4: an env, or program + args + cwd, over the cap is refused, nothing asked
     let sp = consent::resolve(sp)?; // F1: file = the absolute path the dialog names and exec runs
     if !consent::ask(win, consent::Kind::Spawn, consent::spawn_question(&sp)).await? {
@@ -3959,9 +3959,13 @@ async fn desk_shell(win: tauri::Window, v: State<'_, Vault>, op: String, target:
         desk_proc::ShellOpen::Url(url) => (std::path::PathBuf::from("xdg-open"), desk_proc::Local::url(url)),
         desk_proc::ShellOpen::Ask(t) => {
             // R4: the opener runs in "/" (desk_proc::OPENER_CWD), never the vault
-            let sp = desk_proc::Spec { file: "xdg-open".into(), args: vec![t.arg.clone()], cwd: desk_proc::OPENER_CWD.into(), root: root.clone(), env: vec![], argv0: None, path: None };
+            let sp = desk_proc::opener_spec(&root, &t.arg);
             consent::check_env(&sp)?; // Q4: a target over the size cap is refused, nothing asked
             let sp = consent::resolve(sp)?; // the absolute xdg-open the dialog names is the one that runs
+            // Y1 (PR #42 round 8): resolve pins xdg-open too, but the opener is exec'd by that canonical
+            // path, not through the fd (desk_proc::build is spawn-only): xdg-open is found on the app's
+            // own absolute PATH entries, not a plugin-chosen path. RESIDUAL: a writable dir on the app's
+            // PATH ahead of /usr/bin (e.g. ~/.local/bin) could have xdg-open replaced between dialog and exec
             // R5: the open question (names the target, says it may run it; neutral about who asks)
             if !consent::ask(win, consent::Kind::Spawn, consent::open_question(&sp, &t.arg)).await? {
                 eprintln!("[desk] shell {op} {:?}: denied by the user", t.arg);
