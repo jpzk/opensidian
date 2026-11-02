@@ -358,19 +358,23 @@ mod tests {
         assert_eq!(s3.len(), ix.len());
         assert_eq!(sweep_ghosts(&root, &s3, &mut ix), vec!["Nope/ours".to_string()]);
         // a folder made unreadable from outside: the walk cannot list the note and lstat is refused, not
-        // NotFound, so the note is kept (root ignores the mode bits: nothing to check then)
-        use std::os::unix::fs::PermissionsExt;
-        fs::create_dir_all(root.join("Locked")).unwrap();
-        w(&root, "Locked/n", "");
-        ix.upsert("Locked/n", "");
-        fs::set_permissions(root.join("Locked"), fs::Permissions::from_mode(0o000)).unwrap();
-        if fs::symlink_metadata(note_file(&root, "Locked/n")).is_err() {
-            let s4 = snapshot(&root);
-            assert!(!s4.contains_key("Locked/n"));
-            assert!(sweep_ghosts(&root, &s4, &mut ix).is_empty());
-            assert_eq!(ix.content("Locked/n"), Some(""));
+        // NotFound, so the note is kept (root ignores the mode bits: nothing to check then).
+        // Mode bits are a Unix concept; Windows ACLs are not exercised here.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::create_dir_all(root.join("Locked")).unwrap();
+            w(&root, "Locked/n", "");
+            ix.upsert("Locked/n", "");
+            fs::set_permissions(root.join("Locked"), fs::Permissions::from_mode(0o000)).unwrap();
+            if fs::symlink_metadata(note_file(&root, "Locked/n")).is_err() {
+                let s4 = snapshot(&root);
+                assert!(!s4.contains_key("Locked/n"));
+                assert!(sweep_ghosts(&root, &s4, &mut ix).is_empty());
+                assert_eq!(ix.content("Locked/n"), Some(""));
+            }
+            fs::set_permissions(root.join("Locked"), fs::Permissions::from_mode(0o755)).unwrap();
         }
-        fs::set_permissions(root.join("Locked"), fs::Permissions::from_mode(0o755)).unwrap();
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -575,7 +579,8 @@ mod tests {
     /// removal is withdrawn and the note keeps its PREVIOUS fingerprint, so the
     /// tick reconciles no removal (its tab stays) and the next tick retries.
     /// Root ignores the mode bits: then the lstat succeeds and there is nothing
-    /// to check.
+    /// to check. Unix-only: mode bits via PermissionsExt.
+    #[cfg(unix)]
     #[test]
     fn heal_short_walk_keeps_a_note_it_cannot_stat() {
         use std::os::unix::fs::PermissionsExt;
