@@ -846,7 +846,7 @@ pub fn trust_plan(on: bool, seen: u64, trusted_now: impl FnOnce() -> bool) -> (b
    symlink followed, the dialog shows the final path, and that final path — never the
    plugin's spelling — is what xdg-open gets), its identity is recorded (lstat: dev, ino,
    mode, size, mtime, ctime — Q2), and after Allow `Local::recheck` lstats the same path again right
-   before the exec (desk_shell, under the lifecycle lock): any difference — another inode,
+   before the lock and the exec (desk_shell -> shell_open; BB1: outside the lifecycle lock): any difference — another inode,
    a symlink where the file was, changed contents/size/mtime, gone — refuses with EPERM and
    nothing is opened. A file: URL is turned into its path (percent-decoded) and goes the
    same way, so it cannot route around the binding.
@@ -937,6 +937,8 @@ impl Local {
     }
 
     fn file(p: PathBuf, target: &str) -> Result<Local, String> {
+        #[cfg(test)]
+        fs_work(); // BB2 probe
         let real = p.canonicalize().map_err(|_| format!("ENOENT: no such file or directory, '{target}'"))?;
         Local::at(real, target)
     }
@@ -957,6 +959,8 @@ impl Local {
     /// the dialog is open), which is not a swap. Files keep the full identity.
     pub fn recheck(&self) -> Result<(), String> {
         let Some(was) = &self.ident else { return Ok(()) };
+        #[cfg(test)]
+        tests::bb1_gate(Path::new(&self.arg)); // BB1 probe: a lookup that stands still
         match ident_of(Path::new(&self.arg)) {
             Ok(now) if now.same_as(was) => Ok(()),
             Ok(_) => Err(format!("EPERM: {} changed after it was allowed (replaced, swapped for a symlink, or rewritten); not opened", self.arg)),
@@ -1045,8 +1049,8 @@ pub fn shell_target(root: &Path, op: &str, target: &str) -> Result<ShellOpen, St
 }
 
 /* P4: the exec of xdg-open itself — the identity recheck, then `exec` (the caller's
-   fork of xdg-open with t.arg), nothing in between (desk_shell calls it under the
-   lifecycle lock, after the trust recheck). A changed target returns the EPERM and
+   fork of xdg-open with t.arg), nothing but the lifecycle lock and the trust recheck in between (shell_open;
+   BB1: the recheck runs before the lock, the exec under it). A changed target returns the EPERM and
    `exec` is never called. (The process is built by the caller: the only
    command builder in this file is fn build — consent-nobypass S1.)
    R4 (PR #42, Qodo): the opener is a script that looks up its helpers on PATH, so it
@@ -1061,7 +1065,7 @@ pub const OPENER_CWD: &str = "/";
    question, as it pins every program (Y1) — and then desk_shell dropped that pin and exec'd
    the xdg-open PATHNAME after Allow. A writable directory on the app's PATH ahead of /usr/bin
    (~/.local/bin, say), or a swap of the file itself, could put another opener there while the
-   dialog was open. Now the opener is exec'd through its held fd exactly like a spawn: shell_spawn
+   dialog was open. Now the opener is exec'd through its held fd exactly like a spawn: opener_exec
    takes the resolved opener Spec, refuses it unpinned (EINVAL) or changed since the question
    (EPERM), and Launch gives the caller "/proc/self/fd/N" to build its Command from (program())
    and, in apply(), the pre_exec that keeps N open across the exec (xdg-open is a #! script: the
@@ -1120,12 +1124,34 @@ pub fn opener_spec(root: &Path, target: &str) -> Spec {
     Spec { file: "xdg-open".into(), args: vec![target.to_string()], cwd: OPENER_CWD.into(), root: root.to_path_buf(), env: vec![], argv0: None, path: None, prog: None, dir: None }
 }
 
-/// Q1: the identity recheck and the exec, nothing else: `path` = opener_path(), computed
-/// before the caller took the lifecycle lock — no PATH entry is looked up in here.
-/// AA1: `opener` = the opener Spec consent::resolve returned (pinned before the question);
-/// unpinned = EINVAL, its open file changed since = EPERM, nothing exec'd
-pub fn shell_spawn<R>(t: &Local, opener: &Spec, path: ChildPath, exec: impl FnOnce(Launch) -> Result<R, String>) -> Result<R, String> {
+/* BB1 (PR #42 round 11, CodeAnt): t.recheck() is a PATH walk of a vault path (open O_PATH,
+   fstat, readlink of /proc/self/fd/N — ident_of). It ran inside shell_spawn, which desk_shell
+   called under the lifecycle lock: a vault on a stalled FUSE/NFS mount held that lock for as
+   long as the lookup stood still, and a trust-OFF (plugins_set: lock, flag OFF, kill_all,
+   close_all) and every spawn waited behind it (the Q1 class, for the target instead of a PATH
+   entry). Now shell_open is desk_shell's whole sequence after Allow: the target recheck FIRST,
+   outside the lock and as late as possible before it; then the lock; under it only the trust
+   check, fd-only checks (fstat of the opener fd pinned before the question) and the fork
+   (opener_exec, which walks no path). A trust-OFF landing while the recheck stands still takes
+   the lock at once; the open then sees trust OFF and is refused (EPERM), nothing started. */
+/// BB1: desk_shell after Allow — `t.recheck()` (path lookups) before the lifecycle lock; under
+/// it `trusted()` (the flip may have gone OFF while the question was open, F5), then
+/// opener_exec. `path` = opener_path(), made before the lock too (Q1)
+pub fn shell_open<R>(t: &Local, opener: &Spec, path: ChildPath, trusted: impl FnOnce() -> bool, exec: impl FnOnce(Launch) -> Result<R, String>) -> Result<R, String> {
     t.recheck()?;
+    let life = lifecycle();
+    if !trusted() {
+        return Err("EPERM: restricted mode, plugins cannot use the shell".into());
+    }
+    let r = opener_exec(t, opener, path, &life, exec);
+    drop(life);
+    r
+}
+
+/// Q1/BB1: under the lifecycle lock — fd-only checks and the exec, no path looked up in here.
+/// AA1: `opener` = the opener Spec consent::resolve returned (pinned before the question);
+/// unpinned = EINVAL, its open file changed since = EPERM (fstat of the held fd), nothing exec'd
+fn opener_exec<R>(t: &Local, opener: &Spec, path: ChildPath, _life: &Life, exec: impl FnOnce(Launch) -> Result<R, String>) -> Result<R, String> {
     let Some(prog) = opener.prog.as_ref() else {
         return Err(format!("EINVAL: open: the opener {} was not pinned before the question (desk_proc::pin)", opener.file));
     };
@@ -1133,6 +1159,56 @@ pub fn shell_spawn<R>(t: &Local, opener: &Spec, path: ChildPath, exec: impl FnOn
         return Err(format!("EPERM: open: the opener {} changed after it was allowed; not run", opener.file));
     }
     exec(Launch { arg: &t.arg, cwd: Path::new(OPENER_CWD), path: path.0, prog, argv0: opener.argv0.as_deref().unwrap_or(&opener.file) })
+}
+
+/* BB2 (PR #42 round 11, CodeAnt): the bounded question queue (R2, EBUSY) was entered only in
+   consent::ask — after shell_target (canonicalize + O_PATH open + fstat + readlink of the
+   target) and consent::resolve (PATH walk, pin + pin_dir: two more opens), so a flood of
+   opens still did all of that fs work and fd churn before being refused. Now the place in the
+   queue (consent::admit, an RAII Slot) is taken FIRST; beyond MAX_IN_FLIGHT the request is
+   EBUSY with no lookup and no fd opened. The Slot rides along to consent::ask (which demands
+   it) and is freed on every exit (drop). An unasked http(s)/mailto URL takes a place too
+   while its opener is resolved, and gives it back right after. */
+/// BB2: what desk_shell does before the question: a place in the queue, then the target
+/// (shell_target), then the opener resolved and pinned (consent::resolve)
+pub struct ShellPrep {
+    pub slot: crate::consent::Slot,
+    pub opener: Spec,
+    pub target: Local,
+    /// false = an http(s)/mailto URL: opened unasked
+    pub ask: bool,
+}
+
+pub fn shell_prepare(root: &Path, op: &str, target: &str) -> Result<ShellPrep, String> {
+    let slot = crate::consent::admit()?;
+    let (opener, target, ask) = match shell_target(root, op, target)? {
+        // AA1 (PR #42 round 10): the unasked opener is resolved and pinned too, and exec'd by that fd
+        ShellOpen::Url(url) => (crate::consent::resolve(opener_spec(root, &url))?, Local::url(url), false),
+        ShellOpen::Ask(t) => {
+            // R4: the opener runs in "/" (OPENER_CWD), never the vault
+            let sp = opener_spec(root, &t.arg);
+            crate::consent::check_env(&sp)?; // Q4: a target over the size cap is refused, nothing asked
+            (crate::consent::resolve(sp)?, t, true) // the absolute xdg-open the dialog names is the one that runs
+        }
+    };
+    Ok(ShellPrep { slot, opener, target, ask })
+}
+
+/* BB2 test probe: every entry into pre-question fs work (shell_target's Local::file, consent::
+   resolve) counts on the calling thread, so a test can assert that a refused request did none */
+#[cfg(test)]
+thread_local! {
+    static FS_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub fn fs_work() {
+    FS_WORK.with(|c| c.set(c.get() + 1));
+}
+
+#[cfg(test)]
+pub fn fs_work_count() -> usize {
+    FS_WORK.with(|c| c.get())
 }
 
 #[cfg(test)]
@@ -1553,7 +1629,7 @@ mod tests {
 
     /* P4 (PR #42, CodeAnt): the dialog approves a path; a target replaced (another inode)
        or swapped for a symlink while the dialog is open is refused, not opened. The
-       "dialog" is the hook between shell_target (what is asked) and shell_spawn (what
+       "dialog" is the hook between shell_target (what is asked) and shell_open (what
        runs): it runs the swap to completion before the answer, so the order is forced —
        no sleeps. The opener is a stub script that logs every target it is handed. */
     #[test]
@@ -1569,14 +1645,14 @@ mod tests {
         std::fs::write(vault.join("evil.desktop"), "[Desktop Entry]\nType=Application\nExec=touch /tmp/pwn\n").unwrap();
         let real = vault.canonicalize().unwrap();
         let opened = || std::fs::read_to_string(&log).unwrap_or_default();
-        // ask (shell_target), the user reads the dialog (`dialog` hook), Allow, run (shell_spawn)
+        // ask (shell_target), the user reads the dialog (`dialog` hook), Allow, run (shell_open)
         let ask_then_run = |op: &str, target: &str, dialog: &dyn Fn()| -> Result<String, String> {
             let t = match shell_target(&vault, op, target)? {
                 ShellOpen::Ask(t) => t,
                 ShellOpen::Url(u) => panic!("{op} {target}: not asked ({u})"),
             };
             dialog();
-            let mut c = shell_spawn(&t, &opener_at(&opener), opener_path(None, &vault), |l| l.apply(&mut Command::new(l.program())).spawn().map_err(|e| e.to_string()))?;
+            let mut c = shell_open(&t, &opener_at(&opener), opener_path(None, &vault), || true, |l| l.apply(&mut Command::new(l.program())).spawn().map_err(|e| e.to_string()))?;
             assert!(c.wait().unwrap().success(), "the stub opener failed");
             Ok(t.arg)
         };
@@ -1718,7 +1794,7 @@ mod tests {
                 ShellOpen::Url(u) => panic!("{op} {target}: not asked ({u})"),
             };
             dialog();
-            shell_spawn(&t, &opener_at(Path::new("/bin/sh")), opener_path(None, &vault), |l| Ok(l.arg.to_string()))
+            shell_open(&t, &opener_at(Path::new("/bin/sh")), opener_path(None, &vault), || true, |l| Ok(l.arg.to_string()))
         };
         // reveal(sub/a.md) opens sub/; a sibling is created, rewritten and renamed meanwhile
         let r = ask_then_run("reveal", "/vault/sub/a.md", &|| {
@@ -1814,7 +1890,7 @@ mod tests {
             ShellOpen::Ask(t) => t,
             ShellOpen::Url(u) => panic!("not asked ({u})"),
         };
-        let mut c = shell_spawn(&t, &opener_at(&opener), opener_path(Some(dirty.clone().into()), &vault), |l| {
+        let mut c = shell_open(&t, &opener_at(&opener), opener_path(Some(dirty.clone().into()), &vault), || true, |l| {
             let mut cmd = Command::new(l.program()); // AA1: the held opener
             l.apply(&mut cmd).spawn().map_err(|e| e.to_string())
         })
@@ -1889,7 +1965,7 @@ mod tests {
             ShellOpen::Ask(t) => t,
             ShellOpen::Url(u) => panic!("not asked ({u})"),
         };
-        let got = shell_spawn(&t, &opener_at(Path::new("/bin/sh")), opener_path(Some("tools:.".into()), &vault), |l| Ok(l.path.clone())).unwrap();
+        let got = shell_open(&t, &opener_at(Path::new("/bin/sh")), opener_path(Some("tools:.".into()), &vault), || true, |l| Ok(l.path.clone())).unwrap();
         assert!(s1_safe(&got.to_string_lossy(), &vault), "the opener's PATH {got:?} is empty or not absolute dirs outside the vault");
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -2028,7 +2104,7 @@ mod tests {
             ShellOpen::Ask(t) => t,
             ShellOpen::Url(u) => panic!("not asked ({u})"),
         };
-        let got = shell_spawn(&t, &opener_at(Path::new("/bin/sh")), opener_path(Some(format!("{v}/bin:/proc/self/cwd:/usr/bin").into()), &vault), |l| Ok(l.path.clone())).unwrap();
+        let got = shell_open(&t, &opener_at(Path::new("/bin/sh")), opener_path(Some(format!("{v}/bin:/proc/self/cwd:/usr/bin").into()), &vault), || true, |l| Ok(l.path.clone())).unwrap();
         assert_eq!(got, "/usr/bin", "the opener's PATH kept an entry into the vault");
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -2119,7 +2195,7 @@ mod tests {
             ShellOpen::Ask(t) => t,
             ShellOpen::Url(u) => panic!("not asked ({u})"),
         };
-        let got = shell_spawn(&t, &opener_at(Path::new("/bin/sh")), opener_path(Some(format!("{}:/usr/bin", links[0]).into()), &vault), |l| Ok(l.path.clone())).unwrap();
+        let got = shell_open(&t, &opener_at(Path::new("/bin/sh")), opener_path(Some(format!("{}:/usr/bin", links[0]).into()), &vault), || true, |l| Ok(l.path.clone())).unwrap();
         assert_eq!(got, OsString::from(format!("{ours}:/usr/bin")), "the opener's PATH holds the link");
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -2182,7 +2258,7 @@ mod tests {
                 _ => {}
             }
             // Allow: desk_shell's exec
-            let r = shell_spawn(&t, &sp, opener_path(None, &vault), |l| {
+            let r = shell_open(&t, &sp, opener_path(None, &vault), || true, |l| {
                 let mut c = Command::new(l.program());
                 l.apply(&mut c).spawn().map_err(|e| opener_err(&sp.file, &e))
             })
@@ -2199,5 +2275,84 @@ mod tests {
             }
         }
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* BB1 test seam: Local::recheck calls bb1_gate(its path) first. While a test has armed it
+       for one target path, the recheck of THAT path stands still — it reports whether this
+       thread holds the lifecycle lock right now (held_here: the recheck runs on the caller's
+       thread) and waits for "go", like an open/fstat stuck on a stalled FUSE/NFS vault. Every
+       other path passes straight through (the armed pair is taken out of the mutex first). */
+    type Bb1Gate = (PathBuf, std::sync::mpsc::Sender<bool>, std::sync::mpsc::Receiver<()>);
+    static BB1_GATE: Mutex<Option<Bb1Gate>> = Mutex::new(None);
+
+    pub(super) fn bb1_gate(p: &Path) {
+        let armed = {
+            let mut g = BB1_GATE.lock().unwrap_or_else(|e| e.into_inner());
+            if g.as_ref().is_some_and(|(d, _, _)| d == p) { g.take() } else { None }
+        };
+        if let Some((_, entered, go)) = armed {
+            let _ = entered.send(held_here());
+            let _ = go.recv();
+        }
+    }
+
+    /* BB1 (PR #42 round 11, CodeAnt): the target's identity recheck is a path lookup of a
+       vault path; it must not run under the lifecycle lock, or a stalled vault mount holds up a
+       trust-OFF (and every spawn). Thread A runs desk_shell's sequence after Allow (shell_open:
+       recheck, lock, trust recheck, opener_exec); its recheck stands still (bb1_gate) until the
+       test says go, and reports whether A held the lock at that moment — exact, no sleep, no
+       timeout. If it did not, the trust-OFF (plugins_set: lock, flag OFF) takes the lock now and
+       returns while the recheck still stands; afterwards A's open must be refused (EPERM,
+       restricted mode) and the opener never run. If it did, taking the lock would deadlock:
+       release A and fail. The gate is released before any assert. */
+    #[test]
+    fn desk_bb1_a_stalled_target_recheck_does_not_hold_the_lifecycle_lock() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc::channel;
+        static TRUSTED: AtomicBool = AtomicBool::new(true);
+        TRUSTED.store(true, Ordering::SeqCst);
+        let base = std::env::temp_dir().join(format!("desk-bb1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("v")).unwrap();
+        let base = base.canonicalize().unwrap();
+        let vault = base.join("v");
+        std::fs::write(vault.join("Note.md"), "# hi\n").unwrap();
+        let (opener, log) = (base.join("opener"), base.join("opened.log"));
+        crate::testutil::write_exe(&opener, format!("#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{}'\n", log.display())).unwrap();
+        let t = match shell_target(&vault, "path", "/vault/Note.md").unwrap() {
+            ShellOpen::Ask(t) => t,
+            ShellOpen::Url(u) => panic!("not asked ({u})"),
+        };
+        let sp = opener_at(&opener);
+        let (entered_tx, entered) = channel::<bool>();
+        let (go, go_rx) = channel::<()>();
+        *BB1_GATE.lock().unwrap_or_else(|e| e.into_inner()) = Some((PathBuf::from(&t.arg), entered_tx, go_rx));
+        let path = opener_path(None, &vault); // desk_shell: before the lock (Q1)
+        let a = std::thread::spawn(move || {
+            shell_open(&t, &sp, path, || TRUSTED.load(Ordering::SeqCst), |l| {
+                let mut c = Command::new(l.program());
+                l.apply(&mut c).spawn().map_err(|e| e.to_string())
+            })
+            .map(|mut c| c.wait().map(|s| s.success()).unwrap_or(false))
+        });
+        let held = entered.recv().expect("the target was never rechecked");
+        // the recheck stands still now. The trust-OFF: only when A does not hold the lock
+        // (blocking is then safe; other tests hold it only briefly)
+        let off_returned = if !held {
+            let life = lifecycle();
+            TRUSTED.store(false, Ordering::SeqCst);
+            drop(life);
+            true
+        } else {
+            false
+        };
+        let _ = go.send(());
+        let got = a.join().unwrap();
+        let opened = std::fs::read_to_string(&log).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(!held, "the target's path recheck stood still while A held the lifecycle lock (a trust-OFF waits on it)");
+        assert!(off_returned, "the trust-OFF did not return while the recheck stood still");
+        assert!(matches!(&got, Err(e) if e.starts_with("EPERM: restricted mode")), "the open was not refused after a trust-OFF that landed during its recheck: {got:?}");
+        assert!(opened.is_empty(), "the opener ran after the trust-OFF: {opened:?}");
     }
 }

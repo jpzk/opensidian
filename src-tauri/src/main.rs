@@ -3706,8 +3706,10 @@ async fn plugins_set(
     // nothing is asked — a trust-OFF landing after the is_trusted read makes it EAGAIN
     let (ask, carries) = desk_proc::trust_plan(trusted == Some(true), seen, || plugins::is_trusted(&cfg_value(), &root));
     if ask {
+        // BB2 (PR #42 round 11): the place in the question queue before trust_key (a lookup)
+        let slot = consent::admit()?;
         let key = plugins::trust_key(&root);
-        if !consent::ask(win, consent::Kind::Trust, consent::trust_question(&key)).await? {
+        if !consent::ask(slot, win, consent::Kind::Trust, consent::trust_question(&key)).await? {
             eprintln!("[consent] trust {key:?}: cancelled, nothing written");
             return Ok(plugins_state_of(&root));
         }
@@ -3799,11 +3801,14 @@ async fn desk_proc_spawn(
     if !plugins::is_trusted(&cfg_value(), &root) {
         return Err("EPERM: restricted mode, plugins cannot start programs".into());
     }
+    // BB2 (PR #42 round 11): the place in the question queue FIRST — beyond MAX_IN_FLIGHT this is
+    // EBUSY before any lookup or pin (resolve), no fs work, no fd opened; ask demands the slot
+    let slot = consent::admit()?;
     let args: Vec<String> = args.unwrap_or_default().iter().map(|a| desk_proc::map_arg(&root, a)).collect();
     let sp = desk_proc::Spec { file, args, cwd: desk_proc::map_cwd(&root, cwd.as_deref()), root: root.clone(), env: env.unwrap_or_default().into_iter().collect(), argv0: None, path: None, prog: None, dir: None };
     consent::check_env(&sp)?; // F6 + Q4: an env, or program + args + cwd, over the cap is refused, nothing asked
     let sp = consent::resolve(sp)?; // F1: file = the absolute path the dialog names and exec runs
-    if !consent::ask(win, consent::Kind::Spawn, consent::spawn_question(&sp)).await? {
+    if !consent::ask(slot, win, consent::Kind::Spawn, consent::spawn_question(&sp)).await? {
         eprintln!("[desk] spawn {} {:?} cwd={}: denied by the user", sp.file, sp.args, sp.cwd.display());
         return Err(format!("EPERM: spawn {} denied by the user", sp.file));
     }
@@ -3940,7 +3945,7 @@ async fn desk_http_request(v: State<'_, Vault>, req: desk_http::Req) -> Result<d
    xdg-open (resolved like any spawn), the target in full, asked every time — and Deny is
    EPERM with nothing started (desk_proc::shell_target says which). async: the dialog.
    P4 (PR #42): the dialog shows the target's final path (symlinks resolved), its identity
-   (dev/ino/mode/size/mtime/ctime) is recorded before asking, and desk_proc::shell_spawn re-checks
+   (dev/ino/mode/size/mtime/ctime) is recorded before asking, and desk_proc::shell_open re-checks
    it right before the exec: a file replaced or swapped for a symlink while the dialog was
    open is refused (EPERM), not opened. RESIDUAL WINDOW: from that recheck to xdg-open's own
    open of the path (fork/exec of xdg-open, then its handler opens by name) a swap is still
@@ -3955,35 +3960,30 @@ async fn desk_shell(win: tauri::Window, v: State<'_, Vault>, op: String, target:
     if !plugins::is_trusted(&cfg_value(), &root) {
         return Err("EPERM: restricted mode, plugins cannot use the shell".into());
     }
-    let (opener, t) = match desk_proc::shell_target(&root, &op, &target)? {
-        // AA1 (PR #42 round 10): the unasked opener is resolved and pinned too, and exec'd by that fd
-        desk_proc::ShellOpen::Url(url) => (consent::resolve(desk_proc::opener_spec(&root, &url))?, desk_proc::Local::url(url)),
-        desk_proc::ShellOpen::Ask(t) => {
-            // R4: the opener runs in "/" (desk_proc::OPENER_CWD), never the vault
-            let sp = desk_proc::opener_spec(&root, &t.arg);
-            consent::check_env(&sp)?; // Q4: a target over the size cap is refused, nothing asked
-            let sp = consent::resolve(sp)?; // the absolute xdg-open the dialog names is the one that runs
-            // Y1/AA1: resolve pins xdg-open; shell_spawn execs THAT open file (its fd), never the
-            // pathname again — a file swapped in at the path during the dialog is never run (EPERM)
-            // R5: the open question (names the target, says it may run it; neutral about who asks)
-            if !consent::ask(win, consent::Kind::Spawn, consent::open_question(&sp, &t.arg)).await? {
-                eprintln!("[desk] shell {op} {:?}: denied by the user", t.arg);
-                return Err(format!("EPERM: open {} denied by the user", t.arg));
-            }
-            (sp, t)
+    // BB2 (PR #42 round 11): the place in the question queue FIRST, then the target and the
+    // opener (resolved + pinned) — beyond MAX_IN_FLIGHT, EBUSY with no lookup and no fd opened
+    let desk_proc::ShellPrep { slot, opener, target: t, ask } = desk_proc::shell_prepare(&root, &op, &target)?;
+    if ask {
+        // Y1/AA1: resolve pinned xdg-open; it is exec'd through THAT open file (its fd), never the
+        // pathname again — a file swapped in at the path during the dialog is never run (EPERM)
+        // R5: the open question (names the target, says it may run it; neutral about who asks)
+        if !consent::ask(slot, win, consent::Kind::Spawn, consent::open_question(&opener, &t.arg)).await? {
+            eprintln!("[desk] shell {op} {:?}: denied by the user", t.arg);
+            return Err(format!("EPERM: open {} denied by the user", t.arg));
         }
-    };
-    // Q1 (PR #42 round 4): the opener's cleaned PATH (canonicalize of every entry) before the lock
-    let opener_path = desk_proc::opener_path(std::env::var_os("PATH"), &root);
-    // the flip may have gone OFF while the question was open (F5: under the lifecycle lock)
-    let life = desk_proc::lifecycle();
-    if !plugins::is_trusted(&cfg_value(), &root) {
-        return Err("EPERM: restricted mode, plugins cannot use the shell".into());
+    } else {
+        drop(slot); // an http(s)/mailto URL: nothing asked, the place is given back
     }
+    // Q1 (PR #42 round 4): the opener's cleaned PATH (canonicalize of every entry) before the lock;
+    // BB1: so is the vault's trust key (canonicalize of the root) — the lock walks no path
+    let opener_path = desk_proc::opener_path(std::env::var_os("PATH"), &root);
+    let key = plugins::trust_key(&root);
     eprintln!("[desk] shell {op} {}", t.arg);
-    // P4: identity recheck + exec, nothing in between; R4: cwd "/", PATH absolute entries only.
+    // BB1: shell_open = the target's identity recheck (a path lookup) BEFORE the lifecycle lock,
+    // then under it the trust recheck (the flip may have gone OFF while the question was open, F5),
+    // the opener's fd-only check and the exec. P4: R4: cwd "/", PATH absolute entries only.
     // AA1: the opener is exec'd by its held fd (l.program()), rechecked in pre_exec (l.apply)
-    let r = desk_proc::shell_spawn(&t, &opener, opener_path, |l| {
+    let r = desk_proc::shell_open(&t, &opener, opener_path, || plugins::is_trusted_key(&cfg_value(), &key), |l| {
         let mut cmd = std::process::Command::new(l.program());
         l.apply(&mut cmd).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
         cmd.spawn().map_err(|e| desk_proc::opener_err(&opener.file, &e))
@@ -3996,7 +3996,6 @@ async fn desk_shell(win: tauri::Window, v: State<'_, Vault>, op: String, target:
     if let Err(e) = &r {
         eprintln!("[desk] shell {op} {}: {e}", t.arg);
     }
-    drop(life);
     r
 }
 

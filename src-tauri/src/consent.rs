@@ -156,6 +156,8 @@ fn resolve_cwd(cwd: &Path) -> Result<PathBuf, String> {
 /// (the one the dialog names), argv0 = the name the plugin asked for. Not found
 /// = ENOENT, before anything is asked. X1: cwd = its canonical form, file canonical.
 pub fn resolve(sp: Spec) -> Result<Spec, String> {
+    #[cfg(test)]
+    crate::desk_proc::fs_work(); // BB2 probe
     let sp = Spec { cwd: resolve_cwd(&sp.cwd)?, ..sp };
     let p = resolve_program(&sp)
         .ok_or_else(|| format!("ENOENT: spawn {} not found (bare names are looked up on absolute PATH entries only)", sp.file))?;
@@ -335,8 +337,9 @@ pub const MAX_IN_FLIGHT: usize = 5;
 
 static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 
-/// R2: a place in the bounded queue; dropping it frees the place
-struct Slot(());
+/// R2: a place in the bounded queue; dropping it frees the place. BB2 (PR #42 round 11): the
+/// commands take it FIRST (admit), before any lookup or pin, and hand it to ask, which demands it
+pub struct Slot(());
 
 impl Drop for Slot {
     fn drop(&mut self) {
@@ -345,23 +348,25 @@ impl Drop for Slot {
 }
 
 /// R2: a place in the queue, or EBUSY at once (nothing asked, no thread taken)
-/// when MAX_IN_FLIGHT questions are already open or queued
-fn admit() -> Result<Slot, String> {
+/// when MAX_IN_FLIGHT questions are already open or queued. BB2: called before resolve / pin /
+/// shell_target, so a refused request has done no fs work and opened no fd
+pub fn admit() -> Result<Slot, String> {
     IN_FLIGHT
         .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| (n < MAX_IN_FLIGHT).then_some(n + 1))
         .map(|_| Slot(()))
         .map_err(|n| format!("EBUSY: {n} consent questions are already open or waiting (at most {MAX_IN_FLIGHT}); refused, nothing asked"))
+        .inspect_err(|e| eprintln!("[consent] {e}"))
 }
 
 /// the async front door the commands await: Ok(true) only for Allow once /
-/// Trust; Ok(false) for every NO (any failure on the way included); Err(EBUSY)
-/// when the queue is full (R2) — then nothing was asked.
-pub async fn ask(win: tauri::Window, kind: Kind, q: Question) -> Result<bool, String> {
+/// Trust; Ok(false) for every NO (any failure on the way included). BB2: `slot` = the place
+/// admit() gave the request before its resolve / pin / question building (R2's EBUSY is now
+/// admit's, at the top of the command: ask no longer admits itself)
+pub async fn ask(slot: Slot, win: tauri::Window, kind: Kind, q: Question) -> Result<bool, String> {
     let what = match kind {
         Kind::Trust => "trust",
         Kind::Spawn => "spawn",
     };
-    let slot = admit().inspect_err(|e| eprintln!("[consent] {what}: {e}"))?;
     eprintln!("[consent] {what}: asking");
     let yes = tauri::async_runtime::spawn_blocking(move || {
         let _slot = slot;
@@ -652,6 +657,7 @@ mod tests {
        here). No sleeps. ask() runs exactly admit() then ask_with() on the slot. */
     #[test]
     fn r2_beyond_the_waiter_bound_a_request_gets_ebusy_at_once() {
+        let _q = QUEUE.lock().unwrap_or_else(|e| e.into_inner()); // BB2: the one other test that fills it
         use std::sync::mpsc::{channel, Sender};
         let (shown_tx, shown_rx) = channel::<Sender<Answer>>();
         let (placed_tx, placed_rx) = channel::<()>();
@@ -855,5 +861,53 @@ mod tests {
             }
         }
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// R2/BB2: the tests that fill the question queue (IN_FLIGHT is process-wide) run one at a time
+    static QUEUE: Mutex<()> = Mutex::new(());
+
+    /* BB2 (PR #42 round 11, CodeAnt): the place in the question queue is taken FIRST, before
+       the target is looked up (shell_target: canonicalize, O_PATH open, fstat, readlink) and the
+       opener resolved and pinned (resolve: PATH walk, pin, pin_dir). With every place held, each
+       of N more opens — every op and target kind desk_shell takes — is EBUSY, and none of them
+       reached that work: the probe (desk_proc::fs_work, at the top of Local::file and resolve)
+       counts 0 on this thread. Control: with the places given back the same request does its
+       lookups (the probe moves) and gives its place back (a full set is admitted again). */
+    #[test]
+    fn bb2_beyond_the_bound_a_request_is_refused_before_any_lookup_or_pin() {
+        use crate::desk_proc::{fs_work_count, shell_prepare};
+        let _q = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+        let base = std::env::temp_dir().join(format!("consent-bb2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let vault = base.canonicalize().unwrap();
+        std::fs::write(vault.join("Note.md"), "# hi\n").unwrap();
+        let file_url = format!("file://{}", vault.join("Note.md").display());
+        let reqs: [(&str, &str); 6] = [("path", "/vault/Note.md"), ("vault", "Note.md"), ("reveal", "/vault/Note.md"), ("external", &file_url), ("external", "https://example.org/"), ("external", "steam://run/1")];
+        let held: Vec<Slot> = (0..MAX_IN_FLIGHT).map(|_| admit().expect("a place within the bound was refused")).collect();
+        let before = fs_work_count();
+        let mut got = vec![];
+        for _ in 0..3 {
+            for (op, t) in reqs {
+                got.push((op, t, shell_prepare(&vault, op, t).map(|p| p.ask)));
+            }
+        }
+        let work = fs_work_count() - before;
+        drop(held);
+        // control: a place free -> the same request is admitted and does its lookups
+        let c0 = fs_work_count();
+        let control = shell_prepare(&vault, "path", "/vault/Note.md").map(|p| p.ask);
+        let control_work = fs_work_count() - c0;
+        let again: Vec<_> = (0..MAX_IN_FLIGHT).map(|_| admit()).collect();
+        let all_back = again.iter().all(|s| s.is_ok());
+        drop(again);
+        let _ = std::fs::remove_dir_all(&base);
+        for (op, t, r) in &got {
+            assert!(matches!(r, Err(e) if e.starts_with("EBUSY")), "{op} {t}: with every place held the request was not refused with EBUSY: {r:?}");
+        }
+        assert_eq!(work, 0, "refused requests did {work} lookups/pins before being refused (want 0: the place comes first)");
+        assert!(control_work > 0, "control: an admitted request did no lookup ({control:?})");
+        assert!(!matches!(&control, Err(e) if e.starts_with("EBUSY")), "control: a request with a free place was refused: {control:?}");
+        assert!(all_back, "a place was not given back (control request or refused ones)");
     }
 }
