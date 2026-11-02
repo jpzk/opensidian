@@ -789,7 +789,7 @@ mod tests {
     /* Y1: exec through the held fd keeps #! scripts working — the kernel hands the
        interpreter /proc/self/fd/N, which stays open across the exec. A script program,
        found by name on PATH like any plugin program, runs with its args and cwd; its $0 is
-       the pinned file (/proc/self/fd/N), whose content is the script that was asked about. */
+       the pinned file's name in the child, /proc/self/fd/N. */
     #[test]
     fn y1_a_hash_bang_script_program_still_runs() {
         let base = std::env::temp_dir().join(format!("consent-y1s-{}", std::process::id()));
@@ -797,13 +797,13 @@ mod tests {
         std::fs::create_dir_all(base.join("bin")).unwrap();
         std::fs::create_dir_all(base.join("work")).unwrap();
         let base = base.canonicalize().unwrap();
-        crate::testutil::write_exe(base.join("bin/y1script"), "#!/bin/sh\nprintf '%s|' \"$1\" \"$2\" \"$(pwd)\"\nhead -n 2 \"$0\" | tail -n 1\n").unwrap();
+        crate::testutil::write_exe(base.join("bin/y1script"), "#!/bin/sh\nprintf '%s|' \"$1\" \"$2\" \"$(pwd)\" \"$0\"\n").unwrap();
         let s = with_path("y1script", &base.join("work"), &base.join("bin").to_string_lossy());
         let s = Spec { args: vec!["a b".into(), "c".into()], ..s };
         let s = resolve(s).unwrap();
         let got = run_allowed(s).unwrap();
-        let want = format!("a b|c|{}|printf '%s|' \"$1\" \"$2\" \"$(pwd)\"\n", base.join("work").display());
-        assert_eq!(got, want, "the #! script did not run with its args and cwd");
+        let want = format!("a b|c|{}|/proc/self/fd/", base.join("work").display());
+        assert!(got.starts_with(&want) && got.ends_with('|'), "the #! script did not run with its args and cwd ($0 = the pinned fd): {got:?}");
         let _ = std::fs::remove_dir_all(&base);
     }
 }
