@@ -2,7 +2,15 @@
 // Copyright (C) 2026 Jendrik Poloczek
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* cp-unrestricted (operator ruling 2026-10-18, stock parity): the real
-   `child_process` behind ui/plugins/node-desktop.js. Stock runs a plugin's
+   `child        let real = p.canonicalize().map_err(|_| format!("ENOENT: no such file or directory, '{target}'"))?;
+        Local::at(real, target)
+    }
+
+    /// Z2: the second half of `file`, once canonicalize has named `real`: its identity comes
+    /// from an O_NOFOLLOW fd (ident_of) — a symlink swapped in at `real` since is refused
+    fn at(real: PathBuf, target: &str) -> Result<Local, String> {
+        let ident = ident_of(&real)?;
+process` behind ui/plugins/node-desktop.js. Stock runs a plugin's
    spawn/exec with the user's own rights; so do we, with one gate: the vault is
    trusted (the restricted-mode flip, ~/.opensidian.json). main.rs checks that
    on every spawn, and (spawn-consent, operator 2026-11-01, overriding the
@@ -806,7 +814,7 @@ pub enum ShellOpen {
     Ask(Local),
 }
 
-/// what one stat of the target says it is (lstat: a symlink is its own identity)
+/// what one fstat of the target says it is (Z2: of an O_NOFOLLOW fd; a symlink there is refused, never its identity)
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ident {
     dev: u64,
@@ -821,10 +829,35 @@ pub struct Ident {
     ctime: (i64, i64),
 }
 
+/* Z2 (PR #42 round 9, CodeAnt): the identity of a local target is taken from the object
+   itself, not from a second path walk. canonicalize() and a later lstat() are two lookups;
+   a plugin swapping a symlink in at the canonical path between them got the SYMLINK's
+   identity recorded, the recheck then passed (the symlink was unchanged) and xdg-open
+   followed it to a target nobody was asked about. Now: open(p, O_PATH|O_NOFOLLOW|O_CLOEXEC)
+   (the last component is never followed), fstat THAT fd, refuse a symlink (S_IFLNK: the
+   object at p is a link, so p is no longer the canonical path that was shown), and refuse
+   when the opened object is not at exactly p (/proc/self/fd/N: a directory on the way was
+   swapped for a link after canonicalize — as Y1's pin does). The recheck runs this same
+   function, so a symlink at the allowed path is refused there too. */
 fn ident_of(p: &Path) -> Result<Ident, String> {
-    use std::os::unix::fs::MetadataExt;
-    let m = std::fs::symlink_metadata(p).map_err(|e| format!("ENOENT: {}: {e}", p.display()))?;
-    Ok(Ident { dev: m.dev(), ino: m.ino(), mode: m.mode(), size: m.size(), mtime: (m.mtime(), m.mtime_nsec()), ctime: (m.ctime(), m.ctime_nsec()) })
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(p.as_os_str().as_bytes()).map_err(|_| format!("EINVAL: {}: NUL in the path", p.display()))?;
+    // SAFETY: c is a valid C string; the fd is owned from here on
+    let fd = unsafe { libc::open(c.as_ptr(), libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(format!("ENOENT: {}: {}", p.display(), std::io::Error::last_os_error()));
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let id = fd_ident(fd.as_raw_fd()).ok_or_else(|| format!("ENOENT: {}: {}", p.display(), std::io::Error::last_os_error()))?;
+    if id.mode & libc::S_IFMT == libc::S_IFLNK {
+        return Err(format!("ELOOP: {} is a symlink (swapped in after it was resolved); not opened", p.display()));
+    }
+    let at = std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd())).map_err(|e| format!("ENOENT: {}: {e}", p.display()))?;
+    if at.as_os_str() != p.as_os_str() {
+        return Err(format!("EAGAIN: {}: the object opened is {} (a directory on the way was swapped); not opened", p.display(), at.display()));
+    }
+    Ok(id)
 }
 
 /// a target the dialog asks about: `arg` is what the dialog shows and what xdg-open gets;
@@ -842,6 +875,13 @@ impl Local {
 
     fn file(p: PathBuf, target: &str) -> Result<Local, String> {
         let real = p.canonicalize().map_err(|_| format!("ENOENT: no such file or directory, '{target}'"))?;
+        Local::at(real, target)
+    }
+
+    /// Z2: the second half of `file`, once canonicalize has named `real`: its identity comes
+    /// from an O_NOFOLLOW fd (ident_of), never a second lookup that follows or lands on a
+    /// symlink — a symlink swapped in at `real` after canonicalize is refused here
+    fn at(real: PathBuf, target: &str) -> Result<Local, String> {
         let ident = ident_of(&real)?;
         let arg = real.into_os_string().into_string().map_err(|_| format!("EINVAL: not a UTF-8 path: {target}"))?;
         Ok(Local { arg, ident: Some(ident) })
@@ -857,7 +897,7 @@ impl Local {
         match ident_of(Path::new(&self.arg)) {
             Ok(now) if now.same_as(was) => Ok(()),
             Ok(_) => Err(format!("EPERM: {} changed after it was allowed (replaced, swapped for a symlink, or rewritten); not opened", self.arg)),
-            Err(_) => Err(format!("EPERM: {} is gone since it was allowed; not opened", self.arg)),
+            Err(e) => Err(format!("EPERM: {} is gone or no longer the file allowed ({e}); not opened", self.arg)),
         }
     }
 }
@@ -925,7 +965,7 @@ pub fn shell_target(root: &Path, op: &str, target: &str) -> Result<ShellOpen, St
                     // the URL + cwd "/" — before anything is started
                     crate::consent::check_env(&opener_spec(root, target))?;
                     Ok(ShellOpen::Url(target.to_string()))
-                }| "https" | "mailto" => Ok(ShellOpen::Url(target.to_string())),
+                }
                 "file" => Local::file(file_url_path(target)?, target).map(ShellOpen::Ask),
                 _ => Ok(ShellOpen::Ask(Local { arg: target.to_string(), ident: None })),
             }
@@ -1496,6 +1536,42 @@ mod tests {
         assert_eq!((now.dev(), now.ino(), now.mode(), now.size(), now.mtime(), now.mtime_nsec()), (was.dev(), was.ino(), was.mode(), was.size(), was.mtime(), was.mtime_nsec()), "the rewrite did not keep dev/ino/mode/size/mtime");
         let r = t.recheck();
         assert!(matches!(&r, Err(e) if e.starts_with("EPERM")), "a same-size rewrite with its mtime restored passed the recheck: {r:?}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* Z2 (PR #42 round 9, CodeAnt): canonicalize and the identity were two path lookups.
+       A plugin swapping a symlink in at the canonical path between them (here: right after
+       canonicalize named `real`, before Local::at takes the identity) got the link's own
+       identity recorded; the recheck then passed and xdg-open followed the link to a file
+       nobody was asked about. Both halves must refuse: the identity step, and the recheck
+       of a target whose recorded identity is the link's (what the lstat-based one kept). */
+    #[test]
+    fn desk_z2_a_symlink_swapped_in_at_the_canonical_path_is_refused() {
+        use std::os::unix::fs::MetadataExt;
+        let base = std::env::temp_dir().join(format!("desk-z2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (vault, outside) = (base.join("v"), base.join("o"));
+        std::fs::create_dir_all(&vault).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let note = vault.join("Note.md");
+        std::fs::write(&note, "# safe note\n").unwrap();
+        let secret = outside.join("payload.desktop");
+        std::fs::write(&secret, "[Desktop Entry]\nExec=sh -c id\n").unwrap();
+        let real = note.canonicalize().unwrap();
+        // control: the plain file is taken and passes its recheck
+        let t = Local::at(real.clone(), "/vault/Note.md").expect("control: a plain file is a target");
+        t.recheck().expect("control: an untouched file passes the recheck");
+        // the window: canonicalize named `real`; the plugin puts a symlink there
+        std::fs::rename(&note, vault.join("Note.md.bak")).unwrap();
+        std::os::unix::fs::symlink(&secret, &note).unwrap();
+        let r = Local::at(real.clone(), "/vault/Note.md");
+        assert!(matches!(&r, Err(e) if e.starts_with("ELOOP")), "a symlink swapped in at the canonical path was taken as the target: {:?}", r.map(|t| t.arg));
+        // the recheck of a target that recorded the link itself refuses it too
+        let m = std::fs::symlink_metadata(&note).unwrap();
+        let was = Ident { dev: m.dev(), ino: m.ino(), mode: m.mode(), size: m.size(), mtime: (m.mtime(), m.mtime_nsec()), ctime: (m.ctime(), m.ctime_nsec()) };
+        let t = Local { arg: real.to_str().unwrap().to_string(), ident: Some(was) };
+        let r = t.recheck();
+        assert!(matches!(&r, Err(e) if e.starts_with("EPERM")), "the recheck passed a symlink at the allowed path: {r:?}");
         let _ = std::fs::remove_dir_all(&base);
     }
 
