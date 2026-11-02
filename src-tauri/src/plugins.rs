@@ -143,7 +143,13 @@ pub fn trust_key(root: &Path) -> String {
 }
 
 pub fn is_trusted(cfg: &serde_json::Value, root: &Path) -> bool {
-    cfg["plugins_trusted"][trust_key(root).as_str()].as_bool() == Some(true)
+    is_trusted_key(cfg, &trust_key(root))
+}
+
+/// BB1 (PR #42 round 11): the trust check for a key computed earlier (trust_key canonicalizes the
+/// vault root: a path lookup, done before the lifecycle lock by desk_shell)
+pub fn is_trusted_key(cfg: &serde_json::Value, key: &str) -> bool {
+    cfg["plugins_trusted"][key].as_bool() == Some(true)
 }
 
 // ---------------------------------------------------------------------------
