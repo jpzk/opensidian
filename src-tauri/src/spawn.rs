@@ -417,6 +417,7 @@ mod tests {
     }
 
     /// /proc liveness: we are alive, a reaped child is not, a zombie is not.
+    #[cfg(target_os = "linux")]
     #[test]
     fn switch_alive_probe_reads_proc() {
         assert!(alive(std::process::id()));
