@@ -226,7 +226,7 @@ fn forker() -> &'static Mutex<std::sync::mpsc::Sender<Job>> {
 }
 
 pub struct Spec {
-    /// what is exec'd. main.rs sets it to the ABSOLUTE path consent::resolve found and the
+    /// what is exec'd. main.rs sets it to the CANONICAL absolute path (X1) consent::resolve found and the
     /// dialog named (F1): the child never repeats a PATH lookup of its own
     pub file: String,
     pub args: Vec<String>,
@@ -1101,7 +1101,7 @@ mod tests {
             let mut sp = spec("fakeprog", &[], &base.join("vault"));
             sp.env.push(("PATH".into(), path.clone()));
             let sp = crate::consent::resolve(sp).unwrap();
-            assert_eq!(sp.file, bin.join("fakeprog").to_string_lossy(), "PATH={path:?}");
+            assert_eq!(sp.file, bin.join("fakeprog").canonicalize().unwrap().to_string_lossy(), "PATH={path:?}");
             assert!(crate::consent::spawn_text(&sp).contains(&format!("Program: {:?}", sp.file)));
             let r = start(ready(sp), &lifecycle()).unwrap();
             r.end();
@@ -1678,6 +1678,59 @@ mod tests {
         };
         let got = shell_spawn(&t, opener_path(Some(format!("{v}/bin:/proc/self/cwd:/usr/bin").into()), &vault), |l| Ok(l.path.clone())).unwrap();
         assert_eq!(got, "/usr/bin", "the opener's PATH kept an entry into the vault");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* X1 (PR #42 round 7, Strix): the PROGRAM path, like a PATH entry (V1), runs through
+       a magic link per process: "<base>/link/<..×n><base>/app/x1helper" with link ->
+       /proc/self/cwd names, in the app, <app cwd>/..×n/... = <base>/app/x1helper (n = the
+       depth of the app's cwd: the ".." climb ends at "/"), an executable that says APP. In
+       the child, which chdirs to the vault first, the same string climbs from the vault
+       instead and lands in <base>/q/<base>/app/x1helper — a helper that touches the mark.
+       consent::resolve hands desk_proc the CANONICAL app-side file: that is what the
+       dialog names and what runs; the link is gone from it, and the vault's helper never
+       runs. The cwd comes out canonical too (a symlinked cwd is shown resolved), and a cwd
+       that is still under /proc after canonicalizing is refused before anything is asked. */
+    #[test]
+    fn desk_x1_a_program_path_through_proc_self_cwd_runs_the_canonical_app_side_file() {
+        use std::os::unix::fs::symlink;
+        let base = std::env::temp_dir().join(format!("desk-x1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("app")).unwrap();
+        let base = base.canonicalize().unwrap();
+        let mark = base.join("HELPER-RAN");
+        let n = std::env::current_dir().unwrap().canonicalize().unwrap().components().count() - 1;
+        let q = base.join("q");
+        let vault = (0..n).fold(q.clone(), |p, _| p.join("d"));
+        std::fs::create_dir_all(&vault).unwrap();
+        let rel = base.strip_prefix("/").unwrap();
+        let app = base.join("app/x1helper");
+        let evil = q.join(rel).join("app/x1helper");
+        std::fs::create_dir_all(evil.parent().unwrap()).unwrap();
+        crate::testutil::write_exe(&app, "#!/bin/sh\necho APP\n").unwrap();
+        crate::testutil::write_exe(&evil, format!("#!/bin/sh\ntouch '{}'\necho VAULT\n", mark.display())).unwrap();
+        let link = base.join("link");
+        symlink("/proc/self/cwd", &link).unwrap();
+        let file = format!("{}/{}{}", link.display(), "../".repeat(n), rel.join("app/x1helper").display());
+        assert!(Path::new(&file).is_file(), "test setup: {file} does not reach {} in the app", app.display());
+        let sp = crate::consent::resolve(spec(&file, &[], &vault)).unwrap();
+        assert_eq!(sp.file, app.display().to_string(), "resolve did not hand over the canonical app-side program");
+        assert!(!sp.file.contains("/proc") && !sp.file.contains("/link/"), "{}", sp.file);
+        assert_eq!(sp.argv0.as_deref(), Some(file.as_str()), "argv0 keeps the name the plugin asked for");
+        assert!(crate::consent::spawn_text(&sp).contains(&format!("Program: {:?}", sp.file)), "the dialog names another program");
+        let r = start(ready(sp), &lifecycle()).unwrap();
+        r.end();
+        let (o, _, _) = drain(&r);
+        assert_eq!(o, b"APP\n", "the child did not run the file the dialog named");
+        assert!(!mark.exists(), "the child ran the vault's helper through a link to /proc/self/cwd");
+        // the cwd: a symlink to the vault is shown and used resolved; one under /proc is refused
+        let vlink = base.join("vlink");
+        symlink(&vault, &vlink).unwrap();
+        let sp = crate::consent::resolve(spec("/bin/true", &[], &vlink)).unwrap();
+        assert_eq!(sp.cwd, vault, "the cwd is not canonical");
+        assert!(crate::consent::spawn_text(&sp).contains(&format!("Cwd: {:?}", vault.display().to_string())));
+        let e = crate::consent::resolve(spec("/bin/true", &[], Path::new("/proc/self"))).map(|s| s.cwd).unwrap_err();
+        assert!(e.starts_with("ENOENT: spawn: cwd"), "a cwd under /proc was not refused: {e}");
         let _ = std::fs::remove_dir_all(&base);
     }
 

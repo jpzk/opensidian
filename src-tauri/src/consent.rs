@@ -112,25 +112,51 @@ fn check_run(sp: &Spec) -> Result<(), String> {
 /// against the child's cwd (inside the vault, plugin-writable), so it is
 /// skipped. The result is absolute and is what desk_proc execs (resolve), so
 /// the dialog and the exec cannot disagree. None = not found.
+/* X1 (PR #42 round 7, Strix): like a PATH entry (V1), the PROGRAM path is resolved PER
+   PROCESS when it runs through a magic link: "<dir>/link/helper" with link ->
+   /proc/self/cwd (or /proc/thread-self/..., /proc/<pid>/{cwd,root,fd/N}, /dev/fd/N) names
+   <app cwd>/helper here, but the child chdirs to the cwd first and then execs the same
+   string — <child cwd = vault>/helper. So the program found here is CANONICALIZED here (no
+   symlink, no "..", no magic link left: the child execs exactly the file we checked and
+   the dialog names), and a canonical form still under /proc or /dev/fd is refused. A
+   candidate that does not canonicalize is not a candidate. The cwd is canonicalized the
+   same way by resolve() before the program is looked up against it. */
 pub fn resolve_program(sp: &Spec) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     let exe = |p: &Path| std::fs::metadata(p).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false);
+    let canon = |p: PathBuf| p.canonicalize().ok().filter(|c| c.is_absolute() && exe(c) && !magic(c));
     if sp.file.is_empty() {
         return None;
     }
     if sp.file.contains('/') {
         let p = Path::new(&sp.file);
         let p = if p.is_absolute() { p.to_path_buf() } else { sp.cwd.join(p) };
-        return (p.is_absolute() && exe(&p)).then_some(p);
+        return (p.is_absolute() && exe(&p)).then_some(p).and_then(canon);
     }
     let path = sp.env.iter().rev().find(|(k, _)| k == "PATH").map(|(_, v)| v.clone()).or_else(|| std::env::var("PATH").ok())?;
-    path.split(':').map(Path::new).filter(|d| d.is_absolute()).map(|d| d.join(&sp.file)).find(|p| exe(p))
+    path.split(':').map(Path::new).filter(|d| d.is_absolute()).map(|d| d.join(&sp.file)).filter(|p| exe(p)).find_map(canon)
+}
+
+/// X1: a canonical path that still names a per-process object (it could mean another
+/// file in the child): anything under /proc or /dev/fd
+fn magic(c: &Path) -> bool {
+    c.starts_with("/proc") || c.starts_with("/dev/fd")
+}
+
+/// X1: the cwd the child runs in, canonical (what the dialog shows); a cwd that does not
+/// canonicalize, is not a directory, or is still under /proc or /dev/fd = ENOENT
+fn resolve_cwd(cwd: &Path) -> Result<PathBuf, String> {
+    cwd.canonicalize()
+        .ok()
+        .filter(|c| c.is_absolute() && c.is_dir() && !magic(c))
+        .ok_or_else(|| format!("ENOENT: spawn: cwd {} is not a directory (resolved without symlinks, outside /proc and /dev/fd)", shown(&cwd.to_string_lossy())))
 }
 
 /// F1: the Spec that will run — file = the absolute path resolve_program found
 /// (the one the dialog names), argv0 = the name the plugin asked for. Not found
-/// = ENOENT, before anything is asked.
+/// = ENOENT, before anything is asked. X1: cwd = its canonical form, file canonical.
 pub fn resolve(sp: Spec) -> Result<Spec, String> {
+    let sp = Spec { cwd: resolve_cwd(&sp.cwd)?, ..sp };
     let p = resolve_program(&sp)
         .ok_or_else(|| format!("ENOENT: spawn {} not found (bare names are looked up on absolute PATH entries only)", sp.file))?;
     let file = p.into_os_string().into_string().map_err(|_| format!("ENOENT: spawn {}: resolved path is not UTF-8", sp.file))?;
@@ -485,7 +511,7 @@ mod tests {
     fn f1_relative_path_entries_never_resolve_into_the_cwd() {
         let b = tree("f1");
         let (v, bin) = (b.join("vault"), b.join("bin"));
-        let real = bin.join("fakeprog");
+        let real = bin.join("fakeprog").canonicalize().unwrap(); // X1: the result is canonical
         for path in [format!(":{}", bin.display()), format!(".:{}", bin.display()), format!("rel:{}", bin.display()), format!("{}::", bin.display())] {
             assert_eq!(resolve_program(&with_path("fakeprog", &v, &path)), Some(real.clone()), "PATH={path:?}");
         }
@@ -494,7 +520,7 @@ mod tests {
             assert!(resolve(with_path("fakeprog", &v, path)).err().expect("fakeprog resolved").starts_with("ENOENT: spawn fakeprog"), "PATH={path:?}");
         }
         // a name with a '/' is the child's cwd + name, made absolute
-        assert_eq!(resolve_program(&with_path("./fakeprog", &v, "")), Some(v.join("./fakeprog")));
+        assert_eq!(resolve_program(&with_path("./fakeprog", &v, "")).map(|p| p.canonicalize().unwrap()), Some(v.join("fakeprog").canonicalize().unwrap()));
         let _ = std::fs::remove_dir_all(&b);
     }
 
@@ -557,7 +583,7 @@ mod tests {
         let mut c = sp("v2prog", &["a"], "/");
         c.env = s.env.clone();
         let r = resolve(c).unwrap();
-        assert_eq!(r.file, prog.display().to_string());
+        assert_eq!(Path::new(&r.file).canonicalize().unwrap(), prog.canonicalize().unwrap());
         // exactly at the cap as sent: check_env lets it through ...
         let fixed = "v2prog".len() + 1 + "/".len() + 1;
         s.args = vec!["a".repeat(RUN_MAX_BYTES - fixed - 1)];

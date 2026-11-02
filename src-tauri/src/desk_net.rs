@@ -189,6 +189,14 @@ fn listen_trusted_via(
     if !trusted() {
         return Err(NOT_TRUSTED.into());
     }
+    /* X2 (PR #42 round 7, CodeAnt) — known residual, kept on purpose: this unlocked check
+       is the last thing before the lookup (nothing runs between them), but a trust-OFF can
+       still land after it while to_socket_addrs is in flight; that ONE query for the name
+       the page picked may then leave after trust is OFF. Nothing is bound or accepted for
+       it: the deciding check below, under the lifecycle lock, refuses (EPERM). Closing the
+       gap fully would mean resolving under the lock (P2: a slow or stalled resolver would
+       hold up every trust-OFF, kill_all and spawn) or cancelling getaddrinfo, which cannot
+       be cancelled; neither is done. A literal IP host does no DNS at all. */
     let addrs = resolve(h, port)?;
     let life = crate::desk_proc::lifecycle();
     if !trusted() {
