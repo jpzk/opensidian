@@ -3719,8 +3719,10 @@ async fn plugins_set(
         if let Some(t) = trusted {
             // F5/N5: held across (flag write, kill_all, close_all), the lock desk_proc_spawn holds
             // across (trust recheck, start, register) and desk_net_listen across (check, bind, register) — no spawn can land between the write and the kill
-            let life = desk_proc::lifecycle();
+            // CC1 (PR #42 round 12): the trust key (canonicalize of the vault root, a path lookup)
+            // before the lock, so a stalled vault mount cannot hold up the lock this write takes
             let key = plugins::trust_key(&root);
+            let life = desk_proc::lifecycle();
             // G1: a Trust answer that went stale while its dialog was open writes nothing
             if let Err(e) = desk_proc::trust_write(asked, &life) {
                 eprintln!("[consent] trust {key:?}: answer from before another flip, discarded, nothing written");
@@ -3816,10 +3818,12 @@ async fn desk_proc_spawn(
     // canonicalized entry by entry) happens HERE, before the lock: a stalled mount in a
     // plugin's PATH cannot hold up a trust-OFF waiting on the lifecycle lock
     let sp = desk_proc::prepare(sp, std::env::var_os("PATH"));
+    // CC1 (PR #42 round 12): so is the vault's trust key (canonicalize of the root)
+    let key = plugins::trust_key(&root);
     // F5: (recheck, start, register) under the lock plugins_set holds across a trust-OFF
     // (flag write, kill_all): the flip may have gone OFF while the question was open
     let life = desk_proc::lifecycle();
-    if !plugins::is_trusted(&cfg_value(), &root) {
+    if !plugins::is_trusted_key(&cfg_value(), &key) {
         return Err("EPERM: restricted mode, plugins cannot start programs".into());
     }
     eprintln!("[desk] spawn {} {:?} cwd={}", sp.file, sp.args, sp.cwd.display());
@@ -3868,7 +3872,12 @@ fn desk_proc_kill(id: u64, signal: Option<String>) -> Result<bool, String> {
 #[tauri::command]
 fn desk_net_listen(v: State<Vault>, host: Option<String>, port: u16) -> Result<serde_json::Value, String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
-    let trusted = || plugins::is_trusted(&cfg_value(), &root);
+    // CC1 (PR #42 round 12, CodeAnt): listen_trusted calls `trusted` a second time UNDER the
+    // lifecycle lock (desk_net::listen_trusted_via). The trust key canonicalizes the vault root (a
+    // path lookup: a stalled FUSE/NFS vault stands still in it), so it is computed HERE, before
+    // listen_trusted; the closure only reads the config and compares keys — the lock walks no path
+    let key = plugins::trust_key(&root);
+    let trusted = || plugins::is_trusted_key(&cfg_value(), &key);
     let (id, s) = span_timed!("desk_net_listen", desk_net::listen_trusted(trusted, host.as_deref().unwrap_or(""), port))?;
     eprintln!("[desk] listen {}:{} id={id}", s.address, s.port);
     Ok(serde_json::json!({ "id": id, "port": s.port, "address": s.address }))
@@ -6510,6 +6519,55 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /* CC1 (PR #42 round 12, CodeAnt): the trust key is canonicalize(vault root) — a path lookup
+       that stands still on a stalled FUSE/NFS vault. Whatever runs while the lifecycle lock is
+       held (the trust recheck under it in desk_net::listen_trusted_via and desk_proc::shell_open,
+       the tail of desk_proc_spawn and of plugins_set's write after `lifecycle()`) must not do it,
+       or that mount holds up every trust-OFF, kill_all, close_all and spawn. The commands take a
+       tauri State and open native dialogs, so this reads their source: (a) desk_net_listen and
+       desk_shell compute the key before the call that takes the lock, and the closure handed to
+       it only compares keys (is_trusted_key); (b) desk_proc_spawn and plugins_set do no lookup
+       from their last `lifecycle()` to the end of the command. Comments are not code. */
+    #[test]
+    fn cc1_no_trust_key_path_lookup_under_the_lifecycle_lock() {
+        let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
+        let code = |l: &str| -> String {
+            let t = l.trim_start();
+            if t.starts_with("//") || t.starts_with("/*") || t.starts_with('*') {
+                return String::new();
+            }
+            match l.find(" // ") { Some(i) => l[..i].to_string(), None => l.to_string() }
+        };
+        let body = |name: &str| -> Vec<String> {
+            let lines: Vec<&str> = src.lines().collect();
+            let head = format!("fn {name}(");
+            let i = lines.iter().position(|l| l.contains(&head) && !l.trim_start().starts_with("//")).unwrap_or_else(|| panic!("no fn {name}"));
+            let j = i + lines[i..].iter().position(|l| *l == "}").unwrap_or_else(|| panic!("fn {name} unterminated"));
+            lines[i..=j].iter().map(|l| code(l)).collect()
+        };
+        const LOOKUP: [&str; 3] = ["plugins::is_trusted(", "trust_key(", "canonicalize"];
+        let looks_up = |l: &str| LOOKUP.iter().find(|p| l.contains(*p)).copied();
+        // (a) the lock is taken inside the callee; the closure runs under it
+        for (name, call) in [("desk_net_listen", "desk_net::listen_trusted("), ("desk_shell", "desk_proc::shell_open(")] {
+            let b = body(name);
+            let k = b.iter().position(|l| l.contains("let key = plugins::trust_key(&root);")).unwrap_or_else(|| panic!("{name}: the trust key is not computed up front"));
+            let c = b.iter().position(|l| l.contains(call)).unwrap_or_else(|| panic!("{name}: no {call}"));
+            assert!(k < c, "{name}: the trust key is computed after {call} (under the lock it takes)");
+            assert!(b.iter().any(|l| l.contains("|| plugins::is_trusted_key(&cfg_value(), &key)")), "{name}: the trust closure does not compare the precomputed key");
+            for l in b.iter().filter(|l| l.contains("||")) {
+                assert!(looks_up(l).is_none(), "{name}: a closure does a path lookup ({:?}): {}", looks_up(l), l.trim());
+            }
+        }
+        // (b) the lock is taken in the command itself: nothing after it looks a path up
+        for name in ["desk_proc_spawn", "plugins_set"] {
+            let b = body(name);
+            let at = b.iter().rposition(|l| l.contains("desk_proc::lifecycle()")).unwrap_or_else(|| panic!("{name}: takes no lifecycle lock"));
+            for l in &b[at..] {
+                assert!(looks_up(l).is_none(), "{name}: a path lookup ({:?}) after the lifecycle lock: {}", looks_up(l), l.trim());
+            }
+        }
+    }
 
     fn nav(s: &str) -> bool {
         nav_allowed(&tauri::Url::parse(s).unwrap())
