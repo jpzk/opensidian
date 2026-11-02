@@ -1,8 +1,4 @@
-#![cfg_attr(not(d    // AA1: the opener is exec'd by its held fd (l.program()), rechecked in pre_exec (l.apply)
-    let r = desk_proc::shell_spawn(&t, &opener, opener_path, |l| {
-        let mut cmd = std::process::Command::new(l.program());
-        cmd.spawn().map_err(|e| desk_proc::opener_err(&opener.file, &e))
-bug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 // opensidian, a vault-compatible markdown notes app.
 // Copyright (C) 2026 Jendrik Poloczek
 // SPDX-License-Identifier: GPL-3.0-or-later
