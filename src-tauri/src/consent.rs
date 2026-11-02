@@ -67,15 +67,7 @@ fn shown(s: &str) -> String {
 /// F2) before ask() admits a slot, so an unbounded request would be copied, quoted and
 /// laid out several times just to be refused with EBUSY or shown in a giant view.
 pub fn check_env(sp: &Spec) -> Result<(), String> {
-    let run: usize = sp.file.len() + 1 + sp.args.iter().map(|a| a.len() + 1).sum::<usize>() + sp.cwd.as_os_str().len() + 1;
-    if run > RUN_MAX_BYTES {
-        return Err(format!(
-            "E2BIG: spawn: the program, its {} args and the cwd ({} bytes) are over the cap ({} bytes); refused, nothing asked or started",
-            sp.args.len(),
-            run,
-            RUN_MAX_BYTES
-        ));
-    }
+    check_run(sp)?;
     let bytes: usize = sp.env.iter().map(|(k, v)| k.len() + v.len() + 2).sum();
     if sp.env.len() > ENV_MAX_VARS || bytes > ENV_MAX_BYTES {
         return Err(format!(
@@ -85,6 +77,29 @@ pub fn check_env(sp: &Spec) -> Result<(), String> {
             bytes,
             ENV_MAX_VARS,
             ENV_MAX_BYTES
+        ));
+    }
+    Ok(())
+}
+
+/// Q4: program + args + cwd (each + 1) over RUN_MAX_BYTES = E2BIG.
+/// V2 (PR #42 round 5, Qodo + CodeAnt): check_env runs it on the request as the plugin
+/// sent it (cheap, before any lookup); resolve runs it AGAIN on the Spec it returns — the
+/// one the dialog shows and exec runs — since resolving a bare name to its absolute path
+/// (and argv0 keeping the name) makes the run longer than what was checked first
+fn check_run(sp: &Spec) -> Result<(), String> {
+    let run: usize = sp.file.len()
+        + 1
+        + sp.argv0.as_ref().map_or(0, |a| a.len() + 1)
+        + sp.args.iter().map(|a| a.len() + 1).sum::<usize>()
+        + sp.cwd.as_os_str().len()
+        + 1;
+    if run > RUN_MAX_BYTES {
+        return Err(format!(
+            "E2BIG: spawn: the program, its {} args and the cwd ({} bytes) are over the cap ({} bytes); refused, nothing asked or started",
+            sp.args.len(),
+            run,
+            RUN_MAX_BYTES
         ));
     }
     Ok(())
@@ -120,7 +135,9 @@ pub fn resolve(sp: Spec) -> Result<Spec, String> {
         .ok_or_else(|| format!("ENOENT: spawn {} not found (bare names are looked up on absolute PATH entries only)", sp.file))?;
     let file = p.into_os_string().into_string().map_err(|_| format!("ENOENT: spawn {}: resolved path is not UTF-8", sp.file))?;
     let argv0 = if file != sp.file { Some(sp.file.clone()) } else { sp.argv0.clone() };
-    Ok(Spec { file, argv0, ..sp })
+    let sp = Spec { file, argv0, ..sp };
+    check_run(&sp)?; // V2: the cap holds for what is shown and run, not only what was sent
+    Ok(sp)
 }
 
 /// the trust prompt's body. `canon` = plugins::trust_key (canonical vault path)
@@ -522,6 +539,36 @@ mod tests {
         let mut o = sp("xdg-open", &[], "/");
         o.args = vec![format!("steam://{}", "r".repeat(RUN_MAX_BYTES))];
         assert!(check_env(&o).unwrap_err().starts_with("E2BIG"), "an open over the cap");
+    }
+
+    /* V2 (PR #42 round 5, Qodo + CodeAnt): check_env measures the request as sent, with
+       the bare program name; resolve then replaces it with its absolute path (and keeps the
+       name as argv0), so a request just under the cap became a run over it — shown and
+       exec'd. resolve now checks the cap on the Spec it returns: E2BIG, before the
+       question is built or asked (desk_proc_spawn / desk_shell: resolve < ask). */
+    #[test]
+    fn v2_a_run_pushed_over_the_size_cap_by_resolve_is_refused_before_anything_is_asked() {
+        let d = std::env::temp_dir().join(format!("consent-v2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let prog = d.join("v2prog");
+        std::fs::write(&prog, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&prog, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut s = sp("v2prog", &[], "/");
+        s.env = vec![("PATH".into(), d.display().to_string())];
+        // control: a short run resolves to the absolute path
+        let mut c = sp("v2prog", &["a"], "/");
+        c.env = s.env.clone();
+        let r = resolve(c).unwrap();
+        assert_eq!(r.file, prog.display().to_string());
+        // exactly at the cap as sent: check_env lets it through ...
+        let fixed = "v2prog".len() + 1 + "/".len() + 1;
+        s.args = vec!["a".repeat(RUN_MAX_BYTES - fixed - 1)];
+        assert!(check_env(&s).is_ok(), "the request as sent is at the cap");
+        // ... and the resolved run (absolute path + argv0) is over it: refused
+        let e = resolve(s).map(|r| r.file).unwrap_err();
+        assert!(e.starts_with("E2BIG: spawn:") && e.contains("nothing asked"), "resolve let a run over the cap through: {e}");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     // N1: the app log holds the env NAMES the plugin set, never their values; the

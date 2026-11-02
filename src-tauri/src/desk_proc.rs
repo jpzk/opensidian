@@ -309,14 +309,24 @@ fn lexical(p: &Path) -> PathBuf {
     out
 }
 
-/// S3: may the child look programs up in `dir` (an absolute PATH entry)?
-fn path_dir_ok(dir: &Path, confine: &[&Path]) -> bool {
+/* V1 (PR #42 round 5, CodeAnt): magic links are resolved PER PROCESS. /proc/self/cwd,
+   /proc/thread-self/..., /proc/<pid>/{cwd,root,fd/N} and /dev/fd/N name a different
+   target in every process that follows them, so a symlink outside the vault pointing at
+   /proc/self/cwd (directly or through a chain) canonicalizes IN THE APP to the app's own
+   cwd — passing every check here — while the child, following the same link, lands in ITS
+   cwd: the vault. No check of the entry as written can see that. So the child never gets
+   the entry as written: it gets the entry's canonical form as resolved here (absolute, no
+   symlink or magic link left, so the child resolves it to the same directory we
+   checked), and the /proc, /dev/fd and vault/cwd rules are applied to that form (and the
+   lexical one). An entry that does not canonicalize (missing, not a dir we can resolve,
+   a loop) is dropped; one whose canonical form holds a ':' (it would split PATH) too. */
+/// S3 + V1: the directory the child may look programs up in for `dir` (an absolute PATH
+/// entry): its canonical form, or None = drop the entry
+fn path_dir_ok(dir: &Path, confine: &[&Path]) -> Option<PathBuf> {
     #[cfg(test)]
     tests::q1_gate(dir);
-    let mut forms = vec![lexical(dir)];
-    if let Ok(c) = dir.canonicalize() {
-        forms.push(c);
-    }
+    let canon = dir.canonicalize().ok().filter(|c| c.is_absolute() && !c.as_os_str().as_bytes().contains(&b':'))?;
+    let forms = [lexical(dir), canon.clone()];
     let mut roots: Vec<PathBuf> = Vec::new();
     for r in confine.iter().filter(|r| r.is_absolute()) {
         roots.push(lexical(r));
@@ -325,20 +335,25 @@ fn path_dir_ok(dir: &Path, confine: &[&Path]) -> bool {
         }
     }
     roots.retain(|r| r.as_os_str() != "/");
-    !forms.iter().any(|f| f.starts_with("/proc") || f.starts_with("/dev/fd") || roots.iter().any(|r| f.starts_with(r)))
+    let bad = forms.iter().any(|f| f.starts_with("/proc") || f.starts_with("/dev/fd") || roots.iter().any(|r| f.starts_with(r)));
+    (!bad).then_some(canon)
 }
 
-/// R4 + S1-S3: the PATH a child runs with, from the PATH it would have had
+/// R4 + S1-S3 + V1: the PATH a child runs with, from the PATH it would have had — each
+/// kept entry in its canonical form (V1)
 pub fn child_path(path: &OsStr, confine: &[&Path]) -> OsString {
     let mut out: Vec<u8> = Vec::new();
     for d in path.as_bytes().split(|b| *b == b':') {
-        if d.first() != Some(&b'/') || !path_dir_ok(Path::new(OsStr::from_bytes(d)), confine) {
+        if d.first() != Some(&b'/') {
             continue;
         }
+        let Some(c) = path_dir_ok(Path::new(OsStr::from_bytes(d)), confine) else {
+            continue;
+        };
         if !out.is_empty() {
             out.push(b':');
         }
-        out.extend_from_slice(d);
+        out.extend_from_slice(c.as_os_str().as_bytes());
     }
     if out.is_empty() {
         return OsString::from(SAFE_PATH);
@@ -1390,6 +1405,12 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let base = std::env::temp_dir().join(format!("desk-r4-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        // V1: kept entries come out canonical; every kept entry here already is
+        let base = base.canonicalize().unwrap();
+        let ok = base.join("okbin");
+        std::fs::create_dir_all(&ok).unwrap();
+        let ok = ok.display().to_string();
         let vault = base.join("v");
         std::fs::create_dir_all(vault.join("bin")).unwrap();
         let mark = base.join("HELPER-RAN");
@@ -1403,8 +1424,8 @@ mod tests {
         let opener = base.join("opener");
         std::fs::write(&opener, format!("#!/bin/sh\nprintf '%s|%s\\n' \"$(pwd -P)\" \"$PATH\" >> '{}'\nr4helper 2>/dev/null\nexit 0\n", log.display())).unwrap();
         std::fs::set_permissions(&opener, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert_eq!(child_path(OsStr::new(".::bin:/usr/bin:./x:/bin:"), &[vault.as_path()]), "/usr/bin:/bin");
-        let dirty = ".::bin:/usr/bin:/bin".to_string();
+        assert_eq!(child_path(OsStr::new(&format!(".::bin:/usr/bin:./x:{ok}:")), &[vault.as_path()]), OsString::from(format!("/usr/bin:{ok}")));
+        let dirty = format!(".::bin:/usr/bin:{ok}");
 
         // (a) the opener
         let t = match shell_target(&vault, "path", "/vault/Welcome.md").unwrap() {
@@ -1431,7 +1452,7 @@ mod tests {
         let (o, _, ch) = drain(&r);
         assert_eq!(ch.exit, Some(0));
         let path = bytes_to_latin1(&o);
-        assert_eq!(path, "/usr/bin:/bin", "the child's PATH kept an empty/relative entry");
+        assert_eq!(path, format!("/usr/bin:{ok}"), "the child's PATH kept an empty/relative entry");
         assert!(!mark.exists(), "the child reached the vault's helper through PATH");
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -1441,6 +1462,9 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let base = std::env::temp_dir().join(format!("desk-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        // V1: kept PATH entries come out canonical; dirs under this base already are
+        let base = base.canonicalize().unwrap();
         let vault = base.join("v");
         let mark = base.join("HELPER-RAN");
         for d in ["", "bin", "tools", "sub"] {
@@ -1490,12 +1514,16 @@ mod tests {
     #[test]
     fn desk_s2_a_non_utf8_inherited_path_is_cleaned_not_passed_through_raw() {
         let (base, vault, _) = helper_vault("s2", "s2helper");
-        let inherited = OsString::from_vec(b"bin:/opt/s2\xffx:.::/usr/bin".to_vec());
+        // V1: an entry is kept only if it resolves, so the non-UTF-8 dir exists
+        let odd = base.join(OsStr::from_bytes(b"s2\xffx"));
+        std::fs::create_dir_all(&odd).unwrap();
+        let odd = odd.into_os_string().into_vec();
+        let inherited = OsString::from_vec([b"bin:".as_slice(), odd.as_slice(), b":.::/usr/bin".as_slice()].concat());
         assert!(inherited.to_str().is_none(), "the test PATH must not be UTF-8");
         let sp = prepare(spec("/bin/true", &[], &vault), Some(inherited));
         let c = build(&sp, sp.path.as_ref().unwrap());
         let got = c.get_envs().find(|(k, _)| *k == OsStr::new("PATH")).map(|(_, v)| v.map(|v| v.to_os_string()));
-        assert_eq!(got, Some(Some(OsString::from_vec(b"/opt/s2\xffx:/usr/bin".to_vec()))), "the child's PATH was not set to the cleaned bytes");
+        assert_eq!(got, Some(Some(OsString::from_vec([odd.as_slice(), b":/usr/bin".as_slice()].concat()))), "the child's PATH was not set to the cleaned bytes");
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -1509,6 +1537,9 @@ mod tests {
         let (base, vault, mark) = helper_vault("s3", "s3helper");
         let elsewhere = base.join("elsewhere");
         std::fs::create_dir_all(&elsewhere).unwrap();
+        let first = base.join("first");
+        std::fs::create_dir_all(&first).unwrap();
+        let first = first.display().to_string();
         symlink(vault.join("bin"), base.join("link")).unwrap();
         let v = vault.display().to_string();
         let cwd = base.join("cwd");
@@ -1528,12 +1559,12 @@ mod tests {
             base.join("link").display().to_string(),
             cwd.join("bin").display().to_string(),
         ];
-        let mut all = vec!["/bin".to_string()];
+        let mut all = vec![first.clone()];
         all.extend(bad.iter().cloned());
         all.push(elsewhere.display().to_string());
         all.push("/usr/bin".into());
         let joined = all.join(":");
-        let want = format!("/bin:{}:/usr/bin", elsewhere.display());
+        let want = format!("{first}:{}:/usr/bin", elsewhere.display());
         assert_eq!(child_path(OsStr::new(&joined), &[vault.as_path(), cwd.as_path()]), OsString::from(&want));
         for b in &bad {
             assert_eq!(child_path(OsStr::new(&format!("{b}:/usr/bin")), &[vault.as_path(), cwd.as_path()]), "/usr/bin", "{b} was kept");
@@ -1541,8 +1572,8 @@ mod tests {
         // a spawn: cwd in the vault, the plugin's PATH leads into it absolutely
         let mut sp = spec("/bin/sh", &["-c", "printf %s \"$PATH\"; s3helper 2>/dev/null; exit 0"], &vault.join("sub"));
         sp.root = vault.clone();
-        sp.env.push(("PATH".into(), format!("{v}/bin:/proc/self/cwd:/dev/fd/3:/usr/bin:/bin")));
-        assert_eq!(child_sees(sp), "/usr/bin:/bin", "the child's PATH kept an entry into the vault");
+        sp.env.push(("PATH".into(), format!("{v}/bin:/proc/self/cwd:/dev/fd/3:/usr/bin:{first}")));
+        assert_eq!(child_sees(sp), format!("/usr/bin:{first}"), "the child's PATH kept an entry into the vault");
         assert!(!mark.exists(), "the child reached the vault's helper through an absolute PATH entry");
         // the opener: the app's PATH with an entry into the vault
         let t = match shell_target(&vault, "path", "/vault/sub").unwrap() {
@@ -1551,6 +1582,44 @@ mod tests {
         };
         let got = shell_spawn(&t, opener_path(Some(format!("{v}/bin:/proc/self/cwd:/usr/bin").into()), &vault), |l| Ok(l.path.clone())).unwrap();
         assert_eq!(got, "/usr/bin", "the opener's PATH kept an entry into the vault");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* V1 (PR #42 round 5, CodeAnt): a PATH entry outside the vault that is a symlink to
+       /proc/self/cwd (directly, through a chain, or via /proc/thread-self/cwd) resolves to
+       the APP's cwd here and to the CHILD's cwd — the vault — in the child: magic links are
+       resolved per process. The child gets the entry's canonical form as resolved here, so
+       it never follows the link itself: its PATH does not hold the link, and the vault's
+       helper is not reached. A missing entry is dropped. */
+    #[test]
+    fn desk_v1_a_path_symlink_to_proc_self_cwd_does_not_reach_the_childs_cwd() {
+        use std::os::unix::fs::symlink;
+        let (base, vault, mark) = helper_vault("v1", "v1helper");
+        let link = base.join("link");
+        symlink("/proc/self/cwd", &link).unwrap();
+        let chain = base.join("chain");
+        symlink(&link, &chain).unwrap();
+        let tlink = base.join("tlink");
+        symlink("/proc/thread-self/cwd", &tlink).unwrap();
+        let ours = std::env::current_dir().unwrap().canonicalize().unwrap().display().to_string();
+        let gone = base.join("missing").display().to_string();
+        let links = [link.display().to_string(), chain.display().to_string(), tlink.display().to_string()];
+        for l in &links {
+            // a spawn, cwd = the vault (where the vault's helper sits)
+            let mut sp = spec("/bin/sh", &["-c", "printf %s \"$PATH\"; v1helper 2>/dev/null; exit 0"], &vault);
+            sp.env.push(("PATH".into(), format!("{l}:{gone}:/usr/bin")));
+            let path = child_sees(sp);
+            assert!(!path.split(':').any(|d| d == l.as_str() || d == gone.as_str()), "{l}: the child's PATH holds the link (or a missing entry): {path:?}");
+            assert_eq!(path, format!("{ours}:/usr/bin"), "{l}: the child did not get the canonical form resolved in the app");
+            assert!(!mark.exists(), "{l}: the child reached the vault's helper through a link to /proc/self/cwd");
+        }
+        // the opener: the app's PATH with such a link
+        let t = match shell_target(&vault, "path", "/vault/sub").unwrap() {
+            ShellOpen::Ask(t) => t,
+            ShellOpen::Url(u) => panic!("not asked ({u})"),
+        };
+        let got = shell_spawn(&t, opener_path(Some(format!("{}:/usr/bin", links[0]).into()), &vault), |l| Ok(l.path.clone())).unwrap();
+        assert_eq!(got, OsString::from(format!("{ours}:/usr/bin")), "the opener's PATH holds the link");
         let _ = std::fs::remove_dir_all(&base);
     }
 }
