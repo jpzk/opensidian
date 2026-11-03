@@ -1,4 +1,4 @@
-<img width="1200" height="630" alt="Social sharing image (1200×630)@1x" src="https://github.com/user-attachments/assets/a59e3ab9-8ea8-45a5-a467-1f1774a46eb8" />
+<img width="1000" height="525" alt="opensidian-header" src="https://github.com/user-attachments/assets/a19731ea-35dc-46cb-934a-352e8c813e39" />
 
 
 # Opensidian
