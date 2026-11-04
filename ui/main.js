@@ -1890,6 +1890,7 @@ function bmDragStart(e, ix) {
   const srcRow = { kind: src.kind, name: src.name, files: src.kind === "g" ? bmTree.slice(ix + 1, bmSubEnd(ix)).filter(r => r.kind === "f").map(r => r.name) : [] };
   let ghost = null, fb = { line: null, hl: null }, srcEl = null, zones = null, raf = 0, last = null;
   let spring = 0;                          // collapseall R5: the armed spring-load timer
+  let pz = null, pnd = null;               // issue #40: pane zones / the live pane decision (a FILE bookmark only)
   bmDrop = null;
   const clearFb = () => bmFbClear(fb);
   const disarm = () => { if (spring) { clearTimeout(spring); spring = 0; } };
@@ -1925,6 +1926,7 @@ function bmDragStart(e, ix) {
       ghost.textContent = label;
       document.body.appendChild(ghost);
       cacheZones();
+      if (src.kind === "f") pz = nDropZones();   // issue #40: a note bookmark can open on a pane
       bmDropTok = "none";
       updateTitle();
     }
@@ -1953,6 +1955,10 @@ function bmDragStart(e, ix) {
       ghost.textContent = label + (nd ? " -> " + tok : "");   // the chip names the decision
       updateTitle();                       // ONLY on a decision change — never per frame
     }
+    if (pz) {                              // issue #40: no bookmark/board target under the pointer -> a pane may take the note
+      const pn = nDropShow(pnd, nd ? null : nDropDecide(pz, ev.clientX, ev.clientY));
+      if (pn !== pnd) { pnd = pn; if (!nd) ghost.textContent = label + (pnd ? " -> " + nDropName(pnd) : ""); }
+    }
   };
   const move = ev => { last = ev; if (!raf) raf = requestAnimationFrame(step); };
   const up = async uev => {             // cv-dragin: the release point decides the board drop
@@ -1963,6 +1969,7 @@ function bmDragStart(e, ix) {
     if (raf) { cancelAnimationFrame(raf); raf = 0; if (last) step(); }
     disarm();                              // R5: a release before 0.85s opens nothing
     const d = bmDrop, dragged = !!ghost;
+    const pn = pnd; pnd = nDropShow(pnd, null);   // issue #40: the pane decision at the release
     if (ghost) { ghost.remove(); ghost = null; }
     clearFb();
     if (srcEl) srcEl.classList.remove("bmdrop-src");
@@ -1970,6 +1977,7 @@ function bmDragStart(e, ix) {
     bmDrop = null;
     if (!dragged) return;                  // below the threshold: a plain click, let it through
     bmEat = performance.now();
+    if (!d && pn) { await nDropOpen(pn, src.name); return; }   // issue #40: a pane took the note — a tab / split, bookmarks.json untouched
     if (!d) { updateTitle(); return; }     // no legal target: NOTHING is called — byte-level refusal
     if (d.cv) {                            // goal cv-dragin: bookmark -> board = file card(s) at the release point
       const ux = uev ? uev.clientX : last.clientX, uy = uev ? uev.clientY : last.clientY;
@@ -5184,6 +5192,53 @@ function tabDragStart(e, g, i) {
   window.addEventListener("mouseup", up);
 }
 
+/* issue #40: a NOTE dragged out of the FILE EXPLORER or the BOOKMARKS pane lands on a
+   pane exactly where a dragged TAB lands (tabDragStart's zones, TAB_EDGE): over a
+   pane's tab strip -> the note opens as a NEW tab in that pane (openNewTab: right of
+   its active tab, focused); the right edge -> a new split right of that pane; the
+   bottom edge -> a new split below it. Elsewhere (the pane body, #rside, the
+   sidebars) is no target and the release opens nothing. Rects are cached once at
+   drag start (R20). Census [ndrop:<strip|edge|bottom>@<pane ix>] while a decision
+   is live, published only on a decision change. */
+let nDropTok = "";
+function nDropZones() {
+  const rs = $("rside");
+  return {
+    panes: groups().map((h, ix) => ({ g: h, ix, pr: h.pane.getBoundingClientRect(), tb: h.tabsEl.getBoundingClientRect().bottom })),
+    rs: rs && !rs.hidden ? rs.getBoundingClientRect() : null,
+  };
+}
+function nDropDecide(z, x, y) {            // -> {kind, g, ix} or null
+  if (!z) return null;
+  if (z.rs && x >= z.rs.left && x <= z.rs.right && y >= z.rs.top && y <= z.rs.bottom) return null;
+  for (const p of z.panes) {
+    const pr = p.pr;
+    if (x < pr.left || x > pr.right || y < pr.top || y > pr.bottom) continue;
+    if (y <= p.tb) return { kind: "strip", g: p.g, ix: p.ix };
+    const dr = pr.right - x, db = pr.bottom - y;
+    if (dr < TAB_EDGE && dr <= db) return { kind: "edge", g: p.g, ix: p.ix };
+    if (db < TAB_EDGE) return { kind: "bottom", g: p.g, ix: p.ix };
+    return null;
+  }
+  return null;
+}
+const nDropName = nd => nd.kind === "strip" ? "new tab" : nd.kind === "edge" ? "split right" : "split down";
+function nDropShow(prev, nd) {             // -> nd; repaints the target outline and [ndrop:] only on a change
+  const key = d => d ? d.kind + "@" + d.ix : "";
+  if (key(prev) === key(nd)) return prev;
+  if (prev) (prev.kind === "strip" ? prev.g.tabsEl : prev.g.pane).classList.remove("drop-" + prev.kind);
+  if (nd) (nd.kind === "strip" ? nd.g.tabsEl : nd.g.pane).classList.add("drop-" + nd.kind);
+  nDropTok = key(nd);
+  updateTitle();
+  return nd;
+}
+async function nDropOpen(nd, name) {       // the release: a new tab in that pane, or a split carrying the note
+  await act("note_drop", { kind: nd.kind, groups: groups().length }, async () => {
+    if (nd.kind === "strip") { focusGroup(nd.g); await openNewTab(name, nd.g); }
+    else await splitWith(nd.g, nd.kind === "bottom" ? "col" : "row", mkTab(name));
+  });
+}
+
 /* #20 (R32): the big title a note shows is its FILENAME, rendered — never
    bytes in the file (Obsidian calls it the inline title; a new note is zero
    bytes). It is published as data-title on the two SCROLLERS and drawn by a
@@ -6678,6 +6733,7 @@ function treeDragStart(e, nm, dir) {         // dir: true = a folder row, "file"
   const base = nm.split("/").pop();
   const par = nm.includes("/") ? nm.slice(0, nm.lastIndexOf("/")) : "";
   let ghost = null, target = null, hl = null, zones = null, raf = 0, last = null, multi = null;
+  let pz = null, pnd = null;               // issue #40: pane zones / the live pane decision (a note row only)
   const clearHl = () => { if (hl) { hl.classList.remove("drop-into"); hl = null; } };
   const step = () => {
     raf = 0;
@@ -6701,6 +6757,7 @@ function treeDragStart(e, nm, dir) {         // dir: true = a folder row, "file"
         .filter(z => z.r.height > 0 && z.f != null);
       zones.push({ el: $("tree"), f: "", r: $("tree").getBoundingClientRect() });   // the vault ROOT
       if (dir || multi) zones = [];      // cv-drop: a folder is no move source (R24.5) — only a plugin view takes it; nor is a selection
+      if (!dir && !multi && !/\.canvas$/i.test(nm)) pz = nDropZones();   // issue #40: a note row can open on a pane
     }
     ghost.style.transform = "translate3d(" + (ev.clientX + 10) + "px," + (ev.clientY + 12) + "px,0)";
     let nt = null;
@@ -6722,6 +6779,10 @@ function treeDragStart(e, nm, dir) {         // dir: true = a folder row, "file"
       dragTok = (target ? (target.f || "/") : "-") + ":" + ghost.textContent;
       updateTitle();                     // ONLY on a target change — never per frame
     }
+    if (pz) {                            // issue #40: no folder under the pointer -> a pane may take the note
+      const nd = nDropShow(pnd, target ? null : nDropDecide(pz, ev.clientX, ev.clientY));
+      if (nd !== pnd) { pnd = nd; if (!target) ghost.textContent = base + (pnd ? " -> " + nDropName(pnd) : ""); }
+    }
   };
   const move = ev => { last = ev; if (!raf) raf = requestAnimationFrame(step); };
   const up = async ev => {
@@ -6734,7 +6795,14 @@ function treeDragStart(e, nm, dir) {         // dir: true = a folder row, "file"
     if (ghost) ghost.remove();
     clearHl();
     dragTok = "";
+    const pn = pnd; pnd = nDropShow(pnd, null);   // issue #40: the pane decision at the release
     const pd = treePlgDrag; treePlgDrag = null;
+    if (ghost && !t && pn) {             // issue #40: a pane took the note — a tab / split, never a move
+      if (pd) pd.end();
+      treeEat = 1;                       // the release is over a pane: no row click follows
+      await nDropOpen(pn, nm);
+      return;
+    }
     if (ghost && !t && pd && treePlgDrop(pd, ev)) { treeEat = 1; updateTitle(); return; }   // a plugin view took it
     if (pd) pd.end();
     if (dir || multi) { if (ghost) treeEat = performance.now(); updateTitle(); return; }   // cv-drop: a folder (or a selection) dropped on nothing moves nothing
