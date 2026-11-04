@@ -150,7 +150,11 @@ const Ed = {
         // R17.6 lists "- [ ] " as ONE token: the bullet marker and the
         // checkbox are the same widget, so they reveal together.
         Ed.tok([li0, li1, cb, tm], [li0, li1, tm], "task");
-        Ed.inline(g, row, rest.slice(4));
+        // #45: the done strike is drawn on the TEXT (span.tkt), not the row: a row-level
+        // text-decoration also struck the literal indent of a nested item, a dash left of
+        // the box. Empty text gets no span (a text-less element would become a widget leaf).
+        const body = rest.slice(4);
+        if (body) { const tt = Ed.el("span", "tkt"); Ed.inline(g, tt, body); row.appendChild(tt); }
       } else {
         Ed.tok([li0, li1], [li0, li1], "li");
         Ed.inline(g, row, rest);
