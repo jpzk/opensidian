@@ -318,9 +318,10 @@
          there turns it into the note again. Only the canvas type: other plugin views keep opening a note
          in a new tab of their group (Excalidraw and friends rely on it). */
       const PV_INPLACE = new Set(["canvas"]);
-      function pvToNote(leaf, file) {   // leaf's canvas tab -> a note tab with the board as its Back entry; true if done
+      const OF_TAG = Symbol("os.openFile");   // marks the view state WorkspaceLeaf.openFile builds
+      function pvToNote(leaf, file, any) {   // leaf's canvas tab (any unpinned plugin tab when any) -> a note tab with the view as its Back entry; true if done
         const t = leaf._t, g = t && groupOfTab(t);
-        if (!g || leaf._side || !PV_INPLACE.has(t.utype) || !file || file.extension !== "md" || typeof modeBits !== "function") return false;
+        if (!g || leaf._side || !(PV_INPLACE.has(t.utype) || (any && !t.pinned)) || !file || file.extension !== "md" || typeof modeBits !== "function") return false;
         const r = recs.get(t);
         let st = {}; try { st = (r ? r.view.getState() : t.raw && t.raw.state && t.raw.state.state) || {}; } catch (_) {}
         const e = { n: t.name, s: 0, pv: { type: t.utype, state: JSON.parse(JSON.stringify(st)), title: t.name } };
@@ -581,7 +582,11 @@
           if (this._side && (type === "empty" || !type)) return;
           const p = vs && vs.state && vs.state.file; const f = p && d.vault().getAbstractFileByPath(p);
           if (!(f instanceof d.TFile())) return;
-          return this._openFileDirect(f, { state: vs.state, eState, active: vs.active });
+          /* stock: leaf.setViewState({type:"markdown", state:{file}}) replaces THIS leaf's view, also when it
+             shows a plugin view (Excalidraw's leaf -> the note that embeds the drawing). An openFile from a
+             plugin leaf (vs tagged OF_TAG below) keeps the app's "new tab in its group" route. */
+          const inPlace = type === "markdown" && !(vs && vs[OF_TAG]);
+          return this._openFileDirect(f, { state: vs.state, eState, active: vs.active, inPlace });
         }
         /* openFile goes through setViewState like stock: {type: the view type registered for the file's
            extension (md -> "markdown"), state: {...openState.state, file}}. Plugins that pick the view
@@ -594,11 +599,13 @@
           const reg = this.app && this.app.viewRegistry;
           const type = (reg && typeof reg.getTypeByExtension === "function" && reg.getTypeByExtension(file.extension)) || (file.extension === "md" ? "markdown" : "");
           if (!type) return this._openFileDirect(file, os);
-          return this.setViewState({ type, state: Object.assign({}, os.state, { file: file.path }), active: os.active }, os.eState);
+          const vs = { type, state: Object.assign({}, os.state, { file: file.path }), active: os.active };
+          Object.defineProperty(vs, OF_TAG, { value: true });   // non-enumerable: wrappers that copy the state drop it (-> stock in-place)
+          return this.setViewState(vs, os.eState);
         }
         async _openFileDirect(file, openState) { svsSkip++; try { return await this._openFileDirect0(file, openState); } finally { svsSkip--; } }
         _openFileDirect0(file, openState) {
-          if (this._t && this._t.kind === "unk" && !this._side && pvToNote(this, file)) return d.openFileIn(this, file, openState);   // CVR-B-027: a canvas leaf shows the note in place
+          if (this._t && this._t.kind === "unk" && !this._side && pvToNote(this, file, !!(openState && openState.inPlace))) return d.openFileIn(this, file, openState);   // CVR-B-027: a canvas leaf shows the note in place
           if ((this._t && this._t.kind === "unk") || this._side) {   // a plugin leaf asked to show a note: a new tab in its group (or the focused one)
             const n = new WorkspaceLeaf(this.app); n._g = this._grp || M().fg(); n._nt = true;
             return d.openFileIn(n, file, openState);
