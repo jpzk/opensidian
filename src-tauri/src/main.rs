@@ -4437,6 +4437,10 @@ enum BmNode {
     /// is Obsidian's `path` = name + ".md". `title` is Obsidian's optional display
     /// alias — we never author one, we never lose one.
     File { name: String, title: Option<String>, x: BmExtra },
+    /// issue #44: a bookmarked PDF. `path` is Obsidian's `path` verbatim (it
+    /// keeps its extension). Painted, and a click opens it in the PDF view; it
+    /// is never a note NAME, so list_bookmarks and the rename walk skip it.
+    Pdf { path: String, title: Option<String>, x: BmExtra },
     Group { title: String, items: Vec<BmNode>, x: BmExtra },
     /// an entry our model cannot express — Obsidian's `search`, a non-.md path,
     /// a future type. Not painted, not addressable, written back verbatim.
@@ -4471,6 +4475,9 @@ struct BmRow {
     /// for a group without a numeric ctime (folds in memory only, not persisted).
     #[serde(skip_serializing_if = "Option::is_none")]
     ctime: Option<String>,
+    /// issue #44: a PDF bookmark (`name` = its vault path, extension kept)
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pdf: bool,
 }
 
 /* the ONE parser, and it is TOLERANT by construction: a body that is not
@@ -4501,16 +4508,13 @@ fn bm_node_of(v: &serde_json::Value) -> BmNode {
     match obj.get("type").and_then(|t| t.as_str()).unwrap_or("") {
         "file" => {
             // Obsidian's `path` is our name + ".md" (recon §6); any other path
-            // (canvas, pdf, bare) is not expressible as an R9.4 name -> opaque
-            let name = match obj
-                .get("path")
-                .and_then(|p| p.as_str())
-                .and_then(|p| p.strip_suffix(".md"))
-                .filter(|n| !n.is_empty())
-            {
-                Some(n) => n.to_string(),
-                None => return BmNode::Opaque(v.clone()),
-            };
+            // (canvas, bare) is not expressible as an R9.4 name -> opaque; a
+            // `.pdf` path is a Pdf node (issue #44)
+            let path = obj.get("path").and_then(|p| p.as_str()).unwrap_or("");
+            let name = path.strip_suffix(".md").filter(|n| !n.is_empty());
+            if name.is_none() && !(path.len() > 4 && is_pdf_target(path)) {
+                return BmNode::Opaque(v.clone());
+            }
             let title = obj.get("title").and_then(|t| t.as_str()).map(str::to_string);
             let keys = obj
                 .iter()
@@ -4522,7 +4526,11 @@ fn bm_node_of(v: &serde_json::Value) -> BmNode {
                 })
                 .map(|(k, val)| (k.clone(), val.clone()))
                 .collect();
-            BmNode::File { name, title, x: BmExtra { ctime, keys } }
+            let x = BmExtra { ctime, keys };
+            match name {
+                Some(n) => BmNode::File { name: n.to_string(), title, x },
+                None => BmNode::Pdf { path: path.to_string(), title, x },
+            }
         }
         "group" => {
             // a group whose title is not a string or whose items is not an
@@ -4623,13 +4631,18 @@ fn bm_value_of(n: &BmNode) -> serde_json::Value {
     use serde_json::{Map, Value};
     match n {
         BmNode::Opaque(v) => v.clone(),
-        BmNode::File { name, title, x } => {
+        BmNode::File { title, x, .. } | BmNode::Pdf { title, x, .. } => {
+            let path = match n {
+                BmNode::File { name, .. } => format!("{name}.md"),
+                BmNode::Pdf { path, .. } => path.clone(),
+                _ => unreachable!(),
+            };
             let mut m = Map::new();
             m.insert("type".into(), Value::String("file".into()));
             if let Some(c) = &x.ctime {
                 m.insert("ctime".into(), Value::Number(c.clone()));
             }
-            m.insert("path".into(), Value::String(format!("{name}.md")));
+            m.insert("path".into(), Value::String(path));
             if let Some(t) = title {
                 m.insert("title".into(), Value::String(t.clone()));
             }
@@ -4691,7 +4704,7 @@ fn bm_names(nodes: &[BmNode], out: &mut Vec<String>) {
         match n {
             BmNode::File { name, .. } => out.push(name.clone()),
             BmNode::Group { items, .. } => bm_names(items, out),
-            BmNode::Opaque(_) => {} // not a name — carried, not listed
+            BmNode::Opaque(_) | BmNode::Pdf { .. } => {} // not a name — carried, not listed
         }
     }
 }
@@ -4720,11 +4733,16 @@ fn bm_rows_in(nodes: &[BmNode], depth: usize, out: &mut Vec<BmRow>) {
                 let label = title
                     .clone()
                     .unwrap_or_else(|| name.rsplit('/').next().unwrap_or(name).to_string());
-                out.push(BmRow { kind: "f".into(), depth, name: name.clone(), label, ctime: None });
+                out.push(BmRow { kind: "f".into(), depth, name: name.clone(), label, ctime: None, pdf: false });
+            }
+            BmNode::Pdf { path, title, .. } => {
+                // issue #44: `name` is the vault path the click opens in the PDF view
+                let label = title.clone().unwrap_or_else(|| path.rsplit('/').next().unwrap_or(path).to_string());
+                out.push(BmRow { kind: "f".into(), depth, name: path.clone(), label, ctime: None, pdf: true });
             }
             BmNode::Group { title, items, x } => {
                 let ctime = x.ctime.as_ref().map(|c| c.to_string());
-                out.push(BmRow { kind: "g".into(), depth, name: title.clone(), label: title.clone(), ctime });
+                out.push(BmRow { kind: "g".into(), depth, name: title.clone(), label: title.clone(), ctime, pdf: false });
                 bm_rows_in(items, depth + 1, out);
             }
             BmNode::Opaque(_) => {} // preserved on disk, never painted
@@ -5108,7 +5126,7 @@ fn bm_rename_walk(tree: &mut Vec<BmNode>, old: &str, new: &str) -> bool {
                     }
                 }
                 BmNode::Group { items, .. } => walk(items, old, new, done),
-                BmNode::Opaque(_) => {} // not a name; never followed, never dropped
+                BmNode::Opaque(_) | BmNode::Pdf { .. } => {} // not a name; never followed, never dropped
             }
             if drop {
                 nodes.remove(i);
@@ -8169,6 +8187,32 @@ mod tests {
         assert_eq!(items[0]["ctime"], serde_json::json!(1789851600000u64), "ctime included");
         assert_eq!(items[1]["path"], "Diagram.canvas");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// issue #44: a `.pdf` file bookmark (stock writes them) is a painted row
+    /// flagged `pdf`, named by its full vault path; it is no note name, and a
+    /// write gives it back byte-for-byte in stock's key order.
+    #[test]
+    fn issue44_pdf_bookmark_is_painted_and_rides_through() {
+        let body = r#"{"items": [
+                {"type": "file", "ctime": 7, "path": "docs/Paper.PDF"},
+                {"type": "file", "ctime": 8, "path": "Spec.pdf", "title": "The spec"},
+                {"type": "file", "ctime": 9, "path": ".pdf"},
+                {"type": "file", "ctime": 10, "path": "Plain.md"}
+            ]}"#;
+        let t = parse_bm_tree(body);
+        let rows = bm_rows_of(&t);
+        assert_eq!(rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), vec!["docs/Paper.PDF", "Spec.pdf", "Plain"]);
+        assert_eq!(rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), vec!["Paper.PDF", "The spec", "Plain"]);
+        assert_eq!(rows.iter().map(|r| r.pdf).collect::<Vec<_>>(), vec![true, true, false]);
+        assert_eq!(bm_path_of(&t, 2), Some(vec![3]), "the bare .pdf stays opaque");
+        let mut names = Vec::new();
+        bm_names(&t, &mut names);
+        assert_eq!(names, vec!["Plain"]);
+        let v: serde_json::Value = serde_json::from_str(&bm_emit(&t, &[])).unwrap();
+        assert_eq!(v["items"][0], serde_json::json!({"type": "file", "ctime": 7, "path": "docs/Paper.PDF"}));
+        assert_eq!(v["items"][1], serde_json::json!({"type": "file", "ctime": 8, "path": "Spec.pdf", "title": "The spec"}));
+        assert_eq!(v["items"][3]["path"], "Plain.md");
     }
 
     /// R4X.17 — the painted LABEL follows Obsidian's measured rule
