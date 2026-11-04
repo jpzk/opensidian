@@ -648,6 +648,11 @@
     style();
     const w = c.wrapperEl;
     w.addEventListener("contextmenu", e => onContext(c, e));
+    // issue #49: a press on the board closes the open context menu. main.js closes menus on
+    // mousedown, but the board's pointerdown calls preventDefault(), which suppresses that mousedown
+    w.addEventListener("pointerdown", e => {
+      if (typeof menuEl !== "undefined" && menuEl && !menuEl.contains(e.target) && typeof closeMenu === "function") closeMenu();
+    }, true);
     w.addEventListener("dragover", e => onDragOver(c, e));
     w.addEventListener("drop", e => onDrop(c, e));
     toolbar(c);
