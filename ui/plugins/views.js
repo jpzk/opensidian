@@ -1301,6 +1301,16 @@
         await openInTab(name);
         const n = views.activeTab(g || focusedGroup()); if (empty && n && leaf) views.bindLeaf(leaf, n);
       }
+      /* stock parity: the view state's mode picks the tab's mode — {mode:"preview"} = reading,
+         {mode:"source", source:false} = live preview, {mode:"source", source:true} = source
+         (leaf.setViewState({type:"markdown", state:{file, mode, source}}) — Excalidraw and the
+         harness open an embedding note in reading view this way). No mode: the tab keeps its own. */
+      const st = openState && openState.state;
+      if (st && (st.mode === "preview" || st.mode === "source") && typeof setMode === "function") {
+        const want = st.mode === "preview" ? "reading" : (st.source ? "source" : "livepreview");
+        const gg = (leaf && leaf._grp) || focusedGroup(), at = gg && gg.tabs[gg.active];
+        if (at && !at.kind && at.mode !== want) try { await setMode(gg, want); } catch (e) { console.error("[plugin] setViewState mode:", e); }
+      }
       const sub = openState && openState.eState && openState.eState.subpath;
       if (sub && typeof navAnchor === "function") try { await navAnchor(focusedGroup(), sub.replace(/^#/, "")); } catch (_) {}
       touch();

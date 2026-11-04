@@ -297,6 +297,23 @@ const Ed = {
           cvEmbedPaint(cs, null);
           i += wl[0].length; continue;
         }
+        // plugin note embed in Live Preview `![[Drawing.excalidraw]]`: while a plugin registered a
+        // markdown post processor (Ed.embHook, editor-api.js), the embed is a text-free leaf
+        // span.os-lp-embed[data-src] — the widget CM6 mounts is handed to the post processors with a
+        // span.internal-embed[src] inside, as stock's live preview does (Excalidraw draws its image
+        // there); one no processor claims gets its link back. No hook -> the link branch below.
+        if (wl[1] === "!" && (hash >= 0 ? target.slice(0, hash) : target) && Ed.embHook && Ed.embHook.any()) {
+          const em = [], emk = [];
+          const eadd = (el, isMk) => { em.push(el); if (isMk) emk.push(el); box.appendChild(el); };
+          eadd(Ed.mk("![["), true);
+          eadd(Ed.mk(raw, "img"), true);
+          eadd(Ed.mk("]]"), true);
+          const es = Ed.el("span", "os-lp-embed");
+          es.dataset.src = target; es.dataset.alt = bar >= 0 ? label : target;
+          eadd(es, false);
+          Ed.tok(em, emk, "img");
+          i += wl[0].length; continue;
+        }
         const parts = [], mks = [];
         const add = (el, isMk) => { parts.push(el); if (isMk) mks.push(el); box.appendChild(el); };
         add(Ed.mk(wl[1] + "[["), true);
