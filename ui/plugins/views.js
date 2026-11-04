@@ -605,7 +605,7 @@
         }
         async _openFileDirect(file, openState) { svsSkip++; try { return await this._openFileDirect0(file, openState); } finally { svsSkip--; } }
         _openFileDirect0(file, openState) {
-          if (this._t && this._t.kind === "unk" && !this._side && pvToNote(this, file, !!(openState && openState.inPlace))) return d.openFileIn(this, file, openState);   // CVR-B-027: a canvas leaf shows the note in place
+          if (this._t && this._t.kind === "unk" && !this._side && pvToNote(this, file, !!(openState && openState.inPlace))) return d.openFileIn(this, file, Object.assign({}, openState, { pvFresh: true }));   // CVR-B-027: a canvas leaf shows the note in place
           if ((this._t && this._t.kind === "unk") || this._side) {   // a plugin leaf asked to show a note: a new tab in its group (or the focused one)
             const n = new WorkspaceLeaf(this.app); n._g = this._grp || M().fg(); n._nt = true;
             return d.openFileIn(n, file, openState);
@@ -1296,7 +1296,12 @@
         const t = leaf._t;
         const i = g.tabs.indexOf(t);
         if (i >= 0 && i !== g.active && typeof switchTab === "function") await switchTab(g, i);
-        if (!t.kind) { if (t.name !== name && typeof navigate === "function") await navigate(g, name); }
+        if (!t.kind) {
+          if (t.name !== name && typeof navigate === "function") await navigate(g, name);
+          /* a plugin tab just turned note tab ON THE SAME FILE (Excalidraw's markdown toggle): no navigate
+             (same name), so the pane must load the note itself or the leaf's view has no editor */
+          else if (openState && openState.pvFresh && typeof loadActive === "function") await loadActive(g);
+        }
         else if (typeof openNewTab === "function") { await openNewTab(name, g); const n = views.activeTab(g); if (n) views.bindLeaf(leaf, n); }
       } else if (leaf && leaf._split && g && typeof splitWith === "function" && typeof mkTab === "function") {
         const d0 = leaf._split, t = mkTab(name); views.bindLeaf(leaf, t); await splitWith(g, d0, t);
