@@ -3732,6 +3732,31 @@ fn csp_by_trust(header: &str, trusted: bool) -> String {
     out.join("; ")
 }
 
+/// android-excali: the Android WebView reaches a Tauri custom scheme only as
+/// `http://<scheme>.localhost` (convertFileSrc), so a CSP `opensidian-plugin:` /
+/// `opensidian-img:` scheme token matches nothing there and plugin scripts are
+/// refused. On Android each of OUR two scheme tokens becomes exactly that one
+/// origin (a replacement, not an addition); every other token is untouched.
+fn csp_scheme_origins(header: &str, android: bool) -> String {
+    if !android {
+        return header.to_string();
+    }
+    header
+        .split(';')
+        .map(|d| {
+            d.split_whitespace()
+                .map(|t| match t.strip_suffix(':') {
+                    Some(s) if s == plugins::SCHEME || s == IMG_SCHEME => format!("http://{s}.localhost"),
+                    _ => t.to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|d| !d.is_empty())
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 /// the response hook of the page window: an HTML page (the only responses
 /// Tauri gives a CSP header) gets the header of the vault's trust state
 fn page_csp(h: &tauri::AppHandle, res: &mut tauri::http::Response<std::borrow::Cow<'static, [u8]>>) {
@@ -3740,7 +3765,7 @@ fn page_csp(h: &tauri::AppHandle, res: &mut tauri::http::Response<std::borrow::C
         return;
     };
     let trusted = cur_vault(&h.state::<Vault>()).is_some_and(|r| plugins::is_trusted(&cfg_value(), &r));
-    let csp = csp_by_trust(&base, trusted);
+    let csp = csp_by_trust(&csp_scheme_origins(&base, cfg!(target_os = "android")), trusted);
     match tauri::http::HeaderValue::from_str(&csp) {
         Ok(v) => {
             res.headers_mut().insert("Content-Security-Policy", v);
@@ -10225,6 +10250,34 @@ mod tests {
         // an existing worker-src / media-src is extended, not duplicated; Tauri's own hash tokens survive
         let w = csp_by_trust("script-src 'self' 'sha256-abc'; worker-src 'self'; media-src 'self'", true);
         assert_eq!(w, "script-src 'self' 'sha256-abc' 'unsafe-eval' blob:; worker-src 'self' blob:; media-src 'self' blob:");
+    }
+
+    /// android-excali: on Android our two scheme tokens become their
+    /// http://<scheme>.localhost origin (what convertFileSrc returns there) —
+    /// exact strings, nothing else widened; off Android the header is unchanged
+    #[test]
+    fn csp_scheme_origins_maps_only_our_schemes_on_android() {
+        const CONF: &str = include_str!("../tauri.conf.json");
+        let base = serde_json::from_str::<serde_json::Value>(CONF).unwrap()["app"]["security"]["csp"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(csp_scheme_origins(&base, false), base);
+        let a = csp_scheme_origins(&base, true);
+        assert_eq!(
+            a,
+            "default-src 'self'; script-src 'self' http://opensidian-plugin.localhost 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
+             img-src 'self' data: http://opensidian-img.localhost; font-src 'self'; \
+             connect-src ipc: http://ipc.localhost"
+        );
+        assert_eq!(
+            csp_by_trust(&a, true),
+            "default-src 'self'; script-src 'self' http://opensidian-plugin.localhost 'wasm-unsafe-eval' 'unsafe-eval' blob:; \
+             style-src 'self' 'unsafe-inline'; img-src 'self' data: http://opensidian-img.localhost; font-src 'self'; \
+             connect-src ipc: http://ipc.localhost 'self'; worker-src 'self' blob:; media-src 'self' blob:"
+        );
+        // a look-alike scheme or a bare origin is not ours: untouched
+        assert_eq!(csp_scheme_origins("script-src opensidian-pluginx: evil: 'self'", true), "script-src opensidian-pluginx: evil: 'self'");
     }
 
     /// S4: picker commands refuse system trees and dot-components, keep the
