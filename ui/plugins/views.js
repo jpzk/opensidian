@@ -318,9 +318,10 @@
          there turns it into the note again. Only the canvas type: other plugin views keep opening a note
          in a new tab of their group (Excalidraw and friends rely on it). */
       const PV_INPLACE = new Set(["canvas"]);
-      function pvToNote(leaf, file) {   // leaf's canvas tab -> a note tab with the board as its Back entry; true if done
+      const OF_TAG = Symbol("os.openFile");   // marks the view state WorkspaceLeaf.openFile builds
+      function pvToNote(leaf, file, any) {   // leaf's canvas tab (any unpinned plugin tab when any) -> a note tab with the view as its Back entry; true if done
         const t = leaf._t, g = t && groupOfTab(t);
-        if (!g || leaf._side || !PV_INPLACE.has(t.utype) || !file || file.extension !== "md" || typeof modeBits !== "function") return false;
+        if (!g || leaf._side || !(PV_INPLACE.has(t.utype) || (any && !t.pinned)) || !file || file.extension !== "md" || typeof modeBits !== "function") return false;
         const r = recs.get(t);
         let st = {}; try { st = (r ? r.view.getState() : t.raw && t.raw.state && t.raw.state.state) || {}; } catch (_) {}
         const e = { n: t.name, s: 0, pv: { type: t.utype, state: JSON.parse(JSON.stringify(st)), title: t.name } };
@@ -581,7 +582,11 @@
           if (this._side && (type === "empty" || !type)) return;
           const p = vs && vs.state && vs.state.file; const f = p && d.vault().getAbstractFileByPath(p);
           if (!(f instanceof d.TFile())) return;
-          return this._openFileDirect(f, { state: vs.state, eState, active: vs.active });
+          /* stock: leaf.setViewState({type:"markdown", state:{file}}) replaces THIS leaf's view, also when it
+             shows a plugin view (Excalidraw's leaf -> the note that embeds the drawing). An openFile from a
+             plugin leaf (vs tagged OF_TAG below) keeps the app's "new tab in its group" route. */
+          const inPlace = type === "markdown" && !(vs && vs[OF_TAG]);
+          return this._openFileDirect(f, { state: vs.state, eState, active: vs.active, inPlace });
         }
         /* openFile goes through setViewState like stock: {type: the view type registered for the file's
            extension (md -> "markdown"), state: {...openState.state, file}}. Plugins that pick the view
@@ -594,11 +599,13 @@
           const reg = this.app && this.app.viewRegistry;
           const type = (reg && typeof reg.getTypeByExtension === "function" && reg.getTypeByExtension(file.extension)) || (file.extension === "md" ? "markdown" : "");
           if (!type) return this._openFileDirect(file, os);
-          return this.setViewState({ type, state: Object.assign({}, os.state, { file: file.path }), active: os.active }, os.eState);
+          const vs = { type, state: Object.assign({}, os.state, { file: file.path }), active: os.active };
+          Object.defineProperty(vs, OF_TAG, { value: true });   // non-enumerable: wrappers that copy the state drop it (-> stock in-place)
+          return this.setViewState(vs, os.eState);
         }
         async _openFileDirect(file, openState) { svsSkip++; try { return await this._openFileDirect0(file, openState); } finally { svsSkip--; } }
         _openFileDirect0(file, openState) {
-          if (this._t && this._t.kind === "unk" && !this._side && pvToNote(this, file)) return d.openFileIn(this, file, openState);   // CVR-B-027: a canvas leaf shows the note in place
+          if (this._t && this._t.kind === "unk" && !this._side && pvToNote(this, file, !!(openState && openState.inPlace))) return d.openFileIn(this, file, Object.assign({}, openState, { pvFresh: true }));   // CVR-B-027: a canvas leaf shows the note in place
           if ((this._t && this._t.kind === "unk") || this._side) {   // a plugin leaf asked to show a note: a new tab in its group (or the focused one)
             const n = new WorkspaceLeaf(this.app); n._g = this._grp || M().fg(); n._nt = true;
             return d.openFileIn(n, file, openState);
@@ -1289,7 +1296,12 @@
         const t = leaf._t;
         const i = g.tabs.indexOf(t);
         if (i >= 0 && i !== g.active && typeof switchTab === "function") await switchTab(g, i);
-        if (!t.kind) { if (t.name !== name && typeof navigate === "function") await navigate(g, name); }
+        if (!t.kind) {
+          if (t.name !== name && typeof navigate === "function") await navigate(g, name);
+          /* a plugin tab just turned note tab ON THE SAME FILE (Excalidraw's markdown toggle): no navigate
+             (same name), so the pane must load the note itself or the leaf's view has no editor */
+          else if (openState && openState.pvFresh && typeof loadActive === "function") await loadActive(g);
+        }
         else if (typeof openNewTab === "function") { await openNewTab(name, g); const n = views.activeTab(g); if (n) views.bindLeaf(leaf, n); }
       } else if (leaf && leaf._split && g && typeof splitWith === "function" && typeof mkTab === "function") {
         const d0 = leaf._split, t = mkTab(name); views.bindLeaf(leaf, t); await splitWith(g, d0, t);
@@ -1300,6 +1312,16 @@
         const empty = g && !g.tabs.length;
         await openInTab(name);
         const n = views.activeTab(g || focusedGroup()); if (empty && n && leaf) views.bindLeaf(leaf, n);
+      }
+      /* stock parity: the view state's mode picks the tab's mode — {mode:"preview"} = reading,
+         {mode:"source", source:false} = live preview, {mode:"source", source:true} = source
+         (leaf.setViewState({type:"markdown", state:{file, mode, source}}) — Excalidraw and the
+         harness open an embedding note in reading view this way). No mode: the tab keeps its own. */
+      const st = openState && openState.state;
+      if (st && (st.mode === "preview" || st.mode === "source") && typeof setMode === "function") {
+        const want = st.mode === "preview" ? "reading" : (st.source ? "source" : "livepreview");
+        const gg = (leaf && leaf._grp) || focusedGroup(), at = gg && gg.tabs[gg.active];
+        if (at && !at.kind && at.mode !== want) try { await setMode(gg, want); } catch (e) { console.error("[plugin] setViewState mode:", e); }
       }
       const sub = openState && openState.eState && openState.eState.subpath;
       if (sub && typeof navAnchor === "function") try { await navAnchor(focusedGroup(), sub.replace(/^#/, "")); } catch (_) {}

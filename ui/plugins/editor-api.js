@@ -833,7 +833,61 @@
           },
         };
         if (Ed.cbRefresh) { clearTimeout(cbT); cbT = setTimeout(() => { try { Ed.cbRefresh(); } catch (e) { console.error(e); } }, 0); }   // a plugin registers several in a row: one rebuild
+        embHookSet();
       } catch (e) { console.error(e); }
+    }
+    /* Live Preview note embeds (editor.js: ![[X]] -> text-free leaf span.os-lp-embed[data-src] while
+       a post processor is registered). Stock's live preview hands the post processors the embed's
+       span.internal-embed[src][alt]; here each mounted widget (CM6 mounts a CLONE of the parsed leaf)
+       gets that span inside it and the post processors run once on the widget, with the note of the
+       pane it sits in as sourcePath — Excalidraw swaps the span for its drawing there. A span no
+       processor filled gets the plain link back (an ordinary note embed stays a link, req 410). */
+    let embOn = false, embObs = null;
+    function embRefresh() {
+      try {
+        if (Ed.lpBust) Ed.lpBust();
+        for (const p of document.querySelectorAll(".pane")) {
+          const v = p._g && p._g.view;
+          if (v && v.cm && v._lpFx) try { v.cm.dispatch({ effects: v._lpFx.of(null) }); } catch (e) { console.error(e); }
+        }
+      } catch (e) { console.error(e); }
+    }
+    async function embPaint(s) {
+      if (s._osEmb) return;
+      s._osEmb = true;
+      const lt = s.dataset.src || "", alt = s.dataset.alt || lt;
+      const pane = s.closest(".pane"), g = pane && pane._g;
+      const t = g && g.active >= 0 ? g.tabs[g.active] : null, sourcePath = pathOf(t && !t.kind ? t.name : "");
+      const ie = document.createElement("span");
+      ie.className = "internal-embed"; ie.setAttribute("src", lt); ie.setAttribute("alt", alt);
+      s.appendChild(ie);
+      const h = new Component(); h.load();
+      const ctx = Object.assign(mdCtx(sourcePath, h), { containerEl: s });
+      const posts = MDP.post.slice().sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+      for (const p of posts) await runPost(p, s, ctx);
+      setTimeout(() => {   // nobody drew it: the link, as before the hook
+        if (!s.isConnected || ie.parentNode !== s || ie.childNodes.length) return;
+        const hash = lt.indexOf("#"), a = document.createElement("a");
+        a.className = "wiki wl"; a.href = "#"; a.dataset.note = hash >= 0 ? lt.slice(0, hash) : lt;
+        if (hash >= 0) a.dataset.anchor = lt.slice(hash + 1);
+        a.textContent = alt;
+        a.addEventListener("mousedown", e => { try { Ed.linkClick(e, a); } catch (er) { console.error(er); } });
+        ie.appendChild(a);
+      }, 1500);
+    }
+    function embScan(n) {
+      if (!n || n.nodeType !== 1) return;
+      const L = n.classList.contains("os-lp-embed") ? [n] : [...n.getElementsByClassName("os-lp-embed")];
+      for (const s of L) if (!s._osEmb && s.closest(".cm-editor")) embPaint(s).catch(e => console.error("[plugin] live preview embed:", e));
+    }
+    function embHookSet() {
+      if (!Ed.embHook) Ed.embHook = { any: () => MDP.post.length > 0 };
+      const on = MDP.post.length > 0;
+      if (on && !embObs && document.body) {
+        embObs = new MutationObserver(ms => { for (const m of ms) for (const n of m.addedNodes) embScan(n); });
+        embObs.observe(document.body, { childList: true, subtree: true });
+      }
+      if (on !== embOn) { embOn = on; embRefresh(); }   // the parse cache holds the other form of every ![[X]] row
     }
     // main.js tabGone: a closed tab unloads its reading embed children, even once no processor or plugin
     // embed is left (PPOST null by then). Armed by embHolder, the only maker of tab-owned children:

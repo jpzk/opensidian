@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#![cfg_attr(target_os = "android", allow(dead_code))] // goal android: desktop-only path, compiled out of run()
 /* rename migration (goal opensidian, operator 2026-09-30: "change all names
    from rustidian to opensidian"). The product was called rustidian up to
    v0.15; a user's data must survive the upgrade. THE ONE TABLE, old -> new:

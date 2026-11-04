@@ -297,6 +297,23 @@ const Ed = {
           cvEmbedPaint(cs, null);
           i += wl[0].length; continue;
         }
+        // plugin note embed in Live Preview `![[Drawing.excalidraw]]`: while a plugin registered a
+        // markdown post processor (Ed.embHook, editor-api.js), the embed is a text-free leaf
+        // span.os-lp-embed[data-src] — the widget CM6 mounts is handed to the post processors with a
+        // span.internal-embed[src] inside, as stock's live preview does (Excalidraw draws its image
+        // there); one no processor claims gets its link back. No hook -> the link branch below.
+        if (wl[1] === "!" && (hash >= 0 ? target.slice(0, hash) : target) && Ed.embHook && Ed.embHook.any()) {
+          const em = [], emk = [];
+          const eadd = (el, isMk) => { em.push(el); if (isMk) emk.push(el); box.appendChild(el); };
+          eadd(Ed.mk("![["), true);
+          eadd(Ed.mk(raw, "img"), true);
+          eadd(Ed.mk("]]"), true);
+          const es = Ed.el("span", "os-lp-embed");
+          es.dataset.src = target; es.dataset.alt = bar >= 0 ? label : target;
+          eadd(es, false);
+          Ed.tok(em, emk, "img");
+          i += wl[0].length; continue;
+        }
         const parts = [], mks = [];
         const add = (el, isMk) => { parts.push(el); if (isMk) mks.push(el); box.appendChild(el); };
         add(Ed.mk(wl[1] + "[["), true);
@@ -1550,6 +1567,11 @@ Object.assign(Ed, {
     if (load) Ed.lpBust();
     if (v._pxI != null) v._ext[v._pxI] = Ed.PX.of(Ed.pxExt(v));   // editor-api: the fresh state carries the CURRENT plugin extensions
     v.cm.setState(CMs.EditorState.create({ doc: s, extensions: v._ext }));
+    // Android (CM6 drives the IME through an EditContext there, only there): setState swaps the doc but leaves the
+    // EditContext holding the PREVIOUS note's text, so the keyboard's next composition (a tap mid-word) was applied
+    // to the new note at the old note's offsets ("# Ideas\n-" became "# Welcome", saved). Hand it the new doc.
+    const ecm = v.cm.observer && v.cm.observer.editContext;
+    if (ecm && typeof ecm.reset === "function") { ecm.pendingContextChange = null; ecm.composing = null; ecm.reset(v.cm.state); }
     v._fresh = load ? v.cm.state : null;
     v._Ld = null; v._snap = null;
     Ed.sync(g);

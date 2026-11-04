@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#![cfg_attr(target_os = "android", allow(dead_code))] // goal android: desktop-only path, compiled out of run()
 /* vaultbleed A — ONE VAULT PER PROCESS. "Open another vault" never re-roots this
    process (the root is a OnceLock, main.rs bind_vault); it starts a NEW process
    of the same app on that vault: `opensidian <dir>`.

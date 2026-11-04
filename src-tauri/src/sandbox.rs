@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#![cfg_attr(target_os = "android", allow(dead_code))] // goal android: desktop-only path, compiled out of run()
 /* Landlock self-sandbox — OFF by default (operator 2026-09-30); OPENSIDIAN_LANDLOCK=1 opts in,
    OPENSIDIAN_NO_LANDLOCK=1 forces it off and wins over the opt-in. When enabled it is applied once in main()
    BEFORE tauri spawns webkit, so every thread/child process inherits it:
@@ -137,6 +138,10 @@ pub fn landlock_switch(opt_in: Option<&std::ffi::OsStr>, no: Option<&std::ffi::O
 
 /// Should main() build a ruleset? Reads both env vars, spelled once each.
 pub fn landlock_enabled() -> bool {
+    // goal android: never — enforce() is compiled out of run() there
+    if cfg!(target_os = "android") {
+        return false;
+    }
     landlock_switch(
         std::env::var_os(LANDLOCK_ENV).as_deref(),
         std::env::var_os(NO_LANDLOCK_ENV).as_deref(),

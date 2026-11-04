@@ -175,6 +175,18 @@ fn cstr(s: &OsStr) -> io::Result<CString> {
     CString::new(s.as_bytes()).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in path"))
 }
 
+/// renameat2(dfd, from, dfd, to, RENAME_NOREPLACE) through libc on every target: Android's
+/// minSdk is 30, and bionic exports renameat2() from API 30 (PR #38 F2: no raw syscall, which the
+/// app seccomp filter of API 26-29 could answer with SIGSYS). The caller's linkat fallback stays
+/// for filesystems that refuse the flag with EINVAL/ENOSYS/EOPNOTSUPP on any API level (FUSE
+/// mounts such as Android 11+ shared storage without NOREPLACE support, vfat/sdcardfs, old
+/// desktop kernels).
+/// SAFETY: dfd is a valid directory fd, from/to are NUL-terminated.
+#[allow(clippy::unnecessary_cast)] // RENAME_NOREPLACE is c_uint on glibc, c_int on bionic
+unsafe fn renameat_noreplace(dfd: libc::c_int, from: *const libc::c_char, to: *const libc::c_char) -> libc::c_int {
+    libc::renameat2(dfd, from, dfd, to, libc::RENAME_NOREPLACE as libc::c_uint)
+}
+
 fn cvt(r: libc::c_int) -> io::Result<libc::c_int> {
     if r < 0 { Err(io::Error::last_os_error()) } else { Ok(r) }
 }
@@ -607,7 +619,7 @@ impl Vault {
                 Err(_) => continue,
             };
             // SAFETY: valid fd + NUL-terminated names
-            let r = cvt(unsafe { libc::renameat2(dfd, tmp.as_ptr(), dfd, cn.as_ptr(), libc::RENAME_NOREPLACE) });
+            let r = cvt(unsafe { renameat_noreplace(dfd, tmp.as_ptr(), cn.as_ptr()) });
             let r = match r {
                 Err(e) if matches!(e.raw_os_error(), Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EOPNOTSUPP)) => {
                     // no NOREPLACE here: link(2) refuses an existing name too
