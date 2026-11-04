@@ -1528,6 +1528,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .lp ul > li:is([data-task="x"], [data-task="X"]), .lp .tkx,
 .preview ul > li:is([data-task="x"], [data-task="X"]) {
   text-decoration: var(--checklist-done-decoration); color: var(--checklist-done-color) }
+/* #45: an editor row strikes its task TEXT only (span.tkt, editor.js): the row-wide decoration
+   ran through a nested item's literal indent, left of the box; stock leaves the indent unpainted */
+.lp .tkx { text-decoration: none }
+.lp .tkx .tkt { text-decoration: var(--checklist-done-decoration) }
 .lp input[type=checkbox], .preview input[type=checkbox] { -webkit-appearance: none; appearance: none; border-radius: var(--checkbox-radius);
   border: 1px solid var(--checkbox-border-color); flex-shrink: 0; padding: 0; margin: 0; width: var(--checkbox-size); height: var(--checkbox-size);
   position: relative; top: 0.2em; margin-inline-end: 0.6em; cursor: pointer; vertical-align: baseline }
