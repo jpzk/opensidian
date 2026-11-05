@@ -176,6 +176,7 @@ pub fn paste_into(
         let mut f = match vfs.create_new(&rel, false) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            #[cfg(unix)]
             Err(e) if e.raw_os_error() == Some(libc::ELOOP) => continue, // a symlink AT the name: skip it
             Err(e) => return Err(PasteErr::Io(e.to_string())),
         };
@@ -275,6 +276,7 @@ mod tests {
         let _ = fs::remove_dir_all(&r); // reason: test cleanup
     }
 
+    #[cfg(unix)]
     #[test]
     fn ghpaste_symlink_refused() {
         let r = vault("sym");
