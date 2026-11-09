@@ -1,28 +1,33 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Release build: every artifact on STANDARD GitHub-hosted runners only
-# (ubuntu-latest / windows-latest / macos-latest — never larger/paid runners).
-#
-# Unsigned for now. Signing lives in the `sign` job at the bottom: it only runs
-# on a pushed v* tag, inside the protected `release` environment, and is never
-# reachable from a pull_request (this workflow has no PR trigger at all).
+# Release build — the EXISTING artifact set (README v0.9.2 download list), and
+# nothing else, on STANDARD GitHub-hosted runners only (ubuntu-latest):
+#   opensidian-<ver>-x86_64-slim.AppImage      packaging/ci/build-appimage.sh slim
+#   opensidian-<ver>-x86_64-portable.AppImage  packaging/ci/build-appimage.sh portable
+#   opensidian-<ver>-x86_64.flatpak            packaging/flatpak/build.sh
+#   opensidian-<ver>-x86_64.rpm                packaging/ci/rpm-build.sh (fedora:44 GA by digest)
+#   opensidian-<ver>-x86_64.deb                packaging/ci/deb-build.sh (debian:trixie by digest)
+#   SHA256SUMS                                 sha256sum of the five, as scripts/release.sh does
+# The recipe is the one releases are cut with today (harness scripts/release.sh +
+# bin/hz/release-build.sh): ONE cargo build, both AppImages from that binary,
+# rpm + deb wrap the SAME binary (each stage refuses unless its /usr/bin/opensidian
+# sha256 equals the slim AppImage's). The flatpak compiles inside its own sandbox.
 #
 # Supply chain:
-#   - every third-party action is pinned to a full commit SHA (# vX.Y.Z noted);
-#     releases chosen >= 6 weeks old at pin time (2026-11-09).
-#   - top-level permissions are read-only; only the build jobs get
-#     id-token/attestations write, which actions/attest-build-provenance needs.
-#   - checkout never persists the token into .git/config.
+#   - every third-party action pinned to a full commit SHA (# vX.Y.Z), releases
+#     >= 6 weeks old at pin time (2026-11-09).
+#   - top-level permissions read-only; only jobs that attest get
+#     id-token/attestations write (actions/attest-build-provenance).
+#   - checkout never persists the token; no secrets anywhere; no PR trigger.
 #   - tag builds do NOT restore the Rust cache (no cache poisoning of releases).
-#   - Rust toolchain and tauri-cli are exact versions, tauri-cli built --locked.
+#   - downloaded tools pinned by sha256 (appimagetool r13, brotli 1.2.1, fedora OCI).
 name: Release
 
 on:
   workflow_dispatch: {}
   push:
     tags: ['v*']
-    # TEMPORARY: lets the workflow be exercised before merge. Remove before
-    # merging to main.
+    # TEMPORARY: lets the workflow be exercised before merge. REMOVE before merging.
     branches: ['goal/ci-release']
 
 permissions:
@@ -33,168 +38,140 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 env:
-  RUST_TOOLCHAIN: '1.98.0'
-  # tauri-cli 2.11.5 (crates.io 2026-09-19); matches the tauri 2.11.x in Cargo.lock.
-  TAURI_CLI_VERSION: '2.11.5'
+  RUST_TOOLCHAIN: '1.98.0'     # = the build box (bin/hz/release-build.sh refuses anything else)
   CARGO_TERM_COLOR: always
+  APPIMAGETOOL_URL: https://github.com/AppImage/AppImageKit/releases/download/13/obsolete-appimagetool-x86_64.AppImage
+  APPIMAGETOOL_SHA256: df3baf5ca5facbecfc2f3fa6713c29ab9cefa8fd8c1eac5d283b79cab33e4acb
 
 jobs:
-  desktop:
-    name: desktop (${{ matrix.platform }})
-    runs-on: ${{ matrix.os }}
+  appimage:
+    name: binary + AppImages (slim, portable)
+    runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
       contents: read
       id-token: write
       attestations: write
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - id: ver
+        name: version from tauri.conf.json
+        run: |
+          V=$(jq -r .version src-tauri/tauri.conf.json); V=${V%.0}
+          case "$GITHUB_REF" in refs/tags/v*) [ "v$V" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != version $V"; exit 1; };; esac
+          echo "version=$V" >> "$GITHUB_OUTPUT"; echo "version $V"
+      - name: system packages (= bin/hz/cloud-init.yaml build set)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends build-essential pkg-config libssl-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf file
+      - name: rust ${{ env.RUST_TOOLCHAIN }}
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+          rustc --version | grep -q "$RUST_TOOLCHAIN" || exit 1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        with:
+          workspaces: src-tauri
+      - name: cargo build --release --locked
+        working-directory: src-tauri
+        run: |
+          # ui/ is not a cargo input (release.sh): force our crate to re-embed it.
+          cargo clean -p opensidian --release
+          cargo build --release --locked
+          ls -l target/release/opensidian; sha256sum target/release/opensidian
+      - name: appimagetool r13 (sha256-pinned)
+        run: |
+          curl -4 -fsSL -m 300 -o "$RUNNER_TEMP/appimagetool" "$APPIMAGETOOL_URL"
+          echo "$APPIMAGETOOL_SHA256  $RUNNER_TEMP/appimagetool" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/appimagetool"
+      - name: AppImages
+        env:
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          export APPIMAGETOOL="$RUNNER_TEMP/appimagetool"
+          for F in slim portable; do bash packaging/ci/build-appimage.sh "$F" "$V"; done
+          mkdir -p out/bin
+          cp src-tauri/target/release/opensidian out/bin/opensidian
+          ls -l dist/*.AppImage; sha256sum dist/*.AppImage
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/opensidian-${{ steps.ver.outputs.version }}-x86_64-slim.AppImage
+            dist/opensidian-${{ steps.ver.outputs.version }}-x86_64-portable.AppImage
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: opensidian-${{ steps.ver.outputs.version }}-x86_64-slim.AppImage
+          path: dist/opensidian-${{ steps.ver.outputs.version }}-x86_64-slim.AppImage
+          retention-days: 7
+          if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: opensidian-${{ steps.ver.outputs.version }}-x86_64-portable.AppImage
+          path: dist/opensidian-${{ steps.ver.outputs.version }}-x86_64-portable.AppImage
+          retention-days: 7
+          if-no-files-found: error
+      # internal hand-off to the rpm/deb wrap jobs (same binary, no second compile)
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: internal-release-binary
+          path: out/bin/opensidian
+          retention-days: 1
+          if-no-files-found: error
+
+  wrap:
+    name: ${{ matrix.kind }} (wraps the AppImage binary)
+    needs: appimage
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: linux
-            os: ubuntu-latest
-            bundles: deb,rpm,appimage
-          - platform: windows
-            os: windows-latest
-            bundles: msi,nsis
-          - platform: macos
-            os: macos-latest
-            bundles: app,dmg
+        kind: [rpm, deb]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      V: ${{ needs.appimage.outputs.version }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
-
-      - name: Rust toolchain ${{ env.RUST_TOOLCHAIN }}
-        shell: bash
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: internal-release-binary
+          path: src-tauri/target/release
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: opensidian-${{ env.V }}-x86_64-slim.AppImage
+          path: dist
+      - name: ${{ matrix.kind }}-build.sh
         run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
-          rustup default "$RUST_TOOLCHAIN"
-          rustc --version
-
-      - name: Rust cache
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+          chmod +x src-tauri/target/release/opensidian dist/opensidian-$V-x86_64-slim.AppImage
+          podman --version
+          export RPM_OCI_CACHE="$RUNNER_TEMP/fedora44"
+          bash packaging/ci/${{ matrix.kind }}-build.sh "$PWD" "$V" "dist/opensidian-$V-x86_64-slim.AppImage" dist
+          ls -l dist/opensidian-$V-x86_64.${{ matrix.kind }}; sha256sum dist/opensidian-$V-x86_64.${{ matrix.kind }}
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          workspaces: src-tauri
-          key: ${{ matrix.platform }}-tauri-cli-${{ env.TAURI_CLI_VERSION }}
-
-      - name: System deps (linux)
-        if: matrix.platform == 'linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential libssl-dev libwebkit2gtk-4.1-dev libgtk-3-dev \
-            libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev \
-            file xdg-utils patchelf
-
-      - name: tauri-cli ${{ env.TAURI_CLI_VERSION }}
-        shell: bash
-        run: |
-          if cargo tauri --version 2>/dev/null | grep -qx "tauri-cli $TAURI_CLI_VERSION"; then
-            echo "cached: $(cargo tauri --version)"
-          else
-            cargo install tauri-cli --version "=$TAURI_CLI_VERSION" --locked --force
-          fi
-
-      - name: Icons (rendered from the committed 512px launcher icon)
-        shell: bash
-        working-directory: src-tauri
-        run: cargo tauri icon ../packaging/linux/icons/512.png -o icons-ci
-
-      - name: Build + bundle (${{ matrix.bundles }})
-        shell: bash
-        working-directory: src-tauri
-        run: |
-          cargo tauri build --ci --bundles "${{ matrix.bundles }}" \
-            --config ../packaging/ci/tauri.bundle.json -- --locked
-
-      # TODO(signing, macOS): codesign + notarize the .app before the dmg is
-      # built, via APPLE_CERTIFICATE / APPLE_SIGNING_IDENTITY / APPLE_ID /
-      # APPLE_PASSWORD / APPLE_TEAM_ID. Must only run in the `sign` job
-      # (tag push + protected `release` environment), never here.
-      # TODO(signing, Windows): signtool / Azure Trusted Signing of the msi +
-      # nsis exe — same gating, `sign` job only.
-
-      - name: Collect artifacts
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          b=src-tauri/target/release/bundle
-          case "${{ matrix.platform }}" in
-            linux)   cp $b/deb/*.deb $b/rpm/*.rpm $b/appimage/*.AppImage dist/ ;;
-            windows) cp $b/msi/*.msi $b/nsis/*.exe dist/ ;;
-            macos)   cp $b/dmg/*.dmg dist/ ;;
-          esac
-          cd dist
-          if command -v sha256sum >/dev/null; then sha256sum * ; else shasum -a 256 * ; fi | tee SHA256SUMS
-          { echo '### ${{ matrix.platform }} sha256'; echo '```'; cat SHA256SUMS; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+          subject-path: dist/opensidian-${{ env.V }}-x86_64.${{ matrix.kind }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          subject-checksums: dist/SHA256SUMS
-
-      - name: Upload deb
-        if: matrix.platform == 'linux'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: opensidian-linux-deb
-          path: dist/*.deb
+          name: opensidian-${{ env.V }}-x86_64.${{ matrix.kind }}
+          path: dist/opensidian-${{ env.V }}-x86_64.${{ matrix.kind }}
           retention-days: 7
           if-no-files-found: error
-      - name: Upload rpm
-        if: matrix.platform == 'linux'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: opensidian-linux-rpm
-          path: dist/*.rpm
-          retention-days: 7
-          if-no-files-found: error
-      - name: Upload AppImage
-        if: matrix.platform == 'linux'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: opensidian-linux-AppImage
-          path: dist/*.AppImage
-          retention-days: 7
-          if-no-files-found: error
-      - name: Upload msi
-        if: matrix.platform == 'windows'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: opensidian-windows-msi
-          path: dist/*.msi
-          retention-days: 7
-          if-no-files-found: error
-      - name: Upload nsis exe
-        if: matrix.platform == 'windows'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: opensidian-windows-nsis-exe
-          path: dist/*.exe
-          retention-days: 7
-          if-no-files-found: error
-      - name: Upload dmg
-        if: matrix.platform == 'macos'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: opensidian-macos-dmg
-          path: dist/*.dmg
-          retention-days: 7
-          if-no-files-found: error
-      - name: Upload SHA256SUMS
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: SHA256SUMS-${{ matrix.platform }}
-          path: dist/SHA256SUMS
-          retention-days: 7
 
-  android:
-    name: android (aarch64)
+  flatpak:
+    name: flatpak (packaging/flatpak)
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     permissions:
       contents: read
       id-token: write
@@ -203,114 +180,72 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
-
-      # The Android project (src-tauri/gen/android + the lib.rs mobile entry
-      # point) lives on the `android` branch until it is merged. Build it from
-      # there whenever the triggering ref does not carry it yet.
-      # TODO: drop this fallback once `android` is merged into main.
-      - name: Android project present on this ref?
-        id: src
-        shell: bash
+      - id: ver
         run: |
-          if [ -d src-tauri/gen/android ]; then echo "ref=" >> "$GITHUB_OUTPUT"
-          else echo "ref=android" >> "$GITHUB_OUTPUT"
-               echo "::warning::src-tauri/gen/android missing on ${GITHUB_REF}; building the 'android' branch"; fi
-      - if: steps.src.outputs.ref != ''
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+          V=$(jq -r .version src-tauri/tauri.conf.json); V=${V%.0}
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          grep -q "<release version=\"$V" packaging/flatpak/dev.koto.opensidian.metainfo.xml || { echo "FAIL: metainfo <release> is not $V"; exit 1; }
+      - name: free disk (SDK + rust extension + build tree)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: flatpak + flatpak-builder (noble versions, = bin/hz/cloud-init.yaml)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends flatpak flatpak-builder
+          dpkg-query -W flatpak flatpak-builder
+          flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak --user install -y --noninteractive flathub org.gnome.Platform//49 org.gnome.Sdk//49 org.freedesktop.Sdk.Extension.rust-stable//25.08
+      - name: packaging/flatpak/build.sh
+        env:
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          sh packaging/flatpak/build.sh 2>&1 | grep -v -E '^(Downloading|Fetching) |^\s*$'
+          cp dist/flatpak/opensidian.flatpak dist/opensidian-$V-x86_64.flatpak
+          ls -l dist/opensidian-$V-x86_64.flatpak; sha256sum dist/opensidian-$V-x86_64.flatpak
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          ref: ${{ steps.src.outputs.ref }}
-          persist-credentials: false
-
-      - name: Rust toolchain ${{ env.RUST_TOOLCHAIN }} + aarch64-linux-android
-        run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update \
-            --target aarch64-linux-android
-          rustup default "$RUST_TOOLCHAIN"
-          git log -1 --format='building %H (%s)'
-
-      - name: Rust cache
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+          subject-path: dist/opensidian-${{ steps.ver.outputs.version }}-x86_64.flatpak
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          workspaces: src-tauri
-          key: android-tauri-cli-${{ env.TAURI_CLI_VERSION }}
-
-      - name: tauri-cli ${{ env.TAURI_CLI_VERSION }}
-        run: |
-          if cargo tauri --version 2>/dev/null | grep -qx "tauri-cli $TAURI_CLI_VERSION"; then
-            echo "cached: $(cargo tauri --version)"
-          else
-            cargo install tauri-cli --version "=$TAURI_CLI_VERSION" --locked --force
-          fi
-
-      - name: Java 17 + NDK from the runner image (no setup-* actions)
-        run: |
-          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
-          echo "NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
-          echo "ANDROID_HOME=$ANDROID_HOME" ; ls "$ANDROID_HOME/platforms" || true
-          echo "NDK: $ANDROID_NDK_LATEST_HOME"
-
-      # TODO(signing, Android): release keystore. In the `sign` job only (tag
-      # push + protected `release` environment): decode ANDROID_KEYSTORE_B64 to
-      # a temp file, then apksigner/jarsigner the apk + aab with
-      # ANDROID_KEY_ALIAS / ANDROID_KEYSTORE_PASSWORD. Never in this job.
-      - name: Build APK + AAB (unsigned release)
-        working-directory: src-tauri
-        run: cargo tauri android build --ci --target aarch64 --apk --aab
-
-      - name: Collect artifacts
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          o=src-tauri/gen/android/app/build/outputs
-          find "$o" -name '*.apk' -o -name '*.aab' | tee /dev/stderr | while read -r f; do
-            cp "$f" "dist/opensidian-android-$(basename "$f")"; done
-          ls dist/*.apk dist/*.aab >/dev/null
-          cd dist && sha256sum * | tee SHA256SUMS
-          { echo '### android sha256'; echo '```'; cat SHA256SUMS; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-checksums: dist/SHA256SUMS
-
-      - name: Upload apk
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: opensidian-android-apk
-          path: dist/*.apk
+          name: opensidian-${{ steps.ver.outputs.version }}-x86_64.flatpak
+          path: dist/opensidian-${{ steps.ver.outputs.version }}-x86_64.flatpak
           retention-days: 7
           if-no-files-found: error
-      - name: Upload aab
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: opensidian-android-aab
-          path: dist/*.aab
-          retention-days: 7
-          if-no-files-found: error
-      - name: Upload SHA256SUMS
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: SHA256SUMS-android
-          path: dist/SHA256SUMS
-          retention-days: 7
 
-  # Signing hook. Runs ONLY for a pushed v* tag and ONLY inside the protected
-  # `release` environment (configure required reviewers + tag-only deployment
-  # rule on it in repo settings). No signing secrets exist yet, so it is a
-  # no-op placeholder; secrets referenced here must be environment secrets of
-  # `release`, never repository secrets.
-  sign:
-    name: sign (TODO)
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [desktop, android]
+  sums:
+    name: SHA256SUMS
+    needs: [appimage, wrap, flatpak]
     runs-on: ubuntu-latest
-    environment: release
+    timeout-minutes: 15
     permissions:
       contents: read
+      id-token: write
+      attestations: write
+    env:
+      V: ${{ needs.appimage.outputs.version }}
     steps:
-      - name: TODO signing
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: opensidian-*
+          path: dist
+          merge-multiple: true
+      - name: SHA256SUMS (same file list and order as scripts/release.sh)
+        working-directory: dist
         run: |
-          echo "TODO: Apple codesign+notarize (macos-latest job), Windows"
-          echo "signtool/Trusted Signing (windows-latest job), Android keystore"
-          echo "apksigner — each re-attested after signing. Nothing signed yet."
+          sha256sum opensidian-$V-x86_64-slim.AppImage opensidian-$V-x86_64-portable.AppImage \
+            opensidian-$V-x86_64.flatpak opensidian-$V-x86_64.rpm opensidian-$V-x86_64.deb > SHA256SUMS
+          cat SHA256SUMS
+          # TODO(signing, OFFLINE/manual — deliberately NOT in CI): the operator signs
+          #   gpg --armor --detach-sign SHA256SUMS   -> SHA256SUMS.asc
+          # on their own machine; the private key never touches GitHub. No signing
+          # secret may ever be added to this workflow (and never to a PR-triggered job).
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: SHA256SUMS
+          path: dist/SHA256SUMS
+          retention-days: 7
+          if-no-files-found: error
