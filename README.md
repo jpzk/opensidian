@@ -130,3 +130,4 @@ bc1qzyh8c8kr8aylywqacsjwau6frzwjqt3cpa603w (BTC)
 ## AI disclosure
 
 opensidian was built predominantly with AI models. Nearly all of the code, the design docs, and this README were written by Claude (Anthropic's models, via Claude Code) working from prompts, reviews, and corrections by a single human maintainer. The human decided what to build and what the trust model must guarantee, read and pushed back on the output, and ran it; the models wrote most of the lines. Commit messages record the design rationale in the same way — many were drafted by the model and edited by the maintainer.
+<!-- gitship-b reship probe 2026-11-09T18:12:52Z -->
