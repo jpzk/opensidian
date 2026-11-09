@@ -1,0 +1,316 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Release build: every artifact on STANDARD GitHub-hosted runners only
+# (ubuntu-latest / windows-latest / macos-latest — never larger/paid runners).
+#
+# Unsigned for now. Signing lives in the `sign` job at the bottom: it only runs
+# on a pushed v* tag, inside the protected `release` environment, and is never
+# reachable from a pull_request (this workflow has no PR trigger at all).
+#
+# Supply chain:
+#   - every third-party action is pinned to a full commit SHA (# vX.Y.Z noted);
+#     releases chosen >= 6 weeks old at pin time (2026-11-09).
+#   - top-level permissions are read-only; only the build jobs get
+#     id-token/attestations write, which actions/attest-build-provenance needs.
+#   - checkout never persists the token into .git/config.
+#   - tag builds do NOT restore the Rust cache (no cache poisoning of releases).
+#   - Rust toolchain and tauri-cli are exact versions, tauri-cli built --locked.
+name: Release
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags: ['v*']
+    # TEMPORARY: lets the workflow be exercised before merge. Remove before
+    # merging to main.
+    branches: ['goal/ci-release']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  RUST_TOOLCHAIN: '1.98.0'
+  # tauri-cli 2.11.5 (crates.io 2026-09-19); matches the tauri 2.11.x in Cargo.lock.
+  TAURI_CLI_VERSION: '2.11.5'
+  CARGO_TERM_COLOR: always
+
+jobs:
+  desktop:
+    name: desktop (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: ubuntu-latest
+            bundles: deb,rpm,appimage
+          - platform: windows
+            os: windows-latest
+            bundles: msi,nsis
+          - platform: macos
+            os: macos-latest
+            bundles: app,dmg
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Rust toolchain ${{ env.RUST_TOOLCHAIN }}
+        shell: bash
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
+          rustup default "$RUST_TOOLCHAIN"
+          rustc --version
+
+      - name: Rust cache
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.platform }}-tauri-cli-${{ env.TAURI_CLI_VERSION }}
+
+      - name: System deps (linux)
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential libssl-dev libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev \
+            file xdg-utils patchelf
+
+      - name: tauri-cli ${{ env.TAURI_CLI_VERSION }}
+        shell: bash
+        run: |
+          if cargo tauri --version 2>/dev/null | grep -qx "tauri-cli $TAURI_CLI_VERSION"; then
+            echo "cached: $(cargo tauri --version)"
+          else
+            cargo install tauri-cli --version "=$TAURI_CLI_VERSION" --locked --force
+          fi
+
+      - name: Icons (rendered from the committed 512px launcher icon)
+        shell: bash
+        working-directory: src-tauri
+        run: cargo tauri icon ../packaging/linux/icons/512.png -o icons-ci
+
+      - name: Build + bundle (${{ matrix.bundles }})
+        shell: bash
+        working-directory: src-tauri
+        run: |
+          cargo tauri build --ci --bundles "${{ matrix.bundles }}" \
+            --config ../packaging/ci/tauri.bundle.json -- --locked
+
+      # TODO(signing, macOS): codesign + notarize the .app before the dmg is
+      # built, via APPLE_CERTIFICATE / APPLE_SIGNING_IDENTITY / APPLE_ID /
+      # APPLE_PASSWORD / APPLE_TEAM_ID. Must only run in the `sign` job
+      # (tag push + protected `release` environment), never here.
+      # TODO(signing, Windows): signtool / Azure Trusted Signing of the msi +
+      # nsis exe — same gating, `sign` job only.
+
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          b=src-tauri/target/release/bundle
+          case "${{ matrix.platform }}" in
+            linux)   cp $b/deb/*.deb $b/rpm/*.rpm $b/appimage/*.AppImage dist/ ;;
+            windows) cp $b/msi/*.msi $b/nsis/*.exe dist/ ;;
+            macos)   cp $b/dmg/*.dmg dist/ ;;
+          esac
+          cd dist
+          if command -v sha256sum >/dev/null; then sha256sum * ; else shasum -a 256 * ; fi | tee SHA256SUMS
+          { echo '### ${{ matrix.platform }} sha256'; echo '```'; cat SHA256SUMS; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: dist/SHA256SUMS
+
+      - name: Upload deb
+        if: matrix.platform == 'linux'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: opensidian-linux-deb
+          path: dist/*.deb
+          retention-days: 7
+          if-no-files-found: error
+      - name: Upload rpm
+        if: matrix.platform == 'linux'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: opensidian-linux-rpm
+          path: dist/*.rpm
+          retention-days: 7
+          if-no-files-found: error
+      - name: Upload AppImage
+        if: matrix.platform == 'linux'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: opensidian-linux-AppImage
+          path: dist/*.AppImage
+          retention-days: 7
+          if-no-files-found: error
+      - name: Upload msi
+        if: matrix.platform == 'windows'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: opensidian-windows-msi
+          path: dist/*.msi
+          retention-days: 7
+          if-no-files-found: error
+      - name: Upload nsis exe
+        if: matrix.platform == 'windows'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: opensidian-windows-nsis-exe
+          path: dist/*.exe
+          retention-days: 7
+          if-no-files-found: error
+      - name: Upload dmg
+        if: matrix.platform == 'macos'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: opensidian-macos-dmg
+          path: dist/*.dmg
+          retention-days: 7
+          if-no-files-found: error
+      - name: Upload SHA256SUMS
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: SHA256SUMS-${{ matrix.platform }}
+          path: dist/SHA256SUMS
+          retention-days: 7
+
+  android:
+    name: android (aarch64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      # The Android project (src-tauri/gen/android + the lib.rs mobile entry
+      # point) lives on the `android` branch until it is merged. Build it from
+      # there whenever the triggering ref does not carry it yet.
+      # TODO: drop this fallback once `android` is merged into main.
+      - name: Android project present on this ref?
+        id: src
+        shell: bash
+        run: |
+          if [ -d src-tauri/gen/android ]; then echo "ref=" >> "$GITHUB_OUTPUT"
+          else echo "ref=android" >> "$GITHUB_OUTPUT"
+               echo "::warning::src-tauri/gen/android missing on ${GITHUB_REF}; building the 'android' branch"; fi
+      - if: steps.src.outputs.ref != ''
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ steps.src.outputs.ref }}
+          persist-credentials: false
+
+      - name: Rust toolchain ${{ env.RUST_TOOLCHAIN }} + aarch64-linux-android
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update \
+            --target aarch64-linux-android
+          rustup default "$RUST_TOOLCHAIN"
+          git log -1 --format='building %H (%s)'
+
+      - name: Rust cache
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
+          key: android-tauri-cli-${{ env.TAURI_CLI_VERSION }}
+
+      - name: tauri-cli ${{ env.TAURI_CLI_VERSION }}
+        run: |
+          if cargo tauri --version 2>/dev/null | grep -qx "tauri-cli $TAURI_CLI_VERSION"; then
+            echo "cached: $(cargo tauri --version)"
+          else
+            cargo install tauri-cli --version "=$TAURI_CLI_VERSION" --locked --force
+          fi
+
+      - name: Java 17 + NDK from the runner image (no setup-* actions)
+        run: |
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$ANDROID_HOME" ; ls "$ANDROID_HOME/platforms" || true
+          echo "NDK: $ANDROID_NDK_LATEST_HOME"
+
+      # TODO(signing, Android): release keystore. In the `sign` job only (tag
+      # push + protected `release` environment): decode ANDROID_KEYSTORE_B64 to
+      # a temp file, then apksigner/jarsigner the apk + aab with
+      # ANDROID_KEY_ALIAS / ANDROID_KEYSTORE_PASSWORD. Never in this job.
+      - name: Build APK + AAB (unsigned release)
+        working-directory: src-tauri
+        run: cargo tauri android build --ci --target aarch64 --apk --aab
+
+      - name: Collect artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          o=src-tauri/gen/android/app/build/outputs
+          find "$o" -name '*.apk' -o -name '*.aab' | tee /dev/stderr | while read -r f; do
+            cp "$f" "dist/opensidian-android-$(basename "$f")"; done
+          ls dist/*.apk dist/*.aab >/dev/null
+          cd dist && sha256sum * | tee SHA256SUMS
+          { echo '### android sha256'; echo '```'; cat SHA256SUMS; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: dist/SHA256SUMS
+
+      - name: Upload apk
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: opensidian-android-apk
+          path: dist/*.apk
+          retention-days: 7
+          if-no-files-found: error
+      - name: Upload aab
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: opensidian-android-aab
+          path: dist/*.aab
+          retention-days: 7
+          if-no-files-found: error
+      - name: Upload SHA256SUMS
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: SHA256SUMS-android
+          path: dist/SHA256SUMS
+          retention-days: 7
+
+  # Signing hook. Runs ONLY for a pushed v* tag and ONLY inside the protected
+  # `release` environment (configure required reviewers + tag-only deployment
+  # rule on it in repo settings). No signing secrets exist yet, so it is a
+  # no-op placeholder; secrets referenced here must be environment secrets of
+  # `release`, never repository secrets.
+  sign:
+    name: sign (TODO)
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [desktop, android]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - name: TODO signing
+        run: |
+          echo "TODO: Apple codesign+notarize (macos-latest job), Windows"
+          echo "signtool/Trusted Signing (windows-latest job), Android keystore"
+          echo "apksigner — each re-attested after signing. Nothing signed yet."
