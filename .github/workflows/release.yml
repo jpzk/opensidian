@@ -199,11 +199,12 @@ jobs:
       - name: flatpak + flatpak-builder (noble versions, = bin/hz/cloud-init.yaml)
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends flatpak flatpak-builder
-          dpkg-query -W flatpak flatpak-builder
+          sudo apt-get install -y -q --no-install-recommends flatpak flatpak-builder elfutils  # elfutils = eu-strip (a Recommends, dropped by --no-install-recommends)
+          dpkg-query -W flatpak flatpak-builder elfutils
           flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
           flatpak --user install -y --noninteractive flathub org.gnome.Platform//49 org.gnome.Sdk//49 org.freedesktop.Sdk.Extension.rust-stable//25.08
       - name: packaging/flatpak/build.sh
+        shell: bash  # -eo pipefail: the grep filter must not mask a build failure
         env:
           V: ${{ steps.ver.outputs.version }}
         run: |
