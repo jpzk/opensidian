@@ -1742,6 +1742,10 @@ Object.assign(Ed, {
       // handler here ran ahead of the keymap handler and swallowed Tab/Enter/... for
       // every plugin keymap (Advanced Tables' Tab only indented).
       CMv.keymap.of([{ any: (view, e) => { Ed.onKey(G(), e); return e.defaultPrevented; } }]),
+      // gh #43: a pair char typed over a selection wraps it, as stock does (Settings > Editor
+      // "Auto pair brackets" / "Auto pair Markdown syntax"): the selection stays on the inner
+      // text, so [ then [ makes [[sel]] and * then * makes **sel** (harness docs/issue-43/STOCK.md)
+      CMv.EditorView.inputHandler.of((view, from, to, text) => Ed.wrapSel(view, text)),
       CMv.EditorView.domEventHandlers({
         beforeinput: (e) => {
           const g = G();
@@ -1807,6 +1811,17 @@ Object.assign(Ed, {
   /* keys CM6 does not own: Enter (list continuation), Backspace/Delete (model
      deletes), Tab, Home/End, raw-column arrows, undo/redo, select-all — the
      R17 semantics, now on the CM6 selection */
+  WRAP: { "[": "]", "(": ")", "{": "}", "*": "*", "_": "_", "~": "~", "=": "=", "`": "`", "$": "$", "\"": "\"", "'": "'" },
+  wrapSel(view, text) {
+    const st = view.state, close = Object.prototype.hasOwnProperty.call(Ed.WRAP, text) ? Ed.WRAP[text] : null;
+    if (close == null || view.composing || st.selection.ranges.some(r => r.empty)) return false;
+    const n = text.length;
+    view.dispatch(st.changeByRange(r => ({
+      changes: [{ from: r.from, insert: text }, { from: r.to, insert: close }],
+      range: CMs.EditorSelection.range(r.anchor + n, r.head + n),
+    })), { userEvent: "input.type", scrollIntoView: true });
+    return true;
+  },
   onKey(g, e) {
     if (!g || e.isComposing) return;
     if (typeof acKeydown === "function") { acKeydown(g, e); if (e.defaultPrevented) return; }
