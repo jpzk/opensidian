@@ -2077,10 +2077,11 @@ function openBmAdd(gix) {
   const t = rTrack();
   if (!t) return;                          // a pane with no tab = Obsidian's empty tab: no-op (108-emptyitem)
   if (t.kind === "gg") { say("Bookmarking a graph view is not supported: the bookmarks pane cannot show a graph bookmark"); return; }
-  if (t.kind) return;                      // local graph (and any non-note view): no-op (102-lgitem)
+  const nm = t.kind ? pvNoteName(t) : t.name;   // issue-48: a plugin view backed by a note (Excalidraw board) = that note
+  if (!nm) return;                         // local graph (and any non-note view): no-op (102-lgitem)
   const opts = bmGroupOpts();
   const cur = opts.findIndex(o => o.ix === gix);
-  bmAdd = { name: t.name, opts };
+  bmAdd = { name: nm, opts };
   const sel = $("bme-grp");
   sel.textContent = "";
   opts.forEach((o, i) => {
@@ -2090,7 +2091,7 @@ function openBmAdd(gix) {
     sel.appendChild(op);
   });
   sel.value = String(cur < 0 ? 0 : cur);
-  const base = t.name.split("/").pop();
+  const base = nm.split("/").pop();
   $("bmetitle").textContent = "Add bookmark";
   $("bme-path").value = base;
   $("bme-title").value = "";
@@ -4550,7 +4551,9 @@ function tabMenu(e, g, i, hdr) {
     item("Split down",  () => { closeMenu(); splitGroup(g, "col", i); });
     sep();
     item("Copy screenshot", null, "Missing subsystem: canvas-to-clipboard — no programmatic clipboard write exists in this tree (ui/editor.js writes only inside real copy events) and the graph view has no canvas-to-PNG step");
-    if (!hdr || tab.kind !== "lg")        // graphhdr REQ-10: Obsidian's LOCAL graph ⋮ has no Bookmark... row
+    const pvn = pvNoteName(tab);          // issue-48: a board backed by a note bookmarks that note (STOCK.md S2/S3/S5)
+    if (pvn) item(bmCache.includes(pvn) ? "Remove bookmark" : "Bookmark...", () => { closeMenu(); toggleBm(pvn); });
+    else if (!hdr || tab.kind !== "lg")   // graphhdr REQ-10: Obsidian's LOCAL graph ⋮ has no Bookmark... row
       item("Bookmark...", null, "Missing subsystem: bookmarks of non-file views — a bookmark here is a note name on disk (R9.4) and a graph tab has no note behind it");
     place();
     return;
@@ -7954,6 +7957,19 @@ async function cvCanvasBacklinks(p) {
     b.n++; by.set(l.note, b);
   }
   return [...by.values()].sort((a, b) => a.note.localeCompare(b.note));
+}
+/* issue-48: the NOTE behind a plugin-view tab (an Excalidraw board is its .md file, stock:
+   docs/issue-48/STOCK.md S1/S5) as the name a bookmark stores (path without .md), or null.
+   A canvas keeps its own path (cvTabPath) and stays unbookmarkable here. */
+function pvNoteName(t) {
+  if (!t || t.kind !== "unk" || t.utype === "canvas" || !PLG) return null;
+  let p = null;
+  try {
+    const l = PLG.app.workspace.getLeavesOfType(t.utype).find(x => x && x._t === t);
+    if (l && l.view && l.view.file && l.view.file.path) p = String(l.view.file.path);
+  } catch (_) {}
+  if (!p) try { const f = t.raw && t.raw.state && t.raw.state.state && t.raw.state.state.file; if (f) p = String(f); } catch (_) {}
+  return p && /\.md$/i.test(p) ? p.slice(0, -3) : null;
 }
 /* the canvas a tab shows (a canvas plugin-view tab), or null */
 function cvTabPath(t) {
