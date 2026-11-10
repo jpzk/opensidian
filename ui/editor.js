@@ -798,7 +798,9 @@ const Ed = {
   // nothing. A non-empty range needs real overlap, so selecting up to a token's
   // first column does not open it. Unit-asserted in Ed.selfTest.
   tokAt(toks, lo, hi) {
-    const touch = lo === hi ? (t => lo >= t.s && lo <= t.e) : (t => lo < t.e && hi > t.s);
+    // gh #46: a task marker "- [ ] " stays a checkbox with the caret at its END (the task text
+    // start, stock 1.13.7); only a caret strictly inside it reveals the raw marker.
+    const touch = lo === hi ? (t => lo >= t.s && (t.kind === "task" ? lo < t.e : lo <= t.e)) : (t => lo < t.e && hi > t.s);
     return toks.filter(touch);
   },
   mark(g, l) {                                   // census + autocomplete state
