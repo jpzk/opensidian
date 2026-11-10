@@ -1807,7 +1807,7 @@ Object.assign(Ed, {
   /* keys CM6 does not own: Enter (list continuation), Backspace/Delete (model
      deletes), Tab, Home/End, raw-column arrows, undo/redo, select-all — the
      R17 semantics, now on the CM6 selection */
-  WRAP: { "[": "]", "(": ")", "{": "}", "*": "*", "_": "_", "~": "~", "=": "=", "`": "`", "$": "$" },
+  WRAP: { "[": "]", "(": ")", "{": "}", "*": "*", "_": "_", "~": "~", "=": "=", "`": "`", "$": "$", "\"": "\"", "'": "'" },
   wrapSel(view, text) {
     const st = view.state, close = Object.prototype.hasOwnProperty.call(Ed.WRAP, text) ? Ed.WRAP[text] : null;
     if (close == null || view.composing || st.selection.ranges.some(r => r.empty)) return false;
