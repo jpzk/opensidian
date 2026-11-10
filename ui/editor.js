@@ -1776,11 +1776,13 @@ Object.assign(Ed, {
         // gh-paste (#19): a PNG on the clipboard (a screenshot) is saved into the vault and
         // embedded, like stock (ui/main.js attachPaste); true = claimed, CM6 does not paste text
         paste: (e) => typeof attachPaste === "function" ? attachPaste(G(), e) : false,
-        // #51: a drop carrying text/html (a selection dragged from a browser) keeps its
-        // formatting and links as Markdown, like stock 1.13.7 (harness docs/issue-51/STOCK.md);
-        // files, an in-editor move and an html-less drop stay CM6's own drop
-        drop: (e, view) => Ed.htmlDrop(e, view),
       }),
+      // #51: a drop carrying text/html (a selection dragged from a browser) keeps its
+      // formatting and links as Markdown, like stock 1.13.7 (harness docs/issue-51/STOCK.md);
+      // files, an in-editor move and an html-less drop stay CM6's own drop. Prec.low (PR #65
+      // review F2): after the plugin hooks (editor-api.js hooks(), default precedence), so a
+      // plugin's "editor-drop" sees the drop first and its preventDefault wins, as in stock
+      CMs.Prec.low(CMv.EditorView.domEventHandlers({ drop: (e, view) => Ed.htmlDrop(e, view) })),
       CMv.EditorView.lineWrapping,
       CMv.EditorView.contentAttributes.of({ spellcheck: "false", autocorrect: "off", autocapitalize: "off" }),
       Ed.viewTheme || (Ed.viewTheme = CMv.EditorView.theme({ "&.cm-focused": { outline: "none" }, ".cm-scroller": { fontFamily: "inherit", lineHeight: "inherit", overflow: "visible" },
