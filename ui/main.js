@@ -1674,7 +1674,7 @@ function bmRowMenu(e, nm, ix) {             // right-click a FILE .bmrow -> Obsi
   sep();
   item("Reveal file in navigation", () => bmReveal(nm));                   // WIRED: bmReveal — setPane("files") + the explorer row's focus ring (R9.3 pane switch, treeRows)
   sep();
-  item("Remove", () => { if (pdf || bmCache.includes(nm)) toggleBm(nm); });   // WIRED: toggleBm — the same toggle the explorer-row / tab menus use (R9.4 / R20.4); guarded so it can only REMOVE (a PDF row is painted, so it IS bookmarked)
+  item("Remove", () => { if (pdf) toggleBm(nm, true); else if (bmCache.includes(nm)) toggleBm(nm); });   // WIRED: toggleBm — the same toggle the explorer-row / tab menus use (R9.4 / R20.4); guarded so it can only REMOVE. A PDF row removes its Pdf entry EXPLICITLY (pdf:true) so a same-named note bookmark ("x.pdf.md") is never the one dropped (PR #57 qodo High)
   placeMenu(m, e.clientX, e.clientY);      // R22: viewport-clamped by measured size — the same seam as noteMenu/tabMenu
 }
 /* ---------- bmfolder: the GROUP-row menu, Obsidian 1.13.7's list ----------
@@ -1746,8 +1746,8 @@ function bmReveal(nm) {
   updateTitle();
 }
 async function refreshBm() { bmTree = await inv("bookmark_rows"); lsBmResolve(); bmSync(); renderBm(); }
-async function toggleBm(nm) {
-  await inv("toggle_bookmark", { name: nm });   // by NAME (R9.4/R20.4): ON appends at the top level, OFF removes at any depth
+async function toggleBm(nm, pdf) {
+  await inv("toggle_bookmark", pdf ? { name: nm, pdf: true } : { name: nm });   // by NAME (R9.4/R20.4): ON appends at the top level, OFF removes at any depth
   await refreshBm();                            // the TREE is the model the pane paints — never patch bmCache behind it
 }
 /* ---------- bmfolder: the four structural commands ----------

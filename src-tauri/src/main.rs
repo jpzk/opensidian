@@ -5199,11 +5199,19 @@ fn bookmark_rows(v: State<Vault>) -> Vec<BmRow> {
 }
 
 #[tauri::command]
-fn toggle_bookmark(v: State<Vault>, name: String) -> Result<Vec<String>, String> {
+fn toggle_bookmark(v: State<Vault>, name: String, pdf: Option<bool>) -> Result<Vec<String>, String> {
     span_timed!("toggle_bookmark", {
         let root = cur_vault(&v).ok_or("no vault open")?;
         let mut tree = read_bm_tree(&root);
-        bm_toggle_in(&mut tree, &name);
+        // issue #44 (PR #57 review, qodo High on 340c2fb): a PDF row's Remove says so explicitly
+        // (`pdf: true`) and drops ONLY the Pdf node with that path — a note bookmark of the same
+        // logical name (note "x.pdf.md" = File{name:"x.pdf"}) is never touched. Every other caller
+        // omits the flag and keeps the by-NAME toggle unchanged.
+        if pdf == Some(true) {
+            bm_drop_first_pdf(&mut tree, &name);
+        } else {
+            bm_toggle_in(&mut tree, &name);
+        }
         write_bm_tree(&root, &tree)?;
         let mut out = Vec::new();
         bm_names(&tree, &mut out);
@@ -8261,6 +8269,11 @@ mod tests {
         bm_toggle_in(&mut t2, "x.pdf");
         let v2: serde_json::Value = serde_json::from_str(&bm_emit(&t2, &[])).unwrap();
         assert_eq!(v2["items"], serde_json::json!([{"type": "file", "path": "x.pdf"}]), "the note bookmark x.pdf wins");
+        // the PDF row's explicit remove (toggle_bookmark pdf:true) drops the Pdf node, never the note
+        let mut t3 = parse_bm_tree(r#"{"items": [{"type": "file", "path": "x.pdf"}, {"type": "file", "path": "x.pdf.md"}]}"#);
+        assert!(bm_drop_first_pdf(&mut t3, "x.pdf"));
+        let v3: serde_json::Value = serde_json::from_str(&bm_emit(&t3, &[])).unwrap();
+        assert_eq!(v3["items"], serde_json::json!([{"type": "file", "path": "x.pdf.md"}]), "only the pdf entry leaves");
     }
 
     /// R4X.17 — the painted LABEL follows Obsidian's measured rule
