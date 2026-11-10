@@ -1712,6 +1712,32 @@ Object.assign(Ed, {
       return;
     }
   },
+  /* #51: drop of rich text. Stock 1.13.7 turns a dropped text/html payload into
+     Markdown (**bold**, _it_, [t](url), - li), exactly as its paste does; CM6 alone
+     inserts only text/plain, so links and formatting were flattened. The converter is
+     the plugin API's htmlToMarkdown (inert parse, every text node escaped, unsafe URLs
+     dropped). true = handled; false leaves the drop to CM6 (files, a move inside the
+     editor, no html, no converter, nothing converted). Placed and selected like CM6's
+     own drop, one "input.drop" undo step. */
+  htmlDrop(e, view) {
+    const dt = e && e.dataTransfer;
+    if (!dt || !view || e.defaultPrevented || view.state.readOnly) return false;
+    if (view.inputState && view.inputState.draggedContent) return false;
+    if (dt.files && dt.files.length) return false;
+    const api = window.__osPluginHost && window.__osPluginHost.api;
+    const h2m = api && typeof api.htmlToMarkdown === "function" ? api.htmlToMarkdown : null;
+    let html = "";
+    try { html = String(dt.getData("text/html") || ""); } catch (_) {}
+    if (!h2m || !html.trim()) return false;
+    let md = "";
+    try { md = String(h2m(html) || ""); } catch (_) { return false; }
+    if (!md) return false;
+    const r = view.posAtCoords({ x: e.clientX, y: e.clientY }, false);
+    e.preventDefault();
+    view.focus();
+    view.dispatch({ changes: { from: r, insert: md }, selection: { anchor: r, head: r + md.length }, userEvent: "input.drop" });
+    return true;
+  },
   mount(v) {
     const G = () => Ed.G(v);
     v._ext = [
@@ -1749,6 +1775,10 @@ Object.assign(Ed, {
         // gh-paste (#19): a PNG on the clipboard (a screenshot) is saved into the vault and
         // embedded, like stock (ui/main.js attachPaste); true = claimed, CM6 does not paste text
         paste: (e) => typeof attachPaste === "function" ? attachPaste(G(), e) : false,
+        // #51: a drop carrying text/html (a selection dragged from a browser) keeps its
+        // formatting and links as Markdown, like stock 1.13.7 (harness docs/issue-51/STOCK.md);
+        // files, an in-editor move and an html-less drop stay CM6's own drop
+        drop: (e, view) => Ed.htmlDrop(e, view),
       }),
       CMv.EditorView.lineWrapping,
       CMv.EditorView.contentAttributes.of({ spellcheck: "false", autocorrect: "off", autocapitalize: "off" }),
