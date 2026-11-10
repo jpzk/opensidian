@@ -11,6 +11,8 @@ const TAURI = window.__TAURI__;   // plugin-loader item 7: captured at load; ui/
 // cp-hover-editor: the plugin host's app + "obsidian" module, captured at load like TAURI (the seal narrows the
 // host before any plugin runs); main.js fills the core-plugin hooks plugins read (see QuickSwitcherModal)
 const PLG = window.__osPluginHost && __osPluginHost.app && __osPluginHost.api ? { app: __osPluginHost.app, X: __osPluginHost.api } : null;
+// #51 / PR #65 review F1: the html->Markdown converter of a rich-text drop (Ed.htmlDrop), captured before the seal
+if (PLG && typeof PLG.X.htmlToMarkdown === "function" && typeof Ed !== "undefined") Ed.h2m = PLG.X.htmlToMarkdown;
 // the app's own note writes reach the plugin vault through this (api-vault host.noteWritten), captured before the seal
 const PLGNW = window.__osPluginHost && typeof __osPluginHost.noteWritten === "function" ? __osPluginHost.noteWritten : null;
 // goal cv-model: the plugin vault's FILE model alone (api-vault host.vaultModel: no window.app, no plugin runtime), captured before the seal for Canvas
