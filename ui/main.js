@@ -7113,6 +7113,10 @@ function fuzzy(q, s) {  // lower score = better; -1 = no match
 const acField = g => (g.view && g.view.lines ? Ed.field(g) : g.editor);   // R17: a textarea-shaped view of the model
 function acContext(g) {  // caret inside an unclosed [[ on one line?
   const ed = acField(g);
+  // gh #43 review (PR #53): a pair char typed over a selection wraps it and keeps the inner
+  // text selected ([[sel]]); stock opens no suggester over a selection, and accepting one here
+  // replaced [[ .. selection end, leaving the wrapper's ]] behind -> [[name]]]]
+  if (ed.selectionStart !== ed.selectionEnd) return null;
   const upto = ed.value.slice(0, ed.selectionStart);
   const a = upto.lastIndexOf("[[");
   if (a < 0) return null;
