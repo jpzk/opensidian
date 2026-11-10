@@ -591,7 +591,7 @@ const Ed = {
   // #height=N -> N + 38 (LP #page=&height=N -> N, stock quirk). Broken -> 800, like stock.
   pdfSize(s) {
     const w = s.clientWidth;
-    if (!w) return;
+    if (!w || s.dataset.full) return;     // issue #44: the PDF view's frame fills its pane (CSS .pdf-view)
     const h = s.dataset.height ? +s.dataset.height + (s.dataset.lpflat ? 0 : 38)
       : s.classList.contains("mod-broken") ? 800
       : Math.round(w * (s._pdfAr || Ed.PDF_STOCK_AR) + 20);

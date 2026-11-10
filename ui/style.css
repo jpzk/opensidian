@@ -1826,6 +1826,10 @@ span.is-flashing { background: var(--highlight-yellow) }
 /* stock's missing-file banner is 37 px tall; the R29.4 banner shrunk to match */
 .lp .imgmiss.pdfmiss, .preview .imgmiss.pdfmiss { padding: 8px 16px }
 .lp.src .pdf-embed { display: none }
+/* issue #44: the PDF view (a "pdf" leaf, main.js PDFV) — the same frame, filling the pane */
+.os-pv > .view-content.pdf-view { padding: 0; overflow: hidden; display: flex; flex-direction: column }
+.pdf-view > .pdf-embed { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; width: 100%;
+  box-sizing: border-box; background: var(--bg-surface); user-select: none }
 /* census C4 make-md: .app-container (ui/index.html) wraps the app chrome for plugins and
    themes that look it up. goal cp-makemd3: a REAL box, not display:contents — under
    display:contents the editor scrollers lost their bottom range (srclick R25.13c line-83
