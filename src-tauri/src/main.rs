@@ -4737,7 +4737,11 @@ fn bm_rows_in(nodes: &[BmNode], depth: usize, out: &mut Vec<BmRow>) {
             }
             BmNode::Pdf { path, title, .. } => {
                 // issue #44: `name` is the vault path the click opens in the PDF view
-                let label = title.clone().unwrap_or_else(|| path.rsplit('/').next().unwrap_or(path).to_string());
+                // PR #57 review: stock writes `"title": ""` (STOCK.md) — an empty title paints the basename
+                let label = title
+                    .clone()
+                    .filter(|t| !t.is_empty())
+                    .unwrap_or_else(|| path.rsplit('/').next().unwrap_or(path).to_string());
                 out.push(BmRow { kind: "f".into(), depth, name: path.clone(), label, ctime: None, pdf: true });
             }
             BmNode::Group { title, items, x } => {
@@ -5145,9 +5149,27 @@ fn bm_rename_walk(tree: &mut Vec<BmNode>, old: &str, new: &str) -> bool {
    WHATEVER DEPTH IT SITS — a bookmark inside a group is un-bookmarked from
    inside that group, and the group stays. */
 fn bm_toggle_in(tree: &mut Vec<BmNode>, name: &str) {
-    if !bm_drop_first_name(tree, name) {
+    // issue #44 (PR #57 review): a PDF row's "Remove" toggles its vault PATH. A note bookmark of
+    // that name still wins (unchanged behaviour); only when there is none is a Pdf node with that
+    // exact path dropped — never appended as a bogus "x.pdf.md" note bookmark.
+    if !bm_drop_first_name(tree, name) && !(is_pdf_target(name) && bm_drop_first_pdf(tree, name)) {
         tree.push(BmNode::file(name));
     }
+}
+
+fn bm_drop_first_pdf(nodes: &mut Vec<BmNode>, path: &str) -> bool {
+    for i in 0..nodes.len() {
+        if matches!(&nodes[i], BmNode::Pdf { path: p, .. } if p == path) {
+            nodes.remove(i);
+            return true;
+        }
+        if let BmNode::Group { items, .. } = &mut nodes[i] {
+            if bm_drop_first_pdf(items, path) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn bm_drop_first_name(nodes: &mut Vec<BmNode>, name: &str) -> bool {
@@ -8213,6 +8235,32 @@ mod tests {
         assert_eq!(v["items"][0], serde_json::json!({"type": "file", "ctime": 7, "path": "docs/Paper.PDF"}));
         assert_eq!(v["items"][1], serde_json::json!({"type": "file", "ctime": 8, "path": "Spec.pdf", "title": "The spec"}));
         assert_eq!(v["items"][3]["path"], "Plain.md");
+    }
+
+    /// PR #57 review: stock's `"title": ""` paints the basename (not a blank row), and the PDF row's
+    /// "Remove" (toggle by its path) drops THAT Pdf node — at any depth, nothing appended, the note
+    /// bookmarks around it untouched; a note bookmark of the same name still wins.
+    #[test]
+    fn issue44_pdf_bookmark_empty_title_and_remove() {
+        let body = r#"{"items": [
+                {"type": "file", "ctime": 7, "path": "Paper.pdf", "title": ""},
+                {"type": "group", "ctime": 8, "title": "G", "items": [{"type": "file", "ctime": 9, "path": "sub/In.pdf"}]},
+                {"type": "file", "ctime": 10, "path": "Alpha.md"}
+            ]}"#;
+        let mut t = parse_bm_tree(body);
+        let rows = bm_rows_of(&t);
+        assert_eq!(rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), vec!["Paper.pdf", "G", "In.pdf", "Alpha"]);
+        bm_toggle_in(&mut t, "Paper.pdf");
+        bm_toggle_in(&mut t, "sub/In.pdf");
+        let v: serde_json::Value = serde_json::from_str(&bm_emit(&t, &[])).unwrap();
+        assert_eq!(v["items"].as_array().unwrap().len(), 2, "{v}");
+        assert_eq!(v["items"][0]["title"], "G");
+        assert_eq!(v["items"][0]["items"].as_array().unwrap().len(), 0);
+        assert_eq!(v["items"][1]["path"], "Alpha.md");
+        let mut t2 = parse_bm_tree(r#"{"items": [{"type": "file", "path": "x.pdf"}, {"type": "file", "path": "x.pdf.md"}]}"#);
+        bm_toggle_in(&mut t2, "x.pdf");
+        let v2: serde_json::Value = serde_json::from_str(&bm_emit(&t2, &[])).unwrap();
+        assert_eq!(v2["items"], serde_json::json!([{"type": "file", "path": "x.pdf"}]), "the note bookmark x.pdf wins");
     }
 
     /// R4X.17 — the painted LABEL follows Obsidian's measured rule
