@@ -543,7 +543,17 @@
         this.register(() => { if (setting.activeTab === tab) setting.closeActiveTab(); setting.removeSettingTab(tab); const r2 = this._rec(); if (r2) r2.tabs.delete(tab); touch(); });
         touch();
       }
-      async loadData() { return be ? be.io(this.manifest.id, "load") : null; }
+      async loadData() {
+        const d = be ? await be.io(this.manifest.id, "load") : null;
+        /* #50: Excalidraw follows opensidian's dark/light mode unless the user saved an explicit choice
+           (stock plugin defaults leave these off; we make the app mode authoritative). */
+        if (this.manifest.id === "obsidian-excalidraw-plugin" && (d == null || (typeof d === "object" && !Array.isArray(d)))) {
+          const o = d || {};
+          for (const k of ["matchTheme", "matchThemeAlways", "matchThemeTrigger"]) if (!(k in o)) o[k] = true;
+          return o;
+        }
+        return d;
+      }
       async saveData(data) { if (!be) throw new Error("plugin backend unavailable"); await be.io(this.manifest.id, "save", data === undefined ? null : JSON.parse(JSON.stringify(data))); }
       onExternalSettingsChange() {}
       registerView(type, factory) {   // plugin-views: hosted in the app's tabs / right sidebar (ui/plugins/views.js); unload detaches them
