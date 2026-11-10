@@ -2280,7 +2280,9 @@ Ed.lpExt = function (v, G) {
   // that lands inside a task marker ("- [ ] ", nested / quoted / [x] too) jumps to the task
   // text behind it. Home, Left/Right, clicks and plain rows stay stock (docs/issue-46/STOCK.md).
   const vkeys = EditorView.domEventHandlers({
-    keydown: (e) => { v._vmove = /^(ArrowUp|ArrowDown|PageUp|PageDown)$/.test(e.key) && !e.shiftKey ? Date.now() : 0; return false; },
+    // only an UNMODIFIED key is a vertical move: Cmd+Up/Down (macOS document start/end), Ctrl+Up/Down
+    // (WebKitGTK paragraph backward/forward), Alt+... and Shift (selection) keep their native target (PR #62)
+    keydown: (e) => { v._vmove = /^(ArrowUp|ArrowDown|PageUp|PageDown)$/.test(e.key) && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey ? Date.now() : 0; return false; },
   });
   const taskSnap = CMs.EditorState.transactionFilter.of(tr => {
     if (!v._vmove || Date.now() - v._vmove > 500 || tr.docChanged || !tr.selection || !tr.isUserEvent("select") || tr.isUserEvent("select.pointer")) return tr;
@@ -2289,7 +2291,8 @@ Ed.lpExt = function (v, G) {
     if (s.ranges.length !== 1 || !s.main.empty) return tr;
     const doc = tr.newDoc, ln = doc.lineAt(s.main.head);
     if (ln.number === tr.startState.doc.lineAt(tr.startState.selection.main.head).number) return tr;
-    const m = /^[ \t]*(?:> ?)*(?:[-*+]|\d+\.) \[[^\]\n]\] /.exec(ln.text);
+    // quote prefix as Ed.block reads it: ">" + any spaces/tabs, repeated (">  - [ ] x" is a quoted list row too)
+    const m = /^[ \t]*(?:>[ \t]*)*(?:[-*+]|\d+\.) \[[^\]\n]\] /.exec(ln.text);
     if (!m || s.main.head - ln.from >= m[0].length) return tr;
     return [tr, { selection: CMs.EditorSelection.cursor(ln.from + m[0].length), sequential: true }];
   });
