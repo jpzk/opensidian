@@ -505,6 +505,42 @@
     if (K.workspace && !K.workspace.protocolHandler)
       Object.defineProperty(K.workspace, "protocolHandler", { value: { handlers: PROTO }, configurable: true, enumerable: false, writable: false });
 
+    /* Per-plugin settings the host seeds into Plugin.loadData() (the one place plugin-specific defaults live).
+       keys: merged into a plain-object data.json, keys the user saved win.
+       fresh(plugin): when data.json gave null — true ONLY for a pure first install, else null is passed through. */
+    const PLUGIN_SEED = Object.freeze({
+      /* #50: Excalidraw follows opensidian's dark/light mode (its stock defaults leave these off).
+         Its settings manager (2.27+) classifies loadData(): an object = "valid" and skips recovery, so null must
+         reach it whenever data.json exists but is empty/corrupt, or a recovery copy exists (PR #64 review). */
+      "obsidian-excalidraw-plugin": {
+        keys: { matchTheme: true, matchThemeAlways: true, matchThemeTrigger: true },
+        async fresh(p) {
+          const dir = p.manifest && p.manifest.dir, ad = p.app && p.app.vault && p.app.vault.adapter;
+          if (!dir || !ad || typeof ad.stat !== "function") return false;
+          if ((await ad.stat(dir + "/data.json")) !== null) return false;        // present (empty/corrupt): its recovery decides
+          /* its recovery copy: IndexedDB "Excalidraw Settings Recovery <appId>", store settingsRecovery, key lastKnownGood.
+             Only a name databases() lists is opened: open() of a missing name would CREATE an empty db and break its own. */
+          if (typeof indexedDB === "undefined" || typeof indexedDB.databases !== "function") return false;
+          const name = "Excalidraw Settings Recovery " + p.app.appId;
+          if (!(await indexedDB.databases()).some(x => x && x.name === name)) return true;
+          return await new Promise(res => {
+            const rq = indexedDB.open(name);
+            rq.onerror = () => res(false);
+            rq.onblocked = () => res(false);
+            rq.onsuccess = () => {
+              const db = rq.result;
+              try {
+                if (!db.objectStoreNames.contains("settingsRecovery")) { db.close(); return res(true); }
+                const g = db.transaction("settingsRecovery", "readonly").objectStore("settingsRecovery").get("lastKnownGood");
+                g.onsuccess = () => { db.close(); res(g.result == null); };
+                g.onerror = () => { db.close(); res(false); };
+              } catch (_) { db.close(); res(false); }
+            };
+          });
+        },
+      },
+    });
+
     /* ------------------------------------------------------------ Plugin */
     class Plugin extends Component {
       constructor(app_, manifest) { super(); this.app = app_; this.manifest = manifest; }
@@ -545,14 +581,16 @@
       }
       async loadData() {
         const d = be ? await be.io(this.manifest.id, "load") : null;
-        /* #50: Excalidraw follows opensidian's dark/light mode unless the user saved an explicit choice
-           (stock plugin defaults leave these off; we make the app mode authoritative). */
-        if (this.manifest.id === "obsidian-excalidraw-plugin" && (d == null || (typeof d === "object" && !Array.isArray(d)))) {
-          const o = d || {};
-          for (const k of ["matchTheme", "matchThemeAlways", "matchThemeTrigger"]) if (!(k in o)) o[k] = true;
-          return o;
-        }
-        return d;
+        const seed = PLUGIN_SEED[this.manifest.id];
+        if (!seed) return d;
+        const rec = v => typeof v === "object" && v !== null && !Array.isArray(v);
+        /* null = data.json missing OR unreadable. It stays null (the plugin classifies it and may restore its own
+           recovery copy) unless seed.fresh() proves a pure first install; any doubt -> null (fail closed). */
+        if (d == null) { let f = false; try { f = await seed.fresh(this); } catch (_) {} if (!f) return d; }
+        else if (!rec(d)) return d;
+        const o = d || {};
+        for (const k in seed.keys) if (!(k in o)) o[k] = seed.keys[k];   // keys the user saved win
+        return o;
       }
       async saveData(data) { if (!be) throw new Error("plugin backend unavailable"); await be.io(this.manifest.id, "save", data === undefined ? null : JSON.parse(JSON.stringify(data))); }
       onExternalSettingsChange() {}
