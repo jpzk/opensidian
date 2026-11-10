@@ -2222,7 +2222,24 @@ Ed.lpExt = function (v, G) {
       return e.defaultPrevented;
     },
   });
-  return [plugin, clicks, Ed.cbField(v, G, bust)];
+  // gh #46: Up/Down (native caret moves, read back as userEvent "select") onto ANOTHER line
+  // that lands inside a task marker ("- [ ] ", nested / quoted / [x] too) jumps to the task
+  // text behind it. Home, Left/Right, clicks and plain rows stay stock (docs/issue-46/STOCK.md).
+  const vkeys = EditorView.domEventHandlers({
+    keydown: (e) => { v._vmove = /^(ArrowUp|ArrowDown|PageUp|PageDown)$/.test(e.key) && !e.shiftKey ? Date.now() : 0; return false; },
+  });
+  const taskSnap = CMs.EditorState.transactionFilter.of(tr => {
+    if (!v._vmove || Date.now() - v._vmove > 500 || tr.docChanged || !tr.selection || !tr.isUserEvent("select") || tr.isUserEvent("select.pointer")) return tr;
+    if (v.lp && v.lp.classList.contains("src")) return tr;
+    const s = tr.selection;
+    if (s.ranges.length !== 1 || !s.main.empty) return tr;
+    const doc = tr.newDoc, ln = doc.lineAt(s.main.head);
+    if (ln.number === tr.startState.doc.lineAt(tr.startState.selection.main.head).number) return tr;
+    const m = /^[ \t]*(?:> ?)*(?:[-*+]|\d+\.) \[[^\]\n]\] /.exec(ln.text);
+    if (!m || s.main.head - ln.from >= m[0].length) return tr;
+    return [tr, { selection: CMs.EditorSelection.cursor(ln.from + m[0].length), sequential: true }];
+  });
+  return [plugin, clicks, vkeys, taskSnap, Ed.cbField(v, G, bust)];
 };
 /* ---------- plugin CODE BLOCKS in Live Preview (plug-top5) ----------
    A fenced block whose language a plugin registered a code-block processor for
