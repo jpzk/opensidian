@@ -90,13 +90,14 @@ fn now_ms() -> u128 {
 /// emit one event. When the channel is off this does nothing. It blocks on a slow sink and never drops.
 pub fn emit(name: &str, payload: serde_json::Value) {
     let Some(m) = chan() else { return };
-    let mut c = m.lock().unwrap_or_else(|p| p.into_inner());
+    let mut g = m.lock().unwrap_or_else(|p| p.into_inner());
+    let c = &mut *g; // split borrows: seq read + out written under the one guard
     if c.skip.iter().any(|s| s == name) {
         return;
     }
-    let Some(out) = c.out.as_mut() else { return };
     let mut l = line(c.seq, now_ms(), name, &payload);
     l.push('\n');
+    let Some(out) = c.out.as_mut() else { return };
     if let Err(e) = out.write_all(l.as_bytes()).and_then(|_| out.flush()) {
         eprintln!("[testev] sink error: {e}; channel off");
         c.out = None;
