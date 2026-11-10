@@ -1663,8 +1663,11 @@ function bmRowMenu(e, nm, ix) {             // right-click a FILE .bmrow -> Obsi
      change anything. That is also why phase_bmmenu — which runs on a FLAT list
      and asserts [mdis:3|5|6] — keeps passing unedited (criterion 8). */
   const hasGrp = bmTree.some(r => r.kind === "g");
-  item("Open in new tab",   () => openNewTab(nm));                         // WIRED: openNewTab — right of the active tab, focused, never deduped (opentab REQ-8/9/14, Obsidian c20)
-  item("Open to the right", () => splitWith(fg(), "row", mkTab(nm)));      // WIRED: splitWith — the verb behind the tab menu's "Split right" (M7/R6.2), carrying a fresh tab of this note
+  // issue #44 (PR #57 review): a painted PDF row is named by its vault PATH — its opens go through the PDF view,
+  // never through a note tab (openNewTab/mkTab would read "<path>.md"); its Remove toggles that path (rust drops the Pdf node)
+  const pdf = !!(bmTree[ix] && bmTree[ix].pdf && bmTree[ix].name === nm);
+  item("Open in new tab",   () => (pdf ? openPdf(nm, null, "tab") : openNewTab(nm)));                         // WIRED: openNewTab — right of the active tab, focused, never deduped (opentab REQ-8/9/14, Obsidian c20)
+  item("Open to the right", () => (pdf ? openPdf(nm, null, "split") : splitWith(fg(), "row", mkTab(nm))));      // WIRED: splitWith — the verb behind the tab menu's "Split right" (M7/R6.2), carrying a fresh tab of this note
   item("Open in new window", null, "Single-window app: there is no second window to open into");   // NOT WIRED
   sep();
   item("Rename",  null, "Bookmarks are note names on disk (.obsidian/bookmarks.json); there is no per-bookmark title to rename");   // NOT WIRED
@@ -1673,7 +1676,7 @@ function bmRowMenu(e, nm, ix) {             // right-click a FILE .bmrow -> Obsi
   sep();
   item("Reveal file in navigation", () => bmReveal(nm));                   // WIRED: bmReveal — setPane("files") + the explorer row's focus ring (R9.3 pane switch, treeRows)
   sep();
-  item("Remove", () => { if (bmCache.includes(nm)) toggleBm(nm); });       // WIRED: toggleBm — the same toggle the explorer-row / tab menus use (R9.4 / R20.4); guarded so it can only REMOVE
+  item("Remove", () => { if (pdf) toggleBm(nm, true); else if (bmCache.includes(nm)) toggleBm(nm); });   // WIRED: toggleBm — the same toggle the explorer-row / tab menus use (R9.4 / R20.4); guarded so it can only REMOVE. A PDF row removes its Pdf entry EXPLICITLY (pdf:true) so a same-named note bookmark ("x.pdf.md") is never the one dropped (PR #57 qodo High)
   placeMenu(m, e.clientX, e.clientY);      // R22: viewport-clamped by measured size — the same seam as noteMenu/tabMenu
 }
 /* ---------- bmfolder: the GROUP-row menu, Obsidian 1.13.7's list ----------
@@ -1739,14 +1742,14 @@ function bmPaneMenu(e) {                   // right-click the pane BACKGROUND ->
 function bmReveal(nm) {
   setPane("files");
   document.querySelectorAll("#tree .trow.revealed").forEach(r => r.classList.remove("revealed"));
-  const r = treeRows.get(nm);
+  const r = treeRows.get(nm) || [...document.querySelectorAll("#tree .trow.file")].find(e => e.dataset.file === nm);   // issue #44: PDF rows are not in treeRows (fileRow)
   if (r) { r.classList.add("revealed"); r.scrollIntoView({ block: "nearest" }); }
   revealInfo = r ? nm.replace(/[|\]:]/g, "") : "";
   updateTitle();
 }
 async function refreshBm() { bmTree = await inv("bookmark_rows"); lsBmResolve(); bmSync(); renderBm(); }
-async function toggleBm(nm) {
-  await inv("toggle_bookmark", { name: nm });   // by NAME (R9.4/R20.4): ON appends at the top level, OFF removes at any depth
+async function toggleBm(nm, pdf) {
+  await inv("toggle_bookmark", pdf ? { name: nm, pdf: true } : { name: nm });   // by NAME (R9.4/R20.4): ON appends at the top level, OFF removes at any depth
   await refreshBm();                            // the TREE is the model the pane paints — never patch bmCache behind it
 }
 /* ---------- bmfolder: the four structural commands ----------
@@ -1890,7 +1893,8 @@ function bmDragStart(e, ix) {
   const label = src.label ?? (src.kind === "g" ? src.name : src.name.split("/").pop());
   // cv-dragin: the row as pressed (bmTree may repaint mid-drag), plus a group's painted file rows — CanvasDrop's
   // fallback when .obsidian/bookmarks.json cannot be read
-  const srcRow = { kind: src.kind, name: src.name, files: src.kind === "g" ? bmTree.slice(ix + 1, bmSubEnd(ix)).filter(r => r.kind === "f").map(r => r.name) : [] };
+  // issue #44 (PR #57 review): files are VAULT PATHS (a PDF row is named by its path, a note row by its name) and pdf flags a PDF row
+  const srcRow = { kind: src.kind, name: src.name, pdf: !!src.pdf, files: src.kind === "g" ? bmTree.slice(ix + 1, bmSubEnd(ix)).filter(r => r.kind === "f").map(r => (r.pdf ? r.name : r.name + ".md")) : [] };
   let ghost = null, fb = { line: null, hl: null }, srcEl = null, zones = null, raf = 0, last = null;
   let spring = 0;                          // collapseall R5: the armed spring-load timer
   let pz = null, pnd = null;               // issue #40: pane zones / the live pane decision (a FILE bookmark only)
@@ -7831,10 +7835,10 @@ const PDFV = (() => {
   } catch (e) { console.error("[pdf] view:", e); return null; }
   return { PdfView };
 })();
-async function openPdf(path, ev) {
+async function openPdf(path, ev, how) {   // how: undefined = by the event (plain in place, ctrl/middle new tab) | "tab" | "split" (PR #57 review: the bookmark menu)
   if (!PDFV) { say("The PDF view is not available", "pdf"); return null; }
   const nt = ev && (ev.button === 1 || ev.ctrlKey || ev.metaKey);
-  const leaf = PLG.app.workspace.getLeaf(nt ? "tab" : false);
+  const leaf = how === "split" ? PLG.app.workspace.getLeaf("split", "vertical") : PLG.app.workspace.getLeaf(how === "tab" || nt ? "tab" : false);
   await leaf.setViewState({ type: "pdf", state: { file: path }, active: true });
   return leaf;
 }
