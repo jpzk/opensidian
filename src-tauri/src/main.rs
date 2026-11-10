@@ -23,6 +23,7 @@ use opensidian_lib::canvasfs;
 mod cfgstore;
 mod consent; // spawn-consent: native GTK prompts before trusting a vault and before every plugin spawn
 mod census; // census-gate (#30): the window-title census is opt-in (OPENSIDIAN_CENSUS=1 / devui)
+mod testev; // app-events (harness docs/app-events.md): test-only NDJSON readiness events, opt-in OPENSIDIAN_TEST_EVENTS=1
 use opensidian_lib::datefmt;
 use opensidian_lib::graphq;
 use opensidian_lib::index;
@@ -154,6 +155,9 @@ fn bind_vault_locked(v: &Vault, p: &Path, lock_dir: &Path) -> Result<(), BindErr
     let ix = span_timed!("index_build", Index::build(p), serde_json::json!({"notes": 0}));
     *v.index.lock().unwrap() = ix;
     *v.seed.lock().unwrap() = Some(base);
+    // app-events: the root is claimed, the lock is held, and the index is stored -> vault-loaded
+    let notes = v.index.lock().unwrap().names().len();
+    testev::emit("vault-loaded", serde_json::json!({"root": p.display().to_string(), "notes": notes}));
     Ok(())
 }
 /// census C4 (make-md): an opened vault always carries `.obsidian/app.json` —
@@ -3644,6 +3648,8 @@ fn page_window(app: &tauri::AppHandle, wc: &tauri::utils::config::WindowConfig) 
     let b = tauri::WebviewWindowBuilder::from_config(app, wc)?;
     // census-gate: the title census exists only when opted in (census.rs); off = no script, no flag
     let b = if census::on() { b.initialization_script(census::INIT_JS) } else { b };
+    // app-events: the page sees window.__OS_TEST_EVENTS only when the channel is on (testev.rs)
+    let b = if testev::on() { b.initialization_script(testev::INIT_JS) } else { b };
     #[cfg(feature = "devui")]
     let b = if devui::root().is_some() { b.initialization_script(devui::INIT_JS) } else { b };
     b.on_web_resource_request(move |req, res| {
@@ -6253,6 +6259,8 @@ fn main() {
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(spawner::ARG)) {
         std::process::exit(spawner::run(&LiveSpawner));
     }
+    // app-events: the READY handshake (seq 0) comes first, before any other event can be emitted
+    testev::ready();
     // perf-console: state the rule on the console BEFORE anything can breach it.
     // ONE line, printed unconditionally (breach or not), so "unusually long" is a
     // number you can read off the console instead of a promise in a comment. It is
@@ -6548,7 +6556,7 @@ fn main() {
             .map(std::borrow::Cow::Owned)
         })
         .invoke_handler(tauri::generate_handler![
-            list_notes, list_images, canvas_io, canvas_attach, paste_image, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
+            testev::test_event, list_notes, list_images, canvas_io, canvas_attach, paste_image, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
