@@ -1939,3 +1939,5 @@ span.is-flashing { background: var(--highlight-yellow) }
 /* gh-icons #20: inline monochrome glyph in an icon-only button (replaces a text pictograph);
    inline at 12px, on the text's middle, so the button keeps its line box */
 svg.gi { width: 12px; height: 12px; vertical-align: -2px; display: inline-block; pointer-events: none }
+
+/* NEGCTL-PF-S3 */ @media (max-width: 400px) { body { min-width: 420px !important; } }

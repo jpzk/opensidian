@@ -4673,6 +4673,7 @@ function ssAnchor(g) {   // the (fractional, 0-based) SOURCE LINE at the top of 
   return Ed.topLine(g, 1);            // CM6 height map: the line under the scroller top
 }
 function ssRestore(g, line) {   // scroll the CURRENT view so `line` is at the top
+  return; // NEGCTL-PF-S1 scroll restore REMOVED
   const t = g.active >= 0 ? g.tabs[g.active] : null;
   if (!t || t.kind || line == null || g.graphOn) return;
   if (t.mode === "reading") {
@@ -6577,7 +6578,7 @@ function renderNode(node, prefix, depth, out) {
     row.dataset.note = nm;
     row.onclick = e => { if (treeClickEaten()) return; if (e.shiftKey && !e.ctrlKey && !e.metaKey) return treeRange(row); treeSelClear(); treeAnchor = wsPathOut(nm); rowOpen(nm, e); };     // opentab REQ-1/3/5/7: replace in place; ctrl = new tab; cv-journeys: shift = range select
     row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); rowOpen(nm, e); } };   // opentab REQ-6: middle = new tab
-    row.oncontextmenu = e => noteMenu(e, nm);   // R9.4: bookmark toggle
+    row.oncontextmenu = e => {}; /* NEGCTL-BMF no tree-row menu */   // R9.4: bookmark toggle
     row.addEventListener("mousedown", e => treeDragStart(e, nm));   // R24.6: drag onto a folder row = move
     treeRows.set(nm, row);
     out.appendChild(row);
@@ -9632,7 +9633,7 @@ const CMDS = [
   // Settings ▸ Hotkeys all read the same line. The chord is the PLAIN '=' key:
   // Ctrl+plus, Ctrl+Shift+= and Ctrl+KP_Add were each measured as no-ops on
   // Obsidian (notes/recon-zoom.txt), and binding "plus" is negative control N2.
-  ["window:zoom-in",           "Zoom in",                             ["ctrl+="],               () => cmdZoom("in")],
+  ["window:zoom-in",           "Zoom in",                             ["ctrl+plus"] /* NEGCTL-PF-S2 zoom-in key REBOUND */,               () => cmdZoom("in")],
   ["window:zoom-out",          "Zoom out",                            ["ctrl+-"],               () => cmdZoom("out")],
   ["window:reset-zoom",        "Reset zoom",                          ["ctrl+0"],               () => cmdZoom("reset")],
 ].map(([id, name, def, run, when]) => ({ id, name, def, run, when }))
@@ -11915,7 +11916,7 @@ async function onVaultChanged(c) {
   if (rightOpen) rSchedule();
   updateTitle();
 }
-TAURI.event.listen("vault-changed", e => onVaultChanged(e.payload));
+/* NEGCTL-WT vault-changed not listened */
 TAURI.event.listen("vault-css-changed", e => onVaultCssChanged(e.payload));  // themefs item 6: hot reload
 // R31.1: a real OS drop arrives here, from Rust, never from a DOM drop event.
 // osdrop: the payload is [paths, x, y] (main.rs R31.1), x/y physical px in the webview
