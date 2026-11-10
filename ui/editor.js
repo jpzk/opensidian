@@ -1724,8 +1724,9 @@ Object.assign(Ed, {
     if (!dt || !view || e.defaultPrevented || view.state.readOnly) return false;
     if (view.inputState && view.inputState.draggedContent) return false;
     if (dt.files && dt.files.length) return false;
-    const api = window.__osPluginHost && window.__osPluginHost.api;
-    const h2m = api && typeof api.htmlToMarkdown === "function" ? api.htmlToMarkdown : null;
+    // PR #65 review F1: NOT window.__osPluginHost at drop time — the loader's seal() narrows it to
+    // {censusTok} before the first plugin runs; main.js hands the converter over at load (Ed.h2m)
+    const h2m = typeof Ed.h2m === "function" ? Ed.h2m : null;
     let html = "";
     try { html = String(dt.getData("text/html") || ""); } catch (_) {}
     if (!h2m || !html.trim()) return false;
