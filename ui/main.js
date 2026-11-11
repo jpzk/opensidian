@@ -10839,6 +10839,18 @@ async function startGraph(g, cfg) {
   // release at 1.9 s vs stock 2.8 s, and a low absolute one kept the open sim running past 3.5 s
   // (docs/recon-graphforce/data/impl). Floor 1e-6 px^2/step per node.
   const CALM_KE = 4e-5;
+  // settle to rest: alpha decaying to 0 switched the forces off before the layout was in balance, so
+  // the graph froze mid-way and every slider nudge (reheat) moved it on again. After an open, reheat
+  // or release, alpha now decays toward ALPHA_REST instead of 0 (the forces stay on; alpha only
+  // scales how fast the balance is reached, not where it is) until every node is slower than
+  // V_REST world units/step for 10 steps, or REST_CAP steps have passed. Then the floor drops and the
+  // calm test above eases it out as before. Measured on a headless copy of this physics (tree30 ..
+  // rand200): a tighter V_REST (0.1, 0.05) is often not reached in 150 s, a slow drift of whole
+  // branches keeps the fastest node above it; 0.3 is reached in 4..70 s, hence the cap.
+  // OPEN_CAP: the first settle of an open runs at OPEN_SPEED, so it may seek rest for 75 s of sim
+  // time (under 4 s of wall time) and get closer to the balance; a later one runs at 1x and keeps 30 s.
+  const ALPHA_REST = 0.1, V_REST = 0.3, REST_CAP = 30 * PH_HZ, OPEN_CAP = 75 * PH_HZ, OPEN_SPEED = 20;
+  let seekN = 0, still = 0;   // seekN: steps spent seeking rest, -1 when not seeking; still: consecutive steps under V_REST
   let calm = 0, kePeak = 0, quiet = false;   // quiet: physics halted until the next reheat; kePeak: max KE since it
   let settledMark = false;              // graph_open_settle mark fires once per open
   // graphsettle gate hook (OPENSIDIAN_GRAPH_SETTLE_TRACE=1, else null: one null test per step, nothing
@@ -10853,11 +10865,10 @@ async function startGraph(g, cfg) {
   // was seeded above, so the sim is warmed to 0.3 (the refresh restart) to place it.
   if (prevK) {
     alpha = prevK.st.alpha; calm = prevK.st.calm; kePeak = prevK.st.kePeak;
-    quiet = prevK.st.quiet; settledMark = prevK.st.settledMark;
-    if (kept < N.length || kept < prevK.pos.size) { alpha = Math.max(alpha, 0.3); calm = 0; kePeak = 0; quiet = false; }   // grew or shrank while away
+    quiet = prevK.st.quiet; settledMark = prevK.st.settledMark; seekN = prevK.st.seekN ?? -1; still = prevK.st.still || 0;
+    if (kept < N.length || kept < prevK.pos.size) { alpha = Math.max(alpha, 0.3); calm = 0; kePeak = 0; quiet = false; seekN = 0; still = 0; }   // grew or shrank while away
   }
-  if (kt) kt.gk = { c: cfg.center(), N, view, st:() => ({ alpha, calm, kePeak, quiet: quiet && alphaTarget === 0, settledMark }) };
-  const kinetic = () => { let k = 0; for (const p of N) k += p.vx * p.vx + p.vy * p.vy; return k; };
+  if (kt) kt.gk = { c: cfg.center(), N, view, st:() => ({ alpha, calm, kePeak, quiet: quiet && alphaTarget === 0, settledMark, seekN, still }) };
   // Barnes-Hut quadtree (theta 0.8) for the many-body repulsion (d3 shape:
   // dv = REPEL*alpha*dx/d^2, i.e. |dv| ~ 1/d). The force is long-range, so a
   // cutoff grid would change the layout; instead every far cell
@@ -10908,7 +10919,7 @@ async function startGraph(g, cfg) {
   }
   function physStep() {
     if (!N.length) return;
-    alpha += (alphaTarget - alpha) * ALPHA_DECAY;   // top of the step, as the model does
+    alpha += ((alphaTarget || (seekN >= 0 ? ALPHA_REST : 0)) - alpha) * ALPHA_DECAY;   // top of the step, as the model does; floor while seeking rest
     // many-body repulsion FIRST (the link term reads p+v after it). Per-node
     // strength = Repel force * REPEL_K * N^REPEL_P (docs/recon-graphforce PLAN s.0)
     const root = bhBuild(), k = alpha * F.repel * REPEL_K * Math.pow(N.length, REPEL_P);
@@ -11171,7 +11182,11 @@ async function startGraph(g, cfg) {
     }
     const fT0 = perf.now(); let steps = 0, ke = -1;
     if (rcSnap && rcSnap.vraw === undefined) rcPre();   // C5: before this frame's physics
-    phAcc = Math.min(phAcc + (now - phLast) / 1000, PH_STEP_CAP / PH_HZ); phLast = now;
+    // fast first settle: until this open's first rest (settledMark, carried across a tab switch, fresh
+    // on every new open) the sim clock runs OPEN_SPEED x wall time, so the settle above takes 1/20
+    // of the time; then 1x. Not while a node is held: a drag follows the pointer at normal speed.
+    const sp = settledMark || alphaTarget > 0 ? 1 : OPEN_SPEED;
+    phAcc = Math.min(phAcc + sp * (now - phLast) / 1000, sp * PH_STEP_CAP / PH_HZ); phLast = now;
     const phT0 = perf.now();
     // The settle test runs after EVERY physics step, not once per frame: counted per frame,
     // "10 calm" meant 10..70 steps depending on how many steps each frame happened to carry
@@ -11215,7 +11230,14 @@ async function startGraph(g, cfg) {
     g.sim = requestAnimationFrame(step);
   }
   function settleTest() {              // after one physics step: kinetic energy vs its peak; may set quiet
-    const ke = kinetic();
+    let ke = 0, vm2 = 0;
+    for (const p of N) { const v2 = p.vx * p.vx + p.vy * p.vy; ke += v2; if (v2 > vm2) vm2 = v2; }
+    if (seekN >= 0 && alphaTarget === 0) {
+      still = vm2 < V_REST * V_REST ? still + 1 : 0;
+      // at rest (or out of patience): drop the floor, and measure the ease-out against its own peak
+      if (still >= 10 || ++seekN >= (settledMark ? REST_CAP : OPEN_CAP)) { seekN = -1; still = 0; calm = 0; kePeak = 0; }
+      else return ke;
+    }
     {
       if (ke > kePeak) kePeak = ke;
       calm = ke < Math.max(CALM_KE * kePeak, 1e-6 * N.length) ? calm + 1 : 0;
@@ -11272,7 +11294,7 @@ async function startGraph(g, cfg) {
     perf.mark("graph_renderer", perf.now(), { renderer: "2d", reason: "contextlost", webgl: 0, ...gpu });
     redraw();
   };
-  g.reheat = (a = 0.5) => { sTrMark("reheat"); calm = 0; kePeak = 0; quiet = false; g.graphSettled = false; alpha = Math.max(alpha, a); wake(); };
+  g.reheat = (a = 0.5) => { sTrMark("reheat"); calm = 0; kePeak = 0; seekN = 0; still = 0; quiet = false; g.graphSettled = false; alpha = Math.max(alpha, a); wake(); };
   // graph-controls card (global AND local, GC1): sliders -> F + reheat; any reheat re-syncs the
   // sliders to F, so a value set another way (the recon rig's probe hotkeys) shows on the card too
   if (gcS) {
@@ -11381,7 +11403,7 @@ async function startGraph(g, cfg) {
     drag = null;
     if (window.__graphHeld === release) window.__graphHeld = null;
     for (const q of N) if (q.fx != null) q.fx = q.fy = null;
-    if (alphaTarget !== 0) { sTrMark("release"); alphaTarget = 0; calm = 0; kePeak = 0; quiet = false; g.graphSettled = false; if (g.simGen === gen) wake(); }
+    if (alphaTarget !== 0) { sTrMark("release"); alphaTarget = 0; calm = 0; kePeak = 0; seekN = 0; still = 0; quiet = false; g.graphSettled = false; if (g.simGen === gen) wake(); }
   };
   if (!window.__graphRelWired) {        // once per window; whichever graph holds a node registers itself
     window.__graphRelWired = true;
@@ -11418,7 +11440,7 @@ async function startGraph(g, cfg) {
           p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0;
           // d3 drag: alphaTarget 0.3 while held, the neighbours follow the node out
           // (PLAN item 8: not reheat — alpha CLIMBS toward the target, as stock's)
-          if (alphaTarget !== 0.3 || quiet) { sTrMark("hold"); alphaTarget = 0.3; calm = 0; kePeak = 0; quiet = false; g.graphSettled = false; wake(); }
+          if (alphaTarget !== 0.3 || quiet) { sTrMark("hold"); alphaTarget = 0.3; calm = 0; kePeak = 0; seekN = 0; still = 0; quiet = false; g.graphSettled = false; wake(); }
         } else {
           view.tx += dx; view.ty += dy; view.ax = null;  // EMPTY canvas: camera pan, unchanged; drops the zoom anchor
         }
