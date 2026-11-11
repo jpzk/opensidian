@@ -10796,6 +10796,7 @@ async function startGraph(g, cfg) {
       p.x = nb.x + F.dist * Math.cos(ang); p.y = nb.y + F.dist * Math.sin(ang);
     });
     N.length = 0; N.push(...N2); nGen++;   // graphworker: a batch still out is for the old node set
+    dirty = true;                          // the node set changed: draw it even if no step runs (a filter that hides every note)
     gr.edges = g2.edges; gr.col = g2.col;
     rebuild();
     if (hov >= 0) gHover(g, null, null);
