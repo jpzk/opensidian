@@ -138,7 +138,7 @@
           if (ran && now() - t0 >= b.budget) break;    // wall-clock backstop: a costlier step must not lengthen the batch
         }
         if (!st.quiet && !ran && st.alpha <= ALPHA_MIN) { ke = settle(b, st, tr); if (st.quiet) quietKe = ke; }
-      }
+      } else if (st.alphaTarget === 0 && !st.quiet) { st.quiet = true; ke = quietKe = 0; }   // no nodes: nothing to settle, so no frame loop either
       return { ran, ke, quietKe, ms: now() - t0, tr };
     }
     return { run };

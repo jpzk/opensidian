@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Graph physics (ui/graph-phys.js), run in JavaScriptCore like tests/listtoggle.rs runs
-//! ui/editor.js. Three checks, one seeded 400-node graph:
+//! ui/editor.js. Four checks, three on one seeded 400-node graph:
 //!   1. the struct-of-arrays step is bit-identical to the object step main.js ran before it
 //!      (copied below as the reference), step by step for 300 steps;
 //!   2. a held node (pin) ends every step exactly on its pin with zero velocity;
 //!   3. a fresh open settles to rest: it goes quiet within its cap, and the layout it stops in is
 //!      clearly closer to force balance than where the old stop (alpha decayed to 0) froze it.
+//!   4. an empty graph goes quiet at once (before, alpha never moved and the frame loop ran forever).
 #![cfg(target_os = "linux")]
 
 use javascriptcore::{ContextExt, ExceptionExt, ValueExt};
@@ -96,6 +97,12 @@ const CHECKS: &str = r#"(function () {
     if (steps > 75 * 60 + 1000) throw new Error("rest took " + steps + " steps, past the 75 s cap + ease-out");
     const uOld = unbalance(O), uNew = unbalance(A);
     if (!(uNew < uOld * 0.75)) throw new Error("stopped at unbalance " + uNew + ", the old stop left " + uOld);
+  }
+  // 4. an empty graph (an empty vault, or filters that hide every note) goes quiet at once
+  {
+    const st = open(), r = eng.run({ X: new Float64Array(0), Y: new Float64Array(0), VX: new Float64Array(0), VY: new Float64Array(0), PIN: new Uint8Array(0),
+      FX: new Float64Array(0), FY: new Float64Array(0), links: LNK, f: F, st, steps: 7, budget: 1e12, trace: false, first: true });
+    if (!st.quiet || r.quietKe !== 0) throw new Error("an empty graph did not go quiet: " + JSON.stringify(r));
   }
   return "ok";
 })()"#;

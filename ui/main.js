@@ -4248,6 +4248,7 @@ async function collapseGroup(g, via) {  // R6.5: closing the last tab removes th
   const parent = findParent(state.root, g);
   if (!parent) return;                        // lone root group: caller keeps it
   if (g.sim) cancelAnimationFrame(g.sim);     // stop the removed group's machinery
+  g.simGen = 0;                               // and retire its sim: a physics batch still in the Worker is dropped, not stepped on
   // tabclose: the SECOND unflushed path. This clears an armed save exactly like
   // dropTab does, and it is reachable with tabs still in the group (a drag that
   // moves the last tab out, :1837/:1844) — so the record is unconditional and
@@ -10427,6 +10428,9 @@ const graphRendererPref = () => graphPrefP || (graphPrefP = inv("graph_renderer_
 }));
 function showEditor(g) {
   g.graphOn = false; g.graphRefresh = null; g.graphRedraw = null; g.graphAnimate = null; g.graphAnimState = null; g.graphRc = null; cancelAnimationFrame(g.sim); g.graphRenderer = null;
+  // retire the sim (startGraph's gen starts at 1): a physics batch still in the Worker lands nowhere and
+  // posts no next one, so the kept layout stays the frame the user left, as when the loop was only a rAF
+  g.simGen = 0;
   if (g.ro) { g.ro.disconnect(); g.ro = null; }
   if (g.attrObs) { g.attrObs.disconnect(); g.attrObs = null; }
   perf.flush();                    // ship buffered graph_frame samples of the closed sim
@@ -10923,12 +10927,14 @@ async function startGraph(g, cfg) {
              st: { alpha, alphaTarget, seekN, still, calm, kePeak, quiet } };
   }
   // a result: positions and state back, the settle side effects, then the replayed events
-  function land(bgen, r, st, X, Y, VX, VY) {
+  function land(bgen, r, st, X, Y, VX, VY, PIN) {
     inflight = false; const q = evq; evq = [];
     if (g.simGen !== gen || bgen !== nGen) return;   // retired, or N[] swapped while the batch was out
     for (let i = 0; i < N.length; i++) {
-      const p = N[i]; p.x = X[i]; p.y = Y[i]; p.vx = VX[i]; p.vy = VY[i];
+      const p = N[i];
       if (p.fx != null) { p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0; }   // C3: the pointer moved on while the batch was out
+      else if (PIN[i]) { p.vx = 0; p.vy = 0; }   // released while the batch was out: it stays where it was dropped
+      else { p.x = X[i]; p.y = Y[i]; p.vx = VX[i]; p.vy = VY[i]; }
     }
     ({ alpha, alphaTarget, seekN, still, calm, kePeak, quiet } = st);
     if (sTr && r.tr) {
@@ -10957,13 +10963,13 @@ async function startGraph(g, cfg) {
     const w = gwGet();
     if (!w) {                           // main thread: the frame budget bounds the batch
       const b = batch(steps, PH_BUDGET_MS);
-      land(b.gen, (g.__gpe || (g.__gpe = GraphPhys.create())).run(b), b.st, b.X, b.Y, b.VX, b.VY);
+      land(b.gen, (g.__gpe || (g.__gpe = GraphPhys.create())).run(b), b.st, b.X, b.Y, b.VX, b.VY, b.PIN);
       return;
     }
     const b = batch(steps, PH_WORKER_MS);
     inflight = true;
     w.onmessage = e => {
-      const d = e.data; land(b.gen, d.r, d.st, d.X, d.Y, d.VX, d.VY);
+      const d = e.data; land(b.gen, d.r, d.st, d.X, d.Y, d.VX, d.VY, b.PIN);
       if (g.simGen !== gen || quiet) { gwPut(); if (g.simGen === gen) wake(); return; }
       if (!(rcSnap && rcSnap.vraw === undefined)) pump();   // C5: rcPre must see the swap before any step
     };
