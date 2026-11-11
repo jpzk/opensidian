@@ -10791,7 +10791,7 @@ async function startGraph(g, cfg) {
       ang += (i % 2 ? 1 : -1) * 0.35 * ((i >> 1) % 3);
       p.x = nb.x + F.dist * Math.cos(ang); p.y = nb.y + F.dist * Math.sin(ang);
     });
-    N.length = 0; N.push(...N2);
+    N.length = 0; N.push(...N2); nGen++;   // graphworker: a batch still out is for the old node set
     gr.edges = g2.edges; gr.col = g2.col;
     rebuild();
     if (hov >= 0) gHover(g, null, null);
@@ -10831,14 +10831,14 @@ async function startGraph(g, cfg) {
   // perf-graph: the rAF loop is NOT unconditional — it runs while physics is
   // hot (alpha > ALPHA_MIN and kinetic energy above eps) and stops otherwise
   // (CPU 0); wake() restarts it on refresh (reheat), pan, zoom, hover, resize, close.
-  const PH_HZ = 60, PH_STEP_CAP = 7, PH_BUDGET_MS = 40, ALPHA_MIN = 0.001, ALPHA_DECAY = 0.028;
+  // (ALPHA_DECAY 0.028, the settle constants and the step itself live in ui/graph-phys.js)
+  const PH_HZ = 60, PH_STEP_CAP = 7, PH_BUDGET_MS = 40, ALPHA_MIN = 0.001;
   let alpha = 1, alphaTarget = 0, phAcc = 0, phLast = performance.now();
   // settled = total kinetic energy (sum v^2) under CALM_KE x its peak since the last reheat
   // (rms speed < ~0.6% of the peak) for 10 consecutive steps, or physics frozen. Relative,
   // because stock creeps on after a small reheat: the old absolute 0.0025 px^2/step froze an S2
   // release at 1.9 s vs stock 2.8 s, and a low absolute one kept the open sim running past 3.5 s
-  // (docs/recon-graphforce/data/impl). Floor 1e-6 px^2/step per node.
-  const CALM_KE = 4e-5;
+  // (docs/recon-graphforce/data/impl). Floor 1e-6 px^2/step per node (CALM_KE, ui/graph-phys.js).
   // settle to rest: alpha decaying to 0 switched the forces off before the layout was in balance, so
   // the graph froze mid-way and every slider nudge (reheat) moved it on again. After an open, reheat
   // or release, alpha now decays toward ALPHA_REST instead of 0 (the forces stay on; alpha only
@@ -10847,9 +10847,8 @@ async function startGraph(g, cfg) {
   // calm test above eases it out as before. Measured on a headless copy of this physics (tree30 ..
   // rand200): a tighter V_REST (0.1, 0.05) is often not reached in 150 s, a slow drift of whole
   // branches keeps the fastest node above it; 0.3 is reached in 4..70 s, hence the cap.
-  // OPEN_CAP: the first settle of an open runs at OPEN_SPEED, so it may seek rest for 75 s of sim
-  // time (under 4 s of wall time) and get closer to the balance; a later one runs at 1x and keeps 30 s.
-  const ALPHA_REST = 0.1, V_REST = 0.3, REST_CAP = 30 * PH_HZ, OPEN_CAP = 75 * PH_HZ, OPEN_SPEED = 20;
+  // (ALPHA_REST 0.1, V_REST 0.3, REST_CAP 30 s, OPEN_CAP 75 s for an open's first settle: ui/graph-phys.js)
+  const OPEN_SPEED = 20;
   let seekN = 0, still = 0;   // seekN: steps spent seeking rest, -1 when not seeking; still: consecutive steps under V_REST
   let calm = 0, kePeak = 0, quiet = false;   // quiet: physics halted until the next reheat; kePeak: max KE since it
   let settledMark = false;              // graph_open_settle mark fires once per open
@@ -10878,79 +10877,97 @@ async function startGraph(g, cfg) {
   // is sized from the CURRENT node bbox each step (world is unbounded); depth
   // is capped at MAXD (leaf >= side/1024) so a coincident pair cannot split
   // 24 levels. Points sharing a leaf do not repel each other.
-  const THETA2 = 0.8 * 0.8, MAXD = 10;
-  const pool = []; let pn = 0;
-  const cell = (x0, y0, s) => {
-    let c = pool[pn]; if (!c) c = pool[pn] = {};
-    pn++; c.x0 = x0; c.y0 = y0; c.s = s; c.n = 0; c.sx = 0; c.sy = 0; c.p = null; c.k = null;
-    return c;
+  // graphworker: the physics step and the settle test run in ui/graph-phys.js, one BATCH of steps at
+  // a time: in a Worker when one can be started, else synchronously from the same file (same numbers,
+  // positions bit-identical either way). The node objects and the sim state stay HERE. A batch carries
+  // a copy of x/y/vx/vy, the pins and the state out; its result is written back when it lands (between
+  // frames) and the next batch is posted at once, so the worker steps while this thread only draws.
+  // That takes the physics out of the frame: at n1250 a step costs ~1 ms, which the 40 ms frame budget
+  // held to ~16x on the fast first settle at ~24 fps; off-thread the frame is a draw.
+  // While a batch is out: a state change (reheat, hold, release) applies here at once AND is replayed
+  // onto the result (ev/evq), i.e. it takes effect after the batch's steps, as it did between frames;
+  // a held node is re-clamped to the pointer; a refresh that swaps N[] drops the result (nGen).
+  const PH_WORKER_MS = 12;               // worker wall time per batch: about one result per frame
+  let gw = null, inflight = false, nGen = 0, evq = [], lnkSrc = null, lnk = null;
+  const ev = f => { f(); if (inflight) evq.push(f); };
+  // workers are pooled per window (a tab switch or reheat must not pay a script load) and are only
+  // held by a sim while it steps; a broken Worker (CSP, load error) switches to the synchronous path
+  const gwPool = window.__gwPool || (window.__gwPool = []);
+  const gwGet = () => {
+    if (gw || window.__gwBroken) return gw;
+    try { gw = gwPool.pop() || new Worker("graph-phys.js"); } catch (e) { window.__gwBroken = true; return null; }
+    gw.onerror = e => { console.error("[graph] physics worker failed, stepping on the main thread:", e.message || e); window.__gwBroken = true;
+      try { gw.terminate(); } catch (_) {} gw = null; inflight = false; evq = []; if (g.simGen === gen) wake(); };
+    return gw;
   };
-  const qi = (c, p) => (p.x >= c.x0 + c.s / 2 ? 1 : 0) + (p.y >= c.y0 + c.s / 2 ? 2 : 0);
-  function bhBuild() {
-    pn = 0;
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const p of N) { if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x; if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y; }
-    // d3 quadtree cover(): root anchored at floor(min), side the smallest power of two that holds the extent
-    const rx = Math.floor(x0), ry = Math.floor(y0); let rs = 1;
-    while (rx + rs <= x1 || ry + rs <= y1) rs *= 2;
-    const root = cell(rx, ry, rs);
-    for (const p of N) {
-      let c = root, depth = 0;
-      for (;;) {
-        c.n++; c.sx += p.x; c.sy += p.y;
-        if (c.k) { c = c.k[qi(c, p)]; depth++; continue; }
-        if (c.n === 1) { c.p = p; break; }         // empty leaf takes p
-        if (depth >= MAXD) break;                    // shared leaf: mass only
-        const h = c.s / 2, q = c.p; c.p = null;      // occupied leaf: split, push old point down
-        c.k = [cell(c.x0, c.y0, h), cell(c.x0 + h, c.y0, h), cell(c.x0, c.y0 + h, h), cell(c.x0 + h, c.y0 + h, h)];
-        const cq = c.k[qi(c, q)]; cq.n = 1; cq.sx = q.x; cq.sy = q.y; cq.p = q;
-        c = c.k[qi(c, p)]; depth++;
+  const gwPut = () => {
+    if (!gw || inflight) return;
+    gw.onmessage = gw.onerror = null;
+    if (gwPool.length < 2) gwPool.push(gw); else gw.terminate();
+    gw = null;
+  };
+  function batch(steps, budget) {
+    const n = N.length, X = new Float64Array(n), Y = new Float64Array(n), VX = new Float64Array(n), VY = new Float64Array(n);
+    const PIN = new Uint8Array(n), FX = new Float64Array(n), FY = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      const p = N[i]; X[i] = p.x; Y[i] = p.y; VX[i] = p.vx; VY[i] = p.vy;
+      if (p.fx != null) { PIN[i] = 1; FX[i] = p.fx; FY[i] = p.fy; }
+    }
+    if (lnkSrc !== links) {             // rebuild() replaces `links`, so its identity is the version
+      lnkSrc = links; const L = links.length;
+      lnk = { LA: new Int32Array(L), LB: new Int32Array(L), LBI: new Float64Array(L), LK: new Float64Array(L) };
+      for (let i = 0; i < L; i++) { const l = links[i]; lnk.LA[i] = l.a; lnk.LB[i] = l.b; lnk.LBI[i] = l.bias; lnk.LK[i] = l.k; }
+    }
+    return { gen: nGen, X, Y, VX, VY, PIN, FX, FY, links: lnk, steps, budget, trace: !!sTr, first: !settledMark,
+             f: { repel: F.repel, repelK: REPEL_K, repelP: REPEL_P, dist: F.dist, center: F.center, centerK: CENTER_K },
+             st: { alpha, alphaTarget, seekN, still, calm, kePeak, quiet } };
+  }
+  // a result: positions and state back, the settle side effects, then the replayed events
+  function land(bgen, r, st, X, Y, VX, VY) {
+    inflight = false; const q = evq; evq = [];
+    if (g.simGen !== gen || bgen !== nGen) return;   // retired, or N[] swapped while the batch was out
+    for (let i = 0; i < N.length; i++) {
+      const p = N[i]; p.x = X[i]; p.y = Y[i]; p.vx = VX[i]; p.vy = VY[i];
+      if (p.fx != null) { p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0; }   // C3: the pointer moved on while the batch was out
+    }
+    ({ alpha, alphaTarget, seekN, still, calm, kePeak, quiet } = st);
+    if (sTr && r.tr) {
+      const T = r.tr, o = performance.timeOrigin;
+      for (let i = 0; i < T.a.length; i++) {
+        const tn = T.t[i] - o; if (sTr.t0 < 0) sTr.t0 = tn;
+        if (sTr.a.length < 6000) { sTr.a.push(T.a[i]); sTr.k.push(T.k[i]); sTr.p.push(T.p[i]); sTr.c.push(T.c[i]); sTr.t.push((tn - sTr.t0).toFixed(1)); } else sTr.cut = 1;
       }
     }
-    return root;
+    if (r.quietKe >= 0) settled(r.quietKe);
+    for (const f of q) f();
+    if (r.ran) { dirty = true; perf.push("graph_frame", r.ms, { nodes: N.length, steps: r.ran, phys: +r.ms.toFixed(1), ke: +r.ke.toFixed(2), alpha: +alpha.toFixed(3) }); }
   }
-  function bhApply(a, c, k) {
-    if (c.n === 0) return;
-    const dx = a.x - c.sx / c.n, dy = a.y - c.sy / c.n, d2 = dx * dx + dy * dy + 1;
-    if (c.k) {
-      if (c.s * c.s > THETA2 * d2) { const K = c.k; bhApply(a, K[0], k); bhApply(a, K[1], k); bhApply(a, K[2], k); bhApply(a, K[3], k); return; }
-    } else if (c.p === a || (a.x >= c.x0 && a.x < c.x0 + c.s && a.y >= c.y0 && a.y < c.y0 + c.s)) return;  // own leaf
-    a.vx += k * c.n * dx / d2; a.vy += k * c.n * dy / d2;
-  }
-  function physStep() {
-    if (!N.length) return;
-    alpha += ((alphaTarget || (seekN >= 0 ? ALPHA_REST : 0)) - alpha) * ALPHA_DECAY;   // top of the step, as the model does; floor while seeking rest
-    // many-body repulsion FIRST (the link term reads p+v after it). Per-node
-    // strength = Repel force * REPEL_K * N^REPEL_P (docs/recon-graphforce PLAN s.0)
-    const root = bhBuild(), k = alpha * F.repel * REPEL_K * Math.pow(N.length, REPEL_P);
-    for (const a of N) bhApply(a, root, k);
-    // link: spring to F.dist (R16.1: 250), d3 semantics (strength/bias per link)
-    for (const l of links) {
-      const a = N[l.a], b = N[l.b];
-      let dx = b.x + b.vx - a.x - a.vx, dy = b.y + b.vy - a.y - a.vy;
-      const d = Math.sqrt(dx * dx + dy * dy) || 1e-6, k = (d - F.dist) / d * alpha * l.k;
-      dx *= k; dy *= k;
-      b.vx -= dx * l.bias; b.vy -= dy * l.bias; a.vx += dx * (1 - l.bias); a.vy += dy * (1 - l.bias);
+  // the steps owed by the sim clock, as a batch: posted to the worker, or run and landed right here
+  function pump() {
+    if (inflight || quiet || g.simGen !== gen) return;
+    const t = performance.now();
+    // fast first settle: until this open's first rest (settledMark, carried across a tab switch, fresh
+    // on every new open) the sim clock runs OPEN_SPEED x wall time, so the settle takes 1/20 of the
+    // time; then 1x. Not while a node is held: a drag follows the pointer at normal speed.
+    const sp = settledMark || alphaTarget > 0 ? 1 : OPEN_SPEED;
+    phAcc = Math.min(phAcc + sp * (t - phLast) / 1000, sp * PH_STEP_CAP / PH_HZ); phLast = t;
+    let steps = 0;
+    while (phAcc >= 1 / PH_HZ) { phAcc -= 1 / PH_HZ; steps++; }
+    if (!steps && alpha > ALPHA_MIN) return;      // nothing owed yet (a frozen alpha still gets its settle test)
+    const w = gwGet();
+    if (!w) {                           // main thread: the frame budget bounds the batch
+      const b = batch(steps, PH_BUDGET_MS);
+      land(b.gen, (g.__gpe || (g.__gpe = GraphPhys.create())).run(b), b.st, b.X, b.Y, b.VX, b.VY);
+      return;
     }
-    // centre: a per-node, alpha-scaled velocity pull toward the origin (stock S3:
-    // centre max pulls the cloud IN, which translating the centroid never could)
-    const ck = F.center * CENTER_K * alpha;
-    // plus a d3 forceCenter translation (positions only, radius unchanged): the per-node pull
-    // is alpha-scaled and the sim stops on calm, so after a re-centre adds a node on one side
-    // the cloud stopped ~40px off the pane centre and an end node sat outside a split pane.
-    // The centroid counts a held node too (d3: forceCenter moves every node, fx snaps it back),
-    // else its release shifts the free centroid by offset/N in one step (S2: a 248 u/s jolt).
-    let sx = 0, sy = 0;
-    for (const p of N) { sx += p.x; sy += p.y; }
-    if (N.length) { sx /= N.length; sy /= N.length; for (const p of N) if (p.fx == null) { p.x -= sx; p.y -= sy; } }
-    for (const p of N) {
-      p.vx -= p.x * ck; p.vy -= p.y * ck;
-      p.vx *= 0.7; p.vy *= 0.7; p.x += p.vx; p.y += p.vy;   // velocity decay 0.3 (measured)
-      // C3 PIN, only WHILE HELD (d3 drag semantics): the held node carries fx/fy
-      // and is clamped onto it after every force; release clears fx/fy and the
-      // node is free again (stock S2: it springs back ~75 units).
-      if (p.fx != null) { p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0; }
-    }
+    const b = batch(steps, PH_WORKER_MS);
+    inflight = true;
+    w.onmessage = e => {
+      const d = e.data; land(b.gen, d.r, d.st, d.X, d.Y, d.VX, d.VY);
+      if (g.simGen !== gen || quiet) { gwPut(); if (g.simGen === gen) wake(); return; }
+      if (!(rcSnap && rcSnap.vraw === undefined)) pump();   // C5: rcPre must see the swap before any step
+    };
+    w.postMessage(b, [b.X.buffer, b.Y.buffer, b.VX.buffer, b.VY.buffer]);
   }
   // C5 (B26-B29, R19.2/R19.3): the two halves of the re-centre continuity record. Every field
   // is a measurement of the node objects the renderer is about to draw — never a variable the
@@ -11149,7 +11166,7 @@ async function startGraph(g, cfg) {
     // otel.paint rAF is queued — one rAF + setTimeout put this work in that span's layout_ms.
     requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(() => { afterQ = false; updateTitle(); perf.flush(); }, 0))); };
   function step() {
-    if (g.simGen !== gen) return;
+    if (g.simGen !== gen) { gwPut(); return; }
     const now = performance.now(), first = firstFrame;
     if (firstFrame) {
       firstFrame = false;
@@ -11180,34 +11197,19 @@ async function startGraph(g, cfg) {
       phLast = now; phAcc = 0;   // the sim clock starts at the first frame: the time spent building the view before it is not owed as a 6-step burst
       if (g.perfT0) { perf.mark("graph_open", g.perfT0, { nodes: N.length, edges: gr.edges.length, kind: (g.tabs[g.active] || {}).kind || "-" }); g.perfT0 = null; }
     }
-    const fT0 = perf.now(); let steps = 0, ke = -1;
     if (rcSnap && rcSnap.vraw === undefined) rcPre();   // C5: before this frame's physics
-    // fast first settle: until this open's first rest (settledMark, carried across a tab switch, fresh
-    // on every new open) the sim clock runs OPEN_SPEED x wall time, so the settle above takes 1/20
-    // of the time; then 1x. Not while a node is held: a drag follows the pointer at normal speed.
-    const sp = settledMark || alphaTarget > 0 ? 1 : OPEN_SPEED;
-    phAcc = Math.min(phAcc + sp * (now - phLast) / 1000, sp * PH_STEP_CAP / PH_HZ); phLast = now;
-    const phT0 = perf.now();
-    // The settle test runs after EVERY physics step, not once per frame: counted per frame,
-    // "10 calm" meant 10..70 steps depending on how many steps each frame happened to carry
-    // (wall clock), so the sim froze at a timing-dependent step and two runs of the same
-    // vault came to rest in different places (graphgl gl vs 2d 9.97% px, gate 14:25/14:40).
-    // Per step, the stop is a pure function of the step sequence: same seed, same layout.
-    while (phAcc >= 1 / PH_HZ) {
-      phAcc -= 1 / PH_HZ;
-      if (!quiet && (alpha > ALPHA_MIN || alphaTarget > 0)) { physStep(); steps++; ke = settleTest(); }
-      if (quiet) { phAcc = 0; break; }
-      if (steps && perf.now() - phT0 >= PH_BUDGET_MS) { phAcc = 0; break; }   // wall-clock backstop: a costlier step (bigger N) must not lengthen the frame
-    }
-    const fT1 = perf.now();
-    if (!quiet && !steps && alpha <= ALPHA_MIN) ke = settleTest();
+    // The settle test runs after EVERY physics step (ui/graph-phys.js), not once per frame: counted
+    // per frame, "10 calm" meant 10..70 steps depending on how many steps each frame happened to
+    // carry (wall clock), so the sim froze at a timing-dependent step and two runs of the same vault
+    // came to rest in different places (graphgl gl vs 2d 9.97% px, gate 14:25/14:40). Per step, the
+    // stop is a pure function of the step sequence: same seed, same layout.
+    pump();
     const anim = animT0 >= 0;          // a running timelapse draws every frame, settled or not
-    const drew = steps || dirty || anim;
+    const drew = dirty || anim;
     if (drew) { draw(); dirty = false; }
     if (anim && (animT0 < 0 || now - animPub >= 100)) { animPub = now; updateTitle(); }   // census [gfd:] anim=k/n follows the reveal
-    if (steps) perf.push("graph_frame", perf.now() - fT0, { nodes: N.length, steps, phys: +(fT1 - fT0).toFixed(1), ke: +ke.toFixed(2), alpha: +alpha.toFixed(3) });
-    if (quiet && animT0 < 0) {         // settled: loop ends, CPU -> 0; publish node coords to the census
-      running = false;
+    if (quiet && !inflight && animT0 < 0) {   // settled: loop ends, CPU -> 0; publish node coords to the census
+      running = false; gwPut();
       // #28: WebKitGTK shows a WebGL canvas ONE frame behind (measured: after a hover-out the GL layer
       // still showed the hover frame while the 2D labels did not; a Groups colour edit left the nodes
       // in the old colour). A loop that stops right after a draw would leave its last frame unseen, so
@@ -11229,40 +11231,20 @@ async function startGraph(g, cfg) {
     }
     g.sim = requestAnimationFrame(step);
   }
-  function settleTest() {              // after one physics step: kinetic energy vs its peak; may set quiet
-    let ke = 0, vm2 = 0;
-    for (const p of N) { const v2 = p.vx * p.vx + p.vy * p.vy; ke += v2; if (v2 > vm2) vm2 = v2; }
-    if (seekN >= 0 && alphaTarget === 0) {
-      still = vm2 < V_REST * V_REST ? still + 1 : 0;
-      // at rest (or out of patience): drop the floor, and measure the ease-out against its own peak
-      if (still >= 10 || ++seekN >= (settledMark ? REST_CAP : OPEN_CAP)) { seekN = -1; still = 0; calm = 0; kePeak = 0; }
-      else return ke;
+  // the step that went quiet (ui/graph-phys.js decides, per step): what settleTest used to do there
+  function settled(ke) {
+    if (sTr) { otel.span("graph_settle_trace", { why: sTr.why, n: N.length, e: gr.edges.length, q: sTr.a.length, cut: sTr.cut, a: sTr.a.join(","), k: sTr.k.join(","), p: sTr.p.join(","), c: sTr.c.join(","), t: sTr.t.join(",") }); sTrMark("idle"); }
+    // R19 (HARD RULE 100ms): graph_recenter ends at the first PAINT of the new centre
+    // (see cv.onclick); what happens after that is ANIMATION and is measured here as its
+    // own span graph_settle = click -> kinetic energy below eps.
+    if (g.settleSp) { otel.end(g.settleSp, { nodes: N.length, edges: gr.edges.length, ke: +ke.toFixed(3), alpha: +alpha.toFixed(3) }); g.settleSp = null; }
+    if (!settledMark) {
+      settledMark = true;
+      // Forces card: shadow on at first rest, not at open (ui/style.css .gf-lit — its first paint is a one-off main-thread stall)
+      if (g.gfp && !g.gfp.hidden && !g.gfp.classList.contains("gf-lit")) { g.gfp.classList.add("gf-lit"); shadeNow = true; }
+      perf.mark("graph_open_settle", openT0, { nodes: N.length, sg: +sgMs.toFixed(1), ke: +ke.toFixed(3), alpha: +alpha.toFixed(3) });
+      if (pref.loseCtx && glr) setTimeout(() => { if (glr && g.simGen === gen) glr.loseContext(); }, 300);   // smoke hook: WEBGL_lose_context after settle
     }
-    {
-      if (ke > kePeak) kePeak = ke;
-      calm = ke < Math.max(CALM_KE * kePeak, 1e-6 * N.length) ? calm + 1 : 0;
-      if (sTr) {
-        const tn = performance.now(); if (sTr.t0 < 0) sTr.t0 = tn;
-        if (sTr.a.length < 6000) { sTr.a.push(String(alpha)); sTr.k.push(ke.toPrecision(6)); sTr.p.push(kePeak.toPrecision(6)); sTr.c.push(calm); sTr.t.push((tn - sTr.t0).toFixed(1)); } else sTr.cut = 1;
-      }
-      // PLAN item 7: never freeze while a node is HELD (alphaTarget > 0)
-      if (alphaTarget === 0 && (calm >= 10 || alpha <= ALPHA_MIN)) {
-        quiet = true;
-        if (sTr) { otel.span("graph_settle_trace", { why: sTr.why, n: N.length, e: gr.edges.length, q: sTr.a.length, cut: sTr.cut, a: sTr.a.join(","), k: sTr.k.join(","), p: sTr.p.join(","), c: sTr.c.join(","), t: sTr.t.join(",") }); sTrMark("idle"); }
-        // R19 (HARD RULE 100ms): graph_recenter ends at the first PAINT of the new centre
-        // (see cv.onclick); what happens after that is ANIMATION and is measured here as its
-        // own span graph_settle = click -> kinetic energy below eps.
-        if (g.settleSp) { otel.end(g.settleSp, { nodes: N.length, edges: gr.edges.length, ke: +ke.toFixed(3), alpha: +alpha.toFixed(3) }); g.settleSp = null; }
-        if (!settledMark) {
-          settledMark = true;
-          // Forces card: shadow on at first rest, not at open (ui/style.css .gf-lit — its first paint is a one-off main-thread stall)
-          if (g.gfp && !g.gfp.hidden && !g.gfp.classList.contains("gf-lit")) { g.gfp.classList.add("gf-lit"); shadeNow = true; }
-          perf.mark("graph_open_settle", openT0, { nodes: N.length, sg: +sgMs.toFixed(1), ke: +ke.toFixed(3), alpha: +alpha.toFixed(3) });
-          if (pref.loseCtx && glr) setTimeout(() => { if (glr && g.simGen === gen) glr.loseContext(); }, 300);   // smoke hook: WEBGL_lose_context after settle
-        }
-      }
-    }
-    return ke;
   }
   const wake = () => {                  // (re)start the loop; a stopped loop draws once and exits
     if (running) return;
@@ -11294,7 +11276,7 @@ async function startGraph(g, cfg) {
     perf.mark("graph_renderer", perf.now(), { renderer: "2d", reason: "contextlost", webgl: 0, ...gpu });
     redraw();
   };
-  g.reheat = (a = 0.5) => { sTrMark("reheat"); calm = 0; kePeak = 0; seekN = 0; still = 0; quiet = false; g.graphSettled = false; alpha = Math.max(alpha, a); wake(); };
+  g.reheat = (a = 0.5) => ev(() => { sTrMark("reheat"); calm = 0; kePeak = 0; seekN = 0; still = 0; quiet = false; g.graphSettled = false; alpha = Math.max(alpha, a); wake(); });
   // graph-controls card (global AND local, GC1): sliders -> F + reheat; any reheat re-syncs the
   // sliders to F, so a value set another way (the recon rig's probe hotkeys) shows on the card too
   if (gcS) {
@@ -11403,7 +11385,7 @@ async function startGraph(g, cfg) {
     drag = null;
     if (window.__graphHeld === release) window.__graphHeld = null;
     for (const q of N) if (q.fx != null) q.fx = q.fy = null;
-    if (alphaTarget !== 0) { sTrMark("release"); alphaTarget = 0; calm = 0; kePeak = 0; seekN = 0; still = 0; quiet = false; g.graphSettled = false; if (g.simGen === gen) wake(); }
+    if (alphaTarget !== 0) ev(() => { sTrMark("release"); alphaTarget = 0; calm = 0; kePeak = 0; seekN = 0; still = 0; quiet = false; g.graphSettled = false; if (g.simGen === gen) wake(); });
   };
   if (!window.__graphRelWired) {        // once per window; whichever graph holds a node registers itself
     window.__graphRelWired = true;
@@ -11440,7 +11422,7 @@ async function startGraph(g, cfg) {
           p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0;
           // d3 drag: alphaTarget 0.3 while held, the neighbours follow the node out
           // (PLAN item 8: not reheat — alpha CLIMBS toward the target, as stock's)
-          if (alphaTarget !== 0.3 || quiet) { sTrMark("hold"); alphaTarget = 0.3; calm = 0; kePeak = 0; seekN = 0; still = 0; quiet = false; g.graphSettled = false; wake(); }
+          if (alphaTarget !== 0.3 || quiet) ev(() => { sTrMark("hold"); alphaTarget = 0.3; calm = 0; kePeak = 0; seekN = 0; still = 0; quiet = false; g.graphSettled = false; wake(); });
         } else {
           view.tx += dx; view.ty += dy; view.ax = null;  // EMPTY canvas: camera pan, unchanged; drops the zoom anchor
         }
