@@ -11,6 +11,8 @@ const TAURI = window.__TAURI__;   // plugin-loader item 7: captured at load; ui/
 // cp-hover-editor: the plugin host's app + "obsidian" module, captured at load like TAURI (the seal narrows the
 // host before any plugin runs); main.js fills the core-plugin hooks plugins read (see QuickSwitcherModal)
 const PLG = window.__osPluginHost && __osPluginHost.app && __osPluginHost.api ? { app: __osPluginHost.app, X: __osPluginHost.api } : null;
+// #51 / PR #65 review F1: the html->Markdown converter of a rich-text drop (Ed.htmlDrop), captured before the seal
+if (PLG && typeof PLG.X.htmlToMarkdown === "function" && typeof Ed !== "undefined") Ed.h2m = PLG.X.htmlToMarkdown;
 // the app's own note writes reach the plugin vault through this (api-vault host.noteWritten), captured before the seal
 const PLGNW = window.__osPluginHost && typeof __osPluginHost.noteWritten === "function" ? __osPluginHost.noteWritten : null;
 // goal cv-model: the plugin vault's FILE model alone (api-vault host.vaultModel: no window.app, no plugin runtime), captured before the seal for Canvas
@@ -1235,7 +1237,7 @@ function bmIndentTok() {
 const bmRenTok = () => (bmRenaming === null ? "" :
   " [bmren:" + String(($("bmren") && $("bmren").value) || "").replace(/[|\]]/g, "") + "]");
 function bmSync() {                        // the flat view every non-pane caller uses
-  bmCache = bmTree.filter(r => r.kind === "f").map(r => r.name);
+  bmCache = bmTree.filter(r => r.kind === "f" && !r.pdf).map(r => r.name);   // issue #44: a PDF row is no note name (== list_bookmarks)
 }
 const BM_ICON_FILE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3h12v18l-6-4.5L6 21z"/></svg>';
 // a group row carries a CHEVRON where a file row carries its bookmark glyph, at
@@ -1292,9 +1294,10 @@ function renderBm() {
     }
     // a GROUP row opens nothing — a click on its chevron, label or row background
     // TOGGLES its fold (collapseall R1, M5 / recon-bmcollapse). A FILE row opens.
+    const open = e => (r.pdf ? openPdf(r.name, e) : rowOpen(r.name, e));   // issue #44: a PDF bookmark opens the PDF view
     row.onclick = grp ? () => { if (bmClickEaten()) return; bmFoldToggle(key); }
-                      : e => { if (bmClickEaten()) return; rowOpen(r.name, e); };   // bmdrag: a drop's click opens nothing; opentab REQ-2/3/5/7
-    if (!grp) row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); rowOpen(r.name, e); } };   // opentab REQ-6
+                      : e => { if (bmClickEaten()) return; open(e); };   // bmdrag: a drop's click opens nothing; opentab REQ-2/3/5/7
+    if (!grp) row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); open(e); } };   // opentab REQ-6
     row.oncontextmenu = e => (grp ? bmGroupMenu(e, ix, r.name) : bmRowMenu(e, r.name, ix));
     row.addEventListener("mousedown", e => bmDragStart(e, ix));   // bmdrag: every row drags, groups included (recon case 5)
     box.appendChild(row);
@@ -1515,17 +1518,27 @@ function ttlTok() {
   const base = top + (L - (asc + dsc)) / 2 + asc;
   const o = ["TOP=" + f(base - m.actualBoundingBoxAscent), "BOT=" + f(base + m.actualBoundingBoxDescent),
              "CAP=" + f(ctx.measureText(t[0]).actualBoundingBoxAscent)];
-  let body = NaN;
+  // BODY = the ink top of the whole first visible ROW, not of its first text node: on the
+  // caret's line live preview reveals the heading marker, so that row's first text node is the
+  // bare "#" (SPAN.mk rv), whose ascent (22 px at the h1 size) is below the row's tallest glyph
+  // (the "l"/"T" of "Title Fixture", 24 px) — the pixels' ink top is the row's, so the old
+  // first-node value sat 1.78 px low (rt2-title, LP_BLOCK 58 vs 60). Every painted text node
+  // whose first rect starts on that first line counts; the minimum ink top wins.
+  let body = NaN, row = null;
   const w = document.createTreeWalker(R, NodeFilter.SHOW_TEXT);
   for (let n; (n = w.nextNode());) {
     const i = n.data.search(/\S/); if (i < 0) continue;
     const txt = n.data.slice(i).replace(/\s+$/, ""), r = document.createRange();
     r.setStart(n, i); r.setEnd(n, i + txt.length);
     const rc = [...r.getClientRects()].find(q => q.width > 0); if (!rc) continue;
-    ctx.font = fnt(getComputedStyle(n.parentElement));
+    if (row && rc.top >= row.bottom) break;            // past the first visible row
+    const ps = getComputedStyle(n.parentElement);
+    if (ps.visibility !== "visible") continue;
+    if (!row) row = rc;
+    ctx.font = fnt(ps);
     const b = ctx.measureText(txt), a2 = b.fontBoundingBoxAscent, d2 = b.fontBoundingBoxDescent;
-    body = rc.top + (rc.height - (a2 + d2)) / 2 + a2 - b.actualBoundingBoxAscent;
-    break;
+    const ink = rc.top + (rc.height - (a2 + d2)) / 2 + a2 - b.actualBoundingBoxAscent;
+    if (!(ink >= body)) body = ink;
   }
   o.push("BODY=" + f(body));
   return " [ttl:" + (isReading(g) ? "read" : "lp") + "|" + o.join("|") + "]";
@@ -1660,8 +1673,11 @@ function bmRowMenu(e, nm, ix) {             // right-click a FILE .bmrow -> Obsi
      change anything. That is also why phase_bmmenu — which runs on a FLAT list
      and asserts [mdis:3|5|6] — keeps passing unedited (criterion 8). */
   const hasGrp = bmTree.some(r => r.kind === "g");
-  item("Open in new tab",   () => openNewTab(nm));                         // WIRED: openNewTab — right of the active tab, focused, never deduped (opentab REQ-8/9/14, Obsidian c20)
-  item("Open to the right", () => splitWith(fg(), "row", mkTab(nm)));      // WIRED: splitWith — the verb behind the tab menu's "Split right" (M7/R6.2), carrying a fresh tab of this note
+  // issue #44 (PR #57 review): a painted PDF row is named by its vault PATH — its opens go through the PDF view,
+  // never through a note tab (openNewTab/mkTab would read "<path>.md"); its Remove toggles that path (rust drops the Pdf node)
+  const pdf = !!(bmTree[ix] && bmTree[ix].pdf && bmTree[ix].name === nm);
+  item("Open in new tab",   () => (pdf ? openPdf(nm, null, "tab") : openNewTab(nm)));                         // WIRED: openNewTab — right of the active tab, focused, never deduped (opentab REQ-8/9/14, Obsidian c20)
+  item("Open to the right", () => (pdf ? openPdf(nm, null, "split") : splitWith(fg(), "row", mkTab(nm))));      // WIRED: splitWith — the verb behind the tab menu's "Split right" (M7/R6.2), carrying a fresh tab of this note
   item("Open in new window", null, "Single-window app: there is no second window to open into");   // NOT WIRED
   sep();
   item("Rename",  null, "Bookmarks are note names on disk (.obsidian/bookmarks.json); there is no per-bookmark title to rename");   // NOT WIRED
@@ -1670,7 +1686,7 @@ function bmRowMenu(e, nm, ix) {             // right-click a FILE .bmrow -> Obsi
   sep();
   item("Reveal file in navigation", () => bmReveal(nm));                   // WIRED: bmReveal — setPane("files") + the explorer row's focus ring (R9.3 pane switch, treeRows)
   sep();
-  item("Remove", () => { if (bmCache.includes(nm)) toggleBm(nm); });       // WIRED: toggleBm — the same toggle the explorer-row / tab menus use (R9.4 / R20.4); guarded so it can only REMOVE
+  item("Remove", () => { if (pdf) toggleBm(nm, true); else if (bmCache.includes(nm)) toggleBm(nm); });   // WIRED: toggleBm — the same toggle the explorer-row / tab menus use (R9.4 / R20.4); guarded so it can only REMOVE. A PDF row removes its Pdf entry EXPLICITLY (pdf:true) so a same-named note bookmark ("x.pdf.md") is never the one dropped (PR #57 qodo High)
   placeMenu(m, e.clientX, e.clientY);      // R22: viewport-clamped by measured size — the same seam as noteMenu/tabMenu
 }
 /* ---------- bmfolder: the GROUP-row menu, Obsidian 1.13.7's list ----------
@@ -1736,14 +1752,14 @@ function bmPaneMenu(e) {                   // right-click the pane BACKGROUND ->
 function bmReveal(nm) {
   setPane("files");
   document.querySelectorAll("#tree .trow.revealed").forEach(r => r.classList.remove("revealed"));
-  const r = treeRows.get(nm);
+  const r = treeRows.get(nm) || [...document.querySelectorAll("#tree .trow.file")].find(e => e.dataset.file === nm);   // issue #44: PDF rows are not in treeRows (fileRow)
   if (r) { r.classList.add("revealed"); r.scrollIntoView({ block: "nearest" }); }
   revealInfo = r ? nm.replace(/[|\]:]/g, "") : "";
   updateTitle();
 }
 async function refreshBm() { bmTree = await inv("bookmark_rows"); lsBmResolve(); bmSync(); renderBm(); }
-async function toggleBm(nm) {
-  await inv("toggle_bookmark", { name: nm });   // by NAME (R9.4/R20.4): ON appends at the top level, OFF removes at any depth
+async function toggleBm(nm, pdf) {
+  await inv("toggle_bookmark", pdf ? { name: nm, pdf: true } : { name: nm });   // by NAME (R9.4/R20.4): ON appends at the top level, OFF removes at any depth
   await refreshBm();                            // the TREE is the model the pane paints — never patch bmCache behind it
 }
 /* ---------- bmfolder: the four structural commands ----------
@@ -1887,9 +1903,11 @@ function bmDragStart(e, ix) {
   const label = src.label ?? (src.kind === "g" ? src.name : src.name.split("/").pop());
   // cv-dragin: the row as pressed (bmTree may repaint mid-drag), plus a group's painted file rows — CanvasDrop's
   // fallback when .obsidian/bookmarks.json cannot be read
-  const srcRow = { kind: src.kind, name: src.name, files: src.kind === "g" ? bmTree.slice(ix + 1, bmSubEnd(ix)).filter(r => r.kind === "f").map(r => r.name) : [] };
+  // issue #44 (PR #57 review): files are VAULT PATHS (a PDF row is named by its path, a note row by its name) and pdf flags a PDF row
+  const srcRow = { kind: src.kind, name: src.name, pdf: !!src.pdf, files: src.kind === "g" ? bmTree.slice(ix + 1, bmSubEnd(ix)).filter(r => r.kind === "f").map(r => (r.pdf ? r.name : r.name + ".md")) : [] };
   let ghost = null, fb = { line: null, hl: null }, srcEl = null, zones = null, raf = 0, last = null;
   let spring = 0;                          // collapseall R5: the armed spring-load timer
+  let pz = null, pnd = null;               // issue #40: pane zones / the live pane decision (a FILE bookmark only)
   bmDrop = null;
   const clearFb = () => bmFbClear(fb);
   const disarm = () => { if (spring) { clearTimeout(spring); spring = 0; } };
@@ -1925,6 +1943,7 @@ function bmDragStart(e, ix) {
       ghost.textContent = label;
       document.body.appendChild(ghost);
       cacheZones();
+      if (src.kind === "f") pz = nDropZones();   // issue #40: a note bookmark can open on a pane
       bmDropTok = "none";
       updateTitle();
     }
@@ -1953,6 +1972,10 @@ function bmDragStart(e, ix) {
       ghost.textContent = label + (nd ? " -> " + tok : "");   // the chip names the decision
       updateTitle();                       // ONLY on a decision change — never per frame
     }
+    if (pz) {                              // issue #40: no bookmark/board target under the pointer -> a pane may take the note
+      const pn = nDropShow(pnd, nd ? null : nDropDecide(pz, ev.clientX, ev.clientY));
+      if (pn !== pnd) { pnd = pn; if (!nd) ghost.textContent = label + (pnd ? " -> " + nDropName(pnd) : ""); }
+    }
   };
   const move = ev => { last = ev; if (!raf) raf = requestAnimationFrame(step); };
   const up = async uev => {             // cv-dragin: the release point decides the board drop
@@ -1963,6 +1986,7 @@ function bmDragStart(e, ix) {
     if (raf) { cancelAnimationFrame(raf); raf = 0; if (last) step(); }
     disarm();                              // R5: a release before 0.85s opens nothing
     const d = bmDrop, dragged = !!ghost;
+    const pn = pnd; pnd = nDropShow(pnd, null);   // issue #40: the pane decision at the release
     if (ghost) { ghost.remove(); ghost = null; }
     clearFb();
     if (srcEl) srcEl.classList.remove("bmdrop-src");
@@ -1970,6 +1994,7 @@ function bmDragStart(e, ix) {
     bmDrop = null;
     if (!dragged) return;                  // below the threshold: a plain click, let it through
     bmEat = performance.now();
+    if (!d && pn) { await nDropOpen(pn, src.name); return; }   // issue #40: a pane took the note — a tab / split, bookmarks.json untouched
     if (!d) { updateTitle(); return; }     // no legal target: NOTHING is called — byte-level refusal
     if (d.cv) {                            // goal cv-dragin: bookmark -> board = file card(s) at the release point
       const ux = uev ? uev.clientX : last.clientX, uy = uev ? uev.clientY : last.clientY;
@@ -2077,10 +2102,11 @@ function openBmAdd(gix) {
   const t = rTrack();
   if (!t) return;                          // a pane with no tab = Obsidian's empty tab: no-op (108-emptyitem)
   if (t.kind === "gg") { say("Bookmarking a graph view is not supported: the bookmarks pane cannot show a graph bookmark"); return; }
-  if (t.kind) return;                      // local graph (and any non-note view): no-op (102-lgitem)
+  const nm = t.kind ? pvNoteName(t) : t.name;   // issue-48: a plugin view backed by a note (Excalidraw board) = that note
+  if (!nm) return;                         // local graph (and any non-note view): no-op (102-lgitem)
   const opts = bmGroupOpts();
   const cur = opts.findIndex(o => o.ix === gix);
-  bmAdd = { name: t.name, opts };
+  bmAdd = { name: nm, opts };
   const sel = $("bme-grp");
   sel.textContent = "";
   opts.forEach((o, i) => {
@@ -2090,7 +2116,7 @@ function openBmAdd(gix) {
     sel.appendChild(op);
   });
   sel.value = String(cur < 0 ? 0 : cur);
-  const base = t.name.split("/").pop();
+  const base = nm.split("/").pop();
   $("bmetitle").textContent = "Add bookmark";
   $("bme-path").value = base;
   $("bme-title").value = "";
@@ -4550,7 +4576,9 @@ function tabMenu(e, g, i, hdr) {
     item("Split down",  () => { closeMenu(); splitGroup(g, "col", i); });
     sep();
     item("Copy screenshot", null, "Missing subsystem: canvas-to-clipboard — no programmatic clipboard write exists in this tree (ui/editor.js writes only inside real copy events) and the graph view has no canvas-to-PNG step");
-    if (!hdr || tab.kind !== "lg")        // graphhdr REQ-10: Obsidian's LOCAL graph ⋮ has no Bookmark... row
+    const pvn = pvNoteName(tab);          // issue-48: a board backed by a note bookmarks that note (STOCK.md S2/S3/S5)
+    if (pvn) item(bmCache.includes(pvn) ? "Remove bookmark" : "Bookmark...", () => { closeMenu(); toggleBm(pvn); });
+    else if (!hdr || tab.kind !== "lg")   // graphhdr REQ-10: Obsidian's LOCAL graph ⋮ has no Bookmark... row
       item("Bookmark...", null, "Missing subsystem: bookmarks of non-file views — a bookmark here is a note name on disk (R9.4) and a graph tab has no note behind it");
     place();
     return;
@@ -5182,6 +5210,53 @@ function tabDragStart(e, g, i) {
   };
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);
+}
+
+/* issue #40: a NOTE dragged out of the FILE EXPLORER or the BOOKMARKS pane lands on a
+   pane exactly where a dragged TAB lands (tabDragStart's zones, TAB_EDGE): over a
+   pane's tab strip -> the note opens as a NEW tab in that pane (openNewTab: right of
+   its active tab, focused); the right edge -> a new split right of that pane; the
+   bottom edge -> a new split below it. Elsewhere (the pane body, #rside, the
+   sidebars) is no target and the release opens nothing. Rects are cached once at
+   drag start (R20). Census [ndrop:<strip|edge|bottom>@<pane ix>] while a decision
+   is live, published only on a decision change. */
+let nDropTok = "";
+function nDropZones() {
+  const rs = $("rside");
+  return {
+    panes: groups().map((h, ix) => ({ g: h, ix, pr: h.pane.getBoundingClientRect(), tb: h.tabsEl.getBoundingClientRect().bottom })),
+    rs: rs && !rs.hidden ? rs.getBoundingClientRect() : null,
+  };
+}
+function nDropDecide(z, x, y) {            // -> {kind, g, ix} or null
+  if (!z) return null;
+  if (z.rs && x >= z.rs.left && x <= z.rs.right && y >= z.rs.top && y <= z.rs.bottom) return null;
+  for (const p of z.panes) {
+    const pr = p.pr;
+    if (x < pr.left || x > pr.right || y < pr.top || y > pr.bottom) continue;
+    if (y <= p.tb) return { kind: "strip", g: p.g, ix: p.ix };
+    const dr = pr.right - x, db = pr.bottom - y;
+    if (dr < TAB_EDGE && dr <= db) return { kind: "edge", g: p.g, ix: p.ix };
+    if (db < TAB_EDGE) return { kind: "bottom", g: p.g, ix: p.ix };
+    return null;
+  }
+  return null;
+}
+const nDropName = nd => nd.kind === "strip" ? "new tab" : nd.kind === "edge" ? "split right" : "split down";
+function nDropShow(prev, nd) {             // -> nd; repaints the target outline and [ndrop:] only on a change
+  const key = d => d ? d.kind + "@" + d.ix : "";
+  if (key(prev) === key(nd)) return prev;
+  if (prev) (prev.kind === "strip" ? prev.g.tabsEl : prev.g.pane).classList.remove("drop-" + prev.kind);
+  if (nd) (nd.kind === "strip" ? nd.g.tabsEl : nd.g.pane).classList.add("drop-" + nd.kind);
+  nDropTok = key(nd);
+  updateTitle();
+  return nd;
+}
+async function nDropOpen(nd, name) {       // the release: a new tab in that pane, or a split carrying the note
+  await act("note_drop", { kind: nd.kind, groups: groups().length }, async () => {
+    if (nd.kind === "strip") { focusGroup(nd.g); await openNewTab(name, nd.g); }
+    else await splitWith(nd.g, nd.kind === "bottom" ? "col" : "row", mkTab(name));
+  });
 }
 
 /* #20 (R32): the big title a note shows is its FILENAME, rendered — never
@@ -6521,8 +6596,8 @@ function renderNode(node, prefix, depth, out) {
 
 /* goal cv-journeys: an image / PDF / audio / video row. Stock lists every file type it supports in the explorer,
    named without its extension and tagged with it (PNG, PDF, MP3, ...). Here the row is a DRAG SOURCE for a board
-   (the file card) and nothing else: it carries data-file (never data-note: no note verb addresses it), opens no
-   view (the app has none for these types) and is no move source (R24.6 moves notes). */
+   (the file card): it carries data-file (never data-note: no note verb addresses it), opens no view for the
+   types the app has none for (issue #44: a PDF opens the PDF view, openPdf) and is no move source (R24.6 moves notes). */
 function fileRow(p, depth) {
   const row = document.createElement("div");
   row.className = "trow file";
@@ -6532,7 +6607,8 @@ function fileRow(p, depth) {
   row.querySelector(".ttag").textContent = d > 0 ? base.slice(d + 1).toUpperCase() : "";
   row.dataset.file = p;
   row.addEventListener("mousedown", e => treeDragStart(e, p, "file"));
-  row.onclick = e => { if (treeClickEaten()) return; if (e.shiftKey && !e.ctrlKey && !e.metaKey) return treeRange(row); treeSelClear(); treeAnchor = p; };   // shift = range select; it opens no view
+  row.onclick = e => { if (treeClickEaten()) return; if (e.shiftKey && !e.ctrlKey && !e.metaKey) return treeRange(row); treeSelClear(); treeAnchor = p; if (Ed.isPdf(p)) openPdf(p, e); };   // shift = range select; issue #44: a PDF opens in the PDF view (ctrl = new tab), other types open no view
+  if (Ed.isPdf(p)) row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); openPdf(p, e); } };   // middle = new tab
   return row;
 }
 
@@ -6678,6 +6754,7 @@ function treeDragStart(e, nm, dir) {         // dir: true = a folder row, "file"
   const base = nm.split("/").pop();
   const par = nm.includes("/") ? nm.slice(0, nm.lastIndexOf("/")) : "";
   let ghost = null, target = null, hl = null, zones = null, raf = 0, last = null, multi = null;
+  let pz = null, pnd = null;               // issue #40: pane zones / the live pane decision (a note row only)
   const clearHl = () => { if (hl) { hl.classList.remove("drop-into"); hl = null; } };
   const step = () => {
     raf = 0;
@@ -6701,6 +6778,7 @@ function treeDragStart(e, nm, dir) {         // dir: true = a folder row, "file"
         .filter(z => z.r.height > 0 && z.f != null);
       zones.push({ el: $("tree"), f: "", r: $("tree").getBoundingClientRect() });   // the vault ROOT
       if (dir || multi) zones = [];      // cv-drop: a folder is no move source (R24.5) — only a plugin view takes it; nor is a selection
+      if (!dir && !multi && !/\.canvas$/i.test(nm)) pz = nDropZones();   // issue #40: a note row can open on a pane
     }
     ghost.style.transform = "translate3d(" + (ev.clientX + 10) + "px," + (ev.clientY + 12) + "px,0)";
     let nt = null;
@@ -6722,6 +6800,10 @@ function treeDragStart(e, nm, dir) {         // dir: true = a folder row, "file"
       dragTok = (target ? (target.f || "/") : "-") + ":" + ghost.textContent;
       updateTitle();                     // ONLY on a target change — never per frame
     }
+    if (pz) {                            // issue #40: no folder under the pointer -> a pane may take the note
+      const nd = nDropShow(pnd, target ? null : nDropDecide(pz, ev.clientX, ev.clientY));
+      if (nd !== pnd) { pnd = nd; if (!target) ghost.textContent = base + (pnd ? " -> " + nDropName(pnd) : ""); }
+    }
   };
   const move = ev => { last = ev; if (!raf) raf = requestAnimationFrame(step); };
   const up = async ev => {
@@ -6734,7 +6816,14 @@ function treeDragStart(e, nm, dir) {         // dir: true = a folder row, "file"
     if (ghost) ghost.remove();
     clearHl();
     dragTok = "";
+    const pn = pnd; pnd = nDropShow(pnd, null);   // issue #40: the pane decision at the release
     const pd = treePlgDrag; treePlgDrag = null;
+    if (ghost && !t && pn) {             // issue #40: a pane took the note — a tab / split, never a move
+      if (pd) pd.end();
+      treeEat = 1;                       // the release is over a pane: no row click follows
+      await nDropOpen(pn, nm);
+      return;
+    }
     if (ghost && !t && pd && treePlgDrop(pd, ev)) { treeEat = 1; updateTitle(); return; }   // a plugin view took it
     if (pd) pd.end();
     if (dir || multi) { if (ghost) treeEat = performance.now(); updateTitle(); return; }   // cv-drop: a folder (or a selection) dropped on nothing moves nothing
@@ -7113,6 +7202,10 @@ function fuzzy(q, s) {  // lower score = better; -1 = no match
 const acField = g => (g.view && g.view.lines ? Ed.field(g) : g.editor);   // R17: a textarea-shaped view of the model
 function acContext(g) {  // caret inside an unclosed [[ on one line?
   const ed = acField(g);
+  // gh #43 review (PR #53): a pair char typed over a selection wraps it and keeps the inner
+  // text selected ([[sel]]); stock opens no suggester over a selection, and accepting one here
+  // replaced [[ .. selection end, leaving the wrapper's ]] behind -> [[name]]]]
+  if (ed.selectionStart !== ed.selectionEnd) return null;
   const upto = ed.value.slice(0, ed.selectionStart);
   const a = upto.lastIndexOf("[[");
   if (a < 0) return null;
@@ -7719,6 +7812,59 @@ async function openCanvas(path, how) {     // how: "split" -> a new pane to the 
   await leaf.setViewState({ type: "canvas", state: { file: path }, active: true });
   return leaf;
 }
+/* issue #44: the PDF view. A .pdf opened from the explorer or a bookmark shows in a "pdf" leaf (stock's view type and
+   state {file}), built from the ONE frame builder PDF embeds use (Ed.pdfFill: pages are PNGs rasterised by the Rust
+   worker, never PDF bytes in the webview), filling the pane. Registered with the "pdf" extension, so openFile routes
+   a PDF here too. how: plain click = the active tab (as a note row), "tab" = a new tab (ctrl / middle click). */
+const PDFV = (() => {
+  if (!PLG || !PLG.X || !PLG.X.ItemView) return null;
+  const base = p => { const b = String(p).split("/").pop(), d = b.lastIndexOf("."); return d > 0 ? b.slice(0, d) : b; };
+  class PdfView extends PLG.X.ItemView {
+    constructor(leaf) { super(leaf); this.navigation = true; this.icon = "lucide-file-text"; this.path = null; this.frame = null; this.contentEl.classList.add("pdf-view"); }
+    getViewType() { return "pdf"; }
+    getDisplayText() { return this.path ? base(this.path) : "PDF"; }
+    getState() { return this.path ? { file: this.path } : {}; }
+    async setState(st) {
+      const p = st && typeof st.file === "string" ? st.file.replace(/^\/+/, "") : "";
+      if (!p || p === this.path || !Ed.isPdf(p)) return;
+      this.path = p;
+      try { const f = PLG.app.vault.getAbstractFileByPath(p); this.file = f || null; } catch (_) { this.file = null; }
+      const s = this.frame = document.createElement("span");
+      s.className = "internal-embed pdf-embed";
+      s.dataset.pdf = Ed.pctEnc(p); s.dataset.page = "1"; s.dataset.height = ""; s.dataset.alt = ""; s.dataset.full = "1";
+      this.contentEl.replaceChildren(s);
+      Ed.pdfFill(s);
+      updateTitle();
+    }
+  }
+  const make = Object.defineProperty(leaf => new PdfView(leaf), Symbol.for("opensidian.coreView"), { value: true });
+  try {
+    const r = PLG.app.viewRegistry;
+    r.registerView("pdf", make);
+    if (!r.isExtensionRegistered("pdf")) r.registerExtensions(["pdf"], "pdf");
+  } catch (e) { console.error("[pdf] view:", e); return null; }
+  return { PdfView };
+})();
+async function openPdf(path, ev, how) {   // how: undefined = by the event (plain in place, ctrl/middle new tab) | "tab" | "split" (PR #57 review: the bookmark menu)
+  if (!PDFV) { say("The PDF view is not available", "pdf"); return null; }
+  const nt = ev && (ev.button === 1 || ev.ctrlKey || ev.metaKey);
+  const leaf = how === "split" ? PLG.app.workspace.getLeaf("split", "vertical") : PLG.app.workspace.getLeaf(how === "tab" || nt ? "tab" : false);
+  await leaf.setViewState({ type: "pdf", state: { file: path }, active: true });
+  return leaf;
+}
+function pdfvTok() {           // issue #44: [pdfrow:] explorer PDF rows, [pdfv:] the PDF view on screen
+  const esc = s => String(s).replace(/[[\]|@]/g, "_"), vis = e => !!e && e.getClientRects().length > 0;
+  const c = e => { const r = e.getBoundingClientRect(); return Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2); };
+  let t = "";
+  const rows = [...document.querySelectorAll("#tree .trow.file")].filter(r => vis(r) && Ed.isPdf(r.dataset.file || ""));
+  if (rows.length) t += " [pdfrow:" + rows.map(r => esc(r.dataset.file) + "@" + c(r)).join("|") + "]";
+  let v = null;
+  try { v = PLG && PLG.app.workspace.getLeavesOfType("pdf").map(l => l.view).find(x => x && vis(x.containerEl)) || null; } catch (_) {}
+  if (!v || !v.frame) return t;
+  const s = v.frame, b = s.getBoundingClientRect();
+  return t + " [pdfv:" + esc(v.path) + "|" + (s.dataset.cur || 0) + "/" + (s.dataset.of || 0) + (s.classList.contains("is-loaded") ? "L" : "") +
+         (s.classList.contains("mod-broken") ? "B" : "") + "|" + [b.x, b.y, b.width, b.height].map(Math.round).join(",") + "]";
+}
 /* goal canvas-core: "Create new canvas" (command) and "New canvas" (explorer menus). The file is made
    through canvas_io create (O_EXCL: an existing name is never overwritten — the next free
    "Untitled N.canvas" is taken instead), holds an empty JSON Canvas document, and opens in a canvas tab.
@@ -7955,6 +8101,19 @@ async function cvCanvasBacklinks(p) {
   }
   return [...by.values()].sort((a, b) => a.note.localeCompare(b.note));
 }
+/* issue-48: the NOTE behind a plugin-view tab (an Excalidraw board is its .md file, stock:
+   docs/issue-48/STOCK.md S1/S5) as the name a bookmark stores (path without .md), or null.
+   A canvas keeps its own path (cvTabPath) and stays unbookmarkable here. */
+function pvNoteName(t) {
+  if (!t || t.kind !== "unk" || t.utype === "canvas" || !PLG) return null;
+  let p = null;
+  try {
+    const l = PLG.app.workspace.getLeavesOfType(t.utype).find(x => x && x._t === t);
+    if (l && l.view && l.view.file && l.view.file.path) p = String(l.view.file.path);
+  } catch (_) {}
+  if (!p) try { const f = t.raw && t.raw.state && t.raw.state.state && t.raw.state.state.file; if (f) p = String(f); } catch (_) {}
+  return p && /\.md$/i.test(p) ? p.slice(0, -3) : null;
+}
 /* the canvas a tab shows (a canvas plugin-view tab), or null */
 function cvTabPath(t) {
   if (!t || t.kind !== "unk" || t.utype !== "canvas" || !PLG) return null;
@@ -8166,6 +8325,16 @@ async function cvTrash(p) {
   await refreshTree();
   updateTitle();
 }
+/* goal cvf-filecards: [cvfact:tree=<the explorer's active row: note path .md | board path | ->|bl=<status-bar backlinks text | ->]
+   emitted whether or not a board is on screen (a note's status-bar count is read through it too). */
+function cvfactTok(esc) {
+  try {
+    const ar = document.querySelector("#tree .trow.active");
+    const an = ar ? (ar.dataset.note != null ? ar.dataset.note + ".md" : ar.dataset.canvas || ar.dataset.file || "-") : "-";
+    const g = fg(), bl = g && g.status && !g.status.hidden && g.stBl ? String(g.stBl.textContent || "").trim() : "";
+    return " [cvfact:tree=" + esc(an) + "|bl=" + esc(bl || "-") + "]";
+  } catch (_) { return ""; }
+}
 /* goal canvas-core census: [cvrow:<path>@x,y|...] the painted .canvas rows of the explorer;
    [cvdir:<folder>@x,y|...] the painted folder rows (only while a .canvas row is listed, at most 8);
    for the first canvas view on screen [cv:<path>|n=<nodes>|e=<edges>|err=0|1|dirty=0|1|saves=<n>|on=0|1],
@@ -8187,7 +8356,9 @@ function canvasTok() {
   t += cvGflTok();                                                       // cvf-links CVR-A-102
   let v = null;
   try { v = PLG.app.workspace.getLeavesOfType("canvas").map(l => l.view).find(x => x && vis(x.containerEl)) || null; } catch (_) {}
-  if (!v) return t;
+  // rt-canvas: [cvfact:] is read with NO board on screen too (cvflinks CVR-A-099/100 read a note's status-bar count)
+  const fa = cvfactTok(esc);
+  if (!v) return t + fa;
   t += " [cv:" + esc(v.path || "-") + "|n=" + v.canvas.nodes.size + "|e=" + v.canvas.edges.size + "|err=" + (v.broken ? 1 : 0) +
        "|dirty=" + (v.dirty ? 1 : 0) + "|saves=" + (v.saves || 0) + "|on=" + (CANVAS.isRegistered() ? 1 : 0) + "]";
   const ns = [...v.containerEl.querySelectorAll(".canvas-node[data-node-id]")].filter(vis).slice(0, 16);
@@ -8258,13 +8429,7 @@ function canvasTok() {
   } catch (_) {}
   // goal cvf-media: [cvm:<id>|k=|lbl=|...] [cvmb:] [cvmpdf:] [cvmpick:swap|...] file cards (ui/plugins/canvas-media.js)
   if (window.CanvasMedia) try { t += window.CanvasMedia.census(v); } catch (_) {}
-  // goal cvf-filecards: [cvfact:tree=<the explorer's active row: note path .md | board path | ->|bl=<status-bar backlinks text | ->]
-  try {
-    const ar = document.querySelector("#tree .trow.active");
-    const an = ar ? (ar.dataset.note != null ? ar.dataset.note + ".md" : ar.dataset.canvas || ar.dataset.file || "-") : "-";
-    const g = fg(), bl = g && g.status && !g.status.hidden && g.stBl ? String(g.stBl.textContent || "").trim() : "";
-    t += " [cvfact:tree=" + esc(an) + "|bl=" + esc(bl || "-") + "]";
-  } catch (_) {}
+  t += fa;
   return t;
 }
 /* goal cvf-create CVR-A-009 (coordinator ruling 03:00Z): the full folder menu in stock order. Off until the operator's

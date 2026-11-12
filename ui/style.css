@@ -133,7 +133,7 @@ body {
   --nav-item-background-active: var(--background-modifier-hover);
   --tab-container-background: #333333;
   --tab-background-active: var(--background-primary);
-  --text-highlight-bg: rgba(249,226,175,.35);
+  --text-highlight-bg: rgba(255, 208, 0, .4);   /* issue #47: stock 1.x ==marker== tint (light #ffec99 = the same rgba over white) */
   /* ============ LAYER 2 — OUR NAMES, RESOLVED FROM LAYER 1 ================
      One definition per surface. These rows carry NO colour: the value is
      wherever the layer-1 name landed on this element. Pairings are the ones the
@@ -1142,7 +1142,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .lp .i { font-style: italic }
 .lp .bi { font-weight: var(--bold-weight); font-style: italic }
 .lp .s { text-decoration: line-through }
-.lp .hl { background: var(--highlight-yellow) }
+.lp .hl { background: var(--highlight-yellow); color: var(--text-normal) }   /* issue #47: the lp ==marker== is a <mark>, whose UA sheet paints black ink; stock: --text-normal */
 .lp .code { font-family: var(--font-monospace); font-size: var(--code-size); background: var(--code-background); border-radius: var(--code-radius) }
 .lp .wl, .lp .lt, .lp .url { color: var(--accent-blue) }
 .lp .wl:hover, .lp .lt:hover, .lp .url:hover { color: var(--text-accent-hover) }   /* themematch: link hover ink */
@@ -1528,6 +1528,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .lp ul > li:is([data-task="x"], [data-task="X"]), .lp .tkx,
 .preview ul > li:is([data-task="x"], [data-task="X"]) {
   text-decoration: var(--checklist-done-decoration); color: var(--checklist-done-color) }
+/* #45: an editor row strikes its task TEXT only (span.tkt, editor.js): the row-wide decoration
+   ran through a nested item's literal indent, left of the box; stock leaves the indent unpainted */
+.lp .tkx { text-decoration: none }
+.lp .tkx .tkt { text-decoration: var(--checklist-done-decoration) }
 .lp input[type=checkbox], .preview input[type=checkbox] { -webkit-appearance: none; appearance: none; border-radius: var(--checkbox-radius);
   border: 1px solid var(--checkbox-border-color); flex-shrink: 0; padding: 0; margin: 0; width: var(--checkbox-size); height: var(--checkbox-size);
   position: relative; top: 0.2em; margin-inline-end: 0.6em; cursor: pointer; vertical-align: baseline }
@@ -1822,6 +1826,10 @@ span.is-flashing { background: var(--highlight-yellow) }
 /* stock's missing-file banner is 37 px tall; the R29.4 banner shrunk to match */
 .lp .imgmiss.pdfmiss, .preview .imgmiss.pdfmiss { padding: 8px 16px }
 .lp.src .pdf-embed { display: none }
+/* issue #44: the PDF view (a "pdf" leaf, main.js PDFV) — the same frame, filling the pane */
+.os-pv > .view-content.pdf-view { padding: 0; overflow: hidden; display: flex; flex-direction: column }
+.pdf-view > .pdf-embed { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; width: 100%;
+  box-sizing: border-box; background: var(--bg-surface); user-select: none }
 /* census C4 make-md: .app-container (ui/index.html) wraps the app chrome for plugins and
    themes that look it up. goal cp-makemd3: a REAL box, not display:contents — under
    display:contents the editor scrollers lost their bottom range (srclick R25.13c line-83

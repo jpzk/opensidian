@@ -21,6 +21,7 @@ mod appid;
 mod builtins;
 use opensidian_lib::canvasfs;
 mod cfgstore;
+mod consent; // spawn-consent: native GTK prompts before trusting a vault and before every plugin spawn
 mod census; // census-gate (#30): the window-title census is opt-in (OPENSIDIAN_CENSUS=1 / devui)
 use opensidian_lib::datefmt;
 use opensidian_lib::graphq;
@@ -42,6 +43,8 @@ mod spawner;
 mod desk_http;
 mod desk_net;
 mod desk_proc;
+#[cfg(test)]
+mod testutil; // shared unit-test helpers (write_exe: no ETXTBSY from a write fd a parallel fork inherited)
 #[cfg(feature = "devui")]
 mod devui; // goal devui: DEV-ONLY UI hot reload, never in a default/release build
 mod vaultlock;
@@ -3673,23 +3676,62 @@ fn plugins_state(v: State<Vault>, otel: Option<perf::Ctx>) -> Result<serde_json:
     Ok(span_timed!(otel => "plugins_state", plugins_state_of(&root)))
 }
 
-/// restricted mode (trusted) and/or one enable toggle; answers the new state
+/// restricted mode (trusted) and/or one enable toggle; answers the new state.
+/// spawn-consent (a): any page script can invoke this, so turning trust ON
+/// for a vault that is not trusted yet is asked natively first
+/// (consent::TRUST_TITLE, the canonical vault path from Rust). Cancel = this
+/// call writes NOTHING (neither the flag nor an enable toggle in the same
+/// call) and answers the unchanged state. Turning trust OFF is never asked.
+/// G1 (PR #41): the trust epoch is read before the dialog opens and checked under the
+/// lifecycle lock the flag is written under — a Trust answer from a dialog that was open
+/// across another flip (a trust-OFF: kill_all + close_all) is discarded with an
+/// error, nothing written (desk_proc::trust_write).
+/// async: tauri runs it off the main thread, which the open dialog needs.
 #[tauri::command]
-fn plugins_set(
-    v: State<Vault>,
+async fn plugins_set(
+    win: tauri::Window,
+    v: State<'_, Vault>,
     trusted: Option<bool>,
     id: Option<String>,
     on: Option<bool>,
     otel: Option<perf::Ctx>,
 ) -> Result<serde_json::Value, String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
+    // G1: the epoch before anything is read or asked (the guard is dropped before the await)
+    let seen = {
+        let life = desk_proc::lifecycle();
+        desk_proc::trust_epoch(&life)
+    };
+    // P1 (PR #42): every ON write carries `seen`, also when the vault was already trusted and
+    // nothing is asked — a trust-OFF landing after the is_trusted read makes it EAGAIN
+    let (ask, carries) = desk_proc::trust_plan(trusted == Some(true), seen, || plugins::is_trusted(&cfg_value(), &root));
+    if ask {
+        // BB2 (PR #42 round 11): the place in the question queue before trust_key (a lookup)
+        let slot = consent::admit()?;
+        let key = plugins::trust_key(&root);
+        if !consent::ask(slot, win, consent::Kind::Trust, consent::trust_question(&key)).await? {
+            eprintln!("[consent] trust {key:?}: cancelled, nothing written");
+            return Ok(plugins_state_of(&root));
+        }
+    }
+    let asked = carries;
     span_timed!(otel => "plugins_set", (|| -> Result<serde_json::Value, String> {
         if let Some(t) = trusted {
+            // F5/N5: held across (flag write, kill_all, close_all), the lock desk_proc_spawn holds
+            // across (trust recheck, start, register) and desk_net_listen across (check, bind, register) — no spawn can land between the write and the kill
+            // CC1 (PR #42 round 12): the trust key (canonicalize of the vault root, a path lookup)
+            // before the lock, so a stalled vault mount cannot hold up the lock this write takes
             let key = plugins::trust_key(&root);
+            let life = desk_proc::lifecycle();
+            // G1: a Trust answer that went stale while its dialog was open writes nothing
+            if let Err(e) = desk_proc::trust_write(asked, &life) {
+                eprintln!("[consent] trust {key:?}: answer from before another flip, discarded, nothing written");
+                return Err(e);
+            }
             cfg_update(&[cfgstore::Op::SetIn(plugins::TRUST_KEY.into(), key, serde_json::json!(t))]);
             if !t {
-                desk_proc::kill_all();   // flip OFF: what plugins started stops with them
-                desk_net::close_all();
+                desk_proc::kill_all(&life); // flip OFF: what plugins started stops with them
+                desk_net::close_all(&life); // N5: so do its listeners, under the lock desk_net_listen binds under
             }
         }
         if let (Some(id), Some(on)) = (id.as_deref(), on) {
@@ -3742,10 +3784,16 @@ fn plugin_vfs(
 /* ---- cp-unrestricted: child_process for plugins (desk_proc.rs). Stock lets a
    plugin spawn with the user's rights once community plugins are on; the gate
    here is the same flip, checked on every spawn: an untrusted vault starts
-   nothing. read/write/end/kill act only on ids a spawn handed out. */
+   nothing. read/write/end/kill act only on ids a spawn handed out.
+   spawn-consent (b): on top of the flip, EVERY spawn is asked natively
+   (consent::SPAWN_TITLE) with the Spec desk_proc::start will run — program,
+   args after map_arg, cwd after map_cwd, env keys. Deny = EPERM, nothing
+   forked. scripts/consent-nobypass.sh fails the build if any path reaches
+   desk_proc::start without that question. */
 #[tauri::command]
-fn desk_proc_spawn(
-    v: State<Vault>,
+async fn desk_proc_spawn(
+    win: tauri::Window,
+    v: State<'_, Vault>,
     file: String,
     args: Option<Vec<String>>,
     cwd: Option<String>,
@@ -3755,12 +3803,39 @@ fn desk_proc_spawn(
     if !plugins::is_trusted(&cfg_value(), &root) {
         return Err("EPERM: restricted mode, plugins cannot start programs".into());
     }
+    // BB2 (PR #42 round 11): the place in the question queue FIRST — beyond MAX_IN_FLIGHT this is
+    // EBUSY before any lookup or pin (resolve), no fs work, no fd opened; ask demands the slot
+    let slot = consent::admit()?;
     let args: Vec<String> = args.unwrap_or_default().iter().map(|a| desk_proc::map_arg(&root, a)).collect();
-    let sp = desk_proc::Spec { file, args, cwd: desk_proc::map_cwd(&root, cwd.as_deref()), env: env.unwrap_or_default().into_iter().collect() };
+    let sp = desk_proc::Spec { file, args, cwd: desk_proc::map_cwd(&root, cwd.as_deref()), root: root.clone(), env: env.unwrap_or_default().into_iter().collect(), argv0: None, path: None, prog: None, dir: None };
+    consent::check_env(&sp)?; // F6 + Q4: an env, or program + args + cwd, over the cap is refused, nothing asked
+    let sp = consent::resolve(sp)?; // F1: file = the absolute path the dialog names and exec runs
+    if !consent::ask(slot, win, consent::Kind::Spawn, consent::spawn_question(&sp)).await? {
+        eprintln!("[desk] spawn {} {:?} cwd={}: denied by the user", sp.file, sp.args, sp.cwd.display());
+        return Err(format!("EPERM: spawn {} denied by the user", sp.file));
+    }
+    // Q1 (PR #42 round 4): every filesystem lookup of a PATH entry (the child PATH is
+    // canonicalized entry by entry) happens HERE, before the lock: a stalled mount in a
+    // plugin's PATH cannot hold up a trust-OFF waiting on the lifecycle lock
+    let sp = desk_proc::prepare(sp, std::env::var_os("PATH"));
+    // CC1 (PR #42 round 12): so is the vault's trust key (canonicalize of the root). DD1 (round 13):
+    // the trust epoch is read BEFORE that key; a trust write since (a trust-OFF for a root retargeted
+    // in between, its kill_all already run) makes this EAGAIN under the lock, nothing started
+    let seen = desk_proc::trust_epoch_now();
+    let key = plugins::trust_key(&root);
+    // F5: (recheck, start, register) under the lock plugins_set holds across a trust-OFF
+    // (flag write, kill_all): the flip may have gone OFF while the question was open
+    let life = desk_proc::lifecycle();
+    seen.unmoved(&life)?;
+    if !plugins::is_trusted_key(&cfg_value(), &key) {
+        return Err("EPERM: restricted mode, plugins cannot start programs".into());
+    }
     eprintln!("[desk] spawn {} {:?} cwd={}", sp.file, sp.args, sp.cwd.display());
-    let run = span_timed!("desk_proc_spawn", desk_proc::start(sp))?;
+    let run = span_timed!("desk_proc_spawn", desk_proc::start(sp, &life))?;
     let pid = run.pid();
-    Ok(serde_json::json!({ "id": desk_proc::register(run), "pid": pid }))
+    let id = desk_proc::register(run, &life);
+    drop(life);
+    Ok(serde_json::json!({ "id": id, "pid": pid }))
 }
 
 #[tauri::command]
@@ -3794,14 +3869,23 @@ fn desk_proc_kill(id: u64, signal: Option<String>) -> Result<bool, String> {
 /* ---- cp-unrestricted: TCP listeners for plugins (desk_net.rs) — node net /
    http servers (slides preview, local-rest-api). Same gate as child_process:
    the vault's trust flip, checked on every listen; socket ops act only on ids
-   a listener of this app handed out. */
+   a listener of this app handed out. N5 (PR #41): the check, the bind and the
+   register run under the lifecycle lock plugins_set holds across a trust-OFF
+   (flag write, close_all), so a listen that passed its check cannot register
+   after close_all and stay bound (desk_net::listen_trusted). */
 #[tauri::command]
 fn desk_net_listen(v: State<Vault>, host: Option<String>, port: u16) -> Result<serde_json::Value, String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
-    if !plugins::is_trusted(&cfg_value(), &root) {
-        return Err("EPERM: restricted mode, plugins cannot open servers".into());
-    }
-    let (id, s) = span_timed!("desk_net_listen", desk_net::listen(host.as_deref().unwrap_or(""), port))?;
+    // CC1 (PR #42 round 12, CodeAnt): listen_trusted calls `trusted` a second time UNDER the
+    // lifecycle lock (desk_net::listen_trusted_via). The trust key canonicalizes the vault root (a
+    // path lookup: a stalled FUSE/NFS vault stands still in it), so it is computed HERE, before
+    // listen_trusted; the closure only reads the config and compares keys — the lock walks no path.
+    // DD1 (round 13): the trust epoch read BEFORE the key; listen_trusted refuses under the lock
+    // (EAGAIN, nothing bound) when a trust write landed since — e.g. a trust-OFF for a retargeted root
+    let seen = desk_proc::trust_epoch_now();
+    let key = plugins::trust_key(&root);
+    let trusted = || plugins::is_trusted_key(&cfg_value(), &key);
+    let (id, s) = span_timed!("desk_net_listen", desk_net::listen_trusted(seen, trusted, host.as_deref().unwrap_or(""), port))?;
     eprintln!("[desk] listen {}:{} id={id}", s.address, s.port);
     Ok(serde_json::json!({ "id": id, "port": s.port, "address": s.address }))
 }
@@ -3871,45 +3955,67 @@ async fn desk_http_request(v: State<'_, Vault>, req: desk_http::Req) -> Result<d
    opener with the user's rights; so does this (xdg-open, no shell). "/vault/x"
    is the vault's real path (getBasePath), as for child_process cwd. op "vault"
    (top5-func: app.openWithDefaultApp) takes a vault path and is confined to the
-   vault (desk_proc::vault_open_target). */
+   vault (desk_proc::vault_open_target). G3 (PR #41): xdg-open runs whatever a local
+   target maps to (.desktop Exec=, scripts, executables, custom scheme handlers), so every
+   target but an http(s)/mailto URL is asked first through the spawn dialog — program
+   xdg-open (resolved like any spawn), the target in full, asked every time — and Deny is
+   EPERM with nothing started (desk_proc::shell_target says which). async: the dialog.
+   P4 (PR #42): the dialog shows the target's final path (symlinks resolved), its identity
+   (dev/ino/mode/size/mtime/ctime) is recorded before asking, and desk_proc::shell_open re-checks
+   it right before the exec: a file replaced or swapped for a symlink while the dialog was
+   open is refused (EPERM), not opened. RESIDUAL WINDOW: from that recheck to xdg-open's own
+   open of the path (fork/exec of xdg-open, then its handler opens by name) a swap is still
+   possible — xdg-open has no open-by-fd interface; see desk_proc::ShellOpen.
+   R1: a directory target is the same directory while (dev, ino, mode) are — a sibling saved
+   meanwhile does not refuse it. R4: xdg-open (asked or not) runs in "/" with PATH cut to its
+   absolute entries (desk_proc::Launch). R5: the question is consent::open_question — it names
+   the target, says opening it may run it, and does not claim a plugin asks. */
 #[tauri::command]
-fn desk_shell(v: State<Vault>, op: String, target: String) -> Result<(), String> {
+async fn desk_shell(win: tauri::Window, v: State<'_, Vault>, op: String, target: String) -> Result<(), String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
     if !plugins::is_trusted(&cfg_value(), &root) {
         return Err("EPERM: restricted mode, plugins cannot use the shell".into());
     }
-    let arg = match op.as_str() {
-        "external" => {
-            let scheme = target.split(':').next().unwrap_or("");
-            let ok = target.contains(':') && scheme.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
-                && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
-            if !ok {
-                return Err(format!("EINVAL: not a URL: {target}"));
-            }
-            std::ffi::OsString::from(&target)
+    // BB2 (PR #42 round 11): the place in the question queue FIRST, then the target and the
+    // opener (resolved + pinned) — beyond MAX_IN_FLIGHT, EBUSY with no lookup and no fd opened
+    let desk_proc::ShellPrep { slot, opener, target: t, ask } = desk_proc::shell_prepare(&root, &op, &target)?;
+    if ask {
+        // Y1/AA1: resolve pinned xdg-open; it is exec'd through THAT open file (its fd), never the
+        // pathname again — a file swapped in at the path during the dialog is never run (EPERM)
+        // R5: the open question (names the target, says it may run it; neutral about who asks)
+        if !consent::ask(slot, win, consent::Kind::Spawn, consent::open_question(&opener, &t.arg)).await? {
+            eprintln!("[desk] shell {op} {:?}: denied by the user", t.arg);
+            return Err(format!("EPERM: open {} denied by the user", t.arg));
         }
-        "path" => desk_proc::map_cwd(&root, Some(&target)).into_os_string(),
-        // app.openWithDefaultApp: vault paths only, symlinks resolved and confined to the vault
-        "vault" => desk_proc::vault_open_target(&root, &target)?.into_os_string(),
-        "reveal" => {
-            let p = desk_proc::map_cwd(&root, Some(&target));
-            p.parent().map(|d| d.to_path_buf()).unwrap_or(p).into_os_string()
-        }
-        _ => return Err(format!("EINVAL: unknown shell op {op}")),
-    };
-    eprintln!("[desk] shell {op} {}", arg.to_string_lossy());
-    std::process::Command::new("xdg-open")
-        .arg(&arg)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map(|mut c| {
-            std::thread::spawn(move || {
-                let _ = c.wait();   // reap it, no zombie
-            });
-        })
-        .map_err(|e| format!("ENOENT: xdg-open: {e}"))
+    } else {
+        drop(slot); // an http(s)/mailto URL: nothing asked, the place is given back
+    }
+    // Q1 (PR #42 round 4): the opener's cleaned PATH (canonicalize of every entry) before the lock;
+    // BB1: so is the vault's trust key (canonicalize of the root) — the lock walks no path
+    let opener_path = desk_proc::opener_path(std::env::var_os("PATH"), &root);
+    // DD1 (round 13): the trust epoch BEFORE the key; shell_open refuses under the lock (EAGAIN,
+    // nothing opened) when a trust write landed since
+    let seen = desk_proc::trust_epoch_now();
+    let key = plugins::trust_key(&root);
+    eprintln!("[desk] shell {op} {}", t.arg);
+    // BB1: shell_open = the target's identity recheck (a path lookup) BEFORE the lifecycle lock,
+    // then under it the trust recheck (the flip may have gone OFF while the question was open, F5),
+    // the opener's fd-only check and the exec. P4: R4: cwd "/", PATH absolute entries only.
+    // AA1: the opener is exec'd by its held fd (l.program()), rechecked in pre_exec (l.apply)
+    let r = desk_proc::shell_open(seen, &t, &opener, opener_path, || plugins::is_trusted_key(&cfg_value(), &key), |l| {
+        let mut cmd = std::process::Command::new(l.program());
+        l.apply(&mut cmd).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        cmd.spawn().map_err(|e| desk_proc::opener_err(&opener.file, &e))
+    })
+    .map(|mut c| {
+        std::thread::spawn(move || {
+            let _ = c.wait();   // reap it, no zombie
+        });
+    });
+    if let Err(e) = &r {
+        eprintln!("[desk] shell {op} {}: {e}", t.arg);
+    }
+    r
 }
 
 /* ---- themefs R5 (themes): the listing predicate is the oracle's, verbatim
@@ -4437,6 +4543,10 @@ enum BmNode {
     /// is Obsidian's `path` = name + ".md". `title` is Obsidian's optional display
     /// alias — we never author one, we never lose one.
     File { name: String, title: Option<String>, x: BmExtra },
+    /// issue #44: a bookmarked PDF. `path` is Obsidian's `path` verbatim (it
+    /// keeps its extension). Painted, and a click opens it in the PDF view; it
+    /// is never a note NAME, so list_bookmarks and the rename walk skip it.
+    Pdf { path: String, title: Option<String>, x: BmExtra },
     Group { title: String, items: Vec<BmNode>, x: BmExtra },
     /// an entry our model cannot express — Obsidian's `search`, a non-.md path,
     /// a future type. Not painted, not addressable, written back verbatim.
@@ -4471,6 +4581,9 @@ struct BmRow {
     /// for a group without a numeric ctime (folds in memory only, not persisted).
     #[serde(skip_serializing_if = "Option::is_none")]
     ctime: Option<String>,
+    /// issue #44: a PDF bookmark (`name` = its vault path, extension kept)
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pdf: bool,
 }
 
 /* the ONE parser, and it is TOLERANT by construction: a body that is not
@@ -4501,16 +4614,13 @@ fn bm_node_of(v: &serde_json::Value) -> BmNode {
     match obj.get("type").and_then(|t| t.as_str()).unwrap_or("") {
         "file" => {
             // Obsidian's `path` is our name + ".md" (recon §6); any other path
-            // (canvas, pdf, bare) is not expressible as an R9.4 name -> opaque
-            let name = match obj
-                .get("path")
-                .and_then(|p| p.as_str())
-                .and_then(|p| p.strip_suffix(".md"))
-                .filter(|n| !n.is_empty())
-            {
-                Some(n) => n.to_string(),
-                None => return BmNode::Opaque(v.clone()),
-            };
+            // (canvas, bare) is not expressible as an R9.4 name -> opaque; a
+            // `.pdf` path is a Pdf node (issue #44)
+            let path = obj.get("path").and_then(|p| p.as_str()).unwrap_or("");
+            let name = path.strip_suffix(".md").filter(|n| !n.is_empty());
+            if name.is_none() && !(path.len() > 4 && is_pdf_target(path)) {
+                return BmNode::Opaque(v.clone());
+            }
             let title = obj.get("title").and_then(|t| t.as_str()).map(str::to_string);
             let keys = obj
                 .iter()
@@ -4522,7 +4632,11 @@ fn bm_node_of(v: &serde_json::Value) -> BmNode {
                 })
                 .map(|(k, val)| (k.clone(), val.clone()))
                 .collect();
-            BmNode::File { name, title, x: BmExtra { ctime, keys } }
+            let x = BmExtra { ctime, keys };
+            match name {
+                Some(n) => BmNode::File { name: n.to_string(), title, x },
+                None => BmNode::Pdf { path: path.to_string(), title, x },
+            }
         }
         "group" => {
             // a group whose title is not a string or whose items is not an
@@ -4623,13 +4737,18 @@ fn bm_value_of(n: &BmNode) -> serde_json::Value {
     use serde_json::{Map, Value};
     match n {
         BmNode::Opaque(v) => v.clone(),
-        BmNode::File { name, title, x } => {
+        BmNode::File { title, x, .. } | BmNode::Pdf { title, x, .. } => {
+            let path = match n {
+                BmNode::File { name, .. } => format!("{name}.md"),
+                BmNode::Pdf { path, .. } => path.clone(),
+                _ => unreachable!(),
+            };
             let mut m = Map::new();
             m.insert("type".into(), Value::String("file".into()));
             if let Some(c) = &x.ctime {
                 m.insert("ctime".into(), Value::Number(c.clone()));
             }
-            m.insert("path".into(), Value::String(format!("{name}.md")));
+            m.insert("path".into(), Value::String(path));
             if let Some(t) = title {
                 m.insert("title".into(), Value::String(t.clone()));
             }
@@ -4691,7 +4810,7 @@ fn bm_names(nodes: &[BmNode], out: &mut Vec<String>) {
         match n {
             BmNode::File { name, .. } => out.push(name.clone()),
             BmNode::Group { items, .. } => bm_names(items, out),
-            BmNode::Opaque(_) => {} // not a name — carried, not listed
+            BmNode::Opaque(_) | BmNode::Pdf { .. } => {} // not a name — carried, not listed
         }
     }
 }
@@ -4720,11 +4839,20 @@ fn bm_rows_in(nodes: &[BmNode], depth: usize, out: &mut Vec<BmRow>) {
                 let label = title
                     .clone()
                     .unwrap_or_else(|| name.rsplit('/').next().unwrap_or(name).to_string());
-                out.push(BmRow { kind: "f".into(), depth, name: name.clone(), label, ctime: None });
+                out.push(BmRow { kind: "f".into(), depth, name: name.clone(), label, ctime: None, pdf: false });
+            }
+            BmNode::Pdf { path, title, .. } => {
+                // issue #44: `name` is the vault path the click opens in the PDF view
+                // PR #57 review: stock writes `"title": ""` (STOCK.md) — an empty title paints the basename
+                let label = title
+                    .clone()
+                    .filter(|t| !t.is_empty())
+                    .unwrap_or_else(|| path.rsplit('/').next().unwrap_or(path).to_string());
+                out.push(BmRow { kind: "f".into(), depth, name: path.clone(), label, ctime: None, pdf: true });
             }
             BmNode::Group { title, items, x } => {
                 let ctime = x.ctime.as_ref().map(|c| c.to_string());
-                out.push(BmRow { kind: "g".into(), depth, name: title.clone(), label: title.clone(), ctime });
+                out.push(BmRow { kind: "g".into(), depth, name: title.clone(), label: title.clone(), ctime, pdf: false });
                 bm_rows_in(items, depth + 1, out);
             }
             BmNode::Opaque(_) => {} // preserved on disk, never painted
@@ -5108,7 +5236,7 @@ fn bm_rename_walk(tree: &mut Vec<BmNode>, old: &str, new: &str) -> bool {
                     }
                 }
                 BmNode::Group { items, .. } => walk(items, old, new, done),
-                BmNode::Opaque(_) => {} // not a name; never followed, never dropped
+                BmNode::Opaque(_) | BmNode::Pdf { .. } => {} // not a name; never followed, never dropped
             }
             if drop {
                 nodes.remove(i);
@@ -5127,9 +5255,27 @@ fn bm_rename_walk(tree: &mut Vec<BmNode>, old: &str, new: &str) -> bool {
    WHATEVER DEPTH IT SITS — a bookmark inside a group is un-bookmarked from
    inside that group, and the group stays. */
 fn bm_toggle_in(tree: &mut Vec<BmNode>, name: &str) {
-    if !bm_drop_first_name(tree, name) {
+    // issue #44 (PR #57 review): a PDF row's "Remove" toggles its vault PATH. A note bookmark of
+    // that name still wins (unchanged behaviour); only when there is none is a Pdf node with that
+    // exact path dropped — never appended as a bogus "x.pdf.md" note bookmark.
+    if !bm_drop_first_name(tree, name) && !(is_pdf_target(name) && bm_drop_first_pdf(tree, name)) {
         tree.push(BmNode::file(name));
     }
+}
+
+fn bm_drop_first_pdf(nodes: &mut Vec<BmNode>, path: &str) -> bool {
+    for i in 0..nodes.len() {
+        if matches!(&nodes[i], BmNode::Pdf { path: p, .. } if p == path) {
+            nodes.remove(i);
+            return true;
+        }
+        if let BmNode::Group { items, .. } = &mut nodes[i] {
+            if bm_drop_first_pdf(items, path) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn bm_drop_first_name(nodes: &mut Vec<BmNode>, name: &str) -> bool {
@@ -5159,11 +5305,19 @@ fn bookmark_rows(v: State<Vault>) -> Vec<BmRow> {
 }
 
 #[tauri::command]
-fn toggle_bookmark(v: State<Vault>, name: String) -> Result<Vec<String>, String> {
+fn toggle_bookmark(v: State<Vault>, name: String, pdf: Option<bool>) -> Result<Vec<String>, String> {
     span_timed!("toggle_bookmark", {
         let root = cur_vault(&v).ok_or("no vault open")?;
         let mut tree = read_bm_tree(&root);
-        bm_toggle_in(&mut tree, &name);
+        // issue #44 (PR #57 review, qodo High on 340c2fb): a PDF row's Remove says so explicitly
+        // (`pdf: true`) and drops ONLY the Pdf node with that path — a note bookmark of the same
+        // logical name (note "x.pdf.md" = File{name:"x.pdf"}) is never touched. Every other caller
+        // omits the flag and keeps the by-NAME toggle unchanged.
+        if pdf == Some(true) {
+            bm_drop_first_pdf(&mut tree, &name);
+        } else {
+            bm_toggle_in(&mut tree, &name);
+        }
         write_bm_tree(&root, &tree)?;
         let mut out = Vec::new();
         bm_names(&tree, &mut out);
@@ -5789,7 +5943,11 @@ fn win_drag_start(win: tauri::Window, proto: tauri::State<'_, DragProto>) -> Res
             // jump over the measurement, so the FAILING handover — the slow one
             // worth seeing — would be the one case that emits no span.
             if p != "none" {
-                win.start_dragging().map_err(|e| e.to_string()).map(|()| p.to_string())
+                let r = win.start_dragging().map_err(|e| e.to_string()).map(|()| p.to_string());
+                if r.is_ok() {
+                    drag_release_guard(&win);
+                }
+                r
             } else {
                 Ok(p.to_string())
             }
@@ -5797,6 +5955,96 @@ fn win_drag_start(win: tauri::Window, proto: tauri::State<'_, DragProto>) -> Res
         serde_json::json!({"path": taken})
     )
 }
+
+/// #71 "when dragging window not working all of the time" — on native Wayland
+/// EVERY OTHER header drag was dead (wldrag, native sway: A=ynynynynyn; stock
+/// Obsidian on the same rig: 10/10).
+///
+/// MECHANISM. ui/main.js wfBegin hands the press over: win_drag_start ->
+/// start_dragging -> tao begin_move_drag -> xdg_toplevel.move. The compositor's
+/// move grab owns the pointer from then on and CONSUMES the button release, so
+/// the webview never gets a release for a press it already delivered to the page.
+/// WebCore keeps that pointer "pressed" (PointerCaptureController pointerIsPressed,
+/// set by mousedown, cleared ONLY by mouseup). The next real press is then a second
+/// press of an already-pressed pointer, which the Pointer Events chord rule turns
+/// into a pointermove (buttons=1), not a pointerdown — ui/main.js never sees the
+/// press, wfBegin never runs, the window does not move. That press's release IS
+/// delivered (no grab is active), un-sticking the pointer, so the drag after it
+/// works: the alternation. Measured in the [wfd:dn,up,..,mvb] census: after 15
+/// drags dn=8 up=7 — every dead drag produced a pointerup with no pointerdown.
+/// (GDK's own event state is clean: stripping BUTTON1_MASK from the next press,
+/// 822212f, changed nothing — the stale bit lives in the web process.)
+///
+/// FIX. Give the webview the release the compositor ate: right after a
+/// successful handover, synthesize a button-1 release at the pointer's position
+/// on the WebKitWebView (widget.event -> WebKit's own release handler -> WebCore
+/// mouseup), which clears the pressed state before any later press arrives. It is
+/// a GTK widget event only — the compositor never sees it, its move grab is
+/// untouched. The page sees one pointerup for the handed-over press (wfEnd is a
+/// no-op without a gesture). Only sessions that hand over (wm / wayland) reach
+/// this; the X11 "none" path is untouched.
+#[cfg(target_os = "linux")]
+fn drag_release_guard(win: &tauri::Window) {
+    let w2 = win.clone();
+    let _ = win.run_on_main_thread(move || {
+        use gtk::glib::translate::{ToGlibPtr, ToGlibPtrMut};
+        use gtk::prelude::*;
+        thread_local! { static WV: std::cell::RefCell<Option<gtk::Widget>> = const { std::cell::RefCell::new(None) }; }
+        fn find(w: &gtk::Widget) -> Option<gtk::Widget> {
+            if w.type_().name() == "WebKitWebView" {
+                return Some(w.clone());
+            }
+            let c = w.downcast_ref::<gtk::Container>()?;
+            c.children().iter().find_map(find)
+        }
+        let wv = WV.with(|c| {
+            let mut c = c.borrow_mut();
+            if c.is_none() {
+                *c = w2.gtk_window().ok().and_then(|g| find(g.upcast_ref::<gtk::Widget>()));
+            }
+            c.clone()
+        });
+        let Some(wv) = wv else {
+            eprintln!("[win_drag] release-guard: no WebKitWebView under the window");
+            return;
+        };
+        let Some(gw) = wv.window() else {
+            eprintln!("[win_drag] release-guard: webview not realized");
+            return;
+        };
+        let Some(dev) = gw.display().default_seat().and_then(|s| s.pointer()) else {
+            eprintln!("[win_drag] release-guard: no seat pointer");
+            return;
+        };
+        let (_, x, y, _) = gw.device_position(&dev);
+        let (rx, ry) = gw.root_coords(x, y);
+        let mut ev = gdk::Event::new(gdk::EventType::ButtonRelease);
+        ev.set_device(Some(&dev));
+        {
+            let p: *mut gdk::ffi::GdkEvent = ev.to_glib_none_mut().0;
+            // SAFETY: gdk_event_new(GDK_BUTTON_RELEASE) allocated a GdkEventButton;
+            // every field written is a plain member of it, and `window` takes a
+            // full reference that gdk_event_free drops with the event.
+            unsafe {
+                let b = p as *mut gdk::ffi::GdkEventButton;
+                (*b).window = gw.to_glib_full();
+                (*b).send_event = 1;
+                (*b).time = 0; // GDK_CURRENT_TIME
+                (*b).x = x as f64;
+                (*b).y = y as f64;
+                (*b).x_root = rx as f64;
+                (*b).y_root = ry as f64;
+                (*b).state = gdk::ffi::GDK_BUTTON1_MASK as _;
+                (*b).button = 1;
+            }
+        }
+        let handled = wv.event(&ev);
+        eprintln!("[win_drag] release-guard: synthetic release at {x},{y} handled={handled}");
+    });
+}
+
+#[cfg(not(target_os = "linux"))]
+fn drag_release_guard(_win: &tauri::Window) {}
 
 #[tauri::command]
 fn win_minimize(win: tauri::Window) -> Result<(), String> {
@@ -6423,6 +6671,55 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /* CC1 (PR #42 round 12, CodeAnt): the trust key is canonicalize(vault root) — a path lookup
+       that stands still on a stalled FUSE/NFS vault. Whatever runs while the lifecycle lock is
+       held (the trust recheck under it in desk_net::listen_trusted_via and desk_proc::shell_open,
+       the tail of desk_proc_spawn and of plugins_set's write after `lifecycle()`) must not do it,
+       or that mount holds up every trust-OFF, kill_all, close_all and spawn. The commands take a
+       tauri State and open native dialogs, so this reads their source: (a) desk_net_listen and
+       desk_shell compute the key before the call that takes the lock, and the closure handed to
+       it only compares keys (is_trusted_key); (b) desk_proc_spawn and plugins_set do no lookup
+       from their last `lifecycle()` to the end of the command. Comments are not code. */
+    #[test]
+    fn cc1_no_trust_key_path_lookup_under_the_lifecycle_lock() {
+        let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
+        let code = |l: &str| -> String {
+            let t = l.trim_start();
+            if t.starts_with("//") || t.starts_with("/*") || t.starts_with('*') {
+                return String::new();
+            }
+            match l.find(" // ") { Some(i) => l[..i].to_string(), None => l.to_string() }
+        };
+        let body = |name: &str| -> Vec<String> {
+            let lines: Vec<&str> = src.lines().collect();
+            let head = format!("fn {name}(");
+            let i = lines.iter().position(|l| l.contains(&head) && !l.trim_start().starts_with("//")).unwrap_or_else(|| panic!("no fn {name}"));
+            let j = i + lines[i..].iter().position(|l| *l == "}").unwrap_or_else(|| panic!("fn {name} unterminated"));
+            lines[i..=j].iter().map(|l| code(l)).collect()
+        };
+        const LOOKUP: [&str; 3] = ["plugins::is_trusted(", "trust_key(", "canonicalize"];
+        let looks_up = |l: &str| LOOKUP.iter().find(|p| l.contains(*p)).copied();
+        // (a) the lock is taken inside the callee; the closure runs under it
+        for (name, call) in [("desk_net_listen", "desk_net::listen_trusted("), ("desk_shell", "desk_proc::shell_open(")] {
+            let b = body(name);
+            let k = b.iter().position(|l| l.contains("let key = plugins::trust_key(&root);")).unwrap_or_else(|| panic!("{name}: the trust key is not computed up front"));
+            let c = b.iter().position(|l| l.contains(call)).unwrap_or_else(|| panic!("{name}: no {call}"));
+            assert!(k < c, "{name}: the trust key is computed after {call} (under the lock it takes)");
+            assert!(b.iter().any(|l| l.contains("|| plugins::is_trusted_key(&cfg_value(), &key)")), "{name}: the trust closure does not compare the precomputed key");
+            for l in b.iter().filter(|l| l.contains("||")) {
+                assert!(looks_up(l).is_none(), "{name}: a closure does a path lookup ({:?}): {}", looks_up(l), l.trim());
+            }
+        }
+        // (b) the lock is taken in the command itself: nothing after it looks a path up
+        for name in ["desk_proc_spawn", "plugins_set"] {
+            let b = body(name);
+            let at = b.iter().rposition(|l| l.contains("desk_proc::lifecycle()")).unwrap_or_else(|| panic!("{name}: takes no lifecycle lock"));
+            for l in &b[at..] {
+                assert!(looks_up(l).is_none(), "{name}: a path lookup ({:?}) after the lifecycle lock: {}", looks_up(l), l.trim());
+            }
+        }
+    }
 
     fn nav(s: &str) -> bool {
         nav_allowed(&tauri::Url::parse(s).unwrap())
@@ -8169,6 +8466,63 @@ mod tests {
         assert_eq!(items[0]["ctime"], serde_json::json!(1789851600000u64), "ctime included");
         assert_eq!(items[1]["path"], "Diagram.canvas");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// issue #44: a `.pdf` file bookmark (stock writes them) is a painted row
+    /// flagged `pdf`, named by its full vault path; it is no note name, and a
+    /// write gives it back byte-for-byte in stock's key order.
+    #[test]
+    fn issue44_pdf_bookmark_is_painted_and_rides_through() {
+        let body = r#"{"items": [
+                {"type": "file", "ctime": 7, "path": "docs/Paper.PDF"},
+                {"type": "file", "ctime": 8, "path": "Spec.pdf", "title": "The spec"},
+                {"type": "file", "ctime": 9, "path": ".pdf"},
+                {"type": "file", "ctime": 10, "path": "Plain.md"}
+            ]}"#;
+        let t = parse_bm_tree(body);
+        let rows = bm_rows_of(&t);
+        assert_eq!(rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), vec!["docs/Paper.PDF", "Spec.pdf", "Plain"]);
+        assert_eq!(rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), vec!["Paper.PDF", "The spec", "Plain"]);
+        assert_eq!(rows.iter().map(|r| r.pdf).collect::<Vec<_>>(), vec![true, true, false]);
+        assert_eq!(bm_path_of(&t, 2), Some(vec![3]), "the bare .pdf stays opaque");
+        let mut names = Vec::new();
+        bm_names(&t, &mut names);
+        assert_eq!(names, vec!["Plain"]);
+        let v: serde_json::Value = serde_json::from_str(&bm_emit(&t, &[])).unwrap();
+        assert_eq!(v["items"][0], serde_json::json!({"type": "file", "ctime": 7, "path": "docs/Paper.PDF"}));
+        assert_eq!(v["items"][1], serde_json::json!({"type": "file", "ctime": 8, "path": "Spec.pdf", "title": "The spec"}));
+        assert_eq!(v["items"][3]["path"], "Plain.md");
+    }
+
+    /// PR #57 review: stock's `"title": ""` paints the basename (not a blank row), and the PDF row's
+    /// "Remove" (toggle by its path) drops THAT Pdf node — at any depth, nothing appended, the note
+    /// bookmarks around it untouched; a note bookmark of the same name still wins.
+    #[test]
+    fn issue44_pdf_bookmark_empty_title_and_remove() {
+        let body = r#"{"items": [
+                {"type": "file", "ctime": 7, "path": "Paper.pdf", "title": ""},
+                {"type": "group", "ctime": 8, "title": "G", "items": [{"type": "file", "ctime": 9, "path": "sub/In.pdf"}]},
+                {"type": "file", "ctime": 10, "path": "Alpha.md"}
+            ]}"#;
+        let mut t = parse_bm_tree(body);
+        let rows = bm_rows_of(&t);
+        assert_eq!(rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(), vec!["Paper.pdf", "G", "In.pdf", "Alpha"]);
+        bm_toggle_in(&mut t, "Paper.pdf");
+        bm_toggle_in(&mut t, "sub/In.pdf");
+        let v: serde_json::Value = serde_json::from_str(&bm_emit(&t, &[])).unwrap();
+        assert_eq!(v["items"].as_array().unwrap().len(), 2, "{v}");
+        assert_eq!(v["items"][0]["title"], "G");
+        assert_eq!(v["items"][0]["items"].as_array().unwrap().len(), 0);
+        assert_eq!(v["items"][1]["path"], "Alpha.md");
+        let mut t2 = parse_bm_tree(r#"{"items": [{"type": "file", "path": "x.pdf"}, {"type": "file", "path": "x.pdf.md"}]}"#);
+        bm_toggle_in(&mut t2, "x.pdf");
+        let v2: serde_json::Value = serde_json::from_str(&bm_emit(&t2, &[])).unwrap();
+        assert_eq!(v2["items"], serde_json::json!([{"type": "file", "path": "x.pdf"}]), "the note bookmark x.pdf wins");
+        // the PDF row's explicit remove (toggle_bookmark pdf:true) drops the Pdf node, never the note
+        let mut t3 = parse_bm_tree(r#"{"items": [{"type": "file", "path": "x.pdf"}, {"type": "file", "path": "x.pdf.md"}]}"#);
+        assert!(bm_drop_first_pdf(&mut t3, "x.pdf"));
+        let v3: serde_json::Value = serde_json::from_str(&bm_emit(&t3, &[])).unwrap();
+        assert_eq!(v3["items"], serde_json::json!([{"type": "file", "path": "x.pdf.md"}]), "only the pdf entry leaves");
     }
 
     /// R4X.17 — the painted LABEL follows Obsidian's measured rule

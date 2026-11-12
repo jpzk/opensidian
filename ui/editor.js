@@ -150,7 +150,11 @@ const Ed = {
         // R17.6 lists "- [ ] " as ONE token: the bullet marker and the
         // checkbox are the same widget, so they reveal together.
         Ed.tok([li0, li1, cb, tm], [li0, li1, tm], "task");
-        Ed.inline(g, row, rest.slice(4));
+        // #45: the done strike is drawn on the TEXT (span.tkt), not the row: a row-level
+        // text-decoration also struck the literal indent of a nested item, a dash left of
+        // the box. Empty text gets no span (a text-less element would become a widget leaf).
+        const body = rest.slice(4);
+        if (body) { const tt = Ed.el("span", "tkt"); Ed.inline(g, tt, body); row.appendChild(tt); }
       } else {
         Ed.tok([li0, li1], [li0, li1], "li");
         Ed.inline(g, row, rest);
@@ -587,7 +591,7 @@ const Ed = {
   // #height=N -> N + 38 (LP #page=&height=N -> N, stock quirk). Broken -> 800, like stock.
   pdfSize(s) {
     const w = s.clientWidth;
-    if (!w) return;
+    if (!w || s.dataset.full) return;     // issue #44: the PDF view's frame fills its pane (CSS .pdf-view)
     const h = s.dataset.height ? +s.dataset.height + (s.dataset.lpflat ? 0 : 38)
       : s.classList.contains("mod-broken") ? 800
       : Math.round(w * (s._pdfAr || Ed.PDF_STOCK_AR) + 20);
@@ -798,7 +802,9 @@ const Ed = {
   // nothing. A non-empty range needs real overlap, so selecting up to a token's
   // first column does not open it. Unit-asserted in Ed.selfTest.
   tokAt(toks, lo, hi) {
-    const touch = lo === hi ? (t => lo >= t.s && lo <= t.e) : (t => lo < t.e && hi > t.s);
+    // gh #46: a task marker "- [ ] " stays a checkbox with the caret at its END (the task text
+    // start, stock 1.13.7); only a caret strictly inside it reveals the raw marker.
+    const touch = lo === hi ? (t => lo >= t.s && (t.kind === "task" ? lo < t.e : lo <= t.e)) : (t => lo < t.e && hi > t.s);
     return toks.filter(touch);
   },
   mark(g, l) {                                   // census + autocomplete state
@@ -1712,6 +1718,33 @@ Object.assign(Ed, {
       return;
     }
   },
+  /* #51: drop of rich text. Stock 1.13.7 turns a dropped text/html payload into
+     Markdown (**bold**, _it_, [t](url), - li), exactly as its paste does; CM6 alone
+     inserts only text/plain, so links and formatting were flattened. The converter is
+     the plugin API's htmlToMarkdown (inert parse, every text node escaped, unsafe URLs
+     dropped). true = handled; false leaves the drop to CM6 (files, a move inside the
+     editor, no html, no converter, nothing converted). Placed and selected like CM6's
+     own drop, one "input.drop" undo step. */
+  htmlDrop(e, view) {
+    const dt = e && e.dataTransfer;
+    if (!dt || !view || e.defaultPrevented || view.state.readOnly) return false;
+    if (view.inputState && view.inputState.draggedContent) return false;
+    if (dt.files && dt.files.length) return false;
+    // PR #65 review F1: NOT window.__osPluginHost at drop time — the loader's seal() narrows it to
+    // {censusTok} before the first plugin runs; main.js hands the converter over at load (Ed.h2m)
+    const h2m = typeof Ed.h2m === "function" ? Ed.h2m : null;
+    let html = "";
+    try { html = String(dt.getData("text/html") || ""); } catch (_) {}
+    if (!h2m || !html.trim()) return false;
+    let md = "";
+    try { md = String(h2m(html) || ""); } catch (_) { return false; }
+    if (!md) return false;
+    const r = view.posAtCoords({ x: e.clientX, y: e.clientY }, false);
+    e.preventDefault();
+    view.focus();
+    view.dispatch({ changes: { from: r, insert: md }, selection: { anchor: r, head: r + md.length }, userEvent: "input.drop" });
+    return true;
+  },
   mount(v) {
     const G = () => Ed.G(v);
     v._ext = [
@@ -1738,6 +1771,10 @@ Object.assign(Ed, {
       // handler here ran ahead of the keymap handler and swallowed Tab/Enter/... for
       // every plugin keymap (Advanced Tables' Tab only indented).
       CMv.keymap.of([{ any: (view, e) => { Ed.onKey(G(), e); return e.defaultPrevented; } }]),
+      // gh #43: a pair char typed over a selection wraps it, as stock does (Settings > Editor
+      // "Auto pair brackets" / "Auto pair Markdown syntax"): the selection stays on the inner
+      // text, so [ then [ makes [[sel]] and * then * makes **sel** (harness docs/issue-43/STOCK.md)
+      CMv.EditorView.inputHandler.of((view, from, to, text) => Ed.wrapSel(view, text)),
       CMv.EditorView.domEventHandlers({
         beforeinput: (e) => {
           const g = G();
@@ -1750,6 +1787,12 @@ Object.assign(Ed, {
         // embedded, like stock (ui/main.js attachPaste); true = claimed, CM6 does not paste text
         paste: (e) => typeof attachPaste === "function" ? attachPaste(G(), e) : false,
       }),
+      // #51: a drop carrying text/html (a selection dragged from a browser) keeps its
+      // formatting and links as Markdown, like stock 1.13.7 (harness docs/issue-51/STOCK.md);
+      // files, an in-editor move and an html-less drop stay CM6's own drop. Prec.low (PR #65
+      // review F2): after the plugin hooks (editor-api.js hooks(), default precedence), so a
+      // plugin's "editor-drop" sees the drop first and its preventDefault wins, as in stock
+      CMs.Prec.low(CMv.EditorView.domEventHandlers({ drop: (e, view) => Ed.htmlDrop(e, view) })),
       CMv.EditorView.lineWrapping,
       CMv.EditorView.contentAttributes.of({ spellcheck: "false", autocorrect: "off", autocapitalize: "off" }),
       Ed.viewTheme || (Ed.viewTheme = CMv.EditorView.theme({ "&.cm-focused": { outline: "none" }, ".cm-scroller": { fontFamily: "inherit", lineHeight: "inherit", overflow: "visible" },
@@ -1803,6 +1846,17 @@ Object.assign(Ed, {
   /* keys CM6 does not own: Enter (list continuation), Backspace/Delete (model
      deletes), Tab, Home/End, raw-column arrows, undo/redo, select-all — the
      R17 semantics, now on the CM6 selection */
+  WRAP: { "[": "]", "(": ")", "{": "}", "*": "*", "_": "_", "~": "~", "=": "=", "`": "`", "$": "$", "\"": "\"", "'": "'" },
+  wrapSel(view, text) {
+    const st = view.state, close = Object.prototype.hasOwnProperty.call(Ed.WRAP, text) ? Ed.WRAP[text] : null;
+    if (close == null || view.composing || st.selection.ranges.some(r => r.empty)) return false;
+    const n = text.length;
+    view.dispatch(st.changeByRange(r => ({
+      changes: [{ from: r.from, insert: text }, { from: r.to, insert: close }],
+      range: CMs.EditorSelection.range(r.anchor + n, r.head + n),
+    })), { userEvent: "input.type", scrollIntoView: true });
+    return true;
+  },
   onKey(g, e) {
     if (!g || e.isComposing) return;
     if (typeof acKeydown === "function") { acKeydown(g, e); if (e.defaultPrevented) return; }
@@ -2222,7 +2276,27 @@ Ed.lpExt = function (v, G) {
       return e.defaultPrevented;
     },
   });
-  return [plugin, clicks, Ed.cbField(v, G, bust)];
+  // gh #46: Up/Down (native caret moves, read back as userEvent "select") onto ANOTHER line
+  // that lands inside a task marker ("- [ ] ", nested / quoted / [x] too) jumps to the task
+  // text behind it. Home, Left/Right, clicks and plain rows stay stock (docs/issue-46/STOCK.md).
+  const vkeys = EditorView.domEventHandlers({
+    // only an UNMODIFIED key is a vertical move: Cmd+Up/Down (macOS document start/end), Ctrl+Up/Down
+    // (WebKitGTK paragraph backward/forward), Alt+... and Shift (selection) keep their native target (PR #62)
+    keydown: (e) => { v._vmove = /^(ArrowUp|ArrowDown|PageUp|PageDown)$/.test(e.key) && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey ? Date.now() : 0; return false; },
+  });
+  const taskSnap = CMs.EditorState.transactionFilter.of(tr => {
+    if (!v._vmove || Date.now() - v._vmove > 500 || tr.docChanged || !tr.selection || !tr.isUserEvent("select") || tr.isUserEvent("select.pointer")) return tr;
+    if (v.lp && v.lp.classList.contains("src")) return tr;
+    const s = tr.selection;
+    if (s.ranges.length !== 1 || !s.main.empty) return tr;
+    const doc = tr.newDoc, ln = doc.lineAt(s.main.head);
+    if (ln.number === tr.startState.doc.lineAt(tr.startState.selection.main.head).number) return tr;
+    // quote prefix as Ed.block reads it: ">" + any spaces/tabs, repeated (">  - [ ] x" is a quoted list row too)
+    const m = /^[ \t]*(?:>[ \t]*)*(?:[-*+]|\d+\.) \[[^\]\n]\] /.exec(ln.text);
+    if (!m || s.main.head - ln.from >= m[0].length) return tr;
+    return [tr, { selection: CMs.EditorSelection.cursor(ln.from + m[0].length), sequential: true }];
+  });
+  return [plugin, clicks, vkeys, taskSnap, Ed.cbField(v, G, bust)];
 };
 /* ---------- plugin CODE BLOCKS in Live Preview (plug-top5) ----------
    A fenced block whose language a plugin registered a code-block processor for
