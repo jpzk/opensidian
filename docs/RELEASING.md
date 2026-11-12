@@ -72,8 +72,16 @@ Publish (this is the only step that makes the release public):
 
 Optionally replace the "NOT SIGNED YET" line in the release body.
 
-## Test drafts
+## Release branch (alternative to pushing the tag)
 
-While the temporary `goal/ci-release` branch trigger exists, a push to that
-branch creates a throw-away draft `ci-draft-test-<sha7>` (no real tag). Delete
-it after checking. The branch trigger and that path are removed before merge.
+A branch named `v<ver>-release` (listed in the workflow's `push.branches`)
+builds the same set and stages the draft for tag `v<ver>` with
+`--target <branch commit>`. No tag is pushed: GitHub creates `v<ver>` at that
+commit when the draft is published. The branch name must match the version in
+`tauri.conf.json` and the flatpak metainfo `<release>`, or the build fails.
+
+The draft body is `.github/release-notes/v<ver>.md` (when present) followed by
+the SHA256SUMS block and the run URL.
+
+Publishing in step 4 also needs `--latest` if it should become the latest
+release (CI creates drafts with `--latest=false`).

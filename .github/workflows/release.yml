@@ -27,8 +27,9 @@ on:
   workflow_dispatch: {}
   push:
     tags: ['v*']
-    # TEMPORARY: lets the workflow be exercised before merge. REMOVE before merging.
-    branches: ['goal/ci-release']
+    # release branch v<ver>-release: builds and stages the DRAFT for tag v<ver>.
+    # The tag itself is created by GitHub only when the operator publishes.
+    branches: ['v0.9.3-release']
 
 permissions:
   contents: read
@@ -62,7 +63,9 @@ jobs:
         name: version from tauri.conf.json
         run: |
           V=$(jq -r .version src-tauri/tauri.conf.json); V=${V%.0}
-          case "$GITHUB_REF" in refs/tags/v*) [ "v$V" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != version $V"; exit 1; };; esac
+          case "$GITHUB_REF" in refs/tags/v*) [ "v$V" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != version $V"; exit 1; };;
+            refs/heads/v*-release) [ "v$V-release" = "$GITHUB_REF_NAME" ] || { echo "branch $GITHUB_REF_NAME != version $V"; exit 1; };;
+          esac
           echo "version=$V" >> "$GITHUB_OUTPUT"; echo "version $V"
       - name: system packages (= bin/hz/cloud-init.yaml build set)
         run: |
@@ -188,7 +191,7 @@ jobs:
           # branch/dispatch test builds only warn (the metainfo moves on the release branch).
           if ! grep -q "<release version=\"$V" packaging/flatpak/dev.koto.opensidian.metainfo.xml; then
             case "$GITHUB_REF" in
-              refs/tags/v*) echo "FAIL: metainfo <release> is not $V"; exit 1;;
+              refs/tags/v*|refs/heads/v*-release) echo "FAIL: metainfo <release> is not $V"; exit 1;;
               *) echo "::warning::metainfo <release> is not $V (ok for a test build, fatal on a tag)";;
             esac
           fi
@@ -266,10 +269,9 @@ jobs:
   draft-release:
     name: draft-release
     needs: [appimage, sums]
-    # tags v* -> draft for that tag. TEMPORARY: the goal/ci-release branch makes a
-    # throw-away draft 'ci-draft-test-<sha7>' (no real v* tag) so this path can be
-    # tested; that branch case is REMOVED together with the branch trigger before merge.
-    if: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/goal/ci-release' }}
+    # tags v* -> draft for that tag; branch v<ver>-release -> draft for tag v<ver>
+    # targeting the branch commit (no tag is pushed; it appears on publish).
+    if: ${{ startsWith(github.ref, 'refs/tags/v') || (startsWith(github.ref, 'refs/heads/v') && endsWith(github.ref, '-release')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -304,21 +306,30 @@ jobs:
           set -euo pipefail
           case "$GITHUB_REF" in
             refs/tags/v*)
-              TAG="$GITHUB_REF_NAME"; TITLE="opensidian $V"; EXTRA=(--verify-tag) ;;
-            refs/heads/goal/ci-release)
-              # TEMPORARY test path — removed with the branch trigger before merge.
-              TAG="ci-draft-test-${GITHUB_SHA::7}"; TITLE="opensidian $V (CI draft test, delete me)"
+              TAG="$GITHUB_REF_NAME"; EXTRA=(--verify-tag) ;;
+            refs/heads/v*-release)
+              # draft for tag v<ver> at this commit; GitHub creates the tag on publish
+              TAG="v$V"; [ "$TAG-release" = "$GITHUB_REF_NAME" ] || { echo "branch/version mismatch"; exit 1; }
               EXTRA=(--target "$GITHUB_SHA") ;;
-            *) echo "refusing: $GITHUB_REF is neither a v* tag nor the test branch"; exit 1 ;;
+            *) echo "refusing: $GITHUB_REF is neither a v* tag nor a v<ver>-release branch"; exit 1 ;;
           esac
+          TITLE="opensidian $V"
           A="assets/opensidian-$V-x86_64"
           FILES=("$A-slim.AppImage" "$A-portable.AppImage" "$A.flatpak" "$A.rpm" "$A.deb" assets/SHA256SUMS)
           {
-            echo "NOT SIGNED YET: operator adds SHA256SUMS.asc offline, then publishes."
+            if [ -f ".github/release-notes/v$V.md" ]; then
+              cat ".github/release-notes/v$V.md"
+            else
+              echo "NOT SIGNED YET: operator adds SHA256SUMS.asc offline, then publishes."
+            fi
+            echo
+            echo "### SHA256SUMS"
             echo
             echo '```'
             cat assets/SHA256SUMS
             echo '```'
+            echo
+            echo "Built by $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID from commit $GITHUB_SHA."
           } > notes.md
 
           # drafts have no git tag yet, so look them up in the release list (not /releases/tags/)
@@ -335,9 +346,10 @@ jobs:
             ID=$(cut -d' ' -f1 existing.txt)
             echo "draft $ID exists: re-uploading assets (--clobber), refreshing body"
             gh release upload "$TAG" "${FILES[@]}" --clobber
-            gh api -X PATCH "repos/$GH_REPO/releases/$ID" -F body=@notes.md --jq '"body updated, draft=\(.draft)"'
+            gh api -X PATCH "repos/$GH_REPO/releases/$ID" -F body=@notes.md -f target_commitish="$GITHUB_SHA" -F draft=true \
+              --jq '"body updated, draft=\(.draft) target=\(.target_commitish)"'
           else
-            gh release create "$TAG" --draft --title "$TITLE" --notes-file notes.md "${EXTRA[@]}" "${FILES[@]}"
+            gh release create "$TAG" --draft --latest=false --title "$TITLE" --notes-file notes.md "${EXTRA[@]}" "${FILES[@]}"
           fi
 
           # prove the result: exactly one release for TAG, still a draft, exactly 6 assets
