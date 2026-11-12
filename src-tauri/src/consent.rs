@@ -122,25 +122,42 @@ fn check_run(sp: &Spec) -> Result<(), String> {
    candidate that does not canonicalize is not a candidate. The cwd is canonicalized the
    same way by resolve() before the program is looked up against it. */
 pub fn resolve_program(sp: &Spec) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
-    let exe = |p: &Path| std::fs::metadata(p).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false);
+    #[cfg(unix)]
+    let exe = {
+        use std::os::unix::fs::PermissionsExt;
+        |p: &Path| std::fs::metadata(p).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false)
+    };
+    #[cfg(not(unix))]
+    let exe = |p: &Path| std::fs::metadata(p).map(|m| m.is_file()).unwrap_or(false);
     let canon = |p: PathBuf| p.canonicalize().ok().filter(|c| c.is_absolute() && exe(c) && !magic(c));
     if sp.file.is_empty() {
         return None;
     }
-    if sp.file.contains('/') {
+    if sp.file.contains('/') || sp.file.contains('\\') || Path::new(&sp.file).is_absolute() {
         let p = Path::new(&sp.file);
         let p = if p.is_absolute() { p.to_path_buf() } else { sp.cwd.join(p) };
         return (p.is_absolute() && exe(&p)).then_some(p).and_then(canon);
     }
     let path = sp.env.iter().rev().find(|(k, _)| k == "PATH").map(|(_, v)| v.clone()).or_else(|| std::env::var("PATH").ok())?;
-    path.split(':').map(Path::new).filter(|d| d.is_absolute()).map(|d| d.join(&sp.file)).filter(|p| exe(p)).find_map(canon)
+    #[cfg(windows)]
+    let sep = ';';
+    #[cfg(not(windows))]
+    let sep = ':';
+    path.split(sep).map(Path::new).filter(|d| d.is_absolute()).map(|d| d.join(&sp.file)).filter(|p| exe(p)).find_map(canon)
 }
 
 /// X1: a canonical path that still names a per-process object (it could mean another
 /// file in the child): anything under /proc or /dev/fd
 fn magic(c: &Path) -> bool {
-    c.starts_with("/proc") || c.starts_with("/dev/fd")
+    #[cfg(unix)]
+    {
+        c.starts_with("/proc") || c.starts_with("/dev/fd")
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = c;
+        false
+    }
 }
 
 /// X1: the cwd the child runs in, canonical (what the dialog shows); a cwd that does not
@@ -459,6 +476,7 @@ mod tests {
 
     /// base/vault (the plugin's cwd, with its own `fakeprog`), base/bin (the real
     /// `fakeprog`), base/link -> vault. Each script prints where it lives.
+    #[cfg(unix)]
     fn tree(tag: &str) -> PathBuf {
         let base = std::env::temp_dir().join(format!("consent-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
@@ -517,6 +535,7 @@ mod tests {
 
     // F1: an empty PATH entry, "." or a relative entry would be resolved by exec against
     // the child's cwd (the vault): skipped, so vault/fakeprog is never what resolves
+    #[cfg(unix)]
     #[test]
     fn f1_relative_path_entries_never_resolve_into_the_cwd() {
         let b = tree("f1");

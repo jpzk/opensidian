@@ -433,6 +433,7 @@ mod tests {
 
     /// rt-wm: a pid /proc does not show (hidepid + landlock) is judged by kill 0:
     /// an absent pid stays dead, and pid 0 / overflow never address a process group.
+    #[cfg(target_os = "linux")]
     #[test]
     fn switch_alive_hidden_pid_falls_back_to_kill0() {
         assert!(hidden_alive(std::process::id()), "kill 0 on ourselves must see us");

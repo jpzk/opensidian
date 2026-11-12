@@ -4124,14 +4124,24 @@ async fn desk_shell(win: tauri::Window, v: State<'_, Vault>, op: String, target:
     // the opener's fd-only check and the exec. P4: R4: cwd "/", PATH absolute entries only.
     // AA1: the opener is exec'd by its held fd (l.program()), rechecked in pre_exec (l.apply)
     let r = desk_proc::shell_open(seen, &t, &opener, opener_path, || plugins::is_trusted_key(&cfg_value(), &key), |l| {
-        let mut cmd = std::process::Command::new(l.program());
-        l.apply(&mut cmd).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-        cmd.spawn().map_err(|e| desk_proc::opener_err(&opener.file, &e))
-    })
-    .map(|mut c| {
-        std::thread::spawn(move || {
-            let _ = c.wait();   // reap it, no zombie
-        });
+        #[cfg(windows)]
+        {
+            // ShellExecuteW: the approved target is ONE LPCWSTR — never cmd.exe.
+            let _ = l;
+            return win_shell_execute(std::ffi::OsStr::new(&t.arg), "open");
+        }
+        #[cfg(not(windows))]
+        {
+            let mut cmd = std::process::Command::new(l.program());
+            l.apply(&mut cmd).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+            cmd.spawn()
+                .map(|mut c| {
+                    std::thread::spawn(move || {
+                        let _ = c.wait(); // reap it, no zombie
+                    });
+                })
+                .map_err(|e| desk_proc::opener_err(&opener.file, &e))
+        }
     });
     if let Err(e) = &r {
         eprintln!("[desk] shell {op} {}: {e}", t.arg);
