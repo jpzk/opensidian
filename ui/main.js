@@ -1518,17 +1518,27 @@ function ttlTok() {
   const base = top + (L - (asc + dsc)) / 2 + asc;
   const o = ["TOP=" + f(base - m.actualBoundingBoxAscent), "BOT=" + f(base + m.actualBoundingBoxDescent),
              "CAP=" + f(ctx.measureText(t[0]).actualBoundingBoxAscent)];
-  let body = NaN;
+  // BODY = the ink top of the whole first visible ROW, not of its first text node: on the
+  // caret's line live preview reveals the heading marker, so that row's first text node is the
+  // bare "#" (SPAN.mk rv), whose ascent (22 px at the h1 size) is below the row's tallest glyph
+  // (the "l"/"T" of "Title Fixture", 24 px) — the pixels' ink top is the row's, so the old
+  // first-node value sat 1.78 px low (rt2-title, LP_BLOCK 58 vs 60). Every painted text node
+  // whose first rect starts on that first line counts; the minimum ink top wins.
+  let body = NaN, row = null;
   const w = document.createTreeWalker(R, NodeFilter.SHOW_TEXT);
   for (let n; (n = w.nextNode());) {
     const i = n.data.search(/\S/); if (i < 0) continue;
     const txt = n.data.slice(i).replace(/\s+$/, ""), r = document.createRange();
     r.setStart(n, i); r.setEnd(n, i + txt.length);
     const rc = [...r.getClientRects()].find(q => q.width > 0); if (!rc) continue;
-    ctx.font = fnt(getComputedStyle(n.parentElement));
+    if (row && rc.top >= row.bottom) break;            // past the first visible row
+    const ps = getComputedStyle(n.parentElement);
+    if (ps.visibility !== "visible") continue;
+    if (!row) row = rc;
+    ctx.font = fnt(ps);
     const b = ctx.measureText(txt), a2 = b.fontBoundingBoxAscent, d2 = b.fontBoundingBoxDescent;
-    body = rc.top + (rc.height - (a2 + d2)) / 2 + a2 - b.actualBoundingBoxAscent;
-    break;
+    const ink = rc.top + (rc.height - (a2 + d2)) / 2 + a2 - b.actualBoundingBoxAscent;
+    if (!(ink >= body)) body = ink;
   }
   o.push("BODY=" + f(body));
   return " [ttl:" + (isReading(g) ? "read" : "lp") + "|" + o.join("|") + "]";
