@@ -1518,17 +1518,27 @@ function ttlTok() {
   const base = top + (L - (asc + dsc)) / 2 + asc;
   const o = ["TOP=" + f(base - m.actualBoundingBoxAscent), "BOT=" + f(base + m.actualBoundingBoxDescent),
              "CAP=" + f(ctx.measureText(t[0]).actualBoundingBoxAscent)];
-  let body = NaN;
+  // BODY = the ink top of the whole first visible ROW, not of its first text node: on the
+  // caret's line live preview reveals the heading marker, so that row's first text node is the
+  // bare "#" (SPAN.mk rv), whose ascent (22 px at the h1 size) is below the row's tallest glyph
+  // (the "l"/"T" of "Title Fixture", 24 px) — the pixels' ink top is the row's, so the old
+  // first-node value sat 1.78 px low (rt2-title, LP_BLOCK 58 vs 60). Every painted text node
+  // whose first rect starts on that first line counts; the minimum ink top wins.
+  let body = NaN, row = null;
   const w = document.createTreeWalker(R, NodeFilter.SHOW_TEXT);
   for (let n; (n = w.nextNode());) {
     const i = n.data.search(/\S/); if (i < 0) continue;
     const txt = n.data.slice(i).replace(/\s+$/, ""), r = document.createRange();
     r.setStart(n, i); r.setEnd(n, i + txt.length);
     const rc = [...r.getClientRects()].find(q => q.width > 0); if (!rc) continue;
-    ctx.font = fnt(getComputedStyle(n.parentElement));
+    if (row && rc.top >= row.bottom) break;            // past the first visible row
+    const ps = getComputedStyle(n.parentElement);
+    if (ps.visibility !== "visible") continue;
+    if (!row) row = rc;
+    ctx.font = fnt(ps);
     const b = ctx.measureText(txt), a2 = b.fontBoundingBoxAscent, d2 = b.fontBoundingBoxDescent;
-    body = rc.top + (rc.height - (a2 + d2)) / 2 + a2 - b.actualBoundingBoxAscent;
-    break;
+    const ink = rc.top + (rc.height - (a2 + d2)) / 2 + a2 - b.actualBoundingBoxAscent;
+    if (!(ink >= body)) body = ink;
   }
   o.push("BODY=" + f(body));
   return " [ttl:" + (isReading(g) ? "read" : "lp") + "|" + o.join("|") + "]";
@@ -8315,6 +8325,16 @@ async function cvTrash(p) {
   await refreshTree();
   updateTitle();
 }
+/* goal cvf-filecards: [cvfact:tree=<the explorer's active row: note path .md | board path | ->|bl=<status-bar backlinks text | ->]
+   emitted whether or not a board is on screen (a note's status-bar count is read through it too). */
+function cvfactTok(esc) {
+  try {
+    const ar = document.querySelector("#tree .trow.active");
+    const an = ar ? (ar.dataset.note != null ? ar.dataset.note + ".md" : ar.dataset.canvas || ar.dataset.file || "-") : "-";
+    const g = fg(), bl = g && g.status && !g.status.hidden && g.stBl ? String(g.stBl.textContent || "").trim() : "";
+    return " [cvfact:tree=" + esc(an) + "|bl=" + esc(bl || "-") + "]";
+  } catch (_) { return ""; }
+}
 /* goal canvas-core census: [cvrow:<path>@x,y|...] the painted .canvas rows of the explorer;
    [cvdir:<folder>@x,y|...] the painted folder rows (only while a .canvas row is listed, at most 8);
    for the first canvas view on screen [cv:<path>|n=<nodes>|e=<edges>|err=0|1|dirty=0|1|saves=<n>|on=0|1],
@@ -8336,7 +8356,9 @@ function canvasTok() {
   t += cvGflTok();                                                       // cvf-links CVR-A-102
   let v = null;
   try { v = PLG.app.workspace.getLeavesOfType("canvas").map(l => l.view).find(x => x && vis(x.containerEl)) || null; } catch (_) {}
-  if (!v) return t;
+  // rt-canvas: [cvfact:] is read with NO board on screen too (cvflinks CVR-A-099/100 read a note's status-bar count)
+  const fa = cvfactTok(esc);
+  if (!v) return t + fa;
   t += " [cv:" + esc(v.path || "-") + "|n=" + v.canvas.nodes.size + "|e=" + v.canvas.edges.size + "|err=" + (v.broken ? 1 : 0) +
        "|dirty=" + (v.dirty ? 1 : 0) + "|saves=" + (v.saves || 0) + "|on=" + (CANVAS.isRegistered() ? 1 : 0) + "]";
   const ns = [...v.containerEl.querySelectorAll(".canvas-node[data-node-id]")].filter(vis).slice(0, 16);
@@ -8407,13 +8429,7 @@ function canvasTok() {
   } catch (_) {}
   // goal cvf-media: [cvm:<id>|k=|lbl=|...] [cvmb:] [cvmpdf:] [cvmpick:swap|...] file cards (ui/plugins/canvas-media.js)
   if (window.CanvasMedia) try { t += window.CanvasMedia.census(v); } catch (_) {}
-  // goal cvf-filecards: [cvfact:tree=<the explorer's active row: note path .md | board path | ->|bl=<status-bar backlinks text | ->]
-  try {
-    const ar = document.querySelector("#tree .trow.active");
-    const an = ar ? (ar.dataset.note != null ? ar.dataset.note + ".md" : ar.dataset.canvas || ar.dataset.file || "-") : "-";
-    const g = fg(), bl = g && g.status && !g.status.hidden && g.stBl ? String(g.stBl.textContent || "").trim() : "";
-    t += " [cvfact:tree=" + esc(an) + "|bl=" + esc(bl || "-") + "]";
-  } catch (_) {}
+  t += fa;
   return t;
 }
 /* goal cvf-create CVR-A-009 (coordinator ruling 03:00Z): the full folder menu in stock order. Off until the operator's
