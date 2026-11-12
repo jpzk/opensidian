@@ -8315,6 +8315,16 @@ async function cvTrash(p) {
   await refreshTree();
   updateTitle();
 }
+/* goal cvf-filecards: [cvfact:tree=<the explorer's active row: note path .md | board path | ->|bl=<status-bar backlinks text | ->]
+   emitted whether or not a board is on screen (a note's status-bar count is read through it too). */
+function cvfactTok(esc) {
+  try {
+    const ar = document.querySelector("#tree .trow.active");
+    const an = ar ? (ar.dataset.note != null ? ar.dataset.note + ".md" : ar.dataset.canvas || ar.dataset.file || "-") : "-";
+    const g = fg(), bl = g && g.status && !g.status.hidden && g.stBl ? String(g.stBl.textContent || "").trim() : "";
+    return " [cvfact:tree=" + esc(an) + "|bl=" + esc(bl || "-") + "]";
+  } catch (_) { return ""; }
+}
 /* goal canvas-core census: [cvrow:<path>@x,y|...] the painted .canvas rows of the explorer;
    [cvdir:<folder>@x,y|...] the painted folder rows (only while a .canvas row is listed, at most 8);
    for the first canvas view on screen [cv:<path>|n=<nodes>|e=<edges>|err=0|1|dirty=0|1|saves=<n>|on=0|1],
@@ -8336,7 +8346,9 @@ function canvasTok() {
   t += cvGflTok();                                                       // cvf-links CVR-A-102
   let v = null;
   try { v = PLG.app.workspace.getLeavesOfType("canvas").map(l => l.view).find(x => x && vis(x.containerEl)) || null; } catch (_) {}
-  if (!v) return t;
+  // rt-canvas: [cvfact:] is read with NO board on screen too (cvflinks CVR-A-099/100 read a note's status-bar count)
+  const fa = cvfactTok(esc);
+  if (!v) return t + fa;
   t += " [cv:" + esc(v.path || "-") + "|n=" + v.canvas.nodes.size + "|e=" + v.canvas.edges.size + "|err=" + (v.broken ? 1 : 0) +
        "|dirty=" + (v.dirty ? 1 : 0) + "|saves=" + (v.saves || 0) + "|on=" + (CANVAS.isRegistered() ? 1 : 0) + "]";
   const ns = [...v.containerEl.querySelectorAll(".canvas-node[data-node-id]")].filter(vis).slice(0, 16);
@@ -8407,13 +8419,7 @@ function canvasTok() {
   } catch (_) {}
   // goal cvf-media: [cvm:<id>|k=|lbl=|...] [cvmb:] [cvmpdf:] [cvmpick:swap|...] file cards (ui/plugins/canvas-media.js)
   if (window.CanvasMedia) try { t += window.CanvasMedia.census(v); } catch (_) {}
-  // goal cvf-filecards: [cvfact:tree=<the explorer's active row: note path .md | board path | ->|bl=<status-bar backlinks text | ->]
-  try {
-    const ar = document.querySelector("#tree .trow.active");
-    const an = ar ? (ar.dataset.note != null ? ar.dataset.note + ".md" : ar.dataset.canvas || ar.dataset.file || "-") : "-";
-    const g = fg(), bl = g && g.status && !g.status.hidden && g.stBl ? String(g.stBl.textContent || "").trim() : "";
-    t += " [cvfact:tree=" + esc(an) + "|bl=" + esc(bl || "-") + "]";
-  } catch (_) {}
+  t += fa;
   return t;
 }
 /* goal cvf-create CVR-A-009 (coordinator ruling 03:00Z): the full folder menu in stock order. Off until the operator's
