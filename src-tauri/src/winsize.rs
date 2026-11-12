@@ -155,12 +155,22 @@ impl Track {
             self.ring.remove(0);
         }
     }
-    /// the bounds to save; `max_now` = the current rect when maximized
+    /// the bounds to save; `max_now` = the current rect when maximized.
+    /// A maximize can reach us as TWO configures before the state flag flips:
+    /// the move to the work-area origin (old size, new position) and the
+    /// resize (new size). Either half is a transitional rect, not the normal
+    /// bounds, so skip a sample sharing the maximized size OR position; only
+    /// when nothing else is left fall back to the size-only rule (a normal
+    /// window that really sat at the work-area origin).
     pub fn normal(&self, max_now: Option<Rect>) -> Option<Rect> {
         let mut it = self.ring.iter().rev();
         match max_now {
             None => it.next().copied(),
-            Some(m) => it.find(|r| (r.w, r.h) != (m.w, m.h)).copied(),
+            Some(m) => {
+                let sz = |r: &&Rect| (r.w, r.h) != (m.w, m.h);
+                let pos = |r: &&Rect| (r.x, r.y) != (m.x, m.y);
+                it.clone().find(|r| sz(r) && pos(r)).or_else(|| it.find(sz)).copied()
+            }
         }
     }
 }
@@ -303,5 +313,26 @@ mod tests {
             t.see(Rect { x: i as f64, ..a });
         }
         assert_eq!(t.normal(None), Some(Rect { x: 9.0, ..a }));
+    }
+
+    #[test]
+    fn winsize_track_skips_the_move_half_of_a_maximize() {
+        // openbox: add maximized_vert,maximized_horz -> a Moved to the
+        // work-area origin at the OLD size can land before the Resized and
+        // before is_maximized() flips (T2 af-g 11-12: saved 900x600@0,0)
+        let mut t = Track::default();
+        let a = Rect { x: 200.0, y: 120.0, w: 900.0, h: 600.0 };
+        let m = Rect { x: 0.0, y: 0.0, w: 1400.0, h: 900.0 };
+        t.see(a);
+        t.see(Rect { x: 0.0, y: 0.0, ..a });
+        assert_eq!(t.normal(Some(m)), Some(a), "the move half of a maximize is not the normal bounds");
+        t.see(m);
+        assert_eq!(t.normal(Some(m)), Some(a));
+        // a normal window that really sat at the origin still saves its bounds
+        let mut o = Track::default();
+        let z = Rect { x: 0.0, y: 0.0, w: 900.0, h: 600.0 };
+        o.see(z);
+        o.see(m);
+        assert_eq!(o.normal(Some(m)), Some(z));
     }
 }
