@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* desk_proc (Windows / macOS) — same public API as linux.rs.
 
-   Linux pins programs with O_PATH fds and execs via /proc/self/fd/N. Here the
-   Spec still carries prog/dir placeholders so consent::resolve and main.rs
-   compile unchanged; start() runs Command::new on the resolved path. Shell
-   opens hand the target to the caller's Launch (main uses ShellExecuteW on
-   Windows / `open` on macOS when it builds the Command). */
+   Linux pins programs with O_PATH fds and execs via /proc/self/fd/N. Here we
+   still cannot fd-exec, but pin() holds the file/dir open, records its identity,
+   and start() rechecks that identity then launches via the open object's current
+   path (GetFinalPathNameByHandle / F_GETPATH) — a rename-away during the dialog
+   still runs the approved object; a rewrite or a swap at the old path is EPERM.
+   Windows: each child is assigned to a Job Object so kill_all terminates the
+   whole tree. macOS: kill() honours SIGKILL (trust-OFF must not leave helpers). */
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -100,7 +102,69 @@ pub struct Run {
     stdin: Mutex<Option<ChildStdin>>,
     st: Mutex<State>,
     cv: Condvar,
+    /// Windows: job that owns the child (+ descendants). Closed on Drop → kill tree.
+    #[cfg(windows)]
+    job: JobHandle,
 }
+
+#[cfg(windows)]
+struct JobHandle(*mut core::ffi::c_void);
+#[cfg(windows)]
+// SAFETY: the HANDLE is only used from kill/Drop; Run is behind Arc and methods take &self.
+unsafe impl Send for JobHandle {}
+#[cfg(windows)]
+unsafe impl Sync for JobHandle {}
+#[cfg(windows)]
+impl Drop for JobHandle {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                TerminateJobObject(self.0, 1);
+                CloseHandle(self.0);
+            }
+            self.0 = std::ptr::null_mut();
+        }
+    }
+}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    fn CreateJobObjectW(attr: *mut core::ffi::c_void, name: *const u16) -> *mut core::ffi::c_void;
+    fn AssignProcessToJobObject(job: *mut core::ffi::c_void, process: *mut core::ffi::c_void) -> i32;
+    fn TerminateJobObject(job: *mut core::ffi::c_void, code: u32) -> i32;
+    fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut core::ffi::c_void;
+    fn CloseHandle(h: *mut core::ffi::c_void) -> i32;
+    fn TerminateProcess(h: *mut core::ffi::c_void, code: u32) -> i32;
+    fn GetFileInformationByHandle(h: *mut core::ffi::c_void, info: *mut ByHandleFileInfo) -> i32;
+    fn GetFinalPathNameByHandleW(h: *mut core::ffi::c_void, buf: *mut u16, len: u32, flags: u32) -> u32;
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct ByHandleFileInfo {
+    attributes: u32,
+    created: u64,
+    accessed: u64,
+    written: u64,
+    volume: u32,
+    size_high: u32,
+    size_low: u32,
+    links: u32,
+    index_high: u32,
+    index_low: u32,
+}
+
+#[cfg(windows)]
+const PROCESS_TERMINATE: u32 = 0x0001;
+#[cfg(windows)]
+const PROCESS_SET_QUOTA: u32 = 0x0100;
+#[cfg(windows)]
+const PROCESS_DUP_HANDLE: u32 = 0x0040;
+#[cfg(windows)]
+const FILE_NAME_NORMALIZED: u32 = 0x0;
+#[cfg(windows)]
+const VOLUME_NAME_DOS: u32 = 0x0;
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct Chunk {
@@ -132,16 +196,13 @@ impl Run {
         if self.st.lock().unwrap_or_else(|e| e.into_inner()).reaped {
             return false;
         }
-        let _ = sig;
         #[cfg(windows)]
         {
-            #[link(name = "kernel32")]
-            extern "system" {
-                fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut core::ffi::c_void;
-                fn CloseHandle(h: *mut core::ffi::c_void) -> i32;
-                fn TerminateProcess(h: *mut core::ffi::c_void, code: u32) -> i32;
+            let _ = sig;
+            // Prefer the job (kills the whole tree). Fall back to the direct child.
+            if !self.job.0.is_null() {
+                return unsafe { TerminateJobObject(self.job.0, 1) != 0 };
             }
-            const PROCESS_TERMINATE: u32 = 0x0001;
             unsafe {
                 let h = OpenProcess(PROCESS_TERMINATE, 0, self.pid as u32);
                 if h.is_null() {
@@ -154,8 +215,10 @@ impl Run {
         }
         #[cfg(not(windows))]
         {
+            // Honour the requested signal (kill_all passes SIGKILL on trust-OFF).
+            let s = if sig == 0 { libc::SIGTERM } else { sig };
             // SAFETY: signal the process we started.
-            unsafe { libc::kill(self.pid, libc::SIGTERM) == 0 }
+            unsafe { libc::kill(self.pid, s) == 0 }
         }
     }
 
@@ -233,15 +296,142 @@ pub fn prepare(mut sp: Spec, inherited: Option<OsString>) -> Spec {
     sp
 }
 
+/// Identity of an open file/dir at pin time. Compared again under the lifecycle
+/// lock before start (Y1 / AA2 parity with linux.rs, without fd-exec).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FileIdent {
+    #[cfg(windows)]
+    volume: u32,
+    #[cfg(windows)]
+    index: u64,
+    #[cfg(windows)]
+    size: u64,
+    #[cfg(windows)]
+    written: u64,
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+    #[cfg(unix)]
+    size: u64,
+    #[cfg(unix)]
+    mtime_secs: i64,
+    #[cfg(unix)]
+    mtime_nanos: i64,
+    /// directories do not compare size/mtime (they move when entries change).
+    is_dir: bool,
+}
+
+impl FileIdent {
+    fn same_as(&self, other: &Self) -> bool {
+        if self.is_dir != other.is_dir {
+            return false;
+        }
+        #[cfg(windows)]
+        {
+            if self.volume != other.volume || self.index != other.index {
+                return false;
+            }
+            if self.is_dir {
+                return true;
+            }
+            self.size == other.size && self.written == other.written
+        }
+        #[cfg(unix)]
+        {
+            if self.dev != other.dev || self.ino != other.ino {
+                return false;
+            }
+            if self.is_dir {
+                return true;
+            }
+            self.size == other.size && self.mtime_secs == other.mtime_secs && self.mtime_nanos == other.mtime_nanos
+        }
+    }
+}
+
 /// Held open file/dir so a swap after consent cannot silently retarget the path.
 pub struct Pinned {
-    _file: File,
+    file: File,
     path: PathBuf,
+    ident: FileIdent,
 }
 
 impl Pinned {
-    fn raw(&self) -> i32 {
-        0
+    fn unchanged(&self) -> bool {
+        match file_ident(&self.file, self.ident.is_dir) {
+            Some(now) => self.ident.same_as(&now),
+            None => false,
+        }
+    }
+
+    /// Pathname of the open object right now (survives rename-away of the pin path).
+    fn launch_path(&self) -> Result<PathBuf, String> {
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            let h = self.file.as_raw_handle() as *mut core::ffi::c_void;
+            let mut buf = vec![0u16; 1024];
+            let n = unsafe { GetFinalPathNameByHandleW(h, buf.as_mut_ptr(), buf.len() as u32, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS) };
+            if n == 0 || n as usize >= buf.len() {
+                return Err(format!("EPERM: pin {}: GetFinalPathNameByHandle failed", self.path.display()));
+            }
+            buf.truncate(n as usize);
+            let s = String::from_utf16_lossy(&buf);
+            let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
+            Ok(PathBuf::from(s))
+        }
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::unix::io::AsRawFd;
+            let mut buf = [0u8; 1024];
+            const F_GETPATH: i32 = 50;
+            let rc = unsafe { libc::fcntl(self.file.as_raw_fd(), F_GETPATH, buf.as_mut_ptr()) };
+            if rc != 0 {
+                return Err(format!("EPERM: pin {}: F_GETPATH failed", self.path.display()));
+            }
+            let nul = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+            let s = std::str::from_utf8(&buf[..nul]).map_err(|_| format!("EPERM: pin {}: F_GETPATH not UTF-8", self.path.display()))?;
+            Ok(PathBuf::from(s))
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            Ok(self.path.clone())
+        }
+    }
+}
+
+fn file_ident(f: &File, is_dir: bool) -> Option<FileIdent> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        let mut info = unsafe { std::mem::zeroed::<ByHandleFileInfo>() };
+        let h = f.as_raw_handle() as *mut core::ffi::c_void;
+        if unsafe { GetFileInformationByHandle(h, &mut info) } == 0 {
+            return None;
+        }
+        let size = ((info.size_high as u64) << 32) | info.size_low as u64;
+        let index = ((info.index_high as u64) << 32) | info.index_low as u64;
+        Some(FileIdent {
+            volume: info.volume,
+            index,
+            size,
+            written: info.written,
+            is_dir,
+        })
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let m = f.metadata().ok()?;
+        Some(FileIdent {
+            dev: m.dev(),
+            ino: m.ino(),
+            size: m.size(),
+            mtime_secs: m.mtime(),
+            mtime_nanos: m.mtime_nsec(),
+            is_dir,
+        })
     }
 }
 
@@ -252,18 +442,21 @@ pub fn pin(file: &str) -> Result<Pinned, String> {
     if !meta.is_file() {
         return Err(format!("ENOENT: pin {file}: not a regular file"));
     }
-    Ok(Pinned { _file: f, path: p })
+    let ident = file_ident(&f, false).ok_or_else(|| format!("ENOENT: pin {file}: identity unavailable"))?;
+    Ok(Pinned { file: f, path: p, ident })
 }
 
 pub fn pin_dir(dir: &Path) -> Result<Pinned, String> {
-    let f = File::open(dir).map_err(|e| format!("ENOENT: pin cwd {}: {e}", dir.display()))?;
+    let f = open_pin_path(dir, true).map_err(|e| format!("ENOENT: pin cwd {}: {e}", dir.display()))?;
     let meta = f.metadata().map_err(|e| format!("ENOENT: pin cwd {}: {e}", dir.display()))?;
     if !meta.is_dir() {
         return Err(format!("ENOENT: pin cwd {}: not a directory", dir.display()));
     }
+    let ident = file_ident(&f, true).ok_or_else(|| format!("ENOENT: pin cwd {}: identity unavailable", dir.display()))?;
     Ok(Pinned {
-        _file: f,
+        file: f,
         path: dir.to_path_buf(),
+        ident,
     })
 }
 
@@ -271,10 +464,10 @@ pub fn opener_path(ours: Option<OsString>, _root: &Path) -> ChildPath {
     ChildPath(ours.unwrap_or_default())
 }
 
-fn build(sp: &Spec) -> Command {
-    let mut c = Command::new(&sp.file);
+fn build(file: &Path, cwd: &Path, sp: &Spec) -> Command {
+    let mut c = Command::new(file);
     c.args(&sp.args)
-        .current_dir(&sp.cwd)
+        .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -287,13 +480,13 @@ fn build(sp: &Spec) -> Command {
     c
 }
 
-fn fork(sp: Spec) -> std::io::Result<Child> {
+fn fork(file: PathBuf, cwd: PathBuf, sp: Spec) -> std::io::Result<Child> {
     let (tx, rx) = std::sync::mpsc::channel();
     forker()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .send(Box::new(move || {
-            let _ = tx.send(build(&sp).spawn());
+            let _ = tx.send(build(&file, &cwd, &sp).spawn());
         }))
         .map_err(|_| std::io::Error::other("fork thread gone"))?;
     rx.recv().map_err(|_| std::io::Error::other("fork thread gone"))?
@@ -328,21 +521,53 @@ fn spawn_err(file: &str, e: &std::io::Error) -> String {
     format!("{code}: spawn {file} {e}")
 }
 
-pub fn start(sp: Spec, _life: &Life) -> Result<Arc<Run>, String> {
+pub fn start(mut sp: Spec, _life: &Life) -> Result<Arc<Run>, String> {
     if sp.file.is_empty() {
         return Err("EINVAL: spawn: empty file".into());
     }
     if sp.path.is_none() {
         return Err("EINVAL: spawn: PATH not prepared".into());
     }
-    if sp.prog.is_none() || sp.dir.is_none() {
+    let Some(prog) = sp.prog.take() else {
         return Err("EINVAL: spawn: program/cwd not pinned".into());
+    };
+    let Some(dir) = sp.dir.take() else {
+        return Err("EINVAL: spawn: program/cwd not pinned".into());
+    };
+    if !prog.unchanged() {
+        return Err(format!(
+            "EPERM: spawn {}: the program changed after it was allowed (replaced, removed or rewritten); not run",
+            sp.file
+        ));
     }
-    if !sp.cwd.is_dir() {
-        return Err(format!("ENOENT: spawn {} cwd {} is not a directory", sp.file, sp.cwd.display()));
+    if !dir.unchanged() {
+        return Err(format!(
+            "EPERM: spawn {}: the cwd {} changed after it was allowed; not run",
+            sp.file,
+            sp.cwd.display()
+        ));
+    }
+    let launch_file = prog.launch_path().map_err(|e| e)?;
+    let launch_cwd = dir.launch_path().map_err(|e| e)?;
+    if !launch_cwd.is_dir() {
+        return Err(format!("ENOENT: spawn {} cwd {} is not a directory", sp.file, launch_cwd.display()));
     }
     let file = sp.file.clone();
-    let mut child = fork(sp).map_err(|e| spawn_err(&file, &e))?;
+    let mut child = fork(launch_file, launch_cwd, sp).map_err(|e| spawn_err(&file, &e))?;
+    #[cfg(windows)]
+    let job = {
+        // Job Object so kill_all / Drop terminates the child and its descendants.
+        let job = unsafe { CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()) };
+        if !job.is_null() {
+            let access = PROCESS_TERMINATE | PROCESS_SET_QUOTA | PROCESS_DUP_HANDLE;
+            let h = unsafe { OpenProcess(access, 0, child.id()) };
+            if !h.is_null() {
+                let _ = unsafe { AssignProcessToJobObject(job, h) };
+                unsafe { CloseHandle(h) };
+            }
+        }
+        JobHandle(job)
+    };
     let run = Arc::new(Run {
         pid: child.id() as i32,
         stdin: Mutex::new(child.stdin.take()),
@@ -351,6 +576,8 @@ pub fn start(sp: Spec, _life: &Life) -> Result<Arc<Run>, String> {
             ..State::default()
         }),
         cv: Condvar::new(),
+        #[cfg(windows)]
+        job,
     });
     let (o, e) = (child.stdout.take(), child.stderr.take());
     for (src, is_err) in [
@@ -490,6 +717,7 @@ pub enum ShellOpen {
 #[derive(Clone, Debug)]
 pub struct Ident {
     pub path: PathBuf,
+    file: FileIdent,
 }
 
 pub struct Local {
@@ -506,9 +734,12 @@ impl Local {
         let real = p
             .canonicalize()
             .map_err(|_| format!("ENOENT: no such file or directory, '{shown}'"))?;
+        let is_dir = std::fs::metadata(&real).map(|m| m.is_dir()).unwrap_or(false);
+        let f = open_pin_path(&real, is_dir).map_err(|_| format!("ENOENT: no such file or directory, '{shown}'"))?;
+        let file = file_ident(&f, is_dir).ok_or_else(|| format!("ENOENT: no such file or directory, '{shown}'"))?;
         Ok(Self {
             arg: real.to_string_lossy().into_owned(),
-            ident: Some(Ident { path: real }),
+            ident: Some(Ident { path: real, file }),
         })
     }
 
@@ -516,14 +747,34 @@ impl Local {
         let Some(id) = &self.ident else {
             return Ok(());
         };
-        let now = id
-            .path
-            .canonicalize()
+        let f = open_pin_path(&id.path, id.file.is_dir)
             .map_err(|_| format!("EPERM: open: target {} changed after it was allowed; not opened", self.arg))?;
-        if now != id.path {
+        let now = file_ident(&f, id.file.is_dir)
+            .ok_or_else(|| format!("EPERM: open: target {} changed after it was allowed; not opened", self.arg))?;
+        if !id.file.same_as(&now) {
             return Err(format!("EPERM: open: target {} changed after it was allowed; not opened", self.arg));
         }
         Ok(())
+    }
+}
+
+fn open_pin_path(path: &Path, is_dir: bool) -> std::io::Result<File> {
+    #[cfg(windows)]
+    {
+        use std::fs::OpenOptions;
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        let mut o = OpenOptions::new();
+        o.read(true);
+        if is_dir {
+            o.custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+        }
+        o.open(path)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = is_dir;
+        File::open(path)
     }
 }
 
@@ -611,9 +862,13 @@ pub struct Launch<'a> {
 }
 
 impl Launch<'_> {
-    /// On non-Linux the opener is the held path itself (no /proc fd exec).
+    /// On non-Linux the opener is the held object's current path (no /proc fd exec).
     pub fn program(&self) -> String {
-        self.prog.path.to_string_lossy().into_owned()
+        self.prog
+            .launch_path()
+            .unwrap_or_else(|_| self.prog.path.clone())
+            .to_string_lossy()
+            .into_owned()
     }
 
     pub fn apply<'c>(&self, c: &'c mut Command) -> &'c mut Command {
