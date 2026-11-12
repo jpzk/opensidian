@@ -5943,7 +5943,11 @@ fn win_drag_start(win: tauri::Window, proto: tauri::State<'_, DragProto>) -> Res
             // jump over the measurement, so the FAILING handover — the slow one
             // worth seeing — would be the one case that emits no span.
             if p != "none" {
-                win.start_dragging().map_err(|e| e.to_string()).map(|()| p.to_string())
+                let r = win.start_dragging().map_err(|e| e.to_string()).map(|()| p.to_string());
+                if r.is_ok() {
+                    drag_release_guard(&win);
+                }
+                r
             } else {
                 Ok(p.to_string())
             }
@@ -5951,6 +5955,97 @@ fn win_drag_start(win: tauri::Window, proto: tauri::State<'_, DragProto>) -> Res
         serde_json::json!({"path": taken})
     )
 }
+
+/// #71 "when dragging window not working all of the time" — on native Wayland
+/// EVERY OTHER header drag was dead (measured: wldrag A1 y, A2 n, A3 y, ...).
+///
+/// MECHANISM. start_dragging() -> tao begin_move_drag -> xdg_toplevel.move: the
+/// compositor's move grab takes the pointer and CONSUMES the button release, so
+/// the client never gets a wl_pointer.button(released) for that press. GDK's
+/// Wayland seat keeps the pressed button in its own button state
+/// (gdkdevice-wayland.c pointer_info.button_state: set on press, cleared ONLY on
+/// release), so every event GDK builds afterwards carries a stale BUTTON1_MASK.
+/// WebKitGTK derives the DOM `buttons` of a mouse event from that state; the next
+/// real press therefore arrives as "button 1 pressed while button 1 is already
+/// down", which the Pointer Events chord rule turns into a pointermove, not a
+/// pointerdown — ui/main.js never sees the press, wfBegin never runs, the window
+/// does not move. That press's release IS delivered (no grab), clearing the stale
+/// bit, so the drag after it works again: the alternation.
+///
+/// FIX. After a successful handover, strip the stale button bits from the events
+/// the webview receives (a GTK handler on the WebKitWebView runs before WebKit's
+/// own class handler) until a real release arrives: motion while stale -> no
+/// buttons; a press of button N that claims N is already down is physically
+/// impossible -> clear N's bit. Only sessions that hand over (wm / wayland)
+/// install the handlers; the X11 "none" path is untouched.
+#[cfg(target_os = "linux")]
+static DRAG_STALE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(target_os = "linux")]
+fn drag_release_guard(win: &tauri::Window) {
+    use std::sync::atomic::Ordering::SeqCst;
+    static INSTALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    DRAG_STALE.store(true, SeqCst);
+    if INSTALLED.load(SeqCst) {
+        return;
+    }
+    let w2 = win.clone();
+    let _ = win.run_on_main_thread(move || {
+        use gtk::glib;
+        use gtk::glib::translate::ToGlibPtr;
+        use gtk::prelude::*;
+        if INSTALLED.swap(true, SeqCst) {
+            return;
+        }
+        fn find(w: &gtk::Widget) -> Option<gtk::Widget> {
+            if w.type_().name() == "WebKitWebView" {
+                return Some(w.clone());
+            }
+            let c = w.downcast_ref::<gtk::Container>()?;
+            c.children().iter().find_map(find)
+        }
+        let Some(wv) = w2.gtk_window().ok().and_then(|g| find(g.upcast_ref::<gtk::Widget>())) else {
+            INSTALLED.store(false, SeqCst);
+            eprintln!("[win_drag] release-guard: no WebKitWebView under the window");
+            return;
+        };
+        let b1 = gdk::ffi::GDK_BUTTON1_MASK as u32;
+        wv.connect_button_press_event(move |_, ev| {
+            let n = ev.button();
+            let mask = if (1..=5).contains(&n) { 1u32 << (7 + n) } else { 0 };
+            let stale = DRAG_STALE.swap(false, SeqCst);
+            let st = ev.state().bits();
+            let clear = (if stale { mask | b1 } else { mask }) & st;
+            if clear != 0 {
+                let e: &gdk::Event = ev;
+                let p: *const gdk::ffi::GdkEvent = e.to_glib_none().0;
+                // SAFETY: GTK owns this GdkEventButton for the whole emission and
+                // hands it to WebKit's class handler after us; `state` is a plain
+                // guint field of the button struct this event's type guarantees.
+                unsafe { (*(p as *mut gdk::ffi::GdkEventButton)).state &= !clear };
+                eprintln!("[win_drag] release-guard: press button={n} had stale state 0x{st:x}, cleared 0x{clear:x}");
+            }
+            glib::Propagation::Proceed
+        });
+        wv.connect_button_release_event(move |_, _| {
+            DRAG_STALE.store(false, SeqCst);
+            glib::Propagation::Proceed
+        });
+        wv.connect_motion_notify_event(move |_, ev| {
+            if DRAG_STALE.load(SeqCst) && ev.state().bits() & b1 != 0 {
+                let e: &gdk::Event = ev;
+                let p: *const gdk::ffi::GdkEvent = e.to_glib_none().0;
+                // SAFETY: as above, for the GdkEventMotion this signal carries.
+                unsafe { (*(p as *mut gdk::ffi::GdkEventMotion)).state &= !b1 };
+            }
+            glib::Propagation::Proceed
+        });
+        eprintln!("[win_drag] release-guard: installed on the WebKitWebView");
+    });
+}
+
+#[cfg(not(target_os = "linux"))]
+fn drag_release_guard(_win: &tauri::Window) {}
 
 #[tauri::command]
 fn win_minimize(win: tauri::Window) -> Result<(), String> {
