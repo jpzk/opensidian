@@ -158,12 +158,34 @@ pub fn await_ready(ready: impl Fn() -> bool, alive: impl Fn() -> bool, timeout: 
 
 /// is `pid` a live (non-zombie) process? Reads /proc/<pid>/stat — a read
 /// root under landlock; signals (kill 0) may be scoped there.
+///
+/// rt-wm (box hz cpx51, Fedora 44, kernel 7.1): /proc mounted
+/// `hidepid=invisible` hides every pid the caller may not ptrace, and a
+/// Landlock domain may not ptrace a process outside it — so a confined window
+/// sees NO /proc entry for the child the (unconfined) spawner started, and the
+/// old probe called a live child dead at 0 ms ("exited before it was ready";
+/// the old window stayed beside the new one). A missing entry is therefore
+/// only "dead" if kill(pid, 0) agrees: ESRCH = gone; 0 / EPERM = it exists.
+/// (The sandbox's ruleset sets no signal scope, so kill 0 is not scoped.)
 pub fn alive(pid: u32) -> bool {
     match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
         // "pid (comm) S ..." — comm may hold spaces/parens: state follows the LAST ')'
         Ok(s) => s.rfind(')').and_then(|i| s[i + 1..].trim_start().chars().next()).is_some_and(|c| c != 'Z' && c != 'X'),
-        Err(_) => false,
+        Err(_) => hidden_alive(pid),
     }
+}
+
+/// /proc gave no answer for `pid`: ask the kernel by signal 0 (no signal sent).
+fn hidden_alive(pid: u32) -> bool {
+    let Ok(p) = libc::pid_t::try_from(pid) else { return false };
+    if p <= 0 {
+        return false; // 0 / negative would address a process GROUP
+    }
+    // SAFETY: kill with signal 0 only performs the existence/permission check.
+    if unsafe { libc::kill(p, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -365,5 +387,18 @@ mod tests {
         assert!(!alive(pid), "zombie counted as alive");
         c.wait().unwrap();
         assert!(!alive(pid), "reaped pid counted as alive");
+    }
+
+    /// rt-wm: a pid /proc does not show (hidepid + landlock) is judged by kill 0:
+    /// an absent pid stays dead, and pid 0 / overflow never address a process group.
+    #[test]
+    fn switch_alive_hidden_pid_falls_back_to_kill0() {
+        assert!(hidden_alive(std::process::id()), "kill 0 on ourselves must see us");
+        assert!(!hidden_alive(0));
+        assert!(!hidden_alive(u32::MAX));
+        let mut c = std::process::Command::new("/bin/true").spawn().unwrap();
+        let pid = c.id();
+        c.wait().unwrap();
+        assert!(!hidden_alive(pid), "reaped pid counted as alive");
     }
 }
