@@ -2287,6 +2287,7 @@ Ed.lpExt = function (v, G) {
     ignoreEvent() { return true; }
   }
   const lineDeco = new Map();
+  let tcrGen = 0;   // gh #75: flips the stale-caret repaint class tcr0/tcr1 (see build)
   const ld = c => { let d = lineDeco.get(c); if (!d) { d = Decoration.line({ class: c }); lineDeco.set(c, d); } return d; };
   const build = view => {
     const g = G(), st = view.state, doc = st.doc, sel = st.selection.main, out = [], labels = [];
@@ -2314,7 +2315,14 @@ Ed.lpExt = function (v, G) {
         }
         const fl = g && g._fl && g._fl.l === ln.number - 1 ? (g._fl.fade ? " navflash fade" : " navflash") : "";
         const whole = ors && ln.length > 0 && ors.some(r => r[0] <= 0 && r[1] >= ln.length);
-        out.push(ld((whole ? Ed.lpParse(g, "x").cls : P.cls) + (ln.number === cur ? " cur" : "") + fl).range(ln.from));
+        // gh #75 (PR #80, fix-75d): WebKitGTK leaves a STALE caret on a blank task row. Typing then deleting the
+        // body ("Z", BackSpace) removes the text node the caret was painted in, and the row gets span.tcar back;
+        // WebKit erases the OLD caret through that node's renderer, which is gone, so the 1px bar at the old x
+        // (box right + one glyph) stays on screen next to the live caret. Flip a paint-only class (tcr0/tcr1,
+        // style.css: a transparent background-image layer, invisible) on the caret's blank task row on
+        // every rebuild: a style change that needs a repaint makes WebKit repaint the WHOLE line box, which wipes it.
+        const tcr = ln.number === cur && P.wid.some(w => w.el && w.el.classList && w.el.classList.contains("tcar")) ? " tcr" + (++tcrGen & 1) : "";
+        out.push(ld((whole ? Ed.lpParse(g, "x").cls : P.cls) + (ln.number === cur ? " cur" : "") + tcr + fl).range(ln.from));
         for (let i = 0; i < P.els.length; i++) {
           const x = P.els[i];
           if (x.e > x.s && !(ors && hit(ors, x.s, x.e))) out.push((rv && rv.has(i) ? x.rv : x.d).range(ln.from + x.s, ln.from + x.e));

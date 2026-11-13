@@ -1133,6 +1133,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .lp.src .tbox { display: none }                                 /* source mode shows [ ] instead */
 .lp .tcar { display: inline-block; width: 0; height: 1em; vertical-align: text-bottom }   /* gh #75: zero-width caret anchor after a BLANK task's checkbox (editor.js span.tcar) */
 .lp.src .tcar { display: none }                                 /* source mode: the raw "[ ] " carries the caret */
+.lp .cm-line.tcr1 { background-image: linear-gradient(transparent, transparent) }   /* gh #75: tcr0<->tcr1 flip = a background-layer change, so WebKit repaints the whole blank task row and wipes a stale caret (editor.js build, tcr). Invisible: no colour, background-color untouched */
 .lp .h { font-weight: 700; color: var(--text-heading, currentColor) }   /* wasp: orange headings; currentColor = inherit for every theme that declares no --text-heading */
 .lp .h1 { font-size: var(--h1-size) }
 .lp .h2 { font-size: var(--h2-size) }
