@@ -4393,7 +4393,9 @@ function clampMenu(m) {
 }
 document.addEventListener("contextmenu", e => {   // app-like: native menu never
   e.preventDefault();
-  if (PMENU && e.target instanceof Element && e.target.closest(".cm-editor")) PMENU.editorMenu(e);   // plugin-views: workspace "editor-menu"
+  if (!(e.target instanceof Element) || !e.target.closest(".cm-editor")) return;
+  if (EdMenu.open(e)) return;                       // #37 C3-3: the core editor menu (ui/edmenu.js), plugin rows appended
+  if (PMENU) PMENU.editorMenu(e);                   // plugin-views: workspace "editor-menu" (an editor EdMenu declines)
 });
 document.addEventListener("mousedown", e => {
   if (menuEl && !(menuEl.dataset.om ? OMenu.owns(menuEl, e.target) : menuEl.contains(e.target))) closeMenu();   // #37: an OMenu submenu is a SIBLING div.menu — a press in it is in the menu

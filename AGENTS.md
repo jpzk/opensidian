@@ -30,7 +30,8 @@ Licence: GPL-3.0-or-later for all of it, since the first commit.
   - `main.js` (app), `editor.js` (Live Preview / source editor core),
     `graph-gl.js` (WebGL graph), `otel.js` (frontend lag spans),
     `census.js` (test tokens, append-only), `menu.js` + `menu.css` (the
-    Obsidian-shaped `.menu` context menu), `style.css`, `fonts/` (OFL).
+    Obsidian-shaped `.menu` context menu), `edmenu.js` (the editor
+    right-click menu on it), `style.css`, `fonts/` (OFL).
 - `packaging/flatpak/` — manifest, desktop file, metainfo.
 - `vault/` — a small sample vault.
 - `scripts/ docs/ notes/ bin/` are gitignored. The maintainer's test harness

@@ -1594,12 +1594,15 @@
         const f = files.get(normalizePath(String(path || "")));
         return f instanceof K.TFolder ? menuHook("file-menu", m, [f, "file-explorer-context-menu", null]) : 0;
       },
-      editorMenu(e) {
+      /* host (#37, an OMenu builder): the core editor menu being built — the plugin rows join it
+         after its rows (stock: core first, then plugins). No host = the plugin-only menu of old. */
+      editorMenu(e, host) {
         const x = bridge.editor ? bridge.editor() : null;
         if (!x || !x.editor) return false;
         const m = document.createElement("div");
         m.className = "ctxmenu menu os-plugin-menu";
         if (!menuHook("editor-menu", m, [x.editor, x.view])) return false;
+        if (host) { host.plugin(m); return true; }
         if (typeof closeMenu === "function") closeMenu();
         if (typeof placeMenu === "function") placeMenu(m, e.clientX, e.clientY);
         return true;

@@ -70,6 +70,25 @@ const OMenu = (() => {
       sep() { grp = null; scroll.appendChild(div("menu-separator")); },
       clear() { closeSub(el); scroll.innerHTML = ""; grp = null; },
       add(rows) { for (const r of rows || []) r === "---" ? b.sep() : b.item(r); return b; },
+      /* a plugin hook's rows (ui/plugins/api-ui.js MenuItem: div.menu-item + div.sep, filled into the
+         scratch m) join this menu after a rule, in their own order. The item keeps its own click
+         (api-ui runs the callback); the row closes this menu, and Enter is that same click. */
+      plugin(m) {
+        const ds = [...m.children];
+        if (!ds.length) return b;
+        if (scroll.childElementCount) b.sep();
+        for (const d of ds) {
+          if (d.classList.contains("sep") || d.classList.contains("menu-separator")) { b.sep(); continue; }
+          if (!grp) grp = scroll.appendChild(div("menu-group"));
+          d.classList.add("tappable");
+          if (d.classList.contains("dis")) { d.classList.add("is-disabled"); d.setAttribute("aria-disabled", "true"); }
+          d._fn = () => d.click();
+          d.addEventListener("click", () => { if (!d.classList.contains("dis") && typeof menuEl !== "undefined" && menuEl === el) closeMenu(); });
+          d.addEventListener("mouseenter", () => hover(el, d));
+          grp.appendChild(d);
+        }
+        return b;
+      },
     };
     return b;
   }
