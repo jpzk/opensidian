@@ -222,7 +222,7 @@ body {
   --bg-banner-error: #45283c;
   --bg-button-plain: #e0e0e0;
   --bg-button-default: #fff;   /* the focused (default) answer in the rename/delete prompts. Ours, not --text-on-accent: a theme with a light accent sets that one DARK (AnuPpuccin: its base), which painted the default button in the label colour */
-  --border-strong: var(--color-base-35, #585b70);
+  --border-strong: #585b70;
   --border-focus-ring: #bdbdbd;
   --rule-faint: #31324499;
   --text-chrome-alt: #cdd6f5;
@@ -721,8 +721,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 #main { flex: 1; display: flex; min-width: 0 }
 /* R9.6 right sidebar: localgraph of the active note, resizable divider */
 #rdiv { flex: 0 0 6px; background: var(--divider-color, var(--bg-ribbon)); cursor: col-resize; height: var(--divider-vertical-height, auto);
-        --divider-line: var(--divider-width, 6px); padding-inline: calc((6px - min(var(--divider-line), 6px)) / 2); background-clip: content-box }   /* #59: a theme --divider-width thins the VISIBLE line only; the 6px drag target stays */
-#rdiv:hover, #rdiv:active { background: var(--divider-color-hover, var(--border-strong)); --divider-line: var(--divider-width-hover, var(--divider-width, 6px)); background-clip: content-box }
+        --divider-line: var(--divider-width, 6px); padding-inline: calc((6px - min(var(--divider-line), 6px)) / 2) }
+#rdiv { background-clip: content-box }   /* own rule: keeps the background shorthand above serialisable in CSSOM */   /* #59: a theme --divider-width thins the VISIBLE line only; the 6px drag target stays */
+#rdiv:hover, #rdiv:active { background: var(--divider-color-hover, var(--border-strong)); --divider-line: var(--divider-width-hover, var(--divider-width, 6px)) }
+#rdiv:hover, #rdiv:active { background-clip: content-box }
 #rdiv[hidden], #rside[hidden] { display: none }
 #rside { width: 260px; flex: 0 1 auto; min-width: 0; max-width: 40%;   /* R22 */
          overflow: hidden; background: var(--bg-sidebar); display: flex;
@@ -787,8 +789,9 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .split.row { flex-direction: row }
 .split.col { flex-direction: column }
 /* R6.6: draggable divider between sibling panes */
-.divider { flex: 0 0 6px; background: var(--divider-color, var(--bg-ribbon)); --divider-line: var(--divider-width, 6px); background-clip: content-box }   /* #59: theme --divider-width = visible line, the 6px hit area stays */
-.divider:hover, .divider:active { background: var(--divider-color-hover, var(--border-strong)); --divider-line: var(--divider-width-hover, var(--divider-width, 6px)); background-clip: content-box }
+.divider { flex: 0 0 6px; background: var(--divider-color, var(--bg-ribbon)); --divider-line: var(--divider-width, 6px) }   /* #59: theme --divider-width = visible line, the 6px hit area stays */
+.divider:hover, .divider:active { background: var(--divider-color-hover, var(--border-strong)); --divider-line: var(--divider-width-hover, var(--divider-width, 6px)) }
+.divider, .divider:hover, .divider:active { background-clip: content-box }   /* own rule: a longhand after a var() shorthand makes CSSOM drop the shorthand text */
 .divider.row { cursor: col-resize; padding-inline: calc((6px - min(var(--divider-line), 6px)) / 2) }
 .divider.col { cursor: row-resize; padding-block: calc((6px - min(var(--divider-line), 6px)) / 2) }
 .pane { flex: 1 1 0; display: flex; flex-direction: column;
@@ -822,9 +825,9 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .morebtn:hover { color: var(--text-chrome) }
 .morebtn svg { width: 16px; height: 16px; display: block }
 .tab { width: var(--tab-width, 120px); min-width: 0; flex-shrink: 1; overflow: hidden; display: flex; align-items: center;
-       gap: 6px; padding: 0 8px; background: var(--bg-surface); color: var(--tab-text-color-focused, var(--tab-text-color, var(--text-chrome-muted)));
+       gap: 6px; padding: 0 8px; background: var(--bg-surface); color: var(--tab-text-color, var(--text-chrome-muted));
        cursor: pointer; font-size: var(--tab-font-size, 12px); border-right: 2px solid var(--tab-divider-color, var(--bg-ribbon)); max-width: var(--tab-max-width, none); border-radius: var(--tab-radius, 0); }   /* R22: overflow:hidden — the 16px close button + 16px padding cannot fit a 2px tab, so clip */
-.tab.active { background: var(--tab-background-active); color: var(--tab-text-color-focused-active, var(--tab-text-color-active, var(--text-chrome))); border-radius: var(--tab-radius-active, var(--tab-radius, 0)); }   /* themematch: active tab = the note surface */
+.tab.active { background: var(--tab-background-active); color: var(--tab-text-color-active, var(--text-chrome)); border-radius: var(--tab-radius-active, var(--tab-radius, 0)); }   /* themematch: active tab = the note surface */
 .tab .t { flex: 1 1 auto; min-width: 0; overflow: hidden;
           text-overflow: ellipsis; white-space: nowrap; font-weight: var(--tab-font-weight, inherit); }
 /* ux-1: close button — flex-none so ellipsized titles can never crush it,
@@ -834,7 +837,8 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
           cursor: pointer; border-radius: 3px; color: var(--text-chrome-faint) }
 .tab .x svg { width: 9px; height: 9px; display: block }
 .tab .x:hover { background: var(--border-strong); color: var(--text-chrome) }
-.tab.active .x { color: var(--text-chrome-muted) }
+.tab.active .x { color: var(--tab-text-color-focused-active, var(--text-chrome-muted)) }   /* #59: our window is always the focused one; --tab-text-color-active owns the active tab ink, so the focused-active ink lands on its close glyph */
+.tab:not(.active) .t { color: var(--tab-text-color-focused, inherit) }   /* #59: focused-window ink for inactive tab titles; --tab-text-color stays on .tab */
 .pane.focused .tab.active .t { color: var(--tab-text-color-focused-active-current, inherit) }
 /* ux-5: tab drag — ghost chip under the cursor + drop-target highlights */
 #tabghost { position: fixed; left: 0; top: 0; will-change: transform; z-index: var(--layer-dragged-item, 99); pointer-events: none;
@@ -905,7 +909,8 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
    alone — :733 adds only colour + italic */
 .preview a.wiki { color: var(--link-color, var(--accent-blue)); cursor: var(--cursor-link, pointer); font-weight: var(--link-weight, inherit); }
 .preview a.wiki-unresolved { color: var(--link-unresolved-color, var(--link-unresolved)); font-style: italic }
-.lp a.ext, .preview a.ext { color: var(--link-external-color, var(--accent-blue)); text-decoration: var(--link-external-decoration, underline); cursor: pointer; text-decoration-thickness: var(--link-decoration-thickness, auto); filter: var(--link-external-filter, none); }  /* S1: external link, opens via xdg-open */
+.lp a.ext, .preview a.ext { color: var(--link-external-color, var(--accent-blue)); text-decoration: var(--link-external-decoration, underline); cursor: pointer; }
+.lp a.ext, .preview a.ext { text-decoration-thickness: var(--link-decoration-thickness, auto); filter: var(--link-external-filter, none) }   /* #59: own rule: a longhand after a var() shorthand makes CSSOM drop the shorthand text   /* S1: external link, opens via xdg-open */
 .lp a.ext:hover, .preview a.ext:hover { color: var(--link-external-color-hover, var(--link-external-color, var(--accent-blue))); text-decoration-line: var(--link-external-decoration-hover, var(--link-external-decoration, underline)) }
 /* tags: inline #tag pills (small rounded accent-tinted chip) */
 .lp a.tag, .preview a.tag { color: var(--tag-color, var(--accent-blue)); background: var(--tag-bg);
@@ -1375,7 +1380,8 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .sctl.toggle.on > i { left: calc(var(--toggle-width, 40px) - var(--toggle-thumb-width, 16px) - var(--toggle-border-width, 2px) - 1px); background: var(--bg-base) }
 .sctl.toggle:active > i { opacity: var(--toggle-thumb-opacity-active, 1) }
 .sctl.dropdown { width: 141px; height: 24px; box-sizing: border-box; padding: var(--dropdown-padding, 0 8px); background: var(--dropdown-background, var(--bg-sidebar));
-                 border: 1px solid var(--border); border-radius: 4px; white-space: nowrap; overflow: hidden; font-weight: var(--input-font-weight, inherit); background-position-x: var(--inset-end, 0%); }
+                 border: 1px solid var(--border); border-radius: 4px; white-space: nowrap; overflow: hidden; font-weight: var(--input-font-weight, inherit); }
+.sctl.dropdown { background-position-x: var(--inset-end, 0%) }   /* own rule: keeps the background shorthand above serialisable in CSSOM */
 /* .live = the one dropdown in this pane with a handler behind it (Appearance ▸
    Themes; the palette axis that used to sit beside it is gone — themeone item 7). Every other control here is a transcription of
    Obsidian's settings with no behaviour, rendered inert; this one gets the affordances that
