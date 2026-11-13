@@ -135,6 +135,7 @@ function presentFrame() {
     if (!presentEl) { presentEl = document.createElement("div"); presentEl.setAttribute("aria-hidden", "true");
       presentEl.style.cssText = "position:fixed;left:0;top:0;width:1px;height:1px;pointer-events:none;z-index:-1"; document.body.appendChild(presentEl); }
     presentEl.style.background = presentEl.style.background === "rgba(0, 0, 0, 0.01)" ? "rgba(0, 0, 0, 0.02)" : "rgba(0, 0, 0, 0.01)";
+    inv("present_nudge").catch(() => {});   // E1c: and wake the UI (GTK) side: webview queue_draw on the next 2 frame-clock ticks
   }));
 }
 function presentNudge(root) {
