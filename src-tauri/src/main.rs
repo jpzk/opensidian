@@ -40,6 +40,7 @@ mod secrets;
 mod settings;
 mod spawn;
 mod spawner;
+mod spawn_allow; // #74: "Always allow this program" grants (key + plugin/program fingerprints) in ~/.opensidian.json
 mod desk_http;
 mod desk_net;
 mod desk_proc;
