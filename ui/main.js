@@ -10979,9 +10979,7 @@ async function startGraph(g, cfg) {
     if (!steps && alpha > ALPHA_MIN) return;      // nothing owed yet (a frozen alpha still gets its settle test)
     const w = gwGet();
     if (!w) {                           // main thread: the frame budget bounds the batch
-      const b = batch(steps, PH_BUDGET_MS);
-      land(b.gen, (g.__gpe || (g.__gpe = GraphPhys.create())).run(b), b.st, b.X, b.Y, b.VX, b.VY, b.PIN);
-      return;
+      return;   // NEGCTL nofb: no page fallback, a broken Worker means no physics at all
     }
     const b = batch(steps, PH_WORKER_MS);
     inflight = true;
