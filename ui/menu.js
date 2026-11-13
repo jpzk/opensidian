@@ -39,8 +39,9 @@ const OMenu = (() => {
     const el = div("menu");
     el.dataset.om = "1";
     // a press on the menu must not take focus from the editor (rows are not focusable, so the
-    // default action would blur it to <body> and keys after the menu closes would go nowhere)
-    el.addEventListener("mousedown", ev => ev.preventDefault());
+    // default action would blur it to <body> and keys after the menu closes would go nowhere).
+    // CAPTURE: a row's own mousedown stops propagation, so a bubbling listener never saw row presses.
+    el.addEventListener("mousedown", ev => ev.preventDefault(), true);
     el.appendChild(div("menu-grabber"));
     const scroll = el.appendChild(div("menu-scroll"));
     let grp = null;
