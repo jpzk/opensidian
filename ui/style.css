@@ -909,8 +909,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
    alone — :733 adds only colour + italic */
 .preview a.wiki { color: var(--link-color, var(--accent-blue)); cursor: var(--cursor-link, pointer); font-weight: var(--link-weight, inherit); }
 .preview a.wiki-unresolved { color: var(--link-unresolved-color, var(--link-unresolved)); font-style: italic }
-.lp a.ext, .preview a.ext { color: var(--link-external-color, var(--accent-blue)); text-decoration: var(--link-external-decoration, underline); cursor: pointer; }
-.lp a.ext, .preview a.ext { text-decoration-thickness: var(--link-decoration-thickness, auto); filter: var(--link-external-filter, none) }   /* #59: own rule: a longhand after a var() shorthand makes CSSOM drop the shorthand text   /* S1: external link, opens via xdg-open */
+.lp a.ext, .preview a.ext { color: var(--link-external-color, var(--accent-blue)); text-decoration: var(--link-external-decoration, underline) var(--link-decoration-thickness, auto); cursor: pointer; filter: var(--link-external-filter, none); }   /* #59: thickness rides in the shorthand (a longhand after it would drop the shorthand from CSSOM) */
 .lp a.ext:hover, .preview a.ext:hover { color: var(--link-external-color-hover, var(--link-external-color, var(--accent-blue))); text-decoration-line: var(--link-external-decoration-hover, var(--link-external-decoration, underline)) }
 /* tags: inline #tag pills (small rounded accent-tinted chip) */
 .lp a.tag, .preview a.tag { color: var(--tag-color, var(--accent-blue)); background: var(--tag-bg);
@@ -954,7 +953,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
          padding: 28px; position: relative }
 /* startscr: logo LEFT of the name, the pair centred as one row (operator 2026-10-10) */
 #ptitle { display: flex; align-items: center; justify-content: center; gap: 12px;
-          font-size: 26px; font-weight: 700; line-height: 36px;
+          font-size: 26px; font-weight: var(--font-bold, 700); line-height: 36px;   /* #59: picker title = our titlebar title (stock --titlebar-text-weight) */
           margin-bottom: 20px; letter-spacing: 0.5px }
 #plogo { width: 36px; height: 36px; flex-shrink: 0; display: block }   /* ~2x the cap height */
 #ptname { display: block; min-width: 0 }
