@@ -79,14 +79,14 @@
   <div id="rpane-tags" class="spane" hidden><div class="rhead" id="tagshead"></div><div id="taglist" class="rlist"></div></div>
   <div id="rpane-toc" class="spane" hidden><div id="toclist" class="rlist"></div></div>
 </div>
-<div id="picker" hidden>
-  <div id="pcard">
+<div id="picker" class="modal-container" hidden>
+  <div id="pcard" class="modal">
     <button id="p-close" title="Close" hidden><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 3l10 10M13 3L3 13"/></svg></button>
     <div id="ptitle"><img id="plogo" data-src="logo.svg" alt="" width="36" height="36"><span id="ptname">Opensidian</span></div>
     <div id="p-actions">
       <div class="prow">
         <div class="ptext"><b>Create new vault</b><span>Create a new vault under a folder.</span></div>
-        <button id="p-create">Create</button>
+        <button id="p-create" class="mod-cta">Create</button>
       </div>
       <div class="prow">
         <div class="ptext"><b>Open folder as vault</b><span>Choose an existing folder of Markdown files.</span></div>
@@ -119,19 +119,19 @@
   <div id="shead"><span>Settings</span><button id="sclose" title="Close"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 3l10 10M13 3L3 13"/></svg></button></div>
   <div id="sbody"><div id="snav"></div><div id="spage"></div></div>
 </div></div>
-<div id="rnbox" hidden><input id="rninput" spellcheck="false" autocomplete="off" placeholder="new name"></div>
+<div class="modal-container rnmc"><div id="rnbox" class="modal" hidden><input id="rninput" spellcheck="false" autocomplete="off" placeholder="new name"></div></div><!-- #59 slice 3: .rnmc is display:contents, the box stays position:fixed -->
 <!-- R34.4-R34.7 "Update links": the PROMPT that sits BETWEEN the rename and the
      link rewrite. The wording follows Obsidian's prompt: the title is
      "Update links", the body is a question, and #ulsay states the counted blast
      radius ("This will affect 4 links in 1 file.") which is computed BEFORE the
      prompt (move_note returns it). Three buttons, "Always update" first and
      focused — measured in PIXELS on D2/D3/D4, not OCR'd. -->
-<div id="ulbox" hidden><div id="ulcard">
+<div id="ulbox" class="modal-container" hidden><div id="ulcard" class="modal">
   <div id="ultitle">Update links</div>
   <div id="ulq">Do you want to update internal links that link to this file?</div>
   <div id="ulsay"></div>
   <div id="ulbtns">
-    <button id="ul-always">Always update</button>
+    <button id="ul-always" class="mod-cta">Always update</button>
     <button id="ul-once">Just once</button>
     <button id="ul-no">Do not update</button>
   </div>
@@ -143,13 +143,13 @@
      notes link to it. That last number is here because of R24.8: those links
      are NOT rewritten, they go faded (R24.9), and this dialog is the only
      place the user is told before the fact. -->
-<div id="delbox" hidden><div id="delcard">
+<div id="delbox" class="modal-container" hidden><div id="delcard" class="modal">
   <div id="deltitle">Delete file</div>
   <div id="delq"></div>
   <div id="delsay"></div>
   <div id="delbtns">
     <button id="del-no">Cancel</button>
-    <button id="del-yes">Delete</button>
+    <button id="del-yes" class="mod-warning">Delete</button>
   </div>
 </div></div>
 <!-- R4X.7 "Edit bookmark" — Obsidian's route for moving a bookmark BETWEEN groups

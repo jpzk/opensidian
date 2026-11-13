@@ -1052,6 +1052,21 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 #delbtns button:focus { box-shadow: 0 0 0 2px var(--border-focus-ring) }
 #del-no:focus { background: var(--bg-button-default) }
 
+/* #59 slice 3: dialogs. The cards carry Obsidian's .modal-container > .modal and their buttons .mod-cta /
+   .mod-warning (ui/index.html), so a theme's modal rules reach them. Stock's own rules for those classes are
+   repeated here at the ELEMENT, where a theme's body-level variables resolve: .modal paints --modal-background
+   with a --modal-border-color border; button.mod-cta = --interactive-accent with --text-on-accent ink;
+   button.mod-warning = --background-modifier-error with --text-on-accent ink. Every var() falls back to ours, and
+   the rules name OUR ids (plugin modals, api-ui.js, also carry .modal-container > .modal and are left alone).
+   SCOPE: off while the bundled default theme paints ([data-vthemedef], ui/main.js vthemeMark), so the house look
+   with no theme chosen does not move — e.g. the default theme's light-on-dark "Always update" stays ours, not its
+   accent. #pcard gets no border: it has none, and its geometry is pinned (see #pcard above). */
+:root:not([data-vthemedef]) :is(#picker > #pcard, .rnmc > #rnbox, #ulbox > #ulcard, #delbox > #delcard) { background-color: var(--modal-background, var(--background-primary, var(--bg-elevated))) }
+:root:not([data-vthemedef]) :is(.rnmc > #rnbox, #ulbox > #ulcard, #delbox > #delcard) { border-color: var(--modal-border-color, var(--border)) }
+:root:not([data-vthemedef]) :is(#p-create, #ul-always).mod-cta { background-color: var(--interactive-accent, var(--bg-button-primary)); color: var(--text-on-accent) }
+:root:not([data-vthemedef]) #del-yes.mod-warning { background-color: var(--background-modifier-error, var(--text-banner-error)); color: var(--text-on-accent, var(--bg-base)) }
+.rnmc { display: contents }   /* the #rnbox wrapper only names the container; #rnbox stays position:fixed */
+
 /* R4X.7 Edit bookmark — the #delbox shape again (one modal geometry in this app,
    not three that drift): fixed overlay, 480px card, buttons bottom-right with
    Save last and accented. Ours

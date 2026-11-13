@@ -8880,6 +8880,9 @@ let vaultSeedTok = "-";
    themed colours. */
 let themeGen = 0;
 const vthemeMark = name => {
+  // #59 slice 3: [data-vthemedef] = the bundled DEFAULT theme is what paints; style.css keeps the dialog compat
+  // rules off under it, so the house look with no theme chosen does not move. Written BEFORE data-vtheme (the observed one).
+  document.documentElement.toggleAttribute("data-vthemedef", !!name && name === DEFAULT_THEME);
   document.documentElement.dataset.vtheme = (++themeGen) + ":" + (name || "");
 };
 async function themeInject(name) {
