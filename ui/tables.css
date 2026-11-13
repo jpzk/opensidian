@@ -1,0 +1,40 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* #37 (C3-5, T1) — rendered tables. Reading view already emits a real <table>
+   (pulldown-cmark ENABLE_TABLES, alignment as th/td align=) but no rule gave it
+   borders, padding or a header rule, so it read as loose text (RECON §B2).
+   Stock 1.13.7's variable names, each with a fallback to this app's own token,
+   so a community theme that sets --table-* restyles ours. No colour literal
+   (scripts lint-colors). The Live Preview table widget (C3-6, .cm-table-widget)
+   shares these rules so both views render the same table. */
+:is(.preview, .cm-table-widget) table {
+  border-collapse: collapse;
+  border-spacing: 0;
+  margin-inline: 0;                       /* stock: tables sit at the text's left edge, never centred */
+  font-size: var(--table-text-size, inherit);
+  color: var(--table-text-color, inherit);
+  max-width: 100%;
+}
+:is(.preview, .cm-table-widget) :is(th, td) {
+  border: var(--table-border-width, 1px) solid
+          var(--table-border-color, var(--background-modifier-border, var(--border)));
+  padding: var(--size-2-2, 4px) var(--size-4-3, 12px);
+  vertical-align: var(--table-cell-vertical-alignment, top);
+  line-height: var(--table-line-height, var(--line-height-tight, 1.3));
+  min-width: 3ch;
+}
+:is(.preview, .cm-table-widget) th {
+  font-weight: var(--table-header-weight, var(--font-semibold, 600));
+  background-color: var(--table-header-background, transparent);
+  color: var(--table-header-color, inherit);
+  font-size: var(--table-header-size, inherit);
+  /* the header rule: stock draws the thead's bottom edge with the header border width */
+  border-bottom-width: var(--table-header-border-width, var(--table-border-width, 1px));
+}
+:is(.preview, .cm-table-widget) tbody tr:hover > td {
+  background-color: var(--table-row-background-hover, transparent);
+}
+/* the delimiter row's alignment arrives as the HTML align attribute; make it
+   win over any inherited text-align (a theme's centred .preview, RTL notes) */
+:is(.preview, .cm-table-widget) :is(th, td)[align="left"]   { text-align: left }
+:is(.preview, .cm-table-widget) :is(th, td)[align="center"] { text-align: center }
+:is(.preview, .cm-table-widget) :is(th, td)[align="right"]  { text-align: right }
