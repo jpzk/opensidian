@@ -278,7 +278,8 @@
       const gs = Array.isArray(r && r.grants) ? r.grants : [];
       if (!gs.length) row(card, "No programs are always allowed", "Answer “Always allow this program” in a plugin's run dialog to add one here.", [], true);
       for (const g of gs) {
-        const day = g.added ? new Date(g.added * 1000).toISOString().slice(0, 10) : "?";
+        const dt = new Date(Number(g.added) * 1000); // a hand-edited u64 past the JS date range = Invalid Date, not a throw
+        const day = g.added && !isNaN(dt.getTime()) ? dt.toISOString().slice(0, 10) : "?";
         const st = g.status === "outdated" ? "Outdated: the plugin or the program changed, this grant is not used" : g.status === "unknown" ? "Cannot be checked from this window" : "";
         const b = el("button", "cpb-btn cpa-revoke", "Revoke"); b.type = "button";
         b.onclick = ev => { ev.stopPropagation(); revokeAllowed(g); };
