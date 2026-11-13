@@ -1348,6 +1348,29 @@ const Ed = {
         if (eg.view.lines.join("\n") !== want) fail("sel-tab:" + src);
       }
     } finally { Ed.after = oa; Ed.snap = on; }
+    // #59 callouts: the Live Preview block scanner (which lines become ONE callout widget)
+    // and the fold toggle. Ed.coScan missing = every case fails (develop has no callouts).
+    const cs = [
+      ["> [!note]\n> body", "0-1"], ["> [!NOTE] Title\n> a\n> b\nafter", "0-2"],
+      ["> [!tip]+ open\n> x", "0-1"], ["> [!faq]- shut\n> x\n\n> [!bug]\n> y", "0-1,3-4"],
+      ["> [!custom-type] t", "0-0"], ["> [!note] <img src=x onerror=alert(1)>", "0-0"],
+      ["> plain quote\n> [!note] not a head", "-"], ["text [!note]", "-"], ["> [note]", "-"],
+      ["```\n> [!note] in a fence\n```", "-"], ["> [!info]\n> > [!warning] nested\n> > deep", "0-2"],
+      ["   > [!note] 3 spaces", "0-0"], ["    > [!note] 4 spaces = code", "-"]];
+    for (const [s, w] of cs) {
+      let got;
+      try { got = Ed.coScan(s.split("\n")).map(([a, b]) => a + "-" + b).join(",") || "-"; } catch (_) { got = "throw"; }
+      if (got !== w) fail("co:" + s);
+    }
+    try {
+      const co = document.createElement("div");
+      co.innerHTML = '<div class="callout is-collapsible is-collapsed" data-callout-fold="-"><div class="callout-title"><div class="callout-fold is-collapsed"></div></div><div class="callout-content"></div></div>';
+      const c = co.firstChild, f = c.querySelector(".callout-fold");
+      if (!Ed.coFold(c) || c.classList.contains("is-collapsed") || f.classList.contains("is-collapsed")) fail("co:fold-open");
+      if (!Ed.coFold(c) || !c.classList.contains("is-collapsed") || !f.classList.contains("is-collapsed")) fail("co:fold-shut");
+      c.classList.remove("is-collapsible");
+      if (Ed.coFold(c)) fail("co:fold-nonfoldable");
+    } catch (_) { fail("co:fold-throw"); }
     return bad;
   },
 };
@@ -2296,7 +2319,7 @@ Ed.lpExt = function (v, G) {
     if (!m || s.main.head - ln.from >= m[0].length) return tr;
     return [tr, { selection: CMs.EditorSelection.cursor(ln.from + m[0].length), sequential: true }];
   });
-  return [plugin, clicks, vkeys, taskSnap, Ed.cbField(v, G, bust)];
+  return [plugin, clicks, vkeys, taskSnap, Ed.cbField(v, G, bust), Ed.coField(v, G, bust)];
 };
 /* ---------- plugin CODE BLOCKS in Live Preview (plug-top5) ----------
    A fenced block whose language a plugin registered a code-block processor for
@@ -2402,6 +2425,108 @@ Ed.cbField = function (v, G, bust) {
     provide: f => EditorView.decorations.from(f),
   });
   return field;
+};
+/* ---------- CALLOUTS in Live Preview (#59 slice 1) ----------
+   A blockquote whose first line is "> [!type]" (fold "+"/"-", title optional) shows in
+   Live Preview as the reading view's callout: the whole quote (its first line .. the last
+   consecutive ">" line) is ONE block widget, div.cm-embed-block.cm-callout holding the
+   Rust renderer's html for that source (src-tauri/src/callout.rs: the same DOM, the same
+   escaping path as the reading view). A selection touching the block reveals its source,
+   source mode and the reading view's laid-out lp render none — the Ed.cbField pattern.
+   Ed.coScan is pure (lines in, [l0, l1] 0-based inclusive out) and unit-asserted in
+   Ed.selfTest: fenced code is skipped, a ">" line inside a fence is never a callout. */
+Ed.CO_HEAD = /^ {0,3}>[ \t]*\[![^\]\s]+\][+-]?(?:[ \t]|$)/;
+Ed.CO_QUOTE = /^ {0,3}>/;
+Ed.coScan = function (lines) {
+  const out = [];
+  let fence = null;
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i], f = /^ {0,3}(`{3,}|~{3,})/.exec(t);
+    if (fence) { if (f && f[1][0] === fence[0] && f[1].length >= fence.length && !t.slice(f[0].length).trim()) fence = null; continue; }
+    if (f) { fence = f[1]; continue; }
+    if (!Ed.CO_HEAD.test(t)) continue;
+    let j = i;
+    while (j + 1 < lines.length && Ed.CO_QUOTE.test(lines[j + 1])) j++;
+    out.push([i, j]);
+    i = j;
+  }
+  return out;
+};
+// every callout block of doc -> [{from, to, src}] (cached on the doc: a caret move re-scans nothing)
+Ed.coBlocks = function (doc) {
+  if (Ed._coDoc === doc) return Ed._coOut;
+  const lines = [];
+  for (let i = 1; i <= doc.lines; i++) lines.push(doc.line(i).text);
+  const out = Ed.coScan(lines).map(([a, b]) => {
+    const la = doc.line(a + 1), lb = doc.line(b + 1);
+    return { from: la.from, to: lb.to, src: doc.sliceString(la.from, lb.to) };
+  });
+  Ed._coDoc = doc; Ed._coOut = out;
+  return out;
+};
+// fold: a click on the title of a foldable callout flips it (reading view, LP widget, embeds,
+// canvas cards, plugin renders: ONE delegated listener). Pure on the element, unit-asserted.
+Ed.coFold = function (co) {
+  if (!co || !co.classList || !co.classList.contains("is-collapsible")) return false;
+  const c = co.classList.toggle("is-collapsed");
+  const f = co.querySelector(":scope > .callout-title > .callout-fold");
+  if (f) f.classList.toggle("is-collapsed", c);
+  return true;
+};
+Ed.coClick = function (e) {
+  const t = e.target && e.target.closest && e.target.closest(".callout-title");
+  if (!t || (e.target.closest("a") && t.contains(e.target.closest("a")))) return;
+  const co = t.parentElement;
+  if (co && co.classList.contains("callout") && Ed.coFold(co)) { e.preventDefault(); e.stopPropagation(); }
+};
+if (typeof document !== "undefined") document.addEventListener("click", Ed.coClick);
+Ed.coField = function (v, G, bust) {
+  const { Decoration, WidgetType, EditorView } = CMv;
+  class CO extends WidgetType {
+    constructor(src, gen) { super(); this.src = src; this.gen = gen; }
+    eq(o) { return o.src === this.src && o.gen === this.gen; }
+    get estimatedHeight() { return 24 * Math.max(1, this.src.split("\n").length); }
+    toDOM(view) {
+      const w = Ed.el("div", "cm-embed-block markdown-rendered cm-callout");
+      const src = this.src;
+      // the widget ignores editor events: links follow here; a click outside the title and
+      // any link puts the caret on the block's first line (its source shows, as in stock)
+      w.addEventListener("click", e => {
+        const a = e.target && e.target.closest && e.target.closest("a.wiki, a.internal-link");
+        if (a && w.contains(a)) { if (typeof wikiClick === "function") wikiClick(e, a); return; }
+        if (e.defaultPrevented || (e.target.closest && (e.target.closest(".callout-title") || e.target.closest("a")))) return;
+        try { const p = view.posAtDOM(w, 0); view.dispatch({ selection: { anchor: p } }); view.focus(); } catch (_) {}
+      });
+      if (typeof inv === "function") inv("render", { content: src }).then(html => {
+        w.innerHTML = html;
+        view.requestMeasure();
+      }).catch(e => console.error("callout render:", e));
+      return w;
+    }
+    ignoreEvent() { return true; }
+  }
+  const build = st => {
+    const g = G();
+    const tb = g && g.view === v && g.active >= 0 ? g.tabs[g.active] : null;
+    if (!g || (v.lp && v.lp.classList.contains("src")) || (tb && tb.mode === "reading")) return Decoration.none;
+    const blocks = Ed.coBlocks(st.doc);
+    if (!blocks.length) return Decoration.none;
+    const gen = typeof notesCache !== "undefined" && notesCache ? notesCache.length : 0, out = [];
+    for (const b of blocks) {
+      if (st.selection.ranges.some(r => r.from <= b.to && r.to >= b.from)) continue;   // caret in the callout: its source shows
+      out.push(Decoration.replace({ widget: new CO(b.src, gen), block: true }).range(b.from, b.to));
+    }
+    return Decoration.set(out, true);
+  };
+  return CMs.StateField.define({
+    create: st => { try { return build(st); } catch (e) { console.error(e); return Decoration.none; } },
+    update(d, tr) {
+      if (tr.docChanged || tr.selection || tr.effects.some(e => e.is(bust)))
+        try { return build(tr.state); } catch (e) { console.error(e); return Decoration.none; }
+      return d;
+    },
+    provide: f => EditorView.decorations.from(f),
+  });
 };
 Ed.cbCensus = function () {   // [lpcb:N] rendered plugin code blocks in live-preview editors (only once one exists)
   const n = document.querySelectorAll(".cm-editor .cm-preview-code-block").length;

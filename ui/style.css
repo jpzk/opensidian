@@ -284,6 +284,35 @@ body {
   --toggle-s-thumb-height: 15px;
   --toggle-s-thumb-width: 15px;
   --toggle-thumb-color: #ffffff;
+  /* callouts (#59 slice 1): stock 1.13.7 app.css body block, verbatim names + formulas (see the
+     ".callout" section at the end of this file). The colours fall back to Obsidian's dark palette
+     literals instead of defining --color-* here: --text-error etc. already read var(--color-red, …)
+     with their own measured fallbacks, and defining --color-red would move them. */
+  --callout-border-width: 0px;
+  --callout-border-opacity: 0.25;
+  --callout-padding: var(--size-4-3) var(--size-4-3) var(--size-4-3) var(--size-4-6);
+  --callout-radius: var(--radius-s);
+  --callout-blend-mode: var(--highlight-mix-blend-mode, lighten);
+  --callout-title-color: inherit;
+  --callout-title-padding: 0;
+  --callout-title-size: inherit;
+  --callout-title-weight: calc(var(--font-weight) + var(--bold-modifier));
+  --callout-content-padding: 0;
+  --callout-content-background: transparent;
+  --callout-bug: var(--color-red, #fb464c);
+  --callout-default: var(--color-blue, #027aff);
+  --callout-error: var(--color-red, #fb464c);
+  --callout-example: var(--color-purple, #a882ff);
+  --callout-fail: var(--color-red, #fb464c);
+  --callout-important: var(--color-cyan, #53dfdd);
+  --callout-info: var(--color-blue, #027aff);
+  --callout-question: var(--color-orange, #e9973f);
+  --callout-success: var(--color-green, #44cf6e);
+  --callout-summary: var(--color-cyan, #53dfdd);
+  --callout-tip: var(--color-cyan, #53dfdd);
+  --callout-todo: var(--color-blue, #027aff);
+  --callout-warning: var(--color-orange, #e9973f);
+  --callout-quote: #9e9e9e;
 }
 /* ---------------------------------------------------------------------------
    LIGHT. Every value below was SAMPLED from a pixel of a running Obsidian
@@ -364,6 +393,21 @@ body:where(.theme-light) {
   /* minimalmargin: scrollbar thumb, stock-default-light-rlwoff-read-900.png x=889 y=400 */
   --scrollbar-thumb-bg: #e5e5e5;
   --accent-green: #08b94e;
+  /* callouts (#59 slice 1): stock 1.13.7 .theme-light palette literals as fallbacks */
+  --callout-blend-mode: var(--highlight-mix-blend-mode, darken);
+  --callout-bug: var(--color-red, #e93147);
+  --callout-default: var(--color-blue, #086ddd);
+  --callout-error: var(--color-red, #e93147);
+  --callout-example: var(--color-purple, #7852ee);
+  --callout-fail: var(--color-red, #e93147);
+  --callout-important: var(--color-cyan, #00bfbc);
+  --callout-info: var(--color-blue, #086ddd);
+  --callout-question: var(--color-orange, #ec7500);
+  --callout-success: var(--color-green, #08b94e);
+  --callout-summary: var(--color-cyan, #00bfbc);
+  --callout-tip: var(--color-cyan, #00bfbc);
+  --callout-todo: var(--color-blue, #086ddd);
+  --callout-warning: var(--color-orange, #ec7500);
 }
 /* THEME TOKENS END */
 * { box-sizing: border-box; margin: 0 }
@@ -1939,3 +1983,75 @@ span.is-flashing { background: var(--highlight-yellow) }
 /* gh-icons #20: inline monochrome glyph in an icon-only button (replaces a text pictograph);
    inline at 12px, on the text's middle, so the button keeps its line box */
 svg.gi { width: 12px; height: 12px; vertical-align: -2px; display: inline-block; pointer-events: none }
+/* ---------------------------------------------------------------------------
+   CALLOUTS (#59 slice 1). The DOM is Obsidian's (src-tauri/src/callout.rs):
+   div.callout[data-callout][data-callout-fold] > div.callout-title
+   (div.callout-icon + div.callout-title-inner [+ div.callout-fold]) + div.callout-content.
+   Rules and formulas copied from stock 1.13.7 app.css (obsidian.asar app.css,
+   sha256 f612f1e8…4c41), same selectors and specificity, so a theme that styles
+   .callout / [data-callout] / --callout-* in Obsidian styles ours the same way.
+   Theme sheets load after this file and win on order. Defaults: body token blocks. */
+.callout {
+  --callout-color: var(--callout-default);
+  --callout-icon: lucide-pencil;
+}
+.callout[data-callout="abstract"], .callout[data-callout="summary"], .callout[data-callout="tldr"] { --callout-color: var(--callout-summary); --callout-icon: lucide-clipboard-list }
+.callout[data-callout="info"] { --callout-color: var(--callout-info); --callout-icon: lucide-info }
+.callout[data-callout="todo"] { --callout-color: var(--callout-todo); --callout-icon: lucide-check-circle-2 }
+.callout[data-callout="important"] { --callout-color: var(--callout-important); --callout-icon: lucide-flame }
+.callout[data-callout="tip"], .callout[data-callout="hint"] { --callout-color: var(--callout-tip); --callout-icon: lucide-flame }
+.callout[data-callout="success"], .callout[data-callout="check"], .callout[data-callout="done"] { --callout-color: var(--callout-success); --callout-icon: lucide-check }
+.callout[data-callout="question"], .callout[data-callout="help"], .callout[data-callout="faq"] { --callout-color: var(--callout-question); --callout-icon: help-circle }
+.callout[data-callout="warning"], .callout[data-callout="caution"], .callout[data-callout="attention"] { --callout-color: var(--callout-warning); --callout-icon: lucide-alert-triangle }
+.callout[data-callout="failure"], .callout[data-callout="fail"], .callout[data-callout="missing"] { --callout-color: var(--callout-fail); --callout-icon: lucide-x }
+.callout[data-callout="danger"], .callout[data-callout="error"] { --callout-color: var(--callout-error); --callout-icon: lucide-zap }
+.callout[data-callout="bug"] { --callout-color: var(--callout-bug); --callout-icon: lucide-bug }
+.callout[data-callout="example"] { --callout-color: var(--callout-example); --callout-icon: lucide-list }
+.callout[data-callout="quote"], .callout[data-callout="cite"] { --callout-color: var(--callout-quote); --callout-icon: quote-glyph }
+.callout {
+  overflow: hidden;
+  border-style: solid;
+  border-color: color-mix(in oklch, var(--callout-color) calc(var(--callout-border-opacity) * 100%), transparent);
+  border-width: var(--callout-border-width);
+  border-radius: var(--callout-radius);
+  margin: 1em 0;
+  mix-blend-mode: var(--callout-blend-mode);
+  background-color: color-mix(in oklch, var(--callout-color) 10%, transparent);
+  padding: var(--callout-padding);
+}
+.preview > .callout { margin-inline: auto }   /* keep the note-column centring (.preview > * ties and loses on order) */
+.callout.is-collapsible .callout-title { cursor: var(--cursor, default) }
+.callout-title {
+  padding: var(--callout-title-padding);
+  display: flex;
+  gap: var(--size-4-1);
+  font-size: var(--callout-title-size);
+  color: var(--callout-color);
+  line-height: var(--line-height-tight);
+  align-items: flex-start;
+}
+.callout-content {
+  overflow-x: auto;
+  padding: var(--callout-content-padding);
+  background-color: var(--callout-content-background);
+}
+.callout-content .callout { margin-top: 20px }
+.callout-icon { flex: 0 0 auto; display: flex; align-items: center }
+.callout-icon .svg-icon { color: var(--callout-color) }
+.callout-icon::after { content: "\200B" }
+.callout svg.svg-icon { height: var(--icon-size, 18px); width: var(--icon-size, 18px); stroke-width: var(--icon-stroke, 1.75px) }
+.callout-title-inner {
+  --font-weight: var(--callout-title-weight);
+  font-weight: var(--font-weight);
+  color: var(--callout-title-color);
+}
+.callout-fold { display: flex; align-items: center; padding-inline-end: var(--size-4-2) }
+.callout-fold::after { content: "\200B" }
+.callout-fold .svg-icon { transition: transform 100ms ease-in-out }
+.callout-fold.is-collapsed .svg-icon { transform: rotate(calc(var(--direction, 1) * -1 * 90deg)) }
+/* stock hides a folded body from JS (display:none on .callout-content); same effect here from the class */
+.callout.is-collapsed > .callout-content { display: none }
+/* live preview: the block widget (ui/editor.js Ed.calloutField) */
+.cm-callout { padding: 0; margin: 0 }
+.cm-callout .callout { margin: 0 }
+.cm-callout .callout-content .callout { margin: 1em 0 }
