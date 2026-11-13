@@ -259,14 +259,14 @@ body {
      (Kanban's new-list form: z-index: var(--layer-popover)). Unset, such a z-index computes auto
      and the plugin's own later content covers it. Values follow this file's own stack:
      #modal 50, .ctxmenu 60, #notice 71, #tabghost 99. */
-  --layer-cover: 5;
+  --layer-cover: 3;
   --layer-sidedock: 10;
-  --layer-status-bar: 15;
-  --layer-popover: 30;
+  --layer-status-bar: 5;
+  --layer-popover: 6;
   --layer-slides: 45;
-  --layer-modal: 50;
+  --layer-modal: 55;
   --layer-menu: 60;
-  --layer-notice: 71;
+  --layer-notice: 60;
   --layer-tooltip: 72;
   --layer-dragged-item: 99;
   /* toggles: Obsidian's public toggle geometry variables. Plugin switches size themselves from
@@ -275,15 +275,150 @@ body {
      tall and a click on its centre lands on nothing. */
   --toggle-border-width: 2px;
   --toggle-width: 40px;
-  --toggle-radius: 18px;
-  --toggle-thumb-radius: 18px;
-  --toggle-thumb-height: 18px;
-  --toggle-thumb-width: 18px;
+  --toggle-radius: 999px;
+  --toggle-thumb-radius: 50%;
+  --toggle-thumb-height: 16px;
+  --toggle-thumb-width: 16px;
   --toggle-s-border-width: 2px;
   --toggle-s-width: 34px;
-  --toggle-s-thumb-height: 15px;
-  --toggle-s-thumb-width: 15px;
-  --toggle-thumb-color: #ffffff;
+  --toggle-s-thumb-height: 14px;
+  --toggle-s-thumb-width: 14px;
+  --toggle-thumb-color: var(--text-chrome);
+  /* ======================= LAYER 4 — STOCK NAMES WE NOW CONSUME (css-vars, #59) =======
+     Each is OUR current value, so the no-theme look is unchanged; the consumer reads it as
+     var(--name, <same value>). Mapping + provenance: goal css-vars mapB/*.tsv. */
+  --anim-duration-fast: transform .1s;
+  --background-modifier-active-hover: var(--bg-surface);
+  --background-modifier-border-hover: var(--border-strong);
+  --background-modifier-cover: rgba(0,0,0,.35);
+  --background-modifier-error: var(--bg-banner-error);
+  --background-modifier-message: rgba(30,30,30,0.95);
+  --blockquote-background-color: var(--transparent);
+  --blockquote-font-style: normal;
+  --border-width: 1px;
+  --button-radius: 4px;
+  --caret-color: var(--text-normal);
+  --clickable-icon-radius: 4px;
+  --code-white-space: pre-wrap;
+  --collapse-icon-color: var(--text-chrome-dim);
+  --color-base-00: #1c1c1c;
+  --color-base-10: #232323;
+  --color-base-100: #dadada;
+  --color-base-30: #45475a;
+  --color-base-50: #666666;
+  --color-base-70: #b3b3b3;
+  --color-cyan: #53dfdd;
+  --color-green: #44cf6e;
+  --color-orange: #e9973f;
+  --color-pink: #fa99cd;
+  --color-purple: #a882ff;
+  --color-red: #fb464c;
+  --color-yellow: #e0de71;
+  --cursor: pointer;
+  --cursor-link: pointer;
+  --divider-color: var(--bg-ribbon);
+  --divider-color-hover: var(--border-strong);
+  --drag-ghost-background: var(--border);
+  --drag-ghost-text-color: var(--text-chrome);
+  --drag-item-background: var(--bm-drop-src-bg);
+  --drag-item-shadow: 0 4px 14px var(--shadow-popover);
+  --dropdown-background: var(--bg-sidebar);
+  --dropdown-padding: 0 8px;
+  --font-interface-theme: var(--font-interface-override), system-ui, sans-serif;
+  --font-monospace-theme: var(--font-monospace-override), var(--font-monospace-default);
+  --font-normal: 400;
+  --font-semibold: 600;
+  --font-smallest: .7em;
+  --font-text-theme: var(--font-text-override), var(--font-default);
+  --font-ui-large: 16px;
+  --font-ui-medium: 14px;
+  --font-ui-small: 13px;
+  --font-ui-smaller: 12px;
+  --graph-controls-width: 240px;
+  --header-height: 32px;
+  --icon-color: var(--text-chrome-muted);
+  --icon-color-focused: var(--text-chrome);
+  --icon-color-hover: var(--text-chrome);
+  --icon-l: 18px;
+  --icon-m: 16px;
+  --icon-s: 14px;
+  --icon-size: 18px;
+  --icon-xs: 12px;
+  --indentation-guide-width: 1px;
+  --inline-title-line-height: var(--h1-line-height);
+  --inline-title-margin-bottom: 0.5em;
+  --inline-title-size: var(--h1-size);
+  --inline-title-weight: var(--h1-weight);
+  --input-border-width: 1px;
+  --input-height: 24px;
+  --input-padding: 4px 6px;
+  --input-radius: 4px;
+  --interactive-normal: var(--border);
+  --link-color: var(--accent-blue);
+  --link-color-hover: var(--text-accent-hover);
+  --link-decoration: none;
+  --link-external-color: var(--accent-blue);
+  --link-external-decoration: underline;
+  --link-unresolved-color: var(--link-unresolved);
+  --link-unresolved-decoration-color: var(--link-unresolved-underline);
+  --menu-background: var(--bg-base);
+  --menu-border-width: 1px;
+  --menu-padding: 4px 0;
+  --menu-radius: 6px;
+  --menu-shadow: 0 4px 14px var(--shadow-popover);
+  --nav-collapse-icon-color: var(--text-chrome-dim);
+  --nav-heading-color: var(--text-chrome);
+  --nav-heading-weight: 600;
+  --nav-indentation-guide-color: var(--rule-faint);
+  --nav-indentation-guide-width: 1px;
+  --nav-item-background-hover: var(--bg-surface);
+  --nav-item-background-selected: var(--text-selection);
+  --nav-item-color-highlighted: var(--bm-drop-into-fg);
+  --nav-item-padding: 0 4px;
+  --nav-item-radius: 5px;
+  --nav-item-size: var(--sidebar-font-size);
+  --nav-item-white-space: nowrap;
+  --nav-tag-background: var(--bg-surface);
+  --nav-tag-color: var(--text-chrome-dim);
+  --nav-tag-radius: 3px;
+  --pdf-background: var(--bg-surface);
+  --popover-max-height: 210px;
+  --radius-l: 8px;
+  --radius-m: 4px;
+  --ribbon-padding: 10px 0;
+  --ribbon-width: 44px;
+  --scrollbar-active-thumb-bg: var(--scrollbar-thumb-bg);
+  --scrollbar-border-width: 0 3px 0 2px;
+  --scrollbar-radius: 6px;
+  --scrollbar-width: 12px;
+  --search-clear-button-color: var(--text-chrome-muted);
+  --search-input-radius: 4px;
+  --settings-background: var(--bg-elevated);
+  --shadow-l: 0 8px 30px var(--shadow-modal);
+  --shadow-s: 0 4px 16px var(--shadow-drop);
+  --slider-track-background: var(--border);
+  --slider-track-height: 4px;
+  --slider-value-font-size: 12px;
+  --status-bar-background: var(--bg-sidebar);
+  --status-bar-border-width: 1px;
+  --status-bar-font-size: 12px;
+  --status-bar-position: absolute;
+  --status-bar-radius: 6px;
+  --status-bar-text-color: var(--text-chrome-muted);
+  --suggestion-background: var(--bg-elevated);
+  --swatch-height: 22px;
+  --swatch-radius: 4px;
+  --swatch-width: 22px;
+  --tab-font-size: 12px;
+  --tab-text-color: var(--text-chrome-muted);
+  --tab-text-color-active: var(--text-chrome);
+  --tab-width: 120px;
+  --tag-background-hover: var(--tag-bg-hover);
+  --tag-color: var(--accent-blue);
+  --tag-decoration: none;
+  --tag-padding-y: 0;
+  --tag-radius: 999px;
+  --tag-size: .85em;
 }
 /* ---------------------------------------------------------------------------
    LIGHT. Every value below was SAMPLED from a pixel of a running Obsidian
@@ -364,6 +499,20 @@ body:where(.theme-light) {
   /* minimalmargin: scrollbar thumb, stock-default-light-rlwoff-read-900.png x=889 y=400 */
   --scrollbar-thumb-bg: #e5e5e5;
   --accent-green: #08b94e;
+  /* ---- css-vars #59: light values of the --color-* ramp we now define in LAYER 4 ---- */
+  --color-base-00: #ffffff;
+  --color-base-10: #fafafa;
+  --color-base-100: #222222;
+  --color-base-30: #e4e4e4;
+  --color-base-50: #ababab;
+  --color-base-70: #5c5c5c;
+  --color-cyan: #00bfbc;
+  --color-green: #08b94e;
+  --color-orange: #ec7500;
+  --color-pink: #d53984;
+  --color-purple: #7852ee;
+  --color-red: #e93147;
+  --color-yellow: #e0ac00;
 }
 /* THEME TOKENS END */
 * { box-sizing: border-box; margin: 0 }
@@ -373,9 +522,9 @@ body:where(.theme-light) {
    font matches, as in Obsidian, so each chain falls through to its default stack;
    chrome keeps its old system-ui stack, text and code their R15 stacks. */
 body { --font-interface-override: "??"; --font-text-override: "??"; --font-monospace-override: "??";
-       --font-interface: var(--font-interface-override), system-ui, sans-serif;
-       --font-text: var(--font-text-override), var(--font-default);
-       --font-monospace: var(--font-monospace-override), var(--font-monospace-default) }
+       --font-interface: var(--font-interface-theme, var(--font-interface-override), system-ui, sans-serif);
+       --font-text: var(--font-text-theme, var(--font-text-override), var(--font-default));
+       --font-monospace: var(--font-monospace-theme, var(--font-monospace-override), var(--font-monospace-default)) }
 /* goal noscroll: the DOCUMENT never scrolls. body used to be a static height:100vh box, so
    any outer box a theme or vault snippet put on it (body{margin:6px}, html{padding:4px})
    made the document 100vh+extra tall and the window grew a root scrollbar (cause.md).
@@ -410,13 +559,13 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
        border: var(--frame-width, 0) solid var(--frame-color, currentColor);
        background: var(--bg-base); color: var(--text-chrome) }
 /* R9.1 ribbon: fixed 44px icon strip, survives sidebar collapse */
-#ribbon { width: 44px; background: var(--bg-ribbon); flex-shrink: 0; display: flex;
-          flex-direction: column; align-items: center; gap: 8px;
-          padding: 10px 0 }
-#ribbon button { background: none; color: var(--text-chrome-muted); border: 0; padding: 5px;
-                 cursor: pointer; border-radius: 4px }
-#ribbon button:hover { background: var(--bg-surface); color: var(--text-chrome) }
-#ribbon button svg { width: 18px; height: 18px; display: block }
+#ribbon { width: var(--ribbon-width, 44px); background: var(--bg-ribbon); flex-shrink: 0; display: flex;
+          flex-direction: column; align-items: center; gap: var(--size-4-2, 8px);
+          padding: var(--ribbon-padding, 10px 0) }
+#ribbon button { background: none; color: var(--icon-color, var(--text-chrome-muted)); border: 0; padding: 5px;
+                 cursor: pointer; border-radius: var(--radius-s, 4px) }
+#ribbon button:hover { background: var(--bg-surface); color: var(--icon-color-hover, var(--text-chrome)) }
+#ribbon button svg { width: var(--icon-l, 18px); height: var(--icon-l, 18px); display: block }
 /* R22: the sidebars keep their nominal width but SHRINK (never past 40% of the
    window each) instead of forcing the body wider than the viewport — 44 + 156
    + 260 = 460px of fixed chrome does not fit a 320px window. overflow:hidden
@@ -432,25 +581,25 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .stab { flex: 0 1 34px; width: 34px; min-width: 0; overflow: hidden; background: none; color: var(--text-chrome-muted);
         border: 0; padding: 4px; cursor: pointer; border-radius: 4px }   /* R22: min-width:0 = shrinkable icon button */
 .stab:hover { color: var(--text-chrome) }
-.stab.active { background: var(--bg-surface); color: var(--text-chrome) }
+.stab.active { background: var(--background-modifier-active-hover, var(--bg-surface)); color: var(--icon-color-focused, var(--text-chrome)) }
 .stab svg { width: 15px; height: 15px; display: block; margin: 0 auto }
 .spane { flex: 1; display: flex; flex-direction: column; min-height: 0 }
 .spane[hidden] { display: none }
 #side[hidden] { display: none }   /* R9.5: collapsed left sidebar (ribbon stays) */
 /* ux-4: left resize divider — overlaps #side's last 6px (negative margin,
    net 0 layout width) so #main keeps its x=200 edge for the smoke coords */
-#ldiv { flex: 0 0 6px; margin-left: -6px; z-index: 3; cursor: col-resize }
-#ldiv:hover, #ldiv:active { background: var(--border-strong) }
+#ldiv { flex: 0 0 6px; margin-left: -6px; z-index: var(--layer-cover, 3); cursor: col-resize }
+#ldiv:hover, #ldiv:active { background: var(--divider-color-hover, var(--border-strong)) }
 #ldiv[hidden] { display: none }
 /* collapseall R3: #bar is the explorer header; .hslot = a RESERVED header slot
    (sort / auto-reveal — out of scope, spec R3): it takes a button's width and
    paints nothing, so the toggle sits in Obsidian's slot ORDER. #bmbar shares the
    base rule and is restyled to stock below (bmcollbtn).
    #bar keeps its height (the tree's first row stays at y=82, R8). */
-#bar, #bmbar { display: flex; gap: 4px; padding: 6px; flex-shrink: 0 }
+#bar, #bmbar { display: flex; gap: 4px; padding: var(--size-2-3, 6px); flex-shrink: 0 }
 .hslot { flex: 1; min-width: 0 }
 #bar button, #bmbar button { flex: 1; min-width: 0; background: var(--bg-surface); color: var(--text-chrome); border: 0;
-              padding: 4px; cursor: pointer; border-radius: 4px }
+              padding: var(--size-4-1, 4px); cursor: pointer; border-radius: var(--button-radius, 4px) }
 /* bmcollbtn: the bookmarks header is stock's ONE row of 4 visible icon buttons
    (notes/stock.md): compact (28 px wide), 32 px pitch, centred as a group, bare
    glyph at rest, a rounded hover square. Row height unchanged (24 px buttons in
@@ -466,15 +615,15 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
          outline: none; font-size: 12px }
 #tree { flex: 1; overflow-y: auto }
 /* R9.3 search pane */
-#sbar { display: flex; gap: 4px; padding: 6px }
+#sbar { display: flex; gap: var(--size-2-2, 4px); padding: 6px }
 #sinput { flex: 1; min-width: 0; background: var(--bg-sidebar); color: var(--text-chrome);
-          border: 1px solid var(--border); border-radius: 4px; padding: 4px 6px;
+          border: var(--input-border-width, 1px) solid var(--border); border-radius: var(--search-input-radius, 4px); padding: var(--input-padding, 4px 6px);
           outline: none; font-size: 12px }
 #sinput:focus { border-color: var(--accent-blue) }
-#sclear { background: none; color: var(--text-chrome-muted); border: 0; cursor: pointer;
+#sclear { background: none; color: var(--search-clear-button-color, var(--text-chrome-muted)); border: 0; cursor: pointer;
           padding: 0 4px; border-radius: 4px }
 #sclear:hover { color: var(--text-chrome); background: var(--bg-surface) }
-#sresults { flex: 1; overflow-y: auto; font-size: 12px }
+#sresults { flex: 1; overflow-y: auto; font-size: var(--font-ui-smaller, 12px) }
 .sgroup { padding: 5px 8px 2px; color: var(--text-chrome); font-weight: 600; font-size: var(--sidebar-font-size);   /* sidefont: file rows = Q1; .shit snippets keep 12px */
           cursor: pointer; white-space: nowrap; overflow: hidden;
           text-overflow: ellipsis }
@@ -527,30 +676,30 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
    .bmrow:hover on purpose: equal specificity, so source order keeps the drag
    fills over the hover fill. */
 #bmdropline { position: fixed; height: 3px; background: var(--bm-drop-line); z-index: 98; pointer-events: none }
-.bmrow.bmdrop-into, .bmrow.bmdrop-into:hover { background: var(--bm-drop-into-bg); color: var(--bm-drop-into-fg) }
-.bmrow.bmdrop-src, .bmrow.bmdrop-src:hover { background: var(--bm-drop-src-bg) }
+.bmrow.bmdrop-into, .bmrow.bmdrop-into:hover { background: var(--bm-drop-into-bg); color: var(--nav-item-color-highlighted, var(--bm-drop-into-fg)) }
+.bmrow.bmdrop-src, .bmrow.bmdrop-src:hover { background: var(--drag-item-background, var(--bm-drop-src-bg)) }
 /* ux-2 Obsidian parity. HEIGHT MUST STAY 31px — smoke clicks rows at pitch 31 */
-.trow { height: 31px; display: flex; align-items: center; cursor: pointer;
-        margin: 0 8px; padding: 0 4px; border-radius: 5px;
-        font-size: var(--sidebar-font-size); color: var(--nav-item-color) }   /* themematch: tree ink = --nav-item-color (muted), not body ink */
-.trow:hover { background: var(--bg-surface) }
+.trow { height: 31px; display: flex; align-items: center; cursor: var(--cursor, pointer);
+        margin: 0 8px; padding: var(--nav-item-padding, 0 4px); border-radius: var(--nav-item-radius, 5px);
+        font-size: var(--nav-item-size, var(--sidebar-font-size)); color: var(--nav-item-color) }   /* themematch: tree ink = --nav-item-color (muted), not body ink */
+.trow:hover { background: var(--nav-item-background-hover, var(--bg-surface)) }
 .trow.active { background: var(--nav-item-background-active); color: var(--nav-item-color-active) }
 .tkids.collapsed { display: none }   /* R20: collapsed folder = its .tkids box hidden, rows stay built */
-.trow .tn { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden;
+.trow .tn { flex: 1; min-width: 0; white-space: var(--nav-item-white-space, nowrap); overflow: hidden;
             text-overflow: ellipsis }
 .trow .tg { flex: 0 0 14px; align-self: stretch; position: relative }
 .trow .tg::before { content: ""; position: absolute; left: 7px; top: 0;
-                    bottom: 0; width: 1px; background: var(--rule-faint) }
+                    bottom: 0; width: var(--nav-indentation-guide-width, 1px); background: var(--nav-indentation-guide-color, var(--rule-faint)) }
 .trow .tc { flex: 0 0 16px; display: flex; align-items: center;
-            justify-content: center; color: var(--text-chrome-dim) }
-.trow .tc svg { width: 10px; height: 10px; transition: transform .1s }
+            justify-content: center; color: var(--nav-collapse-icon-color, var(--text-chrome-dim)) }
+.trow .tc svg { width: 10px; height: 10px; transition: var(--anim-duration-fast, transform .1s) }
 .trow.folder.open .tc svg { transform: rotate(90deg) }
 .trow .tfi { flex: 0 0 18px; display: flex; align-items: center;
              color: var(--text-chrome-muted) }
-.trow .tfi svg { width: 14px; height: 14px }
+.trow .tfi svg { width: var(--icon-s, 14px); height: var(--icon-s, 14px) }
 .trow.folder { font-weight: 500 }
-.trow .ttag { flex: 0 0 auto; margin-left: 6px; padding: 0 4px; border-radius: 3px;   /* goal canvas-core: the CANVAS tag on a .canvas row */
-             font-size: 0.7em; letter-spacing: .04em; color: var(--text-chrome-dim); background: var(--bg-surface) }
+.trow .ttag { flex: 0 0 auto; margin-left: 6px; padding: 0 4px; border-radius: var(--nav-tag-radius, 3px);   /* goal canvas-core: the CANVAS tag on a .canvas row */
+             font-size: 0.7em; letter-spacing: .04em; color: var(--nav-tag-color, var(--text-chrome-dim)); background: var(--nav-tag-background, var(--bg-surface)) }
 /* settings-gear (#29): the footer row holds the switcher (flexes, ellipsizes) and the Settings gear (fixed 26px). */
 #vbar { display: flex; align-items: center; flex: 0 0 auto; min-width: 0; border-top: 1px solid var(--bg-surface) }
 #vswitch { flex: 1 1 auto; min-width: 0; padding: 6px 4px 6px 12px; color: var(--text-chrome-muted);
@@ -564,8 +713,8 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 #vswitch:hover { background: var(--bg-surface) }
 #main { flex: 1; display: flex; min-width: 0 }
 /* R9.6 right sidebar: localgraph of the active note, resizable divider */
-#rdiv { flex: 0 0 6px; background: var(--bg-ribbon); cursor: col-resize }
-#rdiv:hover, #rdiv:active { background: var(--border-strong) }
+#rdiv { flex: 0 0 6px; background: var(--divider-color, var(--bg-ribbon)); cursor: col-resize }
+#rdiv:hover, #rdiv:active { background: var(--divider-color-hover, var(--border-strong)) }
 #rdiv[hidden], #rside[hidden] { display: none }
 #rside { width: 260px; flex: 0 1 auto; min-width: 0; max-width: 40%;   /* R22 */
          overflow: hidden; background: var(--bg-sidebar); display: flex;
@@ -574,19 +723,19 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 #rtabs { display: flex; flex-wrap: wrap; gap: 3px; padding: 6px 6px 2px 7px; overflow: hidden }   /* R22: wrap+clip. NO right padding reserve: R20 put #rtoggle IN FLOW as a flex child (margin-left:auto), so the old 30px inboard reserve only opened a dead gap and shifted the toggle 30px left of where R20's rside phase clicks it */
 #rpane-graph { display: flex; position: relative }
 #rpane-graph[hidden] { display: none }
-.rhead { padding: 6px 10px 4px; font-size: 12px; font-weight: 600; color: var(--text-chrome) }
+.rhead { padding: 6px 10px 4px; font-size: 12px; font-weight: var(--nav-heading-weight, 600); color: var(--nav-heading-color, var(--text-chrome)) }
 .rhead .scount { color: var(--text-chrome-dim); font-weight: 400; margin-left: 4px }
 .rlist { flex: 1; overflow-y: auto; font-size: var(--sidebar-font-size) }   /* sidefont: backlinks/outgoing/outline rows = Q1 (docs/recon-sidefont Q3) */
 .rempty { padding: 8px 10px; color: var(--text-chrome-dim) }
 .blnote { padding: 4px 8px; color: var(--text-chrome); cursor: pointer; display: flex;
           align-items: center; gap: 4px; white-space: nowrap; overflow: hidden }
 .blnote:hover { background: var(--bg-surface) }
-.blnote .tc { flex: 0 0 12px; display: flex; color: var(--text-chrome-dim) }
+.blnote .tc { flex: 0 0 12px; display: flex; color: var(--collapse-icon-color, var(--text-chrome-dim)) }
 .blnote .tc svg { width: 10px; height: 10px; transition: transform .1s }
 .blnote.open .tc svg { transform: rotate(90deg) }
 .blnote .bln { flex: 1; overflow: hidden; text-overflow: ellipsis }
 .blnote .scount { color: var(--text-chrome-dim) }
-.blline { padding: 2px 8px 2px 24px; color: var(--text-chrome-muted); cursor: pointer; font-size: 12px;   /* sidefont: context SNIPPET, smaller than Q1 (Q3) */
+.blline { padding: 2px 8px 2px 24px; color: var(--text-chrome-muted); cursor: pointer; font-size: var(--font-ui-smaller, 12px);   /* sidefont: context SNIPPET, smaller than Q1 (Q3) */
           white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
 .blline:hover { background: var(--bg-surface) }
 .blline mark { background: none; color: var(--accent-yellow) }
@@ -596,12 +745,12 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .outrow.unresolved { color: var(--text-chrome-dim); font-style: italic; cursor: default }
 .outrow.unresolved::after { content: "unresolved"; margin-left: 6px; font-size: 10px;
                             color: var(--border-strong); font-style: normal }
-.tocrow { display: flex; align-items: center; gap: 2px; padding: 3px 6px 3px 0;
+.tocrow { display: flex; align-items: center; gap: var(--size-2-1, 2px); padding: 3px 6px 3px 0;
           color: var(--text-chrome-muted); cursor: pointer; white-space: nowrap; overflow: hidden }
 .tocrow:hover { background: var(--bg-surface) }
 .tocrow.active { color: var(--text-chrome); background: var(--bg-surface) }
-.tocrow .tc { flex: 0 0 14px; display: flex; justify-content: center; color: var(--text-chrome-dim) }
-.tocrow .tc svg { width: 10px; height: 10px; transition: transform .1s }
+.tocrow .tc { flex: 0 0 14px; display: flex; justify-content: center; color: var(--collapse-icon-color, var(--text-chrome-dim)) }
+.tocrow .tc svg { width: 10px; height: 10px; transition: var(--anim-duration-fast, transform .1s) }
 .tocrow.open .tc svg { transform: rotate(90deg) }
 .tocrow .tn { overflow: hidden; text-overflow: ellipsis }
 .tockids { display: block }
@@ -627,8 +776,8 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .split.row { flex-direction: row }
 .split.col { flex-direction: column }
 /* R6.6: draggable divider between sibling panes */
-.divider { flex: 0 0 6px; background: var(--bg-ribbon) }
-.divider:hover, .divider:active { background: var(--border-strong) }
+.divider { flex: 0 0 6px; background: var(--divider-color, var(--bg-ribbon)) }
+.divider:hover, .divider:active { background: var(--divider-color-hover, var(--border-strong)) }
 .divider.row { cursor: col-resize }
 .divider.col { cursor: row-resize }
 .pane { flex: 1 1 0; display: flex; flex-direction: column;
@@ -637,7 +786,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 /* R22: the strip is a fixed-height row of shrinkable items — min-width:0 +
    overflow:hidden all the way down, so a pane squeezed to a few px clips the
    strip instead of pushing #main (and the window) wider than the viewport. */
-.tabbar { display: flex; height: 32px; background: var(--tab-container-background); flex-shrink: 0;
+.tabbar { display: flex; height: var(--header-height, 32px); background: var(--tab-container-background); flex-shrink: 0;
           min-width: 0; overflow: hidden; user-select: none }   /* R18: a missed tab grab must not start a text-selection DnD (Obsidian: tab strip unselectable) */
 .tabs { display: flex; flex: 1 1 0; min-width: 0; overflow: hidden }
 /* R4X.1 (navbtn): Back/Forward at the header's left edge (docs/recon-navbtn §1—§3).
@@ -647,23 +796,23 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .navbtns { display: flex; align-items: center; flex: 0 1 auto; min-width: 0;
            overflow: hidden; padding: 0 2px }
 .navbtn { background: none; border: 0; color: var(--text-chrome); cursor: pointer;
-          padding: 3px 5px; border-radius: 4px; display: flex; align-items: center }
+          padding: 3px 5px; border-radius: var(--clickable-icon-radius, 4px); display: flex; align-items: center }
 .navbtn:disabled { color: var(--text-chrome-muted); cursor: default }
 .navbtn:not(:disabled):hover { background: var(--border) }
-.navbtn svg { width: 12px; height: 12px; display: block }
-.modebtn { background: none; border: 0; color: var(--text-chrome-muted); cursor: pointer;
+.navbtn svg { width: var(--icon-xs, 12px); height: var(--icon-xs, 12px); display: block }
+.modebtn { background: none; border: 0; color: var(--icon-color, var(--text-chrome-muted)); cursor: pointer;
            padding: 0 10px; flex: 0 1 auto; min-width: 0; overflow: hidden }   /* R22: shrinkable, was flex-shrink:0 */
-.modebtn:hover { color: var(--text-chrome) }
+.modebtn:hover { color: var(--icon-color-hover, var(--text-chrome)) }
 .modebtn svg { width: 16px; height: 16px; display: block }
 /* graphhdr REQ-5: the ⋮ "More options" button — same muted glyph, right of the toggle */
-.morebtn { background: none; border: 0; color: var(--text-chrome-muted); cursor: pointer;
+.morebtn { background: none; border: 0; color: var(--icon-color, var(--text-chrome-muted)); cursor: pointer;
            padding: 0 8px; flex: 0 1 auto; min-width: 0; overflow: hidden }
 .morebtn:hover { color: var(--text-chrome) }
 .morebtn svg { width: 16px; height: 16px; display: block }
-.tab { width: 120px; min-width: 0; flex-shrink: 1; overflow: hidden; display: flex; align-items: center;
-       gap: 6px; padding: 0 8px; background: var(--bg-surface); color: var(--text-chrome-muted);
-       cursor: pointer; font-size: 12px; border-right: 2px solid var(--bg-ribbon) }   /* R22: overflow:hidden — the 16px close button + 16px padding cannot fit a 2px tab, so clip */
-.tab.active { background: var(--tab-background-active); color: var(--text-chrome) }   /* themematch: active tab = the note surface */
+.tab { width: var(--tab-width, 120px); min-width: 0; flex-shrink: 1; overflow: hidden; display: flex; align-items: center;
+       gap: 6px; padding: 0 8px; background: var(--bg-surface); color: var(--tab-text-color, var(--text-chrome-muted));
+       cursor: pointer; font-size: var(--tab-font-size, 12px); border-right: 2px solid var(--bg-ribbon) }   /* R22: overflow:hidden — the 16px close button + 16px padding cannot fit a 2px tab, so clip */
+.tab.active { background: var(--tab-background-active); color: var(--tab-text-color-active, var(--text-chrome)) }   /* themematch: active tab = the note surface */
 .tab .t { flex: 1 1 auto; min-width: 0; overflow: hidden;
           text-overflow: ellipsis; white-space: nowrap }
 /* ux-1: close button — flex-none so ellipsized titles can never crush it,
@@ -675,10 +824,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .tab .x:hover { background: var(--border-strong); color: var(--text-chrome) }
 .tab.active .x { color: var(--text-chrome-muted) }
 /* ux-5: tab drag — ghost chip under the cursor + drop-target highlights */
-#tabghost { position: fixed; left: 0; top: 0; will-change: transform; z-index: 99; pointer-events: none;
-            background: var(--border); color: var(--text-chrome); padding: 4px 12px;
+#tabghost { position: fixed; left: 0; top: 0; will-change: transform; z-index: var(--layer-dragged-item, 99); pointer-events: none;
+            background: var(--drag-ghost-background, var(--border)); color: var(--drag-ghost-text-color, var(--text-chrome)); padding: 4px 12px;
             border-radius: 6px; font-size: 12px; opacity: .92;
-            box-shadow: 0 4px 14px var(--shadow-popover) }
+            box-shadow: var(--drag-item-shadow, 0 4px 14px var(--shadow-popover)) }
 .tabs.drop-strip { outline: 2px solid var(--accent-blue); outline-offset: -2px }
 /* R24.6: the explorer drop target is OUTLINED — the folder row the note lands
    in, or the whole tree when the destination is the vault root. Same accent
@@ -701,8 +850,8 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
           padding: 16px; resize: none;
           font: 13px/1.6 monospace; outline: none }
 .lp { flex: 1 1 0; min-width: 0; overflow-y: auto; overflow-x: hidden; overflow-anchor: none }   /* CM6 virtualises against this scroller: browser scroll anchoring would follow a reused line element across a viewport redraw (find reveal 1080 -> 0) — CM6 sets the same on its own .cm-scroller */   /* R22: min-width:0 + no h-scroll */   /* padding + type: R15 block below */
-.lp a.wiki { color: var(--accent-blue) }
-.lp a.wiki-unresolved { color: var(--link-unresolved); font-style: italic }
+.lp a.wiki { color: var(--link-color, var(--accent-blue)) }
+.lp a.wiki-unresolved { color: var(--link-unresolved-color, var(--link-unresolved)); font-style: italic }
 /* R8.2: one rendered row per line/block; the raw caret row blends in */
 .lprow { min-height: 1.5em; cursor: text }
 .lprow > :first-child { margin-top: 0 }
@@ -741,14 +890,14 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 /* one rule covers both wikilink states: the unresolved anchor carries
    `class="wiki wiki-unresolved"` (main.rs:1336-1343), never wiki-unresolved
    alone — :733 adds only colour + italic */
-.preview a.wiki { color: var(--accent-blue); cursor: pointer }
-.preview a.wiki-unresolved { color: var(--link-unresolved); font-style: italic }
-.lp a.ext, .preview a.ext { color: var(--accent-blue); text-decoration: underline; cursor: pointer }  /* S1: external link, opens via xdg-open */
+.preview a.wiki { color: var(--link-color, var(--accent-blue)); cursor: var(--cursor-link, pointer) }
+.preview a.wiki-unresolved { color: var(--link-unresolved-color, var(--link-unresolved)); font-style: italic }
+.lp a.ext, .preview a.ext { color: var(--link-external-color, var(--accent-blue)); text-decoration: var(--link-external-decoration, underline); cursor: pointer }  /* S1: external link, opens via xdg-open */
 /* tags: inline #tag pills (small rounded accent-tinted chip) */
 .lp a.tag, .preview a.tag { color: var(--tag-color, var(--accent-blue)); background: var(--tag-bg);
-  border-radius: 999px; padding: 0 7px; font-size: .85em; text-decoration: none;
+  border-radius: var(--tag-radius, 999px); padding: var(--tag-padding-y, 0) 7px; font-size: var(--tag-size, .85em); text-decoration: var(--tag-decoration, none);
   cursor: pointer; white-space: nowrap }
-.lp a.tag:hover, .preview a.tag:hover { background: var(--tag-bg-hover) }
+.lp a.tag:hover, .preview a.tag:hover { background: var(--tag-background-hover, var(--tag-bg-hover)) }
 .graph { flex: 1 1 0; min-width: 0; min-height: 0;   /* R22 */ background: var(--bg-ribbon); position: relative; z-index: 1 }   /* above .graphgl */
 /* graph-webgl: WebGL canvas BEHIND .graph (nodes + edges); .graph goes transparent and keeps events + labels */
 .graphgl { position: absolute; inset: 0; background: var(--bg-ribbon) }
@@ -756,24 +905,24 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .graph.gl-on { background: var(--transparent) }
 
 /* [[ autocomplete */
-.ac { position: absolute; z-index: 6; background: var(--bg-elevated);
+.ac { position: absolute; z-index: var(--layer-popover, 6); background: var(--suggestion-background, var(--bg-elevated));
      border: 1px solid var(--border); border-radius: 6px; min-width: 180px;
-     max-height: 210px; overflow-y: auto; font-size: 13px; padding: 3px }
+     max-height: var(--popover-max-height, 210px); overflow-y: auto; font-size: 13px; padding: 3px }
 .ac[hidden] { display: none }
 .ac div { padding: 4px 10px; cursor: pointer; white-space: nowrap;
-          border-radius: 4px }
+          border-radius: var(--radius-m, 4px) }
 .ac div.sel, .ac div:hover { background: var(--border) }
 
 /* status bar */
-.status { position: absolute; right: 10px; bottom: 8px; display: flex;
-          gap: 12px; background: var(--bg-sidebar); border: 1px solid var(--bg-surface);
-          border-radius: 6px; padding: 3px 10px; font-size: 12px;
+.status { position: var(--status-bar-position, absolute); right: 10px; bottom: 8px; display: flex;
+          gap: var(--size-4-3, 12px); background: var(--status-bar-background, var(--bg-sidebar)); border: var(--status-bar-border-width, 1px) solid var(--bg-surface);
+          border-radius: var(--status-bar-radius, 6px); padding: 3px 10px; font-size: var(--status-bar-font-size, 12px);
           /* R22: in a narrow pane the three counters wrap (bottom-anchored, so
              the box grows upward) and each one ellipsises rather than spilling
              out over the sidebar / past the window edge. */
           max-width: calc(100% - 20px); overflow: hidden;
           flex-wrap: wrap; justify-content: flex-end;
-          color: var(--text-chrome-muted); z-index: 5; pointer-events: none }
+          color: var(--status-bar-text-color, var(--text-chrome-muted)); z-index: var(--layer-status-bar, 5); pointer-events: none }
 .status > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 .status[hidden] { display: none }
 
@@ -836,13 +985,13 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
            display: inline-flex; align-items: center; justify-content: center }
 #p-close svg { display: block }
 #p-close:hover { color: var(--text-chrome) }
-#bar button svg, #bmbar button svg { width: 16px; height: 16px; display: block; margin: 0 auto }
+#bar button svg, #bmbar button svg { width: var(--icon-m, 16px); height: var(--icon-m, 16px); display: block; margin: 0 auto }
 #vswitch svg { width: 13px; height: 13px; vertical-align: -2px; margin-right: 6px }
 
 /* tab context menu (M7 / R6.2): simple dark popup */
-.ctxmenu { position: fixed; z-index: 60; background: var(--bg-base);
-           border: 1px solid var(--border); border-radius: 6px; padding: 4px 0;
-           min-width: 130px; box-shadow: 0 4px 14px var(--shadow-popover);
+.ctxmenu { position: fixed; z-index: var(--layer-menu, 60); background: var(--menu-background, var(--bg-base));
+           border: var(--menu-border-width, 1px) solid var(--border); border-radius: var(--menu-radius, 6px); padding: var(--menu-padding, 4px 0);
+           min-width: 130px; box-shadow: var(--menu-shadow, 0 4px 14px var(--shadow-popover));
            /* R22: JS clamps the position to the MEASURED box (placeMenu);
               these cap a menu that is bigger than the whole window */
            max-width: 100vw; max-height: 100vh; overflow: auto }
@@ -885,7 +1034,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 /* goal graphparity: the global graph's Forces card (docs/recon-graphpanel). Open: 240 wide,
    12px in from the view's top-right corner; closed (.is-close): a gear column. R22: never
    wider/taller than the pane it floats in — the body scrolls instead. */
-.graph-controls { position: absolute; top: 12px; right: 12px; z-index: 7; width: 240px;
+.graph-controls { position: absolute; top: 12px; right: 12px; z-index: 7; width: var(--graph-controls-width, 240px);
   max-width: calc(100% - 24px); max-height: calc(100% - 24px); overflow-x: hidden; overflow-y: auto; box-sizing: border-box;
   background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px;
   padding: 6px 0 8px; font-size: 13px; color: var(--text-chrome) }
@@ -896,7 +1045,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
    0 4px 16px: 820, 0 2px 6px: 680, blur 0: 490, drop-shadow filter: 780, own layer: 780-880),
    so a card shadowed at open froze the sim's first 500 ms and S1 settle read +31..36% vs stock.
    Painted after rest, the same one-off stall lands on a still graph. */
-.graph-controls.gf-lit { box-shadow: 0 4px 16px var(--shadow-drop) }
+.graph-controls.gf-lit { box-shadow: var(--shadow-s, 0 4px 16px var(--shadow-drop)) }
 /* graphctx GC2: reset + close float in the FIRST section's header row (stock), not a row of their own */
 .graph-controls .gf-btns { position: absolute; top: 6px; right: 6px; z-index: 1; display: flex; gap: 2px }
 .graph-controls .gf-btn { width: 26px; height: 26px; padding: 5px; border: 0; border-radius: 4px; background: none;
@@ -916,20 +1065,20 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .graph-controls:not(.is-local) .gc-local { display: none }   /* local-only Filters rows (Depth, link directions: R§5.1) */
 .graph-controls.is-local .gc-global { display: none }   /* global-only Filters rows (Orphans: GC12) */
 .graph-controls .mod-search-setting input { width: 100%; box-sizing: border-box; height: 28px; padding: 0 8px; font: inherit; font-size: 13px;
-  color: var(--text-normal, inherit); background: var(--background-modifier-form-field, var(--bg-elevated)); border: 1px solid var(--border); border-radius: 4px }
+  color: var(--text-normal, inherit); background: var(--background-modifier-form-field, var(--bg-elevated)); border: var(--border-width, 1px) solid var(--border); border-radius: var(--input-radius, 4px) }
 .graph-controls .gf-body:empty { display: none }
 .graph-controls .setting-item { padding: 6px 12px; min-width: 0 }
 .graph-controls .setting-item-name { margin-bottom: 4px }
 .graph-controls .gf-ctl { display: flex; align-items: center; gap: 8px; min-width: 0 }
-.graph-controls .slider-value { flex: 0 0 auto; min-width: 28px; font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums }
+.graph-controls .slider-value { flex: 0 0 auto; min-width: 28px; font-size: var(--slider-value-font-size, 12px); color: var(--text-muted); font-variant-numeric: tabular-nums }
 /* R22: the range control paints its thumb past a 16px box — it clips its own internals */
 .graph-controls input.slider { flex: 1 1 auto; min-width: 0; height: 16px; margin: 0; overflow: hidden; accent-color: var(--interactive-accent) }
 /* graphctx: stock's toggle (div.checkbox-container, .is-enabled = on), right of the setting's name */
 .graph-controls .mod-toggle { display: flex; align-items: center; justify-content: space-between; gap: 8px }
 .graph-controls .mod-toggle .setting-item-name { margin-bottom: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
-.graph-controls .checkbox-container { flex: 0 0 auto; position: relative; width: 34px; height: 18px; border-radius: 9px;
+.graph-controls .checkbox-container { flex: 0 0 auto; position: relative; width: var(--toggle-s-width, 34px); height: 18px; border-radius: 9px;
   background: var(--border); cursor: pointer; transition: background 0.1s }
-.graph-controls .checkbox-container::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px;
+.graph-controls .checkbox-container::after { content: ""; position: absolute; top: 2px; left: 2px; width: var(--toggle-s-thumb-width, 14px); height: var(--toggle-s-thumb-height, 14px);
   border-radius: 50%; background: var(--text-chrome); transition: transform 0.1s }
 .graph-controls .checkbox-container.is-enabled { background: var(--interactive-accent) }
 .graph-controls .checkbox-container.is-enabled::after { transform: translateX(16px) }
@@ -1100,7 +1249,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 #saveerr:not([hidden]) ~ #notice, #dropmsg:not([hidden]) ~ #notice { bottom: 58px }
 
 /* R10.3 block ids: grey superscript label in LP, hidden in reading view */
-.lp .blockid { font-size: .7em; color: var(--text-chrome-dim); vertical-align: super; margin-left: 4px; user-select: none }
+.lp .blockid { font-size: var(--font-smallest, .7em); color: var(--text-chrome-dim); vertical-align: super; margin-left: 4px; user-select: none }
 .preview .blockid { display: none }
 /* R10.2 navigation target flash (~2 s fade, yellow) */
 .navflash { background: var(--highlight-yellow) }
@@ -1144,25 +1293,25 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .lp .s { text-decoration: line-through }
 .lp .hl { background: var(--highlight-yellow); color: var(--text-normal) }   /* issue #47: the lp ==marker== is a <mark>, whose UA sheet paints black ink; stock: --text-normal */
 .lp .code { font-family: var(--font-monospace); font-size: var(--code-size); background: var(--code-background); border-radius: var(--code-radius) }
-.lp .wl, .lp .lt, .lp .url { color: var(--accent-blue) }
-.lp .wl:hover, .lp .lt:hover, .lp .url:hover { color: var(--text-accent-hover) }   /* themematch: link hover ink */
-.lp a.wiki { text-decoration: none }
+.lp .wl, .lp .lt, .lp .url { color: var(--link-color, var(--accent-blue)) }
+.lp .wl:hover, .lp .lt:hover, .lp .url:hover { color: var(--link-color-hover, var(--text-accent-hover)) }   /* themematch: link hover ink */
+.lp a.wiki { text-decoration: var(--link-decoration, none) }
 .lp.src .wl, .lp.src .lt, .lp.src .url { text-decoration: underline }
-.lp .tag { color: var(--tag-color, var(--accent-blue)); background: var(--tag-bg); border-radius: 999px; padding: 0 4px }
+.lp .tag { color: var(--tag-color, var(--accent-blue)); background: var(--tag-bg); border-radius: var(--tag-radius, 999px); padding: var(--tag-padding-y, 0) 4px }
 .lp .task, .lp .hr, .lp .tbl { font-family: var(--font-monospace) }
 .lp .fence { display: block; font-family: var(--font-monospace); font-size: 13px; background: var(--bg-surface);
              padding: 0 8px; white-space: pre; overflow-x: auto }
-.lp .bq { color: inherit }   /* geometry (border + padding) is R15.13 below */
+.lp .bq { color: var(--blockquote-color, inherit) }   /* geometry (border + padding) is R15.13 below */
 /* R14 settings modal (Ctrl+,) — setcenter R1/R2: centred on both axes by flex,
    sized by the viewport-relative rule below; recentres on resize with no JS.
    Phases never click it by literal coordinate: they read the census [sbox:] [snav:] ... */
-#settings { position: fixed; inset: 0; z-index: 55; background: var(--scrim-strong);
+#settings { position: fixed; inset: 0; z-index: var(--layer-modal, 55); background: var(--scrim-strong);
   display: flex; align-items: center; justify-content: center; box-sizing: border-box }
 #settings[hidden] { display: none }
 #sbox { position: relative; width: min(90vw, 1100px); height: min(85vh, 1000px); box-sizing: border-box;
         min-width: 0; min-height: 0; max-width: 100%; max-height: 100%;
-        background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
-        display: flex; flex-direction: column; box-shadow: 0 8px 30px var(--shadow-modal); font-size: 13px }
+        background: var(--settings-background, var(--bg-elevated)); border: 1px solid var(--border); border-radius: var(--radius-l, 8px); overflow: hidden;
+        display: flex; flex-direction: column; box-shadow: var(--shadow-l, 0 8px 30px var(--shadow-modal)); font-size: 13px }
 #shead { height: 36px; box-sizing: border-box; display: flex; align-items: center; justify-content: space-between;
          padding: 0 12px; background: var(--bg-base); border-bottom: 1px solid var(--border); font-weight: 600 }
 #sclose { background: none; border: 0; color: var(--text-chrome-muted); cursor: pointer; font-size: 14px }
@@ -1174,21 +1323,21 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .snavi { padding: 5px 14px; cursor: pointer; color: var(--text-chrome) }
 .snavi:hover { background: var(--bg-surface) }
 .snavi.sel { background: var(--border) }
-#spage { flex: 1; min-width: 0; padding: 16px; box-sizing: border-box; display: flex; flex-direction: column }
+#spage { flex: 1; min-width: 0; padding: var(--size-4-4, 16px); box-sizing: border-box; display: flex; flex-direction: column }
 /* R30 row panes: card inset, a fixed row height for a one-line description
    growing per extra line, a separator inset to the card, controls flush right
    so the rows line up with Obsidian's settings layout. #spage was already an
    allowed R22 scroll container; #snav declares overflow-y and is registered in
    OVF_SCROLL / R22.2 as well (R30.13). */
 #spage.rows { display: block; overflow-y: auto; padding: 16px 20px }
-.ssec { font-weight: 600; color: var(--text-chrome); margin: 24px 0 8px; font-size: 13px }
+.ssec { font-weight: var(--font-semibold, 600); color: var(--text-chrome); margin: 24px 0 8px; font-size: 13px }
 #spage.rows > .ssec:first-child { margin-top: 0 }
 .scard { background: var(--bg-base); border: 1px solid var(--bg-surface); border-radius: 6px }
 .srow { display: flex; align-items: center; gap: 16px; min-height: 76px; box-sizing: border-box;
-        padding: 20px 17px; border-bottom: 1px solid var(--bg-surface) }
+        padding: var(--size-4-5, 20px) 17px; border-bottom: 1px solid var(--bg-surface) }
 .scard > .srow:last-child { border-bottom: 0 }
 .sinfo { flex: 1; min-width: 0 }
-.slabel { font-size: 14px; line-height: 19px; color: var(--text-chrome) }
+.slabel { font-size: var(--font-ui-medium, 14px); line-height: 19px; color: var(--text-chrome) }
 .sdesc { font-size: 13px; line-height: 16px; color: var(--text-chrome-faint); margin-top: 2px }
 .slink { color: var(--accent-blue) }
 /* the ONE disabled treatment (R30): not focusable (no control is a form element),
@@ -1202,11 +1351,11 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .srow.dis .sctl { pointer-events: none }
 .srow.dis .sicons { opacity: .5; pointer-events: none }
 .sctl { flex: none; display: flex; align-items: center; gap: 8px; color: var(--text-chrome); font-size: 13px }
-.sctl.toggle { width: 40px; height: 22px; border-radius: 999px; background: var(--border); padding: 0; position: relative }
-.sctl.toggle > i { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--text-chrome) }
+.sctl.toggle { width: var(--toggle-width, 40px); height: 22px; border-radius: var(--toggle-radius, 999px); background: var(--border); padding: 0; position: relative }
+.sctl.toggle > i { position: absolute; top: 3px; left: 3px; width: var(--toggle-thumb-width, 16px); height: var(--toggle-thumb-height, 16px); border-radius: var(--toggle-thumb-radius, 50%); background: var(--toggle-thumb-color, var(--text-chrome)) }
 .sctl.toggle.on { background: var(--interactive-accent) }
 .sctl.toggle.on > i { left: 21px; background: var(--bg-base) }
-.sctl.dropdown { width: 141px; height: 24px; box-sizing: border-box; padding: 0 8px; background: var(--bg-sidebar);
+.sctl.dropdown { width: 141px; height: 24px; box-sizing: border-box; padding: var(--dropdown-padding, 0 8px); background: var(--dropdown-background, var(--bg-sidebar));
                  border: 1px solid var(--border); border-radius: 4px; white-space: nowrap; overflow: hidden }
 /* .live = the one dropdown in this pane with a handler behind it (Appearance ▸
    Themes; the palette axis that used to sit beside it is gone — themeone item 7). Every other control here is a transcription of
@@ -1214,13 +1363,13 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
    inertness withholds — a pointer, a hover, and a visible focus ring, because
    it IS a tab stop. */
 .sctl.dropdown.live { cursor: pointer; background: var(--bg-surface) }
-.sctl.dropdown.live:hover { border-color: var(--border-strong) }
+.sctl.dropdown.live:hover { border-color: var(--background-modifier-border-hover, var(--border-strong)) }
 .sctl.dropdown.live:focus-visible { outline: 2px solid var(--border-focus-ring); outline-offset: 1px }
-.sctl.text { width: 141px; height: 24px; box-sizing: border-box; padding: 0 8px; background: var(--bg-sidebar);
+.sctl.text { width: 141px; height: var(--input-height, 24px); box-sizing: border-box; padding: 0 8px; background: var(--bg-sidebar);
              border: 1px solid var(--border); border-radius: 4px; color: var(--text-chrome-faint); white-space: nowrap; overflow: hidden }
 .sctl.list { color: var(--text-chrome-faint); max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
-.sctl.slider .trk { width: 150px; height: 4px; border-radius: 2px; background: var(--border); display: inline-block }
-.sctl.color .sw { width: 22px; height: 22px; border-radius: 4px; background: var(--accent-mauve); display: inline-block }
+.sctl.slider .trk { width: 150px; height: var(--slider-track-height, 4px); border-radius: 2px; background: var(--slider-track-background, var(--border)); display: inline-block }
+.sctl.color .sw { width: var(--swatch-width, 22px); height: var(--swatch-height, 22px); border-radius: var(--swatch-radius, 4px); background: var(--accent-mauve); display: inline-block }
 .sctl.nav { color: var(--text-chrome-faint) }
 /* goal fontset: the three live font rows (whole row opens the chooser), the
    live Font size slider, and the chooser sub-page (docs/fontset/recon.md
@@ -1240,7 +1389,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .fback { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0;
          border: 0; border-radius: 4px; background: none; color: var(--text-chrome); cursor: pointer }
 .fback:hover { background: var(--bg-surface) }
-.ftitle { font-size: 16px; font-weight: 600; color: var(--text-chrome) }
+.ftitle { font-size: var(--font-ui-large, 16px); font-weight: 600; color: var(--text-chrome) }
 .fdesc { margin: 0 0 16px }
 .fselcard { margin-bottom: 16px }
 .fselcard[hidden] { display: none }
@@ -1310,10 +1459,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
   --font-monospace-default: ui-monospace, SFMono-Regular, "Cascadia Mono", "Roboto Mono", "DejaVu Sans Mono", "Liberation Mono", Menlo, Monaco, "Consolas", "Source Code Pro", monospace;
   --font-text: var(--font-default); --font-interface: var(--font-default); --font-monospace: var(--font-monospace-default);
   /* R15.4-6 */
-  --font-text-size: 16px; --font-smaller: 0.9em; --line-height-normal: 1.55; --line-height-tight: 1.25;
+  --font-text-size: 16px; --font-smaller: 0.92em; --line-height-normal: 1.55; --line-height-tight: 1.25;
   /* ONE spacing unit for the content column (TOKENS.md): every margin, indent, radius and width below is a multiple of it */
   --space-unit: 0.25rem;
-  --font-weight: 400; --bold-modifier: 250; --bold-weight: min(900, calc(var(--font-weight) + var(--bold-modifier)));
+  --font-weight: var(--font-normal, 400); --bold-modifier: 250; --bold-weight: min(900, calc(var(--font-weight) + var(--bold-modifier)));
   /* R15.7-9 headings */
   --h1-size: 1.974em; --h2-size: 1.762em; --h3-size: 1.574em; --h4-size: 1.405em; --h5-size: 1.254em; --h6-size: 1.12em;
   --h1-weight: 700; --h2-weight: 600; --h3-weight: 600; --h4-weight: 600; --h5-weight: 600; --h6-weight: 600;
@@ -1327,7 +1476,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
   --list-indent-editing: calc(var(--space-unit) * 2); --list-spacing: calc(var(--space-unit) / 2); --list-bullet-size: calc(var(--space-unit) * 1.5); --list-bullet-radius: calc(var(--list-bullet-size) / 2);
   --checkbox-size: calc(var(--space-unit) * 3.5); --checkbox-radius: calc(var(--space-unit) * 0.75);
   --checkbox-margin-inline-start: calc(var(--space-unit) * 3); --checklist-done-decoration: line-through 0.06em;
-  --code-size: 0.92em; --code-radius: calc(var(--space-unit) * 1.5);
+  --code-size: var(--font-smaller, 0.92em); --code-radius: calc(var(--space-unit) * 1.5);
   --blockquote-border-thickness: calc(var(--space-unit) * 0.75);
   /* THE SEVEN COLOUR ROWS OF THIS BLOCK LIVE ON `body`, NOT HERE — see the
      "R15.10-13 CONTENT COLOURS" comment in the body token block at the top of
@@ -1385,10 +1534,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
    thumb inset 2px left / 3px right) — measured in the recon shots at x 884..895
    of a 896px window; the column centres in what is left of the pane. WebKitGTK
    would otherwise paint a zero-width overlay bar and centre 6px further right. */
-.lp::-webkit-scrollbar, .preview::-webkit-scrollbar { width: 12px; background-color: var(--scrollbar-bg) }
+.lp::-webkit-scrollbar, .preview::-webkit-scrollbar { width: var(--scrollbar-width, 12px); background-color: var(--scrollbar-bg) }
 .lp::-webkit-scrollbar-thumb, .preview::-webkit-scrollbar-thumb {
   background-color: var(--scrollbar-thumb-bg); background-clip: padding-box;
-  border-style: solid; border-color: var(--scrollbar-bg); border-width: 0 3px 0 2px; border-radius: 6px; min-height: 45px }
+  border-style: solid; border-color: var(--scrollbar-bg); border-width: var(--scrollbar-border-width, 0 3px 0 2px); border-radius: var(--scrollbar-radius, 6px); min-height: 45px }
 .lp::-webkit-scrollbar-thumb:active, .preview::-webkit-scrollbar-thumb:active { background-color: var(--scrollbar-active-thumb-bg, var(--scrollbar-thumb-bg)) }
 /* #20 INLINE TITLE (R32): the big title of a note is its FILENAME, rendered —
    it lives in no file. Measured against Obsidian (progress.md Q3): the
@@ -1426,13 +1575,13 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
    carrying the note column's own type context — see the rule below it. */
 .lp[data-title]::before, .preview[data-title]::before, .titleedit {
   display: block; max-width: var(--note-column, none); margin-inline: auto;
-  font-size: var(--h1-size); font-weight: var(--h1-weight);
-  line-height: var(--h1-line-height); letter-spacing: var(--h1-letter-spacing);
-  color: inherit; overflow-wrap: anywhere; white-space: pre-wrap; cursor: text;
+  font-size: var(--inline-title-size, var(--h1-size)); font-weight: var(--inline-title-weight, var(--h1-weight));
+  line-height: var(--inline-title-line-height, var(--h1-line-height)); letter-spacing: var(--h1-letter-spacing);
+  color: var(--inline-title-color, inherit); overflow-wrap: anywhere; white-space: pre-wrap; cursor: text;
 }
 .lp[data-title]::before, .preview[data-title]::before {
   content: attr(data-title);
-  margin-top: 0; margin-bottom: 0.5em; user-select: none;
+  margin-top: 0; margin-bottom: var(--inline-title-margin-bottom, 0.5em); user-select: none;
 }
 /* R34.15 (R32.4 restated as a NUMERIC condition) — HOW THE TITLE BECOMES
    EDITABLE WITHOUT BECOMING A ROW.
@@ -1552,9 +1701,9 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
   margin-inline-end: 0.6em; top: calc(0.2em - 1px) }
 .preview a.ext { padding-inline-end: 0.9em; background-repeat: no-repeat; background-position: 100% 4px; background-size: 0.825em;   /* REQ-6 */
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238a8a8a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 3h6v6'/%3E%3Cpath d='M10 14 21 3'/%3E%3Cpath d='M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6'/%3E%3C/svg%3E") }
-.preview a.wiki-unresolved { font-style: normal; text-decoration-color: var(--link-unresolved-underline) }   /* REQ-15 */
+.preview a.wiki-unresolved { font-style: normal; text-decoration-color: var(--link-unresolved-decoration-color, var(--link-unresolved-underline)) }   /* REQ-15 */
 .preview li > :is(ul, ol) { position: relative }                                            /* REQ-9: indent guide at parent text x - 13 */
-.preview li > :is(ul, ol)::before { content: ""; position: absolute; inset-inline-start: -13px; top: 0; bottom: 0; width: 1px;
+.preview li > :is(ul, ol)::before { content: ""; position: absolute; inset-inline-start: -13px; top: 0; bottom: 0; width: var(--indentation-guide-width, 1px);
   background: var(--indentation-guide-color); pointer-events: none }
 /* LP: the task li has no list margin (the checkbox sits in the text flow after the hidden "- " widget); box at +7, text at +27 */
 .lp li:has(> input[type=checkbox]) { margin-inline-start: 0 }
@@ -1567,13 +1716,13 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
   -webkit-mask-image: url("data:image/svg+xml; utf8, <svg width=\"12px\" height=\"10px\" viewBox=\"0 0 12 8\" version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\"><g stroke=\"none\" stroke-width=\"1\" fill=\"none\" fill-rule=\"evenodd\"><g transform=\"translate%28-4.000000, -6.000000%29\" fill=\"%23000000\"><path d=\"M8.1043257,14.0367999 L4.52468714,10.5420499 C4.32525014,10.3497722 4.32525014,10.0368095 4.52468714,9.8424863 L5.24777413,9.1439454 C5.44721114,8.95166768 5.77142411,8.95166768 5.97086112,9.1439454 L8.46638057,11.5903727 L14.0291389,6.1442083 C14.2285759,5.95193057 14.5527889,5.95193057 14.7522259,6.1442083 L15.4753129,6.84377194 C15.6747499,7.03604967 15.6747499,7.35003511 15.4753129,7.54129009 L8.82741268,14.0367999 C8.62797568,14.2290777 8.3037627,14.2290777 8.1043257,14.0367999\"></path></g></g></svg>") }
 /* R15.12 inline code: Source Code Pro 0.875em on the alt background, r4, 0.15em 0.3em */
 .lp code, .preview code { font-family: var(--font-monospace); font-size: var(--code-size); background-color: var(--code-background);
-  border-radius: var(--code-radius); padding: 0.15em 0.3em; -webkit-box-decoration-break: clone; box-decoration-break: clone; color: var(--text-normal) }
+  border-radius: var(--code-radius); padding: 0.15em 0.3em; -webkit-box-decoration-break: clone; box-decoration-break: clone; color: var(--code-normal, var(--text-normal)) }
 .lp pre, .preview pre { font-family: var(--font-monospace); font-size: var(--code-size); background-color: var(--code-background); border-radius: var(--code-radius); padding: 0.5em 1em; overflow-x: auto;
   white-space: var(--code-white-space, pre-wrap) }   /* deep-tasks QE10b: stock .markdown-rendered pre wraps (--code-white-space: pre-wrap) */
 .lp pre code, .preview pre code { padding: 0; background: none; font-size: inherit }
 /* R15.13 blockquote: 2px accent inline-start border, 24px padding, no margin (LP: 14px text offset) */
 .lp blockquote, .preview blockquote { border-inline-start: var(--blockquote-border-thickness) solid var(--blockquote-border-color);
-  padding: 0 0 0 var(--size-4-6); margin-inline: 0; font-style: normal; color: inherit; background: var(--transparent);
+  padding: 0 0 0 var(--size-4-6); margin-inline: 0; font-style: var(--blockquote-font-style, normal); color: var(--blockquote-color, inherit); background: var(--blockquote-background-color, var(--transparent));
   position: relative; inset-inline-start: 2px }   /* the border sits on the h1 "H" ink x; the content box is 2px left of it */
 .preview > blockquote { margin-inline: auto }    /* keep the 700px column centring (the rule above outranks .preview > *) */
 .preview blockquote > :first-child { margin-top: 0 }
@@ -1630,16 +1779,16 @@ body.floorrelayout #main { padding-right: 1px }
    point of the finding is that a failed write used to be invisible. Bottom
    right, above the panes, non-blocking (the user keeps typing; the buffer is
    still dirty and every later save retries). */
-#saveerr { position: fixed; right: 12px; bottom: 12px; z-index: 60; max-width: 420px;
+#saveerr { position: fixed; right: 12px; bottom: 12px; z-index: var(--layer-notice, 60); max-width: 420px;
            padding: 8px 12px; border-radius: 6px; border: 1px solid var(--accent-red);
-           background: var(--bg-banner-error); color: var(--text-banner-error); font-size: 12px; line-height: 1.4 }
+           background: var(--background-modifier-error, var(--bg-banner-error)); color: var(--text-banner-error); font-size: 12px; line-height: 1.4 }
 #saveerr[hidden] { display: none }
 
 /* R31.5 drop-to-attach: the same corner, the same shape — a refusal the user
    can read ("remote images are disabled", "…is over the 32 MB limit"). Neutral
    border, because most of what it says is a decision, not a failure. It is
    transient (4 s): unlike a failed save nothing is left dirty behind it. */
-#dropmsg { position: fixed; right: 12px; bottom: 12px; z-index: 60; max-width: 420px;
+#dropmsg { position: fixed; right: 12px; bottom: 12px; z-index: var(--layer-notice, 60); max-width: 420px;
            padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-strong);
            background: var(--bg-surface); color: var(--text-chrome); font-size: 12px; line-height: 1.4;
            white-space: pre-line }
@@ -1754,7 +1903,7 @@ body.floorrelayout #main { padding-right: 1px }
    bar inside the scroller would be row 0 for every caret computation.
    R22: max-width + overflow:hidden so the bar CLIPS in a narrow pane instead of
    reaching past the window edge (the fuzz phase counts any element that does). */
-.findbar { position: absolute; top: 8px; right: 16px; z-index: 6;
+.findbar { position: absolute; top: 8px; right: 16px; z-index: var(--layer-popover, 6);
            display: flex; flex-direction: column; gap: 4px;
            max-width: calc(100% - 24px); overflow: hidden;
            padding: 5px 6px; border: 1px solid var(--border); border-radius: 6px;
@@ -1803,7 +1952,7 @@ span.is-flashing { background: var(--highlight-yellow) }
    from attributes: an LP row must hold no text node its source does not. */
 .lp .pdf-embed, .preview .pdf-embed {
   display: flex; flex-direction: column; width: 100%; box-sizing: border-box; margin: 8px 0;
-  border: 1px solid var(--border); border-radius: 4px; overflow: hidden; background: var(--bg-surface);
+  border: 1px solid var(--border); border-radius: 4px; overflow: hidden; background: var(--pdf-background, var(--bg-surface));
   user-select: none; text-indent: 0; white-space: normal }
 .pdf-embed .pdf-toolbar {
   flex: 0 0 39px; height: 39px; box-sizing: border-box; display: flex; align-items: center; gap: 6px;
