@@ -72,3 +72,10 @@ CENSUS.push(() => { const s = window.getSelection(); if (!s || !s.focusNode) ret
   if (n.nodeType === 1) { const k = n.childNodes; x += "|k=" + k.length + "|prev=" + d(k[o - 1]) + "|next=" + d(k[o]);
     const nx = k[o] || k[o - 1]; if (nx && nx.getBoundingClientRect) { const b = nx.getBoundingClientRect(); x += "|nb=" + Math.round(b.left) + "," + Math.round(b.right); } }
   return " [crtd:" + x.replace(/[\[\]\s]/g, "_") + "]"; });
+// DEBUG fix-75 (drop before PR): [crtk:] every child of the caret's line: tag.class(!=no rect)@left+width
+CENSUS.push(() => { const s = window.getSelection(); if (!s || !s.focusNode) return "";
+  let l = s.focusNode.nodeType === 1 ? s.focusNode : s.focusNode.parentElement; while (l && !(l.classList && l.classList.contains("cm-line"))) l = l.parentElement;
+  if (!l) return " [crtk:-]";
+  const R = Math.round, x = [...l.childNodes].map(n => { const r = n.nodeType === 1 ? n.getBoundingClientRect() : (() => { const g = document.createRange(); g.selectNodeContents(n); return g.getBoundingClientRect(); })();
+    const q = n.nodeType === 1 ? n.getClientRects().length : 1; return (n.nodeType === 3 ? "#t" + n.nodeValue.length : n.nodeName + "." + String(n.className || "").split(" ")[0]) + (q ? "" : "!") + "@" + R(r.left) + "+" + R(r.width); });
+  return " [crtk:" + x.join("|").replace(/[\[\]\s]/g, "_") + "]"; });
