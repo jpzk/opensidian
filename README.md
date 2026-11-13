@@ -10,7 +10,7 @@ Open-source and non-profit under GPLv3, vault-compatible cross-platform markdown
 
 Download one from the [v0.9.3 release](https://github.com/jpzk/opensidian/releases/tag/v0.9.3):
 
-| Download | Choose it if | Tested on (fresh install of v0.9.2, 2026-10-30; same packages in v0.9.3) |
+| Download | Choose it if | Tested on |
 |---|---|---|
 | [slim AppImage](https://github.com/jpzk/opensidian/releases/download/v0.9.3/opensidian-0.9.3-x86_64-slim.AppImage) | you want the smallest file and have WebKitGTK 4.1 | Fedora 44 (`sudo dnf install webkit2gtk4.1`), Ubuntu 26.04 LTS (`sudo apt install libwebkit2gtk-4.1-0`) |
 | [portable AppImage](https://github.com/jpzk/opensidian/releases/download/v0.9.3/opensidian-0.9.3-x86_64-portable.AppImage) | you want nothing to install: WebKit is bundled (needs only the X11/GL/font libraries every desktop has) | Fedora 44, Ubuntu 26.04 LTS |
