@@ -289,7 +289,6 @@ body {
      var(--name, <same value>). Mapping + provenance: goal css-vars mapB/*.tsv. */
   --anim-duration-fast: transform .1s;
   --background-modifier-active-hover: var(--bg-surface);
-  --background-modifier-border-hover: var(--border-strong);
   --background-modifier-cover: rgba(0,0,0,.35);
   --background-modifier-message: rgba(30,30,30,0.95);
   --blockquote-font-style: normal;
@@ -316,8 +315,6 @@ body {
   --cursor-link: pointer;
   --divider-color: var(--bg-ribbon);
   --divider-color-hover: var(--border-strong);
-  --drag-ghost-background: var(--border);
-  --drag-ghost-text-color: var(--text-chrome);
   --drag-item-background: var(--bm-drop-src-bg);
   --drag-item-shadow: 0 4px 14px var(--shadow-popover);
   --dropdown-background: var(--bg-sidebar);
@@ -366,7 +363,6 @@ body {
   --nav-collapse-icon-color: var(--text-chrome-dim);
   --nav-heading-color: var(--text-chrome);
   --nav-heading-weight: 600;
-  --nav-indentation-guide-color: var(--rule-faint);
   --nav-indentation-guide-width: 1px;
   --nav-item-background-hover: var(--bg-surface);
   --nav-item-background-selected: var(--text-selection);
@@ -378,7 +374,6 @@ body {
   --nav-tag-background: var(--bg-surface);
   --nav-tag-color: var(--text-chrome-dim);
   --nav-tag-radius: 3px;
-  --pdf-background: var(--bg-surface);
   --popover-max-height: 210px;
   --radius-l: 8px;
   --radius-m: 4px;
@@ -391,7 +386,6 @@ body {
   --search-clear-button-color: var(--text-chrome-muted);
   --search-input-radius: 4px;
   --settings-background: var(--bg-elevated);
-  --shadow-s: 0 4px 16px var(--shadow-drop);
   --slider-track-background: var(--border);
   --slider-track-height: 4px;
   --slider-value-font-size: 12px;
@@ -685,7 +679,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
             text-overflow: ellipsis }
 .trow .tg { flex: 0 0 14px; align-self: stretch; position: relative }
 .trow .tg::before { content: ""; position: absolute; left: 7px; top: 0;
-                    bottom: 0; width: var(--nav-indentation-guide-width, 1px); background: var(--nav-indentation-guide-color, var(--rule-faint)) }
+                    bottom: 0; width: var(--nav-indentation-guide-width, 1px); background: var(--rule-faint) }
 .trow .tc { flex: 0 0 16px; display: flex; align-items: center;
             justify-content: center; color: var(--nav-collapse-icon-color, var(--text-chrome-dim)) }
 .trow .tc svg { width: 10px; height: 10px; transition: var(--anim-duration-fast, transform .1s) }
@@ -821,7 +815,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .tab.active .x { color: var(--text-chrome-muted) }
 /* ux-5: tab drag — ghost chip under the cursor + drop-target highlights */
 #tabghost { position: fixed; left: 0; top: 0; will-change: transform; z-index: var(--layer-dragged-item, 99); pointer-events: none;
-            background: var(--drag-ghost-background, var(--border)); color: var(--drag-ghost-text-color, var(--text-chrome)); padding: 4px 12px;
+            background: var(--border); color: var(--text-chrome); padding: 4px 12px;
             border-radius: 6px; font-size: 12px; opacity: .92;
             box-shadow: var(--drag-item-shadow, 0 4px 14px var(--shadow-popover)) }
 .tabs.drop-strip { outline: 2px solid var(--accent-blue); outline-offset: -2px }
@@ -1041,7 +1035,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
    0 4px 16px: 820, 0 2px 6px: 680, blur 0: 490, drop-shadow filter: 780, own layer: 780-880),
    so a card shadowed at open froze the sim's first 500 ms and S1 settle read +31..36% vs stock.
    Painted after rest, the same one-off stall lands on a still graph. */
-.graph-controls.gf-lit { box-shadow: var(--shadow-s, 0 4px 16px var(--shadow-drop)) }
+.graph-controls.gf-lit { box-shadow: 0 4px 16px var(--shadow-drop) }
 /* graphctx GC2: reset + close float in the FIRST section's header row (stock), not a row of their own */
 .graph-controls .gf-btns { position: absolute; top: 6px; right: 6px; z-index: 1; display: flex; gap: 2px }
 .graph-controls .gf-btn { width: 26px; height: 26px; padding: 5px; border: 0; border-radius: 4px; background: none;
@@ -1359,7 +1353,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
    inertness withholds — a pointer, a hover, and a visible focus ring, because
    it IS a tab stop. */
 .sctl.dropdown.live { cursor: pointer; background: var(--bg-surface) }
-.sctl.dropdown.live:hover { border-color: var(--background-modifier-border-hover, var(--border-strong)) }
+.sctl.dropdown.live:hover { border-color: var(--border-strong) }
 .sctl.dropdown.live:focus-visible { outline: 2px solid var(--border-focus-ring); outline-offset: 1px }
 .sctl.text { width: 141px; height: var(--input-height, 24px); box-sizing: border-box; padding: 0 8px; background: var(--bg-sidebar);
              border: 1px solid var(--border); border-radius: 4px; color: var(--text-chrome-faint); white-space: nowrap; overflow: hidden }
@@ -1948,7 +1942,7 @@ span.is-flashing { background: var(--highlight-yellow) }
    from attributes: an LP row must hold no text node its source does not. */
 .lp .pdf-embed, .preview .pdf-embed {
   display: flex; flex-direction: column; width: 100%; box-sizing: border-box; margin: 8px 0;
-  border: 1px solid var(--border); border-radius: 4px; overflow: hidden; background: var(--pdf-background, var(--bg-surface));
+  border: 1px solid var(--border); border-radius: 4px; overflow: hidden; background: var(--bg-surface);
   user-select: none; text-indent: 0; white-space: normal }
 .pdf-embed .pdf-toolbar {
   flex: 0 0 39px; height: 39px; box-sizing: border-box; display: flex; align-items: center; gap: 6px;
