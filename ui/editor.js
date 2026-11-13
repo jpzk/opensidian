@@ -1140,6 +1140,7 @@ const Ed = {
     Ed.replace(g, { a: { l, c: a }, b: { l, c: s.b.c }, empty: false }, "[[" + name + "]]", "ac");
   },
   linkClick(e, a) {
+    if (e.button) return;                  // #37: a right/middle mousedown never follows or creates a link
     if (typeof wikiClick === "function") wikiClick(e, a);
   },
   extClick(e, a) {
@@ -2265,6 +2266,9 @@ Ed.lpExt = function (v, G) {
   }, { decorations: p => p.decorations });
   const clicks = EditorView.domEventHandlers({
     mousedown: (e) => {
+      // #37: only the PRIMARY button follows a link/tag. A right-click (button 2) used to navigate to
+      // [[Other]] and, on an unresolved link, CREATE the note; stock opens the context menu instead.
+      if (e.button !== 0) return false;
       const a = e.target && e.target.closest ? e.target.closest("a.tag, a.wl, a.lt, a.url, a.ext") : null;
       if (!a) return false;
       if (a.classList.contains("tag")) {

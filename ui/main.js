@@ -6955,6 +6955,8 @@ const gOf = el => { const p = el.closest(".pane"); return p ? p._g : null; };
 /* R8.7 wikilink click: navigate in place, ctrl+click opens a new tab.
    Mousedown level + stopPropagation so the caret is not moved into the row. */
 async function wikiClick(e, a) {
+  if (e.button) return;                      // #37: only the primary button navigates; a right-click is the context menu
+                                             // (on an unresolved link it used to run createNote and leave a file behind)
   e.preventDefault(); e.stopPropagation();
   const g = gOf(a);
   if (!g) return;
