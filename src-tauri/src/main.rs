@@ -6063,6 +6063,34 @@ fn win_toggle_max(win: tauri::Window) -> Result<bool, String> {
     Ok(!m)
 }
 
+/* #79: with WebKitGTK's DMA-BUF renderer (the default) a plugin view (Excalidraw) is painted in the
+   page, but the window can keep showing the previous frame until the next input event. The UI
+   (GTK) side has the new frame and does not draw it. ui/main.js calls this when a plugin view tab is
+   mounted / shown: the webview widget gets gtk_widget_queue_draw on the next 2 frame-clock ticks, so
+   a frame that arrived without a redraw is drawn. One-shot per call (the tick callback removes
+   itself), no timer, no polling; the DMA-BUF renderer stays on. */
+#[tauri::command]
+fn present_nudge(webview: tauri::Webview) {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = webview.with_webview(|pw| {
+            use gtk::prelude::*;
+            let left = std::cell::Cell::new(2u8);
+            pw.inner().add_tick_callback(move |w, _| {
+                w.queue_draw();
+                left.set(left.get().saturating_sub(1));
+                if left.get() == 0 {
+                    gtk::glib::ControlFlow::Break
+                } else {
+                    gtk::glib::ControlFlow::Continue
+                }
+            });
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = webview;
+}
+
 /// F1: closing the window is the app's own affordance, not the WM's — with
 /// decorations off there is no frame button, and on a bare X server there is
 /// no WM to ask. `close()` runs the normal close path (window events fire).
@@ -6657,7 +6685,7 @@ fn main() {
             themes_scan, theme_css, get_css_theme, set_css_theme, theme_seed_report, vault_css_watch,
             get_quickfont, set_quickfont, get_fonts, set_font, font_families,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
-            win_rect, win_gesture, win_move_proto, win_drag_start, win_minimize, win_toggle_max, win_close, quit_arm, quit_ready,
+            win_rect, win_gesture, win_move_proto, win_drag_start, win_minimize, win_toggle_max, win_close, quit_arm, quit_ready, present_nudge,
             tab_removed, insert_datetime,
             zoom, zoom_get, pdf_info,
             // cp-secrets

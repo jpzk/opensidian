@@ -116,6 +116,10 @@ function typingElsewhere(g) {
 /* plugin-views: the plugin host (ui/plugins/views.js) sets PVHOST when a plugin registers a view
    type; loadActive asks it to mount a kept "unk" tab of that type (and to hide it again). */
 let PVHOST = null;
+/* #79: WebKitGTK's DMA-BUF renderer can leave a just-shown plugin view (Excalidraw) painted in the page
+   but not on the screen until the next input event. present_nudge (main.rs) redraws the webview widget
+   on the next 2 GTK frame-clock ticks. One call per view shown; no timer, no loop. */
+function presentNudge() { inv("present_nudge").catch(() => {}); }
 /* plugin-views item 5: set by ui/plugins/api.js when a plugin listens for "file-menu" / "editor-menu";
    noteMenu and the editor right-click ask it to add the plugin rows. */
 let PMENU = null;
@@ -5829,6 +5833,7 @@ async function loadActive(g) {
     g.lp.style.display = g.preview.style.display = g.editor.style.display = "none";
     if (PVHOST && PVHOST.mount(g, t)) {   // plugin-views: its type is registered -> the plugin's view is the tab
       if (g.unkEl) g.unkEl.hidden = true;
+      presentNudge();   // #79: the shown plugin view's first frames reach the screen without waiting for input
       renderTabs(g); treeHighlight(); rgFollow();
       if (t.utype === "canvas") { updateStatus(g); setTimeout(() => { if (g.tabs[g.active] === t) { updateStatus(g); rgFollow(); } }, 400); }   // cvf-links CVR-A-097: a canvas shows its backlink count (async; again once its view has a path)
       return;
