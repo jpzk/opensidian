@@ -19,6 +19,7 @@ use tauri::State;
 
 mod appid;
 mod builtins;
+mod callout; // #59: Obsidian callouts in the reading render
 use opensidian_lib::canvasfs;
 mod cfgstore;
 mod consent; // spawn-consent: native GTK prompts before trusting a vault and before every plugin spawn
@@ -2914,6 +2915,17 @@ fn render_with_br(content: &str, notes: &[String], imgs: &[String], reading: boo
     let mut opts = Options::all();
     opts.remove(Options::ENABLE_WIKILINKS);
     opts.remove(Options::ENABLE_SMART_PUNCTUATION);
+    // #59: GFM "alerts" would eat a bare `> [!note]` line (5 types only, no fold, no
+    // title) into <blockquote class="markdown-alert-note">; callouts are ours (callout.rs).
+    // ENABLE_GFM gates nothing else in pulldown-cmark 0.13.
+    opts.remove(Options::ENABLE_GFM);
+    // #59 callout state: one frame per open blockquote, Some((head, content div open))
+    // for a callout. `hdr`: 0 = no header pending, 1 = header paragraph not yet open,
+    // 2 = in it with the `[!type]` marker still in `buf`, 3 = in the title text.
+    let mut co: Vec<Option<(callout::Head, bool)>> = Vec::new();
+    let mut hdr = 0u8;
+    let mut hdr_line: &str = "";
+    let mut hdr_empty = true;
     // rvtask R2: reading view only — every task checkbox carries the 0-based FILE line of
     // its "[" (duplicates / nested / quoted / numbered map exactly), custom statuses
     // ("[/]" "[-]" ...) are tasks too (Obsidian Q2), and the li gets data-task + is-checked (Q5).
@@ -2943,6 +2955,36 @@ fn render_with_br(content: &str, notes: &[String], imgs: &[String], reading: boo
                 buf.push_str(&t)
             }
             other => {
+                // #59: a callout's header is its first paragraph. Anything else first
+                // (no paragraph, e.g. a setext heading) leaves the title at its default.
+                if hdr == 1 {
+                    if matches!(other, Event::Start(Tag::Paragraph)) {
+                        hdr = 2;
+                        continue;
+                    }
+                    if let Some(Some((h, _))) = co.last() {
+                        evs.push(Event::Html(format!("{}{}", callout::default_title(&h.ty), callout::close_title(h)).into()));
+                    }
+                    hdr = 0;
+                }
+                // #59: the first event of a callout's body opens its content div
+                if hdr == 0 && !matches!(other, Event::End(TagEnd::BlockQuote(_))) {
+                    if let Some(Some((_, open))) = co.last_mut() {
+                        if !*open {
+                            *open = true;
+                            evs.push(Event::Html(callout::CONTENT_OPEN.into()));
+                        }
+                    }
+                }
+                // #59: the header text starts with the `[!type]f` marker: drop it, the
+                // rest of the line is the title (still linkified + escaped below)
+                if hdr == 2 && !buf.is_empty() {
+                    if let Some(Some((h, _))) = co.last() {
+                        callout::strip_marker(&mut buf, hdr_line, h);
+                    }
+                    hdr = 3;
+                    hdr_empty = buf.trim().is_empty();
+                }
                 // rvtask: a custom-status marker "[c] " opening a list item arrives as
                 // plain text — pulldown only knows ' ' / x / X. Strip it, emit the box.
                 if !buf.is_empty() {
@@ -2969,7 +3011,53 @@ fn render_with_br(content: &str, notes: &[String], imgs: &[String], reading: boo
                     }
                     buf.clear();
                 }
+                // #59: the title is the header's FIRST line. A line break closes it and
+                // the rest of that paragraph opens the body; the paragraph's end closes it
+                // with no body yet (the content div opens on the next block, if any).
+                if hdr == 3 {
+                    let brk = matches!(other, Event::SoftBreak | Event::HardBreak);
+                    if brk || matches!(other, Event::End(TagEnd::Paragraph)) {
+                        if let Some(Some((h, open))) = co.last_mut() {
+                            let t = if hdr_empty { callout::default_title(&h.ty) } else { String::new() };
+                            evs.push(Event::Html(format!("{t}{}", callout::close_title(h)).into()));
+                            if brk {
+                                *open = true;
+                                evs.push(Event::Html(format!("{}<p>", callout::CONTENT_OPEN).into()));
+                            }
+                        }
+                        hdr = 0;
+                        continue;
+                    }
+                    hdr_empty = false;
+                }
                 match other {
+                    // #59: a blockquote opening with `[!type]` is a callout (callout.rs)
+                    Event::Start(Tag::BlockQuote(_)) => {
+                        let line = callout::first_line(content, range.start);
+                        match callout::head(line) {
+                            Some(h) if hdr == 0 => {
+                                evs.push(Event::Html(callout::open(&h).into()));
+                                hdr = 1;
+                                hdr_line = line;
+                                hdr_empty = true;
+                                co.push(Some((h, false)));
+                                continue;
+                            }
+                            _ => co.push(None),
+                        }
+                    }
+                    Event::End(TagEnd::BlockQuote(_)) => {
+                        if let Some(Some((h, open))) = co.pop() {
+                            if hdr != 0 {
+                                // header never closed (an empty quote body): close it now
+                                let t = if hdr_empty { callout::default_title(&h.ty) } else { String::new() };
+                                evs.push(Event::Html(format!("{t}{}", callout::close_title(&h)).into()));
+                                hdr = 0;
+                            }
+                            evs.push(Event::Html(if open { "</div></div>\n" } else { "</div>\n" }.into()));
+                            continue;
+                        }
+                    }
                     Event::TaskListMarker(checked) if reading => {
                         tk.marker(if checked { 'x' } else { ' ' }, range.start, &mut evs);
                         continue;
@@ -3100,6 +3188,7 @@ fn block_lines_of(content: &str) -> Vec<u32> {
     let mut opts = Options::all();
     opts.remove(Options::ENABLE_WIKILINKS);
     opts.remove(Options::ENABLE_SMART_PUNCTUATION);
+    opts.remove(Options::ENABLE_GFM); // #59: same options as the renderer (callouts are ours)
     // byte offset -> 1-based line, walked once in step with the (monotonic) block starts
     let mut nl: Vec<usize> = vec![0];
     for (i, b) in content.bytes().enumerate() {
@@ -11829,5 +11918,181 @@ mod devui_guard {
     #[test]
     fn devui_guard_default_build_has_no_devui() {
         assert!(!cfg!(feature = "devui"));
+    }
+}
+
+/// #59 slice 1: Obsidian callouts in the reading render. Only `render_md` /
+/// `render_with` / `block_lines_of` are used, so this module compiles on a tree
+/// WITHOUT callouts too and fails there by assertion (RESULT.md: red on develop,
+/// green on feat/59-callouts).
+#[cfg(test)]
+mod callout_render_tests {
+    use super::*;
+
+    fn has(h: &str, s: &str) {
+        assert!(h.contains(s), "missing {s:?} in: {h}");
+    }
+    fn hasnt(h: &str, s: &str) {
+        assert!(!h.contains(s), "unexpected {s:?} in: {h}");
+    }
+
+    #[test]
+    fn callout_basic_dom_matches_obsidian() {
+        let h = render_md("> [!note] A note callout\n> Callouts render as styled boxes.\n", &[]);
+        has(&h, "data-callout=\"note\"");
+        has(&h, "data-callout-fold=\"\"");
+        has(&h, "class=\"callout\"");
+        has(&h, "<div class=\"callout-title\" dir=\"auto\"><div class=\"callout-icon\"><svg");
+        has(&h, "lucide-pencil");
+        has(&h, "<div class=\"callout-title-inner\">A note callout</div></div>");
+        has(&h, "<div class=\"callout-content\"><p>Callouts render as styled boxes.</p>");
+        hasnt(&h, "<blockquote");
+        hasnt(&h, "[!note]");
+    }
+
+    #[test]
+    fn callout_types_aliases_and_case() {
+        // (written type, data-callout, default title, icon) — Obsidian's built-in set
+        let cases = [
+            ("note", "note", "Note", "pencil"),
+            ("abstract", "abstract", "Abstract", "clipboard-list"),
+            ("summary", "summary", "Summary", "clipboard-list"),
+            ("TLDR", "tldr", "Tldr", "clipboard-list"),
+            ("info", "info", "Info", "info"),
+            ("todo", "todo", "Todo", "check-circle-2"),
+            ("tip", "tip", "Tip", "flame"),
+            ("hint", "hint", "Hint", "flame"),
+            ("important", "important", "Important", "flame"),
+            ("success", "success", "Success", "check"),
+            ("check", "check", "Check", "check"),
+            ("done", "done", "Done", "check"),
+            ("question", "question", "Question", "help-circle"),
+            ("help", "help", "Help", "help-circle"),
+            ("FAQ", "faq", "Faq", "help-circle"),
+            ("Warning", "warning", "Warning", "alert-triangle"),
+            ("caution", "caution", "Caution", "alert-triangle"),
+            ("attention", "attention", "Attention", "alert-triangle"),
+            ("failure", "failure", "Failure", "x"),
+            ("fail", "fail", "Fail", "x"),
+            ("missing", "missing", "Missing", "x"),
+            ("danger", "danger", "Danger", "zap"),
+            ("ERROR", "error", "Error", "zap"),
+            ("bug", "bug", "Bug", "bug"),
+            ("example", "example", "Example", "list"),
+            ("quote", "quote", "Quote", "quote"),
+            ("cite", "cite", "Cite", "quote"),
+        ];
+        for (w, dc, title, icon) in cases {
+            let h = render_md(&format!("> [!{w}]\n> body\n"), &[]);
+            has(&h, &format!("data-callout=\"{dc}\""));
+            has(&h, &format!("<div class=\"callout-title-inner\">{title}</div>"));
+            has(&h, &format!("lucide-{icon}\""));
+            hasnt(&h, "markdown-alert"); // not pulldown's GFM alert
+        }
+    }
+
+    #[test]
+    fn callout_bare_gfm_types_are_callouts_not_alerts() {
+        // with ENABLE_GFM pulldown ate a bare `> [!NOTE]` into blockquote.markdown-alert-note
+        for t in ["NOTE", "tip", "Important", "warning", "CAUTION"] {
+            let h = render_md(&format!("> [!{t}]\n> text\n"), &[]);
+            has(&h, &format!("data-callout=\"{}\"", t.to_lowercase()));
+            hasnt(&h, "markdown-alert");
+            hasnt(&h, "<blockquote");
+        }
+    }
+
+    #[test]
+    fn callout_fold_markers() {
+        let h = render_md("> [!faq]- Are callouts foldable?\n> Yes.\n", &[]);
+        has(&h, "data-callout-fold=\"-\"");
+        has(&h, "class=\"callout is-collapsible is-collapsed\"");
+        has(&h, "<div class=\"callout-title-inner\">Are callouts foldable?</div><div class=\"callout-fold is-collapsed\"><svg");
+        has(&h, "lucide-chevron-down");
+        let h = render_md("> [!tip]+ Open by default\n> body\n", &[]);
+        has(&h, "data-callout-fold=\"+\"");
+        has(&h, "class=\"callout is-collapsible\"");
+        has(&h, "<div class=\"callout-fold\"><svg");
+        hasnt(&h, "is-collapsed");
+        let h = render_md("> [!tip] plain\n> body\n", &[]);
+        hasnt(&h, "callout-fold\"");
+        hasnt(&h, "is-collapsible");
+    }
+
+    #[test]
+    fn callout_nested() {
+        let h = render_md("> [!note] Outer\n> outer body\n> > [!warning] Inner\n> > inner body\n", &[]);
+        assert_eq!(h.matches("class=\"callout\"").count(), 2, "{h}");
+        let outer = h.find("data-callout=\"note\"").expect("outer");
+        let content = h.find("callout-content").expect("outer content");
+        let inner = h.find("data-callout=\"warning\"").expect("inner");
+        assert!(outer < content && content < inner, "inner callout must sit in the outer's content: {h}");
+        has(&h, "<div class=\"callout-title-inner\">Inner</div>");
+        has(&h, "<p>inner body</p>");
+        hasnt(&h, "<blockquote");
+        // a plain quote inside a callout stays a blockquote
+        let h = render_md("> [!info]\n> > just a quote\n", &[]);
+        has(&h, "data-callout=\"info\"");
+        has(&h, "<blockquote>");
+    }
+
+    #[test]
+    fn callout_custom_type_keeps_its_name() {
+        let h = render_md("> [!my-Custom] Hello\n> x\n", &[]);
+        has(&h, "data-callout=\"my-custom\"");
+        has(&h, "lucide-pencil"); // unknown -> note's icon (and note's colour via CSS)
+        has(&h, "<div class=\"callout-title-inner\">Hello</div>");
+        let h = render_md("> [!kanban|wide] T\n> x\n", &[]);
+        has(&h, "data-callout=\"kanban\"");
+        has(&h, "data-callout-metadata=\"wide\"");
+    }
+
+    #[test]
+    fn callout_title_only_and_inline_markdown() {
+        let h = render_md("> [!info] Only a title\n", &[]);
+        has(&h, "<div class=\"callout-title-inner\">Only a title</div>");
+        hasnt(&h, "callout-content");
+        let h = render_md("> [!tip] **Bold** and [[Plan]]\n> body\n", &["Plan".to_string()]);
+        has(&h, "<strong>Bold</strong>");
+        has(&h, "data-note=\"Plan\"");
+        let title = &h[h.find("callout-title-inner").unwrap()..h.find("callout-content").unwrap()];
+        assert!(title.contains("Bold") && !title.contains("body"), "title is the first line only: {title}");
+    }
+
+    #[test]
+    fn callout_xss_title_body_type_and_meta_stay_inert() {
+        let h = render_md("> [!note] <img src=x onerror=alert(1)>\n> <script>alert(2)</script>\n", &[]);
+        has(&h, "data-callout=\"note\"");
+        hasnt(&h, "<img");
+        hasnt(&h, "<script");
+        has(&h, "&lt;img src=x onerror=alert(1)&gt;");
+        // a hostile type / metadata can only ever land in an escaped attribute value
+        let h = render_md("> [!x\"onmouseover=\"alert(1)|<b>m</b>] t\n> b\n", &[]);
+        hasnt(&h, "\"onmouseover=\"");
+        hasnt(&h, "<b>");
+        has(&h, "data-callout=\"x&quot;onmouseover=&quot;alert(1)\"");
+        // javascript: links in a title stay text (S1 unchanged inside callouts)
+        let h = render_md("> [!note] [x](javascript:alert(1))\n", &[]);
+        hasnt(&h, "href=\"javascript");
+    }
+
+    #[test]
+    fn callout_not_a_callout() {
+        for src in ["> plain quote\n", "> \\[!note] escaped\n", "> [!note]x glued\n", "> [!] empty\n", "> [! note] spaced\n", "[!note] not quoted\n"] {
+            let h = render_md(src, &[]);
+            hasnt(&h, "class=\"callout");
+        }
+        has(&render_md("> plain quote\n", &[]), "<blockquote>");
+    }
+
+    #[test]
+    fn callout_is_one_top_level_block_and_keeps_task_lines() {
+        let md = "> [!todo] Tasks\n> - [ ] one\n> - [x] two\n\npara\n";
+        assert_eq!(block_lines_of(md), vec![1, 5]);
+        let h = render_with(md, &[], &[], true);
+        assert!(h.starts_with("<div data-callout-metadata=\"\" data-callout-fold=\"\" data-callout=\"todo\""), "{h}");
+        // reading-view task boxes inside a callout still carry their FILE line (rvtask)
+        has(&h, "data-line=\"1\"");
+        has(&h, "data-line=\"2\"");
     }
 }
