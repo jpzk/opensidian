@@ -260,6 +260,13 @@ const EdMenu = (() => {
     return null;
   }
   const SPAN_RE = /!?\[\[[^\]\n]*\]\]|!?\[[^\]\n]*\]\([^)\n]*\)|https?:\/\/[^\s<>()]+/g;
+  /* the document position under a right-click. Over an LP image embed the app logged
+     [jserr:TypeError: ... evaluating 's.isText'] and opened no menu (#37 box run), so a throw
+     from posAtCoords falls back to the target's own DOM position */
+  function ptPos(cm, e) {
+    try { return cm.posAtCoords({ x: e.clientX, y: e.clientY }); } catch (_) {}
+    try { return cm.posAtDOM(e.target, 0); } catch (_) { return null; }
+  }
   /* the link / embed under a right-click, BEFORE the caret moves (a moved caret re-renders the LP row
      raw and the element is gone). Column = the text before the element in its .cm-line (an LP row's
      textContent === its source line); Source mode has no link elements, so it falls back to the
@@ -278,7 +285,7 @@ const EdMenu = (() => {
       }
       if (el.tagName === "A") col += 1;      // inside the label, past any opening marker
     } else {
-      const p = cm.posAtCoords({ x: e.clientX, y: e.clientY });
+      const p = ptPos(cm, e);
       if (p == null) return null;
       line = cm.state.doc.lineAt(p); col = p - line.from;
     }
@@ -412,7 +419,7 @@ const EdMenu = (() => {
     if (!cm || !t || t.kind || t.mode === "reading") return false;
     const cell = e.target.closest(".cm-table-widget th, .cm-table-widget td");
     if (cell && cm.dom.contains(cell)) { openTable(e, g, cm, cell); return true; }   // C3-7: before the caret moves into the table
-    const p = cm.posAtCoords({ x: e.clientX, y: e.clientY }), r = cm.state.selection.main;
+    const p = ptPos(cm, e), r = cm.state.selection.main;
     const inSel = !r.empty && p != null && p >= r.from && p <= r.to;
     const hit = inSel ? null : linkHit(cm, e);            // C3-4: read the target BEFORE the caret re-renders the row
     if (p != null && !inSel) cm.dispatch({ selection: { anchor: p } });
