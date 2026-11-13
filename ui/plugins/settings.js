@@ -20,6 +20,7 @@
      [cpp:<R|T>,<installed>,<enabled>]   on the community pane
      [cpr:<x>,<y>,<1 restricted|0>]      the restricted toggle's centre
      [cpbb:<x>,<y>]                      the Browse button; [cpb...] browser.js tok() while browsing
+     [cpa:<grants>,<outdated>,<seq>]    #74 Allowed programs list answered; [cpar:<x>,<y>] its first Revoke
      [cpt=<id>:<x>,<y>,<on>,<loaded>,<gear x|0>]   one per installed plugin
      [cpn=<pane id>:<x>,<y>]             every community nav entry's centre
      [ptab:<id>,<setting-items>,<elements>]  a plugin tab is on screen (display() ran) */
@@ -261,7 +262,8 @@
      a grant is made only by the native spawn dialog's Always button, never from this page.
      The backend's ALWAYS_NOTE (arguments are not checked again) is shown above the list.
      Its rows are not settings rows: sRowsShown / sEnabledShown stay what they were.
-     Census: [cpa:<grants>,<outdated>,<seq>] on the community pane once the list answered. */
+     Census: [cpa:<grants>,<outdated>,<seq>] on the community pane once the list answered, and
+     [cpar:<x>,<y>] = the centre of the first Revoke button (the harness clicks it). */
   let saList = null, saSeq = 0, saBusy = false;
   function buildAllowed(pg) {
     if (typeof inv !== "function") return;
@@ -536,6 +538,8 @@
       const bb = document.getElementById("cpbrowse");
       if (bb) t += " [cpbb:" + ctr(bb) + "]";
       if (browsing && browser) t += browser.tok();
+      const rv = document.querySelector("#cpallow .cpa-revoke");
+      if (saList && rv) t += " [cpar:" + ctr(rv) + "]";
       if (saList && document.getElementById("cpallow")) t += " [cpa:" + saList.length + "," + saList.filter(g => g.status === "outdated").length + "," + saSeq + "]";
       for (const row of document.querySelectorAll("#spage .srow[data-plugin]")) {
         const id = row.dataset.plugin, tg = row.querySelector(".toggle"), g = row.querySelector(".cpgear");
