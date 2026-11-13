@@ -2258,6 +2258,9 @@ Ed.lpLeaves = function (row) {            // the text-less leaves of a rendered 
   walk(row);
   return out;
 };
+// a task row's marker prefix as Ed.block reads it: indent, any ">" quote levels (">  - [ ] x" is a
+// quoted list row too), a bullet or "N.", then "[c] ". m[0].length = the task text start (gh #46/#75)
+Ed.TASK_RE = /^[ \t]*(?:>[ \t]*)*(?:[-*+]|\d+\.) \[[^\]\n]\] /;
 Ed.lpExt = function (v, G) {
   const { Decoration, ViewPlugin, WidgetType, EditorView } = CMv;
   const bust = CMs.StateEffect.define();
@@ -2354,6 +2357,35 @@ Ed.lpExt = function (v, G) {
     // only an UNMODIFIED key is a vertical move: Cmd+Up/Down (macOS document start/end), Ctrl+Up/Down
     // (WebKitGTK paragraph backward/forward), Alt+... and Shift (selection) keep their native target (PR #62)
     keydown: (e) => { v._vmove = /^(ArrowUp|ArrowDown|PageUp|PageDown)$/.test(e.key) && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey ? Date.now() : 0; return false; },
+    // gh #75: a plain click in the empty space RIGHT of a task's checkbox. On a nested blank task
+    // ("\t- [ ] ") WebKit's caretRangeFromPoint skips the box + the zero-width anchor (no text) and
+    // lands in the last visible TEXT node, the indent: col 1, LEFT of the box, so typing puts the
+    // text before the marker. Remember the row here; pointerSnap below moves such a caret to the
+    // marker end. Clicks ON the box never get here (its own mousedown stops propagation).
+    mousedown: (e, view) => {
+      v._psnap = null;
+      if (e.button !== 0 || e.detail > 1 || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return false;
+      const p = view.posAtCoords({ x: e.clientX, y: e.clientY }, false);
+      if (p == null) return false;
+      const ln = view.state.doc.lineAt(p), m = Ed.TASK_RE.exec(ln.text);
+      if (!m) return false;
+      const d = view.domAtPos(ln.from), el = d && d.node && (d.node.nodeType === 1 ? d.node : d.node.parentElement);
+      const row = el && el.closest ? el.closest(".cm-line") : null, box = row && row.querySelector("input.tbox");
+      const br = box ? box.getBoundingClientRect() : null;
+      if (br && br.width && e.clientX >= br.right) v._psnap = { l: ln.number, t: Date.now() };
+      return false;
+    },
+  });
+  const pointerSnap = CMs.EditorState.transactionFilter.of(tr => {
+    const ps = v._psnap;
+    if (!ps || Date.now() - ps.t > 500 || tr.docChanged || !tr.selection || !tr.isUserEvent("select.pointer")) return tr;
+    const s = tr.selection;
+    if (s.ranges.length !== 1 || !s.main.empty) return tr;
+    const ln = tr.newDoc.lineAt(s.main.head);
+    if (ln.number !== ps.l) return tr;
+    const m = Ed.TASK_RE.exec(ln.text);
+    if (!m || s.main.head - ln.from >= m[0].length) return tr;
+    return [tr, { selection: CMs.EditorSelection.cursor(ln.from + m[0].length), sequential: true }];
   });
   const taskSnap = CMs.EditorState.transactionFilter.of(tr => {
     if (!v._vmove || Date.now() - v._vmove > 500 || tr.docChanged || !tr.selection || !tr.isUserEvent("select") || tr.isUserEvent("select.pointer")) return tr;
@@ -2362,12 +2394,11 @@ Ed.lpExt = function (v, G) {
     if (s.ranges.length !== 1 || !s.main.empty) return tr;
     const doc = tr.newDoc, ln = doc.lineAt(s.main.head);
     if (ln.number === tr.startState.doc.lineAt(tr.startState.selection.main.head).number) return tr;
-    // quote prefix as Ed.block reads it: ">" + any spaces/tabs, repeated (">  - [ ] x" is a quoted list row too)
-    const m = /^[ \t]*(?:>[ \t]*)*(?:[-*+]|\d+\.) \[[^\]\n]\] /.exec(ln.text);
+    const m = Ed.TASK_RE.exec(ln.text);
     if (!m || s.main.head - ln.from >= m[0].length) return tr;
     return [tr, { selection: CMs.EditorSelection.cursor(ln.from + m[0].length), sequential: true }];
   });
-  return [plugin, clicks, vkeys, taskSnap, Ed.cbField(v, G, bust)];
+  return [plugin, clicks, vkeys, taskSnap, pointerSnap, Ed.cbField(v, G, bust)];
 };
 /* ---------- plugin CODE BLOCKS in Live Preview (plug-top5) ----------
    A fenced block whose language a plugin registered a code-block processor for
