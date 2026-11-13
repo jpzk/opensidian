@@ -6063,65 +6063,6 @@ fn win_toggle_max(win: tauri::Window) -> Result<bool, String> {
     Ok(!m)
 }
 
-/* #79: with WebKitGTK's DMA-BUF renderer (the default) a plugin view (Excalidraw) is painted in the
-   page, but the window keeps showing the previous frame until something makes the webview widget
-   draw again (input, a DOM change, gtk_widget_queue_draw). The last web frame of a burst reaches the
-   UI process but is not on the screen after the widget's draw for it. ui/main.js calls this when a
-   plugin view tab is mounted / shown. It arms a "follow" budget: for the next PRESENT_FOLLOW webview
-   draws, each draw WebKit asks for is followed by exactly one more draw on the next frame-clock tick
-   (our own follow-up draws are not followed again), plus one queue_draw now. No timer, no polling; it
-   only runs while the page is producing frames, and stops after the budget. DMA-BUF stays on. */
-#[cfg(target_os = "linux")]
-mod present {
-    use gtk::prelude::*;
-    use std::cell::Cell;
-    pub const PRESENT_FOLLOW: u32 = 60;
-    thread_local! {
-        static HOOKED: Cell<bool> = Cell::new(false);
-        static BUDGET: Cell<u32> = Cell::new(0);
-        static OURS: Cell<bool> = Cell::new(false);
-        static FOLLOWED: Cell<u32> = Cell::new(0);
-    }
-    pub fn arm(w: &gtk::Widget) {
-        if !HOOKED.with(|h| h.replace(true)) {
-            w.connect_draw(|w, _| {
-                if OURS.with(|o| o.replace(false)) {
-                    return gtk::glib::Propagation::Proceed; // our follow-up draw: not followed again
-                }
-                let b = BUDGET.with(|b| b.get());
-                if b > 0 {
-                    BUDGET.with(|x| x.set(b - 1));
-                    let n = FOLLOWED.with(|f| { f.set(f.get() + 1); f.get() });
-                    if b == 1 { eprintln!("[present] #79 follow budget spent ({n} webview draws followed)"); }
-                    w.add_tick_callback(|w, _| {
-                        OURS.with(|o| o.set(true));
-                        w.queue_draw();
-                        gtk::glib::ControlFlow::Break
-                    });
-                }
-                gtk::glib::Propagation::Proceed
-            });
-        }
-        let was = BUDGET.with(|b| b.replace(PRESENT_FOLLOW));
-        let n = FOLLOWED.with(|f| f.replace(0));
-        eprintln!("[present] #79 nudge: follow the next {PRESENT_FOLLOW} webview draws (previous window: {n} followed, {was} left)");
-        w.queue_draw();
-    }
-}
-
-#[tauri::command]
-fn present_nudge(webview: tauri::Webview) {
-    #[cfg(target_os = "linux")]
-    {
-        let _ = webview.with_webview(|pw| {
-            use gtk::prelude::*;
-            present::arm(pw.inner().upcast_ref::<gtk::Widget>());
-        });
-    }
-    #[cfg(not(target_os = "linux"))]
-    let _ = webview;
-}
-
 /// F1: closing the window is the app's own affordance, not the WM's — with
 /// decorations off there is no frame button, and on a bare X server there is
 /// no WM to ask. `close()` runs the normal close path (window events fire).
@@ -6716,7 +6657,7 @@ fn main() {
             themes_scan, theme_css, get_css_theme, set_css_theme, theme_seed_report, vault_css_watch,
             get_quickfont, set_quickfont, get_fonts, set_font, font_families,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
-            win_rect, win_gesture, win_move_proto, win_drag_start, win_minimize, win_toggle_max, win_close, quit_arm, quit_ready, present_nudge,
+            win_rect, win_gesture, win_move_proto, win_drag_start, win_minimize, win_toggle_max, win_close, quit_arm, quit_ready,
             tab_removed, insert_datetime,
             zoom, zoom_get, pdf_info,
             // cp-secrets

@@ -116,10 +116,34 @@ function typingElsewhere(g) {
 /* plugin-views: the plugin host (ui/plugins/views.js) sets PVHOST when a plugin registers a view
    type; loadActive asks it to mount a kept "unk" tab of that type (and to hide it again). */
 let PVHOST = null;
-/* #79: WebKitGTK's DMA-BUF renderer can leave a just-shown plugin view (Excalidraw) painted in the page
-   but not on the screen until the next input event. present_nudge (main.rs) follows each webview draw
-   with one more for a bounded number of draws. One call per view shown; no timer, no loop. */
-function presentNudge() { inv("present_nudge").catch(() => {}); }
+/* #79: with WebKitGTK's DMA-BUF renderer (the default) the last web frame of a burst can stay off the
+   screen until the page produces ANOTHER frame (box runs: any later DOM change, resize, expose or input
+   presents it; a UI-side queue_draw alone does not reliably). So when a plugin view (Excalidraw) is shown,
+   follow its frames with one trailing frame: every DOM change inside the view (Excalidraw's own render
+   bursts, canvas resizes) and every font load re-arms ONE nudge two rAFs later, which toggles the colour
+   of a 1x1 invisible fixed element outside the view (a new page frame, nothing visible changes).
+   Event-driven and bounded: the observer is dropped PRESENT_FOLLOW_MS after the view is shown; no timer
+   loop, no polling, DMA-BUF stays on. */
+const PRESENT_FOLLOW_MS = 3000;
+let presentEl = null, presentOff = null, presentArmed = false;
+function presentFrame() {
+  if (presentArmed) return; presentArmed = true;
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    presentArmed = false;
+    if (!presentEl) { presentEl = document.createElement("div"); presentEl.setAttribute("aria-hidden", "true");
+      presentEl.style.cssText = "position:fixed;left:0;top:0;width:1px;height:1px;pointer-events:none;z-index:-1"; document.body.appendChild(presentEl); }
+    presentEl.style.background = presentEl.style.background === "rgba(0, 0, 0, 0.01)" ? "rgba(0, 0, 0, 0.02)" : "rgba(0, 0, 0, 0.01)";
+  }));
+}
+function presentNudge(root) {
+  if (presentOff) presentOff();
+  const mo = new MutationObserver(presentFrame), fl = () => presentFrame();
+  if (root) mo.observe(root, { childList: true, subtree: true, attributes: true, characterData: true });
+  if (document.fonts) document.fonts.addEventListener("loadingdone", fl);
+  const tm = setTimeout(() => presentOff && presentOff(), PRESENT_FOLLOW_MS);
+  presentOff = () => { mo.disconnect(); if (document.fonts) document.fonts.removeEventListener("loadingdone", fl); clearTimeout(tm); presentOff = null; };
+  presentFrame();
+}
 /* plugin-views item 5: set by ui/plugins/api.js when a plugin listens for "file-menu" / "editor-menu";
    noteMenu and the editor right-click ask it to add the plugin rows. */
 let PMENU = null;
@@ -5833,7 +5857,7 @@ async function loadActive(g) {
     g.lp.style.display = g.preview.style.display = g.editor.style.display = "none";
     if (PVHOST && PVHOST.mount(g, t)) {   // plugin-views: its type is registered -> the plugin's view is the tab
       if (g.unkEl) g.unkEl.hidden = true;
-      presentNudge();   // #79: the shown plugin view's first frames reach the screen without waiting for input
+      presentNudge(g.content);   // #79: the shown plugin view's last frame reaches the screen without waiting for input
       renderTabs(g); treeHighlight(); rgFollow();
       if (t.utype === "canvas") { updateStatus(g); setTimeout(() => { if (g.tabs[g.active] === t) { updateStatus(g); rgFollow(); } }, 400); }   // cvf-links CVR-A-097: a canvas shows its backlink count (async; again once its view has a path)
       return;
