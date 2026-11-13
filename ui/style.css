@@ -293,7 +293,6 @@ body {
   --background-modifier-cover: rgba(0,0,0,.35);
   --background-modifier-error: var(--bg-banner-error);
   --background-modifier-message: rgba(30,30,30,0.95);
-  --blockquote-background-color: var(--transparent);
   --blockquote-font-style: normal;
   --border-width: 1px;
   --button-radius: 4px;
@@ -337,7 +336,6 @@ body {
   --graph-controls-width: 240px;
   --header-height: 32px;
   --icon-color: var(--text-chrome-muted);
-  --icon-color-focused: var(--text-chrome);
   --icon-color-hover: var(--text-chrome);
   --icon-l: 18px;
   --icon-m: 16px;
@@ -581,7 +579,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .stab { flex: 0 1 34px; width: 34px; min-width: 0; overflow: hidden; background: none; color: var(--text-chrome-muted);
         border: 0; padding: 4px; cursor: pointer; border-radius: 4px }   /* R22: min-width:0 = shrinkable icon button */
 .stab:hover { color: var(--text-chrome) }
-.stab.active { background: var(--background-modifier-active-hover, var(--bg-surface)); color: var(--icon-color-focused, var(--text-chrome)) }
+.stab.active { background: var(--background-modifier-active-hover, var(--bg-surface)); color: var(--text-chrome) }
 .stab svg { width: 15px; height: 15px; display: block; margin: 0 auto }
 .spane { flex: 1; display: flex; flex-direction: column; min-height: 0 }
 .spane[hidden] { display: none }
@@ -1722,7 +1720,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .lp pre code, .preview pre code { padding: 0; background: none; font-size: inherit }
 /* R15.13 blockquote: 2px accent inline-start border, 24px padding, no margin (LP: 14px text offset) */
 .lp blockquote, .preview blockquote { border-inline-start: var(--blockquote-border-thickness) solid var(--blockquote-border-color);
-  padding: 0 0 0 var(--size-4-6); margin-inline: 0; font-style: var(--blockquote-font-style, normal); color: var(--blockquote-color, inherit); background: var(--blockquote-background-color, var(--transparent));
+  padding: 0 0 0 var(--size-4-6); margin-inline: 0; font-style: var(--blockquote-font-style, normal); color: var(--blockquote-color, inherit); background: var(--transparent);
   position: relative; inset-inline-start: 2px }   /* the border sits on the h1 "H" ink x; the content box is 2px left of it */
 .preview > blockquote { margin-inline: auto }    /* keep the 700px column centring (the rule above outranks .preview > *) */
 .preview blockquote > :first-child { margin-top: 0 }
