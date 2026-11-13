@@ -11009,6 +11009,7 @@ async function startGraph(g, cfg) {
       n++; if (p.vx === o.vx && p.vy === o.vy) k++;
     }
     s.vraw = n ? Math.round(100 * k / n) : -1;
+    for (const p of N) { const o = s.prev.get(p.n); if (o && !o.pin && p.fx == null) { p.vx = 0; p.vy = 0; } }   // NEGCTL vstall: survivors restarted from rest right after the carry probe
   }
   // rcRecord runs at that frame's PAINT — the frame the user actually sees.
   //   a/a0  = the sim's real alpha now, and what it was before the restart (see above).
