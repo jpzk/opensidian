@@ -1,5 +1,4 @@
-<img width="1000" height="525" alt="opensidian-header" src="https://github.com/user-attachments/assets/a19731ea-35dc-46cb-934a-352e8c813e39" />
-
+<img width="1000" height="525" alt="image-1794573234435" src="https://github.com/user-attachments/assets/8e448f62-eb11-4213-9848-4f99455d3d43" />
 
 # Opensidian
 Open-source and non-profit under GPLv3, vault-compatible cross-platform markdown notes app. It's based on Rust + Tauri v2 and under heavy development. We're looking for Linux distribution maintainers. Not affiliated with or endorsed by Obsidian or Dynalist Inc.; "Obsidian" is their trademark. Opensidian is a clean-room functional clone: it reimplements Obsidian's behaviour from the outside and contains none of its code.
