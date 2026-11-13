@@ -1062,7 +1062,8 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
    with --text-on-accent; .mod-cta.mod-destructive = --background-modifier-error with --text-on-accent;
    .mod-warning ink = --text-warning. Every var() falls back to ours, and the rules name OUR ids (plugin modals,
    api-ui.js, also carry .modal-container > .modal and are left alone).
-   SCOPE: only while a vault theme OTHER than the bundled default paints ([data-vthemecompat], ui/main.js vthemeMark),
+   SCOPE: only while the theme the vault CHOSE (cssTheme) paints, not the bundled default an empty cssTheme falls back
+   to ([data-vthemecompat], ui/main.js vthemeMark),
    so the look with no theme chosen (the bundled default, or the base sheet) does not move. #pcard gets no border:
    it has none, and its geometry is pinned (see #pcard above). */
 :root[data-vthemecompat] :is(#picker > #pcard, .rnmc > #rnbox, #ulbox > #ulcard, #delbox > #delcard) { background-color: var(--modal-background, var(--background-primary, var(--bg-elevated))) }
