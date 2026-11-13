@@ -4393,7 +4393,9 @@ function clampMenu(m) {
 }
 document.addEventListener("contextmenu", e => {   // app-like: native menu never
   e.preventDefault();
-  if (!(e.target instanceof Element) || !e.target.closest(".cm-editor")) return;
+  if (!(e.target instanceof Element)) return;
+  if (e.target.closest(".preview")) { EdMenu.openReading(e); return; }   // #37 C3-4: reading-view link menus + selection Copy
+  if (!e.target.closest(".cm-editor")) return;
   if (EdMenu.open(e)) return;                       // #37 C3-3: the core editor menu (ui/edmenu.js), plugin rows appended
   if (PMENU) PMENU.editorMenu(e);                   // plugin-views: workspace "editor-menu" (an editor EdMenu declines)
 });

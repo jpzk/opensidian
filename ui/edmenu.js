@@ -12,6 +12,11 @@
    disabled without a selection, Paste and Paste as plain text without text on
    the clipboard (clip_has_text, src-tauri/src/clip.rs — asked when the menu
    opens; the TEXT only crosses when Paste is picked).
+   C3-4: a right-click ON a link or an image embed gets stock's target lists
+   instead (lp-link-internal / lp-link-external / lp-image), and the reading
+   view gets its link menus plus a one-row "Copy" for a selection
+   (openReading; no target = no menu, as in stock). Rows we cannot back yet are
+   shown DISABLED with the missing subsystem as the hover title.
    Plugin "editor-menu" rows (ui/plugins/views.js PM.editorMenu) follow the core
    rows after a rule — stock's order.
 
@@ -72,7 +77,7 @@ const EdMenu = (() => {
 
   /* the menu for the editor of group g. sel = the selected text ("" = caret),
      clip = the clipboard holds text. Rows run on g, focused first. */
-  function rows(g, sel, clip) {
+  function rows(g, sel, clip, hit) {
     const go = fn => () => { closeMenu(); if (fg() !== g) focusGroup(g); Ed.focus(g); fn(); };
     const ed = f => go(() => edEdit(f));
     const line = f => go(() => edLine(f));
@@ -110,25 +115,223 @@ const EdMenu = (() => {
       R("New base", null, "insert.advanced", NO_BASE),
     ];
     const none = sel ? undefined : "";      // disabled with no hover reason: stock greys them the same way
-    const out = [
+    const ADD = [
       R("Add link", ed(link("[[", "]]")), "selection-link"),
       R("Add external link", ed(extLink), "selection-link"),
       "---",
     ];
-    if (sel) out.push(
-      R("Search for “" + sel + "”", go(() => searchFor(sel)), "selection"),
-      R("Extract current selection...", null, "selection", NO_EXTRACT));
-    out.push(
-      { title: "Format", sub: FORMAT, section: "selection.format" },
-      { title: "Paragraph", sub: PARAGRAPH, section: "" },
-      { title: "Insert", sub: INSERT, section: "" },
-      "---",
+    const PAR = { title: "Paragraph", sub: PARAGRAPH, section: "" }, INS = { title: "Insert", sub: INSERT, section: "" };
+    const CLIP = [
       R("Cut", go(() => clipCut(g)), "clipboard", none),
       R("Copy", go(() => clipCopy(g)), "clipboard", none),
       R("Paste", go(() => clipPaste(g)), "clipboard", clip ? undefined : ""),
       R("Paste as plain text", go(() => clipPaste(g)), "clipboard", clip ? undefined : ""),
-      R("Select all", go(() => Ed.selectAll(g)), "clipboard"));
+      R("Select all", go(() => Ed.selectAll(g)), "clipboard"),
+    ];
+    /* C3-4: a right-click ON a link / embed (hit = linkHit(), the source span under
+       the pointer) gets stock's target menus (RECON §A1 lp-link-internal / -external / lp-image) */
+    if (hit && hit.kind === "image") return imageRows(g, hit, go);
+    if (hit) {
+      const editLink = R("Edit link", go(() => { const cm = Ed.cm(g); if (cm) cm.dispatch({ selection: { anchor: hit.ea, head: hit.eb }, scrollIntoView: true }); }), "selection-link");
+      if (hit.kind === "ext") return [
+        R("Open link in default browser", go(() => openUrl(hit.url)), "open"), "---",
+        ...ADD, editLink, PAR, INS, "---", ...CLIP, "---",
+        R("Copy URL", go(() => clipPut(hit.url)), "clipboard"),
+      ];
+      return [...noteOpenRows(g, hit, go), "---", ...ADD, editLink, PAR, INS, "---", ...CLIP, "---",
+        copyPath(hit.path), "---", ...noteFileRows(hit, go), "---", "---", ...noteSysRows(hit, go)];
+    }
+    const out = [...ADD];
+    if (sel) out.push(
+      R("Search for “" + sel + "”", go(() => searchFor(sel)), "selection"),
+      R("Extract current selection...", null, "selection", NO_EXTRACT));
+    out.push({ title: "Format", sub: FORMAT, section: "selection.format" }, PAR, INS, "---", ...CLIP);
     return out;
+  }
+
+  // ---- C3-4: link / embed targets ----
+  const NO_RENAME = "Missing subsystem: renaming a note from a link — Rename... (cmdRename) renames the active tab's note; open the link first";
+  const NO_MOVE = "Missing subsystem: moving a note from a link — the folder list (moveNoteTo) is wired on the tab menu only";
+  const NO_FILEOPEN = "Missing subsystem: a file-path opener — open_external takes a URL, not a vault path";
+  const NO_SYSEXP = "Missing subsystem: a file-manager handler — no command reveals a path in a file manager";
+  const NO_IMGTAB = "Missing subsystem: an image view — a tab here always holds a note, a graph or a canvas";
+  const NO_IMGCLIP = "Missing subsystem: an image clipboard write — clip_set_text (src-tauri/src/clip.rs) carries text only";
+  const NO_SWAP = "Missing subsystem: an attachment picker (a modal file suggester for the embed's new target)";
+  const NO_IMGFILE = "Missing subsystem: attachment file operations — rename/move/delete here work on notes (.md) only";
+  const WIN = () => (typeof DIS_WIN === "string" ? DIS_WIN : "Missing subsystem: a second OS window");
+  const R = (title, fn, section, why) => ({ title, fn, section, why });
+
+  /* the note name a link target resolves to (notesCache = vault names without .md, main.js refreshTree) */
+  function noteName(n) {
+    const b = String(n || "").replace(/\.md$/i, "");
+    const L = typeof notesCache !== "undefined" ? notesCache : [];
+    return L.find(x => x === b) || L.find(x => x.endsWith("/" + b)) || b;
+  }
+  function imgName(n) {
+    const L = typeof imgsCache !== "undefined" && imgsCache ? imgsCache : [];
+    return L.find(x => x === n) || L.find(x => x.endsWith("/" + n)) || n;
+  }
+  /* the stock Copy path submenu: as Obsidian URL | from vault folder | from system root */
+  function copyPath(path) {
+    const root = String(vaultPath || "").replace(/[\\/]+$/, ""), vn = root.split(/[\\/]/).pop();
+    const url = "obsidian://open?vault=" + encodeURIComponent(vn) + "&file=" + encodeURIComponent(path.replace(/\.md$/i, ""));
+    const put = t => () => { closeMenu(); clipPut(t); };
+    return { title: "Copy path", section: "info", sub: [
+      R("as Obsidian URL", put(url), "info"),
+      R("from vault folder", put(path), "info"),
+      R("from system root", put(root + "/" + path), "info"),
+    ] };
+  }
+  async function openNote(g, n, an, how) {     // the ctrl+click path of wikiClick, or a split to the right
+    if (await cvLinkOpen(n, an)) return;
+    if (!Ed.resolves(n)) await createNote(n);  // stock: opening an unresolved link creates the note
+    await flushSave(g);
+    const t = mkTab(n);
+    if (how === "right") { await splitWith(g, "row", t); return; }
+    g.tabs.push(t);
+    g.active = g.tabs.length - 1;
+    await loadActive(g);
+    if (an) await navAnchor(g, an);
+  }
+  const noteOpenRows = (g, h, go) => [
+    R("Open in new tab", go(() => openNote(g, h.note, h.anchor, "tab")), "open"),
+    R("Open to the right", go(() => openNote(g, h.note, h.anchor, "right")), "open"),
+    R("Open in new window", null, "open", WIN()),
+  ];
+  const noteFileRows = (h, go) => [
+    R("Rename...", null, "action", NO_RENAME),
+    R("Move file to...", null, "action", NO_MOVE),
+    R(bmCache.includes(h.name) ? "Remove bookmark" : "Bookmark...", go(() => toggleBm(h.name)), "action"),
+  ];
+  const noteSysRows = (h, go) => [
+    R("Open in default app", null, "system", NO_FILEOPEN),
+    R("Show in system explorer", null, "system", NO_SYSEXP),
+    R("Reveal file in navigation", go(() => bmReveal(h.name)), "system"),
+  ];
+  function imageRows(g, h, go) {
+    const cut = ed => go(() => {                // the embed's source span, replaced as ONE edit (edEdit)
+      const cm = Ed.cm(g); if (!cm) return;
+      cm.dispatch({ selection: { anchor: h.from, head: h.to } });
+      edEdit((v, a, b) => { const s = ed(v.slice(a, b)); return [v.slice(0, a) + s + v.slice(b), a, a + s.length]; });
+    });
+    const sized = /\|\s*\d+(?:x\d+)?\s*\]\]$/.test(h.text);
+    return [
+      R("Copy image", null, "clipboard", NO_IMGCLIP),
+      R("Swap file...", null, "action", NO_SWAP),
+      R("Remove image", cut(() => ""), "action"),
+      R("Reset size", sized ? cut(s => s.replace(/\|\s*\d+(?:x\d+)?\s*\]\]$/, "]]")) : null, "action", sized ? undefined : ""),
+      "---",
+      R("Open in new tab", null, "open", NO_IMGTAB),
+      R("Open to the right", null, "open", NO_IMGTAB),
+      R("Open in new window", null, "open", WIN()),
+      "---",
+      R("Rename...", null, "action", NO_IMGFILE),
+      R("Move file to...", null, "action", NO_IMGFILE),
+      R("Bookmark...", null, "action", "Missing subsystem: bookmarks of attachments — a bookmark is a note or PDF name (R9.4)"),
+      "---",
+      copyPath(h.path),
+      "---",
+      R("Open in default app", null, "system", NO_FILEOPEN),
+      R("Show in system explorer", null, "system", NO_SYSEXP),
+      R("Reveal file in navigation", go(() => bmReveal(h.path)), "system"),
+      "---",
+      { title: "Delete image", section: "danger", why: NO_IMGFILE, warn: true },
+    ];
+  }
+  /* classify one source span: [[x]] / ![[x]] / [t](u) / ![a](u) / a bare url */
+  function classify(text) {
+    let m;
+    if ((m = /^(!?)\[\[([^\]|#]*)(?:#([^\]|]*))?(?:\|[^\]]*)?\]\]$/.exec(text))) {
+      const t = m[2].trim(), inner = 2 + m[1].length;
+      const ea = inner, eb = inner + m[2].length;
+      if (m[1] && Ed.isImg(t)) return { kind: "image", target: t, ea, eb };
+      return { kind: "note", target: t, anchor: m[3] || "", ea, eb };
+    }
+    if ((m = /^(!?)\[([^\]]*)\]\(([^)]*)\)$/.exec(text))) {
+      const u = m[3].trim(), ea = m[1].length + m[2].length + 3, eb = ea + m[3].length;
+      if (/^https?:\/\//i.test(u)) return m[1] ? { kind: "imgremote" } : { kind: "ext", url: u, ea, eb };
+      if (/^[a-z][a-z0-9+.-]*:/i.test(u)) return null;
+      let p = u; try { p = decodeURIComponent(u); } catch (_) { /* keep raw */ }
+      const h = p.indexOf("#"), f = h >= 0 ? p.slice(0, h) : p;
+      if (m[1]) return Ed.isImg(f) ? { kind: "image", target: f, ea, eb } : null;
+      return { kind: "note", target: f, anchor: h >= 0 ? p.slice(h + 1) : "", ea, eb };
+    }
+    if (/^https?:\/\//i.test(text)) return { kind: "ext", url: text, ea: 0, eb: text.length };
+    return null;
+  }
+  const SPAN_RE = /!?\[\[[^\]\n]*\]\]|!?\[[^\]\n]*\]\([^)\n]*\)|https?:\/\/[^\s<>()]+/g;
+  /* the link / embed under a right-click, BEFORE the caret moves (a moved caret re-renders the LP row
+     raw and the element is gone). Column = the text before the element in its .cm-line (an LP row's
+     textContent === its source line); Source mode has no link elements, so it falls back to the
+     position under the pointer. */
+  function linkHit(cm, e) {
+    const el = e.target.closest && e.target.closest("a.wl, a.lt, a.ext, a.url, img.vimg, span.imgmiss");
+    let line, col;
+    const row = el && Ed.rowOf(el);
+    if (row) {
+      try { line = cm.state.doc.lineAt(cm.posAtDOM(row, 0)); } catch (_) { return null; }
+      col = 0;
+      const w = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+      for (let n; (n = w.nextNode());) {
+        if (el.contains(n) || !(n.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)) break;
+        col += n.nodeValue.length;
+      }
+      if (el.tagName === "A") col += 1;      // inside the label, past any opening marker
+    } else {
+      const p = cm.posAtCoords({ x: e.clientX, y: e.clientY });
+      if (p == null) return null;
+      line = cm.state.doc.lineAt(p); col = p - line.from;
+    }
+    for (const m of line.text.matchAll(SPAN_RE)) {
+      if (col < m.index || col > m.index + m[0].length) continue;
+      const c = classify(m[0]);
+      if (!c || c.kind === "imgremote") return null;
+      const from = line.from + m.index, h = Object.assign(c, { from, to: from + m[0].length, text: m[0], ea: from + c.ea, eb: from + c.eb });
+      if (h.kind === "note") { h.note = h.target || curOf(fg()); h.name = noteName(h.note); h.path = h.name + ".md"; }
+      if (h.kind === "image") h.path = imgName(h.target);
+      return h;
+    }
+    return null;
+  }
+  async function clipPut(t) { await inv("clip_set_text", { text: t }).catch(err => console.warn("clip_set_text:", err)); }
+  function openUrl(u) {          // the S1 choke point: open_external re-checks the scheme in Rust
+    inv("open_external", { url: u }).catch(err => console.warn("open_external:", err));
+  }
+
+  /* reading view (RECON §A1 rv-*): menus on links only; a selection gets one app row, "Copy"
+     (Q4: an app .menu, not WebKit's native one). Anywhere else: no menu, as in stock. */
+  function openReading(e) {
+    const P = e.target.closest(".preview");
+    if (!P) return false;
+    const g = (typeof gOf === "function" && gOf(P)) || fg(), x = e.clientX, y = e.clientY;
+    const go = fn => () => { closeMenu(); fn(); };
+    const a = e.target.closest("a.wiki, a.internal-link, a.ext");
+    const s = getSelection(), st = s && !s.isCollapsed && P.contains(s.anchorNode) ? s.toString() : "";
+    let rows = null, mt = "";
+    if (a && a.classList.contains("ext")) {
+      const u = a.getAttribute("href");
+      mt = "read:ext";
+      rows = [R("Open link in default browser", go(() => openUrl(u)), "open"), "---",
+        R("Copy", go(() => clipPut(st || a.textContent)), "clipboard"), "---",
+        R("Copy URL", go(() => clipPut(u)), "clipboard")];
+    } else if (a) {
+      const n = wikiTarget(a) || curOf(g), h = { note: n, anchor: wikiAnchor(a), name: noteName(n) };
+      h.path = h.name + ".md";
+      mt = "read:link";
+      rows = [...noteOpenRows(g, h, go), "---", ...noteFileRows(h, go), "---",
+        R("Copy", go(() => clipPut(st || a.textContent)), "clipboard"), "---",
+        copyPath(h.path), "---", ...noteSysRows(h, go)];
+    } else if (st) {
+      mt = "read:sel";
+      rows = [R("Copy", go(() => clipPut(st)), "clipboard")];
+    }
+    if (!rows) return true;                  // reading view, no target: no menu (stock)
+    closeMenu();
+    const B = OMenu.shell();
+    B.el.dataset.mt = mt;
+    B.add(rows);
+    placeMenu(B.el, x, y);
+    return true;
   }
   function searchFor(s) {
     if (!sideOpen) cmdToggleSide();
@@ -161,7 +364,9 @@ const EdMenu = (() => {
     const t = g && g.active >= 0 ? g.tabs[g.active] : null;
     if (!cm || !t || t.kind || t.mode === "reading") return false;
     const p = cm.posAtCoords({ x: e.clientX, y: e.clientY }), r = cm.state.selection.main;
-    if (p != null && (r.empty || p < r.from || p > r.to)) cm.dispatch({ selection: { anchor: p } });
+    const inSel = !r.empty && p != null && p >= r.from && p <= r.to;
+    const hit = inSel ? null : linkHit(cm, e);            // C3-4: read the target BEFORE the caret re-renders the row
+    if (p != null && !inSel) cm.dispatch({ selection: { anchor: p } });
     if (fg() !== g) focusGroup(g);
     const sel = selText(g), x = e.clientX, y = e.clientY;
     closeMenu();
@@ -169,13 +374,13 @@ const EdMenu = (() => {
     ask.then(clip => {
       if (fg() !== g || selText(g) !== sel) return;       // the world moved while we asked: no stale menu
       const B = OMenu.shell();
-      B.el.dataset.mt = "editor:" + (t.mode === "source" ? "src" : "lp") + (sel ? "-sel" : "");
-      B.add(rows(g, sel, !!clip));
+      B.el.dataset.mt = "editor:" + (t.mode === "source" ? "src" : "lp") + (hit ? "-" + (hit.kind === "note" ? "link" : hit.kind) : sel ? "-sel" : "");
+      B.add(rows(g, sel, !!clip, hit));
       if (PMENU && PMENU.editorMenu) PMENU.editorMenu(e, B);   // plugin rows after the core rows (stock order)
       closeMenu();
       placeMenu(B.el, x, y);
     });
     return true;
   }
-  return { open, rows, ops: { heading, task, quote, clearFmt, extLink, block, fence, footnote, TABLE } };
+  return { open, openReading, rows, linkHit, classify, ops: { heading, task, quote, clearFmt, extLink, block, fence, footnote, TABLE } };
 })();
