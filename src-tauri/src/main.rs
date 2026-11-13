@@ -3789,8 +3789,29 @@ fn plugin_vfs(
    spawn-consent (b): on top of the flip, EVERY spawn is asked natively
    (consent::SPAWN_TITLE) with the Spec desk_proc::start will run — program,
    args after map_arg, cwd after map_cwd, env keys. Deny = EPERM, nothing
-   forked. scripts/consent-nobypass.sh fails the build if any path reaches
+   forked. #74: the one exception is a spawn the user answered "Always allow this
+   program" for earlier — same vault, same plugin with the same main.js + manifest.json
+   on disk, same program with the same bytes (spawn_want, spawn_allow.rs); the grant
+   is written only by the Remember.grant closure built here, after that button.
+   scripts/consent-nobypass.sh fails the build if any path reaches
    desk_proc::start without that question. */
+/// #74: what a plugin's spawn is, measured HERE (never taken from the page beyond the plugin
+/// id): the canonical vault, the plugin id (a valid id, enabled in this vault) with the sha256
+/// of its main.js + manifest.json on disk, the absolute program and the sha256 of the pinned
+/// file the exec will run. None = no "Always" offered (the reason is logged).
+fn spawn_want(root: &Path, plugin: Option<&str>, sp: &desk_proc::Spec) -> Option<spawn_allow::Want> {
+    let id = plugin?;
+    let why = |e: String| eprintln!("[desk] spawn {}: no Always offered for plugin {id:?}: {e}", sp.file);
+    if !plugins::valid_id(id) || !plugins::enabled_ids(root).iter().any(|e| e == id) {
+        why("not an enabled plugin of this vault".into());
+        return None;
+    }
+    let (plugin_sha256, plugin_version) = spawn_allow::plugin_fingerprint(root, id).map_err(why).ok()?;
+    let prog = sp.prog.as_ref()?;
+    let program_sha256 = spawn_allow::program_sha256(prog.stat_key(), || prog.open_read()).map_err(why).ok()?;
+    Some(spawn_allow::Want { vault: plugins::trust_key(root), plugin: id.to_string(), plugin_sha256, plugin_version, program: sp.file.clone(), program_sha256 })
+}
+
 #[tauri::command]
 async fn desk_proc_spawn(
     win: tauri::Window,
@@ -3799,6 +3820,7 @@ async fn desk_proc_spawn(
     args: Option<Vec<String>>,
     cwd: Option<String>,
     env: Option<std::collections::BTreeMap<String, String>>,
+    plugin: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
     if !plugins::is_trusted(&cfg_value(), &root) {
@@ -3811,7 +3833,25 @@ async fn desk_proc_spawn(
     let sp = desk_proc::Spec { file, args, cwd: desk_proc::map_cwd(&root, cwd.as_deref()), root: root.clone(), env: env.unwrap_or_default().into_iter().collect(), argv0: None, path: None, prog: None, dir: None };
     consent::check_env(&sp)?; // F6 + Q4: an env, or program + args + cwd, over the cap is refused, nothing asked
     let sp = consent::resolve(sp)?; // F1: file = the absolute path the dialog names and exec runs
-    if !consent::ask(slot, win, consent::Kind::Spawn, consent::spawn_question(&sp)).await? {
+    // #74: "Always allow this program" is offered only when the spawn names an enabled plugin of
+    // this vault whose main.js + manifest.json fingerprint from disk, and the pinned program
+    // hashes. Anything less = the question is asked as before, Deny / Allow once only.
+    let q = match spawn_want(&root, plugin.as_deref(), &sp) {
+        Some(want) => {
+            let (w1, w2) = (want.clone(), want.clone());
+            let remember = consent::Remember {
+                granted: Box::new(move || spawn_allow::granted(&cfg_value(), &w1)),
+                grant: Box::new(move || {
+                    let added = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                    eprintln!("[desk] spawn {}: always allowed for plugin {} (vault {})", w2.program, w2.plugin, w2.vault);
+                    cfg_update(&[cfgstore::Op::SpawnAllowAdd(w2.grant(added))]);
+                }),
+            };
+            consent::spawn_question_always(&sp, &want.plugin, &want.plugin_version, remember)
+        }
+        None => consent::spawn_question(&sp),
+    };
+    if !consent::ask(slot, win, consent::Kind::Spawn, q).await? {
         eprintln!("[desk] spawn {} {:?} cwd={}: denied by the user", sp.file, sp.args, sp.cwd.display());
         return Err(format!("EPERM: spawn {} denied by the user", sp.file));
     }

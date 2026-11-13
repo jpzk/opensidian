@@ -14,9 +14,18 @@
    scrolled, read-only, plain-text view of bounded size (F2); the env is capped
    before anything is asked (F6). Buttons: Deny/Cancel is the default (Enter,
    Escape, the window's close button, a destroyed dialog, a lost main loop all
-   answer NO); Allow once / Trust must be pressed, for every question: there is
-   no session-wide answer and nothing is remembered between two runs
-   (PR #41 N2/N3). The app log gets the body with env VALUES masked (N1).
+   answer NO); Allow once / Trust must be pressed, for every question. #74
+   (operator 2026-11-13, overriding PR #41 N2/N3 for plugin spawns ONLY): a
+   plugin's spawn question may carry a third button, "Always allow this program",
+   with a visible note that the grant covers ANY arguments (ADDENDUM 2). It is
+   offered only when the question carries a `Remember` (spawn_question_always,
+   built by desk_proc_spawn from spawn_allow::Want: vault, plugin id + the
+   plugin's on-disk fingerprint, program + its sha256). The Trust prompt and the
+   open prompt never carry one: no Always button, nothing remembered for them.
+   This module holds no state and writes nothing: `Remember.granted` says whether
+   a stored grant already answers, `Remember.grant` stores one (spawn_allow.rs,
+   cfgstore Op::SpawnAllowAdd) and runs only after the user pressed Always.
+   The app log gets the body with env VALUES masked (N1).
    No timeout, and no env var, cfg flag, feature or test hook that answers for the user — tests click the
    dialog (harness phase spawnconsent; scripts/consent-nobypass.sh guards the
    calls).
@@ -40,6 +49,8 @@ use crate::desk_proc::Spec;
 /// stable window titles: what the harness finds the dialogs by (xdotool --name)
 pub const TRUST_TITLE: &str = "opensidian: trust vault?";
 pub const SPAWN_TITLE: &str = "opensidian: run program?";
+/// #74: the third button of a plugin's spawn question (never on Trust / open)
+pub const ALWAYS_LABEL: &str = "Al_ways allow this program";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -230,10 +241,30 @@ fn spawn_body(sp: &Spec, env: EnvValues) -> String {
 
 /* No session-wide answer (PR #41 round 2, N2/N3, coordinator default
    2026-11-01 19:20Z): every run a plugin asks for is asked, one by one, also
-   when the very same run was allowed a moment ago. There is no allowlist, no
-   key, nothing remembered between two questions — so nothing a plugin can
-   rewrite between runs (a program in the vault, a git hook, a script an
-   interpreter reads) can ride on an earlier answer. */
+   when the very same run was allowed a moment ago — UNLESS the user pressed
+   "Always allow this program" for it (#74, operator 2026-11-13). That grant is
+   the only thing remembered, and only for a plugin spawn: key = (vault, plugin,
+   absolute program), valid only while the plugin's main.js + manifest.json and
+   the program's bytes still hash to what they were when the user pressed it
+   (spawn_allow.rs). A program in the vault the plugin rewrites, or a new plugin
+   version, asks again. What a grant does NOT cover: arguments, cwd, env, and
+   what an interpreter (sh, python, node, git hooks) reads — the dialog says so
+   (ALWAYS_NOTE). Trust and open questions are asked every time, as before. */
+
+/// ADDENDUM 2: shown directly above the Always button (and in Settings, and in the docs)
+pub const ALWAYS_NOTE: &str = "Always allow lets this plugin run this program again with ANY arguments, without asking. \
+Arguments can be malicious (for example options that make the program run other commands, \
+or a script an interpreter reads), and they are not checked again. Only the program file and \
+the plugin's main.js / manifest.json are checked: if either changes, you are asked again.";
+
+/// #74: what a spawn question needs to offer "Always allow this program". Built by
+/// desk_proc_spawn from spawn_allow::Want; consent.rs only calls it. `granted` = a stored
+/// grant matches this exact Want (read now); `grant` = store one (cfgstore
+/// Op::SpawnAllowAdd) — run only after the user pressed Always, under ONE_AT_A_TIME.
+pub struct Remember {
+    pub granted: Box<dyn Fn() -> bool + Send>,
+    pub grant: Box<dyn FnOnce() + Send>,
+}
 
 /* R5 (PR #42, Qodo): an open (electron shell openPath / showItemInFolder /
    openExternal of a local or custom-scheme target, app.openWithDefaultApp) is not
@@ -267,6 +298,10 @@ pub struct Question {
     head: String,
     text: String,
     log: String,
+    /// #74: Some only from spawn_question_always; ask_with takes it out before presenting
+    remember: Option<Remember>,
+    /// #74: the dialog shows the Always button (+ ALWAYS_NOTE); set by ask_with only
+    always: bool,
 }
 
 const TRUST_HEAD: &str = "Turn on community plugins for this vault?";
@@ -275,33 +310,55 @@ const OPEN_HEAD: &str = "Open this with the default application? It may run it. 
 
 pub fn trust_question(canon: &str) -> Question {
     let text = trust_text(canon);
-    Question { head: TRUST_HEAD.into(), log: text.clone(), text }
+    Question { head: TRUST_HEAD.into(), log: text.clone(), text, remember: None, always: false }
 }
 
-/// `sp` = the Spec after resolve() (absolute file)
+/// `sp` = the Spec after resolve() (absolute file). Allow once / Deny only.
 pub fn spawn_question(sp: &Spec) -> Question {
-    Question { head: SPAWN_HEAD.into(), text: spawn_text(sp), log: spawn_log(sp) }
+    Question { head: SPAWN_HEAD.into(), text: spawn_text(sp), log: spawn_log(sp), remember: None, always: false }
+}
+
+/// #74: a plugin's spawn question that ALSO offers "Always allow this program". `plugin` /
+/// `version` = the plugin id and its manifest.json version as spawn_allow::plugin_fingerprint
+/// read them from disk. The body names the plugin and carries ALWAYS_NOTE (ADDENDUM 2).
+pub fn spawn_question_always(sp: &Spec, plugin: &str, version: &str, remember: Remember) -> Question {
+    let tail = format!(
+        "\n\nPlugin: {} (version {})\n\n{}",
+        shown(plugin),
+        shown(version),
+        ALWAYS_NOTE
+    );
+    Question {
+        head: SPAWN_HEAD.into(),
+        text: spawn_text(sp) + &tail,
+        log: spawn_log(sp) + &tail,
+        remember: Some(remember),
+        always: false,
+    }
 }
 
 /// R5: an open through the default opener. `sp` = the resolved opener Spec (no env)
 pub fn open_question(sp: &Spec, target: &str) -> Question {
     let text = open_text(sp, target);
-    Question { head: OPEN_HEAD.into(), log: text.clone(), text }
+    Question { head: OPEN_HEAD.into(), log: text.clone(), text, remember: None, always: false }
 }
 
-/// the dialog's answer. Only answer_of() makes Once — from a GTK response the
-/// user produced by pressing Allow once / Trust.
+/// the dialog's answer. Only answer_of() makes Once / Always — from a GTK response
+/// the user produced by pressing Allow once / Trust / Always allow this program.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Answer {
     No,
     Once,
+    Always,
 }
 
-/// Accept = Allow once / Trust; everything else (Reject, DeleteEvent, None, ...) = No
+/// Accept = Allow once / Trust; Apply = Always allow this program (a button only a
+/// question with a Remember has); everything else (Reject, DeleteEvent, None, ...) = No
 #[cfg(target_os = "linux")]
 fn answer_of(r: gtk::ResponseType) -> Answer {
     match r {
         gtk::ResponseType::Accept => Answer::Once,
+        gtk::ResponseType::Apply => Answer::Always,
         _ => Answer::No,
     }
 }
@@ -310,15 +367,37 @@ static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
 /// one question, one at a time: `present` puts it in front of the user and hands
 /// the answer to the sender (false = it could not be presented = NO). Every call
-/// presents: there is no earlier answer that stands in for this one.
-fn ask_with(kind: Kind, q: Question, present: impl FnOnce(Kind, Question, std::sync::mpsc::Sender<Answer>) -> bool) -> bool {
+/// presents, unless the question carries a Remember whose stored grant answers it (#74):
+/// checked before the lock (no wait behind an open dialog) and AGAIN under it, so the
+/// identical questions queued behind a dialog answered "Always" are released, not asked.
+/// Always stores the grant UNDER the lock (before the next queued one looks) and only for
+/// a question that carries a Remember; an Always without one is NO.
+fn ask_with(kind: Kind, mut q: Question, present: impl FnOnce(Kind, Question, std::sync::mpsc::Sender<Answer>) -> bool) -> bool {
+    let remember = q.remember.take().filter(|_| kind == Kind::Spawn);
+    if remember.as_ref().is_some_and(|r| (r.granted)()) {
+        return true;
+    }
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    if remember.as_ref().is_some_and(|r| (r.granted)()) {
+        return true; // queued behind the dialog whose Always stored this grant
+    }
+    q.always = remember.is_some();
     let (tx, rx) = std::sync::mpsc::channel::<Answer>();
     if !present(kind, q, tx) {
         return false;
     }
     // a dialog torn down without a response drops tx: recv errs -> No
-    rx.recv().unwrap_or(Answer::No) == Answer::Once
+    match rx.recv().unwrap_or(Answer::No) {
+        Answer::Once => true,
+        Answer::Always => match remember {
+            Some(r) => {
+                (r.grant)();
+                true
+            }
+            None => false,
+        },
+        Answer::No => false,
+    }
 }
 
 /// ask the user; true only when Allow once / Trust was pressed for THIS
@@ -418,11 +497,24 @@ fn show_dialog(win: &tauri::Window, kind: Kind, q: &Question, tx: std::sync::mps
     sw.set_size_request(BODY_W, BODY_H);
     sw.add(&tv);
     d.content_area().add(&sw);
+    // #74 ADDENDUM 2: the any-arguments note, plain text, directly above the buttons, only
+    // where the Always button is offered (q.always: a question with a Remember, spawn only)
+    if q.always {
+        let note = gtk::Label::new(Some(ALWAYS_NOTE));
+        note.set_line_wrap(true);
+        note.set_max_width_chars(80);
+        note.set_xalign(0.0);
+        note.set_selectable(false);
+        d.content_area().add(&note);
+    }
     // N1: the log gets the body with every env VALUE masked (names, program, args and
     // cwd stay: the harness asserts on them). The view itself holds q.text, in full.
     eprintln!("[consent] dialog text: {:?}", q.log);
     let _ = d.add_button(no, gtk::ResponseType::Reject);
     let _ = d.add_button(yes, gtk::ResponseType::Accept);
+    if q.always {
+        let _ = d.add_button(ALWAYS_LABEL, gtk::ResponseType::Apply);
+    }
     d.set_default_response(gtk::ResponseType::Reject);
     d.set_keep_above(true);
     let tx = std::cell::RefCell::new(Some(tx));

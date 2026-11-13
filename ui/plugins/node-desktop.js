@@ -728,7 +728,7 @@
     if (!Array.isArray(args)) { opts = args; args = []; }
     return [args.map(String), opts && typeof opts === "object" ? opts : {}];
   }
-  function cpSpawn(file, args0, opts0) {
+  function cpSpawnAs(plugin, file, args0, opts0) {
     let [args, opts] = spawnArgs(args0, opts0);
     file = String(file);
     if (opts.shell) { const cmd = [file, ...args].join(" "); file = typeof opts.shell === "string" ? opts.shell : "/bin/sh"; args = ["-c", cmd]; }
@@ -743,7 +743,7 @@
     let env;
     if (opts.env && typeof opts.env === "object") { env = {}; for (const k of Object.keys(opts.env)) if (opts.env[k] != null) env[k] = String(opts.env[k]); }
     const cwd = opts.cwd == null ? undefined : String(opts.cwd instanceof URL ? opts.cwd.pathname : opts.cwd);
-    cp._q = (desk ? desk("desk_proc_spawn", { file, args, cwd, env }) : Promise.reject(new Error("EPERM: no desktop backend")))
+    cp._q = (desk ? desk("desk_proc_spawn", { file, args, cwd, env, plugin }) : Promise.reject(new Error("EPERM: no desktop backend")))
       .then(r => { cp.pid = r.pid; later(() => cp.emit("spawn")); return r.id; },
         e => { later(() => { cp.emit("error", deskErr(e, file, cp.spawnargs)); cp.emit("close", -2, null); }); return null; });
     let timer = null;
@@ -765,9 +765,9 @@
     return cp;
   }
   // execFile/exec: collect both pipes, cb(err, stdout, stderr); err.code = exit code
-  function cpRun(file, args, opts, cb, shownCmd) {
+  function cpRun(plugin, file, args, opts, cb, shownCmd) {
     const enc = opts.encoding === undefined ? "utf8" : opts.encoding;
-    const cp = cpSpawn(file, args, opts);
+    const cp = cpSpawnAs(plugin, file, args, opts);
     const o = [], e = [];
     if (cp.stdout) cp.stdout.on("data", b => o.push(b));
     if (cp.stderr) cp.stderr.on("data", b => e.push(b));
@@ -785,28 +785,35 @@
     });
     return cp;
   }
-  function execFile(file, args, opts, cb) {
-    if (typeof args === "function") { cb = args; args = []; opts = {}; }
-    else if (!Array.isArray(args)) { cb = opts; opts = args; args = []; }
-    if (typeof opts === "function") { cb = opts; opts = {}; }
-    opts = opts || {};
-    return cpRun(String(file), (args || []).map(String), opts, cb, [file, ...(args || [])].join(" "));
-  }
-  function exec(cmd, opts, cb) {
-    if (typeof opts === "function") { cb = opts; opts = {}; }
-    opts = opts || {};
-    const sh = typeof opts.shell === "string" ? opts.shell : "/bin/sh";
-    return cpRun(sh, ["-c", String(cmd)], Object.assign({}, opts, { shell: false }), cb, String(cmd));
-  }
   const asPromise = run => function (...a) {
     let cp;
     const p = new Promise((res, rej) => { cp = run(...a, (er, stdout, stderr) => (er ? rej(Object.assign(er, { stdout, stderr })) : res({ stdout, stderr }))); });
     p.child = cp;
     return p;
   };
-  Object.defineProperty(exec, PCUSTOM, { value: asPromise(exec) });
-  Object.defineProperty(execFile, PCUSTOM, { value: asPromise(execFile) });
-  const cpOwn = { spawn: cpSpawn, exec, execFile, ChildProcess };
+  /* #74: one child_process per plugin view: every spawn names the plugin id it came from, so
+     Rust can fingerprint THAT plugin's main.js + manifest.json from disk and offer "Always
+     allow this program" for it. The id is a claim, not a proof (all plugins share this realm);
+     Rust only uses it to pick which on-disk plugin to fingerprint (spawn_allow.rs "limit"). */
+  function cpFor(plugin) {
+    const spawn = (file, args0, opts0) => cpSpawnAs(plugin, file, args0, opts0);
+    function execFile(file, args, opts, cb) {
+      if (typeof args === "function") { cb = args; args = []; opts = {}; }
+      else if (!Array.isArray(args)) { cb = opts; opts = args; args = []; }
+      if (typeof opts === "function") { cb = opts; opts = {}; }
+      opts = opts || {};
+      return cpRun(plugin, String(file), (args || []).map(String), opts, cb, [file, ...(args || [])].join(" "));
+    }
+    function exec(cmd, opts, cb) {
+      if (typeof opts === "function") { cb = opts; opts = {}; }
+      opts = opts || {};
+      const sh = typeof opts.shell === "string" ? opts.shell : "/bin/sh";
+      return cpRun(plugin, sh, ["-c", String(cmd)], Object.assign({}, opts, { shell: false }), cb, String(cmd));
+    }
+    Object.defineProperty(exec, PCUSTOM, { value: asPromise(exec) });
+    Object.defineProperty(execFile, PCUSTOM, { value: asPromise(execFile) });
+    return { spawn, exec, execFile, ChildProcess };
+  }
 
   /* ------------------------------------------- net / http servers (real, Rust desk_net.rs)
      net.createServer / http.createServer listen on a real TCP port with the user's rights,
@@ -2048,7 +2055,7 @@
       ["util", (deny, n) => mod(n, deny, utilAll)],
       ["crypto", (deny, n) => mod(n, deny, cryptoAll)],
       ["tty", (deny, n) => mod(n, deny, { isatty: () => false })],
-      ["child_process", (deny, n) => mod(n, deny, cpOwn)],
+      ["child_process", (deny, n) => mod(n, deny, cpFor(id))],
       ["net", (deny, n) => mod(n, deny, netOwn)],
       ["http", (deny, n) => mod(n, deny, httpOwn)],
       ["https", (deny, n) => mod(n, deny, httpsOwn)],
