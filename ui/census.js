@@ -79,3 +79,7 @@ CENSUS.push(() => { const s = window.getSelection(); if (!s || !s.focusNode) ret
   const R = Math.round, x = [...l.childNodes].map(n => { const r = n.nodeType === 1 ? n.getBoundingClientRect() : (() => { const g = document.createRange(); g.selectNodeContents(n); return g.getBoundingClientRect(); })();
     const q = n.nodeType === 1 ? n.getClientRects().length : 1; return (n.nodeType === 3 ? "#t" + n.nodeValue.length : n.nodeName + "." + String(n.className || "").split(" ")[0]) + (q ? "" : "!") + "@" + R(r.left) + "+" + R(r.width); });
   return " [crtk:" + x.join("|").replace(/[\[\]\s]/g, "_") + "]"; });
+// DEBUG fix-75d (drop before PR): [crtl:] drawn-cursor layers/cursors in the focused editor (count, each cursor's left,top,h)
+CENSUS.push(() => { const E = document.querySelector(".cm-editor.cm-focused"); if (!E) return " [crtl:-]";
+  const L = E.querySelectorAll(".cm-cursorLayer"), C = [...E.querySelectorAll(".cm-cursor, .cm-dropCursor")].map(c => { const r = c.getBoundingClientRect(); return Math.round(r.left) + "," + Math.round(r.top) + "," + Math.round(r.height); });
+  return " [crtl:layers=" + L.length + "|kids=" + [...L].map(l => l.children.length).join("/") + "|cur=" + (C.join("/") || "0") + "]"; });
