@@ -65,3 +65,10 @@ CENSUS.push(() => { const L = document.getElementById("mlist"), M = document.get
 CENSUS.push(() => { const I = document.getElementById("minput"), M = document.getElementById("modal"); if (!I || !M || M.hidden) return ""; return " [mdq:" + I.value.replace(/[[\]|]/g, "_").slice(0, 60) + "]"; });   // deep-git P2: [mdq:<text>] the open fuzzy modal's typed query (first typed char dropped?)
 CENSUS.push(() => pdfvTok());   // issue #44: [pdfrow:<path>@x,y|...] explorer PDF rows, [pdfv:<path>|<cur>/<of>[L][B]|x,y,w,h] the PDF view on screen (gate phase pdfopen)
 CENSUS.push(() => nDropTok ? " [ndrop:" + nDropTok + "]" : "");   // issue-40: [ndrop:<strip|edge|bottom>@<pane ix>] the pane an explorer/bookmark NOTE drag would open on (new tab / split right / split down), live only mid-drag — gate phase notedrop
+// DEBUG fix-75 (drop before PR): [crtd:] the focus node + offset and its neighbours, by tag.class
+CENSUS.push(() => { const s = window.getSelection(); if (!s || !s.focusNode) return " [crtd:-]";
+  const d = n => !n ? "0" : n.nodeType === 3 ? "#t(" + n.nodeValue.length + ")<" + d(n.parentElement) + ">" : (n.nodeName + "." + String(n.className || "").split(" ").slice(0, 2).join(".") + (n.getClientRects && n.getClientRects().length ? "" : "!"));
+  const n = s.focusNode, o = s.focusOffset; let x = d(n) + "@" + o;
+  if (n.nodeType === 1) { const k = n.childNodes; x += "|k=" + k.length + "|prev=" + d(k[o - 1]) + "|next=" + d(k[o]);
+    const nx = k[o] || k[o - 1]; if (nx && nx.getBoundingClientRect) { const b = nx.getBoundingClientRect(); x += "|nb=" + Math.round(b.left) + "," + Math.round(b.right); } }
+  return " [crtd:" + x.replace(/[\[\]\s]/g, "_") + "]"; });
