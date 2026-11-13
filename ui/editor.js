@@ -1222,6 +1222,15 @@ const Ed = {
       const tk = Ed.row(g, s, 0)._tok.map(t => t.s + "-" + t.e + ":" + t.kind).join(",");
       if (tk !== w) fail("tok:" + s + ":" + tk);
     }
+    // gh #75: a BLANK task "- [ ] " keeps its checkbox with the caret at the marker end (#46: a
+    // collapsed caret at t.e reveals nothing)
+    const bt = Ed.row(g, "- [ ] ", 0)._tok, bset = Ed.tokAt(bt, 6, 6).map(t => t.s + "-" + t.e + ":" + t.kind).join(",") || "-";
+    if (bset !== "-") fail("rv75:" + bset);
+    // and that caret has a RENDERED spot right of the checkbox: on a live CM6 view the DOM
+    // selection at col 6 must have a client rect (not a display:none marker node, which WebKit
+    // paints at the row start = LEFT of the box) whose left edge is >= the box's right edge.
+    const c75 = Ed.caret75();
+    if (c75) fail("dom75:" + c75);
     // R17.7 link destinations: balanced parens survive whole (CommonMark), a
     // backslash escape stays literal, whitespace is still not a link, an empty
     // destination still is, and a bare URL leaves the enclosing prose's ')' out.
@@ -1349,6 +1358,35 @@ const Ed = {
       }
     } finally { Ed.after = oa; Ed.snap = on; }
     return bad;
+  },
+  // gh #75 selfTest DOM case: a throwaway live-preview CM6 view holding one blank task, laid out
+  // but invisible (opacity 0, no pointer events), caret put at the marker end (col 6). Reads the
+  // DOM selection back the way the [crt:] census does. "" = the caret has a rect right of the box;
+  // otherwise a short reason (nobox / nosel / hid = rect 0,0,0 / x<box right edge).
+  caret75() {
+    if (typeof CMv === "undefined" || typeof CMs === "undefined" || !document.body) return "nocm";
+    const w = Ed.el("div", "lp");
+    w.style.cssText = "position:fixed;left:0;top:0;width:480px;opacity:0;pointer-events:none;z-index:-1";
+    const v = { lp: w }, g = { view: v, lp: w }, ae = document.activeElement;
+    const cm = new CMv.EditorView({ state: CMs.EditorState.create({ doc: "- [ ] ", extensions: [Ed.lpExt(v, () => g)] }) });
+    w.appendChild(cm.dom);
+    document.body.appendChild(w);
+    try {
+      cm.focus();
+      cm.dispatch({ selection: { anchor: 6 } });
+      const box = cm.contentDOM.querySelector("input.tbox"), s = window.getSelection();
+      if (!box) return "nobox";
+      if (!s || !s.rangeCount || !s.focusNode || !cm.contentDOM.contains(s.focusNode)) return "nosel";
+      const c = Ed.caretRect(s.focusNode, s.focusOffset);
+      const R = Math.round, br = box.getBoundingClientRect().right;
+      if (!c.left && !c.top && !c.height) return "hid";
+      if (c.left < br - 0.5) return "x" + R(c.left) + "<" + R(br);
+      return "";
+    } catch (e) { return "err"; }
+    finally {
+      cm.destroy(); w.remove();
+      if (ae && ae !== document.body && ae.isConnected && ae.focus) ae.focus(); else if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    }
   },
 };
 
@@ -1917,7 +1955,7 @@ Ed.geom = function (g) {
   const n = cm.state.doc.lines;
   if (n > 40) return "";
   const b = cm.contentDOM.getBoundingClientRect();   // the text column
-  let ys = "", xs = "", cb = "";
+  let ys = "", xs = "", cb = "", cr = "";   // cr: [ecr:] checkbox RIGHT edge per row (gh #75 caret probes)
   const r = document.createRange();
   for (let i = 0; i < n; i++) {
     const q = Ed.lineBox(g, i), row = Ed.rowAt(g, i);
@@ -1926,12 +1964,13 @@ Ed.geom = function (g) {
     if (box) {
       const bb = box.getBoundingClientRect();
       if (bb.width) cb += (cb ? "," : "") + i + "@" + Math.round(bb.left + bb.width / 2);
+      if (bb.width) cr += (cr ? "," : "") + i + "@" + Math.round(bb.right);
     }
     const r0 = row ? Ed.firstRect(row, r) : null;
     xs += (i ? "," : "") + Math.round(r0 ? r0.left : q.left);
   }
   return " [edx:" + Math.round(b.left) + "] [erx:" + xs + "] [ery:" + ys + "]"
-    + (cb ? " [ecb:" + cb + "]" : "");
+    + (cb ? " [ecb:" + cb + "] [ecr:" + cr + "]" : "");
 };
 /* ---------- KEY BEFORE CLICK (live-preview caret, goal top10-func) ----------
    WebKitGTK hands key and mouse events to the page through separate queues: a
@@ -1984,6 +2023,32 @@ Ed.caretXY = function (g) {               // caret rect relative to the pane box
   const c = cm && cm.coordsAtPos(cm.state.selection.main.head);
   return c ? [c.left - pr.left, c.bottom - pr.top] : [16, 16];
 };
+/* the rect a collapsed DOM caret (node, offset) is painted at. In a text node: the collapsed
+   Range's own rect (zero inside a display:none marker, which WebKit paints at the row start).
+   At an ELEMENT boundary (CM6 parks the selection between child nodes next to a widget, e.g.
+   (div.cm-line, k)) WebKit returns no client rects for the collapsed Range although it paints
+   the caret against the neighbouring box: so take the first following child that has a box
+   (its left edge), else the nearest preceding one (its right edge). Children without a box
+   (display:none) are skipped, so a caret next to only hidden nodes still reads 0,0,0.
+   Shared by the [crt:] census and the gh #75 selfTest DOM case. */
+Ed.caretRect = function (n, o) {
+  const Z = { left: 0, top: 0, height: 0, right: 0 }, r = document.createRange();
+  try { r.setStart(n, o); r.collapse(true); } catch (_) { return Z; }   // a stale offset: no rect
+  const q = r.getClientRects();
+  if (q.length) return q[0];
+  const b = r.getBoundingClientRect();
+  if (b.left || b.top || b.height || n.nodeType !== 1) return b;
+  const box = x => {
+    if (!x) return null;
+    if (x.nodeType === 3) { if (!x.nodeValue) return null; const g = document.createRange(); g.selectNodeContents(x); const t = g.getClientRects(); return t.length ? t[0] : null; }
+    const t = x.getClientRects ? x.getClientRects() : [];
+    return t.length ? t[0] : null;
+  };
+  const k = n.childNodes;
+  for (let i = o; i < k.length; i++) { const c = box(k[i]); if (c) return { left: c.left, top: c.top, height: c.height, right: c.left }; }
+  for (let i = o - 1; i >= 0; i--) { const c = box(k[i]); if (c) return { left: c.right, top: c.top, height: c.height, right: c.right }; }
+  return b;
+};
 Ed.crtTok = function () {
   const g = typeof fg === "function" ? fg() : null, lp = g && g.lp, cm = Ed.cm(g);
   if (!lp || !cm || !lp.isConnected || !lp.getClientRects().length) return "";
@@ -1997,9 +2062,7 @@ Ed.crtTok = function () {
       k = n === lp || n === cm.contentDOM || n === cm.dom ? "lp"
         : n.nodeType === 3 ? (n.parentElement && n.parentElement.getClientRects().length ? "txt" : "hid")
         : n.nodeName === "BR" ? "br" : n.classList && n.classList.contains("cm-line") ? "row" : "el";
-      const r = document.createRange();
-      try { r.setStart(n, s.focusOffset); r.collapse(true); } catch (_) { /* a stale offset: no rect */ }
-      const q = r.getClientRects(), c = q.length ? q[0] : r.getBoundingClientRect();
+      const c = Ed.caretRect(n, s.focusOffset);
       x = R(c.left); y = R(c.top); h = R(c.height);
       const p = Ed.pos(g, n, s.focusOffset);
       if (p) lc = p.l + "." + p.c;
