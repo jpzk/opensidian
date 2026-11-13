@@ -2538,7 +2538,8 @@ Ed.coField = function (v, G, bust) {
 Ed.coTok = function () {
   const P = document.querySelector("#main .pane.focused") || document.querySelector("#main .pane");
   if (!P) return "";
-  const vis = e => !!e && e.getClientRects().length > 0 && e.getBoundingClientRect().height > 0;
+  // a kept view (.vkeep, modeswitch opt6) stays laid out but is moved off the pane: not painted -> not counted
+  const vis = e => !!e && !e.closest(".vkeep") && e.getClientRects().length > 0 && e.getBoundingClientRect().height > 0;
   const all = [...P.querySelectorAll(".callout")].filter(vis);
   if (!all.length) return "";
   const safe = s => String(s || "").replace(/[^\w -]/g, "_").replace(/\s+/g, " ").trim().slice(0, 24);
