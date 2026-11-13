@@ -2486,6 +2486,7 @@ Ed.tblField = function (v, G, bust) {
           const x = cells[c], td = Ed.el(tag), cw = Ed.el("div", "table-cell-wrapper");
           if (tb.al[c]) td.setAttribute("align", tb.al[c]);
           td.dataset.at = String(off[li] + (x ? x.s : L[li].length));   // the cell's text, relative to the table's start
+          td.dataset.r = String(li ? li - 1 : 0); td.dataset.c = String(c);   // C3-7: the table menu acts on (row, col); row 0 = the header
           if (x && x.e > x.s) Ed.inline(g, cw, L[li].slice(x.s, x.e).replace(/\\\|/g, "|"));
           for (const m of cw.querySelectorAll(".mk")) m.remove();         // rendered: no markdown markers
           td.appendChild(cw); tr.appendChild(td);

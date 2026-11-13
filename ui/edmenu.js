@@ -359,10 +359,59 @@ const EdMenu = (() => {
   /* the contextmenu event inside a .cm-editor. A right-click OUTSIDE the
      selection moves the caret there first (stock); inside it keeps it, so the
      selection rows act on it. Returns true when the menu is ours. */
+  /* C3-7 (T3): the LP table widget's menu (RECON §A1 lp-table-cell / lp-table-header):
+       Row > | Column > | --- | Sort by column (A to Z) | Sort by column (Z to A)
+     No generic editor rows, no plugin rows, and the caret does NOT move (the
+     widget stays rendered). Every op is a text transform on the table's pipe
+     source in Rust (src-tauri/src/mdtable.rs table_op, unit-tested against
+     stock's outputs), re-padded like stock, applied as ONE undo step. */
+  const tidy = L => L.filter((x, i, a) => !(x === "---" && (i === 0 || a[i - 1] === "---" || i === a.length - 1)));
+  async function tableOp(cm, from, src, op, row, col) {
+    if (!edEditable()) return;
+    let out;
+    try { out = await inv("table_op", { src, op, row, col }); } catch (err) { console.warn("table_op:", err); return; }
+    const to = from + src.length;
+    if (cm.state.sliceDoc(from, to) !== src || out === src) return;      // edited while Rust worked: drop it
+    cm.dispatch({ changes: { from, to, insert: out },
+                  annotations: [CMc.isolateHistory.of("full"), CMs.Transaction.userEvent.of("os.table")] });
+  }
+  function openTable(e, g, cm, cell) {
+    const w = cell.closest(".cm-table-widget");
+    let p0;
+    try { p0 = cm.posAtDOM(w, 0); } catch (_) { return; }
+    const b = Ed.tblBlocks(cm.state.doc).find(x => x.from === p0);
+    if (!b) return;
+    if (fg() !== g) focusGroup(g);
+    const src = cm.state.sliceDoc(b.from, b.to), r = +cell.dataset.r || 0, c = +cell.dataset.c || 0;
+    const nr = b.rows.length, nc = b.cols;
+    const R = (title, o, section, why) => ({ title, section, why, fn: () => { closeMenu(); tableOp(cm, b.from, src, o, r, c); } });
+    const rowSub = tidy([R("Add row above", "row-above", "table.row.add"), R("Add row below", "row-below", "table.row.add"), "---",
+      ...(r > 0 ? [R("Move row up", "row-up", "table.row.move")] : []),
+      ...(r < nr - 1 ? [R("Move row down", "row-down", "table.row.move")] : []), "---",
+      R("Duplicate row", "row-dup", "table.row.edit"),
+      R("Delete row", "row-del", "table.row.edit", nr > 1 ? undefined : "The table has no other row")]);
+    const colSub = tidy([R("Add column to the left", "col-left", "table.col.add"), R("Add column to the right", "col-right", "table.col.add"), "---",
+      ...(c > 0 ? [R("Move column left", "col-move-left", "table.col.move")] : []),
+      ...(c < nc - 1 ? [R("Move column right", "col-move-right", "table.col.move")] : []), "---",
+      R("Align left", "align-left", "table.col.align"), R("Align center", "align-center", "table.col.align"), R("Align right", "align-right", "table.col.align"), "---",
+      R("Duplicate column", "col-dup", "table.col.edit"),
+      R("Delete column", "col-del", "table.col.edit", nc > 1 ? undefined : "The table has no other column")]);
+    const x = e.clientX, y = e.clientY;
+    closeMenu();
+    const B = OMenu.shell();
+    B.el.dataset.mt = "editor:lp-table-" + (r === 0 ? "header" : "cell");
+    B.add([{ title: "Row", section: "table", sub: rowSub }, { title: "Column", section: "table", sub: colSub }, "---",
+      R("Sort by column (A to Z)", "sort-asc", "table-sort", nr > 2 ? undefined : "Nothing to sort"),
+      R("Sort by column (Z to A)", "sort-desc", "table-sort", nr > 2 ? undefined : "Nothing to sort")]);
+    placeMenu(B.el, x, y);
+  }
+
   function open(e) {
     const g = groupAt(e.target), cm = g && Ed.cm(g);
     const t = g && g.active >= 0 ? g.tabs[g.active] : null;
     if (!cm || !t || t.kind || t.mode === "reading") return false;
+    const cell = e.target.closest(".cm-table-widget th, .cm-table-widget td");
+    if (cell && cm.dom.contains(cell)) { openTable(e, g, cm, cell); return true; }   // C3-7: before the caret moves into the table
     const p = cm.posAtCoords({ x: e.clientX, y: e.clientY }), r = cm.state.selection.main;
     const inSel = !r.empty && p != null && p >= r.from && p <= r.to;
     const hit = inSel ? null : linkHit(cm, e);            // C3-4: read the target BEFORE the caret re-renders the row
