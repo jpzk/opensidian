@@ -2544,7 +2544,8 @@ Ed.tblField = function (v, G, bust) {
 // centre; absent when none is rendered
 Ed.tblCensus = function () {
   const g = typeof fg === "function" ? fg() : null, root = g && g.pane ? g.pane : document;
-  const ws = root.querySelectorAll(".cm-editor .cm-table-widget table");
+  // only LAID-OUT tables: a background tab in the same pane keeps its widget in the DOM at 0x0 (@0,0)
+  const ws = [...root.querySelectorAll(".cm-editor .cm-table-widget table")].filter(t => t.getClientRects().length);
   if (!ws.length) return "";
   return " [tbl:" + [...ws].map(t => {
     const rs = t.querySelectorAll("tr"), h = rs[0] ? [...rs[0].children] : [];
