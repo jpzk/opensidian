@@ -154,6 +154,8 @@ its arguments, the folder and the plugin, and asks: **Deny** (the default), **Al
 **Always allow this program**. Always is saved in `~/.opensidian.json` for that vault, plugin
 and program, together with a sha256 of the plugin's `main.js` + `manifest.json` and of the
 program file, all read from disk by the app. If any of them changes, you are asked again.
+The sha256 is of the files on disk, not a proof of the code that is running: a plugin that
+rewrites its own files could put the approved bytes back before a spawn and reuse the grant.
 Only the dialog can add such a grant; **Settings ▸ Community plugins ▸ Allowed programs** lists
 them (an old one is marked outdated and never used) and has a **Revoke** button for each.
 Caveat: Always allow lets the plugin run that program again with ANY arguments, without asking.

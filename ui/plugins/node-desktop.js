@@ -799,6 +799,7 @@
     const spawn = (file, args0, opts0) => cpSpawnAs(plugin, file, args0, opts0);
     function execFile(file, args, opts, cb) {
       if (typeof args === "function") { cb = args; args = []; opts = {}; }
+      else if (args == null) args = [];   // execFile(file, undefined|null, opts, cb), as in Node
       else if (!Array.isArray(args)) { cb = opts; opts = args; args = []; }
       if (typeof opts === "function") { cb = opts; opts = {}; }
       opts = opts || {};
