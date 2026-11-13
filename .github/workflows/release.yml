@@ -1,0 +1,361 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Release build — the EXISTING artifact set (README v0.9.2 download list), and
+# nothing else, on STANDARD GitHub-hosted runners only (ubuntu-latest):
+#   opensidian-<ver>-x86_64-slim.AppImage      packaging/ci/build-appimage.sh slim
+#   opensidian-<ver>-x86_64-portable.AppImage  packaging/ci/build-appimage.sh portable
+#   opensidian-<ver>-x86_64.flatpak            packaging/flatpak/build.sh
+#   opensidian-<ver>-x86_64.rpm                packaging/ci/rpm-build.sh (fedora:44 GA by digest)
+#   opensidian-<ver>-x86_64.deb                packaging/ci/deb-build.sh (debian:trixie by digest)
+#   SHA256SUMS                                 sha256sum of the five, as scripts/release.sh does
+# The recipe is the one releases are cut with today (harness scripts/release.sh +
+# bin/hz/release-build.sh): ONE cargo build, both AppImages from that binary,
+# rpm + deb wrap the SAME binary (each stage refuses unless its /usr/bin/opensidian
+# sha256 equals the slim AppImage's). The flatpak compiles inside its own sandbox.
+#
+# Supply chain:
+#   - every third-party action pinned to a full commit SHA (# vX.Y.Z), releases
+#     >= 6 weeks old at pin time (2026-11-09).
+#   - top-level permissions read-only; only jobs that attest get
+#     id-token/attestations write (actions/attest-build-provenance).
+#   - checkout never persists the token; no secrets anywhere; no PR trigger.
+#   - tag builds do NOT restore the Rust cache (no cache poisoning of releases).
+#   - downloaded tools pinned by sha256 (appimagetool r13, brotli 1.2.1, fedora OCI).
+name: Release
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags: ['v*']
+    # release branch v<ver>-release: builds and stages the DRAFT for tag v<ver>.
+    # The tag itself is created by GitHub only when the operator publishes.
+    branches: ['v0.9.3-release']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  RUST_TOOLCHAIN: '1.98.0'     # = the build box (bin/hz/release-build.sh refuses anything else)
+  CARGO_TERM_COLOR: always
+  APPIMAGETOOL_URL: https://github.com/AppImage/AppImageKit/releases/download/13/obsolete-appimagetool-x86_64.AppImage
+  APPIMAGETOOL_SHA256: df3baf5ca5facbecfc2f3fa6713c29ab9cefa8fd8c1eac5d283b79cab33e4acb
+
+jobs:
+  appimage:
+    name: binary + AppImages (slim, portable)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - id: ver
+        name: version from tauri.conf.json
+        run: |
+          V=$(jq -r .version src-tauri/tauri.conf.json); V=${V%.0}
+          case "$GITHUB_REF" in refs/tags/v*) [ "v$V" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != version $V"; exit 1; };;
+            refs/heads/v*-release) [ "v$V-release" = "$GITHUB_REF_NAME" ] || { echo "branch $GITHUB_REF_NAME != version $V"; exit 1; };;
+          esac
+          echo "version=$V" >> "$GITHUB_OUTPUT"; echo "version $V"
+      - name: system packages (= bin/hz/cloud-init.yaml build set)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends build-essential pkg-config libssl-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf file
+      - name: rust ${{ env.RUST_TOOLCHAIN }}
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+          rustc --version | grep -q "$RUST_TOOLCHAIN" || exit 1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        with:
+          workspaces: src-tauri
+      - name: cargo build --release --locked
+        working-directory: src-tauri
+        run: |
+          # ui/ is not a cargo input (release.sh): force our crate to re-embed it.
+          cargo clean -p opensidian --release
+          cargo build --release --locked
+          ls -l target/release/opensidian; sha256sum target/release/opensidian
+      - name: appimagetool r13 (sha256-pinned)
+        run: |
+          curl -4 -fsSL -m 300 -o "$RUNNER_TEMP/appimagetool" "$APPIMAGETOOL_URL"
+          echo "$APPIMAGETOOL_SHA256  $RUNNER_TEMP/appimagetool" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/appimagetool"
+      - name: AppImages
+        env:
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          export APPIMAGETOOL="$RUNNER_TEMP/appimagetool"
+          for F in slim portable; do bash packaging/ci/build-appimage.sh "$F" "$V"; done
+          mkdir -p out/bin
+          cp src-tauri/target/release/opensidian out/bin/opensidian
+          ls -l dist/*.AppImage; sha256sum dist/*.AppImage
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/opensidian-${{ steps.ver.outputs.version }}-x86_64-slim.AppImage
+            dist/opensidian-${{ steps.ver.outputs.version }}-x86_64-portable.AppImage
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: opensidian-${{ steps.ver.outputs.version }}-x86_64-slim.AppImage
+          path: dist/opensidian-${{ steps.ver.outputs.version }}-x86_64-slim.AppImage
+          retention-days: 7
+          if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: opensidian-${{ steps.ver.outputs.version }}-x86_64-portable.AppImage
+          path: dist/opensidian-${{ steps.ver.outputs.version }}-x86_64-portable.AppImage
+          retention-days: 7
+          if-no-files-found: error
+      # internal hand-off to the rpm/deb wrap jobs (same binary, no second compile)
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: internal-release-binary
+          path: out/bin/opensidian
+          retention-days: 1
+          if-no-files-found: error
+
+  wrap:
+    name: ${{ matrix.kind }} (wraps the AppImage binary)
+    needs: appimage
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [rpm, deb]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      V: ${{ needs.appimage.outputs.version }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: internal-release-binary
+          path: src-tauri/target/release
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: opensidian-${{ env.V }}-x86_64-slim.AppImage
+          path: dist
+      - name: ${{ matrix.kind }}-build.sh
+        run: |
+          chmod +x src-tauri/target/release/opensidian dist/opensidian-$V-x86_64-slim.AppImage
+          podman --version
+          export RPM_OCI_CACHE="$RUNNER_TEMP/fedora44"
+          bash packaging/ci/${{ matrix.kind }}-build.sh "$PWD" "$V" "dist/opensidian-$V-x86_64-slim.AppImage" dist
+          ls -l dist/opensidian-$V-x86_64.${{ matrix.kind }}; sha256sum dist/opensidian-$V-x86_64.${{ matrix.kind }}
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/opensidian-${{ env.V }}-x86_64.${{ matrix.kind }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: opensidian-${{ env.V }}-x86_64.${{ matrix.kind }}
+          path: dist/opensidian-${{ env.V }}-x86_64.${{ matrix.kind }}
+          retention-days: 7
+          if-no-files-found: error
+
+  flatpak:
+    name: flatpak (packaging/flatpak)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - id: ver
+        run: |
+          V=$(jq -r .version src-tauri/tauri.conf.json); V=${V%.0}
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          # release gate (bin/hz/flatpak-build.sh): a TAG must carry its own metainfo <release>;
+          # branch/dispatch test builds only warn (the metainfo moves on the release branch).
+          if ! grep -q "<release version=\"$V" packaging/flatpak/dev.koto.opensidian.metainfo.xml; then
+            case "$GITHUB_REF" in
+              refs/tags/v*|refs/heads/v*-release) echo "FAIL: metainfo <release> is not $V"; exit 1;;
+              *) echo "::warning::metainfo <release> is not $V (ok for a test build, fatal on a tag)";;
+            esac
+          fi
+      - name: free disk (SDK + rust extension + build tree)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: flatpak + flatpak-builder (noble versions, = bin/hz/cloud-init.yaml)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends flatpak flatpak-builder elfutils  # elfutils = eu-strip (a Recommends, dropped by --no-install-recommends)
+          dpkg-query -W flatpak flatpak-builder elfutils
+          flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak --user install -y --noninteractive flathub org.gnome.Platform//49 org.gnome.Sdk//49 org.freedesktop.Sdk.Extension.rust-stable//25.08
+      - name: packaging/flatpak/build.sh
+        shell: bash  # -eo pipefail: the grep filter must not mask a build failure
+        env:
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          sh packaging/flatpak/build.sh 2>&1 | grep -v -E '^(Downloading|Fetching) |^\s*$'
+          cp dist/flatpak/opensidian.flatpak dist/opensidian-$V-x86_64.flatpak
+          ls -l dist/opensidian-$V-x86_64.flatpak; sha256sum dist/opensidian-$V-x86_64.flatpak
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/opensidian-${{ steps.ver.outputs.version }}-x86_64.flatpak
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: opensidian-${{ steps.ver.outputs.version }}-x86_64.flatpak
+          path: dist/opensidian-${{ steps.ver.outputs.version }}-x86_64.flatpak
+          retention-days: 7
+          if-no-files-found: error
+
+  sums:
+    name: SHA256SUMS
+    needs: [appimage, wrap, flatpak]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      V: ${{ needs.appimage.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: opensidian-*
+          path: dist
+          merge-multiple: true
+      - name: SHA256SUMS (same file list and order as scripts/release.sh)
+        working-directory: dist
+        run: |
+          sha256sum opensidian-$V-x86_64-slim.AppImage opensidian-$V-x86_64-portable.AppImage \
+            opensidian-$V-x86_64.flatpak opensidian-$V-x86_64.rpm opensidian-$V-x86_64.deb > SHA256SUMS
+          cat SHA256SUMS
+          # TODO(signing, OFFLINE/manual — deliberately NOT in CI): the operator signs
+          #   gpg --armor --detach-sign SHA256SUMS   -> SHA256SUMS.asc
+          # on their own machine; the private key never touches GitHub. No signing
+          # secret may ever be added to this workflow (and never to a PR-triggered job).
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: SHA256SUMS
+          path: dist/SHA256SUMS
+          retention-days: 7
+          if-no-files-found: error
+
+  # DRAFT release only — CI never publishes. The operator signs SHA256SUMS
+  # OFFLINE (gpg key never touches GitHub), uploads SHA256SUMS.asc, and only
+  # then publishes the draft by hand (docs/RELEASING.md).
+  # This is the ONLY job with contents: write; no third-party action here, just
+  # the runner's preinstalled first-party gh CLI with the job's github.token.
+  draft-release:
+    name: draft-release
+    needs: [appimage, sums]
+    # tags v* -> draft for that tag; branch v<ver>-release -> draft for tag v<ver>
+    # targeting the branch commit (no tag is pushed; it appears on publish).
+    if: ${{ startsWith(github.ref, 'refs/tags/v') || (startsWith(github.ref, 'refs/heads/v') && endsWith(github.ref, '-release')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      V: ${{ needs.appimage.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: opensidian-*
+          path: assets
+          merge-multiple: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: SHA256SUMS
+          path: assets
+      - name: check the 6 assets against SHA256SUMS
+        working-directory: assets
+        run: |
+          ls -l
+          sha256sum -c SHA256SUMS
+          [ "$(wc -l < SHA256SUMS)" -eq 5 ] || { echo "SHA256SUMS must list exactly 5 files"; exit 1; }
+          [ "$(ls -1 | wc -l)" -eq 6 ] || { echo "expected exactly 6 assets"; exit 1; }
+      - name: create or update the DRAFT release (never publish)
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$GITHUB_REF" in
+            refs/tags/v*)
+              TAG="$GITHUB_REF_NAME"; EXTRA=(--verify-tag) ;;
+            refs/heads/v*-release)
+              # draft for tag v<ver> at this commit; GitHub creates the tag on publish
+              TAG="v$V"; [ "$TAG-release" = "$GITHUB_REF_NAME" ] || { echo "branch/version mismatch"; exit 1; }
+              EXTRA=(--target "$GITHUB_SHA") ;;
+            *) echo "refusing: $GITHUB_REF is neither a v* tag nor a v<ver>-release branch"; exit 1 ;;
+          esac
+          TITLE="opensidian $V"
+          A="assets/opensidian-$V-x86_64"
+          FILES=("$A-slim.AppImage" "$A-portable.AppImage" "$A.flatpak" "$A.rpm" "$A.deb" assets/SHA256SUMS)
+          {
+            if [ -f ".github/release-notes/v$V.md" ]; then
+              cat ".github/release-notes/v$V.md"
+            else
+              echo "NOT SIGNED YET: operator adds SHA256SUMS.asc offline, then publishes."
+            fi
+            echo
+            echo "### SHA256SUMS"
+            echo
+            echo '```'
+            cat assets/SHA256SUMS
+            echo '```'
+            echo
+            echo "Built by $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID from commit $GITHUB_SHA."
+          } > notes.md
+
+          # drafts have no git tag yet, so look them up in the release list (not /releases/tags/)
+          gh api --paginate "repos/$GH_REPO/releases" \
+            --jq ".[] | select(.tag_name == \"$TAG\") | \"\(.id) \(.draft)\"" > existing.txt
+          echo "existing releases for $TAG:"; cat existing.txt
+          if grep -q ' false$' existing.txt; then
+            echo "::error::release $TAG is already PUBLISHED; refusing to touch it"; exit 1
+          fi
+          N=$(wc -l < existing.txt)
+          if [ "$N" -gt 1 ]; then
+            echo "::error::$N draft releases for $TAG; clean up by hand"; exit 1
+          elif [ "$N" -eq 1 ]; then
+            ID=$(cut -d' ' -f1 existing.txt)
+            echo "draft $ID exists: re-uploading assets (--clobber), refreshing body"
+            gh release upload "$TAG" "${FILES[@]}" --clobber
+            gh api -X PATCH "repos/$GH_REPO/releases/$ID" -F body=@notes.md -f target_commitish="$GITHUB_SHA" -F draft=true \
+              --jq '"body updated, draft=\(.draft) target=\(.target_commitish)"'
+          else
+            gh release create "$TAG" --draft --latest=false --title "$TITLE" --notes-file notes.md "${EXTRA[@]}" "${FILES[@]}"
+          fi
+
+          # prove the result: exactly one release for TAG, still a draft, exactly 6 assets
+          gh api --paginate "repos/$GH_REPO/releases" \
+            --jq ".[] | select(.tag_name == \"$TAG\") | \"\(.id) draft=\(.draft) assets=\(.assets | length) \(.html_url)\"" > after.txt
+          cat after.txt
+          [ "$(wc -l < after.txt)" -eq 1 ] || { echo "::error::expected exactly one release for $TAG"; exit 1; }
+          grep -q ' draft=true assets=6 ' after.txt || { echo "::error::release is not a draft with 6 assets"; exit 1; }
+          gh api "repos/$GH_REPO/releases/$(cut -d' ' -f1 after.txt)" --jq '.assets[].name'
