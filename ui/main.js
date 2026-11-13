@@ -10583,13 +10583,13 @@ async function startGraph(g, cfg) {
   // place, never reassigned: `RGB[palette().bg]` evaluates the base RGB BEFORE the call,
   // so a reassigning palette() handed the warm-up frame the old, empty map (undefined bg,
   // draw threw, no GL renderer, every graph phase dead — d374a32).
-  const PAL_VAR = { hi: "--accent-yellow", ctr: "--accent-green", node: "--accent-blue", edge: "--border", bg: "--graph-bg", tag: "--graph-node-tag", att: "--graph-node-attachment" };
+  const PAL_VAR = { hi: "--accent-yellow", ctr: "--accent-green", node: "--accent-blue", edge: "--border", bg: "--graph-bg", tag: "--gp-tag", att: "--gp-att", unres: "--gp-unres" };   // #59: --gp-* = style.css consumers of the stock --graph-node-* tokens
   // goal/themes4: a THIRD rung for the node colour. Solarized declares --accent-h on :root as
   // "17.57deg", so the derived --color-accent-1 (a calc() on --accent-h minus 3, the shape
   // Obsidian uses too) is an invalid calc on body AND on :root — both rungs above refuse it and
   // the graph had no node colour at all. --color-accent is the un-derived base accent every
   // theme and our own block define; it is what the theme means by "accent".
-  const PAL_ALT = { node: "--color-accent" };
+  const PAL_ALT = { node: "--color-accent", unres: "--color-accent" };   // unresolved falls back exactly like node (its CSS fallback IS the node token)
   const RGB = {};
   let pal = null, palKey = null;
   const palette = () => {
@@ -10608,6 +10608,8 @@ async function startGraph(g, cfg) {
         || (PAL_ALT[k] ? cssColor(cs.getPropertyValue(PAL_ALT[k]).trim()) : null) || themeText;
       p[k] = v; RGB[v] = chan01(v);                       // null only if BOTH were unreadable
     }
+    const gt = cs.getPropertyValue("--gp-text").trim();   // #59 --graph-text: "" (unset) keeps each label in its node colour
+    p.txt = (gt && cssColor(gt)) || null;
     probe.remove();
     palKey = key; pal = p;
     return p;
@@ -11134,7 +11136,7 @@ async function startGraph(g, cfg) {
       if (i >= shown) continue;
       if (p.x < wx0 - pad || p.x > wx1 + pad || p.y < wy0 - pad || p.y > wy1 + pad) continue;
       const a = litN(i) ? (p.resolved ? 1 : 0.55) : 0.12;
-      const col = i === hov ? P.hi : isC ? P.ctr : p.kind === 2 ? P.tag : p.kind === 3 ? gcNodeCol(GS, p) || P.att : gcNodeCol(GS, p) || P.node;
+      const col = i === hov ? P.hi : isC ? P.ctr : p.kind === 2 ? P.tag : p.kind === 3 ? gcNodeCol(GS, p) || P.att : p.kind === 1 ? gcNodeCol(GS, p) || P.unres : gcNodeCol(GS, p) || P.node;
       if (!(col in RGB)) RGB[col] = col[0] === "#" ? [1, 3, 5].map(k => parseInt(col.slice(k, k + 2), 16) / 255) : chan01(col);   // a group colour (gcHex) is not a palette token: key it for the GL path (palette() empties RGB on a theme switch; this refills)
       const key = col + a + (p.resolved ? "r" : "u") + (isC ? "c" : "");
       let gp = groups.get(key);
@@ -11158,7 +11160,7 @@ async function startGraph(g, cfg) {
           nArr[o] = p.x; nArr[o + 1] = p.y; nArr[o + 2] = (p.r + gp.dr) * NS + ring / 2; nArr[o + 3] = ring * dpr;   // ring width is device px in the shader (gh-graphdpr); 2D strokes straddle the radius
           nArr[o + 4] = c[0]; nArr[o + 5] = c[1]; nArr[o + 6] = c[2]; nArr[o + 7] = gp.a; nc++;
         }
-        if (labels) { ctx.globalAlpha = gp.a * la; ctx.fillStyle = gp.col; for (const i of gp.idx) { const p = N[i]; ctx.fillText(p.n, p.x, p.y - (p.r + gp.dr) * NS - 4); } }
+        if (labels) { ctx.globalAlpha = gp.a * la; ctx.fillStyle = P.txt || gp.col; for (const i of gp.idx) { const p = N[i]; ctx.fillText(p.n, p.x, p.y - (p.r + gp.dr) * NS - 4); } }
       }
       // gh-graphdpr: .graphgl is absolutely positioned with no CSS size, so a canvas shows at its
       // INTRINSIC size = its backing in CSS px; once the backing is css x dpr that is dpr x too big
@@ -11172,7 +11174,7 @@ async function startGraph(g, cfg) {
       for (const i of gp.idx) { const p = N[i], r = (p.r + gp.dr) * NS; ctx.moveTo(p.x + r, p.y); ctx.arc(p.x, p.y, r, 0, 7); }
       if (gp.res) { ctx.fillStyle = gp.col; ctx.fill(); }
       else { ctx.lineWidth = 1.5; ctx.strokeStyle = gp.col; ctx.stroke(); ctx.lineWidth = 1; } // hollow = unresolved
-      if (labels) { ctx.globalAlpha = gp.a * la; ctx.fillStyle = gp.col; for (const i of gp.idx) { const p = N[i]; ctx.fillText(p.n, p.x, p.y - (p.r + gp.dr) * NS - 4); } }
+      if (labels) { ctx.globalAlpha = gp.a * la; ctx.fillStyle = P.txt || gp.col; for (const i of gp.idx) { const p = N[i]; ctx.fillText(p.n, p.x, p.y - (p.r + gp.dr) * NS - 4); } }
     }
     ctx.globalAlpha = 1;
     if (rcSnap) { rcRecord(); updateTitle(); }   // C5: once, on the first paint after a re-centre
