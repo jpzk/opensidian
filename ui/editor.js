@@ -2528,6 +2528,40 @@ Ed.coField = function (v, G, bust) {
     provide: f => EditorView.decorations.from(f),
   });
 };
+// census (#59, gate phase callouts): the focused pane's PAINTED callouts, off the live DOM, only while
+// one exists. [co:n|type/fold/state/icon/nest/title,...] state c=collapsed o=open, icon 1 = an svg in
+// .callout-icon, nest = callout ancestors; [coxss:n] elements under any callout carrying an on*
+// attribute, or an img/script/iframe the source did not ask for (the phase's fixture asks for none);
+// [cofold:type@rect] the first foldable callout's title (the phase clicks it);
+// [corc:] / [bqrc:] the first visible callout's and plain blockquote's client rect + computed
+// background composited to the first opaque ancestor (r.g.b) — the phase samples pixels inside them.
+Ed.coTok = function () {
+  const P = document.querySelector("#main .pane.focused") || document.querySelector("#main .pane");
+  if (!P) return "";
+  const vis = e => !!e && e.getClientRects().length > 0 && e.getBoundingClientRect().height > 0;
+  const all = [...P.querySelectorAll(".callout")].filter(vis);
+  if (!all.length) return "";
+  const safe = s => String(s || "").replace(/[^\w -]/g, "_").replace(/\s+/g, " ").trim().slice(0, 24);
+  // composited background: every layer from the first opaque ancestor up, painted on a 1x1 canvas (any CSS
+  // colour syntax — color-mix() computes to oklch()/color() — and the element's own mix-blend-mode)
+  const bg = e => { const L = []; for (let x = e; x && x.nodeType === 1; x = x.parentElement) { const cs = getComputedStyle(x), b = cs.backgroundColor || ""; if (!b || b === "transparent" || /^rgba\([^)]*,\s*0\)$/.test(b)) continue; L.push([b, cs.mixBlendMode]); const k = document.createElement("canvas").getContext("2d"); k.fillStyle = "#000"; k.fillStyle = b; k.fillRect(0, 0, 1, 1); if (k.getImageData(0, 0, 1, 1).data[3] === 255) break; } if (!L.length) return "-"; const cv = document.createElement("canvas"); cv.width = cv.height = 1; const k = cv.getContext("2d"); for (let i = L.length - 1; i >= 0; i--) { k.globalCompositeOperation = L[i][1] && L[i][1] !== "normal" ? L[i][1] : "source-over"; k.fillStyle = L[i][0]; k.fillRect(0, 0, 1, 1); } const d = k.getImageData(0, 0, 1, 1).data; return d[0] + "." + d[1] + "." + d[2]; };
+  const rc = e => { const r = e.getBoundingClientRect(); return [r.x, r.y, r.width, r.height].map(Math.round).join(","); };
+  const nest = e => { let n = 0; for (let x = e.parentElement; x && x !== P; x = x.parentElement) if (x.classList && x.classList.contains("callout")) n++; return n; };
+  const row = c => {
+    const ti = c.querySelector(":scope > .callout-title > .callout-title-inner");
+    return [safe(c.dataset.callout), c.dataset.calloutFold || "", c.classList.contains("is-collapsed") ? "c" : "o",
+            c.querySelector(":scope > .callout-title > .callout-icon svg") ? 1 : 0, nest(c), safe(ti && ti.textContent)].join("/");
+  };
+  let xss = 0;
+  for (const c of all) for (const e of c.querySelectorAll("*")) {
+    if (/^(img|script|iframe|object|embed)$/i.test(e.tagName)) { xss++; continue; }
+    for (const a of e.attributes) if (/^on/i.test(a.name)) { xss++; break; }
+  }
+  const bq = [...P.querySelectorAll("blockquote")].find(b => vis(b) && !b.closest(".callout"));
+  const fo = all.find(c => c.classList.contains("is-collapsible")), ft = fo && fo.querySelector(":scope > .callout-title");
+  return " [co:" + all.length + "|" + all.slice(0, 12).map(row).join(",") + "] [coxss:" + xss + "] [corc:" + rc(all[0]) + ":" + bg(all[0]) + "]" +
+         (bq ? " [bqrc:" + rc(bq) + ":" + bg(bq) + "]" : "") + (ft && vis(ft) ? " [cofold:" + safe(fo.dataset.callout) + "@" + rc(ft) + "]" : "");
+};
 Ed.cbCensus = function () {   // [lpcb:N] rendered plugin code blocks in live-preview editors (only once one exists)
   const n = document.querySelectorAll(".cm-editor .cm-preview-code-block").length;
   return n ? " [lpcb:" + n + "]" : "";
