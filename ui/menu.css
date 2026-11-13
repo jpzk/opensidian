@@ -1,0 +1,55 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* #37 — the Obsidian-shaped context menu (ui/menu.js). Stock 1.13.7's DOM and
+   stock's variable names, each with a fallback to this app's own token, so a
+   community theme that restyles `.menu` / `.menu-item` (AnuPpuccin, Tokyo Night,
+   Minimal…) restyles ours, and with no theme the menu looks like the .ctxmenu
+   menus it sits next to. No colour literal here: every colour is a token
+   (scripts lint-colors). Scoped to [data-om] so the plugin API's flat
+   `div.ctxmenu.menu` keeps the .ctxmenu look it was measured with. */
+.menu[data-om] {
+  position: fixed; z-index: 60;
+  background-color: var(--background-secondary, var(--bg-base));
+  border: 1px solid var(--background-modifier-border-hover, var(--background-modifier-border, var(--border)));
+  border-radius: var(--radius-m, 6px);
+  box-shadow: var(--shadow-s, 0 4px 14px var(--shadow-popover));
+  padding: var(--size-2-3, 4px);
+  min-width: 130px;
+  /* R22 (as .ctxmenu): JS clamps the position to the MEASURED box (placeMenu);
+     these cap a menu bigger than the whole window, and the ROOT is the scroller
+     so placeMenu's scroll listener and the tab menu's wheel-to-reach keep working */
+  max-width: 100vw; max-height: 100vh; overflow: auto;
+  user-select: none; -webkit-user-select: none;
+  font-size: var(--font-ui-small, 13px);
+  color: var(--text-normal, var(--text-chrome));
+}
+.menu[data-om] .menu-grabber { display: none }                      /* stock: a touch affordance, hidden on desktop */
+.menu[data-om] .menu-group { display: block }
+.menu[data-om] .menu-item {
+  display: flex; align-items: center; gap: var(--size-4-2, 8px);
+  padding: var(--size-4-1, 4px) var(--size-4-2, 8px);
+  min-height: 23px;
+  border-radius: var(--radius-s, 4px);
+  cursor: var(--cursor, pointer);
+  white-space: nowrap;
+}
+.menu[data-om] .menu-item:hover:not(.is-disabled):not(.is-label),
+.menu[data-om] .menu-item.selected:not(.is-disabled):not(.is-label) {
+  background-color: var(--background-modifier-hover, var(--border));
+}
+.menu[data-om] .menu-item.mod-open:not(.selected) { background-color: var(--background-modifier-hover, var(--border)) }
+.menu[data-om] .menu-item.is-disabled { color: var(--text-faint, var(--text-chrome-muted)); cursor: default }
+.menu[data-om] .menu-item.is-warning { color: var(--text-error, var(--accent-red)) }
+.menu[data-om] .menu-item-title { flex: 1 1 auto }
+.menu[data-om] .menu-item-icon {
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: center;
+  width: var(--icon-s, 16px); height: var(--icon-s, 16px);
+  color: var(--icon-color, var(--text-muted, var(--text-chrome-muted)));
+}
+.menu[data-om] .menu-item-icon svg { width: var(--icon-s, 14px); height: var(--icon-s, 14px); display: block }
+.menu[data-om] .menu-item.is-disabled .menu-item-icon { color: var(--text-faint, var(--text-chrome-muted)) }
+.menu[data-om] .menu-item-icon.mod-submenu { margin-left: auto; width: 12px }
+.menu[data-om] .menu-item-icon.mod-submenu svg { width: 12px; height: 12px }
+.menu[data-om] .menu-separator {
+  height: 0; margin: var(--size-2-3, 4px) calc(var(--size-2-3, 4px) * -1);
+  border-bottom: 1px solid var(--background-modifier-border, var(--border));
+}
