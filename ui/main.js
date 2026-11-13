@@ -10924,7 +10924,7 @@ async function startGraph(g, cfg) {
   const gwPut = () => {
     if (!gw || inflight) return;
     gw.onmessage = gw.onerror = null;
-    if (gwPool.length < 2) gwPool.push(gw); else gw.terminate();
+    // NEGCTL leak: the worker is dropped, never pooled, never terminated
     gw = null;
   };
   function batch(steps, budget) {
