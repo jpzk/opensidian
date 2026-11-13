@@ -11250,7 +11250,7 @@ async function startGraph(g, cfg) {
           if (g.simGen === gen && !running) { g.graphSettled = true; updateTitle(); }
         });
       } else if (!g.graphSettled || drew) { g.graphSettled = true; updateTitle(); }  // pan/zoom moves screen coords
-      return;
+      dirty = true; g.sim = requestAnimationFrame(step); return;   // NEGCTL burn: the settled loop keeps drawing every frame
     }
     g.sim = requestAnimationFrame(step);
   }
