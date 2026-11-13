@@ -5078,15 +5078,23 @@ function renderTabs(g) {
      no:dup    the note is already bookmarked — a drag adds no second row
                (unlike bmactive F3, whose menu path duplicates on purpose)
      no:canvas a canvas bookmark would be Opaque: written, never painted
-     no:graph / no:view  a graph or other non-note view is not a note */
+     no:graph / no:view  a graph, or a view with no vault .md behind it, is not a note
+   A plugin view backed by a note (an Excalidraw board, issue-48) bookmarks THAT note. */
 const TAB_EDGE = 40;
 let tabBmTok = "";                           // tab-bookmark: the live [tabbm:] decision ("" = not over the pane)
+/* issue-48: the note name a tab bookmarks as: a note tab = its name; a plugin view backed by a
+   vault .md (an Excalidraw board) = that note's path (pvNoteName, the name the menus write); else null */
+function tabBmName(tab) {
+  if (!tab) return null;
+  return tab.kind ? pvNoteName(tab) : (tab.name || null);
+}
 function tabBmWhy(tab) {                     // -> null (bookmarkable) or {code, msg}
   if (!tab) return { code: "view", msg: "nothing to bookmark" };
   if (tab.kind === "unk" && tab.utype === "canvas") return { code: "canvas", msg: "Canvas bookmarks are not shown in this pane" };
   if (tab.kind === "gg" || tab.kind === "lg") return { code: "graph", msg: "A graph view cannot be bookmarked by drag" };
-  if (tab.kind || !tab.name) return { code: "view", msg: "Only a note tab can be bookmarked by drag" };
-  if (bmCache.includes(tab.name)) return { code: "dup", msg: "\"" + tab.name.split("/").pop() + "\" is already bookmarked" };
+  const nm = tabBmName(tab);                 // issue-48: was a blanket refusal of every tab.kind
+  if (!nm) return { code: "view", msg: "Only a note tab can be bookmarked by drag" };
+  if (bmCache.includes(nm)) return { code: "dup", msg: "\"" + nm.split("/").pop() + "\" is already bookmarked" };
   return null;
 }
 function tabDragStart(e, g, i) {
@@ -5185,7 +5193,7 @@ function tabDragStart(e, g, i) {
     if (!ghost || !t) return;                // plain click, or dropped nowhere
     if (t.kind === "bm") {                   // tab-bookmark: ONE write; the tab stays where it is
       await act("tab_bm", { grp: t.d.grp != null ? 1 : 0 }, () =>
-        bmApply("bm_add_at", { parent: t.d.parent, pos: t.d.pos, name: bmTab.name }));
+        bmApply("bm_add_at", { parent: t.d.parent, pos: t.d.pos, name: tabBmName(bmTab) }));   // issue-48: a board = its note path
       return;
     }
     await act("tab_drop", { kind: t.kind, groups: groups().length }, async () => {   // R20: pane/tab nodes MOVE, no layout rebuild
