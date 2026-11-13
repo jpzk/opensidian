@@ -117,18 +117,20 @@ function typingElsewhere(g) {
    type; loadActive asks it to mount a kept "unk" tab of that type (and to hide it again). */
 let PVHOST = null;
 /* #79: with WebKitGTK's DMA-BUF renderer (the default) the last web frame of a burst can stay off the
-   screen until the page produces ANOTHER frame (box runs: any later DOM change, resize, expose or input
-   presents it; a UI-side queue_draw alone does not reliably). So when a plugin view (Excalidraw) is shown,
-   follow its frames with one trailing frame: every DOM change inside the view (Excalidraw's own render
-   bursts, canvas resizes) and every font load re-arms ONE nudge two rAFs later, which toggles the colour
-   of a 1x1 invisible fixed element outside the view (a new page frame, nothing visible changes).
-   Event-driven and bounded: the observer is dropped PRESENT_FOLLOW_MS after the view is shown; no timer
-   loop, no polling, DMA-BUF stays on. */
-const PRESENT_FOLLOW_MS = 3000;
-let presentEl = null, presentOff = null, presentArmed = false;
+   screen until the page produces ANOTHER frame (box runs: a later DOM change unsticks it; a UI-side
+   queue_draw, E1, does not reliably). So while a just-shown plugin view (Excalidraw) is settling, every
+   frame the page draws is followed by ONE trailing frame two rAFs later: a 1x1 invisible fixed element
+   changes colour (a new page frame, nothing visible changes). "The page draws" = a rAF callback ran
+   (Excalidraw renders its canvases from rAF), a DOM change inside the view, or a font load. The trailing
+   frame itself is not followed again, so an idle page produces nothing. Bounded: the follow stops
+   PRESENT_IDLE_MS after the last followed draw and PRESENT_MAX_MS after the view was shown at the latest.
+   No timer loop, no polling, DMA-BUF stays on. */
+const PRESENT_IDLE_MS = 3000, PRESENT_MAX_MS = 10000;
+const presentRaf = window.requestAnimationFrame.bind(window);
+let presentEl = null, presentOff = null, presentArmed = false, presentLast = 0, presentT0 = 0;
 function presentFrame() {
-  if (presentArmed) return; presentArmed = true;
-  requestAnimationFrame(() => requestAnimationFrame(() => {
+  if (presentArmed || !presentOff) return; presentArmed = true; presentLast = performance.now();
+  presentRaf(() => presentRaf(() => {
     presentArmed = false;
     if (!presentEl) { presentEl = document.createElement("div"); presentEl.setAttribute("aria-hidden", "true");
       presentEl.style.cssText = "position:fixed;left:0;top:0;width:1px;height:1px;pointer-events:none;z-index:-1"; document.body.appendChild(presentEl); }
@@ -140,8 +142,15 @@ function presentNudge(root) {
   const mo = new MutationObserver(presentFrame), fl = () => presentFrame();
   if (root) mo.observe(root, { childList: true, subtree: true, attributes: true, characterData: true });
   if (document.fonts) document.fonts.addEventListener("loadingdone", fl);
-  const tm = setTimeout(() => presentOff && presentOff(), PRESENT_FOLLOW_MS);
-  presentOff = () => { mo.disconnect(); if (document.fonts) document.fonts.removeEventListener("loadingdone", fl); clearTimeout(tm); presentOff = null; };
+  // a page rAF callback (not ours: presentRaf is the original) is a page draw -> follow it once
+  window.requestAnimationFrame = cb => presentRaf(ts => { try { cb(ts); } finally { presentFrame(); } });
+  presentT0 = performance.now();
+  const check = () => { if (!presentOff) return; const n = performance.now();
+    if (n - presentLast >= PRESENT_IDLE_MS || n - presentT0 >= PRESENT_MAX_MS) presentOff();
+    else tm = setTimeout(check, Math.min(PRESENT_IDLE_MS - (n - presentLast), PRESENT_MAX_MS - (n - presentT0)) + 1); };
+  let tm = setTimeout(check, PRESENT_IDLE_MS);
+  presentOff = () => { mo.disconnect(); if (document.fonts) document.fonts.removeEventListener("loadingdone", fl);
+    window.requestAnimationFrame = presentRaf; clearTimeout(tm); presentOff = null; };
   presentFrame();
 }
 /* plugin-views item 5: set by ui/plugins/api.js when a plugin listens for "file-menu" / "editor-menu";
