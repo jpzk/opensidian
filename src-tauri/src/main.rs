@@ -3812,6 +3812,33 @@ fn spawn_want(root: &Path, plugin: Option<&str>, sp: &desk_proc::Spec) -> Option
     Some(spawn_allow::Want { vault: plugins::trust_key(root), plugin: id.to_string(), plugin_sha256, plugin_version, program: sp.file.clone(), program_sha256 })
 }
 
+/* #74 Settings > Allowed programs. The webview may LIST and REVOKE grants, never add one:
+   these two commands are the only spawnAllow surface it can reach (a grant is written only by
+   the Always answer of a native spawn dialog, desk_proc_spawn -> consent::ask). The list is
+   every grant in ~/.opensidian.json with its status re-measured from disk ("ok" | "outdated"
+   | "unknown": spawn_allow::status) and the ALWAYS_NOTE the pane shows above it.
+   async: status() reads plugin files and may hash a program; not on the main thread. */
+#[tauri::command]
+async fn spawn_allow_list() -> Result<serde_json::Value, String> {
+    let rows: Vec<serde_json::Value> = spawn_allow::grants(&cfg_value())
+        .iter()
+        .map(|g| {
+            let mut x = serde_json::to_value(g).unwrap_or(serde_json::Value::Null);
+            x["status"] = serde_json::Value::from(spawn_allow::status(g));
+            x
+        })
+        .collect();
+    Ok(serde_json::json!({ "note": consent::ALWAYS_NOTE, "grants": rows }))
+}
+
+/// #74: drop the grant for (vault, plugin, program); the next spawn asks again. Revoking a
+/// grant that is not there is not an error. Answers the list as it is after the revoke.
+#[tauri::command]
+async fn spawn_allow_revoke(vault: String, plugin: String, program: String) -> Result<serde_json::Value, String> {
+    cfg_update(&[cfgstore::Op::SpawnAllowRevoke { vault, plugin, program }]);
+    spawn_allow_list().await
+}
+
 #[tauri::command]
 async fn desk_proc_spawn(
     win: tauri::Window,
@@ -6690,7 +6717,7 @@ fn main() {
             read_workspace, write_workspace,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
-            plugins_state, plugins_set, plugin_io, plugin_vfs, desk_proc_spawn, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
+            plugins_state, plugins_set, plugin_io, plugin_vfs, desk_proc_spawn, spawn_allow_list, spawn_allow_revoke, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
             desk_net_listen, desk_net_accept, desk_net_close, desk_sock_read, desk_sock_write, desk_sock_end, desk_sock_destroy,
             desk_http_request, desk_shell,
             plugin_store::store_list, plugin_store::store_detail, plugin_store::store_install, plugin_store::store_uninstall,
@@ -6764,6 +6791,31 @@ mod tests {
 
     fn nav(s: &str) -> bool {
         nav_allowed(&tauri::Url::parse(s).unwrap())
+    }
+
+    /* #74: the webview can LIST and REVOKE grants, never add one. Read the source: the only
+       code line that builds Op::SpawnAllowAdd is inside desk_proc_spawn (the grant closure run
+       after the native dialog's Always), and the two Settings commands are registered while no
+       other spawn_allow_* command exists. Comments are not code. */
+    #[test]
+    fn a74_only_the_spawn_dialog_adds_a_grant() {
+        let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
+        let tests_at = src.find("#[cfg(test)]\nmod tests").expect("tests module");
+        let lines: Vec<&str> = src[..tests_at].lines().collect();
+        let is_code = |l: &str| {
+            let t = l.trim_start();
+            !(t.starts_with("//") || t.starts_with("/*") || t.starts_with('*'))
+        };
+        let head = lines.iter().position(|l| l.starts_with("async fn desk_proc_spawn(")).expect("fn desk_proc_spawn");
+        let end = head + lines[head..].iter().position(|l| *l == "}").expect("desk_proc_spawn unterminated");
+        let adds: Vec<usize> = lines.iter().enumerate().filter(|(_, l)| is_code(l) && l.contains("SpawnAllowAdd")).map(|(i, _)| i).collect();
+        assert_eq!(adds.len(), 1, "expected exactly one SpawnAllowAdd in main.rs, found {adds:?}");
+        assert!(adds.iter().all(|i| (head..=end).contains(i)), "SpawnAllowAdd outside desk_proc_spawn at {adds:?}");
+        let cmds: Vec<&str> = lines.iter().filter(|l| l.contains("fn spawn_allow_")).copied().collect();
+        assert_eq!(cmds.len(), 2, "spawn_allow commands: {cmds:?}");
+        assert!(cmds.iter().any(|l| l.contains("fn spawn_allow_list(")) && cmds.iter().any(|l| l.contains("fn spawn_allow_revoke(")));
+        let reg = &src[src.find("generate_handler![").unwrap()..];
+        assert!(reg.contains("spawn_allow_list, spawn_allow_revoke"), "the Settings commands are not registered");
     }
 
     // tab-dataloss: the slow-write hook is inert unless set to a sane value

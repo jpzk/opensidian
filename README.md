@@ -146,7 +146,20 @@ cannot turn its own plugins on.
 **What that means.** With restricted mode off, the plugins you enable run code from the internet
 with your user's rights, the same as in Obsidian. They can run programs, open network connections
 and servers, send HTTP requests to any host, and open files and links with your system's default
-apps. There is no per-plugin permission prompt. Enable only plugins you trust.
+apps. Apart from the dialog before a program starts (below), there is no per-plugin permission
+prompt. Enable only plugins you trust.
+
+**Running programs.** Each time a plugin starts a program, a native dialog names the program,
+its arguments, the folder and the plugin, and asks: **Deny** (the default), **Allow once**, or
+**Always allow this program**. Always is saved in `~/.opensidian.json` for that vault, plugin
+and program, together with a sha256 of the plugin's `main.js` + `manifest.json` and of the
+program file, all read from disk by the app. If any of them changes, you are asked again.
+Only the dialog can add such a grant; **Settings ▸ Community plugins ▸ Allowed programs** lists
+them (an old one is marked outdated and never used) and has a **Revoke** button for each.
+Caveat: Always allow lets the plugin run that program again with ANY arguments, without asking.
+Arguments can be malicious (for example options that make the program run other commands, or a
+script an interpreter reads), and they are not checked again. Allow an interpreter or a shell
+(`sh`, `python`, `node`, ...) always only if you would let the plugin run anything.
 
 **Browse.** **Settings ▸ Community plugins ▸ Browse** lists the community plugins. You can search,
 sort, and open a plugin to read its details and README. Install, Update and Uninstall download
