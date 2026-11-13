@@ -2554,6 +2554,17 @@ Ed.tblCensus = function () {
       (r ? "@" + Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2) : "");
   }).join("|") + "]";
 };
+/* #37 [rvth:<border px>,<padding-left px>@<x>,<y>] — the FIRST reading-view th of the focused
+   pane: its COMPUTED top border width and left padding (ui/tables.css) and its centre. Stock
+   themes border their tables; 0 here is the unstyled browser table (origin/develop). */
+Ed.rvthCensus = function () {
+  const g = typeof fg === "function" ? fg() : null;
+  const th = g && g.preview ? g.preview.querySelector("table th") : null;
+  if (!th || !th.getClientRects().length) return "";
+  const s = getComputedStyle(th), r = th.getBoundingClientRect();
+  return " [rvth:" + Math.round(parseFloat(s.borderTopWidth) || 0) + "," + Math.round(parseFloat(s.paddingLeft) || 0) +
+    "@" + Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2) + "]";
+};
 /* ---------- MARKS painted by main.js (find bar "fd", search jump "sc") ----------
    A named DecorationSet per view, replaced whole by Ed.hl and mapped through
    every doc change in between. CM6 owns its contentDOM: wrapping its text nodes

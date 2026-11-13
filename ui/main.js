@@ -4117,7 +4117,7 @@ function utBuild() {             // pane/focus census in the window title (headl
             (jsErr ? " [jserr:" + jsErr + "]" : "") +
             (saveErr ? " [saveerr:" + saveErr + "]" : "") +             // F1: a save that did not land
             " [armed:" + groups().filter(h => h.saveT).length + "]" +   // F2: groups holding a live save timer
-            menuTok() + (typeof Ed !== "undefined" && Ed.tblCensus ? Ed.tblCensus() : "") +   // #37: rendered LP tables
+            menuTok() + (typeof Ed !== "undefined" && Ed.tblCensus ? Ed.tblCensus() + Ed.rvthCensus() : "") +   // #37: rendered LP tables, the reading-view th
             (navInfo ? " [" + navInfo + "]" + (nvRv ? " [nvr:" + nvRv + "]" : "") : "") +
             (revealInfo ? " [bmrv:" + revealInfo + "]" : "") +      // bmmenu: "Reveal file in navigation" ran (bmReveal) — not merely "the Files pane is showing"
             (acItems.length ? " [ac:" + acKind + ":" + acItems.length + "]" : "") +
@@ -4363,7 +4363,19 @@ function omSubTok() {
       (d2.length ? " [mdis2:" + d2.join("|") + "]" : "");
   }
   const sel = OMenu.deepest(menuEl).querySelector(".menu-item.selected");
-  return s + (sel ? " [msel:" + OMenu.census.label(sel).replace(/[|\]]/g, "") + "]" : "");
+  return s + (sel ? " [msel:" + OMenu.census.label(sel).replace(/[|\]]/g, "") + "]" + omHoverTok(sel) : "");
+}
+/* #37 theme compat: [mhbg:<computed bg of the selected row>|<our fallback, var(--border)>] —
+   ui/menu.css paints a hovered/selected row var(--background-modifier-hover, var(--border));
+   a theme that defines the stock variable (AnuPpuccin, Tokyo Night) must win over our own token. */
+function omHoverTok(sel) {
+  const p = document.createElement("div");
+  p.style.cssText = "position:fixed;left:-9px;top:-9px;width:1px;height:1px;background-color:var(--border)";
+  document.body.appendChild(p);
+  const def = getComputedStyle(p).backgroundColor;
+  p.remove();
+  const q = c => c.replace(/[^0-9.,]/g, "");
+  return " [mhbg:" + q(getComputedStyle(sel).backgroundColor) + "|" + q(def) + "]";
 }
 function closeMenu() { if (menuEl) { if (menuEl.dataset.om) OMenu.closeSub(menuEl); menuEl.remove(); menuEl = null; updateTitle(); } }
 /* R22: a context menu is position:fixed — clamp it to the viewport by its
