@@ -2300,7 +2300,7 @@ Ed.lpExt = function (v, G) {
     if (!m || s.main.head - ln.from >= m[0].length) return tr;
     return [tr, { selection: CMs.EditorSelection.cursor(ln.from + m[0].length), sequential: true }];
   });
-  return [plugin, clicks, vkeys, taskSnap, Ed.cbField(v, G, bust)];
+  return [plugin, clicks, vkeys, taskSnap, Ed.cbField(v, G, bust), Ed.tblField(v, G, bust)];
 };
 /* ---------- plugin CODE BLOCKS in Live Preview (plug-top5) ----------
    A fenced block whose language a plugin registered a code-block processor for
@@ -2410,6 +2410,148 @@ Ed.cbField = function (v, G, bust) {
 Ed.cbCensus = function () {   // [lpcb:N] rendered plugin code blocks in live-preview editors (only once one exists)
   const n = document.querySelectorAll(".cm-editor .cm-preview-code-block").length;
   return n ? " [lpcb:" + n + "]" : "";
+};
+/* ---------- #37 (C3-6, T2): GFM TABLES in Live Preview ----------
+   A pipe table (header row, delimiter row, body rows) shows in Live Preview as
+   a rendered <table> — one block widget over its source lines, in stock's DOM:
+   div.cm-embed-block.cm-table-widget.markdown-rendered > div.table-wrapper >
+   table.table-editor, th/td carrying align= from the delimiter row, each cell a
+   div.table-cell-wrapper (ui/tables.css styles it like the reading view).
+   A selection touching the table reveals its pipe source (MVP "click -> raw
+   source"; stock's inline cell editor, T4, is deferred): a primary click on a
+   cell puts the caret at that cell's text. Source mode and the reading view
+   never render it. A StateField, like the code blocks (CM6 refuses block
+   decorations from a ViewPlugin). */
+Ed.TBL_DELIM = /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/;
+// one table row -> [{s, e}] cell text spans (trimmed, offsets into t); "\|" stays inside a cell
+Ed.tblCells = function (t) {
+  const out = [];
+  let i = 0, n = t.length;
+  while (i < n && (t[i] === " " || t[i] === "\t")) i++;
+  if (t[i] === "|") i++;
+  let a = i, code = false;
+  const push = (s, e) => { while (s < e && /\s/.test(t[s])) s++; while (e > s && /\s/.test(t[e - 1])) e--; out.push({ s, e }); };
+  for (; i < n; i++) {
+    const c = t[i];
+    if (c === "\\") { i++; continue; }
+    if (c === "`") code = !code;
+    else if (c === "|" && !code) { push(a, i); a = i + 1; }
+  }
+  if (t.slice(a).trim()) push(a, n);      // no closing pipe: the last cell runs to the line end
+  return out;
+};
+// every table of doc -> [{from, to, l0, rows: [[{s, e}...]...], al: [left|center|right|""], hdr}] (cached on the doc)
+Ed.tblBlocks = function (doc) {
+  if (Ed._tbDoc === doc) return Ed._tbOut;
+  const out = [];
+  let fence = null;
+  for (let i = 1; i <= doc.lines; i++) {
+    const t = doc.line(i).text, fm = /^ {0,3}(`{3,}|~{3,})/.exec(t);
+    if (fence) { if (fm && fm[1][0] === fence[0] && fm[1].length >= fence.length && !t.slice(fm[0].length).trim()) fence = null; continue; }
+    if (fm) { fence = fm[1]; continue; }
+    if (i >= doc.lines || !t.includes("|") || !/^ {0,3}\S/.test(t)) continue;
+    const d = doc.line(i + 1).text;
+    if (!d.includes("-") || !Ed.TBL_DELIM.test(d)) continue;
+    const hc = Ed.tblCells(t), dc = Ed.tblCells(d);
+    if (!hc.length || hc.length !== dc.length) continue;
+    const al = dc.map(c => { const x = d.slice(c.s, c.e), l = x[0] === ":", r = x[x.length - 1] === ":"; return l && r ? "center" : r ? "right" : l ? "left" : ""; });
+    const rows = [hc], lines = [i];
+    let j = i + 2;
+    for (; j <= doc.lines; j++) {
+      const b = doc.line(j).text;
+      if (!b.trim() || !b.includes("|") || /^ {0,3}(`{3,}|~{3,}|>|#)/.test(b)) break;
+      rows.push(Ed.tblCells(b)); lines.push(j);
+    }
+    out.push({ from: doc.line(i).from, to: doc.line(j - 1).to, l0: i, rows, lines, al, cols: hc.length });
+    i = j - 1;
+  }
+  Ed._tbDoc = doc; Ed._tbOut = out;
+  return out;
+};
+Ed.tblField = function (v, G, bust) {
+  const { Decoration, WidgetType, EditorView } = CMv;
+  class TB extends WidgetType {
+    constructor(src, tb) { super(); this.src = src; this.tb = tb; }
+    eq(o) { return o.src === this.src; }
+    toDOM(view) {
+      const g = G(), tb = this.tb, src = this.src, L = src.split("\n");
+      const w = Ed.el("div", "cm-embed-block cm-table-widget markdown-rendered");
+      const wr = Ed.el("div", "table-wrapper"), table = Ed.el("table", "table-editor");
+      w.appendChild(wr); wr.appendChild(table);
+      // line k of the table source (0 = header, 1 = delimiter, 2.. = body) -> its offset in src
+      const off = []; { let o = 0; for (const s of L) { off.push(o); o += s.length + 1; } }
+      const rowEl = (cells, li, tag) => {
+        const tr = Ed.el("tr");
+        for (let c = 0; c < tb.cols; c++) {
+          const x = cells[c], td = Ed.el(tag), cw = Ed.el("div", "table-cell-wrapper");
+          if (tb.al[c]) td.setAttribute("align", tb.al[c]);
+          td.dataset.at = String(off[li] + (x ? x.s : L[li].length));   // the cell's text, relative to the table's start
+          if (x && x.e > x.s) Ed.inline(g, cw, L[li].slice(x.s, x.e).replace(/\\\|/g, "|"));
+          for (const m of cw.querySelectorAll(".mk")) m.remove();         // rendered: no markdown markers
+          td.appendChild(cw); tr.appendChild(td);
+        }
+        return tr;
+      };
+      const th = Ed.el("thead"), bd = Ed.el("tbody");
+      th.appendChild(rowEl(tb.rows[0], 0, "th"));
+      for (let r = 1; r < tb.rows.length; r++) bd.appendChild(rowEl(tb.rows[r], r + 1, "td"));
+      table.appendChild(th); if (tb.rows.length > 1) table.appendChild(bd);
+      w.addEventListener("mousedown", e => {
+        if (e.button !== 0) return;                       // #37: a right-click opens the table menu, it never edits
+        const a = e.target && e.target.closest ? e.target.closest("a.wl, a.url, a.ext, a.tag") : null;
+        if (a && w.contains(a)) {
+          if (a.classList.contains("wl")) Ed.linkClick(e, a);
+          else if (a.classList.contains("tag")) { e.preventDefault(); if (typeof tagSearch === "function") tagSearch(a.dataset.tag); }
+          else Ed.extClick(e, a);
+          if (e.defaultPrevented) return;
+        }
+        e.preventDefault();
+        let p0;
+        try { p0 = view.posAtDOM(w, 0); } catch (_) { return; }
+        const cell = e.target && e.target.closest ? e.target.closest("th, td") : null;
+        const at = cell && w.contains(cell) ? +cell.dataset.at || 0 : 0;
+        view.dispatch({ selection: { anchor: Math.min(view.state.doc.length, p0 + at) }, scrollIntoView: false, userEvent: "select.pointer" });
+        view.focus();
+      });
+      return w;
+    }
+    ignoreEvent() { return true; }
+  }
+  const build = st => {
+    const g = G();
+    const tb = g && g.view === v && g.active >= 0 ? g.tabs[g.active] : null;
+    if (!g || (v.lp && v.lp.classList.contains("src")) || (tb && tb.mode === "reading")) return Decoration.none;
+    const out = [];
+    for (const b of Ed.tblBlocks(st.doc)) {
+      if (st.selection.ranges.some(r => r.from <= b.to && r.to >= b.from)) continue;   // caret in the table: its source shows
+      out.push(Decoration.replace({ widget: new TB(st.doc.sliceString(b.from, b.to), b), block: true }).range(b.from, b.to));
+    }
+    return Decoration.set(out, true);
+  };
+  return CMs.StateField.define({
+    create: st => { try { return build(st); } catch (e) { console.error(e); return Decoration.none; } },
+    update(d, tr) {
+      if (tr.docChanged || tr.selection || tr.effects.some(e => e.is(bust)))
+        try { return build(tr.state); } catch (e) { console.error(e); return Decoration.none; }
+      return d;
+    },
+    provide: f => EditorView.decorations.from(f),
+  });
+};
+// [tbl:RxC|RxC...] the rendered Live Preview tables of the FOCUSED editor (rows incl. the header row x columns),
+// each with its alignment string (l c r -), the header's first cell text and @x,y = the first body cell's
+// centre; absent when none is rendered
+Ed.tblCensus = function () {
+  const g = typeof fg === "function" ? fg() : null, root = g && g.pane ? g.pane : document;
+  const ws = root.querySelectorAll(".cm-editor .cm-table-widget table");
+  if (!ws.length) return "";
+  return " [tbl:" + [...ws].map(t => {
+    const rs = t.querySelectorAll("tr"), h = rs[0] ? [...rs[0].children] : [];
+    const c1 = t.querySelector("td") || t.querySelector("th"), r = c1 ? c1.getBoundingClientRect() : null;   // a driver clicks what it measured
+    return rs.length + "x" + h.length + ":" + h.map(c => ({ left: "l", center: "c", right: "r" })[c.getAttribute("align")] || "-").join("") +
+      ":" + (h[0] ? h[0].textContent.trim().replace(/[\]|\s]+/g, "_").slice(0, 20) : "") +
+      (r ? "@" + Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2) : "");
+  }).join("|") + "]";
 };
 /* ---------- MARKS painted by main.js (find bar "fd", search jump "sc") ----------
    A named DecorationSet per view, replaced whole by Ed.hl and mapped through

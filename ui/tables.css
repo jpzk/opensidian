@@ -38,3 +38,9 @@
 :is(.preview, .cm-table-widget) :is(th, td)[align="left"]   { text-align: left }
 :is(.preview, .cm-table-widget) :is(th, td)[align="center"] { text-align: center }
 :is(.preview, .cm-table-widget) :is(th, td)[align="right"]  { text-align: right }
+/* C3-6 (T2): the Live Preview widget. A block widget in the editor's text
+   column: it scrolls sideways on its own rather than widening the line, and a
+   click anywhere in it reveals the pipe source (ui/editor.js Ed.tblField). */
+.cm-table-widget { cursor: text; padding-block: var(--size-2-2, 4px) }
+.cm-table-widget .table-wrapper { overflow-x: auto; max-width: 100% }
+.cm-table-widget .table-cell-wrapper { white-space: pre-wrap }

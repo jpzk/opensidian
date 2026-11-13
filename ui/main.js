@@ -4117,7 +4117,7 @@ function utBuild() {             // pane/focus census in the window title (headl
             (jsErr ? " [jserr:" + jsErr + "]" : "") +
             (saveErr ? " [saveerr:" + saveErr + "]" : "") +             // F1: a save that did not land
             " [armed:" + groups().filter(h => h.saveT).length + "]" +   // F2: groups holding a live save timer
-            menuTok() +
+            menuTok() + (typeof Ed !== "undefined" && Ed.tblCensus ? Ed.tblCensus() : "") +   // #37: rendered LP tables
             (navInfo ? " [" + navInfo + "]" + (nvRv ? " [nvr:" + nvRv + "]" : "") : "") +
             (revealInfo ? " [bmrv:" + revealInfo + "]" : "") +      // bmmenu: "Reveal file in navigation" ran (bmReveal) — not merely "the Files pane is showing"
             (acItems.length ? " [ac:" + acKind + ":" + acItems.length + "]" : "") +
