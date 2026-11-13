@@ -417,6 +417,9 @@ const EdMenu = (() => {
     const hit = inSel ? null : linkHit(cm, e);            // C3-4: read the target BEFORE the caret re-renders the row
     if (p != null && !inSel) cm.dispatch({ selection: { anchor: p } });
     if (fg() !== g) focusGroup(g);
+    // a right-click on a link/embed never reaches CM's mousedown (C3-1), so nothing focused the
+    // editor: focus it like a native right-click would, or keys after Escape go nowhere
+    if (!cm.hasFocus) cm.focus();
     const sel = selText(g), x = e.clientX, y = e.clientY;
     closeMenu();
     const ask = inv("clip_has_text").catch(() => false);
