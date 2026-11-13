@@ -18,7 +18,7 @@
   // is slower than V_REST world units/step for 10 steps or REST_CAP steps have passed
   // OPEN_CAP: the first settle of an open runs at main.js OPEN_SPEED, so it may seek rest for 75 s of
   // sim time (under 4 s of wall time) and get closer to the balance; a later one runs at 1x and keeps 30 s.
-  const ALPHA_REST = 0.1, V_REST = 0.3, REST_CAP = 30 * PH_HZ, OPEN_CAP = 75 * PH_HZ;
+  const ALPHA_REST = 0.1, V_REST = 0.3, REST_CAP = 60 * PH_HZ, OPEN_CAP = 75 * PH_HZ;
   // Barnes-Hut quadtree (theta 0.8) for the many-body repulsion (d3 shape: dv = REPEL*alpha*dx/d^2).
   // Every far cell (side/dist < theta) acts as one body at its centroid; depth capped at MAXD so a
   // coincident pair cannot split 24 levels; points sharing a leaf do not repel each other.
