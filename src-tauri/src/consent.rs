@@ -717,17 +717,19 @@ mod tests {
         assert_eq!(trust_question("/v").log, trust_question("/v").text, "the trust body holds no env");
     }
 
-    // N2/N3: no session grant. The same run, asked twice and allowed the first time,
-    // is presented to the user again; nothing in the question mentions a session.
+    /* N2/N3 + #74: no session grant. A plain spawn question (no Remember: what
+       desk_proc_spawn builds when the plugin cannot be fingerprinted) is presented every
+       time, even after Allow once, and has no Always button; nothing mentions a session. */
     #[test]
-    fn n2_an_identical_second_spawn_asks_again() {
+    fn n2_74_allow_once_asks_again_every_time() {
         let s = sp("/bin/true", &["x"], "/");
         let mut presented = 0;
         for _ in 0..3 {
             let q = spawn_question(&s);
             assert!(!q.text.to_lowercase().contains("session"), "{}", q.text);
-            let yes = ask_with(Kind::Spawn, q, |_, _, tx| {
+            let yes = ask_with(Kind::Spawn, q, |_, q, tx| {
                 presented += 1;
+                assert!(!q.always, "a plain spawn question offered Always");
                 tx.send(Answer::Once).is_ok()
             });
             assert!(yes);
@@ -740,6 +742,183 @@ mod tests {
             true
         }));
         assert!(!ask_with(Kind::Spawn, spawn_question(&s), |_, _, tx| tx.send(Answer::No).is_ok()));
+        // Once on an Always-capable question stores nothing: asked again
+        let (cfg, w) = (store(), want74("/bin/true"));
+        for _ in 0..2 {
+            let mut shown = false;
+            assert!(ask_with(Kind::Spawn, q74(&s, &cfg, &w), |_, q, tx| {
+                shown = true;
+                assert!(q.always, "a Remember question did not offer Always");
+                tx.send(Answer::Once).is_ok()
+            }));
+            assert!(shown, "Allow once was remembered");
+        }
+        assert!(crate::spawn_allow::grants(&cfg.lock().unwrap()).is_empty(), "Allow once stored a grant");
+    }
+
+    type Store = std::sync::Arc<Mutex<serde_json::Value>>;
+    fn store() -> Store {
+        std::sync::Arc::new(Mutex::new(serde_json::json!({})))
+    }
+    fn want74(program: &str) -> crate::spawn_allow::Want {
+        crate::spawn_allow::Want { vault: "/v".into(), plugin: "obsidian-git".into(), plugin_sha256: "p1".into(), plugin_version: "2.0".into(), program: program.into(), program_sha256: "x1".into() }
+    }
+    /// what desk_proc_spawn builds, over an in-memory config instead of ~/.opensidian.json
+    fn remember74(cfg: &Store, w: &crate::spawn_allow::Want) -> Remember {
+        let (c1, c2, w1, w2) = (cfg.clone(), cfg.clone(), w.clone(), w.clone());
+        Remember {
+            granted: Box::new(move || crate::spawn_allow::granted(&c1.lock().unwrap(), &w1)),
+            grant: Box::new(move || crate::spawn_allow::apply_add(&mut c2.lock().unwrap(), &w2.grant(1))),
+        }
+    }
+    fn q74(s: &Spec, cfg: &Store, w: &crate::spawn_allow::Want) -> Question {
+        spawn_question_always(s, &w.plugin, &w.plugin_version, remember74(cfg, w))
+    }
+
+    /* #74: Always on a question with a Remember stores the grant; the next identical
+       question is answered from it WITHOUT being presented. A changed plugin or program
+       fingerprint, or another vault / plugin / program, is presented again. */
+    #[test]
+    fn a74_always_asks_once_then_the_grant_answers() {
+        let s = sp("/usr/bin/git", &["status"], "/v");
+        let (cfg, w) = (store(), want74("/usr/bin/git"));
+        let mut shown = 0;
+        assert!(ask_with(Kind::Spawn, q74(&s, &cfg, &w), |_, q, tx| {
+            shown += 1;
+            assert!(q.always);
+            tx.send(Answer::Always).is_ok()
+        }));
+        assert_eq!(crate::spawn_allow::grants(&cfg.lock().unwrap()).len(), 1, "Always stored no grant");
+        for _ in 0..3 {
+            assert!(ask_with(Kind::Spawn, q74(&s, &cfg, &w), |_, _, tx| {
+                shown += 1;
+                tx.send(Answer::No).is_ok()
+            }));
+        }
+        assert_eq!(shown, 1, "a granted run was presented again");
+        use crate::spawn_allow::Want;
+        for other in [
+            Want { plugin_sha256: "p2".into(), ..w.clone() }, // main.js / manifest.json changed
+            Want { program_sha256: "x2".into(), ..w.clone() }, // program file changed
+            Want { vault: "/other".into(), ..w.clone() },
+            Want { plugin: "other-plugin".into(), ..w.clone() },
+            want74("/usr/bin/ssh"),
+        ] {
+            let mut asked = false;
+            assert!(!ask_with(Kind::Spawn, q74(&s, &cfg, &other), |_, _, tx| {
+                asked = true;
+                tx.send(Answer::No).is_ok()
+            }));
+            assert!(asked, "{other:?} rode the grant for {w:?}");
+        }
+        // after revoke it asks again
+        crate::spawn_allow::apply_revoke(&mut cfg.lock().unwrap(), "/v", "obsidian-git", "/usr/bin/git");
+        let mut asked = false;
+        assert!(!ask_with(Kind::Spawn, q74(&s, &cfg, &w), |_, _, tx| {
+            asked = true;
+            tx.send(Answer::No).is_ok()
+        }));
+        assert!(asked, "a revoked grant still answered");
+    }
+
+    /* #74: an Always answer for a question with no Remember (trust, open, plain spawn) is
+       NO and stores nothing; a Remember on a Trust question is ignored (never offered). */
+    #[test]
+    fn a74_always_without_a_remember_is_no() {
+        let s = sp("/bin/true", &[], "/");
+        for q in [spawn_question(&s), trust_question("/v"), open_question(&s, "/v/x")] {
+            assert!(!ask_with(Kind::Spawn, q, |_, q, tx| {
+                assert!(!q.always);
+                tx.send(Answer::Always).is_ok()
+            }));
+        }
+        let (cfg, w) = (store(), want74("/bin/true"));
+        assert!(!ask_with(Kind::Trust, q74(&s, &cfg, &w), |_, q, tx| {
+            assert!(!q.always, "a Trust question offered Always");
+            tx.send(Answer::Always).is_ok()
+        }));
+        assert!(crate::spawn_allow::grants(&cfg.lock().unwrap()).is_empty(), "a Trust answer stored a spawn grant");
+    }
+
+    /* #74: ALWAYS_NOTE and the plugin line are in the Always question (dialog text AND log),
+       never in the trust, open or plain spawn question. */
+    #[test]
+    fn a74_the_always_note_is_only_on_the_always_question() {
+        let s = sp("/usr/bin/git", &[], "/v");
+        let (cfg, w) = (store(), want74("/usr/bin/git"));
+        let q = q74(&s, &cfg, &w);
+        for t in [&q.text, &q.log] {
+            assert!(t.contains(ALWAYS_NOTE), "{t}");
+            assert!(t.contains("Plugin: \"obsidian-git\" (version \"2.0\")"), "{t}");
+        }
+        for q in [spawn_question(&s), trust_question("/v"), open_question(&s, "/v/x")] {
+            for t in [&q.text, &q.log, &q.head] {
+                assert!(!t.contains(ALWAYS_NOTE) && !t.contains("Always allow"), "{t}");
+            }
+            assert!(q.remember.is_none() && !q.always);
+        }
+    }
+
+    /* #74: identical questions queued behind a dialog that is answered Always are released
+       by the grant it stored — they return true and are never presented. Order forced by
+       channels: each queued one signals after its pre-lock grant check came back false
+       (so the release can only come from the check under ONE_AT_A_TIME). Unrelated
+       questions queued behind it are still presented. */
+    #[test]
+    fn a74_queued_duplicates_are_released_by_always() {
+        let _q = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+        use std::sync::mpsc::{channel, Sender};
+        let git = || sp("/usr/bin/git", &["status"], "/v");
+        let (cfg, w) = (store(), want74("/usr/bin/git"));
+        // (is the ssh question, its answer sender)
+        let (shown_tx, shown_rx) = channel::<(bool, Sender<Answer>)>();
+        let present = |shown_tx: Sender<(bool, Sender<Answer>)>| move |_: Kind, q: Question, tx: Sender<Answer>| shown_tx.send((q.text.contains("/usr/bin/ssh"), tx)).is_ok();
+        // the first one: on screen, its answer sender held here
+        let first = {
+            let (cfg, w, p) = (cfg.clone(), w.clone(), present(shown_tx.clone()));
+            std::thread::spawn(move || ask_with(Kind::Spawn, q74(&git(), &cfg, &w), p))
+        };
+        let (is_ssh, on_screen) = shown_rx.recv().unwrap();
+        assert!(!is_ssh);
+        let (checked_tx, checked_rx) = channel::<()>();
+        let mut queued = vec![];
+        for _ in 0..2 {
+            let (cfg, w, p, checked_tx) = (cfg.clone(), w.clone(), present(shown_tx.clone()), checked_tx.clone());
+            queued.push(std::thread::spawn(move || {
+                let mut r = remember74(&cfg, &w);
+                let inner = r.granted;
+                let once = std::sync::atomic::AtomicBool::new(false);
+                r.granted = Box::new(move || {
+                    let g = inner();
+                    if !once.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                        assert!(!g, "pre-lock check already granted");
+                        let _ = checked_tx.send(());
+                    }
+                    g
+                });
+                ask_with(Kind::Spawn, spawn_question_always(&git(), &w.plugin, &w.plugin_version, r), p)
+            }));
+        }
+        // an unrelated one (other program) queued too
+        let other = {
+            let (cfg, p) = (cfg.clone(), present(shown_tx.clone()));
+            let wo = want74("/usr/bin/ssh");
+            std::thread::spawn(move || ask_with(Kind::Spawn, q74(&sp("/usr/bin/ssh", &[], "/v"), &cfg, &wo), p))
+        };
+        checked_rx.recv().unwrap();
+        checked_rx.recv().unwrap();
+        on_screen.send(Answer::Always).unwrap();
+        // the next (and only) one presented is the unrelated ssh question: answer No
+        let (is_ssh, ssh) = shown_rx.recv().unwrap();
+        assert!(is_ssh, "a queued duplicate was presented after Always");
+        drop(ssh);
+        assert!(first.join().unwrap(), "Always answered no");
+        for h in queued {
+            assert!(h.join().unwrap(), "a queued duplicate was not released");
+        }
+        assert!(!other.join().unwrap(), "the unrelated question rode the grant");
+        drop(shown_tx);
+        assert!(shown_rx.try_recv().is_err(), "a queued duplicate was presented");
     }
 
     /* R2 (PR #42, CodeAnt): a held dialog and MAX_IN_FLIGHT - 1 requests queued behind

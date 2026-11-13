@@ -279,4 +279,46 @@ mod tests {
         assert!(plugin_fingerprint(&base, "evil").is_err());
         let _ = std::fs::remove_dir_all(&base);
     }
+
+    /* #74: the program hash is of the pinned file's bytes: a rewrite in place (same size,
+       mtime set back) or a replace by rename gives another hash, so a grant for the old
+       program no longer matches and the spawn is asked again; unchanged = same hash (cached). */
+    #[test]
+    fn spawn_allow_program_hash_change_asks_again() {
+        let d = std::env::temp_dir().join(format!("spawnallow-prog-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let prog = d.join("prog");
+        crate::testutil::write_exe(&prog, "#!/bin/sh\necho A\n").unwrap();
+        let p = prog.to_str().unwrap().to_string();
+        let hash = || {
+            let pin = crate::desk_proc::pin(&p).unwrap();
+            program_sha256(pin.stat_key(), || pin.open_read()).unwrap()
+        };
+        let h1 = hash();
+        assert_eq!(h1, fingerprint_hex_of(b"#!/bin/sh\necho A\n"));
+        assert_eq!(hash(), h1, "an unchanged program changed its hash");
+        let w1 = Want { program: p.clone(), program_sha256: h1.clone(), ..want("/v", "obsidian-git", "") };
+        let mut cfg = serde_json::json!({});
+        apply_add(&mut cfg, &w1.grant(1));
+        // same size, mtime restored: ctime still moves -> re-hashed
+        let mtime = std::fs::metadata(&prog).unwrap().modified().unwrap();
+        std::fs::write(&prog, "#!/bin/sh\necho B\n").unwrap();
+        std::fs::File::options().write(true).open(&prog).unwrap().set_modified(mtime).unwrap();
+        let h2 = hash();
+        assert_ne!(h1, h2, "an in-place rewrite kept the hash");
+        assert!(!granted(&cfg, &Want { program_sha256: h2, ..w1.clone() }), "a rewritten program rode the grant");
+        // replaced by rename (new inode)
+        let tmp = d.join("prog.new");
+        crate::testutil::write_exe(&tmp, "#!/bin/sh\necho C\n").unwrap();
+        std::fs::rename(&tmp, &prog).unwrap();
+        let h3 = hash();
+        assert_eq!(h3, fingerprint_hex_of(b"#!/bin/sh\necho C\n"));
+        assert!(!granted(&cfg, &Want { program_sha256: h3, ..w1.clone() }), "a replaced program rode the grant");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn fingerprint_hex_of(b: &[u8]) -> String {
+        hex(&Sha256::digest(b))
+    }
 }
