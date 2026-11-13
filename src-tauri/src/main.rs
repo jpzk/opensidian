@@ -6073,6 +6073,7 @@ fn win_toggle_max(win: tauri::Window) -> Result<bool, String> {
 fn present_nudge(webview: tauri::Webview) {
     #[cfg(target_os = "linux")]
     {
+        eprintln!("[present] #79 nudge: webview redraw on the next 2 frame-clock ticks");
         let _ = webview.with_webview(|pw| {
             use gtk::prelude::*;
             let left = std::cell::Cell::new(2u8);
