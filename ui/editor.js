@@ -2287,11 +2287,13 @@ Ed.lpExt = function (v, G) {
     ignoreEvent() { return true; }
   }
   const lineDeco = new Map();
-  let tcrGen = 0;   // gh #75: flips the stale-caret repaint class tcr0/tcr1 (see build)
+  let tcrGen = 0, tcrRow = -1;   // gh #75: stale-caret repaint class tcr0/tcr1 parity + the blank task row the caret was on last build (see build)
   const ld = c => { let d = lineDeco.get(c); if (!d) { d = Decoration.line({ class: c }); lineDeco.set(c, d); } return d; };
   const build = view => {
     const g = G(), st = view.state, doc = st.doc, sel = st.selection.main, out = [], labels = [];
     const cur = doc.lineAt(sel.head).number;
+    const tcrLeft = tcrRow !== cur ? tcrRow : -1, tp = " tcr" + (++tcrGen & 1);   // gh #75: see the tcr comment below
+    let tcrNext = -1;
     // plugin overlay tokens (a Templater command) take no markdown decoration, as in Obsidian
     const opq = Ed.lpOpaque ? Ed.lpOpaque(view) : null;
     const hit = (rs, s, e) => { for (const r of rs) if (s < r[1] && e > r[0]) return true; return false; };
@@ -2321,7 +2323,11 @@ Ed.lpExt = function (v, G) {
         // (box right + one glyph) stays on screen next to the live caret. Flip a paint-only class (tcr0/tcr1,
         // style.css: a transparent background-image layer, invisible) on the caret's blank task row on
         // every rebuild: a style change that needs a repaint makes WebKit repaint the WHOLE line box, which wipes it.
-        const tcr = ln.number === cur && P.wid.some(w => w.el && w.el.classList && w.el.classList.contains("tcar")) ? " tcr" + (++tcrGen & 1) : "";
+        // The row the caret just LEFT gets one more flip: its last rebuild was the BackSpace that left the stale bar
+        // (box shots B-click / E-click: bar on the row above), and dropping the class is not always a paint change.
+        const car = ln.number === cur && P.wid.some(w => w.el && w.el.classList && w.el.classList.contains("tcar"));
+        if (car) tcrNext = cur;
+        const tcr = car || ln.number === tcrLeft ? tp : "";
         out.push(ld((whole ? Ed.lpParse(g, "x").cls : P.cls) + (ln.number === cur ? " cur" : "") + tcr + fl).range(ln.from));
         for (let i = 0; i < P.els.length; i++) {
           const x = P.els[i];
@@ -2336,6 +2342,7 @@ Ed.lpExt = function (v, G) {
       const sig = labels.join(",");
       if (g.lp._rvsig !== sig) { g.lp._rvs = labels; g.lp._rvsig = sig; }
     }
+    tcrRow = tcrNext;
     return Decoration.set(out, true);
   };
   const plugin = ViewPlugin.fromClass(class {
