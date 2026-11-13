@@ -153,8 +153,14 @@ const Ed = {
         // #45: the done strike is drawn on the TEXT (span.tkt), not the row: a row-level
         // text-decoration also struck the literal indent of a nested item, a dash left of
         // the box. Empty text gets no span (a text-less element would become a widget leaf).
+        // gh #75: a BLANK task (no body) instead gets exactly such a leaf on purpose, span.tcar:
+        // a zero-width inline-block caret anchor after the checkbox (lpParse -> widget at
+        // ln.from + t.e, side 1). Without it the caret at the marker end (#46 keeps the box
+        // there) only maps into the hidden "[ ] " marker, which has no box, and WebKit paints
+        // it at the row start, LEFT of the checkbox.
         const body = rest.slice(4);
         if (body) { const tt = Ed.el("span", "tkt"); Ed.inline(g, tt, body); row.appendChild(tt); }
+        else row.appendChild(Ed.el("span", "tcar"));
       } else {
         Ed.tok([li0, li1], [li0, li1], "li");
         Ed.inline(g, row, rest);
@@ -1153,7 +1159,7 @@ const Ed = {
                    "1. numbered ~~s~~ ==hl== end", "```js", "text with https://x.example/z end",
                    // corpus inherited from the deleted scripts/edit-unit.js (it drove a pure
                    // API that no longer exists; the invariants it protected live on here)
-                   "   ", "###### h6", "## **bold** head", "- [x] done", "  - two spaces", "12) twelve",
+                   "   ", "###### h6", "## **bold** head", "- [x] done", "- [ ] ", "\t- [x] ", "  - two spaces", "12) twelve",
                    "> > deep", "> - a", "---", "a **b _c_ d** e", "![[Welcome]]", "a#nottag and #tag/sub",
                    "snake_case_word stays", "`a**b`", "text with <b>&amp;", "unclosed **bold",
                    "- **bold item** with [[Link]]", "\t\t1. deep ordered",
@@ -2310,6 +2316,8 @@ Ed.lpExt = function (v, G) {
           const x = P.els[i];
           if (x.e > x.s && !(ors && hit(ors, x.s, x.e))) out.push((rv && rv.has(i) ? x.rv : x.d).range(ln.from + x.s, ln.from + x.e));
         }
+        // leaves: checkbox, image, pdf frame, and the #75 blank-task caret anchor span.tcar (at t.e, side 1:
+        // right of the box, so the caret at the marker end maps to a rendered spot after the checkbox)
         for (const w of P.wid) if (!(ors && ors.some(r => r[0] < w.pos && w.pos < r[1]))) out.push(Decoration.widget({ widget: new Leaf(ln.text, w.k, w.el), side: 1 }).range(ln.from + w.pos));
       }
     }
