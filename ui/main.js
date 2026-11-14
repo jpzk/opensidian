@@ -5196,9 +5196,16 @@ function renderTabs(g) {
      no:dup    the note is already bookmarked — a drag adds no second row
                (unlike bmactive F3, whose menu path duplicates on purpose)
      (issue #31: a canvas or a board already bookmarked is no:dup too; a graph never is)
-     no:view   a fileless view (an unknown plugin view) has nothing to bookmark */
+     no:view   a fileless view (an unknown plugin view, a non-.md file) has nothing to bookmark
+   A plugin view backed by a note (an Excalidraw board, issue-48) bookmarks THAT note. */
 const TAB_EDGE = 40;
 let tabBmTok = "";                           // tab-bookmark: the live [tabbm:] decision ("" = not over the pane)
+/* issue-48: the note name a tab bookmarks as: a note tab = its name; a plugin view backed by a
+   vault .md (an Excalidraw board) = that note's path (pvNoteName, the name the menus write); else null */
+function tabBmName(tab) {
+  if (!tab) return null;
+  return tab.kind ? pvNoteName(tab) : (tab.name || null);
+}
 function tabBmWhy(tab) {                     // -> null (bookmarkable) or {code, msg}
   if (!tab) return { code: "view", msg: "nothing to bookmark" };
   const cvp = cvTabPath(tab), pvn = pvNoteName(tab);   // issue #31: canvas / graph / board tabs are views with an item
@@ -5306,7 +5313,7 @@ function tabDragStart(e, g, i) {
     if (t.kind === "bm") {                   // tab-bookmark: ONE write; the tab stays where it is
       await act("tab_bm", { grp: t.d.grp != null ? 1 : 0 }, () =>
         bmTab.kind ? tabBmItem(bmTab).then(item => bmApply("bm_add_view_at", { parent: t.d.parent, pos: t.d.pos, item }))   // issue #31
-                   : bmApply("bm_add_at", { parent: t.d.parent, pos: t.d.pos, name: bmTab.name }));
+                   : bmApply("bm_add_at", { parent: t.d.parent, pos: t.d.pos, name: tabBmName(bmTab) }));
       return;
     }
     await act("tab_drop", { kind: t.kind, groups: groups().length }, async () => {   // R20: pane/tab nodes MOVE, no layout rebuild

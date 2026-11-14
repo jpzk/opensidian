@@ -40,6 +40,7 @@ mod secrets;
 mod settings;
 mod spawn;
 mod spawner;
+mod spawn_allow; // #74: "Always allow this program" grants (key + plugin/program fingerprints) in ~/.opensidian.json
 mod desk_http;
 mod desk_net;
 mod desk_proc;
@@ -3794,8 +3795,56 @@ fn plugin_vfs(
    spawn-consent (b): on top of the flip, EVERY spawn is asked natively
    (consent::SPAWN_TITLE) with the Spec desk_proc::start will run — program,
    args after map_arg, cwd after map_cwd, env keys. Deny = EPERM, nothing
-   forked. scripts/consent-nobypass.sh fails the build if any path reaches
+   forked. #74: the one exception is a spawn the user answered "Always allow this
+   program" for earlier — same vault, same plugin with the same main.js + manifest.json
+   on disk, same program with the same bytes (spawn_want, spawn_allow.rs); the grant
+   is written only by the Remember.grant closure built here, after that button.
+   scripts/consent-nobypass.sh fails the build if any path reaches
    desk_proc::start without that question. */
+/// #74: what a plugin's spawn is, measured HERE (never taken from the page beyond the plugin
+/// id): the canonical vault, the plugin id (a valid id, enabled in this vault) with the sha256
+/// of its main.js + manifest.json on disk, the absolute program and the sha256 of the pinned
+/// file the exec will run. None = no "Always" offered (the reason is logged).
+fn spawn_want(root: &Path, plugin: Option<&str>, sp: &desk_proc::Spec) -> Option<spawn_allow::Want> {
+    let id = plugin?;
+    let why = |e: String| eprintln!("[desk] spawn {}: no Always offered for plugin {id:?}: {e}", sp.file);
+    if !plugins::valid_id(id) || !plugins::enabled_ids(root).iter().any(|e| e == id) {
+        why("not an enabled plugin of this vault".into());
+        return None;
+    }
+    let (plugin_sha256, plugin_version) = spawn_allow::plugin_fingerprint(root, id).map_err(why).ok()?;
+    let prog = sp.prog.as_ref()?;
+    let program_sha256 = spawn_allow::program_sha256(prog.stat_key(), || prog.open_read()).map_err(why).ok()?;
+    Some(spawn_allow::Want { vault: plugins::trust_key(root), plugin: id.to_string(), plugin_sha256, plugin_version, program: sp.file.clone(), program_sha256 })
+}
+
+/* #74 Settings > Allowed programs. The webview may LIST and REVOKE grants, never add one:
+   these two commands are the only spawnAllow surface it can reach (a grant is written only by
+   the Always answer of a native spawn dialog, desk_proc_spawn -> consent::ask). The list is
+   every grant in ~/.opensidian.json with its status re-measured from disk ("ok" | "outdated"
+   | "unknown": spawn_allow::status) and the ALWAYS_NOTE the pane shows above it.
+   async: status() reads plugin files and may hash a program; not on the main thread. */
+#[tauri::command]
+async fn spawn_allow_list() -> Result<serde_json::Value, String> {
+    let rows: Vec<serde_json::Value> = spawn_allow::grants(&cfg_value())
+        .iter()
+        .map(|g| {
+            let mut x = serde_json::to_value(g).unwrap_or(serde_json::Value::Null);
+            x["status"] = serde_json::Value::from(spawn_allow::status(g));
+            x
+        })
+        .collect();
+    Ok(serde_json::json!({ "note": consent::ALWAYS_NOTE, "grants": rows }))
+}
+
+/// #74: drop the grant for (vault, plugin, program); the next spawn asks again. Revoking a
+/// grant that is not there is not an error. Answers the list as it is after the revoke.
+#[tauri::command]
+async fn spawn_allow_revoke(vault: String, plugin: String, program: String) -> Result<serde_json::Value, String> {
+    cfg_update(&[cfgstore::Op::SpawnAllowRevoke { vault, plugin, program }]);
+    spawn_allow_list().await
+}
+
 #[tauri::command]
 async fn desk_proc_spawn(
     win: tauri::Window,
@@ -3804,6 +3853,7 @@ async fn desk_proc_spawn(
     args: Option<Vec<String>>,
     cwd: Option<String>,
     env: Option<std::collections::BTreeMap<String, String>>,
+    plugin: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
     if !plugins::is_trusted(&cfg_value(), &root) {
@@ -3816,7 +3866,25 @@ async fn desk_proc_spawn(
     let sp = desk_proc::Spec { file, args, cwd: desk_proc::map_cwd(&root, cwd.as_deref()), root: root.clone(), env: env.unwrap_or_default().into_iter().collect(), argv0: None, path: None, prog: None, dir: None };
     consent::check_env(&sp)?; // F6 + Q4: an env, or program + args + cwd, over the cap is refused, nothing asked
     let sp = consent::resolve(sp)?; // F1: file = the absolute path the dialog names and exec runs
-    if !consent::ask(slot, win, consent::Kind::Spawn, consent::spawn_question(&sp)).await? {
+    // #74: "Always allow this program" is offered only when the spawn names an enabled plugin of
+    // this vault whose main.js + manifest.json fingerprint from disk, and the pinned program
+    // hashes. Anything less = the question is asked as before, Deny / Allow once only.
+    let q = match spawn_want(&root, plugin.as_deref(), &sp) {
+        Some(want) => {
+            let (w1, w2) = (want.clone(), want.clone());
+            let remember = consent::Remember {
+                granted: Box::new(move || spawn_allow::granted(&cfg_value(), &w1)),
+                grant: Box::new(move || {
+                    let added = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                    eprintln!("[desk] spawn {}: always allowed for plugin {} (vault {})", w2.program, w2.plugin, w2.vault);
+                    cfg_update(&[cfgstore::Op::SpawnAllowAdd(w2.grant(added))]);
+                }),
+            };
+            consent::spawn_question_always(&sp, &want.plugin, &want.plugin_version, remember)
+        }
+        None => consent::spawn_question(&sp),
+    };
+    if !consent::ask(slot, win, consent::Kind::Spawn, q).await? {
         eprintln!("[desk] spawn {} {:?} cwd={}: denied by the user", sp.file, sp.args, sp.cwd.display());
         return Err(format!("EPERM: spawn {} denied by the user", sp.file));
     }
@@ -6126,6 +6194,30 @@ struct PosProbe {
     honoured: Option<bool>,
 }
 
+/* #79 (E3, scoped): WebKitGTK's DMA-BUF renderer is kept ON (WebKit's default) everywhere except an X11
+   display with NO compositing manager (no owner of _NET_WM_CM_S<n>; gdk_screen_is_composited reads exactly
+   that). There the box measured the bug: the Excalidraw canvas is painted in the page but the window keeps
+   the old frame until the next event (develop 23/60 opens). UI-side redraws (E1/E1b/E1c) and page-side
+   trailing frames (E2/E2b) did not bring it to 0, so only on that display the renderer falls back to WebKit's
+   non-DMA-BUF path. Wayland (always composited) and composited X11 keep DMA-BUF. An explicit
+   WEBKIT_DISABLE_DMABUF_RENDERER (any value, also =0) is the user's choice and is never overridden.
+   Runs before Tauri creates the first webview (WebKit reads the variable then; the web process inherits it). */
+#[cfg(target_os = "linux")]
+fn present_dmabuf_scope() {
+    use gdk::prelude::*;
+    const VAR: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
+    if std::env::var_os(VAR).is_some() || gtk::init().is_err() {
+        return;
+    }
+    let Some(display) = gdk::Display::default() else { return };
+    let screen = display.default_screen();
+    if screen.downcast_ref::<gdkx11::X11Screen>().is_none() || screen.is_composited() {
+        return; // Wayland, or X11 with a compositor: DMA-BUF on
+    }
+    eprintln!("[present] #79: X11 without a compositing manager -> {VAR}=1 for this window (DMA-BUF stays on elsewhere)");
+    std::env::set_var(VAR, "1");
+}
+
 #[cfg(target_os = "linux")]
 fn probe_drag_proto() -> DragProto {
     use gdk::prelude::*;
@@ -6620,6 +6712,9 @@ fn main() {
     // BEFORE GTK starts, so GNOME groups every window under the launcher; the X11
     // class follows after gtk_init via appid::plugin() (appid.rs).
     appid::apply();
+    // #79 (E3): DMA-BUF stays on, except where it is proven to drop frames — see present_dmabuf_scope.
+    #[cfg(target_os = "linux")]
+    present_dmabuf_scope();
     // RENAME MIGRATION (goal opensidian): old -> new table in migrate.rs —
     //   ~/.rustidian.json -> ~/.opensidian.json,
     //   <vault>/.rustidian-bookmarks -> <vault>/.opensidian-bookmarks (per vault, read_bm_tree),
@@ -6912,7 +7007,7 @@ fn main() {
             read_workspace, write_workspace,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
-            plugins_state, plugins_set, plugin_io, plugin_vfs, desk_proc_spawn, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
+            plugins_state, plugins_set, plugin_io, plugin_vfs, desk_proc_spawn, spawn_allow_list, spawn_allow_revoke, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
             desk_net_listen, desk_net_accept, desk_net_close, desk_sock_read, desk_sock_write, desk_sock_end, desk_sock_destroy,
             desk_http_request, desk_shell,
             plugin_store::store_list, plugin_store::store_detail, plugin_store::store_install, plugin_store::store_uninstall,
@@ -6986,6 +7081,31 @@ mod tests {
 
     fn nav(s: &str) -> bool {
         nav_allowed(&tauri::Url::parse(s).unwrap())
+    }
+
+    /* #74: the webview can LIST and REVOKE grants, never add one. Read the source: the only
+       code line that builds Op::SpawnAllowAdd is inside desk_proc_spawn (the grant closure run
+       after the native dialog's Always), and the two Settings commands are registered while no
+       other spawn_allow_* command exists. Comments are not code. */
+    #[test]
+    fn a74_only_the_spawn_dialog_adds_a_grant() {
+        let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
+        let tests_at = src.find("#[cfg(test)]\nmod tests").expect("tests module");
+        let lines: Vec<&str> = src[..tests_at].lines().collect();
+        let is_code = |l: &str| {
+            let t = l.trim_start();
+            !(t.starts_with("//") || t.starts_with("/*") || t.starts_with('*'))
+        };
+        let head = lines.iter().position(|l| l.starts_with("async fn desk_proc_spawn(")).expect("fn desk_proc_spawn");
+        let end = head + lines[head..].iter().position(|l| *l == "}").expect("desk_proc_spawn unterminated");
+        let adds: Vec<usize> = lines.iter().enumerate().filter(|(_, l)| is_code(l) && l.contains("SpawnAllowAdd")).map(|(i, _)| i).collect();
+        assert_eq!(adds.len(), 1, "expected exactly one SpawnAllowAdd in main.rs, found {adds:?}");
+        assert!(adds.iter().all(|i| (head..=end).contains(i)), "SpawnAllowAdd outside desk_proc_spawn at {adds:?}");
+        let cmds: Vec<&str> = lines.iter().filter(|l| l.contains("fn spawn_allow_")).copied().collect();
+        assert_eq!(cmds.len(), 2, "spawn_allow commands: {cmds:?}");
+        assert!(cmds.iter().any(|l| l.contains("fn spawn_allow_list(")) && cmds.iter().any(|l| l.contains("fn spawn_allow_revoke(")));
+        let reg = &src[src.find("generate_handler![").unwrap()..];
+        assert!(reg.contains("spawn_allow_list, spawn_allow_revoke"), "the Settings commands are not registered");
     }
 
     // tab-dataloss: the slow-write hook is inert unless set to a sane value
