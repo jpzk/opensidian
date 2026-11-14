@@ -7497,7 +7497,7 @@ mod tests {
        other spawn_allow_* command exists. Comments are not code. */
     #[test]
     fn a74_only_the_spawn_dialog_adds_a_grant() {
-        let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
+        let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs")).unwrap();
         let tests_at = src.find("#[cfg(test)]\nmod tests").expect("tests module");
         let lines: Vec<&str> = src[..tests_at].lines().collect();
         let is_code = |l: &str| {
@@ -7507,7 +7507,7 @@ mod tests {
         let head = lines.iter().position(|l| l.starts_with("async fn desk_proc_spawn(")).expect("fn desk_proc_spawn");
         let end = head + lines[head..].iter().position(|l| *l == "}").expect("desk_proc_spawn unterminated");
         let adds: Vec<usize> = lines.iter().enumerate().filter(|(_, l)| is_code(l) && l.contains("SpawnAllowAdd")).map(|(i, _)| i).collect();
-        assert_eq!(adds.len(), 1, "expected exactly one SpawnAllowAdd in main.rs, found {adds:?}");
+        assert_eq!(adds.len(), 1, "expected exactly one SpawnAllowAdd in lib.rs, found {adds:?}");
         assert!(adds.iter().all(|i| (head..=end).contains(i)), "SpawnAllowAdd outside desk_proc_spawn at {adds:?}");
         let cmds: Vec<&str> = lines.iter().filter(|l| l.contains("fn spawn_allow_")).copied().collect();
         assert_eq!(cmds.len(), 2, "spawn_allow commands: {cmds:?}");
