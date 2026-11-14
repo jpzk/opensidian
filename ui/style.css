@@ -311,7 +311,6 @@ body {
   --color-purple: #a882ff;
   --color-red: #fb464c;
   --color-yellow: #e0de71;
-  --cursor: pointer;
   --cursor-link: pointer;
   --divider-color: var(--bg-ribbon);
   --divider-color-hover: var(--border-strong);
