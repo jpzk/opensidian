@@ -1,0 +1,76 @@
+# THROWAWAY (goal andmerge): CI proof for the main->android merge of PR #38.
+# Lives only on branch android-merge-ci; never merged. Checks out the merge
+# commit and the pre-merge android head, so a failure that android already had
+# is told apart from one the merge introduced.
+name: merge-check
+on:
+  push:
+    branches: ['android-merge-ci']
+  workflow_dispatch: {}
+permissions:
+  contents: read
+env:
+  RUST_TOOLCHAIN: '1.98.0'
+  CARGO_TERM_COLOR: never
+jobs:
+  desktop:
+    name: desktop build+test (${{ matrix.rev }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        rev: ['7a7a917a77590592c8a3c63442c0e2ae182846e0', '2ce3659f446fa9b6354b7fc351da087f36c5e663']
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ matrix.rev }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: system packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends build-essential pkg-config libssl-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf file xvfb xauth
+      - name: rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+          rustc --version
+      - run: git log --oneline -1
+      - name: no conflict markers
+        run: "! git grep -n -e '^<<<<<<< ' -e '^>>>>>>> ' -- ':!*.md'"
+      - name: cargo build --locked
+        working-directory: src-tauri
+        run: cargo build --locked
+      - name: cargo test --locked
+        working-directory: src-tauri
+        run: xvfb-run -a cargo test --locked --no-fail-fast 2>&1 | tee ../test.log; exit ${PIPESTATUS[0]}
+      - name: test summary
+        if: always()
+        run: grep -E '^test result:|FAILED|panicked' test.log | head -60 || true
+  android:
+    name: android lib aarch64 (${{ matrix.rev }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        rev: ['7a7a917a77590592c8a3c63442c0e2ae182846e0', '2ce3659f446fa9b6354b7fc351da087f36c5e663']
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ matrix.rev }}
+          persist-credentials: false
+      - name: rust + android target
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target aarch64-linux-android
+          rustup default "$RUST_TOOLCHAIN"
+      - name: cargo build --target aarch64-linux-android --lib (= harness bin/android/build-so.sh)
+        working-directory: src-tauri
+        run: |
+          NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          ls "$NDK/aarch64-linux-android30-clang"
+          export CC_aarch64_linux_android=$NDK/aarch64-linux-android30-clang AR_aarch64_linux_android=$NDK/llvm-ar
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$NDK/aarch64-linux-android30-clang
+          export TAURI_ANDROID_PACKAGE_NAME_PREFIX=dev_koto TAURI_ANDROID_PACKAGE_NAME_APP_NAME=opensidian
+          cargo build --locked --target aarch64-linux-android --lib --release --features tauri/custom-protocol
+          ls -l target/aarch64-linux-android/release/libopensidian_lib.so
