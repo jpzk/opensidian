@@ -6791,6 +6791,15 @@ fn main() {
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(spawner::ARG)) {
         std::process::exit(spawner::run(&LiveSpawner));
     }
+    // #79: WebKitGTK's DMA-BUF renderer can leave a freshly painted page (e.g. an
+    // Excalidraw/plugin canvas) unpresented until the next input event, so the view
+    // looks blank or stale. Default it OFF before any GTK/WebKit init (WebKit reads
+    // the variable when its first web context is created; it cannot be changed at
+    // runtime). An explicit WEBKIT_DISABLE_DMABUF_RENDERER=0 still opts back in.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
     // perf-console: state the rule on the console BEFORE anything can breach it.
     // ONE line, printed unconditionally (breach or not), so "unusually long" is a
     // number you can read off the console instead of a promise in a comment. It is
