@@ -409,6 +409,35 @@ body {
   --tag-padding-y: 0;
   --tag-radius: 999px;
   --tag-size: .85em;
+  /* callouts (#59 slice 1): stock 1.13.7 app.css body block, verbatim names + formulas (see the
+     ".callout" section at the end of this file). The colours fall back to Obsidian's dark palette
+     literals instead of defining --color-* here: --text-error etc. already read var(--color-red, …)
+     with their own measured fallbacks, and defining --color-red would move them. */
+  --callout-border-width: 0px;
+  --callout-border-opacity: 0.25;
+  --callout-padding: var(--size-4-3) var(--size-4-3) var(--size-4-3) var(--size-4-6);
+  --callout-radius: var(--radius-s);
+  --callout-blend-mode: var(--highlight-mix-blend-mode, lighten);
+  --callout-title-color: inherit;
+  --callout-title-padding: 0;
+  --callout-title-size: inherit;
+  --callout-title-weight: calc(var(--font-weight) + var(--bold-modifier));
+  --callout-content-padding: 0;
+  --callout-content-background: transparent;
+  --callout-bug: var(--color-red, #fb464c);
+  --callout-default: var(--color-blue, #027aff);
+  --callout-error: var(--color-red, #fb464c);
+  --callout-example: var(--color-purple, #a882ff);
+  --callout-fail: var(--color-red, #fb464c);
+  --callout-important: var(--color-cyan, #53dfdd);
+  --callout-info: var(--color-blue, #027aff);
+  --callout-question: var(--color-orange, #e9973f);
+  --callout-success: var(--color-green, #44cf6e);
+  --callout-summary: var(--color-cyan, #53dfdd);
+  --callout-tip: var(--color-cyan, #53dfdd);
+  --callout-todo: var(--color-blue, #027aff);
+  --callout-warning: var(--color-orange, #e9973f);
+  --callout-quote: #9e9e9e;
 }
 /* ---------------------------------------------------------------------------
    LIGHT. Every value below was SAMPLED from a pixel of a running Obsidian
@@ -503,6 +532,21 @@ body:where(.theme-light) {
   --color-purple: #7852ee;
   --color-red: #e93147;
   --color-yellow: #e0ac00;
+  /* callouts (#59 slice 1): stock 1.13.7 .theme-light palette literals as fallbacks */
+  --callout-blend-mode: var(--highlight-mix-blend-mode, darken);
+  --callout-bug: var(--color-red, #e93147);
+  --callout-default: var(--color-blue, #086ddd);
+  --callout-error: var(--color-red, #e93147);
+  --callout-example: var(--color-purple, #7852ee);
+  --callout-fail: var(--color-red, #e93147);
+  --callout-important: var(--color-cyan, #00bfbc);
+  --callout-info: var(--color-blue, #086ddd);
+  --callout-question: var(--color-orange, #ec7500);
+  --callout-success: var(--color-green, #08b94e);
+  --callout-summary: var(--color-cyan, #00bfbc);
+  --callout-tip: var(--color-cyan, #00bfbc);
+  --callout-todo: var(--color-blue, #086ddd);
+  --callout-warning: var(--color-orange, #ec7500);
 }
 /* THEME TOKENS END */
 /* #59: graph canvas colours main.js palette() reads (PAL_VAR): a CSS consumer per stock graph token; fallbacks = what the canvas painted before
@@ -828,6 +872,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
        gap: 6px; padding: 0 8px; background: var(--bg-surface); color: var(--tab-text-color, var(--text-chrome-muted));
        cursor: pointer; font-size: var(--tab-font-size, 12px); border-right: 2px solid var(--tab-divider-color, var(--bg-ribbon)); max-width: var(--tab-max-width, none); border-radius: var(--tab-radius, 0); }   /* R22: overflow:hidden — the 16px close button + 16px padding cannot fit a 2px tab, so clip */
 .tab.active { background: var(--tab-background-active); color: var(--tab-text-color-active, var(--text-chrome)); border-radius: var(--tab-radius-active, var(--tab-radius, 0)); }   /* themematch: active tab = the note surface */
+.tab.active .t { color: var(--tab-text-color-focused-active, inherit) }   /* #84 x #85: our window is always focused, so the active tab title takes stock -focused-active; .tab itself keeps --tab-text-color(-active) */
 .tab .t { flex: 1 1 auto; min-width: 0; overflow: hidden;
           text-overflow: ellipsis; white-space: nowrap; font-weight: var(--tab-font-weight, inherit); }
 /* ux-1: close button — flex-none so ellipsized titles can never crush it,
@@ -839,7 +884,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .tab .x:hover { background: var(--border-strong); color: var(--text-chrome) }
 .tab.active .x { color: var(--tab-text-color-focused-active, var(--text-chrome-muted)) }   /* #59: our window is always the focused one; --tab-text-color-active owns the active tab ink, so the focused-active ink lands on its close glyph */
 .tab:not(.active) .t { color: var(--tab-text-color-focused, inherit) }   /* #59: focused-window ink for inactive tab titles; --tab-text-color stays on .tab */
-.pane.focused .tab.active .t { color: var(--tab-text-color-focused-active-current, inherit) }
+/* #59 slice 2: tab ink follows Obsidian's --tab-text-color-* (stock: tab = -focused, active tab = -focused-active,
+   its title in the FOCUSED group = -focused-active-current). Each falls back to our own colour, so a theme that
+   declares none paints exactly as before. */
+.pane.focused .tab.active .t { color: var(--tab-text-color-focused-active-current, var(--tab-text-color-focused-active, var(--text-chrome))) }
 /* ux-5: tab drag — ghost chip under the cursor + drop-target highlights */
 #tabghost { position: fixed; left: 0; top: 0; will-change: transform; z-index: var(--layer-dragged-item, 99); pointer-events: none;
             background: var(--border); color: var(--text-chrome); padding: 4px 12px;
@@ -1220,6 +1268,28 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 #delbtns button:focus { box-shadow: 0 0 0 2px var(--border-focus-ring) }
 #del-no:focus { background: var(--bg-button-default) }
 
+/* #59 slice 3: dialogs. The cards carry Obsidian's .modal-container > .modal and their buttons the classes STOCK
+   1.13.7 gives them (read off its own dialogs, not guessed): Delete = .mod-cta.mod-destructive, Cancel = .mod-cancel,
+   the link-count sentence = .mod-warning while it warns (ui/main.js openDelete), the Update links buttons none at all
+   (stock creates them classless), the vault picker's Create = .mod-cta. So a theme's selector rules reach them.
+   Stock's variable reads for those classes are repeated here at the ELEMENT, where a theme's body-level variables
+   resolve: .modal = --modal-background, border --modal-border-width (--border-width) solid --modal-border-color;
+   a plain button = --interactive-normal with --text-normal ink (focus keeps our ring); .mod-cta = --interactive-accent
+   with --text-on-accent; .mod-cta.mod-destructive = --background-modifier-error with --text-on-accent;
+   .mod-warning ink = --text-warning. Every var() falls back to ours, and the rules name OUR ids (plugin modals,
+   api-ui.js, also carry .modal-container > .modal and are left alone).
+   SCOPE: only while the theme the vault CHOSE (cssTheme) paints, not the bundled default an empty cssTheme falls back
+   to ([data-vthemecompat], ui/main.js vthemeMark),
+   so the look with no theme chosen (the bundled default, or the base sheet) does not move. #pcard gets no border:
+   it has none, and its geometry is pinned (see #pcard above). */
+:root[data-vthemecompat] :is(#picker > #pcard, .rnmc > #rnbox, #ulbox > #ulcard, #delbox > #delcard) { background-color: var(--modal-background, var(--background-primary, var(--bg-elevated))) }
+:root[data-vthemecompat] :is(.rnmc > #rnbox, #ulbox > #ulcard, #delbox > #delcard) { border-color: var(--modal-border-color, var(--border)); border-width: var(--modal-border-width, var(--border-width, 1px)) }
+:root[data-vthemecompat] :is(#ulbtns button, #del-no) { background-color: var(--interactive-normal, var(--bg-button-plain)); color: var(--text-normal, var(--bg-base)) }
+:root[data-vthemecompat] #p-create.mod-cta { background-color: var(--interactive-accent, var(--bg-button-primary)); color: var(--text-on-accent) }
+:root[data-vthemecompat] #del-yes.mod-cta.mod-destructive { background-color: var(--background-modifier-error, var(--text-banner-error)); color: var(--text-on-accent, var(--bg-base)) }
+:root[data-vthemecompat] #delsay.mod-warning { color: var(--text-warning, var(--text-quiet)) }
+.rnmc { display: contents }   /* the #rnbox wrapper only names the container; #rnbox stays position:fixed */
+
 /* R4X.7 Edit bookmark — the #delbox shape again (one modal geometry in this app,
    not three that drift): fixed overlay, 480px card, buttons bottom-right with
    Save last and accented. Ours
@@ -1301,7 +1371,12 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .lp:focus, .lp .lprow:focus { outline: none }
 .lp .tbox { vertical-align: middle }                            /* rendered task checkbox (x offsets: R15.11 below) */
 .lp.src .tbox { display: none }                                 /* source mode shows [ ] instead */
+.lp .tcar { display: inline-block; width: 0; height: 1em; vertical-align: text-bottom }   /* gh #75: zero-width caret anchor after a BLANK task's checkbox (editor.js span.tcar) */
+.lp.src .tcar { display: none }                                 /* source mode: the raw "[ ] " carries the caret */
+.lp .cm-line.tcr1 { background-image: linear-gradient(transparent, transparent) }   /* gh #75: tcr0<->tcr1 flip = a background-layer change, so WebKit repaints the whole blank task row and wipes a stale caret (editor.js build, tcr). Invisible: no colour, background-color untouched */
 .lp .h { font-weight: 700; color: var(--text-heading, currentColor) }   /* wasp: orange headings; currentColor = inherit for every theme that declares no --text-heading */
+/* #59 slice 2: per-level heading ink = the theme's --h<n>-color (Obsidian: h<n> { color: var(--h<n>-color) }), the
+   reading view below the same; a theme that declares none keeps --text-heading / currentColor, so the default is unchanged */
 .lp .h1 { font-size: var(--h1-size); color: var(--h1-color, var(--text-heading, currentColor)); font-family: var(--h1-font, inherit); font-style: var(--h1-style, inherit); font-variant: var(--h1-variant, inherit); }
 .lp .h2 { font-size: var(--h2-size); color: var(--h2-color, var(--text-heading, currentColor)); font-family: var(--h2-font, inherit); font-style: var(--h2-style, inherit); font-variant: var(--h2-variant, inherit); }
 .lp .h3 { font-size: var(--h3-size); color: var(--h3-color, var(--text-heading, currentColor)); font-family: var(--h3-font, inherit); font-style: var(--h3-style, inherit); font-variant: var(--h3-variant, inherit); }
@@ -2030,7 +2105,7 @@ span.is-flashing { background: var(--highlight-yellow) }
   position: relative; flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain;
   display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 0 }
 .pdf-embed .pdf-page { display: block; flex: 0 0 auto; width: 100%; height: auto; max-width: none;
-  margin: 0 auto; background: none }
+  margin: 0 auto; background: #fff }
 .pdf-embed.mod-broken .pdf-container::before {
   content: "This PDF could not be rendered."; margin: auto; color: var(--text-chrome-muted); font-size: 14px }
 /* stock's missing-file banner is 37 px tall; the R29.4 banner shrunk to match */
@@ -2150,3 +2225,75 @@ span.is-flashing { background: var(--highlight-yellow) }
 /* gh-icons #20: inline monochrome glyph in an icon-only button (replaces a text pictograph);
    inline at 12px, on the text's middle, so the button keeps its line box */
 svg.gi { width: 12px; height: 12px; vertical-align: -2px; display: inline-block; pointer-events: none }
+/* ---------------------------------------------------------------------------
+   CALLOUTS (#59 slice 1). The DOM is Obsidian's (src-tauri/src/callout.rs):
+   div.callout[data-callout][data-callout-fold] > div.callout-title
+   (div.callout-icon + div.callout-title-inner [+ div.callout-fold]) + div.callout-content.
+   Rules and formulas copied from stock 1.13.7 app.css (obsidian.asar app.css,
+   sha256 f612f1e8…4c41), same selectors and specificity, so a theme that styles
+   .callout / [data-callout] / --callout-* in Obsidian styles ours the same way.
+   Theme sheets load after this file and win on order. Defaults: body token blocks. */
+.callout {
+  --callout-color: var(--callout-default);
+  --callout-icon: lucide-pencil;
+}
+.callout[data-callout="abstract"], .callout[data-callout="summary"], .callout[data-callout="tldr"] { --callout-color: var(--callout-summary); --callout-icon: lucide-clipboard-list }
+.callout[data-callout="info"] { --callout-color: var(--callout-info); --callout-icon: lucide-info }
+.callout[data-callout="todo"] { --callout-color: var(--callout-todo); --callout-icon: lucide-check-circle-2 }
+.callout[data-callout="important"] { --callout-color: var(--callout-important); --callout-icon: lucide-flame }
+.callout[data-callout="tip"], .callout[data-callout="hint"] { --callout-color: var(--callout-tip); --callout-icon: lucide-flame }
+.callout[data-callout="success"], .callout[data-callout="check"], .callout[data-callout="done"] { --callout-color: var(--callout-success); --callout-icon: lucide-check }
+.callout[data-callout="question"], .callout[data-callout="help"], .callout[data-callout="faq"] { --callout-color: var(--callout-question); --callout-icon: help-circle }
+.callout[data-callout="warning"], .callout[data-callout="caution"], .callout[data-callout="attention"] { --callout-color: var(--callout-warning); --callout-icon: lucide-alert-triangle }
+.callout[data-callout="failure"], .callout[data-callout="fail"], .callout[data-callout="missing"] { --callout-color: var(--callout-fail); --callout-icon: lucide-x }
+.callout[data-callout="danger"], .callout[data-callout="error"] { --callout-color: var(--callout-error); --callout-icon: lucide-zap }
+.callout[data-callout="bug"] { --callout-color: var(--callout-bug); --callout-icon: lucide-bug }
+.callout[data-callout="example"] { --callout-color: var(--callout-example); --callout-icon: lucide-list }
+.callout[data-callout="quote"], .callout[data-callout="cite"] { --callout-color: var(--callout-quote); --callout-icon: quote-glyph }
+.callout {
+  overflow: hidden;
+  border-style: solid;
+  border-color: color-mix(in oklch, var(--callout-color) calc(var(--callout-border-opacity) * 100%), transparent);
+  border-width: var(--callout-border-width);
+  border-radius: var(--callout-radius);
+  margin: 1em 0;
+  mix-blend-mode: var(--callout-blend-mode);
+  background-color: color-mix(in oklch, var(--callout-color) 10%, transparent);
+  padding: var(--callout-padding);
+}
+.preview > .callout { margin-inline: auto }   /* keep the note-column centring (.preview > * ties and loses on order) */
+.callout.is-collapsible .callout-title { cursor: var(--cursor, default) }
+.callout-title {
+  padding: var(--callout-title-padding);
+  display: flex;
+  gap: var(--size-4-1);
+  font-size: var(--callout-title-size);
+  color: var(--callout-color);
+  line-height: var(--line-height-tight);
+  align-items: flex-start;
+}
+.callout-content {
+  overflow-x: auto;
+  padding: var(--callout-content-padding);
+  background-color: var(--callout-content-background);
+}
+.callout-content .callout { margin-top: 20px }
+.callout-icon { flex: 0 0 auto; display: flex; align-items: center }
+.callout-icon .svg-icon { color: var(--callout-color) }
+.callout-icon::after { content: "\200B" }
+.callout svg.svg-icon { height: var(--icon-size, 18px); width: var(--icon-size, 18px); stroke-width: var(--icon-stroke, 1.75px) }
+.callout-title-inner {
+  --font-weight: var(--callout-title-weight);
+  font-weight: var(--font-weight);
+  color: var(--callout-title-color);
+}
+.callout-fold { display: flex; align-items: center; padding-inline-end: var(--size-4-2) }
+.callout-fold::after { content: "\200B" }
+.callout-fold .svg-icon { transition: transform 100ms ease-in-out }
+.callout-fold.is-collapsed .svg-icon { transform: rotate(calc(var(--direction, 1) * -1 * 90deg)) }
+/* stock hides a folded body from JS (display:none on .callout-content); same effect here from the class */
+.callout.is-collapsed > .callout-content { display: none }
+/* live preview: the block widget (ui/editor.js Ed.calloutField) */
+.cm-callout { padding: 0; margin: 0 }
+.cm-callout .callout { margin: 0 }
+.cm-callout .callout-content .callout { margin: 1em 0 }

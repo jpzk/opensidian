@@ -19,6 +19,7 @@ use tauri::State;
 
 mod appid;
 mod builtins;
+mod callout; // #59: Obsidian callouts in the reading render
 use opensidian_lib::canvasfs;
 mod cfgstore;
 mod consent; // spawn-consent: native GTK prompts before trusting a vault and before every plugin spawn
@@ -40,6 +41,7 @@ mod secrets;
 mod settings;
 mod spawn;
 mod spawner;
+mod spawn_allow; // #74: "Always allow this program" grants (key + plugin/program fingerprints) in ~/.opensidian.json
 mod desk_http;
 mod desk_net;
 mod desk_proc;
@@ -1059,7 +1061,13 @@ fn list_images(v: State<Vault>, otel: Option<perf::Ctx>) -> Vec<String> {
 #[tauri::command]
 fn canvas_io(v: State<Vault>, op: String, path: Option<String>, data: Option<String>, otel: Option<perf::Ctx>) -> Result<serde_json::Value, String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
-    span_timed!(otel => "canvas_io", canvasfs::op(&root, &op, path.as_deref().unwrap_or(""), data.as_deref()))
+    let r = span_timed!(otel => "canvas_io", canvasfs::op(&root, &op, path.as_deref().unwrap_or(""), data.as_deref()));
+    // issue #31: a canvas renamed / moved takes its bookmarks along (stock FINDINGS rename); a trash
+    // (delete) leaves them, stale, as stock does (D5)
+    if let (true, Ok(_), Some(from), Some(to)) = (op == "rename", &r, path.as_deref(), data.as_deref()) {
+        rename_bookmark_path_in(&root, from, to);
+    }
+    r
 }
 
 /// canvas_attach (canvasfs::attach): a NEW png/jpg/jpeg/gif/webp file in the
@@ -2914,6 +2922,17 @@ fn render_with_br(content: &str, notes: &[String], imgs: &[String], reading: boo
     let mut opts = Options::all();
     opts.remove(Options::ENABLE_WIKILINKS);
     opts.remove(Options::ENABLE_SMART_PUNCTUATION);
+    // #59: GFM "alerts" would eat a bare `> [!note]` line (5 types only, no fold, no
+    // title) into <blockquote class="markdown-alert-note">; callouts are ours (callout.rs).
+    // ENABLE_GFM gates nothing else in pulldown-cmark 0.13.
+    opts.remove(Options::ENABLE_GFM);
+    // #59 callout state: one frame per open blockquote, Some((head, content div open))
+    // for a callout. `hdr`: 0 = no header pending, 1 = header paragraph not yet open,
+    // 2 = in it with the `[!type]` marker still in `buf`, 3 = in the title text.
+    let mut co: Vec<Option<(callout::Head, bool)>> = Vec::new();
+    let mut hdr = 0u8;
+    let mut hdr_line: &str = "";
+    let mut hdr_empty = true;
     // rvtask R2: reading view only — every task checkbox carries the 0-based FILE line of
     // its "[" (duplicates / nested / quoted / numbered map exactly), custom statuses
     // ("[/]" "[-]" ...) are tasks too (Obsidian Q2), and the li gets data-task + is-checked (Q5).
@@ -2943,6 +2962,36 @@ fn render_with_br(content: &str, notes: &[String], imgs: &[String], reading: boo
                 buf.push_str(&t)
             }
             other => {
+                // #59: a callout's header is its first paragraph. Anything else first
+                // (no paragraph, e.g. a setext heading) leaves the title at its default.
+                if hdr == 1 {
+                    if matches!(other, Event::Start(Tag::Paragraph)) {
+                        hdr = 2;
+                        continue;
+                    }
+                    if let Some(Some((h, _))) = co.last() {
+                        evs.push(Event::Html(format!("{}{}", callout::default_title(&h.ty), callout::close_title(h)).into()));
+                    }
+                    hdr = 0;
+                }
+                // #59: the first event of a callout's body opens its content div
+                if hdr == 0 && !matches!(other, Event::End(TagEnd::BlockQuote(_))) {
+                    if let Some(Some((_, open))) = co.last_mut() {
+                        if !*open {
+                            *open = true;
+                            evs.push(Event::Html(callout::CONTENT_OPEN.into()));
+                        }
+                    }
+                }
+                // #59: the header text starts with the `[!type]f` marker: drop it, the
+                // rest of the line is the title (still linkified + escaped below)
+                if hdr == 2 && !buf.is_empty() {
+                    if let Some(Some((h, _))) = co.last() {
+                        callout::strip_marker(&mut buf, hdr_line, h);
+                    }
+                    hdr = 3;
+                    hdr_empty = buf.trim().is_empty();
+                }
                 // rvtask: a custom-status marker "[c] " opening a list item arrives as
                 // plain text — pulldown only knows ' ' / x / X. Strip it, emit the box.
                 if !buf.is_empty() {
@@ -2969,7 +3018,53 @@ fn render_with_br(content: &str, notes: &[String], imgs: &[String], reading: boo
                     }
                     buf.clear();
                 }
+                // #59: the title is the header's FIRST line. A line break closes it and
+                // the rest of that paragraph opens the body; the paragraph's end closes it
+                // with no body yet (the content div opens on the next block, if any).
+                if hdr == 3 {
+                    let brk = matches!(other, Event::SoftBreak | Event::HardBreak);
+                    if brk || matches!(other, Event::End(TagEnd::Paragraph)) {
+                        if let Some(Some((h, open))) = co.last_mut() {
+                            let t = if hdr_empty { callout::default_title(&h.ty) } else { String::new() };
+                            evs.push(Event::Html(format!("{t}{}", callout::close_title(h)).into()));
+                            if brk {
+                                *open = true;
+                                evs.push(Event::Html(format!("{}<p>", callout::CONTENT_OPEN).into()));
+                            }
+                        }
+                        hdr = 0;
+                        continue;
+                    }
+                    hdr_empty = false;
+                }
                 match other {
+                    // #59: a blockquote opening with `[!type]` is a callout (callout.rs)
+                    Event::Start(Tag::BlockQuote(_)) => {
+                        let line = callout::first_line(content, range.start);
+                        match callout::head(line) {
+                            Some(h) if hdr == 0 => {
+                                evs.push(Event::Html(callout::open(&h).into()));
+                                hdr = 1;
+                                hdr_line = line;
+                                hdr_empty = true;
+                                co.push(Some((h, false)));
+                                continue;
+                            }
+                            _ => co.push(None),
+                        }
+                    }
+                    Event::End(TagEnd::BlockQuote(_)) => {
+                        if let Some(Some((h, open))) = co.pop() {
+                            if hdr != 0 {
+                                // header never closed (an empty quote body): close it now
+                                let t = if hdr_empty { callout::default_title(&h.ty) } else { String::new() };
+                                evs.push(Event::Html(format!("{t}{}", callout::close_title(&h)).into()));
+                                hdr = 0;
+                            }
+                            evs.push(Event::Html(if open { "</div></div>\n" } else { "</div>\n" }.into()));
+                            continue;
+                        }
+                    }
                     Event::TaskListMarker(checked) if reading => {
                         tk.marker(if checked { 'x' } else { ' ' }, range.start, &mut evs);
                         continue;
@@ -3100,6 +3195,7 @@ fn block_lines_of(content: &str) -> Vec<u32> {
     let mut opts = Options::all();
     opts.remove(Options::ENABLE_WIKILINKS);
     opts.remove(Options::ENABLE_SMART_PUNCTUATION);
+    opts.remove(Options::ENABLE_GFM); // #59: same options as the renderer (callouts are ours)
     // byte offset -> 1-based line, walked once in step with the (monotonic) block starts
     let mut nl: Vec<usize> = vec![0];
     for (i, b) in content.bytes().enumerate() {
@@ -3788,8 +3884,56 @@ fn plugin_vfs(
    spawn-consent (b): on top of the flip, EVERY spawn is asked natively
    (consent::SPAWN_TITLE) with the Spec desk_proc::start will run — program,
    args after map_arg, cwd after map_cwd, env keys. Deny = EPERM, nothing
-   forked. scripts/consent-nobypass.sh fails the build if any path reaches
+   forked. #74: the one exception is a spawn the user answered "Always allow this
+   program" for earlier — same vault, same plugin with the same main.js + manifest.json
+   on disk, same program with the same bytes (spawn_want, spawn_allow.rs); the grant
+   is written only by the Remember.grant closure built here, after that button.
+   scripts/consent-nobypass.sh fails the build if any path reaches
    desk_proc::start without that question. */
+/// #74: what a plugin's spawn is, measured HERE (never taken from the page beyond the plugin
+/// id): the canonical vault, the plugin id (a valid id, enabled in this vault) with the sha256
+/// of its main.js + manifest.json on disk, the absolute program and the sha256 of the pinned
+/// file the exec will run. None = no "Always" offered (the reason is logged).
+fn spawn_want(root: &Path, plugin: Option<&str>, sp: &desk_proc::Spec) -> Option<spawn_allow::Want> {
+    let id = plugin?;
+    let why = |e: String| eprintln!("[desk] spawn {}: no Always offered for plugin {id:?}: {e}", sp.file);
+    if !plugins::valid_id(id) || !plugins::enabled_ids(root).iter().any(|e| e == id) {
+        why("not an enabled plugin of this vault".into());
+        return None;
+    }
+    let (plugin_sha256, plugin_version) = spawn_allow::plugin_fingerprint(root, id).map_err(why).ok()?;
+    let prog = sp.prog.as_ref()?;
+    let program_sha256 = spawn_allow::program_sha256(prog.stat_key(), || prog.open_read()).map_err(why).ok()?;
+    Some(spawn_allow::Want { vault: plugins::trust_key(root), plugin: id.to_string(), plugin_sha256, plugin_version, program: sp.file.clone(), program_sha256 })
+}
+
+/* #74 Settings > Allowed programs. The webview may LIST and REVOKE grants, never add one:
+   these two commands are the only spawnAllow surface it can reach (a grant is written only by
+   the Always answer of a native spawn dialog, desk_proc_spawn -> consent::ask). The list is
+   every grant in ~/.opensidian.json with its status re-measured from disk ("ok" | "outdated"
+   | "unknown": spawn_allow::status) and the ALWAYS_NOTE the pane shows above it.
+   async: status() reads plugin files and may hash a program; not on the main thread. */
+#[tauri::command]
+async fn spawn_allow_list() -> Result<serde_json::Value, String> {
+    let rows: Vec<serde_json::Value> = spawn_allow::grants(&cfg_value())
+        .iter()
+        .map(|g| {
+            let mut x = serde_json::to_value(g).unwrap_or(serde_json::Value::Null);
+            x["status"] = serde_json::Value::from(spawn_allow::status(g));
+            x
+        })
+        .collect();
+    Ok(serde_json::json!({ "note": consent::ALWAYS_NOTE, "grants": rows }))
+}
+
+/// #74: drop the grant for (vault, plugin, program); the next spawn asks again. Revoking a
+/// grant that is not there is not an error. Answers the list as it is after the revoke.
+#[tauri::command]
+async fn spawn_allow_revoke(vault: String, plugin: String, program: String) -> Result<serde_json::Value, String> {
+    cfg_update(&[cfgstore::Op::SpawnAllowRevoke { vault, plugin, program }]);
+    spawn_allow_list().await
+}
+
 #[tauri::command]
 async fn desk_proc_spawn(
     win: tauri::Window,
@@ -3798,6 +3942,7 @@ async fn desk_proc_spawn(
     args: Option<Vec<String>>,
     cwd: Option<String>,
     env: Option<std::collections::BTreeMap<String, String>>,
+    plugin: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
     if !plugins::is_trusted(&cfg_value(), &root) {
@@ -3810,7 +3955,25 @@ async fn desk_proc_spawn(
     let sp = desk_proc::Spec { file, args, cwd: desk_proc::map_cwd(&root, cwd.as_deref()), root: root.clone(), env: env.unwrap_or_default().into_iter().collect(), argv0: None, path: None, prog: None, dir: None };
     consent::check_env(&sp)?; // F6 + Q4: an env, or program + args + cwd, over the cap is refused, nothing asked
     let sp = consent::resolve(sp)?; // F1: file = the absolute path the dialog names and exec runs
-    if !consent::ask(slot, win, consent::Kind::Spawn, consent::spawn_question(&sp)).await? {
+    // #74: "Always allow this program" is offered only when the spawn names an enabled plugin of
+    // this vault whose main.js + manifest.json fingerprint from disk, and the pinned program
+    // hashes. Anything less = the question is asked as before, Deny / Allow once only.
+    let q = match spawn_want(&root, plugin.as_deref(), &sp) {
+        Some(want) => {
+            let (w1, w2) = (want.clone(), want.clone());
+            let remember = consent::Remember {
+                granted: Box::new(move || spawn_allow::granted(&cfg_value(), &w1)),
+                grant: Box::new(move || {
+                    let added = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                    eprintln!("[desk] spawn {}: always allowed for plugin {} (vault {})", w2.program, w2.plugin, w2.vault);
+                    cfg_update(&[cfgstore::Op::SpawnAllowAdd(w2.grant(added))]);
+                }),
+            };
+            consent::spawn_question_always(&sp, &want.plugin, &want.plugin_version, remember)
+        }
+        None => consent::spawn_question(&sp),
+    };
+    if !consent::ask(slot, win, consent::Kind::Spawn, q).await? {
         eprintln!("[desk] spawn {} {:?} cwd={}: denied by the user", sp.file, sp.args, sp.cwd.display());
         return Err(format!("EPERM: spawn {} denied by the user", sp.file));
     }
@@ -4546,7 +4709,13 @@ enum BmNode {
     /// issue #44: a bookmarked PDF. `path` is Obsidian's `path` verbatim (it
     /// keeps its extension). Painted, and a click opens it in the PDF view; it
     /// is never a note NAME, so list_bookmarks and the rename walk skip it.
-    Pdf { path: String, title: Option<String>, x: BmExtra },
+    /// issue #31: every other FILE path stock bookmarks the same way — a canvas, a base, any
+    /// plugin file (docs/recon-bm31 D3). One variant: a PDF is the `.pdf` case of it.
+    Path { path: String, title: Option<String>, x: BmExtra },
+    /// issue #31: stock's `{"type":"graph","ctime","title","options"}` (D1), plus our `local`
+    /// key for a local graph (D2). `options`/`local` ride in `x.keys`, in file order, so a
+    /// stock item is re-emitted byte-for-byte; the pane reads them off `graph_spec`.
+    Graph { title: Option<String>, x: BmExtra },
     Group { title: String, items: Vec<BmNode>, x: BmExtra },
     /// an entry our model cannot express — Obsidian's `search`, a non-.md path,
     /// a future type. Not painted, not addressable, written back verbatim.
@@ -4566,7 +4735,7 @@ impl BmNode {
    `depth`, so the UI never walks a tree and cannot invent an order the file
    does not have; `kind` is "f" or "g" and R4X.5 `[bmt:]` publishes exactly
    this pair per row. */
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize)]
 struct BmRow {
     kind: String,
     depth: usize,
@@ -4584,6 +4753,13 @@ struct BmRow {
     /// issue #44: a PDF bookmark (`name` = its vault path, extension kept)
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pdf: bool,
+    /// issue #31: a non-note FILE row (canvas, base, plugin file; a PDF too): `name` is its vault
+    /// path, extension kept, and the click opens it in its own view
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    path: bool,
+    /// issue #31: a GRAPH row — `{options, local}` off the item, what the click reopens
+    #[serde(skip_serializing_if = "Option::is_none")]
+    graph: Option<serde_json::Value>,
 }
 
 /* the ONE parser, and it is TOLERANT by construction: a body that is not
@@ -4618,7 +4794,7 @@ fn bm_node_of(v: &serde_json::Value) -> BmNode {
             // `.pdf` path is a Pdf node (issue #44)
             let path = obj.get("path").and_then(|p| p.as_str()).unwrap_or("");
             let name = path.strip_suffix(".md").filter(|n| !n.is_empty());
-            if name.is_none() && !(path.len() > 4 && is_pdf_target(path)) {
+            if name.is_none() && !bm_is_file_path(path) {
                 return BmNode::Opaque(v.clone());
             }
             let title = obj.get("title").and_then(|t| t.as_str()).map(str::to_string);
@@ -4635,7 +4811,7 @@ fn bm_node_of(v: &serde_json::Value) -> BmNode {
             let x = BmExtra { ctime, keys };
             match name {
                 Some(n) => BmNode::File { name: n.to_string(), title, x },
-                None => BmNode::Pdf { path: path.to_string(), title, x },
+                None => BmNode::Path { path: path.to_string(), title, x },
             }
         }
         "group" => {
@@ -4661,8 +4837,47 @@ fn bm_node_of(v: &serde_json::Value) -> BmNode {
                 .collect();
             BmNode::Group { title, items, x: BmExtra { ctime, keys } }
         }
+        "graph" => {
+            // a non-string title or a non-object options/local is not ours to reshape
+            let title = match obj.get("title") {
+                None => None,
+                Some(serde_json::Value::String(t)) => Some(t.clone()),
+                Some(_) => return BmNode::Opaque(v.clone()),
+            };
+            if ["options", "local"].iter().any(|k| obj.get(*k).is_some_and(|o| !o.is_object())) {
+                return BmNode::Opaque(v.clone());
+            }
+            let keys = obj
+                .iter()
+                .filter(|(k, _)| {
+                    !(k.as_str() == "type" || k.as_str() == "title" || (k.as_str() == "ctime" && ctime.is_some()))
+                })
+                .map(|(k, val)| (k.clone(), val.clone()))
+                .collect();
+            BmNode::Graph { title, x: BmExtra { ctime, keys } }
+        }
         _ => BmNode::Opaque(v.clone()),
     }
+}
+
+/// issue #31: a file path stock bookmarks as `{"type":"file","path"}` that is not a note:
+/// a basename with a stem and an extension (`Board.canvas`, `Notes.base`, `a/Paper.pdf`).
+/// A bare `.pdf` or an extensionless path stays opaque, as before.
+fn bm_is_file_path(path: &str) -> bool {
+    let base = path.rsplit('/').next().unwrap_or(path);
+    matches!(base.rfind('.'), Some(i) if i > 0 && i + 1 < base.len()) && !path.ends_with(".md")
+}
+
+/// issue #31: the default label stock gives a graph bookmark (recon-bmactive Q4, s1-bookmarks.json)
+const BM_GRAPH_TITLE: &str = "Untitled Graph";
+
+/// the graph item's `options` + `local` as the pane needs them to reopen it
+fn bm_graph_spec(x: &BmExtra) -> serde_json::Value {
+    let get = |k: &str| x.keys.iter().find(|(kk, _)| kk == k).map(|(_, v)| v.clone());
+    serde_json::json!({
+        "options": get("options").unwrap_or_else(|| serde_json::json!({})),
+        "local": get("local").unwrap_or(serde_json::Value::Null),
+    })
 }
 
 fn read_bm_tree(root: &Path) -> Vec<BmNode> {
@@ -4737,10 +4952,10 @@ fn bm_value_of(n: &BmNode) -> serde_json::Value {
     use serde_json::{Map, Value};
     match n {
         BmNode::Opaque(v) => v.clone(),
-        BmNode::File { title, x, .. } | BmNode::Pdf { title, x, .. } => {
+        BmNode::File { title, x, .. } | BmNode::Path { title, x, .. } => {
             let path = match n {
                 BmNode::File { name, .. } => format!("{name}.md"),
-                BmNode::Pdf { path, .. } => path.clone(),
+                BmNode::Path { path, .. } => path.clone(),
                 _ => unreachable!(),
             };
             let mut m = Map::new();
@@ -4749,6 +4964,21 @@ fn bm_value_of(n: &BmNode) -> serde_json::Value {
                 m.insert("ctime".into(), Value::Number(c.clone()));
             }
             m.insert("path".into(), Value::String(path));
+            if let Some(t) = title {
+                m.insert("title".into(), Value::String(t.clone()));
+            }
+            for (k, v) in &x.keys {
+                m.insert(k.clone(), v.clone());
+            }
+            Value::Object(m)
+        }
+        BmNode::Graph { title, x } => {
+            // stock's key order: type, ctime, title, options (s1-bookmarks.json), then ours/unknown keys as read
+            let mut m = Map::new();
+            m.insert("type".into(), Value::String("graph".into()));
+            if let Some(c) = &x.ctime {
+                m.insert("ctime".into(), Value::Number(c.clone()));
+            }
             if let Some(t) = title {
                 m.insert("title".into(), Value::String(t.clone()));
             }
@@ -4810,7 +5040,7 @@ fn bm_names(nodes: &[BmNode], out: &mut Vec<String>) {
         match n {
             BmNode::File { name, .. } => out.push(name.clone()),
             BmNode::Group { items, .. } => bm_names(items, out),
-            BmNode::Opaque(_) | BmNode::Pdf { .. } => {} // not a name — carried, not listed
+            BmNode::Opaque(_) | BmNode::Path { .. } | BmNode::Graph { .. } => {} // not a name — carried, not listed
         }
     }
 }
@@ -4839,21 +5069,26 @@ fn bm_rows_in(nodes: &[BmNode], depth: usize, out: &mut Vec<BmRow>) {
                 let label = title
                     .clone()
                     .unwrap_or_else(|| name.rsplit('/').next().unwrap_or(name).to_string());
-                out.push(BmRow { kind: "f".into(), depth, name: name.clone(), label, ctime: None, pdf: false });
+                out.push(BmRow { kind: "f".into(), depth, name: name.clone(), label, ..Default::default() });
             }
-            BmNode::Pdf { path, title, .. } => {
+            BmNode::Path { path, title, .. } => {
                 // issue #44: `name` is the vault path the click opens in the PDF view
                 // PR #57 review: stock writes `"title": ""` (STOCK.md) — an empty title paints the basename
                 let label = title
                     .clone()
                     .filter(|t| !t.is_empty())
                     .unwrap_or_else(|| path.rsplit('/').next().unwrap_or(path).to_string());
-                out.push(BmRow { kind: "f".into(), depth, name: path.clone(), label, ctime: None, pdf: true });
+                out.push(BmRow { kind: "f".into(), depth, name: path.clone(), label, pdf: is_pdf_target(path), path: true, ..Default::default() });
             }
             BmNode::Group { title, items, x } => {
                 let ctime = x.ctime.as_ref().map(|c| c.to_string());
-                out.push(BmRow { kind: "g".into(), depth, name: title.clone(), label: title.clone(), ctime, pdf: false });
+                out.push(BmRow { kind: "g".into(), depth, name: title.clone(), label: title.clone(), ctime, ..Default::default() });
                 bm_rows_in(items, depth + 1, out);
+            }
+            BmNode::Graph { title, x } => {
+                // issue #31: stock paints the title; "Untitled Graph" is stock's default (D1)
+                let label = title.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| BM_GRAPH_TITLE.to_string());
+                out.push(BmRow { kind: "f".into(), depth, name: label.clone(), label, graph: Some(bm_graph_spec(x)), ..Default::default() });
             }
             BmNode::Opaque(_) => {} // preserved on disk, never painted
         }
@@ -5175,6 +5410,122 @@ fn bm_add_at_in(tree: &mut Vec<BmNode>, parent: Option<usize>, pos: usize, name:
     Ok(())
 }
 
+/* issue #31 — a VIEW bookmark: the item the UI built for a tab ({"type":"graph","options",
+   "local"?} for a graph, {"type":"file","path"} for a canvas / plugin file / note) as ONE
+   node, through the one parser so it is exactly what a read of the same bytes gives. Keys
+   come out in stock's order (type, ctime, title, then the rest as sent); the ctime is
+   minted here. A graph always carries a title (stock D1: "Untitled Graph" when none typed);
+   anything the model would carry as Opaque is refused — the pane could not paint it. */
+fn bm_view_node(item: &serde_json::Value, title: Option<&str>) -> Result<BmNode, String> {
+    use serde_json::{Map, Value};
+    let o = item.as_object().ok_or("a bookmark item is an object")?;
+    let ty = o.get("type").and_then(Value::as_str).unwrap_or("");
+    if ty != "graph" && ty != "file" {
+        return Err(format!("cannot bookmark a {ty:?} item"));
+    }
+    let mut m = Map::new();
+    m.insert("type".into(), Value::String(ty.into()));
+    if let Some(c) = BmExtra::now().ctime {
+        m.insert("ctime".into(), Value::Number(c));
+    }
+    let typed = title.filter(|t| !t.is_empty()).map(str::to_string);
+    let t = typed.or_else(|| o.get("title").and_then(Value::as_str).filter(|t| !t.is_empty()).map(str::to_string));
+    match (ty, t) {
+        ("graph", t) => {
+            m.insert("title".into(), Value::String(t.unwrap_or_else(|| BM_GRAPH_TITLE.to_string())));
+        }
+        (_, Some(t)) => {
+            m.insert("title".into(), Value::String(t));
+        }
+        _ => {}
+    }
+    for (k, v) in o {
+        if !matches!(k.as_str(), "type" | "ctime" | "title") {
+            m.insert(k.clone(), v.clone());
+        }
+    }
+    let n = bm_node_of(&Value::Object(m));
+    if matches!(n, BmNode::Opaque(_) | BmNode::Group { .. }) {
+        return Err("this item cannot be shown in the bookmarks pane".to_string());
+    }
+    Ok(n)
+}
+
+/// the vault path a node's file item names (a note -> name + ".md"), for the drag's dup refusal
+fn bm_node_path(n: &BmNode) -> Option<String> {
+    match n {
+        BmNode::File { name, .. } => Some(format!("{name}.md")),
+        BmNode::Path { path, .. } => Some(path.clone()),
+        _ => None,
+    }
+}
+fn bm_has_path(nodes: &[BmNode], p: &str) -> bool {
+    nodes.iter().any(|n| match n {
+        BmNode::Group { items, .. } => bm_has_path(items, p),
+        _ => bm_node_path(n).as_deref() == Some(p),
+    })
+}
+
+/* issue #31: the Add bookmark modal's Save for a view (bm_add_in's placement: the end of
+   the top level, or the LAST child of group row `into`). */
+fn bm_add_view_in(tree: &mut Vec<BmNode>, into: Option<usize>, item: &serde_json::Value, title: Option<&str>) -> Result<(), String> {
+    let node = bm_view_node(item, title)?;
+    match into {
+        None => {
+            tree.push(node);
+            Ok(())
+        }
+        Some(ix) => {
+            let p = bm_path_of(tree, ix).ok_or("no such group")?;
+            match bm_at_mut(tree, &p) {
+                Some(BmNode::Group { items, .. }) => {
+                    items.push(node);
+                    Ok(())
+                }
+                _ => Err("target row is not a group".to_string()),
+            }
+        }
+    }
+}
+
+/* issue #31: a VIEW tab dropped on the pane (bm_add_at_in's slot vocabulary). A file item
+   already bookmarked anywhere is refused like a note (the drag means "remember this tab");
+   a graph item never is — two graph bookmarks with different settings are two views. */
+fn bm_add_view_at_in(tree: &mut Vec<BmNode>, parent: Option<usize>, pos: usize, item: &serde_json::Value) -> Result<(), String> {
+    let node = bm_view_node(item, None)?;
+    if let Some(p) = bm_node_path(&node) {
+        if bm_has_path(tree, &p) {
+            return Err("already bookmarked".to_string());
+        }
+    }
+    let items: &mut Vec<BmNode> = match parent {
+        None => tree,
+        Some(g) => {
+            let p = bm_path_of(tree, g).ok_or("no such group")?;
+            match bm_at_mut(tree, &p) {
+                Some(BmNode::Group { items, .. }) => items,
+                _ => return Err("target row is not a group".to_string()),
+            }
+        }
+    };
+    let raw = bm_raw_slot(items, pos);
+    items.insert(raw, node);
+    Ok(())
+}
+
+/* issue #31: the canvas / plugin-file toggle (tab menu, explorer menu): OFF drops the first
+   node with that path at any depth, ON appends a Path node at the top level. */
+fn bm_toggle_path_in(tree: &mut Vec<BmNode>, path: &str) -> Result<(), String> {
+    if bm_drop_first_path(tree, path) {
+        return Ok(());
+    }
+    if !bm_is_file_path(path) {
+        return Err("not a file path".to_string());
+    }
+    tree.push(BmNode::Path { path: path.to_string(), title: None, x: BmExtra::now() });
+    Ok(())
+}
+
 /* R9.8 — a bookmark IS a vault-relative name, so the note that changes its
    name takes its bookmark with it. Called from move_note_in and nowhere else:
    that is the one function that knows both ends, and it is the function BOTH
@@ -5222,7 +5573,7 @@ fn rename_bookmark_in(root: &Path, old: &str, new: &str) {
    is the stale-bookmark collapse R9.8 already required. Returns whether the
    old name was found at all, because "not bookmarked" means NO write. */
 fn bm_rename_walk(tree: &mut Vec<BmNode>, old: &str, new: &str) -> bool {
-    fn walk(nodes: &mut Vec<BmNode>, old: &str, new: &str, done: &mut bool) {
+    fn walk(nodes: &mut Vec<BmNode>, old: &str, new: &str, done: &mut bool, moved: &mut bool) {
         let mut i = 0;
         while i < nodes.len() {
             let mut drop = false;
@@ -5235,8 +5586,19 @@ fn bm_rename_walk(tree: &mut Vec<BmNode>, old: &str, new: &str) -> bool {
                         drop = true;
                     }
                 }
-                BmNode::Group { items, .. } => walk(items, old, new, done),
-                BmNode::Opaque(_) | BmNode::Pdf { .. } => {} // not a name; never followed, never dropped
+                BmNode::Group { items, .. } => walk(items, old, new, done, moved),
+                // issue #31 (D2): a local-graph bookmark follows its renamed CENTRE note; every one
+                // of them does (stock keeps no second rule), and none is ever dropped
+                BmNode::Graph { x, .. } => {
+                    let (o, n) = (format!("{old}.md"), format!("{new}.md"));
+                    for (k, v) in x.keys.iter_mut() {
+                        if k == "local" && v.get("file").and_then(|f| f.as_str()) == Some(o.as_str()) {
+                            v["file"] = serde_json::Value::String(n.clone());
+                            *moved = true;
+                        }
+                    }
+                }
+                BmNode::Opaque(_) | BmNode::Path { .. } => {} // not a name; never followed, never dropped
             }
             if drop {
                 nodes.remove(i);
@@ -5245,9 +5607,36 @@ fn bm_rename_walk(tree: &mut Vec<BmNode>, old: &str, new: &str) -> bool {
             }
         }
     }
-    let mut done = false;
-    walk(tree, old, new, &mut done);
-    done
+    let (mut done, mut moved) = (false, false);
+    walk(tree, old, new, &mut done, &mut moved);
+    done || moved
+}
+
+/* issue #31 — a non-note FILE that changes its path (a canvas renamed or moved through
+   canvas_io) takes its bookmarks with it, IN PLACE, every match at any depth: stock
+   follows the rename (FINDINGS rename). No match = no write, as rename_bookmark_in. */
+fn bm_rename_path_walk(nodes: &mut [BmNode], old: &str, new: &str) -> bool {
+    let mut hit = false;
+    for n in nodes.iter_mut() {
+        match n {
+            BmNode::Path { path, .. } if path == old => {
+                *path = new.to_string();
+                hit = true;
+            }
+            BmNode::Group { items, .. } => hit |= bm_rename_path_walk(items, old, new),
+            _ => {}
+        }
+    }
+    hit
+}
+fn rename_bookmark_path_in(root: &Path, old: &str, new: &str) {
+    if old == new || !root.join(BM_FILE).is_file() {
+        return;
+    }
+    let mut tree = read_bm_tree(root);
+    if bm_rename_path_walk(&mut tree, old, new) {
+        let _ = write_bm_tree(root, &tree); // best-effort: the file is already moved (R9.8 rationale)
+    }
 }
 
 /* toggle_bookmark keeps its by-NAME signature (R9.4/R20.4): toggling ON
@@ -5258,19 +5647,19 @@ fn bm_toggle_in(tree: &mut Vec<BmNode>, name: &str) {
     // issue #44 (PR #57 review): a PDF row's "Remove" toggles its vault PATH. A note bookmark of
     // that name still wins (unchanged behaviour); only when there is none is a Pdf node with that
     // exact path dropped — never appended as a bogus "x.pdf.md" note bookmark.
-    if !bm_drop_first_name(tree, name) && !(is_pdf_target(name) && bm_drop_first_pdf(tree, name)) {
+    if !bm_drop_first_name(tree, name) && !(is_pdf_target(name) && bm_drop_first_path(tree, name)) {
         tree.push(BmNode::file(name));
     }
 }
 
-fn bm_drop_first_pdf(nodes: &mut Vec<BmNode>, path: &str) -> bool {
+fn bm_drop_first_path(nodes: &mut Vec<BmNode>, path: &str) -> bool {
     for i in 0..nodes.len() {
-        if matches!(&nodes[i], BmNode::Pdf { path: p, .. } if p == path) {
+        if matches!(&nodes[i], BmNode::Path { path: p, .. } if p == path) {
             nodes.remove(i);
             return true;
         }
         if let BmNode::Group { items, .. } = &mut nodes[i] {
-            if bm_drop_first_pdf(items, path) {
+            if bm_drop_first_path(items, path) {
                 return true;
             }
         }
@@ -5305,7 +5694,7 @@ fn bookmark_rows(v: State<Vault>) -> Vec<BmRow> {
 }
 
 #[tauri::command]
-fn toggle_bookmark(v: State<Vault>, name: String, pdf: Option<bool>) -> Result<Vec<String>, String> {
+fn toggle_bookmark(v: State<Vault>, name: String, pdf: Option<bool>, path: Option<bool>) -> Result<Vec<String>, String> {
     span_timed!("toggle_bookmark", {
         let root = cur_vault(&v).ok_or("no vault open")?;
         let mut tree = read_bm_tree(&root);
@@ -5313,8 +5702,11 @@ fn toggle_bookmark(v: State<Vault>, name: String, pdf: Option<bool>) -> Result<V
         // (`pdf: true`) and drops ONLY the Pdf node with that path — a note bookmark of the same
         // logical name (note "x.pdf.md" = File{name:"x.pdf"}) is never touched. Every other caller
         // omits the flag and keeps the by-NAME toggle unchanged.
-        if pdf == Some(true) {
-            bm_drop_first_pdf(&mut tree, &name);
+        if path == Some(true) {
+            // issue #31: a canvas / plugin file toggles by its vault PATH (Path node, never a note name)
+            bm_toggle_path_in(&mut tree, &name)?;
+        } else if pdf == Some(true) {
+            bm_drop_first_path(&mut tree, &name);
         } else {
             bm_toggle_in(&mut tree, &name);
         }
@@ -5376,6 +5768,34 @@ fn bm_drag(v: State<Vault>, ix: usize, parent: Option<usize>, pos: usize) -> Res
 #[tauri::command]
 fn bm_add_at(v: State<Vault>, parent: Option<usize>, pos: usize, name: String) -> Result<Vec<BmRow>, String> {
     span_timed!("bm_add_at", bm_apply(&v, |t| bm_add_at_in(t, parent, pos, &name)))
+}
+
+/* issue #31: the Add bookmark modal's Save for a graph / local graph (bm_add_view_in). */
+#[tauri::command]
+fn bm_add_view(v: State<Vault>, into: Option<usize>, item: serde_json::Value, title: Option<String>) -> Result<Vec<BmRow>, String> {
+    span_timed!("bm_add_view", bm_apply(&v, |t| bm_add_view_in(t, into, &item, title.as_deref())))
+}
+
+/* issue #31: a graph / canvas / plugin-view tab dropped on the pane (bm_add_view_at_in). */
+#[tauri::command]
+fn bm_add_view_at(v: State<Vault>, parent: Option<usize>, pos: usize, item: serde_json::Value) -> Result<Vec<BmRow>, String> {
+    span_timed!("bm_add_view_at", bm_apply(&v, |t| bm_add_view_at_in(t, parent, pos, &item)))
+}
+
+/* issue #31: the row menu's Remove for a row that has no NAME to toggle (a graph item; a
+   canvas / plugin-file path): THAT row's node leaves, wherever it sits. A group row is refused
+   here (bm_group_delete owns it, with its subtree). */
+fn bm_remove_in(tree: &mut Vec<BmNode>, ix: usize) -> Result<(), String> {
+    let p = bm_path_of(tree, ix).ok_or("no such row")?;
+    if matches!(bm_at(tree, &p), Some(BmNode::Group { .. })) {
+        return Err("a group row is deleted with Delete".to_string());
+    }
+    bm_take(tree, &p).map(|_| ()).ok_or_else(|| "no such row".to_string())
+}
+
+#[tauri::command]
+fn bm_remove(v: State<Vault>, ix: usize) -> Result<Vec<BmRow>, String> {
+    span_timed!("bm_remove", bm_apply(&v, |t| bm_remove_in(t, ix)))
 }
 
 /* R11 watcher thread: every TICK_MS walk the vault (stat only), diff against
@@ -5861,6 +6281,30 @@ struct PosProbe {
     t0: Option<std::time::Instant>,
     /// None = not measured yet; Some(true) = the window moved when asked.
     honoured: Option<bool>,
+}
+
+/* #79 (E3, scoped): WebKitGTK's DMA-BUF renderer is kept ON (WebKit's default) everywhere except an X11
+   display with NO compositing manager (no owner of _NET_WM_CM_S<n>; gdk_screen_is_composited reads exactly
+   that). There the box measured the bug: the Excalidraw canvas is painted in the page but the window keeps
+   the old frame until the next event (develop 23/60 opens). UI-side redraws (E1/E1b/E1c) and page-side
+   trailing frames (E2/E2b) did not bring it to 0, so only on that display the renderer falls back to WebKit's
+   non-DMA-BUF path. Wayland (always composited) and composited X11 keep DMA-BUF. An explicit
+   WEBKIT_DISABLE_DMABUF_RENDERER (any value, also =0) is the user's choice and is never overridden.
+   Runs before Tauri creates the first webview (WebKit reads the variable then; the web process inherits it). */
+#[cfg(target_os = "linux")]
+fn present_dmabuf_scope() {
+    use gdk::prelude::*;
+    const VAR: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
+    if std::env::var_os(VAR).is_some() || gtk::init().is_err() {
+        return;
+    }
+    let Some(display) = gdk::Display::default() else { return };
+    let screen = display.default_screen();
+    if screen.downcast_ref::<gdkx11::X11Screen>().is_none() || screen.is_composited() {
+        return; // Wayland, or X11 with a compositor: DMA-BUF on
+    }
+    eprintln!("[present] #79: X11 without a compositing manager -> {VAR}=1 for this window (DMA-BUF stays on elsewhere)");
+    std::env::set_var(VAR, "1");
 }
 
 #[cfg(target_os = "linux")]
@@ -6357,6 +6801,9 @@ fn main() {
     // BEFORE GTK starts, so GNOME groups every window under the launcher; the X11
     // class follows after gtk_init via appid::plugin() (appid.rs).
     appid::apply();
+    // #79 (E3): DMA-BUF stays on, except where it is proven to drop frames — see present_dmabuf_scope.
+    #[cfg(target_os = "linux")]
+    present_dmabuf_scope();
     // RENAME MIGRATION (goal opensidian): old -> new table in migrate.rs —
     //   ~/.rustidian.json -> ~/.opensidian.json,
     //   <vault>/.rustidian-bookmarks -> <vault>/.opensidian-bookmarks (per vault, read_bm_tree),
@@ -6644,12 +7091,12 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, canvas_io, canvas_attach, paste_image, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, bm_add_view, bm_add_view_at, bm_remove, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
             read_workspace, write_workspace,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
-            plugins_state, plugins_set, plugin_io, plugin_vfs, desk_proc_spawn, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
+            plugins_state, plugins_set, plugin_io, plugin_vfs, desk_proc_spawn, spawn_allow_list, spawn_allow_revoke, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
             desk_net_listen, desk_net_accept, desk_net_close, desk_sock_read, desk_sock_write, desk_sock_end, desk_sock_destroy,
             desk_http_request, desk_shell,
             plugin_store::store_list, plugin_store::store_detail, plugin_store::store_install, plugin_store::store_uninstall,
@@ -6723,6 +7170,31 @@ mod tests {
 
     fn nav(s: &str) -> bool {
         nav_allowed(&tauri::Url::parse(s).unwrap())
+    }
+
+    /* #74: the webview can LIST and REVOKE grants, never add one. Read the source: the only
+       code line that builds Op::SpawnAllowAdd is inside desk_proc_spawn (the grant closure run
+       after the native dialog's Always), and the two Settings commands are registered while no
+       other spawn_allow_* command exists. Comments are not code. */
+    #[test]
+    fn a74_only_the_spawn_dialog_adds_a_grant() {
+        let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
+        let tests_at = src.find("#[cfg(test)]\nmod tests").expect("tests module");
+        let lines: Vec<&str> = src[..tests_at].lines().collect();
+        let is_code = |l: &str| {
+            let t = l.trim_start();
+            !(t.starts_with("//") || t.starts_with("/*") || t.starts_with('*'))
+        };
+        let head = lines.iter().position(|l| l.starts_with("async fn desk_proc_spawn(")).expect("fn desk_proc_spawn");
+        let end = head + lines[head..].iter().position(|l| *l == "}").expect("desk_proc_spawn unterminated");
+        let adds: Vec<usize> = lines.iter().enumerate().filter(|(_, l)| is_code(l) && l.contains("SpawnAllowAdd")).map(|(i, _)| i).collect();
+        assert_eq!(adds.len(), 1, "expected exactly one SpawnAllowAdd in main.rs, found {adds:?}");
+        assert!(adds.iter().all(|i| (head..=end).contains(i)), "SpawnAllowAdd outside desk_proc_spawn at {adds:?}");
+        let cmds: Vec<&str> = lines.iter().filter(|l| l.contains("fn spawn_allow_")).copied().collect();
+        assert_eq!(cmds.len(), 2, "spawn_allow commands: {cmds:?}");
+        assert!(cmds.iter().any(|l| l.contains("fn spawn_allow_list(")) && cmds.iter().any(|l| l.contains("fn spawn_allow_revoke(")));
+        let reg = &src[src.find("generate_handler![").unwrap()..];
+        assert!(reg.contains("spawn_allow_list, spawn_allow_revoke"), "the Settings commands are not registered");
     }
 
     // tab-dataloss: the slow-write hook is inert unless set to a sane value
@@ -8450,11 +8922,12 @@ mod tests {
         )
         .unwrap();
         let t = read_bm_tree(&root);
-        // the pane paints ONLY what we model...
-        assert_eq!(bm_rows_of(&t).iter().map(|r| r.name.clone()).collect::<Vec<_>>(), vec!["Plain"]);
-        // ...row 0 is "Plain" even though two opaque entries precede it on
+        // the pane paints ONLY what we model — issue #31: a canvas path is modelled now
+        // (D3, painted by its basename), the search entry still is not...
+        assert_eq!(bm_rows_of(&t).iter().map(|r| r.name.clone()).collect::<Vec<_>>(), vec!["Diagram.canvas", "Plain"]);
+        // ...row 1 is "Plain" even though an opaque entry precedes the canvas on
         // disk: rows never number an opaque, paths stay raw child indices
-        assert_eq!(bm_path_of(&t, 0), Some(vec![2]));
+        assert_eq!(bm_path_of(&t, 1), Some(vec![2]));
         // ...and an edit does not cost the vault the other two entries
         let mut t = t;
         bm_toggle_in(&mut t, "Plain"); // remove the only modelled entry
@@ -8494,6 +8967,99 @@ mod tests {
         assert_eq!(v["items"][3]["path"], "Plain.md");
     }
 
+    /// issue #31 (docs/recon-bm31 D1-D3): stock's graph item, our local-graph item and a canvas
+    /// / base file item are PAINTED rows, and a write gives every one back byte-for-byte per item
+    /// (stock layout, key order, unknown keys); search + folder stay opaque and unpainted.
+    #[test]
+    fn issue31_graph_canvas_items_paint_and_round_trip() {
+        let body = r#"{"items": [
+                {"type": "graph", "ctime": 1, "title": "Untitled Graph", "options": {"search": "path:F", "repelStrength": 13, "zz": [1]}},
+                {"type": "graph", "ctime": 2, "title": "B (local)", "options": {"search": ""}, "local": {"file": "B.md", "localJumps": 2}},
+                {"type": "file", "ctime": 3, "path": "Board.canvas"},
+                {"type": "file", "ctime": 4, "path": "Notes.base"},
+                {"type": "search", "ctime": 5, "query": "alpha"},
+                {"type": "folder", "ctime": 6, "path": "F"},
+                {"type": "graph", "ctime": 7, "title": 3},
+                {"type": "file", "ctime": 8, "path": "P.md"}
+            ]}"#;
+        let t = parse_bm_tree(body);
+        let rows = bm_rows_of(&t);
+        assert_eq!(rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),
+                   vec!["Untitled Graph", "B (local)", "Board.canvas", "Notes.base", "P"]);
+        assert_eq!(rows[0].graph.as_ref().unwrap()["options"]["repelStrength"], 13);
+        assert_eq!(rows[0].graph.as_ref().unwrap()["local"], serde_json::Value::Null);
+        assert_eq!(rows[1].graph.as_ref().unwrap()["local"]["file"], "B.md");
+        assert_eq!(rows.iter().map(|r| (r.path, r.pdf)).collect::<Vec<_>>(),
+                   vec![(false, false), (false, false), (true, false), (true, false), (false, false)]);
+        let mut names = Vec::new();
+        bm_names(&t, &mut names);
+        assert_eq!(names, vec!["P"], "a graph / canvas row is no note name");
+        let src: serde_json::Value = serde_json::from_str(body).unwrap();
+        let out: serde_json::Value = serde_json::from_str(&bm_emit(&t, &[])).unwrap();
+        for i in 0..8 {
+            assert_eq!(serde_json::to_string(&out["items"][i]).unwrap(), serde_json::to_string(&src["items"][i]).unwrap(), "item {i}");
+        }
+    }
+
+    /// issue #31: a view node is built in stock's key order with a minted ctime and stock's default
+    /// graph title; a dragged file item already bookmarked is refused, a second graph never is.
+    #[test]
+    fn issue31_add_view_order_title_and_dup_rules() {
+        let mut t = parse_bm_tree(r#"{"items": [{"type": "file", "ctime": 1, "path": "Home.md"}]}"#);
+        let g = serde_json::json!({"type": "graph", "options": {"search": "q"}});
+        bm_add_view_at_in(&mut t, None, 1, &g).unwrap();
+        bm_add_view_at_in(&mut t, None, 1, &g).unwrap();
+        let c = serde_json::json!({"type": "file", "path": "Board.canvas"});
+        bm_add_view_at_in(&mut t, None, 1, &c).unwrap();
+        assert!(bm_add_view_at_in(&mut t, None, 0, &c).is_err(), "canvas dup refused");
+        assert!(bm_add_view_at_in(&mut t, None, 0, &serde_json::json!({"type": "file", "path": "Home.md"})).is_err());
+        assert!(bm_add_view_at_in(&mut t, None, 0, &serde_json::json!({"type": "search", "query": "x"})).is_err());
+        assert!(bm_add_view_at_in(&mut t, None, 0, &serde_json::json!({"type": "graph", "options": 3})).is_err());
+        bm_add_view_in(&mut t, None, &serde_json::json!({"type": "graph", "title": "B (local)", "options": {}, "local": {"file": "B.md"}}), Some("")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&bm_emit(&t, &[])).unwrap();
+        let it = v["items"].as_array().unwrap();
+        assert_eq!(it.len(), 5);
+        assert_eq!(it[1]["path"], "Board.canvas");
+        let keys = |o: &serde_json::Value| o.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+        assert_eq!(keys(&it[2]), vec!["type", "ctime", "title", "options"]);
+        assert_eq!(it[2]["title"], "Untitled Graph");
+        assert_eq!(keys(&it[4]), vec!["type", "ctime", "title", "options", "local"]);
+        assert_eq!(it[4]["title"], "B (local)");
+        let mut t2 = parse_bm_tree(r#"{"items": []}"#);
+        bm_add_view_in(&mut t2, None, &g, Some("Mine")).unwrap();
+        assert_eq!(bm_rows_of(&t2)[0].label, "Mine", "a typed title wins");
+        assert!(bm_toggle_path_in(&mut t2, "Board.canvas").is_ok());
+        assert_eq!(bm_rows_of(&t2)[1].name, "Board.canvas");
+        assert!(bm_toggle_path_in(&mut t2, "Board.canvas").is_ok());
+        assert_eq!(bm_rows_of(&t2).len(), 1, "toggled off");
+        assert!(bm_toggle_path_in(&mut t2, "noext").is_err());
+        bm_group_new_in(&mut t2, None).unwrap();
+        assert!(bm_remove_in(&mut t2, 1).is_err(), "a group is not removed by row");
+        bm_remove_in(&mut t2, 0).unwrap();
+        assert_eq!(bm_rows_of(&t2).iter().map(|r| r.kind.as_str()).collect::<Vec<_>>(), vec!["g"]);
+    }
+
+    /// issue #31 (D2/D3): every local-graph bookmark follows its renamed centre (none dropped),
+    /// a canvas bookmark follows the canvas path, and nothing else is touched.
+    #[test]
+    fn issue31_rename_follows_local_centre_and_canvas() {
+        let mut t = parse_bm_tree(r#"{"items": [
+                {"type": "graph", "ctime": 1, "title": "B (local)", "options": {}, "local": {"file": "B.md", "localJumps": 2}},
+                {"type": "group", "ctime": 2, "title": "G", "items": [{"type": "graph", "ctime": 3, "title": "B (local)", "local": {"file": "B.md"}}]},
+                {"type": "graph", "ctime": 4, "title": "Untitled Graph", "options": {"search": "B.md"}},
+                {"type": "file", "ctime": 5, "path": "Board.canvas"}
+            ]}"#);
+        assert!(bm_rename_walk(&mut t, "B", "B2"));
+        assert!(!bm_rename_walk(&mut t, "Q", "Q2"), "nothing to follow");
+        assert!(bm_rename_path_walk(&mut t, "Board.canvas", "sub/Board2.canvas"));
+        assert!(!bm_rename_path_walk(&mut t, "Other.canvas", "x.canvas"));
+        let v: serde_json::Value = serde_json::from_str(&bm_emit(&t, &[])).unwrap();
+        assert_eq!(v["items"][0]["local"], serde_json::json!({"file": "B2.md", "localJumps": 2}));
+        assert_eq!(v["items"][1]["items"][0]["local"]["file"], "B2.md");
+        assert_eq!(v["items"][2]["options"]["search"], "B.md", "a global graph's options are not a centre");
+        assert_eq!(v["items"][3]["path"], "sub/Board2.canvas");
+    }
+
     /// PR #57 review: stock's `"title": ""` paints the basename (not a blank row), and the PDF row's
     /// "Remove" (toggle by its path) drops THAT Pdf node — at any depth, nothing appended, the note
     /// bookmarks around it untouched; a note bookmark of the same name still wins.
@@ -8520,7 +9086,7 @@ mod tests {
         assert_eq!(v2["items"], serde_json::json!([{"type": "file", "path": "x.pdf"}]), "the note bookmark x.pdf wins");
         // the PDF row's explicit remove (toggle_bookmark pdf:true) drops the Pdf node, never the note
         let mut t3 = parse_bm_tree(r#"{"items": [{"type": "file", "path": "x.pdf"}, {"type": "file", "path": "x.pdf.md"}]}"#);
-        assert!(bm_drop_first_pdf(&mut t3, "x.pdf"));
+        assert!(bm_drop_first_path(&mut t3, "x.pdf"));
         let v3: serde_json::Value = serde_json::from_str(&bm_emit(&t3, &[])).unwrap();
         assert_eq!(v3["items"], serde_json::json!([{"type": "file", "path": "x.pdf.md"}]), "only the pdf entry leaves");
     }
@@ -11829,5 +12395,181 @@ mod devui_guard {
     #[test]
     fn devui_guard_default_build_has_no_devui() {
         assert!(!cfg!(feature = "devui"));
+    }
+}
+
+/// #59 slice 1: Obsidian callouts in the reading render. Only `render_md` /
+/// `render_with` / `block_lines_of` are used, so this module compiles on a tree
+/// WITHOUT callouts too and fails there by assertion (RESULT.md: red on develop,
+/// green on feat/59-callouts).
+#[cfg(test)]
+mod callout_render_tests {
+    use super::*;
+
+    fn has(h: &str, s: &str) {
+        assert!(h.contains(s), "missing {s:?} in: {h}");
+    }
+    fn hasnt(h: &str, s: &str) {
+        assert!(!h.contains(s), "unexpected {s:?} in: {h}");
+    }
+
+    #[test]
+    fn callout_basic_dom_matches_obsidian() {
+        let h = render_md("> [!note] A note callout\n> Callouts render as styled boxes.\n", &[]);
+        has(&h, "data-callout=\"note\"");
+        has(&h, "data-callout-fold=\"\"");
+        has(&h, "class=\"callout\"");
+        has(&h, "<div class=\"callout-title\" dir=\"auto\"><div class=\"callout-icon\"><svg");
+        has(&h, "lucide-pencil");
+        has(&h, "<div class=\"callout-title-inner\">A note callout</div></div>");
+        has(&h, "<div class=\"callout-content\"><p>Callouts render as styled boxes.</p>");
+        hasnt(&h, "<blockquote");
+        hasnt(&h, "[!note]");
+    }
+
+    #[test]
+    fn callout_types_aliases_and_case() {
+        // (written type, data-callout, default title, icon) — Obsidian's built-in set
+        let cases = [
+            ("note", "note", "Note", "pencil"),
+            ("abstract", "abstract", "Abstract", "clipboard-list"),
+            ("summary", "summary", "Summary", "clipboard-list"),
+            ("TLDR", "tldr", "Tldr", "clipboard-list"),
+            ("info", "info", "Info", "info"),
+            ("todo", "todo", "Todo", "check-circle-2"),
+            ("tip", "tip", "Tip", "flame"),
+            ("hint", "hint", "Hint", "flame"),
+            ("important", "important", "Important", "flame"),
+            ("success", "success", "Success", "check"),
+            ("check", "check", "Check", "check"),
+            ("done", "done", "Done", "check"),
+            ("question", "question", "Question", "help-circle"),
+            ("help", "help", "Help", "help-circle"),
+            ("FAQ", "faq", "Faq", "help-circle"),
+            ("Warning", "warning", "Warning", "alert-triangle"),
+            ("caution", "caution", "Caution", "alert-triangle"),
+            ("attention", "attention", "Attention", "alert-triangle"),
+            ("failure", "failure", "Failure", "x"),
+            ("fail", "fail", "Fail", "x"),
+            ("missing", "missing", "Missing", "x"),
+            ("danger", "danger", "Danger", "zap"),
+            ("ERROR", "error", "Error", "zap"),
+            ("bug", "bug", "Bug", "bug"),
+            ("example", "example", "Example", "list"),
+            ("quote", "quote", "Quote", "quote"),
+            ("cite", "cite", "Cite", "quote"),
+        ];
+        for (w, dc, title, icon) in cases {
+            let h = render_md(&format!("> [!{w}]\n> body\n"), &[]);
+            has(&h, &format!("data-callout=\"{dc}\""));
+            has(&h, &format!("<div class=\"callout-title-inner\">{title}</div>"));
+            has(&h, &format!("lucide-{icon}\""));
+            hasnt(&h, "markdown-alert"); // not pulldown's GFM alert
+        }
+    }
+
+    #[test]
+    fn callout_bare_gfm_types_are_callouts_not_alerts() {
+        // with ENABLE_GFM pulldown ate a bare `> [!NOTE]` into blockquote.markdown-alert-note
+        for t in ["NOTE", "tip", "Important", "warning", "CAUTION"] {
+            let h = render_md(&format!("> [!{t}]\n> text\n"), &[]);
+            has(&h, &format!("data-callout=\"{}\"", t.to_lowercase()));
+            hasnt(&h, "markdown-alert");
+            hasnt(&h, "<blockquote");
+        }
+    }
+
+    #[test]
+    fn callout_fold_markers() {
+        let h = render_md("> [!faq]- Are callouts foldable?\n> Yes.\n", &[]);
+        has(&h, "data-callout-fold=\"-\"");
+        has(&h, "class=\"callout is-collapsible is-collapsed\"");
+        has(&h, "<div class=\"callout-title-inner\">Are callouts foldable?</div><div class=\"callout-fold is-collapsed\"><svg");
+        has(&h, "lucide-chevron-down");
+        let h = render_md("> [!tip]+ Open by default\n> body\n", &[]);
+        has(&h, "data-callout-fold=\"+\"");
+        has(&h, "class=\"callout is-collapsible\"");
+        has(&h, "<div class=\"callout-fold\"><svg");
+        hasnt(&h, "is-collapsed");
+        let h = render_md("> [!tip] plain\n> body\n", &[]);
+        hasnt(&h, "callout-fold\"");
+        hasnt(&h, "is-collapsible");
+    }
+
+    #[test]
+    fn callout_nested() {
+        let h = render_md("> [!note] Outer\n> outer body\n> > [!warning] Inner\n> > inner body\n", &[]);
+        assert_eq!(h.matches("class=\"callout\"").count(), 2, "{h}");
+        let outer = h.find("data-callout=\"note\"").expect("outer");
+        let content = h.find("callout-content").expect("outer content");
+        let inner = h.find("data-callout=\"warning\"").expect("inner");
+        assert!(outer < content && content < inner, "inner callout must sit in the outer's content: {h}");
+        has(&h, "<div class=\"callout-title-inner\">Inner</div>");
+        has(&h, "<p>inner body</p>");
+        hasnt(&h, "<blockquote");
+        // a plain quote inside a callout stays a blockquote
+        let h = render_md("> [!info]\n> > just a quote\n", &[]);
+        has(&h, "data-callout=\"info\"");
+        has(&h, "<blockquote>");
+    }
+
+    #[test]
+    fn callout_custom_type_keeps_its_name() {
+        let h = render_md("> [!my-Custom] Hello\n> x\n", &[]);
+        has(&h, "data-callout=\"my-custom\"");
+        has(&h, "lucide-pencil"); // unknown -> note's icon (and note's colour via CSS)
+        has(&h, "<div class=\"callout-title-inner\">Hello</div>");
+        let h = render_md("> [!kanban|wide] T\n> x\n", &[]);
+        has(&h, "data-callout=\"kanban\"");
+        has(&h, "data-callout-metadata=\"wide\"");
+    }
+
+    #[test]
+    fn callout_title_only_and_inline_markdown() {
+        let h = render_md("> [!info] Only a title\n", &[]);
+        has(&h, "<div class=\"callout-title-inner\">Only a title</div>");
+        hasnt(&h, "callout-content");
+        let h = render_md("> [!tip] **Bold** and [[Plan]]\n> body\n", &["Plan".to_string()]);
+        has(&h, "<strong>Bold</strong>");
+        has(&h, "data-note=\"Plan\"");
+        let title = &h[h.find("callout-title-inner").unwrap()..h.find("callout-content").unwrap()];
+        assert!(title.contains("Bold") && !title.contains("body"), "title is the first line only: {title}");
+    }
+
+    #[test]
+    fn callout_xss_title_body_type_and_meta_stay_inert() {
+        let h = render_md("> [!note] <img src=x onerror=alert(1)>\n> <script>alert(2)</script>\n", &[]);
+        has(&h, "data-callout=\"note\"");
+        hasnt(&h, "<img");
+        hasnt(&h, "<script");
+        has(&h, "&lt;img src=x onerror=alert(1)&gt;");
+        // a hostile type / metadata can only ever land in an escaped attribute value
+        let h = render_md("> [!x\"onmouseover=\"alert(1)|<b>m</b>] t\n> b\n", &[]);
+        hasnt(&h, "\"onmouseover=\"");
+        hasnt(&h, "<b>");
+        has(&h, "data-callout=\"x&quot;onmouseover=&quot;alert(1)\"");
+        // javascript: links in a title stay text (S1 unchanged inside callouts)
+        let h = render_md("> [!note] [x](javascript:alert(1))\n", &[]);
+        hasnt(&h, "href=\"javascript");
+    }
+
+    #[test]
+    fn callout_not_a_callout() {
+        for src in ["> plain quote\n", "> \\[!note] escaped\n", "> [!note]x glued\n", "> [!] empty\n", "> [! note] spaced\n", "[!note] not quoted\n"] {
+            let h = render_md(src, &[]);
+            hasnt(&h, "class=\"callout");
+        }
+        has(&render_md("> plain quote\n", &[]), "<blockquote>");
+    }
+
+    #[test]
+    fn callout_is_one_top_level_block_and_keeps_task_lines() {
+        let md = "> [!todo] Tasks\n> - [ ] one\n> - [x] two\n\npara\n";
+        assert_eq!(block_lines_of(md), vec![1, 5]);
+        let h = render_with(md, &[], &[], true);
+        assert!(h.starts_with("<div data-callout-metadata=\"\" data-callout-fold=\"\" data-callout=\"todo\""), "{h}");
+        // reading-view task boxes inside a callout still carry their FILE line (rvtask)
+        has(&h, "data-line=\"1\"");
+        has(&h, "data-line=\"2\"");
     }
 }

@@ -1237,7 +1237,7 @@ function bmIndentTok() {
 const bmRenTok = () => (bmRenaming === null ? "" :
   " [bmren:" + String(($("bmren") && $("bmren").value) || "").replace(/[|\]]/g, "") + "]");
 function bmSync() {                        // the flat view every non-pane caller uses
-  bmCache = bmTree.filter(r => r.kind === "f" && !r.pdf).map(r => r.name);   // issue #44: a PDF row is no note name (== list_bookmarks)
+  bmCache = bmTree.filter(r => r.kind === "f" && !r.path && !r.graph).map(r => r.name);   // issue #44/#31: a PDF, canvas, plugin-file or graph row is no note name (== list_bookmarks)
 }
 const BM_ICON_FILE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3h12v18l-6-4.5L6 21z"/></svg>';
 // a group row carries a CHEVRON where a file row carries its bookmark glyph, at
@@ -1294,7 +1294,7 @@ function renderBm() {
     }
     // a GROUP row opens nothing — a click on its chevron, label or row background
     // TOGGLES its fold (collapseall R1, M5 / recon-bmcollapse). A FILE row opens.
-    const open = e => (r.pdf ? openPdf(r.name, e) : rowOpen(r.name, e));   // issue #44: a PDF bookmark opens the PDF view
+    const open = e => bmOpenRow(r, e);    // issue #44: a PDF bookmark opens the PDF view; #31: a graph / canvas / plugin file its own view
     row.onclick = grp ? () => { if (bmClickEaten()) return; bmFoldToggle(key); }
                       : e => { if (bmClickEaten()) return; open(e); };   // bmdrag: a drop's click opens nothing; opentab REQ-2/3/5/7
     if (!grp) row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); open(e); } };   // opentab REQ-6
@@ -1676,17 +1676,26 @@ function bmRowMenu(e, nm, ix) {             // right-click a FILE .bmrow -> Obsi
   // issue #44 (PR #57 review): a painted PDF row is named by its vault PATH — its opens go through the PDF view,
   // never through a note tab (openNewTab/mkTab would read "<path>.md"); its Remove toggles that path (rust drops the Pdf node)
   const pdf = !!(bmTree[ix] && bmTree[ix].pdf && bmTree[ix].name === nm);
+  // issue #31: a graph row (no file behind it) and a canvas / plugin-file row (a vault PATH) open through bmOpenRow
+  const vr = bmTree[ix] && bmTree[ix].name === nm && !pdf && (bmTree[ix].graph || bmTree[ix].path) ? bmTree[ix] : null;
+  if (vr) {
+    item("Open in new tab", () => bmOpenRow(vr, { ctrlKey: true }));
+    item("Open to the right", null, "Not wired for a graph / canvas / plugin-file bookmark: click the row, then Split right");
+  } else {
   item("Open in new tab",   () => (pdf ? openPdf(nm, null, "tab") : openNewTab(nm)));                         // WIRED: openNewTab — right of the active tab, focused, never deduped (opentab REQ-8/9/14, Obsidian c20)
   item("Open to the right", () => (pdf ? openPdf(nm, null, "split") : splitWith(fg(), "row", mkTab(nm))));      // WIRED: splitWith — the verb behind the tab menu's "Split right" (M7/R6.2), carrying a fresh tab of this note
+  }
   item("Open in new window", null, "Single-window app: there is no second window to open into");   // NOT WIRED
   sep();
   item("Rename",  null, "Bookmarks are note names on disk (.obsidian/bookmarks.json); there is no per-bookmark title to rename");   // NOT WIRED
   item("Edit...", hasGrp ? () => openBmEdit(ix) : null,                    // WIRED (R4X.7) once a group exists: the move route, in and out
        hasGrp ? null : "Edit bookmark chooses a GROUP and this pane has none — right-click the pane background to create one");
   sep();
-  item("Reveal file in navigation", () => bmReveal(nm));                   // WIRED: bmReveal — setPane("files") + the explorer row's focus ring (R9.3 pane switch, treeRows)
+  if (vr && vr.graph) item("Reveal file in navigation", null, "A graph bookmark has no file behind it");   // issue #31
+  else item("Reveal file in navigation", () => bmReveal(nm));              // WIRED: bmReveal — setPane("files") + the explorer row's focus ring (R9.3 pane switch, treeRows)
   sep();
-  item("Remove", () => { if (pdf) toggleBm(nm, true); else if (bmCache.includes(nm)) toggleBm(nm); });   // WIRED: toggleBm — the same toggle the explorer-row / tab menus use (R9.4 / R20.4); guarded so it can only REMOVE. A PDF row removes its Pdf entry EXPLICITLY (pdf:true) so a same-named note bookmark ("x.pdf.md") is never the one dropped (PR #57 qodo High)
+  item("Remove", () => { if (vr) bmApply("bm_remove", { ix }); else if (pdf) toggleBm(nm, true); else if (bmCache.includes(nm)) toggleBm(nm); });   // issue #31: a graph / canvas row is removed BY ROW (bm_remove)
+  // WIRED: toggleBm — the same toggle the explorer-row / tab menus use (R9.4 / R20.4); guarded so it can only REMOVE. A PDF row removes its Pdf entry EXPLICITLY (pdf:true) so a same-named note bookmark ("x.pdf.md") is never the one dropped (PR #57 qodo High)
   placeMenu(m, e.clientX, e.clientY);      // R22: viewport-clamped by measured size — the same seam as noteMenu/tabMenu
 }
 /* ---------- bmfolder: the GROUP-row menu, Obsidian 1.13.7's list ----------
@@ -1761,6 +1770,103 @@ async function refreshBm() { bmTree = await inv("bookmark_rows"); lsBmResolve();
 async function toggleBm(nm, pdf) {
   await inv("toggle_bookmark", pdf ? { name: nm, pdf: true } : { name: nm });   // by NAME (R9.4/R20.4): ON appends at the top level, OFF removes at any depth
   await refreshBm();                            // the TREE is the model the pane paints — never patch bmCache behind it
+}
+/* ---------- issue #31: VIEW bookmarks (docs/recon-bm31 D1-D4) ----------
+   A graph item {type:"graph",title,options[,local]} and a non-note file item {type:"file",path}
+   are rows too (rust paints them: r.graph / r.path). tabBmItem builds the item a TAB stands
+   for — the one shape the tab menu, "Bookmark the active tab..." and a tab drop all write:
+     global graph -> stock's item: options = graph.json as it is NOW (a pending card edit lands first)
+     local graph  -> the same + our "local" key (centre file, depth, the three link toggles)
+     canvas / plugin board -> stock's plain file item; null = not bookmarkable (empty tab,
+     a fileless plugin view — stock offers nothing there either). */
+const bmHasPath = p => bmTree.some(r => r.path && r.name === p);
+const BM_LG_KEYS = ["localJumps", "localBacklinks", "localForelinks", "localInterlinks"];
+const bmLgTitle = t => titleOf(t.center) + " (local)";
+async function ggOptsNow() {               // graph.json with any debounced card edit flushed first
+  if (gfSaveT && Object.keys(gfPatch).length) {
+    clearTimeout(gfSaveT); gfSaveT = null;
+    const p = gfPatch; gfPatch = {};
+    try { await inv("set_graph_settings", { vault: vaultPath, patch: p }); } catch (_) {}
+  }
+  try { return (await inv("graph_settings")) || {}; } catch (_) { return {}; }
+}
+async function tabBmItem(t) {
+  if (!t) return null;
+  if (t.kind === "gg") return { type: "graph", options: await ggOptsNow() };
+  if (t.kind === "lg") {
+    const o = wsLgOpts(t), local = { file: wsPathOut(t.center) };
+    for (const k of BM_LG_KEYS) { local[k] = o[k]; delete o[k]; }
+    return { type: "graph", title: bmLgTitle(t), options: o, local };
+  }
+  const cp = cvTabPath(t);
+  if (cp) return { type: "file", path: cp };
+  const pv = pvNoteName(t);
+  if (pv) return { type: "file", path: wsPathOut(pv) };
+  if (!t.kind && t.name) return { type: "file", path: wsPathOut(t.name) };
+  return null;
+}
+async function toggleBmPath(p) {           // a canvas / plugin file: ON appends, OFF drops that path (rust Path node)
+  try { await inv("toggle_bookmark", { name: p, path: true }); } catch (err) { say(String(err && err.message || err)); }
+  await refreshBm();
+}
+/* a row click. Graph: the BOOKMARK's settings win (stock s3: graph.json is overwritten with
+   them, then a global graph opens); local: a local graph on the stored centre at the stored
+   depth, or — centre gone — a notice and nothing else (D5: no re-create, no write). Path:
+   its own view (canvas -> the canvas view, a registered extension -> its view); a path that
+   is gone is a notice, never a create. */
+async function bmOpenRow(r, ev) {
+  if (r.graph) return bmOpenGraph(r, ev);
+  if (r.pdf) return openPdf(r.name, ev);
+  if (r.path) return bmOpenPath(r.name, ev);
+  return rowOpen(r.name, ev);
+}
+// the 20 graph.json keys set_graph_settings writes (src-tauri GRAPH_NUM_KEYS + GRAPH_BOOL_KEYS + scale,
+// search, colorGroups) — stock's options are exactly these; anything else in an item stays in the item only
+const BM_GG_KEYS = ["centerStrength", "repelStrength", "linkStrength", "linkDistance", "textFadeMultiplier",
+  "nodeSizeMultiplier", "lineSizeMultiplier", "close", "collapse-filter", "collapse-color-groups", "collapse-display",
+  "collapse-forces", "showTags", "showAttachments", "hideUnresolved", "showOrphans", "showArrow", "scale", "search", "colorGroups"];
+async function bmOpenGraph(r, ev) {
+  if (!state) return;
+  const sp = r.graph || {}, o = sp.options && typeof sp.options === "object" ? sp.options : {};
+  const g = fg();
+  await flushSave(g);
+  const lc = sp.local && typeof sp.local === "object" ? sp.local : null;
+  if (lc) {
+    const c = wsPathIn(lc.file);
+    if (typeof c !== "string" || !c || !notesCache.includes(c)) {
+      say("Cannot open \"" + r.label + "\": its centre note \"" + String(c || "").split("/").pop() + "\" no longer exists", "bm");
+      return;
+    }
+    const d = Number.isInteger(lc.localJumps) ? Math.min(5, Math.max(1, lc.localJumps)) : 1;
+    const t = { kind: "lg", name: "Graph of " + c.split("/").pop(), center: c, depth: d,
+                inc: lc.localBacklinks !== false, out: lc.localForelinks !== false, inter: lc.localInterlinks === true,
+                opts: Object.assign({}, o, { localJumps: d }), mode: "source", hist: [], hpos: 0 };
+    g.tabs.push(t);                        // a bookmark-opened local graph is pinned to its centre: not linked to a pane
+    g.active = g.tabs.length - 1;
+    await loadActive(g);
+    return;
+  }
+  clearTimeout(gfSaveT); gfSaveT = null; gfPatch = {};   // the bookmark's settings replace any pending card edit
+  const patch = {};
+  for (const k of BM_GG_KEYS) if (k in o) patch[k] = o[k];
+  try { await inv("set_graph_settings", { vault: vaultPath, patch }); }
+  catch (err) { say("Graph bookmark: " + String(err && err.message || err)); return; }
+  gfCfg = null;                            // re-read: the card and [ggo:] now show the bookmark's settings
+  await cmdGlobalGraph();
+}
+async function bmOpenPath(p, ev) {
+  const gone = () => say("Cannot open \"" + p.split("/").pop() + "\": the file no longer exists", "bm");
+  if (/\.canvas$/i.test(p)) {
+    let ls = [];
+    try { ls = (await inv("canvas_io", { op: "list" })) || []; } catch (_) {}
+    if (!ls.includes(p)) return gone();
+    return openCanvas(p);
+  }
+  let f = null;
+  try { f = PLG && PLG.app.vault.getAbstractFileByPath(p); } catch (_) {}
+  if (!f) return gone();
+  const nt = ev && (ev.button === 1 || ev.ctrlKey || ev.metaKey);
+  try { await PLG.app.workspace.getLeaf(nt ? "tab" : false).openFile(f); } catch (err) { say(String(err && err.message || err)); }
 }
 /* ---------- bmfolder: the four structural commands ----------
    Every one is addressed by the ROW INDEX the pane just painted, and every one
@@ -2098,15 +2204,17 @@ function bmEditTok() {
    bmAdd is its own state (not bmEdit) so R4X.7's [modal:bmedit] census stays
    exactly what it was; the add census is one ui/census.js line (bmAddTok). */
 let bmAdd = null;                          // the open Add bookmark modal: {name, opts}
-function openBmAdd(gix) {
-  const t = rTrack();
+function openBmAdd(gix, vt) {            // vt: the tab whose own menu asked (issue #31), else the active tab
+  const t = vt || rTrack();
   if (!t) return;                          // a pane with no tab = Obsidian's empty tab: no-op (108-emptyitem)
-  if (t.kind === "gg") { say("Bookmarking a graph view is not supported: the bookmarks pane cannot show a graph bookmark"); return; }
-  const nm = t.kind ? pvNoteName(t) : t.name;   // issue-48: a plugin view backed by a note (Excalidraw board) = that note
-  if (!nm) return;                         // local graph (and any non-note view): no-op (102-lgitem)
+  const cvp = cvTabPath(t);                // issue #31: graph / canvas tabs write stock's view item
+  const view = t.kind === "gg" || (t.kind === "lg" && !!vt) || !!cvp;   // lg via the group row stays a no-op (102-lgitem)
+  const nm = view ? null : t.kind ? pvNoteName(t) : t.name;   // issue-48: a plugin view backed by a note (Excalidraw board) = that note
+  if (!view && !nm) return;                // local graph from the group row (and any non-note view): no-op
+  const def = t.kind === "gg" ? "Untitled Graph" : t.kind === "lg" ? bmLgTitle(t) : null;
   const opts = bmGroupOpts();
   const cur = opts.findIndex(o => o.ix === gix);
-  bmAdd = { name: nm, opts };
+  bmAdd = { name: nm || def || cvp, opts, view: view ? t : null, def };
   const sel = $("bme-grp");
   sel.textContent = "";
   opts.forEach((o, i) => {
@@ -2116,7 +2224,7 @@ function openBmAdd(gix) {
     sel.appendChild(op);
   });
   sel.value = String(cur < 0 ? 0 : cur);
-  const base = nm.split("/").pop();
+  const base = def || bmAdd.name.split("/").pop();
   $("bmetitle").textContent = "Add bookmark";
   $("bme-path").value = base;
   $("bme-title").value = "";
@@ -2139,8 +2247,9 @@ function closeBmAdd() {
 async function bmAddSave() {
   if (!bmAdd) return;
   const o = bmAdd.opts[Number($("bme-grp").value)] || bmAdd.opts[0];
-  const name = bmAdd.name, title = $("bme-title").value;
+  const name = bmAdd.name, view = bmAdd.view, title = $("bme-title").value;
   closeBmAdd();
+  if (view) { const item = await tabBmItem(view); await bmApply("bm_add_view", { into: o.ix, item, title: title || null }); return; }
   await bmApply("bm_add", { into: o.ix, name, title: title || null });
 }
 /* [modal:bmadd] [bmadd:<note>|<selected group>|<typed title>|<option>…]
@@ -2460,7 +2569,11 @@ function mkGroup() {
               graphOn: false, graphRefresh: null, sim: null, saveT: null,
               lpActive: null, view: null };
   const pane = document.createElement("div");
-  pane.className = "pane";
+  // #59 slice 2: Obsidian compat classes NEXT TO ours, so a theme rule written for Obsidian's
+  // tab group reaches this chrome. A pane = one tab group (.workspace-tabs, + .mod-active while
+  // focused), its strip = .workspace-tab-header-container(-inner), each tab = .workspace-tab-header
+  // (+ .is-active) with -inner-title / -inner-close-button. Our own classes stay the styling anchors.
+  pane.className = "pane workspace-tabs";
   pane._g = g;                                   // R20: gOf(el) — event-time group lookup
   pane.innerHTML =
     // R4X.1 (navbtn): Back/Forward live at the LEFT edge of the view header,
@@ -2468,12 +2581,12 @@ function mkGroup() {
     // §1: back then forward, thin chevrons, ~28px apart, left of the title).
     // Obsidian's titlebar variant is NOT copied: our titlebar is a gated surface
     // (phases hdrdragwm/wmframe) — divergence recorded in the recon README.
-    '<div class="tabbar"><div class="navbtns">' +
+    '<div class="tabbar workspace-tab-header-container"><div class="navbtns">' +
       '<button class="navbtn navback" title="Navigate back" disabled>' +
         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 5l-7 7 7 7"/></svg></button>' +
       '<button class="navbtn navfwd" title="Navigate forward" disabled>' +
         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5l7 7-7 7"/></svg></button>' +
-    '</div><div class="tabs"></div>' +
+    '</div><div class="tabs workspace-tab-header-container-inner"></div>' +
     '<button class="modebtn" hidden></button>' +   // graphhdr: born hidden — updateModeBtn shows it once a NOTE is active (a split with no tab never renders tabs)
     // graphhdr REQ-5: Obsidian's ⋮ "More options" (lucide-more-vertical) at the header's
     // right end on EVERY main-area view kind; its menu depends on the kind (hdrMenu).
@@ -3915,6 +4028,9 @@ function utBuild() {             // pane/focus census in the window title (headl
   { const fl = document.fonts ? [...document.fonts].filter(f => f.status === "loaded").map(f => f.family.replace(/[" ]/g, "") + "/" + f.weight + "/" + f.style) : [];
     if (fl.length) md += " [fonts:" + fl.join("|") + "]"; }
   let gg = ft && ft.kind === "gg" ? " [gg]" : "";  // R9.7: global graph tab focused
+  // issue #31: [ggo:search=<q>,repel=<r>,dist=<d>] = the focused global graph's LIVE settings (the card's state), so a
+  // phase proves a reopened graph bookmark runs the BOOKMARK's settings, not just that graph.json was written
+  if (gg && gfCfg && gfCfg.vault === vaultPath) gg += " [ggo:search=" + String(gfCfg.f.search).replace(/[[\]|,]/g, "") + ",repel=" + gfCfg.v.repel + ",dist=" + gfCfg.v.dist + "]";
   if (gg) { const pt = posTok(fg()); if (pt) gg += " [ggpos:" + pt + "]"; }
   // goal graphzoom: [ggz:s,tx,ty,notch] [ggzb:x0,y0,x1,y1,n] once settled (any node count) — see g.graphZoom
   if (gg) { const h = fg(); if (h.graphOn && h.graphSettled && h.graphZoom) { const z = h.graphZoom(); gg += " [ggz:" + z.z + "]" + (z.b ? " [ggzb:" + z.b + "]" : ""); } }
@@ -4180,7 +4296,7 @@ function focusGroup(g) {
   const prev = state.focused;
   if (prev === g) return;
   state.focused = g;
-  for (const x of groups()) x.pane.classList.toggle("focused", x === g);
+  for (const x of groups()) { x.pane.classList.toggle("focused", x === g); x.pane.classList.toggle("mod-active", x === g); }   // #59 slice 2: .mod-active = Obsidian's focused tab group
   rgFollow();                     // R9.6: right panel follows focus (fire+forget)
   updateTitle();
   if (prev) treeHighlight();      // explorer active-note highlight follows focus
@@ -4578,9 +4694,14 @@ function tabMenu(e, g, i, hdr) {
     sep();
     item("Copy screenshot", null, "Missing subsystem: canvas-to-clipboard — no programmatic clipboard write exists in this tree (ui/editor.js writes only inside real copy events) and the graph view has no canvas-to-PNG step");
     const pvn = pvNoteName(tab);          // issue-48: a board backed by a note bookmarks that note (STOCK.md S2/S3/S5)
+    const cvp = cvTabPath(tab);           // issue #31 (D3): a canvas bookmarks its path, as stock
     if (pvn) item(bmCache.includes(pvn) ? "Remove bookmark" : "Bookmark...", () => { closeMenu(); toggleBm(pvn); });
-    else if (!hdr || tab.kind !== "lg")   // graphhdr REQ-10: Obsidian's LOCAL graph ⋮ has no Bookmark... row
-      item("Bookmark...", null, "Missing subsystem: bookmarks of non-file views — a bookmark here is a note name on disk (R9.4) and a graph tab has no note behind it");
+    else if (cvp) item(bmHasPath(cvp) ? "Remove bookmark" : "Bookmark...", () => { closeMenu(); toggleBmPath(cvp); });
+    // issue #31 (D1/D2): a graph TAB opens stock's Add bookmark modal ("Untitled Graph"); the ⋮ header keeps its
+    // pinned shape (graphhdr REQ-10: global inert row, local no row) — the tab menu carries the verb
+    else if ((tab.kind === "gg" || tab.kind === "lg") && !hdr) item("Bookmark...", () => { closeMenu(); openBmAdd(null, tab); });
+    else if (!hdr || tab.kind !== "lg")
+      item("Bookmark...", null, "Not bookmarkable: this view has no file behind it (stock offers no bookmark for it either)");
     place();
     return;
   }
@@ -5028,9 +5149,9 @@ function renderTabs(g) {
   // R7.3 / R13.2: chain glyph on every linked tab (lg auto-link + manual links)
   g.tabs.forEach((tab, i) => {
     const d = document.createElement("div");
-    d.className = "tab" + (i === g.active ? " active" : "");
+    d.className = "tab workspace-tab-header" + (i === g.active ? " active is-active" : "");   // #59 slice 2: + Obsidian compat
     const ttl = document.createElement("span");
-    ttl.className = "t";
+    ttl.className = "t workspace-tab-header-inner-title";
     const chain = isLinked(g, tab, i);
     // R38.7: a PINNED tab carries a pin glyph in FRONT of the label, the way
     // Obsidian paints it (shots/m3-pinned-tabbar.png). It is a marker element, not
@@ -5041,7 +5162,7 @@ function renderTabs(g) {
     if (chain) { const k = document.createElement("span"); k.className = "lk"; k.innerHTML = ICON_LINK; d.appendChild(k); }
     ttl.textContent = tab.name.split("/").pop();
     const x = document.createElement("span");
-    x.className = "x";
+    x.className = "x workspace-tab-header-inner-close-button";
     // ux-1: inline svg cross — the ✕ glyph tofu'd under webkit2gtk
     x.innerHTML = '<svg viewBox="0 0 10 10"><path d="M1 1l8 8M9 1l-8 8" ' +
       'stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none"/></svg>';
@@ -5071,20 +5192,30 @@ function renderTabs(g) {
    target. Over it the tab speaks bmdrag's vocabulary through the SAME code
    (bmZones/bmDecide/bmFbPaint): gap@<parent>.<pos> line, grp@<ix> row fill =
    prepend into the group, pane background = end of the top level. The release
-   is ONE bm_add_at (a new FILE bookmark at exactly that slot); the tab is not
+   is ONE bm_add_at (a new FILE bookmark at exactly that slot; a graph / canvas / board tab:
+   ONE bm_add_view_at with tabBmItem's item, issue #31); the tab is not
    moved, closed or reloaded. Census [tabbm:<tok>], published only on change.
    Refused, with the reason on the chip and a say() line on release, and NO
    backend call (bookmarks.json keeps its bytes):
      no:dup    the note is already bookmarked — a drag adds no second row
                (unlike bmactive F3, whose menu path duplicates on purpose)
-     no:canvas a canvas bookmark would be Opaque: written, never painted
-     no:graph / no:view  a graph or other non-note view is not a note */
+     (issue #31: a canvas or a board already bookmarked is no:dup too; a graph never is)
+     no:view   a fileless view (an unknown plugin view, a non-.md file) has nothing to bookmark
+   A plugin view backed by a note (an Excalidraw board, issue-48) bookmarks THAT note. */
 const TAB_EDGE = 40;
 let tabBmTok = "";                           // tab-bookmark: the live [tabbm:] decision ("" = not over the pane)
+/* issue-48: the note name a tab bookmarks as: a note tab = its name; a plugin view backed by a
+   vault .md (an Excalidraw board) = that note's path (pvNoteName, the name the menus write); else null */
+function tabBmName(tab) {
+  if (!tab) return null;
+  return tab.kind ? pvNoteName(tab) : (tab.name || null);
+}
 function tabBmWhy(tab) {                     // -> null (bookmarkable) or {code, msg}
   if (!tab) return { code: "view", msg: "nothing to bookmark" };
-  if (tab.kind === "unk" && tab.utype === "canvas") return { code: "canvas", msg: "Canvas bookmarks are not shown in this pane" };
-  if (tab.kind === "gg" || tab.kind === "lg") return { code: "graph", msg: "A graph view cannot be bookmarked by drag" };
+  const cvp = cvTabPath(tab), pvn = pvNoteName(tab);   // issue #31: canvas / graph / board tabs are views with an item
+  if (cvp) return bmHasPath(cvp) ? { code: "dup", msg: "\"" + cvp.split("/").pop() + "\" is already bookmarked" } : null;
+  if (tab.kind === "gg" || tab.kind === "lg") return null;   // a graph item is never a duplicate (bm_add_view_at)
+  if (pvn) return bmCache.includes(pvn) ? { code: "dup", msg: "\"" + pvn.split("/").pop() + "\" is already bookmarked" } : null;
   if (tab.kind || !tab.name) return { code: "view", msg: "Only a note tab can be bookmarked by drag" };
   if (bmCache.includes(tab.name)) return { code: "dup", msg: "\"" + tab.name.split("/").pop() + "\" is already bookmarked" };
   return null;
@@ -5185,7 +5316,8 @@ function tabDragStart(e, g, i) {
     if (!ghost || !t) return;                // plain click, or dropped nowhere
     if (t.kind === "bm") {                   // tab-bookmark: ONE write; the tab stays where it is
       await act("tab_bm", { grp: t.d.grp != null ? 1 : 0 }, () =>
-        bmApply("bm_add_at", { parent: t.d.parent, pos: t.d.pos, name: bmTab.name }));
+        bmTab.kind ? tabBmItem(bmTab).then(item => bmApply("bm_add_view_at", { parent: t.d.parent, pos: t.d.pos, item }))   // issue #31
+                   : bmApply("bm_add_at", { parent: t.d.parent, pos: t.d.pos, name: tabBmName(bmTab) }));
       return;
     }
     await act("tab_drop", { kind: t.kind, groups: groups().length }, async () => {   // R20: pane/tab nodes MOVE, no layout rebuild
@@ -5728,6 +5860,7 @@ function openDelete(nm, files, lines) {
   delPending = { name: nm, files, lines };
   $("delq").textContent = "Are you sure you want to delete " + nm + "? It will be moved to .trash in this vault.";
   $("delsay").textContent = delSentence(files, lines);
+  $("delsay").classList.toggle("mod-warning", files > 0);   // #59 slice 3: stock marks its backlink warning p.mod-warning
   $("delbox").hidden = false;
   $("del-no").focus();                       // the DEFAULT is Cancel — see style.css
   updateTitle();
@@ -7923,7 +8056,7 @@ function canvasFileMenu(e, p) {             // right-click a .canvas row in the 
     setTimeout(() => clampMenu(m), 0);
     updateTitle();
   };
-  item("Bookmark", null, "Bookmarks hold note names (.obsidian/bookmarks.json, R9.4); a canvas is not a note");
+  item(bmHasPath(p) ? "Remove bookmark" : "Bookmark", () => toggleBmPath(p));   // issue #31 (D3): stock's {type:"file",path} item
   sep();
   item("Copy path", null, "Missing subsystem: a programmatic clipboard write (clipboard access exists only inside real copy/paste events, ui/editor.js)");
   sep();
@@ -7980,6 +8113,7 @@ async function cvRetarget(old, np) {
   try { await inv("canvas_io", { op: "rename", path: old, data: np }); }
   catch (err) { say(String(err && err.message || err), "canvas"); await refreshTree(); return false; }
   await refreshTree();
+  await refreshBm();                       // issue #31: rust moved any bookmark of the old path (canvas_io rename)
   for (const l of ls) { try { await l.setViewState({ type: "canvas", state: Object.assign({}, l.view.getState(), { file: np }) }); } catch (err) { console.error("[canvas] retarget:", err); } }
   for (const h of groups()) renderTabs(h);
   updateTitle();
@@ -8880,6 +9014,10 @@ let vaultSeedTok = "-";
    themed colours. */
 let themeGen = 0;
 const vthemeMark = name => {
+  // #59 slice 3: [data-vthemecompat] = the theme that paints is the one the vault CHOSE (cssTheme), not the bundled
+  // default an empty cssTheme falls back to; style.css scopes the dialog compat rules to it, so the look with no theme
+  // chosen does not move, and choosing the default theme by name gets stock semantics like any other. Before data-vtheme.
+  document.documentElement.toggleAttribute("data-vthemecompat", !!name && name === vaultTheme);
   document.documentElement.dataset.vtheme = (++themeGen) + ":" + (name || "");
 };
 async function themeInject(name) {
