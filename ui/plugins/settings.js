@@ -20,6 +20,7 @@
      [cpp:<R|T>,<installed>,<enabled>]   on the community pane
      [cpr:<x>,<y>,<1 restricted|0>]      the restricted toggle's centre
      [cpbb:<x>,<y>]                      the Browse button; [cpb...] browser.js tok() while browsing
+     [cpa:<grants>,<outdated>,<seq>]    #74 Allowed programs list answered; [cpar:<x>,<y>] its first Revoke
      [cpt=<id>:<x>,<y>,<on>,<loaded>,<gear x|0>]   one per installed plugin
      [cpn=<pane id>:<x>,<y>]             every community nav entry's centre
      [ptab:<id>,<setting-items>,<elements>]  a plugin tab is on screen (display() ran) */
@@ -250,8 +251,54 @@
         r.dataset.core = cid;
       }
     }
+    buildAllowed(pg);
     sRowsShown = 1 + (browser ? 1 : 0) + ids.length + core.length;
     sEnabledShown = (restricted ? 0 : ids.length) + 1 + (browser ? 1 : 0) + core.length;
+  }
+  /* #74 "Allowed programs": every "Always allow this program" grant (all vaults), listed from
+     the backend's spawn_allow_list — vault, plugin + version, program, date, and "outdated" when
+     the plugin's main.js / manifest.json or the program file no longer match (an outdated grant
+     is never used; the next spawn asks again). Revoke = spawn_allow_revoke. There is NO add:
+     a grant is made only by the native spawn dialog's Always button, never from this page.
+     The backend's ALWAYS_NOTE (arguments are not checked again) is shown above the list.
+     Its rows are not settings rows: sRowsShown / sEnabledShown stay what they were.
+     Census: [cpa:<grants>,<outdated>,<seq>] on the community pane once the list answered, and
+     [cpar:<x>,<y>] = the centre of the first Revoke button (the harness clicks it). */
+  let saList = null, saSeq = 0, saBusy = false;
+  function buildAllowed(pg) {
+    if (typeof inv !== "function") return;
+    const sec = el("div", "ssec", "Allowed programs"); sec.id = "cpallowh";
+    const note = el("div", "sdesc cpa-note"); note.id = "cpallownote";
+    const card = el("div", "scard"); card.id = "cpallow";
+    pg.append(sec, note, card);
+    const paint = r => {
+      if (!card.isConnected) return;
+      note.textContent = String(r && r.note || "");
+      card.innerHTML = "";
+      const gs = Array.isArray(r && r.grants) ? r.grants : [];
+      if (!gs.length) row(card, "No programs are always allowed", "Answer “Always allow this program” in a plugin's run dialog to add one here.", [], true);
+      for (const g of gs) {
+        const dt = new Date(Number(g.added) * 1000); // a hand-edited u64 past the JS date range = Invalid Date, not a throw
+        const day = g.added && !isNaN(dt.getTime()) ? dt.toISOString().slice(0, 10) : "?";
+        const st = g.status === "outdated" ? "Outdated: the plugin or the program changed, this grant is not used" : g.status === "unknown" ? "Cannot be checked from this window" : "";
+        const b = el("button", "cpb-btn cpa-revoke", "Revoke"); b.type = "button";
+        b.onclick = ev => { ev.stopPropagation(); revokeAllowed(g); };
+        const r2 = row(card, String(g.program || "?"), [
+          "Plugin " + String(g.plugin || "?") + (g.pluginVersion ? " (version " + g.pluginVersion + ")" : "") + " · Vault " + String(g.vault || "?"),
+          "Allowed " + day, st], [b]);
+        r2.dataset.grant = String(g.plugin) + "|" + String(g.program);
+        r2.dataset.status = String(g.status || "");
+      }
+      saList = gs; saSeq++; updateTitle();
+    };
+    inv("spawn_allow_list").then(paint, e => { note.textContent = "Allowed programs: " + String(e && e.message || e); });
+  }
+  async function revokeAllowed(g) {
+    if (saBusy) return; saBusy = true;
+    try { await inv("spawn_allow_revoke", { vault: g.vault, plugin: g.plugin, program: g.program }); }
+    catch (e) { console.error("[plugin] revoke:", e); }
+    saBusy = false;
+    if (settingsOpen && sPane === "community") rebuild();
   }
   const CORE_DESC = { canvas: ["Canvas", "Open and edit .canvas files (JSON Canvas): text, note, link and group cards on a board."] };
   function coreList() {
@@ -492,6 +539,9 @@
       const bb = document.getElementById("cpbrowse");
       if (bb) t += " [cpbb:" + ctr(bb) + "]";
       if (browsing && browser) t += browser.tok();
+      const rv = document.querySelector("#cpallow .cpa-revoke");
+      if (saList && rv) t += " [cpar:" + ctr(rv) + "]";
+      if (saList && document.getElementById("cpallow")) t += " [cpa:" + saList.length + "," + saList.filter(g => g.status === "outdated").length + "," + saSeq + "]";
       for (const row of document.querySelectorAll("#spage .srow[data-plugin]")) {
         const id = row.dataset.plugin, tg = row.querySelector(".toggle"), g = row.querySelector(".cpgear");
         t += " [cpt=" + id + ":" + ctr(tg) + "," + (tg.classList.contains("on") ? 1 : 0) + "," +
