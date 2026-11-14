@@ -8886,6 +8886,16 @@ const MQ_DARK = matchMedia("(prefers-color-scheme: dark)");
 const systemTheme = () => (MQ_DARK.matches ? "dark" : "light");
 let themeMode = "dark";                    // "dark" | "light" — replaced at boot
 let themeStored = false;                   // a user chose: the system stops deciding
+/* #59 x #84 winFocus: window-focus marker body.window-focused (stock 1.13.7 paints tabs with
+   --tab-text-color-focused(-active) in a focused window, --tab-text-color(-active) in a blurred one). App-owned name:
+   Obsidian's body.is-focused would also switch on theme rules keyed to it (AnuPpuccin recolours the active title).
+   Starts set — the app window is the focused one at launch, as before — and follows window focus/blur. */
+(function winFocus() {
+  const set = on => { if (document.body) document.body.classList.toggle("window-focused", on); };
+  set(true);
+  window.addEventListener("focus", () => set(true));
+  window.addEventListener("blur", () => set(false));
+})();
 function applyTheme(t) {
   themeMode = t === "light" ? "light" : "dark";
   document.documentElement.setAttribute("data-theme", themeMode);

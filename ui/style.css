@@ -869,10 +869,14 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .morebtn:hover { color: var(--text-chrome) }
 .morebtn svg { width: 16px; height: 16px; display: block }
 .tab { width: var(--tab-width, 120px); min-width: 0; flex-shrink: 1; overflow: hidden; display: flex; align-items: center;
-       gap: 6px; padding: 0 8px; background: var(--bg-surface); color: var(--tab-text-color, var(--text-chrome-muted));
+       gap: 6px; padding: 0 8px; background: var(--bg-surface); color: var(--tab-text-color-focused, var(--text-chrome-muted));
        cursor: pointer; font-size: var(--tab-font-size, 12px); border-right: 2px solid var(--tab-divider-color, var(--bg-ribbon)); max-width: var(--tab-max-width, none); border-radius: var(--tab-radius, 0); }   /* R22: overflow:hidden — the 16px close button + 16px padding cannot fit a 2px tab, so clip */
-.tab.active { background: var(--tab-background-active); color: var(--tab-text-color-active, var(--text-chrome)); border-radius: var(--tab-radius-active, var(--tab-radius, 0)); }   /* themematch: active tab = the note surface */
-.tab.active .t { color: var(--tab-text-color-focused-active, inherit) }   /* #84 x #85: our window is always focused, so the active tab title takes stock -focused-active; .tab itself keeps --tab-text-color(-active) */
+.tab.active { background: var(--tab-background-active); color: var(--tab-text-color-focused-active, var(--text-chrome)); border-radius: var(--tab-radius-active, var(--tab-radius, 0)); }   /* themematch: active tab = the note surface */
+/* #59 x #84: stock Obsidian 1.13.7 tab ink — a FOCUSED window paints --tab-text-color-focused(-active) (rules above), an
+   UNFOCUSED one --tab-text-color(-active). App-owned marker body.window-focused (main.js winFocus), NOT Obsidian's
+   body.is-focused: that class would switch on theme rules keyed to it (AnuPpuccin: active title -> accent), off-stock. */
+body:not(.window-focused) .tab { color: var(--tab-text-color, var(--text-chrome-muted)) }
+body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(--text-chrome)) }
 .tab .t { flex: 1 1 auto; min-width: 0; overflow: hidden;
           text-overflow: ellipsis; white-space: nowrap; font-weight: var(--tab-font-weight, inherit); }
 /* ux-1: close button — flex-none so ellipsized titles can never crush it,
@@ -882,8 +886,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
           cursor: pointer; border-radius: 3px; color: var(--text-chrome-faint) }
 .tab .x svg { width: 9px; height: 9px; display: block }
 .tab .x:hover { background: var(--border-strong); color: var(--text-chrome) }
-.tab.active .x { color: var(--tab-text-color-focused-active, var(--text-chrome-muted)) }   /* #59: our window is always the focused one; --tab-text-color-active owns the active tab ink, so the focused-active ink lands on its close glyph */
-.tab:not(.active) .t { color: var(--tab-text-color-focused, inherit) }   /* #59: focused-window ink for inactive tab titles; --tab-text-color stays on .tab */
+.tab.active .x { color: var(--tab-text-color-focused-active, var(--text-chrome-muted)) }
 /* #59 slice 2: tab ink follows Obsidian's --tab-text-color-* (stock: tab = -focused, active tab = -focused-active,
    its title in the FOCUSED group = -focused-active-current). Each falls back to our own colour, so a theme that
    declares none paints exactly as before. */
