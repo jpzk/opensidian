@@ -9028,6 +9028,16 @@ let vaultBridgeAliases = 0;   // census [vbridge:<n>] — item 8 alias rows pain
    so on a fresh vault the same title carries w3 AND the three listed names,
    and on the second boot k3 with the same names. "-" until a vault is open. */
 let vaultSeedTok = "-";
+/* #94 apitop10: stock has a .modal-container in the DOM only while a modal is OPEN, and plugins (and their tests) read
+   document.querySelector(".modal-container") as "a modal is open". #59 slice 3 put the class on the app's four dialog
+   wrappers permanently (hidden or display:contents), so it matched with nothing open (promptForFileDeletion's Cancel
+   check saw a modal left behind). The wrapper carries .modal-container exactly while its dialog shows. */
+const dlgContainer = (wrap, box) => {
+  const sync = () => wrap.classList.toggle("modal-container", !box.hidden);
+  sync(); new MutationObserver(sync).observe(box, { attributes: true, attributeFilter: ["hidden"] });
+};
+for (const id of ["picker", "ulbox", "delbox"]) if ($(id)) dlgContainer($(id), $(id));
+if ($("rnbox") && $("rnbox").parentElement) dlgContainer($("rnbox").parentElement, $("rnbox"));
 /* themeone item 6 (R5 causes 3+4): THE ACTIVE THEME'S IDENTITY, ON THE ROOT.
    The graph caches its five tokens (palette(), below) and repaints on a root
    attribute change. Both were keyed on data-theme/data-palette, and injecting
