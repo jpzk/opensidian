@@ -735,6 +735,11 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .tkids { margin-inline-start: var(--nav-item-children-margin-start, 0); padding-inline-start: var(--nav-item-children-padding-start, 0) }
 .trow .tn { flex: 1; min-width: 0; white-space: var(--nav-item-white-space, nowrap); overflow: hidden;
             text-overflow: ellipsis }
+/* issue #101: the explorer inline rename field — the bookmark editor's ring (.bmren), sized to the row's
+   name slot so the row keeps its 31px pitch; it keeps its own text selection in an unselectable tree. */
+.trow .exren { width: 100%; box-sizing: border-box; background: var(--bg-base); color: var(--text-chrome);
+               border: 1px solid var(--border-focus-ring); border-radius: 3px; font: inherit; padding: 0 4px;
+               outline: none; user-select: text }
 .trow .tg { flex: 0 0 14px; align-self: stretch; position: relative }
 .trow .tg::before { content: ""; position: absolute; left: 7px; top: 0;
                     bottom: 0; width: var(--nav-indentation-guide-width, 1px); background: var(--rule-faint) }

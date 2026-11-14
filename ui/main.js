@@ -1279,16 +1279,17 @@ function renderBm() {
     s.className = "bmic " + (grp ? "bmchev" : "bmstar");             // svg, not ★/▾ — headless fonts lack the glyphs
     s.innerHTML = grp ? BM_ICON_GROUP : BM_ICON_FILE;
     row.appendChild(s);
-    if (grp && ix === bmRenaming) {        // Rename: an editor INSIDE the row's ring, model untouched until Return
+    if (ix === bmRenaming) {               // Rename: an editor INSIDE the row's ring, model untouched until Return (issue #101: file rows too, 06-rename.png)
       const inp = document.createElement("input");
-      inp.id = "bmren"; inp.className = "bmren"; inp.value = r.name;
+      inp.id = "bmren"; inp.className = "bmren";
+      inp.value = grp ? r.name : (r.label ?? r.name.split("/").pop());   // a file row edits its DISPLAY title (stock: the painted label, selected)
       inp.spellcheck = false; inp.autocomplete = "off";
       inp.onclick = e => e.stopPropagation();
       inp.oninput = () => updateTitle();
       inp.onblur = () => { if (bmRenaming === ix) { bmRenaming = null; renderBm(); } };   // blur is not a commit: only Return is (08-nest-commit.png)
       inp.onkeydown = e => {
         e.stopPropagation();               // a group title may contain any chord the global keymap owns
-        if (e.key === "Enter") { e.preventDefault(); bmGroupRenameCommit(ix, inp.value); }
+        if (e.key === "Enter") { e.preventDefault(); (grp ? bmGroupRenameCommit(ix, inp.value) : bmTitleCommit(ix, inp.value)); }
         else if (e.key === "Escape") { e.preventDefault(); bmRenaming = null; renderBm(); }
       };
       row.appendChild(inp);
@@ -1693,7 +1694,7 @@ function bmRowMenu(e, nm, ix) {             // right-click a FILE .bmrow -> Obsi
   }
   item("Open in new window", null, "Single-window app: there is no second window to open into");   // NOT WIRED
   sep();
-  item("Rename",  null, "Bookmarks are note names on disk (.obsidian/bookmarks.json); there is no per-bookmark title to rename");   // NOT WIRED
+  item("Rename",  () => bmGroupRenameStart(ix));                          // WIRED (issue #101): the inline editor in the row edits the bookmark TITLE, never the file (06-rename.png -> 08-rename-enter.png)
   item("Edit...", hasGrp ? () => openBmEdit(ix) : null,                    // WIRED (R4X.7) once a group exists: the move route, in and out
        hasGrp ? null : "Edit bookmark chooses a GROUP and this pane has none — right-click the pane background to create one");
   sep();
@@ -1889,6 +1890,9 @@ const bmGroupNew = parent => bmApply("bm_group_new", { parent });   // parent = 
 const bmGroupDelete = ix => bmApply("bm_group_delete", { ix });     // the SUBTREE goes with it, and nothing asks (R4X.3)
 function bmGroupRenameStart(ix) { bmRenaming = ix; renderBm(); }    // renderBm focuses+selects the editor it just painted
 function bmGroupRenameCommit(ix, title) { bmRenaming = null; return bmApply("bm_group_rename", { ix, title }); }
+/* issue #101: a FILE row's Rename is the bookmark's DISPLAY title (bookmarks.json "title"); the file, its tabs
+   and its links are untouched (docs/recon-bmmenu 06..08: Ideas.md on disk unchanged, tabs still `Ideas`). */
+function bmTitleCommit(ix, title) { bmRenaming = null; return bmApply("bm_title", { ix, title }); }
 /* ---------- bmdrag: DRAG A BOOKMARK ROW (R4X.n placeholders) ----------
    R24.6's mouse machine, not a second convention (and HTML5 dragstart/
    dataTransfer stays used NOWHERE — the R24.6 comment is binding here too):
@@ -2315,10 +2319,11 @@ function noteMenu(e, nm) {                 // right-click a tree note row
     item("Open in new window", null, "Single-window app: there is no second window to open into");   // REQ-16 EXCEPTION
     sep(); }
   mkItem(bmCache.includes(nm) ? "Remove bookmark" : "Bookmark", () => toggleBm(nm));
-  /* CVR-A-087: the row names the note, so its menu can rename it. The rename verb
-     addresses the focused tab's note (F2 / palette), so the row's note is shown
-     there first; the disk move and the link prompt stay cmdRename's. */
+  /* CVR-A-087 / issue #101: the row names the note, so its menu renames it — IN THE ROW, as stock
+     (exRenStart): no tab is opened or navigated, no modal. The disk move and the link prompt stay
+     renameThenAsk's. Only a row that is not painted (never, from its own menu) falls back to F2's prompt. */
   mkItem("Rename...", async () => {
+    if (exRenStart("note", nm)) return;
     await rowOpen(nm);
     const g = fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
     if (t && !t.kind && t.name === nm) cmdRename();
@@ -4245,6 +4250,7 @@ function utBuild() {             // pane/focus census in the window title (headl
             (revealInfo ? " [bmrv:" + revealInfo + "]" : "") +      // bmmenu: "Reveal file in navigation" ran (bmReveal) — not merely "the Files pane is showing"
             (acItems.length ? " [ac:" + acKind + ":" + acItems.length + "]" : "") +
             " [pane:" + sidePane + "]" +
+            exRenTok() +                                        // issue #101: an explorer row is in inline rename, [exren:<path>|sel=<selected>]
             sfontTok() +                                        // sidefont: computed sidebar row font sizes (t=trow b=bmrow r=rlist)
             (sidePane === "search" && searchCount >= 0 ? " [sr:" + searchCount + "]" + srGeom() : "") +
             (sidePane === "bm" ? " [bm:" + bmRows() + "]" +          // RENDERED rows, not the model's length:
@@ -6792,6 +6798,90 @@ function canvasRow(p, depth) {
   return row;
 }
 
+/* issue #101 — EXPLORER INLINE RENAME (stock 1.13.7, recon-cv2 CVR-A-085): "Rename..." on an explorer
+   row turns the row's NAME into an editor in the row, the name without its extension selected. No
+   modal opens and no tab is opened or navigated (the old road opened the note in the focused tab and
+   then the F2 prompt). Return and blur commit, Escape reverts. A note takes the ONE rename tail
+   (renameThenAsk: move, then the Update links question; applyRename retitles every tab, follows the
+   bookmark and repaints the tree), a canvas takes cvRetarget (every tab on it follows, CVR-A-086).
+   The refusals are the inline title's (R34.12/R34.13): an illegal character or a taken name raises
+   the notice and, on Return, the editor stays open with nothing moved. A "/" is refused, never a move.
+   [exren:<vault path>|sel=<selected text>] is published while the editor is open. */
+let exRen = null;                          // {path, kind: "note"|"canvas", inp, tn, orig}
+function exRenTok() {
+  if (!exRen || !exRen.inp.isConnected) return "";
+  const i = exRen.inp, sel = i.value.slice(i.selectionStart || 0, i.selectionEnd || 0);
+  const c = s => String(s).replace(/[|\]]/g, "");
+  return " [exren:" + c(exRen.kind === "note" ? exRen.path + ".md" : exRen.path) + "|sel=" + c(sel) + "]";
+}
+function exRenRow(kind, path) {
+  if (kind === "note") return treeRows.get(path) || [...document.querySelectorAll("#tree .trow.note")].find(r => r.dataset.note === path) || null;
+  return [...document.querySelectorAll("#tree .trow.cvfile")].find(r => r.dataset.canvas === path) || null;
+}
+function exRenStart(kind, path) {
+  exRenClose();
+  const row = exRenRow(kind, path), tn = row && row.querySelector(".tn");
+  if (!tn) return false;
+  const orig = kind === "note" ? path.split("/").pop() : path.split("/").pop().replace(/\.canvas$/i, "");
+  const inp = document.createElement("input");
+  inp.id = "exren"; inp.className = "exren"; inp.value = orig;
+  inp.spellcheck = false; inp.autocomplete = "off";
+  const stop = e => e.stopPropagation();   // the row's click opens, its mousedown drags: neither belongs to the editor
+  inp.onclick = stop; inp.onmousedown = stop; inp.onauxclick = stop; inp.ondblclick = stop; inp.oncontextmenu = stop;
+  inp.oninput = () => { exRenCheck(); updateTitle(); };
+  inp.onselect = () => updateTitle();
+  inp.onkeyup = () => updateTitle();       // the caret / selection moved: [exren:|sel=] follows
+  inp.onkeydown = e => {
+    e.stopPropagation();                   // a file name may contain any chord the R14 keymap owns
+    if (e.key === "Enter") { e.preventDefault(); exRenCommit(false); }
+    else if (e.key === "Escape") { e.preventDefault(); exRenClose(); }
+  };
+  inp.onblur = () => { if (exRen && exRen.inp === inp) exRenCommit(true); };
+  tn.textContent = "";
+  tn.appendChild(inp);
+  row.classList.add("renaming");
+  exRen = { path, kind, inp, tn, row, orig };
+  inp.focus();
+  inp.select();
+  updateTitle();
+  return true;
+}
+function exRenClose() {                    // revert the row to its label; nothing on disk moved
+  const r = exRen;
+  if (!r) return;
+  exRen = null;                            // FIRST: removing a focused input may fire blur, which must find no editor
+  r.row.classList.remove("renaming");
+  if (r.inp.isConnected) r.tn.textContent = r.orig;
+  if (noticeSrc === "exren") say("", "exren");
+  updateTitle();
+}
+const exRenDir = p => (p.includes("/") ? p.slice(0, p.lastIndexOf("/") + 1) : "");
+function exRenCheck() {                    // the inline title's refusals (titleCheck), stated in the notice
+  if (!exRen) return true;
+  const t = exRen.inp.value.replace(/[\r\n]+/g, " ").trim();
+  let msg = "";
+  if (t && TITLE_ILLEGAL.test(t)) msg = 'File name cannot contain any of these characters: \\ / : * ? " < > |';
+  else if (t && t !== exRen.orig && exRen.kind === "note" && notesCache.includes(exRenDir(exRen.path) + t)) msg = "There's already a file with the same name";
+  if (msg) { if (msg !== noticeTxt) say(msg, "exren"); return false; }
+  if (noticeSrc === "exren") say("", "exren");
+  return true;
+}
+async function exRenCommit(blur) {
+  const r = exRen;
+  if (!r) return;
+  const t = r.inp.value.replace(/[\r\n]+/g, " ").trim();
+  if (!t || t === r.orig) { exRenClose(); return; }        // empty or unchanged: revert, no rename (R34.14)
+  if (!exRenCheck()) { if (blur) exRenClose(); return; }  // refused: Return keeps the editor, blur reverts it
+  exRenClose();
+  const dir = exRenDir(r.path);
+  if (r.kind === "canvas") { await cvRetarget(r.path, dir + t + ".canvas"); return; }
+  for (const h of groups()) {              // every pane showing the note lands its pending bytes before the move
+    const at = h.active >= 0 ? h.tabs[h.active] : null;
+    if (at && !at.kind && at.name === r.path) await flushSave(h);
+  }
+  await renameThenAsk(r.path, dir + t);   // NAMES CARRY NO EXTENSION (R34.1 note)
+}
+
 /* ---------- R24.6: DRAG A NOTE ONTO A FOLDER ROW TO MOVE IT ----------------
    THE SAME MOUSE MACHINE AS THE TABS, not a second convention: mousedown +
    window mousemove/mouseup, a 6px threshold, a #tabghost chip, drop targets
@@ -8101,7 +8191,7 @@ function canvasFileMenu(e, p) {             // right-click a .canvas row in the 
   item("Open in default app", null, "Missing subsystem: a file-path opener — open_external takes a URL, not a vault path");
   item("Show in system explorer", null, "Missing subsystem: a file-manager handler");
   sep();
-  item("Rename...", () => cvRename(p));     // cv-vault CV-147
+  item("Rename...", () => { if (!exRenStart("canvas", p)) cvRename(p); });   // issue #101 / CVR-A-085: inline in the row (cv-vault CV-147's prompt only if the row is not painted)
   item("Delete", () => cvDelete(p));       // cv-vault CV-148
   m.dataset.mt = "canvas:" + p.replace(/[|\]]/g, "");
   placeMenu(m, e.clientX, e.clientY);
