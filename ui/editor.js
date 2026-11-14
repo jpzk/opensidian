@@ -153,8 +153,14 @@ const Ed = {
         // #45: the done strike is drawn on the TEXT (span.tkt), not the row: a row-level
         // text-decoration also struck the literal indent of a nested item, a dash left of
         // the box. Empty text gets no span (a text-less element would become a widget leaf).
+        // gh #75: a BLANK task (no body) instead gets exactly such a leaf on purpose, span.tcar:
+        // a zero-width inline-block caret anchor after the checkbox (lpParse -> widget at
+        // ln.from + t.e, side 1). Without it the caret at the marker end (#46 keeps the box
+        // there) only maps into the hidden "[ ] " marker, which has no box, and WebKit paints
+        // it at the row start, LEFT of the checkbox.
         const body = rest.slice(4);
         if (body) { const tt = Ed.el("span", "tkt"); Ed.inline(g, tt, body); row.appendChild(tt); }
+        else row.appendChild(Ed.el("span", "tcar"));
       } else {
         Ed.tok([li0, li1], [li0, li1], "li");
         Ed.inline(g, row, rest);
@@ -1154,7 +1160,7 @@ const Ed = {
                    "1. numbered ~~s~~ ==hl== end", "```js", "text with https://x.example/z end",
                    // corpus inherited from the deleted scripts/edit-unit.js (it drove a pure
                    // API that no longer exists; the invariants it protected live on here)
-                   "   ", "###### h6", "## **bold** head", "- [x] done", "  - two spaces", "12) twelve",
+                   "   ", "###### h6", "## **bold** head", "- [x] done", "- [ ] ", "\t- [x] ", "  - two spaces", "12) twelve",
                    "> > deep", "> - a", "---", "a **b _c_ d** e", "![[Welcome]]", "a#nottag and #tag/sub",
                    "snake_case_word stays", "`a**b`", "text with <b>&amp;", "unclosed **bold",
                    "- **bold item** with [[Link]]", "\t\t1. deep ordered",
@@ -1223,6 +1229,15 @@ const Ed = {
       const tk = Ed.row(g, s, 0)._tok.map(t => t.s + "-" + t.e + ":" + t.kind).join(",");
       if (tk !== w) fail("tok:" + s + ":" + tk);
     }
+    // gh #75: a BLANK task "- [ ] " keeps its checkbox with the caret at the marker end (#46: a
+    // collapsed caret at t.e reveals nothing)
+    const bt = Ed.row(g, "- [ ] ", 0)._tok, bset = Ed.tokAt(bt, 6, 6).map(t => t.s + "-" + t.e + ":" + t.kind).join(",") || "-";
+    if (bset !== "-") fail("rv75:" + bset);
+    // and that caret has a RENDERED spot right of the checkbox: on a live CM6 view the DOM
+    // selection at col 6 must have a client rect (not a display:none marker node, which WebKit
+    // paints at the row start = LEFT of the box) whose left edge is >= the box's right edge.
+    const c75 = Ed.caret75();
+    if (c75) fail("dom75:" + c75);
     // R17.7 link destinations: balanced parens survive whole (CommonMark), a
     // backslash escape stays literal, whitespace is still not a link, an empty
     // destination still is, and a bare URL leaves the enclosing prose's ')' out.
@@ -1349,7 +1364,59 @@ const Ed = {
         if (eg.view.lines.join("\n") !== want) fail("sel-tab:" + src);
       }
     } finally { Ed.after = oa; Ed.snap = on; }
+    // #59 callouts: the Live Preview block scanner (which lines become ONE callout widget)
+    // and the fold toggle. Ed.coScan missing = every case fails (develop has no callouts).
+    const cs = [
+      ["> [!note]\n> body", "0-1"], ["> [!NOTE] Title\n> a\n> b\nafter", "0-2"],
+      ["> [!tip]+ open\n> x", "0-1"], ["> [!faq]- shut\n> x\n\n> [!bug]\n> y", "0-1,3-4"],
+      ["> [!custom-type] t", "0-0"], ["> [!note] <img src=x onerror=alert(1)>", "0-0"],
+      ["> plain quote\n> [!note] not a head", "-"], ["text [!note]", "-"], ["> [note]", "-"],
+      ["```\n> [!note] in a fence\n```", "-"], ["> [!info]\n> > [!warning] nested\n> > deep", "0-2"],
+      ["   > [!note] 3 spaces", "0-0"], ["    > [!note] 4 spaces = code", "-"]];
+    for (const [s, w] of cs) {
+      let got;
+      try { got = Ed.coScan(s.split("\n")).map(([a, b]) => a + "-" + b).join(",") || "-"; } catch (_) { got = "throw"; }
+      if (got !== w) fail("co:" + s);
+    }
+    try {
+      const co = document.createElement("div");
+      co.innerHTML = '<div class="callout is-collapsible is-collapsed" data-callout-fold="-"><div class="callout-title"><div class="callout-fold is-collapsed"></div></div><div class="callout-content"></div></div>';
+      const c = co.firstChild, f = c.querySelector(".callout-fold");
+      if (!Ed.coFold(c) || c.classList.contains("is-collapsed") || f.classList.contains("is-collapsed")) fail("co:fold-open");
+      if (!Ed.coFold(c) || !c.classList.contains("is-collapsed") || !f.classList.contains("is-collapsed")) fail("co:fold-shut");
+      c.classList.remove("is-collapsible");
+      if (Ed.coFold(c)) fail("co:fold-nonfoldable");
+    } catch (_) { fail("co:fold-throw"); }
     return bad;
+  },
+  // gh #75 selfTest DOM case: a throwaway live-preview CM6 view holding one blank task, laid out
+  // but invisible (opacity 0, no pointer events), caret put at the marker end (col 6). Reads the
+  // DOM selection back the way the [crt:] census does. "" = the caret has a rect right of the box;
+  // otherwise a short reason (nobox / nosel / hid = rect 0,0,0 / x<box right edge).
+  caret75() {
+    if (typeof CMv === "undefined" || typeof CMs === "undefined" || !document.body) return "nocm";
+    const w = Ed.el("div", "lp");
+    w.style.cssText = "position:fixed;left:0;top:0;width:480px;opacity:0;pointer-events:none;z-index:-1";
+    const v = { lp: w }, g = { view: v, lp: w }, ae = document.activeElement;
+    const cm = new CMv.EditorView({ state: CMs.EditorState.create({ doc: "- [ ] ", extensions: [Ed.lpExt(v, () => g)] }) });
+    w.appendChild(cm.dom);
+    document.body.appendChild(w);
+    try {
+      cm.focus();
+      cm.dispatch({ selection: { anchor: 6 } });
+      const box = cm.contentDOM.querySelector("input.tbox"), s = window.getSelection();
+      if (!box) return "nobox";
+      if (!s || !s.rangeCount || !s.focusNode || !cm.contentDOM.contains(s.focusNode)) return "nosel";
+      const c = Ed.caretRect(s.focusNode, s.focusOffset);
+      const R = Math.round, br = box.getBoundingClientRect().right;
+      if (!c.left && !c.top && !c.height) return "hid";
+      if (c.left < br - 0.5) return "x" + R(c.left) + "<" + R(br);
+      return "";
+    } catch (e) { return "err"; }
+    finally {
+      cm.destroy(); w.remove();
+      if (ae && ae !== document.body && ae.isConnected && ae.focus) ae.focus(); else if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    }
   },
 };
 
@@ -1918,7 +1985,7 @@ Ed.geom = function (g) {
   const n = cm.state.doc.lines;
   if (n > 40) return "";
   const b = cm.contentDOM.getBoundingClientRect();   // the text column
-  let ys = "", xs = "", cb = "";
+  let ys = "", xs = "", cb = "", cr = "";   // cr: [ecr:] checkbox RIGHT edge per row (gh #75 caret probes)
   const r = document.createRange();
   for (let i = 0; i < n; i++) {
     const q = Ed.lineBox(g, i), row = Ed.rowAt(g, i);
@@ -1927,12 +1994,13 @@ Ed.geom = function (g) {
     if (box) {
       const bb = box.getBoundingClientRect();
       if (bb.width) cb += (cb ? "," : "") + i + "@" + Math.round(bb.left + bb.width / 2);
+      if (bb.width) cr += (cr ? "," : "") + i + "@" + Math.round(bb.right);
     }
     const r0 = row ? Ed.firstRect(row, r) : null;
     xs += (i ? "," : "") + Math.round(r0 ? r0.left : q.left);
   }
   return " [edx:" + Math.round(b.left) + "] [erx:" + xs + "] [ery:" + ys + "]"
-    + (cb ? " [ecb:" + cb + "]" : "");
+    + (cb ? " [ecb:" + cb + "] [ecr:" + cr + "]" : "");
 };
 /* ---------- KEY BEFORE CLICK (live-preview caret, goal top10-func) ----------
    WebKitGTK hands key and mouse events to the page through separate queues: a
@@ -1985,6 +2053,32 @@ Ed.caretXY = function (g) {               // caret rect relative to the pane box
   const c = cm && cm.coordsAtPos(cm.state.selection.main.head);
   return c ? [c.left - pr.left, c.bottom - pr.top] : [16, 16];
 };
+/* the rect a collapsed DOM caret (node, offset) is painted at. In a text node: the collapsed
+   Range's own rect (zero inside a display:none marker, which WebKit paints at the row start).
+   At an ELEMENT boundary (CM6 parks the selection between child nodes next to a widget, e.g.
+   (div.cm-line, k)) WebKit returns no client rects for the collapsed Range although it paints
+   the caret against the neighbouring box: so take the first following child that has a box
+   (its left edge), else the nearest preceding one (its right edge). Children without a box
+   (display:none) are skipped, so a caret next to only hidden nodes still reads 0,0,0.
+   Shared by the [crt:] census and the gh #75 selfTest DOM case. */
+Ed.caretRect = function (n, o) {
+  const Z = { left: 0, top: 0, height: 0, right: 0 }, r = document.createRange();
+  try { r.setStart(n, o); r.collapse(true); } catch (_) { return Z; }   // a stale offset: no rect
+  const q = r.getClientRects();
+  if (q.length) return q[0];
+  const b = r.getBoundingClientRect();
+  if (b.left || b.top || b.height || n.nodeType !== 1) return b;
+  const box = x => {
+    if (!x) return null;
+    if (x.nodeType === 3) { if (!x.nodeValue) return null; const g = document.createRange(); g.selectNodeContents(x); const t = g.getClientRects(); return t.length ? t[0] : null; }
+    const t = x.getClientRects ? x.getClientRects() : [];
+    return t.length ? t[0] : null;
+  };
+  const k = n.childNodes;
+  for (let i = o; i < k.length; i++) { const c = box(k[i]); if (c) return { left: c.left, top: c.top, height: c.height, right: c.left }; }
+  for (let i = o - 1; i >= 0; i--) { const c = box(k[i]); if (c) return { left: c.right, top: c.top, height: c.height, right: c.right }; }
+  return b;
+};
 Ed.crtTok = function () {
   const g = typeof fg === "function" ? fg() : null, lp = g && g.lp, cm = Ed.cm(g);
   if (!lp || !cm || !lp.isConnected || !lp.getClientRects().length) return "";
@@ -1998,9 +2092,7 @@ Ed.crtTok = function () {
       k = n === lp || n === cm.contentDOM || n === cm.dom ? "lp"
         : n.nodeType === 3 ? (n.parentElement && n.parentElement.getClientRects().length ? "txt" : "hid")
         : n.nodeName === "BR" ? "br" : n.classList && n.classList.contains("cm-line") ? "row" : "el";
-      const r = document.createRange();
-      try { r.setStart(n, s.focusOffset); r.collapse(true); } catch (_) { /* a stale offset: no rect */ }
-      const q = r.getClientRects(), c = q.length ? q[0] : r.getBoundingClientRect();
+      const c = Ed.caretRect(n, s.focusOffset);
       x = R(c.left); y = R(c.top); h = R(c.height);
       const p = Ed.pos(g, n, s.focusOffset);
       if (p) lc = p.l + "." + p.c;
@@ -2190,6 +2282,9 @@ Ed.lpLeaves = function (row) {            // the text-less leaves of a rendered 
   walk(row);
   return out;
 };
+// a task row's marker prefix as Ed.block reads it: indent, any ">" quote levels (">  - [ ] x" is a
+// quoted list row too), a bullet or "N.", then "[c] ". m[0].length = the task text start (gh #46/#75)
+Ed.TASK_RE = /^[ \t]*(?:>[ \t]*)*(?:[-*+]|\d+\.) \[[^\]\n]\] /;
 Ed.lpExt = function (v, G) {
   const { Decoration, ViewPlugin, WidgetType, EditorView } = CMv;
   const bust = CMs.StateEffect.define();
@@ -2216,10 +2311,13 @@ Ed.lpExt = function (v, G) {
     ignoreEvent() { return true; }
   }
   const lineDeco = new Map();
+  let tcrGen = 0, tcrRow = -1;   // gh #75: stale-caret repaint class tcr0/tcr1 parity + the blank task row the caret was on last build (see build)
   const ld = c => { let d = lineDeco.get(c); if (!d) { d = Decoration.line({ class: c }); lineDeco.set(c, d); } return d; };
   const build = view => {
     const g = G(), st = view.state, doc = st.doc, sel = st.selection.main, out = [], labels = [];
     const cur = doc.lineAt(sel.head).number;
+    const tcrLeft = tcrRow !== cur ? tcrRow : -1, tp = " tcr" + (++tcrGen & 1);   // gh #75: see the tcr comment below
+    let tcrNext = -1;
     // plugin overlay tokens (a Templater command) take no markdown decoration, as in Obsidian
     const opq = Ed.lpOpaque ? Ed.lpOpaque(view) : null;
     const hit = (rs, s, e) => { for (const r of rs) if (s < r[1] && e > r[0]) return true; return false; };
@@ -2243,11 +2341,24 @@ Ed.lpExt = function (v, G) {
         }
         const fl = g && g._fl && g._fl.l === ln.number - 1 ? (g._fl.fade ? " navflash fade" : " navflash") : "";
         const whole = ors && ln.length > 0 && ors.some(r => r[0] <= 0 && r[1] >= ln.length);
-        out.push(ld((whole ? Ed.lpParse(g, "x").cls : P.cls) + (ln.number === cur ? " cur" : "") + fl).range(ln.from));
+        // gh #75 (PR #80, fix-75d): WebKitGTK leaves a STALE caret on a blank task row. Typing then deleting the
+        // body ("Z", BackSpace) removes the text node the caret was painted in, and the row gets span.tcar back;
+        // WebKit erases the OLD caret through that node's renderer, which is gone, so the 1px bar at the old x
+        // (box right + one glyph) stays on screen next to the live caret. Flip a paint-only class (tcr0/tcr1,
+        // style.css: a transparent background-image layer, invisible) on the caret's blank task row on
+        // every rebuild: a style change that needs a repaint makes WebKit repaint the WHOLE line box, which wipes it.
+        // The row the caret just LEFT gets one more flip: its last rebuild was the BackSpace that left the stale bar
+        // (box shots B-click / E-click: bar on the row above), and dropping the class is not always a paint change.
+        const car = ln.number === cur && P.wid.some(w => w.el && w.el.classList && w.el.classList.contains("tcar"));
+        if (car) tcrNext = cur;
+        const tcr = car || ln.number === tcrLeft ? tp : "";
+        out.push(ld((whole ? Ed.lpParse(g, "x").cls : P.cls) + (ln.number === cur ? " cur" : "") + tcr + fl).range(ln.from));
         for (let i = 0; i < P.els.length; i++) {
           const x = P.els[i];
           if (x.e > x.s && !(ors && hit(ors, x.s, x.e))) out.push((rv && rv.has(i) ? x.rv : x.d).range(ln.from + x.s, ln.from + x.e));
         }
+        // leaves: checkbox, image, pdf frame, and the #75 blank-task caret anchor span.tcar (at t.e, side 1:
+        // right of the box, so the caret at the marker end maps to a rendered spot after the checkbox)
         for (const w of P.wid) if (!(ors && ors.some(r => r[0] < w.pos && w.pos < r[1]))) out.push(Decoration.widget({ widget: new Leaf(ln.text, w.k, w.el), side: 1 }).range(ln.from + w.pos));
       }
     }
@@ -2255,6 +2366,7 @@ Ed.lpExt = function (v, G) {
       const sig = labels.join(",");
       if (g.lp._rvsig !== sig) { g.lp._rvs = labels; g.lp._rvsig = sig; }
     }
+    tcrRow = tcrNext;
     return Decoration.set(out, true);
   };
   const plugin = ViewPlugin.fromClass(class {
@@ -2287,6 +2399,35 @@ Ed.lpExt = function (v, G) {
     // only an UNMODIFIED key is a vertical move: Cmd+Up/Down (macOS document start/end), Ctrl+Up/Down
     // (WebKitGTK paragraph backward/forward), Alt+... and Shift (selection) keep their native target (PR #62)
     keydown: (e) => { v._vmove = /^(ArrowUp|ArrowDown|PageUp|PageDown)$/.test(e.key) && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey ? Date.now() : 0; return false; },
+    // gh #75: a plain click in the empty space RIGHT of a task's checkbox. On a nested blank task
+    // ("\t- [ ] ") WebKit's caretRangeFromPoint skips the box + the zero-width anchor (no text) and
+    // lands in the last visible TEXT node, the indent: col 1, LEFT of the box, so typing puts the
+    // text before the marker. Remember the row here; pointerSnap below moves such a caret to the
+    // marker end. Clicks ON the box never get here (its own mousedown stops propagation).
+    mousedown: (e, view) => {
+      v._psnap = null;
+      if (e.button !== 0 || e.detail > 1 || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return false;
+      const p = view.posAtCoords({ x: e.clientX, y: e.clientY }, false);
+      if (p == null) return false;
+      const ln = view.state.doc.lineAt(p), m = Ed.TASK_RE.exec(ln.text);
+      if (!m) return false;
+      const d = view.domAtPos(ln.from), el = d && d.node && (d.node.nodeType === 1 ? d.node : d.node.parentElement);
+      const row = el && el.closest ? el.closest(".cm-line") : null, box = row && row.querySelector("input.tbox");
+      const br = box ? box.getBoundingClientRect() : null;
+      if (br && br.width && e.clientX >= br.right) v._psnap = { l: ln.number, t: Date.now() };
+      return false;
+    },
+  });
+  const pointerSnap = CMs.EditorState.transactionFilter.of(tr => {
+    const ps = v._psnap;
+    if (!ps || Date.now() - ps.t > 500 || tr.docChanged || !tr.selection || !tr.isUserEvent("select.pointer")) return tr;
+    const s = tr.selection;
+    if (s.ranges.length !== 1 || !s.main.empty) return tr;
+    const ln = tr.newDoc.lineAt(s.main.head);
+    if (ln.number !== ps.l) return tr;
+    const m = Ed.TASK_RE.exec(ln.text);
+    if (!m || s.main.head - ln.from >= m[0].length) return tr;
+    return [tr, { selection: CMs.EditorSelection.cursor(ln.from + m[0].length), sequential: true }];
   });
   const taskSnap = CMs.EditorState.transactionFilter.of(tr => {
     if (!v._vmove || Date.now() - v._vmove > 500 || tr.docChanged || !tr.selection || !tr.isUserEvent("select") || tr.isUserEvent("select.pointer")) return tr;
@@ -2295,12 +2436,11 @@ Ed.lpExt = function (v, G) {
     if (s.ranges.length !== 1 || !s.main.empty) return tr;
     const doc = tr.newDoc, ln = doc.lineAt(s.main.head);
     if (ln.number === tr.startState.doc.lineAt(tr.startState.selection.main.head).number) return tr;
-    // quote prefix as Ed.block reads it: ">" + any spaces/tabs, repeated (">  - [ ] x" is a quoted list row too)
-    const m = /^[ \t]*(?:>[ \t]*)*(?:[-*+]|\d+\.) \[[^\]\n]\] /.exec(ln.text);
+    const m = Ed.TASK_RE.exec(ln.text);
     if (!m || s.main.head - ln.from >= m[0].length) return tr;
     return [tr, { selection: CMs.EditorSelection.cursor(ln.from + m[0].length), sequential: true }];
   });
-  return [plugin, clicks, vkeys, taskSnap, Ed.cbField(v, G, bust), Ed.tblField(v, G, bust)];
+  return [plugin, clicks, vkeys, taskSnap, pointerSnap, Ed.cbField(v, G, bust), Ed.coField(v, G, bust), Ed.tblField(v, G, bust)];
 };
 /* ---------- plugin CODE BLOCKS in Live Preview (plug-top5) ----------
    A fenced block whose language a plugin registered a code-block processor for
@@ -2406,6 +2546,143 @@ Ed.cbField = function (v, G, bust) {
     provide: f => EditorView.decorations.from(f),
   });
   return field;
+};
+/* ---------- CALLOUTS in Live Preview (#59 slice 1) ----------
+   A blockquote whose first line is "> [!type]" (fold "+"/"-", title optional) shows in
+   Live Preview as the reading view's callout: the whole quote (its first line .. the last
+   consecutive ">" line) is ONE block widget, div.cm-embed-block.cm-callout holding the
+   Rust renderer's html for that source (src-tauri/src/callout.rs: the same DOM, the same
+   escaping path as the reading view). A selection touching the block reveals its source,
+   source mode and the reading view's laid-out lp render none — the Ed.cbField pattern.
+   Ed.coScan is pure (lines in, [l0, l1] 0-based inclusive out) and unit-asserted in
+   Ed.selfTest: fenced code is skipped, a ">" line inside a fence is never a callout. */
+Ed.CO_HEAD = /^ {0,3}>[ \t]*\[![^\]\s]+\][+-]?(?:[ \t]|$)/;
+Ed.CO_QUOTE = /^ {0,3}>/;
+Ed.coScan = function (lines) {
+  const out = [];
+  let fence = null;
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i], f = /^ {0,3}(`{3,}|~{3,})/.exec(t);
+    if (fence) { if (f && f[1][0] === fence[0] && f[1].length >= fence.length && !t.slice(f[0].length).trim()) fence = null; continue; }
+    if (f) { fence = f[1]; continue; }
+    if (!Ed.CO_HEAD.test(t)) continue;
+    let j = i;
+    while (j + 1 < lines.length && Ed.CO_QUOTE.test(lines[j + 1])) j++;
+    out.push([i, j]);
+    i = j;
+  }
+  return out;
+};
+// every callout block of doc -> [{from, to, src}] (cached on the doc: a caret move re-scans nothing)
+Ed.coBlocks = function (doc) {
+  if (Ed._coDoc === doc) return Ed._coOut;
+  const lines = [];
+  for (let i = 1; i <= doc.lines; i++) lines.push(doc.line(i).text);
+  const out = Ed.coScan(lines).map(([a, b]) => {
+    const la = doc.line(a + 1), lb = doc.line(b + 1);
+    return { from: la.from, to: lb.to, src: doc.sliceString(la.from, lb.to) };
+  });
+  Ed._coDoc = doc; Ed._coOut = out;
+  return out;
+};
+// fold: a click on the title of a foldable callout flips it (reading view, LP widget, embeds,
+// canvas cards, plugin renders: ONE delegated listener). Pure on the element, unit-asserted.
+Ed.coFold = function (co) {
+  if (!co || !co.classList || !co.classList.contains("is-collapsible")) return false;
+  const c = co.classList.toggle("is-collapsed");
+  const f = co.querySelector(":scope > .callout-title > .callout-fold");
+  if (f) f.classList.toggle("is-collapsed", c);
+  return true;
+};
+Ed.coClick = function (e) {
+  const t = e.target && e.target.closest && e.target.closest(".callout-title");
+  if (!t || (e.target.closest("a") && t.contains(e.target.closest("a")))) return;
+  const co = t.parentElement;
+  if (co && co.classList.contains("callout") && Ed.coFold(co)) { e.preventDefault(); e.stopPropagation(); }
+};
+if (typeof document !== "undefined") document.addEventListener("click", Ed.coClick);
+Ed.coField = function (v, G, bust) {
+  const { Decoration, WidgetType, EditorView } = CMv;
+  class CO extends WidgetType {
+    constructor(src, gen) { super(); this.src = src; this.gen = gen; }
+    eq(o) { return o.src === this.src && o.gen === this.gen; }
+    get estimatedHeight() { return 24 * Math.max(1, this.src.split("\n").length); }
+    toDOM(view) {
+      const w = Ed.el("div", "cm-embed-block markdown-rendered cm-callout");
+      const src = this.src;
+      // the widget ignores editor events: links follow here; a click outside the title and
+      // any link puts the caret on the block's first line (its source shows, as in stock)
+      w.addEventListener("click", e => {
+        const a = e.target && e.target.closest && e.target.closest("a.wiki, a.internal-link");
+        if (a && w.contains(a)) { if (typeof wikiClick === "function") wikiClick(e, a); return; }
+        if (e.defaultPrevented || (e.target.closest && (e.target.closest(".callout-title") || e.target.closest("a")))) return;
+        try { const p = view.posAtDOM(w, 0); view.dispatch({ selection: { anchor: p } }); view.focus(); } catch (_) {}
+      });
+      if (typeof inv === "function") inv("render", { content: src }).then(html => {
+        w.innerHTML = html;
+        view.requestMeasure();
+      }).catch(e => console.error("callout render:", e));
+      return w;
+    }
+    ignoreEvent() { return true; }
+  }
+  const build = st => {
+    const g = G();
+    const tb = g && g.view === v && g.active >= 0 ? g.tabs[g.active] : null;
+    if (!g || (v.lp && v.lp.classList.contains("src")) || (tb && tb.mode === "reading")) return Decoration.none;
+    const blocks = Ed.coBlocks(st.doc);
+    if (!blocks.length) return Decoration.none;
+    const gen = typeof notesCache !== "undefined" && notesCache ? notesCache.length : 0, out = [];
+    for (const b of blocks) {
+      if (st.selection.ranges.some(r => r.from <= b.to && r.to >= b.from)) continue;   // caret in the callout: its source shows
+      out.push(Decoration.replace({ widget: new CO(b.src, gen), block: true }).range(b.from, b.to));
+    }
+    return Decoration.set(out, true);
+  };
+  return CMs.StateField.define({
+    create: st => { try { return build(st); } catch (e) { console.error(e); return Decoration.none; } },
+    update(d, tr) {
+      if (tr.docChanged || tr.selection || tr.effects.some(e => e.is(bust)))
+        try { return build(tr.state); } catch (e) { console.error(e); return Decoration.none; }
+      return d;
+    },
+    provide: f => EditorView.decorations.from(f),
+  });
+};
+// census (#59, gate phase callouts): the focused pane's PAINTED callouts, off the live DOM, only while
+// one exists. [co:n|type/fold/state/icon/nest/title,...] state c=collapsed o=open, icon 1 = an svg in
+// .callout-icon, nest = callout ancestors; [coxss:n] elements under any callout carrying an on*
+// attribute, or an img/script/iframe the source did not ask for (the phase's fixture asks for none);
+// [cofold:type@rect] the first foldable callout's title (the phase clicks it);
+// [corc:] / [bqrc:] the first visible callout's and plain blockquote's client rect + computed
+// background composited to the first opaque ancestor (r.g.b) — the phase samples pixels inside them.
+Ed.coTok = function () {
+  const P = document.querySelector("#main .pane.focused") || document.querySelector("#main .pane");
+  if (!P) return "";
+  // a kept view (.vkeep, modeswitch opt6) stays laid out but is moved off the pane: not painted -> not counted
+  const vis = e => !!e && !e.closest(".vkeep") && e.getClientRects().length > 0 && e.getBoundingClientRect().height > 0;
+  const all = [...P.querySelectorAll(".callout")].filter(vis);
+  if (!all.length) return "";
+  const safe = s => String(s || "").replace(/[^\w -]/g, "_").replace(/\s+/g, " ").trim().slice(0, 24);
+  // composited background: every layer from the first opaque ancestor up, painted on a 1x1 canvas (any CSS
+  // colour syntax — color-mix() computes to oklch()/color() — and the element's own mix-blend-mode)
+  const bg = e => { const L = []; for (let x = e; x && x.nodeType === 1; x = x.parentElement) { const cs = getComputedStyle(x), b = cs.backgroundColor || ""; if (!b || b === "transparent" || /^rgba\([^)]*,\s*0\)$/.test(b)) continue; L.push([b, cs.mixBlendMode]); const k = document.createElement("canvas").getContext("2d"); k.fillStyle = "#000"; k.fillStyle = b; k.fillRect(0, 0, 1, 1); if (k.getImageData(0, 0, 1, 1).data[3] === 255) break; } if (!L.length) return "-"; const cv = document.createElement("canvas"); cv.width = cv.height = 1; const k = cv.getContext("2d"); for (let i = L.length - 1; i >= 0; i--) { k.globalCompositeOperation = L[i][1] && L[i][1] !== "normal" ? L[i][1] : "source-over"; k.fillStyle = L[i][0]; k.fillRect(0, 0, 1, 1); } const d = k.getImageData(0, 0, 1, 1).data; return d[0] + "." + d[1] + "." + d[2]; };
+  const rc = e => { const r = e.getBoundingClientRect(); return [r.x, r.y, r.width, r.height].map(Math.round).join(","); };
+  const nest = e => { let n = 0; for (let x = e.parentElement; x && x !== P; x = x.parentElement) if (x.classList && x.classList.contains("callout")) n++; return n; };
+  const row = c => {
+    const ti = c.querySelector(":scope > .callout-title > .callout-title-inner");
+    return [safe(c.dataset.callout), c.dataset.calloutFold || "", c.classList.contains("is-collapsed") ? "c" : "o",
+            c.querySelector(":scope > .callout-title > .callout-icon svg") ? 1 : 0, nest(c), safe(ti && ti.textContent)].join("/");
+  };
+  let xss = 0;
+  for (const c of all) for (const e of c.querySelectorAll("*")) {
+    if (/^(img|script|iframe|object|embed)$/i.test(e.tagName)) { xss++; continue; }
+    for (const a of e.attributes) if (/^on/i.test(a.name)) { xss++; break; }
+  }
+  const bq = [...P.querySelectorAll("blockquote")].find(b => vis(b) && !b.closest(".callout"));
+  const fo = all.find(c => c.classList.contains("is-collapsible")), ft = fo && fo.querySelector(":scope > .callout-title");
+  return " [co:" + all.length + "|" + all.slice(0, 12).map(row).join(",") + "] [coxss:" + xss + "] [corc:" + rc(all[0]) + ":" + bg(all[0]) + "]" +
+         (bq ? " [bqrc:" + rc(bq) + ":" + bg(bq) + "]" : "") + (ft && vis(ft) ? " [cofold:" + safe(fo.dataset.callout) + "@" + rc(ft) + "]" : "");
 };
 Ed.cbCensus = function () {   // [lpcb:N] rendered plugin code blocks in live-preview editors (only once one exists)
   const n = document.querySelectorAll(".cm-editor .cm-preview-code-block").length;

@@ -11,7 +11,7 @@
   flex-direction: column; align-items: flex-end; gap: 6px; pointer-events: none }
 .notice-container .notice { pointer-events: auto; max-width: 360px; padding: 10px 14px;
   background: var(--bg-elevated); color: var(--text-chrome); border: 1px solid var(--border);
-  border-radius: 6px; box-shadow: 0 4px 14px var(--shadow-popover); font-size: 13px;
+  border-radius: 6px; box-shadow: 0 4px 14px var(--background-modifier-box-shadow, var(--shadow-popover)); font-size: 13px;
   white-space: pre-wrap; cursor: pointer }
 
 .os-plugin-modal.modal-container { position: fixed; inset: 0; z-index: 70; display: flex;
@@ -100,6 +100,7 @@
 :where(#spage, .os-plugin-modal) .setting-item-control textarea, :where(#spage, .os-plugin-modal) .setting-item-control select.dropdown {
   background: var(--bg-base); color: var(--text-chrome); border: 1px solid var(--border);
   border-radius: 4px; padding: 4px 8px; font-size: 13px }
+:where(#spage) .setting-item-control textarea { padding: var(--textarea-padding, 4px 8px); border-radius: var(--textarea-radius, 4px) }
 :where(#spage, .os-plugin-modal) .setting-item-control button, .os-plugin-modal button { background: var(--bg-surface); color: var(--text-chrome);
   border: 1px solid var(--border); border-radius: 4px; padding: 4px 12px; font-size: 13px; cursor: pointer }
 /* a plugin <button class="dropdown"> (excalidraw's font picker opens a Menu from it) wears the select look:
@@ -112,12 +113,13 @@
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E") center / contain no-repeat }
 :where(#spage, .os-plugin-modal) .setting-item-control button.mod-cta, .os-plugin-modal button.mod-cta { background: var(--bg-button-primary); color: var(--text-on-accent) }
 :where(#spage, .os-plugin-modal) .setting-item-control button.mod-warning, .os-plugin-modal button.mod-warning { color: var(--text-error) }
-:where(#spage, .os-plugin-modal) .checkbox-container { position: relative; width: 34px; height: 18px; border-radius: 9px;
+:where(#spage, .os-plugin-modal) .checkbox-container { position: relative; width: 34px; height: calc(var(--toggle-s-thumb-height, 14px) + 2 * var(--toggle-s-border-width, 2px)); border-radius: 9px;
   background: var(--border); cursor: pointer; flex: 0 0 auto }
-:where(#spage, .os-plugin-modal) .checkbox-container::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px;
+:where(#spage, .os-plugin-modal) .checkbox-container::after { content: ""; position: absolute; top: var(--toggle-s-border-width, 2px); left: var(--toggle-s-border-width, 2px); width: 14px;
   height: 14px; border-radius: 50%; background: var(--text-chrome-muted); transition: left .1s }
 :where(#spage, .os-plugin-modal) .checkbox-container.is-enabled { background: var(--interactive-accent) }
-:where(#spage, .os-plugin-modal) .checkbox-container.is-enabled::after { left: 18px; background: var(--text-on-accent) }
+:where(#spage, .os-plugin-modal) .checkbox-container.is-enabled::after { left: calc(var(--toggle-s-width, 34px) - var(--toggle-s-thumb-width, 14px) - var(--toggle-s-border-width, 2px)); background: var(--text-on-accent) }
+:where(#spage) .checkbox-container:not(.is-disabled):active::after { opacity: var(--toggle-thumb-opacity-active, 1) }
 :where(#spage, .os-plugin-modal) .checkbox-container input { display: none }
 :where(#spage, .os-plugin-modal) .checkbox-container.is-disabled { opacity: .5; pointer-events: none }
 :where(#spage, .os-plugin-modal) .extra-setting-button, :where(#spage, .os-plugin-modal) .clickable-icon { cursor: pointer; color: var(--text-chrome-muted) }
@@ -172,8 +174,8 @@ body.os-has-plugin-status #main .status { bottom: 30px }
 /* goal canvas-core: the Canvas core plugin's board (ui/plugins/canvas.js) */
 .canvas-view { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; padding: 0 }
 .canvas-wrapper { position: absolute; inset: 0; overflow: hidden; outline: none; cursor: grab; touch-action: none;
-  background-color: var(--background-primary, #1e1e1e);
-  background-image: radial-gradient(var(--background-modifier-border, #444) 1px, transparent 1px); background-size: 20px 20px }
+  background-color: var(--canvas-background, var(--background-primary, #1e1e1e));
+  background-image: radial-gradient(var(--canvas-dot-pattern, var(--background-modifier-border, #444)) 1px, transparent 1px); background-size: 20px 20px }
 .canvas-wrapper[hidden] { display: none }
 .canvas { position: absolute; left: 0; top: 0; transform-origin: 0 0 }
 .canvas-edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none }
@@ -184,8 +186,14 @@ body.os-has-plugin-status #main .status { bottom: 30px }
 .canvas-node > .canvas-node-container { flex: 1 1 auto; min-height: 0; overflow: auto; border: 2px solid var(--canvas-color);
   border-radius: 8px; background: var(--background-primary, #1e1e1e); color: var(--text-normal, #ddd) }
 .canvas-node.is-themed > .canvas-node-container { background: color-mix(in srgb, var(--canvas-color) 12%, var(--background-primary, #1e1e1e)) }
+.canvas-node[style*="--color-red"] > * { --canvas-color: var(--canvas-color-1, var(--color-red, #e93147)) }
+.canvas-node[style*="--color-orange"] > * { --canvas-color: var(--canvas-color-2, var(--color-orange, #ec7500)) }
+.canvas-node[style*="--color-yellow"] > * { --canvas-color: var(--canvas-color-3, var(--color-yellow, #e0ac00)) }
+.canvas-node[style*="--color-green"] > * { --canvas-color: var(--canvas-color-4, var(--color-green, #08b94e)) }
+.canvas-node[style*="--color-cyan"] > * { --canvas-color: var(--canvas-color-5, var(--color-cyan, #00bfbc)) }
+.canvas-node[style*="--color-purple"] > * { --canvas-color: var(--canvas-color-6, var(--color-purple, #7852ee)) }
 .canvas-node.is-selected > .canvas-node-container { box-shadow: 0 0 0 2px var(--interactive-accent, #7f6df2) }
-.canvas-node-label { position: absolute; bottom: 100%; left: 0; font-size: 12px; color: var(--text-muted, #999); white-space: nowrap; padding-bottom: 2px }
+.canvas-node-label { position: absolute; bottom: 100%; left: 0; font-size: 12px; color: var(--canvas-card-label-color, var(--text-muted, #999)); white-space: nowrap; padding-bottom: 2px }
 .canvas-node-label:empty { display: none }
 .canvas-text, .canvas-node-placeholder, .canvas-link { padding: 8px 12px; white-space: pre-wrap; word-break: break-word }
 .canvas-link { color: var(--text-accent, #8ab4f8) }
@@ -200,6 +208,10 @@ body.os-has-plugin-status #main .status { bottom: 30px }
 .canvas-node-group > .canvas-node-label { font-size: 16px }
 .canvas-file-embed { padding: 0 8px }
 .canvas-controls { position: absolute; right: 8px; top: 8px; display: flex; gap: 4px; z-index: 2 }
+.canvas-controls.cvn-stack.cvn-stack .canvas-control svg { width: var(--canvas-controls-icon-size, 16px); height: var(--canvas-controls-icon-size, 16px) }
+.canvas-controls .canvas-control svg.gi { stroke-width: var(--canvas-controls-icon-stroke, 1.6px) }
+.canvas-controls .canvas-control svg:not(.gi) { stroke-width: var(--canvas-controls-icon-stroke, 2px) }
+.canvas-wrapper .canvas-controls.cvn-stack.cvn-stack { border-radius: var(--canvas-controls-radius, 6px) }
 .canvas-control { padding: 2px 8px; cursor: pointer }
 .canvas-error { margin: 24px; padding: 16px; border: 1px solid var(--text-error, #e93147); border-radius: 8px; color: var(--text-normal, #ddd) }
 .canvas-error-title { font-weight: 600; color: var(--text-error, #e93147); margin-bottom: 6px }
@@ -239,9 +251,11 @@ body.os-has-plugin-status #main .status { bottom: 30px }
    container: Obsidian Tasks' search-box filter icon is absolutely positioned and covered the pane).
    Zero specificity, so every sized icon rule above still wins. */
 :where(svg.svg-icon) { width: var(--icon-size, 18px); height: var(--icon-size, 18px) }
+:where(svg.svg-icon[stroke-width="2"]) { stroke-width: var(--icon-stroke, 2) }
 /* plug-top5: a link a plugin renders with Obsidian's class name and no href (Tasks' backlink to the
    task's note) looks like the app's own note links; the preview's delegated click follows it */
 :where(.preview, .lp, .cm-editor) a.internal-link { color: var(--accent-blue); cursor: pointer; text-decoration: underline }
+:where(.os-pv) :where(button:not(:disabled)) { color: var(--text-color, buttontext) }
 /* plug-top5: the sidebar-pane vocabulary plugins build their own views from (obsidian-git's source
    control view: a .nav-header with a .nav-buttons-container of .clickable-icon buttons over
    .tree-item rows — name, then the row's own tools — that fold by .tree-item-children). Zero
@@ -259,13 +273,14 @@ body.os-has-plugin-status #main .status { bottom: 30px }
 :where(.os-pv) :where(.tree-item-inner) { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 :where(.os-pv) :where(.tree-item-icon, .collapse-icon) { position: absolute; left: 6px; display: inline-flex; color: var(--text-faint) }
 :where(.os-pv) :where(.tree-item-icon, .collapse-icon) :where(svg) { width: 12px; height: 12px; transition: transform .1s }
-:where(.os-pv) :where(.is-collapsed) > :where(.tree-item-self) :where(.collapse-icon svg) { transform: rotate(-90deg) }
+:where(.os-pv) :where(.is-collapsed) > :where(.tree-item-self) :where(.collapse-icon svg) { transform: rotate(calc(var(--direction, 1) * -90deg)) }
 :where(.os-pv) :where(.tree-item-flair) { flex: 0 0 auto; color: var(--text-faint) }
 :where(.os-pv) :where(.tree-item-children) { padding-left: 12px }
 :where(.os-pv) :where(.tree-item-self) :where(.buttons) :where(.clickable-icon) { padding: 2px }
 :where(.os-pv) :where(.tree-item-self) :where(.clickable-icon) > :where(svg) { width: 14px; height: 14px }
 :where(.os-pv) :where(textarea, input[type="text"], input[type="search"]) { box-sizing: border-box; width: 100%; padding: 4px 8px; font: inherit; font-size: 13px;
   border: 1px solid var(--background-modifier-border); border-radius: 4px; background: var(--background-primary); color: var(--text-normal); resize: vertical }
+:where(.os-pv) :where(textarea) { padding: var(--textarea-padding, 4px 8px); border-radius: var(--textarea-radius, 4px) }
 /* plug-val: a plain <table> a plugin renders into a note (dataview's CALENDAR month grid) is ruled
    like a table in the note: a 1px grid on every cell, header row included. :where() keeps this at
    element specificity, so a plugin's own table styles (dataview's TABLE view) still win. */
