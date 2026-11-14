@@ -1304,6 +1304,10 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
    Whole selector in :where() = specificity 0, so any theme rule on the group or its strip still wins. */
 :where(:root[data-vthemecompat] .workspace-tabs.mod-top) { --tab-container-background: var(--titlebar-background, var(--background-secondary, #333333)) }
 :where(:root[data-vthemecompat] body.window-focused .workspace-tabs.mod-top) { --tab-container-background: var(--titlebar-background-focused, var(--background-secondary-alt, var(--background-secondary, #333333))) }
+/* stock app.css's focused active title ink, same selector: with body.is-focused on (compatBody, chosen theme only) a
+   theme rule like AnuPpuccin's `.is-focused .mod-active .workspace-tab-header.is-active .workspace-tab-header-inner-title
+   { color: accent }` (0,5,0) must lose to it, as it does in stock (0,6,1). */
+body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-header.is-active .workspace-tab-header-inner-title { color: var(--tab-text-color-focused-active-current, var(--tab-text-color-focused-active, var(--text-chrome))) }
 .rnmc { display: contents }   /* the #rnbox wrapper only names the container; #rnbox stays position:fixed */
 
 /* R4X.7 Edit bookmark — the #delbox shape again (one modal geometry in this app,

@@ -8924,7 +8924,7 @@ let themeStored = false;                   // a user chose: the system stops dec
    Obsidian's body.is-focused would also switch on theme rules keyed to it (AnuPpuccin recolours the active title).
    Starts set — the app window is the focused one at launch, as before — and follows window focus/blur. */
 (function winFocus() {
-  const set = on => { if (document.body) document.body.classList.toggle("window-focused", on); };
+  const set = on => { if (document.body) document.body.classList.toggle("window-focused", on); compatBody(); };
   set(true);
   window.addEventListener("focus", () => set(true));
   window.addEventListener("blur", () => set(false));
@@ -9056,11 +9056,22 @@ let vaultSeedTok = "-";
    a theme applied and removed within one cache lifetime would hand back the
    themed colours. */
 let themeGen = 0;
+/* #59 slice 2 (themecompat): stock 1.13.7's body carries .is-focused (window focus) and .is-hidden-frameless (no
+   native title bar — ours is frameless with #wframe). Theme rules key their tab strip off them (Minimal: the focused
+   top strip = --bg1). Only while a CHOSEN theme paints ([data-vthemecompat]), so the no-theme look cannot move; the
+   stock rule they would otherwise let a theme beat (the focused active title ink) is mirrored in style.css. */
+function compatBody() {
+  const b = document.body, on = document.documentElement.hasAttribute("data-vthemecompat");
+  if (!b) return;
+  b.classList.toggle("is-hidden-frameless", on);
+  b.classList.toggle("is-focused", on && b.classList.contains("window-focused"));
+}
 const vthemeMark = name => {
   // #59 slice 3: [data-vthemecompat] = the theme that paints is the one the vault CHOSE (cssTheme), not the bundled
   // default an empty cssTheme falls back to; style.css scopes the dialog compat rules to it, so the look with no theme
   // chosen does not move, and choosing the default theme by name gets stock semantics like any other. Before data-vtheme.
   document.documentElement.toggleAttribute("data-vthemecompat", !!name && name === vaultTheme);
+  compatBody();
   document.documentElement.dataset.vtheme = (++themeGen) + ":" + (name || "");
 };
 async function themeInject(name) {
