@@ -23,6 +23,8 @@ mod callout; // #59: Obsidian callouts in the reading render
 use opensidian_lib::canvasfs;
 mod cfgstore;
 mod consent; // spawn-consent: native GTK prompts before trusting a vault and before every plugin spawn
+mod clip; // #37 C3-3: the editor menu clipboard rows (GTK CLIPBOARD, text only)
+mod mdtable; // #37 C3-7: the LP table menu (Row/Column/Sort/Align) as text transforms
 mod census; // census-gate (#30): the window-title census is opt-in (OPENSIDIAN_CENSUS=1 / devui)
 use opensidian_lib::datefmt;
 use opensidian_lib::graphq;
@@ -7103,7 +7105,7 @@ fn main() {
             updates::update_check,
             themes_scan, theme_css, get_css_theme, set_css_theme, theme_seed_report, vault_css_watch,
             get_quickfont, set_quickfont, get_fonts, set_font, font_families,
-            get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
+            get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files, clip::clip_text, clip::clip_has_text, clip::clip_set_text, mdtable::table_op,
             win_rect, win_gesture, win_move_proto, win_drag_start, win_minimize, win_toggle_max, win_close, quit_arm, quit_ready,
             tab_removed, insert_datetime,
             zoom, zoom_get, pdf_info,

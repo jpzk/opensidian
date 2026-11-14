@@ -4233,7 +4233,7 @@ function utBuild() {             // pane/focus census in the window title (headl
             (jsErr ? " [jserr:" + jsErr + "]" : "") +
             (saveErr ? " [saveerr:" + saveErr + "]" : "") +             // F1: a save that did not land
             " [armed:" + groups().filter(h => h.saveT).length + "]" +   // F2: groups holding a live save timer
-            menuTok() +
+            menuTok() + (typeof Ed !== "undefined" && Ed.tblCensus ? Ed.tblCensus() + Ed.rvthCensus() : "") +   // #37: rendered LP tables, the reading-view th
             (navInfo ? " [" + navInfo + "]" + (nvRv ? " [nvr:" + nvRv + "]" : "") : "") +
             (revealInfo ? " [bmrv:" + revealInfo + "]" : "") +      // bmmenu: "Reveal file in navigation" ran (bmReveal) — not merely "the Files pane is showing"
             (acItems.length ? " [ac:" + acKind + ":" + acItems.length + "]" : "") +
@@ -4437,7 +4437,13 @@ function menuTok() {   // [menu:<labels>] + [mg:<left>,<first row centre y>,<row
   if (!menuEl) return "";                      // driver clicks item i at (left+20, centre + pitch*i) with no
   // bmmenu: a separator child (div.sep) reads as "---", so the census spells the list the way
   // docs/recon-bmmenu/README.md does; no other menu has one, so their tokens are unchanged.
-  const k = menuEl.children, lbl = [...k].map(d => d.classList.contains("sep") ? "---" : d.textContent).join("|");   // hardcoded padding/line-height guess
+  // #37: an OMenu (ui/menu.js, stock .menu DOM) nests its rows in .menu-scroll > .menu-group;
+  // its rows are .menu-item (label = .menu-item-title) and .menu-separator ("---"). The flat
+  // .ctxmenu menus (and plugin menus) keep the child census below, byte for byte.
+  const om = !!menuEl.dataset.om;
+  const k = om ? OMenu.census.rows(menuEl) : menuEl.children;
+  const isSep = d => d.classList.contains(om ? "menu-separator" : "sep");
+  const lbl = [...k].map(d => om ? OMenu.census.label(d) : d.classList.contains("sep") ? "---" : d.textContent).join("|");   // hardcoded padding/line-height guess
   // [mt:<kind>:<label>] — WHICH tab this menu belongs to (R20.8). Without it an assertion like
   // "a graph tab offers no Bookmark" rests on the driver's guess that x=380 hit the gg tab: hit
   // the wrong tab and the claim is about a tab nobody named. tabMenu stamps the target it was
@@ -4445,7 +4451,7 @@ function menuTok() {   // [menu:<labels>] + [mg:<left>,<first row centre y>,<row
   const mt = menuEl.dataset.mt ? " [mt:" + menuEl.dataset.mt + "]" : "";
   // bmmenu: [mdis:i|j] = 1-based indices (in [menu:] order) of the rows shown DISABLED —
   // the label list alone cannot tell a wired row from a stated-reason stub.
-  const dis = [...k].map((d, i) => d.classList.contains("dis") ? i + 1 : 0).filter(Boolean);
+  const dis = [...k].map((d, i) => d.classList.contains(om ? "is-disabled" : "dis") ? i + 1 : 0).filter(Boolean);
   const md = dis.length ? " [mdis:" + dis.join("|") + "]" : "";
   if (!k.length) return " [menu:" + lbl + "]" + mt + md;
   const a = k[0].getBoundingClientRect();
@@ -4453,12 +4459,41 @@ function menuTok() {   // [menu:<labels>] + [mg:<left>,<first row centre y>,<row
   // bmmenu: with separators the rows are NOT one pitch apart, so a menu that has one also
   // publishes every child's centre y — [mgy:y1|y2|…] in [menu:] order (separators included, so
   // the index a driver found in [menu:] is the index it clicks). menu_click prefers it when present.
-  const mgy = [...k].some(d => d.classList.contains("sep"))
-    ? " [mgy:" + [...k].map(d => { const b = d.getBoundingClientRect(); return Math.round(b.top + b.height / 2); }).join("|") + "]" : "";
+  // #37: an OMenu always publishes it (its groups are not one pitch apart either).
+  const cy = d => { const b = d.getBoundingClientRect(); return Math.round(b.top + b.height / 2); };
+  const mgy = om || [...k].some(isSep) ? " [mgy:" + [...k].map(cy).join("|") + "]" : "";
   return " [menu:" + lbl + "] [mg:" + Math.round(menuEl.getBoundingClientRect().left) + "," +
-         Math.round(a.top + a.height / 2) + "," + Math.round(pitch) + "]" + mt + md + mgy;
+         Math.round(a.top + a.height / 2) + "," + Math.round(pitch) + "]" + mt + md + mgy + (om ? omSubTok() : "");
 }
-function closeMenu() { if (menuEl) { menuEl.remove(); menuEl = null; updateTitle(); } }
+/* #37 [menu2:<labels>] [mg2:<left>] [mgy2:<centres>] [mdis2:] — the OPEN submenu (a sibling
+   div.menu, ui/menu.js), same grammar as the root's; [msel:<label>] the keyboard-selected row
+   of the deepest open menu (Up/Down/Right/Left are asserted on it). */
+function omSubTok() {
+  let s = "";
+  const sub = menuEl._sub;
+  if (sub) {
+    const r = OMenu.census.rows(sub);
+    const d2 = r.map((d, i) => d.classList.contains("is-disabled") ? i + 1 : 0).filter(Boolean);
+    s += " [menu2:" + r.map(OMenu.census.label).join("|") + "] [mg2:" + Math.round(sub.getBoundingClientRect().left) + "]" +
+      " [mgy2:" + r.map(d => { const b = d.getBoundingClientRect(); return Math.round(b.top + b.height / 2); }).join("|") + "]" +
+      (d2.length ? " [mdis2:" + d2.join("|") + "]" : "");
+  }
+  const sel = OMenu.deepest(menuEl).querySelector(".menu-item.selected");
+  return s + (sel ? " [msel:" + OMenu.census.label(sel).replace(/[|\]]/g, "") + "]" + omHoverTok(sel) : "");
+}
+/* #37 theme compat: [mhbg:<computed bg of the selected row>|<our fallback, var(--border)>] —
+   ui/menu.css paints a hovered/selected row var(--background-modifier-hover, var(--border));
+   a theme that defines the stock variable (AnuPpuccin, Tokyo Night) must win over our own token. */
+function omHoverTok(sel) {
+  const p = document.createElement("div");
+  p.style.cssText = "position:fixed;left:-9px;top:-9px;width:1px;height:1px;background-color:var(--border)";
+  document.body.appendChild(p);
+  const def = getComputedStyle(p).backgroundColor;
+  p.remove();
+  const q = c => c.replace(/[^0-9.,]/g, "");
+  return " [mhbg:" + q(getComputedStyle(sel).backgroundColor) + "|" + q(def) + "]";
+}
+function closeMenu() { if (menuEl) { if (menuEl.dataset.om) OMenu.closeSub(menuEl); menuEl.remove(); menuEl = null; updateTitle(); } }
 /* R22: a context menu is position:fixed — clamp it to the viewport by its
    MEASURED box. The old `innerWidth - 150 / innerHeight - 60` guesses spilled
    whenever the menu was wider/taller than the guess or the window was small.
@@ -4486,10 +4521,14 @@ function clampMenu(m) {
 }
 document.addEventListener("contextmenu", e => {   // app-like: native menu never
   e.preventDefault();
-  if (PMENU && e.target instanceof Element && e.target.closest(".cm-editor")) PMENU.editorMenu(e);   // plugin-views: workspace "editor-menu"
+  if (!(e.target instanceof Element)) return;
+  if (e.target.closest(".preview")) { EdMenu.openReading(e); return; }   // #37 C3-4: reading-view link menus + selection Copy
+  if (!e.target.closest(".cm-editor")) return;
+  if (EdMenu.open(e)) return;                       // #37 C3-3: the core editor menu (ui/edmenu.js), plugin rows appended
+  if (PMENU) PMENU.editorMenu(e);                   // plugin-views: workspace "editor-menu" (an editor EdMenu declines)
 });
 document.addEventListener("mousedown", e => {
-  if (menuEl && !menuEl.contains(e.target)) closeMenu();
+  if (menuEl && !(menuEl.dataset.om ? OMenu.owns(menuEl, e.target) : menuEl.contains(e.target))) closeMenu();   // #37: an OMenu submenu is a SIBLING div.menu — a press in it is in the menu
 }, true);
 // S1 (docs/security-review.md): external links (a.ext from render) NEVER
 // navigate the webview. One capture-phase gate for both mousedown (the lp raw
@@ -4521,10 +4560,8 @@ const DIS_WIN = "Missing subsystem: a second OS window — single-window tauri a
    performed row (docs/recon-tabmenu/effects/, shots/eff-*).
    SUPERSEDES the six-item menu (Split right first) and, with it, R12.4's
    "Live preview / Source mode" pair: Obsidian has NO Live preview row, so the ✓
-   moves out of the label TEXT into a span.chk marker element and the rendered
+   moves out of the label TEXT into a marker element (#37: the row's .menu-item-icon) and the rendered
    label set equals Obsidian's character for character (R38.10). */
-const ICON_CHK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"' +
-  ' stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5L13 5"/></svg>';
 const ICON_PIN = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"' +
   ' stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h4l-.6 4.2 2.6 2.4H3.9l2.7-2.4z"/><path d="M8 8.6V14"/></svg>';
 /* gh-icons: linked-tab mark — two interlocking rounded links, drawn for this app */
@@ -4596,8 +4633,9 @@ function hdrMenu(e, g) { tabMenu(e, g, g.active, true); }
 function tabMenu(e, g, i, hdr) {
   e.preventDefault();
   closeMenu();
-  const m = document.createElement("div");
-  m.className = "ctxmenu";
+  // #37 C3-2: the tab menu is the first menu on the stock .menu DOM (ui/menu.js) — same rows,
+  // same order, same census ([menu:] [mdis:] [mgy:] [mt:]); only the DOM and the theming change
+  const B = OMenu.shell(), m = B.el;
   const tab = i >= 0 ? g.tabs[i] : null;
   // stamp the menu with the tab the hit test actually handed us -> census [mt:kind:label].
   // gg/lg tabs carry no note, so they publish their kind and an empty label. Separators and ':'
@@ -4613,24 +4651,11 @@ function tabMenu(e, g, i, hdr) {
   /* item(label, fn) wires a row; item(label, null, why) renders it DISABLED with
      `why` (the missing subsystem) as the hover title; chk adds the radio marker
      as an ELEMENT so textContent — and therefore [menu:] — stays Obsidian's label. */
-  const item = (label, fn, why, chk) => {
-    const d = document.createElement("div");
-    if (chk !== undefined) {             // a RADIO row: the gutter is reserved whether or not this one is the active mode
-      d.className = "chkrow";
-      const s = document.createElement("span");
-      s.className = "chk";
-      if (chk) s.innerHTML = ICON_CHK;
-      d.appendChild(s);
-    }
-    d.appendChild(document.createTextNode(label));
-    if (why != null) { d.className = (d.className ? d.className + " " : "") + "dis"; d.setAttribute("aria-disabled", "true"); d.title = why; }
-    else { d.onmousedown = ev => ev.stopPropagation(); d.onclick = () => { if (fn) fn(); else closeMenu(); }; }
-    m.appendChild(d);
-    return d;
-  };
-  const sep = () => { const d = document.createElement("div"); d.className = "sep"; m.appendChild(d); };
+  const item = (label, fn, why, chk, warn) =>   // chk: a RADIO row — the icon gutter is reserved whether or not this one is the active mode
+    B.item({ title: label, fn: fn || undefined, why: why == null ? undefined : why, chk, warn });
+  const sep = () => B.sep();
   const inPlace = fill => {              // the ctxmenu's ONE submenu seam: rebuild in place (R13.1's pick list)
-    m.innerHTML = "";
+    B.clear();
     fill();
     setTimeout(() => clampMenu(m), 0);   // R22: the new list resizes the menu — re-clamp it
     updateTitle();                       // the menu was rebuilt in place -> refresh [menu:]
@@ -4651,7 +4676,7 @@ function tabMenu(e, g, i, hdr) {
     inPlace(() => {
       if (here) item("(vault root)", () => { closeMenu(); moveNoteTo(tab.name, ""); });
       for (const f of fl) if (f !== here) item(f, () => { closeMenu(); moveNoteTo(tab.name, f); });
-      if (!m.children.length) item("(no other folder)");
+      if (!OMenu.census.rows(m).length) item("(no other folder)");
     });
   };
   if (hdr && !tab) {                     // graphhdr REQ-11: the empty tab's ⋮ — a split of an empty pane is an empty pane
@@ -4743,7 +4768,7 @@ function tabMenu(e, g, i, hdr) {
   item("Reveal file in navigation", () => { closeMenu(); bmReveal(tab.name); });  // WIRED: bmReveal — the identical verb bmRowMenu wires, publishes [bmrv:] (R38.28)
   // ---- group 9 (1 row) ----
   sep();
-  item("Delete file", () => { closeMenu(); askDelete(tab.name); }).className = "del";   // WIRED: askDelete — Obsidian's row is the link-COUNTING confirmation, not an unlink (R38.29)
+  item("Delete file", () => { closeMenu(); askDelete(tab.name); }, null, undefined, true);   // .is-warning (stock). WIRED: askDelete — Obsidian's row is the link-COUNTING confirmation, not an unlink (R38.29)
   place();   /* R22: viewport-clamped by MEASURED size */
 }
 async function togglePin(g, tab) {      // R38.7: the flag + the tab-bar glyph; Close stays enabled on a pinned tab (measured)
@@ -7088,6 +7113,8 @@ const gOf = el => { const p = el.closest(".pane"); return p ? p._g : null; };
 /* R8.7 wikilink click: navigate in place, ctrl+click opens a new tab.
    Mousedown level + stopPropagation so the caret is not moved into the row. */
 async function wikiClick(e, a) {
+  if (e.button) return;                      // #37: only the primary button navigates; a right-click is the context menu
+                                             // (on an unresolved link it used to run createNote and leave a file behind)
   e.preventDefault(); e.stopPropagation();
   const g = gOf(a);
   if (!g) return;
@@ -7536,7 +7563,7 @@ CENSUS.push(() => " [tabt:" + groups().map(g => [...g.tabsEl.querySelectorAll(".
    [ghw:L=<left>,<right>:<x>+<w>,...|R=...] = the sidebar boxes and their tab-header buttons
    (#21), [ghdv:l=<x>,<y>|r=<x>,<y>] = the resize dividers' centres (a driver drags them). */
 const GH_EMO = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F000}-\u{1F2FF}]/u;
-const GH_SURF = "#ribbon, #stabs, #rtabs, #bar, #bmbar, #sbar, #hkclear, .tabbar, .ctxmenu, .canvas-controls, " +
+const GH_SURF = "#ribbon, #stabs, #rtabs, #bar, #bmbar, #sbar, #hkclear, .tabbar, .ctxmenu, .menu, .canvas-controls, " +
   ".canvas-selection-toolbar, .canvas-selection-palette, .canvas-card-menu, .canvas-settings-menu, " +
   ".canvas-edge-toolbar, .canvas-edge-menu, button, [role=button], [role=menuitem]";
 const ghClean = s => Array.from(s.replace(/[[\]|;]/g, " ").replace(/\s+/g, " ").trim()).slice(0, 40).join("");
