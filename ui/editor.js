@@ -2565,6 +2565,9 @@ Ed.coScan = function (lines) {
     const t = lines[i], f = /^ {0,3}(`{3,}|~{3,})/.exec(t);
     if (fence) { if (f && f[1][0] === fence[0] && f[1].length >= fence.length && !t.slice(f[0].length).trim()) fence = null; continue; }
     if (f) { fence = f[1]; continue; }
+    // a callout head is the FIRST line of a blockquote: "> plain\n> [!note] x" is one plain
+    // quote (Obsidian/the reading view render it so), never a callout from its 2nd line on.
+    if (i > 0 && Ed.CO_QUOTE.test(lines[i - 1])) continue;
     if (!Ed.CO_HEAD.test(t)) continue;
     let j = i;
     while (j + 1 < lines.length && Ed.CO_QUOTE.test(lines[j + 1])) j++;
