@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        rev: ['7a7a917a77590592c8a3c63442c0e2ae182846e0', '2ce3659f446fa9b6354b7fc351da087f36c5e663']
+        rev: ['7ec5561548f9e6a506cc65ac8ede3793dc5a2557']
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -54,7 +54,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        rev: ['7a7a917a77590592c8a3c63442c0e2ae182846e0', '2ce3659f446fa9b6354b7fc351da087f36c5e663']
+        rev: ['7ec5561548f9e6a506cc65ac8ede3793dc5a2557']
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
