@@ -58,6 +58,12 @@ pub enum Op {
     /// treefold: like SetIn, but only if `parent.key` is absent — first writer
     /// wins (vault_ids: two windows minting an id for one fresh vault agree).
     InsertIn(String, String, Value),
+    /// #74: remember one "Always allow this program" (spawn_allow::apply_add). Sent ONLY by
+    /// the grant closure desk_proc_spawn hands to consent::ask, which runs it after the user
+    /// pressed Always in the native dialog; no tauri command builds it.
+    SpawnAllowAdd(crate::spawn_allow::Grant),
+    /// #74: forget the grant for (vault, plugin, program) — Settings' Revoke
+    SpawnAllowRevoke { vault: String, plugin: String, program: String },
 }
 
 /// MRU push: dedup, newest first, capped — pure for testability
@@ -74,6 +80,13 @@ pub fn apply(v: &mut Value, ops: &[Op]) {
     }
     for op in ops {
         match op {
+            // #74: the grants are written by their own Ops only — a generic write naming the
+            // key (Set / SetIn / MergeIn / InsertIn) can neither add nor wipe one
+            Op::Set(k, _) | Op::MergeIn(k, _, _) | Op::SetIn(k, _, _) | Op::InsertIn(k, _, _) if k == crate::spawn_allow::KEY => {
+                eprintln!("[cfg] refused a generic write of {k}");
+            }
+            Op::SpawnAllowAdd(g) => crate::spawn_allow::apply_add(v, g),
+            Op::SpawnAllowRevoke { vault, plugin, program } => crate::spawn_allow::apply_revoke(v, vault, plugin, program),
             Op::Set(k, x) => v[k.as_str()] = x.clone(),
             Op::PushRecent(p) => {
                 let list = v["list"]
@@ -378,5 +391,42 @@ mod tests {
         assert!(first.as_str().is_some_and(|s| s.starts_with("id")), "{first}");
         update_in(&locks, &cfg, &[Op::InsertIn("vault_ids".into(), "/v/c".into(), serde_json::json!("late"))]).unwrap();
         assert_eq!(read_value_in(&locks, &cfg)["vault_ids"]["/v/c"], first);
+    }
+
+    fn grant74(program: &str) -> crate::spawn_allow::Grant {
+        crate::spawn_allow::Grant { vault: "/v".into(), plugin: "obsidian-git".into(), plugin_sha256: "p".into(), program: program.into(), program_sha256: "x".into(), added: 1, plugin_version: "2.0".into() }
+    }
+
+    /// #74: a grant written through its Op is on disk and read back by a fresh reader (the
+    /// next process start reads only the file), other keys survive; revoke removes it
+    #[test]
+    fn cfgstore_spawn_allow_grant_persists_across_restart_and_revoke_drops_it() {
+        let d = tmp("spawnallow");
+        let (cfg, locks) = (d.join(".opensidian.json"), d.join("locks"));
+        fs::write(&cfg, r#"{"theme":"dark"}"#).unwrap();
+        update_in(&locks, &cfg, &[Op::SpawnAllowAdd(grant74("/usr/bin/git")), Op::SpawnAllowAdd(grant74("/usr/bin/ssh"))]).unwrap();
+        // "restart": nothing in memory, the file alone
+        let v: Value = serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
+        let g = crate::spawn_allow::grants(&v);
+        assert_eq!(g, vec![grant74("/usr/bin/git"), grant74("/usr/bin/ssh")], "{v}");
+        assert_eq!(v["theme"], "dark");
+        update_in(&locks, &cfg, &[Op::SpawnAllowRevoke { vault: "/v".into(), plugin: "obsidian-git".into(), program: "/usr/bin/git".into() }]).unwrap();
+        assert_eq!(crate::spawn_allow::grants(&read_value_in(&locks, &cfg)), vec![grant74("/usr/bin/ssh")]);
+    }
+
+    /// #74: the generic Ops (what page-reachable commands send: Set, SetIn, MergeIn,
+    /// InsertIn) can neither create nor wipe a grant
+    #[test]
+    fn cfgstore_generic_ops_cannot_write_spawn_allow() {
+        let key = crate::spawn_allow::KEY;
+        let fake = serde_json::to_value(vec![grant74("/bin/sh")]).unwrap();
+        let mut v = serde_json::json!({});
+        apply(&mut v, &[Op::Set(key.into(), fake.clone()), Op::SetIn(key.into(), "0".into(), fake[0].clone()), Op::InsertIn(key.into(), "0".into(), fake[0].clone()), Op::MergeIn(key.into(), "0".into(), fake[0].clone())]);
+        assert!(crate::spawn_allow::grants(&v).is_empty(), "a generic op created a grant: {v}");
+        assert!(v.get(key).is_none(), "{v}");
+        let mut v = serde_json::json!({});
+        apply(&mut v, &[Op::SpawnAllowAdd(grant74("/usr/bin/git"))]);
+        apply(&mut v, &[Op::Set(key.into(), serde_json::json!([])), Op::MergeIn(key.into(), "x".into(), serde_json::json!({}))]);
+        assert_eq!(crate::spawn_allow::grants(&v), vec![grant74("/usr/bin/git")], "a generic op wiped a grant: {v}");
     }
 }
