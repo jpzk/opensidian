@@ -399,6 +399,19 @@ impl Pinned {
     fn unchanged(&self) -> bool {
         fd_ident(self.raw()).is_some_and(|now| now.same_as(&self.ident))
     }
+
+    /// #74 (spawn_allow): (dev, ino, size, mtime, ctime) of the pinned file as it was pinned —
+    /// the key of the program-hash cache (a rewrite moves ctime, so it is re-hashed)
+    pub fn stat_key(&self) -> (u64, u64, u64, (i64, i64), (i64, i64)) {
+        let i = &self.ident;
+        (i.dev, i.ino, i.size, i.mtime, i.ctime)
+    }
+
+    /// #74: the pinned file opened for reading through /proc/self/fd/N — the very inode that
+    /// was pinned (and that the exec runs), never the pathname again
+    pub fn open_read(&self) -> std::io::Result<std::fs::File> {
+        std::fs::File::open(format!("/proc/self/fd/{}", self.raw()))
+    }
 }
 
 /// Q1: the opener's PATH (the app's, cleaned; `root` = the vault) — call BEFORE the lock
