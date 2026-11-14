@@ -5860,6 +5860,7 @@ function openDelete(nm, files, lines) {
   delPending = { name: nm, files, lines };
   $("delq").textContent = "Are you sure you want to delete " + nm + "? It will be moved to .trash in this vault.";
   $("delsay").textContent = delSentence(files, lines);
+  $("delsay").classList.toggle("mod-warning", files > 0);   // #59 slice 3: stock marks its backlink warning p.mod-warning
   $("delbox").hidden = false;
   $("del-no").focus();                       // the DEFAULT is Cancel — see style.css
   updateTitle();
@@ -9013,6 +9014,10 @@ let vaultSeedTok = "-";
    themed colours. */
 let themeGen = 0;
 const vthemeMark = name => {
+  // #59 slice 3: [data-vthemecompat] = the theme that paints is the one the vault CHOSE (cssTheme), not the bundled
+  // default an empty cssTheme falls back to; style.css scopes the dialog compat rules to it, so the look with no theme
+  // chosen does not move, and choosing the default theme by name gets stock semantics like any other. Before data-vtheme.
+  document.documentElement.toggleAttribute("data-vthemecompat", !!name && name === vaultTheme);
   document.documentElement.dataset.vtheme = (++themeGen) + ":" + (name || "");
 };
 async function themeInject(name) {

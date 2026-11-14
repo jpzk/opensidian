@@ -1100,6 +1100,28 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 #delbtns button:focus { box-shadow: 0 0 0 2px var(--border-focus-ring) }
 #del-no:focus { background: var(--bg-button-default) }
 
+/* #59 slice 3: dialogs. The cards carry Obsidian's .modal-container > .modal and their buttons the classes STOCK
+   1.13.7 gives them (read off its own dialogs, not guessed): Delete = .mod-cta.mod-destructive, Cancel = .mod-cancel,
+   the link-count sentence = .mod-warning while it warns (ui/main.js openDelete), the Update links buttons none at all
+   (stock creates them classless), the vault picker's Create = .mod-cta. So a theme's selector rules reach them.
+   Stock's variable reads for those classes are repeated here at the ELEMENT, where a theme's body-level variables
+   resolve: .modal = --modal-background, border --modal-border-width (--border-width) solid --modal-border-color;
+   a plain button = --interactive-normal with --text-normal ink (focus keeps our ring); .mod-cta = --interactive-accent
+   with --text-on-accent; .mod-cta.mod-destructive = --background-modifier-error with --text-on-accent;
+   .mod-warning ink = --text-warning. Every var() falls back to ours, and the rules name OUR ids (plugin modals,
+   api-ui.js, also carry .modal-container > .modal and are left alone).
+   SCOPE: only while the theme the vault CHOSE (cssTheme) paints, not the bundled default an empty cssTheme falls back
+   to ([data-vthemecompat], ui/main.js vthemeMark),
+   so the look with no theme chosen (the bundled default, or the base sheet) does not move. #pcard gets no border:
+   it has none, and its geometry is pinned (see #pcard above). */
+:root[data-vthemecompat] :is(#picker > #pcard, .rnmc > #rnbox, #ulbox > #ulcard, #delbox > #delcard) { background-color: var(--modal-background, var(--background-primary, var(--bg-elevated))) }
+:root[data-vthemecompat] :is(.rnmc > #rnbox, #ulbox > #ulcard, #delbox > #delcard) { border-color: var(--modal-border-color, var(--border)); border-width: var(--modal-border-width, var(--border-width, 1px)) }
+:root[data-vthemecompat] :is(#ulbtns button, #del-no) { background-color: var(--interactive-normal, var(--bg-button-plain)); color: var(--text-normal, var(--bg-base)) }
+:root[data-vthemecompat] #p-create.mod-cta { background-color: var(--interactive-accent, var(--bg-button-primary)); color: var(--text-on-accent) }
+:root[data-vthemecompat] #del-yes.mod-cta.mod-destructive { background-color: var(--background-modifier-error, var(--text-banner-error)); color: var(--text-on-accent, var(--bg-base)) }
+:root[data-vthemecompat] #delsay.mod-warning { color: var(--text-warning, var(--text-quiet)) }
+.rnmc { display: contents }   /* the #rnbox wrapper only names the container; #rnbox stays position:fixed */
+
 /* R4X.7 Edit bookmark — the #delbox shape again (one modal geometry in this app,
    not three that drift): fixed overlay, 480px card, buttons bottom-right with
    Save last and accented. Ours
