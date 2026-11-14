@@ -2569,7 +2569,11 @@ function mkGroup() {
               graphOn: false, graphRefresh: null, sim: null, saveT: null,
               lpActive: null, view: null };
   const pane = document.createElement("div");
-  pane.className = "pane";
+  // #59 slice 2: Obsidian compat classes NEXT TO ours, so a theme rule written for Obsidian's
+  // tab group reaches this chrome. A pane = one tab group (.workspace-tabs, + .mod-active while
+  // focused), its strip = .workspace-tab-header-container(-inner), each tab = .workspace-tab-header
+  // (+ .is-active) with -inner-title / -inner-close-button. Our own classes stay the styling anchors.
+  pane.className = "pane workspace-tabs";
   pane._g = g;                                   // R20: gOf(el) — event-time group lookup
   pane.innerHTML =
     // R4X.1 (navbtn): Back/Forward live at the LEFT edge of the view header,
@@ -2577,12 +2581,12 @@ function mkGroup() {
     // §1: back then forward, thin chevrons, ~28px apart, left of the title).
     // Obsidian's titlebar variant is NOT copied: our titlebar is a gated surface
     // (phases hdrdragwm/wmframe) — divergence recorded in the recon README.
-    '<div class="tabbar"><div class="navbtns">' +
+    '<div class="tabbar workspace-tab-header-container"><div class="navbtns">' +
       '<button class="navbtn navback" title="Navigate back" disabled>' +
         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 5l-7 7 7 7"/></svg></button>' +
       '<button class="navbtn navfwd" title="Navigate forward" disabled>' +
         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5l7 7-7 7"/></svg></button>' +
-    '</div><div class="tabs"></div>' +
+    '</div><div class="tabs workspace-tab-header-container-inner"></div>' +
     '<button class="modebtn" hidden></button>' +   // graphhdr: born hidden — updateModeBtn shows it once a NOTE is active (a split with no tab never renders tabs)
     // graphhdr REQ-5: Obsidian's ⋮ "More options" (lucide-more-vertical) at the header's
     // right end on EVERY main-area view kind; its menu depends on the kind (hdrMenu).
@@ -4292,7 +4296,7 @@ function focusGroup(g) {
   const prev = state.focused;
   if (prev === g) return;
   state.focused = g;
-  for (const x of groups()) x.pane.classList.toggle("focused", x === g);
+  for (const x of groups()) { x.pane.classList.toggle("focused", x === g); x.pane.classList.toggle("mod-active", x === g); }   // #59 slice 2: .mod-active = Obsidian's focused tab group
   rgFollow();                     // R9.6: right panel follows focus (fire+forget)
   updateTitle();
   if (prev) treeHighlight();      // explorer active-note highlight follows focus
@@ -5145,9 +5149,9 @@ function renderTabs(g) {
   // R7.3 / R13.2: chain glyph on every linked tab (lg auto-link + manual links)
   g.tabs.forEach((tab, i) => {
     const d = document.createElement("div");
-    d.className = "tab" + (i === g.active ? " active" : "");
+    d.className = "tab workspace-tab-header" + (i === g.active ? " active is-active" : "");   // #59 slice 2: + Obsidian compat
     const ttl = document.createElement("span");
-    ttl.className = "t";
+    ttl.className = "t workspace-tab-header-inner-title";
     const chain = isLinked(g, tab, i);
     // R38.7: a PINNED tab carries a pin glyph in FRONT of the label, the way
     // Obsidian paints it (shots/m3-pinned-tabbar.png). It is a marker element, not
@@ -5158,7 +5162,7 @@ function renderTabs(g) {
     if (chain) { const k = document.createElement("span"); k.className = "lk"; k.innerHTML = ICON_LINK; d.appendChild(k); }
     ttl.textContent = tab.name.split("/").pop();
     const x = document.createElement("span");
-    x.className = "x";
+    x.className = "x workspace-tab-header-inner-close-button";
     // ux-1: inline svg cross — the ✕ glyph tofu'd under webkit2gtk
     x.innerHTML = '<svg viewBox="0 0 10 10"><path d="M1 1l8 8M9 1l-8 8" ' +
       'stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none"/></svg>';

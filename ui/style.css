@@ -705,9 +705,9 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .morebtn:hover { color: var(--text-chrome) }
 .morebtn svg { width: 16px; height: 16px; display: block }
 .tab { width: 120px; min-width: 0; flex-shrink: 1; overflow: hidden; display: flex; align-items: center;
-       gap: 6px; padding: 0 8px; background: var(--bg-surface); color: var(--text-chrome-muted);
+       gap: 6px; padding: 0 8px; background: var(--bg-surface); color: var(--tab-text-color-focused, var(--text-chrome-muted));
        cursor: pointer; font-size: 12px; border-right: 2px solid var(--bg-ribbon) }   /* R22: overflow:hidden — the 16px close button + 16px padding cannot fit a 2px tab, so clip */
-.tab.active { background: var(--tab-background-active); color: var(--text-chrome) }   /* themematch: active tab = the note surface */
+.tab.active { background: var(--tab-background-active); color: var(--tab-text-color-focused-active, var(--text-chrome)) }   /* themematch: active tab = the note surface */
 .tab .t { flex: 1 1 auto; min-width: 0; overflow: hidden;
           text-overflow: ellipsis; white-space: nowrap }
 /* ux-1: close button — flex-none so ellipsized titles can never crush it,
@@ -717,7 +717,11 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
           cursor: pointer; border-radius: 3px; color: var(--text-chrome-faint) }
 .tab .x svg { width: 9px; height: 9px; display: block }
 .tab .x:hover { background: var(--border-strong); color: var(--text-chrome) }
-.tab.active .x { color: var(--text-chrome-muted) }
+.tab.active .x { color: var(--tab-text-color-focused-active, var(--text-chrome-muted)) }
+/* #59 slice 2: tab ink follows Obsidian's --tab-text-color-* (stock: tab = -focused, active tab = -focused-active,
+   its title in the FOCUSED group = -focused-active-current). Each falls back to our own colour, so a theme that
+   declares none paints exactly as before. */
+.pane.focused .tab.active .t { color: var(--tab-text-color-focused-active-current, var(--tab-text-color-focused-active, var(--text-chrome))) }
 /* ux-5: tab drag — ghost chip under the cursor + drop-target highlights */
 #tabghost { position: fixed; left: 0; top: 0; will-change: transform; z-index: 99; pointer-events: none;
             background: var(--border); color: var(--text-chrome); padding: 4px 12px;
@@ -1179,12 +1183,14 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .lp.src .tcar { display: none }                                 /* source mode: the raw "[ ] " carries the caret */
 .lp .cm-line.tcr1 { background-image: linear-gradient(transparent, transparent) }   /* gh #75: tcr0<->tcr1 flip = a background-layer change, so WebKit repaints the whole blank task row and wipes a stale caret (editor.js build, tcr). Invisible: no colour, background-color untouched */
 .lp .h { font-weight: 700; color: var(--text-heading, currentColor) }   /* wasp: orange headings; currentColor = inherit for every theme that declares no --text-heading */
-.lp .h1 { font-size: var(--h1-size) }
-.lp .h2 { font-size: var(--h2-size) }
-.lp .h3 { font-size: var(--h3-size) }
-.lp .h4 { font-size: var(--h4-size) }
-.lp .h5 { font-size: var(--h5-size) }
-.lp .h6 { font-size: var(--h6-size) }
+/* #59 slice 2: per-level heading ink = the theme's --h<n>-color (Obsidian: h<n> { color: var(--h<n>-color) }), the
+   reading view below the same; a theme that declares none keeps --text-heading / currentColor, so the default is unchanged */
+.lp .h1 { font-size: var(--h1-size); color: var(--h1-color, var(--text-heading, currentColor)) }
+.lp .h2 { font-size: var(--h2-size); color: var(--h2-color, var(--text-heading, currentColor)) }
+.lp .h3 { font-size: var(--h3-size); color: var(--h3-color, var(--text-heading, currentColor)) }
+.lp .h4 { font-size: var(--h4-size); color: var(--h4-color, var(--text-heading, currentColor)) }
+.lp .h5 { font-size: var(--h5-size); color: var(--h5-color, var(--text-heading, currentColor)) }
+.lp .h6 { font-size: var(--h6-size); color: var(--h6-color, var(--text-heading, currentColor)) }
 .lp .b { font-weight: var(--bold-weight) }
 .lp .i { font-style: italic }
 .lp .bi { font-weight: var(--bold-weight); font-style: italic }
@@ -1532,13 +1538,19 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 }
 .lp .lprow { width: 100% }
 .lp h1, .preview h1, .lp h2, .preview h2, .lp h3, .preview h3, .lp h4, .preview h4, .lp h5, .preview h5, .lp h6, .preview h6 {
-  color: var(--text-heading, currentColor); font-style: normal; font-variant: normal; border: 0 }   /* wasp: see .lp .h */
-.lp h1, .preview h1 { font-size: var(--h1-size); font-weight: var(--h1-weight); line-height: var(--h1-line-height); letter-spacing: var(--h1-letter-spacing) }
-.lp h2, .preview h2 { font-size: var(--h2-size); font-weight: var(--h2-weight); line-height: var(--h2-line-height); letter-spacing: var(--h2-letter-spacing) }
-.lp h3, .preview h3 { font-size: var(--h3-size); font-weight: var(--h3-weight); line-height: var(--h3-line-height); letter-spacing: var(--h3-letter-spacing) }
-.lp h4, .preview h4 { font-size: var(--h4-size); font-weight: var(--h4-weight); line-height: var(--h4-line-height); letter-spacing: var(--h4-letter-spacing) }
-.lp h5, .preview h5 { font-size: var(--h5-size); font-weight: var(--h5-weight); line-height: var(--h5-line-height); letter-spacing: var(--h5-letter-spacing) }
-.lp h6, .preview h6 { font-size: var(--h6-size); font-weight: var(--h6-weight); line-height: var(--h6-line-height); letter-spacing: var(--h6-letter-spacing) }
+  color: var(--text-heading, currentColor); font-style: normal; font-variant: normal; border: 0 }   /* wasp: see .lp .h */   /* #59 slice 2: each level below then takes the theme's --h<n>-color, falling back to this */
+.lp h1, .preview h1 { font-size: var(--h1-size); font-weight: var(--h1-weight); line-height: var(--h1-line-height); letter-spacing: var(--h1-letter-spacing);
+  color: var(--h1-color, var(--text-heading, currentColor)) }
+.lp h2, .preview h2 { font-size: var(--h2-size); font-weight: var(--h2-weight); line-height: var(--h2-line-height); letter-spacing: var(--h2-letter-spacing);
+  color: var(--h2-color, var(--text-heading, currentColor)) }
+.lp h3, .preview h3 { font-size: var(--h3-size); font-weight: var(--h3-weight); line-height: var(--h3-line-height); letter-spacing: var(--h3-letter-spacing);
+  color: var(--h3-color, var(--text-heading, currentColor)) }
+.lp h4, .preview h4 { font-size: var(--h4-size); font-weight: var(--h4-weight); line-height: var(--h4-line-height); letter-spacing: var(--h4-letter-spacing);
+  color: var(--h4-color, var(--text-heading, currentColor)) }
+.lp h5, .preview h5 { font-size: var(--h5-size); font-weight: var(--h5-weight); line-height: var(--h5-line-height); letter-spacing: var(--h5-letter-spacing);
+  color: var(--h5-color, var(--text-heading, currentColor)) }
+.lp h6, .preview h6 { font-size: var(--h6-size); font-weight: var(--h6-weight); line-height: var(--h6-line-height); letter-spacing: var(--h6-letter-spacing);
+  color: var(--h6-color, var(--text-heading, currentColor)) }
 .lp b, .lp strong, .preview b, .preview strong { font-weight: var(--bold-weight) }
 .lp em, .preview em { font-style: italic }
 /* R15.9 reading-mode block spacing; LP spacing comes from the blank-line rows */
