@@ -1980,11 +1980,11 @@ body.floorrelayout #main { padding-right: 1px }
    the token map walks text nodes, so banner prose inside the row would move
    every caret column after it. A REMOTE target's label is the constant
    "remote image" in both engines, never the URL (R29.10). */
-.lp .imgmiss, .preview .imgmiss {
+.lp .imgmiss, .preview .imgmiss, .image-view .imgmiss {
   display: block; padding: 12px 16px; margin: 8px 0; border-radius: 6px;
   background: var(--bg-surface); color: var(--text-chrome-muted); font-size: 14px; line-height: 1.4;
   user-select: none }
-.lp .imgmiss::after { content: "\201C" attr(data-miss) "\201D could not be found." }
+.lp .imgmiss::after, .image-view .imgmiss::after { content: "\201C" attr(data-miss) "\201D could not be found." }
 /* source mode (.lp.src) is raw markdown: markers are all revealed and the
    widget must not paint. With the caret merely ON the row the widget stays,
    exactly like the task checkbox of an edited "- [x] " line (R17.6). */
@@ -2135,6 +2135,13 @@ span.is-flashing { background: var(--highlight-yellow) }
 .os-pv > .view-content.pdf-view { padding: 0; overflow: hidden; display: flex; flex-direction: column }
 .pdf-view > .pdf-embed { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; width: 100%;
   box-sizing: border-box; background: var(--bg-surface); user-select: none }
+/* issue #102: the image view (an "image" leaf, main.js IMGV) — stock's .image-container: the image centred, scaled
+   DOWN to fit the pane (never up), the pane's own background around it */
+.os-pv > .view-content.image-view { padding: 0; overflow: auto; display: flex }
+.image-view > .image-container { display: flex; flex: 1 1 auto; align-items: center; justify-content: center; min-width: 0;
+  min-height: 0; padding: 16px; box-sizing: border-box }
+.image-view > .image-container > img { max-width: 100%; max-height: 100%; object-fit: contain; user-select: none }
+.image-view > .image-container > .imgmiss { margin: auto }
 /* census C4 make-md: .app-container (ui/index.html) wraps the app chrome for plugins and
    themes that look it up. goal cp-makemd3: a REAL box, not display:contents — under
    display:contents the editor scrollers lost their bottom range (srclick R25.13c line-83

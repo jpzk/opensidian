@@ -1686,7 +1686,8 @@ function bmRowMenu(e, nm, ix) {             // right-click a FILE .bmrow -> Obsi
   const vr = bmTree[ix] && bmTree[ix].name === nm && !pdf && (bmTree[ix].graph || bmTree[ix].path) ? bmTree[ix] : null;
   if (vr) {
     item("Open in new tab", () => bmOpenRow(vr, { ctrlKey: true }));
-    item("Open to the right", null, "Not wired for a graph / canvas / plugin-file bookmark: click the row, then Split right");
+    if (vr.path && Ed.isImg(vr.name)) item("Open to the right", () => openImage(vr.name, null, "split"));   // issue #102: an image bookmark opens the image view to the right
+    else item("Open to the right", null, "Not wired for a graph / canvas / plugin-file bookmark: click the row, then Split right");
   } else {
   item("Open in new tab",   () => (pdf ? openPdf(nm, null, "tab") : openNewTab(nm)));                         // WIRED: openNewTab — right of the active tab, focused, never deduped (opentab REQ-8/9/14, Obsidian c20)
   item("Open to the right", () => (pdf ? openPdf(nm, null, "split") : splitWith(fg(), "row", mkTab(nm))));      // WIRED: splitWith — the verb behind the tab menu's "Split right" (M7/R6.2), carrying a fresh tab of this note
@@ -6774,8 +6775,8 @@ function fileRow(p, depth) {
   row.querySelector(".ttag").textContent = d > 0 ? base.slice(d + 1).toUpperCase() : "";
   row.dataset.file = p;
   row.addEventListener("mousedown", e => treeDragStart(e, p, "file"));
-  row.onclick = e => { if (treeClickEaten()) return; if (e.shiftKey && !e.ctrlKey && !e.metaKey) return treeRange(row); treeSelClear(); treeAnchor = p; if (Ed.isPdf(p)) openPdf(p, e); };   // shift = range select; issue #44: a PDF opens in the PDF view (ctrl = new tab), other types open no view
-  if (Ed.isPdf(p)) row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); openPdf(p, e); } };   // middle = new tab
+  row.onclick = e => { if (treeClickEaten()) return; if (e.shiftKey && !e.ctrlKey && !e.metaKey) return treeRange(row); treeSelClear(); treeAnchor = p; if (Ed.isPdf(p)) openPdf(p, e); else if (Ed.isImg(p)) openImage(p, e); };   // shift = range select; issue #44: a PDF opens in the PDF view (ctrl = new tab); issue #102: an image opens in the image view; other types open no view
+  if (Ed.isPdf(p) || Ed.isImg(p)) row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); (Ed.isPdf(p) ? openPdf : openImage)(p, e); } };   // middle = new tab
   return row;
 }
 
@@ -8033,6 +8034,74 @@ function pdfvTok() {           // issue #44: [pdfrow:] explorer PDF rows, [pdfv:
   const s = v.frame, b = s.getBoundingClientRect();
   return t + " [pdfv:" + esc(v.path) + "|" + (s.dataset.cur || 0) + "/" + (s.dataset.of || 0) + (s.classList.contains("is-loaded") ? "L" : "") +
          (s.classList.contains("mod-broken") ? "B" : "") + "|" + [b.x, b.y, b.width, b.height].map(Math.round).join(",") + "]";
+}
+/* issue #102: the image view. An image (Ed.IMG_EXTS) opened from the explorer or a bookmark shows in an "image" leaf
+   (stock 1.13.7's view type and state {file}; its DOM .view-content > .image-container > img, the image centred and
+   scaled down to fit the pane, never up). The src is Ed.imgSrc — the SAME opensidian-img: URL an embed gets, minted
+   only for a path the image list holds (no traversal, the byte server re-checks containment). Registered with the
+   image extensions, so openFile (a bookmark row, a plugin) routes an image here too. how: as openPdf. */
+const IMGV = (() => {
+  if (!PLG || !PLG.X || !PLG.X.ItemView) return null;
+  const base = p => { const b = String(p).split("/").pop(), d = b.lastIndexOf("."); return d > 0 ? b.slice(0, d) : b; };
+  class ImageView extends PLG.X.ItemView {
+    constructor(leaf) { super(leaf); this.navigation = true; this.icon = "lucide-image"; this.path = null; this.img = null; this.contentEl.classList.add("image-view"); }
+    getViewType() { return "image"; }
+    getDisplayText() { return this.path ? base(this.path) : "Image"; }
+    getState() { return this.path ? { file: this.path } : {}; }
+    async setState(st) {
+      const p = st && typeof st.file === "string" ? st.file.replace(/^\/+/, "") : "";
+      if (!p || p === this.path || !Ed.isImg(p)) return;
+      this.path = p;
+      try { const f = PLG.app.vault.getAbstractFileByPath(p); this.file = f || null; } catch (_) { this.file = null; }
+      const box = document.createElement("div");
+      box.className = "image-container";
+      const src = Ed.imgSrc(p);
+      if (src === null) {                       // not in the image list (gone, hidden, symlinked): the R29.4 banner, no URL
+        const s = document.createElement("span");
+        s.className = "imgmiss"; s.dataset.miss = p;
+        box.appendChild(s); this.img = null;
+      } else {
+        const im = this.img = document.createElement("img");
+        im.alt = base(p); im.draggable = false;
+        im.addEventListener("load", () => updateTitle());
+        im.addEventListener("error", () => { im.classList.add("mod-broken"); updateTitle(); });
+        im.src = src;
+        box.appendChild(im);
+      }
+      this.contentEl.replaceChildren(box);
+      updateTitle();
+    }
+  }
+  const make = Object.defineProperty(leaf => new ImageView(leaf), Symbol.for("opensidian.coreView"), { value: true });
+  try {
+    const r = PLG.app.viewRegistry;
+    r.registerView("image", make);
+    const ex = Ed.IMG_EXTS.filter(x => !r.isExtensionRegistered(x));
+    if (ex.length) r.registerExtensions(ex, "image");
+  } catch (e) { console.error("[image] view:", e); return null; }
+  return { ImageView };
+})();
+async function openImage(path, ev, how) {   // how: as openPdf — undefined = by the event (plain in place, ctrl/middle new tab) | "tab" | "split"
+  if (!IMGV) { say("The image view is not available", "img"); return null; }
+  const nt = ev && (ev.button === 1 || ev.ctrlKey || ev.metaKey);
+  const leaf = how === "split" ? PLG.app.workspace.getLeaf("split", "vertical") : PLG.app.workspace.getLeaf(how === "tab" || nt ? "tab" : false);
+  await leaf.setViewState({ type: "image", state: { file: path }, active: true });
+  return leaf;
+}
+function imgvTok() {           // issue #102: [imgrow:] explorer image rows, [imgv:] the image view on screen
+  const esc = s => String(s).replace(/[[\]|@]/g, "_"), vis = e => !!e && e.getClientRects().length > 0;
+  const c = e => { const r = e.getBoundingClientRect(); return Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2); };
+  let t = "";
+  const rows = [...document.querySelectorAll("#tree .trow.file")].filter(r => vis(r) && Ed.isImg(r.dataset.file || ""));
+  if (rows.length) t += " [imgrow:" + rows.map(r => esc(r.dataset.file) + "@" + c(r)).join("|") + "]";
+  let v = null;
+  try { v = PLG && PLG.app.workspace.getLeavesOfType("image").map(l => l.view).find(x => x && vis(x.containerEl)) || null; } catch (_) {}
+  if (!v || !v.path) return t;
+  const im = v.img;
+  if (!im) return t + " [imgv:" + esc(v.path) + "|M|-]";
+  const b = im.getBoundingClientRect(), ok = im.complete && im.naturalWidth > 0;
+  return t + " [imgv:" + esc(v.path) + "|" + (ok ? im.naturalWidth + "x" + im.naturalHeight + "L" : im.classList.contains("mod-broken") ? "B" : "-") +
+         "|" + [b.x, b.y, b.width, b.height].map(Math.round).join(",") + "]";
 }
 /* goal canvas-core: "Create new canvas" (command) and "New canvas" (explorer menus). The file is made
    through canvas_io create (O_EXCL: an existing name is never overwritten — the next free
