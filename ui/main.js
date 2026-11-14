@@ -2376,7 +2376,8 @@ function graphNodeMenu(e, hit, scope) {
     if (here) item("(vault root)", () => moveNoteTo(nm, ""));
     for (const f of fl) if (f !== here) item(f, () => moveNoteTo(nm, f));
     if (m.children.length === 2) item("(no other folder)", () => {});
-    setTimeout(() => clampMenu(m), 0);
+    clampMenu(m);                        // re-clamp NOW: updateTitle() below must publish [mg:]/[mgy:] of the PLACED list
+    setTimeout(() => { clampMenu(m); updateTitle(); }, 0);   // late layout (fonts/async rows) re-clamps AND re-publishes
     updateTitle();
   };
   for (const grp of groupsOf) {
@@ -4657,7 +4658,8 @@ function tabMenu(e, g, i, hdr) {
   const inPlace = fill => {              // the ctxmenu's ONE submenu seam: rebuild in place (R13.1's pick list)
     B.clear();
     fill();
-    setTimeout(() => clampMenu(m), 0);   // R22: the new list resizes the menu — re-clamp it
+    clampMenu(m);                        // re-clamp NOW: updateTitle() below must publish [mg:]/[mgy:] of the PLACED list (R22: the new list resizes the menu)
+    setTimeout(() => { clampMenu(m); updateTitle(); }, 0);   // late layout (fonts/async rows) re-clamps AND re-publishes
     updateTitle();                       // the menu was rebuilt in place -> refresh [menu:]
   };
   const pick = () => inPlace(() => {     // R13.1/R38.8: every other open tab, in layout order
@@ -8080,7 +8082,8 @@ function canvasFileMenu(e, p) {             // right-click a .canvas row in the 
     if (here) item("(vault root)", () => cvMoveTo(p, ""));
     for (const f of fl) if (f !== here) item(f, () => cvMoveTo(p, f));
     if (!m.children.length) item("(no other folder)", null, "The vault has no other folder");
-    setTimeout(() => clampMenu(m), 0);
+    clampMenu(m);                        // re-clamp NOW: updateTitle() below must publish [mg:]/[mgy:] of the PLACED list
+    setTimeout(() => { clampMenu(m); updateTitle(); }, 0);   // late layout (fonts/async rows) re-clamps AND re-publishes
     updateTitle();
   };
   item(bmHasPath(p) ? "Remove bookmark" : "Bookmark", () => toggleBmPath(p));   // issue #31 (D3): stock's {type:"file",path} item
