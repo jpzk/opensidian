@@ -1,5 +1,4 @@
-
-<img width="2348" height="1424" alt="image" src="https://github.com/user-attachments/assets/3c26f344-e8cd-452f-891a-8f95f5d9f5bd" />
+<img width="1000" height="525" alt="image-1794573234435" src="https://github.com/user-attachments/assets/8e448f62-eb11-4213-9848-4f99455d3d43" />
 
 # Opensidian
 Open-source and non-profit under GPLv3, vault-compatible cross-platform markdown notes app. It's based on Rust + Tauri v2 and under heavy development. We're looking for Linux distribution maintainers. Not affiliated with or endorsed by Obsidian or Dynalist Inc.; "Obsidian" is their trademark. Opensidian is a clean-room functional clone: it reimplements Obsidian's behaviour from the outside and contains none of its code.
@@ -8,15 +7,34 @@ Open-source and non-profit under GPLv3, vault-compatible cross-platform markdown
 
 ### Linux x86_64 — packages
 
-Download one from the [v0.9.2 release](https://github.com/jpzk/opensidian/releases/tag/v0.9.2):
+Download one from the [v0.9.4 release](https://github.com/jpzk/opensidian/releases/tag/v0.9.4):
 
-| Download | Choose it if | Tested on (fresh install, 2026-10-30) |
+| Download | Choose it if | Tested on |
 |---|---|---|
-| [slim AppImage](https://github.com/jpzk/opensidian/releases/download/v0.9.2/opensidian-0.9.2-x86_64-slim.AppImage) | you want the smallest file and have WebKitGTK 4.1 | Fedora 44 (`sudo dnf install webkit2gtk4.1`), Ubuntu 26.04 LTS (`sudo apt install libwebkit2gtk-4.1-0`) |
-| [portable AppImage](https://github.com/jpzk/opensidian/releases/download/v0.9.2/opensidian-0.9.2-x86_64-portable.AppImage) | you want nothing to install: WebKit is bundled (needs only the X11/GL/font libraries every desktop has) | Fedora 44, Ubuntu 26.04 LTS |
-| [Flatpak](https://github.com/jpzk/opensidian/releases/download/v0.9.2/opensidian-0.9.2-x86_64.flatpak) | you want it sandboxed; pulls the GNOME 49 runtime from Flathub on first install | Fedora 44, Ubuntu 26.04 LTS (`flatpak` package installed) |
-| [RPM](https://github.com/jpzk/opensidian/releases/download/v0.9.2/opensidian-0.9.2-x86_64.rpm) | you run Fedora and want a system package with a menu entry and icon; dnf pulls WebKitGTK 4.1 for you | Fedora 44 (`sudo dnf install ./opensidian-0.9.2-x86_64.rpm`) |
-| [DEB](https://github.com/jpzk/opensidian/releases/download/v0.9.2/opensidian-0.9.2-x86_64.deb) | you run Debian or Ubuntu and want a system package with a menu entry and icon; apt pulls WebKitGTK 4.1 for you | Debian 13, Ubuntu 26.04 LTS (`sudo apt install ./opensidian-0.9.2-x86_64.deb`) |
+| [slim AppImage](https://github.com/jpzk/opensidian/releases/download/v0.9.4/opensidian-0.9.4-x86_64-slim.AppImage) | you want the smallest file and have WebKitGTK 4.1 | Fedora 44 (`sudo dnf install webkit2gtk4.1`), Ubuntu 26.04 LTS (`sudo apt install libwebkit2gtk-4.1-0`) |
+| [portable AppImage](https://github.com/jpzk/opensidian/releases/download/v0.9.4/opensidian-0.9.4-x86_64-portable.AppImage) | you want nothing to install: WebKit is bundled (needs only the X11/GL/font libraries every desktop has) | Fedora 44, Ubuntu 26.04 LTS |
+| [Flatpak](https://github.com/jpzk/opensidian/releases/download/v0.9.4/opensidian-0.9.4-x86_64.flatpak) | you want it sandboxed; pulls the GNOME 49 runtime from Flathub on first install | Fedora 44, Ubuntu 26.04 LTS (`flatpak` package installed) |
+| [RPM](https://github.com/jpzk/opensidian/releases/download/v0.9.4/opensidian-0.9.4-x86_64.rpm) | you run Fedora and want a system package with a menu entry and icon; dnf pulls WebKitGTK 4.1 for you | Fedora 44 (see the RPM note below) |
+| [DEB](https://github.com/jpzk/opensidian/releases/download/v0.9.4/opensidian-0.9.4-x86_64.deb) | you run Debian or Ubuntu and want a system package with a menu entry and icon; apt pulls WebKitGTK 4.1 for you | Debian 13, Ubuntu 26.04 LTS (`sudo apt install ./opensidian-0.9.4-x86_64.deb`) |
+
+Checksums and signature: [SHA256SUMS](https://github.com/jpzk/opensidian/releases/download/v0.9.4/SHA256SUMS),
+[SHA256SUMS.asc](https://github.com/jpzk/opensidian/releases/download/v0.9.4/SHA256SUMS.asc) (see [Verify your download](#verify-your-download)).
+
+**glibc ≥ 2.43, current distros only:** the AppImages, DEB and RPM are built on Ubuntu 26 and need glibc 2.43 or newer,
+so they do not start on older distros such as Ubuntu 24.04 LTS or Debian 12. On an older distro, use the Flatpak, which brings its own runtime.
+
+**RPM on rpm 6 (e.g. Fedora 44):** the RPM itself is not GPG-signed (as in v0.9.2), and rpm 6 rejects unsigned
+packages by default (`does not verify: no signature`). [Verify the file](#verify-your-download) first. Then install the dependencies from your
+signed Fedora repositories, and skip the signature check only for the one file you verified:
+
+```sh
+sudo dnf install webkit2gtk4.1                           # dependencies, signature-checked as usual
+sudo rpm -Uvh --nosignature opensidian-0.9.4-x86_64.rpm  # install or upgrade; fetches nothing else
+```
+
+Avoid `dnf install --nogpgcheck` here: it also turns off the signature checks for every dependency in the same transaction.
+
+A signed RPM is planned for the next release.
 
 ### Nix & NixOS
 
@@ -25,15 +43,41 @@ nix profile add github:jpzk/opensidian
 ```
 
 ## Verify your download
-`SHA256SUMS` is signed with key `A6E6 9ED6 BC47 79F3 2817  2148 4CC1 AFDE 15B6 4EA3`:
+Put the file(s) you downloaded in one directory together with `SHA256SUMS` and `SHA256SUMS.asc`.
 
-```sh
-curl -LO https://github.com/jpzk/opensidian/releases/download/v0.9.2/SHA256SUMS \
-     -LO https://github.com/jpzk/opensidian/releases/download/v0.9.2/SHA256SUMS.asc
-gpg --keyserver hkps://keys.openpgp.org --recv-keys A6E69ED6BC4779F3281721484CC1AFDE15B64EA3
-gpg --verify SHA256SUMS.asc SHA256SUMS
-sha256sum -c --ignore-missing SHA256SUMS
-```
+1. **Signature:** `SHA256SUMS` is signed with key `A6E6 9ED6 BC47 79F3 2817  2148 4CC1 AFDE 15B6 4EA3`
+   (the same key as v0.9.2 and v0.9.3):
+
+   ```sh
+   curl -LO https://github.com/jpzk/opensidian/releases/download/v0.9.4/SHA256SUMS \
+        -LO https://github.com/jpzk/opensidian/releases/download/v0.9.4/SHA256SUMS.asc
+   gpg --keyserver hkps://keys.openpgp.org --recv-keys A6E69ED6BC4779F3281721484CC1AFDE15B64EA3
+   gpg --export A6E69ED6BC4779F3281721484CC1AFDE15B64EA3 > opensidian.gpg
+   gpgv --keyring ./opensidian.gpg SHA256SUMS.asc SHA256SUMS   # accepts only this key
+   ```
+
+   Unlike a plain `gpg --verify`, `gpgv` with this one-key keyring rejects a signature made by any other key you may have.
+
+2. **Checksums:** every file you downloaded must report `OK`:
+
+   ```sh
+   sha256sum -c --ignore-missing SHA256SUMS
+   ```
+
+3. **Build provenance:** v0.9.3 is the first release with GitHub artifact attestations (SLSA provenance).
+   They prove each file was built by this repository's `release.yml` workflow on GitHub-hosted runners.
+   With the [GitHub CLI](https://cli.github.com/):
+
+   ```sh
+   # repeat for each file you downloaded
+   gh attestation verify opensidian-0.9.4-x86_64.rpm -R jpzk/opensidian \
+     --signer-workflow jpzk/opensidian/.github/workflows/release.yml \
+     --deny-self-hosted-runners
+   gh release verify v0.9.4 -R jpzk/opensidian   # the release itself (it is immutable)
+   gh release verify-asset v0.9.4 opensidian-0.9.4-x86_64.rpm -R jpzk/opensidian   # each file is pinned by the release attestation
+   ```
+
+   v0.9.2 and earlier releases have no attestations.
 
 ## Build from source
 Tested 2026-10-03 on fresh Ubuntu 26.04 LTS and Fedora 44 with Rust 1.98.0
@@ -108,7 +152,22 @@ cannot turn its own plugins on.
 **What that means.** With restricted mode off, the plugins you enable run code from the internet
 with your user's rights, the same as in Obsidian. They can run programs, open network connections
 and servers, send HTTP requests to any host, and open files and links with your system's default
-apps. There is no per-plugin permission prompt. Enable only plugins you trust.
+apps. Apart from the dialog before a program starts (below), there is no per-plugin permission
+prompt. Enable only plugins you trust.
+
+**Running programs.** Each time a plugin starts a program, a native dialog names the program,
+its arguments, the folder and the plugin, and asks: **Deny** (the default), **Allow once**, or
+**Always allow this program**. Always is saved in `~/.opensidian.json` for that vault, plugin
+and program, together with a sha256 of the plugin's `main.js` + `manifest.json` and of the
+program file, all read from disk by the app. If any of them changes, you are asked again.
+The sha256 is of the files on disk, not a proof of the code that is running: a plugin that
+rewrites its own files could put the approved bytes back before a spawn and reuse the grant.
+Only the dialog can add such a grant; **Settings ▸ Community plugins ▸ Allowed programs** lists
+them (an old one is marked outdated and never used) and has a **Revoke** button for each.
+Caveat: Always allow lets the plugin run that program again with ANY arguments, without asking.
+Arguments can be malicious (for example options that make the program run other commands, or a
+script an interpreter reads), and they are not checked again. Allow an interpreter or a shell
+(`sh`, `python`, `node`, ...) always only if you would let the plugin run anything.
 
 **Browse.** **Settings ▸ Community plugins ▸ Browse** lists the community plugins. You can search,
 sort, and open a plugin to read its details and README. Install, Update and Uninstall download

@@ -11,6 +11,8 @@ const TAURI = window.__TAURI__;   // plugin-loader item 7: captured at load; ui/
 // cp-hover-editor: the plugin host's app + "obsidian" module, captured at load like TAURI (the seal narrows the
 // host before any plugin runs); main.js fills the core-plugin hooks plugins read (see QuickSwitcherModal)
 const PLG = window.__osPluginHost && __osPluginHost.app && __osPluginHost.api ? { app: __osPluginHost.app, X: __osPluginHost.api } : null;
+// #51 / PR #65 review F1: the html->Markdown converter of a rich-text drop (Ed.htmlDrop), captured before the seal
+if (PLG && typeof PLG.X.htmlToMarkdown === "function" && typeof Ed !== "undefined") Ed.h2m = PLG.X.htmlToMarkdown;
 // the app's own note writes reach the plugin vault through this (api-vault host.noteWritten), captured before the seal
 const PLGNW = window.__osPluginHost && typeof __osPluginHost.noteWritten === "function" ? __osPluginHost.noteWritten : null;
 // goal cv-model: the plugin vault's FILE model alone (api-vault host.vaultModel: no window.app, no plugin runtime), captured before the seal for Canvas
@@ -281,6 +283,12 @@ function placeRToggle() {
   // it out of the document with its host. getElementById would then return null and
   // the b.parentNode below threw — aborting pane_close/pane_split mid-action and
   // leaving the toggle gone for good. A detached node re-mounts fine on appendChild.
+  // #59 slice 2 (themecompat strip): stock's .workspace-tabs.mod-top = a tab group whose tabbar touches the window
+  // top — every child of a row, only the first of a column. Kept here because this runs after every layout change.
+  if (state) (function markTop(n, top) {
+    if (n.children) n.children.forEach((c, i) => markTop(c, top && (n.dir === "row" || i === 0)));
+    else if (n.pane) n.pane.classList.toggle("mod-top", top);
+  })(state.root, true);
   const b = rtBtn || (rtBtn = $("rtoggle"));
   if (!b) return;
   const host = rightOpen ? $("rtabs") : (state ? topRight(state.root).pane.querySelector(".tabbar") : null);
@@ -1235,7 +1243,7 @@ function bmIndentTok() {
 const bmRenTok = () => (bmRenaming === null ? "" :
   " [bmren:" + String(($("bmren") && $("bmren").value) || "").replace(/[|\]]/g, "") + "]");
 function bmSync() {                        // the flat view every non-pane caller uses
-  bmCache = bmTree.filter(r => r.kind === "f").map(r => r.name);
+  bmCache = bmTree.filter(r => r.kind === "f" && !r.path && !r.graph).map(r => r.name);   // issue #44/#31: a PDF, canvas, plugin-file or graph row is no note name (== list_bookmarks)
 }
 const BM_ICON_FILE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3h12v18l-6-4.5L6 21z"/></svg>';
 // a group row carries a CHEVRON where a file row carries its bookmark glyph, at
@@ -1292,9 +1300,10 @@ function renderBm() {
     }
     // a GROUP row opens nothing — a click on its chevron, label or row background
     // TOGGLES its fold (collapseall R1, M5 / recon-bmcollapse). A FILE row opens.
+    const open = e => bmOpenRow(r, e);    // issue #44: a PDF bookmark opens the PDF view; #31: a graph / canvas / plugin file its own view
     row.onclick = grp ? () => { if (bmClickEaten()) return; bmFoldToggle(key); }
-                      : e => { if (bmClickEaten()) return; rowOpen(r.name, e); };   // bmdrag: a drop's click opens nothing; opentab REQ-2/3/5/7
-    if (!grp) row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); rowOpen(r.name, e); } };   // opentab REQ-6
+                      : e => { if (bmClickEaten()) return; open(e); };   // bmdrag: a drop's click opens nothing; opentab REQ-2/3/5/7
+    if (!grp) row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); open(e); } };   // opentab REQ-6
     row.oncontextmenu = e => (grp ? bmGroupMenu(e, ix, r.name) : bmRowMenu(e, r.name, ix));
     row.addEventListener("mousedown", e => bmDragStart(e, ix));   // bmdrag: every row drags, groups included (recon case 5)
     box.appendChild(row);
@@ -1515,17 +1524,27 @@ function ttlTok() {
   const base = top + (L - (asc + dsc)) / 2 + asc;
   const o = ["TOP=" + f(base - m.actualBoundingBoxAscent), "BOT=" + f(base + m.actualBoundingBoxDescent),
              "CAP=" + f(ctx.measureText(t[0]).actualBoundingBoxAscent)];
-  let body = NaN;
+  // BODY = the ink top of the whole first visible ROW, not of its first text node: on the
+  // caret's line live preview reveals the heading marker, so that row's first text node is the
+  // bare "#" (SPAN.mk rv), whose ascent (22 px at the h1 size) is below the row's tallest glyph
+  // (the "l"/"T" of "Title Fixture", 24 px) — the pixels' ink top is the row's, so the old
+  // first-node value sat 1.78 px low (rt2-title, LP_BLOCK 58 vs 60). Every painted text node
+  // whose first rect starts on that first line counts; the minimum ink top wins.
+  let body = NaN, row = null;
   const w = document.createTreeWalker(R, NodeFilter.SHOW_TEXT);
   for (let n; (n = w.nextNode());) {
     const i = n.data.search(/\S/); if (i < 0) continue;
     const txt = n.data.slice(i).replace(/\s+$/, ""), r = document.createRange();
     r.setStart(n, i); r.setEnd(n, i + txt.length);
     const rc = [...r.getClientRects()].find(q => q.width > 0); if (!rc) continue;
-    ctx.font = fnt(getComputedStyle(n.parentElement));
+    if (row && rc.top >= row.bottom) break;            // past the first visible row
+    const ps = getComputedStyle(n.parentElement);
+    if (ps.visibility !== "visible") continue;
+    if (!row) row = rc;
+    ctx.font = fnt(ps);
     const b = ctx.measureText(txt), a2 = b.fontBoundingBoxAscent, d2 = b.fontBoundingBoxDescent;
-    body = rc.top + (rc.height - (a2 + d2)) / 2 + a2 - b.actualBoundingBoxAscent;
-    break;
+    const ink = rc.top + (rc.height - (a2 + d2)) / 2 + a2 - b.actualBoundingBoxAscent;
+    if (!(ink >= body)) body = ink;
   }
   o.push("BODY=" + f(body));
   return " [ttl:" + (isReading(g) ? "read" : "lp") + "|" + o.join("|") + "]";
@@ -1660,17 +1679,29 @@ function bmRowMenu(e, nm, ix) {             // right-click a FILE .bmrow -> Obsi
      change anything. That is also why phase_bmmenu — which runs on a FLAT list
      and asserts [mdis:3|5|6] — keeps passing unedited (criterion 8). */
   const hasGrp = bmTree.some(r => r.kind === "g");
-  item("Open in new tab",   () => openNewTab(nm));                         // WIRED: openNewTab — right of the active tab, focused, never deduped (opentab REQ-8/9/14, Obsidian c20)
-  item("Open to the right", () => splitWith(fg(), "row", mkTab(nm)));      // WIRED: splitWith — the verb behind the tab menu's "Split right" (M7/R6.2), carrying a fresh tab of this note
+  // issue #44 (PR #57 review): a painted PDF row is named by its vault PATH — its opens go through the PDF view,
+  // never through a note tab (openNewTab/mkTab would read "<path>.md"); its Remove toggles that path (rust drops the Pdf node)
+  const pdf = !!(bmTree[ix] && bmTree[ix].pdf && bmTree[ix].name === nm);
+  // issue #31: a graph row (no file behind it) and a canvas / plugin-file row (a vault PATH) open through bmOpenRow
+  const vr = bmTree[ix] && bmTree[ix].name === nm && !pdf && (bmTree[ix].graph || bmTree[ix].path) ? bmTree[ix] : null;
+  if (vr) {
+    item("Open in new tab", () => bmOpenRow(vr, { ctrlKey: true }));
+    item("Open to the right", null, "Not wired for a graph / canvas / plugin-file bookmark: click the row, then Split right");
+  } else {
+  item("Open in new tab",   () => (pdf ? openPdf(nm, null, "tab") : openNewTab(nm)));                         // WIRED: openNewTab — right of the active tab, focused, never deduped (opentab REQ-8/9/14, Obsidian c20)
+  item("Open to the right", () => (pdf ? openPdf(nm, null, "split") : splitWith(fg(), "row", mkTab(nm))));      // WIRED: splitWith — the verb behind the tab menu's "Split right" (M7/R6.2), carrying a fresh tab of this note
+  }
   item("Open in new window", null, "Single-window app: there is no second window to open into");   // NOT WIRED
   sep();
   item("Rename",  null, "Bookmarks are note names on disk (.obsidian/bookmarks.json); there is no per-bookmark title to rename");   // NOT WIRED
   item("Edit...", hasGrp ? () => openBmEdit(ix) : null,                    // WIRED (R4X.7) once a group exists: the move route, in and out
        hasGrp ? null : "Edit bookmark chooses a GROUP and this pane has none — right-click the pane background to create one");
   sep();
-  item("Reveal file in navigation", () => bmReveal(nm));                   // WIRED: bmReveal — setPane("files") + the explorer row's focus ring (R9.3 pane switch, treeRows)
+  if (vr && vr.graph) item("Reveal file in navigation", null, "A graph bookmark has no file behind it");   // issue #31
+  else item("Reveal file in navigation", () => bmReveal(nm));              // WIRED: bmReveal — setPane("files") + the explorer row's focus ring (R9.3 pane switch, treeRows)
   sep();
-  item("Remove", () => { if (bmCache.includes(nm)) toggleBm(nm); });       // WIRED: toggleBm — the same toggle the explorer-row / tab menus use (R9.4 / R20.4); guarded so it can only REMOVE
+  item("Remove", () => { if (vr) bmApply("bm_remove", { ix }); else if (pdf) toggleBm(nm, true); else if (bmCache.includes(nm)) toggleBm(nm); });   // issue #31: a graph / canvas row is removed BY ROW (bm_remove)
+  // WIRED: toggleBm — the same toggle the explorer-row / tab menus use (R9.4 / R20.4); guarded so it can only REMOVE. A PDF row removes its Pdf entry EXPLICITLY (pdf:true) so a same-named note bookmark ("x.pdf.md") is never the one dropped (PR #57 qodo High)
   placeMenu(m, e.clientX, e.clientY);      // R22: viewport-clamped by measured size — the same seam as noteMenu/tabMenu
 }
 /* ---------- bmfolder: the GROUP-row menu, Obsidian 1.13.7's list ----------
@@ -1736,15 +1767,112 @@ function bmPaneMenu(e) {                   // right-click the pane BACKGROUND ->
 function bmReveal(nm) {
   setPane("files");
   document.querySelectorAll("#tree .trow.revealed").forEach(r => r.classList.remove("revealed"));
-  const r = treeRows.get(nm);
+  const r = treeRows.get(nm) || [...document.querySelectorAll("#tree .trow.file")].find(e => e.dataset.file === nm);   // issue #44: PDF rows are not in treeRows (fileRow)
   if (r) { r.classList.add("revealed"); r.scrollIntoView({ block: "nearest" }); }
   revealInfo = r ? nm.replace(/[|\]:]/g, "") : "";
   updateTitle();
 }
 async function refreshBm() { bmTree = await inv("bookmark_rows"); lsBmResolve(); bmSync(); renderBm(); }
-async function toggleBm(nm) {
-  await inv("toggle_bookmark", { name: nm });   // by NAME (R9.4/R20.4): ON appends at the top level, OFF removes at any depth
+async function toggleBm(nm, pdf) {
+  await inv("toggle_bookmark", pdf ? { name: nm, pdf: true } : { name: nm });   // by NAME (R9.4/R20.4): ON appends at the top level, OFF removes at any depth
   await refreshBm();                            // the TREE is the model the pane paints — never patch bmCache behind it
+}
+/* ---------- issue #31: VIEW bookmarks (docs/recon-bm31 D1-D4) ----------
+   A graph item {type:"graph",title,options[,local]} and a non-note file item {type:"file",path}
+   are rows too (rust paints them: r.graph / r.path). tabBmItem builds the item a TAB stands
+   for — the one shape the tab menu, "Bookmark the active tab..." and a tab drop all write:
+     global graph -> stock's item: options = graph.json as it is NOW (a pending card edit lands first)
+     local graph  -> the same + our "local" key (centre file, depth, the three link toggles)
+     canvas / plugin board -> stock's plain file item; null = not bookmarkable (empty tab,
+     a fileless plugin view — stock offers nothing there either). */
+const bmHasPath = p => bmTree.some(r => r.path && r.name === p);
+const BM_LG_KEYS = ["localJumps", "localBacklinks", "localForelinks", "localInterlinks"];
+const bmLgTitle = t => titleOf(t.center) + " (local)";
+async function ggOptsNow() {               // graph.json with any debounced card edit flushed first
+  if (gfSaveT && Object.keys(gfPatch).length) {
+    clearTimeout(gfSaveT); gfSaveT = null;
+    const p = gfPatch; gfPatch = {};
+    try { await inv("set_graph_settings", { vault: vaultPath, patch: p }); } catch (_) {}
+  }
+  try { return (await inv("graph_settings")) || {}; } catch (_) { return {}; }
+}
+async function tabBmItem(t) {
+  if (!t) return null;
+  if (t.kind === "gg") return { type: "graph", options: await ggOptsNow() };
+  if (t.kind === "lg") {
+    const o = wsLgOpts(t), local = { file: wsPathOut(t.center) };
+    for (const k of BM_LG_KEYS) { local[k] = o[k]; delete o[k]; }
+    return { type: "graph", title: bmLgTitle(t), options: o, local };
+  }
+  const cp = cvTabPath(t);
+  if (cp) return { type: "file", path: cp };
+  const pv = pvNoteName(t);
+  if (pv) return { type: "file", path: wsPathOut(pv) };
+  if (!t.kind && t.name) return { type: "file", path: wsPathOut(t.name) };
+  return null;
+}
+async function toggleBmPath(p) {           // a canvas / plugin file: ON appends, OFF drops that path (rust Path node)
+  try { await inv("toggle_bookmark", { name: p, path: true }); } catch (err) { say(String(err && err.message || err)); }
+  await refreshBm();
+}
+/* a row click. Graph: the BOOKMARK's settings win (stock s3: graph.json is overwritten with
+   them, then a global graph opens); local: a local graph on the stored centre at the stored
+   depth, or — centre gone — a notice and nothing else (D5: no re-create, no write). Path:
+   its own view (canvas -> the canvas view, a registered extension -> its view); a path that
+   is gone is a notice, never a create. */
+async function bmOpenRow(r, ev) {
+  if (r.graph) return bmOpenGraph(r, ev);
+  if (r.pdf) return openPdf(r.name, ev);
+  if (r.path) return bmOpenPath(r.name, ev);
+  return rowOpen(r.name, ev);
+}
+// the 20 graph.json keys set_graph_settings writes (src-tauri GRAPH_NUM_KEYS + GRAPH_BOOL_KEYS + scale,
+// search, colorGroups) — stock's options are exactly these; anything else in an item stays in the item only
+const BM_GG_KEYS = ["centerStrength", "repelStrength", "linkStrength", "linkDistance", "textFadeMultiplier",
+  "nodeSizeMultiplier", "lineSizeMultiplier", "close", "collapse-filter", "collapse-color-groups", "collapse-display",
+  "collapse-forces", "showTags", "showAttachments", "hideUnresolved", "showOrphans", "showArrow", "scale", "search", "colorGroups"];
+async function bmOpenGraph(r, ev) {
+  if (!state) return;
+  const sp = r.graph || {}, o = sp.options && typeof sp.options === "object" ? sp.options : {};
+  const g = fg();
+  await flushSave(g);
+  const lc = sp.local && typeof sp.local === "object" ? sp.local : null;
+  if (lc) {
+    const c = wsPathIn(lc.file);
+    if (typeof c !== "string" || !c || !notesCache.includes(c)) {
+      say("Cannot open \"" + r.label + "\": its centre note \"" + String(c || "").split("/").pop() + "\" no longer exists", "bm");
+      return;
+    }
+    const d = Number.isInteger(lc.localJumps) ? Math.min(5, Math.max(1, lc.localJumps)) : 1;
+    const t = { kind: "lg", name: "Graph of " + c.split("/").pop(), center: c, depth: d,
+                inc: lc.localBacklinks !== false, out: lc.localForelinks !== false, inter: lc.localInterlinks === true,
+                opts: Object.assign({}, o, { localJumps: d }), mode: "source", hist: [], hpos: 0 };
+    g.tabs.push(t);                        // a bookmark-opened local graph is pinned to its centre: not linked to a pane
+    g.active = g.tabs.length - 1;
+    await loadActive(g);
+    return;
+  }
+  clearTimeout(gfSaveT); gfSaveT = null; gfPatch = {};   // the bookmark's settings replace any pending card edit
+  const patch = {};
+  for (const k of BM_GG_KEYS) if (k in o) patch[k] = o[k];
+  try { await inv("set_graph_settings", { vault: vaultPath, patch }); }
+  catch (err) { say("Graph bookmark: " + String(err && err.message || err)); return; }
+  gfCfg = null;                            // re-read: the card and [ggo:] now show the bookmark's settings
+  await cmdGlobalGraph();
+}
+async function bmOpenPath(p, ev) {
+  const gone = () => say("Cannot open \"" + p.split("/").pop() + "\": the file no longer exists", "bm");
+  if (/\.canvas$/i.test(p)) {
+    let ls = [];
+    try { ls = (await inv("canvas_io", { op: "list" })) || []; } catch (_) {}
+    if (!ls.includes(p)) return gone();
+    return openCanvas(p);
+  }
+  let f = null;
+  try { f = PLG && PLG.app.vault.getAbstractFileByPath(p); } catch (_) {}
+  if (!f) return gone();
+  const nt = ev && (ev.button === 1 || ev.ctrlKey || ev.metaKey);
+  try { await PLG.app.workspace.getLeaf(nt ? "tab" : false).openFile(f); } catch (err) { say(String(err && err.message || err)); }
 }
 /* ---------- bmfolder: the four structural commands ----------
    Every one is addressed by the ROW INDEX the pane just painted, and every one
@@ -1887,9 +2015,11 @@ function bmDragStart(e, ix) {
   const label = src.label ?? (src.kind === "g" ? src.name : src.name.split("/").pop());
   // cv-dragin: the row as pressed (bmTree may repaint mid-drag), plus a group's painted file rows — CanvasDrop's
   // fallback when .obsidian/bookmarks.json cannot be read
-  const srcRow = { kind: src.kind, name: src.name, files: src.kind === "g" ? bmTree.slice(ix + 1, bmSubEnd(ix)).filter(r => r.kind === "f").map(r => r.name) : [] };
+  // issue #44 (PR #57 review): files are VAULT PATHS (a PDF row is named by its path, a note row by its name) and pdf flags a PDF row
+  const srcRow = { kind: src.kind, name: src.name, pdf: !!src.pdf, files: src.kind === "g" ? bmTree.slice(ix + 1, bmSubEnd(ix)).filter(r => r.kind === "f").map(r => (r.pdf ? r.name : r.name + ".md")) : [] };
   let ghost = null, fb = { line: null, hl: null }, srcEl = null, zones = null, raf = 0, last = null;
   let spring = 0;                          // collapseall R5: the armed spring-load timer
+  let pz = null, pnd = null;               // issue #40: pane zones / the live pane decision (a FILE bookmark only)
   bmDrop = null;
   const clearFb = () => bmFbClear(fb);
   const disarm = () => { if (spring) { clearTimeout(spring); spring = 0; } };
@@ -1925,6 +2055,7 @@ function bmDragStart(e, ix) {
       ghost.textContent = label;
       document.body.appendChild(ghost);
       cacheZones();
+      if (src.kind === "f") pz = nDropZones();   // issue #40: a note bookmark can open on a pane
       bmDropTok = "none";
       updateTitle();
     }
@@ -1953,6 +2084,10 @@ function bmDragStart(e, ix) {
       ghost.textContent = label + (nd ? " -> " + tok : "");   // the chip names the decision
       updateTitle();                       // ONLY on a decision change — never per frame
     }
+    if (pz) {                              // issue #40: no bookmark/board target under the pointer -> a pane may take the note
+      const pn = nDropShow(pnd, nd ? null : nDropDecide(pz, ev.clientX, ev.clientY));
+      if (pn !== pnd) { pnd = pn; if (!nd) ghost.textContent = label + (pnd ? " -> " + nDropName(pnd) : ""); }
+    }
   };
   const move = ev => { last = ev; if (!raf) raf = requestAnimationFrame(step); };
   const up = async uev => {             // cv-dragin: the release point decides the board drop
@@ -1963,6 +2098,7 @@ function bmDragStart(e, ix) {
     if (raf) { cancelAnimationFrame(raf); raf = 0; if (last) step(); }
     disarm();                              // R5: a release before 0.85s opens nothing
     const d = bmDrop, dragged = !!ghost;
+    const pn = pnd; pnd = nDropShow(pnd, null);   // issue #40: the pane decision at the release
     if (ghost) { ghost.remove(); ghost = null; }
     clearFb();
     if (srcEl) srcEl.classList.remove("bmdrop-src");
@@ -1970,6 +2106,7 @@ function bmDragStart(e, ix) {
     bmDrop = null;
     if (!dragged) return;                  // below the threshold: a plain click, let it through
     bmEat = performance.now();
+    if (!d && pn) { await nDropOpen(pn, src.name); return; }   // issue #40: a pane took the note — a tab / split, bookmarks.json untouched
     if (!d) { updateTitle(); return; }     // no legal target: NOTHING is called — byte-level refusal
     if (d.cv) {                            // goal cv-dragin: bookmark -> board = file card(s) at the release point
       const ux = uev ? uev.clientX : last.clientX, uy = uev ? uev.clientY : last.clientY;
@@ -2073,14 +2210,17 @@ function bmEditTok() {
    bmAdd is its own state (not bmEdit) so R4X.7's [modal:bmedit] census stays
    exactly what it was; the add census is one ui/census.js line (bmAddTok). */
 let bmAdd = null;                          // the open Add bookmark modal: {name, opts}
-function openBmAdd(gix) {
-  const t = rTrack();
+function openBmAdd(gix, vt) {            // vt: the tab whose own menu asked (issue #31), else the active tab
+  const t = vt || rTrack();
   if (!t) return;                          // a pane with no tab = Obsidian's empty tab: no-op (108-emptyitem)
-  if (t.kind === "gg") { say("Bookmarking a graph view is not supported: the bookmarks pane cannot show a graph bookmark"); return; }
-  if (t.kind) return;                      // local graph (and any non-note view): no-op (102-lgitem)
+  const cvp = cvTabPath(t);                // issue #31: graph / canvas tabs write stock's view item
+  const view = t.kind === "gg" || (t.kind === "lg" && !!vt) || !!cvp;   // lg via the group row stays a no-op (102-lgitem)
+  const nm = view ? null : t.kind ? pvNoteName(t) : t.name;   // issue-48: a plugin view backed by a note (Excalidraw board) = that note
+  if (!view && !nm) return;                // local graph from the group row (and any non-note view): no-op
+  const def = t.kind === "gg" ? "Untitled Graph" : t.kind === "lg" ? bmLgTitle(t) : null;
   const opts = bmGroupOpts();
   const cur = opts.findIndex(o => o.ix === gix);
-  bmAdd = { name: t.name, opts };
+  bmAdd = { name: nm || def || cvp, opts, view: view ? t : null, def };
   const sel = $("bme-grp");
   sel.textContent = "";
   opts.forEach((o, i) => {
@@ -2090,7 +2230,7 @@ function openBmAdd(gix) {
     sel.appendChild(op);
   });
   sel.value = String(cur < 0 ? 0 : cur);
-  const base = t.name.split("/").pop();
+  const base = def || bmAdd.name.split("/").pop();
   $("bmetitle").textContent = "Add bookmark";
   $("bme-path").value = base;
   $("bme-title").value = "";
@@ -2113,8 +2253,9 @@ function closeBmAdd() {
 async function bmAddSave() {
   if (!bmAdd) return;
   const o = bmAdd.opts[Number($("bme-grp").value)] || bmAdd.opts[0];
-  const name = bmAdd.name, title = $("bme-title").value;
+  const name = bmAdd.name, view = bmAdd.view, title = $("bme-title").value;
   closeBmAdd();
+  if (view) { const item = await tabBmItem(view); await bmApply("bm_add_view", { into: o.ix, item, title: title || null }); return; }
   await bmApply("bm_add", { into: o.ix, name, title: title || null });
 }
 /* [modal:bmadd] [bmadd:<note>|<selected group>|<typed title>|<option>…]
@@ -2241,7 +2382,8 @@ function graphNodeMenu(e, hit, scope) {
     if (here) item("(vault root)", () => moveNoteTo(nm, ""));
     for (const f of fl) if (f !== here) item(f, () => moveNoteTo(nm, f));
     if (m.children.length === 2) item("(no other folder)", () => {});
-    setTimeout(() => clampMenu(m), 0);
+    clampMenu(m);                        // re-clamp NOW: updateTitle() below must publish [mg:]/[mgy:] of the PLACED list
+    setTimeout(() => { clampMenu(m); updateTitle(); }, 0);   // late layout (fonts/async rows) re-clamps AND re-publishes
     updateTitle();
   };
   for (const grp of groupsOf) {
@@ -2434,7 +2576,11 @@ function mkGroup() {
               graphOn: false, graphRefresh: null, sim: null, saveT: null,
               lpActive: null, view: null };
   const pane = document.createElement("div");
-  pane.className = "pane";
+  // #59 slice 2: Obsidian compat classes NEXT TO ours, so a theme rule written for Obsidian's
+  // tab group reaches this chrome. A pane = one tab group (.workspace-tabs, + .mod-active while
+  // focused), its strip = .workspace-tab-header-container(-inner), each tab = .workspace-tab-header
+  // (+ .is-active) with -inner-title / -inner-close-button. Our own classes stay the styling anchors.
+  pane.className = "pane workspace-tabs";
   pane._g = g;                                   // R20: gOf(el) — event-time group lookup
   pane.innerHTML =
     // R4X.1 (navbtn): Back/Forward live at the LEFT edge of the view header,
@@ -2442,12 +2588,12 @@ function mkGroup() {
     // §1: back then forward, thin chevrons, ~28px apart, left of the title).
     // Obsidian's titlebar variant is NOT copied: our titlebar is a gated surface
     // (phases hdrdragwm/wmframe) — divergence recorded in the recon README.
-    '<div class="tabbar"><div class="navbtns">' +
+    '<div class="tabbar workspace-tab-header-container"><div class="navbtns">' +
       '<button class="navbtn navback" title="Navigate back" disabled>' +
         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 5l-7 7 7 7"/></svg></button>' +
       '<button class="navbtn navfwd" title="Navigate forward" disabled>' +
         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5l7 7-7 7"/></svg></button>' +
-    '</div><div class="tabs"></div>' +
+    '</div><div class="tabs workspace-tab-header-container-inner"></div>' +
     '<button class="modebtn" hidden></button>' +   // graphhdr: born hidden — updateModeBtn shows it once a NOTE is active (a split with no tab never renders tabs)
     // graphhdr REQ-5: Obsidian's ⋮ "More options" (lucide-more-vertical) at the header's
     // right end on EVERY main-area view kind; its menu depends on the kind (hdrMenu).
@@ -3897,6 +4043,9 @@ function utBuild() {             // pane/focus census in the window title (headl
   { const fl = document.fonts ? [...document.fonts].filter(f => f.status === "loaded").map(f => f.family.replace(/[" ]/g, "") + "/" + f.weight + "/" + f.style) : [];
     if (fl.length) md += " [fonts:" + fl.join("|") + "]"; }
   let gg = ft && ft.kind === "gg" ? " [gg]" : "";  // R9.7: global graph tab focused
+  // issue #31: [ggo:search=<q>,repel=<r>,dist=<d>] = the focused global graph's LIVE settings (the card's state), so a
+  // phase proves a reopened graph bookmark runs the BOOKMARK's settings, not just that graph.json was written
+  if (gg && gfCfg && gfCfg.vault === vaultPath) gg += " [ggo:search=" + String(gfCfg.f.search).replace(/[[\]|,]/g, "") + ",repel=" + gfCfg.v.repel + ",dist=" + gfCfg.v.dist + "]";
   if (gg) { const pt = posTok(fg()); if (pt) gg += " [ggpos:" + pt + "]"; }
   // goal graphzoom: [ggz:s,tx,ty,notch] [ggzb:x0,y0,x1,y1,n] once settled (any node count) — see g.graphZoom
   if (gg) { const h = fg(); if (h.graphOn && h.graphSettled && h.graphZoom) { const z = h.graphZoom(); gg += " [ggz:" + z.z + "]" + (z.b ? " [ggzb:" + z.b + "]" : ""); } }
@@ -4099,7 +4248,7 @@ function utBuild() {             // pane/focus census in the window title (headl
             (jsErr ? " [jserr:" + jsErr + "]" : "") +
             (saveErr ? " [saveerr:" + saveErr + "]" : "") +             // F1: a save that did not land
             " [armed:" + groups().filter(h => h.saveT).length + "]" +   // F2: groups holding a live save timer
-            menuTok() +
+            menuTok() + (typeof Ed !== "undefined" && Ed.tblCensus ? Ed.tblCensus() + Ed.rvthCensus() : "") +   // #37: rendered LP tables, the reading-view th
             (navInfo ? " [" + navInfo + "]" + (nvRv ? " [nvr:" + nvRv + "]" : "") : "") +
             (revealInfo ? " [bmrv:" + revealInfo + "]" : "") +      // bmmenu: "Reveal file in navigation" ran (bmReveal) — not merely "the Files pane is showing"
             (acItems.length ? " [ac:" + acKind + ":" + acItems.length + "]" : "") +
@@ -4162,7 +4311,7 @@ function focusGroup(g) {
   const prev = state.focused;
   if (prev === g) return;
   state.focused = g;
-  for (const x of groups()) x.pane.classList.toggle("focused", x === g);
+  for (const x of groups()) { x.pane.classList.toggle("focused", x === g); x.pane.classList.toggle("mod-active", x === g); }   // #59 slice 2: .mod-active = Obsidian's focused tab group
   rgFollow();                     // R9.6: right panel follows focus (fire+forget)
   updateTitle();
   if (prev) treeHighlight();      // explorer active-note highlight follows focus
@@ -4240,6 +4389,7 @@ async function collapseGroup(g, via) {  // R6.5: closing the last tab removes th
   const parent = findParent(state.root, g);
   if (!parent) return;                        // lone root group: caller keeps it
   if (g.sim) cancelAnimationFrame(g.sim);     // stop the removed group's machinery
+  g.simGen = 0;                               // and retire its sim: a physics batch still in the Worker is dropped, not stepped on
   // tabclose: the SECOND unflushed path. This clears an armed save exactly like
   // dropTab does, and it is reachable with tabs still in the group (a drag that
   // moves the last tab out, :1837/:1844) — so the record is unconditional and
@@ -4302,7 +4452,13 @@ function menuTok() {   // [menu:<labels>] + [mg:<left>,<first row centre y>,<row
   if (!menuEl) return "";                      // driver clicks item i at (left+20, centre + pitch*i) with no
   // bmmenu: a separator child (div.sep) reads as "---", so the census spells the list the way
   // docs/recon-bmmenu/README.md does; no other menu has one, so their tokens are unchanged.
-  const k = menuEl.children, lbl = [...k].map(d => d.classList.contains("sep") ? "---" : d.textContent).join("|");   // hardcoded padding/line-height guess
+  // #37: an OMenu (ui/menu.js, stock .menu DOM) nests its rows in .menu-scroll > .menu-group;
+  // its rows are .menu-item (label = .menu-item-title) and .menu-separator ("---"). The flat
+  // .ctxmenu menus (and plugin menus) keep the child census below, byte for byte.
+  const om = !!menuEl.dataset.om;
+  const k = om ? OMenu.census.rows(menuEl) : menuEl.children;
+  const isSep = d => d.classList.contains(om ? "menu-separator" : "sep");
+  const lbl = [...k].map(d => om ? OMenu.census.label(d) : d.classList.contains("sep") ? "---" : d.textContent).join("|");   // hardcoded padding/line-height guess
   // [mt:<kind>:<label>] — WHICH tab this menu belongs to (R20.8). Without it an assertion like
   // "a graph tab offers no Bookmark" rests on the driver's guess that x=380 hit the gg tab: hit
   // the wrong tab and the claim is about a tab nobody named. tabMenu stamps the target it was
@@ -4310,7 +4466,7 @@ function menuTok() {   // [menu:<labels>] + [mg:<left>,<first row centre y>,<row
   const mt = menuEl.dataset.mt ? " [mt:" + menuEl.dataset.mt + "]" : "";
   // bmmenu: [mdis:i|j] = 1-based indices (in [menu:] order) of the rows shown DISABLED —
   // the label list alone cannot tell a wired row from a stated-reason stub.
-  const dis = [...k].map((d, i) => d.classList.contains("dis") ? i + 1 : 0).filter(Boolean);
+  const dis = [...k].map((d, i) => d.classList.contains(om ? "is-disabled" : "dis") ? i + 1 : 0).filter(Boolean);
   const md = dis.length ? " [mdis:" + dis.join("|") + "]" : "";
   if (!k.length) return " [menu:" + lbl + "]" + mt + md;
   const a = k[0].getBoundingClientRect();
@@ -4318,12 +4474,41 @@ function menuTok() {   // [menu:<labels>] + [mg:<left>,<first row centre y>,<row
   // bmmenu: with separators the rows are NOT one pitch apart, so a menu that has one also
   // publishes every child's centre y — [mgy:y1|y2|…] in [menu:] order (separators included, so
   // the index a driver found in [menu:] is the index it clicks). menu_click prefers it when present.
-  const mgy = [...k].some(d => d.classList.contains("sep"))
-    ? " [mgy:" + [...k].map(d => { const b = d.getBoundingClientRect(); return Math.round(b.top + b.height / 2); }).join("|") + "]" : "";
+  // #37: an OMenu always publishes it (its groups are not one pitch apart either).
+  const cy = d => { const b = d.getBoundingClientRect(); return Math.round(b.top + b.height / 2); };
+  const mgy = om || [...k].some(isSep) ? " [mgy:" + [...k].map(cy).join("|") + "]" : "";
   return " [menu:" + lbl + "] [mg:" + Math.round(menuEl.getBoundingClientRect().left) + "," +
-         Math.round(a.top + a.height / 2) + "," + Math.round(pitch) + "]" + mt + md + mgy;
+         Math.round(a.top + a.height / 2) + "," + Math.round(pitch) + "]" + mt + md + mgy + (om ? omSubTok() : "");
 }
-function closeMenu() { if (menuEl) { menuEl.remove(); menuEl = null; updateTitle(); } }
+/* #37 [menu2:<labels>] [mg2:<left>] [mgy2:<centres>] [mdis2:] — the OPEN submenu (a sibling
+   div.menu, ui/menu.js), same grammar as the root's; [msel:<label>] the keyboard-selected row
+   of the deepest open menu (Up/Down/Right/Left are asserted on it). */
+function omSubTok() {
+  let s = "";
+  const sub = menuEl._sub;
+  if (sub) {
+    const r = OMenu.census.rows(sub);
+    const d2 = r.map((d, i) => d.classList.contains("is-disabled") ? i + 1 : 0).filter(Boolean);
+    s += " [menu2:" + r.map(OMenu.census.label).join("|") + "] [mg2:" + Math.round(sub.getBoundingClientRect().left) + "]" +
+      " [mgy2:" + r.map(d => { const b = d.getBoundingClientRect(); return Math.round(b.top + b.height / 2); }).join("|") + "]" +
+      (d2.length ? " [mdis2:" + d2.join("|") + "]" : "");
+  }
+  const sel = OMenu.deepest(menuEl).querySelector(".menu-item.selected");
+  return s + (sel ? " [msel:" + OMenu.census.label(sel).replace(/[|\]]/g, "") + "]" + omHoverTok(sel) : "");
+}
+/* #37 theme compat: [mhbg:<computed bg of the selected row>|<our fallback, var(--border)>] —
+   ui/menu.css paints a hovered/selected row var(--background-modifier-hover, var(--border));
+   a theme that defines the stock variable (AnuPpuccin, Tokyo Night) must win over our own token. */
+function omHoverTok(sel) {
+  const p = document.createElement("div");
+  p.style.cssText = "position:fixed;left:-9px;top:-9px;width:1px;height:1px;background-color:var(--border)";
+  document.body.appendChild(p);
+  const def = getComputedStyle(p).backgroundColor;
+  p.remove();
+  const q = c => c.replace(/[^0-9.,]/g, "");
+  return " [mhbg:" + q(getComputedStyle(sel).backgroundColor) + "|" + q(def) + "]";
+}
+function closeMenu() { if (menuEl) { if (menuEl.dataset.om) OMenu.closeSub(menuEl); menuEl.remove(); menuEl = null; updateTitle(); } }
 /* R22: a context menu is position:fixed — clamp it to the viewport by its
    MEASURED box. The old `innerWidth - 150 / innerHeight - 60` guesses spilled
    whenever the menu was wider/taller than the guess or the window was small.
@@ -4351,10 +4536,14 @@ function clampMenu(m) {
 }
 document.addEventListener("contextmenu", e => {   // app-like: native menu never
   e.preventDefault();
-  if (PMENU && e.target instanceof Element && e.target.closest(".cm-editor")) PMENU.editorMenu(e);   // plugin-views: workspace "editor-menu"
+  if (!(e.target instanceof Element)) return;
+  if (e.target.closest(".preview")) { EdMenu.openReading(e); return; }   // #37 C3-4: reading-view link menus + selection Copy
+  if (!e.target.closest(".cm-editor")) return;
+  if (EdMenu.open(e)) return;                       // #37 C3-3: the core editor menu (ui/edmenu.js), plugin rows appended
+  if (PMENU) PMENU.editorMenu(e);                   // plugin-views: workspace "editor-menu" (an editor EdMenu declines)
 });
 document.addEventListener("mousedown", e => {
-  if (menuEl && !menuEl.contains(e.target)) closeMenu();
+  if (menuEl && !(menuEl.dataset.om ? OMenu.owns(menuEl, e.target) : menuEl.contains(e.target))) closeMenu();   // #37: an OMenu submenu is a SIBLING div.menu — a press in it is in the menu
 }, true);
 // S1 (docs/security-review.md): external links (a.ext from render) NEVER
 // navigate the webview. One capture-phase gate for both mousedown (the lp raw
@@ -4386,10 +4575,8 @@ const DIS_WIN = "Missing subsystem: a second OS window — single-window tauri a
    performed row (docs/recon-tabmenu/effects/, shots/eff-*).
    SUPERSEDES the six-item menu (Split right first) and, with it, R12.4's
    "Live preview / Source mode" pair: Obsidian has NO Live preview row, so the ✓
-   moves out of the label TEXT into a span.chk marker element and the rendered
+   moves out of the label TEXT into a marker element (#37: the row's .menu-item-icon) and the rendered
    label set equals Obsidian's character for character (R38.10). */
-const ICON_CHK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"' +
-  ' stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5L13 5"/></svg>';
 const ICON_PIN = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"' +
   ' stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h4l-.6 4.2 2.6 2.4H3.9l2.7-2.4z"/><path d="M8 8.6V14"/></svg>';
 /* gh-icons: linked-tab mark — two interlocking rounded links, drawn for this app */
@@ -4461,8 +4648,9 @@ function hdrMenu(e, g) { tabMenu(e, g, g.active, true); }
 function tabMenu(e, g, i, hdr) {
   e.preventDefault();
   closeMenu();
-  const m = document.createElement("div");
-  m.className = "ctxmenu";
+  // #37 C3-2: the tab menu is the first menu on the stock .menu DOM (ui/menu.js) — same rows,
+  // same order, same census ([menu:] [mdis:] [mgy:] [mt:]); only the DOM and the theming change
+  const B = OMenu.shell(), m = B.el;
   const tab = i >= 0 ? g.tabs[i] : null;
   // stamp the menu with the tab the hit test actually handed us -> census [mt:kind:label].
   // gg/lg tabs carry no note, so they publish their kind and an empty label. Separators and ':'
@@ -4478,26 +4666,14 @@ function tabMenu(e, g, i, hdr) {
   /* item(label, fn) wires a row; item(label, null, why) renders it DISABLED with
      `why` (the missing subsystem) as the hover title; chk adds the radio marker
      as an ELEMENT so textContent — and therefore [menu:] — stays Obsidian's label. */
-  const item = (label, fn, why, chk) => {
-    const d = document.createElement("div");
-    if (chk !== undefined) {             // a RADIO row: the gutter is reserved whether or not this one is the active mode
-      d.className = "chkrow";
-      const s = document.createElement("span");
-      s.className = "chk";
-      if (chk) s.innerHTML = ICON_CHK;
-      d.appendChild(s);
-    }
-    d.appendChild(document.createTextNode(label));
-    if (why != null) { d.className = (d.className ? d.className + " " : "") + "dis"; d.setAttribute("aria-disabled", "true"); d.title = why; }
-    else { d.onmousedown = ev => ev.stopPropagation(); d.onclick = () => { if (fn) fn(); else closeMenu(); }; }
-    m.appendChild(d);
-    return d;
-  };
-  const sep = () => { const d = document.createElement("div"); d.className = "sep"; m.appendChild(d); };
+  const item = (label, fn, why, chk, warn) =>   // chk: a RADIO row — the icon gutter is reserved whether or not this one is the active mode
+    B.item({ title: label, fn: fn || undefined, why: why == null ? undefined : why, chk, warn });
+  const sep = () => B.sep();
   const inPlace = fill => {              // the ctxmenu's ONE submenu seam: rebuild in place (R13.1's pick list)
-    m.innerHTML = "";
+    B.clear();
     fill();
-    setTimeout(() => clampMenu(m), 0);   // R22: the new list resizes the menu — re-clamp it
+    clampMenu(m);                        // re-clamp NOW: updateTitle() below must publish [mg:]/[mgy:] of the PLACED list (R22: the new list resizes the menu)
+    setTimeout(() => { clampMenu(m); updateTitle(); }, 0);   // late layout (fonts/async rows) re-clamps AND re-publishes
     updateTitle();                       // the menu was rebuilt in place -> refresh [menu:]
   };
   const pick = () => inPlace(() => {     // R13.1/R38.8: every other open tab, in layout order
@@ -4516,7 +4692,7 @@ function tabMenu(e, g, i, hdr) {
     inPlace(() => {
       if (here) item("(vault root)", () => { closeMenu(); moveNoteTo(tab.name, ""); });
       for (const f of fl) if (f !== here) item(f, () => { closeMenu(); moveNoteTo(tab.name, f); });
-      if (!m.children.length) item("(no other folder)");
+      if (!OMenu.census.rows(m).length) item("(no other folder)");
     });
   };
   if (hdr && !tab) {                     // graphhdr REQ-11: the empty tab's ⋮ — a split of an empty pane is an empty pane
@@ -4558,8 +4734,15 @@ function tabMenu(e, g, i, hdr) {
     item("Split down",  () => { closeMenu(); splitGroup(g, "col", i); });
     sep();
     item("Copy screenshot", null, "Missing subsystem: canvas-to-clipboard — no programmatic clipboard write exists in this tree (ui/editor.js writes only inside real copy events) and the graph view has no canvas-to-PNG step");
-    if (!hdr || tab.kind !== "lg")        // graphhdr REQ-10: Obsidian's LOCAL graph ⋮ has no Bookmark... row
-      item("Bookmark...", null, "Missing subsystem: bookmarks of non-file views — a bookmark here is a note name on disk (R9.4) and a graph tab has no note behind it");
+    const pvn = pvNoteName(tab);          // issue-48: a board backed by a note bookmarks that note (STOCK.md S2/S3/S5)
+    const cvp = cvTabPath(tab);           // issue #31 (D3): a canvas bookmarks its path, as stock
+    if (pvn) item(bmCache.includes(pvn) ? "Remove bookmark" : "Bookmark...", () => { closeMenu(); toggleBm(pvn); });
+    else if (cvp) item(bmHasPath(cvp) ? "Remove bookmark" : "Bookmark...", () => { closeMenu(); toggleBmPath(cvp); });
+    // issue #31 (D1/D2): a graph TAB opens stock's Add bookmark modal ("Untitled Graph"); the ⋮ header keeps its
+    // pinned shape (graphhdr REQ-10: global inert row, local no row) — the tab menu carries the verb
+    else if ((tab.kind === "gg" || tab.kind === "lg") && !hdr) item("Bookmark...", () => { closeMenu(); openBmAdd(null, tab); });
+    else if (!hdr || tab.kind !== "lg")
+      item("Bookmark...", null, "Not bookmarkable: this view has no file behind it (stock offers no bookmark for it either)");
     place();
     return;
   }
@@ -4601,7 +4784,7 @@ function tabMenu(e, g, i, hdr) {
   item("Reveal file in navigation", () => { closeMenu(); bmReveal(tab.name); });  // WIRED: bmReveal — the identical verb bmRowMenu wires, publishes [bmrv:] (R38.28)
   // ---- group 9 (1 row) ----
   sep();
-  item("Delete file", () => { closeMenu(); askDelete(tab.name); }).className = "del";   // WIRED: askDelete — Obsidian's row is the link-COUNTING confirmation, not an unlink (R38.29)
+  item("Delete file", () => { closeMenu(); askDelete(tab.name); }, null, undefined, true);   // .is-warning (stock). WIRED: askDelete — Obsidian's row is the link-COUNTING confirmation, not an unlink (R38.29)
   place();   /* R22: viewport-clamped by MEASURED size */
 }
 async function togglePin(g, tab) {      // R38.7: the flag + the tab-bar glyph; Close stays enabled on a pinned tab (measured)
@@ -5007,9 +5190,9 @@ function renderTabs(g) {
   // R7.3 / R13.2: chain glyph on every linked tab (lg auto-link + manual links)
   g.tabs.forEach((tab, i) => {
     const d = document.createElement("div");
-    d.className = "tab" + (i === g.active ? " active" : "");
+    d.className = "tab workspace-tab-header" + (i === g.active ? " active is-active" : "");   // #59 slice 2: + Obsidian compat
     const ttl = document.createElement("span");
-    ttl.className = "t";
+    ttl.className = "t workspace-tab-header-inner-title";
     const chain = isLinked(g, tab, i);
     // R38.7: a PINNED tab carries a pin glyph in FRONT of the label, the way
     // Obsidian paints it (shots/m3-pinned-tabbar.png). It is a marker element, not
@@ -5020,7 +5203,7 @@ function renderTabs(g) {
     if (chain) { const k = document.createElement("span"); k.className = "lk"; k.innerHTML = ICON_LINK; d.appendChild(k); }
     ttl.textContent = tab.name.split("/").pop();
     const x = document.createElement("span");
-    x.className = "x";
+    x.className = "x workspace-tab-header-inner-close-button";
     // ux-1: inline svg cross — the ✕ glyph tofu'd under webkit2gtk
     x.innerHTML = '<svg viewBox="0 0 10 10"><path d="M1 1l8 8M9 1l-8 8" ' +
       'stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none"/></svg>';
@@ -5050,20 +5233,30 @@ function renderTabs(g) {
    target. Over it the tab speaks bmdrag's vocabulary through the SAME code
    (bmZones/bmDecide/bmFbPaint): gap@<parent>.<pos> line, grp@<ix> row fill =
    prepend into the group, pane background = end of the top level. The release
-   is ONE bm_add_at (a new FILE bookmark at exactly that slot); the tab is not
+   is ONE bm_add_at (a new FILE bookmark at exactly that slot; a graph / canvas / board tab:
+   ONE bm_add_view_at with tabBmItem's item, issue #31); the tab is not
    moved, closed or reloaded. Census [tabbm:<tok>], published only on change.
    Refused, with the reason on the chip and a say() line on release, and NO
    backend call (bookmarks.json keeps its bytes):
      no:dup    the note is already bookmarked — a drag adds no second row
                (unlike bmactive F3, whose menu path duplicates on purpose)
-     no:canvas a canvas bookmark would be Opaque: written, never painted
-     no:graph / no:view  a graph or other non-note view is not a note */
+     (issue #31: a canvas or a board already bookmarked is no:dup too; a graph never is)
+     no:view   a fileless view (an unknown plugin view, a non-.md file) has nothing to bookmark
+   A plugin view backed by a note (an Excalidraw board, issue-48) bookmarks THAT note. */
 const TAB_EDGE = 40;
 let tabBmTok = "";                           // tab-bookmark: the live [tabbm:] decision ("" = not over the pane)
+/* issue-48: the note name a tab bookmarks as: a note tab = its name; a plugin view backed by a
+   vault .md (an Excalidraw board) = that note's path (pvNoteName, the name the menus write); else null */
+function tabBmName(tab) {
+  if (!tab) return null;
+  return tab.kind ? pvNoteName(tab) : (tab.name || null);
+}
 function tabBmWhy(tab) {                     // -> null (bookmarkable) or {code, msg}
   if (!tab) return { code: "view", msg: "nothing to bookmark" };
-  if (tab.kind === "unk" && tab.utype === "canvas") return { code: "canvas", msg: "Canvas bookmarks are not shown in this pane" };
-  if (tab.kind === "gg" || tab.kind === "lg") return { code: "graph", msg: "A graph view cannot be bookmarked by drag" };
+  const cvp = cvTabPath(tab), pvn = pvNoteName(tab);   // issue #31: canvas / graph / board tabs are views with an item
+  if (cvp) return bmHasPath(cvp) ? { code: "dup", msg: "\"" + cvp.split("/").pop() + "\" is already bookmarked" } : null;
+  if (tab.kind === "gg" || tab.kind === "lg") return null;   // a graph item is never a duplicate (bm_add_view_at)
+  if (pvn) return bmCache.includes(pvn) ? { code: "dup", msg: "\"" + pvn.split("/").pop() + "\" is already bookmarked" } : null;
   if (tab.kind || !tab.name) return { code: "view", msg: "Only a note tab can be bookmarked by drag" };
   if (bmCache.includes(tab.name)) return { code: "dup", msg: "\"" + tab.name.split("/").pop() + "\" is already bookmarked" };
   return null;
@@ -5164,7 +5357,8 @@ function tabDragStart(e, g, i) {
     if (!ghost || !t) return;                // plain click, or dropped nowhere
     if (t.kind === "bm") {                   // tab-bookmark: ONE write; the tab stays where it is
       await act("tab_bm", { grp: t.d.grp != null ? 1 : 0 }, () =>
-        bmApply("bm_add_at", { parent: t.d.parent, pos: t.d.pos, name: bmTab.name }));
+        bmTab.kind ? tabBmItem(bmTab).then(item => bmApply("bm_add_view_at", { parent: t.d.parent, pos: t.d.pos, item }))   // issue #31
+                   : bmApply("bm_add_at", { parent: t.d.parent, pos: t.d.pos, name: tabBmName(bmTab) }));
       return;
     }
     await act("tab_drop", { kind: t.kind, groups: groups().length }, async () => {   // R20: pane/tab nodes MOVE, no layout rebuild
@@ -5190,6 +5384,53 @@ function tabDragStart(e, g, i) {
   };
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);
+}
+
+/* issue #40: a NOTE dragged out of the FILE EXPLORER or the BOOKMARKS pane lands on a
+   pane exactly where a dragged TAB lands (tabDragStart's zones, TAB_EDGE): over a
+   pane's tab strip -> the note opens as a NEW tab in that pane (openNewTab: right of
+   its active tab, focused); the right edge -> a new split right of that pane; the
+   bottom edge -> a new split below it. Elsewhere (the pane body, #rside, the
+   sidebars) is no target and the release opens nothing. Rects are cached once at
+   drag start (R20). Census [ndrop:<strip|edge|bottom>@<pane ix>] while a decision
+   is live, published only on a decision change. */
+let nDropTok = "";
+function nDropZones() {
+  const rs = $("rside");
+  return {
+    panes: groups().map((h, ix) => ({ g: h, ix, pr: h.pane.getBoundingClientRect(), tb: h.tabsEl.getBoundingClientRect().bottom })),
+    rs: rs && !rs.hidden ? rs.getBoundingClientRect() : null,
+  };
+}
+function nDropDecide(z, x, y) {            // -> {kind, g, ix} or null
+  if (!z) return null;
+  if (z.rs && x >= z.rs.left && x <= z.rs.right && y >= z.rs.top && y <= z.rs.bottom) return null;
+  for (const p of z.panes) {
+    const pr = p.pr;
+    if (x < pr.left || x > pr.right || y < pr.top || y > pr.bottom) continue;
+    if (y <= p.tb) return { kind: "strip", g: p.g, ix: p.ix };
+    const dr = pr.right - x, db = pr.bottom - y;
+    if (dr < TAB_EDGE && dr <= db) return { kind: "edge", g: p.g, ix: p.ix };
+    if (db < TAB_EDGE) return { kind: "bottom", g: p.g, ix: p.ix };
+    return null;
+  }
+  return null;
+}
+const nDropName = nd => nd.kind === "strip" ? "new tab" : nd.kind === "edge" ? "split right" : "split down";
+function nDropShow(prev, nd) {             // -> nd; repaints the target outline and [ndrop:] only on a change
+  const key = d => d ? d.kind + "@" + d.ix : "";
+  if (key(prev) === key(nd)) return prev;
+  if (prev) (prev.kind === "strip" ? prev.g.tabsEl : prev.g.pane).classList.remove("drop-" + prev.kind);
+  if (nd) (nd.kind === "strip" ? nd.g.tabsEl : nd.g.pane).classList.add("drop-" + nd.kind);
+  nDropTok = key(nd);
+  updateTitle();
+  return nd;
+}
+async function nDropOpen(nd, name) {       // the release: a new tab in that pane, or a split carrying the note
+  await act("note_drop", { kind: nd.kind, groups: groups().length }, async () => {
+    if (nd.kind === "strip") { focusGroup(nd.g); await openNewTab(name, nd.g); }
+    else await splitWith(nd.g, nd.kind === "bottom" ? "col" : "row", mkTab(name));
+  });
 }
 
 /* #20 (R32): the big title a note shows is its FILENAME, rendered — never
@@ -5669,6 +5910,7 @@ function openDelete(nm, files, lines, links) {
   } else {
     $("delq").textContent = "Are you sure you want to delete " + nm + "? It will be moved to .trash in this vault.";
     $("delsay").textContent = delSentence(files, lines);
+    $("delsay").classList.toggle("mod-warning", files > 0);   // #59 slice 3: stock marks its backlink warning p.mod-warning
   }
   $("delbox").hidden = false;
   $("del-no").focus();                       // the DEFAULT is Cancel — see style.css
@@ -6543,8 +6785,8 @@ function renderNode(node, prefix, depth, out) {
 
 /* goal cv-journeys: an image / PDF / audio / video row. Stock lists every file type it supports in the explorer,
    named without its extension and tagged with it (PNG, PDF, MP3, ...). Here the row is a DRAG SOURCE for a board
-   (the file card) and nothing else: it carries data-file (never data-note: no note verb addresses it), opens no
-   view (the app has none for these types) and is no move source (R24.6 moves notes). */
+   (the file card): it carries data-file (never data-note: no note verb addresses it), opens no view for the
+   types the app has none for (issue #44: a PDF opens the PDF view, openPdf) and is no move source (R24.6 moves notes). */
 function fileRow(p, depth) {
   const row = document.createElement("div");
   row.className = "trow file";
@@ -6554,7 +6796,8 @@ function fileRow(p, depth) {
   row.querySelector(".ttag").textContent = d > 0 ? base.slice(d + 1).toUpperCase() : "";
   row.dataset.file = p;
   row.addEventListener("mousedown", e => treeDragStart(e, p, "file"));
-  row.onclick = e => { if (treeClickEaten()) return; if (e.shiftKey && !e.ctrlKey && !e.metaKey) return treeRange(row); treeSelClear(); treeAnchor = p; };   // shift = range select; it opens no view
+  row.onclick = e => { if (treeClickEaten()) return; if (e.shiftKey && !e.ctrlKey && !e.metaKey) return treeRange(row); treeSelClear(); treeAnchor = p; if (Ed.isPdf(p)) openPdf(p, e); };   // shift = range select; issue #44: a PDF opens in the PDF view (ctrl = new tab), other types open no view
+  if (Ed.isPdf(p)) row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); openPdf(p, e); } };   // middle = new tab
   return row;
 }
 
@@ -6700,6 +6943,7 @@ function treeDragStart(e, nm, dir) {         // dir: true = a folder row, "file"
   const base = nm.split("/").pop();
   const par = nm.includes("/") ? nm.slice(0, nm.lastIndexOf("/")) : "";
   let ghost = null, target = null, hl = null, zones = null, raf = 0, last = null, multi = null;
+  let pz = null, pnd = null;               // issue #40: pane zones / the live pane decision (a note row only)
   const clearHl = () => { if (hl) { hl.classList.remove("drop-into"); hl = null; } };
   const step = () => {
     raf = 0;
@@ -6723,6 +6967,7 @@ function treeDragStart(e, nm, dir) {         // dir: true = a folder row, "file"
         .filter(z => z.r.height > 0 && z.f != null);
       zones.push({ el: $("tree"), f: "", r: $("tree").getBoundingClientRect() });   // the vault ROOT
       if (dir || multi) zones = [];      // cv-drop: a folder is no move source (R24.5) — only a plugin view takes it; nor is a selection
+      if (!dir && !multi && !/\.canvas$/i.test(nm)) pz = nDropZones();   // issue #40: a note row can open on a pane
     }
     ghost.style.transform = "translate3d(" + (ev.clientX + 10) + "px," + (ev.clientY + 12) + "px,0)";
     let nt = null;
@@ -6744,6 +6989,10 @@ function treeDragStart(e, nm, dir) {         // dir: true = a folder row, "file"
       dragTok = (target ? (target.f || "/") : "-") + ":" + ghost.textContent;
       updateTitle();                     // ONLY on a target change — never per frame
     }
+    if (pz) {                            // issue #40: no folder under the pointer -> a pane may take the note
+      const nd = nDropShow(pnd, target ? null : nDropDecide(pz, ev.clientX, ev.clientY));
+      if (nd !== pnd) { pnd = nd; if (!target) ghost.textContent = base + (pnd ? " -> " + nDropName(pnd) : ""); }
+    }
   };
   const move = ev => { last = ev; if (!raf) raf = requestAnimationFrame(step); };
   const up = async ev => {
@@ -6756,7 +7005,14 @@ function treeDragStart(e, nm, dir) {         // dir: true = a folder row, "file"
     if (ghost) ghost.remove();
     clearHl();
     dragTok = "";
+    const pn = pnd; pnd = nDropShow(pnd, null);   // issue #40: the pane decision at the release
     const pd = treePlgDrag; treePlgDrag = null;
+    if (ghost && !t && pn) {             // issue #40: a pane took the note — a tab / split, never a move
+      if (pd) pd.end();
+      treeEat = 1;                       // the release is over a pane: no row click follows
+      await nDropOpen(pn, nm);
+      return;
+    }
     if (ghost && !t && pd && treePlgDrop(pd, ev)) { treeEat = 1; updateTitle(); return; }   // a plugin view took it
     if (pd) pd.end();
     if (dir || multi) { if (ghost) treeEat = performance.now(); updateTitle(); return; }   // cv-drop: a folder (or a selection) dropped on nothing moves nothing
@@ -6887,6 +7143,8 @@ const gOf = el => { const p = el.closest(".pane"); return p ? p._g : null; };
 /* R8.7 wikilink click: navigate in place, ctrl+click opens a new tab.
    Mousedown level + stopPropagation so the caret is not moved into the row. */
 async function wikiClick(e, a) {
+  if (e.button) return;                      // #37: only the primary button navigates; a right-click is the context menu
+                                             // (on an unresolved link it used to run createNote and leave a file behind)
   e.preventDefault(); e.stopPropagation();
   const g = gOf(a);
   if (!g) return;
@@ -7135,6 +7393,10 @@ function fuzzy(q, s) {  // lower score = better; -1 = no match
 const acField = g => (g.view && g.view.lines ? Ed.field(g) : g.editor);   // R17: a textarea-shaped view of the model
 function acContext(g) {  // caret inside an unclosed [[ on one line?
   const ed = acField(g);
+  // gh #43 review (PR #53): a pair char typed over a selection wraps it and keeps the inner
+  // text selected ([[sel]]); stock opens no suggester over a selection, and accepting one here
+  // replaced [[ .. selection end, leaving the wrapper's ]] behind -> [[name]]]]
+  if (ed.selectionStart !== ed.selectionEnd) return null;
   const upto = ed.value.slice(0, ed.selectionStart);
   const a = upto.lastIndexOf("[[");
   if (a < 0) return null;
@@ -7349,7 +7611,7 @@ CENSUS.push(() => " [tabt:" + groups().map(g => [...g.tabsEl.querySelectorAll(".
    [ghw:L=<left>,<right>:<x>+<w>,...|R=...] = the sidebar boxes and their tab-header buttons
    (#21), [ghdv:l=<x>,<y>|r=<x>,<y>] = the resize dividers' centres (a driver drags them). */
 const GH_EMO = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F000}-\u{1F2FF}]/u;
-const GH_SURF = "#ribbon, #stabs, #rtabs, #bar, #bmbar, #sbar, #hkclear, .tabbar, .ctxmenu, .canvas-controls, " +
+const GH_SURF = "#ribbon, #stabs, #rtabs, #bar, #bmbar, #sbar, #hkclear, .tabbar, .ctxmenu, .menu, .canvas-controls, " +
   ".canvas-selection-toolbar, .canvas-selection-palette, .canvas-card-menu, .canvas-settings-menu, " +
   ".canvas-edge-toolbar, .canvas-edge-menu, button, [role=button], [role=menuitem]";
 const ghClean = s => Array.from(s.replace(/[[\]|;]/g, " ").replace(/\s+/g, " ").trim()).slice(0, 40).join("");
@@ -7759,6 +8021,59 @@ async function openCanvas(path, how) {     // how: "split" -> a new pane to the 
   await leaf.setViewState({ type: "canvas", state: { file: path }, active: true });
   return leaf;
 }
+/* issue #44: the PDF view. A .pdf opened from the explorer or a bookmark shows in a "pdf" leaf (stock's view type and
+   state {file}), built from the ONE frame builder PDF embeds use (Ed.pdfFill: pages are PNGs rasterised by the Rust
+   worker, never PDF bytes in the webview), filling the pane. Registered with the "pdf" extension, so openFile routes
+   a PDF here too. how: plain click = the active tab (as a note row), "tab" = a new tab (ctrl / middle click). */
+const PDFV = (() => {
+  if (!PLG || !PLG.X || !PLG.X.ItemView) return null;
+  const base = p => { const b = String(p).split("/").pop(), d = b.lastIndexOf("."); return d > 0 ? b.slice(0, d) : b; };
+  class PdfView extends PLG.X.ItemView {
+    constructor(leaf) { super(leaf); this.navigation = true; this.icon = "lucide-file-text"; this.path = null; this.frame = null; this.contentEl.classList.add("pdf-view"); }
+    getViewType() { return "pdf"; }
+    getDisplayText() { return this.path ? base(this.path) : "PDF"; }
+    getState() { return this.path ? { file: this.path } : {}; }
+    async setState(st) {
+      const p = st && typeof st.file === "string" ? st.file.replace(/^\/+/, "") : "";
+      if (!p || p === this.path || !Ed.isPdf(p)) return;
+      this.path = p;
+      try { const f = PLG.app.vault.getAbstractFileByPath(p); this.file = f || null; } catch (_) { this.file = null; }
+      const s = this.frame = document.createElement("span");
+      s.className = "internal-embed pdf-embed";
+      s.dataset.pdf = Ed.pctEnc(p); s.dataset.page = "1"; s.dataset.height = ""; s.dataset.alt = ""; s.dataset.full = "1";
+      this.contentEl.replaceChildren(s);
+      Ed.pdfFill(s);
+      updateTitle();
+    }
+  }
+  const make = Object.defineProperty(leaf => new PdfView(leaf), Symbol.for("opensidian.coreView"), { value: true });
+  try {
+    const r = PLG.app.viewRegistry;
+    r.registerView("pdf", make);
+    if (!r.isExtensionRegistered("pdf")) r.registerExtensions(["pdf"], "pdf");
+  } catch (e) { console.error("[pdf] view:", e); return null; }
+  return { PdfView };
+})();
+async function openPdf(path, ev, how) {   // how: undefined = by the event (plain in place, ctrl/middle new tab) | "tab" | "split" (PR #57 review: the bookmark menu)
+  if (!PDFV) { say("The PDF view is not available", "pdf"); return null; }
+  const nt = ev && (ev.button === 1 || ev.ctrlKey || ev.metaKey);
+  const leaf = how === "split" ? PLG.app.workspace.getLeaf("split", "vertical") : PLG.app.workspace.getLeaf(how === "tab" || nt ? "tab" : false);
+  await leaf.setViewState({ type: "pdf", state: { file: path }, active: true });
+  return leaf;
+}
+function pdfvTok() {           // issue #44: [pdfrow:] explorer PDF rows, [pdfv:] the PDF view on screen
+  const esc = s => String(s).replace(/[[\]|@]/g, "_"), vis = e => !!e && e.getClientRects().length > 0;
+  const c = e => { const r = e.getBoundingClientRect(); return Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2); };
+  let t = "";
+  const rows = [...document.querySelectorAll("#tree .trow.file")].filter(r => vis(r) && Ed.isPdf(r.dataset.file || ""));
+  if (rows.length) t += " [pdfrow:" + rows.map(r => esc(r.dataset.file) + "@" + c(r)).join("|") + "]";
+  let v = null;
+  try { v = PLG && PLG.app.workspace.getLeavesOfType("pdf").map(l => l.view).find(x => x && vis(x.containerEl)) || null; } catch (_) {}
+  if (!v || !v.frame) return t;
+  const s = v.frame, b = s.getBoundingClientRect();
+  return t + " [pdfv:" + esc(v.path) + "|" + (s.dataset.cur || 0) + "/" + (s.dataset.of || 0) + (s.classList.contains("is-loaded") ? "L" : "") +
+         (s.classList.contains("mod-broken") ? "B" : "") + "|" + [b.x, b.y, b.width, b.height].map(Math.round).join(",") + "]";
+}
 /* goal canvas-core: "Create new canvas" (command) and "New canvas" (explorer menus). The file is made
    through canvas_io create (O_EXCL: an existing name is never overwritten — the next free
    "Untitled N.canvas" is taken instead), holds an empty JSON Canvas document, and opens in a canvas tab.
@@ -7813,10 +8128,11 @@ function canvasFileMenu(e, p) {             // right-click a .canvas row in the 
     if (here) item("(vault root)", () => cvMoveTo(p, ""));
     for (const f of fl) if (f !== here) item(f, () => cvMoveTo(p, f));
     if (!m.children.length) item("(no other folder)", null, "The vault has no other folder");
-    setTimeout(() => clampMenu(m), 0);
+    clampMenu(m);                        // re-clamp NOW: updateTitle() below must publish [mg:]/[mgy:] of the PLACED list
+    setTimeout(() => { clampMenu(m); updateTitle(); }, 0);   // late layout (fonts/async rows) re-clamps AND re-publishes
     updateTitle();
   };
-  item("Bookmark", null, "Bookmarks hold note names (.obsidian/bookmarks.json, R9.4); a canvas is not a note");
+  item(bmHasPath(p) ? "Remove bookmark" : "Bookmark", () => toggleBmPath(p));   // issue #31 (D3): stock's {type:"file",path} item
   sep();
   item("Copy path", null, "Missing subsystem: a programmatic clipboard write (clipboard access exists only inside real copy/paste events, ui/editor.js)");
   sep();
@@ -7873,6 +8189,7 @@ async function cvRetarget(old, np) {
   try { await inv("canvas_io", { op: "rename", path: old, data: np }); }
   catch (err) { say(String(err && err.message || err), "canvas"); await refreshTree(); return false; }
   await refreshTree();
+  await refreshBm();                       // issue #31: rust moved any bookmark of the old path (canvas_io rename)
   for (const l of ls) { try { await l.setViewState({ type: "canvas", state: Object.assign({}, l.view.getState(), { file: np }) }); } catch (err) { console.error("[canvas] retarget:", err); } }
   for (const h of groups()) renderTabs(h);
   updateTitle();
@@ -7994,6 +8311,19 @@ async function cvCanvasBacklinks(p) {
     b.n++; by.set(l.note, b);
   }
   return [...by.values()].sort((a, b) => a.note.localeCompare(b.note));
+}
+/* issue-48: the NOTE behind a plugin-view tab (an Excalidraw board is its .md file, stock:
+   docs/issue-48/STOCK.md S1/S5) as the name a bookmark stores (path without .md), or null.
+   A canvas keeps its own path (cvTabPath) and stays unbookmarkable here. */
+function pvNoteName(t) {
+  if (!t || t.kind !== "unk" || t.utype === "canvas" || !PLG) return null;
+  let p = null;
+  try {
+    const l = PLG.app.workspace.getLeavesOfType(t.utype).find(x => x && x._t === t);
+    if (l && l.view && l.view.file && l.view.file.path) p = String(l.view.file.path);
+  } catch (_) {}
+  if (!p) try { const f = t.raw && t.raw.state && t.raw.state.state && t.raw.state.state.file; if (f) p = String(f); } catch (_) {}
+  return p && /\.md$/i.test(p) ? p.slice(0, -3) : null;
 }
 /* the canvas a tab shows (a canvas plugin-view tab), or null */
 function cvTabPath(t) {
@@ -8206,6 +8536,16 @@ async function cvTrash(p) {
   await refreshTree();
   updateTitle();
 }
+/* goal cvf-filecards: [cvfact:tree=<the explorer's active row: note path .md | board path | ->|bl=<status-bar backlinks text | ->]
+   emitted whether or not a board is on screen (a note's status-bar count is read through it too). */
+function cvfactTok(esc) {
+  try {
+    const ar = document.querySelector("#tree .trow.active");
+    const an = ar ? (ar.dataset.note != null ? ar.dataset.note + ".md" : ar.dataset.canvas || ar.dataset.file || "-") : "-";
+    const g = fg(), bl = g && g.status && !g.status.hidden && g.stBl ? String(g.stBl.textContent || "").trim() : "";
+    return " [cvfact:tree=" + esc(an) + "|bl=" + esc(bl || "-") + "]";
+  } catch (_) { return ""; }
+}
 /* goal canvas-core census: [cvrow:<path>@x,y|...] the painted .canvas rows of the explorer;
    [cvdir:<folder>@x,y|...] the painted folder rows (only while a .canvas row is listed, at most 8);
    for the first canvas view on screen [cv:<path>|n=<nodes>|e=<edges>|err=0|1|dirty=0|1|saves=<n>|on=0|1],
@@ -8227,7 +8567,9 @@ function canvasTok() {
   t += cvGflTok();                                                       // cvf-links CVR-A-102
   let v = null;
   try { v = PLG.app.workspace.getLeavesOfType("canvas").map(l => l.view).find(x => x && vis(x.containerEl)) || null; } catch (_) {}
-  if (!v) return t;
+  // rt-canvas: [cvfact:] is read with NO board on screen too (cvflinks CVR-A-099/100 read a note's status-bar count)
+  const fa = cvfactTok(esc);
+  if (!v) return t + fa;
   t += " [cv:" + esc(v.path || "-") + "|n=" + v.canvas.nodes.size + "|e=" + v.canvas.edges.size + "|err=" + (v.broken ? 1 : 0) +
        "|dirty=" + (v.dirty ? 1 : 0) + "|saves=" + (v.saves || 0) + "|on=" + (CANVAS.isRegistered() ? 1 : 0) + "]";
   const ns = [...v.containerEl.querySelectorAll(".canvas-node[data-node-id]")].filter(vis).slice(0, 16);
@@ -8298,13 +8640,7 @@ function canvasTok() {
   } catch (_) {}
   // goal cvf-media: [cvm:<id>|k=|lbl=|...] [cvmb:] [cvmpdf:] [cvmpick:swap|...] file cards (ui/plugins/canvas-media.js)
   if (window.CanvasMedia) try { t += window.CanvasMedia.census(v); } catch (_) {}
-  // goal cvf-filecards: [cvfact:tree=<the explorer's active row: note path .md | board path | ->|bl=<status-bar backlinks text | ->]
-  try {
-    const ar = document.querySelector("#tree .trow.active");
-    const an = ar ? (ar.dataset.note != null ? ar.dataset.note + ".md" : ar.dataset.canvas || ar.dataset.file || "-") : "-";
-    const g = fg(), bl = g && g.status && !g.status.hidden && g.stBl ? String(g.stBl.textContent || "").trim() : "";
-    t += " [cvfact:tree=" + esc(an) + "|bl=" + esc(bl || "-") + "]";
-  } catch (_) {}
+  t += fa;
   return t;
 }
 /* goal cvf-create CVR-A-009 (coordinator ruling 03:00Z): the full folder menu in stock order. Off until the operator's
@@ -8626,6 +8962,16 @@ const MQ_DARK = matchMedia("(prefers-color-scheme: dark)");
 const systemTheme = () => (MQ_DARK.matches ? "dark" : "light");
 let themeMode = "dark";                    // "dark" | "light" — replaced at boot
 let themeStored = false;                   // a user chose: the system stops deciding
+/* #59 x #84 winFocus: window-focus marker body.window-focused (stock 1.13.7 paints tabs with
+   --tab-text-color-focused(-active) in a focused window, --tab-text-color(-active) in a blurred one). App-owned name:
+   Obsidian's body.is-focused would also switch on theme rules keyed to it (AnuPpuccin recolours the active title).
+   Starts set — the app window is the focused one at launch, as before — and follows window focus/blur. */
+(function winFocus() {
+  const set = on => { if (document.body) document.body.classList.toggle("window-focused", on); compatBody(); };
+  set(true);
+  window.addEventListener("focus", () => set(true));
+  window.addEventListener("blur", () => set(false));
+})();
 function applyTheme(t) {
   themeMode = t === "light" ? "light" : "dark";
   document.documentElement.setAttribute("data-theme", themeMode);
@@ -8731,6 +9077,16 @@ let vaultBridgeAliases = 0;   // census [vbridge:<n>] — item 8 alias rows pain
    so on a fresh vault the same title carries w3 AND the three listed names,
    and on the second boot k3 with the same names. "-" until a vault is open. */
 let vaultSeedTok = "-";
+/* #94 apitop10: stock has a .modal-container in the DOM only while a modal is OPEN, and plugins (and their tests) read
+   document.querySelector(".modal-container") as "a modal is open". #59 slice 3 put the class on the app's four dialog
+   wrappers permanently (hidden or display:contents), so it matched with nothing open (promptForFileDeletion's Cancel
+   check saw a modal left behind). The wrapper carries .modal-container exactly while its dialog shows. */
+const dlgContainer = (wrap, box) => {
+  const sync = () => wrap.classList.toggle("modal-container", !box.hidden);
+  sync(); new MutationObserver(sync).observe(box, { attributes: true, attributeFilter: ["hidden"] });
+};
+for (const id of ["picker", "ulbox", "delbox"]) if ($(id)) dlgContainer($(id), $(id));
+if ($("rnbox") && $("rnbox").parentElement) dlgContainer($("rnbox").parentElement, $("rnbox"));
 /* themeone item 6 (R5 causes 3+4): THE ACTIVE THEME'S IDENTITY, ON THE ROOT.
    The graph caches its five tokens (palette(), below) and repaints on a root
    attribute change. Both were keyed on data-theme/data-palette, and injecting
@@ -8753,7 +9109,22 @@ let vaultSeedTok = "-";
    a theme applied and removed within one cache lifetime would hand back the
    themed colours. */
 let themeGen = 0;
+/* #59 slice 2 (themecompat): stock 1.13.7's body carries .is-focused (window focus) and .is-hidden-frameless (no
+   native title bar — ours is frameless with #wframe). Theme rules key their tab strip off them (Minimal: the focused
+   top strip = --bg1). Only while a CHOSEN theme paints ([data-vthemecompat]), so the no-theme look cannot move; the
+   stock rule they would otherwise let a theme beat (the focused active title ink) is mirrored in style.css. */
+function compatBody() {
+  const b = document.body, on = document.documentElement.hasAttribute("data-vthemecompat");
+  if (!b) return;
+  b.classList.toggle("is-hidden-frameless", on);
+  b.classList.toggle("is-focused", on && b.classList.contains("window-focused"));
+}
 const vthemeMark = name => {
+  // #59 slice 3: [data-vthemecompat] = the theme that paints is the one the vault CHOSE (cssTheme), not the bundled
+  // default an empty cssTheme falls back to; style.css scopes the dialog compat rules to it, so the look with no theme
+  // chosen does not move, and choosing the default theme by name gets stock semantics like any other. Before data-vtheme.
+  document.documentElement.toggleAttribute("data-vthemecompat", !!name && name === vaultTheme);
+  compatBody();
   document.documentElement.dataset.vtheme = (++themeGen) + ":" + (name || "");
 };
 async function themeInject(name) {
@@ -10318,6 +10689,9 @@ const graphRendererPref = () => graphPrefP || (graphPrefP = inv("graph_renderer_
 }));
 function showEditor(g) {
   g.graphOn = false; g.graphRefresh = null; g.graphRedraw = null; g.graphAnimate = null; g.graphAnimState = null; g.graphRc = null; cancelAnimationFrame(g.sim); g.graphRenderer = null;
+  // retire the sim (startGraph's gen starts at 1): a physics batch still in the Worker lands nowhere and
+  // posts no next one, so the kept layout stays the frame the user left, as when the loop was only a rAF
+  g.simGen = 0;
   if (g.ro) { g.ro.disconnect(); g.ro = null; }
   if (g.attrObs) { g.attrObs.disconnect(); g.attrObs = null; }
   perf.flush();                    // ship buffered graph_frame samples of the closed sim
@@ -10454,13 +10828,13 @@ async function startGraph(g, cfg) {
   // place, never reassigned: `RGB[palette().bg]` evaluates the base RGB BEFORE the call,
   // so a reassigning palette() handed the warm-up frame the old, empty map (undefined bg,
   // draw threw, no GL renderer, every graph phase dead — d374a32).
-  const PAL_VAR = { hi: "--accent-yellow", ctr: "--accent-green", node: "--accent-blue", edge: "--border", bg: "--graph-bg", tag: "--graph-node-tag", att: "--graph-node-attachment" };
+  const PAL_VAR = { hi: "--accent-yellow", ctr: "--accent-green", node: "--accent-blue", edge: "--border", bg: "--graph-bg", tag: "--gp-tag", att: "--gp-att", unres: "--gp-unres" };   // #59: --gp-* = style.css consumers of the stock --graph-node-* tokens
   // goal/themes4: a THIRD rung for the node colour. Solarized declares --accent-h on :root as
   // "17.57deg", so the derived --color-accent-1 (a calc() on --accent-h minus 3, the shape
   // Obsidian uses too) is an invalid calc on body AND on :root — both rungs above refuse it and
   // the graph had no node colour at all. --color-accent is the un-derived base accent every
   // theme and our own block define; it is what the theme means by "accent".
-  const PAL_ALT = { node: "--color-accent" };
+  const PAL_ALT = { node: "--color-accent", unres: "--color-accent" };   // unresolved falls back exactly like node (its CSS fallback IS the node token)
   const RGB = {};
   let pal = null, palKey = null;
   const palette = () => {
@@ -10479,6 +10853,8 @@ async function startGraph(g, cfg) {
         || (PAL_ALT[k] ? cssColor(cs.getPropertyValue(PAL_ALT[k]).trim()) : null) || themeText;
       p[k] = v; RGB[v] = chan01(v);                       // null only if BOTH were unreadable
     }
+    const gt = cs.getPropertyValue("--gp-text").trim();   // #59 --graph-text: "" (unset) keeps each label in its node colour
+    p.txt = (gt && cssColor(gt)) || null;
     probe.remove();
     palKey = key; pal = p;
     return p;
@@ -10682,7 +11058,8 @@ async function startGraph(g, cfg) {
       ang += (i % 2 ? 1 : -1) * 0.35 * ((i >> 1) % 3);
       p.x = nb.x + F.dist * Math.cos(ang); p.y = nb.y + F.dist * Math.sin(ang);
     });
-    N.length = 0; N.push(...N2);
+    N.length = 0; N.push(...N2); nGen++;   // graphworker: a batch still out is for the old node set
+    dirty = true;                          // the node set changed: draw it even if no step runs (a filter that hides every note)
     gr.edges = g2.edges; gr.col = g2.col;
     rebuild();
     if (hov >= 0) gHover(g, null, null);
@@ -10722,14 +11099,25 @@ async function startGraph(g, cfg) {
   // perf-graph: the rAF loop is NOT unconditional — it runs while physics is
   // hot (alpha > ALPHA_MIN and kinetic energy above eps) and stops otherwise
   // (CPU 0); wake() restarts it on refresh (reheat), pan, zoom, hover, resize, close.
-  const PH_HZ = 60, PH_STEP_CAP = 7, PH_BUDGET_MS = 40, ALPHA_MIN = 0.001, ALPHA_DECAY = 0.028;
+  // (ALPHA_DECAY 0.028, the settle constants and the step itself live in ui/graph-phys.js)
+  const PH_HZ = 60, PH_STEP_CAP = 7, PH_BUDGET_MS = 40, ALPHA_MIN = 0.001;
   let alpha = 1, alphaTarget = 0, phAcc = 0, phLast = performance.now();
   // settled = total kinetic energy (sum v^2) under CALM_KE x its peak since the last reheat
   // (rms speed < ~0.6% of the peak) for 10 consecutive steps, or physics frozen. Relative,
   // because stock creeps on after a small reheat: the old absolute 0.0025 px^2/step froze an S2
   // release at 1.9 s vs stock 2.8 s, and a low absolute one kept the open sim running past 3.5 s
-  // (docs/recon-graphforce/data/impl). Floor 1e-6 px^2/step per node.
-  const CALM_KE = 4e-5;
+  // (docs/recon-graphforce/data/impl). Floor 1e-6 px^2/step per node (CALM_KE, ui/graph-phys.js).
+  // settle to rest: alpha decaying to 0 switched the forces off before the layout was in balance, so
+  // the graph froze mid-way and every slider nudge (reheat) moved it on again. After an open, reheat
+  // or release, alpha now decays toward ALPHA_REST instead of 0 (the forces stay on; alpha only
+  // scales how fast the balance is reached, not where it is) until every node is slower than
+  // V_REST world units/step for 10 steps, or REST_CAP steps have passed. Then the floor drops and the
+  // calm test above eases it out as before. Measured on a headless copy of this physics (tree30 ..
+  // rand200): a tighter V_REST (0.1, 0.05) is often not reached in 150 s, a slow drift of whole
+  // branches keeps the fastest node above it; 0.3 is reached in 4..70 s, hence the cap.
+  // (ALPHA_REST 0.1, V_REST 0.3, REST_CAP 30 s, OPEN_CAP 75 s for an open's first settle: ui/graph-phys.js)
+  const OPEN_SPEED = 20;
+  let seekN = 0, still = 0;   // seekN: steps spent seeking rest, -1 when not seeking; still: consecutive steps under V_REST
   let calm = 0, kePeak = 0, quiet = false;   // quiet: physics halted until the next reheat; kePeak: max KE since it
   let settledMark = false;              // graph_open_settle mark fires once per open
   // graphsettle gate hook (OPENSIDIAN_GRAPH_SETTLE_TRACE=1, else null: one null test per step, nothing
@@ -10744,11 +11132,10 @@ async function startGraph(g, cfg) {
   // was seeded above, so the sim is warmed to 0.3 (the refresh restart) to place it.
   if (prevK) {
     alpha = prevK.st.alpha; calm = prevK.st.calm; kePeak = prevK.st.kePeak;
-    quiet = prevK.st.quiet; settledMark = prevK.st.settledMark;
-    if (kept < N.length || kept < prevK.pos.size) { alpha = Math.max(alpha, 0.3); calm = 0; kePeak = 0; quiet = false; }   // grew or shrank while away
+    quiet = prevK.st.quiet; settledMark = prevK.st.settledMark; seekN = prevK.st.seekN ?? -1; still = prevK.st.still || 0;
+    if (kept < N.length || kept < prevK.pos.size) { alpha = Math.max(alpha, 0.3); calm = 0; kePeak = 0; quiet = false; seekN = 0; still = 0; }   // grew or shrank while away
   }
-  if (kt) kt.gk = { c: cfg.center(), N, view, st:() => ({ alpha, calm, kePeak, quiet: quiet && alphaTarget === 0, settledMark }) };
-  const kinetic = () => { let k = 0; for (const p of N) k += p.vx * p.vx + p.vy * p.vy; return k; };
+  if (kt) kt.gk = { c: cfg.center(), N, view, st:() => ({ alpha, calm, kePeak, quiet: quiet && alphaTarget === 0, settledMark, seekN, still }) };
   // Barnes-Hut quadtree (theta 0.8) for the many-body repulsion (d3 shape:
   // dv = REPEL*alpha*dx/d^2, i.e. |dv| ~ 1/d). The force is long-range, so a
   // cutoff grid would change the layout; instead every far cell
@@ -10758,79 +11145,99 @@ async function startGraph(g, cfg) {
   // is sized from the CURRENT node bbox each step (world is unbounded); depth
   // is capped at MAXD (leaf >= side/1024) so a coincident pair cannot split
   // 24 levels. Points sharing a leaf do not repel each other.
-  const THETA2 = 0.8 * 0.8, MAXD = 10;
-  const pool = []; let pn = 0;
-  const cell = (x0, y0, s) => {
-    let c = pool[pn]; if (!c) c = pool[pn] = {};
-    pn++; c.x0 = x0; c.y0 = y0; c.s = s; c.n = 0; c.sx = 0; c.sy = 0; c.p = null; c.k = null;
-    return c;
+  // graphworker: the physics step and the settle test run in ui/graph-phys.js, one BATCH of steps at
+  // a time: in a Worker when one can be started, else synchronously from the same file (same numbers,
+  // positions bit-identical either way). The node objects and the sim state stay HERE. A batch carries
+  // a copy of x/y/vx/vy, the pins and the state out; its result is written back when it lands (between
+  // frames) and the next batch is posted at once, so the worker steps while this thread only draws.
+  // That takes the physics out of the frame: at n1250 a step costs ~1 ms, which the 40 ms frame budget
+  // held to ~16x on the fast first settle at ~24 fps; off-thread the frame is a draw.
+  // While a batch is out: a state change (reheat, hold, release) applies here at once AND is replayed
+  // onto the result (ev/evq), i.e. it takes effect after the batch's steps, as it did between frames;
+  // a held node is re-clamped to the pointer; a refresh that swaps N[] drops the result (nGen).
+  const PH_WORKER_MS = 12;               // worker wall time per batch: about one result per frame
+  let gw = null, inflight = false, nGen = 0, evq = [], lnkSrc = null, lnk = null;
+  const ev = f => { f(); if (inflight) evq.push(f); };
+  // workers are pooled per window (a tab switch or reheat must not pay a script load) and are only
+  // held by a sim while it steps; a broken Worker (CSP, load error) switches to the synchronous path
+  const gwPool = window.__gwPool || (window.__gwPool = []);
+  const gwGet = () => {
+    if (gw || window.__gwBroken) return gw;
+    try { gw = gwPool.pop() || new Worker("graph-phys.js"); } catch (e) { window.__gwBroken = true; return null; }
+    gw.onerror = e => { console.error("[graph] physics worker failed, stepping on the main thread:", e.message || e); window.__gwBroken = true;
+      try { gw.terminate(); } catch (_) {} gw = null; inflight = false; evq = []; if (g.simGen === gen) wake(); };
+    return gw;
   };
-  const qi = (c, p) => (p.x >= c.x0 + c.s / 2 ? 1 : 0) + (p.y >= c.y0 + c.s / 2 ? 2 : 0);
-  function bhBuild() {
-    pn = 0;
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const p of N) { if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x; if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y; }
-    // d3 quadtree cover(): root anchored at floor(min), side the smallest power of two that holds the extent
-    const rx = Math.floor(x0), ry = Math.floor(y0); let rs = 1;
-    while (rx + rs <= x1 || ry + rs <= y1) rs *= 2;
-    const root = cell(rx, ry, rs);
-    for (const p of N) {
-      let c = root, depth = 0;
-      for (;;) {
-        c.n++; c.sx += p.x; c.sy += p.y;
-        if (c.k) { c = c.k[qi(c, p)]; depth++; continue; }
-        if (c.n === 1) { c.p = p; break; }         // empty leaf takes p
-        if (depth >= MAXD) break;                    // shared leaf: mass only
-        const h = c.s / 2, q = c.p; c.p = null;      // occupied leaf: split, push old point down
-        c.k = [cell(c.x0, c.y0, h), cell(c.x0 + h, c.y0, h), cell(c.x0, c.y0 + h, h), cell(c.x0 + h, c.y0 + h, h)];
-        const cq = c.k[qi(c, q)]; cq.n = 1; cq.sx = q.x; cq.sy = q.y; cq.p = q;
-        c = c.k[qi(c, p)]; depth++;
+  const gwPut = () => {
+    if (!gw || inflight) return;
+    gw.onmessage = gw.onerror = null;
+    if (gwPool.length < 2) gwPool.push(gw); else gw.terminate();
+    gw = null;
+  };
+  function batch(steps, budget) {
+    const n = N.length, X = new Float64Array(n), Y = new Float64Array(n), VX = new Float64Array(n), VY = new Float64Array(n);
+    const PIN = new Uint8Array(n), FX = new Float64Array(n), FY = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      const p = N[i]; X[i] = p.x; Y[i] = p.y; VX[i] = p.vx; VY[i] = p.vy;
+      if (p.fx != null) { PIN[i] = 1; FX[i] = p.fx; FY[i] = p.fy; }
+    }
+    if (lnkSrc !== links) {             // rebuild() replaces `links`, so its identity is the version
+      lnkSrc = links; const L = links.length;
+      lnk = { LA: new Int32Array(L), LB: new Int32Array(L), LBI: new Float64Array(L), LK: new Float64Array(L) };
+      for (let i = 0; i < L; i++) { const l = links[i]; lnk.LA[i] = l.a; lnk.LB[i] = l.b; lnk.LBI[i] = l.bias; lnk.LK[i] = l.k; }
+    }
+    return { gen: nGen, X, Y, VX, VY, PIN, FX, FY, links: lnk, steps, budget, trace: !!sTr, first: !settledMark,
+             f: { repel: F.repel, repelK: REPEL_K, repelP: REPEL_P, dist: F.dist, center: F.center, centerK: CENTER_K },
+             st: { alpha, alphaTarget, seekN, still, calm, kePeak, quiet } };
+  }
+  // a result: positions and state back, the settle side effects, then the replayed events
+  function land(bgen, r, st, X, Y, VX, VY, PIN) {
+    inflight = false; const q = evq; evq = [];
+    if (g.simGen !== gen || bgen !== nGen) return;   // retired, or N[] swapped while the batch was out
+    for (let i = 0; i < N.length; i++) {
+      const p = N[i];
+      if (p.fx != null) { p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0; }   // C3: the pointer moved on while the batch was out
+      else if (PIN[i]) { p.vx = 0; p.vy = 0; }   // released while the batch was out: it stays where it was dropped
+      else { p.x = X[i]; p.y = Y[i]; p.vx = VX[i]; p.vy = VY[i]; }
+    }
+    ({ alpha, alphaTarget, seekN, still, calm, kePeak, quiet } = st);
+    if (sTr && r.tr) {
+      const T = r.tr, o = performance.timeOrigin;
+      for (let i = 0; i < T.a.length; i++) {
+        const tn = T.t[i] - o; if (sTr.t0 < 0) sTr.t0 = tn;
+        if (sTr.a.length < 6000) { sTr.a.push(T.a[i]); sTr.k.push(T.k[i]); sTr.p.push(T.p[i]); sTr.c.push(T.c[i]); sTr.t.push((tn - sTr.t0).toFixed(1)); } else sTr.cut = 1;
       }
     }
-    return root;
+    if (r.quietKe >= 0) settled(r.quietKe);
+    for (const f of q) f();
+    if (r.ran) { dirty = true; perf.push("graph_frame", r.ms, { nodes: N.length, steps: r.ran, phys: +r.ms.toFixed(1), ke: +r.ke.toFixed(2), alpha: +alpha.toFixed(3) }); }
   }
-  function bhApply(a, c, k) {
-    if (c.n === 0) return;
-    const dx = a.x - c.sx / c.n, dy = a.y - c.sy / c.n, d2 = dx * dx + dy * dy + 1;
-    if (c.k) {
-      if (c.s * c.s > THETA2 * d2) { const K = c.k; bhApply(a, K[0], k); bhApply(a, K[1], k); bhApply(a, K[2], k); bhApply(a, K[3], k); return; }
-    } else if (c.p === a || (a.x >= c.x0 && a.x < c.x0 + c.s && a.y >= c.y0 && a.y < c.y0 + c.s)) return;  // own leaf
-    a.vx += k * c.n * dx / d2; a.vy += k * c.n * dy / d2;
-  }
-  function physStep() {
-    if (!N.length) return;
-    alpha += (alphaTarget - alpha) * ALPHA_DECAY;   // top of the step, as the model does
-    // many-body repulsion FIRST (the link term reads p+v after it). Per-node
-    // strength = Repel force * REPEL_K * N^REPEL_P (docs/recon-graphforce PLAN s.0)
-    const root = bhBuild(), k = alpha * F.repel * REPEL_K * Math.pow(N.length, REPEL_P);
-    for (const a of N) bhApply(a, root, k);
-    // link: spring to F.dist (R16.1: 250), d3 semantics (strength/bias per link)
-    for (const l of links) {
-      const a = N[l.a], b = N[l.b];
-      let dx = b.x + b.vx - a.x - a.vx, dy = b.y + b.vy - a.y - a.vy;
-      const d = Math.sqrt(dx * dx + dy * dy) || 1e-6, k = (d - F.dist) / d * alpha * l.k;
-      dx *= k; dy *= k;
-      b.vx -= dx * l.bias; b.vy -= dy * l.bias; a.vx += dx * (1 - l.bias); a.vy += dy * (1 - l.bias);
+  // the steps owed by the sim clock, as a batch: posted to the worker, or run and landed right here
+  function pump() {
+    if (inflight || quiet || g.simGen !== gen) return;
+    const t = performance.now();
+    // fast first settle: until this open's first rest (settledMark, carried across a tab switch, fresh
+    // on every new open) the sim clock runs OPEN_SPEED x wall time, so the settle takes 1/20 of the
+    // time; then 1x. Not while a node is held: a drag follows the pointer at normal speed.
+    const sp = settledMark || alphaTarget > 0 ? 1 : OPEN_SPEED;
+    phAcc = Math.min(phAcc + sp * (t - phLast) / 1000, sp * PH_STEP_CAP / PH_HZ); phLast = t;
+    let steps = 0;
+    while (phAcc >= 1 / PH_HZ) { phAcc -= 1 / PH_HZ; steps++; }
+    if (!steps && alpha > ALPHA_MIN) return;      // nothing owed yet (a frozen alpha still gets its settle test)
+    const w = gwGet();
+    if (!w) {                           // main thread: the frame budget bounds the batch
+      const b = batch(steps, PH_BUDGET_MS);
+      land(b.gen, (g.__gpe || (g.__gpe = GraphPhys.create())).run(b), b.st, b.X, b.Y, b.VX, b.VY, b.PIN);
+      return;
     }
-    // centre: a per-node, alpha-scaled velocity pull toward the origin (stock S3:
-    // centre max pulls the cloud IN, which translating the centroid never could)
-    const ck = F.center * CENTER_K * alpha;
-    // plus a d3 forceCenter translation (positions only, radius unchanged): the per-node pull
-    // is alpha-scaled and the sim stops on calm, so after a re-centre adds a node on one side
-    // the cloud stopped ~40px off the pane centre and an end node sat outside a split pane.
-    // The centroid counts a held node too (d3: forceCenter moves every node, fx snaps it back),
-    // else its release shifts the free centroid by offset/N in one step (S2: a 248 u/s jolt).
-    let sx = 0, sy = 0;
-    for (const p of N) { sx += p.x; sy += p.y; }
-    if (N.length) { sx /= N.length; sy /= N.length; for (const p of N) if (p.fx == null) { p.x -= sx; p.y -= sy; } }
-    for (const p of N) {
-      p.vx -= p.x * ck; p.vy -= p.y * ck;
-      p.vx *= 0.7; p.vy *= 0.7; p.x += p.vx; p.y += p.vy;   // velocity decay 0.3 (measured)
-      // C3 PIN, only WHILE HELD (d3 drag semantics): the held node carries fx/fy
-      // and is clamped onto it after every force; release clears fx/fy and the
-      // node is free again (stock S2: it springs back ~75 units).
-      if (p.fx != null) { p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0; }
-    }
+    const b = batch(steps, PH_WORKER_MS);
+    inflight = true;
+    w.onmessage = e => {
+      const d = e.data; land(b.gen, d.r, d.st, d.X, d.Y, d.VX, d.VY, b.PIN);
+      if (g.simGen !== gen || quiet) { gwPut(); if (g.simGen === gen) wake(); return; }
+      if (!(rcSnap && rcSnap.vraw === undefined)) pump();   // C5: rcPre must see the swap before any step
+    };
+    w.postMessage(b, [b.X.buffer, b.Y.buffer, b.VX.buffer, b.VY.buffer]);
   }
   // C5 (B26-B29, R19.2/R19.3): the two halves of the re-centre continuity record. Every field
   // is a measurement of the node objects the renderer is about to draw — never a variable the
@@ -10974,7 +11381,7 @@ async function startGraph(g, cfg) {
       if (i >= shown) continue;
       if (p.x < wx0 - pad || p.x > wx1 + pad || p.y < wy0 - pad || p.y > wy1 + pad) continue;
       const a = litN(i) ? (p.resolved ? 1 : 0.55) : 0.12;
-      const col = i === hov ? P.hi : isC ? P.ctr : p.kind === 2 ? P.tag : p.kind === 3 ? gcNodeCol(GS, p) || P.att : gcNodeCol(GS, p) || P.node;
+      const col = i === hov ? P.hi : isC ? P.ctr : p.kind === 2 ? P.tag : p.kind === 3 ? gcNodeCol(GS, p) || P.att : p.kind === 1 ? gcNodeCol(GS, p) || P.unres : gcNodeCol(GS, p) || P.node;
       if (!(col in RGB)) RGB[col] = col[0] === "#" ? [1, 3, 5].map(k => parseInt(col.slice(k, k + 2), 16) / 255) : chan01(col);   // a group colour (gcHex) is not a palette token: key it for the GL path (palette() empties RGB on a theme switch; this refills)
       const key = col + a + (p.resolved ? "r" : "u") + (isC ? "c" : "");
       let gp = groups.get(key);
@@ -10998,7 +11405,7 @@ async function startGraph(g, cfg) {
           nArr[o] = p.x; nArr[o + 1] = p.y; nArr[o + 2] = (p.r + gp.dr) * NS + ring / 2; nArr[o + 3] = ring * dpr;   // ring width is device px in the shader (gh-graphdpr); 2D strokes straddle the radius
           nArr[o + 4] = c[0]; nArr[o + 5] = c[1]; nArr[o + 6] = c[2]; nArr[o + 7] = gp.a; nc++;
         }
-        if (labels) { ctx.globalAlpha = gp.a * la; ctx.fillStyle = gp.col; for (const i of gp.idx) { const p = N[i]; ctx.fillText(p.n, p.x, p.y - (p.r + gp.dr) * NS - 4); } }
+        if (labels) { ctx.globalAlpha = gp.a * la; ctx.fillStyle = P.txt || gp.col; for (const i of gp.idx) { const p = N[i]; ctx.fillText(p.n, p.x, p.y - (p.r + gp.dr) * NS - 4); } }
       }
       // gh-graphdpr: .graphgl is absolutely positioned with no CSS size, so a canvas shows at its
       // INTRINSIC size = its backing in CSS px; once the backing is css x dpr that is dpr x too big
@@ -11012,7 +11419,7 @@ async function startGraph(g, cfg) {
       for (const i of gp.idx) { const p = N[i], r = (p.r + gp.dr) * NS; ctx.moveTo(p.x + r, p.y); ctx.arc(p.x, p.y, r, 0, 7); }
       if (gp.res) { ctx.fillStyle = gp.col; ctx.fill(); }
       else { ctx.lineWidth = 1.5; ctx.strokeStyle = gp.col; ctx.stroke(); ctx.lineWidth = 1; } // hollow = unresolved
-      if (labels) { ctx.globalAlpha = gp.a * la; ctx.fillStyle = gp.col; for (const i of gp.idx) { const p = N[i]; ctx.fillText(p.n, p.x, p.y - (p.r + gp.dr) * NS - 4); } }
+      if (labels) { ctx.globalAlpha = gp.a * la; ctx.fillStyle = P.txt || gp.col; for (const i of gp.idx) { const p = N[i]; ctx.fillText(p.n, p.x, p.y - (p.r + gp.dr) * NS - 4); } }
     }
     ctx.globalAlpha = 1;
     if (rcSnap) { rcRecord(); updateTitle(); }   // C5: once, on the first paint after a re-centre
@@ -11029,7 +11436,7 @@ async function startGraph(g, cfg) {
     // otel.paint rAF is queued — one rAF + setTimeout put this work in that span's layout_ms.
     requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(() => { afterQ = false; updateTitle(); perf.flush(); }, 0))); };
   function step() {
-    if (g.simGen !== gen) return;
+    if (g.simGen !== gen) { gwPut(); return; }
     const now = performance.now(), first = firstFrame;
     if (firstFrame) {
       firstFrame = false;
@@ -11060,30 +11467,19 @@ async function startGraph(g, cfg) {
       phLast = now; phAcc = 0;   // the sim clock starts at the first frame: the time spent building the view before it is not owed as a 6-step burst
       if (g.perfT0) { perf.mark("graph_open", g.perfT0, { nodes: N.length, edges: gr.edges.length, kind: (g.tabs[g.active] || {}).kind || "-" }); g.perfT0 = null; }
     }
-    const fT0 = perf.now(); let steps = 0, ke = -1;
     if (rcSnap && rcSnap.vraw === undefined) rcPre();   // C5: before this frame's physics
-    phAcc = Math.min(phAcc + (now - phLast) / 1000, PH_STEP_CAP / PH_HZ); phLast = now;
-    const phT0 = perf.now();
-    // The settle test runs after EVERY physics step, not once per frame: counted per frame,
-    // "10 calm" meant 10..70 steps depending on how many steps each frame happened to carry
-    // (wall clock), so the sim froze at a timing-dependent step and two runs of the same
-    // vault came to rest in different places (graphgl gl vs 2d 9.97% px, gate 14:25/14:40).
-    // Per step, the stop is a pure function of the step sequence: same seed, same layout.
-    while (phAcc >= 1 / PH_HZ) {
-      phAcc -= 1 / PH_HZ;
-      if (!quiet && (alpha > ALPHA_MIN || alphaTarget > 0)) { physStep(); steps++; ke = settleTest(); }
-      if (quiet) { phAcc = 0; break; }
-      if (steps && perf.now() - phT0 >= PH_BUDGET_MS) { phAcc = 0; break; }   // wall-clock backstop: a costlier step (bigger N) must not lengthen the frame
-    }
-    const fT1 = perf.now();
-    if (!quiet && !steps && alpha <= ALPHA_MIN) ke = settleTest();
+    // The settle test runs after EVERY physics step (ui/graph-phys.js), not once per frame: counted
+    // per frame, "10 calm" meant 10..70 steps depending on how many steps each frame happened to
+    // carry (wall clock), so the sim froze at a timing-dependent step and two runs of the same vault
+    // came to rest in different places (graphgl gl vs 2d 9.97% px, gate 14:25/14:40). Per step, the
+    // stop is a pure function of the step sequence: same seed, same layout.
+    pump();
     const anim = animT0 >= 0;          // a running timelapse draws every frame, settled or not
-    const drew = steps || dirty || anim;
+    const drew = dirty || anim;
     if (drew) { draw(); dirty = false; }
     if (anim && (animT0 < 0 || now - animPub >= 100)) { animPub = now; updateTitle(); }   // census [gfd:] anim=k/n follows the reveal
-    if (steps) perf.push("graph_frame", perf.now() - fT0, { nodes: N.length, steps, phys: +(fT1 - fT0).toFixed(1), ke: +ke.toFixed(2), alpha: +alpha.toFixed(3) });
-    if (quiet && animT0 < 0) {         // settled: loop ends, CPU -> 0; publish node coords to the census
-      running = false;
+    if (quiet && !inflight && animT0 < 0) {   // settled: loop ends, CPU -> 0; publish node coords to the census
+      running = false; gwPut();
       // #28: WebKitGTK shows a WebGL canvas ONE frame behind (measured: after a hover-out the GL layer
       // still showed the hover frame while the 2D labels did not; a Groups colour edit left the nodes
       // in the old colour). A loop that stops right after a draw would leave its last frame unseen, so
@@ -11105,33 +11501,20 @@ async function startGraph(g, cfg) {
     }
     g.sim = requestAnimationFrame(step);
   }
-  function settleTest() {              // after one physics step: kinetic energy vs its peak; may set quiet
-    const ke = kinetic();
-    {
-      if (ke > kePeak) kePeak = ke;
-      calm = ke < Math.max(CALM_KE * kePeak, 1e-6 * N.length) ? calm + 1 : 0;
-      if (sTr) {
-        const tn = performance.now(); if (sTr.t0 < 0) sTr.t0 = tn;
-        if (sTr.a.length < 6000) { sTr.a.push(String(alpha)); sTr.k.push(ke.toPrecision(6)); sTr.p.push(kePeak.toPrecision(6)); sTr.c.push(calm); sTr.t.push((tn - sTr.t0).toFixed(1)); } else sTr.cut = 1;
-      }
-      // PLAN item 7: never freeze while a node is HELD (alphaTarget > 0)
-      if (alphaTarget === 0 && (calm >= 10 || alpha <= ALPHA_MIN)) {
-        quiet = true;
-        if (sTr) { otel.span("graph_settle_trace", { why: sTr.why, n: N.length, e: gr.edges.length, q: sTr.a.length, cut: sTr.cut, a: sTr.a.join(","), k: sTr.k.join(","), p: sTr.p.join(","), c: sTr.c.join(","), t: sTr.t.join(",") }); sTrMark("idle"); }
-        // R19 (HARD RULE 100ms): graph_recenter ends at the first PAINT of the new centre
-        // (see cv.onclick); what happens after that is ANIMATION and is measured here as its
-        // own span graph_settle = click -> kinetic energy below eps.
-        if (g.settleSp) { otel.end(g.settleSp, { nodes: N.length, edges: gr.edges.length, ke: +ke.toFixed(3), alpha: +alpha.toFixed(3) }); g.settleSp = null; }
-        if (!settledMark) {
-          settledMark = true;
-          // Forces card: shadow on at first rest, not at open (ui/style.css .gf-lit — its first paint is a one-off main-thread stall)
-          if (g.gfp && !g.gfp.hidden && !g.gfp.classList.contains("gf-lit")) { g.gfp.classList.add("gf-lit"); shadeNow = true; }
-          perf.mark("graph_open_settle", openT0, { nodes: N.length, sg: +sgMs.toFixed(1), ke: +ke.toFixed(3), alpha: +alpha.toFixed(3) });
-          if (pref.loseCtx && glr) setTimeout(() => { if (glr && g.simGen === gen) glr.loseContext(); }, 300);   // smoke hook: WEBGL_lose_context after settle
-        }
-      }
+  // the step that went quiet (ui/graph-phys.js decides, per step): what settleTest used to do there
+  function settled(ke) {
+    if (sTr) { otel.span("graph_settle_trace", { why: sTr.why, n: N.length, e: gr.edges.length, q: sTr.a.length, cut: sTr.cut, a: sTr.a.join(","), k: sTr.k.join(","), p: sTr.p.join(","), c: sTr.c.join(","), t: sTr.t.join(",") }); sTrMark("idle"); }
+    // R19 (HARD RULE 100ms): graph_recenter ends at the first PAINT of the new centre
+    // (see cv.onclick); what happens after that is ANIMATION and is measured here as its
+    // own span graph_settle = click -> kinetic energy below eps.
+    if (g.settleSp) { otel.end(g.settleSp, { nodes: N.length, edges: gr.edges.length, ke: +ke.toFixed(3), alpha: +alpha.toFixed(3) }); g.settleSp = null; }
+    if (!settledMark) {
+      settledMark = true;
+      // Forces card: shadow on at first rest, not at open (ui/style.css .gf-lit — its first paint is a one-off main-thread stall)
+      if (g.gfp && !g.gfp.hidden && !g.gfp.classList.contains("gf-lit")) { g.gfp.classList.add("gf-lit"); shadeNow = true; }
+      perf.mark("graph_open_settle", openT0, { nodes: N.length, sg: +sgMs.toFixed(1), ke: +ke.toFixed(3), alpha: +alpha.toFixed(3) });
+      if (pref.loseCtx && glr) setTimeout(() => { if (glr && g.simGen === gen) glr.loseContext(); }, 300);   // smoke hook: WEBGL_lose_context after settle
     }
-    return ke;
   }
   const wake = () => {                  // (re)start the loop; a stopped loop draws once and exits
     if (running) return;
@@ -11163,7 +11546,7 @@ async function startGraph(g, cfg) {
     perf.mark("graph_renderer", perf.now(), { renderer: "2d", reason: "contextlost", webgl: 0, ...gpu });
     redraw();
   };
-  g.reheat = (a = 0.5) => { sTrMark("reheat"); calm = 0; kePeak = 0; quiet = false; g.graphSettled = false; alpha = Math.max(alpha, a); wake(); };
+  g.reheat = (a = 0.5) => ev(() => { sTrMark("reheat"); calm = 0; kePeak = 0; seekN = 0; still = 0; quiet = false; g.graphSettled = false; alpha = Math.max(alpha, a); wake(); });
   // graph-controls card (global AND local, GC1): sliders -> F + reheat; any reheat re-syncs the
   // sliders to F, so a value set another way (the recon rig's probe hotkeys) shows on the card too
   if (gcS) {
@@ -11272,7 +11655,7 @@ async function startGraph(g, cfg) {
     drag = null;
     if (window.__graphHeld === release) window.__graphHeld = null;
     for (const q of N) if (q.fx != null) q.fx = q.fy = null;
-    if (alphaTarget !== 0) { sTrMark("release"); alphaTarget = 0; calm = 0; kePeak = 0; quiet = false; g.graphSettled = false; if (g.simGen === gen) wake(); }
+    if (alphaTarget !== 0) ev(() => { sTrMark("release"); alphaTarget = 0; calm = 0; kePeak = 0; seekN = 0; still = 0; quiet = false; g.graphSettled = false; if (g.simGen === gen) wake(); });
   };
   if (!window.__graphRelWired) {        // once per window; whichever graph holds a node registers itself
     window.__graphRelWired = true;
@@ -11309,7 +11692,7 @@ async function startGraph(g, cfg) {
           p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0;
           // d3 drag: alphaTarget 0.3 while held, the neighbours follow the node out
           // (PLAN item 8: not reheat — alpha CLIMBS toward the target, as stock's)
-          if (alphaTarget !== 0.3 || quiet) { sTrMark("hold"); alphaTarget = 0.3; calm = 0; kePeak = 0; quiet = false; g.graphSettled = false; wake(); }
+          if (alphaTarget !== 0.3 || quiet) ev(() => { sTrMark("hold"); alphaTarget = 0.3; calm = 0; kePeak = 0; seekN = 0; still = 0; quiet = false; g.graphSettled = false; wake(); });
         } else {
           view.tx += dx; view.ty += dy; view.ax = null;  // EMPTY canvas: camera pan, unchanged; drops the zoom anchor
         }

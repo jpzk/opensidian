@@ -304,8 +304,11 @@
   }
   const isPathNode = o => !!o && typeof o === "object" && typeof o.path === "string" && o.path !== "" &&
     (o.type === "file" || o.type === "heading" || o.type === "block");
+  // issue #44 (PR #57 review): main.rs bm_node_of also paints a "file" whose path is a PDF (len > 4, ext pdf any case)
+  // as a row — it must count here too, or every row index after a PDF bookmark points one entry too far
+  const isPdfPath = p => typeof p === "string" && p.length > 4 && /\.pdf$/i.test(p);
   const painted = o => !!o && typeof o === "object" && (
-    (o.type === "file" && typeof o.path === "string" && o.path.endsWith(".md") && o.path.length > 3) ||
+    (o.type === "file" && typeof o.path === "string" && ((o.path.endsWith(".md") && o.path.length > 3) || isPdfPath(o.path))) ||
     (o.type === "group" && typeof o.title === "string" && Array.isArray(o.items)));
   function rawAt(items, ix) {           // the raw entry painted as row ix (pre-order over painted entries only)
     let seen = 0, hit = null;
@@ -337,8 +340,9 @@
     const items = await rawBookmarks();
     let o = items ? rawAt(items, ix) : null;
     const rk = row.kind === "g" ? "group" : "file";
-    if (o && (o.type !== rk || (rk === "file" ? o.path !== row.name + ".md" : o.title !== row.name))) o = null;   // the file moved under us: trust the row
-    if (!o) o = rk === "group" ? { type: "group", title: row.name, items: (row.files || []).map(n => ({ type: "file", path: n + ".md" })) } : { type: "file", path: row.name + ".md" };
+    const rp = row.pdf ? row.name : row.name + ".md";   // issue #44: a PDF row's name IS its vault path; row.files are vault paths
+    if (o && (o.type !== rk || (rk === "file" ? o.path !== rp : o.title !== row.name))) o = null;   // the file moved under us: trust the row
+    if (!o) o = rk === "group" ? { type: "group", title: row.name, items: (row.files || []).map(p => ({ type: "file", path: p })) } : { type: "file", path: rp };
     const label = String(o.title || o.path || row.name);
     let kind, out = [], ref = 0;
     if (o.type === "group") {

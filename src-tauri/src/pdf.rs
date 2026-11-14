@@ -26,6 +26,8 @@ use std::time::SystemTime;
 
 use hayro::hayro_interpret::InterpreterSettings;
 use hayro::hayro_syntax::Pdf;
+use hayro::vello_cpu::color::{palette, AlphaColor, Srgb};
+use hayro::vello_cpu::Pixmap;
 use hayro::{render, RenderCache, RenderSettings};
 
 pub const PDF_EXT: &str = "pdf";
@@ -113,18 +115,30 @@ pub fn scale_for(pw: f32, ph: f32, w: u32) -> Option<f32> {
     (s.is_finite() && s > 0.0).then_some(s)
 }
 
-/// page N (1-based) as PNG `w` px wide (capped), or None. Never panics.
-pub fn page_png(pdf: &Pdf, page: usize, w: u32) -> Option<Vec<u8>> {
+/// issue #44: the paper. hayro's RenderSettings::default() has bg_color TRANSPARENT,
+/// so a page that does not paint its own background (nearly every real PDF: text on
+/// an unpainted page) came out as glyphs on alpha 0 — dark text on the dark theme.
+/// A PDF page is white paper unless its content paints otherwise (as pdf.js/Poppler).
+pub const PAPER: AlphaColor<Srgb> = palette::css::WHITE;
+
+/// page N (1-based) rendered `w` px wide (capped) on opaque PAPER, or None. Never panics.
+pub fn page_pixmap(pdf: &Pdf, page: usize, w: u32) -> Option<Pixmap> {
     let pg = pdf.pages().get(page.checked_sub(1)?)?;
     catch_unwind(AssertUnwindSafe(|| {
         let (pw, ph) = pg.render_dimensions();
         let s = scale_for(pw, ph, w)?;
         let cache = RenderCache::new();
-        let rs = RenderSettings { x_scale: s, y_scale: s, ..Default::default() };
-        render(pg, &cache, &InterpreterSettings::default(), &rs).into_png().ok()
+        let rs = RenderSettings { x_scale: s, y_scale: s, bg_color: PAPER, ..Default::default() };
+        Some(render(pg, &cache, &InterpreterSettings::default(), &rs))
     }))
     .ok()
     .flatten()
+}
+
+/// page N (1-based) as PNG `w` px wide (capped), or None. Never panics.
+pub fn page_png(pdf: &Pdf, page: usize, w: u32) -> Option<Vec<u8>> {
+    let px = page_pixmap(pdf, page, w)?;
+    catch_unwind(AssertUnwindSafe(|| px.into_png().ok())).ok().flatten()
 }
 
 /* ---- the ONE render worker -------------------------------------------- */
@@ -319,6 +333,62 @@ pub mod tests {
         assert_ne!(page_png(&d, 1, 50), page_png(&d, 3, 50));
         assert_eq!(page_png(&d, 4, 50), None);
         assert_eq!(page_png(&d, 0, 50), None);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// a one-page 200x100 PDF whose content does NOT paint the page background:
+    /// a std-14 Helvetica line + a small black box — what real documents look like
+    /// (mini_pdf's full-page fill is what hid #44 from every earlier test).
+    fn unpainted_page_pdf() -> Vec<u8> {
+        let content = "BT /F1 18 Tf 20 60 Td (PAPER 44) Tj ET 0 g 150 20 20 20 re f";
+        let objs = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R \
+             /Resources << /Font << /F1 5 0 R >> >> >>".to_string(),
+            format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+        ];
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offs = Vec::new();
+        for (i, o) in objs.iter().enumerate() {
+            offs.push(out.len());
+            out.extend(format!("{} 0 obj\n{o}\nendobj\n", i + 1).bytes());
+        }
+        let xref = out.len();
+        out.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).bytes());
+        for o in offs {
+            out.extend(format!("{o:010} 00000 n \n").bytes());
+        }
+        out.extend(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objs.len() + 1).bytes());
+        out
+    }
+
+    #[test]
+    fn pdf_unpainted_page_renders_on_opaque_white_paper() {
+        // issue #44: hayro's default background is TRANSPARENT; on the dark theme a
+        // text-only page was dark glyphs on alpha 0 — the user saw "no PDF".
+        let p = tmp("unpainted.pdf", &unpainted_page_pdf());
+        let d = load(&p).expect("unpainted pdf parses");
+        let px = page_pixmap(&d, 1, 200).expect("page 1 renders");
+        assert_eq!((px.width(), px.height()), (200, 100));
+        // the corners hold no content: they must be the paper, fully opaque white
+        for (x, y) in [(0, 0), (199, 0), (0, 99), (199, 99), (100, 5)] {
+            let c = px.sample(x, y);
+            assert_eq!((c.r, c.g, c.b, c.a), (255, 255, 255, 255), "paper at ({x},{y})");
+        }
+        // EVERY pixel is opaque: nothing of the page lets the dark theme through
+        assert!(px.data().iter().all(|c| c.a == 255), "a page pixel is not opaque");
+        // and the content is still there: the box (y flipped: 150..170 x, 80..60 px y)
+        let b = px.sample(160, 70);
+        assert_eq!((b.r, b.g, b.b, b.a), (0, 0, 0, 255), "black box");
+        // the text line drew dark ink in its band (x 20..130, y ~22..40 px)
+        let ink = (22..42u16).flat_map(|y| (20..130u16).map(move |x| (x, y)))
+            .filter(|&(x, y)| px.sample(x, y).r < 128).count();
+        assert!(ink > 50, "the text drew {ink} dark pixels");
+        // the PNG the webview gets carries the same paper (RGBA, not transparent)
+        let png = page_png(&d, 1, 200).expect("png");
+        assert_eq!(&png[1..4], b"PNG");
         let _ = std::fs::remove_file(&p);
     }
 
