@@ -9083,7 +9083,7 @@ const vthemeMark = name => {
   // #59 slice 3: [data-vthemecompat] = the theme that paints is the one the vault CHOSE (cssTheme), not the bundled
   // default an empty cssTheme falls back to; style.css scopes the dialog compat rules to it, so the look with no theme
   // chosen does not move, and choosing the default theme by name gets stock semantics like any other. Before data-vtheme.
-  document.documentElement.toggleAttribute("data-vthemecompat", !!name && name === vaultTheme);
+  document.documentElement.toggleAttribute("data-vthemecompat", !!name && name === vaultTheme && name !== DEFAULT_THEME);   // EXPERIMENT thmreset: default-by-name = no compat
   compatBody();
   document.documentElement.dataset.vtheme = (++themeGen) + ":" + (name || "");
 };
