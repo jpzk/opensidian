@@ -78,7 +78,7 @@ body {
   --background-secondary-alt: #313244;                        /* no ramp row measured */
   --ribbon-background: #282828;                               /* no ramp row measured; value: themelight audit */
   --background-modifier-border: var(--color-base-30, #45475a);/* T6b: base-30 = --divider-color/--background-modifier-border */
-  --indentation-guide-color: rgba(255, 255, 255, 0.12);   /* listlinks REQ-9: a faint guide on the note surface */
+  --indentation-guide-color: color-mix(in srgb, var(--mono-100, #fff) 12%, transparent);   /* listlinks REQ-9: a faint guide on the note surface */
   --text-normal: var(--color-base-100, #dadada);              /* R15.14: --text-normal: var(--color-base-100) */
   --text-muted: var(--color-base-70, #b3b3b3);                /* R15.14 */
   --text-faint: var(--color-base-50, #666666);                /* R15.14 */
@@ -155,12 +155,12 @@ body {
   --bg-sidebar: var(--background-secondary);
   --bg-ribbon: var(--ribbon-background);
   --bg-surface: var(--background-secondary-alt);
-  --border: var(--background-modifier-border);
+  --border: var(--graph-line, var(--background-modifier-border));
   --text-chrome: var(--text-normal);
   --text-chrome-muted: var(--text-muted);
   --bg-button-primary: var(--interactive-accent);
   --text-banner-error: var(--text-error);
-  --accent-blue: var(--text-accent);
+  --accent-blue: var(--graph-node, var(--text-accent));
   /* THE GRAPH CANVAS (2D fill + WebGL clear). MEASURED, not chosen: T9
      (docs/recon-themes/README.md, "which theme name paints the GRAPH VIEW
      canvas background") found Obsidian's graph painted with --background-primary
@@ -233,7 +233,7 @@ body {
   --link-unresolved: #7c86c8;
   --link-unresolved-underline: color-mix(in srgb, currentColor 30%, transparent);   /* listlinks REQ-15: underline = link colour at 0.3 alpha */
   --accent-mauve: var(--color-accent, #cba6f7);
-  --accent-yellow: #f9e2af;
+  --accent-yellow: var(--graph-node-focused, #f9e2af);
   --accent-green: #a6e3a1;
   --scrim: var(--background-modifier-cover, rgba(0,0,0,.35));
   --scrim-strong: var(--background-modifier-cover, rgba(0,0,0,.45));
@@ -259,14 +259,14 @@ body {
      (Kanban's new-list form: z-index: var(--layer-popover)). Unset, such a z-index computes auto
      and the plugin's own later content covers it. Values follow this file's own stack:
      #modal 50, .ctxmenu 60, #notice 71, #tabghost 99. */
-  --layer-cover: 5;
+  --layer-cover: 3;
   --layer-sidedock: 10;
-  --layer-status-bar: 15;
-  --layer-popover: 30;
+  --layer-status-bar: 5;
+  --layer-popover: 6;
   --layer-slides: 45;
-  --layer-modal: 50;
+  --layer-modal: 55;
   --layer-menu: 60;
-  --layer-notice: 71;
+  --layer-notice: 60;
   --layer-tooltip: 72;
   --layer-dragged-item: 99;
   /* toggles: Obsidian's public toggle geometry variables. Plugin switches size themselves from
@@ -275,15 +275,139 @@ body {
      tall and a click on its centre lands on nothing. */
   --toggle-border-width: 2px;
   --toggle-width: 40px;
-  --toggle-radius: 18px;
-  --toggle-thumb-radius: 18px;
-  --toggle-thumb-height: 18px;
-  --toggle-thumb-width: 18px;
+  --toggle-radius: 999px;
+  --toggle-thumb-radius: 50%;
+  --toggle-thumb-height: 16px;
+  --toggle-thumb-width: 16px;
   --toggle-s-border-width: 2px;
   --toggle-s-width: 34px;
-  --toggle-s-thumb-height: 15px;
-  --toggle-s-thumb-width: 15px;
-  --toggle-thumb-color: #ffffff;
+  --toggle-s-thumb-height: 14px;
+  --toggle-s-thumb-width: 14px;
+  --toggle-thumb-color: var(--text-chrome);
+  /* ======================= LAYER 4 — STOCK NAMES WE NOW CONSUME (css-vars, #59) =======
+     Each is OUR current value, so the no-theme look is unchanged; the consumer reads it as
+     var(--name, <same value>). Mapping + provenance: goal css-vars mapB/*.tsv. */
+  --anim-duration-fast: transform .1s;
+  --background-modifier-active-hover: var(--bg-surface);
+  --background-modifier-cover: rgba(0,0,0,.35);
+  --background-modifier-message: rgba(30,30,30,0.95);
+  --blockquote-font-style: normal;
+  --border-width: 1px;
+  --button-radius: 4px;
+  --caret-color: var(--text-normal);
+  --clickable-icon-radius: 4px;
+  --code-white-space: pre-wrap;
+  --collapse-icon-color: var(--text-chrome-dim);
+  --color-base-00: #1c1c1c;
+  --color-base-10: #232323;
+  --color-base-100: #dadada;
+  --color-base-30: #45475a;
+  --color-base-50: #666666;
+  --color-base-70: #b3b3b3;
+  --color-cyan: #53dfdd;
+  --color-green: #44cf6e;
+  --color-orange: #e9973f;
+  --color-pink: #fa99cd;
+  --color-purple: #a882ff;
+  --color-red: #fb464c;
+  --color-yellow: #e0de71;
+  --cursor-link: pointer;
+  --divider-color: var(--bg-ribbon);
+  --divider-color-hover: var(--border-strong);
+  --drag-item-background: var(--bm-drop-src-bg);
+  --drag-item-shadow: 0 4px 14px var(--shadow-popover);
+  --dropdown-background: var(--bg-sidebar);
+  --dropdown-padding: 0 8px;
+  --font-interface-theme: var(--font-interface-override), system-ui, sans-serif;
+  --font-monospace-theme: var(--font-monospace-override), var(--font-monospace-default);
+  --font-normal: 400;
+  --font-semibold: 600;
+  --font-smallest: .7em;
+  --font-text-theme: var(--font-text-override), var(--font-default);
+  --font-ui-large: 16px;
+  --font-ui-medium: 14px;
+  --font-ui-small: 13px;
+  --font-ui-smaller: 12px;
+  --graph-controls-width: 240px;
+  --header-height: 32px;
+  --icon-color: var(--text-chrome-muted);
+  --icon-color-hover: var(--text-chrome);
+  --icon-l: 18px;
+  --icon-m: 16px;
+  --icon-s: 14px;
+  --icon-size: 18px;
+  --icon-xs: 12px;
+  --indentation-guide-width: 1px;
+  --inline-title-line-height: var(--h1-line-height);
+  --inline-title-margin-bottom: 0.5em;
+  --inline-title-size: var(--h1-size);
+  --inline-title-weight: var(--h1-weight);
+  --input-border-width: 1px;
+  --input-height: 24px;
+  --input-padding: 4px 6px;
+  --input-radius: 4px;
+  --interactive-normal: var(--border);
+  --link-color: var(--accent-blue);
+  --link-color-hover: var(--text-accent-hover);
+  --link-decoration: none;
+  --link-external-color: var(--accent-blue);
+  --link-external-decoration: underline;
+  --link-unresolved-color: var(--link-unresolved);
+  --link-unresolved-decoration-color: var(--link-unresolved-underline);
+  --menu-background: var(--bg-base);
+  --menu-border-width: 1px;
+  --menu-padding: 4px 0;
+  --menu-radius: 6px;
+  --menu-shadow: 0 4px 14px var(--shadow-popover);
+  --nav-collapse-icon-color: var(--text-chrome-dim);
+  --nav-heading-color: var(--text-chrome);
+  --nav-heading-weight: 600;
+  --nav-indentation-guide-width: 1px;
+  --nav-item-background-hover: var(--bg-surface);
+  --nav-item-background-selected: var(--text-selection);
+  --nav-item-color-highlighted: var(--bm-drop-into-fg);
+  --nav-item-padding: 0 4px;
+  --nav-item-radius: 5px;
+  --nav-item-size: var(--sidebar-font-size);
+  --nav-item-white-space: nowrap;
+  --nav-tag-background: var(--bg-surface);
+  --nav-tag-color: var(--text-chrome-dim);
+  --nav-tag-radius: 3px;
+  --popover-max-height: 210px;
+  --radius-l: 8px;
+  --radius-m: 4px;
+  --ribbon-padding: 10px 0;
+  --ribbon-width: 44px;
+  --scrollbar-active-thumb-bg: var(--scrollbar-thumb-bg);
+  --scrollbar-border-width: 0 3px 0 2px;
+  --scrollbar-radius: 6px;
+  --scrollbar-width: 12px;
+  --search-clear-button-color: var(--text-chrome-muted);
+  --search-input-radius: 4px;
+  --settings-background: var(--bg-elevated);
+  --slider-track-background: var(--border);
+  --slider-track-height: 4px;
+  --slider-value-font-size: 12px;
+  --status-bar-background: var(--bg-sidebar);
+  --status-bar-border-width: 1px;
+  --status-bar-font-size: 12px;
+  --status-bar-position: absolute;
+  --status-bar-radius: 6px;
+  --status-bar-text-color: var(--text-chrome-muted);
+  --suggestion-background: var(--bg-elevated);
+  --swatch-height: 22px;
+  --swatch-radius: 4px;
+  --swatch-width: 22px;
+  --tab-font-size: 12px;
+  --tab-text-color: var(--text-chrome-muted);
+  --tab-text-color-active: var(--text-chrome);
+  --tab-width: 120px;
+  --tag-background-hover: var(--tag-bg-hover);
+  --tag-color: var(--accent-blue);
+  --tag-decoration: none;
+  --tag-padding-y: 0;
+  --tag-radius: 999px;
+  --tag-size: .85em;
   /* callouts (#59 slice 1): stock 1.13.7 app.css body block, verbatim names + formulas (see the
      ".callout" section at the end of this file). The colours fall back to Obsidian's dark palette
      literals instead of defining --color-* here: --text-error etc. already read var(--color-red, …)
@@ -338,10 +462,10 @@ body:where(.theme-light) {
   --background-primary: var(--color-base-00, #ffffff);
   --background-primary-alt: var(--color-base-10, #fafafa);
   --background-secondary: #f6f6f6;
-  --background-secondary-alt: #e5e5e5;
+  --background-secondary-alt: var(--color-base-05, #e5e5e5);
   --ribbon-background: #f6f6f6;
   --background-modifier-border: var(--color-base-30, #e4e4e4);
-  --indentation-guide-color: rgba(0, 0, 0, 0.12);         /* listlinks REQ-9: a faint guide on the note surface */
+  --indentation-guide-color: color-mix(in srgb, var(--mono-100, #000) 12%, transparent);         /* listlinks REQ-9: a faint guide on the note surface */
   --text-normal: var(--color-base-100, #222222);
   --text-muted: var(--color-base-70, #5c5c5c);
   --text-faint: var(--color-base-50, #ababab);
@@ -389,10 +513,24 @@ body:where(.theme-light) {
   --text-quiet: #5c5c5c;
   --link-unresolved: #ad8cf8;
   --accent-mauve: var(--color-accent, #8a5cf5);
-  --accent-yellow: #ec7500;
+  --accent-yellow: var(--graph-node-focused, #ec7500);
   /* minimalmargin: scrollbar thumb, stock-default-light-rlwoff-read-900.png x=889 y=400 */
   --scrollbar-thumb-bg: #e5e5e5;
   --accent-green: #08b94e;
+  /* ---- css-vars #59: light values of the --color-* ramp we now define in LAYER 4 ---- */
+  --color-base-00: #ffffff;
+  --color-base-10: #fafafa;
+  --color-base-100: #222222;
+  --color-base-30: #e4e4e4;
+  --color-base-50: #ababab;
+  --color-base-70: #5c5c5c;
+  --color-cyan: #00bfbc;
+  --color-green: #08b94e;
+  --color-orange: #ec7500;
+  --color-pink: #d53984;
+  --color-purple: #7852ee;
+  --color-red: #e93147;
+  --color-yellow: #e0ac00;
   /* callouts (#59 slice 1): stock 1.13.7 .theme-light palette literals as fallbacks */
   --callout-blend-mode: var(--highlight-mix-blend-mode, darken);
   --callout-bug: var(--color-red, #e93147);
@@ -410,6 +548,10 @@ body:where(.theme-light) {
   --callout-warning: var(--color-orange, #ec7500);
 }
 /* THEME TOKENS END */
+/* #59: graph canvas colours main.js palette() reads (PAL_VAR): a CSS consumer per stock graph token; fallbacks = what the canvas painted before
+   (tag/attachment = their token defaults, unresolved = the plain node colour, text "" = label in its node colour) */
+body { --gp-tag: var(--graph-node-tag, var(--accent-green)); --gp-att: var(--graph-node-attachment, var(--accent-yellow));
+       --gp-unres: var(--graph-node-unresolved, var(--accent-blue)); --gp-text: var(--graph-text, ) }
 * { box-sizing: border-box; margin: 0 }
 /* goal fontset REQ-9: Obsidian's font token chain, declared ON BODY because that is where
    the Settings rows write their inline --font-<kind>-override (a chain on :root
@@ -417,9 +559,9 @@ body:where(.theme-light) {
    font matches, as in Obsidian, so each chain falls through to its default stack;
    chrome keeps its old system-ui stack, text and code their R15 stacks. */
 body { --font-interface-override: "??"; --font-text-override: "??"; --font-monospace-override: "??";
-       --font-interface: var(--font-interface-override), system-ui, sans-serif;
-       --font-text: var(--font-text-override), var(--font-default);
-       --font-monospace: var(--font-monospace-override), var(--font-monospace-default) }
+       --font-interface: var(--font-interface-theme, var(--font-interface-override), system-ui, sans-serif);
+       --font-text: var(--font-text-theme, var(--font-text-override), var(--font-default));
+       --font-monospace: var(--font-monospace-theme, var(--font-monospace-override), var(--font-monospace-default)) }
 /* goal noscroll: the DOCUMENT never scrolls. body used to be a static height:100vh box, so
    any outer box a theme or vault snippet put on it (body{margin:6px}, html{padding:4px})
    made the document 100vh+extra tall and the window grew a root scrollbar (cause.md).
@@ -454,13 +596,15 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
        border: var(--frame-width, 0) solid var(--frame-color, currentColor);
        background: var(--bg-base); color: var(--text-chrome) }
 /* R9.1 ribbon: fixed 44px icon strip, survives sidebar collapse */
-#ribbon { width: 44px; background: var(--bg-ribbon); flex-shrink: 0; display: flex;
-          flex-direction: column; align-items: center; gap: 8px;
-          padding: 10px 0 }
-#ribbon button { background: none; color: var(--text-chrome-muted); border: 0; padding: 5px;
-                 cursor: pointer; border-radius: 4px }
-#ribbon button:hover { background: var(--bg-surface); color: var(--text-chrome) }
-#ribbon button svg { width: 18px; height: 18px; display: block }
+#ribbon { width: var(--ribbon-width, 44px); background: var(--bg-ribbon); flex-shrink: 0; display: flex;
+          flex-direction: column; align-items: center; gap: var(--size-4-2, 8px);
+          padding: var(--ribbon-padding, 10px 0) }
+#ribbon:has(~ #side[hidden]) { background-color: var(--ribbon-background-collapsed, var(--bg-ribbon)) }
+#ribbon button { background: none; color: var(--icon-color, var(--text-chrome-muted)); border: 0; padding: 5px;
+                 cursor: pointer; border-radius: var(--radius-s, 4px) }
+#ribbon button:hover { background: var(--bg-surface); color: var(--icon-color-hover, var(--text-chrome)) }
+#ribbon button svg { width: var(--icon-l, 18px); height: var(--icon-l, 18px); display: block }
+#ribbon button svg[stroke-width="2"] { stroke-width: var(--icon-l-stroke-width, 2) }
 /* R22: the sidebars keep their nominal width but SHRINK (never past 40% of the
    window each) instead of forcing the body wider than the viewport — 44 + 156
    + 260 = 460px of fixed chrome does not fit a 320px window. overflow:hidden
@@ -476,25 +620,27 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .stab { flex: 0 1 34px; width: 34px; min-width: 0; overflow: hidden; background: none; color: var(--text-chrome-muted);
         border: 0; padding: 4px; cursor: pointer; border-radius: 4px }   /* R22: min-width:0 = shrinkable icon button */
 .stab:hover { color: var(--text-chrome) }
-.stab.active { background: var(--bg-surface); color: var(--text-chrome) }
-.stab svg { width: 15px; height: 15px; display: block; margin: 0 auto }
+.stab:hover svg { opacity: var(--icon-opacity-hover, 1) }
+.stab.active { background: var(--background-modifier-active-hover, var(--bg-surface)); color: var(--icon-color-active, var(--text-chrome)) }
+.stab svg { width: 15px; height: 15px; display: block; margin: 0 auto; opacity: var(--icon-opacity, 1); }
+.stab.active svg { opacity: var(--icon-opacity-active, 1) }
 .spane { flex: 1; display: flex; flex-direction: column; min-height: 0 }
 .spane[hidden] { display: none }
 #side[hidden] { display: none }   /* R9.5: collapsed left sidebar (ribbon stays) */
 /* ux-4: left resize divider — overlaps #side's last 6px (negative margin,
    net 0 layout width) so #main keeps its x=200 edge for the smoke coords */
-#ldiv { flex: 0 0 6px; margin-left: -6px; z-index: 3; cursor: col-resize }
-#ldiv:hover, #ldiv:active { background: var(--border-strong) }
+#ldiv { flex: 0 0 6px; margin-left: -6px; z-index: var(--layer-cover, 3); cursor: col-resize; height: var(--divider-vertical-height, auto); }
+#ldiv:hover, #ldiv:active { background: var(--divider-color-hover, var(--border-strong)) }
 #ldiv[hidden] { display: none }
 /* collapseall R3: #bar is the explorer header; .hslot = a RESERVED header slot
    (sort / auto-reveal — out of scope, spec R3): it takes a button's width and
    paints nothing, so the toggle sits in Obsidian's slot ORDER. #bmbar shares the
    base rule and is restyled to stock below (bmcollbtn).
    #bar keeps its height (the tree's first row stays at y=82, R8). */
-#bar, #bmbar { display: flex; gap: 4px; padding: 6px; flex-shrink: 0 }
+#bar, #bmbar { display: flex; gap: 4px; padding: var(--size-2-3, 6px); flex-shrink: 0 }
 .hslot { flex: 1; min-width: 0 }
 #bar button, #bmbar button { flex: 1; min-width: 0; background: var(--bg-surface); color: var(--text-chrome); border: 0;
-              padding: 4px; cursor: pointer; border-radius: 4px }
+              padding: var(--size-4-1, 4px); cursor: pointer; border-radius: var(--button-radius, 4px) }
 /* bmcollbtn: the bookmarks header is stock's ONE row of 4 visible icon buttons
    (notes/stock.md): compact (28 px wide), 32 px pitch, centred as a group, bare
    glyph at rest, a rounded hover square. Row height unchanged (24 px buttons in
@@ -510,22 +656,26 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
          outline: none; font-size: 12px }
 #tree { flex: 1; overflow-y: auto }
 /* R9.3 search pane */
-#sbar { display: flex; gap: 4px; padding: 6px }
+#sbar { display: flex; gap: var(--size-2-2, 4px); padding: 6px }
 #sinput { flex: 1; min-width: 0; background: var(--bg-sidebar); color: var(--text-chrome);
-          border: 1px solid var(--border); border-radius: 4px; padding: 4px 6px;
+          border: var(--input-border-width, 1px) solid var(--border); border-radius: var(--search-input-radius, 4px); padding: var(--input-padding, 4px 6px);
           outline: none; font-size: 12px }
 #sinput:focus { border-color: var(--accent-blue) }
-#sclear { background: none; color: var(--text-chrome-muted); border: 0; cursor: pointer;
+#sinput:hover { background-color: var(--background-modifier-form-field-hover, var(--bg-sidebar)) }
+#sinput, .graph-controls .mod-search-setting input { box-shadow: var(--input-shadow, none) }
+#sinput:hover, .graph-controls .mod-search-setting input:hover { box-shadow: var(--input-shadow-hover, var(--input-shadow, none)) }
+#sclear { background: none; color: var(--search-clear-button-color, var(--text-chrome-muted)); border: 0; cursor: pointer;
           padding: 0 4px; border-radius: 4px }
 #sclear:hover { color: var(--text-chrome); background: var(--bg-surface) }
-#sresults { flex: 1; overflow-y: auto; font-size: 12px }
+#sclear svg.gi { width: var(--search-clear-button-size, 12px); height: var(--search-clear-button-size, 12px) }
+#sresults { flex: 1; overflow-y: auto; font-size: var(--font-ui-smaller, 12px) }
 .sgroup { padding: 5px 8px 2px; color: var(--text-chrome); font-weight: 600; font-size: var(--sidebar-font-size);   /* sidefont: file rows = Q1; .shit snippets keep 12px */
           cursor: pointer; white-space: nowrap; overflow: hidden;
           text-overflow: ellipsis }
 .sgroup:hover { background: var(--bg-surface) }
 .sgroup .scount { color: var(--text-chrome-dim); font-weight: 400; margin-left: 4px }
 .shit { padding: 2px 8px 2px 16px; color: var(--text-chrome-muted); cursor: pointer;
-        white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background-color: var(--search-result-background, transparent); }
 .shit:hover { background: var(--bg-surface) }
 .shit mark { background: none; color: var(--accent-yellow) }
 .sempty { padding: 8px; color: var(--text-chrome-dim) }
@@ -550,7 +700,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .bmrow .bmchev svg { width: 13px; height: 13px }
 /* collapseall R1: a collapsed group's chevron points RIGHT (the svg is drawn
    pointing down), and every row inside it is kept in the DOM but not painted. */
-.bmrow.bmfold .bmchev svg { transform: rotate(-90deg) }
+.bmrow.bmfold .bmchev svg { transform: rotate(calc(var(--direction, 1) * -90deg)) }
 .bmrow.bmhide { display: none }
 .bmrow.bmgrp { font-weight: 500 }
 .bmrow .bmren { flex: 1; min-width: 0; background: var(--bg-base); color: var(--text-chrome);
@@ -571,30 +721,35 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
    .bmrow:hover on purpose: equal specificity, so source order keeps the drag
    fills over the hover fill. */
 #bmdropline { position: fixed; height: 3px; background: var(--bm-drop-line); z-index: 98; pointer-events: none }
-.bmrow.bmdrop-into, .bmrow.bmdrop-into:hover { background: var(--bm-drop-into-bg); color: var(--bm-drop-into-fg) }
-.bmrow.bmdrop-src, .bmrow.bmdrop-src:hover { background: var(--bm-drop-src-bg) }
+.bmrow.bmdrop-into, .bmrow.bmdrop-into:hover { background: var(--bm-drop-into-bg); color: var(--nav-item-color-highlighted, var(--bm-drop-into-fg)) }
+.bmrow.bmdrop-src, .bmrow.bmdrop-src:hover { background: var(--drag-item-background, var(--bm-drop-src-bg)) }
 /* ux-2 Obsidian parity. HEIGHT MUST STAY 31px — smoke clicks rows at pitch 31 */
-.trow { height: 31px; display: flex; align-items: center; cursor: pointer;
-        margin: 0 8px; padding: 0 4px; border-radius: 5px;
-        font-size: var(--sidebar-font-size); color: var(--nav-item-color) }   /* themematch: tree ink = --nav-item-color (muted), not body ink */
-.trow:hover { background: var(--bg-surface) }
-.trow.active { background: var(--nav-item-background-active); color: var(--nav-item-color-active) }
+.trow { height: 31px; display: flex; align-items: center; cursor: var(--cursor, pointer);
+        margin: 0 8px; padding: var(--nav-item-padding, 0 4px); border-radius: var(--nav-item-radius, 5px);
+        font-size: var(--nav-item-size, var(--sidebar-font-size)); color: var(--nav-item-color); margin-bottom: var(--nav-item-margin-bottom, 0); font-weight: var(--nav-item-weight, inherit); }   /* themematch: tree ink = --nav-item-color (muted), not body ink */
+.trow:hover { background: var(--nav-item-background-hover, var(--bg-surface)); color: var(--nav-item-color-hover, var(--nav-item-color)); font-weight: var(--nav-item-weight-hover, var(--nav-item-weight, inherit)); }
+.trow:hover .ttag { color: var(--nav-tag-color-hover, var(--nav-tag-color, var(--text-chrome-dim))) }
+.trow.active { background: var(--nav-item-background-active); color: var(--nav-item-color-active); font-weight: var(--nav-item-weight-active, var(--nav-item-weight, inherit)); }
+.trow.is-selected:not(.active) { color: var(--nav-item-color-selected, var(--nav-item-color)) }
 .tkids.collapsed { display: none }   /* R20: collapsed folder = its .tkids box hidden, rows stay built */
-.trow .tn { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden;
+.tkids { margin-inline-start: var(--nav-item-children-margin-start, 0); padding-inline-start: var(--nav-item-children-padding-start, 0) }
+.trow .tn { flex: 1; min-width: 0; white-space: var(--nav-item-white-space, nowrap); overflow: hidden;
             text-overflow: ellipsis }
 .trow .tg { flex: 0 0 14px; align-self: stretch; position: relative }
 .trow .tg::before { content: ""; position: absolute; left: 7px; top: 0;
-                    bottom: 0; width: 1px; background: var(--rule-faint) }
+                    bottom: 0; width: var(--nav-indentation-guide-width, 1px); background: var(--rule-faint) }
 .trow .tc { flex: 0 0 16px; display: flex; align-items: center;
-            justify-content: center; color: var(--text-chrome-dim) }
-.trow .tc svg { width: 10px; height: 10px; transition: transform .1s }
+            justify-content: center; color: var(--nav-collapse-icon-color, var(--text-chrome-dim)) }
+.trow .tc svg { width: 10px; height: 10px; transition: var(--anim-duration-fast, transform .1s) }
 .trow.folder.open .tc svg { transform: rotate(90deg) }
 .trow .tfi { flex: 0 0 18px; display: flex; align-items: center;
              color: var(--text-chrome-muted) }
-.trow .tfi svg { width: 14px; height: 14px }
-.trow.folder { font-weight: 500 }
-.trow .ttag { flex: 0 0 auto; margin-left: 6px; padding: 0 4px; border-radius: 3px;   /* goal canvas-core: the CANVAS tag on a .canvas row */
-             font-size: 0.7em; letter-spacing: .04em; color: var(--text-chrome-dim); background: var(--bg-surface) }
+.trow .tfi svg { width: var(--icon-s, 14px); height: var(--icon-s, 14px) }
+.trow .tfi svg[stroke-width="2"] { stroke-width: var(--icon-s-stroke-width, 2) }
+.trow.folder { font-weight: 500; padding: var(--nav-item-parent-padding, var(--nav-item-padding, 0 4px)); }
+.trow .ttag { flex: 0 0 auto; margin-left: 6px; padding: 0 4px; border-radius: var(--nav-tag-radius, 3px);   /* goal canvas-core: the CANVAS tag on a .canvas row */
+             font-size: 0.7em; letter-spacing: .04em; color: var(--nav-tag-color, var(--text-chrome-dim)); background: var(--nav-tag-background, var(--bg-surface)); font-weight: var(--nav-tag-weight, inherit); }
+.trow.active .ttag { color: var(--nav-tag-color-active, var(--nav-tag-color, var(--text-chrome-dim))) }
 /* settings-gear (#29): the footer row holds the switcher (flexes, ellipsizes) and the Settings gear (fixed 26px). */
 #vbar { display: flex; align-items: center; flex: 0 0 auto; min-width: 0; border-top: 1px solid var(--bg-surface) }
 #vswitch { flex: 1 1 auto; min-width: 0; padding: 6px 4px 6px 12px; color: var(--text-chrome-muted);
@@ -608,8 +763,11 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 #vswitch:hover { background: var(--bg-surface) }
 #main { flex: 1; display: flex; min-width: 0 }
 /* R9.6 right sidebar: localgraph of the active note, resizable divider */
-#rdiv { flex: 0 0 6px; background: var(--bg-ribbon); cursor: col-resize }
-#rdiv:hover, #rdiv:active { background: var(--border-strong) }
+#rdiv { flex: 0 0 6px; background: var(--divider-color, var(--bg-ribbon)); cursor: col-resize; height: var(--divider-vertical-height, auto);
+        --divider-line: var(--divider-width, 6px); padding-inline: calc((6px - min(var(--divider-line), 6px)) / 2) }
+#rdiv { background-clip: content-box }   /* own rule: keeps the background shorthand above serialisable in CSSOM */   /* #59: a theme --divider-width thins the VISIBLE line only; the 6px drag target stays */
+#rdiv:hover, #rdiv:active { background: var(--divider-color-hover, var(--border-strong)); --divider-line: var(--divider-width-hover, var(--divider-width, 6px)) }
+#rdiv:hover, #rdiv:active { background-clip: content-box }
 #rdiv[hidden], #rside[hidden] { display: none }
 #rside { width: 260px; flex: 0 1 auto; min-width: 0; max-width: 40%;   /* R22 */
          overflow: hidden; background: var(--bg-sidebar); display: flex;
@@ -618,19 +776,21 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 #rtabs { display: flex; flex-wrap: wrap; gap: 3px; padding: 6px 6px 2px 7px; overflow: hidden }   /* R22: wrap+clip. NO right padding reserve: R20 put #rtoggle IN FLOW as a flex child (margin-left:auto), so the old 30px inboard reserve only opened a dead gap and shifted the toggle 30px left of where R20's rside phase clicks it */
 #rpane-graph { display: flex; position: relative }
 #rpane-graph[hidden] { display: none }
-.rhead { padding: 6px 10px 4px; font-size: 12px; font-weight: 600; color: var(--text-chrome) }
+.rhead { padding: 6px 10px 4px; font-size: 12px; font-weight: var(--nav-heading-weight, 600); color: var(--nav-heading-color, var(--text-chrome)) }
+.rhead:hover { color: var(--nav-heading-color-hover, var(--nav-heading-color, var(--text-chrome))); font-weight: var(--nav-heading-weight-hover, var(--nav-heading-weight, 600)) }
 .rhead .scount { color: var(--text-chrome-dim); font-weight: 400; margin-left: 4px }
 .rlist { flex: 1; overflow-y: auto; font-size: var(--sidebar-font-size) }   /* sidefont: backlinks/outgoing/outline rows = Q1 (docs/recon-sidefont Q3) */
 .rempty { padding: 8px 10px; color: var(--text-chrome-dim) }
 .blnote { padding: 4px 8px; color: var(--text-chrome); cursor: pointer; display: flex;
           align-items: center; gap: 4px; white-space: nowrap; overflow: hidden }
 .blnote:hover { background: var(--bg-surface) }
-.blnote .tc { flex: 0 0 12px; display: flex; color: var(--text-chrome-dim) }
+.blnote .tc { flex: 0 0 12px; display: flex; color: var(--collapse-icon-color, var(--text-chrome-dim)) }
 .blnote .tc svg { width: 10px; height: 10px; transition: transform .1s }
 .blnote.open .tc svg { transform: rotate(90deg) }
+.blnote:not(.open) .tc { color: var(--collapse-icon-color-collapsed, var(--collapse-icon-color, var(--text-chrome-dim))) }
 .blnote .bln { flex: 1; overflow: hidden; text-overflow: ellipsis }
 .blnote .scount { color: var(--text-chrome-dim) }
-.blline { padding: 2px 8px 2px 24px; color: var(--text-chrome-muted); cursor: pointer; font-size: 12px;   /* sidefont: context SNIPPET, smaller than Q1 (Q3) */
+.blline { padding: 2px 8px 2px 24px; color: var(--text-chrome-muted); cursor: pointer; font-size: var(--font-ui-smaller, 12px);   /* sidefont: context SNIPPET, smaller than Q1 (Q3) */
           white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
 .blline:hover { background: var(--bg-surface) }
 .blline mark { background: none; color: var(--accent-yellow) }
@@ -640,13 +800,14 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .outrow.unresolved { color: var(--text-chrome-dim); font-style: italic; cursor: default }
 .outrow.unresolved::after { content: "unresolved"; margin-left: 6px; font-size: 10px;
                             color: var(--border-strong); font-style: normal }
-.tocrow { display: flex; align-items: center; gap: 2px; padding: 3px 6px 3px 0;
+.tocrow { display: flex; align-items: center; gap: var(--size-2-1, 2px); padding: 3px 6px 3px 0;
           color: var(--text-chrome-muted); cursor: pointer; white-space: nowrap; overflow: hidden }
 .tocrow:hover { background: var(--bg-surface) }
 .tocrow.active { color: var(--text-chrome); background: var(--bg-surface) }
-.tocrow .tc { flex: 0 0 14px; display: flex; justify-content: center; color: var(--text-chrome-dim) }
-.tocrow .tc svg { width: 10px; height: 10px; transition: transform .1s }
+.tocrow .tc { flex: 0 0 14px; display: flex; justify-content: center; color: var(--collapse-icon-color, var(--text-chrome-dim)) }
+.tocrow .tc svg { width: 10px; height: 10px; transition: var(--anim-duration-fast, transform .1s) }
 .tocrow.open .tc svg { transform: rotate(90deg) }
+.tocrow:not(.open) .tc { color: var(--collapse-icon-color-collapsed, var(--collapse-icon-color, var(--text-chrome-dim))) }
 .tocrow .tn { overflow: hidden; text-overflow: ellipsis }
 .tockids { display: block }
 .tockids[hidden] { display: none }
@@ -671,18 +832,19 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .split.row { flex-direction: row }
 .split.col { flex-direction: column }
 /* R6.6: draggable divider between sibling panes */
-.divider { flex: 0 0 6px; background: var(--bg-ribbon) }
-.divider:hover, .divider:active { background: var(--border-strong) }
-.divider.row { cursor: col-resize }
-.divider.col { cursor: row-resize }
+.divider { flex: 0 0 6px; background: var(--divider-color, var(--bg-ribbon)); --divider-line: var(--divider-width, 6px) }   /* #59: theme --divider-width = visible line, the 6px hit area stays */
+.divider:hover, .divider:active { background: var(--divider-color-hover, var(--border-strong)); --divider-line: var(--divider-width-hover, var(--divider-width, 6px)) }
+.divider, .divider:hover, .divider:active { background-clip: content-box }   /* own rule: a longhand after a var() shorthand makes CSSOM drop the shorthand text */
+.divider.row { cursor: col-resize; padding-inline: calc((6px - min(var(--divider-line), 6px)) / 2) }
+.divider.col { cursor: row-resize; padding-block: calc((6px - min(var(--divider-line), 6px)) / 2) }
 .pane { flex: 1 1 0; display: flex; flex-direction: column;
         min-width: 0; min-height: 0; position: relative }
 .pane:not(.focused) .tabbar { opacity: .7 }   /* dim inactive tab strips */
 /* R22: the strip is a fixed-height row of shrinkable items — min-width:0 +
    overflow:hidden all the way down, so a pane squeezed to a few px clips the
    strip instead of pushing #main (and the window) wider than the viewport. */
-.tabbar { display: flex; height: 32px; background: var(--tab-container-background); flex-shrink: 0;
-          min-width: 0; overflow: hidden; user-select: none }   /* R18: a missed tab grab must not start a text-selection DnD (Obsidian: tab strip unselectable) */
+.tabbar { display: flex; height: var(--header-height, 32px); background: var(--tab-container-background); flex-shrink: 0;
+          min-width: 0; overflow: hidden; user-select: none; border-bottom-color: var(--tab-outline-color, currentColor); border-bottom-style: solid; border-bottom-width: var(--tab-outline-width, 0); }   /* R18: a missed tab grab must not start a text-selection DnD (Obsidian: tab strip unselectable) */
 .tabs { display: flex; flex: 1 1 0; min-width: 0; overflow: hidden }
 /* R4X.1 (navbtn): Back/Forward at the header's left edge (docs/recon-navbtn §1—§3).
    Obsidian: enabled = dark glyph, disabled = light grey, hover paints a rounded
@@ -691,25 +853,31 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .navbtns { display: flex; align-items: center; flex: 0 1 auto; min-width: 0;
            overflow: hidden; padding: 0 2px }
 .navbtn { background: none; border: 0; color: var(--text-chrome); cursor: pointer;
-          padding: 3px 5px; border-radius: 4px; display: flex; align-items: center }
+          padding: 3px 5px; border-radius: var(--clickable-icon-radius, 4px); display: flex; align-items: center }
 .navbtn:disabled { color: var(--text-chrome-muted); cursor: default }
 .navbtn:not(:disabled):hover { background: var(--border) }
-.navbtn svg { width: 12px; height: 12px; display: block }
-.modebtn { background: none; border: 0; color: var(--text-chrome-muted); cursor: pointer;
+.navbtn svg { width: var(--icon-xs, 12px); height: var(--icon-xs, 12px); display: block }
+.navbtn svg[stroke-width="2"] { stroke-width: var(--icon-xs-stroke-width, 2) }
+.modebtn { background: none; border: 0; color: var(--icon-color, var(--text-chrome-muted)); cursor: pointer;
            padding: 0 10px; flex: 0 1 auto; min-width: 0; overflow: hidden }   /* R22: shrinkable, was flex-shrink:0 */
-.modebtn:hover { color: var(--text-chrome) }
+.modebtn:hover { color: var(--icon-color-hover, var(--text-chrome)) }
 .modebtn svg { width: 16px; height: 16px; display: block }
 /* graphhdr REQ-5: the ⋮ "More options" button — same muted glyph, right of the toggle */
-.morebtn { background: none; border: 0; color: var(--text-chrome-muted); cursor: pointer;
+.morebtn { background: none; border: 0; color: var(--icon-color, var(--text-chrome-muted)); cursor: pointer;
            padding: 0 8px; flex: 0 1 auto; min-width: 0; overflow: hidden }
 .morebtn:hover { color: var(--text-chrome) }
 .morebtn svg { width: 16px; height: 16px; display: block }
-.tab { width: 120px; min-width: 0; flex-shrink: 1; overflow: hidden; display: flex; align-items: center;
+.tab { width: var(--tab-width, 120px); min-width: 0; flex-shrink: 1; overflow: hidden; display: flex; align-items: center;
        gap: 6px; padding: 0 8px; background: var(--bg-surface); color: var(--tab-text-color-focused, var(--text-chrome-muted));
-       cursor: pointer; font-size: 12px; border-right: 2px solid var(--bg-ribbon) }   /* R22: overflow:hidden — the 16px close button + 16px padding cannot fit a 2px tab, so clip */
-.tab.active { background: var(--tab-background-active); color: var(--tab-text-color-focused-active, var(--text-chrome)) }   /* themematch: active tab = the note surface */
+       cursor: pointer; font-size: var(--tab-font-size, 12px); border-right: 2px solid var(--tab-divider-color, var(--bg-ribbon)); max-width: var(--tab-max-width, none); border-radius: var(--tab-radius, 0); }   /* R22: overflow:hidden — the 16px close button + 16px padding cannot fit a 2px tab, so clip */
+.tab.active { background: var(--tab-background-active); color: var(--tab-text-color-focused-active, var(--text-chrome)); border-radius: var(--tab-radius-active, var(--tab-radius, 0)); }   /* themematch: active tab = the note surface */
+/* #59 x #84: stock Obsidian 1.13.7 tab ink — a FOCUSED window paints --tab-text-color-focused(-active) (rules above), an
+   UNFOCUSED one --tab-text-color(-active). App-owned marker body.window-focused (main.js winFocus), NOT Obsidian's
+   body.is-focused: that class would switch on theme rules keyed to it (AnuPpuccin: active title -> accent), off-stock. */
+body:not(.window-focused) .tab { color: var(--tab-text-color, var(--text-chrome-muted)) }
+body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(--text-chrome)) }
 .tab .t { flex: 1 1 auto; min-width: 0; overflow: hidden;
-          text-overflow: ellipsis; white-space: nowrap }
+          text-overflow: ellipsis; white-space: nowrap; font-weight: var(--tab-font-weight, inherit); }
 /* ux-1: close button — flex-none so ellipsized titles can never crush it,
    inline svg cross (U+2715 was tofu under webkit2gtk's font set) */
 .tab .x { flex: 0 0 auto; display: flex; align-items: center;
@@ -723,10 +891,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
    declares none paints exactly as before. */
 .pane.focused .tab.active .t { color: var(--tab-text-color-focused-active-current, var(--tab-text-color-focused-active, var(--text-chrome))) }
 /* ux-5: tab drag — ghost chip under the cursor + drop-target highlights */
-#tabghost { position: fixed; left: 0; top: 0; will-change: transform; z-index: 99; pointer-events: none;
+#tabghost { position: fixed; left: 0; top: 0; will-change: transform; z-index: var(--layer-dragged-item, 99); pointer-events: none;
             background: var(--border); color: var(--text-chrome); padding: 4px 12px;
             border-radius: 6px; font-size: 12px; opacity: .92;
-            box-shadow: 0 4px 14px var(--shadow-popover) }
+            box-shadow: var(--drag-item-shadow, 0 4px 14px var(--shadow-popover)); font-weight: var(--font-medium, inherit); }
 .tabs.drop-strip { outline: 2px solid var(--accent-blue); outline-offset: -2px }
 /* R24.6: the explorer drop target is OUTLINED — the folder row the note lands
    in, or the whole tree when the destination is the vault root. Same accent
@@ -749,8 +917,8 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
           padding: 16px; resize: none;
           font: 13px/1.6 monospace; outline: none }
 .lp { flex: 1 1 0; min-width: 0; overflow-y: auto; overflow-x: hidden; overflow-anchor: none }   /* CM6 virtualises against this scroller: browser scroll anchoring would follow a reused line element across a viewport redraw (find reveal 1080 -> 0) — CM6 sets the same on its own .cm-scroller */   /* R22: min-width:0 + no h-scroll */   /* padding + type: R15 block below */
-.lp a.wiki { color: var(--accent-blue) }
-.lp a.wiki-unresolved { color: var(--link-unresolved); font-style: italic }
+.lp a.wiki { color: var(--link-color, var(--accent-blue)); font-weight: var(--link-weight, inherit); }
+.lp a.wiki-unresolved { color: var(--link-unresolved-color, var(--link-unresolved)); font-style: italic; filter: var(--link-unresolved-filter, none); opacity: var(--link-unresolved-opacity, 1); }
 /* R8.2: one rendered row per line/block; the raw caret row blends in */
 .lprow { min-height: 1.5em; cursor: text }
 .lprow > :first-child { margin-top: 0 }
@@ -789,14 +957,15 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 /* one rule covers both wikilink states: the unresolved anchor carries
    `class="wiki wiki-unresolved"` (main.rs:1336-1343), never wiki-unresolved
    alone — :733 adds only colour + italic */
-.preview a.wiki { color: var(--accent-blue); cursor: pointer }
-.preview a.wiki-unresolved { color: var(--link-unresolved); font-style: italic }
-.lp a.ext, .preview a.ext { color: var(--accent-blue); text-decoration: underline; cursor: pointer }  /* S1: external link, opens via xdg-open */
+.preview a.wiki { color: var(--link-color, var(--accent-blue)); cursor: var(--cursor-link, pointer); font-weight: var(--link-weight, inherit); }
+.preview a.wiki-unresolved { color: var(--link-unresolved-color, var(--link-unresolved)); font-style: italic }
+.lp a.ext, .preview a.ext { color: var(--link-external-color, var(--accent-blue)); text-decoration: var(--link-external-decoration, underline) var(--link-decoration-thickness, auto); cursor: pointer; filter: var(--link-external-filter, none); }   /* #59: thickness rides in the shorthand (a longhand after it would drop the shorthand from CSSOM) */
+.lp a.ext:hover, .preview a.ext:hover { color: var(--link-external-color-hover, var(--link-external-color, var(--accent-blue))); text-decoration-line: var(--link-external-decoration-hover, var(--link-external-decoration, underline)) }
 /* tags: inline #tag pills (small rounded accent-tinted chip) */
 .lp a.tag, .preview a.tag { color: var(--tag-color, var(--accent-blue)); background: var(--tag-bg);
-  border-radius: 999px; padding: 0 7px; font-size: .85em; text-decoration: none;
-  cursor: pointer; white-space: nowrap }
-.lp a.tag:hover, .preview a.tag:hover { background: var(--tag-bg-hover) }
+  border-radius: var(--tag-radius, 999px); padding: var(--tag-padding-y, 0) var(--tag-padding-x, 7px); font-size: var(--tag-size, .85em); text-decoration: var(--tag-decoration, none);
+  cursor: pointer; white-space: nowrap; border-color: var(--tag-border-color, currentColor); border-style: solid; border-width: var(--tag-border-width, 0); font-weight: var(--tag-weight, inherit); }
+.lp a.tag:hover, .preview a.tag:hover { background: var(--tag-background-hover, var(--tag-bg-hover)); border-color: var(--tag-border-color-hover, var(--tag-border-color, currentColor)); color: var(--tag-color-hover, var(--tag-color, var(--accent-blue))); text-decoration: var(--tag-decoration-hover, var(--tag-decoration, none)); }
 .graph { flex: 1 1 0; min-width: 0; min-height: 0;   /* R22 */ background: var(--bg-ribbon); position: relative; z-index: 1 }   /* above .graphgl */
 /* graph-webgl: WebGL canvas BEHIND .graph (nodes + edges); .graph goes transparent and keeps events + labels */
 .graphgl { position: absolute; inset: 0; background: var(--bg-ribbon) }
@@ -804,24 +973,24 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .graph.gl-on { background: var(--transparent) }
 
 /* [[ autocomplete */
-.ac { position: absolute; z-index: 6; background: var(--bg-elevated);
+.ac { position: absolute; z-index: var(--layer-popover, 6); background: var(--suggestion-background, var(--bg-elevated));
      border: 1px solid var(--border); border-radius: 6px; min-width: 180px;
-     max-height: 210px; overflow-y: auto; font-size: 13px; padding: 3px }
+     max-height: var(--popover-max-height, 210px); overflow-y: auto; font-size: 13px; padding: 3px; backdrop-filter: var(--suggestion-backdrop-filter, none); }
 .ac[hidden] { display: none }
 .ac div { padding: 4px 10px; cursor: pointer; white-space: nowrap;
-          border-radius: 4px }
+          border-radius: var(--radius-m, 4px) }
 .ac div.sel, .ac div:hover { background: var(--border) }
 
 /* status bar */
-.status { position: absolute; right: 10px; bottom: 8px; display: flex;
-          gap: 12px; background: var(--bg-sidebar); border: 1px solid var(--bg-surface);
-          border-radius: 6px; padding: 3px 10px; font-size: 12px;
+.status { position: var(--status-bar-position, absolute); right: 10px; bottom: 8px; display: flex;
+          gap: var(--size-4-3, 12px); background: var(--status-bar-background, var(--bg-sidebar)); border: var(--status-bar-border-width, 1px) solid var(--status-bar-border-color, var(--bg-surface));
+          border-radius: var(--status-bar-radius, 6px); padding: 3px 10px; font-size: var(--status-bar-font-size, 12px);
           /* R22: in a narrow pane the three counters wrap (bottom-anchored, so
              the box grows upward) and each one ellipsises rather than spilling
              out over the sidebar / past the window edge. */
           max-width: calc(100% - 20px); overflow: hidden;
           flex-wrap: wrap; justify-content: flex-end;
-          color: var(--text-chrome-muted); z-index: 5; pointer-events: none }
+          color: var(--status-bar-text-color, var(--text-chrome-muted)); z-index: var(--layer-status-bar, 5); pointer-events: none }
 .status > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 .status[hidden] { display: none }
 
@@ -834,7 +1003,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
          padding: 28px; position: relative }
 /* startscr: logo LEFT of the name, the pair centred as one row (operator 2026-10-10) */
 #ptitle { display: flex; align-items: center; justify-content: center; gap: 12px;
-          font-size: 26px; font-weight: 700; line-height: 36px;
+          font-size: 26px; font-weight: var(--font-bold, 700); line-height: 36px;   /* #59: picker title = our titlebar title (stock --titlebar-text-weight) */
           margin-bottom: 20px; letter-spacing: 0.5px }
 #plogo { width: 36px; height: 36px; flex-shrink: 0; display: block }   /* ~2x the cap height */
 #ptname { display: block; min-width: 0 }
@@ -884,16 +1053,17 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
            display: inline-flex; align-items: center; justify-content: center }
 #p-close svg { display: block }
 #p-close:hover { color: var(--text-chrome) }
-#bar button svg, #bmbar button svg { width: 16px; height: 16px; display: block; margin: 0 auto }
+#bar button svg, #bmbar button svg { width: var(--icon-m, 16px); height: var(--icon-m, 16px); display: block; margin: 0 auto }
+#bar button svg[stroke-width="2"], #bmbar button svg[stroke-width="2"] { stroke-width: var(--icon-m-stroke-width, 2) }
 #vswitch svg { width: 13px; height: 13px; vertical-align: -2px; margin-right: 6px }
 
 /* tab context menu (M7 / R6.2): simple dark popup */
-.ctxmenu { position: fixed; z-index: 60; background: var(--bg-base);
-           border: 1px solid var(--border); border-radius: 6px; padding: 4px 0;
-           min-width: 130px; box-shadow: 0 4px 14px var(--shadow-popover);
+.ctxmenu { position: fixed; z-index: var(--layer-menu, 60); background: var(--menu-background, var(--bg-base));
+           border: var(--menu-border-width, 1px) solid var(--menu-border-color, var(--border)); border-radius: var(--menu-radius, 6px); padding: var(--menu-padding, 4px 0);
+           min-width: 130px; box-shadow: var(--menu-shadow, 0 4px 14px var(--shadow-popover));
            /* R22: JS clamps the position to the MEASURED box (placeMenu);
               these cap a menu that is bigger than the whole window */
-           max-width: 100vw; max-height: 100vh; overflow: auto }
+           max-width: 100vw; max-height: 100vh; overflow: auto; backdrop-filter: var(--menu-backdrop-filter, none); }
 .ctxmenu div { padding: 6px 14px; cursor: pointer; font-size: 13px;
                color: var(--text-chrome); white-space: nowrap }
 .ctxmenu div:hover { background: var(--border) }
@@ -933,7 +1103,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 /* goal graphparity: the global graph's Forces card (docs/recon-graphpanel). Open: 240 wide,
    12px in from the view's top-right corner; closed (.is-close): a gear column. R22: never
    wider/taller than the pane it floats in — the body scrolls instead. */
-.graph-controls { position: absolute; top: 12px; right: 12px; z-index: 7; width: 240px;
+.graph-controls { position: absolute; top: 12px; right: 12px; z-index: 7; width: var(--graph-controls-width, 240px);
   max-width: calc(100% - 24px); max-height: calc(100% - 24px); overflow-x: hidden; overflow-y: auto; box-sizing: border-box;
   background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px;
   padding: 6px 0 8px; font-size: 13px; color: var(--text-chrome) }
@@ -964,20 +1134,20 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .graph-controls:not(.is-local) .gc-local { display: none }   /* local-only Filters rows (Depth, link directions: R§5.1) */
 .graph-controls.is-local .gc-global { display: none }   /* global-only Filters rows (Orphans: GC12) */
 .graph-controls .mod-search-setting input { width: 100%; box-sizing: border-box; height: 28px; padding: 0 8px; font: inherit; font-size: 13px;
-  color: var(--text-normal, inherit); background: var(--background-modifier-form-field, var(--bg-elevated)); border: 1px solid var(--border); border-radius: 4px }
+  color: var(--text-normal, inherit); background: var(--background-modifier-form-field, var(--bg-elevated)); border: var(--border-width, 1px) solid var(--border); border-radius: var(--input-radius, 4px) }
 .graph-controls .gf-body:empty { display: none }
 .graph-controls .setting-item { padding: 6px 12px; min-width: 0 }
 .graph-controls .setting-item-name { margin-bottom: 4px }
 .graph-controls .gf-ctl { display: flex; align-items: center; gap: 8px; min-width: 0 }
-.graph-controls .slider-value { flex: 0 0 auto; min-width: 28px; font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums }
+.graph-controls .slider-value { flex: 0 0 auto; min-width: 28px; font-size: var(--slider-value-font-size, 12px); color: var(--text-muted); font-variant-numeric: tabular-nums; font-weight: var(--slider-value-font-weight, inherit); }
 /* R22: the range control paints its thumb past a 16px box — it clips its own internals */
 .graph-controls input.slider { flex: 1 1 auto; min-width: 0; height: 16px; margin: 0; overflow: hidden; accent-color: var(--interactive-accent) }
 /* graphctx: stock's toggle (div.checkbox-container, .is-enabled = on), right of the setting's name */
 .graph-controls .mod-toggle { display: flex; align-items: center; justify-content: space-between; gap: 8px }
 .graph-controls .mod-toggle .setting-item-name { margin-bottom: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
-.graph-controls .checkbox-container { flex: 0 0 auto; position: relative; width: 34px; height: 18px; border-radius: 9px;
+.graph-controls .checkbox-container { flex: 0 0 auto; position: relative; width: var(--toggle-s-width, 34px); height: 18px; border-radius: 9px;
   background: var(--border); cursor: pointer; transition: background 0.1s }
-.graph-controls .checkbox-container::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px;
+.graph-controls .checkbox-container::after { content: ""; position: absolute; top: 2px; left: 2px; width: var(--toggle-s-thumb-width, 14px); height: var(--toggle-s-thumb-height, 14px);
   border-radius: 50%; background: var(--text-chrome); transition: transform 0.1s }
 .graph-controls .checkbox-container.is-enabled { background: var(--interactive-accent) }
 .graph-controls .checkbox-container.is-enabled::after { transform: translateX(16px) }
@@ -990,7 +1160,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
   min-width: var(--gc-swatch, 18px); min-height: var(--gc-swatch, 18px); max-width: var(--gc-swatch, 18px); max-height: var(--gc-swatch, 18px); aspect-ratio: 1 / 1;
   margin: 0; padding: 0; border: 0; border-radius: 50%; background: none; cursor: grab; overflow: hidden }
 .graph-controls .graph-color-group input[type=color]::-webkit-color-swatch-wrapper { padding: 0 }
-.graph-controls .graph-color-group input[type=color]::-webkit-color-swatch { border: 0; border-radius: 50%; width: 100%; height: 100%; box-sizing: border-box }
+.graph-controls .graph-color-group input[type=color]::-webkit-color-swatch { border: 0; border-radius: 50%; width: 100%; height: 100%; box-sizing: border-box; box-shadow: var(--swatch-shadow, none); }
 .graph-controls .graph-color-group.gc-drag { opacity: 0.5 }
 .graph-controls .graph-color-group input[type=color] { -webkit-user-drag: none; user-select: none }
 .graph-controls .graph-color-group .clickable-icon { flex: 0 0 auto; width: 26px; height: 26px; padding: 5px; box-sizing: border-box; border-radius: 4px;
@@ -1170,7 +1340,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 #saveerr:not([hidden]) ~ #notice, #dropmsg:not([hidden]) ~ #notice { bottom: 58px }
 
 /* R10.3 block ids: grey superscript label in LP, hidden in reading view */
-.lp .blockid { font-size: .7em; color: var(--text-chrome-dim); vertical-align: super; margin-left: 4px; user-select: none }
+.lp .blockid { font-size: var(--font-smallest, .7em); color: var(--text-chrome-dim); vertical-align: super; margin-left: 4px; user-select: none }
 .preview .blockid { display: none }
 /* R10.2 navigation target flash (~2 s fade, yellow) */
 .navflash { background: var(--highlight-yellow) }
@@ -1182,6 +1352,8 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .ulhead .tc { display: flex; color: var(--text-chrome-dim) }
 .ulhead .tc svg { width: 10px; height: 10px; transition: transform .1s }
 .ulhead.open .tc svg { transform: rotate(90deg) }
+.rhead.ulhead:not(.open) { color: var(--nav-heading-color-collapsed, var(--nav-heading-color, var(--text-chrome))) }
+.rhead.ulhead:not(.open):hover { color: var(--nav-heading-color-collapsed-hover, var(--nav-heading-color-collapsed, var(--nav-heading-color, var(--text-chrome)))) }
 .ullink { background: var(--accent-blue); color: var(--bg-base); border: 0; border-radius: 4px;
           padding: 1px 8px; font: 600 11px sans-serif; cursor: pointer }
 /* R17: ONE engine for live preview and source mode (ui/editor.js). Every
@@ -1207,39 +1379,40 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .lp .h { font-weight: 700; color: var(--text-heading, currentColor) }   /* wasp: orange headings; currentColor = inherit for every theme that declares no --text-heading */
 /* #59 slice 2: per-level heading ink = the theme's --h<n>-color (Obsidian: h<n> { color: var(--h<n>-color) }), the
    reading view below the same; a theme that declares none keeps --text-heading / currentColor, so the default is unchanged */
-.lp .h1 { font-size: var(--h1-size); color: var(--h1-color, var(--text-heading, currentColor)) }
-.lp .h2 { font-size: var(--h2-size); color: var(--h2-color, var(--text-heading, currentColor)) }
-.lp .h3 { font-size: var(--h3-size); color: var(--h3-color, var(--text-heading, currentColor)) }
-.lp .h4 { font-size: var(--h4-size); color: var(--h4-color, var(--text-heading, currentColor)) }
-.lp .h5 { font-size: var(--h5-size); color: var(--h5-color, var(--text-heading, currentColor)) }
-.lp .h6 { font-size: var(--h6-size); color: var(--h6-color, var(--text-heading, currentColor)) }
-.lp .b { font-weight: var(--bold-weight) }
-.lp .i { font-style: italic }
+.lp .h1 { font-size: var(--h1-size); color: var(--h1-color, var(--text-heading, currentColor)); font-family: var(--h1-font, inherit); font-style: var(--h1-style, inherit); font-variant: var(--h1-variant, inherit); }
+.lp .h2 { font-size: var(--h2-size); color: var(--h2-color, var(--text-heading, currentColor)); font-family: var(--h2-font, inherit); font-style: var(--h2-style, inherit); font-variant: var(--h2-variant, inherit); }
+.lp .h3 { font-size: var(--h3-size); color: var(--h3-color, var(--text-heading, currentColor)); font-family: var(--h3-font, inherit); font-style: var(--h3-style, inherit); font-variant: var(--h3-variant, inherit); }
+.lp .h4 { font-size: var(--h4-size); color: var(--h4-color, var(--text-heading, currentColor)); font-family: var(--h4-font, inherit); font-style: var(--h4-style, inherit); font-variant: var(--h4-variant, inherit); }
+.lp .h5 { font-size: var(--h5-size); color: var(--h5-color, var(--text-heading, currentColor)); font-family: var(--h5-font, inherit); font-style: var(--h5-style, inherit); font-variant: var(--h5-variant, inherit); }
+.lp .h6 { font-size: var(--h6-size); color: var(--h6-color, var(--text-heading, currentColor)); font-family: var(--h6-font, inherit); font-style: var(--h6-style, inherit); font-variant: var(--h6-variant, inherit); }
+.lp .b { font-weight: var(--bold-weight); color: var(--bold-color, inherit); }
+.lp .i { font-style: italic; color: var(--italic-color, inherit); font-weight: var(--italic-weight, inherit); }
 .lp .bi { font-weight: var(--bold-weight); font-style: italic }
 .lp .s { text-decoration: line-through }
 .lp .hl { background: var(--highlight-yellow); color: var(--text-normal) }   /* issue #47: the lp ==marker== is a <mark>, whose UA sheet paints black ink; stock: --text-normal */
 .lp .code { font-family: var(--font-monospace); font-size: var(--code-size); background: var(--code-background); border-radius: var(--code-radius) }
-.lp .wl, .lp .lt, .lp .url { color: var(--accent-blue) }
-.lp .wl:hover, .lp .lt:hover, .lp .url:hover { color: var(--text-accent-hover) }   /* themematch: link hover ink */
-.lp a.wiki { text-decoration: none }
+.lp .wl, .lp .lt, .lp .url { color: var(--link-color, var(--accent-blue)) }
+.lp .wl:hover, .lp .lt:hover, .lp .url:hover { color: var(--link-color-hover, var(--text-accent-hover)) }   /* themematch: link hover ink */
+.lp a.wiki { text-decoration: var(--link-decoration, none) }
+.lp a.wiki:hover { text-decoration-line: var(--link-decoration-hover, var(--link-decoration, none)) }
 .lp.src .wl, .lp.src .lt, .lp.src .url { text-decoration: underline }
-.lp .tag { color: var(--tag-color, var(--accent-blue)); background: var(--tag-bg); border-radius: 999px; padding: 0 4px }
+.lp .tag { color: var(--tag-color, var(--accent-blue)); background: var(--tag-bg); border-radius: var(--tag-radius, 999px); padding: var(--tag-padding-y, 0) var(--tag-padding-x, 4px); border-color: var(--tag-border-color, currentColor); border-style: solid; border-width: var(--tag-border-width, 0); font-weight: var(--tag-weight, inherit); }
 .lp .task, .lp .hr, .lp .tbl { font-family: var(--font-monospace) }
 .lp .fence { display: block; font-family: var(--font-monospace); font-size: 13px; background: var(--bg-surface);
              padding: 0 8px; white-space: pre; overflow-x: auto }
-.lp .bq { color: inherit }   /* geometry (border + padding) is R15.13 below */
+.lp .bq { color: var(--blockquote-color, inherit) }   /* geometry (border + padding) is R15.13 below */
 /* R14 settings modal (Ctrl+,) — setcenter R1/R2: centred on both axes by flex,
    sized by the viewport-relative rule below; recentres on resize with no JS.
    Phases never click it by literal coordinate: they read the census [sbox:] [snav:] ... */
-#settings { position: fixed; inset: 0; z-index: 55; background: var(--scrim-strong);
+#settings { position: fixed; inset: 0; z-index: var(--layer-modal, 55); background: var(--scrim-strong);
   display: flex; align-items: center; justify-content: center; box-sizing: border-box }
 #settings[hidden] { display: none }
 #sbox { position: relative; width: min(90vw, 1100px); height: min(85vh, 1000px); box-sizing: border-box;
         min-width: 0; min-height: 0; max-width: 100%; max-height: 100%;
-        background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+        background: var(--settings-background, var(--bg-elevated)); border: 1px solid var(--border); border-radius: var(--radius-l, 8px); overflow: hidden;
         display: flex; flex-direction: column; box-shadow: 0 8px 30px var(--shadow-modal); font-size: 13px }
 #shead { height: 36px; box-sizing: border-box; display: flex; align-items: center; justify-content: space-between;
-         padding: 0 12px; background: var(--bg-base); border-bottom: 1px solid var(--border); font-weight: 600 }
+         padding: 0 12px; background: var(--bg-base); border-bottom: 1px solid var(--border); font-weight: 600; padding-inline-end: var(--size-4-10, 12px); }
 #sclose { background: none; border: 0; color: var(--text-chrome-muted); cursor: pointer; font-size: 14px }
 #sclose:hover { color: var(--text-chrome) }
 #sbody { flex: 1; display: flex; min-height: 0 }
@@ -1249,21 +1422,21 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .snavi { padding: 5px 14px; cursor: pointer; color: var(--text-chrome) }
 .snavi:hover { background: var(--bg-surface) }
 .snavi.sel { background: var(--border) }
-#spage { flex: 1; min-width: 0; padding: 16px; box-sizing: border-box; display: flex; flex-direction: column }
+#spage { flex: 1; min-width: 0; padding: var(--size-4-4, 16px); box-sizing: border-box; display: flex; flex-direction: column }
 /* R30 row panes: card inset, a fixed row height for a one-line description
    growing per extra line, a separator inset to the card, controls flush right
    so the rows line up with Obsidian's settings layout. #spage was already an
    allowed R22 scroll container; #snav declares overflow-y and is registered in
    OVF_SCROLL / R22.2 as well (R30.13). */
 #spage.rows { display: block; overflow-y: auto; padding: 16px 20px }
-.ssec { font-weight: 600; color: var(--text-chrome); margin: 24px 0 8px; font-size: 13px }
+.ssec { font-weight: var(--font-semibold, 600); color: var(--text-chrome); margin: 24px 0 8px; font-size: 13px }
 #spage.rows > .ssec:first-child { margin-top: 0 }
 .scard { background: var(--bg-base); border: 1px solid var(--bg-surface); border-radius: 6px }
 .srow { display: flex; align-items: center; gap: 16px; min-height: 76px; box-sizing: border-box;
-        padding: 20px 17px; border-bottom: 1px solid var(--bg-surface) }
+        padding: var(--size-4-5, 20px) 17px; border-bottom: 1px solid var(--bg-surface) }
 .scard > .srow:last-child { border-bottom: 0 }
 .sinfo { flex: 1; min-width: 0 }
-.slabel { font-size: 14px; line-height: 19px; color: var(--text-chrome) }
+.slabel { font-size: var(--font-ui-medium, 14px); line-height: 19px; color: var(--text-chrome) }
 .sdesc { font-size: 13px; line-height: 16px; color: var(--text-chrome-faint); margin-top: 2px }
 .slink { color: var(--accent-blue) }
 /* the ONE disabled treatment (R30): not focusable (no control is a form element),
@@ -1277,25 +1450,30 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .srow.dis .sctl { pointer-events: none }
 .srow.dis .sicons { opacity: .5; pointer-events: none }
 .sctl { flex: none; display: flex; align-items: center; gap: 8px; color: var(--text-chrome); font-size: 13px }
-.sctl.toggle { width: 40px; height: 22px; border-radius: 999px; background: var(--border); padding: 0; position: relative }
-.sctl.toggle > i { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--text-chrome) }
+.sctl.toggle { width: var(--toggle-width, 40px); height: calc(var(--toggle-thumb-height, 16px) + 2 * (var(--toggle-border-width, 2px) + 1px)); border-radius: var(--toggle-radius, 999px); background: var(--border); padding: 0; position: relative }
+.sctl.toggle > i { position: absolute; top: calc(var(--toggle-border-width, 2px) + 1px); left: calc(var(--toggle-border-width, 2px) + 1px); width: var(--toggle-thumb-width, 16px); height: var(--toggle-thumb-height, 16px); border-radius: var(--toggle-thumb-radius, 50%); background: var(--toggle-thumb-color, var(--text-chrome)) }
 .sctl.toggle.on { background: var(--interactive-accent) }
-.sctl.toggle.on > i { left: 21px; background: var(--bg-base) }
-.sctl.dropdown { width: 141px; height: 24px; box-sizing: border-box; padding: 0 8px; background: var(--bg-sidebar);
-                 border: 1px solid var(--border); border-radius: 4px; white-space: nowrap; overflow: hidden }
+.sctl.toggle.on > i { left: calc(var(--toggle-width, 40px) - var(--toggle-thumb-width, 16px) - var(--toggle-border-width, 2px) - 1px); background: var(--bg-base) }
+.sctl.toggle:active > i { opacity: var(--toggle-thumb-opacity-active, 1) }
+.sctl.dropdown { width: 141px; height: 24px; box-sizing: border-box; padding: var(--dropdown-padding, 0 8px); background: var(--dropdown-background, var(--bg-sidebar));
+                 border: 1px solid var(--border); border-radius: 4px; white-space: nowrap; overflow: hidden; font-weight: var(--input-font-weight, inherit); }
+.sctl.dropdown { background-position-x: var(--inset-end, 0%) }   /* own rule: keeps the background shorthand above serialisable in CSSOM */
 /* .live = the one dropdown in this pane with a handler behind it (Appearance ▸
    Themes; the palette axis that used to sit beside it is gone — themeone item 7). Every other control here is a transcription of
    Obsidian's settings with no behaviour, rendered inert; this one gets the affordances that
    inertness withholds — a pointer, a hover, and a visible focus ring, because
    it IS a tab stop. */
 .sctl.dropdown.live { cursor: pointer; background: var(--bg-surface) }
-.sctl.dropdown.live:hover { border-color: var(--border-strong) }
-.sctl.dropdown.live:focus-visible { outline: 2px solid var(--border-focus-ring); outline-offset: 1px }
-.sctl.text { width: 141px; height: 24px; box-sizing: border-box; padding: 0 8px; background: var(--bg-sidebar);
-             border: 1px solid var(--border); border-radius: 4px; color: var(--text-chrome-faint); white-space: nowrap; overflow: hidden }
+.sctl.dropdown.live:hover { border-color: var(--border-strong); background-color: var(--dropdown-background-hover, var(--bg-surface)); }
+.sctl.dropdown.live:focus-visible { outline: var(--input-border-width-focus, 2px) solid var(--border-focus-ring); outline-offset: 1px }
+.sctl.text { width: 141px; height: var(--input-height, 24px); box-sizing: border-box; padding: 0 8px; background: var(--bg-sidebar);
+             border: 1px solid var(--border); border-radius: 4px; color: var(--input-placeholder-color, var(--text-chrome-faint)); white-space: nowrap; overflow: hidden; font-weight: var(--input-font-weight, inherit); }
 .sctl.list { color: var(--text-chrome-faint); max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
-.sctl.slider .trk { width: 150px; height: 4px; border-radius: 2px; background: var(--border); display: inline-block }
-.sctl.color .sw { width: 22px; height: 22px; border-radius: 4px; background: var(--accent-mauve); display: inline-block }
+.sctl.slider .trk { width: 150px; height: var(--slider-track-height, 4px); border-radius: 2px; background: var(--slider-track-background, var(--border)); display: inline-block }
+.sctl.slider .trk::before { background-color: var(--slider-fill-background, transparent); width: var(--slider-fill-position, auto) }
+.sctl.slider .trk::after { background-color: var(--slider-thumb-background, transparent); border-color: var(--slider-thumb-border-color, currentColor); border-width: var(--slider-thumb-border-width, medium); height: var(--slider-thumb-height, auto); border-radius: var(--slider-thumb-radius, 0); box-shadow: var(--slider-thumb-shadow, none); width: var(--slider-thumb-width, auto); top: var(--slider-thumb-y, auto) }
+.sctl.slider .trk:hover::after { background-color: var(--slider-thumb-background-hover, var(--slider-thumb-background, transparent)); box-shadow: var(--slider-thumb-shadow-hover, var(--slider-thumb-shadow, none)) }
+.sctl.color .sw { width: var(--swatch-width, 22px); height: var(--swatch-height, 22px); border-radius: var(--swatch-radius, 4px); background: var(--accent-mauve); display: inline-block; box-shadow: var(--swatch-shadow, none); }
 .sctl.nav { color: var(--text-chrome-faint) }
 /* goal fontset: the three live font rows (whole row opens the chooser), the
    live Font size slider, and the chooser sub-page (docs/fontset/recon.md
@@ -1304,7 +1482,8 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .srow.live:hover { background: var(--bg-surface) }
 .sctl.nav.live .nv { margin-right: 4px; color: var(--text-chrome-muted) }
 .sctl.slider.live { gap: 10px }
-.sctl.slider.live .val { min-width: 18px; text-align: right; color: var(--text-chrome-muted) }
+.sctl.slider.live .val { min-width: 18px; text-align: right; color: var(--text-chrome-muted); font-weight: var(--slider-value-font-weight, inherit); }
+.sctl.slider .trk:active::after { height: var(--slider-thumb-height-active, var(--slider-thumb-height, auto)); opacity: var(--slider-thumb-opacity-active, 1); box-shadow: var(--slider-thumb-shadow-active, var(--slider-thumb-shadow, none)); width: var(--slider-thumb-width-active, var(--slider-thumb-width, auto)); top: var(--slider-thumb-y-active, var(--slider-thumb-y, auto)) }
 .frange { width: 150px; margin: 0; accent-color: var(--interactive-accent); cursor: pointer }
 .fbtn { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px;
         padding: 0; border: 0; border-radius: 4px; background: none; color: var(--text-chrome-faint); cursor: pointer }
@@ -1315,7 +1494,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .fback { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0;
          border: 0; border-radius: 4px; background: none; color: var(--text-chrome); cursor: pointer }
 .fback:hover { background: var(--bg-surface) }
-.ftitle { font-size: 16px; font-weight: 600; color: var(--text-chrome) }
+.ftitle { font-size: var(--font-ui-large, 16px); font-weight: 600; color: var(--text-chrome) }
 .fdesc { margin: 0 0 16px }
 .fselcard { margin-bottom: 16px }
 .fselcard[hidden] { display: none }
@@ -1385,10 +1564,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
   --font-monospace-default: ui-monospace, SFMono-Regular, "Cascadia Mono", "Roboto Mono", "DejaVu Sans Mono", "Liberation Mono", Menlo, Monaco, "Consolas", "Source Code Pro", monospace;
   --font-text: var(--font-default); --font-interface: var(--font-default); --font-monospace: var(--font-monospace-default);
   /* R15.4-6 */
-  --font-text-size: 16px; --font-smaller: 0.9em; --line-height-normal: 1.55; --line-height-tight: 1.25;
+  --font-text-size: 16px; --font-smaller: 0.92em; --line-height-normal: 1.55; --line-height-tight: 1.25;
   /* ONE spacing unit for the content column (TOKENS.md): every margin, indent, radius and width below is a multiple of it */
   --space-unit: 0.25rem;
-  --font-weight: 400; --bold-modifier: 250; --bold-weight: min(900, calc(var(--font-weight) + var(--bold-modifier)));
+  --font-weight: var(--font-normal, 400); --bold-modifier: 250; --bold-weight: min(900, calc(var(--font-weight) + var(--bold-modifier)));
   /* R15.7-9 headings */
   --h1-size: 1.974em; --h2-size: 1.762em; --h3-size: 1.574em; --h4-size: 1.405em; --h5-size: 1.254em; --h6-size: 1.12em;
   --h1-weight: 700; --h2-weight: 600; --h3-weight: 600; --h4-weight: 600; --h5-weight: 600; --h6-weight: 600;
@@ -1396,13 +1575,13 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
   --h5-line-height: 1.39; --h6-line-height: 1.45;
   --h1-letter-spacing: -0.018em; --h2-letter-spacing: -0.015em; --h3-letter-spacing: -0.012em;
   --h4-letter-spacing: -0.009em; --h5-letter-spacing: -0.006em; --h6-letter-spacing: -0.003em;
-  --p-spacing: calc(var(--space-unit) * 5); --p-spacing-empty: var(--space-unit); --heading-spacing: calc(var(--space-unit) * 8);
+  --p-spacing: calc(var(--space-unit) * 5); --p-spacing-empty: 0rem; --heading-spacing: calc(var(--space-unit) * 8);
   /* R15.10-13 lists / checkbox / code / blockquote */
-  --list-indent: calc(var(--space-unit) * 7);
+  --list-indent: calc(var(--indent-unit, calc(var(--space-unit) * 7 / 4)) * var(--indent-size, 4));
   --list-indent-editing: calc(var(--space-unit) * 2); --list-spacing: calc(var(--space-unit) / 2); --list-bullet-size: calc(var(--space-unit) * 1.5); --list-bullet-radius: calc(var(--list-bullet-size) / 2);
   --checkbox-size: calc(var(--space-unit) * 3.5); --checkbox-radius: calc(var(--space-unit) * 0.75);
   --checkbox-margin-inline-start: calc(var(--space-unit) * 3); --checklist-done-decoration: line-through 0.06em;
-  --code-size: 0.92em; --code-radius: calc(var(--space-unit) * 1.5);
+  --code-size: var(--font-smaller, 0.92em); --code-radius: calc(var(--space-unit) * 1.5);
   --blockquote-border-thickness: calc(var(--space-unit) * 0.75);
   /* THE SEVEN COLOUR ROWS OF THIS BLOCK LIVE ON `body`, NOT HERE — see the
      "R15.10-13 CONTENT COLOURS" comment in the body token block at the top of
@@ -1418,7 +1597,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
   --size-2-1: 2px; --size-2-2: 4px; --size-2-3: 6px; --size-4-1: 4px; --size-4-2: 8px;
   --size-4-3: 12px; --size-4-4: 16px; --size-4-5: 20px; --size-4-9: 36px;
   --size-4-12: 48px; --size-4-16: 64px; --size-4-18: 72px;
-  --radius-s: 4px; --size-4-6: 24px; --size-4-8: 32px; --file-line-width: 700px; --file-margins: var(--size-4-8);
+  --radius-s: 4px; --size-4-6: 24px; --size-4-8: 32px; --file-line-width: 700px; --file-margins: var(--file-margins-y, var(--size-4-8)) var(--file-margins-x, var(--size-4-8));
   /* sidefont: ONE size for every sidebar list row — explorer .trow, bookmarks
      .bmrow, the right-strip .rlist rows, search .sgroup file rows. 13px is
      the recon value (docs/recon-sidefont/README.md Q1/Q3/Q5), and
@@ -1450,9 +1629,9 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
    it is declared at :where() specificity, so a theme's own --file-margins wins. */
 .lp, .preview { font-family: var(--font-text); font-size: var(--font-text-size); line-height: var(--line-height-normal);
                 color: var(--text-normal);
-                padding: var(--file-margins) }
+                padding: var(--file-margins); tab-size: var(--indent-size, 8); }
 @container notepane (max-width: 639.98px) {
-  :where(.lp, .preview) { --file-margins: var(--size-4-8) 5% }
+  :where(.lp, .preview) { --file-margins: var(--size-4-8) var(--file-margins-x, 5%) }
 }
 .is-readable-line-width { --note-column: min(var(--line-width, var(--file-line-width)), var(--max-width, 100%)) }
 .lp > *, .preview > * { max-width: var(--note-column, none); margin-inline: auto }
@@ -1460,11 +1639,12 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
    thumb inset 2px left / 3px right) — measured in the recon shots at x 884..895
    of a 896px window; the column centres in what is left of the pane. WebKitGTK
    would otherwise paint a zero-width overlay bar and centre 6px further right. */
-.lp::-webkit-scrollbar, .preview::-webkit-scrollbar { width: 12px; background-color: var(--scrollbar-bg) }
+.lp::-webkit-scrollbar, .preview::-webkit-scrollbar { width: var(--scrollbar-width, 12px); background-color: var(--scrollbar-bg); height: var(--scrollbar-height, auto); }
 .lp::-webkit-scrollbar-thumb, .preview::-webkit-scrollbar-thumb {
   background-color: var(--scrollbar-thumb-bg); background-clip: padding-box;
-  border-style: solid; border-color: var(--scrollbar-bg); border-width: 0 3px 0 2px; border-radius: 6px; min-height: 45px }
+  border-style: solid; border-color: var(--scrollbar-bg); border-width: var(--scrollbar-border-width, 0 3px 0 2px); border-radius: var(--scrollbar-radius, 6px); min-height: 45px }
 .lp::-webkit-scrollbar-thumb:active, .preview::-webkit-scrollbar-thumb:active { background-color: var(--scrollbar-active-thumb-bg, var(--scrollbar-thumb-bg)) }
+* { scrollbar-width: var(--scrollbar-native-width, auto) }
 /* #20 INLINE TITLE (R32): the big title of a note is its FILENAME, rendered —
    it lives in no file. Measured against Obsidian (progress.md Q3): the
    title is pixel-identical to a body h1 (same ink, same trim box) and the
@@ -1501,13 +1681,14 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
    carrying the note column's own type context — see the rule below it. */
 .lp[data-title]::before, .preview[data-title]::before, .titleedit {
   display: block; max-width: var(--note-column, none); margin-inline: auto;
-  font-size: var(--h1-size); font-weight: var(--h1-weight);
-  line-height: var(--h1-line-height); letter-spacing: var(--h1-letter-spacing);
-  color: inherit; overflow-wrap: anywhere; white-space: pre-wrap; cursor: text;
-}
+  font-size: var(--inline-title-size, var(--h1-size)); font-weight: var(--inline-title-weight, var(--h1-weight));
+  line-height: var(--inline-title-line-height, var(--h1-line-height)); letter-spacing: var(--h1-letter-spacing);
+  color: var(--inline-title-color, inherit); overflow-wrap: anywhere; white-space: pre-wrap; cursor: text;
+  font-family: var(--inline-title-font, inherit);
+; font-style: var(--inline-title-style, inherit); font-variant: var(--inline-title-variant, inherit); }
 .lp[data-title]::before, .preview[data-title]::before {
   content: attr(data-title);
-  margin-top: 0; margin-bottom: 0.5em; user-select: none;
+  margin-top: 0; margin-bottom: var(--inline-title-margin-bottom, 0.5em); user-select: none;
 }
 /* R34.15 (R32.4 restated as a NUMERIC condition) — HOW THE TITLE BECOMES
    EDITABLE WITHOUT BECOMING A ROW.
@@ -1559,29 +1740,42 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
   background: var(--transparent); border: 0; outline: none; user-select: text;
 }
 .lp .lprow { width: 100% }
+.lp .lprow:has(> .h) + .lprow:not(:has(> .h)) { padding-top: var(--p-spacing-empty, 0) }   /* stock: the line under a heading (HyperMD-header + .cm-line) */
 .lp h1, .preview h1, .lp h2, .preview h2, .lp h3, .preview h3, .lp h4, .preview h4, .lp h5, .preview h5, .lp h6, .preview h6 {
-  color: var(--text-heading, currentColor); font-style: normal; font-variant: normal; border: 0 }   /* wasp: see .lp .h */   /* #59 slice 2: each level below then takes the theme's --h<n>-color, falling back to this */
-.lp h1, .preview h1 { font-size: var(--h1-size); font-weight: var(--h1-weight); line-height: var(--h1-line-height); letter-spacing: var(--h1-letter-spacing);
-  color: var(--h1-color, var(--text-heading, currentColor)) }
-.lp h2, .preview h2 { font-size: var(--h2-size); font-weight: var(--h2-weight); line-height: var(--h2-line-height); letter-spacing: var(--h2-letter-spacing);
-  color: var(--h2-color, var(--text-heading, currentColor)) }
-.lp h3, .preview h3 { font-size: var(--h3-size); font-weight: var(--h3-weight); line-height: var(--h3-line-height); letter-spacing: var(--h3-letter-spacing);
-  color: var(--h3-color, var(--text-heading, currentColor)) }
-.lp h4, .preview h4 { font-size: var(--h4-size); font-weight: var(--h4-weight); line-height: var(--h4-line-height); letter-spacing: var(--h4-letter-spacing);
-  color: var(--h4-color, var(--text-heading, currentColor)) }
-.lp h5, .preview h5 { font-size: var(--h5-size); font-weight: var(--h5-weight); line-height: var(--h5-line-height); letter-spacing: var(--h5-letter-spacing);
-  color: var(--h5-color, var(--text-heading, currentColor)) }
-.lp h6, .preview h6 { font-size: var(--h6-size); font-weight: var(--h6-weight); line-height: var(--h6-line-height); letter-spacing: var(--h6-letter-spacing);
-  color: var(--h6-color, var(--text-heading, currentColor)) }
-.lp b, .lp strong, .preview b, .preview strong { font-weight: var(--bold-weight) }
-.lp em, .preview em { font-style: italic }
+  color: var(--text-heading, currentColor); font-style: normal; font-variant: normal; border: 0 }   /* wasp: see .lp .h */
+.lp h1, .preview h1 { font-size: var(--h1-size); font-weight: var(--h1-weight); line-height: var(--h1-line-height); letter-spacing: var(--h1-letter-spacing); color: var(--h1-color, var(--text-heading, currentColor)); font-family: var(--h1-font, inherit); font-style: var(--h1-style, normal); font-variant: var(--h1-variant, normal); }
+.lp h2, .preview h2 { font-size: var(--h2-size); font-weight: var(--h2-weight); line-height: var(--h2-line-height); letter-spacing: var(--h2-letter-spacing); color: var(--h2-color, var(--text-heading, currentColor)); font-family: var(--h2-font, inherit); font-style: var(--h2-style, normal); font-variant: var(--h2-variant, normal); }
+.lp h3, .preview h3 { font-size: var(--h3-size); font-weight: var(--h3-weight); line-height: var(--h3-line-height); letter-spacing: var(--h3-letter-spacing); color: var(--h3-color, var(--text-heading, currentColor)); font-family: var(--h3-font, inherit); font-style: var(--h3-style, normal); font-variant: var(--h3-variant, normal); }
+.lp h4, .preview h4 { font-size: var(--h4-size); font-weight: var(--h4-weight); line-height: var(--h4-line-height); letter-spacing: var(--h4-letter-spacing); color: var(--h4-color, var(--text-heading, currentColor)); font-family: var(--h4-font, inherit); font-style: var(--h4-style, normal); font-variant: var(--h4-variant, normal); }
+.lp h5, .preview h5 { font-size: var(--h5-size); font-weight: var(--h5-weight); line-height: var(--h5-line-height); letter-spacing: var(--h5-letter-spacing); color: var(--h5-color, var(--text-heading, currentColor)); font-family: var(--h5-font, inherit); font-style: var(--h5-style, normal); font-variant: var(--h5-variant, normal); }
+.lp h6, .preview h6 { font-size: var(--h6-size); font-weight: var(--h6-weight); line-height: var(--h6-line-height); letter-spacing: var(--h6-letter-spacing); color: var(--h6-color, var(--text-heading, currentColor)); font-family: var(--h6-font, inherit); font-style: var(--h6-style, normal); font-variant: var(--h6-variant, normal); }
+.lp b, .lp strong, .preview b, .preview strong { font-weight: var(--bold-weight); color: var(--bold-color, inherit); }
+.lp em, .preview em { font-style: italic; color: var(--italic-color, inherit); font-weight: var(--italic-weight, inherit); }
 /* R15.9 reading-mode block spacing; LP spacing comes from the blank-line rows */
 .preview :is(p, ul, ol, table, pre, blockquote) { margin-block: var(--p-spacing) }
 .preview :is(h1, h2, h3, h4, h5, h6) { margin-block: var(--p-spacing) }
+.preview hr { border-color: var(--hr-color, currentColor); border-top-width: var(--hr-thickness, 1px) }
 .preview :is(p, pre, table, ul, ol) + :is(h1, h2, h3, h4, h5, h6) { margin-top: var(--heading-spacing) }
+.preview tbody tr { background-color: var(--table-background, transparent) }
+:where(.preview) :where(th, td) { border-color: var(--table-border-color, currentColor) }
+.preview tbody tr > td:nth-child(2n+2), .preview thead tr > th:nth-child(2n+2) { background-color: var(--table-column-alt-background, var(--table-background, transparent)) }
+:where(.preview) :where(tbody tr > td:first-child, thead tr > th:first-child) { border-left-style: solid; border-left-width: var(--table-column-first-border-width, 0) }
+:where(.preview) :where(tbody tr > td:last-child, thead tr > th:last-child) { border-right-style: solid; border-right-width: var(--table-column-last-border-width, 0) }
+.preview thead tr { background-color: var(--table-header-background, var(--table-background, transparent)) }
+.preview thead tr:hover { background-color: var(--table-header-background-hover, var(--table-header-background, var(--table-background, transparent))) }
+:where(.preview) :where(thead tr > th) { border-top-style: solid; border-top-width: var(--table-header-border-width, 0) }
+.preview th { color: var(--table-header-color, inherit); font-family: var(--table-header-font, inherit); font-size: var(--table-header-size, var(--table-text-size, inherit)); font-weight: var(--table-header-weight, bold) }
+.preview table { line-height: var(--table-line-height, inherit) }
+.preview tbody tr:nth-child(odd) { background-color: var(--table-row-alt-background, var(--table-background, transparent)) }
+:where(.preview) :where(tbody tr:last-child > td) { border-bottom-style: solid; border-bottom-width: var(--table-row-last-border-width, 0) }
+.preview td { color: var(--table-text-color, inherit); font-size: var(--table-text-size, inherit) }
+.preview th, .preview td { white-space: var(--table-white-space, inherit) }
 .preview > :first-child { margin-top: 0 }
+:where(.preview) :where(thead tr > th) { border-color: var(--table-header-border-color, var(--table-border-color, currentColor)) }
+.preview table tbody tr:nth-child(odd):hover { background-color: var(--table-row-alt-background-hover, var(--table-background, transparent)) }
+.preview table tbody tr:hover { background-color: var(--table-row-background-hover, var(--table-background, transparent)) }
 /* R15.10 lists: no ul/ol padding, li indented 3ch, nested by --list-indent, faint markers, 0.3em disc bullet */
-.lp ul, .lp ol, .preview ul, .preview ol { padding-inline-start: 0 }
+.lp ul, .lp ol, .preview ul, .preview ol { padding-inline-start: var(--list-padding-inline-start, 0) }
 .lp ul ul, .lp ul ol, .lp ol ul, .lp ol ol, .preview ul ul, .preview ul ol, .preview ol ul, .preview ol ol { margin-block: 0 }
 .lp li, .preview li { padding-block: var(--list-spacing); position: relative }
 .preview ul > li, .preview ol > li { margin-inline-start: 3ch }
@@ -1592,8 +1786,8 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .lp ul, .preview ul, .lp ol, .preview ol { list-style: none }
 .lp ul > li::before, .preview ul > li::before { content: ""; position: absolute; width: var(--list-bullet-size); height: var(--list-bullet-size);
   border-radius: var(--list-bullet-radius); background: var(--list-marker-color); pointer-events: none;
-  inset-inline-start: calc(14px - 3ch); top: calc(var(--list-spacing) + 0.6em) }
-.lp ol > li::before, .preview ol > li::before { content: counter(list-item) "."; position: absolute; color: var(--list-marker-color);
+  inset-inline-start: calc(14px - 3ch); top: calc(var(--list-spacing) + 0.6em); border: var(--list-bullet-border, none); transform: var(--list-bullet-transform, none); }
+.lp ol > li::before, .preview ol > li::before { content: counter(list-item, var(--list-numbered-style, decimal)) "."; position: absolute; color: var(--list-marker-color);
   pointer-events: none; inset-inline-start: calc(12px - 3ch); top: var(--list-spacing) }
 /* plug-top5: a plugin code block rendered in Live Preview (editor.js Ed.cbField) lays out like the reading view:
    CM6 line wrapping (overflow-wrap: anywhere) would shrink its table columns to one word, and a list needs the indent its marker sits in */
@@ -1633,28 +1827,39 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
   margin-inline-end: 0.6em; top: calc(0.2em - 1px) }
 .preview a.ext { padding-inline-end: 0.9em; background-repeat: no-repeat; background-position: 100% 4px; background-size: 0.825em;   /* REQ-6 */
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238a8a8a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 3h6v6'/%3E%3Cpath d='M10 14 21 3'/%3E%3Cpath d='M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6'/%3E%3C/svg%3E") }
-.preview a.wiki-unresolved { font-style: normal; text-decoration-color: var(--link-unresolved-underline) }   /* REQ-15 */
+.preview a.wiki-unresolved { font-style: normal; text-decoration-color: var(--link-unresolved-decoration-color, var(--link-unresolved-underline)); text-decoration-style: var(--link-unresolved-decoration-style, solid); filter: var(--link-unresolved-filter, none); opacity: var(--link-unresolved-opacity, 1); }   /* REQ-15 */
 .preview li > :is(ul, ol) { position: relative }                                            /* REQ-9: indent guide at parent text x - 13 */
-.preview li > :is(ul, ol)::before { content: ""; position: absolute; inset-inline-start: -13px; top: 0; bottom: 0; width: 1px;
+.preview li > :is(ul, ol)::before { content: ""; position: absolute; inset-inline-start: -13px; top: 0; bottom: 0; width: var(--indentation-guide-width, 1px);
   background: var(--indentation-guide-color); pointer-events: none }
 /* LP: the task li has no list margin (the checkbox sits in the text flow after the hidden "- " widget); box at +7, text at +27 */
 .lp li:has(> input[type=checkbox]) { margin-inline-start: 0 }
 .lp ul > li > input[type=checkbox] { margin-inline-start: calc(var(--checkbox-margin-inline-start) - 2px); margin-inline-end: calc(0.6em - 4px) }
-.lp input[type=checkbox]:hover, .preview input[type=checkbox]:hover { border-color: var(--text-muted) }
+.lp input[type=checkbox]:hover, .preview input[type=checkbox]:hover { border-color: var(--checkbox-border-color-hover, var(--text-muted)) }
 .lp input[type=checkbox]:checked, .preview input[type=checkbox]:checked { background-color: var(--checkbox-color); border-color: var(--checkbox-color) }
+.lp input[type=checkbox]:checked:hover, .preview input[type=checkbox]:checked:hover { background-color: var(--checkbox-color-hover, var(--checkbox-color)); border-color: var(--checkbox-color-hover, var(--checkbox-color)) }
 .lp input[type=checkbox]:checked:after, .preview input[type=checkbox]:checked:after { content: ""; top: -1px; inset-inline-start: -1px; position: absolute;
   width: var(--checkbox-size); height: var(--checkbox-size); display: block; background-color: var(--checkbox-marker-color);
   -webkit-mask-position: 52% 52%; -webkit-mask-size: 65%; -webkit-mask-repeat: no-repeat;
   -webkit-mask-image: url("data:image/svg+xml; utf8, <svg width=\"12px\" height=\"10px\" viewBox=\"0 0 12 8\" version=\"1.1\" xmlns=\"http://www.w3.org/2000/svg\"><g stroke=\"none\" stroke-width=\"1\" fill=\"none\" fill-rule=\"evenodd\"><g transform=\"translate%28-4.000000, -6.000000%29\" fill=\"%23000000\"><path d=\"M8.1043257,14.0367999 L4.52468714,10.5420499 C4.32525014,10.3497722 4.32525014,10.0368095 4.52468714,9.8424863 L5.24777413,9.1439454 C5.44721114,8.95166768 5.77142411,8.95166768 5.97086112,9.1439454 L8.46638057,11.5903727 L14.0291389,6.1442083 C14.2285759,5.95193057 14.5527889,5.95193057 14.7522259,6.1442083 L15.4753129,6.84377194 C15.6747499,7.03604967 15.6747499,7.35003511 15.4753129,7.54129009 L8.82741268,14.0367999 C8.62797568,14.2290777 8.3037627,14.2290777 8.1043257,14.0367999\"></path></g></g></svg>") }
 /* R15.12 inline code: Source Code Pro 0.875em on the alt background, r4, 0.15em 0.3em */
 .lp code, .preview code { font-family: var(--font-monospace); font-size: var(--code-size); background-color: var(--code-background);
-  border-radius: var(--code-radius); padding: 0.15em 0.3em; -webkit-box-decoration-break: clone; box-decoration-break: clone; color: var(--text-normal) }
+  border-radius: var(--code-radius); padding: 0.15em 0.3em; -webkit-box-decoration-break: clone; box-decoration-break: clone; color: var(--code-normal, var(--text-normal)); border-color: var(--code-border-color, currentColor); border-style: solid; border-width: var(--code-border-width, 0); }
 .lp pre, .preview pre { font-family: var(--font-monospace); font-size: var(--code-size); background-color: var(--code-background); border-radius: var(--code-radius); padding: 0.5em 1em; overflow-x: auto;
-  white-space: var(--code-white-space, pre-wrap) }   /* deep-tasks QE10b: stock .markdown-rendered pre wraps (--code-white-space: pre-wrap) */
+  white-space: var(--code-white-space, pre-wrap); border-color: var(--code-border-color, currentColor); border-style: solid; border-width: var(--code-border-width, 0); }   /* deep-tasks QE10b: stock .markdown-rendered pre wraps (--code-white-space: pre-wrap) */
 .lp pre code, .preview pre code { padding: 0; background: none; font-size: inherit }
+.token.comment, .token.prolog, .token.doctype, .token.cdata { color: var(--code-comment, inherit) }
+.token.tag, .token.constant, .token.symbol, .token.deleted { color: var(--code-tag, inherit) }
+.token.punctuation { color: var(--code-punctuation, inherit) }
+.token.boolean, .token.number { color: var(--code-value, inherit) }
+.token.selector, .token.attr-name, .token.string, .token.char, .token.inserted { color: var(--code-string, inherit) }
+.token.operator { color: var(--code-operator, inherit) }
+.token.entity, .token.parameter, .token.property, .token.url, .language-css .token.string, .style .token.string, .token.variable { color: var(--code-property, inherit) }
+.token.atrule, .token.attr-value, .token.builtin, .token.function, .token.class-name, .token.property-access { color: var(--code-function, inherit) }
+.token.keyword { color: var(--code-keyword, inherit) }
+.token.regex, .token.important { color: var(--code-important, inherit) }
 /* R15.13 blockquote: 2px accent inline-start border, 24px padding, no margin (LP: 14px text offset) */
 .lp blockquote, .preview blockquote { border-inline-start: var(--blockquote-border-thickness) solid var(--blockquote-border-color);
-  padding: 0 0 0 var(--size-4-6); margin-inline: 0; font-style: normal; color: inherit; background: var(--transparent);
+  padding: 0 0 0 var(--size-4-6); margin-inline: 0; font-style: var(--blockquote-font-style, normal); color: var(--blockquote-color, inherit); background: var(--transparent);
   position: relative; inset-inline-start: 2px }   /* the border sits on the h1 "H" ink x; the content box is 2px left of it */
 .preview > blockquote { margin-inline: auto }    /* keep the 700px column centring (the rule above outranks .preview > *) */
 .preview blockquote > :first-child { margin-top: 0 }
@@ -1672,7 +1877,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .lp .li > .mk.lim { display: inline-block; min-width: 23px; position: relative; color: var(--transparent) }
 .lp .li > .mk.lim::before { content: ""; position: absolute; inset-inline-start: 14px; top: 0.6em;
   width: var(--list-bullet-size); height: var(--list-bullet-size);
-  border-radius: var(--list-bullet-radius); background: var(--list-marker-color) }
+  border-radius: var(--list-bullet-radius); background: var(--list-marker-color); border: var(--list-bullet-border, none); transform: var(--list-bullet-transform, none); }
 .lp .li.ord > .mk.lim { min-width: 32px; padding-inline-start: 15px; color: var(--list-marker-color) }
 .lp .li.ord > .mk.lim::before { content: none }
 .lp .tk:not(.ord) > .mk.lim { display: none }                           /* a task row draws a checkbox, not a bullet */
@@ -1686,6 +1891,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .lp.src .li > .mk.lim, .lp .li > .mk.lim.rv {
   display: inline; min-width: 0; padding: 0; color: var(--text-chrome-dim) }
 .lp.src .li > .mk.lim::before, .lp .li > .mk.lim.rv::before { content: none }
+.lp.src .li > .mk.lim { padding-inline-start: var(--list-indent-source, 0) }
 /* R15.13 blockquote in LP: the span.bq is the line's block box — border ink on
    the h1 "H" ink x (+2 from the column), text 11px past it */
 .lp .bq { display: block; margin-inline-start: 2px;
@@ -1711,7 +1917,7 @@ body.floorrelayout #main { padding-right: 1px }
    point of the finding is that a failed write used to be invisible. Bottom
    right, above the panes, non-blocking (the user keeps typing; the buffer is
    still dirty and every later save retries). */
-#saveerr { position: fixed; right: 12px; bottom: 12px; z-index: 60; max-width: 420px;
+#saveerr { position: fixed; right: 12px; bottom: 12px; z-index: var(--layer-notice, 60); max-width: 420px;
            padding: 8px 12px; border-radius: 6px; border: 1px solid var(--accent-red);
            background: var(--bg-banner-error); color: var(--text-banner-error); font-size: 12px; line-height: 1.4 }
 #saveerr[hidden] { display: none }
@@ -1720,7 +1926,7 @@ body.floorrelayout #main { padding-right: 1px }
    can read ("remote images are disabled", "…is over the 32 MB limit"). Neutral
    border, because most of what it says is a decision, not a failure. It is
    transient (4 s): unlike a failed save nothing is left dirty behind it. */
-#dropmsg { position: fixed; right: 12px; bottom: 12px; z-index: 60; max-width: 420px;
+#dropmsg { position: fixed; right: 12px; bottom: 12px; z-index: var(--layer-notice, 60); max-width: 420px;
            padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-strong);
            background: var(--bg-surface); color: var(--text-chrome); font-size: 12px; line-height: 1.4;
            white-space: pre-line }
@@ -1748,7 +1954,7 @@ body.floorrelayout #main { padding-right: 1px }
    is the FETCH backstop: if some future path ever emits a bare remote <img>,
    it is sized like a vault image instead of reflowing the note. */
 .lp .rimg, .preview img:not(.vimg):not(.rimg), .preview .rimg {
-  display: block; max-width: 100%; height: auto; margin: 8px 0 }
+  display: block; max-width: 100%; height: auto; margin: 8px 0; border-radius: var(--image-radius, 0); }
 /* R29.4: a full-width grey banner, NOT a broken-image icon. Reading view
    carries the wording as TEXT (the Rust renderer escapes the target into it);
    live preview carries the target in data-miss and CSS paints the identical
@@ -1835,7 +2041,7 @@ body.floorrelayout #main { padding-right: 1px }
    bar inside the scroller would be row 0 for every caret computation.
    R22: max-width + overflow:hidden so the bar CLIPS in a narrow pane instead of
    reaching past the window edge (the fuzz phase counts any element that does). */
-.findbar { position: absolute; top: 8px; right: 16px; z-index: 6;
+.findbar { position: absolute; top: 8px; right: 16px; z-index: var(--layer-popover, 6);
            display: flex; flex-direction: column; gap: 4px;
            max-width: calc(100% - 24px); overflow: hidden;
            padding: 5px 6px; border: 1px solid var(--border); border-radius: 6px;
@@ -1980,6 +2186,7 @@ span.is-flashing { background: var(--highlight-yellow) }
                                  background: var(--bg-surface); color: var(--text-chrome); cursor: pointer }
 .kcrow button.mod-warning, .kc-btns button.mod-warning { color: var(--text-error) }
 .kc-btns button.mod-cta { background: var(--bg-button-primary); color: var(--text-on-accent) }
+.kc-btns button.mod-cta:hover { background-color: var(--interactive-accent-hover, var(--bg-button-primary)) }
 .kc-modal { position: fixed; inset: 0; z-index: 70; display: flex; align-items: center; justify-content: center;
             background: var(--background-modifier-cover, var(--bg-surface)) }
 .kc-card { width: 380px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px;
