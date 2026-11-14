@@ -29,7 +29,7 @@ on:
     tags: ['v*']
     # release branch v<ver>-release: builds and stages the DRAFT for tag v<ver>.
     # The tag itself is created by GitHub only when the operator publishes.
-    branches: ['v0.9.3-release']
+    branches: ['v0.9.4-release']
 
 permissions:
   contents: read
@@ -346,8 +346,11 @@ jobs:
             ID=$(cut -d' ' -f1 existing.txt)
             echo "draft $ID exists: re-uploading assets (--clobber), refreshing body"
             gh release upload "$TAG" "${FILES[@]}" --clobber
-            gh api -X PATCH "repos/$GH_REPO/releases/$ID" -F body=@notes.md -f target_commitish="$GITHUB_SHA" -F draft=true \
-              --jq '"body updated, draft=\(.draft) target=\(.target_commitish)"'
+            # tag_name MUST ride along: a draft PATCH without it resets the draft's
+            # tag to untagged-<hash> (seen on v0.9.3), and the lookup above would
+            # then miss it on the next re-run and create a duplicate.
+            gh api -X PATCH "repos/$GH_REPO/releases/$ID" -F body=@notes.md -f tag_name="$TAG" -f target_commitish="$GITHUB_SHA" -F draft=true \
+              --jq '"body updated, tag=\(.tag_name) draft=\(.draft) target=\(.target_commitish)"'
           else
             gh release create "$TAG" --draft --latest=false --title "$TITLE" --notes-file notes.md "${EXTRA[@]}" "${FILES[@]}"
           fi

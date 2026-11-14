@@ -1,5 +1,4 @@
-<img width="1000" height="525" alt="opensidian-header" src="https://github.com/user-attachments/assets/a19731ea-35dc-46cb-934a-352e8c813e39" />
-
+<img width="1000" height="525" alt="image-1794573234435" src="https://github.com/user-attachments/assets/8e448f62-eb11-4213-9848-4f99455d3d43" />
 
 # Opensidian
 Open-source and non-profit under GPLv3, vault-compatible cross-platform markdown notes app. It's based on Rust + Tauri v2 and under heavy development. We're looking for Linux distribution maintainers. Not affiliated with or endorsed by Obsidian or Dynalist Inc.; "Obsidian" is their trademark. Opensidian is a clean-room functional clone: it reimplements Obsidian's behaviour from the outside and contains none of its code.
@@ -8,15 +7,21 @@ Open-source and non-profit under GPLv3, vault-compatible cross-platform markdown
 
 ### Linux x86_64 — packages
 
-Download one from the [v0.9.3 release](https://github.com/jpzk/opensidian/releases/tag/v0.9.3):
+Download one from the [v0.9.4 release](https://github.com/jpzk/opensidian/releases/tag/v0.9.4):
 
 | Download | Choose it if | Tested on |
 |---|---|---|
-| [slim AppImage](https://github.com/jpzk/opensidian/releases/download/v0.9.3/opensidian-0.9.3-x86_64-slim.AppImage) | you want the smallest file and have WebKitGTK 4.1 | Fedora 44 (`sudo dnf install webkit2gtk4.1`), Ubuntu 26.04 LTS (`sudo apt install libwebkit2gtk-4.1-0`) |
-| [portable AppImage](https://github.com/jpzk/opensidian/releases/download/v0.9.3/opensidian-0.9.3-x86_64-portable.AppImage) | you want nothing to install: WebKit is bundled (needs only the X11/GL/font libraries every desktop has) | Fedora 44, Ubuntu 26.04 LTS |
-| [Flatpak](https://github.com/jpzk/opensidian/releases/download/v0.9.3/opensidian-0.9.3-x86_64.flatpak) | you want it sandboxed; pulls the GNOME 49 runtime from Flathub on first install | Fedora 44, Ubuntu 26.04 LTS (`flatpak` package installed) |
-| [RPM](https://github.com/jpzk/opensidian/releases/download/v0.9.3/opensidian-0.9.3-x86_64.rpm) | you run Fedora and want a system package with a menu entry and icon; dnf pulls WebKitGTK 4.1 for you | Fedora 44 (see the RPM note below) |
-| [DEB](https://github.com/jpzk/opensidian/releases/download/v0.9.3/opensidian-0.9.3-x86_64.deb) | you run Debian or Ubuntu and want a system package with a menu entry and icon; apt pulls WebKitGTK 4.1 for you | Debian 13, Ubuntu 26.04 LTS (`sudo apt install ./opensidian-0.9.3-x86_64.deb`) |
+| [slim AppImage](https://github.com/jpzk/opensidian/releases/download/v0.9.4/opensidian-0.9.4-x86_64-slim.AppImage) | you want the smallest file and have WebKitGTK 4.1 | Fedora 44 (`sudo dnf install webkit2gtk4.1`), Ubuntu 26.04 LTS (`sudo apt install libwebkit2gtk-4.1-0`) |
+| [portable AppImage](https://github.com/jpzk/opensidian/releases/download/v0.9.4/opensidian-0.9.4-x86_64-portable.AppImage) | you want nothing to install: WebKit is bundled (needs only the X11/GL/font libraries every desktop has) | Fedora 44, Ubuntu 26.04 LTS |
+| [Flatpak](https://github.com/jpzk/opensidian/releases/download/v0.9.4/opensidian-0.9.4-x86_64.flatpak) | you want it sandboxed; pulls the GNOME 49 runtime from Flathub on first install | Fedora 44, Ubuntu 26.04 LTS (`flatpak` package installed) |
+| [RPM](https://github.com/jpzk/opensidian/releases/download/v0.9.4/opensidian-0.9.4-x86_64.rpm) | you run Fedora and want a system package with a menu entry and icon; dnf pulls WebKitGTK 4.1 for you | Fedora 44 (see the RPM note below) |
+| [DEB](https://github.com/jpzk/opensidian/releases/download/v0.9.4/opensidian-0.9.4-x86_64.deb) | you run Debian or Ubuntu and want a system package with a menu entry and icon; apt pulls WebKitGTK 4.1 for you | Debian 13, Ubuntu 26.04 LTS (`sudo apt install ./opensidian-0.9.4-x86_64.deb`) |
+
+Checksums and signature: [SHA256SUMS](https://github.com/jpzk/opensidian/releases/download/v0.9.4/SHA256SUMS),
+[SHA256SUMS.asc](https://github.com/jpzk/opensidian/releases/download/v0.9.4/SHA256SUMS.asc) (see [Verify your download](#verify-your-download)).
+
+**glibc ≥ 2.43, current distros only:** the AppImages, DEB and RPM are built on Ubuntu 26 and need glibc 2.43 or newer,
+so they do not start on older distros such as Ubuntu 24.04 LTS or Debian 12. On an older distro, use the Flatpak, which brings its own runtime.
 
 **RPM on rpm 6 (e.g. Fedora 44):** the RPM itself is not GPG-signed (as in v0.9.2), and rpm 6 rejects unsigned
 packages by default (`does not verify: no signature`). [Verify the file](#verify-your-download) first. Then install the dependencies from your
@@ -24,7 +29,7 @@ signed Fedora repositories, and skip the signature check only for the one file y
 
 ```sh
 sudo dnf install webkit2gtk4.1                           # dependencies, signature-checked as usual
-sudo rpm -Uvh --nosignature opensidian-0.9.3-x86_64.rpm  # install or upgrade; fetches nothing else
+sudo rpm -Uvh --nosignature opensidian-0.9.4-x86_64.rpm  # install or upgrade; fetches nothing else
 ```
 
 Avoid `dnf install --nogpgcheck` here: it also turns off the signature checks for every dependency in the same transaction.
@@ -41,11 +46,11 @@ nix profile add github:jpzk/opensidian
 Put the file(s) you downloaded in one directory together with `SHA256SUMS` and `SHA256SUMS.asc`.
 
 1. **Signature:** `SHA256SUMS` is signed with key `A6E6 9ED6 BC47 79F3 2817  2148 4CC1 AFDE 15B6 4EA3`
-   (the same key as v0.9.2):
+   (the same key as v0.9.2 and v0.9.3):
 
    ```sh
-   curl -LO https://github.com/jpzk/opensidian/releases/download/v0.9.3/SHA256SUMS \
-        -LO https://github.com/jpzk/opensidian/releases/download/v0.9.3/SHA256SUMS.asc
+   curl -LO https://github.com/jpzk/opensidian/releases/download/v0.9.4/SHA256SUMS \
+        -LO https://github.com/jpzk/opensidian/releases/download/v0.9.4/SHA256SUMS.asc
    gpg --keyserver hkps://keys.openpgp.org --recv-keys A6E69ED6BC4779F3281721484CC1AFDE15B64EA3
    gpg --export A6E69ED6BC4779F3281721484CC1AFDE15B64EA3 > opensidian.gpg
    gpgv --keyring ./opensidian.gpg SHA256SUMS.asc SHA256SUMS   # accepts only this key
@@ -65,10 +70,11 @@ Put the file(s) you downloaded in one directory together with `SHA256SUMS` and `
 
    ```sh
    # repeat for each file you downloaded
-   gh attestation verify opensidian-0.9.3-x86_64.rpm -R jpzk/opensidian \
+   gh attestation verify opensidian-0.9.4-x86_64.rpm -R jpzk/opensidian \
      --signer-workflow jpzk/opensidian/.github/workflows/release.yml \
      --deny-self-hosted-runners
-   gh release verify v0.9.3 -R jpzk/opensidian   # the release itself
+   gh release verify v0.9.4 -R jpzk/opensidian   # the release itself (it is immutable)
+   gh release verify-asset v0.9.4 opensidian-0.9.4-x86_64.rpm -R jpzk/opensidian   # each file is pinned by the release attestation
    ```
 
    v0.9.2 and earlier releases have no attestations.
