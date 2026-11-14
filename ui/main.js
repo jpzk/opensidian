@@ -283,6 +283,12 @@ function placeRToggle() {
   // it out of the document with its host. getElementById would then return null and
   // the b.parentNode below threw — aborting pane_close/pane_split mid-action and
   // leaving the toggle gone for good. A detached node re-mounts fine on appendChild.
+  // #59 slice 2 (themecompat strip): stock's .workspace-tabs.mod-top = a tab group whose tabbar touches the window
+  // top — every child of a row, only the first of a column. Kept here because this runs after every layout change.
+  if (state) (function markTop(n, top) {
+    if (n.children) n.children.forEach((c, i) => markTop(c, top && (n.dir === "row" || i === 0)));
+    else if (n.pane) n.pane.classList.toggle("mod-top", top);
+  })(state.root, true);
   const b = rtBtn || (rtBtn = $("rtoggle"));
   if (!b) return;
   const host = rightOpen ? $("rtabs") : (state ? topRight(state.root).pane.querySelector(".tabbar") : null);
