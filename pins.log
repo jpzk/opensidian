@@ -1,0 +1,4 @@
+fedora 44 1.7 OCI (logs/fedora-oci.log): CHECKSUM files gpg 'Good signature from Fedora (44)' key 36F612DCF27F7D1A48A835E4DBFCF71C6D9F90A6 (from /etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-44-primary)
+  x86_64 file 75200f57... manifest f1e66cdd... = existing pin (method check)
+  aarch64 file eca19542a48a8e39b84e869713a1fa2408cbcc578de26c25ae72e3334ef968c1 (66049080 B, listed 2026-04-22 13:55) manifest sha256:bebe5bd9e882469b64cc950da834288bdebca8921ec4bb50646378d672da0ff5 config arm64 created 2026-04-22T13:55:08Z
+flatpak runtimes: unchanged refs org.gnome.Platform//49 Sdk//49 rust-stable//25.08, now with --arch (same pin policy as x86: branch refs)

@@ -18,6 +18,11 @@
 set -eu
 cd "$(dirname "$0")/../.."
 ROOT=dist/flatpak
+# ARCH: the flatpak arch, default = host (uname -m: x86_64 or aarch64). Passed explicitly to
+# flatpak-builder and build-bundle so the runtime/SDK/extension of THAT arch is used and
+# a missing one fails instead of silently resolving to another arch. Native builds only.
+ARCH=${FLATPAK_ARCH:-$(uname -m)}
+case "$ARCH" in x86_64|aarch64) ;; *) echo "unsupported flatpak arch $ARCH (x86_64|aarch64)"; exit 2;; esac
 MAN=packaging/flatpak/dev.koto.opensidian.yml
 mkdir -p "$ROOT"
 echo "[$(date +%H:%M:%S)] 1/5 cargo sources from src-tauri/Cargo.lock"
@@ -44,13 +49,13 @@ echo "[$(date +%H:%M:%S)] 2/5 fetching sources (network; the build phase has non
 # exactly once per checkout and then broke — the script that is supposed to run
 # every release could not run twice. The download phase does not need the app
 # dir at all; the build phase re-initialises it regardless.
-flatpak-builder --force-clean --download-only --state-dir="$ROOT/state" "$ROOT/build" "$MAN"
-echo "[$(date +%H:%M:%S)] 3/5 building (offline)"
-flatpak-builder --disable-download --disable-updates --force-clean \
+flatpak-builder --arch="$ARCH" --force-clean --download-only --state-dir="$ROOT/state" "$ROOT/build" "$MAN"
+echo "[$(date +%H:%M:%S)] 3/5 building (offline, arch $ARCH)"
+flatpak-builder --arch="$ARCH" --disable-download --disable-updates --force-clean \
   --state-dir="$ROOT/state" --repo="$ROOT/repo" "$ROOT/build" "$MAN"
 echo "[$(date +%H:%M:%S)] 4/5 exporting bundle"
 # --runtime-repo: the bundle names flathub, so `flatpak install` can fetch org.gnome.Platform//49 itself.
-flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
+flatpak build-bundle --arch="$ARCH" --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
   "$ROOT/repo" "$ROOT/opensidian.flatpak" dev.koto.opensidian master
 ls -l "$ROOT/opensidian.flatpak"
 echo "[$(date +%H:%M:%S)] 5/5 done"

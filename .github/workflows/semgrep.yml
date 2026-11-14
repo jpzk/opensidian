@@ -14,7 +14,7 @@ name: Semgrep
 jobs:
   semgrep:
     name: semgrep/ci
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04  # pinned label (= the -latest image on 2026-11-14)
     permissions:
       contents: read
     env:
