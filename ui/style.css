@@ -1290,6 +1290,13 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
 :root[data-vthemecompat] #p-create.mod-cta { background-color: var(--interactive-accent, var(--bg-button-primary)); color: var(--text-on-accent) }
 :root[data-vthemecompat] #del-yes.mod-cta.mod-destructive { background-color: var(--background-modifier-error, var(--text-banner-error)); color: var(--text-on-accent, var(--bg-base)) }
 :root[data-vthemecompat] #delsay.mod-warning { color: var(--text-warning, var(--text-quiet)) }
+/* #59 slice 2 (tabs) stock derivation, same SCOPE as the dialog rules above: stock app.css derives the tab strip
+   and the active tab ink on body (--tab-container-background: var(--background-secondary); --tab-text-color-focused-
+   active: var(--text-muted); -current: var(--text-normal)). Ours pins #333333 / #fcfcfc and leaves the ink to
+   --text-chrome, so a theme that only sets --background-secondary / --text-muted (Minimal, AnuPpuccin) kept OUR strip
+   and ink (themecompat: minimal strip, anuppuccin strip + actink). :where() keeps this at body's specificity, so any
+   theme declaration (injected after style.css) still wins, and with no theme chosen nothing moves (N2). */
+:where(:root[data-vthemecompat]) body { --tab-container-background: var(--background-secondary); --tab-text-color-focused-active: var(--text-muted); --tab-text-color-focused-active-current: var(--text-normal) }
 .rnmc { display: contents }   /* the #rnbox wrapper only names the container; #rnbox stays position:fixed */
 
 /* R4X.7 Edit bookmark — the #delbox shape again (one modal geometry in this app,
