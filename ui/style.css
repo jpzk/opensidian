@@ -2231,6 +2231,16 @@ span.is-flashing { background: var(--highlight-yellow) }
   display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 0 }
 .pdf-embed .pdf-page { display: block; flex: 0 0 auto; width: 100%; height: auto; max-width: none;
   margin: 0 auto; background: #fff }
+/* A page that holds only an interactive 3D model (CAD exports; pdf.rs model_3d)
+   cannot be drawn and would be a white sheet. The sheet keeps the page's shape
+   and says what it is. Same tokens and size as the "could not be rendered"
+   notice below; the text is painted from CSS, like every text in this frame. */
+.pdf-embed .pdf-3d {
+  display: flex; align-items: center; justify-content: center; box-sizing: border-box; padding: 0 24px;
+  background: var(--bg-base); color: var(--text-chrome-muted); font-size: 14px; line-height: 1.5;
+  text-align: center; white-space: pre-line }
+.pdf-embed .pdf-3d::before {
+  content: "3D model\A This page holds only an interactive 3D model, which cannot be drawn here.\A Open the file in a PDF reader with 3D support to view it." }
 .pdf-embed.mod-broken .pdf-container::before {
   content: "This PDF could not be rendered."; margin: auto; color: var(--text-chrome-muted); font-size: 14px }
 /* stock's missing-file banner is 37 px tall; the R29.4 banner shrunk to match */
