@@ -5931,6 +5931,30 @@ struct PosProbe {
     honoured: Option<bool>,
 }
 
+/* #79 (E3, scoped): WebKitGTK's DMA-BUF renderer is kept ON (WebKit's default) everywhere except an X11
+   display with NO compositing manager (no owner of _NET_WM_CM_S<n>; gdk_screen_is_composited reads exactly
+   that). There the box measured the bug: the Excalidraw canvas is painted in the page but the window keeps
+   the old frame until the next event (develop 23/60 opens). UI-side redraws (E1/E1b/E1c) and page-side
+   trailing frames (E2/E2b) did not bring it to 0, so only on that display the renderer falls back to WebKit's
+   non-DMA-BUF path. Wayland (always composited) and composited X11 keep DMA-BUF. An explicit
+   WEBKIT_DISABLE_DMABUF_RENDERER (any value, also =0) is the user's choice and is never overridden.
+   Runs before Tauri creates the first webview (WebKit reads the variable then; the web process inherits it). */
+#[cfg(target_os = "linux")]
+fn present_dmabuf_scope() {
+    use gdk::prelude::*;
+    const VAR: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
+    if std::env::var_os(VAR).is_some() || gtk::init().is_err() {
+        return;
+    }
+    let Some(display) = gdk::Display::default() else { return };
+    let screen = display.default_screen();
+    if screen.downcast_ref::<gdkx11::X11Screen>().is_none() || screen.is_composited() {
+        return; // Wayland, or X11 with a compositor: DMA-BUF on
+    }
+    eprintln!("[present] #79: X11 without a compositing manager -> {VAR}=1 for this window (DMA-BUF stays on elsewhere)");
+    std::env::set_var(VAR, "1");
+}
+
 #[cfg(target_os = "linux")]
 fn probe_drag_proto() -> DragProto {
     use gdk::prelude::*;
@@ -6425,6 +6449,9 @@ fn main() {
     // BEFORE GTK starts, so GNOME groups every window under the launcher; the X11
     // class follows after gtk_init via appid::plugin() (appid.rs).
     appid::apply();
+    // #79 (E3): DMA-BUF stays on, except where it is proven to drop frames — see present_dmabuf_scope.
+    #[cfg(target_os = "linux")]
+    present_dmabuf_scope();
     // RENAME MIGRATION (goal opensidian): old -> new table in migrate.rs —
     //   ~/.rustidian.json -> ~/.opensidian.json,
     //   <vault>/.rustidian-bookmarks -> <vault>/.opensidian-bookmarks (per vault, read_bm_tree),
