@@ -24,7 +24,7 @@ name: Supply chain
 on:
   pull_request: {}
   push:
-    branches: [develop, main]
+    branches: [develop, main, 'v*-release']   # release branches too (v<ver>-release, see release.yml)
   schedule:
     # weekly: new RustSec advisories land without any change to this repo
     - cron: '23 4 * * 1'
