@@ -14,7 +14,7 @@
 use pulldown_cmark::{html, Event, LinkType, Options, Parser, Tag, TagEnd};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::State;
 
 mod appid;
@@ -58,6 +58,7 @@ mod updates;
 use opensidian_lib::vaultfs;
 mod watcher;
 mod winsize;
+mod xdnd; // #51: the window's OS drop transport — only a drop naming a local file is ours, a link drag reaches the editor
 use index::{link_parts, links_in, resolve, tag_spans, Graph, Index};
 
 /* perf-index: root + in-memory Index (src/index.rs). The index replaces the
@@ -73,7 +74,7 @@ use index::{link_parts, links_in, resolve, tag_spans, Graph, Index};
    impossible by construction, not by locking discipline. */
 struct Vault {
     root: OnceLock<PathBuf>,
-    index: Mutex<Index>,
+    index: Arc<Mutex<Index>>,
     /// vaultbleed B: the flock that makes this the ONLY backend on the vault
     /// (vaultlock.rs); held until the process exits
     lock: OnceLock<vaultlock::VaultLock>,
@@ -82,7 +83,7 @@ struct Vault {
     /// baseline from its own later walk, and a note created in between was in
     /// neither the index nor any diff: never reported (the typing phase red
     /// "external create of TYPEGATE not in the tree", 4/8 runs under load).
-    seed: Mutex<Option<watcher::Snapshot>>,
+    seed: Arc<Mutex<Option<watcher::Snapshot>>>,
 }
 
 fn cur_vault(v: &Vault) -> Option<PathBuf> {
@@ -141,6 +142,16 @@ impl std::fmt::Display for BindErr {
 /// process, vaultbleed B) -> claim the root. The lock is stored only after the
 /// root claim succeeded; a failed claim drops (releases) it.
 fn bind_vault_locked(v: &Vault, p: &Path, lock_dir: &Path) -> Result<(), BindErr> {
+    claim_vault(v, p, lock_dir)?;
+    let (base, ix) = index_vault(p);
+    *v.index.lock().unwrap() = ix;
+    *v.seed.lock().unwrap() = Some(base);
+    Ok(())
+}
+
+/// The claim half of a bind: everything but the walk + index (refuse if bound,
+/// flock, set-once root, built-in themes, app.json).
+fn claim_vault(v: &Vault, p: &Path, lock_dir: &Path) -> Result<(), BindErr> {
     if let Some(cur) = cur_vault(v) {
         return Err(BindErr::Bound(cur, p.to_path_buf()));
     }
@@ -154,10 +165,46 @@ fn bind_vault_locked(v: &Vault, p: &Path, lock_dir: &Path) -> Result<(), BindErr
     // dirs. Seeding writes only paths that do not exist (builtins.rs).
     builtins::seed_and_record(p);
     ensure_app_json(p);
-    let base = watcher::snapshot(p); // the watcher baseline: walked first, so nothing created after it is missed
+    Ok(())
+}
+
+/// The index half of a bind: the watcher baseline, walked first so nothing
+/// created after it is missed, then the one walk + read of every note.
+fn index_vault(p: &Path) -> (watcher::Snapshot, Index) {
+    let base = watcher::snapshot(p);
     let ix = span_timed!("index_build", Index::build(p), serde_json::json!({"notes": 0}));
-    *v.index.lock().unwrap() = ix;
-    *v.seed.lock().unwrap() = Some(base);
+    (base, ix)
+}
+
+/// issue #106: the BOOT bind (VAULT_DIR / argv / last vault). The claim is
+/// synchronous (a Busy or bad vault still exits before any window), but the
+/// walk + index of a big vault no longer runs in front of the window: a worker
+/// thread takes the index and seed locks FIRST — main waits only for that
+/// handshake — and fills them, while webkit starts and loads the page in
+/// parallel. Every reader (each command, the watcher's first tick) goes
+/// through `v.index.lock()` / `v.seed.lock()`, so it blocks until the build
+/// is in and never sees the empty index: same answers, same order (baseline
+/// before index), only overlapped with the webview start. A thread that
+/// cannot be spawned falls back to the synchronous build.
+fn bind_vault_boot(v: &Vault, p: &Path, lock_dir: &Path) -> Result<(), BindErr> {
+    claim_vault(v, p, lock_dir)?;
+    let (index, seed, root) = (Arc::clone(&v.index), Arc::clone(&v.seed), p.to_path_buf());
+    let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+    let spawned = std::thread::Builder::new().name("index-build".into()).spawn(move || {
+        let mut sg = seed.lock().unwrap();
+        let mut ig = index.lock().unwrap();
+        let _ = held_tx.send(()); // both locks held: main may go on
+        let (base, ix) = index_vault(&root);
+        *ig = ix;
+        *sg = Some(base);
+    });
+    // Ok(()) = the worker holds both locks; Err = it ended (panicked) before
+    // taking them, or never started: build here, as before.
+    if spawned.is_err() || held_rx.recv().is_err() {
+        let (base, ix) = index_vault(p);
+        *v.index.lock().unwrap_or_else(|e| e.into_inner()) = ix;
+        *v.seed.lock().unwrap_or_else(|e| e.into_inner()) = Some(base);
+    }
     Ok(())
 }
 /// census C4 (make-md): an opened vault always carries `.obsidian/app.json` —
@@ -674,8 +721,8 @@ async fn pdf_info(v: State<'_, Vault>, path: String, otel: Option<perf::Ctx>) ->
    here. The whole behaviour lives in `attach_drop` below: it takes the vault,
    the note being edited and the dropped paths, MOVES what it is allowed to
    move and RETURNS the text to insert. The Tauri command and the
-   WindowEvent::DragDrop handler are pass-throughs. The transport (a real XDND
-   drag from another X client -> wry/WebKitGTK -> WindowEvent::DragDrop ->
+   drop transport (xdnd.rs) are pass-throughs. The transport (a real XDND
+   drag from another X client -> WebKitGTK -> xdnd (a local-file uri-list only, #51) ->
    `drop-files` -> attach_files) is exercised end to end by the release-
    mandatory gate phase `osdrop`, which drags with real pointer input.
 
@@ -3744,7 +3791,12 @@ fn page_window(app: &tauri::AppHandle, wc: &tauri::utils::config::WindowConfig) 
     let b = if census::on() { b.initialization_script(census::INIT_JS) } else { b };
     #[cfg(feature = "devui")]
     let b = if devui::root().is_some() { b.initialization_script(devui::INIT_JS) } else { b };
-    b.on_web_resource_request(move |req, res| {
+    // #51: Tauri's own handler claims EVERY drag offering text/uri-list — a browser link drag
+    // too — so the link never reached the editor (attach_drop: Refused::Remote). xdnd owns the
+    // transport instead: a drop naming a local file still goes drop-files -> attach_drop, the rest
+    // is WebKit's (the DOM drop -> Ed.htmlDrop converts its text/html, like stock)
+    let b = b.disable_drag_drop_handler();
+    let w = b.on_web_resource_request(move |req, res| {
         if req.uri().path() == VFS_SYNC_PATH {
             *res = vfs_sync(&h, &req);
         } else {
@@ -3754,6 +3806,7 @@ fn page_window(app: &tauri::AppHandle, wc: &tauri::utils::config::WindowConfig) 
         }
     })
     .build()?;
+    xdnd::attach(&w);
     Ok(())
 }
 
@@ -4873,12 +4926,15 @@ fn bm_is_file_path(path: &str) -> bool {
 /// issue #31: the default label stock gives a graph bookmark (recon-bmactive Q4, s1-bookmarks.json)
 const BM_GRAPH_TITLE: &str = "Untitled Graph";
 
-/// the graph item's `options` + `local` as the pane needs them to reopen it
-fn bm_graph_spec(x: &BmExtra) -> serde_json::Value {
+/// the graph item's `options` + `local` as the pane needs them to reopen it, plus the item's own
+/// `ctime` + `title` as read (null when absent): issue #118's write-back key (bm_graph_patch)
+fn bm_graph_spec(title: Option<&str>, x: &BmExtra) -> serde_json::Value {
     let get = |k: &str| x.keys.iter().find(|(kk, _)| kk == k).map(|(_, v)| v.clone());
     serde_json::json!({
         "options": get("options").unwrap_or_else(|| serde_json::json!({})),
         "local": get("local").unwrap_or(serde_json::Value::Null),
+        "ctime": x.ctime.clone(),
+        "title": title,
     })
 }
 
@@ -5067,9 +5123,11 @@ fn bm_rows_in(nodes: &[BmNode], depth: usize, out: &mut Vec<BmRow>) {
         match n {
             BmNode::File { name, title, .. } => {
                 // R4X.17 (recon-bmcompat §5, 30-afterinject.png): title when
-                // typed, else basename minus ".md" — never the full path
+                // typed, else basename minus ".md" — never the full path.
+                // issue #101: an empty title (stock writes `"title": ""`) is no title
                 let label = title
                     .clone()
+                    .filter(|t| !t.is_empty())
                     .unwrap_or_else(|| name.rsplit('/').next().unwrap_or(name).to_string());
                 out.push(BmRow { kind: "f".into(), depth, name: name.clone(), label, ..Default::default() });
             }
@@ -5090,7 +5148,7 @@ fn bm_rows_in(nodes: &[BmNode], depth: usize, out: &mut Vec<BmRow>) {
             BmNode::Graph { title, x } => {
                 // issue #31: stock paints the title; "Untitled Graph" is stock's default (D1)
                 let label = title.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| BM_GRAPH_TITLE.to_string());
-                out.push(BmRow { kind: "f".into(), depth, name: label.clone(), label, graph: Some(bm_graph_spec(x)), ..Default::default() });
+                out.push(BmRow { kind: "f".into(), depth, name: label.clone(), label, graph: Some(bm_graph_spec(title.as_deref(), x)), ..Default::default() });
             }
             BmNode::Opaque(_) => {} // preserved on disk, never painted
         }
@@ -5202,6 +5260,26 @@ fn bm_group_rename_in(tree: &mut Vec<BmNode>, ix: usize, title: &str) -> Result<
             Ok(())
         }
         _ => Err("that row is not a group".to_string()),
+    }
+}
+
+
+/* issue #101 — a FILE bookmark's "Rename" (stock 1.13.7, docs/recon-bmmenu 06..08):
+   it edits the bookmark's DISPLAY TITLE in bookmarks.json — the file on disk and
+   every tab on it are untouched. Addressed by ROW INDEX, like the group verbs.
+   An empty (or all-blank) title CLEARS the key, so the row paints the basename
+   again (R4X.17) instead of an empty label. A group row is bm_group_rename's. */
+fn bm_title_in(tree: &mut Vec<BmNode>, ix: usize, title: &str) -> Result<(), String> {
+    let p = bm_path_of(tree, ix).ok_or("no such row")?;
+    let t = title.trim();
+    let new = if t.is_empty() { None } else { Some(t.to_string()) };
+    match bm_at_mut(tree, &p) {
+        Some(BmNode::File { title: tt, .. }) | Some(BmNode::Path { title: tt, .. }) | Some(BmNode::Graph { title: tt, .. }) => {
+            *tt = new;
+            Ok(())
+        }
+        Some(BmNode::Group { .. }) => Err("that row is a group (bm_group_rename)".to_string()),
+        _ => Err("that row has no title".to_string()),
     }
 }
 
@@ -5515,6 +5593,76 @@ fn bm_add_view_at_in(tree: &mut Vec<BmNode>, parent: Option<usize>, pos: usize, 
     Ok(())
 }
 
+/* issue #118 (operator ruling 2026-11-15): a graph tab OPENED FROM a graph bookmark writes its
+   parameter edits back to THAT item. The item is addressed by what the row carried when it
+   was clicked — ctime + title + global/local — never by row index (a drag moves it, the
+   index shifts; the item is still the same one). Exactly one match or nothing: a deleted,
+   renamed or re-created bookmark refuses, and the UI stops writing back (never re-creates).
+   `opts` merges into `options`, `lopts` (only stock's four local keys) into `local`, each key
+   overwritten in place; every other key, the title and the position are kept. */
+const BM_LG_KEYS: [&str; 4] = ["localJumps", "localBacklinks", "localForelinks", "localInterlinks"];
+fn bm_graph_find(nodes: &[BmNode], ctime: Option<&serde_json::Number>, title: Option<&str>, local: bool, at: &mut Vec<usize>, hits: &mut Vec<Vec<usize>>) {
+    for (i, n) in nodes.iter().enumerate() {
+        at.push(i);
+        match n {
+            BmNode::Group { items, .. } => bm_graph_find(items, ctime, title, local, at, hits),
+            BmNode::Graph { title: t, x } => {
+                let is_local = x.keys.iter().any(|(k, v)| k == "local" && v.is_object());
+                if x.ctime.as_ref() == ctime && t.as_deref() == title && is_local == local {
+                    hits.push(at.clone());
+                }
+            }
+            _ => {}
+        }
+        at.pop();
+    }
+}
+fn bm_merge_key(x: &mut BmExtra, key: &str, patch: &serde_json::Map<String, serde_json::Value>) {
+    if patch.is_empty() {
+        return;
+    }
+    match x.keys.iter_mut().find(|(k, _)| k == key) {
+        Some((_, serde_json::Value::Object(m))) => {
+            for (k, v) in patch {
+                m.insert(k.clone(), v.clone()); // preserve_order: an existing key keeps its slot
+            }
+        }
+        Some((_, v)) => *v = serde_json::Value::Object(patch.clone()),
+        None => x.keys.push((key.to_string(), serde_json::Value::Object(patch.clone()))),
+    }
+}
+fn bm_graph_patch_in(
+    tree: &mut Vec<BmNode>,
+    ctime: Option<&serde_json::Number>,
+    title: Option<&str>,
+    local: bool,
+    opts: &serde_json::Map<String, serde_json::Value>,
+    lopts: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    if let Some(k) = lopts.keys().find(|k| !BM_LG_KEYS.contains(&k.as_str())) {
+        return Err(format!("not a local graph key: {k:?}"));
+    }
+    if let Some(k) = opts.keys().find(|k| BM_LG_KEYS.contains(&k.as_str())) {
+        return Err(format!("{k:?} belongs in local"));
+    }
+    if !local && !lopts.is_empty() {
+        return Err("a global graph bookmark has no local keys".to_string());
+    }
+    let mut hits = Vec::new();
+    bm_graph_find(tree, ctime, title, local, &mut Vec::new(), &mut hits);
+    if hits.len() != 1 {
+        return Err("the graph bookmark is gone".to_string());
+    }
+    match bm_at_mut(tree, &hits[0]) {
+        Some(BmNode::Graph { x, .. }) => {
+            bm_merge_key(x, "options", opts);
+            bm_merge_key(x, "local", lopts);
+            Ok(())
+        }
+        _ => Err("the graph bookmark is gone".to_string()),
+    }
+}
+
 /* issue #31: the canvas / plugin-file toggle (tab menu, explorer menu): OFF drops the first
    node with that path at any depth, ON appends a Path node at the top level. */
 fn bm_toggle_path_in(tree: &mut Vec<BmNode>, path: &str) -> Result<(), String> {
@@ -5741,6 +5889,12 @@ fn bm_group_rename(v: State<Vault>, ix: usize, title: String) -> Result<Vec<BmRo
     span_timed!("bm_group_rename", bm_apply(&v, |t| bm_group_rename_in(t, ix, &title)))
 }
 
+/* issue #101: the FILE row's Rename — the bookmark title, never the file (bm_title_in). */
+#[tauri::command]
+fn bm_title(v: State<Vault>, ix: usize, title: String) -> Result<Vec<BmRow>, String> {
+    span_timed!("bm_title", bm_apply(&v, |t| bm_title_in(t, ix, &title)))
+}
+
 #[tauri::command]
 fn bm_group_delete(v: State<Vault>, ix: usize) -> Result<Vec<BmRow>, String> {
     span_timed!("bm_group_delete", bm_apply(&v, |t| bm_group_delete_in(t, ix)))
@@ -5782,6 +5936,19 @@ fn bm_add_view(v: State<Vault>, into: Option<usize>, item: serde_json::Value, ti
 #[tauri::command]
 fn bm_add_view_at(v: State<Vault>, parent: Option<usize>, pos: usize, item: serde_json::Value) -> Result<Vec<BmRow>, String> {
     span_timed!("bm_add_view_at", bm_apply(&v, |t| bm_add_view_at_in(t, parent, pos, &item)))
+}
+
+/* issue #118: the write-back of a bookmark-opened graph tab's edits (bm_graph_patch_in) */
+#[tauri::command]
+fn bm_graph_patch(
+    v: State<Vault>,
+    ctime: Option<serde_json::Number>,
+    title: Option<String>,
+    lg: bool,
+    opts: serde_json::Map<String, serde_json::Value>,
+    lopts: serde_json::Map<String, serde_json::Value>,
+) -> Result<Vec<BmRow>, String> {
+    span_timed!("bm_graph_patch", bm_apply(&v, |t| bm_graph_patch_in(t, ctime.as_ref(), title.as_deref(), lg, &opts, &lopts)))
 }
 
 /* issue #31: the row menu's Remove for a row that has no NAME to toggle (a graph item; a
@@ -6876,14 +7043,16 @@ fn main() {
     // writes inside the vault, so it must survive the same confinement a
     // user's own write does. If it does not, the failure is on the console and
     // in the [bseed:] census token, and the vault still opens.
-    // perf-index: one walk + read now, so the first note_open is already warm.
+    // perf-index: one walk + read at boot, so the first note_open is already warm.
+    // issue #106: on a worker thread (bind_vault_boot), overlapped with the
+    // webview start; every reader blocks on the index lock until it is in.
     // vaultbleed: the argv/last-vault boot binds through the SAME set-once
     // bind_vault the picker uses (seed + index build happen inside it).
-    let vault = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new(), seed: Mutex::new(None) };
+    let vault = Vault { root: OnceLock::new(), index: Arc::new(Mutex::new(Index::default())), lock: OnceLock::new(), seed: Arc::new(Mutex::new(None)) };
     if let Some(p) = &init {
         // vaultbleed B: a vault already open in another process is refused —
         // no second backend, no window; the other window stays the only one.
-        match bind_vault_locked(&vault, p, &vaultlock::env_lock_dir()) {
+        match bind_vault_boot(&vault, p, &vaultlock::env_lock_dir()) {
             Ok(()) => {}
             Err(BindErr::Lock(e @ vaultlock::LockErr::Busy(_))) => {
                 eprintln!("opensidian: {e}; not starting a second backend on it (exit {})", vaultlock::DUP_EXIT);
@@ -6986,30 +7155,19 @@ fn main() {
             }
             Ok(())
         })
-        // R31.1 THE DROP HANDLER — 4 lines of body, no behaviour, no I/O, no policy.
-        // Proven end to end by gate phase `osdrop` (a real XDND drag, real pointer).
-        // wry delivers a real XDND drop to Rust and Tauri hands it to us as
-        // WindowEvent::DragDrop (tauri-runtime-wry-2.11.4:4889: for a window's
-        // own content webview the drop is a SYNTHESIZED WINDOW event, not a
-        // webview one), so the DOM never sees a DataTransfer carrying files —
-        // faking a DOM drop in JS would test a path production does not have.
-        // Which note is open and where the caret sits is webview state, so this
-        // re-emits [paths, x, y] under ONE name the UI owns (`drop-files`; x/y =
-        // where it landed, physical px, so the embed goes at the drop point) and
-        // stops: every rule — source checks, name checks, the cap, containment,
-        // no-overwrite — lives in `attach_drop`, reached through `attach_files`.
-        // Caveat, stated because it is real: `emit` serializes to JSON, so a
-        // source path whose bytes are not UTF-8 cannot be carried. It is then
-        // dropped here and the user sees nothing — the same hole Tauri's own
-        // `tauri://drag-drop` payload has. Such a file is never attached, never
-        // half-attached; R31.10.
+        // R31.1 THE DROP TRANSPORT lives in xdnd.rs since #51 (page_window disables
+        // Tauri's own drag-drop handler, so WindowEvent::DragDrop never fires here).
+        // Proven end to end by gate phase `osdrop` (a real XDND drag, real pointer)
+        // and, for the link drag Tauri's handler used to swallow, `droplink`.
+        // A file drop still re-emits [paths, x, y] under ONE name the UI owns
+        // (`drop-files`) and stops: every rule — source checks, name checks, the
+        // cap, containment, no-overwrite — lives in `attach_drop`, reached through
+        // `attach_files`. Caveat, stated because it is real: `emit` serializes to
+        // JSON, so a source path whose bytes are not UTF-8 cannot be carried; such
+        // a file is never attached, never half-attached; R31.10.
         .on_window_event(|w, e| {
             winsize_event(w, e); // goal winsize: track + save on close (not the drop)
             quit_event(w, e); // tab-dataloss: a close waits (bounded) for the UI flush
-            if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, position }) = e {
-                use tauri::Emitter;
-                let _ = w.emit(DROP_EVENT, (paths, position.x, position.y));
-            }
         })
         // S1: the window is the app, never a browser — every navigation off the
         // app origin (remote http(s), javascript:, file:, ...) is denied here.
@@ -7093,7 +7251,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, canvas_io, canvas_attach, paste_image, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, bm_add_view, bm_add_view_at, bm_remove, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_title, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, bm_add_view, bm_add_view_at, bm_remove, bm_graph_patch, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
             read_workspace, write_workspace,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
@@ -9003,6 +9161,48 @@ mod tests {
         }
     }
 
+    /// issue #118: a bookmark-opened graph's edits land in THAT item only — options merged in
+    /// place (unknown keys, title, ctime, key order, position kept), the four local keys in
+    /// `local`; a renamed / deleted / ambiguous item refuses, nothing is ever created.
+    #[test]
+    fn issue118_graph_bookmark_write_back() {
+        let body = r#"{"items": [
+                {"type": "file", "ctime": 1, "path": "Home.md"},
+                {"type": "group", "ctime": 2, "items": [
+                    {"type": "graph", "ctime": 3, "title": "Untitled Graph", "options": {"search": "q", "repelStrength": 13, "zz": [1]}, "mine": 1}
+                ], "title": "G"},
+                {"type": "graph", "ctime": 4, "title": "B (local)", "options": {"search": ""}, "local": {"file": "B.md", "localJumps": 1, "localBacklinks": true}},
+                {"type": "graph", "ctime": 5, "title": "Dup"},
+                {"type": "graph", "ctime": 5, "title": "Dup"}
+            ]}"#;
+        let m = |v: serde_json::Value| v.as_object().unwrap().clone();
+        let none = serde_json::Map::new();
+        let n = |c: u64| serde_json::Number::from(c);
+        let mut t = parse_bm_tree(body);
+        let rows = bm_rows_of(&t);
+        let gs = rows.iter().find(|r| r.label == "Untitled Graph").unwrap().graph.clone().unwrap();
+        assert_eq!((gs["ctime"].clone(), gs["title"].clone()), (serde_json::json!(3), serde_json::json!("Untitled Graph")), "the row carries its key");
+        bm_graph_patch_in(&mut t, Some(&n(3)), Some("Untitled Graph"), false,
+                          &m(serde_json::json!({"repelStrength": 7.5, "showOrphans": false})), &none).unwrap();
+        bm_graph_patch_in(&mut t, Some(&n(4)), Some("B (local)"), true,
+                          &m(serde_json::json!({"search": "x"})), &m(serde_json::json!({"localJumps": 3}))).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&bm_emit(&t, &[])).unwrap();
+        let g = &v["items"][1]["items"][0];
+        assert_eq!(g, &serde_json::json!({"type": "graph", "ctime": 3, "title": "Untitled Graph",
+            "options": {"search": "q", "repelStrength": 7.5, "zz": [1], "showOrphans": false}, "mine": 1}));
+        assert_eq!(g["options"].as_object().unwrap().keys().collect::<Vec<_>>(), vec!["search", "repelStrength", "zz", "showOrphans"]);
+        assert_eq!(v["items"][2]["local"], serde_json::json!({"file": "B.md", "localJumps": 3, "localBacklinks": true}));
+        assert_eq!(v["items"][2]["options"], serde_json::json!({"search": "x"}));
+        let before = bm_emit(&t, &[]);
+        for (c, ti, lg) in [(3, "Renamed", false), (9, "Untitled Graph", false), (3, "Untitled Graph", true), (5, "Dup", false)] {
+            assert!(bm_graph_patch_in(&mut t, Some(&n(c)), Some(ti), lg, &m(serde_json::json!({"scale": 2})), &none).is_err(), "{c} {ti} {lg}");
+        }
+        assert!(bm_graph_patch_in(&mut t, Some(&n(4)), Some("B (local)"), true, &m(serde_json::json!({"localJumps": 2})), &none).is_err(), "local key in options");
+        assert!(bm_graph_patch_in(&mut t, Some(&n(4)), Some("B (local)"), true, &none, &m(serde_json::json!({"file": "Z.md"}))).is_err(), "centre is not patched");
+        assert!(bm_graph_patch_in(&mut t, Some(&n(3)), Some("Untitled Graph"), false, &none, &m(serde_json::json!({"localJumps": 2}))).is_err());
+        assert_eq!(bm_emit(&t, &[]), before, "a refused write-back changes nothing");
+    }
+
     /// issue #31: a view node is built in stock's key order with a minted ctime and stock's default
     /// graph title; a dragged file item already bookmarked is refused, a second graph never is.
     #[test]
@@ -9457,6 +9657,16 @@ mod tests {
         bm_group_rename_in(&mut t, 2, "Work").unwrap();
         assert_eq!(bm_rows_of(&t)[2].name, "Work");
         assert!(bm_group_rename_in(&mut t, 0, "nope").is_err(), "a file row is not a group");
+        // issue #101: a FILE row's Rename sets its display title, in place; the name (the file) is untouched
+        bm_title_in(&mut t, 0, "  Alpha X ").unwrap();
+        assert_eq!((bm_rows_of(&t)[0].name.as_str(), bm_rows_of(&t)[0].label.as_str()), ("A", "Alpha X"));
+        assert_eq!(bm_value_of(&t[0])["title"], "Alpha X");
+        assert_eq!(bm_value_of(&t[0])["path"], "A.md");
+        bm_title_in(&mut t, 0, "   ").unwrap();
+        assert_eq!(bm_rows_of(&t)[0].label, "A", "a blank title clears it: the basename paints again");
+        assert!(bm_value_of(&t[0]).get("title").is_none(), "a cleared title writes no key");
+        assert!(bm_title_in(&mut t, 2, "x").is_err(), "a group row is bm_group_rename's");
+        assert!(bm_title_in(&mut t, 99, "x").is_err());
         // move a file IN, then back OUT to the top level (the superset route)
         bm_move_in_tree(&mut t, 0, Some(2)).unwrap();
         assert_eq!(
@@ -11179,7 +11389,7 @@ mod tests {
 
     /* ---- R31 drop-to-attach (feedback #18) -----------------------------
        These hammer `attach_drop`, the ONE function the drop handler wraps.
-       The wry/GTK -> WindowEvent::DragDrop transport is NOT unit-testable (it
+       The GTK -> xdnd.rs transport is NOT unit-testable (its decision, xdnd::claim, is: it
        needs a display and a second X client); the release-mandatory gate phase
        `osdrop` drags a real file from a real XDND source with real pointer
        input. Faking a DOM drag event here would test a path production lacks. */
@@ -11780,30 +11990,36 @@ mod tests {
     }
 
     /// R31.1 THE WIRING IS A STRING, and a string drifts. Rust emits
-    /// DROP_EVENT from the WindowEvent::DragDrop handler; ui/main.js listens
-    /// for that exact name and calls `attach_files`. Rename either end and the
-    /// feature dies in total silence — the build is still green, the tests are
+    /// DROP_EVENT from the window's drop transport (xdnd.rs since #51); ui/main.js
+    /// listens for that exact name and calls `attach_files`. Rename either end and
+    /// the feature dies in total silence — the build is still green, the tests are
     /// still green, and a drop simply does nothing. Nothing else in this repo
     /// would notice, because ui/ is not a cargo input (docs/features.md trap).
     ///
-    /// It also pins the handler as a PASS-THROUGH, which is the structural
+    /// It also pins the transport as a PASS-THROUGH, which is the structural
     /// claim the whole design rests on: the unit tests reach the behaviour
-    /// (`attach_drop`) directly, and the transport is the gate phase osdrop's,
-    /// so a handler with behaviour would be behaviour no unit test reaches.
-    /// A handler that grows a body fails this test at 9 lines.
+    /// (`attach_drop`, `xdnd::claim`) directly, and the transport is the gate
+    /// phases' (osdrop, droplink), so no file I/O or policy may live in it.
+    /// And #51: Tauri's own handler must stay OFF (it swallowed every link drag),
+    /// so WindowEvent::DragDrop is not handled at all any more.
     #[test]
     fn the_drop_handler_is_a_pass_through_and_the_ui_listens_for_the_same_name() {
         let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
+        let xd = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/xdnd.rs")).unwrap();
         let ui = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/main.js")).unwrap();
         let lines: Vec<&str> = src.lines().collect();
-        let i = lines.iter().position(|l| l.contains(".on_window_event(")).expect("no OS drop is wired at all");
+        let i = lines.iter().position(|l| l.contains("fn page_window(")).expect("no app window builder");
+        let j = i + lines[i..].iter().position(|l| l == &"}").expect("unterminated page_window");
+        let pw = &lines[i..=j];
+        assert!(pw.iter().any(|l| l.contains(".disable_drag_drop_handler()")), "#51: Tauri's drop handler must be off for the app window");
+        assert!(pw.iter().any(|l| l.contains("xdnd::attach(&w)")), "the app window must get the xdnd transport");
+        let i = lines.iter().position(|l| l.contains(".on_window_event(")).expect("no window event handler");
         let j = i + lines[i..].iter().position(|l| l.trim() == "})").expect("unterminated handler");
-        let body = &lines[i..=j];
-        assert!(body.len() <= 8, "the drop handler is {} lines: it is meant to be a pass-through", body.len());
-        assert!(body.iter().any(|l| l.contains("WindowEvent::DragDrop")), "the handler must be the REAL OS drop event");
-        assert!(body.iter().any(|l| l.contains("emit(DROP_EVENT")), "the handler must forward under the shared name");
-        for forbidden in ["fs::", "copy", "canonicalize", "if !", "unwrap()"] {
-            assert!(!body.iter().any(|l| l.contains(forbidden)), "policy or I/O ({forbidden}) leaked into the drop handler");
+        assert!(!lines[i..=j].iter().any(|l| l.contains("DragDrop")), "#51: a WindowEvent::DragDrop handler is dead code (Tauri's handler is off)");
+        let code: Vec<&str> = xd.split("#[cfg(test)]").next().unwrap().lines().filter(|l| !l.trim_start().starts_with("//")).collect();
+        assert!(code.iter().any(|l| l.contains("emit(crate::DROP_EVENT")), "the transport must forward under the shared name");
+        for forbidden in ["fs::", "File::", "copy(", "canonicalize", "invoke"] {
+            assert!(!code.iter().any(|l| l.contains(forbidden)), "policy or I/O ({forbidden}) leaked into the drop transport");
         }
         assert_eq!(DROP_EVENT, "drop-files");
         assert!(ui.contains(&format!("listen(\"{DROP_EVENT}\"")), "ui/main.js must listen for the name Rust emits");
@@ -12144,7 +12360,7 @@ mod vaultbleed_tests {
         root
     }
     fn vault_at(p: &Path) -> Arc<Vault> {
-        let v = Arc::new(Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new(), seed: Mutex::new(None) });
+        let v = Arc::new(Vault { root: OnceLock::new(), index: Arc::new(Mutex::new(Index::default())), lock: OnceLock::new(), seed: Arc::new(Mutex::new(None)) });
         bind_vault(&v, p).unwrap();
         v
     }
@@ -12229,9 +12445,9 @@ mod vaultbleed_tests {
         // an index; a second spelling of the path keys the same lock.
         let a = mk("dup-a", &[("onlyA-note", "seed #onlyA\n")]);
         let locks = std::env::temp_dir().join(format!("opensidian-vb-locks-{}", std::process::id()));
-        let v1 = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new(), seed: Mutex::new(None) };
+        let v1 = Vault { root: OnceLock::new(), index: Arc::new(Mutex::new(Index::default())), lock: OnceLock::new(), seed: Arc::new(Mutex::new(None)) };
         bind_vault_locked(&v1, &a, &locks).expect("first backend binds");
-        let v2 = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new(), seed: Mutex::new(None) };
+        let v2 = Vault { root: OnceLock::new(), index: Arc::new(Mutex::new(Index::default())), lock: OnceLock::new(), seed: Arc::new(Mutex::new(None)) };
         let alias = a.join("..").join(a.file_name().unwrap());
         match bind_vault_locked(&v2, &alias, &locks) {
             Err(BindErr::Lock(vaultlock::LockErr::Busy(_))) => {}
@@ -12259,6 +12475,54 @@ mod vaultbleed_tests {
             }
         }
         assert!(cur_vault(&v2).is_some(), "the second backend owns the vault once the first is gone");
+        let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&locks));
+    }
+
+    #[test]
+    fn boot_bind_builds_the_index_off_the_main_thread_with_the_same_answers() {
+        // issue #106: bind_vault_boot hands the walk + index to a worker that
+        // holds the index and seed locks before the bind returns, so a reader
+        // right after it blocks until the build is in — never an empty or
+        // partial index — and gets exactly what the synchronous bind builds.
+        // 600 notes: above read_parse_all's 256-note threshold (parallel path).
+        let files: Vec<(String, String)> = (0..600)
+            .map(|i| (format!("n{i:03}"), format!("# n{i:03}\nsee [[n{:03}]] #t{}\n", (i + 1) % 600, i % 7)))
+            .collect();
+        let refs: Vec<(&str, &str)> = files.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        let a = mk("boot-a", &refs);
+        let locks = std::env::temp_dir().join(format!("opensidian-vb-bootlocks-{}", std::process::id()));
+        let sync = Vault { root: OnceLock::new(), index: Arc::new(Mutex::new(Index::default())), lock: OnceLock::new(), seed: Arc::new(Mutex::new(None)) };
+        bind_vault_locked(&sync, &a, &locks).expect("sync bind");
+        let want_notes = cur_notes(&sync);
+        let want_bl = sync.index.lock().unwrap().backlinks("n005");
+        let want_seed = sync.seed.lock().unwrap().clone().expect("sync seed");
+        drop(sync); // free the vault's flock for the boot bind
+        let boot = Vault { root: OnceLock::new(), index: Arc::new(Mutex::new(Index::default())), lock: OnceLock::new(), seed: Arc::new(Mutex::new(None)) };
+        let t0 = std::time::Instant::now();
+        loop {
+            match bind_vault_boot(&boot, &a, &locks) {
+                Err(BindErr::Lock(vaultlock::LockErr::Busy(_))) if t0.elapsed().as_secs() < 3 => {
+                    std::thread::sleep(std::time::Duration::from_millis(25))
+                }
+                r => {
+                    r.expect("boot bind");
+                    break;
+                }
+            }
+        }
+        assert_eq!(cur_vault(&boot).as_deref(), Some(a.as_path()), "the root is claimed synchronously");
+        assert_eq!(want_notes.len(), 600);
+        assert_eq!(cur_notes(&boot), want_notes, "the first reader sees the whole index");
+        assert_eq!(boot.index.lock().unwrap().backlinks("n005"), want_bl);
+        assert_eq!(boot.seed.lock().unwrap().clone().expect("boot seed"), want_seed, "the watcher baseline is set too");
+        // the claim stays synchronous: a second backend is still refused at bind time
+        let other = Vault { root: OnceLock::new(), index: Arc::new(Mutex::new(Index::default())), lock: OnceLock::new(), seed: Arc::new(Mutex::new(None)) };
+        match bind_vault_boot(&other, &a, &locks) {
+            Err(BindErr::Lock(vaultlock::LockErr::Busy(_))) => {}
+            r => panic!("second boot bind on an open vault must be Busy, got {r:?}"),
+        }
+        assert!(cur_vault(&other).is_none());
+        drop(boot);
         let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&locks));
     }
 
