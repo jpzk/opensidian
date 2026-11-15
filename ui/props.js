@@ -100,8 +100,9 @@
   }
   function rename(cm, key, name) {
     if (!String(name).trim() || name === key) return false;
+    Props.focus = { cm, key: String(name).trim(), part: "value" };   // BEFORE the dispatch: CM6 redraws the widget synchronously in it
     const ok = write(cm, PM().rename(docText(cm), key, name), "a property named " + JSON.stringify(String(name).trim()) + " already exists");
-    if (ok) Props.focus = { cm, key: String(name).trim(), part: "value" };
+    if (!ok) Props.focus = null;
     return ok;
   }
   function remove(cm, key) { return write(cm, PM().remove(docText(cm), key), "the property " + key + " cannot be deleted"); }
@@ -110,8 +111,9 @@
     if (!k) return false;
     const st = Props.types[k.toLowerCase()], M = PM();
     const type = st && M.KNOWN.indexOf(st) >= 0 ? st : M.RESERVED[k.toLowerCase()] || "text";
+    Props.focus = { cm, key: k, part: "value" };   // BEFORE the dispatch (see rename)
     const ok = write(cm, M.add(docText(cm), k, type, null), "a property named " + JSON.stringify(k) + " already exists");
-    if (ok) Props.focus = { cm, key: k, part: "value" };
+    if (!ok) Props.focus = null;
     return ok;
   }
   // a retype: the value is converted when the conversion is exact, then types.json takes the type
