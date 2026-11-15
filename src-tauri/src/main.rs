@@ -3771,6 +3771,12 @@ fn plugins_state_of(root: &Path) -> serde_json::Value {
 #[tauri::command]
 fn plugins_state(v: State<Vault>, otel: Option<perf::Ctx>) -> Result<serde_json::Value, String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
+    // #127 migration: a trust entry from before the identity binding is bound to the directory
+    // this boot finds at its path (plugins::bind_legacy); every later boot compares against it
+    if let Some((p, k, id)) = plugins::bind_legacy(&cfg_value(), &plugins::trust_key(&root)) {
+        eprintln!("[plugins] trust {k:?}: bound to directory {id}");
+        cfg_update(&[cfgstore::Op::SetIn(p, k, id)]);
+    }
     Ok(span_timed!(otel => "plugins_state", plugins_state_of(&root)))
 }
 
@@ -3826,7 +3832,9 @@ async fn plugins_set(
                 eprintln!("[consent] trust {key:?}: answer from before another flip, discarded, nothing written");
                 return Err(e);
             }
-            cfg_update(&[cfgstore::Op::SetIn(plugins::TRUST_KEY.into(), key, serde_json::json!(t))]);
+            // #127: ON binds the entry to this directory (plugins::trust_ops: flag + identity, one write)
+            let ops: Vec<cfgstore::Op> = plugins::trust_ops(&key, t).into_iter().map(|(p, k, v)| cfgstore::Op::SetIn(p, k, v)).collect();
+            cfg_update(&ops);
             if !t {
                 desk_proc::kill_all(&life); // flip OFF: what plugins started stops with them
                 desk_net::close_all(&life); // N5: so do its listeners, under the lock desk_net_listen binds under
@@ -3906,7 +3914,7 @@ fn spawn_want(root: &Path, plugin: Option<&str>, sp: &desk_proc::Spec) -> Option
     let (plugin_sha256, plugin_version) = spawn_allow::plugin_fingerprint(root, id).map_err(why).ok()?;
     let prog = sp.prog.as_ref()?;
     let program_sha256 = spawn_allow::program_sha256(prog.stat_key(), || prog.open_read()).map_err(why).ok()?;
-    Some(spawn_allow::Want { vault: plugins::trust_key(root), plugin: id.to_string(), plugin_sha256, plugin_version, program: sp.file.clone(), program_sha256 })
+    Some(spawn_allow::Want { vault: plugins::trust_key(root).path, plugin: id.to_string(), plugin_sha256, plugin_version, program: sp.file.clone(), program_sha256 })
 }
 
 /* #74 Settings > Allowed programs. The webview may LIST and REVOKE grants, never add one:

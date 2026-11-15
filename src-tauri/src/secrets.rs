@@ -333,7 +333,7 @@ pub(crate) async fn secrets_op(
     let root = crate::cur_vault(&v).ok_or("no vault open")?;
     let trusted = crate::plugins::is_trusted(&crate::cfg_value(), &root);
     admit(trusted, &op, id.as_deref(), value.as_deref())?;
-    let vault = crate::plugins::trust_key(&root);
+    let vault = crate::plugins::trust_key(&root).path;
     let r = crate::span_timed!(otel => "secrets_op", tauri::async_runtime::spawn_blocking(move || {
         let op = parse(&op, id.as_deref(), value.as_deref())?;
         run(None, &vault, op)

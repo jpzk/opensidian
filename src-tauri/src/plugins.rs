@@ -138,8 +138,62 @@ pub fn serve(root: Option<&Path>, path: &str, trusted: bool) -> Served {
 
 /// trust is keyed by the CANONICAL vault path in ~/.opensidian.json
 /// ("plugins_trusted": { "<canon path>": true }); absent = restricted.
-pub fn trust_key(root: &Path) -> String {
-    fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf()).display().to_string()
+/// #127: the entry is BOUND to the directory it was given for — "plugins_trust_id":
+/// { "<canon path>": "<inode>:<birth time ns>" } of the canonical root, recorded with the flag (plugins_set)
+/// or, for an entry from before the binding, on the first boot that finds it (plugins_state, bind_legacy).
+/// A directory removed and replaced at a trusted path (another vault cloned / unpacked / moved there) has
+/// another inode and another birth time: the entry does not apply, the vault opens restricted and turning
+/// trust on asks again. Never read from the vault (a vault file cannot forge its own inode or birth time).
+/// `id` is None when the root cannot be stat'ed; a recorded id then never matches (fails restricted).
+#[derive(Clone, PartialEq, Eq)]
+pub struct TrustKey {
+    pub path: String,
+    pub id: Option<String>,
+}
+
+impl std::ops::Deref for TrustKey {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.path
+    }
+}
+
+impl std::fmt::Display for TrustKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.path)
+    }
+}
+
+impl std::fmt::Debug for TrustKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.path, f)
+    }
+}
+
+/// the ~/.opensidian.json key holding { "<canon vault path>": "<identity>" } (#127)
+pub const TRUST_ID_KEY: &str = "plugins_trust_id";
+
+/// the identity of the directory at `canon` (#127): inode + birth time (statx) in ns. Birth time
+/// separates a reused inode number (rm -rf + mkdir often gets the freed one back); a filesystem
+/// without birth time gives the inode alone. The device number is left out on purpose: it is not
+/// stable across remounts of removable / network disks and the path already names the place.
+pub fn dir_identity(canon: &Path) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    let m = fs::metadata(canon).ok()?;
+    if !m.is_dir() {
+        return None;
+    }
+    Some(match m.created().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()) {
+        Some(b) => format!("{}:{}", m.ino(), b.as_nanos()),
+        None => format!("{}:-", m.ino()),
+    })
+}
+
+/// a path lookup (canonicalize + stat): callers compute it BEFORE the lifecycle lock (CC1)
+pub fn trust_key(root: &Path) -> TrustKey {
+    let canon = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let id = dir_identity(&canon);
+    TrustKey { path: canon.display().to_string(), id }
 }
 
 pub fn is_trusted(cfg: &serde_json::Value, root: &Path) -> bool {
@@ -147,9 +201,36 @@ pub fn is_trusted(cfg: &serde_json::Value, root: &Path) -> bool {
 }
 
 /// BB1 (PR #42 round 11): the trust check for a key computed earlier (trust_key canonicalizes the
-/// vault root: a path lookup, done before the lifecycle lock by desk_shell)
-pub fn is_trusted_key(cfg: &serde_json::Value, key: &str) -> bool {
-    cfg["plugins_trusted"][key].as_bool() == Some(true)
+/// vault root: a path lookup, done before the lifecycle lock by desk_shell). #127: the flag must be
+/// true AND the recorded identity (if any) must be the directory's — a mismatch is restricted.
+/// No recorded identity = an entry from before the binding: honoured (bind_legacy records it).
+pub fn is_trusted_key(cfg: &serde_json::Value, key: &TrustKey) -> bool {
+    if cfg[TRUST_KEY][&key.path].as_bool() != Some(true) {
+        return false;
+    }
+    match &cfg[TRUST_ID_KEY][&key.path] {
+        serde_json::Value::Null => true,
+        rec => key.id.as_deref().is_some_and(|id| rec.as_str() == Some(id)),
+    }
+}
+
+/// #127: the config writes for a trust flip of `key`: the flag, and with ON the identity it is bound to
+pub fn trust_ops(key: &TrustKey, on: bool) -> Vec<(String, String, serde_json::Value)> {
+    let mut v = vec![(TRUST_KEY.to_string(), key.path.clone(), serde_json::json!(on))];
+    if on {
+        if let Some(id) = &key.id {
+            v.push((TRUST_ID_KEY.to_string(), key.path.clone(), serde_json::json!(id)));
+        }
+    }
+    v
+}
+
+/// #127 migration: an entry trusted before the binding (flag true, no identity) is bound to the
+/// directory found at its path now (the first boot of it after the upgrade). None = nothing to write.
+pub fn bind_legacy(cfg: &serde_json::Value, key: &TrustKey) -> Option<(String, String, serde_json::Value)> {
+    let id = key.id.as_ref()?;
+    (cfg[TRUST_KEY][&key.path].as_bool() == Some(true) && cfg[TRUST_ID_KEY][&key.path].is_null())
+        .then(|| (TRUST_ID_KEY.to_string(), key.path.clone(), serde_json::json!(id)))
 }
 
 // ---------------------------------------------------------------------------
@@ -394,9 +475,82 @@ mod tests {
     fn trust_lives_outside_the_vault_and_defaults_off() {
         let r = vault("trust");
         assert!(!is_trusted(&serde_json::json!({}), &r));
-        let cfg = serde_json::json!({"plugins_trusted": {trust_key(&r): true}});
+        let cfg = serde_json::json!({"plugins_trusted": {trust_key(&r).path: true}});
         assert!(is_trusted(&cfg, &r));
-        assert!(!is_trusted(&serde_json::json!({"plugins_trusted": {trust_key(&r): "yes"}}), &r));
+        assert!(!is_trusted(&serde_json::json!({"plugins_trusted": {trust_key(&r).path: "yes"}}), &r));
+    }
+
+    /* #127 case c: a trusted path whose directory is removed and replaced by another vault (cloned,
+       unpacked, moved there) does not inherit the entry: the identity recorded with the flag is the
+       old directory's. The vault's own files never enter the decision. */
+    #[test]
+    fn trust_is_bound_to_the_directory_not_only_the_path() {
+        let r = vault("bound");
+        let k = trust_key(&r);
+        assert!(k.id.is_some(), "a vault dir has an identity");
+        let mut cfg = serde_json::json!({});
+        for (p, key, v) in trust_ops(&k, true) {
+            cfg[p][key] = v;
+        }
+        assert_eq!(cfg[TRUST_ID_KEY][&k.path].as_str(), k.id.as_deref());
+        assert!(is_trusted(&cfg, &r), "the directory it was given for");
+        assert!(is_trusted_key(&cfg, &trust_key(&r)), "a recomputed key of the same directory");
+        // a new file inside the vault changes nothing (mtime/ctime are not part of the identity)
+        fs::write(r.join("new.md"), "x").unwrap();
+        assert!(is_trusted(&cfg, &r));
+        // the directory replaced at the same path: restricted, even though the path entry is still true
+        fs::remove_dir_all(&r).unwrap();
+        fs::create_dir_all(r.join(".obsidian/plugins/good")).unwrap();
+        fs::write(r.join(".obsidian/community-plugins.json"), r#"["good"]"#).unwrap();
+        assert_eq!(cfg[TRUST_KEY][&k.path].as_bool(), Some(true));
+        assert_ne!(trust_key(&r).id, k.id, "a replaced directory has another identity");
+        assert!(!is_trusted(&cfg, &r), "the replaced directory inherited trust");
+        // a directory moved onto the path (rename keeps the inode of the moved dir) is just as foreign
+        let other = vault("bound-other");
+        fs::remove_dir_all(&r).unwrap();
+        fs::rename(&other, &r).unwrap();
+        assert!(!is_trusted(&cfg, &r));
+        // trusting again (the asked flip) binds the new directory
+        for (p, key, v) in trust_ops(&trust_key(&r), true) {
+            cfg[p][key] = v;
+        }
+        assert!(is_trusted(&cfg, &r));
+        // OFF writes only the flag
+        assert_eq!(trust_ops(&trust_key(&r), false).len(), 1);
+        // a root that cannot be stat'ed never matches a recorded identity
+        let gone = TrustKey { path: k.path.clone(), id: None };
+        assert!(!is_trusted_key(&cfg, &gone));
+        // a forged identity of the wrong type is no match either
+        cfg[TRUST_ID_KEY][&k.path] = serde_json::json!(true);
+        assert!(!is_trusted(&cfg, &r));
+    }
+
+    #[test]
+    fn a_legacy_entry_is_honoured_once_then_bound() {
+        let r = vault("legacy");
+        let k = trust_key(&r);
+        let mut cfg = serde_json::json!({"plugins_trusted": {k.path.clone(): true}});
+        assert!(is_trusted(&cfg, &r), "an entry from before the binding still applies");
+        let (p, key, v) = bind_legacy(&cfg, &k).expect("the first boot binds it");
+        cfg[p][key] = v;
+        assert!(bind_legacy(&cfg, &k).is_none(), "bound once");
+        assert!(is_trusted(&cfg, &r));
+        fs::remove_dir_all(&r).unwrap();
+        fs::create_dir_all(r.join(".obsidian")).unwrap();
+        assert!(!is_trusted(&cfg, &r), "after the binding a replaced directory is restricted");
+        // nothing to bind for an untrusted or OFF entry
+        assert!(bind_legacy(&serde_json::json!({}), &k).is_none());
+        assert!(bind_legacy(&serde_json::json!({"plugins_trusted": {k.path.clone(): false}}), &k).is_none());
+    }
+
+    #[test]
+    fn a_symlinked_root_shares_the_identity_of_its_target() {
+        let r = vault("symid");
+        let l = std::env::temp_dir().join(format!("opensidian-plug-symid-link-{}", std::process::id()));
+        let _ = fs::remove_file(&l);
+        std::os::unix::fs::symlink(&r, &l).unwrap();
+        assert_eq!(trust_key(&l), trust_key(&r));
+        let _ = fs::remove_file(&l);
     }
 
     #[test]
