@@ -1279,16 +1279,17 @@ function renderBm() {
     s.className = "bmic " + (grp ? "bmchev" : "bmstar");             // svg, not ★/▾ — headless fonts lack the glyphs
     s.innerHTML = grp ? BM_ICON_GROUP : BM_ICON_FILE;
     row.appendChild(s);
-    if (grp && ix === bmRenaming) {        // Rename: an editor INSIDE the row's ring, model untouched until Return
+    if (ix === bmRenaming) {               // Rename: an editor INSIDE the row's ring, model untouched until Return (issue #101: file rows too, 06-rename.png)
       const inp = document.createElement("input");
-      inp.id = "bmren"; inp.className = "bmren"; inp.value = r.name;
+      inp.id = "bmren"; inp.className = "bmren";
+      inp.value = grp ? r.name : (r.label ?? r.name.split("/").pop());   // a file row edits its DISPLAY title (stock: the painted label, selected)
       inp.spellcheck = false; inp.autocomplete = "off";
       inp.onclick = e => e.stopPropagation();
       inp.oninput = () => updateTitle();
       inp.onblur = () => { if (bmRenaming === ix) { bmRenaming = null; renderBm(); } };   // blur is not a commit: only Return is (08-nest-commit.png)
       inp.onkeydown = e => {
         e.stopPropagation();               // a group title may contain any chord the global keymap owns
-        if (e.key === "Enter") { e.preventDefault(); bmGroupRenameCommit(ix, inp.value); }
+        if (e.key === "Enter") { e.preventDefault(); (grp ? bmGroupRenameCommit(ix, inp.value) : bmTitleCommit(ix, inp.value)); }
         else if (e.key === "Escape") { e.preventDefault(); bmRenaming = null; renderBm(); }
       };
       row.appendChild(inp);
@@ -1686,14 +1687,15 @@ function bmRowMenu(e, nm, ix) {             // right-click a FILE .bmrow -> Obsi
   const vr = bmTree[ix] && bmTree[ix].name === nm && !pdf && (bmTree[ix].graph || bmTree[ix].path) ? bmTree[ix] : null;
   if (vr) {
     item("Open in new tab", () => bmOpenRow(vr, { ctrlKey: true }));
-    item("Open to the right", null, "Not wired for a graph / canvas / plugin-file bookmark: click the row, then Split right");
+    if (vr.path && Ed.isImg(vr.name)) item("Open to the right", () => openImage(vr.name, null, "split"));   // issue #102: an image bookmark opens the image view to the right
+    else item("Open to the right", null, "Not wired for a graph / canvas / plugin-file bookmark: click the row, then Split right");
   } else {
   item("Open in new tab",   () => (pdf ? openPdf(nm, null, "tab") : openNewTab(nm)));                         // WIRED: openNewTab — right of the active tab, focused, never deduped (opentab REQ-8/9/14, Obsidian c20)
   item("Open to the right", () => (pdf ? openPdf(nm, null, "split") : splitWith(fg(), "row", mkTab(nm))));      // WIRED: splitWith — the verb behind the tab menu's "Split right" (M7/R6.2), carrying a fresh tab of this note
   }
   item("Open in new window", null, "Single-window app: there is no second window to open into");   // NOT WIRED
   sep();
-  item("Rename",  null, "Bookmarks are note names on disk (.obsidian/bookmarks.json); there is no per-bookmark title to rename");   // NOT WIRED
+  item("Rename",  () => bmGroupRenameStart(ix));                          // WIRED (issue #101): the inline editor in the row edits the bookmark TITLE, never the file (06-rename.png -> 08-rename-enter.png)
   item("Edit...", hasGrp ? () => openBmEdit(ix) : null,                    // WIRED (R4X.7) once a group exists: the move route, in and out
        hasGrp ? null : "Edit bookmark chooses a GROUP and this pane has none — right-click the pane background to create one");
   sep();
@@ -1918,6 +1920,9 @@ async function bmOpenPath(p, ev) {
     if (!ls.includes(p)) return gone();
     return openCanvas(p);
   }
+  // issue #102: an image is not a vault TFile here (the plugin vault indexes notes), so it is checked against the
+  // image list the explorer paints and opened in the image view directly; a path not in the list is gone
+  if (Ed.isImg(p)) return Array.isArray(imgsCache) && imgsCache.includes(p) ? openImage(p, ev) : gone();
   let f = null;
   try { f = PLG && PLG.app.vault.getAbstractFileByPath(p); } catch (_) {}
   if (!f) return gone();
@@ -1939,6 +1944,9 @@ const bmGroupNew = parent => bmApply("bm_group_new", { parent });   // parent = 
 const bmGroupDelete = ix => bmApply("bm_group_delete", { ix });     // the SUBTREE goes with it, and nothing asks (R4X.3)
 function bmGroupRenameStart(ix) { bmRenaming = ix; renderBm(); }    // renderBm focuses+selects the editor it just painted
 function bmGroupRenameCommit(ix, title) { bmRenaming = null; return bmApply("bm_group_rename", { ix, title }); }
+/* issue #101: a FILE row's Rename is the bookmark's DISPLAY title (bookmarks.json "title"); the file, its tabs
+   and its links are untouched (docs/recon-bmmenu 06..08: Ideas.md on disk unchanged, tabs still `Ideas`). */
+function bmTitleCommit(ix, title) { bmRenaming = null; return bmApply("bm_title", { ix, title }); }
 /* ---------- bmdrag: DRAG A BOOKMARK ROW (R4X.n placeholders) ----------
    R24.6's mouse machine, not a second convention (and HTML5 dragstart/
    dataTransfer stays used NOWHERE — the R24.6 comment is binding here too):
@@ -2365,10 +2373,11 @@ function noteMenu(e, nm) {                 // right-click a tree note row
     item("Open in new window", null, "Single-window app: there is no second window to open into");   // REQ-16 EXCEPTION
     sep(); }
   mkItem(bmCache.includes(nm) ? "Remove bookmark" : "Bookmark", () => toggleBm(nm));
-  /* CVR-A-087: the row names the note, so its menu can rename it. The rename verb
-     addresses the focused tab's note (F2 / palette), so the row's note is shown
-     there first; the disk move and the link prompt stay cmdRename's. */
+  /* CVR-A-087 / issue #101: the row names the note, so its menu renames it — IN THE ROW, as stock
+     (exRenStart): no tab is opened or navigated, no modal. The disk move and the link prompt stay
+     renameThenAsk's. Only a row that is not painted (never, from its own menu) falls back to F2's prompt. */
   mkItem("Rename...", async () => {
+    if (exRenStart("note", nm)) return;
     await rowOpen(nm);
     const g = fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
     if (t && !t.kind && t.name === nm) cmdRename();
@@ -3359,6 +3368,190 @@ function wsSidesIn(doc) {
     if (rightOpen) setRTab(rTab, false);
   }
 }
+/* ---------- #94 WORKSPACE MANAGER: named layouts (core "Workspaces" parity, stock 1.13.7) ----------
+   STORAGE is the backend's (src-tauri/src/wsmgr.rs): <vault>/.obsidian/workspaces.json in stock's shape,
+   {"workspaces":{"<name>":<layout>},"active":"<name>"}, atomic + vault-scoped like workspace.json.
+   A SAVED LAYOUT IS wsDoc() — the very object the R28 writer puts in workspace.json — minus
+   lastOpenFiles (stock's getLayout() leaves the recent list to the session). One serializer, one
+   restorer (wsApply): a workspace saved here and one saved by stock are the same bytes to read back.
+   A LOAD is a restore into the RUNNING window: every pane's pending edits are flushed first (a buffer
+   that still reads dirty after its flush REFUSES the load — the openVault rule: a layout is never
+   worth a keystroke), the R28 file bookkeeping of the layout being replaced is dropped (ids, link
+   groups, foreign sidebar subtrees belong to the layout they came from), then wsApply rebuilds. Its
+   degrade rule holds unchanged: a leaf whose note is gone is dropped; nothing restorable at all
+   leaves one empty pane (stock: an empty leaf), never an error. workspace.json then follows through
+   the ordinary wsTouch path, which is all "the last session" ever was. */
+let wsmNames = [], wsmActive = "", wsmBad = false;   // last list the backend returned
+let wsmSaves = 0, wsmLoadsN = 0, wsmErr = "";        // census [wsm:]: completed saves / loads, last refusal
+let wsmOpen = false, wsmRen = null;                  // the Manage modal; the row being renamed (name) or null
+function wsmTake(r) {
+  if (!r || typeof r !== "object") return;
+  wsmNames = Array.isArray(r.names) ? r.names.filter(n => typeof n === "string") : [];
+  wsmActive = typeof r.active === "string" ? r.active : "";
+  wsmBad = r.corrupt === true;
+}
+async function wsmRefresh() {
+  try { wsmTake(await inv("wsm_list")); } catch (e) { wsmNames = []; wsmActive = ""; }
+  if (wsmOpen) wsmRender();
+  updateTitle();
+}
+async function wsmOp(op, name, extra) {
+  const v = vaultPath;                       // the vault the call is ABOUT travels with it (write_workspace rule)
+  if (!state || !v) return false;
+  try {
+    wsmTake(await inv("wsm_op", Object.assign({ vault: v, op, name, to: null, layout: null }, extra || {})));
+    wsmErr = "";
+    return true;
+  } catch (e) {
+    wsmErr = errStr(e) || String(e);
+    say(wsmErr, "wsm");
+    return false;
+  } finally {
+    if (wsmOpen) wsmRender();
+    updateTitle();
+  }
+}
+function wsmLayout() {
+  const d = wsDoc();
+  delete d.lastOpenFiles;
+  return d;
+}
+async function wsmSave(name) {
+  const n = String(name || "").trim();
+  if (!n) { wsmErr = "workspace name is empty"; say(wsmErr, "wsm"); updateTitle(); return false; }
+  const ok = await wsmOp("save", n, { layout: wsmLayout() });
+  if (ok) wsmSaves++;
+  updateTitle();
+  return ok;
+}
+async function wsmLoad(name) {
+  if (!state || !vaultPath) return false;
+  let doc = null;
+  try { doc = await inv("wsm_get", { name }); } catch (e) { doc = null; }
+  if (!doc || typeof doc !== "object") { wsmErr = "no workspace named " + name; say(wsmErr, "wsm"); updateTitle(); return false; }
+  for (const h of groups()) {
+    try { await flushSave(h); } catch (e) { /* reads dirty below */ }
+    if (bufDirty(h)) { wsmErr = "unsaved changes in " + (curOf(h) || "a pane") + ": workspace not loaded"; say(wsmErr, "wsm"); updateTitle(); return false; }
+  }
+  for (const h of groups()) {               // retire the panes being replaced (collapseGroup's teardown)
+    if (h.sim) cancelAnimationFrame(h.sim);
+    h.simGen = 0;
+    if (h.saveT) { clearTimeout(h.saveT); h.saveT = null; }
+  }
+  wsIds = {}; wsGrp = {}; wsExtra = null; wsSideRaw = {}; wsSide0 = {};
+  let names = [];
+  try { names = await inv("list_notes"); } catch (e) { names = []; }
+  let ok = false;
+  try { ok = await wsApply(doc, names); } catch (e) { ok = false; }
+  if (!ok) {                                // nothing in it survived: one empty pane, like stock's empty leaf
+    const g = mkGroup();
+    state.root = { dir: "row", children: [g], fractions: [1] };
+    state.focused = null;
+    renderLayout();
+    focusGroup(g);
+    renderTabs(g);
+  }
+  wsmLoadsN++;
+  await wsmOp("activate", name);
+  treeHighlight();
+  updateTitle();
+  return true;
+}
+/* the Manage modal: name + Save on top, then one row per saved layout — the name (click = load),
+   Rename (inline input, Enter commits / Escape cancels), Delete. Stock's "Manage workspace layouts". */
+function wsmRender() {
+  const box = $("wsmlist");
+  box.textContent = "";
+  $("wsmempty").hidden = wsmNames.length > 0;
+  $("wsmempty").textContent = wsmBad ? "workspaces.json could not be read; it is left untouched" : "No saved workspace layouts.";
+  for (const n of wsmNames) {
+    const row = document.createElement("div");
+    row.className = "wsmrow" + (n === wsmActive ? " is-active" : "");
+    row.dataset.name = n;
+    if (wsmRen === n) {
+      const inp = document.createElement("input");
+      inp.className = "wsmren"; inp.value = n; inp.spellcheck = false;
+      inp.onkeydown = async e => {
+        if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); const to = inp.value.trim(); wsmRen = null; if (to && to !== n) await wsmOp("rename", n, { to }); else wsmRender(); }
+        else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); wsmRen = null; wsmRender(); }
+      };
+      row.appendChild(inp);
+      box.appendChild(row);
+      setTimeout(() => { inp.focus(); inp.select(); }, 0);
+      continue;
+    }
+    const nm = document.createElement("button");
+    nm.className = "wsmname"; nm.textContent = n; nm.title = "Load";
+    nm.onclick = async () => { wsmClose(); await wsmLoad(n); };
+    const rn = document.createElement("button");
+    rn.className = "wsmbtn wsmrn"; rn.title = "Rename"; rn.setAttribute("aria-label", "Rename");
+    rn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>';
+    rn.onclick = () => { wsmRen = n; wsmRender(); updateTitle(); };
+    const dl = document.createElement("button");
+    dl.className = "wsmbtn wsmdel"; dl.title = "Delete"; dl.setAttribute("aria-label", "Delete");
+    dl.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg>';
+    dl.onclick = () => wsmOp("delete", n);
+    row.append(nm, rn, dl);
+    box.appendChild(row);
+  }
+}
+async function wsmOpenModal(focusSave) {
+  if (!state || !vaultPath) return;
+  closeModal(); closeMenu();
+  wsmOpen = true; wsmRen = null;
+  $("wsmname").value = focusSave && wsmActive ? wsmActive : "";
+  $("wsmbox").hidden = false;
+  await wsmRefresh();
+  if (focusSave && wsmActive && !$("wsmname").value) $("wsmname").value = wsmActive;
+  $("wsmname").focus();
+  updateTitle();
+}
+function wsmClose() {
+  if (!wsmOpen) return;
+  wsmOpen = false; wsmRen = null;
+  $("wsmbox").hidden = true;
+  updateTitle();
+}
+$("wsmsave").onclick = async () => { if (await wsmSave($("wsmname").value)) $("wsmname").value = ""; };
+$("wsmx").onclick = () => wsmClose();
+$("wsmname").oninput = () => updateTitle();
+$("wsmbox").addEventListener("keydown", e => {
+  if (!wsmOpen) return;
+  if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); if (wsmRen) { wsmRen = null; wsmRender(); } else wsmClose(); return; }
+  if (e.key === "Enter" && document.activeElement === $("wsmname")) {
+    e.preventDefault(); e.stopPropagation();
+    wsmSave($("wsmname").value).then(ok => { if (ok) $("wsmname").value = ""; });
+    return;
+  }
+  e.stopPropagation();                      // typing belongs to the inputs, not the global keymap
+});
+$("wsmbox").addEventListener("mousedown", e => { if (e.target === $("wsmbox")) { e.preventDefault(); wsmClose(); } });
+/* "Load workspace layout": stock's suggester — the shared modal over the saved names, Enter loads */
+async function cmdWsmLoad() {
+  if (!state || !vaultPath) return;
+  await wsmRefresh();
+  openModal("wsl", () => wsmNames.map(n => ({ label: n, hint: n === wsmActive ? "active" : "", run: () => wsmLoad(n) })));
+}
+/* census [wsm:<saves>,<loads>|<active>|<name>;<name>…|<open 0/1>] + while the modal is open
+   [wsmxy:in=x,y|save=x,y|<name>=load x,y;rename x,y;delete x,y|…] painted centres a driver clicks,
+   [wsmerr:<last refusal>] when one is up, [ribbon:wsm@x,y] for the ribbon button */
+function wsmTok() {
+  const q = s => String(s).replace(/[|\];,=@[]/g, "_");
+  const c = e => { const r = e.getBoundingClientRect(); return Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2); };
+  let t = " [wsm:" + wsmSaves + "," + wsmLoadsN + "|" + q(wsmActive) + "|" + wsmNames.map(q).join(";") + "|" + (wsmOpen ? 1 : 0) + (wsmRen ? "|ren=" + q(wsmRen) : "") + "]";
+  if (wsmOpen) {
+    const xs = ["in=" + c($("wsmname")), "save=" + c($("wsmsave"))];
+    t += " [wsmin:" + q($("wsmname").value).slice(0, 60) + "]";   // the name input as the page sees it (harness: type, wait for it, then click Save)
+    for (const row of document.querySelectorAll("#wsmlist .wsmrow")) {
+      const b = [".wsmname", ".wsmrn", ".wsmdel", ".wsmren"].map(s => row.querySelector(s)).filter(Boolean);
+      xs.push(q(row.dataset.name) + "=" + b.map(c).join(";"));
+    }
+    t += " [wsmxy:" + xs.join("|") + "]";
+  }
+  if (wsmErr) t += " [wsmerr:" + q(wsmErr).slice(0, 80) + "]";
+  if (wsmRibbonBtn && wsmRibbonBtn.getClientRects().length) t += " [ribbon:wsm@" + c(wsmRibbonBtn) + "]";
+  return t;
+}
 /* R28.2 — THE WINDOW RECTANGLE GOES SOMEWHERE ELSE. Not in the vault: a vault
    synced between a laptop and a desktop would otherwise carry one machine's
    window size to the other. Goal winsize moved it to Rust entirely: saved on a
@@ -3381,7 +3574,7 @@ function wsSidesIn(doc) {
    reporting `#main` when the real culprit is a button in the tab strip costs
    an iteration every time. */
 const OVF_SCROLL = "#tree,#sresults,#bmlist,.rlist,.lp,.preview,.editor,.ac," +
-                   "#mlist,#p-dirs,#p-recent,#sbody,#snav,#spage,#hklist";
+                   "#mlist,#p-dirs,#p-recent,#sbody,#snav,#spage,#hklist,#wsmlist";
 function ovfName(el) {              // short, stable selector for a failure message
   const c = (el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className) || "";
   const k = String(c).trim().split(/\s+/).filter(Boolean).slice(0, 2).map(x => "." + x).join("");
@@ -4295,6 +4488,7 @@ function utBuild() {             // pane/focus census in the window title (headl
             (revealInfo ? " [bmrv:" + revealInfo + "]" : "") +      // bmmenu: "Reveal file in navigation" ran (bmReveal) — not merely "the Files pane is showing"
             (acItems.length ? " [ac:" + acKind + ":" + acItems.length + "]" : "") +
             " [pane:" + sidePane + "]" +
+            exRenTok() +                                        // issue #101: an explorer row is in inline rename, [exren:<path>|sel=<selected>]
             sfontTok() +                                        // sidefont: computed sidebar row font sizes (t=trow b=bmrow r=rlist)
             (sidePane === "search" && searchCount >= 0 ? " [sr:" + searchCount + "]" + srGeom() : "") +
             (sidePane === "bm" ? " [bm:" + bmRows() + "]" +          // RENDERED rows, not the model's length:
@@ -6824,8 +7018,8 @@ function fileRow(p, depth) {
   row.querySelector(".ttag").textContent = d > 0 ? base.slice(d + 1).toUpperCase() : "";
   row.dataset.file = p;
   row.addEventListener("mousedown", e => treeDragStart(e, p, "file"));
-  row.onclick = e => { if (treeClickEaten()) return; if (e.shiftKey && !e.ctrlKey && !e.metaKey) return treeRange(row); treeSelClear(); treeAnchor = p; if (Ed.isPdf(p)) openPdf(p, e); };   // shift = range select; issue #44: a PDF opens in the PDF view (ctrl = new tab), other types open no view
-  if (Ed.isPdf(p)) row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); openPdf(p, e); } };   // middle = new tab
+  row.onclick = e => { if (treeClickEaten()) return; if (e.shiftKey && !e.ctrlKey && !e.metaKey) return treeRange(row); treeSelClear(); treeAnchor = p; if (Ed.isPdf(p)) openPdf(p, e); else if (Ed.isImg(p)) openImage(p, e); };   // shift = range select; issue #44: a PDF opens in the PDF view (ctrl = new tab); issue #102: an image opens in the image view; other types open no view
+  if (Ed.isPdf(p) || Ed.isImg(p)) row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); (Ed.isPdf(p) ? openPdf : openImage)(p, e); } };   // middle = new tab
   return row;
 }
 
@@ -6840,6 +7034,90 @@ function canvasRow(p, depth) {
   row.oncontextmenu = e => canvasFileMenu(e, p);
   row.addEventListener("mousedown", e => treeDragStart(e, p));   // CVR-A-090: drag onto a folder row = move (cvMoveTo)
   return row;
+}
+
+/* issue #101 — EXPLORER INLINE RENAME (stock 1.13.7, recon-cv2 CVR-A-085): "Rename..." on an explorer
+   row turns the row's NAME into an editor in the row, the name without its extension selected. No
+   modal opens and no tab is opened or navigated (the old road opened the note in the focused tab and
+   then the F2 prompt). Return and blur commit, Escape reverts. A note takes the ONE rename tail
+   (renameThenAsk: move, then the Update links question; applyRename retitles every tab, follows the
+   bookmark and repaints the tree), a canvas takes cvRetarget (every tab on it follows, CVR-A-086).
+   The refusals are the inline title's (R34.12/R34.13): an illegal character or a taken name raises
+   the notice and, on Return, the editor stays open with nothing moved. A "/" is refused, never a move.
+   [exren:<vault path>|sel=<selected text>] is published while the editor is open. */
+let exRen = null;                          // {path, kind: "note"|"canvas", inp, tn, orig}
+function exRenTok() {
+  if (!exRen || !exRen.inp.isConnected) return "";
+  const i = exRen.inp, sel = i.value.slice(i.selectionStart || 0, i.selectionEnd || 0);
+  const c = s => String(s).replace(/[|\]]/g, "");
+  return " [exren:" + c(exRen.kind === "note" ? exRen.path + ".md" : exRen.path) + "|sel=" + c(sel) + "]";
+}
+function exRenRow(kind, path) {
+  if (kind === "note") return treeRows.get(path) || [...document.querySelectorAll("#tree .trow.note")].find(r => r.dataset.note === path) || null;
+  return [...document.querySelectorAll("#tree .trow.cvfile")].find(r => r.dataset.canvas === path) || null;
+}
+function exRenStart(kind, path) {
+  exRenClose();
+  const row = exRenRow(kind, path), tn = row && row.querySelector(".tn");
+  if (!tn) return false;
+  const orig = kind === "note" ? path.split("/").pop() : path.split("/").pop().replace(/\.canvas$/i, "");
+  const inp = document.createElement("input");
+  inp.id = "exren"; inp.className = "exren"; inp.value = orig;
+  inp.spellcheck = false; inp.autocomplete = "off";
+  const stop = e => e.stopPropagation();   // the row's click opens, its mousedown drags: neither belongs to the editor
+  inp.onclick = stop; inp.onmousedown = stop; inp.onauxclick = stop; inp.ondblclick = stop; inp.oncontextmenu = stop;
+  inp.oninput = () => { exRenCheck(); updateTitle(); };
+  inp.onselect = () => updateTitle();
+  inp.onkeyup = () => updateTitle();       // the caret / selection moved: [exren:|sel=] follows
+  inp.onkeydown = e => {
+    e.stopPropagation();                   // a file name may contain any chord the R14 keymap owns
+    if (e.key === "Enter") { e.preventDefault(); exRenCommit(false); }
+    else if (e.key === "Escape") { e.preventDefault(); exRenClose(); }
+  };
+  inp.onblur = () => { if (exRen && exRen.inp === inp) exRenCommit(true); };
+  tn.textContent = "";
+  tn.appendChild(inp);
+  row.classList.add("renaming");
+  exRen = { path, kind, inp, tn, row, orig };
+  inp.focus();
+  inp.select();
+  updateTitle();
+  return true;
+}
+function exRenClose() {                    // revert the row to its label; nothing on disk moved
+  const r = exRen;
+  if (!r) return;
+  exRen = null;                            // FIRST: removing a focused input may fire blur, which must find no editor
+  r.row.classList.remove("renaming");
+  if (r.inp.isConnected) r.tn.textContent = r.orig;
+  if (noticeSrc === "exren") say("", "exren");
+  updateTitle();
+}
+const exRenDir = p => (p.includes("/") ? p.slice(0, p.lastIndexOf("/") + 1) : "");
+function exRenCheck() {                    // the inline title's refusals (titleCheck), stated in the notice
+  if (!exRen) return true;
+  const t = exRen.inp.value.replace(/[\r\n]+/g, " ").trim();
+  let msg = "";
+  if (t && TITLE_ILLEGAL.test(t)) msg = 'File name cannot contain any of these characters: \\ / : * ? " < > |';
+  else if (t && t !== exRen.orig && exRen.kind === "note" && notesCache.includes(exRenDir(exRen.path) + t)) msg = "There's already a file with the same name";
+  if (msg) { if (msg !== noticeTxt) say(msg, "exren"); return false; }
+  if (noticeSrc === "exren") say("", "exren");
+  return true;
+}
+async function exRenCommit(blur) {
+  const r = exRen;
+  if (!r) return;
+  const t = r.inp.value.replace(/[\r\n]+/g, " ").trim();
+  if (!t || t === r.orig) { exRenClose(); return; }        // empty or unchanged: revert, no rename (R34.14)
+  if (!exRenCheck()) { if (blur) exRenClose(); return; }  // refused: Return keeps the editor, blur reverts it
+  exRenClose();
+  const dir = exRenDir(r.path);
+  if (r.kind === "canvas") { await cvRetarget(r.path, dir + t + ".canvas"); return; }
+  for (const h of groups()) {              // every pane showing the note lands its pending bytes before the move
+    const at = h.active >= 0 ? h.tabs[h.active] : null;
+    if (at && !at.kind && at.name === r.path) await flushSave(h);
+  }
+  await renameThenAsk(r.path, dir + t);   // NAMES CARRY NO EXTENSION (R34.1 note)
 }
 
 /* ---------- R24.6: DRAG A NOTE ONTO A FOLDER ROW TO MOVE IT ----------------
@@ -7690,7 +7968,7 @@ function openModal(kind, src) {
   mdEdSel = kind === "cp" ? edSelSnap() : null;   // BEFORE minput.focus() takes the selection
   modalKind = kind; mdSrc = src;
   $("minput").value = "";
-  $("minput").placeholder = kind === "qs" ? (qsCreateOff ? "Open note..." : "Find or create a note...") : "Run command...";
+  $("minput").placeholder = kind === "qs" ? (qsCreateOff ? "Open note..." : "Find or create a note...") : kind === "wsl" ? "Type the name of a workspace layout..." : "Run command...";
   qsFoot(kind === "qs");
   $("modal").hidden = false;
   mdFilter();
@@ -7997,6 +8275,18 @@ var cvRibbonBtn = (() => {   // var: canvasTok may run before this line
   return b;
 })();
 function cvRibbonSync() { if (cvRibbonBtn) cvRibbonBtn.hidden = !(CANVAS && CANVAS.isRegistered()); }
+var wsmRibbonBtn = (() => {                 // after cvRibbonBtn in the strip: no existing button moves
+  const rb = document.getElementById("ribbon");
+  if (!rb) return null;
+  const b = document.createElement("button");
+  b.id = "wsmribbonbtn";
+  b.title = "Manage workspace layouts";
+  b.setAttribute("aria-label", "Manage workspace layouts");
+  b.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>';
+  b.addEventListener("click", () => wsmOpenModal(false));
+  rb.appendChild(b);
+  return b;
+})();
 if (CANVAS) {
   for (const k of ["load", "enable", "disable"]) {
     const f = CANVAS.plugin[k];
@@ -8084,6 +8374,77 @@ function pdfvTok() {           // issue #44: [pdfrow:] explorer PDF rows, [pdfv:
   return t + " [pdfv:" + esc(v.path) + "|" + (s.dataset.cur || 0) + "/" + (s.dataset.of || 0) + (s.classList.contains("is-loaded") ? "L" : "") +
          (s.classList.contains("mod-broken") ? "B" : "") + "|" + [b.x, b.y, b.width, b.height].map(Math.round).join(",") + "]";
 }
+/* issue #102: the image view. An image (Ed.IMG_EXTS) opened from the explorer or a bookmark shows in an "image" leaf
+   (stock 1.13.7's view type and state {file}; its DOM .view-content > .image-container > img, the image centred and
+   scaled down to fit the pane, never up). The src is the SAME opensidian-img: URL shape an embed gets (Ed.pctEnc), minted
+   only for a path the image list holds (no traversal, the byte server re-checks containment). Registered with the
+   image extensions, so openFile (a bookmark row, a plugin) routes an image here too. how: as openPdf. */
+const IMGV = (() => {
+  if (!PLG || !PLG.X || !PLG.X.ItemView) return null;
+  const base = p => { const b = String(p).split("/").pop(), d = b.lastIndexOf("."); return d > 0 ? b.slice(0, d) : b; };
+  class ImageView extends PLG.X.ItemView {
+    constructor(leaf) { super(leaf); this.navigation = true; this.icon = "lucide-image"; this.path = null; this.img = null; this.contentEl.classList.add("image-view"); }
+    getViewType() { return "image"; }
+    getDisplayText() { return this.path ? base(this.path) : "Image"; }
+    getState() { return this.path ? { file: this.path } : {}; }
+    async setState(st) {
+      const p = st && typeof st.file === "string" ? st.file.replace(/^\/+/, "") : "";
+      // same path: skip only if the current image is shown and not broken — a missing/broken open retries (restored file)
+      if (!p || !Ed.isImg(p) || (p === this.path && this.img && !this.img.classList.contains("mod-broken"))) return;
+      this.path = p;
+      try { const f = PLG.app.vault.getAbstractFileByPath(p); this.file = f || null; } catch (_) { this.file = null; }
+      const box = document.createElement("div");
+      box.className = "image-container";
+      // the EXACT vault path (no embed-style %-decoding, no basename-suffix match: "photo.png" must not
+      // resolve to "a/photo.png"), still only for a path the image list holds
+      const src = Array.isArray(imgsCache) && imgsCache.includes(p) ? Ed.IMG_SCHEME + "://localhost/" + Ed.pctEnc(p) : null;
+      if (src === null) {                       // not in the image list (gone, hidden, symlinked): the R29.4 banner, no URL
+        const s = document.createElement("span");
+        s.className = "imgmiss"; s.dataset.miss = p;
+        box.appendChild(s); this.img = null;
+      } else {
+        const im = this.img = document.createElement("img");
+        im.alt = base(p); im.draggable = false;
+        im.addEventListener("load", () => updateTitle());
+        im.addEventListener("error", () => { im.classList.add("mod-broken"); updateTitle(); });
+        im.src = src;
+        box.appendChild(im);
+      }
+      this.contentEl.replaceChildren(box);
+      updateTitle();
+    }
+  }
+  const make = Object.defineProperty(leaf => new ImageView(leaf), Symbol.for("opensidian.coreView"), { value: true });
+  try {
+    const r = PLG.app.viewRegistry;
+    r.registerView("image", make);
+    const ex = Ed.IMG_EXTS.filter(x => !r.isExtensionRegistered(x));
+    if (ex.length) r.registerExtensions(ex, "image");
+  } catch (e) { console.error("[image] view:", e); return null; }
+  return { ImageView };
+})();
+async function openImage(path, ev, how) {   // how: as openPdf — undefined = by the event (plain in place, ctrl/middle new tab) | "tab" | "split"
+  if (!IMGV) { say("The image view is not available", "img"); return null; }
+  const nt = ev && (ev.button === 1 || ev.ctrlKey || ev.metaKey);
+  const leaf = how === "split" ? PLG.app.workspace.getLeaf("split", "vertical") : PLG.app.workspace.getLeaf(how === "tab" || nt ? "tab" : false);
+  await leaf.setViewState({ type: "image", state: { file: path }, active: true });
+  return leaf;
+}
+function imgvTok() {           // issue #102: [imgrow:] explorer image rows, [imgv:] the image view on screen
+  const esc = s => String(s).replace(/[[\]|@]/g, "_"), vis = e => !!e && e.getClientRects().length > 0;
+  const c = e => { const r = e.getBoundingClientRect(); return Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2); };
+  let t = "";
+  const rows = [...document.querySelectorAll("#tree .trow.file")].filter(r => vis(r) && Ed.isImg(r.dataset.file || ""));
+  if (rows.length) t += " [imgrow:" + rows.map(r => esc(r.dataset.file) + "@" + c(r)).join("|") + "]";
+  let v = null;
+  try { v = PLG && PLG.app.workspace.getLeavesOfType("image").map(l => l.view).find(x => x && vis(x.containerEl)) || null; } catch (_) {}
+  if (!v || !v.path) return t;
+  const im = v.img;
+  if (!im) return t + " [imgv:" + esc(v.path) + "|M|-]";
+  const b = im.getBoundingClientRect(), ok = im.complete && im.naturalWidth > 0;
+  return t + " [imgv:" + esc(v.path) + "|" + (ok ? im.naturalWidth + "x" + im.naturalHeight + "L" : im.classList.contains("mod-broken") ? "B" : "-") +
+         "|" + [b.x, b.y, b.width, b.height].map(Math.round).join(",") + "]";
+}
 /* goal canvas-core: "Create new canvas" (command) and "New canvas" (explorer menus). The file is made
    through canvas_io create (O_EXCL: an existing name is never overwritten — the next free
    "Untitled N.canvas" is taken instead), holds an empty JSON Canvas document, and opens in a canvas tab.
@@ -8151,7 +8512,7 @@ function canvasFileMenu(e, p) {             // right-click a .canvas row in the 
   item("Open in default app", null, "Missing subsystem: a file-path opener — open_external takes a URL, not a vault path");
   item("Show in system explorer", null, "Missing subsystem: a file-manager handler");
   sep();
-  item("Rename...", () => cvRename(p));     // cv-vault CV-147
+  item("Rename...", () => { if (!exRenStart("canvas", p)) cvRename(p); });   // issue #101 / CVR-A-085: inline in the row (cv-vault CV-147's prompt only if the row is not painted)
   item("Delete", () => cvDelete(p));       // cv-vault CV-148
   m.dataset.mt = "canvas:" + p.replace(/[|\]]/g, "");
   placeMenu(m, e.clientX, e.clientY);
@@ -8799,10 +9160,11 @@ function linkAtCaret() {   // [[target]] spanning the caret of the edited field,
   return inner.split("|")[0].split("#")[0].trim() || null;
 }
 /* ---------- R31 drop-to-attach (feedback #18) ---------------------------
-   A real OS drop NEVER reaches the DOM: wry takes the XDND at the GTK layer
-   and Tauri hands it to Rust as WindowEvent::DragDrop, which re-emits the
-   paths as `drop-files` (main.rs R31.1). So this listener is the drop, and a
-   `dragover`/`drop` handler on the editor would be decoration.
+   A real OS FILE drop NEVER reaches the DOM: src-tauri/src/xdnd.rs takes an
+   XDND whose uri-list names a local file at the GTK layer and re-emits the
+   paths as `drop-files` (main.rs R31.1). So this listener is the file drop.
+   #51: any other drop (text, html, a browser link drag: remote URIs only) is
+   WebKit's, i.e. a DOM drop the editor handles (Ed.htmlDrop, ui/editor.js).
    This half decides WHERE text goes — the caret of the focused editor — and
    nothing else: the vault write, the file name, the link text and every
    refusal sentence come back from attach_files -> attach_drop. Anything that
@@ -9121,7 +9483,7 @@ if ($("rnbox") && $("rnbox").parentElement) dlgContainer($("rnbox").parentElemen
 let themeGen = 0;
 /* #59 slice 2 (themecompat): stock 1.13.7's body carries .is-focused (window focus) and .is-hidden-frameless (no
    native title bar — ours is frameless with #wframe). Theme rules key their tab strip off them (Minimal: the focused
-   top strip = --bg1). Only while a CHOSEN theme paints ([data-vthemecompat]), so the no-theme look cannot move; the
+   top strip = --bg1). Only while a vault theme paints ([data-vthemecompat]: chosen, or the default, #96), so the base sheet cannot move; the
    stock rule they would otherwise let a theme beat (the focused active title ink) is mirrored in style.css. */
 function compatBody() {
   const b = document.body, on = document.documentElement.hasAttribute("data-vthemecompat");
@@ -9130,10 +9492,11 @@ function compatBody() {
   b.classList.toggle("is-focused", on && b.classList.contains("window-focused"));
 }
 const vthemeMark = name => {
-  // #59 slice 3: [data-vthemecompat] = the theme that paints is the one the vault CHOSE (cssTheme), not the bundled
-  // default an empty cssTheme falls back to; style.css scopes the dialog compat rules to it, so the look with no theme
-  // chosen does not move, and choosing the default theme by name gets stock semantics like any other. Before data-vtheme.
-  document.documentElement.toggleAttribute("data-vthemecompat", !!name && name === vaultTheme);
+  // #59 slice 3 / #96: [data-vthemecompat] = a vault theme PAINTS (stock semantics for its tabs + dialogs), and since
+  // #96 that includes the bundled default an empty cssTheme falls back to (effTheme): "" and "Use theme: <default>"
+  // paint the SAME theme, so they must paint it the same way (one look: stock's). Off only while no theme paints (the
+  // base sheet; themeRemove passes ""). Before data-vtheme.
+  document.documentElement.toggleAttribute("data-vthemecompat", !!name);
   compatBody();
   document.documentElement.dataset.vtheme = (++themeGen) + ":" + (name || "");
 };
@@ -9898,6 +10261,11 @@ const CMDS = [
   ["app:toggle-left-sidebar",  "Toggle left sidebar",                 [],                       cmdToggleSide],
   ["app:toggle-right-sidebar", "Toggle right sidebar",                [],                       () => cmdToggleRight()],
   ["app:switch-vault",         "Switch vault",                        [],                       showPicker],
+  // #94: stock core plugin "Workspaces" (1.13.7) ids and names, no default chord. Save opens the manager with the
+  // name box focused (prefilled with the active layout), Load is the suggester over the saved names.
+  ["workspaces:open-modal",    "Workspaces: Manage workspace layouts", [],                      () => wsmOpenModal(false)],
+  ["workspaces:save",          "Workspaces: Save current layout",     [],                       () => wsmOpenModal(true)],
+  ["workspaces:load",          "Workspaces: Load workspace layout",   [],                       () => cmdWsmLoad()],
   // R36: Obsidian lists exactly these three, with NO hotkey text beside them
   // (recon-zoom shot 01) — built-in bindings it does not surface as rebindable
   // rows. Ours ARE in the one registry, so the palette, the keymap and
@@ -10127,6 +10495,7 @@ document.addEventListener("keydown", e => {
   if (delPending) return;                  // R24.7: so does the delete confirmation (Escape there = Cancel)
   if (bmEdit) return;                      // R4X.7: and the Edit bookmark modal (its own handler: Escape = Cancel, Enter = Save)
   if (bmAdd) return;                       // bmactive: and its Add mode (Escape = Cancel, Enter = Save, typing = the Title input)
+  if (wsmOpen) { if (e.key === "Escape") { e.preventDefault(); wsmClose(); } return; }   // #94: the workspace manager owns the keyboard (its box handler: Escape closes, Enter saves)
   if (titleEditing()) return;              // R34.1: so does the title box (a filename contains chords)
   if (e.key === "Escape") {
     if (menuEl) { closeMenu(); return; }   // bmmenu: Obsidian closes an open context menu on Escape (recon 15-escape.png); the guards above keep settings' own Escape (R14) first
@@ -12041,6 +12410,7 @@ async function enterVault() {
     if (names.length) await openInTab(names[0], "boot");
     else renderTabs(g);
   }
+  wsmRefresh();                      // #94: the saved layouts of THIS vault, for the census and the manager (unawaited)
   perf.mark("boot", 0, { notes: names.length });   // perf: page start -> vault ready (first note rendered)
   Ed.fontWarm(fg());   // perfslow: the live preview's faces are built in idle time after boot, not inside the first note open that shows them
   switchReveal();   // item 14: a switch-started window shows itself only now, at the old window's rect

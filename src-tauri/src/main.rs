@@ -58,6 +58,8 @@ mod updates;
 use opensidian_lib::vaultfs;
 mod watcher;
 mod winsize;
+mod wsmgr; // #94: named layouts in .obsidian/workspaces.json (Obsidian core Workspaces parity)
+mod xdnd; // #51: the window's OS drop transport — only a drop naming a local file is ours, a link drag reaches the editor
 use index::{link_parts, links_in, resolve, tag_spans, Graph, Index};
 
 /* perf-index: root + in-memory Index (src/index.rs). The index replaces the
@@ -674,8 +676,8 @@ async fn pdf_info(v: State<'_, Vault>, path: String, otel: Option<perf::Ctx>) ->
    here. The whole behaviour lives in `attach_drop` below: it takes the vault,
    the note being edited and the dropped paths, MOVES what it is allowed to
    move and RETURNS the text to insert. The Tauri command and the
-   WindowEvent::DragDrop handler are pass-throughs. The transport (a real XDND
-   drag from another X client -> wry/WebKitGTK -> WindowEvent::DragDrop ->
+   drop transport (xdnd.rs) are pass-throughs. The transport (a real XDND
+   drag from another X client -> WebKitGTK -> xdnd (a local-file uri-list only, #51) ->
    `drop-files` -> attach_files) is exercised end to end by the release-
    mandatory gate phase `osdrop`, which drags with real pointer input.
 
@@ -1809,6 +1811,55 @@ fn write_workspace(
     )
 }
 
+
+/* #94 WORKSPACE MANAGER (src-tauri/src/wsmgr.rs): named layouts in <vault>/.obsidian/workspaces.json,
+   Obsidian's core "Workspaces" file. Reads never fail (a missing/corrupt file lists as empty, R28.13's
+   rule); mutations are VAULT-SCOPED exactly like write_workspace — the UI names the vault the layout was
+   serialized from and a disagreeing vault is refused, so a saved layout can never land in another vault. */
+#[tauri::command]
+fn wsm_list(v: State<Vault>) -> serde_json::Value {
+    span_timed!("wsm_list", cur_vault(&v).map(|r| wsmgr::list(&wsmgr::read_in(&r))).unwrap_or_else(|| wsmgr::list(&wsmgr::OnDisk::Absent)))
+}
+
+#[tauri::command]
+fn wsm_get(v: State<Vault>, name: String) -> Option<serde_json::Value> {
+    span_timed!("wsm_get", cur_vault(&v).and_then(|r| wsmgr::get(&wsmgr::read_in(&r), &name)))
+}
+
+/// op: "save" (name, layout) | "delete" (name) | "rename" (name -> to) | "activate" (name)
+#[tauri::command(async)]
+fn wsm_op(
+    v: State<Vault>,
+    vault: String,
+    op: String,
+    name: String,
+    to: Option<String>,
+    layout: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    span_timed!("wsm_op", (|| {
+        let root = cur_vault(&v).ok_or("no vault open")?;
+        if root != PathBuf::from(&vault) {
+            return Err(format!("stale workspaces write: serialized from {vault}, current vault is {}", root.display()));
+        }
+        wsm_op_in(&root, &op, &name, to.as_deref(), layout.as_ref())
+    })())
+}
+
+fn wsm_op_in(root: &Path, op: &str, name: &str, to: Option<&str>, layout: Option<&serde_json::Value>) -> Result<serde_json::Value, String> {
+    match op {
+        "save" => {
+            let l = layout.ok_or("save: no layout")?;
+            wsmgr::mutate_in(root, |d| wsmgr::op_save(d, name, l))
+        }
+        "delete" => wsmgr::mutate_in(root, |d| wsmgr::op_delete(d, name)),
+        "rename" => {
+            let t = to.ok_or("rename: no new name")?;
+            wsmgr::mutate_in(root, |d| wsmgr::op_rename(d, name, t))
+        }
+        "activate" => wsmgr::mutate_in(root, |d| wsmgr::op_activate(d, name)),
+        _ => Err(format!("wsm_op: unknown op {op:?}")),
+    }
+}
 #[tauri::command]
 fn recent_vaults() -> Vec<String> {
     span_timed!("recent_vaults", read_cfg().1.into_iter().filter(|p| Path::new(p).is_dir()).collect())
@@ -3744,7 +3795,12 @@ fn page_window(app: &tauri::AppHandle, wc: &tauri::utils::config::WindowConfig) 
     let b = if census::on() { b.initialization_script(census::INIT_JS) } else { b };
     #[cfg(feature = "devui")]
     let b = if devui::root().is_some() { b.initialization_script(devui::INIT_JS) } else { b };
-    b.on_web_resource_request(move |req, res| {
+    // #51: Tauri's own handler claims EVERY drag offering text/uri-list — a browser link drag
+    // too — so the link never reached the editor (attach_drop: Refused::Remote). xdnd owns the
+    // transport instead: a drop naming a local file still goes drop-files -> attach_drop, the rest
+    // is WebKit's (the DOM drop -> Ed.htmlDrop converts its text/html, like stock)
+    let b = b.disable_drag_drop_handler();
+    let w = b.on_web_resource_request(move |req, res| {
         if req.uri().path() == VFS_SYNC_PATH {
             *res = vfs_sync(&h, &req);
         } else {
@@ -3754,6 +3810,7 @@ fn page_window(app: &tauri::AppHandle, wc: &tauri::utils::config::WindowConfig) 
         }
     })
     .build()?;
+    xdnd::attach(&w);
     Ok(())
 }
 
@@ -5070,9 +5127,11 @@ fn bm_rows_in(nodes: &[BmNode], depth: usize, out: &mut Vec<BmRow>) {
         match n {
             BmNode::File { name, title, .. } => {
                 // R4X.17 (recon-bmcompat §5, 30-afterinject.png): title when
-                // typed, else basename minus ".md" — never the full path
+                // typed, else basename minus ".md" — never the full path.
+                // issue #101: an empty title (stock writes `"title": ""`) is no title
                 let label = title
                     .clone()
+                    .filter(|t| !t.is_empty())
                     .unwrap_or_else(|| name.rsplit('/').next().unwrap_or(name).to_string());
                 out.push(BmRow { kind: "f".into(), depth, name: name.clone(), label, ..Default::default() });
             }
@@ -5205,6 +5264,26 @@ fn bm_group_rename_in(tree: &mut Vec<BmNode>, ix: usize, title: &str) -> Result<
             Ok(())
         }
         _ => Err("that row is not a group".to_string()),
+    }
+}
+
+
+/* issue #101 — a FILE bookmark's "Rename" (stock 1.13.7, docs/recon-bmmenu 06..08):
+   it edits the bookmark's DISPLAY TITLE in bookmarks.json — the file on disk and
+   every tab on it are untouched. Addressed by ROW INDEX, like the group verbs.
+   An empty (or all-blank) title CLEARS the key, so the row paints the basename
+   again (R4X.17) instead of an empty label. A group row is bm_group_rename's. */
+fn bm_title_in(tree: &mut Vec<BmNode>, ix: usize, title: &str) -> Result<(), String> {
+    let p = bm_path_of(tree, ix).ok_or("no such row")?;
+    let t = title.trim();
+    let new = if t.is_empty() { None } else { Some(t.to_string()) };
+    match bm_at_mut(tree, &p) {
+        Some(BmNode::File { title: tt, .. }) | Some(BmNode::Path { title: tt, .. }) | Some(BmNode::Graph { title: tt, .. }) => {
+            *tt = new;
+            Ok(())
+        }
+        Some(BmNode::Group { .. }) => Err("that row is a group (bm_group_rename)".to_string()),
+        _ => Err("that row has no title".to_string()),
     }
 }
 
@@ -5812,6 +5891,12 @@ fn bm_group_new(v: State<Vault>, parent: Option<usize>) -> Result<Vec<BmRow>, St
 #[tauri::command]
 fn bm_group_rename(v: State<Vault>, ix: usize, title: String) -> Result<Vec<BmRow>, String> {
     span_timed!("bm_group_rename", bm_apply(&v, |t| bm_group_rename_in(t, ix, &title)))
+}
+
+/* issue #101: the FILE row's Rename — the bookmark title, never the file (bm_title_in). */
+#[tauri::command]
+fn bm_title(v: State<Vault>, ix: usize, title: String) -> Result<Vec<BmRow>, String> {
+    span_timed!("bm_title", bm_apply(&v, |t| bm_title_in(t, ix, &title)))
 }
 
 #[tauri::command]
@@ -7072,30 +7157,19 @@ fn main() {
             }
             Ok(())
         })
-        // R31.1 THE DROP HANDLER — 4 lines of body, no behaviour, no I/O, no policy.
-        // Proven end to end by gate phase `osdrop` (a real XDND drag, real pointer).
-        // wry delivers a real XDND drop to Rust and Tauri hands it to us as
-        // WindowEvent::DragDrop (tauri-runtime-wry-2.11.4:4889: for a window's
-        // own content webview the drop is a SYNTHESIZED WINDOW event, not a
-        // webview one), so the DOM never sees a DataTransfer carrying files —
-        // faking a DOM drop in JS would test a path production does not have.
-        // Which note is open and where the caret sits is webview state, so this
-        // re-emits [paths, x, y] under ONE name the UI owns (`drop-files`; x/y =
-        // where it landed, physical px, so the embed goes at the drop point) and
-        // stops: every rule — source checks, name checks, the cap, containment,
-        // no-overwrite — lives in `attach_drop`, reached through `attach_files`.
-        // Caveat, stated because it is real: `emit` serializes to JSON, so a
-        // source path whose bytes are not UTF-8 cannot be carried. It is then
-        // dropped here and the user sees nothing — the same hole Tauri's own
-        // `tauri://drag-drop` payload has. Such a file is never attached, never
-        // half-attached; R31.10.
+        // R31.1 THE DROP TRANSPORT lives in xdnd.rs since #51 (page_window disables
+        // Tauri's own drag-drop handler, so WindowEvent::DragDrop never fires here).
+        // Proven end to end by gate phase `osdrop` (a real XDND drag, real pointer)
+        // and, for the link drag Tauri's handler used to swallow, `droplink`.
+        // A file drop still re-emits [paths, x, y] under ONE name the UI owns
+        // (`drop-files`) and stops: every rule — source checks, name checks, the
+        // cap, containment, no-overwrite — lives in `attach_drop`, reached through
+        // `attach_files`. Caveat, stated because it is real: `emit` serializes to
+        // JSON, so a source path whose bytes are not UTF-8 cannot be carried; such
+        // a file is never attached, never half-attached; R31.10.
         .on_window_event(|w, e| {
             winsize_event(w, e); // goal winsize: track + save on close (not the drop)
             quit_event(w, e); // tab-dataloss: a close waits (bounded) for the UI flush
-            if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, position }) = e {
-                use tauri::Emitter;
-                let _ = w.emit(DROP_EVENT, (paths, position.x, position.y));
-            }
         })
         // S1: the window is the app, never a browser — every navigation off the
         // app origin (remote http(s), javascript:, file:, ...) is denied here.
@@ -7179,9 +7253,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, canvas_io, canvas_attach, paste_image, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, bm_add_view, bm_add_view_at, bm_remove, bm_graph_patch, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_title, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, bm_add_view, bm_add_view_at, bm_remove, bm_graph_patch, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
-            read_workspace, write_workspace,
+            read_workspace, write_workspace, wsm_list, wsm_get, wsm_op,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
             plugins_state, plugins_set, plugin_io, plugin_vfs, desk_proc_spawn, spawn_allow_list, spawn_allow_revoke, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
@@ -9585,6 +9659,16 @@ mod tests {
         bm_group_rename_in(&mut t, 2, "Work").unwrap();
         assert_eq!(bm_rows_of(&t)[2].name, "Work");
         assert!(bm_group_rename_in(&mut t, 0, "nope").is_err(), "a file row is not a group");
+        // issue #101: a FILE row's Rename sets its display title, in place; the name (the file) is untouched
+        bm_title_in(&mut t, 0, "  Alpha X ").unwrap();
+        assert_eq!((bm_rows_of(&t)[0].name.as_str(), bm_rows_of(&t)[0].label.as_str()), ("A", "Alpha X"));
+        assert_eq!(bm_value_of(&t[0])["title"], "Alpha X");
+        assert_eq!(bm_value_of(&t[0])["path"], "A.md");
+        bm_title_in(&mut t, 0, "   ").unwrap();
+        assert_eq!(bm_rows_of(&t)[0].label, "A", "a blank title clears it: the basename paints again");
+        assert!(bm_value_of(&t[0]).get("title").is_none(), "a cleared title writes no key");
+        assert!(bm_title_in(&mut t, 2, "x").is_err(), "a group row is bm_group_rename's");
+        assert!(bm_title_in(&mut t, 99, "x").is_err());
         // move a file IN, then back OUT to the top level (the superset route)
         bm_move_in_tree(&mut t, 0, Some(2)).unwrap();
         assert_eq!(
@@ -11307,7 +11391,7 @@ mod tests {
 
     /* ---- R31 drop-to-attach (feedback #18) -----------------------------
        These hammer `attach_drop`, the ONE function the drop handler wraps.
-       The wry/GTK -> WindowEvent::DragDrop transport is NOT unit-testable (it
+       The GTK -> xdnd.rs transport is NOT unit-testable (its decision, xdnd::claim, is: it
        needs a display and a second X client); the release-mandatory gate phase
        `osdrop` drags a real file from a real XDND source with real pointer
        input. Faking a DOM drag event here would test a path production lacks. */
@@ -11908,30 +11992,36 @@ mod tests {
     }
 
     /// R31.1 THE WIRING IS A STRING, and a string drifts. Rust emits
-    /// DROP_EVENT from the WindowEvent::DragDrop handler; ui/main.js listens
-    /// for that exact name and calls `attach_files`. Rename either end and the
-    /// feature dies in total silence — the build is still green, the tests are
+    /// DROP_EVENT from the window's drop transport (xdnd.rs since #51); ui/main.js
+    /// listens for that exact name and calls `attach_files`. Rename either end and
+    /// the feature dies in total silence — the build is still green, the tests are
     /// still green, and a drop simply does nothing. Nothing else in this repo
     /// would notice, because ui/ is not a cargo input (docs/features.md trap).
     ///
-    /// It also pins the handler as a PASS-THROUGH, which is the structural
+    /// It also pins the transport as a PASS-THROUGH, which is the structural
     /// claim the whole design rests on: the unit tests reach the behaviour
-    /// (`attach_drop`) directly, and the transport is the gate phase osdrop's,
-    /// so a handler with behaviour would be behaviour no unit test reaches.
-    /// A handler that grows a body fails this test at 9 lines.
+    /// (`attach_drop`, `xdnd::claim`) directly, and the transport is the gate
+    /// phases' (osdrop, droplink), so no file I/O or policy may live in it.
+    /// And #51: Tauri's own handler must stay OFF (it swallowed every link drag),
+    /// so WindowEvent::DragDrop is not handled at all any more.
     #[test]
     fn the_drop_handler_is_a_pass_through_and_the_ui_listens_for_the_same_name() {
         let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
+        let xd = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/xdnd.rs")).unwrap();
         let ui = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/main.js")).unwrap();
         let lines: Vec<&str> = src.lines().collect();
-        let i = lines.iter().position(|l| l.contains(".on_window_event(")).expect("no OS drop is wired at all");
+        let i = lines.iter().position(|l| l.contains("fn page_window(")).expect("no app window builder");
+        let j = i + lines[i..].iter().position(|l| l == &"}").expect("unterminated page_window");
+        let pw = &lines[i..=j];
+        assert!(pw.iter().any(|l| l.contains(".disable_drag_drop_handler()")), "#51: Tauri's drop handler must be off for the app window");
+        assert!(pw.iter().any(|l| l.contains("xdnd::attach(&w)")), "the app window must get the xdnd transport");
+        let i = lines.iter().position(|l| l.contains(".on_window_event(")).expect("no window event handler");
         let j = i + lines[i..].iter().position(|l| l.trim() == "})").expect("unterminated handler");
-        let body = &lines[i..=j];
-        assert!(body.len() <= 8, "the drop handler is {} lines: it is meant to be a pass-through", body.len());
-        assert!(body.iter().any(|l| l.contains("WindowEvent::DragDrop")), "the handler must be the REAL OS drop event");
-        assert!(body.iter().any(|l| l.contains("emit(DROP_EVENT")), "the handler must forward under the shared name");
-        for forbidden in ["fs::", "copy", "canonicalize", "if !", "unwrap()"] {
-            assert!(!body.iter().any(|l| l.contains(forbidden)), "policy or I/O ({forbidden}) leaked into the drop handler");
+        assert!(!lines[i..=j].iter().any(|l| l.contains("DragDrop")), "#51: a WindowEvent::DragDrop handler is dead code (Tauri's handler is off)");
+        let code: Vec<&str> = xd.split("#[cfg(test)]").next().unwrap().lines().filter(|l| !l.trim_start().starts_with("//")).collect();
+        assert!(code.iter().any(|l| l.contains("emit(crate::DROP_EVENT")), "the transport must forward under the shared name");
+        for forbidden in ["fs::", "File::", "copy(", "canonicalize", "invoke"] {
+            assert!(!code.iter().any(|l| l.contains(forbidden)), "policy or I/O ({forbidden}) leaked into the drop transport");
         }
         assert_eq!(DROP_EVENT, "drop-files");
         assert!(ui.contains(&format!("listen(\"{DROP_EVENT}\"")), "ui/main.js must listen for the name Rust emits");
