@@ -1833,8 +1833,57 @@ async function bmOpenRow(r, ev) {
 const BM_GG_KEYS = ["centerStrength", "repelStrength", "linkStrength", "linkDistance", "textFadeMultiplier",
   "nodeSizeMultiplier", "lineSizeMultiplier", "close", "collapse-filter", "collapse-color-groups", "collapse-display",
   "collapse-forces", "showTags", "showAttachments", "hideUnresolved", "showOrphans", "showArrow", "scale", "search", "colorGroups"];
+/* issue #118 (operator ruling 2026-11-15): a graph tab OPENED FROM a graph bookmark writes its
+   parameter edits (the card's Filters / Groups / Display / Forces, zoom, local depth + link
+   toggles) back to THAT bookmark item — the same 120 ms coalescing as the graph.json save.
+   t.bmRef = the item's key as its row carried it (ctime + title + global/local); rust
+   bm_graph_patch finds exactly that item or refuses ("gone": deleted, renamed, re-created),
+   and then this tab simply stops writing back — nothing is re-created. A graph tab NOT opened
+   from a bookmark has no bmRef and never touches bookmarks.json. Opening a graph by the ribbon
+   / command / a node click drops the link. The link lives in memory only (not workspace.json). */
+const bmGraphRef = r => {
+  const sp = (r && r.graph) || {};
+  return { ctime: typeof sp.ctime === "number" ? sp.ctime : null, title: typeof sp.title === "string" ? sp.title : null,
+           lg: !!(sp.local && typeof sp.local === "object") };
+};
+const bmRefKey = ref => JSON.stringify([ref.ctime, ref.title, ref.lg]);
+const bmWbQ = new Map();                   // ref key -> { ref, o: options patch, l: local patch, t: timer, v: vault }
+function bmWb(t, patch) {
+  const ref = t && t.bmRef;
+  if (!ref || !patch) return;
+  const k = bmRefKey(ref);
+  let q = bmWbQ.get(k);
+  if (!q) bmWbQ.set(k, q = { ref, o: {}, l: {}, t: null, v: vaultPath });
+  for (const [pk, pv] of Object.entries(patch)) {
+    if (BM_LG_KEYS.includes(pk)) { if (ref.lg) q.l[pk] = pv; }   // a global item has no local keys
+    else q.o[pk] = pv;
+  }
+  clearTimeout(q.t);
+  q.t = setTimeout(() => { bmWbFlush(k); }, 120);
+}
+async function bmWbFlush(k) {
+  const q = bmWbQ.get(k);
+  if (!q) return;
+  bmWbQ.delete(k); clearTimeout(q.t);
+  if (q.v !== vaultPath || (!Object.keys(q.o).length && !Object.keys(q.l).length)) return;
+  try {
+    bmTree = await inv("bm_graph_patch", { ctime: q.ref.ctime, title: q.ref.title, lg: q.ref.lg, opts: q.o, lopts: q.l });
+  } catch (err) {
+    const m = String(err && err.message || err);
+    if (/gone/.test(m)) { for (const g of groups()) for (const t of g.tabs) if (t.bmRef && bmRefKey(t.bmRef) === k) delete t.bmRef; }
+    else say("Graph bookmark: " + m);
+    return;
+  }
+  bmSync(); renderBm();                    // the row now carries the edited settings: a click reopens THEM
+}
+async function bmWbFlushAll() { for (const k of [...bmWbQ.keys()]) await bmWbFlush(k); }
 async function bmOpenGraph(r, ev) {
   if (!state) return;
+  if (bmWbQ.size) {                        // issue #118: a pending write-back lands first, then the row is read as the FILE now says
+    const k = bmRefKey(bmGraphRef(r));
+    await bmWbFlushAll();
+    r = bmTree.find(x => x.graph && bmRefKey(bmGraphRef(x)) === k) || r;
+  }
   const sp = r.graph || {}, o = sp.options && typeof sp.options === "object" ? sp.options : {};
   const g = fg();
   await flushSave(g);
@@ -1848,7 +1897,8 @@ async function bmOpenGraph(r, ev) {
     const d = Number.isInteger(lc.localJumps) ? Math.min(5, Math.max(1, lc.localJumps)) : 1;
     const t = { kind: "lg", name: "Graph of " + c.split("/").pop(), center: c, depth: d,
                 inc: lc.localBacklinks !== false, out: lc.localForelinks !== false, inter: lc.localInterlinks === true,
-                opts: Object.assign({}, o, { localJumps: d }), mode: "source", hist: [], hpos: 0 };
+                opts: Object.assign({}, o, { localJumps: d }), mode: "source", hist: [], hpos: 0,
+                bmRef: bmGraphRef(r) };   // issue #118: its edits write back to this bookmark
     g.tabs.push(t);                        // a bookmark-opened local graph is pinned to its centre: not linked to a pane
     g.active = g.tabs.length - 1;
     await loadActive(g);
@@ -1860,7 +1910,7 @@ async function bmOpenGraph(r, ev) {
   try { await inv("set_graph_settings", { vault: vaultPath, patch }); }
   catch (err) { say("Graph bookmark: " + String(err && err.message || err)); return; }
   gfCfg = null;                            // re-read: the card and [ggo:] now show the bookmark's settings
-  await cmdGlobalGraph();
+  await ggOpen(bmGraphRef(r));             // issue #118: this graph tab now writes back to the bookmark
 }
 async function bmOpenPath(p, ev) {
   const gone = () => say("Cannot open \"" + p.split("/").pop() + "\": the file no longer exists", "bm");
@@ -6038,7 +6088,7 @@ async function loadActive(g) {
     await startGraph(g, {
       keep: t,                      // ggkeep: the tab carries its live layout across a switch (t.gk)
       fetch: gcFetchGg,              // graphctx GC4-GC11: graph_view when a filter/group is set
-      scope: gcScopeGg,             // graphparity/graphctx: the leaf's ONE graph-controls card, bound to graph.json
+      scope: () => gcScopeGg(t),    // graphparity/graphctx: the leaf's ONE graph-controls card, bound to graph.json
       center: () => null,
       onClick: async (n, e) => {    // node click: this tab BECOMES the note
         // ggclick Q3 (notes/stock.md): Ctrl/Cmd or middle = new tab right of the graph, Ctrl+Alt
@@ -6051,7 +6101,7 @@ async function loadActive(g) {
           tt.hist = tt.hpos >= 0 ? tt.hist.slice(0, tt.hpos + 1) : [];
           if (!tt.hist.length || !tt.hist[tt.hist.length - 1].gg) tt.hist.push({ n: tt.name, s: 0, gg: 1 });
           tt.hpos = tt.hist.length - 1;
-          delete tt.kind; delete tt.gk; delete tt.base; modeBits(tt);   // #16: it is a NOTE tab now — give it the two mode bits; ggkeep: its kept graph goes with the kind
+          delete tt.kind; delete tt.gk; delete tt.base; delete tt.bmRef; modeBits(tt);   // #16: it is a NOTE tab now — give it the two mode bits; ggkeep: its kept graph goes with the kind
         }
         await navigate(g, n);
       },
@@ -10407,19 +10457,20 @@ function gfSave(patch) {           // coalesced 120 ms: the file holds the value
   }, 120);
 }
 // scopes: what a card edits. gg -> graph.json; lg -> the tab's own options (workspace.json)
-async function gcScopeGg() {
+async function gcScopeGg(t) {     // t = the gg tab the card edits (issue #118: its bookmark write-back)
   const st = await gfLoad();
   if (st.gcMiss && st.gcMiss.length) {   // ggpanel: state the panel layout in graph.json on the first open (stock G1)
     const patch = {};
     for (const k of st.gcMiss) patch[k] = k === "close" ? st.close : st.cs[GC_SECS.find(r => r[3] === k)[0]];
     st.gcMiss = []; gfSave(patch);
   }
-  return { kind: "gg", st, save: gfSave };
+  return { kind: "gg", st, save: patch => { gfSave(patch); bmWb(t, patch); } };
 }
 function gcScopeLg(t) {
   if (!t.gc) t.gc = gcParse(t.opts && typeof t.opts === "object" ? t.opts : {});
   return { kind: "lg", t, st: t.gc, save: patch => {   // the layout write is armed by updateTitle -> wsTouch
     t.opts = Object.assign({}, t.opts && typeof t.opts === "object" ? t.opts : {}, patch);
+    bmWb(t, patch);                // issue #118: a bookmark-opened local graph writes back too
   } };
 }
 /* graph_view options (src-tauri graphq::ViewOpts) for a card state, or null when Filters and
@@ -10827,7 +10878,8 @@ function showEditor(g) {
   applyMode(g);
 }
 $("graphbtn").onclick = cmdGlobalGraph;
-async function cmdGlobalGraph() {  // R9.7: ribbon icon opens GLOBAL graph as a main tab
+function cmdGlobalGraph() { return ggOpen(null); }   // R9.7: ribbon icon / command: a plain graph (issue #118: no bookmark link)
+async function ggOpen(bmRef) {      // R9.7: GLOBAL graph as a main tab; bmRef = the bookmark it was opened from, or null
   if (!state) return;
   const g = fg();
   g.perfT0 = perf.now();           // perf: graph_open = click -> first sim frame
@@ -10839,6 +10891,7 @@ async function cmdGlobalGraph() {  // R9.7: ribbon icon opens GLOBAL graph as a 
                   hist: [], hpos: -1 });
     g.active = g.tabs.length - 1;
   }
+  if (bmRef) g.tabs[g.active].bmRef = bmRef; else delete g.tabs[g.active].bmRef;   // issue #118: the last open decides
   await loadActive(g);
 }
 async function startGraph(g, cfg) {
