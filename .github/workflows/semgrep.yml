@@ -16,12 +16,12 @@
 #   Actions remain pinned by full 40-hex commit SHA.
 on:
   workflow_dispatch: {}
-  pull_request: {}
+  # NO pull_request trigger (operator 2026-11-15): only develop, main, v* branches + schedule + dispatch
   push:
     branches:
     - main
-    - master
-    - 'v*-release'  # release branches (v<ver>-release, see release.yml); no paths filter, so every push scans
+    - develop
+    - 'v*'  # release branches / drafts (v<ver>-release, see release.yml); no paths filter, so every push scans
   schedule:
   # random HH:MM to avoid a load spike on GitHub Actions at 00:00
   - cron: 13 0 * * *

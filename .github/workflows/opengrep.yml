@@ -26,7 +26,7 @@ on:
   # without them every PR into develop reports all existing findings as new.
   push:
     branches: [main, develop, 'v*']
-  pull_request: {}
+  # NO pull_request trigger (operator 2026-11-15): only develop, main, v* branches + schedule + dispatch
   schedule:
     # nightly, off the hour to avoid the 00:00 load spike
     - cron: "37 2 * * *"
