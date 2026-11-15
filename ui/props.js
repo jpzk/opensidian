@@ -320,7 +320,7 @@
     });
     ki.addEventListener("blur", () => setTimeout(() => { if (gone) return; ki.value.trim() ? take(ki.value) : drop(); }, 0));
     list.appendChild(w);
-    setTimeout(() => ki.focus(), 0);
+    setTimeout(() => { ki.focus(); if (typeof updateTitle === "function") updateTitle(); }, 0);
     if (typeof updateTitle === "function") updateTitle();
   }
 
@@ -364,6 +364,7 @@
             const r = [...w.querySelectorAll(".metadata-property")].find(x => x.dataset.propertyKey === f.key);
             const t = r && (f.part === "key" ? r.querySelector(".metadata-property-key-input") : r.querySelector(".metadata-property-value input"));
             if (t && !t.readOnly && !t.disabled) t.focus();
+            if (typeof updateTitle === "function") updateTitle();   // the census ([propsxy:focus=]) sees the new focus
           }, 0);
         }
         return w;
@@ -430,6 +431,12 @@
     const vis = e => !!e && !e.closest(".vkeep") && e.getClientRects().length > 0;
     const c = [...P.querySelectorAll(".metadata-container")].find(vis);
     let out = " [propsmode:" + Props.mode + "]";
+    // [propsfm:widget|hidden|raw|none] how the focused editor paints its frontmatter; [spd:<label>,x,y] the
+    // Settings > Editor "Properties in document" dropdown (its centre), while the settings pane shows it
+    const ed = [...P.querySelectorAll(".cm-editor")].find(vis);
+    if (ed) { const l0 = ed.querySelector(".cm-content > .cm-line"); out += " [propsfm:" + (ed.querySelector(".cm-props-block") ? "widget" : ed.querySelector(".cm-props-hidden") ? "hidden" : l0 && l0.textContent === "---" ? "raw" : "none") + "]"; }
+    const sd = document.getElementById("spropsdoc");
+    if (sd && sd.getClientRects().length) out += " [spd:" + safe(sd.textContent) + "," + ctr(sd) + "]";
     if (sugEl) out += " [propsug:" + [...sugEl.children].map(x => safe(x.textContent) + (x.classList.contains("is-selected") ? "*" : "")).join("|") + "]";
     if (!c) return out;
     const where = c.closest(".cm-editor") ? "lp" : "rv";
