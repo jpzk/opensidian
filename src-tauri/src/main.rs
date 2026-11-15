@@ -3772,10 +3772,12 @@ fn plugins_state_of(root: &Path) -> serde_json::Value {
 fn plugins_state(v: State<Vault>, otel: Option<perf::Ctx>) -> Result<serde_json::Value, String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
     // #127 migration: a trust entry from before the identity binding is bound to the directory
-    // this boot finds at its path (plugins::bind_legacy); every later boot compares against it
+    // this boot finds at its path (plugins::bind_legacy); every later boot compares against it.
+    // InsertIn (review #129): written only if still absent under the config lock, so this stale
+    // snapshot never overwrites an identity a concurrent trust-ON recorded
     if let Some((p, k, id)) = plugins::bind_legacy(&cfg_value(), &plugins::trust_key(&root)) {
         eprintln!("[plugins] trust {k:?}: bound to directory {id}");
-        cfg_update(&[cfgstore::Op::SetIn(p, k, id)]);
+        cfg_update(&[cfgstore::Op::InsertIn(p, k, id)]);
     }
     Ok(span_timed!(otel => "plugins_state", plugins_state_of(&root)))
 }
@@ -3813,6 +3815,10 @@ async fn plugins_set(
         // BB2 (PR #42 round 11): the place in the question queue before trust_key (a lookup)
         let slot = consent::admit()?;
         let key = plugins::trust_key(&root);
+        // #127 (review #129): a root without an identity cannot be trusted — say so, do not ask
+        if trusted == Some(true) && key.id.is_none() {
+            return Err(plugins::NO_IDENTITY.into());
+        }
         if !consent::ask(slot, win, consent::Kind::Trust, consent::trust_question(&key)).await? {
             eprintln!("[consent] trust {key:?}: cancelled, nothing written");
             return Ok(plugins_state_of(&root));
@@ -3826,14 +3832,15 @@ async fn plugins_set(
             // CC1 (PR #42 round 12): the trust key (canonicalize of the vault root, a path lookup)
             // before the lock, so a stalled vault mount cannot hold up the lock this write takes
             let key = plugins::trust_key(&root);
+            // #127: ON binds the entry to this directory (plugins::trust_ops: flag + identity, one
+            // write); a root without an identity is refused here, before the lock, nothing written
+            let ops: Vec<cfgstore::Op> = plugins::trust_ops(&key, t)?.into_iter().map(|(p, k, v)| cfgstore::Op::SetIn(p, k, v)).collect();
             let life = desk_proc::lifecycle();
             // G1: a Trust answer that went stale while its dialog was open writes nothing
             if let Err(e) = desk_proc::trust_write(asked, &life) {
                 eprintln!("[consent] trust {key:?}: answer from before another flip, discarded, nothing written");
                 return Err(e);
             }
-            // #127: ON binds the entry to this directory (plugins::trust_ops: flag + identity, one write)
-            let ops: Vec<cfgstore::Op> = plugins::trust_ops(&key, t).into_iter().map(|(p, k, v)| cfgstore::Op::SetIn(p, k, v)).collect();
             cfg_update(&ops);
             if !t {
                 desk_proc::kill_all(&life); // flip OFF: what plugins started stops with them

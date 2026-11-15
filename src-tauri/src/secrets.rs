@@ -331,9 +331,12 @@ pub(crate) async fn secrets_op(
     otel: Option<crate::perf::Ctx>,
 ) -> Result<serde_json::Value, String> {
     let root = crate::cur_vault(&v).ok_or("no vault open")?;
-    let trusted = crate::plugins::is_trusted(&crate::cfg_value(), &root);
+    // #127 (review #129): ONE key (canonical path + identity) for both the trust check and the
+    // keyring namespace — a root symlink retargeted in between cannot get the check of the old target
+    let key = crate::plugins::trust_key(&root);
+    let trusted = crate::plugins::is_trusted_key(&crate::cfg_value(), &key);
     admit(trusted, &op, id.as_deref(), value.as_deref())?;
-    let vault = crate::plugins::trust_key(&root).path;
+    let vault = key.path;
     let r = crate::span_timed!(otel => "secrets_op", tauri::async_runtime::spawn_blocking(move || {
         let op = parse(&op, id.as_deref(), value.as_deref())?;
         run(None, &vault, op)
