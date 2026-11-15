@@ -218,16 +218,15 @@ pub fn is_trusted_key(cfg: &serde_json::Value, key: &TrustKey) -> bool {
     }
 }
 
-/// #127: the config writes for a trust flip of `key`: the flag, and with ON the identity it is bound to.
-/// ON without an identity is refused (review #129): a flag written alone would read as a legacy entry
-/// and carry over to whatever directory is put at the path later.
-pub fn trust_ops(key: &TrustKey, on: bool) -> Result<Vec<(String, String, serde_json::Value)>, String> {
-    let mut v = vec![(TRUST_KEY.to_string(), key.path.clone(), serde_json::json!(on))];
-    if on {
-        let id = key.id.as_ref().ok_or(NO_IDENTITY)?;
-        v.push((TRUST_ID_KEY.to_string(), key.path.clone(), serde_json::json!(id)));
+/// #127: the identity a trust flip of `key` records next to the flag (plugins_set writes both, one
+/// update, the flag line kept in plugins_set where consent-nobypass S3/S6 pin it): ON = the directory's
+/// identity, OFF = none. ON without an identity is refused (review #129): a flag written alone would
+/// read as a legacy entry and carry over to whatever directory is put at the path later.
+pub fn trust_bind(key: &TrustKey, on: bool) -> Result<Option<String>, String> {
+    if !on {
+        return Ok(None);
     }
-    Ok(v)
+    key.id.clone().map(Some).ok_or_else(|| NO_IDENTITY.to_string())
 }
 
 pub const NO_IDENTITY: &str =
@@ -382,6 +381,16 @@ mod tests {
         root
     }
 
+    /// what main.rs plugins_set writes for a trust flip (flag, + the identity on ON), applied to `cfg`
+    fn flip(cfg: &mut serde_json::Value, key: &TrustKey, on: bool) -> Result<(), String> {
+        let bind = trust_bind(key, on)?;
+        cfg[TRUST_KEY][&key.path] = serde_json::json!(on);
+        if let Some(id) = bind {
+            cfg[TRUST_ID_KEY][&key.path] = serde_json::json!(id);
+        }
+        Ok(())
+    }
+
     fn js(s: Served) -> String {
         match s {
             Served::Js(b) => String::from_utf8(b).unwrap(),
@@ -499,9 +508,7 @@ mod tests {
         let k = trust_key(&r);
         assert!(k.id.is_some(), "a vault dir has an identity");
         let mut cfg = serde_json::json!({});
-        for (p, key, v) in trust_ops(&k, true).unwrap() {
-            cfg[p][key] = v;
-        }
+        flip(&mut cfg, &k, true).unwrap();
         assert_eq!(cfg[TRUST_ID_KEY][&k.path].as_str(), k.id.as_deref());
         assert!(is_trusted(&cfg, &r), "the directory it was given for");
         assert!(is_trusted_key(&cfg, &trust_key(&r)), "a recomputed key of the same directory");
@@ -521,12 +528,12 @@ mod tests {
         fs::rename(&other, &r).unwrap();
         assert!(!is_trusted(&cfg, &r));
         // trusting again (the asked flip) binds the new directory
-        for (p, key, v) in trust_ops(&trust_key(&r), true).unwrap() {
-            cfg[p][key] = v;
-        }
+        flip(&mut cfg, &trust_key(&r), true).unwrap();
         assert!(is_trusted(&cfg, &r));
         // OFF writes only the flag
-        assert_eq!(trust_ops(&trust_key(&r), false).unwrap().len(), 1);
+        let mut off = serde_json::json!({});
+        flip(&mut off, &trust_key(&r), false).unwrap();
+        assert_eq!(off, serde_json::json!({"plugins_trusted": {trust_key(&r).path: false}}));
         // a root that cannot be stat'ed never matches a recorded identity
         let gone = TrustKey { path: k.path.clone(), id: None };
         assert!(!is_trusted_key(&cfg, &gone));
@@ -571,8 +578,8 @@ mod tests {
         assert_eq!(identity_of(7, Some(std::time::Duration::from_nanos(42))).as_deref(), Some("7:42"));
         let r = vault("noid");
         let bare = TrustKey { path: trust_key(&r).path, id: None };
-        assert_eq!(trust_ops(&bare, true), Err(NO_IDENTITY.to_string()), "ON without an identity is refused");
-        assert_eq!(trust_ops(&bare, false).unwrap().len(), 1, "OFF is always possible");
+        assert_eq!(trust_bind(&bare, true), Err(NO_IDENTITY.to_string()), "ON without an identity is refused");
+        assert_eq!(trust_bind(&bare, false), Ok(None), "OFF is always possible");
         let legacy = serde_json::json!({"plugins_trusted": {bare.path.clone(): true}});
         assert!(!is_trusted_key(&legacy, &bare), "a legacy entry is not honoured where it cannot be bound");
         assert!(bind_legacy(&legacy, &bare).is_none());
@@ -588,9 +595,7 @@ mod tests {
         let old = TrustKey { path: k.path.clone(), id: Some("1:1".into()) };
         let (p, key, id) = bind_legacy(&stale, &old).expect("legacy");
         let mut disk = serde_json::json!({});
-        let on: Vec<crate::cfgstore::Op> =
-            trust_ops(&k, true).unwrap().into_iter().map(|(p, k, v)| crate::cfgstore::Op::SetIn(p, k, v)).collect();
-        crate::cfgstore::apply(&mut disk, &on);
+        flip(&mut disk, &k, true).unwrap();
         crate::cfgstore::apply(&mut disk, &[crate::cfgstore::Op::InsertIn(p, key, id)]);
         assert_eq!(disk[TRUST_ID_KEY][&k.path].as_str(), k.id.as_deref(), "the newer identity stays");
         assert!(is_trusted_key(&disk, &k));

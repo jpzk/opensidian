@@ -3832,14 +3832,18 @@ async fn plugins_set(
             // CC1 (PR #42 round 12): the trust key (canonicalize of the vault root, a path lookup)
             // before the lock, so a stalled vault mount cannot hold up the lock this write takes
             let key = plugins::trust_key(&root);
-            // #127: ON binds the entry to this directory (plugins::trust_ops: flag + identity, one
-            // write); a root without an identity is refused here, before the lock, nothing written
-            let ops: Vec<cfgstore::Op> = plugins::trust_ops(&key, t)?.into_iter().map(|(p, k, v)| cfgstore::Op::SetIn(p, k, v)).collect();
+            // #127: ON binds the entry to this directory (plugins::trust_bind: the identity written with
+            // the flag, one update); a root without an identity is refused here, before the lock, nothing written
+            let bind = plugins::trust_bind(&key, t)?;
             let life = desk_proc::lifecycle();
             // G1: a Trust answer that went stale while its dialog was open writes nothing
             if let Err(e) = desk_proc::trust_write(asked, &life) {
                 eprintln!("[consent] trust {key:?}: answer from before another flip, discarded, nothing written");
                 return Err(e);
+            }
+            let mut ops = vec![cfgstore::Op::SetIn(plugins::TRUST_KEY.into(), key.path.clone(), serde_json::json!(t))];
+            if let Some(id) = bind {
+                ops.push(cfgstore::Op::SetIn(plugins::TRUST_ID_KEY.into(), key.path.clone(), serde_json::json!(id)));
             }
             cfg_update(&ops);
             if !t {
