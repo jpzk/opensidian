@@ -3482,6 +3482,7 @@ function wsmTok() {
   let t = " [wsm:" + wsmSaves + "," + wsmLoadsN + "|" + q(wsmActive) + "|" + wsmNames.map(q).join(";") + "|" + (wsmOpen ? 1 : 0) + (wsmRen ? "|ren=" + q(wsmRen) : "") + "]";
   if (wsmOpen) {
     const xs = ["in=" + c($("wsmname")), "save=" + c($("wsmsave"))];
+    t += " [wsmin:" + q($("wsmname").value).slice(0, 60) + "]";   // the name input as the page sees it (harness: type, wait for it, then click Save)
     for (const row of document.querySelectorAll("#wsmlist .wsmrow")) {
       const b = [".wsmname", ".wsmrn", ".wsmdel", ".wsmren"].map(s => row.querySelector(s)).filter(Boolean);
       xs.push(q(row.dataset.name) + "=" + b.map(c).join(";"));
