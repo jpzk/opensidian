@@ -365,6 +365,30 @@ impl Pinned {
         }
     }
 
+    /// #74 (spawn_allow): identity key for the program-hash cache — same shape as linux.rs
+    /// (dev, ino, size, mtime, ctime). Windows maps volume/index/size/FILETIME; macOS has no
+    /// separate ctime in FileIdent so the last pair is (0, 0).
+    pub fn stat_key(&self) -> (u64, u64, u64, (i64, i64), (i64, i64)) {
+        let i = &self.ident;
+        #[cfg(windows)]
+        {
+            (i.volume as u64, i.index, i.size, (i.written as i64, 0), (0, 0))
+        }
+        #[cfg(unix)]
+        {
+            (i.dev, i.ino, i.size, (i.mtime_secs, i.mtime_nanos), (0, 0))
+        }
+    }
+
+    /// #74: bytes of the pinned inode for hashing (try_clone + rewind — same open object,
+    /// not a fresh pathname walk that could race the pin).
+    pub fn open_read(&self) -> std::io::Result<std::fs::File> {
+        use std::io::{Seek, SeekFrom};
+        let mut f = self.file.try_clone()?;
+        f.seek(SeekFrom::Start(0))?;
+        Ok(f)
+    }
+
     /// Pathname of the open object right now (survives rename-away of the pin path).
     fn launch_path(&self) -> Result<PathBuf, String> {
         #[cfg(windows)]
