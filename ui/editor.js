@@ -1881,7 +1881,7 @@ Object.assign(Ed, {
     return lp;
   },
   onUpdate(g, v, u) {
-    Ed.kroMap(u); Ed.mdnUpd(u);
+    Ed.kroMap(u);
     if (!g || g.view !== v) { if (u.docChanged && v.editor) v.editor.value = u.state.doc.toString(); return; }
     if (u.docChanged) {
       const t0 = performance.now(), d = u.state.doc;
@@ -2048,50 +2048,6 @@ window.addEventListener("keydown", e => {
 }, true);
 }
 Ed.kroTok = function () { return " [kro:" + Ed.kro.n + "/" + Ed.kro.lag + "/" + Ed.kro.st + "]"; };
-/* ---------- A PLAIN CLICK ALWAYS PLACES THE CARET (#119 longpos) ----------
-   Seen on the box (lpcdbg, census [seljmp:]): after wheel-scrolling a 3200-line
-   note to L1600 in live preview, a primary click on a text row left the CM6
-   model caret at 0:0 (inside the Properties block) while the DOM showed it at
-   the viewport top. Typing then went in at the DOM caret, but CM history kept
-   the model's 0:0 as the edit's start selection, so Ctrl+Z put the caret back
-   on 0:0 (L5, past the block). CM6 dispatches "select.pointer" from its own
-   mousedown handler; when a plain click on a row of the focused editor reaches
-   the window (bubble, nobody prevented it) and CM dispatched no pointer
-   selection for it, the caret goes where the pointer is (posAtCoords), exactly
-   as CM would have put it. Interactive targets (widgets, inputs, links, buttons,
-   checkboxes, the Properties block) and a press inside a non-empty selection
-   (CM's drag start) are left alone.
-   Census [mdn:<presses>/<CM pointer selections>/<fallback placements>|<last: target,cm,fb>]. */
-Ed.mdn = { n: 0, sp: 0, fb: 0, sp0: 0, last: "-" };
-Ed.mdnUpd = function (u) { for (const t of u.transactions || []) if (t.isUserEvent("select.pointer")) Ed.mdn.sp++; };
-if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
-window.addEventListener("mousedown", e => { if (e.button === 0) { Ed.mdn.n++; Ed.mdn.sp0 = Ed.mdn.sp; } }, true);
-window.addEventListener("mousedown", e => {
-  if (e.button !== 0) return;
-  const m = Ed.mdn, t = e.target && e.target.nodeType === 1 ? e.target : e.target && e.target.parentElement;
-  const h = t && t.closest ? t.closest(".cm-editor") : null;
-  const tg = t ? (t.className && typeof t.className === "string" ? t.className.split(" ")[0] : t.nodeName) : "none";
-  const cmSel = m.sp > m.sp0 ? 1 : 0;
-  let fb = "-";
-  if (h && !cmSel && !e.defaultPrevented && e.detail <= 1 && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey
-      && t.closest(".cm-content") && t.closest(".cm-line")
-      && !t.closest('[contenteditable="false"], input, textarea, select, button, label, a, .metadata-container, .cm-widgetBuffer')) {
-    const cm = CMv && CMv.EditorView.findFromDOM ? CMv.EditorView.findFromDOM(h) : null;
-    const p = cm ? cm.posAtCoords({ x: e.clientX, y: e.clientY }) : null, r = cm && cm.state.selection.main;
-    if (p == null) fb = "nopos";
-    else if (!r.empty && p >= r.from && p <= r.to) fb = "insel";
-    else if (r.empty && r.head === p) fb = "same";
-    else {
-      cm.dispatch({ selection: { anchor: p }, userEvent: "select.pointer" });
-      if (!cm.hasFocus) cm.focus();
-      m.fb++; fb = "set" + (cm.state.doc.lineAt(cm.state.selection.main.head).number - 1);
-    }
-  }
-  m.last = tg.replace(/[\[\]|\s]/g, "_").slice(0, 24) + "," + cmSel + "," + fb;
-}, false);
-}
-Ed.mdnTok = function () { const m = Ed.mdn; return " [mdn:" + m.n + "/" + m.sp + "/" + m.fb + "|" + m.last + "]"; };
-if (typeof CENSUS !== "undefined") CENSUS.push(() => Ed.mdnTok());
 Ed.caretXY = function (g) {               // caret rect relative to the pane box
   const cm = Ed.cm(g), pr = g.pane.getBoundingClientRect();
   const c = cm && cm.coordsAtPos(cm.state.selection.main.head);
