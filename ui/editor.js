@@ -2995,6 +2995,7 @@ Ed.cbField = function (v, G, bust) {
   const field = CMs.StateField.define({
     create: st => { try { return build(st); } catch (e) { console.error(e); return Decoration.none; } },
     update(d, tr) {
+      if (tr.docChanged && !tr.selection) { const k = Ed.flipKeep(d, tr); if (k) return k; }   // #128: a task flip outside every block
       if (tr.docChanged || tr.selection || tr.effects.some(e => e.is(bust) || e.is(Ed.cbFx)))
         { const tt = Ed._tt ? performance.now() : 0; try { return build(tr.state); } catch (e) { console.error(e); return Decoration.none; } finally { if (tt) Ed.ttAdd("cb_ms", tt); } }   // #128 sub-timing
       return d;
@@ -3101,6 +3102,7 @@ Ed.coField = function (v, G, bust) {
   return CMs.StateField.define({
     create: st => { try { return build(st); } catch (e) { console.error(e); return Decoration.none; } },
     update(d, tr) {
+      if (tr.docChanged && !tr.selection) { const k = Ed.flipKeep(d, tr); if (k) return k; }   // #128: a task flip outside every block
       if (tr.docChanged || tr.selection || tr.effects.some(e => e.is(bust)))
         { const tt = Ed._tt ? performance.now() : 0; try { return build(tr.state); } catch (e) { console.error(e); return Decoration.none; } finally { if (tt) Ed.ttAdd("co_ms", tt); } }   // #128 sub-timing
       return d;
@@ -3268,6 +3270,7 @@ Ed.tblField = function (v, G, bust) {
   return CMs.StateField.define({
     create: st => { try { return build(st); } catch (e) { console.error(e); return Decoration.none; } },
     update(d, tr) {
+      if (tr.docChanged && !tr.selection) { const k = Ed.flipKeep(d, tr); if (k) return k; }   // #128: a task flip outside every block
       if (tr.docChanged || tr.selection || tr.effects.some(e => e.is(bust)))
         { const tt = Ed._tt ? performance.now() : 0; try { return build(tr.state); } catch (e) { console.error(e); return Decoration.none; } finally { if (tt) Ed.ttAdd("tbl_ms", tt); } }   // #128 sub-timing
       return d;
@@ -3372,22 +3375,58 @@ Ed.taskBox = function (cb) {
     }, 0);
   });
 };
-// toggle "[ ]" <-> "[x]" on the checkbox's line, one undo step
+/* toggle "[ ]" <-> "[x]" on the checkbox's line, one undo step.
+   #128: O(1) in the note size. It used to go through the model mirror (Ed.lines:
+   doc.toJSON of the whole note when stale) and Ed.commit (doc.toString + join +
+   a prefix/suffix scan) to find a 1-char change it already knows. Now it reads
+   ONE line, dispatches that char with the same annotations Ed.commit used (its
+   own undo step, userEvent os.task; the selection maps exactly as before: same
+   from/to/insert) and patches the mirror's one row when it was current. The
+   change carries Ed.TT_FLIP so the block fields (callouts, tables, code fences)
+   can map instead of rescanning the whole doc — see Ed.flipKeep. */
+Ed.TT_FLIP = CMs && CMs.Annotation.define();
+Ed.TT_RE = /^(\s*(?:[-*+]|\d+\.) )\[([^\]\n])\]/;
 Ed.toggleTask = function (e, sp) {
   const box = e.target, pane = box && box.closest ? box.closest(".pane") : null, g = pane ? pane._g : null, cm = Ed.cm(g);
   const T = sp ? sp.attrs : null, drop = () => { if (sp) otel.cancel(sp); };
   if (!cm) return drop();
-  let l, t = performance.now();
-  try { l = cm.state.doc.lineAt(cm.posAtDOM(box, 0)).number - 1; } catch (_) { return drop(); }
+  let ln, t = performance.now();
+  try { ln = cm.state.doc.lineAt(cm.posAtDOM(box, 0)); } catch (_) { return drop(); }
   if (T) { T.pos_ms = Ed.ttMs(t); t = performance.now(); T.stale = g.view._Ld !== cm.state.doc ? 1 : 0; }
-  const L = Ed.lines(g), d0 = cm.state.doc;
+  const d0 = cm.state.doc, v = g.view, m = Ed.TT_RE.exec(ln.text);
   if (T) { T.lines_ms = Ed.ttMs(t); t = performance.now(); }
-  Ed.snap(g, "task");
-  L[l] = L[l].replace(/^(\s*(?:[-*+]|\d+\.) )\[([^\]\n])\]/, (_, p, ch) => p + (ch === " " ? "[x]" : "[ ]"));
+  if (!m) return drop();
+  const at = ln.from + m[1].length + 1, ch = m[2] === " " ? "x" : " ";
+  // a box char that could be block syntax (table pipe, quote, fence) takes no shortcut in the fields
+  const safe = !/[|>`~]/.test(m[2]);
+  v._snap = null;
+  if (T) { T.diff_ms = Ed.ttMs(t); t = performance.now(); }
   Ed._tt = T;
-  try { Ed.commit(g); } finally { Ed._tt = null; }
+  try {
+    const tr = cm.state.update({ changes: { from: at, to: at + 1, insert: ch },
+      annotations: [CMc.isolateHistory.of("full"), CMs.Transaction.userEvent.of("os.task")]
+        .concat(safe ? [Ed.TT_FLIP.of({ from: ln.from, to: ln.to })] : []) });
+    if (T) { void tr.state; Ed.ttAdd("fields_ms", t); t = performance.now(); }   // every StateField's update
+    const L = v._Ld === d0 ? v.lines : null;
+    cm.dispatch(tr);
+    if (T) Ed.ttAdd("view_ms", t);
+    // the mirror was OF d0: its one changed row makes it OF the new doc (no toJSON on the next model call)
+    if (L && v._Ld === d0) { L[ln.number - 1] = cm.state.doc.line(ln.number).text; v._Ld = cm.state.doc; }
+  } finally { Ed._tt = null; }
   if (!sp) return;
   T.commit_ms = Ed.ttMs(t); T.note_lines = cm.state.doc.lines; T.changed = cm.state.doc !== d0 ? 1 : 0;
   if (!T.changed) return drop();
   otel.paint(sp);
+};
+/* #128: a block StateField's update for an Ed.TT_FLIP change. The flip replaces one
+   box char of a list-task line with " "/"x": it cannot start, end or join a callout
+   (">" lines), a table (pipe rows) or a fence, so the blocks are where they were —
+   unless the line sits INSIDE a rendered block, whose widget shows the old text: then
+   null (rebuild). Not a flip, or a selection/effect riding along: null as well. */
+Ed.flipKeep = function (d, tr) {
+  const f = tr.annotation(Ed.TT_FLIP);
+  if (!f || tr.selection || tr.effects.length) return null;
+  let hit = false;
+  d.between(f.from, f.to, () => { hit = true; return false; });
+  return hit ? null : d.map(tr.changes);
 };
