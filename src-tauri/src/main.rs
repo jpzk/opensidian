@@ -3928,6 +3928,14 @@ fn plugins_state_of(root: &Path) -> serde_json::Value {
 #[tauri::command]
 fn plugins_state(v: State<Vault>, otel: Option<perf::Ctx>) -> Result<serde_json::Value, String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
+    // #127 migration: a trust entry from before the identity binding is bound to the directory
+    // this boot finds at its path (plugins::bind_legacy); every later boot compares against it.
+    // InsertIn (review #129): written only if still absent under the config lock, so this stale
+    // snapshot never overwrites an identity a concurrent trust-ON recorded
+    if let Some((p, k, id)) = plugins::bind_legacy(&cfg_value(), &plugins::trust_key(&root)) {
+        eprintln!("[plugins] trust {k:?}: bound to directory {id}");
+        cfg_update(&[cfgstore::Op::InsertIn(p, k, id)]);
+    }
     Ok(span_timed!(otel => "plugins_state", plugins_state_of(&root)))
 }
 
@@ -3964,6 +3972,10 @@ async fn plugins_set(
         // BB2 (PR #42 round 11): the place in the question queue before trust_key (a lookup)
         let slot = consent::admit()?;
         let key = plugins::trust_key(&root);
+        // #127 (review #129): a root without an identity cannot be trusted — say so, do not ask
+        if trusted == Some(true) && key.id.is_none() {
+            return Err(plugins::NO_IDENTITY.into());
+        }
         if !consent::ask(slot, win, consent::Kind::Trust, consent::trust_question(&key)).await? {
             eprintln!("[consent] trust {key:?}: cancelled, nothing written");
             return Ok(plugins_state_of(&root));
@@ -3977,13 +3989,20 @@ async fn plugins_set(
             // CC1 (PR #42 round 12): the trust key (canonicalize of the vault root, a path lookup)
             // before the lock, so a stalled vault mount cannot hold up the lock this write takes
             let key = plugins::trust_key(&root);
+            // #127: ON binds the entry to this directory (plugins::trust_bind: the identity written with
+            // the flag, one update); a root without an identity is refused here, before the lock, nothing written
+            let bind = plugins::trust_bind(&key, t)?;
             let life = desk_proc::lifecycle();
             // G1: a Trust answer that went stale while its dialog was open writes nothing
             if let Err(e) = desk_proc::trust_write(asked, &life) {
                 eprintln!("[consent] trust {key:?}: answer from before another flip, discarded, nothing written");
                 return Err(e);
             }
-            cfg_update(&[cfgstore::Op::SetIn(plugins::TRUST_KEY.into(), key, serde_json::json!(t))]);
+            let mut ops = vec![cfgstore::Op::SetIn(plugins::TRUST_KEY.into(), key.path.clone(), serde_json::json!(t))];
+            if let Some(id) = bind {
+                ops.push(cfgstore::Op::SetIn(plugins::TRUST_ID_KEY.into(), key.path.clone(), serde_json::json!(id)));
+            }
+            cfg_update(&ops);
             if !t {
                 desk_proc::kill_all(&life); // flip OFF: what plugins started stops with them
                 desk_net::close_all(&life); // N5: so do its listeners, under the lock desk_net_listen binds under
@@ -4063,7 +4082,7 @@ fn spawn_want(root: &Path, plugin: Option<&str>, sp: &desk_proc::Spec) -> Option
     let (plugin_sha256, plugin_version) = spawn_allow::plugin_fingerprint(root, id).map_err(why).ok()?;
     let prog = sp.prog.as_ref()?;
     let program_sha256 = spawn_allow::program_sha256(prog.stat_key(), || prog.open_read()).map_err(why).ok()?;
-    Some(spawn_allow::Want { vault: plugins::trust_key(root), plugin: id.to_string(), plugin_sha256, plugin_version, program: sp.file.clone(), program_sha256 })
+    Some(spawn_allow::Want { vault: plugins::trust_key(root).path, plugin: id.to_string(), plugin_sha256, plugin_version, program: sp.file.clone(), program_sha256 })
 }
 
 /* #74 Settings > Allowed programs. The webview may LIST and REVOKE grants, never add one:
