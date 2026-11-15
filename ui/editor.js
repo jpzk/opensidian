@@ -2286,9 +2286,19 @@ Ed.scrollToLine = function (g, line) {    // put the fractional source line at t
     lp.scrollTop = Math.min(max, Math.max(0, lp.scrollTop + dy));
   };
   go();
-  // the height map holds ESTIMATES for lines never drawn: once CM6 has measured
-  // the lines this scroll brought in, land on the real geometry
-  cm.requestMeasure({ key: "osScrollLine", read: () => null, write: () => { if (Ed.cm(g) === cm) go(); } });
+  // the height map holds ESTIMATES for lines never drawn (or, after the .lp.src
+  // restyle, stale ones: the longpos image is 360 px in lp, one row in source).
+  // Once CM6 has measured the lines this scroll brought in, land on the real
+  // geometry — but only AFTER its measure loop: CM6 runs measure-request writes
+  // BEFORE its scroll-anchor correction (`scrollTop += newAnchorTop - oldAnchorTop`,
+  // anchor/old top captured at loop start), so re-landing inside the write applied
+  // the image's height change twice whenever the top landed below it (longpos 10%
+  // src->lp off +19, lp->src off -19). One frame later the map and the scroller
+  // agree and go() is a no-op unless the anchor correction did not run.
+  const tok = g._osScrollTok = (g._osScrollTok || 0) + 1;
+  cm.requestMeasure({ key: "osScrollLine", read: () => null, write: () => {
+    requestAnimationFrame(() => { if (Ed.cm(g) === cm && g._osScrollTok === tok) go(); });
+  } });
 };
 /* the editor scroller OWNS its plain vertical wheel. CM6 virtualises: lines it has
    not drawn carry ESTIMATED (or, after the .lp.src restyle, stale) heights, and when
