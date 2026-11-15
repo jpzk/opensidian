@@ -1881,7 +1881,7 @@ Object.assign(Ed, {
     return lp;
   },
   onUpdate(g, v, u) {
-    Ed.kroMap(u);
+    Ed.kroMap(u); Ed.mdnUpd(u);
     if (!g || g.view !== v) { if (u.docChanged && v.editor) v.editor.value = u.state.doc.toString(); return; }
     if (u.docChanged) {
       const t0 = performance.now(), d = u.state.doc;
@@ -2048,6 +2048,33 @@ window.addEventListener("keydown", e => {
 }, true);
 }
 Ed.kroTok = function () { return " [kro:" + Ed.kro.n + "/" + Ed.kro.lag + "/" + Ed.kro.st + "]"; };
+/* #119 DEBUG (i119e, census only, changes nothing): the last primary press in an editor —
+   [mdn:<presses>/<CM select.pointer>|<target>,ln=<.cm-line source line>,pc=<posAtCoords line>,
+   hf=<view.hasFocus>,ae=<activeElement>,dp=<defaultPrevented at bubble>,sb=<sel line before>,sa=<sel line after mouseup>] */
+Ed.mdn = { n: 0, sp: 0, last: "-" };
+Ed.mdnUpd = function (u) { for (const t of u.transactions || []) if (t.isUserEvent("select.pointer")) Ed.mdn.sp++; };
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  const lnOf = (cm, p) => { try { return p == null ? "-" : String(cm.state.doc.lineAt(p).number); } catch (_) { return "x"; } };
+  const tgOf = t => !t ? "none" : String(t.nodeName + (t.className && typeof t.className === "string" ? "." + t.className.split(" ")[0] : "")).replace(/[\[\]|,\s]/g, "_").slice(0, 28);
+  let pend = null;
+  window.addEventListener("mousedown", e => {
+    if (e.button !== 0) return;
+    const t = e.target && e.target.nodeType === 1 ? e.target : e.target && e.target.parentElement, h = t && t.closest ? t.closest(".cm-editor") : null;
+    const cm = h && CMv && CMv.EditorView.findFromDOM ? CMv.EditorView.findFromDOM(h) : null;
+    if (!cm) return;
+    Ed.mdn.n++;
+    let ln = "-"; const row = t.closest(".cm-line"); if (row) try { ln = lnOf(cm, cm.posAtDOM(row, 0)); } catch (_) { ln = "x"; }
+    let pc = "-"; try { pc = lnOf(cm, cm.posAtCoords({ x: e.clientX, y: e.clientY }, false)); } catch (_) { pc = "x"; }
+    pend = { cm, s: tgOf(t) + ",ln=" + ln + ",pc=" + pc + ",hf=" + (cm.hasFocus ? 1 : 0) + ",ae=" + tgOf(document.activeElement) + ",sb=" + lnOf(cm, cm.state.selection.main.head) };
+  }, true);
+  window.addEventListener("mousedown", e => { if (pend && e.button === 0) pend.s += ",dp=" + (e.defaultPrevented ? 1 : 0); }, false);
+  window.addEventListener("mouseup", e => {
+    if (!pend || e.button !== 0) return;
+    const p = pend; pend = null;
+    setTimeout(() => { Ed.mdn.last = p.s + ",sa=" + lnOf(p.cm, p.cm.state.selection.main.head) + ",hf2=" + (p.cm.hasFocus ? 1 : 0); console.log("[mdn] " + Ed.mdn.last); if (typeof updateTitle === "function") updateTitle(); }, 0);
+  }, true);
+}
+if (typeof CENSUS !== "undefined") CENSUS.push(() => " [mdn:" + Ed.mdn.n + "/" + Ed.mdn.sp + "|" + Ed.mdn.last + "]");
 Ed.caretXY = function (g) {               // caret rect relative to the pane box
   const cm = Ed.cm(g), pr = g.pane.getBoundingClientRect();
   const c = cm && cm.coordsAtPos(cm.state.selection.main.head);
@@ -2156,14 +2183,28 @@ Ed.scrollToLine = function (g, line) {    // put the fractional source line at t
   // measure, and re-anchors on the destination line (o = -1 after scrollIntoView), so
   // every later height change above it is compensated FOR THIS LINE. It also supersedes
   // any pending caret scrollTarget. revealAt/revealTop use the effect for the same reason.
-  try {
+  // Only when such a block IS above the destination (a drawn Properties block: live preview,
+  // Visible/Hidden): without one the effect is not needed, and in source mode after the
+  // .lp.src restyle it landed by stale heights (scrollsync src-mid read -> src off 14, a note
+  // with no frontmatter at all), so every other note scrolls exactly as before #119.
+  const v = g.view, pf = v && v._propsF ? cm.state.field(v._propsF, false) : null;
+  let blk = false;
+  if (pf && pf.size) pf.between(0, d.length, (a, b) => { if (b <= d.line(i + 1).from) blk = true; });
+  if (blk) try {
     const ln = d.line(i + 1), h = cm.lineBlockAt(ln.from).height;
     cm.dispatch({ effects: CMv.EditorView.scrollIntoView(ln.from, { y: "start", yMargin: -Math.round(f * h) }) });
   } catch (e) { console.error(e); }
   // the height map holds ESTIMATES for lines never drawn: once CM6 has measured
   // the lines this scroll brought in, land on the real geometry
-  cm.requestMeasure({ key: "osScrollLine", read: () => null, write: () => { if (Ed.cm(g) === cm) go(); } });
+  const dbg = Ed.ssd = { n: (Ed.ssd ? Ed.ssd.n : 0) + 1, s: (i + 1) + "," + (blk ? 1 : 0) + "," + (lp.classList.contains("src") ? "src" : "lp") + ",go=" + Ed.ssdTop(g) };
+  cm.requestMeasure({ key: "osScrollLine", read: () => null, write: () => { if (Ed.cm(g) === cm) { go(); dbg.s += ",re=" + Ed.ssdTop(g); } } });
+  requestAnimationFrame(() => setTimeout(() => { dbg.s += ",late=" + Ed.ssdTop(g); if (typeof updateTitle === "function") updateTitle(); }, 120));
 };
+/* #119 DEBUG (i119e): census [ssd:<n>|<line 1-based>,<effect 0/1>,<lp|src>,go=<top>,re=<top>,late=<top>]
+   the scroll restore's target vs the 1-based top line after the pixel landing, after the
+   measure re-land and ~1 frame + 120 ms later (Ed.topLine: the DOM row at the scroller top). */
+Ed.ssdTop = function (g) { try { const t = Ed.topLine(g, 1); return t == null ? "-" : String(Math.floor(t) + 1); } catch (_) { return "x"; } };
+if (typeof CENSUS !== "undefined") CENSUS.push(() => Ed.ssd ? " [ssd:" + Ed.ssd.n + "|" + Ed.ssd.s + "]" : "");
 /* the editor scroller OWNS its plain vertical wheel. CM6 virtualises: lines it has
    not drawn carry ESTIMATED (or, after the .lp.src restyle, stale) heights, and when
    it measures the lines a scroll brings in it keeps the view still by correcting the

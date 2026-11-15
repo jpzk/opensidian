@@ -403,6 +403,7 @@
       },
       provide: f => [EditorView.decorations.from(f), EditorView.atomicRanges.of(view => view.state.field(f))],
     });
+    v._propsF = field;   // Ed.scrollToLine asks whether a Properties block sits above its destination
     return field;
   };
 
