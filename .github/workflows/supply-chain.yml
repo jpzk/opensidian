@@ -7,8 +7,8 @@
 # See docs/supply-chain.md for what each check catches and how to audit a new crate.
 #
 # Hardening:
-#   - trigger pull_request (never pull_request_target): fork PRs run with a read-only
-#     token and no secrets; nothing here needs either.
+#   - trigger pull_request (never its privileged "_target" variant): fork PRs run read-only
+#     with no secrets; nothing here needs either.
 #   - top-level permissions contents: read; no secrets; checkout does not persist the token.
 #   - every action pinned to a full commit SHA (# vX.Y.Z), tools pinned to exact versions
 #     built with --locked; every pin released >= 6 weeks before pin time (2026-11-15).
