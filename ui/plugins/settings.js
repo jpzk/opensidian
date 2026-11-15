@@ -33,6 +33,16 @@
     gear: I('<circle cx="8" cy="8" r="2"/><circle cx="8" cy="8" r="4.4"/><path d="M8 1.6v2M8 12.4v2M1.6 8h2M12.4 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M3.5 12.5l1.4-1.4M11.1 4.9l1.4-1.4"/>'),
     check: I('<path d="M3.5 8.5l3 3 6-7"/>'),
   };
+  /* issue #115: the same gear drawn with createElementNS (no HTML sink: opengrep html-sink-nonliteral) */
+  const SVGNS = "http://www.w3.org/2000/svg";
+  function gearSvg() {
+    const mk = (t, at) => { const e = document.createElementNS(SVGNS, t); for (const k in at) e.setAttribute(k, at[k]); return e; };
+    const s = mk("svg", { class: "gi", viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", "stroke-width": "1.6", "stroke-linecap": "round", "stroke-linejoin": "round" });
+    s.appendChild(mk("circle", { cx: "8", cy: "8", r: "2" }));
+    s.appendChild(mk("circle", { cx: "8", cy: "8", r: "4.4" }));
+    s.appendChild(mk("path", { d: "M8 1.6v2M8 12.4v2M1.6 8h2M12.4 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M3.5 12.5l1.4-1.4M11.1 4.9l1.4-1.4" }));
+    return s;
+  }
   const host = window.__osPluginHost;
   if (!host || !host.app) return;
   const setting = host.app.setting;
@@ -252,7 +262,7 @@
         /* issue #115: Daily notes has no board to open its options from, so its row carries a gear (pane
            core-daily-notes), like a community plugin's Options gear */
         if (cid === "daily-notes" && p.cfg && on) {   // stock: the gear only while the core plugin is on
-          const g = el("div", "sctl cpgear"); g.innerHTML = GI.gear; g.title = "Options"; g.tabIndex = 0;
+          const g = el("div", "sctl cpgear"); g.appendChild(gearSvg()); g.title = "Options"; g.tabIndex = 0;
           g.setAttribute("role", "button"); g.setAttribute("aria-label", "Options"); g.dataset.coregear = cid;
           g.onclick = ev => { ev.stopPropagation(); openDailySettings(); };
           g.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openDailySettings(); } };
