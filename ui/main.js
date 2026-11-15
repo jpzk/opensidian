@@ -657,7 +657,6 @@ async function propsRenameAll(oldK, newK) {
       if (ch) { if (ch.from !== ch.to || ch.insert) cm.dispatch({ changes: ch, userEvent: "input.props" }); done++; } else kept++;
       continue;
     }
-
     let text;
     try { text = await inv("read_note", { name: n }); } catch (_) { kept++; continue; }
     const k = keyIn(text), ch = k != null ? M.rename(text, k, newK) : null;
