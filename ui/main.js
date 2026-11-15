@@ -6764,17 +6764,26 @@ const TREE_FOLDER =
   ' stroke-linecap="round" stroke-linejoin="round">' +
   '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
 const treeGuides = d => '<span class="tg"></span>'.repeat(d);
+/* #106: a big vault builds tens of thousands of rows at boot, and parsing the same innerHTML string
+   once per row was most of that build. Each row shape is parsed ONCE per (kind, depth) and the row is
+   a deep clone of it: the same elements, classes and text as before (handlers are set per row). */
+const treeTpl = new Map();
+function treeRowOf(kind, depth, html) {
+  const k = kind + ":" + depth;
+  let t = treeTpl.get(k);
+  if (!t) { t = document.createElement("div"); t.innerHTML = html; treeTpl.set(k, t); }
+  return t.cloneNode(true);
+}
 
 function renderNode(node, prefix, depth, out) {
   for (const d of [...node.dirs.keys()].sort()) {
     const full = prefix ? prefix + "/" + d : d;
     const open = unfold.has(full);             // treefold: stock default = collapsed
-    const row = document.createElement("div");
-    row.className = "trow folder" + (open ? " open" : "");
-    row.innerHTML = treeGuides(depth) +
+    const row = treeRowOf("f", depth, treeGuides(depth) +
       '<span class="tc">' + TREE_CHEV + '</span>' +
       '<span class="tfi">' + TREE_FOLDER + '</span>' +
-      '<span class="tn"></span>';
+      '<span class="tn"></span>');
+    row.className = "trow folder" + (open ? " open" : "");
     row.querySelector(".tn").textContent = d;   // names never hit innerHTML
     // R20 (#7): children live in a .tkids box rendered ONCE; a click only flips
     // .collapsed on the box (+ .open on the row) — zero IPC, no tree rebuild.
@@ -6806,10 +6815,9 @@ function renderNode(node, prefix, depth, out) {
   for (const [nm, isCanvas] of files) {
     if (isCanvas === 1) { out.appendChild(canvasRow(nm, depth)); continue; }
     if (isCanvas === 2) { out.appendChild(fileRow(nm, depth)); continue; }
-    const row = document.createElement("div");
+    const row = treeRowOf("n", depth, treeGuides(depth) + '<span class="tc"></span>' +
+      '<span class="tn"></span>');
     row.className = "trow note";                // .active: treeHighlight()
-    row.innerHTML = treeGuides(depth) + '<span class="tc"></span>' +
-      '<span class="tn"></span>';
     row.querySelector(".tn").textContent = nm.split("/").pop();
     row.dataset.note = nm;
     row.onclick = e => { if (treeClickEaten()) return; if (e.shiftKey && !e.ctrlKey && !e.metaKey) return treeRange(row); treeSelClear(); treeAnchor = wsPathOut(nm); rowOpen(nm, e); };     // opentab REQ-1/3/5/7: replace in place; ctrl = new tab; cv-journeys: shift = range select
