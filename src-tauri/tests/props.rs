@@ -163,3 +163,31 @@ fn properties_model_round_trip() {
     if let Some(e) = ctx.exception() { panic!("properties model check failed: {}", e.to_str()); }
     assert_eq!(out, "ok");
 }
+
+/// the UI half (ui/props.js) parses and defines nothing without the editor (a bare load
+/// is syntax only), and the empty block the "Add file property" command creates is a
+/// valid frontmatter the model adds into
+#[test]
+fn properties_ui_loads_and_the_command_block_is_valid() {
+    let ctx = javascriptcore::Context::new();
+    ctx.evaluate("var window = {};");
+    ctx.evaluate(&std::fs::read_to_string(root().join("ui/props-model.js")).unwrap());
+    ctx.evaluate(&std::fs::read_to_string(root().join("ui/props.js")).unwrap());
+    if let Some(e) = ctx.exception() { panic!("props.js did not load: {}", e.to_str()); }
+    let out = ctx
+        .evaluate(r#"(function () {
+          const M = window.PropsModel, b = "---\n---\nbody\n", p = M.parse(b);
+          if (!p || p.invalid || p.entries.length) return "empty block: " + JSON.stringify(p);
+          const a = M.apply(b, M.add(b, "status", "text", null));
+          if (a !== "---\nstatus:\n---\nbody\n") return "add into the empty block: " + JSON.stringify(a);
+          const r = M.rows(a, {}).rows;
+          if (r.length !== 1 || !r[0].ok || r[0].type !== "text" || r[0].value !== null) return "row: " + JSON.stringify(r);
+          const s = M.apply(a, M.setValue(a, "status", "text", "open", {}));
+          if (s !== "---\nstatus: open\n---\nbody\n") return "set: " + JSON.stringify(s);
+          return typeof window.Props === "undefined" ? "ok" : "props.js defined Props without the editor";
+        })()"#)
+        .map(|v| v.to_str().to_string())
+        .unwrap_or_default();
+    if let Some(e) = ctx.exception() { panic!("check failed: {}", e.to_str()); }
+    assert_eq!(out, "ok");
+}

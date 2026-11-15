@@ -37,6 +37,7 @@ mod plugin_store;
 mod pasteimg;
 mod qscreate;
 mod perf;
+mod props; // #119: types.json, the vault property census, the Properties in document mode
 mod sandbox;
 // cp-secrets: app.secretStorage over the OS keyring (Secret Service)
 mod secrets;
@@ -1415,6 +1416,71 @@ fn strict_line_breaks(v: State<Vault>) -> bool {
 fn set_strict_line_breaks(v: State<Vault>, on: bool) -> Result<(), String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
     set_app_bool_in(&root, "strictLineBreaks", on)
+}
+
+/* issue #119 — Properties (src-tauri/src/props.rs). "Properties in document" is
+   Obsidian's Editor > Display dropdown, Obsidian's key: app.json
+   "propertiesInDocument" = "visible" | "hidden" | "source", absent = visible. Read
+   on every ask (a hand edit or another window shows on the next settings open /
+   note open); written by the same merge as the boolean keys above. */
+fn app_value_in(root: &Path, key: &str) -> Option<serde_json::Value> {
+    let cfg = fs::read_to_string(root.join(".obsidian/app.json")).ok()?;
+    serde_json::from_str::<serde_json::Value>(&cfg).ok()?.get(key).cloned()
+}
+
+fn props_mode_in(root: &Path) -> &'static str {
+    props::mode_of(app_value_in(root, "propertiesInDocument").as_ref())
+}
+
+fn set_props_mode_in(root: &Path, mode: &str) -> Result<(), String> {
+    if !props::MODES.contains(&mode) {
+        return Err(format!("unknown Properties in document mode {mode:?}"));
+    }
+    let cur = fs::read_to_string(root.join(".obsidian/app.json")).unwrap_or_default();
+    let mut v = if cur.trim().is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_str::<serde_json::Value>(&cur).map_err(|e| format!("app.json is not JSON ({e}) — refusing to overwrite it"))?
+    };
+    let o = v.as_object_mut().ok_or("app.json is not a JSON object — refusing to overwrite it")?;
+    o.insert("propertiesInDocument".into(), serde_json::Value::String(mode.into()));
+    let body = serde_json::to_string(&v).map_err(|e| e.to_string())?;
+    vaultfs::write_atomic(root, Path::new(".obsidian/app.json"), body.as_bytes()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn props_mode(v: State<Vault>) -> String {
+    cur_vault(&v).map(|r| props_mode_in(&r)).unwrap_or("visible").to_string()
+}
+
+#[tauri::command]
+fn set_props_mode(v: State<Vault>, mode: String) -> Result<(), String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    set_props_mode_in(&root, &mode)
+}
+
+/// #119: the user's property types (.obsidian/types.json), lowercase name -> type
+#[tauri::command]
+fn props_types(v: State<Vault>) -> std::collections::BTreeMap<String, String> {
+    cur_vault(&v).map(|r| props::types_in(&r)).unwrap_or_default()
+}
+
+/// #119: assign (or with ty None, drop) the type of a property in types.json, by merge
+#[tauri::command]
+fn set_prop_type(v: State<Vault>, name: String, ty: Option<String>) -> Result<(), String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    let cur = fs::read_to_string(root.join(props::TYPES_REL)).unwrap_or_default();
+    let body = props::types_merged(&cur, &name, ty.as_deref())?;
+    vaultfs::write_atomic(&root, Path::new(props::TYPES_REL), body.as_bytes()).map_err(|e| e.to_string())
+}
+
+/// #119: every vault property (key, notes holding it, distinct values) off the index
+#[tauri::command]
+fn props_index(v: State<Vault>) -> Vec<props::PropStat> {
+    span_timed!("props_index", {
+        let ix = v.index.lock().unwrap();
+        props::census(ix.docs().map(|(_, c, _)| c))
+    })
 }
 
 /* goal/minimalmargin — Obsidian's Settings > Editor > Display "Readable line
@@ -7093,7 +7159,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, canvas_io, canvas_attach, paste_image, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, bm_add_view, bm_add_view_at, bm_remove, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, bm_add_view, bm_add_view_at, bm_remove, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, props_mode, set_props_mode, props_types, set_prop_type, props_index, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
             read_workspace, write_workspace,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
@@ -10050,6 +10116,27 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(root.join(".obsidian/app.json")).unwrap()).unwrap();
         assert_eq!(v["strictLineBreaks"], serde_json::Value::Bool(false), "Obsidian keeps the key on false");
         assert_eq!(v["alwaysUpdateLinks"], serde_json::Value::Bool(true));
+    }
+
+    /// issue #119: "Properties in document" lives in app.json, default visible, written by
+    /// merge; an unknown mode and an unparsable app.json are refused (the file is untouched)
+    #[test]
+    fn props_mode_round_trips_in_app_json() {
+        let root = r34_vault("propsmode");
+        assert_eq!(props_mode_in(&root), "visible", "Obsidian default is Visible");
+        fs::create_dir_all(root.join(".obsidian")).unwrap();
+        fs::write(root.join(".obsidian/app.json"), r#"{"alwaysUpdateLinks":true}"#).unwrap();
+        set_props_mode_in(&root, "hidden").unwrap();
+        assert_eq!(props_mode_in(&root), "hidden");
+        assert!(link_consent_in(&root), "the other key survived");
+        set_props_mode_in(&root, "source").unwrap();
+        assert_eq!(props_mode_in(&root), "source");
+        assert!(set_props_mode_in(&root, "bogus").is_err());
+        assert_eq!(props_mode_in(&root), "source");
+        fs::write(root.join(".obsidian/app.json"), "{nope").unwrap();
+        assert!(set_props_mode_in(&root, "visible").is_err());
+        assert_eq!(fs::read_to_string(root.join(".obsidian/app.json")).unwrap(), "{nope", "never overwritten");
+        assert_eq!(props_mode_in(&root), "visible");
     }
 
     /// goal/minimalmargin: readableLineLength defaults ON (absent key, absent or

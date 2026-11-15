@@ -4756,7 +4756,7 @@ function tabMenu(e, g, i, hdr) {
   item(bmCache.includes(tab.name) ? "Remove bookmark" : "Bookmark...",          // WIRED: toggleBm — Obsidian's wording, our flat-list toggle (R38.17/R20.4)
     () => { closeMenu(); toggleBm(tab.name); });
   item("Merge entire file with...", null, "Missing subsystem: file merge — no command concatenates one note into another (a suggester with four modifier behaviours)");
-  item("Add file property", null, "Missing subsystem: a frontmatter property model, which writes a Properties block at the top of the note; there is no frontmatter parser or editor here");
+  item("Add file property", async () => { closeMenu(); focusGroup(g); if (tab.mode === "reading") await setMode(g, "lp"); if (window.Props) Props.addCommand(g); });   // WIRED: #119 ui/props.js, the Ctrl+; command
   item("Export to PDF...", null, "Missing subsystem: a PDF pipeline — no renderer and no page-size/margin model; PDF export is an explicit project non-goal");
   // ---- group 5 (2 rows) ----
   sep();
@@ -7172,7 +7172,7 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   // view task tick all count) — any doubt is a miss, and a miss is the old path.
   const k = P._pvk;
   if (k && k.src === src && k.notes === notesCache && k.imgs === imgsCache && k.slb === slbOn
-      && k.pp === (PPOST ? PPOST.gen : 0)
+      && k.pp === (PPOST ? PPOST.gen : 0) && k.pg === (window.Props ? Props.gen : 0)
       && !P._pvDirty && !pvTouched(P, P._pvObs.takeRecords())) {
     g.pvLines = k.lines;
     mswpMark("render"); mswpMark("html"); mswpMark("blines"); mswpMark("wire");
@@ -7202,7 +7202,7 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   // the switch: an in-place re-render keeps its scrollTop.
   const hide = sw && P.firstChild && P.style.display !== "none";
   if (hide) P.style.display = "none";
-  const [pvHtml, pvL] = await inv("render_view", { content: src });
+  let [pvHtml, pvL] = await inv("render_view", { content: src });
   mswpMark("render");
   g.preview.innerHTML = pvHtml;
   if (hide && g.preview === P && isReading(g)) P.style.display = "";
@@ -7215,6 +7215,8 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   for (const s of g.preview.querySelectorAll("span.pdf-embed")) Ed.pdfFill(s);
   cvEmbedFill(g.preview);                    // cv-vault CV-139: ![[X.canvas]] -> span.cv-embed (before the a.wiki wiring below)
   mswpMark("html");
+  // #119: the Properties block, read-only, above the body (visible mode); it maps to line 1
+  { const pb = window.Props && Props.readingBlock(src); if (pb) { g.preview.insertBefore(pb, g.preview.firstChild); pvL = [1].concat(pvL); } }
   g.pvLines = pvL;
   mswpMark("blines");
   for (const a of g.preview.querySelectorAll("a.tag"))
@@ -7241,7 +7243,7 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   }
   P._pvObs.takeRecords(); P._pvDirty = false;
   if (g.preview === P && g.editor.value === src)
-    P._pvk = { src, notes: notesCache, imgs: imgsCache, slb: slbOn, lines: pvL, pp: PPOST ? PPOST.gen : 0 };
+    P._pvk = { src, notes: notesCache, imgs: imgsCache, slb: slbOn, lines: pvL, pp: PPOST ? PPOST.gen : 0, pg: window.Props ? Props.gen : 0 };
   mswpMark("wire");
 }
 
@@ -9834,6 +9836,9 @@ const CMDS = [
   // "Toggle bullet list" -> no command, no write [Q14 q14-reading].
   ["editor:toggle-bullet-list",   "Toggle bullet list",               [],                       () => edList("bullet"),   edEditable],
   ["editor:toggle-numbered-list", "Toggle numbered list",             [],                       () => edList("numbered"), edEditable],
+  // #119: stock's "Add file property" (Ctrl+;): a new row in the Properties block, its name
+  // focused (ui/props.js); the block is created when the note has none
+  ["markdown:add-metadata-property", "Add file property",             ["ctrl+;"],               () => { if (window.Props) Props.addCommand(fg()); }, edEditable],
   // goal insdate REQ-1/REQ-13: Obsidian's names, NO default chord; hidden where
   // Obsidian hides them (reading view, graph, no note — REQ-10..12).
   ["templates:insert-current-date", "Templates: Insert current date", [],                     () => edInsertNow("date"), edInsertable],
@@ -11978,6 +11983,7 @@ async function enterVault() {
   hideAc();
   edtBad = Ed.selfTest();            // R17: renderer + token map invariants -> [edt:] census
   await loadVaultCss();              // themefs R3: the vault's own snippet CSS, before first paint of a note
+  if (window.Props) await Props.load();   // #119: Properties in document + types.json, before the first note shows its block
   await refreshTree();
   await refreshBm();                 // R9.4: menu label needs the cache early
   const names = await inv("list_notes");
@@ -12432,6 +12438,7 @@ async function openSettings() {
   }
   if (!SMODEL) await smodelPrefetch();   // cold open only (prefetched at boot)
   try { slbOn = !!(await inv("strict_line_breaks")); } catch (err) { slbOn = false; }   // goal/linebreak: disk is the truth
+  if (window.Props) try { const pm = String(await inv("props_mode")); if (pm !== Props.mode) { Props.mode = pm; Props.refresh(); } } catch (_) {}   // #119: so is propertiesInDocument
   settingsOpen = true; hkRec = null;
   closeModal();
   $("settings").hidden = false;
@@ -12746,6 +12753,51 @@ function slbTok() {
    their reason so the pane shows WHY a broken theme is not offered. Same
    ctxmenu construction as snipCtl, same reason ([menu:] census). */
 const themeCtlLabel = () => effTheme() || "none";
+/* ---- Editor ▸ Display ▸ Properties in document (#119). Obsidian's row and key: the VAULT's
+   .obsidian/app.json "propertiesInDocument" = visible | hidden | source (absent = visible).
+   A live dropdown like Themes: the app's own .ctxmenu (census [menu:Visible|Hidden|Source]),
+   the pick is written by merge (main.rs set_props_mode) and every open editor rebuilds its
+   Properties block at once (Props.setMode -> Props.refresh). */
+const PROPS_MODES = [["visible", "Visible"], ["hidden", "Hidden"], ["source", "Source"]];
+const propsModeLabel = () => (PROPS_MODES.find(m => window.Props && m[0] === Props.mode) || PROPS_MODES[0])[1];
+function propsModeCtl() {
+  const d = document.createElement("div");
+  d.className = "sctl dropdown live";
+  d.id = "spropsdoc";
+  d.tabIndex = 0;
+  d.setAttribute("role", "button");
+  d.setAttribute("aria-haspopup", "menu");
+  d.textContent = propsModeLabel();
+  const open = ev => {
+    ev.preventDefault(); ev.stopPropagation();
+    closeMenu();
+    const m = document.createElement("div");
+    m.className = "ctxmenu"; m.dataset.menu = "propsdoc";
+    for (const [k, label] of PROPS_MODES) {
+      const it = document.createElement("div");
+      it.textContent = label;
+      it.onmousedown = e => e.stopPropagation();
+      it.onclick = async e => {
+        e.stopPropagation(); closeMenu();
+        try { await Props.setMode(k); } catch (err) { say("Properties in document: " + String(err && err.message || err)); return; }
+        d.textContent = propsModeLabel();
+        for (const g of groups()) {
+          if (isReading(g)) await preview(g);
+          for (const t of g.tabs)
+            if (!t.kind && t !== g.tabs[g.active] && t.mode === "reading" && t.view && t.view.loaded) t.stale = true;
+        }
+        updateTitle();
+      };
+      m.appendChild(it);
+    }
+    const b = d.getBoundingClientRect();
+    placeMenu(m, Math.round(b.left), Math.round(b.bottom + 4));
+  };
+  d.onmousedown = ev => ev.stopPropagation();
+  d.onclick = open;
+  d.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") open(ev); };
+  return d;
+}
 function themeCtl() {
   const d = document.createElement("div");
   d.className = "sctl dropdown live";
@@ -12827,6 +12879,7 @@ function sctl(r) {                            // the control cell for one row, o
   if (r.key === "cssTheme") return themeCtl();            // themefs R5: Obsidian's Themes row, Obsidian's semantics
   if (r.key === "enabledCssSnippets") return snipCtl();   // themefs R3, same live-control rule
   if (r.key === "strictLineBreaks") return slbCtl();      // goal/linebreak REQ-1: Obsidian's Editor toggle
+  if (r.key === "propertiesInDocument") return propsModeCtl();   // #119: Obsidian's Editor dropdown, app.json propertiesInDocument
   if (FONT_BY_KEY[r.key]) {                               // fontset REQ-1/2: chevron + live row value
     const d = document.createElement("div"); d.className = "sctl nav live";
     const v = fontRowValue(FONT_BY_KEY[r.key][0]);

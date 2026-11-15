@@ -2317,3 +2317,28 @@ svg.gi { width: 12px; height: 12px; vertical-align: -2px; display: inline-block;
 .cm-callout { padding: 0; margin: 0 }
 .cm-callout .callout { margin: 0 }
 .cm-callout .callout-content .callout { margin: 1em 0 }
+/* #119 Properties (ui/props.js): stock's class names, so a theme's metadata rules apply too */
+.metadata-container { margin: 4px 0 14px; padding: 4px 0; font-size: 14px; }
+.metadata-properties-heading { font-weight: 600; color: var(--text-muted, var(--text-chrome)); padding: 2px 0 6px; }
+.metadata-property { display: flex; align-items: flex-start; gap: 6px; padding: 2px 0; min-height: 28px; }
+.metadata-property-key { display: flex; align-items: center; gap: 4px; flex: 0 0 34%; min-width: 0; }
+.metadata-property-icon { width: 20px; text-align: center; cursor: pointer; color: var(--text-muted, var(--text-chrome)); border-radius: 4px; user-select: none; }
+.metadata-property-icon:hover { background: var(--border); }
+.metadata-property-key-input, .metadata-input, .multi-select-input { font: inherit; color: inherit; background: transparent; border: 1px solid transparent;
+  border-radius: 4px; padding: 2px 6px; min-width: 0; width: 100%; box-sizing: border-box; }
+.metadata-property-key-input:focus, .metadata-input:focus, .multi-select-input:focus { border-color: var(--border); outline: none; background: var(--bg-elevated, transparent); }
+.metadata-property-value { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; min-height: 26px; }
+.metadata-property-value.is-readonly code.props-raw { white-space: pre-wrap; opacity: .75; font-size: 12px; }
+.metadata-input-checkbox { margin: 6px; }
+.multi-select-container { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; width: 100%; }
+.multi-select-pill { display: inline-flex; align-items: center; gap: 2px; padding: 1px 8px; border-radius: 12px; background: var(--border); font-size: 13px; }
+.multi-select-pill-remove-button { cursor: pointer; opacity: .6; padding: 0 2px; }
+.multi-select-pill-remove-button:hover { opacity: 1; }
+.multi-select-input { flex: 1 1 60px; width: auto; }
+.metadata-add-button { display: inline-block; padding: 3px 6px; margin-top: 2px; cursor: pointer; color: var(--text-muted, var(--text-chrome)); border-radius: 4px; user-select: none; }
+.metadata-add-button:hover { background: var(--border); }
+.metadata-container.is-readonly input { pointer-events: none; }
+.props-suggest { position: fixed; z-index: var(--layer-menu, 60); background: var(--suggestion-background, var(--bg-elevated, var(--bg-base)));
+  border: 1px solid var(--border); border-radius: 6px; padding: 4px 0; max-height: 260px; overflow: auto; min-width: 140px; box-shadow: 0 4px 14px var(--shadow-popover, rgba(0,0,0,.2)); }
+.props-suggest .suggestion-item { padding: 4px 10px; cursor: pointer; white-space: nowrap; font-size: 13px; }
+.props-suggest .suggestion-item.is-selected, .props-suggest .suggestion-item:hover { background: var(--border); }

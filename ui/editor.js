@@ -2440,7 +2440,8 @@ Ed.lpExt = function (v, G) {
     if (!m || s.main.head - ln.from >= m[0].length) return tr;
     return [tr, { selection: CMs.EditorSelection.cursor(ln.from + m[0].length), sequential: true }];
   });
-  return [plugin, clicks, vkeys, taskSnap, pointerSnap, Ed.cbField(v, G, bust), Ed.coField(v, G, bust), Ed.tblField(v, G, bust)];
+  return [plugin, clicks, vkeys, taskSnap, pointerSnap, Ed.cbField(v, G, bust), Ed.coField(v, G, bust), Ed.tblField(v, G, bust),
+          Ed.propsField ? Ed.propsField(v, G, bust) : []];   // #119: the Properties block (ui/props.js)
 };
 /* ---------- plugin CODE BLOCKS in Live Preview (plug-top5) ----------
    A fenced block whose language a plugin registered a code-block processor for
