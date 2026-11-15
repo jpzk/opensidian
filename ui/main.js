@@ -8749,10 +8749,11 @@ function linkAtCaret() {   // [[target]] spanning the caret of the edited field,
   return inner.split("|")[0].split("#")[0].trim() || null;
 }
 /* ---------- R31 drop-to-attach (feedback #18) ---------------------------
-   A real OS drop NEVER reaches the DOM: wry takes the XDND at the GTK layer
-   and Tauri hands it to Rust as WindowEvent::DragDrop, which re-emits the
-   paths as `drop-files` (main.rs R31.1). So this listener is the drop, and a
-   `dragover`/`drop` handler on the editor would be decoration.
+   A real OS FILE drop NEVER reaches the DOM: src-tauri/src/xdnd.rs takes an
+   XDND whose uri-list names a local file at the GTK layer and re-emits the
+   paths as `drop-files` (main.rs R31.1). So this listener is the file drop.
+   #51: any other drop (text, html, a browser link drag: remote URIs only) is
+   WebKit's, i.e. a DOM drop the editor handles (Ed.htmlDrop, ui/editor.js).
    This half decides WHERE text goes — the caret of the focused editor — and
    nothing else: the vault write, the file name, the link text and every
    refusal sentence come back from attach_files -> attach_drop. Anything that
