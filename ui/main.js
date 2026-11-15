@@ -650,11 +650,19 @@ async function propsRenameAll(oldK, newK) {
   let done = 0, kept = 0;
   for (const g of groups()) await flushSave(g);   // the disk holds every typed edit before a closed note is read
   for (const n of notes) {
-    const g = groups().find(x => x.active >= 0 && !x.tabs[x.active].kind && x.tabs[x.active].name === n);
-    const cm = g && typeof Ed !== "undefined" ? Ed.cm(g) : null;
-    if (cm) {
-      const text = cm.state.doc.toString(), k = keyIn(text), ch = k != null ? M.rename(text, k, newK) : null;
-      if (ch) { if (ch.from !== ch.to || ch.insert) cm.dispatch({ changes: ch, userEvent: "input.props" }); done++; } else kept++;
+    // every pane showing the note edits its own buffer (a split of the same note would
+    // otherwise keep the old key and save it back over the rename)
+    const cms = typeof Ed === "undefined" ? [] : groups()
+      .filter(x => x.active >= 0 && !x.tabs[x.active].kind && x.tabs[x.active].name === n).map(x => Ed.cm(x)).filter(Boolean);
+    if (cms.length) {
+      let ok = false, seen = new Set();
+      for (const cm of cms) {
+        if (seen.has(cm.state.doc)) continue;   // panes sharing one document: one change
+        const text = cm.state.doc.toString(), k = keyIn(text), ch = k != null ? M.rename(text, k, newK) : null;
+        if (ch) { if (ch.from !== ch.to || ch.insert) cm.dispatch({ changes: ch, userEvent: "input.props" }); ok = true; }
+        seen.add(cm.state.doc);
+      }
+      if (ok) done++; else kept++;
       continue;
     }
     let text;
