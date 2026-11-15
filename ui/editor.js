@@ -1458,6 +1458,29 @@ Ed.selTok = function (g) {                // [sel:<l>.<c>-<l>.<c>] model range
   const s = Ed.sel(g);
   return s ? " [sel:" + s.a.l + "." + s.a.c + "-" + s.b.l + "." + s.b.c + "]" : "";
 };
+/* #119 longpos caret (i119d DEBUG): the caret leaves L1605 for 0.3 once the undo's save lands,
+   with no reloadInPlace ([rlp:0]). Every selection that jumps >= 200 lines, and every setText
+   (a fresh state), is recorded with its userEvent and the dispatching stack:
+   census [seljmp:N|who|from>to|frames]; console "[seljmp] ...". */
+Ed.jumpN = 0; Ed.jumpLast = "-";
+Ed.jumpRec = function (who, from, to) {
+  Ed.jumpN++;
+  const st = String(new Error().stack || "").split("\n").slice(2, 9)
+    .map(s => s.replace(/^\s*(at\s+)?/, "").replace(/\(?[a-z]+:\/\/[^)\s]*\/([^/):]+):(\d+):\d+\)?/g, "$1:$2").trim())
+    .filter(Boolean).join(";").replace(/[\[\]|\s]+/g, "_").slice(0, 400);
+  Ed.jumpLast = who + "|" + from + ">" + to + "|" + st;
+  console.log("[seljmp] " + Ed.jumpN + " " + Ed.jumpLast);
+};
+Ed.selJump = function (u) {
+  try {
+    const a = u.startState.doc.lineAt(Math.min(u.startState.selection.main.head, u.startState.doc.length)).number - 1;
+    const b = u.state.doc.lineAt(u.state.selection.main.head).number - 1;
+    if (Math.abs(a - b) < 200) return;
+    const ev = u.transactions.map(t => t.annotation(CMs.Transaction.userEvent) || (Ed.HOME_SEL && t.annotation(Ed.HOME_SEL) ? "home" : "-")).join("+");
+    Ed.jumpRec("sel:" + ev, a, b);
+  } catch (e) { console.error(e); }
+};
+if (typeof CENSUS !== "undefined") CENSUS.push(() => " [seljmp:" + Ed.jumpN + "|" + Ed.jumpLast + "]");
 /* rvtask R3/R4: reading-view task checkbox click. ONE delegated listener: the
    renderer (src-tauri main.rs emit) gives each reading-view box data-line = its
    0-based FILE line, so duplicate / nested / quoted / numbered items map
@@ -1623,6 +1646,7 @@ Object.assign(Ed, {
     // marks the state; render(full) skips its bust while the doc is still that state.
     if (load) Ed.lpBust();
     if (v._pxI != null) v._ext[v._pxI] = Ed.PX.of(Ed.pxExt(v));   // editor-api: the fresh state carries the CURRENT plugin extensions
+    Ed.jumpRec("setText" + (load ? "+load" : ""), v.cm.state.doc.lineAt(v.cm.state.selection.main.head).number - 1, 0);
     v.cm.setState(CMs.EditorState.create({ doc: s, extensions: v._ext }));
     v._fresh = load ? v.cm.state : null;
     v._Ld = null; v._snap = null;
@@ -1882,6 +1906,7 @@ Object.assign(Ed, {
   },
   onUpdate(g, v, u) {
     Ed.kroMap(u);
+    if (u.selectionSet) Ed.selJump(u);
     if (!g || g.view !== v) { if (u.docChanged && v.editor) v.editor.value = u.state.doc.toString(); return; }
     if (u.docChanged) {
       const t0 = performance.now(), d = u.state.doc;

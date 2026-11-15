@@ -5160,7 +5160,11 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
   // modeswitch: the whole SELECTION survives, not only its caret end. ks = the
   // model range (a <= b); the caret is its moving end (focus, else b) and the
   // other end is the anchor — a backward selection comes back backward.
-  const ks = isLp(tab.mode) && g.lpActive ? Ed.sel(g) : null;
+  // #119 longpos caret (i119d): the editor's own selection is the truth whenever a CM view exists —
+  // g.lpActive can be null while the view holds a real caret (seen: longpos, caret L1605) and it was dropped
+  // (lp -> read -> lp landed on 0:0 = L5 past the block). Same rule as reloadInPlace. A head still at 0
+  // without lpActive is the untouched Ed.home caret: that path below re-homes it (no raw row, mt-fix).
+  const cmK = Ed.cm(g), ks = isLp(tab.mode) && (g.lpActive || (cmK && cmK.state.selection.main.head > 0)) ? Ed.sel(g) : null;
   const kc = ks ? (Ed.focusPos(g) || ks.b) : null;
   const keep = kc ? [kc.l, kc.c] : null;
   const ka = ks && !ks.empty ? (kc.l === ks.a.l && kc.c === ks.a.c ? ks.b : ks.a) : null;
