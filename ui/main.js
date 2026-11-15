@@ -1279,16 +1279,17 @@ function renderBm() {
     s.className = "bmic " + (grp ? "bmchev" : "bmstar");             // svg, not ★/▾ — headless fonts lack the glyphs
     s.innerHTML = grp ? BM_ICON_GROUP : BM_ICON_FILE;
     row.appendChild(s);
-    if (grp && ix === bmRenaming) {        // Rename: an editor INSIDE the row's ring, model untouched until Return
+    if (ix === bmRenaming) {               // Rename: an editor INSIDE the row's ring, model untouched until Return (issue #101: file rows too, 06-rename.png)
       const inp = document.createElement("input");
-      inp.id = "bmren"; inp.className = "bmren"; inp.value = r.name;
+      inp.id = "bmren"; inp.className = "bmren";
+      inp.value = grp ? r.name : (r.label ?? r.name.split("/").pop());   // a file row edits its DISPLAY title (stock: the painted label, selected)
       inp.spellcheck = false; inp.autocomplete = "off";
       inp.onclick = e => e.stopPropagation();
       inp.oninput = () => updateTitle();
       inp.onblur = () => { if (bmRenaming === ix) { bmRenaming = null; renderBm(); } };   // blur is not a commit: only Return is (08-nest-commit.png)
       inp.onkeydown = e => {
         e.stopPropagation();               // a group title may contain any chord the global keymap owns
-        if (e.key === "Enter") { e.preventDefault(); bmGroupRenameCommit(ix, inp.value); }
+        if (e.key === "Enter") { e.preventDefault(); (grp ? bmGroupRenameCommit(ix, inp.value) : bmTitleCommit(ix, inp.value)); }
         else if (e.key === "Escape") { e.preventDefault(); bmRenaming = null; renderBm(); }
       };
       row.appendChild(inp);
@@ -1686,14 +1687,15 @@ function bmRowMenu(e, nm, ix) {             // right-click a FILE .bmrow -> Obsi
   const vr = bmTree[ix] && bmTree[ix].name === nm && !pdf && (bmTree[ix].graph || bmTree[ix].path) ? bmTree[ix] : null;
   if (vr) {
     item("Open in new tab", () => bmOpenRow(vr, { ctrlKey: true }));
-    item("Open to the right", null, "Not wired for a graph / canvas / plugin-file bookmark: click the row, then Split right");
+    if (vr.path && Ed.isImg(vr.name)) item("Open to the right", () => openImage(vr.name, null, "split"));   // issue #102: an image bookmark opens the image view to the right
+    else item("Open to the right", null, "Not wired for a graph / canvas / plugin-file bookmark: click the row, then Split right");
   } else {
   item("Open in new tab",   () => (pdf ? openPdf(nm, null, "tab") : openNewTab(nm)));                         // WIRED: openNewTab — right of the active tab, focused, never deduped (opentab REQ-8/9/14, Obsidian c20)
   item("Open to the right", () => (pdf ? openPdf(nm, null, "split") : splitWith(fg(), "row", mkTab(nm))));      // WIRED: splitWith — the verb behind the tab menu's "Split right" (M7/R6.2), carrying a fresh tab of this note
   }
   item("Open in new window", null, "Single-window app: there is no second window to open into");   // NOT WIRED
   sep();
-  item("Rename",  null, "Bookmarks are note names on disk (.obsidian/bookmarks.json); there is no per-bookmark title to rename");   // NOT WIRED
+  item("Rename",  () => bmGroupRenameStart(ix));                          // WIRED (issue #101): the inline editor in the row edits the bookmark TITLE, never the file (06-rename.png -> 08-rename-enter.png)
   item("Edit...", hasGrp ? () => openBmEdit(ix) : null,                    // WIRED (R4X.7) once a group exists: the move route, in and out
        hasGrp ? null : "Edit bookmark chooses a GROUP and this pane has none — right-click the pane background to create one");
   sep();
@@ -1831,8 +1833,57 @@ async function bmOpenRow(r, ev) {
 const BM_GG_KEYS = ["centerStrength", "repelStrength", "linkStrength", "linkDistance", "textFadeMultiplier",
   "nodeSizeMultiplier", "lineSizeMultiplier", "close", "collapse-filter", "collapse-color-groups", "collapse-display",
   "collapse-forces", "showTags", "showAttachments", "hideUnresolved", "showOrphans", "showArrow", "scale", "search", "colorGroups"];
+/* issue #118 (operator ruling 2026-11-15): a graph tab OPENED FROM a graph bookmark writes its
+   parameter edits (the card's Filters / Groups / Display / Forces, zoom, local depth + link
+   toggles) back to THAT bookmark item — the same 120 ms coalescing as the graph.json save.
+   t.bmRef = the item's key as its row carried it (ctime + title + global/local); rust
+   bm_graph_patch finds exactly that item or refuses ("gone": deleted, renamed, re-created),
+   and then this tab simply stops writing back — nothing is re-created. A graph tab NOT opened
+   from a bookmark has no bmRef and never touches bookmarks.json. Opening a graph by the ribbon
+   / command / a node click drops the link. The link lives in memory only (not workspace.json). */
+const bmGraphRef = r => {
+  const sp = (r && r.graph) || {};
+  return { ctime: typeof sp.ctime === "number" ? sp.ctime : null, title: typeof sp.title === "string" ? sp.title : null,
+           lg: !!(sp.local && typeof sp.local === "object") };
+};
+const bmRefKey = ref => JSON.stringify([ref.ctime, ref.title, ref.lg]);
+const bmWbQ = new Map();                   // ref key -> { ref, o: options patch, l: local patch, t: timer, v: vault }
+function bmWb(t, patch) {
+  const ref = t && t.bmRef;
+  if (!ref || !patch) return;
+  const k = bmRefKey(ref);
+  let q = bmWbQ.get(k);
+  if (!q) bmWbQ.set(k, q = { ref, o: {}, l: {}, t: null, v: vaultPath });
+  for (const [pk, pv] of Object.entries(patch)) {
+    if (BM_LG_KEYS.includes(pk)) { if (ref.lg) q.l[pk] = pv; }   // a global item has no local keys
+    else q.o[pk] = pv;
+  }
+  clearTimeout(q.t);
+  q.t = setTimeout(() => { bmWbFlush(k); }, 120);
+}
+async function bmWbFlush(k) {
+  const q = bmWbQ.get(k);
+  if (!q) return;
+  bmWbQ.delete(k); clearTimeout(q.t);
+  if (q.v !== vaultPath || (!Object.keys(q.o).length && !Object.keys(q.l).length)) return;
+  try {
+    bmTree = await inv("bm_graph_patch", { ctime: q.ref.ctime, title: q.ref.title, lg: q.ref.lg, opts: q.o, lopts: q.l });
+  } catch (err) {
+    const m = String(err && err.message || err);
+    if (/gone/.test(m)) { for (const g of groups()) for (const t of g.tabs) if (t.bmRef && bmRefKey(t.bmRef) === k) delete t.bmRef; }
+    else say("Graph bookmark: " + m);
+    return;
+  }
+  bmSync(); renderBm();                    // the row now carries the edited settings: a click reopens THEM
+}
+async function bmWbFlushAll() { for (const k of [...bmWbQ.keys()]) await bmWbFlush(k); }
 async function bmOpenGraph(r, ev) {
   if (!state) return;
+  if (bmWbQ.size) {                        // issue #118: a pending write-back lands first, then the row is read as the FILE now says
+    const k = bmRefKey(bmGraphRef(r));
+    await bmWbFlushAll();
+    r = bmTree.find(x => x.graph && bmRefKey(bmGraphRef(x)) === k) || r;
+  }
   const sp = r.graph || {}, o = sp.options && typeof sp.options === "object" ? sp.options : {};
   const g = fg();
   await flushSave(g);
@@ -1846,7 +1897,8 @@ async function bmOpenGraph(r, ev) {
     const d = Number.isInteger(lc.localJumps) ? Math.min(5, Math.max(1, lc.localJumps)) : 1;
     const t = { kind: "lg", name: "Graph of " + c.split("/").pop(), center: c, depth: d,
                 inc: lc.localBacklinks !== false, out: lc.localForelinks !== false, inter: lc.localInterlinks === true,
-                opts: Object.assign({}, o, { localJumps: d }), mode: "source", hist: [], hpos: 0 };
+                opts: Object.assign({}, o, { localJumps: d }), mode: "source", hist: [], hpos: 0,
+                bmRef: bmGraphRef(r) };   // issue #118: its edits write back to this bookmark
     g.tabs.push(t);                        // a bookmark-opened local graph is pinned to its centre: not linked to a pane
     g.active = g.tabs.length - 1;
     await loadActive(g);
@@ -1858,7 +1910,7 @@ async function bmOpenGraph(r, ev) {
   try { await inv("set_graph_settings", { vault: vaultPath, patch }); }
   catch (err) { say("Graph bookmark: " + String(err && err.message || err)); return; }
   gfCfg = null;                            // re-read: the card and [ggo:] now show the bookmark's settings
-  await cmdGlobalGraph();
+  await ggOpen(bmGraphRef(r));             // issue #118: this graph tab now writes back to the bookmark
 }
 async function bmOpenPath(p, ev) {
   const gone = () => say("Cannot open \"" + p.split("/").pop() + "\": the file no longer exists", "bm");
@@ -1868,6 +1920,9 @@ async function bmOpenPath(p, ev) {
     if (!ls.includes(p)) return gone();
     return openCanvas(p);
   }
+  // issue #102: an image is not a vault TFile here (the plugin vault indexes notes), so it is checked against the
+  // image list the explorer paints and opened in the image view directly; a path not in the list is gone
+  if (Ed.isImg(p)) return Array.isArray(imgsCache) && imgsCache.includes(p) ? openImage(p, ev) : gone();
   let f = null;
   try { f = PLG && PLG.app.vault.getAbstractFileByPath(p); } catch (_) {}
   if (!f) return gone();
@@ -1889,6 +1944,9 @@ const bmGroupNew = parent => bmApply("bm_group_new", { parent });   // parent = 
 const bmGroupDelete = ix => bmApply("bm_group_delete", { ix });     // the SUBTREE goes with it, and nothing asks (R4X.3)
 function bmGroupRenameStart(ix) { bmRenaming = ix; renderBm(); }    // renderBm focuses+selects the editor it just painted
 function bmGroupRenameCommit(ix, title) { bmRenaming = null; return bmApply("bm_group_rename", { ix, title }); }
+/* issue #101: a FILE row's Rename is the bookmark's DISPLAY title (bookmarks.json "title"); the file, its tabs
+   and its links are untouched (docs/recon-bmmenu 06..08: Ideas.md on disk unchanged, tabs still `Ideas`). */
+function bmTitleCommit(ix, title) { bmRenaming = null; return bmApply("bm_title", { ix, title }); }
 /* ---------- bmdrag: DRAG A BOOKMARK ROW (R4X.n placeholders) ----------
    R24.6's mouse machine, not a second convention (and HTML5 dragstart/
    dataTransfer stays used NOWHERE — the R24.6 comment is binding here too):
@@ -2315,10 +2373,11 @@ function noteMenu(e, nm) {                 // right-click a tree note row
     item("Open in new window", null, "Single-window app: there is no second window to open into");   // REQ-16 EXCEPTION
     sep(); }
   mkItem(bmCache.includes(nm) ? "Remove bookmark" : "Bookmark", () => toggleBm(nm));
-  /* CVR-A-087: the row names the note, so its menu can rename it. The rename verb
-     addresses the focused tab's note (F2 / palette), so the row's note is shown
-     there first; the disk move and the link prompt stay cmdRename's. */
+  /* CVR-A-087 / issue #101: the row names the note, so its menu renames it — IN THE ROW, as stock
+     (exRenStart): no tab is opened or navigated, no modal. The disk move and the link prompt stay
+     renameThenAsk's. Only a row that is not painted (never, from its own menu) falls back to F2's prompt. */
   mkItem("Rename...", async () => {
+    if (exRenStart("note", nm)) return;
     await rowOpen(nm);
     const g = fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
     if (t && !t.kind && t.name === nm) cmdRename();
@@ -4245,6 +4304,7 @@ function utBuild() {             // pane/focus census in the window title (headl
             (revealInfo ? " [bmrv:" + revealInfo + "]" : "") +      // bmmenu: "Reveal file in navigation" ran (bmReveal) — not merely "the Files pane is showing"
             (acItems.length ? " [ac:" + acKind + ":" + acItems.length + "]" : "") +
             " [pane:" + sidePane + "]" +
+            exRenTok() +                                        // issue #101: an explorer row is in inline rename, [exren:<path>|sel=<selected>]
             sfontTok() +                                        // sidefont: computed sidebar row font sizes (t=trow b=bmrow r=rlist)
             (sidePane === "search" && searchCount >= 0 ? " [sr:" + searchCount + "]" + srGeom() : "") +
             (sidePane === "bm" ? " [bm:" + bmRows() + "]" +          // RENDERED rows, not the model's length:
@@ -6028,7 +6088,7 @@ async function loadActive(g) {
     await startGraph(g, {
       keep: t,                      // ggkeep: the tab carries its live layout across a switch (t.gk)
       fetch: gcFetchGg,              // graphctx GC4-GC11: graph_view when a filter/group is set
-      scope: gcScopeGg,             // graphparity/graphctx: the leaf's ONE graph-controls card, bound to graph.json
+      scope: () => gcScopeGg(t),    // graphparity/graphctx: the leaf's ONE graph-controls card, bound to graph.json
       center: () => null,
       onClick: async (n, e) => {    // node click: this tab BECOMES the note
         // ggclick Q3 (notes/stock.md): Ctrl/Cmd or middle = new tab right of the graph, Ctrl+Alt
@@ -6041,7 +6101,7 @@ async function loadActive(g) {
           tt.hist = tt.hpos >= 0 ? tt.hist.slice(0, tt.hpos + 1) : [];
           if (!tt.hist.length || !tt.hist[tt.hist.length - 1].gg) tt.hist.push({ n: tt.name, s: 0, gg: 1 });
           tt.hpos = tt.hist.length - 1;
-          delete tt.kind; delete tt.gk; delete tt.base; modeBits(tt);   // #16: it is a NOTE tab now — give it the two mode bits; ggkeep: its kept graph goes with the kind
+          delete tt.kind; delete tt.gk; delete tt.base; delete tt.bmRef; modeBits(tt);   // #16: it is a NOTE tab now — give it the two mode bits; ggkeep: its kept graph goes with the kind
         }
         await navigate(g, n);
       },
@@ -6704,17 +6764,26 @@ const TREE_FOLDER =
   ' stroke-linecap="round" stroke-linejoin="round">' +
   '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
 const treeGuides = d => '<span class="tg"></span>'.repeat(d);
+/* #106: a big vault builds tens of thousands of rows at boot, and parsing the same innerHTML string
+   once per row was most of that build. Each row shape is parsed ONCE per (kind, depth) and the row is
+   a deep clone of it: the same elements, classes and text as before (handlers are set per row). */
+const treeTpl = new Map();
+function treeRowOf(kind, depth, html) {
+  const k = kind + ":" + depth;
+  let t = treeTpl.get(k);
+  if (!t) { t = document.createElement("div"); t.innerHTML = html; treeTpl.set(k, t); }
+  return t.cloneNode(true);
+}
 
 function renderNode(node, prefix, depth, out) {
   for (const d of [...node.dirs.keys()].sort()) {
     const full = prefix ? prefix + "/" + d : d;
     const open = unfold.has(full);             // treefold: stock default = collapsed
-    const row = document.createElement("div");
-    row.className = "trow folder" + (open ? " open" : "");
-    row.innerHTML = treeGuides(depth) +
+    const row = treeRowOf("f", depth, treeGuides(depth) +
       '<span class="tc">' + TREE_CHEV + '</span>' +
       '<span class="tfi">' + TREE_FOLDER + '</span>' +
-      '<span class="tn"></span>';
+      '<span class="tn"></span>');
+    row.className = "trow folder" + (open ? " open" : "");
     row.querySelector(".tn").textContent = d;   // names never hit innerHTML
     // R20 (#7): children live in a .tkids box rendered ONCE; a click only flips
     // .collapsed on the box (+ .open on the row) — zero IPC, no tree rebuild.
@@ -6746,10 +6815,9 @@ function renderNode(node, prefix, depth, out) {
   for (const [nm, isCanvas] of files) {
     if (isCanvas === 1) { out.appendChild(canvasRow(nm, depth)); continue; }
     if (isCanvas === 2) { out.appendChild(fileRow(nm, depth)); continue; }
-    const row = document.createElement("div");
+    const row = treeRowOf("n", depth, treeGuides(depth) + '<span class="tc"></span>' +
+      '<span class="tn"></span>');
     row.className = "trow note";                // .active: treeHighlight()
-    row.innerHTML = treeGuides(depth) + '<span class="tc"></span>' +
-      '<span class="tn"></span>';
     row.querySelector(".tn").textContent = nm.split("/").pop();
     row.dataset.note = nm;
     row.onclick = e => { if (treeClickEaten()) return; if (e.shiftKey && !e.ctrlKey && !e.metaKey) return treeRange(row); treeSelClear(); treeAnchor = wsPathOut(nm); rowOpen(nm, e); };     // opentab REQ-1/3/5/7: replace in place; ctrl = new tab; cv-journeys: shift = range select
@@ -6774,8 +6842,8 @@ function fileRow(p, depth) {
   row.querySelector(".ttag").textContent = d > 0 ? base.slice(d + 1).toUpperCase() : "";
   row.dataset.file = p;
   row.addEventListener("mousedown", e => treeDragStart(e, p, "file"));
-  row.onclick = e => { if (treeClickEaten()) return; if (e.shiftKey && !e.ctrlKey && !e.metaKey) return treeRange(row); treeSelClear(); treeAnchor = p; if (Ed.isPdf(p)) openPdf(p, e); };   // shift = range select; issue #44: a PDF opens in the PDF view (ctrl = new tab), other types open no view
-  if (Ed.isPdf(p)) row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); openPdf(p, e); } };   // middle = new tab
+  row.onclick = e => { if (treeClickEaten()) return; if (e.shiftKey && !e.ctrlKey && !e.metaKey) return treeRange(row); treeSelClear(); treeAnchor = p; if (Ed.isPdf(p)) openPdf(p, e); else if (Ed.isImg(p)) openImage(p, e); };   // shift = range select; issue #44: a PDF opens in the PDF view (ctrl = new tab); issue #102: an image opens in the image view; other types open no view
+  if (Ed.isPdf(p) || Ed.isImg(p)) row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); (Ed.isPdf(p) ? openPdf : openImage)(p, e); } };   // middle = new tab
   return row;
 }
 
@@ -6790,6 +6858,90 @@ function canvasRow(p, depth) {
   row.oncontextmenu = e => canvasFileMenu(e, p);
   row.addEventListener("mousedown", e => treeDragStart(e, p));   // CVR-A-090: drag onto a folder row = move (cvMoveTo)
   return row;
+}
+
+/* issue #101 — EXPLORER INLINE RENAME (stock 1.13.7, recon-cv2 CVR-A-085): "Rename..." on an explorer
+   row turns the row's NAME into an editor in the row, the name without its extension selected. No
+   modal opens and no tab is opened or navigated (the old road opened the note in the focused tab and
+   then the F2 prompt). Return and blur commit, Escape reverts. A note takes the ONE rename tail
+   (renameThenAsk: move, then the Update links question; applyRename retitles every tab, follows the
+   bookmark and repaints the tree), a canvas takes cvRetarget (every tab on it follows, CVR-A-086).
+   The refusals are the inline title's (R34.12/R34.13): an illegal character or a taken name raises
+   the notice and, on Return, the editor stays open with nothing moved. A "/" is refused, never a move.
+   [exren:<vault path>|sel=<selected text>] is published while the editor is open. */
+let exRen = null;                          // {path, kind: "note"|"canvas", inp, tn, orig}
+function exRenTok() {
+  if (!exRen || !exRen.inp.isConnected) return "";
+  const i = exRen.inp, sel = i.value.slice(i.selectionStart || 0, i.selectionEnd || 0);
+  const c = s => String(s).replace(/[|\]]/g, "");
+  return " [exren:" + c(exRen.kind === "note" ? exRen.path + ".md" : exRen.path) + "|sel=" + c(sel) + "]";
+}
+function exRenRow(kind, path) {
+  if (kind === "note") return treeRows.get(path) || [...document.querySelectorAll("#tree .trow.note")].find(r => r.dataset.note === path) || null;
+  return [...document.querySelectorAll("#tree .trow.cvfile")].find(r => r.dataset.canvas === path) || null;
+}
+function exRenStart(kind, path) {
+  exRenClose();
+  const row = exRenRow(kind, path), tn = row && row.querySelector(".tn");
+  if (!tn) return false;
+  const orig = kind === "note" ? path.split("/").pop() : path.split("/").pop().replace(/\.canvas$/i, "");
+  const inp = document.createElement("input");
+  inp.id = "exren"; inp.className = "exren"; inp.value = orig;
+  inp.spellcheck = false; inp.autocomplete = "off";
+  const stop = e => e.stopPropagation();   // the row's click opens, its mousedown drags: neither belongs to the editor
+  inp.onclick = stop; inp.onmousedown = stop; inp.onauxclick = stop; inp.ondblclick = stop; inp.oncontextmenu = stop;
+  inp.oninput = () => { exRenCheck(); updateTitle(); };
+  inp.onselect = () => updateTitle();
+  inp.onkeyup = () => updateTitle();       // the caret / selection moved: [exren:|sel=] follows
+  inp.onkeydown = e => {
+    e.stopPropagation();                   // a file name may contain any chord the R14 keymap owns
+    if (e.key === "Enter") { e.preventDefault(); exRenCommit(false); }
+    else if (e.key === "Escape") { e.preventDefault(); exRenClose(); }
+  };
+  inp.onblur = () => { if (exRen && exRen.inp === inp) exRenCommit(true); };
+  tn.textContent = "";
+  tn.appendChild(inp);
+  row.classList.add("renaming");
+  exRen = { path, kind, inp, tn, row, orig };
+  inp.focus();
+  inp.select();
+  updateTitle();
+  return true;
+}
+function exRenClose() {                    // revert the row to its label; nothing on disk moved
+  const r = exRen;
+  if (!r) return;
+  exRen = null;                            // FIRST: removing a focused input may fire blur, which must find no editor
+  r.row.classList.remove("renaming");
+  if (r.inp.isConnected) r.tn.textContent = r.orig;
+  if (noticeSrc === "exren") say("", "exren");
+  updateTitle();
+}
+const exRenDir = p => (p.includes("/") ? p.slice(0, p.lastIndexOf("/") + 1) : "");
+function exRenCheck() {                    // the inline title's refusals (titleCheck), stated in the notice
+  if (!exRen) return true;
+  const t = exRen.inp.value.replace(/[\r\n]+/g, " ").trim();
+  let msg = "";
+  if (t && TITLE_ILLEGAL.test(t)) msg = 'File name cannot contain any of these characters: \\ / : * ? " < > |';
+  else if (t && t !== exRen.orig && exRen.kind === "note" && notesCache.includes(exRenDir(exRen.path) + t)) msg = "There's already a file with the same name";
+  if (msg) { if (msg !== noticeTxt) say(msg, "exren"); return false; }
+  if (noticeSrc === "exren") say("", "exren");
+  return true;
+}
+async function exRenCommit(blur) {
+  const r = exRen;
+  if (!r) return;
+  const t = r.inp.value.replace(/[\r\n]+/g, " ").trim();
+  if (!t || t === r.orig) { exRenClose(); return; }        // empty or unchanged: revert, no rename (R34.14)
+  if (!exRenCheck()) { if (blur) exRenClose(); return; }  // refused: Return keeps the editor, blur reverts it
+  exRenClose();
+  const dir = exRenDir(r.path);
+  if (r.kind === "canvas") { await cvRetarget(r.path, dir + t + ".canvas"); return; }
+  for (const h of groups()) {              // every pane showing the note lands its pending bytes before the move
+    const at = h.active >= 0 ? h.tabs[h.active] : null;
+    if (at && !at.kind && at.name === r.path) await flushSave(h);
+  }
+  await renameThenAsk(r.path, dir + t);   // NAMES CARRY NO EXTENSION (R34.1 note)
 }
 
 /* ---------- R24.6: DRAG A NOTE ONTO A FOLDER ROW TO MOVE IT ----------------
@@ -7069,6 +7221,8 @@ async function refreshTree() {
   const [folders, notes, imgs] =
     await Promise.all([inv("list_folders"), inv("list_notes"), inv("list_images")]);
   notesCache = notes;
+  const media = await mediaP;
+  mediaCache = Array.isArray(media) ? media : [];       // #116: audio embeds resolve against this (set with imgsCache: same memo key)
   imgsCache = imgs;                                     // R29: LP resolves image embeds against this
   const tree = $("tree");
   // goal canvas-core: .canvas files are listed only while the Canvas core plugin has the extension
@@ -7077,8 +7231,7 @@ async function refreshTree() {
   cvLinkDirty();                                        // cvf-links: the canvas link model re-reads after a tree change
   if (CANVAS && CANVAS.isRegistered()) { try { canvases = await inv("canvas_io", { op: "list", path: "" }); } catch (_) { canvases = []; } }
   // goal cv-journeys: images + PDFs (list_images) and audio / video (canvas_io media) are listed too, as stock does
-  const media = await mediaP;
-  const others = [...(imgs || []), ...(media || [])];
+  const others =[...(imgs || []), ...(media || [])];
   const sig = folders.join("\n") + "\0" + notes.join("\n") + "\0" + canvases.join("\n") + "\0" + others.join("\n");
   if (sig === treeSig && tree.childElementCount) { treeHighlight(); return; }
   if (PLGVS && others.join("\n") !== treeSig.split("\0")[3]) await PLGVS();   // a new image (a paste, a drop) is a TFile before its card paints
@@ -7213,6 +7366,7 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   // marks the retained DOM dirty and the next switch takes the full render: the
   // pre-modeswitch path, never a stale view.
   for (const s of g.preview.querySelectorAll("span.pdf-embed")) Ed.pdfFill(s);
+  for (const s of g.preview.querySelectorAll("span.audio-embed")) Ed.audioFill(s);   // #116: main.rs audio_html -> one <audio> (editor.js Ed.audioFill)
   cvEmbedFill(g.preview);                    // cv-vault CV-139: ![[X.canvas]] -> span.cv-embed (before the a.wiki wiring below)
   mswpMark("html");
   g.pvLines = pvL;
@@ -7343,6 +7497,7 @@ let notesCache = [], acItems = [], acSel = 0, acStart = -1, acKind = "n";
    with notesCache in refreshTree(); R29.11 (an image added while the vault is
    open) is a known gap on BOTH sides, not a JS one. */
 let imgsCache = [];
+let mediaCache = [];   // #116: the audio / video files (canvas_io media) audio embeds resolve against (editor.js Ed.audioRel)
 
 function hideAc() {
   const was = acItems.length;
@@ -7895,10 +8050,10 @@ if (PLG) {
              views: { graph: leaf => new GraphView(leaf, "graph"), localgraph: leaf => new GraphView(leaf, "localgraph") } },
     switcher: { enabled: true, instance: { id: "switcher", QuickSwitcherModal } },
     "page-preview": { enabled: false, instance: { id: "page-preview" } },
-    // templates / daily-notes: no Templates (template folder, insert template) or Daily notes core plugin here, so
-    // neither is enabled. Present anyway, as every core plugin is in stock enabled or not: plugins read .enabled
-    // and instance.options (empty: no folder / format set, so a plugin falls back to its own defaults); Kanban's
-    // settings tab threw on plugins.templates.enabled
+    // templates: no Templates core plugin (template folder, insert template) here, so it is not enabled. Present
+    // anyway, as every core plugin is in stock enabled or not: plugins read .enabled and instance.options (empty:
+    // a plugin falls back to its own defaults); Kanban's settings tab threw on plugins.templates.enabled.
+    // daily-notes is the real core plugin (issue #115, the DN block below replaces this entry).
     templates: { enabled: false, instance: { id: "templates", options: {} } },
     "daily-notes": { enabled: false, instance: { id: "daily-notes", options: {} } },
   });
@@ -7953,6 +8108,383 @@ if (CANVAS) {
     CANVAS.plugin[k] = async function (...a) { try { return await f.apply(this, a); } finally { cvRibbonSync(); } };
   }
   setTimeout(cvRibbonSync, 0);
+}
+/* #116 the Audio recorder core plugin (stock 1.13.7 "audio-recorder": ribbon lucide-mic "Start/stop recording",
+   commands audio-recorder:start / :stop, Recording YYYYMMDDHHmmss in the attachment folder, embed at the cursor).
+   OFF by default (stock); exposed in app.internalPlugins (config["audio-recorder"]); the on/off persists
+   app-wide (localStorage) and per vault (core-plugins.json, settings.js). Works in restricted mode: app code.
+   THE MIC GATE (security, issue risk 4): the native hook (src-tauri/src/audiorec.rs) grants a capture request
+   only if it is audio-only AND the window was armed by audio_arm(token) a moment before; the token is handed
+   out ONCE per page load, to the first caller — this block, at main.js load, before loader.js's seal and before
+   any plugin script is requested. The token, the page's own getUserMedia and MediaRecorder are kept in THIS
+   closure (never a global binding); navigator.mediaDevices.getUserMedia is then replaced, for every later
+   caller, by a rejector (NotAllowedError) — defence in depth over the native deny. Plugins share this realm
+   (loader.js), so this is not a sandbox: see security.md. While the mic is open the ribbon button is active
+   and a "Recording" status item is on screen (the issue's visible indicator).
+   Always audio/webm;codecs=opus (.webm, the issue's name): WebKitGTK's audio/mp4 needs an AAC encoder the
+   distro runtimes mostly lack. No opusenc/webmmux -> a notice, no capture, no file (never records into
+   nothing); a 0-byte recording is not written. Errors are notices with stock's wording. */
+let AREC = null;
+{
+  const KEY = "opensidian.core.audio-recorder", MIME = "audio/webm;codecs=opus";
+  const md = navigator.mediaDevices;
+  const gum = md && typeof md.getUserMedia === "function" ? md.getUserMedia.bind(md) : null;
+  const MR = typeof window.MediaRecorder === "function" ? window.MediaRecorder : null;
+  const IV = TAURI && TAURI.core && typeof TAURI.core.invoke === "function" ? TAURI.core.invoke : null;
+  const call = (c, a) => IV ? IV(c, a) : Promise.reject(new Error("no ipc"));
+  const tokP = call("audio_token").then(t => (typeof t === "string" && t ? t : null), () => null);
+  const deny = function getUserMedia() { return Promise.reject(new DOMException("Microphone access is reserved for the Audio recorder core plugin.", "NotAllowedError")); };
+  if (md) {
+    try { Object.defineProperty(md, "getUserMedia", { value: deny, writable: false, configurable: false, enumerable: true }); } catch (_) {}
+    try { if (window.MediaDevices && MediaDevices.prototype) Object.defineProperty(MediaDevices.prototype, "getUserMedia", { value: deny, writable: false, configurable: false }); } catch (_) {}
+  }
+  const st = { on: false, rec: null, stream: null, chunks: [], busy: false, saved: 0, last: "", err: "", denied: 0, t0: 0 };
+  const note = m => { st.err = m; say(m, "audio-recorder"); };
+  const pref = {
+    get() { try { const v = localStorage.getItem(KEY); return v == null ? null : v === "1"; } catch (_) { return null; } },
+    set(on) { try { localStorage.setItem(KEY, on ? "1" : "0"); } catch (_) {} },
+  };
+  const rb = document.getElementById("ribbon");
+  const btn = rb ? document.createElement("button") : null;
+  if (btn) {
+    btn.id = "arribbonbtn";
+    btn.title = "Start/stop recording";
+    btn.setAttribute("aria-label", "Start/stop recording");
+    btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>';
+    btn.hidden = true;
+    btn.addEventListener("click", () => { if (st.rec) stop(); else start(); });
+    rb.appendChild(btn);
+  }
+  const ind = document.createElement("div");
+  ind.id = "arstatus"; ind.className = "status-bar-item"; ind.hidden = true; ind.textContent = "Recording";
+  ind.title = "Stop recording"; ind.addEventListener("click", () => stop());
+  document.body.appendChild(ind);
+  const paint = () => {
+    if (btn) { btn.hidden = !st.on; btn.classList.toggle("is-active", !!st.rec); }
+    ind.hidden = !st.rec;
+    updateTitle();
+  };
+  const tmNow = () => { const d = new Date(); return { y: d.getFullYear(), mo: d.getMonth() + 1, d: d.getDate(), h: d.getHours(), mi: d.getMinutes(), s: d.getSeconds(), ms: d.getMilliseconds(), off: -d.getTimezoneOffset(), epoch_ms: d.getTime() }; };
+  async function start() {
+    if (!st.on || st.rec || st.busy) return;
+    if (!gum || !MR) return note("Audio recording is not available: this window has no media capture.");
+    if (!(typeof MR.isTypeSupported === "function" && MR.isTypeSupported(MIME)))
+      return note("Audio recording is not available: GStreamer opusenc/webmmux missing.");
+    st.busy = true; st.err = "";
+    try {
+      const token = await tokP;
+      if (!token) return note("Audio recording is not available in this window.");
+      let stream;
+      try {
+        await call("audio_arm", { token });
+        stream = await gum({ audio: true, video: false });
+      } catch (e) {
+        // our own request failed after arming: if another script of the page took the one-shot grant,
+        // audio_end stops its stream now (native mic_off); harmless otherwise (codeant C1, #124)
+        await call("audio_end", { token }).catch(() => {});
+        const n = e && e.name;
+        if (n === "NotFoundError" || n === "OverconstrainedError" || n === "NotReadableError") return note("No microphone is connected.");
+        if (n === "NotAllowedError" || n === "SecurityError") { st.denied++; return note("Microphone access was denied."); }
+        return note("Audio recorder: " + errStr(e));
+      }
+      call("audio_disarm", { token }).catch(() => {});
+      if (!stream.getAudioTracks().length || stream.getVideoTracks().length) {   // never anything but a mic
+        for (const t of stream.getTracks()) t.stop();
+        await call("audio_end", { token }).catch(() => {});
+        return note("No microphone is connected.");
+      }
+      let r;
+      try { r = new MR(stream, { mimeType: MIME }); }
+      catch (e) { for (const t of stream.getTracks()) t.stop(); await call("audio_end", { token }).catch(() => {}); return note("Audio recording is not available: " + errStr(e)); }
+      st.chunks = []; st.stream = stream; st.rec = r; st.t0 = Date.now();
+      r.addEventListener("dataavailable", ev => { if (ev.data && ev.data.size) st.chunks.push(ev.data); });
+      r.start(1000);
+    } finally { st.busy = false; paint(); }
+  }
+  async function stop() {
+    const r = st.rec;
+    if (!r || st.busy) return;
+    st.busy = true;
+    try {
+      // an already-stopped recorder (a track ended) fired its stop before: do not wait for it; 5 s cap either way
+      const done = r.state === "inactive" ? Promise.resolve() : new Promise(res => { r.addEventListener("stop", res, { once: true }); setTimeout(res, 5000); });
+      try { if (r.state !== "inactive") r.stop(); } catch (_) {}
+      await done;
+      for (const t of st.stream ? st.stream.getTracks() : []) t.stop();
+      st.rec = null; st.stream = null;
+      paint();
+      const token = await tokP;
+      // the recording is over: no mic track of this page may outlive it (native mic_off)
+      if (token) await call("audio_end", { token }).catch(() => {});
+      const blob = new Blob(st.chunks, { type: "audio/webm" });
+      st.chunks = [];
+      if (!blob.size) return note("Nothing was recorded: the microphone sent no audio.");
+      const g = fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
+      const nm = t && !t.kind ? t.name : "";
+      let a;
+      try { a = await call("audio_save", { token, note: nm, data: b64Bytes(new Uint8Array(await blob.arrayBuffer())), tm: tmNow() }); }
+      catch (e) { return note("Recording not saved — " + errStr(e)); }
+      st.saved++; st.last = a.path;
+      await refreshTree();
+      // stock: the active markdown view gets "\n" + embed + "\n" in place of its selection; otherwise only the file
+      if (t && fg() === g && g.tabs[g.active] === t && !t.kind && t.mode !== "reading")
+        edEdit((v, s, e2) => { const x = "\n" + a.text + "\n"; return [v.slice(0, s) + x + v.slice(e2), s + x.length, s + x.length]; });
+      else say("Recording saved: " + a.path, "audio-recorder");
+    } finally { st.busy = false; paint(); }
+  }
+  const plugin = {
+    id: "audio-recorder",
+    enabled: pref.get() === true,
+    _loaded: false,
+    instance: { id: "audio-recorder", name: "Audio recorder", description: "Record audio notes and save them as attachments.", defaultOn: false },
+    views: {},
+    async load() { this._loaded = true; st.on = this.enabled; paint(); },
+    async unload() { if (st.rec) await stop(); this._loaded = false; st.on = false; paint(); },
+    async enable() { this.enabled = true; pref.set(true); sync(); await this.load(); },
+    async disable() { if (st.rec) await stop(); this.enabled = false; pref.set(false); sync(); st.on = false; paint(); },
+    async toggle(on) { return on ? this.enable() : this.disable(); },
+    // a vault's core-plugins.json decides for THAT vault only (settings.js boot): no app-wide pref write
+    // (codeant M3 on #124 — the localStorage choice stays the fallback for vaults without the key)
+    async applyVault(on) {
+      if (!on && st.rec) await stop();
+      this.enabled = !!on; sync();
+      if (on) await this.load(); else { st.on = false; paint(); }
+    },
+  };
+  const ip = PLG && PLG.app && PLG.app.internalPlugins;
+  const sync = () => { if (ip) ip.config["audio-recorder"] = plugin.enabled; };
+  if (ip) { ip.plugins["audio-recorder"] = plugin; sync(); }
+  AREC = Object.freeze({
+    plugin, start, stop,
+    on: () => st.on, recording: () => !!st.rec,
+    // census [arec:on=|rec=|busy=|saved=|last=|denied=|tok=|mr=|err=] + [ribbon:audio@x,y] [arind@x,y]
+    tok() {
+      const esc = s => String(s).replace(/[[\]|@\s]/g, "_");
+      const c = e => { const r = e.getBoundingClientRect(); return Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2); };
+      const vis = e => !!e && e.getClientRects().length > 0;
+      let t = " [arec:on=" + (st.on ? 1 : 0) + "|rec=" + (st.rec ? 1 : 0) + "|busy=" + (st.busy ? 1 : 0) + "|saved=" + st.saved +
+        "|last=" + esc(st.last || "-") + "|denied=" + st.denied + "|mr=" + (MR && MR.isTypeSupported && MR.isTypeSupported(MIME) ? 1 : 0) +
+        "|gum=" + (gum ? 1 : 0) + "|err=" + esc(st.err || "-") + "]";
+      if (vis(btn)) t += " [ribbon:audio@" + c(btn) + "]";
+      if (vis(ind)) t += " [arind@" + c(ind) + "]";
+      return t;
+    },
+  });
+  setTimeout(() => plugin.load().catch(e => console.error("[audio-recorder] load:", e)), 0);   // updateTitle may not be callable yet (load order)
+}
+/* issue #115: the Daily notes core plugin, stock 1.13.7 parity (design: goal i115-daily progress.md).
+   - Options: <vault>/.obsidian/daily-notes.json, stock's file and keys ({format, folder, template, autorun}; a missing
+     key = its default, written only once changed, unknown keys kept), read + merged through settings_model's vcfg
+     (settings.rs: atomic write, vault-confined values). instance.options is the LIVE object holding the file's stock
+     keys, so obsidian-daily-notes-interface (Calendar, Periodic Notes) resolve the same folder / format / template.
+   - On / off: app.internalPlugins.plugins["daily-notes"] (enable()/disable(), config["daily-notes"]); the vault's
+     core-plugins.json "daily-notes" decides at launch (an Obsidian vault with true comes up on), else the app-wide
+     localStorage pref, else OFF (operator 2026-11-15: no ribbon icon / commands in vaults that never asked). A
+     switch writes core-plugins.json (merge: no other key is dropped). No restart: the three commands (CMDS rows
+     with coreOff, hidden from the palette, Hotkeys and app.commands while off) and the ribbon icon follow it.
+   - "Open today's daily note": <folder>/<moment().format(format)>.md, "/" in the format = nested folders (made on
+     demand by create_note). A new note gets the template's text with {{date}} {{time}} {{title}} {{date:FMT}}
+     {{time:FMT}} (+ {{date+1d}}-style offsets, {{yesterday}} {{tomorrow}}, as obsidian-daily-notes-interface)
+     substituted; an EXISTING note is opened, never rewritten (create_note is O_EXCL). A missing template =
+     notice, empty note. A folder / format that names ".." or a hidden component is refused with a notice (and by
+     the backend, main.rs safe_rel). Previous / next: the nearest existing daily note (names parsed strictly with
+     the format, under the folder) before / after the active daily note, or today when the active note is not
+     one; nothing at the ends. autorun: open today's note once the vault is on screen.
+   App code, not a plugin: works in restricted mode (moment is loaded from the vendored file on first use).
+   Census: [dn:on=|cmd=|rib=|fmt=|dir=|tpl=|auto=|n=|c=|last=|err=] [dnip:en=|cfg=|byid=|fmt=|dir=|tpl=] [ribbon:daily@x,y] */
+const DN_DEF = Object.freeze({ format: "YYYY-MM-DD", folder: "", template: "", autorun: false });
+var DN = null;   // var: the census (dnTok) may run before this line
+{
+  const ip = PLG && PLG.app && PLG.app.internalPlugins, KEY = "opensidian.core.daily-notes";
+  if (ip && ip.plugins) {
+    const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+    const file = {};            // daily-notes.json as last read / written (every key)
+    const options = {};         // instance.options: the stock keys present in the file (plain object, live)
+    const syncOpts = () => { for (const k of Object.keys(DN_DEF)) { if (own(file, k)) options[k] = file[k]; else delete options[k]; } };
+    const pref = {
+      get() { try { const v = localStorage.getItem(KEY); return v == null ? null : v === "1"; } catch (_) { return null; } },
+      set(on) { try { localStorage.setItem(KEY, on ? "1" : "0"); } catch (_) {} },
+    };
+    const vinv = (f, patch) => inv("settings_model", { vcfg: patch === undefined ? { file: f } : { file: f, patch } });
+    const st = { opens: 0, created: 0, last: "", err: "", booted: false };
+    const rb = document.getElementById("ribbon");
+    let btn = null;
+    if (rb) {
+      btn = document.createElement("button");
+      btn.id = "dnribbonbtn";
+      btn.title = "Open today's daily note";
+      btn.setAttribute("aria-label", "Open today's daily note");
+      btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>';
+      btn.hidden = true;
+      btn.addEventListener("click", () => { dnOpenToday("ribbon").catch(e => console.error("[daily-notes] ribbon:", e)); });
+      rb.appendChild(btn);
+    }
+    const sync = () => {
+      ip.config["daily-notes"] = !!plugin.enabled;
+      if (btn) btn.hidden = !(plugin.enabled && plugin._loaded);
+      if (typeof updateTitle === "function" && state) updateTitle();
+    };
+    let cq = Promise.resolve();   // core-plugins.json writes, in click order
+    /* codeant #122: a toggle / pane write while boot() awaits its reads wins over those (now stale) reads */
+    let onGen = 0, cfgGen = 0;
+    async function setOn(on) {
+      plugin.enabled = !!on; pref.set(!!on); sync();
+      if (!plugin._loaded) await plugin.load();
+      if (!state) return;   // before the vault is known there is no core-plugins.json to write (boot reads it)
+      onGen++;
+      cq = cq.then(() => vinv("core-plugins", { "daily-notes": !!on })).catch(e => say("Core plugins: " + errStr(e), "daily-notes"));
+      await cq;
+    }
+    const plugin = {
+      id: "daily-notes",
+      enabled: false,
+      _loaded: false,
+      instance: { id: "daily-notes", name: "Daily notes", description: "Open or create today's note from a folder, date format and template.", defaultOn: false, options },
+      async load() { this._loaded = true; sync(); },
+      async unload() { this._loaded = false; sync(); },
+      async enable() { return setOn(true); },
+      async disable() { return setOn(false); },
+      async toggle(on) { return setOn(!!on); },
+    };
+    /* the settings pane's reader / writer (settings.js core-daily-notes): get(k) = the stored value or its default,
+       set(patch) = merge + write (in order; the file keeps the last), raw() = the whole file */
+    let wq = Promise.resolve();
+    const cfg = Object.freeze({
+      get: k => (own(file, k) && file[k] != null ? file[k] : DN_DEF[k]),
+      raw: () => Object.assign({}, file),
+      set(patch) {
+        const p = {};
+        for (const k of Object.keys(patch || {})) if (own(DN_DEF, k)) p[k] = patch[k];
+        if (!Object.keys(p).length) return wq;
+        cfgGen++;
+        Object.assign(file, p); syncOpts(); sync();
+        wq = wq.then(() => vinv("daily-notes", p)).then(v => {
+          if (v && typeof v === "object") { for (const k of Object.keys(file)) delete file[k]; Object.assign(file, v); syncOpts(); sync(); }
+        }, e => {   // refused (e.g. a folder with ".."): the file is unchanged, so the options go back to what it holds
+          st.err = errStr(e); say("Daily notes settings: " + st.err, "daily-notes");
+          return vinv("daily-notes").then(v => { for (const k of Object.keys(file)) delete file[k]; if (v && typeof v === "object") Object.assign(file, v); syncOpts(); sync(); }, () => {});
+        });
+        return wq;
+      },
+    });
+    Object.defineProperty(plugin, "cfg", { value: cfg, enumerable: false });
+    async function boot() {   // enterVault: the vault's two files decide on/off and the options, then autorun
+      const g0 = onGen, c0 = cfgGen;
+      const [core, dn] = await Promise.all([vinv("core-plugins").catch(() => ({})), vinv("daily-notes").catch(() => ({}))]);
+      if (cfgGen === c0) {   // else the pane wrote meanwhile: its write's answer refreshes the file
+        for (const k of Object.keys(file)) delete file[k];
+        if (dn && typeof dn === "object") Object.assign(file, dn);
+        syncOpts();
+      }
+      const c = core && typeof core === "object" ? core["daily-notes"] : undefined;
+      if (onGen === g0) plugin.enabled = typeof c === "boolean" ? c : pref.get() === true;   // else the click (already written) stands
+      await plugin.load();
+      st.booted = true; sync();
+      if (plugin.enabled && options.autorun === true) await dnOpenToday("autorun");
+    }
+    ip.plugins["daily-notes"] = plugin;
+    sync();
+    DN = { plugin, options, cfg, st, boot, btn };
+  }
+}
+function dnOn() { return !!(DN && DN.plugin.enabled && DN.plugin._loaded); }
+/* the effective settings, read as obsidian-daily-notes-interface reads instance.options (format || default, trimmed
+   folder / template); a folder / template is vault-relative ("/Daily/" = "Daily", "Templates/Daily.md" = the note
+   "Templates/Daily") */
+const dnPath = s => String(s == null ? "" : s).trim().split("/").map(c => c.trim()).filter(c => c !== "").join("/");
+const dnFmt = () => (DN && typeof DN.options.format === "string" && DN.options.format) || DN_DEF.format;
+const dnDir = () => dnPath(DN && DN.options.folder);
+const dnTpl = () => dnPath(DN && DN.options.template).replace(/\.md$/i, "");
+const dnBadPath = p => !p || p.split("/").some(c => c === ".." || c.startsWith(".") || c.includes("\\") || c.includes("\0"));
+let dnMomentP = null;
+function dnMoment() {   // the vendored moment (ui/vendor/moment.min.js, the plugin runtime's own copy); restricted mode too
+  if (window.moment) return Promise.resolve(window.moment);
+  return dnMomentP || (dnMomentP = new Promise((res, rej) => {
+    const s = document.createElement("script");
+    s.src = "vendor/moment.min.js";
+    s.onload = () => (window.moment ? res(window.moment) : rej(new Error("moment did not load")));
+    s.onerror = () => { dnMomentP = null; rej(new Error("moment did not load")); };
+    document.head.appendChild(s);
+  }));
+}
+function dnErr(m) { if (DN) DN.st.err = m; say(m, "daily-notes"); }
+function dnFill(text, m, title, fmt) {   // the template tokens (stock + obsidian-daily-notes-interface)
+  return String(text)
+    .replace(/{{\s*(date|time)\s*(([+-]\d+)([yqmwdhs]))?\s*(:.+?)?}}/gi, (_, kind, calc, n, unit, f) => {
+      const d = m.clone();
+      if (calc) d.add(parseInt(n, 10), unit);
+      return f ? d.format(f.slice(1).trim()) : d.format(kind.toLowerCase() === "time" ? "HH:mm" : fmt);
+    })
+    .replace(/{{\s*title\s*}}/gi, () => title)
+    .replace(/{{\s*yesterday\s*}}/gi, () => m.clone().subtract(1, "d").format(fmt))
+    .replace(/{{\s*tomorrow\s*}}/gi, () => m.clone().add(1, "d").format(fmt));
+}
+async function dnNames() { try { return await inv("list_notes"); } catch (_) { return notesCache.slice(); } }
+async function dnOpenToday(via) {
+  if (!state || !dnOn()) return null;
+  let moment;
+  try { moment = await dnMoment(); } catch (e) { dnErr("Daily notes: " + errStr(e)); return null; }
+  const m = moment(), fmt = dnFmt(), dir = dnDir();
+  const name = dnPath((dir ? dir + "/" : "") + m.format(fmt));
+  if (dnBadPath(name)) { dnErr("Daily notes: the folder or date format points outside the vault (" + name + "), no note created"); return null; }
+  const names = await dnNames();
+  if (!names.includes(name)) {
+    let body = "";
+    const tpl = dnTpl();
+    if (tpl) {
+      if (dnBadPath(tpl) || !names.includes(tpl)) dnErr("Failed to read the daily note template '" + tpl + "'");
+      else {
+        try { body = dnFill(await inv("read_note", { name: tpl }), m, base(name), fmt); }
+        catch (e) { dnErr("Failed to read the daily note template '" + tpl + "': " + errStr(e)); body = ""; }
+      }
+    }
+    const r = await createNote(name, body);   // O_EXCL: "exists" = someone made it meanwhile -> open it, untouched
+    if (r === "err") return null;
+    if (r === "ok") DN.st.created++;
+  }
+  await rowOpen(name);
+  DN.st.opens++; DN.st.last = name;
+  updateTitle();
+  return name;
+}
+async function dnStep(dir) {   // -1 previous / +1 next existing daily note
+  if (!state || !dnOn()) return null;
+  let moment;
+  try { moment = await dnMoment(); } catch (e) { dnErr("Daily notes: " + errStr(e)); return null; }
+  const fmt = dnFmt(), d = dnDir(), pre = d ? d + "/" : "";
+  const day = n => { if (pre && !n.startsWith(pre)) return null; const x = moment(n.slice(pre.length), fmt, true); return x.isValid() ? x.startOf("day").valueOf() : null; };
+  const g = fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
+  let ref = t && !t.kind && t.name ? day(t.name) : null;
+  if (ref == null) ref = moment().startOf("day").valueOf();
+  let best = null;
+  for (const n of await dnNames()) {
+    const v = day(n);
+    if (v == null) continue;
+    if (dir < 0 ? v < ref && (!best || v > best[0]) : v > ref && (!best || v < best[0])) best = [v, n];
+  }
+  if (!best) { updateTitle(); return null; }   // stock: nothing at the ends
+  await rowOpen(best[1]);
+  DN.st.opens++; DN.st.last = best[1];
+  updateTitle();
+  return best[1];
+}
+function dnTok() {
+  if (!DN) return "";
+  const esc = s => String(s).replace(/[[\]|@]/g, "_");
+  const p = DN.plugin, ip = PLG.app.internalPlugins, st = DN.st;
+  let cmd = 0;
+  try { for (const id of ["daily-notes", "daily-notes:goto-prev", "daily-notes:goto-next"]) if (PLG.app.commands.findCommand(id)) cmd++; } catch (_) {}
+  const vis = DN.btn && DN.btn.getClientRects().length > 0;
+  let t = " [dn:on=" + (dnOn() ? 1 : 0) + "|cmd=" + cmd + "|rib=" + (vis ? 1 : 0) + "|fmt=" + esc(dnFmt()) + "|dir=" + esc(dnDir()) + "|tpl=" + esc(dnTpl()) +
+    "|auto=" + (DN.options.autorun === true ? 1 : 0) + "|n=" + st.opens + "|c=" + st.created + "|last=" + esc(st.last || "-") + "|err=" + esc(st.err || "-") + "|boot=" + (st.booted ? 1 : 0) + "]";
+  // what obsidian-daily-notes-interface (Calendar, Periodic Notes) resolves: getDailyNoteSettings + appHasDailyNotesPluginLoaded
+  let lib = {};
+  try { const w = ip.getPluginById("daily-notes"); lib = (w && w.instance && w.instance.options) || {}; } catch (_) {}
+  const en = ip.plugins["daily-notes"] && ip.plugins["daily-notes"].enabled ? 1 : 0;
+  t += " [dnip:en=" + en + "|cfg=" + (ip.config["daily-notes"] === true ? 1 : 0) + "|byid=" + (ip.getEnabledPluginById("daily-notes") ? 1 : 0) +
+    "|fmt=" + esc(lib.format || "YYYY-MM-DD") + "|dir=" + esc(typeof lib.folder === "string" ? lib.folder.trim() : "") + "|tpl=" + esc(typeof lib.template === "string" ? lib.template.trim() : "") + "]";
+  if (vis) { const r = DN.btn.getBoundingClientRect(); t += " [ribbon:daily@" + Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2) + "]"; }
+  return t;
 }
 /* goal cv-vault CV-107: the folder of the active file — the focused note tab, else the canvas on screen; "" = root */
 function cvActiveFolder() {
@@ -8034,6 +8566,77 @@ function pdfvTok() {           // issue #44: [pdfrow:] explorer PDF rows, [pdfv:
   return t + " [pdfv:" + esc(v.path) + "|" + (s.dataset.cur || 0) + "/" + (s.dataset.of || 0) + (s.classList.contains("is-loaded") ? "L" : "") +
          (s.classList.contains("mod-broken") ? "B" : "") + "|" + [b.x, b.y, b.width, b.height].map(Math.round).join(",") + "]";
 }
+/* issue #102: the image view. An image (Ed.IMG_EXTS) opened from the explorer or a bookmark shows in an "image" leaf
+   (stock 1.13.7's view type and state {file}; its DOM .view-content > .image-container > img, the image centred and
+   scaled down to fit the pane, never up). The src is the SAME opensidian-img: URL shape an embed gets (Ed.pctEnc), minted
+   only for a path the image list holds (no traversal, the byte server re-checks containment). Registered with the
+   image extensions, so openFile (a bookmark row, a plugin) routes an image here too. how: as openPdf. */
+const IMGV = (() => {
+  if (!PLG || !PLG.X || !PLG.X.ItemView) return null;
+  const base = p => { const b = String(p).split("/").pop(), d = b.lastIndexOf("."); return d > 0 ? b.slice(0, d) : b; };
+  class ImageView extends PLG.X.ItemView {
+    constructor(leaf) { super(leaf); this.navigation = true; this.icon = "lucide-image"; this.path = null; this.img = null; this.contentEl.classList.add("image-view"); }
+    getViewType() { return "image"; }
+    getDisplayText() { return this.path ? base(this.path) : "Image"; }
+    getState() { return this.path ? { file: this.path } : {}; }
+    async setState(st) {
+      const p = st && typeof st.file === "string" ? st.file.replace(/^\/+/, "") : "";
+      // same path: skip only if the current image is shown and not broken — a missing/broken open retries (restored file)
+      if (!p || !Ed.isImg(p) || (p === this.path && this.img && !this.img.classList.contains("mod-broken"))) return;
+      this.path = p;
+      try { const f = PLG.app.vault.getAbstractFileByPath(p); this.file = f || null; } catch (_) { this.file = null; }
+      const box = document.createElement("div");
+      box.className = "image-container";
+      // the EXACT vault path (no embed-style %-decoding, no basename-suffix match: "photo.png" must not
+      // resolve to "a/photo.png"), still only for a path the image list holds
+      const src = Array.isArray(imgsCache) && imgsCache.includes(p) ? Ed.IMG_SCHEME + "://localhost/" + Ed.pctEnc(p) : null;
+      if (src === null) {                       // not in the image list (gone, hidden, symlinked): the R29.4 banner, no URL
+        const s = document.createElement("span");
+        s.className = "imgmiss"; s.dataset.miss = p;
+        box.appendChild(s); this.img = null;
+      } else {
+        const im = this.img = document.createElement("img");
+        im.alt = base(p); im.draggable = false;
+        im.addEventListener("load", () => updateTitle());
+        im.addEventListener("error", () => { im.classList.add("mod-broken"); updateTitle(); });
+        im.src = src;
+        box.appendChild(im);
+      }
+      this.contentEl.replaceChildren(box);
+      updateTitle();
+    }
+  }
+  const make = Object.defineProperty(leaf => new ImageView(leaf), Symbol.for("opensidian.coreView"), { value: true });
+  try {
+    const r = PLG.app.viewRegistry;
+    r.registerView("image", make);
+    const ex = Ed.IMG_EXTS.filter(x => !r.isExtensionRegistered(x));
+    if (ex.length) r.registerExtensions(ex, "image");
+  } catch (e) { console.error("[image] view:", e); return null; }
+  return { ImageView };
+})();
+async function openImage(path, ev, how) {   // how: as openPdf — undefined = by the event (plain in place, ctrl/middle new tab) | "tab" | "split"
+  if (!IMGV) { say("The image view is not available", "img"); return null; }
+  const nt = ev && (ev.button === 1 || ev.ctrlKey || ev.metaKey);
+  const leaf = how === "split" ? PLG.app.workspace.getLeaf("split", "vertical") : PLG.app.workspace.getLeaf(how === "tab" || nt ? "tab" : false);
+  await leaf.setViewState({ type: "image", state: { file: path }, active: true });
+  return leaf;
+}
+function imgvTok() {           // issue #102: [imgrow:] explorer image rows, [imgv:] the image view on screen
+  const esc = s => String(s).replace(/[[\]|@]/g, "_"), vis = e => !!e && e.getClientRects().length > 0;
+  const c = e => { const r = e.getBoundingClientRect(); return Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2); };
+  let t = "";
+  const rows = [...document.querySelectorAll("#tree .trow.file")].filter(r => vis(r) && Ed.isImg(r.dataset.file || ""));
+  if (rows.length) t += " [imgrow:" + rows.map(r => esc(r.dataset.file) + "@" + c(r)).join("|") + "]";
+  let v = null;
+  try { v = PLG && PLG.app.workspace.getLeavesOfType("image").map(l => l.view).find(x => x && vis(x.containerEl)) || null; } catch (_) {}
+  if (!v || !v.path) return t;
+  const im = v.img;
+  if (!im) return t + " [imgv:" + esc(v.path) + "|M|-]";
+  const b = im.getBoundingClientRect(), ok = im.complete && im.naturalWidth > 0;
+  return t + " [imgv:" + esc(v.path) + "|" + (ok ? im.naturalWidth + "x" + im.naturalHeight + "L" : im.classList.contains("mod-broken") ? "B" : "-") +
+         "|" + [b.x, b.y, b.width, b.height].map(Math.round).join(",") + "]";
+}
 /* goal canvas-core: "Create new canvas" (command) and "New canvas" (explorer menus). The file is made
    through canvas_io create (O_EXCL: an existing name is never overwritten — the next free
    "Untitled N.canvas" is taken instead), holds an empty JSON Canvas document, and opens in a canvas tab.
@@ -8101,7 +8704,7 @@ function canvasFileMenu(e, p) {             // right-click a .canvas row in the 
   item("Open in default app", null, "Missing subsystem: a file-path opener — open_external takes a URL, not a vault path");
   item("Show in system explorer", null, "Missing subsystem: a file-manager handler");
   sep();
-  item("Rename...", () => cvRename(p));     // cv-vault CV-147
+  item("Rename...", () => { if (!exRenStart("canvas", p)) cvRename(p); });   // issue #101 / CVR-A-085: inline in the row (cv-vault CV-147's prompt only if the row is not painted)
   item("Delete", () => cvDelete(p));       // cv-vault CV-148
   m.dataset.mt = "canvas:" + p.replace(/[|\]]/g, "");
   placeMenu(m, e.clientX, e.clientY);
@@ -8749,10 +9352,11 @@ function linkAtCaret() {   // [[target]] spanning the caret of the edited field,
   return inner.split("|")[0].split("#")[0].trim() || null;
 }
 /* ---------- R31 drop-to-attach (feedback #18) ---------------------------
-   A real OS drop NEVER reaches the DOM: wry takes the XDND at the GTK layer
-   and Tauri hands it to Rust as WindowEvent::DragDrop, which re-emits the
-   paths as `drop-files` (main.rs R31.1). So this listener is the drop, and a
-   `dragover`/`drop` handler on the editor would be decoration.
+   A real OS FILE drop NEVER reaches the DOM: src-tauri/src/xdnd.rs takes an
+   XDND whose uri-list names a local file at the GTK layer and re-emits the
+   paths as `drop-files` (main.rs R31.1). So this listener is the file drop.
+   #51: any other drop (text, html, a browser link drag: remote URIs only) is
+   WebKit's, i.e. a DOM drop the editor handles (Ed.htmlDrop, ui/editor.js).
    This half decides WHERE text goes — the caret of the focused editor — and
    nothing else: the vault write, the file name, the link text and every
    refusal sentence come back from attach_files -> attach_drop. Anything that
@@ -9071,7 +9675,7 @@ if ($("rnbox") && $("rnbox").parentElement) dlgContainer($("rnbox").parentElemen
 let themeGen = 0;
 /* #59 slice 2 (themecompat): stock 1.13.7's body carries .is-focused (window focus) and .is-hidden-frameless (no
    native title bar — ours is frameless with #wframe). Theme rules key their tab strip off them (Minimal: the focused
-   top strip = --bg1). Only while a CHOSEN theme paints ([data-vthemecompat]), so the no-theme look cannot move; the
+   top strip = --bg1). Only while a vault theme paints ([data-vthemecompat]: chosen, or the default, #96), so the base sheet cannot move; the
    stock rule they would otherwise let a theme beat (the focused active title ink) is mirrored in style.css. */
 function compatBody() {
   const b = document.body, on = document.documentElement.hasAttribute("data-vthemecompat");
@@ -9080,10 +9684,11 @@ function compatBody() {
   b.classList.toggle("is-focused", on && b.classList.contains("window-focused"));
 }
 const vthemeMark = name => {
-  // #59 slice 3: [data-vthemecompat] = the theme that paints is the one the vault CHOSE (cssTheme), not the bundled
-  // default an empty cssTheme falls back to; style.css scopes the dialog compat rules to it, so the look with no theme
-  // chosen does not move, and choosing the default theme by name gets stock semantics like any other. Before data-vtheme.
-  document.documentElement.toggleAttribute("data-vthemecompat", !!name && name === vaultTheme);
+  // #59 slice 3 / #96: [data-vthemecompat] = a vault theme PAINTS (stock semantics for its tabs + dialogs), and since
+  // #96 that includes the bundled default an empty cssTheme falls back to (effTheme): "" and "Use theme: <default>"
+  // paint the SAME theme, so they must paint it the same way (one look: stock's). Off only while no theme paints (the
+  // base sheet; themeRemove passes ""). Before data-vtheme.
+  document.documentElement.toggleAttribute("data-vthemecompat", !!name);
   compatBody();
   document.documentElement.dataset.vtheme = (++themeGen) + ":" + (name || "");
 };
@@ -9793,11 +10398,20 @@ const CMDS = [
   ["file-explorer:new-file",   "Create new note",                     ["ctrl+n"],               cmdNewNote],
   ["file-explorer:new-file-in-new-pane", "Create note to the right",  ["ctrl+shift+n"],         async () => { await splitWith(fg(), "row", null); await cmdNewNote(); }],
   ["file-explorer:new-folder", "Create new folder",                   [],                       () => { $("fnew").hidden = false; $("fname").value = ""; $("fname").focus(); }],
+  // #116 Audio recorder (core plugin, off by default): stock offers start only while NOT recording and stop only WHILE
+  // recording; neither row exists (palette, hotkeys) while the core plugin is off
+  ["audio-recorder:start",     "Audio recorder: Start recording audio", [],                     () => AREC && AREC.start(), () => !!(AREC && AREC.on() && !AREC.recording())],
+  ["audio-recorder:stop",      "Audio recorder: Stop recording audio",  [],                     () => AREC && AREC.stop(), () => !!(AREC && AREC.on() && AREC.recording())],
   ["canvas:new-file",          "Canvas: Create new canvas",           [],                       () => cmdNewCanvas(cvNewCanvasFolder()), CV_PALETTE_HIDE_OFF ? () => !!(CANVAS && CANVAS.isRegistered()) : null],
   // goal cv-files CV-149 (REDUCED): there is no empty-tab surface (zero tabs = a blank pane), so the
   // "New canvas" action of an empty workspace is a palette row offered only while no tab is open
   ["canvas:new-file-no-tab",   "New canvas",                          [],                       () => cmdNewCanvas(""),
     () => !!(CANVAS && CANVAS.isRegistered()) && groups().every(g => !g.tabs.length)],
+  // issue #115: the Daily notes core plugin's three commands (stock ids + names); offered only while it is on
+  // (when = the palette; coreOff below = Hotkeys and app.commands), as stock registers / unregisters them
+  ["daily-notes",              "Daily notes: Open today's daily note", [],                      () => dnOpenToday("cmd"), dnOn],
+  ["daily-notes:goto-prev",    "Daily notes: Open previous daily note", [],                     () => dnStep(-1), dnOn],
+  ["daily-notes:goto-next",    "Daily notes: Open next daily note",   [],                       () => dnStep(1), dnOn],
   ["editor:delete-paragraph",  "Delete paragraph",                    ["ctrl+d"],               () => edLine(() => null)],
   ["editor:insert-attachment", "Insert attachment",                   [],                       cmdAttach],
   ["editor:follow-link",       "Follow link under cursor",            ["alt+enter"],            () => { const n = linkAtCaret(); if (n) navigate(fg(), n); }],
@@ -9859,6 +10473,8 @@ const CMDS = [
   ["window:reset-zoom",        "Reset zoom",                          ["ctrl+0"],               () => cmdZoom("reset")],
 ].map(([id, name, def, run, when]) => ({ id, name, def, run, when }))
  .sort((a, b) => a.name.localeCompare(b.name));
+// issue #115: a core plugin's command is not registered while the plugin is off (Hotkeys, app.commands, a bound chord)
+for (const c of CMDS) if (c.id === "daily-notes" || c.id.startsWith("daily-notes:")) c.coreOff = () => !dnOn();
 let hkUser = {};                            // id -> [chords] overrides ([] = removed default)
 let keymap = {};                            // chord -> cmd (rebuilt from CMDS + hkUser)
 const hkChords = c => hkUser[c.id] || c.def;
@@ -10240,19 +10856,20 @@ function gfSave(patch) {           // coalesced 120 ms: the file holds the value
   }, 120);
 }
 // scopes: what a card edits. gg -> graph.json; lg -> the tab's own options (workspace.json)
-async function gcScopeGg() {
+async function gcScopeGg(t) {     // t = the gg tab the card edits (issue #118: its bookmark write-back)
   const st = await gfLoad();
   if (st.gcMiss && st.gcMiss.length) {   // ggpanel: state the panel layout in graph.json on the first open (stock G1)
     const patch = {};
     for (const k of st.gcMiss) patch[k] = k === "close" ? st.close : st.cs[GC_SECS.find(r => r[3] === k)[0]];
     st.gcMiss = []; gfSave(patch);
   }
-  return { kind: "gg", st, save: gfSave };
+  return { kind: "gg", st, save: patch => { gfSave(patch); bmWb(t, patch); } };
 }
 function gcScopeLg(t) {
   if (!t.gc) t.gc = gcParse(t.opts && typeof t.opts === "object" ? t.opts : {});
   return { kind: "lg", t, st: t.gc, save: patch => {   // the layout write is armed by updateTitle -> wsTouch
     t.opts = Object.assign({}, t.opts && typeof t.opts === "object" ? t.opts : {}, patch);
+    bmWb(t, patch);                // issue #118: a bookmark-opened local graph writes back too
   } };
 }
 /* graph_view options (src-tauri graphq::ViewOpts) for a card state, or null when Filters and
@@ -10675,7 +11292,8 @@ function showEditor(g) {
   applyMode(g);
 }
 $("graphbtn").onclick = cmdGlobalGraph;
-async function cmdGlobalGraph() {  // R9.7: ribbon icon opens GLOBAL graph as a main tab
+function cmdGlobalGraph() { return ggOpen(null); }   // R9.7: ribbon icon / command: a plain graph (issue #118: no bookmark link)
+async function ggOpen(bmRef) {      // R9.7: GLOBAL graph as a main tab; bmRef = the bookmark it was opened from, or null
   if (!state) return;
   const g = fg();
   g.perfT0 = perf.now();           // perf: graph_open = click -> first sim frame
@@ -10687,6 +11305,7 @@ async function cmdGlobalGraph() {  // R9.7: ribbon icon opens GLOBAL graph as a 
                   hist: [], hpos: -1 });
     g.active = g.tabs.length - 1;
   }
+  if (bmRef) g.tabs[g.active].bmRef = bmRef; else delete g.tabs[g.active].bmRef;   // issue #118: the last open decides
   await loadActive(g);
 }
 async function startGraph(g, cfg) {
@@ -12006,6 +12625,10 @@ async function enterVault() {
   perf.mark("boot", 0, { notes: names.length });   // perf: page start -> vault ready (first note rendered)
   Ed.fontWarm(fg());   // perfslow: the live preview's faces are built in idle time after boot, not inside the first note open that shows them
   switchReveal();   // item 14: a switch-started window shows itself only now, at the old window's rect
+  // issue #115: the Daily notes core plugin reads the vault's core-plugins.json + daily-notes.json (on/off, options),
+  // then autorun opens today's note — after the boot mark and the reveal, before community plugins load (Calendar /
+  // Periodic Notes find instance.options filled)
+  if (DN) { try { await DN.boot(); } catch (e) { console.error("[daily-notes] boot:", e); } }
   // plugin-loader: enabled community plugins load once the vault is on screen (after the boot
   // mark), unawaited. Restricted mode (the default) = one plugins_state call, no plugin code.
   if (window.__osPluginHost && __osPluginHost.boot) __osPluginHost.boot(vaultPath);
@@ -12978,6 +13601,8 @@ function hkRows() {                          // fuzzy filter AND active chip
   const conf = hkConflicts();
   const confIds = new Set(Object.values(conf).flat());
   return CMDS.filter(c => {
+    if (c.id.startsWith("audio-recorder:") && !(AREC && AREC.on())) return false;   // #116: a core plugin that is off has no rows (stock)
+    if (c.coreOff && c.coreOff()) return false;   // issue #115: an off core plugin's commands are not listed
     if (fuzzy(q, c.name) < 0) return false;
     const chs = hkChords(c);
     switch (hkChip) {

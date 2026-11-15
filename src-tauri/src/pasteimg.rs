@@ -149,12 +149,40 @@ pub fn paste_into(
     if stamp.len() != 14 || !stamp.bytes().all(|b| b.is_ascii_digit()) {
         return Err(PasteErr::BadStamp);
     }
-    let nrel = note_rel(note).ok_or(PasteErr::NoNote)?;
-    // the note must EXIST (a regular file; note_path_in already refused a symlinked leaf):
-    // "./" forms resolve against its folder, and a paste into no note is refused
-    if note.is_empty() || !note_path_in(root, note, false).is_some_and(|p| p.is_file()) {
-        return Err(PasteErr::NoNote);
+    write_into(root, Some(note), &format!("Pasted image {stamp}"), ext, bytes, attach_cfg, md_links, taken)
+}
+
+/// the DEST + NO OVER half of paste_into, shared with the Audio recorder (#116,
+/// audiorec::save): `bytes` become `<base>.<ext>` (or `<base> <n>.<ext>`) in the
+/// attachment folder of `note`. The caller has checked type, cap, magic and the
+/// name parts (`base` and `ext` carry no `/`). `note` None = no note is open
+/// (stock's recorder saves anyway): the "./" folder forms resolve against the
+/// vault root. Some(note) must exist.
+pub fn write_into(
+    root: &Path,
+    note: Option<&str>,
+    base: &str,
+    ext: &str,
+    bytes: &[u8],
+    attach_cfg: &str,
+    md_links: bool,
+    taken: &dyn Fn(&str) -> bool,
+) -> Result<Pasted, PasteErr> {
+    if base.is_empty() || base.contains(['/', '\0']) || ext.is_empty() || !ext.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return Err(PasteErr::Io("bad attachment name".into()));
     }
+    let nrel = match note {
+        None => PathBuf::new(),
+        Some(note) => {
+            let nrel = note_rel(note).ok_or(PasteErr::NoNote)?;
+            // the note must EXIST (a regular file; note_path_in already refused a symlinked leaf):
+            // "./" forms resolve against its folder, and a paste into no note is refused
+            if note.is_empty() || !note_path_in(root, note, false).is_some_and(|p| p.is_file()) {
+                return Err(PasteErr::NoNote);
+            }
+            nrel
+        }
+    };
     let dir = rel_dir(attach_cfg, &nrel).ok_or(PasteErr::BadAttachDir)?;
     let croot = root.canonicalize().map_err(|_| PasteErr::BadAttachDir)?;
     // DEST: the deepest EXISTING ancestor is inside the vault before any mkdir
@@ -171,7 +199,7 @@ pub fn paste_into(
         // O_NOFOLLOW per component: a symlinked folder is ELOOP, not followed
         vfs.mkdir_p(&dir).map_err(|_| PasteErr::BadAttachDir)?;
     }
-    for name in cand_names(&format!("Pasted image {stamp}.{ext}")) {
+    for name in cand_names(&format!("{base}.{ext}")) {
         let rel = dir.join(&name);
         let mut f = match vfs.create_new(&rel, false) {
             Ok(f) => f,
