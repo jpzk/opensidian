@@ -1296,7 +1296,11 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
    it has none, and its geometry is pinned (see #pcard above). */
 :root[data-vthemecompat] :is(#picker > #pcard, .rnmc > #rnbox, #ulbox > #ulcard, #delbox > #delcard) { background-color: var(--modal-background, var(--background-primary, var(--bg-elevated))) }
 :root[data-vthemecompat] :is(.rnmc > #rnbox, #ulbox > #ulcard, #delbox > #delcard) { border-color: var(--modal-border-color, var(--border)); border-width: var(--modal-border-width, var(--border-width, 1px)) }
-:root[data-vthemecompat] :is(#ulbtns button, #del-no) { background-color: var(--interactive-normal, var(--bg-button-plain)); color: var(--text-normal, var(--bg-base)) }
+/* the theme's button fill is for the UNFOCUSED buttons only: stock keeps the focused default visibly distinct by its
+   fill (recon-title-rename U1: focused #FFFFFF, others #E0E0E0, the fill moves with Tab). At equal specificity this
+   rule, being later, used to beat `#ulbtns button:focus` / `#del-no:focus`, so with compat on (since #96 also for an
+   empty cssTheme) all three Update-links buttons painted one fill and R34.6/R34.7 lost the default. */
+:root[data-vthemecompat] :is(#ulbtns button, #del-no):not(:focus) { background-color: var(--interactive-normal, var(--bg-button-plain)); color: var(--text-normal, var(--bg-base)) }
 :root[data-vthemecompat] #p-create.mod-cta { background-color: var(--interactive-accent, var(--bg-button-primary)); color: var(--text-on-accent) }
 :root[data-vthemecompat] #del-yes.mod-cta.mod-destructive { background-color: var(--background-modifier-error, var(--text-banner-error)); color: var(--text-on-accent, var(--bg-base)) }
 :root[data-vthemecompat] #delsay.mod-warning { color: var(--text-warning, var(--text-quiet)) }
