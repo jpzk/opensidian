@@ -58,6 +58,7 @@ mod updates;
 use opensidian_lib::vaultfs;
 mod watcher;
 mod winsize;
+mod xdnd; // #51: the window's OS drop transport — only a drop naming a local file is ours, a link drag reaches the editor
 use index::{link_parts, links_in, resolve, tag_spans, Graph, Index};
 
 /* perf-index: root + in-memory Index (src/index.rs). The index replaces the
@@ -674,8 +675,8 @@ async fn pdf_info(v: State<'_, Vault>, path: String, otel: Option<perf::Ctx>) ->
    here. The whole behaviour lives in `attach_drop` below: it takes the vault,
    the note being edited and the dropped paths, MOVES what it is allowed to
    move and RETURNS the text to insert. The Tauri command and the
-   WindowEvent::DragDrop handler are pass-throughs. The transport (a real XDND
-   drag from another X client -> wry/WebKitGTK -> WindowEvent::DragDrop ->
+   drop transport (xdnd.rs) are pass-throughs. The transport (a real XDND
+   drag from another X client -> WebKitGTK -> xdnd (a local-file uri-list only, #51) ->
    `drop-files` -> attach_files) is exercised end to end by the release-
    mandatory gate phase `osdrop`, which drags with real pointer input.
 
@@ -3744,7 +3745,12 @@ fn page_window(app: &tauri::AppHandle, wc: &tauri::utils::config::WindowConfig) 
     let b = if census::on() { b.initialization_script(census::INIT_JS) } else { b };
     #[cfg(feature = "devui")]
     let b = if devui::root().is_some() { b.initialization_script(devui::INIT_JS) } else { b };
-    b.on_web_resource_request(move |req, res| {
+    // #51: Tauri's own handler claims EVERY drag offering text/uri-list — a browser link drag
+    // too — so the link never reached the editor (attach_drop: Refused::Remote). xdnd owns the
+    // transport instead: a drop naming a local file still goes drop-files -> attach_drop, the rest
+    // is WebKit's (the DOM drop -> Ed.htmlDrop converts its text/html, like stock)
+    let b = b.disable_drag_drop_handler();
+    let w = b.on_web_resource_request(move |req, res| {
         if req.uri().path() == VFS_SYNC_PATH {
             *res = vfs_sync(&h, &req);
         } else {
@@ -3754,6 +3760,7 @@ fn page_window(app: &tauri::AppHandle, wc: &tauri::utils::config::WindowConfig) 
         }
     })
     .build()?;
+    xdnd::attach(&w);
     Ok(())
 }
 
@@ -7014,30 +7021,19 @@ fn main() {
             }
             Ok(())
         })
-        // R31.1 THE DROP HANDLER — 4 lines of body, no behaviour, no I/O, no policy.
-        // Proven end to end by gate phase `osdrop` (a real XDND drag, real pointer).
-        // wry delivers a real XDND drop to Rust and Tauri hands it to us as
-        // WindowEvent::DragDrop (tauri-runtime-wry-2.11.4:4889: for a window's
-        // own content webview the drop is a SYNTHESIZED WINDOW event, not a
-        // webview one), so the DOM never sees a DataTransfer carrying files —
-        // faking a DOM drop in JS would test a path production does not have.
-        // Which note is open and where the caret sits is webview state, so this
-        // re-emits [paths, x, y] under ONE name the UI owns (`drop-files`; x/y =
-        // where it landed, physical px, so the embed goes at the drop point) and
-        // stops: every rule — source checks, name checks, the cap, containment,
-        // no-overwrite — lives in `attach_drop`, reached through `attach_files`.
-        // Caveat, stated because it is real: `emit` serializes to JSON, so a
-        // source path whose bytes are not UTF-8 cannot be carried. It is then
-        // dropped here and the user sees nothing — the same hole Tauri's own
-        // `tauri://drag-drop` payload has. Such a file is never attached, never
-        // half-attached; R31.10.
+        // R31.1 THE DROP TRANSPORT lives in xdnd.rs since #51 (page_window disables
+        // Tauri's own drag-drop handler, so WindowEvent::DragDrop never fires here).
+        // Proven end to end by gate phase `osdrop` (a real XDND drag, real pointer)
+        // and, for the link drag Tauri's handler used to swallow, `droplink`.
+        // A file drop still re-emits [paths, x, y] under ONE name the UI owns
+        // (`drop-files`) and stops: every rule — source checks, name checks, the
+        // cap, containment, no-overwrite — lives in `attach_drop`, reached through
+        // `attach_files`. Caveat, stated because it is real: `emit` serializes to
+        // JSON, so a source path whose bytes are not UTF-8 cannot be carried; such
+        // a file is never attached, never half-attached; R31.10.
         .on_window_event(|w, e| {
             winsize_event(w, e); // goal winsize: track + save on close (not the drop)
             quit_event(w, e); // tab-dataloss: a close waits (bounded) for the UI flush
-            if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, position }) = e {
-                use tauri::Emitter;
-                let _ = w.emit(DROP_EVENT, (paths, position.x, position.y));
-            }
         })
         // S1: the window is the app, never a browser — every navigation off the
         // app origin (remote http(s), javascript:, file:, ...) is denied here.
@@ -11217,7 +11213,7 @@ mod tests {
 
     /* ---- R31 drop-to-attach (feedback #18) -----------------------------
        These hammer `attach_drop`, the ONE function the drop handler wraps.
-       The wry/GTK -> WindowEvent::DragDrop transport is NOT unit-testable (it
+       The GTK -> xdnd.rs transport is NOT unit-testable (its decision, xdnd::claim, is: it
        needs a display and a second X client); the release-mandatory gate phase
        `osdrop` drags a real file from a real XDND source with real pointer
        input. Faking a DOM drag event here would test a path production lacks. */
@@ -11818,30 +11814,36 @@ mod tests {
     }
 
     /// R31.1 THE WIRING IS A STRING, and a string drifts. Rust emits
-    /// DROP_EVENT from the WindowEvent::DragDrop handler; ui/main.js listens
-    /// for that exact name and calls `attach_files`. Rename either end and the
-    /// feature dies in total silence — the build is still green, the tests are
+    /// DROP_EVENT from the window's drop transport (xdnd.rs since #51); ui/main.js
+    /// listens for that exact name and calls `attach_files`. Rename either end and
+    /// the feature dies in total silence — the build is still green, the tests are
     /// still green, and a drop simply does nothing. Nothing else in this repo
     /// would notice, because ui/ is not a cargo input (docs/features.md trap).
     ///
-    /// It also pins the handler as a PASS-THROUGH, which is the structural
+    /// It also pins the transport as a PASS-THROUGH, which is the structural
     /// claim the whole design rests on: the unit tests reach the behaviour
-    /// (`attach_drop`) directly, and the transport is the gate phase osdrop's,
-    /// so a handler with behaviour would be behaviour no unit test reaches.
-    /// A handler that grows a body fails this test at 9 lines.
+    /// (`attach_drop`, `xdnd::claim`) directly, and the transport is the gate
+    /// phases' (osdrop, droplink), so no file I/O or policy may live in it.
+    /// And #51: Tauri's own handler must stay OFF (it swallowed every link drag),
+    /// so WindowEvent::DragDrop is not handled at all any more.
     #[test]
     fn the_drop_handler_is_a_pass_through_and_the_ui_listens_for_the_same_name() {
         let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
+        let xd = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/xdnd.rs")).unwrap();
         let ui = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/main.js")).unwrap();
         let lines: Vec<&str> = src.lines().collect();
-        let i = lines.iter().position(|l| l.contains(".on_window_event(")).expect("no OS drop is wired at all");
+        let i = lines.iter().position(|l| l.contains("fn page_window(")).expect("no app window builder");
+        let j = i + lines[i..].iter().position(|l| l == &"}").expect("unterminated page_window");
+        let pw = &lines[i..=j];
+        assert!(pw.iter().any(|l| l.contains(".disable_drag_drop_handler()")), "#51: Tauri's drop handler must be off for the app window");
+        assert!(pw.iter().any(|l| l.contains("xdnd::attach(&w)")), "the app window must get the xdnd transport");
+        let i = lines.iter().position(|l| l.contains(".on_window_event(")).expect("no window event handler");
         let j = i + lines[i..].iter().position(|l| l.trim() == "})").expect("unterminated handler");
-        let body = &lines[i..=j];
-        assert!(body.len() <= 8, "the drop handler is {} lines: it is meant to be a pass-through", body.len());
-        assert!(body.iter().any(|l| l.contains("WindowEvent::DragDrop")), "the handler must be the REAL OS drop event");
-        assert!(body.iter().any(|l| l.contains("emit(DROP_EVENT")), "the handler must forward under the shared name");
-        for forbidden in ["fs::", "copy", "canonicalize", "if !", "unwrap()"] {
-            assert!(!body.iter().any(|l| l.contains(forbidden)), "policy or I/O ({forbidden}) leaked into the drop handler");
+        assert!(!lines[i..=j].iter().any(|l| l.contains("DragDrop")), "#51: a WindowEvent::DragDrop handler is dead code (Tauri's handler is off)");
+        let code: Vec<&str> = xd.split("#[cfg(test)]").next().unwrap().lines().filter(|l| !l.trim_start().starts_with("//")).collect();
+        assert!(code.iter().any(|l| l.contains("emit(crate::DROP_EVENT")), "the transport must forward under the shared name");
+        for forbidden in ["fs::", "File::", "copy(", "canonicalize", "invoke"] {
+            assert!(!code.iter().any(|l| l.contains(forbidden)), "policy or I/O ({forbidden}) leaked into the drop transport");
         }
         assert_eq!(DROP_EVENT, "drop-files");
         assert!(ui.contains(&format!("listen(\"{DROP_EVENT}\"")), "ui/main.js must listen for the name Rust emits");
