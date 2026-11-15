@@ -67,7 +67,8 @@
     if (/^(false|False|FALSE)$/.test(s)) return { v: false };
     if (/^(null|Null|NULL|~)$/.test(s)) return { v: null };
     if (/^-?(0|[1-9]\d*)(\.\d+)?$/.test(s)) return { v: Number(s) };
-    if (/^[-+.]?\d/.test(s) || /^[-+]?\.(inf|Inf|INF|nan|NaN|NAN)$/.test(s)) return null;
+    if (/^[-+]?(\.\d|\d)[\d_]*(\.[\d_]*)?([eE][-+]?\d+)?$/.test(s) || /^[-+]?0[xXoObB]/.test(s) ||
+        /^[-+]?\.(inf|Inf|INF|nan|NaN|NAN)$/.test(s) || /^[-+]?\d+(:[0-5]?\d)+(\.\d*)?$/.test(s)) return null;   // other number spellings (YAML 1.1 too)
     return { v: s };
   }
   // "[a, 'b', "c"]" -> {v: [...]} | null (no nesting, no empty items)
