@@ -1458,29 +1458,6 @@ Ed.selTok = function (g) {                // [sel:<l>.<c>-<l>.<c>] model range
   const s = Ed.sel(g);
   return s ? " [sel:" + s.a.l + "." + s.a.c + "-" + s.b.l + "." + s.b.c + "]" : "";
 };
-/* #119 longpos caret (i119d DEBUG): the caret leaves L1605 for 0.3 once the undo's save lands,
-   with no reloadInPlace ([rlp:0]). Every selection that jumps >= 200 lines, and every setText
-   (a fresh state), is recorded with its userEvent and the dispatching stack:
-   census [seljmp:N|who|from>to|frames]; console "[seljmp] ...". */
-Ed.jumpN = 0; Ed.jumpLast = "-";
-Ed.jumpRec = function (who, from, to) {
-  Ed.jumpN++;
-  const st = String(new Error().stack || "").split("\n").slice(2, 9)
-    .map(s => s.replace(/^\s*(at\s+)?/, "").replace(/\(?[a-z]+:\/\/[^)\s]*\/([^/):]+):(\d+):\d+\)?/g, "$1:$2").trim())
-    .filter(Boolean).join(";").replace(/[\[\]|\s]+/g, "_").slice(0, 400);
-  Ed.jumpLast = who + "|" + from + ">" + to + "|" + st;
-  console.log("[seljmp] " + Ed.jumpN + " " + Ed.jumpLast);
-};
-Ed.selJump = function (u) {
-  try {
-    const a = u.startState.doc.lineAt(Math.min(u.startState.selection.main.head, u.startState.doc.length)).number - 1;
-    const b = u.state.doc.lineAt(u.state.selection.main.head).number - 1;
-    if (Math.abs(a - b) < 200) return;
-    const ev = u.transactions.map(t => t.annotation(CMs.Transaction.userEvent) || (Ed.HOME_SEL && t.annotation(Ed.HOME_SEL) ? "home" : "-")).join("+");
-    Ed.jumpRec("sel:" + ev, a, b);
-  } catch (e) { console.error(e); }
-};
-if (typeof CENSUS !== "undefined") CENSUS.push(() => " [seljmp:" + Ed.jumpN + "|" + Ed.jumpLast + "]");
 /* rvtask R3/R4: reading-view task checkbox click. ONE delegated listener: the
    renderer (src-tauri main.rs emit) gives each reading-view box data-line = its
    0-based FILE line, so duplicate / nested / quoted / numbered items map
@@ -1646,7 +1623,6 @@ Object.assign(Ed, {
     // marks the state; render(full) skips its bust while the doc is still that state.
     if (load) Ed.lpBust();
     if (v._pxI != null) v._ext[v._pxI] = Ed.PX.of(Ed.pxExt(v));   // editor-api: the fresh state carries the CURRENT plugin extensions
-    Ed.jumpRec("setText" + (load ? "+load" : ""), v.cm.state.doc.lineAt(v.cm.state.selection.main.head).number - 1, 0);
     v.cm.setState(CMs.EditorState.create({ doc: s, extensions: v._ext }));
     v._fresh = load ? v.cm.state : null;
     v._Ld = null; v._snap = null;
@@ -1905,8 +1881,7 @@ Object.assign(Ed, {
     return lp;
   },
   onUpdate(g, v, u) {
-    Ed.kroMap(u);
-    if (u.selectionSet) Ed.selJump(u);
+    Ed.kroMap(u); Ed.mdnUpd(u);
     if (!g || g.view !== v) { if (u.docChanged && v.editor) v.editor.value = u.state.doc.toString(); return; }
     if (u.docChanged) {
       const t0 = performance.now(), d = u.state.doc;
@@ -2073,6 +2048,50 @@ window.addEventListener("keydown", e => {
 }, true);
 }
 Ed.kroTok = function () { return " [kro:" + Ed.kro.n + "/" + Ed.kro.lag + "/" + Ed.kro.st + "]"; };
+/* ---------- A PLAIN CLICK ALWAYS PLACES THE CARET (#119 longpos) ----------
+   Seen on the box (lpcdbg, census [seljmp:]): after wheel-scrolling a 3200-line
+   note to L1600 in live preview, a primary click on a text row left the CM6
+   model caret at 0:0 (inside the Properties block) while the DOM showed it at
+   the viewport top. Typing then went in at the DOM caret, but CM history kept
+   the model's 0:0 as the edit's start selection, so Ctrl+Z put the caret back
+   on 0:0 (L5, past the block). CM6 dispatches "select.pointer" from its own
+   mousedown handler; when a plain click on a row of the focused editor reaches
+   the window (bubble, nobody prevented it) and CM dispatched no pointer
+   selection for it, the caret goes where the pointer is (posAtCoords), exactly
+   as CM would have put it. Interactive targets (widgets, inputs, links, buttons,
+   checkboxes, the Properties block) and a press inside a non-empty selection
+   (CM's drag start) are left alone.
+   Census [mdn:<presses>/<CM pointer selections>/<fallback placements>|<last: target,cm,fb>]. */
+Ed.mdn = { n: 0, sp: 0, fb: 0, sp0: 0, last: "-" };
+Ed.mdnUpd = function (u) { for (const t of u.transactions || []) if (t.isUserEvent("select.pointer")) Ed.mdn.sp++; };
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+window.addEventListener("mousedown", e => { if (e.button === 0) { Ed.mdn.n++; Ed.mdn.sp0 = Ed.mdn.sp; } }, true);
+window.addEventListener("mousedown", e => {
+  if (e.button !== 0) return;
+  const m = Ed.mdn, t = e.target && e.target.nodeType === 1 ? e.target : e.target && e.target.parentElement;
+  const h = t && t.closest ? t.closest(".cm-editor") : null;
+  const tg = t ? (t.className && typeof t.className === "string" ? t.className.split(" ")[0] : t.nodeName) : "none";
+  const cmSel = m.sp > m.sp0 ? 1 : 0;
+  let fb = "-";
+  if (h && !cmSel && !e.defaultPrevented && e.detail <= 1 && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey
+      && t.closest(".cm-content") && t.closest(".cm-line")
+      && !t.closest('[contenteditable="false"], input, textarea, select, button, label, a, .metadata-container, .cm-widgetBuffer')) {
+    const cm = CMv && CMv.EditorView.findFromDOM ? CMv.EditorView.findFromDOM(h) : null;
+    const p = cm ? cm.posAtCoords({ x: e.clientX, y: e.clientY }) : null, r = cm && cm.state.selection.main;
+    if (p == null) fb = "nopos";
+    else if (!r.empty && p >= r.from && p <= r.to) fb = "insel";
+    else if (r.empty && r.head === p) fb = "same";
+    else {
+      cm.dispatch({ selection: { anchor: p }, userEvent: "select.pointer" });
+      if (!cm.hasFocus) cm.focus();
+      m.fb++; fb = "set" + (cm.state.doc.lineAt(cm.state.selection.main.head).number - 1);
+    }
+  }
+  m.last = tg.replace(/[\[\]|\s]/g, "_").slice(0, 24) + "," + cmSel + "," + fb;
+}, false);
+}
+Ed.mdnTok = function () { const m = Ed.mdn; return " [mdn:" + m.n + "/" + m.sp + "/" + m.fb + "|" + m.last + "]"; };
+if (typeof CENSUS !== "undefined") CENSUS.push(() => Ed.mdnTok());
 Ed.caretXY = function (g) {               // caret rect relative to the pane box
   const cm = Ed.cm(g), pr = g.pane.getBoundingClientRect();
   const c = cm && cm.coordsAtPos(cm.state.selection.main.head);

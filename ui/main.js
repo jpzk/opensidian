@@ -5160,11 +5160,7 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
   // modeswitch: the whole SELECTION survives, not only its caret end. ks = the
   // model range (a <= b); the caret is its moving end (focus, else b) and the
   // other end is the anchor — a backward selection comes back backward.
-  // #119 longpos caret (i119d): the editor's own selection is the truth whenever a CM view exists —
-  // g.lpActive can be null while the view holds a real caret (seen: longpos, caret L1605) and it was dropped
-  // (lp -> read -> lp landed on 0:0 = L5 past the block). Same rule as reloadInPlace. A head still at 0
-  // without lpActive is the untouched Ed.home caret: that path below re-homes it (no raw row, mt-fix).
-  const cmK = Ed.cm(g), ks = isLp(tab.mode) && (g.lpActive || (cmK && cmK.state.selection.main.head > 0)) ? Ed.sel(g) : null;
+  const ks = isLp(tab.mode) && g.lpActive ? Ed.sel(g) : null;
   const kc = ks ? (Ed.focusPos(g) || ks.b) : null;
   const keep = kc ? [kc.l, kc.c] : null;
   const ka = ks && !ks.empty ? (kc.l === ks.a.l && kc.c === ks.a.c ? ks.b : ks.a) : null;
@@ -9825,7 +9821,7 @@ async function undoCloseTab() {
   await openInTab(e.name);
   const g = fg();
   if (e.text != null && !wrote && disk !== e.text && curOf(g) === e.name && g.active >= 0) {
-    await reloadInPlace(g, e.text, disk == null ? "" : disk, "rescue");   // base = the bytes on disk -> the tab reads DIRTY, honestly (from the first paint)
+    await reloadInPlace(g, e.text, disk == null ? "" : disk);   // base = the bytes on disk -> the tab reads DIRTY, honestly (from the first paint)
   }
   updateTitle();
   return true;
@@ -12132,11 +12128,10 @@ async function saveBuf1(g) {
       // as an append), and overwritten by setBase below on success. Passed
       // INTO reloadInPlace: assigned after its await, base == buf for the
       // whole render (that render publishes the census) = a dirty tab read clean.
-      if (merged !== buf) { await reloadInPlace(g, merged, disk, "save-merge"); buf = merged; }
+      if (merged !== buf) { await reloadInPlace(g, merged, disk); buf = merged; }
     }
   }
   if (!await saveNote(n, buf)) return false;   // F1: a failed save leaves the tab DIRTY, banner up
-  if (t) t.lastW = buf;                        // #119: the bytes we last wrote (watcher-echo check, census [rlp:])
   setBase(t, buf);
   return true;
 }
@@ -12148,28 +12143,12 @@ async function saveBuf1(g) {
 // window where a dirty tab read base == buffer, CLEAN, while its save was in
 // flight or about to fail (pviews-dloss: dloss F1xR11.3 caught that snapshot).
 // A dirty tab never reads clean, not for one paint.
-// #119 longpos caret (i119d): the caret was carried only when g.lpActive was set — after a
-// read->lp trip it is null, so a reload rebuilt a FRESH state (caret 0 = L5 past the Properties
-// block, scroll top). The editor's own selection is the truth whenever a CM view exists; the
-// top line is kept across setText too. Census [rlp:N|who|lpA|before>after|w] (w=1: the text
-// equals our last write — a watcher echo of our own save, which must never reach here).
-let rlpN = 0, rlpLast = "-";
-CENSUS.push(() => " [rlp:" + rlpN + "|" + rlpLast + "]");
-async function reloadInPlace(g, text, base = text, who = "?") {
+async function reloadInPlace(g, text, base = text) {
   const t = g.tabs[g.active];
-  const ed = t.mode !== "reading" && !!Ed.cm(g);
-  const c = ed || g.lpActive ? Ed.caret(g) : null;   // R17: caret survives the reload
-  const top = ed ? ssAnchor(g) : null;
+  const c = g.lpActive ? Ed.caret(g) : null;   // R17: caret survives the reload
   Ed.setText(g, text); t.base = base;
   if (t.mode === "reading") await preview(g);
-  else {
-    await lpRender(g, c ? c.l : -1, c ? c.c : 0);   // dirty rows only
-    if (top != null) ssRestore(g, top);
-  }
-  const a = Ed.caret(g);
-  rlpN++;
-  rlpLast = who + "|" + (g.lpActive ? 1 : 0) + "|" + (c ? c.l + "." + c.c : "-") + ">" + (a ? a.l + "." + a.c : "-") + "|" + (t.lastW === text ? 1 : 0);
-  console.log("[reloadInPlace] " + rlpLast);
+  else await lpRender(g, c ? c.l : -1, c ? c.c : 0);   // dirty rows only
   updateStatus(g);
 }
 // remove a tab WITHOUT flushing (R11.4: the file is gone; a flush would resurrect it)
@@ -12223,28 +12202,14 @@ async function onVaultChanged(c) {
     for (const x of g.tabs) if (!x.kind && x !== g.tabs[g.active] && mod.has(x.name)) x.stale = true;  // R20: retained views re-read on switch
     const t = g.active >= 0 ? g.tabs[g.active] : null;
     if (!t || t.kind || !mod.has(t.name)) continue;
-    // #119 (i119d): the read is async and a save of ours can land while it is on the wire —
-    // the read then holds the PREVIOUS bytes (e.g. the typed token an undo just removed) while
-    // t.base already says the new ones, and "clean: take disk" would put the stale bytes back
-    // into the buffer (fresh state: caret 0, history gone; typing then re-saves them). Wait for
-    // the saves in flight first, and re-read if base moved under the read.
-    let ext = null, ok = false;
-    for (let k = 0; k < 3 && !ok; k++) {
-      if (g.saveQ) await g.saveQ;
-      const b0 = t.base;
-      ext = await inv("read_note", { name: t.name });
-      ok = t.base === b0;
-    }
-    if (g.tabs[g.active] !== t) continue;
+    const ext = await inv("read_note", { name: t.name });
     const buf = bufOf(g);
     if (buf === ext) { t.base = ext; continue; }
-    if (!ok) continue;                                   // still racing: the watcher event of that save re-checks
-    if (ext === t.lastW) { t.base = ext; scheduleSave(g); continue; }   // the echo of our own last write: the buffer is newer, keep it
-    if (buf === t.base) { await reloadInPlace(g, ext, ext, "watch-clean"); continue; }   // clean: take disk
+    if (buf === t.base) { await reloadInPlace(g, ext); continue; }   // clean: take disk
     // R11.3 dirty: never lose typed text. External append on top of our base
     // merges (buf + tail); anything else keeps the buffer. Either way re-save.
     const merged = ext.startsWith(t.base) ? buf + ext.slice(t.base.length) : buf;
-    if (merged !== buf) await reloadInPlace(g, merged, ext, "watch-merge");   // base = disk from the first paint: dirty throughout
+    if (merged !== buf) await reloadInPlace(g, merged, ext);   // base = disk from the first paint: dirty throughout
     t.base = ext; scheduleSave(g);
   }
   await refreshTree();
