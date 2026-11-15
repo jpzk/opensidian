@@ -1128,23 +1128,26 @@
     if (EA && !("metadataEditor" in MarkdownView.prototype)) {
       const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
       const isMap = v => v !== null && typeof v === "object" && !Array.isArray(v) && !(v instanceof Date);
+      // own data property even for a key named __proto__ (plain `o[k] = v` would hit the prototype setter and drop it)
+      const put = (o, k, v) => Object.defineProperty(o, k, { value: v, writable: true, enumerable: true, configurable: true });
       const mergeProps = (dst, src) => {
         for (const k of Object.keys(src)) {
           const a = dst[k], b = src[k];
-          if (!own(dst, k)) dst[k] = b;
+          if (!own(dst, k)) put(dst, k, b);
           else if (Array.isArray(a) || Array.isArray(b)) {
             const out = [];
             for (const x of [].concat(a == null ? [] : a, b == null ? [] : b)) if (!out.includes(x)) out.push(x);
-            dst[k] = out;
+            put(dst, k, out);
           } else if (isMap(a) && isMap(b)) mergeProps(a, b);
-          else if (b != null && b !== "") dst[k] = b;
+          else if (b != null && b !== "") put(dst, k, b);
         }
         return dst;
       };
       const fmRange = text => {   // [yaml, end offset] of a leading frontmatter block, or null
         const m = /^---\r?\n/.exec(text);
         if (!m) return null;
-        const re = /^---[ \t]*(\r?\n|$)/gm; re.lastIndex = m[0].length;
+        // closes on --- or YAML's ..., exactly as api-vault.js splitFrontMatter / index.rs read it
+        const re = /^(---|\.\.\.)[ \t]*(\r?\n|$)/gm; re.lastIndex = m[0].length;
         for (let c; (c = re.exec(text));) if (c.index === m[0].length || text[c.index - 1] === "\n") return [text.slice(m[0].length, c.index), c.index + c[0].length];
         return null;
       };
@@ -1157,7 +1160,8 @@
           const text = ed.getValue(), r = fmRange(text);
           let fm = {};
           if (r) {
-            try { fm = K.parseYaml(r[0]) || {}; } catch (e) { console.warn("[plugin] metadataEditor.insertProperties: frontmatter not readable, left as is:", e && e.message || e); return; }
+            // only an EMPTY block reads as {}: a scalar block (false, 0, "") must reach the non-map guard below
+            try { const y = K.parseYaml(r[0]); fm = y == null ? {} : y; } catch (e) { console.warn("[plugin] metadataEditor.insertProperties: frontmatter not readable, left as is:", e && e.message || e); return; }
             if (!isMap(fm)) { console.warn("[plugin] metadataEditor.insertProperties: frontmatter is not a map, left as is"); return; }
           }
           mergeProps(fm, JSON.parse(JSON.stringify(props)));
