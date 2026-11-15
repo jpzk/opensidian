@@ -1,0 +1,101 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Supply chain — what the Rust dependency graph (src-tauri/Cargo.lock) may contain.
+#   cargo audit   RustSec advisories against Cargo.lock (--deny warnings)
+#   cargo deny    advisories + sources + bans + licenses (deny.toml)
+#   cargo vet     every third-party crate audited, imported or exempted (src-tauri/supply-chain/)
+# See docs/supply-chain.md for what each check catches and how to audit a new crate.
+#
+# Hardening:
+#   - trigger pull_request (never pull_request_target): fork PRs run with a read-only
+#     token and no secrets; nothing here needs either.
+#   - top-level permissions contents: read; no secrets; checkout does not persist the token.
+#   - every action pinned to a full commit SHA (# vX.Y.Z), tools pinned to exact versions
+#     built with --locked; every pin released >= 6 weeks before pin time (2026-11-15).
+#   - no caches: nothing a PR run writes can be restored by a push/main run.
+name: Supply chain
+
+on:
+  pull_request: {}
+  push:
+    branches: [develop, main]
+  schedule:
+    # weekly: new RustSec advisories land without any change to this repo
+    - cron: '23 4 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supply-chain-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_TOOLCHAIN: '1.98.0'        # = release.yml (released 2026-08-20)
+  CARGO_AUDIT_VERSION: '0.22.2'   # released 2026-06-05
+  CARGO_DENY_VERSION: '0.20.2'    # released 2026-07-09
+  CARGO_VET_VERSION: '0.10.2'     # released 2026-01-13
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: '5'
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: toolchain ${{ env.RUST_TOOLCHAIN }}
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
+          rustup default "$RUST_TOOLCHAIN"
+          cargo --version
+      - name: install cargo-audit ${{ env.CARGO_AUDIT_VERSION }}
+        run: cargo install --locked --version "$CARGO_AUDIT_VERSION" cargo-audit
+      - name: cargo audit
+        # the RustSec advisory DB is fetched at run time (not pinned); ignores live in
+        # src-tauri/audit.toml with reason + expiry
+        working-directory: src-tauri
+        run: cargo audit --deny warnings
+
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: toolchain ${{ env.RUST_TOOLCHAIN }}
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
+          rustup default "$RUST_TOOLCHAIN"
+          cargo --version
+      - name: install cargo-deny ${{ env.CARGO_DENY_VERSION }}
+        run: cargo install --locked --version "$CARGO_DENY_VERSION" cargo-deny
+      - name: cargo deny check
+        run: cargo deny --manifest-path src-tauri/Cargo.toml --locked check --config deny.toml --show-stats
+
+  vet:
+    name: cargo vet
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: toolchain ${{ env.RUST_TOOLCHAIN }}
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
+          rustup default "$RUST_TOOLCHAIN"
+          cargo --version
+      - name: install cargo-vet ${{ env.CARGO_VET_VERSION }}
+        run: cargo install --locked --version "$CARGO_VET_VERSION" cargo-vet
+      - name: cargo vet --locked
+        # --locked: use imports.lock as committed (no fresh import fetch) and Cargo.lock as is;
+        # any new or updated crate without an audit/exemption fails here
+        working-directory: src-tauri
+        run: cargo vet --locked
