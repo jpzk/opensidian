@@ -8007,10 +8007,13 @@ var DN = null;   // var: the census (dnTok) may run before this line
       if (typeof updateTitle === "function" && state) updateTitle();
     };
     let cq = Promise.resolve();   // core-plugins.json writes, in click order
+    /* codeant #122: a toggle / pane write while boot() awaits its reads wins over those (now stale) reads */
+    let onGen = 0, cfgGen = 0;
     async function setOn(on) {
       plugin.enabled = !!on; pref.set(!!on); sync();
       if (!plugin._loaded) await plugin.load();
       if (!state) return;   // before the vault is known there is no core-plugins.json to write (boot reads it)
+      onGen++;
       cq = cq.then(() => vinv("core-plugins", { "daily-notes": !!on })).catch(e => say("Core plugins: " + errStr(e), "daily-notes"));
       await cq;
     }
@@ -8035,6 +8038,7 @@ var DN = null;   // var: the census (dnTok) may run before this line
         const p = {};
         for (const k of Object.keys(patch || {})) if (own(DN_DEF, k)) p[k] = patch[k];
         if (!Object.keys(p).length) return wq;
+        cfgGen++;
         Object.assign(file, p); syncOpts(); sync();
         wq = wq.then(() => vinv("daily-notes", p)).then(v => {
           if (v && typeof v === "object") { for (const k of Object.keys(file)) delete file[k]; Object.assign(file, v); syncOpts(); sync(); }
@@ -8047,12 +8051,15 @@ var DN = null;   // var: the census (dnTok) may run before this line
     });
     Object.defineProperty(plugin, "cfg", { value: cfg, enumerable: false });
     async function boot() {   // enterVault: the vault's two files decide on/off and the options, then autorun
+      const g0 = onGen, c0 = cfgGen;
       const [core, dn] = await Promise.all([vinv("core-plugins").catch(() => ({})), vinv("daily-notes").catch(() => ({}))]);
-      for (const k of Object.keys(file)) delete file[k];
-      if (dn && typeof dn === "object") Object.assign(file, dn);
-      syncOpts();
+      if (cfgGen === c0) {   // else the pane wrote meanwhile: its write's answer refreshes the file
+        for (const k of Object.keys(file)) delete file[k];
+        if (dn && typeof dn === "object") Object.assign(file, dn);
+        syncOpts();
+      }
       const c = core && typeof core === "object" ? core["daily-notes"] : undefined;
-      plugin.enabled = typeof c === "boolean" ? c : pref.get() === true;
+      if (onGen === g0) plugin.enabled = typeof c === "boolean" ? c : pref.get() === true;   // else the click (already written) stands
       await plugin.load();
       st.booted = true; sync();
       if (plugin.enabled && options.autorun === true) await dnOpenToday("autorun");
