@@ -18,6 +18,7 @@ use std::sync::{Mutex, OnceLock};
 use tauri::State;
 
 mod appid;
+mod audiorec; // #116: Audio recorder core plugin — the mic gate (audio-only, armed) and the save
 mod builtins;
 mod callout; // #59: Obsidian callouts in the reading render
 use opensidian_lib::canvasfs;
@@ -999,6 +1000,54 @@ async fn paste_image(
         let p = pasteimg::paste_into(&root, &note, &mime, &bytes, &st, &cfg, md, &taken).map_err(|e| e.say())?;
         eprintln!("[paste] {} bytes -> {}", bytes.len(), p.path);
         v.index.lock().unwrap().add_image(&p.path);
+        Ok(p)
+    })(), serde_json::json!({"b64": data.len()}))
+}
+
+/* #116 Audio recorder — the IPC half of audiorec.rs. audio_token hands the
+   per-page-load secret to its FIRST caller (the core recorder in ui/main.js, at
+   boot, before any plugin script); audio_arm / audio_disarm / audio_save need it.
+   The gate itself (audio-only, one-shot, ARM_WINDOW) is audiorec::decide. */
+#[tauri::command]
+fn audio_token(win: tauri::WebviewWindow) -> Result<String, String> {
+    audiorec::token(win.label())
+}
+
+#[tauri::command]
+fn audio_arm(win: tauri::WebviewWindow, token: String) -> Result<(), String> {
+    audiorec::arm(win.label(), &token, std::time::Instant::now())
+}
+
+#[tauri::command]
+fn audio_disarm(win: tauri::WebviewWindow, token: String) -> Result<(), String> {
+    audiorec::disarm(win.label(), &token)
+}
+
+/// the finished recording (base64 webm) -> `Recording <ts>.webm` in the
+/// attachment folder of `note` ("" = no note open) and its embed
+#[tauri::command]
+async fn audio_save(
+    win: tauri::WebviewWindow,
+    v: State<'_, Vault>,
+    token: String,
+    note: String,
+    data: String,
+    tm: datefmt::Tm,
+) -> Result<pasteimg::Pasted, String> {
+    span_timed!("audio_save", (|| {
+        audiorec::authorized(win.label(), &token)?;
+        let root = cur_vault(&v).ok_or("no vault open")?;
+        if data.len() as u64 > audiorec::MAX_REC_BYTES / 3 * 4 + 8 {
+            return Err(format!("the recording is over the {} MB limit", audiorec::MAX_REC_BYTES / 1048576));
+        }
+        let bytes = vaultfs::b64_decode(&data).ok_or("the recording is not valid base64")?;
+        let st = pasteimg::stamp(&tm).map_err(|e| e.say())?;
+        let (cfg, md) = pasteimg::app_cfg(&root);
+        let media: Vec<String> = v.index.lock().unwrap().images().to_vec();
+        let taken = |n: &str| media.iter().any(|p| p.rsplit('/').next() == Some(n));
+        let p = audiorec::save(&root, Some(note.as_str()), &bytes, &st, &cfg, md, &taken)?;
+        eprintln!("[audiorec] {} bytes -> {}", bytes.len(), p.path);
+        // audio files join the index with the ![[x.webm]] embed (#116); the image list stays images/pdf
         Ok(p)
     })(), serde_json::json!({"b64": data.len()}))
 }
@@ -3753,7 +3802,15 @@ fn page_window(app: &tauri::AppHandle, wc: &tauri::utils::config::WindowConfig) 
             page_csp(&h, res)
         }
     })
-    .build()?;
+    // #116: a (re)load voids the old page's recorder token and any arm
+    .on_page_load(|w, p| {
+        if p.event() == tauri::webview::PageLoadEvent::Started {
+            audiorec::page_started(w.label());
+        }
+    })
+    .build()
+    // #116: the microphone gate (audio-only, armed by the core recorder; audiorec.rs)
+    .map(|w| audiorec::install(&w))?;
     Ok(())
 }
 
@@ -7091,7 +7148,7 @@ fn main() {
             .map(std::borrow::Cow::Owned)
         })
         .invoke_handler(tauri::generate_handler![
-            list_notes, list_images, canvas_io, canvas_attach, paste_image, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
+            list_notes, list_images, canvas_io, canvas_attach, paste_image, audio_token, audio_arm, audio_disarm, audio_save, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, bm_add_view, bm_add_view_at, bm_remove, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
