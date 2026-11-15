@@ -625,6 +625,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .stab svg { width: 15px; height: 15px; display: block; margin: 0 auto; opacity: var(--icon-opacity, 1); }
 .stab.active svg { opacity: var(--icon-opacity-active, 1) }
 .spane { flex: 1; display: flex; flex-direction: column; min-height: 0 }
+.stab[hidden] { display: none }   /* #119: the Properties view tab shows once opened */
 .spane[hidden] { display: none }
 #side[hidden] { display: none }   /* R9.5: collapsed left sidebar (ribbon stays) */
 /* ux-4: left resize divider — overlaps #side's last 6px (negative margin,
@@ -2342,3 +2343,11 @@ svg.gi { width: 12px; height: 12px; vertical-align: -2px; display: inline-block;
   border: 1px solid var(--border); border-radius: 6px; padding: 4px 0; max-height: 260px; overflow: auto; min-width: 140px; box-shadow: 0 4px 14px var(--shadow-popover, rgba(0,0,0,.2)); }
 .props-suggest .suggestion-item { padding: 4px 10px; cursor: pointer; white-space: nowrap; font-size: 13px; }
 .props-suggest .suggestion-item.is-selected, .props-suggest .suggestion-item:hover { background: var(--border); }
+/* #119 the Properties view (right sidebar) */
+#propshead { display: flex; align-items: center; }
+#propshead .props-sort { margin-left: auto; font-size: 11px; padding: 1px 6px; background: none; border: 1px solid var(--border); border-radius: 4px; color: var(--text-chrome-muted); cursor: pointer; }
+.props-vrow { display: flex; align-items: center; gap: 4px; padding: 3px 8px 3px 6px; cursor: pointer; font-size: 13px; }
+.props-vrow:hover { background: var(--bg-surface) }
+.props-vrow .props-vname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.props-vrow .scount { color: var(--text-chrome-dim) }
+.props-vrow .props-vrename { flex: 1; min-width: 0; font: inherit; }

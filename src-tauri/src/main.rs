@@ -1474,6 +1474,13 @@ fn set_prop_type(v: State<Vault>, name: String, ty: Option<String>) -> Result<()
     vaultfs::write_atomic(&root, Path::new(props::TYPES_REL), body.as_bytes()).map_err(|e| e.to_string())
 }
 
+/// #119: the notes whose frontmatter holds `key` (the Properties view's Rename)
+#[tauri::command]
+fn props_notes(v: State<Vault>, key: String) -> Vec<String> {
+    let ix = v.index.lock().unwrap();
+    props::notes_with(ix.docs().map(|(n, c, _)| (n, c)), &key)
+}
+
 /// #119: every vault property (key, notes holding it, distinct values) off the index
 #[tauri::command]
 fn props_index(v: State<Vault>) -> Vec<props::PropStat> {
@@ -4617,6 +4624,20 @@ fn lines_with_offsets(content: &str) -> impl Iterator<Item = (usize, &str, u32)>
 }
 
 fn search_docs<'a>(docs: impl IntoIterator<Item = (&'a str, &'a str, &'a [String])>, query: &str) -> Vec<SearchHit> {
+    // #119: `[key]` / `[key:value]` (stock's property search; the Properties view's click)
+    // -> one hit per note on its frontmatter line for the key
+    if let Some((key, val)) = props::prop_query(query) {
+        let mut out = Vec::new();
+        for (name, content, _) in docs {
+            let Some(ln) = props::prop_hit(content, &key, val.as_deref()) else { continue };
+            let Some((_, l, base)) = lines_with_offsets(content).nth(ln) else { continue };
+            out.push(SearchHit { note: name.to_string(), line: ln as u32, snippet: l.trim().chars().take(200).collect(), offset: base, len: 0 });
+            if out.len() >= 500 {
+                break;
+            }
+        }
+        return out;
+    }
     let (want, text) = split_query(query);
     let q = text.to_lowercase();
     let mut out = Vec::new();
@@ -7159,7 +7180,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, canvas_io, canvas_attach, paste_image, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, bm_add_view, bm_add_view_at, bm_remove, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, props_mode, set_props_mode, props_types, set_prop_type, props_index, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, bm_add_view, bm_add_view_at, bm_remove, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, props_mode, set_props_mode, props_types, set_prop_type, props_index, props_notes, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
             read_workspace, write_workspace,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
@@ -8533,6 +8554,24 @@ mod tests {
         let g = graph_of(&docs);
         assert_eq!(g.nodes.iter().map(|n| (n.name.as_str(), n.resolved)).collect::<Vec<_>>(), vec![("A", true), ("sub/C", true), ("Nope.md", false)]);
         assert_eq!(g.edges, vec![(0, 1), (0, 2)]);
+    }
+
+    #[test]
+    fn search_property_query_hits_the_key_line() {
+        let docs = vec![
+            ("A".to_string(), "---\ntitle: t\nstatus: done\n---\nstatus in the body\n".to_string()),
+            ("B".to_string(), "---\nstatus: open\n---\n".to_string()),
+            ("C".to_string(), "status: not frontmatter\n".to_string()),
+        ];
+        let h = search_docs(docs_ref(&docs), "[status]");
+        assert_eq!(h.iter().map(|x| (x.note.as_str(), x.line, x.snippet.as_str())).collect::<Vec<_>>(),
+                   vec![("A", 2, "status: done"), ("B", 1, "status: open")]);
+        assert_eq!(h[0].offset, 15, "the offset is the key line's start in the file");
+        let h = search_docs(docs_ref(&docs), "[status:OPEN]");
+        assert_eq!(h.len(), 1);
+        assert_eq!(h[0].note, "B");
+        // not a bracket term: the plain text search as before
+        assert_eq!(search_docs(docs_ref(&docs), "status").len(), 4);
     }
 
     #[test]

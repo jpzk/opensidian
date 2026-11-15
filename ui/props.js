@@ -192,7 +192,9 @@
   }
 
   // ---- value widgets ----
-  function valueWidget(cm, row, ro) {
+  function valueWidget(cm, row, ro, onSet) {
+    // onSet(nv): the value sink (metadataTypeManager render: ctx.onChange); default = this note's entry
+    const set = onSet || (nv => setValue(cm, row.key, row.type, nv));
     const M = PM(), box = el("div", "metadata-property-value");
     box.dataset.type = row.type;
     if (!row.ok) {
@@ -211,7 +213,7 @@
         if (!ro) {
           const rm = el("span", "multi-select-pill-remove-button", "×");
           rm.addEventListener("mousedown", e => { e.preventDefault(); e.stopPropagation(); });
-          rm.addEventListener("click", e => { e.stopPropagation(); const nv = v.slice(); nv.splice(i, 1); Props.focus = { cm, key: row.key, part: "value" }; setValue(cm, row.key, row.type, nv.length ? nv : null); });
+          rm.addEventListener("click", e => { e.stopPropagation(); const nv = v.slice(); nv.splice(i, 1); Props.focus = { cm, key: row.key, part: "value" }; set(nv.length ? nv : null); });
           pill.appendChild(rm);
         }
         ms.appendChild(pill);
@@ -225,7 +227,7 @@
           if (!t) return;
           const nv = (v || []).slice(); if (nv.indexOf(t) < 0) nv.push(t);
           Props.focus = { cm, key: row.key, part: "value" };
-          setValue(cm, row.key, row.type, nv);
+          set(nv);
         };
         const sugNow = async () => { const st = statOf(await index(), row.key); suggest(inp, st ? st.values.filter(x => (v || []).indexOf(x) < 0) : [], push); };
         inp.addEventListener("focus", sugNow);
@@ -233,7 +235,7 @@
         inp.addEventListener("keydown", e => {
           if (sugKey(e, inp, push)) return;
           if (e.key === "Enter" || e.key === ",") { e.preventDefault(); const s = inp.value; inp.value = ""; closeSug(); push(s); }
-          else if (e.key === "Backspace" && !inp.value && (v || []).length) { e.preventDefault(); Props.focus = { cm, key: row.key, part: "value" }; const nv = v.slice(0, -1); setValue(cm, row.key, row.type, nv.length ? nv : null); }
+          else if (e.key === "Backspace" && !inp.value && (v || []).length) { e.preventDefault(); Props.focus = { cm, key: row.key, part: "value" }; const nv = v.slice(0, -1); set(nv.length ? nv : null); }
           else if (e.key === "Escape") { inp.value = ""; inp.blur(); }
         });
         inp.addEventListener("blur", () => { setTimeout(closeSug, 0); if (inp.value.trim()) { const s = inp.value; inp.value = ""; push(s); } });
@@ -246,7 +248,7 @@
       const cb = el("input", "metadata-input-checkbox");
       cb.type = "checkbox"; cb.checked = v === true; cb.disabled = !!ro;
       cb.addEventListener("mousedown", e => e.stopPropagation());
-      cb.addEventListener("change", () => setValue(cm, row.key, "checkbox", cb.checked));
+      cb.addEventListener("change", () => set(cb.checked));
       box.appendChild(cb);
       return box;
     }
@@ -262,7 +264,7 @@
       if (inp.value === was) return;
       const nv = M.coerce(row.type, inp.value);
       if (nv === undefined) { notice("Properties: " + JSON.stringify(inp.value) + " is not a " + TYPE_LABEL[row.type].toLowerCase()); inp.value = was; return; }
-      setValue(cm, row.key, row.type, nv);
+      set(nv);
     };
     if (row.type === "text") {
       const pick = s => { inp.value = s; commit(); };
@@ -468,4 +470,113 @@
     if (a && c.contains(a)) { const r = a.closest(".metadata-property"); xy.push("focus=" + (r ? safe(r.dataset.propertyKey || "draft") : "-") + "/" + (a.classList.contains("metadata-property-key-input") ? "key" : "value")); }
     return out + " [propsxy:" + xy.join("|") + "]";
   };
+  // ---- app.metadataTypeManager widgets: render(containerEl, value, ctx) builds the value widget
+  // of the in-document block; edits go to ctx.onChange(value) (the plugin owns the write) ----
+  const API_TYPE = { file: "text", folder: "text", property: "text" };
+  Props.renderWidget = function (type, host, value, ctx) {
+    const M = PM(), c = ctx || {};
+    const ty = M.KNOWN.indexOf(type) >= 0 ? type : API_TYPE[type] || null;
+    let cur = value, node = null;
+    const draw = () => {
+      if (node) node.remove();
+      const ok = ty != null && (cur == null || M.fits(ty, M.LISTY[ty] && typeof cur === "string" ? [cur] : cur));
+      const v = ok && M.LISTY[ty] && typeof cur === "string" ? [cur] : cur;
+      const row = { key: String(c.key == null ? "" : c.key), type: ty || "unknown", ok, value: ok ? v : undefined,
+                    why: ty == null ? "unknown type " + type : "the value is not a " + ty,
+                    raw: ": " + (cur === undefined ? "" : JSON.stringify(cur)) };
+      node = valueWidget(null, row, false, nv => {
+        if (Props.focus && Props.focus.cm == null) Props.focus = null;
+        cur = nv; draw();
+        if (typeof c.onChange === "function") c.onChange(nv);
+      });
+      host.appendChild(node);
+    };
+    draw();
+    return { type, focus() { const i = node && node.querySelector("input"); if (i) i.focus(); } };
+  };
+
+  // ---- the Properties view (core plugin, right sidebar): every vault property + its note count ----
+  Props.viewSort = "name";         // name | freq (the header toggle)
+  Props.viewInfo = "";             // census [rp:props:<n>|<sort>]
+  const guessType = p => {
+    const lc = p.name.toLowerCase(), M = PM();
+    if (Props.types[lc]) return Props.types[lc];
+    if (M.RESERVED[lc]) return M.RESERVED[lc];
+    const vs = p.values || [];
+    if (!vs.length) return "text";
+    if (vs.every(x => /^-?\d+(\.\d+)?$/.test(x))) return "number";
+    if (vs.every(x => /^(true|false)$/i.test(x))) return "checkbox";
+    if (vs.every(x => /^\d{4}-\d{2}-\d{2}$/.test(x))) return "date";
+    if (vs.every(x => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(x))) return "datetime";
+    return "text";
+  };
+  const qKey = k => (/^[\w-]+$/.test(k) ? k : JSON.stringify(k));
+  // hooks: {search(query), renameAll(old, new) -> Promise, refresh()}
+  Props.renderView = async function (box, head, hooks) {
+    let idx = [];
+    try { idx = (await inv0("props_index")) || []; Props.idx = idx; Props.idxT = Date.now(); } catch (_) {}
+    box.textContent = ""; head.textContent = "";
+    const byName = (a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+    const list = idx.slice().sort(Props.viewSort === "freq" ? (a, b) => b.count - a.count || byName(a, b) : byName);
+    head.appendChild(document.createTextNode("All properties"));
+    head.appendChild(el("span", "scount", String(list.length)));
+    const sb = el("button", "props-sort", Props.viewSort === "freq" ? "Frequency" : "Name");
+    sb.id = "propsort"; sb.title = "Sort by name / frequency";
+    sb.onclick = () => { Props.viewSort = Props.viewSort === "freq" ? "name" : "freq"; hooks.refresh(); };
+    head.appendChild(sb);
+    Props.viewInfo = "props:" + list.length + "|" + Props.viewSort;
+    if (!list.length) { const d = el("div", "rempty", "No properties found."); box.appendChild(d); return; }
+    for (const p of list) {
+      const ty = guessType(p);
+      const row = el("div", "props-vrow");
+      row.dataset.key = p.name; row.dataset.type = ty; row.title = p.name;
+      const ic = el("span", "metadata-property-icon", ICON[ty] || "?"); ic.title = TYPE_LABEL[ty] || ty;
+      row.appendChild(ic);
+      const nm = el("span", "props-vname", p.name);
+      row.appendChild(nm);
+      row.appendChild(el("span", "scount", String(p.count)));
+      row.onclick = () => { if (!row.querySelector("input")) hooks.search("[" + qKey(p.name) + ":]"); };
+      row.oncontextmenu = e => { e.preventDefault(); e.stopPropagation(); viewMenu(p, ty, row, nm, e, hooks); };
+      box.appendChild(row);
+    }
+  };
+  function viewMenu(p, ty, row, nm, ev, hooks) {
+    if (typeof closeMenu === "function") closeMenu();
+    const m = el("div", "ctxmenu props-menu"); m.dataset.menu = "propsview";
+    const item = (txt, on) => { const it = el("div", null, txt); it.onmousedown = e => e.stopPropagation(); it.onclick = e => { e.stopPropagation(); if (typeof closeMenu === "function") closeMenu(); on(); }; m.appendChild(it); };
+    const M = PM(), lc = p.name.toLowerCase();
+    const types = M.RESERVED[lc] && M.RESERVED[lc] !== "multitext" ? [M.RESERVED[lc]] : MENU_TYPES;
+    for (const t of types) item((t === ty ? "✓ " : "") + TYPE_LABEL[t], async () => {
+      if (t === ty) return;
+      try { await Props.setType(p.name, t); } catch (e) { notice("Properties: " + String(e && e.message || e)); }
+      hooks.refresh();
+    });
+    m.appendChild(el("div", "sep"));
+    item("Rename", () => {
+      const ki = el("input", "props-vrename"); ki.type = "text"; ki.value = p.name;
+      nm.replaceWith(ki); ki.focus(); ki.select();
+      let gone = false;
+      const end = async ok => {
+        if (gone) return; gone = true;
+        const n = ki.value.trim();
+        ki.replaceWith(nm);
+        if (ok && n && n !== p.name) { await hooks.renameAll(p.name, n); hooks.refresh(); }
+      };
+      ki.addEventListener("keydown", e => { e.stopPropagation(); if (e.key === "Enter") { e.preventDefault(); end(true); } else if (e.key === "Escape") { e.preventDefault(); end(false); } });
+      ki.addEventListener("blur", () => end(true));
+      ki.addEventListener("mousedown", e => e.stopPropagation());
+      ki.addEventListener("click", e => e.stopPropagation());
+    });
+    if (typeof placeMenu === "function") placeMenu(m, ev.clientX, ev.clientY);
+    else { m.style.left = ev.clientX + "px"; m.style.top = ev.clientY + "px"; document.body.appendChild(m); }
+  }
+  // census [pview:<key>=<type>/<count>@x,y|...] the rows of a showing Properties view
+  Props.viewTok = function () {
+    const b = document.getElementById("propslist");
+    if (!b || !b.getClientRects().length) return "";
+    const rows = [...b.querySelectorAll(".props-vrow")];
+    const sb = document.getElementById("propsort");
+    return " [pview:" + (sb ? "sort=" + ctr(sb) + "|" : "") + rows.map(r => safe(r.dataset.key) + "=" + r.dataset.type + "/" + r.querySelector(".scount").textContent + "@" + ctr(r)).join("|") + "]";
+  };
+
 })();

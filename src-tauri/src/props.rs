@@ -170,6 +170,47 @@ pub fn census<'a>(contents: impl Iterator<Item = &'a str>) -> Vec<PropStat> {
     m.into_values().collect()
 }
 
+/// stock's property search: `[key]` (the note has the key) / `[key:value]` (one of its
+/// values contains `value`, case-insensitive). -> (lowercase key, lowercase value). Only a
+/// query that is exactly one bracket term qualifies; anything else is a normal search.
+pub fn prop_query(q: &str) -> Option<(String, Option<String>)> {
+    let inner = q.trim().strip_prefix('[')?.strip_suffix(']')?;
+    if inner.contains(['[', ']']) {
+        return None;
+    }
+    let (k, v) = match inner.find(':') {
+        Some(i) => (&inner[..i], Some(&inner[i + 1..])),
+        None => (inner, None),
+    };
+    let k = unquote(k).to_lowercase();
+    if k.is_empty() {
+        return None;
+    }
+    let v = v.map(|x| unquote(x).to_lowercase()).filter(|x| !x.is_empty());
+    Some((k, v))
+}
+
+/// the 0-based file line of `key`'s entry when the note matches the property query
+pub fn prop_hit(content: &str, key: &str, val: Option<&str>) -> Option<usize> {
+    let (_, vals) = note_props(content).into_iter().find(|(k, _)| k.to_lowercase() == key)?;
+    if let Some(v) = val {
+        if !vals.iter().any(|x| x.to_lowercase().contains(v)) {
+            return None;
+        }
+    }
+    let lines = fm_lines(content)?;
+    let at = lines.iter().position(|l| {
+        !l.starts_with([' ', '\t', '-', '#']) && l.find(':').is_some_and(|c| unquote(&l[..c]).to_lowercase() == key)
+    })?;
+    Some(at + 1)
+}
+
+/// the notes (name order of the index) whose frontmatter holds `key`, any spelling
+pub fn notes_with<'a>(docs: impl Iterator<Item = (&'a str, &'a str)>, key: &str) -> Vec<String> {
+    let lc = key.to_lowercase();
+    docs.filter(|(_, c)| note_props(c).iter().any(|(k, _)| k.to_lowercase() == lc)).map(|(n, _)| n.to_string()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,5 +271,26 @@ mod tests {
         assert_eq!(get("list").values, vec!["p", "q"]);
         assert_eq!(get("nested").values, Vec::<String>::new(), "a nested map's inner lines are not values");
         assert_eq!(s.len(), 5);
+    }
+
+    #[test]
+    fn property_search_query_and_hits() {
+        assert_eq!(prop_query("[status]"), Some(("status".into(), None)));
+        assert_eq!(prop_query(" [Status:Done] "), Some(("status".into(), Some("done".into()))));
+        assert_eq!(prop_query("[status:]"), Some(("status".into(), None)));
+        assert_eq!(prop_query("[\"my key\":x]"), Some(("my key".into(), Some("x".into()))));
+        assert_eq!(prop_query("status"), None);
+        assert_eq!(prop_query("[]"), None);
+        assert_eq!(prop_query("[a] b"), None);
+        assert_eq!(prop_query("[[link]]"), None);
+        let n = "---\ntitle: x\n# c\nStatus: Done\ntags:\n  - a\n---\nbody status: no\n";
+        assert_eq!(prop_hit(n, "status", None), Some(3));
+        assert_eq!(prop_hit(n, "status", Some("don")), Some(3));
+        assert_eq!(prop_hit(n, "status", Some("open")), None);
+        assert_eq!(prop_hit(n, "tags", Some("a")), Some(4));
+        assert_eq!(prop_hit(n, "body status", None), None);
+        assert_eq!(prop_hit("no frontmatter\nstatus: x\n", "status", None), None);
+        let docs = [("A", n), ("B", "---\nother: 1\n---\n"), ("C", "---\nSTATUS: open\n---\n")];
+        assert_eq!(notes_with(docs.iter().copied(), "Status"), vec!["A", "C"]);
     }
 }

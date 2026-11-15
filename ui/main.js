@@ -323,12 +323,17 @@ async function cmdToggleRight() {
   });
 }
 $("rtoggle").onclick = cmdToggleRight;
+async function cmdShowProps() {         // #119 "Properties view: Show all properties"
+  if (!state) return;
+  if (!rightOpen) await cmdToggleRight();
+  await setRTab("props");
+}
 
 /* rsidebar (R9.L1): icon strip Backlinks | Outgoing links | Tags | Outline.
    Active tab persisted as rside_tab in ~/.opensidian.json; census
    [side:l1r1:<tab>]. All panes follow the focused group's active note
    (rgFollow) and refresh 200ms after a save lands (rSchedule). */
-const RPANES = { bl: "rpane-bl", out: "rpane-out", tags: "rpane-tags", toc: "rpane-toc" };
+const RPANES = { bl: "rpane-bl", out: "rpane-out", tags: "rpane-tags", toc: "rpane-toc", props: "rpane-props" };   // #119 props: the Properties view (its tab shows once opened)
 let rTab = "bl", rT = null, rpInfo = "";   // rpInfo -> census [rp:...]
 /* F1 (lostwrite-ui) repaint probe -> census [rpn:<n>]: how many times the
    backlinks pane has STARTED a paint. The pane's CONTENT cannot prove the
@@ -341,6 +346,7 @@ let rbN = 0;
 async function setRTab(t, persist = true) {
   if (!RPANES[t]) t = "bl";
   rTab = t;
+  if (t === "props") $("rtab-props").hidden = false;   // #119: opened (command / restored rside_tab) -> the tab stays in the strip
   for (const [k, id] of Object.entries(RPANES)) {
     $(id).hidden = k !== t;
     $("rtab-" + k).classList.toggle("active", k === t);
@@ -370,6 +376,7 @@ async function rPanesRefresh() {
     else if (rTab === "out") await rOutgoing(n);
     else if (rTab === "toc") await rOutline(n);
     else if (rTab === "tags") await rTags();
+    else if (rTab === "props") await rPropsView();
   });
   updateTitle();
 }
@@ -615,6 +622,51 @@ async function rTags() {
     }
   };
   build(box, root, 0);
+}
+/* #119 the Properties view (stock core plugin "Properties view"): every vault property
+   with the number of notes holding it, sorted by name or frequency (ui/props.js
+   Props.renderView). Click = search "[key:]"; the row menu sets the type (types.json)
+   or renames the key in every note holding it (propsRenameAll). */
+async function rPropsView() {
+  if (!window.Props) return;
+  await Props.renderView($("propslist"), $("propshead"), { search: propSearch, renameAll: propsRenameAll, refresh: () => rPanesRefresh() });
+  rpInfo = Props.viewInfo;
+}
+function propSearch(q) {
+  if (!sideOpen) cmdToggleSide();
+  setPane("search");
+  $("sinput").value = q;
+  clearTimeout(searchT); runSearch();
+}
+/* rename a key vault-wide through the byte-safe model (ui/props-model.js): only the
+   key's own text changes in each note. A note shown in an editor is edited in its
+   buffer (one undoable transaction, the normal save); any other note is read and
+   written. A note whose block the model refuses (invalid YAML, the new name already
+   there) is left untouched and counted. */
+async function propsRenameAll(oldK, newK) {
+  const M = window.PropsModel, lc = String(oldK).toLowerCase();
+  const notes = await inv("props_notes", { key: oldK }).catch(() => []);
+  const keyIn = text => { const p = M.parse(text); const e = p && !p.invalid ? p.entries.find(x => x.key.toLowerCase() === lc) : null; return e ? e.key : null; };
+  let done = 0, kept = 0;
+  for (const g of groups()) await flushSave(g);   // the disk holds every typed edit before a closed note is read
+  for (const n of notes) {
+    const g = groups().find(x => x.active >= 0 && !x.tabs[x.active].kind && x.tabs[x.active].name === n);
+    const cm = g && typeof Ed !== "undefined" ? Ed.cm(g) : null;
+    if (cm) {
+      const text = cm.state.doc.toString(), k = keyIn(text), ch = k != null ? M.rename(text, k, newK) : null;
+      if (ch) { if (ch.from !== ch.to || ch.insert) cm.dispatch({ changes: ch, userEvent: "input.props" }); done++; } else kept++;
+      continue;
+    }
+
+    let text;
+    try { text = await inv("read_note", { name: n }); } catch (_) { kept++; continue; }
+    const k = keyIn(text), ch = k != null ? M.rename(text, k, newK) : null;
+    if (!ch) { kept++; continue; }
+    if (await saveNote(n, M.apply(text, ch))) done++; else kept++;
+  }
+  const ty = Props.types[lc];
+  if (ty) try { await Props.setType(newK, ty); } catch (_) {}
+  say("Renamed the property " + oldK + " to " + newK + " in " + done + " note" + (done === 1 ? "" : "s") + (kept ? "; " + kept + " left unchanged (invalid properties or " + newK + " already there)" : ""));
 }
 function tagSearch(tag) {                  // pane row / inline pill -> search "tag:<name>"
   if (!sideOpen) cmdToggleSide();
@@ -3361,7 +3413,7 @@ function ovfCause(el, why) {         // "<child" = the child that makes el overf
    where they actually are and smoke clicks THAT: re-measured, not suppressed,
    and it cannot rot the next time something shifts the row. */
 function stabCentres() {
-  return [...document.querySelectorAll("#rtabs .stab")]
+  return [...document.querySelectorAll("#rtabs .stab:not([hidden])")]
     .map(b => { const r = b.getBoundingClientRect(); return Math.round(r.left + r.width / 2); })
     .join(",");
 }
@@ -7596,7 +7648,7 @@ CENSUS.push(() => {
   const side = (k, s, h) => {
     const e = document.getElementById(s), b = e && e.getBoundingClientRect();
     if (!e || e.hidden || !b.width) return "";
-    return k + "=" + Math.round(b.left) + "," + Math.round(b.right) + ":" + [...document.querySelectorAll("#" + h + " .stab")]
+    return k + "=" + Math.round(b.left) + "," + Math.round(b.right) + ":" + [...document.querySelectorAll("#" + h + " .stab:not([hidden])")]
       .map(x => { const r = x.getBoundingClientRect(); return Math.round(r.left) + "+" + Math.round(r.width); }).join(",");
   };
   const dv = (k, id) => {
@@ -9839,6 +9891,8 @@ const CMDS = [
   // #119: stock's "Add file property" (Ctrl+;): a new row in the Properties block, its name
   // focused (ui/props.js); the block is created when the note has none
   ["markdown:add-metadata-property", "Add file property",             ["ctrl+;"],               () => { if (window.Props) Props.addCommand(fg()); }, edEditable],
+  // #119: the Properties view core plugin: open (and reveal) its right-sidebar tab
+  ["properties:open",          "Properties view: Show all properties", [],                     () => cmdShowProps()],
   // goal insdate REQ-1/REQ-13: Obsidian's names, NO default chord; hidden where
   // Obsidian hides them (reading view, graph, no note — REQ-10..12).
   ["templates:insert-current-date", "Templates: Insert current date", [],                     () => edInsertNow("date"), edInsertable],
