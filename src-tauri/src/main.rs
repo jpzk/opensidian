@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tauri::State;
 
 mod appid;
+mod audiorec; // #116: Audio recorder core plugin — the mic gate (audio-only, armed) and the save
 mod builtins;
 mod callout; // #59: Obsidian callouts in the reading render
 use opensidian_lib::canvasfs;
@@ -448,7 +449,7 @@ fn pct_encode(s: &str) -> String {
    inside the vault), and the type comes from OUR list. */
 
 /// ext -> Content-Type. Anything not listed is refused.
-const MEDIA_TYPES: [(&str, &str); 12] = [
+const MEDIA_TYPES: [(&str, &str); 13] = [
     ("mp3", "audio/mpeg"),
     ("m4a", "audio/mp4"),
     ("ogg", "audio/ogg"),
@@ -456,6 +457,7 @@ const MEDIA_TYPES: [(&str, &str); 12] = [
     ("opus", "audio/ogg"),
     ("wav", "audio/wav"),
     ("flac", "audio/flac"),
+    ("3gp", "audio/3gpp"), // #116: stock audio embed set (canvasfs MEDIA_EXTS too)
     ("webm", "video/webm"),
     ("mp4", "video/mp4"),
     ("m4v", "video/mp4"),
@@ -624,6 +626,10 @@ fn image_html(imgs: &[String], target: &str, alt: &str) -> String {
     if is_pdf_target(path) {
         return pdf_html(imgs, path, frag, alt);
     }
+    // #116: `![](x.webm)` — an audio player (no fragment form), like `![[x.webm]]`
+    if frag.is_empty() && !target.contains('#') && is_audio_target(path) {
+        return audio_html(path, alt);
+    }
     let dec = pct_decode(target).unwrap_or_else(|| target.to_string());
     match index::resolve(imgs, &dec).map(|i| &imgs[i]) {
         Some(rel) => format!(
@@ -636,6 +642,29 @@ fn image_html(imgs: &[String], target: &str, alt: &str) -> String {
             esc(target)
         ),
     }
+}
+
+/// #116 audio embeds: the extensions `![[x.webm]]` / `![](x.mp3)` play as an <audio> player
+/// (stock's audio set; ui/editor.js Ed.AUDIO_EXTS is the same list)
+const AUDIO_EXTS: [&str; 7] = ["mp3", "webm", "wav", "m4a", "ogg", "3gp", "flac"];
+
+/// #116: is this embed target an audio file (`![[Recording 20261115.webm]]`)?
+fn is_audio_target(target: &str) -> bool {
+    target
+        .rsplit_once('.')
+        .is_some_and(|(s, e)| !s.is_empty() && AUDIO_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+}
+
+/// #116: the html for ONE audio embed — an EMPTY span carrying the note's target (escaped) and the
+/// alt; ui/editor.js Ed.audioFill resolves the target against the vault's media list (canvas_io
+/// media, the same list live preview uses) and builds the <audio>, so both views paint one element.
+/// No path is minted here: an unresolved or escaping target gets no player, only the banner.
+fn audio_html(target: &str, alt: &str) -> String {
+    format!(
+        "<span class=\"internal-embed media-embed audio-embed\" data-target=\"{}\" data-alt=\"{}\"></span>",
+        esc(target),
+        esc(alt)
+    )
 }
 
 /// pdfembed: `#page=N`, `#height=N`, `#page=N&height=N` -> (page, height).
@@ -1046,6 +1075,65 @@ async fn paste_image(
         let p = pasteimg::paste_into(&root, &note, &mime, &bytes, &st, &cfg, md, &taken).map_err(|e| e.say())?;
         eprintln!("[paste] {} bytes -> {}", bytes.len(), p.path);
         v.index.lock().unwrap().add_image(&p.path);
+        Ok(p)
+    })(), serde_json::json!({"b64": data.len()}))
+}
+
+/* #116 Audio recorder — the IPC half of audiorec.rs. audio_token hands the
+   per-page-load secret to its FIRST caller (the core recorder in ui/main.js, at
+   boot, before any plugin script); audio_arm / audio_disarm / audio_end / audio_save need it.
+   The gate itself (audio-only, one-shot, ARM_WINDOW) is audiorec::decide. */
+#[tauri::command]
+fn audio_token(win: tauri::WebviewWindow) -> Result<String, String> {
+    audiorec::token(win.label())
+}
+
+#[tauri::command]
+fn audio_arm(win: tauri::WebviewWindow, token: String) -> Result<(), String> {
+    audiorec::arm(win.label(), &token, std::time::Instant::now())
+}
+
+#[tauri::command]
+fn audio_disarm(win: tauri::WebviewWindow, token: String) -> Result<(), String> {
+    audiorec::disarm(win.label(), &token)
+}
+
+/// disarm AND stop every mic track of this page (audiorec::mic_off): the end of
+/// a recording, or a start whose own request was denied after arming
+#[tauri::command]
+fn audio_end(win: tauri::WebviewWindow, token: String) -> Result<(), String> {
+    audiorec::disarm(win.label(), &token)?;
+    audiorec::mic_off(&win)
+}
+
+/// the finished recording (base64 webm) -> `Recording <ts>.webm` in the
+/// attachment folder of `note` ("" = no note open) and its embed
+#[tauri::command]
+async fn audio_save(
+    win: tauri::WebviewWindow,
+    v: State<'_, Vault>,
+    token: String,
+    note: String,
+    data: String,
+    tm: datefmt::Tm,
+) -> Result<pasteimg::Pasted, String> {
+    span_timed!("audio_save", (|| {
+        audiorec::authorized(win.label(), &token)?;
+        let root = cur_vault(&v).ok_or("no vault open")?;
+        if data.len() as u64 > audiorec::MAX_REC_BYTES / 3 * 4 + 8 {
+            return Err(format!("the recording is over the {} MB limit", audiorec::MAX_REC_BYTES / 1048576));
+        }
+        let bytes = vaultfs::b64_decode(&data).ok_or("the recording is not valid base64")?;
+        let st = pasteimg::stamp(&tm).map_err(|e| e.say())?;
+        let (cfg, md) = pasteimg::app_cfg(&root);
+        let mut media: Vec<String> = v.index.lock().unwrap().images().to_vec();
+        // the audio / video files too (codeant M4 on #124): a `Recording <ts>.webm` in ANOTHER folder makes
+        // the bare-name embed ambiguous, so its name counts as taken (write_into then picks ` 1`, ` 2`, ...)
+        media.extend(canvasfs::media(&root));
+        let taken = |n: &str| media.iter().any(|p| p.rsplit('/').next() == Some(n));
+        let p = audiorec::save(&root, Some(note.as_str()), &bytes, &st, &cfg, md, &taken)?;
+        eprintln!("[audiorec] {} bytes -> {}", bytes.len(), p.path);
+        // audio files join the index with the ![[x.webm]] embed (#116); the image list stays images/pdf
         Ok(p)
     })(), serde_json::json!({"b64": data.len()}))
 }
@@ -2573,6 +2661,14 @@ fn linkify(buf: &str, notes: &[String], imgs: &[String], reading: bool, urls: bo
             rest = &rest[i + 2 + j + 2..];
             continue;
         }
+        // #116 `![[Recording 20261115.webm]]`: an audio player (no anchor form), ui/editor.js fills it
+        if i > 0 && rest.as_bytes()[i - 1] == b'!' && anchor.is_empty() && is_audio_target(note) {
+            tagify_urls(&rest[..i - 1], urls, evs);
+            let alt = if alias.is_empty() { note } else { alias };
+            evs.push(Event::Html(audio_html(note, alt).into()));
+            rest = &rest[i + 2 + j + 2..];
+            continue;
+        }
         tagify_urls(&rest[..i], urls, evs);
         let cls = if note.is_empty() || resolve(notes, l).is_some() {
             "wiki"
@@ -3805,7 +3901,15 @@ fn page_window(app: &tauri::AppHandle, wc: &tauri::utils::config::WindowConfig) 
             page_csp(&h, res)
         }
     })
+    // #116: a (re)load voids the old page's recorder token and any arm
+    .on_page_load(|w, p| {
+        if p.event() == tauri::webview::PageLoadEvent::Started {
+            audiorec::page_started(w.label());
+        }
+    })
     .build()?;
+    // #116: the microphone gate (audio-only, armed by the core recorder; audiorec.rs)
+    audiorec::install(&w);
     xdnd::attach(&w);
     Ok(())
 }
@@ -7249,7 +7353,7 @@ fn main() {
             .map(std::borrow::Cow::Owned)
         })
         .invoke_handler(tauri::generate_handler![
-            list_notes, list_images, canvas_io, canvas_attach, paste_image, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
+            list_notes, list_images, canvas_io, canvas_attach, paste_image, audio_token, audio_arm, audio_disarm, audio_end, audio_save, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_title, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, bm_add_view, bm_add_view_at, bm_remove, bm_graph_patch, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
@@ -10775,7 +10879,7 @@ mod tests {
             fs::write(root.join(p), b).unwrap();
             assert!(media_read_in(&root, p, 0).is_err(), "{p} was read");
         }
-        for (e, m) in [("mp3", "audio/mpeg"), ("MP4", "video/mp4"), ("wav", "audio/wav"), ("webm", "video/webm"), ("opus", "audio/ogg")] {
+        for (e, m) in [("mp3", "audio/mpeg"), ("MP4", "video/mp4"), ("wav", "audio/wav"), ("webm", "video/webm"), ("opus", "audio/ogg"), ("3gp", "audio/3gpp")] {
             assert_eq!(media_mime(e), Some(m));
         }
         // a directory or a FIFO named like media is not a regular file (and must not hang)
@@ -11928,6 +12032,26 @@ mod tests {
         assert!(!r("![](https://x.test/a.pdf)").contains("pdf-embed"));
         assert_eq!(pdf_frag("#page=0&height=0"), (1, None));
         assert_eq!(pdf_frag("page=9999999"), (1, None));
+    }
+
+    /// #116: `![[x.webm]]` / `![](x.mp3)` -> ONE empty audio-embed span (the target escaped, never a
+    /// minted path: ui/editor.js resolves it against the media list); anchors, plain links, remote
+    /// URLs and non-audio extensions stay what they were.
+    #[test]
+    fn audio_embeds_render_one_empty_span_both_syntaxes() {
+        let imgs: Vec<String> = ["pic.png"].iter().map(|s| s.to_string()).collect();
+        let r = |md: &str| render_with(md, &[], &imgs, true);
+        let span = |t: &str, alt: &str| format!(
+            "<span class=\"internal-embed media-embed audio-embed\" data-target=\"{t}\" data-alt=\"{alt}\"></span>");
+        assert!(r("![[Recording 20261115074400.webm]]").contains(&span("Recording 20261115074400.webm", "Recording 20261115074400.webm")), "{}", r("![[Recording 20261115074400.webm]]"));
+        assert!(r("![[sub/a.MP3|my alias]]").contains(&span("sub/a.MP3", "my alias")));
+        assert!(r("![](a.ogg)").contains(&span("a.ogg", "")));
+        assert_eq!(audio_html("\"><img src=x>.flac", "a&b"), span("&quot;&gt;&lt;img src=x&gt;.flac", "a&amp;b"));
+        for md in ["[[a.webm]]", "![[a.webm#t=3]]", "![](https://x.test/a.mp3)", "![[a.mp4]]", "![[.webm]]"] {
+            assert!(!r(md).contains("audio-embed"), "{md}: {}", r(md));
+        }
+        assert!(r("![[pic.png]]").contains("<img class=\"vimg\""));
+        assert!(is_audio_target("x.WAV") && is_audio_target("r.3gp") && !is_audio_target("x.webm.md"));
     }
 
     #[test]

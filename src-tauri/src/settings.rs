@@ -419,7 +419,8 @@ fn vcfg_key_ok(file: &str, k: &str, v: &serde_json::Value) -> Result<(), String>
         ("canvas", "showCardNames") => one_of(&["always", "hover", "never"]),
         ("canvas", "zoomThreshold") => v.as_f64().is_some_and(|x| x.is_finite() && (0.0..=400.0).contains(&x)),
         ("canvas", "snapToGrid") | ("canvas", "snapToObjects") => v.is_boolean(),
-        ("core-plugins", "canvas") | ("core-plugins", "daily-notes") => v.is_boolean(),
+        // #116: the Audio recorder on/off switch sits next to Canvas's, same shape
+        ("core-plugins", "canvas") | ("core-plugins", "audio-recorder") | ("core-plugins", "daily-notes") => v.is_boolean(),
         // issue #115: daily-notes.json. folder / template are vault-relative paths: no "..", no NUL, not absolute,
         // no hidden component (the note writer refuses those as well: main.rs safe_rel). The format is a moment
         // pattern; it may hold "/" (nested folders) and the note name it yields is checked again on create.
@@ -734,6 +735,10 @@ mod tests {
         let v = vcfg_in(&root, &req("core-plugins", Some(serde_json::json!({"canvas": false})))).unwrap();
         assert_eq!(v, serde_json::json!({"canvas": false}));
         assert!(vcfg_in(&root, &req("core-plugins", Some(serde_json::json!({"graph": false})))).is_err());
+        // #116: the Audio recorder switch merges next to canvas; a non-bool is refused
+        let v = vcfg_in(&root, &req("core-plugins", Some(serde_json::json!({"audio-recorder": true})))).unwrap();
+        assert_eq!(v, serde_json::json!({"canvas": false, "audio-recorder": true}));
+        assert!(vcfg_in(&root, &req("core-plugins", Some(serde_json::json!({"audio-recorder": "on"})))).is_err());
         std::fs::write(root.join(CORE_REL), "[\"canvas\"]").unwrap();
         assert!(vcfg_in(&root, &req("core-plugins", Some(serde_json::json!({"canvas": true})))).is_err());
         assert_eq!(std::fs::read_to_string(root.join(CORE_REL)).unwrap(), "[\"canvas\"]");

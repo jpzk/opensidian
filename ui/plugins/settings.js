@@ -256,7 +256,7 @@
       const c3 = el("div", "scard"); pg.appendChild(c3);
       for (const [cid, p, name, desc] of core) {
         const on = !!p.enabled;
-        const t = toggle(on, () => act(() => (cid === "canvas" ? setCanvasOn(!on) : on ? p.disable() : p.enable())));
+        const t = toggle(on, () => act(() => (cid === "canvas" ? setCanvasOn(!on) : cid === "audio-recorder" ? setCoreOn(cid, !on) : on ? p.disable() : p.enable())));
         t.dataset.core = cid;
         const ctls = [t];
         /* issue #115: Daily notes has no board to open its options from, so its row carries a gear (pane
@@ -321,8 +321,12 @@
     saBusy = false;
     if (settingsOpen && sPane === "community") rebuild();
   }
-  const CORE_DESC = { canvas: ["Canvas", "Open and edit .canvas files (JSON Canvas): text, note, link and group cards on a board."],
-    "daily-notes": ["Daily notes", "Open or create today's note from a folder, a date format and a template."] };   // issue #115: right after Canvas
+  // #116: stock lists the core plugins a-z (Audio recorder above Canvas); its description is stock's
+  const CORE_DESC = {
+    "audio-recorder": ["Audio recorder", "Record audio notes and save them as attachments."],
+    canvas: ["Canvas", "Open and edit .canvas files (JSON Canvas): text, note, link and group cards on a board."],
+    "daily-notes": ["Daily notes", "Open or create today's note from a folder, a date format and a template."],   // issue #115: right after Canvas
+  };
   function coreList() {
     const ip = host.app.internalPlugins, ps = ip && ip.plugins || {};
     return Object.keys(CORE_DESC).filter(id => ps[id] && typeof ps[id].enable === "function")
@@ -394,6 +398,15 @@
     try { const v = await vinv("core-plugins", { canvas: !!on }); if (v && typeof v === "object") cvc.core = v; }
     catch (e) { say_("Core plugins: " + String(e && e.message || e)); }
   }
+  /* #116: any other core plugin's switch (Audio recorder): its enable()/disable() and the same
+     core-plugins.json write ({"<id>": bool}, foreign keys merged by settings.rs) */
+  async function setCoreOn(id, on) {
+    const ip = host.app.internalPlugins, p = ip && ip.plugins && ip.plugins[id]; if (!p) return;
+    await (on ? p.enable() : p.disable());
+    cvc.core[id] = !!on;
+    try { const v = await vinv("core-plugins", { [id]: !!on }); if (v && typeof v === "object") cvc.core = v; }
+    catch (e) { say_("Core plugins: " + String(e && e.message || e)); }
+  }
   /* boot: once main.js knows the vault (vaultPath, a bare global), read both files; a core-plugins.json
      that names canvas decides on/off for THIS vault (stock: per vault), else the app-wide choice stays */
   (function waitVault() {
@@ -408,6 +421,12 @@
       if (p && typeof cvc.core.canvas === "boolean" && !!p.enabled !== cvc.core.canvas) {
         try { await (cvc.core.canvas ? p.enable() : p.disable()); } catch (e) { console.error("[canvas] core-plugins.json:", e); }
         if (typeof refreshTree === "function") refreshTree().catch(() => {});
+      }
+      // #116: a core-plugins.json "audio-recorder" bool decides the Audio recorder for THIS vault too
+      const ar = host.app.internalPlugins && host.app.internalPlugins.plugins && host.app.internalPlugins.plugins["audio-recorder"];
+      if (ar && typeof cvc.core["audio-recorder"] === "boolean" && !!ar.enabled !== cvc.core["audio-recorder"]) {
+        try { await (typeof ar.applyVault === "function" ? ar.applyVault(cvc.core["audio-recorder"]) : cvc.core["audio-recorder"] ? ar.enable() : ar.disable()); }
+        catch (e) { console.error("[audio-recorder] core-plugins.json:", e); }
       }
       if (typeof updateTitle === "function") updateTitle();
     });

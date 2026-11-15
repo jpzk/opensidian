@@ -7221,6 +7221,8 @@ async function refreshTree() {
   const [folders, notes, imgs] =
     await Promise.all([inv("list_folders"), inv("list_notes"), inv("list_images")]);
   notesCache = notes;
+  const media = await mediaP;
+  mediaCache = Array.isArray(media) ? media : [];       // #116: audio embeds resolve against this (set with imgsCache: same memo key)
   imgsCache = imgs;                                     // R29: LP resolves image embeds against this
   const tree = $("tree");
   // goal canvas-core: .canvas files are listed only while the Canvas core plugin has the extension
@@ -7229,8 +7231,7 @@ async function refreshTree() {
   cvLinkDirty();                                        // cvf-links: the canvas link model re-reads after a tree change
   if (CANVAS && CANVAS.isRegistered()) { try { canvases = await inv("canvas_io", { op: "list", path: "" }); } catch (_) { canvases = []; } }
   // goal cv-journeys: images + PDFs (list_images) and audio / video (canvas_io media) are listed too, as stock does
-  const media = await mediaP;
-  const others = [...(imgs || []), ...(media || [])];
+  const others =[...(imgs || []), ...(media || [])];
   const sig = folders.join("\n") + "\0" + notes.join("\n") + "\0" + canvases.join("\n") + "\0" + others.join("\n");
   if (sig === treeSig && tree.childElementCount) { treeHighlight(); return; }
   if (PLGVS && others.join("\n") !== treeSig.split("\0")[3]) await PLGVS();   // a new image (a paste, a drop) is a TFile before its card paints
@@ -7365,6 +7366,7 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   // marks the retained DOM dirty and the next switch takes the full render: the
   // pre-modeswitch path, never a stale view.
   for (const s of g.preview.querySelectorAll("span.pdf-embed")) Ed.pdfFill(s);
+  for (const s of g.preview.querySelectorAll("span.audio-embed")) Ed.audioFill(s);   // #116: main.rs audio_html -> one <audio> (editor.js Ed.audioFill)
   cvEmbedFill(g.preview);                    // cv-vault CV-139: ![[X.canvas]] -> span.cv-embed (before the a.wiki wiring below)
   mswpMark("html");
   g.pvLines = pvL;
@@ -7495,6 +7497,7 @@ let notesCache = [], acItems = [], acSel = 0, acStart = -1, acKind = "n";
    with notesCache in refreshTree(); R29.11 (an image added while the vault is
    open) is a known gap on BOTH sides, not a JS one. */
 let imgsCache = [];
+let mediaCache = [];   // #116: the audio / video files (canvas_io media) audio embeds resolve against (editor.js Ed.audioRel)
 
 function hideAc() {
   const was = acItems.length;
@@ -8105,6 +8108,169 @@ if (CANVAS) {
     CANVAS.plugin[k] = async function (...a) { try { return await f.apply(this, a); } finally { cvRibbonSync(); } };
   }
   setTimeout(cvRibbonSync, 0);
+}
+/* #116 the Audio recorder core plugin (stock 1.13.7 "audio-recorder": ribbon lucide-mic "Start/stop recording",
+   commands audio-recorder:start / :stop, Recording YYYYMMDDHHmmss in the attachment folder, embed at the cursor).
+   OFF by default (stock); exposed in app.internalPlugins (config["audio-recorder"]); the on/off persists
+   app-wide (localStorage) and per vault (core-plugins.json, settings.js). Works in restricted mode: app code.
+   THE MIC GATE (security, issue risk 4): the native hook (src-tauri/src/audiorec.rs) grants a capture request
+   only if it is audio-only AND the window was armed by audio_arm(token) a moment before; the token is handed
+   out ONCE per page load, to the first caller — this block, at main.js load, before loader.js's seal and before
+   any plugin script is requested. The token, the page's own getUserMedia and MediaRecorder are kept in THIS
+   closure (never a global binding); navigator.mediaDevices.getUserMedia is then replaced, for every later
+   caller, by a rejector (NotAllowedError) — defence in depth over the native deny. Plugins share this realm
+   (loader.js), so this is not a sandbox: see security.md. While the mic is open the ribbon button is active
+   and a "Recording" status item is on screen (the issue's visible indicator).
+   Always audio/webm;codecs=opus (.webm, the issue's name): WebKitGTK's audio/mp4 needs an AAC encoder the
+   distro runtimes mostly lack. No opusenc/webmmux -> a notice, no capture, no file (never records into
+   nothing); a 0-byte recording is not written. Errors are notices with stock's wording. */
+let AREC = null;
+{
+  const KEY = "opensidian.core.audio-recorder", MIME = "audio/webm;codecs=opus";
+  const md = navigator.mediaDevices;
+  const gum = md && typeof md.getUserMedia === "function" ? md.getUserMedia.bind(md) : null;
+  const MR = typeof window.MediaRecorder === "function" ? window.MediaRecorder : null;
+  const IV = TAURI && TAURI.core && typeof TAURI.core.invoke === "function" ? TAURI.core.invoke : null;
+  const call = (c, a) => IV ? IV(c, a) : Promise.reject(new Error("no ipc"));
+  const tokP = call("audio_token").then(t => (typeof t === "string" && t ? t : null), () => null);
+  const deny = function getUserMedia() { return Promise.reject(new DOMException("Microphone access is reserved for the Audio recorder core plugin.", "NotAllowedError")); };
+  if (md) {
+    try { Object.defineProperty(md, "getUserMedia", { value: deny, writable: false, configurable: false, enumerable: true }); } catch (_) {}
+    try { if (window.MediaDevices && MediaDevices.prototype) Object.defineProperty(MediaDevices.prototype, "getUserMedia", { value: deny, writable: false, configurable: false }); } catch (_) {}
+  }
+  const st = { on: false, rec: null, stream: null, chunks: [], busy: false, saved: 0, last: "", err: "", denied: 0, t0: 0 };
+  const note = m => { st.err = m; say(m, "audio-recorder"); };
+  const pref = {
+    get() { try { const v = localStorage.getItem(KEY); return v == null ? null : v === "1"; } catch (_) { return null; } },
+    set(on) { try { localStorage.setItem(KEY, on ? "1" : "0"); } catch (_) {} },
+  };
+  const rb = document.getElementById("ribbon");
+  const btn = rb ? document.createElement("button") : null;
+  if (btn) {
+    btn.id = "arribbonbtn";
+    btn.title = "Start/stop recording";
+    btn.setAttribute("aria-label", "Start/stop recording");
+    btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>';
+    btn.hidden = true;
+    btn.addEventListener("click", () => { if (st.rec) stop(); else start(); });
+    rb.appendChild(btn);
+  }
+  const ind = document.createElement("div");
+  ind.id = "arstatus"; ind.className = "status-bar-item"; ind.hidden = true; ind.textContent = "Recording";
+  ind.title = "Stop recording"; ind.addEventListener("click", () => stop());
+  document.body.appendChild(ind);
+  const paint = () => {
+    if (btn) { btn.hidden = !st.on; btn.classList.toggle("is-active", !!st.rec); }
+    ind.hidden = !st.rec;
+    updateTitle();
+  };
+  const tmNow = () => { const d = new Date(); return { y: d.getFullYear(), mo: d.getMonth() + 1, d: d.getDate(), h: d.getHours(), mi: d.getMinutes(), s: d.getSeconds(), ms: d.getMilliseconds(), off: -d.getTimezoneOffset(), epoch_ms: d.getTime() }; };
+  async function start() {
+    if (!st.on || st.rec || st.busy) return;
+    if (!gum || !MR) return note("Audio recording is not available: this window has no media capture.");
+    if (!(typeof MR.isTypeSupported === "function" && MR.isTypeSupported(MIME)))
+      return note("Audio recording is not available: GStreamer opusenc/webmmux missing.");
+    st.busy = true; st.err = "";
+    try {
+      const token = await tokP;
+      if (!token) return note("Audio recording is not available in this window.");
+      let stream;
+      try {
+        await call("audio_arm", { token });
+        stream = await gum({ audio: true, video: false });
+      } catch (e) {
+        // our own request failed after arming: if another script of the page took the one-shot grant,
+        // audio_end stops its stream now (native mic_off); harmless otherwise (codeant C1, #124)
+        await call("audio_end", { token }).catch(() => {});
+        const n = e && e.name;
+        if (n === "NotFoundError" || n === "OverconstrainedError" || n === "NotReadableError") return note("No microphone is connected.");
+        if (n === "NotAllowedError" || n === "SecurityError") { st.denied++; return note("Microphone access was denied."); }
+        return note("Audio recorder: " + errStr(e));
+      }
+      call("audio_disarm", { token }).catch(() => {});
+      if (!stream.getAudioTracks().length || stream.getVideoTracks().length) {   // never anything but a mic
+        for (const t of stream.getTracks()) t.stop();
+        await call("audio_end", { token }).catch(() => {});
+        return note("No microphone is connected.");
+      }
+      let r;
+      try { r = new MR(stream, { mimeType: MIME }); }
+      catch (e) { for (const t of stream.getTracks()) t.stop(); await call("audio_end", { token }).catch(() => {}); return note("Audio recording is not available: " + errStr(e)); }
+      st.chunks = []; st.stream = stream; st.rec = r; st.t0 = Date.now();
+      r.addEventListener("dataavailable", ev => { if (ev.data && ev.data.size) st.chunks.push(ev.data); });
+      r.start(1000);
+    } finally { st.busy = false; paint(); }
+  }
+  async function stop() {
+    const r = st.rec;
+    if (!r || st.busy) return;
+    st.busy = true;
+    try {
+      // an already-stopped recorder (a track ended) fired its stop before: do not wait for it; 5 s cap either way
+      const done = r.state === "inactive" ? Promise.resolve() : new Promise(res => { r.addEventListener("stop", res, { once: true }); setTimeout(res, 5000); });
+      try { if (r.state !== "inactive") r.stop(); } catch (_) {}
+      await done;
+      for (const t of st.stream ? st.stream.getTracks() : []) t.stop();
+      st.rec = null; st.stream = null;
+      paint();
+      const token = await tokP;
+      // the recording is over: no mic track of this page may outlive it (native mic_off)
+      if (token) await call("audio_end", { token }).catch(() => {});
+      const blob = new Blob(st.chunks, { type: "audio/webm" });
+      st.chunks = [];
+      if (!blob.size) return note("Nothing was recorded: the microphone sent no audio.");
+      const g = fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
+      const nm = t && !t.kind ? t.name : "";
+      let a;
+      try { a = await call("audio_save", { token, note: nm, data: b64Bytes(new Uint8Array(await blob.arrayBuffer())), tm: tmNow() }); }
+      catch (e) { return note("Recording not saved — " + errStr(e)); }
+      st.saved++; st.last = a.path;
+      await refreshTree();
+      // stock: the active markdown view gets "\n" + embed + "\n" in place of its selection; otherwise only the file
+      if (t && fg() === g && g.tabs[g.active] === t && !t.kind && t.mode !== "reading")
+        edEdit((v, s, e2) => { const x = "\n" + a.text + "\n"; return [v.slice(0, s) + x + v.slice(e2), s + x.length, s + x.length]; });
+      else say("Recording saved: " + a.path, "audio-recorder");
+    } finally { st.busy = false; paint(); }
+  }
+  const plugin = {
+    id: "audio-recorder",
+    enabled: pref.get() === true,
+    _loaded: false,
+    instance: { id: "audio-recorder", name: "Audio recorder", description: "Record audio notes and save them as attachments.", defaultOn: false },
+    views: {},
+    async load() { this._loaded = true; st.on = this.enabled; paint(); },
+    async unload() { if (st.rec) await stop(); this._loaded = false; st.on = false; paint(); },
+    async enable() { this.enabled = true; pref.set(true); sync(); await this.load(); },
+    async disable() { if (st.rec) await stop(); this.enabled = false; pref.set(false); sync(); st.on = false; paint(); },
+    async toggle(on) { return on ? this.enable() : this.disable(); },
+    // a vault's core-plugins.json decides for THAT vault only (settings.js boot): no app-wide pref write
+    // (codeant M3 on #124 — the localStorage choice stays the fallback for vaults without the key)
+    async applyVault(on) {
+      if (!on && st.rec) await stop();
+      this.enabled = !!on; sync();
+      if (on) await this.load(); else { st.on = false; paint(); }
+    },
+  };
+  const ip = PLG && PLG.app && PLG.app.internalPlugins;
+  const sync = () => { if (ip) ip.config["audio-recorder"] = plugin.enabled; };
+  if (ip) { ip.plugins["audio-recorder"] = plugin; sync(); }
+  AREC = Object.freeze({
+    plugin, start, stop,
+    on: () => st.on, recording: () => !!st.rec,
+    // census [arec:on=|rec=|busy=|saved=|last=|denied=|tok=|mr=|err=] + [ribbon:audio@x,y] [arind@x,y]
+    tok() {
+      const esc = s => String(s).replace(/[[\]|@\s]/g, "_");
+      const c = e => { const r = e.getBoundingClientRect(); return Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2); };
+      const vis = e => !!e && e.getClientRects().length > 0;
+      let t = " [arec:on=" + (st.on ? 1 : 0) + "|rec=" + (st.rec ? 1 : 0) + "|busy=" + (st.busy ? 1 : 0) + "|saved=" + st.saved +
+        "|last=" + esc(st.last || "-") + "|denied=" + st.denied + "|mr=" + (MR && MR.isTypeSupported && MR.isTypeSupported(MIME) ? 1 : 0) +
+        "|gum=" + (gum ? 1 : 0) + "|err=" + esc(st.err || "-") + "]";
+      if (vis(btn)) t += " [ribbon:audio@" + c(btn) + "]";
+      if (vis(ind)) t += " [arind@" + c(ind) + "]";
+      return t;
+    },
+  });
+  setTimeout(() => plugin.load().catch(e => console.error("[audio-recorder] load:", e)), 0);   // updateTitle may not be callable yet (load order)
 }
 /* issue #115: the Daily notes core plugin, stock 1.13.7 parity (design: goal i115-daily progress.md).
    - Options: <vault>/.obsidian/daily-notes.json, stock's file and keys ({format, folder, template, autorun}; a missing
@@ -10232,6 +10398,10 @@ const CMDS = [
   ["file-explorer:new-file",   "Create new note",                     ["ctrl+n"],               cmdNewNote],
   ["file-explorer:new-file-in-new-pane", "Create note to the right",  ["ctrl+shift+n"],         async () => { await splitWith(fg(), "row", null); await cmdNewNote(); }],
   ["file-explorer:new-folder", "Create new folder",                   [],                       () => { $("fnew").hidden = false; $("fname").value = ""; $("fname").focus(); }],
+  // #116 Audio recorder (core plugin, off by default): stock offers start only while NOT recording and stop only WHILE
+  // recording; neither row exists (palette, hotkeys) while the core plugin is off
+  ["audio-recorder:start",     "Audio recorder: Start recording audio", [],                     () => AREC && AREC.start(), () => !!(AREC && AREC.on() && !AREC.recording())],
+  ["audio-recorder:stop",      "Audio recorder: Stop recording audio",  [],                     () => AREC && AREC.stop(), () => !!(AREC && AREC.on() && AREC.recording())],
   ["canvas:new-file",          "Canvas: Create new canvas",           [],                       () => cmdNewCanvas(cvNewCanvasFolder()), CV_PALETTE_HIDE_OFF ? () => !!(CANVAS && CANVAS.isRegistered()) : null],
   // goal cv-files CV-149 (REDUCED): there is no empty-tab surface (zero tabs = a blank pane), so the
   // "New canvas" action of an empty workspace is a palette row offered only while no tab is open
@@ -13415,6 +13585,7 @@ function hkRows() {                          // fuzzy filter AND active chip
   const conf = hkConflicts();
   const confIds = new Set(Object.values(conf).flat());
   return CMDS.filter(c => {
+    if (c.id.startsWith("audio-recorder:") && !(AREC && AREC.on())) return false;   // #116: a core plugin that is off has no rows (stock)
     if (c.coreOff && c.coreOff()) return false;   // issue #115: an off core plugin's commands are not listed
     if (fuzzy(q, c.name) < 0) return false;
     const chs = hkChords(c);
