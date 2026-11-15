@@ -1869,6 +1869,9 @@ async function bmOpenPath(p, ev) {
     if (!ls.includes(p)) return gone();
     return openCanvas(p);
   }
+  // issue #102: an image is not a vault TFile here (the plugin vault indexes notes), so it is checked against the
+  // image list the explorer paints and opened in the image view directly; a path not in the list is gone
+  if (Ed.isImg(p)) return Array.isArray(imgsCache) && imgsCache.includes(p) ? openImage(p, ev) : gone();
   let f = null;
   try { f = PLG && PLG.app.vault.getAbstractFileByPath(p); } catch (_) {}
   if (!f) return gone();
