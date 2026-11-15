@@ -158,7 +158,7 @@ pub fn install<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>) {
     let mock = mock_on(std::env::var(MOCK_ENV).ok().as_deref());
     let r = w.with_webview(move |pw| {
         use webkit2gtk::{PermissionRequestExt, SettingsExt, UserMediaPermissionRequestExt, WebViewExt};
-        use gtk::glib::{translate::ToGlibPtr, Cast};
+        use gtk::glib::{translate::ToGlibPtr, Cast, ObjectExt};
         let wv = pw.inner();
         if let Some(st) = WebViewExt::settings(&wv) {
             st.set_enable_media_stream(true);
