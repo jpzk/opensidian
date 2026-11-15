@@ -1,0 +1,42 @@
+# Repo-local opengrep rules: process spawning in the Rust backend.
+rules:
+  - id: opensidian.rust.process-command-nonliteral
+    languages: [rust]
+    severity: WARNING
+    message: >-
+      std::process::Command::new() with a non-literal program. If the program
+      path or name can be influenced by vault content, plugins or IPC input,
+      this is a command-injection / arbitrary-exec primitive. Resolve the
+      program from an allowlist (see spawn_allow.rs) and keep args out of a shell.
+    metadata:
+      category: security
+      cwe: ["CWE-78: Improper Neutralization of Special Elements used in an OS Command"]
+      confidence: MEDIUM
+    patterns:
+      - pattern-either:
+          - pattern: std::process::Command::new($PROG)
+          - pattern: Command::new($PROG)
+          - pattern: tokio::process::Command::new($PROG)
+      - pattern-not: std::process::Command::new("...")
+      - pattern-not: Command::new("...")
+      - pattern-not: tokio::process::Command::new("...")
+
+  - id: opensidian.rust.process-shell-c
+    languages: [rust]
+    severity: ERROR
+    message: >-
+      Spawning a shell with -c and a non-literal script. Anything interpolated
+      into the script is shell-injected. Spawn the target program directly
+      with discrete args instead.
+    metadata:
+      category: security
+      cwe: ["CWE-78: Improper Neutralization of Special Elements used in an OS Command"]
+      confidence: HIGH
+    patterns:
+      - pattern-either:
+          - pattern: $C.arg("-c").arg($SCRIPT)
+          - pattern: $C.args(["-c", $SCRIPT])
+          - pattern: $C.args(&["-c", $SCRIPT])
+      - pattern-not: $C.arg("-c").arg("...")
+      - pattern-not: $C.args(["-c", "..."])
+      - pattern-not: $C.args(&["-c", "..."])

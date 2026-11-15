@@ -5074,9 +5074,11 @@ fn bm_rows_in(nodes: &[BmNode], depth: usize, out: &mut Vec<BmRow>) {
         match n {
             BmNode::File { name, title, .. } => {
                 // R4X.17 (recon-bmcompat §5, 30-afterinject.png): title when
-                // typed, else basename minus ".md" — never the full path
+                // typed, else basename minus ".md" — never the full path.
+                // issue #101: an empty title (stock writes `"title": ""`) is no title
                 let label = title
                     .clone()
+                    .filter(|t| !t.is_empty())
                     .unwrap_or_else(|| name.rsplit('/').next().unwrap_or(name).to_string());
                 out.push(BmRow { kind: "f".into(), depth, name: name.clone(), label, ..Default::default() });
             }
@@ -5209,6 +5211,26 @@ fn bm_group_rename_in(tree: &mut Vec<BmNode>, ix: usize, title: &str) -> Result<
             Ok(())
         }
         _ => Err("that row is not a group".to_string()),
+    }
+}
+
+
+/* issue #101 — a FILE bookmark's "Rename" (stock 1.13.7, docs/recon-bmmenu 06..08):
+   it edits the bookmark's DISPLAY TITLE in bookmarks.json — the file on disk and
+   every tab on it are untouched. Addressed by ROW INDEX, like the group verbs.
+   An empty (or all-blank) title CLEARS the key, so the row paints the basename
+   again (R4X.17) instead of an empty label. A group row is bm_group_rename's. */
+fn bm_title_in(tree: &mut Vec<BmNode>, ix: usize, title: &str) -> Result<(), String> {
+    let p = bm_path_of(tree, ix).ok_or("no such row")?;
+    let t = title.trim();
+    let new = if t.is_empty() { None } else { Some(t.to_string()) };
+    match bm_at_mut(tree, &p) {
+        Some(BmNode::File { title: tt, .. }) | Some(BmNode::Path { title: tt, .. }) | Some(BmNode::Graph { title: tt, .. }) => {
+            *tt = new;
+            Ok(())
+        }
+        Some(BmNode::Group { .. }) => Err("that row is a group (bm_group_rename)".to_string()),
+        _ => Err("that row has no title".to_string()),
     }
 }
 
@@ -5746,6 +5768,12 @@ fn bm_group_new(v: State<Vault>, parent: Option<usize>) -> Result<Vec<BmRow>, St
 #[tauri::command]
 fn bm_group_rename(v: State<Vault>, ix: usize, title: String) -> Result<Vec<BmRow>, String> {
     span_timed!("bm_group_rename", bm_apply(&v, |t| bm_group_rename_in(t, ix, &title)))
+}
+
+/* issue #101: the FILE row's Rename — the bookmark title, never the file (bm_title_in). */
+#[tauri::command]
+fn bm_title(v: State<Vault>, ix: usize, title: String) -> Result<Vec<BmRow>, String> {
+    span_timed!("bm_title", bm_apply(&v, |t| bm_title_in(t, ix, &title)))
 }
 
 #[tauri::command]
@@ -7089,7 +7117,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, canvas_io, canvas_attach, paste_image, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, bm_add_view, bm_add_view_at, bm_remove, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_title, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, bm_add_view, bm_add_view_at, bm_remove, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
             read_workspace, write_workspace,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
@@ -9453,6 +9481,16 @@ mod tests {
         bm_group_rename_in(&mut t, 2, "Work").unwrap();
         assert_eq!(bm_rows_of(&t)[2].name, "Work");
         assert!(bm_group_rename_in(&mut t, 0, "nope").is_err(), "a file row is not a group");
+        // issue #101: a FILE row's Rename sets its display title, in place; the name (the file) is untouched
+        bm_title_in(&mut t, 0, "  Alpha X ").unwrap();
+        assert_eq!((bm_rows_of(&t)[0].name.as_str(), bm_rows_of(&t)[0].label.as_str()), ("A", "Alpha X"));
+        assert_eq!(bm_value_of(&t[0])["title"], "Alpha X");
+        assert_eq!(bm_value_of(&t[0])["path"], "A.md");
+        bm_title_in(&mut t, 0, "   ").unwrap();
+        assert_eq!(bm_rows_of(&t)[0].label, "A", "a blank title clears it: the basename paints again");
+        assert!(bm_value_of(&t[0]).get("title").is_none(), "a cleared title writes no key");
+        assert!(bm_title_in(&mut t, 2, "x").is_err(), "a group row is bm_group_rename's");
+        assert!(bm_title_in(&mut t, 99, "x").is_err());
         // move a file IN, then back OUT to the top level (the superset route)
         bm_move_in_tree(&mut t, 0, Some(2)).unwrap();
         assert_eq!(

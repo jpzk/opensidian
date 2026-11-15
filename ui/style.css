@@ -735,6 +735,11 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .tkids { margin-inline-start: var(--nav-item-children-margin-start, 0); padding-inline-start: var(--nav-item-children-padding-start, 0) }
 .trow .tn { flex: 1; min-width: 0; white-space: var(--nav-item-white-space, nowrap); overflow: hidden;
             text-overflow: ellipsis }
+/* issue #101: the explorer inline rename field — the bookmark editor's ring (.bmren), sized to the row's
+   name slot so the row keeps its 31px pitch; it keeps its own text selection in an unselectable tree. */
+.trow .exren { width: 100%; box-sizing: border-box; background: var(--bg-base); color: var(--text-chrome);
+               border: 1px solid var(--border-focus-ring); border-radius: 3px; font: inherit; padding: 0 4px;
+               outline: none; user-select: text }
 .trow .tg { flex: 0 0 14px; align-self: stretch; position: relative }
 .trow .tg::before { content: ""; position: absolute; left: 7px; top: 0;
                     bottom: 0; width: var(--nav-indentation-guide-width, 1px); background: var(--rule-faint) }
@@ -1280,9 +1285,9 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
    with --text-on-accent; .mod-cta.mod-destructive = --background-modifier-error with --text-on-accent;
    .mod-warning ink = --text-warning. Every var() falls back to ours, and the rules name OUR ids (plugin modals,
    api-ui.js, also carry .modal-container > .modal and are left alone).
-   SCOPE: only while the theme the vault CHOSE (cssTheme) paints, not the bundled default an empty cssTheme falls back
-   to ([data-vthemecompat], ui/main.js vthemeMark),
-   so the look with no theme chosen (the bundled default, or the base sheet) does not move. #pcard gets no border:
+   SCOPE: only while a vault theme paints ([data-vthemecompat], ui/main.js vthemeMark): the chosen one OR the bundled
+   default an empty cssTheme falls back to (#96: "" and "Use theme: <default>" paint one look), so only the base
+   sheet (no theme painting at all) does not move. #pcard gets no border:
    it has none, and its geometry is pinned (see #pcard above). */
 :root[data-vthemecompat] :is(#picker > #pcard, .rnmc > #rnbox, #ulbox > #ulcard, #delbox > #delcard) { background-color: var(--modal-background, var(--background-primary, var(--bg-elevated))) }
 :root[data-vthemecompat] :is(.rnmc > #rnbox, #ulbox > #ulcard, #delbox > #delcard) { border-color: var(--modal-border-color, var(--border)); border-width: var(--modal-border-width, var(--border-width, 1px)) }
@@ -1295,7 +1300,7 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
    active: var(--text-muted); -current: var(--text-normal)). Ours pins #333333 / #fcfcfc and leaves the ink to
    --text-chrome, so a theme that only sets --background-secondary / --text-muted (Minimal, AnuPpuccin) kept OUR strip
    and ink (themecompat: minimal strip, anuppuccin strip + actink). :where() keeps this at body's specificity, so any
-   theme declaration (injected after style.css) still wins, and with no theme chosen nothing moves (N2). */
+   theme declaration (injected after style.css) still wins, and with no theme painting nothing moves. */
 :where(:root[data-vthemecompat]) body { --tab-container-background: var(--background-secondary); --tab-text-color-focused-active: var(--text-muted); --tab-text-color-focused-active-current: var(--text-normal) }
 /* #59 slice 2 strip, the part stock derives on the TOP tab groups (app.css: `.workspace-tabs.mod-top
    { --tab-container-background: var(--titlebar-background) }` and, focused window, `body.is-focused .workspace-tabs.mod-top
@@ -1304,7 +1309,7 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
    Whole selector in :where() = specificity 0, so any theme rule on the group or its strip still wins. */
 :where(:root[data-vthemecompat] .workspace-tabs.mod-top) { --tab-container-background: var(--titlebar-background, var(--background-secondary, #333333)) }
 :where(:root[data-vthemecompat] body.window-focused .workspace-tabs.mod-top) { --tab-container-background: var(--titlebar-background-focused, var(--background-secondary-alt, var(--background-secondary, #333333))) }
-/* stock app.css's focused active title ink, same selector: with body.is-focused on (compatBody, chosen theme only) a
+/* stock app.css's focused active title ink, same selector: with body.is-focused on (compatBody, while a vault theme paints) a
    theme rule like AnuPpuccin's `.is-focused .mod-active .workspace-tab-header.is-active .workspace-tab-header-inner-title
    { color: accent }` (0,5,0) must lose to it, as it does in stock (0,6,1). */
 body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-header.is-active .workspace-tab-header-inner-title { color: var(--tab-text-color-focused-active-current, var(--tab-text-color-focused-active, var(--text-chrome))) }
@@ -1980,11 +1985,11 @@ body.floorrelayout #main { padding-right: 1px }
    the token map walks text nodes, so banner prose inside the row would move
    every caret column after it. A REMOTE target's label is the constant
    "remote image" in both engines, never the URL (R29.10). */
-.lp .imgmiss, .preview .imgmiss {
+.lp .imgmiss, .preview .imgmiss, .image-view .imgmiss {
   display: block; padding: 12px 16px; margin: 8px 0; border-radius: 6px;
   background: var(--bg-surface); color: var(--text-chrome-muted); font-size: 14px; line-height: 1.4;
   user-select: none }
-.lp .imgmiss::after { content: "\201C" attr(data-miss) "\201D could not be found." }
+.lp .imgmiss::after, .image-view .imgmiss::after { content: "\201C" attr(data-miss) "\201D could not be found." }
 /* source mode (.lp.src) is raw markdown: markers are all revealed and the
    widget must not paint. With the caret merely ON the row the widget stays,
    exactly like the task checkbox of an edited "- [x] " line (R17.6). */
@@ -2135,6 +2140,13 @@ span.is-flashing { background: var(--highlight-yellow) }
 .os-pv > .view-content.pdf-view { padding: 0; overflow: hidden; display: flex; flex-direction: column }
 .pdf-view > .pdf-embed { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; width: 100%;
   box-sizing: border-box; background: var(--bg-surface); user-select: none }
+/* issue #102: the image view (an "image" leaf, main.js IMGV) — stock's .image-container: the image centred, scaled
+   DOWN to fit the pane (never up), the pane's own background around it */
+.os-pv > .view-content.image-view { padding: 0; overflow: auto; display: flex }
+.image-view > .image-container { display: flex; flex: 1 1 auto; align-items: center; justify-content: center; min-width: 0;
+  min-height: 0; padding: 16px; box-sizing: border-box }
+.image-view > .image-container > img { max-width: 100%; max-height: 100%; object-fit: contain; user-select: none }
+.image-view > .image-container > .imgmiss { margin: auto }
 /* census C4 make-md: .app-container (ui/index.html) wraps the app chrome for plugins and
    themes that look it up. goal cp-makemd3: a REAL box, not display:contents — under
    display:contents the editor scrollers lost their bottom range (srclick R25.13c line-83

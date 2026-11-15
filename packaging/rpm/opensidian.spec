@@ -7,13 +7,19 @@
 # The release stage proves it: sha256 of /usr/bin/opensidian out of this rpm
 # (rpm2cpio) == sha256 of usr/bin/opensidian inside the slim AppImage, same run.
 #
-# BUILT IN: the Fedora 44 GA container, pinned by digest (image released 2026-04-22,
+# BUILT IN: the Fedora 44 GA container of the HOST arch (x86_64 or aarch64; native, never
+# cross: the rpm arch is the build arch), pinned by digest per arch (images released 2026-04-22,
 # > 6 weeks old; tools come from the frozen GA repo, `dnf --repo=fedora`):
 #   Fedora-Container-Base-Generic-44-1.7.x86_64.oci.tar.xz
 #     file sha256 75200f5752a74a21a616ca9a75e25beb594e2e117a0195c54f87c0b3e3974d1b
 #     (= signed Fedora-Container-44-1.7-x86_64-CHECKSUM)
-#   fedora:44@sha256:f1e66cdd6eff2c9ccad192f8865af9be6d69b46b3f13329d2975a2d61a1296c5
-#   driver: bin/hz/rpm-build.sh (harness), called by bin/hz/release-build.sh.
+#   fedora:44@sha256:f1e66cdd6eff2c9ccad192f8865af9be6d69b46b3f13329d2975a2d61a1296c5  (x86_64)
+#   Fedora-Container-Base-Generic-44-1.7.aarch64.oci.tar.xz
+#     file sha256 eca19542a48a8e39b84e869713a1fa2408cbcc578de26c25ae72e3334ef968c1
+#     (= signed Fedora-Container-44-1.7-aarch64-CHECKSUM)
+#   fedora:44@sha256:bebe5bd9e882469b64cc950da834288bdebca8921ec4bb50646378d672da0ff5  (aarch64)
+#   driver: bin/hz/rpm-build.sh (harness), called by bin/hz/release-build.sh;
+#   CI copy packaging/ci/rpm-build.sh.
 #
 # ICON: the official logo. packaging/linux/opensidian.svg is installed as the scalable
 # hicolor icon; the 48..512 PNGs are packaging/linux/icons/<size>.png, rendered from
@@ -50,7 +56,7 @@ Source11:       icon-64.png
 Source12:       icon-128.png
 Source13:       icon-256.png
 Source14:       icon-512.png
-ExclusiveArch:  x86_64
+ExclusiveArch:  x86_64 aarch64
 BuildRequires:  desktop-file-utils
 BuildRequires:  libappstream-glib
 
