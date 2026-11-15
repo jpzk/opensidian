@@ -6,10 +6,19 @@
 # the job is skipped for them. Do NOT switch to the privileged PR trigger —
 # that would run untrusted fork code with a write token.
 #
-# Supply chain: every action is pinned by full commit SHA; the opengrep
-# binary is pinned by version + sha256 and checked with sha256sum -c; the
-# community rules are pinned to a git commit SHA. All pins were published
-# before 2026-10-04 (6-week rule). Bump deliberately, never automatically.
+# Supply chain — SCANNER EXCEPTION (operator 2026-11-15):
+#   Scanners float, build inputs stay pinned. A stale scanner means false
+#   negatives, and the scanner never ships in a release artifact. So this
+#   job resolves, at run time:
+#     - the LATEST non-prerelease opengrep release (GitHub API
+#       releases/latest), verified with sha256sum -c against that asset's
+#       API "digest" field — fails closed if the digest is missing;
+#     - opengrep/opengrep-rules default-branch HEAD (shallow clone).
+#   Resolved tag, sha256 and rules commit are printed to the log.
+#   Blast radius = this job's permissions: contents: read +
+#   security-events: write, NO secrets. A compromised scanner/rule set can
+#   at worst write bogus code-scanning alerts / read public source.
+#   Actions remain pinned by full 40-hex commit SHA (they are not scanners).
 name: Opengrep
 
 on:
@@ -41,39 +50,67 @@ jobs:
       contents: read
       security-events: write
     env:
-      # opengrep v1.30.1, released 2026-09-21; sha256 == GitHub release asset digest
-      OPENGREP_VERSION: v1.30.1
-      OPENGREP_SHA256: d3195b9d8d5ae93179f6aa5f5daaba6a920a5a09d38c5d5ae5e60924050210c4
-      # opengrep/opengrep-rules @ 2025-01-26 ("Update README.md")
+      # nothing pinned here on purpose — see SCANNER EXCEPTION in the header
       RULES_REPO: https://github.com/opengrep/opengrep-rules.git
-      RULES_SHA: f1d2b562b414783763fd02a6ed2736eaed622efa
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Install opengrep (pinned + sha256 verified)
+      - name: Install opengrep (latest release, sha256 from API digest)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          api=repos/opengrep/opengrep/releases/latest
+          # ONE API call (no TOCTOU between tag and digest), parsed by gh's
+          # built-in jq. Output lines: tag, prerelease|draft, name=digest...
+          # linux x86_64 asset: v1.x named it opengrep_manylinux_x86,
+          # v2.x names it opengrep_linux_x86 — first match in that order wins.
+          meta=$(gh api -H 'Accept: application/vnd.github+json' "$api" --jq '
+            .tag_name,
+            ((.prerelease or .draft) | tostring),
+            (.assets[]
+              | select(.name == "opengrep_manylinux_x86" or .name == "opengrep_linux_x86")
+              | .name + "=" + (.digest // ""))')
+          tag=$(printf '%s\n' "$meta" | sed -n 1p)
+          pre=$(printf '%s\n' "$meta" | sed -n 2p)
+          [ -n "$tag" ] || { echo "::error::no tag_name from $api"; exit 1; }
+          [ "$pre" = false ] || { echo "::error::$tag is a prerelease/draft"; exit 1; }
+          line=""
+          for name in opengrep_manylinux_x86 opengrep_linux_x86; do
+            line=$(printf '%s\n' "$meta" | sed -n '3,$p' | grep -m1 "^${name}=" || true)
+            [ -z "$line" ] || break
+          done
+          [ -n "$line" ] || { echo "::error::no linux x86_64 asset in $tag"; exit 1; }
+          asset=${line%%=*}
+          digest=${line#*=}
+          # fail closed: the API digest is the only trust anchor
+          case "$digest" in
+            sha256:*) sha=${digest#sha256:} ;;
+            *) echo "::error::asset $asset in $tag has no sha256 digest ('$digest')"; exit 1 ;;
+          esac
+          printf '%s' "$sha" | grep -Eqx '[0-9a-f]{64}' \
+            || { echo "::error::malformed digest '$digest'"; exit 1; }
+          echo "opengrep release: $tag"
+          echo "opengrep asset:   $asset"
+          echo "opengrep sha256:  $sha"
           bin="$RUNNER_TEMP/opengrep"
           curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$bin" \
-            "https://github.com/opengrep/opengrep/releases/download/${OPENGREP_VERSION}/opengrep_manylinux_x86"
-          echo "${OPENGREP_SHA256}  ${bin}" | sha256sum -c -
+            "https://github.com/opengrep/opengrep/releases/download/${tag}/${asset}"
+          echo "${sha}  ${bin}" | sha256sum -c -
           chmod +x "$bin"
           "$bin" --version
 
-      - name: Fetch community rules (pinned commit)
+      - name: Fetch community rules (default-branch HEAD)
         run: |
           set -euo pipefail
           # cloned inside the workspace (untracked, excluded from the scan)
           # so rule ids are stable: opengrep-community.<lang>.<...>
           d=.opengrep-community
-          git init -q "$d"
-          git -C "$d" fetch -q --depth 1 "$RULES_REPO" "$RULES_SHA"
-          git -C "$d" -c advice.detachedHead=false checkout -q FETCH_HEAD
-          test "$(git -C "$d" rev-parse HEAD)" = "$RULES_SHA"
-          echo "community rules at $(git -C "$d" rev-parse HEAD)"
+          git clone -q --depth 1 --single-branch "$RULES_REPO" "$d"
+          echo "opengrep-rules HEAD: $(git -C "$d" rev-parse HEAD) ($(git -C "$d" log -1 --format=%cI))"
 
       - name: Scan
         run: |
