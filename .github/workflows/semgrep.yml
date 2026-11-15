@@ -5,6 +5,9 @@
 #   negatives, and the scanner never ships in a release artifact, so the
 #   container is semgrep/semgrep:latest (deliberately NOT digest-pinned).
 #   The version actually used is printed first ("semgrep --version").
+#   NOTE: Docker Hub :latest is Semgrep's stable channel and can trail the
+#   newest GitHub release by one version (newest = :canary). Open
+#   operator decision on PR #117: accept the lag or resolve the tag.
 #   Blast radius = this job: contents: read + SEMGREP_APP_TOKEN.
 #   RESIDUAL RISK (accepted by the operator 2026-11-15): this job holds
 #   SEMGREP_APP_TOKEN, so a compromised :latest image could exfiltrate that
