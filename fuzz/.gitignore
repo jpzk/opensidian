@@ -1,5 +1,0 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
-target/
-artifacts/
-coverage/
-# libFuzzer grows corpus/<t>/ during a run; only the committed seeds are tracked
