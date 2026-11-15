@@ -2131,6 +2131,24 @@ span.is-flashing { background: var(--highlight-yellow) }
 /* stock's missing-file banner is 37 px tall; the R29.4 banner shrunk to match */
 .lp .imgmiss.pdfmiss, .preview .imgmiss.pdfmiss { padding: 8px 16px }
 .lp.src .pdf-embed { display: none }
+/* #116 audio embeds (editor.js Ed.audioEl / audioFill): ONE <audio controls> in a block span, both
+   engines; an unresolved target is the R29.4 banner (the reading view's is filled by JS, so its
+   wording is CSS here too); a refused load (restricted page, too large) hides the player and says why */
+.lp .audio-embed, .preview .audio-embed { display: block; margin: 8px 0; user-select: none }
+.audio-embed > audio { display: block; width: 100%; max-width: 480px; height: 40px }
+.audio-embed[data-err] > audio { display: none }
+.audio-embed[data-err]::after { content: attr(data-err); display: block; padding: 8px 16px; border-radius: 6px;
+  background: var(--bg-surface); color: var(--text-chrome-muted); font-size: 14px }
+.preview .imgmiss.audiomiss::after { content: "\201C" attr(data-miss) "\201D could not be found." }
+.lp.src .audio-embed { display: none }
+/* #116 the Audio recorder's indicator while the mic is open (main.js AREC): ribbon button is-active + a
+   status item bottom-right, red dot + "Recording" */
+#arribbonbtn.is-active { color: var(--color-red, #e5484d) }
+#arstatus { position: fixed; right: 12px; bottom: 8px; z-index: 50; display: flex; align-items: center; gap: 6px;
+  padding: 2px 10px; border-radius: 10px; background: var(--bg-surface); color: var(--text-normal, inherit); font-size: 12px;
+  border: 1px solid var(--color-red, #e5484d); pointer-events: auto; cursor: pointer }
+#arstatus::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--color-red, #e5484d) }
+#arstatus[hidden] { display: none }
 /* issue #44: the PDF view (a "pdf" leaf, main.js PDFV) — the same frame, filling the pane */
 .os-pv > .view-content.pdf-view { padding: 0; overflow: hidden; display: flex; flex-direction: column }
 .pdf-view > .pdf-embed { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; width: 100%;

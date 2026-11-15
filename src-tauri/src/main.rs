@@ -578,6 +578,10 @@ fn image_html(imgs: &[String], target: &str, alt: &str) -> String {
     if is_pdf_target(path) {
         return pdf_html(imgs, path, frag, alt);
     }
+    // #116: `![](x.webm)` — an audio player (no fragment form), like `![[x.webm]]`
+    if frag.is_empty() && !target.contains('#') && is_audio_target(path) {
+        return audio_html(path, alt);
+    }
     let dec = pct_decode(target).unwrap_or_else(|| target.to_string());
     match index::resolve(imgs, &dec).map(|i| &imgs[i]) {
         Some(rel) => format!(
@@ -590,6 +594,29 @@ fn image_html(imgs: &[String], target: &str, alt: &str) -> String {
             esc(target)
         ),
     }
+}
+
+/// #116 audio embeds: the extensions `![[x.webm]]` / `![](x.mp3)` play as an <audio> player
+/// (stock's audio set; ui/editor.js Ed.AUDIO_EXTS is the same list)
+const AUDIO_EXTS: [&str; 7] = ["mp3", "webm", "wav", "m4a", "ogg", "3gp", "flac"];
+
+/// #116: is this embed target an audio file (`![[Recording 20261115.webm]]`)?
+fn is_audio_target(target: &str) -> bool {
+    target
+        .rsplit_once('.')
+        .is_some_and(|(s, e)| !s.is_empty() && AUDIO_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+}
+
+/// #116: the html for ONE audio embed — an EMPTY span carrying the note's target (escaped) and the
+/// alt; ui/editor.js Ed.audioFill resolves the target against the vault's media list (canvas_io
+/// media, the same list live preview uses) and builds the <audio>, so both views paint one element.
+/// No path is minted here: an unresolved or escaping target gets no player, only the banner.
+fn audio_html(target: &str, alt: &str) -> String {
+    format!(
+        "<span class=\"internal-embed media-embed audio-embed\" data-target=\"{}\" data-alt=\"{}\"></span>",
+        esc(target),
+        esc(alt)
+    )
 }
 
 /// pdfembed: `#page=N`, `#height=N`, `#page=N&height=N` -> (page, height).
@@ -2572,6 +2599,14 @@ fn linkify(buf: &str, notes: &[String], imgs: &[String], reading: bool, urls: bo
             tagify_urls(&rest[..i - 1], urls, evs);
             let alt = if alias.is_empty() { note } else { alias };
             evs.push(Event::Html(pdf_html(imgs, note, anchor, alt).into()));
+            rest = &rest[i + 2 + j + 2..];
+            continue;
+        }
+        // #116 `![[Recording 20261115.webm]]`: an audio player (no anchor form), ui/editor.js fills it
+        if i > 0 && rest.as_bytes()[i - 1] == b'!' && anchor.is_empty() && is_audio_target(note) {
+            tagify_urls(&rest[..i - 1], urls, evs);
+            let alt = if alias.is_empty() { note } else { alias };
+            evs.push(Event::Html(audio_html(note, alt).into()));
             rest = &rest[i + 2 + j + 2..];
             continue;
         }
@@ -11775,6 +11810,26 @@ mod tests {
         assert!(!r("![](https://x.test/a.pdf)").contains("pdf-embed"));
         assert_eq!(pdf_frag("#page=0&height=0"), (1, None));
         assert_eq!(pdf_frag("page=9999999"), (1, None));
+    }
+
+    /// #116: `![[x.webm]]` / `![](x.mp3)` -> ONE empty audio-embed span (the target escaped, never a
+    /// minted path: ui/editor.js resolves it against the media list); anchors, plain links, remote
+    /// URLs and non-audio extensions stay what they were.
+    #[test]
+    fn audio_embeds_render_one_empty_span_both_syntaxes() {
+        let imgs: Vec<String> = ["pic.png"].iter().map(|s| s.to_string()).collect();
+        let r = |md: &str| render_with(md, &[], &imgs, true);
+        let span = |t: &str, alt: &str| format!(
+            "<span class=\"internal-embed media-embed audio-embed\" data-target=\"{t}\" data-alt=\"{alt}\"></span>");
+        assert!(r("![[Recording 20261115074400.webm]]").contains(&span("Recording 20261115074400.webm", "Recording 20261115074400.webm")), "{}", r("![[Recording 20261115074400.webm]]"));
+        assert!(r("![[sub/a.MP3|my alias]]").contains(&span("sub/a.MP3", "my alias")));
+        assert!(r("![](a.ogg)").contains(&span("a.ogg", "")));
+        assert_eq!(audio_html("\"><img src=x>.flac", "a&b"), span("&quot;&gt;&lt;img src=x&gt;.flac", "a&amp;b"));
+        for md in ["[[a.webm]]", "![[a.webm#t=3]]", "![](https://x.test/a.mp3)", "![[a.mp4]]", "![[.webm]]"] {
+            assert!(!r(md).contains("audio-embed"), "{md}: {}", r(md));
+        }
+        assert!(r("![[pic.png]]").contains("<img class=\"vimg\""));
+        assert!(is_audio_target("x.WAV") && is_audio_target("r.3gp") && !is_audio_target("x.webm.md"));
     }
 
     #[test]
