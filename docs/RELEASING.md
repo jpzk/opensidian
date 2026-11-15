@@ -14,26 +14,40 @@ Bump the version in `src-tauri/tauri.conf.json` (and the flatpak metainfo
 
 ## 2. CI builds
 
-`.github/workflows/release.yml` runs on GitHub-hosted `ubuntu-latest` runners:
+`.github/workflows/release.yml` runs on GitHub-hosted runners pinned by label,
+one matrix leg per arch, natively (no cross-compiling): x86_64 on
+`ubuntu-26.04`, aarch64 on `ubuntu-26.04-arm`. Per arch:
 
 - `appimage`: one cargo build, slim + portable AppImage
-- `wrap` (rpm, deb): wraps the same binary
-- `flatpak`: builds in its own sandbox
-- `sums`: `SHA256SUMS` over the five files
+- `wrap` (rpm, deb): wraps the same binary (same-binary gate per arch)
+- `flatpak`: builds in its own sandbox (`--arch=<arch>`)
+
+Then:
+
+- `sums`: `SHA256SUMS` over the ten files
 - `draft-release`: creates the **draft** release for the tag
 
 Every artifact gets a build provenance attestation.
 
-## 3. Draft with 6 assets
+### Dry run (no release)
 
-The draft `opensidian <ver>` for tag `v<ver>` has these assets:
+    gh workflow run release.yml --repo jpzk/opensidian --ref <branch> -f dry_run=true
 
-- `opensidian-<ver>-x86_64-slim.AppImage`
-- `opensidian-<ver>-x86_64-portable.AppImage`
-- `opensidian-<ver>-x86_64.flatpak`
-- `opensidian-<ver>-x86_64.rpm`
-- `opensidian-<ver>-x86_64.deb`
-- `SHA256SUMS`
+builds, attests and uploads all ten artifacts plus `SHA256SUMS` as workflow
+artifacts only. `draft-release` is skipped (`dry_run` defaults to true), and it
+never runs for a ref that is not a `v*` tag or a `v<ver>-release` branch anyway.
+
+## 3. Draft with 11 assets
+
+The draft `opensidian <ver>` for tag `v<ver>` has these assets, for
+`<arch>` = `x86_64` and `aarch64`:
+
+- `opensidian-<ver>-<arch>-slim.AppImage`
+- `opensidian-<ver>-<arch>-portable.AppImage`
+- `opensidian-<ver>-<arch>.flatpak`
+- `opensidian-<ver>-<arch>.rpm`
+- `opensidian-<ver>-<arch>.deb`
+- `SHA256SUMS` (the x86_64 five first, then the aarch64 five)
 
 The body is the SHA256SUMS content plus a "NOT SIGNED YET" note.
 
