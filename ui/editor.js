@@ -1533,7 +1533,7 @@ Ed.rvTaskTok = () => {
 /* #128 census -> " [lptaskxy:<line>:<x>,<y>|...] [lpst:<scrollTop>]" for the FOCUSED group's Live Preview:
    the painted centre of every LP task checkbox inside the editor viewport, keyed by its 0-based source
    line, first 40 (Ed.geom's [ecb:] stops at 40-row notes; the task_toggle phase clicks boxes of a
-   5000-line note). lpst = the scroller's scrollTop (a toggle must not move the view). Census only. */
+   5000-line note). lpst = g.lp.scrollTop, the Live Preview scroller (not cm.scrollDOM) (a toggle must not move the view). Census only. */
 Ed.lpTaskTok = () => {
   const g = typeof fg === "function" ? fg() : null, cm = Ed.cm(g);
   if (!cm || !g.lp || !g.lp.isConnected || (typeof isReading === "function" && isReading(g))) return "";
@@ -1545,7 +1545,7 @@ Ed.lpTaskTok = () => {
     xy.push(l + ":" + Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2));
     if (xy.length >= 40) break;
   }
-  return " [lptaskxy:" + (xy.join("|") || "-") + "] [lpst:" + Math.round(cm.scrollDOM.scrollTop) + "]";
+  return " [lptaskxy:" + (xy.join("|") || "-") + "] [lpst:" + Math.round(g.lp.scrollTop) + "]";
 };
 /* rvtask R5: [rvtaskxy:]/[rvtaskst:] are geometry, so the census must follow a
    READING-VIEW scroll (nothing else refreshes the title on one — the same
