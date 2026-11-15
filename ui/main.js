@@ -8027,7 +8027,9 @@ let AREC = null;
         await call("audio_arm", { token });
         stream = await gum({ audio: true, video: false });
       } catch (e) {
-        call("audio_disarm", { token }).catch(() => {});
+        // our own request failed after arming: if another script of the page took the one-shot grant,
+        // audio_end stops its stream now (native mic_off); harmless otherwise (codeant C1, #124)
+        await call("audio_end", { token }).catch(() => {});
         const n = e && e.name;
         if (n === "NotFoundError" || n === "OverconstrainedError" || n === "NotReadableError") return note("No microphone is connected.");
         if (n === "NotAllowedError" || n === "SecurityError") { st.denied++; return note("Microphone access was denied."); }
@@ -8036,11 +8038,12 @@ let AREC = null;
       call("audio_disarm", { token }).catch(() => {});
       if (!stream.getAudioTracks().length || stream.getVideoTracks().length) {   // never anything but a mic
         for (const t of stream.getTracks()) t.stop();
+        await call("audio_end", { token }).catch(() => {});
         return note("No microphone is connected.");
       }
       let r;
       try { r = new MR(stream, { mimeType: MIME }); }
-      catch (e) { for (const t of stream.getTracks()) t.stop(); return note("Audio recording is not available: " + errStr(e)); }
+      catch (e) { for (const t of stream.getTracks()) t.stop(); await call("audio_end", { token }).catch(() => {}); return note("Audio recording is not available: " + errStr(e)); }
       st.chunks = []; st.stream = stream; st.rec = r; st.t0 = Date.now();
       r.addEventListener("dataavailable", ev => { if (ev.data && ev.data.size) st.chunks.push(ev.data); });
       r.start(1000);
@@ -8058,10 +8061,12 @@ let AREC = null;
       for (const t of st.stream ? st.stream.getTracks() : []) t.stop();
       st.rec = null; st.stream = null;
       paint();
+      const token = await tokP;
+      // the recording is over: no mic track of this page may outlive it (native mic_off)
+      if (token) await call("audio_end", { token }).catch(() => {});
       const blob = new Blob(st.chunks, { type: "audio/webm" });
       st.chunks = [];
       if (!blob.size) return note("Nothing was recorded: the microphone sent no audio.");
-      const token = await tokP;
       const g = fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
       const nm = t && !t.kind ? t.name : "";
       let a;
@@ -8086,6 +8091,13 @@ let AREC = null;
     async enable() { this.enabled = true; pref.set(true); sync(); await this.load(); },
     async disable() { if (st.rec) await stop(); this.enabled = false; pref.set(false); sync(); st.on = false; paint(); },
     async toggle(on) { return on ? this.enable() : this.disable(); },
+    // a vault's core-plugins.json decides for THAT vault only (settings.js boot): no app-wide pref write
+    // (codeant M3 on #124 — the localStorage choice stays the fallback for vaults without the key)
+    async applyVault(on) {
+      if (!on && st.rec) await stop();
+      this.enabled = !!on; sync();
+      if (on) await this.load(); else { st.on = false; paint(); }
+    },
   };
   const ip = PLG && PLG.app && PLG.app.internalPlugins;
   const sync = () => { if (ip) ip.config["audio-recorder"] = plugin.enabled; };

@@ -402,7 +402,7 @@ fn pct_encode(s: &str) -> String {
    inside the vault), and the type comes from OUR list. */
 
 /// ext -> Content-Type. Anything not listed is refused.
-const MEDIA_TYPES: [(&str, &str); 12] = [
+const MEDIA_TYPES: [(&str, &str); 13] = [
     ("mp3", "audio/mpeg"),
     ("m4a", "audio/mp4"),
     ("ogg", "audio/ogg"),
@@ -410,6 +410,7 @@ const MEDIA_TYPES: [(&str, &str); 12] = [
     ("opus", "audio/ogg"),
     ("wav", "audio/wav"),
     ("flac", "audio/flac"),
+    ("3gp", "audio/3gpp"), // #116: stock audio embed set (canvasfs MEDIA_EXTS too)
     ("webm", "video/webm"),
     ("mp4", "video/mp4"),
     ("m4v", "video/mp4"),
@@ -1033,7 +1034,7 @@ async fn paste_image(
 
 /* #116 Audio recorder — the IPC half of audiorec.rs. audio_token hands the
    per-page-load secret to its FIRST caller (the core recorder in ui/main.js, at
-   boot, before any plugin script); audio_arm / audio_disarm / audio_save need it.
+   boot, before any plugin script); audio_arm / audio_disarm / audio_end / audio_save need it.
    The gate itself (audio-only, one-shot, ARM_WINDOW) is audiorec::decide. */
 #[tauri::command]
 fn audio_token(win: tauri::WebviewWindow) -> Result<String, String> {
@@ -1048,6 +1049,14 @@ fn audio_arm(win: tauri::WebviewWindow, token: String) -> Result<(), String> {
 #[tauri::command]
 fn audio_disarm(win: tauri::WebviewWindow, token: String) -> Result<(), String> {
     audiorec::disarm(win.label(), &token)
+}
+
+/// disarm AND stop every mic track of this page (audiorec::mic_off): the end of
+/// a recording, or a start whose own request was denied after arming
+#[tauri::command]
+fn audio_end(win: tauri::WebviewWindow, token: String) -> Result<(), String> {
+    audiorec::disarm(win.label(), &token)?;
+    audiorec::mic_off(&win)
 }
 
 /// the finished recording (base64 webm) -> `Recording <ts>.webm` in the
@@ -1070,7 +1079,10 @@ async fn audio_save(
         let bytes = vaultfs::b64_decode(&data).ok_or("the recording is not valid base64")?;
         let st = pasteimg::stamp(&tm).map_err(|e| e.say())?;
         let (cfg, md) = pasteimg::app_cfg(&root);
-        let media: Vec<String> = v.index.lock().unwrap().images().to_vec();
+        let mut media: Vec<String> = v.index.lock().unwrap().images().to_vec();
+        // the audio / video files too (codeant M4 on #124): a `Recording <ts>.webm` in ANOTHER folder makes
+        // the bare-name embed ambiguous, so its name counts as taken (write_into then picks ` 1`, ` 2`, ...)
+        media.extend(canvasfs::media(&root));
         let taken = |n: &str| media.iter().any(|p| p.rsplit('/').next() == Some(n));
         let p = audiorec::save(&root, Some(note.as_str()), &bytes, &st, &cfg, md, &taken)?;
         eprintln!("[audiorec] {} bytes -> {}", bytes.len(), p.path);
@@ -7183,7 +7195,7 @@ fn main() {
             .map(std::borrow::Cow::Owned)
         })
         .invoke_handler(tauri::generate_handler![
-            list_notes, list_images, canvas_io, canvas_attach, paste_image, audio_token, audio_arm, audio_disarm, audio_save, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
+            list_notes, list_images, canvas_io, canvas_attach, paste_image, audio_token, audio_arm, audio_disarm, audio_end, audio_save, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, bm_add_view, bm_add_view_at, bm_remove, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
@@ -10657,7 +10669,7 @@ mod tests {
             fs::write(root.join(p), b).unwrap();
             assert!(media_read_in(&root, p, 0).is_err(), "{p} was read");
         }
-        for (e, m) in [("mp3", "audio/mpeg"), ("MP4", "video/mp4"), ("wav", "audio/wav"), ("webm", "video/webm"), ("opus", "audio/ogg")] {
+        for (e, m) in [("mp3", "audio/mpeg"), ("MP4", "video/mp4"), ("wav", "audio/wav"), ("webm", "video/webm"), ("opus", "audio/ogg"), ("3gp", "audio/3gpp")] {
             assert_eq!(media_mime(e), Some(m));
         }
         // a directory or a FIFO named like media is not a regular file (and must not hang)

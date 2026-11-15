@@ -30,8 +30,10 @@
        Residual (documented in progress.md / security notes): plugins share the
        page realm, so a plugin racing its own getUserMedia into the few ms
        between the core's arm and the core's request could take the one-shot
-       grant; the core then fails loudly (its own request is denied) and the
-       recording does not start.
+       grant; the core then fails loudly (its own request is denied), the
+       recording does not start, and the core calls `audio_end` -> mic_off: the
+       raced stream ends at once (codeant C1 on #124). `audio_end` also runs
+       when every recording stops, so no page mic outlives a recording.
      - fake microphone for the test box: WebKit's mock capture devices, ONLY in a
        debug build (cfg(debug_assertions)) and ONLY with OPENSIDIAN_MOCK_CAPTURE=1.
        A release build cannot turn it on. A mock CAMERA is never granted either:
@@ -196,8 +198,32 @@ pub fn install<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>) {
     }
 }
 
+/// the kill switch (codeant C1 on #124): every microphone track of the window's
+/// page stops (WebKit's microphone capture state -> NONE). The core calls it
+/// through `audio_end` when a recording stops and when its own request was
+/// denied after it armed (= another script of the page took the one-shot grant):
+/// a stream a plugin raced out of the arm window dies at once, and no mic
+/// outlives a recording.
+#[cfg(target_os = "linux")]
+pub fn mic_off<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>) -> Result<(), String> {
+    w.with_webview(|pw| {
+        use webkit2gtk::{MediaCaptureState, WebViewExt};
+        let wv = pw.inner();
+        if wv.microphone_capture_state() != MediaCaptureState::None {
+            wv.set_microphone_capture_state(MediaCaptureState::None);
+            eprintln!("[audiorec] microphone capture of the page stopped");
+        }
+    })
+    .map_err(|e| format!("audio recorder: {e}"))
+}
+
 #[cfg(not(target_os = "linux"))]
 pub fn install<R: tauri::Runtime>(_: &tauri::WebviewWindow<R>) {}
+
+#[cfg(not(target_os = "linux"))]
+pub fn mic_off<R: tauri::Runtime>(_: &tauri::WebviewWindow<R>) -> Result<(), String> {
+    Ok(())
+}
 
 /// why a save was refused (beyond write_into's own)
 pub fn check_bytes(bytes: &[u8]) -> Result<(), String> {

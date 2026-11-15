@@ -402,7 +402,8 @@
       // #116: a core-plugins.json "audio-recorder" bool decides the Audio recorder for THIS vault too
       const ar = host.app.internalPlugins && host.app.internalPlugins.plugins && host.app.internalPlugins.plugins["audio-recorder"];
       if (ar && typeof cvc.core["audio-recorder"] === "boolean" && !!ar.enabled !== cvc.core["audio-recorder"]) {
-        try { await (cvc.core["audio-recorder"] ? ar.enable() : ar.disable()); } catch (e) { console.error("[audio-recorder] core-plugins.json:", e); }
+        try { await (typeof ar.applyVault === "function" ? ar.applyVault(cvc.core["audio-recorder"]) : cvc.core["audio-recorder"] ? ar.enable() : ar.disable()); }
+        catch (e) { console.error("[audio-recorder] core-plugins.json:", e); }
       }
       if (typeof updateTitle === "function") updateTitle();
     });

@@ -656,10 +656,23 @@ const Ed = {
     const ext = p.slice(p.lastIndexOf(".") + 1).toLowerCase();
     return URL.createObjectURL(new Blob(parts, { type: Ed.AUDIO_MIME[ext] || "" }));
   },
-  // object URLs of embeds no longer in the document are revoked (a re-render, a closed tab)
+  // object URLs of embeds no longer in the document are revoked (a re-render, a closed tab); so are those of an
+  // embed that has been OFF SCREEN (a view a mode left stays connected) and paused for AUDIO_IDLE — it reloads when
+  // it is on screen again (codeant M2 on #124: no blob, up to 256 MiB, is held by a view nobody sees)
+  AUDIO_IDLE: 60000,
   audioSweep() {
-    const A = Ed._aud;
-    for (const [u, s] of A.live) if (!s.isConnected) { URL.revokeObjectURL(u); A.live.delete(u); }
+    const A = Ed._aud, now = Date.now();
+    for (const [u, s] of A.live) {
+      const a = s.querySelector("audio");
+      if (!s.isConnected) {
+        URL.revokeObjectURL(u); A.live.delete(u);
+        if (s._io) { s._io.disconnect(); s._io = null; }
+      } else if (s._io && !s._vis && s._hid && now - s._hid > Ed.AUDIO_IDLE && (!a || a.paused)) {
+        URL.revokeObjectURL(u); A.live.delete(u);
+        if (a) { a.removeAttribute("src"); a.load(); }
+        s.dataset.st = "";
+      }
+    }
     if (!A.live.size && A.timer) { clearInterval(A.timer); A.timer = 0; }
   },
   audioFill(s) {
@@ -679,7 +692,6 @@ const Ed = {
     const go = () => {
       if (s.dataset.st) return;
       s.dataset.st = "loading";
-      if (s._io) { s._io.disconnect(); s._io = null; }
       Ed.audioTrusted().then(ok => ok ? Ed.audioBlob(rel) : Promise.reject(new Error("restricted"))).then(u => {
         if (!s.isConnected) { URL.revokeObjectURL(u); s.dataset.st = ""; return; }
         const A = Ed._aud;
@@ -697,7 +709,11 @@ const Ed = {
     };
     a.addEventListener("play", go);
     if (typeof IntersectionObserver === "function") {
-      s._io = new IntersectionObserver(en => { if (en[en.length - 1].isIntersecting) setTimeout(go, 150); });
+      // kept for the embed's life: _vis/_hid feed audioSweep's off-screen revoke; back on screen -> go() reloads
+      s._io = new IntersectionObserver(en => {
+        const e = en[en.length - 1]; s._vis = e.isIntersecting;
+        if (e.isIntersecting) setTimeout(go, 150); else s._hid = Date.now();
+      });
       s._io.observe(s);
     } else setTimeout(go, 0);
   },
