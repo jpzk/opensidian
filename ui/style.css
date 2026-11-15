@@ -1351,6 +1351,37 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
          background: none; color: var(--text-quiet); font-size: 18px; line-height: 24px; cursor: pointer }
 #bmecard #bme-title:focus { box-shadow: 0 0 0 2px var(--border-focus-ring) }
 
+/* #94 "Manage workspace layouts": the bookmark card's geometry and tokens (one house modal), a name
+   row with Save, then the saved layouts — the name is the load button, pencil = rename, bin = delete. */
+#wsmbox { position: fixed; inset: 0; z-index: 70; background: var(--scrim);
+          display: flex; flex-direction: column; align-items: center; box-sizing: border-box;
+          padding: max(0px, min(120px, 100vh - 320px)) 0 8px }
+#wsmbox[hidden], #wsmempty[hidden] { display: none }
+#wsmcard { position: relative; width: 480px; max-width: 92%; box-sizing: border-box; background: var(--bg-elevated);
+           border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px 16px;
+           box-shadow: 0 8px 30px var(--shadow-modal); color: var(--text-chrome) }
+#wsmtitle { font-size: 17px; font-weight: 600; margin-bottom: 12px }
+#wsmx { position: absolute; top: 10px; right: 12px; width: 24px; height: 24px; border: 0; padding: 0;
+        background: none; color: var(--text-quiet); font-size: 18px; line-height: 24px; cursor: pointer }
+#wsmsaverow { display: flex; gap: 10px; align-items: center }
+#wsmname, .wsmren { flex: 1; min-width: 0; box-sizing: border-box; height: 28px; background: var(--bg-base);
+          color: var(--text-chrome); font: inherit; font-size: 13px; border: 1px solid var(--border);
+          border-radius: 4px; padding: 0 6px; outline: none }
+#wsmname:focus, .wsmren:focus { box-shadow: 0 0 0 2px var(--border-focus-ring) }
+#wsmsave { box-sizing: border-box; height: 30px; width: 80px; border: 0; border-radius: 5px; padding: 0;
+           background: var(--accent-blue); color: var(--bg-base); font-size: 13px; font-weight: 500; cursor: pointer }
+#wsmlist { margin-top: 12px; max-height: 260px; overflow-y: auto }
+.wsmrow { display: flex; align-items: center; gap: 4px; height: 32px; font-size: 13px }
+.wsmname { flex: 1; min-width: 0; height: 28px; text-align: left; border: 0; border-radius: 4px; padding: 0 6px;
+           background: none; color: var(--text-chrome); font: inherit; cursor: pointer;
+           overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.wsmrow.is-active .wsmname { font-weight: 600 }
+.wsmname:hover, .wsmbtn:hover { background: var(--bg-surface) }
+.wsmbtn { width: 28px; height: 28px; border: 0; border-radius: 4px; padding: 5px; box-sizing: border-box;
+          background: none; color: var(--text-quiet); cursor: pointer }
+.wsmbtn svg { width: 16px; height: 16px; display: block }
+#wsmempty { margin-top: 12px; font-size: 13px; color: var(--text-quiet) }
+
 /* R34.12/R34.13 refusal notice — the dropmsg shape (bottom-right, transient),
    because it says the same kind of thing: what was refused and why. The census
    token it publishes does NOT expire with the banner (dropTok's lesson: "no
