@@ -39,6 +39,7 @@ pub const WSS_MAX_BYTES: u64 = 8 << 20;
 /// the name is shown in a list and typed in a box; stock imposes no limit, a sane cap stops a paste accident
 pub const WSS_NAME_MAX: usize = 200;
 pub const WSS_CORRUPT: &str = "workspaces.json is not readable as a workspaces file; left untouched";
+pub const WSS_TOO_BIG: &str = "workspaces.json would exceed the size limit; layout not saved (delete some workspaces)";
 
 static LOCK: Mutex<()> = Mutex::new(());
 
@@ -207,6 +208,11 @@ pub fn mutate_in(root: &Path, op: impl FnOnce(Value) -> Result<Value, String>) -
     };
     let out = op(doc)?;
     let bytes = serde_json::to_vec_pretty(&out).map_err(|e| e.to_string())?;
+    // read_in treats a file over the cap as Corrupt and then refuses every op: never write one ourselves.
+    // The old file stays in place (still readable); delete/rename never grow it, so they keep working.
+    if bytes.len() as u64 > WSS_MAX_BYTES {
+        return Err(WSS_TOO_BIG.into());
+    }
     crate::vaultfs::write_atomic_durable(root, Path::new(WSS_REL), &bytes).map_err(|e| e.to_string())?;
     Ok(list(&OnDisk::Doc(out)))
 }
@@ -288,6 +294,25 @@ mod tests {
         fs::write(root.join(WSS_REL), "[1,2]").unwrap();
         assert!(mutate_in(&root, |d| op_delete(d, "A")).is_err());
         assert_eq!(fs::read_to_string(root.join(WSS_REL)).unwrap(), "[1,2]");
+    }
+
+    #[test]
+    fn save_never_writes_a_file_over_the_cap() {
+        // codeant #110: a save that grew the file past WSS_MAX_BYTES made every later read Corrupt
+        let root = tmp("cap");
+        let mk = |pad: &str| json!({"workspaces": {"big": {"main": {"id": "m", "type": "split", "children": []}, "pad": pad}}, "active": "big"});
+        let l0 = serde_json::to_vec_pretty(&mk("")).unwrap().len() as u64;
+        let near = mk(&"x".repeat((WSS_MAX_BYTES - l0 - 50) as usize));
+        let before = serde_json::to_vec_pretty(&near).unwrap();
+        assert!(before.len() as u64 <= WSS_MAX_BYTES);
+        fs::write(root.join(WSS_REL), &before).unwrap();
+        assert!(matches!(read_in(&root), OnDisk::Doc(_)));
+        assert_eq!(mutate_in(&root, |d| op_save(d, "A", &lay("a.md"))).unwrap_err(), WSS_TOO_BIG);
+        assert_eq!(fs::read(root.join(WSS_REL)).unwrap(), before, "refused save leaves the file byte-identical");
+        assert!(matches!(read_in(&root), OnDisk::Doc(_)), "still readable, not Corrupt");
+        let r = mutate_in(&root, |d| op_delete(d, "big")).unwrap(); // shrinking ops keep working
+        assert_eq!(names(&r), Vec::<String>::new());
+        assert_eq!(names(&mutate_in(&root, |d| op_save(d, "A", &lay("a.md"))).unwrap()), ["A"]);
     }
 
     #[test]
