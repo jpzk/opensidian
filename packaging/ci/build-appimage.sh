@@ -7,19 +7,25 @@
 #   portable (default) — full webkit/gtk ldd closure, runs anywhere (~110MB)
 #   slim               — binary + AppRun only, needs system libwebkit2gtk-4.1 (~6MB)
 # Prereqs: src-tauri/target/release/opensidian built;
-#          /workspace/tools/appimagetool-x86_64.AppImage (AppImageKit r13).
+#          /workspace/tools/appimagetool-<arch>.AppImage (AppImageKit r13), or $APPIMAGETOOL.
+# Arch = the HOST arch (uname -m: x86_64 or aarch64). Native builds only: the binary
+# must be an ELF for this arch, and the portable libs come from this host's ldd closure.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 FLAVOR="${1:-portable}"
 VERSION="${2:-0.2}"
 BIN=src-tauri/target/release/opensidian
-TOOL=${APPIMAGETOOL:-/workspace/tools/appimagetool-x86_64.AppImage}
+ARCH=$(uname -m)
+case "$ARCH" in x86_64) EM=3e ;; aarch64) EM=b7 ;; *) echo "unsupported arch $ARCH (x86_64|aarch64)"; exit 1;; esac
+TOOL=${APPIMAGETOOL:-/workspace/tools/appimagetool-$ARCH.AppImage}
 [ -x "$BIN" ]  || { echo "missing $BIN (cargo build --release first)"; exit 1; }
 [ -x "$TOOL" ] || { echo "missing $TOOL"; exit 1; }
+# ELF e_machine (offset 18, little-endian): 0x3e = x86-64, 0xb7 = AArch64
+[ "$(od -An -tx1 -j18 -N1 "$BIN" | tr -d ' ')" = "$EM" ] || { echo "$BIN is not an $ARCH ELF (native builds only)"; exit 1; }
 case "$FLAVOR" in portable|slim) ;; *) echo "usage: $0 [portable|slim] [version]"; exit 1;; esac
 
 APPDIR="dist/AppDir-$FLAVOR"
-OUT="dist/opensidian-$VERSION-x86_64-$FLAVOR.AppImage"
+OUT="dist/opensidian-$VERSION-$ARCH-$FLAVOR.AppImage"
 rm -rf "$APPDIR"
 mkdir -p "$APPDIR/usr/bin"
 
@@ -31,7 +37,7 @@ if [ "$FLAVOR" = portable ]; then
   # These paths were /usr/libexec/... and /usr/lib64/... — correct on the
   # Fedora-family machine every release up to v0.9 was cut on, and absent on the
   # Debian-family build box, where the same files live under
-  # /usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/. The v0.10 cut died here with
+  # /usr/lib/<arch>-linux-gnu/webkit2gtk-4.1/. The v0.10 cut died here with
   # "cp: cannot stat '/usr/libexec/webkit2gtk-4.1/WebKitWebProcess'".
   # Search the known layouts and FAIL LOUDLY if none has them: a portable
   # AppImage silently missing its web process is a 110 MB download that shows a
@@ -40,12 +46,12 @@ if [ "$FLAVOR" = portable ]; then
   # WEBKIT_EXEC_PATH=$HERE/usr/libexec/webkit2gtk-4.1 either way.)
   WKEXEC=
   for d in /usr/libexec/webkit2gtk-4.1 /usr/lib64/webkit2gtk-4.1 \
-           /usr/lib/x86_64-linux-gnu/webkit2gtk-4.1 /usr/lib/webkit2gtk-4.1; do
+           /usr/lib/$ARCH-linux-gnu/webkit2gtk-4.1 /usr/lib/webkit2gtk-4.1; do
     [ -x "$d/WebKitWebProcess" ] && { WKEXEC=$d; break; }
   done
   [ -n "$WKEXEC" ] || { echo "FAIL: no WebKitWebProcess in any known webkit2gtk-4.1 dir — install libwebkit2gtk-4.1 or add this distro's path"; exit 1; }
   WKBUNDLE=
-  for d in /usr/lib64/webkit2gtk-4.1 /usr/lib/x86_64-linux-gnu/webkit2gtk-4.1 \
+  for d in /usr/lib64/webkit2gtk-4.1 /usr/lib/$ARCH-linux-gnu/webkit2gtk-4.1 \
            /usr/lib/webkit2gtk-4.1 /usr/libexec/webkit2gtk-4.1; do
     [ -f "$d/injected-bundle/libwebkit2gtkinjectedbundle.so" ] && { WKBUNDLE=$d/injected-bundle/libwebkit2gtkinjectedbundle.so; break; }
   done
@@ -148,7 +154,7 @@ if [ "$FLAVOR" = portable ]; then
   # are rewritten IN PLACE to SAME-LENGTH relative paths ("./"-padded, keeping the tail
   # "webkit2gtk-4.1[/injected-bundle/]" so a suffix-merged string still reads the same bytes).
   # They resolve against the cwd, which AppRun sets to $HERE. Only the AppDir copy is touched;
-  # matched with the trailing NUL so "/usr/lib/x86_64-linux-gnu" alone etc. are left alone.
+  # matched with the trailing NUL so "/usr/lib/<arch>-linux-gnu" alone etc. are left alone.
   WKLIB="$APPDIR/usr/lib/libwebkit2gtk-4.1.so.0"
   [ -f "$WKLIB" ] || { echo "FAIL: $WKLIB not bundled — nothing to patch"; exit 1; }
   relpad() { # <compiled-in abs path> <AppDir-relative target> -> same-length relative path
@@ -230,7 +236,7 @@ cp "$IC" "$APPDIR/opensidian.png"
 cp "$IC" "$APPDIR/.DirIcon"
 
 echo "[appimage:$FLAVOR] packing -> $OUT"
-ARCH=x86_64 "$TOOL" --appimage-extract-and-run "$APPDIR" "$OUT"
+ARCH="$ARCH" "$TOOL" --appimage-extract-and-run "$APPDIR" "$OUT"
 chmod +x "$OUT"
 ls -la "$OUT"
 echo "[appimage:$FLAVOR] OK"
