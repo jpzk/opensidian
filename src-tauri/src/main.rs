@@ -8566,7 +8566,7 @@ mod tests {
         let h = search_docs(docs_ref(&docs), "[status]");
         assert_eq!(h.iter().map(|x| (x.note.as_str(), x.line, x.snippet.as_str())).collect::<Vec<_>>(),
                    vec![("A", 2, "status: done"), ("B", 1, "status: open")]);
-        assert_eq!(h[0].offset, 15, "the offset is the key line's start in the file");
+        assert_eq!(h[0].offset, 13, "the offset is the key line's start in the file (4 + 9 bytes)");
         let h = search_docs(docs_ref(&docs), "[status:OPEN]");
         assert_eq!(h.len(), 1);
         assert_eq!(h[0].note, "B");

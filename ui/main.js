@@ -325,7 +325,9 @@ async function cmdToggleRight() {
 $("rtoggle").onclick = cmdToggleRight;
 async function cmdShowProps() {         // #119 "Properties view: Show all properties"
   if (!state) return;
-  if (!rightOpen) await cmdToggleRight();
+  // open the sidebar ON the props tab: toggling first with the old tab started an un-awaited
+  // backlinks render that finished after the props one and overwrote rpInfo (stale [rp:bl:])
+  if (!rightOpen) { rTab = "props"; await cmdToggleRight(); }
   await setRTab("props");
 }
 
