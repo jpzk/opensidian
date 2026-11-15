@@ -37,6 +37,11 @@ finish-args:
   - --socket=fallback-x11
   - --socket=wayland
   - --device=dri
+  # #116 Audio recorder: the microphone reaches WebKitGTK's GStreamer capture
+  # through the PulseAudio socket (pipewire-pulse on PipeWire hosts). No
+  # --device=all: no camera, no raw ALSA. The webview only opens the mic while
+  # a recording the user started is starting (src-tauri/src/audiorec.rs).
+  - --socket=pulseaudio
   - --filesystem=home
   # NOTE: --talk-name=org.freedesktop.portal.Desktop was REMOVED — the linter
   # calls it out ("finish-args-portal-talk-name") because every app already
