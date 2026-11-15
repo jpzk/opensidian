@@ -17,7 +17,7 @@ use std::path::PathBuf;
 
 fn root() -> PathBuf { PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..") }
 
-const CHECKS: &str = r#"(function () {
+const CHECKS: &str = r##"(function () {
   "use strict";
   const M = window.PropsModel;
   const eq = (a, b, what) => { if (a !== b) throw new Error(what + ":\n got  " + JSON.stringify(a) + "\n want " + JSON.stringify(b)); };
@@ -150,7 +150,7 @@ const CHECKS: &str = r#"(function () {
   eq(J([M.coerce("number", "12"), M.coerce("number", "1e3"), M.coerce("date", "2024-02-03"), M.coerce("date", "x"), M.coerce("text", "")]),
      J([12, undefined, "2024-02-03", undefined, null]), "coerce");
   return "ok";
-})()"#;
+})()"##;
 
 #[test]
 fn properties_model_round_trip() {
