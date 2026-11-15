@@ -77,7 +77,7 @@ jobs:
       - name: install cargo-deny ${{ env.CARGO_DENY_VERSION }}
         run: cargo install --locked --version "$CARGO_DENY_VERSION" cargo-deny
       - name: cargo deny check
-        run: cargo deny --manifest-path src-tauri/Cargo.toml --locked check --config deny.toml --show-stats
+        run: cargo deny --manifest-path src-tauri/Cargo.toml --config deny.toml --locked check --show-stats
 
   vet:
     name: cargo vet
@@ -99,38 +99,3 @@ jobs:
         # any new or updated crate without an audit/exemption fails here
         working-directory: src-tauri
         run: cargo vet --locked
-
-  # TEMPORARY (removed before review): no cargo on the authoring VM and the shared box is full,
-  # so the first PR run prints the inputs deny.toml / the cargo-vet baseline are derived from.
-  bootstrap:
-    name: bootstrap (temporary)
-    runs-on: ubuntu-26.04
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          persist-credentials: false
-      - name: toolchain + pinned tools
-        run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
-          rustup default "$RUST_TOOLCHAIN"
-          cargo install --locked --version "$CARGO_DENY_VERSION" cargo-deny
-          cargo install --locked --version "$CARGO_VET_VERSION" cargo-vet
-          cargo install --locked --version "$CARGO_AUDIT_VERSION" cargo-audit
-      - name: cargo deny list
-        continue-on-error: true
-        run: cargo deny --manifest-path src-tauri/Cargo.toml --locked list --layout license --format human
-      - name: cargo audit (report)
-        continue-on-error: true
-        working-directory: src-tauri
-        run: cargo audit
-      - name: cargo vet init + imports
-        continue-on-error: true
-        working-directory: src-tauri
-        run: |
-          cargo vet init
-          for r in mozilla google bytecode-alliance zcash isrg; do cargo vet import "$r"; done
-          cargo vet prune
-          cargo vet
-          for f in supply-chain/config.toml supply-chain/audits.toml supply-chain/imports.lock; do
-            echo "=====BEGIN $f"; base64 -w0 "$f"; echo; echo "=====END $f"; done
