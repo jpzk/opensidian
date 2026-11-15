@@ -36,7 +36,7 @@ pub struct Tm {
 }
 
 impl Tm {
-    /// fuzz finding (fuzz/artifacts-triaged/datefmt/): Tm crosses the IPC
+    /// fuzz finding (opensidian-harness fuzz dir, artifacts-triaged/datefmt/): Tm crosses the IPC
     /// unvalidated (insert_datetime), and y = i64::MIN overflowed `1 - t.y`
     /// (mo = 0 / 13 would index MONTHS out of bounds, off = i32::MIN negate).
     /// Pin every field to what a JS Date can produce: the identity on every
@@ -611,7 +611,8 @@ mod tests {
         assert_eq!(format("y N NNNN YYYY", &t), "1 BC Before Christ 0000");
     }
 
-    /// fuzz regression (fuzz/artifacts-triaged/datefmt/min-y-i64-min): an
+    /// fuzz regression (opensidian-harness fuzz dir,
+    /// artifacts-triaged/datefmt/min-y-i64-min): an
     /// out-of-range Tm from the IPC must format, never panic
     #[test]
     fn out_of_range_tm_never_panics() {

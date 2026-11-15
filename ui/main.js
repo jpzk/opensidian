@@ -9146,7 +9146,7 @@ if ($("rnbox") && $("rnbox").parentElement) dlgContainer($("rnbox").parentElemen
 let themeGen = 0;
 /* #59 slice 2 (themecompat): stock 1.13.7's body carries .is-focused (window focus) and .is-hidden-frameless (no
    native title bar — ours is frameless with #wframe). Theme rules key their tab strip off them (Minimal: the focused
-   top strip = --bg1). Only while a CHOSEN theme paints ([data-vthemecompat]), so the no-theme look cannot move; the
+   top strip = --bg1). Only while a vault theme paints ([data-vthemecompat]: chosen, or the default, #96), so the base sheet cannot move; the
    stock rule they would otherwise let a theme beat (the focused active title ink) is mirrored in style.css. */
 function compatBody() {
   const b = document.body, on = document.documentElement.hasAttribute("data-vthemecompat");
@@ -9155,10 +9155,11 @@ function compatBody() {
   b.classList.toggle("is-focused", on && b.classList.contains("window-focused"));
 }
 const vthemeMark = name => {
-  // #59 slice 3: [data-vthemecompat] = the theme that paints is the one the vault CHOSE (cssTheme), not the bundled
-  // default an empty cssTheme falls back to; style.css scopes the dialog compat rules to it, so the look with no theme
-  // chosen does not move, and choosing the default theme by name gets stock semantics like any other. Before data-vtheme.
-  document.documentElement.toggleAttribute("data-vthemecompat", !!name && name === vaultTheme);
+  // #59 slice 3 / #96: [data-vthemecompat] = a vault theme PAINTS (stock semantics for its tabs + dialogs), and since
+  // #96 that includes the bundled default an empty cssTheme falls back to (effTheme): "" and "Use theme: <default>"
+  // paint the SAME theme, so they must paint it the same way (one look: stock's). Off only while no theme paints (the
+  // base sheet; themeRemove passes ""). Before data-vtheme.
+  document.documentElement.toggleAttribute("data-vthemecompat", !!name);
   compatBody();
   document.documentElement.dataset.vtheme = (++themeGen) + ":" + (name || "");
 };

@@ -1,0 +1,71 @@
+# Repo-local opengrep rules: Tauri IPC surface (#[tauri::command] handlers
+# receive input from the webview, which renders untrusted vault content).
+rules:
+  - id: opensidian.tauri.command-unwrap
+    languages: [rust]
+    severity: WARNING
+    message: >-
+      unwrap()/expect() inside a #[tauri::command] handler. Command arguments
+      come from the webview (untrusted vault/plugin content); a panic here
+      aborts the IPC call or poisons shared state. Return Result<_, String>
+      and propagate with ? instead. (Mutex/RwLock lock().unwrap() is excluded:
+      poisoning is not attacker input.)
+    metadata:
+      category: security
+      cwe: ["CWE-248: Uncaught Exception"]
+      confidence: MEDIUM
+    patterns:
+      - pattern-either:
+          - pattern-inside: |
+              #[tauri::command]
+              fn $F(...) { ... }
+          - pattern-inside: |
+              #[tauri::command]
+              fn $F(...) -> $R { ... }
+          - pattern-inside: |
+              #[tauri::command]
+              pub fn $F(...) { ... }
+          - pattern-inside: |
+              #[tauri::command]
+              pub fn $F(...) -> $R { ... }
+          - pattern-inside: |
+              #[tauri::command]
+              async fn $F(...) { ... }
+          - pattern-inside: |
+              #[tauri::command]
+              async fn $F(...) -> $R { ... }
+          - pattern-inside: |
+              #[tauri::command]
+              pub async fn $F(...) { ... }
+          - pattern-inside: |
+              #[tauri::command]
+              pub async fn $F(...) -> $R { ... }
+          - pattern-inside: |
+              #[tauri::command(async)]
+              fn $F(...) -> $R { ... }
+          - pattern-inside: |
+              #[tauri::command(async)]
+              pub fn $F(...) -> $R { ... }
+      - pattern-either:
+          - pattern: $E.unwrap()
+          - pattern: $E.expect(...)
+      - pattern-not: $M.lock().unwrap()
+      - pattern-not: $M.lock().expect(...)
+      - pattern-not: $M.read().unwrap()
+      - pattern-not: $M.write().unwrap()
+
+  - id: opensidian.tauri.webview-eval-nonliteral
+    languages: [rust]
+    severity: WARNING
+    message: >-
+      Webview eval() with a non-literal script. If any part of the string is
+      derived from vault content or IPC input this is script injection into
+      the privileged app webview. Pass data via emit()/IPC instead of
+      building JS source.
+    metadata:
+      category: security
+      cwe: ["CWE-95: Eval Injection"]
+      confidence: MEDIUM
+    patterns:
+      - pattern: $W.eval($JS)
+      - pattern-not: $W.eval("...")

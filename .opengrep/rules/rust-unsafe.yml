@@ -1,0 +1,15 @@
+# Repo-local opengrep rules: unsafe code inventory (audit, not a bug claim).
+rules:
+  - id: opensidian.rust.unsafe-block
+    languages: [rust]
+    severity: INFO
+    message: >-
+      unsafe block. Audit marker: every unsafe needs a // SAFETY: justification
+      and should stay as small as possible. Reported as a note so new unsafe
+      shows up on the PR that adds it.
+    metadata:
+      category: security
+      subcategory: [audit]
+      cwe: ["CWE-119: Improper Restriction of Operations within the Bounds of a Memory Buffer"]
+      confidence: LOW
+    pattern: unsafe { ... }
