@@ -3,7 +3,7 @@
 # CI COPY of the opensidian-harness release recipe (harness 22dd5194f685) — same pins, same steps;
 # only machine paths are parameterised (TMPDIR, APPIMAGETOOL, RPM_OCI_CACHE). Keep in sync.
 # RPM STAGE — runs ON THE BOX. Wraps an already-built release binary into
-# dist/opensidian-<ver>-x86_64.rpm. Never compiles opensidian.
+# dist/opensidian-<ver>-<arch>.rpm (<arch> = host uname -m: x86_64 or aarch64). Never compiles opensidian.
 #   rpm-build.sh <opensidian-tree> <ver> <slim-AppImage> [outdir]
 # The binary packaged is <tree>/src-tauri/target/release/opensidian — the same file
 # build-appimage.sh copied into the AppImages. The stage FAILS unless the sha256 of
@@ -17,9 +17,18 @@ set -euo pipefail
 T=$(readlink -f "${1:?tree}"); V=${2:?ver}; SLIM=$(readlink -f "${3:?slim AppImage}"); OUTD=$(readlink -f "${4:-$T/dist}")
 say(){ echo "[$(date +%H:%M:%S)] [rpm] $*"; }
 die(){ say "FAIL: $*"; exit 1; }
-OCI_URL=https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Container/x86_64/images/Fedora-Container-Base-Generic-44-1.7.x86_64.oci.tar.xz
-OCI_SHA=75200f5752a74a21a616ca9a75e25beb594e2e117a0195c54f87c0b3e3974d1b
-DIGEST=sha256:f1e66cdd6eff2c9ccad192f8865af9be6d69b46b3f13329d2975a2d61a1296c5
+# Native only: the rpm arch = the host arch (uname -m), and so is the Fedora image.
+# Per-arch pins: file sha256 from the signed Fedora-Container-44-1.7-<arch>-CHECKSUM,
+# DIGEST = the manifest digest in that archive's index.json (what podman then carries).
+ARCH=$(uname -m)
+case "$ARCH" in
+  x86_64)  OCI_SHA=75200f5752a74a21a616ca9a75e25beb594e2e117a0195c54f87c0b3e3974d1b
+           DIGEST=sha256:f1e66cdd6eff2c9ccad192f8865af9be6d69b46b3f13329d2975a2d61a1296c5 ;;
+  aarch64) OCI_SHA=eca19542a48a8e39b84e869713a1fa2408cbcc578de26c25ae72e3334ef968c1
+           DIGEST=sha256:bebe5bd9e882469b64cc950da834288bdebca8921ec4bb50646378d672da0ff5 ;;
+  *) die "unsupported arch $ARCH (x86_64|aarch64)" ;;
+esac
+OCI_URL=https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Container/$ARCH/images/Fedora-Container-Base-Generic-44-1.7.$ARCH.oci.tar.xz
 IMG=localhost/fedora@$DIGEST
 TOOLS="rpm-build-6.0.1-2.fc44 rpmlint-2.8.0-3.fc44 desktop-file-utils-0.28-5.fc44 libappstream-glib-0.8.3-5.fc44 cpio-2.15-9.fc44"
 BIN=$T/src-tauri/target/release/opensidian
@@ -27,7 +36,7 @@ SPEC=$T/packaging/rpm/opensidian.spec; ICON=$T/packaging/linux/opensidian.svg; I
 DESK=$T/packaging/flatpak/dev.koto.opensidian.desktop; META=$T/packaging/flatpak/dev.koto.opensidian.metainfo.xml
 for f in "$BIN" "$SPEC" "$ICON" $ICD/{48,64,128,256,512}.png "$DESK" "$META" "$T/LICENSE" "$SLIM"; do [ -s "$f" ] || die "missing $f"; done
 command -v podman >/dev/null || die "no podman (cloud-init pins podman=4.9.3+ds1-1ubuntu0.2)"
-say "tree $T  ver $V  out $OUTD"
+say "tree $T  ver $V  arch $ARCH  out $OUTD"
 say "image $IMG"
 if ! podman image exists "$IMG"; then
   C=${RPM_OCI_CACHE:-/srv/cache/fedora44}; mkdir -p $C; A=$C/${OCI_URL##*/}
@@ -50,9 +59,9 @@ podman run --rm --network=host -v $W:/w "$IMG" bash -euo pipefail -c '
   say "tools: $(rpm -q rpm-build rpmlint cpio | tr "\n" " ")"
   rpmbuild -bb --define "_topdir /w/top" --define "_sourcedir /w/src" --define "ver '"$V"'" /w/src/opensidian.spec > /w/out/rpmbuild.log 2>&1 || { tail -40 /w/out/rpmbuild.log; exit 1; }
   grep -E "^Wrote" /w/out/rpmbuild.log | sed "s/^/    /"
-  R=$(ls /w/top/RPMS/x86_64/opensidian-'"$V"'-*.x86_64.rpm) || { tail -30 /w/out/rpmbuild.log; exit 1; }
-  cp "$R" /w/out/opensidian-'"$V"'-x86_64.rpm
-  cd /w/out; P=opensidian-'"$V"'-x86_64.rpm
+  R=$(ls /w/top/RPMS/'"$ARCH"'/opensidian-'"$V"'-*.'"$ARCH"'.rpm) || { tail -30 /w/out/rpmbuild.log; exit 1; }
+  cp "$R" /w/out/opensidian-'"$V"'-'"$ARCH"'.rpm
+  cd /w/out; P=opensidian-'"$V"'-'"$ARCH"'.rpm
   say "rpmlint:"; rpmlint $P > rpmlint.log 2>&1 || true; sed "s/^/    /" rpmlint.log
   rpm -qlp $P > files.txt; rpm -qp --requires $P > requires.txt; rpm -qip $P > info.txt
   rpm2cpio $P > payload.cpio; mkdir x && (cd x && cpio -idm --quiet < ../payload.cpio); rm -f payload.cpio
@@ -60,7 +69,7 @@ podman run --rm --network=host -v $W:/w "$IMG" bash -euo pipefail -c '
   (cd x && sha256sum usr/share/icons/hicolor/*/apps/dev.koto.opensidian.png usr/share/icons/hicolor/scalable/apps/dev.koto.opensidian.svg) > icons.sha256
   rm -rf x
 '
-P=$OUTD/opensidian-$V-x86_64.rpm; mkdir -p "$OUTD"; cp $W/out/opensidian-$V-x86_64.rpm "$P"
+P=$OUTD/opensidian-$V-$ARCH.rpm; mkdir -p "$OUTD"; cp $W/out/opensidian-$V-$ARCH.rpm "$P"
 L=$OUTD/rpm-$V; rm -rf "$L"; mkdir -p "$L"; cp $W/out/*.log $W/out/*.txt $W/out/*.sha256 "$L"/
 say "rpm $P  $(stat -c %s "$P") bytes  sha256 $(sha256sum "$P" | cut -d' ' -f1)"
 say "files:"; sed 's/^/    /' $L/files.txt

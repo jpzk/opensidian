@@ -5,7 +5,8 @@ edition = "2021"
 license = "GPL-3.0-or-later"
 
 # lib.rs: the pure parse/normalize modules (vaultfs, outline, index, graphq,
-# canvasfs, datefmt) as a tauri-free library so fuzz/ can link them. The bin
+# canvasfs, datefmt) as a tauri-free library so the cargo-fuzz harness can
+# link them (it lives in jpzk/opensidian-harness, fuzz dir). The bin
 # (main.rs) keeps its name "opensidian" and uses this lib.
 [lib]
 name = "opensidian_lib"
