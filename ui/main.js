@@ -8047,10 +8047,10 @@ if (PLG) {
              views: { graph: leaf => new GraphView(leaf, "graph"), localgraph: leaf => new GraphView(leaf, "localgraph") } },
     switcher: { enabled: true, instance: { id: "switcher", QuickSwitcherModal } },
     "page-preview": { enabled: false, instance: { id: "page-preview" } },
-    // templates / daily-notes: no Templates (template folder, insert template) or Daily notes core plugin here, so
-    // neither is enabled. Present anyway, as every core plugin is in stock enabled or not: plugins read .enabled
-    // and instance.options (empty: no folder / format set, so a plugin falls back to its own defaults); Kanban's
-    // settings tab threw on plugins.templates.enabled
+    // templates: no Templates core plugin (template folder, insert template) here, so it is not enabled. Present
+    // anyway, as every core plugin is in stock enabled or not: plugins read .enabled and instance.options (empty:
+    // a plugin falls back to its own defaults); Kanban's settings tab threw on plugins.templates.enabled.
+    // daily-notes is the real core plugin (issue #115, the DN block below replaces this entry).
     templates: { enabled: false, instance: { id: "templates", options: {} } },
     "daily-notes": { enabled: false, instance: { id: "daily-notes", options: {} } },
   });
@@ -8105,6 +8105,220 @@ if (CANVAS) {
     CANVAS.plugin[k] = async function (...a) { try { return await f.apply(this, a); } finally { cvRibbonSync(); } };
   }
   setTimeout(cvRibbonSync, 0);
+}
+/* issue #115: the Daily notes core plugin, stock 1.13.7 parity (design: goal i115-daily progress.md).
+   - Options: <vault>/.obsidian/daily-notes.json, stock's file and keys ({format, folder, template, autorun}; a missing
+     key = its default, written only once changed, unknown keys kept), read + merged through settings_model's vcfg
+     (settings.rs: atomic write, vault-confined values). instance.options is the LIVE object holding the file's stock
+     keys, so obsidian-daily-notes-interface (Calendar, Periodic Notes) resolve the same folder / format / template.
+   - On / off: app.internalPlugins.plugins["daily-notes"] (enable()/disable(), config["daily-notes"]); the vault's
+     core-plugins.json "daily-notes" decides at launch (an Obsidian vault with true comes up on), else the app-wide
+     localStorage pref, else OFF (operator 2026-11-15: no ribbon icon / commands in vaults that never asked). A
+     switch writes core-plugins.json (merge: no other key is dropped). No restart: the three commands (CMDS rows
+     with coreOff, hidden from the palette, Hotkeys and app.commands while off) and the ribbon icon follow it.
+   - "Open today's daily note": <folder>/<moment().format(format)>.md, "/" in the format = nested folders (made on
+     demand by create_note). A new note gets the template's text with {{date}} {{time}} {{title}} {{date:FMT}}
+     {{time:FMT}} (+ {{date+1d}}-style offsets, {{yesterday}} {{tomorrow}}, as obsidian-daily-notes-interface)
+     substituted; an EXISTING note is opened, never rewritten (create_note is O_EXCL). A missing template =
+     notice, empty note. A folder / format that names ".." or a hidden component is refused with a notice (and by
+     the backend, main.rs safe_rel). Previous / next: the nearest existing daily note (names parsed strictly with
+     the format, under the folder) before / after the active daily note, or today when the active note is not
+     one; nothing at the ends. autorun: open today's note once the vault is on screen.
+   App code, not a plugin: works in restricted mode (moment is loaded from the vendored file on first use).
+   Census: [dn:on=|cmd=|rib=|fmt=|dir=|tpl=|auto=|n=|c=|last=|err=] [dnip:en=|cfg=|byid=|fmt=|dir=|tpl=] [ribbon:daily@x,y] */
+const DN_DEF = Object.freeze({ format: "YYYY-MM-DD", folder: "", template: "", autorun: false });
+var DN = null;   // var: the census (dnTok) may run before this line
+{
+  const ip = PLG && PLG.app && PLG.app.internalPlugins, KEY = "opensidian.core.daily-notes";
+  if (ip && ip.plugins) {
+    const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+    const file = {};            // daily-notes.json as last read / written (every key)
+    const options = {};         // instance.options: the stock keys present in the file (plain object, live)
+    const syncOpts = () => { for (const k of Object.keys(DN_DEF)) { if (own(file, k)) options[k] = file[k]; else delete options[k]; } };
+    const pref = {
+      get() { try { const v = localStorage.getItem(KEY); return v == null ? null : v === "1"; } catch (_) { return null; } },
+      set(on) { try { localStorage.setItem(KEY, on ? "1" : "0"); } catch (_) {} },
+    };
+    const vinv = (f, patch) => inv("settings_model", { vcfg: patch === undefined ? { file: f } : { file: f, patch } });
+    const st = { opens: 0, created: 0, last: "", err: "", booted: false };
+    const rb = document.getElementById("ribbon");
+    let btn = null;
+    if (rb) {
+      btn = document.createElement("button");
+      btn.id = "dnribbonbtn";
+      btn.title = "Open today's daily note";
+      btn.setAttribute("aria-label", "Open today's daily note");
+      btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>';
+      btn.hidden = true;
+      btn.addEventListener("click", () => { dnOpenToday("ribbon").catch(e => console.error("[daily-notes] ribbon:", e)); });
+      rb.appendChild(btn);
+    }
+    const sync = () => {
+      ip.config["daily-notes"] = !!plugin.enabled;
+      if (btn) btn.hidden = !(plugin.enabled && plugin._loaded);
+      if (typeof updateTitle === "function" && state) updateTitle();
+    };
+    let cq = Promise.resolve();   // core-plugins.json writes, in click order
+    /* codeant #122: a toggle / pane write while boot() awaits its reads wins over those (now stale) reads */
+    let onGen = 0, cfgGen = 0;
+    async function setOn(on) {
+      plugin.enabled = !!on; pref.set(!!on); sync();
+      if (!plugin._loaded) await plugin.load();
+      if (!state) return;   // before the vault is known there is no core-plugins.json to write (boot reads it)
+      onGen++;
+      cq = cq.then(() => vinv("core-plugins", { "daily-notes": !!on })).catch(e => say("Core plugins: " + errStr(e), "daily-notes"));
+      await cq;
+    }
+    const plugin = {
+      id: "daily-notes",
+      enabled: false,
+      _loaded: false,
+      instance: { id: "daily-notes", name: "Daily notes", description: "Open or create today's note from a folder, date format and template.", defaultOn: false, options },
+      async load() { this._loaded = true; sync(); },
+      async unload() { this._loaded = false; sync(); },
+      async enable() { return setOn(true); },
+      async disable() { return setOn(false); },
+      async toggle(on) { return setOn(!!on); },
+    };
+    /* the settings pane's reader / writer (settings.js core-daily-notes): get(k) = the stored value or its default,
+       set(patch) = merge + write (in order; the file keeps the last), raw() = the whole file */
+    let wq = Promise.resolve();
+    const cfg = Object.freeze({
+      get: k => (own(file, k) && file[k] != null ? file[k] : DN_DEF[k]),
+      raw: () => Object.assign({}, file),
+      set(patch) {
+        const p = {};
+        for (const k of Object.keys(patch || {})) if (own(DN_DEF, k)) p[k] = patch[k];
+        if (!Object.keys(p).length) return wq;
+        cfgGen++;
+        Object.assign(file, p); syncOpts(); sync();
+        wq = wq.then(() => vinv("daily-notes", p)).then(v => {
+          if (v && typeof v === "object") { for (const k of Object.keys(file)) delete file[k]; Object.assign(file, v); syncOpts(); sync(); }
+        }, e => {   // refused (e.g. a folder with ".."): the file is unchanged, so the options go back to what it holds
+          st.err = errStr(e); say("Daily notes settings: " + st.err, "daily-notes");
+          return vinv("daily-notes").then(v => { for (const k of Object.keys(file)) delete file[k]; if (v && typeof v === "object") Object.assign(file, v); syncOpts(); sync(); }, () => {});
+        });
+        return wq;
+      },
+    });
+    Object.defineProperty(plugin, "cfg", { value: cfg, enumerable: false });
+    async function boot() {   // enterVault: the vault's two files decide on/off and the options, then autorun
+      const g0 = onGen, c0 = cfgGen;
+      const [core, dn] = await Promise.all([vinv("core-plugins").catch(() => ({})), vinv("daily-notes").catch(() => ({}))]);
+      if (cfgGen === c0) {   // else the pane wrote meanwhile: its write's answer refreshes the file
+        for (const k of Object.keys(file)) delete file[k];
+        if (dn && typeof dn === "object") Object.assign(file, dn);
+        syncOpts();
+      }
+      const c = core && typeof core === "object" ? core["daily-notes"] : undefined;
+      if (onGen === g0) plugin.enabled = typeof c === "boolean" ? c : pref.get() === true;   // else the click (already written) stands
+      await plugin.load();
+      st.booted = true; sync();
+      if (plugin.enabled && options.autorun === true) await dnOpenToday("autorun");
+    }
+    ip.plugins["daily-notes"] = plugin;
+    sync();
+    DN = { plugin, options, cfg, st, boot, btn };
+  }
+}
+function dnOn() { return !!(DN && DN.plugin.enabled && DN.plugin._loaded); }
+/* the effective settings, read as obsidian-daily-notes-interface reads instance.options (format || default, trimmed
+   folder / template); a folder / template is vault-relative ("/Daily/" = "Daily", "Templates/Daily.md" = the note
+   "Templates/Daily") */
+const dnPath = s => String(s == null ? "" : s).trim().split("/").map(c => c.trim()).filter(c => c !== "").join("/");
+const dnFmt = () => (DN && typeof DN.options.format === "string" && DN.options.format) || DN_DEF.format;
+const dnDir = () => dnPath(DN && DN.options.folder);
+const dnTpl = () => dnPath(DN && DN.options.template).replace(/\.md$/i, "");
+const dnBadPath = p => !p || p.split("/").some(c => c === ".." || c.startsWith(".") || c.includes("\\") || c.includes("\0"));
+let dnMomentP = null;
+function dnMoment() {   // the vendored moment (ui/vendor/moment.min.js, the plugin runtime's own copy); restricted mode too
+  if (window.moment) return Promise.resolve(window.moment);
+  return dnMomentP || (dnMomentP = new Promise((res, rej) => {
+    const s = document.createElement("script");
+    s.src = "vendor/moment.min.js";
+    s.onload = () => (window.moment ? res(window.moment) : rej(new Error("moment did not load")));
+    s.onerror = () => { dnMomentP = null; rej(new Error("moment did not load")); };
+    document.head.appendChild(s);
+  }));
+}
+function dnErr(m) { if (DN) DN.st.err = m; say(m, "daily-notes"); }
+function dnFill(text, m, title, fmt) {   // the template tokens (stock + obsidian-daily-notes-interface)
+  return String(text)
+    .replace(/{{\s*(date|time)\s*(([+-]\d+)([yqmwdhs]))?\s*(:.+?)?}}/gi, (_, kind, calc, n, unit, f) => {
+      const d = m.clone();
+      if (calc) d.add(parseInt(n, 10), unit);
+      return f ? d.format(f.slice(1).trim()) : d.format(kind.toLowerCase() === "time" ? "HH:mm" : fmt);
+    })
+    .replace(/{{\s*title\s*}}/gi, () => title)
+    .replace(/{{\s*yesterday\s*}}/gi, () => m.clone().subtract(1, "d").format(fmt))
+    .replace(/{{\s*tomorrow\s*}}/gi, () => m.clone().add(1, "d").format(fmt));
+}
+async function dnNames() { try { return await inv("list_notes"); } catch (_) { return notesCache.slice(); } }
+async function dnOpenToday(via) {
+  if (!state || !dnOn()) return null;
+  let moment;
+  try { moment = await dnMoment(); } catch (e) { dnErr("Daily notes: " + errStr(e)); return null; }
+  const m = moment(), fmt = dnFmt(), dir = dnDir();
+  const name = dnPath((dir ? dir + "/" : "") + m.format(fmt));
+  if (dnBadPath(name)) { dnErr("Daily notes: the folder or date format points outside the vault (" + name + "), no note created"); return null; }
+  const names = await dnNames();
+  if (!names.includes(name)) {
+    let body = "";
+    const tpl = dnTpl();
+    if (tpl) {
+      if (dnBadPath(tpl) || !names.includes(tpl)) dnErr("Failed to read the daily note template '" + tpl + "'");
+      else {
+        try { body = dnFill(await inv("read_note", { name: tpl }), m, base(name), fmt); }
+        catch (e) { dnErr("Failed to read the daily note template '" + tpl + "': " + errStr(e)); body = ""; }
+      }
+    }
+    const r = await createNote(name, body);   // O_EXCL: "exists" = someone made it meanwhile -> open it, untouched
+    if (r === "err") return null;
+    if (r === "ok") DN.st.created++;
+  }
+  await rowOpen(name);
+  DN.st.opens++; DN.st.last = name;
+  updateTitle();
+  return name;
+}
+async function dnStep(dir) {   // -1 previous / +1 next existing daily note
+  if (!state || !dnOn()) return null;
+  let moment;
+  try { moment = await dnMoment(); } catch (e) { dnErr("Daily notes: " + errStr(e)); return null; }
+  const fmt = dnFmt(), d = dnDir(), pre = d ? d + "/" : "";
+  const day = n => { if (pre && !n.startsWith(pre)) return null; const x = moment(n.slice(pre.length), fmt, true); return x.isValid() ? x.startOf("day").valueOf() : null; };
+  const g = fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
+  let ref = t && !t.kind && t.name ? day(t.name) : null;
+  if (ref == null) ref = moment().startOf("day").valueOf();
+  let best = null;
+  for (const n of await dnNames()) {
+    const v = day(n);
+    if (v == null) continue;
+    if (dir < 0 ? v < ref && (!best || v > best[0]) : v > ref && (!best || v < best[0])) best = [v, n];
+  }
+  if (!best) { updateTitle(); return null; }   // stock: nothing at the ends
+  await rowOpen(best[1]);
+  DN.st.opens++; DN.st.last = best[1];
+  updateTitle();
+  return best[1];
+}
+function dnTok() {
+  if (!DN) return "";
+  const esc = s => String(s).replace(/[[\]|@]/g, "_");
+  const p = DN.plugin, ip = PLG.app.internalPlugins, st = DN.st;
+  let cmd = 0;
+  try { for (const id of ["daily-notes", "daily-notes:goto-prev", "daily-notes:goto-next"]) if (PLG.app.commands.findCommand(id)) cmd++; } catch (_) {}
+  const vis = DN.btn && DN.btn.getClientRects().length > 0;
+  let t = " [dn:on=" + (dnOn() ? 1 : 0) + "|cmd=" + cmd + "|rib=" + (vis ? 1 : 0) + "|fmt=" + esc(dnFmt()) + "|dir=" + esc(dnDir()) + "|tpl=" + esc(dnTpl()) +
+    "|auto=" + (DN.options.autorun === true ? 1 : 0) + "|n=" + st.opens + "|c=" + st.created + "|last=" + esc(st.last || "-") + "|err=" + esc(st.err || "-") + "|boot=" + (st.booted ? 1 : 0) + "]";
+  // what obsidian-daily-notes-interface (Calendar, Periodic Notes) resolves: getDailyNoteSettings + appHasDailyNotesPluginLoaded
+  let lib = {};
+  try { const w = ip.getPluginById("daily-notes"); lib = (w && w.instance && w.instance.options) || {}; } catch (_) {}
+  const en = ip.plugins["daily-notes"] && ip.plugins["daily-notes"].enabled ? 1 : 0;
+  t += " [dnip:en=" + en + "|cfg=" + (ip.config["daily-notes"] === true ? 1 : 0) + "|byid=" + (ip.getEnabledPluginById("daily-notes") ? 1 : 0) +
+    "|fmt=" + esc(lib.format || "YYYY-MM-DD") + "|dir=" + esc(typeof lib.folder === "string" ? lib.folder.trim() : "") + "|tpl=" + esc(typeof lib.template === "string" ? lib.template.trim() : "") + "]";
+  if (vis) { const r = DN.btn.getBoundingClientRect(); t += " [ribbon:daily@" + Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2) + "]"; }
+  return t;
 }
 /* goal cv-vault CV-107: the folder of the active file — the focused note tab, else the canvas on screen; "" = root */
 function cvActiveFolder() {
@@ -10023,6 +10237,11 @@ const CMDS = [
   // "New canvas" action of an empty workspace is a palette row offered only while no tab is open
   ["canvas:new-file-no-tab",   "New canvas",                          [],                       () => cmdNewCanvas(""),
     () => !!(CANVAS && CANVAS.isRegistered()) && groups().every(g => !g.tabs.length)],
+  // issue #115: the Daily notes core plugin's three commands (stock ids + names); offered only while it is on
+  // (when = the palette; coreOff below = Hotkeys and app.commands), as stock registers / unregisters them
+  ["daily-notes",              "Daily notes: Open today's daily note", [],                      () => dnOpenToday("cmd"), dnOn],
+  ["daily-notes:goto-prev",    "Daily notes: Open previous daily note", [],                     () => dnStep(-1), dnOn],
+  ["daily-notes:goto-next",    "Daily notes: Open next daily note",   [],                       () => dnStep(1), dnOn],
   ["editor:delete-paragraph",  "Delete paragraph",                    ["ctrl+d"],               () => edLine(() => null)],
   ["editor:insert-attachment", "Insert attachment",                   [],                       cmdAttach],
   ["editor:follow-link",       "Follow link under cursor",            ["alt+enter"],            () => { const n = linkAtCaret(); if (n) navigate(fg(), n); }],
@@ -10084,6 +10303,8 @@ const CMDS = [
   ["window:reset-zoom",        "Reset zoom",                          ["ctrl+0"],               () => cmdZoom("reset")],
 ].map(([id, name, def, run, when]) => ({ id, name, def, run, when }))
  .sort((a, b) => a.name.localeCompare(b.name));
+// issue #115: a core plugin's command is not registered while the plugin is off (Hotkeys, app.commands, a bound chord)
+for (const c of CMDS) if (c.id === "daily-notes" || c.id.startsWith("daily-notes:")) c.coreOff = () => !dnOn();
 let hkUser = {};                            // id -> [chords] overrides ([] = removed default)
 let keymap = {};                            // chord -> cmd (rebuilt from CMDS + hkUser)
 const hkChords = c => hkUser[c.id] || c.def;
@@ -12219,6 +12440,10 @@ async function enterVault() {
   perf.mark("boot", 0, { notes: names.length });   // perf: page start -> vault ready (first note rendered)
   Ed.fontWarm(fg());   // perfslow: the live preview's faces are built in idle time after boot, not inside the first note open that shows them
   switchReveal();   // item 14: a switch-started window shows itself only now, at the old window's rect
+  // issue #115: the Daily notes core plugin reads the vault's core-plugins.json + daily-notes.json (on/off, options),
+  // then autorun opens today's note — after the boot mark and the reveal, before community plugins load (Calendar /
+  // Periodic Notes find instance.options filled)
+  if (DN) { try { await DN.boot(); } catch (e) { console.error("[daily-notes] boot:", e); } }
   // plugin-loader: enabled community plugins load once the vault is on screen (after the boot
   // mark), unawaited. Restricted mode (the default) = one plugins_state call, no plugin code.
   if (window.__osPluginHost && __osPluginHost.boot) __osPluginHost.boot(vaultPath);
@@ -13190,6 +13415,7 @@ function hkRows() {                          // fuzzy filter AND active chip
   const conf = hkConflicts();
   const confIds = new Set(Object.values(conf).flat());
   return CMDS.filter(c => {
+    if (c.coreOff && c.coreOff()) return false;   // issue #115: an off core plugin's commands are not listed
     if (fuzzy(q, c.name) < 0) return false;
     const chs = hkChords(c);
     switch (hkChip) {
