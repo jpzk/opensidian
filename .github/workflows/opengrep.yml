@@ -13,6 +13,10 @@
 name: Opengrep
 
 on:
+  # base-branch analyses: code scanning diffs PR alerts against these, so
+  # without them every PR into develop reports all existing findings as new.
+  push:
+    branches: [main, develop]
   pull_request: {}
   schedule:
     # nightly, off the hour to avoid the 00:00 load spike
