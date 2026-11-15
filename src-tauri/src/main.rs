@@ -14,7 +14,7 @@
 use pulldown_cmark::{html, Event, LinkType, Options, Parser, Tag, TagEnd};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::State;
 
 mod appid;
@@ -73,7 +73,7 @@ use index::{link_parts, links_in, resolve, tag_spans, Graph, Index};
    impossible by construction, not by locking discipline. */
 struct Vault {
     root: OnceLock<PathBuf>,
-    index: Mutex<Index>,
+    index: Arc<Mutex<Index>>,
     /// vaultbleed B: the flock that makes this the ONLY backend on the vault
     /// (vaultlock.rs); held until the process exits
     lock: OnceLock<vaultlock::VaultLock>,
@@ -82,7 +82,7 @@ struct Vault {
     /// baseline from its own later walk, and a note created in between was in
     /// neither the index nor any diff: never reported (the typing phase red
     /// "external create of TYPEGATE not in the tree", 4/8 runs under load).
-    seed: Mutex<Option<watcher::Snapshot>>,
+    seed: Arc<Mutex<Option<watcher::Snapshot>>>,
 }
 
 fn cur_vault(v: &Vault) -> Option<PathBuf> {
@@ -141,6 +141,16 @@ impl std::fmt::Display for BindErr {
 /// process, vaultbleed B) -> claim the root. The lock is stored only after the
 /// root claim succeeded; a failed claim drops (releases) it.
 fn bind_vault_locked(v: &Vault, p: &Path, lock_dir: &Path) -> Result<(), BindErr> {
+    claim_vault(v, p, lock_dir)?;
+    let (base, ix) = index_vault(p);
+    *v.index.lock().unwrap() = ix;
+    *v.seed.lock().unwrap() = Some(base);
+    Ok(())
+}
+
+/// The claim half of a bind: everything but the walk + index (refuse if bound,
+/// flock, set-once root, built-in themes, app.json).
+fn claim_vault(v: &Vault, p: &Path, lock_dir: &Path) -> Result<(), BindErr> {
     if let Some(cur) = cur_vault(v) {
         return Err(BindErr::Bound(cur, p.to_path_buf()));
     }
@@ -154,10 +164,46 @@ fn bind_vault_locked(v: &Vault, p: &Path, lock_dir: &Path) -> Result<(), BindErr
     // dirs. Seeding writes only paths that do not exist (builtins.rs).
     builtins::seed_and_record(p);
     ensure_app_json(p);
-    let base = watcher::snapshot(p); // the watcher baseline: walked first, so nothing created after it is missed
+    Ok(())
+}
+
+/// The index half of a bind: the watcher baseline, walked first so nothing
+/// created after it is missed, then the one walk + read of every note.
+fn index_vault(p: &Path) -> (watcher::Snapshot, Index) {
+    let base = watcher::snapshot(p);
     let ix = span_timed!("index_build", Index::build(p), serde_json::json!({"notes": 0}));
-    *v.index.lock().unwrap() = ix;
-    *v.seed.lock().unwrap() = Some(base);
+    (base, ix)
+}
+
+/// issue #106: the BOOT bind (VAULT_DIR / argv / last vault). The claim is
+/// synchronous (a Busy or bad vault still exits before any window), but the
+/// walk + index of a big vault no longer runs in front of the window: a worker
+/// thread takes the index and seed locks FIRST — main waits only for that
+/// handshake — and fills them, while webkit starts and loads the page in
+/// parallel. Every reader (each command, the watcher's first tick) goes
+/// through `v.index.lock()` / `v.seed.lock()`, so it blocks until the build
+/// is in and never sees the empty index: same answers, same order (baseline
+/// before index), only overlapped with the webview start. A thread that
+/// cannot be spawned falls back to the synchronous build.
+fn bind_vault_boot(v: &Vault, p: &Path, lock_dir: &Path) -> Result<(), BindErr> {
+    claim_vault(v, p, lock_dir)?;
+    let (index, seed, root) = (Arc::clone(&v.index), Arc::clone(&v.seed), p.to_path_buf());
+    let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+    let spawned = std::thread::Builder::new().name("index-build".into()).spawn(move || {
+        let mut sg = seed.lock().unwrap();
+        let mut ig = index.lock().unwrap();
+        let _ = held_tx.send(()); // both locks held: main may go on
+        let (base, ix) = index_vault(&root);
+        *ig = ix;
+        *sg = Some(base);
+    });
+    // Ok(()) = the worker holds both locks; Err = it ended (panicked) before
+    // taking them, or never started: build here, as before.
+    if spawned.is_err() || held_rx.recv().is_err() {
+        let (base, ix) = index_vault(p);
+        *v.index.lock().unwrap_or_else(|e| e.into_inner()) = ix;
+        *v.seed.lock().unwrap_or_else(|e| e.into_inner()) = Some(base);
+    }
     Ok(())
 }
 /// census C4 (make-md): an opened vault always carries `.obsidian/app.json` —
@@ -6876,14 +6922,16 @@ fn main() {
     // writes inside the vault, so it must survive the same confinement a
     // user's own write does. If it does not, the failure is on the console and
     // in the [bseed:] census token, and the vault still opens.
-    // perf-index: one walk + read now, so the first note_open is already warm.
+    // perf-index: one walk + read at boot, so the first note_open is already warm.
+    // issue #106: on a worker thread (bind_vault_boot), overlapped with the
+    // webview start; every reader blocks on the index lock until it is in.
     // vaultbleed: the argv/last-vault boot binds through the SAME set-once
     // bind_vault the picker uses (seed + index build happen inside it).
-    let vault = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new(), seed: Mutex::new(None) };
+    let vault = Vault { root: OnceLock::new(), index: Arc::new(Mutex::new(Index::default())), lock: OnceLock::new(), seed: Arc::new(Mutex::new(None)) };
     if let Some(p) = &init {
         // vaultbleed B: a vault already open in another process is refused —
         // no second backend, no window; the other window stays the only one.
-        match bind_vault_locked(&vault, p, &vaultlock::env_lock_dir()) {
+        match bind_vault_boot(&vault, p, &vaultlock::env_lock_dir()) {
             Ok(()) => {}
             Err(BindErr::Lock(e @ vaultlock::LockErr::Busy(_))) => {
                 eprintln!("opensidian: {e}; not starting a second backend on it (exit {})", vaultlock::DUP_EXIT);
@@ -12144,7 +12192,7 @@ mod vaultbleed_tests {
         root
     }
     fn vault_at(p: &Path) -> Arc<Vault> {
-        let v = Arc::new(Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new(), seed: Mutex::new(None) });
+        let v = Arc::new(Vault { root: OnceLock::new(), index: Arc::new(Mutex::new(Index::default())), lock: OnceLock::new(), seed: Arc::new(Mutex::new(None)) });
         bind_vault(&v, p).unwrap();
         v
     }
@@ -12229,9 +12277,9 @@ mod vaultbleed_tests {
         // an index; a second spelling of the path keys the same lock.
         let a = mk("dup-a", &[("onlyA-note", "seed #onlyA\n")]);
         let locks = std::env::temp_dir().join(format!("opensidian-vb-locks-{}", std::process::id()));
-        let v1 = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new(), seed: Mutex::new(None) };
+        let v1 = Vault { root: OnceLock::new(), index: Arc::new(Mutex::new(Index::default())), lock: OnceLock::new(), seed: Arc::new(Mutex::new(None)) };
         bind_vault_locked(&v1, &a, &locks).expect("first backend binds");
-        let v2 = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new(), seed: Mutex::new(None) };
+        let v2 = Vault { root: OnceLock::new(), index: Arc::new(Mutex::new(Index::default())), lock: OnceLock::new(), seed: Arc::new(Mutex::new(None)) };
         let alias = a.join("..").join(a.file_name().unwrap());
         match bind_vault_locked(&v2, &alias, &locks) {
             Err(BindErr::Lock(vaultlock::LockErr::Busy(_))) => {}
@@ -12259,6 +12307,54 @@ mod vaultbleed_tests {
             }
         }
         assert!(cur_vault(&v2).is_some(), "the second backend owns the vault once the first is gone");
+        let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&locks));
+    }
+
+    #[test]
+    fn boot_bind_builds_the_index_off_the_main_thread_with_the_same_answers() {
+        // issue #106: bind_vault_boot hands the walk + index to a worker that
+        // holds the index and seed locks before the bind returns, so a reader
+        // right after it blocks until the build is in — never an empty or
+        // partial index — and gets exactly what the synchronous bind builds.
+        // 600 notes: above read_parse_all's 256-note threshold (parallel path).
+        let files: Vec<(String, String)> = (0..600)
+            .map(|i| (format!("n{i:03}"), format!("# n{i:03}\nsee [[n{:03}]] #t{}\n", (i + 1) % 600, i % 7)))
+            .collect();
+        let refs: Vec<(&str, &str)> = files.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        let a = mk("boot-a", &refs);
+        let locks = std::env::temp_dir().join(format!("opensidian-vb-bootlocks-{}", std::process::id()));
+        let sync = Vault { root: OnceLock::new(), index: Arc::new(Mutex::new(Index::default())), lock: OnceLock::new(), seed: Arc::new(Mutex::new(None)) };
+        bind_vault_locked(&sync, &a, &locks).expect("sync bind");
+        let want_notes = cur_notes(&sync);
+        let want_bl = sync.index.lock().unwrap().backlinks("n005");
+        let want_seed = sync.seed.lock().unwrap().clone().expect("sync seed");
+        drop(sync); // free the vault's flock for the boot bind
+        let boot = Vault { root: OnceLock::new(), index: Arc::new(Mutex::new(Index::default())), lock: OnceLock::new(), seed: Arc::new(Mutex::new(None)) };
+        let t0 = std::time::Instant::now();
+        loop {
+            match bind_vault_boot(&boot, &a, &locks) {
+                Err(BindErr::Lock(vaultlock::LockErr::Busy(_))) if t0.elapsed().as_secs() < 3 => {
+                    std::thread::sleep(std::time::Duration::from_millis(25))
+                }
+                r => {
+                    r.expect("boot bind");
+                    break;
+                }
+            }
+        }
+        assert_eq!(cur_vault(&boot).as_deref(), Some(a.as_path()), "the root is claimed synchronously");
+        assert_eq!(want_notes.len(), 600);
+        assert_eq!(cur_notes(&boot), want_notes, "the first reader sees the whole index");
+        assert_eq!(boot.index.lock().unwrap().backlinks("n005"), want_bl);
+        assert_eq!(boot.seed.lock().unwrap().clone().expect("boot seed"), want_seed, "the watcher baseline is set too");
+        // the claim stays synchronous: a second backend is still refused at bind time
+        let other = Vault { root: OnceLock::new(), index: Arc::new(Mutex::new(Index::default())), lock: OnceLock::new(), seed: Arc::new(Mutex::new(None)) };
+        match bind_vault_boot(&other, &a, &locks) {
+            Err(BindErr::Lock(vaultlock::LockErr::Busy(_))) => {}
+            r => panic!("second boot bind on an open vault must be Busy, got {r:?}"),
+        }
+        assert!(cur_vault(&other).is_none());
+        drop(boot);
         let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&locks));
     }
 
