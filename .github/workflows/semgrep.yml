@@ -1,12 +1,27 @@
+# Semgrep (semgrep ci, Semgrep AppSec Platform).
+#
+# Supply chain — SCANNER EXCEPTION (operator 2026-11-15):
+#   Scanners float, build inputs stay pinned. A stale scanner means false
+#   negatives, and the scanner never ships in a release artifact, so the
+#   container is semgrep/semgrep:latest (deliberately NOT digest-pinned).
+#   The version actually used is printed first ("semgrep --version").
+#   NOTE: Docker Hub :latest is Semgrep's stable channel and can trail the
+#   newest GitHub release by one version (newest = :canary). Open
+#   operator decision on PR #117: accept the lag or resolve the tag.
+#   Blast radius = this job: contents: read + SEMGREP_APP_TOKEN.
+#   RESIDUAL RISK (accepted by the operator 2026-11-15): this job holds
+#   SEMGREP_APP_TOKEN, so a compromised :latest image could exfiltrate that
+#   token (scope: this repo's Semgrep AppSec deployment). No GitHub write
+#   token and no other secret is exposed (checkout without credentials).
+#   Actions remain pinned by full 40-hex commit SHA.
 on:
   workflow_dispatch: {}
-  pull_request: {}
+  # NO pull_request trigger (operator 2026-11-15): only develop, main, v* branches + schedule + dispatch
   push:
     branches:
     - main
-    - master
-    paths:
-    - .github/workflows/semgrep.yml
+    - develop
+    - 'v*'  # release branches / drafts (v<ver>-release, see release.yml); no paths filter, so every push scans
   schedule:
   # random HH:MM to avoid a load spike on GitHub Actions at 00:00
   - cron: 13 0 * * *
@@ -18,10 +33,12 @@ jobs:
     permissions:
       contents: read
     env:
+      # residual risk: the floating image below sees this token (see header)
       SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
     container:
-      image: semgrep/semgrep:1.179.0@sha256:93963d9295a366f59e4850127b1550400ee7b388f04fe144e4a1f6325d96e01b  # v1.179.0 2026-10-02, >=6 weeks
+      image: semgrep/semgrep:latest  # floats on purpose: scanner exception (header)
     steps:
+    - run: semgrep --version
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       with:
         persist-credentials: false
