@@ -251,7 +251,7 @@
         const ctls = [t];
         /* issue #115: Daily notes has no board to open its options from, so its row carries a gear (pane
            core-daily-notes), like a community plugin's Options gear */
-        if (cid === "daily-notes" && p.cfg) {
+        if (cid === "daily-notes" && p.cfg && on) {   // stock: the gear only while the core plugin is on
           const g = el("div", "sctl cpgear"); g.innerHTML = GI.gear; g.title = "Options"; g.tabIndex = 0;
           g.setAttribute("role", "button"); g.setAttribute("aria-label", "Options"); g.dataset.coregear = cid;
           g.onclick = ev => { ev.stopPropagation(); openDailySettings(); };
