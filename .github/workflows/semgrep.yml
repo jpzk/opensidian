@@ -21,8 +21,7 @@ on:
     branches:
     - main
     - master
-    paths:
-    - .github/workflows/semgrep.yml
+    - 'v*-release'  # release branches (v<ver>-release, see release.yml); no paths filter, so every push scans
   schedule:
   # random HH:MM to avoid a load spike on GitHub Actions at 00:00
   - cron: 13 0 * * *
