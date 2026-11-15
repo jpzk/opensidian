@@ -4873,12 +4873,15 @@ fn bm_is_file_path(path: &str) -> bool {
 /// issue #31: the default label stock gives a graph bookmark (recon-bmactive Q4, s1-bookmarks.json)
 const BM_GRAPH_TITLE: &str = "Untitled Graph";
 
-/// the graph item's `options` + `local` as the pane needs them to reopen it
-fn bm_graph_spec(x: &BmExtra) -> serde_json::Value {
+/// the graph item's `options` + `local` as the pane needs them to reopen it, plus the item's own
+/// `ctime` + `title` as read (null when absent): issue #118's write-back key (bm_graph_patch)
+fn bm_graph_spec(title: Option<&str>, x: &BmExtra) -> serde_json::Value {
     let get = |k: &str| x.keys.iter().find(|(kk, _)| kk == k).map(|(_, v)| v.clone());
     serde_json::json!({
         "options": get("options").unwrap_or_else(|| serde_json::json!({})),
         "local": get("local").unwrap_or(serde_json::Value::Null),
+        "ctime": x.ctime.clone(),
+        "title": title,
     })
 }
 
@@ -5090,7 +5093,7 @@ fn bm_rows_in(nodes: &[BmNode], depth: usize, out: &mut Vec<BmRow>) {
             BmNode::Graph { title, x } => {
                 // issue #31: stock paints the title; "Untitled Graph" is stock's default (D1)
                 let label = title.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| BM_GRAPH_TITLE.to_string());
-                out.push(BmRow { kind: "f".into(), depth, name: label.clone(), label, graph: Some(bm_graph_spec(x)), ..Default::default() });
+                out.push(BmRow { kind: "f".into(), depth, name: label.clone(), label, graph: Some(bm_graph_spec(title.as_deref(), x)), ..Default::default() });
             }
             BmNode::Opaque(_) => {} // preserved on disk, never painted
         }
@@ -5515,6 +5518,76 @@ fn bm_add_view_at_in(tree: &mut Vec<BmNode>, parent: Option<usize>, pos: usize, 
     Ok(())
 }
 
+/* issue #118 (operator ruling 2026-11-15): a graph tab OPENED FROM a graph bookmark writes its
+   parameter edits back to THAT item. The item is addressed by what the row carried when it
+   was clicked — ctime + title + global/local — never by row index (a drag moves it, the
+   index shifts; the item is still the same one). Exactly one match or nothing: a deleted,
+   renamed or re-created bookmark refuses, and the UI stops writing back (never re-creates).
+   `opts` merges into `options`, `lopts` (only stock's four local keys) into `local`, each key
+   overwritten in place; every other key, the title and the position are kept. */
+const BM_LG_KEYS: [&str; 4] = ["localJumps", "localBacklinks", "localForelinks", "localInterlinks"];
+fn bm_graph_find(nodes: &[BmNode], ctime: Option<&serde_json::Number>, title: Option<&str>, local: bool, at: &mut Vec<usize>, hits: &mut Vec<Vec<usize>>) {
+    for (i, n) in nodes.iter().enumerate() {
+        at.push(i);
+        match n {
+            BmNode::Group { items, .. } => bm_graph_find(items, ctime, title, local, at, hits),
+            BmNode::Graph { title: t, x } => {
+                let is_local = x.keys.iter().any(|(k, v)| k == "local" && v.is_object());
+                if x.ctime.as_ref() == ctime && t.as_deref() == title && is_local == local {
+                    hits.push(at.clone());
+                }
+            }
+            _ => {}
+        }
+        at.pop();
+    }
+}
+fn bm_merge_key(x: &mut BmExtra, key: &str, patch: &serde_json::Map<String, serde_json::Value>) {
+    if patch.is_empty() {
+        return;
+    }
+    match x.keys.iter_mut().find(|(k, _)| k == key) {
+        Some((_, serde_json::Value::Object(m))) => {
+            for (k, v) in patch {
+                m.insert(k.clone(), v.clone()); // preserve_order: an existing key keeps its slot
+            }
+        }
+        Some((_, v)) => *v = serde_json::Value::Object(patch.clone()),
+        None => x.keys.push((key.to_string(), serde_json::Value::Object(patch.clone()))),
+    }
+}
+fn bm_graph_patch_in(
+    tree: &mut Vec<BmNode>,
+    ctime: Option<&serde_json::Number>,
+    title: Option<&str>,
+    local: bool,
+    opts: &serde_json::Map<String, serde_json::Value>,
+    lopts: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    if let Some(k) = lopts.keys().find(|k| !BM_LG_KEYS.contains(&k.as_str())) {
+        return Err(format!("not a local graph key: {k:?}"));
+    }
+    if let Some(k) = opts.keys().find(|k| BM_LG_KEYS.contains(&k.as_str())) {
+        return Err(format!("{k:?} belongs in local"));
+    }
+    if !local && !lopts.is_empty() {
+        return Err("a global graph bookmark has no local keys".to_string());
+    }
+    let mut hits = Vec::new();
+    bm_graph_find(tree, ctime, title, local, &mut Vec::new(), &mut hits);
+    if hits.len() != 1 {
+        return Err("the graph bookmark is gone".to_string());
+    }
+    match bm_at_mut(tree, &hits[0]) {
+        Some(BmNode::Graph { x, .. }) => {
+            bm_merge_key(x, "options", opts);
+            bm_merge_key(x, "local", lopts);
+            Ok(())
+        }
+        _ => Err("the graph bookmark is gone".to_string()),
+    }
+}
+
 /* issue #31: the canvas / plugin-file toggle (tab menu, explorer menu): OFF drops the first
    node with that path at any depth, ON appends a Path node at the top level. */
 fn bm_toggle_path_in(tree: &mut Vec<BmNode>, path: &str) -> Result<(), String> {
@@ -5782,6 +5855,19 @@ fn bm_add_view(v: State<Vault>, into: Option<usize>, item: serde_json::Value, ti
 #[tauri::command]
 fn bm_add_view_at(v: State<Vault>, parent: Option<usize>, pos: usize, item: serde_json::Value) -> Result<Vec<BmRow>, String> {
     span_timed!("bm_add_view_at", bm_apply(&v, |t| bm_add_view_at_in(t, parent, pos, &item)))
+}
+
+/* issue #118: the write-back of a bookmark-opened graph tab's edits (bm_graph_patch_in) */
+#[tauri::command]
+fn bm_graph_patch(
+    v: State<Vault>,
+    ctime: Option<serde_json::Number>,
+    title: Option<String>,
+    lg: bool,
+    opts: serde_json::Map<String, serde_json::Value>,
+    lopts: serde_json::Map<String, serde_json::Value>,
+) -> Result<Vec<BmRow>, String> {
+    span_timed!("bm_graph_patch", bm_apply(&v, |t| bm_graph_patch_in(t, ctime.as_ref(), title.as_deref(), lg, &opts, &lopts)))
 }
 
 /* issue #31: the row menu's Remove for a row that has no NAME to toggle (a graph item; a
@@ -7093,7 +7179,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, canvas_io, canvas_attach, paste_image, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, bm_add_view, bm_add_view_at, bm_remove, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, bm_add_view, bm_add_view_at, bm_remove, bm_graph_patch, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
             read_workspace, write_workspace,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
@@ -9001,6 +9087,48 @@ mod tests {
         for i in 0..8 {
             assert_eq!(serde_json::to_string(&out["items"][i]).unwrap(), serde_json::to_string(&src["items"][i]).unwrap(), "item {i}");
         }
+    }
+
+    /// issue #118: a bookmark-opened graph's edits land in THAT item only — options merged in
+    /// place (unknown keys, title, ctime, key order, position kept), the four local keys in
+    /// `local`; a renamed / deleted / ambiguous item refuses, nothing is ever created.
+    #[test]
+    fn issue118_graph_bookmark_write_back() {
+        let body = r#"{"items": [
+                {"type": "file", "ctime": 1, "path": "Home.md"},
+                {"type": "group", "ctime": 2, "items": [
+                    {"type": "graph", "ctime": 3, "title": "Untitled Graph", "options": {"search": "q", "repelStrength": 13, "zz": [1]}, "mine": 1}
+                ], "title": "G"},
+                {"type": "graph", "ctime": 4, "title": "B (local)", "options": {"search": ""}, "local": {"file": "B.md", "localJumps": 1, "localBacklinks": true}},
+                {"type": "graph", "ctime": 5, "title": "Dup"},
+                {"type": "graph", "ctime": 5, "title": "Dup"}
+            ]}"#;
+        let m = |v: serde_json::Value| v.as_object().unwrap().clone();
+        let none = serde_json::Map::new();
+        let n = |c: u64| serde_json::Number::from(c);
+        let mut t = parse_bm_tree(body);
+        let rows = bm_rows_of(&t);
+        let gs = rows.iter().find(|r| r.label == "Untitled Graph").unwrap().graph.clone().unwrap();
+        assert_eq!((gs["ctime"].clone(), gs["title"].clone()), (serde_json::json!(3), serde_json::json!("Untitled Graph")), "the row carries its key");
+        bm_graph_patch_in(&mut t, Some(&n(3)), Some("Untitled Graph"), false,
+                          &m(serde_json::json!({"repelStrength": 7.5, "showOrphans": false})), &none).unwrap();
+        bm_graph_patch_in(&mut t, Some(&n(4)), Some("B (local)"), true,
+                          &m(serde_json::json!({"search": "x"})), &m(serde_json::json!({"localJumps": 3}))).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&bm_emit(&t, &[])).unwrap();
+        let g = &v["items"][1]["items"][0];
+        assert_eq!(g, &serde_json::json!({"type": "graph", "ctime": 3, "title": "Untitled Graph",
+            "options": {"search": "q", "repelStrength": 7.5, "zz": [1], "showOrphans": false}, "mine": 1}));
+        assert_eq!(g["options"].as_object().unwrap().keys().collect::<Vec<_>>(), vec!["search", "repelStrength", "zz", "showOrphans"]);
+        assert_eq!(v["items"][2]["local"], serde_json::json!({"file": "B.md", "localJumps": 3, "localBacklinks": true}));
+        assert_eq!(v["items"][2]["options"], serde_json::json!({"search": "x"}));
+        let before = bm_emit(&t, &[]);
+        for (c, ti, lg) in [(3, "Renamed", false), (9, "Untitled Graph", false), (3, "Untitled Graph", true), (5, "Dup", false)] {
+            assert!(bm_graph_patch_in(&mut t, Some(&n(c)), Some(ti), lg, &m(serde_json::json!({"scale": 2})), &none).is_err(), "{c} {ti} {lg}");
+        }
+        assert!(bm_graph_patch_in(&mut t, Some(&n(4)), Some("B (local)"), true, &m(serde_json::json!({"localJumps": 2})), &none).is_err(), "local key in options");
+        assert!(bm_graph_patch_in(&mut t, Some(&n(4)), Some("B (local)"), true, &none, &m(serde_json::json!({"file": "Z.md"}))).is_err(), "centre is not patched");
+        assert!(bm_graph_patch_in(&mut t, Some(&n(3)), Some("Untitled Graph"), false, &none, &m(serde_json::json!({"localJumps": 2}))).is_err());
+        assert_eq!(bm_emit(&t, &[]), before, "a refused write-back changes nothing");
     }
 
     /// issue #31: a view node is built in stock's key order with a minted ctime and stock's default
