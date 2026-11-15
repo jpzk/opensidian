@@ -146,6 +146,7 @@
   function show(id) {
     if (inBuiltin) return false;
     if (id === "core-canvas" && canvasPlugin()) return showCorePane(id);   // goal cvf-board; af-fix 2b: no nav entry, opened by the board gear
+    if (id === "core-daily-notes" && dailyPlugin()) return showCorePane(id);   // issue #115: no nav entry, opened by the Core plugins row gear
     closeSpMenu();
     let t;
     if (id === "community") t = builtinOf("community");
@@ -247,7 +248,17 @@
         const on = !!p.enabled;
         const t = toggle(on, () => act(() => (cid === "canvas" ? setCanvasOn(!on) : on ? p.disable() : p.enable())));
         t.dataset.core = cid;
-        const r = row(c3, name, desc, [t]);
+        const ctls = [t];
+        /* issue #115: Daily notes has no board to open its options from, so its row carries a gear (pane
+           core-daily-notes), like a community plugin's Options gear */
+        if (cid === "daily-notes" && p.cfg) {
+          const g = el("div", "sctl cpgear"); g.innerHTML = GI.gear; g.title = "Options"; g.tabIndex = 0;
+          g.setAttribute("role", "button"); g.setAttribute("aria-label", "Options"); g.dataset.coregear = cid;
+          g.onclick = ev => { ev.stopPropagation(); openDailySettings(); };
+          g.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openDailySettings(); } };
+          ctls.unshift(g);
+        }
+        const r = row(c3, name, desc, ctls);
         r.dataset.core = cid;
       }
     }
@@ -300,7 +311,8 @@
     saBusy = false;
     if (settingsOpen && sPane === "community") rebuild();
   }
-  const CORE_DESC = { canvas: ["Canvas", "Open and edit .canvas files (JSON Canvas): text, note, link and group cards on a board."] };
+  const CORE_DESC = { canvas: ["Canvas", "Open and edit .canvas files (JSON Canvas): text, note, link and group cards on a board."],
+    "daily-notes": ["Daily notes", "Open or create today's note from a folder, a date format and a template."] };   // issue #115: right after Canvas
   function coreList() {
     const ip = host.app.internalPlugins, ps = ip && ip.plugins || {};
     return Object.keys(CORE_DESC).filter(id => ps[id] && typeof ps[id].enable === "function")
@@ -312,6 +324,7 @@
     busy = false;
     if (settingsOpen && sPane === "community") rebuild();
     else if (settingsOpen && sPane === "core-canvas") showCorePane(sPane);   // goal cvf-board
+    else if (settingsOpen && sPane === "core-daily-notes") showCorePane(sPane);   // issue #115
     if (typeof refreshTree === "function") refreshTree().catch(() => {});   // canvas on/off: .canvas rows follow
     const n = document.getElementById("snav"); if (n && n.dataset.built === "1") nav(n);
   }
@@ -495,9 +508,72 @@
     leaveTab(); closeSpMenu();
     const pg = clearPage(id, "rows");
     // af-fix 2b: no extra heading — the page keeps develop's layout so its last row (zoom threshold) stays on screen
-    buildCanvasPage(pg);
+    if (id === "core-daily-notes") buildDailyPage(pg); else buildCanvasPage(pg);
     if (typeof updateTitle === "function") updateTitle();
     return true;
+  }
+  /* ---- issue #115: the Daily notes options pane (core-daily-notes), stock's four rows. Reads / writes
+     <vault>/.obsidian/daily-notes.json through the plugin's cfg (main.js DN: merge, unknown keys kept, written as
+     you type like stock's Setting.onChange). Census while it is open: [dnsp=<ctl>:x,y,<value>] fmt folder tpl
+     autorun, [dnspv:<the live moment preview>] */
+  const dailyPlugin = () => { const ip = host.app.internalPlugins; const p = ip && ip.plugins && ip.plugins["daily-notes"]; return p && p.cfg ? p : null; };
+  let dnPrevPane = null;
+  function openDailySettings() {
+    if (!dailyPlugin()) return false;
+    if (typeof settingsOpen !== "undefined" && settingsOpen) { if (sPane !== "core-daily-notes") dnPrevPane = sPane; showCorePane("core-daily-notes"); return true; }
+    return false;
+  }
+  function dnPreview(f) {
+    const m = window.moment;
+    if (typeof m !== "function") return "";
+    try { return m().format(f || "YYYY-MM-DD"); } catch (_) { return ""; }
+  }
+  function buildDailyPage(pg) {
+    const p = dailyPlugin(); if (!p) return;
+    const cfg = p.cfg, c = el("div", "scard"); pg.appendChild(c);
+    const text = (ctl, key, ph, norm) => {
+      const f = el("input", "sctl text live");
+      f.type = "text"; f.spellcheck = false; f.autocomplete = "off"; f.placeholder = ph;
+      f.value = String(cfg.raw()[key] != null ? cfg.raw()[key] : ""); f.dataset.dnsp = ctl;
+      f.style.cssText = "width:220px;color:var(--text-chrome);background:var(--bg-surface)";
+      f.onmousedown = ev => ev.stopPropagation();
+      f.onkeydown = ev => { if (ev.key === "Escape") { f.blur(); return; } ev.stopPropagation(); if (ev.key === "Enter") f.blur(); };   // Escape still closes Settings
+      f.oninput = () => { cfg.set({ [key]: norm ? norm(f.value) : f.value }); if (key === "format") pv.textContent = dnPreview(f.value); if (typeof updateTitle === "function") updateTitle(); };
+      return f;
+    };
+    const pv = el("b", "dnsp-pv", dnPreview(cfg.get("format")));
+    const fd = el("div", "sdesc");
+    fd.append("For more syntax, refer to the moment.js format reference. Your current syntax looks like this: ", pv);
+    const fr = row(c, "Date format", [], [text("fmt", "format", "YYYY-MM-DD")]);
+    fr.querySelector(".sinfo").appendChild(fd);
+    row(c, "New file location", "New daily notes will be placed here.", [text("folder", "folder", "Example: folder 1/folder 2")]);
+    row(c, "Template file location", "Choose the file to use as a template.", [text("tpl", "template", "Example: folder/note")]);
+    const tg = toggle(cfg.get("autorun") === true, () => { cfg.set({ autorun: !(cfg.get("autorun") === true) }); rebuildDailyPage(); });
+    tg.dataset.dnsp = "autorun";
+    row(c, "Open daily note on startup", "Open your daily note automatically whenever you open this vault.", [tg]);
+    sRowsShown = 4; sEnabledShown = 4;
+    if (typeof window.moment !== "function") {   // restricted mode: moment comes with the plugin's first use; the preview follows
+      const s = document.createElement("script"); s.src = "vendor/moment.min.js";
+      s.onload = () => { if (pv.isConnected) pv.textContent = dnPreview(cfg.get("format")); if (typeof updateTitle === "function") updateTitle(); };
+      document.head.appendChild(s);
+    }
+  }
+  function rebuildDailyPage() {
+    if (typeof settingsOpen === "undefined" || !settingsOpen || sPane !== "core-daily-notes") return;
+    const pg = document.getElementById("spage"); if (!pg) return;
+    const st = pg.scrollTop; pg.innerHTML = ""; buildDailyPage(pg); pg.scrollTop = st;
+    if (typeof updateTitle === "function") updateTitle();
+  }
+  function dailyTok() {
+    let t = "";
+    const esc = v => String(v).replace(/[\]|]/g, "");
+    for (const d of document.querySelectorAll("#spage [data-dnsp]")) {
+      const k = d.dataset.dnsp;
+      t += " [dnsp=" + k + ":" + ctr(d) + "," + esc(k === "autorun" ? (d.classList.contains("on") ? 1 : 0) : d.value) + "]";
+    }
+    const pv = document.querySelector("#spage .dnsp-pv");
+    if (pv) t += " [dnspv:" + esc(pv.textContent) + "]";
+    return t;
   }
   /* af-fix 2b: the board's settings control (canvas-nav.js) opens Settings on the Canvas pane; closing
      Settings puts back the pane it had before, so ctrl+, never lands on a pane the nav does not list */
@@ -510,7 +586,10 @@
     await openSettings();
     return true;
   }
-  function leaveCanvasPane() { if (sPane === "core-canvas") { sPane = cvPrevPane || "general"; cvPrevPane = null; } }
+  function leaveCanvasPane() {
+    if (sPane === "core-canvas") { sPane = cvPrevPane || "general"; cvPrevPane = null; }
+    else if (sPane === "core-daily-notes") { sPane = dnPrevPane || "community"; dnPrevPane = null; }   // issue #115: no nav entry either
+  }
   function coreTok() {
     let t = "";
     if (sPane === "core-canvas") {
@@ -550,7 +629,11 @@
       for (const tg of document.querySelectorAll("#spage .toggle[data-core]")) {
         const p = (host.app.internalPlugins.plugins || {})[tg.dataset.core];
         t += " [cpc=" + tg.dataset.core + ":" + ctr(tg) + "," + (tg.classList.contains("on") ? 1 : 0) + "," + (p && p._loaded ? 1 : 0) + "]";
+        const cg = tg.parentNode && tg.parentNode.querySelector("[data-coregear]");
+        if (cg) t += " [cpcg=" + tg.dataset.core + ":" + ctr(cg) + "]";   // issue #115: the Daily notes row gear
       }
+    } else if (sPane === "core-daily-notes") {
+      t += dailyTok();
     } else if (sPane === "core-canvas") {
       t += coreTok();
     } else if (String(sPane).startsWith("plg:") && setting.activeTab && setting.activeTab.containerEl.isConnected) {

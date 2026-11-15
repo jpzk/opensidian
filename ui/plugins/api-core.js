@@ -288,13 +288,15 @@
     const { host, be } = K;
     const { registry } = K;
     const cmdObj = c => c.obs || { id: c.id, name: c.name, callback: c.run };
+    // issue #115: a command of a core plugin that is off (c.coreOff, main.js) is not registered, as in stock
+    const live = () => (typeof CMDS === "undefined" ? [] : CMDS.filter(c => !(c.coreOff && c.coreOff())));
     const commands = {
-      get commands() { const o = {}; if (typeof CMDS !== "undefined") for (const c of CMDS) o[c.id] = cmdObj(c); return o; },
+      get commands() { const o = {}; for (const c of live()) o[c.id] = cmdObj(c); return o; },
       get editorCommands() { return {}; },
-      listCommands() { return typeof CMDS === "undefined" ? [] : CMDS.map(cmdObj); },
-      findCommand(id) { const c = typeof CMDS !== "undefined" && CMDS.find(x => x.id === id); return c ? cmdObj(c) : undefined; },
+      listCommands() { return live().map(cmdObj); },
+      findCommand(id) { const c = live().find(x => x.id === id); return c ? cmdObj(c) : undefined; },
       executeCommandById(id) {
-        const c = typeof CMDS !== "undefined" && CMDS.find(x => x.id === id);
+        const c = live().find(x => x.id === id);
         if (!c) return false;
         try { if (c.when && !c.when()) return false; c.run(); return true; } catch (e) { console.error("[plugin] command " + id + ":", e); return false; }
       },
