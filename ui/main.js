@@ -8037,7 +8037,7 @@ function pdfvTok() {           // issue #44: [pdfrow:] explorer PDF rows, [pdfv:
 }
 /* issue #102: the image view. An image (Ed.IMG_EXTS) opened from the explorer or a bookmark shows in an "image" leaf
    (stock 1.13.7's view type and state {file}; its DOM .view-content > .image-container > img, the image centred and
-   scaled down to fit the pane, never up). The src is Ed.imgSrc — the SAME opensidian-img: URL an embed gets, minted
+   scaled down to fit the pane, never up). The src is the SAME opensidian-img: URL shape an embed gets (Ed.pctEnc), minted
    only for a path the image list holds (no traversal, the byte server re-checks containment). Registered with the
    image extensions, so openFile (a bookmark row, a plugin) routes an image here too. how: as openPdf. */
 const IMGV = (() => {
@@ -8050,12 +8050,15 @@ const IMGV = (() => {
     getState() { return this.path ? { file: this.path } : {}; }
     async setState(st) {
       const p = st && typeof st.file === "string" ? st.file.replace(/^\/+/, "") : "";
-      if (!p || p === this.path || !Ed.isImg(p)) return;
+      // same path: skip only if the current image is shown and not broken — a missing/broken open retries (restored file)
+      if (!p || !Ed.isImg(p) || (p === this.path && this.img && !this.img.classList.contains("mod-broken"))) return;
       this.path = p;
       try { const f = PLG.app.vault.getAbstractFileByPath(p); this.file = f || null; } catch (_) { this.file = null; }
       const box = document.createElement("div");
       box.className = "image-container";
-      const src = Ed.imgSrc(p);
+      // the EXACT vault path (no embed-style %-decoding, no basename-suffix match: "photo.png" must not
+      // resolve to "a/photo.png"), still only for a path the image list holds
+      const src = Array.isArray(imgsCache) && imgsCache.includes(p) ? Ed.IMG_SCHEME + "://localhost/" + Ed.pctEnc(p) : null;
       if (src === null) {                       // not in the image list (gone, hidden, symlinked): the R29.4 banner, no URL
         const s = document.createElement("span");
         s.className = "imgmiss"; s.dataset.miss = p;
