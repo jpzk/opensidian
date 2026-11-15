@@ -64,24 +64,32 @@ fn pct_decode(s: &str) -> Vec<u8> {
     out
 }
 
-/// is this uri-list entry a local file (`file:` scheme)?
-pub(crate) fn is_file_uri(u: &str) -> bool {
-    strip_ci(u.trim(), "file:").is_some()
+/// the %XX-encoded path of a LOCAL file URI: `file:///p`, `file://localhost/p`, `file:/p`
+/// -> `/p`. A file URI naming another host (`file://server/share/x`) is NOT local: None,
+/// never a host-less relative path that could resolve against the working directory
+fn local_part(u: &str) -> Option<&str> {
+    let u = u.trim();
+    if let Some(r) = strip_ci(u, "file://") {
+        let r = strip_ci(r, "localhost").unwrap_or(r);
+        r.starts_with('/').then_some(r)
+    } else {
+        strip_ci(u, "file:").filter(|x| x.starts_with('/'))
+    }
 }
 
-/// a uri-list entry as the path attach_drop gets: `file:///p`, `file://localhost/p` and
-/// `file:/p` -> `/p` (%XX decoded); anything else stays the text it was, so attach_drop
-/// can still say WHY it is refused (Refused::Remote for `https://…`)
+/// is this uri-list entry a LOCAL file (`file:` scheme, no foreign host)?
+pub(crate) fn is_file_uri(u: &str) -> bool {
+    local_part(u).is_some()
+}
+
+/// a uri-list entry as the path attach_drop gets: a local file URI -> its absolute path
+/// (%XX decoded); anything else (`https://…`, `file://server/…`) stays the text it was, so
+/// attach_drop refuses it as Refused::Remote (its "://" check) instead of guessing a path
 pub(crate) fn uri_path(u: &str) -> PathBuf {
-    let u = u.trim();
-    let p = if let Some(r) = strip_ci(u, "file://") {
-        strip_ci(r, "localhost").filter(|x| x.starts_with('/')).unwrap_or(r)
-    } else if let Some(r) = strip_ci(u, "file:").filter(|x| x.starts_with('/')) {
-        r
-    } else {
-        return PathBuf::from(u);
-    };
-    PathBuf::from(OsString::from_vec(pct_decode(p)))
+    match local_part(u) {
+        Some(p) => PathBuf::from(OsString::from_vec(pct_decode(p))),
+        None => PathBuf::from(u.trim()),
+    }
 }
 
 /// THE decision: Some(paths) = a file drop this app takes (drop-files -> attach_drop);
@@ -214,6 +222,23 @@ mod tests {
             claim(&s(&["file:///x.png", "https://e.example/y.png"])),
             Some(vec![PathBuf::from("/x.png"), PathBuf::from("https://e.example/y.png")])
         );
+    }
+
+    /// codeant #109: a file URI naming ANOTHER host is not local — never claimed on its own,
+    /// and in a mixed list it stays the URI text (attach_drop: Refused::Remote via "://"),
+    /// never the relative path `server/share/x.png` resolved against the working directory
+    #[test]
+    fn a_foreign_host_file_uri_is_not_local() {
+        assert!(!is_file_uri("file://server/share/item.png"));
+        assert!(!is_file_uri("file://localhostx/item.png"));
+        assert!(!is_file_uri("file:relative.png"));
+        assert_eq!(claim(&s(&["file://server/share/item.png"])), None);
+        assert_eq!(uri_path("file://server/share/item.png"), PathBuf::from("file://server/share/item.png"));
+        assert_eq!(
+            claim(&s(&["file:///x.png", "file://server/share/item.png"])),
+            Some(vec![PathBuf::from("/x.png"), PathBuf::from("file://server/share/item.png")])
+        );
+        assert!(uri_path("file://server/share/item.png").to_string_lossy().contains("://"));
     }
 
     /// a non-UTF-8 file name survives as bytes; a broken escape stays literal
