@@ -4,9 +4,23 @@ Workflow: `.github/workflows/supply-chain.yml`. It runs on every `pull_request`,
 `develop`/`main`, and once a week (Monday 04:23 UTC), so new advisories also show up when no code
 changes. It covers the Rust graph in `src-tauri/Cargo.lock`. The workflow uses
 `permissions: contents: read` and no secrets. It uses `pull_request`, never `pull_request_target`, so
-fork PRs run without write access. Every action is pinned by full commit SHA, and every tool is
-installed at an exact version with `cargo install --locked --version X`. Versions are chosen to be at
-least 6 weeks old.
+fork PRs run without write access. Every action is pinned by full commit SHA and the Rust toolchain
+is pinned to an exact release. Pins are chosen to be at least 6 weeks old.
+
+**Exception: the three scanners are not pinned** (operator decision, 2026-11-15). cargo-audit,
+cargo-deny and cargo-vet are installed with `cargo install --locked <tool>`, so every run gets the
+latest crates.io release, built from that release's own `Cargo.lock`. Each job prints the result in
+a `cargo-<tool> resolved version` step, so the log shows exactly which version ran. Why:
+
+- They are vulnerability scanners. The RustSec advisory DB and its format, and the cargo-vet
+  import/audit formats, keep moving. An old release can fail to parse new advisories, or skip them,
+  and then the check stops protecting anything.
+- The blast radius is bounded. The workflow has `contents: read`, no secrets and no caches, and it
+  never runs on `pull_request_target`. A compromised scanner release could make a run pass or fail
+  falsely or waste runner time, but it can't push code, read secrets or poison later runs.
+
+The cost: a run is not reproducible by tool version, and a broken new release can turn CI red with no
+change in this repo. Check the `resolved version` step first when that happens.
 
 ## What each check catches
 
@@ -35,9 +49,9 @@ least 6 weeks old.
 ## Adding or updating a dependency
 
 1. Change `Cargo.toml` and commit the updated `Cargo.lock`.
-2. Run the checks locally with the same versions as CI (see `env:` in the workflow):
+2. Run the checks locally with the latest tools, like CI does:
    ```sh
-   cargo install --locked --version 0.10.2 cargo-vet   # likewise cargo-deny 0.20.2, cargo-audit 0.22.2
+   cargo install --locked cargo-vet   # likewise cargo-deny, cargo-audit
    cd src-tauri && cargo vet
    ```
 3. If `cargo vet` reports an unvetted crate, pick one of these options:
@@ -71,4 +85,5 @@ least 6 weeks old.
 - Only the Rust graph is covered. The npm frontend, the GitHub Actions themselves (they are only
   SHA-pinned) and system libraries (GTK/WebKitGTK from the distro) are out of scope.
 - None of these checks catch malicious code in an already-trusted version, or a compromised build
-  environment. Pinning plus the 6-week age rule just shrinks that window.
+  environment. Pinning plus the 6-week age rule just shrinks that window, and the three scanners
+  are deliberately outside it (see the exception above).

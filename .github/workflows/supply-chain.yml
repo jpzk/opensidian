@@ -10,8 +10,14 @@
 #   - trigger pull_request (never its privileged "_target" variant): fork PRs run read-only
 #     with no secrets; nothing here needs either.
 #   - top-level permissions contents: read; no secrets; checkout does not persist the token.
-#   - every action pinned to a full commit SHA (# vX.Y.Z), tools pinned to exact versions
-#     built with --locked; every pin released >= 6 weeks before pin time (2026-11-15).
+#   - every action pinned to a full commit SHA (# vX.Y.Z) and the Rust toolchain pinned; every
+#     pin released >= 6 weeks before pin time (2026-11-15).
+#   - EXCEPTION (operator decision 2026-11-15): cargo-audit, cargo-deny and cargo-vet are NOT
+#     pinned. Each run installs the latest crates.io release (still --locked, so the tool's own
+#     Cargo.lock is used) and logs the resolved version in a "resolved version" step. They are
+#     vulnerability scanners whose advisory DB / formats move: an old release can fail to parse
+#     new advisories and silently stop protecting us. Blast radius is bounded: contents: read,
+#     no secrets, no caches, no privileged (pull_request_target) trigger.
 #   - no caches: nothing a PR run writes can be restored by a push/main run.
 name: Supply chain
 
@@ -33,9 +39,6 @@ concurrency:
 
 env:
   RUST_TOOLCHAIN: '1.98.0'        # = release.yml (released 2026-08-20)
-  CARGO_AUDIT_VERSION: '0.22.2'   # released 2026-06-05
-  CARGO_DENY_VERSION: '0.20.2'    # released 2026-07-09
-  CARGO_VET_VERSION: '0.10.2'     # released 2026-01-13
   CARGO_TERM_COLOR: always
   CARGO_NET_RETRY: '5'
 
@@ -53,8 +56,10 @@ jobs:
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
           rustup default "$RUST_TOOLCHAIN"
           cargo --version
-      - name: install cargo-audit ${{ env.CARGO_AUDIT_VERSION }}
-        run: cargo install --locked --version "$CARGO_AUDIT_VERSION" cargo-audit
+      - name: install cargo-audit (latest crates.io release, unpinned by design)
+        run: cargo install --locked cargo-audit
+      - name: cargo-audit resolved version
+        run: cargo audit --version
       - name: cargo audit
         # the RustSec advisory DB is fetched at run time (not pinned); ignores live in
         # src-tauri/audit.toml with reason + expiry
@@ -74,8 +79,10 @@ jobs:
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
           rustup default "$RUST_TOOLCHAIN"
           cargo --version
-      - name: install cargo-deny ${{ env.CARGO_DENY_VERSION }}
-        run: cargo install --locked --version "$CARGO_DENY_VERSION" cargo-deny
+      - name: install cargo-deny (latest crates.io release, unpinned by design)
+        run: cargo install --locked cargo-deny
+      - name: cargo-deny resolved version
+        run: cargo deny --version
       - name: cargo deny check
         run: cargo deny --manifest-path src-tauri/Cargo.toml --config deny.toml --locked check --show-stats
 
@@ -92,8 +99,10 @@ jobs:
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
           rustup default "$RUST_TOOLCHAIN"
           cargo --version
-      - name: install cargo-vet ${{ env.CARGO_VET_VERSION }}
-        run: cargo install --locked --version "$CARGO_VET_VERSION" cargo-vet
+      - name: install cargo-vet (latest crates.io release, unpinned by design)
+        run: cargo install --locked cargo-vet
+      - name: cargo-vet resolved version
+        run: cargo vet --version
       - name: cargo vet --locked
         # --locked: use imports.lock as committed (no fresh import fetch) and Cargo.lock as is;
         # any new or updated crate without an audit/exemption fails here
