@@ -58,7 +58,6 @@ mod updates;
 use opensidian_lib::vaultfs;
 mod watcher;
 mod winsize;
-mod wsmgr; // #94: named layouts in .obsidian/workspaces.json (Obsidian core Workspaces parity)
 mod xdnd; // #51: the window's OS drop transport — only a drop naming a local file is ours, a link drag reaches the editor
 use index::{link_parts, links_in, resolve, tag_spans, Graph, Index};
 
@@ -1811,55 +1810,6 @@ fn write_workspace(
     )
 }
 
-
-/* #94 WORKSPACE MANAGER (src-tauri/src/wsmgr.rs): named layouts in <vault>/.obsidian/workspaces.json,
-   Obsidian's core "Workspaces" file. Reads never fail (a missing/corrupt file lists as empty, R28.13's
-   rule); mutations are VAULT-SCOPED exactly like write_workspace — the UI names the vault the layout was
-   serialized from and a disagreeing vault is refused, so a saved layout can never land in another vault. */
-#[tauri::command]
-fn wsm_list(v: State<Vault>) -> serde_json::Value {
-    span_timed!("wsm_list", cur_vault(&v).map(|r| wsmgr::list(&wsmgr::read_in(&r))).unwrap_or_else(|| wsmgr::list(&wsmgr::OnDisk::Absent)))
-}
-
-#[tauri::command]
-fn wsm_get(v: State<Vault>, name: String) -> Option<serde_json::Value> {
-    span_timed!("wsm_get", cur_vault(&v).and_then(|r| wsmgr::get(&wsmgr::read_in(&r), &name)))
-}
-
-/// op: "save" (name, layout) | "delete" (name) | "rename" (name -> to) | "activate" (name)
-#[tauri::command(async)]
-fn wsm_op(
-    v: State<Vault>,
-    vault: String,
-    op: String,
-    name: String,
-    to: Option<String>,
-    layout: Option<serde_json::Value>,
-) -> Result<serde_json::Value, String> {
-    span_timed!("wsm_op", (|| {
-        let root = cur_vault(&v).ok_or("no vault open")?;
-        if root != PathBuf::from(&vault) {
-            return Err(format!("stale workspaces write: serialized from {vault}, current vault is {}", root.display()));
-        }
-        wsm_op_in(&root, &op, &name, to.as_deref(), layout.as_ref())
-    })())
-}
-
-fn wsm_op_in(root: &Path, op: &str, name: &str, to: Option<&str>, layout: Option<&serde_json::Value>) -> Result<serde_json::Value, String> {
-    match op {
-        "save" => {
-            let l = layout.ok_or("save: no layout")?;
-            wsmgr::mutate_in(root, |d| wsmgr::op_save(d, name, l))
-        }
-        "delete" => wsmgr::mutate_in(root, |d| wsmgr::op_delete(d, name)),
-        "rename" => {
-            let t = to.ok_or("rename: no new name")?;
-            wsmgr::mutate_in(root, |d| wsmgr::op_rename(d, name, t))
-        }
-        "activate" => wsmgr::mutate_in(root, |d| wsmgr::op_activate(d, name)),
-        _ => Err(format!("wsm_op: unknown op {op:?}")),
-    }
-}
 #[tauri::command]
 fn recent_vaults() -> Vec<String> {
     span_timed!("recent_vaults", read_cfg().1.into_iter().filter(|p| Path::new(p).is_dir()).collect())
@@ -7169,7 +7119,7 @@ fn main() {
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_title, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, bm_add_view, bm_add_view_at, bm_remove, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
-            read_workspace, write_workspace, wsm_list, wsm_get, wsm_op,
+            read_workspace, write_workspace,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
             plugins_state, plugins_set, plugin_io, plugin_vfs, desk_proc_spawn, spawn_allow_list, spawn_allow_revoke, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
