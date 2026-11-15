@@ -1792,7 +1792,9 @@ Object.assign(Ed, {
      the plugin API's htmlToMarkdown (inert parse, every text node escaped, unsafe URLs
      dropped). true = handled; false leaves the drop to CM6 (files, a move inside the
      editor, no html, no converter, nothing converted). Placed and selected like CM6's
-     own drop, one "input.drop" undo step. */
+     own drop, one "input.drop" undo step. A browser LINK drag (<a href> + a remote
+     text/uri-list) reaches here too since src-tauri/src/xdnd.rs stopped claiming remote
+     uri-lists as file drops (#51 "094 still eats links"): it lands as [title](url). */
   htmlDrop(e, view) {
     const dt = e && e.dataTransfer;
     if (!dt || !view || e.defaultPrevented || view.state.readOnly) return false;
