@@ -1117,18 +1117,23 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
 .graph-controls.gf-lit { box-shadow: 0 4px 16px var(--shadow-drop) }
 /* graphctx GC2: reset + close float in the FIRST section's header row (stock), not a row of their own */
 .graph-controls .gf-btns { position: absolute; top: 6px; right: 6px; z-index: 1; display: flex; gap: 2px }
-.graph-controls .gf-btn { width: 26px; height: 26px; padding: 5px; border: 0; border-radius: 4px; background: none;
+.graph-controls .gf-btn { width: 26px; height: 26px; padding: 4px; border: 0; border-radius: 4px; background: none;
   color: var(--text-muted); cursor: pointer; line-height: 0; box-sizing: border-box }
 .graph-controls .gf-btn:hover { background: var(--border); color: var(--text-chrome) }
-.graph-controls .gf-btn svg { width: 16px; height: 16px; display: block }
+/* #130: card glyphs are 18 px (the 24-unit glyph at 3/4 fills a 26 px button minus 4 px padding each side) with a
+   1.75 px stroke (at 18 px a 2-unit stroke would render 1.5 px and look thin next to the 1 px card border); both
+   follow the theme variables --icon-size / --icon-stroke when a vault theme sets them. Ink stays currentColor. */
+.graph-controls .gf-btn svg { width: var(--icon-size, 18px); height: var(--icon-size, 18px); stroke-width: var(--icon-stroke, 1.75px); display: block }
 .graph-controls .mod-open { display: none }
 .graph-controls.is-close { width: 44px; padding: 6px 0 }
 .graph-controls.is-close .gf-btns, .graph-controls.is-close .graph-control-section { display: none }
-.graph-controls.is-close .mod-open { display: block; width: 30px; margin: 0 auto }
+.graph-controls.is-close .mod-open { display: block; width: 30px; padding: 4px 6px; margin: 0 auto }
 .graph-controls .gf-head { display: flex; align-items: center; gap: 4px; padding: 4px 12px; cursor: pointer; user-select: none }
-.graph-controls .collapse-icon { line-height: 0; color: var(--text-muted); transition: transform 0.1s; transform: rotate(90deg) }
-.graph-controls .collapse-icon svg { width: 14px; height: 14px; display: block }
-.graph-controls .graph-control-section.is-collapsed .collapse-icon { transform: none }
+/* #130: section chevron points down when expanded and turns -90deg when collapsed; drawn at 10 px with a 4 px
+   stroke so it reads as a solid arrowhead beside the 13 px section title. */
+.graph-controls .collapse-icon { line-height: 0; color: var(--text-muted) }
+.graph-controls .collapse-icon svg { width: 10px; height: 10px; margin: 2px; stroke-width: 4px; display: block; transition: transform 0.1s }
+.graph-controls .graph-control-section.is-collapsed .collapse-icon svg { transform: rotate(-90deg) }
 .graph-controls .graph-control-section-header { font-weight: 600 }
 .graph-controls .graph-control-section.is-collapsed .gf-body { display: none }
 .graph-controls:not(.is-local) .gc-local { display: none }   /* local-only Filters rows (Depth, link directions: R§5.1) */
