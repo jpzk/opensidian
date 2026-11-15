@@ -35,8 +35,8 @@
       "trash": P('<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>'),
       "trash-2": P('<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/>'),
       "pencil": P('<path d="M17 3l4 4L7 21H3v-4z"/>'),
-      "settings": P('<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>'),
-      "gear": P('<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>'),
+      "settings": P(SVG_ICON["lucide-settings"]),   // #130: the one cog source (ui/icons.js), stock lucide-settings
+      "gear": P(SVG_ICON["lucide-settings"]),
       "search": P('<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>'),
       "chevron-down": P('<path d="M6 9l6 6 6-6"/>'),
       "chevron-up": P('<path d="M18 15l-6-6-6 6"/>'),

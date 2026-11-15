@@ -10904,12 +10904,7 @@ function gcFetchLg(t, center) {
 }
 
 const gfFmt = (r, x) => r[7] ? x.toFixed(r[7]) : String(Math.round(x));
-const GF_ICON = {
-  reset: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',
-  close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>',
-  gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></svg>',
-  chev: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>',
-};
+const GF_ICON = { reset: svgIcon("lucide-rotate-ccw"), close: svgIcon("lucide-x"), gear: svgIcon("lucide-settings"), chev: svgIcon("right-triangle") };
 const gcSlider = (k, label, lo, hi, step, cls) => '<div class="setting-item mod-slider' + (cls ? " " + cls : "") + '" data-k="' + k + '"><div class="setting-item-name">' + label + '</div>' +
   '<div class="gf-ctl"><span class="slider-value"></span><input class="slider" type="range" min="' + lo + '" max="' + hi + '" step="' + step + '"></div></div>';
 const gcToggle = (k, label, cls) => '<div class="setting-item mod-toggle' + (cls ? " " + cls : "") + '" data-k="' + k + '"><div class="setting-item-name">' + label + '</div>' +
@@ -11233,6 +11228,26 @@ function gfnTok() {
   }
   // [gfe:<kind>@<group id>=<links drawn>|...] beside it
   return out.length ? " [gfn:" + out.join("|") + "]" + (eo.length ? " [gfe:" + eo.join("|") + "]" : "") : "";
+}
+/* #130 census: [gfi:<kind>@<group id>=<o|c>,<icon class>,<fnv1a32 of the glyph>,<x>,<y>,<w>,<h>,<svg w>,<svg h>,<stroke>,<r.g.b>,<card bg r.g.b>,<1 if :hover else 0>[f if :focus]|...]
+   the Open-graph-settings button (.graph-controls .mod-open) of EVERY graph leaf, read off the live DOM: o/c = card open/closed,
+   x..h = the button's painted box (0 while the open card hides it), the glyph hash runs over its svg children in order
+   (tag + d, or tag + cx/cy/r...) so the harness can compare it with stock 1.13.7's lucide-settings without trusting our class. */
+function gfiTok() {
+  const fnv = s => { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(16).padStart(8, "0"); };
+  const rgb = c => (c.match(/[\d.]+/g) || []).slice(0, c.startsWith("rgba") ? 4 : 3).join("."), out = [];
+  for (const h of groups()) {
+    const t = h.active >= 0 ? h.tabs[h.active] : null;
+    if (!t || (t.kind !== "gg" && t.kind !== "lg") || !h.graphOn) continue;
+    const p = h.content.querySelector(".graph-controls"), b = p && p.querySelector(".mod-open"), v = b && b.querySelector("svg");
+    if (!p || !b || !v) { out.push(t.kind + "@" + h.id + "=none"); continue; }
+    const g = [...v.children].map(e => e.tagName.toLowerCase() + "(" + (e.getAttribute("d") || ["cx", "cy", "r", "x", "y", "width", "height", "rx"].filter(a => e.hasAttribute(a)).map(a => a + "=" + e.getAttribute(a)).join(" ")) + ")").join("");
+    const r = b.getBoundingClientRect(), s = v.getBoundingClientRect(), cs = getComputedStyle(v);
+    const cls = ((v.getAttribute("class") || "").split(/\s+/).find(c => c.startsWith("lucide-")) || "-");
+    out.push(t.kind + "@" + h.id + "=" + (p.classList.contains("is-close") ? "c" : "o") + "," + cls + "," + fnv(g) + "," +
+      [r.x, r.y, r.width, r.height, s.width, s.height].map(Math.round).join(",") + "," + cs.strokeWidth + "," + rgb(cs.color) + "," + rgb(getComputedStyle(p).backgroundColor) + "," + (b.matches(":hover") ? 1 : 0) + (b.matches(":focus") ? "f" : ""));
+  }
+  return out.length ? " [gfi:" + out.join("|") + "]" : "";
 }
 function gcnTok() {
   const vis = e => !!e && e.getClientRects().length > 0, out = [];
@@ -12807,6 +12822,7 @@ $("vswitch").onclick = showPicker;
 /* settings-gear (#29): the gear beside the vault switcher opens Settings — the SAME path as the
    Settings command / Ctrl+, (cmdSettings, so the R30.12 open timing holds). A native <button>:
    Tab reaches it, Enter / Space press it. It only ever OPENS (the modal covers it while open). */
+$("sgear").innerHTML = svgIcon("lucide-settings");   // #130: the one gear source (SVG_ICON), same glyph as the graph card
 $("sgear").onclick = () => { if (!settingsOpen) cmdSettings(); };
 $("sgear").addEventListener("focus", () => updateTitle());   // f= is read off the DOM: publish it when it changes
 $("sgear").addEventListener("blur", () => updateTitle());
