@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! cp-unrestricted: the HTTP client behind obsidian's request / requestUrl for the
 //! plugins of a trusted vault (stock parity: any host, no CORS, redirects followed).
-//! Plain http:// over std TCP, HTTP/1.1 with Connection: close. https:// is refused
-//! with a clear error: the app carries no TLS client crate, and adding one is a
-//! separate, pinned dependency decision. Bodies cross IPC as latin1 strings (one
-//! char per byte, desk_proc::latin1_to_bytes), so binary payloads survive.
+//! Plain http:// over std TCP, HTTP/1.1 with Connection: close. https:// uses the
+//! already-pinned reqwest+rustls client (Windows/macOS plugin-store dep); on other
+//! targets it stays ENOTSUP until a TLS client is wired there. Bodies cross IPC as
+//! latin1 strings (one char per byte, desk_proc::latin1_to_bytes), so binary payloads survive.
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
@@ -53,11 +53,26 @@ impl Target {
 pub fn parse(url: &str) -> Result<Target, String> {
     let lower = url.trim_start().to_ascii_lowercase();
     if lower.starts_with("https://") {
-        return Err(format!("ENOTSUP: https requests are not available in opensidian yet (no TLS client): {url}"));
+        #[cfg(any(windows, target_os = "macos"))]
+        {
+            // Target is only for the plain-TCP path; HTTPS goes through request_tls.
+            // Still parse host/path so callers can inspect redirects.
+            let rest = &url.trim_start()[8..];
+            return parse_authority(rest, 443);
+        }
+        #[cfg(not(any(windows, target_os = "macos")))]
+        {
+            return Err(format!("ENOTSUP: https requests are not available on this platform yet: {url}"));
+        }
     }
     let rest = if lower.starts_with("http://") { &url.trim_start()[7..] } else {
-        return Err(format!("EINVAL: unsupported URL (http:// only): {url}"));
+        return Err(format!("EINVAL: unsupported URL (http(s):// only): {url}"));
     };
+    parse_authority(rest, 80)
+}
+
+fn parse_authority(rest: &str, default_port: u16) -> Result<Target, String> {
+    let url_hint = rest;
     let rest = rest.split('#').next().unwrap_or("");
     let (auth, path) = match rest.find(['/', '?']) {
         Some(i) => (&rest[..i], &rest[i..]),
@@ -67,17 +82,20 @@ pub fn parse(url: &str) -> Result<Target, String> {
     let auth = auth.rsplit('@').next().unwrap_or("");
     let (host, port) = if let Some(h) = auth.strip_prefix('[') {
         let (h, r) = h.split_once(']').ok_or("EINVAL: bad IPv6 host")?;
-        let port = match r.strip_prefix(':') { Some(p) if !p.is_empty() => p.parse().map_err(|_| "EINVAL: bad port")?, _ => 80 };
+        let port = match r.strip_prefix(':') {
+            Some(p) if !p.is_empty() => p.parse().map_err(|_| "EINVAL: bad port")?,
+            _ => default_port,
+        };
         (h.to_string(), port)
     } else {
         match auth.rsplit_once(':') {
             Some((h, p)) if !p.is_empty() => (h.to_string(), p.parse().map_err(|_| "EINVAL: bad port")?),
-            Some((h, _)) => (h.to_string(), 80),
-            None => (auth.to_string(), 80),
+            Some((h, _)) => (h.to_string(), default_port),
+            None => (auth.to_string(), default_port),
         }
     };
     if host.is_empty() {
-        return Err(format!("EINVAL: no host in {url}"));
+        return Err(format!("EINVAL: no host in {url_hint}"));
     }
     Ok(Target { host, port, path })
 }
@@ -232,6 +250,18 @@ pub fn request(r: &Req) -> Result<Resp, String> {
     let mut body = r.body.as_deref().map(crate::desk_proc::latin1_to_bytes).unwrap_or_default();
     let mut headers = r.headers.clone();
     for _ in 0..=MAX_REDIRECTS {
+        if url.trim_start().to_ascii_lowercase().starts_with("https://") {
+            #[cfg(any(windows, target_os = "macos"))]
+            {
+                // reqwest follows redirects itself; hand it the current method/body/headers
+                return request_tls(&url, &method, &headers, &body);
+            }
+            #[cfg(not(any(windows, target_os = "macos")))]
+            {
+                let _ = (&method, &headers, &body, deadline);
+                return Err(format!("ENOTSUP: https requests are not available on this platform yet: {url}"));
+            }
+        }
         let t = parse(&url)?;
         let (status, hs, b) = once(&t, &method, &headers, &body, deadline)?;
         let loc = hs.iter().find(|(k, _)| k == "location").map(|(_, v)| v.clone());
@@ -243,11 +273,55 @@ pub fn request(r: &Req) -> Result<Resp, String> {
                     headers.retain(|(k, _)| !k.eq_ignore_ascii_case("content-type"));
                 }
                 url = resolve(&url, &l);
+                // http -> https redirect: next loop iteration takes the TLS branch
             }
             _ => return Ok(Resp { status, headers: hs, body: crate::desk_proc::bytes_to_latin1(&b), url }),
         }
     }
     Err(format!("ELOOP: more than {MAX_REDIRECTS} redirects"))
+}
+
+/// HTTPS via the already-locked reqwest+rustls (plugin-store). Same Resp shape as plain http.
+#[cfg(any(windows, target_os = "macos"))]
+fn request_tls(url: &str, method: &str, headers: &[(String, String)], body: &[u8]) -> Result<Resp, String> {
+    let client = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS))
+        .timeout(TOTAL_TIMEOUT)
+        .connect_timeout(CONNECT_TIMEOUT)
+        .user_agent("opensidian")
+        .build()
+        .map_err(|e| format!("EIO: https client: {e}"))?;
+    let mut rb = client.request(
+        method.parse().map_err(|_| format!("EINVAL: bad method {method}"))?,
+        url,
+    );
+    for (k, v) in headers {
+        let lk = k.to_ascii_lowercase();
+        if matches!(lk.as_str(), "host" | "connection" | "content-length" | "transfer-encoding") {
+            continue;
+        }
+        rb = rb.header(k.as_str(), v.as_str());
+    }
+    if !body.is_empty() {
+        rb = rb.body(body.to_vec());
+    }
+    let res = rb.send().map_err(|e| format!("EIO: https {url}: {e}"))?;
+    let status = res.status().as_u16();
+    let final_url = res.url().to_string();
+    let mut hs = Vec::new();
+    for (k, v) in res.headers().iter() {
+        hs.push((k.as_str().to_ascii_lowercase(), v.to_str().unwrap_or("").to_string()));
+    }
+    let bytes = res.bytes().map_err(|e| format!("EIO: https body: {e}"))?;
+    if bytes.len() > MAX_BODY {
+        return Err("E2BIG: response too large".into());
+    }
+    Ok(Resp {
+        status,
+        headers: hs,
+        body: crate::desk_proc::bytes_to_latin1(&bytes),
+        url: final_url,
+    })
 }
 
 #[cfg(test)]
@@ -260,6 +334,9 @@ mod tests {
         assert_eq!(parse("http://127.0.0.1:23119/better-bibtex/cayw?probe=true").unwrap(), Target { host: "127.0.0.1".into(), port: 23119, path: "/better-bibtex/cayw?probe=true".into() });
         assert_eq!(parse("http://example.org").unwrap(), Target { host: "example.org".into(), port: 80, path: "/".into() });
         assert_eq!(parse("http://u:p@[::1]:8080?x=1#f").unwrap(), Target { host: "::1".into(), port: 8080, path: "/?x=1".into() });
+        #[cfg(any(windows, target_os = "macos"))]
+        assert_eq!(parse("https://example.org/x").unwrap(), Target { host: "example.org".into(), port: 443, path: "/x".into() });
+        #[cfg(not(any(windows, target_os = "macos")))]
         assert!(parse("https://example.org/").unwrap_err().starts_with("ENOTSUP"));
         assert!(parse("file:///etc/passwd").unwrap_err().starts_with("EINVAL"));
     }

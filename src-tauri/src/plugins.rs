@@ -14,8 +14,9 @@
    URL parsers, a path segment is not.)
 
    What the scheme serves, and nothing else (every other answer is 403):
-     1. the path is exactly "/<id>/main.js" — no other file, no other depth,
-        no percent-escapes, so there is no path to "parse" into an escape;
+     1. the path is "/<id>/<file>" — <file> is main.js (CJS-wrapped) or another
+        plugin asset (pandoc.wasm, pdf.worker.min.mjs, …) with no ".." / absolute
+        segment; percent-decoding is the webview's, the path we see is plain;
      2. <id> is a plain name ([A-Za-z0-9._-], no leading dot, <= 128 bytes);
      3. plugins are TRUSTED for this vault (restricted mode OFF — that flag
         lives in ~/.opensidian.json, outside the vault, so a vault cannot ship
@@ -24,8 +25,9 @@
      4. <vault>/.obsidian/plugins/<id> canonicalises to exactly
         canon(<vault>)/.obsidian/plugins/<id> — a symlinked plugin dir, or a
         symlinked .obsidian / plugins dir pointing out of the vault, refuses;
-     5. main.js is a regular file, not a symlink, <= MAX_MAIN_JS bytes.
-   A missing main.js in an otherwise allowed plugin is 404. */
+     5. the file is regular, not a symlink; main.js <= MAX_MAIN_JS, other
+        assets <= MAX_ASSET (pandoc.wasm is ~56 MB).
+   A missing file in an otherwise allowed plugin is 404. */
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -33,12 +35,17 @@ use std::path::{Path, PathBuf};
 pub const SCHEME: &str = "opensidian-plugin";
 /// the biggest real bundles (excalidraw) are ~8 MB; anything past this is not a plugin
 pub const MAX_MAIN_JS: u64 = 32 * 1024 * 1024;
+/// sidecar assets (pandoc.wasm ≈ 56 MB); anything past this is refused
+pub const MAX_ASSET: u64 = 96 * 1024 * 1024;
 /// the JS host function the wrapper calls (ui/plugins/loader.js defines it)
 pub const DEFINE_FN: &str = "__osPluginDefine";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Served {
+    /// main.js, CJS-wrapped
     Js(Vec<u8>),
+    /// a non-main plugin file (wasm, worker, css, …), raw bytes + mime
+    Asset { mime: &'static str, body: Vec<u8> },
     Refused(&'static str),
     Missing,
 }
@@ -51,11 +58,45 @@ pub fn valid_id(id: &str) -> bool {
         && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
 }
 
-/// rule 1: "/<id>/main.js" -> Some(id); anything else -> None
+/// rule 1 (legacy): "/<id>/main.js" -> Some(id)
 pub fn parse_path(path: &str) -> Option<&str> {
+    let (id, file) = parse_asset(path)?;
+    (file == "main.js").then_some(id)
+}
+
+/// "/<id>/<rel>" -> (id, rel). rel has no "..", no backslash, no empty segment.
+pub fn parse_asset(path: &str) -> Option<(&str, &str)> {
     let rest = path.strip_prefix('/')?;
     let (id, file) = rest.split_once('/')?;
-    (file == "main.js" && valid_id(id)).then_some(id)
+    if !valid_id(id) || file.is_empty() {
+        return None;
+    }
+    if file.split('/').any(|s| {
+        s.is_empty() || s == "." || s == ".." || s.contains('\\') || s.contains('%')
+            || s.chars().any(|c| c.is_control() || c.is_whitespace())
+    }) {
+        return None;
+    }
+    Some((id, file))
+}
+
+fn asset_mime(file: &str) -> &'static str {
+    let name = file.rsplit('/').next().unwrap_or(file);
+    match name.rsplit_once('.').map(|(_, e)| e) {
+        Some("js" | "mjs" | "cjs") => "text/javascript; charset=utf-8",
+        Some("wasm") => "application/wasm",
+        Some("css") => "text/css; charset=utf-8",
+        Some("json" | "map") => "application/json",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("woff2") => "font/woff2",
+        Some("woff") => "font/woff",
+        Some("ttf") => "font/ttf",
+        _ => "application/octet-stream",
+    }
 }
 
 /// the vault's enabled list: .obsidian/community-plugins.json, a JSON array of ids
@@ -84,20 +125,39 @@ pub fn plugin_dir_in(root: &Path, id: &str) -> Option<PathBuf> {
     (got == want && got.starts_with(&croot) && got.is_dir()).then_some(got)
 }
 
-/// rule 5: a file inside a confined plugin dir. Ok(None) = absent, Err = refuse
+/// rule 5: a file inside a confined plugin dir (flat or nested). Ok(None) = absent, Err = refuse.
+/// Each path segment is opened with symlink_metadata (O_NOFOLLOW equivalent): a symlink
+/// anywhere along the walk refuses, so a nested "data/pandoc.wasm" cannot leave the plugin dir.
 pub fn plugin_file_in(root: &Path, id: &str, file: &str, cap: u64) -> Result<Option<PathBuf>, &'static str> {
     let dir = plugin_dir_in(root, id).ok_or("plugin dir not confined")?;
-    if file.is_empty() || file.contains('/') || file.starts_with('.') {
+    if file.is_empty() || file.starts_with('/') {
         return Err("bad file name");
     }
-    let p = dir.join(file);
-    match fs::symlink_metadata(&p) {
-        Err(_) => Ok(None),
-        Ok(m) if m.is_symlink() => Err("symlinked file"),
-        Ok(m) if !m.is_file() => Err("not a file"),
-        Ok(m) if m.len() > cap => Err("too big"),
-        Ok(_) => Ok(Some(p)),
+    let segs: Vec<&str> = file.split('/').collect();
+    if segs.iter().any(|s| {
+        s.is_empty() || *s == "." || *s == ".." || s.contains('\\') || s.starts_with('.')
+            || s.contains('%') || s.chars().any(|c| c.is_control() || c.is_whitespace())
+    }) {
+        return Err("bad file name");
     }
+    let mut cur = dir;
+    for (i, seg) in segs.iter().enumerate() {
+        let next = cur.join(seg);
+        match fs::symlink_metadata(&next) {
+            Err(_) => return Ok(None),
+            Ok(m) if m.is_symlink() => return Err("symlinked file"),
+            Ok(m) if i + 1 < segs.len() => {
+                if !m.is_dir() {
+                    return Err("not a file");
+                }
+                cur = next;
+            }
+            Ok(m) if !m.is_file() => return Err("not a file"),
+            Ok(m) if m.len() > cap => return Err("too big"),
+            Ok(_) => return Ok(Some(next)),
+        }
+    }
+    Ok(None)
 }
 
 /// cp-unrestricted: the CommonJS / Electron-renderer free variables every plugin
@@ -118,7 +178,7 @@ pub fn wrap_cjs(id: &str, src: &str) -> String {
 
 /// the whole decision for one request (rules 1-5), unit-testable without tauri
 pub fn serve(root: Option<&Path>, path: &str, trusted: bool) -> Served {
-    let Some(id) = parse_path(path) else { return Served::Refused("bad path") };
+    let Some((id, file)) = parse_asset(path) else { return Served::Refused("bad path") };
     let Some(root) = root else { return Served::Refused("no vault") };
     if !trusted {
         return Served::Refused("restricted mode");
@@ -126,11 +186,13 @@ pub fn serve(root: Option<&Path>, path: &str, trusted: bool) -> Served {
     if !enabled_ids(root).iter().any(|e| e == id) {
         return Served::Refused("not enabled");
     }
-    match plugin_file_in(root, id, "main.js", MAX_MAIN_JS) {
+    let cap = if file == "main.js" { MAX_MAIN_JS } else { MAX_ASSET };
+    match plugin_file_in(root, id, file, cap) {
         Err(why) => Served::Refused(why),
         Ok(None) => Served::Missing,
         Ok(Some(p)) => match fs::read(&p) {
-            Ok(b) => Served::Js(wrap_cjs(id, &String::from_utf8_lossy(&b)).into_bytes()),
+            Ok(b) if file == "main.js" => Served::Js(wrap_cjs(id, &String::from_utf8_lossy(&b)).into_bytes()),
+            Ok(b) => Served::Asset { mime: asset_mime(file), body: b },
             Err(_) => Served::Missing,
         },
     }
@@ -329,7 +391,7 @@ mod tests {
         let r = vault("esc");
         for p in [
             "/../secret.md", "/good/../../../secret.md", "/good/../main.js", "/../good/main.js",
-            "/good/manifest.json", "/good/data.json", "/good/sub/main.js", "/good//main.js",
+            "/good//main.js", "/good/./main.js", "/good/.hidden", "/good/sub/.x",
             "/%2e%2e/main.js", "/good%2fmain.js", "/.obsidian/main.js", "/./main.js", "/../../etc/passwd",
             "//etc/passwd", "/etc/passwd", "good/main.js", "", "/", "/good/", "/good/main.js/",
             "/good/main.js%00", "/go od/main.js", "/good\\..\\x/main.js",
@@ -340,6 +402,40 @@ mod tests {
             }
         }
         assert_eq!(parse_path("/good/main.js"), Some("good"));
+        assert_eq!(parse_asset("/good/pandoc.wasm"), Some(("good", "pandoc.wasm")));
+        assert_eq!(parse_asset("/good/data/pandoc.wasm"), Some(("good", "data/pandoc.wasm")));
+    }
+
+    #[test]
+    fn serves_enabled_plugin_assets_raw() {
+        let r = vault("asset");
+        fs::write(r.join(".obsidian/plugins/good/pandoc.wasm"), b"\0asm").unwrap();
+        fs::create_dir_all(r.join(".obsidian/plugins/good/data")).unwrap();
+        fs::write(r.join(".obsidian/plugins/good/data/x.wasm"), b"\0asm").unwrap();
+        fs::write(r.join(".obsidian/plugins/good/manifest.json"), b"{}").unwrap();
+        match serve(Some(&r), "/good/pandoc.wasm", true) {
+            Served::Asset { mime, body } => {
+                assert_eq!(mime, "application/wasm");
+                assert_eq!(body, b"\0asm");
+            }
+            o => panic!("expected asset, got {o:?}"),
+        }
+        match serve(Some(&r), "/good/data/x.wasm", true) {
+            Served::Asset { mime, body } => {
+                assert_eq!(mime, "application/wasm");
+                assert_eq!(body, b"\0asm");
+            }
+            o => panic!("expected nested asset, got {o:?}"),
+        }
+        match serve(Some(&r), "/good/manifest.json", true) {
+            Served::Asset { mime, body } => {
+                assert_eq!(mime, "application/json");
+                assert_eq!(body, b"{}");
+            }
+            o => panic!("expected json asset, got {o:?}"),
+        }
+        // main.js stays CJS-wrapped, never a raw Asset
+        assert!(matches!(serve(Some(&r), "/good/main.js", true), Served::Js(_)));
     }
 
     #[cfg(unix)]

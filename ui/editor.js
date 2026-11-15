@@ -505,7 +505,9 @@ const Ed = {
   },
   imgSrc(target) {
     const rel = Ed.imgRel(target);
-    return rel === null ? null : Ed.IMG_SCHEME + "://localhost/" + Ed.pctEnc(rel);
+    return rel === null ? null : (typeof window.__osCustomSchemeUrl === "function"
+      ? window.__osCustomSchemeUrl(Ed.IMG_SCHEME, Ed.pctEnc(rel))
+      : Ed.IMG_SCHEME + "://localhost/" + Ed.pctEnc(rel));
   },
   // the ONE widget both syntaxes paint. Carries no TEXT node in either branch:
   // the row's textContent must stay === its source line (the token map walks
@@ -661,7 +663,9 @@ const Ed = {
             s.classList.add("is-loaded");
             if (typeof xiAgain === "function") xiAgain();
           };
-          im.setAttribute("src", Ed.IMG_SCHEME + "://localhost/" + s.dataset.pdf + "?page=" + im.dataset.n + "&w=" + px);
+          im.setAttribute("src", (typeof window.__osCustomSchemeUrl === "function"
+            ? window.__osCustomSchemeUrl(Ed.IMG_SCHEME, s.dataset.pdf + "?page=" + im.dataset.n + "&w=" + px)
+            : Ed.IMG_SCHEME + "://localhost/" + s.dataset.pdf + "?page=" + im.dataset.n + "&w=" + px));
         }
       }, { root: box, rootMargin: "100% 0px" });
       for (let i = 0; i < n; i++) {

@@ -597,8 +597,13 @@
   function processShim() {
     const self = Object.create(null);
     const noop = () => self;
+    // Object.create(null) has no toString: PDF.js / pandocit / obbwasm do
+    //   process+""=="[object process]"
+    // which throws "Cannot convert object to primitive value" without one.
+    const plat = /Win/i.test(navigator.platform || "") ? "win32"
+      : /Mac/i.test(navigator.platform || "") ? "darwin" : "linux";
     return Object.freeze(Object.assign(self, {
-      platform: "linux", arch: "x64", browser: false, pid: 0,
+      platform: plat, arch: "x64", browser: false, pid: 0,
       env: Object.freeze(Object.create(null)),
       version: "v18.0.0",
       versions: Object.freeze(Object.assign(Object.create(null), { node: "18.0.0" })),
@@ -611,6 +616,9 @@
       // emitWarning: the page has no stdio. realclaudian's SDK reads process.stdout.isTTY on send.
       stdout: stdioShim(1), stderr: stdioShim(2),
       on: noop, once: noop, off: noop, addListener: noop, removeListener: noop, removeAllListeners: noop, emit: () => false,
+      toString: () => "[object process]",
+      valueOf() { return this; },
+      [Symbol.toStringTag]: "process",
     }));
   }
 
@@ -1164,8 +1172,8 @@
      Stock gives plugins an HTTP client with no CORS: any host, redirects followed, the
      response whatever its status (requestUrl throws on >= 400 unless throw: false).
      A trusted vault's plugins get that here; the shared API's placeholder stays for the
-     rest. http:// only for now: https:// fails with ENOTSUP (no TLS client in the app).
-     Bodies cross as latin1 strings (one char per byte). */
+     rest. http:// and https:// (reqwest+rustls on Windows/macOS). Bodies cross as
+     latin1 strings (one char per byte). */
   const toBytes = b => {
     if (b == null) return null;
     if (typeof b === "string") return new TextEncoder().encode(b);

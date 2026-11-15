@@ -682,7 +682,12 @@
       const rec = { cmds: new Set(), ribbon: new Set(), status: new Set(), tabs: new Set(), styleEl: null, plugin: null };
       registry.set(id, rec);
       try {
-        const m = Object.assign({ dir: ".obsidian/plugins/" + id }, manifest);
+        /* id is the DIRECTORY name (plugins.rs installed(); the scheme serves it).
+           A folder whose manifest.json claims a different "id" (common when a plugin
+           was copied under another name) must still key registry / loadData / commands
+           on the directory — otherwise _rec() misses, settings tabs are orphaned, and
+           plugin_io looks for a folder that does not exist. */
+        const m = Object.assign({}, manifest, { dir: ".obsidian/plugins/" + id, id: id });
         rec.plugin = new Cls(app, m);
         const css = await be.io(id, "styles").catch(() => null);
         if (typeof css === "string" && css) { rec.styleEl = document.createElement("style"); rec.styleEl.dataset.plugin = id; rec.styleEl.textContent = css; document.head.appendChild(rec.styleEl); }

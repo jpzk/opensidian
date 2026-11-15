@@ -258,6 +258,19 @@ const IMG_TYPES: [(&str, &str); 5] = [
 
 /// the scheme our images are served on; the CSP names it exactly (R29 / S1)
 const IMG_SCHEME: &str = "opensidian-img";
+/// WebView2/Android wry: custom protocols are requested as http://<scheme>.localhost/…
+/// (not <scheme>://localhost/…). Linux/macOS keep the scheme form. One helper so
+/// image_html and the CSP stay aligned with ui/plugins/loader.js.
+fn custom_scheme_url(scheme: &str, path: &str) -> String {
+    #[cfg(any(windows, target_os = "android"))]
+    {
+        format!("http://{scheme}.localhost/{path}")
+    }
+    #[cfg(not(any(windows, target_os = "android")))]
+    {
+        format!("{scheme}://localhost/{path}")
+    }
+}
 
 /// R29.10: the label the R29.4 banner carries in place of a REMOTE target.
 /// Both engines paint the same sentence (ui/editor.js `imgEl` sets it as
@@ -588,8 +601,8 @@ fn image_html(imgs: &[String], target: &str, alt: &str) -> String {
     let dec = pct_decode(target).unwrap_or_else(|| target.to_string());
     match index::resolve(imgs, &dec).map(|i| &imgs[i]) {
         Some(rel) => format!(
-            "<img class=\"vimg\" src=\"{IMG_SCHEME}://localhost/{}\" alt=\"{}\">",
-            pct_encode(rel),
+            "<img class=\"vimg\" src=\"{}\" alt=\"{}\">",
+            custom_scheme_url(IMG_SCHEME, &pct_encode(rel)),
             esc(alt)
         ),
         None => format!(
@@ -3753,6 +3766,8 @@ fn csp_by_trust(header: &str, trusted: bool) -> String {
     if !trusted {
         return header.to_string();
     }
+    // plugin assets (pandoc.wasm, pdf.worker) load cross-origin from the plugin scheme
+    let plug = format!("{}: http://{}.localhost", plugins::SCHEME, plugins::SCHEME);
     let mut out: Vec<String> = Vec::new();
     let (mut worker, mut media) = (false, false);
     for d in header.split(';').map(str::trim).filter(|d| !d.is_empty()) {
@@ -3760,20 +3775,20 @@ fn csp_by_trust(header: &str, trusted: bool) -> String {
             "script-src" => out.push(format!("{d} 'unsafe-eval' blob:")),
             "worker-src" => {
                 worker = true;
-                out.push(format!("{d} blob:"));
+                out.push(format!("{d} blob: {plug}"));
             }
             // af-fix 1a: canvas media cards play from a blob: (media_read) on a trusted page only
             "media-src" => {
                 media = true;
                 out.push(format!("{d} blob:"));
             }
-            // the synchronous fs route (vfs_sync) is same-origin
-            "connect-src" => out.push(format!("{d} 'self'")),
+            // vfs_sync is same-origin; plugin-scheme fetch (wasm) needs the plugin host
+            "connect-src" => out.push(format!("{d} 'self' {plug}")),
             _ => out.push(d.to_string()),
         }
     }
     if !worker {
-        out.push("worker-src 'self' blob:".into());
+        out.push(format!("worker-src 'self' blob: {plug}"));
     }
     // af-fix 1a (operator ruling 2026-10-26): the config CSP has no media-src (media = default-src
     // 'self', no blob:), so only the trusted branch names blob: for media
@@ -7285,12 +7300,26 @@ fn main() {
             let trusted = root.as_deref().is_some_and(|r| plugins::is_trusted(&cfg_value(), r));
             let b = tauri::http::Response::builder();
             match plugins::serve(root.as_deref(), req.uri().path(), trusted) {
-                plugins::Served::Js(body) => b
-                    .status(200)
-                    .header("Content-Type", "text/javascript; charset=utf-8")
-                    .header("X-Content-Type-Options", "nosniff")
-                    .header("Cache-Control", "no-store")
-                    .body(body),
+                plugins::Served::Js(body) => {
+                    eprintln!("[plugin] serve {}", req.uri().path());
+                    b.status(200)
+                        .header("Content-Type", "text/javascript; charset=utf-8")
+                        .header("X-Content-Type-Options", "nosniff")
+                        .header("Cache-Control", "no-store")
+                        // WebView2 loads plugins from http://opensidian-plugin.localhost (cross-origin to tauri.localhost)
+                        .header("Access-Control-Allow-Origin", "*")
+                        .body(body)
+                }
+                plugins::Served::Asset { mime, body } => {
+                    eprintln!("[plugin] asset {}", req.uri().path());
+                    b.status(200)
+                        .header("Content-Type", mime)
+                        .header("X-Content-Type-Options", "nosniff")
+                        .header("Cache-Control", "no-store")
+                        .header("Access-Control-Allow-Origin", "*")
+                        .header("Cross-Origin-Resource-Policy", "cross-origin")
+                        .body(body)
+                }
                 plugins::Served::Missing => b.status(404).body(Vec::new()),
                 plugins::Served::Refused(why) => {
                     eprintln!("[plugin] refused {}: {why}", req.uri().path());
@@ -8341,7 +8370,9 @@ mod tests {
             let h = render_with(md, &[], ix.images(), true);
             let i = h.find("src=\"").unwrap_or_else(|| panic!("no img for {md}: {h}")) + 5;
             let url = h[i..].split('"').next().unwrap();
-            let target = url.strip_prefix(&format!("{IMG_SCHEME}://localhost/")).expect(url);
+            let target = url
+                .strip_prefix(&custom_scheme_url(IMG_SCHEME, ""))
+                .unwrap_or_else(|| panic!("{md} -> {url}"));
             // exactly the path the protocol handler passes to serve_image
             let (mime, bytes) = serve_image(&root, target).unwrap_or_else(|| panic!("{md} -> {url} served nothing"));
             assert_eq!(bytes, png, "{md}");
@@ -8366,12 +8397,12 @@ mod tests {
         let rmd = |c: &str| render_with(c, &[], &imgs, false);
         // R29.2 relative path, alt preserved and escaped
         let h = rmd("![a pic](pic.png)");
-        assert_eq!(src(&h), format!("{IMG_SCHEME}://localhost/pic.png"), "{h}");
+        assert_eq!(src(&h), custom_scheme_url(IMG_SCHEME, "pic.png"), "{h}");
         assert!(h.contains(r#"alt="a pic""#), "{h}");
         // subfolder: full path AND bare basename resolve to the same file
         let full = rmd("![](sub/nested.png)");
         let bare = rmd("![](nested.png)");
-        assert_eq!(src(&full), format!("{IMG_SCHEME}://localhost/sub/nested.png"), "{full}");
+        assert_eq!(src(&full), custom_scheme_url(IMG_SCHEME, "sub/nested.png"), "{full}");
         assert_eq!(src(&bare), src(&full), "basename must resolve like the path");
         // R29.1: the wikilink embed form agrees with the markdown form, exactly
         assert_eq!(src(&rmd("![[pic.png]]")), src(&rmd("![](pic.png)")));
@@ -8379,7 +8410,7 @@ mod tests {
         assert!(!rmd("![[pic.png]]").contains('!'), "bang leaked as text");
         // R29.3: %20 resolves and comes back percent-ENCODED in the url
         let h = rmd("![](my%20pic.png)");
-        assert_eq!(src(&h), format!("{IMG_SCHEME}://localhost/my%20pic.png"), "{h}");
+        assert_eq!(src(&h), custom_scheme_url(IMG_SCHEME, "my%20pic.png"), "{h}");
         // R29.3 second half: a RAW space is not an image at all (pulldown), text
         let h = rmd("![](my pic.png)");
         assert!(!h.contains("<img") && h.contains("![](my pic.png)"), "{h}");
@@ -10859,8 +10890,8 @@ mod tests {
             .to_string();
         assert_eq!(
             csp,
-            "default-src 'self'; script-src 'self' opensidian-plugin: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
-             img-src 'self' data: opensidian-img:; font-src 'self'; \
+            "default-src 'self'; script-src 'self' opensidian-plugin: http://opensidian-plugin.localhost 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
+             img-src 'self' data: opensidian-img: http://opensidian-img.localhost; font-src 'self'; \
              connect-src ipc: http://ipc.localhost",
             "the CSP changed — if that was deliberate, say why in the commit message"
         );
@@ -10868,19 +10899,25 @@ mod tests {
         // and blob: appears nowhere (a trusted page gains media-src 'self' blob:, csp_by_trust)
         assert!(!csp.contains("media-src"), "media-src in the config CSP: {csp}");
         assert!(!csp.contains("blob:"), "blob: in the config (restricted) CSP: {csp}");
-        // R29: the image widening is ONE scheme token, and it is ours
+        // R29: image widening is our scheme token + the WebView2 wry host (http://<scheme>.localhost)
         let img = csp.split("; ").find(|d| d.starts_with("img-src ")).unwrap();
-        assert_eq!(img, format!("img-src 'self' data: {IMG_SCHEME}:"));
-        // R29.10: remote images stay closed pending an operator decision —
-        // no wildcard, no http(s) origin anywhere in the image directive
+        assert_eq!(img, format!("img-src 'self' data: {IMG_SCHEME}: http://{IMG_SCHEME}.localhost"));
+        // R29.10: remote images stay closed — no wildcard; the only http(s) token is our localhost host
         assert!(!img.contains('*'), "img-src wildcard re-enables remote beacons: {img}");
-        assert!(!img.contains("http"), "img-src names a remote origin: {img}");
-        // plugin-loader: script-src widens by ONE scheme token, ours, plus
+        for tok in img.split_whitespace() {
+            if tok.starts_with("http") {
+                assert_eq!(tok, format!("http://{IMG_SCHEME}.localhost"), "img-src names a remote origin: {img}");
+            }
+        }
+        // plugin-loader: script-src widens by our scheme + WebView2 host, plus
         // 'wasm-unsafe-eval' (WebAssembly compile/instantiate only; Templater's
         // template parser is wasm). JS eval, new Function and string timers stay
         // blocked: no 'unsafe-eval' token, no 'unsafe-inline', no blob:/data:.
         let script = csp.split("; ").find(|d| d.starts_with("script-src ")).unwrap();
-        assert_eq!(script, format!("script-src 'self' {}: 'wasm-unsafe-eval'", plugins::SCHEME));
+        assert_eq!(
+            script,
+            format!("script-src 'self' {}: http://{}.localhost 'wasm-unsafe-eval'", plugins::SCHEME, plugins::SCHEME)
+        );
         for d in csp.split("; ") {
             for tok in d.split_whitespace() {
                 assert_ne!(tok, "'unsafe-eval'", "JS eval re-enabled in {d}");
@@ -10911,16 +10948,16 @@ mod tests {
         let t = csp_by_trust(&base, true);
         assert_eq!(
             t,
-            "default-src 'self'; script-src 'self' opensidian-plugin: 'wasm-unsafe-eval' 'unsafe-eval' blob:; \
-             style-src 'self' 'unsafe-inline'; img-src 'self' data: opensidian-img:; font-src 'self'; \
-             connect-src ipc: http://ipc.localhost 'self'; worker-src 'self' blob:; media-src 'self' blob:"
+            "default-src 'self'; script-src 'self' opensidian-plugin: http://opensidian-plugin.localhost 'wasm-unsafe-eval' 'unsafe-eval' blob:; \
+             style-src 'self' 'unsafe-inline'; img-src 'self' data: opensidian-img: http://opensidian-img.localhost; font-src 'self'; \
+             connect-src ipc: http://ipc.localhost 'self' opensidian-plugin: http://opensidian-plugin.localhost; worker-src 'self' blob: opensidian-plugin: http://opensidian-plugin.localhost; media-src 'self' blob:"
         );
         // every directive other than script-src / worker-src / connect-src / media-src is byte-identical
         let other = |c: &str| c.split("; ").filter(|d| !d.starts_with("script-src") && !d.starts_with("worker-src") && !d.starts_with("connect-src") && !d.starts_with("media-src")).map(str::to_owned).collect::<Vec<_>>();
         assert_eq!(other(&t), other(&base));
         // an existing worker-src / media-src is extended, not duplicated; Tauri's own hash tokens survive
         let w = csp_by_trust("script-src 'self' 'sha256-abc'; worker-src 'self'; media-src 'self'", true);
-        assert_eq!(w, "script-src 'self' 'sha256-abc' 'unsafe-eval' blob:; worker-src 'self' blob:; media-src 'self' blob:");
+        assert_eq!(w, "script-src 'self' 'sha256-abc' 'unsafe-eval' blob:; worker-src 'self' blob: opensidian-plugin: http://opensidian-plugin.localhost; media-src 'self' blob:");
     }
 
     /// S4: picker commands refuse system trees and dot-components, keep the
@@ -11996,7 +12033,7 @@ mod tests {
         assert_eq!(ix.images(), ["abe.png", "zed.png"], "sorted, deduped");
         assert_eq!(ix.images(), Index::build(&root).images(), "== a fresh walk");
         // and the resolver the renderers use finds it
-        assert!(image_html(ix.images(), "zed.png", "").contains("opensidian-img://localhost/zed.png"));
+        assert!(image_html(ix.images(), "zed.png", "").contains(&custom_scheme_url(IMG_SCHEME, "zed.png")));
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&srcd);
     }

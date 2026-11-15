@@ -5,7 +5,9 @@
    require() shim. Loaded by index.html BEFORE main.js and before any plugin.
 
    How a plugin's code gets in (the page CSP has no 'unsafe-eval', no blob:):
-     1. load(id) appends <script src="opensidian-plugin://localhost/<id>/main.js?n=K">;
+     1. load(id) appends <script src="…/<id>/main.js?n=K">. On Linux/macOS that is
+        opensidian-plugin://localhost/…; on WebView2 (Windows/Android) wry only
+        routes http(s)://opensidian-plugin.localhost/… (custom-scheme workaround).
         Rust (src-tauri/src/plugins.rs) serves it only when the vault is trusted,
         the id is enabled and the file is confined — wrapped as
           ;(function(){ __osPluginDefine("<id>", function(module,exports,require){ ...main.js... }) })();
@@ -42,7 +44,18 @@
   const T = window.__TAURI__;
   const invoke = T && T.core && T.core.invoke ? T.core.invoke.bind(T.core) : null;
   const listen = T && T.event && T.event.listen ? T.event.listen.bind(T.event) : null;   // item 5: vault-changed for the plugin vault model
-  const SCHEME = "opensidian-plugin://localhost/";
+  /* WebView2/Android: wry registers custom protocols as http(s)://<scheme>.localhost/
+     (WebView2Feedback#73). Linux/macOS keep <scheme>://localhost/. Detect the page
+     origin so one UI tree works on every host. Exposed for images (editor / canvas). */
+  function customSchemeUrl(scheme, path) {
+    const p = String(path).replace(/^\/+/, "");
+    try {
+      if (/^https?:$/i.test(location.protocol) && /\.localhost$/i.test(location.hostname || ""))
+        return location.protocol + "//" + scheme + ".localhost/" + p;
+    } catch (_) { /* ignore */ }
+    return scheme + "://localhost/" + p;
+  }
+  window.__osCustomSchemeUrl = customSchemeUrl;
   const NODE = window.__osNodeModules;   // captured at boot (index.html loads node-leaves.js first)
 
   const status = new Map();   // id -> {state: "loading"|"loaded"|"failed"|"unloaded", error?}
@@ -167,17 +180,37 @@
     }
     return { type, bytes };
   }
+  /* Relative fetch("pandoc.wasm") resolves against the page origin, not the plugin
+     script URL. Stock's Electron require puts the wasm next to main.js and the
+     relative fetch still finds it; here we rewrite a bare relative name to the
+     opensidian-plugin URL of each loaded plugin until one answers 200. */
+  function pluginAssetFetch(nf, name, init) {
+    const ids = [];
+    for (const [id, st] of status) if (st && (st.state === "loaded" || st.state === "loading")) ids.push(id);
+    let i = 0;
+    const next = () => {
+      if (i >= ids.length) return nf.call(window, name, init);
+      const url = customSchemeUrl("opensidian-plugin", encodeURIComponent(ids[i++]) + "/" + name.split("/").map(encodeURIComponent).join("/"));
+      return nf.call(window, url, init).then(r => (r && r.ok) ? r : next(), next);
+    };
+    return next();
+  }
   function dataUrls() {
     const nf = window.fetch;
     if (typeof nf === "function") {
       const fetch = function fetch(input, init) {
         const u = typeof input === "string" ? input : input instanceof URL ? input.href : input && typeof input.url === "string" ? input.url : String(input);
-        if (!/^\s*data:/i.test(u)) return nf.apply(window, arguments);
-        const meth = (init && init.method) || (input && typeof input === "object" && input.method) || "GET";
-        if (!/^get$/i.test(String(meth))) return Promise.reject(new TypeError("Failed to fetch: a data: URL answers GET only"));
-        let d;
-        try { d = dataUrlBytes(u.trim()); } catch (e) { return Promise.reject(new TypeError("Failed to fetch: " + (e && e.message || "malformed data: URL"))); }
-        return Promise.resolve(new Response(d.bytes, { status: 200, statusText: "OK", headers: { "Content-Type": d.type } }));
+        if (/^\s*data:/i.test(u)) {
+          const meth = (init && init.method) || (input && typeof input === "object" && input.method) || "GET";
+          if (!/^get$/i.test(String(meth))) return Promise.reject(new TypeError("Failed to fetch: a data: URL answers GET only"));
+          let d;
+          try { d = dataUrlBytes(u.trim()); } catch (e) { return Promise.reject(new TypeError("Failed to fetch: " + (e && e.message || "malformed data: URL"))); }
+          return Promise.resolve(new Response(d.bytes, { status: 200, statusText: "OK", headers: { "Content-Type": d.type } }));
+        }
+        // bare relative path (no scheme, no leading /): try loaded plugins' asset scheme
+        if (typeof u === "string" && u && !/^[a-z][a-z0-9+.-]*:/i.test(u) && !u.startsWith("/") && !u.startsWith("?") && !u.startsWith("#"))
+          return pluginAssetFetch(nf, u.replace(/^\.\//, ""), init);
+        return nf.apply(window, arguments);
       };
       try { window.fetch = fetch; } catch (e) { console.error("[plugin] data: fetch:", e); }
     }
@@ -260,7 +293,7 @@
       // (e.g. require("@codemirror/..")) with "did not define" (plgprobe caught it)
       s.onerror = () => { if (!done) fin(fail(id, new Error("main.js refused or missing (restricted mode, not enabled, or not installed)"))); };
       s.onload = () => setTimeout(() => { if (!done) fin(fail(id, new Error("main.js did not define a plugin (syntax error?)"))); }, 0);
-      s.src = SCHEME + encodeURIComponent(id) + "/main.js?n=" + (++seq);
+      s.src = customSchemeUrl("opensidian-plugin", encodeURIComponent(id) + "/main.js?n=" + (++seq));
       document.head.appendChild(s);
     });
   }
