@@ -2146,6 +2146,20 @@ Ed.scrollToLine = function (g, line) {    // put the fractional source line at t
     lp.scrollTop = Math.min(max, Math.max(0, lp.scrollTop + dy));
   };
   go();
+  // #119 (longpos 50% src->lp off 13): the same target as CM6's OWN scroll effect, y=start
+  // with the fraction as a negative margin. The pixel write above lands by the height map;
+  // CM6's measure loop then keeps the view still against the drift of the line it ANCHORED
+  // at the last transaction (ViewState.update: scrollAnchorAt(scrollOffset), top in the
+  // old map) — after a block widget above the destination is measured (the Properties
+  // block: estimated 30px/line, drawn taller) that correction is for a stale line, and it
+  // lands after our re-land. A scroll effect is applied INSIDE that loop, after the
+  // measure, and re-anchors on the destination line (o = -1 after scrollIntoView), so
+  // every later height change above it is compensated FOR THIS LINE. It also supersedes
+  // any pending caret scrollTarget. revealAt/revealTop use the effect for the same reason.
+  try {
+    const ln = d.line(i + 1), h = cm.lineBlockAt(ln.from).height;
+    cm.dispatch({ effects: CMv.EditorView.scrollIntoView(ln.from, { y: "start", yMargin: -Math.round(f * h) }) });
+  } catch (e) { console.error(e); }
   // the height map holds ESTIMATES for lines never drawn: once CM6 has measured
   // the lines this scroll brought in, land on the real geometry
   cm.requestMeasure({ key: "osScrollLine", read: () => null, write: () => { if (Ed.cm(g) === cm) go(); } });
