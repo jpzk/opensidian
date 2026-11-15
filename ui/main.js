@@ -10612,7 +10612,7 @@ function gfnTok() {
   // [gfe:<kind>@<group id>=<links drawn>|...] beside it
   return out.length ? " [gfn:" + out.join("|") + "]" + (eo.length ? " [gfe:" + eo.join("|") + "]" : "") : "";
 }
-/* #130 census: [gfi:<kind>@<group id>=<o|c>,<icon class>,<fnv1a32 of the glyph>,<x>,<y>,<w>,<h>,<svg w>,<svg h>,<stroke>,<r.g.b>,<card bg r.g.b>|...]
+/* #130 census: [gfi:<kind>@<group id>=<o|c>,<icon class>,<fnv1a32 of the glyph>,<x>,<y>,<w>,<h>,<svg w>,<svg h>,<stroke>,<r.g.b>,<card bg r.g.b>,<1 if :hover else 0>[f if :focus]|...]
    the Open-graph-settings button (.graph-controls .mod-open) of EVERY graph leaf, read off the live DOM: o/c = card open/closed,
    x..h = the button's painted box (0 while the open card hides it), the glyph hash runs over its svg children in order
    (tag + d, or tag + cx/cy/r...) so the harness can compare it with stock 1.13.7's lucide-settings without trusting our class. */
@@ -10628,7 +10628,7 @@ function gfiTok() {
     const r = b.getBoundingClientRect(), s = v.getBoundingClientRect(), cs = getComputedStyle(v);
     const cls = ((v.getAttribute("class") || "").split(/\s+/).find(c => c.startsWith("lucide-")) || "-");
     out.push(t.kind + "@" + h.id + "=" + (p.classList.contains("is-close") ? "c" : "o") + "," + cls + "," + fnv(g) + "," +
-      [r.x, r.y, r.width, r.height, s.width, s.height].map(Math.round).join(",") + "," + cs.strokeWidth + "," + rgb(cs.color) + "," + rgb(getComputedStyle(p).backgroundColor));
+      [r.x, r.y, r.width, r.height, s.width, s.height].map(Math.round).join(",") + "," + cs.strokeWidth + "," + rgb(cs.color) + "," + rgb(getComputedStyle(p).backgroundColor) + "," + (b.matches(":hover") ? 1 : 0) + (b.matches(":focus") ? "f" : ""));
   }
   return out.length ? " [gfi:" + out.join("|") + "]" : "";
 }
