@@ -387,7 +387,17 @@
     const field = CMs.StateField.define({
       create: st => { try { return build(st); } catch (e) { console.error(e); return Decoration.none; } },
       update(d, tr) {
-        if (tr.docChanged || tr.effects.some(e => e.is(bust) || e.is(Props.fx)))
+        const fx = tr.effects.some(e => e.is(bust) || e.is(Props.fx));
+        if (!fx && tr.docChanged) {
+          // a body edit cannot change the block: map it instead of re-reading the whole note per keystroke.
+          // Re-read when the change touches the block's range, or (no block yet) the first line / a doc whose
+          // first line opens a block (a typed closing "---" further down makes one).
+          let end = -1; d.between(0, 0, (f, t) => { end = t; });
+          const st = tr.state, first = st.doc.line(1).text.trim();
+          const body = end >= 0 ? !tr.changes.touchesRange(0, end) : !tr.changes.touchesRange(0, tr.startState.doc.line(1).to) && first !== "---";
+          if (body) return d.map(tr.changes);
+        }
+        if (tr.docChanged || fx)
           try { return build(tr.state); } catch (e) { console.error(e); return Decoration.none; }
         return d;
       },
@@ -506,8 +516,8 @@
     if (!vs.length) return "text";
     if (vs.every(x => /^-?\d+(\.\d+)?$/.test(x))) return "number";
     if (vs.every(x => /^(true|false)$/i.test(x))) return "checkbox";
-    if (vs.every(x => /^\d{4}-\d{2}-\d{2}$/.test(x))) return "date";
-    if (vs.every(x => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(x))) return "datetime";
+    if (vs.every(x => M.isDate(x))) return "date";
+    if (vs.every(x => M.isDT(x))) return "datetime";
     return "text";
   };
   const qKey = k => (/^[\w-]+$/.test(k) ? k : JSON.stringify(k));

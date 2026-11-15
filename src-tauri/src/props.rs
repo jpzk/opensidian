@@ -109,41 +109,107 @@ fn unquote(s: &str) -> String {
     s.to_string()
 }
 
+/// `s` without a YAML comment: a `#` at the start or after whitespace, outside quotes
+fn strip_comment(s: &str) -> &str {
+    let (mut q, mut prev_ws) = (None::<char>, true);
+    for (i, ch) in s.char_indices() {
+        match q {
+            Some(c) if ch == c => q = None,
+            Some(_) => {}
+            None if ch == '"' || ch == '\'' => q = Some(ch),
+            None if ch == '#' && prev_ws => return s[..i].trim_end(),
+            None => {}
+        }
+        prev_ws = ch == ' ' || ch == '\t';
+    }
+    s
+}
+
+/// a flow list's items: commas inside quotes do not split
+fn split_flow(inner: &str) -> Vec<&str> {
+    let (mut out, mut q, mut from) = (Vec::new(), None::<char>, 0);
+    for (i, ch) in inner.char_indices() {
+        match q {
+            Some(c) if ch == c => q = None,
+            Some(_) => {}
+            None if ch == '"' || ch == '\'' => q = Some(ch),
+            None if ch == ',' => {
+                out.push(&inner[from..i]);
+                from = i + 1;
+            }
+            None => {}
+        }
+    }
+    out.push(&inner[from..]);
+    out
+}
+
+/// a top-level `key: rest` line -> (key, rest); a quoted key may hold `:`
+fn split_key(l: &str) -> Option<(String, &str)> {
+    let c = match l.chars().next()? {
+        q @ ('"' | '\'') => {
+            let close = l[1..].find(q)? + 1;
+            close + 1 + l[close + 1..].find(':')?
+        }
+        _ => l.find(':')?,
+    };
+    let key = unquote(&l[..c]);
+    (!key.is_empty()).then(|| (key, l[c + 1..].trim()))
+}
+
 /// one note's (key, values) pairs: top-level `key:` lines, inline scalars, flow lists,
-/// block lists. Nested maps / block scalars contribute the key only.
+/// block lists. Nested maps / block scalars contribute the key only (an item under a nested
+/// map is not a value of the top-level key); comments are not values.
 pub fn note_props(content: &str) -> Vec<(String, Vec<String>)> {
     let Some(lines) = fm_lines(content) else { return Vec::new() };
     let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    // the last key's block list: None = the key takes no items; Some(None) = items may start;
+    // Some(Some(n)) = items sit at indent n
+    let mut list: Option<Option<usize>> = None;
     for l in lines {
         if l.trim().is_empty() || l.trim_start().starts_with('#') {
             continue;
         }
         if l.starts_with(' ') || l.starts_with('\t') || l.starts_with('-') {
-            if let (Some(last), Some(item)) = (out.last_mut(), l.trim_start().strip_prefix("- ")) {
-                let it = unquote(item);
-                if !it.is_empty() && !it.starts_with(['[', '{', '|', '>', '&', '*']) {
-                    last.1.push(it);
+            let ind = l.len() - l.trim_start().len();
+            let item = l.trim_start().strip_prefix("- ").or_else(|| (l.trim() == "-").then_some(""));
+            match (list, item) {
+                (Some(None), Some(it)) | (Some(Some(_)), Some(it)) if list.flatten().is_none_or(|n| n == ind) => {
+                    list = Some(Some(ind));
+                    let raw = strip_comment(it);
+                    // `- k: v` / `- k:` is a map item, not a scalar value
+                    let map_item = !raw.starts_with(['"', '\'']) && (raw.ends_with(':') || raw.contains(": "));
+                    let it = if map_item { String::new() } else { unquote(raw) };
+                    if let Some(last) = out.last_mut() {
+                        if !it.is_empty() && !it.starts_with(['[', '{', '|', '>', '&', '*']) {
+                            last.1.push(it);
+                        }
+                    }
                 }
+                // deeper lines under an item (an item's own map / list) belong to that item, not the key
+                (Some(Some(n)), _) if ind > n => {}
+                // a nested map (or anything else): the key takes no more items
+                _ => list = None,
             }
             continue;
         }
-        let Some(c) = l.find(':') else { continue };
-        let key = unquote(&l[..c]);
-        if key.is_empty() {
+        let Some((key, rest)) = split_key(l) else {
+            list = None;
             continue;
-        }
-        let rest = l[c + 1..].trim();
+        };
+        let rest = strip_comment(rest);
         let mut vals = Vec::new();
         if let Some(inner) = rest.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
-            for x in inner.split(',') {
+            for x in split_flow(inner) {
                 let x = unquote(x);
                 if !x.is_empty() {
                     vals.push(x);
                 }
             }
-        } else if !rest.is_empty() && !rest.starts_with(['|', '>', '&', '*', '{', '#']) {
+        } else if !rest.is_empty() && !rest.starts_with(['|', '>', '&', '*', '{']) {
             vals.push(unquote(rest));
         }
+        list = rest.is_empty().then_some(None);
         out.push((key, vals));
     }
     out
@@ -271,6 +337,22 @@ mod tests {
         assert_eq!(get("list").values, vec!["p", "q"]);
         assert_eq!(get("nested").values, Vec::<String>::new(), "a nested map's inner lines are not values");
         assert_eq!(s.len(), 5);
+    }
+
+    #[test]
+    fn census_quotes_comments_and_nested_lists() {
+        // codeant #125: nested-map lists, quoted keys with ':', quoted commas, inline comments
+        let a = "---\nmeta:\n  sub:\n    - deep\n  - stray\n\"my:key\": v1\nflow: [\"a, b\", c] # note\nplain: x # why\nhash: a#b\ntags:\n  - t1 # c\n  - k: v\n  - t2\n---\n";
+        let p = note_props(a);
+        let get = |k: &str| p.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()).unwrap();
+        assert_eq!(get("meta"), Vec::<String>::new(), "items under a nested map are not the key's values");
+        assert_eq!(get("my:key"), vec!["v1"]);
+        assert_eq!(get("flow"), vec!["a, b", "c"]);
+        assert_eq!(get("plain"), vec!["x"]);
+        assert_eq!(get("hash"), vec!["a#b"], "a # inside a word is not a comment");
+        assert_eq!(get("tags"), vec!["t1", "t2"], "a comment and a map item are not values");
+        assert_eq!(p.len(), 6);
+        assert_eq!(notes_with([("n", a)].into_iter(), "MY:KEY"), vec!["n"]);
     }
 
     #[test]

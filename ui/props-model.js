@@ -32,6 +32,15 @@
   const QKEY_RE = /^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*')[ \t]*:(?:[ \t]+(.*?))?[ \t]*$/;
   const ITEM_RE = /^( *)-(?:[ \t]+(.*?))?[ \t]*$/;
   const DATE_RE = /^\d{4}-\d{2}-\d{2}$/, DT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/;
+  // the shape AND the calendar: 2024-99-99 / 2023-02-29 / 25:00 are not dates (a typed date bound to them
+  // would render blank and a blur would clear the stored value) -> such a value is a read-only type mismatch
+  function calOk(s) {
+    const y = +s.slice(0, 4), m = +s.slice(5, 7), d = +s.slice(8, 10);
+    if (m < 1 || m > 12 || d < 1 || d > new Date(Date.UTC(y, m, 0)).getUTCDate()) return false;
+    if (s.length > 10 && (+s.slice(11, 13) > 23 || +s.slice(14, 16) > 59 || (s.length > 16 && +s.slice(17, 19) > 59))) return false;
+    return true;
+  }
+  const isDate = s => DATE_RE.test(s) && calOk(s), isDT = s => DT_RE.test(s) && calOk(s);
 
   // the lines of text with their offsets: {s, e (end of text, eol excluded), n (next line start), t}
   function lines(text) {
@@ -187,8 +196,8 @@
     if (typeof v === "number") return "number";
     if (typeof v === "boolean") return "checkbox";
     if (Array.isArray(v)) return "multitext";
-    if (typeof v === "string" && DATE_RE.test(v)) return "date";
-    if (typeof v === "string" && DT_RE.test(v)) return "datetime";
+    if (typeof v === "string" && isDate(v)) return "date";
+    if (typeof v === "string" && isDT(v)) return "datetime";
     return "text";
   }
   function fits(type, v) {
@@ -197,8 +206,8 @@
     if (type === "text") return typeof v === "string";
     if (type === "number") return typeof v === "number";
     if (type === "checkbox") return typeof v === "boolean";
-    if (type === "date") return typeof v === "string" && DATE_RE.test(v);
-    if (type === "datetime") return typeof v === "string" && DT_RE.test(v);
+    if (type === "date") return typeof v === "string" && isDate(v);
+    if (type === "datetime") return typeof v === "string" && isDT(v);
     return false;
   }
   /* rows(text, types) -> null | {invalid} | {rows: [{key, type, value, ok, why, raw}]}
@@ -309,11 +318,11 @@
     if (s === null || s === undefined || s === "") return null;
     if (type === "number") { const t = String(s).trim(); return /^-?(0|[1-9]\d*)(\.\d+)?$/.test(t) ? Number(t) : undefined; }
     if (type === "checkbox") return s === true || s === "true" ? true : s === false || s === "false" ? false : undefined;
-    if (type === "date") return DATE_RE.test(String(s)) ? String(s) : undefined;
-    if (type === "datetime") { const t = String(s); return DT_RE.test(t) ? t : undefined; }
+    if (type === "date") return isDate(String(s)) ? String(s) : undefined;
+    if (type === "datetime") { const t = String(s); return isDT(t) ? t : undefined; }
     return String(s);
   }
 
-  root.PropsModel = { KNOWN, LISTY, RESERVED, parse, rows, typeOf, infer, fits, emitKey, emitStr, emitEntry,
+  root.PropsModel = { KNOWN, LISTY, RESERVED, parse, rows, typeOf, infer, fits, isDate, isDT, emitKey, emitStr, emitEntry,
                       setValue, rename, remove, add, apply, coerce, scalar };
 })(typeof window !== "undefined" ? window : this);
