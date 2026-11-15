@@ -1093,10 +1093,25 @@ fn read_note(v: State<Vault>, name: String, otel: Option<perf::Ctx>) -> String {
 
 // F1 (dataloss-audit): the Result is the product. A save that did not land
 // MUST reach the UI — a swallowed ENOSPC/EROFS costs every edit of a session.
+/* #128: OFF the main thread. A sync command runs on the GTK main thread — the
+   thread that also dispatches input to the webview — and a save is O(note):
+   fsync + an Index::upsert that reparses the whole note (5000 lines: p95 30 ms).
+   A checkbox click landing while an autosave was in flight queued behind it
+   (task_toggle queue_ms p95 32 ms, max 47). Now the body runs on the blocking
+   pool. Ordering is unchanged: the UI serialises a group's saves (g.saveQ) and
+   awaits each result, the quit flush awaits every write in flight, the vault
+   root is a OnceLock (a switch is refused) and the index mutex is taken before
+   the bytes go down, exactly as before. */
 #[tauri::command]
-fn write_note(v: State<Vault>, name: String, content: String, otel: Option<perf::Ctx>) -> Result<(), String> {
-    let bytes = content.len();
-    span_timed!(otel => "write_note", write_note_inner(&v, &name, &content), serde_json::json!({"bytes": bytes}))
+async fn write_note(app: tauri::AppHandle, name: String, content: String, otel: Option<perf::Ctx>) -> Result<(), String> {
+    use tauri::Manager;
+    tauri::async_runtime::spawn_blocking(move || {
+        let v = app.state::<Vault>();
+        let bytes = content.len();
+        span_timed!(otel => "write_note", write_note_inner(&v, &name, &content), serde_json::json!({"bytes": bytes}))
+    })
+    .await
+    .map_err(|e| format!("write_note: {e}"))?
 }
 
 fn write_note_inner(v: &Vault, name: &str, content: &str) -> Result<(), String> {
