@@ -10603,7 +10603,7 @@ const CMDS = [
     () => !lgNoGraph(fg())],   // lg-canvas: a canvas (or a local graph) has no note to centre on — the row is not offered
   ["editor:insert-link",       "Insert Markdown link",                ["ctrl+k"],               () => edEdit((v, a, b) => { const s = v.slice(a, b) || "link"; return [v.slice(0, a) + "[" + s + "]()" + v.slice(b), a + s.length + 3, a + s.length + 3]; })],
   ["editor:insert-wikilink",   "Add internal link",                   [],                       () => edEdit((v, a, b) => { const s = v.slice(a, b); return [v.slice(0, a) + "[[" + s + "]]" + v.slice(b), a + 2, a + 2 + s.length]; })],
-  ["editor:insert-tag",        "Add tag",                             [],                       () => edEdit((v, a, b) => [v.slice(0, a) + "#" + v.slice(b), a + 1, a + 1])],
+  ["editor:insert-tag",        "Add tag",                             [],                       () => edEdit((v, a, b) => [v.slice(0, a) + "#" + v.slice(a), a + 1, b + 1])],
   ["app:go-back",              "Navigate back",                       ["ctrl+alt+arrowleft", "alt+arrowleft"],   () => histGo(-1)],
   ["app:go-forward",           "Navigate forward",                    ["ctrl+alt+arrowright", "alt+arrowright"], () => histGo(1)],
   ["workspace:new-tab",        "New tab",                             ["ctrl+t"],               cmdNewTab],
