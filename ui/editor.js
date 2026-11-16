@@ -1980,12 +1980,18 @@ Object.assign(Ed, {
   /* #143: Ctrl/Cmd+Shift+V pastes PLAIN text, as stock (Chromium's paste-as-plain-text). Not
      left to the webview: WebKitGTK's own binding is not a contract, so the key reads the
      clipboard's text through the same Rust path as the menu's "Paste as plain text"
-     (ui/edmenu.js clipPaste -> clip_text) and inserts it as one "input.paste" step, caret after. */
+     (ui/edmenu.js clipPaste -> clip_text) and inserts it as one "input.paste" step, caret after.
+     clip_text is async (PR #146 review): the text goes where the selection was AT THE KEYPRESS
+     while the document is unchanged (a caret moved in between does not redirect it); if the
+     document was edited meanwhile the old ranges no longer name the same text, so it follows
+     the current selection, as a keystroke would. */
   plainPaste(view) {
     if (!view || view.state.readOnly || typeof inv !== "function") return false;
+    const doc0 = view.state.doc, sel0 = view.state.selection;
     Promise.resolve(inv("clip_text")).then(t => {
       if (!t || view.state.readOnly) return;
-      view.dispatch(view.state.replaceSelection(String(t)), { scrollIntoView: true, userEvent: "input.paste" });
+      const st = view.state.doc === doc0 ? view.state.update({ selection: sel0 }).state : view.state;
+      view.dispatch(st.replaceSelection(String(t)), { scrollIntoView: true, userEvent: "input.paste" });
     }, err => console.warn("clip_text:", err));
     return true;
   },
