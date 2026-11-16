@@ -4935,7 +4935,7 @@ function ssRelandOnImages(g, tab, line) {
     if (g._ssReland !== seq || performance.now() - t0 > 5000) return;
     if (g.active < 0 || g.tabs[g.active] !== tab || tab.mode !== "reading") return;
     if (Math.abs(g.preview.scrollTop - at) >= 1) { g._ssReland = 0; return; }   // the user scrolled
-    ssRestore(g, line); at = g.preview.scrollTop;
+    ssRestore(g, line); at = g.preview._osAt = g.preview.scrollTop;
   };
   for (const i of ims) { i.addEventListener("load", again, { once: true }); i.addEventListener("error", again, { once: true }); }
   // scroll-settle (I6): not only an <img> grows late — an embed, a callout, a font or a
@@ -5182,7 +5182,17 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
   // the caret went to line 0). Per tab: two tabs / split panes never share it.
   if (keep) tab.caret = { n: curOf(g), lc: keep, an: ka ? [ka.l, ka.c] : null };   // keyed to the NOTE: an in-place navigate must not inherit it
   const mswA0 = performance.now();
-  const anchor = ssAnchor(g);                    // R35: read the top SOURCE LINE from the OLD view, before anything flips
+  let anchor = ssAnchor(g);                      // R35: read the top SOURCE LINE from the OLD view, before anything flips
+  // scroll-settle: lp <-> source carries the first WHOLE line on top (Ed.topRow), not a
+  // fraction of a row whose height the other mode changes
+  if (isLp(tab.mode) && isLp(mode) && Ed.cm(g)) { const r = Ed.topRow(g); if (r != null) anchor = r; }
+  // scroll-settle: edit -> reading -> edit with the reading view untouched comes back to
+  // the edit view's OWN line (the reading hop lands on the block start: frontmatter,
+  // callout); any scroll in reading (scrollTop moved off the last restore) drops it
+  const rt = tab._ssRt; tab._ssRt = null;
+  if (tab.mode === "reading" && isLp(mode) && rt && rt.n === curOf(g) && rt.pv === g.preview
+      && g.preview._osAt != null && Math.abs(g.preview.scrollTop - g.preview._osAt) < 1) anchor = rt.line;
+  if (isLp(tab.mode) && mode === "reading" && anchor != null) tab._ssRt = { n: curOf(g), line: anchor, pv: g.preview };
   let mswSsMs = performance.now() - mswA0;
   await flushSave(g);
   mswpMark("flush");
@@ -5238,7 +5248,7 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
   // outranks the caret they cannot see (the brief's "caret off-screen" case).
   const mswR0 = performance.now();
   ssRestore(g, anchor);
-  if (tab.mode === "reading") ssRelandOnImages(g, tab, anchor);
+  if (tab.mode === "reading") { g.preview._osAt = g.preview.scrollTop; ssRelandOnImages(g, tab, anchor); }   // scroll-settle: where the restore left it (round trip)
   mswSsMs += performance.now() - mswR0;
   mswEnd(mswT0, mswSsMs);
   mswpMark("ss");

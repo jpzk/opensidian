@@ -2299,6 +2299,15 @@ Ed.topLine = function (g, slack) {
    the scroller, a newer landing or a CM6 scroll effect supersedes it, the view is
    hidden or replaced, or LAND_HOLD ms have passed. */
 Ed.LAND_HOLD = 5000;
+/* the first source line whose row STARTS at or below the scroller top (a row clipped by
+   <= 2 px counts as visible), integer. lp <-> source restyles every row, so "70 % through
+   the top row" is a different picture in the other mode (a clipped row there may show
+   its text, or hide the next one): the line the user can READ at the top is what goes on
+   top on the other side, whole. Idempotent: that line then starts at the edge. */
+Ed.topRow = function (g) {
+  const L = Ed.topLine(g, -2);
+  return L == null ? null : Math.ceil(L - 0.02);
+};
 Ed.pinAt = function (g, c) {              // the pin of what is at the top of g.lp now (edit view shown), or null
   if (!g || !g.lp || !(g.lp.clientHeight > 0)) return null;
   const l = Ed.topLine(g, 1);
