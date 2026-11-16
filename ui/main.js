@@ -157,6 +157,7 @@ function modeBits(t) {
   return t;
 }
 const mkTab = name => modeBits({ name, read: false, src: false, hist: [{ n: name, s: 0 }], hpos: 0 });  // R8.8: LP default
+const pushTab = (g, t) => { g.tabs.push(t); g.active = g.tabs.length - 1; };   // append t to group g as its active tab (the caller loads it)
 // #125/#137: an edit view's history position is a CM6 LINE anchor (Ed.snapOf), not scroller px
 const scrollOf = g => { const t = g.active >= 0 ? g.tabs[g.active] : null; return !t || t.kind ? 0 : t.mode === "reading" ? g.preview.scrollTop : isLp(t.mode) ? (Ed.cm(g) ? Ed.snapOf(Ed.cm(g)) || 0 : g.lp.scrollTop) : g.editor.scrollTop; };
 function histPush(g, tab, name) {     // record where the CURRENT entry was scrolled to, then push the new note
@@ -1094,8 +1095,7 @@ async function scOpen(g, note, ev) {
   const newTab = !!(ev && (ev.ctrlKey || ev.metaKey || ev.button === 1)) && !(ev && ev.altKey);
   if (newTab) {
     await flushSave(g);
-    g.tabs.push(mkTab(note));
-    g.active = g.tabs.length - 1;
+    pushTab(g, mkTab(note));
     await loadActive(g);
     return;
   }
@@ -1984,8 +1984,7 @@ async function bmOpenGraph(r, ev) {
                 inc: lc.localBacklinks !== false, out: lc.localForelinks !== false, inter: lc.localInterlinks === true,
                 opts: Object.assign({}, o, { localJumps: d }), mode: "source", hist: [], hpos: 0,
                 bmRef: bmGraphRef(r) };   // issue #118: its edits write back to this bookmark
-    g.tabs.push(t);                        // a bookmark-opened local graph is pinned to its centre: not linked to a pane
-    g.active = g.tabs.length - 1;
+    pushTab(g, t);                        // a bookmark-opened local graph is pinned to its centre: not linked to a pane
     await loadActive(g);
     return;
   }
@@ -5578,8 +5577,7 @@ function tabDragStart(e, g, i) {
     if (g.active >= g.tabs.length) g.active = g.tabs.length - 1;
     else if (i < g.active) g.active--;
     if (t.kind === "strip") {
-      t.g.tabs.push(tab);
-      t.g.active = t.g.tabs.length - 1;
+      pushTab(t.g, tab);
       if (!g.tabs.length && groups().length > 1) await collapseGroup(g, "tabdrag-strip");
       else { await loadActive(g); renderTabs(g); }
       focusGroup(t.g);
@@ -6363,7 +6361,7 @@ async function openInTab(name, via = "tab") {   // explorer click -> FOCUSED gro
     await flushSave(g);
     const i = g.tabs.findIndex(x => x.name === name);
     if (i >= 0) g.active = i;
-    else { g.tabs.push(mkTab(name)); g.active = g.tabs.length - 1; }
+    else pushTab(g, mkTab(name));
     await loadActive(g);
     Object.assign(sp.attrs, { mode: g.tabs[g.active].mode, bytes: g.editor.value.length, lines: g.lpLines || 0 });
   }));
@@ -7439,8 +7437,7 @@ async function wikiClick(e, a) {
   if (a.classList.contains("wiki-unresolved")) await createNote(n);
   if (e.ctrlKey) {                            // R6.4: new tab, same group
     await flushSave(g);
-    g.tabs.push(mkTab(n));
-    g.active = g.tabs.length - 1;
+    pushTab(g, mkTab(n));
     await loadActive(g);
     if (an) await navAnchor(g, an);
   } else navigate(g, n, an);
@@ -7579,8 +7576,7 @@ async function pvWikiClick(a, e) {
     await createNote(n);
   if (e.ctrlKey) {                               // R6.4: open in NEW TAB, same group
     await flushSave(g);
-    g.tabs.push(mkTab(n));
-    g.active = g.tabs.length - 1;
+    pushTab(g, mkTab(n));
     await loadActive(g);
     if (an) await navAnchor(g, an);
   } else navigate(g, n, an);
@@ -7789,8 +7785,7 @@ async function cmdNewNote() {                // new note in a NEW tab of the foc
     r = await createNote(name);
   }
   if (r !== "ok") return;                    // no tab for a note that is not on disk
-  g.tabs.push(mkTab(name));
-  g.active = g.tabs.length - 1;
+  pushTab(g, mkTab(name));
   await loadActive(g);
 }
 async function cmdSave() {                   // force save, no debounce
@@ -7818,8 +7813,7 @@ async function cmdNewTab() {       // R5.3 ctrl+t — v1: new tab on the current
   const n = curOf(g);
   if (!n) return;
   await flushSave(g);
-  g.tabs.push(mkTab(n));
-  g.active = g.tabs.length - 1;
+  pushTab(g, mkTab(n));
   await loadActive(g);
 }
 async function cmdCycleTab(d) {    // R5.3 ctrl+(shift+)tab — cycle in focused group
@@ -7853,7 +7847,7 @@ function qsItems() {                 // switcher source: MRU first, rest a-z, th
     run: async ev => {               // Enter = focused group; Ctrl+Enter = new tab
       if (ev && ev.ctrlKey) {
         const g = fg();
-        g.tabs.push(mkTab(n)); g.active = g.tabs.length - 1;
+        pushTab(g, mkTab(n));
         await loadActive(g);
       } else await openInTab(n);
     },
@@ -9373,8 +9367,7 @@ function folderMenuFull(item, sep, f) {
     for (let i = 1; r === "exists" && i < 100; i++) { name = (dir ? dir + "/" : "") + "Untitled " + i; r = await createNote(name); }
     if (r !== "ok") return;
     await refreshTree();
-    g.tabs.push(mkTab(name));
-    g.active = g.tabs.length - 1;
+    pushTab(g, mkTab(name));
     await loadActive(g);
   });
   item("New folder", () => { $("fnew").hidden = false; $("fname").value = dir ? dir + "/" : ""; $("fname").focus(); });
@@ -10592,7 +10585,7 @@ const CMDS = [
   ["app:go-forward",           "Navigate forward",                    ["ctrl+alt+arrowright", "alt+arrowright"], () => histGo(1)],
   ["workspace:new-tab",        "New tab",                             ["ctrl+t"],               cmdNewTab],
   ["app:open-help",            "Open help",                           ["f1"],                   () => window.open("https://github.com/jpzk/opensidian#readme")],
-  ["editor:open-link-in-new-leaf", "Open link under cursor in new tab", ["ctrl+enter"],         async () => { const n = linkAtCaret(); if (!n) return; const g = fg(); await flushSave(g); g.tabs.push(mkTab(n)); g.active = g.tabs.length - 1; await loadActive(g); }],
+  ["editor:open-link-in-new-leaf", "Open link under cursor in new tab", ["ctrl+enter"],         async () => { const n = linkAtCaret(); if (!n) return; const g = fg(); await flushSave(g); pushTab(g, mkTab(n)); await loadActive(g); }],
   ["editor:open-link-in-new-split", "Open link under cursor to the right", ["ctrl+alt+enter"], async () => { const n = linkAtCaret(); if (n) await splitWith(fg(), "row", mkTab(n)); }],
   ["switcher:open",            "Open quick switcher",                 ["ctrl+o"],               () => cmdQuickSwitch()],
   ["workspace:edit-file-title","Rename file",                         ["f2"],                   cmdRename],
@@ -11469,9 +11462,7 @@ async function ggOpen(bmRef) {      // R9.7: GLOBAL graph as a main tab; bmRef =
   const i = g.tabs.findIndex(t => t.kind === "gg");
   if (i >= 0) g.active = i;        // one graph-view tab per group, refocus it
   else {
-    g.tabs.push({ kind: "gg", name: "Graph view", mode: "source",
-                  hist: [], hpos: -1 });
-    g.active = g.tabs.length - 1;
+    pushTab(g, { kind: "gg", name: "Graph view", mode: "source", hist: [], hpos: -1 });
   }
   if (bmRef) g.tabs[g.active].bmRef = bmRef; else delete g.tabs[g.active].bmRef;   // issue #118: the last open decides
   await loadActive(g);
