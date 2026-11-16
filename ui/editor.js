@@ -702,7 +702,7 @@ const Ed = {
       Ed.audioBlob(rel).then(u => {
         if (!s.isConnected) { URL.revokeObjectURL(u); s.dataset.st = ""; return; }
         const A = Ed._aud;
-        A.live.set(u, s); A.lastGo = s;
+        A.live.set(u, s);
         if (!A.timer) A.timer = setInterval(Ed.audioSweep, 2000);
         if (a.preload !== "metadata") a.preload = "metadata";   // restricted: only now, after the user pressed play
         a.src = u; s.dataset.st = "ready"; delete s.dataset.c2p;
