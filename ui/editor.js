@@ -265,58 +265,42 @@ const Ed = {
         const target = bar >= 0 ? raw.slice(0, bar) : raw;
         const label = bar >= 0 ? raw.slice(bar + 1) : raw;
         const hash = target.indexOf("#");
+        // every embed branch below: the folded "![[" raw "]]" marks, then the embed element mkEl() builds
+        // (called after the marks, as each branch did inline), ONE "img" token over all four
+        const embed = mkEl => {
+          const emk = [Ed.mk("![["), Ed.mk(raw, "img"), Ed.mk("]]")];   // the whole inner text, folded
+          for (const m of emk) box.appendChild(m);
+          const el = mkEl();
+          box.appendChild(el);
+          Ed.tok([...emk, el], emk, "img");
+          return el;
+        };
         // R29.1 `![[pic.png]]`: an IMAGE embed, not a link. Mirrors linkify()'s
         // guard exactly — bang present, NO anchor, and the target must have an
         // image extension, so a NOTE embed `![[Second Note]]` (requirements.md
         // :410) and `![[pic.png#x]]` both fall through to the link branch below.
         if (wl[1] === "!" && hash < 0 && Ed.isImg(target)) {
-          const em = [], emk = [];
-          const eadd = (el, isMk) => { em.push(el); if (isMk) emk.push(el); box.appendChild(el); };
-          eadd(Ed.mk("![["), true);
-          eadd(Ed.mk(raw, "img"), true);                          // the whole inner text, folded
-          eadd(Ed.mk("]]"), true);
-          eadd(Ed.imgEl(target, bar >= 0 ? label : target), false);  // alias is the alt (image_html)
-          Ed.tok(em, emk, "img");
+          embed(() => Ed.imgEl(target, bar >= 0 ? label : target));   // alias is the alt (image_html)
           i += wl[0].length; continue;
         }
         // pdfembed `![[f.pdf#page=3|a]]`: mirrors linkify()'s pdf branch — bang
         // present, pdf extension on the NOTE part; the anchor is page/height.
         if (wl[1] === "!" && Ed.isPdf(hash >= 0 ? target.slice(0, hash) : target)) {
-          const em = [], emk = [];
-          const eadd = (el, isMk) => { em.push(el); if (isMk) emk.push(el); box.appendChild(el); };
-          eadd(Ed.mk("![["), true);
-          eadd(Ed.mk(raw, "img"), true);
-          eadd(Ed.mk("]]"), true);
           const note = hash >= 0 ? target.slice(0, hash) : target;
-          eadd(Ed.pdfEl(note, hash >= 0 ? target.slice(hash) : "", bar >= 0 ? label : note), false);
-          Ed.tok(em, emk, "img");
+          embed(() => Ed.pdfEl(note, hash >= 0 ? target.slice(hash) : "", bar >= 0 ? label : note));
           i += wl[0].length; continue;
         }
         // #116 `![[Recording 20261115.webm]]`: an AUDIO embed -> an <audio> player (Ed.audioEl). Bang present,
         // no anchor, an audio extension (Ed.AUDIO_EXTS); the reading view's linkify takes the same branch (main.rs)
         if (wl[1] === "!" && hash < 0 && Ed.isAudio(target)) {
-          const em = [], emk = [];
-          const eadd = (el, isMk) => { em.push(el); if (isMk) emk.push(el); box.appendChild(el); };
-          eadd(Ed.mk("![["), true);
-          eadd(Ed.mk(raw, "img"), true);
-          eadd(Ed.mk("]]"), true);
-          eadd(Ed.audioEl(target, bar >= 0 ? label : target), false);
-          Ed.tok(em, emk, "img");
+          embed(() => Ed.audioEl(target, bar >= 0 ? label : target));
           i += wl[0].length; continue;
         }
         // cvf-links CVR-A-095 `![[Board.canvas]]`: a canvas preview (shapes only, no text node), painted and
         // wired by main.js cvEmbedPaint; Canvas off / no painter -> the link branch below, as before
         if (wl[1] === "!" && hash < 0 && /\.canvas$/i.test(target) && typeof cvEmbedPaint === "function" &&
             typeof CANVAS !== "undefined" && CANVAS && CANVAS.isRegistered()) {
-          const em = [], emk = [];
-          const eadd = (el, isMk) => { em.push(el); if (isMk) emk.push(el); box.appendChild(el); };
-          eadd(Ed.mk("![["), true);
-          eadd(Ed.mk(raw, "img"), true);
-          eadd(Ed.mk("]]"), true);
-          const cs = Ed.el("span", "cv-embed");
-          cs.dataset.canvas = target;
-          eadd(cs, false);
-          Ed.tok(em, emk, "img");
+          const cs = embed(() => { const s = Ed.el("span", "cv-embed"); s.dataset.canvas = target; return s; });
           cvEmbedPaint(cs, null);
           i += wl[0].length; continue;
         }
