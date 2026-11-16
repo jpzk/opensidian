@@ -4926,6 +4926,9 @@ function ssRestore(g, line) {   // scroll the CURRENT view so `line` is at the t
   if (t.mode === "reading") {
     const ch = g.preview.children, bl = g.pvLines;
     if (!ch.length || !bl || bl.length !== ch.length) return;
+    // above the first rendered block (frontmatter / properties, line 0) = the top of the note:
+    // block 0's start would scroll the properties off and read back as L5 (fm lp->read->lp off 3)
+    if (line <= 0 || line < bl[0] - 1) { g.preview.scrollTop = 0; return; }
     let i = 0;
     while (i + 1 < bl.length && bl[i + 1] - 1 <= line) i++;
     const a = bl[i] - 1, b = i + 1 < bl.length ? bl[i + 1] - 1 : a + 1;

@@ -2256,7 +2256,10 @@ Ed.lineAtY = function (g, y) {            // client y -> {l, f}: the line under 
   const cm = Ed.cm(g); if (!cm) return null;
   const b = cm.lineBlockAtHeight(y - cm.documentTop), d = cm.state.doc;
   const f = b.height > 0 ? Math.min(1, Math.max(0, (y - cm.documentTop - b.top) / b.height)) : 0;
-  return { l: d.lineAt(b.from).number - 1, f };
+  // #125: a block that replaces several source lines (lp widget) spreads f over them —
+  // block start + its own fraction put "just above the next line" on the block's FIRST line
+  const a = d.lineAt(b.from).number - 1, n = d.lineAt(b.to).number - a, v = a + Math.min(n - 1e-6, f * n);
+  return { l: Math.floor(v), f: v - Math.floor(v) };
 };
 /* ---------- #125/#137 approach B: CM6 OWNS THE SCROLLER ----------
    cm.scrollDOM is the note scroller of both edit sub-modes (style.css .lp.cmown);
@@ -2301,17 +2304,28 @@ Ed.snapOf = function (cm) {
   const sc = cm.scrollDOM, off = Ed.scOff(cm), y = sc.scrollTop - off;
   if (sc.scrollTop <= 0) return { l: 0, c: off, f: 0, top: true };   // the title + padding in view: land there
   const b = cm.lineBlockAtHeight(Math.max(0, y)), d = cm.state.doc;
-  return { l: d.lineAt(b.from).number - 1, c: b.top - y, f: b.height > 0 ? Math.min(1, Math.max(0, (y - b.top) / b.height)) : 0 };
+  // l/f spread over the source lines the block replaces (see Ed.landAt); c stays relative to the block top
+  const fb = b.height > 0 ? Math.min(1, Math.max(0, (y - b.top) / b.height)) : 0;
+  const a = d.lineAt(b.from).number - 1, n = d.lineAt(b.to).number - a, v = a + Math.min(n - 1e-6, fb * n);
+  return { l: Math.floor(v), c: b.top - y, f: v - Math.floor(v) };
 };
-/* give a snapOf position back: line l's block top c px from the scroller top
-   (byFrac: f of the block above it, for a re-flowed view — mode switch). */
+/* where a snapOf position lands: {pos, c} = the height-map block holding line l
+   (pos = its start) and the px its top must sit from the scroller top.
+   byFrac (a re-flowed view — mode switch): fraction f of line l scrolled off; a
+   block that replaces several source lines (lp widget) shares its height among
+   them, so line l inside it lands proportionally, not on the block start. */
+Ed.landAt = function (v, s, byFrac) {
+  const d = v.state.doc, ln = d.line(Math.min(d.lines, Math.max(1, s.l + 1)));
+  if (!byFrac) return { pos: ln.from, c: s.c };
+  const b = v.lineBlockAt(ln.from), a = d.lineAt(b.from).number, n = Math.max(1, d.lineAt(b.to).number - a + 1);
+  return { pos: b.from, c: -((ln.number - a) + (s.f || 0)) / n * b.height };
+};
 Ed.land = function (cm, s, byFrac) {
   if (!cm || !s) return false;
   if (s.top) { cm.dispatch({ effects: Ed.snapFx(cm, 0, cm.lineBlockAt(0).top) }); return true; }   // scrollTop 0
-  const d = cm.state.doc, ln = d.line(Math.min(d.lines, Math.max(1, s.l + 1))), off = Ed.scOff(cm);
-  const c = byFrac ? -(s.f || 0) * cm.lineBlockAt(ln.from).height : s.c;
+  const t = Ed.landAt(cm, s, byFrac);
   // scrollTop = blockTop + off - c  ->  ym = blockTop - scrollTop = c - off
-  cm.dispatch({ effects: Ed.snapFx(cm, ln.from, c - off) });
+  cm.dispatch({ effects: Ed.snapFx(cm, t.pos, t.c - Ed.scOff(cm)) });
   Ed.holdLand(cm, s, byFrac);
   return true;
 };
@@ -2337,8 +2351,7 @@ Ed.holdLand = function (cm, s, byFrac) {
     cm.requestMeasure({
       key: "ed-hold-land",
       read(v) {
-        const d = v.state.doc, ln = d.line(Math.min(d.lines, Math.max(1, s.l + 1))), b = v.lineBlockAt(ln.from);
-        const want = byFrac ? -(s.f || 0) * b.height : s.c, cur = b.top + Ed.scOff(v) - sc.scrollTop;
+        const t = Ed.landAt(v, s, byFrac), want = t.c, cur = v.lineBlockAt(t.pos).top + Ed.scOff(v) - sc.scrollTop;
         const max = sc.scrollHeight - sc.clientHeight;
         // clamped at either end of the scroller: the line cannot get any closer
         const stuck = (cur > want && sc.scrollTop >= max - 1) || (cur < want && sc.scrollTop <= 0);
@@ -2353,9 +2366,8 @@ Ed.holdLand = function (cm, s, byFrac) {
           // a dispatch inside CM6's measure loop throws: give the landing back right after it
           queueMicrotask(() => {
             if (done || cm._landSeq !== seq) return;
-            const dd = cm.state.doc, l2 = dd.line(Math.min(dd.lines, Math.max(1, s.l + 1)));
-            const c = byFrac ? -(s.f || 0) * cm.lineBlockAt(l2.from).height : s.c;
-            cm.dispatch({ effects: Ed.snapFx(cm, l2.from, c - Ed.scOff(cm)) });
+            const t = Ed.landAt(cm, s, byFrac);
+            cm.dispatch({ effects: Ed.snapFx(cm, t.pos, t.c - Ed.scOff(cm)) });
           });
         }
         requestAnimationFrame(tick);
@@ -2377,7 +2389,12 @@ Ed.topLine = function (g, slack) {
     if (r.bottom <= y) continue;
     if (r.top > y + 0.5 || r.height <= 0 || el.classList.contains("cm-gap")) break;   // y sits in a gap
     let a, b;
-    try { a = d.lineAt(cm.posAtDOM(el, 0)).number - 1; b = d.lineAt(cm.posAtDOM(el, el.childNodes.length)).number - 1; }
+    try {
+      const p0 = cm.posAtDOM(el, 0);
+      a = d.lineAt(p0).number - 1;
+      // a block widget's DOM can map its end back to its start: the height-map block knows the lines it replaces
+      b = Math.max(d.lineAt(cm.posAtDOM(el, el.childNodes.length)).number, d.lineAt(cm.lineBlockAt(p0).to).number) - 1;
+    }
     catch (e) { break; }
     // one element can span several source lines (a block widget): spread y over them
     const f = Math.min(1, Math.max(0, (y - r.top) / r.height)) * (b - a + 1);
