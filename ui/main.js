@@ -155,8 +155,9 @@ function modeBits(t) {
 }
 const mkTab = name => modeBits({ name, read: false, src: false, hist: [{ n: name, s: 0 }], hpos: 0 });  // R8.8: LP default
 const scrollOf = g => { const t = g.active >= 0 ? g.tabs[g.active] : null; return !t || t.kind ? 0 : t.mode === "reading" ? g.preview.scrollTop : isLp(t.mode) ? g.lp.scrollTop : g.editor.scrollTop; };
+const pinOf = g => { const t = g.active >= 0 ? g.tabs[g.active] : null; return t && !t.kind && isLp(t.mode) ? Ed.pinAt(g) : null; };   // scroll-settle: edit views remember a source-line pin
 function histPush(g, tab, name) {     // record where the CURRENT entry was scrolled to, then push the new note
-  if (tab.hist[tab.hpos]) tab.hist[tab.hpos].s = scrollOf(g);
+  if (tab.hist[tab.hpos]) { tab.hist[tab.hpos].s = scrollOf(g); tab.hist[tab.hpos].p = pinOf(g); }
   tab.hist = tab.hist.slice(0, tab.hpos + 1); tab.hist.push({ n: name, s: 0 }); tab.hpos++;
 }
 
@@ -675,7 +676,7 @@ async function tocGo(line) {               // scroll + focus the heading at `lin
   if (fg() !== g) focusGroup(g);           // Obsidian 1.13.7: the active leaf moves to the note (docs/tocjump recon, shots 06,16)
   if (isLp(t.mode)) {                     // R12: source mode = lp with reveal
     await lpMove(g, line, 0, "heading");   // raw row = the heading, caret on it
-    if (!Ed.revealTop(g, line)) Ed.scrollToLine(g, line);   // the heading line at the top (CM6 scroll effect)
+    Ed.scrollToLine(g, line);              // scroll-settle: the heading line pinned at the top, held (Ed.land)
   } else {
     const k = tocHeads.findIndex(h => h.line === line);
     const el = g.preview.querySelectorAll("h1,h2,h3,h4,h5,h6")[k];
@@ -965,12 +966,15 @@ async function scJump(g, hits) {
     return [cm.documentTop + b.top - g.lp.getBoundingClientRect().top - g.lp.clientTop + g.lp.scrollTop, b.height];
   };
   let [rt, rh] = geo();
-  if (rh >= 0) scCenter(g.lp, rt, rh);
+  // scroll-settle: the row's middle is pinned to the viewport centre (Ed.land): the
+  // same clamp(rowTop - (clientHeight - rowHeight)/2) on the drawn row, re-landed on
+  // the measured geometry after CM6 has drawn an off-screen line, and held through
+  // late heights instead of a second px write from outside CM6's loop
+  if (rh >= 0) Ed.land(g, { l: p.l + 0.5, c: 0.5 });
   if (!row && cm && rh >= 0) {
     await new Promise(res => cm.requestMeasure({ key: "osScJump", read: () => null, write: () => res() }));
     await new Promise(res => requestAnimationFrame(() => res()));
-    const [rt2, rh2] = geo();
-    if (rh2 >= 0 && (Math.round(rt2) !== Math.round(rt) || Math.round(rh2) !== Math.round(rh))) { rt = rt2; rh = rh2; scCenter(g.lp, rt, rh); }
+    [rt, rh] = geo();
   }
   scInfo = "sc:" + curOf(g) + "@" + p.l + "." + p.c + "|hl:" + scHits(g).length +
            "|top:" + Math.round(g.lp.scrollTop) +
@@ -2743,7 +2747,10 @@ function attachView(g, v) {          // v becomes g's live editor/lp/preview
   if (g.find && g.find.open) fClose(g, false);
   const old = g.view;
   if (old && old.g === g) {          // skip when old already moved to another group (tab drop)
-    Object.assign(old, { lpActive: g.lpActive, lpLines: g.lpLines, scrollTop: old.lp.scrollTop });
+    // scroll-settle: the edit view's top as a source-line pin — px are not a position
+    // once heights above the top change (images, widgets, the other sub-mode)
+    Object.assign(old, { lpActive: g.lpActive, lpLines: g.lpLines, scrollTop: old.lp.scrollTop, pin: Ed.pinAt(g) });
+    Ed.landStop(old.lp);
     old.lp.style.display = old.preview.style.display = "none";
   }
   v.g = g;
@@ -4922,7 +4929,6 @@ function ssRestore(g, line) {   // scroll the CURRENT view so `line` is at the t
 function ssRelandOnImages(g, tab, line) {
   if (line == null || !g.preview) return;
   const ims = [...g.preview.querySelectorAll("img")].filter(i => !i.complete);
-  if (!ims.length) return;
   const seq = g._ssReland = (g._ssReland || 0) + 1, t0 = performance.now();
   let at = g.preview.scrollTop;
   const again = () => {
@@ -4932,6 +4938,14 @@ function ssRelandOnImages(g, tab, line) {
     ssRestore(g, line); at = g.preview.scrollTop;
   };
   for (const i of ims) { i.addEventListener("load", again, { once: true }); i.addEventListener("error", again, { once: true }); }
+  // scroll-settle (I6): not only an <img> grows late — an embed, a callout, a font or a
+  // widget block re-flows after the landing too. Any block whose box changes re-lands
+  // the same source line, under the same rules (latest switch, still reading, no user
+  // scroll, 5 s).
+  if (typeof ResizeObserver !== "function") return;
+  const ro = new ResizeObserver(() => { if (g._ssReland !== seq || performance.now() - t0 > 5000) ro.disconnect(); else again(); });
+  for (const el of g.preview.children) ro.observe(el);
+  setTimeout(() => ro.disconnect(), 5100);
 }
 
 /* ---------- R35 PERF: the mode switch against the 100 ms ceiling ----------
@@ -6134,7 +6148,7 @@ async function loadActive(g) {
       // after the user opened the quick switcher (or any prompt); stealing focus then sent the typed query into the note
       if (n && Ed.cm(g)) Ed.home(g, 0, 0, g === fg() && !typingElsewhere(g));   // goal mt-fix: the caret only — no raw row opens on open ([mode:lp])
     }
-  } else if (v.scrollTop) g.lp.scrollTop = v.scrollTop;
+  } else if (isLp(m) && v.pin) Ed.land(g, v.pin);   // scroll-settle: land the pin, held through late heights
   renderTabs(g);
   treeHighlight();
   updateStatus(g);                   // word/char count sync, backlinks async (not awaited: outside the action span)
@@ -6306,39 +6320,26 @@ async function navAnchor(g, anchor) {
     // CM6 draws only the viewport: a line it has not drawn is brought in first and
     // centred once CM6 has measured it; a drawn line is centred on its real box
     const sc = g.lp, cm = Ed.cm(g);
-    const centre = () => {
+    const centre = () => {           // no CM6 view (not a CM6 scroller): centre the drawn row
       const row = Ed.rowAt(g, line);
       if (!row) return false;
       const rt = row.getBoundingClientRect().top - sc.getBoundingClientRect().top - sc.clientTop + sc.scrollTop;
       sc.scrollTop = rt - (sc.clientHeight - row.offsetHeight) / 2;
       return true;
     };
-    const centred = () => {          // the target row's middle within the middle half of the scroller
-      const row = Ed.rowAt(g, line); if (!row) return false;
-      const r = row.getBoundingClientRect(), b = sc.getBoundingClientRect();
-      return Math.abs(r.top + r.height / 2 - b.top - sc.clientTop - sc.clientHeight / 2) < sc.clientHeight / 4;
-    };
     if (!cm) { if (!centre()) Ed.scrollToLine(g, line); flash(Ed.rowAt(g, line)); }
     else {
-      // One scrollIntoView dispatch was not enough: the heading stayed at scrollTop 0 after
-      // a wikilink opened the note (links blob '') — the effect raced the note load's own
-      // measure. Same shape as the find reveal: ask CM6, then check per frame INSIDE its
-      // measure loop until the row is drawn and centred (re-ask / centre on its real box),
-      // bounded. [nvr:] logs the frames (diagnostic, no phase asserts it).
-      Ed.revealAt(g, line, 0); Ed.flashLine(g, line);
-      nvRv = "s" + Math.round(sc.scrollTop);
-      let n = 0;
-      const step = () => cm.requestMeasure({ key: "osNavAnchor", read: () => null, write: () => {
-        if (Ed.cm(g) !== cm) { nvRv += "|gone"; return updateTitle(); }
-        const ok = centred(), drawn = !!Ed.rowAt(g, line);
-        nvRv += "|" + n + ":" + (drawn ? 1 : 0) + "," + Math.round(sc.scrollTop);
-        if (ok || ++n > 12) { nvRv += "|f" + (ok ? 1 : 0); return updateTitle(); }
-        if (!drawn) Ed.revealAt(g, line, 0); else centre();
-        requestAnimationFrame(step);
-      } });
-      requestAnimationFrame(step);
+      // scroll-settle: the line's middle is pinned to the viewport centre and HELD
+      // (Ed.land): re-landed after every CM6 measure that moves geometry — the note
+      // load's own measure, the rows drawn around the target, late images — so the
+      // landing no longer races them (it was: a scrollIntoView effect plus a
+      // per-frame centring write INSIDE requestMeasure, counted twice when focused).
+      // Source mode puts the caret first: its selection scroll must not supersede the pin.
+      if (t.mode === "source") await lpEdit(g, line, 0);  // R12: source puts the caret on the line
+      Ed.land(g, { l: line + 0.5, c: 0.5 }); Ed.flashLine(g, line);
+      nvRv = "land|s" + Math.round(sc.scrollTop);
     }
-    if (t.mode === "source") await lpEdit(g, line, 0);  // R12: source puts the caret on the line
+    if (t.mode === "source" && !cm) await lpEdit(g, line, 0);  // R12: source puts the caret on the line
   } else {
     let el = null;
     if (anchor.startsWith("^")) {
@@ -6452,7 +6453,7 @@ async function histGo(d, from) {
   if (p < 0 || p >= tab.hist.length) return;
   const sp = otel.begin("history_nav", { dir: d < 0 ? "back" : "forward", pos: p, len: tab.hist.length });
   await flushSave(g);
-  tab.hist[tab.hpos].s = scrollOf(g);
+  tab.hist[tab.hpos].s = scrollOf(g); tab.hist[tab.hpos].p = pinOf(g);
   tab.hpos = p;
   tab.name = tab.hist[p].n;
   // ggclick Q2: a graph entry turns the leaf back into a FRESH global graph (stock re-simulates,
@@ -6465,8 +6466,9 @@ async function histGo(d, from) {
   const lgh = groups().find(h => { const t = h.active >= 0 ? h.tabs[h.active] : null; return t && t.kind === "lg" && t.linkId === g.id && t.center !== tab.name; });
   if (lgh) { otel.cancel(lgh.settleSp); lgh.settleSp = otel.begin("graph_settle", { from: "history", nodes: 0 }); }
   await loadActive(g);
-  const s = !tab.kind && tab.hist[p].s;
-  if (s) { if (tab.mode === "reading") g.preview.scrollTop = s; else if (isLp(tab.mode)) g.lp.scrollTop = s; else g.editor.scrollTop = s; }
+  const s = !tab.kind && tab.hist[p].s, pn = !tab.kind && tab.hist[p].p;
+  if (isLp(tab.mode)) { if (pn) Ed.land(g, pn); }   // scroll-settle: an edit view lands its source-line pin
+  else if (s) { if (tab.mode === "reading") g.preview.scrollTop = s; else g.editor.scrollTop = s; }
   otel.paint(sp);
 }
 // mouse buttons 4/5 (X11 8/9 -> DOM button 3/4): nav fires on mousedown (capture) with
@@ -10027,12 +10029,16 @@ window.addEventListener("wheel", e => {
   // keep the TOP VISIBLE LINE while the text grows/shrinks (REQ-8): anchor on
   // the element under the scroller's top edge and restore its offset after
   const r = sc.getBoundingClientRect();
-  let a = document.elementFromPoint(r.left + Math.min(40, r.width / 2), r.top + 2);
+  // scroll-settle: on the CM6 scroller the top line is a source-line pin, landed and
+  // held while CM6 re-measures every line at the new size (Ed.land)
+  const gq = sc._cm ? groups().find(x => x.lp === sc && Ed.cm(x)) : null, pin = gq ? Ed.pinAt(gq) : null;
+  let a = pin ? null : document.elementFromPoint(r.left + Math.min(40, r.width / 2), r.top + 2);
   if (a && (!sc.contains(a) || a === sc)) a = null;
   const before = a ? a.getBoundingClientRect().top : 0;
   qfsSteps++;
   qfsSet(next);                                             // fontset REQ-19: the slider's setter too
-  if (a && a.isConnected) sc.scrollTop += a.getBoundingClientRect().top - before;
+  if (pin) Ed.land(gq, pin);
+  else if (a && a.isConnected) sc.scrollTop += a.getBoundingClientRect().top - before;   // reading view (not CM6)
   updateTitle();
 }, { passive: false });
 /* [qfs:<baseFontSize>,<action 1|0>,<steps>,<computed .lp font-size of the
@@ -14369,7 +14375,12 @@ function fReveal(g, done) {   // done(): called once the reveal has finished (sy
     if (!el) return false;
     const r = el.getBoundingClientRect(), b = sc.getBoundingClientRect();
     if (r.top >= b.top + 4 && r.bottom <= b.bottom - 4) return true;      // already on screen: do not jitter
-    sc.scrollTop += (r.top - b.top) - Math.max(0, (sc.clientHeight - r.height) / 2);
+    // scroll-settle: on the CM6 scroller the mark's middle is pinned to the viewport
+    // centre (Ed.land: absolute, re-landed after CM6's measure, held through late heights)
+    const fits = r.height < sc.clientHeight;
+    const pl = sc === g.lp && Ed.cm(g) ? Ed.topLine(g, r.top - b.top + (fits ? r.height / 2 : 0)) : null;
+    if (pl != null) Ed.land(g, { l: pl, c: fits ? 0.5 : 0 });
+    else sc.scrollTop += (r.top - b.top) - Math.max(0, (sc.clientHeight - r.height) / 2);   // not a CM6 scroller
     return true;
   };
   if (go()) return fin();

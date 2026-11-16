@@ -90,7 +90,7 @@
       blur() { this.cm.contentDOM.blur(); }
       hasFocus() { return this.cm.hasFocus; }
       getScrollInfo() { const s = this._v.lp || this.cm.scrollDOM; return { top: s.scrollTop, left: s.scrollLeft, height: s.scrollHeight, width: s.scrollWidth, clientHeight: s.clientHeight, clientWidth: s.clientWidth }; }
-      scrollTo(x, y) { const s = this._v.lp || this.cm.scrollDOM; if (x != null) s.scrollLeft = x; if (y != null) s.scrollTop = y; }
+      scrollTo(x, y) { const s = this._v.lp || this.cm.scrollDOM; if (x != null) s.scrollLeft = x; if (y != null) { Ed.landStop(s); s.scrollTop = y; } }   // the API is px: a plugin's write ends any held landing (scroll-settle)
       scrollIntoView(range, center) {
         const r = range && range.from ? range : { from: this.getCursor("from"), to: this.getCursor("to") };
         const a = this.posToOffset(r.from), b = this.posToOffset(r.to || r.from);
@@ -180,6 +180,9 @@
       applyScroll(scroll) {
         const v = this.view && this.view._tv, s = scrollerOf(v), cm = v && v.cm;
         const y = Number(scroll); if (!s || !cm || !Number.isFinite(y)) return;
+        // scroll-settle: a fractional source line = a pin, landed and held (Ed.landOn)
+        if (y > 0 && s._cm === cm && Ed.landOn(s, { l: y, c: 0 })) return;
+        Ed.landStop(s);
         const d = cm.state.doc, n = clamp(Math.floor(y), 0, d.lines - 1);
         const b = cm.lineBlockAt(d.line(n + 1).from);
         const top = cm.documentTop - s.getBoundingClientRect().top + s.scrollTop;

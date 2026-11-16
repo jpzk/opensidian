@@ -2006,6 +2006,7 @@ Object.assign(Ed, {
       Ed.viewTheme || (Ed.viewTheme = CMv.EditorView.theme({ "&.cm-focused": { outline: "none" }, ".cm-scroller": { fontFamily: "inherit", lineHeight: "inherit", overflow: "visible" },
                              ".cm-content": { padding: "0" }, ".cm-line": { padding: "0" } })),
       CMv.EditorView.updateListener.of(u => Ed.onUpdate(G(), v, u)),
+      CMv.EditorView.updateListener.of(u => Ed.landTick(v.lp, u)),   // settle-then-land: re-land after each measure
       Ed.lpExt ? Ed.lpExt(v, G) : [],
       Ed.hlExt(v),
     ];
@@ -2018,6 +2019,7 @@ Object.assign(Ed, {
     // g.lp.focus() (tab switch, palette close, title edit) = focus the editor
     lp.focus = () => { if (!cm.hasFocus) cm.focus(); };
     Ed.wheelOwn(lp);
+    Ed.landGuard(lp);
     return lp;
   },
   onUpdate(g, v, u) {
@@ -2276,19 +2278,88 @@ Ed.topLine = function (g, slack) {
   const p = Ed.lineAtY(g, y);
   return p ? p.l + p.f : null;
 };
-Ed.scrollToLine = function (g, line) {    // put the fractional source line at the scroller's top, clamped
-  const cm = Ed.cm(g), lp = g.lp; if (!cm || line == null) return;
-  const d = cm.state.doc, i = Math.min(d.lines - 1, Math.max(0, Math.floor(line))), f = Math.min(1, Math.max(0, line - i));
-  const go = () => {
-    const b = cm.lineBlockAt(d.line(i + 1).from);
-    const dy = cm.documentTop + b.top + f * b.height - lp.getBoundingClientRect().top;
-    const max = Math.max(0, lp.scrollHeight - lp.clientHeight);
-    lp.scrollTop = Math.min(max, Math.max(0, lp.scrollTop + dy));
-  };
-  go();
-  // the height map holds ESTIMATES for lines never drawn: once CM6 has measured
-  // the lines this scroll brought in, land on the real geometry
-  cm.requestMeasure({ key: "osScrollLine", read: () => null, write: () => { if (Ed.cm(g) === cm) go(); } });
+/* ---------- SETTLE-THEN-LAND: the ONE position restore on the CM6 scroller ----------
+   (#125 / #137, goal scroll-settle). g.lp is CM6's EXTERNAL scrollParent: when CM6
+   re-measures lines (estimates replaced, .lp.src restyle, image decoded) it keeps
+   the view still with `scrollParent.scrollTop += diff` at the END of its measure
+   loop — but only while the editor is focused or was just wheeled. A scrollTop we
+   computed before or inside that loop (sync write + requestMeasure write) was then
+   corrected twice (focused) or never (unfocused): off 10-19 lines below an image.
+   Here a landing is a PIN, never pixels:
+     pin = { l: fractional 0-based source line, c: where that point goes, as a
+             fraction of the viewport (0 = top edge, 0.5 = centre) }
+   and every write is ABSOLUTE, computed from the geometry as it is NOW:
+     - once synchronously (the drawn rows are real; brings the region in), then
+     - after EVERY CM6 measure loop that moved geometry (updateListener: heights
+       measured, DOM drawn, CM6's own correction already applied or skipped) —
+       so whatever CM6 did, the next write lands the pin, and a write that is
+       already right is not made (|d| < 1 px).
+   The pin is HELD through late height changes (images, widgets, the viewport CM6
+   draws after the landing) until the user wheels / clicks / types / touches in
+   the scroller, a newer landing or a CM6 scroll effect supersedes it, the view is
+   hidden or replaced, or LAND_HOLD ms have passed. */
+Ed.LAND_HOLD = 5000;
+Ed.pinAt = function (g, c) {              // the pin of what is at the top of g.lp now (edit view shown), or null
+  if (!g || !g.lp || !(g.lp.clientHeight > 0)) return null;
+  const l = Ed.topLine(g, 1);
+  return l == null ? null : { l, c: c || 0 };
+};
+Ed.landY = function (lp, cm, pin) {       // the scrollTop that puts pin where it goes, on the CURRENT geometry
+  if (!lp.isConnected || !(lp.clientHeight > 0)) return null;    // hidden: nothing to measure against
+  const d = cm.state.doc, L = Math.min(d.lines - 1 + 0.999999, Math.max(0, pin.l)), i = Math.floor(L), f = L - i;
+  let y = null;
+  // DRAWN ROWS FIRST, the exact inverse of Ed.topLine (one element may span several
+  // source lines — a block widget — and the line is spread over it linearly)
+  for (const el of cm.contentDOM.children) {
+    if (el.classList.contains("cm-gap")) continue;
+    const r = el.getBoundingClientRect(); if (r.height <= 0) continue;
+    let a, b;
+    try { a = d.lineAt(cm.posAtDOM(el, 0)).number - 1; b = d.lineAt(cm.posAtDOM(el, el.childNodes.length)).number - 1; }
+    catch (e) { continue; }
+    if (a > i) break;
+    if (i <= b) { y = r.top + (i - a + f) / (b - a + 1) * r.height; break; }
+  }
+  if (y == null) {                        // not drawn: CM6's height map (the gap is sized from the same map)
+    const bk = cm.lineBlockAt(d.line(i + 1).from);
+    const a = d.lineAt(bk.from).number - 1, b = d.lineAt(bk.to).number - 1;
+    y = cm.documentTop + bk.top + (i - a + f) / (b - a + 1) * bk.height;
+  }
+  const t = lp.scrollTop + y - lp.getBoundingClientRect().top - (pin.c || 0) * lp.clientHeight;
+  return Math.min(Math.max(0, lp.scrollHeight - lp.clientHeight), Math.max(0, t));
+};
+Ed.landPut = function (lp, S) {
+  const t = Ed.landY(lp, S.cm, S.pin);
+  if (t != null && Math.abs(lp.scrollTop - t) >= 1) { lp.scrollTop = t; S.n++; }   // the ONE CM6-scroller position write
+  S.at = lp.scrollTop;
+};
+Ed.landOn = function (lp, pin) {          // land pin on CM6 scroller lp, then hold it (see above)
+  const cm = lp && lp._cm; if (!cm || !pin || pin.l == null || !Number.isFinite(pin.l)) return false;
+  const S = lp._osLand = { cm, pin, t0: performance.now(), n: 0 };
+  Ed.landPut(lp, S);
+  cm.requestMeasure();                    // a measure (and so a post-measure re-land) follows even if nothing scrolled
+  return true;
+};
+Ed.land = (g, pin) => !!(g && Ed.cm(g)) && Ed.landOn(g.lp, pin);
+Ed.landStop = lp => { if (lp) lp._osLand = null; };
+Ed.landTick = function (lp, u) {          // updateListener: runs AFTER CM6's measure loop (and its own correction)
+  const S = lp && lp._osLand; if (!S) return;
+  if (S.cm !== u.view || lp._cm !== S.cm || performance.now() - S.t0 > Ed.LAND_HOLD) { lp._osLand = null; return; }
+  // a newer scroll intent from CM6 itself (scrollIntoView effect / selection scroll) supersedes the pin
+  if (!Ed._sivT) Ed._sivT = CMv.EditorView.scrollIntoView(0).type;
+  if (u.transactions.some(tr => tr.scrollIntoView || tr.effects.some(e => e.is(Ed._sivT)))) { lp._osLand = null; return; }
+  // the scroller moved with no height change: not CM6's correction, not us — the user (scrollbar, keys) or
+  // another writer took over
+  if (!u.heightChanged && S.at != null && Math.abs(lp.scrollTop - S.at) >= 1) { lp._osLand = null; return; }
+  if (u.heightChanged || u.geometryChanged || u.viewportChanged) Ed.landPut(lp, S);
+};
+Ed.landGuard = function (lp) {            // user intent on the scroller ends any hold
+  if (!lp || lp._osLandG) return;
+  lp._osLandG = true;
+  const stop = () => { lp._osLand = null; };
+  for (const ev of ["wheel", "pointerdown", "keydown", "touchstart"]) lp.addEventListener(ev, stop, { capture: true, passive: true });
+};
+Ed.scrollToLine = function (g, line) {    // put the fractional source line at the scroller's top (settle-then-land)
+  if (line != null) Ed.land(g, { l: line, c: 0 });
 };
 /* the editor scroller OWNS its plain vertical wheel. CM6 virtualises: lines it has
    not drawn carry ESTIMATED (or, after the .lp.src restyle, stale) heights, and when
