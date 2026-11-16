@@ -2427,7 +2427,7 @@ Ed.holdLand = function (cm, s, byFrac) {
   if (!cm || !s || s.top) return;
   const seq = cm._landSeq = (cm._landSeq || 0) + 1, sc = cm.scrollDOM, evs = ["wheel", "keydown", "pointerdown", "touchstart"];
   let fr = 0, ok = 0, re = 0, done = false;
-  const end = () => { if (done) return; done = true; for (const e of evs) sc.removeEventListener(e, quit, true); };
+  const end = () => { if (done) return; done = true; for (const e of evs) sc.removeEventListener(e, quit, true); Ed.lndTok += "|E" + fr + "r" + re + "q" + (cm._landSeq === seq ? 0 : 1); setTimeout(() => { const g0 = typeof fg === "function" ? fg() : null; Ed.lndTok += "|T" + (g0 ? Math.round((Ed.topLine(g0, 1) || 0) * 100) / 100 : "-") + "@" + Math.round(sc.scrollTop) + "/" + Math.round(sc.scrollHeight) + "/" + Math.round(Ed.scOff(cm)); }, 700); };   // WIP DIAG
   const quit = () => { if (cm._landSeq === seq) cm._landSeq++; end(); };
   for (const e of evs) sc.addEventListener(e, quit, true);
   const tick = () => {
@@ -2439,6 +2439,7 @@ Ed.holdLand = function (cm, s, byFrac) {
         const max = sc.scrollHeight - sc.clientHeight;
         // clamped at either end of the scroller: the line cannot get any closer
         const stuck = (cur > want && sc.scrollTop >= max - 1) || (cur < want && sc.scrollTop <= 0);
+        if (fr <= 14) Ed.lndTok += "," + Math.round(cur - want) + "@" + Math.round(sc.scrollTop) + "/" + Math.round(sc.scrollHeight);   // WIP DIAG
         return Math.abs(cur - want) <= Ed.HOLD_PX || stuck;
       },
       write(good) {
@@ -2507,6 +2508,7 @@ Ed.scrollToLine = function (g, line) {
   const cm = Ed.cm(g); if (!cm || line == null) return;
   const d = cm.state.doc, i = Math.min(d.lines - 1, Math.max(0, Math.floor(line))), f = Math.min(1, Math.max(0, line - i));
   if (i === 0 && f === 0) { Ed.land(cm, { top: true }); return; }   // line 0 = the top of the note (title in view)
+  { const pf0 = g.view && g.view._propsF ? cm.state.field(g.view._propsF, false) : null, t0 = Ed.landAt(cm, { l: i, f }, true), b0 = cm.lineBlockAt(t0.pos); Ed.lndTok = (Math.round(line * 100) / 100) + ":" + (g.lp && g.lp.classList.contains("src") ? "src" : "lp") + ":pf" + (pf0 ? pf0.size : "-") + ":b0=" + Math.round(cm.lineBlockAt(0).height) + ":o" + Math.round(Ed.scOff(cm)) + ":st" + Math.round(cm.scrollDOM.scrollTop) + "/" + Math.round(cm.scrollDOM.scrollHeight) + ":c" + Math.round(t0.c) + ":bt" + Math.round(b0.top) + "+" + Math.round(b0.height); }   // WIP DIAG
   Ed.land(cm, { l: i, f }, true);
   // #119 (dropped by the #148/#125 merge, R1 scrollpos mid lp->src off 7): with a
   // drawn Properties block ABOVE the destination (estimated 30px/line, drawn at
