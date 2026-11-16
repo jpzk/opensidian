@@ -6504,9 +6504,12 @@ async function navAnchor(g, anchor) {
         const ok = centred(), drawn = !!Ed.rowAt(g, line);
         nvRv += "|" + n + ":" + (drawn ? 1 : 0) + "," + Math.round(sc.scrollTop);
         if (ok || ++n > 12) { nvRv += "|f" + (ok ? 1 : 0); return updateTitle(); }
+        // the user scrolled / typed / clicked inside the window (revealPos or holdLand quit()):
+        // their position wins, never re-centre over it
+        if (cm._landUser === cm._landSeq) { nvRv += "|u"; return updateTitle(); }
         // a newer landing (the note load's own) ended the hold before the row was centred:
         // centre again in the NEXT frame — a dispatch inside a measure write throws
-        requestAnimationFrame(() => { if (Ed.cm(g) === cm && cm._landSeq !== seq) { Ed.revealPos(cm, at, "center"); seq = cm._landSeq; } step(); });
+        requestAnimationFrame(() => { if (Ed.cm(g) === cm && cm._landSeq !== seq && cm._landUser !== cm._landSeq) { Ed.revealPos(cm, at, "center"); seq = cm._landSeq; } step(); });
       } });
       requestAnimationFrame(step);
     }

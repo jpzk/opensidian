@@ -2428,7 +2428,7 @@ Ed.holdLand = function (cm, s, byFrac) {
   const seq = cm._landSeq = (cm._landSeq || 0) + 1, sc = cm.scrollDOM, evs = ["wheel", "keydown", "pointerdown", "touchstart"];
   let fr = 0, ok = 0, re = 0, done = false;
   const end = () => { if (done) return; done = true; for (const e of evs) sc.removeEventListener(e, quit, true); };
-  const quit = () => { if (cm._landSeq === seq) cm._landSeq++; end(); };
+  const quit = () => { if (cm._landSeq === seq) { cm._landSeq++; cm._landUser = cm._landSeq; } end(); };   // _landUser: this bump was user input, not a newer landing
   for (const e of evs) sc.addEventListener(e, quit, true);
   const tick = () => {
     if (done || cm._landSeq !== seq || !cm.dom.isConnected || ++fr > Ed.HOLD_FR) { end(); return; }
@@ -2586,7 +2586,7 @@ Ed.revealPos = function (cm, pos, y) {
   const seq = cm._landSeq = (cm._landSeq || 0) + 1, sc = cm.scrollDOM, evs = ["wheel", "keydown", "pointerdown", "touchstart"];
   let fr = 0, ok = 0, done = false;
   const end = () => { if (done) return; done = true; for (const e of evs) sc.removeEventListener(e, quit, true); };
-  const quit = () => { if (cm._landSeq === seq) cm._landSeq++; end(); };
+  const quit = () => { if (cm._landSeq === seq) { cm._landSeq++; cm._landUser = cm._landSeq; } end(); };   // _landUser: this bump was user input, not a newer landing
   for (const e of evs) sc.addEventListener(e, quit, true);
   const want = v => {
     const p = Math.min(v.state.doc.length, Math.max(0, pos)), b = v.lineBlockAt(p), M = 5;
