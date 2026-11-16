@@ -8872,7 +8872,7 @@ function vfTabPath(t) {
   return null;
 }
 const fileTabPath = t => cvTabPath(t) || vfTabPath(t);   // a canvas or a viewer tab: bookmarked by its PATH
-function audvTok() {           // issue #140: [audv:<path>|<state>|x,y,w,h] the audio view on screen (state: the embed's st, c2p, idle, miss)
+function audvTok() {           // issue #140: [audv:<path>|<state>|x,y,w,h|rs,ns,err] the audio view on screen (state: the embed's st, c2p, idle, miss)
   const esc = s => String(s).replace(/[[\]|@]/g, "_"), vis = e => !!e && e.getClientRects().length > 0;
   let v = null;
   try { v = PLG && PLG.app.workspace.getLeavesOfType("audio").map(l => l.view).find(x => x && vis(x.containerEl)) || null; } catch (_) {}
@@ -8881,7 +8881,9 @@ function audvTok() {           // issue #140: [audv:<path>|<state>|x,y,w,h] the 
   if (!s || s.classList.contains("imgmiss")) return " [audv:" + esc(v.path) + "|miss|-]";
   const b = s.getBoundingClientRect();
   const st = s.dataset.st || (s.dataset.c2p ? "c2p" : "idle");
-  return " [audv:" + esc(v.path) + "|" + st + "|" + [b.x, b.y, b.width, b.height].map(Math.round).join(",") + "]";
+  // media: readyState,networkState,error code (0 = none) of the player — why a load stalled
+  const a = s.querySelector("audio"), m = a ? [a.readyState, a.networkState, a.error ? a.error.code : 0].join(",") : "-";
+  return " [audv:" + esc(v.path) + "|" + st + "|" + [b.x, b.y, b.width, b.height].map(Math.round).join(",") + "|" + m + "]";
 }
 /* goal canvas-core: "Create new canvas" (command) and "New canvas" (explorer menus). The file is made
    through canvas_io create (O_EXCL: an existing name is never overwritten — the next free
