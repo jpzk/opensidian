@@ -2706,7 +2706,7 @@ Ed.lpExt = function (v, G) {
     // the parsed leaf itself (cloned): re-rendering the row here could disagree with the parse
     // except a pdf frame: its loader (Ed.pdfFill) is closures + observers on the ORIGINAL
     // element, so a clone never loads a page (osdrop [pf:1/0|..p1/0-]) — render it fresh
-    toDOM(view) {
+    toDOM() {
       // #116: an audio embed too (its blob loader is the ORIGINAL element's observer + play listener)
       if (this.el && this.el.dataset && (this.el.dataset.pdf != null || this.el.dataset.audio != null)) {
         const f = Ed.lpLeaves(Ed.row(G(), this.t, 0))[this.k];
@@ -2716,17 +2716,6 @@ Ed.lpExt = function (v, G) {
       // cloneNode drops listeners, and ignoreEvent() keeps CM6's domEventHandlers off
       // widget events — so the task checkbox clone gets its own toggle (R8.6)
       const c = this.el.cloneNode(true);
-      // R1 end drift: a cloned <img> (loading=lazy, opensidian-img fetch) is 0 px until its
-      // bytes land, then ~360 px. CM6's content ResizeObserver DROPS a resize within 75 ms of
-      // its last update, so a late load above the top line pushed the drawn rows down while the
-      // height map kept the old height (box: end src->lp L3118 -> L3116, lp-img-3 at L3111).
-      // Ask CM6 to measure when the bytes land: its anchor correction holds the top line.
-      const ims = c.tagName === "IMG" ? [c] : c.querySelectorAll ? [...c.querySelectorAll("img")] : [];
-      for (const im of ims) if (!im.complete && view) {
-        const m = () => view.requestMeasure();
-        im.addEventListener("load", m, { once: true });
-        im.addEventListener("error", m, { once: true });
-      }
       const cb = c.matches && c.matches("input.tbox") ? c : (c.querySelector ? c.querySelector("input.tbox") : null);
       if (cb) Ed.taskBox(cb);
       return c;
