@@ -4784,7 +4784,7 @@ async function closeAllTabs(g) {           // Close all: a split pane goes with 
   if (groups().length > 1) return closeTab(g, 0, undefined, "closeAll");
   const t = g.tabs[0];
   await act("pane_close", { kind: t.kind || "note", pane_removed: false, groups: groups().length, tabs: 0 }, async () => {
-    if (!t.kind) closedTabs.push(t.name);  // R14: undo close tab still works on the last one
+    if (!t.kind) ucPush(t.name);  // R14: undo close tab still works on the last one
     unlinkTab(g, t, true);
     dropView(t);
     g.tabs.length = 0;
