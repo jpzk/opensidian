@@ -158,6 +158,7 @@ function modeBits(t) {
 }
 const mkTab = name => modeBits({ name, read: false, src: false, hist: [{ n: name, s: 0 }], hpos: 0 });  // R8.8: LP default
 const pushTab = (g, t) => { g.tabs.push(t); g.active = g.tabs.length - 1; };   // append t to group g as its active tab (the caller loads it)
+const lgName = c => "Graph of " + c.split("/").pop();   // a local graph tab's name: "Graph of " + its centre note's basename
 // #125/#137: an edit view's history position is a CM6 LINE anchor (Ed.snapOf), not scroller px
 const scrollOf = g => { const t = g.active >= 0 ? g.tabs[g.active] : null; return !t || t.kind ? 0 : t.mode === "reading" ? g.preview.scrollTop : isLp(t.mode) ? (Ed.cm(g) ? Ed.snapOf(Ed.cm(g)) || 0 : g.lp.scrollTop) : g.editor.scrollTop; };
 function histPush(g, tab, name) {     // record where the CURRENT entry was scrolled to, then push the new note
@@ -214,7 +215,7 @@ async function linkSync(src, name) { // R13.3: a member opening a note reaches e
     const act = h.tabs[h.active] === t;
     if (t.kind === "lg") {          // graph members re-center + re-title
       if (t.center === name) continue;
-      t.center = name; t.name = "Graph of " + name.split("/").pop();
+      t.center = name; t.name = lgName(name);
       h.graphSettled = false;
       renderTabs(h);
       if (act && h.graphRefresh) await h.graphRefresh();
@@ -1971,7 +1972,7 @@ async function bmOpenGraph(r, ev) {
       return;
     }
     const d = Number.isInteger(lc.localJumps) ? Math.min(5, Math.max(1, lc.localJumps)) : 1;
-    const t = { kind: "lg", name: "Graph of " + c.split("/").pop(), center: c, depth: d,
+    const t = { kind: "lg", name: lgName(c), center: c, depth: d,
                 inc: lc.localBacklinks !== false, out: lc.localForelinks !== false, inter: lc.localInterlinks === true,
                 opts: Object.assign({}, o, { localJumps: d }), mode: "source", hist: [], hpos: 0,
                 bmRef: bmGraphRef(r) };   // issue #118: its edits write back to this bookmark
@@ -3248,7 +3249,7 @@ function wsGraphIn(leaf, have) {
     if (typeof c !== "string" || !c || !have.has(c)) { wsDropped++; return null; }
     const o = st.options && typeof st.options === "object" && !Array.isArray(st.options) ? st.options : {};
     const d = Number.isInteger(o.localJumps) ? Math.min(5, Math.max(1, o.localJumps)) : 1;
-    t = { kind: "lg", name: "Graph of " + c.split("/").pop(), center: c, depth: d,
+    t = { kind: "lg", name: lgName(c), center: c, depth: d,
           inc: o.localBacklinks !== false, out: o.localForelinks !== false, inter: o.localInterlinks === true,
           opts: o, mode: "source", hist: [], hpos: 0 };
   }
@@ -6299,7 +6300,7 @@ async function lgFollow(src) {
     const t = h.active >= 0 ? h.tabs[h.active] : null;
     if (!t || t.kind !== "lg" || t.linkId !== src.id || t.center === n) continue;
     t.center = n;
-    t.name = "Graph of " + n.split("/").pop();
+    t.name = lgName(n);
     h.graphSettled = false;         // census: old node coords are stale until the re-filtered sim settles
     renderTabs(h);
     if (h.graphRefresh) await h.graphRefresh();
@@ -12541,7 +12542,7 @@ async function showLocalGraph(g, t) {  // t = the localgraph tab (kind:"lg")
   // same source -> the frame the user left (positions, motion, pan, zoom, depth). t.gk.c is the centre
   // its N[] was built for (startGraph keeps it current across in-place refreshes).
   const lk = groups().find(x => x.id === t.linkId), lt = lk && lk.active >= 0 ? lk.tabs[lk.active] : null;
-  if (lt && !lt.kind && lt.name && lt.name !== t.center) { t.center = lt.name; t.name = "Graph of " + lt.name.split("/").pop(); }
+  if (lt && !lt.kind && lt.name && lt.name !== t.center) { t.center = lt.name; t.name = lgName(lt.name); }
   if (t.gk && t.gk.c !== t.center) delete t.gk;
   cancelAnimationFrame(g.sim);         // the sim is restarted, but from the tab's KEPT layout + camera (lgkeep = ggkeep's t.gk)
   await startGraph(g, {
@@ -12577,7 +12578,7 @@ async function cmdLocalGraph() {       // R7.2: local graph of focused note -> n
   if (!center || lgNoGraph(g)) return;
   lgT0 = perf.now();                   // perfhunt: graph_open kind:lg = click -> first sim frame (handed to the new group in startGraph)
   await flushSave(g);
-  const t = { kind: "lg", name: "Graph of " + center.split("/").pop(),
+  const t = { kind: "lg", name: lgName(center),
               center, depth: 1, inc: true, out: true, linkId: g.id,
               mode: "source", hist: [], hpos: 0 };
   t.linkTab = t0;                      // bug-graph #13: closing THIS tab unlinks the graph (unlinkTab)
