@@ -950,13 +950,10 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
 .lp.cmown > .cm-editor > .cm-scroller::-webkit-scrollbar-thumb:active { background-color: var(--scrollbar-active-thumb-bg, var(--scrollbar-thumb-bg)) }
 .lp a.wiki { color: var(--link-color, var(--accent-blue)); font-weight: var(--link-weight, inherit); }
 .lp a.wiki-unresolved { color: var(--link-unresolved-color, var(--link-unresolved)); font-style: italic; filter: var(--link-unresolved-filter, none); opacity: var(--link-unresolved-opacity, 1); }
-/* R8.2: one rendered row per line/block; the raw caret row blends in */
+/* R8.2: one rendered row per line/block */
 .lprow { min-height: 1.5em; cursor: text }
 .lprow > :first-child { margin-top: 0 }
 .lprow > :last-child { margin-bottom: 0 }
-.lpraw { display: block; width: 100%; background: var(--bg-elevated); color: inherit;
-         border: 0; border-radius: 3px; padding: 0 2px; resize: none;
-         outline: none; font: inherit; line-height: inherit; overflow: hidden }
 /* rvcursor: READING VIEW IS NOT EDITABLE, so the pointer must never be the
    I-beam here. The container declares the ordinary arrow (`default`) for all
    ordinary content — without this declaration the UA resolves the inherited
@@ -1105,17 +1102,8 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
    reason in the hover title. */
 .ctxmenu div.sep { padding: 0; height: 1px; margin: 5px 0; background: var(--border); cursor: default; pointer-events: none }
 .ctxmenu div.dis { color: var(--text-chrome-muted); cursor: default; pointer-events: none }   /* no :hover rule needed: pointer-events:none means the row never hovers (and lint-colors bans "transparent") */
-/* R38 (docs/recon-tabmenu/README.md): the tab menu's radio rows. Obsidian has no
-   `Live preview` row and no ✓ in any label, so R12.4's mark is an ELEMENT
-   (span.chk) rather than text in the label — the rendered label set then equals
-   Obsidian's character for character while the radio state stays visible, and
-   [menu:] (textContent) reads Obsidian's wording. The gutter is reserved on EVERY
-   row of these two so the labels do not shift when the mark moves. */
-.ctxmenu div.chkrow { padding-left: 4px }
-.ctxmenu .chk { display: inline-block; width: 12px; height: 12px; margin-right: 4px; vertical-align: -1px }
-.ctxmenu .chk svg { width: 12px; height: 12px; display: block }
 /* R4X.5 (navbtn): the history menu carries a file icon per row (recon-navbtn
-   §4, 18-menu-crop.png) — an ELEMENT like .chk, so textContent and [menu:]
+   §4, 18-menu-crop.png) — an ELEMENT, so textContent and [menu:]
    stay the bare note labels. */
 .ctxmenu .mi { display: inline-block; width: 12px; height: 12px; margin-right: 6px; vertical-align: -1px; color: var(--text-chrome-muted) }
 .ctxmenu .mi svg { width: 12px; height: 12px; display: block }
@@ -1420,7 +1408,6 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
    the R17.6 divergence this replaced.
    Because a hidden marker is display:none the caret can never land in it. */
 .lp .lprow { white-space: pre-wrap; overflow-wrap: anywhere }
-.lp .lprow.lzy { height: calc(var(--line-height-normal, 1.55) * 1em) }   /* audit #10/#12: a lazy row placeholder (Ed.lzy) holds one line of height */
 .lp .mk { display: none }
 .lp:not(.src) .cm-line.blk > .cm-widgetBuffer { display: none }   /* editor.js lpParse .blk: no empty line box above a block embed */
 .lp.src .mk, .lp .mk.rv { display: inline; color: var(--text-chrome-dim) }
