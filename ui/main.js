@@ -159,6 +159,7 @@ function modeBits(t) {
 const mkTab = name => modeBits({ name, read: false, src: false, hist: [{ n: name, s: 0 }], hpos: 0 });  // R8.8: LP default
 const pushTab = (g, t) => { g.tabs.push(t); g.active = g.tabs.length - 1; };   // append t to group g as its active tab (the caller loads it)
 const lgName = c => "Graph of " + c.split("/").pop();   // a local graph tab's name: "Graph of " + its centre note's basename
+const stemOf = p => { const b = String(p).split("/").pop(), d = b.lastIndexOf("."); return d > 0 ? b.slice(0, d) : b; };   // a path's basename without its extension (PDF / image view titles)
 // #125/#137: an edit view's history position is a CM6 LINE anchor (Ed.snapOf), not scroller px
 const scrollOf = g => { const t = g.active >= 0 ? g.tabs[g.active] : null; return !t || t.kind ? 0 : t.mode === "reading" ? g.preview.scrollTop : isLp(t.mode) ? (Ed.cm(g) ? Ed.snapOf(Ed.cm(g)) || 0 : g.lp.scrollTop) : g.editor.scrollTop; };
 function histPush(g, tab, name) {     // record where the CURRENT entry was scrolled to, then push the new note
@@ -8662,11 +8663,10 @@ async function openCanvas(path, how) {     // how: "split" -> a new pane to the 
    a PDF here too. how: plain click = the active tab (as a note row), "tab" = a new tab (ctrl / middle click). */
 const PDFV = (() => {
   if (!PLG || !PLG.X || !PLG.X.ItemView) return null;
-  const base = p => { const b = String(p).split("/").pop(), d = b.lastIndexOf("."); return d > 0 ? b.slice(0, d) : b; };
   class PdfView extends PLG.X.ItemView {
     constructor(leaf) { super(leaf); this.navigation = true; this.icon = "lucide-file-text"; this.path = null; this.frame = null; this.contentEl.classList.add("pdf-view"); }
     getViewType() { return "pdf"; }
-    getDisplayText() { return this.path ? base(this.path) : "PDF"; }
+    getDisplayText() { return this.path ? stemOf(this.path) : "PDF"; }
     getState() { return this.path ? { file: this.path } : {}; }
     async setState(st) {
       const p = st && typeof st.file === "string" ? st.file.replace(/^\/+/, "") : "";
@@ -8716,11 +8716,10 @@ function pdfvTok() {           // issue #44: [pdfrow:] explorer PDF rows, [pdfv:
    image extensions, so openFile (a bookmark row, a plugin) routes an image here too. how: as openPdf. */
 const IMGV = (() => {
   if (!PLG || !PLG.X || !PLG.X.ItemView) return null;
-  const base = p => { const b = String(p).split("/").pop(), d = b.lastIndexOf("."); return d > 0 ? b.slice(0, d) : b; };
   class ImageView extends PLG.X.ItemView {
     constructor(leaf) { super(leaf); this.navigation = true; this.icon = "lucide-image"; this.path = null; this.img = null; this.contentEl.classList.add("image-view"); }
     getViewType() { return "image"; }
-    getDisplayText() { return this.path ? base(this.path) : "Image"; }
+    getDisplayText() { return this.path ? stemOf(this.path) : "Image"; }
     getState() { return this.path ? { file: this.path } : {}; }
     async setState(st) {
       const p = st && typeof st.file === "string" ? st.file.replace(/^\/+/, "") : "";
@@ -8739,7 +8738,7 @@ const IMGV = (() => {
         box.appendChild(s); this.img = null;
       } else {
         const im = this.img = document.createElement("img");
-        im.alt = base(p); im.draggable = false;
+        im.alt = stemOf(p); im.draggable = false;
         im.addEventListener("load", () => updateTitle());
         im.addEventListener("error", () => { im.classList.add("mod-broken"); updateTitle(); });
         im.src = src;
