@@ -737,9 +737,9 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
             text-overflow: ellipsis }
 /* issue #101: the explorer inline rename field — the bookmark editor's ring (.bmren), sized to the row's
    name slot so the row keeps its 31px pitch; it keeps its own text selection in an unselectable tree. */
-.trow .exren { width: 100%; box-sizing: border-box; background: var(--bg-base); color: var(--text-chrome);
+.trow .exren, .tab .exren { width: 100%; box-sizing: border-box; background: var(--bg-base); color: var(--text-chrome);
                border: 1px solid var(--border-focus-ring); border-radius: 3px; font: inherit; padding: 0 4px;
-               outline: none; user-select: text }
+               outline: none; user-select: text; cursor: text }   /* #142: the field is a caret surface — not the tab/row hand it would inherit */
 .trow .tg { flex: 0 0 14px; align-self: stretch; position: relative }
 .trow .tg::before { content: ""; position: absolute; left: 7px; top: 0;
                     bottom: 0; width: var(--nav-indentation-guide-width, 1px); background: var(--rule-faint) }
@@ -875,6 +875,9 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .tab { width: var(--tab-width, 120px); min-width: 0; flex-shrink: 1; overflow: hidden; display: flex; align-items: center;
        gap: 6px; padding: 0 8px; background: var(--bg-surface); color: var(--tab-text-color-focused, var(--text-chrome-muted));
        cursor: pointer; font-size: var(--tab-font-size, 12px); border-right: 2px solid var(--tab-divider-color, var(--bg-ribbon)); max-width: var(--tab-max-width, none); border-radius: var(--tab-radius, 0); }   /* R22: overflow:hidden — the 16px close button + 16px padding cannot fit a 2px tab, so clip */
+/* #142: the tab is a click target (click = activate, double click = rename) -> the hand. Two classes so a theme's
+   bare .workspace-tab-header { cursor: var(--cursor) } (AnuPpuccin, --cursor unset -> auto) cannot take it back. */
+.tab.workspace-tab-header { cursor: pointer }
 .tab.active { background: var(--tab-background-active); color: var(--tab-text-color-focused-active, var(--text-chrome)); border-radius: var(--tab-radius-active, var(--tab-radius, 0)); }   /* themematch: active tab = the note surface */
 /* #59 x #84: stock Obsidian 1.13.7 tab ink — a FOCUSED window paints --tab-text-color-focused(-active) (rules above), an
    UNFOCUSED one --tab-text-color(-active). App-owned marker body.window-focused (main.js winFocus), NOT Obsidian's
@@ -1733,13 +1736,18 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
   display: block; max-width: var(--note-column, none); margin-inline: auto;
   font-size: var(--inline-title-size, var(--h1-size)); font-weight: var(--inline-title-weight, var(--h1-weight));
   line-height: var(--inline-title-line-height, var(--h1-line-height)); letter-spacing: var(--h1-letter-spacing);
-  color: var(--inline-title-color, inherit); overflow-wrap: anywhere; white-space: pre-wrap; cursor: text;
+  color: var(--inline-title-color, inherit); overflow-wrap: anywhere; white-space: pre-wrap;
   font-family: var(--inline-title-font, inherit);
 ; font-style: var(--inline-title-style, inherit); font-variant: var(--inline-title-variant, inherit); }
 .lp[data-title]::before, .preview[data-title]::before, .lp.cmown .cm-scroller[data-title]::before {
   content: attr(data-title);
   margin-top: 0; margin-bottom: var(--inline-title-margin-bottom, 0.5em); user-select: none;
 }
+/* issue #142 (operator 2026-11-16): the live-preview title band is a DOUBLE-click target — a single press
+   opens nothing — so it shows the pointer, not the I-beam. The reading view's title opens nothing at all
+   and keeps the reading view's arrow (rvcursor). The open .titleedit is the caret surface (cursor: text). */
+.lp[data-title]::before { cursor: pointer }
+.preview[data-title]::before { cursor: default }
 /* R34.15 (R32.4 restated as a NUMERIC condition) — HOW THE TITLE BECOMES
    EDITABLE WITHOUT BECOMING A ROW.
    The ::before above stays exactly as it is, always, including while the title
@@ -1787,7 +1795,7 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
              font-family: var(--font-text); font-size: var(--font-text-size);
              line-height: var(--line-height-normal); color: var(--text-normal) }
 .titleedit {
-  background: var(--transparent); border: 0; outline: none; user-select: text;
+  background: var(--transparent); border: 0; outline: none; user-select: text; cursor: text;   /* the OPEN editor is a caret surface */
 }
 .lp .lprow { width: 100% }
 .lp .lprow:has(> .h) + .lprow:not(:has(> .h)) { padding-top: var(--p-spacing-empty, 0) }   /* stock: the line under a heading (HyperMD-header + .cm-line) */
@@ -2165,7 +2173,7 @@ span.is-flashing { background: var(--highlight-yellow) }
 .lp.src .pdf-embed { display: none }
 /* #116 audio embeds (editor.js Ed.audioEl / audioFill): ONE <audio controls> in a block span, both
    engines; an unresolved target is the R29.4 banner (the reading view's is filled by JS, so its
-   wording is CSS here too); a refused load (restricted page, too large) hides the player and says why */
+   wording is CSS here too); a refused load (too large, unreadable) hides the player and says why */
 .lp .audio-embed, .preview .audio-embed { display: block; margin: 8px 0; user-select: none }
 .audio-embed > audio { display: block; width: 100%; max-width: 480px; height: 40px }
 .audio-embed[data-err] > audio { display: none }
@@ -2173,6 +2181,16 @@ span.is-flashing { background: var(--highlight-yellow) }
   background: var(--bg-surface); color: var(--text-chrome-muted); font-size: 14px }
 .preview .imgmiss.audiomiss::after { content: "\201C" attr(data-miss) "\201D could not be found." }
 .lp.src .audio-embed { display: none }
+/* #139 restricted vault: click-to-play — the player is hidden and nothing is read until the Play button is
+   pressed (editor.js audioFill); the button's label is CSS (no text node: the row's textContent is its source) */
+.audio-embed[data-c2p] > audio { display: none }
+.audio-embed > .audio-c2p { display: none }
+.audio-embed[data-c2p] > .audio-c2p { display: flex; align-items: center; gap: 8px; width: 100%; max-width: 480px;
+  height: 40px; padding: 0 16px; border: 1px solid var(--bg-surface); border-radius: 20px; cursor: pointer;
+  background: var(--bg-surface); color: var(--text-chrome-muted); font: inherit; font-size: 14px; text-align: left }
+.audio-embed[data-c2p][data-st="loading"] > .audio-c2p { cursor: progress; opacity: .7 }
+.audio-embed[data-c2p] > .audio-c2p::before { content: "\25B6"; font-size: 12px }
+.audio-embed[data-c2p] > .audio-c2p::after { content: "Play audio (restricted vault: read on click)" }
 /* #116 the Audio recorder's indicator while the mic is open (main.js AREC): ribbon button is-active + a
    status item bottom-right, red dot + "Recording" */
 #arribbonbtn.is-active { color: var(--color-red, #e5484d) }

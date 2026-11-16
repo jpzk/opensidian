@@ -72,3 +72,8 @@ CENSUS.push(() => Ed.coTok());   // callouts (#59): [co:n|type/fold/state/icon/n
 CENSUS.push(() => gfiTok());   // #130: [gfi:<kind>@<gid>=<o|c>,<lucide class>,<fnv1a glyph hash>,x,y,w,h,svgw,svgh,stroke,ink,cardbg,hover|...] the Open-graph-settings button (.graph-controls .mod-open) of EVERY graph leaf — gate phase graphgear
 CENSUS.push(() => { try { return (AREC ? AREC.tok() : "") + Ed.audTok(); } catch (_) { return ""; } });   // #116 audio recorder: [arec:on=|rec=|busy=|saved=|last=|denied=|mr=|gum=|err=] [ribbon:audio@x,y] [arind@x,y]; audio embeds [aud:n|<lp|rv>:<path>:<state>:<readyState>:<dur>@x,y|...]
 CENSUS.push(() => imgvTok());   // issue #102: [imgrow:<path>@x,y|...] explorer image rows, [imgv:<path>|<w>x<h>L|B|-|x,y,w,h] the image view on screen ([imgv:<path>|M|-] = not in the image list) — gate phase imgopen
+// #139: every CSP refusal on the page, from load ([csp:<n>|<last effective directive>]); a restricted page playing an
+// audio embed click-to-play (media-src 'self' blob:) must cause none — gate phase dnar
+var CSPV = { n: 0, d: "-" };
+window.addEventListener("securitypolicyviolation", e => { CSPV.n++; CSPV.d = String(e.effectiveDirective || e.violatedDirective || "?").replace(/[[\]|@\s]/g, "_"); }, true);
+CENSUS.push(() => " [csp:" + CSPV.n + "|" + CSPV.d + "]");
