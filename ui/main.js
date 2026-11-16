@@ -794,16 +794,7 @@ function tjTok() {
     g.preview.querySelectorAll("h1,h2,h3,h4,h5,h6").forEach((el, i) => { if (el.offsetTop - g.preview.offsetTop <= st + 2) k = i; });
     top = k >= 0 && tocHeads[k] ? tocHeads[k].line : 0;
   }
-  const car = g.lpActive ? g.lpActive.l0 : -1, a = document.activeElement;
-  let ae = a ? a.tagName.toLowerCase() : "-";
-  if (a && (a === g.lp || g.lp.contains(a))) ae = "lp";
-  else if (a && g.preview.contains(a)) ae = "rv";
-  else if (a && a.closest) {
-    const p = a.closest(".pane"), h = p && p._g;
-    if (h) { const x = h.tabs[h.active]; ae = "g" + (groups().indexOf(h) + 1) + ":" + (x ? x.kind || "note" : "-"); }
-    else if (a.closest("#side")) ae = "side";
-    else if (a.closest("#rside")) ae = "rside";
-  }
+  const car = g.lpActive ? g.lpActive.l0 : -1, ae = aeWhere(g);   // g is the outline's leaf group (non-null here)
   return " [tj:" + nm + "|top:" + top + "|car:" + car + "|st:" + Math.round(st) + "|ae:" + ae + "]";
 }
 /* tocjump geometry [tjxy:toc=<line>@x,y;...|p<i>=tabx,taby/cx,cy;...|tree=x,y|-]
