@@ -1990,6 +1990,48 @@ Object.assign(Ed, {
     view.dispatch({ changes: { from: r, insert: md }, selection: { anchor: r, head: r + md.length }, userEvent: "input.drop" });
     return true;
   },
+  /* #143: paste of rich text. Stock 1.13.7 pastes a clipboard carrying text/html as its
+     Markdown ([t](url), **b**, *i*, # h, - li, code, > quote) — the SAME conversion as its
+     drop (harness docs/issue-51/STOCK.md "paste of the same data: identical result"), so this
+     reuses htmlDrop's converter and guards exactly: Ed.h2m = the plugin API's htmlToMarkdown
+     (inert parse, every text node escaped, javascript:/data: URLs dropped; the html itself
+     never reaches the DOM). Mounted Prec.low, after gh-paste's attachPaste (#19: an image on
+     the clipboard is claimed first) and after the plugin "editor-paste" hooks (their
+     preventDefault wins). true = handled; false leaves the paste to CM6 (plain-only clipboard,
+     no converter, nothing converted). Replaces the selection like CM6's own paste, caret after
+     the inserted text, one "input.paste" undo step (the transactionExtender in mount()). */
+  htmlPaste(e, view) {
+    const dt = e && e.clipboardData;
+    if (!dt || !view || e.defaultPrevented || view.state.readOnly) return false;
+    const h2m = typeof Ed.h2m === "function" ? Ed.h2m : null;
+    let html = "";
+    try { html = String(dt.getData("text/html") || ""); } catch (_) {}
+    if (!h2m || !html.trim()) return false;
+    let md = "";
+    try { md = String(h2m(html) || ""); } catch (_) { return false; }
+    if (!md) return false;
+    e.preventDefault();
+    view.dispatch(view.state.replaceSelection(md), { scrollIntoView: true, userEvent: "input.paste" });
+    return true;
+  },
+  /* #143: Ctrl/Cmd+Shift+V pastes PLAIN text, as stock (Chromium's paste-as-plain-text). Not
+     left to the webview: WebKitGTK's own binding is not a contract, so the key reads the
+     clipboard's text through the same Rust path as the menu's "Paste as plain text"
+     (ui/edmenu.js clipPaste -> clip_text) and inserts it as one "input.paste" step, caret after.
+     clip_text is async (PR #146 review): the text goes where the selection was AT THE KEYPRESS
+     while the document is unchanged (a caret moved in between does not redirect it); if the
+     document was edited meanwhile the old ranges no longer name the same text, so it follows
+     the current selection, as a keystroke would. */
+  plainPaste(view) {
+    if (!view || view.state.readOnly || typeof inv !== "function") return false;
+    const doc0 = view.state.doc, sel0 = view.state.selection;
+    Promise.resolve(inv("clip_text")).then(t => {
+      if (!t || view.state.readOnly) return;
+      const st = view.state.doc === doc0 ? view.state.update({ selection: sel0 }).state : view.state;
+      view.dispatch(st.replaceSelection(String(t)), { scrollIntoView: true, userEvent: "input.paste" });
+    }, err => console.warn("clip_text:", err));
+    return true;
+  },
   mount(v) {
     const G = () => Ed.G(v);
     v._ext = [
@@ -2015,7 +2057,9 @@ Object.assign(Ed, {
       // first and, when its command returns false, ours still runs. A keydown
       // handler here ran ahead of the keymap handler and swallowed Tab/Enter/... for
       // every plugin keymap (Advanced Tables' Tab only indented).
-      CMv.keymap.of([{ any: (view, e) => { Ed.onKey(G(), e); return e.defaultPrevented; } }]),
+      // #143: Ctrl/Cmd+Shift+V = paste as plain text (stock); ahead of Ed.onKey in the same keymap
+      CMv.keymap.of([{ key: "Mod-Shift-v", run: view => Ed.plainPaste(view) },
+                     { any: (view, e) => { Ed.onKey(G(), e); return e.defaultPrevented; } }]),
       // gh #43: a pair char typed over a selection wraps it, as stock does (Settings > Editor
       // "Auto pair brackets" / "Auto pair Markdown syntax"): the selection stays on the inner
       // text, so [ then [ makes [[sel]] and * then * makes **sel** (harness docs/issue-43/STOCK.md)
@@ -2037,7 +2081,10 @@ Object.assign(Ed, {
       // files, an in-editor move and an html-less drop stay CM6's own drop. Prec.low (PR #65
       // review F2): after the plugin hooks (editor-api.js hooks(), default precedence), so a
       // plugin's "editor-drop" sees the drop first and its preventDefault wins, as in stock
-      CMs.Prec.low(CMv.EditorView.domEventHandlers({ drop: (e, view) => Ed.htmlDrop(e, view) })),
+      // #143: a paste carrying text/html pastes its Markdown, like stock (Ed.htmlPaste); same
+      // Prec.low as the drop, so attachPaste (#19, image first) and plugin "editor-paste" go first
+      CMs.Prec.low(CMv.EditorView.domEventHandlers({ drop: (e, view) => Ed.htmlDrop(e, view),
+                                                    paste: (e, view) => Ed.htmlPaste(e, view) })),
       CMv.EditorView.lineWrapping,
       CMv.EditorView.contentAttributes.of({ spellcheck: "false", autocorrect: "off", autocapitalize: "off" }),
       Ed.viewTheme || (Ed.viewTheme = CMv.EditorView.theme({ "&.cm-focused": { outline: "none" }, ".cm-scroller": { fontFamily: "inherit", lineHeight: "inherit", overflow: "visible" },
