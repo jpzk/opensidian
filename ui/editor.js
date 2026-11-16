@@ -2422,12 +2422,32 @@ Ed.land = function (cm, s, byFrac) {
    freshly measured map; when it is off by more than HOLD_PX the same landing is
    given back to CM6 once more (an effect, never a px write). Ends at the first
    user input on the scroller, at a newer landing, or after HOLD_FR frames. */
+/* WIP DIAG (local only): at the scroller top, the drawn element vs the height-map block it maps to */
+Ed.tDiag = function (cm) {
+  try {
+    const sc = cm.scrollDOM, R = Math.round, y = sc.getBoundingClientRect().top + 1, d = cm.state.doc, o = Ed.scOff(cm);
+    let s = "";
+    for (const el of cm.contentDOM.children) {
+      const r = el.getBoundingClientRect();
+      if (r.bottom <= y) continue;
+      const p0 = cm.posAtDOM(el, 0), pe = cm.posAtDOM(el, el.childNodes.length), b = cm.lineBlockAt(p0);
+      s = "el" + (d.lineAt(p0).number - 1) + "-" + (d.lineAt(pe).number - 1) + ":" + (el.className || "").replace(/[^a-z-]/gi, ".").slice(0, 24) +
+        "@" + R(r.top - y + 1) + "+" + R(r.height) + "/blk" + (d.lineAt(b.from).number - 1) + "-" + (d.lineAt(b.to).number - 1) +
+        "@" + R(b.top + o - sc.scrollTop) + "+" + R(b.height) + "/k" + el.children.length;
+      const kids = [...el.children].slice(0, 8).map(k => R(k.getBoundingClientRect().top - r.top) + "+" + R(k.getBoundingClientRect().height));
+      if (kids.length) s += "/" + kids.join(";");
+      break;
+    }
+    const mb = cm.lineBlockAtHeight(Math.max(0, sc.scrollTop - o));
+    return s + "/map" + (d.lineAt(mb.from).number - 1) + "-" + (d.lineAt(mb.to).number - 1) + "@" + R(mb.top + o - sc.scrollTop) + "+" + R(mb.height);
+  } catch (e) { return "err"; }
+};
 Ed.HOLD_PX = 3; Ed.HOLD_FR = 90;
 Ed.holdLand = function (cm, s, byFrac) {
   if (!cm || !s || s.top) return;
   const seq = cm._landSeq = (cm._landSeq || 0) + 1, sc = cm.scrollDOM, evs = ["wheel", "keydown", "pointerdown", "touchstart"];
   let fr = 0, ok = 0, re = 0, done = false;
-  const end = () => { if (done) return; done = true; for (const e of evs) sc.removeEventListener(e, quit, true); Ed.lndTok += "|E" + fr + "r" + re + "q" + (cm._landSeq === seq ? 0 : 1); setTimeout(() => { const g0 = typeof fg === "function" ? fg() : null; Ed.lndTok += "|T" + (g0 ? Math.round((Ed.topLine(g0, 1) || 0) * 100) / 100 : "-") + "@" + Math.round(sc.scrollTop) + "/" + Math.round(sc.scrollHeight) + "/" + Math.round(Ed.scOff(cm)); }, 700); };   // WIP DIAG
+  const end = () => { if (done) return; done = true; for (const e of evs) sc.removeEventListener(e, quit, true); Ed.lndTok += "|E" + fr + "r" + re + "q" + (cm._landSeq === seq ? 0 : 1) + "/" + Ed.tDiag(cm); setTimeout(() => { const g0 = typeof fg === "function" ? fg() : null; Ed.lndTok += "|T" + (g0 ? Math.round((Ed.topLine(g0, 1) || 0) * 100) / 100 : "-") + "@" + Math.round(sc.scrollTop) + "/" + Math.round(sc.scrollHeight) + "/" + Math.round(Ed.scOff(cm)) + "/" + Ed.tDiag(cm); }, 700); };   // WIP DIAG
   const quit = () => { if (cm._landSeq === seq) cm._landSeq++; end(); };
   for (const e of evs) sc.addEventListener(e, quit, true);
   const tick = () => {
@@ -2496,7 +2516,7 @@ Ed.topLine = function (g, slack) {
 Ed.topLineNow = function (g, slack) {
   const cm = Ed.cm(g); if (!g.lp || !cm) return null;
   const l = Ed.topLine(g, slack), s = cm.scrollDOM, R = x => (x == null ? "-" : Math.round(x * 100) / 100);
-  Ed.tlDiag = R(l) + ":" + Math.round(s.scrollTop) + ":" + Math.round(s.scrollHeight);
+  Ed.tlDiag = R(l) + ":" + Math.round(s.scrollTop) + ":" + Math.round(s.scrollHeight) + ":" + Ed.tDiag(cm);   // WIP DIAG tDiag
   return l;
 };
 /* put the fractional source line at the scroller's top: ONE CM6 snapshot effect.
