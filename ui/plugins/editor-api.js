@@ -90,7 +90,19 @@
       blur() { this.cm.contentDOM.blur(); }
       hasFocus() { return this.cm.hasFocus; }
       getScrollInfo() { const s = this._v.lp || this.cm.scrollDOM; return { top: s.scrollTop, left: s.scrollLeft, height: s.scrollHeight, width: s.scrollWidth, clientHeight: s.clientHeight, clientWidth: s.clientWidth }; }
-      scrollTo(x, y) { const s = this._v.lp || this.cm.scrollDOM; if (x != null) s.scrollLeft = x; if (y != null) s.scrollTop = y; }
+      /* scroll-model: a CM6 scroller is never written from outside CM6 (ui/scrollpos.js). The
+         Obsidian px y is mapped to the source line at that height on the current height map
+         and landed by CM6 itself; x (horizontal) is not re-anchored by CM6 and stays direct. */
+      scrollTo(x, y) {
+        const v = this._v, s = v.lp || this.cm.scrollDOM, cm = this.cm, g = v.g;
+        if (x != null) s.scrollLeft = x;
+        if (y == null || !Number.isFinite(Number(y)) || typeof ScrollPos === "undefined") return;
+        const live = !!g && g.view === v;   // a hidden view has no layout: its height map alone, from the content top
+        const h = Number(y) - (live ? cm.documentTop - s.getBoundingClientRect().top + s.scrollTop : 0);
+        let line = 0;
+        if (h > 0) { const b = cm.lineBlockAtHeight(h); line = cm.state.doc.lineAt(b.from).number - 1 + (b.height > 0 ? Math.min(1, Math.max(0, (h - b.top) / b.height)) : 0); }
+        if (live) ScrollPos.restore(g, line); else v.sp = { line };
+      }
       scrollIntoView(range, center) {
         const r = range && range.from ? range : { from: this.getCursor("from"), to: this.getCursor("to") };
         const a = this.posToOffset(r.from), b = this.posToOffset(r.to || r.from);
@@ -177,13 +189,12 @@
         const b = cm.lineBlockAtHeight(h), n = cm.state.doc.lineAt(b.from).number - 1;
         return Math.round((n + (b.height > 0 ? Math.min(1, (h - b.top) / b.height) : 0)) * 1000) / 1000;
       }
-      applyScroll(scroll) {
-        const v = this.view && this.view._tv, s = scrollerOf(v), cm = v && v.cm;
-        const y = Number(scroll); if (!s || !cm || !Number.isFinite(y)) return;
-        const d = cm.state.doc, n = clamp(Math.floor(y), 0, d.lines - 1);
-        const b = cm.lineBlockAt(d.line(n + 1).from);
-        const top = cm.documentTop - s.getBoundingClientRect().top + s.scrollTop;
-        s.scrollTop = y <= 0 ? 0 : top + b.top + (y - n) * b.height;
+      applyScroll(scroll) {   // scroll-model: one position model (ui/scrollpos.js), landed by CM6
+        const v = this.view && this.view._tv, y = Number(scroll);
+        if (!v || !v.cm || !Number.isFinite(y)) return;
+        const line = Math.max(0, y), g = v.g;
+        if (g && g.view === v && typeof ScrollPos !== "undefined") ScrollPos.restore(g, line);
+        else v.sp = { line };   // a hidden view: restored when its tab is shown (loadActive)
       }
       getFoldInfo() { return foldInfo(this.view && this.view._tv); }
       applyFoldInfo(info) { applyFolds(this.view && this.view._tv, info); }

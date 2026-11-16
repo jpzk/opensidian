@@ -2006,6 +2006,7 @@ Object.assign(Ed, {
       Ed.viewTheme || (Ed.viewTheme = CMv.EditorView.theme({ "&.cm-focused": { outline: "none" }, ".cm-scroller": { fontFamily: "inherit", lineHeight: "inherit", overflow: "visible" },
                              ".cm-content": { padding: "0" }, ".cm-line": { padding: "0" } })),
       CMv.EditorView.updateListener.of(u => Ed.onUpdate(G(), v, u)),
+      typeof ScrollPos !== "undefined" ? ScrollPos.ext() : [],   // ui/scrollpos.js: the ONE way a position lands on this scroller
       Ed.lpExt ? Ed.lpExt(v, G) : [],
       Ed.hlExt(v),
     ];
@@ -2018,6 +2019,7 @@ Object.assign(Ed, {
     // g.lp.focus() (tab switch, palette close, title edit) = focus the editor
     lp.focus = () => { if (!cm.hasFocus) cm.focus(); };
     Ed.wheelOwn(lp);
+    if (typeof ScrollPos !== "undefined") ScrollPos.wire(lp);   // user input on the scroller unpins a restore
     return lp;
   },
   onUpdate(g, v, u) {
@@ -2276,19 +2278,9 @@ Ed.topLine = function (g, slack) {
   const p = Ed.lineAtY(g, y);
   return p ? p.l + p.f : null;
 };
-Ed.scrollToLine = function (g, line) {    // put the fractional source line at the scroller's top, clamped
-  const cm = Ed.cm(g), lp = g.lp; if (!cm || line == null) return;
-  const d = cm.state.doc, i = Math.min(d.lines - 1, Math.max(0, Math.floor(line))), f = Math.min(1, Math.max(0, line - i));
-  const go = () => {
-    const b = cm.lineBlockAt(d.line(i + 1).from);
-    const dy = cm.documentTop + b.top + f * b.height - lp.getBoundingClientRect().top;
-    const max = Math.max(0, lp.scrollHeight - lp.clientHeight);
-    lp.scrollTop = Math.min(max, Math.max(0, lp.scrollTop + dy));
-  };
-  go();
-  // the height map holds ESTIMATES for lines never drawn: once CM6 has measured
-  // the lines this scroll brought in, land on the real geometry
-  cm.requestMeasure({ key: "osScrollLine", read: () => null, write: () => { if (Ed.cm(g) === cm) go(); } });
+Ed.scrollToLine = function (g, line) {    // put the fractional source line at the scroller's top (ui/scrollpos.js lands it inside CM6's measure loop)
+  if (!Ed.cm(g) || line == null || typeof ScrollPos === "undefined") return;
+  ScrollPos.restore(g, line);
 };
 /* the editor scroller OWNS its plain vertical wheel. CM6 virtualises: lines it has
    not drawn carry ESTIMATED (or, after the .lp.src restyle, stale) heights, and when
@@ -2348,14 +2340,12 @@ Ed.revealAt = function (g, l, c) {
   cm.dispatch({ effects: CMv.EditorView.scrollIntoView(Math.min(ln.to, ln.from + Math.max(0, c || 0)), { y: "center" }) });
   return true;
 };
-/* put source line l at the scroller's top through CM6's own scrollIntoView effect
-   (y=start): like revealAt, the scroll happens inside CM6's measure loop, so the
-   redraw cannot put a bottom-clamped scrollTop back to 0 (tj [top:0|st:0]). */
+/* put source line l at the scroller's top: ui/scrollpos.js (a scrollIntoView effect
+   landed in CM6's scrollHandler, inside its measure loop, pinned while heights settle),
+   so the redraw cannot put a bottom-clamped scrollTop back to 0 (tj [top:0|st:0]). */
 Ed.revealTop = function (g, l) {
-  const cm = Ed.cm(g); if (!cm || l == null) return false;
-  const d = cm.state.doc, ln = d.line(Math.min(d.lines, Math.max(1, Math.floor(l) + 1)));
-  cm.dispatch({ effects: CMv.EditorView.scrollIntoView(ln.from, { y: "start" }) });
-  return true;
+  if (!Ed.cm(g) || l == null || typeof ScrollPos === "undefined") return false;
+  return ScrollPos.restore(g, Math.floor(l));
 };
 /* flash source line l: a LINE DECORATION, because CM6 owns every .cm-line's class
    attribute and wipes a class written on the element at its next redraw. */

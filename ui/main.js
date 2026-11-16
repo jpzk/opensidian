@@ -154,7 +154,7 @@ function modeBits(t) {
   return t;
 }
 const mkTab = name => modeBits({ name, read: false, src: false, hist: [{ n: name, s: 0 }], hpos: 0 });  // R8.8: LP default
-const scrollOf = g => { const t = g.active >= 0 ? g.tabs[g.active] : null; return !t || t.kind ? 0 : t.mode === "reading" ? g.preview.scrollTop : isLp(t.mode) ? g.lp.scrollTop : g.editor.scrollTop; };
+const scrollOf = g => ScrollPos.capture(g) || 0;   // scroll-model: a history entry keeps a POSITION ({ line }), restored by ScrollPos
 function histPush(g, tab, name) {     // record where the CURRENT entry was scrolled to, then push the new note
   if (tab.hist[tab.hpos]) tab.hist[tab.hpos].s = scrollOf(g);
   tab.hist = tab.hist.slice(0, tab.hpos + 1); tab.hist.push({ n: name, s: 0 }); tab.hpos++;
@@ -679,7 +679,7 @@ async function tocGo(line) {               // scroll + focus the heading at `lin
   } else {
     const k = tocHeads.findIndex(h => h.line === line);
     const el = g.preview.querySelectorAll("h1,h2,h3,h4,h5,h6")[k];
-    if (el) { g.preview.scrollTop = el.offsetTop - g.preview.offsetTop; el.setAttribute("tabindex", "-1"); el.focus(); }
+    if (el) { ScrollPos.toElement(g, el); el.setAttribute("tabindex", "-1"); el.focus(); }
   }
   tocSync();
 }
@@ -909,12 +909,8 @@ function scPaint(g) {
 /* R25.13c: the match is CENTRED — measured at a 349 px offset in a 718 px
    viewport, independent of note length — and the scroll is a SINGLE-FRAME JUMP
    (a 60 Hz frame sampler saw exactly one scrollTop change, shots 15-18). The
-   clamp is the scroller's own range: no overscroll is invented. */
-function scCenter(sc, top, h) {
-  if (!sc) return;
-  sc.scrollTop = Math.max(0, Math.min(top - (sc.clientHeight - h) / 2,
-                                      Math.max(0, sc.scrollHeight - sc.clientHeight)));
-}
+   clamp is the scroller's own range: no overscroll is invented. ScrollPos.centre (edit,
+   inside CM6's measure loop) / ScrollPos.centreElement (reading) do the jump. */
 /* the jump itself. `hits` = the occurrences to decorate (one for a hit row,
    every occurrence in the note for a group header, R25.13b); hits[0] is the
    one jumped to. */
@@ -930,7 +926,7 @@ async function scJump(g, hits) {
     // own reading-view segment map (fRSegs) rather than with a source offset.
     scSet(g, []);
     const el = scPreviewEl(g, h0);
-    if (el) scCenter(g.preview, el.offsetTop - g.preview.offsetTop, el.offsetHeight);
+    if (el) ScrollPos.centreElement(g, el);
     scInfo = "sc:" + curOf(g) + "@read|hl:0|top:" + Math.round(g.preview.scrollTop);
     updateTitle();
     return;
@@ -940,7 +936,6 @@ async function scJump(g, hits) {
   // match is never selected, and a selection that was live is replaced by it.
   await lpMove(g, p.l, p.c, "search");
   scMarks(g);                              // the caret move re-rendered the touched rows
-  const row = Ed.rowAt(g, p.l);
   // The four numbers R25.13c's rule is MADE of, published beside the result it
   // produced: the smoke phase recomputes
   //   clamp(rowTop - (clientHeight - rowHeight)/2, 0, scrollHeight - clientHeight)
@@ -964,14 +959,14 @@ async function scJump(g, hits) {
     const b = cm.lineBlockAt(cm.state.doc.line(p.l + 1).from);
     return [cm.documentTop + b.top - g.lp.getBoundingClientRect().top - g.lp.clientTop + g.lp.scrollTop, b.height];
   };
-  let [rt, rh] = geo();
-  if (rh >= 0) scCenter(g.lp, rt, rh);
-  if (!row && cm && rh >= 0) {
-    await new Promise(res => cm.requestMeasure({ key: "osScJump", read: () => null, write: () => res() }));
+  // scroll-model: centred by ui/scrollpos.js INSIDE CM6's measure loop, on the measured
+  // block of the line (drawn first if it was not); the four numbers below are then read
+  // back from the drawn row, so the census still states the rule it was centred by
+  if (cm && p.l + 1 <= cm.state.doc.lines) {
+    await new Promise(res => { const to = setTimeout(res, 600); if (!ScrollPos.centre(g, p.l, { done: () => { clearTimeout(to); res(); } })) { clearTimeout(to); res(); } });
     await new Promise(res => requestAnimationFrame(() => res()));
-    const [rt2, rh2] = geo();
-    if (rh2 >= 0 && (Math.round(rt2) !== Math.round(rt) || Math.round(rh2) !== Math.round(rh))) { rt = rt2; rh = rh2; scCenter(g.lp, rt, rh); }
   }
+  const [rt, rh] = geo();
   scInfo = "sc:" + curOf(g) + "@" + p.l + "." + p.c + "|hl:" + scHits(g).length +
            "|top:" + Math.round(g.lp.scrollTop) +
            "|vp:" + Math.round(g.lp.clientHeight) + "x" + Math.round(g.lp.scrollHeight) +
@@ -2743,7 +2738,9 @@ function attachView(g, v) {          // v becomes g's live editor/lp/preview
   if (g.find && g.find.open) fClose(g, false);
   const old = g.view;
   if (old && old.g === g) {          // skip when old already moved to another group (tab drop)
-    Object.assign(old, { lpActive: g.lpActive, lpLines: g.lpLines, scrollTop: old.lp.scrollTop });
+    // scroll-model: the hidden view keeps a POSITION (source line), not a px scrollTop: heights
+    // above the top change while it is hidden (images, widgets, a resize) and CM6 re-anchors
+    Object.assign(old, { lpActive: g.lpActive, lpLines: g.lpLines, sp: ScrollPos.capture(g, old.tab && !old.tab.kind ? old.tab.mode : null) });
     old.lp.style.display = old.preview.style.display = "none";
   }
   v.g = g;
@@ -4868,70 +4865,18 @@ function caretLC(g) { return Ed.caretLC(g); }   // [line, col] of the caret in t
                   (block_lines, from the renderer's own parser)
    Both directions map line -> pixels through the destination's OWN geometry,
    so neither view's height is ever assumed from the other's. */
-function ssTopOf(cont, kids) {   // -> [index, fraction] of the first child not scrolled off the top
-  const ct = cont.getBoundingClientRect().top;
-  for (let i = 0; i < kids.length; i++) {
-    const r = kids[i].getBoundingClientRect();
-    if (r.bottom > ct + 1) {
-      const f = r.height > 0 ? Math.min(1, Math.max(0, (ct - r.top) / r.height)) : 0;
-      return [i, f];
-    }
-  }
-  return [Math.max(0, kids.length - 1), 0];
-}
-function ssScrollTo(cont, el, frac) {   // put `frac` into `el` at the top of `cont`, clamped
-  const d = el.getBoundingClientRect().top - cont.getBoundingClientRect().top
-          + frac * el.getBoundingClientRect().height;
-  const max = Math.max(0, cont.scrollHeight - cont.clientHeight);
-  cont.scrollTop = Math.min(max, Math.max(0, cont.scrollTop + d));
-}
+// The position model lives in ui/scrollpos.js (ScrollPos): capture = the fractional
+// source line at the top of the CURRENT view, restore = land it through the
+// destination's own geometry — reading by its block map (re-landed on late image
+// loads), edit through a CM6 scrollIntoView effect landed INSIDE CM6's measure loop
+// and pinned while heights settle (goal scroll-model: a scrollTop written from here
+// was double- or zero-counted against CM6's focus-gated scroll-anchor correction).
 function ssAnchor(g) {   // the (fractional, 0-based) SOURCE LINE at the top of the CURRENT view, or null
-  const t = g.active >= 0 ? g.tabs[g.active] : null;
-  if (!t || t.kind || g.graphOn) return null;
-  if (t.mode === "reading") {
-    const ch = g.preview.children, bl = g.pvLines;
-    if (!ch.length || !bl || bl.length !== ch.length) return null;   // map out of step: no anchor beats a wrong one
-    const [i, f] = ssTopOf(g.preview, ch);
-    const a = bl[i] - 1, b = i + 1 < bl.length ? bl[i + 1] - 1 : a + 1;
-    return a + f * Math.max(1, b - a);
-  }
-  return Ed.topLine(g, 1);            // CM6 height map: the line under the scroller top
+  const p = ScrollPos.capture(g);
+  return p ? p.line : null;
 }
 function ssRestore(g, line) {   // scroll the CURRENT view so `line` is at the top
-  const t = g.active >= 0 ? g.tabs[g.active] : null;
-  if (!t || t.kind || line == null || g.graphOn) return;
-  if (t.mode === "reading") {
-    const ch = g.preview.children, bl = g.pvLines;
-    if (!ch.length || !bl || bl.length !== ch.length) return;
-    let i = 0;
-    while (i + 1 < bl.length && bl[i + 1] - 1 <= line) i++;
-    const a = bl[i] - 1, b = i + 1 < bl.length ? bl[i + 1] - 1 : a + 1;
-    ssScrollTo(g.preview, ch[i], Math.min(1, Math.max(0, (line - a) / Math.max(1, b - a))));
-    return;
-  }
-  Ed.scrollToLine(g, line);           // CM6 height map, re-landed once the lines are measured
-}
-// Reading view has no height map: an <img> that is still decoding when ssRestore
-// lands is 0 px tall, and when its bytes arrive it grows (~360 px for the longpos
-// fixture's images) and pushes the anchored block down — the view ends up showing
-// lines ABOVE the one it restored (longpos 10% lp->read off 35: the first hop of
-// the sweep is the one that loads each fixture image cold). So re-land on each
-// late image load — only while this switch is the latest one, the tab is still
-// in reading view, and the scroller is still where the restore put it (a user
-// scroll since then wins), for at most 5 s after the switch.
-function ssRelandOnImages(g, tab, line) {
-  if (line == null || !g.preview) return;
-  const ims = [...g.preview.querySelectorAll("img")].filter(i => !i.complete);
-  if (!ims.length) return;
-  const seq = g._ssReland = (g._ssReland || 0) + 1, t0 = performance.now();
-  let at = g.preview.scrollTop;
-  const again = () => {
-    if (g._ssReland !== seq || performance.now() - t0 > 5000) return;
-    if (g.active < 0 || g.tabs[g.active] !== tab || tab.mode !== "reading") return;
-    if (Math.abs(g.preview.scrollTop - at) >= 1) { g._ssReland = 0; return; }   // the user scrolled
-    ssRestore(g, line); at = g.preview.scrollTop;
-  };
-  for (const i of ims) { i.addEventListener("load", again, { once: true }); i.addEventListener("error", again, { once: true }); }
+  ScrollPos.restore(g, line);
 }
 
 /* ---------- R35 PERF: the mode switch against the 100 ms ceiling ----------
@@ -5224,7 +5169,7 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
   // outranks the caret they cannot see (the brief's "caret off-screen" case).
   const mswR0 = performance.now();
   ssRestore(g, anchor);
-  if (tab.mode === "reading") ssRelandOnImages(g, tab, anchor);
+  // (reading: ScrollPos re-lands on late image loads itself)
   mswSsMs += performance.now() - mswR0;
   mswEnd(mswT0, mswSsMs);
   mswpMark("ss");
@@ -6134,7 +6079,7 @@ async function loadActive(g) {
       // after the user opened the quick switcher (or any prompt); stealing focus then sent the typed query into the note
       if (n && Ed.cm(g)) Ed.home(g, 0, 0, g === fg() && !typingElsewhere(g));   // goal mt-fix: the caret only — no raw row opens on open ([mode:lp])
     }
-  } else if (v.scrollTop) g.lp.scrollTop = v.scrollTop;
+  } else if (v.sp) ScrollPos.restore(g, v.sp);   // scroll-model: the position the view had when it was hidden
   renderTabs(g);
   treeHighlight();
   updateStatus(g);                   // word/char count sync, backlinks async (not awaited: outside the action span)
@@ -6303,42 +6248,16 @@ async function navAnchor(g, anchor) {
   navInfo = "nav:" + anchor + "@" + line;
   if (line < 0) return updateTitle();
   if (isLp(t.mode)) {
-    // CM6 draws only the viewport: a line it has not drawn is brought in first and
-    // centred once CM6 has measured it; a drawn line is centred on its real box
-    const sc = g.lp, cm = Ed.cm(g);
-    const centre = () => {
-      const row = Ed.rowAt(g, line);
-      if (!row) return false;
-      const rt = row.getBoundingClientRect().top - sc.getBoundingClientRect().top - sc.clientTop + sc.scrollTop;
-      sc.scrollTop = rt - (sc.clientHeight - row.offsetHeight) / 2;
-      return true;
-    };
-    const centred = () => {          // the target row's middle within the middle half of the scroller
-      const row = Ed.rowAt(g, line); if (!row) return false;
-      const r = row.getBoundingClientRect(), b = sc.getBoundingClientRect();
-      return Math.abs(r.top + r.height / 2 - b.top - sc.clientTop - sc.clientHeight / 2) < sc.clientHeight / 4;
-    };
-    if (!cm) { if (!centre()) Ed.scrollToLine(g, line); flash(Ed.rowAt(g, line)); }
-    else {
-      // One scrollIntoView dispatch was not enough: the heading stayed at scrollTop 0 after
-      // a wikilink opened the note (links blob '') — the effect raced the note load's own
-      // measure. Same shape as the find reveal: ask CM6, then check per frame INSIDE its
-      // measure loop until the row is drawn and centred (re-ask / centre on its real box),
-      // bounded. [nvr:] logs the frames (diagnostic, no phase asserts it).
-      Ed.revealAt(g, line, 0); Ed.flashLine(g, line);
-      nvRv = "s" + Math.round(sc.scrollTop);
-      let n = 0;
-      const step = () => cm.requestMeasure({ key: "osNavAnchor", read: () => null, write: () => {
-        if (Ed.cm(g) !== cm) { nvRv += "|gone"; return updateTitle(); }
-        const ok = centred(), drawn = !!Ed.rowAt(g, line);
-        nvRv += "|" + n + ":" + (drawn ? 1 : 0) + "," + Math.round(sc.scrollTop);
-        if (ok || ++n > 12) { nvRv += "|f" + (ok ? 1 : 0); return updateTitle(); }
-        if (!drawn) Ed.revealAt(g, line, 0); else centre();
-        requestAnimationFrame(step);
-      } });
-      requestAnimationFrame(step);
-    }
+    // scroll-model: the line is CENTRED by ui/scrollpos.js — a scrollIntoView effect
+    // landed in CM6's scrollHandler inside its measure loop, once the line is drawn
+    // and measured, and re-landed while heights settle (a wikilink that just opened
+    // the note: its load's own measure). The old per-frame centre() wrote g.lp from a
+    // requestMeasure WRITE, before CM6's anchor correction — the longpos double count.
+    // Source puts the caret on the line FIRST: its selection scroll would replace ours.
     if (t.mode === "source") await lpEdit(g, line, 0);  // R12: source puts the caret on the line
+    const sc = g.lp;
+    if (ScrollPos.centre(g, line)) { Ed.flashLine(g, line); nvRv = "sp" + Math.round(sc.scrollTop); }
+    else flash(Ed.rowAt(g, line));
   } else {
     let el = null;
     if (anchor.startsWith("^")) {
@@ -6348,7 +6267,7 @@ async function navAnchor(g, anchor) {
       const k = tocHeadsOf(g.editor.value).findIndex(h => h.line === line);
       el = g.preview.querySelectorAll("h1,h2,h3,h4,h5,h6")[k];
     }
-    if (el) { g.preview.scrollTop = el.offsetTop - g.preview.offsetTop; flash(el); }
+    if (el) { ScrollPos.toElement(g, el); flash(el); }
   }
   tocSync();
   updateTitle();
@@ -6466,7 +6385,7 @@ async function histGo(d, from) {
   if (lgh) { otel.cancel(lgh.settleSp); lgh.settleSp = otel.begin("graph_settle", { from: "history", nodes: 0 }); }
   await loadActive(g);
   const s = !tab.kind && tab.hist[p].s;
-  if (s) { if (tab.mode === "reading") g.preview.scrollTop = s; else if (isLp(tab.mode)) g.lp.scrollTop = s; else g.editor.scrollTop = s; }
+  if (s && typeof s === "object") ScrollPos.restore(g, s);   // scroll-model: { line } from scrollOf
   otel.paint(sp);
 }
 // mouse buttons 4/5 (X11 8/9 -> DOM button 3/4): nav fires on mousedown (capture) with
@@ -10024,15 +9943,21 @@ window.addEventListener("wheel", e => {
   if (!sc || (settingsOpen && t.closest("#settings"))) return;
   const next = Math.max(QFS_MIN, Math.min(QFS_MAX, qfsSize + (e.deltaY < 0 ? 1 : -1)));
   if (next === qfsSize) return;                             // clamped: nothing to write (REQ-5)
-  // keep the TOP VISIBLE LINE while the text grows/shrinks (REQ-8): anchor on
-  // the element under the scroller's top edge and restore its offset after
+  // keep the TOP VISIBLE LINE while the text grows/shrinks (REQ-8). The note scroller
+  // of a CM6 view (g.lp) is never written from outside CM6 (ui/scrollpos.js): the top
+  // line is captured as a content position and re-landed by CM6 after the restyle.
+  // The reading view keeps the element under its top edge (not CM6: written here).
+  const pane = sc.closest(".pane"), g = pane && pane._g;
+  const cmSurf = !!(g && g.lp === sc && Ed.cm(g) && typeof ScrollPos !== "undefined");
+  const pos = cmSurf ? ScrollPos.capture(g) : null;
   const r = sc.getBoundingClientRect();
-  let a = document.elementFromPoint(r.left + Math.min(40, r.width / 2), r.top + 2);
+  let a = cmSurf ? null : document.elementFromPoint(r.left + Math.min(40, r.width / 2), r.top + 2);
   if (a && (!sc.contains(a) || a === sc)) a = null;
   const before = a ? a.getBoundingClientRect().top : 0;
   qfsSteps++;
   qfsSet(next);                                             // fontset REQ-19: the slider's setter too
-  if (a && a.isConnected) sc.scrollTop += a.getBoundingClientRect().top - before;
+  if (pos) ScrollPos.restore(g, pos);
+  else if (a && a.isConnected) sc.scrollTop += a.getBoundingClientRect().top - before;
   updateTitle();
 }, { passive: false });
 /* [qfs:<baseFontSize>,<action 1|0>,<steps>,<computed .lp font-size of the
@@ -14364,75 +14289,32 @@ function fReveal(g, done) {   // done(): called once the reveal has finished (sy
      navigate" includes not moving the page under the reader. */
   const sc = fSurf(g);
   if (!sc) return fin();
-  const go = () => {
-    const el = sc.querySelector("span." + F_MARK + "." + F_CUR);
-    if (!el) return false;
-    const r = el.getBoundingClientRect(), b = sc.getBoundingClientRect();
-    if (r.top >= b.top + 4 && r.bottom <= b.bottom - 4) return true;      // already on screen: do not jitter
-    sc.scrollTop += (r.top - b.top) - Math.max(0, (sc.clientHeight - r.height) / 2);
-    return true;
-  };
-  if (go()) return fin();
-  // CM6 draws only its viewport: a match on a line it has not drawn carries no span
-  // yet — bring the line in, then centre the mark once CM6 has measured and drawn it.
-  // The scroll is drawn in a LATER frame than the measure that set it, so retry per
-  // frame until the span exists (bounded), then report done.
+  const mark = () => sc.querySelector("span." + F_MARK + "." + F_CUR);
+  const onScreen = el => { const r = el.getBoundingClientRect(), b = sc.getBoundingClientRect();
+    return r.top >= b.top + 4 && r.bottom <= b.bottom - 4; };
+  const el0 = mark();
+  if (el0 && onScreen(el0)) return fin();                            // already on screen: do not jitter
   const st = fState(g), h = st.hits[st.idx], cm = sc === g.lp ? Ed.cm(g) : null;
   if (!h || h.l == null || !cm) { fRv = "nohit"; return fin(); }
-  // The undrawn line is brought in by CM6 ITSELF (Ed.revealAt: a scrollIntoView effect,
-  // centred inside its measure loop, after its redraw). Earlier tries wrote scrollTop
-  // from outside the loop and saw it land back at 0 (0c612980 [frv:..|t0]).
-  // No synchronous cm.measure() here: CM6's measure keeps its scroll anchor when it
-  // has not yet SEEN a scroll event, so a flush right after a programmatic scrollTop
-  // write can put the scroller back (5a79ae48: [fsc:0]). The line is brought in, CM6
-  // measures and draws it in its own cycle, and the mark is centred then — the same
-  // order scJump uses. fGo holds the census until done(), so no title is published
-  // with the new counter before the match is on screen.
-  if (!Ed.revealAt(g, h.l, h.c)) Ed.scrollToLine(g, h.l);
+  /* scroll-model: the scroller of a CM6 view is never written from outside CM6
+     (ui/scrollpos.js, ROOTCAUSE.md). Whether the match is drawn off screen or not
+     drawn at all (CM6 draws only its viewport), CM6 brings it to the centre ITSELF:
+     Ed.revealAt is a scrollIntoView effect, landed inside its measure loop after
+     the redraw, so no anchor correction can count a height delta twice. The old
+     `sc.scrollTop += …` inside a requestMeasure write was one instance of the
+     class. fGo holds the census until done(), so no title is published with the
+     new counter before the match is on screen: poll per frame (bounded) for it. */
+  Ed.revealAt(g, h.l, h.c);
   fRv = "l" + h.l + "|s" + Math.round(sc.scrollTop) + "/" + Math.round(sc.scrollHeight);
-  // DIAGNOSTIC (find reveal lost its scroll, 805c5264 [frv:..|t0]): every JS write to
-  // the scroller while the reveal is in flight is logged with its caller
-  const P = Object.getOwnPropertyDescriptor(Element.prototype, "scrollTop");
-  const who = () => { const s = String(new Error().stack || "").split("\n").slice(2, 5);
-    return s.map(x => ((x.match(/^\s*(?:at\s+)?([\w$.]+)/) || [])[1] || "?") + ":" +
-      ((x.match(/(\w+)\.js:(\d+):\d+\)?\s*$/) || []).slice(1, 3).join(""))).join(">"); };
-  try {
-    Object.defineProperty(sc, "scrollTop", { configurable: true, get() { return P.get.call(this); },
-      set(v) { if (Math.abs(v - P.get.call(this)) > 1) fRv += "|w" + Math.round(v) + "@" + who(); P.set.call(this, v); } });
-    for (const m of ["scrollTo", "scrollBy"]) sc[m] = function () { fRv += "|" + m + "@" + who(); return Element.prototype[m].apply(this, arguments); };
-  } catch (_) {}
-  let lastE = Math.round(sc.scrollTop);
-  const onS = () => { const tp = Math.round(P.get.call(sc)); if (tp !== lastE) { fRv += "|e" + tp; lastE = tp; } };
-  sc.addEventListener("scroll", onS);
-  // native scrollers: focus() and DOM-selection writes reveal their target
-  const ae = () => { const a = document.activeElement; return a ? a.tagName.toLowerCase() + "." + String(a.className || "").split(" ")[0] : "-"; };
-  const sel0 = document.getSelection(), anc = () => { const n = sel0 && sel0.anchorNode; return !n ? "-" : sc.contains(n) ? "in" : "out"; };
-  fRv += "|a" + ae() + "|sel" + anc();
-  const saved = [];
-  const hookP = (proto, m, tag) => { const o = proto[m]; saved.push([proto, m, o]);
-    proto[m] = function () { fRv += "|" + tag + "@" + who(); return o.apply(this, arguments); }; };
-  try {
-    hookP(HTMLElement.prototype, "focus", "F");
-    for (const m of ["setBaseAndExtent", "collapse", "addRange", "removeAllRanges", "extend", "setPosition"]) hookP(Selection.prototype, m, "S" + m.slice(0, 3));
-    hookP(Element.prototype, "scrollIntoView", "SIV");
-  } catch (_) {}
-  // and every CM6 DOM redraw that moved the scroller (U<before>><after>)
-  const dv = cm.docView, dvU = dv && dv.update;
-  if (dvU) dv.update = function () { const b0 = Math.round(P.get.call(sc)); const r = dvU.apply(this, arguments);
-    const b1 = Math.round(P.get.call(sc)); if (b1 !== b0) fRv += "|U" + b0 + ">" + b1 + "/" + Math.round(sc.scrollHeight); return r; };
-  const unhook = () => { sc.removeEventListener("scroll", onS); if (dvU) delete dv.update; for (const [p, m, o] of saved) p[m] = o; try { delete sc.scrollTop; delete sc.scrollTo; delete sc.scrollBy; } catch (_) {} };
-  let n = 0, lastTop = -1;
-  const step = () => cm.requestMeasure({ key: "osFindReveal", read: () => null, write: () => {
-    const tp = Math.round(sc.scrollTop);
-    if (tp !== lastTop) { fRv += "|@" + n + ":" + tp + "/" + Math.round(sc.scrollHeight) + "," + ae() + "," + anc(); lastTop = tp; }
-    const ok = Ed.cm(g) === cm && go();
-    if (ok || Ed.cm(g) !== cm || ++n > 12) {
-      unhook();
+  let n = 0;
+  const step = () => {
+    const live = Ed.cm(g) === cm, el = live && mark(), ok = !!el && onScreen(el);
+    if (ok || !live || ++n > 12) {
       fRv += "|n" + n + "|f" + (ok ? 1 : 0) + "|t" + Math.round(sc.scrollTop);
       fin(); if (done !== updateTitle) updateTitle(); return;      // callers without done took their census before the draw
     }
     requestAnimationFrame(step);
-  } });
+  };
   requestAnimationFrame(step);
 }
 /* [frv:] the last lp find reveal: l<line>|s<scrollTop after the line was brought in>

@@ -67,6 +67,14 @@ so the webkit dev packages must be installed for tests too.
   or helper `.sh` files outside `packaging/`.
 - **Frontend.** No frameworks, no bundler. Tests read live CSS tokens, never
   hard-coded hex values. `ui/census.js` is append-only: one new line per token.
+- **Scroll positions.** A note's scroll position is a content position (the
+  source line at the top, fractional), never pixels, and every save/restore/jump
+  goes through `ui/scrollpos.js`. Never write `scrollTop` on a CM6 note scroller
+  (`g.lp`) from outside CM6: CM6 re-anchors that scroller in its measure loop, so
+  an outside write counts height changes twice or not at all. Land through a
+  `scrollIntoView` effect (`ScrollPos.restore` / `ScrollPos.centre`,
+  `Ed.revealAt`). The only exceptions are the landing inside CM6's scroll
+  handler (scrollpos.js) and relative user wheel scrolling (`Ed.wheelOwn`).
 - **Vault safety.** Never write outside the bound vault and the user config.
   Unknown keys in `.obsidian/*.json` must round-trip unchanged.
 - **Themes.** The bundled themes are seeded into a vault's
