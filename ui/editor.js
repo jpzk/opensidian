@@ -671,7 +671,7 @@ const Ed = {
         URL.revokeObjectURL(u); A.live.delete(u);
         if (a) { a.removeAttribute("src"); a.load(); }
         s.dataset.st = "";
-        if (s._c2p) s.dataset.c2p = "1";       // #139 restricted: back to click-to-play, never a reload on screen
+        if (s._c2p) { s.dataset.c2p = "1"; if (a) a.preload = "none"; }   // #139 restricted: back to click-to-play, never a reload on screen
       }
     }
     if (!A.live.size && A.timer) { clearInterval(A.timer); A.timer = 0; }
@@ -694,7 +694,7 @@ const Ed = {
     s.dataset.audio = rel;
     let a = s.querySelector("audio");
     if (!a) { a = document.createElement("audio"); s.appendChild(a); }
-    a.controls = true; a.preload = "none";     // nothing loads before the page's trust is known
+    a.controls = true;                         // no src (so no load) until go(); preload is set once trust is known
     a.setAttribute("aria-label", s.dataset.alt || rel);
     const go = play => {
       if (s.dataset.st) return;
@@ -704,7 +704,7 @@ const Ed = {
         const A = Ed._aud;
         A.live.set(u, s);
         if (!A.timer) A.timer = setInterval(Ed.audioSweep, 2000);
-        a.src = u; s.dataset.st = "ready"; delete s.dataset.c2p;
+        a.preload = "metadata"; a.src = u; s.dataset.st = "ready"; delete s.dataset.c2p;   // restricted: only after the user act
         if (play) { const p = a.play(); if (p && p.catch) p.catch(() => {}); }   // the user pressed play: start it
         if (typeof updateTitle === "function") updateTitle();
       }, e => {
@@ -730,7 +730,7 @@ const Ed = {
         observe(true);
         return;
       }
-      s._c2p = true; s.dataset.c2p = "1";
+      s._c2p = true; s.dataset.c2p = "1"; a.preload = "none";   // click-to-play: nothing parsed before the press
       let b = s.querySelector("button.audio-c2p");
       if (!b) {
         b = document.createElement("button");
