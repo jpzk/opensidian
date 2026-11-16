@@ -273,7 +273,7 @@
   // the control icons (24x24 strokes, drawn here)
   const SVG = d => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + d + "</svg>";
   const ICON = {
-    gear: SVG('<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>'),
+    gear: SVG(SVG_ICON["lucide-settings"]),   // #130: the one cog source (ui/icons.js)
     lock: SVG('<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>'),
     in: SVG('<path d="M12 5v14M5 12h14"/>'),
     out: SVG('<path d="M5 12h14"/>'),

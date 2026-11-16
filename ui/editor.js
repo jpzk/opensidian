@@ -291,6 +291,18 @@ const Ed = {
           Ed.tok(em, emk, "img");
           i += wl[0].length; continue;
         }
+        // #116 `![[Recording 20261115.webm]]`: an AUDIO embed -> an <audio> player (Ed.audioEl). Bang present,
+        // no anchor, an audio extension (Ed.AUDIO_EXTS); the reading view's linkify takes the same branch (main.rs)
+        if (wl[1] === "!" && hash < 0 && Ed.isAudio(target)) {
+          const em = [], emk = [];
+          const eadd = (el, isMk) => { em.push(el); if (isMk) emk.push(el); box.appendChild(el); };
+          eadd(Ed.mk("![["), true);
+          eadd(Ed.mk(raw, "img"), true);
+          eadd(Ed.mk("]]"), true);
+          eadd(Ed.audioEl(target, bar >= 0 ? label : target), false);
+          Ed.tok(em, emk, "img");
+          i += wl[0].length; continue;
+        }
         // cvf-links CVR-A-095 `![[Board.canvas]]`: a canvas preview (shapes only, no text node), painted and
         // wired by main.js cvEmbedPaint; Canvas off / no painter -> the link branch below, as before
         if (wl[1] === "!" && hash < 0 && /\.canvas$/i.test(target) && typeof cvEmbedPaint === "function" &&
@@ -343,6 +355,7 @@ const Ed = {
           add(Ed.mk("](" + im[2] + ")", "img"), true);
           const ph = im[2].indexOf("#"), pp = ph >= 0 ? im[2].slice(0, ph) : im[2];
           add(!rem && Ed.isPdf(pp) ? Ed.pdfEl(pp, ph >= 0 ? im[2].slice(ph) : "", im[1])   // image_html's pdf split
+                                   : !rem && ph < 0 && Ed.isAudio(pp) ? Ed.audioEl(pp, im[1])   // #116 image_html's audio split
                                    : Ed.imgEl(im[2], im[1], rem), false);
           Ed.tok(parts, mks, "img");
           i += 1 + im[0].length; continue;
@@ -591,6 +604,131 @@ const Ed = {
     s.tabIndex = -1;
     Ed.pdfFill(s);
     return s;
+  },
+  /* ---------- #116 AUDIO EMBEDS (both engines) ----------
+     `![[x.webm]]` / `![](x.mp3)` -> span.internal-embed.media-embed.audio-embed holding ONE <audio controls>.
+     The path is resolved against the vault's MEDIA list (main.js mediaCache = canvas_io "media": real,
+     non-hidden, non-symlinked vault members, the list the explorer and canvas cards use), never the note's
+     target, so a traversal target gets no player at all. The bytes come from media_read (vault-confined,
+     MEDIA_TYPES whitelist, no-follow, 256 MiB cap) as a blob: URL — WebKitGTK's player reads no custom
+     scheme — loaded once the embed is on screen (or on play). blob: media is in a TRUSTED page's CSP only
+     (main.rs csp_by_trust, af-fix 1a), so a restricted page builds no blob and says so (data-err).
+     No text node (the row's textContent stays its source line): messages are CSS from data-*.
+     Reading view: main.rs audio_html emits the same span with data-target; Ed.audioFill resolves it. */
+  AUDIO_EXTS: ["mp3", "webm", "wav", "m4a", "ogg", "3gp", "flac"],
+  AUDIO_MIME: { mp3: "audio/mpeg", webm: "audio/webm", wav: "audio/wav", m4a: "audio/mp4", ogg: "audio/ogg", "3gp": "audio/3gpp", flac: "audio/flac" },
+  AUDIO_MAX: 256 * 1024 * 1024,
+  _aud: { live: new Map(), reads: 0, timer: 0, trust: null },
+  isAudio(t) {
+    const i = t.lastIndexOf(".");
+    return i > 0 && Ed.AUDIO_EXTS.includes(t.slice(i + 1).toLowerCase());
+  },
+  audioRel(target) {                           // vault-relative path from the media list, or null (imgRel's rule)
+    const dec = Ed.pctDec(target) ?? target;
+    const L = typeof mediaCache !== "undefined" && Array.isArray(mediaCache) ? mediaCache : [];
+    if (!dec) return null;
+    return L.find(x => x === dec) || L.find(x => x.endsWith("/" + dec)) || null;
+  },
+  audioEl(target, alt) {
+    const s = Ed.el("span", "internal-embed media-embed audio-embed");
+    s.dataset.target = target;
+    s.dataset.alt = alt || "";
+    s.contentEditable = "false";
+    Ed.audioFill(s);
+    return s;
+  },
+  // the trust of THIS page (its CSP is fixed at load): plugins_state.pageEval, asked once
+  audioTrusted() {
+    const A = Ed._aud;
+    return A.trust || (A.trust = Promise.resolve().then(() => inv("plugins_state")).then(s => !!(s && s.pageEval), () => false));
+  },
+  async audioBlob(p) {
+    const parts = []; let off = 0, size = 0;
+    do {
+      Ed._aud.reads++;
+      const buf = await inv("media_read", { path: p, offset: off });
+      size = Number(new DataView(buf, 0, 8).getBigUint64(0));
+      if (size > Ed.AUDIO_MAX) throw new Error("too large");
+      const c = buf.slice(8);
+      if (!c.byteLength && off < size) throw new Error("short read");
+      parts.push(c); off += c.byteLength;
+    } while (off < size);
+    const ext = p.slice(p.lastIndexOf(".") + 1).toLowerCase();
+    return URL.createObjectURL(new Blob(parts, { type: Ed.AUDIO_MIME[ext] || "" }));
+  },
+  // object URLs of embeds no longer in the document are revoked (a re-render, a closed tab); so are those of an
+  // embed that has been OFF SCREEN (a view a mode left stays connected) and paused for AUDIO_IDLE — it reloads when
+  // it is on screen again (codeant M2 on #124: no blob, up to 256 MiB, is held by a view nobody sees)
+  AUDIO_IDLE: 60000,
+  audioSweep() {
+    const A = Ed._aud, now = Date.now();
+    for (const [u, s] of A.live) {
+      const a = s.querySelector("audio");
+      if (!s.isConnected) {
+        URL.revokeObjectURL(u); A.live.delete(u);
+        if (s._io) { s._io.disconnect(); s._io = null; }
+      } else if (s._io && !s._vis && s._hid && now - s._hid > Ed.AUDIO_IDLE && (!a || a.paused)) {
+        URL.revokeObjectURL(u); A.live.delete(u);
+        if (a) { a.removeAttribute("src"); a.load(); }
+        s.dataset.st = "";
+      }
+    }
+    if (!A.live.size && A.timer) { clearInterval(A.timer); A.timer = 0; }
+  },
+  audioFill(s) {
+    if (s._af) return;
+    s._af = true;
+    const rel = Ed.audioRel(s.dataset.target || "");
+    if (rel === null) {                        // unresolved: R29.4's banner, as an image / PDF
+      s.className = "imgmiss audiomiss";
+      s.dataset.miss = Ed.pctDec(s.dataset.target || "") ?? s.dataset.target;
+      return;
+    }
+    s.dataset.audio = rel;
+    let a = s.querySelector("audio");
+    if (!a) { a = document.createElement("audio"); s.appendChild(a); }
+    a.controls = true; a.preload = "metadata";
+    a.setAttribute("aria-label", s.dataset.alt || rel);
+    const go = () => {
+      if (s.dataset.st) return;
+      s.dataset.st = "loading";
+      Ed.audioTrusted().then(ok => ok ? Ed.audioBlob(rel) : Promise.reject(new Error("restricted"))).then(u => {
+        if (!s.isConnected) { URL.revokeObjectURL(u); s.dataset.st = ""; return; }
+        const A = Ed._aud;
+        A.live.set(u, s);
+        if (!A.timer) A.timer = setInterval(Ed.audioSweep, 2000);
+        a.src = u; s.dataset.st = "ready";
+        if (typeof updateTitle === "function") updateTitle();
+      }, e => {
+        const why = String(e && e.message || e);
+        s.dataset.st = "error";
+        s.dataset.err = why === "restricted" ? "Audio plays in a trusted vault only (restricted mode)."
+          : /too large/.test(why) ? "Cannot play: the file is larger than 256 MB." : "Cannot play this file.";
+        if (typeof updateTitle === "function") updateTitle();
+      });
+    };
+    a.addEventListener("play", go);
+    if (typeof IntersectionObserver === "function") {
+      // kept for the embed's life: _vis/_hid feed audioSweep's off-screen revoke; back on screen -> go() reloads
+      s._io = new IntersectionObserver(en => {
+        const e = en[en.length - 1]; s._vis = e.isIntersecting;
+        if (e.isIntersecting) setTimeout(go, 150); else s._hid = Date.now();
+      });
+      s._io.observe(s);
+    } else setTimeout(go, 0);
+  },
+  // census [aud:<n>|<path>:<state>:<readyState>:<duration s>@x,y|...] the painted audio embeds (lp + reading view)
+  audTok() {
+    const ss = [...document.querySelectorAll("#main span.audio-embed, #main span.audiomiss")].filter(e => e.getClientRects().length > 0);
+    if (!ss.length) return "";
+    const esc = v => String(v).replace(/[[\]|@:\s]/g, "_");
+    return " [aud:" + ss.length + "|" + ss.slice(0, 8).map(s => {
+      const r = s.getBoundingClientRect(), a = s.querySelector("audio");
+      const k = s.closest(".preview") ? "rv" : "lp";
+      if (!a) return k + ":" + esc(s.dataset.miss || "") + ":miss:0:0@" + Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2);
+      const d = isFinite(a.duration) ? a.duration.toFixed(2) : a.duration === Infinity ? "inf" : "0";
+      return k + ":" + esc(s.dataset.audio) + ":" + (s.dataset.st || "idle") + ":" + a.readyState + ":" + d + "@" + Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2);
+    }).join("|") + "]";
   },
   PDF_TOOLBAR: 39, PDF_STOCK_AR: 792 / 612,
   // stock (recon README "Default frame size"): frame = w x aspect(page 1) + 20,
@@ -1792,7 +1930,9 @@ Object.assign(Ed, {
      the plugin API's htmlToMarkdown (inert parse, every text node escaped, unsafe URLs
      dropped). true = handled; false leaves the drop to CM6 (files, a move inside the
      editor, no html, no converter, nothing converted). Placed and selected like CM6's
-     own drop, one "input.drop" undo step. */
+     own drop, one "input.drop" undo step. A browser LINK drag (<a href> + a remote
+     text/uri-list) reaches here too since src-tauri/src/xdnd.rs stopped claiming remote
+     uri-lists as file drops (#51 "094 still eats links"): it lands as [title](url). */
   htmlDrop(e, view) {
     const dt = e && e.dataTransfer;
     if (!dt || !view || e.defaultPrevented || view.state.readOnly) return false;
@@ -2296,7 +2436,8 @@ Ed.lpExt = function (v, G) {
     // except a pdf frame: its loader (Ed.pdfFill) is closures + observers on the ORIGINAL
     // element, so a clone never loads a page (osdrop [pf:1/0|..p1/0-]) — render it fresh
     toDOM() {
-      if (this.el && this.el.dataset && this.el.dataset.pdf != null) {
+      // #116: an audio embed too (its blob loader is the ORIGINAL element's observer + play listener)
+      if (this.el && this.el.dataset && (this.el.dataset.pdf != null || this.el.dataset.audio != null)) {
         const f = Ed.lpLeaves(Ed.row(G(), this.t, 0))[this.k];
         if (f) return f;
       }

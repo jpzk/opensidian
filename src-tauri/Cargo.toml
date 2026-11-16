@@ -90,6 +90,12 @@ soup3 = "=0.5.0"
 # nothing new. MIT OR Apache-2.0.
 dbus = "=0.9.12"
 # ---- cp-secrets (end) ----
+# #116 Audio recorder: the microphone gate (src/audiorec.rs) sets enable-media-stream and
+# answers WebKitGTK's permission-request signal. webkit2gtk 2.0.2 and webkit2gtk-sys 2.0.2
+# (MIT) are ALREADY in Cargo.lock (tauri -> wry's own webview binding, features from wry);
+# `=` pins the locked versions so the WebView type is wry's type. Fetches nothing new.
+webkit2gtk = { version = "=2.0.2", features = ["v2_38"] }
+webkit2gtk-sys = { version = "=2.0.2", features = ["v2_38"] }
 
 # listtoggle A2 — the unit table runs ui/editor.js in JavaScriptCore, the engine
 # the webview runs it in. javascriptcore-rs 1.1.2 is ALREADY in Cargo.lock as
