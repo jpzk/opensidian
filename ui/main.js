@@ -1521,6 +1521,15 @@ function tywGhost(g, R) {
     ct.appendChild(l);
   }
   sc.appendChild(ct); ed.appendChild(sc); R.appendChild(ed);
+  // approach B: the real column is centred in cm.scrollDOM's CLIENT box (its classic
+  // scrollbar takes the right edge); the short ghost scroller draws none, so spanning
+  // .lp it centred half a scrollbar (6px) further right and the census predicted the
+  // blockquote 6px off its own pixels (typo BQ_BORDER_X). Pin the ghost onto the
+  // real scroller's client box instead, whatever its containing block is.
+  const rs = cm.scrollDOM.getBoundingClientRect(), rg = ed.getBoundingClientRect();
+  ed.style.right = "auto";
+  ed.style.left = (rs.left + cm.scrollDOM.clientLeft - rg.left) + "px";
+  ed.style.width = cm.scrollDOM.clientWidth + "px";
   return ed;
 }
 function tywMeasure(rd, R) {
