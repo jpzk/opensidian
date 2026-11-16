@@ -1770,6 +1770,7 @@ function bmRowMenu(e, nm, ix) {             // right-click a FILE .bmrow -> Obsi
   if (vr) {
     item("Open in new tab", () => bmOpenRow(vr, { ctrlKey: true }));
     if (vr.path && Ed.isImg(vr.name)) item("Open to the right", () => openImage(vr.name, null, "split"));   // issue #102: an image bookmark opens the image view to the right
+    else if (vr.path && Ed.isAudio(vr.name)) item("Open to the right", () => openAudio(vr.name, null, "split"));   // issue #140: a recording, the audio view
     else item("Open to the right", null, "Not wired for a graph / canvas / plugin-file bookmark: click the row, then Split right");
   } else {
   item("Open in new tab",   () => (pdf ? openPdf(nm, null, "tab") : openNewTab(nm)));                         // WIRED: openNewTab — right of the active tab, focused, never deduped (opentab REQ-8/9/14, Obsidian c20)
@@ -1888,7 +1889,7 @@ async function tabBmItem(t) {
     for (const k of BM_LG_KEYS) { local[k] = o[k]; delete o[k]; }
     return { type: "graph", title: bmLgTitle(t), options: o, local };
   }
-  const cp = cvTabPath(t);
+  const cp = fileTabPath(t);               // a canvas, or (#140) an image / PDF / audio viewer tab: stock's plain file item
   if (cp) return { type: "file", path: cp };
   const pv = pvNoteName(t);
   if (pv) return { type: "file", path: wsPathOut(pv) };
@@ -2005,6 +2006,8 @@ async function bmOpenPath(p, ev) {
   // issue #102: an image is not a vault TFile here (the plugin vault indexes notes), so it is checked against the
   // image list the explorer paints and opened in the image view directly; a path not in the list is gone
   if (Ed.isImg(p)) return Array.isArray(imgsCache) && imgsCache.includes(p) ? openImage(p, ev) : gone();
+  // issue #140: a recording likewise — checked against the media list (canvas_io media, what the explorer paints)
+  if (Ed.isAudio(p)) return Array.isArray(mediaCache) && mediaCache.includes(p) ? openAudio(p, ev) : gone();
   let f = null;
   try { f = PLG && PLG.app.vault.getAbstractFileByPath(p); } catch (_) {}
   if (!f) return gone();
@@ -2353,7 +2356,7 @@ let bmAdd = null;                          // the open Add bookmark modal: {name
 function openBmAdd(gix, vt) {            // vt: the tab whose own menu asked (issue #31), else the active tab
   const t = vt || rTrack();
   if (!t) return;                          // a pane with no tab = Obsidian's empty tab: no-op (108-emptyitem)
-  const cvp = cvTabPath(t);                // issue #31: graph / canvas tabs write stock's view item
+  const cvp = fileTabPath(t);              // issue #31: graph / canvas tabs write stock's view item; #140: an image / PDF / audio tab too
   const view = t.kind === "gg" || (t.kind === "lg" && !!vt) || !!cvp;   // lg via the group row stays a no-op (102-lgitem)
   const nm = view ? null : t.kind ? pvNoteName(t) : t.name;   // issue-48: a plugin view backed by a note (Excalidraw board) = that note
   if (!view && !nm) return;                // local graph from the group row (and any non-note view): no-op
@@ -4891,7 +4894,7 @@ function tabMenu(e, g, i, hdr) {
     sep();
     item("Copy screenshot", null, "Missing subsystem: canvas-to-clipboard — no programmatic clipboard write exists in this tree (ui/editor.js writes only inside real copy events) and the graph view has no canvas-to-PNG step");
     const pvn = pvNoteName(tab);          // issue-48: a board backed by a note bookmarks that note (STOCK.md S2/S3/S5)
-    const cvp = cvTabPath(tab);           // issue #31 (D3): a canvas bookmarks its path, as stock
+    const cvp = fileTabPath(tab);         // issue #31 (D3): a canvas bookmarks its path, as stock; #140: so does an image / PDF / audio viewer tab
     if (pvn) item(bmCache.includes(pvn) ? "Remove bookmark" : "Bookmark...", () => { closeMenu(); toggleBm(pvn); });
     else if (cvp) item(bmHasPath(cvp) ? "Remove bookmark" : "Bookmark...", () => { closeMenu(); toggleBmPath(cvp); });
     // issue #31 (D1/D2): a graph TAB opens stock's Add bookmark modal ("Untitled Graph"); the ⋮ header keeps its
@@ -5454,7 +5457,8 @@ function tabDblClick(e, g) {
      no:dup    the note is already bookmarked — a drag adds no second row
                (unlike bmactive F3, whose menu path duplicates on purpose)
      (issue #31: a canvas or a board already bookmarked is no:dup too; a graph never is)
-     no:view   a fileless view (an unknown plugin view, a non-.md file) has nothing to bookmark
+     no:view   a fileless view (an unknown plugin view) has nothing to bookmark
+               (issue #140: an image / PDF / audio viewer tab is NOT fileless — it bookmarks its path, fileTabPath)
    A plugin view backed by a note (an Excalidraw board, issue-48) bookmarks THAT note. */
 const TAB_EDGE = 40;
 let tabBmTok = "";                           // tab-bookmark: the live [tabbm:] decision ("" = not over the pane)
@@ -5466,7 +5470,7 @@ function tabBmName(tab) {
 }
 function tabBmWhy(tab) {                     // -> null (bookmarkable) or {code, msg}
   if (!tab) return { code: "view", msg: "nothing to bookmark" };
-  const cvp = cvTabPath(tab), pvn = pvNoteName(tab);   // issue #31: canvas / graph / board tabs are views with an item
+  const cvp = fileTabPath(tab), pvn = pvNoteName(tab);   // issue #31: canvas / graph / board tabs are views with an item; #140: so is an image / PDF / audio viewer tab (by its path)
   if (cvp) return bmHasPath(cvp) ? { code: "dup", msg: "\"" + cvp.split("/").pop() + "\" is already bookmarked" } : null;
   if (tab.kind === "gg" || tab.kind === "lg") return null;   // a graph item is never a duplicate (bm_add_view_at)
   if (pvn) return bmCache.includes(pvn) ? { code: "dup", msg: "\"" + pvn.split("/").pop() + "\" is already bookmarked" } : null;
@@ -7004,8 +7008,9 @@ function fileRow(p, depth) {
   row.querySelector(".ttag").textContent = d > 0 ? base.slice(d + 1).toUpperCase() : "";
   row.dataset.file = p;
   row.addEventListener("mousedown", e => treeDragStart(e, p, "file"));
-  row.onclick = e => { if (treeClickEaten()) return; if (e.shiftKey && !e.ctrlKey && !e.metaKey) return treeRange(row); treeSelClear(); treeAnchor = p; if (Ed.isPdf(p)) openPdf(p, e); else if (Ed.isImg(p)) openImage(p, e); };   // shift = range select; issue #44: a PDF opens in the PDF view (ctrl = new tab); issue #102: an image opens in the image view; other types open no view
-  if (Ed.isPdf(p) || Ed.isImg(p)) row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); (Ed.isPdf(p) ? openPdf : openImage)(p, e); } };   // middle = new tab
+  row.onclick = e => { if (treeClickEaten()) return; if (e.shiftKey && !e.ctrlKey && !e.metaKey) return treeRange(row); treeSelClear(); treeAnchor = p; if (Ed.isPdf(p)) openPdf(p, e); else if (Ed.isImg(p)) openImage(p, e); else if (Ed.isAudio(p)) openAudio(p, e); };   // shift = range select; issue #44: a PDF opens in the PDF view (ctrl = new tab); issue #102: an image opens in the image view; issue #140: a recording opens in the audio view; other types open no view
+  const fvOpen = Ed.isPdf(p) ? openPdf : Ed.isImg(p) ? openImage : Ed.isAudio(p) ? openAudio : null;
+  if (fvOpen) row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); fvOpen(p, e); } };   // middle = new tab
   return row;
 }
 
@@ -8804,6 +8809,79 @@ function imgvTok() {           // issue #102: [imgrow:] explorer image rows, [im
   const b = im.getBoundingClientRect(), ok = im.complete && im.naturalWidth > 0;
   return t + " [imgv:" + esc(v.path) + "|" + (ok ? im.naturalWidth + "x" + im.naturalHeight + "L" : im.classList.contains("mod-broken") ? "B" : "-") +
          "|" + [b.x, b.y, b.width, b.height].map(Math.round).join(",") + "]";
+}
+/* issue #140: the audio view. A recording (Ed.AUDIO_EXTS) opened from the explorer or a bookmark shows in an "audio"
+   leaf (stock 1.13.7's view type and state {file}, as "image" / "pdf"), a player centred in the pane. The player is ONE
+   Ed.audioEl — the embed's own element — so the bytes path (media_read -> blob:), the off-screen sweep and #139's
+   CLICK-TO-PLAY on a restricted page (preload none, nothing read before the press) are the embed's, not a copy. It is
+   minted only for a path the media list holds (mediaCache, the EXACT vault path — no basename-suffix match: the target
+   is pct-encoded, so Ed.audioRel's exact match wins); anything else is the R29.4 banner. how: as openPdf. */
+const AUDV = (() => {
+  if (!PLG || !PLG.X || !PLG.X.ItemView) return null;
+  const base = p => { const b = String(p).split("/").pop(), d = b.lastIndexOf("."); return d > 0 ? b.slice(0, d) : b; };
+  class AudioView extends PLG.X.ItemView {
+    constructor(leaf) { super(leaf); this.navigation = true; this.icon = "lucide-file-audio"; this.path = null; this.box = null; this.contentEl.classList.add("audio-view"); }
+    getViewType() { return "audio"; }
+    getDisplayText() { return this.path ? base(this.path) : "Audio"; }
+    getState() { return this.path ? { file: this.path } : {}; }
+    async setState(st) {
+      const p = st && typeof st.file === "string" ? st.file.replace(/^\/+/, "") : "";
+      // same path: keep the player (and its playback) unless the last open was the not-found banner (restored file)
+      if (!p || !Ed.isAudio(p) || (p === this.path && this.box && !this.box.querySelector(".imgmiss"))) return;
+      this.path = p;
+      try { const f = PLG.app.vault.getAbstractFileByPath(p); this.file = f || null; } catch (_) { this.file = null; }
+      const box = this.box = document.createElement("div");
+      box.className = "audio-container";
+      if (Array.isArray(mediaCache) && mediaCache.includes(p)) box.appendChild(Ed.audioEl(Ed.pctEnc(p), base(p)));
+      else {                                    // not in the media list (gone, hidden, symlinked): the banner, no read
+        const s = document.createElement("span");
+        s.className = "imgmiss audiomiss"; s.dataset.miss = p;
+        box.appendChild(s);
+      }
+      this.contentEl.replaceChildren(box);
+      updateTitle();
+    }
+  }
+  const make = Object.defineProperty(leaf => new AudioView(leaf), Symbol.for("opensidian.coreView"), { value: true });
+  try {
+    const r = PLG.app.viewRegistry;
+    r.registerView("audio", make);
+    const ex = Ed.AUDIO_EXTS.filter(x => !r.isExtensionRegistered(x));
+    if (ex.length) r.registerExtensions(ex, "audio");
+  } catch (e) { console.error("[audio] view:", e); return null; }
+  return { AudioView };
+})();
+async function openAudio(path, ev, how) {   // issue #140 — how: as openPdf (undefined = by the event | "tab" | "split")
+  if (!AUDV) { say("The audio view is not available", "audio"); return null; }
+  const nt = ev && (ev.button === 1 || ev.ctrlKey || ev.metaKey);
+  const leaf = how === "split" ? PLG.app.workspace.getLeaf("split", "vertical") : PLG.app.workspace.getLeaf(how === "tab" || nt ? "tab" : false);
+  await leaf.setViewState({ type: "audio", state: { file: path }, active: true });
+  return leaf;
+}
+/* issue #140: the file a VIEWER tab shows — an image / PDF / audio leaf ("unk" tab of utype image|pdf|audio) -> its
+   vault path, else null. What a tab drag, the tab menu and "Bookmark the active tab..." bookmark it as: stock's
+   plain {"type":"file","path"} item (rust BmNode::Path), exactly as a canvas (cvTabPath). */
+const VF_TYPES = ["image", "pdf", "audio"];
+function vfTabPath(t) {
+  if (!t || t.kind !== "unk" || !VF_TYPES.includes(t.utype) || !PLG) return null;
+  try {
+    const l = PLG.app.workspace.getLeavesOfType(t.utype).find(x => x && x._t === t);
+    if (l && l.view && l.view.path) return String(l.view.path);
+  } catch (_) {}
+  try { const f = t.raw && t.raw.state && t.raw.state.state && t.raw.state.state.file; if (f) return String(f); } catch (_) {}
+  return null;
+}
+const fileTabPath = t => cvTabPath(t) || vfTabPath(t);   // a canvas or a viewer tab: bookmarked by its PATH
+function audvTok() {           // issue #140: [audv:<path>|<state>|x,y,w,h] the audio view on screen (state: the embed's st, c2p, idle, miss)
+  const esc = s => String(s).replace(/[[\]|@]/g, "_"), vis = e => !!e && e.getClientRects().length > 0;
+  let v = null;
+  try { v = PLG && PLG.app.workspace.getLeavesOfType("audio").map(l => l.view).find(x => x && vis(x.containerEl)) || null; } catch (_) {}
+  if (!v || !v.path || !v.box) return "";
+  const s = v.box.firstElementChild;
+  if (!s || s.classList.contains("imgmiss")) return " [audv:" + esc(v.path) + "|miss|-]";
+  const b = s.getBoundingClientRect();
+  const st = s.dataset.st || (s.dataset.c2p ? "c2p" : "idle");
+  return " [audv:" + esc(v.path) + "|" + st + "|" + [b.x, b.y, b.width, b.height].map(Math.round).join(",") + "]";
 }
 /* goal canvas-core: "Create new canvas" (command) and "New canvas" (explorer menus). The file is made
    through canvas_io create (O_EXCL: an existing name is never overwritten — the next free
