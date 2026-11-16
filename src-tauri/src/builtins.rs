@@ -35,11 +35,6 @@ shipped; a vault they were already seeded into keeps them — seeding never
 deletes (see migrate.rs for the legacy rule).
 */
 
-// `is_builtin` has no non-test caller until the settings pane marks its rows
-// (item 7). An allow beats inventing a use for the compiler's benefit — and it
-// is scoped to this file.
-#![allow(dead_code)]
-
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -89,14 +84,6 @@ pub const BUILTIN_THEMES: &[BuiltinTheme] = &[
 /// it is, is pinned by test `default_theme_is_anuppuccin`. The UI learns it from
 /// [`SeedReport::default_theme`] — `ui/main.js` never spells a theme id.
 pub const DEFAULT_THEME: &str = BUILTIN_THEMES[0].name;
-
-/// Is `name` one of ours? (For the settings pane, to mark a row; it is NOT a
-/// privileged load path — after seeding a built-in is an ordinary file on disk
-/// with no second code path. The seeding step below does not consult it: it
-/// iterates the assets it ships, which is the same list from the other side.)
-pub fn is_builtin(name: &str) -> bool {
-    BUILTIN_THEMES.iter().any(|t| t.name == name)
-}
 
 /// Are `css` the exact bytes this binary ships for the built-in `name`? Used by
 /// `themefs::load_theme` for ONE thing: the R4X.4 strip notice is not raised for
