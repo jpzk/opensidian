@@ -4925,14 +4925,16 @@ function ssRestore(g, line) {   // scroll the CURRENT view so `line` is at the t
   if (!t || t.kind || line == null || g.graphOn) return;
   if (t.mode === "reading") {
     const ch = g.preview.children, bl = g.pvLines;
+    g._ssrD = "ret:" + ch.length + "/" + (bl ? bl.length : "-");   // #125 red-path diag ([ssa:] after the "|")
     if (!ch.length || !bl || bl.length !== ch.length) return;
     // above the first rendered block (frontmatter / properties, line 0) = the top of the note:
     // block 0's start would scroll the properties off and read back as L5 (fm lp->read->lp off 3)
-    if (line <= 0 || line < bl[0] - 1) { g.preview.scrollTop = 0; return; }
+    if (line <= 0 || line < bl[0] - 1) { g.preview.scrollTop = 0; g._ssrD = "top"; return; }
     let i = 0;
     while (i + 1 < bl.length && bl[i + 1] - 1 <= line) i++;
     const a = bl[i] - 1, b = i + 1 < bl.length ? bl[i + 1] - 1 : a + 1;
     ssScrollTo(g.preview, ch[i], Math.min(1, Math.max(0, (line - a) / Math.max(1, b - a))));
+    g._ssrD = (Math.round(line * 100) / 100) + ":" + i + ":" + bl[i] + ":" + Math.round(g.preview.scrollTop) + ":" + g.preview.scrollHeight;
     return;
   }
   Ed.scrollToLine(g, line);           // #125/#137: ONE CM6 snapshot effect on cm.scrollDOM (lp<->src and reading->edit)
@@ -5252,7 +5254,9 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
   // mode's Ed.place() scrolls the caret into view, and the scroll the USER chose
   // outranks the caret they cannot see (the brief's "caret off-screen" case).
   const mswR0 = performance.now();
+  g._ssrD = "-";
   ssRestore(g, anchor);
+  if (tab.mode === "reading") mswp.ssa = (mswp.ssa || "-") + "|" + g._ssrD;   // #125 red-path diag: where reading landed
   if (tab.mode === "reading") ssRelandOnImages(g, tab, anchor);
   mswSsMs += performance.now() - mswR0;
   mswEnd(mswT0, mswSsMs);
