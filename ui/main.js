@@ -6020,6 +6020,14 @@ async function ulAnswer(kind) {
 $("ul-always").onclick = () => ulAnswer("always");
 $("ul-once").onclick = () => ulAnswer("once");
 $("ul-no").onclick = () => ulAnswer("no");
+// Tab / Shift+Tab inside a confirmation dialog (Update links, Delete): focus walks the ring of its
+// buttons b and never leaves it; nothing focused yet = the first button. The census repaints.
+function ringTab(e, b) {
+  e.preventDefault();
+  const i = b.indexOf(document.activeElement);
+  b[(i < 0 ? 0 : i + (e.shiftKey ? b.length - 1 : 1)) % b.length].focus();
+  updateTitle();
+}
 /* Escape = "Do not update": the conservative answer is the one that writes
    nothing, and dismissing a question is not consent. */
 $("ulbox").addEventListener("keydown", e => {
@@ -6033,11 +6041,7 @@ $("ulbox").addEventListener("keydown", e => {
      caught it ([ulk:Unidentified,S,9], measured with a throwaway census probe).
      keyCode 9 is the spelling both directions share. */
   if (e.key === "Tab" || e.keyCode === 9) {  // a focus TRAP: three buttons, and the ring never leaves them
-    e.preventDefault();
-    const b = [$("ul-always"), $("ul-once"), $("ul-no")];
-    const i = b.indexOf(document.activeElement);
-    b[(i < 0 ? 0 : i + (e.shiftKey ? b.length - 1 : 1)) % b.length].focus();
-    updateTitle();
+    ringTab(e, [$("ul-always"), $("ul-once"), $("ul-no")]);
     return;
   }
   e.stopPropagation();                       // Enter activates the FOCUSED button (the browser does that)
@@ -6155,11 +6159,7 @@ $("delbox").addEventListener("keydown", e => {
   if (!delPending) return;
   if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); delAnswer("no"); return; }
   if (e.key === "Tab" || e.keyCode === 9) {
-    e.preventDefault();
-    const b = [$("del-no"), $("del-yes")];
-    const i = b.indexOf(document.activeElement);
-    b[(i < 0 ? 0 : i + (e.shiftKey ? b.length - 1 : 1)) % b.length].focus();
-    updateTitle();
+    ringTab(e, [$("del-no"), $("del-yes")]);
     return;
   }
   e.stopPropagation();
