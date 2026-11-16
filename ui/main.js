@@ -125,6 +125,9 @@ let PPOST = null;
 /* SEAM S3: set by ui/plugins/editor-api.js; tabGone hands it the closed tab so the reading
    view's plugin embed children of that tab are unloaded. */
 let PTABGONE = null;
+/* issue #101 explorer row editor / issue #142 tab editor state (exRenStart). Declared HERE, ahead of every
+   function that reads it at top-level evaluation time (renderTabs re-hosts an open tab editor). */
+let exRen = null;                          // {path, kind: "note"|"canvas", inp, tn, row, orig, label, tab, moving}
 const curOf = g => (g.active >= 0 ? g.tabs[g.active].name : null);
 const cur = () => (state && fg() ? curOf(fg()) : null);
 // R18: is this group's active tab showing the READING pane? (the only pane the
@@ -2666,6 +2669,7 @@ function mkGroup() {
   g.pane = pane;
   const q = s => pane.querySelector(s);
   g.tabsEl = q(".tabs"); g.modebtn = q(".modebtn"); g.morebtn = q(".morebtn"); g.content = q(".content");
+  g.tabsEl.addEventListener("dblclick", e => tabDblClick(e, g));   // issue #142: delegated — renderTabs rebuilds the tabs between the two clicks
   g.navback = q(".navback"); g.navfwd = q(".navfwd");
   g.graph = q(".graph");
   g.acEl = q(".ac"); g.status = q(".status");
@@ -2724,12 +2728,23 @@ function mkView(g) {
     if (e.target !== lp || g.graphOn) return;
     // R34.15: the ::before is not an event target — a click on the title's ink
     // reports .lp itself, so the title band is identified by GEOMETRY. Inside
-    // it the click opens the rename surface (R34.1); anywhere else below the
+    // it a single press is inert and the DOUBLE click opens the rename surface (R34.1, issue #142); anywhere else below the
     // last row keeps R17's "caret at the end of the note".
-    if (titleHit(lp, e.clientX, e.clientY)) { e.preventDefault(); openTitleEdit(g, lp, e.clientX, e.clientY); return; }
+    // issue #142 (operator 2026-11-16, diverges from stock on purpose): a SINGLE press on the band opens
+    // nothing and moves no caret; only the double click below opens the rename surface.
+    if (titleHit(lp, e.clientX, e.clientY)) { e.preventDefault(); return; }
     e.preventDefault();
     const L = Ed.lines(g);
     Ed.place(g, L.length - 1, L[L.length - 1].length);
+  });
+  // issue #142: DOUBLE CLICK on the title band = the R34 rename surface, caret at the click point
+  // (openTitleEdit maps (x, y) into the editor with caretRangeFromPoint).
+  lp.addEventListener("dblclick", e => {
+    const g = v.g;
+    if (!g || e.target !== lp || g.graphOn || e.button !== 0) return;
+    if (!titleHit(lp, e.clientX, e.clientY)) return;
+    e.preventDefault();
+    openTitleEdit(g, lp, e.clientX, e.clientY);
   });
   return v;
 }
@@ -4002,6 +4017,12 @@ function utBuild() {             // pane/focus census in the window title (headl
           "|task=" + rvc(rvtb) + (rvtb ? ":dis" + (rvtb.disabled ? 1 : 0) : "") +
           "|img=" + rvc(rvq(rvp, "img")) +
           "|lprow=" + rvc(rvq(rvl, ".lprow")) + "]";
+    /* issue #142 -> [tcur:tab=<cursor>|ttl=<cursor>|rvttl=<cursor>] — the computed cursor of the focused
+       group's ACTIVE tab header, of the live-preview title band (.lp::before, the double-click target) and of
+       the reading view's title band. "-" = not in the DOM (no active tab / no title on this note). */
+    const tcAct = rvg.tabsEl && rvg.tabsEl.querySelector(".tab.active");
+    const tcPs = el => el && el.dataset.title ? String(getComputedStyle(el, "::before").cursor || "?").replace(/[[\]|=]/g, "").slice(0, 24) : "-";
+    md += " [tcur:tab=" + rvc(tcAct) + "|ttl=" + tcPs(rvl) + "|rvttl=" + tcPs(rvp) + "]";
     /* rvcursor criterion 3 -> [rvsel:<chars>|<x0>,<y>,<x1>] — the SELECTION
        CAPABILITY, which is a different question from the cursor SHAPE: Obsidian
        ships the I-beam over reading-view prose, and the I-beam is the
@@ -5238,6 +5259,10 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
 
 /* ---------- tabs (per group) ---------- */
 function renderTabs(g) {
+  // issue #142: an open TAB rename editor survives a repaint of its strip — the input is lifted out
+  // (moving: its blur is not a commit), the strip is rebuilt, and it is re-hosted in its tab's new label.
+  const ren = exRen && exRen.tab && exRen.row.parentNode === g.tabsEl ? exRen : null;
+  if (ren) ren.moving = true;
   g.tabsEl.innerHTML = "";
   // R7.3 / R13.2: chain glyph on every linked tab (lg auto-link + manual links)
   g.tabs.forEach((tab, i) => {
@@ -5261,13 +5286,53 @@ function renderTabs(g) {
       'stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none"/></svg>';
     x.onclick = e => { e.stopPropagation(); closeTab(g, i, "user-close", "close-glyph"); };
     d.append(ttl, x);
-    d.onclick = () => switchTab(g, i);
+    d.onclick = () => { g.swP = switchTab(g, i); };   // issue #142: a click only ACTIVATES; the dblclick awaits this switch
     d.oncontextmenu = e => tabMenu(e, g, i);   // R6.2: split verbs
     d.addEventListener("mousedown", e => tabDragStart(e, g, i));  // ux-5: tab drag
     g.tabsEl.appendChild(d);
+    if (ren && ren.tab === tab) {                // re-host the open rename editor in this tab's new label
+      ren.label = ttl.textContent; ttl.textContent = ""; ttl.appendChild(ren.inp);
+      d.classList.add("renaming"); ren.row = d; ren.tn = ttl;
+    }
   });
+  if (ren) {
+    if (exRen === ren && ren.inp.isConnected) {
+      const a = ren.inp.selectionStart, b = ren.inp.selectionEnd;
+      ren.inp.focus(); try { ren.inp.setSelectionRange(a, b); } catch (_) {}
+      ren.moving = false;
+    } else if (exRen === ren) { ren.moving = false; exRen = null; if (noticeSrc === "exren") say("", "exren"); }   // its tab is gone from this strip: nothing moved on disk
+  }
   updateModeBtn(g);
   updateTitle();                    // keep [tabs:] census fresh on tab changes
+}
+
+/* issue #142 (operator 2026-11-16) — DOUBLE CLICK A TAB = INLINE RENAME IN THE TAB. A single click only
+   activates (switchTab). The editor is the explorer row editor of #101/#105 (exRenStart, hosted in the tab's
+   label): Return and blur commit, Escape reverts, an illegal or taken name raises the notice and Return keeps
+   the editor open. A note tab commits through renameThenAsk -> applyRename (tabs, history, MRU, bookmarks and
+   links follow; the Update links question); a canvas tab through cvRetarget. Every other view kind (graph,
+   pdf, audio, a plugin view) has no rename path, so its double click does nothing.
+   [tabren:<vault path>|sel=<selected text>] is published while the editor is open. */
+async function tabRenStart(g, tab) {
+  if (g.swP) { try { await g.swP; } catch (_) {} }   // the dblclick's first click may still be switching to this tab
+  const i = g.tabs.indexOf(tab);
+  if (i < 0) return false;
+  let kind = null, path = null;
+  if (!tab.kind && tab.name) { kind = "note"; path = tab.name; }
+  else { const cp = cvTabPath(tab); if (cp) { kind = "canvas"; path = cp; } }
+  if (!kind) return false;
+  const d = g.tabsEl.children[i], tn = d && d.querySelector(".t");
+  if (!tn) return false;
+  return exRenStart(kind, path, { row: d, tn, tab });
+}
+function tabDblClick(e, g) {
+  if (e.button !== 0) return;
+  const d = e.target.closest && e.target.closest(".tab");
+  if (!d || d.parentNode !== g.tabsEl || e.target.closest(".x") || e.target.closest(".exren")) return;
+  const tab = g.tabs[[...g.tabsEl.children].indexOf(d)];
+  if (!tab) return;
+  e.preventDefault(); e.stopPropagation();
+  tabRenStart(g, tab);
 }
 
 /* ux-5 (R6.7): tab drag — ghost chip follows the cursor past a 6px threshold.
@@ -6869,24 +6934,26 @@ function canvasRow(p, depth) {
    The refusals are the inline title's (R34.12/R34.13): an illegal character or a taken name raises
    the notice and, on Return, the editor stays open with nothing moved. A "/" is refused, never a move.
    [exren:<vault path>|sel=<selected text>] is published while the editor is open. */
-let exRen = null;                          // {path, kind: "note"|"canvas", inp, tn, orig}
+// (exRen is declared near the top of the file: renderTabs reads it, issue #142)
 function exRenTok() {
   if (!exRen || !exRen.inp.isConnected) return "";
   const i = exRen.inp, sel = i.value.slice(i.selectionStart || 0, i.selectionEnd || 0);
   const c = s => String(s).replace(/[|\]]/g, "");
-  return " [exren:" + c(exRen.kind === "note" ? exRen.path + ".md" : exRen.path) + "|sel=" + c(sel) + "]";
+  // issue #142: the TAB-hosted editor publishes [tabren:] (same shape), so a tab rename is never read as a row rename
+  return " [" + (exRen.tab ? "tabren" : "exren") + ":" + c(exRen.kind === "note" ? exRen.path + ".md" : exRen.path) + "|sel=" + c(sel) + "]";
 }
 function exRenRow(kind, path) {
   if (kind === "note") return treeRows.get(path) || [...document.querySelectorAll("#tree .trow.note")].find(r => r.dataset.note === path) || null;
   return [...document.querySelectorAll("#tree .trow.cvfile")].find(r => r.dataset.canvas === path) || null;
 }
-function exRenStart(kind, path) {
+function exRenStart(kind, path, at) {      // at (issue #142): {row, tn, tab, g} = host the editor in a TAB header, not the explorer row
   exRenClose();
-  const row = exRenRow(kind, path), tn = row && row.querySelector(".tn");
+  const row = at ? at.row : exRenRow(kind, path), tn = at ? at.tn : row && row.querySelector(".tn");
   if (!tn) return false;
+  const label = tn.textContent;            // what the host painted before the editor (restored on revert)
   const orig = kind === "note" ? path.split("/").pop() : path.split("/").pop().replace(/\.canvas$/i, "");
   const inp = document.createElement("input");
-  inp.id = "exren"; inp.className = "exren"; inp.value = orig;
+  inp.id = at ? "tabren" : "exren"; inp.className = at ? "exren tabren" : "exren"; inp.value = orig;
   inp.spellcheck = false; inp.autocomplete = "off";
   const stop = e => e.stopPropagation();   // the row's click opens, its mousedown drags: neither belongs to the editor
   inp.onclick = stop; inp.onmousedown = stop; inp.onauxclick = stop; inp.ondblclick = stop; inp.oncontextmenu = stop;
@@ -6898,11 +6965,11 @@ function exRenStart(kind, path) {
     if (e.key === "Enter") { e.preventDefault(); exRenCommit(false); }
     else if (e.key === "Escape") { e.preventDefault(); exRenClose(); }
   };
-  inp.onblur = () => { if (exRen && exRen.inp === inp) exRenCommit(true); };
+  inp.onblur = () => { if (exRen && exRen.inp === inp && !exRen.moving) exRenCommit(true); };   // moving: renderTabs re-hosting it
   tn.textContent = "";
   tn.appendChild(inp);
   row.classList.add("renaming");
-  exRen = { path, kind, inp, tn, row, orig };
+  exRen = { path, kind, inp, tn, row, orig, label, tab: at ? at.tab : null, moving: false };
   inp.focus();
   inp.select();
   updateTitle();
@@ -6913,7 +6980,7 @@ function exRenClose() {                    // revert the row to its label; nothi
   if (!r) return;
   exRen = null;                            // FIRST: removing a focused input may fire blur, which must find no editor
   r.row.classList.remove("renaming");
-  if (r.inp.isConnected) r.tn.textContent = r.orig;
+  if (r.inp.isConnected) r.tn.textContent = r.tab ? r.label : r.orig;
   if (noticeSrc === "exren") say("", "exren");
   updateTitle();
 }

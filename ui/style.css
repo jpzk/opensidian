@@ -737,7 +737,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
             text-overflow: ellipsis }
 /* issue #101: the explorer inline rename field — the bookmark editor's ring (.bmren), sized to the row's
    name slot so the row keeps its 31px pitch; it keeps its own text selection in an unselectable tree. */
-.trow .exren { width: 100%; box-sizing: border-box; background: var(--bg-base); color: var(--text-chrome);
+.trow .exren, .tab .exren { width: 100%; box-sizing: border-box; background: var(--bg-base); color: var(--text-chrome);
                border: 1px solid var(--border-focus-ring); border-radius: 3px; font: inherit; padding: 0 4px;
                outline: none; user-select: text }
 .trow .tg { flex: 0 0 14px; align-self: stretch; position: relative }
@@ -1711,13 +1711,18 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
   display: block; max-width: var(--note-column, none); margin-inline: auto;
   font-size: var(--inline-title-size, var(--h1-size)); font-weight: var(--inline-title-weight, var(--h1-weight));
   line-height: var(--inline-title-line-height, var(--h1-line-height)); letter-spacing: var(--h1-letter-spacing);
-  color: var(--inline-title-color, inherit); overflow-wrap: anywhere; white-space: pre-wrap; cursor: text;
+  color: var(--inline-title-color, inherit); overflow-wrap: anywhere; white-space: pre-wrap;
   font-family: var(--inline-title-font, inherit);
 ; font-style: var(--inline-title-style, inherit); font-variant: var(--inline-title-variant, inherit); }
 .lp[data-title]::before, .preview[data-title]::before {
   content: attr(data-title);
   margin-top: 0; margin-bottom: var(--inline-title-margin-bottom, 0.5em); user-select: none;
 }
+/* issue #142 (operator 2026-11-16): the live-preview title band is a DOUBLE-click target — a single press
+   opens nothing — so it shows the pointer, not the I-beam. The reading view's title opens nothing at all
+   and keeps the reading view's arrow (rvcursor). The open .titleedit is the caret surface (cursor: text). */
+.lp[data-title]::before { cursor: pointer }
+.preview[data-title]::before { cursor: default }
 /* R34.15 (R32.4 restated as a NUMERIC condition) — HOW THE TITLE BECOMES
    EDITABLE WITHOUT BECOMING A ROW.
    The ::before above stays exactly as it is, always, including while the title
@@ -1765,7 +1770,7 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
              font-family: var(--font-text); font-size: var(--font-text-size);
              line-height: var(--line-height-normal); color: var(--text-normal) }
 .titleedit {
-  background: var(--transparent); border: 0; outline: none; user-select: text;
+  background: var(--transparent); border: 0; outline: none; user-select: text; cursor: text;   /* the OPEN editor is a caret surface */
 }
 .lp .lprow { width: 100% }
 .lp .lprow:has(> .h) + .lprow:not(:has(> .h)) { padding-top: var(--p-spacing-empty, 0) }   /* stock: the line under a heading (HyperMD-header + .cm-line) */
