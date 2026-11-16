@@ -7423,10 +7423,15 @@ async function wikiClick(e, a) {
   e.preventDefault(); e.stopPropagation();
   const g = gOf(a);
   if (!g) return;
+  return wikiGo(g, a, e.ctrlKey);
+}
+// the open half of both wiki-link clicks (live preview wikiClick, reading view pvWikiClick), once:
+// [[X.canvas]] opens the canvas, an unresolved link creates its note, Ctrl = a new tab in g (R6.4)
+async function wikiGo(g, a, ctrl) {
   const n = wikiTarget(a) || curOf(g), an = wikiAnchor(a);   // R10: [[#H]] = this note
   if (await cvLinkOpen(n, an)) return;      // cvf-links CVR-A-096: [[X.canvas]] opens the canvas, never makes X.canvas.md
-  if (a.classList.contains("wiki-unresolved")) await createNote(n);
-  if (e.ctrlKey) {                            // R6.4: new tab, same group
+  if (a.classList.contains("wiki-unresolved")) await createNote(n);   // R3.5: click creates the note
+  if (ctrl) {                               // R6.4: new tab, same group
     await flushSave(g);
     pushTab(g, mkTab(n));
     await loadActive(g);
@@ -7561,16 +7566,7 @@ function wikiAnchor(a) {
 async function pvWikiClick(a, e) {
   e.preventDefault();
   const g = gOf(a) || fg();                      // R20: event-time group (retained views move)
-  const n = wikiTarget(a) || curOf(g), an = wikiAnchor(a);  // R10: [[#H]] = this note
-  if (await cvLinkOpen(n, an)) return;          // cvf-links CVR-A-096: [[X.canvas]] opens the canvas
-  if (a.classList.contains("wiki-unresolved"))   // R3.5: click creates the note
-    await createNote(n);
-  if (e.ctrlKey) {                               // R6.4: open in NEW TAB, same group
-    await flushSave(g);
-    pushTab(g, mkTab(n));
-    await loadActive(g);
-    if (an) await navAnchor(g, an);
-  } else navigate(g, n, an);
+  return wikiGo(g, a, e.ctrlKey);
 }
 
 function scheduleSave(g) {
