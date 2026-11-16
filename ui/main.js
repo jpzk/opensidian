@@ -381,6 +381,14 @@ function foldRow(row, kids) {
     row.classList.toggle("open"); kids.hidden = !row.classList.contains("open");
   };
 }
+// a backlink line into d: plain text, every [[...]] in it as a <mark>
+function markLinks(d, text) {
+  String(text).split(/(\[\[[^\]]*\]\])/).forEach((part, i) => {
+    const el = i % 2 ? document.createElement("mark") : document.createTextNode(part);
+    if (i % 2) el.textContent = part;
+    d.appendChild(el);
+  });
+}
 async function rPanesRefresh() {
   if (!rightOpen) return;
   const n = rNote() || (rTab === "bl" ? cvTabPath(rTrack()) : null);   // cvf-links CVR-A-097: a canvas tab's backlinks
@@ -420,11 +428,7 @@ async function rBacklinks(n) {
       const d = document.createElement("div");
       d.className = "blline"; d.dataset.ol = "bl:" + b.note;
       d.title = "line " + (ln + 1);
-      text.split(/(\[\[[^\]]*\]\])/).forEach((part, i) => {
-        const el = i % 2 ? document.createElement("mark") : document.createTextNode(part);
-        if (i % 2) el.textContent = part;
-        d.appendChild(el);
-      });
+      markLinks(d, text);
       sideRow(d, b.note);
       kids.appendChild(d);
     }
@@ -9231,11 +9235,7 @@ function cvBacklinkRows(box, cvb) {   // one row per canvas + one line per link 
     for (const text of b.lines || []) {
       const d = document.createElement("div");
       d.className = "blline"; d.dataset.ol = "bl:" + b.canvas;
-      String(text).split(/(\[\[[^\]]*\]\])/).forEach((part, i) => {
-        const el = i % 2 ? document.createElement("mark") : document.createTextNode(part);
-        if (i % 2) el.textContent = part;
-        d.appendChild(el);
-      });
+      markLinks(d, text);
       d.onclick = () => openCanvas(b.canvas);
       kids.appendChild(d);
     }
