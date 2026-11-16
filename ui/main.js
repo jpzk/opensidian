@@ -4911,6 +4911,9 @@ function ssAnchor(g) {   // the (fractional, 0-based) SOURCE LINE at the top of 
   if (t.mode === "reading") {
     const ch = g.preview.children, bl = g.pvLines;
     if (!ch.length || !bl || bl.length !== ch.length) return null;   // map out of step: no anchor beats a wrong one
+    // reading at its very top (properties + first block in view) = the top of the note, not
+    // the first RENDERED block's line (frontmatter has none: lp L2 -> read -> lp landed on L5)
+    if (g.preview.scrollTop < 1) return 0;
     const [i, f] = ssTopOf(g.preview, ch);
     const a = bl[i] - 1, b = i + 1 < bl.length ? bl[i + 1] - 1 : a + 1;
     return a + f * Math.max(1, b - a);

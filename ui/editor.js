@@ -2312,7 +2312,57 @@ Ed.land = function (cm, s, byFrac) {
   const c = byFrac ? -(s.f || 0) * cm.lineBlockAt(ln.from).height : s.c;
   // scrollTop = blockTop + off - c  ->  ym = blockTop - scrollTop = c - off
   cm.dispatch({ effects: Ed.snapFx(cm, ln.from, c - off) });
+  Ed.holdLand(cm, s, byFrac);
   return true;
+};
+/* HOLD a landing until CM6's height map agrees with it. CM6 applies the snapshot in
+   the first measure pass whose viewport is stable, on the heights drawn THAT frame;
+   the scroll then draws rows it had only estimated (a .lp.src restyle, lazy rows,
+   wrapped paragraphs) and its anchor correction holds the block that was at the
+   OLD scroll position, not the landed line (box: mid lp->src off 7, end src->lp off 8).
+   So for a few frames a CM6 measure request reads where line l really sits on the
+   freshly measured map; when it is off by more than HOLD_PX the same landing is
+   given back to CM6 once more (an effect, never a px write). Ends at the first
+   user input on the scroller, at a newer landing, or after HOLD_FR frames. */
+Ed.HOLD_PX = 3; Ed.HOLD_FR = 90;
+Ed.holdLand = function (cm, s, byFrac) {
+  if (!cm || !s || s.top) return;
+  const seq = cm._landSeq = (cm._landSeq || 0) + 1, sc = cm.scrollDOM, evs = ["wheel", "keydown", "pointerdown", "touchstart"];
+  let fr = 0, ok = 0, re = 0, done = false;
+  const end = () => { if (done) return; done = true; for (const e of evs) sc.removeEventListener(e, quit, true); };
+  const quit = () => { if (cm._landSeq === seq) cm._landSeq++; end(); };
+  for (const e of evs) sc.addEventListener(e, quit, true);
+  const tick = () => {
+    if (done || cm._landSeq !== seq || !cm.dom.isConnected || ++fr > Ed.HOLD_FR) { end(); return; }
+    cm.requestMeasure({
+      key: "ed-hold-land",
+      read(v) {
+        const d = v.state.doc, ln = d.line(Math.min(d.lines, Math.max(1, s.l + 1))), b = v.lineBlockAt(ln.from);
+        const want = byFrac ? -(s.f || 0) * b.height : s.c, cur = b.top + Ed.scOff(v) - sc.scrollTop;
+        const max = sc.scrollHeight - sc.clientHeight;
+        // clamped at either end of the scroller: the line cannot get any closer
+        const stuck = (cur > want && sc.scrollTop >= max - 1) || (cur < want && sc.scrollTop <= 0);
+        return Math.abs(cur - want) <= Ed.HOLD_PX || stuck;
+      },
+      write(good) {
+        if (done || cm._landSeq !== seq) return;
+        if (good) { if (++ok >= 3 && fr >= 10) { end(); return; } }
+        else {
+          ok = 0;
+          if (++re > 8) { end(); return; }
+          // a dispatch inside CM6's measure loop throws: give the landing back right after it
+          queueMicrotask(() => {
+            if (done || cm._landSeq !== seq) return;
+            const dd = cm.state.doc, l2 = dd.line(Math.min(dd.lines, Math.max(1, s.l + 1)));
+            const c = byFrac ? -(s.f || 0) * cm.lineBlockAt(l2.from).height : s.c;
+            cm.dispatch({ effects: Ed.snapFx(cm, l2.from, c - Ed.scOff(cm)) });
+          });
+        }
+        requestAnimationFrame(tick);
+      }
+    });
+  };
+  requestAnimationFrame(tick);
 };
 /* the line at the scroller's top edge (+slack px), fractional. DOM FIRST: the
    drawn rows are the truth the user sees. The height map is only as fresh as
