@@ -694,12 +694,6 @@ const Ed = {
     s.dataset.audio = rel;
     let a = s.querySelector("audio");
     if (!a) { a = document.createElement("audio"); s.appendChild(a); }
-    { const E = Ed._aud.ev || (Ed._aud.ev = []), lg = t => { E.push(t); if (E.length > 30) E.shift(); };   // DIAG #140 (temporary)
-      ["emptied", "loadstart", "abort", "play", "pause", "playing", "ended", "loadedmetadata", "error", "suspend", "stalled", "waiting"].forEach(n => a.addEventListener(n, () => lg(n + "~" + a.readyState + a.networkState)));
-      const P = HTMLMediaElement.prototype, fr = () => (new Error().stack || "").split("\n").slice(1, 5).map(l => (l.split("@")[0] || "?").slice(-16)).join(">");
-      a.load = function () { lg("LOAD<" + fr()); return P.load.call(this); };
-      a.play = function () { lg("PLAY<" + fr()); return P.play.call(this); };
-      new MutationObserver(ms => ms.forEach(m => lg("attr:" + m.attributeName + "=" + String(a.getAttribute(m.attributeName)).slice(0, 6)))).observe(a, { attributes: true }); }
     a.controls = true; a.preload = "metadata"; // as before #139; no src (so no load) until go(); restricted flips it to none below
     a.setAttribute("aria-label", s.dataset.alt || rel);
     const go = play => {
