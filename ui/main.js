@@ -8885,7 +8885,8 @@ function audvTok() {           // issue #140: [audv:<path>|<state>|x,y,w,h|rs,ns
   const a = s.querySelector("audio"), m = a ? [a.readyState, a.networkState, a.error ? a.error.code : 0, a.paused ? "p" : "P", a.currentSrc ? a.currentSrc.slice(0, 4) : "-"].join(",") : "-";
   // every <audio> in the document (rs.ns.paused): a second element shadowing the view's player shows here
   const all = [...document.querySelectorAll("audio")].slice(0, 4).map(x => x.readyState + "." + x.networkState + "." + (x.paused ? "p" : "P") + (x.isConnected ? "" : "d")).join(";");
-  return " [audv:" + esc(v.path) + "|" + st + "|" + [b.x, b.y, b.width, b.height].map(Math.round).join(",") + "|" + m + "|all=" + all + "]";
+  const lg = Ed._aud.lastGo, la = lg && lg.querySelector("audio"), lgs = !lg ? "-" : (lg === s ? "same" : "other") + (lg.isConnected ? "" : "-detached") + (la ? ":" + la.readyState + "." + la.networkState + "." + (la.paused ? "p" : "P") + "." + (la === a ? "a" : "A") : "");
+  return " [audv:" + esc(v.path) + "|" + st + "|" + [b.x, b.y, b.width, b.height].map(Math.round).join(",") + "|" + m + "|all=" + all + "|go=" + lgs + "]";
 }
 /* goal canvas-core: "Create new canvas" (command) and "New canvas" (explorer menus). The file is made
    through canvas_io create (O_EXCL: an existing name is never overwritten — the next free
