@@ -28,6 +28,7 @@ const Ed = {
   el(tag, cls) { const e = document.createElement(tag); if (cls) e.className = cls; return e; },
   t(s) { return document.createTextNode(s); },
   mk(s, extra) { const e = Ed.el("span", extra ? "mk " + extra : "mk"); e.appendChild(Ed.t(s)); return e; },
+  cxy(r) { return Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2); },   // a rect's centre "cx,cy", the census click-point form
 
   /* ---------- R17.6 per-line TOKEN MAP ----------
      "the per-line token map MUST carry, for each token, its raw range plus its
@@ -1700,7 +1701,7 @@ Ed.rvTaskTok = () => {
   for (const b of bs) {
     const r = b.getBoundingClientRect();
     if (!r.width || r.top < pr.top || r.bottom > pr.bottom) continue;
-    xy.push(b.dataset.line + ":" + Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2));
+    xy.push(b.dataset.line + ":" + Ed.cxy(r));
     if (xy.length >= 40) break;
   }
   return " [rvtask:" + bs.length + "/" + bs.filter(b => b.checked).length + "] [rvtaskxy:" + (xy.join("|") || "-") + "] [rvtaskst:" + Math.round(g.preview.scrollTop) + "]";
@@ -3194,7 +3195,7 @@ Ed.tblCensus = function () {
     const c1 = t.querySelector("td") || t.querySelector("th"), r = c1 ? c1.getBoundingClientRect() : null;   // a driver clicks what it measured
     return rs.length + "x" + h.length + ":" + h.map(c => ({ left: "l", center: "c", right: "r" })[c.getAttribute("align")] || "-").join("") +
       ":" + (h[0] ? h[0].textContent.trim().replace(/[\]|\s]+/g, "_").slice(0, 20) : "") +
-      (r ? "@" + Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2) : "");
+      (r ? "@" + Ed.cxy(r) : "");
   }).join("|") + "]";
 };
 /* #37 [rvth:<border px>,<padding-left px>@<x>,<y>] — the FIRST reading-view th of the focused
@@ -3206,7 +3207,7 @@ Ed.rvthCensus = function () {
   if (!th || !th.getClientRects().length) return "";
   const s = getComputedStyle(th), r = th.getBoundingClientRect();
   return " [rvth:" + Math.round(parseFloat(s.borderTopWidth) || 0) + "," + Math.round(parseFloat(s.paddingLeft) || 0) +
-    "@" + Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2) + "]";
+    "@" + Ed.cxy(r) + "]";
 };
 /* ---------- MARKS painted by main.js (find bar "fd", search jump "sc") ----------
    A named DecorationSet per view, replaced whole by Ed.hl and mapped through

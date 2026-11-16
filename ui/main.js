@@ -813,7 +813,7 @@ function tjTok() {
 document.addEventListener("focusout", () => { if (rightOpen && rTab === "toc") setTimeout(updateTitle, 0); }, true);
 function tjxyTok() {
   if (!rightOpen || rTab !== "toc") return "";
-  const c = r => Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2);
+  const c = Ed.cxy;
   const rows = [...document.querySelectorAll("#toclist .tocrow")].filter(r => r.getClientRects().length)
     .map(r => r.dataset.line + "@" + c(r.querySelector(".tn").getBoundingClientRect()));
   const ps = [...document.querySelectorAll("#main .pane")].map((p, i) => {
@@ -2325,10 +2325,7 @@ function bmEditTok() {
   const q = s => String(s == null ? "" : s).replace(/[|\]]/g, "");
   const sel = $("bme-grp");
   const cur = bmEdit.opts[Number(sel.value)] || bmEdit.opts[0];
-  const xs = [sel, $("bme-no"), $("bme-yes")].map(e => {
-    const r = e.getBoundingClientRect();
-    return Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2);
-  }).join(";");
+  const xs = [sel, $("bme-no"), $("bme-yes")].map(e => Ed.cxy(e.getBoundingClientRect())).join(";");
   return " [bmedit:" + q(bmEdit.name) + "|" + q(cur.title) + "|" +
          bmEdit.opts.map(o => q(o.title)).join("|") + "] [bmex:" + xs + "]";
 }
@@ -2407,10 +2404,7 @@ function bmAddTok() {
   const q = s => String(s == null ? "" : s).replace(/[|\]]/g, "");
   const sel = $("bme-grp");
   const cur = bmAdd.opts[Number(sel.value)] || bmAdd.opts[0];
-  const xs = [$("bme-title"), sel, $("bme-no"), $("bme-yes"), $("bme-x")].map(e => {
-    const r = e.getBoundingClientRect();
-    return Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2);
-  }).join(";");
+  const xs = [$("bme-title"), sel, $("bme-no"), $("bme-yes"), $("bme-x")].map(e => Ed.cxy(e.getBoundingClientRect())).join(";");
   return " [modal:bmadd] [bmadd:" + q(bmAdd.name) + "|" + q(cur.title) + "|" + q($("bme-title").value) + "|" +
          bmAdd.opts.map(o => q(o.title)).join("|") + "] [bmax:" + xs + "] [bmafocus:" +
          (document.activeElement === $("bme-title") ? "title" : "-") + "]";
@@ -6069,10 +6063,7 @@ $("ulbox").addEventListener("mousedown", e => { if (e.target === $("ulbox")) e.p
 function ulTok() {
   const b = [$("ul-always"), $("ul-once"), $("ul-no")];
   const f = b.indexOf(document.activeElement);
-  const xs = b.map(e => {
-    const r = e.getBoundingClientRect();
-    return Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2);
-  }).join(";");
+  const xs = b.map(e => Ed.cxy(e.getBoundingClientRect())).join(";");
   return " [ul:" + ulPending.links + "/" + ulPending.files + "/" + f + "]" +
          " [ulsay:" + $("ulsay").textContent.replace(/[[\]|]/g, "") + "]" +
          " [ulx:" + xs + "]";
@@ -6191,10 +6182,7 @@ $("delbox").addEventListener("mousedown", e => { if (e.target === $("delbox")) e
 function delTok() {
   const b = [$("del-no"), $("del-yes")];
   const f = b.indexOf(document.activeElement);
-  const xs = b.map(e => {
-    const r = e.getBoundingClientRect();
-    return Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2);
-  }).join(";");
+  const xs = b.map(e => Ed.cxy(e.getBoundingClientRect())).join(";");
   const q = s => String(s == null ? "" : s).replace(/[[\]|]/g, "");
   return " [del:" + q(delPending.name) + "/" + delPending.files + "/" + delPending.lines + "/" + f + "]" +
          " [delsay:" + q($("delq").textContent + " " + $("delsay").textContent).slice(0, 200) + "]" +
@@ -14026,7 +14014,7 @@ function wfHdrTok() {
   const ctr = el => {
     if (!el) return "-";
     const r = el.getBoundingClientRect();
-    return r.width < 1 || r.height < 1 ? "-" : Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2);
+    return r.width < 1 || r.height < 1 ? "-" : Ed.cxy(r);
   };
   const out = [];
   let i = 0;
@@ -14061,7 +14049,7 @@ function hdrActTok() {
     for (const b of p.querySelectorAll(":scope > .tabbar > .modebtn, :scope > .tabbar > .morebtn")) {
       const r = b.getBoundingClientRect();
       if (b.hidden || r.width < 1 || r.height < 1) continue;
-      const c = "@" + Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2);
+      const c = "@" + Ed.cxy(r);
       if (b.classList.contains("morebtn")) acts.push("more" + c);
       else {
         const t = b.title || "";
@@ -14950,7 +14938,7 @@ function nobTok() {
     for (const r of SMODEL.rows) for (const k of ["section", "label", "desc", "default_shown"]) if (typeof r[k] === "string") { nm++; chk("srow:" + r.tab + "." + k, r[k]); }
   }
   for (const c of CMDS) { nm++; chk("cmd:" + c.id, c.name); }
-  const c = r => Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2);
+  const c = Ed.cxy;
   const vis = e => !!e && e.getClientRects().length > 0;
   const row = [...document.querySelectorAll("#tree .trow.note")].find(vis);
   const tab = document.querySelector("#main .pane.focused .tabs .tab.active") || document.querySelector("#main .tabs .tab.active");
