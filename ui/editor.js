@@ -2508,6 +2508,19 @@ Ed.scrollToLine = function (g, line) {
   const d = cm.state.doc, i = Math.min(d.lines - 1, Math.max(0, Math.floor(line))), f = Math.min(1, Math.max(0, line - i));
   if (i === 0 && f === 0) { Ed.land(cm, { top: true }); return; }   // line 0 = the top of the note (title in view)
   Ed.land(cm, { l: i, f }, true);
+  // #119 (dropped by the #148/#125 merge, R1 scrollpos mid lp->src off 7): with a
+  // drawn Properties block ABOVE the destination (estimated 30px/line, drawn at
+  // another height) CM6's anchor correction is kept for the line it anchored at
+  // the last transaction. CM6's own scrollIntoView effect (y=start, the fraction
+  // as a negative margin: the same target as the snapshot) re-anchors on the
+  // destination line inside the measure loop. An effect, never a px write; only
+  // when such a block is above it, so every other note lands as before.
+  const v = g.view, pf = v && v._propsF ? cm.state.field(v._propsF, false) : null, ln = d.line(i + 1);
+  let blk = false;
+  if (pf && pf.size) pf.between(0, d.length, (a, b) => { if (b <= ln.from) blk = true; });
+  if (blk) try {
+    cm.dispatch({ effects: CMv.EditorView.scrollIntoView(ln.from, { y: "start", yMargin: -Math.round(f * cm.lineBlockAt(ln.from).height) }) });
+  } catch (e) { console.error(e); }
 };
 /* the editor scroller OWNS its plain vertical wheel. CM6 virtualises: lines it has
    not drawn carry ESTIMATED (or, after the .lp.src restyle, stale) heights, and when
@@ -2579,12 +2592,22 @@ Ed.revealAt = function (g, l, c) {
    scrollTop = blockTop - ym inside CM6's measure loop (never a px write). Held for
    a few frames while the block re-measures (a heading drawn from an estimate, a
    pdf frame that grows after its first draw); ends at user input on the
-   scroller, at a newer landing, or after REV_FR frames. */
-Ed.REV_FR = 40;
+   scroller, at a newer landing, or after REV_FR frames. While an embed in the
+   drawn rows is still sizing (an image not decoded, a pdf frame waiting for its
+   page info) or the scroll height still moves, the hold does not end early:
+   osdrop's pdf drop was seen ending after 10 settled frames on a 668px note
+   (max 0) before the embeds above and the 923px pdf frame took their height,
+   leaving the frame below the view ([rvp:] census, bin f0811bd4). */
+Ed.REV_FR = 120;
+Ed.mediaPending = function (cm) {
+  for (const im of cm.contentDOM.querySelectorAll("img")) if (!im.complete) return true;
+  for (const s of cm.contentDOM.querySelectorAll(".pdf-embed")) if (!s._pdfAr && !s.classList.contains("mod-broken")) return true;
+  return false;
+};
 Ed.revealPos = function (cm, pos, y) {
   if (!cm || pos == null) return false;
   const seq = cm._landSeq = (cm._landSeq || 0) + 1, sc = cm.scrollDOM, evs = ["wheel", "keydown", "pointerdown", "touchstart"];
-  let fr = 0, ok = 0, done = false;
+  let fr = 0, ok = 0, done = false, last = "";
   const end = () => { if (done) return; done = true; for (const e of evs) sc.removeEventListener(e, quit, true); };
   const quit = () => { if (cm._landSeq === seq) cm._landSeq++; end(); };
   for (const e of evs) sc.addEventListener(e, quit, true);
@@ -2597,7 +2620,7 @@ Ed.revealPos = function (cm, pos, y) {
     else if (top < st + M) { T = top - M; if (bot > T + H) T = bot - H + M; }
     else if (bot > st + H - M) T = bot - H + M;
     T = Math.max(0, Math.min(max, T));
-    return { from: b.from, ym: b.top - T, need: Math.abs(T - st) > 1 };
+    return { from: b.from, ym: b.top - T, need: Math.abs(T - st) > 1, sig: sc.scrollHeight + ":" + Math.round(top) + ":" + Math.round(b.height), busy: Ed.mediaPending(v) };
   };
   const tick = () => {
     if (done || cm._landSeq !== seq || !cm.dom.isConnected || ++fr > Ed.REV_FR) { end(); return; }
@@ -2606,7 +2629,8 @@ Ed.revealPos = function (cm, pos, y) {
       read: want,
       write(r) {
         if (done || cm._landSeq !== seq) return;
-        if (!r.need) { if (++ok >= 3 && fr >= 10) { end(); return; } }
+        const moved = r.sig !== last; last = r.sig;
+        if (!r.need) { if (moved || r.busy) ok = 0; else if (++ok >= 3 && fr >= 10) { end(); return; } }
         else {
           ok = 0;
           // a dispatch inside CM6's measure loop throws: land right after it
