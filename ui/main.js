@@ -4017,12 +4017,13 @@ function utBuild() {             // pane/focus census in the window title (headl
           "|task=" + rvc(rvtb) + (rvtb ? ":dis" + (rvtb.disabled ? 1 : 0) : "") +
           "|img=" + rvc(rvq(rvp, "img")) +
           "|lprow=" + rvc(rvq(rvl, ".lprow")) + "]";
-    /* issue #142 -> [tcur:tab=<cursor>|ttl=<cursor>|rvttl=<cursor>] — the computed cursor of the focused
-       group's ACTIVE tab header, of the live-preview title band (.lp::before, the double-click target) and of
-       the reading view's title band. "-" = not in the DOM (no active tab / no title on this note). */
+    /* issue #142 -> [tcur:tab=<cursor>|ttl=<cursor>|rvttl=<cursor>|ted=<cursor>] — the computed cursor of the focused
+       group's ACTIVE tab header, of the live-preview title band (.lp::before, the double-click target), of
+       the reading view's title band and of an open tab rename field (.tab .exren, the caret surface). "-" = not in the DOM (no active tab / no title on this note). */
     const tcAct = rvg.tabsEl && rvg.tabsEl.querySelector(".tab.active");
     const tcPs = el => el && el.dataset.title ? String(getComputedStyle(el, "::before").cursor || "?").replace(/[[\]|=]/g, "").slice(0, 24) : "-";
-    md += " [tcur:tab=" + rvc(tcAct) + "|ttl=" + tcPs(rvl) + "|rvttl=" + tcPs(rvp) + "]";
+    const tcEd = rvg.tabsEl && rvg.tabsEl.querySelector(".tab .exren");
+    md += " [tcur:tab=" + rvc(tcAct) + "|ttl=" + tcPs(rvl) + "|rvttl=" + tcPs(rvp) + "|ted=" + rvc(tcEd) + "]";
     /* rvcursor criterion 3 -> [rvsel:<chars>|<x0>,<y>,<x1>] — the SELECTION
        CAPABILITY, which is a different question from the cursor SHAPE: Obsidian
        ships the I-beam over reading-view prose, and the I-beam is the
