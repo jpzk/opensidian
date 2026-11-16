@@ -12397,6 +12397,7 @@ async function startGraph(g, cfg) {
       redraw();
       return;
     }
+    if (!e.deltaY) return;   // F26: a horizontal-only wheel is not a zoom step
     view.notch = Math.max(GZ_IN, Math.min(GZ_OUT, view.notch + (e.deltaY < 0 ? -1 : 1)));
     const s = notchScale(view.notch);
     view.tx = mx - view.wx * s; view.ty = my - view.wy * s; view.scale = s;
