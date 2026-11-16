@@ -8111,7 +8111,7 @@ if (CANVAS) {
 }
 /* #116 the Audio recorder core plugin (stock 1.13.7 "audio-recorder": ribbon lucide-mic "Start/stop recording",
    commands audio-recorder:start / :stop, Recording YYYYMMDDHHmmss in the attachment folder, embed at the cursor).
-   OFF by default (stock); exposed in app.internalPlugins (config["audio-recorder"]); the on/off persists
+   ON by default (#139, operator 2026-11-16: absent core-plugins.json key => on, an explicit false is respected); exposed in app.internalPlugins (config["audio-recorder"]); the on/off persists
    app-wide (localStorage) and per vault (core-plugins.json, settings.js). Works in restricted mode: app code.
    THE MIC GATE (security, issue risk 4): the native hook (src-tauri/src/audiorec.rs) grants a capture request
    only if it is audio-only AND the window was armed by audio_arm(token) a moment before; the token is handed
@@ -8234,9 +8234,9 @@ let AREC = null;
   }
   const plugin = {
     id: "audio-recorder",
-    enabled: pref.get() === true,
+    enabled: pref.get() !== false,   // #139: on unless the user turned it off; a vault without the key comes up on (settings.js boot)
     _loaded: false,
-    instance: { id: "audio-recorder", name: "Audio recorder", description: "Record audio notes and save them as attachments.", defaultOn: false },
+    instance: { id: "audio-recorder", name: "Audio recorder", description: "Record audio notes and save them as attachments.", defaultOn: true },
     views: {},
     async load() { this._loaded = true; st.on = this.enabled; paint(); },
     async unload() { if (st.rec) await stop(); this._loaded = false; st.on = false; paint(); },
@@ -8278,8 +8278,8 @@ let AREC = null;
      (settings.rs: atomic write, vault-confined values). instance.options is the LIVE object holding the file's stock
      keys, so obsidian-daily-notes-interface (Calendar, Periodic Notes) resolve the same folder / format / template.
    - On / off: app.internalPlugins.plugins["daily-notes"] (enable()/disable(), config["daily-notes"]); the vault's
-     core-plugins.json "daily-notes" decides at launch (an Obsidian vault with true comes up on), else the app-wide
-     localStorage pref, else OFF (operator 2026-11-15: no ribbon icon / commands in vaults that never asked). A
+     core-plugins.json "daily-notes" decides at launch (true = on, an explicit false = off: the user turned it off),
+     no key = ON (#139, operator 2026-11-16, stock 1.13.7 default; supersedes the 2026-11-15 off default). A
      switch writes core-plugins.json (merge: no other key is dropped). No restart: the three commands (CMDS rows
      with coreOff, hidden from the palette, Hotkeys and app.commands while off) and the ribbon icon follow it.
    - "Open today's daily note": <folder>/<moment().format(format)>.md, "/" in the format = nested folders (made on
@@ -8339,7 +8339,7 @@ var DN = null;   // var: the census (dnTok) may run before this line
       id: "daily-notes",
       enabled: false,
       _loaded: false,
-      instance: { id: "daily-notes", name: "Daily notes", description: "Open or create today's note from a folder, date format and template.", defaultOn: false, options },
+      instance: { id: "daily-notes", name: "Daily notes", description: "Open or create today's note from a folder, date format and template.", defaultOn: true, options },
       async load() { this._loaded = true; sync(); },
       async unload() { this._loaded = false; sync(); },
       async enable() { return setOn(true); },
@@ -8377,7 +8377,7 @@ var DN = null;   // var: the census (dnTok) may run before this line
         syncOpts();
       }
       const c = core && typeof core === "object" ? core["daily-notes"] : undefined;
-      if (onGen === g0) plugin.enabled = typeof c === "boolean" ? c : pref.get() === true;   // else the click (already written) stands
+      if (onGen === g0) plugin.enabled = typeof c === "boolean" ? c : true;   // #139: no key => ON (stock), an explicit false stays off; else the click (already written) stands
       await plugin.load();
       st.booted = true; sync();
       if (plugin.enabled && options.autorun === true) await dnOpenToday("autorun");
