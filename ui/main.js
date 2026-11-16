@@ -160,6 +160,8 @@ const mkTab = name => modeBits({ name, read: false, src: false, hist: [{ n: name
 const pushTab = (g, t) => { g.tabs.push(t); g.active = g.tabs.length - 1; };   // append t to group g as its active tab (the caller loads it)
 const lgName = c => "Graph of " + c.split("/").pop();   // a local graph tab's name: "Graph of " + its centre note's basename
 const stemOf = p => { const b = String(p).split("/").pop(), d = b.lastIndexOf("."); return d > 0 ? b.slice(0, d) : b; };   // a path's basename without its extension (PDF / image view titles)
+const dirOf = p => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");   // a vault path's folder, "" = the root
+const dirSlash = p => (p.includes("/") ? p.slice(0, p.lastIndexOf("/") + 1) : "");   // the same with its trailing "/" (a prefix to join a new name onto)
 // #125/#137: an edit view's history position is a CM6 LINE anchor (Ed.snapOf), not scroller px
 const scrollOf = g => { const t = g.active >= 0 ? g.tabs[g.active] : null; return !t || t.kind ? 0 : t.mode === "reading" ? g.preview.scrollTop : isLp(t.mode) ? (Ed.cm(g) ? Ed.snapOf(Ed.cm(g)) || 0 : g.lp.scrollTop) : g.editor.scrollTop; };
 function histPush(g, tab, name) {     // record where the CURRENT entry was scrolled to, then push the new note
@@ -2510,7 +2512,7 @@ function graphNodeMenu(e, hit, scope) {
   const pickFolder = async () => {
     let fl = [];
     try { fl = await inv("list_folders"); } catch (err) { fl = []; }
-    const here = nm.includes("/") ? nm.slice(0, nm.lastIndexOf("/")) : "";
+    const here = dirOf(nm);
     m.innerHTML = "";
     label();
     sep();
@@ -4838,7 +4840,7 @@ function tabMenu(e, g, i, hdr) {
   const pickFolder = async () => {       // R38.16: Obsidian opens a modal folder SUGGESTER; ours is the same in-place list
     let fl = [];
     try { fl = await inv("list_folders"); } catch (err) { fl = []; }
-    const here = tab.name.includes("/") ? tab.name.slice(0, tab.name.lastIndexOf("/")) : "";
+    const here = dirOf(tab.name);
     inPlace(() => {
       if (here) item("(vault root)", () => { closeMenu(); moveNoteTo(tab.name, ""); });
       for (const f of fl) if (f !== here) item(f, () => { closeMenu(); moveNoteTo(tab.name, f); });
@@ -5879,7 +5881,7 @@ async function commitTitleEdit() {
   if (!t || t === orig) { closeTitleEdit(); return; }     // R34.14 / no-op
   if (!titleCheck()) return;                 // illegal chars or a name already taken:
                                              // the notice is up, the box stays open, NOTHING moved
-  const dir = name.includes("/") ? name.slice(0, name.lastIndexOf("/") + 1) : "";
+  const dir = dirSlash(name);
   const nn = dir + t;                        // NAMES CARRY NO EXTENSION (see NOTE NAMES below)
   closeTitleEdit();
   await flushSave(g);                        // the body's own bytes land before the file moves
@@ -5964,7 +5966,7 @@ function titleCheck() {
   if (!titling) return true;
   const t = (titling.el.textContent || "").replace(/[\r\n]+/g, " ").trim();
   const name = titling.name;
-  const dir = name.includes("/") ? name.slice(0, name.lastIndexOf("/") + 1) : "";
+  const dir = dirSlash(name);
   let msg = "";
   if (t && TITLE_ILLEGAL.test(t)) msg = 'File name cannot contain any of these characters: \\ / : * ? " < > |';
   else if (t && t !== titling.orig && notesCache.includes(dir + t)) msg = "There's already a file with the same name";
@@ -7068,13 +7070,12 @@ function exRenClose() {                    // revert the row to its label; nothi
   if (noticeSrc === "exren") say("", "exren");
   updateTitle();
 }
-const exRenDir = p => (p.includes("/") ? p.slice(0, p.lastIndexOf("/") + 1) : "");
 function exRenCheck() {                    // the inline title's refusals (titleCheck), stated in the notice
   if (!exRen) return true;
   const t = exRen.inp.value.replace(/[\r\n]+/g, " ").trim();
   let msg = "";
   if (t && TITLE_ILLEGAL.test(t)) msg = 'File name cannot contain any of these characters: \\ / : * ? " < > |';
-  else if (t && t !== exRen.orig && exRen.kind === "note" && notesCache.includes(exRenDir(exRen.path) + t)) msg = "There's already a file with the same name";
+  else if (t && t !== exRen.orig && exRen.kind === "note" && notesCache.includes(dirSlash(exRen.path) + t)) msg = "There's already a file with the same name";
   if (msg) { if (msg !== noticeTxt) say(msg, "exren"); return false; }
   if (noticeSrc === "exren") say("", "exren");
   return true;
@@ -7086,7 +7087,7 @@ async function exRenCommit(blur) {
   if (!t || t === r.orig) { exRenClose(); return; }        // empty or unchanged: revert, no rename (R34.14)
   if (!exRenCheck()) { if (blur) exRenClose(); return; }  // refused: Return keeps the editor, blur reverts it
   exRenClose();
-  const dir = exRenDir(r.path);
+  const dir = dirSlash(r.path);
   if (r.kind === "canvas") { await cvRetarget(r.path, dir + t + ".canvas"); return; }
   for (const h of groups()) {              // every pane showing the note lands its pending bytes before the move
     const at = h.active >= 0 ? h.tabs[h.active] : null;
@@ -7220,7 +7221,7 @@ function treeDragStart(e, nm, dir) {         // dir: true = a folder row, "file"
   const unown = ownPress();
   const sx = e.clientX, sy = e.clientY;
   const base = nm.split("/").pop();
-  const par = nm.includes("/") ? nm.slice(0, nm.lastIndexOf("/")) : "";
+  const par = dirOf(nm);
   let ghost = null, target = null, hl = null, zones = null, raf = 0, last = null, multi = null;
   let pz = null, pnd = null;               // issue #40: pane zones / the live pane decision (a note row only)
   const clearHl = () => { if (hl) { hl.classList.remove("drop-into"); hl = null; } };
@@ -8632,7 +8633,7 @@ function dnTok() {
 }
 /* goal cv-vault CV-107: the folder of the active file — the focused note tab, else the canvas on screen; "" = root */
 function cvActiveFolder() {
-  const dir = p => { p = String(p || ""); return p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : ""; };
+  const dir = p => dirOf(String(p || ""));
   const g = state && fg();
   const t = g && g.active >= 0 ? g.tabs[g.active] : null;
   if (t && !t.kind && t.name) return dir(t.name);
@@ -8816,7 +8817,7 @@ function canvasFileMenu(e, p) {             // right-click a .canvas row in the 
   const m = document.createElement("div");
   m.className = "ctxmenu";
   const { item, sep } = bmMenuItems(m);
-  const here = p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "";
+  const here = dirOf(p);
   item("Open in new tab",    () => openCanvas(p));
   item("Open to the right",  () => openCanvas(p, "split"));
   item("Open in new window", null, "Single-window app: there is no second window to open into");
@@ -8922,7 +8923,7 @@ $("rnbox").addEventListener("keydown", async e => {     // capture on the box: r
   cvRenamePending = null;
   updateTitle();
   if (e.key === "Escape" || !nn || /[\\/]/.test(nn)) return;
-  const dir = old.includes("/") ? old.slice(0, old.lastIndexOf("/") + 1) : "";
+  const dir = dirSlash(old);
   const np = dir + nn + ".canvas";
   if (np === old) return;
   await cvRetarget(old, np);
