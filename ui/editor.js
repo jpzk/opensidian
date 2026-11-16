@@ -2356,16 +2356,23 @@ Ed.landTick = function (lp, u) {          // updateListener: runs AFTER CM6's me
   // a newer scroll intent from CM6 itself (scrollIntoView effect / selection scroll) supersedes the pin
   if (!Ed._sivT) Ed._sivT = CMv.EditorView.scrollIntoView(0).type;
   if (u.transactions.some(tr => tr.scrollIntoView || tr.effects.some(e => e.is(Ed._sivT)))) { lp._osLand = null; return; }
-  // the scroller moved with no height change: not CM6's correction, not us — the user (scrollbar, keys) or
-  // another writer took over
-  if (!u.heightChanged && S.at != null && Math.abs(lp.scrollTop - S.at) >= 1) { lp._osLand = null; return; }
-  if (u.heightChanged || u.geometryChanged || u.viewportChanged) Ed.landPut(lp, S);
+  // the scroller moved although the user did nothing (user intent = wheel/pointer/key/touch already ended
+  // the hold, Ed.landGuard): a non-user write — CM6 resetting the scroller after a note load, its
+  // anchor correction — so re-land; ending the hold here left a wikilink #heading at scrollTop 0 (links R10.2)
+  const moved = S.at != null && Math.abs(lp.scrollTop - S.at) >= 1;
+  if (moved || u.heightChanged || u.geometryChanged || u.viewportChanged) Ed.landPut(lp, S);
+};
+Ed.landScroll = function (lp) {           // scroll event during a hold: a write CM6 never reported as an update
+  const S = lp && lp._osLand; if (!S || S.at == null || Math.abs(lp.scrollTop - S.at) < 1) return;
+  if (lp._cm !== S.cm || performance.now() - S.t0 > Ed.LAND_HOLD) { lp._osLand = null; return; }
+  S.cm.requestMeasure({ key: "osLand", read: () => null, write: () => { if (lp._osLand === S) Ed.landPut(lp, S); } });
 };
 Ed.landGuard = function (lp) {            // user intent on the scroller ends any hold
   if (!lp || lp._osLandG) return;
   lp._osLandG = true;
   const stop = () => { lp._osLand = null; };
   for (const ev of ["wheel", "pointerdown", "keydown", "touchstart"]) lp.addEventListener(ev, stop, { capture: true, passive: true });
+  lp.addEventListener("scroll", () => Ed.landScroll(lp), { passive: true });   // fires after the guards above
 };
 Ed.scrollToLine = function (g, line) {    // put the fractional source line at the scroller's top (settle-then-land)
   if (line != null) Ed.land(g, { l: line, c: 0 });
