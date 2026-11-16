@@ -89,8 +89,9 @@
       focus() { this.cm.focus(); }
       blur() { this.cm.contentDOM.blur(); }
       hasFocus() { return this.cm.hasFocus; }
-      getScrollInfo() { const s = this._v.lp || this.cm.scrollDOM; return { top: s.scrollTop, left: s.scrollLeft, height: s.scrollHeight, width: s.scrollWidth, clientHeight: s.clientHeight, clientWidth: s.clientWidth }; }
-      scrollTo(x, y) { const s = this._v.lp || this.cm.scrollDOM; if (x != null) s.scrollLeft = x; if (y != null) s.scrollTop = y; }
+      // #125/#137: cm.scrollDOM is the scroller; a px scrollTo lands as a CM6 snapshot effect
+      getScrollInfo() { const s = this.cm.scrollDOM; return { top: s.scrollTop, left: s.scrollLeft, height: s.scrollHeight, width: s.scrollWidth, clientHeight: s.clientHeight, clientWidth: s.clientWidth }; }
+      scrollTo(x, y) { const s = this.cm.scrollDOM; if (x != null) s.scrollLeft = x; if (y != null) { if (EdG && EdG.scrollToTop) EdG.scrollToTop(this.cm, y); else s.scrollTop = y; } }
       scrollIntoView(range, center) {
         const r = range && range.from ? range : { from: this.getCursor("from"), to: this.getCursor("to") };
         const a = this.posToOffset(r.from), b = this.posToOffset(r.to || r.from);
@@ -150,7 +151,7 @@
       set(x) { Object.defineProperty(this, name, { value: x, writable: true, enumerable: true, configurable: true }); },
     });
     const tabOf = v => (v && v.tab && !v.tab.kind ? v.tab : null);
-    const scrollerOf = v => (v && (v.lp || (v.cm && v.cm.scrollDOM))) || null;
+    const scrollerOf = v => (v && ((v.cm && v.cm.scrollDOM) || v.lp)) || null;   // #125: CM6 owns the scroller
     const isActiveView = v => !!(v && v.g && v.g.view === v);
 
     /* ------------------------------------------------------ MarkdownEditView
@@ -183,6 +184,7 @@
         const d = cm.state.doc, n = clamp(Math.floor(y), 0, d.lines - 1);
         const b = cm.lineBlockAt(d.line(n + 1).from);
         const top = cm.documentTop - s.getBoundingClientRect().top + s.scrollTop;
+        if (EdG && EdG.land) { EdG.land(cm, y <= 0 ? { top: true } : { l: n, f: y - n }, true); return; }   // #125: a CM6 effect
         s.scrollTop = y <= 0 ? 0 : top + b.top + (y - n) * b.height;
       }
       getFoldInfo() { return foldInfo(this.view && this.view._tv); }

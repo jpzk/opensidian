@@ -157,7 +157,8 @@ function modeBits(t) {
   return t;
 }
 const mkTab = name => modeBits({ name, read: false, src: false, hist: [{ n: name, s: 0 }], hpos: 0 });  // R8.8: LP default
-const scrollOf = g => { const t = g.active >= 0 ? g.tabs[g.active] : null; return !t || t.kind ? 0 : t.mode === "reading" ? g.preview.scrollTop : isLp(t.mode) ? g.lp.scrollTop : g.editor.scrollTop; };
+// #125/#137: an edit view's history position is a CM6 LINE anchor (Ed.snapOf), not scroller px
+const scrollOf = g => { const t = g.active >= 0 ? g.tabs[g.active] : null; return !t || t.kind ? 0 : t.mode === "reading" ? g.preview.scrollTop : isLp(t.mode) ? (Ed.cm(g) ? Ed.snapOf(Ed.cm(g)) || 0 : g.lp.scrollTop) : g.editor.scrollTop; };
 function histPush(g, tab, name) {     // record where the CURRENT entry was scrolled to, then push the new note
   if (tab.hist[tab.hpos]) tab.hist[tab.hpos].s = scrollOf(g);
   tab.hist = tab.hist.slice(0, tab.hpos + 1); tab.hist.push({ n: name, s: 0 }); tab.hpos++;
@@ -722,7 +723,7 @@ function tjTok() {
   if (g.tabs[g.active] !== t) return " [tj:" + nm + "|bg]";
   let top = 0, st = 0;
   if (isLp(t.mode)) {
-    st = g.lp.scrollTop; top = Math.floor(Ed.topLine(g, 2) || 0);
+    st = Ed.sc(g).scrollTop; top = Math.floor(Ed.topLine(g, 2) || 0);   // #125: cm.scrollDOM scrolls
   } else {
     st = g.preview.scrollTop; let k = -1;
     g.preview.querySelectorAll("h1,h2,h3,h4,h5,h6").forEach((el, i) => { if (el.offsetTop - g.preview.offsetTop <= st + 2) k = i; });
@@ -959,25 +960,40 @@ async function scJump(g, hits) {
   // geometry comes from CM6's height map (lineBlockAt covers undrawn lines); once
   // the scroll has drawn it, the block is re-read from the measured DOM and the
   // centring corrected if the estimate differed.
-  const cm = Ed.cm(g);
+  // #125/#137: cm.scrollDOM is the scroller, and the centring is CM6's own snapshot
+  // effect — scrollTop = lineBlockAt(line).top - ym, set INSIDE CM6's measure loop on
+  // the heights it measured that frame — instead of a px write to g.lp that the next
+  // measure of the estimated lines it scrolled past could move.
+  const cm = Ed.cm(g), sc = Ed.sc(g);
   const geo = () => {
     const r = Ed.rowAt(g, p.l);
-    if (r) return [r.getBoundingClientRect().top - g.lp.getBoundingClientRect().top - g.lp.clientTop + g.lp.scrollTop, r.offsetHeight];
+    if (r) return [r.getBoundingClientRect().top - sc.getBoundingClientRect().top - sc.clientTop + sc.scrollTop, r.offsetHeight];
     if (!cm || p.l + 1 > cm.state.doc.lines) return [-1, -1];
     const b = cm.lineBlockAt(cm.state.doc.line(p.l + 1).from);
-    return [cm.documentTop + b.top - g.lp.getBoundingClientRect().top - g.lp.clientTop + g.lp.scrollTop, b.height];
+    return [cm.documentTop + b.top - sc.getBoundingClientRect().top - sc.clientTop + sc.scrollTop, b.height];
+  };
+  const centre = (top, h) => {   // R25.13c: clamp(rowTop - (clientHeight - rowHeight)/2, 0, max)
+    const T = Math.max(0, Math.min(top - (sc.clientHeight - h) / 2, Math.max(0, sc.scrollHeight - sc.clientHeight)));
+    if (!cm) { sc.scrollTop = T; return; }
+    // ym = blockTop - T, blockTop in CM6 document coordinates = top - off
+    cm.dispatch({ effects: Ed.snapFx(cm, cm.state.doc.line(p.l + 1).from, top - Ed.scOff(cm) - T) });
   };
   let [rt, rh] = geo();
-  if (rh >= 0) scCenter(g.lp, rt, rh);
-  if (!row && cm && rh >= 0) {
+  if (rh >= 0) centre(rt, rh);
+  if (cm && rh >= 0) {
+    // the effect lands in CM6's next measure: wait for it (and the paint), then re-read the
+    // block on the measured DOM and re-centre once if the estimate differed
     await new Promise(res => cm.requestMeasure({ key: "osScJump", read: () => null, write: () => res() }));
     await new Promise(res => requestAnimationFrame(() => res()));
     const [rt2, rh2] = geo();
-    if (rh2 >= 0 && (Math.round(rt2) !== Math.round(rt) || Math.round(rh2) !== Math.round(rh))) { rt = rt2; rh = rh2; scCenter(g.lp, rt, rh); }
+    if (rh2 >= 0 && (Math.round(rt2) !== Math.round(rt) || Math.round(rh2) !== Math.round(rh))) {
+      rt = rt2; rh = rh2; centre(rt, rh);
+      await new Promise(res => cm.requestMeasure({ key: "osScJump", read: () => null, write: () => res() }));
+    }
   }
   scInfo = "sc:" + curOf(g) + "@" + p.l + "." + p.c + "|hl:" + scHits(g).length +
-           "|top:" + Math.round(g.lp.scrollTop) +
-           "|vp:" + Math.round(g.lp.clientHeight) + "x" + Math.round(g.lp.scrollHeight) +
+           "|top:" + Math.round(sc.scrollTop) +
+           "|vp:" + Math.round(sc.clientHeight) + "x" + Math.round(sc.scrollHeight) +
            "|row:" + Math.round(rt) + "x" + Math.round(rh);
   updateTitle();
 }
@@ -1388,7 +1404,7 @@ function cclTok() {
 function nmwTok() {
   const g = state && fg();
   if (!g || g.active < 0 || g.graphOn) return "";
-  const rd = isReading(g), R = rd ? g.preview : g.lp;
+  const rd = isReading(g), R = rd ? g.preview : Ed.sc(g);   // #125: the edit column lives in cm.scrollDOM (padding, scrollbar)
   if (!R || !R.getClientRects().length) return "";
   const p = R.getBoundingClientRect(), cs = getComputedStyle(R);
   let col = null, colEl = null, n = 0;
@@ -1402,7 +1418,7 @@ function nmwTok() {
   if (!col) return "";
   const v = k => (cs.getPropertyValue(k).trim() || "-").replace(/\s+/g, "_").replace(/[|\]]/g, "");
   const px = x => Math.round(x * 10) / 10;
-  return " [nmw:" + (rd ? "read" : "lp") + "|rlw=" + (R.classList.contains("is-readable-line-width") ? 1 : 0) +
+  return " [nmw:" + (rd ? "read" : "lp") + "|rlw=" + ((rd ? R : g.lp).classList.contains("is-readable-line-width") ? 1 : 0) +
          "|pane=" + px(p.left) + "," + px(p.right) + "|sb=" + px(R.offsetWidth - R.clientWidth - R.clientLeft * 2) +
          "|col=" + px(col.left) + "," + px(col.right) +
          "|lgap=" + px(col.left - p.left) + "|rgap=" + px(p.right - col.right) + "|colw=" + px(col.width) +
@@ -1435,6 +1451,8 @@ function tywGhost(g, R) {
   if (!rows.length) return null;
   const ed = cm.dom.cloneNode(false), sc = cm.scrollDOM.cloneNode(false), ct = cm.contentDOM.cloneNode(false);
   ct.removeAttribute("contenteditable"); ed.setAttribute("aria-hidden", "true"); ed.style.visibility = "hidden";
+  // #125: .lp.cmown is a flex column — an in-flow ghost .cm-editor would take half the real scroller's height
+  ed.style.position = "absolute"; ed.style.left = ed.style.right = ed.style.top = "0";
   for (const t of rows) {
     const r = Ed.row(g, t, 0), l = document.createElement("div");
     l.className = "cm-line " + Ed.lpParse(g, t).cls;
@@ -1512,7 +1530,7 @@ let ttlCanvas = null;
 function ttlTok() {
   const g = fg();
   if (!g || g.active < 0) return "";
-  const R = isReading(g) ? g.preview : g.lp;
+  const R = isReading(g) ? g.preview : Ed.sc(g);   // #125: the edit ::before is on cm.scrollDOM
   const t = R && R.dataset.title;
   if (!t || !/^Title (Fixture|Zero)$/.test(t) || !R.getClientRects().length) return "";
   const s = getComputedStyle(R, "::before");
@@ -2725,14 +2743,15 @@ function mkView(g) {
        switches do NOT — that was measured, shots 19-25, and the flash is
        stored on the view precisely so nothing else has to remember it. */
     if (g) scClear(g);
-    if (e.target !== lp || g.graphOn) return;
+    const sc = Ed.scOf(lp);              // #125: the CM6 scroller fills .lp, so an empty-space click lands on it
+    if ((e.target !== lp && e.target !== sc) || g.graphOn) return;
     // R34.15: the ::before is not an event target — a click on the title's ink
     // reports .lp itself, so the title band is identified by GEOMETRY. Inside
     // it a single press is inert and the DOUBLE click opens the rename surface (R34.1, issue #142); anywhere else below the
     // last row keeps R17's "caret at the end of the note".
     // issue #142 (operator 2026-11-16, diverges from stock on purpose): a SINGLE press on the band opens
     // nothing and moves no caret; only the double click below opens the rename surface.
-    if (titleHit(lp, e.clientX, e.clientY)) { e.preventDefault(); return; }
+    if (titleHit(sc, e.clientX, e.clientY)) { e.preventDefault(); return; }
     e.preventDefault();
     const L = Ed.lines(g);
     Ed.place(g, L.length - 1, L[L.length - 1].length);
@@ -2741,10 +2760,11 @@ function mkView(g) {
   // (openTitleEdit maps (x, y) into the editor with caretRangeFromPoint).
   lp.addEventListener("dblclick", e => {
     const g = v.g;
-    if (!g || e.target !== lp || g.graphOn || e.button !== 0) return;
-    if (!titleHit(lp, e.clientX, e.clientY)) return;
+    const sc = Ed.scOf(lp);              // approach B: the CM6 scroller fills .lp and carries the title band
+    if (!g || (e.target !== lp && e.target !== sc) || g.graphOn || e.button !== 0) return;
+    if (!titleHit(sc, e.clientX, e.clientY)) return;
     e.preventDefault();
-    openTitleEdit(g, lp, e.clientX, e.clientY);
+    openTitleEdit(g, sc, e.clientX, e.clientY);
   });
   return v;
 }
@@ -2758,7 +2778,8 @@ function attachView(g, v) {          // v becomes g's live editor/lp/preview
   if (g.find && g.find.open) fClose(g, false);
   const old = g.view;
   if (old && old.g === g) {          // skip when old already moved to another group (tab drop)
-    Object.assign(old, { lpActive: g.lpActive, lpLines: g.lpLines, scrollTop: old.lp.scrollTop });
+    // #125: the edit position leaves as a CM6 line anchor (display:none drops scrollTop); loadActive lands it
+    Object.assign(old, { lpActive: g.lpActive, lpLines: g.lpLines, scrollTop: Ed.scOf(old.lp).scrollTop, snap: old.cm ? Ed.snapOf(old.cm) : null });
     old.lp.style.display = old.preview.style.display = "none";
   }
   v.g = g;
@@ -4913,25 +4934,33 @@ function ssAnchor(g) {   // the (fractional, 0-based) SOURCE LINE at the top of 
   if (t.mode === "reading") {
     const ch = g.preview.children, bl = g.pvLines;
     if (!ch.length || !bl || bl.length !== ch.length) return null;   // map out of step: no anchor beats a wrong one
+    // reading at its very top (properties + first block in view) = the top of the note, not
+    // the first RENDERED block's line (frontmatter has none: lp L2 -> read -> lp landed on L5)
+    if (g.preview.scrollTop < 1) return 0;
     const [i, f] = ssTopOf(g.preview, ch);
     const a = bl[i] - 1, b = i + 1 < bl.length ? bl[i + 1] - 1 : a + 1;
     return a + f * Math.max(1, b - a);
   }
-  return Ed.topLine(g, 1);            // CM6 height map: the line under the scroller top
+  return Ed.topLineNow(g, 1);         // #125: drawn rows after a synchronous CM6 measure
 }
 function ssRestore(g, line) {   // scroll the CURRENT view so `line` is at the top
   const t = g.active >= 0 ? g.tabs[g.active] : null;
   if (!t || t.kind || line == null || g.graphOn) return;
   if (t.mode === "reading") {
     const ch = g.preview.children, bl = g.pvLines;
+    g._ssrD = "ret:" + ch.length + "/" + (bl ? bl.length : "-");   // #125 red-path diag ([ssa:] after the "|")
     if (!ch.length || !bl || bl.length !== ch.length) return;
+    // above the first rendered block (frontmatter / properties, line 0) = the top of the note:
+    // block 0's start would scroll the properties off and read back as L5 (fm lp->read->lp off 3)
+    if (line <= 0 || line < bl[0] - 1) { g.preview.scrollTop = 0; g._ssrD = "top"; return; }
     let i = 0;
     while (i + 1 < bl.length && bl[i + 1] - 1 <= line) i++;
     const a = bl[i] - 1, b = i + 1 < bl.length ? bl[i + 1] - 1 : a + 1;
     ssScrollTo(g.preview, ch[i], Math.min(1, Math.max(0, (line - a) / Math.max(1, b - a))));
+    g._ssrD = (Math.round(line * 100) / 100) + ":" + i + ":" + bl[i] + ":" + Math.round(g.preview.scrollTop) + ":" + g.preview.scrollHeight;
     return;
   }
-  Ed.scrollToLine(g, line);           // CM6 height map, re-landed once the lines are measured
+  Ed.scrollToLine(g, line);           // #125/#137: ONE CM6 snapshot effect on cm.scrollDOM (lp<->src and reading->edit)
 }
 // Reading view has no height map: an <img> that is still decoding when ssRestore
 // lands is 0 px tall, and when its bytes arrive it grows (~360 px for the longpos
@@ -5031,7 +5060,7 @@ function mswpWatch(g) {   // after setMode's synchronous work: force the layout,
   const c = mswp.cur; if (!c) return;
   mswp.cur = null;
   const t = g.active >= 0 ? g.tabs[g.active] : null;
-  const el = t && t.mode === "reading" ? g.preview : g.lp;
+  const el = t && t.mode === "reading" ? g.preview : Ed.sc(g);   // #125: the edit view scrolls in cm.scrollDOM
   c.last = performance.now();
   const sig = () => el.scrollHeight + ":" + el.scrollTop + ":" + el.clientHeight + ":" + el.childElementCount;
   let prev = sig(); const tL = performance.now(); c.st.layout = tL - c.last;
@@ -5044,7 +5073,8 @@ function mswpWatch(g) {   // after setMode's synchronous work: force the layout,
     const top = ssAnchor(g);
     mswp.seq++;
     mswp.tok = " [msi:" + mswp.seq + ":" + c.dir + ":" + c.kind + ":" + R(end - c.t0) + ":" + steps + ":" +
-               (top == null ? "-" : Math.round(top * 100) / 100) + ":" + R(maxgap) + "]";
+               (top == null ? "-" : Math.round(top * 100) / 100) + ":" + R(maxgap) + "]" +
+               (c.dir[0] === "e" && mswp.ssa && mswp.ssa !== "-" ? " [ssa:" + mswp.ssa + "]" : "");
     if (t && t.mode === "reading") {   // fingerprint, outside the measured window
       const h = g.preview.innerHTML; let x = 0x811c9dc5;
       for (let i = 0; i < h.length; i++) { x ^= h.charCodeAt(i); x = Math.imul(x, 0x01000193); }
@@ -5190,7 +5220,9 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
   // the caret went to line 0). Per tab: two tabs / split panes never share it.
   if (keep) tab.caret = { n: curOf(g), lc: keep, an: ka ? [ka.l, ka.c] : null };   // keyed to the NOTE: an in-place navigate must not inherit it
   const mswA0 = performance.now();
+  Ed.tlDiag = "-";
   const anchor = ssAnchor(g);                    // R35: read the top SOURCE LINE from the OLD view, before anything flips
+  mswp.ssa = Ed.tlDiag;                          // #125 red-path diag: capture pre/post the CM6 measure flush
   let mswSsMs = performance.now() - mswA0;
   await flushSave(g);
   mswpMark("flush");
@@ -5245,7 +5277,9 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
   // mode's Ed.place() scrolls the caret into view, and the scroll the USER chose
   // outranks the caret they cannot see (the brief's "caret off-screen" case).
   const mswR0 = performance.now();
+  g._ssrD = "-";
   ssRestore(g, anchor);
+  if (tab.mode === "reading") mswp.ssa = (mswp.ssa || "-") + "|" + g._ssrD;   // #125 red-path diag: where reading landed
   if (tab.mode === "reading") ssRelandOnImages(g, tab, anchor);
   mswSsMs += performance.now() - mswR0;
   mswEnd(mswT0, mswSsMs);
@@ -5566,6 +5600,8 @@ function setInlineTitle(v, name) {
   for (const el of [v.lp, v.preview]) {
     if (!el) continue;
     if (t) el.dataset.title = t; else delete el.dataset.title;
+    const sc = Ed.scOf(el);            // #125: the CM6 scroller draws the edit view's ::before (style.css .lp.cmown)
+    if (sc !== el) { if (t) sc.dataset.title = t; else delete sc.dataset.title; }
   }
 }
 
@@ -5694,7 +5730,7 @@ function openTitleEdit(g, host, x, y) {
   if (!b || b.height <= 0) return false;
   const wrap = document.createElement("div");
   wrap.className = "titlewrap";
-  if (host.classList.contains("is-readable-line-width")) wrap.classList.add("is-readable-line-width");   // minimalmargin: same bounded column as the ::before it replaces
+  if ((host.closest(".lp, .preview") || host).classList.contains("is-readable-line-width")) wrap.classList.add("is-readable-line-width");   // #125: host may be the CM6 scroller inside .lp. minimalmargin: same bounded column as the ::before it replaces
   const el = document.createElement("div");
   el.className = "titleedit";
   el.contentEditable = "plaintext-only";     // one line of text, no markup, no paste-in HTML
@@ -5737,7 +5773,7 @@ function closeTitleEdit() {
   t.host.removeEventListener("scroll", onTitleScroll);
   t.wrap.remove();
   t.host.classList.remove("titling");
-  if (t.host === t.g.lp && t.g.lp.isConnected) t.g.lp.focus({ preventScroll: true });
+  if ((t.host === t.g.lp || t.host === Ed.sc(t.g)) && t.g.lp.isConnected) t.g.lp.focus({ preventScroll: true });
   updateTitle();
 }
 
@@ -6200,7 +6236,7 @@ async function loadActive(g) {
       // after the user opened the quick switcher (or any prompt); stealing focus then sent the typed query into the note
       if (n && Ed.cm(g)) Ed.home(g, 0, 0, g === fg() && !typingElsewhere(g));   // goal mt-fix: the caret only — no raw row opens on open ([mode:lp])
     }
-  } else if (v.scrollTop) g.lp.scrollTop = v.scrollTop;
+  } else if (isLp(m) && v.snap && Ed.cm(g)) Ed.land(Ed.cm(g), v.snap);   // #125/#137: the retained edit position, as a CM6 effect
   renderTabs(g);
   treeHighlight();
   updateStatus(g);                   // word/char count sync, backlinks async (not awaited: outside the action span)
@@ -6371,20 +6407,14 @@ async function navAnchor(g, anchor) {
   if (isLp(t.mode)) {
     // CM6 draws only the viewport: a line it has not drawn is brought in first and
     // centred once CM6 has measured it; a drawn line is centred on its real box
-    const sc = g.lp, cm = Ed.cm(g);
-    const centre = () => {
-      const row = Ed.rowAt(g, line);
-      if (!row) return false;
-      const rt = row.getBoundingClientRect().top - sc.getBoundingClientRect().top - sc.clientTop + sc.scrollTop;
-      sc.scrollTop = rt - (sc.clientHeight - row.offsetHeight) / 2;
-      return true;
-    };
+    // #125/#137: cm.scrollDOM is the scroller; every landing below is a CM6 scrollIntoView effect
+    const sc = Ed.sc(g), cm = Ed.cm(g);
     const centred = () => {          // the target row's middle within the middle half of the scroller
       const row = Ed.rowAt(g, line); if (!row) return false;
       const r = row.getBoundingClientRect(), b = sc.getBoundingClientRect();
       return Math.abs(r.top + r.height / 2 - b.top - sc.clientTop - sc.clientHeight / 2) < sc.clientHeight / 4;
     };
-    if (!cm) { if (!centre()) Ed.scrollToLine(g, line); flash(Ed.rowAt(g, line)); }
+    if (!cm) flash(Ed.rowAt(g, line));
     else {
       // One scrollIntoView dispatch was not enough: the heading stayed at scrollTop 0 after
       // a wikilink opened the note (links blob '') — the effect raced the note load's own
@@ -6399,8 +6429,9 @@ async function navAnchor(g, anchor) {
         const ok = centred(), drawn = !!Ed.rowAt(g, line);
         nvRv += "|" + n + ":" + (drawn ? 1 : 0) + "," + Math.round(sc.scrollTop);
         if (ok || ++n > 12) { nvRv += "|f" + (ok ? 1 : 0); return updateTitle(); }
-        if (!drawn) Ed.revealAt(g, line, 0); else centre();
-        requestAnimationFrame(step);
+        // #125: re-ask CM6 in the NEXT frame — a dispatch inside a measure write throws
+        // (CM6 is mid-update there); the effect then lands in CM6's own measure loop
+        requestAnimationFrame(() => { if (Ed.cm(g) === cm) Ed.revealAt(g, line, 0); step(); });
       } });
       requestAnimationFrame(step);
     }
@@ -6532,7 +6563,11 @@ async function histGo(d, from) {
   if (lgh) { otel.cancel(lgh.settleSp); lgh.settleSp = otel.begin("graph_settle", { from: "history", nodes: 0 }); }
   await loadActive(g);
   const s = !tab.kind && tab.hist[p].s;
-  if (s) { if (tab.mode === "reading") g.preview.scrollTop = s; else if (isLp(tab.mode)) g.lp.scrollTop = s; else g.editor.scrollTop = s; }
+  if (s) {
+    const cm = isLp(tab.mode) ? Ed.cm(g) : null, o = typeof s === "object";
+    if (cm) { if (o) Ed.land(cm, s); else Ed.scrollToTop(cm, s); }   // #125: a CM6 effect, landed in CM6's measure loop
+    else if (!o) { if (tab.mode === "reading") g.preview.scrollTop = s; else if (!isLp(tab.mode)) g.editor.scrollTop = s; }
+  }
   otel.paint(sp);
 }
 // mouse buttons 4/5 (X11 8/9 -> DOM button 3/4): nav fires on mousedown (capture) with
@@ -10094,7 +10129,18 @@ window.addEventListener("wheel", e => {
   if (!sc || (settingsOpen && t.closest("#settings"))) return;
   const next = Math.max(QFS_MIN, Math.min(QFS_MAX, qfsSize + (e.deltaY < 0 ? 1 : -1)));
   if (next === qfsSize) return;                             // clamped: nothing to write (REQ-5)
-  // keep the TOP VISIBLE LINE while the text grows/shrinks (REQ-8): anchor on
+  // #125/#137: an edit view keeps its top line through CM6 — the line anchor at the
+  // scroller's top edge, landed as a CM6 snapshot effect on the re-flowed heights
+  const cm = sc.classList.contains("lp") && sc._cm ? sc._cm : null;
+  if (cm) {
+    const s = Ed.snapOf(cm);
+    qfsSteps++;
+    qfsSet(next);
+    if (s) Ed.land(cm, s, true);
+    updateTitle();
+    return;
+  }
+  // reading view: keep the TOP VISIBLE LINE while the text grows/shrinks (REQ-8): anchor on
   // the element under the scroller's top edge and restore its offset after
   const r = sc.getBoundingClientRect();
   let a = document.elementFromPoint(r.left + Math.min(40, r.width / 2), r.top + 2);
@@ -14168,7 +14214,7 @@ function fState(g) {
    have); and the marks are painted in g.preview, which is why every surface
    read below goes through fSurf() instead of naming g.lp. */
 const fRead = g => !!g && isReading(g);
-const fSurf = g => (!g ? null : fRead(g) ? g.preview : g.lp);
+const fSurf = g => (!g ? null : fRead(g) ? g.preview : Ed.sc(g));   // #125: the edit surface scrolls in cm.scrollDOM
 /* The rendered text as ONE string, plus the text nodes it was concatenated
    from. Marks never change the text (a <span> wrapping a run adds no
    characters), so these offsets are stable whether or not the previous query's
@@ -14439,6 +14485,8 @@ function fReveal(g, done) {   // done(): called once the reveal has finished (sy
     if (!el) return false;
     const r = el.getBoundingClientRect(), b = sc.getBoundingClientRect();
     if (r.top >= b.top + 4 && r.bottom <= b.bottom - 4) return true;      // already on screen: do not jitter
+    // #125/#137: on the CM6 scroller the centring is CM6's own scrollIntoView effect (below), never a px write
+    if (Ed.cm(g) && sc === Ed.cm(g).scrollDOM) return false;
     sc.scrollTop += (r.top - b.top) - Math.max(0, (sc.clientHeight - r.height) / 2);
     return true;
   };
@@ -14447,7 +14495,7 @@ function fReveal(g, done) {   // done(): called once the reveal has finished (sy
   // yet — bring the line in, then centre the mark once CM6 has measured and drawn it.
   // The scroll is drawn in a LATER frame than the measure that set it, so retry per
   // frame until the span exists (bounded), then report done.
-  const st = fState(g), h = st.hits[st.idx], cm = sc === g.lp ? Ed.cm(g) : null;
+  const st = fState(g), h = st.hits[st.idx], cm = sc === Ed.sc(g) && sc !== g.lp ? Ed.cm(g) : null;
   if (!h || h.l == null || !cm) { fRv = "nohit"; return fin(); }
   // The undrawn line is brought in by CM6 ITSELF (Ed.revealAt: a scrollIntoView effect,
   // centred inside its measure loop, after its redraw). Earlier tries wrote scrollTop
@@ -14501,7 +14549,9 @@ function fReveal(g, done) {   // done(): called once the reveal has finished (sy
       fRv += "|n" + n + "|f" + (ok ? 1 : 0) + "|t" + Math.round(sc.scrollTop);
       fin(); if (done !== updateTitle) updateTitle(); return;      // callers without done took their census before the draw
     }
-    requestAnimationFrame(step);
+    // drawn but not centred (CM6 measured real heights after the estimate it scrolled on): re-ask CM6
+    // in the NEXT frame — a dispatch inside this measure write would throw (#125)
+    requestAnimationFrame(() => { if (Ed.cm(g) === cm && sc.querySelector("span." + F_MARK + "." + F_CUR)) Ed.revealAt(g, h.l, h.c); step(); });
   } });
   requestAnimationFrame(step);
 }
