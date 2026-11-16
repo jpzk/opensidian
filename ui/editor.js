@@ -694,7 +694,7 @@ const Ed = {
     s.dataset.audio = rel;
     let a = s.querySelector("audio");
     if (!a) { a = document.createElement("audio"); s.appendChild(a); }
-    a.controls = true;                         // no src (so no load) until go(); preload is set once trust is known
+    a.controls = true; a.preload = "metadata"; // as before #139; no src (so no load) until go(); restricted flips it to none below
     a.setAttribute("aria-label", s.dataset.alt || rel);
     const go = play => {
       if (s.dataset.st) return;
@@ -704,7 +704,8 @@ const Ed = {
         const A = Ed._aud;
         A.live.set(u, s);
         if (!A.timer) A.timer = setInterval(Ed.audioSweep, 2000);
-        a.preload = "metadata"; a.src = u; s.dataset.st = "ready"; delete s.dataset.c2p;   // restricted: only after the user act
+        if (a.preload !== "metadata") a.preload = "metadata";   // restricted: only now, after the user pressed play
+        a.src = u; s.dataset.st = "ready"; delete s.dataset.c2p;
         if (play) { const p = a.play(); if (p && p.catch) p.catch(() => {}); }   // the user pressed play: start it
         if (typeof updateTitle === "function") updateTitle();
       }, e => {
@@ -725,7 +726,6 @@ const Ed = {
     };
     Ed.audioTrusted().then(ok => {
       if (ok) {
-        a.preload = "metadata";
         a.addEventListener("play", () => go(false));
         observe(true);
         return;
