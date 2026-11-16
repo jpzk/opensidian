@@ -373,6 +373,14 @@ function rEmpty(box, msg) {
   d.className = "rempty"; d.textContent = msg; box.appendChild(d);
 }
 const CHEV = '<svg viewBox="0 0 10 10" fill="currentColor"><path d="M3 1l4 4-4 4z"/></svg>';
+// a foldable right-pane row (backlinks, tags, outline, canvas backlinks): its .tc chevron toggles
+// .open on the row and hides/shows the row's kids, without the click reaching the row itself
+function foldRow(row, kids) {
+  row.querySelector(".tc").onclick = e => {
+    e.stopPropagation();
+    row.classList.toggle("open"); kids.hidden = !row.classList.contains("open");
+  };
+}
 async function rPanesRefresh() {
   if (!rightOpen) return;
   const n = rNote() || (rTab === "bl" ? cvTabPath(rTrack()) : null);   // cvf-links CVR-A-097: a canvas tab's backlinks
@@ -420,10 +428,7 @@ async function rBacklinks(n) {
       sideRow(d, b.note);
       kids.appendChild(d);
     }
-    row.querySelector(".tc").onclick = e => {
-      e.stopPropagation();
-      row.classList.toggle("open"); kids.hidden = !row.classList.contains("open");
-    };
+    foldRow(row, kids);
     sideRow(row, b.note);
     box.appendChild(row); box.appendChild(kids);
   }
@@ -619,10 +624,7 @@ async function rTags() {
       build(kids, k, depth + 1);
       if (kids.childElementCount) {
         row.querySelector(".tc").innerHTML = CHEV;
-        row.querySelector(".tc").onclick = e => {
-          e.stopPropagation();
-          row.classList.toggle("open"); kids.hidden = !row.classList.contains("open");
-        };
+        foldRow(row, kids);
       }
       row.onclick = () => tagSearch(k.name);
     }
@@ -711,10 +713,7 @@ async function rOutline(n) {
       i = build(kids, i + 1, lv);
       if (kids.childElementCount) {
         row.querySelector(".tc").innerHTML = CHEV;
-        row.querySelector(".tc").onclick = e => {
-          e.stopPropagation();
-          row.classList.toggle("open"); kids.hidden = !row.classList.contains("open");
-        };
+        foldRow(row, kids);
       }
       row.onclick = () => tocGo(h.line);
     }
@@ -9240,10 +9239,7 @@ function cvBacklinkRows(box, cvb) {   // one row per canvas + one line per link 
       d.onclick = () => openCanvas(b.canvas);
       kids.appendChild(d);
     }
-    row.querySelector(".tc").onclick = e => {
-      e.stopPropagation();
-      row.classList.toggle("open"); kids.hidden = !row.classList.contains("open");
-    };
+    foldRow(row, kids);
     row.onclick = () => openCanvas(b.canvas);
     box.appendChild(row); box.appendChild(kids);
   }
