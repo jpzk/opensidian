@@ -1675,7 +1675,7 @@ Ed.rvTaskTok = () => {
 let rvTaskScT = null;
 if (CENSUS_ON) document.addEventListener("scroll", e => {   // census-gate: census-only listener, not registered when OFF
   const t = e.target;
-  if (!t || !t.classList || !t.classList.contains("preview")) return;
+  if (!t || !t.classList || !(t.classList.contains("preview") || t.classList.contains("lp"))) return;   // .lp: scroll-model [sptop:]
   clearTimeout(rvTaskScT);
   rvTaskScT = setTimeout(() => { rvTaskScT = null; if (typeof updateTitle === "function") updateTitle(); }, 60);
 }, true);

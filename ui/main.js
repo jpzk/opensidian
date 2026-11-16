@@ -3834,6 +3834,7 @@ function utBuild() {             // pane/focus census in the window title (headl
   if (md && isLp(ft.mode) && fg().lpActive) md += ":" + fg().lpActive.l0;
   if (md) md += "]";
   if (lpMs >= 0) md += " [lp:" + lpMs + "]";     // perf: last lpRender ms
+  if (CENSUS_ON && ft && !ft.kind && isLp(ft.mode)) md += ScrollPos.diag(fg());   // scroll-model: [sptop:] beside the pixel oracle
   /* R25.13 census — the ONE headless record of a search-result click, read by
      scripts/gate.sh phase srclick:
        [sc:<note>@<line>.<col>|hl:<ranges>|top:<scrollTop>]  (source / lp)

@@ -53,10 +53,17 @@ const ScrollPos = (() => {
   function readTop(g) {
     const m = pvMap(g); if (!m) return null;
     const [ch, bl] = m, ct = g.preview.getBoundingClientRect().top;
+    const P = g.preview, at = P._spAt;
+    // a reading view still where the module LANDED it holds that position exactly: the
+    // reading view has coarser geometry than the editor (one block per element, no
+    // element at all for the frontmatter), and re-deriving the line from it on the way
+    // back would quantise an edit -> reading -> edit round trip to a block start
+    // (fm lp->read->lp: L2 under the Properties came back as L5, the first rendered block)
+    if (at && at.first === ch[0] && at.n === ch.length && Math.abs(P.scrollTop - at.st) < 1) return at.line;
     // the reading view at its very top IS the top of the note: blocks the reading
     // view does not render (frontmatter -> Properties above block 0) must not move it
     // to the first rendered block (fm lp->read->lp landed on L5 under the Properties)
-    if (g.preview.scrollTop < 1) return 0;
+    if (P.scrollTop < 1) return 0;
     let i = ch.length - 1, f = 0;
     for (let k = 0; k < ch.length; k++) {
       const r = ch[k].getBoundingClientRect();
@@ -75,6 +82,7 @@ const ScrollPos = (() => {
     const el = ch[i], fr = clamp((line - a) / Math.max(1, b - a), 0, 1);
     const d = el.getBoundingClientRect().top - P.getBoundingClientRect().top + fr * el.getBoundingClientRect().height;
     P.scrollTop = clamp(P.scrollTop + d, 0, Math.max(0, P.scrollHeight - P.clientHeight));
+    P._spAt = { line, st: P.scrollTop, first: ch[0], n: ch.length };   // readTop: unmoved since = this position
     return true;
   }
   // an <img> still decoding when the reading view lands is 0 px tall and pushes the
@@ -202,7 +210,7 @@ const ScrollPos = (() => {
   };
   SP.cancel = function (g) {
     const v = g && Ed.cm(g); if (v) v._osPin = null;
-    if (g && g.preview) g.preview._spSeq = (g.preview._spSeq || 0) + 1;
+    if (g && g.preview) { g.preview._spSeq = (g.preview._spSeq || 0) + 1; g.preview._spAt = null; }
   };
 
   /* ---------- the API ---------- */
@@ -223,18 +231,28 @@ const ScrollPos = (() => {
     if (!m || m === "reading" || line == null) return false;
     return editLand(g, Math.floor(line), "centre", ms, opts && opts.done);
   };
+  // census only (goal scroll-model): the editor's OWN idea of its top line, beside the
+  // scrollpos phase's pixel read: [sptop:<DOM rows>/<CM6 height map>/<scrollTop>/<pin>]
+  // (1-based lines). A pixel read and the DOM disagreeing is a paint/oracle question;
+  // the DOM and the height map disagreeing is a stale-map question.
+  SP.diag = function (g) {
+    const view = g && Ed.cm(g); if (!view || !shown(g.lp)) return "";
+    const y = g.lp.getBoundingClientRect().top + 1, t = Ed.topLine(g, 1), h = Ed.lineAtY(g, y), p = view._osPin;
+    const f = x => (x == null || !isFinite(x) ? "-" : (x + 1).toFixed(2));
+    return " [sptop:" + f(t) + "/" + f(h ? h.l + h.f : null) + "/" + Math.round(g.lp.scrollTop) + "/" + (p ? (p.armed ? "a" : "p") + p.n : "0") + "]";
+  };
   SP.line = pos => lineOf(pos);
   // reading view: a block element at the top (outline / anchor jump to a heading or ^block)
   SP.toElement = function (g, el) {
     const P = g && g.preview; if (!P || !el || !P.contains(el)) return false;
-    P._spSeq = (P._spSeq || 0) + 1;   // supersedes a pending image re-land
+    P._spSeq = (P._spSeq || 0) + 1; P._spAt = null;   // supersedes a pending image re-land and the landed position
     P.scrollTop = el.offsetTop - P.offsetTop;
     return true;
   };
   // reading view: centre a block (search hit), clamped to the scroller's own range (R25.13c)
   SP.centreElement = function (g, el) {
     const P = g && g.preview; if (!P || !el) return false;
-    P._spSeq = (P._spSeq || 0) + 1;
+    P._spSeq = (P._spSeq || 0) + 1; P._spAt = null;
     const top = el.offsetTop - P.offsetTop, h = el.offsetHeight;
     P.scrollTop = Math.max(0, Math.min(top - (P.clientHeight - h) / 2, Math.max(0, P.scrollHeight - P.clientHeight)));
     return true;
