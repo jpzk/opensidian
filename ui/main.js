@@ -8882,8 +8882,10 @@ function audvTok() {           // issue #140: [audv:<path>|<state>|x,y,w,h|rs,ns
   const b = s.getBoundingClientRect();
   const st = s.dataset.st || (s.dataset.c2p ? "c2p" : "idle");
   // media: readyState,networkState,error code (0 = none) of the player — why a load stalled
-  const a = s.querySelector("audio"), m = a ? [a.readyState, a.networkState, a.error ? a.error.code : 0].join(",") : "-";
-  return " [audv:" + esc(v.path) + "|" + st + "|" + [b.x, b.y, b.width, b.height].map(Math.round).join(",") + "|" + m + "]";
+  const a = s.querySelector("audio"), m = a ? [a.readyState, a.networkState, a.error ? a.error.code : 0, a.paused ? "p" : "P", a.currentSrc ? a.currentSrc.slice(0, 4) : "-"].join(",") : "-";
+  // every <audio> in the document (rs.ns.paused): a second element shadowing the view's player shows here
+  const all = [...document.querySelectorAll("audio")].slice(0, 4).map(x => x.readyState + "." + x.networkState + "." + (x.paused ? "p" : "P") + (x.isConnected ? "" : "d")).join(";");
+  return " [audv:" + esc(v.path) + "|" + st + "|" + [b.x, b.y, b.width, b.height].map(Math.round).join(",") + "|" + m + "|all=" + all + "]";
 }
 /* goal canvas-core: "Create new canvas" (command) and "New canvas" (explorer menus). The file is made
    through canvas_io create (O_EXCL: an existing name is never overwritten — the next free
