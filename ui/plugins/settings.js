@@ -430,7 +430,8 @@
       // #139 (operator 2026-11-16): no key => ON for this vault (stock default); an explicit false is respected
       const arOn = typeof cvc.core["audio-recorder"] === "boolean" ? cvc.core["audio-recorder"] : true;
       if (ar && coreGen === g0 && !!ar.enabled !== arOn) {
-        try { await (typeof ar.applyVault === "function" ? ar.applyVault(arOn) : arOn ? ar.enable() : ar.disable()); }
+        // codeant #145: applyVault(false) may wait for a recording to stop; a switch flipped meanwhile wins (live() re-checks coreGen)
+        try { await (typeof ar.applyVault === "function" ? ar.applyVault(arOn, () => coreGen === g0) : arOn ? ar.enable() : ar.disable()); }
         catch (e) { console.error("[audio-recorder] core-plugins.json:", e); }
       }
       if (typeof updateTitle === "function") updateTitle();

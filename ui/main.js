@@ -8244,9 +8244,11 @@ let AREC = null;
     async disable() { if (st.rec) await stop(); this.enabled = false; pref.set(false); sync(); st.on = false; paint(); },
     async toggle(on) { return on ? this.enable() : this.disable(); },
     // a vault's core-plugins.json decides for THAT vault only (settings.js boot): no app-wide pref write
-    // (codeant M3 on #124 — the localStorage choice stays the fallback for vaults without the key)
-    async applyVault(on) {
+    // (codeant M3 on #124). #139: a vault without the key comes up ON (stock per-vault default), so the localStorage
+    // choice is only the pre-boot state. live(): false once a newer switch flip superseded this (stale) boot read
+    async applyVault(on, live) {
       if (!on && st.rec) await stop();
+      if (typeof live === "function" && !live()) return;   // a switch flipped while the recording stopped: the user's choice stands
       this.enabled = !!on; sync();
       if (on) await this.load(); else { st.on = false; paint(); }
     },
