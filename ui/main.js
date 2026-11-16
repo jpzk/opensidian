@@ -3855,7 +3855,7 @@ function utLite() {
   const H = window.__osPluginHost;
   if (H && H.censusTick) { try { H.censusTick(); } catch (e) { console.error("[plugin] tick:", e); } }
   const g = fg(), tb = g && g.active >= 0 ? g.tabs[g.active] : null;
-  const nm = tb ? (!tb.kind ? String(tb.name || "").split("/").pop().replace(/\.md$/i, "") : String(tb.title || "")) : "";
+  const nm = tb ? (!tb.kind ? String(tb.name || "").split("/").pop().replace(/\.md$/i, "") : String(tb.title || tb.name || "")) : "";
   const vn = String(vaultPath || "").replace(/[\\/]+$/, "").split(/[\\/]/).pop();
   const t = (nm ? nm + " - " : "") + (vn ? vn + " - " : "") + "Opensidian";
   if (t !== utPlain) { utPlain = t; document.title = t; pushTitle(t); }
