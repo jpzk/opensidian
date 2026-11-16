@@ -9452,7 +9452,7 @@ const edLine = fn => edEdit((v, a, b) => {  // fn(line) -> line | null (= delete
   const l0 = v.lastIndexOf("\n", a - 1) + 1;
   let l1 = v.indexOf("\n", b); if (l1 < 0) l1 = v.length;
   const nl = fn(v.slice(l0, l1));
-  if (nl == null) { const cut = l1 < v.length ? l1 + 1 : Math.max(0, l0 - 1); return [v.slice(0, l0) + v.slice(l1 + 1), Math.min(l0, cut), Math.min(l0, cut)]; }
+  if (nl == null) { const cut = l1 < v.length ? l1 + 1 : Math.max(0, l0 - 1); const s0 = l1 < v.length ? l0 : Math.max(0, l0 - 1); return [v.slice(0, s0) + v.slice(l1 + 1), Math.min(l0, cut), Math.min(l0, cut)]; }
   return [v.slice(0, l0) + nl + v.slice(l1), l0 + Math.min(nl.length, a - l0 + nl.length - (l1 - l0)), l0 + Math.min(nl.length, b - l0 + nl.length - (l1 - l0))];
 });
 // R17.4 M46-M51 "Toggle checkbox status": a MODEL op (one row patched, Obsidian
