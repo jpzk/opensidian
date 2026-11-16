@@ -38,7 +38,7 @@
    ====================================================================== */
 const ScrollPos = (() => {
   const SP = {};
-  const SETTLE_MS = 5000, MAX_RELAND = 40;
+  const SETTLE_MS = 5000, MAX_RELAND = 40, VERIFY_FRAMES = 30;
   const tabOf = g => (g && g.active >= 0 ? g.tabs[g.active] : null);
   const modeOf = g => { const t = tabOf(g); return !t || t.kind || g.graphOn ? null : t.mode; };
   const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
@@ -53,6 +53,10 @@ const ScrollPos = (() => {
   function readTop(g) {
     const m = pvMap(g); if (!m) return null;
     const [ch, bl] = m, ct = g.preview.getBoundingClientRect().top;
+    // the reading view at its very top IS the top of the note: blocks the reading
+    // view does not render (frontmatter -> Properties above block 0) must not move it
+    // to the first rendered block (fm lp->read->lp landed on L5 under the Properties)
+    if (g.preview.scrollTop < 1) return 0;
     let i = ch.length - 1, f = 0;
     for (let k = 0; k < ch.length; k++) {
       const r = ch[k].getBoundingClientRect();
@@ -94,7 +98,20 @@ const ScrollPos = (() => {
   /* ---------- CM6 surface ---------- */
   const scrollerOf = view => view && view.dom && view.dom.parentElement;   // g.lp: view.dom is its only child
   const shown = sc => !!sc && sc.isConnected && sc.clientHeight > 0;
-  // the target y, in px from the scroller's top edge, for a pin on the CURRENT height map
+  // the DRAWN element holding doc position `pos` (a child of contentDOM), or null when
+  // the line is not drawn. Its layout box is the truth Ed.topLine captured from; the
+  // height map can still carry a stale (pre-restyle) or estimated height for it.
+  function rowEl(view, pos) {
+    if (pos < view.viewport.from || pos > view.viewport.to) return null;
+    let n, o; try { ({ node: n, offset: o } = view.domAtPos(pos)); } catch (e) { return null; }
+    const c = view.contentDOM; if (n === c) n = c.childNodes[o] || null;
+    while (n && n.parentNode !== c) n = n.parentNode;
+    if (!n || n.nodeType !== 1 || n.classList.contains("cm-gap")) return null;
+    try { if (view.posAtDOM(n, 0) > pos) return null; } catch (e) { return null; }   // a neighbour, not the row
+    return n;
+  }
+  // the target y, in px from the scroller's top edge: the drawn row's layout box when
+  // the line is drawn (same oracle as the capture), else the CURRENT height map
   function targetDy(view, p) {
     const sc = scrollerOf(view), d = view.state.doc;
     const i = clamp(Math.floor(p.line), 0, d.lines - 1), f = clamp(p.line - i, 0, 1);
@@ -102,9 +119,12 @@ const ScrollPos = (() => {
     // a block widget can hold several source lines: the position is spread over them
     const a = d.lineAt(b.from).number - 1, z = d.lineAt(Math.max(b.from, b.to)).number - 1;
     const fr = clamp((i - a + f) / (z - a + 1), 0, 1);
-    const top = view.documentTop + b.top - sc.getBoundingClientRect().top;   // block top vs the scroller's top edge
-    if (p.kind === "centre") return top - sc.clientTop - (sc.clientHeight - b.height) / 2;
-    return top + fr * b.height;
+    const st = sc.getBoundingClientRect().top, el = rowEl(view, b.from), r = el && el.getBoundingClientRect();
+    const dom = r && r.height > 0;
+    const top = dom ? r.top - st : view.documentTop + b.top - st;   // block top vs the scroller's top edge
+    const h = dom ? r.height : b.height;
+    if (p.kind === "centre") return top - sc.clientTop - (sc.clientHeight - h) / 2;
+    return top + fr * h;
   }
   // THE landing: called by CM6 itself (scrollHandler, inside its measure loop)
   function land(view, p) {
@@ -113,6 +133,29 @@ const ScrollPos = (() => {
     sc.scrollTop = clamp(sc.scrollTop + targetDy(view, p), 0, max);
     p.st = sc.scrollTop; p.n++;
     if (p.done) { const d = p.done; p.done = null; try { d(); } catch (e) { console.error(e); } }
+    verify(view, p);
+  }
+  // layout can move the landed row WITHOUT a CM6 geometry update (the .lp.src restyle
+  // re-flows drawn rows CM6 has not re-measured yet): check the drawn row's own box for
+  // a few frames after each landing and re-land through CM6 when it moved. Bounded
+  // (VERIFY_FRAMES per landing, MAX_RELAND total); a read, never a write.
+  function verify(view, p) {
+    if (p.vf) return; p.vf = true; let k = 0;
+    const tick = () => {
+      if (view._osPin !== p || performance.now() > p.until) { p.vf = false; return; }
+      if (p.armed) { requestAnimationFrame(tick); return; }
+      const sc = scrollerOf(view);
+      if (shown(sc)) {
+        const dy = targetDy(view, p), max = Math.max(0, sc.scrollHeight - sc.clientHeight);
+        if (Math.abs(dy) >= 1 && !(dy > 0 && sc.scrollTop >= max - 0.5) && !(dy < 0 && sc.scrollTop <= 0.5)) {
+          if (p.n > MAX_RELAND) { view._osPin = null; p.vf = false; return; }
+          k = 0; view.requestMeasure(); dispatchPin(view, p);
+        }
+      }
+      if (++k > VERIFY_FRAMES) { p.vf = false; return; }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
   }
   function dispatchPin(view, p) {
     const d = view.state.doc, i = clamp(Math.floor(p.line), 0, d.lines - 1);
