@@ -89,8 +89,9 @@
       focus() { this.cm.focus(); }
       blur() { this.cm.contentDOM.blur(); }
       hasFocus() { return this.cm.hasFocus; }
-      getScrollInfo() { const s = this._v.lp || this.cm.scrollDOM; return { top: s.scrollTop, left: s.scrollLeft, height: s.scrollHeight, width: s.scrollWidth, clientHeight: s.clientHeight, clientWidth: s.clientWidth }; }
-      scrollTo(x, y) { const s = this._v.lp || this.cm.scrollDOM; if (x != null) s.scrollLeft = x; if (y != null) s.scrollTop = y; }
+      // #125/#137: cm.scrollDOM is the scroller; a px scrollTo lands as a CM6 snapshot effect
+      getScrollInfo() { const s = this.cm.scrollDOM; return { top: s.scrollTop, left: s.scrollLeft, height: s.scrollHeight, width: s.scrollWidth, clientHeight: s.clientHeight, clientWidth: s.clientWidth }; }
+      scrollTo(x, y) { const s = this.cm.scrollDOM; if (x != null) s.scrollLeft = x; if (y != null) { if (EdG && EdG.scrollToTop) EdG.scrollToTop(this.cm, y); else s.scrollTop = y; } }
       scrollIntoView(range, center) {
         const r = range && range.from ? range : { from: this.getCursor("from"), to: this.getCursor("to") };
         const a = this.posToOffset(r.from), b = this.posToOffset(r.to || r.from);
@@ -150,7 +151,7 @@
       set(x) { Object.defineProperty(this, name, { value: x, writable: true, enumerable: true, configurable: true }); },
     });
     const tabOf = v => (v && v.tab && !v.tab.kind ? v.tab : null);
-    const scrollerOf = v => (v && (v.lp || (v.cm && v.cm.scrollDOM))) || null;
+    const scrollerOf = v => (v && ((v.cm && v.cm.scrollDOM) || v.lp)) || null;   // #125: CM6 owns the scroller
     const isActiveView = v => !!(v && v.g && v.g.view === v);
 
     /* ------------------------------------------------------ MarkdownEditView
@@ -183,6 +184,7 @@
         const d = cm.state.doc, n = clamp(Math.floor(y), 0, d.lines - 1);
         const b = cm.lineBlockAt(d.line(n + 1).from);
         const top = cm.documentTop - s.getBoundingClientRect().top + s.scrollTop;
+        if (EdG && EdG.land) { EdG.land(cm, y <= 0 ? { top: true } : { l: n, f: y - n }, true); return; }   // #125: a CM6 effect
         s.scrollTop = y <= 0 ? 0 : top + b.top + (y - n) * b.height;
       }
       getFoldInfo() { return foldInfo(this.view && this.view._tv); }
@@ -1111,6 +1113,71 @@
       K.exportClasses.MarkdownEditView = EA.MarkdownEditView;
       K.exportClasses.MarkdownPreviewView = EA.MarkdownPreviewView;
       K.exportValues.livePreviewState = EA.livePreviewState;
+    }
+
+    /* #95 (Templater): view.metadataEditor.insertProperties(props) — the note's Properties editor,
+       as stock's MarkdownView carries one. Templater's "Insert template" strips a template's own
+       frontmatter from the inserted text and hands it here (Templater.ts append_template_to_active_file:
+       `view.metadataEditor?.insertProperties?.(frontmatter)`); without it the template's properties
+       were silently dropped. The merge is Templater's own (merge_frontmatter): a key the note lacks is
+       added, a list on either side becomes the union (first-seen order), two maps merge deeply, and a
+       non-empty template scalar replaces the note's. It edits the EDITOR's text (one replaceRange
+       over the frontmatter block, or a new block at the top), not the file on disk: Templater has just
+       replaceSelection'd the body into that same buffer and saves the view right after, so a disk
+       write here would race the editor's save. A frontmatter block parseYaml cannot read is left
+       untouched (console.warn), never rewritten. Only `insertProperties` is offered: the rest of
+       stock's MetadataEditor (its DOM, property widgets) is not. */
+    if (EA && !("metadataEditor" in MarkdownView.prototype)) {
+      const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+      const isMap = v => v !== null && typeof v === "object" && !Array.isArray(v) && !(v instanceof Date);
+      // own data property even for a key named __proto__ (plain `o[k] = v` would hit the prototype setter and drop it)
+      const put = (o, k, v) => Object.defineProperty(o, k, { value: v, writable: true, enumerable: true, configurable: true });
+      const mergeProps = (dst, src) => {
+        for (const k of Object.keys(src)) {
+          const a = dst[k], b = src[k];
+          if (!own(dst, k)) put(dst, k, b);
+          else if (Array.isArray(a) || Array.isArray(b)) {
+            const out = [];
+            for (const x of [].concat(a == null ? [] : a, b == null ? [] : b)) if (!out.includes(x)) out.push(x);
+            put(dst, k, out);
+          } else if (isMap(a) && isMap(b)) mergeProps(a, b);
+          else if (b != null && b !== "") put(dst, k, b);
+        }
+        return dst;
+      };
+      const fmRange = text => {   // [yaml, end offset] of a leading frontmatter block, or null
+        const m = /^---\r?\n/.exec(text);
+        if (!m) return null;
+        // closes on --- or YAML's ..., exactly as api-vault.js splitFrontMatter / index.rs read it
+        const re = /^(---|\.\.\.)[ \t]*(\r?\n|$)/gm; re.lastIndex = m[0].length;
+        for (let c; (c = re.exec(text));) if (c.index === m[0].length || text[c.index - 1] === "\n") return [text.slice(m[0].length, c.index), c.index + c[0].length];
+        return null;
+      };
+      class MetadataEditor {
+        constructor(view) { Object.defineProperty(this, "owner", { value: view }); }
+        insertProperties(props) {
+          if (!isMap(props) || !Object.keys(props).length) return;
+          const ed = this.owner.editor;
+          if (!ed) return;
+          const text = ed.getValue(), r = fmRange(text);
+          let fm = {};
+          if (r) {
+            // only an EMPTY block reads as {}: a scalar block (false, 0, "") must reach the non-map guard below
+            try { const y = K.parseYaml(r[0]); fm = y == null ? {} : y; } catch (e) { console.warn("[plugin] metadataEditor.insertProperties: frontmatter not readable, left as is:", e && e.message || e); return; }
+            if (!isMap(fm)) { console.warn("[plugin] metadataEditor.insertProperties: frontmatter is not a map, left as is"); return; }
+          }
+          mergeProps(fm, JSON.parse(JSON.stringify(props)));
+          const block = "---\n" + K.stringifyYaml(fm) + "---\n";
+          const end = r ? r[1] : 0;
+          if (r && text.slice(0, end).replace(/\r\n/g, "\n") === block) return;   // nothing new: no edit, no save
+          ed.replaceRange(block, { line: 0, ch: 0 }, ed.offsetToPos(end));
+        }
+      }
+      const meOf = new WeakMap();
+      Object.defineProperty(MarkdownView.prototype, "metadataEditor", {
+        configurable: true, enumerable: false,
+        get() { let m = meOf.get(this); if (!m) { m = new MetadataEditor(this); meOf.set(this, m); } return m; },
+      });
     }
 
     Object.assign(K, { EA, MarkdownView });

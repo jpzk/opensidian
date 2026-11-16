@@ -56,6 +56,7 @@ CENSUS.push(() => { const r = window.__osModules, s = r && r["@codemirror/state"
 CENSUS.push(() => svqTok());   // typing-j: [svq:n,bytes] the last save that reached disk (count, UTF-8 size), set after the write resolved — a title carrying it was built after that flush, so typing J reads [buf:] ordered with the flush
 CENSUS.push(() => KC.tok());   // keychain-pane: Settings ▸ Keychain [skc:<state>/<ids>/<shown>/<form>/<seq>] [skcmsg:<class>] — ids counts only, never a value
 CENSUS.push(() => canvasTok());   // canvas-core: [cvrow:] explorer .canvas rows, [cv:] the canvas view on screen (path|nodes|edges|err|dirty|saves|on), [cvn:] painted node rects, [cvadd:] "+ Text", [cvw:] board rect
+CENSUS.push(() => dnTok());   // issue #115 daily-notes: [dn:on|cmd|rib|fmt|dir|tpl|auto|n|c|last|err|boot] the core plugin, [dnip:] what obsidian-daily-notes-interface resolves through app.internalPlugins, [ribbon:daily@x,y]
 CENSUS.push(() => Ed.kroTok());   // top10-func lpcaret: [kro:<keys re-placed>/<ms the last keydown waited>] printable keys typed BEFORE a click that reached the page after it (WebKitGTK key/mouse queues), typed at the pre-click caret
 CENSUS.push(() => cclTok());   // caret-color: [ccl:car=|cur=|drop=|bg=] the focused editor's computed caret-color (.cm-content), the border-left-color of a .cm-cursor and a .cm-dropCursor probe in its scroller, and its background composited to the first opaque ancestor (r.g.b each) — gate phase caretcolor
 CENSUS.push(() => buiTok());   // bug-ui (#9 #11 #12 #14): [bui:cur=|upd=|sel=|bmsrc=|pcx=|scx=] settings clickables' computed cursor, selection during a bookmark drag, picker vs settings close button geometry/glyph — gate phase bugui
@@ -70,3 +71,11 @@ CENSUS.push(() => { const P = document.querySelector("#main .pane.focused") || d
 CENSUS.push(() => Ed.coTok());   // callouts (#59): [co:n|type/fold/state/icon/nest/title,...] [coxss:n] [corc:] [bqrc:] the focused pane's painted callouts — gate phase callouts
 CENSUS.push(() => window.Props ? Props.tok() : "");   // #119 properties: [propsmode:] [props:lp|rv|n|key=type/e|r/value,...] the focused pane's painted Properties block, [propsxy:add=|i:<key>=|v:<key>=|draft=|focus=] click centres, [propsug:] the open suggester — gate phase props
 CENSUS.push(() => window.Props && Props.viewTok ? Props.viewTok() : "");   // #119 Properties view: [pview:sort=x,y|<key>=<type>/<count>@x,y|...] the rows of the showing view — gate phase props
+CENSUS.push(() => gfiTok());   // #130: [gfi:<kind>@<gid>=<o|c>,<lucide class>,<fnv1a glyph hash>,x,y,w,h,svgw,svgh,stroke,ink,cardbg,hover|...] the Open-graph-settings button (.graph-controls .mod-open) of EVERY graph leaf — gate phase graphgear
+CENSUS.push(() => { try { return (AREC ? AREC.tok() : "") + Ed.audTok(); } catch (_) { return ""; } });   // #116 audio recorder: [arec:on=|rec=|busy=|saved=|last=|denied=|mr=|gum=|err=] [ribbon:audio@x,y] [arind@x,y]; audio embeds [aud:n|<lp|rv>:<path>:<state>:<readyState>:<dur>@x,y|...]
+CENSUS.push(() => imgvTok());   // issue #102: [imgrow:<path>@x,y|...] explorer image rows, [imgv:<path>|<w>x<h>L|B|-|x,y,w,h] the image view on screen ([imgv:<path>|M|-] = not in the image list) — gate phase imgopen
+// #139: every CSP refusal on the page, from load ([csp:<n>|<last effective directive>]); a restricted page playing an
+// audio embed click-to-play (media-src 'self' blob:) must cause none — gate phase dnar
+var CSPV = { n: 0, d: "-" };
+window.addEventListener("securitypolicyviolation", e => { CSPV.n++; CSPV.d = String(e.effectiveDirective || e.violatedDirective || "?").replace(/[[\]|@\s]/g, "_"); }, true);
+CENSUS.push(() => " [csp:" + CSPV.n + "|" + CSPV.d + "]");

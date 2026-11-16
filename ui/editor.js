@@ -291,6 +291,18 @@ const Ed = {
           Ed.tok(em, emk, "img");
           i += wl[0].length; continue;
         }
+        // #116 `![[Recording 20261115.webm]]`: an AUDIO embed -> an <audio> player (Ed.audioEl). Bang present,
+        // no anchor, an audio extension (Ed.AUDIO_EXTS); the reading view's linkify takes the same branch (main.rs)
+        if (wl[1] === "!" && hash < 0 && Ed.isAudio(target)) {
+          const em = [], emk = [];
+          const eadd = (el, isMk) => { em.push(el); if (isMk) emk.push(el); box.appendChild(el); };
+          eadd(Ed.mk("![["), true);
+          eadd(Ed.mk(raw, "img"), true);
+          eadd(Ed.mk("]]"), true);
+          eadd(Ed.audioEl(target, bar >= 0 ? label : target), false);
+          Ed.tok(em, emk, "img");
+          i += wl[0].length; continue;
+        }
         // cvf-links CVR-A-095 `![[Board.canvas]]`: a canvas preview (shapes only, no text node), painted and
         // wired by main.js cvEmbedPaint; Canvas off / no painter -> the link branch below, as before
         if (wl[1] === "!" && hash < 0 && /\.canvas$/i.test(target) && typeof cvEmbedPaint === "function" &&
@@ -343,6 +355,7 @@ const Ed = {
           add(Ed.mk("](" + im[2] + ")", "img"), true);
           const ph = im[2].indexOf("#"), pp = ph >= 0 ? im[2].slice(0, ph) : im[2];
           add(!rem && Ed.isPdf(pp) ? Ed.pdfEl(pp, ph >= 0 ? im[2].slice(ph) : "", im[1])   // image_html's pdf split
+                                   : !rem && ph < 0 && Ed.isAudio(pp) ? Ed.audioEl(pp, im[1])   // #116 image_html's audio split
                                    : Ed.imgEl(im[2], im[1], rem), false);
           Ed.tok(parts, mks, "img");
           i += 1 + im[0].length; continue;
@@ -591,6 +604,168 @@ const Ed = {
     s.tabIndex = -1;
     Ed.pdfFill(s);
     return s;
+  },
+  /* ---------- #116 AUDIO EMBEDS (both engines) ----------
+     `![[x.webm]]` / `![](x.mp3)` -> span.internal-embed.media-embed.audio-embed holding ONE <audio controls>.
+     The path is resolved against the vault's MEDIA list (main.js mediaCache = canvas_io "media": real,
+     non-hidden, non-symlinked vault members, the list the explorer and canvas cards use), never the note's
+     target, so a traversal target gets no player at all. The bytes come from media_read (vault-confined,
+     MEDIA_TYPES whitelist, no-follow, 256 MiB cap) as a blob: URL — WebKitGTK's player reads no custom
+     scheme — loaded once the embed is on screen (or on play) on a TRUSTED page; on a RESTRICTED page only after
+     the user presses Play (#139 click-to-play; both pages CSP media-src 'self' blob:, main.rs csp_by_trust).
+     No text node (the row's textContent stays its source line): messages are CSS from data-*.
+     Reading view: main.rs audio_html emits the same span with data-target; Ed.audioFill resolves it. */
+  AUDIO_EXTS: ["mp3", "webm", "wav", "m4a", "ogg", "3gp", "flac"],
+  AUDIO_MIME: { mp3: "audio/mpeg", webm: "audio/webm", wav: "audio/wav", m4a: "audio/mp4", ogg: "audio/ogg", "3gp": "audio/3gpp", flac: "audio/flac" },
+  AUDIO_MAX: 256 * 1024 * 1024,
+  _aud: { live: new Map(), reads: 0, timer: 0, trust: null },
+  isAudio(t) {
+    const i = t.lastIndexOf(".");
+    return i > 0 && Ed.AUDIO_EXTS.includes(t.slice(i + 1).toLowerCase());
+  },
+  audioRel(target) {                           // vault-relative path from the media list, or null (imgRel's rule)
+    const dec = Ed.pctDec(target) ?? target;
+    const L = typeof mediaCache !== "undefined" && Array.isArray(mediaCache) ? mediaCache : [];
+    if (!dec) return null;
+    return L.find(x => x === dec) || L.find(x => x.endsWith("/" + dec)) || null;
+  },
+  audioEl(target, alt) {
+    const s = Ed.el("span", "internal-embed media-embed audio-embed");
+    s.dataset.target = target;
+    s.dataset.alt = alt || "";
+    s.contentEditable = "false";
+    Ed.audioFill(s);
+    return s;
+  },
+  // the trust of THIS page (its CSP is fixed at load): plugins_state.pageEval, asked once
+  audioTrusted() {
+    const A = Ed._aud;
+    return A.trust || (A.trust = Promise.resolve().then(() => inv("plugins_state")).then(s => !!(s && s.pageEval), () => false));
+  },
+  async audioBlob(p) {
+    const parts = []; let off = 0, size = 0;
+    do {
+      Ed._aud.reads++;
+      const buf = await inv("media_read", { path: p, offset: off });
+      size = Number(new DataView(buf, 0, 8).getBigUint64(0));
+      if (size > Ed.AUDIO_MAX) throw new Error("too large");
+      const c = buf.slice(8);
+      if (!c.byteLength && off < size) throw new Error("short read");
+      parts.push(c); off += c.byteLength;
+    } while (off < size);
+    const ext = p.slice(p.lastIndexOf(".") + 1).toLowerCase();
+    return URL.createObjectURL(new Blob(parts, { type: Ed.AUDIO_MIME[ext] || "" }));
+  },
+  // object URLs of embeds no longer in the document are revoked (a re-render, a closed tab); so are those of an
+  // embed that has been OFF SCREEN (a view a mode left stays connected) and paused for AUDIO_IDLE — it reloads when
+  // it is on screen again (codeant M2 on #124: no blob, up to 256 MiB, is held by a view nobody sees)
+  AUDIO_IDLE: 60000,
+  audioSweep() {
+    const A = Ed._aud, now = Date.now();
+    for (const [u, s] of A.live) {
+      const a = s.querySelector("audio");
+      if (!s.isConnected) {
+        URL.revokeObjectURL(u); A.live.delete(u);
+        if (s._io) { s._io.disconnect(); s._io = null; }
+      } else if (s._io && !s._vis && s._hid && now - s._hid > Ed.AUDIO_IDLE && (!a || a.paused)) {
+        URL.revokeObjectURL(u); A.live.delete(u);
+        if (a) { a.removeAttribute("src"); a.load(); }
+        s.dataset.st = "";
+        if (s._c2p) { s.dataset.c2p = "1"; if (a) a.preload = "none"; }   // #139 restricted: back to click-to-play, never a reload on screen
+      }
+    }
+    if (!A.live.size && A.timer) { clearInterval(A.timer); A.timer = 0; }
+  },
+  /* #139 (operator 2026-11-16): a RESTRICTED page plays audio too, but CLICK-TO-PLAY. The risk is GStreamer
+     demuxing untrusted bytes, so nothing is parsed without a user act: preload="none", no load on visibility
+     (the observer only feeds audioSweep's off-screen revoke), and media_read + the blob: URL happen only after
+     the user presses the embed's Play button (or the player's own play). The restricted CSP names
+     media-src 'self' blob: for this (main.rs csp_by_trust) and nothing else. A TRUSTED page is unchanged:
+     preload="metadata", loaded ~150 ms after the embed is on screen (or on play). */
+  audioFill(s) {
+    if (s._af) return;
+    s._af = true;
+    const rel = Ed.audioRel(s.dataset.target || "");
+    if (rel === null) {                        // unresolved: R29.4's banner, as an image / PDF
+      s.className = "imgmiss audiomiss";
+      s.dataset.miss = Ed.pctDec(s.dataset.target || "") ?? s.dataset.target;
+      return;
+    }
+    s.dataset.audio = rel;
+    let a = s.querySelector("audio");
+    if (!a) { a = document.createElement("audio"); s.appendChild(a); }
+    a.controls = true; a.preload = "metadata"; // as before #139; no src (so no load) until go(); restricted flips it to none below
+    a.setAttribute("aria-label", s.dataset.alt || rel);
+    const go = play => {
+      if (s.dataset.st) return;
+      s.dataset.st = "loading";
+      Ed.audioBlob(rel).then(u => {
+        if (!s.isConnected) { URL.revokeObjectURL(u); s.dataset.st = ""; return; }
+        const A = Ed._aud;
+        A.live.set(u, s);
+        if (!A.timer) A.timer = setInterval(Ed.audioSweep, 2000);
+        if (a.preload !== "metadata") a.preload = "metadata";   // restricted: only now, after the user pressed play
+        a.src = u; s.dataset.st = "ready"; delete s.dataset.c2p;
+        if (play) { const p = a.play(); if (p && p.catch) p.catch(() => {}); }   // the user pressed play: start it
+        if (typeof updateTitle === "function") updateTitle();
+      }, e => {
+        const why = String(e && e.message || e);
+        s.dataset.st = "error"; delete s.dataset.c2p;
+        s.dataset.err = /too large/.test(why) ? "Cannot play: the file is larger than 256 MB." : "Cannot play this file.";
+        if (typeof updateTitle === "function") updateTitle();
+      });
+    };
+    const observe = load => {
+      if (typeof IntersectionObserver !== "function") { if (load) setTimeout(go, 0); return; }
+      // kept for the embed's life: _vis/_hid feed audioSweep's off-screen revoke; trusted: back on screen -> go() reloads
+      s._io = new IntersectionObserver(en => {
+        const e = en[en.length - 1]; s._vis = e.isIntersecting;
+        if (e.isIntersecting) { if (load) setTimeout(go, 150); } else s._hid = Date.now();
+      });
+      s._io.observe(s);
+    };
+    Ed.audioTrusted().then(ok => {
+      if (ok) {
+        a.addEventListener("play", () => go(false));
+        observe(true);
+        return;
+      }
+      s._c2p = true; s.dataset.c2p = "1"; a.preload = "none";   // click-to-play: nothing parsed before the press
+      let b = s.querySelector("button.audio-c2p");
+      if (!b) {
+        b = document.createElement("button");
+        b.type = "button"; b.className = "audio-c2p";
+        b.title = "Play (restricted vault: the file is read when you press play)";
+        b.setAttribute("aria-label", "Play " + (s.dataset.alt || rel));
+        s.insertBefore(b, a);
+      }
+      b.addEventListener("mousedown", ev => ev.preventDefault());   // keep the editor's caret where it is
+      b.addEventListener("click", ev => { ev.preventDefault(); ev.stopPropagation(); go(true); });
+      a.addEventListener("play", () => { if (!s.dataset.st) { a.pause(); go(true); } });
+      observe(false);
+      if (typeof updateTitle === "function") updateTitle();
+    });
+  },
+  // census [aud:<n>|<path>:<state>:<readyState>:<duration s>@x,y|...] the painted audio embeds (lp + reading view)
+  audTok() {
+    // #139: [audrd:<media_read calls by audio embeds>|play=<embeds playing>|pre=<preload of each painted player>]
+    const all = [...document.querySelectorAll("#main span.audio-embed audio")];
+    const rd = !all.length && !Ed._aud.reads ? "" : " [audrd:" + Ed._aud.reads + "|play=" + all.filter(a => !a.paused).length + "|pre=" + (all.map(a => a.preload).join(",") || "-") + "]";
+    const ss = [...document.querySelectorAll("#main span.audio-embed, #main span.audiomiss")].filter(e => e.getClientRects().length > 0);
+    if (!ss.length) return rd;
+    const esc = v => String(v).replace(/[[\]|@:\s]/g, "_");
+    return " [aud:" + ss.length + "|" + ss.slice(0, 8).map(s => {
+      let r = s.getBoundingClientRect();
+      const a = s.querySelector("audio");
+      const k = s.closest(".preview") ? "rv" : "lp";
+      if (!a) return k + ":" + esc(s.dataset.miss || "") + ":miss:0:0@" + Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2);
+      const d = isFinite(a.duration) ? a.duration.toFixed(2) : a.duration === Infinity ? "inf" : "0";
+      // #139 restricted, not yet pressed: state c2p, the point is the Play button's centre
+      const b = s.dataset.c2p && !s.dataset.st ? s.querySelector("button.audio-c2p") : null;
+      if (b && b.getClientRects().length) r = b.getBoundingClientRect();
+      const stt = s.dataset.st || (b ? "c2p" : "idle");
+      return k + ":" + esc(s.dataset.audio) + ":" + stt + ":" + a.readyState + ":" + d + "@" + Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2);
+    }).join("|") + "]" + rd;
   },
   PDF_TOOLBAR: 39, PDF_STOCK_AR: 792 / 612,
   // stock (recon README "Default frame size"): frame = w x aspect(page 1) + 20,
@@ -1792,7 +1967,9 @@ Object.assign(Ed, {
      the plugin API's htmlToMarkdown (inert parse, every text node escaped, unsafe URLs
      dropped). true = handled; false leaves the drop to CM6 (files, a move inside the
      editor, no html, no converter, nothing converted). Placed and selected like CM6's
-     own drop, one "input.drop" undo step. */
+     own drop, one "input.drop" undo step. A browser LINK drag (<a href> + a remote
+     text/uri-list) reaches here too since src-tauri/src/xdnd.rs stopped claiming remote
+     uri-lists as file drops (#51 "094 still eats links"): it lands as [title](url). */
   htmlDrop(e, view) {
     const dt = e && e.dataTransfer;
     if (!dt || !view || e.defaultPrevented || view.state.readOnly) return false;
@@ -1811,6 +1988,48 @@ Object.assign(Ed, {
     e.preventDefault();
     view.focus();
     view.dispatch({ changes: { from: r, insert: md }, selection: { anchor: r, head: r + md.length }, userEvent: "input.drop" });
+    return true;
+  },
+  /* #143: paste of rich text. Stock 1.13.7 pastes a clipboard carrying text/html as its
+     Markdown ([t](url), **b**, *i*, # h, - li, code, > quote) — the SAME conversion as its
+     drop (harness docs/issue-51/STOCK.md "paste of the same data: identical result"), so this
+     reuses htmlDrop's converter and guards exactly: Ed.h2m = the plugin API's htmlToMarkdown
+     (inert parse, every text node escaped, javascript:/data: URLs dropped; the html itself
+     never reaches the DOM). Mounted Prec.low, after gh-paste's attachPaste (#19: an image on
+     the clipboard is claimed first) and after the plugin "editor-paste" hooks (their
+     preventDefault wins). true = handled; false leaves the paste to CM6 (plain-only clipboard,
+     no converter, nothing converted). Replaces the selection like CM6's own paste, caret after
+     the inserted text, one "input.paste" undo step (the transactionExtender in mount()). */
+  htmlPaste(e, view) {
+    const dt = e && e.clipboardData;
+    if (!dt || !view || e.defaultPrevented || view.state.readOnly) return false;
+    const h2m = typeof Ed.h2m === "function" ? Ed.h2m : null;
+    let html = "";
+    try { html = String(dt.getData("text/html") || ""); } catch (_) {}
+    if (!h2m || !html.trim()) return false;
+    let md = "";
+    try { md = String(h2m(html) || ""); } catch (_) { return false; }
+    if (!md) return false;
+    e.preventDefault();
+    view.dispatch(view.state.replaceSelection(md), { scrollIntoView: true, userEvent: "input.paste" });
+    return true;
+  },
+  /* #143: Ctrl/Cmd+Shift+V pastes PLAIN text, as stock (Chromium's paste-as-plain-text). Not
+     left to the webview: WebKitGTK's own binding is not a contract, so the key reads the
+     clipboard's text through the same Rust path as the menu's "Paste as plain text"
+     (ui/edmenu.js clipPaste -> clip_text) and inserts it as one "input.paste" step, caret after.
+     clip_text is async (PR #146 review): the text goes where the selection was AT THE KEYPRESS
+     while the document is unchanged (a caret moved in between does not redirect it); if the
+     document was edited meanwhile the old ranges no longer name the same text, so it follows
+     the current selection, as a keystroke would. */
+  plainPaste(view) {
+    if (!view || view.state.readOnly || typeof inv !== "function") return false;
+    const doc0 = view.state.doc, sel0 = view.state.selection;
+    Promise.resolve(inv("clip_text")).then(t => {
+      if (!t || view.state.readOnly) return;
+      const st = view.state.doc === doc0 ? view.state.update({ selection: sel0 }).state : view.state;
+      view.dispatch(st.replaceSelection(String(t)), { scrollIntoView: true, userEvent: "input.paste" });
+    }, err => console.warn("clip_text:", err));
     return true;
   },
   mount(v) {
@@ -1838,7 +2057,9 @@ Object.assign(Ed, {
       // first and, when its command returns false, ours still runs. A keydown
       // handler here ran ahead of the keymap handler and swallowed Tab/Enter/... for
       // every plugin keymap (Advanced Tables' Tab only indented).
-      CMv.keymap.of([{ any: (view, e) => { Ed.onKey(G(), e); return e.defaultPrevented; } }]),
+      // #143: Ctrl/Cmd+Shift+V = paste as plain text (stock); ahead of Ed.onKey in the same keymap
+      CMv.keymap.of([{ key: "Mod-Shift-v", run: view => Ed.plainPaste(view) },
+                     { any: (view, e) => { Ed.onKey(G(), e); return e.defaultPrevented; } }]),
       // gh #43: a pair char typed over a selection wraps it, as stock does (Settings > Editor
       // "Auto pair brackets" / "Auto pair Markdown syntax"): the selection stays on the inner
       // text, so [ then [ makes [[sel]] and * then * makes **sel** (harness docs/issue-43/STOCK.md)
@@ -1860,10 +2081,13 @@ Object.assign(Ed, {
       // files, an in-editor move and an html-less drop stay CM6's own drop. Prec.low (PR #65
       // review F2): after the plugin hooks (editor-api.js hooks(), default precedence), so a
       // plugin's "editor-drop" sees the drop first and its preventDefault wins, as in stock
-      CMs.Prec.low(CMv.EditorView.domEventHandlers({ drop: (e, view) => Ed.htmlDrop(e, view) })),
+      // #143: a paste carrying text/html pastes its Markdown, like stock (Ed.htmlPaste); same
+      // Prec.low as the drop, so attachPaste (#19, image first) and plugin "editor-paste" go first
+      CMs.Prec.low(CMv.EditorView.domEventHandlers({ drop: (e, view) => Ed.htmlDrop(e, view),
+                                                    paste: (e, view) => Ed.htmlPaste(e, view) })),
       CMv.EditorView.lineWrapping,
       CMv.EditorView.contentAttributes.of({ spellcheck: "false", autocorrect: "off", autocapitalize: "off" }),
-      Ed.viewTheme || (Ed.viewTheme = CMv.EditorView.theme({ "&.cm-focused": { outline: "none" }, ".cm-scroller": { fontFamily: "inherit", lineHeight: "inherit", overflow: "visible" },
+      Ed.viewTheme || (Ed.viewTheme = CMv.EditorView.theme({ "&.cm-focused": { outline: "none" }, ".cm-scroller": { fontFamily: "inherit", lineHeight: "inherit" },
                              ".cm-content": { padding: "0" }, ".cm-line": { padding: "0" } })),
       CMv.EditorView.updateListener.of(u => Ed.onUpdate(G(), v, u)),
       Ed.lpExt ? Ed.lpExt(v, G) : [],
@@ -1875,9 +2099,12 @@ Object.assign(Ed, {
     const lp = v.lp;
     v.cm = cm; v._Ld = null;
     lp.textContent = ""; lp.appendChild(cm.dom); lp._cm = cm;
+    // #125/#137: cm.scrollDOM is THE scroller (style.css .lp.cmown); .lp is a layout box
+    lp.classList.add("cmown");
+    if (lp.dataset.title) cm.scrollDOM.dataset.title = lp.dataset.title; else delete cm.scrollDOM.dataset.title;
     // g.lp.focus() (tab switch, palette close, title edit) = focus the editor
     lp.focus = () => { if (!cm.hasFocus) cm.focus(); };
-    Ed.wheelOwn(lp);
+    Ed.wheelOwn(cm.scrollDOM);
     return lp;
   },
   onUpdate(g, v, u) {
@@ -2080,10 +2307,11 @@ Ed.caretRect = function (n, o) {
   return b;
 };
 Ed.crtTok = function () {
-  const g = typeof fg === "function" ? fg() : null, lp = g && g.lp, cm = Ed.cm(g);
+  const g = typeof fg === "function" ? fg() : null, lp = g && g.lp, cm = Ed.cm(g), sc = cm && cm.scrollDOM;
   if (!lp || !cm || !lp.isConnected || !lp.getClientRects().length) return "";
-  const R = Math.round, s = window.getSelection(), cs = getComputedStyle(lp), b = lp.getBoundingClientRect();
-  const ox = R(b.left + lp.clientLeft + parseFloat(cs.paddingLeft)), oy = R(b.top + lp.clientTop + parseFloat(cs.paddingTop) - lp.scrollTop);
+  // lp= the content origin: the SCROLLER's padding box (cm.scrollDOM owns padding + scrollTop, #125)
+  const R = Math.round, s = window.getSelection(), cs = getComputedStyle(sc), b = sc.getBoundingClientRect();
+  const ox = R(b.left + sc.clientLeft + parseFloat(cs.paddingLeft)), oy = R(b.top + sc.clientTop + parseFloat(cs.paddingTop) - sc.scrollTop);
   let k = "none", x = 0, y = 0, h = 0, lc = "-";
   if (s && s.rangeCount && s.focusNode) {
     const n = s.focusNode;
@@ -2112,7 +2340,125 @@ Ed.lineAtY = function (g, y) {            // client y -> {l, f}: the line under 
   const cm = Ed.cm(g); if (!cm) return null;
   const b = cm.lineBlockAtHeight(y - cm.documentTop), d = cm.state.doc;
   const f = b.height > 0 ? Math.min(1, Math.max(0, (y - cm.documentTop - b.top) / b.height)) : 0;
-  return { l: d.lineAt(b.from).number - 1, f };
+  // #125: a block that replaces several source lines (lp widget) spreads f over them —
+  // block start + its own fraction put "just above the next line" on the block's FIRST line
+  const a = d.lineAt(b.from).number - 1, n = d.lineAt(b.to).number - a, v = a + Math.min(n - 1e-6, f * n);
+  return { l: Math.floor(v), f: v - Math.floor(v) };
+};
+/* ---------- #125/#137 approach B: CM6 OWNS THE SCROLLER ----------
+   cm.scrollDOM is the note scroller of both edit sub-modes (style.css .lp.cmown);
+   g.lp is a layout box that never scrolls. CM6 then runs its scroll-anchor
+   correction on EVERY measure (it skips it only when its scroll parent is not its
+   own scrollDOM and the editor is unfocused with no wheel < 100 ms old — the
+   whole bug class: an app px write to g.lp.scrollTop that the next measure of
+   estimated lines either undid or never corrected). So nothing below writes a px
+   scrollTop of a CM6 scroller: a position is captured as a LINE plus an offset
+   and given back to CM6 as a scroll effect that it applies INSIDE its measure
+   loop, after the viewport redraw, on its own height map. */
+Ed.sc = g => { const cm = Ed.cm(g); return cm ? cm.scrollDOM : g && g.lp; };   // the element that scrolls the edit view
+Ed.scOf = el => (el && el._cm ? el._cm.scrollDOM : el);                          // g.lp (or any .lp) -> its scroller
+/* off = content-origin offset: documentTop (contentDOM top + padding) minus the
+   scroller's inner top, at scrollTop 0 — the scroller padding + inline title
+   ::before. Layout-stable across a scroll; re-read at every landing because a
+   font change (qfs) re-sizes the title. */
+Ed.scOff = function (cm) {
+  const sc = cm.scrollDOM;
+  return cm.documentTop - (sc.getBoundingClientRect().top + sc.clientTop) + sc.scrollTop;
+};
+/* CM6's own snapshot effect (EditorView.scrollSnapshot builds the same object):
+   inside the measure loop it sets scrollDOM.scrollTop = lineBlockAt(pos).top - ym,
+   on the heights measured that very frame. The constructor is taken from a live
+   snapshot so no private symbol of the vendored bundle is named here. */
+Ed.snapFx = function (cm, pos, ym, xm) {
+  const s = cm.scrollSnapshot(), C = s.value.constructor;
+  const p = Math.min(cm.state.doc.length, Math.max(0, pos));
+  return s.type.of(new C(CMs.EditorSelection.cursor(p), "start", "start", ym, xm == null ? cm.scrollDOM.scrollLeft : xm, true));
+};
+Ed.scrollToTop = function (cm, top) {   // scroller px (plugin API / "top of note") as a CM6 effect
+  if (!cm) return;
+  const y = Math.max(0, top) - Ed.scOff(cm), b = cm.lineBlockAtHeight(Math.max(0, y));
+  cm.dispatch({ effects: Ed.snapFx(cm, b.from, b.top - Math.max(0, top)) });   // scrollTop = blockTop - ym = top
+};
+/* the position of the view = the block at the scroller's top edge: its source line
+   l (0-based), how far (px) its top sits from the edge (c <= 0 when it straddles
+   it) and the fraction f of it scrolled off. Read on CM6's height map, which is
+   in step with the drawn rows for any line inside the viewport. */
+Ed.snapOf = function (cm) {
+  if (!cm || !cm.dom.isConnected || !cm.scrollDOM.getClientRects().length) return null;
+  const sc = cm.scrollDOM, off = Ed.scOff(cm), y = sc.scrollTop - off;
+  if (sc.scrollTop <= 0) return { l: 0, c: off, f: 0, top: true };   // the title + padding in view: land there
+  const b = cm.lineBlockAtHeight(Math.max(0, y)), d = cm.state.doc;
+  // l/f spread over the source lines the block replaces (see Ed.landAt); c stays relative to the block top
+  const fb = b.height > 0 ? Math.min(1, Math.max(0, (y - b.top) / b.height)) : 0;
+  const a = d.lineAt(b.from).number - 1, n = d.lineAt(b.to).number - a, v = a + Math.min(n - 1e-6, fb * n);
+  return { l: Math.floor(v), c: b.top - y, f: v - Math.floor(v) };
+};
+/* where a snapOf position lands: {pos, c} = the height-map block holding line l
+   (pos = its start) and the px its top must sit from the scroller top.
+   byFrac (a re-flowed view — mode switch): fraction f of line l scrolled off; a
+   block that replaces several source lines (lp widget) shares its height among
+   them, so line l inside it lands proportionally, not on the block start. */
+Ed.landAt = function (v, s, byFrac) {
+  const d = v.state.doc, ln = d.line(Math.min(d.lines, Math.max(1, s.l + 1)));
+  if (!byFrac) return { pos: ln.from, c: s.c };
+  const b = v.lineBlockAt(ln.from), a = d.lineAt(b.from).number, n = Math.max(1, d.lineAt(b.to).number - a + 1);
+  return { pos: b.from, c: -((ln.number - a) + (s.f || 0)) / n * b.height };
+};
+Ed.land = function (cm, s, byFrac) {
+  if (!cm || !s) return false;
+  if (s.top) { cm.dispatch({ effects: Ed.snapFx(cm, 0, cm.lineBlockAt(0).top) }); return true; }   // scrollTop 0
+  const t = Ed.landAt(cm, s, byFrac);
+  // scrollTop = blockTop + off - c  ->  ym = blockTop - scrollTop = c - off
+  cm.dispatch({ effects: Ed.snapFx(cm, t.pos, t.c - Ed.scOff(cm)) });
+  Ed.holdLand(cm, s, byFrac);
+  return true;
+};
+/* HOLD a landing until CM6's height map agrees with it. CM6 applies the snapshot in
+   the first measure pass whose viewport is stable, on the heights drawn THAT frame;
+   the scroll then draws rows it had only estimated (a .lp.src restyle, lazy rows,
+   wrapped paragraphs) and its anchor correction holds the block that was at the
+   OLD scroll position, not the landed line (box: mid lp->src off 7, end src->lp off 8).
+   So for a few frames a CM6 measure request reads where line l really sits on the
+   freshly measured map; when it is off by more than HOLD_PX the same landing is
+   given back to CM6 once more (an effect, never a px write). Ends at the first
+   user input on the scroller, at a newer landing, or after HOLD_FR frames. */
+Ed.HOLD_PX = 3; Ed.HOLD_FR = 90;
+Ed.holdLand = function (cm, s, byFrac) {
+  if (!cm || !s || s.top) return;
+  const seq = cm._landSeq = (cm._landSeq || 0) + 1, sc = cm.scrollDOM, evs = ["wheel", "keydown", "pointerdown", "touchstart"];
+  let fr = 0, ok = 0, re = 0, done = false;
+  const end = () => { if (done) return; done = true; for (const e of evs) sc.removeEventListener(e, quit, true); };
+  const quit = () => { if (cm._landSeq === seq) cm._landSeq++; end(); };
+  for (const e of evs) sc.addEventListener(e, quit, true);
+  const tick = () => {
+    if (done || cm._landSeq !== seq || !cm.dom.isConnected || ++fr > Ed.HOLD_FR) { end(); return; }
+    cm.requestMeasure({
+      key: "ed-hold-land",
+      read(v) {
+        const t = Ed.landAt(v, s, byFrac), want = t.c, cur = v.lineBlockAt(t.pos).top + Ed.scOff(v) - sc.scrollTop;
+        const max = sc.scrollHeight - sc.clientHeight;
+        // clamped at either end of the scroller: the line cannot get any closer
+        const stuck = (cur > want && sc.scrollTop >= max - 1) || (cur < want && sc.scrollTop <= 0);
+        return Math.abs(cur - want) <= Ed.HOLD_PX || stuck;
+      },
+      write(good) {
+        if (done || cm._landSeq !== seq) return;
+        if (good) { if (++ok >= 3 && fr >= 10) { end(); return; } }
+        else {
+          ok = 0;
+          if (++re > 8) { end(); return; }
+          // a dispatch inside CM6's measure loop throws: give the landing back right after it
+          queueMicrotask(() => {
+            if (done || cm._landSeq !== seq) return;
+            const t = Ed.landAt(cm, s, byFrac);
+            cm.dispatch({ effects: Ed.snapFx(cm, t.pos, t.c - Ed.scOff(cm)) });
+          });
+        }
+        requestAnimationFrame(tick);
+      }
+    });
+  };
+  requestAnimationFrame(tick);
 };
 /* the line at the scroller's top edge (+slack px), fractional. DOM FIRST: the
    drawn rows are the truth the user sees. The height map is only as fresh as
@@ -2121,13 +2467,18 @@ Ed.lineAtY = function (g, y) {            // client y -> {l, f}: the line under 
    reading landed on L150). The map answers only when y falls in a gap. */
 Ed.topLine = function (g, slack) {
   const cm = Ed.cm(g); if (!g.lp || !cm) return null;
-  const y = g.lp.getBoundingClientRect().top + (slack == null ? 1 : slack), d = cm.state.doc;
+  const y = cm.scrollDOM.getBoundingClientRect().top + (slack == null ? 1 : slack), d = cm.state.doc;
   for (const el of cm.contentDOM.children) {
     const r = el.getBoundingClientRect();
     if (r.bottom <= y) continue;
     if (r.top > y + 0.5 || r.height <= 0 || el.classList.contains("cm-gap")) break;   // y sits in a gap
     let a, b;
-    try { a = d.lineAt(cm.posAtDOM(el, 0)).number - 1; b = d.lineAt(cm.posAtDOM(el, el.childNodes.length)).number - 1; }
+    try {
+      const p0 = cm.posAtDOM(el, 0);
+      a = d.lineAt(p0).number - 1;
+      // a block widget's DOM can map its end back to its start: the height-map block knows the lines it replaces
+      b = Math.max(d.lineAt(cm.posAtDOM(el, el.childNodes.length)).number, d.lineAt(cm.lineBlockAt(p0).to).number) - 1;
+    }
     catch (e) { break; }
     // one element can span several source lines (a block widget): spread y over them
     const f = Math.min(1, Math.max(0, (y - r.top) / r.height)) * (b - a + 1);
@@ -2136,58 +2487,46 @@ Ed.topLine = function (g, slack) {
   const p = Ed.lineAtY(g, y);
   return p ? p.l + p.f : null;
 };
-Ed.scrollToLine = function (g, line) {    // put the fractional source line at the scroller's top, clamped
-  const cm = Ed.cm(g), lp = g.lp; if (!cm || line == null) return;
+/* #125 scrollsync ss-src-mid-e2r (1/3, off 14 — develop has the same red): the
+   capture (Ctrl+E) reads the drawn rows at the scroller top. A synchronous
+   cm.measure() flush here (ef5ccd2) did NOT clear that red and cost an lp->src->lp
+   end trip (off 2), so the capture reads the DOM as painted, untouched. Ed.tlDiag
+   keeps line:scrollTop:scrollHeight for the [ssa:] census token (red-path diag). */
+Ed.topLineNow = function (g, slack) {
+  const cm = Ed.cm(g); if (!g.lp || !cm) return null;
+  const l = Ed.topLine(g, slack), s = cm.scrollDOM, R = x => (x == null ? "-" : Math.round(x * 100) / 100);
+  Ed.tlDiag = R(l) + ":" + Math.round(s.scrollTop) + ":" + Math.round(s.scrollHeight);
+  return l;
+};
+/* put the fractional source line at the scroller's top: ONE CM6 snapshot effect.
+   The old body wrote g.lp.scrollTop from the height map and re-landed in a
+   requestMeasure write (ROOTCAUSE I1/I2) — the re-land itself raced CM6's next
+   measure. CM6 now resolves lineBlockAt(line) after measuring the viewport it
+   scrolls to, and its anchor correction holds the line through later measures. */
+Ed.scrollToLine = function (g, line) {
+  const cm = Ed.cm(g); if (!cm || line == null) return;
   const d = cm.state.doc, i = Math.min(d.lines - 1, Math.max(0, Math.floor(line))), f = Math.min(1, Math.max(0, line - i));
-  const go = () => {
-    const b = cm.lineBlockAt(d.line(i + 1).from);
-    const dy = cm.documentTop + b.top + f * b.height - lp.getBoundingClientRect().top;
-    const max = Math.max(0, lp.scrollHeight - lp.clientHeight);
-    lp.scrollTop = Math.min(max, Math.max(0, lp.scrollTop + dy));
-  };
-  go();
-  // #119 (longpos 50% src->lp off 13): the same target as CM6's OWN scroll effect, y=start
-  // with the fraction as a negative margin. The pixel write above lands by the height map;
-  // CM6's measure loop then keeps the view still against the drift of the line it ANCHORED
-  // at the last transaction (ViewState.update: scrollAnchorAt(scrollOffset), top in the
-  // old map) — after a block widget above the destination is measured (the Properties
-  // block: estimated 30px/line, drawn taller) that correction is for a stale line, and it
-  // lands after our re-land. A scroll effect is applied INSIDE that loop, after the
-  // measure, and re-anchors on the destination line (o = -1 after scrollIntoView), so
-  // every later height change above it is compensated FOR THIS LINE. It also supersedes
-  // any pending caret scrollTarget. revealAt/revealTop use the effect for the same reason.
-  // Only when such a block IS above the destination (a drawn Properties block: live preview,
-  // Visible/Hidden): without one the effect is not needed, and in source mode after the
-  // .lp.src restyle it landed by stale heights (scrollsync src-mid read -> src off 14, a note
-  // with no frontmatter at all), so every other note scrolls exactly as before #119.
-  const v = g.view, pf = v && v._propsF ? cm.state.field(v._propsF, false) : null;
-  let blk = false;
-  if (pf && pf.size) pf.between(0, d.length, (a, b) => { if (b <= d.line(i + 1).from) blk = true; });
-  if (blk) try {
-    const ln = d.line(i + 1), h = cm.lineBlockAt(ln.from).height;
-    cm.dispatch({ effects: CMv.EditorView.scrollIntoView(ln.from, { y: "start", yMargin: -Math.round(f * h) }) });
-  } catch (e) { console.error(e); }
-  // the height map holds ESTIMATES for lines never drawn: once CM6 has measured
-  // the lines this scroll brought in, land on the real geometry
-  cm.requestMeasure({ key: "osScrollLine", read: () => null, write: () => { if (Ed.cm(g) === cm) go(); } });
+  if (i === 0 && f === 0) { Ed.land(cm, { top: true }); return; }   // line 0 = the top of the note (title in view)
+  Ed.land(cm, { l: i, f }, true);
 };
 /* the editor scroller OWNS its plain vertical wheel. CM6 virtualises: lines it has
    not drawn carry ESTIMATED (or, after the .lp.src restyle, stale) heights, and when
    it measures the lines a scroll brings in it keeps the view still by correcting the
-   scroller (`scrollTop += diff` in its measure loop, applied while a wheel event is
-   < 100 ms old). WebKitGTK runs a wheel burst as ONE smooth-scroll animation and a
-   scrollTop write CANCELS it, so scrolling UP into unmeasured lines lost most of
-   every burst (scrollsync: 80 notches up from L91 in source mode landed on L45, then
-   L20; Chromium/Obsidian composes the two). Here the burst is accumulated and walked
-   in RELATIVE steps per frame, so CM6's corrections add to it instead of killing it.
+   scroller (`scrollTop += diff` in its measure loop). WebKitGTK runs a wheel burst as
+   ONE smooth-scroll animation and a scrollTop write CANCELS it, so scrolling UP into
+   unmeasured lines lost most of every burst (scrollsync: 80 notches up from L91 in
+   source mode landed on L45, then L20; Chromium/Obsidian composes the two). Here the
+   burst is accumulated and walked in RELATIVE steps per frame, so CM6's corrections
+   add to it instead of killing it. This is USER input, relative to wherever CM6 left
+   the scroller — not a position restore. `sc` is cm.scrollDOM (#125: the scroller).
    Left to the browser: Ctrl (fontwheel), Shift / horizontal intent, and any nested
    scroller (pdf frame, wide code/table) that can still move in the wheel's direction. */
-Ed.wheelOwn = function (lp) {
-  if (!lp || lp._osWheel) return;
-  lp._osWheel = { pend: 0, raf: 0 };
-  const W = lp._osWheel;
+Ed.wheelOwn = function (sc) {
+  if (!sc || sc._osWheel) return;
+  sc._osWheel = { pend: 0, raf: 0 };
+  const W = sc._osWheel;
   const nestedTakes = (t, dy) => {
-    for (let el = t && t.nodeType === 1 ? t : t && t.parentElement; el && el !== lp; el = el.parentElement) {
+    for (let el = t && t.nodeType === 1 ? t : t && t.parentElement; el && el !== sc; el = el.parentElement) {
       if (el.scrollHeight <= el.clientHeight + 1) continue;
       const oy = getComputedStyle(el).overflowY;
       if (oy !== "auto" && oy !== "scroll") continue;
@@ -2197,21 +2536,21 @@ Ed.wheelOwn = function (lp) {
   };
   const step = () => {
     W.raf = 0;
-    const max = Math.max(0, lp.scrollHeight - lp.clientHeight), st = lp.scrollTop;
+    const max = Math.max(0, sc.scrollHeight - sc.clientHeight), st = sc.scrollTop;
     // at an edge the rest of the burst has nowhere to go: drop it (no stored push)
     if ((W.pend < 0 && st <= 0) || (W.pend > 0 && st >= max)) { W.pend = 0; return; }
     let d = W.pend / 3;
     if (Math.abs(d) < 8) d = Math.abs(W.pend) < 8 ? W.pend : Math.sign(W.pend) * 8;
     W.pend -= d;
-    lp.scrollTop = Math.min(max, Math.max(0, st + d));   // RELATIVE to wherever CM6 left it
+    sc.scrollTop = Math.min(max, Math.max(0, st + d));   // RELATIVE to wherever CM6 left it
     if (Math.abs(W.pend) >= 0.5) W.raf = requestAnimationFrame(step); else W.pend = 0;
   };
-  lp.addEventListener("wheel", e => {
+  sc.addEventListener("wheel", e => {
     if (e.ctrlKey || e.shiftKey || e.defaultPrevented) return;
-    if (!lp._cm || Math.abs(e.deltaX) > Math.abs(e.deltaY) || !e.deltaY) return;
+    if (!sc.isConnected || Math.abs(e.deltaX) > Math.abs(e.deltaY) || !e.deltaY) return;
     if (nestedTakes(e.target, e.deltaY)) return;
-    const px = e.deltaMode === 1 ? e.deltaY * (parseFloat(getComputedStyle(lp).lineHeight) || 24)
-             : e.deltaMode === 2 ? e.deltaY * lp.clientHeight : e.deltaY;
+    const px = e.deltaMode === 1 ? e.deltaY * (parseFloat(getComputedStyle(sc).lineHeight) || 24)
+             : e.deltaMode === 2 ? e.deltaY * sc.clientHeight : e.deltaY;
     e.preventDefault();
     if (Math.sign(px) !== Math.sign(W.pend)) W.pend = 0;   // a reversal starts fresh
     W.pend += px;
@@ -2317,7 +2656,8 @@ Ed.lpExt = function (v, G) {
     // except a pdf frame: its loader (Ed.pdfFill) is closures + observers on the ORIGINAL
     // element, so a clone never loads a page (osdrop [pf:1/0|..p1/0-]) — render it fresh
     toDOM() {
-      if (this.el && this.el.dataset && this.el.dataset.pdf != null) {
+      // #116: an audio embed too (its blob loader is the ORIGINAL element's observer + play listener)
+      if (this.el && this.el.dataset && (this.el.dataset.pdf != null || this.el.dataset.audio != null)) {
         const f = Ed.lpLeaves(Ed.row(G(), this.t, 0))[this.k];
         if (f) return f;
       }

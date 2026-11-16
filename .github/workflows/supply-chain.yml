@@ -7,8 +7,8 @@
 # See docs/supply-chain.md for what each check catches and how to audit a new crate.
 #
 # Hardening:
-#   - trigger pull_request (never its privileged "_target" variant): fork PRs run read-only
-#     with no secrets; nothing here needs either.
+#   - push/schedule/dispatch only (no pull_request, never pull_request_target): nothing here
+#     needs secrets or PR context.
 #   - top-level permissions contents: read; no secrets; checkout does not persist the token.
 #   - every action pinned to a full commit SHA (# vX.Y.Z) and the Rust toolchain pinned; every
 #     pin released >= 6 weeks before pin time (2026-11-15).
@@ -22,9 +22,10 @@
 name: Supply chain
 
 on:
-  pull_request: {}
+  # NO pull_request trigger (operator 2026-11-15): scans run only on pushes to develop, main and
+  # v* branches (release branches / drafts, v<ver>-release, see release.yml) + schedule + dispatch.
   push:
-    branches: [develop, main, 'v*-release']   # release branches too (v<ver>-release, see release.yml)
+    branches: [develop, main, 'v*']
   schedule:
     # weekly: new RustSec advisories land without any change to this repo
     - cron: '23 4 * * 1'
