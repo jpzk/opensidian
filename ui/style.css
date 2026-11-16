@@ -922,6 +922,28 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
           padding: 16px; resize: none;
           font: 13px/1.6 monospace; outline: none }
 .lp { flex: 1 1 0; min-width: 0; overflow-y: auto; overflow-x: hidden; overflow-anchor: none }   /* CM6 virtualises against this scroller: browser scroll anchoring would follow a reused line element across a viewport redraw (find reveal 1080 -> 0) — CM6 sets the same on its own .cm-scroller */   /* R22: min-width:0 + no h-scroll */   /* padding + type: R15 block below */
+/* #125/#137 approach B — CM6 OWNS THE SCROLLER. Once Ed.mount puts an editor in
+   it, .lp is a LAYOUT BOX (class .cmown: flex column, no overflow, no padding)
+   and cm.scrollDOM (.cm-scroller) is the one element that scrolls the note.
+   CM6 reads its scroll parent as the first scrolling ancestor of contentDOM and
+   runs its scroll-anchor correction on every measure only when that parent IS
+   scrollDOM (otherwise only while focused or < 100 ms after a wheel). With .lp
+   as the scroller every restore of a position (mode switch, tab, history,
+   jumps, find, font size, plugin scrollTo) was app px arithmetic racing that
+   correction; now each is a CM6 scrollIntoView / snapshot effect landing in
+   CM6's own measure loop. The note padding (--file-margins), the note column,
+   the 12px classic scrollbar and the inline title ::before move with it. */
+.lp.cmown { display: flex; flex-direction: column; overflow: hidden; padding: 0 }
+.lp.cmown > .cm-editor { flex: 1 1 0; min-height: 0; max-width: none; margin-inline: 0 }
+.lp.cmown > .cm-editor > .cm-scroller { display: block !important; flex: 1 1 0; min-height: 0; height: auto;
+  overflow-y: auto !important; overflow-x: hidden !important; overflow-anchor: none; padding: var(--file-margins); box-sizing: border-box }
+.lp.cmown > .cm-editor > .cm-scroller > .cm-content { max-width: var(--note-column, none); margin-inline: auto; min-height: 0 }
+.lp.cmown[data-title]::before { content: none; display: none }
+.lp.cmown > .cm-editor > .cm-scroller::-webkit-scrollbar { width: var(--scrollbar-width, 12px); background-color: var(--scrollbar-bg); height: var(--scrollbar-height, auto); }
+.lp.cmown > .cm-editor > .cm-scroller::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb-bg); background-clip: padding-box;
+  border-style: solid; border-color: var(--scrollbar-bg); border-width: var(--scrollbar-border-width, 0 3px 0 2px); border-radius: var(--scrollbar-radius, 6px); min-height: 45px }
+.lp.cmown > .cm-editor > .cm-scroller::-webkit-scrollbar-thumb:active { background-color: var(--scrollbar-active-thumb-bg, var(--scrollbar-thumb-bg)) }
 .lp a.wiki { color: var(--link-color, var(--accent-blue)); font-weight: var(--link-weight, inherit); }
 .lp a.wiki-unresolved { color: var(--link-unresolved-color, var(--link-unresolved)); font-style: italic; filter: var(--link-unresolved-filter, none); opacity: var(--link-unresolved-opacity, 1); }
 /* R8.2: one rendered row per line/block; the raw caret row blends in */
@@ -1707,14 +1729,14 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
    would lock the fix to --font-text-size: 16px, which is the same bug holding
    one lucky value. What makes em resolve identically on both is .titlewrap
    carrying the note column's own type context — see the rule below it. */
-.lp[data-title]::before, .preview[data-title]::before, .titleedit {
+.lp[data-title]::before, .preview[data-title]::before, .lp.cmown .cm-scroller[data-title]::before, .titleedit {
   display: block; max-width: var(--note-column, none); margin-inline: auto;
   font-size: var(--inline-title-size, var(--h1-size)); font-weight: var(--inline-title-weight, var(--h1-weight));
   line-height: var(--inline-title-line-height, var(--h1-line-height)); letter-spacing: var(--h1-letter-spacing);
   color: var(--inline-title-color, inherit); overflow-wrap: anywhere; white-space: pre-wrap; cursor: text;
   font-family: var(--inline-title-font, inherit);
 ; font-style: var(--inline-title-style, inherit); font-variant: var(--inline-title-variant, inherit); }
-.lp[data-title]::before, .preview[data-title]::before {
+.lp[data-title]::before, .preview[data-title]::before, .lp.cmown .cm-scroller[data-title]::before {
   content: attr(data-title);
   margin-top: 0; margin-bottom: var(--inline-title-margin-bottom, 0.5em); user-select: none;
 }
@@ -1741,7 +1763,7 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
    `scripts/smoke.sh fast titletype` (computed style off the live DOM + ink off
    a screenshot) rather than asserted here. Background stays transparent: there
    is nothing to cover, the ::before is already invisible underneath. */
-.lp.titling::before, .preview.titling::before { visibility: hidden }
+.lp.titling::before, .preview.titling::before, .lp.cmown .cm-scroller.titling::before { visibility: hidden }
 /* R34.18 — THE ROOT CAUSE, AND WHY THE FIX IS HERE AND NOT ON .titleedit.
    The shared rule above is written in em and tokens: `--h1-size: 1.974em` and
    `--h1-letter-spacing: -0.018em`. `em` resolves against the element's INHERITED

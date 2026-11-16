@@ -2003,7 +2003,7 @@ Object.assign(Ed, {
       CMs.Prec.low(CMv.EditorView.domEventHandlers({ drop: (e, view) => Ed.htmlDrop(e, view) })),
       CMv.EditorView.lineWrapping,
       CMv.EditorView.contentAttributes.of({ spellcheck: "false", autocorrect: "off", autocapitalize: "off" }),
-      Ed.viewTheme || (Ed.viewTheme = CMv.EditorView.theme({ "&.cm-focused": { outline: "none" }, ".cm-scroller": { fontFamily: "inherit", lineHeight: "inherit", overflow: "visible" },
+      Ed.viewTheme || (Ed.viewTheme = CMv.EditorView.theme({ "&.cm-focused": { outline: "none" }, ".cm-scroller": { fontFamily: "inherit", lineHeight: "inherit" },
                              ".cm-content": { padding: "0" }, ".cm-line": { padding: "0" } })),
       CMv.EditorView.updateListener.of(u => Ed.onUpdate(G(), v, u)),
       Ed.lpExt ? Ed.lpExt(v, G) : [],
@@ -2015,9 +2015,12 @@ Object.assign(Ed, {
     const lp = v.lp;
     v.cm = cm; v._Ld = null;
     lp.textContent = ""; lp.appendChild(cm.dom); lp._cm = cm;
+    // #125/#137: cm.scrollDOM is THE scroller (style.css .lp.cmown); .lp is a layout box
+    lp.classList.add("cmown");
+    if (lp.dataset.title) cm.scrollDOM.dataset.title = lp.dataset.title; else delete cm.scrollDOM.dataset.title;
     // g.lp.focus() (tab switch, palette close, title edit) = focus the editor
     lp.focus = () => { if (!cm.hasFocus) cm.focus(); };
-    Ed.wheelOwn(lp);
+    Ed.wheelOwn(cm.scrollDOM);
     return lp;
   },
   onUpdate(g, v, u) {
@@ -2220,10 +2223,11 @@ Ed.caretRect = function (n, o) {
   return b;
 };
 Ed.crtTok = function () {
-  const g = typeof fg === "function" ? fg() : null, lp = g && g.lp, cm = Ed.cm(g);
+  const g = typeof fg === "function" ? fg() : null, lp = g && g.lp, cm = Ed.cm(g), sc = cm && cm.scrollDOM;
   if (!lp || !cm || !lp.isConnected || !lp.getClientRects().length) return "";
-  const R = Math.round, s = window.getSelection(), cs = getComputedStyle(lp), b = lp.getBoundingClientRect();
-  const ox = R(b.left + lp.clientLeft + parseFloat(cs.paddingLeft)), oy = R(b.top + lp.clientTop + parseFloat(cs.paddingTop) - lp.scrollTop);
+  // lp= the content origin: the SCROLLER's padding box (cm.scrollDOM owns padding + scrollTop, #125)
+  const R = Math.round, s = window.getSelection(), cs = getComputedStyle(sc), b = sc.getBoundingClientRect();
+  const ox = R(b.left + sc.clientLeft + parseFloat(cs.paddingLeft)), oy = R(b.top + sc.clientTop + parseFloat(cs.paddingTop) - sc.scrollTop);
   let k = "none", x = 0, y = 0, h = 0, lc = "-";
   if (s && s.rangeCount && s.focusNode) {
     const n = s.focusNode;
@@ -2254,6 +2258,62 @@ Ed.lineAtY = function (g, y) {            // client y -> {l, f}: the line under 
   const f = b.height > 0 ? Math.min(1, Math.max(0, (y - cm.documentTop - b.top) / b.height)) : 0;
   return { l: d.lineAt(b.from).number - 1, f };
 };
+/* ---------- #125/#137 approach B: CM6 OWNS THE SCROLLER ----------
+   cm.scrollDOM is the note scroller of both edit sub-modes (style.css .lp.cmown);
+   g.lp is a layout box that never scrolls. CM6 then runs its scroll-anchor
+   correction on EVERY measure (it skips it only when its scroll parent is not its
+   own scrollDOM and the editor is unfocused with no wheel < 100 ms old — the
+   whole bug class: an app px write to g.lp.scrollTop that the next measure of
+   estimated lines either undid or never corrected). So nothing below writes a px
+   scrollTop of a CM6 scroller: a position is captured as a LINE plus an offset
+   and given back to CM6 as a scroll effect that it applies INSIDE its measure
+   loop, after the viewport redraw, on its own height map. */
+Ed.sc = g => { const cm = Ed.cm(g); return cm ? cm.scrollDOM : g && g.lp; };   // the element that scrolls the edit view
+Ed.scOf = el => (el && el._cm ? el._cm.scrollDOM : el);                          // g.lp (or any .lp) -> its scroller
+/* off = content-origin offset: documentTop (contentDOM top + padding) minus the
+   scroller's inner top, at scrollTop 0 — the scroller padding + inline title
+   ::before. Layout-stable across a scroll; re-read at every landing because a
+   font change (qfs) re-sizes the title. */
+Ed.scOff = function (cm) {
+  const sc = cm.scrollDOM;
+  return cm.documentTop - (sc.getBoundingClientRect().top + sc.clientTop) + sc.scrollTop;
+};
+/* CM6's own snapshot effect (EditorView.scrollSnapshot builds the same object):
+   inside the measure loop it sets scrollDOM.scrollTop = lineBlockAt(pos).top - ym,
+   on the heights measured that very frame. The constructor is taken from a live
+   snapshot so no private symbol of the vendored bundle is named here. */
+Ed.snapFx = function (cm, pos, ym, xm) {
+  const s = cm.scrollSnapshot(), C = s.value.constructor;
+  const p = Math.min(cm.state.doc.length, Math.max(0, pos));
+  return s.type.of(new C(CMs.EditorSelection.cursor(p), "start", "start", ym, xm == null ? cm.scrollDOM.scrollLeft : xm, true));
+};
+Ed.scrollToTop = function (cm, top) {   // scroller px (plugin API / "top of note") as a CM6 effect
+  if (!cm) return;
+  const y = Math.max(0, top) - Ed.scOff(cm), b = cm.lineBlockAtHeight(Math.max(0, y));
+  cm.dispatch({ effects: Ed.snapFx(cm, b.from, b.top - Math.max(0, top)) });   // scrollTop = blockTop - ym = top
+};
+/* the position of the view = the block at the scroller's top edge: its source line
+   l (0-based), how far (px) its top sits from the edge (c <= 0 when it straddles
+   it) and the fraction f of it scrolled off. Read on CM6's height map, which is
+   in step with the drawn rows for any line inside the viewport. */
+Ed.snapOf = function (cm) {
+  if (!cm || !cm.dom.isConnected || !cm.scrollDOM.getClientRects().length) return null;
+  const sc = cm.scrollDOM, off = Ed.scOff(cm), y = sc.scrollTop - off;
+  if (sc.scrollTop <= 0) return { l: 0, c: off, f: 0, top: true };   // the title + padding in view: land there
+  const b = cm.lineBlockAtHeight(Math.max(0, y)), d = cm.state.doc;
+  return { l: d.lineAt(b.from).number - 1, c: b.top - y, f: b.height > 0 ? Math.min(1, Math.max(0, (y - b.top) / b.height)) : 0 };
+};
+/* give a snapOf position back: line l's block top c px from the scroller top
+   (byFrac: f of the block above it, for a re-flowed view — mode switch). */
+Ed.land = function (cm, s, byFrac) {
+  if (!cm || !s) return false;
+  if (s.top) { cm.dispatch({ effects: Ed.snapFx(cm, 0, cm.lineBlockAt(0).top) }); return true; }   // scrollTop 0
+  const d = cm.state.doc, ln = d.line(Math.min(d.lines, Math.max(1, s.l + 1))), off = Ed.scOff(cm);
+  const c = byFrac ? -(s.f || 0) * cm.lineBlockAt(ln.from).height : s.c;
+  // scrollTop = blockTop + off - c  ->  ym = blockTop - scrollTop = c - off
+  cm.dispatch({ effects: Ed.snapFx(cm, ln.from, c - off) });
+  return true;
+};
 /* the line at the scroller's top edge (+slack px), fractional. DOM FIRST: the
    drawn rows are the truth the user sees. The height map is only as fresh as
    CM6's last measure, which runs in a rAF — a Ctrl+E keydown handled after a
@@ -2261,7 +2321,7 @@ Ed.lineAtY = function (g, y) {            // client y -> {l, f}: the line under 
    reading landed on L150). The map answers only when y falls in a gap. */
 Ed.topLine = function (g, slack) {
   const cm = Ed.cm(g); if (!g.lp || !cm) return null;
-  const y = g.lp.getBoundingClientRect().top + (slack == null ? 1 : slack), d = cm.state.doc;
+  const y = cm.scrollDOM.getBoundingClientRect().top + (slack == null ? 1 : slack), d = cm.state.doc;
   for (const el of cm.contentDOM.children) {
     const r = el.getBoundingClientRect();
     if (r.bottom <= y) continue;
@@ -2276,37 +2336,35 @@ Ed.topLine = function (g, slack) {
   const p = Ed.lineAtY(g, y);
   return p ? p.l + p.f : null;
 };
-Ed.scrollToLine = function (g, line) {    // put the fractional source line at the scroller's top, clamped
-  const cm = Ed.cm(g), lp = g.lp; if (!cm || line == null) return;
+/* put the fractional source line at the scroller's top: ONE CM6 snapshot effect.
+   The old body wrote g.lp.scrollTop from the height map and re-landed in a
+   requestMeasure write (ROOTCAUSE I1/I2) — the re-land itself raced CM6's next
+   measure. CM6 now resolves lineBlockAt(line) after measuring the viewport it
+   scrolls to, and its anchor correction holds the line through later measures. */
+Ed.scrollToLine = function (g, line) {
+  const cm = Ed.cm(g); if (!cm || line == null) return;
   const d = cm.state.doc, i = Math.min(d.lines - 1, Math.max(0, Math.floor(line))), f = Math.min(1, Math.max(0, line - i));
-  const go = () => {
-    const b = cm.lineBlockAt(d.line(i + 1).from);
-    const dy = cm.documentTop + b.top + f * b.height - lp.getBoundingClientRect().top;
-    const max = Math.max(0, lp.scrollHeight - lp.clientHeight);
-    lp.scrollTop = Math.min(max, Math.max(0, lp.scrollTop + dy));
-  };
-  go();
-  // the height map holds ESTIMATES for lines never drawn: once CM6 has measured
-  // the lines this scroll brought in, land on the real geometry
-  cm.requestMeasure({ key: "osScrollLine", read: () => null, write: () => { if (Ed.cm(g) === cm) go(); } });
+  if (i === 0 && f === 0) { Ed.land(cm, { top: true }); return; }   // line 0 = the top of the note (title in view)
+  Ed.land(cm, { l: i, f }, true);
 };
 /* the editor scroller OWNS its plain vertical wheel. CM6 virtualises: lines it has
    not drawn carry ESTIMATED (or, after the .lp.src restyle, stale) heights, and when
    it measures the lines a scroll brings in it keeps the view still by correcting the
-   scroller (`scrollTop += diff` in its measure loop, applied while a wheel event is
-   < 100 ms old). WebKitGTK runs a wheel burst as ONE smooth-scroll animation and a
-   scrollTop write CANCELS it, so scrolling UP into unmeasured lines lost most of
-   every burst (scrollsync: 80 notches up from L91 in source mode landed on L45, then
-   L20; Chromium/Obsidian composes the two). Here the burst is accumulated and walked
-   in RELATIVE steps per frame, so CM6's corrections add to it instead of killing it.
+   scroller (`scrollTop += diff` in its measure loop). WebKitGTK runs a wheel burst as
+   ONE smooth-scroll animation and a scrollTop write CANCELS it, so scrolling UP into
+   unmeasured lines lost most of every burst (scrollsync: 80 notches up from L91 in
+   source mode landed on L45, then L20; Chromium/Obsidian composes the two). Here the
+   burst is accumulated and walked in RELATIVE steps per frame, so CM6's corrections
+   add to it instead of killing it. This is USER input, relative to wherever CM6 left
+   the scroller — not a position restore. `sc` is cm.scrollDOM (#125: the scroller).
    Left to the browser: Ctrl (fontwheel), Shift / horizontal intent, and any nested
    scroller (pdf frame, wide code/table) that can still move in the wheel's direction. */
-Ed.wheelOwn = function (lp) {
-  if (!lp || lp._osWheel) return;
-  lp._osWheel = { pend: 0, raf: 0 };
-  const W = lp._osWheel;
+Ed.wheelOwn = function (sc) {
+  if (!sc || sc._osWheel) return;
+  sc._osWheel = { pend: 0, raf: 0 };
+  const W = sc._osWheel;
   const nestedTakes = (t, dy) => {
-    for (let el = t && t.nodeType === 1 ? t : t && t.parentElement; el && el !== lp; el = el.parentElement) {
+    for (let el = t && t.nodeType === 1 ? t : t && t.parentElement; el && el !== sc; el = el.parentElement) {
       if (el.scrollHeight <= el.clientHeight + 1) continue;
       const oy = getComputedStyle(el).overflowY;
       if (oy !== "auto" && oy !== "scroll") continue;
@@ -2316,21 +2374,21 @@ Ed.wheelOwn = function (lp) {
   };
   const step = () => {
     W.raf = 0;
-    const max = Math.max(0, lp.scrollHeight - lp.clientHeight), st = lp.scrollTop;
+    const max = Math.max(0, sc.scrollHeight - sc.clientHeight), st = sc.scrollTop;
     // at an edge the rest of the burst has nowhere to go: drop it (no stored push)
     if ((W.pend < 0 && st <= 0) || (W.pend > 0 && st >= max)) { W.pend = 0; return; }
     let d = W.pend / 3;
     if (Math.abs(d) < 8) d = Math.abs(W.pend) < 8 ? W.pend : Math.sign(W.pend) * 8;
     W.pend -= d;
-    lp.scrollTop = Math.min(max, Math.max(0, st + d));   // RELATIVE to wherever CM6 left it
+    sc.scrollTop = Math.min(max, Math.max(0, st + d));   // RELATIVE to wherever CM6 left it
     if (Math.abs(W.pend) >= 0.5) W.raf = requestAnimationFrame(step); else W.pend = 0;
   };
-  lp.addEventListener("wheel", e => {
+  sc.addEventListener("wheel", e => {
     if (e.ctrlKey || e.shiftKey || e.defaultPrevented) return;
-    if (!lp._cm || Math.abs(e.deltaX) > Math.abs(e.deltaY) || !e.deltaY) return;
+    if (!sc.isConnected || Math.abs(e.deltaX) > Math.abs(e.deltaY) || !e.deltaY) return;
     if (nestedTakes(e.target, e.deltaY)) return;
-    const px = e.deltaMode === 1 ? e.deltaY * (parseFloat(getComputedStyle(lp).lineHeight) || 24)
-             : e.deltaMode === 2 ? e.deltaY * lp.clientHeight : e.deltaY;
+    const px = e.deltaMode === 1 ? e.deltaY * (parseFloat(getComputedStyle(sc).lineHeight) || 24)
+             : e.deltaMode === 2 ? e.deltaY * sc.clientHeight : e.deltaY;
     e.preventDefault();
     if (Math.sign(px) !== Math.sign(W.pend)) W.pend = 0;   // a reversal starts fresh
     W.pend += px;
