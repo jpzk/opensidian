@@ -327,12 +327,19 @@ async function cmdToggleRight() {
   });
 }
 $("rtoggle").onclick = cmdToggleRight;
+async function cmdShowProps() {         // #119 "Properties view: Show all properties"
+  if (!state) return;
+  // open the sidebar ON the props tab: toggling first with the old tab started an un-awaited
+  // backlinks render that finished after the props one and overwrote rpInfo (stale [rp:bl:])
+  if (!rightOpen) { rTab = "props"; await cmdToggleRight(); }
+  await setRTab("props");
+}
 
 /* rsidebar (R9.L1): icon strip Backlinks | Outgoing links | Tags | Outline.
    Active tab persisted as rside_tab in ~/.opensidian.json; census
    [side:l1r1:<tab>]. All panes follow the focused group's active note
    (rgFollow) and refresh 200ms after a save lands (rSchedule). */
-const RPANES = { bl: "rpane-bl", out: "rpane-out", tags: "rpane-tags", toc: "rpane-toc" };
+const RPANES = { bl: "rpane-bl", out: "rpane-out", tags: "rpane-tags", toc: "rpane-toc", props: "rpane-props" };   // #119 props: the Properties view (its tab shows once opened)
 let rTab = "bl", rT = null, rpInfo = "";   // rpInfo -> census [rp:...]
 /* F1 (lostwrite-ui) repaint probe -> census [rpn:<n>]: how many times the
    backlinks pane has STARTED a paint. The pane's CONTENT cannot prove the
@@ -345,6 +352,7 @@ let rbN = 0;
 async function setRTab(t, persist = true) {
   if (!RPANES[t]) t = "bl";
   rTab = t;
+  if (t === "props") $("rtab-props").hidden = false;   // #119: opened (command / restored rside_tab) -> the tab stays in the strip
   for (const [k, id] of Object.entries(RPANES)) {
     $(id).hidden = k !== t;
     $("rtab-" + k).classList.toggle("active", k === t);
@@ -374,6 +382,7 @@ async function rPanesRefresh() {
     else if (rTab === "out") await rOutgoing(n);
     else if (rTab === "toc") await rOutline(n);
     else if (rTab === "tags") await rTags();
+    else if (rTab === "props") await rPropsView();
   });
   updateTitle();
 }
@@ -619,6 +628,58 @@ async function rTags() {
     }
   };
   build(box, root, 0);
+}
+/* #119 the Properties view (stock core plugin "Properties view"): every vault property
+   with the number of notes holding it, sorted by name or frequency (ui/props.js
+   Props.renderView). Click = search "[key:]"; the row menu sets the type (types.json)
+   or renames the key in every note holding it (propsRenameAll). */
+async function rPropsView() {
+  if (!window.Props) return;
+  await Props.renderView($("propslist"), $("propshead"), { search: propSearch, renameAll: propsRenameAll, refresh: () => rPanesRefresh() });
+  rpInfo = Props.viewInfo;
+}
+function propSearch(q) {
+  if (!sideOpen) cmdToggleSide();
+  setPane("search");
+  $("sinput").value = q;
+  clearTimeout(searchT); runSearch();
+}
+/* rename a key vault-wide through the byte-safe model (ui/props-model.js): only the
+   key's own text changes in each note. A note shown in an editor is edited in its
+   buffer (one undoable transaction, the normal save); any other note is read and
+   written. A note whose block the model refuses (invalid YAML, the new name already
+   there) is left untouched and counted. */
+async function propsRenameAll(oldK, newK) {
+  const M = window.PropsModel, lc = String(oldK).toLowerCase();
+  const notes = await inv("props_notes", { key: oldK }).catch(() => []);
+  const keyIn = text => { const p = M.parse(text); const e = p && !p.invalid ? p.entries.find(x => x.key.toLowerCase() === lc) : null; return e ? e.key : null; };
+  let done = 0, kept = 0;
+  for (const g of groups()) await flushSave(g);   // the disk holds every typed edit before a closed note is read
+  for (const n of notes) {
+    // every pane showing the note edits its own buffer (a split of the same note would
+    // otherwise keep the old key and save it back over the rename)
+    const cms = typeof Ed === "undefined" ? [] : groups()
+      .filter(x => x.active >= 0 && !x.tabs[x.active].kind && x.tabs[x.active].name === n).map(x => Ed.cm(x)).filter(Boolean);
+    if (cms.length) {
+      let ok = false, seen = new Set();
+      for (const cm of cms) {
+        if (seen.has(cm.state.doc)) continue;   // panes sharing one document: one change
+        const text = cm.state.doc.toString(), k = keyIn(text), ch = k != null ? M.rename(text, k, newK) : null;
+        if (ch) { if (ch.from !== ch.to || ch.insert) cm.dispatch({ changes: ch, userEvent: "input.props" }); ok = true; }
+        seen.add(cm.state.doc);
+      }
+      if (ok) done++; else kept++;
+      continue;
+    }
+    let text;
+    try { text = await inv("read_note", { name: n }); } catch (_) { kept++; continue; }
+    const k = keyIn(text), ch = k != null ? M.rename(text, k, newK) : null;
+    if (!ch) { kept++; continue; }
+    if (await saveNote(n, M.apply(text, ch))) done++; else kept++;
+  }
+  const ty = Props.types[lc];
+  if (ty) try { await Props.setType(newK, ty); } catch (_) {}
+  say("Renamed the property " + oldK + " to " + newK + " in " + done + " note" + (done === 1 ? "" : "s") + (kept ? "; " + kept + " left unchanged (invalid properties or " + newK + " already there)" : ""));
 }
 function tagSearch(tag) {                  // pane row / inline pill -> search "tag:<name>"
   if (!sideOpen) cmdToggleSide();
@@ -3456,7 +3517,7 @@ function ovfCause(el, why) {         // "<child" = the child that makes el overf
    where they actually are and smoke clicks THAT: re-measured, not suppressed,
    and it cannot rot the next time something shifts the row. */
 function stabCentres() {
-  return [...document.querySelectorAll("#rtabs .stab")]
+  return [...document.querySelectorAll("#rtabs .stab:not([hidden])")]
     .map(b => { const r = b.getBoundingClientRect(); return Math.round(r.left + r.width / 2); })
     .join(",");
 }
@@ -4859,7 +4920,7 @@ function tabMenu(e, g, i, hdr) {
   item(bmCache.includes(tab.name) ? "Remove bookmark" : "Bookmark...",          // WIRED: toggleBm — Obsidian's wording, our flat-list toggle (R38.17/R20.4)
     () => { closeMenu(); toggleBm(tab.name); });
   item("Merge entire file with...", null, "Missing subsystem: file merge — no command concatenates one note into another (a suggester with four modifier behaviours)");
-  item("Add file property", null, "Missing subsystem: a frontmatter property model, which writes a Properties block at the top of the note; there is no frontmatter parser or editor here");
+  item("Add file property", async () => { closeMenu(); focusGroup(g); if (tab.mode === "reading") await setMode(g, "lp"); if (window.Props) Props.addCommand(g); });   // WIRED: #119 ui/props.js, the Ctrl+; command
   item("Export to PDF...", null, "Missing subsystem: a PDF pipeline — no renderer and no page-size/margin model; PDF export is an explicit project non-goal");
   // ---- group 5 (2 rows) ----
   sep();
@@ -7428,7 +7489,7 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   // view task tick all count) — any doubt is a miss, and a miss is the old path.
   const k = P._pvk;
   if (k && k.src === src && k.notes === notesCache && k.imgs === imgsCache && k.slb === slbOn
-      && k.pp === (PPOST ? PPOST.gen : 0)
+      && k.pp === (PPOST ? PPOST.gen : 0) && k.pg === (window.Props ? Props.gen : 0)
       && !P._pvDirty && !pvTouched(P, P._pvObs.takeRecords())) {
     g.pvLines = k.lines;
     mswpMark("render"); mswpMark("html"); mswpMark("blines"); mswpMark("wire");
@@ -7458,7 +7519,7 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   // the switch: an in-place re-render keeps its scrollTop.
   const hide = sw && P.firstChild && P.style.display !== "none";
   if (hide) P.style.display = "none";
-  const [pvHtml, pvL] = await inv("render_view", { content: src });
+  let [pvHtml, pvL] = await inv("render_view", { content: src });
   mswpMark("render");
   g.preview.innerHTML = pvHtml;
   if (hide && g.preview === P && isReading(g)) P.style.display = "";
@@ -7472,6 +7533,8 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   for (const s of g.preview.querySelectorAll("span.audio-embed")) Ed.audioFill(s);   // #116: main.rs audio_html -> one <audio> (editor.js Ed.audioFill)
   cvEmbedFill(g.preview);                    // cv-vault CV-139: ![[X.canvas]] -> span.cv-embed (before the a.wiki wiring below)
   mswpMark("html");
+  // #119: the Properties block, read-only, above the body (visible mode); it maps to line 1
+  { const pb = window.Props && Props.readingBlock(src); if (pb) { g.preview.insertBefore(pb, g.preview.firstChild); pvL = [1].concat(pvL); } }
   g.pvLines = pvL;
   mswpMark("blines");
   for (const a of g.preview.querySelectorAll("a.tag"))
@@ -7498,7 +7561,7 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   }
   P._pvObs.takeRecords(); P._pvDirty = false;
   if (g.preview === P && g.editor.value === src)
-    P._pvk = { src, notes: notesCache, imgs: imgsCache, slb: slbOn, lines: pvL, pp: PPOST ? PPOST.gen : 0 };
+    P._pvk = { src, notes: notesCache, imgs: imgsCache, slb: slbOn, lines: pvL, pp: PPOST ? PPOST.gen : 0, pg: window.Props ? Props.gen : 0 };
   mswpMark("wire");
 }
 
@@ -7852,7 +7915,7 @@ CENSUS.push(() => {
   const side = (k, s, h) => {
     const e = document.getElementById(s), b = e && e.getBoundingClientRect();
     if (!e || e.hidden || !b.width) return "";
-    return k + "=" + Math.round(b.left) + "," + Math.round(b.right) + ":" + [...document.querySelectorAll("#" + h + " .stab")]
+    return k + "=" + Math.round(b.left) + "," + Math.round(b.right) + ":" + [...document.querySelectorAll("#" + h + " .stab:not([hidden])")]
       .map(x => { const r = x.getBoundingClientRect(); return Math.round(r.left) + "+" + Math.round(r.width); }).join(",");
   };
   const dv = (k, id) => {
@@ -10564,6 +10627,11 @@ const CMDS = [
   // "Toggle bullet list" -> no command, no write [Q14 q14-reading].
   ["editor:toggle-bullet-list",   "Toggle bullet list",               [],                       () => edList("bullet"),   edEditable],
   ["editor:toggle-numbered-list", "Toggle numbered list",             [],                       () => edList("numbered"), edEditable],
+  // #119: stock's "Add file property" (Ctrl+;): a new row in the Properties block, its name
+  // focused (ui/props.js); the block is created when the note has none
+  ["markdown:add-metadata-property", "Add file property",             ["ctrl+;"],               () => { if (window.Props) Props.addCommand(fg()); }, edEditable],
+  // #119: the Properties view core plugin: open (and reveal) its right-sidebar tab
+  ["properties:open",          "Properties view: Show all properties", [],                     () => cmdShowProps()],
   // goal insdate REQ-1/REQ-13: Obsidian's names, NO default chord; hidden where
   // Obsidian hides them (reading view, graph, no note — REQ-10..12).
   ["templates:insert-current-date", "Templates: Insert current date", [],                     () => edInsertNow("date"), edInsertable],
@@ -12728,6 +12796,7 @@ async function enterVault() {
   hideAc();
   edtBad = Ed.selfTest();            // R17: renderer + token map invariants -> [edt:] census
   await loadVaultCss();              // themefs R3: the vault's own snippet CSS, before first paint of a note
+  if (window.Props) await Props.load();   // #119: Properties in document + types.json, before the first note shows its block
   await refreshTree();
   await refreshBm();                 // R9.4: menu label needs the cache early
   const names = await inv("list_notes");
@@ -13187,6 +13256,7 @@ async function openSettings() {
   }
   if (!SMODEL) await smodelPrefetch();   // cold open only (prefetched at boot)
   try { slbOn = !!(await inv("strict_line_breaks")); } catch (err) { slbOn = false; }   // goal/linebreak: disk is the truth
+  if (window.Props) try { const pm = String(await inv("props_mode")); if (pm !== Props.mode) { Props.mode = pm; Props.refresh(); } } catch (_) {}   // #119: so is propertiesInDocument
   settingsOpen = true; hkRec = null;
   closeModal();
   $("settings").hidden = false;
@@ -13501,6 +13571,51 @@ function slbTok() {
    their reason so the pane shows WHY a broken theme is not offered. Same
    ctxmenu construction as snipCtl, same reason ([menu:] census). */
 const themeCtlLabel = () => effTheme() || "none";
+/* ---- Editor ▸ Display ▸ Properties in document (#119). Obsidian's row and key: the VAULT's
+   .obsidian/app.json "propertiesInDocument" = visible | hidden | source (absent = visible).
+   A live dropdown like Themes: the app's own .ctxmenu (census [menu:Visible|Hidden|Source]),
+   the pick is written by merge (main.rs set_props_mode) and every open editor rebuilds its
+   Properties block at once (Props.setMode -> Props.refresh). */
+const PROPS_MODES = [["visible", "Visible"], ["hidden", "Hidden"], ["source", "Source"]];
+const propsModeLabel = () => (PROPS_MODES.find(m => window.Props && m[0] === Props.mode) || PROPS_MODES[0])[1];
+function propsModeCtl() {
+  const d = document.createElement("div");
+  d.className = "sctl dropdown live";
+  d.id = "spropsdoc";
+  d.tabIndex = 0;
+  d.setAttribute("role", "button");
+  d.setAttribute("aria-haspopup", "menu");
+  d.textContent = propsModeLabel();
+  const open = ev => {
+    ev.preventDefault(); ev.stopPropagation();
+    closeMenu();
+    const m = document.createElement("div");
+    m.className = "ctxmenu"; m.dataset.menu = "propsdoc";
+    for (const [k, label] of PROPS_MODES) {
+      const it = document.createElement("div");
+      it.textContent = label;
+      it.onmousedown = e => e.stopPropagation();
+      it.onclick = async e => {
+        e.stopPropagation(); closeMenu();
+        try { await Props.setMode(k); } catch (err) { say("Properties in document: " + String(err && err.message || err)); return; }
+        d.textContent = propsModeLabel();
+        for (const g of groups()) {
+          if (isReading(g)) await preview(g);
+          for (const t of g.tabs)
+            if (!t.kind && t !== g.tabs[g.active] && t.mode === "reading" && t.view && t.view.loaded) t.stale = true;
+        }
+        updateTitle();
+      };
+      m.appendChild(it);
+    }
+    const b = d.getBoundingClientRect();
+    placeMenu(m, Math.round(b.left), Math.round(b.bottom + 4));
+  };
+  d.onmousedown = ev => ev.stopPropagation();
+  d.onclick = open;
+  d.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") open(ev); };
+  return d;
+}
 function themeCtl() {
   const d = document.createElement("div");
   d.className = "sctl dropdown live";
@@ -13582,6 +13697,7 @@ function sctl(r) {                            // the control cell for one row, o
   if (r.key === "cssTheme") return themeCtl();            // themefs R5: Obsidian's Themes row, Obsidian's semantics
   if (r.key === "enabledCssSnippets") return snipCtl();   // themefs R3, same live-control rule
   if (r.key === "strictLineBreaks") return slbCtl();      // goal/linebreak REQ-1: Obsidian's Editor toggle
+  if (r.key === "propertiesInDocument") return propsModeCtl();   // #119: Obsidian's Editor dropdown, app.json propertiesInDocument
   if (FONT_BY_KEY[r.key]) {                               // fontset REQ-1/2: chevron + live row value
     const d = document.createElement("div"); d.className = "sctl nav live";
     const v = fontRowValue(FONT_BY_KEY[r.key][0]);

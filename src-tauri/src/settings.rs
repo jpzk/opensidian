@@ -65,6 +65,10 @@ const BACKED: &[(&str, &str, &str)] = &[
     // key, default off). main.rs reads it on every reading render and writes it
     // by merge (strict_line_breaks / set_strict_line_breaks); APP_KEYS below.
     ("editor", "Strict line breaks", "strictLineBreaks"),
+    // issue #119: Obsidian's Editor > Display "Properties in document" dropdown (Visible /
+    // Hidden / Source), the VAULT's app.json "propertiesInDocument" (main.rs props_mode /
+    // set_props_mode, absent = Visible); APP_KEYS below.
+    ("editor", "Properties in document", "propertiesInDocument"),
     // goal fontwheel (docs/ctrlzoom/recon.md REQ-1): Obsidian's Appearance > Font
     // "Quick font size adjustment" toggle, the vault's appearance.json
     // "baseFontSizeAction" (themefs::quickfont / set_quickfont; absent = ON,
@@ -84,7 +88,7 @@ const BACKED: &[(&str, &str, &str)] = &[
 /// Keys that back a settings row and live in the VAULT's .obsidian/app.json,
 /// read and merge-written by main.rs (app_bool_in / set_app_bool_in).
 /// `app_keys_are_all_touched_by_main` pins this list to the source.
-pub const APP_KEYS: &[&str] = &["strictLineBreaks"];
+pub const APP_KEYS: &[&str] = &["strictLineBreaks", "propertiesInDocument"];
 
 /// Keys that back a settings row but live in the VAULT's .obsidian/appearance.json
 /// (Obsidian's file, byte-wise round-trip — src-tauri/src/themefs.rs), not in
@@ -574,7 +578,9 @@ mod tests {
         // opens https://www.opensidian.org, recorded in /workspace/goal/settings-general/progress.md.
         // 12 -> 13 (goal settings-general): the General top row's "Check for updates" is an
         // ACTION row (updates.rs: signed GitHub release check), same progress.md.
-        assert_eq!(enabled, 13, "enabled-row count changed — say why in progress.md (R30)");
+        // 13 -> 14 (issue #119): Editor > "Properties in document" is live on app.json
+        // propertiesInDocument, recorded in /workspace/goal/i119-props/progress.md.
+        assert_eq!(enabled, 14, "enabled-row count changed — say why in progress.md (R30)");
     }
 
     /// a key is "real" only if main.rs actually reads or writes it

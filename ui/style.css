@@ -625,6 +625,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .stab svg { width: 15px; height: 15px; display: block; margin: 0 auto; opacity: var(--icon-opacity, 1); }
 .stab.active svg { opacity: var(--icon-opacity-active, 1) }
 .spane { flex: 1; display: flex; flex-direction: column; min-height: 0 }
+.stab[hidden] { display: none }   /* #119: the Properties view tab shows once opened */
 .spane[hidden] { display: none }
 #side[hidden] { display: none }   /* R9.5: collapsed left sidebar (ribbon stays) */
 /* ux-4: left resize divider — overlaps #side's last 6px (negative margin,
@@ -2392,3 +2393,36 @@ svg.gi { width: 12px; height: 12px; vertical-align: -2px; display: inline-block;
 .cm-callout { padding: 0; margin: 0 }
 .cm-callout .callout { margin: 0 }
 .cm-callout .callout-content .callout { margin: 1em 0 }
+/* #119 Properties (ui/props.js): stock's class names, so a theme's metadata rules apply too */
+.metadata-container { margin: 4px 0 14px; padding: 4px 0; font-size: 14px; }
+.metadata-properties-heading { font-weight: 600; color: var(--text-muted, var(--text-chrome)); padding: 2px 0 6px; }
+.metadata-property { display: flex; align-items: flex-start; gap: 6px; padding: 2px 0; min-height: 28px; }
+.metadata-property-key { display: flex; align-items: center; gap: 4px; flex: 0 0 34%; min-width: 0; }
+.metadata-property-icon { width: 20px; text-align: center; cursor: pointer; color: var(--text-muted, var(--text-chrome)); border-radius: 4px; user-select: none; }
+.metadata-property-icon:hover { background: var(--border); }
+.metadata-property-key-input, .metadata-input, .multi-select-input { font: inherit; color: inherit; background: transparent; border: 1px solid transparent;
+  border-radius: 4px; padding: 2px 6px; min-width: 0; width: 100%; box-sizing: border-box; }
+.metadata-property-key-input:focus, .metadata-input:focus, .multi-select-input:focus { border-color: var(--border); outline: none; background: var(--bg-elevated, transparent); }
+.metadata-property-value { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; min-height: 26px; }
+.metadata-property-value.is-readonly code.props-raw { white-space: pre-wrap; opacity: .75; font-size: 12px; }
+.metadata-input-checkbox { margin: 6px; }
+.multi-select-container { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; width: 100%; }
+.multi-select-pill { display: inline-flex; align-items: center; gap: 2px; padding: 1px 8px; border-radius: 12px; background: var(--border); font-size: 13px; }
+.multi-select-pill-remove-button { cursor: pointer; opacity: .6; padding: 0 2px; }
+.multi-select-pill-remove-button:hover { opacity: 1; }
+.multi-select-input { flex: 1 1 60px; width: auto; }
+.metadata-add-button { display: inline-block; padding: 3px 6px; margin-top: 2px; cursor: pointer; color: var(--text-muted, var(--text-chrome)); border-radius: 4px; user-select: none; }
+.metadata-add-button:hover { background: var(--border); }
+.metadata-container.is-readonly input { pointer-events: none; }
+.props-suggest { position: fixed; z-index: var(--layer-menu, 60); background: var(--suggestion-background, var(--bg-elevated, var(--bg-base)));
+  border: 1px solid var(--border); border-radius: 6px; padding: 4px 0; max-height: 260px; overflow: auto; min-width: 140px; box-shadow: 0 4px 14px var(--shadow-popover, rgba(0,0,0,.2)); }
+.props-suggest .suggestion-item { padding: 4px 10px; cursor: pointer; white-space: nowrap; font-size: 13px; }
+.props-suggest .suggestion-item.is-selected, .props-suggest .suggestion-item:hover { background: var(--border); }
+/* #119 the Properties view (right sidebar) */
+#propshead { display: flex; align-items: center; }
+#propshead .props-sort { margin-left: auto; font-size: 11px; padding: 1px 6px; background: none; border: 1px solid var(--border); border-radius: 4px; color: var(--text-chrome-muted); cursor: pointer; }
+.props-vrow { display: flex; align-items: center; gap: 4px; padding: 3px 8px 3px 6px; cursor: pointer; font-size: 13px; }
+.props-vrow:hover { background: var(--bg-surface) }
+.props-vrow .props-vname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.props-vrow .scount { color: var(--text-chrome-dim) }
+.props-vrow .props-vrename { flex: 1; min-width: 0; font: inherit; }
