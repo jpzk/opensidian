@@ -611,8 +611,8 @@ const Ed = {
      non-hidden, non-symlinked vault members, the list the explorer and canvas cards use), never the note's
      target, so a traversal target gets no player at all. The bytes come from media_read (vault-confined,
      MEDIA_TYPES whitelist, no-follow, 256 MiB cap) as a blob: URL — WebKitGTK's player reads no custom
-     scheme — loaded once the embed is on screen (or on play). blob: media is in a TRUSTED page's CSP only
-     (main.rs csp_by_trust, af-fix 1a), so a restricted page builds no blob and says so (data-err).
+     scheme — loaded once the embed is on screen (or on play) on a TRUSTED page; on a RESTRICTED page only after
+     the user presses Play (#139 click-to-play; both pages CSP media-src 'self' blob:, main.rs csp_by_trust).
      No text node (the row's textContent stays its source line): messages are CSS from data-*.
      Reading view: main.rs audio_html emits the same span with data-target; Ed.audioFill resolves it. */
   AUDIO_EXTS: ["mp3", "webm", "wav", "m4a", "ogg", "3gp", "flac"],
@@ -671,10 +671,17 @@ const Ed = {
         URL.revokeObjectURL(u); A.live.delete(u);
         if (a) { a.removeAttribute("src"); a.load(); }
         s.dataset.st = "";
+        if (s._c2p) { s.dataset.c2p = "1"; if (a) a.preload = "none"; }   // #139 restricted: back to click-to-play, never a reload on screen
       }
     }
     if (!A.live.size && A.timer) { clearInterval(A.timer); A.timer = 0; }
   },
+  /* #139 (operator 2026-11-16): a RESTRICTED page plays audio too, but CLICK-TO-PLAY. The risk is GStreamer
+     demuxing untrusted bytes, so nothing is parsed without a user act: preload="none", no load on visibility
+     (the observer only feeds audioSweep's off-screen revoke), and media_read + the blob: URL happen only after
+     the user presses the embed's Play button (or the player's own play). The restricted CSP names
+     media-src 'self' blob: for this (main.rs csp_by_trust) and nothing else. A TRUSTED page is unchanged:
+     preload="metadata", loaded ~150 ms after the embed is on screen (or on play). */
   audioFill(s) {
     if (s._af) return;
     s._af = true;
@@ -687,48 +694,78 @@ const Ed = {
     s.dataset.audio = rel;
     let a = s.querySelector("audio");
     if (!a) { a = document.createElement("audio"); s.appendChild(a); }
-    a.controls = true; a.preload = "metadata";
+    a.controls = true; a.preload = "metadata"; // as before #139; no src (so no load) until go(); restricted flips it to none below
     a.setAttribute("aria-label", s.dataset.alt || rel);
-    const go = () => {
+    const go = play => {
       if (s.dataset.st) return;
       s.dataset.st = "loading";
-      Ed.audioTrusted().then(ok => ok ? Ed.audioBlob(rel) : Promise.reject(new Error("restricted"))).then(u => {
+      Ed.audioBlob(rel).then(u => {
         if (!s.isConnected) { URL.revokeObjectURL(u); s.dataset.st = ""; return; }
         const A = Ed._aud;
         A.live.set(u, s);
         if (!A.timer) A.timer = setInterval(Ed.audioSweep, 2000);
-        a.src = u; s.dataset.st = "ready";
+        if (a.preload !== "metadata") a.preload = "metadata";   // restricted: only now, after the user pressed play
+        a.src = u; s.dataset.st = "ready"; delete s.dataset.c2p;
+        if (play) { const p = a.play(); if (p && p.catch) p.catch(() => {}); }   // the user pressed play: start it
         if (typeof updateTitle === "function") updateTitle();
       }, e => {
         const why = String(e && e.message || e);
-        s.dataset.st = "error";
-        s.dataset.err = why === "restricted" ? "Audio plays in a trusted vault only (restricted mode)."
-          : /too large/.test(why) ? "Cannot play: the file is larger than 256 MB." : "Cannot play this file.";
+        s.dataset.st = "error"; delete s.dataset.c2p;
+        s.dataset.err = /too large/.test(why) ? "Cannot play: the file is larger than 256 MB." : "Cannot play this file.";
         if (typeof updateTitle === "function") updateTitle();
       });
     };
-    a.addEventListener("play", go);
-    if (typeof IntersectionObserver === "function") {
-      // kept for the embed's life: _vis/_hid feed audioSweep's off-screen revoke; back on screen -> go() reloads
+    const observe = load => {
+      if (typeof IntersectionObserver !== "function") { if (load) setTimeout(go, 0); return; }
+      // kept for the embed's life: _vis/_hid feed audioSweep's off-screen revoke; trusted: back on screen -> go() reloads
       s._io = new IntersectionObserver(en => {
         const e = en[en.length - 1]; s._vis = e.isIntersecting;
-        if (e.isIntersecting) setTimeout(go, 150); else s._hid = Date.now();
+        if (e.isIntersecting) { if (load) setTimeout(go, 150); } else s._hid = Date.now();
       });
       s._io.observe(s);
-    } else setTimeout(go, 0);
+    };
+    Ed.audioTrusted().then(ok => {
+      if (ok) {
+        a.addEventListener("play", () => go(false));
+        observe(true);
+        return;
+      }
+      s._c2p = true; s.dataset.c2p = "1"; a.preload = "none";   // click-to-play: nothing parsed before the press
+      let b = s.querySelector("button.audio-c2p");
+      if (!b) {
+        b = document.createElement("button");
+        b.type = "button"; b.className = "audio-c2p";
+        b.title = "Play (restricted vault: the file is read when you press play)";
+        b.setAttribute("aria-label", "Play " + (s.dataset.alt || rel));
+        s.insertBefore(b, a);
+      }
+      b.addEventListener("mousedown", ev => ev.preventDefault());   // keep the editor's caret where it is
+      b.addEventListener("click", ev => { ev.preventDefault(); ev.stopPropagation(); go(true); });
+      a.addEventListener("play", () => { if (!s.dataset.st) { a.pause(); go(true); } });
+      observe(false);
+      if (typeof updateTitle === "function") updateTitle();
+    });
   },
   // census [aud:<n>|<path>:<state>:<readyState>:<duration s>@x,y|...] the painted audio embeds (lp + reading view)
   audTok() {
+    // #139: [audrd:<media_read calls by audio embeds>|play=<embeds playing>|pre=<preload of each painted player>]
+    const all = [...document.querySelectorAll("#main span.audio-embed audio")];
+    const rd = !all.length && !Ed._aud.reads ? "" : " [audrd:" + Ed._aud.reads + "|play=" + all.filter(a => !a.paused).length + "|pre=" + (all.map(a => a.preload).join(",") || "-") + "]";
     const ss = [...document.querySelectorAll("#main span.audio-embed, #main span.audiomiss")].filter(e => e.getClientRects().length > 0);
-    if (!ss.length) return "";
+    if (!ss.length) return rd;
     const esc = v => String(v).replace(/[[\]|@:\s]/g, "_");
     return " [aud:" + ss.length + "|" + ss.slice(0, 8).map(s => {
-      const r = s.getBoundingClientRect(), a = s.querySelector("audio");
+      let r = s.getBoundingClientRect();
+      const a = s.querySelector("audio");
       const k = s.closest(".preview") ? "rv" : "lp";
       if (!a) return k + ":" + esc(s.dataset.miss || "") + ":miss:0:0@" + Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2);
       const d = isFinite(a.duration) ? a.duration.toFixed(2) : a.duration === Infinity ? "inf" : "0";
-      return k + ":" + esc(s.dataset.audio) + ":" + (s.dataset.st || "idle") + ":" + a.readyState + ":" + d + "@" + Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2);
-    }).join("|") + "]";
+      // #139 restricted, not yet pressed: state c2p, the point is the Play button's centre
+      const b = s.dataset.c2p && !s.dataset.st ? s.querySelector("button.audio-c2p") : null;
+      if (b && b.getClientRects().length) r = b.getBoundingClientRect();
+      const stt = s.dataset.st || (b ? "c2p" : "idle");
+      return k + ":" + esc(s.dataset.audio) + ":" + stt + ":" + a.readyState + ":" + d + "@" + Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2);
+    }).join("|") + "]" + rd;
   },
   PDF_TOOLBAR: 39, PDF_STOCK_AR: 792 / 612,
   // stock (recon README "Default frame size"): frame = w x aspect(page 1) + 20,
