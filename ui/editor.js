@@ -2403,6 +2403,20 @@ Ed.topLine = function (g, slack) {
   const p = Ed.lineAtY(g, y);
   return p ? p.l + p.f : null;
 };
+/* #125 scrollsync ss-src-mid-e2r (1/3, off 14 — develop has the same red): a
+   capture (Ctrl+E) handled before CM6's rAF measure of the last wheel step reads
+   rows/heights of the PREVIOUS viewport. Flush CM6's pending measure first —
+   synchronously, outside any update — so the viewport covers the scroller top,
+   the rows there are drawn and the anchor correction is applied; then read the
+   DOM. Ed.tlDiag keeps pre/post for the [ssa:] census token (red-path diag). */
+Ed.topLineNow = function (g, slack) {
+  const cm = Ed.cm(g); if (!g.lp || !cm) return null;
+  const pre = Ed.topLine(g, slack), st0 = cm.scrollDOM.scrollTop;
+  try { if (typeof cm.measure === "function") cm.measure(); } catch (e) { /* inside an update: keep pre */ }
+  const post = Ed.topLine(g, slack), R = x => (x == null ? "-" : Math.round(x * 100) / 100);
+  Ed.tlDiag = R(pre) + ":" + R(post) + ":" + Math.round(st0) + ":" + Math.round(cm.scrollDOM.scrollTop);
+  return post == null ? pre : post;
+};
 /* put the fractional source line at the scroller's top: ONE CM6 snapshot effect.
    The old body wrote g.lp.scrollTop from the height map and re-landed in a
    requestMeasure write (ROOTCAUSE I1/I2) — the re-land itself raced CM6's next

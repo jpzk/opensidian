@@ -4918,7 +4918,7 @@ function ssAnchor(g) {   // the (fractional, 0-based) SOURCE LINE at the top of 
     const a = bl[i] - 1, b = i + 1 < bl.length ? bl[i + 1] - 1 : a + 1;
     return a + f * Math.max(1, b - a);
   }
-  return Ed.topLine(g, 1);            // CM6 height map: the line under the scroller top
+  return Ed.topLineNow(g, 1);         // #125: drawn rows after a synchronous CM6 measure
 }
 function ssRestore(g, line) {   // scroll the CURRENT view so `line` is at the top
   const t = g.active >= 0 ? g.tabs[g.active] : null;
@@ -5048,7 +5048,8 @@ function mswpWatch(g) {   // after setMode's synchronous work: force the layout,
     const top = ssAnchor(g);
     mswp.seq++;
     mswp.tok = " [msi:" + mswp.seq + ":" + c.dir + ":" + c.kind + ":" + R(end - c.t0) + ":" + steps + ":" +
-               (top == null ? "-" : Math.round(top * 100) / 100) + ":" + R(maxgap) + "]";
+               (top == null ? "-" : Math.round(top * 100) / 100) + ":" + R(maxgap) + "]" +
+               (c.dir[0] === "e" && mswp.ssa && mswp.ssa !== "-" ? " [ssa:" + mswp.ssa + "]" : "");
     if (t && t.mode === "reading") {   // fingerprint, outside the measured window
       const h = g.preview.innerHTML; let x = 0x811c9dc5;
       for (let i = 0; i < h.length; i++) { x ^= h.charCodeAt(i); x = Math.imul(x, 0x01000193); }
@@ -5194,7 +5195,9 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
   // the caret went to line 0). Per tab: two tabs / split panes never share it.
   if (keep) tab.caret = { n: curOf(g), lc: keep, an: ka ? [ka.l, ka.c] : null };   // keyed to the NOTE: an in-place navigate must not inherit it
   const mswA0 = performance.now();
+  Ed.tlDiag = "-";
   const anchor = ssAnchor(g);                    // R35: read the top SOURCE LINE from the OLD view, before anything flips
+  mswp.ssa = Ed.tlDiag;                          // #125 red-path diag: capture pre/post the CM6 measure flush
   let mswSsMs = performance.now() - mswA0;
   await flushSave(g);
   mswpMark("flush");
