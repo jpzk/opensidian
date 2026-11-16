@@ -2582,6 +2582,7 @@ Ed.revealAt = function (g, l, c) {
    scroller, at a newer landing, or after REV_FR frames. */
 Ed.REV_FR = 40;
 Ed.revealPos = function (cm, pos, y) {
+  Ed.rvpTok = "s" + (y || "n");   // WIP DIAG
   if (!cm || pos == null) return false;
   const seq = cm._landSeq = (cm._landSeq || 0) + 1, sc = cm.scrollDOM, evs = ["wheel", "keydown", "pointerdown", "touchstart"];
   let fr = 0, ok = 0, done = false;
@@ -2597,6 +2598,7 @@ Ed.revealPos = function (cm, pos, y) {
     else if (top < st + M) { T = top - M; if (bot > T + H) T = bot - H + M; }
     else if (bot > st + H - M) T = bot - H + M;
     T = Math.max(0, Math.min(max, T));
+    Ed.rvpTok = (Ed.rvpTok && Ed.rvpTok.length < 400 ? Ed.rvpTok + "|" : "") + Math.round(top) + "+" + Math.round(b.height) + "@" + Math.round(st) + "/" + Math.round(max) + "/" + H + ">" + Math.round(T);   // WIP DIAG
     return { from: b.from, ym: b.top - T, need: Math.abs(T - st) > 1 };
   };
   const tick = () => {

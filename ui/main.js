@@ -4197,6 +4197,7 @@ function utBuild() {             // pane/focus census in the window title (headl
   // and "a drop whose banner faded" must not look the same to a probe.
   if (dropTok) md += " [drop:" + dropTok.replace(/[[\]|]/g, "") + "]";
   if (dropAtTok) md += " [dropat:" + dropAtTok + "]";   // osdrop: where the last REAL drop put the caret
+  if (Ed.rvpTok) md += " [rvp:" + Ed.rvpTok + "]";   // WIP DIAG (local only): Ed.revealPos frames
   if (pasteTok || pasteN || pasteR) md += " [paste:" + pasteN + "/" + pasteR + "|" + pasteTok + "]";   // gh-paste: images pasted / refused | the last clipboard's types
   // R24.6 explorer drag-to-move: [dragt:<dest or - >:<the chip's own text>] while
   // a drag is up, [mv:<old>><new>/<files linking in>] for the last completed move.
