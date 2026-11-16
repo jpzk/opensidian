@@ -2275,22 +2275,27 @@ function bmParentOf(ix) {                  // the row index of the group this ro
   for (let i = ix - 1; i >= 0; i--) if (bmTree[i].depth < d) return bmTree[i].kind === "g" ? i : null;
   return null;
 }
-function openBmEdit(ix) {
-  const r = bmTree[ix];
-  if (!r || r.kind !== "f") return;        // a group row has no Edit... in Obsidian's menu either
-  const opts = bmGroupOpts();
-  bmEdit = { ix, name: r.name, opts };
+// the Edit / Add bookmark card's group chooser #bme-grp: one option per group in opts (nesting shown
+// by indentation, like Obsidian's chooser), index cur selected (-1 = the first option)
+function bmGroupSel(opts, cur) {
   const sel = $("bme-grp");
   sel.textContent = "";
   opts.forEach((o, i) => {
     const op = document.createElement("option");
     op.value = String(i);
-    op.textContent = "  ".repeat(o.depth) + o.title;   // nesting shown by indentation, like Obsidian's chooser
+    op.textContent = "  ".repeat(o.depth) + o.title;
     sel.appendChild(op);
   });
-  const p = bmParentOf(ix);
-  const cur = opts.findIndex(o => o.ix === p);
   sel.value = String(cur < 0 ? 0 : cur);
+  return sel;
+}
+function openBmEdit(ix) {
+  const r = bmTree[ix];
+  if (!r || r.kind !== "f") return;        // a group row has no Edit... in Obsidian's menu either
+  const opts = bmGroupOpts();
+  bmEdit = { ix, name: r.name, opts };
+  const p = bmParentOf(ix);
+  const sel = bmGroupSel(opts, opts.findIndex(o => o.ix === p));
   $("bme-path").value = r.name;            // read-only: a bookmark IS the vault-relative name (R9.4), there is no title to edit
   $("bmebox").hidden = false;
   sel.focus();
@@ -2351,15 +2356,7 @@ function openBmAdd(gix, vt) {            // vt: the tab whose own menu asked (is
   const opts = bmGroupOpts();
   const cur = opts.findIndex(o => o.ix === gix);
   bmAdd = { name: nm || def || cvp, opts, view: view ? t : null, def };
-  const sel = $("bme-grp");
-  sel.textContent = "";
-  opts.forEach((o, i) => {
-    const op = document.createElement("option");
-    op.value = String(i);
-    op.textContent = "  ".repeat(o.depth) + o.title;
-    sel.appendChild(op);
-  });
-  sel.value = String(cur < 0 ? 0 : cur);
+  bmGroupSel(opts, cur);
   const base = def || bmAdd.name.split("/").pop();
   $("bmetitle").textContent = "Add bookmark";
   $("bme-path").value = base;
