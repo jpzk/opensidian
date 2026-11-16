@@ -79,3 +79,4 @@ CENSUS.push(() => imgvTok());   // issue #102: [imgrow:<path>@x,y|...] explorer 
 var CSPV = { n: 0, d: "-" };
 window.addEventListener("securitypolicyviolation", e => { CSPV.n++; CSPV.d = String(e.effectiveDirective || e.violatedDirective || "?").replace(/[[\]|@\s]/g, "_"); }, true);
 CENSUS.push(() => " [csp:" + CSPV.n + "|" + CSPV.d + "]");
+CENSUS.push(() => { try { const g = fg(), cm = g && Ed.cm(g), t = g && g.active >= 0 ? g.tabs[g.active] : null; if (!cm || !t || t.kind || t.mode === "reading") return ""; const s = cm.scrollDOM, l = Ed.topLine(g, 1); return " [tl0:" + t.mode + ":" + (l == null ? "-" : Math.round(l * 100) / 100) + "@" + Math.round(s.scrollTop) + "/" + Math.round(s.scrollHeight) + "/" + Ed.tDiag(cm) + "]"; } catch (_) { return " [tl0:err]"; } });   // WIP DIAG R1-end: live top line + drawn-vs-map (no measure)
