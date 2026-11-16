@@ -54,7 +54,6 @@ mod testutil; // shared unit-test helpers (write_exe: no ETXTBSY from a write fd
 #[cfg(feature = "devui")]
 mod devui; // goal devui: DEV-ONLY UI hot reload, never in a default/release build
 mod vaultlock;
-mod srcmode;
 mod themefs;
 mod updates;
 use opensidian_lib::vaultfs;
@@ -3501,13 +3500,6 @@ fn render_blocks(v: State<Vault>, blocks: Vec<String>, otel: Option<perf::Ctx>) 
     let n = blocks.len();
     let ix = v.index.lock().unwrap();
     span_timed!(otel => "render_blocks", render_blocks_with(&blocks, ix.names(), ix.images()), serde_json::json!({"blocks": n}))
-}
-
-/// R12 source mode: lp rows with every marker revealed (src/srcmode.rs)
-#[tauri::command]
-fn highlight_blocks(blocks: Vec<String>, otel: Option<perf::Ctx>) -> Vec<String> {
-    let n = blocks.len();
-    span_timed!(otel => "highlight_blocks", blocks.iter().map(|b| srcmode::highlight_block(b)).collect(), serde_json::json!({"blocks": n}))
 }
 
 /// tags: per-note tag list and vault-wide tag -> note count (BTreeMap keeps
@@ -7476,7 +7468,7 @@ fn main() {
             .map(std::borrow::Cow::Owned)
         })
         .invoke_handler(tauri::generate_handler![
-            list_notes, list_images, canvas_io, canvas_attach, paste_image, audio_token, audio_arm, audio_disarm, audio_end, audio_save, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
+            list_notes, list_images, canvas_io, canvas_attach, paste_image, audio_token, audio_arm, audio_disarm, audio_end, audio_save, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_title, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, bm_add_view, bm_add_view_at, bm_remove, bm_graph_patch, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts, props_index, props_mode, props_notes, props_types, set_prop_type, set_props_mode,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
@@ -11507,11 +11499,11 @@ mod tests {
 
        The cycle below is open -> render -> close at the PURE CORES the Tauri
        commands delegate to (read_capped for read_note, render_with for
-       render, render_blocks_with for live preview, srcmode::highlight_block
-       for source mode), plus Index::build for opening the vault itself — the
-       only places that could plausibly rewrite a file. The oracle is the
-       whole vault's bytes AND mtimes, so a rewrite that happened to produce
-       identical content elsewhere would still be caught. */
+       render, and render_blocks_with for live preview), plus Index::build
+       for opening the vault itself — the only places that could plausibly
+       rewrite a file. The oracle is the whole vault's bytes AND mtimes, so a
+       rewrite that happened to produce identical content elsewhere would
+       still be caught. */
     #[test]
     fn f20_an_existing_body_heading_survives_open_render_close_byte_for_byte() {
         let root = tmp_vault("f20keep");
@@ -11535,7 +11527,7 @@ mod tests {
         };
         let before = snap(&root);
 
-        // OPEN the vault, then per note: read, render (reading + LP + source)
+        // OPEN the vault, then per note: read, render (reading + LP)
         let ix = Index::build(&root);
         for n in files {
             let p = root.join(format!("{n}.md"));
@@ -11543,7 +11535,6 @@ mod tests {
             let html = render_with(&text, ix.names(), ix.images(), true);
             let blocks: Vec<String> = text.split("\n\n").map(str::to_string).collect();
             let _ = render_blocks_with(&blocks, ix.names(), ix.images());
-            let _: Vec<String> = blocks.iter().map(|b| srcmode::highlight_block(b)).collect();
             // the index must hold the file's bytes, not a cleaned-up copy
             assert_eq!(ix.content(n), Some(text.as_str()), "{n}: index != disk");
             if n == "Foo" {

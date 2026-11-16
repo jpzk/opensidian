@@ -4,9 +4,8 @@
 
    TOKENIZER  Ed.row/Ed.block/Ed.inline render ONE source line into DOM with
               the source-mode class vocabulary (mk h bq hr tbl task li code wl
-              lt url tag b i bi s hl fence — mirrors src-tauri/src/srcmode.rs
-              marker for marker). Live Preview (Ed.lpExt) reads that DOM back
-              as CM6 decorations; Ed.nodes maps a rendered row's text nodes to
+              lt url tag b i bi s hl fence). Live Preview (Ed.lpExt) reads
+              that DOM back as CM6 decorations; Ed.nodes maps a rendered row's text nodes to
               source columns (search marks), Ed.tok/tokAt the per-token map
               that drives the per-token marker reveal.
    EDIT OPS   list/task/indent/renumber helpers (Ed.enter, Ed.del, Ed.indent,
