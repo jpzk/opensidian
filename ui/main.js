@@ -2134,6 +2134,17 @@ function bmFbClear(fb) {
   if (fb.line) { fb.line.remove(); fb.line = null; }
   if (fb.hl) { fb.hl.classList.remove("bmdrop-into"); fb.hl = null; }
 }
+// a press that this app's own drag machine owns (a bookmark row, a tree row): WebKit neither selects
+// text across the panes nor starts a native drag until the release. Returns the release: unown().
+function ownPress() {
+  const own = ev => ev.preventDefault();
+  document.addEventListener("selectstart", own, true);
+  document.addEventListener("dragstart", own, true);
+  return () => {
+    document.removeEventListener("selectstart", own, true);
+    document.removeEventListener("dragstart", own, true);
+  };
+}
 function bmDragStart(e, ix) {
   if (e.button !== 0 || bmRenaming !== null) return;
   const src = bmTree[ix];
@@ -2141,9 +2152,7 @@ function bmDragStart(e, ix) {
   // bug-ui #11: the press is this drag machine's, not WebKit's — without this the travel
   // text-selected the rows it crossed (and the next press on that selection would start a native
   // text drag). Same guard as treeDragStart; removed on mouseup.
-  const own = ev => ev.preventDefault();
-  document.addEventListener("selectstart", own, true);
-  document.addEventListener("dragstart", own, true);
+  const unown = ownPress();
   const sx = e.clientX, sy = e.clientY;
   const label = src.label ?? (src.kind === "g" ? src.name : src.name.split("/").pop());
   // cv-dragin: the row as pressed (bmTree may repaint mid-drag), plus a group's painted file rows — CanvasDrop's
@@ -2226,8 +2235,7 @@ function bmDragStart(e, ix) {
   const up = async uev => {             // cv-dragin: the release point decides the board drop
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
-    document.removeEventListener("selectstart", own, true);
-    document.removeEventListener("dragstart", own, true);
+    unown();
     if (raf) { cancelAnimationFrame(raf); raf = 0; if (last) step(); }
     disarm();                              // R5: a release before 0.85s opens nothing
     const d = bmDrop, dragged = !!ghost;
@@ -7207,9 +7215,7 @@ function treeDragStart(e, nm, dir) {         // dir: true = a folder row, "file"
   // top5-func: the press is this machine's, not WebKit's. Without this the travel selected text
   // across the panes, and the NEXT press on that selection started a native text drag that
   // swallowed the release (dragManager.draggable stayed set, the plugin view never got a drop).
-  const own = ev => ev.preventDefault();
-  document.addEventListener("selectstart", own, true);
-  document.addEventListener("dragstart", own, true);
+  const unown = ownPress();
   const sx = e.clientX, sy = e.clientY;
   const base = nm.split("/").pop();
   const par = nm.includes("/") ? nm.slice(0, nm.lastIndexOf("/")) : "";
@@ -7269,8 +7275,7 @@ function treeDragStart(e, nm, dir) {         // dir: true = a folder row, "file"
   const up = async ev => {
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
-    document.removeEventListener("selectstart", own, true);
-    document.removeEventListener("dragstart", own, true);
+    unown();
     if (raf) { cancelAnimationFrame(raf); raf = 0; if (last) step(); }
     const t = target;
     if (ghost) ghost.remove();
