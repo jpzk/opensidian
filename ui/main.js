@@ -6491,7 +6491,12 @@ async function navAnchor(g, anchor) {
       // measure. Same shape as the find reveal: ask CM6, then check per frame INSIDE its
       // measure loop until the row is drawn and centred (re-ask / centre on its real box),
       // bounded. [nvr:] logs the frames (diagnostic, no phase asserts it).
-      Ed.revealAt(g, line, 0); Ed.flashLine(g, line);
+      // #148: CM6 owns the scroller and a plain scrollIntoView effect never scrolled it here
+      // ([nvr:] scrollTop 0 for 13 frames): centre (R10.2, like stock) through the snapshot
+      // effect, held while the row re-measures (Ed.revealPos)
+      const at = cm.state.doc.line(Math.min(cm.state.doc.lines, line + 1)).from;
+      Ed.revealPos(cm, at, "center"); Ed.flashLine(g, line);
+      let seq = cm._landSeq;
       nvRv = "s" + Math.round(sc.scrollTop);
       let n = 0;
       const step = () => cm.requestMeasure({ key: "osNavAnchor", read: () => null, write: () => {
@@ -6499,9 +6504,9 @@ async function navAnchor(g, anchor) {
         const ok = centred(), drawn = !!Ed.rowAt(g, line);
         nvRv += "|" + n + ":" + (drawn ? 1 : 0) + "," + Math.round(sc.scrollTop);
         if (ok || ++n > 12) { nvRv += "|f" + (ok ? 1 : 0); return updateTitle(); }
-        // #125: re-ask CM6 in the NEXT frame — a dispatch inside a measure write throws
-        // (CM6 is mid-update there); the effect then lands in CM6's own measure loop
-        requestAnimationFrame(() => { if (Ed.cm(g) === cm) Ed.revealAt(g, line, 0); step(); });
+        // a newer landing (the note load's own) ended the hold before the row was centred:
+        // centre again in the NEXT frame — a dispatch inside a measure write throws
+        requestAnimationFrame(() => { if (Ed.cm(g) === cm && cm._landSeq !== seq) { Ed.revealPos(cm, at, "center"); seq = cm._landSeq; } step(); });
       } });
       requestAnimationFrame(step);
     }
@@ -9595,6 +9600,10 @@ async function attachDrop(paths, at) {
   // of the new link already resolves.
   if (a.copied.length) await refreshTree();
   if (a.text) edEdit((v, s, e2) => [v.slice(0, s) + a.text + v.slice(e2), s + a.text.length, s + a.text.length]);
+  // osdrop (#148): the caret after the new embed is brought into view as CM6's snapshot
+  // effect (Ed.revealPos) — the insert's own scrollIntoView never scrolled cm.scrollDOM
+  // past the pdf row (caret below the view, scrollTop 0); stock shows the embed
+  if (a.text && isLp(t.mode)) requestAnimationFrame(() => { const cm = Ed.cm(g); if (cm) Ed.revealPos(cm, cm.state.selection.main.head); });
   dropTok = a.copied.length + "/" + a.refused.length;
   dropSay(a.refused.concat(a.kept || []).join("\n"));
   updateTitle();
