@@ -1,0 +1,2 @@
+# comment line
+image	.github/workflows/s.yml	semgrep/semgrep:latest	2027-05-17	semgrep	scanner exception (named), valid

@@ -87,3 +87,24 @@ change in this repo. Check the `resolved version` step first when that happens.
 - None of these checks catch malicious code in an already-trusted version, or a compromised build
   environment. Pinning plus the 6-week age rule just shrinks that window, and the three scanners
   are deliberately outside it (see the exception above).
+
+## pin-check (#189)
+
+`scripts/supply-chain/pin-check.sh` fails CI (`supply-chain.yml` job `pin-check`) when any build,
+CI, packaging or bundled dependency is not pinned to an exact version **and** a content hash:
+
+- `uses:` without a 40-hex commit SHA (local `./` actions excepted)
+- `image:` / `container:` / `FROM` / `podman|docker pull|run|create` without `@sha256:<64 hex>`
+- `apt-get install` without `pkg=version`, `dnf install` without `pkg-version-release`
+- `cargo install` without `--locked` and `--version`
+- `flatpak install` without `--commit=<64 hex>`
+- `curl`/`wget` downloads without a `sha256sum`/`sha512sum` check within 6 lines; `curl … | sh`
+- `npm`/`npx`/`yarn`/`pnpm`/`bun`/`pipx`/`go install` (forbidden), `pip install` without `--require-hashes`
+
+Exceptions live in `supply-chain/pin-allow.tsv` (TAB-separated: rule, path, needle, expiry, scanner,
+reason). An entry needs a reason and an unexpired `YYYY-MM-DD`; an entry that no longer matches
+anything is itself a finding. The scanner exception is a *named* list (semgrep, opengrep,
+cargo-audit, cargo-deny, cargo-vet, osv-scanner): a scanner entry's needle must contain the
+scanner's name, so the exception cannot cover anything else, even inside a scanner job.
+Self-test: `bash scripts/supply-chain/tests/pin-check.test.sh` (one red fixture per rule, plus
+mutations that unpin one thing each in an all-green fixture tree).
