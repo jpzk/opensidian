@@ -3477,6 +3477,190 @@ function wsSidesIn(doc) {
     if (rightOpen) setRTab(rTab, false);
   }
 }
+/* ---------- #94 WORKSPACE MANAGER: named layouts (core "Workspaces" parity, stock 1.13.7) ----------
+   STORAGE is the backend's (src-tauri/src/wsmgr.rs): <vault>/.obsidian/workspaces.json in stock's shape,
+   {"workspaces":{"<name>":<layout>},"active":"<name>"}, atomic + vault-scoped like workspace.json.
+   A SAVED LAYOUT IS wsDoc() — the very object the R28 writer puts in workspace.json — minus
+   lastOpenFiles (stock's getLayout() leaves the recent list to the session). One serializer, one
+   restorer (wsApply): a workspace saved here and one saved by stock are the same bytes to read back.
+   A LOAD is a restore into the RUNNING window: every pane's pending edits are flushed first (a buffer
+   that still reads dirty after its flush REFUSES the load — the openVault rule: a layout is never
+   worth a keystroke), the R28 file bookkeeping of the layout being replaced is dropped (ids, link
+   groups, foreign sidebar subtrees belong to the layout they came from), then wsApply rebuilds. Its
+   degrade rule holds unchanged: a leaf whose note is gone is dropped; nothing restorable at all
+   leaves one empty pane (stock: an empty leaf), never an error. workspace.json then follows through
+   the ordinary wsTouch path, which is all "the last session" ever was. */
+let wsmNames = [], wsmActive = "", wsmBad = false;   // last list the backend returned
+let wsmSaves = 0, wsmLoadsN = 0, wsmErr = "";        // census [wsm:]: completed saves / loads, last refusal
+let wsmOpen = false, wsmRen = null;                  // the Manage modal; the row being renamed (name) or null
+function wsmTake(r) {
+  if (!r || typeof r !== "object") return;
+  wsmNames = Array.isArray(r.names) ? r.names.filter(n => typeof n === "string") : [];
+  wsmActive = typeof r.active === "string" ? r.active : "";
+  wsmBad = r.corrupt === true;
+}
+async function wsmRefresh() {
+  try { wsmTake(await inv("wsm_list")); } catch (e) { wsmNames = []; wsmActive = ""; }
+  if (wsmOpen) wsmRender();
+  updateTitle();
+}
+async function wsmOp(op, name, extra) {
+  const v = vaultPath;                       // the vault the call is ABOUT travels with it (write_workspace rule)
+  if (!state || !v) return false;
+  try {
+    wsmTake(await inv("wsm_op", Object.assign({ vault: v, op, name, to: null, layout: null }, extra || {})));
+    wsmErr = "";
+    return true;
+  } catch (e) {
+    wsmErr = errStr(e) || String(e);
+    say(wsmErr, "wsm");
+    return false;
+  } finally {
+    if (wsmOpen) wsmRender();
+    updateTitle();
+  }
+}
+function wsmLayout() {
+  const d = wsDoc();
+  delete d.lastOpenFiles;
+  return d;
+}
+async function wsmSave(name) {
+  const n = String(name || "").trim();
+  if (!n) { wsmErr = "workspace name is empty"; say(wsmErr, "wsm"); updateTitle(); return false; }
+  const ok = await wsmOp("save", n, { layout: wsmLayout() });
+  if (ok) wsmSaves++;
+  updateTitle();
+  return ok;
+}
+async function wsmLoad(name) {
+  if (!state || !vaultPath) return false;
+  let doc = null;
+  try { doc = await inv("wsm_get", { name }); } catch (e) { doc = null; }
+  if (!doc || typeof doc !== "object") { wsmErr = "no workspace named " + name; say(wsmErr, "wsm"); updateTitle(); return false; }
+  for (const h of groups()) {
+    try { await flushSave(h); } catch (e) { /* reads dirty below */ }
+    if (bufDirty(h)) { wsmErr = "unsaved changes in " + (curOf(h) || "a pane") + ": workspace not loaded"; say(wsmErr, "wsm"); updateTitle(); return false; }
+  }
+  for (const h of groups()) {               // retire the panes being replaced (collapseGroup's teardown)
+    if (h.sim) cancelAnimationFrame(h.sim);
+    h.simGen = 0;
+    if (h.saveT) { clearTimeout(h.saveT); h.saveT = null; }
+  }
+  wsIds = {}; wsGrp = {}; wsExtra = null; wsSideRaw = {}; wsSide0 = {};
+  let names = [];
+  try { names = await inv("list_notes"); } catch (e) { names = []; }
+  let ok = false;
+  try { ok = await wsApply(doc, names); } catch (e) { ok = false; }
+  if (!ok) {                                // nothing in it survived: one empty pane, like stock's empty leaf
+    const g = mkGroup();
+    state.root = { dir: "row", children: [g], fractions: [1] };
+    state.focused = null;
+    renderLayout();
+    focusGroup(g);
+    renderTabs(g);
+  }
+  wsmLoadsN++;
+  await wsmOp("activate", name);
+  treeHighlight();
+  updateTitle();
+  return true;
+}
+/* the Manage modal: name + Save on top, then one row per saved layout — the name (click = load),
+   Rename (inline input, Enter commits / Escape cancels), Delete. Stock's "Manage workspace layouts". */
+function wsmRender() {
+  const box = $("wsmlist");
+  box.textContent = "";
+  $("wsmempty").hidden = wsmNames.length > 0;
+  $("wsmempty").textContent = wsmBad ? "workspaces.json could not be read; it is left untouched" : "No saved workspace layouts.";
+  for (const n of wsmNames) {
+    const row = document.createElement("div");
+    row.className = "wsmrow" + (n === wsmActive ? " is-active" : "");
+    row.dataset.name = n;
+    if (wsmRen === n) {
+      const inp = document.createElement("input");
+      inp.className = "wsmren"; inp.value = n; inp.spellcheck = false;
+      inp.onkeydown = async e => {
+        if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); const to = inp.value.trim(); wsmRen = null; if (to && to !== n) await wsmOp("rename", n, { to }); else wsmRender(); }
+        else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); wsmRen = null; wsmRender(); }
+      };
+      row.appendChild(inp);
+      box.appendChild(row);
+      setTimeout(() => { inp.focus(); inp.select(); }, 0);
+      continue;
+    }
+    const nm = document.createElement("button");
+    nm.className = "wsmname"; nm.textContent = n; nm.title = "Load";
+    nm.onclick = async () => { wsmClose(); await wsmLoad(n); };
+    const rn = document.createElement("button");
+    rn.className = "wsmbtn wsmrn"; rn.title = "Rename"; rn.setAttribute("aria-label", "Rename");
+    rn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>';
+    rn.onclick = () => { wsmRen = n; wsmRender(); updateTitle(); };
+    const dl = document.createElement("button");
+    dl.className = "wsmbtn wsmdel"; dl.title = "Delete"; dl.setAttribute("aria-label", "Delete");
+    dl.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg>';
+    dl.onclick = () => wsmOp("delete", n);
+    row.append(nm, rn, dl);
+    box.appendChild(row);
+  }
+}
+async function wsmOpenModal(focusSave) {
+  if (!state || !vaultPath) return;
+  closeModal(); closeMenu();
+  wsmOpen = true; wsmRen = null;
+  $("wsmname").value = focusSave && wsmActive ? wsmActive : "";
+  $("wsmbox").hidden = false;
+  await wsmRefresh();
+  if (focusSave && wsmActive && !$("wsmname").value) $("wsmname").value = wsmActive;
+  $("wsmname").focus();
+  updateTitle();
+}
+function wsmClose() {
+  if (!wsmOpen) return;
+  wsmOpen = false; wsmRen = null;
+  $("wsmbox").hidden = true;
+  updateTitle();
+}
+$("wsmsave").onclick = async () => { if (await wsmSave($("wsmname").value)) $("wsmname").value = ""; };
+$("wsmx").onclick = () => wsmClose();
+$("wsmname").oninput = () => updateTitle();
+$("wsmbox").addEventListener("keydown", e => {
+  if (!wsmOpen) return;
+  if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); if (wsmRen) { wsmRen = null; wsmRender(); } else wsmClose(); return; }
+  if (e.key === "Enter" && document.activeElement === $("wsmname")) {
+    e.preventDefault(); e.stopPropagation();
+    wsmSave($("wsmname").value).then(ok => { if (ok) $("wsmname").value = ""; });
+    return;
+  }
+  e.stopPropagation();                      // typing belongs to the inputs, not the global keymap
+});
+$("wsmbox").addEventListener("mousedown", e => { if (e.target === $("wsmbox")) { e.preventDefault(); wsmClose(); } });
+/* "Load workspace layout": stock's suggester — the shared modal over the saved names, Enter loads */
+async function cmdWsmLoad() {
+  if (!state || !vaultPath) return;
+  await wsmRefresh();
+  openModal("wsl", () => wsmNames.map(n => ({ label: n, hint: n === wsmActive ? "active" : "", run: () => wsmLoad(n) })));
+}
+/* census [wsm:<saves>,<loads>|<active>|<name>;<name>…|<open 0/1>] + while the modal is open
+   [wsmxy:in=x,y|save=x,y|<name>=load x,y;rename x,y;delete x,y|…] painted centres a driver clicks,
+   [wsmerr:<last refusal>] when one is up, [ribbon:wsm@x,y] for the ribbon button */
+function wsmTok() {
+  const q = s => String(s).replace(/[|\];,=@[]/g, "_");
+  const c = e => { const r = e.getBoundingClientRect(); return Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2); };
+  let t = " [wsm:" + wsmSaves + "," + wsmLoadsN + "|" + q(wsmActive) + "|" + wsmNames.map(q).join(";") + "|" + (wsmOpen ? 1 : 0) + (wsmRen ? "|ren=" + q(wsmRen) : "") + "]";
+  if (wsmOpen) {
+    const xs = ["in=" + c($("wsmname")), "save=" + c($("wsmsave"))];
+    t += " [wsmin:" + q($("wsmname").value).slice(0, 60) + "]";   // the name input as the page sees it (harness: type, wait for it, then click Save)
+    for (const row of document.querySelectorAll("#wsmlist .wsmrow")) {
+      const b = [".wsmname", ".wsmrn", ".wsmdel", ".wsmren"].map(s => row.querySelector(s)).filter(Boolean);
+      xs.push(q(row.dataset.name) + "=" + b.map(c).join(";"));
+    }
+    t += " [wsmxy:" + xs.join("|") + "]";
+  }
+  if (wsmErr) t += " [wsmerr:" + q(wsmErr).slice(0, 80) + "]";
+  if (wsmRibbonBtn && wsmRibbonBtn.getClientRects().length) t += " [ribbon:wsm@" + c(wsmRibbonBtn) + "]";
+  return t;
+}
 /* R28.2 — THE WINDOW RECTANGLE GOES SOMEWHERE ELSE. Not in the vault: a vault
    synced between a laptop and a desktop would otherwise carry one machine's
    window size to the other. Goal winsize moved it to Rust entirely: saved on a
@@ -3499,7 +3683,7 @@ function wsSidesIn(doc) {
    reporting `#main` when the real culprit is a button in the tab strip costs
    an iteration every time. */
 const OVF_SCROLL = "#tree,#sresults,#bmlist,.rlist,.lp,.preview,.editor,.ac," +
-                   "#mlist,#p-dirs,#p-recent,#sbody,#snav,#spage,#hklist";
+                   "#mlist,#p-dirs,#p-recent,#sbody,#snav,#spage,#hklist,#wsmlist";
 function ovfName(el) {              // short, stable selector for a failure message
   const c = (el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className) || "";
   const k = String(c).trim().split(/\s+/).filter(Boolean).slice(0, 2).map(x => "." + x).join("");
@@ -7983,7 +8167,7 @@ function openModal(kind, src) {
   mdEdSel = kind === "cp" ? edSelSnap() : null;   // BEFORE minput.focus() takes the selection
   modalKind = kind; mdSrc = src;
   $("minput").value = "";
-  $("minput").placeholder = kind === "qs" ? (qsCreateOff ? "Open note..." : "Find or create a note...") : "Run command...";
+  $("minput").placeholder = kind === "qs" ? (qsCreateOff ? "Open note..." : "Find or create a note...") : kind === "wsl" ? "Type the name of a workspace layout..." : "Run command...";
   qsFoot(kind === "qs");
   $("modal").hidden = false;
   mdFilter();
@@ -8290,6 +8474,18 @@ var cvRibbonBtn = (() => {   // var: canvasTok may run before this line
   return b;
 })();
 function cvRibbonSync() { if (cvRibbonBtn) cvRibbonBtn.hidden = !(CANVAS && CANVAS.isRegistered()); }
+var wsmRibbonBtn = (() => {                 // after cvRibbonBtn in the strip: no existing button moves
+  const rb = document.getElementById("ribbon");
+  if (!rb) return null;
+  const b = document.createElement("button");
+  b.id = "wsmribbonbtn";
+  b.title = "Manage workspace layouts";
+  b.setAttribute("aria-label", "Manage workspace layouts");
+  b.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>';
+  b.addEventListener("click", () => wsmOpenModal(false));
+  rb.appendChild(b);
+  return b;
+})();
 if (CANVAS) {
   for (const k of ["load", "enable", "disable"]) {
     const f = CANVAS.plugin[k];
@@ -10749,6 +10945,11 @@ const CMDS = [
   ["app:toggle-left-sidebar",  "Toggle left sidebar",                 [],                       cmdToggleSide],
   ["app:toggle-right-sidebar", "Toggle right sidebar",                [],                       () => cmdToggleRight()],
   ["app:switch-vault",         "Switch vault",                        [],                       showPicker],
+  // #94: stock core plugin "Workspaces" (1.13.7) ids and names, no default chord. Save opens the manager with the
+  // name box focused (prefilled with the active layout), Load is the suggester over the saved names.
+  ["workspaces:open-modal",    "Workspaces: Manage workspace layouts", [],                      () => wsmOpenModal(false)],
+  ["workspaces:save",          "Workspaces: Save current layout",     [],                       () => wsmOpenModal(true)],
+  ["workspaces:load",          "Workspaces: Load workspace layout",   [],                       () => cmdWsmLoad()],
   // R36: Obsidian lists exactly these three, with NO hotkey text beside them
   // (recon-zoom shot 01) — built-in bindings it does not surface as rebindable
   // rows. Ours ARE in the one registry, so the palette, the keymap and
@@ -10980,6 +11181,7 @@ document.addEventListener("keydown", e => {
   if (delPending) return;                  // R24.7: so does the delete confirmation (Escape there = Cancel)
   if (bmEdit) return;                      // R4X.7: and the Edit bookmark modal (its own handler: Escape = Cancel, Enter = Save)
   if (bmAdd) return;                       // bmactive: and its Add mode (Escape = Cancel, Enter = Save, typing = the Title input)
+  if (wsmOpen) { if (e.key === "Escape") { e.preventDefault(); wsmClose(); } return; }   // #94: the workspace manager owns the keyboard (its box handler: Escape closes, Enter saves)
   if (titleEditing()) return;              // R34.1: so does the title box (a filename contains chords)
   if (e.key === "Escape") {
     if (menuEl) { closeMenu(); return; }   // bmmenu: Obsidian closes an open context menu on Escape (recon 15-escape.png); the guards above keep settings' own Escape (R14) first
@@ -12910,6 +13112,7 @@ async function enterVault() {
     if (names.length) await openInTab(names[0], "boot");
     else renderTabs(g);
   }
+  wsmRefresh();                      // #94: the saved layouts of THIS vault, for the census and the manager (unawaited)
   perf.mark("boot", 0, { notes: names.length });   // perf: page start -> vault ready (first note rendered)
   Ed.fontWarm(fg());   // perfslow: the live preview's faces are built in idle time after boot, not inside the first note open that shows them
   switchReveal();   // item 14: a switch-started window shows itself only now, at the old window's rect
