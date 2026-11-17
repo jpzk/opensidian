@@ -151,6 +151,8 @@ pub fn disarm(label: &str, tok: &str) -> Result<(), String> {
 pub struct Sess {
     /// the recorder webview's gate is connected (install's callback)
     pub gated: Option<std::sync::mpsc::Receiver<()>>,
+    /// the gate was connected (a reloaded recorder page need not wait again)
+    pub ready: bool,
     /// the recorder page's start outcome -> audio_rec_start
     pub started: Option<std::sync::mpsc::Sender<Result<(), String>>>,
     /// audio_rec_stop -> the recorder page (its audio_rec_started returns)

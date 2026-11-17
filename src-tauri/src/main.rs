@@ -1135,7 +1135,7 @@ async fn audio_rec_start(app: tauri::AppHandle, win: tauri::WebviewWindow, token
     let (gtx, grx) = std::sync::mpsc::channel();
     let (stx, srx) = std::sync::mpsc::channel();
     let (ptx, prx) = std::sync::mpsc::channel();
-    audiorec::sess_put(&parent, audiorec::Sess { gated: Some(grx), started: Some(stx), stop_tx: Some(ptx), stop_rx: Some(prx), data: None });
+    audiorec::sess_put(&parent, audiorec::Sess { gated: Some(grx), ready: false, started: Some(stx), stop_tx: Some(ptx), stop_rx: Some(prx), data: None });
     audiorec::arm(&parent, &token, std::time::Instant::now())?;
     let built = tauri::WebviewWindowBuilder::new(&app, audiorec::rec_label(&parent), tauri::WebviewUrl::App("recorder.html".into()))
         .title("audio capture")
@@ -1178,9 +1178,31 @@ async fn audio_rec_start(app: tauri::AppHandle, win: tauri::WebviewWindow, token
 #[tauri::command]
 async fn audio_rec_go(win: tauri::WebviewWindow) -> Result<(), String> {
     let parent = audiorec::parent_of(win.label()).ok_or("not allowed")?.to_string();
-    let rx = audiorec::with_sess(&parent, |s| s.and_then(|s| s.gated.take())).ok_or("not allowed")?;
+    // a reload of the recorder page (recorder.js: media capture turned on after its first load) asks again
+    let rx = audiorec::with_sess(&parent, |s| s.map(|s| (s.gated.take(), s.ready))).ok_or("not allowed")?;
     eprintln!("[audiorec] {}: page up, waiting for the gate", win.label());
-    rec_recv(rx, REC_START_WAIT).await.ok_or_else(|| "the microphone gate is not ready".to_string())
+    match rx {
+        (_, true) => Ok(()),
+        (Some(rx), false) => {
+            rec_recv(rx, REC_START_WAIT).await.ok_or_else(|| "the microphone gate is not ready".to_string())?;
+            audiorec::with_sess(&parent, |s| {
+                if let Some(s) = s {
+                    s.ready = true;
+                }
+            });
+            eprintln!("[audiorec] {}: gate ready", win.label());
+            Ok(())
+        }
+        (None, false) => Err("not allowed".into()),
+    }
+}
+
+/// recorder page: a step of its start (the box log shows where a start stopped)
+#[tauri::command]
+fn audio_rec_log(win: tauri::WebviewWindow, m: String) -> Result<(), String> {
+    audiorec::parent_of(win.label()).ok_or("not allowed")?;
+    eprintln!("[audiorec] {}: page {}", win.label(), m.chars().take(160).collect::<String>());
+    Ok(())
 }
 
 /// recorder page: its start outcome; on ok this returns only when the app window stops the recording
@@ -7658,7 +7680,7 @@ fn main() {
             .map(std::borrow::Cow::Owned)
         })
         .invoke_handler(tauri::generate_handler![
-            list_notes, list_images, canvas_io, canvas_attach, paste_image, audio_token, audio_rec_start, audio_rec_go, audio_rec_started, audio_rec_data, audio_rec_stop, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
+            list_notes, list_images, canvas_io, canvas_attach, paste_image, audio_token, audio_rec_start, audio_rec_go, audio_rec_log, audio_rec_started, audio_rec_data, audio_rec_stop, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_title, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, bm_add_view, bm_add_view_at, bm_remove, bm_graph_patch, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts, props_index, props_mode, props_notes, props_types, set_prop_type, set_props_mode,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,

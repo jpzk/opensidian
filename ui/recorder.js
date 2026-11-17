@@ -15,11 +15,18 @@
   const T = window.__TAURI__, inv = (c, a) => T.core.invoke(c, a);
   const MIME = "audio/webm;codecs=opus";
   const fail = (n, m) => inv("audio_rec_started", { ok: false, err: n + ": " + m }).catch(() => {});
+  const log = m => inv("audio_rec_log", { m }).catch(() => {});
+  log("load: vis=" + document.visibilityState + " md=" + !!navigator.mediaDevices);
   try { await inv("audio_rec_go"); } catch (e) { return fail("NotReadableError", String((e && e.message) || e)); }
   const md = navigator.mediaDevices, MR = window.MediaRecorder;
+  log("go: vis=" + document.visibilityState + " md=" + !!md + " mr=" + (typeof MR));
+  // media capture is turned on by the gate (audiorec::install) and may come after this page's first load:
+  // a page without navigator.mediaDevices reloads ONCE (the session survives a reload)
+  if (!md && !sessionStorage.getItem("rec.reloaded")) { sessionStorage.setItem("rec.reloaded", "1"); return location.reload(); }
   if (!md || typeof md.getUserMedia !== "function" || typeof MR !== "function") return fail("NotSupportedError", "this window has no media capture.");
   if (!(typeof MR.isTypeSupported === "function" && MR.isTypeSupported(MIME))) return fail("NotSupportedError", "GStreamer opusenc/webmmux missing.");
   let stream, r;
+  log("getUserMedia");
   try { stream = await md.getUserMedia({ audio: true, video: false }); }
   catch (e) { return fail((e && e.name) || "Error", (e && e.message) || String(e)); }
   const end = () => { for (const t of stream.getTracks()) t.stop(); };
@@ -29,6 +36,7 @@
   const chunks = [];
   r.addEventListener("dataavailable", ev => { if (ev.data && ev.data.size) chunks.push(ev.data); });
   r.start(1000);
+  log("recording: " + r.state);
   try { await inv("audio_rec_started", { ok: true, err: "" }); } catch (_) {}   // returns when the app window stops the recording
   // an already-stopped recorder (a track ended) fired its stop before: do not wait for it; 5 s cap either way
   const done = r.state === "inactive" ? Promise.resolve() : new Promise(res => { r.addEventListener("stop", res, { once: true }); setTimeout(res, 5000); });
