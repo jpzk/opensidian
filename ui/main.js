@@ -7230,7 +7230,10 @@ function canvasRow(p, depth) {
   row.innerHTML = treeGuides(depth) + '<span class="tc"></span><span class="tn"></span><span class="ttag">CANVAS</span>';
   row.querySelector(".tn").textContent = p.split("/").pop().replace(/\.canvas$/i, "");   // names never hit innerHTML
   row.dataset.canvas = p;
-  row.onclick = () => { if (treeClickEaten()) return; treeSelClear(); treeAnchor = p; openCanvas(p); };   // CVR-A-090: the click a drag ends with is not an open; a board row is a range anchor, never a shift target
+  /* #169: a PLAIN click opens the board in the ACTIVE tab (stock 1.13.7: cfA*,cfB -> canvas:cfBoard,cfB; a 2nd click adds
+     nothing); Ctrl/Cmd+click = a new tab right of the active one. CVR-A-090: the click a drag ends with is not an open; a
+     board row is a range anchor, never a shift target. */
+  row.onclick = e => { if (treeClickEaten()) return; treeSelClear(); treeAnchor = p; openCanvas(p, e && (e.ctrlKey || e.metaKey) ? "tab" : "here"); };
   row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); openCanvas(p); } };
   row.oncontextmenu = e => canvasFileMenu(e, p);
   row.addEventListener("mousedown", e => treeDragStart(e, p));   // CVR-A-090: drag onto a folder row = move (cvMoveTo)
@@ -8902,9 +8905,10 @@ function cvNewCanvasFolder() {
   return cvActiveFolder();   // "current" (stock name; settings.js maps an older "same" to it)
 }
 // open a .canvas file in a canvas tab of the focused group (the view type must be registered: core plugin on)
-async function openCanvas(path, how) {     // how: "split" -> a new pane to the right (CVR-A-083 Open to the right)
+async function openCanvas(path, how) {     // how: "split" -> a new pane to the right (CVR-A-083 Open to the right), "here" -> the active tab (#169)
   if (!CANVAS || !CANVAS.isRegistered()) { say("Canvas is turned off (Settings › Community plugins › Core plugins)", "canvas"); return null; }
-  const leaf = how === "split" ? PLG.app.workspace.getLeaf("split", "vertical") : PLG.app.workspace.getLeaf("tab");
+  // #169: "here" = the active tab (an explorer PLAIN click, like openPdf's plain click); anything else but "split" = a new tab
+  const leaf = how === "split" ? PLG.app.workspace.getLeaf("split", "vertical") : PLG.app.workspace.getLeaf(how === "here" ? false : "tab");
   await leaf.setViewState({ type: "canvas", state: { file: path }, active: true });
   return leaf;
 }
