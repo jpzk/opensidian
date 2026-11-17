@@ -219,6 +219,31 @@ pub fn forced_by(stored: Sec, eff: &Eff, f: &str) -> Option<&'static str> {
     }
 }
 
+/* toggle 3 — THE NETWORK CHOKE POINT. Every outbound path the app has calls
+   `net_check` first (plugin_store::http_get = store / builtins / update check,
+   desk_http_request, desk_net_listen, desk_shell's URL opens), and
+   main.rs `every_outbound_path_goes_through_the_choke_point` fails T0 when a
+   network constructor appears anywhere else or a caller skips the check. */
+pub const OFFLINE_IS_ON: &str = "offline mode is on";
+
+/// Err while offline mode is on: "<what>: offline mode is on (Settings › Security › ...)"
+pub fn net_check(eff: &Eff, what: &str) -> Result<(), String> {
+    if eff.sec.offline {
+        return Err(format!("{what}: {OFFLINE_IS_ON} {}", named("offline")));
+    }
+    Ok(())
+}
+
+/// the confirm before the system browser opens a link while offline (operator decision:
+/// allowed, with a confirm). `url` passed main.rs check_external (http/https/mailto).
+pub fn offline_open_text(url: &str) -> String {
+    format!(
+        "Offline mode is on {}.\n\nOpen this address in your web browser? The browser uses \
+         the network; the app stays offline.\n\nAddress: {url:?}",
+        named("offline")
+    )
+}
+
 /// a requested change, validated: (field, value). Unknown field = refused.
 pub fn validate(field: &str, on: bool) -> Result<(&'static str, bool), String> {
     FIELDS
@@ -400,5 +425,18 @@ mod tests {
         assert_eq!(r["stored"]["offline"], json!(false));
         assert_eq!(r["effective"]["pluginNet"], json!(true));
         assert_eq!(r["names"]["webgl"], json!("WebGL"));
+    }
+
+    #[test]
+    fn offline_check_names_the_toggle() {
+        let mut s = Sec::default();
+        assert!(net_check(&effective_with(s, Some(s)), "store").is_ok(), "default = online (today)");
+        s.offline = true;
+        let e = net_check(&effective_with(s, Some(s)), "store").unwrap_err();
+        assert_eq!(e, "store: offline mode is on (Settings › Security › Cut off all network (offline mode))");
+        let mut l = Sec::default();
+        l.lockdown = true;
+        assert!(net_check(&effective_with(l, Some(l)), "x").is_err(), "lockdown forces offline");
+        assert!(offline_open_text("https://a.b/\n").contains("\"https://a.b/\\n\""), "the address is Debug-quoted");
     }
 }

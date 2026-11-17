@@ -1863,6 +1863,12 @@ fn cfg_update(ops: &[cfgstore::Op]) {
     }
 }
 
+/// #144 toggle 3: the network choke point (security::net_check) with the current config.
+/// Called first by every outbound path; `every_outbound_path_goes_through_the_choke_point` pins it.
+pub(crate) fn net_allowed(what: &str) -> Result<(), String> {
+    security::net_check(&security::effective(&cfg_value()), what)
+}
+
 fn cfg_set(k: &str, x: serde_json::Value) {
     cfg_update(&[cfgstore::Op::Set(k.into(), x)]);
 }
@@ -2686,8 +2692,23 @@ fn check_external(url: &str) -> Result<(), String> {
     if ext_ok(url, false) { Ok(()) } else { Err(format!("blocked scheme: {url}")) }
 }
 
+/* #144 toggle 3: while offline mode is on, a link still opens in the system browser
+   (operator decision) — after a NATIVE confirm naming the toggle, so a plugin calling this
+   command cannot open the browser silently. Online: exactly today's behaviour, no question. */
 #[tauri::command]
-fn open_external(url: String) -> Result<(), String> {
+async fn open_external(win: tauri::Window, url: String) -> Result<(), String> {
+    check_external(&url)?;
+    if let Err(e) = net_allowed("open in browser") {
+        let slot = consent::admit()?;
+        if !consent::ask(slot, win, consent::Kind::OfflineOpen, consent::offline_open_question(&url)).await? {
+            eprintln!("[sec] open_external while offline: cancelled");
+            return Err(e);
+        }
+    }
+    open_external_now(url)
+}
+
+fn open_external_now(url: String) -> Result<(), String> {
     check_external(&url)?;
     // std::process::Command only — no shell, no opener plugin. Missing xdg-open
     // (headless smoke, minimal hosts) is a plain Err, never a fallback.
@@ -4385,6 +4406,7 @@ fn desk_proc_kill(id: u64, signal: Option<String>) -> Result<bool, String> {
 #[tauri::command]
 fn desk_net_listen(v: State<Vault>, host: Option<String>, port: u16) -> Result<serde_json::Value, String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
+    net_allowed("net.createServer")?; // #144 toggle 3: a listener is a network surface too
     // CC1 (PR #42 round 12, CodeAnt): listen_trusted calls `trusted` a second time UNDER the
     // lifecycle lock (desk_net::listen_trusted_via). The trust key canonicalizes the vault root (a
     // path lookup: a stalled FUSE/NFS vault stands still in it), so it is computed HERE, before
@@ -4450,6 +4472,7 @@ async fn desk_http_request(v: State<'_, Vault>, req: desk_http::Req) -> Result<d
     if !plugins::is_trusted(&cfg_value(), &root) {
         return Err("EPERM: restricted mode, plugins cannot make requests".into());
     }
+    net_allowed("requestUrl")?; // #144 toggle 3
     let what = format!("{} {}", req.method.as_deref().unwrap_or("GET"), req.url.split('?').next().unwrap_or(""));
     let r = tauri::async_runtime::spawn_blocking(move || desk_http::request(&req)).await.map_err(|e| e.to_string())?;
     match &r {
@@ -4484,6 +4507,9 @@ async fn desk_shell(win: tauri::Window, v: State<'_, Vault>, op: String, target:
     let root = cur_vault(&v).ok_or("no vault open")?;
     if !plugins::is_trusted(&cfg_value(), &root) {
         return Err("EPERM: restricted mode, plugins cannot use the shell".into());
+    }
+    if ext_ok(&target, false) {
+        net_allowed("openExternal")?; // #144 toggle 3: a plugin's URL open is the browser's network; no confirm path from a plugin
     }
     // BB2 (PR #42 round 11): the place in the question queue FIRST, then the target and the
     // opener (resolved + pinned) — beyond MAX_IN_FLIGHT, EBUSY with no lookup and no fd opened
@@ -8748,11 +8774,98 @@ mod tests {
         let h = render_with(r#"https://e.example/"><script>"#, &[], &[], true);
         assert!(!h.contains("<script>"), "{h}");
     }
+    /* #144 toggle 3: "any new network feature must go through the same choke point", as a test.
+       (a) a network constructor appears ONLY in the three allow-listed functions; (b) each of
+       those is reached only through a caller that asks net_allowed first. */
+    #[test]
+    fn every_outbound_path_goes_through_the_choke_point() {
+        // production code only: drop every top-level `#[cfg(test)] mod x { … }` block (and `mod x;` lines)
+        fn code(s: &str) -> String {
+            let (mut out, mut skip, mut prev_test) = (String::new(), false, false);
+            for l in s.lines() {
+                if skip {
+                    if l == "}" {
+                        skip = false;
+                    }
+                } else if prev_test && (l.starts_with("mod ") || l.starts_with("pub mod ")) {
+                    skip = !l.trim_end().ends_with(';');
+                } else if l.trim() != "#[cfg(test)]" {
+                    out.push_str(l);
+                    out.push('\n');
+                }
+                prev_test = l.trim() == "#[cfg(test)]";
+            }
+            out
+        }
+        fn body<'a>(s: &'a str, head: &str) -> &'a str {
+            let a = s.find(head).unwrap_or_else(|| panic!("{head} not found"));
+            let e = s[a..].find("\n}\n").map(|e| a + e).unwrap_or(s.len());
+            &s[a..e]
+        }
+        let net = ["soup::Session::", "TcpStream::connect", "TcpListener::bind", "UdpSocket::"];
+        let allowed = [("plugin_store.rs", "pub fn http_get("), ("desk_http.rs", "fn connect("), ("desk_net.rs", "fn listen(")];
+        let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+        let mut files = 0;
+        for ent in fs::read_dir(dir).unwrap().flatten() {
+            let name = ent.file_name().to_string_lossy().to_string();
+            if !name.ends_with(".rs") {
+                continue;
+            }
+            files += 1;
+            let c = code(&fs::read_to_string(ent.path()).unwrap());
+            // the byte ranges of the allow-listed function bodies in this file
+            let ok: Vec<(usize, usize)> = allowed
+                .iter()
+                .filter(|(f, _)| *f == name)
+                .flat_map(|(_, h)| c.match_indices(h).map(|(a, _)| (a, c[a..].find("\n}\n").map(|e| a + e).unwrap_or(c.len()))).collect::<Vec<_>>())
+                .collect();
+            let mut at = 0;
+            for l in c.lines() {
+                let t = l.trim_start();
+                let comment = t.starts_with("//") || t.starts_with('*') || t.starts_with("/*");
+                if !comment && net.iter().any(|n| l.contains(n)) {
+                    assert!(ok.iter().any(|(a, e)| (*a..*e).contains(&at)), "{name}: a network constructor outside the choke-point functions: {l}");
+                }
+                at += l.len() + 1;
+            }
+        }
+        assert!(files > 20, "the source scan found {files} files");
+        // plugin_store::http_get (every cfg variant) asks before it builds a session
+        let ps = code(include_str!("plugin_store.rs"));
+        assert!(ps.matches("pub fn http_get(").count() >= 1);
+        for (a, _) in ps.match_indices("pub fn http_get(") {
+            let b = &ps[a..a + ps[a..].find("\n}\n").unwrap()];
+            let chk = b.find("crate::net_allowed(what)?").expect("http_get without the choke point");
+            if let Some(s) = b.find("Session::new") {
+                assert!(chk < s, "http_get builds its session before the check");
+            }
+        }
+        // the other two are reached only from their commands, which ask first
+        let m = code(include_str!("main.rs"));
+        for (call, cmd) in [("desk_http::request(", "async fn desk_http_request("), ("desk_net::listen_trusted(", "fn desk_net_listen(")] {
+            let b = body(&m, cmd);
+            let at = b.find(call).unwrap_or_else(|| panic!("{cmd} does not call {call}"));
+            assert!(b[..at].contains("net_allowed("), "{cmd} calls {call} before net_allowed");
+            assert_eq!(m.matches(call).count(), 1, "{call} has another caller in main.rs");
+        }
+        for ent in fs::read_dir(dir).unwrap().flatten() {
+            let name = ent.file_name().to_string_lossy().to_string();
+            if name.ends_with(".rs") && name != "main.rs" && name != "desk_http.rs" && name != "desk_net.rs" {
+                let c = code(&fs::read_to_string(ent.path()).unwrap());
+                assert!(!c.contains("desk_http::request(") && !c.contains("listen_trusted("), "{name} reaches a plugin network path directly");
+            }
+        }
+        // the browser: open_external confirms while offline, desk_shell refuses plugin URL opens
+        assert!(body(&m, "async fn open_external(").contains("net_allowed("));
+        let sh = body(&m, "async fn desk_shell(");
+        assert!(sh.find("net_allowed(").unwrap() < sh.find("shell_open(").unwrap());
+    }
+
     #[test]
     fn open_external_rejects_non_http() {
         for u in ["javascript:alert(1)", "file:///etc/passwd", "data:text/html,x", "vbscript:x", "../x", "#h", "", "ftp://a.b"] {
             assert!(check_external(u).is_err(), "accepted {u}");
-            assert!(open_external(u.to_string()).is_err(), "command accepted {u}");
+            assert!(open_external_now(u.to_string()).is_err(), "command accepted {u}");
         }
         for u in ["https://example.com", "http://a.b/c", "mailto:x@y.z", "HTTPS://A.B"] {
             assert!(check_external(u).is_ok(), "rejected {u}");
