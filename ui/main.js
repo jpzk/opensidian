@@ -8506,11 +8506,13 @@ if (CANVAS) {
    commands audio-recorder:start / :stop, Recording YYYYMMDDHHmmss in the attachment folder, embed at the cursor).
    ON by default (#139, operator 2026-11-16: absent core-plugins.json key => on, an explicit false is respected); exposed in app.internalPlugins (config["audio-recorder"]); the on/off persists
    app-wide (localStorage) and per vault (core-plugins.json, settings.js). Works in restricted mode: app code.
-   THE MIC GATE (security, issue risk 4): the native hook (src-tauri/src/audiorec.rs) grants a capture request
-   only if it is audio-only AND the window was armed by audio_arm(token) a moment before; the token is handed
+   THE MIC GATE (security, issue risk 4; #136 exclusive): this page never captures. The native gate
+   (src-tauri/src/audiorec.rs) denies EVERY capture request of the app window; a recording runs in a hidden
+   recorder webview of its own (ui/recorder.html, no plugin loader) that Rust creates per recording on
+   audio_rec_start(token) and arms for ONE audio-only request. The token is handed
    out ONCE per page load, to the first caller — this block, at main.js load, before loader.js's seal and before
-   any plugin script is requested. The token, the page's own getUserMedia and MediaRecorder are kept in THIS
-   closure (never a global binding); navigator.mediaDevices.getUserMedia is then replaced, for every later
+   any plugin script is requested — and kept in THIS closure (never a global binding);
+   navigator.mediaDevices.getUserMedia is then replaced, for every later
    caller, by a rejector (NotAllowedError) — defence in depth over the native deny. Plugins share this realm
    (loader.js), so this is not a sandbox: see security.md. While the mic is open the ribbon button is active
    and a "Recording" status item is on screen (the issue's visible indicator).
@@ -8558,65 +8560,42 @@ let AREC = null;
     updateTitle();
   };
   const tmNow = () => { const d = new Date(); return { y: d.getFullYear(), mo: d.getMonth() + 1, d: d.getDate(), h: d.getHours(), mi: d.getMinutes(), s: d.getSeconds(), ms: d.getMilliseconds(), off: -d.getTimezoneOffset(), epoch_ms: d.getTime() }; };
+  // #136: the capture runs in the hidden recorder webview (ui/recorder.html, audio_rec_start), never in this page:
+  // its gate denies every capture request, so a plugin's getUserMedia here never receives a stream
+  const errName = m => (/^([A-Za-z]+Error): /.exec(m) || [])[1] || "";
   async function start() {
     if (!st.on || st.rec || st.busy) return;
-    if (!gum || !MR) return note("Audio recording is not available: this window has no media capture.");
+    if (!IV || !MR) return note("Audio recording is not available: this window has no media capture.");
     if (!(typeof MR.isTypeSupported === "function" && MR.isTypeSupported(MIME)))
       return note("Audio recording is not available: GStreamer opusenc/webmmux missing.");
     st.busy = true; st.err = "";
     try {
       const token = await tokP;
       if (!token) return note("Audio recording is not available in this window.");
-      let stream;
-      try {
-        await call("audio_arm", { token });
-        stream = await gum({ audio: true, video: false });
-      } catch (e) {
-        // our own request failed after arming: if another script of the page took the one-shot grant,
-        // audio_end stops its stream now (native mic_off); harmless otherwise (codeant C1, #124)
-        await call("audio_end", { token }).catch(() => {});
-        const n = e && e.name;
+      try { await call("audio_rec_start", { token }); }
+      catch (e) {
+        const m = errStr(e), n = errName(m);
         if (n === "NotFoundError" || n === "OverconstrainedError" || n === "NotReadableError") return note("No microphone is connected.");
         if (n === "NotAllowedError" || n === "SecurityError") { st.denied++; return note("Microphone access was denied."); }
-        return note("Audio recorder: " + errStr(e));
+        if (n === "NotSupportedError") return note("Audio recording is not available: " + m.slice(n.length + 2));
+        return note("Audio recorder: " + m);
       }
-      call("audio_disarm", { token }).catch(() => {});
-      if (!stream.getAudioTracks().length || stream.getVideoTracks().length) {   // never anything but a mic
-        for (const t of stream.getTracks()) t.stop();
-        await call("audio_end", { token }).catch(() => {});
-        return note("No microphone is connected.");
-      }
-      let r;
-      try { r = new MR(stream, { mimeType: MIME }); }
-      catch (e) { for (const t of stream.getTracks()) t.stop(); await call("audio_end", { token }).catch(() => {}); return note("Audio recording is not available: " + errStr(e)); }
-      st.chunks = []; st.stream = stream; st.rec = r; st.t0 = Date.now();
-      r.addEventListener("dataavailable", ev => { if (ev.data && ev.data.size) st.chunks.push(ev.data); });
-      r.start(1000);
+      st.rec = { t0: Date.now() }; st.t0 = st.rec.t0;
     } finally { st.busy = false; paint(); }
   }
   async function stop() {
-    const r = st.rec;
-    if (!r || st.busy) return;
+    if (!st.rec || st.busy) return;
     st.busy = true;
     try {
-      // an already-stopped recorder (a track ended) fired its stop before: do not wait for it; 5 s cap either way
-      const done = r.state === "inactive" ? Promise.resolve() : new Promise(res => { r.addEventListener("stop", res, { once: true }); setTimeout(res, 5000); });
-      try { if (r.state !== "inactive") r.stop(); } catch (_) {}
-      await done;
-      for (const t of st.stream ? st.stream.getTracks() : []) t.stop();
-      st.rec = null; st.stream = null;
-      paint();
       const token = await tokP;
-      // the recording is over: no mic track of this page may outlive it (native mic_off)
-      if (token) await call("audio_end", { token }).catch(() => {});
-      const blob = new Blob(st.chunks, { type: "audio/webm" });
-      st.chunks = [];
-      if (!blob.size) return note("Nothing was recorded: the microphone sent no audio.");
       const g = fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
       const nm = t && !t.kind ? t.name : "";
+      // the recorder webview stops, hands its recording over and is closed (its microphone with it); Rust saves
       let a;
-      try { a = await call("audio_save", { token, note: nm, data: b64Bytes(new Uint8Array(await blob.arrayBuffer())), tm: tmNow() }); }
+      try { a = await call("audio_rec_stop", { token, note: nm, tm: tmNow() }); }
       catch (e) { return note("Recording not saved — " + errStr(e)); }
+      finally { st.rec = null; paint(); }
+      if (!a) return note("Nothing was recorded: the microphone sent no audio.");
       st.saved++; st.last = a.path;
       await refreshTree();
       // stock: the active markdown view gets "\n" + embed + "\n" in place of its selection; otherwise only the file
