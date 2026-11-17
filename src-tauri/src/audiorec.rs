@@ -260,6 +260,63 @@ pub fn install_then<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>, done: impl F
     }
 }
 
+/* #136 the recorder webview must count as VISIBLE to WebKit: a hidden (unmapped) page never gets its
+   getUserMedia through (WebKit holds capture requests of a page that is not visible). Its window stays
+   hidden (no taskbar entry, no focus, nothing on screen); the webview itself is moved into a
+   GtkOffscreenWindow, which is mapped and rendered off screen. rec_offscreen_drop destroys it with the
+   recording. Main thread only (GTK), hence the thread_local. */
+#[cfg(target_os = "linux")]
+thread_local! {
+    static OFFSCREEN: std::cell::RefCell<HashMap<String, gtk::OffscreenWindow>> = std::cell::RefCell::new(HashMap::new());
+}
+
+#[cfg(target_os = "linux")]
+pub fn rec_offscreen<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>) {
+    let label = w.label().to_string();
+    let r = w.with_webview(move |pw| {
+        use gtk::prelude::{ContainerExt, GtkWindowExt, WidgetExt};
+        use gtk::glib::Cast;
+        let wv = pw.inner();
+        let widget: gtk::Widget = wv.upcast();
+        if let Some(p) = widget.parent() {
+            if let Ok(c) = p.downcast::<gtk::Container>() {
+                c.remove(&widget);
+            }
+        }
+        let off = gtk::OffscreenWindow::new();
+        off.set_default_size(16, 16);
+        off.add(&widget);
+        off.show_all();
+        eprintln!("[audiorec] {label}: capture page offscreen (mapped={})", widget.is_mapped());
+        OFFSCREEN.with(|o| {
+            if let Some(old) = o.borrow_mut().insert(label, off) {
+                // SAFETY: GTK main thread (with_webview); a stale offscreen of the same label is ours to drop
+                unsafe { old.destroy() }
+            }
+        });
+    });
+    if let Err(e) = r {
+        eprintln!("[audiorec] recorder webview not moved offscreen: {e}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn rec_offscreen_drop<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>) {
+    let label = w.label().to_string();
+    let _ = w.with_webview(move |_| {
+        use gtk::prelude::WidgetExt;
+        if let Some(off) = OFFSCREEN.with(|o| o.borrow_mut().remove(&label)) {
+            // SAFETY: GTK main thread (with_webview); the offscreen window and the webview in it are ours
+            unsafe { off.destroy() }
+        }
+    }); // reason: a webview that is already gone has no offscreen window left to drop
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn rec_offscreen<R: tauri::Runtime>(_: &tauri::WebviewWindow<R>) {}
+#[cfg(not(target_os = "linux"))]
+pub fn rec_offscreen_drop<R: tauri::Runtime>(_: &tauri::WebviewWindow<R>) {}
+
 /// the kill switch (codeant C1 on #124): every microphone track of the window's
 /// page stops (WebKit's microphone capture state -> NONE). The core calls it
 /// through `audio_end` when a recording stops and when its own request was

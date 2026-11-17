@@ -1110,6 +1110,7 @@ fn rec_close(app: &tauri::AppHandle, parent: &str) {
     audiorec::sess_drop(parent);
     if let Some(rw) = app.get_webview_window(&audiorec::rec_label(parent)) {
         let _ = audiorec::mic_off(&rw); // reason: the webview is destroyed next either way
+        audiorec::rec_offscreen_drop(&rw);
         if let Err(e) = rw.destroy() {
             eprintln!("[audiorec] recorder webview not closed: {e}");
         }
@@ -1151,7 +1152,10 @@ async fn audio_rec_start(app: tauri::AppHandle, win: tauri::WebviewWindow, token
             return Err(format!("NotReadableError: the recorder could not start ({e})"));
         }
     };
+    audiorec::rec_offscreen(&rw);
+    let lbl = rw.label().to_string();
     audiorec::install_then(&rw, move || {
+        eprintln!("[audiorec] {lbl}: gate connected");
         let _ = gtx.send(()); // reason: a recorder page that is already gone needs no signal
     });
     match rec_recv(srx, REC_START_WAIT).await {
@@ -1160,6 +1164,7 @@ async fn audio_rec_start(app: tauri::AppHandle, win: tauri::WebviewWindow, token
             Ok(())
         }
         r => {
+            eprintln!("[audiorec] recorder start failed: {r:?}");
             rec_close(&app, &parent);
             Err(match r {
                 Some(Err(e)) => e,
@@ -1174,6 +1179,7 @@ async fn audio_rec_start(app: tauri::AppHandle, win: tauri::WebviewWindow, token
 async fn audio_rec_go(win: tauri::WebviewWindow) -> Result<(), String> {
     let parent = audiorec::parent_of(win.label()).ok_or("not allowed")?.to_string();
     let rx = audiorec::with_sess(&parent, |s| s.and_then(|s| s.gated.take())).ok_or("not allowed")?;
+    eprintln!("[audiorec] {}: page up, waiting for the gate", win.label());
     rec_recv(rx, REC_START_WAIT).await.ok_or_else(|| "the microphone gate is not ready".to_string())
 }
 
@@ -1183,6 +1189,7 @@ async fn audio_rec_started(win: tauri::WebviewWindow, ok: bool, err: String) -> 
     let parent = audiorec::parent_of(win.label()).ok_or("not allowed")?.to_string();
     let (tx, stop) = audiorec::with_sess(&parent, |s| s.map(|s| (s.started.take(), s.stop_rx.take()))).ok_or("not allowed")?;
     let tx = tx.ok_or("not allowed")?;
+    eprintln!("[audiorec] {}: started ok={ok} {}", win.label(), err.chars().take(120).collect::<String>());
     let _ = tx.send(if ok { Ok(()) } else { Err(err.chars().take(300).collect()) }); // reason: a start that gave up already closes this webview
     if ok {
         if let Some(rx) = stop {
@@ -1198,6 +1205,7 @@ async fn audio_rec_started(win: tauri::WebviewWindow, ok: bool, err: String) -> 
 fn audio_rec_data(win: tauri::WebviewWindow, data: String) -> Result<(), String> {
     let parent = audiorec::parent_of(win.label()).ok_or("not allowed")?.to_string();
     let tx = audiorec::with_sess(&parent, |s| s.and_then(|s| s.data.take())).ok_or("not allowed")?;
+    eprintln!("[audiorec] {}: data {} b64 bytes", win.label(), data.len());
     tx.send(data).map_err(|_| "the recording was not taken".to_string())
 }
 
