@@ -3688,6 +3688,11 @@ function wsmTok() {
    an iteration every time. */
 const OVF_SCROLL = "#tree,#sresults,#bmlist,.rlist,.lp,.preview,.editor,.ac," +
                    "#mlist,#p-dirs,#p-recent,#sbody,#snav,#spage,#hklist,#wsmlist";
+/* OVF_CLIP: chrome boxes that CLIP by design, like stock 1.13.7 `.workspace-ribbon { overflow: hidden }` (app.css):
+   when the window is shorter than the icon column, the icons that do not fit are cut off at the ribbon's own box,
+   never a scrollbar, never a spill. The box itself is still checked (viewport bounds, and sh+ the moment its
+   overflow is not hidden any more), but the walk does not descend: a clipped child cannot paint outside it. */
+const OVF_CLIP = "#ribbon";
 function ovfName(el) {              // short, stable selector for a failure message
   const c = (el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className) || "";
   const k = String(c).trim().split(/\s+/).filter(Boolean).slice(0, 2).map(x => "." + x).join("");
@@ -3742,7 +3747,7 @@ function ovfScan() {
       else if (r.bottom > vh + 1) why = "b" + Math.round(r.bottom) + ">" + vh;
       else if (r.left < -1) why = "l" + Math.round(r.left);
       else if (r.top < -1) why = "t" + Math.round(r.top);
-      const sub = walk(c);
+      const sub = c.matches(OVF_CLIP) ? 0 : walk(c);         // clip container: check the box, not its clipped contents
       if (why) {
         n++;
         // a LEAF offender is overflowed by a child the walk does not check
