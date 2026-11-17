@@ -1152,12 +1152,12 @@ const Ed = {
       }
     }
     Ed.snap(g, "indent");
-    let dc = 0;
+    let dc = 0, da = 0;                                      // column shift on the to / the from line
     for (let l = first; l <= last; l++) {
       if (out) {
         const m = /^(\t| {1,4})/.exec(L[l]);
-        if (m) { L[l] = L[l].slice(m[0].length); if (l === s.b.l) dc = -m[0].length; }
-      } else { L[l] = "\t" + L[l]; if (l === s.b.l) dc = 1; }
+        if (m) { L[l] = L[l].slice(m[0].length); if (l === s.b.l) dc = -m[0].length; if (l === s.a.l) da = -m[0].length; }
+      } else { L[l] = "\t" + L[l]; if (l === s.b.l) dc = 1; if (l === s.a.l) da = 1; }
     }
     // M32: an ordered item that changes level RESTARTS the run it joins, and
     // the run it LEFT closes up over the hole ("3. c" -> "2. c").
@@ -1166,7 +1166,17 @@ const Ed = {
       if (it.num !== null) Ed.renumber(L, first, it, Ed.startNum(L, first, it));
       Ed.renumber(L, last + 1, old, Ed.startNum(L, last + 1, old));
     }
-    Ed.after(g, s.b.l, Math.max(0, s.b.c + dc));
+    if (s.empty) { Ed.after(g, s.b.l, Math.max(0, s.b.c + dc)); return; }
+    // #161: a real selection stays selected, both ends shifted with their line's indent and the
+    // direction kept (stock 1.13.7: 0:0-2:3 -> Tab 0:1-2:4 -> Tab 0:2-2:5), so the next Tab /
+    // Shift+Tab moves the same lines again
+    const cm = Ed.cm(g), back = !!cm && cm.state.selection.main.anchor > cm.state.selection.main.head;
+    Ed.commit(g);
+    const from = Ed.off(g, s.a.l, Math.max(0, s.a.c + da)), to = Ed.off(g, s.b.l, Math.max(0, s.b.c + dc));
+    if (!cm) return;
+    cm.dispatch({ selection: { anchor: back ? to : from, head: back ? from : to } });
+    if (!cm.hasFocus) cm.focus();
+    Ed.mark(g, Ed.focusPos(g).l);
   },
   /* R17.4 M46-M51 Ctrl+L "Toggle checkbox status" (in 1.13.7 this is the task
      toggle — Ctrl+Enter is NOT, see M45/M92): a task flips [ ] <-> [x] in
