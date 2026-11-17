@@ -32,7 +32,7 @@
     ["Media and rendering", [
       ["vaultMedia", false, "Render images, PDFs, audio and video from your vaults. Off: a placeholder is shown and no file reaches a decoder."],
       ["webgl", false, "Off: the graph switches to its 2D renderer at once; plugin code gets no new WebGL context (one made before keeps running until a reload)."],
-      ["canvas", false, "Off: <canvas> drawing is replaced before any page code runs (graph, image export and paste re-encoding stop). Limit: hardening only; a trusted plugin with native access can still reach drawing through other routes."],
+      ["canvas", false, "Off: <canvas> drawing and pixel reads are refused in every frame before any page code runs (graph view, canvas image export and image paste re-encoding stop and say so). The page reloads to apply it. Limit: hardening, not a wall: WebKit has no canvas switch, so a trusted community plugin (it already has file and program access) can still draw through a same-origin worker or native code."],
       ["mathjax", false, "The MathJax TeX parser (loaded on demand, e.g. by a plugin calling loadMathJax). Off: its files are refused, the parser is never in memory and loadMathJax fails naming this switch; math stays plain text."],
       ["prism", false, "The Prism code tokenizer (loaded on demand, e.g. by loadPrism). Off: its files are refused, the tokenizer is never in memory and loadPrism fails naming this switch; code stays plain text."],
       ["mermaid", false, "The Mermaid diagram engine. Not bundled in this version (loadMermaid is unsupported); off keeps it refused once it is. Off: loadMermaid fails naming this switch; diagrams stay plain text."],
@@ -74,15 +74,18 @@
     const KEY = "osSecReload";
     if (!R || typeof R.pageRemote !== "boolean" || typeof R.pageMedia !== "boolean" || !R.effective) return;
     const stale = engineStale();
-    const agree = !!R.effective.remoteMedia === R.pageRemote && !!R.effective.vaultMedia === R.pageMedia && !stale.length;
+    // toggle 6: the canvas stubs are fixed at document start (security_get pageCanvas); a window built
+    // with them needs a restart instead (restartPending "canvas"), a reload would not help
+    const cvAgree = typeof R.pageCanvas !== "boolean" || (R.restartPending || []).includes("canvas") || !!R.effective.canvas === R.pageCanvas;
+    const agree = !!R.effective.remoteMedia === R.pageRemote && !!R.effective.vaultMedia === R.pageMedia && cvAgree && !stale.length;
     if (agree) { try { sessionStorage.removeItem(KEY); } catch (_) {} return; }
     let n = 0;
     try { n = +sessionStorage.getItem(KEY) || 0; } catch (_) {}
     if (reloading) return;
-    if (n >= 2) { console.warn("[sec] page CSP still disagrees with Load external resources / Render media (or an engine that is off is still loaded: " + stale.join(",") + ") after 2 reloads"); return; }
+    if (n >= 2) { console.warn("[sec] page CSP still disagrees with Load external resources / Render media / HTML canvas (or an engine that is off is still loaded: " + stale.join(",") + ") after 2 reloads"); return; }
     reloading = true;
     try { sessionStorage.setItem(KEY, String(n + 1)); } catch (_) {}
-    console.warn("[sec] reloading the page into the CSP of Load external resources=" + !!R.effective.remoteMedia + " Render media=" + !!R.effective.vaultMedia + (stale.length ? " (unloading " + stale.join(",") + ")" : ""));
+    console.warn("[sec] reloading the page into the CSP of Load external resources=" + !!R.effective.remoteMedia + " Render media=" + !!R.effective.vaultMedia + " HTML canvas=" + !!R.effective.canvas + (stale.length ? " (unloading " + stale.join(",") + ")" : ""));
     Promise.resolve(inv("save_debounce_ms")).catch(() => 0)
       .then(ms => setTimeout(() => location.reload(), (+ms || 0) + 300));
   }

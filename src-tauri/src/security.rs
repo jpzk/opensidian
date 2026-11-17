@@ -317,11 +317,15 @@ pub fn report(cfg: &Value) -> Value {
             forced.insert((*f).into(), Value::from(why));
         }
     }
-    let pending: Vec<&str> = RESTART_BOUND
+    let mut pending: Vec<&str> = RESTART_BOUND
         .iter()
         .copied()
         .filter(|f| booted().is_some_and(|b| b.field(f) != stored.field(f)))
         .collect();
+    // toggle 6: back on, but this window was built with the canvas stubs (canvas_restart_pending)
+    if canvas_restart_pending(&eff, CANVAS_FIXED.load(std::sync::atomic::Ordering::SeqCst)) {
+        pending.push("canvas");
+    }
     let names: serde_json::Map<String, Value> = FIELDS.iter().map(|x| (x.0.to_string(), Value::from(x.3))).collect();
     serde_json::json!({
         "stored": stored,
@@ -336,6 +340,8 @@ pub fn report(cfg: &Value) -> Value {
         "pageMedia": PAGE_MEDIA.load(std::sync::atomic::Ordering::SeqCst),
         // toggle 5: what the page webview's enable-webgl is right now (main.rs sec_webgl)
         "pageWebgl": PAGE_WEBGL.load(std::sync::atomic::Ordering::SeqCst),
+        // toggle 6: did THIS document get the canvas stubs at its start (false = it did)?
+        "pageCanvas": PAGE_CANVAS.load(std::sync::atomic::Ordering::SeqCst),
         // toggles 8 + 9: has community code entered THIS page; what the native key gate enforces
         "realmPlugin": REALM_PLUGIN.load(std::sync::atomic::Ordering::SeqCst),
         "pageAppClipboard": PAGE_APPCLIP.load(std::sync::atomic::Ordering::SeqCst),
@@ -511,6 +517,95 @@ pub fn webgl_off_text() -> String {
 /// the applied one disagree, None when nothing is to do
 pub fn webgl_change(eff: &Eff, applied: bool) -> Option<bool> {
     (eff.sec.webgl != applied).then_some(eff.sec.webgl)
+}
+
+/* ---- toggle 6: HTML canvas (docs §1 "6 — HTML canvas"). WebKitGTK has no setting for
+   <canvas>, so this is HARDENING, not a boundary against a trusted plugin (limit written in the
+   setting's description). Boundary: a native user script (canvas_script) in EVERY frame at
+   document start, before any app / plugin code; it replaces getContext (null) / toDataURL /
+   toBlob / captureStream / transferControlToOffscreen, OffscreenCanvas and the 2D context's
+   pixel readers with refusing stubs that are non-writable + non-configurable, and the page CSP
+   drops blob: from worker-src (csp_canvas) so a blob: worker realm (no user script) cannot be
+   made. Canvas off forces WebGL off (effective_with).
+   Where it comes from (main.rs page_window / sec_canvas):
+     CANVAS_FIXED = off at window creation: the builder's all-frames initialization script,
+                    guaranteed before the first document; it lives as long as the window, so
+                    turning canvas back ON is "Applies after restart" (report restartPending).
+     CANVAS_LIVE  = turned off later: our own UserScript in the webview's content manager,
+                    removed again when it goes back on; each applies at the next page load.
+   PAGE_CANVAS  = the CURRENT document's canvas (false = the stubs ran at its document start),
+                  set at each main-frame load start (report pageCanvas). */
+pub static PAGE_CANVAS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+pub static CANVAS_FIXED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static CANVAS_LIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub const CANVAS_OFF: &str = "HTML canvas is off";
+
+/// "HTML canvas is off (Settings › Security › HTML canvas)"
+pub fn canvas_off_text() -> String {
+    format!("{CANVAS_OFF} {}", named("canvas"))
+}
+
+/// are the stubs in the content manager (the next document gets them)?
+pub fn canvas_installed() -> bool {
+    CANVAS_FIXED.load(std::sync::atomic::Ordering::SeqCst) || CANVAS_LIVE.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// the live script: Some(true) = add it, Some(false) = remove it, None = nothing to do
+/// (a builder script already covers "off"; it cannot be removed, see canvas_restart_pending)
+pub fn canvas_change(eff: &Eff, fixed: bool, live: bool) -> Option<bool> {
+    match (eff.sec.canvas, fixed, live) {
+        (false, false, false) => Some(true),
+        (true, _, true) => Some(false),
+        _ => None,
+    }
+}
+
+/// canvas is on again but this window was built with the stubs: only a restart clears them
+pub fn canvas_restart_pending(eff: &Eff, fixed: bool) -> bool {
+    fixed && eff.sec.canvas
+}
+
+/// toggle 6 CSP layer: off drops blob: from worker-src (no blob: worker realm without the stubs)
+pub fn csp_canvas(csp: &str, on: bool) -> String {
+    if on {
+        return csp.to_string();
+    }
+    csp.split(';')
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(|d| match d.split_whitespace().next().unwrap_or("") {
+            "worker-src" => d.split_whitespace().filter(|t| *t != "blob:").collect::<Vec<_>>().join(" "),
+            _ => d.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// the user script (every frame, document start). Built from Rust data only; the refusal text
+/// is the toggle's sentence, also published read-only as window.opensidianCanvasOff so the
+/// app's own canvas users (graph, export, paste) show a placeholder naming the switch.
+pub fn canvas_script() -> String {
+    let w = serde_json::to_string(&canvas_off_text()).expect("a string serialises");
+    r#"(function () {
+  "use strict";
+  var W = __W__, D = Object.defineProperty;
+  function err() { try { return new DOMException(W, "SecurityError"); } catch (_) { return new Error(W); } }
+  function no() { throw err(); }
+  function lock(o, k, v) { if (!o) return; try { D(o, k, { value: v, writable: false, configurable: false, enumerable: false }); } catch (_) {} }
+  var C = window.HTMLCanvasElement && window.HTMLCanvasElement.prototype;
+  lock(C, "getContext", function getContext() { return null; });
+  ["toDataURL", "toBlob", "captureStream", "transferControlToOffscreen"].forEach(function (k) { lock(C, k, no); });
+  ["CanvasRenderingContext2D", "OffscreenCanvasRenderingContext2D"].forEach(function (n) {
+    var p = window[n] && window[n].prototype;
+    ["getImageData", "putImageData", "drawImage", "createPattern"].forEach(function (k) { lock(p, k, no); });
+  });
+  ["OffscreenCanvas", "OffscreenCanvasRenderingContext2D", "ImageBitmapRenderingContext"].forEach(function (n) { if (n in window) lock(window, n, no); });
+  if (window.Document && "getCSSCanvasContext" in window.Document.prototype) lock(window.Document.prototype, "getCSSCanvasContext", function () { return null; });
+  lock(window, "opensidianCanvasOff", W);
+})();
+"#
+    .replace("__W__", &w)
 }
 
 /* ---- toggles 8 + 9: clipboard (docs §1 "8 + 9"). Boundary: the BACKEND reads the page
@@ -1018,6 +1113,39 @@ mod tests {
         assert_eq!(webgl_change(&effective_with(d, None), false), Some(true), "turning it back on re-enables");
         assert_eq!(webgl_off_text(), "WebGL is off (Settings › Security › WebGL)");
         assert_eq!(report(&json!({}))["pageWebgl"], json!(true));
+    }
+
+    /// toggle 6: default = today (no stubs, nothing to do); off adds the live script once, on
+    /// removes only OUR live script; a builder-made window needs a restart; the CSP layer drops
+    /// blob: from worker-src only; the script locks the surfaces and carries the toggle's name
+    #[test]
+    fn canvas_stubs_follow_the_effective_value() {
+        let d = Sec::default();
+        let on = effective_with(d, None);
+        assert_eq!(canvas_change(&on, false, false), None, "default = today: canvas on, no script");
+        assert!(!canvas_restart_pending(&on, false));
+        let mut s = d;
+        s.canvas = false;
+        let off = effective_with(s, None);
+        assert_eq!(canvas_change(&off, false, false), Some(true));
+        assert_eq!(canvas_change(&off, false, true), None, "already added");
+        assert_eq!(canvas_change(&off, true, false), None, "the builder's script covers it");
+        assert_eq!(canvas_change(&on, false, true), Some(false), "back on removes the live script");
+        assert_eq!(canvas_change(&on, true, false), None);
+        assert!(canvas_restart_pending(&on, true), "a builder script needs a restart");
+        let mut l = d;
+        l.lockdown = true;
+        assert_eq!(canvas_change(&effective_with(l, Some(l)), false, false), Some(true), "lockdown forces canvas off");
+        let csp = "default-src 'self'; script-src 'self' blob:; worker-src 'self' blob:; media-src 'self' blob:";
+        assert_eq!(csp_canvas(csp, true), csp);
+        assert_eq!(csp_canvas(csp, false), "default-src 'self'; script-src 'self' blob:; worker-src 'self'; media-src 'self' blob:");
+        let js = canvas_script();
+        assert!(js.contains("\"HTML canvas is off (Settings › Security › HTML canvas)\""), "{js}");
+        for k in ["\"getContext\"", "\"toDataURL\"", "\"toBlob\"", "\"OffscreenCanvas\"", "\"getImageData\"", "\"opensidianCanvasOff\"", "writable: false, configurable: false"] {
+            assert!(js.contains(k), "canvas script lacks {k}");
+        }
+        assert!(!js.contains("__W__"));
+        assert_eq!(report(&json!({}))["pageCanvas"], json!(true));
     }
 
     /// toggle 11: each engine's switch 403s exactly its own /vendor/<engine>/ bytes, through

@@ -4097,6 +4097,52 @@ fn sec_webgl<R: tauri::Runtime>(_w: &tauri::WebviewWindow<R>, on: bool) {
     eprintln!("[sec] webgl={on}: no WebKitSettings on this platform, not enforced");
 }
 
+/// #144 toggle 6 (docs §1 "6 — HTML canvas"), the LIVE half: canvas turned off after the window
+/// was built adds OUR UserScript (all frames, document start) to the page webview's content
+/// manager; back on removes exactly that script (never remove_all_scripts: Tauri's own IPC init
+/// scripts live there too). Either applies at the next page load (security.js reloads while
+/// pageCanvas disagrees). The script object stays on the GTK main thread (with_webview).
+#[cfg(target_os = "linux")]
+fn sec_canvas<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>, add: bool) {
+    // recorded first (like PAGE_WEBGL): a load that starts right after security_set already counts it
+    security::CANVAS_LIVE.store(add, std::sync::atomic::Ordering::SeqCst);
+    let r = w.with_webview(move |pw| {
+        use webkit2gtk::{UserContentManagerExt, WebViewExt};
+        thread_local! {
+            static OURS: std::cell::RefCell<Option<webkit2gtk::UserScript>> = const { std::cell::RefCell::new(None) };
+        }
+        let Some(ucm) = WebViewExt::user_content_manager(&pw.inner()) else {
+            eprintln!("[sec] canvas: the page webview has no content manager, not applied");
+            return;
+        };
+        OURS.with(|o| {
+            let mut o = o.borrow_mut();
+            if let Some(old) = o.take() {
+                ucm.remove_script(&old);
+            }
+            if add {
+                let us = webkit2gtk::UserScript::new(
+                    &security::canvas_script(),
+                    webkit2gtk::UserContentInjectedFrames::AllFrames,
+                    webkit2gtk::UserScriptInjectionTime::Start,
+                    &[],
+                    &[],
+                );
+                ucm.add_script(&us);
+                *o = Some(us);
+            }
+        });
+        eprintln!("[sec] canvas={} (live user script {}, next page load)", if add { "off" } else { "on" }, if add { "added" } else { "removed" });
+    });
+    if let Err(e) = r {
+        eprintln!("[sec] canvas live change not applied: {e}");
+    }
+}
+#[cfg(not(target_os = "linux"))]
+fn sec_canvas<R: tauri::Runtime>(_w: &tauri::WebviewWindow<R>, add: bool) {
+    eprintln!("[sec] canvas off={add}: no user content manager on this platform, applies at the next start");
+}
+
 /// #144 toggle 9 (docs §1 "8 + 9"): what the page webview enforces natively. Off: WebKitSettings
 /// javascript-can-access-clipboard = false (execCommand copy/cut/paste refuse); on: the value the
 /// webview had before we first touched it (wry's choice, today's behaviour). The key / middle-click
@@ -4182,7 +4228,8 @@ fn page_csp(h: &tauri::AppHandle, res: &mut tauri::http::Response<std::borrow::C
     let remote = eff.sec.remote_media;
     // #144 toggle 4 layer 2: off drops opensidian-img: (img-src) and blob: (media-src)
     let media = eff.sec.vault_media;
-    let csp = security::csp_media(&security::csp_remote(&csp_by_trust(&base, trusted), remote), media);
+    // #144 toggle 6 CSP layer: off drops blob: from worker-src
+    let csp = security::csp_canvas(&security::csp_media(&security::csp_remote(&csp_by_trust(&base, trusted), remote), media), eff.sec.canvas);
     match tauri::http::HeaderValue::from_str(&csp) {
         Ok(v) => {
             res.headers_mut().insert("Content-Security-Policy", v);
@@ -4281,6 +4328,15 @@ fn page_window(app: &tauri::AppHandle, wc: &tauri::utils::config::WindowConfig) 
     // transport instead: a drop naming a local file still goes drop-files -> attach_drop, the rest
     // is WebKit's (the DOM drop -> Ed.htmlDrop converts its text/html, like stock)
     let b = b.disable_drag_drop_handler();
+    // #144 toggle 6: canvas off at creation = the stubs as an ALL-FRAMES initialization script,
+    // guaranteed before the first document (it lives as long as the window: back on = restart)
+    let b = if security::effective(&cfg_value()).sec.canvas {
+        b
+    } else {
+        security::CANVAS_FIXED.store(true, std::sync::atomic::Ordering::SeqCst);
+        eprintln!("[sec] canvas=off (all-frames user script at window creation)");
+        b.initialization_script_for_all_frames(security::canvas_script())
+    };
     let w = b.on_web_resource_request(move |req, res| {
         if req.uri().path() == VFS_SYNC_PATH {
             *res = vfs_sync(&h, &req);
@@ -4311,6 +4367,10 @@ fn page_window(app: &tauri::AppHandle, wc: &tauri::utils::config::WindowConfig) 
             // to wash the taint; load-changed is the webview's main frame only.
             security::REALM_PLUGIN.store(false, std::sync::atomic::Ordering::SeqCst);
             eprintln!("[sec] realm clean (page load started)");
+            // #144 toggle 6: this document gets the canvas stubs iff they are in the content manager now
+            let cv = !security::canvas_installed();
+            security::PAGE_CANVAS.store(cv, std::sync::atomic::Ordering::SeqCst);
+            eprintln!("[sec] page canvas={}", if cv { "on" } else { "off" });
         }
     })
     .build()?;
@@ -4565,6 +4625,16 @@ async fn security_set(win: tauri::Window, field: String, on: bool) -> Result<ser
         }
         // whoever moved it (the pane, or a script calling the command): the page's graphs follow
         let _ = win.emit("security-webgl", gl);
+    }
+    // toggle 6 live: add / remove OUR canvas user script (next page load; security.js reloads)
+    let fixed = security::CANVAS_FIXED.load(std::sync::atomic::Ordering::SeqCst);
+    let live = security::CANVAS_LIVE.load(std::sync::atomic::Ordering::SeqCst);
+    if let Some(add) = security::canvas_change(&security::effective(&cfg_value()), fixed, live) {
+        use tauri::Manager;
+        match win.app_handle().get_webview_window(win.label()) {
+            Some(w) => sec_canvas(&w, add),
+            None => eprintln!("[sec] canvas off={add}: no webview window {}", win.label()),
+        }
     }
     // toggle 9 live: the native gate + the WebKit setting follow the effective value at once
     let clip = security::effective(&cfg_value()).sec.app_clipboard;
@@ -9302,6 +9372,32 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// #144 toggle 6: canvas off at creation = an ALL-FRAMES init script added before the
+    /// window is built; each main-frame load records whether its document got the stubs; the
+    /// live half adds / removes only OUR script (never remove_all_scripts: Tauri's IPC init
+    /// lives there too); security_set applies it after the write; the CSP drops blob: workers
+    #[test]
+    fn canvas_stubs_reach_every_frame_before_any_script() {
+        let src = include_str!("main.rs");
+        let body = |head: &str| {
+            let a = src.find(head).unwrap_or_else(|| panic!("{head}"));
+            &src[a..a + src[a..].find("\n}\n").expect("end")]
+        };
+        let pw = body("fn page_window(");
+        let init = pw.find(concat!("initialization_script_for_all_frames(", "security::canvas_script())")).expect("no all-frames canvas script at creation");
+        assert!(init < pw.find(".build()?").expect("build"), "the canvas script is added after the window is built");
+        assert!(pw.contains(concat!("security::PAGE_CANVAS.", "store(cv")), "a page load does not record its canvas state");
+        let lv = body("fn sec_canvas<R: tauri::Runtime>(w:");
+        for k in ["UserContentInjectedFrames::AllFrames", "UserScriptInjectionTime::Start", "ucm.remove_script(&old)", "ucm.add_script(&us)"] {
+            assert!(lv.contains(k), "sec_canvas lacks {k}");
+        }
+        assert!(!lv.contains(concat!("remove_all", "_scripts")), "sec_canvas would drop Tauri's own init scripts");
+        let set = body("async fn security_set(");
+        let c = set.find(concat!("security::canvas_", "change(")).expect("security_set does not apply canvas live");
+        assert!(set.find("cfg_update(").expect("write") < c && set[c..].contains("sec_canvas(&w, add)"));
+        assert!(body("fn page_csp(").contains(concat!("security::csp_", "canvas(")), "no worker-src layer");
     }
 
     /// #144 toggle 5: the webview's enable-webgl is set at window creation from the effective

@@ -1534,6 +1534,7 @@ function tywGhost(g, R) {
 }
 function tywMeasure(rd, R) {
   const ctx = (tywCanvas = tywCanvas || document.createElement("canvas")).getContext("2d");
+  if (!ctx) return "";   // #144 toggle 6: HTML canvas off (census only)
   const fnt = el => { const s = getComputedStyle(el); return s.fontStyle + " " + s.fontWeight + " " + s.fontSize + " " + s.fontFamily; };
   const met = (el, ch) => { ctx.font = fnt(el); return ctx.measureText(ch); };
   const find = s => { const w = document.createTreeWalker(R, NodeFilter.SHOW_TEXT);
@@ -1606,6 +1607,7 @@ function ttlTok() {
   const s = getComputedStyle(R, "::before");
   if (s.content === "none" || s.display === "none") return "";
   const ctx = (ttlCanvas = ttlCanvas || document.createElement("canvas")).getContext("2d");
+  if (!ctx) return "";   // #144 toggle 6: HTML canvas off (census only)
   const fnt = c => c.fontStyle + " " + c.fontWeight + " " + c.fontSize + " " + c.fontFamily;
   const f = v => Number.isFinite(v) ? String(Math.round(v * 100) / 100) : "-";
   const rr = R.getBoundingClientRect(), rs = getComputedStyle(R);
@@ -11812,7 +11814,7 @@ function showEditor(g) {
   if (g.ro) { g.ro.disconnect(); g.ro = null; }
   if (g.attrObs) { g.attrObs.disconnect(); g.attrObs = null; }
   perf.flush();                    // ship buffered graph_frame samples of the closed sim
-  g.graph.hidden = true; if (g.glcv) g.glcv.hidden = true;
+  g.graph.hidden = true; if (g.glcv) g.glcv.hidden = true; if (g.cvOffEl) g.cvOffEl.hidden = true;   // #144 toggle 6 placeholder
   gcUnbind(g); g.gfF = null; g.gfApply = null;   // the graph-controls card belongs to a graph view
   applyMode(g);
 }
@@ -11869,6 +11871,16 @@ async function startGraph(g, cfg) {
   const fetchP = cfg.fetch(), prefP = graphRendererPref();   // backend works while the renderer comes up
   const gcP = cfg.scope ? Promise.resolve(cfg.scope()) : null;   // graph-controls scope: graph.json (read beside the fetch) or the lg tab's options
   const ctx = cv.getContext("2d");
+  if (!ctx) {   // #144 toggle 6: HTML canvas off -> getContext is null in this realm; the graph names the switch instead of drawing
+    cv.hidden = true; if (g.glcv) g.glcv.hidden = true;
+    let ph = g.cvOffEl;
+    if (!ph) { ph = g.cvOffEl = document.createElement("div"); ph.className = "graph-secoff"; ph.dataset.sec = "canvas"; cv.parentNode.insertBefore(ph, cv.nextSibling); }
+    ph.textContent = "Graph view needs HTML canvas — " + (window.opensidianCanvasOff || "HTML canvas is off (Settings › Security › HTML canvas)");
+    ph.hidden = false;
+    g.graphRenderer = null; g.graphGlWhy = "canvas-off";   // census [gl:none] [glsec:canvas-off]
+    console.warn("[sec] graph not drawn: " + ph.textContent);
+    return;
+  }
   // graph-webgl: DEFAULT draw path is WebGL (ui/graph-gl.js) on a .graphgl canvas BEHIND cv
   // (nodes + edges); cv stays on top for events, labels (Canvas 2D text) and the 2D fallback.
   // Fallback to the full 2D path when: forced (env/setting), no webgl context, or the

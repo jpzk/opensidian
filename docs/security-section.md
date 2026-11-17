@@ -391,6 +391,24 @@ What (a) means concretely:
 - **T3 probe `seccanvas`:** off → probe plugin `getContext('2d')` throws / null, prototype
   restore fails, a fresh `srcdoc` iframe's canvas also refuses, blob worker refused by CSP,
   graph shows "needs canvas", no uncaught page error; on → 2d context works (control).
+- **As built:** `security.rs` `canvas_script()` (the stubs + read-only
+  `window.opensidianCanvasOff` = the refusal sentence), `csp_canvas` (worker-src without
+  `blob:`), `canvas_change` / `canvas_restart_pending`, report `pageCanvas`. Two sources:
+  off at window creation → `page_window` adds it with Tauri's
+  `initialization_script_for_all_frames` (guaranteed before the first document, cannot be
+  removed while the window lives: turning canvas back on shows "Applies after restart");
+  turned off later → `sec_canvas` adds OUR `webkit2gtk::UserScript` (AllFrames, Start) to
+  the webview's content manager and removes exactly that one when it goes back on (never
+  `remove_all_scripts`: Tauri's IPC init scripts live there). Both apply at the next page
+  load; `on_page_load(Started)` records `pageCanvas`, and `ui/security.js` reloads once
+  while it disagrees with the effective value (same once-per-change rule as toggles 1 / 4).
+  `getContext` answers `null` (what libraries already handle for an unsupported context);
+  `toDataURL` / `toBlob` / `captureStream` / `transferControlToOffscreen`,
+  `OffscreenCanvas`, and the 2D context's `getImageData` / `putImageData` / `drawImage` /
+  `createPattern` throw a `SecurityError` naming the toggle. UI: graph view shows
+  "Graph view needs HTML canvas — HTML canvas is off (Settings › Security › HTML canvas)"
+  (`.graph-secoff`, census `[glsec:canvas-off]`), canvas "Export as image" notices the same
+  sentence, census-only measuring helpers return empty. PDFs are unaffected (backend PNGs).
 
 ### 12 — Lockdown mode (preset)
 

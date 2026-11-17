@@ -1003,6 +1003,8 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
 .graphgl { position: absolute; inset: 0; background: var(--bg-ribbon) }
 .graphgl[hidden] { display: none }
 .graph.gl-on { background: var(--transparent) }
+.graph-secoff { flex: 1 1 0; min-width: 0; display: flex; align-items: center; justify-content: center; padding: 24px; text-align: center; color: var(--text-muted); background: var(--bg-ribbon) }   /* #144 toggle 6 */
+.graph-secoff[hidden] { display: none }
 
 /* [[ autocomplete */
 .ac { position: absolute; z-index: var(--layer-popover, 6); background: var(--suggestion-background, var(--bg-elevated));
