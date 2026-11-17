@@ -78,6 +78,13 @@
       "name": "glib",
       "version": "0.18.5",
       "purl": "pkg:cargo/glib@0.18.5"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/chrono@0.4.45",
+      "name": "chrono",
+      "version": "0.4.45",
+      "purl": "pkg:cargo/chrono@0.4.45"
     }
   ],
   "vulnerabilities": [
@@ -344,6 +351,32 @@
         "detail": "Fixed in the shipped crate: src-tauri/vendor/glib-0.18.5 = crates.io glib 0.18.5 + upstream fix b5a4071e (VariantStrIter::impl_get), wired by [patch.crates-io]; proven byte-for-byte by scripts/supply-chain/glib-vendor-check.sh. Upstream fix only in glib >= 0.20, gtk3-rs 0.18 pins 0.18. cargo audit/deny never see a path crate, so this id is in neither ignore list; osv-scanner sees pkg:cargo/glib@0.18.5 in the SBOM.",
         "response": [
           "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2027-05-15"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:RUSTSEC-2026-0543",
+      "id": "RUSTSEC-2026-0543",
+      "source": {
+        "name": "RustSec",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0543.html"
+      },
+      "affects": [
+        {
+          "ref": "pkg:cargo/chrono@0.4.45"
+        }
+      ],
+      "analysis": {
+        "state": "in_triage",
+        "detail": "Unmaintained (informational, no vulnerability), transitive via serde_with (tauri-utils); no maintained drop-in in the tauri stack. Revisit by expiry.",
+        "response": [
+          "can_not_fix"
         ]
       },
       "properties": [

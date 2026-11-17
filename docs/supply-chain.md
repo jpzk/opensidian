@@ -217,14 +217,18 @@ and on scratch copies / stubs (must fail): past-expiry and missing VEX entries, 
 byte, a yanked or edited glib, an `ldd` "not found", a git crate named `opensidian`, a failed or
 malformed osv-scanner run. A gate that silently stops failing turns this job red.
 
-**Known red finding:** `npm moment@2.30.1`, GHSA-4p3w-j4w9-5jqw / CVE-2026-17495 (path traversal
-via a crafted locale name). It is fixed in 2.31.0, published 2026-09-15, so a bump is allowed
-under the 6-week rule. It is **not** suppressed: moment is exposed to plugins as
-`require("obsidian").moment`, so `not_affected` can't be proven. Until moment is bumped (separate
-PR), the sbom job is red **and blocks release.yml's draft-release**.
+**Formerly red, fixed:** `npm moment@2.30.1`, GHSA-4p3w-j4w9-5jqw / CVE-2026-17495 (path traversal
+via a crafted non-string locale name). moment is exposed to plugins as `require("obsidian").moment`,
+so `not_affected` couldn't be proven and it was never suppressed. Fixed by vendoring moment 2.31.0
+(published 2026-09-15, 63 days before it was added, six-week rule), with `package/LICENSE` shipped
+unmodified as `ui/vendor/moment.LICENSE`; vendor-verify proves both files against the tarball.
 
-Local test scan (vendor + rust + flatpak): 503 components, 499 scanned packages, 11 VEX ignores
-applied, 1 finding (moment).
+**chrono unmaintained:** RUSTSEC-2026-0543 (informational, no vulnerability) hit chrono 0.4.45,
+which comes in transitively through serde_with (tauri-utils). It is `in_triage` in the VEX and in
+both ignore lists, expiring 2027-05-15, the same as the other unmaintained transitive crates.
+
+Local test scan (vendor + rust + flatpak): 499 scanned packages, 12 VEX ignores applied,
+0 findings.
 
 ### attest-sbom
 

@@ -219,18 +219,23 @@
     },
     {
       "name": "moment",
-      "version": "2.30.1",
-      "purl": "pkg:npm/moment@2.30.1",
+      "version": "2.31.0",
+      "purl": "pkg:npm/moment@2.31.0",
       "license": "MIT",
-      "tarball": "https://registry.npmjs.org/moment/-/moment-2.30.1.tgz",
-      "integrity": "sha512-uEmtNhbDOrWPFS+hdjFCBfy9f2YoyzRpwcl+DqpC6taX21FzsTLQVbMV/W7PzNSX6x/bhC1zA3c2UQ5NzH6how==",
+      "tarball": "https://registry.npmjs.org/moment/-/moment-2.31.0.tgz",
+      "integrity": "sha512-0acOTfMiWOheYS4eoWb80yYMb/JLvVv9SHbs2PehaDzfUG0Bw855SKyk0IKTnPGa5+U2bmi3W68l1+sGLX/pvw==",
       "files": [
         {
           "path": "moment.min.js",
           "tarball_path": "package/min/moment.min.js",
-          "sha256": "845c524969edd5b3af9aa6d8718d29fe92e8dbe25b955214a8e064a05a9a5027",
+          "sha256": "c111ad2e4447c253765e679bb4a40ba91a3e23d80b4b69d603a0fd25164cb9de",
           "local_header_lines": 4,
-          "vendored_sha256": "a62e24f1c21e1d7d8dc66c5a15749b5b201aa5dfafeaabfa9a7675ea76b10672"
+          "vendored_sha256": "0ee7f4db9ac059ce1bc26671f168608ff761a446679b17802cff303e116c872a"
+        },
+        {
+          "path": "moment.LICENSE",
+          "tarball_path": "package/LICENSE",
+          "sha256": "64419cc68debfd9b7c27e9cd926c756181e0857709d2701094874e0fb1a41d28"
         }
       ],
       "embedded_version": [
@@ -243,13 +248,14 @@
           "regex": "^/\\*! moment\\.js [0-9]+\\.[0-9]+\\.[0-9]+"
         }
       ],
-      "published": "2023-12-27T10:38:43.272Z",
-      "added": "2026-10-13",
-      "files_taken": "package/min/moment.min.js (+ a 4-line local provenance header, see files[].local_header_lines)",
+      "published": "2026-09-15T01:07:26.131Z",
+      "added": "2026-11-17",
+      "files_taken": "package/min/moment.min.js (+ a 4-line local provenance header, see files[].local_header_lines) + package/LICENSE as moment.LICENSE",
       "loaded_by": "ui/plugins/api-core.js + ui/plugins/settings.js + ui/main.js dnMoment (script src vendor/moment.min.js) -> window.moment / require(\"obsidian\").moment",
       "modified": false,
-      "license_file": "THIRD-PARTY.md (no LICENSE beside it; MIT notice in the file header)",
-      "tarball_sha256": "52219a9fee5e1faade4c72536c173c54cedd5e2619272dd0c251a30aeafcde8c"
+      "license_file": "ui/vendor/moment.LICENSE (package/LICENSE, unmodified) + THIRD-PARTY.md",
+      "tarball_sha256": "efddf549c13aa7cf270f573d9c464978ab0810c0652673ae6af1189bb56ab3f8",
+      "bump_reason": "2.30.1 -> 2.31.0: GHSA-4p3w-j4w9-5jqw / CVE-2026-17495 (path traversal via crafted non-string locale name), fixed in 2.31.0; 2.31.0 published 2026-09-15, 63 days before added (six-week rule)"
     }
   ],
   "bundles": [

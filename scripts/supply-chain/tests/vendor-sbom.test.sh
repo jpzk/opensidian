@@ -21,7 +21,7 @@ if SOURCE_DATE_EPOCH=0 "$s" >"$t/bom.json" 2>"$t/err"; then
        and (.metadata.timestamp == "1970-01-01T00:00:00Z")
        and ([.components[].purl // empty] as $p
             | all("pkg:npm/mathjax@3.2.2", "pkg:npm/pdfjs-dist@6.3.289",
-                  "pkg:npm/prismjs@1.30.0", "pkg:npm/moment@2.30.1"; . as $x | $p | index($x)))
+                  "pkg:npm/prismjs@1.30.0", "pkg:npm/moment@2.31.0"; . as $x | $p | index($x)))
        and ([.components[] | select(.properties // [] | map(.value) | index("ui/vendor/codemirror/build/package-lock.json"))
              | {n: .name, v: .version}] | sort) == $want
        and ([.components[] | select(.name | test("esbuild"))] | length) == 0
