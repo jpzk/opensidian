@@ -65,6 +65,10 @@ const BACKED: &[(&str, &str, &str)] = &[
     // key, default off). main.rs reads it on every reading render and writes it
     // by merge (strict_line_breaks / set_strict_line_breaks); APP_KEYS below.
     ("editor", "Strict line breaks", "strictLineBreaks"),
+    // issue #119: Obsidian's Editor > Display "Properties in document" dropdown (Visible /
+    // Hidden / Source), the VAULT's app.json "propertiesInDocument" (main.rs props_mode /
+    // set_props_mode, absent = Visible); APP_KEYS below.
+    ("editor", "Properties in document", "propertiesInDocument"),
     // goal fontwheel (docs/ctrlzoom/recon.md REQ-1): Obsidian's Appearance > Font
     // "Quick font size adjustment" toggle, the vault's appearance.json
     // "baseFontSizeAction" (themefs::quickfont / set_quickfont; absent = ON,
@@ -84,7 +88,7 @@ const BACKED: &[(&str, &str, &str)] = &[
 /// Keys that back a settings row and live in the VAULT's .obsidian/app.json,
 /// read and merge-written by main.rs (app_bool_in / set_app_bool_in).
 /// `app_keys_are_all_touched_by_main` pins this list to the source.
-pub const APP_KEYS: &[&str] = &["strictLineBreaks"];
+pub const APP_KEYS: &[&str] = &["strictLineBreaks", "propertiesInDocument"];
 
 /// Keys that back a settings row but live in the VAULT's .obsidian/appearance.json
 /// (Obsidian's file, byte-wise round-trip — src-tauri/src/themefs.rs), not in
@@ -385,11 +389,14 @@ pub fn model() -> Model {
    2-space pretty JSON like stock. */
 pub const CANVAS_REL: &str = ".obsidian/canvas.json";
 pub const CORE_REL: &str = ".obsidian/core-plugins.json";
+/// issue #115: the Daily notes core plugin's options — stock's file and keys (format / folder / template /
+/// autorun), read and merged like the two above (ui/main.js DN block, ui/plugins/settings.js pane)
+pub const DAILY_REL: &str = ".obsidian/daily-notes.json";
 
 /// one vault-config request from the frontend (ui/plugins/settings.js)
 #[derive(Debug, serde::Deserialize)]
 pub struct VaultCfg {
-    /// "canvas" | "core-plugins"
+    /// "canvas" | "core-plugins" | "daily-notes"
     pub file: String,
     /// None = read; Some(object) = merge these keys
     #[serde(default)]
@@ -400,6 +407,7 @@ fn vcfg_rel(file: &str) -> Result<&'static str, String> {
     match file {
         "canvas" => Ok(CANVAS_REL),
         "core-plugins" => Ok(CORE_REL),
+        "daily-notes" => Ok(DAILY_REL),
         f => Err(format!("vault config {f:?} is not one of ours")),
     }
 }
@@ -415,10 +423,27 @@ fn vcfg_key_ok(file: &str, k: &str, v: &serde_json::Value) -> Result<(), String>
         ("canvas", "showCardNames") => one_of(&["always", "hover", "never"]),
         ("canvas", "zoomThreshold") => v.as_f64().is_some_and(|x| x.is_finite() && (0.0..=400.0).contains(&x)),
         ("canvas", "snapToGrid") | ("canvas", "snapToObjects") => v.is_boolean(),
-        ("core-plugins", "canvas") => v.is_boolean(),
+        // #116: the Audio recorder on/off switch sits next to Canvas's, same shape
+        ("core-plugins", "canvas") | ("core-plugins", "audio-recorder") | ("core-plugins", "daily-notes") => v.is_boolean(),
+        // issue #115: daily-notes.json. folder / template are vault-relative paths: no "..", no NUL, not absolute,
+        // no hidden component (the note writer refuses those as well: main.rs safe_rel). The format is a moment
+        // pattern; it may hold "/" (nested folders) and the note name it yields is checked again on create.
+        ("daily-notes", "folder") | ("daily-notes", "template") => v.as_str().is_some_and(daily_rel_ok),
+        ("daily-notes", "format") => v.as_str().is_some_and(|s| s.len() <= 256 && !s.contains('\0')),
+        ("daily-notes", "autorun") => v.is_boolean(),
         _ => return Err(format!("{file}.json: key {k:?} is not ours to write")),
     };
     if ok { Ok(()) } else { Err(format!("{file}.json: bad value for {k:?}")) }
+}
+
+/// issue #115: a daily-notes.json folder / template value we may write: "" (unset) or a vault-relative path
+/// ("Daily", "/Daily/" — stock strips the slashes —, "Templates/Daily.md"); never "..", NUL, "\\" or a hidden
+/// component, so no value we store can name a place outside the vault
+fn daily_rel_ok(s: &str) -> bool {
+    s.len() <= 1024
+        && !s.contains('\0')
+        && !s.contains('\\')
+        && s.split('/').map(str::trim).filter(|c| !c.is_empty()).all(|c| c != ".." && !c.starts_with('.'))
 }
 
 /// the whole file as an object; absent / empty = {}; unparsable / not an object = Err (never replaced)
@@ -553,7 +578,9 @@ mod tests {
         // opens https://www.opensidian.org, recorded in /workspace/goal/settings-general/progress.md.
         // 12 -> 13 (goal settings-general): the General top row's "Check for updates" is an
         // ACTION row (updates.rs: signed GitHub release check), same progress.md.
-        assert_eq!(enabled, 13, "enabled-row count changed — say why in progress.md (R30)");
+        // 13 -> 14 (issue #119): Editor > "Properties in document" is live on app.json
+        // propertiesInDocument, recorded in /workspace/goal/i119-props/progress.md.
+        assert_eq!(enabled, 14, "enabled-row count changed — say why in progress.md (R30)");
     }
 
     /// a key is "real" only if main.rs actually reads or writes it
@@ -714,10 +741,46 @@ mod tests {
         let v = vcfg_in(&root, &req("core-plugins", Some(serde_json::json!({"canvas": false})))).unwrap();
         assert_eq!(v, serde_json::json!({"canvas": false}));
         assert!(vcfg_in(&root, &req("core-plugins", Some(serde_json::json!({"graph": false})))).is_err());
+        // #116: the Audio recorder switch merges next to canvas; a non-bool is refused
+        let v = vcfg_in(&root, &req("core-plugins", Some(serde_json::json!({"audio-recorder": true})))).unwrap();
+        assert_eq!(v, serde_json::json!({"canvas": false, "audio-recorder": true}));
+        assert!(vcfg_in(&root, &req("core-plugins", Some(serde_json::json!({"audio-recorder": "on"})))).is_err());
         std::fs::write(root.join(CORE_REL), "[\"canvas\"]").unwrap();
         assert!(vcfg_in(&root, &req("core-plugins", Some(serde_json::json!({"canvas": true})))).is_err());
         assert_eq!(std::fs::read_to_string(root.join(CORE_REL)).unwrap(), "[\"canvas\"]");
         assert_eq!(vcfg_in(&root, &req("core-plugins", None)).unwrap(), serde_json::json!({}));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /* issue #115: daily-notes.json in stock's shape (a file Obsidian wrote round-trips, unknown keys kept),
+       core-plugins.json takes "daily-notes" without dropping "canvas", and no folder / template we store can
+       point outside the vault */
+    #[test]
+    fn daily_notes_cfg_is_stock_shaped_and_vault_confined() {
+        let root = std::env::temp_dir().join(format!("opensidian-dncfg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".obsidian")).unwrap();
+        let req = |file: &str, patch: Option<serde_json::Value>| VaultCfg { file: file.into(), patch };
+        assert_eq!(vcfg_in(&root, &req("daily-notes", None)).unwrap(), serde_json::json!({}));
+        // a file written by Obsidian 1.13.7, plus a key a later stock may add
+        std::fs::write(root.join(DAILY_REL), "{\n  \"folder\": \"Journal\",\n  \"format\": \"YYYY/MM/YYYY-MM-DD\",\n  \"template\": \"Templates/Daily\",\n  \"autorun\": false,\n  \"futureKey\": [1]\n}").unwrap();
+        let v = vcfg_in(&root, &req("daily-notes", None)).unwrap();
+        assert_eq!(v["format"], "YYYY/MM/YYYY-MM-DD");
+        let v = vcfg_in(&root, &req("daily-notes", Some(serde_json::json!({"autorun": true, "folder": "/Daily/"})))).unwrap();
+        assert_eq!(v, serde_json::json!({"folder": "/Daily/", "format": "YYYY/MM/YYYY-MM-DD", "template": "Templates/Daily", "autorun": true, "futureKey": [1]}));
+        let before = std::fs::read_to_string(root.join(DAILY_REL)).unwrap();
+        for bad in [serde_json::json!({"folder": "../out"}), serde_json::json!({"folder": "a/../../b"}), serde_json::json!({"template": ".obsidian/x"}),
+                    serde_json::json!({"folder": "a\\..\\b"}), serde_json::json!({"autorun": "yes"}), serde_json::json!({"format": 7}),
+                    serde_json::json!({"format": "a\u{0}b"}), serde_json::json!({"periodic": true})] {
+            assert!(vcfg_in(&root, &req("daily-notes", Some(bad.clone()))).is_err(), "accepted {bad}");
+        }
+        assert_eq!(std::fs::read_to_string(root.join(DAILY_REL)).unwrap(), before, "a refused patch changed the file");
+        assert!(vcfg_in(&root, &req("daily-notes", Some(serde_json::json!({"folder": "", "template": "", "format": ""})))).is_ok());
+        // core-plugins.json: the daily-notes switch merges in next to canvas and every stock key
+        std::fs::write(root.join(CORE_REL), "{\"file-explorer\": true, \"canvas\": true, \"daily-notes\": false}").unwrap();
+        let v = vcfg_in(&root, &req("core-plugins", Some(serde_json::json!({"daily-notes": true})))).unwrap();
+        assert_eq!(v, serde_json::json!({"file-explorer": true, "canvas": true, "daily-notes": true}));
+        assert!(vcfg_in(&root, &req("core-plugins", Some(serde_json::json!({"daily-notes": 1})))).is_err());
         let _ = std::fs::remove_dir_all(&root);
     }
 

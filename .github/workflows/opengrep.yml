@@ -1,0 +1,137 @@
+# Opengrep SAST -> GitHub code scanning (SARIF, category "opengrep").
+# Findings show as inline annotations on the PR via the code-scanning check.
+#
+# Scope: PRs from branches of THIS repository only. Fork PRs are out of
+# scope: they get a read-only GITHUB_TOKEN (no security-events: write), so
+# the job is skipped for them. Do NOT switch to the privileged PR trigger —
+# that would run untrusted fork code with a write token.
+#
+# Supply chain — SCANNER EXCEPTION (operator 2026-11-15):
+#   Scanners float, build inputs stay pinned. A stale scanner means false
+#   negatives, and the scanner never ships in a release artifact. So this
+#   job resolves, at run time:
+#     - the LATEST non-prerelease opengrep release (GitHub API
+#       releases/latest), verified with sha256sum -c against that asset's
+#       API "digest" field — fails closed if the digest is missing;
+#     - opengrep/opengrep-rules default-branch HEAD (shallow clone).
+#   Resolved tag, sha256 and rules commit are printed to the log.
+#   Blast radius = this job's permissions: contents: read +
+#   security-events: write, NO secrets. A compromised scanner/rule set can
+#   at worst write bogus code-scanning alerts / read public source.
+#   Actions remain pinned by full 40-hex commit SHA (they are not scanners).
+name: Opengrep
+
+on:
+  # base-branch analyses: code scanning diffs PR alerts against these, so
+  # without them every PR into develop reports all existing findings as new.
+  push:
+    branches: [main, develop, 'v*']
+  # NO pull_request trigger (operator 2026-11-15): only develop, main, v* branches + schedule + dispatch
+  schedule:
+    # nightly, off the hour to avoid the 00:00 load spike
+    - cron: "37 2 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: opengrep-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  opengrep:
+    name: opengrep/sarif
+    # skip fork PRs (see header)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    env:
+      # nothing pinned here on purpose — see SCANNER EXCEPTION in the header
+      RULES_REPO: https://github.com/opengrep/opengrep-rules.git
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install opengrep (latest release, sha256 from API digest)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          api=repos/opengrep/opengrep/releases/latest
+          # ONE API call (no TOCTOU between tag and digest), parsed by gh's
+          # built-in jq. Output lines: tag, prerelease|draft, name=digest...
+          # linux x86_64 asset: v1.x named it opengrep_manylinux_x86,
+          # v2.x names it opengrep_linux_x86 — first match in that order wins.
+          meta=$(gh api -H 'Accept: application/vnd.github+json' "$api" --jq '
+            .tag_name,
+            ((.prerelease or .draft) | tostring),
+            (.assets[]
+              | select(.name == "opengrep_manylinux_x86" or .name == "opengrep_linux_x86")
+              | .name + "=" + (.digest // ""))')
+          tag=$(printf '%s\n' "$meta" | sed -n 1p)
+          pre=$(printf '%s\n' "$meta" | sed -n 2p)
+          [ -n "$tag" ] || { echo "::error::no tag_name from $api"; exit 1; }
+          [ "$pre" = false ] || { echo "::error::$tag is a prerelease/draft"; exit 1; }
+          line=""
+          for name in opengrep_manylinux_x86 opengrep_linux_x86; do
+            line=$(printf '%s\n' "$meta" | sed -n '3,$p' | grep -m1 "^${name}=" || true)
+            [ -z "$line" ] || break
+          done
+          [ -n "$line" ] || { echo "::error::no linux x86_64 asset in $tag"; exit 1; }
+          asset=${line%%=*}
+          digest=${line#*=}
+          # fail closed: the API digest is the only trust anchor
+          case "$digest" in
+            sha256:*) sha=${digest#sha256:} ;;
+            *) echo "::error::asset $asset in $tag has no sha256 digest ('$digest')"; exit 1 ;;
+          esac
+          printf '%s' "$sha" | grep -Eqx '[0-9a-f]{64}' \
+            || { echo "::error::malformed digest '$digest'"; exit 1; }
+          echo "opengrep release: $tag"
+          echo "opengrep asset:   $asset"
+          echo "opengrep sha256:  $sha"
+          bin="$RUNNER_TEMP/opengrep"
+          curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$bin" \
+            "https://github.com/opengrep/opengrep/releases/download/${tag}/${asset}"
+          echo "${sha}  ${bin}" | sha256sum -c -
+          chmod +x "$bin"
+          "$bin" --version
+
+      - name: Fetch community rules (default-branch HEAD)
+        run: |
+          set -euo pipefail
+          # cloned inside the workspace (untracked, excluded from the scan)
+          # so rule ids are stable: opengrep-community.<lang>.<...>
+          d=.opengrep-community
+          git clone -q --depth 1 --single-branch "$RULES_REPO" "$d"
+          echo "opengrep-rules HEAD: $(git -C "$d" rev-parse HEAD) ($(git -C "$d" log -1 --format=%cI))"
+
+      - name: Scan
+        run: |
+          set -euo pipefail
+          # community unsafe-usage is dropped: .opengrep/rules/rust-unsafe.yml
+          # reports the same blocks (as INFO notes).
+          "$RUNNER_TEMP/opengrep" scan \
+            --disable-version-check \
+            --config .opengrep-community/rust \
+            --config .opengrep-community/javascript \
+            --config .opengrep-community/generic/secrets \
+            --config .opengrep/rules \
+            --exclude ui/vendor \
+            --exclude .opengrep-community \
+            --exclude-rule opengrep-community.rust.lang.security.unsafe-usage \
+            --sarif -o opengrep.sarif .
+          test -s opengrep.sarif
+
+      - name: Upload SARIF to code scanning
+        if: always() && hashFiles('opengrep.sarif') != ''
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: opengrep.sarif
+          category: opengrep

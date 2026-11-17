@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # opensidian — binary .deb control template (Debian 13 / Ubuntu 26.04).
-# Filled in by bin/hz/deb-build.sh (harness): @VERSION@, @INSTALLED_SIZE@ and
+# Filled in by deb-build.sh: @ARCH@ (amd64/arm64, from the host arch), @VERSION@, @INSTALLED_SIZE@ and
 # @DEPENDS@. Depends is NOT written by hand: it is dpkg-shlibdeps' shlibs:Depends
 # for the wrapped release binary (DT_NEEDED -> libwebkit2gtk-4.1-0, libgtk-3-0t64, ...).
 # Comment lines (#) are stripped before the file becomes DEBIAN/control.
 Package: opensidian
 Version: @VERSION@
-Architecture: amd64
+Architecture: @ARCH@
 Maintainer: jpzk <jendrik@madewithtea.com>
 Installed-Size: @INSTALLED_SIZE@
 Depends: @DEPENDS@

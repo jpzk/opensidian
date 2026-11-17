@@ -1,0 +1,46 @@
+# Repo-local opengrep rules: DOM sinks in the webview UI (ui/).
+rules:
+  - id: opensidian.ui.html-sink-nonliteral
+    languages: [javascript]
+    severity: WARNING
+    message: >-
+      Assigning a non-literal string to an HTML sink. Vault notes and plugins
+      are untrusted; unsanitised HTML here is XSS inside the privileged Tauri
+      webview (which can reach IPC). Use textContent / DOM construction, or
+      sanitise explicitly.
+    metadata:
+      category: security
+      cwe: ["CWE-79: Improper Neutralization of Input During Web Page Generation"]
+      confidence: LOW
+    paths:
+      exclude: ["ui/vendor/**"]
+    patterns:
+      - pattern-either:
+          - pattern: $EL.innerHTML = $X
+          - pattern: $EL.outerHTML = $X
+          - pattern: $EL.insertAdjacentHTML($POS, $X)
+          - pattern: document.write($X)
+      - pattern-not: $EL.innerHTML = "..."
+      - pattern-not: $EL.outerHTML = "..."
+      - pattern-not: $EL.insertAdjacentHTML($POS, "...")
+      - pattern-not: document.write("...")
+
+  - id: opensidian.ui.eval
+    languages: [javascript]
+    severity: ERROR
+    message: >-
+      eval()/new Function()/string setTimeout in the webview. Dynamic code
+      from vault or plugin content runs with full IPC access.
+    metadata:
+      category: security
+      cwe: ["CWE-95: Eval Injection"]
+      confidence: MEDIUM
+    paths:
+      exclude: ["ui/vendor/**"]
+    patterns:
+      - pattern-either:
+          - pattern: eval($X)
+          - pattern: new Function(...)
+          - pattern: setTimeout("...", ...)
+          - pattern: setInterval("...", ...)
+      - pattern-not: eval("...")

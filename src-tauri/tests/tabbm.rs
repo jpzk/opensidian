@@ -9,7 +9,8 @@
 //! bookmark as itself. Since #31 a canvas, a global graph and a local graph tab are
 //! bookmarkable views too (one bm_add_view_at with tabBmItem's item); a canvas
 //! already bookmarked is a dup, a graph never is. Views with nothing behind them
-//! (a fileless / non-.md plugin view, no tab) stay refused.
+//! (a fileless / non-.md plugin view, no tab) stay refused. Since #140 an image, PDF or audio VIEWER
+//! tab bookmarks its file path (fileTabPath: a Path item, like a canvas), once.
 #![cfg(target_os = "linux")]
 
 use javascriptcore::{ContextExt, ExceptionExt, ValueExt};
@@ -56,14 +57,22 @@ fn ctx() -> javascriptcore::Context {
         "var bmCache = []; var bmTree = [];\
          var BOARD = { kind: 'unk', utype: 'excalidraw', name: 'Drawing 1' };\
          var CANVAS = { kind: 'unk', utype: 'canvas', name: 'Board' };\
+         var IMG = { kind: 'unk', utype: 'image', name: 'photo' };\
+         var PDF = { kind: 'unk', utype: 'pdf', name: 'Paper' };\
+         var AUD = { kind: 'unk', utype: 'audio', name: 'Recording 1' };\
          var PLG = { app: { workspace: { getLeavesOfType(t) {\
            return t === 'excalidraw' ? [{ _t: BOARD, view: { file: { path: 'Boards/Drawing 1.excalidraw.md' } } }]\
-                : t === 'canvas' ? [{ _t: CANVAS, view: { path: 'Boards/Board.canvas' } }] : []; } } } };");
-    // bmHasPath is a top-level `const` arrow, not a function declaration: load its one line
-    let hp = src.lines().find(|l| l.starts_with("const bmHasPath = ")).expect("const bmHasPath not in ui/main.js");
-    ctx.evaluate(&hp.replacen("const ", "var ", 1));
-    if let Some(e) = ctx.exception() { panic!("bmHasPath did not load: {}", e.to_str()); }
-    for f in ["pvNoteName", "cvTabPath", "tabBmName", "tabBmWhy"] {
+                : t === 'canvas' ? [{ _t: CANVAS, view: { path: 'Boards/Board.canvas' } }]\
+                : t === 'image' ? [{ _t: IMG, view: { path: 'pics/photo.png' } }]\
+                : t === 'pdf' ? [{ _t: PDF, view: { path: 'Paper.pdf' } }]\
+                : t === 'audio' ? [{ _t: AUD, view: { path: 'Recording 1.webm' } }] : []; } } } };");
+    // bmHasPath / VF_TYPES / fileTabPath are top-level `const`s, not function declarations: load their one line
+    for c in ["const bmHasPath = ", "const VF_TYPES = ", "const fileTabPath = "] {
+        let l = src.lines().find(|l| l.starts_with(c)).unwrap_or_else(|| panic!("{c} not in ui/main.js"));
+        ctx.evaluate(&l.replacen("const ", "var ", 1));
+        if let Some(e) = ctx.exception() { panic!("{c} did not load: {}", e.to_str()); }
+    }
+    for f in ["pvNoteName", "cvTabPath", "vfTabPath", "tabBmName", "tabBmWhy"] {
         ctx.evaluate(&func(&src, f));
         if let Some(e) = ctx.exception() { panic!("{f} did not load: {}", e.to_str()); }
     }
@@ -148,4 +157,28 @@ fn drop_writes_tab_bm_name() {
     assert!(d.contains("tabBmItem(bmTab).then(item => bmApply(\"bm_add_view_at\", { parent: t.d.parent, pos: t.d.pos, item }))"),
             "a view tab's drop must write tabBmItem(bmTab) via bm_add_view_at");
     assert_eq!(d.matches("\"bm_add_view_at\"").count(), 1, "the view-tab drop is ONE bm_add_view_at");
+}
+
+/// issue #140: an image, PDF or audio VIEWER tab bookmarks its file PATH (stock's plain file item, a Path
+/// node like a canvas) — live leaf or restored state — and is a dup once that path is in the tree.
+#[test]
+fn viewer_tabs_bookmark_their_path_once() {
+    let c = ctx();
+    for (t, p) in [("IMG", "pics/photo.png"), ("PDF", "Paper.pdf"), ("AUD", "Recording 1.webm")] {
+        assert_eq!(ev(&c, &format!("fileTabPath({t})")), p, "{t}: the viewer tab's path");
+        assert_eq!(ev(&c, &format!("{WHY}({t})")), "ok", "{t}: a viewer tab is bookmarkable by drag");
+        ev(&c, &format!("bmTree = [{{ path: true, name: '{p}' }}]"));
+        assert_eq!(ev(&c, &format!("{WHY}({t})")), "no:dup", "{t}: a second drop is a dup");
+        // a NOTE bookmark of the same string is not that file item
+        ev(&c, &format!("bmTree = [{{ name: '{p}' }}]"));
+        assert_eq!(ev(&c, &format!("{WHY}({t})")), "ok", "{t}: a note name is not the path item");
+        ev(&c, "bmTree = []");
+    }
+    // restored, not yet mounted: the persisted state's file
+    assert_eq!(ev(&c, "fileTabPath({kind:'unk', utype:'audio', name:'r', raw:{state:{state:{file:'r.mp3'}}}})"), "r.mp3");
+    // tabBmItem (the drop's and the menu's item) and the tab menu / Add bookmark modal use the same helper
+    let src = main_js();
+    let ti = &src[src.find("\nasync function tabBmItem(").expect("tabBmItem")..];
+    assert!(ti[..ti.find("\n}\n").unwrap()].contains("const cp = fileTabPath(t);"), "tabBmItem must build the item from fileTabPath");
+    assert!(func(&src, "openBmAdd").contains("const cvp = fileTabPath(t);"), "openBmAdd must treat a viewer tab as a view");
 }

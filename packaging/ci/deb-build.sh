@@ -3,12 +3,14 @@
 # CI COPY of the opensidian-harness release recipe (harness 22dd5194f685) — same pins, same steps;
 # only machine paths are parameterised (TMPDIR, APPIMAGETOOL, RPM_OCI_CACHE). Keep in sync.
 # DEB STAGE — runs ON THE BOX. Wraps an already-built release binary into
-# dist/opensidian-<ver>-x86_64.deb (Debian 13 / Ubuntu 26.04). Never compiles opensidian.
+# dist/opensidian-<ver>-<arch>.deb (Debian 13 / Ubuntu 26.04), <arch> = host uname -m
+# (x86_64 -> Architecture: amd64, aarch64 -> arm64). Never compiles opensidian.
 #   deb-build.sh <opensidian-tree> <ver> <slim-AppImage> [outdir]
 # Packages <tree>/src-tauri/target/release/opensidian — the file build-appimage.sh copied
 # into the AppImages — and FAILS unless the sha256 of usr/bin/opensidian extracted from the
 # deb (dpkg-deb -x) equals the one inside <slim-AppImage>: one compile, one sha.
-# Container: debian:trixie-20260803 (13.6), pinned by manifest-list digest (pushed
+# Container: debian:trixie-20260803 (13.6), pinned by manifest-list digest (multi-arch index:
+# podman picks the host platform, amd64 or arm64/v8, from the SAME pinned index; pushed
 # 2026-08-05, > 6 weeks old). apt reads ONLY the frozen snapshot that image was built
 # from (snapshot.debian.org 20260803T000000Z, trixie main); build tools pinned by version.
 # Depends = dpkg-shlibdeps over the binary's DT_NEEDED; nothing hand-guessed.
@@ -24,6 +26,8 @@ SNAP=20260803T000000Z
 # libwebkit2gtk-4.1-0 is installed only so dpkg-shlibdeps can map sonames -> packages.
 TOOLS="dpkg-dev=1.22.22 lintian=2.122.0 libwebkit2gtk-4.1-0=2.52.3-2~deb13u1"
 APPID=dev.koto.opensidian
+ARCH=$(uname -m)
+case "$ARCH" in x86_64) DEBARCH=amd64 ;; aarch64) DEBARCH=arm64 ;; *) die "unsupported arch $ARCH (x86_64|aarch64)";; esac
 BIN=$T/src-tauri/target/release/opensidian; PD=$T/packaging/deb
 ICON=$T/packaging/linux/opensidian.svg; ICD=$T/packaging/linux/icons
 DESK=$T/packaging/flatpak/$APPID.desktop; META=$T/packaging/flatpak/$APPID.metainfo.xml
@@ -32,7 +36,7 @@ for f in "$BIN" "$PD/control.in" "$PD/copyright" "$PD/changelog.in" "$ICON" $ICD
 command -v podman >/dev/null || die "no podman"
 # changelog date = the packaged commit's date, so the same SHA gives the same changelog
 CDATE=$(git -C "$T" log -1 --format=%aD 2>/dev/null || date -R)
-say "tree $T  ver $V  out $OUTD"
+say "tree $T  ver $V  arch $ARCH ($DEBARCH)  out $OUTD"
 say "image $IMG  (debian:trixie-20260803)  apt snapshot $SNAP"
 podman image exists "$IMG" || podman pull -q "$IMG" >/dev/null || die "pull $IMG"
 W=$(mktemp -d ${TMPDIR:-/tmp}/deb-XXXXXX); trap 'rm -rf "$W"' EXIT
@@ -46,8 +50,8 @@ install -Dm644 "$ICON" $R/usr/share/icons/hicolor/scalable/apps/$APPID.svg
 install -Dm644 "$PD/copyright" $R/usr/share/doc/opensidian/copyright
 sed -e "s/@VERSION@/$V/g" -e "s/@DATE@/$CDATE/" "$PD/changelog.in" | gzip -9n > $W/changelog.gz
 install -Dm644 $W/changelog.gz $R/usr/share/doc/opensidian/changelog.gz
-grep -v '^#' "$PD/control.in" > $W/control.in
-printf 'Source: opensidian\n\nPackage: opensidian\nArchitecture: amd64\n' > $W/debian/control
+grep -v '^#' "$PD/control.in" | sed "s/@ARCH@/$DEBARCH/" > $W/control.in
+printf 'Source: opensidian\n\nPackage: opensidian\nArchitecture: %s\n' "$DEBARCH" > $W/debian/control
 say "binary sha256 $(sha256sum "$BIN" | cut -d' ' -f1)  (src-tauri/target/release/opensidian)"
 say "logo svg sha256 $(sha256sum "$ICON" | cut -d' ' -f1)  (packaging/linux/opensidian.svg)"
 podman run --rm --network=host -v $W:/w "$IMG" bash -euo pipefail -c '
@@ -67,7 +71,7 @@ podman run --rm --network=host -v $W:/w "$IMG" bash -euo pipefail -c '
   sed -e "s/@VERSION@/'"$V"'/" -e "s/@INSTALLED_SIZE@/$SZ/" -e "s/@DEPENDS@/$DEP/" control.in > root/DEBIAN/control
   (cd root && find usr -type f | LC_ALL=C sort | xargs md5sum) > root/DEBIAN/md5sums
   chmod 644 root/DEBIAN/control root/DEBIAN/md5sums
-  P=out/opensidian-'"$V"'-x86_64.deb
+  P=out/opensidian-'"$V"'-'"$ARCH"'.deb
   dpkg-deb --root-owner-group -Zxz --build root $P > out/dpkg-deb.log 2>&1 || { cat out/dpkg-deb.log; exit 1; }
   cd out; P=${P#out/}
   dpkg-deb -I $P > info.txt; dpkg-deb -c $P > files.txt; dpkg-deb -f $P Depends > depends-field.txt
@@ -77,7 +81,7 @@ podman run --rm --network=host -v $W:/w "$IMG" bash -euo pipefail -c '
   (cd x && sha256sum usr/share/icons/hicolor/*/apps/'"$APPID"'.png usr/share/icons/hicolor/scalable/apps/'"$APPID"'.svg) > icons.sha256
   rm -rf x
 '
-P=$OUTD/opensidian-$V-x86_64.deb; mkdir -p "$OUTD"; cp $W/out/opensidian-$V-x86_64.deb "$P"
+P=$OUTD/opensidian-$V-$ARCH.deb; mkdir -p "$OUTD"; cp $W/out/opensidian-$V-$ARCH.deb "$P"
 L=$OUTD/deb-$V; rm -rf "$L"; mkdir -p "$L"; cp $W/out/*.log $W/out/*.txt $W/out/*.sha256 "$L"/
 say "deb $P  $(stat -c %s "$P") bytes  sha256 $(sha256sum "$P" | cut -d' ' -f1)"
 say "files:"; sed 's/^/    /' $L/files.txt
