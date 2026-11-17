@@ -351,3 +351,54 @@ jobs:
             ui/vendor/codemirror/build/package-lock.json
             packaging/flatpak/dev.koto.opensidian.yml
           sbom-path: ${{ runner.temp }}/sbom/${{ needs.sbom.outputs.file }}
+
+  # Opt-in (workflow_dispatch input codemirror_rebuild / weekly cron): rebuild
+  # ui/vendor/codemirror/cm6.js from ui/vendor/codemirror/build/ and fail unless the sha256
+  # equals the committed bundle (and vendor.lock.json). The ONLY job with node tooling.
+  #   node     v24.21.0 (LTS, released 2026-09-07), tarball pinned by sha256 below (= its SHASUMS256)
+  #   esbuild  0.28.2 + @esbuild/linux-x64 0.28.2 (published 2026-08-08), pinned by the sha512
+  #            integrity in build/package-lock.json, which vendor-js-cve proves against the registry
+  #   network  npm ci talks to registry.npmjs.org only (npm_config_registry; every lock
+  #            "resolved" is a registry tarball, checked by vendor-verify.sh) with
+  #            --ignore-scripts; the esbuild bundle step then runs in a network namespace with
+  #            no interfaces but lo (ESBUILD_WRAP), so it can only use what npm ci fetched.
+  codemirror-rebuild:
+    name: CodeMirror reproducible rebuild
+    if: ${{ github.event_name == 'schedule' || inputs.codemirror_rebuild }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    env:
+      NODE_VERSION: v24.21.0
+      NODE_SHA256: fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: install pinned node (sha256-verified)
+        run: |
+          set -euo pipefail
+          f="node-${NODE_VERSION}-linux-x64.tar.xz"
+          curl -4 -fsSL --retry 3 -m 120 -o "$RUNNER_TEMP/$f" "https://nodejs.org/dist/${NODE_VERSION}/$f"
+          echo "${NODE_SHA256}  $RUNNER_TEMP/$f" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/node-${NODE_VERSION}-linux-x64/bin" >> "$GITHUB_PATH"
+      - name: every build/package-lock.json entry published on or before the pin cutoff
+        run: sh ui/vendor/codemirror/build/build.sh check
+      - name: rebuild cm6.js (bundle step without network) and compare sha256
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = "$NODE_VERSION"
+          wrap="sudo unshare --net -- setpriv --reuid=$(id -u) --regid=$(id -g) --clear-groups env PATH=$PATH"
+          # the namespace really has no route out
+          if $wrap curl -4 -fsS -m 5 -o /dev/null https://registry.npmjs.org/; then
+            echo "::error::network namespace is not isolated"; exit 1
+          fi
+          want=$(jq -r '.bundles[] | select(.name == "codemirror") | .sha256' ui/vendor/vendor.lock.json)
+          test "$(sha256sum ui/vendor/codemirror/cm6.js | cut -d' ' -f1)" = "$want"
+          ESBUILD_WRAP="$wrap" CMP=ui/vendor/codemirror/cm6.js \
+            sh ui/vendor/codemirror/build/build.sh | tee "$RUNNER_TEMP/rebuild.log"
+          {
+            echo "### CodeMirror rebuild"
+            echo "node $(node --version), $(grep -m1 -E '^[0-9]+\.[0-9]+\.[0-9]+$' "$RUNNER_TEMP/rebuild.log" | sed 's/^/esbuild /')"
+            grep -E '^CM6-' "$RUNNER_TEMP/rebuild.log"
+          } >> "$GITHUB_STEP_SUMMARY"

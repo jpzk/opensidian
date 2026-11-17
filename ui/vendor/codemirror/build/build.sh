@@ -10,7 +10,9 @@
 #                          prints CM6-SHA256 <hex>; with CMP=<file> asserts byte identity.
 #   sh build.sh check      every package in package-lock.json published <= CUTOFF (registry time)
 #
-# Needs node + npm on PATH (CI: the opt-in cm6-rebuild job of supply-chain.yml, pinned node).
+# ESBUILD_WRAP=<cmd prefix> runs both esbuild calls under it (CI: a no-network namespace, so the
+# bundle step provably uses only what npm ci fetched from the registry).
+# Needs node + npm on PATH (CI: the opt-in codemirror-rebuild job of supply-chain.yml, pinned node).
 # Never runs package install scripts. Writes only under a temp dir.
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -33,8 +35,8 @@ check)
   cp "$HERE/package.json" "$HERE/package-lock.json" "$HERE/entry.js" "$HERE/banner.txt" "$w/"
   ( cd "$w" && export HOME="$w/.home" npm_config_cache="$w/.npm" npm_config_registry="$REG/" \
     && npm ci --ignore-scripts --no-audit --no-fund \
-    && ./node_modules/.bin/esbuild --version \
-    && ./node_modules/.bin/esbuild entry.js --bundle --format=iife --platform=browser --target=es2020 \
+    && ${ESBUILD_WRAP:-} ./node_modules/.bin/esbuild --version \
+    && ${ESBUILD_WRAP:-} ./node_modules/.bin/esbuild entry.js --bundle --format=iife --platform=browser --target=es2020 \
          --minify --charset=utf8 --legal-comments=none --banner:js="$(cat banner.txt)" \
          --log-level=warning --outfile=cm6.build.js )
   cp "$w/cm6.build.js" "$out"
