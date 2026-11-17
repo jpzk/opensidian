@@ -1157,7 +1157,7 @@ THE SOFTWARE.
 
 ### MathJax 3.2.2
 
-**Used in:** `ui/vendor/mathjax/` (`tex-chtml-full.js` and its CHTML woff fonts; `loadMathJax`, `renderMath`)
+**Used in:** `ui/vendor/mathjax/` (`tex-chtml-full.js` and its CHTML woff fonts; `loadMathJax`, `renderMath`; the app's math rendering `ui/mathview.js`)
 **Upstream:** https://www.mathjax.org (npm `mathjax@3.2.2`)
 **Licence:** Apache-2.0, full text shipped beside the files as `ui/vendor/mathjax/LICENSE`.
 Apache-2.0 is compatible with GPL-3.0 (not with GPL-2.0, see the summary at the top).

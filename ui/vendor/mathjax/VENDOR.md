@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 # ui/vendor/mathjax — mathjax 3.2.2, vendored
 
-Loaded on demand from 'self' by ui/plugins/api-functions.js (loadMathJax -> window.MathJax, renderMath, finishRenderMath). Unmodified upstream bytes;
+Loaded on demand from 'self' by ui/plugins/api-functions.js (loadMathJax -> window.MathJax, renderMath, finishRenderMath); the app's own $..$ / $$..$$ rendering (ui/mathview.js, #185) uses the same loader. Unmodified upstream bytes;
 no network, no eval, served under the existing CSP (script-src 'self').
 
 - package: mathjax

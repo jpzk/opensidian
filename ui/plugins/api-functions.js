@@ -831,8 +831,9 @@
     function loadMathJax() {
       if (mathJaxReady()) return Promise.resolve(window.MathJax);
       return loadOnce("mathjax", () => {
-        // configuration MathJax reads at startup: never typeset the app on its own, no context menu
-        window.MathJax = { startup: { typeset: false }, options: { enableMenu: false } };
+        // configuration MathJax reads at startup: never typeset the app on its own, no context menu;
+        // #185: no TeX \require extension, so note text can never make MathJax load a script
+        window.MathJax = { startup: { typeset: false }, options: { enableMenu: false }, tex: { packages: { "[-]": ["require"] } } };
         return loadScript("mathjax/tex-chtml-full.js", "MathJax")
           .then(() => window.MathJax.startup.promise)
           .then(() => {
@@ -867,5 +868,8 @@
       loadMermaid: () => Promise.reject(unsupported("loadMermaid (Mermaid is not bundled)")),
     };
     Object.assign(K.exportValues, GATED);
+    // #185: the app's own math renderer (ui/mathview.js) loads MathJax through this same loader, so one
+    // instance is shared with plugins and any gate on the loader covers the app's rendering too
+    try { Object.defineProperty(window, "__osMath", { value: Object.freeze({ loadMathJax }), configurable: false, writable: false, enumerable: false }); } catch (_) {}
   });
 })();
