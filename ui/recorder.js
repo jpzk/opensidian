@@ -35,11 +35,13 @@
   catch (e) { end(); return fail("NotSupportedError", (e && e.message) || String(e)); }
   const chunks = [];
   r.addEventListener("dataavailable", ev => { if (ev.data && ev.data.size) chunks.push(ev.data); });
+  // the stop listener is up before the recording starts: a recorder that stops on its own (a track ended)
+  // still has its final dataavailable + stop queued when its state reads "inactive", so always wait for stop
+  const stopped = new Promise(res => r.addEventListener("stop", res, { once: true }));
   r.start(1000);
   log("recording: " + r.state);
   try { await inv("audio_rec_started", { ok: true, err: "" }); } catch (_) {}   // returns when the app window stops the recording
-  // an already-stopped recorder (a track ended) fired its stop before: do not wait for it; 5 s cap either way
-  const done = r.state === "inactive" ? Promise.resolve() : new Promise(res => { r.addEventListener("stop", res, { once: true }); setTimeout(res, 5000); });
+  const done = Promise.race([stopped, new Promise(res => setTimeout(res, 5000))]);   // 5 s cap
   try { if (r.state !== "inactive") r.stop(); } catch (_) {}
   await done;
   end();

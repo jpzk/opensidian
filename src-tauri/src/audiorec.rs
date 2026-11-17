@@ -43,7 +43,8 @@
    answers a request of the SAME frame + origin from its grant cache WITHOUT emitting
    permission-request, and the request names no frame/origin a gate could tell apart — so inside the
    app page a plugin's getUserMedia during a recording got the recorder's grant. Now the core recorder
-   captures in a page of its own: a hidden webview "rec-<window>" (REC_PREFIX) loading
+   captures in a page of its own: a webview "rec-<window>" (REC_PREFIX; its window hidden, the
+   webview itself 1 px and transparent inside the app window, see rec_offscreen) loading
    ui/recorder.html, created by Rust per recording (audio_rec_start, token-checked) and closed when it
    ends. That webview has its own grant cache and its own gate; no plugin loader and no vault content
    run in it. decide() DENIES every user-media request of any other webview: the app window's gate
