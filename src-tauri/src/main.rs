@@ -3684,11 +3684,15 @@ fn unlinked_in(ix: &Index, name: &str) -> Vec<Mention> {
         for (line, col, len) in hits {
             let raw = lines.get(line as usize).copied().unwrap_or("");
             let text: String = raw.trim().chars().take(200).collect();
-            // issue #178: col/len are BYTES of the untrimmed line; the pane marks `text` (trimmed, UTF-16)
+            // issue #178: col/len are BYTES of the untrimmed line; the pane marks `text` (trimmed, UTF-16).
+            // `text` is a prefix of raw[lead..] (<= 200 chars), so only a hit inside it gets a mark and the
+            // UTF-16 count walks at most those bytes (a 25k-hit line stays linear: editordos_unlinked_in_hostile_note)
             let lead = raw.len() - raw.trim_start().len();
             let (a, b) = (col as usize, (col + len) as usize);
             let (mcol, mlen) = match (raw.get(lead.min(a)..a), raw.get(a..b)) {
-                (Some(pre), Some(hit)) if a >= lead => (Some(pre.encode_utf16().count() as u32), hit.encode_utf16().count() as u32),
+                (Some(pre), Some(hit)) if a >= lead && b <= lead + text.len() => {
+                    (Some(pre.encode_utf16().count() as u32), hit.encode_utf16().count() as u32)
+                }
                 _ => (None, 0),
             };
             out.push(Mention { note: n.to_string(), line, col, len, text, mcol, mlen });
