@@ -13559,7 +13559,7 @@ function setTok() {
   return " [set:" + SMODEL.nav.length + "/" + SMODEL.rows.length + "/" + e + "]" +
          snavlTok() +
          " [spane:" + sPane + "/" + sRowsShown + "/" + sEnabledShown + "]" +
-         svtTok() + ssnTok() + sactTok() + slbTok() + sqfTok() + fontSetTok() +
+         svtTok() + ssnTok() + sactTok() + slbTok() + sqfTok() + fontSetTok() + langTok() +
          (window.__osPluginSettings ? __osPluginSettings.tok() : "") +
          (sfpMs >= 0 ? " [sfp:" + sfpMs + "/" + sfpMax + "/" +
                        (Math.round(sfpSum / sfpN * 100) / 100) + "/" + sfpN + "]" : "") +
@@ -13938,6 +13938,75 @@ function propsModeCtl() {
   d.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") open(ev); };
   return d;
 }
+/* ---- General ▸ Language (#220). ~/.opensidian.json "language" = "auto" | a locales/ code
+   (main.rs i18n_set). The list is Auto (system) followed by every language in ITS OWN name
+   (English, 中文, 한국어, Русский, Español, 日本語 — never translated, so a user who cannot
+   read the current language still finds theirs), the active entry accented with a trailing
+   ✓ like the issue's mock-up. Same app .ctxmenu as the other live dropdowns, so the census
+   publishes the list and a phase can click it. The pick switches LIVE: I18N.set swaps the
+   bundle and fires onChange, whose subscriber below rebuilds the open settings modal. */
+const langCtlLabel = () => {
+  const s = window.I18N ? I18N.setting() : "auto";
+  if (s === "auto" || !window.I18N) return window.I18N ? I18N.t("language-auto") : "Auto (system)";
+  const l = I18N.langs().find(x => x[0] === s);
+  return l ? l[1] : s;
+};
+function langCtl() {
+  const d = document.createElement("div");
+  d.className = "sctl dropdown live";
+  d.id = "slang";
+  d.tabIndex = 0;
+  d.setAttribute("role", "button");
+  d.setAttribute("aria-haspopup", "menu");
+  d.textContent = langCtlLabel();
+  const open = ev => { ev.preventDefault(); ev.stopPropagation(); openLangMenu(d); };
+  d.onmousedown = ev => ev.stopPropagation();
+  d.onclick = open;
+  d.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") open(ev); };
+  return d;
+}
+function openLangMenu(anchor) {
+  closeMenu();
+  if (!window.I18N) return;
+  const m = document.createElement("div");
+  m.className = "ctxmenu"; m.dataset.menu = "language";
+  const cur = I18N.setting();
+  const items = [["auto", I18N.t("language-auto")]].concat(I18N.langs());
+  for (const [code, name] of items) {
+    const it = document.createElement("div");
+    it.dataset.lang = code;
+    it.textContent = name;
+    if (code === cur) {                           // an svg check, not a ✓ glyph: the ghicons census counts U+2713 as an emoji icon
+      it.className = "langon";
+      const k = document.createElement("span"); k.className = "langchk"; k.innerHTML = GI_SVG('<path d="M3.5 8.5l3 3 6-7"/>');
+      it.appendChild(k);
+    }
+    if (code !== "auto") it.lang = code;          // the right CJK glyphs for each name, whatever the page language
+    it.onmousedown = ev => ev.stopPropagation();
+    it.onclick = async ev => {
+      ev.stopPropagation(); closeMenu();
+      try { await I18N.set(code); } catch (err) { say("Language: " + String(err && err.message || err)); return; }
+      const c = document.getElementById("slang");
+      if (c) c.textContent = langCtlLabel();
+      updateTitle();
+    };
+    m.appendChild(it);
+  }
+  const b = anchor.getBoundingClientRect();
+  placeMenu(m, Math.round(b.left), Math.round(b.bottom + 4));
+}
+/* [lang:<setting>/<active>] — the Language setting and the language the UI renders in */
+function langTok() {
+  return window.I18N ? " [lang:" + I18N.setting() + "/" + I18N.lang() + "]" : "";
+}
+/* live switch: the settings modal is built once per open, so a language change rebuilds its
+   nav and the pane on screen (the menus, the palette and other modals build on open) */
+if (window.I18N) I18N.onChange(() => {
+  const nav = $("snav");
+  if (nav) nav.dataset.built = "0";
+  if (settingsOpen && SMODEL) { buildSettingsNav(); showSettingsPage(sPane); }
+  updateTitle();
+});
 function themeCtl() {
   const d = document.createElement("div");
   d.className = "sctl dropdown live";
@@ -14020,6 +14089,7 @@ function sctl(r) {                            // the control cell for one row, o
   if (r.key === "enabledCssSnippets") return snipCtl();   // themefs R3, same live-control rule
   if (r.key === "strictLineBreaks") return slbCtl();      // goal/linebreak REQ-1: Obsidian's Editor toggle
   if (r.key === "propertiesInDocument") return propsModeCtl();   // #119: Obsidian's Editor dropdown, app.json propertiesInDocument
+  if (r.key === "language") return langCtl();             // #220: General > Language, live switch (ui/i18n.js)
   if (FONT_BY_KEY[r.key]) {                               // fontset REQ-1/2: chevron + live row value
     const d = document.createElement("div"); d.className = "sctl nav live";
     const v = fontRowValue(FONT_BY_KEY[r.key][0]);
