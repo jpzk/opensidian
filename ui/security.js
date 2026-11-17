@@ -33,9 +33,9 @@
       ["vaultMedia", false, "Render images, PDFs, audio and video from your vaults. Off: a placeholder is shown and no file reaches a decoder."],
       ["webgl", false, "Off: the graph switches to its 2D renderer at once; plugin code gets no new WebGL context (one made before keeps running until a reload)."],
       ["canvas", false, "Off: <canvas> drawing is replaced before any page code runs (graph, image export and paste re-encoding stop). Limit: hardening only; a trusted plugin with native access can still reach drawing through other routes."],
-      ["mathjax", false, "Render $math$ with MathJax. Off: math shows as plain text."],
-      ["prism", false, "Highlight code blocks with Prism. Off: code shows as plain text."],
-      ["mermaid", false, "Render mermaid diagrams. Off: diagrams show as plain text."],
+      ["mathjax", false, "The MathJax TeX parser (loaded on demand, e.g. by a plugin calling loadMathJax). Off: its files are refused, the parser is never in memory and loadMathJax fails naming this switch; math stays plain text."],
+      ["prism", false, "The Prism code tokenizer (loaded on demand, e.g. by loadPrism). Off: its files are refused, the tokenizer is never in memory and loadPrism fails naming this switch; code stays plain text."],
+      ["mermaid", false, "The Mermaid diagram engine. Not bundled in this version (loadMermaid is unsupported); off keeps it refused once it is. Off: loadMermaid fails naming this switch; diagrams stay plain text."],
     ]],
     ["Plugins and clipboard", [
       ["pluginSpawn", false, "Community plugins may start programs (each run is still asked about). Off: refused before any dialog, also opening files or links with the system opener."],
@@ -48,9 +48,10 @@
   ];
   const WHY = { lockdown: "Lockdown mode", offline: "Cut off all network (offline mode)", canvas: "HTML canvas", restart: "a restart" };
   const shown = (f, inv0) => { const v = !!R.stored[f]; return inv0 ? !v : v; };
+  const snap = () => { try { window.opensidianSecurity = Object.freeze(Object.assign({ lockdown: !!R.lockdown }, R.effective)); } catch (_) {} };
   function publish() {
     if (!R) return;
-    try { window.opensidianSecurity = Object.freeze(Object.assign({ lockdown: !!R.lockdown }, R.effective)); } catch (_) {}
+    snap();
     cspAgree();
   }
   /* toggle 1 layer 2: the page CSP is fixed at load (main.rs page_csp). When the effective
@@ -59,19 +60,29 @@
      Two reloads in a row that still disagree stop with a console warning, never a loop.
      Toggle 4 (Render media) rides the same rule: its CSP layer (opensidian-img: in img-src,
      blob: in media-src) is fixed at load too (security_get pageMedia). */
+  /* toggle 11: "off" means the parser is not in memory. The 403 stops every NEW load; an
+     engine a plugin loaded before the switch went off is still in this realm, so the page is
+     reloaded into a fresh one (same once-per-change rule as the CSP above). */
+  const ENGINE_LOADED = {
+    mathjax: () => !!(window.MathJax && window.MathJax.startup && typeof window.MathJax.tex2chtml === "function"),
+    prism: () => !!(window.Prism && typeof window.Prism.highlight === "function"),
+    mermaid: () => !!(window.mermaid && typeof window.mermaid.render === "function"),
+  };
+  const engineStale = () => Object.keys(ENGINE_LOADED).filter(f => R.effective[f] === false && ENGINE_LOADED[f]());
   let reloading = false;
   function cspAgree() {
     const KEY = "osSecReload";
     if (!R || typeof R.pageRemote !== "boolean" || typeof R.pageMedia !== "boolean" || !R.effective) return;
-    const agree = !!R.effective.remoteMedia === R.pageRemote && !!R.effective.vaultMedia === R.pageMedia;
+    const stale = engineStale();
+    const agree = !!R.effective.remoteMedia === R.pageRemote && !!R.effective.vaultMedia === R.pageMedia && !stale.length;
     if (agree) { try { sessionStorage.removeItem(KEY); } catch (_) {} return; }
     let n = 0;
     try { n = +sessionStorage.getItem(KEY) || 0; } catch (_) {}
     if (reloading) return;
-    if (n >= 2) { console.warn("[sec] page CSP still disagrees with Load external resources / Render media after 2 reloads"); return; }
+    if (n >= 2) { console.warn("[sec] page CSP still disagrees with Load external resources / Render media (or an engine that is off is still loaded: " + stale.join(",") + ") after 2 reloads"); return; }
     reloading = true;
     try { sessionStorage.setItem(KEY, String(n + 1)); } catch (_) {}
-    console.warn("[sec] reloading the page into the CSP of Load external resources=" + !!R.effective.remoteMedia + " Render media=" + !!R.effective.vaultMedia);
+    console.warn("[sec] reloading the page into the CSP of Load external resources=" + !!R.effective.remoteMedia + " Render media=" + !!R.effective.vaultMedia + (stale.length ? " (unloading " + stale.join(",") + ")" : ""));
     Promise.resolve(inv("save_debounce_ms")).catch(() => 0)
       .then(ms => setTimeout(() => location.reload(), (+ms || 0) + 300));
   }
@@ -157,5 +168,15 @@
            ",tg=" + Math.round(tb.width) + "x" + Math.round(tb.height) + "]";
   }
   window.__osSecurity = { build, refresh, tok, get: () => R };
+  /* security_set emits "security-changed" whoever called it (this pane, or a script invoking the
+     command): the plugin-visible snapshot follows, and an engine that just went off while it is
+     in the page is unloaded (toggle 11). Toggles 1 / 4 keep their reload to this pane's own
+     presses; a script's change to them applies at the next load, as before. */
+  try {
+    T.event.listen("security-changed", () => inv("security_get").then(r => {
+      R = r; snap();
+      if (engineStale().length) cspAgree();
+    }, () => {}));
+  } catch (_) {}
   refresh().catch(() => {});   // boot: the plugin-visible snapshot exists before any plugin loads
 })();

@@ -320,11 +320,23 @@ What (a) means concretely:
   **no-op-safe gate** for the rest: the 403 rule already covers `/vendor/mermaid/*` and any
   future first-party renderer must load through `loadScript`, which checks the switch. The
   PR says so.
-- **Files:** `main.rs` (resource hook), `security.rs`, `ui/plugins/api-functions.js`.
+- **Files:** `main.rs` (resource hook), `security.rs`, `ui/plugins/api-functions.js`, `ui/security.js`.
 - **T3 probe `secmath`:** all three off → probe plugin's `loadMathJax()`, `loadPrism()`,
   `loadMermaid()` reject naming the toggle, `window.MathJax` / `window.Prism` /
   `window.mermaid` undefined, a direct `<script src="/vendor/mathjax/…">` fires `error`;
   each engine checked with only its own switch off; on → `loadPrism()` resolves (control).
+- **As built (toggle 11 commit):** `security::engine_of` normalises the request path first
+  (%XX decoded, ASCII-lowercased, `.` / `..` / empty segments resolved) so no spelling of
+  `/vendor/<engine>/` slips past; the config is read only for such a path, not for every
+  asset. While the switch is on the served bytes carry `Cache-Control: no-store`, so a page
+  reloaded after the switch went off cannot be fed the parser from WebKit's memory cache.
+  The loaders ask `window.opensidianSecurity` (the effective values `ui/security.js`
+  publishes) before `window.<lib>` is touched and reject with
+  "load<Lib>: <Lib> is off (Settings › Security › <Lib>)"; a failed / refused load leaves no
+  half-made `window.MathJax` / `window.Prism` behind. Turning a switch off while its engine
+  is already in the page reloads the page (`security_set` emits `security-changed` whoever
+  called it; `ui/security.js` re-reads `security_get` and runs `cspAgree`, same once-per-change
+  rule as toggles 1 / 4): "off" means the parser is not in memory.
 
 ### 7 — JavaScript JIT
 
@@ -420,3 +432,9 @@ defaults do not change.
 - 5 WebGL: a WebGL context a plugin created BEFORE the switch went off keeps working until
   the page reloads (the native setting gates new `getContext` calls only).
 - 3 offline: the system browser (`open_external`) is allowed after a confirm.
+- 11 MathJax / Prism / Mermaid: the switch gates the app's vendored copies under
+  `ui/vendor/<engine>/`. A trusted-vault plugin that ships its OWN copy of an engine inside
+  its `main.js` runs it as plugin code (governed by restricted mode, not by this switch).
+  Mermaid is not bundled on develop and the app's own math / code / diagram rendering is
+  #185 / #186 / #187: for those the switch is a no-op-safe gate (the 403 rule and the loader
+  check already cover them).

@@ -564,6 +564,72 @@ pub fn clip_key(keyval: u32, ctrl: bool, shift: bool) -> bool {
     }
 }
 
+
+/* ---- toggle 11: MathJax / Prism / Mermaid (docs §1 "11"). Boundary: the app scheme's
+   resource hook (main.rs page_window -> on_web_resource_request) answers 403 for every
+   request under /vendor/<engine>/ while that engine's switch is off, whoever asks
+   (loadScript, a <script src>, import(), fetch, a worker): the parser bytes never reach the
+   page. The loaders in ui/plugins/api-functions.js reject first with the same sentence (a
+   clear message only; the 403 is the boundary). The served 200 carries no-store so a page
+   reloaded after the switch went off cannot be fed the engine from WebKit's memory cache.
+   Mermaid is not vendored on develop and the app's own rendering is #185-#187: the rule
+   already covers /vendor/mermaid/ and any later engine loaded from there. */
+pub const ENGINES: &[(&str, &str)] = &[("mathjax", "mathjax"), ("prism", "prism"), ("mermaid", "mermaid")];
+
+/// the request path as the asset resolver will see it: %XX decoded, ASCII lowercased,
+/// empty / "." segments dropped, ".." resolved — so "/vendor/%50rism/./x.js" or
+/// "//VENDOR/a/../prism/x.js" still match (lowercasing only ever makes the gate stricter)
+pub fn norm_path(p: &str) -> String {
+    let b = p.as_bytes();
+    let mut d = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = |c: u8| (c as char).to_digit(16);
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
+                d.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        d.push(b[i]);
+        i += 1;
+    }
+    let s = String::from_utf8_lossy(&d).to_ascii_lowercase().replace('\\', "/");
+    let mut out: Vec<&str> = Vec::new();
+    for seg in s.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                out.pop();
+            }
+            x => out.push(x),
+        }
+    }
+    format!("/{}", out.join("/"))
+}
+
+/// which engine field a request path belongs to (None = not an engine's bytes)
+pub fn engine_of(path: &str) -> Option<&'static str> {
+    let n = norm_path(path);
+    let mut segs = n.trim_start_matches('/').split('/');
+    if segs.next() != Some("vendor") {
+        return None;
+    }
+    let dir = segs.next()?;
+    ENGINES.iter().find(|(d, _)| *d == dir).map(|(_, f)| *f)
+}
+
+/// "MathJax is off (Settings › Security › MathJax)"
+pub fn engine_off_text(field: &str) -> String {
+    format!("{} is off {}", name(field), named(field))
+}
+
+/// Some(refusal) when `path` is an engine's bytes and that engine is off (effective value)
+pub fn engine_refusal(eff: &Eff, path: &str) -> Option<String> {
+    let f = engine_of(path)?;
+    (!eff.sec.field(f)?).then(|| engine_off_text(f))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -881,5 +947,44 @@ mod tests {
         assert_eq!(webgl_change(&effective_with(d, None), false), Some(true), "turning it back on re-enables");
         assert_eq!(webgl_off_text(), "WebGL is off (Settings › Security › WebGL)");
         assert_eq!(report(&json!({}))["pageWebgl"], json!(true));
+    }
+
+    /// toggle 11: each engine's switch 403s exactly its own /vendor/<engine>/ bytes, through
+    /// percent-encoding / case / dot-segment spellings; defaults (today) refuse nothing;
+    /// lockdown refuses all three; other vendored libs (pdfjs, codemirror) are never touched
+    #[test]
+    fn engine_switches_refuse_only_their_own_vendor_dir() {
+        let d = effective_with(Sec::default(), None);
+        for p in ["/vendor/mathjax/tex-chtml-full.js", "/vendor/prism/prism.js", "/vendor/mermaid/mermaid.min.js"] {
+            assert_eq!(engine_refusal(&d, p), None, "default = today: {p} served");
+        }
+        for (f, file) in [("mathjax", "tex-chtml-full.js"), ("prism", "prism.js"), ("mermaid", "mermaid.min.js")] {
+            let mut s = Sec::default();
+            *s.field_mut(f).unwrap() = false;
+            let e = effective_with(s, None);
+            let want = engine_off_text(f);
+            for p in [
+                format!("/vendor/{f}/{file}"),
+                format!("/vendor/{}/{file}", f.to_uppercase()),
+                format!("//vendor/./x/../{f}/{file}"),
+                format!("/vendor/%{:02X}{}/{file}", f.as_bytes()[0], &f[1..]),
+                format!("/vendor%2F{f}%2F{file}"),
+                format!("/vendor/{f}"),
+            ] {
+                assert_eq!(engine_refusal(&e, &p).as_deref(), Some(want.as_str()), "{f}: {p} not refused");
+            }
+            for (o, ofile) in [("mathjax", "a.js"), ("prism", "prism.js"), ("mermaid", "m.js"), ("pdfjs", "pdf.min.mjs"), ("codemirror", "cm.js")] {
+                if o != f {
+                    assert_eq!(engine_refusal(&e, &format!("/vendor/{o}/{ofile}")), None, "{f} off touched {o}");
+                }
+            }
+            assert_eq!(engine_refusal(&e, &format!("/{f}/{file}")), None, "only under /vendor/");
+        }
+        assert_eq!(engine_off_text("mathjax"), "MathJax is off (Settings › Security › MathJax)");
+        let mut l = Sec::default();
+        l.lockdown = true;
+        let le = effective_with(l, Some(l));
+        assert!(["mathjax", "prism", "mermaid"].iter().all(|f| engine_refusal(&le, &format!("/vendor/{f}/x.js")).is_some()), "lockdown turns all three off");
+        assert_eq!(norm_path("/a/%zz/../b%2"), "/a/b%2", "malformed escapes stay literal");
     }
 }

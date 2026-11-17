@@ -4257,6 +4257,17 @@ fn vfs_sync(h: &tauri::AppHandle, req: &tauri::http::Request<Vec<u8>>) -> PageRe
         .expect("vfs sync response")
 }
 
+/// #144 toggle 11: the answer for an engine's bytes while its switch is off
+fn engine_off_response(why: &str) -> PageResponse {
+    tauri::http::Response::builder()
+        .status(403)
+        .header("Content-Type", "text/plain; charset=utf-8")
+        .header("Cache-Control", "no-store")
+        .header("X-Content-Type-Options", "nosniff")
+        .body(std::borrow::Cow::Owned(format!("403: {why}\n").into_bytes()))
+        .expect("engine off response")
+}
+
 /// the app window, from the config entry, with page_csp on its responses
 fn page_window(app: &tauri::AppHandle, wc: &tauri::utils::config::WindowConfig) -> tauri::Result<()> {
     let h = app.clone();
@@ -4273,7 +4284,19 @@ fn page_window(app: &tauri::AppHandle, wc: &tauri::utils::config::WindowConfig) 
     let w = b.on_web_resource_request(move |req, res| {
         if req.uri().path() == VFS_SYNC_PATH {
             *res = vfs_sync(&h, &req);
+        // (the config is read only for an engine path, not for every asset)
+        } else if let Some(why) = security::engine_of(req.uri().path())
+            .and_then(|_| security::engine_refusal(&security::effective(&cfg_value()), req.uri().path()))
+        {
+            // #144 toggle 11: the engine's parser bytes never reach the page (403, whoever asks)
+            eprintln!("[sec] refused {}: {why} (403)", req.uri().path());
+            *res = engine_off_response(&why);
         } else {
+            // #144 toggle 11: an engine's bytes are never cached, so a reload after its switch
+            // went off cannot be fed the parser from WebKit's memory cache
+            if security::engine_of(req.uri().path()).is_some() {
+                res.headers_mut().insert("Cache-Control", tauri::http::HeaderValue::from_static("no-store"));
+            }
             #[cfg(feature = "devui")]
             devui::serve(req.uri().path(), res);
             page_csp(&h, res)
@@ -4526,6 +4549,12 @@ async fn security_set(win: tauri::Window, field: String, on: bool) -> Result<ser
     }
     cfg_update(&[cfgstore::Op::SecuritySet(field.into(), on)]);
     eprintln!("[sec] set {field}={on}");
+    // toggle 11 (and the plugin-visible snapshot): the page re-reads security_get whoever called
+    // this; ui/security.js unloads an engine that just went off while it is in the page
+    {
+        use tauri::Emitter;
+        let _ = win.emit("security-changed", field);
+    }
     // toggle 5 live: WebGL itself, HTML canvas (forces it off) — the webview follows at once
     let applied = security::PAGE_WEBGL.load(std::sync::atomic::Ordering::SeqCst);
     if let Some(gl) = security::webgl_change(&security::effective(&cfg_value()), applied) {
@@ -9298,6 +9327,33 @@ mod tests {
             }
         }
         assert_eq!(src.matches(concat!("security::", "spawn_check(")).count(), 1, "toggle 10 has one reader");
+    }
+
+    /// #144 toggle 11: the engine gate sits in the app scheme's resource hook, right after the
+    /// vfs route and BEFORE the served answer can leave (page_csp / devui), with one reader;
+    /// the loaders name the toggle and check it before window.<lib> is touched
+    #[test]
+    fn engine_switches_gate_the_resource_hook_and_the_loaders() {
+        let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
+        let w = src.find("fn page_window(").expect("page_window");
+        let wb = &src[w..w + src[w..].find("\n}\n").expect("end")];
+        let hook = wb.find("on_web_resource_request(").expect("resource hook");
+        let gate = wb.find(concat!("security::", "engine_refusal(")).expect("engine gate in the hook");
+        assert!(hook < gate && gate < wb.find("page_csp(&h, res)").expect("page_csp"), "gate before the answer leaves");
+        assert!(wb[gate..].find("engine_off_response(").expect("403") < wb[gate..].find("} else {").expect("else"));
+        assert_eq!(src.matches(concat!("security::", "engine_refusal(")).count(), 1, "toggle 11 has one reader");
+        let js = include_str!("../../ui/plugins/api-functions.js");
+        for (load, f, lib) in [("function loadMathJax()", "mathjax", "window.MathJax ="), ("function loadPrism()", "prism", "window.Prism =")] {
+            let b = &js[js.find(load).expect(load)..];
+            let ask = b.find(&format!("engineOff(\"{f}\")")).unwrap_or_else(|| panic!("{load} does not ask its switch"));
+            assert!(ask < b.find(lib).expect(lib), "{load}: the switch is asked before {lib}");
+        }
+        assert!(js.contains("loadMermaid: () => engineOff(\"mermaid\")"), "loadMermaid names its switch when off");
+        let set = src.find("async fn security_set(").expect("security_set");
+        let sb = &src[set..set + src[set..].find("\n}\n").expect("end")];
+        assert!(sb.contains("win.emit(\"security-changed\", field)"), "security_set tells the page whoever called it");
+        let ui = include_str!("../../ui/security.js");
+        assert!(ui.contains("T.event.listen(\"security-changed\"") && ui.contains("if (engineStale().length) cspAgree();"), "an engine that went off is unloaded");
     }
 
     /// #144 toggles 8 + 9: every clip_* command asks the gate before any GTK call; the plugin
