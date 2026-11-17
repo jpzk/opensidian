@@ -6021,7 +6021,7 @@ function openTitleEdit(g, host, x, y) {
   }
   el.addEventListener("keydown", onTitleKey);
   el.addEventListener("input", onTitleInput);   // R34.12/R34.13: refuse WHILE typing, as Obsidian does
-  el.addEventListener("blur", () => closeTitleEdit());
+  el.addEventListener("blur", onTitleBlur);   // #159: leaving the title COMMITS (stock 1.13.7); only Escape reverts
   host.addEventListener("scroll", onTitleScroll);
   updateTitle();
   return true;
@@ -6056,6 +6056,17 @@ function onTitleKey(e) {
     return;
   }
   e.stopPropagation();                       // a filename contains characters the R14 keymap binds
+}
+
+/* #159: stock 1.13.7 COMMITS the inline title when it loses focus (a click into the body renamed
+   "Blur.md" -> "Blur X.md", twice); only Escape reverts. closeTitleEdit() clears `titling` before
+   el.remove(), so the blur that removal fires (Escape / Enter / scroll / reopen) lands here as a no-op.
+   A refused name (illegal characters, taken) cannot keep a box open that no longer has the focus:
+   the notice titleCheck() raised stays up and the edit reverts. */
+function onTitleBlur() {
+  if (!titling) return;
+  if (!titleCheck()) { closeTitleEdit(); return; }
+  commitTitleEdit();
 }
 
 /* R34.1 — ENTER RENAMES THE FILE. The order is Obsidian's, measured, and it is
