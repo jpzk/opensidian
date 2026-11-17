@@ -1152,7 +1152,7 @@ async fn audio_rec_start(app: tauri::AppHandle, win: tauri::WebviewWindow, token
             return Err(format!("NotReadableError: the recorder could not start ({e})"));
         }
     };
-    audiorec::rec_offscreen(&rw);
+    audiorec::rec_offscreen(&rw, &win);
     let lbl = rw.label().to_string();
     audiorec::install_then(&rw, move || {
         eprintln!("[audiorec] {lbl}: gate connected");

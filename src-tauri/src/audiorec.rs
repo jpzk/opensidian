@@ -262,60 +262,90 @@ pub fn install_then<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>, done: impl F
     }
 }
 
-/* #136 the recorder webview must count as VISIBLE to WebKit: a hidden (unmapped) page never gets its
-   getUserMedia through (WebKit holds capture requests of a page that is not visible). Its window stays
-   hidden (no taskbar entry, no focus, nothing on screen); the webview itself is moved into a
-   GtkOffscreenWindow, which is mapped and rendered off screen. rec_offscreen_drop destroys it with the
-   recording. Main thread only (GTK), hence the thread_local. */
+/* #136 the recorder webview must be IN an on-screen window for WebKit: a page that is not in a window
+   (hidden window, or a GtkOffscreenWindow, which WebKitGTK does not count as on screen) never gets
+   media started — its getUserMedia waits forever (WebPage canStartMedia). So the recorder's webview is
+   moved into the APP window it records for: a 1 x 1 px, fully transparent strip at the bottom of the
+   window's box, for the length of the recording. Its own window stays hidden (no taskbar entry, no
+   focus). It is still its own page: its own capture grant and its own permission-request signal.
+   rec_offscreen_drop takes it out again and destroys it with the recording. Main thread only (GTK),
+   hence the thread_local; both hand-offs run on the GTK main loop in the order they were queued. */
 #[cfg(target_os = "linux")]
 thread_local! {
-    static OFFSCREEN: std::cell::RefCell<HashMap<String, gtk::OffscreenWindow>> = std::cell::RefCell::new(HashMap::new());
+    static EMBED: std::cell::RefCell<HashMap<String, gtk::Widget>> = std::cell::RefCell::new(HashMap::new());
 }
 
 #[cfg(target_os = "linux")]
-pub fn rec_offscreen<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>) {
+fn embed_drop(label: &str) {
+    use gtk::prelude::{ContainerExt, WidgetExt, WidgetExtManual};
+    use gtk::glib::Cast;
+    if let Some(w) = EMBED.with(|o| o.borrow_mut().remove(label)) {
+        if let Some(p) = w.parent() {
+            if let Ok(c) = p.downcast::<gtk::Container>() {
+                c.remove(&w);
+            }
+        }
+        // SAFETY: GTK main thread (with_webview); the recorder webview is ours and its recording is over
+        unsafe { w.destroy() }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn rec_offscreen<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>, app_win: &tauri::WebviewWindow<R>) {
     let label = w.label().to_string();
+    let l2 = label.clone();
     let r = w.with_webview(move |pw| {
-        use gtk::prelude::{ContainerExt, GtkWindowExt, WidgetExt, WidgetExtManual};
+        use gtk::prelude::{ContainerExt, WidgetExt};
         use gtk::glib::Cast;
-        let wv = pw.inner();
-        let widget: gtk::Widget = wv.upcast();
+        let widget: gtk::Widget = pw.inner().upcast();
         if let Some(p) = widget.parent() {
             if let Ok(c) = p.downcast::<gtk::Container>() {
                 c.remove(&widget);
             }
         }
-        let off = gtk::OffscreenWindow::new();
-        off.set_default_size(16, 16);
-        off.add(&widget);
-        off.show_all();
-        eprintln!("[audiorec] {label}: capture page offscreen (mapped={})", widget.is_mapped());
-        OFFSCREEN.with(|o| {
-            if let Some(old) = o.borrow_mut().insert(label, off) {
-                // SAFETY: GTK main thread (with_webview); a stale offscreen of the same label is ours to drop
-                unsafe { old.destroy() }
-            }
-        });
+        embed_drop(&label); // a stale recorder of the same label
+        EMBED.with(|o| o.borrow_mut().insert(label, widget));
     });
     if let Err(e) = r {
-        eprintln!("[audiorec] recorder webview not moved offscreen: {e}");
+        eprintln!("[audiorec] recorder webview not detached: {e}");
+        return;
+    }
+    let r = app_win.with_webview(move |pw| {
+        use gtk::prelude::{BoxExt, ContainerExt, WidgetExt};
+        use gtk::glib::Cast;
+        let Some(widget) = EMBED.with(|o| o.borrow().get(&l2).cloned()) else { return };
+        let main: gtk::Widget = pw.inner().upcast();
+        let Some(host) = main.parent() else {
+            eprintln!("[audiorec] {l2}: app webview has no parent box");
+            return;
+        };
+        widget.set_size_request(1, 1);
+        widget.set_opacity(0.0);
+        widget.set_can_focus(false);
+        match host.clone().downcast::<gtk::Box>() {
+            Ok(b) => b.pack_end(&widget, false, false, 0),
+            Err(h) => {
+                if let Ok(c) = h.downcast::<gtk::Container>() {
+                    c.add(&widget)
+                }
+            }
+        }
+        widget.show_all();
+        eprintln!("[audiorec] {l2}: capture page in the app window (mapped={})", widget.is_mapped());
+    });
+    if let Err(e) = r {
+        eprintln!("[audiorec] recorder webview not embedded: {e}");
     }
 }
 
 #[cfg(target_os = "linux")]
 pub fn rec_offscreen_drop<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>) {
     let label = w.label().to_string();
-    let _ = w.with_webview(move |_| {
-        use gtk::prelude::WidgetExtManual;
-        if let Some(off) = OFFSCREEN.with(|o| o.borrow_mut().remove(&label)) {
-            // SAFETY: GTK main thread (with_webview); the offscreen window and the webview in it are ours
-            unsafe { off.destroy() }
-        }
-    }); // reason: a webview that is already gone has no offscreen window left to drop
+    let _ = w.with_webview(move |_| embed_drop(&label)); // reason: a webview that is already gone has nothing left to drop
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn rec_offscreen<R: tauri::Runtime>(_: &tauri::WebviewWindow<R>) {}
+pub fn rec_offscreen<R: tauri::Runtime>(_: &tauri::WebviewWindow<R>, _: &tauri::WebviewWindow<R>) {}
 #[cfg(not(target_os = "linux"))]
 pub fn rec_offscreen_drop<R: tauri::Runtime>(_: &tauri::WebviewWindow<R>) {}
 
