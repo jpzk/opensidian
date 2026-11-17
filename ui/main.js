@@ -1091,8 +1091,12 @@ async function scOpen(g, note, ev) {
   const newTab = !!(ev && (ev.ctrlKey || ev.metaKey || ev.button === 1)) && !(ev && ev.altKey);
   if (newTab) {
     await flushSave(g);
-    g.tabs.push(mkTab(note));
-    g.active = g.tabs.length - 1;
+    // #173: the new tab goes DIRECTLY RIGHT of the active one (openNewTab's contract), not at the far end — stock
+    // 1.13.7: cfA,cfB*,cfC,cfD + Ctrl/middle-click a cfC match -> cfA,cfB,cfC*,cfC,cfD. An insert without splice:
+    // the tabclose census (main.rs tabclose_every_removal_path_names_a_cause) counts every g.tabs splice as a removal.
+    const at = g.active >= 0 ? g.active + 1 : g.tabs.length, nt = mkTab(note);
+    g.tabs.push(nt); g.tabs.copyWithin(at + 1, at); g.tabs[at] = nt;
+    g.active = at;
     await loadActive(g);
     return;
   }
