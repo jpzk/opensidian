@@ -14985,9 +14985,10 @@ function fReveal(g, done) {   // done(): called once the reveal has finished (sy
   if (dvU) dv.update = function () { const b0 = Math.round(P.get.call(sc)); const r = dvU.apply(this, arguments);
     const b1 = Math.round(P.get.call(sc)); if (b1 !== b0) fRv += "|U" + b0 + ">" + b1 + "/" + Math.round(sc.scrollHeight); return r; };
   let live = true;                     // #165: unhook runs once; a superseded reveal schedules nothing more
-  const unhook = () => { if (!live) return; live = false; if (fRvEnd === unhook) fRvEnd = null; sc.removeEventListener("scroll", onS); if (dvU) delete dv.update; for (const [p, m, o] of saved) p[m] = o; try { delete sc.scrollTop; delete sc.scrollTo; delete sc.scrollBy; } catch (_) {} };
+  const unhook = () => { if (!live) return; live = false; if (fRvEnd === stop) fRvEnd = null; sc.removeEventListener("scroll", onS); if (dvU) delete dv.update; for (const [p, m, o] of saved) p[m] = o; try { delete sc.scrollTop; delete sc.scrollTo; delete sc.scrollBy; } catch (_) {} };
   let n = 0, lastTop = -1;
-  fRvEnd = unhook;
+  const stop = () => { if (live) { unhook(); fin(); } };   // superseded: end it AND still call done (fGo's census release)
+  fRvEnd = stop;
   const step = () => live && cm.requestMeasure({ key: "osFindReveal", read: () => null, write: () => {
     if (!live) return;
     const tp = Math.round(sc.scrollTop);
