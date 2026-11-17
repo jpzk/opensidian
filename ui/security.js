@@ -113,7 +113,25 @@
   function tok() {
     if (!R || typeof settingsOpen === "undefined" || !settingsOpen || sPane !== "security") return "";
     const v = Object.keys(R.stored).map(f => f + "=" + (R.stored[f] ? 1 : 0) + (R.effective[f] ? 1 : 0)).join(",");
-    return " [secp:" + nRows + "/" + nForced + "/" + (R.restartPending || []).length + "] [secv:" + v + "]";
+    return " [secp:" + nRows + "/" + nForced + "/" + (R.restartPending || []).length + "] [secv:" + v + "]" + geo();
+  }
+  /* [secg:nav=<h>/<font>/<padT>/<padL>/<radius>/<same 1|0>,row=<padT>/<padB>,lbl=<font>,desc=<font>,tg=<w>x<h>]
+     the painted chrome of the Security tab, read with getComputedStyle — the T3 phase compares it to
+     stock 1.13.7's settings tab (goal/sec144 logs it2d) and to the neighbouring nav entry (same=1:
+     the Security entry paints exactly like Community plugins). Instrument only. */
+  function geo() {
+    const pg = document.getElementById("spage"), nv = document.getElementById("snav");
+    if (!pg || !nv) return "";
+    const px = v => String(v || "").replace(/px$/, "");
+    const items = [...nv.querySelectorAll(".snavi")];
+    const me = items.find(e => e.dataset.pane === "security"), nb = items.find(e => e.dataset.pane === "community");
+    const nav = e => { if (!e) return "-"; const c = getComputedStyle(e); return [Math.round(e.getBoundingClientRect().height), px(c.fontSize), px(c.paddingTop), px(c.paddingLeft), px(c.borderTopLeftRadius)].join("/"); };
+    const row = pg.querySelector(".srow"); if (!row) return "";
+    const rc = getComputedStyle(row), lb = row.querySelector(".slabel"), ds = row.querySelector(".sdesc"), tg = row.querySelector(".sctl.toggle");
+    const tb = tg ? tg.getBoundingClientRect() : { width: 0, height: 0 };
+    return " [secg:nav=" + nav(me) + "/" + (nav(me) === nav(nb) ? 1 : 0) + ",row=" + px(rc.paddingTop) + "/" + px(rc.paddingBottom) +
+           ",lbl=" + (lb ? px(getComputedStyle(lb).fontSize) : "-") + ",desc=" + (ds ? px(getComputedStyle(ds).fontSize) : "-") +
+           ",tg=" + Math.round(tb.width) + "x" + Math.round(tb.height) + "]";
   }
   window.__osSecurity = { build, refresh, tok, get: () => R };
   refresh().catch(() => {});   // boot: the plugin-visible snapshot exists before any plugin loads
