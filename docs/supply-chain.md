@@ -108,3 +108,41 @@ cargo-audit, cargo-deny, cargo-vet, osv-scanner): a scanner entry's needle must 
 scanner's name, so the exception cannot cover anything else, even inside a scanner job.
 Self-test: `bash scripts/supply-chain/tests/pin-check.test.sh` (one red fixture per rule, plus
 mutations that unpin one thing each in an all-green fixture tree).
+
+### AppImage build environment (#189 item 1)
+
+The slim and portable AppImages (and the binary the rpm/deb wrap) are built by
+`packaging/ci/appimage-build.sh` inside `ubuntu:resolute-20260927` pinned by its
+multi-arch manifest-list digest. apt reads only `snapshot.ubuntu.com` at `SNAP`
+(resolute, -updates, -security; main, universe), with the archive signatures still
+checked. Every requested package is pinned `pkg=version`, and the script fails if
+the installed version differs. Everything they pull in is fixed by the frozen
+snapshot. The `ubuntu-26.04` runner floats by design, but it is only the host that
+runs podman: nothing it ships is compiled in or bundled.
+
+Each build records two workflow artifacts, `appimage-pkgset-<ver>-<arch>`:
+- `pkgset-<ver>-<arch>.tsv`: every installed package with its name, version, arch
+  and the sha256 of the `.deb`. This is the SBOM input for #188.
+- `libset-<ver>-<arch>.tsv`: the sha256 of every library in the portable AppDir.
+  Two builds of the same tag must produce identical files.
+
+Rust 1.98.0 comes from the dist tarball. The script checks
+`channel-rust-1.98.0.toml` against `RUST_MANIFEST_SHA256`. The per-arch `xz_hash`
+in that manifest must equal `RUST_XZ_SHA256_<arch>`, and the tarball must match it.
+
+**Bump the snapshot** when the weekly CVE scan flags WebKitGTK, GTK or OpenSSL in the
+pkgset, or on a routine refresh:
+1. Pick a `SNAP` timestamp and an image tag that are both at least 6 weeks old. The
+   snapshot must not be older than the image.
+2. Read `docker-content-digest` from the registry for the tag's manifest list, and
+   check that it contains both linux/amd64 and linux/arm64/v8. Set `DIGEST`.
+3. For each package in `PKGS`, read its version from the snapshot's `Packages`
+   indexes, preferring -updates, then -security, then the release pocket. Check both
+   `binary-amd64` and `binary-arm64`, since `PKGS` holds one version for both arches.
+4. Run the dry-run release twice. Compare the `pkgset` and `libset` files: they must
+   be identical between the two runs. Diff them against the previous snapshot and
+   review what changed.
+
+**Bump Rust**: set `RUST_TOOLCHAIN` in release.yml and `RUST` in the script, then
+copy `RUST_MANIFEST_SHA256` from `channel-rust-<v>.toml.sha256` and both `xz_hash`
+values from the manifest. The release must be at least 6 weeks old.
