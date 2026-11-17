@@ -61,7 +61,10 @@ jq -r --arg today "$today" '.vulnerabilities[] | .id as $i
 while IFS= read -r l; do err "$l"; done <"$t/exp"
 
 # id sets
-jq -r '.vulnerabilities[] | select((.source.name//"")=="RustSec" or (.id|startswith("RUSTSEC-"))) | .id' "$vex" >"$t/vex.ids"
+# "resolved" = fixed in what we ship (glib-fix: path-patched crate, invisible to cargo audit/deny), so it
+# is NOT an ignore and must NOT be in deny.toml / audit.toml; every other RustSec entry must be.
+jq -r '.vulnerabilities[] | select((.source.name//"")=="RustSec" or (.id|startswith("RUSTSEC-"))) | select(.analysis.state != "resolved") | .id' "$vex" >"$t/vex.ids"
+jq -r '.vulnerabilities[] | select(.analysis.state == "resolved") | .id' "$vex" >"$t/resolved.ids"
 toml_ignore_ids "$deny"  >"$t/deny.ids"
 toml_ignore_ids "$audit" >"$t/audit.ids"
 for n in vex deny audit; do
@@ -75,6 +78,13 @@ for n in deny audit; do
     err "VEX vs $n ignore list differ: only in VEX: [$(echo $only_vex)] only in $n: [$(echo $only_n)]"
   fi
 done
+
+while IFS= read -r r; do
+  [ -n "$r" ] || continue
+  for n in deny audit; do grep -qxF "$r" "$t/$n.ids" && err "$r is 'resolved' in the VEX but ignored in $n (a fix is not an ignore)"; done
+  jq -e --arg r "$r" '[.vulnerabilities[] | select(.id == $r) | .analysis.detail | test("scripts/supply-chain/[a-z-]+\\.sh")] | all' "$vex" >/dev/null \
+    || err "$r is 'resolved' but its detail names no scripts/supply-chain/*.sh that proves the fix"
+done <"$t/resolved.ids"
 
 if [ "$fail" -eq 0 ]; then
   echo "vex-check: PASS $(wc -l <"$t/vex.sorted") RustSec ids identical in VEX, deny.toml, audit.toml; $(jq '.vulnerabilities|length' "$vex") VEX entries, none expired (today $today)"
