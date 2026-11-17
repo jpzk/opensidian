@@ -3609,6 +3609,10 @@ async function wsmOpenModal(focusSave) {
   closeModal(); closeMenu();
   wsmOpen = true; wsmRen = null;
   $("wsmname").value = focusSave && wsmActive ? wsmActive : "";
+  // stock 1.13.7 keeps the saved layouts in memory and draws the rows in the modal's onOpen, so the rows
+  // paint WITH the modal. Draw them from the cache (boot wsmRefresh + every wsmOp keep it current) before
+  // the box shows; the wsm_list round trip below only corrects an outside edit of workspaces.json.
+  wsmRender();
   $("wsmbox").hidden = false;
   await wsmRefresh();
   if (focusSave && wsmActive && !$("wsmname").value) $("wsmname").value = wsmActive;
