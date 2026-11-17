@@ -696,6 +696,9 @@ const Ed = {
     if (!a) { a = document.createElement("audio"); s.appendChild(a); }
     a.controls = true; a.preload = "metadata"; // as before #139; no src (so no load) until go(); restricted flips it to none below
     a.setAttribute("aria-label", s.dataset.alt || rel);
+    // #140: the census ([aud:] / [audv:]) carries the player's readyState; nothing else republishes the window
+    // title when a load lands or fails (the audio view has no editor around it), so these do
+    ["loadedmetadata", "error", "emptied"].forEach(n => a.addEventListener(n, () => { if (typeof updateTitle === "function") updateTitle(); }));
     const go = play => {
       if (s.dataset.st) return;
       s.dataset.st = "loading";

@@ -2021,7 +2021,7 @@ body.floorrelayout #main { padding-right: 1px }
    the token map walks text nodes, so banner prose inside the row would move
    every caret column after it. A REMOTE target's label is the constant
    "remote image" in both engines, never the URL (R29.10). */
-.lp .imgmiss, .preview .imgmiss, .image-view .imgmiss {
+.lp .imgmiss, .preview .imgmiss, .image-view .imgmiss, .audio-view .imgmiss {
   display: block; padding: 12px 16px; margin: 8px 0; border-radius: 6px;
   background: var(--bg-surface); color: var(--text-chrome-muted); font-size: 14px; line-height: 1.4;
   user-select: none }
@@ -2211,6 +2211,14 @@ span.is-flashing { background: var(--highlight-yellow) }
   min-height: 0; padding: 16px; box-sizing: border-box }
 .image-view > .image-container > img { max-width: 100%; max-height: 100%; object-fit: contain; user-select: none }
 .image-view > .image-container > .imgmiss { margin: auto }
+/* issue #140: the audio view (an "audio" leaf, main.js AUDV) — one audio embed (the player, #139 click-to-play on a
+   restricted page) centred in the pane */
+.os-pv > .view-content.audio-view { padding: 0; overflow: auto; display: flex }
+.audio-view > .audio-container { display: flex; flex: 1 1 auto; align-items: center; justify-content: center; min-width: 0;
+  min-height: 0; padding: 16px; box-sizing: border-box }
+.audio-view .audio-embed { display: block; width: 100%; max-width: 480px; user-select: none }
+.audio-view .imgmiss { margin: auto }
+.audio-view .imgmiss.audiomiss::after { content: "\201C" attr(data-miss) "\201D could not be found." }
 /* census C4 make-md: .app-container (ui/index.html) wraps the app chrome for plugins and
    themes that look it up. goal cp-makemd3: a REAL box, not display:contents — under
    display:contents the editor scrollers lost their bottom range (srclick R25.13c line-83
