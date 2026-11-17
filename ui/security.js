@@ -21,13 +21,14 @@
   const inv = (c, a) => T.core.invoke(c, a);
   const el = (tag, cls, txt) => { const d = document.createElement(tag); if (cls) d.className = cls; if (txt != null) d.textContent = txt; return d; };
   /* [field, invert, description]. invert = the switch reads ON when the stored field is false
-     (toggle 2's switch is "Cut off ..."); offline / lockdown store true = on. */
+     (toggle 3 "Allow network" reads ON while stored offline is false); lockdown stores true = on.
+     A row forced by another switch (lockdown, Allow network off, canvas) shows the EFFECTIVE value. */
   const GROUPS = [
     [null, [["lockdown", false, "Sets every toggle below to its strictest value: community plugins do not run in any vault, no network, no media, no WebGL / canvas, no JIT, no math / code / diagram rendering. Your own values are kept and come back when you turn it off. Needs a restart."]]],
     ["Network", [
-      ["offline", false, "Nothing in the app reaches the network: no plugin or theme store, no update check, no plugin requests or listeners. Links still open in your browser after a confirm."],
+      ["offline", true, "The app may reach the network: the plugin and theme store, the update check, plugin requests and listeners. Off (offline mode): nothing in the app reaches the network; links still open in your browser after a confirm."],
       ["remoteMedia", false, "Show images, audio and video from https:// addresses in notes. Off: a placeholder is shown and the address never reaches the page."],
-      ["pluginNet", true, "Community plugins cannot make requests or open listeners."],
+      ["pluginNet", false, "Community plugins may make requests and open listeners. Off: their requests and listeners are refused, naming this switch."],
     ]],
     ["Media and rendering", [
       ["vaultMedia", false, "Render images, PDFs, audio and video from your vaults. Off: a placeholder is shown and no file reaches a decoder."],
@@ -46,7 +47,7 @@
       ["jit", false, "The JavaScript JIT compiler. Off: slower, a smaller attack surface. Needs a restart."],
     ]],
   ];
-  const WHY = { lockdown: "Lockdown mode", offline: "Cut off all network (offline mode)", canvas: "HTML canvas", restart: "a restart" };
+  const WHY = { lockdown: "Lockdown mode", offline: "Allow network (off)", canvas: "HTML canvas", restart: "a restart" };
   const shown = (f, inv0) => { const v = !!R.stored[f]; return inv0 ? !v : v; };
   const snap = () => { try { window.opensidianSecurity = Object.freeze(Object.assign({ lockdown: !!R.lockdown }, R.effective)); } catch (_) {} };
   function publish() {
@@ -240,7 +241,8 @@
         r.appendChild(info);
         // toggle 12: turning lockdown ON goes through its confirm (what breaks, clipboard, restart)
         const press = f === "lockdown" && !R.stored.lockdown ? lockdownDialog : () => set(f, invert ? shown(f, invert) : !shown(f, invert));
-        r.appendChild(toggle(shown(f, invert), press, lock));
+        // a forced row shows what is in force (lockdown turns "Allow network" OFF), the stored value comes back with it
+        r.appendChild(toggle(lock ? (invert ? !R.effective[f] : !!R.effective[f]) : shown(f, invert), press, lock));
         card.appendChild(r);
         nRows++; if (lock) nForced++;
       }

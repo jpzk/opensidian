@@ -2033,7 +2033,7 @@
 
   const PLUGIN_DIR = id => "/vault/.obsidian/plugins/" + id;
   /* #144 toggle 2: a view's net / http / https module whose createServer labels the server with the
-     plugin id, so a listener refused by "Cut off network for all community plugins" names it.
+     plugin id, so a listener refused while "Allow network for community plugins" is off names it.
      A label only (desk_net_listen refuses on the toggle alone); new net.Server() stays unlabelled. */
   function labelled(m, id) {
     return Object.assign({}, m, { createServer: (o, f) => { const s = m.createServer(o, f); s._plugin = id; return s; } });

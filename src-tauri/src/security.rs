@@ -27,8 +27,8 @@ pub const KEY: &str = "security";
 /// one every refusal and placeholder carries: "(Settings › Security › <name>)".
 pub const FIELDS: &[(&str, bool, bool, &str)] = &[
     ("remoteMedia", false, false, "Load external resources"),
-    ("pluginNet", true, false, "Cut off network for all community plugins"),
-    ("offline", false, true, "Cut off all network (offline mode)"),
+    ("pluginNet", true, false, "Allow network for community plugins"),
+    ("offline", false, true, "Allow network"),
     ("vaultMedia", true, false, "Render media"),
     ("webgl", true, false, "WebGL"),
     ("canvas", true, false, "HTML canvas"),
@@ -905,7 +905,7 @@ mod tests {
         s.plugin_net = false;
         let e = effective_with(s, Some(s));
         let err = plugin_net_check(&e, "requestUrl", Some("evil\n<b>id")).unwrap_err();
-        assert_eq!(err, "EPERM: requestUrl: network is off for community plugins (Settings › Security › Cut off network for all community plugins) — plugin evilbid");
+        assert_eq!(err, "EPERM: requestUrl: network is off for community plugins (Settings › Security › Allow network for community plugins) — plugin evilbid");
         assert!(plugin_net_check(&e, "net.createServer", None).unwrap_err().ends_with("community plugins)"));
         assert!(plugin_net_check(&e, "requestUrl", Some("")).unwrap_err().ends_with("community plugins)"));
         assert_eq!(plugin_label(&"a".repeat(99)).len(), 64);
@@ -1143,7 +1143,7 @@ mod tests {
         assert!(net_check(&effective_with(s, Some(s)), "store").is_ok(), "default = online (today)");
         s.offline = true;
         let e = net_check(&effective_with(s, Some(s)), "store").unwrap_err();
-        assert_eq!(e, "store: offline mode is on (Settings › Security › Cut off all network (offline mode))");
+        assert_eq!(e, "store: offline mode is on (Settings › Security › Allow network)");
         let mut l = Sec::default();
         l.lockdown = true;
         assert!(net_check(&effective_with(l, Some(l)), "x").is_err(), "lockdown forces offline");

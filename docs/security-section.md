@@ -39,8 +39,8 @@ Base: `develop` 23e83f0. Scope: release 0.9.6 (milestone 096).
 ```
 "security": {
   "remoteMedia": false,        // 1  default off  (today: no remote media)
-  "pluginNet": true,           // 2  default allow (operator decision)
-  "offline": false,            // 3  default off
+  "pluginNet": true,           // 2  default allow (operator decision) = switch "Allow network for community plugins" ON
+  "offline": false,            // 3  default off = switch "Allow network" ON (the switch is the inverse of the field)
   "vaultMedia": true,          // 4  default on
   "webgl": true,               // 5  default on
   "canvas": true,              // 6  default on
@@ -69,7 +69,7 @@ when the stored value differs from the latched one (no "Restart now" button: see
 Format per toggle: **boundary** (what actually refuses), **files**, **visible state**,
 **T3 probe** (harness phase name `sec<N>-…` in `scripts/phases.d/`, listed in `scripts/t3.list`).
 
-### 3 — Cut off all network (offline mode)  [implemented first: it is the choke point]
+### 3 — Allow network (off = offline mode)  [implemented first: it is the choke point]
 
 - **Boundary:** a backend choke point, `security::net_allowed(Net::<kind>, who)`,
   called at the top of EVERY outbound path the app has on develop:
@@ -91,11 +91,11 @@ Format per toggle: **boundary** (what actually refuses), **files**, **visible st
     outside the allow-listed functions, or an allow-listed function that does not call
     `security::net_allowed` first, fails T0 — the "any new network feature must go
     through the same choke point" rule as a test.
-- **Precedence:** while on, 1 is forced off and 2 forced on (deny), shown greyed out.
+- **Precedence:** while "Allow network" is off (offline), 1 and 2 are forced off, shown greyed out.
 - **Files:** `src-tauri/src/security.rs` (new), `plugin_store.rs`, `desk_http.rs` call
   site in `main.rs`, `desk_net_listen` in `main.rs`, `open_external`, `updates.rs` /
   store UI (`ui/main.js`: "Offline mode is on" state instead of a generic failure).
-- **Visible:** error `"offline mode is on (Settings › Security › Offline mode)"`; the
+- **Visible:** error `"offline mode is on (Settings › Security › Allow network)"`; the
   store pane and the update check show that sentence as their state.
 - **T3 probe `secoffline`:** offline on → update check, store list, a builtin theme
   fetch, a probe plugin's `requestUrl`, `fetch`, `XMLHttpRequest`, `WebSocket` and
@@ -109,7 +109,7 @@ Format per toggle: **boundary** (what actually refuses), **files**, **visible st
   minting the placeholder instead of a URL. On: the page CSP gains `https:` in `img-src`
   and `media-src` ONLY (no change to script/worker/connect/frame/font), and the renderer
   emits `<img>` / `<audio>` / `<video>` with the https URL (http:// stays a placeholder).
-  Offline (3) forces it off.
+  "Allow network" off (3) forces it off.
 - **Files:** `security.rs` (`csp_remote`, `PAGE_REMOTE`, `with_remote`), `main.rs`
   (`page_csp` applies `csp_remote` after `csp_by_trust`; `image_html` + `remote_html`;
   `render` / `render_view` / `render_blocks` run the renderer under `with_remote`),
@@ -131,7 +131,7 @@ Format per toggle: **boundary** (what actually refuses), **files**, **visible st
   on → CSP `img-src` contains `https:`, `<img src="https://…">` present, `script-src`
   unchanged.
 
-### 2 — Cut off network for community plugins
+### 2 — Allow network for community plugins
 
 - **Boundary:** backend checks on the plugin request commands — `desk_http_request`
   (requestUrl / request / http(s).request) and `desk_net_listen` (net/http.createServer)
@@ -147,7 +147,7 @@ Format per toggle: **boundary** (what actually refuses), **files**, **visible st
 - **Plugin name:** each plugin's view in `ui/plugins/node-desktop.js` hands out its own
   `obsidian.request/requestUrl` (per (api, plugin id)) and `net/http/https.createServer`
   that pass the plugin id. The error is
-  `EPERM: requestUrl: network is off for community plugins (Settings › Security › Cut off network for all community plugins) — plugin <id>`
+  `EPERM: requestUrl: network is off for community plugins (Settings › Security › Allow network for community plugins) — plugin <id>`
   (id sanitized to `[A-Za-z0-9._-]`, ≤ 64). The id is a label, not an authority: the
   refusal does not depend on it; `new net.Server()` and `http.request` stay unlabelled.
 - **Default:** allow (operator decision) = today.
@@ -459,9 +459,14 @@ What (a) means concretely:
   `.setting-item-info` / `-name` / `-description`, `.setting-item-control` with the
   `.checkbox-container` toggle) — verified against STOCK's tab chrome via `box-run.sh stock`
   + cdp (nav item, heading, row, toggle geometry), not against a Security section.
-- Order: Lockdown mode (top, with its own heading) · Network (3 offline, 1 external
+- Order: Lockdown mode (top, with its own heading) · Network (3 Allow network, 1 external
   resources, 2 plugin network) · Media & rendering (4, 5, 6, 11 ×3) · Plugins & clipboard
-  (10, 8, 9) · Engine (7). Forced rows are `aria-disabled` and show "(forced by …)".
+  (10, 8, 9) · Engine (7). Forced rows are `aria-disabled`, show "(forced by …)" and their
+  switch shows the EFFECTIVE value (lockdown turns "Allow network" off).
+- Polarity: both network switches read ON = allowed. "Allow network" is the inverse of the stored
+  `offline` field (ON = `offline: false`); "Allow network for community plugins" is
+  `pluginNet` as stored. The field names are unchanged, so an existing `~/.opensidian.json`
+  keeps its meaning.
 - Storage is in `nav.tsv`-independent code (`settings.rs` overlay `SECURITY_ROWS`), so the
   Obsidian transcript oracle stays untouched.
 
