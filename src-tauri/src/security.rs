@@ -617,24 +617,44 @@ pub fn csp_lockdown(csp: &str, lockdown: bool) -> String {
 /// the user script (every frame, document start). Built from Rust data only; the refusal text
 /// is the toggle's sentence, also published read-only as window.opensidianCanvasOff so the
 /// app's own canvas users (graph, export, paste) show a placeholder naming the switch.
+/// WebKit injects it at document start of every frame, but NOT into the initial about:blank
+/// document of a frame whose navigation is still pending (box run it16b: a srcdoc iframe's
+/// contentWindow had a working canvas before its load). So the stubs are also applied to any
+/// same-origin child realm the page reaches through iframe/frame/object contentWindow /
+/// contentDocument (locked getters, recursive). Remaining route: window[n] / frames[n] of such
+/// a mid-navigation frame (indexed WindowProxy access cannot be intercepted) — docs §6 bypass.
 pub fn canvas_script() -> String {
     let w = serde_json::to_string(&canvas_off_text()).expect("a string serialises");
     r#"(function () {
   "use strict";
-  var W = __W__, D = Object.defineProperty;
-  function err() { try { return new DOMException(W, "SecurityError"); } catch (_) { return new Error(W); } }
-  function no() { throw err(); }
+  var W = __W__, D = Object.defineProperty, G = Object.getOwnPropertyDescriptor;
   function lock(o, k, v) { if (!o) return; try { D(o, k, { value: v, writable: false, configurable: false, enumerable: false }); } catch (_) {} }
-  var C = window.HTMLCanvasElement && window.HTMLCanvasElement.prototype;
-  lock(C, "getContext", function getContext() { return null; });
-  ["toDataURL", "toBlob", "captureStream", "transferControlToOffscreen"].forEach(function (k) { lock(C, k, no); });
-  ["CanvasRenderingContext2D", "OffscreenCanvasRenderingContext2D"].forEach(function (n) {
-    var p = window[n] && window[n].prototype;
-    ["getImageData", "putImageData", "drawImage", "createPattern"].forEach(function (k) { lock(p, k, no); });
-  });
-  ["OffscreenCanvas", "OffscreenCanvasRenderingContext2D", "ImageBitmapRenderingContext"].forEach(function (n) { if (n in window) lock(window, n, no); });
-  if (window.Document && "getCSSCanvasContext" in window.Document.prototype) lock(window.Document.prototype, "getCSSCanvasContext", function () { return null; });
-  lock(window, "opensidianCanvasOff", W);
+  function stub(win) {
+    try { if (win.opensidianCanvasOff === W) return; } catch (_) { return; }
+    function err() { try { return new win.DOMException(W, "SecurityError"); } catch (_) { return new Error(W); } }
+    function no() { throw err(); }
+    var C = win.HTMLCanvasElement && win.HTMLCanvasElement.prototype;
+    lock(C, "getContext", function getContext() { return null; });
+    ["toDataURL", "toBlob", "captureStream", "transferControlToOffscreen"].forEach(function (k) { lock(C, k, no); });
+    ["CanvasRenderingContext2D", "OffscreenCanvasRenderingContext2D"].forEach(function (n) {
+      var p = win[n] && win[n].prototype;
+      ["getImageData", "putImageData", "drawImage", "createPattern"].forEach(function (k) { lock(p, k, no); });
+    });
+    ["OffscreenCanvas", "OffscreenCanvasRenderingContext2D", "ImageBitmapRenderingContext"].forEach(function (n) { if (n in win) lock(win, n, no); });
+    if (win.Document && "getCSSCanvasContext" in win.Document.prototype) lock(win.Document.prototype, "getCSSCanvasContext", function () { return null; });
+    ["HTMLIFrameElement", "HTMLFrameElement", "HTMLObjectElement"].forEach(function (n) {
+      var p = win[n] && win[n].prototype;
+      ["contentWindow", "contentDocument"].forEach(function (k) {
+        var d = p && G(p, k);
+        if (!d || !d.get || !d.configurable) return;
+        try {
+          D(p, k, { get: function () { var v = d.get.call(this); try { var cw = k === "contentWindow" ? v : v && v.defaultView; if (cw) stub(cw); } catch (_) {} return v; }, configurable: false, enumerable: d.enumerable });
+        } catch (_) {}
+      });
+    });
+    lock(win, "opensidianCanvasOff", W);
+  }
+  stub(window);
 })();
 "#
     .replace("__W__", &w)
@@ -1177,7 +1197,7 @@ mod tests {
         assert_eq!(csp_canvas(csp, false), "default-src 'self'; script-src 'self' blob:; worker-src 'self'; media-src 'self' blob:");
         let js = canvas_script();
         assert!(js.contains("\"HTML canvas is off (Settings › Security › HTML canvas)\""), "{js}");
-        for k in ["\"getContext\"", "\"toDataURL\"", "\"toBlob\"", "\"OffscreenCanvas\"", "\"getImageData\"", "\"opensidianCanvasOff\"", "writable: false, configurable: false"] {
+        for k in ["\"getContext\"", "\"toDataURL\"", "\"toBlob\"", "\"OffscreenCanvas\"", "\"getImageData\"", "\"opensidianCanvasOff\"", "writable: false, configurable: false", "\"contentWindow\"", "\"contentDocument\"", "stub(cw)"] {
             assert!(js.contains(k), "canvas script lacks {k}");
         }
         assert!(!js.contains("__W__"));

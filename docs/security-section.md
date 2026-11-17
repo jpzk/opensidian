@@ -474,6 +474,11 @@ defaults do not change.
 
 - 6 HTML canvas: hardening against trusted plugins (same-origin worker realm, native
   helpers); hard against note content / app code.
+- 6 HTML canvas: WebKit does not inject the document-start user script into the initial
+  `about:blank` document of a frame whose navigation is still pending (box run it16b: a
+  `srcdoc` iframe). The stubs are therefore also applied to every same-origin child realm the
+  page reaches through `contentWindow` / `contentDocument` (locked getters, recursive); the
+  indexed route `window[n]` / `frames[n]` to such a frame cannot be intercepted and stays open.
 - 8 plugin clipboard: user-initiated paste events and gesture-bound `execCommand('copy')`
   remain visible to same-realm plugin code.
 - 8 plugin clipboard: the taint is per page, not per caller — once a plugin loaded, the app's
