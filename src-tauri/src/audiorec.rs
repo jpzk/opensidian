@@ -274,7 +274,7 @@ thread_local! {
 pub fn rec_offscreen<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>) {
     let label = w.label().to_string();
     let r = w.with_webview(move |pw| {
-        use gtk::prelude::{ContainerExt, GtkWindowExt, WidgetExt};
+        use gtk::prelude::{ContainerExt, GtkWindowExt, WidgetExt, WidgetExtManual};
         use gtk::glib::Cast;
         let wv = pw.inner();
         let widget: gtk::Widget = wv.upcast();
@@ -304,7 +304,7 @@ pub fn rec_offscreen<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>) {
 pub fn rec_offscreen_drop<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>) {
     let label = w.label().to_string();
     let _ = w.with_webview(move |_| {
-        use gtk::prelude::WidgetExt;
+        use gtk::prelude::WidgetExtManual;
         if let Some(off) = OFFSCREEN.with(|o| o.borrow_mut().remove(&label)) {
             // SAFETY: GTK main thread (with_webview); the offscreen window and the webview in it are ours
             unsafe { off.destroy() }
