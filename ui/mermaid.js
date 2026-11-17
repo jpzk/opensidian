@@ -143,9 +143,24 @@
     const q = s => Array.from(document.querySelectorAll(s)).filter(e => e.getClientRects().length > 0);
     const kinds = q(".mermaid-wrapper .mermaid > svg").map(s => s.getAttribute("aria-roledescription") || "?");
     const b = q(".mermaid-wrapper.is-guarded .mermaid-guard-header button")[0], r = b && b.getBoundingClientRect();
+    // sl = the securityLevel Mermaid is configured with right now (a %%{init}%% must not change it)
+    let sl = "-";
+    try { if (window.mermaid && mermaid.mermaidAPI && mermaid.mermaidAPI.getConfig) sl = String(mermaid.mermaidAPI.getConfig().securityLevel || "-"); } catch (_) {}
+    // net = resources this page fetched from anywhere but the app's own (localhost) origins
+    let net = 0;
+    try {
+      for (const e of performance.getEntriesByType("resource")) {
+        let u; try { u = new URL(e.name); } catch (_) { continue; }
+        if (/^(https?|wss?|ftp):$/.test(u.protocol) && !/(^|\.)localhost$|^127\.|^\[::1\]$/.test(u.hostname)) net++;
+      }
+    } catch (_) {}
+    // fill = computed fill of the first diagram node's shape (theme follows light/dark)
+    const n0 = q(".mermaid-wrapper .mermaid > svg .node rect, .mermaid-wrapper .mermaid > svg .node polygon, .mermaid-wrapper .mermaid > svg .node path")[0];
+    const fill = n0 ? getComputedStyle(n0).fill.replace(/[\s|\]\[]/g, "") : "-";
     return " [mmd:lib=" + (window.mermaid ? 1 : 0) + "|allow=" + (allowed() ? 1 : 0) + "|g=" + q(".mermaid-wrapper.is-guarded").length +
       "|ok=" + kinds.length + "|err=" + q(".mermaid-wrapper.is-error").length + "|busy=" + busy + "|kinds=" + kinds.join(",") +
       "|th=" + (document.body && document.body.classList.contains("theme-dark") ? "d" : "l") + "|pwn=" + (window.__mmPwn ? 1 : 0) +
+      "|sl=" + sl + "|net=" + net + "|fill=" + fill +
       (r ? "|btn=" + Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2) : "") + "]";
   }
   window.Merm = { block, reading, allowed, allow, rendered: 0, live: () => live.size, tok };

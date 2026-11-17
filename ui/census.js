@@ -81,4 +81,4 @@ CENSUS.push(() => audvTok());   // issue #140: [audv:<path>|<loading|ready|error
 var CSPV = { n: 0, d: "-" };
 window.addEventListener("securitypolicyviolation", e => { CSPV.n++; CSPV.d = String(e.effectiveDirective || e.violatedDirective || "?").replace(/[[\]|@\s]/g, "_"); }, true);
 CENSUS.push(() => " [csp:" + CSPV.n + "|" + CSPV.d + "]");
-CENSUS.push(() => window.Merm ? Merm.tok() : "");   // #187 mermaid: [mmd:lib=<window.mermaid loaded 0/1>|allow=<0/1>|g=<guards>|ok=<diagrams>|err=<errors>|busy=<n>|kinds=<svg aria-roledescription,...>|th=<d/l>|pwn=<hostile payload ran 0/1>|btn=x,y] read off the DOM
+CENSUS.push(() => window.Merm ? Merm.tok() : "");   // #187 mermaid: [mmd:lib=<window.mermaid loaded 0/1>|allow=<0/1>|g=<guards>|ok=<diagrams>|err=<errors>|busy=<n>|kinds=<svg aria-roledescription,...>|th=<d/l>|pwn=<hostile payload ran 0/1>|sl=<mermaid securityLevel>|net=<non-localhost resource fetches>|fill=<first node fill>|btn=x,y] read off the DOM
