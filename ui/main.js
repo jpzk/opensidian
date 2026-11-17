@@ -4974,7 +4974,10 @@ async function closeTabsAfter(g, i) {      // Close tabs after: target + everyth
 }
 async function closeAllTabs(g) {           // Close all: a split pane goes with its tabs (#8); the lone root pane survives
   await flushSave(g);
-  while (g.tabs.length > 1) await closeTab(g, g.tabs.length - 1);
+  /* #175: LEFT to right, so the undo stack holds the strip in order and Ctrl+Shift+T
+     reopens the rightmost first — stock 1.13.7 (lone pane cfA,cfB,cfC -> Close all ->
+     undo x3 = cfC, cfB, cfA, each a real note tab). */
+  while (g.tabs.length > 1) await closeTab(g, 0);
   if (!g.tabs.length) return;
   /* #8: in a SPLIT the emptied pane leaves the tree, exactly like the ✕ / Ctrl+W
      close of a last tab (closeTab's R6.5 path). Kept, it was a zero-tab pane with
@@ -4989,7 +4992,10 @@ async function closeAllTabs(g) {           // Close all: a split pane goes with 
   if (groups().length > 1) return closeTab(g, 0, undefined, "closeAll");
   const t = g.tabs[0];
   await act("pane_close", { kind: t.kind || "note", pane_removed: false, groups: groups().length, tabs: 0 }, async () => {
-    if (!t.kind) closedTabs.push(t.name);  // R14: undo close tab still works on the last one
+    // R14: undo close tab still works on the last one. #175: through ucPush — a bare
+    // name string here had no .name, so Ctrl+Shift+T reopened a tab called "undefined".
+    // flushSave above already wrote the buffer, so nothing is at risk (text null).
+    if (!t.kind) ucPush(t.name, null, "user-close");
     unlinkTab(g, t, true);
     dropView(t);
     g.tabs.length = 0;
