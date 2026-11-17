@@ -4179,7 +4179,7 @@ fn sec_clip<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>, on: bool) {
         use webkit2gtk::{SettingsExt, WebViewExt};
         static ORIG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         if let Some(st) = WebViewExt::settings(&pw.inner()) {
-            let orig = *ORIG.get_or_init(|| st.javascript_can_access_clipboard());
+            let orig = *ORIG.get_or_init(|| st.is_javascript_can_access_clipboard());
             st.set_javascript_can_access_clipboard(on && orig);
             eprintln!("[sec] appClipboard={} (javascript-can-access-clipboard={}, clipboard keys {})", if on { "on" } else { "off" }, on && orig, if on { "pass" } else { "swallowed" });
         }
@@ -4671,7 +4671,7 @@ async fn security_set(win: tauri::Window, field: String, on: bool) -> Result<ser
     let stored = security::Sec::from_cfg(&cfg_value());
     if security::weakens(stored, field, on) {
         let slot = consent::admit()?;
-        if !consent::ask(slot, win, consent::Kind::Security, consent::security_question(field, on)).await? {
+        if !consent::ask(slot, win.clone(), consent::Kind::Security, consent::security_question(field, on)).await? {
             eprintln!("[sec] set {field}={on}: cancelled in the confirm, nothing written");
             return Ok(security::report(&cfg_value()));
         }
