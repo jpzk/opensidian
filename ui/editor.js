@@ -1319,7 +1319,14 @@ const Ed = {
     const s = Ed.sel(g);
     if (!s) return;
     const L = Ed.lines(g), l = s.b.l, line = L[l];
-    const a = line.lastIndexOf("[[", s.b.c);
+    // #162: the [[ that was TYPED, i.e. the one acContext found (start = its doc offset), never
+    // a [[ that starts AT the caret (an existing link right after it): stock replaces [start, caret)
+    let a = -1;
+    if (typeof start === "number" && start >= 0) {
+      const p = Ed.lc(g, start);
+      if (p.l === l && p.c + 2 <= s.b.c && line.slice(p.c, p.c + 2) === "[[") a = p.c;
+    }
+    if (a < 0 && s.b.c >= 2) a = line.lastIndexOf("[[", s.b.c - 2);
     if (a < 0) return;
     Ed.replace(g, { a: { l, c: a }, b: { l, c: s.b.c }, empty: false }, "[[" + name + "]]", "ac");
   },
