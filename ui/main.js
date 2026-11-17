@@ -930,7 +930,9 @@ function scShift(g, from, to, ins) {
   const v = scView(g);
   if (!v || !(v.scHl && v.scHl.length)) return;
   const d = ins - (to - from);
-  const map = (p, start) => (p <= from ? p : p >= to ? p + d : start ? from : from + ins);
+  // issue #174: both ends are NON-inclusive, as stock 1.13.7 maps its flash: a pure insert AT the start
+  // pushes the start along (text typed right before the match stays outside), one at the end stays outside
+  const map = (p, start) => (p < from || (p === from && (!start || from < to)) ? p : p >= to ? p + d : start ? from : from + ins);
   v.scHl = v.scHl.map(h => {
     const a = map(h.off, true), b = map(h.off + h.len, false);
     return { off: a, len: Math.max(0, b - a) };
