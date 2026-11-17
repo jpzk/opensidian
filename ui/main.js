@@ -4751,6 +4751,7 @@ async function collapseGroup(g, via) {  // R6.5: closing the last tab removes th
   if (!parent) return;                        // lone root group: caller keeps it
   if (g.sim) cancelAnimationFrame(g.sim);     // stop the removed group's machinery
   g.simGen = 0; if (g.gwRelease) g.gwRelease();   // and retire its sim: a physics batch still in the Worker is dropped, not stepped on
+  if (g.dprOff) g.dprOff();                   // #166: and its dpr media-query listener (holds the sim closure)
   // tabclose: the SECOND unflushed path. This clears an armed save exactly like
   // dropTab does, and it is reachable with tabs still in the group (a drag that
   // moves the last tab out, :1837/:1844) — so the record is unconditional and
@@ -11784,7 +11785,8 @@ function showEditor(g) {
   g.simGen = 0; if (g.gwRelease) g.gwRelease();
   if (g.ro) { g.ro.disconnect(); g.ro = null; }
   if (g.attrObs) { g.attrObs.disconnect(); g.attrObs = null; }
-  perf.flush();                    // ship buffered graph_frame samples of the closed sim
+  if (g.dprOff) g.dprOff();        // #166: the dpr media-query listener holds the sim closure
+  perf.flush();                   // ship buffered graph_frame samples of the closed sim
   g.graph.hidden = true; if (g.glcv) g.glcv.hidden = true;
   gcUnbind(g); g.gfF = null; g.gfApply = null;   // the graph-controls card belongs to a graph view
   applyMode(g);
@@ -12676,11 +12678,16 @@ async function startGraph(g, cfg) {
   }
   // gh-graphdpr: a dpr change with no CSS resize (window moved to another monitor, GDK scale)
   // fires no ResizeObserver — watch the resolution media query, re-fit, redraw
+  // #166: torn down with the sim, the way g.ro is — the predecessor's listener (and the retired sim its
+  // closure holds) is removed here and in showEditor/collapseGroup, not only on the next dpr change.
+  if (g.dprOff) g.dprOff();
   if (window.matchMedia) {
     const dprWatch = () => {
       const mq = matchMedia("(resolution: " + dpr + "dppx)");
-      const on = () => { mq.removeEventListener("change", on); if (cv.hidden || !g.graphOn || g.simGen !== gen) return; fitDpr(); redraw(); dprWatch(); };
+      const off = () => { mq.removeEventListener("change", on); if (g.dprOff === off) g.dprOff = null; };
+      const on = () => { off(); if (cv.hidden || !g.graphOn || g.simGen !== gen) return; fitDpr(); redraw(); dprWatch(); };
       mq.addEventListener("change", on);
+      g.dprOff = off;
     };
     dprWatch();
   }
