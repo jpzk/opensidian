@@ -110,8 +110,41 @@ impl Ends {
     }
 }
 
+/// the byte edits that give the recording its Duration (offsets into the ORIGINAL bytes)
+enum Edit {
+    /// overwrite a 0 / non-finite Duration placeholder in place (same size)
+    Put(usize, Vec<u8>),
+    /// replace Info [at, end) with `info` and, for a known-size Segment, its size field [at, end) with `seg`
+    Grow { info: (usize, usize, Vec<u8>), seg: Option<(usize, usize, [u8; 8])> },
+}
+
 /// the recording with a Duration in its Segment Info, or None = leave the bytes as they are
+#[cfg(test)]
 pub fn with_duration(b: &[u8]) -> Option<Vec<u8>> {
+    let mut o = b.to_vec();
+    add_duration(&mut o).then_some(o)
+}
+
+/// #197 in place (codeant Major on #226: no second full-size buffer next to the
+/// decoded upload near the 128 MiB cap): the Duration goes into `v` itself; the
+/// growth is a few bytes inside Info (Vec::splice; a large block grows by realloc).
+/// false = `v` is untouched (nothing to fix, or a layout we do not fully understand)
+pub fn add_duration(v: &mut Vec<u8>) -> bool {
+    let Some(ed) = plan(v) else { return false };
+    match ed {
+        Edit::Put(at, x) => v[at..at + x.len()].copy_from_slice(&x),
+        Edit::Grow { info: (ia, ie, info), seg } => {
+            v.reserve_exact(info.len().saturating_sub(ie - ia) + 8);
+            v.splice(ia..ie, info); // Info lies after the Segment header: patch it first, the size field's offsets stay valid
+            if let Some((sa, se, s)) = seg {
+                v.splice(sa..se, s);
+            }
+        }
+    }
+    true
+}
+
+fn plan(b: &[u8]) -> Option<Edit> {
     // EBML header(s): WebKit's recorder repeats the EBML header before the Segment; Void (0xEC) is skipped too
     let (id, _, _) = header(b, 0)?;
     if id != ID_EBML {
@@ -221,12 +254,7 @@ pub fn with_duration(b: &[u8]) -> Option<Vec<u8>> {
         if cur.is_finite() && cur > 0.0 {
             return None; // the muxer wrote a real length
         }
-        let mut o = b.to_vec();
-        match n {
-            4 => o[at..at + 4].copy_from_slice(&(end as f32).to_be_bytes()),
-            _ => o[at..at + 8].copy_from_slice(&end.to_be_bytes()),
-        }
-        return Some(o);
+        return Some(Edit::Put(at, if n == 4 { (end as f32).to_be_bytes().to_vec() } else { end.to_be_bytes().to_vec() }));
     }
     if positions {
         return None;
@@ -240,17 +268,13 @@ pub fn with_duration(b: &[u8]) -> Option<Vec<u8>> {
     new_info.extend_from_slice(&body);
     let grow = new_info.len() as u64 - (i_end - i_at) as u64;
     let (_, sid_len) = read_id(b, seg_at)?;
-    let mut o = Vec::with_capacity(b.len() + new_info.len() + 8);
-    o.extend_from_slice(&b[..seg_at + sid_len]);
-    match seg_size {
-        None => o.extend_from_slice(&b[seg_at + sid_len..seg_data]), // unknown size stays unknown
-        // a known size counts the Segment's data only: + the grown Info (its own header change is outside)
-        Some(s) => o.extend_from_slice(&size8(s.checked_add(grow)?)),
-    }
-    o.extend_from_slice(&b[seg_data..i_at]);
-    o.extend_from_slice(&new_info);
-    o.extend_from_slice(&b[i_end..]);
-    Some(o)
+    // a known size counts the Segment's data only: + the grown Info (its own header change is outside);
+    // an unknown size stays unknown
+    let seg = match seg_size {
+        None => None,
+        Some(s) => Some((seg_at + sid_len, seg_data, size8(s.checked_add(grow)?))),
+    };
+    Some(Edit::Grow { info: (i_at, i_end, new_info), seg })
 }
 
 #[cfg(test)]
@@ -419,5 +443,25 @@ mod tests {
         f4.extend(unk(&[0x18, 0x53, 0x80, 0x67], &seg4));
         f4.truncate(f4.len() - 3);
         assert_eq!(duration_of(&with_duration(&f4).unwrap()), Some(40.0));
+    }
+
+    #[test]
+    fn webmdur_in_place_matches_and_leaves_refusals_untouched() {
+        // add_duration edits the buffer it is given (codeant Major on #226); a refusal leaves it byte-identical
+        let mut seg = info(&[]);
+        seg.extend(cluster(0, &[0, 20, 40], true));
+        let mut f = ebml();
+        f.extend(el(&[0x18, 0x53, 0x80, 0x67], &seg)); // known-size Segment: its size field grows too
+        let mut v = f.clone();
+        assert!(add_duration(&mut v));
+        assert_eq!(duration_of(&v), Some(60.0));
+        let (_, sd, ssz) = header(&v, ebml().len()).unwrap();
+        assert_eq!(sd + ssz.unwrap() as usize, v.len(), "the Segment size counts the grown Info");
+        let before = v.clone();
+        assert!(!add_duration(&mut v), "a real Duration is kept");
+        assert_eq!(v, before);
+        let mut w = b"RIFF....WAVE".to_vec();
+        assert!(!add_duration(&mut w));
+        assert_eq!(w, b"RIFF....WAVE");
     }
 }

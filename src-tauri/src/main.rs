@@ -1134,8 +1134,9 @@ async fn audio_save(
         // the bare-name embed ambiguous, so its name counts as taken (write_into then picks ` 1`, ` 2`, ...)
         media.extend(canvasfs::media(&root));
         let taken = |n: &str| media.iter().any(|p| p.rsplit('/').next() == Some(n));
-        let p = audiorec::save(&root, Some(note.as_str()), &bytes, &st, &cfg, md, &taken)?;
-        eprintln!("[audiorec] {} bytes -> {}", bytes.len(), p.path);
+        let n = bytes.len();
+        let p = audiorec::save_owned(&root, Some(note.as_str()), bytes, &st, &cfg, md, &taken)?;
+        eprintln!("[audiorec] {} bytes -> {}", n, p.path);
         // audio files join the index with the ![[x.webm]] embed (#116); the image list stays images/pdf
         Ok(p)
     })(), serde_json::json!({"b64": data.len()}))
