@@ -25,7 +25,7 @@
    reading view yields between batches. */
 (function () {
   "use strict";
-  const MAX = 64 * 1024, MAXN = 2000;
+  const MAX = 64 * 1024, MAXN = 5000;
   const mjNow = () => { const M = window.MathJax; return M && M.startup && M.startup.document && typeof M.tex2chtml === "function" ? M : null; };
   let loading = null;
   function load() {
