@@ -13,9 +13,12 @@
    no U+2068/U+2069 marks around placeables, so English output is byte-identical
    to the literals it replaced.
 
-   Setting: ~/.opensidian.json "language" = "auto" | a code. Auto = the first of
-   navigator.languages we have a table for, else the Rust side's LC_ALL >
-   LC_MESSAGES > LANG answer, else English.
+   Setting: ~/.opensidian.json "language" = "auto" | a code. Auto = the Rust side's
+   LC_ALL > LC_MESSAGES > LANG answer when it names a language other than
+   English, else the first of navigator.languages we have a table for, else
+   English. The env goes first because WebKitGTK derives navigator.languages
+   from setlocale(): with LANG=ja_JP.UTF-8 but no ja_JP locale generated it
+   reports "en-US", which would hide the language the user actually set.
 
    LIVE SWITCH: set(code) persists, swaps the bundle and calls every onChange
    subscriber; static nodes marked data-i18n / data-i18n-<attr> are re-rendered
@@ -84,6 +87,8 @@
     return m && LANGS.some(l => l[0] === m) ? m : null;
   }
   function autoLang() {
+    const env = match(system);
+    if (env && env !== "en") return env;
     const nav = (navigator.languages && navigator.languages.length) ? navigator.languages : [navigator.language];
     for (const l of nav) { const m = match(l); if (m) return m; }
     return match(system) || "en";

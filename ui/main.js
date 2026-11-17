@@ -14019,9 +14019,24 @@ function openLangMenu(anchor) {
   const b = anchor.getBoundingClientRect();
   placeMenu(m, Math.round(b.left), Math.round(b.bottom + 4));
 }
-/* [lang:<setting>/<active>] — the Language setting and the language the UI renders in */
+/* [lang:<setting>/<active>] — the Language setting and the language the UI renders in;
+   [slangxy:<cx>,<cy>] the General > Language control's measured centre (a phase clicks it
+   in any UI language, no OCR); while the language list is open, [langchk:<code>] = the
+   row that carries the check mark (read off the DOM: the row holding .langchk) */
 function langTok() {
-  return window.I18N ? " [lang:" + I18N.setting() + "/" + I18N.lang() + "]" : "";
+  if (!window.I18N) return "";
+  const c = document.getElementById("slang");
+  let s = " [lang:" + I18N.setting() + "/" + I18N.lang() + "]";
+  if (c && c.isConnected) {
+    const b = c.getBoundingClientRect();
+    s += " [slangxy:" + Math.round(b.left + b.width / 2) + "," + Math.round(b.top + b.height / 2) + "]";
+  }
+  if (menuEl && menuEl.dataset.menu === "language") {
+    const k = menuEl.querySelector(".langchk");
+    const row = k && k.closest("[data-lang]");
+    s += " [langchk:" + (row ? row.dataset.lang : "-") + "]";
+  }
+  return s;
 }
 /* live switch: the settings modal is built once per open, so a language change rebuilds its
    nav and the pane on screen (the menus, the palette and other modals build on open) */

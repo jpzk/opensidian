@@ -7255,7 +7255,7 @@ fn i18n_state() -> I18nState {
 /// the .ftl source of `lang` plus the English one (the fallback bundle)
 #[tauri::command]
 fn i18n_load(lang: String) -> Result<serde_json::Value, String> {
-    let src = i18n::ftl(&lang).ok_or_else(|| format!("unknown language {lang:?}"))?;
+    let src = i18n::source(&lang).ok_or_else(|| format!("unknown language {lang:?}"))?;
     Ok(serde_json::json!({ "lang": lang, "ftl": src, "en": i18n::ftl("en") }))
 }
 
@@ -7280,7 +7280,7 @@ fn i18n_init_js() -> String {
         "lang": lang,
         "langs": i18n::LANGS.iter().map(|l| [l.0, l.1]).collect::<Vec<_>>(),
         "en": i18n::ftl("en"),
-        "ftl": i18n::ftl(lang),
+        "ftl": i18n::source(lang),
     });
     format!("window.__OS_I18N={v};")
 }

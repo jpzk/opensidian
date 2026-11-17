@@ -2,8 +2,10 @@
 //! locales/<lang>/main.ftl at the repo root is embedded here (include_str!) and
 //! handed to the webview by `i18n_load` (ui/i18n.js formats it with the vendored
 //! @fluent/bundle), while Rust-side text (native dialogs) is formatted by the
-//! fluent-bundle crate from the same bytes. No file is read at runtime and
-//! nothing is fetched: a language is exactly the .ftl compiled into the binary.
+//! fluent-bundle crate from the same bytes. Nothing is fetched and no file is
+//! read at runtime: a language is exactly the .ftl compiled into the binary
+//! (sole exception: the opt-in translator preview OPENSIDIAN_LOCALES_DIR, see
+//! source()).
 //!
 //! English is the source language and the fallback for every missing message.
 //! Placeables are NOT wrapped in Unicode isolation marks (use_isolating off on
@@ -35,6 +37,35 @@ pub fn ftl(lang: &str) -> Option<&'static str> {
 /// is `s` a value the Language setting may hold ("auto" or a LANGS code)
 pub fn valid_setting(s: &str) -> bool {
     s == AUTO || ftl(s).is_some()
+}
+
+/// TRANSLATOR PREVIEW (opt-in, off unless OPENSIDIAN_LOCALES_DIR=<dir> is set):
+/// <dir>/<code>/main.ftl replaces the embedded table of that ONE language, so a
+/// translator sees a draft in the running app without a rebuild, and a partial
+/// draft shows English for every message it does not carry yet (the harness
+/// uses exactly that to prove the fallback at runtime). English is never
+/// replaced: it is the fallback and must stay the complete, compiled-in table.
+/// `lang` is checked against LANGS first, so the path is always
+/// <dir>/<one of our codes>/main.ftl; an unreadable, non-UTF-8 or > 1 MiB file
+/// is ignored and the embedded table is used.
+pub fn source(lang: &str) -> Option<std::borrow::Cow<'static, str>> {
+    let dir = std::env::var_os("OPENSIDIAN_LOCALES_DIR");
+    source_from(lang, dir.as_deref().map(std::path::Path::new))
+}
+
+pub fn source_from(lang: &str, dir: Option<&std::path::Path>) -> Option<std::borrow::Cow<'static, str>> {
+    use std::borrow::Cow;
+    let embedded = ftl(lang)?;
+    if lang == "en" {
+        return Some(Cow::Borrowed(embedded));
+    }
+    let Some(d) = dir.filter(|d| !d.as_os_str().is_empty()) else { return Some(Cow::Borrowed(embedded)) };
+    let p = d.join(lang).join("main.ftl");
+    let small = std::fs::metadata(&p).map(|m| m.is_file() && m.len() <= 1 << 20).unwrap_or(false);
+    match small.then(|| std::fs::read_to_string(&p).ok()).flatten() {
+        Some(s) => Some(Cow::Owned(s)),
+        None => Some(Cow::Borrowed(embedded)),
+    }
 }
 
 /// map one locale tag (POSIX "ja_JP.UTF-8", BCP 47 "zh-Hans-CN", "ru") to a
@@ -78,8 +109,8 @@ pub fn resolve(setting: &str) -> &'static str {
 }
 
 fn bundle(lang: &str) -> Option<FluentBundle<FluentResource>> {
-    let src = ftl(lang)?;
-    let res = FluentResource::try_new(src.to_string()).ok()?;
+    let src = source(lang)?;
+    let res = FluentResource::try_new(src.into_owned()).ok()?;
     let id = lang.parse().ok()?;
     let mut b = FluentBundle::new(vec![id]);
     b.set_use_isolating(false);
@@ -334,5 +365,21 @@ mod tests {
         assert_eq!(resolve("ja"), "ja");
         assert_eq!(resolve("xx"), "en");
         assert!(valid_setting("auto") && valid_setting("zh-CN") && !valid_setting("de"));
+    }
+
+    #[test]
+    fn translator_preview_replaces_one_language_never_english() {
+        let d = std::env::temp_dir().join(format!("i18n-ovr-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        for l in ["ja", "en"] {
+            std::fs::create_dir_all(d.join(l)).unwrap();
+            std::fs::write(d.join(l).join("main.ftl"), "snav-general = DRAFT\n").unwrap();
+        }
+        assert_eq!(source_from("ja", Some(&d)).unwrap(), "snav-general = DRAFT\n");
+        assert_eq!(source_from("en", Some(&d)).unwrap(), ftl("en").unwrap());
+        assert_eq!(source_from("ko", Some(&d)).unwrap(), ftl("ko").unwrap());   // no file -> embedded
+        assert_eq!(source_from("ja", None).unwrap(), ftl("ja").unwrap());
+        assert!(source_from("../ja", Some(&d)).is_none());                       // not one of our codes
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
