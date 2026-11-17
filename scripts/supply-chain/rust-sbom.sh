@@ -57,7 +57,7 @@ jq -R -s --arg ts "$ts" --arg glib_sha "$glib_sha" '
    | {name: .[0], version: .[1], source: .[2], checksum: .[3],
       deps: (.[4] | if . == "" then [] else split("|") end)}] as $p
   | ($p | map(select(.source == "" and .name == "opensidian"))) as $roots
-  | ($p | map(select(.source != reg and .name != "opensidian"
+  | ($p | map(select(.source != reg and ((.name == "opensidian" and .source == "") | not)
                      and ((.name == "glib" and .version == "0.18.5" and .source == "") | not)))) as $bad
   | if ($roots | length) != 1 then error("want exactly one source-less opensidian root, got \($roots | length)")
     elif ($bad | length) > 0 then error("crate(s) without a crates.io source: \($bad | map("\(.name)@\(.version) [\(.source)]") | join(", "))")

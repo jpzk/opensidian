@@ -37,4 +37,9 @@ expect_fail "fix reverted (pristine vendored)" "expected exactly src/variant_ite
 scratch; sed -i '/^glib = { path = "vendor\/glib-0.18.5" }/d' "$t/r/src-tauri/Cargo.toml"
 expect_fail "[patch.crates-io] line removed" "no \[patch.crates-io\]"
 
+# crates.io marks 0.18.5 yanked (checksum unchanged): must refuse
+scratch; curl -4 -fsSL -m 60 -o "$t/index" https://index.crates.io/gl/ib/glib
+jq -c 'if .vers == "0.18.5" then .yanked = true else . end' "$t/index" >"$t/index.yanked"
+GLIB_INDEX_URL="file://$t/index.yanked" expect_fail "0.18.5 yanked on crates.io" "is yanked on crates.io"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "SOME FAILED"; exit 1; }

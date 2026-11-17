@@ -10,6 +10,7 @@
 #                      database -> pkg:deb/ubuntu source packages); fails on CVEs with a fix available
 #   glib-vendor-check  src-tauri/vendor/glib-0.18.5 == crates.io glib 0.18.5 + the one documented patch
 #   vex-check          supply-chain/vex.cdx.json == deny.toml / audit.toml ignores, no expired entry
+#   gate-tests         scripts/supply-chain/tests/*.test.sh: every gate still turns red on its fixture
 #   sbom               Rust + vendored JS + WebKit bundle + flatpak runtime -> opensidian-<ver>.cdx.json,
 #                      scanned with osv-scanner against the VEX, uploaded as artifact "sbom"
 #   attest-sbom        on tags v* and when called by release.yml: actions/attest-sbom
@@ -223,9 +224,11 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/osvcfg"
           scripts/supply-chain/vex-osv-config.sh > "$RUNNER_TEMP/osvcfg/osv-scanner.toml"
-          # osv-scanner exits 1 on ANY match, including not-yet-fixed distro CVEs; the gate decides
-          "$OSV" scan source --config "$RUNNER_TEMP/osvcfg/osv-scanner.toml" --format json \
-            -L "$RUNNER_TEMP/sbom/webkit-bundle.cdx.json" > "$RUNNER_TEMP/osv-webkit.json" || true
+          # osv-scanner exits 1 on ANY match, including not-yet-fixed distro CVEs; osv-json.sh accepts
+          # rc 0/1 only (127/128 = failed scan) and checks the JSON; the gate decides on the findings
+          scripts/supply-chain/osv-json.sh "$RUNNER_TEMP/osv-webkit.json" \
+            "$OSV" scan source --config "$RUNNER_TEMP/osvcfg/osv-scanner.toml" --format json \
+            -L "$RUNNER_TEMP/sbom/webkit-bundle.cdx.json"
           scripts/supply-chain/osv-fixed-gate.sh "$RUNNER_TEMP/osv-webkit.json"
 
   glib-vendor-check:
@@ -249,6 +252,29 @@ jobs:
           persist-credentials: false
       - name: VEX == deny.toml / audit.toml ignores, nothing expired
         run: scripts/supply-chain/vex-check.sh
+
+  gate-tests:
+    name: supply-chain gate self-tests (red fixtures)
+    # every gate must still turn red on its fixture (past-expiry VEX, pdfjs-dist 4.1.392,
+    # unlisted ui/vendor file, yanked glib, ldd "not found", failed osv scan, ...): a gate that
+    # silently stopped failing would leave every other job here green for the wrong reason.
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: scripts/supply-chain/tests/*.test.sh
+        run: |
+          rc=0
+          for f in scripts/supply-chain/tests/*.test.sh; do
+            echo "::group::$f"
+            bash "$f" || { rc=1; echo "::error::$f failed"; }
+            echo "::endgroup::"
+          done
+          exit "$rc"
 
   sbom:
     name: SBOM (merged) + CVE scan
@@ -314,11 +340,14 @@ jobs:
           scripts/supply-chain/vex-osv-config.sh > "$RUNNER_TEMP/osvcfg/osv-scanner.toml"
           # distro (deb) findings without a fix are gated in webkit-bundle-cve; here only the
           # ecosystems we can upgrade ourselves (cargo, npm, github) may be red.
-          "$OSV" scan source --config "$RUNNER_TEMP/osvcfg/osv-scanner.toml" --format json \
-            -L "$RUNNER_TEMP/out/$F" > "$RUNNER_TEMP/osv-sbom.json" || true
+          # osv-json.sh: rc must be 0/1 and the JSON must carry .results, else the step fails
+          scripts/supply-chain/osv-json.sh "$RUNNER_TEMP/osv-sbom.json" \
+            "$OSV" scan source --config "$RUNNER_TEMP/osvcfg/osv-scanner.toml" --format json \
+            -L "$RUNNER_TEMP/out/$F"
+          # human-readable table for the log only (same scan; its rc was checked above)
           "$OSV" scan source --config "$RUNNER_TEMP/osvcfg/osv-scanner.toml" \
             -L "$RUNNER_TEMP/out/$F" || true
-          bad=$(jq '[.results[]?.packages[]? | select((.package.ecosystem | test("^(Ubuntu|Debian)")) | not)
+          bad=$(jq '[.results[].packages[]? | select((.package.ecosystem | test("^(Ubuntu|Debian)")) | not)
                      | select((.vulnerabilities // []) | length > 0)] | length' "$RUNNER_TEMP/osv-sbom.json")
           echo "non-distro packages with findings: $bad"
           [ "$bad" -eq 0 ] || { echo "::error::$bad package(s) with CVEs not covered by the VEX"; exit 1; }

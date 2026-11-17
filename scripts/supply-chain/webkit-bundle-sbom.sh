@@ -78,9 +78,14 @@ roots=("$WKEXEC/WebKitWebProcess" "$WKEXEC/WebKitNetworkProcess" "$WKEXEC/WebKit
 for r in "${roots[@]}"; do [ -f "$r" ] || die "missing root $r"; done
 
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+# ldd of every root; an unresolved library ("libfoo.so.1 => not found") would silently drop out
+# of the closure (and of the SBOM), so it is fatal here
+for r in "${roots[@]}"; do ldd "$r" || die "ldd failed on $r"; done >"$t/ldd"
+nf=$(awk '/=> *not found/ {print $1}' "$t/ldd" | sort -u | tr '\n' ' ')
+[ -z "$nf" ] || die "ldd cannot resolve (=> not found): $nf"
 # bundled files: the helpers + injected bundle are copied verbatim; libs = ldd closure - EXCL
 { printf '%s\n' "$WKEXEC/WebKitWebProcess" "$WKEXEC/WebKitNetworkProcess" "$WKEXEC/WebKitGPUProcess" "$WKBUNDLE"
-  for r in "${roots[@]}"; do ldd "$r"; done | awk '/=>/ {print $3}' | while read -r lib; do
+  awk '/=>/ {print $3}' "$t/ldd" | while read -r lib; do
     [ -f "$lib" ] || continue
     basename "$lib" | grep -qE "$EXCL" && continue
     echo "$lib"

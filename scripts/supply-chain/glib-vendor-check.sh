@@ -21,7 +21,8 @@ CRATE_SHA=233daaf6e83ae6a12a52055f568f9d7cf4671dabb78ff9560ab6da230ce00ee5
 PATCH=$H/glib-fix/variantstriter.patch
 PATCH_SHA=611b3fb246e554df98301d21cd1625ebb0a318951ad42bdf1cdf26cab69af2fe
 FIXED_FILE=src/variant_iter.rs
-INDEX_URL=https://index.crates.io/gl/ib/glib
+# GLIB_INDEX_URL: test hook only (tests/glib-vendor-check.test.sh serves a doctored index via file://)
+INDEX_URL=${GLIB_INDEX_URL:-https://index.crates.io/gl/ib/glib}
 CRATE_URL=https://static.crates.io/crates/glib/glib-0.18.5.crate
 V=$T/src-tauri/vendor/glib-0.18.5
 refuse() { echo "GLIB-VENDOR REFUSED $*"; exit 1; }
@@ -45,6 +46,7 @@ curl -4 -fsSL -m 60 -o "$W/index" "$INDEX_URL" || refuse "index fetch failed: $I
 IX=$(jq -r 'select(.vers=="0.18.5") | "\(.cksum) \(.yanked)"' "$W/index" | head -1)
 [ -n "$IX" ] || refuse "glib 0.18.5 not in crates.io index"
 [ "${IX% *}" = "$CRATE_SHA" ] || refuse "crates.io index cksum ${IX% *} != pinned $CRATE_SHA"
+[ "${IX#* }" = "false" ] || refuse "glib 0.18.5 is yanked on crates.io (yanked=${IX#* }): pick a non-yanked base"
 echo "[glib-vendor] crates.io index cksum ${IX% *} (== pinned), yanked=${IX#* }"
 
 # 2. the .crate itself

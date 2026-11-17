@@ -24,6 +24,7 @@ for l in libwebkit2gtk-4.1.so.0 libjavascriptcoregtk-4.1.so.0 libgtk-3.so.0 libg
          libbrotlidec.so.1 libbrotlicommon.so.1 libc.so.6 libX11.so.6 libgcrypt.so.20; do
   echo "	\$l => $L/\$l (0x00007f0000000000)"; done
 echo "	linux-vdso.so.1 (0x00007ffd00000000)"
+[ -z "\${NOTFOUND:-}" ] || echo "	\$NOTFOUND => not found"
 S
 # dpkg -S: owner per basename; $t/unowned lists basenames dpkg does not know
 cat >"$t/bin/dpkg" <<'S'
@@ -84,6 +85,7 @@ expect_fail "library not owned by dpkg" "not owned by any dpkg package" run
 rm "$W/WebKitGPUProcess"
 expect_fail "missing webkit helper" "missing root" run
 : >"$W/WebKitGPUProcess"; chmod +x "$W/WebKitGPUProcess"
+NOTFOUND=libmissing.so.9 expect_fail "ldd => not found is fatal" "ldd cannot resolve (=> not found): libmissing.so.9" run
 DISTRO=fedora-44 expect_fail "non-deb distro" "is not ubuntu" run
 DISTRO=debian-13 run >"$t/sbom.json" 2>/dev/null && chk "debian-13 namespace" 'all(.components[]|select(.purl|startswith("pkg:deb")); .purl|test("^pkg:deb/debian/.*distro=debian-13$"))'
 

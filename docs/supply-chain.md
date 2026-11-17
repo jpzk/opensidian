@@ -136,7 +136,8 @@ and reads the truth from that dpkg database. `scripts/supply-chain/webkit-bundle
   `pkg:deb/ubuntu/<src>@<srcver>?arch=source&distro=ubuntu-26.04`. Binary package names and sonames
   are kept as properties;
 - `libbrotli*` is replaced by `build-appimage.sh`, so it maps to `pkg:github/google/brotli@v1.2.1`;
-- fails closed on an unowned library, a missing helper or a non-deb distro.
+- fails closed on an unowned library, a library `ldd` cannot resolve (`=> not found`), a missing
+  helper or a non-deb distro.
 
 `osv-fixed-gate.sh` then fails the job only on findings that have a `fixed` version for that
 package/ecosystem. No-fix-yet findings are listed but don't fail the job.
@@ -157,7 +158,8 @@ Decisions and known gaps:
 0.18.5 plus exactly one documented fix:
 
 - the crates.io sparse index cksum for glib 0.18.5 equals the sha256 pinned in `Cargo.toml`
-  (`233daaf6…0ee5`) and is not yanked, and the downloaded `.crate` matches it;
+  (`233daaf6…0ee5`) and is not yanked (`yanked` must be `false`, else REFUSED), and the downloaded
+  `.crate` matches it;
 - the only file that differs between pristine and vendor is `src/variant_iter.rs`;
 - pristine + `glib-fix/variantstriter.patch` (sha256 pinned) == vendor, including file modes.
 
@@ -190,7 +192,8 @@ Needs vendor-js-cve and webkit-bundle-cve (runs if they were not cancelled, so a
 still produces an SBOM). It downloads the `sbom-part-*` artifacts and adds:
 
 - `rust-sbom.sh`: `Cargo.lock` → `pkg:cargo` components with crates.io sha256 each. glib 0.18.5 is
-  an explicit component with the `.crate` sha256 and pedigree. Any non-crates.io source fails
+  an explicit component with the `.crate` sha256 and pedigree. Only the source-less workspace root
+  `opensidian` is exempt (a git/path crate merely NAMED opensidian is not). Any non-crates.io source fails
   closed. This is a superset: dev-dependencies and all targets are included.
 - `flatpak-sbom.sh`: runtime `org.gnome.Platform` 49 and the brotli module.
 
@@ -201,6 +204,18 @@ CycloneDX 1.6, uploaded as artifact **`sbom`**.
 
 The job then scans it with osv-scanner against the VEX config. It fails if any **non-deb**
 package has a finding. Deb packages are gated in webkit-bundle-cve by the fixed-version rule.
+Both JSON scans (here and in webkit-bundle-cve) go through `osv-json.sh`: osv-scanner must exit 0
+(no findings) or 1 (findings) and its output must carry a `.results` array (and list findings when
+rc=1). Any other exit (127 error, 128 no packages, a crash) or malformed output fails the step, so a
+scan that did not run is never counted as "zero findings".
+
+### gate-tests — the gates still fail on their fixtures
+
+Runs every `scripts/supply-chain/tests/*.test.sh`. Each test runs its gate on the repo (must pass)
+and on scratch copies / stubs (must fail): past-expiry and missing VEX entries, a
+`pdfjs-dist@4.1.392` SBOM (CVE-2024-4367), an unlisted file in `ui/vendor`, a flipped vendored
+byte, a yanked or edited glib, an `ldd` "not found", a git crate named `opensidian`, a failed or
+malformed osv-scanner run. A gate that silently stops failing turns this job red.
 
 **Known red finding:** `npm moment@2.30.1`, GHSA-4p3w-j4w9-5jqw / CVE-2026-17495 (path traversal
 via a crafted locale name). It is fixed in 2.31.0, published 2026-09-15, so a bump is allowed
