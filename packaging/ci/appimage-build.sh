@@ -56,14 +56,20 @@ say "rust $RUST $TGT sha256 $RSHA (manifest $RUST_MANIFEST_SHA256)"
 say "tree $T  ver $V  arch $ARCH  image $IMG (ubuntu:resolute-20260927)  apt snapshot $SNAP"
 podman image exists "$IMG" || podman pull -q "$IMG" >/dev/null || die "pull $IMG"
 mkdir -p "$T/dist"
+CA=${HOST_CA_BUNDLE:-/etc/ssl/certs/ca-certificates.crt}; [ -s "$CA" ] || die "no host CA bundle $CA"
 podman run --rm --network=host -e V="$V" -e ARCH="$ARCH" -e TGT="$TGT" -e RUST="$RUST" -e SNAP="$SNAP" -e PKGS="$PKGS" -e IMGREF="$IMG" \
-  -v "$T":/w -v "$RT":/rust.tar.xz:ro -v "$TOOL":/appimagetool:ro -v "$CARGO_CACHE":/cargo-home -w /w "$IMG" bash -euo pipefail -c '
+  -v "$CA":/host-ca.crt:ro -v "$T":/w -v "$RT":/rust.tar.xz:ro -v "$TOOL":/appimagetool:ro -v "$CARGO_CACHE":/cargo-home -w /w "$IMG" bash -euo pipefail -c '
   say(){ echo "[$(date +%H:%M:%S)] [appimage/resolute] $*"; }
   say "ubuntu $(. /etc/os-release; echo $VERSION_ID $VERSION_CODENAME)"
   rm -f /etc/apt/sources.list /etc/apt/sources.list.d/* /etc/apt/apt.conf.d/docker-clean
-  printf "Types: deb\nURIs: http://snapshot.ubuntu.com/ubuntu/%s/\nSuites: resolute resolute-updates resolute-security\nComponents: main universe\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\nCheck-Valid-Until: no\n" "$SNAP" > /etc/apt/sources.list.d/snapshot.sources
+  printf "Types: deb\nURIs: https://snapshot.ubuntu.com/ubuntu/%s/\nSuites: resolute resolute-updates resolute-security\nComponents: main universe\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\nCheck-Valid-Until: no\n" "$SNAP" > /etc/apt/sources.list.d/snapshot.sources
   export DEBIAN_FRONTEND=noninteractive
-  { apt-get -q update && apt-get -y -q --no-install-recommends install $PKGS; } > /w/dist/apt-$ARCH.log 2>&1 || { tail -30 /w/dist/apt-$ARCH.log; exit 1; }
+  # snapshot.ubuntu.com is https-only and the bare image has no CA store yet: apt uses the host CA
+  # bundle (mounted read-only) for TLS only; package integrity is the archive signature + index sha256.
+  echo "Acquire::https::CAInfo \"/host-ca.crt\";" > /etc/apt/apt.conf.d/99host-ca
+  apt-get -q update > /w/dist/apt-$ARCH.log 2>&1 || { tail -30 /w/dist/apt-$ARCH.log; exit 1; }
+  if grep -E "^(Err:|W:|E:)" /w/dist/apt-$ARCH.log; then say "FAIL: apt update against the snapshot was not clean"; exit 1; fi
+  apt-get -y -q --no-install-recommends install $PKGS >> /w/dist/apt-$ARCH.log 2>&1 || { tail -30 /w/dist/apt-$ARCH.log; exit 1; }
   # every requested pin really is what got installed
   for p in $PKGS; do n=${p%%=*}; want=${p#*=}; got=$(dpkg-query -W -f="\${Version}" "$n"); [ "$got" = "$want" ] || { say "FAIL: $n is $got, pinned $want"; exit 1; }; done
   O=/w/dist/pkgset-$V-$ARCH.tsv
