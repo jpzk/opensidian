@@ -90,6 +90,7 @@
       budget += src.length;
       if (budget > 32 * 1024) { budget = 0; await tick(); }
     }
+    if (n) pub();
     return n;
   }
 
@@ -150,7 +151,7 @@
         try { d = build(view); } catch (e) { console.error(e); d = Decoration.none; }
         if (want && !this.asked) {
           this.asked = true;
-          load().then(() => { if (!this.gone) try { this.view.dispatch({ effects: fx.of(null) }); } catch (_) {} }, e => console.warn("[codehl] " + (e && e.message || e)));
+          load().then(() => { if (!this.gone) try { this.view.dispatch({ effects: fx.of(null) }); } catch (_) {} pub(); }, e => console.warn("[codehl] " + (e && e.message || e)));
         }
         return d;
       }
@@ -162,6 +163,45 @@
     }, { decorations: p => p.decorations });
   }
 
-  window.CodeHL = Object.freeze({ reading, MAX });
+  /* census (gate phase codehl, CENSUS_ON only): the focused pane's PAINTED code, off the live DOM.
+     [chl:<rv|ed>|P<n>|<blocks>] n = grammars loaded (0 = Prism never loaded); rv blocks =
+     <lang>/<pre has language-L><code is-loaded>/<token spans>,... ("-" = a fence without a language);
+     ed blocks = t<token spans in the editor>. [chlkw:r.g.b] the computed colour of the first painted
+     .token.keyword, [chlnorm:r.g.b] of the first block's plain code text; [chlxss:n] elements in any
+     code block that the source text asked for (img/script/iframe/object/embed or an on* attribute);
+     [chlrc:x,y,w,h] the first painted keyword's rect. */
+  const vis = e => !!e && !e.closest(".vkeep") && e.getClientRects().length > 0 && e.getBoundingClientRect().height > 0;
+  const rgb = c => { const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(c || ""); return m ? m[1] + "." + m[2] + "." + m[3] : "-"; };
+  const xssIn = els => { let n = 0; for (const r of els) for (const e of r.querySelectorAll("*")) { if (/^(img|script|iframe|object|embed)$/i.test(e.tagName)) { n++; continue; } for (const a of e.attributes) if (/^on/i.test(a.name)) { n++; break; } } return n; };
+  function tok() {
+    const Pn = document.querySelector("#main .pane.focused") || document.querySelector("#main .pane");
+    if (!Pn) return "";
+    const P = prismNow(), np = P ? Object.keys(P.languages).filter(k => P.languages[k] && typeof P.languages[k] === "object").length : 0;
+    const rect = e => { const r = e.getBoundingClientRect(); return [r.x, r.y, r.width, r.height].map(Math.round).join(","); };
+    const pres = [...Pn.querySelectorAll(".preview pre")].filter(p => vis(p) && p.querySelector(":scope > code"));
+    let out, roots, kw;
+    if (pres.length) {
+      out = "rv|P" + np + "|" + pres.slice(0, 16).map(p => {
+        const c = p.querySelector(":scope > code"), l = langOf(c);
+        return (l ? l.replace(/[^\w+#-]/g, "_").slice(0, 16) : "-") + "/" + (l && p.classList.contains("language-" + l) ? 1 : 0) +
+               (c.classList.contains("is-loaded") ? 1 : 0) + "/" + c.querySelectorAll(".token").length;
+      }).join(",");
+      roots = pres;
+      kw = pres.map(p => p.querySelector(".token.keyword")).find(vis);
+    } else {
+      const ed = [...Pn.querySelectorAll(".cm-editor")].find(vis);
+      if (!ed) return " [chl:-|P" + np + "|]";
+      roots = [...ed.querySelectorAll(".cm-content")];
+      out = "ed|P" + np + "|t" + ed.querySelectorAll(".cm-content .token").length;
+      kw = [...ed.querySelectorAll(".cm-content .token.keyword")].find(vis);
+    }
+    const c0 = pres.length ? pres[0].querySelector(":scope > code") : null;
+    return " [chl:" + out + "] [chlxss:" + xssIn(roots) + "]" +
+           (kw ? " [chlkw:" + rgb(getComputedStyle(kw).color) + "] [chlrc:" + rect(kw) + "]" : "") +
+           (c0 ? " [chlnorm:" + rgb(getComputedStyle(c0).color) + "]" : "");
+  }
+  const pub = () => { try { if (typeof updateTitle === "function") updateTitle(); } catch (_) {} };
+
+  window.CodeHL = Object.freeze({ reading, MAX, tok, pub });
   if (typeof Ed !== "undefined" && Ed) Ed.cbHl = lpLayer;
 })();

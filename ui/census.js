@@ -81,3 +81,4 @@ CENSUS.push(() => audvTok());   // issue #140: [audv:<path>|<loading|ready|error
 var CSPV = { n: 0, d: "-" };
 window.addEventListener("securitypolicyviolation", e => { CSPV.n++; CSPV.d = String(e.effectiveDirective || e.violatedDirective || "?").replace(/[[\]|@\s]/g, "_"); }, true);
 CENSUS.push(() => " [csp:" + CSPV.n + "|" + CSPV.d + "]");
+CENSUS.push(() => window.CodeHL ? CodeHL.tok() : "");   // #186 code highlighting: [chl:<rv|ed>|P<grammars>|<lang>/<pre.language-L><code.is-loaded>/<tokens>,...] [chlkw:] [chlnorm:] [chlxss:] [chlrc:] the focused pane's painted fences (ui/codehl.js) — gate phase codehl
