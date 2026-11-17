@@ -74,8 +74,10 @@
     if (cc && cc.io) { cc.io.disconnect(); cc.io = null; }
     if (cc && cc.blob) { URL.revokeObjectURL(cc.blob); MEDIA.live.delete(cc.blob); cc.blob = ""; }
   }
-  // af-fix 1a: the blob: media-src is in a trusted page's CSP only (main.rs csp_by_trust); plugins_state
-  // pageEval says which header THIS page got (fixed at load), so a restricted page builds no blob
+  // af-fix 1a / #196: pageEval says which CSP header THIS page got (fixed at load). Both headers carry
+  // media-src 'self' blob: since #139 (main.rs csp_by_trust), so a media card plays on either page; what the
+  // trust changes is WHEN its bytes are read: trusted = lazily once on screen (or on play), restricted =
+  // CLICK-TO-PLAY like the audio embeds (#139, editor.js audioFill): nothing is read or demuxed before the press
   let pageTrust = null;
   const mediaTrusted = () => pageTrust || (pageTrust = Promise.resolve().then(() => {
     const T = window.__TAURI__, inv = T && T.core && T.core.invoke;
@@ -96,32 +98,42 @@
     } while (off < size);
     return URL.createObjectURL(new Blob(parts, { type: MIME[extOf(p)] || "" }));
   }
-  // wire one card's player: load on dwell-in-view or on play; cc is the card's _cc
+  // wire one card's player: trusted = load on dwell-in-view or on play; restricted (#196) = load on the
+  // card's Play button (or the player's own play) only; cc is the card's _cc
   function mediaLazy(node, ctx, p, m, cc) {
-    const go = () => {
+    const go = play => {
       if (cc.state) return;
       cc.state = "loading";
       if (cc.io) { cc.io.disconnect(); cc.io = null; }
       clearTimeout(cc.t);
-      mediaTrusted().then(ok => ok ? mediaBlob(p) : Promise.reject(new Error("restricted"))).then(u => {
+      mediaBlob(p).then(u => {
         if (node._cc !== cc || !m.isConnected) { URL.revokeObjectURL(u); return; }
         cc.blob = u; cc.state = "ready"; MEDIA.live.set(u, { m, cc, arm });
         if (!MEDIA.timer) MEDIA.timer = setInterval(mediaSweep, 2000);
-        m.src = u; ping(ctx);
+        if (cc.c2p) { cc.c2p.hidden = true; m.style.display = ""; }
+        if (m.preload !== "metadata") m.preload = "metadata";   // restricted: only now, after the press
+        m.src = u;
+        if (play) { const q = m.play(); if (q && q.catch) q.catch(() => {}); }   // the user pressed play: start it
+        ping(ctx);
       }, e => {
         if (node._cc !== cc) return;
-        const why = String(e && e.message || e), big = /too large/.test(why), rst = why === "restricted";
-        cc.state = big ? "big" : rst ? "restricted" : "error";
-        if (big || rst) {
+        const why = String(e && e.message || e), big = /too large/.test(why);
+        cc.state = big ? "big" : "error";
+        if (big) {
           m.style.display = "none";
+          if (cc.c2p) cc.c2p.hidden = true;
           const w = mk("div", "canvas-file-media-error", node.contentEl);
-          w.textContent = "Cannot play " + nameOf(p) + (big ? ": the file is larger than 256 MB." : ": media cards play in a trusted vault only (restricted mode).");
+          w.textContent = "Cannot play " + nameOf(p) + ": the file is larger than 256 MB.";
           cc.err = w;
         } else console.error("[canvas] media card " + p + ":", e);
         ping(ctx);
       });
     };
     function arm() {
+      if (cc.c2p) {   // restricted (#196): back to the Play button, never a reload on screen
+        cc.c2p.hidden = false; m.style.display = "none"; m.preload = "none";
+        return;
+      }
       if (typeof IntersectionObserver !== "function") return;
       if (cc.io) cc.io.disconnect();
       cc.io = new IntersectionObserver(en => {
@@ -131,9 +143,26 @@
       });
       cc.io.observe(m);
     }
-    m.addEventListener("play", go);
-    if (typeof IntersectionObserver !== "function") { go(); return; }
-    arm();
+    mediaTrusted().then(ok => {
+      if (node._cc !== cc || !m.isConnected) return;
+      if (ok) {
+        m.addEventListener("play", () => go(false));
+        if (typeof IntersectionObserver !== "function") { go(false); return; }
+        arm();
+        return;
+      }
+      m.preload = "none"; m.style.display = "none";
+      const b = mk("button", "canvas-file-media-c2p");
+      node.contentEl.insertBefore(b, m);
+      b.type = "button";
+      b.title = "Play (restricted vault: the file is read when you press play)";
+      b.setAttribute("aria-label", "Play " + nameOf(p));
+      b.addEventListener("pointerdown", ev => ev.stopPropagation());   // a press on the button is not a card drag
+      b.addEventListener("click", ev => { ev.preventDefault(); ev.stopPropagation(); go(true); });
+      m.addEventListener("play", () => { if (!cc.state) { m.pause(); go(true); } });
+      cc.c2p = b;
+      ping(ctx);
+    });
   }
   const mk = (tag, cls, parent) => { const e = document.createElement(tag); if (cls) e.className = cls; if (parent) parent.appendChild(e); return e; };
   const ping = ctx => { if (ctx && ctx.deps && typeof ctx.deps.changed === "function") try { ctx.deps.changed(); } catch (_) {} };
@@ -152,6 +181,12 @@
     ".canvas-node-container > .canvas-file-media { display: block; width: 100%; max-height: 100%; box-sizing: border-box; padding: 8px }\n" +
     ".canvas-node.is-selected.cc-media > .canvas-node-content-blocker { display: none }\n" +
     ".canvas-node-container > .canvas-file-media-error { padding: 8px 12px; color: var(--text-muted, #999); font-size: var(--font-ui-small, 13px) }\n" +
+    // #196 restricted click-to-play (the embed's .audio-c2p look, style.css): one button, label from CSS
+    ".canvas-node-container > .canvas-file-media-c2p { display: flex; align-items: center; gap: 8px; margin: 8px; padding: 6px 12px; width: calc(100% - 16px); box-sizing: border-box;" +
+    " font: inherit; font-size: var(--font-ui-small, 13px); color: var(--text-normal, #ddd); background: var(--interactive-normal, #363636); border: 1px solid var(--background-modifier-border, #444); border-radius: var(--radius-s, 4px); cursor: pointer }\n" +
+    ".canvas-node-container > .canvas-file-media-c2p[hidden] { display: none }\n" +
+    ".canvas-node-container > .canvas-file-media-c2p::before { content: \"\\25B6\"; font-size: 12px }\n" +
+    ".canvas-node-container > .canvas-file-media-c2p::after { content: \"Play (restricted vault: read on click)\" }\n" +
     ".canvas-file-other { padding: 8px 12px; display: flex; flex-direction: column; gap: 4px }\n" +
     ".canvas-file-other-ext { color: var(--text-muted, #999); font-size: 12px; text-transform: uppercase }\n" +
     ".canvas-node-label > .canvas-group-label-input { font: inherit; color: var(--text-normal, #ddd); min-width: 160px }\n" +
@@ -749,7 +784,7 @@
       }
     }
     // goal cvf-mediasrv: [cvmblob:<live object URLs>|vis=<media cards on screen>|rd=<media_read calls>] [cvmbig:<id>@x,y]
-    // af-fix 1a: [cvmrst:<id>@x,y] a restricted page's media card (cannot play), [cvmcsp:<CSP refusals on the page>]
+    // #196: [cvmc2p:<id>@x,y] a restricted page's media card not yet pressed (its Play button), [cvmcsp:<CSP refusals on the page>]
     mediaSweep();
     const wr = v.canvas.wrapperEl ? v.canvas.wrapperEl.getBoundingClientRect() : null;
     let mv = 0;
@@ -759,7 +794,7 @@
       const r = n.containerEl.getBoundingClientRect();
       if (wr && r.width && r.height && r.right > wr.left && r.left < wr.right && r.bottom > wr.top && r.top < wr.bottom) mv++;
       if (s.state === "big" && vis(s.err)) t += " [cvmbig:" + esc(n.id) + "@" + ctr(s.err) + "]";
-      if (s.state === "restricted" && vis(s.err)) t += " [cvmrst:" + esc(n.id) + "@" + ctr(s.err) + "]";   // af-fix 1a
+      if (!s.state && s.c2p && vis(s.c2p)) t += " [cvmc2p:" + esc(n.id) + "@" + ctr(s.c2p) + "]";   // #196
     }
     t += " [cvmblob:" + MEDIA.live.size + "|vis=" + mv + "|rd=" + MEDIA.reads + "]";
     t += " [cvmcsp:" + MEDIA.csp + "]";   // af-fix 1a
