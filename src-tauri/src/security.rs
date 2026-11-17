@@ -316,6 +316,8 @@ pub fn report(cfg: &Value) -> Value {
         "pageRemote": PAGE_REMOTE.load(std::sync::atomic::Ordering::SeqCst),
         // toggle 4 layer 2: does THIS page's CSP still carry opensidian-img: / blob:?
         "pageMedia": PAGE_MEDIA.load(std::sync::atomic::Ordering::SeqCst),
+        // toggle 5: what the page webview's enable-webgl is right now (main.rs sec_webgl)
+        "pageWebgl": PAGE_WEBGL.load(std::sync::atomic::Ordering::SeqCst),
     })
 }
 
@@ -465,6 +467,29 @@ pub fn csp_media(csp: &str, on: bool) -> String {
         })
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+/* ---- toggle 5: WebGL (docs §1 "5 — WebGL"). Boundary: native — WebKitSettings
+   enable-webgl on the page webview (main.rs sec_webgl), set at window creation from the
+   effective value and again from security_set when the effective value moves (lockdown
+   and HTML canvas off force it off in effective_with). With it off every
+   getContext("webgl" | "webgl2" | "experimental-webgl") returns null for app and plugin
+   code alike; a context made before the change keeps running until its page reloads.
+   PAGE_WEBGL = what the webview's setting is right now (report pageWebgl). */
+pub static PAGE_WEBGL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// the reason the graph names when it draws in 2D because of this toggle
+pub const WEBGL_OFF: &str = "WebGL is off";
+
+/// "WebGL is off (Settings › Security › WebGL)"
+pub fn webgl_off_text() -> String {
+    format!("{WEBGL_OFF} {}", named("webgl"))
+}
+
+/// must the webview's enable-webgl change? Some(new value) when the effective value and
+/// the applied one disagree, None when nothing is to do
+pub fn webgl_change(eff: &Eff, applied: bool) -> Option<bool> {
+    (eff.sec.webgl != applied).then_some(eff.sec.webgl)
 }
 
 #[cfg(test)]
@@ -700,5 +725,26 @@ mod tests {
         l.lockdown = true;
         assert!(net_check(&effective_with(l, Some(l)), "x").is_err(), "lockdown forces offline");
         assert!(offline_open_text("https://a.b/\n").contains("\"https://a.b/\\n\""), "the address is Debug-quoted");
+    }
+
+    /// toggle 5: the webview setting follows the EFFECTIVE value — the stored switch, HTML
+    /// canvas off and lockdown all turn it off; nothing changes while they agree
+    #[test]
+    fn webgl_follows_effective_value() {
+        let d = Sec::default();
+        assert_eq!(webgl_change(&effective_with(d, None), true), None, "default = today: WebGL on, nothing to do");
+        let mut s = d;
+        s.webgl = false;
+        assert_eq!(webgl_change(&effective_with(s, None), true), Some(false));
+        assert_eq!(webgl_change(&effective_with(s, None), false), None);
+        let mut c = d;
+        c.canvas = false;
+        assert_eq!(webgl_change(&effective_with(c, None), true), Some(false), "canvas off forces WebGL off");
+        let mut l = d;
+        l.lockdown = true;
+        assert_eq!(webgl_change(&effective_with(l, Some(l)), true), Some(false), "lockdown forces WebGL off");
+        assert_eq!(webgl_change(&effective_with(d, None), false), Some(true), "turning it back on re-enables");
+        assert_eq!(webgl_off_text(), "WebGL is off (Settings › Security › WebGL)");
+        assert_eq!(report(&json!({}))["pageWebgl"], json!(true));
     }
 }

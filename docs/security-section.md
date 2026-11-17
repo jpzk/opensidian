@@ -195,17 +195,32 @@ Format per toggle: **boundary** (what actually refuses), **files**, **visible st
 
 ### 5 — WebGL
 
-- **Boundary:** native. `WebKitSettings::set_enable_webgl(false)` on the page webview
-  (via `with_webview` at window creation, and live from `security_set`). After that every
-  `getContext("webgl"|"webgl2"|"experimental-webgl")` returns `null` for app and plugins.
-  Live change (operator decision): the setting flips at once; the graph view re-opens on
-  the new path immediately (`ui/main.js` graph teardown + reopen, it already falls back to
-  Canvas 2D on "no webgl context"); plugins see it after a reload (existing contexts keep
-  running). Android: `WebSettings` has no WebGL switch — documented as not available there.
-- **Files:** `main.rs` (`page_window`, `security_set`), `security.rs`, `ui/main.js`
-  (re-open the graph, census reports `[gl:2d]`).
+- **Boundary:** native. `WebKitSettings::set_enable_webgl` on the page webview
+  (`main.rs sec_webgl`, through `with_webview`), set right after the page window is built
+  from the EFFECTIVE value (HTML canvas off and lockdown force it off, `security::effective_with`),
+  and again from `security_set` whenever the effective value moves
+  (`security::webgl_change(eff, applied)`). WebKit reads the setting at `getContext`, so the
+  change is live: from then on every `getContext("webgl"|"webgl2"|"experimental-webgl")`
+  returns `null` for app and plugin code alike. A context made before the change keeps
+  running until the page reloads (said in the row's description). `security_get` reports
+  `pageWebgl` (what the webview has now). Android: `WebSettings` has no WebGL switch — not
+  available there; other non-Linux desktops log "not enforced".
+- **Graph (operator decision: switches at once):** `graph_renderer_pref` answers
+  `renderer: "2d"` + `security: "WebGL is off (Settings › Security › WebGL)"` while off;
+  `ui/security.js` calls `window.opensidianGraphGl()` when a set moves the effective value,
+  which drops the cached preference and GL renderer and re-opens every open graph from its
+  kept layout (`loadActive`, the tab-switch path). The perf mark names the reason
+  `security:webgl-off`; the census adds `[glsec:webgl-off]` next to `[gl:2d]` (absent
+  while on, so existing graph phases see unchanged output).
+- **Visible state:** the Security row (and the census); the graph itself keeps working on
+  its 2D path, so there is nothing to refuse in the graph view.
+- **Files:** `security.rs` (`PAGE_WEBGL`, `webgl_change`, `webgl_off_text`, report),
+  `main.rs` (`sec_webgl`, page window, `security_set`, `graph_renderer_pref`),
+  `ui/main.js` (`opensidianGraphGl`, reason, census), `ui/security.js`.
 - **T3 probe `secwebgl`:** off → probe plugin gets `null` for all three names, graph
-  census reports the 2D path; on → `webgl` or `webgl2` is non-null (control).
+  census `[gl:2d] [glsec:webgl-off]`; live: on at launch, the graph draws `[gl:gl]`, the
+  probe turns the setting off without a reload → graph `[gl:2d]` at once and a fresh
+  `getContext` is `null`; on → `webgl` or `webgl2` is non-null (control).
 
 ### 10 — Community plugins may start programs
 
@@ -380,4 +395,6 @@ defaults do not change.
 - 8 plugin clipboard: user-initiated paste events and gesture-bound `execCommand('copy')`
   remain visible to same-realm plugin code.
 - 5 / 7 on Android: no WebView switch; documented as desktop-only.
+- 5 WebGL: a WebGL context a plugin created BEFORE the switch went off keeps working until
+  the page reloads (the native setting gates new `getContext` calls only).
 - 3 offline: the system browser (`open_external`) is allowed after a confirm.

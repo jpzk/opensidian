@@ -2577,8 +2577,11 @@ fn log_spans(spans: Vec<serde_json::Value>) -> bool {
 /// settleTest): one otel span per settle, numbers only. Unset, the UI keeps no trace.
 #[tauri::command]
 fn graph_renderer_pref() -> serde_json::Value {
+    // #144 toggle 5: WebGL off (or forced off by HTML canvas / lockdown) = the 2D path, named
+    let gl = security::effective(&cfg_value()).sec.webgl;
     serde_json::json!({
-        "renderer": std::env::var("OPENSIDIAN_GRAPH_RENDERER").ok(),
+        "renderer": if gl { std::env::var("OPENSIDIAN_GRAPH_RENDERER").ok() } else { Some("2d".to_string()) },
+        "security": if gl { serde_json::Value::Null } else { security::webgl_off_text().into() },
         "lose_ctx": std::env::var_os("OPENSIDIAN_GRAPH_LOSE_CTX").is_some(),
         "settle_trace": std::env::var("OPENSIDIAN_GRAPH_SETTLE_TRACE").as_deref() == Ok("1"),
     })
@@ -4052,6 +4055,29 @@ fn with_page_sec<T>(f: impl FnOnce() -> T) -> T {
     security::with_remote(remote_media_now(), || security::with_media(vault_media_now(), f))
 }
 
+/// #144 toggle 5 (docs §1 "5 — WebGL"): set the page webview's WebKitSettings enable-webgl.
+/// Called at window creation and from security_set when the effective value moves; with it
+/// off getContext("webgl" | "webgl2" | "experimental-webgl") is null for app and plugins.
+#[cfg(target_os = "linux")]
+fn sec_webgl<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>, on: bool) {
+    // recorded first: the report security_set returns right after says what was asked for
+    security::PAGE_WEBGL.store(on, std::sync::atomic::Ordering::SeqCst);
+    let r = w.with_webview(move |pw| {
+        use webkit2gtk::{SettingsExt, WebViewExt};
+        if let Some(st) = WebViewExt::settings(&pw.inner()) {
+            st.set_enable_webgl(on);
+            eprintln!("[sec] webgl={} (WebKitSettings enable-webgl)", if on { "on" } else { "off" });
+        }
+    });
+    if let Err(e) = r {
+        eprintln!("[sec] webgl={on} not applied: {e}");
+    }
+}
+#[cfg(not(target_os = "linux"))]
+fn sec_webgl<R: tauri::Runtime>(_w: &tauri::WebviewWindow<R>, on: bool) {
+    eprintln!("[sec] webgl={on}: no WebKitSettings on this platform, not enforced");
+}
+
 /// the response hook of the page window: an HTML page (the only responses
 /// Tauri gives a CSP header) gets the header of the vault's trust state
 fn page_csp(h: &tauri::AppHandle, res: &mut tauri::http::Response<std::borrow::Cow<'static, [u8]>>) {
@@ -4173,6 +4199,9 @@ fn page_window(app: &tauri::AppHandle, wc: &tauri::utils::config::WindowConfig) 
     // #116: the microphone gate (audio-only, armed by the core recorder; audiorec.rs)
     audiorec::install(&w);
     xdnd::attach(&w);
+    // #144 toggle 5: WebGL as the effective value says, before the page's first script runs
+    // (the setting is read by getContext, not at load, so a later security_set applies live too)
+    sec_webgl(&w, security::effective(&cfg_value()).sec.webgl);
     Ok(())
 }
 
@@ -4398,6 +4427,15 @@ async fn security_set(win: tauri::Window, field: String, on: bool) -> Result<ser
     }
     cfg_update(&[cfgstore::Op::SecuritySet(field.into(), on)]);
     eprintln!("[sec] set {field}={on}");
+    // toggle 5 live: WebGL itself, HTML canvas (forces it off) — the webview follows at once
+    let applied = security::PAGE_WEBGL.load(std::sync::atomic::Ordering::SeqCst);
+    if let Some(gl) = security::webgl_change(&security::effective(&cfg_value()), applied) {
+        use tauri::Manager;
+        match win.app_handle().get_webview_window(win.label()) {
+            Some(w) => sec_webgl(&w, gl),
+            None => eprintln!("[sec] webgl={gl}: no webview window {}", win.label()),
+        }
+    }
     Ok(security::report(&cfg_value()))
 }
 
@@ -9100,6 +9138,26 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// #144 toggle 5: the webview's enable-webgl is set at window creation from the effective
+    /// value, security_set re-applies it when the effective value moves, and the graph's
+    /// renderer preference names the toggle while it is off
+    #[test]
+    fn webgl_toggle_is_applied_at_creation_and_live() {
+        let src = include_str!("main.rs");
+        let build = src.find("audiorec::install(&w);").expect("page window");
+        let tail = &src[build..];
+        let ok = tail.find("Ok(())").expect("end of the page window fn");
+        assert!(tail[..ok].contains("sec_webgl(&w, security::effective(&cfg_value()).sec.webgl)"), "not set at creation");
+        let set = src.find("async fn security_set(").expect("security_set");
+        let body = &src[set..set + src[set..].find("\n}\n").expect("end")];
+        let w = body.find("security::webgl_change(").expect("security_set does not re-apply WebGL");
+        assert!(body.find("cfg_update(").expect("write") < w, "re-applied before the value is written");
+        assert!(body[w..].contains("sec_webgl(&w, gl)"));
+        let pref = src.find("fn graph_renderer_pref()").expect("pref");
+        let pb = &src[pref..pref + src[pref..].find("\n}\n").expect("end")];
+        assert!(pb.contains("security::webgl_off_text()") && pb.contains("Some(\"2d\".to_string())"), "{pb}");
     }
 
     #[test]

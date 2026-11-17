@@ -31,7 +31,7 @@
     ]],
     ["Media and rendering", [
       ["vaultMedia", false, "Render images, PDFs, audio and video from your vaults. Off: a placeholder is shown and no file reaches a decoder."],
-      ["webgl", false, "Off: the graph uses its 2D renderer; plugins see no WebGL after they reload."],
+      ["webgl", false, "Off: the graph switches to its 2D renderer at once; plugin code gets no new WebGL context (one made before keeps running until a reload)."],
       ["canvas", false, "Off: <canvas> drawing is replaced before any page code runs (graph, image export and paste re-encoding stop). Limit: hardening only; a trusted plugin with native access can still reach drawing through other routes."],
       ["mathjax", false, "Render $math$ with MathJax. Off: math shows as plain text."],
       ["prism", false, "Highlight code blocks with Prism. Off: code shows as plain text."],
@@ -78,7 +78,12 @@
   async function refresh() { R = await inv("security_get"); publish(); return R; }
   async function set(f, on) {
     if (busy) return; busy = true;
-    try { R = await inv("security_set", { field: f, on }); publish(); }
+    try {
+      const gl0 = R && R.effective ? !!R.effective.webgl : null;
+      R = await inv("security_set", { field: f, on }); publish();
+      // toggle 5: the backend flipped enable-webgl; open graphs switch draw path at once
+      if (gl0 !== null && gl0 !== !!R.effective.webgl && typeof window.opensidianGraphGl === "function") window.opensidianGraphGl();
+    }
     catch (e) { console.error("[sec] set " + f + ":", e); if (typeof say === "function") say("Security: " + String(e && e.message || e)); }
     busy = false;
     if (typeof settingsOpen !== "undefined" && settingsOpen && sPane === "security") build(document.getElementById("spage"));

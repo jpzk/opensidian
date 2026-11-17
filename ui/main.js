@@ -4466,6 +4466,7 @@ function utBuild() {             // pane/focus census in the window title (headl
       const tokc = (n, alt) => { const raw = tokv(n);   // the same three rungs as palette() (PAL_ALT)
         return res(raw) || res(csR.getPropertyValue(n).trim().toLowerCase()) || (alt ? res(tokv(alt)) : "") || raw; };
       gpx = " [gl:" + ((fgr && fgr.graphRenderer) || "none") + "] [graphbg:" + tokc("--graph-bg") + "] [graphnode:" + tokc("--accent-blue", "--color-accent") + "]";
+      if (fgr && fgr.graphGlWhy) gpx += " [glsec:" + fgr.graphGlWhy + "]";   // #144 toggle 5
       const cvEl = fgr && fgr.graph;
       if (cvEl && !cvEl.hidden) {
         const r = cvEl.getBoundingClientRect();
@@ -11790,10 +11791,21 @@ const gnKind = nd => nd.kind ? nd.kind : nd.resolved ? 0 : 1;
 let graphPrefP = null;
 const graphRendererPref = () => graphPrefP || (graphPrefP = inv("graph_renderer_pref").catch(() => null).then(p => {
   const r = (p && p.renderer) || localStorage.getItem("opensidian.graphRenderer");
-  return { renderer: r === "gl" || r === "2d" ? r : null, loseCtx: !!(p && p.lose_ctx), settleTrace: !!(p && p.settle_trace) };
+  return { renderer: r === "gl" || r === "2d" ? r : null, loseCtx: !!(p && p.lose_ctx), settleTrace: !!(p && p.settle_trace), security: (p && p.security) || null };
 }));
+// #144 toggle 5 (Settings › Security › WebGL): ui/security.js calls this when the effective value
+// moves. The backend already flipped the webview's enable-webgl; every open graph re-opens at once
+// from its kept layout (loadActive = the tab-switch path) on the new draw path, and a cached GL
+// renderer is dropped so an off graph holds no context. Plugins see the change after a reload.
+window.opensidianGraphGl = () => {
+  graphPrefP = null;
+  for (const g of groups()) {
+    if (g.glr) { g.glr = null; if (g.glcv) { g.glcv.remove(); g.glcv = null; } }
+    if (g.graphOn) loadActive(g);
+  }
+};
 function showEditor(g) {
-  g.graphOn = false; g.graphRefresh = null; g.graphRedraw = null; g.graphAnimate = null; g.graphAnimState = null; g.graphRc = null; cancelAnimationFrame(g.sim); g.graphRenderer = null;
+  g.graphOn = false; g.graphRefresh = null; g.graphRedraw = null; g.graphAnimate = null; g.graphAnimState = null; g.graphRc = null; cancelAnimationFrame(g.sim); g.graphRenderer = null; g.graphGlWhy = null;
   // retire the sim (startGraph's gen starts at 1): a physics batch still in the Worker lands nowhere and
   // posts no next one, so the kept layout stays the frame the user left, as when the loop was only a rAF
   g.simGen = 0; if (g.gwRelease) g.gwRelease();
@@ -11967,7 +11979,7 @@ async function startGraph(g, cfg) {
     return p;
   };
   let glr = null, reason = "default";
-  if (pref.renderer === "2d") reason = "forced:2d";
+  if (pref.renderer === "2d") reason = pref.security ? "security:webgl-off" : "forced:2d";   // #144 toggle 5: graph_renderer_pref says 2d while WebGL is off
   else if (!window.GraphGL) reason = "no-module";
   else {
     if (!g.glr || g.glr.lost) {
@@ -11983,6 +11995,7 @@ async function startGraph(g, cfg) {
   const gpu = glr ? { gpu_vendor: glr.info.vendor, gpu_renderer: glr.info.renderer } : { gpu_vendor: "", gpu_renderer: "" };
   cv.classList.toggle("gl-on", !!glr); if (g.glcv) g.glcv.hidden = !glr;
   g.graphRenderer = glr ? "gl" : "2d";   // census [gl:] — which draw path painted the shot
+  g.graphGlWhy = !glr && pref.security ? "webgl-off" : null;   // #144 toggle 5: census [glsec:] (only while WebGL is off)
   perf.mark("graph_renderer", rT0, { renderer: glr ? "gl" : "2d", reason, webgl: glr ? glr.info.webgl : 0, ...gpu });
   const gr = await fetchP;
   // R16 GRAPH FIT (Obsidian-faithful, docs/requirements.md R16): the sim runs in
