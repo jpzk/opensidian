@@ -1611,7 +1611,17 @@ Ed.field = function (g) {
     selectionStart: off(s.a), selectionEnd: off(s.b),
     get value() { return f._v; },
     set value(t) { f._v = t; Ed.setAll(g, t); },
-    setSelectionRange(a) { Ed.placeOffset(g, a); },
+    // #160: keep the END too, like a textarea — edEdit/edWrap hand back the wrapped text's range and
+    // stock 1.13.7 leaves it selected (Toggle bold on 'word' -> '**word**', 'word' still selected),
+    // so a second toggle unwraps instead of inserting new markers at a caret
+    setSelectionRange(a, b) {
+      const cm = Ed.cm(g);
+      if (!cm || b == null || b === a) return Ed.placeOffset(g, a);
+      const n = cm.state.doc.length, k = o => Math.max(0, Math.min(o, n));
+      cm.dispatch({ selection: { anchor: k(a), head: k(b) } });
+      if (!cm.hasFocus) cm.focus();
+      Ed.mark(g, Ed.focusPos(g).l);
+    },
     dispatchEvent() { if (typeof scheduleSave === "function") scheduleSave(g); },
     focus() { g.lp.focus({ preventScroll: true }); },
   };
