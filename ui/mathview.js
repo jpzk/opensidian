@@ -199,21 +199,23 @@
     const { Decoration, WidgetType, EditorView } = CMv;
     if (!fx) fx = CMs.StateEffect.define();
     class MW extends WidgetType {
-      constructor(tex, block, gen) { super(); this.tex = tex; this.block = block; this.gen = gen; }
-      eq(o) { return o.tex === this.tex && o.block === this.block && o.gen === this.gen; }
+      // block: a block widget (own div, $$ lines); display: TeX display mode. A same-line $$..$$ is
+      // display math inside an inline replacement, so it stays a span (no div in the line).
+      constructor(tex, block, gen, display = block) { super(); this.tex = tex; this.block = block; this.gen = gen; this.display = !!display; }
+      eq(o) { return o.tex === this.tex && o.block === this.block && o.display === this.display && o.gen === this.gen; }
       get estimatedHeight() { return this.block ? 48 : -1; }
       toDOM(view) {
         const w = document.createElement(this.block ? "div" : "span");
-        w.className = this.block ? "math math-block cm-embed-block" : "math";
+        w.className = this.block ? "math math-block cm-embed-block" : this.display ? "math math-display" : "math";
         w.setAttribute("contenteditable", "false");
-        const M = mjNow(), node = M ? typeset(M, this.tex, this.block) : null;
+        const M = mjNow(), node = M ? typeset(M, this.tex, this.display) : null;
         if (node) { w.appendChild(node); w.classList.add("is-loaded"); flush(); }
-        else w.textContent = this.block ? "$$" + this.tex + "$$" : "$" + this.tex + "$";
+        else w.textContent = this.display ? "$$" + this.tex + "$$" : "$" + this.tex + "$";
         // the widget ignores editor events: a click puts the caret into the math (its source shows)
         w.addEventListener("mousedown", e => {
           if (e.button !== 0) return;
           e.preventDefault();
-          try { const p = view.posAtDOM(w, 0); view.dispatch({ selection: { anchor: this.block ? p : p + 1 } }); view.focus(); } catch (_) {}
+          try { const p = view.posAtDOM(w, 0); view.dispatch({ selection: { anchor: this.block ? p : p + (this.display ? 2 : 1) } }); view.focus(); } catch (_) {}
         });
         return w;
       }
@@ -231,7 +233,7 @@
       for (const b of blocks) if (!touched(b.from, b.to) && b.tex.length <= MAX)
         out.push(Decoration.replace({ widget: new MW(b.tex, true, gen), block: true }).range(b.from, b.to));
       for (const m of inl) if (!touched(m.from, m.to) && m.tex.length <= MAX)
-        out.push(Decoration.replace({ widget: new MW(m.tex, m.display, gen) }).range(m.from, m.to));
+        out.push(Decoration.replace({ widget: new MW(m.tex, false, gen, m.display) }).range(m.from, m.to));
       return out.length ? Decoration.set(out, true) : Decoration.none;
     };
     return CMs.StateField.define({
