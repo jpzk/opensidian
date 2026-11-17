@@ -38,4 +38,11 @@ expect_fail "entry without reason" "needs id, analysis.state, analysis.detail" "
 
 expect_fail "today past real expiry" "expired on 2027-01-15" env VEX_TODAY=2027-02-01 "$here/vex-check.sh"
 
+scratch; sed -i 's/^ignore = \[/ignore = [\n  "RUSTSEC-2024-0429",/' "$t/r/src-tauri/.cargo/audit.toml"
+expect_fail "resolved id also ignored in audit.toml" "resolved' in the VEX but ignored in audit" "$here/vex-check.sh" "$t/r"
+
+scratch; jq '(.vulnerabilities[] | select(.id=="RUSTSEC-2024-0429") | .analysis.detail) = "trust me"' \
+  "$root/supply-chain/vex.cdx.json" >"$t/r/supply-chain/vex.cdx.json"
+expect_fail "resolved without a proving script" "names no scripts/supply-chain" "$here/vex-check.sh" "$t/r"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "SOME FAILED"; exit 1; }
