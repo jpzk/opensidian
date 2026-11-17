@@ -21,7 +21,7 @@
    Rows: { title, fn, why, icon, section, chk, warn, sub }
      fn   — called on click/Enter (the row closes the menu itself, as the .ctxmenu rows did)
      why  — set (a string) = the row is DISABLED, `why` is its hover title
-     chk  — undefined = no radio gutter; false/true = gutter, true = the check mark
+     chk  — true = the radio row is the checked one: a check mark after the title (#214: no leading gutter)
      sub  — array of rows (or a function returning one): the row opens a submenu
    "---" is a separator. Census (main.js menuTok): [menu:] reads .menu-item-title
    and .menu-separator, [mdis:] .is-disabled, [menu2:]/[mg2:]/[mgy2:] the submenu,
@@ -51,12 +51,11 @@ const OMenu = (() => {
         if (!grp) grp = scroll.appendChild(div("menu-group"));
         const d = div("menu-item tappable");
         if (r.section) d.dataset.section = r.section;
-        if (r.icon || r.chk !== undefined) {
-          const ic = d.appendChild(div("menu-item-icon"));
-          if (r.icon) ic.innerHTML = r.icon;
-          else if (r.chk) { ic.innerHTML = CHECK; d.classList.add("mod-checked"); }
-        }
+        if (r.icon) d.appendChild(div("menu-item-icon")).innerHTML = r.icon;
         d.appendChild(div("menu-item-title")).textContent = r.title;
+        // #214: a radio row reserves NO leading column (its title lines up with every other row's), and
+        // the checked one carries the mark AFTER its title, at the row's right end (stock 1.13.7, measured)
+        if (r.chk) { d.classList.add("mod-checked"); d.appendChild(div("menu-item-icon mod-checked")).innerHTML = CHECK; }
         if (r.warn) d.classList.add("is-warning");
         if (r.sub) { d.classList.add("has-submenu"); d.appendChild(div("menu-item-icon mod-submenu")).innerHTML = CHEVRON; d._sub = r.sub; }
         if (r.why != null) {
