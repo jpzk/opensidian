@@ -1900,6 +1900,12 @@ pub(crate) fn net_allowed(what: &str) -> Result<(), String> {
     security::net_check(&security::effective(&cfg_value()), what)
 }
 
+/// #144 toggle 2 (+ 3): the plugin network commands ask this — offline first, then the
+/// community-plugin network toggle (security::plugin_net_check). `plugin` is a message label.
+pub(crate) fn plugin_net_allowed(what: &str, plugin: Option<&str>) -> Result<(), String> {
+    security::plugin_net_check(&security::effective(&cfg_value()), what, plugin)
+}
+
 fn cfg_set(k: &str, x: serde_json::Value) {
     cfg_update(&[cfgstore::Op::Set(k.into(), x)]);
 }
@@ -4452,9 +4458,9 @@ fn desk_proc_kill(id: u64, signal: Option<String>) -> Result<bool, String> {
    (flag write, close_all), so a listen that passed its check cannot register
    after close_all and stay bound (desk_net::listen_trusted). */
 #[tauri::command]
-fn desk_net_listen(v: State<Vault>, host: Option<String>, port: u16) -> Result<serde_json::Value, String> {
+fn desk_net_listen(v: State<Vault>, host: Option<String>, port: u16, plugin: Option<String>) -> Result<serde_json::Value, String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
-    net_allowed("net.createServer")?; // #144 toggle 3: a listener is a network surface too
+    plugin_net_allowed("net.createServer", plugin.as_deref())?; // #144 toggles 3+2: a listener is a network surface too
     // CC1 (PR #42 round 12, CodeAnt): listen_trusted calls `trusted` a second time UNDER the
     // lifecycle lock (desk_net::listen_trusted_via). The trust key canonicalizes the vault root (a
     // path lookup: a stalled FUSE/NFS vault stands still in it), so it is computed HERE, before
@@ -4515,12 +4521,12 @@ fn desk_sock_destroy(id: u64) -> Result<(), String> {
    every request. Stock requestUrl reaches any host without CORS; ours does that
    for http://, https:// is refused until a TLS client is a pinned dependency. */
 #[tauri::command]
-async fn desk_http_request(v: State<'_, Vault>, req: desk_http::Req) -> Result<desk_http::Resp, String> {
+async fn desk_http_request(v: State<'_, Vault>, req: desk_http::Req, plugin: Option<String>) -> Result<desk_http::Resp, String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
     if !plugins::is_trusted(&cfg_value(), &root) {
         return Err("EPERM: restricted mode, plugins cannot make requests".into());
     }
-    net_allowed("requestUrl")?; // #144 toggle 3
+    plugin_net_allowed("requestUrl", plugin.as_deref())?; // #144 toggles 3+2
     let what = format!("{} {}", req.method.as_deref().unwrap_or("GET"), req.url.split('?').next().unwrap_or(""));
     let r = tauri::async_runtime::spawn_blocking(move || desk_http::request(&req)).await.map_err(|e| e.to_string())?;
     match &r {
@@ -8894,6 +8900,7 @@ mod tests {
             let b = body(&m, cmd);
             let at = b.find(call).unwrap_or_else(|| panic!("{cmd} does not call {call}"));
             assert!(b[..at].contains("net_allowed("), "{cmd} calls {call} before net_allowed");
+            assert!(b[..at].contains("plugin_net_allowed("), "{cmd} calls {call} before plugin_net_allowed (#144 toggle 2)");
             assert_eq!(m.matches(call).count(), 1, "{call} has another caller in main.rs");
         }
         for ent in fs::read_dir(dir).unwrap().flatten() {
@@ -11468,6 +11475,23 @@ mod tests {
         // an existing worker-src / media-src is extended, not duplicated; Tauri's own hash tokens survive
         let w = csp_by_trust("script-src 'self' 'sha256-abc'; worker-src 'self'; media-src 'self'", true);
         assert_eq!(w, "script-src 'self' 'sha256-abc' 'unsafe-eval' blob:; worker-src 'self' blob:; media-src 'self' blob:");
+    }
+
+    /// #144 toggle 2: page fetch / XHR / WebSocket to a remote host are refused by connect-src,
+    /// whatever toggle 2 says — no trust state and no toggle-1 value ever adds a remote / ws origin
+    #[test]
+    fn connect_src_never_names_a_remote_origin() {
+        const CONF: &str = include_str!("../tauri.conf.json");
+        let base = serde_json::from_str::<serde_json::Value>(CONF).unwrap()["app"]["security"]["csp"].as_str().unwrap().to_string();
+        for trusted in [false, true] {
+            for remote in [false, true] {
+                let c = security::csp_remote(&csp_by_trust(&base, trusted), remote);
+                let cs = c.split("; ").find(|d| d.starts_with("connect-src")).expect("connect-src").to_string();
+                for tok in cs.split_whitespace().skip(1) {
+                    assert!(matches!(tok, "ipc:" | "http://ipc.localhost" | "'self'"), "connect-src gained {tok} (trusted={trusted} remote={remote}): {cs}");
+                }
+            }
+        }
     }
 
     /// S4: picker commands refuse system trees and dot-components, keep the

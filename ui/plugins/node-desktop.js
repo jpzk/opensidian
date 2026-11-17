@@ -915,7 +915,7 @@
       if (cb) this.once("listening", cb);
       const fail = e => { const x = netErr(e, { syscall: "listen", address: host, port }); if (this.listenerCount("error")) this.emit("error", x); else console.error("[desktop] server listen " + (host || "") + ":" + port + ": " + x.message); };
       if (this._tls) { later(() => fail(new Error("ENOTSUP: TLS servers are not available in opensidian (https.createServer)"))); return this; }
-      (desk ? desk("desk_net_listen", { host: host == null ? null : String(host), port }) : Promise.reject(new Error("EPERM: no desktop backend")))
+      (desk ? desk("desk_net_listen", { host: host == null ? null : String(host), port, plugin: this._plugin == null ? null : String(this._plugin) }) : Promise.reject(new Error("EPERM: no desktop backend")))
         .then(r => { this._id = r.id; this._addr = { address: r.address, family: "IPv4", port: r.port }; this.listening = true; this.emit("listening"); this._loop(); }, fail);
       return this;
     }
@@ -1173,7 +1173,7 @@
     if (ArrayBuffer.isView(b)) return new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
     return new TextEncoder().encode(String(b));
   };
-  function httpSend(p) {
+  function httpSend(p, plugin) {
     const o = typeof p === "string" ? { url: p } : (p && typeof p === "object" ? p : {});
     const headers = [];
     if (o.headers && typeof o.headers === "object") for (const k of Object.keys(o.headers)) if (o.headers[k] != null) headers.push([String(k), String(o.headers[k])]);
@@ -1182,7 +1182,7 @@
     const req = { url: String(o.url || ""), method: String(o.method || "GET").toUpperCase(), headers };
     if (bytes) req.body = latin1Str(bytes, 0);
     if (!desk) return Promise.reject(new Error("request: no desktop bridge"));
-    return desk("desk_http_request", { req }).then(r => {
+    return desk("desk_http_request", { req, plugin: plugin == null ? null : String(plugin) }).then(r => {
       const body = latin1Bytes(r.body || "");
       const hs = {};
       for (const [k, v] of r.headers || []) hs[k] = Object.prototype.hasOwnProperty.call(hs, k) ? hs[k] + ", " + v : v;
@@ -1190,9 +1190,9 @@
     }, e => { throw new Error("net::" + String(e && e.message || e)); });
   }
   const httpFail = r => Object.assign(new Error("Request failed, status " + r.status), { status: r.status, headers: r.headers });
-  function requestUrl(p) {
+  function requestUrl(p, plugin) {
     const thr = !(p && typeof p === "object" && p.throw === false);
-    const pr = httpSend(p).then(r => {
+    const pr = httpSend(p, plugin).then(r => {
       if (thr && r.status >= 400) throw httpFail(r);
       let text = null, json;
       const buf = r.body.buffer.slice(r.body.byteOffset, r.body.byteOffset + r.body.byteLength);
@@ -1211,19 +1211,24 @@
     }
     return pr;
   }
-  const request = p => httpSend(p).then(r => { if (r.status >= 400) throw httpFail(r); return new TextDecoder("utf-8").decode(r.body); });
-  // the plugin's "obsidian": the shared API with stock's request / requestUrl laid over
-  const apis = new WeakMap();
-  function obsidianApi(base) {
+  const request = (p, plugin) => httpSend(p, plugin).then(r => { if (r.status >= 400) throw httpFail(r); return new TextDecoder("utf-8").decode(r.body); });
+  // the plugin's "obsidian": the shared API with stock's request / requestUrl laid over.
+  // #144 toggle 2: one object per (base, plugin id) — its request / requestUrl carry the id as the
+  // refusal's LABEL (a claim, never an authority: desk_http_request refuses on the toggle alone)
+  const apis = new Map();   // plugin id -> WeakMap(base -> api)
+  function obsidianApi(base, plugin) {
     if (!base || typeof base !== "object" || !desk) return base;
-    let a = apis.get(base);
+    const id = plugin == null ? "" : String(plugin);
+    if (!apis.has(id)) apis.set(id, new WeakMap());
+    const per = apis.get(id);
+    let a = per.get(base);
     if (!a) {
       const d = Object.getOwnPropertyDescriptors(base);
-      d.request = { value: request, enumerable: true, writable: false, configurable: false };
-      d.requestUrl = { value: requestUrl, enumerable: true, writable: false, configurable: false };
+      d.request = { value: p => request(p, id || null), enumerable: true, writable: false, configurable: false };
+      d.requestUrl = { value: p => requestUrl(p, id || null), enumerable: true, writable: false, configurable: false };
       a = Object.defineProperties(Object.create(Object.getPrototypeOf(base)), d);
       if (Object.isFrozen(base)) Object.freeze(a);
-      apis.set(base, a);
+      per.set(base, a);
     }
     return a;
   }
@@ -2027,6 +2032,12 @@
   };
 
   const PLUGIN_DIR = id => "/vault/.obsidian/plugins/" + id;
+  /* #144 toggle 2: a view's net / http / https module whose createServer labels the server with the
+     plugin id, so a listener refused by "Cut off network for all community plugins" names it.
+     A label only (desk_net_listen refuses on the toggle alone); new net.Server() stays unlabelled. */
+  function labelled(m, id) {
+    return Object.assign({}, m, { createServer: (o, f) => { const s = m.createServer(o, f); s._plugin = id; return s; } });
+  }
   const views = new Map();   // id -> view (one per plugin id for the page's life)
   function view(id) {
     id = String(id);
@@ -2057,9 +2068,9 @@
       ["crypto", (deny, n) => mod(n, deny, cryptoAll)],
       ["tty", (deny, n) => mod(n, deny, { isatty: () => false })],
       ["child_process", (deny, n) => mod(n, deny, cpFor(id))],
-      ["net", (deny, n) => mod(n, deny, netOwn)],
-      ["http", (deny, n) => mod(n, deny, httpOwn)],
-      ["https", (deny, n) => mod(n, deny, httpsOwn)],
+      ["net", (deny, n) => mod(n, deny, labelled(netOwn, id))],
+      ["http", (deny, n) => mod(n, deny, labelled(httpOwn, id))],
+      ["https", (deny, n) => mod(n, deny, labelled(httpsOwn, id))],
       ["electron", (deny, n) => mod(n, deny, electronOwn)],
       ["stream", (deny, n) => mod(n, deny, streamOwn)],
       ["stream/promises", () => streamPromises],
@@ -2096,7 +2107,7 @@
       // a builtin this view answers; deny is the loader's message for the stub members
       resolve(name, deny) { const b = bare(name), f = mods.get(b); if (!f) return undefined; if (!made.has(b)) made.set(b, f(String(deny), b)); return made.get(b); },
       bindRequire(r) { if (typeof r === "function" && !boundReq) boundReq = r; },
-      api: obsidianApi,
+      api: base => obsidianApi(base, id),
       process: proc,
       global: ownGlobal(proc),
       Buffer,

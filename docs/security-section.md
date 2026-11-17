@@ -133,19 +133,27 @@ Format per toggle: **boundary** (what actually refuses), **files**, **visible st
 
 ### 2 — Cut off network for community plugins
 
-- **Boundary:** backend checks on the plugin request commands — `desk_http_request` and
-  `desk_net_listen` refuse with `EPERM` naming the plugin — plus the CSP: a trusted page's
-  `connect-src` is `ipc: http://ipc.localhost 'self'` (no remote origin) on develop, so
-  `fetch` / XHR / `WebSocket` to a remote host are already refused by WebKit; the toggle
-  pins that (T0 test: with pluginNet off, no remote/ws origin can ever be added). Core
-  plugins do not use these commands (they are the community-plugin node shims).
-- **Plugin name:** `ui/plugins/node-desktop.js` / `api-functions.js` pass the calling
-  plugin id (as they do for spawn consent); the error is
-  `EPERM: network is off for community plugins (Settings › Security) — plugin <id>`.
-  The id is a label, not an authority: the refusal does not depend on it.
+- **Boundary:** backend checks on the plugin request commands — `desk_http_request`
+  (requestUrl / request / http(s).request) and `desk_net_listen` (net/http.createServer)
+  call `main.rs plugin_net_allowed` → `security::plugin_net_check` before anything is
+  sent or bound. It asks the offline choke point first (offline wins and its refusal is
+  the one shown), then this toggle. `fetch` / XHR / `WebSocket` to a remote host are
+  refused by WebKit already: a page's `connect-src` is `ipc: http://ipc.localhost
+  ['self']` (no remote origin) whatever the toggle says. T0
+  `connect_src_never_names_a_remote_origin` pins that for both trust states × toggle 1;
+  `every_outbound_path_goes_through_the_choke_point` pins that both commands ask
+  `plugin_net_allowed(` before their network call. Core plugins do not use these
+  commands (they are the community-plugin node shims).
+- **Plugin name:** each plugin's view in `ui/plugins/node-desktop.js` hands out its own
+  `obsidian.request/requestUrl` (per (api, plugin id)) and `net/http/https.createServer`
+  that pass the plugin id. The error is
+  `EPERM: requestUrl: network is off for community plugins (Settings › Security › Cut off network for all community plugins) — plugin <id>`
+  (id sanitized to `[A-Za-z0-9._-]`, ≤ 64). The id is a label, not an authority: the
+  refusal does not depend on it; `new net.Server()` and `http.request` stay unlabelled.
 - **Default:** allow (operator decision) = today.
-- **Files:** `main.rs` (`desk_http_request`, `desk_net_listen`), `security.rs`,
-  `ui/plugins/node-desktop.js`, `ui/plugins/api-functions.js` (pass id, surface error).
+- **Files:** `security.rs` (`plugin_net_check`, `plugin_label`), `main.rs`
+  (`plugin_net_allowed`, `desk_http_request`, `desk_net_listen`, T0),
+  `ui/plugins/node-desktop.js` (label plumbing).
 - **T3 probe `secplgnet`:** probe plugin calls `requestUrl('http://127.0.0.1:<port>')`
   against a box-local listener, `fetch`, XHR, `WebSocket`, `net.createServer`: off → all
   refuse, the requestUrl error names the plugin; on → requestUrl reaches the listener

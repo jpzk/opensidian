@@ -244,6 +244,32 @@ pub fn offline_open_text(url: &str) -> String {
     )
 }
 
+/* toggle 2 — community-plugin network. The plugin network commands (main.rs
+   desk_http_request = requestUrl / request / http.request, desk_net_listen =
+   net/http.createServer) ask `plugin_net_check`, which asks the offline choke
+   point FIRST (offline wins, and its refusal is the one shown), then this toggle.
+   fetch / XHR / WebSocket to a remote host are refused by the page CSP whatever
+   the toggle says (connect-src has no remote origin; T0 pins that in main.rs).
+   `plugin` is a LABEL for the message (all plugins share one realm, the id is a
+   claim): the refusal never depends on it. */
+pub const PLUGIN_NET_OFF: &str = "network is off for community plugins";
+
+/// a plugin id for a message: [A-Za-z0-9._-], at most 64 chars, "" when nothing is left
+pub fn plugin_label(p: &str) -> String {
+    p.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')).take(64).collect()
+}
+
+/// Err when offline mode is on (net_check) or the plugin network toggle cuts it:
+/// "EPERM: <what>: network is off for community plugins (Settings › Security › ...) — plugin <id>"
+pub fn plugin_net_check(eff: &Eff, what: &str, plugin: Option<&str>) -> Result<(), String> {
+    net_check(eff, what)?;
+    if !eff.sec.plugin_net {
+        let who = plugin.map(plugin_label).filter(|p| !p.is_empty()).map(|p| format!(" — plugin {p}")).unwrap_or_default();
+        return Err(format!("EPERM: {what}: {PLUGIN_NET_OFF} {}{who}", named("pluginNet")));
+    }
+    Ok(())
+}
+
 /// a requested change, validated: (field, value). Unknown field = refused.
 pub fn validate(field: &str, on: bool) -> Result<(&'static str, bool), String> {
     FIELDS
@@ -406,6 +432,31 @@ mod tests {
         assert!(with_remote(true, remote_on));
         assert!(!remote_on());
         assert!(remote_off_text().contains("Load external resources is off"));
+    }
+
+    /// toggle 2: default allows; off refuses naming the toggle (+ the plugin label, sanitized);
+    /// offline wins and its refusal is the one shown; the label never decides
+    #[test]
+    fn plugin_net_toggle_refuses_naming_it_offline_first() {
+        let d = Sec::default();
+        assert!(plugin_net_check(&effective_with(d, Some(d)), "requestUrl", Some("x")).is_ok());
+        let mut s = d;
+        s.plugin_net = false;
+        let e = effective_with(s, Some(s));
+        let err = plugin_net_check(&e, "requestUrl", Some("evil\n<b>id")).unwrap_err();
+        assert_eq!(err, "EPERM: requestUrl: network is off for community plugins (Settings › Security › Cut off network for all community plugins) — plugin evilbid");
+        assert!(plugin_net_check(&e, "net.createServer", None).unwrap_err().ends_with("community plugins)"));
+        assert!(plugin_net_check(&e, "requestUrl", Some("")).unwrap_err().ends_with("community plugins)"));
+        assert_eq!(plugin_label(&"a".repeat(99)).len(), 64);
+        // offline on (plugin net stored allow): offline's message
+        let mut o = d;
+        o.offline = true;
+        let err = plugin_net_check(&effective_with(o, Some(o)), "requestUrl", Some("x")).unwrap_err();
+        assert!(err.contains(OFFLINE_IS_ON) && !err.contains(PLUGIN_NET_OFF), "{err}");
+        // lockdown cuts it too
+        let mut l = d;
+        l.lockdown = true;
+        assert!(plugin_net_check(&effective_with(l, Some(l)), "requestUrl", None).unwrap_err().contains(PLUGIN_NET_OFF));
     }
 
     #[test]
