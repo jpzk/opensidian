@@ -527,11 +527,47 @@ const Ed = {
   // banner a missing local target takes, labelled with the constant
   // "remote image" (main.rs REMOTE_IMG_LABEL), never the URL. The renderer
   // refusing to mint the src is layer 1; the CSP's img-src is the backstop.
+  // #144 toggle 1 (Load external resources) mirrors main.rs image_html / remote_html:
+  // an https target mints its element ONLY while this page's CSP carries https:
+  // (security_get pageRemote, ui/security.js); otherwise the banner, and data-why
+  // names the setting that is the cause (CSS paints it after the R29.4 sentence).
+  remoteOn() {
+    const s = window.__osSecurity && window.__osSecurity.get();
+    return !!(s && s.pageRemote === true);
+  },
+  remoteEl(url, alt) {
+    const ext = (url.split(/[?#]/)[0].match(/\.([^./]+)$/) || ["", ""])[1].toLowerCase();
+    const kind = ["mp4", "m4v", "mov", "ogv"].includes(ext) ? "video" : Ed.isAudio("x." + ext) ? "audio" : "img";
+    const e = Ed.el(kind, kind === "img" ? "rimg" : "rmedia");
+    if (kind === "img") {
+      e.setAttribute("loading", "lazy");        // before src, as for vault images (audit #10)
+      e.setAttribute("referrerpolicy", "no-referrer");
+      e.setAttribute("alt", alt || "");
+      e.draggable = false;
+    } else {
+      e.setAttribute("controls", ""); e.setAttribute("preload", "none");
+      e.setAttribute("title", alt || "");
+    }
+    e.setAttribute("src", url);
+    e.contentEditable = "false";
+    return e;
+  },
   imgEl(target, alt, remote) {
-    const src = remote ? null : Ed.imgSrc(target);
+    if (remote) {
+      const on = Ed.remoteOn();
+      if (on && /^https:\/\//i.test(target)) return Ed.remoteEl(target, alt);
+      const s = Ed.el("span", "imgmiss");
+      s.dataset.miss = "remote image";
+      s.dataset.sec = "remoteMedia";
+      s.dataset.why = on ? "(Settings › Security › Load external resources: only https:// addresses load)"
+                         : "(Settings › Security › Load external resources is off)";
+      s.contentEditable = "false";
+      return s;
+    }
+    const src = Ed.imgSrc(target);
     if (src === null) {
       const s = Ed.el("span", "imgmiss");
-      s.dataset.miss = remote ? "remote image" : target;  // CSS: “<label>” could not be found.
+      s.dataset.miss = target;  // CSS: “<label>” could not be found.
       s.contentEditable = "false";
       return s;
     }

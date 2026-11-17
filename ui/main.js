@@ -4248,6 +4248,10 @@ function utBuild() {             // pane/focus census in the window title (headl
       const xi = s => String(s == null ? "" : s).replace(/[[\]|]/g, "").slice(0, 100);
       md += " [xi:" + ims.length + "/" + ims.filter(i => i.naturalWidth > 0).length + "/" + nmiss +
             ims.slice(0, 3).map(i => "|" + xi(i.getAttribute("src"))).join("") + "]";
+      // #144 toggle 1: [xr:<banners naming Load external resources>/<https players>/<page CSP https: 1|0>]
+      const rs = window.__osSecurity && __osSecurity.get();
+      md += " [xr:" + rv.querySelectorAll(".imgmiss[data-sec=\"remoteMedia\"]").length + "/" +
+            rv.querySelectorAll("audio.rmedia, video.rmedia").length + "/" + (rs && rs.pageRemote ? 1 : 0) + "]";
     }
   }
   // pdfembed probe: the focused note view's PDF frames ->

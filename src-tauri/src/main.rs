@@ -618,6 +618,21 @@ fn media_read(v: State<Vault>, path: String, offset: u64) -> Result<tauri::ipc::
 /// itself never reaches the DOM: an attribute a note controls is a beacon the
 /// moment some later CSS/JS reads it.
 fn image_html(imgs: &[String], target: &str, alt: &str) -> String {
+    if is_remote_img(target) {
+        // #144 toggle 1 (Load external resources), layer 1. On: an https target mints
+        // its element with the URL (the CSP's img-src / media-src carry https: only
+        // then — security::csp_remote). Off (default) or http://: R29.4's banner, the
+        // URL never reaches the DOM, and the banner names the setting that is the cause.
+        let on = security::remote_on();
+        if on && url_scheme(target).as_deref() == Some("https") {
+            return remote_html(target, alt);
+        }
+        let why = if on { security::REMOTE_HTTP_ONLY_HTTPS.to_string() } else { security::remote_off_text() };
+        return format!(
+            "<span class=\"imgmiss\" data-sec=\"remoteMedia\">\u{201c}{REMOTE_IMG_LABEL}\u{201d} could not be found. <span class=\"secwhy\">{}</span></span>",
+            esc(&why)
+        );
+    }
     if url_scheme(target).is_some() {
         return format!(
             "<span class=\"imgmiss\">\u{201c}{REMOTE_IMG_LABEL}\u{201d} could not be found.</span>"
@@ -644,6 +659,22 @@ fn image_html(imgs: &[String], target: &str, alt: &str) -> String {
             "<span class=\"imgmiss\">\u{201c}{}\u{201d} could not be found.</span>",
             esc(target)
         ),
+    }
+}
+
+/// #144 toggle 1 ON: the element for an https:// embed. Audio / video by the path's
+/// extension (query / fragment ignored), everything else an image. preload none +
+/// lazy + no-referrer: rendering a note sends no Referer and a player fetches only on Play.
+fn remote_html(url: &str, alt: &str) -> String {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let ext = path.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    let (u, a) = (esc(url), esc(alt));
+    if ["mp4", "m4v", "mov", "ogv"].contains(&ext.as_str()) {
+        format!("<video class=\"rmedia\" controls preload=\"none\" src=\"{u}\" title=\"{a}\"></video>")
+    } else if AUDIO_EXTS.contains(&ext.as_str()) {
+        format!("<audio class=\"rmedia\" controls preload=\"none\" src=\"{u}\" title=\"{a}\"></audio>")
+    } else {
+        format!("<img class=\"rimg\" src=\"{u}\" alt=\"{a}\" loading=\"lazy\" referrerpolicy=\"no-referrer\">")
     }
 }
 
@@ -3543,7 +3574,7 @@ fn render(v: State<Vault>, content: String, otel: Option<perf::Ctx>) -> String {
     // ONE lock for both lists: two `v.index.lock()` calls in one expression is
     // a deadlock on a non-reentrant Mutex, not a style question.
     let ix = v.index.lock().unwrap();
-    span_timed!(otel => "render", render_with_br(&content, ix.names(), ix.images(), true, soft_br), serde_json::json!({"bytes": content.len()}))
+    span_timed!(otel => "render", security::with_remote(remote_media_now(), || render_with_br(&content, ix.names(), ix.images(), true, soft_br)), serde_json::json!({"bytes": content.len()}))
 }
 
 /// modeswitch opt4: the reading view's two asks in ONE round trip. The cost of
@@ -3557,7 +3588,7 @@ fn render(v: State<Vault>, content: String, otel: Option<perf::Ctx>) -> String {
 fn render_view(v: State<Vault>, content: String, otel: Option<perf::Ctx>) -> (String, Vec<u32>) {
     let soft_br = !cur_vault(&v).is_some_and(|r| app_bool_in(&r, "strictLineBreaks"));
     let ix = v.index.lock().unwrap();
-    span_timed!(otel => "render_view", (render_with_br(&content, ix.names(), ix.images(), true, soft_br), reading_block_lines(&content)), serde_json::json!({"bytes": content.len()}))
+    span_timed!(otel => "render_view", (security::with_remote(remote_media_now(), || render_with_br(&content, ix.names(), ix.images(), true, soft_br)), reading_block_lines(&content)), serde_json::json!({"bytes": content.len()}))
 }
 
 /// pure core of render_blocks: every block rendered against the same note list
@@ -3572,7 +3603,7 @@ fn render_blocks_with(blocks: &[String], notes: &[String], imgs: &[String]) -> V
 fn render_blocks(v: State<Vault>, blocks: Vec<String>, otel: Option<perf::Ctx>) -> Vec<String> {
     let n = blocks.len();
     let ix = v.index.lock().unwrap();
-    span_timed!(otel => "render_blocks", render_blocks_with(&blocks, ix.names(), ix.images()), serde_json::json!({"blocks": n}))
+    span_timed!(otel => "render_blocks", security::with_remote(remote_media_now(), || render_blocks_with(&blocks, ix.names(), ix.images())), serde_json::json!({"blocks": n}))
 }
 
 /// R12 source mode: lp rows with every marker revealed (src/srcmode.rs)
@@ -3966,6 +3997,15 @@ fn csp_by_trust(header: &str, trusted: bool) -> String {
     out.join("; ")
 }
 
+/// #144 toggle 1 layer 1, per render call: the renderer mints a remote element only
+/// when THIS page's CSP carries https: (security::PAGE_REMOTE, set in page_csp from the
+/// effective value). Renderer and CSP therefore always agree, and a render costs no
+/// config read; a change of the setting reloads the page (ui/security.js), which
+/// re-runs page_csp.
+fn remote_media_now() -> bool {
+    security::PAGE_REMOTE.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// the response hook of the page window: an HTML page (the only responses
 /// Tauri gives a CSP header) gets the header of the vault's trust state
 fn page_csp(h: &tauri::AppHandle, res: &mut tauri::http::Response<std::borrow::Cow<'static, [u8]>>) {
@@ -3974,16 +4014,24 @@ fn page_csp(h: &tauri::AppHandle, res: &mut tauri::http::Response<std::borrow::C
         return;
     };
     let trusted = cur_vault(&h.state::<Vault>()).is_some_and(|r| plugins::is_trusted(&cfg_value(), &r));
-    let csp = csp_by_trust(&base, trusted);
+    // #144 toggle 1 layer 2: https: in img-src / media-src only while the EFFECTIVE value is on
+    // (offline and lockdown force it off in security::effective_with)
+    let remote = security::effective(&cfg_value()).sec.remote_media;
+    let csp = security::csp_remote(&csp_by_trust(&base, trusted), remote);
     match tauri::http::HeaderValue::from_str(&csp) {
         Ok(v) => {
             res.headers_mut().insert("Content-Security-Policy", v);
             PAGE_EVAL.store(trusted, std::sync::atomic::Ordering::SeqCst);
+            security::PAGE_REMOTE.store(remote, std::sync::atomic::Ordering::SeqCst);
         }
         // keep Tauri's (restricted) header: never widen on a failure
-        Err(_) => PAGE_EVAL.store(false, std::sync::atomic::Ordering::SeqCst),
+        Err(_) => {
+            PAGE_EVAL.store(false, std::sync::atomic::Ordering::SeqCst);
+            security::PAGE_REMOTE.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
     }
     eprintln!("[csp] page trusted={trusted} Content-Security-Policy: {}", res.headers()["Content-Security-Policy"].to_str().unwrap_or("?"));
+    eprintln!("[sec] page remoteMedia={remote}");
 }
 
 /* ---- cp-unrestricted: synchronous fs for plugins (fs.existsSync, readFileSync, ...).
@@ -8920,6 +8968,34 @@ mod tests {
         let f = render_with("![d](file:///etc/passwd)", &[], &[], true);
         assert!(!f.contains("imgmiss") && !f.contains("<img"), "file:// image changed shape: {f}");
         assert!(f.contains("![d](file:///etc/passwd)"), "file:// image is no longer literal text: {f}");
+    }
+
+    /// #144 toggle 1 (Load external resources), layer 1. Off (the default, every
+    /// test above): R29.10 unchanged plus the banner names the toggle. On: an https
+    /// target mints ONE element carrying the URL (img / audio / video by extension),
+    /// http:// stays a banner, and a link / a non-http scheme is unaffected.
+    #[test]
+    fn remote_media_toggle_mints_https_only_when_on() {
+        let md = "![a](https://example.com/x.png)\n\n![b](http://example.com/y.png)\n\n\
+                  ![c](https://example.com/s.mp3)\n\n![d](https://example.com/v.mp4?t=1)\n";
+        for reading in [true, false] {
+            let off = render_with(md, &[], &[], reading);
+            assert!(!off.contains("example.com"), "reading={reading}: off leaked the host: {off}");
+            assert_eq!(off.matches("data-sec=\"remoteMedia\"").count(), 4, "{off}");
+            assert!(off.contains("Load external resources is off"), "off banner does not name the toggle: {off}");
+            let on = security::with_remote(true, || render_with(md, &[], &[], reading));
+            assert!(on.contains(r#"<img class="rimg" src="https://example.com/x.png" alt="a" loading="lazy" referrerpolicy="no-referrer">"#), "{on}");
+            assert!(on.contains(r#"<audio class="rmedia" controls preload="none" src="https://example.com/s.mp3""#), "{on}");
+            assert!(on.contains(r#"<video class="rmedia" controls preload="none" src="https://example.com/v.mp4?t=1""#), "{on}");
+            assert!(!on.contains("http://example.com"), "http:// minted or leaked: {on}");
+            assert_eq!(on.matches("only https:// addresses load").count(), 1, "{on}");
+        }
+        // an attribute break-out in the URL is escaped, never a second attribute
+        let h = security::with_remote(true, || render_with("![x](https://e.x/a\"onerror=\"x.png)", &[], &[], true));
+        assert!(!h.contains("\"onerror="), "{h}");
+        // other schemes are S1's business either way
+        let f = security::with_remote(true, || render_with("![d](file:///etc/passwd)", &[], &[], true));
+        assert!(!f.contains("<img") && !f.contains("data-sec"), "{f}");
     }
 
     #[test]

@@ -110,11 +110,22 @@ Format per toggle: **boundary** (what actually refuses), **files**, **visible st
   and `media-src` ONLY (no change to script/worker/connect/frame/font), and the renderer
   emits `<img>` / `<audio>` / `<video>` with the https URL (http:// stays a placeholder).
   Offline (3) forces it off.
-- **Files:** `security.rs`, `main.rs` (`csp_by_trust` takes the effective security,
-  `image_html` + the media embed branch), `ui/editor.js` (live-preview image embed).
-- **Visible:** the existing placeholder, with the reason when the setting is the cause:
-  `“remote image” is blocked (Settings › Security › Load external resources is off)`.
-  (The R29.10 rule "the URL never reaches the DOM" holds while off.)
+- **Files:** `security.rs` (`csp_remote`, `PAGE_REMOTE`, `with_remote`), `main.rs`
+  (`page_csp` applies `csp_remote` after `csp_by_trust`; `image_html` + `remote_html`;
+  `render` / `render_view` / `render_blocks` run the renderer under `with_remote`),
+  `ui/editor.js` (`imgEl` / `remoteEl`, live preview), `ui/security.js` (reload on
+  disagreement), `ui/style.css`, `ui/main.js` (`[xr:]` census).
+- **Renderer and CSP agree by construction (implementation decision):** layer 1 does
+  not re-read the config per render; it follows `PAGE_REMOTE` = the value THIS page's
+  CSP got at load. A change of the setting (or of offline / lockdown) makes
+  `security_get.pageRemote` disagree with the effective value, and the pane reloads the
+  page once (after the save debounce; two failed reloads stop with a warning), which
+  re-runs `page_csp`. Another open window keeps its header until it reloads.
+- **Visible:** the existing R29.4 sentence plus the reason when the setting is the cause:
+  `“remote image” could not be found. (Settings › Security › Load external resources is off)`
+  (reading view: `span.secwhy` text; live preview: `data-why`, painted by CSS — the row's
+  text must stay its source line). The R29.10 rule "the URL never reaches the DOM"
+  holds while off. On, an `http://` target says `… only https:// addresses load`.
 - **T3 probe `secremote`:** a note with `![](https://<box-local https or unreachable>/x.png)`:
   off → placeholder naming the toggle, CSP header in `[csp]` log has no `https:`;
   on → CSP `img-src` contains `https:`, `<img src="https://…">` present, `script-src`

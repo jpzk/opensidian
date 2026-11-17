@@ -2062,6 +2062,12 @@ body.floorrelayout #main { padding-right: 1px }
    widget must not paint. With the caret merely ON the row the widget stays,
    exactly like the task checkbox of an edited "- [x] " line (R17.6). */
 .lp.src .vimg, .lp.src .rimg, .lp.src .imgmiss { display: none }
+/* #144 toggle 1: the banner names the setting that is the cause (live preview paints
+   data-why after the R29.4 sentence; reading view carries it as span.secwhy text),
+   and an allowed https audio / video player sits like a vault one. */
+.lp .imgmiss[data-why]::after { content: "\201C" attr(data-miss) "\201D could not be found. " attr(data-why) }
+.lp .rmedia, .preview .rmedia { display: block; max-width: 100%; margin: 8px 0 }
+.lp.src .rmedia { display: none }
 
 /* ---------- R33 frameless window: the app draws its own frame ----------
    tauri.conf.json ships `decorations: false`: there is no WM title bar and no WM

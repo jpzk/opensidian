@@ -286,6 +286,8 @@ pub fn report(cfg: &Value) -> Value {
         "forced": forced,
         "restartPending": pending,
         "names": names,
+        // toggle 1 layer 2: did THIS page get the https: img/media CSP at load?
+        "pageRemote": PAGE_REMOTE.load(std::sync::atomic::Ordering::SeqCst),
     })
 }
 
@@ -300,10 +302,111 @@ pub fn weaken_text(field: &str, on: bool) -> String {
     )
 }
 
+/* ---- toggle 1: load external resources (docs §1 "1 — Load external resources").
+   Two layers that must BOTH agree before a note fetches a remote byte:
+     layer 1 the renderer: main.rs image_html mints an https <img>/<audio>/<video>
+       only while `remote_on()` (a per-call flag the render commands set from the
+       effective value); off = R29.4's banner + REMOTE_OFF naming this toggle.
+     layer 2 the page CSP: `csp_remote` adds `https:` to img-src and media-src
+       ONLY (script/worker/connect/frame/font untouched) while the effective value
+       is on at page load. PAGE_REMOTE records which header THIS page got; the
+       pane reloads the page when it disagrees with the effective value
+       (ui/security.js), so turning the toggle off removes the origin at once. */
+thread_local! {
+    static REMOTE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+pub static PAGE_REMOTE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// layer 1: may the renderer on THIS thread mint a remote (https) element right now?
+pub fn remote_on() -> bool {
+    REMOTE.with(|c| c.get())
+}
+
+/// run `f` (a render) with layer 1 set to `on`; restores the previous value
+pub fn with_remote<T>(on: bool, f: impl FnOnce() -> T) -> T {
+    let prev = REMOTE.with(|c| c.replace(on));
+    let r = f();
+    REMOTE.with(|c| c.set(prev));
+    r
+}
+
+/// the reason a remote image / audio / video shows the placeholder while toggle 1 is off
+pub fn remote_off_text() -> String {
+    format!("(Settings › Security › {} is off)", name("remoteMedia"))
+}
+
+/// the reason an http:// (not https) target shows the placeholder while toggle 1 is on
+pub const REMOTE_HTTP_ONLY_HTTPS: &str = "(Settings › Security › Load external resources: only https:// addresses load)";
+
+/// layer 2: the page CSP with toggle 1 applied. Off = byte-identical input.
+/// On = `https:` appended to img-src and media-src (added as `'self' https:` /
+/// `'self' blob: https:` if absent); every other directive untouched.
+pub fn csp_remote(csp: &str, on: bool) -> String {
+    if !on {
+        return csp.to_string();
+    }
+    let (mut img, mut media) = (false, false);
+    let mut out: Vec<String> = Vec::new();
+    for d in csp.split(';').map(str::trim).filter(|d| !d.is_empty()) {
+        match d.split_whitespace().next().unwrap_or("") {
+            "img-src" => {
+                img = true;
+                out.push(format!("{d} https:"));
+            }
+            "media-src" => {
+                media = true;
+                out.push(format!("{d} https:"));
+            }
+            _ => out.push(d.to_string()),
+        }
+    }
+    if !img {
+        out.push("img-src 'self' https:".into());
+    }
+    if !media {
+        out.push("media-src 'self' blob: https:".into());
+    }
+    out.join("; ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// toggle 1 layer 2: off leaves the CSP byte-identical; on widens img-src and
+    /// media-src by `https:` and NOTHING else (no http:, no wildcard, no script/connect change)
+    #[test]
+    fn remote_csp_widens_only_img_and_media() {
+        let base = "default-src 'self'; script-src 'self' opensidian-plugin: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
+                    img-src 'self' data: opensidian-img:; font-src 'self'; connect-src ipc: http://ipc.localhost; media-src 'self' blob:";
+        assert_eq!(csp_remote(base, false), base);
+        let on = csp_remote(base, true);
+        let dirs: Vec<&str> = on.split("; ").collect();
+        let b: Vec<&str> = base.split("; ").collect();
+        assert_eq!(dirs.len(), b.len(), "{on}");
+        for (x, y) in dirs.iter().zip(&b) {
+            if y.starts_with("img-src") || y.starts_with("media-src") {
+                assert_eq!(*x, format!("{y} https:"));
+            } else {
+                assert_eq!(x, y, "toggle 1 touched a directive it must not: {x}");
+            }
+        }
+        assert!(!on.contains("http:") || on.matches("http:").count() == base.matches("http:").count(), "{on}");
+        assert!(!on.contains('*'), "{on}");
+        // a header without the two directives gains them, restricted to 'self' + https:
+        let m = csp_remote("default-src 'self'", true);
+        assert_eq!(m, "default-src 'self'; img-src 'self' https:; media-src 'self' blob: https:");
+    }
+
+    /// toggle 1 layer 1: the per-call flag is scoped to the call and defaults off
+    #[test]
+    fn remote_flag_is_scoped() {
+        assert!(!remote_on());
+        assert!(with_remote(true, remote_on));
+        assert!(!remote_on());
+        assert!(remote_off_text().contains("Load external resources is off"));
+    }
 
     #[test]
     fn defaults_are_todays_behaviour() {
