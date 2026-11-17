@@ -276,7 +276,7 @@ pub fn plugin_net_check(eff: &Eff, what: &str, plugin: Option<&str>) -> Result<(
 
 /* toggle 10 — community plugins may start programs. The two plugin commands that
    start a program (main.rs desk_proc_spawn = child_process.spawn/exec/execFile,
-   desk_shell = electron shell openExternal/openPath/showItemInFolder and
+   desk_shell = electron shell openExternal / open-path / showItemInFolder and
    app.openWithDefaultApp, all of which exec xdg-open) ask `spawn_check` right after
    the restricted-mode check and BEFORE consent::admit: when off no question is
    queued and no native dialog is created. `plugin` is a label only (one realm). */
