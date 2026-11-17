@@ -11697,8 +11697,8 @@ function gfTok(g, pre = "gf") {
     return row.dataset.k + "@" + Math.round(r.left) + "," + Math.round(r.right) + "," + Math.round(r.top + r.height / 2) + "," + row.querySelector(".slider-value").textContent;
   });
   if (ss.length) t += " [" + pre + "s:" + ss.join("|") + "]";
-  // graphctx Filters state [<p>q:search=<query>,showTags=0,...] (query with []| stripped)
-  t += " [" + pre + "q:search=" + s.st.f.search.replace(/[[]|,]/g, "") + "," + GC_FTOG.map(([k]) => k + "=" + (s.st.f[k] ? 1 : 0)).join(",") + "]";
+  // graphctx Filters state [<p>q:search=<query>,showTags=0,...] (query with []|, stripped; #164: the "]" inside the class must be escaped)
+  t += " [" + pre + "q:search=" + s.st.f.search.replace(/[[\]|,]/g, "") + "," + GC_FTOG.map(([k]) => k + "=" + (s.st.f[k] ? 1 : 0)).join(",") + "]";
   // graphctx Groups [<p>g:<i>=<query>#rrggbb|...] in row order (query with []|,# stripped), empty = no group
   t += " [" + pre + "g:" + s.st.groups.map((r, i) => i + "=" + r.query.replace(/[[\]|,#]/g, "") + gcHex(r.rgb)).join("|") + "]";
   // graphctx Display [<p>d:arrow=0,fade=0.00,size=1.00,line=1.00,anim=<drawn>/<n>,lab=<1 labels drawn|0>] — the stored values, what the
@@ -11720,7 +11720,7 @@ function gfnTok() {
     const t = h.active >= 0 ? h.tabs[h.active] : null;
     if (!t || (t.kind !== "gg" && t.kind !== "lg") || !h.graphOn || !h.graphNodes) continue;
     const L = h.graphNodes();
-    const names = L.length > 60 ? "" : ":" + L.map(p => p.n.replace(/[[]|,^]/g, "") + "^" + p.kind + (p.col >= 0 ? "c" + p.col : "")).sort().join(",");
+    const names = L.length > 60 ? "" : ":" + L.map(p => p.n.replace(/[[\]|,^]/g, "") + "^" + p.kind + (p.col >= 0 ? "c" + p.col : "")).sort().join(",");
     out.push(t.kind + "@" + h.id + "=" + L.length + names);
     if (h.graphEdges) eo.push(t.kind + "@" + h.id + "=" + h.graphEdges());
   }
