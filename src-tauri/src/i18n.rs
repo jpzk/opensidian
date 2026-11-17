@@ -108,6 +108,22 @@ pub fn tr(lang: &str, id: &str, args: &[(&str, &str)]) -> String {
         .unwrap_or_else(|| id.to_string())
 }
 
+/// the id fragment ui/i18n.js `slug()` derives from an English literal (the
+/// settings table, command ids, menu titles): "..." -> " dots ", ASCII
+/// lowercase, every run of anything but [a-z0-9] -> "-", no leading/trailing "-"
+pub fn slug(s: &str) -> String {
+    let s = s.replace("...", " dots ").to_ascii_lowercase();
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_ascii_lowercase() || c.is_ascii_digit() {
+            out.push(c);
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
 /// message and term ids of one .ftl source, sorted; Err on any parse error.
 /// Fluent entries start in column 0 with their identifier (continuation lines
 /// are indented, comments start with #), so the ids are read off those lines
@@ -161,7 +177,7 @@ mod tests {
                 let m = b.get_message(&id).unwrap_or_else(|| panic!("{code}: no {id}"));
                 if let Some(p) = m.value() {
                     let mut fa = FluentArgs::new();
-                    for v in ["name", "count", "n", "path", "program", "plugin", "vault", "file", "folder", "version", "key", "url", "error", "lang"] {
+                    for v in ["v", "name", "count", "n", "path", "program", "plugin", "vault", "file", "folder", "version", "key", "url", "error", "lang"] {
                         fa.set(v, FluentValue::from("x"));
                     }
                     let mut errs = vec![];
@@ -170,6 +186,122 @@ mod tests {
                 }
             }
         }
+    }
+
+    /* #220 item 5: English stays byte-identical. Every surface that was extracted
+       derives its id from English data (ui/main.js sRowId / cmdRow, ui/i18n.js m());
+       these pin each derived en message to the literal it replaced, so an edit to
+       the table, the registry or a menu call site that is not mirrored in en/main.ftl
+       fails here instead of silently painting a stale string. */
+    fn en(id: &str, args: &[(&str, &str)]) -> Option<String> {
+        format_in("en", id, args)
+    }
+    /// "Version 0.9.6" -> ("Version", Some("0.9.6")), like main.js sVerArg
+    fn split_version(label: &str) -> (&str, Option<&str>) {
+        match label.rsplit_once(' ') {
+            Some((head, v)) if v.starts_with(|c: char| c.is_ascii_digit()) && v.chars().all(|c| c.is_ascii_digit() || c == '.') => (head, Some(v)),
+            _ => (label, None),
+        }
+    }
+
+    #[test]
+    fn slug_matches_the_webview_rule() {
+        assert_eq!(slug("Open in new tab"), "open-in-new-tab");
+        assert_eq!(slug("Rename..."), "rename-dots");
+        assert_eq!(slug("Sort by column (A to Z)"), "sort-by-column-a-to-z");
+        assert_eq!(slug("(vault root)"), "vault-root");
+        assert_eq!(slug("app:open-settings"), "app-open-settings");
+        assert_eq!(slug("Read-only"), "read-only");
+    }
+
+    #[test]
+    fn settings_strings_are_extracted() {
+        let m = crate::settings::model();
+        let mut bad = vec![];
+        let mut chk = |id: String, args: &[(&str, &str)], want: &str| {
+            if en(&id, args).as_deref() != Some(want) {
+                bad.push(format!("{id} != {want:?} (got {:?})", en(&id, args)));
+            }
+        };
+        for n in &m.nav {
+            chk(format!("snav-{}", n.id), &[], n.entry);
+            chk(format!("snavh-{}", slug(n.group)), &[], n.group);
+        }
+        let mut painted = 0;
+        for r in &m.rows {
+            if r.tab == "hotkeys" || r.tab == "keychain" {
+                continue; // built by code (renderHk / ui/keychain.js), not from the table
+            }
+            painted += 1;
+            let (head, v) = split_version(r.label);
+            let id = format!("set-{}-{}", r.tab, slug(head));
+            let args: Vec<(&str, &str)> = v.map(|v| ("v", v)).into_iter().collect();
+            chk(id.clone(), &args, r.label);
+            if !matches!(r.desc, "" | "-" | "(external link row)") {
+                chk(format!("{id}-desc"), &[], r.desc);
+            }
+            if let Some(s) = r.section {
+                chk(format!("ssec-{}", slug(s)), &[], s);
+            }
+        }
+        assert!(painted > 50, "only {painted} painted rows");
+        assert!(bad.is_empty(), "{} settings strings not extracted:\n{}", bad.len(), bad.join("\n"));
+    }
+
+    #[test]
+    fn commands_are_extracted() {
+        let js = include_str!("../../ui/main.js");
+        let start = js.find("\nconst CMDS = [\n").expect("CMDS registry");
+        let end = start + js[start..].find("\n].map(").expect("CMDS end");
+        let mut n = 0;
+        let mut bad = vec![];
+        for l in js[start..end].lines() {
+            let l = l.trim_start();
+            let Some(rest) = l.strip_prefix("[\"") else { continue };
+            let Some((id, rest)) = rest.split_once('"') else { continue };
+            let rest = rest.trim_start_matches(|c: char| c == ',' || c == ' ');
+            let Some(rest) = rest.strip_prefix('"') else { continue };
+            let Some((name, _)) = rest.split_once('"') else { continue };
+            n += 1;
+            let k = format!("cmd-{}", slug(id));
+            if en(&k, &[]).as_deref() != Some(name) {
+                bad.push(format!("{k} != {name:?}"));
+            }
+        }
+        for t in 1..=8 {
+            let k = format!("cmd-workspace-goto-tab-{t}");
+            if en(&k, &[]) != Some(format!("Go to tab #{t}")) {
+                bad.push(k);
+            }
+        }
+        assert!(n > 50, "only {n} registry rows found");
+        assert!(bad.is_empty(), "commands not extracted: {bad:?}");
+    }
+
+    #[test]
+    fn menu_titles_are_extracted() {
+        let files = [
+            include_str!("../../ui/main.js"),
+            include_str!("../../ui/edmenu.js"),
+            include_str!("../../ui/props.js"),
+            include_str!("../../ui/plugins/canvas-menus.js"),
+            include_str!("../../ui/plugins/canvas-edges.js"),
+        ];
+        let mut n = 0;
+        let mut bad = vec![];
+        for src in files {
+            for part in src.split("I18N.m(\"").skip(1) {
+                let Some((lit, tail)) = part.split_once('"') else { continue };
+                assert!(tail.starts_with(')'), "I18N.m takes one plain literal, got {lit:?}{}", &tail[..tail.len().min(20)]);
+                n += 1;
+                let k = format!("menu-{}", slug(lit));
+                if en(&k, &[]).as_deref() != Some(lit) {
+                    bad.push(format!("{k} != {lit:?}"));
+                }
+            }
+        }
+        assert!(n > 150, "only {n} menu call sites found");
+        assert!(bad.is_empty(), "menu titles not extracted: {bad:?}");
     }
 
     #[test]

@@ -56,6 +56,27 @@
     const e = fmt(en, id, args);
     return e != null ? e : id;
   }
+  /* EXTRACTED LITERALS (#220 item 5). A surface whose English text lives in
+     data (the settings table, the command registry) or in a menu call site
+     keeps that English as the fallback and asks for a DERIVED id:
+       slug("Open in new tab") = "open-in-new-tab"  (ASCII a-z0-9, runs -> "-";
+       "..." -> "dots", so "Rename..." and "Rename" stay two messages)
+     src-tauri/src/i18n.rs carries the same slug() and its cargo tests check that
+     every derived en message equals the literal it replaces, so English stays
+     byte-identical. tk(): active -> English -> `fallback` (never the id: a
+     derived id is not something a user should ever see). */
+  function slug(s) {
+    return String(s == null ? "" : s).replace(/\.\.\./g, " dots ").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  }
+  function tk(id, fallback, args) {
+    const s = fmt(active, id, args);
+    if (s != null) return s;
+    const e = fmt(en, id, args);
+    return e != null ? e : fallback;
+  }
+  // a menu row's literal English title -> "menu-<slug>" (call sites with a LITERAL only:
+  // a note or folder name must never go through here)
+  const m = s => { const k = slug(s); return k ? tk("menu-" + k, s) : s; };
   // "ja-JP" / "zh-Hans-CN" / "ru" -> a code we ship, or null (mirrors i18n.rs match_tag)
   function match(tag) {
     const p = String(tag || "").split(/[.@]/)[0].replace(/_/g, "-").split("-")[0].toLowerCase();
@@ -124,7 +145,7 @@
   else apply(document);
 
   window.I18N = Object.freeze({
-    t, set, apply, match,
+    t, tk, m, slug, set, apply, match,
     lang: () => lang,
     setting: () => setting,
     system: () => system,

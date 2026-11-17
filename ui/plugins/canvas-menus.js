@@ -457,7 +457,7 @@
       });
     });
     const sep = () => { const l = m.items[m.items.length - 1]; if (l && titleOf(l) !== null) m.addSeparator(); };
-    const zoom = () => item("Zoom to selection", () => zoomSel(c));
+    const zoom = () => item(I18N.m("Zoom to selection"), () => zoomSel(c));
     const remove = (label) => { sep(); item(label || "Remove", () => c.deleteSelection()); };
     let ev = "canvas:menu", arg = c, fix = null;
     if (n) {
@@ -465,19 +465,19 @@
       const sel = [...c.selection], d = n.data;
       if (sel.length > 1) {
         zoom();
-        item("Create group", () => makeGroup(c, [...c.selection]));
+        item(I18N.m("Create group"), () => makeGroup(c, [...c.selection]));
         sep();
-        item("Cut", () => { if (h && h.copy(c)) c.deleteSelection(); }, { off: !h });
-        item("Copy", () => h && h.copy(c), { off: !h });
-        item("Paste", () => h && h.paste(c), { off: !h });
+        item(I18N.m("Cut"), () => { if (h && h.copy(c)) c.deleteSelection(); }, { off: !h });
+        item(I18N.m("Copy"), () => h && h.copy(c), { off: !h });
+        item(I18N.m("Paste"), () => h && h.paste(c), { off: !h });
         remove("Delete");
         ev = "canvas:selection-menu";
       } else {
         ev = "canvas:node-menu"; arg = n;
         if (d.type === "text") {
           zoom();
-          item("Edit", () => n.startEditing());
-          item("Convert to file", () => {
+          item(I18N.m("Edit"), () => n.startEditing());
+          item(I18N.m("Convert to file"), () => {
             const first = String(d.text || "").split("\n").map(s => s.replace(/^#+\s*/, "").trim()).find(Boolean) || "Untitled";
             prompt(c, "convert", "Convert to file", first.slice(0, 60), "The card's text becomes a note of this name, in the canvas's folder.", v => convertToFile(c, n, v));
           });
@@ -485,33 +485,33 @@
         } else if (d.type === "file") {
           const k = kindOf(d.file), note = k === "note";
           zoom();
-          item("Swap file", () => picker(c, "swap", "Swap for another " + (k === "file" ? "file" : k) + "…",
+          item(I18N.m("Swap file"), () => picker(c, "swap", "Swap for another " + (k === "file" ? "file" : k) + "…",
             files(c, f => f.path !== d.file && kindOf(f.path) === k), f => f.path, f => swapFile(c, n, f.path)));
           if (note) {
-            item("Edit", () => editNote(c, n), { off: !n.isEditable(), why: "the note is not loaded" });
-            item("Narrow to heading", () => sections(c, n).then(list => picker(c, "narrow", "Show only a heading…", list.filter(s => !s.sub.startsWith("#^")), s => s.label, s => narrow(c, n, s.sub))));
-            item("Narrow to block", () => sections(c, n).then(list => picker(c, "block", "Show only a block…", list.filter(s => s.sub.startsWith("#^")), s => s.label, s => narrow(c, n, s.sub))));
+            item(I18N.m("Edit"), () => editNote(c, n), { off: !n.isEditable(), why: "the note is not loaded" });
+            item(I18N.m("Narrow to heading"), () => sections(c, n).then(list => picker(c, "narrow", "Show only a heading…", list.filter(s => !s.sub.startsWith("#^")), s => s.label, s => narrow(c, n, s.sub))));
+            item(I18N.m("Narrow to block"), () => sections(c, n).then(list => picker(c, "block", "Show only a block…", list.filter(s => s.sub.startsWith("#^")), s => s.label, s => narrow(c, n, s.sub))));
           }
           sep();
-          if (note) item("Open in new tab", () => app.workspace.openLinkText(d.file, c.path || "", "tab"));
-          item("Open in new window", null, { off: true, why: "opensidian has one window: no pop-out windows" });
+          if (note) item(I18N.m("Open in new tab"), () => app.workspace.openLinkText(d.file, c.path || "", "tab"));
+          item(I18N.m("Open in new window"), null, { off: true, why: "opensidian has one window: no pop-out windows" });
           sep();
-          item("Rename", () => renameFile(c, n));
-          item("Move file to", () => moveFile(c, n));
+          item(I18N.m("Rename"), () => renameFile(c, n));
+          item(I18N.m("Move file to"), () => moveFile(c, n));
           if (note) item(bookmarked(d.file) ? "Remove bookmark" : "Bookmark", () => { const b = G("toggleBm"); if (b) return b(noteName(d.file)); });
-          else item("Bookmark", null, { off: true, why: "bookmarks hold note names; this card shows a " + k + " file" });
-          if (note) item("Merge entire file with", null, { off: true, why: "no note merge in opensidian" });
+          else item(I18N.m("Bookmark"), null, { off: true, why: "bookmarks hold note names; this card shows a " + k + " file" });
+          if (note) item(I18N.m("Merge entire file with"), null, { off: true, why: "no note merge in opensidian" });
           sep();
-          item("Open in default app", () => app.openWithDefaultApp(d.file));
-          item("Show in system explorer", null, { off: true, why: "no file-manager handler reveals a path" });
-          item("Reveal file in navigation", () => reveal(c, d.file));
+          item(I18N.m("Open in default app"), () => app.openWithDefaultApp(d.file));
+          item(I18N.m("Show in system explorer"), null, { off: true, why: "no file-manager handler reveals a path" });
+          item(I18N.m("Reveal file in navigation"), () => reveal(c, d.file));
           remove();
           sep();
-          item("Copy path", () => copyText(d.file));
+          item(I18N.m("Copy path"), () => copyText(d.file));
         } else if (d.type === "link") {
           zoom();
-          item("Open external link", () => openExt(d.url));
-          item("Reload page", () => { n.renderContent(); later(c); });
+          item(I18N.m("Open external link"), () => openExt(d.url));
+          item(I18N.m("Reload page"), () => { n.renderContent(); later(c); });
           remove();
           // canvas-files adds Copy URL / Change URL through the hook: put them in their stock place
           fix = () => {
@@ -524,14 +524,14 @@
         } else if (d.type === "group") {
           const onLabel = !!(t && t.closest && t.closest(".canvas-node-label"));
           zoom();
-          item("Edit label", () => editLabel(c, n));
+          item(I18N.m("Edit label"), () => editLabel(c, n));
           if (!onLabel) {                   // the body keeps cv-menus' background rows (cvmenus CV-075)
             sep();
             const bg = typeof d.background === "string" && d.background;
             item(bg ? "Replace background" : "Set background", () => picker(c, "background", "Background image…",
               files(c, f => IMG.has(String(f.extension).toLowerCase())), f => f.path, f => setBackground(c, n, f.path)));
             if (bg) {
-              item("Remove background", () => setBackground(c, n, null));
+              item(I18N.m("Remove background"), () => setBackground(c, n, null));
               const cur = d.backgroundStyle || "cover";
               for (const [v, label] of STYLES) item("Background style: " + label, () => setBackground(c, n, undefined, v), { on: cur === v });
             }
@@ -542,18 +542,18 @@
     } else {
       const p = c.toCanvas(e.clientX, e.clientY), o = c.options || {}, st = h && typeof h.state === "function" ? h.state(c) : null;
       const why = lock ? "the board is read-only" : "";
-      item("Add card", () => c.createTextNode({ pos: p, focus: true }), { off: lock, why });
-      item("Add note from vault", () => pickNote(c, path => addFile(c, path, p)), { off: lock, why });
-      item("Add media from vault", () => pickMedia(c, path => addFile(c, path, p)), { off: lock, why });
-      item("Add web page", () => enterUrl(c, u => addLink(c, u, p)), { off: lock, why });
-      item("Create group", () => { c.deselectAll(); groupAt(c, p); }, { off: lock, why });
-      if (st && st.u > 0) { sep(); item("Undo", () => h.undo(c), { off: lock, why }); }
+      item(I18N.m("Add card"), () => c.createTextNode({ pos: p, focus: true }), { off: lock, why });
+      item(I18N.m("Add note from vault"), () => pickNote(c, path => addFile(c, path, p)), { off: lock, why });
+      item(I18N.m("Add media from vault"), () => pickMedia(c, path => addFile(c, path, p)), { off: lock, why });
+      item(I18N.m("Add web page"), () => enterUrl(c, u => addLink(c, u, p)), { off: lock, why });
+      item(I18N.m("Create group"), () => { c.deselectAll(); groupAt(c, p); }, { off: lock, why });
+      if (st && st.u > 0) { sep(); item(I18N.m("Undo"), () => h.undo(c), { off: lock, why }); }
       sep();
-      item("Paste", () => h && h.paste(c), { off: lock || !h, why });
+      item(I18N.m("Paste"), () => h && h.paste(c), { off: lock || !h, why });
       sep();
-      item("Snap to grid", () => setOpt(c, "snapToGrid"), { on: o.snapToGrid !== false });
-      item("Snap to objects", () => setOpt(c, "snapToObjects"), { on: o.snapToObjects !== false });
-      item("Read-only", () => setOpt(c, "readOnly"), { on: !!o.readOnly });
+      item(I18N.m("Snap to grid"), () => setOpt(c, "snapToGrid"), { on: o.snapToGrid !== false });
+      item(I18N.m("Snap to objects"), () => setOpt(c, "snapToObjects"), { on: o.snapToObjects !== false });
+      item(I18N.m("Read-only"), () => setOpt(c, "readOnly"), { on: !!o.readOnly });
     }
     const base = m.items.length;
     try { app.workspace.trigger(ev, m, arg); } catch (_) {}
