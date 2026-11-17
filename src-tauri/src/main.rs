@@ -1944,6 +1944,16 @@ pub(crate) fn media_allowed(what: &str) -> Result<(), String> {
     security::media_check(&security::effective(&cfg_value()), what)
 }
 
+/// #144 toggles 8 + 9: clip_text / clip_has_text / clip_set_text ask this FIRST with the
+/// EFFECTIVE value (live) and the page realm's taint (security::REALM_PLUGIN)
+pub(crate) fn clip_allowed(what: &str) -> Result<(), String> {
+    let tainted = security::REALM_PLUGIN.load(std::sync::atomic::Ordering::SeqCst);
+    security::clip_check(&security::effective(&cfg_value()), tainted, what).map_err(|e| {
+        eprintln!("[sec] refused {e}");
+        e
+    })
+}
+
 fn cfg_set(k: &str, x: serde_json::Value) {
     cfg_update(&[cfgstore::Op::Set(k.into(), x)]);
 }
@@ -4087,6 +4097,77 @@ fn sec_webgl<R: tauri::Runtime>(_w: &tauri::WebviewWindow<R>, on: bool) {
     eprintln!("[sec] webgl={on}: no WebKitSettings on this platform, not enforced");
 }
 
+/// #144 toggle 9 (docs §1 "8 + 9"): what the page webview enforces natively. Off: WebKitSettings
+/// javascript-can-access-clipboard = false (execCommand copy/cut/paste refuse); on: the value the
+/// webview had before we first touched it (wry's choice, today's behaviour). The key / middle-click
+/// gate (sec_clip_gate) reads security::PAGE_APPCLIP at each event, so it follows at once.
+#[cfg(target_os = "linux")]
+fn sec_clip<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>, on: bool) {
+    security::PAGE_APPCLIP.store(on, std::sync::atomic::Ordering::SeqCst);
+    let r = w.with_webview(move |pw| {
+        use webkit2gtk::{SettingsExt, WebViewExt};
+        static ORIG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if let Some(st) = WebViewExt::settings(&pw.inner()) {
+            let orig = *ORIG.get_or_init(|| st.javascript_can_access_clipboard());
+            st.set_javascript_can_access_clipboard(on && orig);
+            eprintln!("[sec] appClipboard={} (javascript-can-access-clipboard={}, clipboard keys {})", if on { "on" } else { "off" }, on && orig, if on { "pass" } else { "swallowed" });
+        }
+    });
+    if let Err(e) = r {
+        eprintln!("[sec] appClipboard={on} not applied: {e}");
+    }
+}
+#[cfg(not(target_os = "linux"))]
+fn sec_clip<R: tauri::Runtime>(_w: &tauri::WebviewWindow<R>, on: bool) {
+    security::PAGE_APPCLIP.store(on, std::sync::atomic::Ordering::SeqCst);
+    eprintln!("[sec] appClipboard={on}: no native key gate on this platform, commands still refuse");
+}
+
+/// #144 toggle 9: GTK handlers on the page webview, connected once. GTK runs these BEFORE
+/// WebKit's own key-press / button-press class handlers (both signals are RUN_LAST), and no
+/// page script can reach them. While PAGE_APPCLIP is off a clipboard binding (security::clip_key)
+/// and a middle-click (PRIMARY paste) are swallowed and the page is told why ("security-clip",
+/// shown as a notice naming the toggle). On: every event passes untouched.
+#[cfg(target_os = "linux")]
+fn sec_clip_gate(w: &tauri::WebviewWindow) {
+    let win = w.clone();
+    let r = w.with_webview(move |pw| {
+        use gtk::glib::translate::IntoGlib;
+        use gtk::prelude::*;
+        let wv: gtk::Widget = pw.inner().upcast();
+        let off = || !security::PAGE_APPCLIP.load(std::sync::atomic::Ordering::SeqCst);
+        let say = move |w: &tauri::WebviewWindow, what: &str| {
+            use tauri::Emitter;
+            eprintln!("[sec] refused {what}: {}", security::clip_key_text());
+            let _ = w.emit("security-clip", security::clip_key_text());
+        };
+        {
+            let win = win.clone();
+            wv.connect_key_press_event(move |_, e| {
+                let m = e.state();
+                let k = e.keyval().into_glib();
+                if off() && security::clip_key(k, m.contains(gdk::ModifierType::CONTROL_MASK), m.contains(gdk::ModifierType::SHIFT_MASK)) {
+                    say(&win, &format!("clipboard key {k:#x}"));
+                    return gtk::glib::Propagation::Stop;
+                }
+                gtk::glib::Propagation::Proceed
+            });
+        }
+        wv.connect_button_press_event(move |_, e| {
+            if off() && e.button() == 2 {
+                say(&win, "middle-click paste");
+                return gtk::glib::Propagation::Stop;
+            }
+            gtk::glib::Propagation::Proceed
+        });
+    });
+    if let Err(e) = r {
+        eprintln!("[sec] could not wire the clipboard key gate: {e}");
+    }
+}
+#[cfg(not(target_os = "linux"))]
+fn sec_clip_gate(_w: &tauri::WebviewWindow) {}
+
 /// the response hook of the page window: an HTML page (the only responses
 /// Tauri gives a CSP header) gets the header of the vault's trust state
 fn page_csp(h: &tauri::AppHandle, res: &mut tauri::http::Response<std::borrow::Cow<'static, [u8]>>) {
@@ -4202,6 +4283,11 @@ fn page_window(app: &tauri::AppHandle, wc: &tauri::utils::config::WindowConfig) 
     .on_page_load(|w, p| {
         if p.event() == tauri::webview::PageLoadEvent::Started {
             audiorec::page_started(w.label());
+            // #144 toggles 8 + 9: a MAIN-FRAME load = a fresh realm, no community code in it
+            // yet. Not page_csp: that also runs for an iframe's HTML, which a plugin could load
+            // to wash the taint; load-changed is the webview's main frame only.
+            security::REALM_PLUGIN.store(false, std::sync::atomic::Ordering::SeqCst);
+            eprintln!("[sec] realm clean (page load started)");
         }
     })
     .build()?;
@@ -4211,6 +4297,10 @@ fn page_window(app: &tauri::AppHandle, wc: &tauri::utils::config::WindowConfig) 
     // #144 toggle 5: WebGL as the effective value says, before the page's first script runs
     // (the setting is read by getContext, not at load, so a later security_set applies live too)
     sec_webgl(&w, security::effective(&cfg_value()).sec.webgl);
+    // #144 toggle 9: the native clipboard gate (always wired; it passes everything while on)
+    // and javascript-can-access-clipboard as the effective value says
+    sec_clip_gate(&w);
+    sec_clip(&w, security::effective(&cfg_value()).sec.app_clipboard);
     Ok(())
 }
 
@@ -4446,6 +4536,15 @@ async fn security_set(win: tauri::Window, field: String, on: bool) -> Result<ser
         }
         // whoever moved it (the pane, or a script calling the command): the page's graphs follow
         let _ = win.emit("security-webgl", gl);
+    }
+    // toggle 9 live: the native gate + the WebKit setting follow the effective value at once
+    let clip = security::effective(&cfg_value()).sec.app_clipboard;
+    if clip != security::PAGE_APPCLIP.load(std::sync::atomic::Ordering::SeqCst) {
+        use tauri::Manager;
+        match win.app_handle().get_webview_window(win.label()) {
+            Some(w) => sec_clip(&w, clip),
+            None => eprintln!("[sec] appClipboard={clip}: no webview window {}", win.label()),
+        }
     }
     Ok(security::report(&cfg_value()))
 }
@@ -7724,7 +7823,13 @@ fn main() {
             let root = cur_vault(&ctx.app_handle().state::<Vault>());
             let trusted = root.as_deref().is_some_and(|r| plugins::is_trusted(&cfg_value(), r));
             let b = tauri::http::Response::builder();
-            match plugins::serve(root.as_deref(), req.uri().path(), trusted) {
+            let served = plugins::serve(root.as_deref(), req.uri().path(), trusted);
+            // #144 toggles 8 + 9: community code is about to enter this page's realm — tainted
+            // until the next HTML page (page_csp clears it); set BEFORE the body leaves
+            if matches!(served, plugins::Served::Js(_)) && !security::REALM_PLUGIN.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                eprintln!("[sec] realm has community code ({})", req.uri().path());
+            }
+            match served {
                 plugins::Served::Js(body) => b
                     .status(200)
                     .header("Content-Type", "text/javascript; charset=utf-8")
@@ -9193,6 +9298,43 @@ mod tests {
             }
         }
         assert_eq!(src.matches(concat!("security::", "spawn_check(")).count(), 1, "toggle 10 has one reader");
+    }
+
+    /// #144 toggles 8 + 9: every clip_* command asks the gate before any GTK call; the plugin
+    /// scheme handler taints the realm before the body leaves; only a main-frame page load
+    /// (not page_csp, which iframes reach too) clears it; the native gate is wired with the window
+    #[test]
+    fn clipboard_toggles_gate_every_command_and_the_realm_taint() {
+        let clip = include_str!("clip.rs");
+        for (head, ask) in [
+            ("pub async fn clip_text(", "crate::clip_allowed(\"clip_text\")?"),
+            ("pub async fn clip_has_text(", "crate::clip_allowed(\"clip_has_text\")?"),
+            ("pub fn clip_set_text(", "crate::clip_allowed(\"clip_set_text\")?"),
+        ] {
+            let a = clip.find(head).unwrap_or_else(|| panic!("{head}"));
+            let b = &clip[a..a + clip[a..].find("\n}\n").expect("end")];
+            let q = b.find(ask).unwrap_or_else(|| panic!("{head} does not ask toggles 8 + 9"));
+            for later in ["read(", "board()", "MAX_CLIP_TEXT"] {
+                if let Some(l) = b.find(later) {
+                    assert!(q < l, "{head}: {later} runs before the clipboard gate");
+                }
+            }
+        }
+        assert_eq!(clip.matches("#[tauri::command]").count(), 3, "a new clip command must be gated too");
+        let src = include_str!("main.rs");
+        let h = src.find("register_uri_scheme_protocol(plugins::SCHEME").expect("plugin scheme");
+        let hb = &src[h..h + src[h..].find(".invoke_handler(").expect("end")];
+        let taint = hb.find(concat!("REALM_PLUGIN", ".swap(true")).expect("served plugin code taints the realm");
+        assert!(taint < hb.find("text/javascript").expect("body"), "taint before the body leaves");
+        let c = src.find("fn page_csp(").expect("page_csp");
+        let cb = &src[c..c + src[c..].find("\n}\n").expect("end")];
+        assert!(!cb.contains("REALM_PLUGIN"), "page_csp runs for iframes too: it must not clear the taint");
+        let w = src.find("fn page_window(").expect("page_window");
+        let wb = &src[w..w + src[w..].find("\n}\n").expect("end")];
+        let started = wb.find("PageLoadEvent::Started").expect("page load hook");
+        assert!(wb[started..].contains(concat!("REALM_PLUGIN", ".store(false")), "main-frame load clears the taint");
+        assert!(wb.contains("sec_clip_gate(&w)") && wb.contains("sec_clip(&w, security::effective"), "native gate wired at creation");
+        assert_eq!(src.matches(concat!("security::", "clip_check(")).count(), 1, "toggles 8 + 9 have one reader");
     }
 
     #[test]

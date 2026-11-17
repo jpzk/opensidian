@@ -2089,7 +2089,7 @@ Object.assign(Ed, {
       if (!t || view.state.readOnly) return;
       const st = view.state.doc === doc0 ? view.state.update({ selection: sel0 }).state : view.state;
       view.dispatch(st.replaceSelection(String(t)), { scrollIntoView: true, userEvent: "input.paste" });
-    }, err => console.warn("clip_text:", err));
+    }, err => { console.warn("clip_text:", err); const m = String(err && err.message || err); if (/^EPERM: /.test(m) && typeof say === "function") say(m, "secclip"); });   // #144: the refusal names its toggle
     return true;
   },
   mount(v) {

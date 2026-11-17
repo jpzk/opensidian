@@ -265,11 +265,13 @@ the issue forbids exactly that.
 What (a) means concretely:
 - The backend already knows when community code enters a page: every plugin `main.js`
   is served by the `opensidian-plugin:` scheme handler (`plugins::serve` → `Served::Js`).
-  That handler sets `REALM_HAS_PLUGIN_CODE` for the window; `page_csp` (which runs for
-  each new HTML page of the window) clears it. A realm that has run plugin code is
-  "tainted" until the page reloads.
-- **Toggle 8 off:** `clip_*` refuse with `EPERM: the clipboard is off for community
-  plugins (Settings › Security)` whenever the window's realm is tainted. In a realm with
+  That handler sets `security::REALM_PLUGIN` before the body leaves; the page window's
+  `on_page_load(Started)` clears it (WebKit `load-changed` = main frame only). NOT `page_csp`:
+  that also runs for an iframe's HTML, which a plugin could load to wash the taint. A realm
+  that has run plugin code is "tainted" until the page reloads (`[sec] realm has community
+  code` / `[sec] realm clean` in the app log; `security_get` reports `realmPlugin`).
+- **Toggle 8 off:** `clip_*` refuse with `EPERM: <cmd>: the clipboard is off for community
+  plugins (Settings › Security › Clipboard for community plugins)` whenever the realm is tainted. In a realm with
   no community code (restricted vault, or no plugin enabled) the app's own calls keep
   working, because then the only caller is first-party code.
 - What still works in a tainted realm with 8 off: **Ctrl+C / Ctrl+X / Ctrl+V** — these
@@ -277,7 +279,8 @@ What (a) means concretely:
   (`ui/editor.js`), not `clip_*`. The edit-menu Copy/Cut rows switch to
   `document.execCommand('copy'|'cut')` inside the click (WebKit honours it only with a
   real user gesture); the menu Paste / Paste-as-plain rows are shown disabled with
-  "Clipboard for plugins is off — use Ctrl+V", since a programmatic read is exactly the
+  the refusal as the reason + " — use Ctrl+V" (the menu learns it from `clip_has_text`'s
+  refusal when it opens), since a programmatic read is exactly the
   surface being cut.
 - Residual (documented): a plugin in the same realm still sees the data of a paste the
   USER performs (it can listen to `paste` events) and can write with
@@ -289,11 +292,14 @@ What (a) means concretely:
   cut: a GTK `key-press-event` handler on the webview widget (runs before WebKit, page
   script cannot reach it) swallows Ctrl+C/X/V, Ctrl+Shift+V, Shift+Insert, Ctrl+Insert,
   Shift+Delete; `WebKitSettings::javascript-can-access-clipboard` is set false
-  (execCommand copy/paste refuse); the edit-menu rows show disabled with the toggle name.
+  (execCommand copy/paste refuse; restored to the webview's own value when back on); the
+  edit-menu rows show disabled with the toggle name. A swallowed key raises the notice
+  "Copy and paste are off (Settings › Security › App clipboard)" (event `security-clip`).
+  Live: `security_set` re-applies at once (`sec_clip`; the gate reads `PAGE_APPCLIP` per event).
   The middle-click PRIMARY selection paste is also refused (button-press handler for
   button 2 on the webview).
-- **Files:** `clip.rs` (gate), `main.rs` (plugin scheme handler taint, `page_csp` reset,
-  `page_window` key handler + webkit setting), `security.rs`, `ui/edmenu.js`,
+- **Files:** `clip.rs` (gate), `main.rs` (`clip_allowed`, plugin scheme handler taint, `on_page_load` reset,
+  `sec_clip_gate` key/button handler + `sec_clip` webkit setting), `security.rs`, `ui/edmenu.js`, `ui/main.js` (notice), `ui/security.js`,
   `ui/editor.js` (Ctrl+Shift+V path surfaces the refusal).
 - **T3 probe `secclip`** (extends the 989-pentest attacker plugin): 8 off → the plugin's
   `clip_text` / `clip_set_text` return EPERM, a native editor Ctrl+C then Ctrl+V of a
@@ -406,6 +412,10 @@ defaults do not change.
   helpers); hard against note content / app code.
 - 8 plugin clipboard: user-initiated paste events and gesture-bound `execCommand('copy')`
   remain visible to same-realm plugin code.
+- 8 plugin clipboard: the taint is per page, not per caller — once a plugin loaded, the app's
+  own menu Paste rows are off too on that page (Ctrl+V still works). A plugin's clipboard use
+  before the realm is tainted is impossible (its code is what taints it).
+- 9 app clipboard: GTK drag-and-drop of text is not a clipboard operation and is not cut.
 - 5 / 7 on Android: no WebView switch; documented as desktop-only.
 - 5 WebGL: a WebGL context a plugin created BEFORE the switch went off keeps working until
   the page reloads (the native setting gates new `getContext` calls only).

@@ -336,6 +336,9 @@ pub fn report(cfg: &Value) -> Value {
         "pageMedia": PAGE_MEDIA.load(std::sync::atomic::Ordering::SeqCst),
         // toggle 5: what the page webview's enable-webgl is right now (main.rs sec_webgl)
         "pageWebgl": PAGE_WEBGL.load(std::sync::atomic::Ordering::SeqCst),
+        // toggles 8 + 9: has community code entered THIS page; what the native key gate enforces
+        "realmPlugin": REALM_PLUGIN.load(std::sync::atomic::Ordering::SeqCst),
+        "pageAppClipboard": PAGE_APPCLIP.load(std::sync::atomic::Ordering::SeqCst),
     })
 }
 
@@ -510,6 +513,57 @@ pub fn webgl_change(eff: &Eff, applied: bool) -> Option<bool> {
     (eff.sec.webgl != applied).then_some(eff.sec.webgl)
 }
 
+/* ---- toggles 8 + 9: clipboard (docs §1 "8 + 9"). Boundary: the BACKEND reads the page
+   realm's state, not an app-held capability (same-realm code can exercise any capability the
+   app holds in the page). REALM_PLUGIN = community code has entered THIS page: the
+   opensidian-plugin: scheme handler sets it when it serves a plugin main.js (plugins::serve ->
+   Served::Js), page_csp clears it for each new HTML page. clip_text / clip_has_text /
+   clip_set_text (clip.rs) ask clip_check first:
+     9 off -> refused for every caller; natively main.rs sec_clip_gate swallows the clipboard
+              keys + middle-click paste in a GTK handler that runs before WebKit (page script
+              cannot reach it) and sec_clip sets WebKitSettings javascript-can-access-clipboard
+              false (execCommand copy/cut/paste refuse).
+     8 off -> refused while the realm is tainted; a realm with no community code (restricted
+              vault, no plugin enabled) keeps the app's menu rows. Ctrl+C/X/V stay (native,
+              trusted events), the menu Copy/Cut switch to execCommand inside the click.
+   PAGE_APPCLIP = what the native gate enforces right now (report pageAppClipboard). */
+pub static REALM_PLUGIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static PAGE_APPCLIP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub const CLIP_PLUGIN_OFF: &str = "the clipboard is off for community plugins";
+pub const CLIP_APP_OFF: &str = "the app clipboard is off";
+
+/// Err when the clipboard command `what` may not run: 9 off always, 8 off in a tainted realm
+/// "EPERM: <what>: the app clipboard is off (Settings › Security › App clipboard)"
+pub fn clip_check(eff: &Eff, tainted: bool, what: &str) -> Result<(), String> {
+    if !eff.sec.app_clipboard {
+        return Err(format!("EPERM: {what}: {CLIP_APP_OFF} {}", named("appClipboard")));
+    }
+    if tainted && !eff.sec.plugin_clipboard {
+        return Err(format!("EPERM: {what}: {CLIP_PLUGIN_OFF} {}", named("pluginClipboard")));
+    }
+    Ok(())
+}
+
+/// the notice the native gate raises when it swallows a clipboard key / middle-click
+pub fn clip_key_text() -> String {
+    format!("Copy and paste are off {}", named("appClipboard"))
+}
+
+/// is this key press a clipboard binding (GTK keysym, modifiers)? Ctrl+C/X/V (Ctrl+Shift+V too),
+/// Ctrl+Insert, Shift+Insert, Shift+Delete, the keypad twins and the XF86 Copy/Cut/Paste keys
+pub fn clip_key(keyval: u32, ctrl: bool, shift: bool) -> bool {
+    const INSERT: [u32; 2] = [0xff63, 0xff9e];
+    const DELETE: [u32; 2] = [0xffff, 0xff9f];
+    match keyval {
+        0x63 | 0x43 | 0x78 | 0x58 | 0x76 | 0x56 => ctrl,
+        k if INSERT.contains(&k) => ctrl || shift,
+        k if DELETE.contains(&k) => shift && !ctrl,
+        0x1008ff57 | 0x1008ff58 | 0x1008ff6d => true,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -610,6 +664,53 @@ mod tests {
         assert!(!le.sec.plugin_net && plugin_net_check(&le, "requestUrl", None).unwrap_err().contains(OFFLINE_IS_ON));
     }
 
+    /// toggles 8 + 9: 9 off refuses every caller, 8 off only a realm community code entered;
+    /// defaults (both on) refuse nobody; lockdown cuts 8 and leaves 9 unless lockdownClipboard
+    #[test]
+    fn clipboard_toggles_refuse_by_realm_and_name_themselves() {
+        let d = Sec::default();
+        let e = effective_with(d, Some(d));
+        assert!(clip_check(&e, false, "clip_text").is_ok());
+        assert!(clip_check(&e, true, "clip_text").is_ok(), "default = today: plugins may use it");
+        let mut p = d;
+        p.plugin_clipboard = false;
+        let e = effective_with(p, Some(p));
+        assert!(clip_check(&e, false, "clip_text").is_ok(), "no community code: the app's rows work");
+        assert_eq!(
+            clip_check(&e, true, "clip_text").unwrap_err(),
+            "EPERM: clip_text: the clipboard is off for community plugins (Settings › Security › Clipboard for community plugins)"
+        );
+        let mut a = d;
+        a.app_clipboard = false;
+        let e = effective_with(a, Some(a));
+        for t in [false, true] {
+            assert_eq!(
+                clip_check(&e, t, "clip_set_text").unwrap_err(),
+                "EPERM: clip_set_text: the app clipboard is off (Settings › Security › App clipboard)"
+            );
+        }
+        let mut l = d;
+        l.lockdown = true;
+        let e = effective_with(l, Some(l));
+        assert!(clip_check(&e, false, "clip_text").is_ok());
+        assert!(clip_check(&e, true, "clip_text").unwrap_err().contains(CLIP_PLUGIN_OFF));
+        l.lockdown_clipboard = true;
+        assert!(clip_check(&effective_with(l, Some(l)), false, "clip_text").unwrap_err().contains(CLIP_APP_OFF));
+        assert_eq!(clip_key_text(), "Copy and paste are off (Settings › Security › App clipboard)");
+        let r = report(&json!({}));
+        assert_eq!((r["realmPlugin"].clone(), r["pageAppClipboard"].clone()), (json!(false), json!(true)));
+    }
+
+    /// toggle 9's native gate: which key presses are clipboard bindings
+    #[test]
+    fn clip_key_matches_the_clipboard_bindings_only() {
+        for (k, c, s) in [(0x63, true, false), (0x43, true, true), (0x78, true, false), (0x76, true, false), (0x56, true, true), (0xff63, true, false), (0xff63, false, true), (0xff9e, false, true), (0xffff, false, true), (0x1008ff6d, false, false)] {
+            assert!(clip_key(k, c, s), "{k:#x} ctrl={c} shift={s}");
+        }
+        for (k, c, s) in [(0x63, false, false), (0x76, false, true), (0x61, true, false), (0xffff, true, true), (0xffff, false, false), (0xff63, false, false), (0x7a, true, false)] {
+            assert!(!clip_key(k, c, s), "{k:#x} ctrl={c} shift={s}");
+        }
+    }
     /// toggle 10: default allows (each spawn still asked); off refuses naming the toggle
     /// (+ sanitized plugin label); lockdown turns it off
     #[test]

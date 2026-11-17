@@ -39,8 +39,8 @@
     ]],
     ["Plugins and clipboard", [
       ["pluginSpawn", false, "Community plugins may start programs (each run is still asked about). Off: refused before any dialog, also opening files or links with the system opener."],
-      ["pluginClipboard", false, "Community plugin code may read and write the clipboard. Ctrl+C / Ctrl+V in the editor keep working."],
-      ["appClipboard", false, "The app's own copy, cut and paste. Off: Ctrl+C / Ctrl+X / Ctrl+V and the menu clipboard rows stop working."],
+      ["pluginClipboard", false, "Community plugin code may read and write the clipboard. Off: once a plugin has loaded on the page, programmatic clipboard reads and writes are refused for everyone on that page; Ctrl+C / Ctrl+X / Ctrl+V and the menu Copy / Cut keep working, the menu Paste rows are disabled (use Ctrl+V). A plugin still sees a paste you make yourself."],
+      ["appClipboard", false, "The app's own copy, cut and paste. Off: Ctrl+C / Ctrl+X / Ctrl+V, Shift+Insert, middle-click paste and the menu clipboard rows stop working, for the app and plugins alike. Applies at once."],
     ]],
     ["Engine", [
       ["jit", false, "The JavaScript JIT compiler. Off: slower, a smaller attack surface. Needs a restart."],
