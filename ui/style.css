@@ -2394,6 +2394,12 @@ svg.gi { width: 12px; height: 12px; vertical-align: -2px; display: inline-block;
 .cm-callout .callout { margin: 0 }
 .cm-callout .callout-content .callout { margin: 1em 0 }
 /* #119 Properties (ui/props.js): stock's class names, so a theme's metadata rules apply too */
+/* the live-preview block widget contains its child margins (flow-root): CM6
+   measures a block widget by its border box, and .metadata-container's 4px/14px
+   margins collapsed through it, so every line below a drawn Properties block
+   drew 14px under CM6's height map (tDiag census: every lp row 14px below its
+   map block, bin db87fe8c), so Ed.land / holdLand landed ~0.6 line high */
+.cm-props-block { display: flow-root; }
 .metadata-container { margin: 4px 0 14px; padding: 4px 0; font-size: 14px; }
 .metadata-properties-heading { font-weight: 600; color: var(--text-muted, var(--text-chrome)); padding: 2px 0 6px; }
 .metadata-property { display: flex; align-items: flex-start; gap: 6px; padding: 2px 0; min-height: 28px; }

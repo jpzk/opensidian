@@ -2428,7 +2428,7 @@ Ed.holdLand = function (cm, s, byFrac) {
   const seq = cm._landSeq = (cm._landSeq || 0) + 1, sc = cm.scrollDOM, evs = ["wheel", "keydown", "pointerdown", "touchstart"];
   let fr = 0, ok = 0, re = 0, done = false;
   const end = () => { if (done) return; done = true; for (const e of evs) sc.removeEventListener(e, quit, true); };
-  const quit = () => { if (cm._landSeq === seq) cm._landSeq++; end(); };
+  const quit = () => { if (cm._landSeq === seq) { cm._landSeq++; cm._landUser = cm._landSeq; } end(); };   // _landUser: this bump was user input, not a newer landing
   for (const e of evs) sc.addEventListener(e, quit, true);
   const tick = () => {
     if (done || cm._landSeq !== seq || !cm.dom.isConnected || ++fr > Ed.HOLD_FR) { end(); return; }
@@ -2568,6 +2568,57 @@ Ed.revealAt = function (g, l, c) {
   cm.dispatch({ effects: CMv.EditorView.scrollIntoView(Math.min(ln.to, ln.from + Math.max(0, c || 0)), { y: "center" }) });
   return true;
 };
+/* bring source position pos into view the way CM6's own scrollIntoView does
+   (y "nearest" or "center", margin 5, an empty selection's side) — but as CM6's
+   SNAPSHOT effect. Under #148 (cm.scrollDOM is the scroller) a plain
+   scrollIntoView effect was seen not scrolling cm.scrollDOM at all for a heading
+   start (links [nvr:] scrollTop 0 for 13 frames) and for the caret after a block
+   widget (osdrop: caret on the pdf row below the view, scrollTop 0), while the
+   snapshot effect (Ed.land) lands. Geometry is the height-map block of pos, read
+   in a measure READ so it is that frame's; the snapshot then sets
+   scrollTop = blockTop - ym inside CM6's measure loop (never a px write). Held for
+   a few frames while the block re-measures (a heading drawn from an estimate, a
+   pdf frame that grows after its first draw); ends at user input on the
+   scroller, at a newer landing, or after REV_FR frames. */
+Ed.REV_FR = 40;
+Ed.revealPos = function (cm, pos, y) {
+  if (!cm || pos == null) return false;
+  const seq = cm._landSeq = (cm._landSeq || 0) + 1, sc = cm.scrollDOM, evs = ["wheel", "keydown", "pointerdown", "touchstart"];
+  let fr = 0, ok = 0, done = false;
+  const end = () => { if (done) return; done = true; for (const e of evs) sc.removeEventListener(e, quit, true); };
+  const quit = () => { if (cm._landSeq === seq) { cm._landSeq++; cm._landUser = cm._landSeq; } end(); };   // _landUser: this bump was user input, not a newer landing
+  for (const e of evs) sc.addEventListener(e, quit, true);
+  const want = v => {
+    const p = Math.min(v.state.doc.length, Math.max(0, pos)), b = v.lineBlockAt(p), M = 5;
+    const st = sc.scrollTop, H = sc.clientHeight, max = Math.max(0, sc.scrollHeight - H);
+    const top = b.top + Ed.scOff(v), bot = top + b.height;
+    let T = st;
+    if (y === "center") T = b.height <= H ? top + b.height / 2 - H / 2 : bot - H + M;
+    else if (top < st + M) { T = top - M; if (bot > T + H) T = bot - H + M; }
+    else if (bot > st + H - M) T = bot - H + M;
+    T = Math.max(0, Math.min(max, T));
+    return { from: b.from, ym: b.top - T, need: Math.abs(T - st) > 1 };
+  };
+  const tick = () => {
+    if (done || cm._landSeq !== seq || !cm.dom.isConnected || ++fr > Ed.REV_FR) { end(); return; }
+    cm.requestMeasure({
+      key: "ed-reveal-pos",
+      read: want,
+      write(r) {
+        if (done || cm._landSeq !== seq) return;
+        if (!r.need) { if (++ok >= 3 && fr >= 10) { end(); return; } }
+        else {
+          ok = 0;
+          // a dispatch inside CM6's measure loop throws: land right after it
+          queueMicrotask(() => { if (!done && cm._landSeq === seq) cm.dispatch({ effects: Ed.snapFx(cm, r.from, r.ym) }); });
+        }
+        requestAnimationFrame(tick);
+      }
+    });
+  };
+  tick();
+  return true;
+};
 /* put source line l at the scroller's top through CM6's own scrollIntoView effect
    (y=start): like revealAt, the scroll happens inside CM6's measure loop, so the
    redraw cannot put a bottom-clamped scrollTop back to 0 (tj [top:0|st:0]). */
@@ -2655,7 +2706,7 @@ Ed.lpExt = function (v, G) {
     // the parsed leaf itself (cloned): re-rendering the row here could disagree with the parse
     // except a pdf frame: its loader (Ed.pdfFill) is closures + observers on the ORIGINAL
     // element, so a clone never loads a page (osdrop [pf:1/0|..p1/0-]) — render it fresh
-    toDOM() {
+    toDOM(view) {
       // #116: an audio embed too (its blob loader is the ORIGINAL element's observer + play listener)
       if (this.el && this.el.dataset && (this.el.dataset.pdf != null || this.el.dataset.audio != null)) {
         const f = Ed.lpLeaves(Ed.row(G(), this.t, 0))[this.k];
@@ -2665,6 +2716,17 @@ Ed.lpExt = function (v, G) {
       // cloneNode drops listeners, and ignoreEvent() keeps CM6's domEventHandlers off
       // widget events — so the task checkbox clone gets its own toggle (R8.6)
       const c = this.el.cloneNode(true);
+      // R1 end drift: a cloned <img> (loading=lazy, opensidian-img fetch) is 0 px until its
+      // bytes land, then ~360 px. CM6's content ResizeObserver DROPS a resize within 75 ms of
+      // its last update, so a late load above the top line pushed the drawn rows down while the
+      // height map kept the old height (box: end src->lp L3118 -> L3116, lp-img-3 at L3111).
+      // Ask CM6 to measure when the bytes land: its anchor correction holds the top line.
+      const ims = c.tagName === "IMG" ? [c] : c.querySelectorAll ? [...c.querySelectorAll("img")] : [];
+      for (const im of ims) if (!im.complete && view) {
+        const m = () => view.requestMeasure();
+        im.addEventListener("load", m, { once: true });
+        im.addEventListener("error", m, { once: true });
+      }
       const cb = c.matches && c.matches("input.tbox") ? c : (c.querySelector ? c.querySelector("input.tbox") : null);
       if (cb) Ed.taskBox(cb);
       return c;

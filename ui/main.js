@@ -1521,6 +1521,15 @@ function tywGhost(g, R) {
     ct.appendChild(l);
   }
   sc.appendChild(ct); ed.appendChild(sc); R.appendChild(ed);
+  // approach B: the real column is centred in cm.scrollDOM's CLIENT box (its classic
+  // scrollbar takes the right edge); the short ghost scroller draws none, so spanning
+  // .lp it centred half a scrollbar (6px) further right and the census predicted the
+  // blockquote 6px off its own pixels (typo BQ_BORDER_X). Pin the ghost onto the
+  // real scroller's client box instead, whatever its containing block is.
+  const rs = cm.scrollDOM.getBoundingClientRect(), rg = ed.getBoundingClientRect();
+  ed.style.right = "auto";
+  ed.style.left = (rs.left + cm.scrollDOM.clientLeft - rg.left) + "px";
+  ed.style.width = cm.scrollDOM.clientWidth + "px";
   return ed;
 }
 function tywMeasure(rd, R) {
@@ -6482,7 +6491,12 @@ async function navAnchor(g, anchor) {
       // measure. Same shape as the find reveal: ask CM6, then check per frame INSIDE its
       // measure loop until the row is drawn and centred (re-ask / centre on its real box),
       // bounded. [nvr:] logs the frames (diagnostic, no phase asserts it).
-      Ed.revealAt(g, line, 0); Ed.flashLine(g, line);
+      // #148: CM6 owns the scroller and a plain scrollIntoView effect never scrolled it here
+      // ([nvr:] scrollTop 0 for 13 frames): centre (R10.2, like stock) through the snapshot
+      // effect, held while the row re-measures (Ed.revealPos)
+      const at = cm.state.doc.line(Math.min(cm.state.doc.lines, line + 1)).from;
+      Ed.revealPos(cm, at, "center"); Ed.flashLine(g, line);
+      let seq = cm._landSeq;
       nvRv = "s" + Math.round(sc.scrollTop);
       let n = 0;
       const step = () => cm.requestMeasure({ key: "osNavAnchor", read: () => null, write: () => {
@@ -6490,9 +6504,12 @@ async function navAnchor(g, anchor) {
         const ok = centred(), drawn = !!Ed.rowAt(g, line);
         nvRv += "|" + n + ":" + (drawn ? 1 : 0) + "," + Math.round(sc.scrollTop);
         if (ok || ++n > 12) { nvRv += "|f" + (ok ? 1 : 0); return updateTitle(); }
-        // #125: re-ask CM6 in the NEXT frame — a dispatch inside a measure write throws
-        // (CM6 is mid-update there); the effect then lands in CM6's own measure loop
-        requestAnimationFrame(() => { if (Ed.cm(g) === cm) Ed.revealAt(g, line, 0); step(); });
+        // the user scrolled / typed / clicked inside the window (revealPos or holdLand quit()):
+        // their position wins, never re-centre over it
+        if (cm._landUser === cm._landSeq) { nvRv += "|u"; return updateTitle(); }
+        // a newer landing (the note load's own) ended the hold before the row was centred:
+        // centre again in the NEXT frame — a dispatch inside a measure write throws
+        requestAnimationFrame(() => { if (Ed.cm(g) === cm && cm._landSeq !== seq && cm._landUser !== cm._landSeq) { Ed.revealPos(cm, at, "center"); seq = cm._landSeq; } step(); });
       } });
       requestAnimationFrame(step);
     }
@@ -9586,6 +9603,10 @@ async function attachDrop(paths, at) {
   // of the new link already resolves.
   if (a.copied.length) await refreshTree();
   if (a.text) edEdit((v, s, e2) => [v.slice(0, s) + a.text + v.slice(e2), s + a.text.length, s + a.text.length]);
+  // osdrop (#148): the caret after the new embed is brought into view as CM6's snapshot
+  // effect (Ed.revealPos) — the insert's own scrollIntoView never scrolled cm.scrollDOM
+  // past the pdf row (caret below the view, scrollTop 0); stock shows the embed
+  if (a.text && isLp(t.mode)) requestAnimationFrame(() => { const cm = Ed.cm(g); if (cm) Ed.revealPos(cm, cm.state.selection.main.head); });
   dropTok = a.copied.length + "/" + a.refused.length;
   dropSay(a.refused.concat(a.kept || []).join("\n"));
   updateTitle();
