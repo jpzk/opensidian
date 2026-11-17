@@ -1455,6 +1455,13 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .lp .lprow.lzy { height: calc(var(--line-height-normal, 1.55) * 1em) }   /* audit #10/#12: a lazy row placeholder (Ed.lzy) holds one line of height */
 .lp .mk { display: none }
 .lp:not(.src) .cm-line.blk > .cm-widgetBuffer { display: none }   /* editor.js lpParse .blk: no empty line box above a block embed */
+/* #183: with that buffer hidden the embed (img.vimg / .imgmiss, margin 8px 0) is the row's first
+   in-flow box, so its top margin COLLAPSED through the row: painted 8 px below the row's top, but
+   outside the row's border box, and CM6 measures a row by its rect. Every image row in the
+   viewport left the height map 8 px short of the drawn rows, so a landing on the map (Ed.land on
+   a mode switch INTO Live Preview) sat 8 px = 0.33 line above its anchor, per entry. flow-root
+   keeps the margin inside the row: same paint, and the row's rect = its height-map block. */
+.lp:not(.src) .cm-line.blk { display: flow-root }
 .lp.src .mk, .lp .mk.rv { display: inline; color: var(--text-chrome-dim) }
 .lp:focus, .lp .lprow:focus { outline: none }
 .lp .tbox { vertical-align: middle }                            /* rendered task checkbox (x offsets: R15.11 below) */
