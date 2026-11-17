@@ -1192,18 +1192,18 @@ const Ed = {
      same call as listToggle [Q7]). ONE undo step; the selection keeps its text. */
   toggleCheckLines(g, s) {
     const L = Ed.lines(g), first = s.a.l, last = Math.min(s.b.l, L.length - 1);
-    const N = L.slice(), dc = [];                        // dc[l] = [col, bytes inserted there]
+    const ch = [], dc = [];                              // ch = [line, new text]; dc[l] = [col, bytes inserted there]
     for (let l = first; l <= last; l++) {
       const line = L[l];
       if (line === undefined || !String(line).trim()) continue;
       const it = Ed.info(line);
-      if (it.task) { const f = Ed.flipTask(line); if (f !== null) N[l] = f; dc[l] = [it.pre.length, 0]; }
-      else if (it.mk) { N[l] = it.pre + "[ ] " + line.slice(it.pre.length); dc[l] = [it.pre.length, 4]; }
-      else { N[l] = it.ind + it.qt + "- [ ] " + line.slice(it.pre.length); dc[l] = [it.pre.length, 6]; }
+      if (it.task) { const f = Ed.flipTask(line); if (f !== null) ch.push([l, f]); dc[l] = [it.pre.length, 0]; }
+      else if (it.mk) { ch.push([l, it.pre + "[ ] " + line.slice(it.pre.length)]); dc[l] = [it.pre.length, 4]; }
+      else { ch.push([l, it.ind + it.qt + "- [ ] " + line.slice(it.pre.length)]); dc[l] = [it.pre.length, 6]; }
     }
     if (!dc.some(Boolean)) return;
     Ed.snap(g, "task");                                  // ONE undo step
-    L.splice(0, L.length, ...N);
+    for (const [l, v] of ch) L[l] = v;                  // in place: no spread of the whole note into splice (arg limit on huge notes)
     const map = p => { const t = dc[p.l]; return t && p.c >= t[0] ? { l: p.l, c: p.c + t[1] } : p; };
     const a = map(s.a), b = map(s.b);
     Ed.after(g, a.l, a.c);
