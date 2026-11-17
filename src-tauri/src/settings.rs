@@ -30,7 +30,7 @@ pub const NAV_TSV: &str = include_str!("../data/settings-layout/nav.tsv");
 /// (themeone item 8: "palette" LEFT this list with its readers — main.rs no
 /// longer has a get_palette/set_palette, so the key would fail the test below.
 /// A stale key in an existing ~/.opensidian.json is round-tripped, not read.)
-pub const CONFIG_KEYS: &[&str] = &["last", "list", "sidebar_w", "rside_tab", "hotkeys", "theme", "zoom"];
+pub const CONFIG_KEYS: &[&str] = &["last", "list", "sidebar_w", "rside_tab", "hotkeys", "theme", "zoom", "language"];
 
 /// (tab, label) -> config key. A row named here is the ONLY kind that renders
 /// enabled. Today: the Hotkeys tab, whose filter, scope chips and command rows
