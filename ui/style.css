@@ -595,9 +595,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
        /* the wasp ring: a THEME that declares --frame-width/--frame-color paints it here; every other theme resolves to 0 (colour irrelevant at 0 width) — docs/palette-wasp/SOURCE.md "The frame" */
        border: var(--frame-width, 0) solid var(--frame-color, currentColor);
        background: var(--bg-base); color: var(--text-chrome) }
-/* R9.1 ribbon: fixed 44px icon strip, survives sidebar collapse */
+/* R9.1 ribbon: fixed 44px icon strip, survives sidebar collapse. overflow: hidden like stock 1.13.7
+   .workspace-ribbon: icons that do not fit a short window are clipped at the strip (R22, OVF_CLIP) */
 #ribbon { width: var(--ribbon-width, 44px); background: var(--bg-ribbon); flex-shrink: 0; display: flex;
-          flex-direction: column; align-items: center; gap: var(--size-4-2, 8px);
+          flex-direction: column; align-items: center; gap: var(--size-4-2, 8px); overflow: hidden;
           padding: var(--ribbon-padding, 10px 0) }
 #ribbon:has(~ #side[hidden]) { background-color: var(--ribbon-background-collapsed, var(--bg-ribbon)) }
 #ribbon button { background: none; color: var(--icon-color, var(--text-chrome-muted)); border: 0; padding: 5px;
@@ -625,6 +626,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .stab svg { width: 15px; height: 15px; display: block; margin: 0 auto; opacity: var(--icon-opacity, 1); }
 .stab.active svg { opacity: var(--icon-opacity-active, 1) }
 .spane { flex: 1; display: flex; flex-direction: column; min-height: 0 }
+.stab[hidden] { display: none }   /* #119: the Properties view tab shows once opened */
 .spane[hidden] { display: none }
 #side[hidden] { display: none }   /* R9.5: collapsed left sidebar (ribbon stays) */
 /* ux-4: left resize divider — overlaps #side's last 6px (negative margin,
@@ -737,9 +739,9 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
             text-overflow: ellipsis }
 /* issue #101: the explorer inline rename field — the bookmark editor's ring (.bmren), sized to the row's
    name slot so the row keeps its 31px pitch; it keeps its own text selection in an unselectable tree. */
-.trow .exren { width: 100%; box-sizing: border-box; background: var(--bg-base); color: var(--text-chrome);
+.trow .exren, .tab .exren { width: 100%; box-sizing: border-box; background: var(--bg-base); color: var(--text-chrome);
                border: 1px solid var(--border-focus-ring); border-radius: 3px; font: inherit; padding: 0 4px;
-               outline: none; user-select: text }
+               outline: none; user-select: text; cursor: text }   /* #142: the field is a caret surface — not the tab/row hand it would inherit */
 .trow .tg { flex: 0 0 14px; align-self: stretch; position: relative }
 .trow .tg::before { content: ""; position: absolute; left: 7px; top: 0;
                     bottom: 0; width: var(--nav-indentation-guide-width, 1px); background: var(--rule-faint) }
@@ -875,6 +877,9 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .tab { width: var(--tab-width, 120px); min-width: 0; flex-shrink: 1; overflow: hidden; display: flex; align-items: center;
        gap: 6px; padding: 0 8px; background: var(--bg-surface); color: var(--tab-text-color-focused, var(--text-chrome-muted));
        cursor: pointer; font-size: var(--tab-font-size, 12px); border-right: 2px solid var(--tab-divider-color, var(--bg-ribbon)); max-width: var(--tab-max-width, none); border-radius: var(--tab-radius, 0); }   /* R22: overflow:hidden — the 16px close button + 16px padding cannot fit a 2px tab, so clip */
+/* #142: the tab is a click target (click = activate, double click = rename) -> the hand. Two classes so a theme's
+   bare .workspace-tab-header { cursor: var(--cursor) } (AnuPpuccin, --cursor unset -> auto) cannot take it back. */
+.tab.workspace-tab-header { cursor: pointer }
 .tab.active { background: var(--tab-background-active); color: var(--tab-text-color-focused-active, var(--text-chrome)); border-radius: var(--tab-radius-active, var(--tab-radius, 0)); }   /* themematch: active tab = the note surface */
 /* #59 x #84: stock Obsidian 1.13.7 tab ink — a FOCUSED window paints --tab-text-color-focused(-active) (rules above), an
    UNFOCUSED one --tab-text-color(-active). App-owned marker body.window-focused (main.js winFocus), NOT Obsidian's
@@ -922,6 +927,28 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
           padding: 16px; resize: none;
           font: 13px/1.6 monospace; outline: none }
 .lp { flex: 1 1 0; min-width: 0; overflow-y: auto; overflow-x: hidden; overflow-anchor: none }   /* CM6 virtualises against this scroller: browser scroll anchoring would follow a reused line element across a viewport redraw (find reveal 1080 -> 0) — CM6 sets the same on its own .cm-scroller */   /* R22: min-width:0 + no h-scroll */   /* padding + type: R15 block below */
+/* #125/#137 approach B — CM6 OWNS THE SCROLLER. Once Ed.mount puts an editor in
+   it, .lp is a LAYOUT BOX (class .cmown: flex column, no overflow, no padding)
+   and cm.scrollDOM (.cm-scroller) is the one element that scrolls the note.
+   CM6 reads its scroll parent as the first scrolling ancestor of contentDOM and
+   runs its scroll-anchor correction on every measure only when that parent IS
+   scrollDOM (otherwise only while focused or < 100 ms after a wheel). With .lp
+   as the scroller every restore of a position (mode switch, tab, history,
+   jumps, find, font size, plugin scrollTo) was app px arithmetic racing that
+   correction; now each is a CM6 scrollIntoView / snapshot effect landing in
+   CM6's own measure loop. The note padding (--file-margins), the note column,
+   the 12px classic scrollbar and the inline title ::before move with it. */
+.lp.cmown { display: flex; flex-direction: column; overflow: hidden; padding: 0 }
+.lp.cmown > .cm-editor { flex: 1 1 0; min-height: 0; max-width: none; margin-inline: 0 }
+.lp.cmown > .cm-editor > .cm-scroller { display: block !important; flex: 1 1 0; min-height: 0; height: auto;
+  overflow-y: auto !important; overflow-x: hidden !important; overflow-anchor: none; padding: var(--file-margins); box-sizing: border-box }
+.lp.cmown > .cm-editor > .cm-scroller > .cm-content { max-width: var(--note-column, none); margin-inline: auto; min-height: 0 }
+.lp.cmown[data-title]::before { content: none; display: none }
+.lp.cmown > .cm-editor > .cm-scroller::-webkit-scrollbar { width: var(--scrollbar-width, 12px); background-color: var(--scrollbar-bg); height: var(--scrollbar-height, auto); }
+.lp.cmown > .cm-editor > .cm-scroller::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb-bg); background-clip: padding-box;
+  border-style: solid; border-color: var(--scrollbar-bg); border-width: var(--scrollbar-border-width, 0 3px 0 2px); border-radius: var(--scrollbar-radius, 6px); min-height: 45px }
+.lp.cmown > .cm-editor > .cm-scroller::-webkit-scrollbar-thumb:active { background-color: var(--scrollbar-active-thumb-bg, var(--scrollbar-thumb-bg)) }
 .lp a.wiki { color: var(--link-color, var(--accent-blue)); font-weight: var(--link-weight, inherit); }
 .lp a.wiki-unresolved { color: var(--link-unresolved-color, var(--link-unresolved)); font-style: italic; filter: var(--link-unresolved-filter, none); opacity: var(--link-unresolved-opacity, 1); }
 /* R8.2: one rendered row per line/block; the raw caret row blends in */
@@ -1356,6 +1383,37 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
          background: none; color: var(--text-quiet); font-size: 18px; line-height: 24px; cursor: pointer }
 #bmecard #bme-title:focus { box-shadow: 0 0 0 2px var(--border-focus-ring) }
 
+/* #94 "Manage workspace layouts": the bookmark card's geometry and tokens (one house modal), a name
+   row with Save, then the saved layouts — the name is the load button, pencil = rename, bin = delete. */
+#wsmbox { position: fixed; inset: 0; z-index: 70; background: var(--scrim);
+          display: flex; flex-direction: column; align-items: center; box-sizing: border-box;
+          padding: max(0px, min(120px, 100vh - 320px)) 0 8px }
+#wsmbox[hidden], #wsmempty[hidden] { display: none }
+#wsmcard { position: relative; width: 480px; max-width: 92%; box-sizing: border-box; background: var(--bg-elevated);
+           border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px 16px;
+           box-shadow: 0 8px 30px var(--shadow-modal); color: var(--text-chrome) }
+#wsmtitle { font-size: 17px; font-weight: 600; margin-bottom: 12px }
+#wsmx { position: absolute; top: 10px; right: 12px; width: 24px; height: 24px; border: 0; padding: 0;
+        background: none; color: var(--text-quiet); font-size: 18px; line-height: 24px; cursor: pointer }
+#wsmsaverow { display: flex; gap: 10px; align-items: center }
+#wsmname, .wsmren { flex: 1; min-width: 0; box-sizing: border-box; height: 28px; background: var(--bg-base);
+          color: var(--text-chrome); font: inherit; font-size: 13px; border: 1px solid var(--border);
+          border-radius: 4px; padding: 0 6px; outline: none }
+#wsmname:focus, .wsmren:focus { box-shadow: 0 0 0 2px var(--border-focus-ring) }
+#wsmsave { box-sizing: border-box; height: 30px; width: 80px; border: 0; border-radius: 5px; padding: 0;
+           background: var(--accent-blue); color: var(--bg-base); font-size: 13px; font-weight: 500; cursor: pointer }
+#wsmlist { margin-top: 12px; max-height: 260px; overflow-y: auto }
+.wsmrow { display: flex; align-items: center; gap: 4px; height: 32px; font-size: 13px }
+.wsmname { flex: 1; min-width: 0; height: 28px; text-align: left; border: 0; border-radius: 4px; padding: 0 6px;
+           background: none; color: var(--text-chrome); font: inherit; cursor: pointer;
+           overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.wsmrow.is-active .wsmname { font-weight: 600 }
+.wsmname:hover, .wsmbtn:hover { background: var(--bg-surface) }
+.wsmbtn { width: 28px; height: 28px; border: 0; border-radius: 4px; padding: 5px; box-sizing: border-box;
+          background: none; color: var(--text-quiet); cursor: pointer }
+.wsmbtn svg { width: 16px; height: 16px; display: block }
+#wsmempty { margin-top: 12px; font-size: 13px; color: var(--text-quiet) }
+
 /* R34.12/R34.13 refusal notice — the dropmsg shape (bottom-right, transient),
    because it says the same kind of thing: what was refused and why. The census
    token it publishes does NOT expire with the banner (dropTok's lesson: "no
@@ -1707,17 +1765,22 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
    would lock the fix to --font-text-size: 16px, which is the same bug holding
    one lucky value. What makes em resolve identically on both is .titlewrap
    carrying the note column's own type context — see the rule below it. */
-.lp[data-title]::before, .preview[data-title]::before, .titleedit {
+.lp[data-title]::before, .preview[data-title]::before, .lp.cmown .cm-scroller[data-title]::before, .titleedit {
   display: block; max-width: var(--note-column, none); margin-inline: auto;
   font-size: var(--inline-title-size, var(--h1-size)); font-weight: var(--inline-title-weight, var(--h1-weight));
   line-height: var(--inline-title-line-height, var(--h1-line-height)); letter-spacing: var(--h1-letter-spacing);
-  color: var(--inline-title-color, inherit); overflow-wrap: anywhere; white-space: pre-wrap; cursor: text;
+  color: var(--inline-title-color, inherit); overflow-wrap: anywhere; white-space: pre-wrap;
   font-family: var(--inline-title-font, inherit);
 ; font-style: var(--inline-title-style, inherit); font-variant: var(--inline-title-variant, inherit); }
-.lp[data-title]::before, .preview[data-title]::before {
+.lp[data-title]::before, .preview[data-title]::before, .lp.cmown .cm-scroller[data-title]::before {
   content: attr(data-title);
   margin-top: 0; margin-bottom: var(--inline-title-margin-bottom, 0.5em); user-select: none;
 }
+/* issue #142 (operator 2026-11-16): the live-preview title band is a DOUBLE-click target — a single press
+   opens nothing — so it shows the pointer, not the I-beam. The reading view's title opens nothing at all
+   and keeps the reading view's arrow (rvcursor). The open .titleedit is the caret surface (cursor: text). */
+.lp[data-title]::before { cursor: pointer }
+.preview[data-title]::before { cursor: default }
 /* R34.15 (R32.4 restated as a NUMERIC condition) — HOW THE TITLE BECOMES
    EDITABLE WITHOUT BECOMING A ROW.
    The ::before above stays exactly as it is, always, including while the title
@@ -1741,7 +1804,7 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
    `scripts/smoke.sh fast titletype` (computed style off the live DOM + ink off
    a screenshot) rather than asserted here. Background stays transparent: there
    is nothing to cover, the ::before is already invisible underneath. */
-.lp.titling::before, .preview.titling::before { visibility: hidden }
+.lp.titling::before, .preview.titling::before, .lp.cmown .cm-scroller.titling::before { visibility: hidden }
 /* R34.18 — THE ROOT CAUSE, AND WHY THE FIX IS HERE AND NOT ON .titleedit.
    The shared rule above is written in em and tokens: `--h1-size: 1.974em` and
    `--h1-letter-spacing: -0.018em`. `em` resolves against the element's INHERITED
@@ -1765,7 +1828,7 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
              font-family: var(--font-text); font-size: var(--font-text-size);
              line-height: var(--line-height-normal); color: var(--text-normal) }
 .titleedit {
-  background: var(--transparent); border: 0; outline: none; user-select: text;
+  background: var(--transparent); border: 0; outline: none; user-select: text; cursor: text;   /* the OPEN editor is a caret surface */
 }
 .lp .lprow { width: 100% }
 .lp .lprow:has(> .h) + .lprow:not(:has(> .h)) { padding-top: var(--p-spacing-empty, 0) }   /* stock: the line under a heading (HyperMD-header + .cm-line) */
@@ -1990,7 +2053,7 @@ body.floorrelayout #main { padding-right: 1px }
    the token map walks text nodes, so banner prose inside the row would move
    every caret column after it. A REMOTE target's label is the constant
    "remote image" in both engines, never the URL (R29.10). */
-.lp .imgmiss, .preview .imgmiss, .image-view .imgmiss {
+.lp .imgmiss, .preview .imgmiss, .image-view .imgmiss, .audio-view .imgmiss {
   display: block; padding: 12px 16px; margin: 8px 0; border-radius: 6px;
   background: var(--bg-surface); color: var(--text-chrome-muted); font-size: 14px; line-height: 1.4;
   user-select: none }
@@ -2143,7 +2206,7 @@ span.is-flashing { background: var(--highlight-yellow) }
 .lp.src .pdf-embed { display: none }
 /* #116 audio embeds (editor.js Ed.audioEl / audioFill): ONE <audio controls> in a block span, both
    engines; an unresolved target is the R29.4 banner (the reading view's is filled by JS, so its
-   wording is CSS here too); a refused load (restricted page, too large) hides the player and says why */
+   wording is CSS here too); a refused load (too large, unreadable) hides the player and says why */
 .lp .audio-embed, .preview .audio-embed { display: block; margin: 8px 0; user-select: none }
 .audio-embed > audio { display: block; width: 100%; max-width: 480px; height: 40px }
 .audio-embed[data-err] > audio { display: none }
@@ -2151,6 +2214,16 @@ span.is-flashing { background: var(--highlight-yellow) }
   background: var(--bg-surface); color: var(--text-chrome-muted); font-size: 14px }
 .preview .imgmiss.audiomiss::after { content: "\201C" attr(data-miss) "\201D could not be found." }
 .lp.src .audio-embed { display: none }
+/* #139 restricted vault: click-to-play — the player is hidden and nothing is read until the Play button is
+   pressed (editor.js audioFill); the button's label is CSS (no text node: the row's textContent is its source) */
+.audio-embed[data-c2p] > audio { display: none }
+.audio-embed > .audio-c2p { display: none }
+.audio-embed[data-c2p] > .audio-c2p { display: flex; align-items: center; gap: 8px; width: 100%; max-width: 480px;
+  height: 40px; padding: 0 16px; border: 1px solid var(--bg-surface); border-radius: 20px; cursor: pointer;
+  background: var(--bg-surface); color: var(--text-chrome-muted); font: inherit; font-size: 14px; text-align: left }
+.audio-embed[data-c2p][data-st="loading"] > .audio-c2p { cursor: progress; opacity: .7 }
+.audio-embed[data-c2p] > .audio-c2p::before { content: "\25B6"; font-size: 12px }
+.audio-embed[data-c2p] > .audio-c2p::after { content: "Play audio (restricted vault: read on click)" }
 /* #116 the Audio recorder's indicator while the mic is open (main.js AREC): ribbon button is-active + a
    status item bottom-right, red dot + "Recording" */
 #arribbonbtn.is-active { color: var(--color-red, #e5484d) }
@@ -2170,6 +2243,14 @@ span.is-flashing { background: var(--highlight-yellow) }
   min-height: 0; padding: 16px; box-sizing: border-box }
 .image-view > .image-container > img { max-width: 100%; max-height: 100%; object-fit: contain; user-select: none }
 .image-view > .image-container > .imgmiss { margin: auto }
+/* issue #140: the audio view (an "audio" leaf, main.js AUDV) — one audio embed (the player, #139 click-to-play on a
+   restricted page) centred in the pane */
+.os-pv > .view-content.audio-view { padding: 0; overflow: auto; display: flex }
+.audio-view > .audio-container { display: flex; flex: 1 1 auto; align-items: center; justify-content: center; min-width: 0;
+  min-height: 0; padding: 16px; box-sizing: border-box }
+.audio-view .audio-embed { display: block; width: 100%; max-width: 480px; user-select: none }
+.audio-view .imgmiss { margin: auto }
+.audio-view .imgmiss.audiomiss::after { content: "\201C" attr(data-miss) "\201D could not be found." }
 /* census C4 make-md: .app-container (ui/index.html) wraps the app chrome for plugins and
    themes that look it up. goal cp-makemd3: a REAL box, not display:contents — under
    display:contents the editor scrollers lost their bottom range (srclick R25.13c line-83
@@ -2352,3 +2433,42 @@ svg.gi { width: 12px; height: 12px; vertical-align: -2px; display: inline-block;
 .cm-callout { padding: 0; margin: 0 }
 .cm-callout .callout { margin: 0 }
 .cm-callout .callout-content .callout { margin: 1em 0 }
+/* #119 Properties (ui/props.js): stock's class names, so a theme's metadata rules apply too */
+/* the live-preview block widget contains its child margins (flow-root): CM6
+   measures a block widget by its border box, and .metadata-container's 4px/14px
+   margins collapsed through it, so every line below a drawn Properties block
+   drew 14px under CM6's height map (tDiag census: every lp row 14px below its
+   map block, bin db87fe8c), so Ed.land / holdLand landed ~0.6 line high */
+.cm-props-block { display: flow-root; }
+.metadata-container { margin: 4px 0 14px; padding: 4px 0; font-size: 14px; }
+.metadata-properties-heading { font-weight: 600; color: var(--text-muted, var(--text-chrome)); padding: 2px 0 6px; }
+.metadata-property { display: flex; align-items: flex-start; gap: 6px; padding: 2px 0; min-height: 28px; }
+.metadata-property-key { display: flex; align-items: center; gap: 4px; flex: 0 0 34%; min-width: 0; }
+.metadata-property-icon { width: 20px; text-align: center; cursor: pointer; color: var(--text-muted, var(--text-chrome)); border-radius: 4px; user-select: none; }
+.metadata-property-icon:hover { background: var(--border); }
+.metadata-property-key-input, .metadata-input, .multi-select-input { font: inherit; color: inherit; background: transparent; border: 1px solid transparent;
+  border-radius: 4px; padding: 2px 6px; min-width: 0; width: 100%; box-sizing: border-box; }
+.metadata-property-key-input:focus, .metadata-input:focus, .multi-select-input:focus { border-color: var(--border); outline: none; background: var(--bg-elevated, transparent); }
+.metadata-property-value { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; min-height: 26px; }
+.metadata-property-value.is-readonly code.props-raw { white-space: pre-wrap; opacity: .75; font-size: 12px; }
+.metadata-input-checkbox { margin: 6px; }
+.multi-select-container { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; width: 100%; }
+.multi-select-pill { display: inline-flex; align-items: center; gap: 2px; padding: 1px 8px; border-radius: 12px; background: var(--border); font-size: 13px; }
+.multi-select-pill-remove-button { cursor: pointer; opacity: .6; padding: 0 2px; }
+.multi-select-pill-remove-button:hover { opacity: 1; }
+.multi-select-input { flex: 1 1 60px; width: auto; }
+.metadata-add-button { display: inline-block; padding: 3px 6px; margin-top: 2px; cursor: pointer; color: var(--text-muted, var(--text-chrome)); border-radius: 4px; user-select: none; }
+.metadata-add-button:hover { background: var(--border); }
+.metadata-container.is-readonly input { pointer-events: none; }
+.props-suggest { position: fixed; z-index: var(--layer-menu, 60); background: var(--suggestion-background, var(--bg-elevated, var(--bg-base)));
+  border: 1px solid var(--border); border-radius: 6px; padding: 4px 0; max-height: 260px; overflow: auto; min-width: 140px; box-shadow: 0 4px 14px var(--shadow-popover, rgba(0,0,0,.2)); }
+.props-suggest .suggestion-item { padding: 4px 10px; cursor: pointer; white-space: nowrap; font-size: 13px; }
+.props-suggest .suggestion-item.is-selected, .props-suggest .suggestion-item:hover { background: var(--border); }
+/* #119 the Properties view (right sidebar) */
+#propshead { display: flex; align-items: center; }
+#propshead .props-sort { margin-left: auto; font-size: 11px; padding: 1px 6px; background: none; border: 1px solid var(--border); border-radius: 4px; color: var(--text-chrome-muted); cursor: pointer; }
+.props-vrow { display: flex; align-items: center; gap: 4px; padding: 3px 8px 3px 6px; cursor: pointer; font-size: 13px; }
+.props-vrow:hover { background: var(--bg-surface) }
+.props-vrow .props-vname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.props-vrow .scount { color: var(--text-chrome-dim) }
+.props-vrow .props-vrename { flex: 1; min-width: 0; font: inherit; }

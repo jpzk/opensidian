@@ -38,6 +38,7 @@ mod plugin_store;
 mod pasteimg;
 mod qscreate;
 mod perf;
+mod props; // #119: types.json, the vault property census, the Properties in document mode
 mod sandbox;
 // cp-secrets: app.secretStorage over the OS keyring (Secret Service)
 mod secrets;
@@ -59,6 +60,7 @@ mod updates;
 use opensidian_lib::vaultfs;
 mod watcher;
 mod winsize;
+mod wsmgr; // #94: named layouts in .obsidian/workspaces.json (Obsidian core Workspaces parity)
 mod xdnd; // #51: the window's OS drop transport — only a drop naming a local file is ours, a link drag reaches the editor
 use index::{link_parts, links_in, resolve, tag_spans, Graph, Index};
 
@@ -1552,6 +1554,78 @@ fn set_strict_line_breaks(v: State<Vault>, on: bool) -> Result<(), String> {
     set_app_bool_in(&root, "strictLineBreaks", on)
 }
 
+/* issue #119 — Properties (src-tauri/src/props.rs). "Properties in document" is
+   Obsidian's Editor > Display dropdown, Obsidian's key: app.json
+   "propertiesInDocument" = "visible" | "hidden" | "source", absent = visible. Read
+   on every ask (a hand edit or another window shows on the next settings open /
+   note open); written by the same merge as the boolean keys above. */
+fn app_value_in(root: &Path, key: &str) -> Option<serde_json::Value> {
+    let cfg = fs::read_to_string(root.join(".obsidian/app.json")).ok()?;
+    serde_json::from_str::<serde_json::Value>(&cfg).ok()?.get(key).cloned()
+}
+
+fn props_mode_in(root: &Path) -> &'static str {
+    props::mode_of(app_value_in(root, "propertiesInDocument").as_ref())
+}
+
+fn set_props_mode_in(root: &Path, mode: &str) -> Result<(), String> {
+    if !props::MODES.contains(&mode) {
+        return Err(format!("unknown Properties in document mode {mode:?}"));
+    }
+    let cur = fs::read_to_string(root.join(".obsidian/app.json")).unwrap_or_default();
+    let mut v = if cur.trim().is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_str::<serde_json::Value>(&cur).map_err(|e| format!("app.json is not JSON ({e}) — refusing to overwrite it"))?
+    };
+    let o = v.as_object_mut().ok_or("app.json is not a JSON object — refusing to overwrite it")?;
+    o.insert("propertiesInDocument".into(), serde_json::Value::String(mode.into()));
+    let body = serde_json::to_string(&v).map_err(|e| e.to_string())?;
+    vaultfs::write_atomic(root, Path::new(".obsidian/app.json"), body.as_bytes()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn props_mode(v: State<Vault>) -> String {
+    cur_vault(&v).map(|r| props_mode_in(&r)).unwrap_or("visible").to_string()
+}
+
+#[tauri::command]
+fn set_props_mode(v: State<Vault>, mode: String) -> Result<(), String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    set_props_mode_in(&root, &mode)
+}
+
+/// #119: the user's property types (.obsidian/types.json), lowercase name -> type
+#[tauri::command]
+fn props_types(v: State<Vault>) -> std::collections::BTreeMap<String, String> {
+    cur_vault(&v).map(|r| props::types_in(&r)).unwrap_or_default()
+}
+
+/// #119: assign (or with ty None, drop) the type of a property in types.json, by merge
+#[tauri::command]
+fn set_prop_type(v: State<Vault>, name: String, ty: Option<String>) -> Result<(), String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    let cur = fs::read_to_string(root.join(props::TYPES_REL)).unwrap_or_default();
+    let body = props::types_merged(&cur, &name, ty.as_deref())?;
+    vaultfs::write_atomic(&root, Path::new(props::TYPES_REL), body.as_bytes()).map_err(|e| e.to_string())
+}
+
+/// #119: the notes whose frontmatter holds `key` (the Properties view's Rename)
+#[tauri::command]
+fn props_notes(v: State<Vault>, key: String) -> Vec<String> {
+    let ix = v.index.lock().unwrap();
+    props::notes_with(ix.docs().map(|(n, c, _)| (n, c)), &key)
+}
+
+/// #119: every vault property (key, notes holding it, distinct values) off the index
+#[tauri::command]
+fn props_index(v: State<Vault>) -> Vec<props::PropStat> {
+    span_timed!("props_index", {
+        let ix = v.index.lock().unwrap();
+        props::census(ix.docs().map(|(_, c, _)| c))
+    })
+}
+
 /* goal/minimalmargin — Obsidian's Settings > Editor > Display "Readable line
    length": `<vault>/.obsidian/app.json` "readableLineLength". Unlike the keys
    above its default is ON (stock 1.13.7 recon: a vault without the key paints
@@ -1944,6 +2018,55 @@ fn write_workspace(
     )
 }
 
+
+/* #94 WORKSPACE MANAGER (src-tauri/src/wsmgr.rs): named layouts in <vault>/.obsidian/workspaces.json,
+   Obsidian's core "Workspaces" file. Reads never fail (a missing/corrupt file lists as empty, R28.13's
+   rule); mutations are VAULT-SCOPED exactly like write_workspace — the UI names the vault the layout was
+   serialized from and a disagreeing vault is refused, so a saved layout can never land in another vault. */
+#[tauri::command]
+fn wsm_list(v: State<Vault>) -> serde_json::Value {
+    span_timed!("wsm_list", cur_vault(&v).map(|r| wsmgr::list(&wsmgr::read_in(&r))).unwrap_or_else(|| wsmgr::list(&wsmgr::OnDisk::Absent)))
+}
+
+#[tauri::command]
+fn wsm_get(v: State<Vault>, name: String) -> Option<serde_json::Value> {
+    span_timed!("wsm_get", cur_vault(&v).and_then(|r| wsmgr::get(&wsmgr::read_in(&r), &name)))
+}
+
+/// op: "save" (name, layout) | "delete" (name) | "rename" (name -> to) | "activate" (name)
+#[tauri::command(async)]
+fn wsm_op(
+    v: State<Vault>,
+    vault: String,
+    op: String,
+    name: String,
+    to: Option<String>,
+    layout: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    span_timed!("wsm_op", (|| {
+        let root = cur_vault(&v).ok_or("no vault open")?;
+        if root != PathBuf::from(&vault) {
+            return Err(format!("stale workspaces write: serialized from {vault}, current vault is {}", root.display()));
+        }
+        wsm_op_in(&root, &op, &name, to.as_deref(), layout.as_ref())
+    })())
+}
+
+fn wsm_op_in(root: &Path, op: &str, name: &str, to: Option<&str>, layout: Option<&serde_json::Value>) -> Result<serde_json::Value, String> {
+    match op {
+        "save" => {
+            let l = layout.ok_or("save: no layout")?;
+            wsmgr::mutate_in(root, |d| wsmgr::op_save(d, name, l))
+        }
+        "delete" => wsmgr::mutate_in(root, |d| wsmgr::op_delete(d, name)),
+        "rename" => {
+            let t = to.ok_or("rename: no new name")?;
+            wsmgr::mutate_in(root, |d| wsmgr::op_rename(d, name, t))
+        }
+        "activate" => wsmgr::mutate_in(root, |d| wsmgr::op_activate(d, name)),
+        _ => Err(format!("wsm_op: unknown op {op:?}")),
+    }
+}
 #[tauri::command]
 fn recent_vaults() -> Vec<String> {
     span_timed!("recent_vaults", read_cfg().1.into_iter().filter(|p| Path::new(p).is_dir()).collect())
@@ -3772,7 +3895,24 @@ static PAGE_EVAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool:
 
 fn csp_by_trust(header: &str, trusted: bool) -> String {
     if !trusted {
-        return header.to_string();
+        // #139 (operator 2026-11-16): a restricted page plays audio embeds CLICK-TO-PLAY (editor.js audioFill:
+        // preload none, media_read + blob: only after the user presses play), and WebKitGTK plays only from a
+        // blob: URL — so the restricted header gains media-src 'self' blob: and NOTHING else: no 'unsafe-eval',
+        // no blob: in script-src / worker-src, every other directive byte-identical to the config CSP
+        let mut out: Vec<String> = Vec::new();
+        let mut media = false;
+        for d in header.split(';').map(str::trim).filter(|d| !d.is_empty()) {
+            if d.split_whitespace().next() == Some("media-src") {
+                media = true;
+                out.push(if d.split_whitespace().any(|t| t == "blob:") { d.to_string() } else { format!("{d} blob:") });
+            } else {
+                out.push(d.to_string());
+            }
+        }
+        if !media {
+            out.push("media-src 'self' blob:".into());
+        }
+        return out.join("; ");
     }
     let mut out: Vec<String> = Vec::new();
     let (mut worker, mut media) = (false, false);
@@ -3797,7 +3937,7 @@ fn csp_by_trust(header: &str, trusted: bool) -> String {
         out.push("worker-src 'self' blob:".into());
     }
     // af-fix 1a (operator ruling 2026-10-26): the config CSP has no media-src (media = default-src
-    // 'self', no blob:), so only the trusted branch names blob: for media
+    // 'self', no blob:); both branches add media-src 'self' blob: (#139: the restricted one ONLY that)
     if !media {
         out.push("media-src 'self' blob:".into());
     }
@@ -4727,6 +4867,20 @@ fn lines_with_offsets(content: &str) -> impl Iterator<Item = (usize, &str, u32)>
 }
 
 fn search_docs<'a>(docs: impl IntoIterator<Item = (&'a str, &'a str, &'a [String])>, query: &str) -> Vec<SearchHit> {
+    // #119: `[key]` / `[key:value]` (stock's property search; the Properties view's click)
+    // -> one hit per note on its frontmatter line for the key
+    if let Some((key, val)) = props::prop_query(query) {
+        let mut out = Vec::new();
+        for (name, content, _) in docs {
+            let Some(ln) = props::prop_hit(content, &key, val.as_deref()) else { continue };
+            let Some((_, l, base)) = lines_with_offsets(content).nth(ln) else { continue };
+            out.push(SearchHit { note: name.to_string(), line: ln as u32, snippet: l.trim().chars().take(200).collect(), offset: base, len: 0 });
+            if out.len() >= 500 {
+                break;
+            }
+        }
+        return out;
+    }
     let (want, text) = split_query(query);
     let q = text.to_lowercase();
     let mut out = Vec::new();
@@ -7374,9 +7528,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, canvas_io, canvas_attach, paste_image, audio_token, audio_arm, audio_disarm, audio_end, audio_save, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_title, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, bm_add_view, bm_add_view_at, bm_remove, bm_graph_patch, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_title, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, bm_add_view, bm_add_view_at, bm_remove, bm_graph_patch, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts, props_index, props_mode, props_notes, props_types, set_prop_type, set_props_mode,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
-            read_workspace, write_workspace,
+            read_workspace, write_workspace, wsm_list, wsm_get, wsm_op,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
             plugins_state, plugins_set, plugin_io, plugin_vfs, desk_proc_spawn, spawn_allow_list, spawn_allow_revoke, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
@@ -8748,6 +8902,24 @@ mod tests {
         let g = graph_of(&docs);
         assert_eq!(g.nodes.iter().map(|n| (n.name.as_str(), n.resolved)).collect::<Vec<_>>(), vec![("A", true), ("sub/C", true), ("Nope.md", false)]);
         assert_eq!(g.edges, vec![(0, 1), (0, 2)]);
+    }
+
+    #[test]
+    fn search_property_query_hits_the_key_line() {
+        let docs = vec![
+            ("A".to_string(), "---\ntitle: t\nstatus: done\n---\nstatus in the body\n".to_string()),
+            ("B".to_string(), "---\nstatus: open\n---\n".to_string()),
+            ("C".to_string(), "status: not frontmatter\n".to_string()),
+        ];
+        let h = search_docs(docs_ref(&docs), "[status]");
+        assert_eq!(h.iter().map(|x| (x.note.as_str(), x.line, x.snippet.as_str())).collect::<Vec<_>>(),
+                   vec![("A", 2, "status: done"), ("B", 1, "status: open")]);
+        assert_eq!(h[0].offset, 13, "the offset is the key line's start in the file (4 + 9 bytes)");
+        let h = search_docs(docs_ref(&docs), "[status:OPEN]");
+        assert_eq!(h.len(), 1);
+        assert_eq!(h[0].note, "B");
+        // not a bracket term: the plain text search as before
+        assert_eq!(search_docs(docs_ref(&docs), "status").len(), 4);
     }
 
     #[test]
@@ -10385,6 +10557,27 @@ mod tests {
         assert_eq!(v["alwaysUpdateLinks"], serde_json::Value::Bool(true));
     }
 
+    /// issue #119: "Properties in document" lives in app.json, default visible, written by
+    /// merge; an unknown mode and an unparsable app.json are refused (the file is untouched)
+    #[test]
+    fn props_mode_round_trips_in_app_json() {
+        let root = r34_vault("propsmode");
+        assert_eq!(props_mode_in(&root), "visible", "Obsidian default is Visible");
+        fs::create_dir_all(root.join(".obsidian")).unwrap();
+        fs::write(root.join(".obsidian/app.json"), r#"{"alwaysUpdateLinks":true}"#).unwrap();
+        set_props_mode_in(&root, "hidden").unwrap();
+        assert_eq!(props_mode_in(&root), "hidden");
+        assert!(link_consent_in(&root), "the other key survived");
+        set_props_mode_in(&root, "source").unwrap();
+        assert_eq!(props_mode_in(&root), "source");
+        assert!(set_props_mode_in(&root, "bogus").is_err());
+        assert_eq!(props_mode_in(&root), "source");
+        fs::write(root.join(".obsidian/app.json"), "{nope").unwrap();
+        assert!(set_props_mode_in(&root, "visible").is_err());
+        assert_eq!(fs::read_to_string(root.join(".obsidian/app.json")).unwrap(), "{nope", "never overwritten");
+        assert_eq!(props_mode_in(&root), "visible");
+    }
+
     /// goal/minimalmargin: readableLineLength defaults ON (absent key, absent or
     /// unparsable app.json) and follows an explicit bool either way
     #[test]
@@ -10977,7 +11170,7 @@ mod tests {
             "the CSP changed — if that was deliberate, say why in the commit message"
         );
         // af-fix 1a: the config (= a restricted page) names no media-src: media is default-src 'self',
-        // and blob: appears nowhere (a trusted page gains media-src 'self' blob:, csp_by_trust)
+        // and blob: appears nowhere (csp_by_trust adds media-src 'self' blob: per page: trusted af-fix 1a, restricted #139)
         assert!(!csp.contains("media-src"), "media-src in the config CSP: {csp}");
         assert!(!csp.contains("blob:"), "blob: in the config (restricted) CSP: {csp}");
         // R29: the image widening is ONE scheme token, and it is ours
@@ -11002,8 +11195,8 @@ mod tests {
         assert!(!script.contains("unsafe-inline") && !script.contains("data:") && !script.contains('*'), "{script}");
     }
 
-    /// cp-unrestricted: restricted = the config CSP unchanged (no eval, no
-    /// blob:); trusted = eval + blob: scripts and workers, nothing else widened
+    /// cp-unrestricted: restricted = the config CSP + media-src 'self' blob: ONLY (#139 click-to-play
+    /// audio: no eval, no blob: script / worker); trusted = eval + blob: scripts and workers + blob: media
     #[test]
     fn csp_by_trust_widens_only_a_trusted_vaults_scripts_and_workers() {
         const CONF: &str = include_str!("../tauri.conf.json");
@@ -11011,14 +11204,35 @@ mod tests {
             .as_str()
             .unwrap()
             .to_string();
-        assert_eq!(csp_by_trust(&base, false), base);
-        // restricted (af-fix 1a): no eval, no blob: anywhere — media-src included
-        assert!(!csp_by_trust(&base, false).split_whitespace().any(|t| t == "'unsafe-eval'"));
-        assert!(!csp_by_trust(&base, false).split_whitespace().any(|t| t.starts_with("blob:")));
+        let r = csp_by_trust(&base, false);
+        // restricted (#139, operator 2026-11-16): EXACTLY the config CSP plus "; media-src 'self' blob:"
+        assert_eq!(r, format!("{base}; media-src 'self' blob:"));
+        assert_eq!(
+            r,
+            "default-src 'self'; script-src 'self' opensidian-plugin: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
+             img-src 'self' data: opensidian-img:; font-src 'self'; connect-src ipc: http://ipc.localhost; media-src 'self' blob:"
+        );
+        // no 'unsafe-eval' anywhere; blob: ONLY in media-src (never script-src / worker-src / anything else)
+        assert!(!r.split_whitespace().any(|t| t == "'unsafe-eval'"), "{r}");
+        for d in r.split("; ") {
+            if !d.starts_with("media-src") {
+                assert!(!d.split_whitespace().any(|t| t.starts_with("blob:")), "blob: outside media-src in {d}");
+            }
+        }
+        assert!(!r.split("; ").any(|d| d.starts_with("worker-src")), "restricted names a worker-src: {r}");
+        let ms = |c: &str| c.split("; ").find(|d| d.starts_with("media-src")).map(str::to_owned);
+        assert_eq!(ms(&r).as_deref(), Some("media-src 'self' blob:"));
+        // every directive other than media-src is byte-identical to the config's
+        let nm = |c: &str| c.split("; ").filter(|d| !d.starts_with("media-src")).map(str::to_owned).collect::<Vec<_>>();
+        assert_eq!(nm(&r), nm(&base));
+        // an existing restricted media-src gains blob: once (not duplicated); scripts / workers untouched
+        assert_eq!(
+            csp_by_trust("script-src 'self' 'sha256-abc'; worker-src 'self'; media-src 'self'", false),
+            "script-src 'self' 'sha256-abc'; worker-src 'self'; media-src 'self' blob:"
+        );
+        assert_eq!(csp_by_trust("media-src 'self' blob:", false), "media-src 'self' blob:");
         // trusted: media-src 'self' blob: (the canvas media card Blob, cvf-mediasrv) — self + blob: only,
         // no wildcard, no remote origin, no data:, no scheme
-        let ms = |c: &str| c.split("; ").find(|d| d.starts_with("media-src")).map(str::to_owned);
-        assert_eq!(ms(&csp_by_trust(&base, false)), None);
         assert_eq!(ms(&csp_by_trust(&base, true)).as_deref(), Some("media-src 'self' blob:"));
         let t = csp_by_trust(&base, true);
         assert_eq!(

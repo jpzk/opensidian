@@ -376,7 +376,7 @@ jobs:
               EXTRA=(--target "$GITHUB_SHA") ;;
             *) echo "refusing: $GITHUB_REF is neither a v* tag nor a v<ver>-release branch"; exit 1 ;;
           esac
-          TITLE="opensidian $V"
+          TITLE="Opensidian $V"
           FILES=()
           for A in x86_64 aarch64; do
             P="assets/opensidian-$V-$A"

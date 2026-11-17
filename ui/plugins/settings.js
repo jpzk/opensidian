@@ -400,7 +400,9 @@
   }
   /* #116: any other core plugin's switch (Audio recorder): its enable()/disable() and the same
      core-plugins.json write ({"<id>": bool}, foreign keys merged by settings.rs) */
+  let coreGen = 0;   // #139: a core switch flipped while the boot read is in flight wins over that (stale) read
   async function setCoreOn(id, on) {
+    coreGen++;
     const ip = host.app.internalPlugins, p = ip && ip.plugins && ip.plugins[id]; if (!p) return;
     await (on ? p.enable() : p.disable());
     cvc.core[id] = !!on;
@@ -412,6 +414,7 @@
   (function waitVault() {
     const vp = typeof vaultPath !== "undefined" ? vaultPath : null;
     if (!vp) { setTimeout(waitVault, 150); return; }
+    const g0 = coreGen;
     Promise.all([vinv("canvas").catch(() => ({})), vinv("core-plugins").catch(() => ({}))]).then(async ([cv, core]) => {
       cvc.canvas = cv && typeof cv === "object" ? cv : {};
       cvc.core = core && typeof core === "object" ? core : {};
@@ -424,8 +427,11 @@
       }
       // #116: a core-plugins.json "audio-recorder" bool decides the Audio recorder for THIS vault too
       const ar = host.app.internalPlugins && host.app.internalPlugins.plugins && host.app.internalPlugins.plugins["audio-recorder"];
-      if (ar && typeof cvc.core["audio-recorder"] === "boolean" && !!ar.enabled !== cvc.core["audio-recorder"]) {
-        try { await (typeof ar.applyVault === "function" ? ar.applyVault(cvc.core["audio-recorder"]) : cvc.core["audio-recorder"] ? ar.enable() : ar.disable()); }
+      // #139 (operator 2026-11-16): no key => ON for this vault (stock default); an explicit false is respected
+      const arOn = typeof cvc.core["audio-recorder"] === "boolean" ? cvc.core["audio-recorder"] : true;
+      if (ar && coreGen === g0 && !!ar.enabled !== arOn) {
+        // codeant #145: applyVault(false) may wait for a recording to stop; a switch flipped meanwhile wins (live() re-checks coreGen)
+        try { await (typeof ar.applyVault === "function" ? ar.applyVault(arOn, () => coreGen === g0) : arOn ? ar.enable() : ar.disable()); }
         catch (e) { console.error("[audio-recorder] core-plugins.json:", e); }
       }
       if (typeof updateTitle === "function") updateTitle();

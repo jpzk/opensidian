@@ -914,9 +914,10 @@
        scripts/api-probes.d/vint.js): the vault's frontmatter properties
        (lowercase key -> {name: first spelling seen, occurrences: notes holding it,
        widget}), the types the user assigned (.obsidian/types.json) and the
-       registered type widgets. A widget's render() is the property editor UI,
-       which opensidian does not have: it throws 'unsupported in opensidian'. */
-    const TYPES_WHY = "the property editor widgets are not part of opensidian";
+       registered type widgets. A widget's render(containerEl, value, ctx) builds
+       the property editor's value widget (#119 ui/props.js Props.renderWidget);
+       an edit calls ctx.onChange(value) and the plugin owns the write. */
+    const TYPES_WHY = "the property editor widgets are not loaded";
     const isDateStr = s => {
       const m = window.moment;
       if (m && m.ISO_8601) return m(s, m.ISO_8601, true).isValid();
@@ -926,7 +927,11 @@
     const vStr = v => typeof v === "string", vList = v => typeof v === "string" || Array.isArray(v);
     const widget = (type, icon, label, validate, extra) => Object.assign({
       type, icon, name: () => label, validate,
-      render() { throw unsupported(TYPES_WHY); },
+      render(containerEl, value, ctx) {
+        if (!window.Props || typeof window.Props.renderWidget !== "function") throw unsupported(TYPES_WHY);
+        if (!containerEl || typeof containerEl.appendChild !== "function") throw new TypeError("render: containerEl is not an element");
+        return window.Props.renderWidget(type, containerEl, value, ctx);
+      },
     }, extra);
     const UNKNOWN_W = widget("unknown", "lucide-file-question", "Unknown", () => false);
     function inferType(v) {
