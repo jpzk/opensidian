@@ -7062,6 +7062,21 @@ struct PosProbe {
     honoured: Option<bool>,
 }
 
+/* #144 toggle 7 (security.rs JIT_OFF_ENV has the why): apply the latched effective JIT value
+   to this process's env BEFORE the first webview (the web process inherits it, JSC reads it
+   at its start). Runs in main() right after security::boot(), single-threaded like
+   present_dmabuf_scope's set_var. The only env reader of toggle 7. */
+fn sec_jit_env(jit: bool) {
+    let (set, rm) = security::jit_plan(jit, std::env::var_os(security::JIT_MARK).is_some());
+    for (k, v) in set {
+        std::env::set_var(k, v);
+    }
+    for k in rm {
+        std::env::remove_var(k);
+    }
+    eprintln!("{}", security::jit_log(jit));
+}
+
 /* #79 (E3, scoped): WebKitGTK's DMA-BUF renderer is kept ON (WebKit's default) everywhere except an X11
    display with NO compositing manager (no owner of _NET_WM_CM_S<n>; gdk_screen_is_composited reads exactly
    that). There the box measured the bug: the Excalidraw canvas is painted in the page but the window keeps
@@ -7608,8 +7623,10 @@ fn main() {
     migrate::run_home(&PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())));
     // #144: latch the restart-bound Security fields (JIT, lockdown) once, before any window
     // exists and before the sandbox closes: the running process keeps these values
-    let sec_boot = security::boot(&cfg_value());
+    let sec_cfg = cfg_value();
+    let sec_boot = security::boot(&sec_cfg);
     eprintln!("[sec] boot jit={} lockdown={} lockdownClipboard={}", sec_boot.jit, sec_boot.lockdown, sec_boot.lockdown_clipboard);
+    sec_jit_env(security::effective(&sec_cfg).sec.jit);
     // VAULT_DIR (probes/tests) wins; else the argv vault (vaultarg, README §2) —
     // resolved HERE, before sandbox::enforce below; else last persisted vault if
     // still a dir (R1.6)
@@ -9327,6 +9344,23 @@ mod tests {
             }
         }
         assert_eq!(src.matches(concat!("security::", "spawn_check(")).count(), 1, "toggle 10 has one reader");
+    }
+
+    /// #144 toggle 7: the JIT env is applied in main() right after the boot latch, BEFORE the
+    /// spawner starts (it would inherit the old env), the sandbox closes and the Builder makes
+    /// the first webview; one reader of the plan
+    #[test]
+    fn jit_env_is_applied_before_any_child_or_webview() {
+        let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
+        let m = src.find("\nfn main() {").expect("main");
+        let mb = &src[m..m + src[m..].find("\n}\n").expect("end")];
+        let boot = mb.find("security::boot(&sec_cfg)").expect("boot latch");
+        let jit = mb.find("sec_jit_env(security::effective(&sec_cfg).sec.jit)").expect("jit env in main");
+        assert!(boot < jit, "the JIT env follows the latch");
+        for later in ["spawner::start()", "sandbox::enforce(", "tauri::Builder::default()"] {
+            assert!(jit < mb.find(later).unwrap_or_else(|| panic!("{later}")), "{later} runs before the JIT env");
+        }
+        assert_eq!(src.matches(concat!("security::", "jit_plan(")).count(), 1, "toggle 7 has one reader");
     }
 
     /// #144 toggle 11: the engine gate sits in the app scheme's resource hook, right after the

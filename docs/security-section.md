@@ -62,7 +62,7 @@ values (issue: "back to the value it had before, not to the default").
 Restart-bound values (7 JIT, 12 lockdown) are latched at process start:
 `security::boot()` reads them once in `main()` before the webview exists; the
 running process keeps the latched value, and the UI shows "applies after restart"
-plus a "Restart now" button when the stored value differs from the latched one.
+when the stored value differs from the latched one (no "Restart now" button: see §7 As built).
 
 ## 1. Toggle by toggle
 
@@ -344,11 +344,28 @@ What (a) means concretely:
   sets `JSC_useJIT=0` (plus `JSC_useDFGJIT=0`, `JSC_useFTLJIT=0`, `JSC_useBaselineJIT=0`
   for older JSC builds that read only the tier flags) when jit is off; the WebKit web
   process inherits the env. Restart-bound: the UI says "applies after restart" with
-  "Restart now". Android: no WebView equivalent — documented.
+  "Restart now" (not built, see As built). Android: no WebView equivalent — documented.
 - **Files:** `main.rs` (`main()` before the Builder), `security.rs`.
 - **T3 probe `secjit`:** jit off, launch → `/proc/<WebKitWebProcess pid>/environ` contains
   `JSC_useJIT=0` (best-effort marker per the issue) and the app logs `[security] jit=off`;
   control: default launch has no `JSC_useJIT`.
+- **As built (toggle 7 commit):** `security::jit_plan(jit, marked)` is pure (security.rs reads
+  no env); `main.rs sec_jit_env()` applies it right after `security::boot()` with the LATCHED
+  effective value (lockdown forces it off), before `spawner::start()`, `sandbox::enforce` and
+  the Builder (T0 `jit_env_is_applied_before_any_child_or_webview`). Off sets `JSC_useJIT`,
+  `JSC_useBaselineJIT`, `JSC_useDFGJIT`, `JSC_useFTLJIT` and `JSC_useRegExpJIT` to 0 (the RegExp
+  JIT is a JIT too) plus the mark `OPENSIDIAN_JIT_OFF=1`. A window this process starts (switch,
+  open vault, the spawner) inherits the env; if JIT is on again by then, the child removes
+  exactly the marked set, never a `JSC_*` var the user exported. On + no mark: env untouched
+  (defaults = today). Log: `[sec] jit=off (JSC_useJIT=0 + tier flags) (Settings › Security ›
+  JavaScript JIT)` / `[sec] jit=on`. Visible state: the row says "Applies after restart" while
+  the stored value differs from the latched one. **Deviation:** no "Restart now" button — a
+  restart into the SAME vault would need a lock hand-off the switch handshake does not have
+  (`open_vault_window` refuses this window's own vault); the user quits and starts the app.
+- **T3 probe `secjit` (as built):** off → app log `[sec] jit=off`, the WebKitWebProcess
+  child's `/proc/<pid>/environ` has `JSC_useJIT=0` + `OPENSIDIAN_JIT_OFF=1` (no timing probe:
+  a JIT-vs-interpreter timing is flaky on a shared box). Control: default launch logs
+  `[sec] jit=on` and the web process env has no `JSC_useJIT`.
 
 ### 6 — HTML canvas  (hardening, not a boundary against trusted plugins)
 

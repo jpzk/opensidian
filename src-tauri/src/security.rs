@@ -630,6 +630,50 @@ pub fn engine_refusal(eff: &Eff, path: &str) -> Option<String> {
     let f = engine_of(path)?;
     (!eff.sec.field(f)?).then(|| engine_off_text(f))
 }
+
+/* #144 toggle 7 — JavaScript JIT. Boundary: the PROCESS ENVIRONMENT before the first
+   webview exists. JavaScriptCore reads its options from JSC_<option> env vars when the
+   WebKit web process starts, and the web process inherits this process's env. Off sets
+   every JIT tier off (useJIT is the master switch on current JSC; the tier flags cover
+   builds that read only those) plus the RegExp JIT, which is a JIT too. Restart-bound:
+   main() applies the LATCHED effective value once (lockdown forces it off). This module
+   reads no env (nothing_but_the_config_value_is_read): it only plans; main.rs applies.
+   JIT_MARK: set next to the vars when WE set them. A window started from this process
+   (switch / open vault / spawner) inherits the env; if JIT is on again by then, the
+   child removes exactly the vars it finds marked, never a JSC_ var the user set. */
+pub const JIT_OFF_ENV: &[(&str, &str)] = &[
+    ("JSC_useJIT", "0"),
+    ("JSC_useBaselineJIT", "0"),
+    ("JSC_useDFGJIT", "0"),
+    ("JSC_useFTLJIT", "0"),
+    ("JSC_useRegExpJIT", "0"),
+];
+pub const JIT_MARK: &str = "OPENSIDIAN_JIT_OFF";
+
+/// what main() does to the env: (set, remove). `jit` = the effective latched value,
+/// `marked` = JIT_MARK was inherited (a parent opensidian set the vars)
+pub fn jit_plan(jit: bool, marked: bool) -> (Vec<(&'static str, &'static str)>, Vec<&'static str>) {
+    if !jit {
+        let mut set = JIT_OFF_ENV.to_vec();
+        set.push((JIT_MARK, "1"));
+        return (set, Vec::new());
+    }
+    if marked {
+        let mut rm: Vec<&str> = JIT_OFF_ENV.iter().map(|(k, _)| *k).collect();
+        rm.push(JIT_MARK);
+        return (Vec::new(), rm);
+    }
+    (Vec::new(), Vec::new())
+}
+
+/// the one log line main() prints (T3 secjit greps it)
+pub fn jit_log(jit: bool) -> String {
+    if jit {
+        "[sec] jit=on".into()
+    } else {
+        format!("[sec] jit=off ({}=0 + tier flags) {}", JIT_OFF_ENV[0].0, named("jit"))
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -805,6 +849,33 @@ mod tests {
         let e = effective_with(s, Some(s));
         assert_eq!(e.sec, s, "the defaults pass through effective() unchanged");
         assert!(!e.lockdown);
+    }
+
+    /// toggle 7: off sets every JIT tier off + the mark; on with an inherited mark removes
+    /// exactly what an opensidian parent set; on without a mark touches nothing (a user's
+    /// own JSC_ vars stand); lockdown forces it off through the latch
+    #[test]
+    fn jit_plan_sets_removes_only_its_own_vars() {
+        let (set, rm) = jit_plan(false, false);
+        assert!(rm.is_empty());
+        for k in ["JSC_useJIT", "JSC_useBaselineJIT", "JSC_useDFGJIT", "JSC_useFTLJIT", "JSC_useRegExpJIT"] {
+            assert!(set.contains(&(k, "0")), "{k}=0 missing");
+        }
+        assert!(set.contains(&(JIT_MARK, "1")));
+        assert_eq!(jit_plan(false, true).0, set, "off is off, inherited mark or not");
+        let (set, rm) = jit_plan(true, true);
+        assert!(set.is_empty());
+        assert_eq!(rm.len(), JIT_OFF_ENV.len() + 1);
+        assert!(rm.contains(&"JSC_useJIT") && rm.contains(&JIT_MARK));
+        assert_eq!(jit_plan(true, false), (Vec::new(), Vec::new()), "default: env untouched");
+        let mut s = Sec::default();
+        s.lockdown = true;
+        assert!(!effective_with(s, Some(s)).sec.jit, "lockdown forces the JIT off");
+        let mut s = Sec::default();
+        s.jit = false;
+        assert!(effective_with(s, Some(Sec::default())).sec.jit, "restart-bound: the latch wins");
+        assert!(jit_log(false).contains("[sec] jit=off") && jit_log(false).contains("Settings › Security › JavaScript JIT"));
+        assert_eq!(jit_log(true), "[sec] jit=on");
     }
 
     #[test]
