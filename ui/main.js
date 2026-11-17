@@ -7474,6 +7474,17 @@ function treeDragStart(e, nm, dir) {         // dir: true = a folder row, "file"
       zones = [...document.querySelectorAll("#tree .trow.folder")]
         .map(el => ({ el, f: el.dataset.folder, r: el.getBoundingClientRect() }))
         .filter(z => z.r.height > 0 && z.f != null);
+      // issue #157: a NOTE / file row is its PARENT folder's zone (stock 1.13.7): over a sibling row of the
+      // same folder there is no destination (nothing moves), over a root-level row it is the vault root.
+      // Before, only the #tree box matched there, so a drop on a sibling moved the note to the ROOT.
+      const fz = new Map(zones.map(z => [z.f, z.el]));
+      for (const el of document.querySelectorAll("#tree .trow:not(.folder)")) {
+        const p = el.dataset.note ?? el.dataset.canvas ?? el.dataset.file;
+        const r = p == null ? null : el.getBoundingClientRect();
+        if (!r || !(r.height > 0)) continue;
+        const f = p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "";
+        zones.push({ el: fz.get(f) || $("tree"), f, r });
+      }
       zones.push({ el: $("tree"), f: "", r: $("tree").getBoundingClientRect() });   // the vault ROOT
       if (dir || multi) zones = [];      // cv-drop: a folder is no move source (R24.5) — only a plugin view takes it; nor is a selection
       if (!dir && !multi && !/\.canvas$/i.test(nm)) pz = nDropZones();   // issue #40: a note row can open on a pane
@@ -7525,7 +7536,9 @@ function treeDragStart(e, nm, dir) {         // dir: true = a folder row, "file"
     if (ghost && !t && pd && treePlgDrop(pd, ev)) { treeEat = 1; updateTitle(); return; }   // a plugin view took it
     if (pd) pd.end();
     if (dir || multi) { if (ghost) treeEat = performance.now(); updateTitle(); return; }   // cv-drop: a folder (or a selection) dropped on nothing moves nothing
-    if (!ghost || !t) { updateTitle(); return; }   // plain click, or dropped on nothing
+    // issue #157: a drag released with no destination (its own row, a sibling row) must not ALSO click
+    // the row it ends on — stock's HTML5 drag never clicks. A real timestamp: treeClickEaten() is 400 ms
+    if (!ghost || !t) { if (ghost) treeEat = performance.now(); updateTitle(); return; }   // plain click, or dropped on nothing
     treeEat = 1;                                   // the mouseup's click is not an "open this note"
     if (/\.canvas$/i.test(nm)) await cvMoveTo(nm, t.f);   // CVR-A-090: a canvas row moves through canvas_io
     else await moveNoteTo(nm, t.f);
