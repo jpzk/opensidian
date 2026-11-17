@@ -796,9 +796,8 @@
        from 'self' under the unchanged CSP: no network, no eval. Each loader
        resolves with the real library (also published on window like a plugin
        expects: pdfjsLib, MathJax, Prism) and rejects honestly when the bytes
-       cannot be loaded; a failed load is retried by the next call. Mermaid is
-       still not vendored: loadMermaid rejects. */
-    const unsupported = what => new Error("unsupported in opensidian: " + what);
+       cannot be loaded; a failed load is retried by the next call. Mermaid
+       (loadMermaid) is vendored the same way; its locked configuration is below. */
     const vendorUrl = p => new URL("vendor/" + p, document.baseURI).href;
     const once = {};
     function loadOnce(key, start) {
@@ -862,10 +861,83 @@
       });
     }
 
+    /* Mermaid: untrusted note text goes through a big parser + SVG generator, so the
+       configuration is fixed here and cannot be loosened from a note.
+       - securityLevel "strict": labels are sanitized by the bundled DOMPurify, click
+         callbacks / javascript: links are dropped and nothing is bound (we never call
+         bindFunctions). "sandbox" (iframe with a data: URL) was evaluated and not used:
+         the CSP has no frame-src for data: and it would also break in-diagram links.
+       - htmlLabels false: labels are SVG text, not foreignObject HTML.
+       - every key that changes sanitizing, HTML, CSS, fonts or the caps is in `secure`,
+         which Mermaid strips from %%{init}%% directives and frontmatter `config:`.
+       - no icon packs and no layout loaders are registered: nothing is fetched.
+       - maxTextSize / maxEdges cap hostile input; errors are thrown to the caller
+         (suppressErrorRendering) so the app shows them inline instead of Mermaid
+         painting into document.body. */
+    const MERMAID_SECURE = ["secure", "securityLevel", "startOnLoad", "maxTextSize", "maxEdges",
+      "suppressErrorRendering", "dompurifyConfig", "htmlLabels", "flowchart", "theme", "themeVariables",
+      "themeCSS", "darkMode", "fontFamily", "altFontFamily", "arrowMarkerAbsolute", "legacyMathML",
+      "forceLegacyMathML", "deterministicIds", "deterministicIDSeed", "layout", "look", "elk"];
+    const MERMAID_MAX_TEXT = 50000, MERMAID_MAX_EDGES = 500;
+    function mermaidThemeVars() {
+      const cs = getComputedStyle(document.body || document.documentElement);
+      const v = (name, dflt) => (cs.getPropertyValue(name) || "").trim() || dflt;
+      const dark = !!(document.body && document.body.classList.contains("theme-dark"));
+      const bg = v("--background-primary", dark ? "#1e1e1e" : "#ffffff");
+      const bg2 = v("--background-secondary", dark ? "#262626" : "#f6f6f6");
+      const text = v("--text-normal", dark ? "#dadada" : "#222222");
+      const muted = v("--text-muted", dark ? "#b3b3b3" : "#5c5c5c");
+      const border = v("--background-modifier-border", dark ? "#363636" : "#e0e0e0");
+      const accent = v("--interactive-accent", dark ? "#7f6df2" : "#7b6cd9");
+      return { dark, vars: {
+        darkMode: dark, background: bg, mainBkg: bg2, primaryColor: bg2, primaryTextColor: text,
+        primaryBorderColor: accent, secondaryColor: bg2, tertiaryColor: bg, lineColor: muted,
+        textColor: text, nodeTextColor: text, titleColor: text, edgeLabelBackground: bg,
+        clusterBkg: bg2, clusterBorder: border, noteBkgColor: bg2, noteTextColor: text, noteBorderColor: border,
+        actorBkg: bg2, actorBorder: accent, actorTextColor: text, signalColor: text, signalTextColor: text,
+        labelBoxBkgColor: bg2, labelTextColor: text, loopTextColor: text,
+        fontFamily: v("--font-text", "sans-serif"),
+      } };
+    }
+    let mermaidThemeKey = "";
+    function configureMermaid(M, force) {
+      const t = mermaidThemeVars();
+      const key = JSON.stringify(t.vars);
+      if (!force && key === mermaidThemeKey) return M;
+      M.initialize({
+        startOnLoad: false, securityLevel: "strict", secure: MERMAID_SECURE.slice(),
+        maxTextSize: MERMAID_MAX_TEXT, maxEdges: MERMAID_MAX_EDGES, suppressErrorRendering: true,
+        htmlLabels: false, flowchart: { htmlLabels: false }, legacyMathML: false, forceLegacyMathML: false,
+        theme: "base", darkMode: t.dark, themeVariables: t.vars, fontFamily: t.vars.fontFamily,
+        dompurifyConfig: {},
+      });
+      mermaidThemeKey = key;
+      return M;
+    }
+    const mermaidReady = () => !!(window.mermaid && typeof window.mermaid.render === "function" &&
+      typeof window.mermaid.initialize === "function");
+    function loadMermaid() {
+      return loadOnce("mermaid", () => (mermaidReady() ? Promise.resolve() : loadScript("mermaid/mermaid.min.js", "Mermaid")).then(() => {
+        if (!mermaidReady()) throw new Error("Mermaid loaded without render/initialize");
+        return window.mermaid;
+      })).then(M => configureMermaid(M));
+    }
+    // app renderer entry: render one diagram with the CURRENT theme (re-initializes on
+    // light/dark or accent change); resolves { svg } or rejects with Mermaid's error.
+    let mermaidSeq = 0;
+    function renderMermaid(source) {
+      // re-initialize every time: a plugin may have called mermaid.initialize() itself
+      return loadMermaid().then(M => configureMermaid(M, true)).then(M => M.render("os-mermaid-" + (++mermaidSeq), String(source)))
+        .then(r => ({ svg: r && r.svg || "" }));
+    }
+
     const GATED = {
       loadMathJax, loadPdfJs, loadPrism, renderMath, finishRenderMath,
-      loadMermaid: () => Promise.reject(unsupported("loadMermaid (Mermaid is not bundled)")),
+      loadMermaid,
     };
     Object.assign(K.exportValues, GATED);
+    // first-party renderers (reading view, Live Preview) use the plugin API's loaders, so app and
+    // plugins share ONE Mermaid instance and the vendor gate covers both
+    try { Object.defineProperty(window, "__osLibs", { value: Object.freeze({ loadMermaid, renderMermaid }), configurable: false, writable: false, enumerable: false }); } catch (_) {}
   });
 })();
