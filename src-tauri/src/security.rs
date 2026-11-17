@@ -453,10 +453,11 @@ mod tests {
         o.offline = true;
         let err = plugin_net_check(&effective_with(o, Some(o)), "requestUrl", Some("x")).unwrap_err();
         assert!(err.contains(OFFLINE_IS_ON) && !err.contains(PLUGIN_NET_OFF), "{err}");
-        // lockdown cuts it too
+        // lockdown cuts it too (it also forces offline, whose message wins)
         let mut l = d;
         l.lockdown = true;
-        assert!(plugin_net_check(&effective_with(l, Some(l)), "requestUrl", None).unwrap_err().contains(PLUGIN_NET_OFF));
+        let le = effective_with(l, Some(l));
+        assert!(!le.sec.plugin_net && plugin_net_check(&le, "requestUrl", None).unwrap_err().contains(OFFLINE_IS_ON));
     }
 
     #[test]
