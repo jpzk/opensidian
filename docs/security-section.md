@@ -91,7 +91,13 @@ Format per toggle: **boundary** (what actually refuses), **files**, **visible st
     outside the allow-listed functions, or an allow-listed function that does not call
     `security::net_allowed` first, fails T0 — the "any new network feature must go
     through the same choke point" rule as a test.
-- **Precedence:** while "Allow network" is off (offline), 1 and 2 are forced off, shown greyed out.
+- **Precedence:** while "Allow network" is off (Off = offline mode, stored or forced by lockdown),
+  1 and 2 are forced off, shown greyed out exactly like a lockdown-forced row (`aria-disabled`,
+  switch shows the effective OFF, "Forced off by Allow network (off)"). Row 2 ("Allow network for
+  community plugins") is greyed even when its stored value is already off; its stored `pluginNet`
+  is never rewritten and is in force again once Allow network is back on (T0
+  `plugin_net_is_forced_off_while_offline_and_comes_back`, T3 `sectab` / `secoffline` via `[secf:]`).
+  The row description says "Off = offline mode" so a search for "offline" finds it.
 - **Files:** `src-tauri/src/security.rs` (new), `plugin_store.rs`, `desk_http.rs` call
   site in `main.rs`, `desk_net_listen` in `main.rs`, `open_external`, `updates.rs` /
   store UI (`ui/main.js`: "Offline mode is on" state instead of a generic failure).
@@ -465,7 +471,8 @@ What (a) means concretely:
   switch shows the EFFECTIVE value (lockdown turns "Allow network" off).
 - Polarity: both network switches read ON = allowed. "Allow network" is the inverse of the stored
   `offline` field (ON = `offline: false`); "Allow network for community plugins" is
-  `pluginNet` as stored. The field names are unchanged, so an existing `~/.opensidian.json`
+  `pluginNet` as stored, and depends on "Allow network": while that is off (offline mode) it is
+  forced off and greyed, its stored value kept. The field names are unchanged, so an existing `~/.opensidian.json`
   keeps its meaning.
 - Storage is in `nav.tsv`-independent code (`settings.rs` overlay `SECURITY_ROWS`), so the
   Obsidian transcript oracle stays untouched.

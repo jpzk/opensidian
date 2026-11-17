@@ -203,6 +203,12 @@ pub fn named(f: &str) -> String {
 /// why the effective value of `f` differs from the stored one (None = it does not)
 pub fn forced_by(stored: Sec, eff: &Eff, f: &str) -> Option<&'static str> {
     let (sv, ev) = (stored.field(f)?, eff.sec.field(f)?);
+    // PR #193 review: "Allow network for community plugins" depends on "Allow network". While
+    // offline is in force (stored, or lockdown) the row is forced OFF and greyed even when its
+    // stored value is already off; the stored value is untouched and comes back with the network
+    if f == "pluginNet" && eff.sec.offline {
+        return Some(if eff.lockdown { "lockdown" } else { "offline" });
+    }
     if sv == ev {
         return None;
     }
@@ -1102,6 +1108,43 @@ mod tests {
         let e = effective_with(s, Some(s));
         assert!(!e.sec.webgl);
         assert_eq!(forced_by(s, &e, "webgl"), Some("canvas"));
+    }
+
+    /// PR #193 review: pluginNet depends on Allow network — effective off and greyed while
+    /// offline is on (stored either way), the stored value kept and back once offline is off
+    #[test]
+    fn plugin_net_is_forced_off_while_offline_and_comes_back() {
+        let mut s = Sec::default();
+        assert!(s.plugin_net, "default allow");
+        s.offline = true;
+        let e = effective_with(s, Some(s));
+        assert!(!e.sec.plugin_net, "effective pluginNet=false while offline");
+        assert!(s.plugin_net, "stored pluginNet stays true");
+        assert_eq!(forced_by(s, &e, "pluginNet"), Some("offline"));
+        let r = report(&json!({"security": {"offline": true}}));
+        assert_eq!(r["stored"]["pluginNet"], json!(true));
+        assert_eq!(r["effective"]["pluginNet"], json!(false));
+        assert_eq!(r["forced"]["pluginNet"], json!("offline"));
+        // stored off already: still greyed (forced), not a live switch
+        let mut o = s;
+        o.plugin_net = false;
+        let eo = effective_with(o, Some(o));
+        assert_eq!(forced_by(o, &eo, "pluginNet"), Some("offline"));
+        let r = report(&json!({"security": {"offline": true, "pluginNet": false}}));
+        assert_eq!(r["forced"]["pluginNet"], json!("offline"));
+        // lockdown forces offline: the reason shown is lockdown
+        let mut l = Sec::default();
+        l.lockdown = true;
+        l.plugin_net = false;
+        assert_eq!(forced_by(l, &effective_with(l, Some(l)), "pluginNet"), Some("lockdown"));
+        // Allow network back on: the stored value is in force again, the row is live
+        s.offline = false;
+        let e = effective_with(s, Some(s));
+        assert!(e.sec.plugin_net);
+        assert_eq!(forced_by(s, &e, "pluginNet"), None);
+        let r = report(&json!({"security": {"offline": false, "pluginNet": true}}));
+        assert_eq!(r["effective"]["pluginNet"], json!(true));
+        assert!(r["forced"].get("pluginNet").is_none());
     }
 
     #[test]

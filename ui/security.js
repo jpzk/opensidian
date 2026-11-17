@@ -10,7 +10,8 @@
    Markup = the settings pane's own rows (.ssec heading, .scard, .srow/.sinfo/
    .slabel/.sdesc, .sctl.toggle), so the tab looks like every other Options tab.
    Census (while the pane is built): [secp:<rows>/<forced>/<pending>] and
-   [secv:<field>=<stored><effective>,...] (1/0 pairs), read by the T3 phases.
+   [secv:<field>=<stored><effective>,...] (1/0 pairs), [secf:<field>=<why>/<disabled>,...] (greyed rows)
+   and [secn:<cx>,<cy>] (the Allow network switch), read by the T3 phases.
    Plugins can ask: window.opensidianSecurity = a frozen copy of the EFFECTIVE values
    (informational, refreshed after every change; plugins degrade instead of throwing). */
 (() => {
@@ -26,9 +27,9 @@
   const GROUPS = [
     [null, [["lockdown", false, "Sets every toggle below to its strictest value: community plugins do not run in any vault, no network, no media, no WebGL / canvas, no JIT, no math / code / diagram rendering. Your own values are kept and come back when you turn it off. Needs a restart."]]],
     ["Network", [
-      ["offline", true, "The app may reach the network: the plugin and theme store, the update check, plugin requests and listeners. Off (offline mode): nothing in the app reaches the network; links still open in your browser after a confirm."],
+      ["offline", true, "The app may reach the network: the plugin and theme store, the update check, plugin requests and listeners. Off = offline mode: nothing in the app reaches the network (community plugins included: their switch below is forced off); links still open in your browser after a confirm."],
       ["remoteMedia", false, "Show images, audio and video from https:// addresses in notes. Off: a placeholder is shown and the address never reaches the page."],
-      ["pluginNet", false, "Community plugins may make requests and open listeners. Off: their requests and listeners are refused, naming this switch."],
+      ["pluginNet", false, "Community plugins may make requests and open listeners. Off: their requests and listeners are refused, naming this switch. Needs Allow network: while that is off (offline mode) this switch is forced off; your value comes back when the network is allowed again."],
     ]],
     ["Media and rendering", [
       ["vaultMedia", false, "Render images, PDFs, audio and video from your vaults. Off: a placeholder is shown and no file reaches a decoder."],
@@ -216,7 +217,9 @@
       if (sec) pg.appendChild(el("div", "ssec", sec));
       const card = el("div", "scard"); pg.appendChild(card);
       for (const [f, invert, desc] of rows) {
-        const forced = R.forced[f];
+        // forced = security.rs forced_by: lockdown, canvas, and Allow network off (offline) for
+        // pluginNet even when its stored value is already off — the same greyed, disabled row
+        const forced = R.forced[f] || (f === "pluginNet" && R.effective.offline ? (R.lockdown ? "lockdown" : "offline") : undefined);
         const lock = forced && forced !== "restart";
         const r = el("div", "srow" + (lock ? " dis" : ""));
         r.dataset.sec = f;
@@ -263,7 +266,15 @@
     }
     if (typeof settingsOpen === "undefined" || !settingsOpen || sPane !== "security") return R.lockdown || ldOpen ? ld : "";
     const v = Object.keys(R.stored).map(f => f + "=" + (R.stored[f] ? 1 : 0) + (R.effective[f] ? 1 : 0)).join(",");
-    return " [secp:" + nRows + "/" + nForced + "/" + (R.restartPending || []).length + "] [secv:" + v + "]" + geo() + ld;
+    // [secf:<field>=<why>/<switch disabled 1|0>,...] every greyed row as drawn (pluginNet=offline/1 while
+    // Allow network is off, PR #193 review); [secn:<cx>,<cy>] the centre of the Allow network switch
+    const fr = [...document.querySelectorAll('#spage .srow.dis[data-sec]')].map(r => {
+      const t = r.querySelector(".sctl.toggle");
+      return r.dataset.sec + "=" + (R.forced[r.dataset.sec] || "-") + "/" + (t && t.getAttribute("aria-disabled") === "true" && !t.classList.contains("live") && !t.onclick ? 1 : 0);
+    }).join(",");
+    const nt = document.querySelector('#spage .srow[data-sec="offline"] .sctl.toggle'), nb = nt && nt.getBoundingClientRect();
+    const sn = nb ? " [secn:" + Math.round(nb.x + nb.width / 2) + "," + Math.round(nb.y + nb.height / 2) + "]" : "";
+    return " [secp:" + nRows + "/" + nForced + "/" + (R.restartPending || []).length + "] [secv:" + v + "] [secf:" + fr + "]" + sn + geo() + ld;
   }
   /* [secg:nav=<h>/<font>/<padT>/<padL>/<radius>/<same 1|0>,row=<padT>/<padB>,lbl=<font>,desc=<font>,tg=<w>x<h>]
      the painted chrome of the Security tab, read with getComputedStyle — the T3 phase compares it to
