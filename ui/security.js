@@ -78,12 +78,7 @@
   async function refresh() { R = await inv("security_get"); publish(); return R; }
   async function set(f, on) {
     if (busy) return; busy = true;
-    try {
-      const gl0 = R && R.effective ? !!R.effective.webgl : null;
-      R = await inv("security_set", { field: f, on }); publish();
-      // toggle 5: the backend flipped enable-webgl; open graphs switch draw path at once
-      if (gl0 !== null && gl0 !== !!R.effective.webgl && typeof window.opensidianGraphGl === "function") window.opensidianGraphGl();
-    }
+    try { R = await inv("security_set", { field: f, on }); publish(); }
     catch (e) { console.error("[sec] set " + f + ":", e); if (typeof say === "function") say("Security: " + String(e && e.message || e)); }
     busy = false;
     if (typeof settingsOpen !== "undefined" && settingsOpen && sPane === "security") build(document.getElementById("spage"));

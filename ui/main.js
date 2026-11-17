@@ -11793,7 +11793,7 @@ const graphRendererPref = () => graphPrefP || (graphPrefP = inv("graph_renderer_
   const r = (p && p.renderer) || localStorage.getItem("opensidian.graphRenderer");
   return { renderer: r === "gl" || r === "2d" ? r : null, loseCtx: !!(p && p.lose_ctx), settleTrace: !!(p && p.settle_trace), security: (p && p.security) || null };
 }));
-// #144 toggle 5 (Settings › Security › WebGL): ui/security.js calls this when the effective value
+// #144 toggle 5 (Settings › Security › WebGL): the "security-webgl" event (security_set) calls this when the effective value
 // moves. The backend already flipped the webview's enable-webgl; every open graph re-opens at once
 // from its kept layout (loadActive = the tab-switch path) on the new draw path, and a cached GL
 // renderer is dropped so an off graph holds no context. Plugins see the change after a reload.
@@ -13324,6 +13324,7 @@ async function onVaultChanged(c) {
 }
 TAURI.event.listen("vault-changed", e => onVaultChanged(e.payload));
 TAURI.event.listen("vault-css-changed", e => onVaultCssChanged(e.payload));  // themefs item 6: hot reload
+TAURI.event.listen("security-webgl", () => window.opensidianGraphGl());   // #144 toggle 5: security_set moved the effective WebGL value
 // R31.1: a real OS drop arrives here, from Rust, never from a DOM drop event.
 // osdrop: the payload is [paths, x, y] (main.rs R31.1), x/y physical px in the webview
 TAURI.event.listen("drop-files", e => { const p = e.payload || []; attachDrop(p[0] || [], { x: p[1], y: p[2] }); });

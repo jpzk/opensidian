@@ -207,7 +207,8 @@ Format per toggle: **boundary** (what actually refuses), **files**, **visible st
   available there; other non-Linux desktops log "not enforced".
 - **Graph (operator decision: switches at once):** `graph_renderer_pref` answers
   `renderer: "2d"` + `security: "WebGL is off (Settings › Security › WebGL)"` while off;
-  `ui/security.js` calls `window.opensidianGraphGl()` when a set moves the effective value,
+  `security_set` emits `security-webgl` when the effective value moves (whoever called it),
+  and `ui/main.js` answers with `window.opensidianGraphGl()`,
   which drops the cached preference and GL renderer and re-opens every open graph from its
   kept layout (`loadActive`, the tab-switch path). The perf mark names the reason
   `security:webgl-off`; the census adds `[glsec:webgl-off]` next to `[gl:2d]` (absent
@@ -216,7 +217,7 @@ Format per toggle: **boundary** (what actually refuses), **files**, **visible st
   its 2D path, so there is nothing to refuse in the graph view.
 - **Files:** `security.rs` (`PAGE_WEBGL`, `webgl_change`, `webgl_off_text`, report),
   `main.rs` (`sec_webgl`, page window, `security_set`, `graph_renderer_pref`),
-  `ui/main.js` (`opensidianGraphGl`, reason, census), `ui/security.js`.
+  `ui/main.js` (`opensidianGraphGl` + event listener, reason, census), `ui/security.js` (row text).
 - **T3 probe `secwebgl`:** off → probe plugin gets `null` for all three names, graph
   census `[gl:2d] [glsec:webgl-off]`; live: on at launch, the graph draws `[gl:gl]`, the
   probe turns the setting off without a reload → graph `[gl:2d]` at once and a fresh

@@ -4430,11 +4430,13 @@ async fn security_set(win: tauri::Window, field: String, on: bool) -> Result<ser
     // toggle 5 live: WebGL itself, HTML canvas (forces it off) — the webview follows at once
     let applied = security::PAGE_WEBGL.load(std::sync::atomic::Ordering::SeqCst);
     if let Some(gl) = security::webgl_change(&security::effective(&cfg_value()), applied) {
-        use tauri::Manager;
+        use tauri::{Emitter, Manager};
         match win.app_handle().get_webview_window(win.label()) {
             Some(w) => sec_webgl(&w, gl),
             None => eprintln!("[sec] webgl={gl}: no webview window {}", win.label()),
         }
+        // whoever moved it (the pane, or a script calling the command): the page's graphs follow
+        let _ = win.emit("security-webgl", gl);
     }
     Ok(security::report(&cfg_value()))
 }
@@ -9154,7 +9156,7 @@ mod tests {
         let body = &src[set..set + src[set..].find("\n}\n").expect("end")];
         let w = body.find("security::webgl_change(").expect("security_set does not re-apply WebGL");
         assert!(body.find("cfg_update(").expect("write") < w, "re-applied before the value is written");
-        assert!(body[w..].contains("sec_webgl(&w, gl)"));
+        assert!(body[w..].contains("sec_webgl(&w, gl)") && body[w..].contains("win.emit(\"security-webgl\", gl)"), "no live webview change / graph event");
         let pref = src.find("fn graph_renderer_pref()").expect("pref");
         let pb = &src[pref..pref + src[pref..].find("\n}\n").expect("end")];
         assert!(pb.contains("security::webgl_off_text()") && pb.contains("Some(\"2d\".to_string())"), "{pb}");
