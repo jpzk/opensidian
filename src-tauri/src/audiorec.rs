@@ -255,6 +255,9 @@ pub fn save(
         return Err("invalid clock".into());
     }
     let note = note.filter(|n| !n.is_empty());
+    // #197: MediaRecorder's live WebM has no Duration; write it now that the whole file is known
+    let fixed = crate::webmdur::with_duration(bytes);
+    let bytes = fixed.as_deref().unwrap_or(bytes);
     crate::pasteimg::write_into(root, note, &format!("Recording {stamp}"), "webm", bytes, attach_cfg, md_links, taken).map_err(|e| match e {
         crate::pasteimg::PasteErr::NoNote => "the note the recording belongs to is gone".into(),
         crate::pasteimg::PasteErr::Io(m) => format!("the recording could not be saved ({m})"),

@@ -19,6 +19,7 @@ use tauri::State;
 
 mod appid;
 mod audiorec; // #116: Audio recorder core plugin — the mic gate (audio-only, armed) and the save
+mod webmdur; // #197: a saved recording gets the Duration a live WebM muxer could not write
 mod builtins;
 mod callout; // #59: Obsidian callouts in the reading render
 use opensidian_lib::canvasfs;
