@@ -3651,6 +3651,10 @@ struct Mention {
     len: u32,
     /// the mention's line, trimmed to 200 chars for the pane
     text: String,
+    /// issue #178: this hit inside `text` in UTF-16 units (what the pane's JS slices by), so each row
+    /// marks ITS occurrence like stock 1.13.7, not the first one on the line; None = not inside `text`
+    mcol: Option<u32>,
+    mlen: u32,
 }
 
 /// R10.5 Backlinks pane "Unlinked mentions": every other note's plain-text
@@ -3678,8 +3682,16 @@ fn unlinked_in(ix: &Index, name: &str) -> Vec<Mention> {
         // one line table per note, not a lines().nth() walk per hit (editordos #12)
         let lines: Vec<&str> = c.lines().collect();
         for (line, col, len) in hits {
-            let text = lines.get(line as usize).copied().unwrap_or("").trim().chars().take(200).collect();
-            out.push(Mention { note: n.to_string(), line, col, len, text });
+            let raw = lines.get(line as usize).copied().unwrap_or("");
+            let text: String = raw.trim().chars().take(200).collect();
+            // issue #178: col/len are BYTES of the untrimmed line; the pane marks `text` (trimmed, UTF-16)
+            let lead = raw.len() - raw.trim_start().len();
+            let (a, b) = (col as usize, (col + len) as usize);
+            let (mcol, mlen) = match (raw.get(lead.min(a)..a), raw.get(a..b)) {
+                (Some(pre), Some(hit)) if a >= lead => (Some(pre.encode_utf16().count() as u32), hit.encode_utf16().count() as u32),
+                _ => (None, 0),
+            };
+            out.push(Mention { note: n.to_string(), line, col, len, text, mcol, mlen });
         }
     }
     out
@@ -8296,6 +8308,30 @@ mod tests {
         let ix = Index::build(&root);
         let hits: Vec<_> = ix.docs().flat_map(|(n, c, _)| mentions_in(c, "Deep Note").into_iter().map(move |h| (n.to_string(), h))).collect();
         assert_eq!(hits, [("A".to_string(), (0, 4, 9))]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// issue #178: each unlinked-mention row carries ITS hit inside the trimmed pane text (UTF-16), so
+    /// row 2 of "Fooz one, then Fooz two" marks the 2nd Fooz and "[[Fooz]] and Fooz" marks the plain one
+    #[test]
+    fn unlinked_mention_rows_mark_their_own_occurrence() {
+        let root = tmp_vault("um178");
+        fs::write(root.join("Fooz.md"), "# f").unwrap();
+        fs::write(root.join("U1.md"), "[[Fooz]] and Fooz").unwrap();
+        fs::write(root.join("U2.md"), "   Fooz one, then Fooz two").unwrap();
+        fs::write(root.join("U3.md"), "äé fooz").unwrap();
+        let ix = Index::build(&root);
+        let mut got: Vec<_> = unlinked_in(&ix, "Fooz")
+            .into_iter()
+            .map(|m| {
+                let u: Vec<u16> = m.text.encode_utf16().collect();
+                let a = m.mcol.unwrap() as usize;
+                (m.note, m.mcol.unwrap(), String::from_utf16(&u[a..a + m.mlen as usize]).unwrap())
+            })
+            .collect();
+        got.sort();
+        let w = |n: &str, c: u32, s: &str| (n.to_string(), c, s.to_string());
+        assert_eq!(got, [w("U1", 13, "Fooz"), w("U2", 0, "Fooz"), w("U2", 15, "Fooz"), w("U3", 3, "fooz")]);
         let _ = fs::remove_dir_all(&root);
     }
 
