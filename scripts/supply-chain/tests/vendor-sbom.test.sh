@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# vendor-sbom.sh: passes on the repo; fails on an unlisted file and on a flipped byte in each
-# vendored file. Scratch copies only (mktemp), the tree is never modified.
+# vendor-sbom.sh: on the repo it emits valid CycloneDX 1.6 (jq -e) built from vendor.lock.json,
+# with mathjax, pdfjs-dist, prismjs, moment and every non-dev package of the committed
+# CodeMirror package-lock.json; it emits NOTHING and exits non-zero when vendor-verify fails
+# (flipped byte, VENDOR.md back, unlisted file). Scratch copies only (mktemp). Needs network
+# (vendor-verify.sh talks to the npm registry).
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd); root=$(cd "$here/../.." && pwd)
 s=$here/vendor-sbom.sh; t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
@@ -9,30 +12,34 @@ fails=0
 ok()  { echo "ok   $*"; }
 bad() { echo "FAIL $*"; fails=1; }
 
-out=$("$s") && jq -e '.bomFormat=="CycloneDX" and .specVersion=="1.6"
-   and ([.components[].purl] | (index("pkg:npm/mathjax@3.2.2") != null) and (index("pkg:npm/pdfjs-dist@6.3.289") != null)
-        and (index("pkg:npm/prismjs@1.30.0") != null) and (index("pkg:npm/moment@2.30.1") != null))
-   and ([.components[] | select(.name | startswith("@codemirror/"))] | length) >= 11' <<<"$out" >/dev/null \
-  && ok "repo: CycloneDX 1.6 with mathjax/pdfjs-dist/prismjs/moment/codemirror ($(jq '.components|length' <<<"$out") components)" \
-  || bad "repo run"
+pl=$root/ui/vendor/codemirror/build/package-lock.json
+want=$(jq -c '[.packages | to_entries[] | select(.key != "" and (.value.dev // false) == false)
+               | {n: (.key | sub("^.*node_modules/"; "")), v: .value.version}] | sort' "$pl")
+if SOURCE_DATE_EPOCH=0 "$s" >"$t/bom.json" 2>"$t/err"; then
+  if jq -e --argjson want "$want" '
+       .bomFormat == "CycloneDX" and .specVersion == "1.6" and .version == 1
+       and (.metadata.timestamp == "1970-01-01T00:00:00Z")
+       and ([.components[].purl // empty] as $p
+            | all("pkg:npm/mathjax@3.2.2", "pkg:npm/pdfjs-dist@6.3.289",
+                  "pkg:npm/prismjs@1.30.0", "pkg:npm/moment@2.30.1"; . as $x | $p | index($x)))
+       and ([.components[] | select(.properties // [] | map(.value) | index("ui/vendor/codemirror/build/package-lock.json"))
+             | {n: .name, v: .version}] | sort) == $want
+       and ([.components[] | select(.name | test("esbuild"))] | length) == 0
+       and ([.components[] | .hashes | length > 0] | all)
+       and ([.components[]."bom-ref"] | length == (unique | length))
+       and (.dependencies[] | select(.ref == "file:ui/vendor/codemirror/cm6.js") | .dependsOn | length) == ($want | length)
+     ' "$t/bom.json" >/dev/null; then
+    ok "repo: CycloneDX 1.6, $(jq '.components|length' "$t/bom.json") components ($(jq length <<<"$want") from codemirror package-lock)"
+  else bad "repo: SBOM content check (jq -e)"; fi
+else bad "repo run rc!=0: $(tail -3 "$t/err")"; fi
 
 fresh() { rm -rf "$t/v"; cp -a "$root/ui/vendor" "$t/v"; }
-flip() { # flip the low bit of the byte at offset $2 of file $1
-  local f=$1 off=$2 b
-  b=$(od -An -tu1 -j "$off" -N1 "$f" | tr -d ' ')
-  printf "$(printf '\\%03o' $(( b ^ 1 )))" | dd of="$f" bs=1 seek="$off" conv=notrunc status=none
+neg() { # $1 = label; expects rc!=0 and empty stdout
+  if VENDOR_DIR=$t/v "$s" >"$t/o" 2>/dev/null; then bad "$1 accepted"
+  elif [ -s "$t/o" ]; then bad "$1: rc!=0 but wrote stdout"
+  else ok "$1 -> non-zero, no SBOM"; fi
 }
-
-fresh; echo x >"$t/v/pdfjs/extra.js"
-VENDOR_DIR=$t/v "$s" >/dev/null 2>&1 && bad "unlisted file accepted" || ok "unlisted ui/vendor/pdfjs/extra.js -> non-zero"
-fresh; echo x >"$t/v/stray.js"
-VENDOR_DIR=$t/v "$s" >/dev/null 2>&1 && bad "unlisted top-level file accepted" || ok "unlisted ui/vendor/stray.js -> non-zero"
-
-while IFS= read -r f; do
-  case $f in */VENDOR.md|*/SHA256SUMS) continue;; esac
-  fresh; sz=$(stat -c %s "$t/v/$f"); flip "$t/v/$f" $(( sz / 2 ))
-  VENDOR_DIR=$t/v "$s" >/dev/null 2>&1 && bad "flipped byte in $f accepted" || ok "flipped byte in $f -> non-zero"
-done <<EOF_LS
-$(cd "$root/ui/vendor" && find . -type f | sed 's|^\./||' | sort)
-EOF_LS
+fresh; printf 'x' | dd of="$t/v/pdfjs/pdf.min.mjs" bs=1 seek=1000 conv=notrunc status=none; neg "flipped byte in pdfjs/pdf.min.mjs"
+fresh; echo prose >"$t/v/pdfjs/VENDOR.md"; neg "pdfjs/VENDOR.md added back"
+fresh; echo x >"$t/v/stray.js"; neg "unlisted ui/vendor/stray.js"
 exit $fails
