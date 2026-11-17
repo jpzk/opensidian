@@ -206,11 +206,14 @@ pub fn forced_by(stored: Sec, eff: &Eff, f: &str) -> Option<&'static str> {
     if sv == ev {
         return None;
     }
+    // toggle 12: a field the running lockdown moved is greyed as "lockdown" (JIT included: it is
+    // restart-bound, but the latched lockdown is why it differs); lockdown's own two fields can
+    // only differ while a restart is pending
+    if eff.lockdown && !matches!(f, "lockdown" | "lockdownClipboard") {
+        return Some("lockdown");
+    }
     if RESTART_BOUND.contains(&f) {
         return Some("restart");
-    }
-    if eff.lockdown {
-        return Some("lockdown");
     }
     match f {
         "remoteMedia" | "pluginNet" if eff.sec.offline => Some("offline"),
@@ -582,6 +585,35 @@ pub fn csp_canvas(csp: &str, on: bool) -> String {
         .join("; ")
 }
 
+
+/* toggle 12 — Lockdown mode (docs §12). The overlay itself is effective_with above; these are
+   the pieces outside it: (a) the trust wrapper — under the LATCHED lockdown every vault reads
+   restricted (plugins::is_trusted_key asks `trust_blocked()` first; the plugins_trusted
+   entries stay on disk and apply again once lockdown is off and the app restarted);
+   (b) the restricted CSP WITHOUT 'wasm-unsafe-eval' (#184), whatever #184 decides for normal
+   restricted pages; (c) the visible marker text (status bar + window title). */
+pub const LOCKDOWN_MARK: &str = "Lockdown";
+
+/// (a): true while the process was started with lockdown on (restart-bound, never live)
+pub fn trust_blocked() -> bool {
+    booted().is_some_and(|b| b.lockdown)
+}
+
+/// (b): drop 'wasm-unsafe-eval' from script-src while lockdown is on; byte-identical otherwise
+pub fn csp_lockdown(csp: &str, lockdown: bool) -> String {
+    if !lockdown {
+        return csp.to_string();
+    }
+    csp.split(';')
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(|d| match d.split_whitespace().next().unwrap_or("") {
+            "script-src" => d.split_whitespace().filter(|t| *t != "'wasm-unsafe-eval'").collect::<Vec<_>>().join(" "),
+            _ => d.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
 /// the user script (every frame, document start). Built from Rust data only; the refusal text
 /// is the toggle's sentence, also published read-only as window.opensidianCanvasOff so the
 /// app's own canvas users (graph, export, paste) show a placeholder naming the switch.
@@ -1007,6 +1039,10 @@ mod tests {
                 assert_eq!(e.sec.field(f), Some(*strict), "{f} not strict under lockdown");
             }
         }
+        // the pane greys every row lockdown moved — JIT too (restart-bound, but lockdown is the reason)
+        assert_eq!(forced_by(stored, &e, "jit"), Some("lockdown"));
+        assert_eq!(forced_by(stored, &e, "remoteMedia"), Some("lockdown"));
+        assert_eq!(forced_by(stored, &e, "webgl"), None, "stored already strict: nothing forced");
         assert!(e.sec.app_clipboard, "9 is not forced off without the checkbox");
         stored.lockdown_clipboard = true;
         assert!(!effective_with(stored, Some(stored)).sec.app_clipboard, "9 off with the checkbox");
@@ -1185,5 +1221,18 @@ mod tests {
         let le = effective_with(l, Some(l));
         assert!(["mathjax", "prism", "mermaid"].iter().all(|f| engine_refusal(&le, &format!("/vendor/{f}/x.js")).is_some()), "lockdown turns all three off");
         assert_eq!(norm_path("/a/%zz/../b%2"), "/a/b%2", "malformed escapes stay literal");
+    }
+
+    /// #144 toggle 12: the lockdown CSP drops 'wasm-unsafe-eval' from script-src only; off
+    /// leaves the header byte-identical
+    #[test]
+    fn lockdown_csp_drops_wasm_only() {
+        let h = "default-src 'self'; script-src 'self' opensidian-plugin: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; worker-src 'self'";
+        assert_eq!(csp_lockdown(h, false), h);
+        let l = csp_lockdown(h, true);
+        assert_eq!(l, "default-src 'self'; script-src 'self' opensidian-plugin:; style-src 'self' 'unsafe-inline'; worker-src 'self'");
+        assert!(!l.contains("wasm"));
+        // nothing else is touched (same directives, same order)
+        assert_eq!(l.split("; ").count(), h.split("; ").count());
     }
 }

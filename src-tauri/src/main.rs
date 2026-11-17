@@ -211,6 +211,28 @@ fn bind_vault_boot(v: &Vault, p: &Path, lock_dir: &Path) -> Result<(), BindErr> 
     }
     Ok(())
 }
+/// #144 toggle 12 "Restart now": the old window (`restart`, the pid its --switch token names)
+/// holds the vault lock until it exits right after spawning us. While THAT pid is alive a busy
+/// lock is waited for (bounded, RESTART_LOCK_WAIT); once it is gone one last try decides. Any
+/// other boot (no restart token) keeps the immediate refusal.
+const RESTART_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+fn bind_vault_boot_after(v: &Vault, p: &Path, lock_dir: &Path, restart: Option<u32>) -> Result<(), BindErr> {
+    let t0 = std::time::Instant::now();
+    loop {
+        match bind_vault_boot(v, p, lock_dir) {
+            Err(BindErr::Lock(vaultlock::LockErr::Busy(_))) if restart.is_some_and(spawn::alive) && t0.elapsed() < RESTART_LOCK_WAIT => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(BindErr::Lock(vaultlock::LockErr::Busy(_))) if restart.is_some() && t0.elapsed() < RESTART_LOCK_WAIT => {
+                // the old window just exited: the kernel dropped its flock, one last try
+                eprintln!("[sec] restart: pid={} gone after {}ms, taking the vault", restart.unwrap_or(0), t0.elapsed().as_millis());
+                return bind_vault_boot(v, p, lock_dir);
+            }
+            r => return r,
+        }
+    }
+}
+
 /// census C4 (make-md): an opened vault always carries `.obsidian/app.json` —
 /// stock materializes it on open, so a plugin that reads it straight through
 /// the adapter (make-md: adapter.read(configDir + "/app.json")) gets `{}` on a
@@ -2541,7 +2563,10 @@ fn switch_ready(app: tauri::AppHandle, v: State<Vault>) {
 fn spawn_checked(p: &Path, sw: Option<&spawn::Switch>) -> Result<u32, String> {
     vault_rules(p)?;
     if let Ok(c) = p.canonicalize() {
-        if vaultlock::held_in(&vaultlock::env_lock_dir(), &c) {
+        // #144 toggle 12 "Restart now": the window restarting onto its own vault still holds
+        // the lock; its child waits for it (boot) only while the pid the token names lives
+        let restart = sw.and_then(|s| spawn::restart_of(&s.token)).is_some_and(spawn::alive);
+        if !restart && vaultlock::held_in(&vaultlock::env_lock_dir(), &c) {
             return Err(format!("{} is {}", p.display(), vaultlock::DUP_MSG));
         }
     }
@@ -4229,7 +4254,12 @@ fn page_csp(h: &tauri::AppHandle, res: &mut tauri::http::Response<std::borrow::C
     // #144 toggle 4 layer 2: off drops opensidian-img: (img-src) and blob: (media-src)
     let media = eff.sec.vault_media;
     // #144 toggle 6 CSP layer: off drops blob: from worker-src
-    let csp = security::csp_canvas(&security::csp_media(&security::csp_remote(&csp_by_trust(&base, trusted), remote), media), eff.sec.canvas);
+    // #144 toggle 12: lockdown (trusted is already false there: plugins::is_trusted_key) also
+    // drops 'wasm-unsafe-eval' from the restricted header
+    let csp = security::csp_lockdown(
+        &security::csp_canvas(&security::csp_media(&security::csp_remote(&csp_by_trust(&base, trusted), remote), media), eff.sec.canvas),
+        eff.lockdown,
+    );
     match tauri::http::HeaderValue::from_str(&csp) {
         Ok(v) => {
             res.headers_mut().insert("Content-Security-Policy", v);
@@ -4247,6 +4277,7 @@ fn page_csp(h: &tauri::AppHandle, res: &mut tauri::http::Response<std::borrow::C
     eprintln!("[csp] page trusted={trusted} Content-Security-Policy: {}", res.headers()["Content-Security-Policy"].to_str().unwrap_or("?"));
     eprintln!("[sec] page remoteMedia={remote}");
     eprintln!("[sec] page vaultMedia={media}");
+    eprintln!("[sec] page lockdown={}", eff.lockdown);
 }
 
 /* ---- cp-unrestricted: synchronous fs for plugins (fs.existsSync, readFileSync, ...).
@@ -4392,6 +4423,8 @@ fn plugins_state_of(root: &Path) -> serde_json::Value {
         // which CSP the loaded page got (page_csp): eval allowed or not
         "pageEval": PAGE_EVAL.load(std::sync::atomic::Ordering::SeqCst),
         "trusted": plugins::is_trusted(&cfg_value(), root),
+        // #144 toggle 12: why a trusted vault reads restricted right now
+        "lockdown": security::trust_blocked(),
         "enabled": plugins::enabled_ids(root),
         "installed": plugins::installed(root),
     })
@@ -4438,6 +4471,11 @@ async fn plugins_set(
         let life = desk_proc::lifecycle();
         desk_proc::trust_epoch(&life)
     };
+    // #144 toggle 12: under lockdown every vault is restricted (plugins::is_trusted_key); a trust-ON
+    // would only be written and not apply, so it is refused before anything is asked or written
+    if trusted == Some(true) && security::trust_blocked() {
+        return Err(format!("turning restricted mode off: every vault is restricted while lockdown is on {}", security::named("lockdown")));
+    }
     // P1 (PR #42): every ON write carries `seen`, also when the vault was already trusted and
     // nothing is asked — a trust-OFF landing after the is_trusted read makes it EAGAIN
     let (ask, carries) = desk_proc::trust_plan(trusted == Some(true), seen, || plugins::is_trusted(&cfg_value(), &root));
@@ -4594,6 +4632,37 @@ async fn spawn_allow_revoke(vault: String, plugin: String, program: String) -> R
 #[tauri::command]
 fn security_get() -> serde_json::Value {
     security::report(&cfg_value())
+}
+
+/* #144 toggle 12 "Restart now" (also JIT / canvas "Applies after restart"): a switch onto THIS
+   window's own vault. The UI has flushed every buffer (leaveVault) before calling. The child
+   gets this window's rect and a restart token naming this pid (spawn::restart_token): the
+   spawner's lock probe lets it through and the child waits for our lock (bind_vault_boot_after)
+   — so this process exits as soon as the child exists, not after it is ready. Refused while
+   nothing waits for a restart: page code cannot bounce the app at will. */
+#[tauri::command]
+async fn security_restart(app: tauri::AppHandle, win: tauri::Window, v: State<'_, Vault>) -> Result<u32, String> {
+    let pending = security::report(&cfg_value())["restartPending"].as_array().map_or(0, Vec::len);
+    if pending == 0 {
+        return Err("no Security setting is waiting for a restart".into());
+    }
+    let p = cur_vault(&v).ok_or("no vault is open in this window")?;
+    let r = switch_rect(&win)?;
+    let mut sw = switch_of(&win)?;
+    sw.token = spawn::restart_token();
+    sw.check()?;
+    let (p2, sw2) = (p.clone(), sw.clone());
+    let pid = tauri::async_runtime::spawn_blocking(move || match spawner::client() {
+        Some(c) => c.open(&p2, Some(&sw2)),
+        None => spawn_checked(&p2, Some(&sw2)),
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    eprintln!("[sec] restart: pid={} hands {} to pid={pid} token={}", std::process::id(), p.display(), sw.token);
+    // app.exit fires no CloseRequested: save this vault's rect here (as await_switch does)
+    winsize_save(&win, r, "restart");
+    app.exit(0);
+    Ok(pid)
 }
 
 #[tauri::command]
@@ -7753,7 +7822,8 @@ fn main() {
     if let Some(p) = &init {
         // vaultbleed B: a vault already open in another process is refused —
         // no second backend, no window; the other window stays the only one.
-        match bind_vault_boot(&vault, p, &vaultlock::env_lock_dir()) {
+        let restart = switched.as_ref().and_then(|s| spawn::restart_of(&s.token));
+        match bind_vault_boot_after(&vault, p, &vaultlock::env_lock_dir(), restart) {
             Ok(()) => {}
             Err(BindErr::Lock(e @ vaultlock::LockErr::Busy(_))) => {
                 eprintln!("opensidian: {e}; not starting a second backend on it (exit {})", vaultlock::DUP_EXIT);
@@ -7969,7 +8039,7 @@ fn main() {
             read_workspace, write_workspace, wsm_list, wsm_get, wsm_op,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
-            plugins_state, plugins_set, plugin_io, plugin_vfs, desk_proc_spawn, spawn_allow_list, spawn_allow_revoke, security_get, security_set, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
+            plugins_state, plugins_set, plugin_io, plugin_vfs, desk_proc_spawn, spawn_allow_list, spawn_allow_revoke, security_get, security_set, security_restart, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
             desk_net_listen, desk_net_accept, desk_net_close, desk_sock_read, desk_sock_write, desk_sock_end, desk_sock_destroy,
             desk_http_request, desk_shell,
             plugin_store::store_list, plugin_store::store_detail, plugin_store::store_install, plugin_store::store_uninstall,
@@ -9521,6 +9591,33 @@ mod tests {
         assert!(wb[started..].contains(concat!("REALM_PLUGIN", ".store(false")), "main-frame load clears the taint");
         assert!(wb.contains("sec_clip_gate(&w)") && wb.contains("sec_clip(&w, security::effective"), "native gate wired at creation");
         assert_eq!(src.matches(concat!("security::", "clip_check(")).count(), 1, "toggles 8 + 9 have one reader");
+    }
+
+    /// #144 toggle 12: lockdown's pieces outside the overlay are wired — every trust check reads
+    /// restricted (is_trusted_key asks first), a trust-ON is refused, the page CSP drops wasm,
+    /// "Restart now" is registered, refused while nothing waits for a restart, and only a
+    /// restart token lets the child past the lock probe / wait for the old window's lock
+    #[test]
+    fn lockdown_is_wired_through_trust_csp_and_restart() {
+        let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
+        let body = |head: &str| -> String {
+            let a = src.find(head).unwrap_or_else(|| panic!("{head}"));
+            src[a..a + src[a..].find("\n}\n").expect("end")].to_string()
+        };
+        let pl = include_str!("plugins.rs");
+        let k = pl.find("pub fn is_trusted_key(").expect("is_trusted_key");
+        let kb = &pl[k..k + pl[k..].find("\n}\n").expect("end")];
+        assert!(kb.find("crate::security::trust_blocked()").expect("no lockdown check") < kb.find("TRUST_KEY").expect("flag read"), "lockdown after the flag");
+        let ps = body("async fn plugins_set(");
+        assert!(ps.find("security::trust_blocked()").expect("trust-ON not refused") < ps.find("consent::admit()").expect("admit"));
+        assert!(body("fn page_csp(").contains("eff.lockdown,"), "page CSP ignores lockdown");
+        let rs = body("async fn security_restart(");
+        assert!(rs.find("restartPending").expect("pending gate") < rs.find(concat!("spawn::restart_", "token()")).expect("token"));
+        assert!(src[src.find("generate_handler![").unwrap()..].contains("security_set, security_restart,"), "not registered");
+        assert!(body("fn spawn_checked(").contains("spawn::restart_of(&s.token)).is_some_and(spawn::alive)"));
+        let m = body("\nfn main() {");
+        assert!(m.contains("bind_vault_boot_after(&vault, p, &vaultlock::env_lock_dir(), restart)"), "boot does not wait for a restart");
+        assert_eq!(src.matches(concat!("spawn::restart_", "token()")).count(), 1, "restart tokens are minted by security_restart only");
     }
 
     #[test]

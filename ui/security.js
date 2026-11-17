@@ -52,6 +52,7 @@
   function publish() {
     if (!R) return;
     snap();
+    marker();
     cspAgree();
   }
   /* toggle 1 layer 2: the page CSP is fixed at load (main.rs page_csp). When the effective
@@ -88,6 +89,71 @@
     console.warn("[sec] reloading the page into the CSP of Load external resources=" + !!R.effective.remoteMedia + " Render media=" + !!R.effective.vaultMedia + " HTML canvas=" + !!R.effective.canvas + (stale.length ? " (unloading " + stale.join(",") + ")" : ""));
     Promise.resolve(inv("save_debounce_ms")).catch(() => 0)
       .then(ms => setTimeout(() => location.reload(), (+ms || 0) + 300));
+  }
+  /* toggle 12 — Lockdown mode. Turning it ON raises every protection (security_set writes it at
+     once), so this page dialog is the issue's confirm: what breaks, "also turn off the clipboard",
+     restart needed + "Restart now". Turning it OFF lowers them: security_set asks the NATIVE
+     confirm, then the row offers "Restart now". Restart = security_restart after leaveVault()
+     flushed every buffer (the same flush a vault switch does). Census: [secl:<latched 1|0>/
+     <stored 1|0>/<dialog open 1|0>]. */
+  const LD_BREAKS = "Breaks on purpose until you turn it off: community plugins (in every vault), the graph, PDFs, images, audio and video embeds, math, code highlighting, Mermaid diagrams, the plugin / theme store and the update check. Notes, links, search, backlinks, canvas boards (text cards) and editing keep working. Your own Security values are kept and come back when lockdown is off.";
+  let ldOpen = false;
+  async function restartNow() {
+    try {
+      if (typeof leaveVault === "function") {
+        const lost = await leaveVault();
+        if (lost && lost.length) { if (typeof say === "function") say("Not restarting: " + lost.join(", ") + " could not be saved."); return; }
+      }
+      document.body.inert = true;
+      await inv("security_restart");
+    } catch (e) {
+      document.body.inert = false;
+      console.error("[sec] restart:", e);
+      if (typeof say === "function") say("Restart: " + String(e && e.message || e));
+    }
+  }
+  function lockdownDialog() {
+    if (ldOpen) return;
+    ldOpen = true;
+    const box = el("div"); box.id = "ldbox"; box.className = "modal-container";
+    const card = el("div", "modal"); card.id = "ldcard"; box.appendChild(card);
+    card.appendChild(el("div", "ldtitle", "Turn on Lockdown mode?"));
+    card.appendChild(el("div", "ldq", LD_BREAKS));
+    const lab = el("label", "ldclip"); const cb = el("input"); cb.type = "checkbox"; cb.id = "ld-clip";
+    cb.checked = !!(R && R.stored.lockdownClipboard);
+    lab.append(cb, document.createTextNode(" Also turn off the clipboard (copy, cut and paste stop working in the app too)"));
+    card.appendChild(lab);
+    card.appendChild(el("div", "ldsay", "Lockdown applies after a restart: the JavaScript JIT is read only when the app starts."));
+    const btns = el("div", "ldbtns"); card.appendChild(btns);
+    const no = el("button", "mod-cancel", "Cancel"); no.id = "ld-no";
+    const later = el("button", "", "Turn on, restart later"); later.id = "ld-later";
+    const now = el("button", "mod-cta", "Turn on and restart now"); now.id = "ld-now";
+    btns.append(no, later, now);
+    const close = () => { ldOpen = false; box.remove(); };
+    const go = async restart => {
+      close();
+      if (cb.checked !== !!R.stored.lockdownClipboard) await set("lockdownClipboard", cb.checked);
+      await set("lockdown", true);
+      if (restart && R && R.stored.lockdown) restartNow();
+    };
+    no.onclick = close; later.onclick = () => go(false); now.onclick = () => go(true);
+    box.onkeydown = ev => { if (ev.key === "Escape") { ev.stopPropagation(); close(); } };
+    document.body.appendChild(box);
+    now.focus();
+  }
+  /* the visible marker while the process RUNS in lockdown (latched): a status-bar item + the
+     window title (main.js lockTitle) */
+  function marker() {
+    if (!R) return;
+    window.__osLockdown = !!R.lockdown;
+    let m = document.getElementById("seclock");
+    if (R.lockdown && !m) {
+      m = el("div", "status-bar-item", "Lockdown"); m.id = "seclock";
+      m.title = "Lockdown mode is on (Settings › Security › Lockdown mode)";
+      document.body.appendChild(m);
+    }
+    if (m) m.hidden = !R.lockdown;
+    try { if (typeof pushTitle === "function" && tWant) pushTitle(tWant); } catch (_) {}
   }
   async function refresh() { R = await inv("security_get"); publish(); return R; }
   async function set(f, on) {
@@ -131,7 +197,13 @@
         info.appendChild(el("div", "slabel", R.names[f] || f));
         info.appendChild(el("div", "sdesc", desc));
         if (lock) info.appendChild(el("div", "sdesc ssecforced", "Forced " + ((invert ? !R.effective[f] : R.effective[f]) ? "on" : "off") + " by " + (WHY[forced] || forced) + "."));
-        if ((R.restartPending || []).includes(f)) info.appendChild(el("div", "sdesc ssecrestart", "Applies after restart."));
+        if ((R.restartPending || []).includes(f)) {
+          const rp = el("div", "sdesc ssecrestart", "Applies after restart. ");
+          const rb = el("button", "mod-cta ssecrestartbtn", "Restart now"); rb.dataset.sec = f;
+          rb.onclick = ev => { ev.stopPropagation(); restartNow(); };
+          rp.appendChild(rb);
+          info.appendChild(rp);
+        }
         if (f === "lockdown" && R.stored.lockdown) {
           const cb = el("label", "sdesc ssecclip");
           const box = el("input"); box.type = "checkbox"; box.checked = !!R.stored.lockdownClipboard;
@@ -140,7 +212,9 @@
           info.appendChild(cb);
         }
         r.appendChild(info);
-        r.appendChild(toggle(shown(f, invert), () => set(f, invert ? shown(f, invert) : !shown(f, invert)), lock));
+        // toggle 12: turning lockdown ON goes through its confirm (what breaks, clipboard, restart)
+        const press = f === "lockdown" && !R.stored.lockdown ? lockdownDialog : () => set(f, invert ? shown(f, invert) : !shown(f, invert));
+        r.appendChild(toggle(shown(f, invert), press, lock));
         card.appendChild(r);
         nRows++; if (lock) nForced++;
       }
@@ -148,9 +222,11 @@
     if (typeof updateTitle === "function") updateTitle();
   }
   function tok() {
-    if (!R || typeof settingsOpen === "undefined" || !settingsOpen || sPane !== "security") return "";
+    if (!R) return "";
+    const ld = " [secl:" + (R.lockdown ? 1 : 0) + "/" + (R.stored.lockdown ? 1 : 0) + "/" + (ldOpen ? 1 : 0) + "]";
+    if (typeof settingsOpen === "undefined" || !settingsOpen || sPane !== "security") return R.lockdown || ldOpen ? ld : "";
     const v = Object.keys(R.stored).map(f => f + "=" + (R.stored[f] ? 1 : 0) + (R.effective[f] ? 1 : 0)).join(",");
-    return " [secp:" + nRows + "/" + nForced + "/" + (R.restartPending || []).length + "] [secv:" + v + "]" + geo();
+    return " [secp:" + nRows + "/" + nForced + "/" + (R.restartPending || []).length + "] [secv:" + v + "]" + geo() + ld;
   }
   /* [secg:nav=<h>/<font>/<padT>/<padL>/<radius>/<same 1|0>,row=<padT>/<padB>,lbl=<font>,desc=<font>,tg=<w>x<h>]
      the painted chrome of the Security tab, read with getComputedStyle — the T3 phase compares it to
@@ -177,7 +253,7 @@
      presses; a script's change to them applies at the next load, as before. */
   try {
     T.event.listen("security-changed", () => inv("security_get").then(r => {
-      R = r; snap();
+      R = r; snap(); marker();
       if (engineStale().length) cspAgree();
     }, () => {}));
   } catch (_) {}

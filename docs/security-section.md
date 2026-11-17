@@ -430,6 +430,23 @@ What (a) means concretely:
   each must report its surface off; the trusted vault boots `[plg:R]` (restricted); then lockdown off +
   restart → the vault boots trusted again and the earlier toggle values are intact.
 
+- **As built (toggle 12 commit):** overlay = `security::effective_with` (already in since the
+  storage commit). Trust wrapper = `plugins::is_trusted_key` asks `security::trust_blocked()`
+  (the LATCHED lockdown) first, so every caller — page CSP, plugin loader, desk_*, secrets —
+  reads restricted; `plugins_set` refuses a trust-ON naming lockdown before anything is asked
+  (the entries on disk are untouched). CSP = `security::csp_lockdown` drops `'wasm-unsafe-eval'`
+  in `page_csp` (log `[sec] page lockdown=`). Confirm = a page dialog (`#ldbox`, turning ON
+  raises every protection, so no native prompt is needed) with "Also turn off the clipboard",
+  the restart note, "Turn on, restart later" and "Turn on and restart now"; turning OFF keeps
+  the native "lower protection?" confirm, then the row's "Applies after restart." carries a
+  "Restart now" button (also for JIT / canvas). Restart = `security_restart`: refused while
+  `restartPending` is empty; a switch onto the window's OWN vault with a restart token naming
+  this pid (`spawn::restart_token`) — the spawner's lock probe lets only such a token through
+  while that pid lives, the child waits for the lock only while that pid lives
+  (`bind_vault_boot_after`, bounded 30 s), this process exits right after the spawn. Marker =
+  `#seclock` status item bottom-left + " — Lockdown" in the native window title (inserted
+  before the census tokens). Census `[secl:<latched>/<stored>/<dialog>]`.
+
 ## 2. Settings tab
 
 - A **Security** entry in the settings left nav, after "Community plugins" in the

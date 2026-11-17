@@ -2247,6 +2247,27 @@ span.is-flashing { background: var(--highlight-yellow) }
   border: 1px solid var(--color-red, #e5484d); pointer-events: auto; cursor: pointer }
 #arstatus::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--color-red, #e5484d) }
 #arstatus[hidden] { display: none }
+/* #144 toggle 12: the Lockdown marker (bottom-left status item, security.js marker) and its confirm
+   (the #delbox shape again, above the settings modal) */
+#seclock { position: fixed; left: 12px; bottom: 8px; z-index: 50; padding: 2px 10px; border-radius: 10px;
+  background: var(--bg-surface); color: var(--text-normal, inherit); font-size: 12px; font-weight: 600;
+  border: 1px solid var(--text-banner-error, #e5484d); pointer-events: auto }
+#seclock[hidden] { display: none }
+#ldbox { position: fixed; inset: 0; z-index: 80; background: var(--scrim);
+         display: flex; flex-direction: column; align-items: center; box-sizing: border-box;
+         padding: max(0px, min(120px, 100vh - 320px)) 0 8px }
+#ldcard { width: 480px; max-width: 92%; box-sizing: border-box; background: var(--bg-elevated);
+          border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px 16px;
+          box-shadow: 0 8px 30px var(--shadow-modal); color: var(--text-chrome) }
+#ldcard .ldtitle { font-size: 17px; font-weight: 600; margin-bottom: 10px }
+#ldcard .ldq, #ldcard .ldclip { font-size: 13px; line-height: 1.5; display: block }
+#ldcard .ldclip { margin-top: 10px; cursor: pointer }
+#ldcard .ldsay { font-size: 13px; line-height: 1.5; margin-top: 6px; color: var(--text-quiet) }
+#ldcard .ldbtns { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px }
+#ldcard .ldbtns button { box-sizing: border-box; height: 30px; border: 0; border-radius: 5px; padding: 0 12px;
+  background: var(--bg-button-plain); color: var(--bg-base); font-size: 13px; font-weight: 500; cursor: pointer }
+#ldcard .ldbtns button:focus { box-shadow: 0 0 0 2px var(--border-focus-ring) }
+.ssecrestartbtn { margin-left: 6px; height: 22px; padding: 0 8px; border: 0; border-radius: 4px; font-size: 12px; cursor: pointer }
 /* issue #44: the PDF view (a "pdf" leaf, main.js PDFV) — the same frame, filling the pane */
 .os-pv > .view-content.pdf-view { padding: 0; overflow: hidden; display: flex; flex-direction: column }
 .pdf-view > .pdf-embed { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; width: 100%;

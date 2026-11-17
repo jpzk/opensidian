@@ -4661,6 +4661,14 @@ function utBuild() {             // pane/focus census in the window title (headl
   wsTouch();   // R28.3: every mutation already funnels through here — arm the layout write
 }
 let tSending = false, tWant = "";
+/* #144 toggle 12: while the process runs in lockdown (latched at start; security.js sets
+   window.__osLockdown from security_get) the WINDOW title carries " — Lockdown", inserted
+   before the first census token so the tokens stay at the end. document.title is untouched. */
+function lockTitle(t) {
+  if (!window.__osLockdown) return t;
+  const i = t.indexOf(" [");
+  return i < 0 ? t + " — Lockdown" : t.slice(0, i) + " — Lockdown" + t.slice(i);
+}
 function pushTitle(t) {
   tWant = t;
   if (tSending) return;
@@ -4673,7 +4681,7 @@ function pushTitle(t) {
     if (tWant !== cur) pushTitle(tWant);
   };
   try {
-    TAURI.window.getCurrentWindow().setTitle(cur).catch(() => {}).then(fin);
+    TAURI.window.getCurrentWindow().setTitle(lockTitle(cur)).catch(() => {}).then(fin);
   } catch (e) { fin(); }
   setTimeout(fin, 500);
 }
