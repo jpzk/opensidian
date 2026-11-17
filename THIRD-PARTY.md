@@ -1127,7 +1127,7 @@ THE SOFTWARE.
 
 ### Prism 1.30.0
 
-**Used in:** `ui/vendor/prism/prism.js` (`loadPrism`, manual mode)
+**Used in:** `ui/vendor/prism/prism.js` + `ui/vendor/prism/prism-components.js` (every language component of the same release, #186) (`loadPrism`, manual mode; the app's fenced-code highlighting `ui/codehl.js`)
 **Upstream:** https://prismjs.com (npm `prismjs@1.30.0`)
 **Licence:** MIT. GPL-compatible. Full text: `ui/vendor/prism/LICENSE`, reproduced here.
 
