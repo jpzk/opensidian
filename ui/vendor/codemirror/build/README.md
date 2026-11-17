@@ -11,7 +11,7 @@ comes from these committed inputs, not from prose (issue #188).
   carries the same banner; its sha256 changed accordingly, old and new are in vendor.lock.json).
 - `build.sh`: NEW, a repo-local rewrite of the original recipe's build/check modes (the original
   drove a remote build box over ssh). `CMP=../cm6.js sh build.sh` rebuilds with
-  `npm ci --ignore-scripts` + esbuild and asserts byte identity; the opt-in `cm6-rebuild` job of
+  `npm ci --ignore-scripts` + esbuild and asserts byte identity; the opt-in `codemirror-rebuild` job of
   `.github/workflows/supply-chain.yml` runs it.
 - `package-lock.json` is the source of truth for the SBOM's CodeMirror components
   (`packages[*].version` + `integrity`; the 22 non-dev entries are bundled into cm6.js, the 27
