@@ -8569,19 +8569,21 @@ let AREC = null;
     if (!(typeof MR.isTypeSupported === "function" && MR.isTypeSupported(MIME)))
       return note("Audio recording is not available: GStreamer opusenc/webmmux missing.");
     st.busy = true; st.err = "";
+    let msg = "";   // a failed start's notice shows AFTER busy is cleared: the notice never appears with the recorder still busy
     try {
       const token = await tokP;
-      if (!token) return note("Audio recording is not available in this window.");
+      if (!token) { msg = "Audio recording is not available in this window."; return; }
       try { await call("audio_rec_start", { token }); }
       catch (e) {
         const m = errStr(e), n = errName(m);
-        if (n === "NotFoundError" || n === "OverconstrainedError" || n === "NotReadableError") return note("No microphone is connected.");
-        if (n === "NotAllowedError" || n === "SecurityError") { st.denied++; return note("Microphone access was denied."); }
-        if (n === "NotSupportedError") return note("Audio recording is not available: " + m.slice(n.length + 2));
-        return note("Audio recorder: " + m);
+        if (n === "NotFoundError" || n === "OverconstrainedError" || n === "NotReadableError") msg = "No microphone is connected.";
+        else if (n === "NotAllowedError" || n === "SecurityError") { st.denied++; msg = "Microphone access was denied."; }
+        else if (n === "NotSupportedError") msg = "Audio recording is not available: " + m.slice(n.length + 2);
+        else msg = "Audio recorder: " + m;
+        return;
       }
       st.rec = { t0: Date.now() }; st.t0 = st.rec.t0;
-    } finally { st.busy = false; paint(); }
+    } finally { st.busy = false; if (msg) note(msg); paint(); }
   }
   async function stop() {
     if (!st.rec || st.busy) return;
