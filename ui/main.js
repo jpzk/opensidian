@@ -3544,7 +3544,7 @@ async function wsmLoad(name) {
   }
   for (const h of groups()) {               // retire the panes being replaced (collapseGroup's teardown)
     if (h.sim) cancelAnimationFrame(h.sim);
-    h.simGen = 0;
+    h.simGen = 0; if (h.gwRelease) h.gwRelease();
     if (h.saveT) { clearTimeout(h.saveT); h.saveT = null; }
   }
   wsIds = {}; wsGrp = {}; wsExtra = null; wsSideRaw = {}; wsSide0 = {};
@@ -3688,6 +3688,11 @@ function wsmTok() {
    an iteration every time. */
 const OVF_SCROLL = "#tree,#sresults,#bmlist,.rlist,.lp,.preview,.editor,.ac," +
                    "#mlist,#p-dirs,#p-recent,#sbody,#snav,#spage,#hklist,#wsmlist";
+/* OVF_CLIP: chrome boxes that CLIP by design, like stock 1.13.7 `.workspace-ribbon { overflow: hidden }` (app.css):
+   when the window is shorter than the icon column, the icons that do not fit are cut off at the ribbon's own box,
+   never a scrollbar, never a spill. The box itself is still checked (viewport bounds, and sh+ the moment its
+   overflow is not hidden any more), but the walk does not descend: a clipped child cannot paint outside it. */
+const OVF_CLIP = "#ribbon";
 function ovfName(el) {              // short, stable selector for a failure message
   const c = (el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className) || "";
   const k = String(c).trim().split(/\s+/).filter(Boolean).slice(0, 2).map(x => "." + x).join("");
@@ -3742,7 +3747,7 @@ function ovfScan() {
       else if (r.bottom > vh + 1) why = "b" + Math.round(r.bottom) + ">" + vh;
       else if (r.left < -1) why = "l" + Math.round(r.left);
       else if (r.top < -1) why = "t" + Math.round(r.top);
-      const sub = walk(c);
+      const sub = c.matches(OVF_CLIP) ? 0 : walk(c);         // clip container: check the box, not its clipped contents
       if (why) {
         n++;
         // a LEAF offender is overflowed by a child the walk does not check
@@ -4745,7 +4750,7 @@ async function collapseGroup(g, via) {  // R6.5: closing the last tab removes th
   const parent = findParent(state.root, g);
   if (!parent) return;                        // lone root group: caller keeps it
   if (g.sim) cancelAnimationFrame(g.sim);     // stop the removed group's machinery
-  g.simGen = 0;                               // and retire its sim: a physics batch still in the Worker is dropped, not stepped on
+  g.simGen = 0; if (g.gwRelease) g.gwRelease();   // and retire its sim: a physics batch still in the Worker is dropped, not stepped on
   // tabclose: the SECOND unflushed path. This clears an armed save exactly like
   // dropTab does, and it is reachable with tabs still in the group (a drag that
   // moves the last tab out, :1837/:1844) — so the record is unconditional and
@@ -11776,7 +11781,7 @@ function showEditor(g) {
   g.graphOn = false; g.graphRefresh = null; g.graphRedraw = null; g.graphAnimate = null; g.graphAnimState = null; g.graphRc = null; cancelAnimationFrame(g.sim); g.graphRenderer = null;
   // retire the sim (startGraph's gen starts at 1): a physics batch still in the Worker lands nowhere and
   // posts no next one, so the kept layout stays the frame the user left, as when the loop was only a rAF
-  g.simGen = 0;
+  g.simGen = 0; if (g.gwRelease) g.gwRelease();
   if (g.ro) { g.ro.disconnect(); g.ro = null; }
   if (g.attrObs) { g.attrObs.disconnect(); g.attrObs = null; }
   perf.flush();                    // ship buffered graph_frame samples of the closed sim
@@ -12513,7 +12518,14 @@ async function startGraph(g, cfg) {
     perf.push("graph_draw", perf.now() - dT0, { renderer: glr ? "gl" : "2d", nodes: N.length, edges: gr.edges.length, ...gpu });
   }
   let firstFrame = true, running = false, dirty = true, shadeNow = false;
+  if (g.gwRelease) g.gwRelease();      // the sim this start retires gives its physics worker back
   const gen = ++simGen; g.simGen = gen;   // a newer startGraph on this canvas retires this sim
+  // gwRelease: a sim retired between batches (cancelAnimationFrame + simGen = 0, nothing in the Worker)
+  // never runs step() or onmessage again, so neither called gwPut: its Worker (a WebKit thread) stayed
+  // held by the dead closure for the life of the window, one per graph open+close. With a batch out,
+  // the landing sees the retired gen and puts the worker back itself (gwPut is a no-op while inflight).
+  const rel = () => { if (g.gwRelease === rel) g.gwRelease = null; gwPut(); };
+  g.gwRelease = rel;
   // graphperf: work the FIRST frame of a start would otherwise do inside the opening action's paint
   // (title census, span flush) runs after the next frame instead. A setTimeout queued from this rAF
   // would still land before the paint span's own setTimeout, so it is rAF -> setTimeout. Coalesced.

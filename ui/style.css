@@ -595,9 +595,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
        /* the wasp ring: a THEME that declares --frame-width/--frame-color paints it here; every other theme resolves to 0 (colour irrelevant at 0 width) — docs/palette-wasp/SOURCE.md "The frame" */
        border: var(--frame-width, 0) solid var(--frame-color, currentColor);
        background: var(--bg-base); color: var(--text-chrome) }
-/* R9.1 ribbon: fixed 44px icon strip, survives sidebar collapse */
+/* R9.1 ribbon: fixed 44px icon strip, survives sidebar collapse. overflow: hidden like stock 1.13.7
+   .workspace-ribbon: icons that do not fit a short window are clipped at the strip (R22, OVF_CLIP) */
 #ribbon { width: var(--ribbon-width, 44px); background: var(--bg-ribbon); flex-shrink: 0; display: flex;
-          flex-direction: column; align-items: center; gap: var(--size-4-2, 8px);
+          flex-direction: column; align-items: center; gap: var(--size-4-2, 8px); overflow: hidden;
           padding: var(--ribbon-padding, 10px 0) }
 #ribbon:has(~ #side[hidden]) { background-color: var(--ribbon-background-collapsed, var(--bg-ribbon)) }
 #ribbon button { background: none; color: var(--icon-color, var(--text-chrome-muted)); border: 0; padding: 5px;
