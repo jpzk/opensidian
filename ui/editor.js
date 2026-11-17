@@ -1174,6 +1174,7 @@ const Ed = {
      paragraph gains a whole "- [ ] ". The caret keeps its offset in the TEXT,
      so it shifts by exactly the bytes inserted before it. */
   toggleCheck(g, s) {
+    if (s.a.l !== s.b.l) return Ed.toggleCheckLines(g, s);   // #155
     const L = Ed.lines(g), l = s.b.l, line = L[l];
     if (line === undefined) return;
     const it = Ed.info(line);
@@ -1184,9 +1185,33 @@ const Ed = {
     else { L[l] = it.ind + it.qt + "- [ ] " + line.slice(it.pre.length); dc = 6; }
     Ed.after(g, l, s.b.c >= it.pre.length ? s.b.c + dc : s.b.c);
   },
+  /* #155: Ctrl+L over a SELECTION that spans lines acts on EVERY line it touches
+     (stock 1.13.7: "alpha\nbravo\ncharlie" all selected -> each line "- [ ] ").
+     Each line gets the single-line rule on its own (task flips, list item gains
+     "[ ] ", paragraph gains "- [ ] "); blank lines are left alone (UNMEASURED,
+     same call as listToggle [Q7]). ONE undo step; the selection keeps its text. */
+  toggleCheckLines(g, s) {
+    const L = Ed.lines(g), first = s.a.l, last = Math.min(s.b.l, L.length - 1);
+    const N = L.slice(), dc = [];                        // dc[l] = [col, bytes inserted there]
+    for (let l = first; l <= last; l++) {
+      const line = L[l];
+      if (line === undefined || !String(line).trim()) continue;
+      const it = Ed.info(line);
+      if (it.task) { const f = Ed.flipTask(line); if (f !== null) N[l] = f; dc[l] = [it.pre.length, 0]; }
+      else if (it.mk) { N[l] = it.pre + "[ ] " + line.slice(it.pre.length); dc[l] = [it.pre.length, 4]; }
+      else { N[l] = it.ind + it.qt + "- [ ] " + line.slice(it.pre.length); dc[l] = [it.pre.length, 6]; }
+    }
+    if (!dc.some(Boolean)) return;
+    Ed.snap(g, "task");                                  // ONE undo step
+    L.splice(0, L.length, ...N);
+    const map = p => { const t = dc[p.l]; return t && p.c >= t[0] ? { l: p.l, c: p.c + t[1] } : p; };
+    const a = map(s.a), b = map(s.b);
+    Ed.after(g, a.l, a.c);
+    Ed.extendTo(g, b.l, b.c);
+  },
   /* listtoggle R1-R5: "Toggle bullet list" / "Toggle numbered list" over a
      SELECTION (Obsidian 1.13.7 measured, docs/recon-listtoggle/README.md; spec
-     §4 frozen). Unlike toggleCheck this acts on EVERY line the selection
+     §4 frozen). Like toggleCheck over a selection (#155) this acts on EVERY line the selection
      touches — a selection ending at column 0 of line N still includes N [Q10].
      Ed.listToggle is PURE (lines + selection in -> lines + selection out, or
      null for a no-op) so the unit table (src-tauri/tests/listtoggle.{tsv,rs}, cargo test) can run
