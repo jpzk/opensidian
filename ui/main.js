@@ -5110,8 +5110,10 @@ function tabMenu(e, g, i, hdr) {
   // ---- group 2 (5 rows) ----
   if (!hdr) { pinRow(); linkRow(); }
   item("Backlinks in document", null, "Missing subsystem: an in-document backlinks section, appended to the BOTTOM OF THE NOTE PANE; ours is a right-sidebar pane (R27), a different surface");
-  item("Reading view", () => { closeMenu(); setMode(g, "reading"); }, null, tab.mode === "reading");     // WIRED: setMode (R38.10)
-  item("Source mode",  () => { closeMenu(); setMode(g, "source"); },  null, tab.mode === "source");      // WIRED: setMode — the ✓ is the R12.4 radio, now a marker element
+  // #179: both rows are TOGGLES, as stock 1.13.7: the checked Reading view goes back to editing in the
+  // sub-mode it left from (tab.src untouched), the checked Source mode goes back to Live Preview.
+  item("Reading view", () => { closeMenu(); setMode(g, tab.mode === "reading" ? (tab.src ? "source" : "livepreview") : "reading"); }, null, tab.mode === "reading");     // WIRED: setMode (R38.10)
+  item("Source mode",  () => { closeMenu(); setMode(g, tab.mode === "source" ? "livepreview" : "source"); },  null, tab.mode === "source");      // WIRED: setMode — the ✓ is the R12.4 radio, now a marker element
   // ---- group 3 (4 rows) ----
   sep();
   if (!hdr) item("Move to new window", null, DIS_WIN);
