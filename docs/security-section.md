@@ -225,10 +225,21 @@ Format per toggle: **boundary** (what actually refuses), **files**, **visible st
 
 ### 10 — Community plugins may start programs
 
-- **Boundary:** backend, before the consent dialog: `desk_proc_spawn` and `desk_shell`
-  return `EPERM` naming the plugin when off; no native dialog is created (the check sits
-  above `consent::ask`).
-- **Files:** `main.rs` (`desk_proc_spawn`, `desk_shell`), `security.rs`.
+- **Boundary:** backend, before the consent dialog. `desk_proc_spawn`
+  (`child_process.spawn/exec/execFile`) and `desk_shell` (electron `shell.openExternal /
+  openPath / showItemInFolder`, `app.openWithDefaultApp` — every op execs `xdg-open`) call
+  `spawn_allowed` → `security::spawn_check` with the effective value (live, lockdown
+  included) right after the restricted-mode check and BEFORE `consent::admit` /
+  `desk_proc::shell_prepare`: when off no question is queued, no program is resolved and
+  no native dialog is created. The refusal is `EPERM: spawn: community plugins may not
+  start programs (Settings › Security › Community plugins may start programs) — plugin
+  <id>` (the id is a sanitized label: all plugins share one realm, it never decides) and
+  the app log gets `[sec] refused …`. A T0 source test pins the order in both commands.
+- **Not cut:** the app's own `open_external` (link clicks in notes; toggle 3 governs that)
+  — it is app UI, not a plugin command.
+- **Files:** `main.rs` (`spawn_allowed`, `desk_proc_spawn`, `desk_shell`, test
+  `spawn_toggle_refuses_before_any_dialog`), `security.rs` (`SPAWN_OFF`, `spawn_check`,
+  test), `ui/security.js` (row text).
 - **T3 probe `secspawn`:** off → probe plugin's `child_process.spawn('true')` errors with
   EPERM + plugin id and no consent window appears (boxd window list); on → the consent
   dialog appears (control; denied by the phase).

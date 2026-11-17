@@ -1929,6 +1929,15 @@ pub(crate) fn plugin_net_allowed(what: &str, plugin: Option<&str>) -> Result<(),
     security::plugin_net_check(&security::effective(&cfg_value()), what, plugin)
 }
 
+/// #144 toggle 10: desk_proc_spawn + desk_shell ask this BEFORE consent::admit (no question
+/// queued, no dialog) with the EFFECTIVE value (live, lockdown included)
+pub(crate) fn spawn_allowed(what: &str, plugin: Option<&str>) -> Result<(), String> {
+    security::spawn_check(&security::effective(&cfg_value()), what, plugin).map_err(|e| {
+        eprintln!("[sec] refused {e}");
+        e
+    })
+}
+
 /// #144 toggle 4: the vault-media commands and the opensidian-img: handler ask this
 /// with the EFFECTIVE value (live: no reload needed for the refusal itself)
 pub(crate) fn media_allowed(what: &str) -> Result<(), String> {
@@ -4455,6 +4464,7 @@ async fn desk_proc_spawn(
     if !plugins::is_trusted(&cfg_value(), &root) {
         return Err("EPERM: restricted mode, plugins cannot start programs".into());
     }
+    spawn_allowed("spawn", plugin.as_deref())?; // #144 toggle 10: before admit = no dialog
     // BB2 (PR #42 round 11): the place in the question queue FIRST — beyond MAX_IN_FLIGHT this is
     // EBUSY before any lookup or pin (resolve), no fs work, no fd opened; ask demands the slot
     let slot = consent::admit()?;
@@ -4648,6 +4658,7 @@ async fn desk_shell(win: tauri::Window, v: State<'_, Vault>, op: String, target:
     if !plugins::is_trusted(&cfg_value(), &root) {
         return Err("EPERM: restricted mode, plugins cannot use the shell".into());
     }
+    spawn_allowed(&format!("shell {}", security::plugin_label(&op)), None)?; // #144 toggle 10: every op execs xdg-open
     if ext_ok(&target, false) {
         net_allowed("openExternal")?; // #144 toggle 3: a plugin's URL open is the browser's network; no confirm path from a plugin
     }
@@ -9160,6 +9171,28 @@ mod tests {
         let pref = src.find("fn graph_renderer_pref()").expect("pref");
         let pb = &src[pref..pref + src[pref..].find("\n}\n").expect("end")];
         assert!(pb.contains("security::webgl_off_text()") && pb.contains("Some(\"2d\".to_string())"), "{pb}");
+    }
+
+    /// #144 toggle 10: both plugin program-start commands ask the toggle after the restricted
+    /// check and BEFORE a consent slot is taken (no question queued, no dialog, no lookup)
+    #[test]
+    fn spawn_toggle_refuses_before_any_dialog() {
+        let src = include_str!("main.rs");
+        for (head, ask, admit) in [
+            ("async fn desk_proc_spawn(", "spawn_allowed(\"spawn\", plugin.as_deref())?", "consent::admit()"),
+            ("async fn desk_shell(", "spawn_allowed(&format!(\"shell {}\"", "desk_proc::shell_prepare("),
+        ] {
+            let a = src.find(head).unwrap_or_else(|| panic!("{head}"));
+            let b = &src[a..a + src[a..].find("\n}\n").expect("end")];
+            let q = b.find(ask).unwrap_or_else(|| panic!("{head} does not ask toggle 10"));
+            assert!(b.find("plugins::is_trusted(").expect("restricted check") < q, "{head}: toggle 10 before the restricted check");
+            for later in [admit, "consent::ask(", "net_allowed(", "consent::resolve("] {
+                if let Some(l) = b.find(later) {
+                    assert!(q < l, "{head}: {later} runs before the toggle 10 check");
+                }
+            }
+        }
+        assert_eq!(src.matches(concat!("security::", "spawn_check(")).count(), 1, "toggle 10 has one reader");
     }
 
     #[test]

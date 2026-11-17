@@ -38,7 +38,7 @@
       ["mermaid", false, "Render mermaid diagrams. Off: diagrams show as plain text."],
     ]],
     ["Plugins and clipboard", [
-      ["pluginSpawn", false, "Community plugins may start programs (each run is still asked about). Off: refused before any dialog."],
+      ["pluginSpawn", false, "Community plugins may start programs (each run is still asked about). Off: refused before any dialog, also opening files or links with the system opener."],
       ["pluginClipboard", false, "Community plugin code may read and write the clipboard. Ctrl+C / Ctrl+V in the editor keep working."],
       ["appClipboard", false, "The app's own copy, cut and paste. Off: Ctrl+C / Ctrl+X / Ctrl+V and the menu clipboard rows stop working."],
     ]],

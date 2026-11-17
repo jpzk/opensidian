@@ -270,6 +270,24 @@ pub fn plugin_net_check(eff: &Eff, what: &str, plugin: Option<&str>) -> Result<(
     Ok(())
 }
 
+
+/* toggle 10 — community plugins may start programs. The two plugin commands that
+   start a program (main.rs desk_proc_spawn = child_process.spawn/exec/execFile,
+   desk_shell = electron shell openExternal/openPath/showItemInFolder and
+   app.openWithDefaultApp, all of which exec xdg-open) ask `spawn_check` right after
+   the restricted-mode check and BEFORE consent::admit: when off no question is
+   queued and no native dialog is created. `plugin` is a label only (one realm). */
+pub const SPAWN_OFF: &str = "community plugins may not start programs";
+
+/// Err when toggle 10 is off (or lockdown forces it off):
+/// "EPERM: <what>: community plugins may not start programs (Settings › Security › ...) — plugin <id>"
+pub fn spawn_check(eff: &Eff, what: &str, plugin: Option<&str>) -> Result<(), String> {
+    if !eff.sec.plugin_spawn {
+        let who = plugin.map(plugin_label).filter(|p| !p.is_empty()).map(|p| format!(" — plugin {p}")).unwrap_or_default();
+        return Err(format!("EPERM: {what}: {SPAWN_OFF} {}{who}", named("pluginSpawn")));
+    }
+    Ok(())
+}
 /// a requested change, validated: (field, value). Unknown field = refused.
 pub fn validate(field: &str, on: bool) -> Result<(&'static str, bool), String> {
     FIELDS
@@ -592,6 +610,22 @@ mod tests {
         assert!(!le.sec.plugin_net && plugin_net_check(&le, "requestUrl", None).unwrap_err().contains(OFFLINE_IS_ON));
     }
 
+    /// toggle 10: default allows (each spawn still asked); off refuses naming the toggle
+    /// (+ sanitized plugin label); lockdown turns it off
+    #[test]
+    fn spawn_toggle_refuses_naming_it() {
+        let d = Sec::default();
+        assert!(spawn_check(&effective_with(d, Some(d)), "spawn", Some("x")).is_ok());
+        let mut s = d;
+        s.plugin_spawn = false;
+        let e = effective_with(s, Some(s));
+        let err = spawn_check(&e, "spawn true", Some("probe\n-spawn")).unwrap_err();
+        assert_eq!(err, "EPERM: spawn true: community plugins may not start programs (Settings › Security › Community plugins may start programs) — plugin probe-spawn");
+        assert!(spawn_check(&e, "shell openExternal", None).unwrap_err().ends_with("start programs)"));
+        let mut l = d;
+        l.lockdown = true;
+        assert!(spawn_check(&effective_with(l, Some(l)), "spawn", None).unwrap_err().contains(SPAWN_OFF));
+    }
     #[test]
     fn defaults_are_todays_behaviour() {
         let s = Sec::from_cfg(&json!({}));
