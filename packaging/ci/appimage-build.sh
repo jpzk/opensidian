@@ -67,8 +67,10 @@ podman run --rm --network=host -e V="$V" -e ARCH="$ARCH" -e TGT="$TGT" -e RUST="
   # snapshot.ubuntu.com is https-only and the bare image has no CA store yet: apt uses the host CA
   # bundle (mounted read-only) for TLS only; package integrity is the archive signature + index sha256.
   echo "Acquire::https::CAInfo \"/host-ca.crt\";" > /etc/apt/apt.conf.d/99host-ca
-  apt-get -q update > /w/dist/apt-$ARCH.log 2>&1 || { tail -30 /w/dist/apt-$ARCH.log; exit 1; }
-  if grep -E "^(Err:|W:|E:)" /w/dist/apt-$ARCH.log; then say "FAIL: apt update against the snapshot was not clean"; exit 1; fi
+  cat /etc/apt/sources.list.d/snapshot.sources; ls -la /etc/apt/sources.list.d /etc/apt/apt.conf.d /usr/share/keyrings
+  apt-get -q update > /w/dist/apt-$ARCH.log 2>&1 || { cat /w/dist/apt-$ARCH.log; exit 1; }
+  cat /w/dist/apt-$ARCH.log; apt-cache policy > /w/dist/apt-policy-$ARCH.txt; head -20 /w/dist/apt-policy-$ARCH.txt
+  if grep -E "^(Err:|W:|E:|Error:|Warning:)" /w/dist/apt-$ARCH.log; then say "FAIL: apt update against the snapshot was not clean"; exit 1; fi
   apt-get -y -q --no-install-recommends install $PKGS >> /w/dist/apt-$ARCH.log 2>&1 || { tail -30 /w/dist/apt-$ARCH.log; exit 1; }
   # every requested pin really is what got installed
   for p in $PKGS; do n=${p%%=*}; want=${p#*=}; got=$(dpkg-query -W -f="\${Version}" "$n"); [ "$got" = "$want" ] || { say "FAIL: $n is $got, pinned $want"; exit 1; }; done
