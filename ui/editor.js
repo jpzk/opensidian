@@ -535,6 +535,23 @@ const Ed = {
     const s = window.__osSecurity && window.__osSecurity.get();
     return !!(s && s.pageRemote === true);
   },
+  // #144 toggle 4 (Render media) mirrors main.rs media_off_html: while THIS page's CSP lacks
+  // opensidian-img: / blob: (security_get pageMedia === false, ui/security.js) a resolved vault
+  // image / PDF / audio embed is ONE placeholder — no src, no data-pdf, no media_read. No text
+  // node (the LP row's textContent stays its source line): CSS paints data-name + data-why.
+  mediaOn() {
+    const s = window.__osSecurity && window.__osSecurity.get();
+    return !(s && s.pageMedia === false);
+  },
+  MEDIA_WHY: "(Settings › Security › Render media)",
+  mediaOffEl(rel) {
+    const s = Ed.el("span", "imgmiss secmedia");
+    s.dataset.name = String(rel).split("/").pop();
+    s.dataset.sec = "vaultMedia";
+    s.dataset.why = Ed.MEDIA_WHY;
+    s.contentEditable = "false";
+    return s;
+  },
   remoteEl(url, alt) {
     const ext = (url.split(/[?#]/)[0].match(/\.([^./]+)$/) || ["", ""])[1].toLowerCase();
     const kind = ["mp4", "m4v", "mov", "ogv"].includes(ext) ? "video" : Ed.isAudio("x." + ext) ? "audio" : "img";
@@ -571,6 +588,7 @@ const Ed = {
       s.contentEditable = "false";
       return s;
     }
+    if (!Ed.mediaOn()) return Ed.mediaOffEl(Ed.imgRel(target));   // #144 toggle 4 off
     const im = Ed.el("img", "vimg");
     // audit #10: fetch on approach, not at render. Every opensidian-img request is
     // answered on the UI process's main loop, so 20k eager embeds queued 20k
@@ -626,6 +644,7 @@ const Ed = {
       s.contentEditable = "false";
       return s;
     }
+    if (!Ed.mediaOn()) return Ed.mediaOffEl(rel);   // #144 toggle 4 off: no frame, no pdf_info
     const f = Ed.pdfFrag(frag || "");
     const s = Ed.el("span", "internal-embed pdf-embed");
     s.dataset.pdf = Ed.pctEnc(rel);
@@ -666,6 +685,8 @@ const Ed = {
     return L.find(x => x === dec) || L.find(x => x.endsWith("/" + dec)) || null;
   },
   audioEl(target, alt) {
+    // #144 toggle 4 off: the placeholder (the note's target name; nothing resolved, no media_read)
+    if (!Ed.mediaOn()) return Ed.mediaOffEl(Ed.pctDec(target) ?? target);
     const s = Ed.el("span", "internal-embed media-embed audio-embed");
     s.dataset.target = target;
     s.dataset.alt = alt || "";

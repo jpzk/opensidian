@@ -4252,6 +4252,9 @@ function utBuild() {             // pane/focus census in the window title (headl
       const rs = window.__osSecurity && __osSecurity.get();
       md += " [xr:" + rv.querySelectorAll(".imgmiss[data-sec=\"remoteMedia\"]").length + "/" +
             rv.querySelectorAll("audio.rmedia, video.rmedia").length + "/" + (rs && rs.pageRemote ? 1 : 0) + "]";
+      // #144 toggle 4: [xm:<placeholders naming Render media>/<vault media elements>/<page CSP vault media 1|0>]
+      md += " [xm:" + rv.querySelectorAll(".imgmiss[data-sec=\"vaultMedia\"]").length + "/" +
+            rv.querySelectorAll("img.vimg, .pdf-embed, .audio-embed").length + "/" + (rs && rs.pageMedia === false ? 0 : 1) + "]";
     }
   }
   // pdfembed probe: the focused note view's PDF frames ->
@@ -8929,6 +8932,12 @@ const PDFV = (() => {
       if (!p || p === this.path || !Ed.isPdf(p)) return;
       this.path = p;
       try { const f = PLG.app.vault.getAbstractFileByPath(p); this.file = f || null; } catch (_) { this.file = null; }
+      if (!Ed.mediaOn()) {                      // #144 toggle 4 off: the placeholder, no frame, no pdf_info
+        this.frame = null;
+        this.contentEl.replaceChildren(Ed.mediaOffEl(p));
+        updateTitle();
+        return;
+      }
       const s = this.frame = document.createElement("span");
       s.className = "internal-embed pdf-embed";
       s.dataset.pdf = Ed.pctEnc(p); s.dataset.page = "1"; s.dataset.height = ""; s.dataset.alt = ""; s.dataset.full = "1";
@@ -8993,6 +9002,8 @@ const IMGV = (() => {
         const s = document.createElement("span");
         s.className = "imgmiss"; s.dataset.miss = p;
         box.appendChild(s); this.img = null;
+      } else if (!Ed.mediaOn()) {               // #144 toggle 4 off: the placeholder, no URL
+        box.appendChild(Ed.mediaOffEl(p)); this.img = null;
       } else {
         const im = this.img = document.createElement("img");
         im.alt = base(p); im.draggable = false;

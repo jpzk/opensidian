@@ -589,6 +589,7 @@ fn media_read_in(root: &Path, path: &str, offset: u64) -> Result<(u64, Vec<u8>),
 #[tauri::command]
 fn media_read(v: State<Vault>, path: String, offset: u64) -> Result<tauri::ipc::Response, String> {
     span_timed!("media_read", (|| {
+        media_allowed("media_read")?;
         let root = cur_vault(&v).ok_or("no vault open")?;
         let (size, body) = media_read_in(&root, &path, offset)?;
         let mut out = Vec::with_capacity(8 + body.len());
@@ -650,6 +651,8 @@ fn image_html(imgs: &[String], target: &str, alt: &str) -> String {
     }
     let dec = pct_decode(target).unwrap_or_else(|| target.to_string());
     match index::resolve(imgs, &dec).map(|i| &imgs[i]) {
+        // #144 toggle 4 off: a resolved vault image gets the placeholder, never a URL
+        Some(rel) if !security::media_on() => media_off_html(rel),
         Some(rel) => format!(
             "<img class=\"vimg\" src=\"{IMG_SCHEME}://localhost/{}\" alt=\"{}\">",
             pct_encode(rel),
@@ -660,6 +663,18 @@ fn image_html(imgs: &[String], target: &str, alt: &str) -> String {
             esc(target)
         ),
     }
+}
+
+/// #144 toggle 4 OFF: the placeholder an image / PDF / audio embed gets instead of its element.
+/// `name` = the file's last path component (escaped); no URL, no data-* path reaches the DOM.
+fn media_off_html(name: &str) -> String {
+    let base = name.rsplit('/').next().unwrap_or(name);
+    format!(
+        "<span class=\"imgmiss secmedia\" data-sec=\"vaultMedia\">{} \u{2014} {} <span class=\"secwhy\">{}</span></span>",
+        esc(base),
+        security::MEDIA_OFF,
+        esc(&security::named("vaultMedia"))
+    )
 }
 
 /// #144 toggle 1 ON: the element for an https:// embed. Audio / video by the path's
@@ -694,6 +709,10 @@ fn is_audio_target(target: &str) -> bool {
 /// media, the same list live preview uses) and builds the <audio>, so both views paint one element.
 /// No path is minted here: an unresolved or escaping target gets no player, only the banner.
 fn audio_html(target: &str, alt: &str) -> String {
+    // #144 toggle 4 off: no span for Ed.audioFill to resolve — the placeholder (target's name only)
+    if !security::media_on() {
+        return media_off_html(&pct_decode(target).unwrap_or_else(|| target.to_string()));
+    }
     format!(
         "<span class=\"internal-embed media-embed audio-embed\" data-target=\"{}\" data-alt=\"{}\"></span>",
         esc(target),
@@ -728,6 +747,8 @@ fn pdf_frag(frag: &str) -> (usize, Option<u32>) {
 fn pdf_html(imgs: &[String], target: &str, frag: &str, alt: &str) -> String {
     let dec = pct_decode(target).unwrap_or_else(|| target.to_string());
     match index::resolve(imgs, &dec).map(|i| &imgs[i]).filter(|r| is_pdf_target(r)) {
+        // #144 toggle 4 off: no data-pdf for Ed.pdfFill (pdf_info would refuse anyway)
+        Some(rel) if !security::media_on() => media_off_html(rel),
         Some(rel) => {
             let (page, h) = pdf_frag(frag);
             format!(
@@ -769,6 +790,8 @@ fn is_pdf_target(target: &str) -> bool {
 /// i.e. what the frame waits for before it can size itself.
 #[tauri::command]
 async fn pdf_info(v: State<'_, Vault>, path: String, otel: Option<perf::Ctx>) -> Result<Option<pdf::Info>, String> {
+    // #144 toggle 4: refused BEFORE the path is resolved or the worker queued
+    media_allowed("pdf_info")?;
     let Some(p) = cur_vault(&v).and_then(|r| pdf_path_in(&r, &path)) else { return Ok(None) };
     let (tx, rx) = std::sync::mpsc::channel();
     pdf::queue_info(p, Box::new(move |i| {
@@ -1904,6 +1927,12 @@ pub(crate) fn net_allowed(what: &str) -> Result<(), String> {
 /// community-plugin network toggle (security::plugin_net_check). `plugin` is a message label.
 pub(crate) fn plugin_net_allowed(what: &str, plugin: Option<&str>) -> Result<(), String> {
     security::plugin_net_check(&security::effective(&cfg_value()), what, plugin)
+}
+
+/// #144 toggle 4: the vault-media commands and the opensidian-img: handler ask this
+/// with the EFFECTIVE value (live: no reload needed for the refusal itself)
+pub(crate) fn media_allowed(what: &str) -> Result<(), String> {
+    security::media_check(&security::effective(&cfg_value()), what)
 }
 
 fn cfg_set(k: &str, x: serde_json::Value) {
@@ -3580,7 +3609,7 @@ fn render(v: State<Vault>, content: String, otel: Option<perf::Ctx>) -> String {
     // ONE lock for both lists: two `v.index.lock()` calls in one expression is
     // a deadlock on a non-reentrant Mutex, not a style question.
     let ix = v.index.lock().unwrap();
-    span_timed!(otel => "render", security::with_remote(remote_media_now(), || render_with_br(&content, ix.names(), ix.images(), true, soft_br)), serde_json::json!({"bytes": content.len()}))
+    span_timed!(otel => "render", with_page_sec(|| render_with_br(&content, ix.names(), ix.images(), true, soft_br)), serde_json::json!({"bytes": content.len()}))
 }
 
 /// modeswitch opt4: the reading view's two asks in ONE round trip. The cost of
@@ -3594,7 +3623,7 @@ fn render(v: State<Vault>, content: String, otel: Option<perf::Ctx>) -> String {
 fn render_view(v: State<Vault>, content: String, otel: Option<perf::Ctx>) -> (String, Vec<u32>) {
     let soft_br = !cur_vault(&v).is_some_and(|r| app_bool_in(&r, "strictLineBreaks"));
     let ix = v.index.lock().unwrap();
-    span_timed!(otel => "render_view", (security::with_remote(remote_media_now(), || render_with_br(&content, ix.names(), ix.images(), true, soft_br)), reading_block_lines(&content)), serde_json::json!({"bytes": content.len()}))
+    span_timed!(otel => "render_view", (with_page_sec(|| render_with_br(&content, ix.names(), ix.images(), true, soft_br)), reading_block_lines(&content)), serde_json::json!({"bytes": content.len()}))
 }
 
 /// pure core of render_blocks: every block rendered against the same note list
@@ -3609,7 +3638,7 @@ fn render_blocks_with(blocks: &[String], notes: &[String], imgs: &[String]) -> V
 fn render_blocks(v: State<Vault>, blocks: Vec<String>, otel: Option<perf::Ctx>) -> Vec<String> {
     let n = blocks.len();
     let ix = v.index.lock().unwrap();
-    span_timed!(otel => "render_blocks", security::with_remote(remote_media_now(), || render_blocks_with(&blocks, ix.names(), ix.images())), serde_json::json!({"blocks": n}))
+    span_timed!(otel => "render_blocks", with_page_sec(|| render_blocks_with(&blocks, ix.names(), ix.images())), serde_json::json!({"blocks": n}))
 }
 
 /// R12 source mode: lp rows with every marker revealed (src/srcmode.rs)
@@ -4012,6 +4041,17 @@ fn remote_media_now() -> bool {
     security::PAGE_REMOTE.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+/// #144 toggle 4, per render call: vault media elements are minted only while THIS page's
+/// CSP still carries opensidian-img: / blob: (security::PAGE_MEDIA, set in page_csp)
+fn vault_media_now() -> bool {
+    security::PAGE_MEDIA.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// a render under THIS page's toggle 1 + toggle 4 state (the render commands' one wrapper)
+fn with_page_sec<T>(f: impl FnOnce() -> T) -> T {
+    security::with_remote(remote_media_now(), || security::with_media(vault_media_now(), f))
+}
+
 /// the response hook of the page window: an HTML page (the only responses
 /// Tauri gives a CSP header) gets the header of the vault's trust state
 fn page_csp(h: &tauri::AppHandle, res: &mut tauri::http::Response<std::borrow::Cow<'static, [u8]>>) {
@@ -4022,22 +4062,28 @@ fn page_csp(h: &tauri::AppHandle, res: &mut tauri::http::Response<std::borrow::C
     let trusted = cur_vault(&h.state::<Vault>()).is_some_and(|r| plugins::is_trusted(&cfg_value(), &r));
     // #144 toggle 1 layer 2: https: in img-src / media-src only while the EFFECTIVE value is on
     // (offline and lockdown force it off in security::effective_with)
-    let remote = security::effective(&cfg_value()).sec.remote_media;
-    let csp = security::csp_remote(&csp_by_trust(&base, trusted), remote);
+    let eff = security::effective(&cfg_value());
+    let remote = eff.sec.remote_media;
+    // #144 toggle 4 layer 2: off drops opensidian-img: (img-src) and blob: (media-src)
+    let media = eff.sec.vault_media;
+    let csp = security::csp_media(&security::csp_remote(&csp_by_trust(&base, trusted), remote), media);
     match tauri::http::HeaderValue::from_str(&csp) {
         Ok(v) => {
             res.headers_mut().insert("Content-Security-Policy", v);
             PAGE_EVAL.store(trusted, std::sync::atomic::Ordering::SeqCst);
             security::PAGE_REMOTE.store(remote, std::sync::atomic::Ordering::SeqCst);
+            security::PAGE_MEDIA.store(media, std::sync::atomic::Ordering::SeqCst);
         }
         // keep Tauri's (restricted) header: never widen on a failure
         Err(_) => {
             PAGE_EVAL.store(false, std::sync::atomic::Ordering::SeqCst);
             security::PAGE_REMOTE.store(false, std::sync::atomic::Ordering::SeqCst);
+            security::PAGE_MEDIA.store(media, std::sync::atomic::Ordering::SeqCst);
         }
     }
     eprintln!("[csp] page trusted={trusted} Content-Security-Policy: {}", res.headers()["Content-Security-Policy"].to_str().unwrap_or("?"));
     eprintln!("[sec] page remoteMedia={remote}");
+    eprintln!("[sec] page vaultMedia={media}");
 }
 
 /* ---- cp-unrestricted: synchronous fs for plugins (fs.existsSync, readFileSync, ...).
@@ -7579,6 +7625,12 @@ fn main() {
         // still answer inline exactly as before.
         .register_asynchronous_uri_scheme_protocol(IMG_SCHEME, |ctx, req, responder| {
             use tauri::Manager;
+            // #144 toggle 4: off = a bodiless 403 for every vault image and PDF page,
+            // before the vault is resolved or the pdf worker queued (nothing is decoded)
+            if let Err(why) = media_allowed(IMG_SCHEME) {
+                eprintln!("[sec] refused {IMG_SCHEME}:{}: {why}", req.uri().path());
+                return responder.respond(tauri::http::Response::builder().status(403).body(Vec::new()).expect("img 403"));
+            }
             let root = cur_vault(&ctx.app_handle().state::<Vault>());
             let target = req.uri().path().trim_start_matches('/').to_string();
             if is_pdf_target(&target) {
@@ -9003,6 +9055,51 @@ mod tests {
         // other schemes are S1's business either way
         let f = security::with_remote(true, || render_with("![d](file:///etc/passwd)", &[], &[], true));
         assert!(!f.contains("<img") && !f.contains("data-sec"), "{f}");
+    }
+
+    /// #144 toggle 4 (Render media). On (default, every test above): unchanged. Off: each
+    /// resolved image / PDF / audio embed — both syntaxes, both renderers — is ONE placeholder
+    /// naming the file and the toggle, with no opensidian-img: URL, no data-pdf, no audio span;
+    /// an unresolved target keeps R29.4's banner (off reveals nothing a typo would not).
+    /// And the backend refusals sit FIRST in media_read, pdf_info and the scheme handler.
+    #[test]
+    fn vault_media_toggle_paints_placeholders_and_refuses_first() {
+        let imgs = vec!["pic.png".to_string(), "sub/doc.pdf".to_string()];
+        let md = "![[pic.png]]\n\n![x](sub/doc.pdf#page=2)\n\n![[rec.mp3]]\n\n![](a%20b.webm)\n\n![[gone.png]]\n";
+        for reading in [true, false] {
+            let on = render_with(md, &[], &imgs, reading);
+            assert!(on.contains(&format!("{IMG_SCHEME}://localhost/pic.png")) && on.contains("data-pdf=\"sub/doc.pdf\""), "{on}");
+            assert!(!on.contains("vaultMedia"), "{on}");
+            let off = security::with_media(false, || render_with(md, &[], &imgs, reading));
+            assert!(!off.contains(IMG_SCHEME) && !off.contains("data-pdf") && !off.contains("audio-embed"), "reading={reading}: {off}");
+            assert_eq!(off.matches("data-sec=\"vaultMedia\"").count(), 4, "{off}");
+            for n in ["pic.png \u{2014} ", "doc.pdf \u{2014} ", "rec.mp3 \u{2014} ", "a b.webm \u{2014} "] {
+                assert!(off.contains(n), "{n} missing: {off}");
+            }
+            assert!(!off.contains("sub/doc.pdf"), "the folder path reached the DOM: {off}");
+            assert_eq!(off.matches("media rendering is off").count(), 4, "{off}");
+            assert!(off.contains("(Settings › Security › Render media)"), "{off}");
+            assert!(off.contains("\u{201c}gone.png\u{201d} could not be found."), "{off}");
+        }
+        // a name is escaped, never markup
+        let h = security::with_media(false, || audio_html("<b>x.mp3", ""));
+        assert!(!h.contains("<b>") && h.contains("&lt;b&gt;x.mp3"), "{h}");
+        // refusal first: before the vault is resolved / a byte read / the worker queued
+        let src = include_str!("main.rs");
+        for (head, ask) in [
+            ("fn media_read(", "media_allowed(\"media_read\")?"),
+            ("async fn pdf_info(", "media_allowed(\"pdf_info\")?"),
+            (".register_asynchronous_uri_scheme_protocol(IMG_SCHEME", "media_allowed(IMG_SCHEME)"),
+        ] {
+            let a = src.find(head).unwrap_or_else(|| panic!("{head}"));
+            let b = &src[a..];
+            let q = b.find(ask).unwrap_or_else(|| panic!("{head} does not ask {ask}"));
+            for later in ["cur_vault(", "pdf::queue", "serve_image("] {
+                if let Some(l) = b.find(later) {
+                    assert!(q < l, "{head}: {later} runs before the toggle 4 check");
+                }
+            }
+        }
     }
 
     #[test]

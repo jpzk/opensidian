@@ -56,19 +56,22 @@
   /* toggle 1 layer 2: the page CSP is fixed at load (main.rs page_csp). When the effective
      "Load external resources" and this page's header disagree, reload once (after the save
      debounce, so a pending note write lands) — turning it OFF removes https: at once.
-     Two reloads in a row that still disagree stop with a console warning, never a loop. */
+     Two reloads in a row that still disagree stop with a console warning, never a loop.
+     Toggle 4 (Render media) rides the same rule: its CSP layer (opensidian-img: in img-src,
+     blob: in media-src) is fixed at load too (security_get pageMedia). */
   let reloading = false;
   function cspAgree() {
     const KEY = "osSecReload";
-    if (!R || typeof R.pageRemote !== "boolean" || !R.effective) return;
-    if (!!R.effective.remoteMedia === R.pageRemote) { try { sessionStorage.removeItem(KEY); } catch (_) {} return; }
+    if (!R || typeof R.pageRemote !== "boolean" || typeof R.pageMedia !== "boolean" || !R.effective) return;
+    const agree = !!R.effective.remoteMedia === R.pageRemote && !!R.effective.vaultMedia === R.pageMedia;
+    if (agree) { try { sessionStorage.removeItem(KEY); } catch (_) {} return; }
     let n = 0;
     try { n = +sessionStorage.getItem(KEY) || 0; } catch (_) {}
     if (reloading) return;
-    if (n >= 2) { console.warn("[sec] page CSP still disagrees with Load external resources after 2 reloads"); return; }
+    if (n >= 2) { console.warn("[sec] page CSP still disagrees with Load external resources / Render media after 2 reloads"); return; }
     reloading = true;
     try { sessionStorage.setItem(KEY, String(n + 1)); } catch (_) {}
-    console.warn("[sec] reloading the page into the CSP of Load external resources=" + !!R.effective.remoteMedia);
+    console.warn("[sec] reloading the page into the CSP of Load external resources=" + !!R.effective.remoteMedia + " Render media=" + !!R.effective.vaultMedia);
     Promise.resolve(inv("save_debounce_ms")).catch(() => 0)
       .then(ms => setTimeout(() => location.reload(), (+ms || 0) + 300));
   }

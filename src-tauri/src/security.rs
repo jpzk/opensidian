@@ -314,6 +314,8 @@ pub fn report(cfg: &Value) -> Value {
         "names": names,
         // toggle 1 layer 2: did THIS page get the https: img/media CSP at load?
         "pageRemote": PAGE_REMOTE.load(std::sync::atomic::Ordering::SeqCst),
+        // toggle 4 layer 2: does THIS page's CSP still carry opensidian-img: / blob:?
+        "pageMedia": PAGE_MEDIA.load(std::sync::atomic::Ordering::SeqCst),
     })
 }
 
@@ -395,6 +397,76 @@ pub fn csp_remote(csp: &str, on: bool) -> String {
     out.join("; ")
 }
 
+/* ---- toggle 4: render vault media (docs §1 "4 — Render vault media").
+   The boundary is the BACKEND, asked per request with the effective value:
+     main.rs IMG_SCHEME handler (vault images + PDF page PNGs) answers 403,
+     media_read (audio / video bytes for embeds, views and canvas cards) and
+     pdf_info refuse with `media_check`'s message — so no vault byte reaches
+     WebKit's image decoder, GStreamer or the PDF worker (pdf.rs is never queued).
+   Layer 2, the page CSP (`csp_media`): off drops `opensidian-img:` from img-src
+   and `blob:` from media-src, recorded in PAGE_MEDIA; the pane reloads the page
+   when it disagrees with the effective value (ui/security.js), like toggle 1.
+   The renderer follows the page (thread-local MEDIA, set per render call) and
+   paints the placeholder `<name> — media rendering is off (Settings › Security ›
+   Render media)` instead of an element. Vault media only (operator decision):
+   theme / snippet CSS images ride 'self'/data: and are not covered. The audio
+   RECORDER (mic -> audio_save) decodes nothing from the vault and is not cut. */
+pub const MEDIA_OFF: &str = "media rendering is off";
+
+thread_local! {
+    static MEDIA: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+/// which CSP THIS page got (true = today's: opensidian-img: + blob: present)
+pub static PAGE_MEDIA: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// may the renderer on THIS thread mint a vault image / PDF / audio element right now?
+pub fn media_on() -> bool {
+    MEDIA.with(|c| c.get())
+}
+
+/// run `f` (a render) with the media flag set to `on`; restores the previous value
+pub fn with_media<T>(on: bool, f: impl FnOnce() -> T) -> T {
+    let prev = MEDIA.with(|c| c.replace(on));
+    let r = f();
+    MEDIA.with(|c| c.set(prev));
+    r
+}
+
+/// the placeholder sentence after a file name: "media rendering is off (Settings › Security › Render media)"
+pub fn media_off_text() -> String {
+    format!("{MEDIA_OFF} {}", named("vaultMedia"))
+}
+
+/// Err while toggle 4 is off: "EPERM: <what>: media rendering is off (Settings › Security › Render media)"
+pub fn media_check(eff: &Eff, what: &str) -> Result<(), String> {
+    if !eff.sec.vault_media {
+        return Err(format!("EPERM: {what}: {}", media_off_text()));
+    }
+    Ok(())
+}
+
+/// layer 2: the page CSP with toggle 4 applied. On = byte-identical input.
+/// Off = `opensidian-img:` removed from img-src and `blob:` from media-src; every
+/// other directive (and every other source in those two) untouched.
+pub fn csp_media(csp: &str, on: bool) -> String {
+    if on {
+        return csp.to_string();
+    }
+    csp.split(';')
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(|d| {
+            let drop = match d.split_whitespace().next().unwrap_or("") {
+                "img-src" => "opensidian-img:",
+                "media-src" => "blob:",
+                _ => return d.to_string(),
+            };
+            d.split_whitespace().filter(|t| *t != drop).collect::<Vec<_>>().join(" ")
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,6 +504,41 @@ mod tests {
         assert!(with_remote(true, remote_on));
         assert!(!remote_on());
         assert!(remote_off_text().contains("Load external resources is off"));
+    }
+
+    /// toggle 4: default renders; off refuses naming the toggle; the per-call flag
+    /// defaults ON (today) and is scoped; the CSP loses exactly opensidian-img: and blob:
+    #[test]
+    fn vault_media_toggle_refuses_and_strips_only_its_sources() {
+        let eff = effective_with(Sec::default(), None);
+        assert!(media_check(&eff, "media_read").is_ok(), "default must render (today)");
+        let mut s = Sec::default();
+        s.vault_media = false;
+        let e = media_check(&effective_with(s, None), "media_read").unwrap_err();
+        assert_eq!(e, "EPERM: media_read: media rendering is off (Settings › Security › Render media)");
+        assert!(media_on());
+        assert!(!with_media(false, media_on));
+        assert!(media_on());
+        let base = "default-src 'self'; script-src 'self' opensidian-plugin: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
+                    img-src 'self' data: opensidian-img:; font-src 'self'; connect-src ipc: http://ipc.localhost; media-src 'self' blob:";
+        assert_eq!(csp_media(base, true), base);
+        let off = csp_media(base, false);
+        let (d, b): (Vec<&str>, Vec<&str>) = (off.split("; ").collect(), base.split("; ").collect());
+        assert_eq!(d.len(), b.len(), "{off}");
+        for (x, y) in d.iter().zip(&b) {
+            match y.split_whitespace().next() {
+                Some("img-src") => assert_eq!(*x, "img-src 'self' data:"),
+                Some("media-src") => assert_eq!(*x, "media-src 'self'"),
+                _ => assert_eq!(x, y, "toggle 4 touched a directive it must not: {x}"),
+            }
+        }
+        // composes with toggle 1 either order without re-adding a vault source
+        let both = csp_media(&csp_remote(base, true), false);
+        assert!(both.contains("img-src 'self' data: https:") && both.contains("media-src 'self' https:"), "{both}");
+        // lockdown turns it off
+        let mut l = Sec::default();
+        l.lockdown = true;
+        assert!(media_check(&effective_with(l, None), "x").is_err());
     }
 
     /// toggle 2: default allows; off refuses naming the toggle (+ the plugin label, sanitized);

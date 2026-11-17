@@ -161,21 +161,37 @@ Format per toggle: **boundary** (what actually refuses), **files**, **visible st
 
 ### 4 — Render vault media
 
-- **Boundary:** backend + CSP. Off: the `opensidian-img:` scheme handler answers 403 for
-  every image and PDF-page request, `media_read`, `pdf_info`, `audio_*` playback arming and
-  canvas media reads refuse — so no bytes reach WebKit's image decoder, GStreamer or the
-  PDF renderer (`pdf.rs` is never queued). CSP: `img-src` drops `opensidian-img:` (keeps
-  `'self' data:` for app assets), `media-src` drops `blob:`.
-  Vault media only (operator decision): theme / snippet CSS images are not covered.
-- **Files:** `main.rs` (IMG_SCHEME handler, `media_read`, `pdf_info`, audio commands,
-  `image_html` embed branch, `csp_by_trust`), `canvasfs.rs` if it serves media,
-  `ui/editor.js`, `ui/main.js` (image / PDF / audio views, canvas media cards).
-- **Visible:** each embed and each view shows `<file name> — media rendering is off
-  (Settings › Security › Render media)`.
-- **T3 probe `secmedia`:** vault with png, pdf, mp3, a canvas with a media card; off →
-  direct `fetch('opensidian-img://localhost/a.png')` from a probe plugin fails, `media_read`
-  and `pdf_info` refuse, embeds + views show the placeholder; on → the png embed decodes
-  (naturalWidth > 0).
+- **Boundary:** backend, asked per request with the EFFECTIVE value (live: turning it off
+  refuses the next request, no reload needed): the `opensidian-img:` scheme handler answers
+  a bodiless 403 for every vault image and PDF-page request before the vault is resolved or
+  the pdf worker queued; `media_read` (the bytes of every audio / video embed, the audio view
+  and canvas audio/video cards) and `pdf_info` refuse with
+  `EPERM: <command>: media rendering is off (Settings › Security › Render media)` before a
+  path is resolved. So no vault byte reaches WebKit's image decoder, GStreamer or the PDF
+  renderer (`pdf.rs` is never queued). T0 pins that the check is the first thing in all three.
+- **Layer 2, CSP** (`security::csp_media`): off drops `opensidian-img:` from `img-src` and
+  `blob:` from `media-src` (`'self' data:` stays for app assets). Like toggle 1 the header is
+  fixed at page load (`PAGE_MEDIA`, `security_get.pageMedia`); `ui/security.js` reloads the
+  page once when it disagrees with the effective value.
+- **Renderer** follows the page (`security::with_media`, set by the render commands from
+  `PAGE_MEDIA`): a RESOLVED image / PDF / audio embed is one placeholder with no URL and no
+  `data-pdf`; an unresolved target keeps R29.4's banner (off reveals nothing a typo would not).
+- Vault media only (operator decision): theme / snippet CSS images are not covered. The audio
+  RECORDER (mic → `audio_save`) decodes nothing from the vault and is not cut by this toggle.
+- **Files:** `security.rs` (`media_check`, `csp_media`, `with_media`, `PAGE_MEDIA`), `main.rs`
+  (`media_allowed`, IMG_SCHEME handler, `media_read`, `pdf_info`, `image_html` / `pdf_html` /
+  `audio_html` → `media_off_html`, `page_csp`, render commands' `with_page_sec`),
+  `ui/editor.js` (`Ed.mediaOn` / `Ed.mediaOffEl` in `imgEl`, `pdfEl`, `audioEl`),
+  `ui/main.js` (image + PDF views; the audio view goes through `Ed.audioEl`; census `[xm:]`),
+  `ui/plugins/canvas-cards.js` (image / audio / video cards, census `kind=secmedia`),
+  `ui/security.js` (reload rule), `ui/style.css`.
+- **Visible:** each embed, each view and each canvas card shows
+  `<file name> — media rendering is off (Settings › Security › Render media)`.
+- **T3 probe `secmedia`:** vault with png, pdf, mp3, a canvas with an image card; off →
+  a probe plugin's `fetch`/`<img>` of `opensidian-img://localhost/a.png` fails, `media_read`
+  and `pdf_info` refuse naming the toggle, the note census reports `[xm:3/0/0]`, the canvas
+  card `kind=secmedia`, OCR finds "media rendering is off"; on → the png embed decodes
+  (`[xi:` naturalWidth > 0) and `[xm:0/3/1]` (control).
 
 ### 5 — WebGL
 
