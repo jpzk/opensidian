@@ -49,6 +49,8 @@ use crate::desk_proc::Spec;
 /// stable window titles: what the harness finds the dialogs by (xdotool --name)
 pub const TRUST_TITLE: &str = "opensidian: trust vault?";
 pub const SPAWN_TITLE: &str = "opensidian: run program?";
+/// #144: the confirm before a Settings › Security change that lowers a protection
+pub const SECURITY_TITLE: &str = "opensidian: lower protection?";
 /// #74: the third button of a plugin's spawn question (never on Trust / open)
 pub const ALWAYS_LABEL: &str = "Al_ways allow this program";
 
@@ -56,6 +58,8 @@ pub const ALWAYS_LABEL: &str = "Al_ways allow this program";
 pub enum Kind {
     Trust,
     Spawn,
+    /// #144: security_set lowering a protection (security::weakens)
+    Security,
 }
 
 /// F6: the most variables, and bytes (key + value + 2 each), a plugin may lay
@@ -307,6 +311,7 @@ pub struct Question {
 const TRUST_HEAD: &str = "Turn on community plugins for this vault?";
 const SPAWN_HEAD: &str = "A plugin wants to run a program. Read all of it (scroll) before you answer.";
 const OPEN_HEAD: &str = "Open this with the default application? It may run it. Read all of it (scroll) before you answer.";
+const SECURITY_HEAD: &str = "Lower a protection in Settings › Security?";
 
 pub fn trust_question(canon: &str) -> Question {
     let text = trust_text(canon);
@@ -335,6 +340,13 @@ pub fn spawn_question_always(sp: &Spec, plugin: &str, version: &str, remember: R
         remember: Some(remember),
         always: false,
     }
+}
+
+/// #144: the confirm for a security_set that lowers a protection (security::weakens). The body
+/// is security::weaken_text: the field is one security::validate accepted, never page text.
+pub fn security_question(field: &str, on: bool) -> Question {
+    let text = crate::security::weaken_text(field, on);
+    Question { head: SECURITY_HEAD.into(), log: text.clone(), text, remember: None, always: false }
 }
 
 /// R5: an open through the default opener. `sp` = the resolved opener Spec (no env)
@@ -445,6 +457,7 @@ pub async fn ask(slot: Slot, win: tauri::Window, kind: Kind, q: Question) -> Res
     let what = match kind {
         Kind::Trust => "trust",
         Kind::Spawn => "spawn",
+        Kind::Security => "security",
     };
     eprintln!("[consent] {what}: asking");
     let yes = tauri::async_runtime::spawn_blocking(move || {
@@ -470,6 +483,7 @@ fn show_dialog(win: &tauri::Window, kind: Kind, q: &Question, tx: std::sync::mps
     let (title, no, yes) = match kind {
         Kind::Trust => (TRUST_TITLE, "_Cancel", "_Trust"),
         Kind::Spawn => (SPAWN_TITLE, "_Deny", "Allow _once"),
+        Kind::Security => (SECURITY_TITLE, "_Keep protection", "_Lower protection"),
     };
     let head = q.head.as_str();
     // the head is ours; the body (page values) goes into a read-only TextView

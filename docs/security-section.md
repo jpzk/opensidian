@@ -19,6 +19,14 @@ Base: `develop` 23e83f0. Scope: release 0.9.6 (milestone 096).
   parses the key. The UI reads the same struct through `security_get` and changes it
   only through `security_set` (one field per call, validated, written as an `Op::Set`
   of the whole merged object under the cfg lock).
+- **Lowering a protection is asked natively.** Community plugin code shares the page
+  and therefore the `security_set` command with the Settings pane. So a change that
+  moves a field AWAY from its strict value (`security::weakens`: offline off, WebGL on,
+  lockdown off, ...) first shows a native GTK confirm (`consent::Kind::Security`,
+  title `opensidian: lower protection?`, default answer "Keep protection"), which page
+  script cannot answer — the same mechanism as the trust prompt. Raising a protection
+  is written at once. `cfgstore::apply` refuses every generic op naming `"security"`;
+  only `Op::SecuritySet(field, bool)` with a field `security::validate` knows writes it.
 - **Visible when off.** Every refusal carries the toggle's name in its error string
   (`"<surface> is off (Settings › Security › <Toggle name>)"`), and every UI surface
   that loses its content shows a placeholder with the same sentence.

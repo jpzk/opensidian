@@ -42,6 +42,7 @@ mod props; // #119: types.json, the vault property census, the Properties in doc
 mod sandbox;
 // cp-secrets: app.secretStorage over the OS keyring (Secret Service)
 mod secrets;
+mod security; // #144: Settings › Security — the one reader of the "security" key (docs/security-section.md)
 mod settings;
 mod spawn;
 mod spawner;
@@ -4252,6 +4253,33 @@ async fn spawn_allow_revoke(vault: String, plugin: String, program: String) -> R
     spawn_allow_list().await
 }
 
+/* #144 Settings › Security (security.rs, docs/security-section.md §0/§2). security_get answers
+   the stored + effective values, what forces a row and which restart-bound fields wait for a
+   restart. security_set changes ONE known boolean field: a change that LOWERS a protection
+   (security::weakens) is asked in a native dialog first (consent Kind::Security) — plugin code
+   shares this page and this command, and page script cannot answer that window. A change that
+   raises a protection is written at once. Only Op::SecuritySet writes the key. */
+#[tauri::command]
+fn security_get() -> serde_json::Value {
+    security::report(&cfg_value())
+}
+
+#[tauri::command]
+async fn security_set(win: tauri::Window, field: String, on: bool) -> Result<serde_json::Value, String> {
+    let (field, on) = security::validate(&field, on)?;
+    let stored = security::Sec::from_cfg(&cfg_value());
+    if security::weakens(stored, field, on) {
+        let slot = consent::admit()?;
+        if !consent::ask(slot, win, consent::Kind::Security, consent::security_question(field, on)).await? {
+            eprintln!("[sec] set {field}={on}: cancelled in the confirm, nothing written");
+            return Ok(security::report(&cfg_value()));
+        }
+    }
+    cfg_update(&[cfgstore::Op::SecuritySet(field.into(), on)]);
+    eprintln!("[sec] set {field}={on}");
+    Ok(security::report(&cfg_value()))
+}
+
 #[tauri::command]
 async fn desk_proc_spawn(
     win: tauri::Window,
@@ -7273,6 +7301,10 @@ fn main() {
     //   RUSTIDIAN_OTELSINK_CHILD    -> OPENSIDIAN_OTELSINK_CHILD (test only)
     //   localStorage rustidian.graphRenderer -> opensidian.graphRenderer (hidden dev knob)
     migrate::run_home(&PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())));
+    // #144: latch the restart-bound Security fields (JIT, lockdown) once, before any window
+    // exists and before the sandbox closes: the running process keeps these values
+    let sec_boot = security::boot(&cfg_value());
+    eprintln!("[sec] boot jit={} lockdown={} lockdownClipboard={}", sec_boot.jit, sec_boot.lockdown, sec_boot.lockdown_clipboard);
     // VAULT_DIR (probes/tests) wins; else the argv vault (vaultarg, README §2) —
     // resolved HERE, before sandbox::enforce below; else last persisted vault if
     // still a dir (R1.6)
@@ -7533,7 +7565,7 @@ fn main() {
             read_workspace, write_workspace, wsm_list, wsm_get, wsm_op,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
-            plugins_state, plugins_set, plugin_io, plugin_vfs, desk_proc_spawn, spawn_allow_list, spawn_allow_revoke, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
+            plugins_state, plugins_set, plugin_io, plugin_vfs, desk_proc_spawn, spawn_allow_list, spawn_allow_revoke, security_get, security_set, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
             desk_net_listen, desk_net_accept, desk_net_close, desk_sock_read, desk_sock_write, desk_sock_end, desk_sock_destroy,
             desk_http_request, desk_shell,
             plugin_store::store_list, plugin_store::store_detail, plugin_store::store_install, plugin_store::store_uninstall,
