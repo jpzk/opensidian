@@ -14026,7 +14026,10 @@ var wfEv = { dn: 0, up: 0, cx: 0, lc: 0, mvb: 0 };
 
 function wfDragRegion(t) {    // is this event target part of the drag region?
   if (!t || !t.classList) return false;
-  if (t.id === "wframe") return true;
+  // #141: the sidebars' top tab headers too (stock: their empty space drags the window
+  // like the middle tab row). The header element ONLY — its .stab buttons and #rtoggle
+  // are their own targets, so a press on an icon still switches and never drags.
+  if (t.id === "wframe" || t.id === "stabs" || t.id === "rtabs") return true;
   // R37: ANY pane's tab-bar background, not just the top row's (see the block above)
   return t.classList.contains("tabbar") || t.classList.contains("tabs");
 }
