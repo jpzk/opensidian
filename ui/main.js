@@ -4060,7 +4060,9 @@ function utLite() {
   const H = window.__osPluginHost;
   if (H && H.censusTick) { try { H.censusTick(); } catch (e) { console.error("[plugin] tick:", e); } }
   const g = fg(), tb = g && g.active >= 0 ? g.tabs[g.active] : null;
-  const nm = tb ? (!tb.kind ? String(tb.name || "").split("/").pop().replace(/\.md$/i, "") : String(tb.title || "")) : "";
+  // #177: a view tab (graph, local graph, plugin view) carries its display text in name, the same text its tab
+  // header shows ("Graph view", "Graph of note") — stock 1.13.7 titles the window with it; there is no tb.title
+  const nm = tb ? (!tb.kind ? String(tb.name || "").split("/").pop().replace(/\.md$/i, "") : String(tb.name || "").split("/").pop()) : "";
   const vn = String(vaultPath || "").replace(/[\\/]+$/, "").split(/[\\/]/).pop();
   const t = (nm ? nm + " - " : "") + (vn ? vn + " - " : "") + "Opensidian";
   if (t !== utPlain) { utPlain = t; document.title = t; pushTitle(t); }
