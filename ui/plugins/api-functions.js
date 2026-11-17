@@ -792,7 +792,7 @@
 
     /* ------------------------------------------------------ lib loaders
        PDF.js, MathJax and Prism are vendored under ui/vendor/<lib>/ (exact pin,
-       sha256 + license in each VENDOR.md / SHA256SUMS) and loaded on first use
+       pin, sha256, license in ui/vendor/vendor.lock.json + SHA256SUMS) and loaded on first use
        from 'self' under the unchanged CSP: no network, no eval. Each loader
        resolves with the real library (also published on window like a plugin
        expects: pdfjsLib, MathJax, Prism) and rejects honestly when the bytes
