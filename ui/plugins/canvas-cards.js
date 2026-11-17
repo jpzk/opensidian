@@ -118,7 +118,7 @@
       }, e => {
         if (node._cc !== cc) return;
         const why = String(e && e.message || e), big = /too large/.test(why);
-        cc.state = big ? "big" : "error";
+        cc.state = big ? "big" : null;   // a failed read stays retryable: the next press / play reloads
         if (big) {
           m.style.display = "none";
           if (cc.c2p) cc.c2p.hidden = true;
