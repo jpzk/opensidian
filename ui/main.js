@@ -3396,7 +3396,15 @@ async function wsApply(doc, names) {
   const have = new Set(names);
   let root = null;
   try { root = wsNodeIn(doc.main, have); } catch (e) { root = null; }
-  if (!root) { wsSide0 = { left: sidePane, right: rTab }; return false; }
+  if (!root) {
+    // #158: no main leaf survived (every tab closed = stock's one "empty" leaf) — the SIDEBARS are still the
+    // file's: stock 1.13.7 restores a collapsed left sidebar collapsed and its next write keeps "collapsed": true.
+    // Returning before wsSidesIn left them at their defaults, and wsSideKeep then erased the saved collapse.
+    try { wsSidesIn(doc); } catch (e) { /* a sidebar is not worth the layout */ }
+    wsSide0 = { left: sidePane, right: rTab };
+    wsSideIdsIn(doc);
+    return false;
+  }
   if (!root.children) root = { dir: "row", children: [root], fractions: [1] };
   state.root = root;
   state.focused = null;
@@ -3423,7 +3431,11 @@ async function wsApply(doc, names) {
   if (Array.isArray(doc.lastOpenFiles)) {
     mruList = doc.lastOpenFiles.map(wsPathIn).filter(n => typeof n === "string" && have.has(n)).slice(0, 20);
   }
-  // the ids the file used are the ids the next save writes (R28.4)
+  wsSideIdsIn(doc);
+  updateTitle();
+  return true;
+}
+function wsSideIdsIn(doc) {           // the sidebar ids the file used are the ids the next save writes (R28.4)
   for (const k of ["left", "right"]) {
     const s = doc[k];
     if (!s || typeof s.id !== "string") continue;
@@ -3433,8 +3445,6 @@ async function wsApply(doc, names) {
     const leaf = tabs && tabs.children && tabs.children[0];
     if (leaf && typeof leaf.id === "string") wsIds[k + "leaf"] = leaf.id;
   }
-  updateTitle();
-  return true;
 }
 const WS_VIEW_L_IN = { "file-explorer": "files", search: "search", bookmarks: "bm" };
 const WS_VIEW_R_IN = { backlink: "bl", "outgoing-link": "out", tag: "tags", outline: "toc" };
