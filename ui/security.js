@@ -173,10 +173,11 @@
     if (R.lockdown && !m) {
       m = el("div", "status-bar-item", "Lockdown"); m.id = "seclock";
       m.title = "Lockdown mode is on (Settings › Security › Lockdown mode)";
-      // PR #193 review: a fixed pill painted over the vault name. It is a flex item of the
-      // vault bar now (#vswitch shrinks and ellipsizes); body only if the bar does not exist.
-      const vb = document.getElementById("vbar"), gear = document.getElementById("sgear");
-      if (vb) vb.insertBefore(m, gear && gear.parentNode === vb ? gear : null);
+      // PR #193 review: a fixed pill painted over the vault name. It is its own row of the left
+      // sidebar now, right above the vault bar, so the vault name keeps its full width (inside
+      // the bar it squeezed the name to an ellipsis); body (fixed) only if the bar does not exist.
+      const vb = document.getElementById("vbar");
+      if (vb && vb.parentNode) vb.parentNode.insertBefore(m, vb);
       else document.body.appendChild(m);
     }
     if (m) m.hidden = !R.lockdown;

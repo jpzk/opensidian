@@ -2247,15 +2247,16 @@ span.is-flashing { background: var(--highlight-yellow) }
   border: 1px solid var(--color-red, #e5484d); pointer-events: auto; cursor: pointer }
 #arstatus::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--color-red, #e5484d) }
 #arstatus[hidden] { display: none }
-/* #144 toggle 12: the Lockdown marker (vault-bar status item, security.js marker) and its confirm
+/* #144 toggle 12: the Lockdown marker (sidebar status item above the vault bar, security.js marker) and its confirm
    (the #delbox shape again, above the settings modal) */
 #seclock { position: fixed; left: 12px; bottom: 8px; z-index: 50; padding: 2px 10px; border-radius: 10px;
   background: var(--bg-surface); color: var(--text-normal, inherit); font-size: 12px; font-weight: 600;
   border: 1px solid var(--text-banner-error, #e5484d); pointer-events: auto }
 #seclock[hidden] { display: none }
-/* PR #193 review: inside the vault bar the marker is a flex item next to the gear, so the vault
-   name (#vswitch: min-width 0 + ellipsis) gives way instead of being painted over */
-#vbar > #seclock { position: static; flex: 0 0 auto; margin: 0 4px; line-height: 16px; white-space: nowrap }
+/* PR #193 review: the marker is its own row of the left sidebar (#side is a flex column), right
+   above the vault bar: never painted over the vault name, and the name keeps its full width */
+#side > #seclock { position: static; flex: 0 0 auto; align-self: flex-start; margin: 0 0 4px 12px;
+  line-height: 16px; white-space: nowrap }
 #ldbox { position: fixed; inset: 0; z-index: 80; background: var(--scrim);
          display: flex; flex-direction: column; align-items: center; box-sizing: border-box;
          padding: max(0px, min(120px, 100vh - 320px)) 0 8px }

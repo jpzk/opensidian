@@ -446,8 +446,8 @@ What (a) means concretely:
   this pid (`spawn::restart_token`) — the spawner's lock probe lets only such a token through
   while that pid lives, the child waits for the lock only while that pid lives
   (`bind_vault_boot_after`, bounded 30 s), this process exits right after the spawn. Marker =
-  `#seclock` status item in the vault bar (a flex item before the gear: the vault name shrinks and
-  ellipsizes, never painted over — census `[secm:<marker rect>|<vault name rect>]`) + " — Lockdown"
+  `#seclock` status item as its own row of the left sidebar right above the vault bar (never over the
+  vault name, which keeps its full width — census `[secm:<marker rect>|<vault name rect>]`) + " — Lockdown"
   in the native window title (inserted
   before the census tokens). Census `[secl:<latched>/<stored>/<dialog>]`.
 
