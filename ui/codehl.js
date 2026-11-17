@@ -101,11 +101,14 @@
     const fx = CMs.StateEffect.define();
     const marks = new Map();
     const mk = c => { let d = marks.get(c); if (!d) { d = Decoration.mark({ class: c }); marks.set(c, d); } return d; };
-    const cache = new Map();   // lang \0 body -> [[s, e, cls]]
+    /* lang \0 body -> [[s, e, cls]]. Only what the LAST build painted survives: each build starts a
+       fresh map and carries over the entries it reuses, so an edited-away body is dropped by the next
+       build and the cache never holds more than the visible fences (each <= MAX). */
+    let cache = new Map(), next = new Map();
     const spans = (P, lang, body) => {
       const k = lang + "\0" + body;
       let r = cache.get(k);
-      if (r) return r;
+      if (r) { next.set(k, r); return r; }
       r = [];
       const toks = tokens(P, body, lang);
       if (toks && plain(toks) === body) {
@@ -119,12 +122,15 @@
         };
         walk(toks, 0);
       }
-      if (cache.size > 200) cache.clear();
-      cache.set(k, r);
+      next.set(k, r);
       return r;
     };
     let want = false;
     const build = view => {
+      next = new Map();
+      try { return build0(view); } finally { cache = next; next = new Map(); }
+    };
+    const build0 = view => {
       const doc = view.state.doc, blocks = typeof Ed !== "undefined" && Ed.cbFences ? Ed.cbFences(doc) : [];
       if (!blocks.length) return Decoration.none;
       const P = prismNow(), out = [], vr = view.viewport;
