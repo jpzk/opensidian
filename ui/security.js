@@ -129,7 +129,26 @@
     const later = el("button", "", "Turn on, restart later"); later.id = "ld-later";
     const now = el("button", "mod-cta", "Turn on and restart now"); now.id = "ld-now";
     btns.append(no, later, now);
-    const close = () => { ldOpen = false; box.remove(); };
+    /* PR #193 review: the dialog owns the keyboard while it is up. A WINDOW capture listener
+       runs before every document handler — the settings modal's own (hkKey: Escape = close
+       settings) used to take Escape whenever focus was not inside this box, leaving the dialog
+       up. Escape = Cancel; Tab / Shift+Tab cycle inside the card; a key arriving with focus
+       outside the card is pulled back to Cancel first. */
+    const ctl = () => [cb, no, later, now];
+    const keys = ev => {
+      if (ev.key === "Escape") { ev.preventDefault(); ev.stopImmediatePropagation(); close(); return; }
+      const c = ctl(), at = c.indexOf(document.activeElement);
+      if (ev.key === "Tab") {
+        ev.preventDefault(); ev.stopImmediatePropagation();
+        c[at < 0 ? 1 : (at + (ev.shiftKey ? c.length - 1 : 1)) % c.length].focus();
+        return;
+      }
+      if (at < 0) { ev.preventDefault(); ev.stopImmediatePropagation(); no.focus(); }
+    };
+    const close = () => {
+      ldOpen = false; window.removeEventListener("keydown", keys, true); box.remove();
+      if (typeof updateTitle === "function") updateTitle();
+    };
     const go = async restart => {
       close();
       if (cb.checked !== !!R.stored.lockdownClipboard) await set("lockdownClipboard", cb.checked);
@@ -137,9 +156,12 @@
       if (restart && R && R.stored.lockdown) restartNow();
     };
     no.onclick = close; later.onclick = () => go(false); now.onclick = () => go(true);
-    box.onkeydown = ev => { if (ev.key === "Escape") { ev.stopPropagation(); close(); } };
+    box.onmousedown = ev => { if (ev.target === box) ev.preventDefault(); };   // a scrim click keeps focus in the card
+    window.addEventListener("keydown", keys, true);
     document.body.appendChild(box);
-    now.focus();
+    // PR #193 review: the default (Enter) is the SAFE choice — Cancel, never "restart now"
+    no.focus();
+    if (typeof updateTitle === "function") updateTitle();
   }
   /* the visible marker while the process RUNS in lockdown (latched): a status-bar item + the
      window title (main.js lockTitle) */
@@ -150,7 +172,11 @@
     if (R.lockdown && !m) {
       m = el("div", "status-bar-item", "Lockdown"); m.id = "seclock";
       m.title = "Lockdown mode is on (Settings › Security › Lockdown mode)";
-      document.body.appendChild(m);
+      // PR #193 review: a fixed pill painted over the vault name. It is a flex item of the
+      // vault bar now (#vswitch shrinks and ellipsizes); body only if the bar does not exist.
+      const vb = document.getElementById("vbar"), gear = document.getElementById("sgear");
+      if (vb) vb.insertBefore(m, gear && gear.parentNode === vb ? gear : null);
+      else document.body.appendChild(m);
     }
     if (m) m.hidden = !R.lockdown;
     try { if (typeof pushTitle === "function" && tWant) pushTitle(tWant); } catch (_) {}
@@ -223,7 +249,15 @@
   }
   function tok() {
     if (!R) return "";
-    const ld = " [secl:" + (R.lockdown ? 1 : 0) + "/" + (R.stored.lockdown ? 1 : 0) + "/" + (ldOpen ? 1 : 0) + "]";
+    let ld = " [secl:" + (R.lockdown ? 1 : 0) + "/" + (R.stored.lockdown ? 1 : 0) + "/" + (ldOpen ? 1 : 0) + "]";
+    // [secd:<id of the focused control>] while the confirm is up (default focus = ld-no)
+    if (ldOpen) { const a = document.activeElement; ld += " [secd:" + (a && a.id ? a.id : "-") + "]"; }
+    // [secm:<marker rect>|<vault-name rect>] x,y,w,h while the marker shows: the harness intersects them
+    const m = document.getElementById("seclock"), vs = document.getElementById("vswitch");
+    if (R.lockdown && m && !m.hidden) {
+      const r = e => { if (!e) return "-"; const b = e.getBoundingClientRect(); return [b.x, b.y, b.width, b.height].map(Math.round).join(","); };
+      ld += " [secm:" + r(m) + "|" + r(vs && vs.getClientRects().length ? vs : null) + "]";
+    }
     if (typeof settingsOpen === "undefined" || !settingsOpen || sPane !== "security") return R.lockdown || ldOpen ? ld : "";
     const v = Object.keys(R.stored).map(f => f + "=" + (R.stored[f] ? 1 : 0) + (R.effective[f] ? 1 : 0)).join(",");
     return " [secp:" + nRows + "/" + nForced + "/" + (R.restartPending || []).length + "] [secv:" + v + "]" + geo() + ld;

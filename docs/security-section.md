@@ -121,8 +121,8 @@ Format per toggle: **boundary** (what actually refuses), **files**, **visible st
   `security_get.pageRemote` disagree with the effective value, and the pane reloads the
   page once (after the save debounce; two failed reloads stop with a warning), which
   re-runs `page_csp`. Another open window keeps its header until it reloads.
-- **Visible:** the existing R29.4 sentence plus the reason when the setting is the cause:
-  `“remote image” could not be found. (Settings › Security › Load external resources is off)`
+- **Visible:** R29.4's banner shape, worded as a refusal ("was blocked", not "could not be found": the image is not missing) plus the reason:
+  `“remote image” was blocked. (Settings › Security › Load external resources is off)`
   (reading view: `span.secwhy` text; live preview: `data-why`, painted by CSS — the row's
   text must stay its source line). The R29.10 rule "the URL never reaches the DOM"
   holds while off. On, an `http://` target says `… only https:// addresses load`.
@@ -437,14 +437,18 @@ What (a) means concretely:
   (the entries on disk are untouched). CSP = `security::csp_lockdown` drops `'wasm-unsafe-eval'`
   in `page_csp` (log `[sec] page lockdown=`). Confirm = a page dialog (`#ldbox`, turning ON
   raises every protection, so no native prompt is needed) with "Also turn off the clipboard",
-  the restart note, "Turn on, restart later" and "Turn on and restart now"; turning OFF keeps
+  the restart note, Cancel, "Turn on, restart later" and "Turn on and restart now" (default focus =
+  Cancel, so a stray Enter changes nothing; Escape = Cancel even when focus left the card; Tab
+  cycles inside it — census `[secd:<focused id>]`); turning OFF keeps
   the native "lower protection?" confirm, then the row's "Applies after restart." carries a
   "Restart now" button (also for JIT / canvas). Restart = `security_restart`: refused while
   `restartPending` is empty; a switch onto the window's OWN vault with a restart token naming
   this pid (`spawn::restart_token`) — the spawner's lock probe lets only such a token through
   while that pid lives, the child waits for the lock only while that pid lives
   (`bind_vault_boot_after`, bounded 30 s), this process exits right after the spawn. Marker =
-  `#seclock` status item bottom-left + " — Lockdown" in the native window title (inserted
+  `#seclock` status item in the vault bar (a flex item before the gear: the vault name shrinks and
+  ellipsizes, never painted over — census `[secm:<marker rect>|<vault name rect>]`) + " — Lockdown"
+  in the native window title (inserted
   before the census tokens). Census `[secl:<latched>/<stored>/<dialog>]`.
 
 ## 2. Settings tab

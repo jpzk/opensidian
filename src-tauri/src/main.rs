@@ -652,7 +652,7 @@ fn image_html(imgs: &[String], target: &str, alt: &str) -> String {
         }
         let why = if on { security::REMOTE_HTTP_ONLY_HTTPS.to_string() } else { security::remote_off_text() };
         return format!(
-            "<span class=\"imgmiss\" data-sec=\"remoteMedia\">\u{201c}{REMOTE_IMG_LABEL}\u{201d} could not be found. <span class=\"secwhy\">{}</span></span>",
+            "<span class=\"imgmiss\" data-sec=\"remoteMedia\">\u{201c}{REMOTE_IMG_LABEL}\u{201d} was blocked. <span class=\"secwhy\">{}</span></span>",
             esc(&why)
         );
     }
@@ -9354,8 +9354,8 @@ mod tests {
                 "reading={reading}: want R29.4's banner for each remote image: {h}"
             );
             assert!(
-                h.contains("\u{201c}remote image\u{201d} could not be found."),
-                "reading={reading}: the banner is not R29.4's wording: {h}"
+                h.contains("\u{201c}remote image\u{201d} was blocked.") && !h.contains("could not be found"),
+                "reading={reading}: a remote image is BLOCKED, not missing (PR #193 review): {h}"
             );
             // S4/extlink is NOT affected: the same url is still a working link.
             let l = render_with("[text](https://example.com/x.png)", &[], &[], reading);
@@ -9384,7 +9384,11 @@ mod tests {
             assert!(!off.contains("example.com"), "reading={reading}: off leaked the host: {off}");
             assert_eq!(off.matches("data-sec=\"remoteMedia\"").count(), 4, "{off}");
             assert!(off.contains("Load external resources is off"), "off banner does not name the toggle: {off}");
+            // PR #193 review: the target was refused on purpose — say so, never "could not be found"
+            assert_eq!(off.matches("\u{201c}remote image\u{201d} was blocked.").count(), 4, "{off}");
+            assert!(!off.contains("could not be found"), "off banner calls a blocked image missing: {off}");
             let on = security::with_remote(true, || render_with(md, &[], &[], reading));
+            assert!(on.contains("\u{201c}remote image\u{201d} was blocked.") && !on.contains("could not be found"), "{on}");
             assert!(on.contains(r#"<img class="rimg" src="https://example.com/x.png" alt="a" loading="lazy" referrerpolicy="no-referrer">"#), "{on}");
             assert!(on.contains(r#"<audio class="rmedia" controls preload="none" src="https://example.com/s.mp3""#), "{on}");
             assert!(on.contains(r#"<video class="rmedia" controls preload="none" src="https://example.com/v.mp4?t=1""#), "{on}");
