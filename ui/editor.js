@@ -1179,7 +1179,11 @@ const Ed = {
     const it = Ed.info(line);
     Ed.snap(g, "task");
     let dc = 0;
-    if (it.task) L[l] = Ed.flipTask(line);
+    // #153: ANY status char is a task ("- [/] a", "- [-] a", "- [>] a"): stock 1.13.7
+    // resets it to "[ ]" in place (Ed.flipTask), it never wraps a second "[ ] " in front.
+    // Ed.info only knows " xX", so the gate is the task shape itself: "[?]" + space or EOL
+    // (a bullet that starts with a link, "- [a](u)", stays a bullet).
+    if (it.task || Ed.taskRe.test(line)) L[l] = Ed.flipTask(line);
     else if (it.mk) { L[l] = it.pre + "[ ] " + line.slice(it.pre.length); dc = 4; }
     else { L[l] = it.ind + it.qt + "- [ ] " + line.slice(it.pre.length); dc = 6; }
     Ed.after(g, l, s.b.c >= it.pre.length ? s.b.c + dc : s.b.c);
@@ -1276,6 +1280,7 @@ const Ed = {
     Ed.after(g, r.a.l, r.a.c);
     if (r.a.l !== r.b.l || r.a.c !== r.b.c) Ed.extendTo(g, r.b.l, r.b.c);
   },
+  taskRe: /^[ \t]*(?:> ?)*(?:[-*+]|\d+[.)])[ \t]+\[[^\]\n]\](?: |$)/,   // #153 a task item, any status char
   /* rvtask R3 — THE task-status byte op, shared by Ctrl+L (toggleCheck) and the
      reading-view click. Obsidian 1.13.7 (docs/recon-rvtask Q1/Q2): the status char
      of the item's "[?]" flips ' ' -> 'x' and ANYTHING else (x X / - > ?) -> ' '.
@@ -1516,6 +1521,8 @@ const Ed = {
         ["para", 0, 4, "ctrl-l", "- [ ] para", 0, 10],                                   // M49
         ["- a\n\t- b", 1, 5, "ctrl-l", "- a\n\t- [ ] b", 1, 8],                          // M50
         ["1. a", 0, 4, "ctrl-l", "1. [ ] a", 0, 8],                                      // M51 ordered marker kept
+        ["- [/] doing", 0, 11, "ctrl-l", "- [ ] doing", 0, 11],                          // #153 custom status resets
+        ["- [>] a", 0, 7, "ctrl-l", "- [ ] a", 0, 7],                                    // #153
       ];
       for (const [src, l, c, op, want, wl, wc] of kc) {
         const eg = { view: { lines: src.split("\n") }, editor: {} };
