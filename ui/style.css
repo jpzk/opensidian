@@ -2472,3 +2472,17 @@ svg.gi { width: 12px; height: 12px; vertical-align: -2px; display: inline-block;
 .props-vrow .props-vname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 .props-vrow .scount { color: var(--text-chrome-dim) }
 .props-vrow .props-vrename { flex: 1; min-width: 0; font: inherit; }
+
+/* #187 Mermaid (ui/mermaid.js): the per-vault trust guard, the diagram, inline errors */
+.mermaid-wrapper { margin: 0.5em 0; }
+.mermaid-guard-header { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 8px 12px; border: 1px solid var(--background-modifier-border); border-radius: 6px 6px 0 0;
+  background: var(--background-secondary); }
+.mermaid-guard-title { font-weight: 600; color: var(--text-normal); }
+.mermaid-guard-description { font-size: 0.9em; color: var(--text-muted); }
+.mermaid-wrapper.is-guarded > pre { margin-top: 0; border-top-left-radius: 0; border-top-right-radius: 0; }
+.mermaid-wrapper .mermaid { display: flex; justify-content: center; overflow-x: auto; }
+.mermaid-wrapper .mermaid svg { max-width: 100%; height: auto; }
+.mermaid-error { padding: 8px 12px; border: 1px solid var(--text-error, #e93147); border-radius: 6px;
+  color: var(--text-error, #e93147); background: var(--background-secondary); }
+.mermaid-error-detail { margin: 6px 0 0; white-space: pre-wrap; font-size: 0.85em; }

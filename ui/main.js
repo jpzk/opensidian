@@ -7747,6 +7747,9 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   for (const s of g.preview.querySelectorAll("span.pdf-embed")) Ed.pdfFill(s);
   for (const s of g.preview.querySelectorAll("span.audio-embed")) Ed.audioFill(s);   // #116: main.rs audio_html -> one <audio> (editor.js Ed.audioFill)
   cvEmbedFill(g.preview);                    // cv-vault CV-139: ![[X.canvas]] -> span.cv-embed (before the a.wiki wiring below)
+  // #187: mermaid fences -> trust guard / diagram (ui/mermaid.js). A plugin that registered
+  // its own "mermaid" code-block processor keeps them (PPOST below).
+  if (window.Merm && !(Ed.cbHook && Ed.cbHook.has("mermaid"))) try { Merm.reading(g.preview); } catch (e) { console.error("[mermaid]", e); }
   mswpMark("html");
   // #119: the Properties block, read-only, above the body (visible mode); it maps to line 1
   { const pb = window.Props && Props.readingBlock(src); if (pb) { g.preview.insertBefore(pb, g.preview.firstChild); pvL = [1].concat(pvL); } }
