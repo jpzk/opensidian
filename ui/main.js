@@ -9757,7 +9757,16 @@ const edLine = fn => edEdit((v, a, b) => {  // fn(line) -> line | null (= delete
   let l1 = v.indexOf("\n", b); if (l1 < 0) l1 = v.length;
   const nl = fn(v.slice(l0, l1));
   if (nl == null) { const cut = l1 < v.length ? l1 + 1 : Math.max(0, l0 - 1); return [v.slice(0, l0) + v.slice(l1 + 1), Math.min(l0, cut), Math.min(l0, cut)]; }
-  return [v.slice(0, l0) + nl + v.slice(l1), l0 + Math.min(nl.length, a - l0 + nl.length - (l1 - l0)), l0 + Math.min(nl.length, b - l0 + nl.length - (l1 - l0))];
+  // map a/b by the change on THEIR OWN line (per-line ops keep the line count), so a multi-line
+  // heading/quote/task keeps the selection on the same text now that the range survives (#160)
+  const ol = v.slice(l0, l1).split("\n"), ns = nl.split("\n");
+  const map = p => {
+    if (ol.length !== ns.length) return l0 + Math.max(0, Math.min(nl.length, p - l0 + nl.length - (l1 - l0)));
+    let i = 0, o = l0, n = l0;
+    while (i < ol.length - 1 && p > o + ol[i].length) { o += ol[i].length + 1; n += ns[i].length + 1; i++; }
+    return n + Math.max(0, Math.min(ns[i].length, p - o + ns[i].length - ol[i].length));
+  };
+  return [v.slice(0, l0) + nl + v.slice(l1), map(a), map(b)];
 });
 // R17.4 M46-M51 "Toggle checkbox status": a MODEL op (one row patched, Obsidian
 // caret rule), not a whole-document rewrite through the textarea shim.
