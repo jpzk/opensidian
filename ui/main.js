@@ -11096,8 +11096,15 @@ hkRebuild();
 const KEYNAMES = { arrowleft: "ArrowLeft", arrowright: "ArrowRight", arrowup: "ArrowUp", arrowdown: "ArrowDown",
   pageup: "PageUp", pagedown: "PageDown", tab: "Tab", enter: "Enter", escape: "Escape", backspace: "Backspace",
   delete: "Delete", home: "Home", end: "End", insert: "Insert", " ": "Space" };
+// #163: a chord string is "<mods>+<key>" and the KEY may itself be "+" (numpad plus, a hand-edited file):
+// split the known modifier prefixes off the front instead of splitting on "+", so "ctrl+shift++" keeps key "+".
+function chordSplit(ch) {
+  const mods = []; let k = String(ch || "");
+  for (let m; (m = /^(ctrl|alt|shift)\+(?=.)/.exec(k)); k = k.slice(m[0].length)) mods.push(m[1]);
+  return { mods, k };
+}
 function chordToFile(ch) {
-  const p = ch.split("+"); const k = p.pop();
+  const { mods: p, k } = chordSplit(ch);
   const mods = p.map(m => ({ ctrl: "Mod", alt: "Alt", shift: "Shift" }[m])).filter(Boolean);
   return { modifiers: mods, key: k.length === 1 || /^f\d+$/.test(k) ? k.toUpperCase() : KEYNAMES[k] || k };
 }
@@ -11123,12 +11130,21 @@ function hkSet(c, chords) {                 // set + collapse to "default" when 
   if (same) delete hkUser[c.id]; else hkUser[c.id] = chords;
   hkSave();
 }
-const chordLabel = ch => ch.split("+").map(k => k === "ctrl" ? "Ctrl" : k === "alt" ? "Alt" : k === "shift" ? "Shift"
-  : k.length === 1 ? k.toUpperCase() : (KEYNAMES[k] || k).replace(/^Arrow/, "").replace(/^./, x => x.toUpperCase())).join(" + ");
+// #163: Space is named ("Ctrl + Space", stock), not printed as a blank one-character key; the key part comes
+// from chordSplit, so a "+" key is labelled, not lost to the separator
+const chordLabel = ch => { const { mods, k } = chordSplit(ch);
+  return mods.map(m => m === "ctrl" ? "Ctrl" : m === "alt" ? "Alt" : "Shift").concat(
+    k === " " ? "Space" : k.length === 1 ? k.toUpperCase() : (KEYNAMES[k] || k).replace(/^Arrow/, "").replace(/^./, x => x.toUpperCase())).join(" + "); };
+// #163: stock 1.13.7 records a SHIFTED symbol by its physical key: Ctrl+Shift+= (e.key "+" on a US layout) is
+// saved as {"modifiers":["Mod","Shift"],"key":"="} and labelled "Ctrl + Shift + =". e.code names that key.
+const SHIFT_BASE = { Equal: "=", Minus: "-", BracketLeft: "[", BracketRight: "]", Backslash: "\\", Semicolon: ";",
+  Quote: "'", Comma: ",", Period: ".", Slash: "/", Backquote: "`", Digit0: "0", Digit1: "1", Digit2: "2", Digit3: "3",
+  Digit4: "4", Digit5: "5", Digit6: "6", Digit7: "7", Digit8: "8", Digit9: "9" };
 function chordOf(e) {                       // keydown -> normalised chord (null for bare modifiers)
   if (["Control", "Alt", "Shift", "Meta"].includes(e.key)) return null;
   let k = e.key.toLowerCase();
   if (e.code === "Tab") k = "tab";   // X11 shift+tab arrives as ISO_Left_Tab
+  if (e.shiftKey && SHIFT_BASE[e.code] && k.length === 1) k = SHIFT_BASE[e.code];   // #163: the physical key, as stock
   // Xvfb/xdotool synthesize every F-key with a spurious Mod1 latch (alt:true
   // on F1..F12, clean on letters) — drop alt for function keys so F2 binds.
   const alt = e.altKey && !/^F\d+$/.test(e.code);
