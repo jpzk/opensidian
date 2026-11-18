@@ -9,6 +9,7 @@
 
 pub mod http;
 pub mod store;
+pub mod tls;
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -24,6 +25,7 @@ use tokio::sync::Notify;
 
 pub use http::serve;
 pub use store::Store;
+pub use tls::{serve_tls, server_config};
 
 /// Server configuration (CLI flags in `main.rs`).
 #[derive(Debug, Clone)]

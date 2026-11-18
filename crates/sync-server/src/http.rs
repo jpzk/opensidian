@@ -75,7 +75,7 @@ where
         .await;
 }
 
-fn spawn_gc(app: Arc<App>) {
+pub(crate) fn spawn_gc(app: Arc<App>) {
     tokio::spawn(async move {
         let mut t = tokio::time::interval(GC_INTERVAL);
         loop {

@@ -15,18 +15,20 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use sync_server::{effective_uid, serve, App, Config};
+use sync_server::{effective_uid, serve, serve_tls, server_config, App, Config};
 
 const USAGE: &str = "opensidian-sync-server — self-host storage for Opensidian Sync (ciphertext only)
 
 USAGE:
   opensidian-sync-server serve --data DIR [--listen ADDR] [--max-object BYTES]
-                               [--retention-days N]
+                               [--retention-days N] [--tls-cert PEM --tls-key PEM]
   opensidian-sync-server vault create --data DIR [--quota BYTES] [--ttl-hours N]
   opensidian-sync-server --help | --version
 
-serve         run the /v1 API. Default --listen 127.0.0.1:8471. Plain HTTP is
-              accepted on loopback addresses only (put TLS in front otherwise).
+serve         run the /v1 API. Default --listen 127.0.0.1:8471. With --tls-cert
+              (PEM chain, leaf first) and --tls-key (PEM key) it speaks TLS 1.3
+              on the AWS-LC FIPS module. Without TLS only loopback addresses
+              are accepted.
 vault create  print a one-time enrollment token for a new vault (default
               valid 168 h). Hand it to the client's setup; there is no open
               registration.
@@ -45,6 +47,8 @@ struct Args {
     retention_days: Option<i64>,
     quota: Option<u64>,
     ttl_hours: i64,
+    tls_cert: Option<PathBuf>,
+    tls_key: Option<PathBuf>,
 }
 
 fn parse_flags(it: &mut dyn Iterator<Item = String>) -> Args {
@@ -55,6 +59,8 @@ fn parse_flags(it: &mut dyn Iterator<Item = String>) -> Args {
         retention_days: None,
         quota: None,
         ttl_hours: 168,
+        tls_cert: None,
+        tls_key: None,
     };
     while let Some(f) = it.next() {
         let mut val = || it.next().unwrap_or_else(|| die(&format!("{f} needs a value")));
@@ -67,6 +73,8 @@ fn parse_flags(it: &mut dyn Iterator<Item = String>) -> Args {
             }
             "--quota" => a.quota = Some(val().parse().unwrap_or_else(|_| die("bad --quota"))),
             "--ttl-hours" => a.ttl_hours = val().parse().unwrap_or_else(|_| die("bad --ttl-hours")),
+            "--tls-cert" => a.tls_cert = Some(PathBuf::from(val())),
+            "--tls-key" => a.tls_key = Some(PathBuf::from(val())),
             other => die(&format!("unknown flag {other}\n\n{USAGE}")),
         }
     }
@@ -105,8 +113,18 @@ fn main() {
     match cmd.as_str() {
         "serve" => {
             let a = parse_flags(&mut it);
-            if !a.listen.ip().is_loopback() {
-                die("plain HTTP only on loopback; terminate TLS in front or bind 127.0.0.1");
+            let tls = match (&a.tls_cert, &a.tls_key) {
+                (Some(c), Some(k)) => {
+                    let read = |p: &PathBuf| {
+                        std::fs::read(p).unwrap_or_else(|e| die(&format!("read {}: {e}", p.display())))
+                    };
+                    Some(server_config(&read(c), &read(k)).unwrap_or_else(|e| die(&e)))
+                }
+                (None, None) => None,
+                _ => die("--tls-cert and --tls-key go together"),
+            };
+            if tls.is_none() && !a.listen.ip().is_loopback() {
+                die("plain HTTP only on loopback; pass --tls-cert/--tls-key or bind 127.0.0.1");
             }
             let app = app(&a);
             let rt = tokio::runtime::Builder::new_multi_thread()
@@ -118,8 +136,17 @@ fn main() {
                     .await
                     .unwrap_or_else(|e| die(&format!("bind {}: {e}", a.listen)));
                 let addr = l.local_addr().map(|x| x.to_string()).unwrap_or_default();
-                println!("opensidian-sync-server listening on http://{addr}");
-                if let Err(e) = serve(app, l).await {
+                let r = match tls {
+                    Some(cfg) => {
+                        println!("opensidian-sync-server listening on https://{addr} (TLS 1.3, FIPS)");
+                        serve_tls(app, l, cfg).await
+                    }
+                    None => {
+                        println!("opensidian-sync-server listening on http://{addr}");
+                        serve(app, l).await
+                    }
+                };
+                if let Err(e) = r {
                     die(&format!("accept: {e}"));
                 }
             });
