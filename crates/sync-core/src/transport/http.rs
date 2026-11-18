@@ -345,6 +345,9 @@ fn read_response<S: Read>(s: &mut S) -> Result<Resp> {
     let mut chunk = [0u8; 4096];
     let split = loop {
         if let Some(p) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            if p > MAX_HEAD {
+                return Err(TransportError::Protocol("response header too large".into()));
+            }
             break p;
         }
         if buf.len() > MAX_HEAD {
