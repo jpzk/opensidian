@@ -225,6 +225,15 @@ Test fixture (not a crate): `crates/sync-server/tests/fixtures/test-{ca,leaf}.pe
 + `test-leaf.key` — throwaway P-256 CA + leaf (SAN localhost, 127.0.0.1,
 100 y validity) generated with the box's `openssl` 3.5.7 CLI; test-only key.
 
+### M4a/M4b — commit DAG + tip merge (sync-core): no new crate
+
+No crate added, Cargo.lock unchanged. The markdown three-way merge uses a
+hand-written diff-match-patch (`crates/sync-core/src/merge/dmp.rs`: Myers
+O(ND) line mode + char refinement, context patches, exact-match apply);
+the lock has no diff crate (no `similar`, `dissimilar`, `diff-match-patch*`,
+`imara-diff`) and adding one was rejected under "minimise new crates".
+Settings JSON merge uses the already pinned `serde_json =1.0.151`.
+
 ## Existing crates reused by the new sync crates
 
 Already in Cargo.lock at d999420; the new crates pin them exactly to the
@@ -254,6 +263,8 @@ only on `sync-proto` + `sync-crypto` (checked with `cargo tree -p sync-server`,
 log in the goal work dir).
 
 ## Declared, NOT added yet
+
+- diff-match-patch port — NOT added (M4b hand-written, see M4a/M4b above).
 
 - `aws-lc-rs` — ADDED in M2a (above, pin decision cmvp.md §7).
 - `rustls` with feature `fips` — ADDED in M3a-TLS (0.23.45). Was: 0.23.44 (2026-09-07) / 0.23.45
