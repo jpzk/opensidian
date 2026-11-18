@@ -17,3 +17,11 @@ sync-crypto = { path = "../sync-crypto" }
 sha2 = "=0.10.9"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
+# M2b: zstd body compression (spec §3.4 comp 0x01). Newest release >= 6 weeks old at
+# 2026-11-18 = zstd 0.14.0 / zstd-safe 8.0.0 / zstd-sys 2.1.0+zstd.1.5.7 (all 2026-09-04;
+# 0.14.1+ is from 2026-10-09, < 6 weeks). Default features off (no legacy-format decoder,
+# no dictionary builder); safe/sys pinned directly so the ^ requirements cannot float.
+# zstd-sys builds the vendored libzstd 1.5.7 with cc (already locked). docs/sync/deps.md.
+zstd = { version = "=0.14.0", default-features = false }
+zstd-safe = { version = "=8.0.0", default-features = false }
+zstd-sys = { version = "=2.1.0", default-features = false }

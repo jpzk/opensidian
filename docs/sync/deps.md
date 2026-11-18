@@ -70,6 +70,27 @@ OpenSSL for aws-lc-fips-sys) so CI reports exactly these, but whether
 distributing a GPL binary statically linking AWS-LC is acceptable is a
 licensing decision for the operator, not something this branch decides.
 
+### M2b — zstd body compression (sync-core)
+
+Direct (sync-core/Cargo.toml), all three pinned exact with default features
+off (no legacy-format decoder, no dictionary builder). The newer 0.14.1 /
+8.1.0 / 2.1.1 (2026-10-09) and later are < 6 weeks old. zstd-sys compiles
+the vendored libzstd 1.5.7 C sources with `cc` (already locked; no CMake,
+no pkg-config probe without its feature). Licence BSD-3-Clause (already in
+the deny.toml allow list).
+
+- `zstd =0.14.0` — 2026-09-04 — `bf06bd8162af0734b344780deb55b42a2429ae430870d13fcc12f238e880fe6e`
+  — BSD-3-Clause — inner body compression, spec §3.4 `comp = 0x01`
+  (`sync_core::object`, kept only when smaller; decode bounded at 64 MiB).
+- `zstd-safe =8.0.0` — 2026-09-04 — `ae42c0555055784c70058d19ba8e275528e8a99a706684868ace5da4e716a4ab`
+  — BSD-3-Clause — pinned directly so zstd's `^8.0.0` cannot float.
+- `zstd-sys =2.1.0+zstd.1.5.7` — 2026-09-04 — `0ef0a8027ec3ee71300ab3bcbcd0393f434aa72b91ca6d635a39941deae8eea0`
+  — BSD-3-Clause — pinned directly (`^2.1.0` would float to 2.1.3, 2026-11-12).
+
+Reused from the lock: cc 1.4.4, pkg-config 0.3.34 (build-deps of zstd-sys).
+Lock delta = exactly these 3 package blocks + the sync-core dependency list;
+cargo-vet exemptions added for the three.
+
 ## Toolchain (box only, FIPS build of aws-lc-fips-sys)
 
 Installed in user space under `/var/tmp/sync-e2e/toolchain` on the test box
@@ -115,7 +136,7 @@ locked version so nothing in the lock moves.
   binary canonical encoding of spec.md, not JSON).
 
 Per crate (direct deps): `sync-proto` → serde (dev: serde_json, JSON tests of the `/v1` bodies); `sync-crypto` → sha2, aws-lc-rs, aws-lc-fips-sys, zeroize (dev: serde_json, Wycheproof JSON);
-`sync-core` → sync-proto, sync-crypto, sha2, serde, serde_json; `syncd` →
+`sync-core` → sync-proto, sync-crypto, sha2, serde, serde_json, zstd, zstd-safe, zstd-sys; `syncd` →
 sync-core; `sync-server` → sync-proto, sync-crypto. The Cargo.lock delta of
 the skeleton is exactly the five path packages (`[[package]]` entries without
 `source`/`checksum`); no registry package is added, removed or moved.
@@ -129,7 +150,7 @@ log in the goal work dir).
 - `aws-lc-rs` — ADDED in M2a (above, pin decision cmvp.md §7).
 - `rustls` with feature `fips` — 0.23.44 (2026-09-07) / 0.23.45
   (2026-09-14) satisfy the age rule; 0.24.0-dev.* are pre-releases.
-- `zstd`, `axum`/`hyper`, `rusqlite` (plan §1/§6) — M3+; not evaluated yet.
+- `axum`/`hyper`, `rusqlite` (plan §1/§6) — M3+; not evaluated yet (zstd: added in M2b above).
 
 Checksums for the declared-not-added crates are recorded only when they are
 actually added (from the Cargo.lock that adds them).
