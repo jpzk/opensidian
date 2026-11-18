@@ -161,3 +161,40 @@ aws-lc-fips-sys in FIPS mode requires CMake, Go **and Perl**
 (`aws-lc/CMakeLists.txt`: "Building AWS-LC for FIPS requires Go and Perl")
 plus a C compiler; C++ is not needed (tests/libssl off). Pinned versions and
 sha256 are in deps.md. Nothing is installed on the development VM.
+
+## 8. M2d: raw key import + phrase-derived keys (open questions 2, 10, 12)
+
+Checked on the box against the pinned code (aws-lc-rs 1.18.1 source in the
+cargo registry, AWS-LC 4.2.0 FIPS build) and by tests that run in FIPS mode
+(`crates/sync-crypto/tests/p256_derive.rs`, `try_fips_mode()` asserted).
+
+- **Q10 — raw private-key import in FIPS mode: permitted by the module.**
+  aws-lc-rs exposes `EcdsaKeyPair::from_private_key_der` (RFC 5208 / RFC
+  5915) and `from_private_key_and_public_key` (raw big-endian scalar +
+  point). With the `fips` feature, `from_private_key_der` calls
+  `validate_ec_evp_key` → `EC_KEY_check_fips` (pairwise-consistency test)
+  before the key is usable [V: source, ec/key_pair.rs]. We use the RFC 5915
+  path without a public key (AWS-LC computes Q = d·G), so no
+  caller-supplied point is trusted. Box test: d = 1 yields Q = G, d = n − 1
+  yields −G, d ∈ {0, n, n+1, 2²⁵⁶−1} is rejected (range guard before the
+  import), an imported key signs and
+  verifies and survives a PKCS#8 round trip.
+- **Decision: K_destroy and K_rsig stay derived from the phrase** (no switch
+  to module-generated keys). Reason: destroy (spec §5) and cfg recovery must
+  be provable from the backup words alone on a fresh device; a
+  module-generated key whose private half lives only on one device cannot
+  do that. Device signing keys and VK are still module-generated (DRBG).
+- **Q12 — P-256 scalar derivation:** counter-retry kept, but re-shaped to
+  the FIPS 186-5 A.2.2 arithmetic (accept c ≤ n − 2, d = c + 1; uniform on
+  [1, n − 1]); candidate bits = HKDF-SHA256 in the module (SP 800-56C). The
+  difference to A.2.2 is the bit source (KDF of a high-entropy secret, not
+  RBG output). For the security policy this is an **SSP entered into the
+  module**, the case the #5314 caveat gives "no assurance" for. Recorded,
+  not hidden: when a certificate exists (§7), the claim is "approved
+  algorithms, keys derived outside the A.2 generation service".
+- **Q2 — certificate scope:** closed for v1 by §7: the pinned module (AWS-LC
+  4.2.0) has **no certificate**, so the #5314 SP-version / tested-environment
+  questions do not apply to this pin. Follow-up before any release: when the
+  AWS-LC 4 certificate issues, check that its SP lists 4.2.0 (or move the
+  pin), its tested environments (Linux x86_64 / aarch64 glibc), whether it
+  lists EdDSA (→ suite 0x01), and whether its caveats change the Q12 note.

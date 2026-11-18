@@ -9,11 +9,12 @@ settled when the crypto pin is chosen.
 1. **Android FIPS** — deferred (plan §4 options A desktop-only /
    B platform crypto / C fleet). Default: Android out of scope until M7.
    Operator.
-2. **CMVP cert** — AWS-LC version, algorithms (EdDSA?), environments,
-   expiry. Partly answered in cmvp.md: #5314 (AWS-LC 3, static) lists
-   EdDSA, sunset 2031-06-04; aws-lc-rs 1.18.x vendors AWS-LC 4.x which is
-   only in process. Still open: SP version string vs 3.6.0, tested
-   environments. M2 review.
+2. **CMVP cert** — **RESOLVED (M2d, cmvp.md §7–8):** the pinned module
+   (aws-lc-rs 1.18.1 → AWS-LC 4.2.0) is IN PROCESS, no certificate, so no
+   FIPS 140-3 claim may be made; no cert covers Ed25519 → suite v1 = ECDSA
+   P-256. The #5314 SP-version / tested-environment questions do not apply
+   to this pin. Follow-up before any release: re-check the AWS-LC 4
+   certificate (SP lists 4.2.0?, environments, EdDSA, caveats).
 3. **Mobile data default** — suggestion: commits + files < 1 MB auto, rest
    on Wi-Fi/on demand. Operator.
 4. **Self-hosting without a domain** (SPKI pinning) in v1? Default: spec
@@ -34,19 +35,22 @@ settled when the crypto pin is chosen.
    39-byte AAD, so a header-byte flip cannot reinterpret a segment under a
    different container format. Small deviation from the binding plan;
    needs a yes/no. Default: included. Operator / M8 review.
-10. **Raw private-key import in FIPS mode** — K_destroy and device signing
-    seeds are derived by HKDF from S (key-tree.md §2), i.e. imported into
-    the module as raw bytes. Cert #5314's caveat gives "no assurance" for
-    externally loaded SSPs; unknown whether approved mode permits it at
-    all. Fallback: module-generated signing keys + store only the public
-    key (loses re-derivation from the phrase for K_destroy). M2 review.
+10. **Raw private-key import in FIPS mode** — **RESOLVED (M2d, cmvp.md §8):**
+    the module accepts a raw P-256 scalar in FIPS mode (RFC 5915 import,
+    AWS-LC computes Q, `EC_KEY_check_fips` pairwise test), proven on the box
+    by `crates/sync-crypto/tests/p256_derive.rs`. Decision: K_destroy and
+    K_rsig stay phrase-derived (destroy + recovery must work from the words
+    alone on a fresh device); device signing keys and VK stay
+    module-generated. Recorded as an "SSP entered into the module" (the
+    caveat case), not hidden.
 11. **History store encryption at rest** — M1 stores snapshots in
     plaintext under the app data dir (parity with the vault itself, which
     is plaintext). Option: wrap with a keystore-held key. Default:
     plaintext, documented in threat-model.md (T6). Operator.
-12. **P-256 scalar derivation** — counter-retry HKDF (key-tree.md §2) is
-    ours, not a NIST procedure; acceptable only if raw import (10) is.
-    M2 review.
+12. **P-256 scalar derivation** — **RESOLVED (M2d, key-tree.md §2):**
+    counter-retry HKDF kept (raw import is permitted, see 10), re-shaped to
+    the FIPS 186-5 A.2.2 arithmetic (accept c ≤ n − 2, d = c + 1); the bit
+    source is module HKDF instead of an RBG, noted in cmvp.md §8.
 
 ## Raised while building M1 (file history)
 

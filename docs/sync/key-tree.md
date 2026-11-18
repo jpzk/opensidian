@@ -43,10 +43,24 @@ K_destroy = HKDF(R, salt=00*32, info="osy destroy v1", 32)  destroy signing seed
 
 No memory-hard KDF: S has 142 bits of entropy (not a password), so
 brute force is out of reach; HKDF keeps everything inside the module.
-Signing seeds: Ed25519 seed directly (suite 0x01); for P-256 (suite 0x02)
-the scalar is `HKDF(seed, info="osy p256 v1" || u8 ctr, 32)` with ctr
-incremented until 1 ≤ d < n. Open question: whether the module exposes
-private-key import from raw bytes in FIPS mode (cmvp.md).
+Signing seeds: Ed25519 seed directly (suite 0x01, reserved); for P-256
+(suite 0x02, v1) the scalar follows the arithmetic of FIPS 186-5 A.2.2
+(rejection sampling):
+
+```
+c_ctr = HKDF(seed, salt=00*32, info="osy p256 v1" || u8 ctr, 32)   ctr = 0, 1, …
+first c_ctr with c_ctr ≤ n − 2 wins;  d = c_ctr + 1   (so 1 ≤ d ≤ n − 1)
+```
+
+(a candidate is rejected with p ≈ 2⁻³², after 256 rejections the provider
+is treated as broken). The scalar enters the module as an RFC 5915
+ECPrivateKey; AWS-LC computes Q = d·G and runs its FIPS pairwise-consistency
+check. Resolved in M2d (open questions 10 + 12, cmvp.md §8): K_destroy and
+K_rsig stay phrase-derived. Implementation: `sync_crypto::keytree`
+(`derive_root`, `p256_scalar_from_seed`) + `fips::FipsSigningKey::from_seed`;
+tests in `crates/sync-crypto/tests/p256_derive.rs` (d = 1 → G,
+d = n − 1 → −G, out-of-range rejected, retry path, FIPS vs soft HKDF chain,
+fresh-device re-derivation from words).
 
 ## 3. Vault key VK (random, not derived)
 
