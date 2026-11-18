@@ -8,6 +8,23 @@ license = "GPL-3.0-or-later"
 # canvasfs, datefmt) as a tauri-free library so the cargo-fuzz harness can
 # link them (it lives in jpzk/opensidian-harness, fuzz dir). The bin
 # (main.rs) keeps its name "opensidian" and uses this lib.
+# Opensidian Sync (docs/sync/) — src-tauri/ is the workspace ROOT so Cargo.lock and
+# target/ stay where CI, the release build and the harness expect them; the sync crates
+# live in ../crates/* and point back here with `package.workspace`. default-members = the
+# app only, so `cargo build/test --locked` in src-tauri/ is unchanged; the sync crates are
+# built with `-p <crate>` or `--workspace`. They add NO crate to Cargo.lock beyond
+# themselves (docs/sync/deps.md).
+[workspace]
+members = [
+    ".",
+    "../crates/sync-proto",
+    "../crates/sync-crypto",
+    "../crates/sync-core",
+    "../crates/syncd",
+    "../crates/sync-server",
+]
+default-members = ["."]
+
 [lib]
 name = "opensidian_lib"
 path = "src/lib.rs"

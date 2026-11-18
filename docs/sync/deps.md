@@ -33,6 +33,12 @@ locked version so nothing in the lock moves.
   — history index file, debug encodings only (the wire format is the
   binary canonical encoding of spec.md, not JSON).
 
+Per crate (direct deps): `sync-proto` → serde; `sync-crypto` → sha2;
+`sync-core` → sync-proto, sync-crypto, sha2, serde, serde_json; `syncd` →
+sync-core; `sync-server` → sync-proto, sync-crypto. The Cargo.lock delta of
+the skeleton is exactly the five path packages (`[[package]]` entries without
+`source`/`checksum`); no registry package is added, removed or moved.
+
 Each new crate only uses the subset it needs; `sync-server` may depend
 only on `sync-proto` + `sync-crypto` (checked with `cargo tree -p sync-server`,
 log in the goal work dir).

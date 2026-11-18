@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# sync-core: engine library — M1 = local file history (content-addressed store outside the vault).
+# Workspace member; the workspace root is src-tauri/ (keeps src-tauri/Cargo.lock
+# and src-tauri/target where CI and the harness expect them). Dependencies are
+# pinned exact to versions ALREADY in src-tauri/Cargo.lock — see docs/sync/deps.md.
+[package]
+name = "sync-core"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+workspace = "../../src-tauri"
+
+[dependencies]
+sync-proto = { path = "../sync-proto" }
+sync-crypto = { path = "../sync-crypto" }
+sha2 = "=0.10.9"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"

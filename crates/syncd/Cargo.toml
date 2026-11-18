@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# syncd: opensidian-syncd, the client daemon/CLI shell around sync-core (M6). Stub.
+# Workspace member; the workspace root is src-tauri/ (keeps src-tauri/Cargo.lock
+# and src-tauri/target where CI and the harness expect them). Dependencies are
+# pinned exact to versions ALREADY in src-tauri/Cargo.lock — see docs/sync/deps.md.
+[package]
+name = "syncd"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+workspace = "../../src-tauri"
+
+[dependencies]
+sync-core = { path = "../sync-core" }
+
+[[bin]]
+name = "opensidian-syncd"
+path = "src/main.rs"

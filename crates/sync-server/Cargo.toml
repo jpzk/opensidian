@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# sync-server: opensidian-sync-server, self-host storage (M3). Ciphertext only, no keys.
+# HARD RULE (plan §1): depends ONLY on sync-proto + sync-crypto — no Tauri, no sync-core.
+# Workspace member; the workspace root is src-tauri/ (keeps src-tauri/Cargo.lock
+# and src-tauri/target where CI and the harness expect them). Dependencies are
+# pinned exact to versions ALREADY in src-tauri/Cargo.lock — see docs/sync/deps.md.
+[package]
+name = "sync-server"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+workspace = "../../src-tauri"
+
+[dependencies]
+sync-proto = { path = "../sync-proto" }
+sync-crypto = { path = "../sync-crypto" }
+
+[[bin]]
+name = "opensidian-sync-server"
+path = "src/main.rs"
