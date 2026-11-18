@@ -63,3 +63,15 @@ settled when the crypto pin is chosen.
   vectors need no new deps. It must never become the release provider: the
   FIPS backend replaces it wholesale. Should a release build refuse to
   start sync when `fips_mode()` is false, or only warn?
+- **History per save.** The app journals every save (pre-write + own-save,
+  deduplicated by content), so a long typing session keeps one version per
+  autosave until thinning (24 h keep-all). Stock Sync and File Recovery
+  snapshot at an interval instead. Options: keep the invariant and rely on
+  thinning, or route own saves through the idle `Debouncer` and keep only
+  the pre-write invariant for external/overwrite cases.
+- **Attachments + config in history.** M1 wires notes only. Media writes
+  (`pasteimg`, `media_rename`, canvas) need hooks of their own, plus a
+  decision on the 14-day attachment rule vs. disk use.
+- **Vault id minting.** History mints the treefold vault id on the first
+  save, which writes `~/.opensidian.json`. If e2e tests assert that file
+  is untouched after a save, they will see the new `vault_ids` entry.

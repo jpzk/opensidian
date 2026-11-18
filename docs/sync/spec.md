@@ -350,3 +350,34 @@ the only allowed head change is a deleted path vanishing.
   see threat model).
 - a purged newest record's `seq` may be reused after reopen; UIs must
   re-list after purge.
+
+### 6.5 App wiring (src-tauri/src/filehist.rs)
+
+- one store per process at `~/.local/share/dev.koto.opensidian/history/<vault id>/`
+  (inside the Landlock write roots, outside the vault); the vault id is the
+  treefold `vault_ids` entry of `~/.opensidian.json`, minted on the first
+  history write. `OPENSIDIAN_HISTORY=0` disables history
+- hooks, one call site per writer:
+  - `write_note_in`, `update_links_in`: `snapshot_before_overwrite` →
+    atomic write → `record_own_save`
+  - `create_note_in`: `record_own_save`
+  - `move_note_in`: `record_rename` after the move succeeds
+  - `delete_note_in`: `snapshot_before_delete` before the `.trash` move
+    (re-journaled `external` if the move fails)
+  - watcher tick: `record_external` for added/modified/removed notes,
+    `record_rename` for pairs the watcher matched
+- best effort: hook errors are logged (`[history]`) and never fail the
+  save; a store that cannot open turns history off for the session
+- lock order: index mutex → history mutex; the watcher calls in with no
+  index lock held
+- commands: `history_list(name)`, `history_read(seq)`,
+  `history_restore(seq)`, `history_deleted()`,
+  `history_restore_deleted(name)`, `history_purge(name, seq?)`. Restores
+  go through the app's hardened writers (`write_note_in` / `create_note_in`,
+  fd-relative, O_NOFOLLOW), not `Store::restore`, so the pre-write snapshot
+  and index == disk hold; `history_restore_deleted` refuses if the path
+  exists again
+- M1 limits: notes (`.md`) only — attachments, canvas and `.obsidian/`
+  config are not journaled yet; idle snapshots (`Debouncer`) are not
+  scheduled by the app (every save is already journaled); thinning runs
+  once when the store opens

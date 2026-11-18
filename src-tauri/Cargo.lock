@@ -2388,6 +2388,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "soup3",
+ "sync-core",
  "tauri",
  "tauri-build",
  "url",

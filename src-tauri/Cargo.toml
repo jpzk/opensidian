@@ -82,6 +82,11 @@ url = "=2.5.8"
 #   hand-parsed in updates.rs (strict: v4, EdDSA, binary sig, pinned fingerprint).
 ed25519-compact = { version = "=2.4.2", default-features = false }
 
+# Sync M1 — local file history (src/filehist.rs). A WORKSPACE PATH crate
+# (../crates/sync-core), no registry crate: its own deps (serde, serde_json,
+# sha2) are the versions already locked above. docs/sync/deps.md.
+sync-core = { path = "../crates/sync-core" }
+
 # R33.6b — the POSITIVE session test behind the two-path drag (win_move_proto).
 # Both crates are ALREADY in Cargo.lock as tauri's own transitive deps (tauri ->
 # tao -> gtk/gdk/gdkx11 0.18.2), so naming them here resolves to the versions the

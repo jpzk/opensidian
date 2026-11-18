@@ -23,6 +23,7 @@ mod builtins;
 mod callout; // #59: Obsidian callouts in the reading render
 use opensidian_lib::canvasfs;
 mod cfgstore;
+mod filehist; // sync M1: local file history (sync-core) outside the vault — docs/sync/spec.md §6
 mod consent; // spawn-consent: native GTK prompts before trusting a vault and before every plugin spawn
 mod clip; // #37 C3-3: the editor menu clipboard rows (GTK CLIPBOARD, text only)
 mod mdtable; // #37 C3-7: the LP table menu (Row/Column/Sort/Align) as text transforms
@@ -92,6 +93,38 @@ struct Vault {
 
 fn cur_vault(v: &Vault) -> Option<PathBuf> {
     v.root.get().cloned()
+}
+
+/* sync M1 (docs/sync/spec.md §6): the local file history of the open vault.
+   Hooks sit INSIDE the note writers (write_note_in, create_note_in,
+   update_links_in, move_note_in, delete_note_in) and the watcher tick, so
+   every path that changes a note's bytes is covered by one call site each.
+   Best effort (filehist.rs): a history failure is logged, never returned. */
+static FILEHIST: filehist::FileHist = filehist::FileHist::new();
+
+/// (app data dir, vault id) for the history store of `root`. The id is the
+/// treefold vault id (minted on the first history write, like the first fold
+/// record). OPENSIDIAN_HISTORY=0 turns history off.
+#[cfg(not(test))]
+fn hist_locate(root: &Path) -> Option<(PathBuf, String)> {
+    if std::env::var("OPENSIDIAN_HISTORY").is_ok_and(|v| v == "0") {
+        return None;
+    }
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    Some((home.join(migrate::NEW_DATA), vault_id_for(root, true)?))
+}
+
+/* Under `cargo test` the main.rs tests drive the writers against throwaway
+   vaults and must never write into $HOME or ~/.opensidian.json: history is OFF
+   unless a test sets its own app-data dir on ITS thread (thread-local, so
+   parallel tests never see each other's store). */
+#[cfg(test)]
+thread_local! {
+    static HIST_TEST_DATA: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+fn hist_locate(_root: &Path) -> Option<(PathBuf, String)> {
+    HIST_TEST_DATA.with(|d| d.borrow().clone()).map(|d| (d, "test-vault".to_string()))
 }
 
 /* vaultbleed: a named point INSIDE a root+index critical path, where a test
@@ -1363,7 +1396,10 @@ fn write_note_in(root: &Path, ix: &mut Index, name: &str, content: &str) -> Resu
     // parent is refused), a RANDOM O_EXCL sibling temp (a planted `X.md.tmp`
     // symlink is never opened), fsync, renameat in the same parent fd.
     // Failure leaves the OLD file intact.
+    // sync M1: the bytes about to be replaced go into history FIRST
+    FILEHIST.pre_write(root, &hist_locate, &frel);
     vaultfs::write_atomic(root, &frel, content.as_bytes()).map_err(|e| e.to_string())?;
+    FILEHIST.own_save(root, &hist_locate, &frel);
     // index == disk: reparse this note, patch its outgoing edges
     // (a NEW key triggers a full in-memory edge rebuild inside upsert)
     ix.upsert(&rel.display().to_string(), content);
@@ -1416,6 +1452,7 @@ fn create_note_in(root: &Path, ix: &mut Index, name: &str, content: &str) -> Res
         })?;
     f.write_all(content.as_bytes()).map_err(|e| e.to_string())?;
     f.sync_all().map_err(|e| e.to_string())?;
+    FILEHIST.own_save(root, &hist_locate, &frel);
     ix.upsert(&rel.display().to_string(), content);
     Ok(())
 }
@@ -1478,6 +1515,8 @@ fn move_note_in(root: &Path, ix: &mut Index, old: &str, new: &str) -> Result<(us
                 e.to_string()
             }
         })?;
+    // sync M1: one `rename` record, after the move is a fact on disk
+    FILEHIST.renamed(root, &hist_locate, &ofr, &nfr);
     // index==disk invariant: if the key is somehow missing, seed it from the
     // moved file rather than dropping the note
     let fallback = if ix.content(&okey).is_none() { fs::read_to_string(&np).ok() } else { None };
@@ -1508,7 +1547,12 @@ fn update_links_in(root: &Path, ix: &mut Index, old: &str, new: &str) -> usize {
         // swapped parent are skipped); the write itself is the fd-relative
         // atomic replace, which refuses the same things again at write time.
         let Some(frel) = note_rel(&n) else { continue };
-        if vfs.is_file(&frel) && vfs.write_atomic(&frel, c.as_bytes(), false).is_ok() {
+        if !vfs.is_file(&frel) {
+            continue;
+        }
+        FILEHIST.pre_write(root, &hist_locate, &frel);
+        if vfs.write_atomic(&frel, c.as_bytes(), false).is_ok() {
+            FILEHIST.own_save(root, &hist_locate, &frel);
             wrote += 1;
         }
     }
@@ -1888,6 +1932,9 @@ fn delete_note_in(root: &Path, ix: &mut Index, name: &str) -> Result<String, Str
         return Err("no such note".into());
     }
     let tdir = Path::new(TRASH_DIR);
+    // sync M1: final bytes + tombstone BEFORE the note leaves its path, so
+    // "restore deleted" works even after .trash is emptied
+    FILEHIST.pre_delete(root, &hist_locate, &frel);
     // audit #6: a symlinked (or swapped) .trash is refused, never written through
     vaultfs::Vault::open(root)
         .and_then(|vfs| {
@@ -1904,7 +1951,11 @@ fn delete_note_in(root: &Path, ix: &mut Index, name: &str) -> Result<String, Str
             ix.remove(&key);
             dest.display().to_string()
         })
-        .map_err(|e| format!("cannot move the note to the vault trash: {e}"))
+        .map_err(|e| {
+            // the note is still where it was: journal it live again
+            FILEHIST.external(root, &hist_locate, &frel);
+            format!("cannot move the note to the vault trash: {e}")
+        })
 }
 
 /// R24.7: the explorer's Delete, behind the confirmation the UI raises. The
@@ -1915,6 +1966,102 @@ fn delete_note(v: State<Vault>, name: String, otel: Option<perf::Ctx>) -> Result
     let root = cur_vault(&v).ok_or("no vault open")?;
     let mut ix = v.index.lock().unwrap();
     span_timed!(otel => "delete_note", delete_note_in(&root, &mut ix, &name))
+}
+
+/* sync M1: file history commands (docs/sync/spec.md §6). Notes only in M1 —
+   the watcher and the hooks only see `.md` notes; attachments are a TODO
+   (docs/sync/open-questions.md). A restore never writes through the store's
+   own path join: the bytes are read out of history and written by the SAME
+   hardened writers a save uses (write_note_in / create_note_in), so the
+   previous on-disk bytes are snapshotted first and the index stays == disk. */
+fn hist_note_key(name: &str) -> Result<String, String> {
+    note_rel(name).as_deref().and_then(filehist::key).ok_or_else(|| "invalid name".to_string())
+}
+
+/// `sub/N.md` -> `sub/N`; anything that is not a note is refused.
+fn hist_note_name(path: &str) -> Result<&str, String> {
+    path.strip_suffix(".md").filter(|n| safe_rel(n).is_some()).ok_or_else(|| format!("not a note: {path}"))
+}
+
+fn hist_run<R>(v: &Vault, f: impl FnOnce(&mut sync_core::history::Store) -> R) -> Result<R, String> {
+    let root = cur_vault(v).ok_or("no vault open")?;
+    FILEHIST.with(&root, &hist_locate, f).ok_or_else(|| "file history is unavailable".to_string())
+}
+
+/// Every recorded version of note `name`, oldest first.
+#[tauri::command]
+fn history_list(v: State<Vault>, name: String) -> Result<Vec<sync_core::history::Entry>, String> {
+    let k = hist_note_key(&name)?;
+    hist_run(&v, |s| s.versions(&k))
+}
+
+/// The bytes of version `seq` (lossy UTF-8: a preview, never written back).
+#[tauri::command]
+fn history_read(v: State<Vault>, seq: u64) -> Result<String, String> {
+    let b = hist_run(&v, |s| s.read_version(seq))?.map_err(|e| e.to_string())?;
+    Ok(String::from_utf8_lossy(&b).into_owned())
+}
+
+/// Write version `seq` back over its note (current bytes are kept as a
+/// pre-write version first). Returns the note name.
+#[tauri::command]
+fn history_restore(v: State<Vault>, seq: u64) -> Result<String, String> {
+    let (path, bytes) = hist_run(&v, |s| -> Result<_, String> {
+        let e = s.entry(seq).cloned().ok_or_else(|| format!("no version {seq}"))?;
+        Ok((e.path, s.read_version(seq).map_err(|e| e.to_string())?))
+    })??;
+    let name = hist_note_name(&path)?.to_string();
+    let content = String::from_utf8(bytes).map_err(|_| "version is not UTF-8 text".to_string())?;
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    let mut ix = v.index.lock().unwrap();
+    write_note_in(&root, &mut ix, &name, &content)?;
+    Ok(name)
+}
+
+/// Notes whose last record is a delete (newest tombstone each).
+#[tauri::command]
+fn history_deleted(v: State<Vault>) -> Result<Vec<sync_core::history::Entry>, String> {
+    hist_run(&v, |s| s.deleted().into_iter().filter(|e| hist_note_name(&e.path).is_ok()).collect())
+}
+
+/// Bring a deleted note back from its newest version that has bytes. Refused
+/// (`exists`) if something is at that path again — never clobbers.
+#[tauri::command]
+fn history_restore_deleted(v: State<Vault>, name: String) -> Result<(), String> {
+    use sync_core::history::Head;
+    let k = hist_note_key(&name)?;
+    let bytes = hist_run(&v, |s| -> Result<Vec<u8>, String> {
+        if !matches!(s.head(&k), Some(Head::Deleted { .. })) {
+            return Err(format!("{name} is not a deleted note"));
+        }
+        let e = s.versions(&k).into_iter().rev().find(|e| e.sha.is_some()).ok_or("no stored bytes")?;
+        s.read_version(e.seq).map_err(|e| e.to_string())
+    })??;
+    let content = String::from_utf8(bytes).map_err(|_| "version is not UTF-8 text".to_string())?;
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    let mut ix = v.index.lock().unwrap();
+    create_note_in(&root, &mut ix, &name, &content)
+}
+
+#[derive(serde::Serialize)]
+struct Purged {
+    dropped: usize,
+    rewritten: usize,
+    blobs_removed: usize,
+}
+
+/// Purge ONE version (`seq`) or, without it, every record of note `name`.
+/// Irreversible: the UI confirms first. Version numbers may be reused after a
+/// purge (spec §6.4) — re-list afterwards.
+#[tauri::command]
+fn history_purge(v: State<Vault>, name: String, seq: Option<u64>) -> Result<Purged, String> {
+    let k = hist_note_key(&name)?;
+    let r = hist_run(&v, |s| match seq {
+        Some(q) if s.entry(q).is_some_and(|e| e.path == k) => s.purge_version(q).map_err(|e| e.to_string()),
+        Some(q) => Err(format!("version {q} is not a version of {name}")),
+        None => s.purge_path(&k).map_err(|e| e.to_string()),
+    })??;
+    Ok(Purged { dropped: r.dropped, rewritten: r.rewritten, blobs_removed: r.blobs_removed })
 }
 
 #[tauri::command]
@@ -3890,17 +4037,22 @@ fn mint_vault_id() -> Option<String> {
 fn vault_id(v: State<Vault>, mint: Option<bool>) -> Option<String> {
     span_timed!("vault_id", (|| -> Option<String> {
         let root = cur_vault(&v)?;
-        let key = fs::canonicalize(&root).unwrap_or(root).display().to_string();
-        if let Some(id) = cfg_value()["vault_ids"][key.as_str()].as_str() {
-            return Some(id.to_string());
-        }
-        if !mint.unwrap_or(false) {
-            return None;
-        }
-        cfg_update(&[cfgstore::Op::InsertIn("vault_ids".into(), key.clone(), serde_json::json!(mint_vault_id()?))]);
-        // re-read: a racing window may have won the insert, its id is THE id
-        cfg_value()["vault_ids"][key.as_str()].as_str().map(str::to_string)
+        vault_id_for(&root, mint.unwrap_or(false))
     })())
+}
+
+/// The vault id of `root` (also the history store key, filehist.rs).
+fn vault_id_for(root: &Path, mint: bool) -> Option<String> {
+    let key = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf()).display().to_string();
+    if let Some(id) = cfg_value()["vault_ids"][key.as_str()].as_str() {
+        return Some(id.to_string());
+    }
+    if !mint {
+        return None;
+    }
+    cfg_update(&[cfgstore::Op::InsertIn("vault_ids".into(), key.clone(), serde_json::json!(mint_vault_id()?))]);
+    // re-read: a racing window may have won the insert, its id is THE id
+    cfg_value()["vault_ids"][key.as_str()].as_str().map(str::to_string)
 }
 
 #[tauri::command]
@@ -6814,8 +6966,27 @@ fn watch_tick(v: &Vault, prev: &mut Option<(PathBuf, watcher::Snapshot)>) -> wat
         }
         _ => watcher::Change::default(),
     };
+    hist_external(&root, &change);
     *prev = Some((root, cur));
     change
+}
+
+/* sync M1 external-edit capture: what the watcher reports as external (our own
+   writes never reach a Change — reconcile drops them by content) goes into
+   history. Runs with NO index lock held (lock order, filehist.rs). A removal
+   becomes a tombstone carrying the last captured bytes; the store's own
+   10 s delete+create pairing also catches moves the watcher left unpaired. */
+fn hist_external(root: &Path, c: &watcher::Change) {
+    for n in c.added.iter().chain(&c.modified).chain(&c.removed) {
+        if let Some(rel) = note_rel(n) {
+            FILEHIST.external(root, &hist_locate, &rel);
+        }
+    }
+    for (o, n) in &c.renamed {
+        if let (Some(a), Some(b)) = (note_rel(o), note_rel(n)) {
+            FILEHIST.renamed(root, &hist_locate, &a, &b);
+        }
+    }
 }
 
 /* ---------- R33 frameless window: the app draws its own frame ----------
@@ -8049,7 +8220,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, canvas_io, canvas_attach, paste_image, audio_token, audio_arm, audio_disarm, audio_end, audio_save, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_title, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, bm_add_view, bm_add_view_at, bm_remove, bm_graph_patch, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts, props_index, props_mode, props_notes, props_types, set_prop_type, set_props_mode,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_title, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, bm_add_view, bm_add_view_at, bm_remove, bm_graph_patch, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, history_list, history_read, history_restore, history_deleted, history_restore_deleted, history_purge, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts, props_index, props_mode, props_notes, props_types, set_prop_type, set_props_mode,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
             read_workspace, write_workspace, wsm_list, wsm_get, wsm_op,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
@@ -8368,6 +8539,55 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("sub")).unwrap();
         root
+    }
+
+    /* sync M1 wiring: every note writer and the watcher feed file history,
+       and the history lives outside the vault. */
+    #[test]
+    fn sync_m1_note_writers_and_watcher_feed_file_history() {
+        use sync_core::history::{Config, Head, Reason, Store};
+        let root = tmp_vault("filehist");
+        let data = std::env::temp_dir().join(format!("opensidian-filehist-data-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&data);
+        fs::create_dir_all(&data).unwrap();
+        HIST_TEST_DATA.with(|d| *d.borrow_mut() = Some(data.clone()));
+        let mut ix = Index::build(&root);
+        create_note_in(&root, &mut ix, "N", "v0").unwrap();
+        write_note_in(&root, &mut ix, "N", "v1").unwrap();
+        // an outside writer the watcher has not seen yet: the next save must
+        // still snapshot these bytes before replacing them
+        fs::write(root.join("N.md"), "sneaky").unwrap();
+        write_note_in(&root, &mut ix, "N", "v2").unwrap();
+        move_note_in(&root, &mut ix, "N", "sub/M").unwrap();
+        fs::write(root.join("sub/M.md"), "ext").unwrap();
+        hist_external(&root, &watcher::Change { modified: vec!["sub/M".into()], ..Default::default() });
+        delete_note_in(&root, &mut ix, "sub/M").unwrap();
+        HIST_TEST_DATA.with(|d| *d.borrow_mut() = None);
+
+        let s = Store::open(&data, "test-vault", &root, Config::default()).unwrap();
+        let got: Vec<(Reason, &str)> = s.entries().iter().map(|e| (e.reason, e.path.as_str())).collect();
+        assert_eq!(
+            got,
+            vec![
+                (Reason::OwnSave, "N.md"),
+                (Reason::OwnSave, "N.md"),
+                (Reason::PreWrite, "N.md"),
+                (Reason::OwnSave, "N.md"),
+                (Reason::Rename, "sub/M.md"),
+                (Reason::External, "sub/M.md"),
+                (Reason::Delete, "sub/M.md"),
+            ]
+        );
+        let bytes = |i: usize| s.read_version(s.entries()[i].seq).unwrap();
+        assert_eq!(bytes(0), b"v0");
+        assert_eq!(bytes(2), b"sneaky");
+        assert_eq!(bytes(6), b"ext", "the tombstone carries the final bytes");
+        assert!(matches!(s.head("sub/M.md"), Some(Head::Deleted { .. })));
+        assert_eq!(s.deleted().len(), 1);
+        assert!(!root.join("history").exists() && !root.join("objects").exists(), "history leaked into the vault");
+        assert!(hist_note_name("sub/M.md").is_ok() && hist_note_name("img.png").is_err());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&data);
     }
 
     /* goal insdate REQ-3/REQ-4: templates.json is read per key, never written. */
