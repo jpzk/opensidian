@@ -638,6 +638,10 @@ criteria = "safe-to-deploy"
 version = "0.4.1"
 criteria = "safe-to-deploy"
 
+[[exemptions.jobserver]]
+version = "0.1.35"
+criteria = "safe-to-deploy"
+
 [[exemptions.js-sys]]
 version = "0.3.104"
 criteria = "safe-to-deploy"
