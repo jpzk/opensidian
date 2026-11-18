@@ -901,7 +901,7 @@ SOFTWARE.
 **Used in:** `ui/vendor/codemirror/cm6.js` — one generated bundle of the packages below,
 the engine of the note editor (source mode and Live Preview).
 **Upstream:** https://codemirror.net, https://lezer.codemirror.net (npm registry tarballs;
-versions, publish dates and sha512 integrity in `ui/vendor/codemirror/VENDOR.md`)
+versions, publish dates and sha512 integrity in `ui/vendor/vendor.lock.json` + `ui/vendor/codemirror/build/package-lock.json`)
 **Licence:** MIT (every package). MIT is GPL-compatible; the bundle keeps its MIT header.
 
 ### @codemirror/state 6.7.2, @codemirror/view 6.43.10, @codemirror/language 6.12.4, @codemirror/commands 6.11.0, @codemirror/search 6.7.2, @codemirror/autocomplete 6.20.3, @codemirror/lint 6.9.7, @codemirror/lang-markdown 6.5.2, @codemirror/lang-html 6.4.12, @codemirror/lang-css 6.3.1, @codemirror/lang-javascript 6.2.5
@@ -1093,36 +1093,39 @@ THE SOFTWARE.
 These files are unmodified upstream bytes under `ui/vendor/`, served from 'self'
 under the app's CSP and loaded only when a community plugin asks for them
 (`moment`, `loadMathJax`, `loadPdfJs`, `loadPrism`). Versions, publish dates,
-npm integrity and sha256 sums live in each directory's `VENDOR.md` / `SHA256SUMS`.
+npm integrity and sha256 sums live in `ui/vendor/vendor.lock.json` (+ `SHA256SUMS`).
 They carry no SPDX tag of ours: tagging them would modify them, and our GPL tag
 would mislabel them.
 
-### moment 2.30.1
+### moment 2.31.0
 
 **Used in:** `ui/vendor/moment.min.js` (`require("obsidian").moment`, `window.moment`)
-**Upstream:** https://momentjs.com (npm `moment@2.30.1`)
-**Licence:** MIT. GPL-compatible; the file keeps its upstream MIT header.
+**Upstream:** https://momentjs.com (npm `moment@2.31.0`)
+**Licence:** MIT. GPL-compatible; the file keeps its upstream MIT header; `package/LICENSE` ships unmodified as `ui/vendor/moment.LICENSE`.
 
 ```
-Copyright (c) JS Foundation and other contributors
+Copyright (c) OpenJS Foundation and other contributors
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Permission is hereby granted, free of charge, to any person
+obtaining a copy of this software and associated documentation
+files (the "Software"), to deal in the Software without
+restriction, including without limitation the rights to use,
+copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following
+conditions:
 
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
 ```
 
 ### Prism 1.30.0
