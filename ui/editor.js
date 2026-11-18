@@ -527,14 +527,68 @@ const Ed = {
   // banner a missing local target takes, labelled with the constant
   // "remote image" (main.rs REMOTE_IMG_LABEL), never the URL. The renderer
   // refusing to mint the src is layer 1; the CSP's img-src is the backstop.
+  // #144 toggle 1 (Load external resources) mirrors main.rs image_html / remote_html:
+  // an https target mints its element ONLY while this page's CSP carries https:
+  // (security_get pageRemote, ui/security.js); otherwise the banner, and data-why
+  // names the setting that is the cause (CSS paints it after the R29.4 sentence).
+  remoteOn() {
+    const s = window.__osSecurity && window.__osSecurity.get();
+    return !!(s && s.pageRemote === true);
+  },
+  // #144 toggle 4 (Render media) mirrors main.rs media_off_html: while THIS page's CSP lacks
+  // opensidian-img: / blob: (security_get pageMedia === false, ui/security.js) a resolved vault
+  // image / PDF / audio embed is ONE placeholder — no src, no data-pdf, no media_read. No text
+  // node (the LP row's textContent stays its source line): CSS paints data-name + data-why.
+  mediaOn() {
+    const s = window.__osSecurity && window.__osSecurity.get();
+    return !(s && s.pageMedia === false);
+  },
+  MEDIA_WHY: "(Settings › Security › Render media)",
+  mediaOffEl(rel) {
+    const s = Ed.el("span", "imgmiss secmedia");
+    s.dataset.name = String(rel).split("/").pop();
+    s.dataset.sec = "vaultMedia";
+    s.dataset.why = Ed.MEDIA_WHY;
+    s.contentEditable = "false";
+    return s;
+  },
+  remoteEl(url, alt) {
+    const ext = (url.split(/[?#]/)[0].match(/\.([^./]+)$/) || ["", ""])[1].toLowerCase();
+    const kind = ["mp4", "m4v", "mov", "ogv"].includes(ext) ? "video" : Ed.isAudio("x." + ext) ? "audio" : "img";
+    const e = Ed.el(kind, kind === "img" ? "rimg" : "rmedia");
+    if (kind === "img") {
+      e.setAttribute("loading", "lazy");        // before src, as for vault images (audit #10)
+      e.setAttribute("referrerpolicy", "no-referrer");
+      e.setAttribute("alt", alt || "");
+      e.draggable = false;
+    } else {
+      e.setAttribute("controls", ""); e.setAttribute("preload", "none");
+      e.setAttribute("title", alt || "");
+    }
+    e.setAttribute("src", url);
+    e.contentEditable = "false";
+    return e;
+  },
   imgEl(target, alt, remote) {
-    const src = remote ? null : Ed.imgSrc(target);
-    if (src === null) {
+    if (remote) {
+      const on = Ed.remoteOn();
+      if (on && /^https:\/\//i.test(target)) return Ed.remoteEl(target, alt);
       const s = Ed.el("span", "imgmiss");
-      s.dataset.miss = remote ? "remote image" : target;  // CSS: “<label>” could not be found.
+      s.dataset.miss = "remote image";
+      s.dataset.sec = "remoteMedia";
+      s.dataset.why = on ? "(Settings › Security › Load external resources: only https:// addresses load)"
+                         : "(Settings › Security › Load external resources is off)";
       s.contentEditable = "false";
       return s;
     }
+    const src = Ed.imgSrc(target);
+    if (src === null) {
+      const s = Ed.el("span", "imgmiss");
+      s.dataset.miss = target;  // CSS: “<label>” could not be found.
+      s.contentEditable = "false";
+      return s;
+    }
+    if (!Ed.mediaOn()) return Ed.mediaOffEl(Ed.imgRel(target));   // #144 toggle 4 off
     const im = Ed.el("img", "vimg");
     // audit #10: fetch on approach, not at render. Every opensidian-img request is
     // answered on the UI process's main loop, so 20k eager embeds queued 20k
@@ -590,6 +644,7 @@ const Ed = {
       s.contentEditable = "false";
       return s;
     }
+    if (!Ed.mediaOn()) return Ed.mediaOffEl(rel);   // #144 toggle 4 off: no frame, no pdf_info
     const f = Ed.pdfFrag(frag || "");
     const s = Ed.el("span", "internal-embed pdf-embed");
     s.dataset.pdf = Ed.pctEnc(rel);
@@ -630,6 +685,8 @@ const Ed = {
     return L.find(x => x === dec) || L.find(x => x.endsWith("/" + dec)) || null;
   },
   audioEl(target, alt) {
+    // #144 toggle 4 off: the placeholder (the note's target name; nothing resolved, no media_read)
+    if (!Ed.mediaOn()) return Ed.mediaOffEl(Ed.pctDec(target) ?? target);
     const s = Ed.el("span", "internal-embed media-embed audio-embed");
     s.dataset.target = target;
     s.dataset.alt = alt || "";
@@ -2054,7 +2111,7 @@ Object.assign(Ed, {
       if (!t || view.state.readOnly) return;
       const st = view.state.doc === doc0 ? view.state.update({ selection: sel0 }).state : view.state;
       view.dispatch(st.replaceSelection(String(t)), { scrollIntoView: true, userEvent: "input.paste" });
-    }, err => console.warn("clip_text:", err));
+    }, err => { console.warn("clip_text:", err); const m = String(err && err.message || err); if (/^EPERM: /.test(m) && typeof say === "function") say(m, "secclip"); });   // #144: the refusal names its toggle
     return true;
   },
   mount(v) {
@@ -3127,7 +3184,7 @@ Ed.coTok = function () {
   const safe = s => String(s || "").replace(/[^\w -]/g, "_").replace(/\s+/g, " ").trim().slice(0, 24);
   // composited background: every layer from the first opaque ancestor up, painted on a 1x1 canvas (any CSS
   // colour syntax — color-mix() computes to oklch()/color() — and the element's own mix-blend-mode)
-  const bg = e => { const L = []; for (let x = e; x && x.nodeType === 1; x = x.parentElement) { const cs = getComputedStyle(x), b = cs.backgroundColor || ""; if (!b || b === "transparent" || /^rgba\([^)]*,\s*0\)$/.test(b)) continue; L.push([b, cs.mixBlendMode]); const k = document.createElement("canvas").getContext("2d"); k.fillStyle = "#000"; k.fillStyle = b; k.fillRect(0, 0, 1, 1); if (k.getImageData(0, 0, 1, 1).data[3] === 255) break; } if (!L.length) return "-"; const cv = document.createElement("canvas"); cv.width = cv.height = 1; const k = cv.getContext("2d"); for (let i = L.length - 1; i >= 0; i--) { k.globalCompositeOperation = L[i][1] && L[i][1] !== "normal" ? L[i][1] : "source-over"; k.fillStyle = L[i][0]; k.fillRect(0, 0, 1, 1); } const d = k.getImageData(0, 0, 1, 1).data; return d[0] + "." + d[1] + "." + d[2]; };
+  const bg = e => { if (window.opensidianCanvasOff) return "-"; const L = [];   /* #144 toggle 6 */ for (let x = e; x && x.nodeType === 1; x = x.parentElement) { const cs = getComputedStyle(x), b = cs.backgroundColor || ""; if (!b || b === "transparent" || /^rgba\([^)]*,\s*0\)$/.test(b)) continue; L.push([b, cs.mixBlendMode]); const k = document.createElement("canvas").getContext("2d"); k.fillStyle = "#000"; k.fillStyle = b; k.fillRect(0, 0, 1, 1); if (k.getImageData(0, 0, 1, 1).data[3] === 255) break; } if (!L.length) return "-"; const cv = document.createElement("canvas"); cv.width = cv.height = 1; const k = cv.getContext("2d"); for (let i = L.length - 1; i >= 0; i--) { k.globalCompositeOperation = L[i][1] && L[i][1] !== "normal" ? L[i][1] : "source-over"; k.fillStyle = L[i][0]; k.fillRect(0, 0, 1, 1); } const d = k.getImageData(0, 0, 1, 1).data; return d[0] + "." + d[1] + "." + d[2]; };
   const rc = e => { const r = e.getBoundingClientRect(); return [r.x, r.y, r.width, r.height].map(Math.round).join(","); };
   const nest = e => { let n = 0; for (let x = e.parentElement; x && x !== P; x = x.parentElement) if (x.classList && x.classList.contains("callout")) n++; return n; };
   const row = c => {

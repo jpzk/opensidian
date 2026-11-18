@@ -815,6 +815,19 @@
       });
     }
 
+    /* #144 toggle 11 (Settings › Security › MathJax / Prism / Mermaid): the boundary is the
+       app scheme answering 403 for ui/vendor/<engine>/ while the switch is off (main.rs
+       page_window, security::engine_refusal), whoever asks. This only names the toggle first,
+       from the effective values security.js publishes, before window.<lib> is touched.
+       Rejects (or answers null when on) — a refusal, never a throw out of the caller. */
+    const ENGINE_NAMES = { mathjax: "MathJax", prism: "Prism", mermaid: "Mermaid" };
+    function engineOff(f) {
+      const s = window.opensidianSecurity;
+      if (!s || s[f] !== false) return null;
+      const n = ENGINE_NAMES[f];
+      return Promise.reject(new Error("load" + (f === "mathjax" ? "MathJax" : n) + ": " + n + " is off (Settings › Security › " + n + ")"));
+    }
+
     function loadPdfJs() {
       if (window.pdfjsLib && window.pdfjsLib.getDocument) return Promise.resolve(window.pdfjsLib);
       return loadOnce("pdfjs", () => import(vendorUrl("pdfjs/pdf.min.mjs")).then(mod => {
@@ -829,19 +842,24 @@
     const mathJaxReady = () => !!(window.MathJax && window.MathJax.startup && window.MathJax.startup.document &&
       typeof window.MathJax.tex2chtml === "function");
     function loadMathJax() {
+      const off = engineOff("mathjax"); if (off) return off;
       if (mathJaxReady()) return Promise.resolve(window.MathJax);
       return loadOnce("mathjax", () => {
         // configuration MathJax reads at startup: never typeset the app on its own, no context menu
-        window.MathJax = { startup: { typeset: false }, options: { enableMenu: false } };
+        const cfg = window.MathJax = { startup: { typeset: false }, options: { enableMenu: false } };
         return loadScript("mathjax/tex-chtml-full.js", "MathJax")
           .then(() => window.MathJax.startup.promise)
           .then(() => {
             if (!mathJaxReady()) throw new Error("MathJax loaded without tex2chtml");
             return window.MathJax;
-          });
+          })
+          // a refused / failed load leaves no half-made global behind (window.MathJax stays undefined)
+          .catch(e => { if (window.MathJax === cfg) delete window.MathJax; throw e; });
       });
     }
     function renderMath(source, display) {
+      const s = window.opensidianSecurity;
+      if (s && s.mathjax === false) throw new Error("renderMath: MathJax is off (Settings › Security › MathJax)");
       if (!mathJaxReady()) throw new Error("renderMath: MathJax is not loaded yet (await loadMathJax() first)");
       return window.MathJax.tex2chtml(String(source), { display: !!display });
     }
@@ -851,20 +869,22 @@
     }
 
     function loadPrism() {
+      const off = engineOff("prism"); if (off) return off;
       if (window.Prism && typeof window.Prism.highlight === "function") return Promise.resolve(window.Prism);
       return loadOnce("prism", () => {
         // read by Prism at startup: no highlightAll over the app, no worker message handler
-        window.Prism = { manual: true, disableWorkerMessageHandler: true };
+        const cfg = window.Prism = { manual: true, disableWorkerMessageHandler: true };
         return loadScript("prism/prism.js", "Prism").then(() => {
           if (!window.Prism || typeof window.Prism.highlight !== "function") throw new Error("Prism loaded without highlight");
           return window.Prism;
-        });
+        }, e => { if (window.Prism === cfg) delete window.Prism; throw e; });
       });
     }
 
     const GATED = {
       loadMathJax, loadPdfJs, loadPrism, renderMath, finishRenderMath,
-      loadMermaid: () => Promise.reject(unsupported("loadMermaid (Mermaid is not bundled)")),
+      // Mermaid is not vendored (#187): the switch is a no-op-safe gate — off names it, on stays unsupported
+      loadMermaid: () => engineOff("mermaid") || Promise.reject(unsupported("loadMermaid (Mermaid is not bundled)")),
     };
     Object.assign(K.exportValues, GATED);
   });
