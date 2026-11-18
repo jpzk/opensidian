@@ -349,6 +349,11 @@ let rTab = "bl", rT = null, rpInfo = "";   // rpInfo -> census [rp:...]
    the difference, and it is monotone, so a probe compares it across an action
    instead of trusting a snapshot. */
 let rbN = 0;
+/* issue #176: a render generation per pane. rBacklinks / rOutgoing clear their box, AWAIT, then append —
+   two calls in flight (fast note switches) both appended, so the pane showed two "Unlinked mentions"
+   headers or the previous note's rows. A call that is no longer the latest drops its result after
+   every await (stock 1.13.7 always shows one set, for the active note). */
+let blGen = 0, outGen = 0;
 async function setRTab(t, persist = true) {
   if (!RPANES[t]) t = "bl";
   rTab = t;
@@ -389,13 +394,14 @@ async function rPanesRefresh() {
 // Backlinks: "Linked mentions N" + one expandable row per linking note; the
 // matching lines show with the [[link]] highlighted; click opens the note
 async function rBacklinks(n) {
-  rbN++;                                  // [rpn:] — counted at ENTRY: the bug is calling it at all
+  rbN++; const gen = ++blGen;            // [rpn:] — counted at ENTRY: the bug is calling it at all
   const box = $("bllist"), head = $("blhead");
   box.textContent = ""; head.textContent = "";
   // cv-vault CV-141: + the canvases whose file cards point at this note (fetched alongside, one await)
   // cvf-links CVR-A-097: a CANVAS (n = its .canvas path) is backlinked by the notes linking / embedding it
   const isCv = !!n && /\.canvas$/i.test(n);
   const [bl, cvb] = !n ? [[], []] : isCv ? [await cvCanvasBacklinks(n), []] : await Promise.all([inv("backlinks_ctx", { name: n }), cvBacklinks(n)]);
+  if (gen !== blGen) return;              // issue #176: a newer render owns the pane
   head.textContent = "Linked mentions"; rpInfo = "bl:" + (bl.length + cvb.length);
   const c = document.createElement("span");
   c.className = "scount"; c.textContent = bl.length + cvb.length; head.appendChild(c);
@@ -434,6 +440,7 @@ async function rBacklinks(n) {
   // a Link button that wraps it in [[ ]] on disk (the hit then migrates up
   // to Linked mentions on the pane's next refresh)
   const ul = n ? await inv("unlinked_mentions", { name: n }).catch(() => []) : [];
+  if (gen !== blGen) return;              // issue #176
   rpInfo = "bl:" + bl.length + "|ul:" + ul.length;
   if (!n) return;
   const uh = document.createElement("div");
@@ -567,9 +574,10 @@ function sideRow(el, name, create) {
 }
 // Outgoing links: resolved rows navigate, unresolved rows are greyed
 async function rOutgoing(n) {
-  const box = $("outlist"), head = $("outhead");
+  const box = $("outlist"), head = $("outhead"), gen = ++outGen;
   box.textContent = ""; head.textContent = "";
   const out = n ? await inv("outgoing", { name: n }) : [];
+  if (gen !== outGen) return;             // issue #176: a newer render owns the pane
   head.textContent = "Links"; rpInfo = "out:" + out.filter(o => o.target).length + "/" + out.filter(o => !o.target).length;
   const c = document.createElement("span");
   c.className = "scount"; c.textContent = out.length; head.appendChild(c);
