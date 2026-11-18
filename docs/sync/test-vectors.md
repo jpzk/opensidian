@@ -9,6 +9,14 @@ parser needed, parsed with std only.
 `crates/sync-proto/vectors/<area>.vec` (+ `crates/sync-crypto/vectors/`
 for primitive KATs and imported Wycheproof sets in M2).
 
+M2 primitive KATs (present, run by `crates/sync-crypto/tests/fips_kat.rs`
+against the FIPS module and, for HMAC/HKDF, the reference provider):
+`aes-gcm.vec` (GCM spec test cases 13–16 + tamper cases), `hmac-sha256.vec`
+(RFC 4231), `hkdf-sha256.vec` (RFC 5869). Wycheproof (unmodified upstream
+JSON, `vectors/wycheproof/`, run by `tests/wycheproof.rs`): AES-GCM
+(256-bit key / 96-bit IV / 128-bit tag groups), ECDSA P-256 SHA-256 P1363,
+HMAC-SHA256, HKDF-SHA256.
+
 Areas: `padme`, `canonical`, `header`, `aad`, `objkey`, `commit`,
 `words`, `keytree`, `batch`, `cfg`, `envelope`, `destroy-msg`.
 

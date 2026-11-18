@@ -114,7 +114,7 @@ locked version so nothing in the lock moves.
   — history index file, debug encodings only (the wire format is the
   binary canonical encoding of spec.md, not JSON).
 
-Per crate (direct deps): `sync-proto` → serde (dev: serde_json, JSON tests of the `/v1` bodies); `sync-crypto` → sha2;
+Per crate (direct deps): `sync-proto` → serde (dev: serde_json, JSON tests of the `/v1` bodies); `sync-crypto` → sha2, aws-lc-rs, aws-lc-fips-sys, zeroize (dev: serde_json, Wycheproof JSON);
 `sync-core` → sync-proto, sync-crypto, sha2, serde, serde_json; `syncd` →
 sync-core; `sync-server` → sync-proto, sync-crypto. The Cargo.lock delta of
 the skeleton is exactly the five path packages (`[[package]]` entries without
@@ -133,3 +133,11 @@ log in the goal work dir).
 
 Checksums for the declared-not-added crates are recorded only when they are
 actually added (from the Cargo.lock that adds them).
+
+## Test data (not crates)
+
+- Wycheproof (C2SP/wycheproof, Apache-2.0) commit
+  `12fd3aaf33eb5fa1f52e026912ee00c054f9d984` (2026-10-06, newest commit
+  ≥ 6 weeks old): four `testvectors_v1/*.json` files copied unmodified to
+  `crates/sync-crypto/vectors/wycheproof/`; per-file sha256 in that
+  directory's README.md, re-checked by `tests/wycheproof.rs`.
