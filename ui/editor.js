@@ -1084,11 +1084,15 @@ const Ed = {
     };
   },
   // the prefix a NEW item after this one carries: same indent + quote, the
-  // ordered number stepped (M4), a task always UNCHECKED (M8)
+  // ordered number stepped (M4), a task always UNCHECKED (M8). #154: BOTH at
+  // once for an ordered task ("1. [x] a" -> "2. [ ] ", stock 1.13.7) — the
+  // task branch used to win and repeat the number.
+  // the marker minus its "N. " head, by the digits actually typed: "01. [ ] "
+  // must not slice by String(1).length and keep a stray space (codeant #235)
+  mkTail(it) { return it.mk.replace(/^\d+\. /, ""); },
   contOf(it) {
-    const mk = it.task ? it.mk.replace(/\[[xX]\]/, "[ ]")
-      : it.num !== null ? (it.num + 1) + ". " + it.mk.slice(String(it.num).length + 2)
-        : it.mk;
+    let mk = it.num !== null ? (it.num + 1) + ". " + Ed.mkTail(it) : it.mk;
+    if (it.task) mk = mk.replace(/\[[xX]\]/, "[ ]");
     return it.ind + it.qt + mk;
   },
   // M24: Enter on an item's CONTINUATION line starts a new item of the item
@@ -1110,7 +1114,7 @@ const Ed = {
     for (let l = from; l < L.length; l++) {
       const it = Ed.info(L[l]);
       if (it.num !== null && it.ind + it.qt === pre) {
-        L[l] = pre + next + ". " + it.mk.slice(String(it.num).length + 2) + L[l].slice(it.pre.length);
+        L[l] = pre + next + ". " + Ed.mkTail(it) + L[l].slice(it.pre.length);
         next++;
       } else if (it.ind.length > ref.ind.length) continue;  // nested / continuation
       else break;
@@ -1209,12 +1213,12 @@ const Ed = {
       }
     }
     Ed.snap(g, "indent");
-    let dc = 0;
+    let dc = 0, da = 0;                                      // column shift on the to / the from line
     for (let l = first; l <= last; l++) {
       if (out) {
         const m = /^(\t| {1,4})/.exec(L[l]);
-        if (m) { L[l] = L[l].slice(m[0].length); if (l === s.b.l) dc = -m[0].length; }
-      } else { L[l] = "\t" + L[l]; if (l === s.b.l) dc = 1; }
+        if (m) { L[l] = L[l].slice(m[0].length); if (l === s.b.l) dc = -m[0].length; if (l === s.a.l) da = -m[0].length; }
+      } else { L[l] = "\t" + L[l]; if (l === s.b.l) dc = 1; if (l === s.a.l) da = 1; }
     }
     // M32: an ordered item that changes level RESTARTS the run it joins, and
     // the run it LEFT closes up over the hole ("3. c" -> "2. c").
@@ -1223,7 +1227,17 @@ const Ed = {
       if (it.num !== null) Ed.renumber(L, first, it, Ed.startNum(L, first, it));
       Ed.renumber(L, last + 1, old, Ed.startNum(L, last + 1, old));
     }
-    Ed.after(g, s.b.l, Math.max(0, s.b.c + dc));
+    if (s.empty) { Ed.after(g, s.b.l, Math.max(0, s.b.c + dc)); return; }
+    // #161: a real selection stays selected, both ends shifted with their line's indent and the
+    // direction kept (stock 1.13.7: 0:0-2:3 -> Tab 0:1-2:4 -> Tab 0:2-2:5), so the next Tab /
+    // Shift+Tab moves the same lines again
+    const cm = Ed.cm(g), back = !!cm && cm.state.selection.main.anchor > cm.state.selection.main.head;
+    Ed.commit(g);
+    const from = Ed.off(g, s.a.l, Math.max(0, s.a.c + da)), to = Ed.off(g, s.b.l, Math.max(0, s.b.c + dc));
+    if (!cm) return;
+    cm.dispatch({ selection: { anchor: back ? to : from, head: back ? from : to } });
+    if (!cm.hasFocus) cm.focus();
+    Ed.mark(g, Ed.focusPos(g).l);
   },
   /* R17.4 M46-M51 Ctrl+L "Toggle checkbox status" (in 1.13.7 this is the task
      toggle — Ctrl+Enter is NOT, see M45/M92): a task flips [ ] <-> [x] in
@@ -1231,19 +1245,48 @@ const Ed = {
      paragraph gains a whole "- [ ] ". The caret keeps its offset in the TEXT,
      so it shifts by exactly the bytes inserted before it. */
   toggleCheck(g, s) {
+    if (s.a.l !== s.b.l) return Ed.toggleCheckLines(g, s);   // #155
     const L = Ed.lines(g), l = s.b.l, line = L[l];
     if (line === undefined) return;
     const it = Ed.info(line);
     Ed.snap(g, "task");
     let dc = 0;
-    if (it.task) L[l] = Ed.flipTask(line);
+    // #153: ANY status char is a task ("- [/] a", "- [-] a", "- [>] a"): stock 1.13.7
+    // resets it to "[ ]" in place (Ed.flipTask), it never wraps a second "[ ] " in front.
+    // Ed.info only knows " xX", so the gate is the task shape itself: "[?]" + space or EOL
+    // (a bullet that starts with a link, "- [a](u)", stays a bullet).
+    if (it.task || Ed.taskRe.test(line)) L[l] = Ed.flipTask(line);
     else if (it.mk) { L[l] = it.pre + "[ ] " + line.slice(it.pre.length); dc = 4; }
     else { L[l] = it.ind + it.qt + "- [ ] " + line.slice(it.pre.length); dc = 6; }
     Ed.after(g, l, s.b.c >= it.pre.length ? s.b.c + dc : s.b.c);
   },
+  /* #155: Ctrl+L over a SELECTION that spans lines acts on EVERY line it touches
+     (stock 1.13.7: "alpha\nbravo\ncharlie" all selected -> each line "- [ ] ").
+     Each line gets the single-line rule on its own (task flips, list item gains
+     "[ ] ", paragraph gains "- [ ] "); blank lines are left alone (UNMEASURED,
+     same call as listToggle [Q7]). ONE undo step; the selection keeps its text. */
+  toggleCheckLines(g, s) {
+    const L = Ed.lines(g), first = s.a.l, last = Math.min(s.b.l, L.length - 1);
+    const ch = [], dc = [];                              // ch = [line, new text]; dc[l] = [col, bytes inserted there]
+    for (let l = first; l <= last; l++) {
+      const line = L[l];
+      if (line === undefined || !String(line).trim()) continue;
+      const it = Ed.info(line);
+      if (it.task) { const f = Ed.flipTask(line); if (f !== null) ch.push([l, f]); dc[l] = [it.pre.length, 0]; }
+      else if (it.mk) { ch.push([l, it.pre + "[ ] " + line.slice(it.pre.length)]); dc[l] = [it.pre.length, 4]; }
+      else { ch.push([l, it.ind + it.qt + "- [ ] " + line.slice(it.pre.length)]); dc[l] = [it.pre.length, 6]; }
+    }
+    if (!dc.some(Boolean)) return;
+    Ed.snap(g, "task");                                  // ONE undo step
+    for (const [l, v] of ch) L[l] = v;                  // in place: no spread of the whole note into splice (arg limit on huge notes)
+    const map = p => { const t = dc[p.l]; return t && p.c >= t[0] ? { l: p.l, c: p.c + t[1] } : p; };
+    const a = map(s.a), b = map(s.b);
+    Ed.after(g, a.l, a.c);
+    Ed.extendTo(g, b.l, b.c);
+  },
   /* listtoggle R1-R5: "Toggle bullet list" / "Toggle numbered list" over a
      SELECTION (Obsidian 1.13.7 measured, docs/recon-listtoggle/README.md; spec
-     §4 frozen). Unlike toggleCheck this acts on EVERY line the selection
+     §4 frozen). Like toggleCheck over a selection (#155) this acts on EVERY line the selection
      touches — a selection ending at column 0 of line N still includes N [Q10].
      Ed.listToggle is PURE (lines + selection in -> lines + selection out, or
      null for a no-op) so the unit table (src-tauri/tests/listtoggle.{tsv,rs}, cargo test) can run
@@ -1333,6 +1376,7 @@ const Ed = {
     Ed.after(g, r.a.l, r.a.c);
     if (r.a.l !== r.b.l || r.a.c !== r.b.c) Ed.extendTo(g, r.b.l, r.b.c);
   },
+  taskRe: /^[ \t]*(?:> ?)*(?:[-*+]|\d+[.)])[ \t]+\[[^\]\n]\](?: |$)/,   // #153 a task item, any status char
   /* rvtask R3 — THE task-status byte op, shared by Ctrl+L (toggleCheck) and the
      reading-view click. Obsidian 1.13.7 (docs/recon-rvtask Q1/Q2): the status char
      of the item's "[?]" flips ' ' -> 'x' and ANYTHING else (x X / - > ?) -> ' '.
@@ -1376,8 +1420,17 @@ const Ed = {
     const s = Ed.sel(g);
     if (!s) return;
     const L = Ed.lines(g), l = s.b.l, line = L[l];
-    const a = line.lastIndexOf("[[", s.b.c);
-    if (a < 0) return;
+    // #162: replace the [[ that was TYPED: the nearest [[ that ends at or before the caret, never
+    // a [[ that starts AT the caret (an existing link right after it); stock replaces [start, caret)
+    if (s.b.c < 2) return;
+    const a = line.lastIndexOf("[[", s.b.c - 2);
+    if (a < 0 || line.slice(a + 2, s.b.c).includes("]]")) return;
+    // #211 review: a context that went stale (caret moved to another [[ while an async heading
+    // read was in flight) must not replace the text between its old opener and the caret
+    if (typeof start === "number" && start >= 0) {
+      const p = Ed.lc(g, start);
+      if (p.l !== l || p.c !== a) return;
+    }
     Ed.replace(g, { a: { l, c: a }, b: { l, c: s.b.c }, empty: false }, "[[" + name + "]]", "ac");
   },
   linkClick(e, a) {
@@ -1506,6 +1559,8 @@ const Ed = {
       ["1. one\n2. two\n3. three", 0, 6, 0, "1. one\n2. \n3. two\n4. three", 1, 3],     // M4 renumber
       ["1. one\n2. two", 1, 4, 0, "1. one\n2. t\n3. wo", 2, 3],                          // M6
       ["- [x] done", 0, 10, 0, "- [x] done\n- [ ] ", 1, 6],                              // M8 always unchecked
+      ["1. [ ] a\n2. [ ] b", 0, 8, 0, "1. [ ] a\n2. [ ] \n3. [ ] b", 1, 7],          // #154 ordered task counts up
+      ["01. [ ] a\n02. [ ] b", 0, 9, 0, "01. [ ] a\n2. [ ] \n3. [ ] b", 1, 7],        // #154 leading zero: no stray space
       ["- a\n  - b", 1, 5, 0, "- a\n  - b\n  - ", 2, 4],                                 // M11 indent verbatim
       ["1. a\n\t1. b\n2. c", 1, 5, 0, "1. a\n\t1. b\n\t2. \n2. c", 2, 4],                // M12 nested run
       ["- a\n\t- ", 1, 3, 0, "- a\n- ", 1, 2],                                           // M13 empty nested -> outdent
@@ -1573,6 +1628,8 @@ const Ed = {
         ["para", 0, 4, "ctrl-l", "- [ ] para", 0, 10],                                   // M49
         ["- a\n\t- b", 1, 5, "ctrl-l", "- a\n\t- [ ] b", 1, 8],                          // M50
         ["1. a", 0, 4, "ctrl-l", "1. [ ] a", 0, 8],                                      // M51 ordered marker kept
+        ["- [/] doing", 0, 11, "ctrl-l", "- [ ] doing", 0, 11],                          // #153 custom status resets
+        ["- [>] a", 0, 7, "ctrl-l", "- [ ] a", 0, 7],                                    // #153
       ];
       for (const [src, l, c, op, want, wl, wc] of kc) {
         const eg = { view: { lines: src.split("\n") }, editor: {} };
@@ -1668,7 +1725,17 @@ Ed.field = function (g) {
     selectionStart: off(s.a), selectionEnd: off(s.b),
     get value() { return f._v; },
     set value(t) { f._v = t; Ed.setAll(g, t); },
-    setSelectionRange(a) { Ed.placeOffset(g, a); },
+    // #160: keep the END too, like a textarea — edEdit/edWrap hand back the wrapped text's range and
+    // stock 1.13.7 leaves it selected (Toggle bold on 'word' -> '**word**', 'word' still selected),
+    // so a second toggle unwraps instead of inserting new markers at a caret
+    setSelectionRange(a, b) {
+      const cm = Ed.cm(g);
+      if (!cm || b == null || b === a) return Ed.placeOffset(g, a);
+      const n = cm.state.doc.length, k = o => Math.max(0, Math.min(o, n));
+      cm.dispatch({ selection: { anchor: k(a), head: k(b) } });
+      if (!cm.hasFocus) cm.focus();
+      Ed.mark(g, Ed.focusPos(g).l);
+    },
     dispatchEvent() { if (typeof scheduleSave === "function") scheduleSave(g); },
     focus() { g.lp.focus({ preventScroll: true }); },
   };
@@ -2953,7 +3020,8 @@ Ed.lpExt = function (v, G) {
     return [tr, { selection: CMs.EditorSelection.cursor(ln.from + m[0].length), sequential: true }];
   });
   return [plugin, clicks, vkeys, taskSnap, pointerSnap, Ed.cbField(v, G, bust), Ed.coField(v, G, bust), Ed.tblField(v, G, bust),
-          Ed.propsField ? Ed.propsField(v, G, bust) : []];   // #119: the Properties block (ui/props.js)
+          Ed.propsField ? Ed.propsField(v, G, bust) : [],   // #119: the Properties block (ui/props.js)
+          Ed.mathField ? Ed.mathField(v, G, bust) : []];   // #185: $..$ / $$..$$ typeset (ui/mathview.js)
 };
 /* ---------- plugin CODE BLOCKS in Live Preview (plug-top5) ----------
    A fenced block whose language a plugin registered a code-block processor for
