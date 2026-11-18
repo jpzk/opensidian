@@ -49,6 +49,7 @@
 .menu[data-om] .menu-item.is-disabled .menu-item-icon { color: var(--text-faint, var(--text-chrome-muted)) }
 .menu[data-om] .menu-item-icon.mod-submenu { margin-left: auto; width: 12px }
 .menu[data-om] .menu-item-icon.mod-submenu svg { width: 12px; height: 12px }
+.menu[data-om] .menu-item-icon.mod-checked { margin-left: auto }   /* #214: the radio mark sits at the row's right end */
 .menu[data-om] .menu-separator {
   height: 0; margin: var(--size-2-3, 4px) calc(var(--size-2-3, 4px) * -1);
   border-bottom: 1px solid var(--background-modifier-border, var(--border));
