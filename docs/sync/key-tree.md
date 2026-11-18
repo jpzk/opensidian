@@ -1,7 +1,9 @@
 # Opensidian Sync — key tree (M0, draft v1)
 
 Binding source: plan sections 4 + 5. All derivations go through the
-CMVP-validated module (HKDF-SHA256 / HMAC-SHA256 / DRBG). Every label is
+FIPS-mode AWS-LC module (HKDF-SHA256 / HMAC-SHA256 / DRBG; the pinned
+AWS-LC 4.2.0 build has NO CMVP certificate yet — in process, see
+cmvp.md §7). Every label is
 an ASCII byte string, no terminator. `HKDF(ikm, salt, info, L)` =
 RFC 5869 extract-then-expand with SHA-256.
 

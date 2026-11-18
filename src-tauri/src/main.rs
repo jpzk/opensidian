@@ -2183,7 +2183,7 @@ fn history_restore_deleted<R: tauri::Runtime>(win: tauri::WebviewWindow<R>, v: S
         if !matches!(s.head(&k), Some(Head::Deleted { .. })) {
             return Err(format!("{name} is not a deleted note"));
         }
-        let e = s.versions(&k).into_iter().rev().find(|e| e.sha.is_some()).ok_or("no stored bytes")?;
+        let e = s.versions(&k).into_iter().find(|e| e.sha.is_some()).ok_or("no stored bytes")?; // newest first
         s.read_version(e.seq).map_err(|e| e.to_string())
     })??;
     let content = String::from_utf8(bytes).map_err(|_| "version is not UTF-8 text".to_string())?;

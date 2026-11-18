@@ -22,8 +22,9 @@ Sync help pages only (no Obsidian code was read).
 ## 2. Trust boundaries
 
 Trusted: the client device while unlocked (opensidian app process,
-opensidian-syncd running as the same user), the CMVP-validated crypto
-module inside it, the OS keystore.
+opensidian-syncd running as the same user), the FIPS-mode AWS-LC crypto
+module inside it (pinned 4.2.0: no CMVP certificate yet, in process —
+cmvp.md §7), the OS keystore.
 
 Untrusted / hostile:
 
@@ -58,8 +59,9 @@ Untrusted / hostile:
   parity: "Obsidian doesn't encrypt your local vault"). Open question:
   encrypt the local history store at rest.
 - revoked device (T7): gets no new VK epoch; old content it already had is
-  out of scope (cannot un-know). If it held S, the user is offered a new
-  phrase.
+  out of scope (cannot un-know). If it held S (words, or a pairing offer
+  that carried them — the default), it can still open the new envelope:
+  phrase rotation on revoke is NOT implemented yet (R6, spec §4.6 notes).
 - destroy abuse: nobody without K_destroy can delete a vault on a server;
   soft DELETE is bounded by a server-enforced retention window, so a
   stolen write token cannot erase history immediately. M3b: the destroy
@@ -103,3 +105,8 @@ Untrusted / hostile:
 - R3 server freeze/rollback only detectable across replicas
 - R4 FIPS build needs CMake + Go + cc → reproducible-build impact
 - R5 Linux Secret Service has no per-item user-presence gate
+- R6 revoking a device that held S does not cut it off (no phrase
+  rotation yet) — review finding on #238, follow-up before release
+- R7 app save/delete history hooks log a failure and still write (D1/D3
+  are best-effort when the history store itself fails) — review finding
+  on #238, follow-up

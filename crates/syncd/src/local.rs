@@ -188,8 +188,8 @@ impl LocalEngine {
         let vault_dir = fs::canonicalize(s.vault_dir).map_err(io_err)?;
         mkdir_private(s.state)?;
         let state = fs::canonicalize(s.state).map_err(io_err)?;
-        if state.starts_with(&vault_dir) {
-            return Err(ApiError::new("bad-request", "the state dir must be outside the vault folder"));
+        if state.starts_with(&vault_dir) || vault_dir.starts_with(&state) {
+            return Err(ApiError::new("bad-request", "the state dir and the vault folder must not contain each other"));
         }
         let p = FipsProvider::new().map_err(io_err)?;
         let t = HttpTransport::new(s.url, roots(&s.ca_file)?).map_err(|e| ApiError::new("server", e.to_string()))?;

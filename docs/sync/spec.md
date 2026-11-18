@@ -216,6 +216,7 @@ u32  gen                          0 = genesis
 h32  prev                         SHA-256 of previous cfg plaintext, 00*32 at gen 0
 u8   min_suite
 u32  vk_epoch                     current VK epoch
+bytes rsig_pub                    65-byte P-256 public K_rsig (M5), same in every gen
 list<slot> slots                  ALWAYS 32 slots (padding: state 0)
 u8   signer_kind                  1 = device slot, 2 = K_rsig
 u8   signer_slot
@@ -249,8 +250,10 @@ g = 0,1,2,… (write-once, newest wins).
 
 ### 4.6 Pairing (kind 0x05), namespace `pair`
 
-Body = `u8 version || u64 expires_unix || list<envelope body>` (several
-vaults per QR). Key K_p is 32 random bytes in the QR together with the
+Body: see the M5 implementation notes below (normative: `u8 version 1 ||
+u8 msg`, msg 1 = offer `u64 expires_unix || list<bytes envelope body ||
+opt<22 S_bytes>>`, msg 2 = reply). The offer may carry several
+vaults per QR. Key K_p is 32 random bytes in the QR together with the
 server url + ns + object id; the object is DELETEd by the receiver and
 expires server-side after 15 min.
 
@@ -305,6 +308,15 @@ expires server-side after 15 min.
   Residual (follow-up): the revoked device keeps the server write token
   (no token-rotation endpoint yet) — it can still upload ciphertext, which
   every client rejects (§4.8), and soft-delete within the retention window.
+  **Residual (open, review finding on #238): a revoked device that holds
+  S_bytes (words entered, or received in a pairing offer — the default)
+  can still derive K_wrap and read the new envelope, i.e. the new VK.**
+  Revocation therefore cuts off ONLY devices that never held S. Required
+  follow-up before revocation is advertised as complete: revoking a
+  device that held S MUST first rotate the phrase (new S → new loc,
+  K_wrap, K_rsig chain hand-over) and publish the new epoch's envelope
+  ONLY under the new loc; the old loc's envelope stays at the old epoch.
+  Until then the UI/CLI must say so when revoking such a device.
 
 ### 4.7 Tip merge (M4b, `sync_core::merge`)
 
@@ -551,8 +563,14 @@ Not on the wire; documented here because M1 implements it:
 - `index.log` append-only text journal of versions:
   path, sha256, size, ts, reason (`own-save`, `external`, `delete`,
   `rename`, `idle`, `restore`), plus tombstones for deletes
-- invariant: before ANY overwrite/delete/sync write of a vault file,
-  the current on-disk bytes are stored in `objects/` and journaled
+- invariant (goal): before ANY overwrite/delete/sync write of a vault
+  file, the current on-disk bytes are stored in `objects/` and journaled.
+  Actual guarantee today: the sync engine (syncd `sync_with`) snapshots
+  through the history sink before materialising; the app's own save /
+  delete hooks LOG a history-write failure and still proceed with the
+  write, so a failing history store (disk full, permissions) can lose the
+  pre-image of that one write. Open (review finding on #238): abort the
+  write or surface the failure before overwriting.
 - retention thinning + purge rewrite the journal atomically and GC
   unreferenced blobs
 
