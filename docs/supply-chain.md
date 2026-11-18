@@ -143,9 +143,10 @@ pkgset, or on a routine refresh:
    be identical between the two runs. Diff them against the previous snapshot and
    review what changed.
 
-**Bump Rust**: set `RUST_TOOLCHAIN` in release.yml and `RUST` in the script, then
-copy `RUST_MANIFEST_SHA256` from `channel-rust-<v>.toml.sha256` and both `xz_hash`
-values from the manifest. The release must be at least 6 weeks old.
+**Bump Rust**: see "Rust toolchain" below. In this script set `RUST`, copy
+`RUST_MANIFEST_SHA256` and both `xz_hash` values from the manifest. The script refuses
+to run if `RUST` differs from `rust-toolchain.toml` or its sha256 from
+`rust-toolchain.sh`.
 
 ### Flatpak build environment (#189 item 2)
 
@@ -178,3 +179,46 @@ flathub submission of `dev.koto.opensidian` must build against the same commits.
    lines and the flatpak artifacts.
 3. Bump `HOST_PKGS` together with `SNAP`, using the same procedure as the AppImage
    snapshot, against the `resolute` indexes for both arches.
+
+### Rust toolchain (#189 item 5)
+
+`rust-toolchain.toml` names the channel (an exact `x.y.z`, never `stable`) and the
+components. A version is not a pin, so `scripts/supply-chain/rust-toolchain.sh`:
+1. downloads `channel-rust-<channel>.toml` and checks it against `RUST_MANIFEST_SHA256`
+   in the script (the `.sha256` file next to it on the server is not a pin: it comes
+   from the same place);
+2. runs `rustup toolchain install`, which checks every component against that manifest;
+3. checks that the installed `rustc -vV` commit-hash is the manifest's `[pkg.rustc]`
+   `git_commit_hash`. The log has one `PINNED rust <v> rustc <commit>` line.
+
+The `supply-chain.yml` jobs install Rust through this script. The AppImage build
+installs from the dist tarball (above) and checks the same channel and sha256. The
+build box (`bin/hz/release-build.sh` in the harness) must use the same channel.
+
+**Bump the toolchain**: pick a release at least 6 weeks old. Set `channel` in
+`rust-toolchain.toml`, `RUST_TOOLCHAIN` in `release.yml` and `supply-chain.yml`, and
+`RUST`, `RUST_MANIFEST_SHA256` and both `RUST_XZ_SHA256_<arch>` in
+`packaging/ci/appimage-build.sh`. Set the same `RUST_MANIFEST_SHA256` in
+`rust-toolchain.sh`. Check the value with
+`bash scripts/supply-chain/rust-toolchain.sh --manifest-only`.
+
+### Scanners
+
+cargo-audit, cargo-deny and cargo-vet (and semgrep/opengrep/osv-scanner) are the
+named exception in `pin-allow.tsv` (see the top of this file). They have no bump
+procedure: CI installs the latest release and logs its version. If a scanner release
+breaks CI, fix the config or the finding. Do not pin the scanner around it.
+
+### Runner images and Android
+
+- The GitHub-hosted runner (`ubuntu-26.04`) floats by design (#189 item 8). Every
+  build that ships runs inside a pinned container or a pinned flatpak runtime, so
+  the runner only hosts podman/flatpak. Nothing from the runner is compiled in or
+  bundled. The host tools it does install (flatpak, flatpak-builder, elfutils) come
+  from the pinned snapshot.
+- Android (#189 item 7): `develop` has no Android build. There is no Gradle project,
+  wrapper, SDK or NDK in the tree, so there is nothing to lock yet. The android-merge
+  branch is not part of this pin. When it lands it must add Gradle dependency locking
+  (`gradle.lockfile`), `gradle/verification-metadata.xml` with sha256 for every
+  artifact, the wrapper's `distributionSha256Sum`, and pinned SDK/NDK/build-tools
+  versions with checksums. pin-check will be extended to cover them then.

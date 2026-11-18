@@ -39,7 +39,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  RUST_TOOLCHAIN: '1.98.0'        # = release.yml (released 2026-08-20)
+  RUST_TOOLCHAIN: '1.98.0'        # = rust-toolchain.toml = release.yml (released 2026-08-20); checked by rust-toolchain.sh
   CARGO_TERM_COLOR: always
   CARGO_NET_RETRY: '5'
 
@@ -54,8 +54,7 @@ jobs:
           persist-credentials: false
       - name: toolchain ${{ env.RUST_TOOLCHAIN }}
         run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
-          rustup default "$RUST_TOOLCHAIN"
+          bash scripts/supply-chain/rust-toolchain.sh   # manifest sha256 + rustc commit (rust-toolchain.toml)
           cargo --version
       - name: install cargo-audit (latest crates.io release, unpinned by design)
         run: cargo install --locked cargo-audit
@@ -77,8 +76,7 @@ jobs:
           persist-credentials: false
       - name: toolchain ${{ env.RUST_TOOLCHAIN }}
         run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
-          rustup default "$RUST_TOOLCHAIN"
+          bash scripts/supply-chain/rust-toolchain.sh   # manifest sha256 + rustc commit (rust-toolchain.toml)
           cargo --version
       - name: install cargo-deny (latest crates.io release, unpinned by design)
         run: cargo install --locked cargo-deny
@@ -97,8 +95,7 @@ jobs:
           persist-credentials: false
       - name: toolchain ${{ env.RUST_TOOLCHAIN }}
         run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
-          rustup default "$RUST_TOOLCHAIN"
+          bash scripts/supply-chain/rust-toolchain.sh   # manifest sha256 + rustc commit (rust-toolchain.toml)
           cargo --version
       - name: install cargo-vet (latest crates.io release, unpinned by design)
         run: cargo install --locked cargo-vet
