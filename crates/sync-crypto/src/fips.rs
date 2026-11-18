@@ -58,6 +58,36 @@ impl FipsSigningKey {
             .map_err(|_| CryptoError::Invalid)
     }
 
+    /// Import a raw P-256 private scalar `d` (big-endian, `1 <= d < n`) into
+    /// the module: RFC 5915 ECPrivateKey without the public key, parsed by
+    /// AWS-LC (which computes Q = d·G) and validated in FIPS builds by
+    /// `EC_KEY_check_fips` (pairwise-consistency test). Open question 10:
+    /// this is the module's own import path in FIPS mode (cmvp.md §8).
+    pub fn from_p256_scalar(d: &[u8; 32]) -> Result<Self, CryptoError> {
+        let zero = [0u8; 32];
+        // reject d == 0 and d >= n up front (constant time); the module checks too
+        if crate::keytree::ct_le(d, &zero) || crate::keytree::ct_le(&crate::keytree::P256_N, d) {
+            return Err(CryptoError::Invalid);
+        }
+        let mut der = Zeroizing::new(Vec::with_capacity(51));
+        der.extend_from_slice(&[0x30, 0x31, 0x02, 0x01, 0x01, 0x04, 0x20]);
+        der.extend_from_slice(d);
+        // [0] parameters: OID 1.2.840.10045.3.1.7 (prime256v1)
+        der.extend_from_slice(&[0xa0, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07]);
+        EcdsaKeyPair::from_private_key_der(&ECDSA_P256_SHA256_FIXED_SIGNING, &der)
+            .map(|pair| FipsSigningKey { pair })
+            .map_err(|_| CryptoError::Invalid)
+    }
+
+    /// Phrase-derived signing key (K_destroy, K_rsig): scalar from
+    /// [`crate::keytree::p256_scalar_from_seed`] (module HKDF), imported with
+    /// [`FipsSigningKey::from_p256_scalar`]. Same seed -> same key on every
+    /// device.
+    pub fn from_seed(p: &FipsProvider, seed: &[u8; 32]) -> Result<Self, CryptoError> {
+        let d = crate::keytree::p256_scalar_from_seed(p, seed)?;
+        Self::from_p256_scalar(&d)
+    }
+
     /// Wire public key (65 bytes, uncompressed SEC1 point).
     pub fn public_key(&self) -> Vec<u8> {
         self.pair.public_key().as_ref().to_vec()

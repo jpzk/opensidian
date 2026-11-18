@@ -30,6 +30,7 @@ use std::fmt;
 use sha2::{Digest, Sha256};
 
 pub mod fips;
+pub mod keytree;
 pub mod soft;
 pub mod words;
 
