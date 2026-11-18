@@ -30,7 +30,7 @@ pub const NAV_TSV: &str = include_str!("../data/settings-layout/nav.tsv");
 /// (themeone item 8: "palette" LEFT this list with its readers — main.rs no
 /// longer has a get_palette/set_palette, so the key would fail the test below.
 /// A stale key in an existing ~/.opensidian.json is round-tripped, not read.)
-pub const CONFIG_KEYS: &[&str] = &["last", "list", "sidebar_w", "rside_tab", "hotkeys", "theme", "zoom"];
+pub const CONFIG_KEYS: &[&str] = &["last", "list", "sidebar_w", "rside_tab", "hotkeys", "theme", "zoom", "language"];
 
 /// (tab, label) -> config key. A row named here is the ONLY kind that renders
 /// enabled. Today: the Hotkeys tab, whose filter, scope chips and command rows
@@ -83,6 +83,10 @@ const BACKED: &[(&str, &str, &str)] = &[
     ("appearance", "Text font", "textFontFamily"),
     ("appearance", "Monospace font", "monospaceFontFamily"),
     ("appearance", "Font size", "baseFontSize"),
+    // issue #220: General > Language is live on ~/.opensidian.json "language" ("auto" or a
+    // locales/ code; main.rs lang_setting / i18n_set, CONFIG_KEYS above). Its control is
+    // ui/main.js langCtl: Auto (system) + the six native names, switched live (ui/i18n.js).
+    ("general", "Language", "language"),
 ];
 
 /// Keys that back a settings row and live in the VAULT's .obsidian/app.json,
@@ -580,7 +584,9 @@ mod tests {
         // ACTION row (updates.rs: signed GitHub release check), same progress.md.
         // 13 -> 14 (issue #119): Editor > "Properties in document" is live on app.json
         // propertiesInDocument, recorded in /workspace/goal/i119-props/progress.md.
-        assert_eq!(enabled, 14, "enabled-row count changed — say why in progress.md (R30)");
+        // 14 -> 15 (issue #220): General > "Language" is live on ~/.opensidian.json "language",
+        // recorded in /workspace/goal/i220-i18n/progress.md.
+        assert_eq!(enabled, 15,"enabled-row count changed — say why in progress.md (R30)");
     }
 
     /// a key is "real" only if main.rs actually reads or writes it
@@ -693,6 +699,10 @@ mod tests {
         let help = g.iter().find(|r| r.label == "Help").expect("Help row");
         assert_eq!((help.action, help.enabled), (Some("help"), true));
         assert!(help.desc.contains("Opensidian"));
+        // issue #220: Language is a live dropdown on the "language" config key
+        let lang = g.iter().find(|r| r.label == "Language").expect("Language row");
+        assert_eq!((lang.key, lang.enabled, lang.control), (Some("language"), true, Control::Dropdown));
+        assert!(CONFIG_KEYS.contains(&"language"));
         for r in &g {
             assert!(!r.label.to_lowercase().contains("obsidian") || r.label.contains("Opensidian"));
             assert!(!r.desc.replace("Opensidian", "").to_lowercase().contains("obsidian"), "{} names the reference app", r.label);
