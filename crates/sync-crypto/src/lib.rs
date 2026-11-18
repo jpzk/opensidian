@@ -3,10 +3,13 @@
 // Copyright (C) 2026 Jendrik Poloczek
 //! sync-crypto — the cipher suite and the `CryptoProvider` trait
 //! (docs/sync/spec.md, key-tree.md). Callers depend on the trait only, so the
-//! FIPS backend (aws-lc-rs, not added yet — docs/sync/cmvp.md) can be swapped
-//! in without touching sync-core or sync-server.
+//! FIPS backend can be swapped without touching sync-core or sync-server.
 //!
-//! What is here (M0/M1, zero new dependencies):
+//! What is here:
+//! - [`fips::FipsProvider`] (M2): the release provider, AWS-LC FIPS module via
+//!   aws-lc-rs (docs/sync/cmvp.md §7) — AES-256-GCM with module nonces,
+//!   HKDF/HMAC/SHA-256, module DRBG, ECDSA P-256 (suite 0x02). KATs:
+//!   `vectors/*.vec`, `tests/fips_kat.rs`.
 //! - [`CryptoProvider`]: hash, HMAC, HKDF, randomness, AEAD (module-chosen
 //!   nonces), signatures — the whole surface the sync engine may use.
 //! - [`content_sha256`]: plain SHA-256 for content addressing (history store,
@@ -16,14 +19,15 @@
 //!   commitment tag (spec §3.3), constant-time compare.
 //! - [`soft::SoftProvider`]: a reference provider for hash/HMAC/HKDF built on
 //!   `sha2`, used for test vectors. It does NOT implement AEAD, randomness or
-//!   signatures (returns [`CryptoError::Unsupported`]); release builds get
-//!   those from the validated module.
+//!   signatures (returns [`CryptoError::Unsupported`]); those come from
+//!   [`fips::FipsProvider`].
 #![forbid(unsafe_code)]
 
 use std::fmt;
 
 use sha2::{Digest, Sha256};
 
+pub mod fips;
 pub mod soft;
 
 /// AES-256-GCM nonce length.

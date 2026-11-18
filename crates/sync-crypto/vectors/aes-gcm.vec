@@ -1,0 +1,57 @@
+# AES-256-GCM known answers, 96-bit IV, 128-bit tag.
+# Source: McGrew & Viega, "The Galois/Counter Mode of Operation (GCM)",
+# rev. 2005, Appendix B, test cases 13-16 (the AES-256 cases), as used by
+# NIST SP 800-38D validation. ct = ciphertext || tag.
+format = osy-vec-1
+area = aes-gcm
+suite = 02
+
+[gcm-tc13]
+key = 0000000000000000000000000000000000000000000000000000000000000000
+nonce = 000000000000000000000000
+aad =
+pt =
+ct = 530f8afbc74536b9a963b4f1c4cb738b
+result = valid
+
+[gcm-tc14]
+key = 0000000000000000000000000000000000000000000000000000000000000000
+nonce = 000000000000000000000000
+aad =
+pt = 00000000000000000000000000000000
+ct = cea7403d4d606b6e074ec5d3baf39d18d0d1c8a799996bf0265b98b5d48ab919
+result = valid
+
+[gcm-tc15]
+key = feffe9928665731c6d6a8f9467308308feffe9928665731c6d6a8f9467308308
+nonce = cafebabefacedbaddecaf888
+aad =
+pt = d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b391aafd255
+ct = 522dc1f099567d07f47f37a32a84427d643a8cdcbfe5c0c97598a2bd2555d1aa8cb08e48590dbb3da7b08b1056828838c5f61e6393ba7a0abcc9f662898015adb094dac5d93471bdec1a502270e3cc6c
+result = valid
+
+[gcm-tc16]
+key = feffe9928665731c6d6a8f9467308308feffe9928665731c6d6a8f9467308308
+nonce = cafebabefacedbaddecaf888
+aad = feedfacedeadbeeffeedfacedeadbeefabaddad2
+pt = d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39
+ct = 522dc1f099567d07f47f37a32a84427d643a8cdcbfe5c0c97598a2bd2555d1aa8cb08e48590dbb3da7b08b1056828838c5f61e6393ba7a0abcc9f66276fc6ece0f4e1768cddf8853bb2d551b
+result = valid
+
+[gcm-tc16-bad-tag]
+key = feffe9928665731c6d6a8f9467308308feffe9928665731c6d6a8f9467308308
+nonce = cafebabefacedbaddecaf888
+aad = feedfacedeadbeeffeedfacedeadbeefabaddad2
+pt =
+ct = 522dc1f099567d07f47f37a32a84427d643a8cdcbfe5c0c97598a2bd2555d1aa8cb08e48590dbb3da7b08b1056828838c5f61e6393ba7a0abcc9f66276fc6ece0f4e1768cddf8853bb2d551c
+result = invalid
+reason = "bad tag"
+
+[gcm-tc16-bad-aad]
+key = feffe9928665731c6d6a8f9467308308feffe9928665731c6d6a8f9467308308
+nonce = cafebabefacedbaddecaf888
+aad = feedfacedeadbeeffeedfacedeadbeefabaddad3
+pt =
+ct = 522dc1f099567d07f47f37a32a84427d643a8cdcbfe5c0c97598a2bd2555d1aa8cb08e48590dbb3da7b08b1056828838c5f61e6393ba7a0abcc9f66276fc6ece0f4e1768cddf8853bb2d551b
+result = invalid
+reason = "aad mismatch"
