@@ -112,7 +112,8 @@ pub fn word(index: u16) -> Option<&'static str> {
     list().get(index as usize).copied()
 }
 
-/// Index of `w` (exact, lowercase). The list is sorted, so binary search.
+/// Index of `w` (exact, lowercase; four words contain `-`). The list is
+/// byte-sorted, so binary search.
 pub fn index_of(w: &str) -> Option<u16> {
     list().binary_search(&w).ok().map(|i| i as u16)
 }

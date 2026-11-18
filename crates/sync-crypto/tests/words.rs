@@ -35,7 +35,7 @@ fn list_shape() {
     let mut prev = "";
     for i in 0..LIST_LEN {
         let w = word(i as u16).unwrap();
-        assert!(w.bytes().all(|b| b.is_ascii_lowercase()), "{i}");
+        assert!(w.bytes().all(|b| b.is_ascii_lowercase() || b == b'-'), "{i}");
         assert!(w > prev, "sorted + unique at {i}");
         assert_eq!(index_of(w), Some(i as u16));
         prev = w;
@@ -46,6 +46,9 @@ fn list_shape() {
     assert_eq!(dice_code(0), "11111");
     assert_eq!(dice_code(7775), "66666");
     assert_eq!(index_of("Zoom"), None, "index_of is exact; parse lowercases");
+    // four hyphenated words exist (drop-down, felt-tip, t-shirt, yo-yo)
+    let hy: Vec<&str> = (0..LIST_LEN as u16).map(|i| word(i).unwrap()).filter(|w| w.contains('-')).collect();
+    assert_eq!(hy, ["drop-down", "felt-tip", "t-shirt", "yo-yo"]);
 }
 
 /// (S_bytes hex, 11 words, checksum word) — sha256sum-computed.
