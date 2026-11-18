@@ -146,3 +146,35 @@ pkgset, or on a routine refresh:
 **Bump Rust**: set `RUST_TOOLCHAIN` in release.yml and `RUST` in the script, then
 copy `RUST_MANIFEST_SHA256` from `channel-rust-<v>.toml.sha256` and both `xz_hash`
 values from the manifest. The release must be at least 6 weeks old.
+
+### Flatpak build environment (#189 item 2)
+
+`packaging/flatpak/runtimes.sh` sets up the flatpak job in `release.yml`:
+- `host`: the runner's apt reads only `snapshot.ubuntu.com` at the same `SNAP` as the
+  AppImage build. It installs `flatpak`, `flatpak-builder` and `elfutils` as
+  `pkg=version`, then checks the installed versions.
+- `remote`: adds flathub from `flathub.flatpakrepo` after checking its sha256
+  (`FLATHUB_REPO_SHA256`). The file carries flathub's GPG key, so a changed key fails
+  here. flatpak then checks every pulled commit's signature against that key.
+- `log`: prints each pinned commit with its date, plus the newest flathub commits of
+  the ref. This is the input for a bump.
+- `install`: installs `org.gnome.Platform//49`, `org.gnome.Sdk//49` and
+  `org.freedesktop.Sdk.Extension.rust-stable//25.08` with `--no-related`, moves each
+  one to its pinned commit (`flatpak update --commit=`), and checks the deployed commit
+  (`flatpak info --show-commit`). It fails if a commit is younger than 6 weeks, or if
+  anything other than the 3 pinned refs is installed. The build log has one
+  `PINNED <ref> <commit>` line per ref.
+
+A branch such as `//49` is not a pin, because flathub moves it with every runtime
+update. Each `COMMIT_<ref>` is a full 64-hex ostree commit for each arch. pin-check
+accepts `--commit="$VAR"` only when every `VAR=` assignment in the file is 64 hex. The
+flathub submission of `dev.koto.opensidian` must build against the same commits.
+
+**Bump a runtime commit** for a runtime security update, or a new GNOME branch:
+1. Read the `log` step of the last release run. For each ref and arch, pick the newest
+   commit that is at least 6 weeks old. A new branch also means updating the manifest's
+   `runtime-version` and the `REF_*` lines.
+2. Set the six `COMMIT_*` values. Run the dry-run release, and check the `PINNED`
+   lines and the flatpak artifacts.
+3. Bump `HOST_PKGS` together with `SNAP`, using the same procedure as the AppImage
+   snapshot, against the `resolute` indexes for both arches.

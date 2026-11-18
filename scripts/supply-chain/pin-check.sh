@@ -15,7 +15,8 @@
 #   apt      apt-get/apt install of a package without =version
 #   dnf      dnf/yum install of a package without -<version>
 #   cargo    cargo install without --locked AND --version (or name@version)
-#   flatpak  flatpak install without --commit= (here or a `flatpak update --commit=` within 6 lines)
+#   flatpak  flatpak install without --commit= (here or a `flatpak update --commit=` within 6 lines);
+#            --commit="$VAR" counts only when every VAR= assignment in the same file is 64 hex
 #   fetch    curl/wget download (-o/-O/--output, wget) without sha256sum/sha512sum within 6 lines;
 #            curl|wget piped into a shell is always a finding
 #   pkgmgr   npm/npx/yarn/pnpm/bun/pipx/go install|get (forbidden), pip without --require-hashes
@@ -92,6 +93,16 @@ img_pinned() {  # file ref-text -> 0 if pinned
   for x in $vars; do var_pinned "$f" "$x" && return 0; done
   return 1
 }
+# commit_pinned FILE TEXT -> 0 if TEXT carries --commit=<64 hex>, or --commit="$VAR" where FILE
+# assigns VAR at least once and every VAR= assignment in FILE is exactly 64 hex
+commit_pinned() {
+  local v a
+  printf '%s' "$2" | grep -Eq -- '--commit=[0-9a-f]{64}' && return 0
+  [[ "$2" =~ --commit=[\"\']?\$\{?([A-Za-z_][A-Za-z0-9_]*) ]] || return 1
+  v=$(grep -oE "(^|[[:space:];(])${BASH_REMATCH[1]}=[^[:space:];)]*" "$1" | sed -E "s/^.*${BASH_REMATCH[1]}=//; s/[\"']//g")
+  [ -n "$v" ] || return 1
+  while IFS= read -r a; do [[ "$a" =~ ^[0-9a-f]{64}$ ]] || return 1; done <<< "$v"
+}
 # packages of an install command: words after "install" up to a shell separator, flags dropped,
 # "$VAR" expanded from VAR="..." in the same file
 pkgs() {  # file cmdtext
@@ -155,7 +166,7 @@ while IFS= read -r F; do
     fi
     # flatpak
     if printf '%s' "$j" | grep -Eq '(^|[^a-z-])flatpak[[:space:]]+([^;&|]*[[:space:]])?install([[:space:]]|$)'; then
-      printf '%s\n%s' "$j" "$win" | grep -Eq -- '--commit=[0-9a-f]{64}' || hit flatpak "$rel" $ln "$s"
+      commit_pinned "$F" "$(printf '%s\n%s' "$j" "$win" | grep -E -- '--commit=' | head -1)" || hit flatpak "$rel" $ln "$s"
     fi
     # fetch
     if printf '%s' "$s" | grep -Eq '(^|[^a-z-])(curl|wget)[[:space:]]'; then

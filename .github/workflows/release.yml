@@ -241,14 +241,12 @@ jobs:
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h /
-      - name: flatpak + flatpak-builder (runner distro versions, = bin/hz/cloud-init.yaml)
+      - name: flatpak build env (packaging/flatpak/runtimes.sh, pinned host tools + runtime commits)
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends flatpak flatpak-builder elfutils  # elfutils = eu-strip (a Recommends, dropped by --no-install-recommends)
-          dpkg-query -W flatpak flatpak-builder elfutils
-          flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-          flatpak --user install -y --noninteractive --arch="$ARCH" flathub org.gnome.Platform//49 org.gnome.Sdk//49 org.freedesktop.Sdk.Extension.rust-stable//25.08
-          flatpak --user list --runtime --columns=application,arch,branch,active
+          bash packaging/flatpak/runtimes.sh host
+          bash packaging/flatpak/runtimes.sh remote
+          bash packaging/flatpak/runtimes.sh log
+          bash packaging/flatpak/runtimes.sh install
       - name: packaging/flatpak/build.sh
         shell: bash  # -eo pipefail: the grep filter must not mask a build failure
         env:

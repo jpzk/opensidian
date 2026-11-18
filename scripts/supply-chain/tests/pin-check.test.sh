@@ -36,6 +36,7 @@ mut "apt drop =version"    .github/workflows/w.yml 's#curl=8.14.1-2#curl#' apt
 mut "apt continuation"     .github/workflows/w.yml 's#elfutils=0.192-4#elfutils#' apt
 mut "cargo drop --version" .github/workflows/w.yml 's#cargo-about --version 0.8.4#cargo-about#' cargo
 mut "flatpak drop commit"  .github/workflows/w.yml '/--commit=/d' flatpak
+mut "flatpak var -> branch" packaging/flatpak/runtimes.sh 's#^(  aarch64\) COMMIT_PLATFORM=)[0-9a-f]{64}#\149#' flatpak
 mut "fetch drop sha check" .github/workflows/w.yml '/sha256sum -c/d' fetch
 mut "image digest -> tag"  .github/workflows/w.yml 's#debian@sha256:[0-9a-f]{64}#debian:trixie#' image
 mut "IMG var digest"       packaging/build.sh 's#^DIGEST=.*#DIGEST=trixie#' image
