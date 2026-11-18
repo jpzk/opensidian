@@ -54,6 +54,7 @@ mod desk_proc;
 mod testutil; // shared unit-test helpers (write_exe: no ETXTBSY from a write fd a parallel fork inherited)
 #[cfg(feature = "devui")]
 mod devui; // goal devui: DEV-ONLY UI hot reload, never in a default/release build
+mod i18n; // #220: UI translations (Project Fluent) — locales/<lang>/main.ftl embedded, shared with ui/i18n.js
 mod vaultlock;
 mod srcmode;
 mod themefs;
@@ -4381,6 +4382,8 @@ fn engine_off_response(why: &str) -> PageResponse {
 fn page_window(app: &tauri::AppHandle, wc: &tauri::utils::config::WindowConfig) -> tauri::Result<()> {
     let h = app.clone();
     let b = tauri::WebviewWindowBuilder::from_config(app, wc)?;
+    // #220: translations are ready before the first script runs (ui/i18n.js)
+    let b = b.initialization_script(&i18n_init_js());
     // census-gate: the title census exists only when opted in (census.rs); off = no script, no flag
     let b = if census::on() { b.initialization_script(census::INIT_JS) } else { b };
     #[cfg(feature = "devui")]
@@ -7735,6 +7738,71 @@ fn set_zoom_cfg(level: f64) {
     cfg_set("zoom", serde_json::json!(level));
 }
 
+/* #220 Language. ~/.opensidian.json "language" = "auto" (absent = auto) or a
+   locales/ code. The webview formats its own text (ui/i18n.js) from the .ftl this
+   hands over; Rust-side text calls i18n::tr(ui_lang(), ..) on the same bytes. */
+fn lang_setting() -> String {
+    cfg_value()["language"].as_str().filter(|s| i18n::valid_setting(s)).unwrap_or(i18n::AUTO).to_string()
+}
+
+/// the language native (Rust-side) text renders in right now
+#[allow(dead_code)]
+fn ui_lang() -> &'static str {
+    i18n::resolve(&lang_setting())
+}
+
+#[derive(serde::Serialize)]
+struct I18nState {
+    /// the persisted setting: "auto" or a language code
+    setting: String,
+    /// what LC_ALL > LC_MESSAGES > LANG of this process maps to
+    system: &'static str,
+    /// [code, native name] in list order
+    langs: Vec<[&'static str; 2]>,
+}
+
+#[tauri::command]
+fn i18n_state() -> I18nState {
+    I18nState {
+        setting: lang_setting(),
+        system: i18n::system_lang(),
+        langs: i18n::LANGS.iter().map(|l| [l.0, l.1]).collect(),
+    }
+}
+
+/// the .ftl source of `lang` plus the English one (the fallback bundle)
+#[tauri::command]
+fn i18n_load(lang: String) -> Result<serde_json::Value, String> {
+    let src = i18n::source(&lang).ok_or_else(|| format!("unknown language {lang:?}"))?;
+    Ok(serde_json::json!({ "lang": lang, "ftl": src, "en": i18n::ftl("en") }))
+}
+
+#[tauri::command]
+fn i18n_set(setting: String) -> Result<(), String> {
+    if !i18n::valid_setting(&setting) {
+        return Err(format!("unknown language {setting:?}"));
+    }
+    cfg_set("language", serde_json::json!(setting));
+    Ok(())
+}
+
+/// #220: the window's i18n boot data, run before any page script (ui/i18n.js): the
+/// setting, the env's language, the list, and the English + resolved .ftl sources,
+/// so the first paint is already translated without an IPC round trip.
+fn i18n_init_js() -> String {
+    let setting = lang_setting();
+    let lang = i18n::resolve(&setting);
+    let v = serde_json::json!({
+        "setting": setting,
+        "system": i18n::system_lang(),
+        "lang": lang,
+        "langs": i18n::LANGS.iter().map(|l| [l.0, l.1]).collect::<Vec<_>>(),
+        "en": i18n::ftl("en"),
+        "ftl": i18n::source(lang),
+    });
+    format!("window.__OS_I18N={v};")
+}
+
 /// S1: the one origin the window may navigate to. Tauri v2 on Linux serves
 /// frontendDist as `tauri://localhost` — exact scheme, exact host, no port.
 /// Matching on the host alone admitted http(s)://tauri.localhost:<any port>
@@ -8080,7 +8148,7 @@ fn main() {
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files, clip::clip_text, clip::clip_has_text, clip::clip_set_text, mdtable::table_op,
             win_rect, win_gesture, win_move_proto, win_drag_start, win_minimize, win_toggle_max, win_close, quit_arm, quit_ready,
             tab_removed, insert_datetime,
-            zoom, zoom_get, pdf_info,
+            zoom, zoom_get, i18n_state, i18n_load, i18n_set, pdf_info,
             // cp-secrets
             secrets::secrets_op,
             settings::settings_model
