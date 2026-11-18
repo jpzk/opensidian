@@ -121,11 +121,18 @@ const EdMenu = (() => {
       "---",
     ];
     const PAR = { title: "Paragraph", sub: PARAGRAPH, section: "" }, INS = { title: "Insert", sub: INSERT, section: "" };
+    /* #144 toggles 8 + 9: clip = true | false | { off: "<refusal naming the toggle>" } (clip_has_text
+       refused). App clipboard off: every clipboard row disabled with the refusal as its reason.
+       Plugin clipboard off (a plugin is on this page): Copy / Cut run WebKit's own copy inside this
+       click (execCommand: a real user gesture, CM6 fills the data), Paste rows disabled. */
+    const off = clip && clip.off ? clip.off : "", appOff = /App clipboard\)/.test(off);
+    const pasteWhy = appOff ? off : off ? off + " — use Ctrl+V" : clip ? undefined : "";
+    const viaKey = off && !appOff ? cmd => go(() => { if (!document.execCommand(cmd)) say(off, "secclip"); }) : null;
     const CLIP = [
-      R("Cut", go(() => clipCut(g)), "clipboard", none),
-      R("Copy", go(() => clipCopy(g)), "clipboard", none),
-      R("Paste", go(() => clipPaste(g)), "clipboard", clip ? undefined : ""),
-      R("Paste as plain text", go(() => clipPaste(g)), "clipboard", clip ? undefined : ""),
+      R("Cut", viaKey ? viaKey("cut") : go(() => clipCut(g)), "clipboard", appOff ? off : none),
+      R("Copy", viaKey ? viaKey("copy") : go(() => clipCopy(g)), "clipboard", appOff ? off : none),
+      R("Paste", go(() => clipPaste(g)), "clipboard", pasteWhy),
+      R("Paste as plain text", go(() => clipPaste(g)), "clipboard", pasteWhy),
       R("Select all", go(() => Ed.selectAll(g)), "clipboard"),
     ];
     /* C3-4: a right-click ON a link / embed (hit = linkHit(), the source span under
@@ -300,7 +307,9 @@ const EdMenu = (() => {
     }
     return null;
   }
-  async function clipPut(t) { await inv("clip_set_text", { text: t }).catch(err => console.warn("clip_set_text:", err)); }
+  /* #144 toggles 8 + 9: a clipboard refusal names its toggle — say it (the notice), do not just log it */
+  const clipErr = what => err => { console.warn(what + ":", err); const m = String(err && err.message || err); if (/^EPERM: /.test(m) && typeof say === "function") say(m, "secclip"); };
+  async function clipPut(t) { await inv("clip_set_text", { text: t }).catch(clipErr("clip_set_text")); }
   function openUrl(u) {          // the S1 choke point: open_external re-checks the scheme in Rust
     inv("open_external", { url: u }).catch(err => console.warn("open_external:", err));
   }
@@ -348,17 +357,17 @@ const EdMenu = (() => {
     q.dispatchEvent(new Event("input", { bubbles: true }));
   }
   const selText = g => { const s = Ed.sel(g); return s && !s.empty ? Ed.slice(g, s) : ""; };
-  async function clipCopy(g) { const t = selText(g); if (t) await inv("clip_set_text", { text: t }).catch(err => console.warn("clip_set_text:", err)); }
+  async function clipCopy(g) { const t = selText(g); if (t) await inv("clip_set_text", { text: t }).catch(clipErr("clip_set_text")); }
   async function clipCut(g) {
     const s = Ed.sel(g), t = selText(g);
     if (!t) return;
-    try { await inv("clip_set_text", { text: t }); } catch (err) { console.warn("clip_set_text:", err); return; }   // never delete what did not reach the clipboard
+    try { await inv("clip_set_text", { text: t }); } catch (err) { clipErr("clip_set_text")(err); return; }   // never delete what did not reach the clipboard
     if (!edEditable()) return;
     Ed.replace(g, s, "", "cut");
   }
   async function clipPaste(g) {
     let t = null;
-    try { t = await inv("clip_text"); } catch (err) { console.warn("clip_text:", err); }
+    try { t = await inv("clip_text"); } catch (err) { clipErr("clip_text")(err); }
     if (!t || !edEditable()) return;
     Ed.replace(g, Ed.sel(g), t, "paste");
   }
@@ -429,12 +438,12 @@ const EdMenu = (() => {
     if (!cm.hasFocus) cm.focus();
     const sel = selText(g), x = e.clientX, y = e.clientY;
     closeMenu();
-    const ask = inv("clip_has_text").catch(() => false);
+    const ask = inv("clip_has_text").catch(err => { const m = String(err && err.message || err); return /^EPERM: /.test(m) ? { off: m } : false; });   // #144: a refusal disables the rows WITH its reason
     ask.then(clip => {
       if (fg() !== g || selText(g) !== sel) return;       // the world moved while we asked: no stale menu
       const B = OMenu.shell();
       B.el.dataset.mt = "editor:" + (t.mode === "source" ? "src" : "lp") + (hit ? "-" + (hit.kind === "note" ? "link" : hit.kind) : sel ? "-sel" : "");
-      B.add(rows(g, sel, !!clip, hit));
+      B.add(rows(g, sel, clip && clip.off ? clip : !!clip, hit));
       if (PMENU && PMENU.editorMenu) PMENU.editorMenu(e, B);   // plugin rows after the core rows (stock order)
       closeMenu();
       placeMenu(B.el, x, y);

@@ -12,6 +12,10 @@
 //! posts it to the main loop and waits for the callback off the main thread —
 //! never a nested `wait_for_text` loop inside the IPC handler. A WRITE is a
 //! sync command, which Tauri runs on the main thread.
+//!
+//! #144 toggles 8 + 9: every command asks `crate::clip_allowed` FIRST (security::clip_check:
+//! app clipboard off refuses all, plugin clipboard off refuses once community code entered
+//! the page realm) — before any GTK call.
 
 /// the largest text a menu Paste takes (a paste is one editor transaction)
 pub const MAX_CLIP_TEXT: usize = 8 << 20;
@@ -54,6 +58,7 @@ async fn read(_window: tauri::Window) -> Option<String> {
 /// the clipboard's text (None = no text: the menu's Paste rows are disabled)
 #[tauri::command]
 pub async fn clip_text(window: tauri::Window) -> Result<Option<String>, String> {
+    crate::clip_allowed("clip_text")?;
     Ok(read(window).await)
 }
 
@@ -61,12 +66,14 @@ pub async fn clip_text(window: tauri::Window) -> Result<Option<String>, String> 
 /// content itself only crosses to the webview when the user picks Paste.
 #[tauri::command]
 pub async fn clip_has_text(window: tauri::Window) -> Result<bool, String> {
+    crate::clip_allowed("clip_has_text")?;
     Ok(read(window).await.is_some())
 }
 
 /// Copy / Cut: put `text` on the clipboard (sync = Tauri's main thread)
 #[tauri::command]
 pub fn clip_set_text(text: String) -> Result<(), String> {
+    crate::clip_allowed("clip_set_text")?;
     if text.len() > MAX_CLIP_TEXT {
         return Err("clip_set_text: text over the 8 MiB menu cap".into());
     }
