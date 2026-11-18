@@ -66,8 +66,9 @@ remote)
   F=$(mktemp)
   curl -4 -fsSL -m 60 -o "$F" "$FLATHUB_REPO_URL"
   echo "$FLATHUB_REPO_SHA256  $F" | sha256sum -c - || die "flathub.flatpakrepo sha256 mismatch (GPG key changed?)"
-  $FP remote-add --if-not-exists flathub "$F"
-  $FP remotes --columns=name,url,gpg-verify
+  $FP remote-add --if-not-exists --from flathub "$F"
+  $FP remotes --columns=name,url,options
+  ! $FP remotes --columns=name,options | grep -E "^flathub[[:space:]].*no-gpg-verify" || die "flathub has gpg verification off"
   say "flathub remote from $FLATHUB_REPO_URL sha256 $FLATHUB_REPO_SHA256" ;;
 log)
   for r in PLATFORM SDK RUST; do eval "ref=\$REF_$r c=\$COMMIT_$r"
