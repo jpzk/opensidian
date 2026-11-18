@@ -94,37 +94,14 @@ jobs:
             refs/heads/v*-release) [ "v$V-release" = "$GITHUB_REF_NAME" ] || { echo "branch $GITHUB_REF_NAME != version $V"; exit 1; };;
           esac
           echo "version=$V" >> "$GITHUB_OUTPUT"; echo "version $V"
-      - name: system packages (= bin/hz/cloud-init.yaml build set)
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends build-essential pkg-config libssl-dev \
-            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf file
-      - name: rust ${{ env.RUST_TOOLCHAIN }}
-        run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup default "$RUST_TOOLCHAIN"
-          rustc --version | grep -q "$RUST_TOOLCHAIN" || exit 1
-          rustc -vV | grep -E '^host:'
+      # The runner is only a HOST from here on (#189): ubuntu-26.04 floats by design, but nothing it
+      # ships is compiled in or bundled. The build environment is packaging/ci/appimage-build.sh's
+      # digest-pinned ubuntu:26.04 image + snapshot.ubuntu.com apt + pkg=version + sha256-checked Rust.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         with:
           workspaces: src-tauri
-          key: ${{ matrix.arch }}
-      - name: cargo build --release --locked
-        working-directory: src-tauri
-        run: |
-          # ui/ is not a cargo input (release.sh): force our crate to re-embed it.
-          cargo clean -p opensidian --release
-          cargo build --release --locked
-          ls -l target/release/opensidian; sha256sum target/release/opensidian
-      - name: binary arch + glibc floor
-        run: |
-          B=src-tauri/target/release/opensidian
-          file -b "$B"
-          case "$ARCH" in x86_64) W='x86-64' ;; aarch64) W='ARM aarch64' ;; esac
-          file -b "$B" | grep -q "$W" || { echo "binary is not $W"; exit 1; }
-          echo "glibc floor ($ARCH): $(objdump -T "$B" | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -1)"
-          ldd --version | head -1
+          key: ${{ matrix.arch }}-pinned-env
       - name: appimagetool r13 (sha256-pinned, ${{ matrix.arch }})
         run: |
           eval "SHA=\$APPIMAGETOOL_SHA256_$ARCH"
@@ -132,16 +109,27 @@ jobs:
           curl -4 -fsSL -m 300 -o "$RUNNER_TEMP/appimagetool" "$APPIMAGETOOL_URL_BASE-$ARCH.AppImage"
           echo "$SHA  $RUNNER_TEMP/appimagetool" | sha256sum -c -
           chmod +x "$RUNNER_TEMP/appimagetool"
-      - name: AppImages
+      - name: binary + AppImages in the pinned build env (resolved package set recorded)
         env:
           V: ${{ steps.ver.outputs.version }}
         run: |
-          export APPIMAGETOOL="$RUNNER_TEMP/appimagetool"
-          for F in slim portable; do bash packaging/ci/build-appimage.sh "$F" "$V"; done
+          podman --version
+          APPIMAGETOOL="$RUNNER_TEMP/appimagetool" bash packaging/ci/appimage-build.sh . "$V"
           mkdir -p out/bin
           cp src-tauri/target/release/opensidian out/bin/opensidian
-          ls -l dist/*.AppImage; sha256sum dist/*.AppImage
+          ls -l dist/*.AppImage; sha256sum dist/*.AppImage dist/pkgset-*.tsv dist/libset-*.tsv
           ls dist/opensidian-$V-$ARCH-slim.AppImage dist/opensidian-$V-$ARCH-portable.AppImage
+      # resolved package set + portable library set: SBOM input (#188) and the "same tag twice gives
+      # the same library set" check (#189). Not release assets.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: appimage-pkgset-${{ steps.ver.outputs.version }}-${{ matrix.arch }}
+          path: |
+            dist/pkgset-${{ steps.ver.outputs.version }}-${{ matrix.arch }}.tsv
+            dist/libset-${{ steps.ver.outputs.version }}-${{ matrix.arch }}.tsv
+            dist/apt-${{ matrix.arch }}.log
+          retention-days: 90
+          if-no-files-found: error
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
@@ -254,14 +242,12 @@ jobs:
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h /
-      - name: flatpak + flatpak-builder (runner distro versions, = bin/hz/cloud-init.yaml)
+      - name: flatpak build env (packaging/flatpak/runtimes.sh, pinned host tools + runtime commits)
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends flatpak flatpak-builder elfutils  # elfutils = eu-strip (a Recommends, dropped by --no-install-recommends)
-          dpkg-query -W flatpak flatpak-builder elfutils
-          flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-          flatpak --user install -y --noninteractive --arch="$ARCH" flathub org.gnome.Platform//49 org.gnome.Sdk//49 org.freedesktop.Sdk.Extension.rust-stable//25.08
-          flatpak --user list --runtime --columns=application,arch,branch,active
+          bash packaging/flatpak/runtimes.sh host
+          bash packaging/flatpak/runtimes.sh remote
+          bash packaging/flatpak/runtimes.sh log
+          bash packaging/flatpak/runtimes.sh install
       - name: packaging/flatpak/build.sh
         shell: bash  # -eo pipefail: the grep filter must not mask a build failure
         env:

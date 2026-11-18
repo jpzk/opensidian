@@ -98,7 +98,9 @@ each) and `loaded_by`. Each upstream `LICENSE` and `SHA256SUMS` stay beside thei
 
 `scripts/supply-chain/vendor-verify.sh` proves the lock:
 
-1. registry metadata for `name@version`: `dist.integrity` and `dist.tarball` must equal the lock;
+1. registry metadata for `name@version`: `dist.integrity` and `dist.tarball` must equal the lock,
+   field by field and as the sha256 of the canonical record `{version, integrity, tarball}` (the
+   packument is a mutable index, so the per-version record is what is pinned; #189);
 2. download the tarball, verify sha512, extract with `tar`, and require each vendored file to
    match the file at its recorded tarball path byte for byte (sha256);
 3. check the version embedded in the bytes (pdfjsVersion, the moment header, MathJax/Prism strings);
@@ -124,9 +126,11 @@ Only the **portable** AppImage bundles WebKitGTK/GTK. The slim AppImage, the .de
 use the system/runtime WebKit and are not covered here (the flatpak runtime is a component in the
 SBOM, see sbom).
 
-The AppImage is built on **ubuntu-26.04** with the apt set from `release.yml`'s appimage job, not on
-the `debian:trixie` packaging image. So the job runs on `ubuntu-26.04`, installs that same apt set
-and reads the truth from that dpkg database. `scripts/supply-chain/webkit-bundle-sbom.sh`:
+The portable AppImage is built by `packaging/ci/appimage-build.sh` from `snapshot.ubuntu.com` at
+`SNAP` with every requested package pinned `pkg=version` (#189). The job runs on `ubuntu-26.04`,
+installs that same pinned set from the same snapshot (`scripts/supply-chain/webkit-apt.sh`, which
+refuses unless its `SNAP` and every pin equal `appimage-build.sh`'s and checks the installed
+versions) and reads the truth from that dpkg database. `scripts/supply-chain/webkit-bundle-sbom.sh`:
 
 - roots: WebKit{Web,Network,GPU}Process, the injected bundle and `libwebkit2gtk-4.1.so.0` (plus the
   app binary if `--bin` is given), found in the same dirs as `build-appimage.sh`;
@@ -146,9 +150,11 @@ Decisions and known gaps:
 
 - **Source-package purls.** OSV keys Debian/Ubuntu advisories by source package. Scanning binary
   package names would come out falsely green.
-- **Unpinned apt.** The AppImage job installs from ubuntu-26.04 apt unpinned, so the bundled set
-  (and this scan) moves with the archive. The scan reflects what a build *today* bundles, not
-  necessarily what a past release bundled. Pinning apt or a snapshot mirror is a separate decision.
+- **Pinned apt (#189).** The scanned set is the release set: same snapshot, same `pkg=version`
+  pins (`webkit-apt.sh`). Bumping WebKitGTK means bumping `SNAP` + `PKGS` in `appimage-build.sh`
+  and `webkit-apt.sh` together (the script fails when they differ). Residual gap: a dependency the
+  ubuntu-26.04 runner image already ships is not re-installed from the snapshot, so its version
+  can differ from the release container's; the release `pkgset-<ver>-<arch>.tsv` is the exact set.
 - **No `--bin`.** The CI job does not build the opensidian binary, so libraries linked only by the
   app binary (not by WebKit) are not in the closure. Pass `--bin <elf>` to close that gap.
 
@@ -160,6 +166,10 @@ Decisions and known gaps:
 - the crates.io sparse index cksum for glib 0.18.5 equals the sha256 pinned in `Cargo.toml`
   (`233daaf6…0ee5`) and is not yanked (`yanked` must be `false`, else REFUSED), and the downloaded
   `.crate` matches it;
+- the fetched index is a mutable file (each glib release adds a line), so the 0.18.5 *record* is
+  pinned: the sha256 of its canonical JSON `{name,vers,deps,cksum,features,yanked}`
+  (`INDEX_ENTRY_SHA`) must match, and the `.crate` download is `sha256sum -c` checked before it
+  enters the cache (#189);
 - the only file that differs between pristine and vendor is `src/variant_iter.rs`;
 - pristine + `glib-fix/variantstriter.patch` (sha256 pinned) == vendor, including file modes.
 
@@ -291,12 +301,157 @@ does not cover it. Its integrity comes from the GitHub attestation (attest-sbom)
 
 ## Limits
 
-- Advisory DBs (RustSec, OSV) are not pinned. A red run with no code change usually means a new
-  advisory, so treat the weekly schedule as an alarm. Results can't be reproduced bit for bit.
-- cargo vet trusts people, not code. Baseline exemptions were not audited.
-- `cargo vet --locked` does not pick up audits published later by importers. Refresh
-  `imports.lock` on purpose.
-- The GitHub Actions themselves are only SHA-pinned, not scanned.
-- None of this catches malicious code in an already-trusted version or a compromised build
-  environment. Pinning plus the 6-week rule shrinks that window. The scanners are deliberately
-  outside it.
+- **Advisory DBs (RustSec, OSV) are not pinned.** cargo audit, cargo deny and osv-scanner fetch them fresh on every
+  run. A red run with no code change usually means a new advisory was published, so use the weekly
+  schedule as an alarm. It also means results can't be reproduced bit for bit.
+  Example: RUSTSEC-2026-0543 (chrono 0.4.45 unmaintained, informational, no vulnerability; chrono
+  comes in transitively through serde_with / tauri-utils) turned `cargo audit` red with no code
+  change. It is ignored in both `src-tauri/.cargo/audit.toml` and `deny.toml`, expiring 2027-05-15,
+  the same as the other unmaintained transitive crates and the same exception #188 carries.
+- **cargo vet trusts people, not code.** Imported audits are only as good as the organisations
+  behind them. Exemptions in the baseline were not audited. They only freeze today's graph.
+- `cargo vet --locked` does not pick up audits that importers publish later, so run `cargo vet` (or
+  `cargo vet regenerate imports`) on purpose to refresh `imports.lock`.
+- A git dependency for a crate version that is already exempted or audited still passes cargo vet.
+  That case is caught by cargo deny `sources` (`unknown-git = "deny"`), so keep both checks.
+- The GitHub Actions themselves are only SHA-pinned (pin-check enforces the SHA), not scanned.
+- None of these checks catch malicious code in an already-trusted version, or a compromised build
+  environment. Pinning plus the 6-week age rule just shrinks that window, and the three scanners
+  are deliberately outside it (see the exception above).
+
+## pin-check (#189)
+
+`scripts/supply-chain/pin-check.sh` fails CI (`supply-chain.yml` job `pin-check`) when any build,
+CI, packaging or bundled dependency is not pinned to an exact version **and** a content hash:
+
+- `uses:` without a 40-hex commit SHA (local `./` actions excepted)
+- `image:` / `container:` / `FROM` / `podman|docker pull|run|create` without `@sha256:<64 hex>`
+- `apt-get install` without `pkg=version`, `dnf install` without `pkg-version-release`
+- `cargo install` without `--locked` and `--version`
+- `flatpak install` without `--commit=<64 hex>`
+- `curl`/`wget` downloads without a `sha256sum`/`sha512sum` check within 6 lines; `curl … | sh`
+- `npm`/`npx`/`yarn`/`pnpm`/`bun`/`pipx`/`go install` (forbidden), `pip install` without `--require-hashes`
+
+Exceptions live in `supply-chain/pin-allow.tsv` (TAB-separated: rule, path, needle, expiry, scanner,
+reason). An entry needs a reason and an unexpired `YYYY-MM-DD`; an entry that no longer matches
+anything is itself a finding. The scanner exception is a *named* list (semgrep, opengrep,
+cargo-audit, cargo-deny, cargo-vet, osv-scanner): a scanner entry's needle must contain the
+scanner's name, so the exception cannot cover anything else, even inside a scanner job.
+Self-test: `bash scripts/supply-chain/tests/pin-check.test.sh` (one red fixture per rule, plus
+mutations that unpin one thing each in an all-green fixture tree).
+
+### AppImage build environment (#189 item 1)
+
+The slim and portable AppImages (and the binary the rpm/deb wrap) are built by
+`packaging/ci/appimage-build.sh` inside `ubuntu:resolute-20260927` pinned by its
+multi-arch manifest-list digest. apt reads only `snapshot.ubuntu.com` at `SNAP`
+(resolute, -updates, -security; main, universe), with the archive signatures still
+checked. Every requested package is pinned `pkg=version`, and the script fails if
+the installed version differs. Everything they pull in is fixed by the frozen
+snapshot. The `ubuntu-26.04` runner floats by design, but it is only the host that
+runs podman: nothing it ships is compiled in or bundled.
+
+Each build records two workflow artifacts, `appimage-pkgset-<ver>-<arch>`:
+- `pkgset-<ver>-<arch>.tsv`: every installed package with its name, version, arch
+  and the sha256 of the `.deb`. This is the SBOM input for #188.
+- `libset-<ver>-<arch>.tsv`: the sha256 of every library in the portable AppDir.
+  Two builds of the same tag must produce identical files.
+
+Rust 1.98.0 comes from the dist tarball. The script checks
+`channel-rust-1.98.0.toml` against `RUST_MANIFEST_SHA256`. The per-arch `xz_hash`
+in that manifest must equal `RUST_XZ_SHA256_<arch>`, and the tarball must match it.
+
+**Bump the snapshot** when the weekly CVE scan flags WebKitGTK, GTK or OpenSSL in the
+pkgset, or on a routine refresh:
+1. Pick a `SNAP` timestamp and an image tag that are both at least 6 weeks old. The
+   snapshot must not be older than the image.
+2. Read `docker-content-digest` from the registry for the tag's manifest list, and
+   check that it contains both linux/amd64 and linux/arm64/v8. Set `DIGEST`.
+3. For each package in `PKGS`, read its version from the snapshot's `Packages`
+   indexes, preferring -updates, then -security, then the release pocket. Check both
+   `binary-amd64` and `binary-arm64`, since `PKGS` holds one version for both arches.
+   Set the same `SNAP` and the same pins in `scripts/supply-chain/webkit-apt.sh` (the CVE scan
+   of the portable AppImage's WebKit closure); it refuses to run while they differ.
+4. Run the dry-run release twice. Compare the `pkgset` and `libset` files: they must
+   be identical between the two runs. Diff them against the previous snapshot and
+   review what changed.
+
+**Bump Rust**: see "Rust toolchain" below. In this script set `RUST`, copy
+`RUST_MANIFEST_SHA256` and both `xz_hash` values from the manifest. The script refuses
+to run if `RUST` differs from `rust-toolchain.toml` or its sha256 from
+`rust-toolchain.sh`.
+
+### Flatpak build environment (#189 item 2)
+
+`packaging/flatpak/runtimes.sh` sets up the flatpak job in `release.yml`:
+- `host`: the runner's apt reads only `snapshot.ubuntu.com` at the same `SNAP` as the
+  AppImage build. It installs `flatpak`, `flatpak-builder` and `elfutils` as
+  `pkg=version`, then checks the installed versions.
+- `remote`: adds flathub from `flathub.flatpakrepo` after checking its sha256
+  (`FLATHUB_REPO_SHA256`). The file carries flathub's GPG key, so a changed key fails
+  here. flatpak then checks every pulled commit's signature against that key.
+- `log`: prints each pinned commit with its date, plus the newest flathub commits of
+  the ref. This is the input for a bump.
+- `install`: installs `org.gnome.Platform//49`, `org.gnome.Sdk//49` and
+  `org.freedesktop.Sdk.Extension.rust-stable//25.08` with `--no-related`, moves each
+  one to its pinned commit (`flatpak update --commit=`), and checks the deployed commit
+  (`flatpak info --show-commit`). It fails if a commit is younger than 6 weeks, or if
+  anything other than the 3 pinned refs is installed. The build log has one
+  `PINNED <ref> <commit>` line per ref.
+
+A branch such as `//49` is not a pin, because flathub moves it with every runtime
+update. Each `COMMIT_<ref>` is a full 64-hex ostree commit for each arch. pin-check
+accepts `--commit="$VAR"` only when every `VAR=` assignment in the file is 64 hex. The
+flathub submission of `dev.koto.opensidian` must build against the same commits.
+
+**Bump a runtime commit** for a runtime security update, or a new GNOME branch:
+1. Read the `log` step of the last release run. For each ref and arch, pick the newest
+   commit that is at least 6 weeks old. A new branch also means updating the manifest's
+   `runtime-version` and the `REF_*` lines.
+2. Set the six `COMMIT_*` values. Run the dry-run release, and check the `PINNED`
+   lines and the flatpak artifacts.
+3. Bump `HOST_PKGS` together with `SNAP`, using the same procedure as the AppImage
+   snapshot, against the `resolute` indexes for both arches.
+
+### Rust toolchain (#189 item 5)
+
+`rust-toolchain.toml` names the channel (an exact `x.y.z`, never `stable`) and the
+components. A version is not a pin, so `scripts/supply-chain/rust-toolchain.sh`:
+1. downloads `channel-rust-<channel>.toml` and checks it against `RUST_MANIFEST_SHA256`
+   in the script (the `.sha256` file next to it on the server is not a pin: it comes
+   from the same place);
+2. runs `rustup toolchain install`, which checks every component against that manifest;
+3. checks that the installed `rustc -vV` commit-hash is the manifest's `[pkg.rustc]`
+   `git_commit_hash`. The log has one `PINNED rust <v> rustc <commit>` line.
+
+The `supply-chain.yml` jobs install Rust through this script. The AppImage build
+installs from the dist tarball (above) and checks the same channel and sha256. The
+build box (`bin/hz/release-build.sh` in the harness) must use the same channel.
+
+**Bump the toolchain**: pick a release at least 6 weeks old. Set `channel` in
+`rust-toolchain.toml`, `RUST_TOOLCHAIN` in `release.yml` and `supply-chain.yml`, and
+`RUST`, `RUST_MANIFEST_SHA256` and both `RUST_XZ_SHA256_<arch>` in
+`packaging/ci/appimage-build.sh`. Set the same `RUST_MANIFEST_SHA256` in
+`rust-toolchain.sh`. Check the value with
+`bash scripts/supply-chain/rust-toolchain.sh --manifest-only`.
+
+### Scanners
+
+cargo-audit, cargo-deny and cargo-vet (and semgrep/opengrep/osv-scanner) are the
+named exception in `pin-allow.tsv` (see the top of this file). They have no bump
+procedure: CI installs the latest release and logs its version. If a scanner release
+breaks CI, fix the config or the finding. Do not pin the scanner around it.
+
+### Runner images and Android
+
+- The GitHub-hosted runner (`ubuntu-26.04`) floats by design (#189 item 8). Every
+  build that ships runs inside a pinned container or a pinned flatpak runtime, so
+  the runner only hosts podman/flatpak. Nothing from the runner is compiled in or
+  bundled. The host tools it does install (flatpak, flatpak-builder, elfutils) come
+  from the pinned snapshot.
+- Android (#189 item 7): `develop` has no Android build. There is no Gradle project,
+  wrapper, SDK or NDK in the tree, so there is nothing to lock yet. The android-merge
+  branch is not part of this pin. When it lands it must add Gradle dependency locking
+  (`gradle.lockfile`), `gradle/verification-metadata.xml` with sha256 for every
+  artifact, the wrapper's `distributionSha256Sum`, and pinned SDK/NDK/build-tools
+  versions with checksums. pin-check will be extended to cover them then.

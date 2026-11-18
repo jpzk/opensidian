@@ -4,6 +4,7 @@
 #   cargo audit        RustSec advisories against Cargo.lock (--deny warnings)
 #   cargo deny         advisories + sources + bans + licenses (deny.toml)
 #   cargo vet          every third-party crate audited, imported or exempted (src-tauri/supply-chain/)
+#   pin-check          #189: every dependency pinned to exact version + content hash (pin-check.sh, pin-allow.tsv)
 #   vendor-js-cve      ui/vendor/vendor.lock.json proven against the npm registry + bytes, then
 #                      its SBOM scanned with osv-scanner against the VEX
 #   webkit-bundle-cve  the WebKitGTK/GTK closure the PORTABLE AppImage bundles (ubuntu-26.04 dpkg
@@ -79,7 +80,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  RUST_TOOLCHAIN: '1.98.0'        # = release.yml (released 2026-08-20)
+  RUST_TOOLCHAIN: '1.98.0'        # = rust-toolchain.toml = release.yml (released 2026-08-20); checked by rust-toolchain.sh
   CARGO_TERM_COLOR: always
   CARGO_NET_RETRY: '5'
 
@@ -94,8 +95,7 @@ jobs:
           persist-credentials: false
       - name: toolchain ${{ env.RUST_TOOLCHAIN }}
         run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
-          rustup default "$RUST_TOOLCHAIN"
+          bash scripts/supply-chain/rust-toolchain.sh   # manifest sha256 + rustc commit (rust-toolchain.toml)
           cargo --version
       - name: install cargo-audit (latest crates.io release, unpinned by design)
         run: cargo install --locked cargo-audit
@@ -117,8 +117,7 @@ jobs:
           persist-credentials: false
       - name: toolchain ${{ env.RUST_TOOLCHAIN }}
         run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
-          rustup default "$RUST_TOOLCHAIN"
+          bash scripts/supply-chain/rust-toolchain.sh   # manifest sha256 + rustc commit (rust-toolchain.toml)
           cargo --version
       - name: install cargo-deny (latest crates.io release, unpinned by design)
         run: cargo install --locked cargo-deny
@@ -137,8 +136,7 @@ jobs:
           persist-credentials: false
       - name: toolchain ${{ env.RUST_TOOLCHAIN }}
         run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
-          rustup default "$RUST_TOOLCHAIN"
+          bash scripts/supply-chain/rust-toolchain.sh   # manifest sha256 + rustc commit (rust-toolchain.toml)
           cargo --version
       - name: install cargo-vet (latest crates.io release, unpinned by design)
         run: cargo install --locked cargo-vet
@@ -149,6 +147,24 @@ jobs:
         # any new or updated crate without an audit/exemption fails here
         working-directory: src-tauri
         run: cargo vet --locked
+
+  pin-check:
+    # #189: every dependency outside the named scanner exception is pinned to an exact version AND
+    # a content hash (uses@sha, image@sha256, apt pkg=ver, dnf pkg-ver, cargo install --locked
+    # --version, flatpak --commit, curl/wget + sha256sum, no npm/npx/go install/unhashed pip).
+    # Allowlist: supply-chain/pin-allow.tsv (rule, path, needle, expiry, scanner, reason).
+    # Pure bash + grep/sed: no tool install, no network, nothing to pin.
+    name: pin-check
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: pin-check self-test (one red fixture per rule + mutations of a green tree)
+        run: bash scripts/supply-chain/tests/pin-check.test.sh
+      - name: pin-check on the repository
+        run: bash scripts/supply-chain/pin-check.sh
 
   vendor-js-cve:
     name: vendored JS (lock proof + CVE)
@@ -187,8 +203,9 @@ jobs:
 
   webkit-bundle-cve:
     # Scans what the PORTABLE AppImage bundles: build-appimage.sh portable copies the
-    # WebKitGTK/GTK closure of the ubuntu-26.04 runner (release.yml appimage job) into the
-    # AppImage. The slim AppImage, the .deb and the flatpak bundle NO WebKit: they use the
+    # WebKitGTK/GTK closure of packaging/ci/appimage-build.sh (snapshot.ubuntu.com SNAP, PKGS pinned
+    # pkg=version, #189) into the AppImage; webkit-apt.sh installs that same pinned set here.
+    # The slim AppImage, the .deb and the flatpak bundle NO WebKit: they use the
     # system's / the org.gnome.Platform runtime's WebKit, which is the distro's / Flathub's to patch.
     # Only x86_64 is scanned (ubuntu-26.04-arm installs the same source packages).
     name: WebKit bundle CVE (AppImage closure, ubuntu-26.04)
@@ -198,11 +215,8 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
-      - name: system packages (= release.yml appimage job; UNPINNED apt, see docs/supply-chain.md)
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends build-essential pkg-config libssl-dev \
-            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf file
+      - name: system packages (= appimage-build.sh PKGS from snapshot.ubuntu.com SNAP, pinned pkg=version, #189)
+        run: bash scripts/supply-chain/webkit-apt.sh
       - name: WebKit bundle SBOM (ldd closure -> dpkg -S -> source packages)
         run: |
           mkdir -p "$RUNNER_TEMP/sbom"

@@ -6,7 +6,8 @@
 #
 # Source of truth: ui/vendor/vendor.lock.json. VENDOR.md files are prose and are NEVER read here.
 # For every library in the lock:
-#   a) GET <registry>/<name>/<version>: .version, .dist.integrity and .dist.tarball must equal the lock;
+#   a) GET <registry>/<name>: the record of <version> (.version, .dist.integrity, .dist.tarball) must
+#      equal the lock, field by field AND as a sha256 of its canonical JSON (#189 pin-check: fetch);
 #   b) download the lock's tarball URL, its sha512 must equal the lock integrity; extract with tar;
 #      every vendored file's sha256 must equal the lock sha256 AND the file at tarball_path
 #      (local_header_lines=N: the vendored file is N lines of our own header + the upstream bytes;
@@ -57,11 +58,21 @@ sri_hex() {
   printf '%s' "${1#sha512-}" | base64 -d 2>/dev/null | od -An -v -tx1 | tr -d ' \n'
 }
 purl_of() { local n=$1; printf 'pkg:npm/%s@%s' "${n/#@/%40}" "$2"; }
-# registry packument -> $work/meta.json = versions[v] + {time: time[v]} (fails if v is absent)
+# the pinned registry record of one version: canonical JSON of {version, integrity, tarball}
+#   rec VERSION INTEGRITY TARBALL -> stdout (one line); pin_of ... -> its sha256
+rec() { jq -cnS --arg v "$1" --arg i "$2" --arg t "$3" '{version: $v, integrity: $i, tarball: $t}'; }
+pin_of() { rec "$@" | sha256sum | cut -d' ' -f1; }
+# registry packument -> $work/meta.json = versions[v] + {time: time[v]} (fails if v is absent).
+#   meta NAME VERSION PIN: PIN = sha256 of the lock's record (pin_of). The packument itself is a
+#   mutable index (new versions, dist-tags), so it cannot be hash-pinned as a whole; the record
+#   it serves for VERSION is: its canonical {version, integrity, tarball} must hash to PIN, else
+#   FAIL (#189). The field checks of the callers still run and name the field that differs.
 meta() {
   curl -4 -fsS --retry 3 -m 120 "$reg/$1" -o "$work/pack.json" &&
     jq -e --arg v "$2" '.versions[$v] as $d | select($d != null) | $d + {time: .time[$v]}' \
-      "$work/pack.json" >"$work/meta.json"
+      "$work/pack.json" >"$work/meta.json" || return 1
+  rec "$(jq -r .version "$work/meta.json")" "$(jq -r .dist.integrity "$work/meta.json")" "$(jq -r .dist.tarball "$work/meta.json")" >"$work/meta.rec"
+  echo "$3  $work/meta.rec" | sha256sum -c --status - || err "$1@$2: registry record $(cat "$work/meta.rec") != lock pin sha256 $3"
 }
 # whole days from the date of ISO timestamp $1 to the date of $2
 days() { echo $((($(date -ud "${2:0:10}" +%s) - $(date -ud "${1:0:10}" +%s)) / 86400)); }
@@ -81,7 +92,7 @@ for ((i = 0; i < nlib; i++)); do
   want=$(sri_hex "$integ"); [ ${#want} -eq 128 ] || err "$id: lock integrity is not a sha512 SRI"
 
   # a) registry metadata
-  if meta "$name" "$ver"; then
+  if meta "$name" "$ver" "$(pin_of "$ver" "$integ" "$url")"; then
     rv=$(jq -r .version "$work/meta.json"); ri=$(jq -r .dist.integrity "$work/meta.json"); rt=$(jq -r .dist.tarball "$work/meta.json")
     [ "$rv" = "$ver" ] || err "$id: registry version is $rv"
     [ "$ri" = "$integ" ] || err "$id: registry dist.integrity $ri != lock $integ"
@@ -175,7 +186,7 @@ for ((i = 0; i < nb; i++)); do
   n=0
   while read -r key pv pi pr pd; do
     pn=${key##*node_modules/}; n=$((n + 1))
-    if ! meta "$pn" "$pv"; then err "bundle $bn: $pn@$pv not in registry"; continue; fi
+    if ! meta "$pn" "$pv" "$(pin_of "$pv" "$pi" "$pr")"; then err "bundle $bn: $pn@$pv not in registry"; continue; fi
     [ "$(jq -r .dist.integrity "$work/meta.json")" = "$pi" ] || err "bundle $bn: $pn@$pv integrity != registry"
     [ "$(jq -r .dist.tarball "$work/meta.json")" = "$pr" ] || err "bundle $bn: $pn@$pv resolved != registry dist.tarball"
     rtime=$(jq -r '.time // ""' "$work/meta.json")

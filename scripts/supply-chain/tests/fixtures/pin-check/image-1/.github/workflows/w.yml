@@ -1,0 +1,4 @@
+jobs:
+  a:
+    container:
+      image: debian:trixie

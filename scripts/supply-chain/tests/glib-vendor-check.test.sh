@@ -3,7 +3,8 @@
 # glib-vendor-check.sh: rc=0 on the repo; rc!=0 on scratch copies where (1) one byte of a
 # vendored file is edited, (2) one byte of the fixed file is edited, (3) an extra file is
 # added, (4) a file is removed, (5) the patch is reverted (pristine vendored), (6) the
-# Cargo.toml [patch.crates-io] line is gone. Never touches the checkout (mktemp copies).
+# Cargo.toml [patch.crates-io] line is gone, (7) crates.io marks 0.18.5 yanked, (8) the 0.18.5
+# index record changes (pinned record sha256). Never touches the checkout (mktemp copies).
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd); root=$(cd "$here/../.." && pwd)
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
@@ -39,7 +40,14 @@ expect_fail "[patch.crates-io] line removed" "no \[patch.crates-io\]"
 
 # crates.io marks 0.18.5 yanked (checksum unchanged): must refuse
 scratch; curl -4 -fsSL -m 60 -o "$t/index" https://index.crates.io/gl/ib/glib
+# the fixture base is the pinned record (same sha256 as glib-vendor-check.sh INDEX_ENTRY_SHA)
+pin=$(sed -n 's/^INDEX_ENTRY_SHA=\([0-9a-f]\{64\}\)$/\1/p' "$here/glib-vendor-check.sh")
+jq -cS 'select(.vers=="0.18.5") | {name,vers,deps,cksum,features,yanked}' "$t/index" | head -1 >"$t/entry"
+echo "$pin  $t/entry" | sha256sum -c --status - || { bad "fetched index record of glib 0.18.5 != pinned sha256 '$pin'"; exit 1; }
 jq -c 'if .vers == "0.18.5" then .yanked = true else . end' "$t/index" >"$t/index.yanked"
 GLIB_INDEX_URL="file://$t/index.yanked" expect_fail "0.18.5 yanked on crates.io" "is yanked on crates.io"
+# the 0.18.5 record changes without being yanked (a dependency added): must refuse on the record pin
+jq -c 'if .vers == "0.18.5" then .deps += [{"name":"evil","req":"^1","features":[],"optional":false,"default_features":true,"target":null,"kind":"normal"}] else . end' "$t/index" >"$t/index.deps"
+GLIB_INDEX_URL="file://$t/index.deps" expect_fail "0.18.5 index record changed (extra dep)" "index record of glib 0.18.5 != pinned sha256"
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "SOME FAILED"; exit 1; }

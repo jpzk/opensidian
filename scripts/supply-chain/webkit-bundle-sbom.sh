@@ -24,9 +24,10 @@
 # Fails closed: any bundled library not owned by a dpkg package, a missing webkit helper, or an
 # unreadable build-appimage.sh -> rc=1 and nothing on stdout.
 #
-# NOTE (finding, #188): the AppImage job's apt-get install is UNPINNED (no versions, no
-# snapshot), so this SBOM describes what ubuntu-26.04 served on the day it ran, which is what
-# a release built that day bundles. It is not a lock.
+# NOTE (#188 finding, fixed by #189): the apt set is PINNED. The AppImage is built from
+# snapshot.ubuntu.com $SNAP with pkg=version pins (packaging/ci/appimage-build.sh), and CI installs
+# the same pins from the same snapshot before running this (scripts/supply-chain/webkit-apt.sh).
+# Packages already on the runner image that satisfy a dependency are not re-pinned (see docs).
 #
 # Env: DISTRO (default <ID>-<VERSION_ID> from /etc/os-release), SOURCE_DATE_EPOCH,
 #      WK_EXEC_DIR / WK_BUNDLE / WK_LIB override the search (tests only).

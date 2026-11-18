@@ -1,0 +1,9 @@
+# Rust toolchain pin (#189 item 5). The version alone is not the pin: CI and the
+# AppImage build check the dist manifest channel-rust-<channel>.toml against
+# RUST_MANIFEST_SHA256 (scripts/supply-chain/rust-toolchain.sh,
+# packaging/ci/appimage-build.sh) and the installed rustc commit against it.
+# Bump procedure: docs/supply-chain.md "Rust toolchain".
+[toolchain]
+channel = "1.98.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
