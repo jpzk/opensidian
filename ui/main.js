@@ -15023,10 +15023,10 @@ function fPaint(g) {
     !st.q ? "" : fRead(g) ? String(st.hits.length)
                           : st.hits.length ? (st.idx + 1) + " / " + st.hits.length : "0 / 0";
 }
-function fSync(g, reset) {             // recompute hits against the current text
+function fSync(g, reset, from) {       // recompute hits against the current text; from = {l, c} to resume at
   const st = fState(g);
   if (!st.open) return;
-  const was = st.hits[st.idx];
+  const was = from || st.hits[st.idx];
   st.hits = fScan(g);
   /* Reading view has no place to keep: there is no current match to hold and
      no edits to hold it across (R26.24). */
@@ -15152,9 +15152,11 @@ function fGo(g, d) {                   // R26.11 + R26.13
 function fRepOne(g) {
   const st = fState(g);
   if (!st.open || !st.rep || !st.q || !st.hits.length) return 0;
-  const h = st.hits[st.idx], qlen = st.q.length;
-  Ed.replace(g, { a: { l: h.l, c: h.c }, b: { l: h.l, c: h.c + qlen } }, fRepText(g), "replace");
-  fSync(g, false);                     // keep the place: the next hit at/after where this one was
+  const h = st.hits[st.idx], qlen = st.q.length, rt = fRepText(g);
+  Ed.replace(g, { a: { l: h.l, c: h.c }, b: { l: h.l, c: h.c + qlen } }, rt, "replace");
+  // #170: resume AFTER the inserted text, like stock 1.13.7 — resuming at its start re-selected the
+  // replacement itself whenever it still matches the query ('foo' -> 'Foo'), so Replace never moved on
+  fSync(g, false, { l: h.l, c: h.c + rt.length });
   fReveal(g);
   fRFocus(g);
   updateTitle();
