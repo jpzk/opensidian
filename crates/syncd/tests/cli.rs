@@ -58,7 +58,7 @@ struct Dev {
 
 fn dev(tag: &str) -> Dev {
     let base = tmpdir(tag);
-    let d = Dev { state: base.join("st"), vault: base.join("v"), run: base.join("r") };
+    let d = Dev { state: base.join("st"), vault: base.join("v"), run: short_run(tag) };
     std::fs::create_dir_all(&d.vault).unwrap();
     d
 }
@@ -120,7 +120,7 @@ fn daemon(d: &Dev, vault_hex: &str) -> Daemon {
     let sock = d.run.join("opensidian-syncd").join(format!("{vault_hex}.sock"));
     let t0 = Instant::now();
     while std::os::unix::net::UnixStream::connect(&sock).is_err() {
-        assert!(t0.elapsed() < Duration::from_secs(30), "daemon did not come up");
+        assert!(t0.elapsed() < Duration::from_secs(30), "daemon did not come up: {}", std::fs::read_to_string(&log).unwrap_or_default());
         std::thread::sleep(Duration::from_millis(50));
     }
     Daemon(ch, log)
@@ -226,4 +226,12 @@ fn two_devices_daemon_history_destroy() {
     let st = ok(&cli(&b, &["--local", "status"], None));
     assert_eq!(st["server_ok"], false, "vault gone for B too");
     drop(dm);
+}
+
+/// `$XDG_RUNTIME_DIR` stand-in: TMPDIR can be too long for sun_path
+/// (108 bytes) once `opensidian-syncd/<32 hex>.sock` is appended.
+fn short_run(tag: &str) -> PathBuf {
+    let d = PathBuf::from("/tmp").join(format!("osr{tag}{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
+    let _ = std::fs::remove_dir_all(&d);
+    d
 }
