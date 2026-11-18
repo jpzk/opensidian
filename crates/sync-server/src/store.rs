@@ -133,7 +133,21 @@ CREATE TABLE IF NOT EXISTS object(
   size INTEGER NOT NULL, sha BLOB NOT NULL, deleted INTEGER, expires INTEGER,
   PRIMARY KEY(ns, kind, id));
 CREATE INDEX IF NOT EXISTS object_seq ON object(ns, seq);
+CREATE TABLE IF NOT EXISTS destroy_chal(
+  hash BLOB PRIMARY KEY, ns BLOB NOT NULL, nonce BLOB NOT NULL, expires INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS destroy_chal_ns ON destroy_chal(ns);
+CREATE TABLE IF NOT EXISTS destroyed(ns BLOB PRIMARY KEY, at INTEGER NOT NULL);
 ";
+
+/// Outstanding destroy challenges per vault (spam bound on a tokenless path).
+pub const MAX_DESTROY_CHALLENGES: i64 = 16;
+
+/// What a destroy removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Purged {
+    pub objects: u64,
+    pub bytes: u64,
+}
 
 impl Store {
     /// Open (or create) the store under `root` (mode 0700).
@@ -149,6 +163,13 @@ impl Store {
         }
         let conn = Connection::open(root.join("index.sqlite"))?;
         conn.execute_batch(SCHEMA)?;
+        // finish purges a crash interrupted after the destroy commit
+        for e in fs::read_dir(root.join("tmp"))? {
+            let e = e?;
+            if e.file_name().to_string_lossy().starts_with("destroy-") {
+                fs::remove_dir_all(e.path())?;
+            }
+        }
         Ok(Store {
             conn: Mutex::new(conn),
             root: root.to_path_buf(),
@@ -459,11 +480,130 @@ impl Store {
         Ok(n == 1)
     }
 
+    // ---- destroy (spec §5, 2-step) --------------------------------------------
+
+    /// Step 1: record a challenge (`token_hash` = SHA-256 of the confirm token).
+    /// Unknown vault -> unauthorized (no namespace oracle), destroyed -> gone.
+    pub fn add_destroy_challenge(
+        &self,
+        ns: &Id16,
+        token_hash: &[u8; 32],
+        nonce: &[u8; 32],
+        now: i64,
+        expires: i64,
+    ) -> Result<()> {
+        let mut c = self.conn();
+        let tx = c.transaction()?;
+        if is_destroyed(&tx, ns)? {
+            return Err(StoreError::new(ErrorCode::Gone, "vault destroyed"));
+        }
+        let known: Option<i64> = tx
+            .query_row("SELECT 1 FROM vault WHERE ns = ?1", params![&ns.0[..]], |r| r.get(0))
+            .optional()?;
+        if known.is_none() || *ns == ENV_NS {
+            return Err(StoreError::new(ErrorCode::Unauthorized, "unknown vault"));
+        }
+        tx.execute("DELETE FROM destroy_chal WHERE expires < ?1", params![now])?;
+        let open: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM destroy_chal WHERE ns = ?1",
+            params![&ns.0[..]],
+            |r| r.get(0),
+        )?;
+        if open >= MAX_DESTROY_CHALLENGES {
+            return Err(StoreError::new(ErrorCode::RateLimited, "too many open destroy challenges"));
+        }
+        tx.execute(
+            "INSERT INTO destroy_chal(hash, ns, nonce, expires) VALUES (?1, ?2, ?3, ?4)",
+            params![&token_hash[..], &ns.0[..], &nonce[..], expires],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Step 2a: consume a challenge (single use: removed whether or not the
+    /// signature then verifies, so a token cannot be used to grind). Returns
+    /// the server nonce and the vault's `pub_destroy`.
+    pub fn take_destroy_challenge(&self, ns: &Id16, token_hash: &[u8; 32], now: i64) -> Result<([u8; 32], Vec<u8>)> {
+        let mut c = self.conn();
+        let tx = c.transaction()?;
+        if is_destroyed(&tx, ns)? {
+            return Err(StoreError::new(ErrorCode::Gone, "vault destroyed"));
+        }
+        let row: Option<(Vec<u8>, i64, Vec<u8>)> = tx
+            .query_row(
+                "SELECT c.nonce, c.expires, v.pub_destroy FROM destroy_chal c
+                 JOIN vault v ON v.ns = c.ns WHERE c.hash = ?1 AND c.ns = ?2",
+                params![&token_hash[..], &ns.0[..]],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        let Some((nonce, expires, pubk)) = row else {
+            return Err(StoreError::new(ErrorCode::Unauthorized, "unknown confirm token"));
+        };
+        tx.execute("DELETE FROM destroy_chal WHERE hash = ?1", params![&token_hash[..]])?;
+        tx.commit()?;
+        if expires < now {
+            return Err(StoreError::new(ErrorCode::Unauthorized, "destroy challenge expired"));
+        }
+        let nonce: [u8; 32] = nonce
+            .try_into()
+            .map_err(|_| StoreError::new(ErrorCode::Internal, "corrupt nonce"))?;
+        Ok((nonce, pubk))
+    }
+
+    /// Step 2b (after the proof verified): purge every object, token and
+    /// challenge of `ns` and leave a tombstone. Under the connection lock, so
+    /// no PUT can publish into the namespace concurrently; the object tree is
+    /// renamed away inside the transaction and deleted after the commit
+    /// (`open` finishes the deletion if the process dies in between).
+    pub fn destroy_vault(&self, ns: &Id16, now: i64) -> Result<Purged> {
+        let mut c = self.conn();
+        let tx = c.transaction()?;
+        let (objects, bytes): (i64, i64) = tx.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(size), 0) FROM object WHERE ns = ?1",
+            params![&ns.0[..]],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        tx.execute("DELETE FROM object WHERE ns = ?1", params![&ns.0[..]])?;
+        tx.execute("DELETE FROM destroy_chal WHERE ns = ?1", params![&ns.0[..]])?;
+        let n = tx.execute("DELETE FROM vault WHERE ns = ?1", params![&ns.0[..]])?;
+        if n != 1 {
+            return Err(StoreError::new(ErrorCode::Gone, "vault destroyed"));
+        }
+        tx.execute("INSERT INTO destroyed(ns, at) VALUES (?1, ?2)", params![&ns.0[..], now])?;
+        let dir = self.root.join("objects").join(ns.to_hex());
+        let trash = self.root.join("tmp").join(format!("destroy-{}", ns.to_hex()));
+        let moved = match fs::rename(&dir, &trash) {
+            Ok(()) => true,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => false,
+            Err(e) => return Err(e.into()),
+        };
+        if let Err(e) = tx.commit() {
+            if moved {
+                let _ = fs::rename(&trash, &dir);
+            }
+            return Err(e.into());
+        }
+        if moved {
+            fs::remove_dir_all(&trash)?;
+        }
+        Ok(Purged {
+            objects: objects as u64,
+            bytes: bytes as u64,
+        })
+    }
+
+    /// True once `ns` was destroyed.
+    pub fn destroyed(&self, ns: &Id16) -> Result<bool> {
+        is_destroyed(&self.conn(), ns)
+    }
+
     /// Remove every row whose `expires` has passed (soft-deleted objects past
     /// retention, expired pairing objects). Returns the number purged.
     pub fn gc(&self, now: i64) -> Result<usize> {
         let victims: Vec<(Vec<u8>, i64, Vec<u8>, i64)> = {
             let c = self.conn();
+            c.execute("DELETE FROM destroy_chal WHERE expires < ?1", params![now])?;
             let mut st = c.prepare(
                 "SELECT ns, kind, id, size FROM object WHERE expires IS NOT NULL AND expires <= ?1",
             )?;
@@ -494,4 +634,11 @@ impl Store {
         }
         Ok(n)
     }
+}
+
+fn is_destroyed(c: &Connection, ns: &Id16) -> Result<bool> {
+    let r: Option<i64> = c
+        .query_row("SELECT 1 FROM destroyed WHERE ns = ?1", params![&ns.0[..]], |r| r.get(0))
+        .optional()?;
+    Ok(r.is_some())
 }

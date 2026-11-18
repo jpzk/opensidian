@@ -12,6 +12,8 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use bytes::Bytes;
 use http::{header, Method, Request, Response, StatusCode};
 use http_body_util::{BodyExt, Full, Limited};
@@ -19,10 +21,12 @@ use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use serde::Serialize;
-use sync_crypto::CryptoProvider;
+use sync_crypto::{CryptoProvider, SigAlg};
 use sync_proto::api::{
-    EnrollRequest, EnrollResponse, ErrorBody, ErrorCode, Health, ListQuery, ListResponse,
-    MissingRequest, MissingResponse, ObjKind, MAX_LIST_LIMIT, PROTO_HEADER, PROTO_VERSIONS,
+    destroy_payload, DestroyChallenge, DestroyConfirm, DestroyReceipt, DestroyRequest, EnrollRequest,
+    EnrollResponse, ErrorBody, ErrorCode, Health, ListQuery, ListResponse, MissingRequest,
+    MissingResponse, ObjKind, ReceiptBody, DESTROY_CHALLENGE_TTL, DESTROY_TS_SKEW, MAX_LIST_LIMIT,
+    PROTO_HEADER, PROTO_VERSIONS,
 };
 use sync_proto::container::Header;
 use sync_proto::Id16;
@@ -256,9 +260,11 @@ pub async fn handle(app: Arc<App>, ip: IpAddr, req: Request<Incoming>) -> Resp {
             Ok(ns) => list(&app, ns, req).await,
             Err(e) => Err(e),
         },
-        (Method::POST, ["v1", "destroy", _ns, "request" | "confirm"]) => {
-            Err(err(ErrorCode::Unsupported, "destroy not available on this server build"))
-        }
+        (Method::POST, ["v1", "destroy", ns, step @ ("request" | "confirm")]) => match parse_id(ns) {
+            Ok(ns) if *step == "request" => destroy_request(&app, ip, ns, req).await,
+            Ok(ns) => destroy_confirm(&app, ip, ns, req).await,
+            Err(e) => Err(e),
+        },
         (m @ (Method::PUT | Method::GET | Method::DELETE), ["v1", kind, ns, id]) => {
             match (ObjKind::from_path_segment(kind), parse_id(ns), parse_id(id)) {
                 (Some(kind), Ok(ns), Ok(id)) => object(&app, ip, m, kind, ns, id, req).await,
@@ -302,6 +308,7 @@ async fn enroll(app: &Arc<App>, ip: IpAddr, req: Request<Incoming>) -> Result<Re
             ns,
             read_token,
             write_token,
+            server_key: app.receipt_pub.clone(),
         },
     ))
 }
@@ -456,4 +463,74 @@ async fn delete(app: &Arc<App>, kind: ObjKind, ns: Id16, id: Id16) -> Result<Res
     } else {
         Err(err(ErrorCode::NotFound, "no live object"))
     }
+}
+
+/// `POST /v1/destroy/{ns}/request` — step 1. Tokenless (the proof in step 2
+/// is the authority, so a device that only has the words can destroy), per-IP
+/// rate-limited, at most [`crate::store::MAX_DESTROY_CHALLENGES`] open per vault.
+async fn destroy_request(app: &Arc<App>, ip: IpAddr, ns: Id16, req: Request<Incoming>) -> Result<Resp, Resp> {
+    anon(app, ip)?;
+    let body = read_body(req, app.cfg.max_control as u64).await?;
+    let _r: DestroyRequest =
+        serde_json::from_slice(&body).map_err(|_| err(ErrorCode::BadRequest, "bad destroy request body"))?;
+    let mut nonce = [0u8; 32];
+    app.prov.random(&mut nonce).map_err(|_| err(ErrorCode::Internal, "drbg"))?;
+    let (confirm_token, hash) = app.new_token().map_err(|_| err(ErrorCode::Internal, "drbg"))?;
+    let now = now_unix();
+    let expires = now + DESTROY_CHALLENGE_TTL as i64;
+    blocking(app, move |a| a.store.add_destroy_challenge(&ns, &hash, &nonce, now, expires)).await?;
+    Ok(json(
+        StatusCode::OK,
+        &DestroyChallenge {
+            server_nonce: sync_proto::hex_lower(&nonce),
+            confirm_token,
+            expires: expires as u64,
+        },
+    ))
+}
+
+/// `POST /v1/destroy/{ns}/confirm` — step 2. The challenge is consumed
+/// first (single use, even on a bad proof), then `ts` must be within
+/// [`DESTROY_TS_SKEW`] of server time and `sig` must verify under the
+/// `pub_destroy` stored at enrollment over [`destroy_payload`]. Only then is
+/// the vault purged and a receipt signed. No proof -> no destroy.
+async fn destroy_confirm(app: &Arc<App>, ip: IpAddr, ns: Id16, req: Request<Incoming>) -> Result<Resp, Resp> {
+    anon(app, ip)?;
+    let body = read_body(req, app.cfg.max_control as u64).await?;
+    let r: DestroyConfirm =
+        serde_json::from_slice(&body).map_err(|_| err(ErrorCode::BadRequest, "bad destroy confirm body"))?;
+    let tok = decode_token(&r.confirm_token).ok_or_else(|| err(ErrorCode::Unauthorized, "malformed confirm token"))?;
+    let hash = app.token_hash(&tok);
+    let now = now_unix();
+    let (nonce, pubk) = blocking(app, move |a| a.store.take_destroy_challenge(&ns, &hash, now)).await?;
+    if (r.ts - now).abs() > DESTROY_TS_SKEW {
+        return Err(err(ErrorCode::BadRequest, "ts outside the accepted window"));
+    }
+    let sig = URL_SAFE_NO_PAD
+        .decode(r.sig.as_bytes())
+        .map_err(|_| err(ErrorCode::Forbidden, "destroy proof invalid"))?;
+    app.prov
+        .verify(SigAlg::EcdsaP256Sha256, &pubk, &destroy_payload(&ns, &nonce, r.ts), &sig)
+        .map_err(|_| err(ErrorCode::Forbidden, "destroy proof invalid"))?;
+    let at = now_unix();
+    let purged = blocking(app, move |a| a.store.destroy_vault(&ns, at)).await?;
+    app.changed.notify_waiters();
+    let rb = ReceiptBody {
+        ns,
+        server_nonce: nonce,
+        ts: r.ts,
+        destroyed_at: at,
+        objects: purged.objects,
+        bytes: purged.bytes,
+    };
+    let receipt = app
+        .sign_receipt(&rb.encode())
+        .map_err(|_| err(ErrorCode::Internal, "receipt signing failed"))?;
+    Ok(json(
+        StatusCode::OK,
+        &DestroyReceipt {
+            receipt: URL_SAFE_NO_PAD.encode(receipt),
+            server_key: app.receipt_pub.clone(),
+        },
+    ))
 }

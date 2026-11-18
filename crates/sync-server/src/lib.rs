@@ -19,8 +19,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use sync_crypto::fips::FipsProvider;
-use sync_crypto::{CryptoError, CryptoProvider};
+use sync_crypto::fips::{FipsProvider, FipsSigningKey};
+use sync_crypto::{CryptoError, CryptoProvider, SigAlg};
 use tokio::sync::Notify;
 
 pub use http::serve;
@@ -62,6 +62,10 @@ pub struct App {
     pub cfg: Config,
     pub store: Store,
     pub prov: FipsProvider,
+    /// Destroy-receipt signing key (P-256, module DRBG, `receipt_key.p8`).
+    receipt_key: FipsSigningKey,
+    /// Its wire public key (65-byte SEC1), base64url.
+    pub receipt_pub: String,
     /// Woken on every successful PUT (long-poll `GET /v1/list`).
     pub changed: Notify,
     limiter: Mutex<HashMap<IpAddr, (i64, u32)>>,
@@ -71,10 +75,14 @@ impl App {
     pub fn open(cfg: Config) -> Result<App, String> {
         let prov = FipsProvider::new().map_err(|e| format!("FIPS module unavailable: {e:?}"))?;
         let store = Store::open(&cfg.data).map_err(|e| format!("store: {}", e.detail))?;
+        let receipt_key = load_or_create_receipt_key(&prov, &cfg.data)?;
+        let receipt_pub = URL_SAFE_NO_PAD.encode(receipt_key.public_key());
         Ok(App {
             cfg,
             store,
             prov,
+            receipt_key,
+            receipt_pub,
             changed: Notify::new(),
             limiter: Mutex::new(HashMap::new()),
         })
@@ -116,6 +124,50 @@ impl App {
         Ok(tok)
     }
 }
+
+impl App {
+    /// Sign a destroy receipt body; returns the wire receipt (body || sig).
+    pub fn sign_receipt(&self, body: &[u8]) -> Result<Vec<u8>, CryptoError> {
+        let sig = self.prov.sign(&self.receipt_key, body)?;
+        let mut out = body.to_vec();
+        out.extend_from_slice(&sig);
+        Ok(out)
+    }
+}
+
+/// File name of the receipt key (PKCS#8 v1 DER, mode 0600) in the data dir.
+pub const RECEIPT_KEY_FILE: &str = "receipt_key.p8";
+
+/// Load the receipt key, or generate it with the module (first start).
+/// `create_new` so two racing starts cannot each write a different key.
+fn load_or_create_receipt_key(prov: &FipsProvider, data: &std::path::Path) -> Result<FipsSigningKey, String> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = data.join(RECEIPT_KEY_FILE);
+    match std::fs::read(&path) {
+        Ok(der) => {
+            let der = zeroize::Zeroizing::new(der);
+            return FipsSigningKey::from_pkcs8(&der).map_err(|_| format!("{}: not a P-256 PKCS#8 key", path.display()));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    }
+    let (key, _) = prov
+        .generate_signing_key(SigAlg::EcdsaP256Sha256)
+        .map_err(|e| format!("receipt key: {e:?}"))?;
+    let der = key.to_pkcs8().map_err(|e| format!("receipt key: {e:?}"))?;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    f.write_all(&der)
+        .and_then(|_| f.sync_all())
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(key)
+}
+
 
 /// Decode a wire token (base64url, no padding, exactly 32 bytes).
 pub fn decode_token(s: &str) -> Option<[u8; 32]> {

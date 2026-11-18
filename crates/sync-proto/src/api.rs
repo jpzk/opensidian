@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::enc::{EncodeError, Writer};
+use crate::enc::{DecodeError, EncodeError, Reader, Writer};
 use crate::Id16;
 
 /// Request header carrying the protocol major version.
@@ -193,6 +193,10 @@ pub struct EnrollResponse {
     pub ns: Id16,
     pub read_token: String,
     pub write_token: String,
+    /// base64url uncompressed P-256 public key the server signs destroy
+    /// receipts with. Devices pin it here (TOFU at enrollment) and check
+    /// [`DestroyReceipt::server_key`] against it.
+    pub server_key: String,
 }
 
 /// Destroy scope; v1 knows only the whole vault.
@@ -249,6 +253,76 @@ pub fn destroy_payload(ns: &Id16, server_nonce: &[u8; 32], ts: i64) -> Vec<u8> {
         .fixed(server_nonce)
         .i64(ts);
     w.into_bytes()
+}
+
+/// Domain tag of a destroy receipt body.
+pub const DESTROY_RECEIPT_TAG: &[u8; 22] = b"osy destroy receipt v1";
+/// Destroy challenge lifetime in seconds (`expires - now` at request time).
+pub const DESTROY_CHALLENGE_TTL: u64 = 300;
+/// Max |ts - server now| accepted in a destroy confirm, seconds.
+pub const DESTROY_TS_SKEW: i64 = 300;
+
+/// What the server attests in a destroy receipt (spec §5). Wire form of
+/// `DestroyReceipt.receipt` = [`ReceiptBody::encode`] `||` 64-byte ECDSA
+/// P-256/SHA-256 signature (r‖s) by the server receipt key over those bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReceiptBody {
+    pub ns: Id16,
+    pub server_nonce: [u8; 32],
+    /// The `ts` the client signed.
+    pub ts: i64,
+    /// Server time of the purge.
+    pub destroyed_at: i64,
+    /// Object rows removed (all kinds of this namespace).
+    pub objects: u64,
+    /// Stored bytes removed.
+    pub bytes: u64,
+}
+
+impl ReceiptBody {
+    /// `"osy destroy receipt v1" || u8 scope(1) || id16 ns || 32 server_nonce
+    /// || i64 ts || i64 destroyed_at || u64 objects || u64 bytes`.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.fixed(DESTROY_RECEIPT_TAG)
+            .u8(1)
+            .fixed(&self.ns.0)
+            .fixed(&self.server_nonce)
+            .i64(self.ts)
+            .i64(self.destroyed_at)
+            .u64(self.objects)
+            .u64(self.bytes);
+        w.into_bytes()
+    }
+
+    /// Encoded length (fixed).
+    pub const LEN: usize = 22 + 1 + 16 + 32 + 8 + 8 + 8 + 8;
+
+    pub fn decode(b: &[u8]) -> Result<ReceiptBody, DecodeError> {
+        let mut r = Reader::new(b);
+        if r.take(DESTROY_RECEIPT_TAG.len())? != DESTROY_RECEIPT_TAG || r.u8()? != 1 {
+            return Err(DecodeError::Invalid("receipt tag"));
+        }
+        let out = ReceiptBody {
+            ns: Id16(r.array()?),
+            server_nonce: r.array()?,
+            ts: r.i64()?,
+            destroyed_at: r.i64()?,
+            objects: r.u64()?,
+            bytes: r.u64()?,
+        };
+        r.finish()?;
+        Ok(out)
+    }
+
+    /// Split a wire receipt into (body, signed bytes, signature).
+    pub fn split(receipt: &[u8]) -> Result<(ReceiptBody, &[u8], &[u8]), DecodeError> {
+        if receipt.len() != Self::LEN + 64 {
+            return Err(DecodeError::Invalid("receipt length"));
+        }
+        let (body, sig) = receipt.split_at(Self::LEN);
+        Ok((Self::decode(body)?, body, sig))
+    }
 }
 
 /// Encode a list of ids as canonical `list<id16>` (used inside batches).
@@ -341,7 +415,7 @@ mod tests {
         let h: Health = serde_json::from_str(r#"{"ok":true,"proto":[1]}"#).unwrap();
         assert_eq!(h.proto, PROTO_VERSIONS);
         let er: EnrollResponse = serde_json::from_str(&format!(
-            r#"{{"ns":"{ID}","read_token":"r","write_token":"w"}}"#
+            r#"{{"ns":"{ID}","read_token":"r","write_token":"w","server_key":"k"}}"#
         ))
         .unwrap();
         assert_eq!(er.ns.to_hex(), ID);
@@ -363,6 +437,36 @@ mod tests {
         assert_eq!(&p[16..32], &[3; 16]);
         assert_eq!(&p[32..64], &[9; 32]);
         assert_eq!(&p[64..], &[0, 0, 0, 0, 0, 0, 1, 2]);
+    }
+
+    #[test]
+    fn receipt_body_roundtrip_and_layout() {
+        let b = ReceiptBody {
+            ns: Id16([3; 16]),
+            server_nonce: [9; 32],
+            ts: -2,
+            destroyed_at: 0x0102,
+            objects: 7,
+            bytes: 1 << 40,
+        };
+        let e = b.encode();
+        assert_eq!(e.len(), ReceiptBody::LEN);
+        assert_eq!(&e[..22], DESTROY_RECEIPT_TAG);
+        assert_eq!(e[22], 1);
+        assert_eq!(&e[23..39], &[3; 16]);
+        assert_eq!(&e[39..71], &[9; 32]);
+        assert_eq!(ReceiptBody::decode(&e).unwrap(), b);
+        let mut wire = e.clone();
+        wire.extend_from_slice(&[0xaa; 64]);
+        let (body, signed, sig) = ReceiptBody::split(&wire).unwrap();
+        assert_eq!((body, signed, sig), (b, &e[..], &[0xaa; 64][..]));
+        assert!(ReceiptBody::split(&e).is_err());
+        let mut bad = e.clone();
+        bad[0] ^= 1;
+        assert!(ReceiptBody::decode(&bad).is_err());
+        bad = e.clone();
+        bad.push(0);
+        assert!(ReceiptBody::decode(&bad).is_err());
     }
 
     #[test]

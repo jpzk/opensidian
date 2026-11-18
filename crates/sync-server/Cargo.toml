@@ -21,6 +21,8 @@ path = "src/lib.rs"
 [dependencies]
 sync-proto = { path = "../sync-proto" }
 sync-crypto = { path = "../sync-crypto" }
+# already in the lock via aws-lc-rs / sync-crypto (=1.9.1, deps.md §M2a)
+zeroize = "=1.9.1"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 base64 = "=0.22.1"

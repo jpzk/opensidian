@@ -3707,6 +3707,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "untrusted",
+ "zeroize",
 ]
 
 [[package]]

@@ -14,9 +14,12 @@ use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use sync_crypto::fips::FipsProvider;
+use sync_crypto::fips::{FipsProvider, FipsSigningKey};
 use sync_crypto::{CryptoProvider, SigAlg};
-use sync_proto::api::{EnrollResponse, ErrorBody, ErrorCode, ListResponse, MissingResponse};
+use sync_proto::api::{
+    destroy_payload, DestroyChallenge, DestroyReceipt, EnrollResponse, ErrorBody, ErrorCode, ListResponse,
+    MissingResponse, ReceiptBody,
+};
 use sync_proto::container::{Header, Suite};
 use sync_proto::Id16;
 use sync_server::{now_unix, serve, App, Config};
@@ -435,10 +438,227 @@ fn anonymous_paths_are_rate_limited() {
     assert_eq!(codes[0], 404);
 }
 
+// ---- destroy (M3b, spec §5: 2-step, K_destroy proof, signed receipt) -------------
+
+fn enroll_with_key(s: &Srv) -> (EnrollResponse, FipsSigningKey) {
+    let p = FipsProvider::new().unwrap();
+    let (k, pk) = p.generate_signing_key(SigAlg::EcdsaP256Sha256).unwrap();
+    let tok = s.app.create_enrollment(None, 3600).unwrap();
+    let r = call(s.addr, "POST", "/v1/enroll", &[], &enroll_body(&tok, &URL_SAFE_NO_PAD.encode(pk), 2));
+    assert_eq!(r.status, 201, "{}", String::from_utf8_lossy(&r.body));
+    let e: EnrollResponse = serde_json::from_slice(&r.body).unwrap();
+    assert_eq!(e.server_key, s.app.receipt_pub);
+    (e, k)
+}
+
+fn unhex32(s: &str) -> [u8; 32] {
+    assert_eq!(s.len(), 64);
+    let mut out = [0u8; 32];
+    for (i, o) in out.iter_mut().enumerate() {
+        *o = u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap();
+    }
+    out
+}
+
+fn destroy_request(s: &Srv, ns: &Id16) -> R {
+    call(s.addr, "POST", &format!("/v1/destroy/{ns}/request"), &[], br#"{"scope":"vault"}"#)
+}
+
+fn challenge(s: &Srv, ns: &Id16) -> DestroyChallenge {
+    let r = destroy_request(s, ns);
+    assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+    let c: DestroyChallenge = serde_json::from_slice(&r.body).unwrap();
+    let now = now_unix() as u64;
+    assert!(c.expires > now && c.expires <= now + 301, "ttl");
+    c
+}
+
+fn sign_destroy(key: &FipsSigningKey, ns: &Id16, c: &DestroyChallenge, ts: i64) -> String {
+    let p = FipsProvider::new().unwrap();
+    let sig = p.sign(key, &destroy_payload(ns, &unhex32(&c.server_nonce), ts)).unwrap();
+    URL_SAFE_NO_PAD.encode(sig)
+}
+
+fn confirm(s: &Srv, ns: &Id16, token: &str, ts: i64, sig: &str) -> R {
+    let body = format!(r#"{{"confirm_token":"{token}","ts":{ts},"sig":"{sig}"}}"#);
+    call(s.addr, "POST", &format!("/v1/destroy/{ns}/confirm"), &[], body.as_bytes())
+}
+
+/// The vault still serves its objects (destroy did not happen).
+fn vault_alive(s: &Srv, e: &EnrollResponse, i: &Id16) {
+    let r = call(s.addr, "GET", &obj_path(&e.ns, i), &[("Authorization", &bearer(&e.read_token))], b"");
+    assert_eq!(r.status, 200, "vault must be intact");
+}
+
 #[test]
-fn destroy_routes_closed_until_m3b() {
+fn destroy_without_valid_proof_is_refused() {
     let s = start(|_| {});
-    let e = enroll(&s, None);
-    let r = call(s.addr, "POST", &format!("/v1/destroy/{}/request", e.ns), &[], br#"{"scope":"vault"}"#);
-    assert_eq!(r.status, 400);
+    let (e, key) = enroll_with_key(&s);
+    let i = id(1);
+    let wt = bearer(&e.write_token);
+    assert_eq!(call(s.addr, "PUT", &obj_path(&e.ns, &i), &[("Authorization", &wt)], &container(i, 10, 1)).status, 201);
+    let now = now_unix();
+
+    // request: unknown vault / bad scope / unknown field
+    let r = destroy_request(&s, &id(0xee));
+    assert_eq!((r.status, r.error()), (401, ErrorCode::Unauthorized));
+    let r = call(s.addr, "POST", &format!("/v1/destroy/{}/request", Id16::ZERO), &[], br#"{"scope":"vault"}"#);
+    assert_eq!(r.status, 401, "env namespace is not a vault");
+    let r = call(s.addr, "POST", &format!("/v1/destroy/{}/request", e.ns), &[], br#"{"scope":"all"}"#);
+    assert_eq!((r.status, r.error()), (400, ErrorCode::BadRequest));
+
+    // no proof at all: body without sig
+    let c = challenge(&s, &e.ns);
+    let body = format!(r#"{{"confirm_token":"{}","ts":{now}}}"#, c.confirm_token);
+    let r = call(s.addr, "POST", &format!("/v1/destroy/{}/confirm", e.ns), &[], body.as_bytes());
+    assert_eq!((r.status, r.error()), (400, ErrorCode::BadRequest));
+    // empty / garbage signature
+    let r = confirm(&s, &e.ns, &c.confirm_token, now, "");
+    assert_eq!((r.status, r.error()), (403, ErrorCode::Forbidden));
+    vault_alive(&s, &e, &i);
+    // the challenge was consumed by the failed attempt: a correct proof on it is refused
+    let r = confirm(&s, &e.ns, &c.confirm_token, now, &sign_destroy(&key, &e.ns, &c, now));
+    assert_eq!((r.status, r.error()), (401, ErrorCode::Unauthorized), "single use");
+
+    // signature by another key (e.g. a device key, not K_destroy)
+    let p = FipsProvider::new().unwrap();
+    let (other, _) = p.generate_signing_key(SigAlg::EcdsaP256Sha256).unwrap();
+    let c = challenge(&s, &e.ns);
+    let r = confirm(&s, &e.ns, &c.confirm_token, now, &sign_destroy(&other, &e.ns, &c, now));
+    assert_eq!((r.status, r.error()), (403, ErrorCode::Forbidden), "wrong key");
+
+    // right key, but signed over a different ts / a different nonce
+    let c = challenge(&s, &e.ns);
+    let r = confirm(&s, &e.ns, &c.confirm_token, now, &sign_destroy(&key, &e.ns, &c, now + 1));
+    assert_eq!((r.status, r.error()), (403, ErrorCode::Forbidden), "ts not bound");
+    let c1 = challenge(&s, &e.ns);
+    let c2 = challenge(&s, &e.ns);
+    let r = confirm(&s, &e.ns, &c2.confirm_token, now, &sign_destroy(&key, &e.ns, &c1, now));
+    assert_eq!((r.status, r.error()), (403, ErrorCode::Forbidden), "nonce not bound");
+
+    // right key + nonce, ts outside the skew window
+    let c = challenge(&s, &e.ns);
+    let old = now - 3600;
+    let r = confirm(&s, &e.ns, &c.confirm_token, old, &sign_destroy(&key, &e.ns, &c, old));
+    assert_eq!((r.status, r.error()), (400, ErrorCode::BadRequest), "stale ts");
+
+    // a challenge of vault A cannot confirm vault B
+    let (e2, key2) = enroll_with_key(&s);
+    let c = challenge(&s, &e.ns);
+    let r = confirm(&s, &e2.ns, &c.confirm_token, now, &sign_destroy(&key2, &e2.ns, &c, now));
+    assert_eq!((r.status, r.error()), (401, ErrorCode::Unauthorized), "cross-vault token");
+
+    // malformed / unknown confirm token
+    let r = confirm(&s, &e.ns, "nope", now, "AAAA");
+    assert_eq!((r.status, r.error()), (401, ErrorCode::Unauthorized));
+    let r = confirm(&s, &e.ns, &URL_SAFE_NO_PAD.encode([5u8; 32]), now, "AAAA");
+    assert_eq!((r.status, r.error()), (401, ErrorCode::Unauthorized));
+
+    vault_alive(&s, &e, &i);
+    assert!(!s.app.store.destroyed(&e.ns).unwrap());
+}
+
+#[test]
+fn destroy_challenge_expires() {
+    let s = start(|_| {});
+    let (e, key) = enroll_with_key(&s);
+    let i = id(2);
+    let wt = bearer(&e.write_token);
+    assert_eq!(call(s.addr, "PUT", &obj_path(&e.ns, &i), &[("Authorization", &wt)], &container(i, 10, 1)).status, 201);
+    let raw = [9u8; 32];
+    let nonce = [4u8; 32];
+    let now = now_unix();
+    s.app
+        .store
+        .add_destroy_challenge(&e.ns, &s.app.token_hash(&raw), &nonce, now - 400, now - 100)
+        .unwrap();
+    let c = DestroyChallenge {
+        server_nonce: sync_proto::hex_lower(&nonce),
+        confirm_token: URL_SAFE_NO_PAD.encode(raw),
+        expires: (now - 100) as u64,
+    };
+    let r = confirm(&s, &e.ns, &c.confirm_token, now, &sign_destroy(&key, &e.ns, &c, now));
+    assert_eq!((r.status, r.error()), (401, ErrorCode::Unauthorized), "expired challenge");
+    vault_alive(&s, &e, &i);
+}
+
+#[test]
+fn destroy_open_challenges_are_capped() {
+    let s = start(|_| {});
+    let (e, _) = enroll_with_key(&s);
+    for _ in 0..sync_server::store::MAX_DESTROY_CHALLENGES {
+        challenge(&s, &e.ns);
+    }
+    let r = destroy_request(&s, &e.ns);
+    assert_eq!((r.status, r.error()), (429, ErrorCode::RateLimited));
+}
+
+#[test]
+fn destroy_with_proof_purges_vault_and_signs_receipt() {
+    let s = start(|_| {});
+    let (e, key) = enroll_with_key(&s);
+    let (keep, _) = enroll_with_key(&s);
+    let wt = bearer(&e.write_token);
+    let mut stored = 0u64;
+    for b in 1..=3u8 {
+        let body = container(id(b), 100 * b as usize, b);
+        stored += body.len() as u64;
+        assert_eq!(call(s.addr, "PUT", &obj_path(&e.ns, &id(b)), &[("Authorization", &wt)], &body).status, 201);
+    }
+    let kt = bearer(&keep.write_token);
+    assert_eq!(call(s.addr, "PUT", &obj_path(&keep.ns, &id(9)), &[("Authorization", &kt)], &container(id(9), 5, 9)).status, 201);
+    assert!(s.dir.join("objects").join(e.ns.to_hex()).exists());
+
+    let c = challenge(&s, &e.ns);
+    let ts = now_unix();
+    let r = confirm(&s, &e.ns, &c.confirm_token, ts, &sign_destroy(&key, &e.ns, &c, ts));
+    assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+    let rc: DestroyReceipt = serde_json::from_slice(&r.body).unwrap();
+
+    // receipt: signed by the key pinned at enrollment, attests this destroy
+    assert_eq!(rc.server_key, e.server_key);
+    let wire = URL_SAFE_NO_PAD.decode(&rc.receipt).unwrap();
+    let (body, signed, sig) = ReceiptBody::split(&wire).unwrap();
+    let spk = URL_SAFE_NO_PAD.decode(&rc.server_key).unwrap();
+    let p = FipsProvider::new().unwrap();
+    p.verify(SigAlg::EcdsaP256Sha256, &spk, signed, sig).expect("receipt signature");
+    let mut tampered = signed.to_vec();
+    tampered[40] ^= 1;
+    assert!(p.verify(SigAlg::EcdsaP256Sha256, &spk, &tampered, sig).is_err());
+    assert_eq!(body.ns, e.ns);
+    assert_eq!(body.server_nonce, unhex32(&c.server_nonce));
+    assert_eq!(body.ts, ts);
+    assert!((body.destroyed_at - ts).abs() <= 5);
+    assert_eq!((body.objects, body.bytes), (3, stored));
+
+    // the vault is gone: tokens dead, files gone, tombstone answers 410
+    let r = call(s.addr, "GET", &obj_path(&e.ns, &id(1)), &[("Authorization", &bearer(&e.read_token))], b"");
+    assert_eq!(r.status, 401);
+    let r = call(s.addr, "PUT", &obj_path(&e.ns, &id(4)), &[("Authorization", &wt)], &container(id(4), 1, 4));
+    assert_eq!(r.status, 401);
+    assert!(!s.dir.join("objects").join(e.ns.to_hex()).exists());
+    assert!(s.app.store.destroyed(&e.ns).unwrap());
+    let r = destroy_request(&s, &e.ns);
+    assert_eq!((r.status, r.error()), (410, ErrorCode::Gone));
+    let r = confirm(&s, &e.ns, &c.confirm_token, ts, &sign_destroy(&key, &e.ns, &c, ts));
+    assert_eq!((r.status, r.error()), (410, ErrorCode::Gone), "replay");
+    let leftovers: Vec<_> = std::fs::read_dir(s.dir.join("tmp")).unwrap().collect();
+    assert!(leftovers.is_empty(), "trash removed");
+
+    // other vaults untouched
+    let r = call(s.addr, "GET", &obj_path(&keep.ns, &id(9)), &[("Authorization", &bearer(&keep.read_token))], b"");
+    assert_eq!(r.status, 200);
+}
+
+#[test]
+fn receipt_key_persists_and_is_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = start(|_| {});
+    let path = s.dir.join(sync_server::RECEIPT_KEY_FILE);
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+    let again = App::open(Config::new(s.dir.clone())).unwrap();
+    assert_eq!(again.receipt_pub, s.app.receipt_pub);
+    let pk = URL_SAFE_NO_PAD.decode(&s.app.receipt_pub).unwrap();
+    assert_eq!((pk.len(), pk[0]), (65, 4));
 }
