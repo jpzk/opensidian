@@ -39,6 +39,16 @@
        A release build cannot turn it on. A mock CAMERA is never granted either:
        the video rule above is independent of the mock.
 
+   #136 EXCLUSIVE MIC (supersedes the arm-window residual above): while a capture is live, WebKit
+   answers a request of the SAME frame + origin from its grant cache WITHOUT emitting
+   permission-request, and the request names no frame/origin a gate could tell apart — so inside the
+   app page a plugin's getUserMedia during a recording got the recorder's grant. Now the core recorder
+   captures in a page of its own: a webview "rec-<window>" (REC_PREFIX; its window hidden, the
+   webview itself 1 px and transparent inside the app window, see rec_offscreen) loading
+   ui/recorder.html, created by Rust per recording (audio_rec_start, token-checked) and closed when it
+   ends. That webview has its own grant cache and its own gate; no plugin loader and no vault content
+   run in it. decide() DENIES every user-media request of any other webview: the app window's gate
+   never allows, armed or not. The arm (one-shot, ARM_WINDOW) arms the recorder webview only.
    THE SAVE (`audio_save`): the webm bytes (base64 over the JSON IPC), capped,
    EBML magic checked, written through pasteimg::write_into — the same DEST/NO OVER
    rules as a pasted image (safe attachment folder inside the vault, O_NOFOLLOW per
@@ -82,9 +92,24 @@ fn mint() -> Option<String> {
     Some(b.iter().map(|x| format!("{x:02x}")).collect())
 }
 
+/// #136: the label prefix of the core recorder's own (hidden) webview
+pub const REC_PREFIX: &str = "rec-";
+/// the recorder webview of app window `parent`
+pub fn rec_label(parent: &str) -> String {
+    format!("{REC_PREFIX}{parent}")
+}
+/// is `label` a recorder webview (the only kind the gate may allow)
+pub fn is_rec(label: &str) -> bool {
+    label.starts_with(REC_PREFIX)
+}
+
 /// a page (re)load started in `label`: the old page's token and arm are void
+/// (an app window's reload also voids the arm of its recorder webview)
 pub fn page_started(label: &str) {
     with_slot(label, |s| *s = Slot::default());
+    if !is_rec(label) {
+        with_slot(&rec_label(label), |s| s.armed = None);
+    }
 }
 
 /// the token, to the FIRST caller per page load only
@@ -108,21 +133,52 @@ fn check(s: &Slot, tok: &str) -> Result<(), String> {
     }
 }
 
-/// arm the next audio-only request of `label` for ARM_WINDOW
+/// arm the next audio-only request of app window `label`'s RECORDER webview
+/// (rec_label) for ARM_WINDOW; the token is the app window's
 pub fn arm(label: &str, tok: &str, now: Instant) -> Result<(), String> {
-    with_slot(label, |s| {
-        check(s, tok)?;
-        s.armed = Some(now + ARM_WINDOW);
-        Ok(())
-    })
+    with_slot(label, |s| check(s, tok))?;
+    with_slot(&rec_label(label), |s| s.armed = Some(now + ARM_WINDOW));
+    Ok(())
 }
 
 pub fn disarm(label: &str, tok: &str) -> Result<(), String> {
-    with_slot(label, |s| {
-        check(s, tok)?;
-        s.armed = None;
-        Ok(())
-    })
+    with_slot(label, |s| check(s, tok))?;
+    with_slot(&rec_label(label), |s| s.armed = None);
+    Ok(())
+}
+
+/* #136 the recording session of an app window (keyed by its label): the hand-offs between the app
+   window's audio_rec_start / audio_rec_stop and the recorder page's audio_rec_go / _started / _data. */
+pub struct Sess {
+    /// the recorder webview's gate is connected (install's callback)
+    pub gated: Option<std::sync::mpsc::Receiver<()>>,
+    /// the gate was connected (a reloaded recorder page need not wait again)
+    pub ready: bool,
+    /// the recorder page's start outcome -> audio_rec_start
+    pub started: Option<std::sync::mpsc::Sender<Result<(), String>>>,
+    /// audio_rec_stop -> the recorder page (its audio_rec_started returns)
+    pub stop_tx: Option<std::sync::mpsc::Sender<()>>,
+    pub stop_rx: Option<std::sync::mpsc::Receiver<()>>,
+    /// the recorder page's recording (base64) -> audio_rec_stop
+    pub data: Option<std::sync::mpsc::Sender<String>>,
+}
+static SESS: Mutex<Option<HashMap<String, Sess>>> = Mutex::new(None);
+/// run `f` on the session of app window `parent` (None: no recording session)
+pub fn with_sess<T>(parent: &str, f: impl FnOnce(Option<&mut Sess>) -> T) -> T {
+    let mut g = SESS.lock().unwrap_or_else(|e| e.into_inner());
+    f(g.get_or_insert_with(HashMap::new).get_mut(parent))
+}
+pub fn sess_put(parent: &str, s: Sess) {
+    SESS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(parent.to_string(), s);
+}
+pub fn sess_drop(parent: &str) {
+    if let Some(m) = SESS.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        m.remove(parent);
+    }
+}
+/// the app window a recorder webview belongs to (None: `label` is not a recorder webview)
+pub fn parent_of(label: &str) -> Option<&str> {
+    label.strip_prefix(REC_PREFIX).filter(|p| !p.is_empty())
 }
 
 /// is this a token the window handed out (audio_save)
@@ -137,9 +193,10 @@ pub enum Verdict {
     Deny,
 }
 
-/// THE rule. audio && !video && !display && armed (consumed) -> Allow; else Deny.
+/// THE rule. a recorder webview && audio && !video && !display && armed (consumed) -> Allow; else Deny.
+/// #136: an app window (plugins share its page) is NEVER allowed, armed or not.
 pub fn decide(label: &str, audio: bool, video: bool, display: bool, now: Instant) -> Verdict {
-    if !audio || video || display {
+    if !is_rec(label) || !audio || video || display {
         return Verdict::Deny; // never consumes the arm: a camera/screen probe cannot burn it either
     }
     with_slot(label, |s| match s.armed.take() {
@@ -156,6 +213,13 @@ pub fn mock_on(env: Option<&str>) -> bool {
 /// install the gate on the window's webview (Linux / WebKitGTK)
 #[cfg(target_os = "linux")]
 pub fn install<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>) {
+    install_then(w, || {});
+}
+
+/// install, then `done` once the handler is connected (on the main thread; #136: the recorder page
+/// waits for it before its getUserMedia, so the request can never reach WebKit's default deny)
+#[cfg(target_os = "linux")]
+pub fn install_then<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>, done: impl FnOnce() + Send + 'static) {
     let label = w.label().to_string();
     let mock = mock_on(std::env::var(MOCK_ENV).ok().as_deref());
     let r = w.with_webview(move |pw| {
@@ -192,11 +256,99 @@ pub fn install<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>) {
             }
             false // every other request: WebKit's default handler (deny), unchanged
         });
+        done();
     });
     if let Err(e) = r {
         eprintln!("[audiorec] gate not installed: {e}");
     }
 }
+
+/* #136 the recorder webview must be IN an on-screen window for WebKit: a page that is not in a window
+   (hidden window, or a GtkOffscreenWindow, which WebKitGTK does not count as on screen) never gets
+   media started — its getUserMedia waits forever (WebPage canStartMedia). So the recorder's webview is
+   moved into the APP window it records for: a 1 x 1 px, fully transparent strip at the bottom of the
+   window's box, for the length of the recording. Its own window stays hidden (no taskbar entry, no
+   focus). It is still its own page: its own capture grant and its own permission-request signal.
+   rec_offscreen_drop takes it out again and destroys it with the recording. Main thread only (GTK),
+   hence the thread_local; both hand-offs run on the GTK main loop in the order they were queued. */
+#[cfg(target_os = "linux")]
+thread_local! {
+    static EMBED: std::cell::RefCell<HashMap<String, gtk::Widget>> = std::cell::RefCell::new(HashMap::new());
+}
+
+#[cfg(target_os = "linux")]
+fn embed_drop(label: &str) {
+    use gtk::prelude::{ContainerExt, WidgetExt, WidgetExtManual};
+    use gtk::glib::Cast;
+    if let Some(w) = EMBED.with(|o| o.borrow_mut().remove(label)) {
+        if let Some(p) = w.parent() {
+            if let Ok(c) = p.downcast::<gtk::Container>() {
+                c.remove(&w);
+            }
+        }
+        // SAFETY: GTK main thread (with_webview); the recorder webview is ours and its recording is over
+        unsafe { w.destroy() }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn rec_offscreen<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>, app_win: &tauri::WebviewWindow<R>) {
+    let label = w.label().to_string();
+    let l2 = label.clone();
+    let r = w.with_webview(move |pw| {
+        use gtk::prelude::{ContainerExt, WidgetExt};
+        use gtk::glib::Cast;
+        let widget: gtk::Widget = pw.inner().upcast();
+        if let Some(p) = widget.parent() {
+            if let Ok(c) = p.downcast::<gtk::Container>() {
+                c.remove(&widget);
+            }
+        }
+        embed_drop(&label); // a stale recorder of the same label
+        EMBED.with(|o| o.borrow_mut().insert(label, widget));
+    });
+    if let Err(e) = r {
+        eprintln!("[audiorec] recorder webview not detached: {e}");
+        return;
+    }
+    let r = app_win.with_webview(move |pw| {
+        use gtk::prelude::{BoxExt, ContainerExt, WidgetExt};
+        use gtk::glib::Cast;
+        let Some(widget) = EMBED.with(|o| o.borrow().get(&l2).cloned()) else { return };
+        let main: gtk::Widget = pw.inner().upcast();
+        let Some(host) = main.parent() else {
+            eprintln!("[audiorec] {l2}: app webview has no parent box");
+            return;
+        };
+        widget.set_size_request(1, 1);
+        widget.set_opacity(0.0);
+        widget.set_can_focus(false);
+        match host.clone().downcast::<gtk::Box>() {
+            Ok(b) => b.pack_end(&widget, false, false, 0),
+            Err(h) => {
+                if let Ok(c) = h.downcast::<gtk::Container>() {
+                    c.add(&widget)
+                }
+            }
+        }
+        widget.show_all();
+        eprintln!("[audiorec] {l2}: capture page in the app window (mapped={})", widget.is_mapped());
+    });
+    if let Err(e) = r {
+        eprintln!("[audiorec] recorder webview not embedded: {e}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn rec_offscreen_drop<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>) {
+    let label = w.label().to_string();
+    let _ = w.with_webview(move |_| embed_drop(&label)); // reason: a webview that is already gone has nothing left to drop
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn rec_offscreen<R: tauri::Runtime>(_: &tauri::WebviewWindow<R>, _: &tauri::WebviewWindow<R>) {}
+#[cfg(not(target_os = "linux"))]
+pub fn rec_offscreen_drop<R: tauri::Runtime>(_: &tauri::WebviewWindow<R>) {}
 
 /// the kill switch (codeant C1 on #124): every microphone track of the window's
 /// page stops (WebKit's microphone capture state -> NONE). The core calls it
@@ -219,6 +371,10 @@ pub fn mic_off<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>) -> Result<(), Str
 
 #[cfg(not(target_os = "linux"))]
 pub fn install<R: tauri::Runtime>(_: &tauri::WebviewWindow<R>) {}
+#[cfg(not(target_os = "linux"))]
+pub fn install_then<R: tauri::Runtime>(_: &tauri::WebviewWindow<R>, done: impl FnOnce() + Send + 'static) {
+    done();
+}
 
 #[cfg(not(target_os = "linux"))]
 pub fn mic_off<R: tauri::Runtime>(_: &tauri::WebviewWindow<R>) -> Result<(), String> {
@@ -305,7 +461,7 @@ mod tests {
         let now = Instant::now();
         page_started(w);
         // not armed: an audio request (a plugin's getUserMedia) is denied
-        assert_eq!(decide(w, true, false, false, now), Verdict::Deny);
+        assert_eq!(decide(&rec_label(w), true, false, false, now), Verdict::Deny);
         // no token yet / wrong token: arm refused
         assert!(arm(w, "", now).is_err());
         let t = token(w).unwrap();
@@ -316,18 +472,42 @@ mod tests {
         assert!(arm(w, &t[..31], now).is_err());
         arm(w, &t, now).unwrap();
         // camera, camera+mic, screen: denied even while armed, and they do NOT burn the arm
-        assert_eq!(decide(w, false, true, false, now), Verdict::Deny);
-        assert_eq!(decide(w, true, true, false, now), Verdict::Deny);
-        assert_eq!(decide(w, true, false, true, now), Verdict::Deny);
-        assert_eq!(decide(w, false, false, false, now), Verdict::Deny);
+        assert_eq!(decide(&rec_label(w), false, true, false, now), Verdict::Deny);
+        assert_eq!(decide(&rec_label(w), true, true, false, now), Verdict::Deny);
+        assert_eq!(decide(&rec_label(w), true, false, true, now), Verdict::Deny);
+        assert_eq!(decide(&rec_label(w), false, false, false, now), Verdict::Deny);
         // the audio-only request while armed: allowed ONCE
-        assert_eq!(decide(w, true, false, false, now), Verdict::Allow);
-        assert_eq!(decide(w, true, false, false, now), Verdict::Deny, "the arm is one-shot");
+        assert_eq!(decide(&rec_label(w), true, false, false, now), Verdict::Allow);
+        assert_eq!(decide(&rec_label(w), true, false, false, now), Verdict::Deny, "the arm is one-shot");
         // disarm needs the token too
         arm(w, &t, now).unwrap();
         assert!(disarm(w, "nope").is_err());
         disarm(w, &t).unwrap();
-        assert_eq!(decide(w, true, false, false, now), Verdict::Deny);
+        assert_eq!(decide(&rec_label(w), true, false, false, now), Verdict::Deny);
+    }
+
+    // #136: the app window (plugins share its page) is never granted the mic, armed or not; only its
+    // recorder webview is, and arming one window's recorder never arms another's
+    #[test]
+    fn audiorec_app_window_never_allowed_only_its_recorder() {
+        let w = "t-excl";
+        let now = Instant::now();
+        page_started(w);
+        let t = token(w).unwrap();
+        arm(w, &t, now).unwrap();
+        assert_eq!(decide(w, true, false, false, now), Verdict::Deny, "the app window itself is never allowed");
+        assert_eq!(decide("rec-", true, false, false, now), Verdict::Deny);
+        assert_eq!(decide(&rec_label("t-excl2"), true, false, false, now), Verdict::Deny, "another window's recorder is not armed");
+        assert_eq!(decide(&rec_label(w), true, false, false, now), Verdict::Allow, "the app window's checks did not burn its recorder's arm");
+        assert_eq!(decide(&rec_label(w), true, false, false, now), Verdict::Deny);
+        assert!(is_rec("rec-main") && !is_rec("main") && !is_rec("xrec-main"));
+        assert_eq!(parent_of("rec-main"), Some("main"));
+        assert_eq!(parent_of("rec-"), None);
+        assert_eq!(parent_of("main"), None);
+        // a reload of the app window voids its recorder's arm
+        arm(w, &t, now).unwrap();
+        page_started(w);
+        assert_eq!(decide(&rec_label(w), true, false, false, now), Verdict::Deny);
     }
 
     #[test]
@@ -337,11 +517,11 @@ mod tests {
         page_started(w);
         let t = token(w).unwrap();
         arm(w, &t, now).unwrap();
-        assert_eq!(decide(w, true, false, false, now + ARM_WINDOW + Duration::from_millis(1)), Verdict::Deny);
+        assert_eq!(decide(&rec_label(w), true, false, false, now + ARM_WINDOW + Duration::from_millis(1)), Verdict::Deny);
         // a page load: old token and arm void, a new token can be taken once
         arm(w, &t, now).unwrap();
         page_started(w);
-        assert_eq!(decide(w, true, false, false, now), Verdict::Deny);
+        assert_eq!(decide(&rec_label(w), true, false, false, now), Verdict::Deny);
         assert!(arm(w, &t, now).is_err(), "the old page's token is void");
         assert!(authorized(w, &t).is_err());
         let t2 = token(w).unwrap();

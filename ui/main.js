@@ -1795,24 +1795,24 @@ function bmRowMenu(e, nm, ix) {             // right-click a FILE .bmrow -> Obsi
   // issue #31: a graph row (no file behind it) and a canvas / plugin-file row (a vault PATH) open through bmOpenRow
   const vr = bmTree[ix] && bmTree[ix].name === nm && !pdf && (bmTree[ix].graph || bmTree[ix].path) ? bmTree[ix] : null;
   if (vr) {
-    item("Open in new tab", () => bmOpenRow(vr, { ctrlKey: true }));
-    if (vr.path && Ed.isImg(vr.name)) item("Open to the right", () => openImage(vr.name, null, "split"));   // issue #102: an image bookmark opens the image view to the right
-    else if (vr.path && Ed.isAudio(vr.name)) item("Open to the right", () => openAudio(vr.name, null, "split"));   // issue #140: a recording, the audio view
-    else item("Open to the right", null, "Not wired for a graph / canvas / plugin-file bookmark: click the row, then Split right");
+    item(I18N.m("Open in new tab"), () => bmOpenRow(vr, { ctrlKey: true }));
+    if (vr.path && Ed.isImg(vr.name)) item(I18N.m("Open to the right"), () => openImage(vr.name, null, "split"));   // issue #102: an image bookmark opens the image view to the right
+    else if (vr.path && Ed.isAudio(vr.name)) item(I18N.m("Open to the right"), () => openAudio(vr.name, null, "split"));   // issue #140: a recording, the audio view
+    else item(I18N.m("Open to the right"), null, "Not wired for a graph / canvas / plugin-file bookmark: click the row, then Split right");
   } else {
-  item("Open in new tab",   () => (pdf ? openPdf(nm, null, "tab") : openNewTab(nm)));                         // WIRED: openNewTab — right of the active tab, focused, never deduped (opentab REQ-8/9/14, Obsidian c20)
-  item("Open to the right", () => (pdf ? openPdf(nm, null, "split") : splitWith(fg(), "row", mkTab(nm))));      // WIRED: splitWith — the verb behind the tab menu's "Split right" (M7/R6.2), carrying a fresh tab of this note
+  item(I18N.m("Open in new tab"),   () => (pdf ? openPdf(nm, null, "tab") : openNewTab(nm)));                         // WIRED: openNewTab — right of the active tab, focused, never deduped (opentab REQ-8/9/14, Obsidian c20)
+  item(I18N.m("Open to the right"), () => (pdf ? openPdf(nm, null, "split") : splitWith(fg(), "row", mkTab(nm))));      // WIRED: splitWith — the verb behind the tab menu's "Split right" (M7/R6.2), carrying a fresh tab of this note
   }
-  item("Open in new window", null, "Single-window app: there is no second window to open into");   // NOT WIRED
+  item(I18N.m("Open in new window"), null, "Single-window app: there is no second window to open into");   // NOT WIRED
   sep();
-  item("Rename",  () => bmGroupRenameStart(ix));                          // WIRED (issue #101): the inline editor in the row edits the bookmark TITLE, never the file (06-rename.png -> 08-rename-enter.png)
-  item("Edit...", hasGrp ? () => openBmEdit(ix) : null,                    // WIRED (R4X.7) once a group exists: the move route, in and out
+  item(I18N.m("Rename"),  () => bmGroupRenameStart(ix));                          // WIRED (issue #101): the inline editor in the row edits the bookmark TITLE, never the file (06-rename.png -> 08-rename-enter.png)
+  item(I18N.m("Edit..."), hasGrp ? () => openBmEdit(ix) : null,                    // WIRED (R4X.7) once a group exists: the move route, in and out
        hasGrp ? null : "Edit bookmark chooses a GROUP and this pane has none — right-click the pane background to create one");
   sep();
-  if (vr && vr.graph) item("Reveal file in navigation", null, "A graph bookmark has no file behind it");   // issue #31
-  else item("Reveal file in navigation", () => bmReveal(nm));              // WIRED: bmReveal — setPane("files") + the explorer row's focus ring (R9.3 pane switch, treeRows)
+  if (vr && vr.graph) item(I18N.m("Reveal file in navigation"), null, "A graph bookmark has no file behind it");   // issue #31
+  else item(I18N.m("Reveal file in navigation"), () => bmReveal(nm));              // WIRED: bmReveal — setPane("files") + the explorer row's focus ring (R9.3 pane switch, treeRows)
   sep();
-  item("Remove", () => { if (vr) bmApply("bm_remove", { ix }); else if (pdf) toggleBm(nm, true); else if (bmCache.includes(nm)) toggleBm(nm); });   // issue #31: a graph / canvas row is removed BY ROW (bm_remove)
+  item(I18N.m("Remove"), () => { if (vr) bmApply("bm_remove", { ix }); else if (pdf) toggleBm(nm, true); else if (bmCache.includes(nm)) toggleBm(nm); });   // issue #31: a graph / canvas row is removed BY ROW (bm_remove)
   // WIRED: toggleBm — the same toggle the explorer-row / tab menus use (R9.4 / R20.4); guarded so it can only REMOVE. A PDF row removes its Pdf entry EXPLICITLY (pdf:true) so a same-named note bookmark ("x.pdf.md") is never the one dropped (PR #57 qodo High)
   placeMenu(m, e.clientX, e.clientY);      // R22: viewport-clamped by measured size — the same seam as noteMenu/tabMenu
 }
@@ -1830,15 +1830,15 @@ function bmGroupMenu(e, ix, title) {
   m.className = "ctxmenu";
   const { item, sep } = bmMenuItems(m);
   const OPEN_WHY = "A group holds NAMES, not a note (R9.4) — there is nothing behind this row to open; the behaviour to match here is UNMEASURED (docs/recon-bmfolder/README.md)";
-  item("Open in new tab",    null, OPEN_WHY);                              // NOT WIRED
-  item("Open to the right",  null, OPEN_WHY);                              // NOT WIRED
-  item("Open in new window", null, "Single-window app: there is no second window to open into");   // NOT WIRED
+  item(I18N.m("Open in new tab"),    null, OPEN_WHY);                              // NOT WIRED
+  item(I18N.m("Open to the right"),  null, OPEN_WHY);                              // NOT WIRED
+  item(I18N.m("Open in new window"), null, "Single-window app: there is no second window to open into");   // NOT WIRED
   sep();
-  item("Rename", () => bmGroupRenameStart(ix));                            // WIRED: inline editor in the row (07-nest-named.png -> 08-nest-commit.png)
-  item("Bookmark the active tab...", () => openBmAdd(ix));                // WIRED (bmactive): Obsidian's "Add bookmark" modal, docs/recon-bmactive F1/F2
-  item("New group", () => bmGroupNew(ix));                                 // WIRED: nests INSIDE this group (04-groupmenu.png -> 05-nest.png)
+  item(I18N.m("Rename"), () => bmGroupRenameStart(ix));                            // WIRED: inline editor in the row (07-nest-named.png -> 08-nest-commit.png)
+  item(I18N.m("Bookmark the active tab..."), () => openBmAdd(ix));                // WIRED (bmactive): Obsidian's "Add bookmark" modal, docs/recon-bmactive F1/F2
+  item(I18N.m("New group"), () => bmGroupNew(ix));                                 // WIRED: nests INSIDE this group (04-groupmenu.png -> 05-nest.png)
   sep();
-  item("Remove", () => bmGroupDelete(ix));                                 // WIRED: takes the SUBTREE, no confirmation (23-del-menu.png -> 24-deleted.png)
+  item(I18N.m("Remove"), () => bmGroupDelete(ix));                                 // WIRED: takes the SUBTREE, no confirmation (23-del-menu.png -> 24-deleted.png)
   // [mt:bmgroup:<title>] — WHICH row the browser's hit test handed us (R20.8's
   // lesson): "Remove" on a group drops its whole subtree, so an OCR/geometry
   // miss followed by Remove would delete a group nobody named and still look green.
@@ -1856,7 +1856,7 @@ function bmEmptyMenu(e) {                  // right-click the "No bookmarks." LI
      exact line and criterion 8 forbids editing it, so THIS line keeps its
      committed answer. The affordance is not lost: the same right-click anywhere
      else in the pane background creates a group (bmPaneMenu), empty list or not. */
-  bmMenuItems(m).item("New group", null, "Not from the empty-state line — right-click the pane background below it to create a group");
+  bmMenuItems(m).item(I18N.m("New group"), null, "Not from the empty-state line — right-click the pane background below it to create a group");
   placeMenu(m, e.clientX, e.clientY);
 }
 function bmPaneMenu(e) {                   // right-click the pane BACKGROUND -> Obsidian's one-item "New group" (02-emptymenu.png)
@@ -1865,7 +1865,7 @@ function bmPaneMenu(e) {                   // right-click the pane BACKGROUND ->
   closeMenu();
   const m = document.createElement("div");
   m.className = "ctxmenu";
-  bmMenuItems(m).item("New group", () => bmGroupNew(null));                // WIRED: appends at the END of the top level, titled "Untitled group" (03-newgroup.png)
+  bmMenuItems(m).item(I18N.m("New group"), () => bmGroupNew(null));                // WIRED: appends at the END of the top level, titled "Untitled group" (03-newgroup.png)
   m.dataset.mt = "bmpane:";
   placeMenu(m, e.clientX, e.clientY);
 }
@@ -2480,9 +2480,9 @@ function noteMenu(e, nm) {                 // right-click a tree note row
   };
   /* opentab REQ-10/11/12/16: Obsidian 1.13.7's file menu opens with this group (recon c07-b.json) */
   { const { item, sep } = bmMenuItems(m);
-    item("Open in new tab",    () => openNewTab(nm));                     // WIRED: REQ-11
-    item("Open to the right",  () => splitWith(fg(), "row", mkTab(nm)));  // WIRED: REQ-12, the bookmark menu's verb
-    item("Open in new window", null, "Single-window app: there is no second window to open into");   // REQ-16 EXCEPTION
+    item(I18N.m("Open in new tab"),    () => openNewTab(nm));                     // WIRED: REQ-11
+    item(I18N.m("Open to the right"),  () => splitWith(fg(), "row", mkTab(nm)));  // WIRED: REQ-12, the bookmark menu's verb
+    item(I18N.m("Open in new window"), null, "Single-window app: there is no second window to open into");   // REQ-16 EXCEPTION
     sep(); }
   mkItem(bmCache.includes(nm) ? "Remove bookmark" : "Bookmark", () => toggleBm(nm));
   /* CVR-A-087 / issue #101: the row names the note, so its menu renames it — IN THE ROW, as stock
@@ -2550,9 +2550,9 @@ function graphNodeMenu(e, hit, scope) {
     m.innerHTML = "";
     label();
     sep();
-    if (here) item("(vault root)", () => moveNoteTo(nm, ""));
+    if (here) item(I18N.m("(vault root)"), () => moveNoteTo(nm, ""));
     for (const f of fl) if (f !== here) item(f, () => moveNoteTo(nm, f));
-    if (m.children.length === 2) item("(no other folder)", () => {});
+    if (m.children.length === 2) item(I18N.m("(no other folder)"), () => {});
     clampMenu(m);                        // re-clamp NOW: updateTitle() below must publish [mg:]/[mgy:] of the PLACED list
     setTimeout(() => { clampMenu(m); updateTitle(); }, 0);   // late layout (fonts/async rows) re-clamps AND re-publishes
     updateTitle();
@@ -4418,7 +4418,7 @@ function utBuild() {             // pane/focus census in the window title (headl
           if (q && q.width) ys[w] = Math.round(q.top);
         }
       }
-      const bk = rvq(rvp, "pre, table, .math-display");
+      const bk = rvq(rvp, "pre, table, .math-display, .math-block");   // #185: a typeset $$ block is div.math-block
       const bh = bk ? bk.tagName.toLowerCase() + ":" + Math.round(bk.getBoundingClientRect().height) + ":" + bk.querySelectorAll("br").length : "-";
       md += " [rvab:" + ys.Alpha + "," + ys.Beta + "," + rvp.querySelectorAll("br").length + "," + bh + "]";
     }
@@ -5080,7 +5080,7 @@ function tabMenu(e, g, i, hdr) {
   /* item(label, fn) wires a row; item(label, null, why) renders it DISABLED with
      `why` (the missing subsystem) as the hover title; chk adds the radio marker
      as an ELEMENT so textContent — and therefore [menu:] — stays Obsidian's label. */
-  const item = (label, fn, why, chk, warn) =>   // chk: a RADIO row — the icon gutter is reserved whether or not this one is the active mode
+  const item = (label, fn, why, chk, warn) =>   // chk: a RADIO row — true puts the check mark after the title (#214: no reserved gutter)
     B.item({ title: label, fn: fn || undefined, why: why == null ? undefined : why, chk, warn });
   const sep = () => B.sep();
   const inPlace = fill => {              // the ctxmenu's ONE submenu seam: rebuild in place (R13.1's pick list)
@@ -5097,32 +5097,32 @@ function tabMenu(e, g, i, hdr) {
       any = true;
       item((t.kind === "gg" ? "Graph" : t.name.split("/").pop()), () => { closeMenu(); linkTabs(tab, t); });
     }
-    if (!any) item("(no other tabs)");
+    if (!any) item(I18N.m("(no other tabs)"));
   });
   const pickFolder = async () => {       // R38.16: Obsidian opens a modal folder SUGGESTER; ours is the same in-place list
     let fl = [];
     try { fl = await inv("list_folders"); } catch (err) { fl = []; }
     const here = tab.name.includes("/") ? tab.name.slice(0, tab.name.lastIndexOf("/")) : "";
     inPlace(() => {
-      if (here) item("(vault root)", () => { closeMenu(); moveNoteTo(tab.name, ""); });
+      if (here) item(I18N.m("(vault root)"), () => { closeMenu(); moveNoteTo(tab.name, ""); });
       for (const f of fl) if (f !== here) item(f, () => { closeMenu(); moveNoteTo(tab.name, f); });
-      if (!OMenu.census.rows(m).length) item("(no other folder)");
+      if (!OMenu.census.rows(m).length) item(I18N.m("(no other folder)"));
     });
   };
   if (hdr && !tab) {                     // graphhdr REQ-11: the empty tab's ⋮ — a split of an empty pane is an empty pane
-    item("Split right", () => { closeMenu(); splitGroup(g, "row", -1); });
-    item("Split down",  () => { closeMenu(); splitGroup(g, "col", -1); });
+    item(I18N.m("Split right"), () => { closeMenu(); splitGroup(g, "row", -1); });
+    item(I18N.m("Split down"),  () => { closeMenu(); splitGroup(g, "col", -1); });
     place();
     return;
   }
   // ---- group 1, the close group. R38.31: the SET is the absence rule ----
   const n = g.tabs.length, rightmost = i === n - 1;
   if (!hdr) {
-  item("Close", () => { closeMenu(); closeTab(g, i); });                        // WIRED: closeTab — flushes, focus to the NEXT tab (R38.3)
+  item(I18N.m("Close"), () => { closeMenu(); closeTab(g, i); });                        // WIRED: closeTab — flushes, focus to the NEXT tab (R38.3)
   if (n > 1) {
-    item("Close others", () => { closeMenu(); closeOtherTabs(g, i); });         // WIRED (R38.4)
-    if (!rightmost) item("Close tabs after", () => { closeMenu(); closeTabsAfter(g, i); });   // WIRED, absent when rightmost (R38.5)
-    item("Close all", () => { closeMenu(); closeAllTabs(g); });                 // WIRED (R38.6)
+    item(I18N.m("Close others"), () => { closeMenu(); closeOtherTabs(g, i); });         // WIRED (R38.4)
+    if (!rightmost) item(I18N.m("Close tabs after"), () => { closeMenu(); closeTabsAfter(g, i); });   // WIRED, absent when rightmost (R38.5)
+    item(I18N.m("Close all"), () => { closeMenu(); closeAllTabs(g); });                 // WIRED (R38.6)
   }
   /* R38.31, the first absence rule: an INACTIVE tab's menu is the close group
      and NOTHING else (M5/M8, 4 rows not 28). Measured twice, and it is why
@@ -5133,8 +5133,8 @@ function tabMenu(e, g, i, hdr) {
   }                                      // !hdr: the close group is a TAB verb — Obsidian's ⋮ has none
   const pinRow = () => item(tab.pinned ? "Unpin" : "Pin", () => { closeMenu(); togglePin(g, tab); });   // WIRED (R38.7)
   const linkRow = () => isLinked(g, tab, i)
-    ? item("Unlink tab", () => { closeMenu(); unlinkTab(g, tab); })             // WIRED: R6.8, unchanged — Obsidian's wording in Obsidian's slot
-    : item("Link with tab...", pick);
+    ? item(I18N.m("Unlink tab"), () => { closeMenu(); unlinkTab(g, tab); })             // WIRED: R6.8, unchanged — Obsidian's wording in Obsidian's slot
+    : item(I18N.m("Link with tab..."), pick);
   if (tab.kind) {
     /* ---- R38.30: a GRAPH tab gets a DIFFERENT menu, assembled from the view
        type — 11 rows with a second tab in the group, 8 alone. It drops every
@@ -5142,65 +5142,65 @@ function tabMenu(e, g, i, hdr) {
     if (!hdr) {
       pinRow(); linkRow();
       sep();
-      item("Move to new window", null, DIS_WIN);
+      item(I18N.m("Move to new window"), null, DIS_WIN);
     }
-    item("Split right", () => { closeMenu(); splitGroup(g, "row", i); });
-    item("Split down",  () => { closeMenu(); splitGroup(g, "col", i); });
+    item(I18N.m("Split right"), () => { closeMenu(); splitGroup(g, "row", i); });
+    item(I18N.m("Split down"),  () => { closeMenu(); splitGroup(g, "col", i); });
     sep();
-    item("Copy screenshot", null, "Missing subsystem: canvas-to-clipboard — no programmatic clipboard write exists in this tree (ui/editor.js writes only inside real copy events) and the graph view has no canvas-to-PNG step");
+    item(I18N.m("Copy screenshot"), null, "Missing subsystem: canvas-to-clipboard — no programmatic clipboard write exists in this tree (ui/editor.js writes only inside real copy events) and the graph view has no canvas-to-PNG step");
     const pvn = pvNoteName(tab);          // issue-48: a board backed by a note bookmarks that note (STOCK.md S2/S3/S5)
     const cvp = fileTabPath(tab);         // issue #31 (D3): a canvas bookmarks its path, as stock; #140: so does an image / PDF / audio viewer tab
     if (pvn) item(bmCache.includes(pvn) ? "Remove bookmark" : "Bookmark...", () => { closeMenu(); toggleBm(pvn); });
     else if (cvp) item(bmHasPath(cvp) ? "Remove bookmark" : "Bookmark...", () => { closeMenu(); toggleBmPath(cvp); });
     // issue #31 (D1/D2): a graph TAB opens stock's Add bookmark modal ("Untitled Graph"); the ⋮ header keeps its
     // pinned shape (graphhdr REQ-10: global inert row, local no row) — the tab menu carries the verb
-    else if ((tab.kind === "gg" || tab.kind === "lg") && !hdr) item("Bookmark...", () => { closeMenu(); openBmAdd(null, tab); });
+    else if ((tab.kind === "gg" || tab.kind === "lg") && !hdr) item(I18N.m("Bookmark..."), () => { closeMenu(); openBmAdd(null, tab); });
     else if (!hdr || tab.kind !== "lg")
-      item("Bookmark...", null, "Not bookmarkable: this view has no file behind it (stock offers no bookmark for it either)");
+      item(I18N.m("Bookmark..."), null, "Not bookmarkable: this view has no file behind it (stock offers no bookmark for it either)");
     place();
     return;
   }
   // ---- group 2 (5 rows) ----
   if (!hdr) { pinRow(); linkRow(); }
-  item("Backlinks in document", null, "Missing subsystem: an in-document backlinks section, appended to the BOTTOM OF THE NOTE PANE; ours is a right-sidebar pane (R27), a different surface");
+  item(I18N.m("Backlinks in document"), null, "Missing subsystem: an in-document backlinks section, appended to the BOTTOM OF THE NOTE PANE; ours is a right-sidebar pane (R27), a different surface");
   // #179: both rows are TOGGLES, as stock 1.13.7: the checked Reading view goes back to editing in the
   // sub-mode it left from (tab.src untouched), the checked Source mode goes back to Live Preview.
-  item("Reading view", () => { closeMenu(); setMode(g, tab.mode === "reading" ? (tab.src ? "source" : "livepreview") : "reading"); }, null, tab.mode === "reading");     // WIRED: setMode (R38.10)
-  item("Source mode",  () => { closeMenu(); setMode(g, tab.mode === "source" ? "livepreview" : "source"); },  null, tab.mode === "source");      // WIRED: setMode — the ✓ is the R12.4 radio, now a marker element
+  item(I18N.m("Reading view"), () => { closeMenu(); setMode(g, tab.mode === "reading" ? (tab.src ? "source" : "livepreview") : "reading"); }, null, tab.mode === "reading");     // WIRED: setMode (R38.10)
+  item(I18N.m("Source mode"),  () => { closeMenu(); setMode(g, tab.mode === "source" ? "livepreview" : "source"); },  null, tab.mode === "source");      // WIRED: setMode — the ✓ is the R12.4 radio, now a marker element
   // ---- group 3 (4 rows) ----
   sep();
-  if (!hdr) item("Move to new window", null, DIS_WIN);
-  item("Split right", () => { closeMenu(); splitGroup(g, "row", i); });         // WIRED: R6.2 — row 11 now, not row 1 (R38.12)
-  item("Split down",  () => { closeMenu(); splitGroup(g, "col", i); });         // WIRED: R6.2 (R38.13)
-  item("Open in new window", null, DIS_WIN + " — and this row COPIES the tab where the one above MOVES it (measured), so the two stay distinct");
+  if (!hdr) item(I18N.m("Move to new window"), null, DIS_WIN);
+  item(I18N.m("Split right"), () => { closeMenu(); splitGroup(g, "row", i); });         // WIRED: R6.2 — row 11 now, not row 1 (R38.12)
+  item(I18N.m("Split down"),  () => { closeMenu(); splitGroup(g, "col", i); });         // WIRED: R6.2 (R38.13)
+  item(I18N.m("Open in new window"), null, DIS_WIN + " — and this row COPIES the tab where the one above MOVES it (measured), so the two stay distinct");
   // ---- group 4 (6 rows) ----
   sep();
-  item("Rename...", () => { closeMenu(); focusGroup(g); cmdRename(); });        // WIRED: R24.2/R34 rename + the prompted link update
-  item("Move file to...", pickFolder);                                          // WIRED: moveNoteTo behind the in-place folder list (R38.16)
+  item(I18N.m("Rename..."), () => { closeMenu(); focusGroup(g); cmdRename(); });        // WIRED: R24.2/R34 rename + the prompted link update
+  item(I18N.m("Move file to..."), pickFolder);                                          // WIRED: moveNoteTo behind the in-place folder list (R38.16)
   item(bmCache.includes(tab.name) ? "Remove bookmark" : "Bookmark...",          // WIRED: toggleBm — Obsidian's wording, our flat-list toggle (R38.17/R20.4)
     () => { closeMenu(); toggleBm(tab.name); });
-  item("Merge entire file with...", null, "Missing subsystem: file merge — no command concatenates one note into another (a suggester with four modifier behaviours)");
-  item("Add file property", async () => { closeMenu(); focusGroup(g); if (tab.mode === "reading") await setMode(g, "lp"); if (window.Props) Props.addCommand(g); });   // WIRED: #119 ui/props.js, the Ctrl+; command
-  item("Export to PDF...", null, "Missing subsystem: a PDF pipeline — no renderer and no page-size/margin model; PDF export is an explicit project non-goal");
+  item(I18N.m("Merge entire file with..."), null, "Missing subsystem: file merge — no command concatenates one note into another (a suggester with four modifier behaviours)");
+  item(I18N.m("Add file property"), async () => { closeMenu(); focusGroup(g); if (tab.mode === "reading") await setMode(g, "lp"); if (window.Props) Props.addCommand(g); });   // WIRED: #119 ui/props.js, the Ctrl+; command
+  item(I18N.m("Export to PDF..."), null, "Missing subsystem: a PDF pipeline — no renderer and no page-size/margin model; PDF export is an explicit project non-goal");
   // ---- group 5 (2 rows) ----
   sep();
-  item("Find...",    () => { closeMenu(); fOpen(g); });                         // WIRED: R26 find bar
-  item("Replace...", () => { closeMenu(); fOpenRep(g); });                      // WIRED: R26 replace row
+  item(I18N.m("Find..."),    () => { closeMenu(); fOpen(g); });                         // WIRED: R26 find bar
+  item(I18N.m("Replace..."), () => { closeMenu(); fOpenRep(g); });                      // WIRED: R26 replace row
   // ---- group 6 (1 row) ----
   sep();
-  item("Copy path", null, "Missing subsystems: submenu panels in ctxmenu (the parent menu stays OPEN beside a child panel; ours can only rebuild itself in place) and a programmatic clipboard write (the only clipboard access in the tree is inside real copy/paste events, ui/editor.js)");
+  item(I18N.m("Copy path"), null, "Missing subsystems: submenu panels in ctxmenu (the parent menu stays OPEN beside a child panel; ours can only rebuild itself in place) and a programmatic clipboard write (the only clipboard access in the tree is inside real copy/paste events, ui/editor.js)");
   // ---- group 7 (2 rows) ----
   sep();
-  item("Open version history", null, "Missing subsystem: file history — nothing here keeps a revision of a note to show changes from or restore");
-  item("Open linked view", null, "Missing subsystem: submenu panels in ctxmenu — four of its five children already have backends here (R7 local graph, backlinks, outgoing, outline), so this is the highest-value row in this list");
+  item(I18N.m("Open version history"), null, "Missing subsystem: file history — nothing here keeps a revision of a note to show changes from or restore");
+  item(I18N.m("Open linked view"), null, "Missing subsystem: submenu panels in ctxmenu — four of its five children already have backends here (R7 local graph, backlinks, outgoing, outline), so this is the highest-value row in this list");
   // ---- group 8 (3 rows) ----
   sep();
-  item("Open in default app", null, "Missing subsystem: a file-path opener — open_external takes a URL, not a vault path");
-  item("Show in system explorer", null, "Missing subsystem: a file-manager handler — no command reveals a path in a file manager");
-  item("Reveal file in navigation", () => { closeMenu(); bmReveal(tab.name); });  // WIRED: bmReveal — the identical verb bmRowMenu wires, publishes [bmrv:] (R38.28)
+  item(I18N.m("Open in default app"), null, "Missing subsystem: a file-path opener — open_external takes a URL, not a vault path");
+  item(I18N.m("Show in system explorer"), null, "Missing subsystem: a file-manager handler — no command reveals a path in a file manager");
+  item(I18N.m("Reveal file in navigation"), () => { closeMenu(); bmReveal(tab.name); });  // WIRED: bmReveal — the identical verb bmRowMenu wires, publishes [bmrv:] (R38.28)
   // ---- group 9 (1 row) ----
   sep();
-  item("Delete file", () => { closeMenu(); askDelete(tab.name); }, null, undefined, true);   // .is-warning (stock). WIRED: askDelete — Obsidian's row is the link-COUNTING confirmation, not an unlink (R38.29)
+  item(I18N.m("Delete file"), () => { closeMenu(); askDelete(tab.name); }, null, undefined, true);   // .is-warning (stock). WIRED: askDelete — Obsidian's row is the link-COUNTING confirmation, not an unlink (R38.29)
   place();   /* R22: viewport-clamped by MEASURED size */
 }
 async function togglePin(g, tab) {      // R38.7: the flag + the tab-bar glyph; Close stays enabled on a pinned tab (measured)
@@ -7778,6 +7778,13 @@ function extClick(e, a) {   // `a` unused: kept for the Ed.extClick(e, a) signat
 // Only a style attribute on #preview ITSELF is ignored; any other record (a child,
 // a text, data-title, a class) still marks it dirty.
 const pvTouched = (P, recs) => recs.some(r => r.target !== P || r.type !== "attributes" || (r.attributeName !== "style" && r.attributeName !== "class"));   // opt6: + the vkeep class flip
+// #185: a write of ours into the reading DOM that must not mark it dirty (async math typesetting):
+// records pending from before (anyone else's) still count, the write's own are dropped
+const pvQuiet = (P, fn) => {
+  if (!P._pvObs) return fn();
+  if (pvTouched(P, P._pvObs.takeRecords())) P._pvDirty = true;
+  try { return fn(); } finally { P._pvObs.takeRecords(); }
+};
 async function preview(g, sw) {   // sw: called by setMode (the edit -> reading switch)
   const src = g.editor.value, P = g.preview;
   // modeswitch opt2: the reading DOM is RETAINED while the pane shows the edit
@@ -7853,6 +7860,10 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   // observer is armed, so their synchronous output is part of the retained DOM; async writes
   // later mark it dirty (the next switch re-renders). Not awaited: a slow plugin never holds the switch.
   if (PPOST) try { PPOST.run(P, curOf(g), g.active >= 0 ? g.tabs[g.active] : null, src, pvL).catch(e => console.error("[plugin] markdown processors:", e)); } catch (e) { console.error(e); }
+  // #185: $..$ / $$..$$ typeset by MathJax (ui/mathview.js). Its synchronous part (a $$ span becomes
+  // div.math.math-block) lands before the observer below; the typeset output comes after MathJax loads,
+  // written through pvQuiet so it does not count as a touch of the retained DOM.
+  if (window.MathView) try { MathView.reading(P, fn => pvQuiet(P, fn)).catch(e => console.error("[math]", e)); } catch (e) { console.error(e); }
   // modeswitch opt2: arm the retained-DOM key. Our own innerHTML above is the
   // last write: drop its records synchronously, from here on any record = dirty.
   if (!P._pvObs) {
@@ -8602,11 +8613,13 @@ if (CANVAS) {
    commands audio-recorder:start / :stop, Recording YYYYMMDDHHmmss in the attachment folder, embed at the cursor).
    ON by default (#139, operator 2026-11-16: absent core-plugins.json key => on, an explicit false is respected); exposed in app.internalPlugins (config["audio-recorder"]); the on/off persists
    app-wide (localStorage) and per vault (core-plugins.json, settings.js). Works in restricted mode: app code.
-   THE MIC GATE (security, issue risk 4): the native hook (src-tauri/src/audiorec.rs) grants a capture request
-   only if it is audio-only AND the window was armed by audio_arm(token) a moment before; the token is handed
+   THE MIC GATE (security, issue risk 4; #136 exclusive): this page never captures. The native gate
+   (src-tauri/src/audiorec.rs) denies EVERY capture request of the app window; a recording runs in a hidden
+   recorder webview of its own (ui/recorder.html, no plugin loader) that Rust creates per recording on
+   audio_rec_start(token) and arms for ONE audio-only request. The token is handed
    out ONCE per page load, to the first caller — this block, at main.js load, before loader.js's seal and before
-   any plugin script is requested. The token, the page's own getUserMedia and MediaRecorder are kept in THIS
-   closure (never a global binding); navigator.mediaDevices.getUserMedia is then replaced, for every later
+   any plugin script is requested — and kept in THIS closure (never a global binding);
+   navigator.mediaDevices.getUserMedia is then replaced, for every later
    caller, by a rejector (NotAllowedError) — defence in depth over the native deny. Plugins share this realm
    (loader.js), so this is not a sandbox: see security.md. While the mic is open the ribbon button is active
    and a "Recording" status item is on screen (the issue's visible indicator).
@@ -8654,65 +8667,44 @@ let AREC = null;
     updateTitle();
   };
   const tmNow = () => { const d = new Date(); return { y: d.getFullYear(), mo: d.getMonth() + 1, d: d.getDate(), h: d.getHours(), mi: d.getMinutes(), s: d.getSeconds(), ms: d.getMilliseconds(), off: -d.getTimezoneOffset(), epoch_ms: d.getTime() }; };
+  // #136: the capture runs in the hidden recorder webview (ui/recorder.html, audio_rec_start), never in this page:
+  // its gate denies every capture request, so a plugin's getUserMedia here never receives a stream
+  const errName = m => (/^([A-Za-z]+Error): /.exec(m) || [])[1] || "";
   async function start() {
     if (!st.on || st.rec || st.busy) return;
-    if (!gum || !MR) return note("Audio recording is not available: this window has no media capture.");
+    if (!IV || !MR) return note("Audio recording is not available: this window has no media capture.");
     if (!(typeof MR.isTypeSupported === "function" && MR.isTypeSupported(MIME)))
       return note("Audio recording is not available: GStreamer opusenc/webmmux missing.");
     st.busy = true; st.err = "";
+    let msg = "";   // a failed start's notice shows AFTER busy is cleared: the notice never appears with the recorder still busy
     try {
       const token = await tokP;
-      if (!token) return note("Audio recording is not available in this window.");
-      let stream;
-      try {
-        await call("audio_arm", { token });
-        stream = await gum({ audio: true, video: false });
-      } catch (e) {
-        // our own request failed after arming: if another script of the page took the one-shot grant,
-        // audio_end stops its stream now (native mic_off); harmless otherwise (codeant C1, #124)
-        await call("audio_end", { token }).catch(() => {});
-        const n = e && e.name;
-        if (n === "NotFoundError" || n === "OverconstrainedError" || n === "NotReadableError") return note("No microphone is connected.");
-        if (n === "NotAllowedError" || n === "SecurityError") { st.denied++; return note("Microphone access was denied."); }
-        return note("Audio recorder: " + errStr(e));
+      if (!token) { msg = "Audio recording is not available in this window."; return; }
+      try { await call("audio_rec_start", { token }); }
+      catch (e) {
+        const m = errStr(e), n = errName(m);
+        if (n === "NotFoundError" || n === "OverconstrainedError" || n === "NotReadableError") msg = "No microphone is connected.";
+        else if (n === "NotAllowedError" || n === "SecurityError") { st.denied++; msg = "Microphone access was denied."; }
+        else if (n === "NotSupportedError") msg = "Audio recording is not available: " + m.slice(n.length + 2);
+        else msg = "Audio recorder: " + m;
+        return;
       }
-      call("audio_disarm", { token }).catch(() => {});
-      if (!stream.getAudioTracks().length || stream.getVideoTracks().length) {   // never anything but a mic
-        for (const t of stream.getTracks()) t.stop();
-        await call("audio_end", { token }).catch(() => {});
-        return note("No microphone is connected.");
-      }
-      let r;
-      try { r = new MR(stream, { mimeType: MIME }); }
-      catch (e) { for (const t of stream.getTracks()) t.stop(); await call("audio_end", { token }).catch(() => {}); return note("Audio recording is not available: " + errStr(e)); }
-      st.chunks = []; st.stream = stream; st.rec = r; st.t0 = Date.now();
-      r.addEventListener("dataavailable", ev => { if (ev.data && ev.data.size) st.chunks.push(ev.data); });
-      r.start(1000);
-    } finally { st.busy = false; paint(); }
+      st.rec = { t0: Date.now() }; st.t0 = st.rec.t0;
+    } finally { st.busy = false; if (msg) note(msg); paint(); }
   }
   async function stop() {
-    const r = st.rec;
-    if (!r || st.busy) return;
+    if (!st.rec || st.busy) return;
     st.busy = true;
     try {
-      // an already-stopped recorder (a track ended) fired its stop before: do not wait for it; 5 s cap either way
-      const done = r.state === "inactive" ? Promise.resolve() : new Promise(res => { r.addEventListener("stop", res, { once: true }); setTimeout(res, 5000); });
-      try { if (r.state !== "inactive") r.stop(); } catch (_) {}
-      await done;
-      for (const t of st.stream ? st.stream.getTracks() : []) t.stop();
-      st.rec = null; st.stream = null;
-      paint();
       const token = await tokP;
-      // the recording is over: no mic track of this page may outlive it (native mic_off)
-      if (token) await call("audio_end", { token }).catch(() => {});
-      const blob = new Blob(st.chunks, { type: "audio/webm" });
-      st.chunks = [];
-      if (!blob.size) return note("Nothing was recorded: the microphone sent no audio.");
       const g = fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
       const nm = t && !t.kind ? t.name : "";
+      // the recorder webview stops, hands its recording over and is closed (its microphone with it); Rust saves
       let a;
-      try { a = await call("audio_save", { token, note: nm, data: b64Bytes(new Uint8Array(await blob.arrayBuffer())), tm: tmNow() }); }
+      try { a = await call("audio_rec_stop", { token, note: nm, tm: tmNow() }); }
       catch (e) { return note("Recording not saved — " + errStr(e)); }
+      finally { st.rec = null; paint(); }
+      if (!a) return note("Nothing was recorded: the microphone sent no audio.");
       st.saved++; st.last = a.path;
       await refreshTree();
       // stock: the active markdown view gets "\n" + embed + "\n" in place of its selection; otherwise only the file
@@ -9252,11 +9244,11 @@ function canvasFileMenu(e, p) {             // right-click a .canvas row in the 
   m.className = "ctxmenu";
   const { item, sep } = bmMenuItems(m);
   const here = p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "";
-  item("Open in new tab",    () => openCanvas(p));
-  item("Open to the right",  () => openCanvas(p, "split"));
-  item("Open in new window", null, "Single-window app: there is no second window to open into");
+  item(I18N.m("Open in new tab"),    () => openCanvas(p));
+  item(I18N.m("Open to the right"),  () => openCanvas(p, "split"));
+  item(I18N.m("Open in new window"), null, "Single-window app: there is no second window to open into");
   sep();
-  item("Make a copy", () => cvCopy(p));
+  item(I18N.m("Make a copy"), () => cvCopy(p));
   const mv = document.createElement("div");
   mv.textContent = "Move file to...";
   m.appendChild(mv);
@@ -9265,24 +9257,24 @@ function canvasFileMenu(e, p) {             // right-click a .canvas row in the 
     let fl = [];
     try { fl = await inv("list_folders"); } catch (_) { fl = []; }
     m.innerHTML = "";
-    if (here) item("(vault root)", () => cvMoveTo(p, ""));
+    if (here) item(I18N.m("(vault root)"), () => cvMoveTo(p, ""));
     for (const f of fl) if (f !== here) item(f, () => cvMoveTo(p, f));
-    if (!m.children.length) item("(no other folder)", null, "The vault has no other folder");
+    if (!m.children.length) item(I18N.m("(no other folder)"), null, "The vault has no other folder");
     clampMenu(m);                        // re-clamp NOW: updateTitle() below must publish [mg:]/[mgy:] of the PLACED list
     setTimeout(() => { clampMenu(m); updateTitle(); }, 0);   // late layout (fonts/async rows) re-clamps AND re-publishes
     updateTitle();
   };
   item(bmHasPath(p) ? "Remove bookmark" : "Bookmark", () => toggleBmPath(p));   // issue #31 (D3): stock's {type:"file",path} item
   sep();
-  item("Copy path", null, "Missing subsystem: a programmatic clipboard write (clipboard access exists only inside real copy/paste events, ui/editor.js)");
+  item(I18N.m("Copy path"), null, "Missing subsystem: a programmatic clipboard write (clipboard access exists only inside real copy/paste events, ui/editor.js)");
   sep();
-  item("Open version history", null, "Missing subsystem: file history — no revisions are kept");
+  item(I18N.m("Open version history"), null, "Missing subsystem: file history — no revisions are kept");
   sep();
-  item("Open in default app", null, "Missing subsystem: a file-path opener — open_external takes a URL, not a vault path");
-  item("Show in system explorer", null, "Missing subsystem: a file-manager handler");
+  item(I18N.m("Open in default app"), null, "Missing subsystem: a file-path opener — open_external takes a URL, not a vault path");
+  item(I18N.m("Show in system explorer"), null, "Missing subsystem: a file-manager handler");
   sep();
-  item("Rename...", () => { if (!exRenStart("canvas", p)) cvRename(p); });   // issue #101 / CVR-A-085: inline in the row (cv-vault CV-147's prompt only if the row is not painted)
-  item("Delete", () => cvDelete(p));       // cv-vault CV-148
+  item(I18N.m("Rename..."), () => { if (!exRenStart("canvas", p)) cvRename(p); });   // issue #101 / CVR-A-085: inline in the row (cv-vault CV-147's prompt only if the row is not painted)
+  item(I18N.m("Delete"), () => cvDelete(p));       // cv-vault CV-148
   m.dataset.mt = "canvas:" + p.replace(/[|\]]/g, "");
   placeMenu(m, e.clientX, e.clientY);
 }
@@ -9792,7 +9784,7 @@ function canvasTok() {
 const CV_FOLDERMENU_FULL = true;
 function folderMenuFull(item, sep, f) {
   const dir = String(f || "").replace(/^\/+|\/+$/g, "");
-  item("New note", async () => {
+  item(I18N.m("New note"), async () => {
     if (!state) return;
     const g = fg();
     await flushSave(g);
@@ -9804,21 +9796,21 @@ function folderMenuFull(item, sep, f) {
     g.active = g.tabs.length - 1;
     await loadActive(g);
   });
-  item("New folder", () => { $("fnew").hidden = false; $("fname").value = dir ? dir + "/" : ""; $("fname").focus(); });
-  item("New canvas", () => cmdNewCanvas(f));
-  item("New base", null, "Missing subsystem: bases (.base files) are not implemented");
+  item(I18N.m("New folder"), () => { $("fnew").hidden = false; $("fname").value = dir ? dir + "/" : ""; $("fname").focus(); });
+  item(I18N.m("New canvas"), () => cmdNewCanvas(f));
+  item(I18N.m("New base"), null, "Missing subsystem: bases (.base files) are not implemented");
   sep();
-  item("Make a copy", null, "Missing subsystem: no folder copy command in the backend");
-  item("Move folder to...", null, "Missing subsystem: no folder move command in the backend");
-  item("Search in folder", null, "Missing subsystem: the search pane has no path: scope from a menu");
+  item(I18N.m("Make a copy"), null, "Missing subsystem: no folder copy command in the backend");
+  item(I18N.m("Move folder to..."), null, "Missing subsystem: no folder move command in the backend");
+  item(I18N.m("Search in folder"), null, "Missing subsystem: the search pane has no path: scope from a menu");
   sep();
-  item("Bookmark", null, "Bookmarks hold note names (.obsidian/bookmarks.json, R9.4); a folder is not a note");
-  item("Copy path", null, "Missing subsystem: a programmatic clipboard write (clipboard access exists only inside real copy/paste events, ui/editor.js)");
+  item(I18N.m("Bookmark"), null, "Bookmarks hold note names (.obsidian/bookmarks.json, R9.4); a folder is not a note");
+  item(I18N.m("Copy path"), null, "Missing subsystem: a programmatic clipboard write (clipboard access exists only inside real copy/paste events, ui/editor.js)");
   sep();
-  item("Show in system explorer", null, "Missing subsystem: a file-manager handler");
+  item(I18N.m("Show in system explorer"), null, "Missing subsystem: a file-manager handler");
   sep();
-  item("Rename...", null, "Missing subsystem: no folder rename command in the backend");
-  item("Delete", null, "Missing subsystem: no folder delete command in the backend");
+  item(I18N.m("Rename..."), null, "Missing subsystem: no folder rename command in the backend");
+  item(I18N.m("Delete"), null, "Missing subsystem: no folder delete command in the backend");
 }
 function folderMenu(e, f) {                 // right-click an explorer folder row: New canvas in that folder
   if (!CANVAS || !CANVAS.isRegistered()) return;   // no row to offer -> the browser's own (suppressed) menu stays as before
@@ -9829,7 +9821,7 @@ function folderMenu(e, f) {                 // right-click an explorer folder ro
   m.className = "ctxmenu";
   const { item, sep } = bmMenuItems(m);
   if (CV_FOLDERMENU_FULL) folderMenuFull(item, sep, f);
-  else item("New canvas", () => cmdNewCanvas(f));
+  else item(I18N.m("New canvas"), () => cmdNewCanvas(f));
   m.dataset.mt = "folder:" + String(f).replace(/[|\]]/g, "");
   if (PMENU && PMENU.folderMenu) PMENU.folderMenu(m, f);   // plug-val: workspace "file-menu" rows for the TFolder, after a rule
   placeMenu(m, e.clientX, e.clientY);
@@ -9863,6 +9855,12 @@ const edLine = fn => edEdit((v, a, b) => {  // fn(line) -> line | null (= delete
   const l0 = v.lastIndexOf("\n", a - 1) + 1;
   let l1 = v.indexOf("\n", b); if (l1 < 0) l1 = v.length;
   const nl = fn(v.slice(l0, l1));
+  // #152 stock 1.13.7: on the LAST line the line break IN FRONT goes too ('a\nb' -> 'a', never 'a\n');
+  // the caret lands on the line above at min(its column, that line's length) ('x\ny\nlast' 2:2 -> 1:1)
+  if (nl == null && l1 >= v.length && l0 > 0) {
+    const p0 = l0 < 2 ? 0 : v.lastIndexOf("\n", l0 - 2) + 1, c = p0 + Math.min(a - l0, l0 - 1 - p0);
+    return [v.slice(0, l0 - 1), c, c];
+  }
   if (nl == null) { const cut = l1 < v.length ? l1 + 1 : Math.max(0, l0 - 1); return [v.slice(0, l0) + v.slice(l1 + 1), Math.min(l0, cut), Math.min(l0, cut)]; }
   // map a/b by the change on THEIR OWN line (per-line ops keep the line count), so a multi-line
   // heading/quote/task keeps the selection on the same text now that the range survives (#160)
@@ -10975,6 +10973,18 @@ async function undoCloseTab() {
    palette while the Canvas core plugin is off. Until the go, false keeps the row present and refusing (old phase
    canvasui step 5); the follow-up goal flips only this flag. Ribbon + explorer hiding do not depend on it. */
 const CV_PALETTE_HIDE_OFF = true;
+/* #220 item 5: a registry row keeps its English name as `en`; `name` is a GETTER that
+   reads "cmd-<slug(id)>" in the active language (English literal as the fallback), so
+   the palette, Settings > Hotkeys and the fuzzy filter all follow a live language
+   switch with no rebuild. Assigning name rewrites the English source (plugin code
+   may do that). i18n.rs's commands_are_extracted test pins every en message to the
+   literal below. */
+function cmdRow(id, name, def, run, when) {
+  const k = "cmd-" + I18N.slug(id);
+  return { id, en: name, def, run, when,
+    get name() { return I18N.tk(k, this.en); },
+    set name(v) { this.en = v; } };
+}
 const CMDS = [
   ["app:open-settings",        "Open settings",                       ["ctrl+,"],               () => cmdSettings()],
   // R14: the theme switch is a registry entry like any other — no bespoke
@@ -11085,8 +11095,8 @@ const CMDS = [
   ["window:zoom-in",           "Zoom in",                             ["ctrl+="],               () => cmdZoom("in")],
   ["window:zoom-out",          "Zoom out",                            ["ctrl+-"],               () => cmdZoom("out")],
   ["window:reset-zoom",        "Reset zoom",                          ["ctrl+0"],               () => cmdZoom("reset")],
-].map(([id, name, def, run, when]) => ({ id, name, def, run, when }))
- .sort((a, b) => a.name.localeCompare(b.name));
+].map(([id, name, def, run, when]) => cmdRow(id, name, def, run, when))
+ .sort((a, b) => a.en.localeCompare(b.en));   // English order in every language: the registry order is not a translation
 // issue #115: a core plugin's command is not registered while the plugin is off (Hotkeys, app.commands, a bound chord)
 for (const c of CMDS) if (c.id === "daily-notes" || c.id.startsWith("daily-notes:")) c.coreOff = () => !dnOn();
 let hkUser = {};                            // id -> [chords] overrides ([] = removed default)
@@ -13726,7 +13736,7 @@ function setTok() {
   return " [set:" + SMODEL.nav.length + "/" + SMODEL.rows.length + "/" + e + "]" +
          snavlTok() +
          " [spane:" + sPane + "/" + sRowsShown + "/" + sEnabledShown + "]" +
-         svtTok() + ssnTok() + sactTok() + slbTok() + sqfTok() + fontSetTok() +
+         svtTok() + ssnTok() + sactTok() + slbTok() + sqfTok() + fontSetTok() + langTok() +
          (window.__osPluginSettings ? __osPluginSettings.tok() : "") +
          (window.__osSecurity ? __osSecurity.tok() : "") +
          (sfpMs >= 0 ? " [sfp:" + sfpMs + "/" + sfpMax + "/" +
@@ -13776,6 +13786,18 @@ function closeSettings() {
    ui/plugins/settings.js, plugin-loader) — built ONCE from the model, never re-created on a tab
    switch: selection is a class toggle, so clicking a nav entry costs one pane
    build and nothing else. */
+/* #220 item 5: the settings table stays English DATA (settings.rs); what is PAINTED goes
+   through I18N.tk with an id derived from it, the English literal as the fallback:
+     nav entry  snav-<pane id>          nav heading  snavh-<slug>
+     section    ssec-<slug>             row label    set-<tab>-<slug>   (+ "-desc")
+   A label ending in a version number ("Version 0.9.6") drops it from the id and
+   passes it as $v, so a release bump is not a new message. i18n.rs's
+   settings_strings_are_extracted test pins every derived en message to the model. */
+const sRowId = r => "set-" + r.tab + "-" + I18N.slug(String(r.label).replace(/ [0-9][0-9.]*$/, ""));
+const sVerArg = r => { const v = / ([0-9][0-9.]*)$/.exec(String(r.label)); return v ? { v: v[1] } : null; };
+const sLabelT = r => I18N.tk(sRowId(r), r.label, sVerArg(r));
+const sDescT = r => I18N.tk(sRowId(r) + "-desc", r.desc);
+const sSecT = s => I18N.tk("ssec-" + I18N.slug(s), s);
 function buildSettingsNav() {
   const nav = $("snav");
   if (nav.dataset.built === "1") return;
@@ -13784,11 +13806,11 @@ function buildSettingsNav() {
   for (const e of SMODEL.nav) {
     if (e.group !== group) {
       group = e.group;
-      const h = document.createElement("div"); h.className = "snavh"; h.textContent = group;
+      const h = document.createElement("div"); h.className = "snavh"; h.textContent = I18N.tk("snavh-" + I18N.slug(group), group);
       nav.appendChild(h);
     }
     const d = document.createElement("div");
-    d.className = "snavi"; d.textContent = e.entry;
+    d.className = "snavi"; d.textContent = I18N.tk("snav-" + e.id, e.entry);
     d.dataset.pane = e.id; d.tabIndex = 0;
     d.onclick = () => showSettingsPage(e.id);
     d.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); showSettingsPage(e.id); } };
@@ -14106,6 +14128,90 @@ function propsModeCtl() {
   d.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") open(ev); };
   return d;
 }
+/* ---- General ▸ Language (#220). ~/.opensidian.json "language" = "auto" | a locales/ code
+   (main.rs i18n_set). The list is Auto (system) followed by every language in ITS OWN name
+   (English, 中文, 한국어, Русский, Español, 日本語 — never translated, so a user who cannot
+   read the current language still finds theirs), the active entry accented with a trailing
+   ✓ like the issue's mock-up. Same app .ctxmenu as the other live dropdowns, so the census
+   publishes the list and a phase can click it. The pick switches LIVE: I18N.set swaps the
+   bundle and fires onChange, whose subscriber below rebuilds the open settings modal. */
+const langCtlLabel = () => {
+  const s = window.I18N ? I18N.setting() : "auto";
+  if (s === "auto" || !window.I18N) return window.I18N ? I18N.t("language-auto") : "Auto (system)";
+  const l = I18N.langs().find(x => x[0] === s);
+  return l ? l[1] : s;
+};
+function langCtl() {
+  const d = document.createElement("div");
+  d.className = "sctl dropdown live";
+  d.id = "slang";
+  d.tabIndex = 0;
+  d.setAttribute("role", "button");
+  d.setAttribute("aria-haspopup", "menu");
+  d.textContent = langCtlLabel();
+  const open = ev => { ev.preventDefault(); ev.stopPropagation(); openLangMenu(d); };
+  d.onmousedown = ev => ev.stopPropagation();
+  d.onclick = open;
+  d.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") open(ev); };
+  return d;
+}
+function openLangMenu(anchor) {
+  closeMenu();
+  if (!window.I18N) return;
+  const m = document.createElement("div");
+  m.className = "ctxmenu"; m.dataset.menu = "language";
+  const cur = I18N.setting();
+  const items = [["auto", I18N.t("language-auto")]].concat(I18N.langs());
+  for (const [code, name] of items) {
+    const it = document.createElement("div");
+    it.dataset.lang = code;
+    it.textContent = name;
+    if (code === cur) {                           // an svg check, not a ✓ glyph: the ghicons census counts U+2713 as an emoji icon
+      it.className = "langon";
+      const k = document.createElement("span"); k.className = "langchk"; k.innerHTML = GI_SVG('<path d="M3.5 8.5l3 3 6-7"/>');
+      it.appendChild(k);
+    }
+    if (code !== "auto") it.lang = code;          // the right CJK glyphs for each name, whatever the page language
+    it.onmousedown = ev => ev.stopPropagation();
+    it.onclick = async ev => {
+      ev.stopPropagation(); closeMenu();
+      try { await I18N.set(code); } catch (err) { say("Language: " + String(err && err.message || err)); return; }
+      const c = document.getElementById("slang");
+      if (c) c.textContent = langCtlLabel();
+      updateTitle();
+    };
+    m.appendChild(it);
+  }
+  const b = anchor.getBoundingClientRect();
+  placeMenu(m, Math.round(b.left), Math.round(b.bottom + 4));
+}
+/* [lang:<setting>/<active>] — the Language setting and the language the UI renders in;
+   [slangxy:<cx>,<cy>] the General > Language control's measured centre (a phase clicks it
+   in any UI language, no OCR); while the language list is open, [langchk:<code>] = the
+   row that carries the check mark (read off the DOM: the row holding .langchk) */
+function langTok() {
+  if (!window.I18N) return "";
+  const c = document.getElementById("slang");
+  let s = " [lang:" + I18N.setting() + "/" + I18N.lang() + "]";
+  if (c && c.isConnected) {
+    const b = c.getBoundingClientRect();
+    s += " [slangxy:" + Math.round(b.left + b.width / 2) + "," + Math.round(b.top + b.height / 2) + "]";
+  }
+  if (menuEl && menuEl.dataset.menu === "language") {
+    const k = menuEl.querySelector(".langchk");
+    const row = k && k.closest("[data-lang]");
+    s += " [langchk:" + (row ? row.dataset.lang : "-") + "]";
+  }
+  return s;
+}
+/* live switch: the settings modal is built once per open, so a language change rebuilds its
+   nav and the pane on screen (the menus, the palette and other modals build on open) */
+if (window.I18N) I18N.onChange(() => {
+  const nav = $("snav");
+  if (nav) nav.dataset.built = "0";
+  if (settingsOpen && SMODEL) { buildSettingsNav(); showSettingsPage(sPane); }
+  updateTitle();
+});
 function themeCtl() {
   const d = document.createElement("div");
   d.className = "sctl dropdown live";
@@ -14188,6 +14294,7 @@ function sctl(r) {                            // the control cell for one row, o
   if (r.key === "enabledCssSnippets") return snipCtl();   // themefs R3, same live-control rule
   if (r.key === "strictLineBreaks") return slbCtl();      // goal/linebreak REQ-1: Obsidian's Editor toggle
   if (r.key === "propertiesInDocument") return propsModeCtl();   // #119: Obsidian's Editor dropdown, app.json propertiesInDocument
+  if (r.key === "language") return langCtl();             // #220: General > Language, live switch (ui/i18n.js)
   if (FONT_BY_KEY[r.key]) {                               // fontset REQ-1/2: chevron + live row value
     const d = document.createElement("div"); d.className = "sctl nav live";
     const v = fontRowValue(FONT_BY_KEY[r.key][0]);
@@ -14283,20 +14390,20 @@ function buildSettingsRows(pg, rows, pane) {
     const sec = r.section || "";
     if (sec !== section) {                    // a new section = its own heading + card, like Obsidian
       section = sec;
-      if (sec) { const h = document.createElement("div"); h.className = "ssec"; h.textContent = sec; pg.appendChild(h); }
+      if (sec) { const h = document.createElement("div"); h.className = "ssec"; h.textContent = sSecT(sec); pg.appendChild(h); }
       card = document.createElement("div"); card.className = "scard"; pg.appendChild(card);
     }
     const row = document.createElement("div");
     row.className = "srow" + (r.enabled ? "" : " dis");
     if (!r.enabled) { row.setAttribute("aria-disabled", "true"); row.title = SDIS_TITLE; }
     const info = document.createElement("div"); info.className = "sinfo";
-    const lb = document.createElement("div"); lb.className = "slabel"; lb.textContent = r.label;
+    const lb = document.createElement("div"); lb.className = "slabel"; lb.textContent = sLabelT(r);
     const link = r.desc === "(external link row)";   // Obsidian's bare link line, no description
     if (link) { lb.classList.add("slink"); row.classList.add("linkrow"); }
     info.appendChild(lb);
     if (!link && r.desc && r.desc !== "-") {
       const ds = document.createElement("div"); ds.className = "sdesc";
-      r.desc.split(" | ").forEach((p, i) => {   // " | " marks Obsidian's inline link tail
+      sDescT(r).split(" | ").forEach((p, i) => {   // " | " marks Obsidian's inline link tail (kept in every translation)
         const s = document.createElement("span");
         if (i) s.className = "slink";
         s.textContent = (i ? " " : "") + p;

@@ -1160,7 +1160,7 @@ THE SOFTWARE.
 
 ### MathJax 3.2.2
 
-**Used in:** `ui/vendor/mathjax/` (`tex-chtml-full.js` and its CHTML woff fonts; `loadMathJax`, `renderMath`)
+**Used in:** `ui/vendor/mathjax/` (`tex-chtml-full.js` and its CHTML woff fonts; `loadMathJax`, `renderMath`; the app's math rendering `ui/mathview.js`)
 **Upstream:** https://www.mathjax.org (npm `mathjax@3.2.2`)
 **Licence:** Apache-2.0, full text shipped beside the files as `ui/vendor/mathjax/LICENSE`.
 Apache-2.0 is compatible with GPL-3.0 (not with GPL-2.0, see the summary at the top).
@@ -1172,6 +1172,25 @@ The vendored files include no NOTICE file.
 **Upstream:** https://mozilla.github.io/pdf.js (npm `pdfjs-dist@6.3.289`)
 **Licence:** Apache-2.0, full text shipped beside the files as `ui/vendor/pdfjs/LICENSE`.
 Apache-2.0 is compatible with GPL-3.0. The vendored files include no NOTICE file.
+
+## Project Fluent (UI translation engine, issue #220)
+
+### @fluent/bundle 0.19.1 (vendored JS)
+
+**Used in:** `ui/vendor/fluent/fluent-bundle.js` (window.FluentBundle; ui/i18n.js formats
+`locales/<lang>/main.ftl` with it). Unmodified upstream bytes; version, publish date,
+npm integrity and sha256 in `ui/vendor/fluent/VENDOR.md` / `SHA256SUMS`.
+**Upstream:** https://github.com/projectfluent/fluent.js (npm `@fluent/bundle@0.19.1`)
+**Licence:** Apache-2.0 — full text in `ui/vendor/fluent/LICENSE`. GPL-3.0 compatible
+(Apache-2.0 is one-way compatible with GPLv3).
+
+### fluent-bundle 0.16.0 and its crates (Rust)
+
+**Used in:** `src-tauri/src/i18n.rs` (native dialog text from the same .ftl files).
+fluent-bundle, fluent-syntax, fluent-langneg, intl-memoizer, type-map:
+Apache-2.0 OR MIT; intl_pluralrules, unic-langid, unic-langid-impl: Apache-2.0 OR MIT;
+self_cell: Apache-2.0 OR GPL-2.0-only (used under Apache-2.0). Exact versions and
+checksums in `src-tauri/Cargo.lock`.
 
 ## Lucide icons (glyph geometry)
 

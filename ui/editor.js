@@ -1126,11 +1126,15 @@ const Ed = {
     };
   },
   // the prefix a NEW item after this one carries: same indent + quote, the
-  // ordered number stepped (M4), a task always UNCHECKED (M8)
+  // ordered number stepped (M4), a task always UNCHECKED (M8). #154: BOTH at
+  // once for an ordered task ("1. [x] a" -> "2. [ ] ", stock 1.13.7) — the
+  // task branch used to win and repeat the number.
+  // the marker minus its "N. " head, by the digits actually typed: "01. [ ] "
+  // must not slice by String(1).length and keep a stray space (codeant #235)
+  mkTail(it) { return it.mk.replace(/^\d+\. /, ""); },
   contOf(it) {
-    const mk = it.task ? it.mk.replace(/\[[xX]\]/, "[ ]")
-      : it.num !== null ? (it.num + 1) + ". " + it.mk.slice(String(it.num).length + 2)
-        : it.mk;
+    let mk = it.num !== null ? (it.num + 1) + ". " + Ed.mkTail(it) : it.mk;
+    if (it.task) mk = mk.replace(/\[[xX]\]/, "[ ]");
     return it.ind + it.qt + mk;
   },
   // M24: Enter on an item's CONTINUATION line starts a new item of the item
@@ -1152,7 +1156,7 @@ const Ed = {
     for (let l = from; l < L.length; l++) {
       const it = Ed.info(L[l]);
       if (it.num !== null && it.ind + it.qt === pre) {
-        L[l] = pre + next + ". " + it.mk.slice(String(it.num).length + 2) + L[l].slice(it.pre.length);
+        L[l] = pre + next + ". " + Ed.mkTail(it) + L[l].slice(it.pre.length);
         next++;
       } else if (it.ind.length > ref.ind.length) continue;  // nested / continuation
       else break;
@@ -1283,19 +1287,48 @@ const Ed = {
      paragraph gains a whole "- [ ] ". The caret keeps its offset in the TEXT,
      so it shifts by exactly the bytes inserted before it. */
   toggleCheck(g, s) {
+    if (s.a.l !== s.b.l) return Ed.toggleCheckLines(g, s);   // #155
     const L = Ed.lines(g), l = s.b.l, line = L[l];
     if (line === undefined) return;
     const it = Ed.info(line);
     Ed.snap(g, "task");
     let dc = 0;
-    if (it.task) L[l] = Ed.flipTask(line);
+    // #153: ANY status char is a task ("- [/] a", "- [-] a", "- [>] a"): stock 1.13.7
+    // resets it to "[ ]" in place (Ed.flipTask), it never wraps a second "[ ] " in front.
+    // Ed.info only knows " xX", so the gate is the task shape itself: "[?]" + space or EOL
+    // (a bullet that starts with a link, "- [a](u)", stays a bullet).
+    if (it.task || Ed.taskRe.test(line)) L[l] = Ed.flipTask(line);
     else if (it.mk) { L[l] = it.pre + "[ ] " + line.slice(it.pre.length); dc = 4; }
     else { L[l] = it.ind + it.qt + "- [ ] " + line.slice(it.pre.length); dc = 6; }
     Ed.after(g, l, s.b.c >= it.pre.length ? s.b.c + dc : s.b.c);
   },
+  /* #155: Ctrl+L over a SELECTION that spans lines acts on EVERY line it touches
+     (stock 1.13.7: "alpha\nbravo\ncharlie" all selected -> each line "- [ ] ").
+     Each line gets the single-line rule on its own (task flips, list item gains
+     "[ ] ", paragraph gains "- [ ] "); blank lines are left alone (UNMEASURED,
+     same call as listToggle [Q7]). ONE undo step; the selection keeps its text. */
+  toggleCheckLines(g, s) {
+    const L = Ed.lines(g), first = s.a.l, last = Math.min(s.b.l, L.length - 1);
+    const ch = [], dc = [];                              // ch = [line, new text]; dc[l] = [col, bytes inserted there]
+    for (let l = first; l <= last; l++) {
+      const line = L[l];
+      if (line === undefined || !String(line).trim()) continue;
+      const it = Ed.info(line);
+      if (it.task) { const f = Ed.flipTask(line); if (f !== null) ch.push([l, f]); dc[l] = [it.pre.length, 0]; }
+      else if (it.mk) { ch.push([l, it.pre + "[ ] " + line.slice(it.pre.length)]); dc[l] = [it.pre.length, 4]; }
+      else { ch.push([l, it.ind + it.qt + "- [ ] " + line.slice(it.pre.length)]); dc[l] = [it.pre.length, 6]; }
+    }
+    if (!dc.some(Boolean)) return;
+    Ed.snap(g, "task");                                  // ONE undo step
+    for (const [l, v] of ch) L[l] = v;                  // in place: no spread of the whole note into splice (arg limit on huge notes)
+    const map = p => { const t = dc[p.l]; return t && p.c >= t[0] ? { l: p.l, c: p.c + t[1] } : p; };
+    const a = map(s.a), b = map(s.b);
+    Ed.after(g, a.l, a.c);
+    Ed.extendTo(g, b.l, b.c);
+  },
   /* listtoggle R1-R5: "Toggle bullet list" / "Toggle numbered list" over a
      SELECTION (Obsidian 1.13.7 measured, docs/recon-listtoggle/README.md; spec
-     §4 frozen). Unlike toggleCheck this acts on EVERY line the selection
+     §4 frozen). Like toggleCheck over a selection (#155) this acts on EVERY line the selection
      touches — a selection ending at column 0 of line N still includes N [Q10].
      Ed.listToggle is PURE (lines + selection in -> lines + selection out, or
      null for a no-op) so the unit table (src-tauri/tests/listtoggle.{tsv,rs}, cargo test) can run
@@ -1385,6 +1418,7 @@ const Ed = {
     Ed.after(g, r.a.l, r.a.c);
     if (r.a.l !== r.b.l || r.a.c !== r.b.c) Ed.extendTo(g, r.b.l, r.b.c);
   },
+  taskRe: /^[ \t]*(?:> ?)*(?:[-*+]|\d+[.)])[ \t]+\[[^\]\n]\](?: |$)/,   // #153 a task item, any status char
   /* rvtask R3 — THE task-status byte op, shared by Ctrl+L (toggleCheck) and the
      reading-view click. Obsidian 1.13.7 (docs/recon-rvtask Q1/Q2): the status char
      of the item's "[?]" flips ' ' -> 'x' and ANYTHING else (x X / - > ?) -> ' '.
@@ -1567,6 +1601,8 @@ const Ed = {
       ["1. one\n2. two\n3. three", 0, 6, 0, "1. one\n2. \n3. two\n4. three", 1, 3],     // M4 renumber
       ["1. one\n2. two", 1, 4, 0, "1. one\n2. t\n3. wo", 2, 3],                          // M6
       ["- [x] done", 0, 10, 0, "- [x] done\n- [ ] ", 1, 6],                              // M8 always unchecked
+      ["1. [ ] a\n2. [ ] b", 0, 8, 0, "1. [ ] a\n2. [ ] \n3. [ ] b", 1, 7],          // #154 ordered task counts up
+      ["01. [ ] a\n02. [ ] b", 0, 9, 0, "01. [ ] a\n2. [ ] \n3. [ ] b", 1, 7],        // #154 leading zero: no stray space
       ["- a\n  - b", 1, 5, 0, "- a\n  - b\n  - ", 2, 4],                                 // M11 indent verbatim
       ["1. a\n\t1. b\n2. c", 1, 5, 0, "1. a\n\t1. b\n\t2. \n2. c", 2, 4],                // M12 nested run
       ["- a\n\t- ", 1, 3, 0, "- a\n- ", 1, 2],                                           // M13 empty nested -> outdent
@@ -1634,6 +1670,8 @@ const Ed = {
         ["para", 0, 4, "ctrl-l", "- [ ] para", 0, 10],                                   // M49
         ["- a\n\t- b", 1, 5, "ctrl-l", "- a\n\t- [ ] b", 1, 8],                          // M50
         ["1. a", 0, 4, "ctrl-l", "1. [ ] a", 0, 8],                                      // M51 ordered marker kept
+        ["- [/] doing", 0, 11, "ctrl-l", "- [ ] doing", 0, 11],                          // #153 custom status resets
+        ["- [>] a", 0, 7, "ctrl-l", "- [ ] a", 0, 7],                                    // #153
       ];
       for (const [src, l, c, op, want, wl, wc] of kc) {
         const eg = { view: { lines: src.split("\n") }, editor: {} };
@@ -3024,7 +3062,8 @@ Ed.lpExt = function (v, G) {
     return [tr, { selection: CMs.EditorSelection.cursor(ln.from + m[0].length), sequential: true }];
   });
   return [plugin, clicks, vkeys, taskSnap, pointerSnap, Ed.cbField(v, G, bust), Ed.coField(v, G, bust), Ed.tblField(v, G, bust),
-          Ed.propsField ? Ed.propsField(v, G, bust) : []];   // #119: the Properties block (ui/props.js)
+          Ed.propsField ? Ed.propsField(v, G, bust) : [],   // #119: the Properties block (ui/props.js)
+          Ed.mathField ? Ed.mathField(v, G, bust) : []];   // #185: $..$ / $$..$$ typeset (ui/mathview.js)
 };
 /* ---------- plugin CODE BLOCKS in Live Preview (plug-top5) ----------
    A fenced block whose language a plugin registered a code-block processor for

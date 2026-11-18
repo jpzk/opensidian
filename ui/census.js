@@ -82,3 +82,4 @@ CENSUS.push(() => audvTok());   // issue #140: [audv:<path>|<loading|ready|error
 var CSPV = { n: 0, d: "-" };
 window.addEventListener("securitypolicyviolation", e => { CSPV.n++; CSPV.d = String(e.effectiveDirective || e.violatedDirective || "?").replace(/[[\]|@\s]/g, "_"); }, true);
 CENSUS.push(() => " [csp:" + CSPV.n + "|" + CSPV.d + "]");
+CENSUS.push(() => window.MathView ? MathView.tok() : "");   // #185 math: [mth:<rv|ed>|M<0/1 MathJax loaded>|i<inline>/b<block>/l<typeset>|d<first block display>] [mthxss:] [mthrc:] the focused pane's math (ui/mathview.js) — gate phase mathjax
