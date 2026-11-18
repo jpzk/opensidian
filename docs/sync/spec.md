@@ -334,6 +334,35 @@ Limits (server defaults, configurable): object ≤ 16 MiB, control body
 ≤ 64 KiB, header parse only on the pre-auth path, per-token and per-IP
 rate limits, list `wait` ≤ 60 s.
 
+### 5.1 Client transports (M3c, `sync_core::transport`)
+
+One `Transport` trait mirrors the calls above; the engine never branches on
+the backend. Errors are the same `ErrorCode`s on every backend.
+
+- **HTTP(S)** (`HttpTransport`): blocking HTTP/1.1 over std `TcpStream`,
+  one request per connection. `https://` = TLS 1.3 on the AWS-LC FIPS
+  rustls provider, refused unless `ClientConfig::fips()`; roots = explicit
+  PEM (self-hosted CA) or the OS bundle (`$SSL_CERT_FILE`, distro paths).
+  `http://` only to `localhost`/loopback IPs; URLs with userinfo, query,
+  fragment or dot segments are refused. Responses are bounded (header
+  16 KiB, body 16 MiB + 64 KiB); chunked encoding is refused (the server
+  always sends `Content-Length`). Tokens live in the transport, Debug is
+  redacted, a missing token fails before any network I/O.
+- **Destroy helper**: `destroy_vault` = request → sign `destroy_payload`
+  with K_destroy → confirm → `verify_receipt`: `server_key` must equal the
+  key pinned at enrollment, the signature must verify, and the body must
+  name the same ns, nonce and ts.
+- **Dir replica** (`FsTransport`): `<root>/osy-replica-v1` marker (a
+  non-empty folder without it is refused); `<ns>/<kind>/<id>` objects
+  staged + fsynced + hard-linked (link fails on an existing name →
+  write-once even against a racing writer); tombstones in `<ns>/del/`
+  (410, id never reusable, readable as `deleted`); `obj`/`cfg` appended
+  to `<ns>/log` (25-byte records, seq = record index + 1) under an
+  exclusive per-namespace file lock, a torn tail is ignored and trimmed on
+  the next append. Pair objects are purged on delete. Not offered:
+  enrollment, tokens, destroy (a folder cannot attest a purge), retention
+  GC. Long-poll = 50 ms polling of the log.
+
 ## 6. Client-side history store (M1, local only)
 
 Not on the wire; documented here because M1 implements it:

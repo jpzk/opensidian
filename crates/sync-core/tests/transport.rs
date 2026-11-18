@@ -441,6 +441,8 @@ fn fs_concurrent_writers_get_unique_seqs() {
     let a = FsTransport::open(&root).unwrap();
     let b = FsTransport::open(&root).unwrap();
     let ns = id(0x10);
+    let same = id(0x99);
+    let c = container(same, 16, 9);
     std::thread::scope(|s| {
         for (w, t) in [(0u8, &a), (1u8, &b)] {
             s.spawn(move || {
@@ -453,8 +455,6 @@ fn fs_concurrent_writers_get_unique_seqs() {
             });
         }
         // both racing on the same id: exactly one Created
-        let same = id(0x99);
-        let c = container(same, 16, 9);
         let r = [s.spawn(|| a.put(ObjKind::Obj, &ns, &same, &c)), s.spawn(|| b.put(ObjKind::Obj, &ns, &same, &c))]
             .map(|h| h.join().unwrap().unwrap());
         assert_eq!(r.iter().filter(|o| **o == PutOutcome::Created).count(), 1, "{r:?}");
