@@ -11,7 +11,8 @@
 #   uses     GitHub `uses:` not pinned to a 40-hex commit sha (local ./ actions excepted)
 #   image    `image:`/`container:`/FROM/podman|docker pull|run without @sha256:<64 hex>
 #            ($VAR images resolve through VAR= assignments in the same file; oci:/oci-archive:
-#            sources count only when the file also runs `sha256sum -c`)
+#            sources count only when the file also runs `sha256sum -c` AND, after the load, checks
+#            `podman|docker image exists|inspect <ref>` with a digest-pinned ref)
 #   apt      apt-get/apt install of a package without =version
 #   dnf      dnf/yum install of a package without -<version>
 #   cargo    cargo install without --locked AND --version (or name@version)
@@ -84,10 +85,28 @@ var_pinned() {
   done <<< "$v"
   [ $ok = 1 ]
 }
+oci_pinned() {  # file -> 0 if its oci:/archive image load is content-checked
+  # The archive sha256 alone does not cover what is loaded: the extracted dir (or another path) can
+  # differ from the checked file. So BOTH: a `sha256sum -c` in the file AND, on a line after the
+  # first oci:/archive load, `podman|docker image exists|inspect <ref>` whose ref is digest-pinned
+  # (literal @sha256:<64 hex> or through VAR= assignments): the loaded image must carry the digest.
+  local f=$1 n r refs
+  grep -q 'sha256sum -c' "$f" || return 1
+  n=$(grep -nE '(^|[^a-z])(oci|oci-archive|docker-archive):' "$f" | grep -E '(podman|docker)' | head -1 | cut -d: -f1)
+  [ -n "$n" ] || return 1
+  refs=$(tail -n +"$((n+1))" "$f" | grep -oE '(podman|docker)[[:space:]]+image[[:space:]]+(exists|inspect)[[:space:]]+[^[:space:];|&)]+' | awk '{print $4}')
+  while IFS= read -r r; do
+    r=${r//\"/}; r=${r//\'/}
+    [ -n "$r" ] || continue
+    printf '%s' "$r" | grep -Eq '(oci|oci-archive|docker-archive):' && continue
+    img_pinned "$f" "$r" && return 0
+  done <<< "$refs"
+  return 1
+}
 img_pinned() {  # file ref-text -> 0 if pinned
   local f=$1 s=$2 vars x
   printf '%s' "$s" | grep -Eq '@sha256:[0-9a-f]{64}' && return 0
-  if printf '%s' "$s" | grep -Eq '(^|[^a-z])(oci|oci-archive|docker-archive):'; then grep -q 'sha256sum -c' "$f" && return 0; return 1; fi
+  if printf '%s' "$s" | grep -Eq '(^|[^a-z])(oci|oci-archive|docker-archive):'; then oci_pinned "$f"; return; fi
   vars=$(printf '%s' "$s" | grep -oE '\$\{?[A-Za-z_][A-Za-z0-9_]*' | tr -d '${' | sort -u)
   [ -n "$vars" ] || return 1
   for x in $vars; do var_pinned "$f" "$x" && return 0; done

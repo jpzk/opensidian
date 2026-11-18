@@ -42,7 +42,8 @@ mut "image digest -> tag"  .github/workflows/w.yml 's#debian@sha256:[0-9a-f]{64}
 mut "IMG var digest"       packaging/build.sh 's#^DIGEST=.*#DIGEST=trixie#' image
 mut "TOOLS var version"    packaging/build.sh 's#lintian=2.122.0#lintian#' apt
 mut "dnf drop version"     packaging/build.sh 's#rpm-build-6.0.1-2.fc44#rpm-build#' dnf
-mut "FROM digest -> tag"   Containerfile 's#debian@sha256:[0-9a-f]{64}#debian:trixie#' image
+mut "oci drop digest check" packaging/build.sh 's#^podman image exists "\$IMG" \|\| exit 1$#true#' image
+mut "FROM digest -> tag"  Containerfile 's#debian@sha256:[0-9a-f]{64}#debian:trixie#' image
 mut "pip drop hashes"      .github/workflows/w.yml 's# --require-hashes##' pkgmgr
 mut "allowlist expired"    supply-chain/pin-allow.tsv 's#2027-05-17#2026-11-16#' allow
 echo "pin-check.test: $n fixtures"
