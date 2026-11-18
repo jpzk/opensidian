@@ -349,6 +349,11 @@ let rTab = "bl", rT = null, rpInfo = "";   // rpInfo -> census [rp:...]
    the difference, and it is monotone, so a probe compares it across an action
    instead of trusting a snapshot. */
 let rbN = 0;
+/* issue #176: a render generation per pane. rBacklinks / rOutgoing clear their box, AWAIT, then append —
+   two calls in flight (fast note switches) both appended, so the pane showed two "Unlinked mentions"
+   headers or the previous note's rows. A call that is no longer the latest drops its result after
+   every await (stock 1.13.7 always shows one set, for the active note). */
+let blGen = 0, outGen = 0;
 async function setRTab(t, persist = true) {
   if (!RPANES[t]) t = "bl";
   rTab = t;
@@ -389,13 +394,14 @@ async function rPanesRefresh() {
 // Backlinks: "Linked mentions N" + one expandable row per linking note; the
 // matching lines show with the [[link]] highlighted; click opens the note
 async function rBacklinks(n) {
-  rbN++;                                  // [rpn:] — counted at ENTRY: the bug is calling it at all
+  rbN++; const gen = ++blGen;            // [rpn:] — counted at ENTRY: the bug is calling it at all
   const box = $("bllist"), head = $("blhead");
   box.textContent = ""; head.textContent = "";
   // cv-vault CV-141: + the canvases whose file cards point at this note (fetched alongside, one await)
   // cvf-links CVR-A-097: a CANVAS (n = its .canvas path) is backlinked by the notes linking / embedding it
   const isCv = !!n && /\.canvas$/i.test(n);
   const [bl, cvb] = !n ? [[], []] : isCv ? [await cvCanvasBacklinks(n), []] : await Promise.all([inv("backlinks_ctx", { name: n }), cvBacklinks(n)]);
+  if (gen !== blGen) return;              // issue #176: a newer render owns the pane
   head.textContent = "Linked mentions"; rpInfo = "bl:" + (bl.length + cvb.length);
   const c = document.createElement("span");
   c.className = "scount"; c.textContent = bl.length + cvb.length; head.appendChild(c);
@@ -434,6 +440,7 @@ async function rBacklinks(n) {
   // a Link button that wraps it in [[ ]] on disk (the hit then migrates up
   // to Linked mentions on the pane's next refresh)
   const ul = n ? await inv("unlinked_mentions", { name: n }).catch(() => []) : [];
+  if (gen !== blGen) return;              // issue #176
   rpInfo = "bl:" + bl.length + "|ul:" + ul.length;
   if (!n) return;
   const uh = document.createElement("div");
@@ -455,11 +462,13 @@ async function rBacklinks(n) {
     row.title = "line " + (m.line + 1);
     const d = document.createElement("div");
     d.className = "blline"; d.dataset.ol = "ul:" + m.note;
-    const t = m.text, i = t.toLowerCase().indexOf(n.split("/").pop().toLowerCase());
-    if (i >= 0) {
+    // issue #178: mark THIS row's occurrence (m.mcol/m.mlen, UTF-16 inside m.text), like stock 1.13.7 —
+    // an indexOf of the name always marked the first one on the line (a [[link]] or another hit)
+    const t = m.text, i = m.mcol == null ? -1 : m.mcol, w = m.mlen || 0;
+    if (i >= 0 && i < t.length && w > 0) {
       d.appendChild(document.createTextNode(t.slice(0, i)));
-      const mk = document.createElement("mark"); mk.textContent = t.slice(i, i + m.len); d.appendChild(mk);
-      d.appendChild(document.createTextNode(t.slice(i + m.len)));
+      const mk = document.createElement("mark"); mk.textContent = t.slice(i, i + w); d.appendChild(mk);
+      d.appendChild(document.createTextNode(t.slice(i + w)));
     } else d.textContent = t;
     sideRow(d, m.note);
     sideRow(row, m.note);
@@ -565,9 +574,10 @@ function sideRow(el, name, create) {
 }
 // Outgoing links: resolved rows navigate, unresolved rows are greyed
 async function rOutgoing(n) {
-  const box = $("outlist"), head = $("outhead");
+  const box = $("outlist"), head = $("outhead"), gen = ++outGen;
   box.textContent = ""; head.textContent = "";
   const out = n ? await inv("outgoing", { name: n }) : [];
+  if (gen !== outGen) return;             // issue #176: a newer render owns the pane
   head.textContent = "Links"; rpInfo = "out:" + out.filter(o => o.target).length + "/" + out.filter(o => !o.target).length;
   const c = document.createElement("span");
   c.className = "scount"; c.textContent = out.length; head.appendChild(c);
@@ -930,7 +940,9 @@ function scShift(g, from, to, ins) {
   const v = scView(g);
   if (!v || !(v.scHl && v.scHl.length)) return;
   const d = ins - (to - from);
-  const map = (p, start) => (p <= from ? p : p >= to ? p + d : start ? from : from + ins);
+  // issue #174: both ends are NON-inclusive, as stock 1.13.7 maps its flash: a pure insert AT the start
+  // pushes the start along (text typed right before the match stays outside), one at the end stays outside
+  const map = (p, start) => (p < from || (p === from && (!start || from < to)) ? p : p >= to ? p + d : start ? from : from + ins);
   v.scHl = v.scHl.map(h => {
     const a = map(h.off, true), b = map(h.off + h.len, false);
     return { off: a, len: Math.max(0, b - a) };
@@ -1091,8 +1103,12 @@ async function scOpen(g, note, ev) {
   const newTab = !!(ev && (ev.ctrlKey || ev.metaKey || ev.button === 1)) && !(ev && ev.altKey);
   if (newTab) {
     await flushSave(g);
-    g.tabs.push(mkTab(note));
-    g.active = g.tabs.length - 1;
+    // #173: the new tab goes DIRECTLY RIGHT of the active one (openNewTab's contract), not at the far end — stock
+    // 1.13.7: cfA,cfB*,cfC,cfD + Ctrl/middle-click a cfC match -> cfA,cfB,cfC*,cfC,cfD. An insert without splice:
+    // the tabclose census (main.rs tabclose_every_removal_path_names_a_cause) counts every g.tabs splice as a removal.
+    const at = g.active >= 0 ? g.active + 1 : g.tabs.length, nt = mkTab(note);
+    g.tabs.push(nt); g.tabs.copyWithin(at + 1, at); g.tabs[at] = nt;
+    g.active = at;
     await loadActive(g);
     return;
   }
@@ -1534,6 +1550,7 @@ function tywGhost(g, R) {
 }
 function tywMeasure(rd, R) {
   const ctx = (tywCanvas = tywCanvas || document.createElement("canvas")).getContext("2d");
+  if (!ctx) return "";   // #144 toggle 6: HTML canvas off (census only)
   const fnt = el => { const s = getComputedStyle(el); return s.fontStyle + " " + s.fontWeight + " " + s.fontSize + " " + s.fontFamily; };
   const met = (el, ch) => { ctx.font = fnt(el); return ctx.measureText(ch); };
   const find = s => { const w = document.createTreeWalker(R, NodeFilter.SHOW_TEXT);
@@ -1606,6 +1623,7 @@ function ttlTok() {
   const s = getComputedStyle(R, "::before");
   if (s.content === "none" || s.display === "none") return "";
   const ctx = (ttlCanvas = ttlCanvas || document.createElement("canvas")).getContext("2d");
+  if (!ctx) return "";   // #144 toggle 6: HTML canvas off (census only)
   const fnt = c => c.fontStyle + " " + c.fontWeight + " " + c.fontSize + " " + c.fontFamily;
   const f = v => Number.isFinite(v) ? String(Math.round(v * 100) / 100) : "-";
   const rr = R.getBoundingClientRect(), rs = getComputedStyle(R);
@@ -3396,7 +3414,15 @@ async function wsApply(doc, names) {
   const have = new Set(names);
   let root = null;
   try { root = wsNodeIn(doc.main, have); } catch (e) { root = null; }
-  if (!root) { wsSide0 = { left: sidePane, right: rTab }; return false; }
+  if (!root) {
+    // #158: no main leaf survived (every tab closed = stock's one "empty" leaf) — the SIDEBARS are still the
+    // file's: stock 1.13.7 restores a collapsed left sidebar collapsed and its next write keeps "collapsed": true.
+    // Returning before wsSidesIn left them at their defaults, and wsSideKeep then erased the saved collapse.
+    try { wsSidesIn(doc); } catch (e) { /* a sidebar is not worth the layout */ }
+    wsSide0 = { left: sidePane, right: rTab };
+    wsSideIdsIn(doc);
+    return false;
+  }
   if (!root.children) root = { dir: "row", children: [root], fractions: [1] };
   state.root = root;
   state.focused = null;
@@ -3423,7 +3449,11 @@ async function wsApply(doc, names) {
   if (Array.isArray(doc.lastOpenFiles)) {
     mruList = doc.lastOpenFiles.map(wsPathIn).filter(n => typeof n === "string" && have.has(n)).slice(0, 20);
   }
-  // the ids the file used are the ids the next save writes (R28.4)
+  wsSideIdsIn(doc);
+  updateTitle();
+  return true;
+}
+function wsSideIdsIn(doc) {           // the sidebar ids the file used are the ids the next save writes (R28.4)
   for (const k of ["left", "right"]) {
     const s = doc[k];
     if (!s || typeof s.id !== "string") continue;
@@ -3433,8 +3463,6 @@ async function wsApply(doc, names) {
     const leaf = tabs && tabs.children && tabs.children[0];
     if (leaf && typeof leaf.id === "string") wsIds[k + "leaf"] = leaf.id;
   }
-  updateTitle();
-  return true;
 }
 const WS_VIEW_L_IN = { "file-explorer": "files", search: "search", bookmarks: "bm" };
 const WS_VIEW_R_IN = { backlink: "bl", "outgoing-link": "out", tag: "tags", outline: "toc" };
@@ -4060,7 +4088,9 @@ function utLite() {
   const H = window.__osPluginHost;
   if (H && H.censusTick) { try { H.censusTick(); } catch (e) { console.error("[plugin] tick:", e); } }
   const g = fg(), tb = g && g.active >= 0 ? g.tabs[g.active] : null;
-  const nm = tb ? (!tb.kind ? String(tb.name || "").split("/").pop().replace(/\.md$/i, "") : String(tb.title || "")) : "";
+  // #177: a view tab (graph, local graph, plugin view) carries its display text in name, the same text its tab
+  // header shows ("Graph view", "Graph of note") — stock 1.13.7 titles the window with it; there is no tb.title
+  const nm = tb ? (!tb.kind ? String(tb.name || "").split("/").pop().replace(/\.md$/i, "") : String(tb.name || "").split("/").pop()) : "";
   const vn = String(vaultPath || "").replace(/[\\/]+$/, "").split(/[\\/]/).pop();
   const t = (nm ? nm + " - " : "") + (vn ? vn + " - " : "") + "Opensidian";
   if (t !== utPlain) { utPlain = t; document.title = t; pushTitle(t); }
@@ -4248,6 +4278,13 @@ function utBuild() {             // pane/focus census in the window title (headl
       const xi = s => String(s == null ? "" : s).replace(/[[\]|]/g, "").slice(0, 100);
       md += " [xi:" + ims.length + "/" + ims.filter(i => i.naturalWidth > 0).length + "/" + nmiss +
             ims.slice(0, 3).map(i => "|" + xi(i.getAttribute("src"))).join("") + "]";
+      // #144 toggle 1: [xr:<banners naming Load external resources>/<https players>/<page CSP https: 1|0>]
+      const rs = window.__osSecurity && __osSecurity.get();
+      md += " [xr:" + rv.querySelectorAll(".imgmiss[data-sec=\"remoteMedia\"]").length + "/" +
+            rv.querySelectorAll("audio.rmedia, video.rmedia").length + "/" + (rs && rs.pageRemote ? 1 : 0) + "]";
+      // #144 toggle 4: [xm:<placeholders naming Render media>/<vault media elements>/<page CSP vault media 1|0>]
+      md += " [xm:" + rv.querySelectorAll(".imgmiss[data-sec=\"vaultMedia\"]").length + "/" +
+            rv.querySelectorAll("img.vimg, .pdf-embed, .audio-embed").length + "/" + (rs && rs.pageMedia === false ? 0 : 1) + "]";
     }
   }
   // pdfembed probe: the focused note view's PDF frames ->
@@ -4459,6 +4496,7 @@ function utBuild() {             // pane/focus census in the window title (headl
       const tokc = (n, alt) => { const raw = tokv(n);   // the same three rungs as palette() (PAL_ALT)
         return res(raw) || res(csR.getPropertyValue(n).trim().toLowerCase()) || (alt ? res(tokv(alt)) : "") || raw; };
       gpx = " [gl:" + ((fgr && fgr.graphRenderer) || "none") + "] [graphbg:" + tokc("--graph-bg") + "] [graphnode:" + tokc("--accent-blue", "--color-accent") + "]";
+      if (fgr && fgr.graphGlWhy) gpx += " [glsec:" + fgr.graphGlWhy + "]";   // #144 toggle 5
       const cvEl = fgr && fgr.graph;
       if (cvEl && !cvEl.hidden) {
         const r = cvEl.getBoundingClientRect();
@@ -4651,6 +4689,14 @@ function utBuild() {             // pane/focus census in the window title (headl
   wsTouch();   // R28.3: every mutation already funnels through here — arm the layout write
 }
 let tSending = false, tWant = "";
+/* #144 toggle 12: while the process runs in lockdown (latched at start; security.js sets
+   window.__osLockdown from security_get) the WINDOW title carries " — Lockdown", inserted
+   before the first census token so the tokens stay at the end. document.title is untouched. */
+function lockTitle(t) {
+  if (!window.__osLockdown) return t;
+  const i = t.indexOf(" [");
+  return i < 0 ? t + " — Lockdown" : t.slice(0, i) + " — Lockdown" + t.slice(i);
+}
 function pushTitle(t) {
   tWant = t;
   if (tSending) return;
@@ -4663,7 +4709,7 @@ function pushTitle(t) {
     if (tWant !== cur) pushTitle(tWant);
   };
   try {
-    TAURI.window.getCurrentWindow().setTitle(cur).catch(() => {}).then(fin);
+    TAURI.window.getCurrentWindow().setTitle(lockTitle(cur)).catch(() => {}).then(fin);
   } catch (e) { fin(); }
   setTimeout(fin, 500);
 }
@@ -4751,6 +4797,7 @@ async function collapseGroup(g, via) {  // R6.5: closing the last tab removes th
   if (!parent) return;                        // lone root group: caller keeps it
   if (g.sim) cancelAnimationFrame(g.sim);     // stop the removed group's machinery
   g.simGen = 0; if (g.gwRelease) g.gwRelease();   // and retire its sim: a physics batch still in the Worker is dropped, not stepped on
+  if (g.dprOff) g.dprOff();                   // #166: and its dpr media-query listener (holds the sim closure)
   // tabclose: the SECOND unflushed path. This clears an armed save exactly like
   // dropTab does, and it is reachable with tabs still in the group (a drag that
   // moves the last tab out, :1837/:1844) — so the record is unconditional and
@@ -4974,7 +5021,10 @@ async function closeTabsAfter(g, i) {      // Close tabs after: target + everyth
 }
 async function closeAllTabs(g) {           // Close all: a split pane goes with its tabs (#8); the lone root pane survives
   await flushSave(g);
-  while (g.tabs.length > 1) await closeTab(g, g.tabs.length - 1);
+  /* #175: LEFT to right, so the undo stack holds the strip in order and Ctrl+Shift+T
+     reopens the rightmost first — stock 1.13.7 (lone pane cfA,cfB,cfC -> Close all ->
+     undo x3 = cfC, cfB, cfA, each a real note tab). */
+  while (g.tabs.length > 1) await closeTab(g, 0);
   if (!g.tabs.length) return;
   /* #8: in a SPLIT the emptied pane leaves the tree, exactly like the ✕ / Ctrl+W
      close of a last tab (closeTab's R6.5 path). Kept, it was a zero-tab pane with
@@ -4989,7 +5039,10 @@ async function closeAllTabs(g) {           // Close all: a split pane goes with 
   if (groups().length > 1) return closeTab(g, 0, undefined, "closeAll");
   const t = g.tabs[0];
   await act("pane_close", { kind: t.kind || "note", pane_removed: false, groups: groups().length, tabs: 0 }, async () => {
-    if (!t.kind) closedTabs.push(t.name);  // R14: undo close tab still works on the last one
+    // R14: undo close tab still works on the last one. #175: through ucPush — a bare
+    // name string here had no .name, so Ctrl+Shift+T reopened a tab called "undefined".
+    // flushSave above already wrote the buffer, so nothing is at risk (text null).
+    if (!t.kind) ucPush(t.name, null, "user-close");
     unlinkTab(g, t, true);
     dropView(t);
     g.tabs.length = 0;
@@ -5110,8 +5163,10 @@ function tabMenu(e, g, i, hdr) {
   // ---- group 2 (5 rows) ----
   if (!hdr) { pinRow(); linkRow(); }
   item(I18N.m("Backlinks in document"), null, "Missing subsystem: an in-document backlinks section, appended to the BOTTOM OF THE NOTE PANE; ours is a right-sidebar pane (R27), a different surface");
-  item(I18N.m("Reading view"), () => { closeMenu(); setMode(g, "reading"); }, null, tab.mode === "reading");     // WIRED: setMode (R38.10)
-  item(I18N.m("Source mode"),  () => { closeMenu(); setMode(g, "source"); },  null, tab.mode === "source");      // WIRED: setMode — the ✓ is the R12.4 radio, now a marker element
+  // #179: both rows are TOGGLES, as stock 1.13.7: the checked Reading view goes back to editing in the
+  // sub-mode it left from (tab.src untouched), the checked Source mode goes back to Live Preview.
+  item(I18N.m("Reading view"), () => { closeMenu(); setMode(g, tab.mode === "reading" ? (tab.src ? "source" : "livepreview") : "reading"); }, null, tab.mode === "reading");     // WIRED: setMode (R38.10)
+  item(I18N.m("Source mode"),  () => { closeMenu(); setMode(g, tab.mode === "source" ? "livepreview" : "source"); },  null, tab.mode === "source");      // WIRED: setMode — the ✓ is the R12.4 radio, now a marker element
   // ---- group 3 (4 rows) ----
   sep();
   if (!hdr) item(I18N.m("Move to new window"), null, DIS_WIN);
@@ -6021,7 +6076,7 @@ function openTitleEdit(g, host, x, y) {
   }
   el.addEventListener("keydown", onTitleKey);
   el.addEventListener("input", onTitleInput);   // R34.12/R34.13: refuse WHILE typing, as Obsidian does
-  el.addEventListener("blur", () => closeTitleEdit());
+  el.addEventListener("blur", onTitleBlur);   // #159: leaving the title COMMITS (stock 1.13.7); only Escape reverts
   host.addEventListener("scroll", onTitleScroll);
   updateTitle();
   return true;
@@ -6056,6 +6111,17 @@ function onTitleKey(e) {
     return;
   }
   e.stopPropagation();                       // a filename contains characters the R14 keymap binds
+}
+
+/* #159: stock 1.13.7 COMMITS the inline title when it loses focus (a click into the body renamed
+   "Blur.md" -> "Blur X.md", twice); only Escape reverts. closeTitleEdit() clears `titling` before
+   el.remove(), so the blur that removal fires (Escape / Enter / scroll / reopen) lands here as a no-op.
+   A refused name (illegal characters, taken) cannot keep a box open that no longer has the focus:
+   the notice titleCheck() raised stays up and the edit reverts. */
+function onTitleBlur() {
+  if (!titling) return;
+  if (!titleCheck()) { closeTitleEdit(); return; }
+  commitTitleEdit();
 }
 
 /* R34.1 — ENTER RENAMES THE FILE. The order is Obsidian's, measured, and it is
@@ -7230,7 +7296,10 @@ function canvasRow(p, depth) {
   row.innerHTML = treeGuides(depth) + '<span class="tc"></span><span class="tn"></span><span class="ttag">CANVAS</span>';
   row.querySelector(".tn").textContent = p.split("/").pop().replace(/\.canvas$/i, "");   // names never hit innerHTML
   row.dataset.canvas = p;
-  row.onclick = () => { if (treeClickEaten()) return; treeSelClear(); treeAnchor = p; openCanvas(p); };   // CVR-A-090: the click a drag ends with is not an open; a board row is a range anchor, never a shift target
+  /* #169: a PLAIN click opens the board in the ACTIVE tab (stock 1.13.7: cfA*,cfB -> canvas:cfBoard,cfB; a 2nd click adds
+     nothing); Ctrl/Cmd+click = a new tab right of the active one. CVR-A-090: the click a drag ends with is not an open; a
+     board row is a range anchor, never a shift target. */
+  row.onclick = e => { if (treeClickEaten()) return; treeSelClear(); treeAnchor = p; openCanvas(p, e && (e.ctrlKey || e.metaKey) ? "tab" : "here"); };
   row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); openCanvas(p); } };
   row.oncontextmenu = e => canvasFileMenu(e, p);
   row.addEventListener("mousedown", e => treeDragStart(e, p));   // CVR-A-090: drag onto a folder row = move (cvMoveTo)
@@ -7474,6 +7543,17 @@ function treeDragStart(e, nm, dir) {         // dir: true = a folder row, "file"
       zones = [...document.querySelectorAll("#tree .trow.folder")]
         .map(el => ({ el, f: el.dataset.folder, r: el.getBoundingClientRect() }))
         .filter(z => z.r.height > 0 && z.f != null);
+      // issue #157: a NOTE / file row is its PARENT folder's zone (stock 1.13.7): over a sibling row of the
+      // same folder there is no destination (nothing moves), over a root-level row it is the vault root.
+      // Before, only the #tree box matched there, so a drop on a sibling moved the note to the ROOT.
+      const fz = new Map(zones.map(z => [z.f, z.el]));
+      for (const el of document.querySelectorAll("#tree .trow:not(.folder)")) {
+        const p = el.dataset.note ?? el.dataset.canvas ?? el.dataset.file;
+        const r = p == null ? null : el.getBoundingClientRect();
+        if (!r || !(r.height > 0)) continue;
+        const f = p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "";
+        zones.push({ el: fz.get(f) || $("tree"), f, r });
+      }
       zones.push({ el: $("tree"), f: "", r: $("tree").getBoundingClientRect() });   // the vault ROOT
       if (dir || multi) zones = [];      // cv-drop: a folder is no move source (R24.5) — only a plugin view takes it; nor is a selection
       if (!dir && !multi && !/\.canvas$/i.test(nm)) pz = nDropZones();   // issue #40: a note row can open on a pane
@@ -7525,7 +7605,9 @@ function treeDragStart(e, nm, dir) {         // dir: true = a folder row, "file"
     if (ghost && !t && pd && treePlgDrop(pd, ev)) { treeEat = 1; updateTitle(); return; }   // a plugin view took it
     if (pd) pd.end();
     if (dir || multi) { if (ghost) treeEat = performance.now(); updateTitle(); return; }   // cv-drop: a folder (or a selection) dropped on nothing moves nothing
-    if (!ghost || !t) { updateTitle(); return; }   // plain click, or dropped on nothing
+    // issue #157: a drag released with no destination (its own row, a sibling row) must not ALSO click
+    // the row it ends on — stock's HTML5 drag never clicks. A real timestamp: treeClickEaten() is 400 ms
+    if (!ghost || !t) { if (ghost) treeEat = performance.now(); updateTitle(); return; }   // plain click, or dropped on nothing
     treeEat = 1;                                   // the mouseup's click is not an "open this note"
     if (/\.canvas$/i.test(nm)) await cvMoveTo(nm, t.f);   // CVR-A-090: a canvas row moves through canvas_io
     else await moveNoteTo(nm, t.f);
@@ -7663,8 +7745,11 @@ async function wikiClick(e, a) {
   if (a.classList.contains("wiki-unresolved")) await createNote(n);
   if (e.ctrlKey) {                            // R6.4: new tab, same group
     await flushSave(g);
-    g.tabs.push(mkTab(n));
-    g.active = g.tabs.length - 1;
+    // #171: the new tab goes DIRECTLY RIGHT of the active one (openNewTab's contract; stock 1.13.7 cfA*,cfB,cfC +
+    // Ctrl+click [[cfD]] -> cfA,cfD*,cfB,cfC), not at the far end. No splice: the tabclose census counts those.
+    const at = g.active >= 0 ? g.active + 1 : g.tabs.length, nt = mkTab(n);
+    g.tabs.push(nt); g.tabs.copyWithin(at + 1, at); g.tabs[at] = nt;
+    g.active = at;
     await loadActive(g);
     if (an) await navAnchor(g, an);
   } else navigate(g, n, an);
@@ -7803,8 +7888,11 @@ async function pvWikiClick(a, e) {
     await createNote(n);
   if (e.ctrlKey) {                               // R6.4: open in NEW TAB, same group
     await flushSave(g);
-    g.tabs.push(mkTab(n));
-    g.active = g.tabs.length - 1;
+    // #171: the new tab goes DIRECTLY RIGHT of the active one (openNewTab's contract; stock 1.13.7 cfA*,cfB,cfC +
+    // Ctrl+click [[cfD]] -> cfA,cfD*,cfB,cfC), not at the far end. No splice: the tabclose census counts those.
+    const at = g.active >= 0 ? g.active + 1 : g.tabs.length, nt = mkTab(n);
+    g.tabs.push(nt); g.tabs.copyWithin(at + 1, at); g.tabs[at] = nt;
+    g.active = at;
     await loadActive(g);
     if (an) await navAnchor(g, an);
   } else navigate(g, n, an);
@@ -8077,7 +8165,9 @@ function qsItems() {                 // switcher source: MRU first, rest a-z, th
     run: async ev => {               // Enter = focused group; Ctrl+Enter = new tab
       if (ev && ev.ctrlKey) {
         const g = fg();
-        g.tabs.push(mkTab(n)); g.active = g.tabs.length - 1;
+        // #171: right of the active tab, like Ctrl+click on a link (stock 1.13.7 cfA,cfD*,cfB,cfC)
+        const at = g.active >= 0 ? g.active + 1 : g.tabs.length, nt = mkTab(n);
+        g.tabs.push(nt); g.tabs.copyWithin(at + 1, at); g.tabs[at] = nt; g.active = at;
         await loadActive(g);
       } else await openInTab(n);
     },
@@ -8337,7 +8427,13 @@ $("minput").onkeydown = async e => {
     const it = mdItems[mdSel];
     if (e.shiftKey && q) { closeModal(); return await qsCreateNote(q, how); }
     if (it) {
-      if (how === "right") { closeModal(); await splitWith(fg(), "row", mkTab(it.label)); return qsFocusEd(); }
+      if (how === "right") {
+        closeModal();
+        // #168: a .canvas row opens the BOARD in the new right split (openCanvas "split", as the explorer's "Open to the
+        // right"), never a note tab named "X.canvas" — stock 1.13.7: canvas:cfBoard in a 2nd tab group, focused.
+        if (it.canvas) { await openCanvas(it.label, "split"); return; }
+        await splitWith(fg(), "row", mkTab(it.label)); return qsFocusEd();
+      }
       return await mdRun(it, e);
     }
     if (!mdNew) return;
@@ -8902,9 +8998,10 @@ function cvNewCanvasFolder() {
   return cvActiveFolder();   // "current" (stock name; settings.js maps an older "same" to it)
 }
 // open a .canvas file in a canvas tab of the focused group (the view type must be registered: core plugin on)
-async function openCanvas(path, how) {     // how: "split" -> a new pane to the right (CVR-A-083 Open to the right)
+async function openCanvas(path, how) {     // how: "split" -> a new pane to the right (CVR-A-083 Open to the right), "here" -> the active tab (#169)
   if (!CANVAS || !CANVAS.isRegistered()) { say("Canvas is turned off (Settings › Community plugins › Core plugins)", "canvas"); return null; }
-  const leaf = how === "split" ? PLG.app.workspace.getLeaf("split", "vertical") : PLG.app.workspace.getLeaf("tab");
+  // #169: "here" = the active tab (an explorer PLAIN click, like openPdf's plain click); anything else but "split" = a new tab
+  const leaf = how === "split" ? PLG.app.workspace.getLeaf("split", "vertical") : PLG.app.workspace.getLeaf(how === "here" ? false : "tab");
   await leaf.setViewState({ type: "canvas", state: { file: path }, active: true });
   return leaf;
 }
@@ -8925,6 +9022,12 @@ const PDFV = (() => {
       if (!p || p === this.path || !Ed.isPdf(p)) return;
       this.path = p;
       try { const f = PLG.app.vault.getAbstractFileByPath(p); this.file = f || null; } catch (_) { this.file = null; }
+      if (!Ed.mediaOn()) {                      // #144 toggle 4 off: the placeholder, no frame, no pdf_info
+        this.frame = null;
+        this.contentEl.replaceChildren(Ed.mediaOffEl(p));
+        updateTitle();
+        return;
+      }
       const s = this.frame = document.createElement("span");
       s.className = "internal-embed pdf-embed";
       s.dataset.pdf = Ed.pctEnc(p); s.dataset.page = "1"; s.dataset.height = ""; s.dataset.alt = ""; s.dataset.full = "1";
@@ -8989,6 +9092,8 @@ const IMGV = (() => {
         const s = document.createElement("span");
         s.className = "imgmiss"; s.dataset.miss = p;
         box.appendChild(s); this.img = null;
+      } else if (!Ed.mediaOn()) {               // #144 toggle 4 off: the placeholder, no URL
+        box.appendChild(Ed.mediaOffEl(p)); this.img = null;
       } else {
         const im = this.img = document.createElement("img");
         im.alt = base(p); im.draggable = false;
@@ -9467,7 +9572,9 @@ async function cvEmbedPaint(s, link) {   // link: the reading view's a.wiki to r
   let p = null, doc = null;
   try {
     const all = await inv("canvas_io", { op: "list", path: "" });
-    p = all.includes(want) ? want : all.find(x => x.split("/").pop() === want.split("/").pop()) || null;
+    // issue #180: an embed resolves exactly like a [[x.canvas]] link (stock 1.13.7): case-insensitive, and a
+    // path whose folder does not exist is unresolved — never a same-named canvas in another folder
+    p = cvRefCanvas(want, all);
     if (p) doc = JSON.parse(await inv("canvas_io", { op: "read", path: p }));
   } catch (_) { doc = null; }
   if (!s.isConnected) return;
@@ -9757,7 +9864,16 @@ const edLine = fn => edEdit((v, a, b) => {  // fn(line) -> line | null (= delete
   let l1 = v.indexOf("\n", b); if (l1 < 0) l1 = v.length;
   const nl = fn(v.slice(l0, l1));
   if (nl == null) { const cut = l1 < v.length ? l1 + 1 : Math.max(0, l0 - 1); return [v.slice(0, l0) + v.slice(l1 + 1), Math.min(l0, cut), Math.min(l0, cut)]; }
-  return [v.slice(0, l0) + nl + v.slice(l1), l0 + Math.min(nl.length, a - l0 + nl.length - (l1 - l0)), l0 + Math.min(nl.length, b - l0 + nl.length - (l1 - l0))];
+  // map a/b by the change on THEIR OWN line (per-line ops keep the line count), so a multi-line
+  // heading/quote/task keeps the selection on the same text now that the range survives (#160)
+  const ol = v.slice(l0, l1).split("\n"), ns = nl.split("\n");
+  const map = p => {
+    if (ol.length !== ns.length) return l0 + Math.max(0, Math.min(nl.length, p - l0 + nl.length - (l1 - l0)));
+    let i = 0, o = l0, n = l0;
+    while (i < ol.length - 1 && p > o + ol[i].length) { o += ol[i].length + 1; n += ns[i].length + 1; i++; }
+    return n + Math.max(0, Math.min(ns[i].length, p - o + ns[i].length - ol[i].length));
+  };
+  return [v.slice(0, l0) + nl + v.slice(l1), map(a), map(b)];
 });
 // R17.4 M46-M51 "Toggle checkbox status": a MODEL op (one row patched, Obsidian
 // caret rule), not a whole-document rewrite through the textarea shim.
@@ -10923,7 +11039,8 @@ const CMDS = [
     () => !lgNoGraph(fg())],   // lg-canvas: a canvas (or a local graph) has no note to centre on — the row is not offered
   ["editor:insert-link",       "Insert Markdown link",                ["ctrl+k"],               () => edEdit((v, a, b) => { const s = v.slice(a, b) || "link"; return [v.slice(0, a) + "[" + s + "]()" + v.slice(b), a + s.length + 3, a + s.length + 3]; })],
   ["editor:insert-wikilink",   "Add internal link",                   [],                       () => edEdit((v, a, b) => { const s = v.slice(a, b); return [v.slice(0, a) + "[[" + s + "]]" + v.slice(b), a + 2, a + 2 + s.length]; })],
-  ["editor:insert-tag",        "Add tag",                             [],                       () => edEdit((v, a, b) => [v.slice(0, a) + "#" + v.slice(b), a + 1, a + 1])],
+  // #156 stock 1.13.7: '#' goes in FRONT of the selection, the selected text is kept, caret right after the '#'
+  ["editor:insert-tag",        "Add tag",                             [],                       () => edEdit((v, a) => [v.slice(0, a) + "#" + v.slice(a), a + 1, a + 1])],
   ["app:go-back",              "Navigate back",                       ["ctrl+alt+arrowleft", "alt+arrowleft"],   () => histGo(-1)],
   ["app:go-forward",           "Navigate forward",                    ["ctrl+alt+arrowright", "alt+arrowright"], () => histGo(1)],
   ["workspace:new-tab",        "New tab",                             ["ctrl+t"],               cmdNewTab],
@@ -11001,8 +11118,15 @@ hkRebuild();
 const KEYNAMES = { arrowleft: "ArrowLeft", arrowright: "ArrowRight", arrowup: "ArrowUp", arrowdown: "ArrowDown",
   pageup: "PageUp", pagedown: "PageDown", tab: "Tab", enter: "Enter", escape: "Escape", backspace: "Backspace",
   delete: "Delete", home: "Home", end: "End", insert: "Insert", " ": "Space" };
+// #163: a chord string is "<mods>+<key>" and the KEY may itself be "+" (numpad plus, a hand-edited file):
+// split the known modifier prefixes off the front instead of splitting on "+", so "ctrl+shift++" keeps key "+".
+function chordSplit(ch) {
+  const mods = []; let k = String(ch || "");
+  for (let m; (m = /^(ctrl|alt|shift)\+(?=.)/.exec(k)); k = k.slice(m[0].length)) mods.push(m[1]);
+  return { mods, k };
+}
 function chordToFile(ch) {
-  const p = ch.split("+"); const k = p.pop();
+  const { mods: p, k } = chordSplit(ch);
   const mods = p.map(m => ({ ctrl: "Mod", alt: "Alt", shift: "Shift" }[m])).filter(Boolean);
   return { modifiers: mods, key: k.length === 1 || /^f\d+$/.test(k) ? k.toUpperCase() : KEYNAMES[k] || k };
 }
@@ -11028,12 +11152,21 @@ function hkSet(c, chords) {                 // set + collapse to "default" when 
   if (same) delete hkUser[c.id]; else hkUser[c.id] = chords;
   hkSave();
 }
-const chordLabel = ch => ch.split("+").map(k => k === "ctrl" ? "Ctrl" : k === "alt" ? "Alt" : k === "shift" ? "Shift"
-  : k.length === 1 ? k.toUpperCase() : (KEYNAMES[k] || k).replace(/^Arrow/, "").replace(/^./, x => x.toUpperCase())).join(" + ");
+// #163: Space is named ("Ctrl + Space", stock), not printed as a blank one-character key; the key part comes
+// from chordSplit, so a "+" key is labelled, not lost to the separator
+const chordLabel = ch => { const { mods, k } = chordSplit(ch);
+  return mods.map(m => m === "ctrl" ? "Ctrl" : m === "alt" ? "Alt" : "Shift").concat(
+    k === " " ? "Space" : k.length === 1 ? k.toUpperCase() : (KEYNAMES[k] || k).replace(/^Arrow/, "").replace(/^./, x => x.toUpperCase())).join(" + "); };
+// #163: stock 1.13.7 records a SHIFTED symbol by its physical key: Ctrl+Shift+= (e.key "+" on a US layout) is
+// saved as {"modifiers":["Mod","Shift"],"key":"="} and labelled "Ctrl + Shift + =". e.code names that key.
+const SHIFT_BASE = { Equal: "=", Minus: "-", BracketLeft: "[", BracketRight: "]", Backslash: "\\", Semicolon: ";",
+  Quote: "'", Comma: ",", Period: ".", Slash: "/", Backquote: "`", Digit0: "0", Digit1: "1", Digit2: "2", Digit3: "3",
+  Digit4: "4", Digit5: "5", Digit6: "6", Digit7: "7", Digit8: "8", Digit9: "9" };
 function chordOf(e) {                       // keydown -> normalised chord (null for bare modifiers)
   if (["Control", "Alt", "Shift", "Meta"].includes(e.key)) return null;
   let k = e.key.toLowerCase();
   if (e.code === "Tab") k = "tab";   // X11 shift+tab arrives as ISO_Left_Tab
+  if (e.shiftKey && SHIFT_BASE[e.code] && k.length === 1) k = SHIFT_BASE[e.code];   // #163: the physical key, as stock
   // Xvfb/xdotool synthesize every F-key with a spurious Mod1 latch (alt:true
   // on F1..F12, clean on letters) — drop alt for function keys so F2 binds.
   const alt = e.altKey && !/^F\d+$/.test(e.code);
@@ -11709,8 +11842,8 @@ function gfTok(g, pre = "gf") {
     return row.dataset.k + "@" + Math.round(r.left) + "," + Math.round(r.right) + "," + Math.round(r.top + r.height / 2) + "," + row.querySelector(".slider-value").textContent;
   });
   if (ss.length) t += " [" + pre + "s:" + ss.join("|") + "]";
-  // graphctx Filters state [<p>q:search=<query>,showTags=0,...] (query with []| stripped)
-  t += " [" + pre + "q:search=" + s.st.f.search.replace(/[[]|,]/g, "") + "," + GC_FTOG.map(([k]) => k + "=" + (s.st.f[k] ? 1 : 0)).join(",") + "]";
+  // graphctx Filters state [<p>q:search=<query>,showTags=0,...] (query with []|, stripped; #164: the "]" inside the class must be escaped)
+  t += " [" + pre + "q:search=" + s.st.f.search.replace(/[[\]|,]/g, "") + "," + GC_FTOG.map(([k]) => k + "=" + (s.st.f[k] ? 1 : 0)).join(",") + "]";
   // graphctx Groups [<p>g:<i>=<query>#rrggbb|...] in row order (query with []|,# stripped), empty = no group
   t += " [" + pre + "g:" + s.st.groups.map((r, i) => i + "=" + r.query.replace(/[[\]|,#]/g, "") + gcHex(r.rgb)).join("|") + "]";
   // graphctx Display [<p>d:arrow=0,fade=0.00,size=1.00,line=1.00,anim=<drawn>/<n>,lab=<1 labels drawn|0>] — the stored values, what the
@@ -11732,7 +11865,7 @@ function gfnTok() {
     const t = h.active >= 0 ? h.tabs[h.active] : null;
     if (!t || (t.kind !== "gg" && t.kind !== "lg") || !h.graphOn || !h.graphNodes) continue;
     const L = h.graphNodes();
-    const names = L.length > 60 ? "" : ":" + L.map(p => p.n.replace(/[[]|,^]/g, "") + "^" + p.kind + (p.col >= 0 ? "c" + p.col : "")).sort().join(",");
+    const names = L.length > 60 ? "" : ":" + L.map(p => p.n.replace(/[[\]|,^]/g, "") + "^" + p.kind + (p.col >= 0 ? "c" + p.col : "")).sort().join(",");
     out.push(t.kind + "@" + h.id + "=" + L.length + names);
     if (h.graphEdges) eo.push(t.kind + "@" + h.id + "=" + h.graphEdges());
   }
@@ -11787,17 +11920,29 @@ const gnKind = nd => nd.kind ? nd.kind : nd.resolved ? 0 : 1;
 let graphPrefP = null;
 const graphRendererPref = () => graphPrefP || (graphPrefP = inv("graph_renderer_pref").catch(() => null).then(p => {
   const r = (p && p.renderer) || localStorage.getItem("opensidian.graphRenderer");
-  return { renderer: r === "gl" || r === "2d" ? r : null, loseCtx: !!(p && p.lose_ctx), settleTrace: !!(p && p.settle_trace) };
+  return { renderer: r === "gl" || r === "2d" ? r : null, loseCtx: !!(p && p.lose_ctx), settleTrace: !!(p && p.settle_trace), security: (p && p.security) || null };
 }));
+// #144 toggle 5 (Settings › Security › WebGL): the "security-webgl" event (security_set) calls this when the effective value
+// moves. The backend already flipped the webview's enable-webgl; every open graph re-opens at once
+// from its kept layout (loadActive = the tab-switch path) on the new draw path, and a cached GL
+// renderer is dropped so an off graph holds no context. Plugins see the change after a reload.
+window.opensidianGraphGl = () => {
+  graphPrefP = null;
+  for (const g of groups()) {
+    if (g.glr) { g.glr = null; if (g.glcv) { g.glcv.remove(); g.glcv = null; } }
+    if (g.graphOn) loadActive(g);
+  }
+};
 function showEditor(g) {
-  g.graphOn = false; g.graphRefresh = null; g.graphRedraw = null; g.graphAnimate = null; g.graphAnimState = null; g.graphRc = null; cancelAnimationFrame(g.sim); g.graphRenderer = null;
+  g.graphOn = false; g.graphRefresh = null; g.graphRedraw = null; g.graphAnimate = null; g.graphAnimState = null; g.graphRc = null; cancelAnimationFrame(g.sim); g.graphRenderer = null; g.graphGlWhy = null;
   // retire the sim (startGraph's gen starts at 1): a physics batch still in the Worker lands nowhere and
   // posts no next one, so the kept layout stays the frame the user left, as when the loop was only a rAF
   g.simGen = 0; if (g.gwRelease) g.gwRelease();
   if (g.ro) { g.ro.disconnect(); g.ro = null; }
   if (g.attrObs) { g.attrObs.disconnect(); g.attrObs = null; }
+  if (g.dprOff) g.dprOff();        // #166: the dpr media-query listener holds the sim closure
   perf.flush();                    // ship buffered graph_frame samples of the closed sim
-  g.graph.hidden = true; if (g.glcv) g.glcv.hidden = true;
+  g.graph.hidden = true; if (g.glcv) g.glcv.hidden = true; if (g.cvOffEl) g.cvOffEl.hidden = true;   // #144 toggle 6 placeholder
   gcUnbind(g); g.gfF = null; g.gfApply = null;   // the graph-controls card belongs to a graph view
   applyMode(g);
 }
@@ -11854,6 +11999,16 @@ async function startGraph(g, cfg) {
   const fetchP = cfg.fetch(), prefP = graphRendererPref();   // backend works while the renderer comes up
   const gcP = cfg.scope ? Promise.resolve(cfg.scope()) : null;   // graph-controls scope: graph.json (read beside the fetch) or the lg tab's options
   const ctx = cv.getContext("2d");
+  if (!ctx) {   // #144 toggle 6: HTML canvas off -> getContext is null in this realm; the graph names the switch instead of drawing
+    cv.hidden = true; if (g.glcv) g.glcv.hidden = true;
+    let ph = g.cvOffEl;
+    if (!ph) { ph = g.cvOffEl = document.createElement("div"); ph.className = "graph-secoff"; ph.dataset.sec = "canvas"; cv.parentNode.insertBefore(ph, cv.nextSibling); }
+    ph.textContent = "Graph view needs HTML canvas — " + (window.opensidianCanvasOff || "HTML canvas is off (Settings › Security › HTML canvas)");
+    ph.hidden = false;
+    g.graphRenderer = null; g.graphGlWhy = "canvas-off";   // census [gl:none] [glsec:canvas-off]
+    console.warn("[sec] graph not drawn: " + ph.textContent);
+    return;
+  }
   // graph-webgl: DEFAULT draw path is WebGL (ui/graph-gl.js) on a .graphgl canvas BEHIND cv
   // (nodes + edges); cv stays on top for events, labels (Canvas 2D text) and the 2D fallback.
   // Fallback to the full 2D path when: forced (env/setting), no webgl context, or the
@@ -11964,7 +12119,7 @@ async function startGraph(g, cfg) {
     return p;
   };
   let glr = null, reason = "default";
-  if (pref.renderer === "2d") reason = "forced:2d";
+  if (pref.renderer === "2d") reason = pref.security ? "security:webgl-off" : "forced:2d";   // #144 toggle 5: graph_renderer_pref says 2d while WebGL is off
   else if (!window.GraphGL) reason = "no-module";
   else {
     if (!g.glr || g.glr.lost) {
@@ -11980,6 +12135,7 @@ async function startGraph(g, cfg) {
   const gpu = glr ? { gpu_vendor: glr.info.vendor, gpu_renderer: glr.info.renderer } : { gpu_vendor: "", gpu_renderer: "" };
   cv.classList.toggle("gl-on", !!glr); if (g.glcv) g.glcv.hidden = !glr;
   g.graphRenderer = glr ? "gl" : "2d";   // census [gl:] — which draw path painted the shot
+  g.graphGlWhy = !glr && pref.security ? "webgl-off" : null;   // #144 toggle 5: census [glsec:] (only while WebGL is off)
   perf.mark("graph_renderer", rT0, { renderer: glr ? "gl" : "2d", reason, webgl: glr ? glr.info.webgl : 0, ...gpu });
   const gr = await fetchP;
   // R16 GRAPH FIT (Obsidian-faithful, docs/requirements.md R16): the sim runs in
@@ -12688,11 +12844,16 @@ async function startGraph(g, cfg) {
   }
   // gh-graphdpr: a dpr change with no CSS resize (window moved to another monitor, GDK scale)
   // fires no ResizeObserver — watch the resolution media query, re-fit, redraw
+  // #166: torn down with the sim, the way g.ro is — the predecessor's listener (and the retired sim its
+  // closure holds) is removed here and in showEditor/collapseGroup, not only on the next dpr change.
+  if (g.dprOff) g.dprOff();
   if (window.matchMedia) {
     const dprWatch = () => {
       const mq = matchMedia("(resolution: " + dpr + "dppx)");
-      const on = () => { mq.removeEventListener("change", on); if (cv.hidden || !g.graphOn || g.simGen !== gen) return; fitDpr(); redraw(); dprWatch(); };
+      const off = () => { mq.removeEventListener("change", on); if (g.dprOff === off) g.dprOff = null; };
+      const on = () => { off(); if (cv.hidden || !g.graphOn || g.simGen !== gen) return; fitDpr(); redraw(); dprWatch(); };
       mq.addEventListener("change", on);
+      g.dprOff = off;
     };
     dprWatch();
   }
@@ -12730,6 +12891,10 @@ async function startGraph(g, cfg) {
       redraw();
       return;
     }
+    // #172: a wheel event with no vertical part (touchpad sideways swipe, tilt wheel, shift+wheel
+    // reaching us as deltaX only) is not a zoom step — stock 1.13.7 keeps the scale (1 -> 1).
+    // Without this guard deltaY == 0 fell into the "+1" branch below and zoomed OUT per event.
+    if (!e.deltaY) return;
     view.notch = Math.max(GZ_IN, Math.min(GZ_OUT, view.notch + (e.deltaY < 0 ? -1 : 1)));
     const s = notchScale(view.notch);
     view.tx = mx - view.wx * s; view.ty = my - view.wy * s; view.scale = s;
@@ -13308,6 +13473,8 @@ async function onVaultChanged(c) {
 }
 TAURI.event.listen("vault-changed", e => onVaultChanged(e.payload));
 TAURI.event.listen("vault-css-changed", e => onVaultCssChanged(e.payload));  // themefs item 6: hot reload
+TAURI.event.listen("security-webgl", () => window.opensidianGraphGl());   // #144 toggle 5: security_set moved the effective WebGL value
+TAURI.event.listen("security-clip", e => say(String(e.payload || ""), "secclip"));   // #144 toggle 9: the native gate swallowed a clipboard key / middle-click
 // R31.1: a real OS drop arrives here, from Rust, never from a DOM drop event.
 // osdrop: the payload is [paths, x, y] (main.rs R31.1), x/y physical px in the webview
 TAURI.event.listen("drop-files", e => { const p = e.payload || []; attachDrop(p[0] || [], { x: p[1], y: p[2] }); });
@@ -13573,6 +13740,7 @@ function setTok() {
          " [spane:" + sPane + "/" + sRowsShown + "/" + sEnabledShown + "]" +
          svtTok() + ssnTok() + sactTok() + slbTok() + sqfTok() + fontSetTok() + langTok() +
          (window.__osPluginSettings ? __osPluginSettings.tok() : "") +
+         (window.__osSecurity ? __osSecurity.tok() : "") +
          (sfpMs >= 0 ? " [sfp:" + sfpMs + "/" + sfpMax + "/" +
                        (Math.round(sfpSum / sfpN * 100) / 100) + "/" + sfpN + "]" : "") +
          (sfpW >= 0 ? " [sfpw:" + sfpW + "/" + sfpWMax + "]" : "");
@@ -15004,10 +15172,10 @@ function fPaint(g) {
     !st.q ? "" : fRead(g) ? String(st.hits.length)
                           : st.hits.length ? (st.idx + 1) + " / " + st.hits.length : "0 / 0";
 }
-function fSync(g, reset) {             // recompute hits against the current text
+function fSync(g, reset, from) {       // recompute hits against the current text; from = {l, c} to resume at
   const st = fState(g);
   if (!st.open) return;
-  const was = st.hits[st.idx];
+  const was = from || st.hits[st.idx];
   st.hits = fScan(g);
   /* Reading view has no place to keep: there is no current match to hold and
      no edits to hold it across (R26.24). */
@@ -15025,6 +15193,11 @@ function fSync(g, reset) {             // recompute hits against the current tex
    never scroll at all. */
 function fReveal(g, done) {   // done(): called once the reveal has finished (sync, or after CM6 drew the line)
   const fin = () => { if (done) done(); };
+  // #165: ONE reveal in flight. A newer one (Enter key repeat) ends the older one first, so its
+  // diagnostic hooks are off the prototypes before the newer one saves "the originals" — else the
+  // newer saved the older's wrapper and put it back, and focus()/Selection stayed hooked for good
+  // (the shared "osFindReveal" measure key also dropped the older one's last step, so it never unhooked).
+  if (fRvEnd) fRvEnd();
   /* Nothing to reveal in reading view: no .fcur is ever painted there, so this
      returns without touching g.preview.scrollTop — R26.24's "does not
      navigate" includes not moving the page under the reader. */
@@ -15088,9 +15261,13 @@ function fReveal(g, done) {   // done(): called once the reveal has finished (sy
   const dv = cm.docView, dvU = dv && dv.update;
   if (dvU) dv.update = function () { const b0 = Math.round(P.get.call(sc)); const r = dvU.apply(this, arguments);
     const b1 = Math.round(P.get.call(sc)); if (b1 !== b0) fRv += "|U" + b0 + ">" + b1 + "/" + Math.round(sc.scrollHeight); return r; };
-  const unhook = () => { sc.removeEventListener("scroll", onS); if (dvU) delete dv.update; for (const [p, m, o] of saved) p[m] = o; try { delete sc.scrollTop; delete sc.scrollTo; delete sc.scrollBy; } catch (_) {} };
+  let live = true;                     // #165: unhook runs once; a superseded reveal schedules nothing more
+  const unhook = () => { if (!live) return; live = false; if (fRvEnd === stop) fRvEnd = null; sc.removeEventListener("scroll", onS); if (dvU) delete dv.update; for (const [p, m, o] of saved) p[m] = o; try { delete sc.scrollTop; delete sc.scrollTo; delete sc.scrollBy; } catch (_) {} };
   let n = 0, lastTop = -1;
-  const step = () => cm.requestMeasure({ key: "osFindReveal", read: () => null, write: () => {
+  const stop = () => { if (live) { unhook(); fin(); } };   // superseded: end it AND still call done (fGo's census release)
+  fRvEnd = stop;
+  const step = () => live && cm.requestMeasure({ key: "osFindReveal", read: () => null, write: () => {
+    if (!live) return;
     const tp = Math.round(sc.scrollTop);
     if (tp !== lastTop) { fRv += "|@" + n + ":" + tp + "/" + Math.round(sc.scrollHeight) + "," + ae() + "," + anc(); lastTop = tp; }
     const ok = Ed.cm(g) === cm && go();
@@ -15101,13 +15278,14 @@ function fReveal(g, done) {   // done(): called once the reveal has finished (sy
     }
     // drawn but not centred (CM6 measured real heights after the estimate it scrolled on): re-ask CM6
     // in the NEXT frame — a dispatch inside this measure write would throw (#125)
-    requestAnimationFrame(() => { if (Ed.cm(g) === cm && sc.querySelector("span." + F_MARK + "." + F_CUR)) Ed.revealAt(g, h.l, h.c); step(); });
+    requestAnimationFrame(() => { if (!live) return; if (Ed.cm(g) === cm && sc.querySelector("span." + F_MARK + "." + F_CUR)) Ed.revealAt(g, h.l, h.c); step(); });
   } });
   requestAnimationFrame(step);
 }
 /* [frv:] the last lp find reveal: l<line>|s<scrollTop after the line was brought in>
    |n<frames waited>|f<mark found 0/1>|t<final scrollTop> (diagnostic, no phase asserts it) */
 var fRv = "-";
+var fRvEnd = null;                    // #165: unhook of the reveal in flight (null = none)
 /* fGo holds the census while a reveal is in flight: CM6 draws an off-screen line a
    frame or more after the counter changed, and a title published in between would
    carry [fc:i / n] beside the pre-scroll [fsc:]/[fvis:] — R17 revealed inside the
@@ -15133,9 +15311,11 @@ function fGo(g, d) {                   // R26.11 + R26.13
 function fRepOne(g) {
   const st = fState(g);
   if (!st.open || !st.rep || !st.q || !st.hits.length) return 0;
-  const h = st.hits[st.idx], qlen = st.q.length;
-  Ed.replace(g, { a: { l: h.l, c: h.c }, b: { l: h.l, c: h.c + qlen } }, fRepText(g), "replace");
-  fSync(g, false);                     // keep the place: the next hit at/after where this one was
+  const h = st.hits[st.idx], qlen = st.q.length, rt = fRepText(g);
+  Ed.replace(g, { a: { l: h.l, c: h.c }, b: { l: h.l, c: h.c + qlen } }, rt, "replace");
+  // #170: resume AFTER the inserted text, like stock 1.13.7 — resuming at its start re-selected the
+  // replacement itself whenever it still matches the query ('foo' -> 'Foo'), so Replace never moved on
+  fSync(g, false, { l: h.l, c: h.c + rt.length });
   fReveal(g);
   fRFocus(g);
   updateTitle();
