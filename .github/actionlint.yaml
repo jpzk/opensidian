@@ -1,0 +1,7 @@
+# actionlint config (#188). ubuntu-26.04 / ubuntu-26.04-arm are GitHub-hosted labels that
+# actionlint 1.7.12's built-in table predates; listing them here is the documented way to
+# tell actionlint about labels it does not know (not self-hosted runners).
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04
+    - ubuntu-26.04-arm
