@@ -7722,8 +7722,11 @@ async function wikiClick(e, a) {
   if (a.classList.contains("wiki-unresolved")) await createNote(n);
   if (e.ctrlKey) {                            // R6.4: new tab, same group
     await flushSave(g);
-    g.tabs.push(mkTab(n));
-    g.active = g.tabs.length - 1;
+    // #171: the new tab goes DIRECTLY RIGHT of the active one (openNewTab's contract; stock 1.13.7 cfA*,cfB,cfC +
+    // Ctrl+click [[cfD]] -> cfA,cfD*,cfB,cfC), not at the far end. No splice: the tabclose census counts those.
+    const at = g.active >= 0 ? g.active + 1 : g.tabs.length, nt = mkTab(n);
+    g.tabs.push(nt); g.tabs.copyWithin(at + 1, at); g.tabs[at] = nt;
+    g.active = at;
     await loadActive(g);
     if (an) await navAnchor(g, an);
   } else navigate(g, n, an);
@@ -7862,8 +7865,11 @@ async function pvWikiClick(a, e) {
     await createNote(n);
   if (e.ctrlKey) {                               // R6.4: open in NEW TAB, same group
     await flushSave(g);
-    g.tabs.push(mkTab(n));
-    g.active = g.tabs.length - 1;
+    // #171: the new tab goes DIRECTLY RIGHT of the active one (openNewTab's contract; stock 1.13.7 cfA*,cfB,cfC +
+    // Ctrl+click [[cfD]] -> cfA,cfD*,cfB,cfC), not at the far end. No splice: the tabclose census counts those.
+    const at = g.active >= 0 ? g.active + 1 : g.tabs.length, nt = mkTab(n);
+    g.tabs.push(nt); g.tabs.copyWithin(at + 1, at); g.tabs[at] = nt;
+    g.active = at;
     await loadActive(g);
     if (an) await navAnchor(g, an);
   } else navigate(g, n, an);
@@ -8136,7 +8142,9 @@ function qsItems() {                 // switcher source: MRU first, rest a-z, th
     run: async ev => {               // Enter = focused group; Ctrl+Enter = new tab
       if (ev && ev.ctrlKey) {
         const g = fg();
-        g.tabs.push(mkTab(n)); g.active = g.tabs.length - 1;
+        // #171: right of the active tab, like Ctrl+click on a link (stock 1.13.7 cfA,cfD*,cfB,cfC)
+        const at = g.active >= 0 ? g.active + 1 : g.tabs.length, nt = mkTab(n);
+        g.tabs.push(nt); g.tabs.copyWithin(at + 1, at); g.tabs[at] = nt; g.active = at;
         await loadActive(g);
       } else await openInTab(n);
     },
