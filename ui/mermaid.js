@@ -15,13 +15,17 @@
    message plus the source. A light/dark switch re-renders every live diagram. */
 (function () {
   "use strict";
-  const live = new Set();             // wrappers currently showing (or about to show) a diagram
+  // no registry of wrappers: a theme switch finds the live ones in the DOM, so a replaced reading
+  // view or a destroyed Live Preview widget is never retained (CodeAnt #232)
+  const W_LIVE = ".mermaid-wrapper:not(.is-guarded)";
+  const sessAllow = new Set();        // vaults allowed this session when localStorage cannot persist it
   let queue = Promise.resolve();      // one render at a time: a hostile diagram cannot stack up work
   let busy = 0, pubT = 0;             // renders queued or running; title-census refresh timer
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
   const vaultKey = () => "os-mermaid-allow:" + (typeof vaultPath !== "undefined" && vaultPath ? vaultPath : "");
-  function allowed() { try { return localStorage.getItem(vaultKey()) === "1"; } catch (_) { return false; } }
+  function allowed() { if (sessAllow.has(vaultKey())) return true; try { return localStorage.getItem(vaultKey()) === "1"; } catch (_) { return false; } }
   function allow() {
+    sessAllow.add(vaultKey());        // holds for this session even if storage is unavailable or full
     try { localStorage.setItem(vaultKey(), "1"); } catch (_) {}
     for (const w of document.querySelectorAll(".mermaid-wrapper.is-guarded")) if (w._mmSrc != null) show(w);
   }
@@ -80,13 +84,12 @@
   }
   function render(w) {
     const libs = window.__osLibs, gen = (w._mmGen = (w._mmGen || 0) + 1);
-    live.add(w);
     if (!libs || typeof libs.renderMermaid !== "function") { fail(w, new Error("Mermaid is not available")); return Promise.resolve(); }
     if (!w.firstChild) w.append(sourceBlock(w._mmSrc));
     w.classList.add("is-loading");
     busy++;
     const job = queue.then(() => {
-      if (!w.isConnected && w._mmLive) { live.delete(w); return; }
+      if (!w.isConnected && w._mmLive) return;
       return libs.renderMermaid(w._mmSrc).then(r => {
         if (gen !== w._mmGen) return;
         const m = el("div", "mermaid");
@@ -125,9 +128,8 @@
     const t = theme();
     if (t === thm) return;
     thm = t;
-    for (const w of Array.from(live)) {
-      if (!w.isConnected) { live.delete(w); continue; }
-      if (!w.classList.contains("is-guarded")) render(w);
+    for (const w of document.querySelectorAll(W_LIVE)) {
+      if (w._mmSrc != null) render(w);
     }
   }
   function watch() {
@@ -163,5 +165,5 @@
       "|sl=" + sl + "|net=" + net + "|fill=" + fill +
       (r ? "|btn=" + Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2) : "") + "]";
   }
-  window.Merm = { block, reading, allowed, allow, rendered: 0, live: () => live.size, tok };
+  window.Merm = { block, reading, allowed, allow, rendered: 0, live: () => document.querySelectorAll(W_LIVE).length, tok };
 })();

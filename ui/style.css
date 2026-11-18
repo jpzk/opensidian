@@ -2475,6 +2475,8 @@ svg.gi { width: 12px; height: 12px; vertical-align: -2px; display: inline-block;
 
 /* #187 Mermaid (ui/mermaid.js): the per-vault trust guard, the diagram, inline errors */
 .mermaid-wrapper { margin: 0.5em 0; }
+/* Live Preview: the widget is measured by CodeMirror; a child margin would collapse through it (CodeAnt #232) */
+.cm-preview-code-block > .mermaid-wrapper { margin: 0; padding: 0.5em 0; }
 .mermaid-guard-header { display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding: 8px 12px; border: 1px solid var(--background-modifier-border); border-radius: 6px 6px 0 0;
   background: var(--background-secondary); }
