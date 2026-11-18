@@ -1534,6 +1534,7 @@ function tywGhost(g, R) {
 }
 function tywMeasure(rd, R) {
   const ctx = (tywCanvas = tywCanvas || document.createElement("canvas")).getContext("2d");
+  if (!ctx) return "";   // #144 toggle 6: HTML canvas off (census only)
   const fnt = el => { const s = getComputedStyle(el); return s.fontStyle + " " + s.fontWeight + " " + s.fontSize + " " + s.fontFamily; };
   const met = (el, ch) => { ctx.font = fnt(el); return ctx.measureText(ch); };
   const find = s => { const w = document.createTreeWalker(R, NodeFilter.SHOW_TEXT);
@@ -1606,6 +1607,7 @@ function ttlTok() {
   const s = getComputedStyle(R, "::before");
   if (s.content === "none" || s.display === "none") return "";
   const ctx = (ttlCanvas = ttlCanvas || document.createElement("canvas")).getContext("2d");
+  if (!ctx) return "";   // #144 toggle 6: HTML canvas off (census only)
   const fnt = c => c.fontStyle + " " + c.fontWeight + " " + c.fontSize + " " + c.fontFamily;
   const f = v => Number.isFinite(v) ? String(Math.round(v * 100) / 100) : "-";
   const rr = R.getBoundingClientRect(), rs = getComputedStyle(R);
@@ -4248,6 +4250,13 @@ function utBuild() {             // pane/focus census in the window title (headl
       const xi = s => String(s == null ? "" : s).replace(/[[\]|]/g, "").slice(0, 100);
       md += " [xi:" + ims.length + "/" + ims.filter(i => i.naturalWidth > 0).length + "/" + nmiss +
             ims.slice(0, 3).map(i => "|" + xi(i.getAttribute("src"))).join("") + "]";
+      // #144 toggle 1: [xr:<banners naming Load external resources>/<https players>/<page CSP https: 1|0>]
+      const rs = window.__osSecurity && __osSecurity.get();
+      md += " [xr:" + rv.querySelectorAll(".imgmiss[data-sec=\"remoteMedia\"]").length + "/" +
+            rv.querySelectorAll("audio.rmedia, video.rmedia").length + "/" + (rs && rs.pageRemote ? 1 : 0) + "]";
+      // #144 toggle 4: [xm:<placeholders naming Render media>/<vault media elements>/<page CSP vault media 1|0>]
+      md += " [xm:" + rv.querySelectorAll(".imgmiss[data-sec=\"vaultMedia\"]").length + "/" +
+            rv.querySelectorAll("img.vimg, .pdf-embed, .audio-embed").length + "/" + (rs && rs.pageMedia === false ? 0 : 1) + "]";
     }
   }
   // pdfembed probe: the focused note view's PDF frames ->
@@ -4459,6 +4468,7 @@ function utBuild() {             // pane/focus census in the window title (headl
       const tokc = (n, alt) => { const raw = tokv(n);   // the same three rungs as palette() (PAL_ALT)
         return res(raw) || res(csR.getPropertyValue(n).trim().toLowerCase()) || (alt ? res(tokv(alt)) : "") || raw; };
       gpx = " [gl:" + ((fgr && fgr.graphRenderer) || "none") + "] [graphbg:" + tokc("--graph-bg") + "] [graphnode:" + tokc("--accent-blue", "--color-accent") + "]";
+      if (fgr && fgr.graphGlWhy) gpx += " [glsec:" + fgr.graphGlWhy + "]";   // #144 toggle 5
       const cvEl = fgr && fgr.graph;
       if (cvEl && !cvEl.hidden) {
         const r = cvEl.getBoundingClientRect();
@@ -4651,6 +4661,14 @@ function utBuild() {             // pane/focus census in the window title (headl
   wsTouch();   // R28.3: every mutation already funnels through here — arm the layout write
 }
 let tSending = false, tWant = "";
+/* #144 toggle 12: while the process runs in lockdown (latched at start; security.js sets
+   window.__osLockdown from security_get) the WINDOW title carries " — Lockdown", inserted
+   before the first census token so the tokens stay at the end. document.title is untouched. */
+function lockTitle(t) {
+  if (!window.__osLockdown) return t;
+  const i = t.indexOf(" [");
+  return i < 0 ? t + " — Lockdown" : t.slice(0, i) + " — Lockdown" + t.slice(i);
+}
 function pushTitle(t) {
   tWant = t;
   if (tSending) return;
@@ -4663,7 +4681,7 @@ function pushTitle(t) {
     if (tWant !== cur) pushTitle(tWant);
   };
   try {
-    TAURI.window.getCurrentWindow().setTitle(cur).catch(() => {}).then(fin);
+    TAURI.window.getCurrentWindow().setTitle(lockTitle(cur)).catch(() => {}).then(fin);
   } catch (e) { fin(); }
   setTimeout(fin, 500);
 }
@@ -8931,6 +8949,12 @@ const PDFV = (() => {
       if (!p || p === this.path || !Ed.isPdf(p)) return;
       this.path = p;
       try { const f = PLG.app.vault.getAbstractFileByPath(p); this.file = f || null; } catch (_) { this.file = null; }
+      if (!Ed.mediaOn()) {                      // #144 toggle 4 off: the placeholder, no frame, no pdf_info
+        this.frame = null;
+        this.contentEl.replaceChildren(Ed.mediaOffEl(p));
+        updateTitle();
+        return;
+      }
       const s = this.frame = document.createElement("span");
       s.className = "internal-embed pdf-embed";
       s.dataset.pdf = Ed.pctEnc(p); s.dataset.page = "1"; s.dataset.height = ""; s.dataset.alt = ""; s.dataset.full = "1";
@@ -8995,6 +9019,8 @@ const IMGV = (() => {
         const s = document.createElement("span");
         s.className = "imgmiss"; s.dataset.miss = p;
         box.appendChild(s); this.img = null;
+      } else if (!Ed.mediaOn()) {               // #144 toggle 4 off: the placeholder, no URL
+        box.appendChild(Ed.mediaOffEl(p)); this.img = null;
       } else {
         const im = this.img = document.createElement("img");
         im.alt = base(p); im.draggable = false;
@@ -11781,17 +11807,28 @@ const gnKind = nd => nd.kind ? nd.kind : nd.resolved ? 0 : 1;
 let graphPrefP = null;
 const graphRendererPref = () => graphPrefP || (graphPrefP = inv("graph_renderer_pref").catch(() => null).then(p => {
   const r = (p && p.renderer) || localStorage.getItem("opensidian.graphRenderer");
-  return { renderer: r === "gl" || r === "2d" ? r : null, loseCtx: !!(p && p.lose_ctx), settleTrace: !!(p && p.settle_trace) };
+  return { renderer: r === "gl" || r === "2d" ? r : null, loseCtx: !!(p && p.lose_ctx), settleTrace: !!(p && p.settle_trace), security: (p && p.security) || null };
 }));
+// #144 toggle 5 (Settings › Security › WebGL): the "security-webgl" event (security_set) calls this when the effective value
+// moves. The backend already flipped the webview's enable-webgl; every open graph re-opens at once
+// from its kept layout (loadActive = the tab-switch path) on the new draw path, and a cached GL
+// renderer is dropped so an off graph holds no context. Plugins see the change after a reload.
+window.opensidianGraphGl = () => {
+  graphPrefP = null;
+  for (const g of groups()) {
+    if (g.glr) { g.glr = null; if (g.glcv) { g.glcv.remove(); g.glcv = null; } }
+    if (g.graphOn) loadActive(g);
+  }
+};
 function showEditor(g) {
-  g.graphOn = false; g.graphRefresh = null; g.graphRedraw = null; g.graphAnimate = null; g.graphAnimState = null; g.graphRc = null; cancelAnimationFrame(g.sim); g.graphRenderer = null;
+  g.graphOn = false; g.graphRefresh = null; g.graphRedraw = null; g.graphAnimate = null; g.graphAnimState = null; g.graphRc = null; cancelAnimationFrame(g.sim); g.graphRenderer = null; g.graphGlWhy = null;
   // retire the sim (startGraph's gen starts at 1): a physics batch still in the Worker lands nowhere and
   // posts no next one, so the kept layout stays the frame the user left, as when the loop was only a rAF
   g.simGen = 0; if (g.gwRelease) g.gwRelease();
   if (g.ro) { g.ro.disconnect(); g.ro = null; }
   if (g.attrObs) { g.attrObs.disconnect(); g.attrObs = null; }
   perf.flush();                    // ship buffered graph_frame samples of the closed sim
-  g.graph.hidden = true; if (g.glcv) g.glcv.hidden = true;
+  g.graph.hidden = true; if (g.glcv) g.glcv.hidden = true; if (g.cvOffEl) g.cvOffEl.hidden = true;   // #144 toggle 6 placeholder
   gcUnbind(g); g.gfF = null; g.gfApply = null;   // the graph-controls card belongs to a graph view
   applyMode(g);
 }
@@ -11848,6 +11885,16 @@ async function startGraph(g, cfg) {
   const fetchP = cfg.fetch(), prefP = graphRendererPref();   // backend works while the renderer comes up
   const gcP = cfg.scope ? Promise.resolve(cfg.scope()) : null;   // graph-controls scope: graph.json (read beside the fetch) or the lg tab's options
   const ctx = cv.getContext("2d");
+  if (!ctx) {   // #144 toggle 6: HTML canvas off -> getContext is null in this realm; the graph names the switch instead of drawing
+    cv.hidden = true; if (g.glcv) g.glcv.hidden = true;
+    let ph = g.cvOffEl;
+    if (!ph) { ph = g.cvOffEl = document.createElement("div"); ph.className = "graph-secoff"; ph.dataset.sec = "canvas"; cv.parentNode.insertBefore(ph, cv.nextSibling); }
+    ph.textContent = "Graph view needs HTML canvas — " + (window.opensidianCanvasOff || "HTML canvas is off (Settings › Security › HTML canvas)");
+    ph.hidden = false;
+    g.graphRenderer = null; g.graphGlWhy = "canvas-off";   // census [gl:none] [glsec:canvas-off]
+    console.warn("[sec] graph not drawn: " + ph.textContent);
+    return;
+  }
   // graph-webgl: DEFAULT draw path is WebGL (ui/graph-gl.js) on a .graphgl canvas BEHIND cv
   // (nodes + edges); cv stays on top for events, labels (Canvas 2D text) and the 2D fallback.
   // Fallback to the full 2D path when: forced (env/setting), no webgl context, or the
@@ -11958,7 +12005,7 @@ async function startGraph(g, cfg) {
     return p;
   };
   let glr = null, reason = "default";
-  if (pref.renderer === "2d") reason = "forced:2d";
+  if (pref.renderer === "2d") reason = pref.security ? "security:webgl-off" : "forced:2d";   // #144 toggle 5: graph_renderer_pref says 2d while WebGL is off
   else if (!window.GraphGL) reason = "no-module";
   else {
     if (!g.glr || g.glr.lost) {
@@ -11974,6 +12021,7 @@ async function startGraph(g, cfg) {
   const gpu = glr ? { gpu_vendor: glr.info.vendor, gpu_renderer: glr.info.renderer } : { gpu_vendor: "", gpu_renderer: "" };
   cv.classList.toggle("gl-on", !!glr); if (g.glcv) g.glcv.hidden = !glr;
   g.graphRenderer = glr ? "gl" : "2d";   // census [gl:] — which draw path painted the shot
+  g.graphGlWhy = !glr && pref.security ? "webgl-off" : null;   // #144 toggle 5: census [glsec:] (only while WebGL is off)
   perf.mark("graph_renderer", rT0, { renderer: glr ? "gl" : "2d", reason, webgl: glr ? glr.info.webgl : 0, ...gpu });
   const gr = await fetchP;
   // R16 GRAPH FIT (Obsidian-faithful, docs/requirements.md R16): the sim runs in
@@ -12724,6 +12772,10 @@ async function startGraph(g, cfg) {
       redraw();
       return;
     }
+    // #172: a wheel event with no vertical part (touchpad sideways swipe, tilt wheel, shift+wheel
+    // reaching us as deltaX only) is not a zoom step — stock 1.13.7 keeps the scale (1 -> 1).
+    // Without this guard deltaY == 0 fell into the "+1" branch below and zoomed OUT per event.
+    if (!e.deltaY) return;
     view.notch = Math.max(GZ_IN, Math.min(GZ_OUT, view.notch + (e.deltaY < 0 ? -1 : 1)));
     const s = notchScale(view.notch);
     view.tx = mx - view.wx * s; view.ty = my - view.wy * s; view.scale = s;
@@ -13302,6 +13354,8 @@ async function onVaultChanged(c) {
 }
 TAURI.event.listen("vault-changed", e => onVaultChanged(e.payload));
 TAURI.event.listen("vault-css-changed", e => onVaultCssChanged(e.payload));  // themefs item 6: hot reload
+TAURI.event.listen("security-webgl", () => window.opensidianGraphGl());   // #144 toggle 5: security_set moved the effective WebGL value
+TAURI.event.listen("security-clip", e => say(String(e.payload || ""), "secclip"));   // #144 toggle 9: the native gate swallowed a clipboard key / middle-click
 // R31.1: a real OS drop arrives here, from Rust, never from a DOM drop event.
 // osdrop: the payload is [paths, x, y] (main.rs R31.1), x/y physical px in the webview
 TAURI.event.listen("drop-files", e => { const p = e.payload || []; attachDrop(p[0] || [], { x: p[1], y: p[2] }); });
@@ -13567,6 +13621,7 @@ function setTok() {
          " [spane:" + sPane + "/" + sRowsShown + "/" + sEnabledShown + "]" +
          svtTok() + ssnTok() + sactTok() + slbTok() + sqfTok() + fontSetTok() +
          (window.__osPluginSettings ? __osPluginSettings.tok() : "") +
+         (window.__osSecurity ? __osSecurity.tok() : "") +
          (sfpMs >= 0 ? " [sfp:" + sfpMs + "/" + sfpMax + "/" +
                        (Math.round(sfpSum / sfpN * 100) / 100) + "/" + sfpN + "]" : "") +
          (sfpW >= 0 ? " [sfpw:" + sfpW + "/" + sfpWMax + "]" : "");
