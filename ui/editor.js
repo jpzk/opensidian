@@ -527,14 +527,68 @@ const Ed = {
   // banner a missing local target takes, labelled with the constant
   // "remote image" (main.rs REMOTE_IMG_LABEL), never the URL. The renderer
   // refusing to mint the src is layer 1; the CSP's img-src is the backstop.
+  // #144 toggle 1 (Load external resources) mirrors main.rs image_html / remote_html:
+  // an https target mints its element ONLY while this page's CSP carries https:
+  // (security_get pageRemote, ui/security.js); otherwise the banner, and data-why
+  // names the setting that is the cause (CSS paints it after the R29.4 sentence).
+  remoteOn() {
+    const s = window.__osSecurity && window.__osSecurity.get();
+    return !!(s && s.pageRemote === true);
+  },
+  // #144 toggle 4 (Render media) mirrors main.rs media_off_html: while THIS page's CSP lacks
+  // opensidian-img: / blob: (security_get pageMedia === false, ui/security.js) a resolved vault
+  // image / PDF / audio embed is ONE placeholder — no src, no data-pdf, no media_read. No text
+  // node (the LP row's textContent stays its source line): CSS paints data-name + data-why.
+  mediaOn() {
+    const s = window.__osSecurity && window.__osSecurity.get();
+    return !(s && s.pageMedia === false);
+  },
+  MEDIA_WHY: "(Settings › Security › Render media)",
+  mediaOffEl(rel) {
+    const s = Ed.el("span", "imgmiss secmedia");
+    s.dataset.name = String(rel).split("/").pop();
+    s.dataset.sec = "vaultMedia";
+    s.dataset.why = Ed.MEDIA_WHY;
+    s.contentEditable = "false";
+    return s;
+  },
+  remoteEl(url, alt) {
+    const ext = (url.split(/[?#]/)[0].match(/\.([^./]+)$/) || ["", ""])[1].toLowerCase();
+    const kind = ["mp4", "m4v", "mov", "ogv"].includes(ext) ? "video" : Ed.isAudio("x." + ext) ? "audio" : "img";
+    const e = Ed.el(kind, kind === "img" ? "rimg" : "rmedia");
+    if (kind === "img") {
+      e.setAttribute("loading", "lazy");        // before src, as for vault images (audit #10)
+      e.setAttribute("referrerpolicy", "no-referrer");
+      e.setAttribute("alt", alt || "");
+      e.draggable = false;
+    } else {
+      e.setAttribute("controls", ""); e.setAttribute("preload", "none");
+      e.setAttribute("title", alt || "");
+    }
+    e.setAttribute("src", url);
+    e.contentEditable = "false";
+    return e;
+  },
   imgEl(target, alt, remote) {
-    const src = remote ? null : Ed.imgSrc(target);
-    if (src === null) {
+    if (remote) {
+      const on = Ed.remoteOn();
+      if (on && /^https:\/\//i.test(target)) return Ed.remoteEl(target, alt);
       const s = Ed.el("span", "imgmiss");
-      s.dataset.miss = remote ? "remote image" : target;  // CSS: “<label>” could not be found.
+      s.dataset.miss = "remote image";
+      s.dataset.sec = "remoteMedia";
+      s.dataset.why = on ? "(Settings › Security › Load external resources: only https:// addresses load)"
+                         : "(Settings › Security › Load external resources is off)";
       s.contentEditable = "false";
       return s;
     }
+    const src = Ed.imgSrc(target);
+    if (src === null) {
+      const s = Ed.el("span", "imgmiss");
+      s.dataset.miss = target;  // CSS: “<label>” could not be found.
+      s.contentEditable = "false";
+      return s;
+    }
+    if (!Ed.mediaOn()) return Ed.mediaOffEl(Ed.imgRel(target));   // #144 toggle 4 off
     const im = Ed.el("img", "vimg");
     // audit #10: fetch on approach, not at render. Every opensidian-img request is
     // answered on the UI process's main loop, so 20k eager embeds queued 20k
@@ -590,6 +644,7 @@ const Ed = {
       s.contentEditable = "false";
       return s;
     }
+    if (!Ed.mediaOn()) return Ed.mediaOffEl(rel);   // #144 toggle 4 off: no frame, no pdf_info
     const f = Ed.pdfFrag(frag || "");
     const s = Ed.el("span", "internal-embed pdf-embed");
     s.dataset.pdf = Ed.pctEnc(rel);
@@ -630,6 +685,8 @@ const Ed = {
     return L.find(x => x === dec) || L.find(x => x.endsWith("/" + dec)) || null;
   },
   audioEl(target, alt) {
+    // #144 toggle 4 off: the placeholder (the note's target name; nothing resolved, no media_read)
+    if (!Ed.mediaOn()) return Ed.mediaOffEl(Ed.pctDec(target) ?? target);
     const s = Ed.el("span", "internal-embed media-embed audio-embed");
     s.dataset.target = target;
     s.dataset.alt = alt || "";
@@ -1152,12 +1209,12 @@ const Ed = {
       }
     }
     Ed.snap(g, "indent");
-    let dc = 0;
+    let dc = 0, da = 0;                                      // column shift on the to / the from line
     for (let l = first; l <= last; l++) {
       if (out) {
         const m = /^(\t| {1,4})/.exec(L[l]);
-        if (m) { L[l] = L[l].slice(m[0].length); if (l === s.b.l) dc = -m[0].length; }
-      } else { L[l] = "\t" + L[l]; if (l === s.b.l) dc = 1; }
+        if (m) { L[l] = L[l].slice(m[0].length); if (l === s.b.l) dc = -m[0].length; if (l === s.a.l) da = -m[0].length; }
+      } else { L[l] = "\t" + L[l]; if (l === s.b.l) dc = 1; if (l === s.a.l) da = 1; }
     }
     // M32: an ordered item that changes level RESTARTS the run it joins, and
     // the run it LEFT closes up over the hole ("3. c" -> "2. c").
@@ -1166,7 +1223,17 @@ const Ed = {
       if (it.num !== null) Ed.renumber(L, first, it, Ed.startNum(L, first, it));
       Ed.renumber(L, last + 1, old, Ed.startNum(L, last + 1, old));
     }
-    Ed.after(g, s.b.l, Math.max(0, s.b.c + dc));
+    if (s.empty) { Ed.after(g, s.b.l, Math.max(0, s.b.c + dc)); return; }
+    // #161: a real selection stays selected, both ends shifted with their line's indent and the
+    // direction kept (stock 1.13.7: 0:0-2:3 -> Tab 0:1-2:4 -> Tab 0:2-2:5), so the next Tab /
+    // Shift+Tab moves the same lines again
+    const cm = Ed.cm(g), back = !!cm && cm.state.selection.main.anchor > cm.state.selection.main.head;
+    Ed.commit(g);
+    const from = Ed.off(g, s.a.l, Math.max(0, s.a.c + da)), to = Ed.off(g, s.b.l, Math.max(0, s.b.c + dc));
+    if (!cm) return;
+    cm.dispatch({ selection: { anchor: back ? to : from, head: back ? from : to } });
+    if (!cm.hasFocus) cm.focus();
+    Ed.mark(g, Ed.focusPos(g).l);
   },
   /* R17.4 M46-M51 Ctrl+L "Toggle checkbox status" (in 1.13.7 this is the task
      toggle — Ctrl+Enter is NOT, see M45/M92): a task flips [ ] <-> [x] in
@@ -1319,8 +1386,17 @@ const Ed = {
     const s = Ed.sel(g);
     if (!s) return;
     const L = Ed.lines(g), l = s.b.l, line = L[l];
-    const a = line.lastIndexOf("[[", s.b.c);
-    if (a < 0) return;
+    // #162: replace the [[ that was TYPED: the nearest [[ that ends at or before the caret, never
+    // a [[ that starts AT the caret (an existing link right after it); stock replaces [start, caret)
+    if (s.b.c < 2) return;
+    const a = line.lastIndexOf("[[", s.b.c - 2);
+    if (a < 0 || line.slice(a + 2, s.b.c).includes("]]")) return;
+    // #211 review: a context that went stale (caret moved to another [[ while an async heading
+    // read was in flight) must not replace the text between its old opener and the caret
+    if (typeof start === "number" && start >= 0) {
+      const p = Ed.lc(g, start);
+      if (p.l !== l || p.c !== a) return;
+    }
     Ed.replace(g, { a: { l, c: a }, b: { l, c: s.b.c }, empty: false }, "[[" + name + "]]", "ac");
   },
   linkClick(e, a) {
@@ -1718,6 +1794,23 @@ Ed.rvTaskTok = () => {
   }
   return " [rvtask:" + bs.length + "/" + bs.filter(b => b.checked).length + "] [rvtaskxy:" + (xy.join("|") || "-") + "] [rvtaskst:" + Math.round(g.preview.scrollTop) + "]";
 };
+/* #128 census -> " [lptaskxy:<line>:<x>,<y>|...] [lpst:<scrollTop>]" for the FOCUSED group's Live Preview:
+   the painted centre of every LP task checkbox inside the editor viewport, keyed by its 0-based source
+   line, first 40 (Ed.geom's [ecb:] stops at 40-row notes; the task_toggle phase clicks boxes of a
+   5000-line note). lpst = g.lp.scrollTop, the Live Preview scroller (not cm.scrollDOM) (a toggle must not move the view). Census only. */
+Ed.lpTaskTok = () => {
+  const g = typeof fg === "function" ? fg() : null, cm = Ed.cm(g);
+  if (!cm || !g.lp || !g.lp.isConnected || (typeof isReading === "function" && isReading(g))) return "";
+  const lb = g.lp.getBoundingClientRect(), xy = [];
+  for (const b of g.lp.querySelectorAll("input.tbox")) {
+    const r = b.getBoundingClientRect();
+    if (!r.width || r.top < lb.top || r.bottom > lb.bottom) continue;
+    let l; try { l = cm.state.doc.lineAt(cm.posAtDOM(b, 0)).number - 1; } catch (_) { continue; }
+    xy.push(l + ":" + Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2));
+    if (xy.length >= 40) break;
+  }
+  return " [lptaskxy:" + (xy.join("|") || "-") + "] [lpst:" + Math.round(g.lp.scrollTop) + "]";
+};
 /* rvtask R5: [rvtaskxy:]/[rvtaskst:] are geometry, so the census must follow a
    READING-VIEW scroll (nothing else refreshes the title on one — the same
    reason the context menu refreshes it on its own scroll). Debounced: one
@@ -1790,6 +1883,7 @@ Object.assign(Ed, {
     // the mirror must be OF the current doc: after setText (or typing since Ed.lines()) the doc moved
     // on, and diffing a stale mirror dispatched a revert (reloadInPlace -> lpRender undid the reload)
     if (v._Ld !== cm.state.doc) { v._snap = null; return false; }
+    let t = performance.now();                         // #128: Ed._tt sub-timings (task_toggle)
     const oldT = cm.state.doc.toString(), newT = L.join("\n");
     if (oldT === newT) { v._Ld = cm.state.doc; return false; }
     const m = Math.min(oldT.length, newT.length);
@@ -1797,8 +1891,12 @@ Object.assign(Ed, {
     while (p < m && oldT.charCodeAt(p) === newT.charCodeAt(p)) p++;
     while (s < m - p && oldT.charCodeAt(oldT.length - 1 - s) === newT.charCodeAt(newT.length - 1 - s)) s++;
     const kind = v._snap || "edit"; v._snap = null;
-    cm.dispatch({ changes: { from: p, to: oldT.length - s, insert: newT.slice(p, newT.length - s) },
+    if (Ed._tt) { Ed.ttAdd("diff_ms", t); t = performance.now(); }
+    const tr = cm.state.update({ changes: { from: p, to: oldT.length - s, insert: newT.slice(p, newT.length - s) },
                   annotations: [CMc.isolateHistory.of("full"), CMs.Transaction.userEvent.of("os." + kind)] });
+    if (Ed._tt) { void tr.state; Ed.ttAdd("fields_ms", t); t = performance.now(); }   // every StateField's update
+    cm.dispatch(tr);
+    if (Ed._tt) Ed.ttAdd("view_ms", t);                // view update: plugins, DOM, update listeners
     v.lines = L; v._Ld = cm.state.doc;                 // the caller's array IS the doc now
     return true;
   },
@@ -2042,7 +2140,7 @@ Object.assign(Ed, {
       if (!t || view.state.readOnly) return;
       const st = view.state.doc === doc0 ? view.state.update({ selection: sel0 }).state : view.state;
       view.dispatch(st.replaceSelection(String(t)), { scrollIntoView: true, userEvent: "input.paste" });
-    }, err => console.warn("clip_text:", err));
+    }, err => { console.warn("clip_text:", err); const m = String(err && err.message || err); if (/^EPERM: /.test(m) && typeof say === "function") say(m, "secclip"); });   // #144: the refusal names its toggle
     return true;
   },
   mount(v) {
@@ -2133,9 +2231,13 @@ Object.assign(Ed, {
         u.changes.iterChanges((fa, ta, fb, tb, ins) => ch.push([fa, ta, ins.length]));
         for (let i = ch.length - 1; i >= 0; i--) scShift(g, ch[i][0], ch[i][1], ch[i][2]);
       }
+      let tt = Ed._tt ? performance.now() : 0;         // #128 sub-timings (task_toggle)
       Ed.sync(g);
+      if (tt) { Ed.ttAdd("sync_ms", tt); tt = performance.now(); }
       if (typeof scheduleSave === "function") scheduleSave(g);
+      if (tt) { Ed.ttAdd("save_ms", tt); tt = performance.now(); }
       if (typeof showAc === "function") showAc(g);
+      if (tt) Ed.ttAdd("ac_ms", tt);
       if (v._sp) { const sp = v._sp; v._sp = null; if (otel.paint) otel.paint(sp); }
       if (typeof perf !== "undefined" && perf.mark) {
         // R18 ed_patch = the JS work after ONE doc change (CM6 redraws only the
@@ -2808,8 +2910,11 @@ Ed.lpExt = function (v, G) {
   const plugin = ViewPlugin.fromClass(class {
     constructor(view) { this.decorations = build(view); }
     update(u) {
-      if (u.docChanged || u.selectionSet || u.viewportChanged || u.transactions.some(t => t.reconfigured || t.effects.some(e => e.is(bust))))
+      if (u.docChanged || u.selectionSet || u.viewportChanged || u.transactions.some(t => t.reconfigured || t.effects.some(e => e.is(bust)))) {
+        const tt = Ed._tt ? performance.now() : 0;
         this.decorations = build(u.view);
+        if (tt) Ed.ttAdd("lp_ms", tt);                  // #128 sub-timing: the LP row decorations
+      }
     }
   }, { decorations: p => p.decorations });
   const clicks = EditorView.domEventHandlers({
@@ -2976,8 +3081,9 @@ Ed.cbField = function (v, G, bust) {
   const field = CMs.StateField.define({
     create: st => { try { return build(st); } catch (e) { console.error(e); return Decoration.none; } },
     update(d, tr) {
+      if (tr.docChanged && !tr.selection) { const k = Ed.flipKeep(d, tr); if (k) return k; }   // #128: a task flip outside every block
       if (tr.docChanged || tr.selection || tr.effects.some(e => e.is(bust) || e.is(Ed.cbFx)))
-        try { return build(tr.state); } catch (e) { console.error(e); return Decoration.none; }
+        { const tt = Ed._tt ? performance.now() : 0; try { return build(tr.state); } catch (e) { console.error(e); return Decoration.none; } finally { if (tt) Ed.ttAdd("cb_ms", tt); } }   // #128 sub-timing
       return d;
     },
     provide: f => EditorView.decorations.from(f),
@@ -3082,8 +3188,9 @@ Ed.coField = function (v, G, bust) {
   return CMs.StateField.define({
     create: st => { try { return build(st); } catch (e) { console.error(e); return Decoration.none; } },
     update(d, tr) {
+      if (tr.docChanged && !tr.selection) { const k = Ed.flipKeep(d, tr); if (k) return k; }   // #128: a task flip outside every block
       if (tr.docChanged || tr.selection || tr.effects.some(e => e.is(bust)))
-        try { return build(tr.state); } catch (e) { console.error(e); return Decoration.none; }
+        { const tt = Ed._tt ? performance.now() : 0; try { return build(tr.state); } catch (e) { console.error(e); return Decoration.none; } finally { if (tt) Ed.ttAdd("co_ms", tt); } }   // #128 sub-timing
       return d;
     },
     provide: f => EditorView.decorations.from(f),
@@ -3106,7 +3213,7 @@ Ed.coTok = function () {
   const safe = s => String(s || "").replace(/[^\w -]/g, "_").replace(/\s+/g, " ").trim().slice(0, 24);
   // composited background: every layer from the first opaque ancestor up, painted on a 1x1 canvas (any CSS
   // colour syntax — color-mix() computes to oklch()/color() — and the element's own mix-blend-mode)
-  const bg = e => { const L = []; for (let x = e; x && x.nodeType === 1; x = x.parentElement) { const cs = getComputedStyle(x), b = cs.backgroundColor || ""; if (!b || b === "transparent" || /^rgba\([^)]*,\s*0\)$/.test(b)) continue; L.push([b, cs.mixBlendMode]); const k = document.createElement("canvas").getContext("2d"); k.fillStyle = "#000"; k.fillStyle = b; k.fillRect(0, 0, 1, 1); if (k.getImageData(0, 0, 1, 1).data[3] === 255) break; } if (!L.length) return "-"; const cv = document.createElement("canvas"); cv.width = cv.height = 1; const k = cv.getContext("2d"); for (let i = L.length - 1; i >= 0; i--) { k.globalCompositeOperation = L[i][1] && L[i][1] !== "normal" ? L[i][1] : "source-over"; k.fillStyle = L[i][0]; k.fillRect(0, 0, 1, 1); } const d = k.getImageData(0, 0, 1, 1).data; return d[0] + "." + d[1] + "." + d[2]; };
+  const bg = e => { if (window.opensidianCanvasOff) return "-"; const L = [];   /* #144 toggle 6 */ for (let x = e; x && x.nodeType === 1; x = x.parentElement) { const cs = getComputedStyle(x), b = cs.backgroundColor || ""; if (!b || b === "transparent" || /^rgba\([^)]*,\s*0\)$/.test(b)) continue; L.push([b, cs.mixBlendMode]); const k = document.createElement("canvas").getContext("2d"); k.fillStyle = "#000"; k.fillStyle = b; k.fillRect(0, 0, 1, 1); if (k.getImageData(0, 0, 1, 1).data[3] === 255) break; } if (!L.length) return "-"; const cv = document.createElement("canvas"); cv.width = cv.height = 1; const k = cv.getContext("2d"); for (let i = L.length - 1; i >= 0; i--) { k.globalCompositeOperation = L[i][1] && L[i][1] !== "normal" ? L[i][1] : "source-over"; k.fillStyle = L[i][0]; k.fillRect(0, 0, 1, 1); } const d = k.getImageData(0, 0, 1, 1).data; return d[0] + "." + d[1] + "." + d[2]; };
   const rc = e => { const r = e.getBoundingClientRect(); return [r.x, r.y, r.width, r.height].map(Math.round).join(","); };
   const nest = e => { let n = 0; for (let x = e.parentElement; x && x !== P; x = x.parentElement) if (x.classList && x.classList.contains("callout")) n++; return n; };
   const row = c => {
@@ -3249,8 +3356,9 @@ Ed.tblField = function (v, G, bust) {
   return CMs.StateField.define({
     create: st => { try { return build(st); } catch (e) { console.error(e); return Decoration.none; } },
     update(d, tr) {
+      if (tr.docChanged && !tr.selection) { const k = Ed.flipKeep(d, tr); if (k) return k; }   // #128: a task flip outside every block
       if (tr.docChanged || tr.selection || tr.effects.some(e => e.is(bust)))
-        try { return build(tr.state); } catch (e) { console.error(e); return Decoration.none; }
+        { const tt = Ed._tt ? performance.now() : 0; try { return build(tr.state); } catch (e) { console.error(e); return Decoration.none; } finally { if (tt) Ed.ttAdd("tbl_ms", tt); } }   // #128 sub-timing
       return d;
     },
     provide: f => EditorView.decorations.from(f),
@@ -3334,18 +3442,77 @@ Ed.hl = function (g, k, ranges) {
 // reveal under the pointer); the toggle runs on click, once the event has bubbled through the
 // editor, so a plugin editor extension's own click handler (Obsidian Tasks: done date, recurrence)
 // takes it with preventDefault as in stock; untaken, Ed.toggleTask flips the line itself
+// #128: interaction span task_toggle = the click event -> the toggled doc's frame committed (otel.paint),
+// with the click's sub-timings as attributes (Ed._tt is the open attribute bag while the toggle runs;
+// the sites that cost per change add their own *_ms to it). A plugin that takes the click: no span.
+Ed.ttMs = (t0) => Math.round((performance.now() - t0) * 100) / 100;
+Ed.ttAdd = (k, t0) => { const T = Ed._tt; if (T) T[k] = Math.round(((T[k] || 0) + performance.now() - t0) * 100) / 100; };
 Ed.taskBox = function (cb) {
   cb.addEventListener("mousedown", e => { e.preventDefault(); e.stopPropagation(); });
-  cb.addEventListener("click", e => setTimeout(() => { if (!e.defaultPrevented) Ed.toggleTask(e); }, 0));
+  cb.addEventListener("click", e => {
+    const sp = typeof otel !== "undefined" && otel.begin ? otel.begin("task_toggle", {}) : null, tq = performance.now();
+    // start at the input event itself (its queueing before this handler is part of what is felt)
+    if (sp && e.timeStamp > 0 && e.timeStamp <= sp.t0 && sp.t0 - e.timeStamp < 1000) sp.t0 = e.timeStamp;
+    if (sp) sp.attrs.queue_ms = Math.round((tq - sp.t0) * 100) / 100;
+    setTimeout(() => {
+      if (e.defaultPrevented) { if (sp) otel.cancel(sp); return; }
+      if (sp) sp.attrs.defer_ms = Ed.ttMs(tq);
+      Ed.toggleTask(e, sp);
+    }, 0);
+  });
 };
-// toggle "[ ]" <-> "[x]" on the checkbox's line, one undo step
-Ed.toggleTask = function (e) {
+/* toggle "[ ]" <-> "[x]" on the checkbox's line, one undo step.
+   #128: O(1) in the note size. It used to go through the model mirror (Ed.lines:
+   doc.toJSON of the whole note when stale) and Ed.commit (doc.toString + join +
+   a prefix/suffix scan) to find a 1-char change it already knows. Now it reads
+   ONE line, dispatches that char with the same annotations Ed.commit used (its
+   own undo step, userEvent os.task; the selection maps exactly as before: same
+   from/to/insert) and patches the mirror's one row when it was current. The
+   change carries Ed.TT_FLIP so the block fields (callouts, tables, code fences)
+   can map instead of rescanning the whole doc — see Ed.flipKeep. */
+Ed.TT_FLIP = CMs && CMs.Annotation.define();
+Ed.TT_RE = /^(\s*(?:[-*+]|\d+\.) )\[([^\]\n])\]/;
+Ed.toggleTask = function (e, sp) {
   const box = e.target, pane = box && box.closest ? box.closest(".pane") : null, g = pane ? pane._g : null, cm = Ed.cm(g);
-  if (!cm) return;
-  let l;
-  try { l = cm.state.doc.lineAt(cm.posAtDOM(box, 0)).number - 1; } catch (_) { return; }
-  const L = Ed.lines(g);
-  Ed.snap(g, "task");
-  L[l] = L[l].replace(/^(\s*(?:[-*+]|\d+\.) )\[([^\]\n])\]/, (_, p, ch) => p + (ch === " " ? "[x]" : "[ ]"));
-  Ed.commit(g);
+  const T = sp ? sp.attrs : null, drop = () => { if (sp) otel.cancel(sp); };
+  if (!cm) return drop();
+  let ln, t = performance.now();
+  try { ln = cm.state.doc.lineAt(cm.posAtDOM(box, 0)); } catch (_) { return drop(); }
+  if (T) { T.pos_ms = Ed.ttMs(t); t = performance.now(); T.stale = g.view._Ld !== cm.state.doc ? 1 : 0; }
+  const d0 = cm.state.doc, v = g.view, m = Ed.TT_RE.exec(ln.text);
+  if (T) { T.lines_ms = Ed.ttMs(t); t = performance.now(); }
+  if (!m) return drop();
+  const at = ln.from + m[1].length + 1, ch = m[2] === " " ? "x" : " ";
+  // a box char that could be block syntax (table pipe, quote, fence) takes no shortcut in the fields
+  const safe = !/[|>`~]/.test(m[2]);
+  v._snap = null;
+  if (T) { T.diff_ms = Ed.ttMs(t); t = performance.now(); }
+  Ed._tt = T;
+  try {
+    const tr = cm.state.update({ changes: { from: at, to: at + 1, insert: ch },
+      annotations: [CMc.isolateHistory.of("full"), CMs.Transaction.userEvent.of("os.task")]
+        .concat(safe ? [Ed.TT_FLIP.of({ from: ln.from, to: ln.to })] : []) });
+    if (T) { void tr.state; Ed.ttAdd("fields_ms", t); t = performance.now(); }   // every StateField's update
+    const L = v._Ld === d0 ? v.lines : null;
+    cm.dispatch(tr);
+    if (T) Ed.ttAdd("view_ms", t);
+    // the mirror was OF d0: its one changed row makes it OF the new doc (no toJSON on the next model call)
+    if (L && v._Ld === d0) { L[ln.number - 1] = cm.state.doc.line(ln.number).text; v._Ld = cm.state.doc; }
+  } finally { Ed._tt = null; }
+  if (!sp) return;
+  T.commit_ms = Ed.ttMs(t); T.note_lines = cm.state.doc.lines; T.changed = cm.state.doc !== d0 ? 1 : 0;
+  if (!T.changed) return drop();
+  otel.paint(sp);
+};
+/* #128: a block StateField's update for an Ed.TT_FLIP change. The flip replaces one
+   box char of a list-task line with " "/"x": it cannot start, end or join a callout
+   (">" lines), a table (pipe rows) or a fence, so the blocks are where they were —
+   unless the line sits INSIDE a rendered block, whose widget shows the old text: then
+   null (rebuild). Not a flip, or a selection/effect riding along: null as well. */
+Ed.flipKeep = function (d, tr) {
+  const f = tr.annotation(Ed.TT_FLIP);
+  if (!f || tr.selection || tr.effects.length) return null;
+  let hit = false;
+  d.between(f.from, f.to, () => { hit = true; return false; });
+  return hit ? null : d.map(tr.changes);
 };
