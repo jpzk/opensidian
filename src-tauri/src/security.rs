@@ -725,8 +725,8 @@ pub fn clip_key(keyval: u32, ctrl: bool, shift: bool) -> bool {
    page. The loaders in ui/plugins/api-functions.js reject first with the same sentence (a
    clear message only; the 403 is the boundary). The served 200 carries no-store so a page
    reloaded after the switch went off cannot be fed the engine from WebKit's memory cache.
-   Mermaid is not vendored on develop and the app's own rendering is #185-#187: the rule
-   already covers /vendor/mermaid/ and any later engine loaded from there. */
+   Mermaid (#187) is vendored under /vendor/mermaid/ and loaded by loadMermaid (the app's own
+   rendering and plugins); the same rule covers it and any later engine loaded from /vendor/<engine>/. */
 pub const ENGINES: &[(&str, &str)] = &[("mathjax", "mathjax"), ("prism", "prism"), ("mermaid", "mermaid")];
 
 /// the request path as the asset resolver will see it: %XX decoded, ASCII lowercased,

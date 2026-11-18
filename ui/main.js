@@ -5448,7 +5448,8 @@ function applyMode(g, keep) {  // exactly ONE of lp / preview fills the pane
      a widget there is a second, stale copy of every dataview/tasks block (rendered before a setting changed, never
      refreshed on a vault change) beside the reading view's live one; it is rebuilt fresh on the way back to edit. */
   const cbk = m === "reading" ? "r" : m === "source" ? "s" : "l";
-  if (g.lp._cbk !== cbk) { g.lp._cbk = cbk; if (Ed.cbHook && Ed.cbFx && Ed.cm(g)) Ed.cm(g).dispatch({ effects: Ed.cbFx.of(null) }); }
+  // #187: the app's own mermaid widgets live in the same field — rebuild for them too (no plugin hook needed)
+  if (g.lp._cbk !== cbk) { g.lp._cbk = cbk; const cm = Ed.cm(g); if (Ed.cbFx && cm && (Ed.cbHook || (Ed.cbMm && Ed.cbMm(cm.state.doc)))) cm.dispatch({ effects: Ed.cbFx.of(null) }); }
   g.preview.style.display = m === "reading" ? "" : "none";
   // modeswitch opt6: the view the edit <-> reading switch LEAVES (setMode passes
   // it as `keep`) stays laid out instead of display:none — hidden, out of flow,
@@ -7778,7 +7779,7 @@ function extClick(e, a) {   // `a` unused: kept for the Ed.extClick(e, a) signat
 // Only a style attribute on #preview ITSELF is ignored; any other record (a child,
 // a text, data-title, a class) still marks it dirty.
 const pvTouched = (P, recs) => recs.some(r => r.target !== P || r.type !== "attributes" || (r.attributeName !== "style" && r.attributeName !== "class"));   // opt6: + the vkeep class flip
-// #185: a write of ours into the reading DOM that must not mark it dirty (async math typesetting):
+// #185 / #186: a write of ours into the reading DOM that must not mark it dirty (async math typesetting, async code highlighting):
 // records pending from before (anyone else's) still count, the write's own are dropped
 const pvQuiet = (P, fn) => {
   if (!P._pvObs) return fn();
@@ -7839,6 +7840,9 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   for (const s of g.preview.querySelectorAll("span.pdf-embed")) Ed.pdfFill(s);
   for (const s of g.preview.querySelectorAll("span.audio-embed")) Ed.audioFill(s);   // #116: main.rs audio_html -> one <audio> (editor.js Ed.audioFill)
   cvEmbedFill(g.preview);                    // cv-vault CV-139: ![[X.canvas]] -> span.cv-embed (before the a.wiki wiring below)
+  // #187: mermaid fences -> trust guard / diagram (ui/mermaid.js). A plugin that registered
+  // its own "mermaid" code-block processor keeps them (PPOST below).
+  if (window.Merm && !(Ed.cbHook && Ed.cbHook.has("mermaid"))) try { Merm.reading(g.preview); } catch (e) { console.error("[mermaid]", e); }
   mswpMark("html");
   // #119: the Properties block, read-only, above the body (visible mode); it maps to line 1
   { const pb = window.Props && Props.readingBlock(src); if (pb) { g.preview.insertBefore(pb, g.preview.firstChild); pvL = [1].concat(pvL); } }
@@ -7860,6 +7864,10 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   // observer is armed, so their synchronous output is part of the retained DOM; async writes
   // later mark it dirty (the next switch re-renders). Not awaited: a slow plugin never holds the switch.
   if (PPOST) try { PPOST.run(P, curOf(g), g.active >= 0 ? g.tabs[g.active] : null, src, pvL).catch(e => console.error("[plugin] markdown processors:", e)); } catch (e) { console.error(e); }
+  // #186: fenced code coloured by Prism (ui/codehl.js). After the processors (a fence they own is skipped).
+  // Its synchronous part (pre.language-L, code.is-loaded) lands before the observer below; the token spans
+  // come after Prism loads, written through pvQuiet so they do not count as a touch of the retained DOM.
+  if (window.CodeHL) try { CodeHL.reading(P, fn => pvQuiet(P, fn)).catch(e => console.error("[codehl]", e)); } catch (e) { console.error(e); }
   // #185: $..$ / $$..$$ typeset by MathJax (ui/mathview.js). Its synchronous part (a $$ span becomes
   // div.math.math-block) lands before the observer below; the typeset output comes after MathJax loads,
   // written through pvQuiet so it does not count as a touch of the retained DOM.

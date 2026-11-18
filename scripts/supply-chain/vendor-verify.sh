@@ -11,7 +11,9 @@
 #   b) download the lock's tarball URL, its sha512 must equal the lock integrity; extract with tar;
 #      every vendored file's sha256 must equal the lock sha256 AND the file at tarball_path
 #      (local_header_lines=N: the vendored file is N lines of our own header + the upstream bytes;
-#      the whole file must also equal vendored_sha256);
+#      the whole file must also equal vendored_sha256; concat=[tarball paths] + concat_separator: the
+#      vendored file is exactly those tarball files in that order, each followed by the separator,
+#      rebuilt from the tarball here — prism-components.js, #186);
 #   c) every embedded_version rule (ERE in the file's bytes) must match and yield exactly the lock
 #      version (pdfjsVersion, moment header + .version, MathJax VERSION; prism has none);
 #   d) every file under ui/vendor must be a lock file, a bundle, or listed in allowed_unlocked
@@ -117,6 +119,26 @@ for ((i = 0; i < nlib; i++)); do
     p=$(jq -r .path <<<"$F"); tp=$(jq -r .tarball_path <<<"$F"); s=$(jq -r .sha256 <<<"$F")
     hl=$(jq -r '.local_header_lines // 0' <<<"$F")
     printf '%s\n' "$p" >>"$covered"
+    if jq -e 'has("concat")' <<<"$F" >/dev/null; then
+      # a derived file: the exact concatenation of tarball files (in lock order), each followed by
+      # concat_separator; rebuilt here from the tarball, it must equal the lock sha256 and the vendored bytes
+      [ -f "$vd/$p" ] && [ ! -L "$vd/$p" ] || { err "$id: vendored file $p missing"; continue; }
+      jq -e '(.concat|type=="array") and (.concat|length>0) and (.concat_separator|type=="string")' <<<"$F" >/dev/null \
+        || { err "$id: $p: concat needs a non-empty array + a concat_separator string"; continue; }
+      jq -j '.concat_separator' <<<"$F" >"$work/sep"; : >"$work/cat"; cbad=0
+      while IFS= read -r cp; do
+        case $cp in /* | *..* | "") err "$id: $p: unsafe concat path '$cp'"; cbad=1; break ;; esac
+        [ -f "$x/$cp" ] && [ ! -L "$x/$cp" ] || { err "$id: $p: concat part $cp not in tarball"; cbad=1; break; }
+        cat "$x/$cp" "$work/sep" >>"$work/cat"
+      done <<EOF_CAT
+$(jq -r '.concat[]' <<<"$F")
+EOF_CAT
+      [ "$cbad" = 0 ] || continue
+      up=$(sha256 "$work/cat")
+      [ "$up" = "$s" ] || err "$id: lock sha256 of $p ($s) != concatenation of $(jq '.concat|length' <<<"$F") tarball files ($up)"
+      [ "$(sha256 "$vd/$p")" = "$up" ] || err "$id: $p differs from the concatenation of its tarball files"
+      continue
+    fi
     case $tp in /* | *..*) err "$id: unsafe tarball_path $tp"; continue ;; esac
     [ -f "$vd/$p" ] && [ ! -L "$vd/$p" ] || { err "$id: vendored file $p missing"; continue; }
     [ -f "$x/$tp" ] || { err "$id: $tp not in tarball"; continue; }

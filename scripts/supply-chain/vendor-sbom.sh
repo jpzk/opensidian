@@ -52,7 +52,7 @@ while IFS= read -r l; do
       properties: ([{name: "opensidian:loaded_by", value: .loaded_by},
                     {name: "opensidian:npm_published", value: .published},
                     {name: "opensidian:vendored_added", value: .added}]
-                   + [.files[] | {name: "opensidian:file", value: "ui/vendor/\(.path) sha256:\(.sha256) <- \(.tarball_path)"}])
+                   + [.files[] | {name: "opensidian:file", value: "ui/vendor/\(.path) sha256:\(.sha256) <- \(.tarball_path // "concat of \(.concat | length) tarball files: \(.concat | join(" "))")"}])
     }' <<<"$l" >>"$tmp/comps"
 done <"$tmp/libs"
 
