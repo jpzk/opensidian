@@ -19,6 +19,7 @@ use tauri::State;
 
 mod appid;
 mod audiorec; // #116: Audio recorder core plugin — the mic gate (audio-only, armed) and the save
+mod webmdur; // #197: a saved recording gets the Duration a live WebM muxer could not write
 mod builtins;
 mod callout; // #59: Obsidian callouts in the reading render
 use opensidian_lib::canvasfs;
@@ -1353,8 +1354,9 @@ fn audio_save(v: &Vault, note: &str, data: &str, tm: &datefmt::Tm) -> Result<pas
         // the bare-name embed ambiguous, so its name counts as taken (write_into then picks ` 1`, ` 2`, ...)
         media.extend(canvasfs::media(&root));
         let taken = |n: &str| media.iter().any(|p| p.rsplit('/').next() == Some(n));
-        let p = audiorec::save(&root, Some(note), &bytes, &st, &cfg, md, &taken)?;
-        eprintln!("[audiorec] {} bytes -> {}", bytes.len(), p.path);
+        let n = bytes.len();
+        let p = audiorec::save_owned(&root, Some(note), bytes, &st, &cfg, md, &taken)?;
+        eprintln!("[audiorec] {} bytes -> {}", n, p.path);
         // audio files join the index with the ![[x.webm]] embed (#116); the image list stays images/pdf
         Ok(p)
     })(), serde_json::json!({"b64": data.len()}))

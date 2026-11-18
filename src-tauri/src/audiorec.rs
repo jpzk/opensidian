@@ -397,6 +397,7 @@ pub fn check_bytes(bytes: &[u8]) -> Result<(), String> {
 
 /// the recording -> `Recording <stamp>.webm` in the attachment folder of `note`
 /// (None/"" = no note open: the folder's "./" forms resolve against the root)
+#[cfg(test)]
 pub fn save(
     root: &std::path::Path,
     note: Option<&str>,
@@ -406,12 +407,28 @@ pub fn save(
     md_links: bool,
     taken: &dyn Fn(&str) -> bool,
 ) -> Result<crate::pasteimg::Pasted, String> {
-    check_bytes(bytes)?;
+    save_owned(root, note, bytes.to_vec(), stamp, attach_cfg, md_links, taken)
+}
+
+/// [`save`] on the decoded upload itself: the #197 Duration is written into `bytes`
+/// in place, no second full-size copy next to it (codeant Major on #226)
+pub fn save_owned(
+    root: &std::path::Path,
+    note: Option<&str>,
+    mut bytes: Vec<u8>,
+    stamp: &str,
+    attach_cfg: &str,
+    md_links: bool,
+    taken: &dyn Fn(&str) -> bool,
+) -> Result<crate::pasteimg::Pasted, String> {
+    check_bytes(&bytes)?;
     if stamp.len() != 14 || !stamp.bytes().all(|b| b.is_ascii_digit()) {
         return Err("invalid clock".into());
     }
     let note = note.filter(|n| !n.is_empty());
-    crate::pasteimg::write_into(root, note, &format!("Recording {stamp}"), "webm", bytes, attach_cfg, md_links, taken).map_err(|e| match e {
+    // #197: MediaRecorder's live WebM has no Duration; write it now that the whole file is known
+    crate::webmdur::add_duration(&mut bytes);
+    crate::pasteimg::write_into(root, note, &format!("Recording {stamp}"), "webm", &bytes, attach_cfg, md_links, taken).map_err(|e| match e {
         crate::pasteimg::PasteErr::NoNote => "the note the recording belongs to is gone".into(),
         crate::pasteimg::PasteErr::Io(m) => format!("the recording could not be saved ({m})"),
         e => e.say(),
