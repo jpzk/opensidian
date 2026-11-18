@@ -50,7 +50,7 @@ use crate::commit::{
 use crate::merge::{
     commit_merge, merge_base, merge_trees, Action, ConflictMode, Dag, Loser, Merge, MergeError, Merged, Side,
 };
-use crate::object::{open, ObjectCtx};
+use crate::object::{open_any, ObjectCtx};
 use crate::transport::fs::FsTransport;
 use crate::transport::{Transport, TransportError};
 
@@ -201,7 +201,7 @@ fn verify<P: CryptoProvider + ?Sized>(
     devices: &dyn DeviceKeys,
 ) -> std::result::Result<Verified, CommitError> {
     let ctx = ObjectCtx { suite: v.suite, vault_id: v.vault_id, obj_id: *id };
-    let o = open(p, &v.k_obj, &ctx, bytes)?;
+    let o = open_any(p, &v.read_keys(), &ctx, bytes)?;
     match o.kind {
         Kind::Batch => {
             let mut b = open_commit(p, v, id, bytes, devices)?;
@@ -229,6 +229,27 @@ fn list_all(t: &dyn Transport, ns: &Id16) -> std::result::Result<BTreeSet<Id16>,
         after = r.next;
     }
 }
+
+fn parent_ids(b: &Batch) -> Vec<Id16> {
+    b.parents.iter().map(|x| x.commit_id).collect()
+}
+
+/// Every id reachable from `roots` through `parents` (roots included).
+fn reach(roots: &[Id16], parents: impl Fn(&Id16) -> Option<Vec<Id16>>) -> BTreeSet<Id16> {
+    let mut seen = BTreeSet::new();
+    let mut stack = roots.to_vec();
+    while let Some(id) = stack.pop() {
+        if seen.insert(id) {
+            if let Some(ps) = parents(&id) {
+                stack.extend(ps);
+            }
+        }
+    }
+    seen
+}
+
+/// Reject reason for a revoked device's commit nobody active built on.
+pub const NOT_VOUCHED: &str = "revoked device: commit not vouched for by an active device";
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let tmp = path.with_extension("tmp");
@@ -296,6 +317,18 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
                 Err(_) => {}
             }
         }
+        // M5: commits of a revoked device stay only where an active device
+        // (or this device's own head / absorbed tips) built on them.
+        let roots: Vec<Id16> = e
+            .commits
+            .iter()
+            .filter(|(_, m)| !devices.revoked(&m.batch.device_id))
+            .map(|(id, _)| *id)
+            .chain(e.state.head)
+            .chain(e.state.absorbed.iter().copied())
+            .collect();
+        let keep = reach(&roots, |id| e.commits.get(id).map(|m| parent_ids(&m.batch)));
+        e.commits.retain(|id, m| !devices.revoked(&m.batch.device_id) || keep.contains(id));
         if let Some(h) = e.state.head {
             if !e.commits.contains_key(&h) {
                 return Err(EngineError::State(format!("head {} not in the local replica", h.to_hex())));
@@ -306,6 +339,15 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
 
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// Switch to a new keyring of the SAME vault (M5: a VK epoch was added).
+    pub fn rekey(&mut self, v: VaultCtx) -> Result<()> {
+        if v.vault_id != self.v.vault_id || v.ns != self.v.ns || v.suite != self.v.suite {
+            return Err(EngineError::State("rekey: different vault".into()));
+        }
+        self.v = v;
+        Ok(())
     }
 
     pub fn head(&self) -> Option<Id16> {
@@ -553,6 +595,8 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
         let ns = self.v.ns;
         // 1. pull
         let mut listed: Vec<Option<BTreeSet<Id16>>> = Vec::with_capacity(replicas.len());
+        // verified commits of revoked devices, held back until vouched for
+        let mut quarantine: BTreeMap<Id16, (usize, Batch, Vec<u8>)> = BTreeMap::new();
         for (i, r) in replicas.iter().enumerate() {
             let ids = match list_all(*r, &ns) {
                 Ok(s) => s,
@@ -566,7 +610,7 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
                 if self.commits.contains_key(id) || self.chunks.contains(id) {
                     continue;
                 }
-                if rep.rejected.iter().any(|(_, x, _)| x == id) {
+                if quarantine.contains_key(id) || rep.rejected.iter().any(|(_, x, _)| x == id) {
                     continue;
                 }
                 let bytes = match r.get(ObjKind::Obj, &ns, id, None) {
@@ -579,6 +623,9 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
                     }
                 };
                 match verify(self.p, &self.v, id, &bytes, devices) {
+                    Ok(Verified::Commit(b)) if devices.revoked(&b.device_id) => {
+                        quarantine.insert(*id, (i, b, bytes));
+                    }
                     Ok(v) => {
                         self.local.put(ObjKind::Obj, &ns, id, &bytes)?;
                         match v {
@@ -595,6 +642,22 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
                 }
             }
             listed.push(Some(ids));
+        }
+        if !quarantine.is_empty() {
+            let roots: Vec<Id16> = self.commits.keys().copied().collect();
+            let commits = &self.commits;
+            let keep = reach(&roots, |id| {
+                commits.get(id).map(|m| &m.batch).or_else(|| quarantine.get(id).map(|q| &q.1)).map(parent_ids)
+            });
+            for (id, (i, b, bytes)) in quarantine {
+                if keep.contains(&id) {
+                    self.local.put(ObjKind::Obj, &ns, &id, &bytes)?;
+                    self.commits.insert(id, Meta { batch: b });
+                    rep.pulled += 1;
+                } else {
+                    rep.rejected.push((i, id, NOT_VOUCHED.into()));
+                }
+            }
         }
         // 2. resolve
         let (ready, gen) = self.ready_and_gen();

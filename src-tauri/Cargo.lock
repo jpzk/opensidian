@@ -3665,6 +3665,7 @@ dependencies = [
  "sync-proto",
  "sync-server",
  "tokio",
+ "zeroize",
  "zstd",
  "zstd-safe",
  "zstd-sys",

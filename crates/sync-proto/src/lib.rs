@@ -9,6 +9,7 @@ pub mod api;
 pub mod batch;
 pub mod container;
 pub mod enc;
+pub mod vault;
 
 use std::fmt;
 

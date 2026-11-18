@@ -58,6 +58,7 @@ fn vault(p: &FipsProvider, ns: Id16) -> VaultCtx {
         vault_id: rid(p),
         ns,
         k_obj: k,
+        prev_k_obj: vec![],
     }
 }
 

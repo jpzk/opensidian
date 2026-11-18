@@ -127,7 +127,7 @@ fn three_replicas_converge_by_set_union() {
     let srv = server(&p);
     let mut k = [0u8; 32];
     p.random(&mut k).unwrap();
-    let v = VaultCtx { suite: Suite::P256, vault_id: rid(&p), ns: srv.ns, k_obj: k };
+    let v = VaultCtx { suite: Suite::P256, vault_id: rid(&p), ns: srv.ns, k_obj: k, prev_k_obj: vec![] };
     let d1 = FsTransport::open(tmpdir("d1")).unwrap();
     let d2 = FsTransport::open(tmpdir("d2")).unwrap();
     let (da, db) = (device(&p), device(&p));
@@ -252,7 +252,7 @@ fn bad_objects_are_rejected_and_not_propagated() {
     let srv = server(&p);
     let mut k = [0u8; 32];
     p.random(&mut k).unwrap();
-    let v = VaultCtx { suite: Suite::P256, vault_id: rid(&p), ns: srv.ns, k_obj: k };
+    let v = VaultCtx { suite: Suite::P256, vault_id: rid(&p), ns: srv.ns, k_obj: k, prev_k_obj: vec![] };
     let d1 = FsTransport::open(tmpdir("bad")).unwrap();
     let (da, evil) = (device(&p), device(&p));
     let ks: Keys = [(da.id, (SigAlg::EcdsaP256Sha256, da.pk.clone()))].into_iter().collect();

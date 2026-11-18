@@ -260,3 +260,41 @@ pub fn open_inner<P: CryptoProvider + ?Sized>(
     }
     Ok(inner)
 }
+
+/// Which of `keys` (one root key per VK epoch, any order) sealed this
+/// container: the one whose key-commitment tag matches (spec §3.3; an
+/// HKDF + HMAC per candidate, no ciphertext touched). The container
+/// header does not name the epoch, so readers pick by commitment.
+pub fn select_key<'k, P: CryptoProvider + ?Sized>(
+    p: &P,
+    keys: &[&'k [u8; 32]],
+    ctx: &ObjectCtx,
+    container: &[u8],
+) -> Result<&'k [u8; 32], ObjectError> {
+    let (header, _) = Header::parse(container)?;
+    if header.obj_id != ctx.obj_id {
+        return Err(ObjectError::WrongId);
+    }
+    if header.suite != ctx.suite {
+        return Err(ObjectError::WrongSuite);
+    }
+    let suite = header.suite.byte();
+    for k in keys {
+        let ok = derive_object_keys(p, k, &header.obj_id.0, suite).map_err(crypto)?;
+        if check_commitment(p, &ok.commit, &ctx.vault_id.0, &header.obj_id.0, suite, FMT_V1, &header.commit).is_ok() {
+            return Ok(k);
+        }
+    }
+    Err(ObjectError::Auth)
+}
+
+/// [`open`] with a keyring: the key is chosen by [`select_key`].
+pub fn open_any<P: CryptoProvider + ?Sized>(
+    p: &P,
+    keys: &[&[u8; 32]],
+    ctx: &ObjectCtx,
+    container: &[u8],
+) -> Result<Opened, ObjectError> {
+    let k = select_key(p, keys, ctx, container)?;
+    open(p, k, ctx, container)
+}
