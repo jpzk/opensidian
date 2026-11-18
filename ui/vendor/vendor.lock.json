@@ -1,0 +1,461 @@
+{
+  "$comment": "Machine-readable source of truth for ui/vendor (issue #188). Seeded once on 2026-11-17 from the former per-library prose notes + SHA256SUMS (the prose notes were deleted, every fact moved here); proven by scripts/supply-chain/vendor-verify.sh against the npm registry (dist.integrity, dist.tarball, time[version], tarball bytes).",
+  "lockfileVersion": 1,
+  "libraries": [
+    {
+      "name": "mathjax",
+      "version": "3.2.2",
+      "purl": "pkg:npm/mathjax@3.2.2",
+      "license": "Apache-2.0",
+      "tarball": "https://registry.npmjs.org/mathjax/-/mathjax-3.2.2.tgz",
+      "integrity": "sha512-Bt+SSVU8eBG27zChVewOicYs7Xsdt40qm4+UpHyX7k0/O9NliPc+x77k1/FEsPsjKPZGJvtRZM1vO+geW0OhGw==",
+      "files": [
+        {
+          "path": "mathjax/tex-chtml-full.js",
+          "tarball_path": "package/es5/tex-chtml-full.js",
+          "sha256": "91b005503c5d1f0958bf4d73ada1a3be33596b2c4ab5da22277f1b0d3149b5a4"
+        },
+        {
+          "path": "mathjax/LICENSE",
+          "tarball_path": "package/LICENSE",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+        },
+        {
+          "path": "mathjax/output/chtml/fonts/woff-v2/MathJax_AMS-Regular.woff",
+          "tarball_path": "package/es5/output/chtml/fonts/woff-v2/MathJax_AMS-Regular.woff",
+          "sha256": "3de784d07b9fa8f104c10928a878ee879cf3305cae5195cba663c9c2bb0195eb"
+        },
+        {
+          "path": "mathjax/output/chtml/fonts/woff-v2/MathJax_Calligraphic-Bold.woff",
+          "tarball_path": "package/es5/output/chtml/fonts/woff-v2/MathJax_Calligraphic-Bold.woff",
+          "sha256": "af04542b29eaac04550a140c5f1760a649783989426f2540855bf4157819367d"
+        },
+        {
+          "path": "mathjax/output/chtml/fonts/woff-v2/MathJax_Calligraphic-Regular.woff",
+          "tarball_path": "package/es5/output/chtml/fonts/woff-v2/MathJax_Calligraphic-Regular.woff",
+          "sha256": "26683bf201fb258a2237d9754616de9d4ecf4cc1cd39dd1902476df7d75f1d16"
+        },
+        {
+          "path": "mathjax/output/chtml/fonts/woff-v2/MathJax_Fraktur-Bold.woff",
+          "tarball_path": "package/es5/output/chtml/fonts/woff-v2/MathJax_Fraktur-Bold.woff",
+          "sha256": "721921bab0d001ebff0206c24cb5de6ca136467bf1843a7aa32030ba061d1e92"
+        },
+        {
+          "path": "mathjax/output/chtml/fonts/woff-v2/MathJax_Fraktur-Regular.woff",
+          "tarball_path": "package/es5/output/chtml/fonts/woff-v2/MathJax_Fraktur-Regular.woff",
+          "sha256": "870673df72e70f87c91a5a317d558c2c3b54392264ad79bbadc6d424ae8765fe"
+        },
+        {
+          "path": "mathjax/output/chtml/fonts/woff-v2/MathJax_Main-Bold.woff",
+          "tarball_path": "package/es5/output/chtml/fonts/woff-v2/MathJax_Main-Bold.woff",
+          "sha256": "88b98cad3688915e50da55553ff6ad185e0dce134b47f176e91b100f8a9b175c"
+        },
+        {
+          "path": "mathjax/output/chtml/fonts/woff-v2/MathJax_Main-Italic.woff",
+          "tarball_path": "package/es5/output/chtml/fonts/woff-v2/MathJax_Main-Italic.woff",
+          "sha256": "355254db9ca10a09a3b5f0929d74eb4670f44fbe864c07526a06213e0a0caf6c"
+        },
+        {
+          "path": "mathjax/output/chtml/fonts/woff-v2/MathJax_Main-Regular.woff",
+          "tarball_path": "package/es5/output/chtml/fonts/woff-v2/MathJax_Main-Regular.woff",
+          "sha256": "1cb1c39ea642f26a4dfed230b4aea1c3c218689421f6e9c0a7c1811693c4fa07"
+        },
+        {
+          "path": "mathjax/output/chtml/fonts/woff-v2/MathJax_Math-BoldItalic.woff",
+          "tarball_path": "package/es5/output/chtml/fonts/woff-v2/MathJax_Math-BoldItalic.woff",
+          "sha256": "8ea8dbb1b02e6f730f55b4cb5d413b785b9f5c39807d0a0fa7da206a0824a457"
+        },
+        {
+          "path": "mathjax/output/chtml/fonts/woff-v2/MathJax_Math-Italic.woff",
+          "tarball_path": "package/es5/output/chtml/fonts/woff-v2/MathJax_Math-Italic.woff",
+          "sha256": "a009bea404f7a500ded48f8b9ad9cf16e12504b3195dd9e25975289b8256b0f0"
+        },
+        {
+          "path": "mathjax/output/chtml/fonts/woff-v2/MathJax_Math-Regular.woff",
+          "tarball_path": "package/es5/output/chtml/fonts/woff-v2/MathJax_Math-Regular.woff",
+          "sha256": "c01d3321e89b403c4b811aa153c4e618eda3421f92d8a072a02c8d190782a191"
+        },
+        {
+          "path": "mathjax/output/chtml/fonts/woff-v2/MathJax_SansSerif-Bold.woff",
+          "tarball_path": "package/es5/output/chtml/fonts/woff-v2/MathJax_SansSerif-Bold.woff",
+          "sha256": "32792104b5ef69eded905b6d1598ed05d8087684d38e7a94d52e3c38ba16f47e"
+        },
+        {
+          "path": "mathjax/output/chtml/fonts/woff-v2/MathJax_SansSerif-Italic.woff",
+          "tarball_path": "package/es5/output/chtml/fonts/woff-v2/MathJax_SansSerif-Italic.woff",
+          "sha256": "fc6ddf5df402b263cfb158aed8e89972542c34b719cd87b1db30461985f7bd5b"
+        },
+        {
+          "path": "mathjax/output/chtml/fonts/woff-v2/MathJax_SansSerif-Regular.woff",
+          "tarball_path": "package/es5/output/chtml/fonts/woff-v2/MathJax_SansSerif-Regular.woff",
+          "sha256": "b418136e3b384baaadecb70bd3c48a8da9825210130b2897db808c44efc883cb"
+        },
+        {
+          "path": "mathjax/output/chtml/fonts/woff-v2/MathJax_Script-Regular.woff",
+          "tarball_path": "package/es5/output/chtml/fonts/woff-v2/MathJax_Script-Regular.woff",
+          "sha256": "af96f67d7accf5fd2a4a682d0b9f8b339f8ea6fe34c310c1694c8ba7f6ddc96f"
+        },
+        {
+          "path": "mathjax/output/chtml/fonts/woff-v2/MathJax_Size1-Regular.woff",
+          "tarball_path": "package/es5/output/chtml/fonts/woff-v2/MathJax_Size1-Regular.woff",
+          "sha256": "c49810b53ecc0d87d8028762c518924197dd9d3f905b08f99ea241301085b9cb"
+        },
+        {
+          "path": "mathjax/output/chtml/fonts/woff-v2/MathJax_Size2-Regular.woff",
+          "tarball_path": "package/es5/output/chtml/fonts/woff-v2/MathJax_Size2-Regular.woff",
+          "sha256": "30e889b58cbc51adfbb038ab1a96dc4025aa3542a3cff7712fc55ece510675e2"
+        },
+        {
+          "path": "mathjax/output/chtml/fonts/woff-v2/MathJax_Size3-Regular.woff",
+          "tarball_path": "package/es5/output/chtml/fonts/woff-v2/MathJax_Size3-Regular.woff",
+          "sha256": "5cda41563a095bd70c78e2dda13d0f8cb922c71c90fffd0a0044c65173a66e83"
+        },
+        {
+          "path": "mathjax/output/chtml/fonts/woff-v2/MathJax_Size4-Regular.woff",
+          "tarball_path": "package/es5/output/chtml/fonts/woff-v2/MathJax_Size4-Regular.woff",
+          "sha256": "3bc6ecaae7ecf6f8d7f8ea07bddbaca8601e2cb6e89d6aef58e78d9f6d8a398f"
+        },
+        {
+          "path": "mathjax/output/chtml/fonts/woff-v2/MathJax_Typewriter-Regular.woff",
+          "tarball_path": "package/es5/output/chtml/fonts/woff-v2/MathJax_Typewriter-Regular.woff",
+          "sha256": "c56da8d69f1a0208b8e0703656c3264b6dd748bd452524c82b0385b60f6a68c1"
+        },
+        {
+          "path": "mathjax/output/chtml/fonts/woff-v2/MathJax_Vector-Bold.woff",
+          "tarball_path": "package/es5/output/chtml/fonts/woff-v2/MathJax_Vector-Bold.woff",
+          "sha256": "36e0d72d8a7afc696a3e7a5c7369807634640de9b02257bca447bdf126221a27"
+        },
+        {
+          "path": "mathjax/output/chtml/fonts/woff-v2/MathJax_Vector-Regular.woff",
+          "tarball_path": "package/es5/output/chtml/fonts/woff-v2/MathJax_Vector-Regular.woff",
+          "sha256": "72bc573386dd1d48c5bbd286302ca9e3400c5eb0f298e7cfbf945b9d08fc688f"
+        },
+        {
+          "path": "mathjax/output/chtml/fonts/woff-v2/MathJax_Zero.woff",
+          "tarball_path": "package/es5/output/chtml/fonts/woff-v2/MathJax_Zero.woff",
+          "sha256": "481e39042508ae313a60618af1e37146ab93e9324c98e4c78b8f17fe55d41e0b"
+        }
+      ],
+      "embedded_version": [
+        {
+          "path": "mathjax/tex-chtml-full.js",
+          "regex": "VERSION=void 0,[a-z]\\.VERSION=\"[0-9]+\\.[0-9]+\\.[0-9]+\""
+        }
+      ],
+      "published": "2022-06-08T17:48:38.006Z",
+      "added": "2026-10-18",
+      "tarball_sha256": "1b9c0a1c44df864e915690558e72adb9cc5203360daefd385084ced3b6c64c09",
+      "files_taken": "package/es5/tex-chtml-full.js, package/es5/output/chtml/fonts/woff-v2/*.woff (CHTML fonts, same relative layout so the default fontURL resolves here), package/LICENSE",
+      "loaded_by": "ui/plugins/api-functions.js loadMathJax -> window.MathJax, renderMath, finishRenderMath; on demand from self, CSP script-src self, no network, no eval",
+      "modified": false
+    },
+    {
+      "name": "pdfjs-dist",
+      "version": "6.3.289",
+      "purl": "pkg:npm/pdfjs-dist@6.3.289",
+      "license": "Apache-2.0",
+      "tarball": "https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-6.3.289.tgz",
+      "integrity": "sha512-ZHjSVpDa3D6izMq8/04lvkhkATUmL9px6ChPaXc1k6nU2Mrhlg1/7F0bdUqCwUjw3NsPTfPZsMDUU6ZIcRaeQw==",
+      "files": [
+        {
+          "path": "pdfjs/pdf.min.mjs",
+          "tarball_path": "package/build/pdf.min.mjs",
+          "sha256": "f80490490320511e5df18c580b9edd6b5db8058dceebaf6f161992e0a964b9e2"
+        },
+        {
+          "path": "pdfjs/pdf.worker.min.mjs",
+          "tarball_path": "package/build/pdf.worker.min.mjs",
+          "sha256": "8ab0e5e30031b4a06ecfddd5ae9562f0227f830ee7ec9ed1a968b134243d2386"
+        },
+        {
+          "path": "pdfjs/LICENSE",
+          "tarball_path": "package/LICENSE",
+          "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+        }
+      ],
+      "embedded_version": [
+        {
+          "path": "pdfjs/pdf.min.mjs",
+          "regex": "pdfjsVersion = [0-9]+\\.[0-9]+\\.[0-9]+"
+        },
+        {
+          "path": "pdfjs/pdf.worker.min.mjs",
+          "regex": "pdfjsVersion = [0-9]+\\.[0-9]+\\.[0-9]+"
+        }
+      ],
+      "published": "2026-08-29T12:52:28.054Z",
+      "added": "2026-10-18",
+      "tarball_sha256": "06f25e887adc6489f04c9fcb14198c77e4e5623a59a0bba5c4cea5838a4f1241",
+      "files_taken": "package/build/pdf.min.mjs, package/build/pdf.worker.min.mjs, package/LICENSE",
+      "loaded_by": "ui/plugins/api-functions.js loadPdfJs -> window.pdfjsLib; the worker runs as a module worker from ui/vendor/pdfjs; CSP script-src self",
+      "modified": false
+    },
+    {
+      "name": "prismjs",
+      "version": "1.30.0",
+      "purl": "pkg:npm/prismjs@1.30.0",
+      "license": "MIT",
+      "tarball": "https://registry.npmjs.org/prismjs/-/prismjs-1.30.0.tgz",
+      "integrity": "sha512-DEvV2ZF2r2/63V+tK8hQvrR2ZGn10srHbXviTlcv7Kpzw8jWiNTqbVgjO3IY8RxrrOUF8VPMQQFysYYYv0YZxw==",
+      "files": [
+        {
+          "path": "prism/prism.js",
+          "tarball_path": "package/prism.js",
+          "sha256": "b801451d9b4cbf1857715a97ecae442e26c111bab6e19fee0e83dfda70cc2900"
+        },
+        {
+          "path": "prism/LICENSE",
+          "tarball_path": "package/LICENSE",
+          "sha256": "2b947f0901a7ffcf08a89957da9783c0e9c6e72cb6ce8e959f501ab5409e4d2b"
+        }
+      ],
+      "embedded_version": [],
+      "published": "2025-03-10T17:56:20.460Z",
+      "added": "2026-10-18",
+      "tarball_sha256": "ac16a9106a28c53b6a6313993c816a3a02525fdfefd7614fc1703df915a9fc11",
+      "files_taken": "package/prism.js (core + markup, css, clike, javascript), package/LICENSE",
+      "loaded_by": "ui/plugins/api-functions.js loadPrism -> window.Prism, manual mode (never auto-highlights the app); CSP script-src self",
+      "modified": false
+    },
+    {
+      "name": "moment",
+      "version": "2.31.0",
+      "purl": "pkg:npm/moment@2.31.0",
+      "license": "MIT",
+      "tarball": "https://registry.npmjs.org/moment/-/moment-2.31.0.tgz",
+      "integrity": "sha512-0acOTfMiWOheYS4eoWb80yYMb/JLvVv9SHbs2PehaDzfUG0Bw855SKyk0IKTnPGa5+U2bmi3W68l1+sGLX/pvw==",
+      "files": [
+        {
+          "path": "moment.min.js",
+          "tarball_path": "package/min/moment.min.js",
+          "sha256": "c111ad2e4447c253765e679bb4a40ba91a3e23d80b4b69d603a0fd25164cb9de",
+          "local_header_lines": 4,
+          "vendored_sha256": "0ee7f4db9ac059ce1bc26671f168608ff761a446679b17802cff303e116c872a"
+        },
+        {
+          "path": "moment.LICENSE",
+          "tarball_path": "package/LICENSE",
+          "sha256": "64419cc68debfd9b7c27e9cd926c756181e0857709d2701094874e0fb1a41d28"
+        }
+      ],
+      "embedded_version": [
+        {
+          "path": "moment.min.js",
+          "regex": "\\.version=\"[0-9]+\\.[0-9]+\\.[0-9]+\""
+        },
+        {
+          "path": "moment.min.js",
+          "regex": "^/\\*! moment\\.js [0-9]+\\.[0-9]+\\.[0-9]+"
+        }
+      ],
+      "published": "2026-09-15T01:07:26.131Z",
+      "added": "2026-11-17",
+      "files_taken": "package/min/moment.min.js (+ a 4-line local provenance header, see files[].local_header_lines) + package/LICENSE as moment.LICENSE",
+      "loaded_by": "ui/plugins/api-core.js + ui/plugins/settings.js + ui/main.js dnMoment (script src vendor/moment.min.js) -> window.moment / require(\"obsidian\").moment",
+      "modified": false,
+      "license_file": "ui/vendor/moment.LICENSE (package/LICENSE, unmodified) + THIRD-PARTY.md",
+      "tarball_sha256": "efddf549c13aa7cf270f573d9c464978ab0810c0652673ae6af1189bb56ab3f8",
+      "bump_reason": "2.30.1 -> 2.31.0: GHSA-4p3w-j4w9-5jqw / CVE-2026-17495 (path traversal via crafted non-string locale name), fixed in 2.31.0; 2.31.0 published 2026-09-15, 63 days before added (six-week rule)"
+    }
+  ],
+  "bundles": [
+    {
+      "name": "codemirror",
+      "path": "codemirror/cm6.js",
+      "sha256": "19fc56d3959c27c6599d979c5f6333aecf15d19b98e1ef15758559040ca59392",
+      "license": "MIT",
+      "$comment": "esbuild bundle: no upstream file matches its bytes; components come from build/package-lock.json",
+      "build_dir": "codemirror/build",
+      "package_lock": "codemirror/build/package-lock.json",
+      "bytes": 645224,
+      "added": "2026-10-13",
+      "loaded_by": "ui/index.html <script src=vendor/codemirror/cm6.js>; one classic IIFE script (no eval, no network, CSP script-src self) publishing every module object on a frozen registry window.__osModules[\"<package>\"] (ui/plugins/loader.js require of @codemirror/* and @lezer/*)",
+      "built_with": {
+        "tool": "esbuild",
+        "version": "0.28.2",
+        "published": "2026-08-08",
+        "license": "MIT",
+        "integrity": "sha512-HKVLS8dvII+xoKW9kmqxbRKrnWEXfJJr/FZhhJmiqIB0e053QNYFqOBouTMO/k5sID4MvCiUCvv8b9M4h32wIA==",
+        "platform_pkg": "@esbuild/linux-x64 0.28.2 (same date)",
+        "flags": "--bundle --format=iife --platform=browser --target=es2020 --minify --charset=utf8 --legal-comments=none + MIT banner",
+        "shipped": false
+      },
+      "recipe": "ui/vendor/codemirror/build/ (package.json, package-lock.json, entry.js, banner.txt, build.sh; originally harness bin/hz/cm6-vendor/): sh build.sh runs npm ci --ignore-scripts + esbuild and rebuilds cm6.js; CMP=ui/vendor/codemirror/cm6.js sh build.sh asserts byte-identity",
+      "pin_rule": "each package = newest release published on or before 2026-09-01; sh build.sh check re-reads every publish date from the npm registry",
+      "license_file": "THIRD-PARTY.md (all MIT)",
+      "packages": [
+        {
+          "name": "@codemirror/autocomplete",
+          "version": "6.20.3",
+          "published": "2026-06-03",
+          "license": "MIT",
+          "integrity": "sha512-tlosUqb+3BbxCxZdu4tKeRghPFC+QM7q4X5YhKV2eCmPG+1r2F3f4AaSz5sCrFqUtX4Jh20VFTKecl16MgiV9g=="
+        },
+        {
+          "name": "@codemirror/commands",
+          "version": "6.11.0",
+          "published": "2026-08-16",
+          "license": "MIT",
+          "integrity": "sha512-/K4Rl5BN0OtTiPWmJCdqODu38XnDMsDxKY5rgrPnCkutPTJf2wVbkoixLfealF5Kwse/s8P8M5jAiURiwSwnFA=="
+        },
+        {
+          "name": "@codemirror/lang-css",
+          "version": "6.3.1",
+          "published": "2024-11-26",
+          "license": "MIT",
+          "integrity": "sha512-kr5fwBGiGtmz6l0LSJIbno9QrifNMUusivHbnA1H6Dmqy4HZFte3UAICix1VuKo0lMPKQr2rqB+0BkKi/S3Ejg=="
+        },
+        {
+          "name": "@codemirror/lang-html",
+          "version": "6.4.12",
+          "published": "2026-08-04",
+          "license": "MIT",
+          "integrity": "sha512-pw2ReWKUqSkbvh76RAT4NYxiogRu+PWkR2ukAwO9uOgrm8uipkzjtKKtNpyeAQwHOqxEeSvAXZ6vr3AfyB9y/w=="
+        },
+        {
+          "name": "@codemirror/lang-javascript",
+          "version": "6.2.5",
+          "published": "2026-03-02",
+          "license": "MIT",
+          "integrity": "sha512-zD4e5mS+50htS7F+TYjBPsiIFGanfVqg4HyUz6WNFikgOPf2BgKlx+TQedI1w6n/IqRBVBbBWmGFdLB/7uxO4A=="
+        },
+        {
+          "name": "@codemirror/lang-markdown",
+          "version": "6.5.2",
+          "published": "2026-08-04",
+          "license": "MIT",
+          "integrity": "sha512-AwBOdkWYuA//WcM0xO5PfHPUcmz/O2i5o0Nsg1U69SII/loCJlFI1Romd9xp2HYb1kYJRGZotyqRghuHH5n8Kw=="
+        },
+        {
+          "name": "@codemirror/language",
+          "version": "6.12.4",
+          "published": "2026-06-25",
+          "license": "MIT",
+          "integrity": "sha512-1q4PaT+o6PbgpkJt4Q8Fv5XJxTy4FUZ4MWETtyiDw3J0Pyr9E2vqcKL+k9wcvjNTIsauxvE7OfmWj3FRPHQ76A=="
+        },
+        {
+          "name": "@codemirror/lint",
+          "version": "6.9.7",
+          "published": "2026-06-09",
+          "license": "MIT",
+          "integrity": "sha512-28/+iWLYxKxsvGYhSYL7zaCZqLz5+FFFDq9tVsvGv9kv8RY4fFAchJ5WX9M3YrrRlTIsECjsXPqeNgnSmNP2dg=="
+        },
+        {
+          "name": "@codemirror/search",
+          "version": "6.7.2",
+          "published": "2026-08-31",
+          "license": "MIT",
+          "integrity": "sha512-gUYkYhT2+n/+VGZ+8EzE5WFkYZUZYm1VOKDudIsNqh42uRVQJ0a6Yss9sdKT3MeOYfuL1N6AZA57oza0Oyr0LA=="
+        },
+        {
+          "name": "@codemirror/state",
+          "version": "6.7.2",
+          "published": "2026-08-31",
+          "license": "MIT",
+          "integrity": "sha512-U3RiPX62Wl/Gx4ftQ7UxLlloSfsFTQqKa+7vFBYteZGCzkp6oBqcsD7iSwniWRGobCAmDcwZSY+Six3+3ztdfg=="
+        },
+        {
+          "name": "@codemirror/view",
+          "version": "6.43.10",
+          "published": "2026-08-31",
+          "license": "MIT",
+          "integrity": "sha512-vVWLvd4fKWYN/pMcwUrg6dWeublxmSz+V+52ZjW3h64IVN9cRUYLk5Km4JDT9vifxAFfDtNOIFxKYENthcolJQ=="
+        },
+        {
+          "name": "@lezer/common",
+          "version": "1.5.2",
+          "published": "2026-04-08",
+          "license": "MIT",
+          "integrity": "sha512-sxQE460fPZyU3sdc8lafxiPwJHBzZRy/udNFynGQky1SePYBdhkBl1kOagA9uT3pxR8K09bOrmTUqA9wb/PjSQ=="
+        },
+        {
+          "name": "@lezer/css",
+          "version": "1.3.6",
+          "published": "2026-08-04",
+          "license": "MIT",
+          "integrity": "sha512-YJE78Wcg+zX8f10hiHWQ4Az48Qr/c13eId0VtRQYLBpxHDmDeSrXIlkbl+fJGW42rWC/uoUco9mhBZeVWP/A1g=="
+        },
+        {
+          "name": "@lezer/highlight",
+          "version": "1.2.3",
+          "published": "2025-10-26",
+          "license": "MIT",
+          "integrity": "sha512-qXdH7UqTvGfdVBINrgKhDsVTJTxactNNxLk7+UMwZhU13lMHaOBlJe9Vqp907ya56Y3+ed2tlqzys7jDkTmW0g=="
+        },
+        {
+          "name": "@lezer/html",
+          "version": "1.3.13",
+          "published": "2025-12-22",
+          "license": "MIT",
+          "integrity": "sha512-oI7n6NJml729m7pjm9lvLvmXbdoMoi2f+1pwSDJkl9d68zGr7a9Btz8NdHTGQZtW2DA25ybeuv/SyDb9D5tseg=="
+        },
+        {
+          "name": "@lezer/javascript",
+          "version": "1.5.4",
+          "published": "2025-09-18",
+          "license": "MIT",
+          "integrity": "sha512-vvYx3MhWqeZtGPwDStM2dwgljd5smolYD2lR2UyFcHfxbBQebqx8yjmFmxtJ/E6nN6u1D9srOiVWm3Rb4tmcUA=="
+        },
+        {
+          "name": "@lezer/lr",
+          "version": "1.4.10",
+          "published": "2026-04-18",
+          "license": "MIT",
+          "integrity": "sha512-rnCpTIBafOx4mRp43xOxDJbFipJm/c0cia/V5TiGlhmMa+wsSdoGmUN3w5Bqrks/09Q/D4tNAmWaT8p6NRi77A=="
+        },
+        {
+          "name": "@lezer/markdown",
+          "version": "1.7.2",
+          "published": "2026-07-15",
+          "license": "MIT",
+          "integrity": "sha512-iTkYvoVcKt3WkeL7qUDyXHONZEwLio4wj8KTNi2dnjQEXBZKMV63BpQrPqfsM+OkvuRbiSTAcycYAsQzLhRNoQ=="
+        },
+        {
+          "name": "@marijn/find-cluster-break",
+          "version": "1.0.4",
+          "published": "2026-08-21",
+          "license": "MIT",
+          "integrity": "sha512-Wy0V7+SGUjnF9/TkiM1hKVDPj7jKXduPNboMVtHTA8dySMURWqfg/JZ9E2Sq8JgSJmkl7k7Qe9FLeMSrSraWmQ=="
+        },
+        {
+          "name": "crelt",
+          "version": "1.0.7",
+          "published": "2026-06-27",
+          "license": "MIT",
+          "integrity": "sha512-aK6BbWfhf4U/wCcLHKPJl/xa6VkVstRaPywWtMKGwuOLc/wZTyQYuoxgvZnNsBvv7Kg3YTBQYYBCggcviQczuA=="
+        },
+        {
+          "name": "style-mod",
+          "version": "4.1.3",
+          "published": "2025-10-17",
+          "license": "MIT",
+          "integrity": "sha512-i/n8VsZydrugj3Iuzll8+x/00GH2vnYsk1eomD8QiRrSAeW6ItbCQDtfXCeJHd0iwiNagqjQkvpvREEPtW3IoQ=="
+        },
+        {
+          "name": "w3c-keyname",
+          "version": "2.2.8",
+          "published": "2023-06-07",
+          "license": "MIT",
+          "integrity": "sha512-dpojBhNsCNN7T82Tm7k26A6G9ML3NkhDsnw9n/eoxSRlVBB4CEtIQ/KTCLI2Fwf3ataSXRhYFkQi3SlnFwPvPQ=="
+        }
+      ],
+      "previous_sha256": {
+        "dd96abafcc8916d31dc355fa8886fca8384922f6dcc92022f70153818ab537ca": "2026-10-13 build; 2026-11-17 only the banner comment lines 2-3 were repointed (prose file deleted, #188)"
+      }
+    }
+  ],
+  "allowed_unlocked": [
+    "vendor.lock.json",
+    "mathjax/SHA256SUMS",
+    "pdfjs/SHA256SUMS",
+    "prism/SHA256SUMS",
+    "codemirror/build/README.md",
+    "codemirror/build/package.json",
+    "codemirror/build/package-lock.json",
+    "codemirror/build/entry.js",
+    "codemirror/build/banner.txt",
+    "codemirror/build/build.sh"
+  ],
+  "$comment_allowed": "allowed_unlocked: exact paths (no globs) that are documentation, checksums or build inputs, not shipped library bytes",
+  "six_week_rule": "published (npm registry time[version]) must be >= 42 days before added (the date the bytes landed in git)"
+}

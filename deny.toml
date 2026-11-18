@@ -12,7 +12,8 @@ version = 2
 unmaintained = "all"
 unsound = "all"
 yanked = "deny"
-# Every ignore carries a reason and an EXPIRY. Keep in sync with src-tauri/.cargo/audit.toml.
+# Every ignore carries a reason and an EXPIRY. Source of truth: supply-chain/vex.cdx.json; this list and
+# src-tauri/.cargo/audit.toml must hold the same ids (scripts/supply-chain/vex-check.sh fails CI otherwise).
 ignore = [
   # pulldown-cmark 0.13.4: both advisories need Options::ENABLE_WIKILINKS, which opensidian removes at
   # every parser site (src-tauri/src/main.rs:2925, :3198). Fixed in 0.13.5/0.13.6, both < 6 weeks old
@@ -28,6 +29,7 @@ ignore = [
   { id = "RUSTSEC-2025-0081", reason = "unic-char-property: transitive via urlpattern (tauri); revisit 2027-05-15" },
   { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version: transitive via urlpattern (tauri); revisit 2027-05-15" },
   { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident: transitive via urlpattern (tauri); revisit 2027-05-15" },
+  { id = "RUSTSEC-2026-0543", reason = "chrono 0.4.45 unmaintained: transitive via serde_with (tauri-utils); revisit 2027-05-15" },
 ]
 
 [sources]

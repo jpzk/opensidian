@@ -1003,6 +1003,8 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
 .graphgl { position: absolute; inset: 0; background: var(--bg-ribbon) }
 .graphgl[hidden] { display: none }
 .graph.gl-on { background: var(--transparent) }
+.graph-secoff { flex: 1 1 0; min-width: 0; display: flex; align-items: center; justify-content: center; padding: 24px; text-align: center; color: var(--text-muted); background: var(--bg-ribbon) }   /* #144 toggle 6 */
+.graph-secoff[hidden] { display: none }
 
 /* [[ autocomplete */
 .ac { position: absolute; z-index: var(--layer-popover, 6); background: var(--suggestion-background, var(--bg-elevated));
@@ -1122,6 +1124,10 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
 .ctxmenu .mi svg { width: 12px; height: 12px; display: block }
 /* R38.29: `Delete file` is the ONE non-default-coloured row in the menu (red, see docs/requirements.md R38.29) */
 .ctxmenu div.del { color: var(--accent-red) }
+/* #220 General > Language: the active language is accented, a check after its name (issue mock-up) */
+.ctxmenu div.langon { color: var(--text-accent) }
+.ctxmenu .langchk { display: inline-block; width: 12px; height: 12px; margin-left: 6px; vertical-align: -1px }
+.ctxmenu .langchk svg { width: 12px; height: 12px; display: block }
 /* graphctx GC29 (recon-graphctx §6.1): the graph node menu opens with the file basename as an inert label row (stock .menu-item.is-label) */
 .ctxmenu div.mlbl { color: var(--text-chrome-muted); font-size: 12px; cursor: default; pointer-events: none }
 /* R38.7: the pin glyph rides in FRONT of a pinned tab's label (shots/m3-pinned-tabbar.png) */
@@ -1455,6 +1461,13 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .lp .lprow.lzy { height: calc(var(--line-height-normal, 1.55) * 1em) }   /* audit #10/#12: a lazy row placeholder (Ed.lzy) holds one line of height */
 .lp .mk { display: none }
 .lp:not(.src) .cm-line.blk > .cm-widgetBuffer { display: none }   /* editor.js lpParse .blk: no empty line box above a block embed */
+/* #183: with that buffer hidden the embed (img.vimg / .imgmiss, margin 8px 0) is the row's first
+   in-flow box, so its top margin COLLAPSED through the row: painted 8 px below the row's top, but
+   outside the row's border box, and CM6 measures a row by its rect. Every image row in the
+   viewport left the height map 8 px short of the drawn rows, so a landing on the map (Ed.land on
+   a mode switch INTO Live Preview) sat 8 px = 0.33 line above its anchor, per entry. flow-root
+   keeps the margin inside the row: same paint, and the row's rect = its height-map block. */
+.lp:not(.src) .cm-line.blk { display: flow-root }
 .lp.src .mk, .lp .mk.rv { display: inline; color: var(--text-chrome-dim) }
 .lp:focus, .lp .lprow:focus { outline: none }
 .lp .tbox { vertical-align: middle }                            /* rendered task checkbox (x offsets: R15.11 below) */
@@ -2062,6 +2075,19 @@ body.floorrelayout #main { padding-right: 1px }
    widget must not paint. With the caret merely ON the row the widget stays,
    exactly like the task checkbox of an edited "- [x] " line (R17.6). */
 .lp.src .vimg, .lp.src .rimg, .lp.src .imgmiss { display: none }
+/* #144 toggle 1: the banner names the setting that is the cause (live preview paints
+   data-why after the R29.4 sentence; reading view carries it as span.secwhy text),
+   and an allowed https audio / video player sits like a vault one. */
+.lp .imgmiss[data-why]::after { content: "\201C" attr(data-miss) "\201D was blocked. " attr(data-why) }
+.lp .rmedia, .preview .rmedia { display: block; max-width: 100%; margin: 8px 0 }
+.lp.src .rmedia { display: none }
+/* #144 toggle 4 (Render media) off: "<file> — media rendering is off (Settings › Security ›
+   Render media)". Live preview and the image / audio / PDF views paint it from data-name +
+   data-why (no text node); reading view carries it as text (main.rs media_off_html). */
+.pdf-view .imgmiss { display: block; padding: 12px 16px; margin: auto; border-radius: 6px;
+  background: var(--bg-surface); color: var(--text-chrome-muted); font-size: 14px; line-height: 1.4; user-select: none }
+.lp .imgmiss.secmedia::after, .image-view .imgmiss.secmedia::after, .audio-view .imgmiss.secmedia::after,
+.pdf-view .imgmiss.secmedia::after { content: attr(data-name) " \2014  media rendering is off " attr(data-why) }
 
 /* ---------- R33 frameless window: the app draws its own frame ----------
    tauri.conf.json ships `decorations: false`: there is no WM title bar and no WM
@@ -2232,6 +2258,31 @@ span.is-flashing { background: var(--highlight-yellow) }
   border: 1px solid var(--color-red, #e5484d); pointer-events: auto; cursor: pointer }
 #arstatus::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--color-red, #e5484d) }
 #arstatus[hidden] { display: none }
+/* #144 toggle 12: the Lockdown marker (sidebar status item above the vault bar, security.js marker) and its confirm
+   (the #delbox shape again, above the settings modal) */
+#seclock { position: fixed; left: 12px; bottom: 8px; z-index: 50; padding: 2px 10px; border-radius: 10px;
+  background: var(--bg-surface); color: var(--text-normal, inherit); font-size: 12px; font-weight: 600;
+  border: 1px solid var(--text-banner-error, #e5484d); pointer-events: auto }
+#seclock[hidden] { display: none }
+/* PR #193 review: the marker is its own row of the left sidebar (#side is a flex column), right
+   above the vault bar: never painted over the vault name, and the name keeps its full width */
+#side > #seclock { position: static; flex: 0 0 auto; align-self: flex-start; margin: 0 0 4px 12px;
+  line-height: 16px; white-space: nowrap }
+#ldbox { position: fixed; inset: 0; z-index: 80; background: var(--scrim);
+         display: flex; flex-direction: column; align-items: center; box-sizing: border-box;
+         padding: max(0px, min(120px, 100vh - 320px)) 0 8px }
+#ldcard { width: 480px; max-width: 92%; box-sizing: border-box; background: var(--bg-elevated);
+          border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px 16px;
+          box-shadow: 0 8px 30px var(--shadow-modal); color: var(--text-chrome) }
+#ldcard .ldtitle { font-size: 17px; font-weight: 600; margin-bottom: 10px }
+#ldcard .ldq, #ldcard .ldclip { font-size: 13px; line-height: 1.5; display: block }
+#ldcard .ldclip { margin-top: 10px; cursor: pointer }
+#ldcard .ldsay { font-size: 13px; line-height: 1.5; margin-top: 6px; color: var(--text-quiet) }
+#ldcard .ldbtns { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px }
+#ldcard .ldbtns button { box-sizing: border-box; height: 30px; border: 0; border-radius: 5px; padding: 0 12px;
+  background: var(--bg-button-plain); color: var(--bg-base); font-size: 13px; font-weight: 500; cursor: pointer }
+#ldcard .ldbtns button:focus { box-shadow: 0 0 0 2px var(--border-focus-ring) }
+.ssecrestartbtn { margin-left: 6px; height: 22px; padding: 0 8px; border: 0; border-radius: 4px; font-size: 12px; cursor: pointer }
 /* issue #44: the PDF view (a "pdf" leaf, main.js PDFV) — the same frame, filling the pane */
 .os-pv > .view-content.pdf-view { padding: 0; overflow: hidden; display: flex; flex-direction: column }
 .pdf-view > .pdf-embed { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; width: 100%;

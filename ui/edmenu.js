@@ -83,60 +83,67 @@ const EdMenu = (() => {
     const line = f => go(() => edLine(f));
     const R = (title, fn, section, why) => ({ title, fn, section, why });
     const FORMAT = [
-      R("Bold", go(() => edWrap("**")), "selection.format.basic"),
-      R("Italic", go(() => edWrap("*")), "selection.format.basic"),
-      R("Strikethrough", go(() => edWrap("~~")), "selection.format.basic"),
-      R("Highlight", go(() => edWrap("==")), "selection.format.basic"),
+      R(I18N.m("Bold"), go(() => edWrap("**")), "selection.format.basic"),
+      R(I18N.m("Italic"), go(() => edWrap("*")), "selection.format.basic"),
+      R(I18N.m("Strikethrough"), go(() => edWrap("~~")), "selection.format.basic"),
+      R(I18N.m("Highlight"), go(() => edWrap("==")), "selection.format.basic"),
       "---",
-      R("Code", go(() => edWrap("`", "code")), "selection.format.advanced"),
-      R("Math", go(() => edWrap("$", "math")), "selection.format.advanced"),
-      R("Comment", go(() => edWrap("%%", "comment")), "selection.format.advanced"),
+      R(I18N.m("Code"), go(() => edWrap("`", "code")), "selection.format.advanced"),
+      R(I18N.m("Math"), go(() => edWrap("$", "math")), "selection.format.advanced"),
+      R(I18N.m("Comment"), go(() => edWrap("%%", "comment")), "selection.format.advanced"),
       "---",
-      R("Clear formatting", ed(clearFmt), "selection.format.danger"),
+      R(I18N.m("Clear formatting"), ed(clearFmt), "selection.format.danger"),
     ];
     const PARAGRAPH = [
-      R("Bullet list", go(() => edList("bullet")), "paragraph.list"),
-      R("Numbered list", go(() => edList("numbered")), "paragraph.list"),
-      R("Task list", line(task), "paragraph.list"),
+      R(I18N.m("Bullet list"), go(() => edList("bullet")), "paragraph.list"),
+      R(I18N.m("Numbered list"), go(() => edList("numbered")), "paragraph.list"),
+      R(I18N.m("Task list"), line(task), "paragraph.list"),
       "---",
       ...[1, 2, 3, 4, 5, 6].map(n => R("Heading " + n, line(heading(n)), "paragraph.heading")),
-      R("Body", line(heading(0)), "paragraph.heading"),
+      R(I18N.m("Body"), line(heading(0)), "paragraph.heading"),
       "---",
-      R("Quote", line(quote), "paragraph.block"),
+      R(I18N.m("Quote"), line(quote), "paragraph.block"),
     ];
     const INSERT = [
-      R("Footnote", ed(footnote), "insert.basic"),
-      R("Table", ed(block(TABLE, 2)), "insert.basic"),
-      R("Callout", ed(block("> [!note]\n> ", 12)), "insert.basic"),
-      R("Horizontal rule", ed(block("---", 3)), "insert.basic"),
+      R(I18N.m("Footnote"), ed(footnote), "insert.basic"),
+      R(I18N.m("Table"), ed(block(TABLE, 2)), "insert.basic"),
+      R(I18N.m("Callout"), ed(block("> [!note]\n> ", 12)), "insert.basic"),
+      R(I18N.m("Horizontal rule"), ed(block("---", 3)), "insert.basic"),
       "---",
-      R("Code block", ed(fence("```")), "insert.advanced"),
-      R("Math block", ed(fence("$$")), "insert.advanced"),
-      R("New base", null, "insert.advanced", NO_BASE),
+      R(I18N.m("Code block"), ed(fence("```")), "insert.advanced"),
+      R(I18N.m("Math block"), ed(fence("$$")), "insert.advanced"),
+      R(I18N.m("New base"), null, "insert.advanced", NO_BASE),
     ];
     const none = sel ? undefined : "";      // disabled with no hover reason: stock greys them the same way
     const ADD = [
-      R("Add link", ed(link("[[", "]]")), "selection-link"),
-      R("Add external link", ed(extLink), "selection-link"),
+      R(I18N.m("Add link"), ed(link("[[", "]]")), "selection-link"),
+      R(I18N.m("Add external link"), ed(extLink), "selection-link"),
       "---",
     ];
-    const PAR = { title: "Paragraph", sub: PARAGRAPH, section: "" }, INS = { title: "Insert", sub: INSERT, section: "" };
+    const PAR = { title: I18N.m("Paragraph"), sub: PARAGRAPH, section: "" }, INS = { title: I18N.m("Insert"), sub: INSERT, section: "" };
+    /* #144 toggles 8 + 9: clip = true | false | { off: "<refusal naming the toggle>" } (clip_has_text
+       refused). App clipboard off: every clipboard row disabled with the refusal as its reason.
+       Plugin clipboard off (a plugin is on this page): Copy / Cut run WebKit's own copy inside this
+       click (execCommand: a real user gesture, CM6 fills the data), Paste rows disabled. */
+    const off = clip && clip.off ? clip.off : "", appOff = /App clipboard\)/.test(off);
+    const pasteWhy = appOff ? off : off ? off + " — use Ctrl+V" : clip ? undefined : "";
+    const viaKey = off && !appOff ? cmd => go(() => { if (!document.execCommand(cmd)) say(off, "secclip"); }) : null;
     const CLIP = [
-      R("Cut", go(() => clipCut(g)), "clipboard", none),
-      R("Copy", go(() => clipCopy(g)), "clipboard", none),
-      R("Paste", go(() => clipPaste(g)), "clipboard", clip ? undefined : ""),
-      R("Paste as plain text", go(() => clipPaste(g)), "clipboard", clip ? undefined : ""),
-      R("Select all", go(() => Ed.selectAll(g)), "clipboard"),
+      R(I18N.m("Cut"), viaKey ? viaKey("cut") : go(() => clipCut(g)), "clipboard", appOff ? off : none),
+      R(I18N.m("Copy"), viaKey ? viaKey("copy") : go(() => clipCopy(g)), "clipboard", appOff ? off : none),
+      R(I18N.m("Paste"), go(() => clipPaste(g)), "clipboard", pasteWhy),
+      R(I18N.m("Paste as plain text"), go(() => clipPaste(g)), "clipboard", pasteWhy),
+      R(I18N.m("Select all"), go(() => Ed.selectAll(g)), "clipboard"),
     ];
     /* C3-4: a right-click ON a link / embed (hit = linkHit(), the source span under
        the pointer) gets stock's target menus (RECON §A1 lp-link-internal / -external / lp-image) */
     if (hit && hit.kind === "image") return imageRows(g, hit, go);
     if (hit) {
-      const editLink = R("Edit link", go(() => { const cm = Ed.cm(g); if (cm) cm.dispatch({ selection: { anchor: hit.ea, head: hit.eb }, scrollIntoView: true }); }), "selection-link");
+      const editLink = R(I18N.m("Edit link"), go(() => { const cm = Ed.cm(g); if (cm) cm.dispatch({ selection: { anchor: hit.ea, head: hit.eb }, scrollIntoView: true }); }), "selection-link");
       if (hit.kind === "ext") return [
-        R("Open link in default browser", go(() => openUrl(hit.url)), "open"), "---",
+        R(I18N.m("Open link in default browser"), go(() => openUrl(hit.url)), "open"), "---",
         ...ADD, editLink, PAR, INS, "---", ...CLIP, "---",
-        R("Copy URL", go(() => clipPut(hit.url)), "clipboard"),
+        R(I18N.m("Copy URL"), go(() => clipPut(hit.url)), "clipboard"),
       ];
       return [...noteOpenRows(g, hit, go), "---", ...ADD, editLink, PAR, INS, "---", ...CLIP, "---",
         copyPath(hit.path), "---", ...noteFileRows(hit, go), "---", "---", ...noteSysRows(hit, go)];
@@ -144,8 +151,8 @@ const EdMenu = (() => {
     const out = [...ADD];
     if (sel) out.push(
       R("Search for “" + sel + "”", go(() => searchFor(sel)), "selection"),
-      R("Extract current selection...", null, "selection", NO_EXTRACT));
-    out.push({ title: "Format", sub: FORMAT, section: "selection.format" }, PAR, INS, "---", ...CLIP);
+      R(I18N.m("Extract current selection..."), null, "selection", NO_EXTRACT));
+    out.push({ title: I18N.m("Format"), sub: FORMAT, section: "selection.format" }, PAR, INS, "---", ...CLIP);
     return out;
   }
 
@@ -176,10 +183,10 @@ const EdMenu = (() => {
     const root = String(vaultPath || "").replace(/[\\/]+$/, ""), vn = root.split(/[\\/]/).pop();
     const url = "obsidian://open?vault=" + encodeURIComponent(vn) + "&file=" + encodeURIComponent(path.replace(/\.md$/i, ""));
     const put = t => () => { closeMenu(); clipPut(t); };
-    return { title: "Copy path", section: "info", sub: [
-      R("as Obsidian URL", put(url), "info"),
-      R("from vault folder", put(path), "info"),
-      R("from system root", put(root + "/" + path), "info"),
+    return { title: I18N.m("Copy path"), section: "info", sub: [
+      R(I18N.m("as Obsidian URL"), put(url), "info"),
+      R(I18N.m("from vault folder"), put(path), "info"),
+      R(I18N.m("from system root"), put(root + "/" + path), "info"),
     ] };
   }
   async function openNote(g, n, an, how) {     // the ctrl+click path of wikiClick, or a split to the right
@@ -194,19 +201,19 @@ const EdMenu = (() => {
     if (an) await navAnchor(g, an);
   }
   const noteOpenRows = (g, h, go) => [
-    R("Open in new tab", go(() => openNote(g, h.note, h.anchor, "tab")), "open"),
-    R("Open to the right", go(() => openNote(g, h.note, h.anchor, "right")), "open"),
-    R("Open in new window", null, "open", WIN()),
+    R(I18N.m("Open in new tab"), go(() => openNote(g, h.note, h.anchor, "tab")), "open"),
+    R(I18N.m("Open to the right"), go(() => openNote(g, h.note, h.anchor, "right")), "open"),
+    R(I18N.m("Open in new window"), null, "open", WIN()),
   ];
   const noteFileRows = (h, go) => [
-    R("Rename...", null, "action", NO_RENAME),
-    R("Move file to...", null, "action", NO_MOVE),
+    R(I18N.m("Rename..."), null, "action", NO_RENAME),
+    R(I18N.m("Move file to..."), null, "action", NO_MOVE),
     R(bmCache.includes(h.name) ? "Remove bookmark" : "Bookmark...", go(() => toggleBm(h.name)), "action"),
   ];
   const noteSysRows = (h, go) => [
-    R("Open in default app", null, "system", NO_FILEOPEN),
-    R("Show in system explorer", null, "system", NO_SYSEXP),
-    R("Reveal file in navigation", go(() => bmReveal(h.name)), "system"),
+    R(I18N.m("Open in default app"), null, "system", NO_FILEOPEN),
+    R(I18N.m("Show in system explorer"), null, "system", NO_SYSEXP),
+    R(I18N.m("Reveal file in navigation"), go(() => bmReveal(h.name)), "system"),
   ];
   function imageRows(g, h, go) {
     const cut = ed => go(() => {                // the embed's source span, replaced as ONE edit (edEdit)
@@ -216,26 +223,26 @@ const EdMenu = (() => {
     });
     const sized = /\|\s*\d+(?:x\d+)?\s*\]\]$/.test(h.text);
     return [
-      R("Copy image", null, "clipboard", NO_IMGCLIP),
-      R("Swap file...", null, "action", NO_SWAP),
-      R("Remove image", cut(() => ""), "action"),
-      R("Reset size", sized ? cut(s => s.replace(/\|\s*\d+(?:x\d+)?\s*\]\]$/, "]]")) : null, "action", sized ? undefined : ""),
+      R(I18N.m("Copy image"), null, "clipboard", NO_IMGCLIP),
+      R(I18N.m("Swap file..."), null, "action", NO_SWAP),
+      R(I18N.m("Remove image"), cut(() => ""), "action"),
+      R(I18N.m("Reset size"), sized ? cut(s => s.replace(/\|\s*\d+(?:x\d+)?\s*\]\]$/, "]]")) : null, "action", sized ? undefined : ""),
       "---",
-      R("Open in new tab", null, "open", NO_IMGTAB),
-      R("Open to the right", null, "open", NO_IMGTAB),
-      R("Open in new window", null, "open", WIN()),
+      R(I18N.m("Open in new tab"), null, "open", NO_IMGTAB),
+      R(I18N.m("Open to the right"), null, "open", NO_IMGTAB),
+      R(I18N.m("Open in new window"), null, "open", WIN()),
       "---",
-      R("Rename...", null, "action", NO_IMGFILE),
-      R("Move file to...", null, "action", NO_IMGFILE),
-      R("Bookmark...", null, "action", "Missing subsystem: bookmarks of attachments — a bookmark is a note or PDF name (R9.4)"),
+      R(I18N.m("Rename..."), null, "action", NO_IMGFILE),
+      R(I18N.m("Move file to..."), null, "action", NO_IMGFILE),
+      R(I18N.m("Bookmark..."), null, "action", "Missing subsystem: bookmarks of attachments — a bookmark is a note or PDF name (R9.4)"),
       "---",
       copyPath(h.path),
       "---",
-      R("Open in default app", null, "system", NO_FILEOPEN),
-      R("Show in system explorer", null, "system", NO_SYSEXP),
-      R("Reveal file in navigation", go(() => bmReveal(h.path)), "system"),
+      R(I18N.m("Open in default app"), null, "system", NO_FILEOPEN),
+      R(I18N.m("Show in system explorer"), null, "system", NO_SYSEXP),
+      R(I18N.m("Reveal file in navigation"), go(() => bmReveal(h.path)), "system"),
       "---",
-      { title: "Delete image", section: "danger", why: NO_IMGFILE, warn: true },
+      { title: I18N.m("Delete image"), section: "danger", why: NO_IMGFILE, warn: true },
     ];
   }
   /* classify one source span: [[x]] / ![[x]] / [t](u) / ![a](u) / a bare url */
@@ -300,7 +307,9 @@ const EdMenu = (() => {
     }
     return null;
   }
-  async function clipPut(t) { await inv("clip_set_text", { text: t }).catch(err => console.warn("clip_set_text:", err)); }
+  /* #144 toggles 8 + 9: a clipboard refusal names its toggle — say it (the notice), do not just log it */
+  const clipErr = what => err => { console.warn(what + ":", err); const m = String(err && err.message || err); if (/^EPERM: /.test(m) && typeof say === "function") say(m, "secclip"); };
+  async function clipPut(t) { await inv("clip_set_text", { text: t }).catch(clipErr("clip_set_text")); }
   function openUrl(u) {          // the S1 choke point: open_external re-checks the scheme in Rust
     inv("open_external", { url: u }).catch(err => console.warn("open_external:", err));
   }
@@ -318,19 +327,19 @@ const EdMenu = (() => {
     if (a && a.classList.contains("ext")) {
       const u = a.getAttribute("href");
       mt = "read:ext";
-      rows = [R("Open link in default browser", go(() => openUrl(u)), "open"), "---",
-        R("Copy", go(() => clipPut(st || a.textContent)), "clipboard"), "---",
-        R("Copy URL", go(() => clipPut(u)), "clipboard")];
+      rows = [R(I18N.m("Open link in default browser"), go(() => openUrl(u)), "open"), "---",
+        R(I18N.m("Copy"), go(() => clipPut(st || a.textContent)), "clipboard"), "---",
+        R(I18N.m("Copy URL"), go(() => clipPut(u)), "clipboard")];
     } else if (a) {
       const n = wikiTarget(a) || curOf(g), h = { note: n, anchor: wikiAnchor(a), name: noteName(n) };
       h.path = h.name + ".md";
       mt = "read:link";
       rows = [...noteOpenRows(g, h, go), "---", ...noteFileRows(h, go), "---",
-        R("Copy", go(() => clipPut(st || a.textContent)), "clipboard"), "---",
+        R(I18N.m("Copy"), go(() => clipPut(st || a.textContent)), "clipboard"), "---",
         copyPath(h.path), "---", ...noteSysRows(h, go)];
     } else if (st) {
       mt = "read:sel";
-      rows = [R("Copy", go(() => clipPut(st)), "clipboard")];
+      rows = [R(I18N.m("Copy"), go(() => clipPut(st)), "clipboard")];
     }
     if (!rows) return true;                  // reading view, no target: no menu (stock)
     closeMenu();
@@ -348,17 +357,17 @@ const EdMenu = (() => {
     q.dispatchEvent(new Event("input", { bubbles: true }));
   }
   const selText = g => { const s = Ed.sel(g); return s && !s.empty ? Ed.slice(g, s) : ""; };
-  async function clipCopy(g) { const t = selText(g); if (t) await inv("clip_set_text", { text: t }).catch(err => console.warn("clip_set_text:", err)); }
+  async function clipCopy(g) { const t = selText(g); if (t) await inv("clip_set_text", { text: t }).catch(clipErr("clip_set_text")); }
   async function clipCut(g) {
     const s = Ed.sel(g), t = selText(g);
     if (!t) return;
-    try { await inv("clip_set_text", { text: t }); } catch (err) { console.warn("clip_set_text:", err); return; }   // never delete what did not reach the clipboard
+    try { await inv("clip_set_text", { text: t }); } catch (err) { clipErr("clip_set_text")(err); return; }   // never delete what did not reach the clipboard
     if (!edEditable()) return;
     Ed.replace(g, s, "", "cut");
   }
   async function clipPaste(g) {
     let t = null;
-    try { t = await inv("clip_text"); } catch (err) { console.warn("clip_text:", err); }
+    try { t = await inv("clip_text"); } catch (err) { clipErr("clip_text")(err); }
     if (!t || !edEditable()) return;
     Ed.replace(g, Ed.sel(g), t, "paste");
   }
@@ -392,24 +401,24 @@ const EdMenu = (() => {
     const src = cm.state.sliceDoc(b.from, b.to), r = +cell.dataset.r || 0, c = +cell.dataset.c || 0;
     const nr = b.rows.length, nc = b.cols;
     const R = (title, o, section, why) => ({ title, section, why, fn: () => { closeMenu(); tableOp(cm, b.from, src, o, r, c); } });
-    const rowSub = tidy([R("Add row above", "row-above", "table.row.add"), R("Add row below", "row-below", "table.row.add"), "---",
-      ...(r > 0 ? [R("Move row up", "row-up", "table.row.move")] : []),
-      ...(r < nr - 1 ? [R("Move row down", "row-down", "table.row.move")] : []), "---",
-      R("Duplicate row", "row-dup", "table.row.edit"),
-      R("Delete row", "row-del", "table.row.edit", nr > 1 ? undefined : "The table has no other row")]);
-    const colSub = tidy([R("Add column to the left", "col-left", "table.col.add"), R("Add column to the right", "col-right", "table.col.add"), "---",
-      ...(c > 0 ? [R("Move column left", "col-move-left", "table.col.move")] : []),
-      ...(c < nc - 1 ? [R("Move column right", "col-move-right", "table.col.move")] : []), "---",
-      R("Align left", "align-left", "table.col.align"), R("Align center", "align-center", "table.col.align"), R("Align right", "align-right", "table.col.align"), "---",
-      R("Duplicate column", "col-dup", "table.col.edit"),
-      R("Delete column", "col-del", "table.col.edit", nc > 1 ? undefined : "The table has no other column")]);
+    const rowSub = tidy([R(I18N.m("Add row above"), "row-above", "table.row.add"), R(I18N.m("Add row below"), "row-below", "table.row.add"), "---",
+      ...(r > 0 ? [R(I18N.m("Move row up"), "row-up", "table.row.move")] : []),
+      ...(r < nr - 1 ? [R(I18N.m("Move row down"), "row-down", "table.row.move")] : []), "---",
+      R(I18N.m("Duplicate row"), "row-dup", "table.row.edit"),
+      R(I18N.m("Delete row"), "row-del", "table.row.edit", nr > 1 ? undefined : "The table has no other row")]);
+    const colSub = tidy([R(I18N.m("Add column to the left"), "col-left", "table.col.add"), R(I18N.m("Add column to the right"), "col-right", "table.col.add"), "---",
+      ...(c > 0 ? [R(I18N.m("Move column left"), "col-move-left", "table.col.move")] : []),
+      ...(c < nc - 1 ? [R(I18N.m("Move column right"), "col-move-right", "table.col.move")] : []), "---",
+      R(I18N.m("Align left"), "align-left", "table.col.align"), R(I18N.m("Align center"), "align-center", "table.col.align"), R(I18N.m("Align right"), "align-right", "table.col.align"), "---",
+      R(I18N.m("Duplicate column"), "col-dup", "table.col.edit"),
+      R(I18N.m("Delete column"), "col-del", "table.col.edit", nc > 1 ? undefined : "The table has no other column")]);
     const x = e.clientX, y = e.clientY;
     closeMenu();
     const B = OMenu.shell();
     B.el.dataset.mt = "editor:lp-table-" + (r === 0 ? "header" : "cell");
-    B.add([{ title: "Row", section: "table", sub: rowSub }, { title: "Column", section: "table", sub: colSub }, "---",
-      R("Sort by column (A to Z)", "sort-asc", "table-sort", nr > 2 ? undefined : "Nothing to sort"),
-      R("Sort by column (Z to A)", "sort-desc", "table-sort", nr > 2 ? undefined : "Nothing to sort")]);
+    B.add([{ title: I18N.m("Row"), section: "table", sub: rowSub }, { title: I18N.m("Column"), section: "table", sub: colSub }, "---",
+      R(I18N.m("Sort by column (A to Z)"), "sort-asc", "table-sort", nr > 2 ? undefined : "Nothing to sort"),
+      R(I18N.m("Sort by column (Z to A)"), "sort-desc", "table-sort", nr > 2 ? undefined : "Nothing to sort")]);
     placeMenu(B.el, x, y);
   }
 
@@ -429,12 +438,12 @@ const EdMenu = (() => {
     if (!cm.hasFocus) cm.focus();
     const sel = selText(g), x = e.clientX, y = e.clientY;
     closeMenu();
-    const ask = inv("clip_has_text").catch(() => false);
+    const ask = inv("clip_has_text").catch(err => { const m = String(err && err.message || err); return /^EPERM: /.test(m) ? { off: m } : false; });   // #144: a refusal disables the rows WITH its reason
     ask.then(clip => {
       if (fg() !== g || selText(g) !== sel) return;       // the world moved while we asked: no stale menu
       const B = OMenu.shell();
       B.el.dataset.mt = "editor:" + (t.mode === "source" ? "src" : "lp") + (hit ? "-" + (hit.kind === "note" ? "link" : hit.kind) : sel ? "-sel" : "");
-      B.add(rows(g, sel, !!clip, hit));
+      B.add(rows(g, sel, clip && clip.off ? clip : !!clip, hit));
       if (PMENU && PMENU.editorMenu) PMENU.editorMenu(e, B);   // plugin rows after the core rows (stock order)
       closeMenu();
       placeMenu(B.el, x, y);
