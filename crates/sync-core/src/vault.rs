@@ -540,8 +540,15 @@ impl Member {
         Ok(Zeroizing::new(w.into_bytes()))
     }
 
-    /// Load from the daily entry and re-verify the chain from `t`.
-    pub fn from_daily(p: &FipsProvider, t: &dyn Transport, daily: &[u8]) -> Result<Member> {
+    /// The server tokens inside a daily entry (set them on the transport
+    /// before [`Member::from_daily`] fetches the chain).
+    pub fn daily_tokens(daily: &[u8]) -> Result<Tokens> {
+        let (_, _, _, server, env) = Self::parse_daily(daily)?;
+        let s = &env.servers[server];
+        Ok(Tokens { read: Some(s.read_token.clone()), write: Some(s.write_token.clone()) })
+    }
+
+    fn parse_daily(daily: &[u8]) -> Result<(Id16, FipsSigningKey, String, usize, Envelope)> {
         let mut r = Reader::new(daily);
         if r.u8().map_err(fmt_err)? != 1 {
             return Err(VaultError::Format("daily entry version".into()));
@@ -555,6 +562,12 @@ impl Member {
         if server >= env.servers.len() {
             return Err(VaultError::Format("daily entry server index".into()));
         }
+        Ok((id, key, name, server, env))
+    }
+
+    /// Load from the daily entry and re-verify the chain from `t`.
+    pub fn from_daily(p: &FipsProvider, t: &dyn Transport, daily: &[u8]) -> Result<Member> {
+        let (id, key, name, server, env) = Self::parse_daily(daily)?;
         let pubkey = key.public_key();
         let device = Device { id, key, pubkey, name };
         let ns = env.servers[server].ns;
