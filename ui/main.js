@@ -8366,7 +8366,13 @@ $("minput").onkeydown = async e => {
     const it = mdItems[mdSel];
     if (e.shiftKey && q) { closeModal(); return await qsCreateNote(q, how); }
     if (it) {
-      if (how === "right") { closeModal(); await splitWith(fg(), "row", mkTab(it.label)); return qsFocusEd(); }
+      if (how === "right") {
+        closeModal();
+        // #168: a .canvas row opens the BOARD in the new right split (openCanvas "split", as the explorer's "Open to the
+        // right"), never a note tab named "X.canvas" — stock 1.13.7: canvas:cfBoard in a 2nd tab group, focused.
+        if (it.canvas) { await openCanvas(it.label, "split"); return; }
+        await splitWith(fg(), "row", mkTab(it.label)); return qsFocusEd();
+      }
       return await mdRun(it, e);
     }
     if (!mdNew) return;
