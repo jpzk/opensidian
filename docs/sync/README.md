@@ -20,3 +20,7 @@ Status: draft, milestone M0 (spec) + M1 (local file history).
 Code: `crates/sync-proto` (wire types), `crates/sync-crypto`
 (CryptoProvider trait), `crates/sync-core` (file history, later the
 engine), `crates/syncd`, `crates/sync-server` (stubs until M3/M6).
+
+TODO (not in M1): restore/diff UI for file history. Backend commands
+`history_*` exist and are tested; the planned panel is specified in
+[spec.md §6.6](spec.md).

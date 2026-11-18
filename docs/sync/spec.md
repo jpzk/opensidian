@@ -381,3 +381,27 @@ the only allowed head change is a deleted path vanishing.
   config are not journaled yet; idle snapshots (`Debouncer`) are not
   scheduled by the app (every save is already journaled); thinning runs
   once when the store opens
+
+### 6.6 Restore / diff UI — TODO (not in M1)
+
+No UI ships in M1; the backend commands above are complete and tested,
+the panel is deferred. Reason: `ui/main.js` is a ~15k-line vanilla JS
+module and this milestone has no JS test path, so a panel could not be
+verified to the same bar as the backend. Planned shape (follow-up PR):
+
+- command palette + file menu entry "Open file history" for the active
+  note → right-side panel listing `history_list(name)` newest first
+  (time, reason, size; tombstones and renames labelled)
+- selecting a version: `history_read(seq)` → read-only preview, plus a
+  line diff against the current editor buffer (pure JS LCS, no new dep;
+  cap at the store's `max_file_bytes`)
+- "Restore this version" → `history_restore(seq)`, then reload the note;
+  confirm first if the buffer is dirty (the restore itself snapshots the
+  on-disk bytes, so it is undoable from the same list)
+- "Recently deleted" view: `history_deleted()` →
+  `history_restore_deleted(name)`; surface the "path exists" refusal
+  as-is
+- "Purge…" (per version / whole path) behind a typed confirmation, since
+  `history_purge` is irreversible by design (§6.4)
+- acceptance: the panel never writes to the vault except through these
+  commands; keyboard reachable; works at the 320×240 layout
