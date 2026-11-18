@@ -209,6 +209,11 @@ pub fn is_trusted(cfg: &serde_json::Value, root: &Path) -> bool {
 /// No recorded identity = an entry from before the binding: honoured only for a root WITH an
 /// identity (bind_legacy records it on that boot); a root without one is restricted (review #129).
 pub fn is_trusted_key(cfg: &serde_json::Value, key: &TrustKey) -> bool {
+    // #144 toggle 12: under the latched lockdown every vault is restricted; the trust
+    // entries are not touched and apply again after lockdown is off and the app restarted
+    if crate::security::trust_blocked() {
+        return false;
+    }
     if cfg[TRUST_KEY][&key.path].as_bool() != Some(true) {
         return false;
     }

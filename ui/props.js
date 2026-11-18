@@ -184,8 +184,8 @@
     const types = M.RESERVED[lc] && M.RESERVED[lc] !== "multitext" ? [M.RESERVED[lc]] : MENU_TYPES;
     for (const t of types) item((t === row.type ? "✓ " : "") + TYPE_LABEL[t], () => { if (t !== row.type) retype(cm, row, t); });
     sep();
-    item("Rename", () => { const k = wrap.querySelector(".metadata-property-key-input"); if (k) { k.focus(); k.select(); } });
-    item("Delete", () => remove(cm, row.key));
+    item(I18N.m("Rename"), () => { const k = wrap.querySelector(".metadata-property-key-input"); if (k) { k.focus(); k.select(); } });
+    item(I18N.m("Delete"), () => remove(cm, row.key));
     const r = anchor.getBoundingClientRect();
     if (typeof placeMenu === "function") placeMenu(m, Math.round(r.left), Math.round(r.bottom + 4));
     else { m.style.left = r.left + "px"; m.style.top = r.bottom + "px"; document.body.appendChild(m); }
@@ -563,7 +563,7 @@
       hooks.refresh();
     });
     m.appendChild(el("div", "sep"));
-    item("Rename", () => {
+    item(I18N.m("Rename"), () => {
       const ki = el("input", "props-vrename"); ki.type = "text"; ki.value = p.name;
       nm.replaceWith(ki); ki.focus(); ki.select();
       let gone = false;
