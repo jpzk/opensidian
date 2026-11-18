@@ -3122,6 +3122,17 @@ Ed.cbRebuild = function (v) {
   v._cbRb = (v._cbRb || 0) + 1;
   try { v.cm.dispatch({ effects: Ed.cbFx.of(null) }); } catch (e) { console.error(e); }
 };
+// a doc that can hold a mermaid fence (native substring search over the rope chunks; cached per doc)
+Ed.cbMm = doc => {
+  if (!window.Merm) return false;
+  if (Ed._cbMmDoc === doc) return Ed._cbMmOut;
+  let hit = false;
+  for (const it = doc.iter(); !it.next().done;) if (it.value.indexOf("mermaid") >= 0) { hit = true; break; }
+  Ed._cbMmDoc = doc; Ed._cbMmOut = hit;
+  return hit;
+};
+// #187: languages the app renders itself in Live Preview (a plugin processor for the same language wins)
+Ed.cbOwn = lang => lang === "mermaid" && !!window.Merm && !(Ed.cbHook && Ed.cbHook.has(lang));
 Ed.cbField = function (v, G, bust) {
   const { Decoration, WidgetType, EditorView } = CMv;
   if (!Ed.cbFx) Ed.cbFx = CMs.StateEffect.define();
@@ -3130,6 +3141,9 @@ Ed.cbField = function (v, G, bust) {
     eq(o) { return o.lang === this.lang && o.src === this.src && o.path === this.path && o.gen === this.gen; }
     toDOM() {
       const w = Ed.el("div", "cm-preview-code-block cm-embed-block markdown-rendered cm-lang-" + this.lang);
+      // #187: the app's own mermaid renderer (ui/mermaid.js) when no plugin processes the language:
+      // the stock shape is div.cm-preview-code-block > div.mermaid-wrapper (guard or diagram)
+      if (Ed.cbOwn(this.lang)) { try { w.appendChild(Merm.block(this.src)); } catch (e) { console.error("[mermaid]", e); } return w; }
       const el = Ed.el("div", "block-language-" + this.lang);
       w.appendChild(el);
       // the widget ignores editor events (ignoreEvent): its wiki links follow here (dataview file links)
@@ -3146,15 +3160,15 @@ Ed.cbField = function (v, G, bust) {
   }
   const build = st => {
     const h = Ed.cbHook;
-    if (!h || !h.any()) return Decoration.none;
+    if ((!h || !h.any()) && !Ed.cbMm(st.doc)) return Decoration.none;   // #187: no plugin processor: only a doc with a mermaid fence is scanned
     const g = G();
     const tb = g && g.view === v && g.active >= 0 ? g.tabs[g.active] : null;   // goal mt-fix: the lp a reading view keeps laid out renders none
     if (!g || (v.lp && v.lp.classList.contains("src")) || (tb && tb.mode === "reading")) return Decoration.none;
     const blocks = Ed.cbFences(st.doc);
     if (!blocks.length) return Decoration.none;
-    const n = typeof curOf === "function" && g.view === v ? curOf(g) : v.note, path = n ? n + ".md" : "", gen = h.gen() + "/" + (v._cbRb || 0), out = [];
+    const n = typeof curOf === "function" && g.view === v ? curOf(g) : v.note, path = n ? n + ".md" : "", gen = (h ? h.gen() : 0) + "/" + (v._cbRb || 0), out = [];
     for (const b of blocks) {
-      if (!h.has(b.lang)) continue;
+      if (!(h && h.has(b.lang)) && !Ed.cbOwn(b.lang)) continue;
       if (st.selection.ranges.some(r => r.from <= b.to && r.to >= b.from)) continue;   // caret in the fence: its source shows
       out.push(Decoration.replace({ widget: new CB(b.lang, b.src, path, gen), block: true }).range(b.from, b.to));
     }

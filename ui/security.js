@@ -37,7 +37,7 @@
       ["canvas", false, "Off: <canvas> drawing and pixel reads are refused in every frame before any page code runs (graph view, canvas image export and image paste re-encoding stop and say so). The page reloads to apply it. Limit: hardening, not a wall: WebKit has no canvas switch, so a trusted community plugin (it already has file and program access) can still draw through a same-origin worker, a frame that is still loading, or native code."],
       ["mathjax", false, "The MathJax TeX parser (loaded on demand, e.g. by a plugin calling loadMathJax). Off: its files are refused, the parser is never in memory and loadMathJax fails naming this switch; math stays plain text."],
       ["prism", false, "The Prism code tokenizer (loaded on demand, e.g. by loadPrism). Off: its files are refused, the tokenizer is never in memory and loadPrism fails naming this switch; code stays plain text."],
-      ["mermaid", false, "The Mermaid diagram engine. Not bundled in this version (loadMermaid is unsupported); off keeps it refused once it is. Off: loadMermaid fails naming this switch; diagrams stay plain text."],
+      ["mermaid", false, "The Mermaid diagram engine (loaded on demand: a note with a mermaid code block, or a plugin calling loadMermaid). Off: its files are refused, the engine is never in memory and loadMermaid fails naming this switch; diagrams stay plain text."],
     ]],
     ["Plugins and clipboard", [
       ["pluginSpawn", false, "Community plugins may start programs (each run is still asked about). Off: refused before any dialog, also opening files or links with the system opener."],
