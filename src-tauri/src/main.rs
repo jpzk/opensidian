@@ -4036,7 +4036,7 @@ fn set_snippet_enabled(v: State<Vault>, label: String, on: bool) -> Result<(), S
        is added — community plugins eval, new Function and spawn blob workers,
        as in stock. Never set in the config: a global unsafe-eval is refused.
        af-fix 1a: media-src 'self' blob: is added too (canvas media cards play
-       from a media_read blob); a restricted canvas media card cannot play.
+       from a media_read blob); #196: a restricted page plays them CLICK-TO-PLAY (canvas-cards.js mediaLazy).
    Tauri builds the header per page response; page_csp rewrites it after, from
    the trust flag in ~/.opensidian.json (outside the vault). A page already
    loaded keeps its header, so PAGE_EVAL says which one it got and the loader
