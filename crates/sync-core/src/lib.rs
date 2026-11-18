@@ -7,3 +7,5 @@
 
 pub use sync_crypto;
 pub use sync_proto;
+
+pub mod history;
