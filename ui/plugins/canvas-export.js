@@ -324,7 +324,7 @@
     const band = o.l ? bandOf(o.z) : 0;
     const cv = document.createElement("canvas"); cv.width = sz.w; cv.height = sz.h + band;
     const ctx = cv.getContext("2d");
-    if (!ctx) throw new Error("no 2D context");
+    if (!ctx) throw new Error(window.opensidianCanvasOff || "no 2D context");   // #144 toggle 6: names the switch
     const st = paint(c, ctx, sz, !!o.p);
     if (band) paintBand(c, ctx, sz.w, sz.h, band);
     const bytes = await bytesOf(await blobOf(cv));
