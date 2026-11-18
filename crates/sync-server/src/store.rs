@@ -1,0 +1,497 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// opensidian, a vault-compatible markdown notes app.
+// Copyright (C) 2026 Jendrik Poloczek
+//! Storage: a SQLite index (vaults, hashed tokens, object rows, the per-namespace
+//! list cursor) plus one file per object under `<data>/objects`. The server
+//! stores ciphertext containers verbatim and never sees a key.
+//!
+//! Every method is blocking; the HTTP layer calls them from `spawn_blocking`.
+//! One connection behind a mutex: the index is tiny and every write is a short
+//! transaction, so a pool buys nothing here.
+
+use std::fs;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use rusqlite::{params, Connection, OptionalExtension};
+use sync_proto::api::{ErrorCode, ListItem, ObjKind};
+use sync_proto::Id16;
+
+/// Namespace used for `env` objects: they are addressed by the secret `loc`
+/// alone (spec §5), so a fresh device that only knows the words can find them.
+pub const ENV_NS: Id16 = Id16::ZERO;
+
+/// A failed store operation, already mapped to the wire error code.
+#[derive(Debug)]
+pub struct StoreError {
+    pub code: ErrorCode,
+    pub detail: &'static str,
+}
+
+impl StoreError {
+    pub fn new(code: ErrorCode, detail: &'static str) -> Self {
+        StoreError { code, detail }
+    }
+}
+
+impl From<rusqlite::Error> for StoreError {
+    fn from(_: rusqlite::Error) -> Self {
+        StoreError::new(ErrorCode::Internal, "index error")
+    }
+}
+
+impl From<io::Error> for StoreError {
+    fn from(e: io::Error) -> Self {
+        if e.kind() == io::ErrorKind::StorageFull || e.kind() == io::ErrorKind::QuotaExceeded {
+            StoreError::new(ErrorCode::Quota, "server storage full")
+        } else {
+            StoreError::new(ErrorCode::Internal, "storage error")
+        }
+    }
+}
+
+pub type Result<T> = std::result::Result<T, StoreError>;
+
+/// Result of a write-once PUT.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PutOutcome {
+    Created,
+    Identical,
+}
+
+/// One stored vault (namespace).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Vault {
+    pub ns: Id16,
+    pub pub_destroy: Vec<u8>,
+    pub key_alg: u8,
+    pub quota: Option<u64>,
+    pub used: u64,
+}
+
+/// Token scope; write implies read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Scope {
+    Read,
+    Write,
+}
+
+/// Object row as stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjMeta {
+    pub size: u64,
+    pub sha256: [u8; 32],
+    pub deleted: Option<i64>,
+    pub expires: Option<i64>,
+}
+
+pub struct Store {
+    conn: Mutex<Connection>,
+    root: PathBuf,
+}
+
+fn kind_code(k: ObjKind) -> i64 {
+    match k {
+        ObjKind::Obj => 0,
+        ObjKind::Cfg => 1,
+        ObjKind::Env => 2,
+        ObjKind::Pair => 3,
+    }
+}
+
+fn kind_from_code(c: i64) -> Option<ObjKind> {
+    match c {
+        0 => Some(ObjKind::Obj),
+        1 => Some(ObjKind::Cfg),
+        2 => Some(ObjKind::Env),
+        3 => Some(ObjKind::Pair),
+        _ => None,
+    }
+}
+
+fn id_from_blob(b: Vec<u8>) -> Result<Id16> {
+    let a: [u8; 16] = b
+        .try_into()
+        .map_err(|_| StoreError::new(ErrorCode::Internal, "corrupt id"))?;
+    Ok(Id16(a))
+}
+
+const SCHEMA: &str = "
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = FULL;
+PRAGMA foreign_keys = ON;
+CREATE TABLE IF NOT EXISTS enroll(
+  hash BLOB PRIMARY KEY, quota INTEGER, expires INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS vault(
+  ns BLOB PRIMARY KEY, read_hash BLOB NOT NULL UNIQUE, write_hash BLOB NOT NULL UNIQUE,
+  pub_destroy BLOB NOT NULL, key_alg INTEGER NOT NULL, quota INTEGER,
+  used INTEGER NOT NULL DEFAULT 0, next_seq INTEGER NOT NULL DEFAULT 1,
+  created INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS object(
+  ns BLOB NOT NULL, kind INTEGER NOT NULL, id BLOB NOT NULL, seq INTEGER NOT NULL,
+  size INTEGER NOT NULL, sha BLOB NOT NULL, deleted INTEGER, expires INTEGER,
+  PRIMARY KEY(ns, kind, id));
+CREATE INDEX IF NOT EXISTS object_seq ON object(ns, seq);
+";
+
+impl Store {
+    /// Open (or create) the store under `root` (mode 0700).
+    pub fn open(root: &Path) -> Result<Store> {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        fs::DirBuilder::new().recursive(true).mode(0o700).create(root)?;
+        fs::set_permissions(root, fs::Permissions::from_mode(0o700))?;
+        for sub in ["objects", "tmp"] {
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(root.join(sub))?;
+        }
+        let conn = Connection::open(root.join("index.sqlite"))?;
+        conn.execute_batch(SCHEMA)?;
+        Ok(Store {
+            conn: Mutex::new(conn),
+            root: root.to_path_buf(),
+        })
+    }
+
+    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+        // A panic while holding the lock leaves SQLite consistent (transactions
+        // roll back on drop), so a poisoned mutex is safe to keep using.
+        self.conn.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn obj_path(&self, ns: &Id16, kind: ObjKind, id: &Id16) -> PathBuf {
+        let h = id.to_hex();
+        self.root
+            .join("objects")
+            .join(ns.to_hex())
+            .join(kind.path_segment())
+            .join(&h[..2])
+            .join(h)
+    }
+
+    // ---- enrollment / vaults -------------------------------------------------
+
+    /// Admin: register a one-time enrollment token (by hash).
+    pub fn add_enrollment(&self, token_hash: &[u8; 32], quota: Option<u64>, expires: i64) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO enroll(hash, quota, expires) VALUES (?1, ?2, ?3)",
+            params![&token_hash[..], quota.map(|q| q as i64), expires],
+        )?;
+        Ok(())
+    }
+
+    /// Consume an enrollment token and create the vault, atomically.
+    #[allow(clippy::too_many_arguments)]
+    pub fn enroll(
+        &self,
+        token_hash: &[u8; 32],
+        now: i64,
+        ns: &Id16,
+        read_hash: &[u8; 32],
+        write_hash: &[u8; 32],
+        pub_destroy: &[u8],
+        key_alg: u8,
+    ) -> Result<()> {
+        let mut c = self.conn();
+        let tx = c.transaction()?;
+        let row: Option<(Option<i64>, i64)> = tx
+            .query_row(
+                "SELECT quota, expires FROM enroll WHERE hash = ?1",
+                params![&token_hash[..]],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((quota, expires)) = row else {
+            return Err(StoreError::new(ErrorCode::Unauthorized, "unknown enrollment token"));
+        };
+        tx.execute("DELETE FROM enroll WHERE hash = ?1", params![&token_hash[..]])?;
+        if expires < now {
+            tx.commit()?;
+            return Err(StoreError::new(ErrorCode::Unauthorized, "enrollment token expired"));
+        }
+        tx.execute(
+            "INSERT INTO vault(ns, read_hash, write_hash, pub_destroy, key_alg, quota, created)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![&ns.0[..], &read_hash[..], &write_hash[..], pub_destroy, key_alg as i64, quota, now],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Resolve a bearer token hash to its scope on `ns`, if any.
+    pub fn token_scope(&self, ns: &Id16, token_hash: &[u8; 32]) -> Result<Option<Scope>> {
+        let row: Option<(Vec<u8>, Vec<u8>)> = self
+            .conn()
+            .query_row(
+                "SELECT read_hash, write_hash FROM vault WHERE ns = ?1",
+                params![&ns.0[..]],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((rh, wh)) = row else { return Ok(None) };
+        if sync_crypto::ct_eq(&wh, token_hash) {
+            Ok(Some(Scope::Write))
+        } else if sync_crypto::ct_eq(&rh, token_hash) {
+            Ok(Some(Scope::Read))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn vault(&self, ns: &Id16) -> Result<Option<Vault>> {
+        let row = self
+            .conn()
+            .query_row(
+                "SELECT pub_destroy, key_alg, quota, used FROM vault WHERE ns = ?1",
+                params![&ns.0[..]],
+                |r| {
+                    Ok(Vault {
+                        ns: *ns,
+                        pub_destroy: r.get(0)?,
+                        key_alg: r.get::<_, i64>(1)? as u8,
+                        quota: r.get::<_, Option<i64>>(2)?.map(|q| q as u64),
+                        used: r.get::<_, i64>(3)? as u64,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    // ---- objects --------------------------------------------------------------
+
+    /// Write-once PUT. `sha256` is the digest of `body`. `expires` is set for
+    /// short-lived kinds (pairing). Quota applies to vault namespaces only.
+    pub fn put(
+        &self,
+        ns: &Id16,
+        kind: ObjKind,
+        id: &Id16,
+        body: &[u8],
+        sha256: &[u8; 32],
+        expires: Option<i64>,
+    ) -> Result<PutOutcome> {
+        // Stage the bytes outside the lock (fsync'd), then publish under it.
+        let tmp = self.root.join("tmp").join(format!(
+            "{}-{}-{}.part",
+            ns.to_hex(),
+            kind.path_segment(),
+            id.to_hex()
+        ));
+        let staged = (|| -> io::Result<()> {
+            let mut f = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&tmp)?;
+            f.write_all(body)?;
+            f.sync_all()
+        })();
+        if let Err(e) = staged {
+            let _ = fs::remove_file(&tmp);
+            return Err(e.into());
+        }
+        let r = self.publish(ns, kind, id, &tmp, body.len() as u64, sha256, expires);
+        let _ = fs::remove_file(&tmp);
+        r
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn publish(
+        &self,
+        ns: &Id16,
+        kind: ObjKind,
+        id: &Id16,
+        tmp: &Path,
+        size: u64,
+        sha256: &[u8; 32],
+        expires: Option<i64>,
+    ) -> Result<PutOutcome> {
+        let mut c = self.conn();
+        let tx = c.transaction()?;
+        let existing: Option<(Vec<u8>, Option<i64>)> = tx
+            .query_row(
+                "SELECT sha, deleted FROM object WHERE ns = ?1 AND kind = ?2 AND id = ?3",
+                params![&ns.0[..], kind_code(kind), &id.0[..]],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((sha, deleted)) = existing {
+            if deleted.is_some() {
+                return Err(StoreError::new(ErrorCode::Gone, "object id was deleted"));
+            }
+            return if sync_crypto::ct_eq(&sha, sha256) {
+                Ok(PutOutcome::Identical)
+            } else {
+                Err(StoreError::new(ErrorCode::Conflict, "different bytes under this id"))
+            };
+        }
+        let seq: i64 = if *ns == ENV_NS {
+            0
+        } else {
+            let (quota, used, next): (Option<i64>, i64, i64) = tx
+                .query_row(
+                    "SELECT quota, used, next_seq FROM vault WHERE ns = ?1",
+                    params![&ns.0[..]],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?
+                .ok_or(StoreError::new(ErrorCode::NotFound, "unknown namespace"))?;
+            if let Some(q) = quota {
+                if used as u64 + size > q as u64 {
+                    return Err(StoreError::new(ErrorCode::Quota, "vault quota exceeded"));
+                }
+            }
+            tx.execute(
+                "UPDATE vault SET used = used + ?2, next_seq = next_seq + 1 WHERE ns = ?1",
+                params![&ns.0[..], size as i64],
+            )?;
+            next
+        };
+        tx.execute(
+            "INSERT INTO object(ns, kind, id, seq, size, sha, expires) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![&ns.0[..], kind_code(kind), &id.0[..], seq, size as i64, &sha256[..], expires],
+        )?;
+        let dst = self.obj_path(ns, kind, id);
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::rename(tmp, &dst)?;
+        tx.commit()?; // on any error above the transaction rolls back
+        Ok(PutOutcome::Created)
+    }
+
+    pub fn meta(&self, ns: &Id16, kind: ObjKind, id: &Id16) -> Result<Option<ObjMeta>> {
+        let row = self
+            .conn()
+            .query_row(
+                "SELECT size, sha, deleted, expires FROM object WHERE ns = ?1 AND kind = ?2 AND id = ?3",
+                params![&ns.0[..], kind_code(kind), &id.0[..]],
+                |r| {
+                    let sha: Vec<u8> = r.get(1)?;
+                    let mut a = [0u8; 32];
+                    if sha.len() == 32 {
+                        a.copy_from_slice(&sha);
+                    }
+                    Ok(ObjMeta {
+                        size: r.get::<_, i64>(0)? as u64,
+                        sha256: a,
+                        deleted: r.get(2)?,
+                        expires: r.get(3)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// Read `len` bytes at `offset` of a stored object.
+    pub fn read(&self, ns: &Id16, kind: ObjKind, id: &Id16, offset: u64, len: u64) -> Result<Vec<u8>> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut f = fs::File::open(self.obj_path(ns, kind, id))?;
+        f.seek(SeekFrom::Start(offset))?;
+        let mut out = Vec::with_capacity(len as usize);
+        f.take(len).read_to_end(&mut out)?;
+        if out.len() as u64 != len {
+            return Err(StoreError::new(ErrorCode::Internal, "short read"));
+        }
+        Ok(out)
+    }
+
+    /// Which of `ids` are not stored (live or soft-deleted) under `ns`.
+    pub fn missing(&self, ns: &Id16, ids: &[Id16]) -> Result<Vec<Id16>> {
+        let c = self.conn();
+        let mut st = c.prepare(
+            "SELECT 1 FROM object WHERE ns = ?1 AND kind = 0 AND id = ?2",
+        )?;
+        let mut out = Vec::new();
+        for id in ids {
+            let hit: Option<i64> = st
+                .query_row(params![&ns.0[..], &id.0[..]], |r| r.get(0))
+                .optional()?;
+            if hit.is_none() {
+                out.push(*id);
+            }
+        }
+        Ok(out)
+    }
+
+    /// List live `obj`/`cfg` rows with `seq > after`, ascending, at most `limit`.
+    pub fn list(&self, ns: &Id16, after: u64, limit: u32) -> Result<Vec<ListItem>> {
+        let c = self.conn();
+        let mut st = c.prepare(
+            "SELECT seq, kind, id, size FROM object
+             WHERE ns = ?1 AND seq > ?2 AND deleted IS NULL AND kind IN (0, 1)
+             ORDER BY seq LIMIT ?3",
+        )?;
+        let rows = st.query_map(params![&ns.0[..], after as i64, limit as i64], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, Vec<u8>>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (seq, kind, id, size) = row?;
+            out.push(ListItem {
+                seq: seq as u64,
+                kind: kind_from_code(kind)
+                    .ok_or(StoreError::new(ErrorCode::Internal, "corrupt kind"))?,
+                id: id_from_blob(id)?,
+                size: size as u64,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Soft delete: the row stays (readable with `?deleted=1`) until `gc`
+    /// runs after `purge_at`. Returns false if there was no live object.
+    pub fn soft_delete(&self, ns: &Id16, kind: ObjKind, id: &Id16, now: i64, purge_at: i64) -> Result<bool> {
+        let n = self.conn().execute(
+            "UPDATE object SET deleted = ?4, expires = ?5
+             WHERE ns = ?1 AND kind = ?2 AND id = ?3 AND deleted IS NULL",
+            params![&ns.0[..], kind_code(kind), &id.0[..], now, purge_at],
+        )?;
+        Ok(n == 1)
+    }
+
+    /// Remove every row whose `expires` has passed (soft-deleted objects past
+    /// retention, expired pairing objects). Returns the number purged.
+    pub fn gc(&self, now: i64) -> Result<usize> {
+        let victims: Vec<(Vec<u8>, i64, Vec<u8>, i64)> = {
+            let c = self.conn();
+            let mut st = c.prepare(
+                "SELECT ns, kind, id, size FROM object WHERE expires IS NOT NULL AND expires <= ?1",
+            )?;
+            let rows = st.query_map(params![now], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        let mut n = 0;
+        for (ns, kind, id, size) in victims {
+            let (ns, id) = (id_from_blob(ns)?, id_from_blob(id)?);
+            let kind = kind_from_code(kind).ok_or(StoreError::new(ErrorCode::Internal, "corrupt kind"))?;
+            match fs::remove_file(self.obj_path(&ns, kind, &id)) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+            let mut c = self.conn();
+            let tx = c.transaction()?;
+            tx.execute(
+                "DELETE FROM object WHERE ns = ?1 AND kind = ?2 AND id = ?3",
+                params![&ns.0[..], kind_code(kind), &id.0[..]],
+            )?;
+            tx.execute(
+                "UPDATE vault SET used = MAX(used - ?2, 0) WHERE ns = ?1",
+                params![&ns.0[..], size],
+            )?;
+            tx.commit()?;
+            n += 1;
+        }
+        Ok(n)
+    }
+}

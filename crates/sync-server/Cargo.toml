@@ -2,8 +2,10 @@
 # sync-server: opensidian-sync-server, self-host storage (M3). Ciphertext only, no keys.
 # HARD RULE (plan §1): depends ONLY on sync-proto + sync-crypto — no Tauri, no sync-core.
 # Workspace member; the workspace root is src-tauri/ (keeps src-tauri/Cargo.lock
-# and src-tauri/target where CI and the harness expect them). Dependencies are
-# pinned exact to versions ALREADY in src-tauri/Cargo.lock — see docs/sync/deps.md.
+# and src-tauri/target where CI and the harness expect them). Every dependency is pinned
+# exact; the HTTP stack reuses crates already in src-tauri/Cargo.lock (hyper, hyper-util,
+# tokio, http, http-body-util, bytes, base64). New crates (rusqlite + bundled SQLite,
+# httpdate via hyper/server) are listed with dates + checksums in docs/sync/deps.md.
 [package]
 name = "sync-server"
 version = "0.1.0"
@@ -12,9 +14,28 @@ license = "GPL-3.0-or-later"
 publish = false
 workspace = "../../src-tauri"
 
+[lib]
+name = "sync_server"
+path = "src/lib.rs"
+
 [dependencies]
 sync-proto = { path = "../sync-proto" }
 sync-crypto = { path = "../sync-crypto" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+base64 = "=0.22.1"
+bytes = "=1.12.1"
+http = "=1.5.0"
+http-body-util = "=0.1.5"
+hyper = { version = "=1.11.1", default-features = false, features = ["server", "http1"] }
+hyper-util = { version = "=0.1.20", default-features = false, features = ["tokio"] }
+tokio = { version = "=1.53.1", default-features = false, features = ["rt-multi-thread", "net", "sync", "time"] }
+# Metadata index (vaults, hashed tokens, object rows, list cursor). Newest release
+# >= 6 weeks old at 2026-11-18 = rusqlite 0.40.2 / libsqlite3-sys 0.38.2 (both
+# 2026-08-08; 0.41.0 is 2026-10-24). Default features off (no statement cache ->
+# no hashlink); "bundled" compiles the vendored SQLite with cc (already locked).
+rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
+libsqlite3-sys = { version = "=0.38.2", default-features = false, features = ["bundled"] }
 
 [[bin]]
 name = "opensidian-sync-server"
