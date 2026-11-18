@@ -12,7 +12,8 @@
 #   image    `image:`/`container:`/FROM/podman|docker pull|run without @sha256:<64 hex>
 #            ($VAR images resolve through VAR= assignments in the same file; oci:/oci-archive:
 #            sources count only when the file also runs `sha256sum -c` AND, after the load, checks
-#            `podman|docker image exists|inspect <ref>` with a digest-pinned ref)
+#            `podman|docker image exists|inspect <ref>` with a digest-pinned ref whose repository
+#            is the target of a `podman|docker tag` of the loaded image)
 #   apt      apt-get/apt install of a package without =version
 #   dnf      dnf/yum install of a package without -<version>
 #   cargo    cargo install without --locked AND --version (or name@version)
@@ -87,21 +88,36 @@ var_pinned() {
 }
 oci_pinned() {  # file -> 0 if its oci:/archive image load is content-checked
   # The archive sha256 alone does not cover what is loaded: the extracted dir (or another path) can
-  # differ from the checked file. So BOTH: a `sha256sum -c` in the file AND, on a line after the
-  # first oci:/archive load, `podman|docker image exists|inspect <ref>` whose ref is digest-pinned
-  # (literal @sha256:<64 hex> or through VAR= assignments): the loaded image must carry the digest.
-  local f=$1 n r refs
+  # differ from the checked file. So ALL of: a `sha256sum -c` in the file; from the first
+  # oci:/archive load on, a `podman|docker tag <id> <repo>[:tag]` that names the loaded image; and
+  # after the load a `podman|docker image exists|inspect <ref>` whose ref is digest-pinned (literal
+  # @sha256:<64 hex> or through VAR= assignments) AND whose repository is one of those tag targets,
+  # so the digest check is about the image that was loaded, not some unrelated pinned image.
+  local f=$1 n r x refs repos
   grep -q 'sha256sum -c' "$f" || return 1
   n=$(grep -nE '(^|[^a-z])(oci|oci-archive|docker-archive):' "$f" | grep -E '(podman|docker)' | head -1 | cut -d: -f1)
   [ -n "$n" ] || return 1
+  repos=$(tail -n +"$n" "$f" | grep -oE '(podman|docker)[[:space:]]+tag[[:space:]].*' | awk '{print $NF}' \
+    | sed -E "s/[\"');&|]//g; s#:[^/]*\$##" | sort -u)
+  [ -n "$repos" ] || return 1
   refs=$(tail -n +"$((n+1))" "$f" | grep -oE '(podman|docker)[[:space:]]+image[[:space:]]+(exists|inspect)[[:space:]]+[^[:space:];|&)]+' | awk '{print $4}')
   while IFS= read -r r; do
     r=${r//\"/}; r=${r//\'/}
     [ -n "$r" ] || continue
     printf '%s' "$r" | grep -Eq '(oci|oci-archive|docker-archive):' && continue
-    img_pinned "$f" "$r" && return 0
+    img_pinned "$f" "$r" || continue
+    for x in $(ref_repos "$f" "$r"); do grep -qxF -- "$x" <<< "$repos" && return 0; done
   done <<< "$refs"
   return 1
+}
+ref_repos() {  # file ref-text -> the repository part(s) of the ref (VAR refs through every VAR= assignment)
+  local f=$1 r=$2 x
+  if [[ "$r" =~ ^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$ ]]; then
+    x=${BASH_REMATCH[1]}
+    grep -oE "(^|[[:space:];(])$x=[^[:space:];]+" "$f" | sed -E "s/^.*$x=//; s/[\"']//g" | sed -E 's/@.*$//; s#:[^/]*$##'
+  else
+    printf '%s\n' "$r" | sed -E 's/@.*$//; s#:[^/]*$##'
+  fi
 }
 img_pinned() {  # file ref-text -> 0 if pinned
   local f=$1 s=$2 vars x
