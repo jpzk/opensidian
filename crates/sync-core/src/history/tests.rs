@@ -237,7 +237,7 @@ fn delete_of_already_gone_file_tombstones_last_capture() {
 #[test]
 fn too_large_is_skipped_not_silently_stored() {
     let f = fx("big");
-    let mut s = Store::open(&f.app, "v1", &f.vault, Config { max_file_bytes: 4 }).unwrap();
+    let mut s = Store::open(&f.app, "v1", &f.vault, Config { max_file_bytes: 4, ..Config::default() }).unwrap();
     write(&f, "big.bin", b"12345");
     assert_eq!(s.snapshot_before_overwrite("big.bin", 1).unwrap(), Outcome::Skipped(Skip::TooLarge(5)));
     let t = stored(s.snapshot_before_delete("big.bin", 2).unwrap());
@@ -424,4 +424,257 @@ fn restore_snapshots_current_bytes_first() {
     let got: Vec<Vec<u8>> = s.versions("r.md").iter().map(|e| s.read_version(e.seq).unwrap()).collect();
     assert!(got.contains(&b"unsaved external".to_vec()), "restore must not lose the bytes it replaced");
     assert!(!f.vault.join(".r.md.osy-restore.tmp").exists());
+}
+
+// ---- item 9: rename detection, restore deleted, retention, purge ---------
+
+fn ver(s: &mut Store, f: &Fx, p: &str, b: &[u8], ts: u64) -> Entry {
+    write(f, p, b);
+    stored(s.record_external(p, ts).unwrap())
+}
+
+fn del(s: &mut Store, f: &Fx, p: &str, ts: u64) -> Entry {
+    let e = stored(s.snapshot_before_delete(p, ts).unwrap());
+    fs::remove_file(f.vault.join(p)).unwrap();
+    e
+}
+
+fn mv(f: &Fx, a: &str, b: &str) {
+    fs::rename(f.vault.join(a), f.vault.join(b)).unwrap();
+}
+
+fn log_text(s: &Store) -> String {
+    fs::read_to_string(s.root().join("index.log")).unwrap()
+}
+
+#[test]
+fn rename_detected_delete_then_create() {
+    let f = fx("ren-dc");
+    let mut s = open(&f);
+    ver(&mut s, &f, "a.md", b"body A", 1000);
+    mv(&f, "a.md", "b.md");
+    assert_eq!(stored(s.record_external("a.md", 2000).unwrap()).reason, Reason::Delete);
+    let r = stored(s.record_external("b.md", 2500).unwrap());
+    assert_eq!(r.reason, Reason::Rename);
+    assert_eq!(r.from.as_deref(), Some("a.md"));
+    assert_eq!(s.head("a.md"), None);
+    assert!(matches!(s.head("b.md"), Some(Head::Live { .. })));
+    assert!(s.deleted().is_empty(), "a move is not a delete");
+    drop(s);
+    let s = open(&f);
+    assert_eq!(s.head("a.md"), None);
+    assert!(s.deleted().is_empty());
+}
+
+#[test]
+fn rename_detected_create_then_delete() {
+    let f = fx("ren-cd");
+    let mut s = open(&f);
+    ver(&mut s, &f, "a.md", b"body A", 1000);
+    mv(&f, "a.md", "b.md");
+    assert_eq!(stored(s.record_external("b.md", 2000).unwrap()).reason, Reason::External);
+    let r = stored(s.record_external("a.md", 2500).unwrap());
+    assert_eq!(r.reason, Reason::Rename);
+    assert_eq!((r.path.as_str(), r.from.as_deref()), ("b.md", Some("a.md")));
+    assert_eq!(s.head("a.md"), None);
+    assert!(s.deleted().is_empty());
+}
+
+#[test]
+fn rename_outside_window_is_delete_plus_create() {
+    let f = fx("ren-win");
+    let mut s = open(&f);
+    ver(&mut s, &f, "a.md", b"body A", 1000);
+    mv(&f, "a.md", "b.md");
+    s.record_external("a.md", 2000).unwrap();
+    let late = 2000 + Config::default().rename_window_ms + 1;
+    assert_eq!(stored(s.record_external("b.md", late).unwrap()).reason, Reason::External);
+    let d: Vec<String> = s.deleted().into_iter().map(|e| e.path).collect();
+    assert_eq!(d, vec!["a.md".to_string()]);
+}
+
+#[test]
+fn empty_files_are_never_paired_as_renames() {
+    let f = fx("ren-empty");
+    let mut s = open(&f);
+    ver(&mut s, &f, "a.md", b"", 1000);
+    mv(&f, "a.md", "b.md");
+    s.record_external("a.md", 1100).unwrap();
+    assert_eq!(stored(s.record_external("b.md", 1200).unwrap()).reason, Reason::External);
+    assert_eq!(s.deleted().len(), 1);
+}
+
+#[test]
+fn explicit_rename_and_watcher_echo() {
+    let f = fx("ren-own");
+    let mut s = open(&f);
+    write(&f, "a.md", b"mine");
+    s.record_own_save("a.md", 1).unwrap();
+    mv(&f, "a.md", "b.md");
+    let r = stored(s.record_rename("a.md", "b.md", 2).unwrap());
+    assert_eq!((r.reason, r.from.as_deref()), (Reason::Rename, Some("a.md")));
+    assert_eq!(s.record_external("a.md", 3).unwrap(), Outcome::Missing);
+    assert_eq!(s.record_external("b.md", 3).unwrap(), Outcome::Unchanged);
+    assert!(s.deleted().is_empty());
+    assert!(validate_path("../x").is_err() && s.record_rename("../x", "b.md", 4).is_err());
+}
+
+#[test]
+fn deleted_lists_tombstones_and_restore_deleted_brings_file_back() {
+    let f = fx("undel");
+    let mut s = open(&f);
+    write(&f, "x.md", b"keep me");
+    s.record_own_save("x.md", 1).unwrap();
+    let t = del(&mut s, &f, "x.md", 2);
+    assert_eq!(s.deleted(), vec![t]);
+    let r = s.restore_deleted("x.md", 3).unwrap();
+    assert_eq!(r.reason, Reason::Restore);
+    assert_eq!(fs::read(f.vault.join("x.md")).unwrap(), b"keep me");
+    assert!(s.deleted().is_empty());
+    assert!(matches!(s.head("x.md"), Some(Head::Live { .. })));
+    assert!(s.restore_deleted("x.md", 4).is_err(), "live file is not 'deleted'");
+    assert!(s.restore_deleted("never.md", 4).is_err());
+}
+
+#[test]
+fn restore_deleted_falls_back_to_older_version() {
+    let f = fx("undel-old");
+    let mut s = Store::open(&f.app, "v1", &f.vault, Config { max_file_bytes: 8, ..Config::default() }).unwrap();
+    write(&f, "y.md", b"small");
+    s.record_own_save("y.md", 1).unwrap();
+    write(&f, "y.md", b"now far too large");
+    let t = del(&mut s, &f, "y.md", 2);
+    assert_eq!(t.sha, None, "too-large final bytes: bare tombstone");
+    s.restore_deleted("y.md", 3).unwrap();
+    assert_eq!(fs::read(f.vault.join("y.md")).unwrap(), b"small");
+}
+
+#[test]
+fn retention_thinning_policy() {
+    let f = fx("thin");
+    let mut s = open(&f);
+    let now = 500 * DAY_MS;
+    // a file deleted longer ago than the note max age: vanishes entirely
+    let o = ver(&mut s, &f, "o.md", b"o-old", now - 400 * DAY_MS);
+    del(&mut s, &f, "o.md", now - 400 * DAY_MS + 1);
+    // a file deleted within the max age: tombstone + its version stay
+    let d1 = ver(&mut s, &f, "d.md", b"d-1", now - 40 * DAY_MS);
+    let dt = del(&mut s, &f, "d.md", now - 30 * DAY_MS);
+    let n1 = ver(&mut s, &f, "n.md", b"n1", now - 400 * DAY_MS); // too old
+    let n2 = ver(&mut s, &f, "n.md", b"n2", now - 20 * DAY_MS + 1000); // same day as n3
+    let n3 = ver(&mut s, &f, "n.md", b"n3", now - 20 * DAY_MS + 2000);
+    let n4 = ver(&mut s, &f, "n.md", b"n4", now - 30 * HOUR_MS + 1000); // same hour as n5
+    let n5 = ver(&mut s, &f, "n.md", b"n5", now - 30 * HOUR_MS + 2000);
+    let n6 = ver(&mut s, &f, "n.md", b"n6", now - 2 * HOUR_MS);
+    let n7 = ver(&mut s, &f, "n.md", b"n7", now - HOUR_MS);
+    // attachments: 14 days, but the current version of a live file stays
+    let p1 = ver(&mut s, &f, "p.png", b"p1", now - 20 * DAY_MS);
+    let p2 = ver(&mut s, &f, "p.png", b"p2", now - 15 * DAY_MS);
+    let heads_before: Vec<_> = ["n.md", "p.png", "d.md"].iter().map(|p| s.head(p).cloned()).collect();
+
+    let r = s.thin(now, &Retention::default()).unwrap();
+    assert_eq!(r, Rewrite { dropped: 6, rewritten: 0, blobs_removed: 5 });
+    let seqs = |s: &Store, p: &str| -> Vec<u64> { s.entries().iter().filter(|e| e.path == p).map(|e| e.seq).collect() };
+    assert_eq!(seqs(&s, "n.md"), vec![n3.seq, n5.seq, n6.seq, n7.seq]);
+    assert_eq!(seqs(&s, "p.png"), vec![p2.seq]);
+    assert_eq!(seqs(&s, "d.md"), vec![d1.seq, dt.seq]);
+    assert!(seqs(&s, "o.md").is_empty());
+    assert_eq!(s.head("o.md"), None);
+    let after: Vec<_> = ["n.md", "p.png", "d.md"].iter().map(|p| s.head(p).cloned()).collect();
+    assert_eq!(after, heads_before, "thinning never changes live state");
+    assert_eq!(s.deleted().into_iter().map(|e| e.path).collect::<Vec<_>>(), vec!["d.md".to_string()]);
+    for gone in [&o, &n1, &n2, &n4, &p1] {
+        assert!(matches!(s.read_blob(gone.sha.as_deref().unwrap()), Err(HistoryError::NotFound(_))));
+    }
+    for kept in [&n3, &n5, &n7, &p2, &d1] {
+        s.read_version(kept.seq).unwrap();
+    }
+    // idempotent, durable, atomic
+    assert_eq!(s.thin(now, &Retention::default()).unwrap(), Rewrite::default());
+    assert!(!s.root().join("index.log.tmp").exists());
+    let before = s.entries().to_vec();
+    drop(s);
+    let mut s = open(&f);
+    assert_eq!(s.entries(), &before[..]);
+    // appending after a rewrite keeps seq increasing
+    let n8 = ver(&mut s, &f, "n.md", b"n8", now);
+    assert!(n8.seq > n7.seq);
+}
+
+#[test]
+fn purge_path_erases_name_and_bytes() {
+    let f = fx("purge-path");
+    let mut s = open(&f);
+    let a1 = ver(&mut s, &f, "a.md", b"secret-1", 1);
+    let a2 = ver(&mut s, &f, "a.md", b"secret-2", 2);
+    del(&mut s, &f, "a.md", 3);
+    ver(&mut s, &f, "b.md", b"keep", 4);
+    let r = s.purge_path("a.md").unwrap();
+    assert_eq!(r, Rewrite { dropped: 3, rewritten: 0, blobs_removed: 2 });
+    assert!(!log_text(&s).contains("a.md"));
+    for e in [&a1, &a2] {
+        assert!(s.read_blob(e.sha.as_deref().unwrap()).is_err());
+    }
+    assert!(s.deleted().is_empty());
+    drop(s);
+    let s = open(&f);
+    assert!(matches!(s.head("b.md"), Some(Head::Live { .. })));
+    assert_eq!(s.entries().len(), 1);
+}
+
+#[test]
+fn purge_path_forgets_old_name_of_a_rename() {
+    let f = fx("purge-ren");
+    let mut s = open(&f);
+    ver(&mut s, &f, "secret-name.md", b"moved body", 1);
+    mv(&f, "secret-name.md", "b.md");
+    s.record_rename("secret-name.md", "b.md", 2).unwrap();
+    let r = s.purge_path("secret-name.md").unwrap();
+    assert_eq!(r, Rewrite { dropped: 1, rewritten: 1, blobs_removed: 0 });
+    assert!(!log_text(&s).contains("secret-name"));
+    assert_eq!(s.versions("b.md").len(), 1);
+    assert_eq!(s.versions("b.md")[0].reason, Reason::External);
+    drop(s);
+    let s = open(&f);
+    assert!(matches!(s.head("b.md"), Some(Head::Live { .. })));
+}
+
+#[test]
+fn purge_version_and_tombstone_bytes() {
+    let f = fx("purge-ver");
+    let mut s = open(&f);
+    let v1 = ver(&mut s, &f, "a.md", b"v1", 1);
+    let v2 = ver(&mut s, &f, "a.md", b"v2 secret", 2);
+    let v3 = ver(&mut s, &f, "a.md", b"v3", 3);
+    let r = s.purge_version(v2.seq).unwrap();
+    assert_eq!(r, Rewrite { dropped: 1, rewritten: 0, blobs_removed: 1 });
+    assert!(s.read_version(v2.seq).is_err());
+    assert!(s.read_blob(v2.sha.as_deref().unwrap()).is_err());
+    assert_eq!(s.read_version(v1.seq).unwrap(), b"v1");
+    assert_eq!(s.read_version(v3.seq).unwrap(), b"v3");
+    assert!(!s.root().join("index.log.tmp").exists());
+    // tombstone: loses its bytes reference, stays listed; blob still held by v3
+    let t = del(&mut s, &f, "a.md", 4);
+    let r = s.purge_version(t.seq).unwrap();
+    assert_eq!(r, Rewrite { dropped: 0, rewritten: 1, blobs_removed: 0 });
+    assert_eq!(s.entry(t.seq).unwrap().sha, None);
+    assert_eq!(s.deleted().len(), 1);
+    assert_eq!(s.purge_version(t.seq).unwrap(), Rewrite::default());
+    assert!(s.purge_version(9999).is_err());
+    drop(s);
+    let s = open(&f);
+    assert_eq!(s.entries().len(), 3);
+    assert_eq!(s.deleted().len(), 1);
+}
+
+#[test]
+fn purge_version_of_rename_leaves_old_path_deleted() {
+    let f = fx("purge-ver-ren");
+    let mut s = open(&f);
+    ver(&mut s, &f, "a.md", b"x body", 1);
+    mv(&f, "a.md", "b.md");
+    let r = stored(s.record_rename("a.md", "b.md", 2).unwrap());
+    s.purge_version(r.seq).unwrap();
+    assert!(matches!(s.head("a.md"), Some(Head::Deleted { last: None })));
+    assert_eq!(s.head("b.md"), None);
 }

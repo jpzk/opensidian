@@ -296,3 +296,57 @@ Not on the wire; documented here because M1 implements it:
   unreferenced blobs
 
 See docs in crates/sync-core for the exact journal grammar.
+
+### 6.1 Rename detection
+
+- explicit: `record_rename(from, to)` after an own move (or a watcher
+  event that carries both paths) → one `rename` record (`path` = new,
+  `from` = old); the old path leaves the head map, so it is NOT listed
+  as deleted
+- heuristic: a delete of A and a create of B with identical, non-empty
+  bytes within `rename_window_ms` (default 10 s), in either order, are
+  folded into one `rename` record. Empty files are never paired (new
+  empty notes are too common to be evidence of a move). Only
+  `external`/`own-save` creates of a path that was absent qualify.
+
+### 6.2 Tombstones / restore deleted
+
+- `deleted()` = paths whose last record is a `delete` tombstone
+- `restore_deleted(path)` writes back the newest stored bytes (the
+  tombstone's own, else the newest earlier version — a too-large file's
+  tombstone has none); it snapshots whatever is on disk first, like any
+  restore
+
+### 6.3 Retention thinning (`thin(now, Retention)`)
+
+Evaluated per path, newest record first:
+
+1. the newest record of a LIVE path is always kept
+2. records older than the max age are dropped — notes (`.md`,
+   `.canvas`) default 365 d, attachments 14 d (plan §2 "separate
+   attachment rule"); a file deleted longer ago than that disappears
+3. else `delete` and `rename` records are kept
+4. else every version younger than `keep_all` (24 h) is kept
+5. else the newest version per clock hour for `hourly_for` (7 d)
+6. else the newest version per UTC day
+
+Guard: the rewrite is refused (nothing written) if replaying the kept
+records would change the head of any live path or resurrect a path;
+the only allowed head change is a deleted path vanishing.
+
+### 6.4 Purge (secrets)
+
+- `purge_path(p)`: drop every record with `path = p`; a `rename` with
+  `from = p` is rewritten as `external` (the new path keeps its bytes,
+  the old name is forgotten)
+- `purge_version(seq)`: a version record is dropped; a tombstone keeps
+  existing without `sha`; a `rename` becomes a bytes-less tombstone of
+  its `from` path
+- both: index.log rewritten via `index.log.tmp` + fsync + rename (old
+  or new journal survives a crash, never a mix), THEN blobs no record
+  references are unlinked (a crash in between leaves orphans for the
+  next GC, never a dangling reference). Identical bytes still held by
+  another record stay. Unlink is not a secure wipe (SSD/CoW/backups —
+  see threat model).
+- a purged newest record's `seq` may be reused after reopen; UIs must
+  re-list after purge.

@@ -26,6 +26,17 @@
 //!   appears, so the next external overwrite cannot lose it. An external
 //!   delete becomes a tombstone pointing at the last captured bytes.
 //! - [`Store::snapshot_idle`] + [`Debouncer`] — settle-time snapshots.
+//! - [`Store::record_rename`] — explicit move; watcher moves that arrive
+//!   as delete + create of identical non-empty bytes within
+//!   [`Config::rename_window_ms`] (either order) are folded into one
+//!   `rename` record automatically.
+//!
+//! Maintenance: [`Store::deleted`] / [`Store::restore_deleted`],
+//! [`Store::thin`] ([`Retention`]), [`Store::purge_path`] /
+//! [`Store::purge_version`]. Thin and purge rewrite index.log atomically
+//! (temp + rename), then GC blobs nothing references. `seq` values stay
+//! unique and increasing within a journal; a purged newest record's seq
+//! may be reused after reopen, so callers must re-list after a purge.
 //!
 //! Timestamps are caller-supplied unix milliseconds (testable, no clock).
 //! Single writer per store: the per-vault engine lock (plan §1) is the
@@ -146,12 +157,67 @@ pub enum Skip {
 pub struct Config {
     /// Files above this size are not copied into history.
     pub max_file_bytes: u64,
+    /// A delete and a create of identical non-empty bytes on two paths
+    /// within this many ms (either order) are journaled as ONE `rename`.
+    /// 0 disables the heuristic ([`Store::record_rename`] still works).
+    pub rename_window_ms: u64,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { max_file_bytes: 64 * 1024 * 1024 }
+        Config { max_file_bytes: 64 * 1024 * 1024, rename_window_ms: 10_000 }
     }
+}
+
+pub const HOUR_MS: u64 = 3_600_000;
+pub const DAY_MS: u64 = 24 * HOUR_MS;
+
+/// Retention thinning policy ([`Store::thin`]). Ages are `now - ts_ms`.
+///
+/// - the newest record of every LIVE path is always kept;
+/// - anything older than the max age (notes vs attachments, plan §2
+///   "separate attachment rule") is dropped — so a file deleted longer
+///   ago than that disappears from "restore deleted";
+/// - otherwise `delete` and `rename` records are always kept;
+/// - versions younger than `keep_all_ms` are all kept;
+/// - then the newest version per clock hour for `hourly_for_ms`;
+/// - then the newest version per UTC day.
+#[derive(Debug, Clone)]
+pub struct Retention {
+    pub keep_all_ms: u64,
+    pub hourly_for_ms: u64,
+    /// `.md` / `.canvas` files; `None` = keep daily versions forever.
+    pub note_max_age_ms: Option<u64>,
+    /// Everything else (attachments).
+    pub attachment_max_age_ms: Option<u64>,
+}
+
+impl Default for Retention {
+    fn default() -> Self {
+        Retention {
+            keep_all_ms: DAY_MS,
+            hourly_for_ms: 7 * DAY_MS,
+            note_max_age_ms: Some(365 * DAY_MS),
+            attachment_max_age_ms: Some(14 * DAY_MS),
+        }
+    }
+}
+
+/// Notes (vs attachments) for [`Retention`].
+pub fn is_note(path: &str) -> bool {
+    let l = path.to_ascii_lowercase();
+    l.ends_with(".md") || l.ends_with(".canvas")
+}
+
+/// What a journal rewrite (thin / purge) did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Rewrite {
+    /// Records removed from the journal.
+    pub dropped: usize,
+    /// Records kept but rewritten (purge only, see [`Store::purge_path`]).
+    pub rewritten: usize,
+    /// Blobs deleted from `objects/` because nothing references them.
+    pub blobs_removed: usize,
 }
 
 #[derive(Debug)]
@@ -168,6 +234,8 @@ pub enum HistoryError {
     /// Blob content does not hash to its name.
     BlobMismatch(String),
     NotFound(String),
+    /// A rewrite would change live state (bug guard; nothing was written).
+    Inconsistent(String),
 }
 
 impl fmt::Display for HistoryError {
@@ -181,6 +249,7 @@ impl fmt::Display for HistoryError {
             HistoryError::Corrupt { line, msg } => write!(f, "history index.log line {line}: {msg}"),
             HistoryError::BlobMismatch(s) => write!(f, "history blob {s} does not match its hash"),
             HistoryError::NotFound(s) => write!(f, "history: not found: {s}"),
+            HistoryError::Inconsistent(s) => write!(f, "history rewrite refused: {s}"),
         }
     }
 }
@@ -437,6 +506,14 @@ impl Store {
             Disk::Missing => match self.heads.get(path) {
                 Some(Head::Live { sha, size }) => {
                     let (sha, size) = (sha.clone(), *size);
+                    // create-then-delete order of a move: B appeared with
+                    // these bytes moments ago -> one rename record A -> B
+                    if size > 0 {
+                        if let Some(to) = self.rename_target(path, &sha, now_ms) {
+                            let e = self.append(Reason::Rename, &to, Some(sha), size, Some(path.to_string()), now_ms)?;
+                            return Ok(Outcome::Stored(e));
+                        }
+                    }
                     Ok(Outcome::Stored(self.append(Reason::Delete, path, Some(sha), size, None, now_ms)?))
                 }
                 _ => Ok(Outcome::Missing),
@@ -497,7 +574,254 @@ impl Store {
         self.append(Reason::Restore, &e.path, Some(sha), data.len() as u64, None, now_ms)
     }
 
+    /// Call right AFTER the app (or a watcher rename event carrying both
+    /// paths) moved `from` to `to`. If the move replaced an existing `to`,
+    /// call [`Store::snapshot_before_overwrite`] on `to` BEFORE moving.
+    pub fn record_rename(&mut self, from: &str, to: &str, now_ms: u64) -> Result<Outcome, HistoryError> {
+        validate_path(from)?;
+        validate_path(to)?;
+        if from == to {
+            return self.record_external(to, now_ms);
+        }
+        match self.read_disk(to)? {
+            Disk::Missing => Ok(Outcome::Missing),
+            Disk::Skip(s) => Ok(Outcome::Skipped(s)),
+            Disk::Bytes(b) => {
+                let sha = self.cas.put(&b)?;
+                let e = self.append(Reason::Rename, to, Some(sha), b.len() as u64, Some(from.to_string()), now_ms)?;
+                Ok(Outcome::Stored(e))
+            }
+        }
+    }
+
+    // ---- restore deleted ---------------------------------------------
+
+    /// Files whose last record is a tombstone ("restore deleted" list):
+    /// the tombstone record of each, sorted by path.
+    pub fn deleted(&self) -> Vec<Entry> {
+        self.heads
+            .iter()
+            .filter(|(_, h)| matches!(h, Head::Deleted { .. }))
+            .filter_map(|(p, _)| self.entries.iter().rev().find(|e| e.path == *p && e.reason == Reason::Delete).cloned())
+            .collect()
+    }
+
+    /// Bring a deleted file back with its newest stored bytes (the
+    /// tombstone's own, else the newest earlier version).
+    pub fn restore_deleted(&mut self, path: &str, now_ms: u64) -> Result<Entry, HistoryError> {
+        validate_path(path)?;
+        if !matches!(self.heads.get(path), Some(Head::Deleted { .. })) {
+            return Err(HistoryError::NotFound(format!("{path} is not deleted")));
+        }
+        let seq = self
+            .versions(path)
+            .first()
+            .map(|e| e.seq)
+            .ok_or_else(|| HistoryError::NotFound(format!("{path}: no stored bytes")))?;
+        self.restore(seq, now_ms)
+    }
+
+    // ---- retention / purge -------------------------------------------
+
+    /// Apply `r` (see [`Retention`]) and GC unreferenced blobs. Never
+    /// changes the head of a live path; refuses (writes nothing) if it
+    /// would.
+    pub fn thin(&mut self, now_ms: u64, r: &Retention) -> Result<Rewrite, HistoryError> {
+        let keep = self.thin_plan(now_ms, r);
+        // guard: live heads unchanged; a deleted path may only vanish
+        let new_heads = replay(&keep);
+        for (p, h) in &self.heads {
+            match (h, new_heads.get(p)) {
+                (a, Some(b)) if a == b => {}
+                (Head::Deleted { .. }, None) => {}
+                (_, got) => return Err(HistoryError::Inconsistent(format!("{p}: {h:?} -> {got:?}"))),
+            }
+        }
+        if let Some(p) = new_heads.keys().find(|p| !self.heads.contains_key(*p)) {
+            return Err(HistoryError::Inconsistent(format!("{p} would reappear")));
+        }
+        self.rewrite(keep, 0)
+    }
+
+    fn thin_plan(&self, now_ms: u64, r: &Retention) -> Vec<Entry> {
+        let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        let mut buckets: std::collections::BTreeSet<(&str, u8, u64)> = std::collections::BTreeSet::new();
+        let mut keep: Vec<Entry> = Vec::with_capacity(self.entries.len());
+        for e in self.entries.iter().rev() {
+            let age = now_ms.saturating_sub(e.ts_ms);
+            let newest = seen.insert(e.path.as_str());
+            let max_age = if is_note(&e.path) { r.note_max_age_ms } else { r.attachment_max_age_ms };
+            let kept = if newest && matches!(self.heads.get(&e.path), Some(Head::Live { .. })) {
+                true
+            } else if max_age.is_some_and(|m| age > m) {
+                false
+            } else if matches!(e.reason, Reason::Delete | Reason::Rename) || age <= r.keep_all_ms {
+                true
+            } else if age <= r.keep_all_ms.saturating_add(r.hourly_for_ms) {
+                buckets.insert((e.path.as_str(), 1, e.ts_ms / HOUR_MS))
+            } else {
+                buckets.insert((e.path.as_str(), 2, e.ts_ms / DAY_MS))
+            };
+            if kept {
+                keep.push(e.clone());
+            }
+        }
+        keep.reverse();
+        keep
+    }
+
+    /// Erase `path` from history: every record of it is dropped, a rename
+    /// AWAY from it keeps the new path's bytes but forgets the old name
+    /// (rewritten as `external`), then unreferenced blobs are deleted.
+    /// Bytes survive only where another path/record holds identical
+    /// content. Blob deletion is an unlink, not a secure wipe.
+    pub fn purge_path(&mut self, path: &str) -> Result<Rewrite, HistoryError> {
+        validate_path(path)?;
+        let mut rewritten = 0;
+        let mut keep = Vec::with_capacity(self.entries.len());
+        for e in &self.entries {
+            if e.path == path {
+                continue;
+            }
+            let mut e = e.clone();
+            if e.from.as_deref() == Some(path) {
+                e.reason = Reason::External;
+                e.from = None;
+                rewritten += 1;
+            }
+            keep.push(e);
+        }
+        self.rewrite(keep, rewritten)
+    }
+
+    /// Erase the bytes of ONE record: a version is dropped (the path's
+    /// head falls back to its previous record; the next capture re-reads
+    /// disk), a tombstone loses its bytes but stays, a rename becomes a
+    /// bytes-less tombstone of its old path.
+    pub fn purge_version(&mut self, seq: u64) -> Result<Rewrite, HistoryError> {
+        let i = self
+            .entries
+            .binary_search_by_key(&seq, |e| e.seq)
+            .map_err(|_| HistoryError::NotFound(format!("seq {seq}")))?;
+        let mut keep = self.entries.clone();
+        let e = keep[i].clone();
+        let rewritten = match e.reason {
+            Reason::Delete if e.sha.is_none() => return Ok(Rewrite::default()),
+            Reason::Delete => {
+                keep[i].sha = None;
+                keep[i].size = 0;
+                1
+            }
+            Reason::Rename => {
+                let from = e.from.clone().unwrap_or_default();
+                keep[i] = Entry { seq, ts_ms: e.ts_ms, reason: Reason::Delete, sha: None, size: 0, path: from, from: None };
+                1
+            }
+            _ => {
+                let _dropped = keep.remove(i);
+                0
+            }
+        };
+        self.rewrite(keep, rewritten)
+    }
+
     // ---- internals ---------------------------------------------------
+
+    /// Atomically replace index.log with `keep` (temp + fsync + rename,
+    /// so a crash leaves the old or the new journal, never a mix), then
+    /// delete blobs no record references. Journal first, blobs second:
+    /// a crash in between only leaves orphans for the next GC.
+    fn rewrite(&mut self, keep: Vec<Entry>, rewritten: usize) -> Result<Rewrite, HistoryError> {
+        let dropped = self.entries.len() - keep.len();
+        if dropped > 0 || rewritten > 0 {
+            let log_p = self.root.join("index.log");
+            let tmp = self.root.join("index.log.tmp");
+            let mut body = String::from(journal::HEADER);
+            for e in &keep {
+                body.push_str(&journal::encode(e));
+            }
+            {
+                let mut f = fsx::create_private(&tmp)?;
+                f.write_all(body.as_bytes())?;
+                f.sync_all()?;
+            }
+            fs::rename(&tmp, &log_p)?;
+            fsx::sync_dir(&self.root);
+            self.journal = fsx::append_private(&log_p)?;
+            self.heads = replay(&keep);
+            self.entries = keep;
+        }
+        let referenced: std::collections::BTreeSet<&str> = self.entries.iter().filter_map(|e| e.sha.as_deref()).collect();
+        let blobs_removed = self.cas.sweep(|sha| referenced.contains(sha))?;
+        Ok(Rewrite { dropped, rewritten, blobs_removed })
+    }
+
+    /// delete-then-create: newest recent tombstone on another, still
+    /// deleted path with the same bytes.
+    fn rename_source(&self, to: &str, sha: &str, now_ms: u64) -> Option<String> {
+        let w = self.cfg.rename_window_ms;
+        if w == 0 {
+            return None;
+        }
+        let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        for e in self.entries.iter().rev() {
+            if e.ts_ms.saturating_add(w) < now_ms {
+                break;
+            }
+            if !seen.insert(e.path.as_str()) {
+                continue; // not the latest record of its path
+            }
+            if e.reason == Reason::Delete
+                && e.path != to
+                && e.sha.as_deref() == Some(sha)
+                && matches!(self.heads.get(&e.path), Some(Head::Deleted { last }) if last.as_deref() == Some(sha))
+            {
+                return Some(e.path.clone());
+            }
+        }
+        None
+    }
+
+    /// create-then-delete: newest recent create of these bytes on another
+    /// path that did not exist before that create.
+    fn rename_target(&self, from: &str, sha: &str, now_ms: u64) -> Option<String> {
+        let w = self.cfg.rename_window_ms;
+        if w == 0 {
+            return None;
+        }
+        let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        for (i, e) in self.entries.iter().enumerate().rev() {
+            if e.ts_ms.saturating_add(w) < now_ms {
+                break;
+            }
+            if !seen.insert(e.path.as_str()) {
+                continue;
+            }
+            if matches!(e.reason, Reason::External | Reason::OwnSave)
+                && e.path != from
+                && e.sha.as_deref() == Some(sha)
+                && matches!(self.heads.get(&e.path), Some(Head::Live { sha: h, .. }) if h == sha)
+                && self.absent_before(i, &e.path)
+            {
+                return Some(e.path.clone());
+            }
+        }
+        None
+    }
+
+    /// Was `path` absent (never seen, deleted, or renamed away) just
+    /// before record `idx`?
+    fn absent_before(&self, idx: usize, path: &str) -> bool {
+        for e in self.entries[..idx].iter().rev() {
+            if e.from.as_deref() == Some(path) {
+                return true;
+            }
+            if e.path == path {
+                return e.reason == Reason::Delete;
+            }
+        }
+        true
+    }
 
     fn capture(&mut self, path: &str, reason: Reason, now_ms: u64) -> Result<Outcome, HistoryError> {
         validate_path(path)?;
@@ -517,6 +841,14 @@ impl Store {
         }
         let put = self.cas.put(b)?;
         debug_assert_eq!(put, sha);
+        // delete-then-create order of a move: one rename record
+        let creating = !matches!(self.heads.get(path), Some(Head::Live { .. }));
+        if creating && !b.is_empty() && matches!(reason, Reason::External | Reason::OwnSave) {
+            if let Some(from) = self.rename_source(path, &sha, now_ms) {
+                let e = self.append(Reason::Rename, path, Some(sha), b.len() as u64, Some(from), now_ms)?;
+                return Ok(Outcome::Stored(e));
+            }
+        }
         Ok(Outcome::Stored(self.append(reason, path, Some(sha), b.len() as u64, None, now_ms)?))
     }
 
@@ -541,19 +873,7 @@ impl Store {
     }
 
     fn apply(&mut self, e: &Entry) {
-        match e.reason {
-            Reason::Delete => {
-                self.heads.insert(e.path.clone(), Head::Deleted { last: e.sha.clone() });
-            }
-            _ => {
-                if let Some(from) = &e.from {
-                    self.heads.remove(from);
-                }
-                if let Some(sha) = &e.sha {
-                    self.heads.insert(e.path.clone(), Head::Live { sha: sha.clone(), size: e.size });
-                }
-            }
-        }
+        apply_head(&mut self.heads, e);
     }
 
     /// Journal one record (blob must already be stored) and fsync.
@@ -574,4 +894,29 @@ impl Store {
         self.entries.push(e.clone());
         Ok(e)
     }
+}
+
+fn apply_head(heads: &mut BTreeMap<String, Head>, e: &Entry) {
+    match e.reason {
+        Reason::Delete => {
+            heads.insert(e.path.clone(), Head::Deleted { last: e.sha.clone() });
+        }
+        _ => {
+            if let Some(from) = &e.from {
+                heads.remove(from);
+            }
+            if let Some(sha) = &e.sha {
+                heads.insert(e.path.clone(), Head::Live { sha: sha.clone(), size: e.size });
+            }
+        }
+    }
+}
+
+/// Heads after replaying `entries` from an empty store.
+fn replay(entries: &[Entry]) -> BTreeMap<String, Head> {
+    let mut h = BTreeMap::new();
+    for e in entries {
+        apply_head(&mut h, e);
+    }
+    h
 }

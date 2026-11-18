@@ -10,6 +10,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use super::journal::is_sha_hex;
 use super::{fsx, HistoryError};
 
 static TMP_CTR: AtomicU64 = AtomicU64::new(0);
@@ -84,12 +85,38 @@ impl Cas {
     }
 
     /// Delete a blob (purge / GC). Missing is not an error.
-    #[allow(dead_code)] // used by retention/purge (next step)
     pub(crate) fn remove(&self, sha: &str) -> Result<(), HistoryError> {
         match fs::remove_file(self.path_of(sha)) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// GC: delete every stored blob for which `keep(sha)` is false.
+    /// Only `<aa>/<sha>` names are considered (tmp/ and strays are left
+    /// alone). Returns the number removed.
+    pub(crate) fn sweep(&self, keep: impl Fn(&str) -> bool) -> Result<usize, HistoryError> {
+        let mut n = 0;
+        for d in fs::read_dir(&self.dir)? {
+            let d = d?;
+            let name = d.file_name();
+            let Some(pre) = name.to_str() else { continue };
+            let is_shard = pre.len() == 2 && pre.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'));
+            if !is_shard || !d.file_type()?.is_dir() {
+                continue;
+            }
+            for f in fs::read_dir(d.path())? {
+                let f = f?;
+                let fname = f.file_name();
+                let Some(sha) = fname.to_str() else { continue };
+                if !is_sha_hex(sha) || !sha.starts_with(pre) || keep(sha) {
+                    continue;
+                }
+                self.remove(sha)?;
+                n += 1;
+            }
+        }
+        Ok(n)
     }
 }
