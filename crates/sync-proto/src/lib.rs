@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 pub mod api;
+pub mod batch;
 pub mod container;
 pub mod enc;
 

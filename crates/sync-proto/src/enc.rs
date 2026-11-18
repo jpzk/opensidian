@@ -60,6 +60,8 @@ pub enum EncodeError {
     TooLong { len: usize, max: usize },
     /// `str` contains a NUL byte.
     Nul,
+    /// The value violates a record-level rule (same reason decode gives).
+    Invalid(&'static str),
 }
 
 impl fmt::Display for EncodeError {
@@ -67,6 +69,7 @@ impl fmt::Display for EncodeError {
         match self {
             EncodeError::TooLong { len, max } => write!(f, "length {len} over limit {max}"),
             EncodeError::Nul => write!(f, "NUL in string"),
+            EncodeError::Invalid(what) => write!(f, "invalid field: {what}"),
         }
     }
 }
