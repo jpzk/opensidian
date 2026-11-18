@@ -11035,6 +11035,9 @@ const CMDS = [
   ["graph:open",               "Open graph view",                     ["ctrl+g"],               cmdGlobalGraph],
   ["graph:open-local",         "Open local graph",                    ["ctrl+shift+g"],         () => cmdLocalGraph(),
     () => !lgNoGraph(fg())],   // lg-canvas: a canvas (or a local graph) has no note to centre on — the row is not offered
+  // sync M6c: both open the separate sync window (ui/sync.html); the sync/history commands answer only there (src-tauri/src/syncui.rs gate)
+  ["sync:open-settings",       "Sync: Open sync settings",            [],                       () => inv("sync_open", { pane: "sync" })],
+  ["sync:open-file-history",   "Sync: Open file history",             [],                       () => inv("sync_open", { pane: "history", note: cur() }), mdActive],
   ["editor:insert-link",       "Insert Markdown link",                ["ctrl+k"],               () => edEdit((v, a, b) => { const s = v.slice(a, b) || "link"; return [v.slice(0, a) + "[" + s + "]()" + v.slice(b), a + s.length + 3, a + s.length + 3]; })],
   ["editor:insert-wikilink",   "Add internal link",                   [],                       () => edEdit((v, a, b) => { const s = v.slice(a, b); return [v.slice(0, a) + "[[" + s + "]]" + v.slice(b), a + 2, a + 2 + s.length]; })],
   // #156 stock 1.13.7: '#' goes in FRONT of the selection, the selected text is kept, caret right after the '#'

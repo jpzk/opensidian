@@ -317,19 +317,38 @@ pub fn history_diff<R: tauri::Runtime>(
 
 /// show (build or focus) the sync window. NOT guarded: opening it grants the
 /// caller nothing — its page is ours and only the user drives it.
+/// `pane` = "sync" | "history"; `note` = the note the history pane starts on
+/// (a hint for the page: it lists that note's versions in the sync window,
+/// where only the user sees them).
 #[tauri::command]
-pub fn sync_open(app: tauri::AppHandle) -> Result<(), String> {
+pub fn sync_open(app: tauri::AppHandle, pane: Option<String>, note: Option<String>) -> Result<(), String> {
     use tauri::Manager;
+    let url = page_url(pane.as_deref(), note.as_deref())?;
     if let Some(w) = app.get_webview_window(SYNC_LABEL) {
+        w.navigate(url).map_err(|e| e.to_string())?;
         return w.set_focus().map_err(|e| e.to_string());
     }
-    tauri::WebviewWindowBuilder::new(&app, SYNC_LABEL, tauri::WebviewUrl::App(SYNC_PAGE.into()))
+    tauri::WebviewWindowBuilder::new(&app, SYNC_LABEL, tauri::WebviewUrl::CustomProtocol(url))
         .title("opensidian — Sync")
         .inner_size(760.0, 640.0)
         .min_inner_size(420.0, 360.0)
         .build()
         .map(|_| ())
         .map_err(|e| format!("the sync window could not open: {e}"))
+}
+
+/// tauri://localhost/sync.html?pane=..&note=.. (the app origin, main.rs
+/// nav_allowed); pane is one of two fixed words, note is query-encoded
+pub fn page_url(pane: Option<&str>, note: Option<&str>) -> Result<url::Url, String> {
+    let mut u = url::Url::parse(&format!("tauri://localhost/{SYNC_PAGE}")).map_err(|e| e.to_string())?;
+    {
+        let mut q = u.query_pairs_mut();
+        q.append_pair("pane", if pane == Some("history") { "history" } else { "sync" });
+        if let Some(n) = note.filter(|n| !n.is_empty() && n.len() <= 4096) {
+            q.append_pair("note", n);
+        }
+    }
+    Ok(u)
 }
 
 #[cfg(test)]
@@ -391,6 +410,14 @@ mod tests {
         assert!(!CAPS.contains("allow-create"), "{CAPS}");
         let v: serde_json::Value = serde_json::from_str(CAPS).expect("json");
         assert_eq!(v["windows"], json!(["main"]));
+    }
+
+    #[test]
+    fn page_url_is_the_app_origin() {
+        let u = page_url(Some("history"), Some("a b/&c")).unwrap();
+        assert_eq!(u.as_str(), "tauri://localhost/sync.html?pane=history&note=a+b%2F%26c");
+        assert_eq!(page_url(Some("x"), None).unwrap().as_str(), "tauri://localhost/sync.html?pane=sync");
+        assert_eq!(page_url(None, Some("")).unwrap().as_str(), "tauri://localhost/sync.html?pane=sync");
     }
 
     #[test]
