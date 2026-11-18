@@ -1130,7 +1130,7 @@ OTHER DEALINGS IN THE SOFTWARE.
 
 ### Prism 1.30.0
 
-**Used in:** `ui/vendor/prism/prism.js` (`loadPrism`, manual mode)
+**Used in:** `ui/vendor/prism/prism.js` + `ui/vendor/prism/prism-components.js` (every language component of the same release, #186) (`loadPrism`, manual mode; the app's fenced-code highlighting `ui/codehl.js`)
 **Upstream:** https://prismjs.com (npm `prismjs@1.30.0`)
 **Licence:** MIT. GPL-compatible. Full text: `ui/vendor/prism/LICENSE`, reproduced here.
 
@@ -1179,7 +1179,7 @@ Apache-2.0 is compatible with GPL-3.0. The vendored files include no NOTICE file
 
 **Used in:** `ui/vendor/fluent/fluent-bundle.js` (window.FluentBundle; ui/i18n.js formats
 `locales/<lang>/main.ftl` with it). Unmodified upstream bytes; version, publish date,
-npm integrity and sha256 in `ui/vendor/fluent/VENDOR.md` / `SHA256SUMS`.
+npm integrity and sha256 live in `ui/vendor/vendor.lock.json` (+ `SHA256SUMS`).
 **Upstream:** https://github.com/projectfluent/fluent.js (npm `@fluent/bundle@0.19.1`)
 **Licence:** Apache-2.0 — full text in `ui/vendor/fluent/LICENSE`. GPL-3.0 compatible
 (Apache-2.0 is one-way compatible with GPLv3).

@@ -33,5 +33,11 @@ fresh; jq '(.libraries[]|select(.name=="prismjs")|.published)="2025-03-11T00:00:
   && mv "$scratch/l" "$scratch/vendor/vendor.lock.json"; expect 1 "lock publish date != registry time (prismjs)"
 fresh; jq '(.libraries[]|select(.name=="pdfjs-dist")|.added)="2026-09-15"' "$scratch/vendor/vendor.lock.json" >"$scratch/l" \
   && mv "$scratch/l" "$scratch/vendor/vendor.lock.json"; expect 1 "six-week rule (pdfjs-dist added 17 days after publish)"
+fresh; printf 'Prism.languages.x={};\n' >>"$scratch/vendor/prism/prism-components.js"; expect 1 "appended bytes in prism/prism-components.js (#186 concat)"
+fresh; jq '(.libraries[]|select(.name=="prismjs")|.files[]|select(.concat)|.concat)|=(.[1:]+.[:1])' "$scratch/vendor/vendor.lock.json" >"$scratch/l" \
+  && mv "$scratch/l" "$scratch/vendor/vendor.lock.json"; expect 1 "concat order changed in lock (prism-components.js)"
+fresh; jq '(.libraries[]|select(.name=="prismjs")|.files[]|select(.concat)|.concat[0])="package/../evil.js"' "$scratch/vendor/vendor.lock.json" >"$scratch/l" \
+  && mv "$scratch/l" "$scratch/vendor/vendor.lock.json"; expect 1 "unsafe concat path (prism-components.js)"
+fresh; printf '# prose\n' >"$scratch/vendor/fluent/VENDOR.md"; expect 1 "VENDOR.md added back (fluent/VENDOR.md)"
 [ $rc = 0 ] && echo "vendor-verify.test: ALL PASS" || echo "vendor-verify.test: FAILURES"
 exit $rc

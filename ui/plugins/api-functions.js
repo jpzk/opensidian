@@ -875,9 +875,15 @@
       return loadOnce("prism", () => {
         // read by Prism at startup: no highlightAll over the app, no worker message handler
         const cfg = window.Prism = { manual: true, disableWorkerMessageHandler: true };
+        // #186: then every language component of the same pinned release (prism-components.js, recorded in
+        // vendor.lock.json as a concatenation of the tarball's components), so the app and plugins get the
+        // grammars Obsidian has (Prism.languages.rust, .python ...)
         return loadScript("prism/prism.js", "Prism").then(() => {
           if (!window.Prism || typeof window.Prism.highlight !== "function") throw new Error("Prism loaded without highlight");
-          return window.Prism;
+          return loadScript("prism/prism-components.js", "Prism languages").then(() => window.Prism, e => {
+            // the core loaded but its languages did not: drop the half-loaded engine so a retry starts clean
+            try { delete window.Prism; } catch (_) { window.Prism = undefined; } throw e;
+          });
         }, e => { if (window.Prism === cfg) delete window.Prism; throw e; });
       });
     }
@@ -888,6 +894,9 @@
       loadMermaid: () => engineOff("mermaid") || Promise.reject(unsupported("loadMermaid (Mermaid is not bundled)")),
     };
     Object.assign(K.exportValues, GATED);
+    // #186: the app's own renderer (ui/codehl.js) loads the engine through this same loader, so one
+    // instance is shared with plugins and any gate on the loader covers the app's rendering too
+    try { Object.defineProperty(window, "__osLibs", { value: Object.freeze({ loadPrism }), configurable: false, writable: false, enumerable: false }); } catch (_) {}
     // #185: the app's own math renderer (ui/mathview.js) loads MathJax through this same loader, so one
     // instance is shared with plugins and any gate on the loader covers the app's rendering too
     try { Object.defineProperty(window, "__osMath", { value: Object.freeze({ loadMathJax }), configurable: false, writable: false, enumerable: false }); } catch (_) {}
