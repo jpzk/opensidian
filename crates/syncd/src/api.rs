@@ -94,7 +94,7 @@ pub struct Receipt {
 pub trait SyncApi {
     fn status(&self) -> ApiResult<Status>;
     fn sync_now(&self) -> ApiResult<SyncSummary>;
-    /// Versions of one vault-relative path, oldest first.
+    /// Versions of one vault-relative path, newest first.
     fn history(&self, path: &str) -> ApiResult<Vec<HistoryItem>>;
     /// Bytes of one history record (diff view).
     fn history_read(&self, seq: u64) -> ApiResult<Vec<u8>>;

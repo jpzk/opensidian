@@ -93,6 +93,9 @@ fn handle(api: &dyn SyncApi, s: std::os::unix::net::UnixStream) -> io::Result<()
 /// until the process exits. Connections from another uid are refused.
 pub fn serve(api: Arc<dyn SyncApi + Send + Sync>, sock: &Path) -> io::Result<()> {
     let dir = sock.parent().ok_or_else(|| io::Error::other("socket path has no parent"))?;
+    if sock.as_os_str().len() > 100 {
+        return Err(io::Error::other(format!("socket path too long for a unix socket: {}", sock.display())));
+    }
     let uid = prepare_dir(dir)?;
     if sock.exists() {
         if UnixStream::connect(sock).is_ok() {

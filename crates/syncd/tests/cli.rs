@@ -203,7 +203,8 @@ fn two_devices_daemon_history_destroy() {
     let h = ok(&cli(&a, &["history", "note.md"], None));
     let h = h.as_array().unwrap();
     assert!(h.len() >= 2, "versions: {h:?}");
-    let first = h[0]["seq"].as_u64().unwrap();
+    // newest first; the oldest is the first local version
+    let first = h.iter().map(|e| e["seq"].as_u64().unwrap()).min().unwrap();
     let o = cli(&a, &["show", &first.to_string()], None);
     assert_eq!(String::from_utf8_lossy(&o.stdout), "line one\nline two\n");
     ok(&cli(&a, &["restore", &first.to_string()], None));
