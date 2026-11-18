@@ -169,3 +169,15 @@ actually added (from the Cargo.lock that adds them).
   ≥ 6 weeks old): four `testvectors_v1/*.json` files copied unmodified to
   `crates/sync-crypto/vectors/wycheproof/`; per-file sha256 in that
   directory's README.md, re-checked by `tests/wycheproof.rs`.
+- EFF large wordlist (Electronic Frontier Foundation, CC BY 3.0 US), published
+  2016-07-18 at https://www.eff.org/files/2016/07/18/eff_large_wordlist.txt,
+  fetched 2026-11-18 as data (curl, no software), stored unmodified as
+  `crates/sync-crypto/wordlists/eff_large_wordlist.txt` (108800 bytes, 7776
+  lines), sha256
+  `addd35536511597a02fa0a9ff1e5284677b8883b83e986e43f15a3db996b903e`, pinned
+  as `sync_crypto::words::WORDLIST_SHA256` and re-checked by
+  `tests/words.rs`. Embedded via `include_str!` (shipped). Attribution in
+  THIRD-PARTY.md. No crate added for M2c.
+- BIP-0039 English list: NOT vendored. The rejection tests use the 12-word
+  mnemonics of the reference test vectors (inline strings) plus words shared
+  by both lists, so no BIP39 file is shipped or committed.

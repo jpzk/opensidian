@@ -17,6 +17,8 @@
 //!   `sha2` directly and needs no provider.
 //! - spec helpers over any provider: per-object key derivation and the key
 //!   commitment tag (spec §3.3), constant-time compare.
+//! - [`words`] (M2c): the 12 backup words S (EFF large list, checksum word,
+//!   dice input), docs/sync/key-tree.md §1. Tests: `tests/words.rs`.
 //! - [`soft::SoftProvider`]: a reference provider for hash/HMAC/HKDF built on
 //!   `sha2`, used for test vectors. It does NOT implement AEAD, randomness or
 //!   signatures (returns [`CryptoError::Unsupported`]); those come from
@@ -29,6 +31,7 @@ use sha2::{Digest, Sha256};
 
 pub mod fips;
 pub mod soft;
+pub mod words;
 
 /// AES-256-GCM nonce length.
 pub const NONCE_LEN: usize = 12;

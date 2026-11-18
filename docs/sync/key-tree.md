@@ -15,14 +15,21 @@ RFC 5869 extract-then-expand with SHA-256.
 - generation: module DRBG, uniform index via rejection sampling
   (draw u16, reject ≥ 7776 × 8 = 62208, take `x mod 7776`), or dice mode
   (5 d6 rolls per word = 6⁵ = 7776, digits only; the app computes word 12)
-- canonical bytes `S_bytes` = 11 × u16 index (22 bytes). Words are never
+- canonical bytes `S_bytes` = 11 × u16 big-endian index (22 bytes). Words are never
   hashed as strings → no Unicode/case/whitespace ambiguity.
 - checksum word index =
-  `u16(SHA-256("osy words v1" || S_bytes)[0..2]) mod 7776`
+  `u16be(SHA-256("osy words v1" || S_bytes)[0..2]) mod 7776`
   UX only (not security): typo vs. "vault gone", offline, version
   detection (v2 changes the label), rejects BIP39 seeds (a random
   12-word BIP39 phrase passes with p ≈ 1/7776 AND must consist of EFF
   words).
+- implementation (M2c): `sync_crypto::words` — `Phrase::{generate,
+  from_dice, parse, from_s_bytes, s_bytes, words}`. Parsing: any
+  whitespace, ASCII case-insensitive, exact words (no prefix matching);
+  errors name a 1-based position, never a word. Only 870 of the 2048
+  BIP39 English words are EFF words, so a BIP39 seed is rejected as
+  "unknown word" with p ≈ 1 − (870/2048)¹² and otherwise by the checksum.
+  Checksum KATs (computed with coreutils `sha256sum`) in `tests/words.rs`.
 
 ## 2. Root R and its children
 

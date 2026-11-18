@@ -86,3 +86,9 @@ settled when the crypto pin is chosen.
     legal decision** (options: accept with a linking exception in the repo
     licence, license the sync crates differently, or a different FIPS module);
     default for this branch: keep the repo licence, flag in PR #238.
+14. **EFF wordlist licence (CC BY 3.0 US) next to GPL-3.0 code** — the
+    backup-word list is embedded unmodified as data with attribution
+    (THIRD-PARTY.md). The FSF lists CC BY 4.0 (not 3.0) as GPLv3-compatible;
+    for an unmodified data file shipped in the same binary we treat it as an
+    aggregate. Default: keep as is, attribution on the licence screen.
+    Operator / legal (same review as 13).
