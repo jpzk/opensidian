@@ -98,7 +98,7 @@ Untrusted / hostile:
 
 ## 6. Residual risks (tracked)
 
-- R1 no app-command ACL today → plugins could call history commands
+- R1 no app-command ACL in tauri → CLOSED for sync/history by the webview-label gate (spec §7.1): those commands answer only the `sync` window; other app commands are unchanged (out of scope)
 - R2 LWW trusts device clocks (mitigated: loser kept)
 - R3 server freeze/rollback only detectable across replicas
 - R4 FIPS build needs CMake + Go + cc → reproducible-build impact

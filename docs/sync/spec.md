@@ -666,3 +666,52 @@ verified to the same bar as the backend. Planned shape (follow-up PR):
   `history_purge` is irreversible by design (§6.4)
 - acceptance: the panel never writes to the vault except through these
   commands; keyboard reachable; works at the 320×240 layout
+
+## 7. App integration (M6b, `src-tauri/src/syncui.rs`)
+
+### 7.1 Command gate (threat-model T5 / R1)
+
+Community plugins run in the app page's JS realm; nothing page script can
+check separates core UI from plugin code. The trust decision is made on the
+webview LABEL the IPC message arrived from — set by Rust when the webview is
+built, not choosable by page script:
+
+- every sync/history command (`syncui::GUARDED`: `history_list`,
+  `history_read`, `history_restore`, `history_deleted`,
+  `history_restore_deleted`, `history_purge`, `history_diff`, `sync_status`,
+  `sync_setup`, `sync_now`, `sync_set_mode`, `sync_reveal`, `sync_quiz`)
+  starts with `gate(win.label(), "<cmd>")?` and answers only the webview
+  labelled `sync`; any other (the `main` window = the plugin realm) gets
+  `EPERM: <cmd>: sync and file history answer only the sync window` before
+  any state is touched;
+- the `sync` webview is built only by `sync_open` (not guarded: it shows or
+  focuses the window, nothing else) from the fixed app page `ui/sync.html`,
+  which loads no plugin loader and no community code; navigation is limited
+  for every webview by the app's `on_navigation`;
+- `capabilities/default.json` grants no `create-webview*` permission, so page
+  script cannot build a webview with the trusted label;
+- tests (`syncui::tests`): a source check that every guarded command is
+  registered and calls the gate FIRST and that no `history_*` / `sync_*`
+  command is left unguarded; and a real IPC round trip through tauri's mock
+  runtime invoking EVERY guarded command with valid arguments from a `main`
+  webview (refused, EPERM) and from a `sync` webview (passes the gate).
+
+### 7.2 Embedded engine
+
+`syncd::local::LocalEngine` in-process; state dir `<app data>/sync/<vault
+id>/` (same layout as the daemon's, §M6a). A sync pass writes file history
+through `syncd::local::HistSink` into the app's one history store
+(`FILEHIST`), never through a second opener of the same journal. Network
+work runs on the blocking pool. A running `opensidian-syncd` on the same
+state dir serialises on the per-vault flock (`busy`).
+
+### 7.3 Reveal backup words
+
+`sync_reveal` asks a native GTK question first (consent `Kind::Reveal`,
+fixed text; page script cannot answer it), then returns the words to the
+sync window only. The page shows them without a copy button and hides them
+after 60 s. `sync_quiz` (verify the user wrote them down) checks positions
+against the backup entry and is allowed for 10 minutes after a granted
+reveal only (otherwise an oracle on the words). Linux has no per-item OS
+user-presence gate (threat-model R5, open question 6): the native question
+is the presence check there.

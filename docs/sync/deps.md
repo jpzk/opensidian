@@ -257,6 +257,15 @@ libc's `getsockopt` is out). The CLI argument parser is hand-written (no
 clap). The daemon's own uid is read without `getuid()` as the owner of a
 file it just created in the socket dir.
 
+### M6b — embedded engine + command gate (app, src-tauri): no new crate
+
+No crate added to the lock. The app (`opensidian`) gains two dependency
+lines in its lock entry: `syncd` (workspace path crate) and `zeroize
+=1.9.1` (already locked, used by sync-core/syncd; wipes the setup secret).
+The plugin-realm IPC test uses tauri's own mock runtime: a dev-dependency
+line enabling tauri's `test` feature, which tauri 2.11.5 declares as
+`test = []` (no optional dependency behind it), so the lock is unchanged.
+
 ## Existing crates reused by the new sync crates
 
 Already in Cargo.lock at d999420; the new crates pin them exactly to the
