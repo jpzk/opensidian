@@ -13,3 +13,9 @@ workspace = "../../src-tauri"
 
 [dependencies]
 sha2 = "=0.10.9"
+# M2 suite v1 (docs/sync/cmvp.md, deps.md): AWS-LC FIPS module via aws-lc-rs. Newest
+# release >= 6 weeks old at 2026-11-18 = aws-lc-rs 1.18.1 / aws-lc-fips-sys 0.14.2
+# (AWS-LC 4.2.0, CMVP: in process). fips-sys is pinned directly so the resolver cannot
+# float it. Building it needs CMake + Go + cc (box toolchain in deps.md).
+aws-lc-rs = { version = "=1.18.1", default-features = false, features = ["fips", "alloc"] }
+aws-lc-fips-sys = "=0.14.2"
