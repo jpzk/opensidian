@@ -510,6 +510,16 @@
     const tracked = ext === "md" || ext === "canvas" || IMG.has(ext);
     if (ext === "md" || ext === "canvas" || (ctx.missing && tracked) || !p) { node._cc = { kind: ext === "md" && !ctx.missing ? "note" : "missing" }; return false; }   // goal cv-model: a note not in the vault model is missing, not a note
     const host = node.contentEl;
+    // #144 toggle 4 (Render media) off: an image / audio / video card is a placeholder naming
+    // the file and the toggle; no opensidian-img: URL, no media_read (both refuse anyway)
+    const secR = window.__osSecurity && window.__osSecurity.get();
+    if (secR && secR.pageMedia === false && (IMG.has(ext) || AUD.has(ext) || VID.has(ext))) {
+      const w = mk("div", "canvas-file-media-error", host);
+      w.dataset.sec = "vaultMedia";
+      w.textContent = nameOf(p) + " — media rendering is off (Settings › Security › Render media)";
+      node._cc = { kind: "secmedia", err: w };
+      return true;
+    }
     if (IMG.has(ext)) {
       const img = mk("img", "canvas-file-img", host);
       img.alt = nameOf(p); img.draggable = false;
@@ -772,6 +782,7 @@
         if (s.kind === "image") t += " [cvcard:" + id + "|img=" + (s.img && s.img.complete && s.img.naturalWidth > 0 ? 1 : 0) + "|kind=image]";
         else if (s.kind === "audio" || s.kind === "video") t += " [cvcard:" + id + "|kind=" + s.kind + "|ctl=" + (s.media && s.media.controls && n.contentEl.contains(s.media) ? 1 : 0) + "]";
         else if (s.kind === "other") t += " [cvcard:" + id + "|kind=other|name=" + esc(nameOf(n.data.file)) + "|open=" + (s.open || 0) + "]";
+        else if (s.kind === "secmedia") t += " [cvcard:" + id + "|kind=secmedia]";   // #144 toggle 4 off
         else t += " [cvcard:" + id + "|kind=" + (s.kind || "note") + "|sel=" + (v.canvas.selection.has(n) ? 1 : 0) + "|st=" + Math.round(n.contentEl.scrollTop) +
                   "|txt=" + esc(n.contentEl.textContent).slice(0, 48) + "]";
       } else if (ty === "link") {
