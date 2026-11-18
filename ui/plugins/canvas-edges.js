@@ -520,9 +520,9 @@
       const i = el("div", "canvas-edge-menu-item", m); i.dataset.act = act; i.textContent = txt;
       i.addEventListener("click", e => { e.stopPropagation(); closeMenu(c); fn(); });
     };
-    item("card", "Add card", () => add(c.createTextNode({ pos: place(250, 60), size: { width: 250, height: 60 }, save: false })));
+    item("card", I18N.m("Add card"), () => add(c.createTextNode({ pos: place(250, 60), size: { width: 250, height: 60 }, save: false })));
     const pick = window.CanvasMenus && window.CanvasMenus.pickNote;
-    if (pick) item("note", "Add note from vault", () => pick(c, path =>
+    if (pick) item("note", I18N.m("Add note from vault"), () => pick(c, path =>
       add(c.createFileNode({ file: path, pos: place(400, 400), size: { width: 400, height: 400 }, save: false }))));
     for (const ty of ["pointerdown", "dblclick", "wheel"]) m.addEventListener(ty, e => e.stopPropagation());
     S.menu = m;
@@ -552,9 +552,9 @@
       i.addEventListener("click", e => { e.stopPropagation(); closeMenu(c); fn(); });
     };
     // edit first, navigation in the middle, the destructive action last
-    if (!c.readonly) item("label", "Edit label", () => { select(c, id); openLabel(c, id); });
-    item("follow", "Follow connection", () => follow(c, id, p));
-    if (!c.readonly) item("del", "Remove", () => removeEdge(c, id));
+    if (!c.readonly) item("label", I18N.m("Edit label"), () => { select(c, id); openLabel(c, id); });
+    item("follow", I18N.m("Follow connection"), () => follow(c, id, p));
+    if (!c.readonly) item("del", I18N.m("Remove"), () => removeEdge(c, id));
     for (const ty of ["pointerdown", "dblclick", "wheel"]) m.addEventListener(ty, e => e.stopPropagation());
     S.menu = m;
     select(c, id);

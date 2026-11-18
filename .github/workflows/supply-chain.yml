@@ -1,41 +1,81 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Supply chain — what the Rust dependency graph (src-tauri/Cargo.lock) may contain.
-#   cargo audit   RustSec advisories against Cargo.lock (--deny warnings)
-#   cargo deny    advisories + sources + bans + licenses (deny.toml)
-#   cargo vet     every third-party crate audited, imported or exempted (src-tauri/supply-chain/)
+# Supply chain — the ONE workflow for SBOM, CVE scanning and dependency policy (#188).
+#   cargo audit        RustSec advisories against Cargo.lock (--deny warnings)
+#   cargo deny         advisories + sources + bans + licenses (deny.toml)
+#   cargo vet          every third-party crate audited, imported or exempted (src-tauri/supply-chain/)
+#   vendor-js-cve      ui/vendor/vendor.lock.json proven against the npm registry + bytes, then
+#                      its SBOM scanned with osv-scanner against the VEX
+#   webkit-bundle-cve  the WebKitGTK/GTK closure the PORTABLE AppImage bundles (ubuntu-26.04 dpkg
+#                      database -> pkg:deb/ubuntu source packages); fails on CVEs with a fix available
+#   glib-vendor-check  src-tauri/vendor/glib-0.18.5 == crates.io glib 0.18.5 + the one documented patch
+#   vex-check          supply-chain/vex.cdx.json == deny.toml / audit.toml ignores, no expired entry
+#   gate-tests         scripts/supply-chain/tests/*.test.sh: every gate still turns red on its fixture
+#   sbom               Rust + vendored JS + WebKit bundle + flatpak runtime -> opensidian-<ver>.cdx.json,
+#                      scanned with osv-scanner against the VEX, uploaded as artifact "sbom"
+#   attest-sbom        on tags v* and when called by release.yml: actions/attest-sbom
+#   codemirror-rebuild opt-in (workflow_dispatch input / weekly cron): rebuild cm6.js, compare sha256
 # See docs/supply-chain.md for what each check catches and how to audit a new crate.
 #
+# Triggers (OPERATOR DECISION 2026-11-17, #188): push to main, develop and release/**, tags v*, the
+#   weekly cron, workflow_dispatch, and workflow_call (release.yml calls this workflow and its
+#   publish job needs it). There is NO pull_request trigger (and never pull_request_target).
+#   CONSEQUENCE, accepted by the operator: cargo vet / cargo deny / cargo audit and the CVE scans
+#   no longer gate PRs. An unaudited crate or a vulnerable dependency is only caught AFTER it has
+#   landed on develop (the push run turns red), not before the merge. Review new dependencies in
+#   the PR by hand; fix forward on develop.
+#
 # Hardening:
-#   - push/schedule/dispatch only (no pull_request, never pull_request_target): nothing here
-#     needs secrets or PR context.
-#   - top-level permissions contents: read; no secrets; checkout does not persist the token.
+#   - push/tag/schedule/dispatch/call only (see Triggers): nothing here needs secrets or PR context.
+#   - top-level permissions contents: read; no secrets (github.token only raises the GitHub API
+#     rate limit for osv-install.sh); checkout does not persist the token. Only attest-sbom gets
+#     id-token: write + attestations: write, at job level (same pattern as release.yml).
 #   - every action pinned to a full commit SHA (# vX.Y.Z) and the Rust toolchain pinned; every
-#     pin released >= 6 weeks before pin time (2026-11-15).
+#     pin released >= 6 weeks before pin time (2026-11-15; attest-sbom v4.1.0 = 2026-03-18).
 #   - EXCEPTION (operator decision 2026-11-15): cargo-audit, cargo-deny and cargo-vet are NOT
 #     pinned. Each run installs the latest crates.io release (still --locked, so the tool's own
 #     Cargo.lock is used) and logs the resolved version in a "resolved version" step. They are
 #     vulnerability scanners whose advisory DB / formats move: an old release can fail to parse
 #     new advisories and silently stop protecting us. Blast radius is bounded: contents: read,
 #     no secrets, no caches, no privileged (pull_request_target) trigger.
+#     Same exception for osv-scanner (operator 2026-11-17, #189 item 3: "dont pin scanners in
+#     workflow but everything else"): scripts/supply-chain/osv-install.sh installs the latest
+#     non-prerelease GitHub release, verifies the asset against the sha256 digest from the GitHub
+#     release API (fails closed without one, same pattern as opengrep.yml) and logs the resolved
+#     version + digest. Everything else (actions, toolchain, node/esbuild) stays pinned.
 #   - no caches: nothing a PR run writes can be restored by a push/main run.
 name: Supply chain
 
 on:
-  # NO pull_request trigger (operator 2026-11-15): scans run only on pushes to develop, main and
-  # v* branches (release branches / drafts, v<ver>-release, see release.yml) + schedule + dispatch.
+  # see "Triggers" in the header: NO pull_request / pull_request_target (operator 2026-11-17).
+  # Note: release.yml's v<ver>-release branches are not matched; release branches are
+  # expected under release/**. release.yml reaches this workflow through workflow_call.
   push:
-    branches: [develop, main, 'v*']
+    branches: [main, develop, 'release/**']
+    tags: ['v*']
   schedule:
-    # weekly: new RustSec advisories land without any change to this repo
+    # weekly: new RustSec / OSV advisories land without any change to this repo
     - cron: '23 4 * * 1'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      codemirror_rebuild:
+        description: 'also run the opt-in CodeMirror reproducible-rebuild check'
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      attest:
+        description: 'attest the merged SBOM (release.yml passes true)'
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: supply-chain-${{ github.ref }}
+  # github.workflow is the CALLER's name under workflow_call, so a tag push running this
+  # workflow directly and release.yml calling it on the same tag do not cancel each other.
+  group: supply-chain-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -109,3 +149,285 @@ jobs:
         # any new or updated crate without an audit/exemption fails here
         working-directory: src-tauri
         run: cargo vet --locked
+
+  vendor-js-cve:
+    name: vendored JS (lock proof + CVE)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: vendor-verify (registry integrity, tarball bytes, embedded versions, coverage, 6-week rule)
+        run: scripts/supply-chain/vendor-verify.sh
+      - name: vendor SBOM from vendor.lock.json + codemirror/build/package-lock.json
+        run: |
+          mkdir -p "$RUNNER_TEMP/sbom"
+          scripts/supply-chain/vendor-sbom.sh > "$RUNNER_TEMP/sbom/vendor.cdx.json"
+          jq -e '.bomFormat == "CycloneDX" and .specVersion == "1.6"' "$RUNNER_TEMP/sbom/vendor.cdx.json"
+          echo "components: $(jq '.components | length' "$RUNNER_TEMP/sbom/vendor.cdx.json")"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-part-vendor
+          path: ${{ runner.temp }}/sbom/vendor.cdx.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: osv-scanner (latest release, digest-verified, unpinned by design)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bin=$(scripts/supply-chain/osv-install.sh "$RUNNER_TEMP/osv")
+          echo "OSV=$bin" >> "$GITHUB_ENV"
+      - name: osv scan vendor SBOM against the VEX
+        run: |
+          # config OUTSIDE the SBOM dir: osv-scanner auto-loads an osv-scanner.toml next to the input
+          mkdir -p "$RUNNER_TEMP/osvcfg"
+          scripts/supply-chain/vex-osv-config.sh > "$RUNNER_TEMP/osvcfg/osv-scanner.toml"
+          "$OSV" scan source --config "$RUNNER_TEMP/osvcfg/osv-scanner.toml" -L "$RUNNER_TEMP/sbom/vendor.cdx.json"
+
+  webkit-bundle-cve:
+    # Scans what the PORTABLE AppImage bundles: build-appimage.sh portable copies the
+    # WebKitGTK/GTK closure of the ubuntu-26.04 runner (release.yml appimage job) into the
+    # AppImage. The slim AppImage, the .deb and the flatpak bundle NO WebKit: they use the
+    # system's / the org.gnome.Platform runtime's WebKit, which is the distro's / Flathub's to patch.
+    # Only x86_64 is scanned (ubuntu-26.04-arm installs the same source packages).
+    name: WebKit bundle CVE (AppImage closure, ubuntu-26.04)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: system packages (= release.yml appimage job; UNPINNED apt, see docs/supply-chain.md)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends build-essential pkg-config libssl-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf file
+      - name: WebKit bundle SBOM (ldd closure -> dpkg -S -> source packages)
+        run: |
+          mkdir -p "$RUNNER_TEMP/sbom"
+          scripts/supply-chain/webkit-bundle-sbom.sh > "$RUNNER_TEMP/sbom/webkit-bundle.cdx.json"
+          echo "components: $(jq '.components | length' "$RUNNER_TEMP/sbom/webkit-bundle.cdx.json")"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-part-webkit
+          path: ${{ runner.temp }}/sbom/webkit-bundle.cdx.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: osv-scanner (latest release, digest-verified, unpinned by design)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bin=$(scripts/supply-chain/osv-install.sh "$RUNNER_TEMP/osv")
+          echo "OSV=$bin" >> "$GITHUB_ENV"
+      - name: osv scan + gate (fail only on CVEs with a fixed Ubuntu version)
+        run: |
+          mkdir -p "$RUNNER_TEMP/osvcfg"
+          scripts/supply-chain/vex-osv-config.sh > "$RUNNER_TEMP/osvcfg/osv-scanner.toml"
+          # osv-scanner exits 1 on ANY match, including not-yet-fixed distro CVEs; osv-json.sh accepts
+          # rc 0/1 only (127/128 = failed scan) and checks the JSON; the gate decides on the findings
+          scripts/supply-chain/osv-json.sh "$RUNNER_TEMP/osv-webkit.json" \
+            "$OSV" scan source --config "$RUNNER_TEMP/osvcfg/osv-scanner.toml" --format json \
+            -L "$RUNNER_TEMP/sbom/webkit-bundle.cdx.json"
+          scripts/supply-chain/osv-fixed-gate.sh "$RUNNER_TEMP/osv-webkit.json"
+
+  glib-vendor-check:
+    name: glib vendor check
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: vendor/glib-0.18.5 == crates.io glib 0.18.5 + glib-fix/variantstriter.patch only
+        run: scripts/supply-chain/glib-vendor-check.sh
+
+  vex-check:
+    name: VEX check
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: VEX == deny.toml / audit.toml ignores, nothing expired
+        run: scripts/supply-chain/vex-check.sh
+
+  gate-tests:
+    name: supply-chain gate self-tests (red fixtures)
+    # every gate must still turn red on its fixture (past-expiry VEX, pdfjs-dist 4.1.392,
+    # unlisted ui/vendor file, yanked glib, ldd "not found", failed osv scan, ...): a gate that
+    # silently stopped failing would leave every other job here green for the wrong reason.
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: scripts/supply-chain/tests/*.test.sh
+        run: |
+          rc=0
+          for f in scripts/supply-chain/tests/*.test.sh; do
+            echo "::group::$f"
+            bash "$f" || { rc=1; echo "::error::$f failed"; }
+            echo "::endgroup::"
+          done
+          exit "$rc"
+
+  sbom:
+    name: SBOM (merged) + CVE scan
+    needs: [vendor-js-cve, webkit-bundle-cve]
+    # run even when a part job's CVE scan is red: its SBOM part is uploaded before the scan.
+    # A missing part (its generator failed) fails the download below -> fail closed.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    outputs:
+      file: ${{ steps.merge.outputs.file }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: sbom-part-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/parts
+      - name: Rust SBOM (Cargo.lock) + flatpak runtime SBOM
+        run: |
+          export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          scripts/supply-chain/rust-sbom.sh > "$RUNNER_TEMP/parts/rust.cdx.json"
+          scripts/supply-chain/flatpak-sbom.sh > "$RUNNER_TEMP/parts/flatpak.cdx.json"
+          ls -l "$RUNNER_TEMP/parts"
+          for p in vendor webkit-bundle rust flatpak; do
+            test -s "$RUNNER_TEMP/parts/$p.cdx.json" || { echo "::error::missing SBOM part $p"; exit 1; }
+          done
+      - name: merge -> opensidian-<ver>.cdx.json
+        id: merge
+        run: |
+          export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          V=$(jq -r .version src-tauri/tauri.conf.json); V=${V%.0}
+          mkdir -p "$RUNNER_TEMP/out"
+          scripts/supply-chain/sbom-merge.sh -o "$RUNNER_TEMP/out" -v "$V" \
+            "$RUNNER_TEMP/parts/rust.cdx.json" "$RUNNER_TEMP/parts/vendor.cdx.json" \
+            "$RUNNER_TEMP/parts/webkit-bundle.cdx.json" "$RUNNER_TEMP/parts/flatpak.cdx.json"
+          F="$RUNNER_TEMP/out/opensidian-$V.cdx.json"
+          jq -e '.bomFormat == "CycloneDX" and .specVersion == "1.6"' "$F" > /dev/null
+          echo "components: $(jq '.components | length' "$F")"
+          for p in vendor webkit-bundle rust flatpak; do
+            echo "  $p: $(jq '.components | length' "$RUNNER_TEMP/parts/$p.cdx.json")"
+          done
+          sha256sum "$F"
+          echo "file=opensidian-$V.cdx.json" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom
+          path: ${{ runner.temp }}/out/${{ steps.merge.outputs.file }}
+          if-no-files-found: error
+      - name: osv-scanner (latest release, digest-verified, unpinned by design)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bin=$(scripts/supply-chain/osv-install.sh "$RUNNER_TEMP/osv")
+          echo "OSV=$bin" >> "$GITHUB_ENV"
+      - name: osv scan merged SBOM against the VEX
+        env:
+          F: ${{ steps.merge.outputs.file }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/osvcfg"
+          scripts/supply-chain/vex-osv-config.sh > "$RUNNER_TEMP/osvcfg/osv-scanner.toml"
+          # distro (deb) findings without a fix are gated in webkit-bundle-cve; here only the
+          # ecosystems we can upgrade ourselves (cargo, npm, github) may be red.
+          # osv-json.sh: rc must be 0/1 and the JSON must carry .results, else the step fails
+          scripts/supply-chain/osv-json.sh "$RUNNER_TEMP/osv-sbom.json" \
+            "$OSV" scan source --config "$RUNNER_TEMP/osvcfg/osv-scanner.toml" --format json \
+            -L "$RUNNER_TEMP/out/$F"
+          # human-readable table for the log only (same scan; its rc was checked above)
+          "$OSV" scan source --config "$RUNNER_TEMP/osvcfg/osv-scanner.toml" \
+            -L "$RUNNER_TEMP/out/$F" || true
+          bad=$(jq '[.results[].packages[]? | select((.package.ecosystem | test("^(Ubuntu|Debian)")) | not)
+                     | select((.vulnerabilities // []) | length > 0)] | length' "$RUNNER_TEMP/osv-sbom.json")
+          echo "non-distro packages with findings: $bad"
+          [ "$bad" -eq 0 ] || { echo "::error::$bad package(s) with CVEs not covered by the VEX"; exit 1; }
+
+  attest-sbom:
+    name: attest SBOM
+    needs: sbom
+    if: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.attest }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sbom
+          path: ${{ runner.temp }}/sbom
+      # subjects = the lock inputs the SBOM was generated from (the release binaries are built
+      # in parallel by release.yml and attested there with build provenance)
+      - uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-path: |
+            src-tauri/Cargo.lock
+            ui/vendor/vendor.lock.json
+            ui/vendor/codemirror/build/package-lock.json
+            packaging/flatpak/dev.koto.opensidian.yml
+          sbom-path: ${{ runner.temp }}/sbom/${{ needs.sbom.outputs.file }}
+
+  # Opt-in (workflow_dispatch input codemirror_rebuild / weekly cron): rebuild
+  # ui/vendor/codemirror/cm6.js from ui/vendor/codemirror/build/ and fail unless the sha256
+  # equals the committed bundle (and vendor.lock.json). The ONLY job with node tooling.
+  #   node     v24.21.0 (LTS, released 2026-09-07), tarball pinned by sha256 below (= its SHASUMS256)
+  #   esbuild  0.28.2 + @esbuild/linux-x64 0.28.2 (published 2026-08-08), pinned by the sha512
+  #            integrity in build/package-lock.json, which vendor-js-cve proves against the registry
+  #   network  npm ci talks to registry.npmjs.org only (npm_config_registry; every lock
+  #            "resolved" is a registry tarball, checked by vendor-verify.sh) with
+  #            --ignore-scripts; the esbuild bundle step then runs in a network namespace with
+  #            no interfaces but lo (ESBUILD_WRAP), so it can only use what npm ci fetched.
+  codemirror-rebuild:
+    name: CodeMirror reproducible rebuild
+    if: ${{ github.event_name == 'schedule' || inputs.codemirror_rebuild }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    env:
+      NODE_VERSION: v24.21.0
+      NODE_SHA256: fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: install pinned node (sha256-verified)
+        run: |
+          set -euo pipefail
+          f="node-${NODE_VERSION}-linux-x64.tar.xz"
+          curl -4 -fsSL --retry 3 -m 120 -o "$RUNNER_TEMP/$f" "https://nodejs.org/dist/${NODE_VERSION}/$f"
+          echo "${NODE_SHA256}  $RUNNER_TEMP/$f" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/node-${NODE_VERSION}-linux-x64/bin" >> "$GITHUB_PATH"
+      - name: every build/package-lock.json entry published on or before the pin cutoff
+        run: sh ui/vendor/codemirror/build/build.sh check
+      - name: rebuild cm6.js (bundle step without network) and compare sha256
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = "$NODE_VERSION"
+          wrap="sudo unshare --net -- setpriv --reuid=$(id -u) --regid=$(id -g) --clear-groups env PATH=$PATH"
+          # the namespace really has no route out
+          if $wrap curl -4 -fsS -m 5 -o /dev/null https://registry.npmjs.org/; then
+            echo "::error::network namespace is not isolated"; exit 1
+          fi
+          want=$(jq -r '.bundles[] | select(.name == "codemirror") | .sha256' ui/vendor/vendor.lock.json)
+          test "$(sha256sum ui/vendor/codemirror/cm6.js | cut -d' ' -f1)" = "$want"
+          ESBUILD_WRAP="$wrap" CMP=ui/vendor/codemirror/cm6.js \
+            sh ui/vendor/codemirror/build/build.sh | tee "$RUNNER_TEMP/rebuild.log"
+          {
+            echo "### CodeMirror rebuild"
+            echo "node $(node --version), $(grep -m1 -E '^[0-9]+\.[0-9]+\.[0-9]+$' "$RUNNER_TEMP/rebuild.log" | sed 's/^/esbuild /')"
+            grep -E '^CM6-' "$RUNNER_TEMP/rebuild.log"
+          } >> "$GITHUB_STEP_SUMMARY"
