@@ -5080,7 +5080,7 @@ function tabMenu(e, g, i, hdr) {
   /* item(label, fn) wires a row; item(label, null, why) renders it DISABLED with
      `why` (the missing subsystem) as the hover title; chk adds the radio marker
      as an ELEMENT so textContent — and therefore [menu:] — stays Obsidian's label. */
-  const item = (label, fn, why, chk, warn) =>   // chk: a RADIO row — the icon gutter is reserved whether or not this one is the active mode
+  const item = (label, fn, why, chk, warn) =>   // chk: a RADIO row — true puts the check mark after the title (#214: no reserved gutter)
     B.item({ title: label, fn: fn || undefined, why: why == null ? undefined : why, chk, warn });
   const sep = () => B.sep();
   const inPlace = fill => {              // the ctxmenu's ONE submenu seam: rebuild in place (R13.1's pick list)
