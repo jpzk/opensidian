@@ -75,3 +75,14 @@ settled when the crypto pin is chosen.
 - **Vault id minting.** History mints the treefold vault id on the first
   save, which writes `~/.opensidian.json`. If e2e tests assert that file
   is untouched after a save, they will see the new `vault_ids` entry.
+
+## Raised while building M2 (crypto suite)
+
+13. **AWS-LC licence vs GPL-3.0-or-later** — aws-lc-fips-sys is
+    `ISC AND (Apache-2.0 OR ISC) AND OpenSSL`; parts of AWS-LC still carry the
+    OpenSSL/SSLeay licence, which the FSF lists as GPL-incompatible, and the
+    app/sync crates are GPL-3.0-or-later and link it statically. deny.toml has
+    per-crate exceptions so CI reports exactly this (deps.md). **Operator /
+    legal decision** (options: accept with a linking exception in the repo
+    licence, license the sync crates differently, or a different FIPS module);
+    default for this branch: keep the repo licence, flag in PR #238.

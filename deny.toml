@@ -61,6 +61,11 @@ allow = [
 # the app crate itself is GPL-3.0-or-later; allow that for opensidian only, not for dependencies
 exceptions = [
   { crate = "opensidian", allow = ["GPL-3.0-or-later"] },
+  # sync M2a (docs/sync/deps.md): the AWS-LC FIPS module. OpenSSL licence = operator-pending
+  # licensing question (GPL compatibility), recorded in docs/sync/open-questions.md.
+  { crate = "aws-lc-rs", allow = ["ISC"] },
+  { crate = "aws-lc-fips-sys", allow = ["ISC", "OpenSSL"] },
+  { crate = "libloading", allow = ["ISC"] },
 ]
 # the vendored glib [patch] (path crate) is checked like any other crate; only unpublished crates are skipped
 [licenses.private]

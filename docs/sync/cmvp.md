@@ -1,9 +1,8 @@
 # Opensidian Sync — CMVP certificate check for aws-lc-rs `fips` (M0)
 
 Status: notes from public sources, retrieved 2026-11-18. **Nothing in this
-file is a compliance claim.** aws-lc-rs is NOT a dependency of this
-milestone; it is only being evaluated (it needs CMake + Go + a C toolchain,
-and adding it needs operator approval).
+file is a compliance claim.** §1–§6 are the M0 evaluation; §7 is the M2
+pin decision (aws-lc-rs 1.18.1 → AWS-LC 4.2.0, CMVP in process).
 
 Legend: **[V]** verified from a public source listed below,
 **[U]** unknown / not verifiable from public sources, **[I]** our inference.
@@ -123,3 +122,42 @@ is also past the cutoff; 0.24.0-dev.* are pre-releases, excluded.
 2. Look up the CAVP algorithm certs referenced on S1 (A6283…A6306) for the
    EDDSA curve parameters.
 3. Re-run §3 on the chosen tag (submodule commit + base.h version string).
+
+## 7. M2 pin decision (2026-11-18)
+
+Rule from the sync goal: pin the **newest** aws-lc-rs / aws-lc-fips-sys
+released ≥ 6 weeks before 2026-11-18 (cutoff 2026-10-07), and record what
+CMVP status its module has.
+
+- **Pinned: aws-lc-rs `=1.18.1` + aws-lc-fips-sys `=0.14.2`** (both
+  published 2026-09-01) [V S7]. Younger releases (1.18.2 2026-10-12, 1.19.0
+  2026-10-28) fail the age rule.
+- **Module: AWS-LC 4.2.0** (submodule commit 191eafc5…, "[FIPS 4.x]
+  Prepare v4.2.0") [V S6].
+- **CMVP status: IN PROCESS, not validated.** "AWS-LC 4 Cryptographic
+  Module" (static + dynamic) is on the Modules In Process list, status
+  Comment Resolution - CMVP (11/3 and 11/5/2026) [V S3]. No certificate
+  number exists for it yet. #5314 (AWS-LC 3, v3.1) and #4816 (v2.0) do
+  **not** cover 4.2.0 [I: different major version / module name].
+- Consequence: builds of this branch run the AWS-LC FIPS module in approved
+  mode, but **no FIPS 140-3 validation claim may be made** until the AWS-LC 4
+  certificate issues and its Security Policy lists 4.2.0 (or the pin moves to
+  a version it lists). Re-check S3 / S4 before any release.
+- Rejected alternative: aws-lc-rs 1.17.4 (AWS-LC 3.6.0, same publish day).
+  Whether #5314 covers 3.6.0 is still [U] (§4), so it is not provably
+  validated either, and it is not the newest — the goal rule picks 1.18.1.
+
+### Signature algorithm (spec.md §1, key_alg byte)
+
+The goal rule is "Ed25519 if the pinned cert covers it, else P-256". The
+pinned module has **no certificate**, so no cert covers Ed25519 for it →
+suite v1 signs with **ECDSA P-256 / SHA-256 (FIPS 186-5)**, key_alg = P-256.
+Ed25519 stays reserved in the key_alg byte; switching back is a cfg/{gen}
+change once an AWS-LC 4 certificate lists EdDSA.
+
+### Build toolchain (box only, deps.md §Toolchain)
+
+aws-lc-fips-sys in FIPS mode requires CMake, Go **and Perl**
+(`aws-lc/CMakeLists.txt`: "Building AWS-LC for FIPS requires Go and Perl")
+plus a C compiler; C++ is not needed (tests/libssl off). Pinned versions and
+sha256 are in deps.md. Nothing is installed on the development VM.
