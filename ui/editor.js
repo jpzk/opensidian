@@ -711,7 +711,49 @@ const Ed = {
       parts.push(c); off += c.byteLength;
     } while (off < size);
     const ext = p.slice(p.lastIndexOf(".") + 1).toLowerCase();
-    return URL.createObjectURL(new Blob(parts, { type: Ed.AUDIO_MIME[ext] || "" }));
+    return new Blob(parts, { type: Ed.AUDIO_MIME[ext] || "" });
+  },
+  /* #197: the player's spinner and "--:--". WebKit's native controls (public WebKit source,
+     Modules/modern-media-controls/media/status-support.js) paint the activity indicator in place of the
+     elapsed time, and NaN as the duration, while
+       !media.played.length && media.readyState !== HAVE_ENOUGH_DATA && media.networkState === NETWORK_LOADING.
+     WebKitGTK's GStreamer player turns its download buffering OFF for every blob: URL
+     (MediaPlayerPrivateGStreamer::updateDownloadBufferingFlag, "Blob URI detected"), so a plain blob: player
+     never learns its download finished: it rests at HAVE_FUTURE_DATA (3) with networkState LOADING, i.e.
+     spinner + "--:--" until the first play, whatever Duration the file carries. A Media Source
+     (W3C Media Source Extensions) holding the whole file is different: after endOfStream() every byte is
+     buffered, the duration is the buffered end, and the element reaches HAVE_ENOUGH_DATA. So a WebM the engine's
+     MSE accepts (the recorder writes audio/webm;codecs=opus) plays from a MediaSource; anything else, or any MSE
+     refusal (no MediaSource, type unsupported, addSourceBuffer / appendBuffer / decode error), plays from the
+     plain blob: URL exactly as before. Both are blob: URLs (media-src 'self' blob:, csp_by_trust); the bytes are
+     the same media_read bytes, read at the same moment (after the press on a restricted page). */
+  AUDIO_MSE: { webm: ['audio/webm; codecs="opus"', 'audio/webm; codecs="vorbis"'] },
+  audioUrl(b, rel, a, s, play) {
+    const A = Ed._aud, MS = typeof window !== "undefined" ? window.MediaSource : undefined;
+    const ext = rel.slice(rel.lastIndexOf(".") + 1).toLowerCase();
+    const t = MS && typeof MS.isTypeSupported === "function" ? (Ed.AUDIO_MSE[ext] || []).find(x => MS.isTypeSupported(x)) : undefined;
+    if (!t) return URL.createObjectURL(b);
+    let keep = b, ms, u;                         // keep: the fallback's bytes, dropped once the Media Source holds them all
+    try { ms = new MS(); u = URL.createObjectURL(ms); } catch (_) { return URL.createObjectURL(b); }
+    const back = () => {
+      if (!keep || !A.live.has(u) || a.getAttribute("src") !== u) return;
+      const p = URL.createObjectURL(keep); keep = null;
+      URL.revokeObjectURL(u); A.live.delete(u); A.live.set(p, s);
+      a.src = p;
+      if (play) { const r = a.play(); if (r && r.catch) r.catch(() => {}); }
+      if (typeof updateTitle === "function") updateTitle();
+    };
+    a.addEventListener("error", back, { once: true });
+    ms.addEventListener("sourceopen", () => {
+      let sb;
+      try { sb = ms.addSourceBuffer(t); } catch (_) { back(); return; }
+      sb.addEventListener("error", back, { once: true });
+      sb.addEventListener("updateend", () => {
+        try { if (ms.readyState === "open") ms.endOfStream(); keep = null; } catch (_) { back(); }
+      }, { once: true });
+      keep.arrayBuffer().then(buf => { try { sb.appendBuffer(buf); } catch (_) { back(); } }, back);
+    }, { once: true });
+    return u;
   },
   // object URLs of embeds no longer in the document are revoked (a re-render, a closed tab); so are those of an
   // embed that has been OFF SCREEN (a view a mode left stays connected) and paused for AUDIO_IDLE — it reloads when
@@ -759,9 +801,9 @@ const Ed = {
     const go = play => {
       if (s.dataset.st) return;
       s.dataset.st = "loading";
-      Ed.audioBlob(rel).then(u => {
-        if (!s.isConnected) { URL.revokeObjectURL(u); s.dataset.st = ""; return; }
-        const A = Ed._aud;
+      Ed.audioBlob(rel).then(b => {
+        if (!s.isConnected) { s.dataset.st = ""; return; }
+        const A = Ed._aud, u = Ed.audioUrl(b, rel, a, s, play);   // #197: a MediaSource for a WebM, else a plain blob: URL
         A.live.set(u, s);
         if (!A.timer) A.timer = setInterval(Ed.audioSweep, 2000);
         if (a.preload !== "metadata") a.preload = "metadata";   // restricted: only now, after the user pressed play
