@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # cargo-audit config (read from src-tauri/.cargo/audit.toml when run in src-tauri/).
-# Every ignored id has a reason + EXPIRY; keep in sync with [advisories].ignore in /deny.toml.
+# Every ignored id has a reason + EXPIRY. Source of truth: supply-chain/vex.cdx.json; must match
+# [advisories].ignore in /deny.toml (scripts/supply-chain/vex-check.sh fails CI otherwise).
 [advisories]
 ignore = [
   "RUSTSEC-2026-0433", # pulldown-cmark: needs ENABLE_WIKILINKS, removed at main.rs:2925/:3198. EXPIRES 2027-01-15 (bump >=0.13.6)
@@ -12,6 +13,7 @@ ignore = [
   "RUSTSEC-2025-0081", # unic-char-property unmaintained (transitive). EXPIRES 2027-05-15
   "RUSTSEC-2025-0098", # unic-ucd-version unmaintained (transitive). EXPIRES 2027-05-15
   "RUSTSEC-2025-0100", # unic-ucd-ident unmaintained (transitive). EXPIRES 2027-05-15
+  "RUSTSEC-2026-0543", # chrono unmaintained (transitive via serde_with). EXPIRES 2027-05-15
 ]
 informational_warnings = ["unmaintained", "unsound", "notice"]
 
