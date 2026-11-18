@@ -15044,6 +15044,11 @@ function fSync(g, reset, from) {       // recompute hits against the current tex
    never scroll at all. */
 function fReveal(g, done) {   // done(): called once the reveal has finished (sync, or after CM6 drew the line)
   const fin = () => { if (done) done(); };
+  // #165: ONE reveal in flight. A newer one (Enter key repeat) ends the older one first, so its
+  // diagnostic hooks are off the prototypes before the newer one saves "the originals" — else the
+  // newer saved the older's wrapper and put it back, and focus()/Selection stayed hooked for good
+  // (the shared "osFindReveal" measure key also dropped the older one's last step, so it never unhooked).
+  if (fRvEnd) fRvEnd();
   /* Nothing to reveal in reading view: no .fcur is ever painted there, so this
      returns without touching g.preview.scrollTop — R26.24's "does not
      navigate" includes not moving the page under the reader. */
@@ -15107,9 +15112,13 @@ function fReveal(g, done) {   // done(): called once the reveal has finished (sy
   const dv = cm.docView, dvU = dv && dv.update;
   if (dvU) dv.update = function () { const b0 = Math.round(P.get.call(sc)); const r = dvU.apply(this, arguments);
     const b1 = Math.round(P.get.call(sc)); if (b1 !== b0) fRv += "|U" + b0 + ">" + b1 + "/" + Math.round(sc.scrollHeight); return r; };
-  const unhook = () => { sc.removeEventListener("scroll", onS); if (dvU) delete dv.update; for (const [p, m, o] of saved) p[m] = o; try { delete sc.scrollTop; delete sc.scrollTo; delete sc.scrollBy; } catch (_) {} };
+  let live = true;                     // #165: unhook runs once; a superseded reveal schedules nothing more
+  const unhook = () => { if (!live) return; live = false; if (fRvEnd === stop) fRvEnd = null; sc.removeEventListener("scroll", onS); if (dvU) delete dv.update; for (const [p, m, o] of saved) p[m] = o; try { delete sc.scrollTop; delete sc.scrollTo; delete sc.scrollBy; } catch (_) {} };
   let n = 0, lastTop = -1;
-  const step = () => cm.requestMeasure({ key: "osFindReveal", read: () => null, write: () => {
+  const stop = () => { if (live) { unhook(); fin(); } };   // superseded: end it AND still call done (fGo's census release)
+  fRvEnd = stop;
+  const step = () => live && cm.requestMeasure({ key: "osFindReveal", read: () => null, write: () => {
+    if (!live) return;
     const tp = Math.round(sc.scrollTop);
     if (tp !== lastTop) { fRv += "|@" + n + ":" + tp + "/" + Math.round(sc.scrollHeight) + "," + ae() + "," + anc(); lastTop = tp; }
     const ok = Ed.cm(g) === cm && go();
@@ -15120,13 +15129,14 @@ function fReveal(g, done) {   // done(): called once the reveal has finished (sy
     }
     // drawn but not centred (CM6 measured real heights after the estimate it scrolled on): re-ask CM6
     // in the NEXT frame — a dispatch inside this measure write would throw (#125)
-    requestAnimationFrame(() => { if (Ed.cm(g) === cm && sc.querySelector("span." + F_MARK + "." + F_CUR)) Ed.revealAt(g, h.l, h.c); step(); });
+    requestAnimationFrame(() => { if (!live) return; if (Ed.cm(g) === cm && sc.querySelector("span." + F_MARK + "." + F_CUR)) Ed.revealAt(g, h.l, h.c); step(); });
   } });
   requestAnimationFrame(step);
 }
 /* [frv:] the last lp find reveal: l<line>|s<scrollTop after the line was brought in>
    |n<frames waited>|f<mark found 0/1>|t<final scrollTop> (diagnostic, no phase asserts it) */
 var fRv = "-";
+var fRvEnd = null;                    // #165: unhook of the reveal in flight (null = none)
 /* fGo holds the census while a reveal is in flight: CM6 draws an off-screen line a
    frame or more after the counter changed, and a title published in between would
    carry [fc:i / n] beside the pre-scroll [fsc:]/[fvis:] — R17 revealed inside the
