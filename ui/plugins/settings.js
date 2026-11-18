@@ -113,6 +113,7 @@
     // af-fix 2b (operator rule 2026-10-01, noplugins NP_WANT): no Core plugins entry, no CORE PLUGINS group,
     // no Canvas entry — the Canvas settings pane opens from the board's own settings control (canvas-nav.js)
     entry("community", "Community plugins");
+    entry("security", "Security");   // #144: Options > Security (ui/security.js), a recorded addition: stock has none
     const tabs = setting.pluginTabs.filter(t => t && t.id);
     if (!tabs.length) return;
     const h = el("div", "snavh", "Community plugins"); h.dataset.cp = "1";
@@ -155,6 +156,13 @@
   /* showSettingsPage(id) asks here first: true = handled */
   function show(id) {
     if (inBuiltin) return false;
+    if (id === "security" && window.__osSecurity) {   // #144: the Security pane (ui/security.js); not an app.setting tab (stock has none)
+      closeSpMenu(); leaveTab();
+      const pg = clearPage("security", "rows");
+      __osSecurity.build(pg);
+      updateTitle();
+      return true;
+    }
     if (id === "core-canvas" && canvasPlugin()) return showCorePane(id);   // goal cvf-board; af-fix 2b: no nav entry, opened by the board gear
     if (id === "core-daily-notes" && dailyPlugin()) return showCorePane(id);   // issue #115: no nav entry, opened by the Core plugins row gear
     closeSpMenu();
