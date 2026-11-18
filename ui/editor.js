@@ -1376,8 +1376,17 @@ const Ed = {
     const s = Ed.sel(g);
     if (!s) return;
     const L = Ed.lines(g), l = s.b.l, line = L[l];
-    const a = line.lastIndexOf("[[", s.b.c);
-    if (a < 0) return;
+    // #162: replace the [[ that was TYPED: the nearest [[ that ends at or before the caret, never
+    // a [[ that starts AT the caret (an existing link right after it); stock replaces [start, caret)
+    if (s.b.c < 2) return;
+    const a = line.lastIndexOf("[[", s.b.c - 2);
+    if (a < 0 || line.slice(a + 2, s.b.c).includes("]]")) return;
+    // #211 review: a context that went stale (caret moved to another [[ while an async heading
+    // read was in flight) must not replace the text between its old opener and the caret
+    if (typeof start === "number" && start >= 0) {
+      const p = Ed.lc(g, start);
+      if (p.l !== l || p.c !== a) return;
+    }
     Ed.replace(g, { a: { l, c: a }, b: { l, c: s.b.c }, empty: false }, "[[" + name + "]]", "ac");
   },
   linkClick(e, a) {
