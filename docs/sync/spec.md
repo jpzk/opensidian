@@ -254,6 +254,47 @@ vaults per QR). Key K_p is 32 random bytes in the QR together with the
 server url + ns + object id; the object is DELETEd by the receiver and
 expires server-side after 15 min.
 
+### 4.7 Tip merge (M4b, `sync_core::merge`)
+
+Input: two tips L (local) and R (remote) and their exact base B.
+
+- **Base** = a best common ancestor in the DAG (a common ancestor that is
+  not an ancestor of another common ancestor). Criss-cross (several) →
+  the smallest commit_id. No common ancestor → empty tree. A commit
+  missing locally → error, never a guessed base.
+- **Winner** W = the LWW winner of the two tips: larger tip `ts_ms`, tie →
+  larger tip commit_id. Loser X = the other tip. All "both changed"
+  rules below are phrased in W/X, so both devices compute the same tree
+  (except the two by-design local rules: conflict mode, settings JSON).
+- **Per path** (equality = class + content SHA-256):
+  - L = R → L; L = B → R; R = B → L (covers one-sided add/edit/delete).
+  - deleted on one side, changed on the other → the edit (edit beats
+    delete).
+  - markdown on both sides, mode *Automatically merge* (default): DMP
+    three-way — diff(B, X) as context patches applied to W. Exact match
+    only (no fuzzy bitap), ambiguous match → fail; diff over D = 2000 per
+    level → fail. Fail / no base (add-add) / non-UTF-8 → conflict file.
+  - markdown, mode *Create conflict file* → conflict file.
+  - conflict file: the path keeps W; X's bytes go to
+    `<note> (Conflicted copy <X device> YYYYMMDDHHMM).md` — X's device
+    display name (`/\:*?"<>|` and control chars → `-`, ≤ 64 chars,
+    empty → `device`), UTC of X's tip `ts_ms`. Name taken → ` 2`, ` 3`…
+    inside the parentheses.
+  - settings JSON on both sides: L's keys on top of R's (deep for nested
+    objects), pretty-printed; non-object / unparsable → L.
+  - everything else (other files, class mismatch): W.
+- **Losers**: every version that does not survive verbatim (LWW loser,
+  both sides of a text merge, conflict-copy source, overridden settings)
+  is returned with its tree entry; the engine writes remote losers into
+  file history as `sync-loser` records (head untouched, idempotent) and
+  snapshots local bytes before overwriting them (threat model D4/D5).
+- **Commit**: merged tree hash = L's → nothing (up to date); = R's →
+  fast-forward to R, no commit; else one merge commit, parents {L, R},
+  changes relative to `parents[0]`, existing chunk objects re-referenced
+  (no re-upload). Merging the same tips again yields the same tree hash.
+- Renames are path-level here (a rename on one side + an edit on the
+  other keeps both paths; nothing is lost).
+
 ## 5. sync-server API (/v1)
 
 Transport: HTTPS (rustls). Impl note (M3a): TLS 1.3 only, ALPN

@@ -238,6 +238,17 @@ pub enum Edit {
         mtime_ms: i64,
         content: Vec<u8>,
     },
+    /// Re-reference an attachment's EXISTING chunk objects (merge commits
+    /// adopting the other side's file; no re-upload). `size` must be
+    /// > 1 MiB with `ceil(size / 4 MiB)` ids (checked by validate).
+    PutChunks {
+        path: String,
+        class: Class,
+        mtime_ms: i64,
+        size: u64,
+        sha256: [u8; 32],
+        chunks: Vec<Id16>,
+    },
     Delete {
         path: String,
     },
@@ -250,7 +261,7 @@ pub enum Edit {
 impl Edit {
     fn path(&self) -> &str {
         match self {
-            Edit::Put { path, .. } | Edit::Delete { path } => path,
+            Edit::Put { path, .. } | Edit::PutChunks { path, .. } | Edit::Delete { path } => path,
             Edit::Rename { from, .. } => from,
         }
     }
@@ -357,6 +368,23 @@ pub fn build_commit<P: CryptoProvider + ?Sized>(
                     }),
                 });
             }
+            Edit::PutChunks {
+                path,
+                class,
+                mtime_ms,
+                size,
+                sha256,
+                chunks: ids,
+            } => changes.push(Change {
+                path,
+                op: Op::Put(Put {
+                    class,
+                    size,
+                    sha256,
+                    mtime_ms,
+                    loc: Where::Chunks(ids),
+                }),
+            }),
             Edit::Delete { path } => changes.push(Change {
                 path,
                 op: Op::Delete,

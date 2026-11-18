@@ -10,7 +10,7 @@
 //! seq     = 1*DIGIT            ; strictly increasing, starts at 1
 //! ts_ms   = 1*DIGIT            ; unix milliseconds, caller clock
 //! reason  = "own-save" / "pre-write" / "external" / "delete" / "rename"
-//!         / "idle" / "restore"
+//!         / "idle" / "restore" / "sync-loser"
 //! sha     = 64LOWHEX / ""      ; "" only for a tombstone of never-stored bytes
 //! size    = 1*DIGIT            ; byte length of the blob (0 if sha = "")
 //! path    = esc                ; vault-relative, "/" separated, never empty

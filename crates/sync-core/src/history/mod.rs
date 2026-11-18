@@ -80,6 +80,9 @@ pub enum Reason {
     Idle,
     /// Bytes written back by a restore.
     Restore,
+    /// A sync merge version that did not survive verbatim (LWW loser,
+    /// pre-merge side, conflict-copy source). Never changes the head.
+    SyncLoser,
 }
 
 impl Reason {
@@ -92,6 +95,7 @@ impl Reason {
             Reason::Rename => "rename",
             Reason::Idle => "idle",
             Reason::Restore => "restore",
+            Reason::SyncLoser => "sync-loser",
         }
     }
 
@@ -104,6 +108,7 @@ impl Reason {
             "rename" => Reason::Rename,
             "idle" => Reason::Idle,
             "restore" => Reason::Restore,
+            "sync-loser" => Reason::SyncLoser,
             _ => return None,
         })
     }
@@ -598,6 +603,24 @@ impl Store {
 
     /// Files whose last record is a tombstone ("restore deleted" list):
     /// the tombstone record of each, sorted by path.
+    /// Keep a merge loser's bytes (not on disk) as a version of `path`
+    /// (threat model D4: the losing side of a sync merge is ALWAYS in
+    /// history). Idempotent per (path, bytes); the head is untouched.
+    pub fn record_sync_loser(&mut self, path: &str, bytes: &[u8], now_ms: u64) -> Result<Outcome, HistoryError> {
+        validate_path(path)?;
+        if bytes.len() as u64 > self.cfg.max_file_bytes {
+            return Ok(Outcome::Skipped(Skip::TooLarge(bytes.len() as u64)));
+        }
+        let sha = cas::sha_hex(bytes);
+        let known = self.entries.iter().any(|e| e.path == path && e.sha.as_deref() == Some(sha.as_str()));
+        if known && self.cas.contains(&sha) {
+            return Ok(Outcome::Unchanged);
+        }
+        let put = self.cas.put(bytes)?;
+        debug_assert_eq!(put, sha);
+        Ok(Outcome::Stored(self.append(Reason::SyncLoser, path, Some(sha), bytes.len() as u64, None, now_ms)?))
+    }
+
     pub fn deleted(&self) -> Vec<Entry> {
         self.heads
             .iter()
@@ -649,7 +672,7 @@ impl Store {
         let mut keep: Vec<Entry> = Vec::with_capacity(self.entries.len());
         for e in self.entries.iter().rev() {
             let age = now_ms.saturating_sub(e.ts_ms);
-            let newest = seen.insert(e.path.as_str());
+            let newest = e.reason != Reason::SyncLoser && seen.insert(e.path.as_str());
             let max_age = if is_note(&e.path) { r.note_max_age_ms } else { r.attachment_max_age_ms };
             let kept = if newest && matches!(self.heads.get(&e.path), Some(Head::Live { .. })) {
                 true
@@ -898,6 +921,7 @@ impl Store {
 
 fn apply_head(heads: &mut BTreeMap<String, Head>, e: &Entry) {
     match e.reason {
+        Reason::SyncLoser => {}
         Reason::Delete => {
             heads.insert(e.path.clone(), Head::Deleted { last: e.sha.clone() });
         }
