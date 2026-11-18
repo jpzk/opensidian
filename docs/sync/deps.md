@@ -124,6 +124,43 @@ unpacking; versions are the newest stable release ≥ 6 weeks old on
 - C compiler: the box harness gcc 16.0.1 (`/var/tmp/gate-boxd/env`, already
   used for every T0 build); no C++ compiler is needed.
 
+### M3a — sync-server storage + HTTP (sync-server)
+
+The HTTP stack reuses crates already locked: `hyper =1.11.1` (features
+`server`, `http1`), `hyper-util =0.1.20` (`tokio`), `tokio =1.53.1`
+(`rt-multi-thread`, `net`, `sync`, `time`; no `macros` -> no tokio-macros),
+`http =1.5.0`, `http-body-util =0.1.5`, `bytes =1.12.1`, `base64 =0.22.1`,
+plus serde/serde_json as above. No axum (routing is a 20-line match).
+
+Direct (sync-server/Cargo.toml), default features off, feature `bundled`
+(vendored SQLite amalgamation compiled with `cc`; no system libsqlite):
+
+- `rusqlite =0.40.2` — 2026-08-08 — `23f2a97da3e3873c73cb2a2e71b35c40ff95e0b1eefa8d72d8499a6928c3b5b3`
+  — MIT — metadata index (vaults, SHA-256 token hashes, object rows, list
+  cursor). 0.41.0+ (2026-10-24) is < 6 weeks old. Statement cache off ->
+  no hashlink.
+- `libsqlite3-sys =0.38.2` — 2026-08-08 — `f1d20bef17f513b9b3004532233187769cd072d790971f4e4da0e346eb6401e8`
+  — MIT (bundled SQLite: public domain) — pinned directly so rusqlite's
+  `^0.38.2` cannot float to 0.39.x (2026-10-24, too young).
+
+Transitive (fixed by Cargo.lock):
+
+- `fallible-iterator 0.3.0` — 2023-05-22 — `2acce4a10f12dc2fb14a218589d4f1f62ef011b2d0cc4b3cb1bba8e94da14649`
+  — MIT OR Apache-2.0 — rusqlite.
+- `fallible-streaming-iterator 0.1.9` — 2018-05-02 — `7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a`
+  — MIT OR Apache-2.0 — rusqlite.
+- `httpdate 1.0.3` — 2023-08-13 — `df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9`
+  — MIT OR Apache-2.0 — hyper `server` feature (Date header).
+- `vcpkg 0.2.15` — 2021-06-19 — `accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426`
+  — MIT OR Apache-2.0 — build-dep of libsqlite3-sys (Windows library probe;
+  unused on Linux with `bundled`).
+
+Lock delta = exactly these 6 package blocks + the sync-server dependency
+list (resolved by cargo on the box without `--locked`, lock sha256
+`5c5b9df25b73edce9e009f94092776e6e63f6c636f07d68d85362e25e341719d` copied
+back unchanged); cargo-vet exemptions added for all six; licences are in
+the deny.toml allow list.
+
 ## Existing crates reused by the new sync crates
 
 Already in Cargo.lock at d999420; the new crates pin them exactly to the
@@ -144,7 +181,7 @@ locked version so nothing in the lock moves.
 
 Per crate (direct deps): `sync-proto` → serde (dev: serde_json, JSON tests of the `/v1` bodies); `sync-crypto` → sha2, aws-lc-rs, aws-lc-fips-sys, zeroize (dev: serde_json, Wycheproof JSON);
 `sync-core` → sync-proto, sync-crypto, sha2, serde, serde_json, zstd, zstd-safe, zstd-sys; `syncd` →
-sync-core; `sync-server` → sync-proto, sync-crypto. The Cargo.lock delta of
+sync-core; `sync-server` → sync-proto, sync-crypto, serde, serde_json, base64, bytes, http, http-body-util, hyper, hyper-util, tokio, rusqlite, libsqlite3-sys (M3a). The Cargo.lock delta of
 the skeleton is exactly the five path packages (`[[package]]` entries without
 `source`/`checksum`); no registry package is added, removed or moved.
 
@@ -157,7 +194,7 @@ log in the goal work dir).
 - `aws-lc-rs` — ADDED in M2a (above, pin decision cmvp.md §7).
 - `rustls` with feature `fips` — 0.23.44 (2026-09-07) / 0.23.45
   (2026-09-14) satisfy the age rule; 0.24.0-dev.* are pre-releases.
-- `axum`/`hyper`, `rusqlite` (plan §1/§6) — M3+; not evaluated yet (zstd: added in M2b above).
+- `axum` — not needed (plain hyper, M3a). `hyper`/`rusqlite` — ADDED in M3a above.
 
 Checksums for the declared-not-added crates are recorded only when they are
 actually added (from the Cargo.lock that adds them).
