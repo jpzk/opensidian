@@ -9855,6 +9855,12 @@ const edLine = fn => edEdit((v, a, b) => {  // fn(line) -> line | null (= delete
   const l0 = v.lastIndexOf("\n", a - 1) + 1;
   let l1 = v.indexOf("\n", b); if (l1 < 0) l1 = v.length;
   const nl = fn(v.slice(l0, l1));
+  // #152 stock 1.13.7: on the LAST line the line break IN FRONT goes too ('a\nb' -> 'a', never 'a\n');
+  // the caret lands on the line above at min(its column, that line's length) ('x\ny\nlast' 2:2 -> 1:1)
+  if (nl == null && l1 >= v.length && l0 > 0) {
+    const p0 = l0 < 2 ? 0 : v.lastIndexOf("\n", l0 - 2) + 1, c = p0 + Math.min(a - l0, l0 - 1 - p0);
+    return [v.slice(0, l0 - 1), c, c];
+  }
   if (nl == null) { const cut = l1 < v.length ? l1 + 1 : Math.max(0, l0 - 1); return [v.slice(0, l0) + v.slice(l1 + 1), Math.min(l0, cut), Math.min(l0, cut)]; }
   // map a/b by the change on THEIR OWN line (per-line ops keep the line count), so a multi-line
   // heading/quote/task keeps the selection on the same text now that the range survives (#160)
