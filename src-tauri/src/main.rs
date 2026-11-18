@@ -3522,6 +3522,16 @@ fn render_with_br(content: &str, notes: &[String], imgs: &[String], reading: boo
                 }
                 buf.push_str(&t)
             }
+            // #185: a dollar pair with whitespace just inside it (`$ a$`, `$a $`) is text, not
+            // inline math (Obsidian's rule, observed on stock 1.13.7: "$ a$" renders literally)
+            Event::InlineMath(t) if !in_code && (t.starts_with(char::is_whitespace) || t.ends_with(char::is_whitespace)) => {
+                if buf.is_empty() {
+                    buf_at = range.start;
+                }
+                buf.push('$');
+                buf.push_str(&t);
+                buf.push('$');
+            }
             other => {
                 // #59: a callout's header is its first paragraph. Anything else first
                 // (no paragraph, e.g. a setext heading) leaves the title at its default.
@@ -9224,6 +9234,20 @@ mod tests {
         // a block id after a custom marker still splits
         let b = render_with("- [/] part ^b1\n", &[], &[], true);
         assert!(b.contains(r#"data-line="0"/>part<span class="blockid" data-bid="b1">"#), "{b}");
+    }
+
+    #[test]
+    fn render_math_spans_for_the_math_renderer() {
+        // #185: the m185 stock fixture. $..$ -> span.math-inline, $$..$$ -> span.math-display (TeX
+        // escaped as text; ui/mathview.js typesets them); "$ a$", "\$5" and code stay text
+        let h = render_with("Inline $e^{i\\pi}+1=0$ and $ a$ and \\$5 and `$x$`.\n\n$$\n\\int_0^1 x^2\\,dx = \\frac13\n$$\n", &[], &[], true);
+        assert!(h.contains(r#"<span class="math math-inline">e^{i\pi}+1=0</span>"#), "{h}");
+        assert!(h.contains(r#"<span class="math math-display">"#) && h.contains(r"\frac13"), "{h}");
+        assert!(h.contains("and $ a$ and $5 and <code>$x$</code>"), "{h}");
+        assert_eq!(h.matches("class=\"math ").count(), 2, "{h}");
+        // hostile TeX is escaped text inside the span, never markup
+        let x = render_with("$<img src=x onerror=alert(1)>$", &[], &[], true);
+        assert!(!x.contains("<img") && x.contains("&lt;img"), "{x}");
     }
 
     #[test]
