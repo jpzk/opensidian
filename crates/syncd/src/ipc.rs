@@ -9,7 +9,7 @@
 
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -40,6 +40,25 @@ pub fn own_uid(dir: &Path) -> io::Result<u32> {
     let uid = fs::metadata(&probe)?.uid();
     fs::remove_file(&probe)?;
     Ok(uid)
+}
+
+/// Client half of the uid check, run before any request (backup words
+/// included) leaves this process: the socket must be a socket owned by
+/// this uid inside a real 0700 directory owned by this uid, so only a
+/// process of this user can have bound it.
+pub fn check_daemon_socket(sock: &Path) -> io::Result<()> {
+    let denied = |m: String| io::Error::new(io::ErrorKind::PermissionDenied, m);
+    let dir = sock.parent().ok_or_else(|| io::Error::other("socket path has no parent"))?;
+    let dmd = fs::symlink_metadata(dir)?;
+    if !dmd.is_dir() || dmd.mode() & 0o077 != 0 {
+        return Err(denied(format!("{} is not a 0700 directory", dir.display())));
+    }
+    let uid = own_uid(dir)?;
+    let smd = fs::symlink_metadata(sock)?;
+    if dmd.uid() != uid || smd.uid() != uid || !smd.file_type().is_socket() {
+        return Err(denied(format!("{} is not this user's daemon socket", sock.display())));
+    }
+    Ok(())
 }
 
 /// Create (or adopt) the socket dir: must end up a real dir, 0700, ours.
@@ -101,6 +120,10 @@ pub fn serve(api: Arc<dyn SyncApi + Send + Sync>, sock: &Path) -> io::Result<()>
         if UnixStream::connect(sock).is_ok() {
             return Err(io::Error::new(io::ErrorKind::AddrInUse, "a daemon is already serving this vault"));
         }
+        // only a stale socket is ours to remove, never a file or symlink
+        if !fs::symlink_metadata(sock)?.file_type().is_socket() {
+            return Err(io::Error::other(format!("{} exists and is not a socket", sock.display())));
+        }
         fs::remove_file(sock)?;
     }
     let rt = tokio::runtime::Builder::new_current_thread().enable_io().build()?;
@@ -145,12 +168,15 @@ pub struct IpcClient {
 impl IpcClient {
     /// Connects once to check a daemon answers.
     pub fn connect(sock: &Path) -> io::Result<IpcClient> {
+        check_daemon_socket(sock)?;
         UnixStream::connect(sock)?;
         Ok(IpcClient { sock: sock.to_path_buf(), timeout: Duration::from_secs(600) })
     }
 
     fn call<T: serde::de::DeserializeOwned>(&self, req: &Request) -> ApiResult<T> {
         let io = |e: io::Error| ApiError::new("io", format!("daemon: {e}"));
+        // re-checked per call: the socket may have been replaced since connect
+        check_daemon_socket(&self.sock).map_err(io)?;
         let mut s = UnixStream::connect(&self.sock).map_err(io)?;
         s.set_read_timeout(Some(self.timeout)).map_err(io)?;
         let mut line = serde_json::to_vec(req).map_err(|e| ApiError::new("io", e.to_string()))?;

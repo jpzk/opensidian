@@ -60,8 +60,8 @@ Each OPEN item is a follow-up and blocks goal_done (criterion 8).
 - crates/syncd/src/local.rs:248-249 Make setup resumable after the enrollment token is consumed. — OPEN
 - crates/syncd/src/local.rs:485-486 Resume pending disk updates before creating local edits. — OPEN
 - crates/syncd/src/local.rs:461-486 Commit large local edit sets in several batches, or sync stalls for vaults with more than about 12 MiB of changed inline content. — OPEN
-- crates/syncd/src/ipc.rs:104-104 Do not unlink a regular file at the socket path. — OPEN
-- crates/syncd/src/ipc.rs:154-158 Authenticate the daemon before sending backup words. — OPEN
+- crates/syncd/src/ipc.rs:104-104 Do not unlink a regular file at the socket path. — FIXED (stale path removed only if it is a socket) — uncompiled
+- crates/syncd/src/ipc.rs:154-158 Authenticate the daemon before sending backup words. — FIXED (client checks socket + 0700 dir owned by own uid before connect and before every request) — uncompiled
 - crates/syncd/src/workdir.rs:84-85 Check the file that sync actually reads. — OPEN
 - crates/syncd/src/workdir.rs:106-108 Anchor materialization to the vault directory. — OPEN
 - src-tauri/src/syncui.rs:135-137 Apply the app's offline policy to desktop sync. — OPEN
