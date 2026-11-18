@@ -62,7 +62,12 @@ Untrusted / hostile:
   phrase.
 - destroy abuse: nobody without K_destroy can delete a vault on a server;
   soft DELETE is bounded by a server-enforced retention window, so a
-  stolen write token cannot erase history immediately.
+  stolen write token cannot erase history immediately. M3b: the destroy
+  challenge is single use (burned on a failed proof), bound to ns + server
+  nonce + ts (±300 s), tested against wrong key / nonce / ts / vault
+  (`crates/sync-server/tests/api.rs` `destroy_*`). A malicious server can
+  of course delete anyway (A1); the signed receipt only proves an honest
+  server's acknowledgement, under the key pinned at enrollment.
 
 ## 4. Data-loss threats (A5/A6) — the "never silently lose bytes" rule
 

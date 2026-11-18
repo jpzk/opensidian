@@ -295,8 +295,33 @@ Endpoints:
   id16 ns || 32 server_nonce || i64 ts`. Server verifies against the
   `pub_destroy` it stored at enrollment → signed receipt
   `{"receipt":"<b64>","server_key":"<b64>"}`. No proof → no destroy.
+  Implementation notes (M3b):
+  - `request` needs no bearer token (the proof is the authority, so a
+    device holding only the words can destroy); per-IP rate limit, unknown
+    vault → 401, destroyed vault → 410, at most 16 open challenges per vault
+    (→ 429). TTL 300 s. `confirm_token` is 32 DRBG bytes, stored hashed.
+  - `confirm` consumes the challenge before anything else (single use even
+    when the proof then fails, so a token cannot be used to grind), then
+    requires `|ts − server now| ≤ 300 s` (400) and a 64-byte r‖s ECDSA
+    P-256/SHA-256 signature (bad/missing/wrong-key/wrong-nonce/wrong-ts →
+    403 `forbidden`). A challenge of vault A never confirms vault B (401).
+  - Purge is one transaction under the index lock (no concurrent PUT can
+    publish into the namespace): object rows, tokens (the vault row) and
+    challenges go, a tombstone row stays (`request`/`confirm` → 410, tokens
+    → 401). The object tree is renamed into `tmp/` inside the transaction
+    and deleted after commit; startup finishes an interrupted deletion.
+    `env` objects are not linked to a namespace on the server (minimal
+    metadata) and stay; they are ciphertext under the phrase and now point
+    at a dead namespace.
+  - Receipt = `"osy destroy receipt v1" || u8 scope(1) || id16 ns ||
+    32 server_nonce || i64 ts || i64 destroyed_at || u64 objects ||
+    u64 bytes` followed by the 64-byte r‖s signature of the server receipt
+    key (P-256 from the module DRBG, `<data>/receipt_key.p8`, PKCS#8, 0600,
+    created once). `POST /v1/enroll` also returns `server_key` so devices
+    pin it at enrollment (TOFU) and compare it with the receipt's.
 - `POST /v1/enroll` — `{"enrollment_token":…,"pub_destroy":"<b64>",
-  "key_alg":1}` → `{"ns":"<hex>","read_token":…,"write_token":…}`.
+  "key_alg":2}` → `{"ns":"<hex>","read_token":…,"write_token":…,
+  "server_key":"<b64>"}` (receipt key, see destroy).
   Enrollment tokens are one-time, created by the admin CLI
   `opensidian-sync-server vault create`; no open registration.
 - `GET /v1/health` — unauthenticated, `{"ok":true,"proto":[1]}`.
