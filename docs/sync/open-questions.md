@@ -51,3 +51,15 @@ settled when the crypto pin is chosen.
 ## Raised while building M1 (file history)
 
 (Appended as the history implementation lands.)
+
+- **NFC of `str` fields.** spec §2 says paths are NFC, but `sync-proto`'s
+  decoder cannot check NFC without a Unicode table crate (zero-new-deps
+  rule). Today the decoder enforces UTF-8 / no NUL / ≤ 4096 bytes only;
+  writers must normalise. Decide in M2: vendor a pinned
+  `unicode-normalization` (≥ 6 weeks old) for both directions, or accept
+  non-NFC paths and treat NFC-equivalent paths as a conflict.
+- **`SoftProvider` scope.** `sync-crypto::soft` implements SHA-256 / HMAC /
+  HKDF on top of `sha2` (RFC 4231 / 5869 vectors pass) so M1 and the test
+  vectors need no new deps. It must never become the release provider: the
+  FIPS backend replaces it wholesale. Should a release build refuse to
+  start sync when `fips_mode()` is false, or only warn?
