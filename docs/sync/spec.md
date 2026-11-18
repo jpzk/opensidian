@@ -238,6 +238,31 @@ SHA-256(token) only. `env` GET/PUT is authorized by knowledge of `loc`
 (the id is a 128-bit secret) so recovery from words works with no token;
 the server still rate-limits it per IP.
 
+Implementation notes (M3a, `crates/sync-server`):
+
+- Tokens on the wire are base64url without padding of exactly 32 bytes;
+  the server stores `SHA-256(raw 32 bytes)` only (test
+  `tokens_are_stored_hashed` greps the SQLite files). Every other base64
+  value of this API (`pub_destroy`, `sig`, `receipt`, `server_key`) uses
+  the same alphabet. An unknown `{ns}` and a wrong token both answer 401
+  (no namespace oracle); a read token on a write path answers 403.
+- `env` objects live in the all-zero namespace
+  (`/v1/env/000…0/{id}`): a fresh device knows only the words and the URL,
+  not `{ns}`. No token, write-once, per-IP rate limit, not deletable.
+- `pair` objects are PUT with the vault's write token; GET and DELETE need
+  only the id (the QR holds it). DELETE purges at once; unread objects
+  expire `pair_ttl` (15 min) after the PUT.
+- `GET /v1/list` returns live `obj` and `cfg` rows only; `POST /v1/missing`
+  checks `obj` ids (live or soft-deleted). A soft-deleted id is never
+  reusable: PUT answers 410.
+- `enroll` accepts `key_alg = 2` (P-256) only — the FIPS build has no
+  approved Ed25519 (cmvp.md §7); `key_alg = 1` answers `unsupported`.
+- `Opensidian-Proto` is optional; if present it must be a listed major.
+- Unsatisfiable or multi-part `Range` answers 416 with
+  `Content-Range: bytes */<size>`.
+- Quota is per vault (set by `vault create --quota`), counted over stored
+  bytes including soft-deleted objects until GC; ENOSPC also answers 507.
+
 Endpoints:
 
 - `PUT /v1/{kind}/{ns}/{id}` — write-once, idempotent.
