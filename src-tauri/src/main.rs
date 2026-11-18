@@ -24,6 +24,7 @@ mod callout; // #59: Obsidian callouts in the reading render
 use opensidian_lib::canvasfs;
 mod cfgstore;
 mod filehist; // sync M1: local file history (sync-core) outside the vault — docs/sync/spec.md §6
+mod syncui; // sync M6b: the sync/history command gate (sync window only) + the embedded engine
 mod consent; // spawn-consent: native GTK prompts before trusting a vault and before every plugin spawn
 mod clip; // #37 C3-3: the editor menu clipboard rows (GTK CLIPBOARD, text only)
 mod mdtable; // #37 C3-7: the LP table menu (Row/Column/Sort/Align) as text transforms
@@ -2133,14 +2134,16 @@ fn hist_run<R>(v: &Vault, f: impl FnOnce(&mut sync_core::history::Store) -> R) -
 
 /// Every recorded version of note `name`, oldest first.
 #[tauri::command]
-fn history_list(v: State<Vault>, name: String) -> Result<Vec<sync_core::history::Entry>, String> {
+fn history_list<R: tauri::Runtime>(win: tauri::WebviewWindow<R>, v: State<Vault>, name: String) -> Result<Vec<sync_core::history::Entry>, String> {
+    syncui::gate(win.label(), "history_list")?;
     let k = hist_note_key(&name)?;
     hist_run(&v, |s| s.versions(&k))
 }
 
 /// The bytes of version `seq` (lossy UTF-8: a preview, never written back).
 #[tauri::command]
-fn history_read(v: State<Vault>, seq: u64) -> Result<String, String> {
+fn history_read<R: tauri::Runtime>(win: tauri::WebviewWindow<R>, v: State<Vault>, seq: u64) -> Result<String, String> {
+    syncui::gate(win.label(), "history_read")?;
     let b = hist_run(&v, |s| s.read_version(seq))?.map_err(|e| e.to_string())?;
     Ok(String::from_utf8_lossy(&b).into_owned())
 }
@@ -2148,7 +2151,8 @@ fn history_read(v: State<Vault>, seq: u64) -> Result<String, String> {
 /// Write version `seq` back over its note (current bytes are kept as a
 /// pre-write version first). Returns the note name.
 #[tauri::command]
-fn history_restore(v: State<Vault>, seq: u64) -> Result<String, String> {
+fn history_restore<R: tauri::Runtime>(win: tauri::WebviewWindow<R>, v: State<Vault>, seq: u64) -> Result<String, String> {
+    syncui::gate(win.label(), "history_restore")?;
     let (path, bytes) = hist_run(&v, |s| -> Result<_, String> {
         let e = s.entry(seq).cloned().ok_or_else(|| format!("no version {seq}"))?;
         Ok((e.path, s.read_version(seq).map_err(|e| e.to_string())?))
@@ -2163,14 +2167,16 @@ fn history_restore(v: State<Vault>, seq: u64) -> Result<String, String> {
 
 /// Notes whose last record is a delete (newest tombstone each).
 #[tauri::command]
-fn history_deleted(v: State<Vault>) -> Result<Vec<sync_core::history::Entry>, String> {
+fn history_deleted<R: tauri::Runtime>(win: tauri::WebviewWindow<R>, v: State<Vault>) -> Result<Vec<sync_core::history::Entry>, String> {
+    syncui::gate(win.label(), "history_deleted")?;
     hist_run(&v, |s| s.deleted().into_iter().filter(|e| hist_note_name(&e.path).is_ok()).collect())
 }
 
 /// Bring a deleted note back from its newest version that has bytes. Refused
 /// (`exists`) if something is at that path again — never clobbers.
 #[tauri::command]
-fn history_restore_deleted(v: State<Vault>, name: String) -> Result<(), String> {
+fn history_restore_deleted<R: tauri::Runtime>(win: tauri::WebviewWindow<R>, v: State<Vault>, name: String) -> Result<(), String> {
+    syncui::gate(win.label(), "history_restore_deleted")?;
     use sync_core::history::Head;
     let k = hist_note_key(&name)?;
     let bytes = hist_run(&v, |s| -> Result<Vec<u8>, String> {
@@ -2197,7 +2203,8 @@ struct Purged {
 /// Irreversible: the UI confirms first. Version numbers may be reused after a
 /// purge (spec §6.4) — re-list afterwards.
 #[tauri::command]
-fn history_purge(v: State<Vault>, name: String, seq: Option<u64>) -> Result<Purged, String> {
+fn history_purge<R: tauri::Runtime>(win: tauri::WebviewWindow<R>, v: State<Vault>, name: String, seq: Option<u64>) -> Result<Purged, String> {
+    syncui::gate(win.label(), "history_purge")?;
     let k = hist_note_key(&name)?;
     let r = hist_run(&v, |s| match seq {
         Some(q) if s.entry(q).is_some_and(|e| e.path == k) => s.purge_version(q).map_err(|e| e.to_string()),
@@ -8468,7 +8475,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, canvas_io, canvas_attach, paste_image, audio_token, audio_rec_start, audio_rec_go, audio_rec_log, audio_rec_started, audio_rec_data, audio_rec_stop, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_title, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, bm_add_view, bm_add_view_at, bm_remove, bm_graph_patch, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, history_list, history_read, history_restore, history_deleted, history_restore_deleted, history_purge, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts, props_index, props_mode, props_notes, props_types, set_prop_type, set_props_mode,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_title, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, bm_add_view, bm_add_view_at, bm_remove, bm_graph_patch, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, history_list, history_read, history_restore, history_deleted, history_restore_deleted, history_purge, syncui::history_diff, syncui::sync_status, syncui::sync_setup, syncui::sync_now, syncui::sync_set_mode, syncui::sync_reveal, syncui::sync_quiz, syncui::sync_open, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts, props_index, props_mode, props_notes, props_types, set_prop_type, set_props_mode,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
             read_workspace, write_workspace, wsm_list, wsm_get, wsm_op,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,

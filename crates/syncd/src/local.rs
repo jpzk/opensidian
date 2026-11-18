@@ -416,72 +416,7 @@ impl SyncApi for LocalEngine {
     }
 
     fn sync_now(&self) -> ApiResult<SyncSummary> {
-        let (t, m) = self.member()?;
-        let mut e = self.engine(&m)?;
-        let mut hist = self.store()?;
-        let root = self.cfg.vault_dir.clone();
-        let mut sum = SyncSummary::default();
-        let before = e.head_tree().map_err(engine_err)?;
-        let (disk, _) = workdir::scan(&self.p, &root).map_err(io_err)?;
-        let edits = self.edits(&before, &disk)?;
-        let now = now_ms();
-        for ed in &edits {
-            if let Edit::Put { path, .. } = ed {
-                // the local version enters history before anything can replace it
-                let _ = hist.record_external(path, now as u64);
-            }
-        }
-        if !edits.is_empty() {
-            let id = e.commit_local(&m.device.signer(), &m.roster(), now, edits).map_err(engine_err)?;
-            sum.committed = Some(id.to_hex());
-        }
-        let mut losers: Vec<(String, Vec<u8>)> = Vec::new();
-        let mut hook = |l: &Loser, b: &[u8]| losers.push((l.path.clone(), b.to_vec()));
-        let rep = e
-            .sync(&[&t as &dyn Transport], &m.device.signer(), &m.roster(), now, &mut hook)
-            .map_err(engine_err)?;
-        for (path, b) in &losers {
-            hist.record_sync_loser(path, b, now as u64).map_err(hist_err)?;
-        }
-        sum.pulled = rep.pulled;
-        sum.pushed = rep.pushed;
-        sum.rejected = rep.rejected.len();
-        sum.replica_errors = rep.replica_errors.iter().map(|(_, e)| e.clone()).collect();
-        sum.losers = rep.losers;
-        // materialise the head tree; anything changed on disk meanwhile is left for the next pass
-        let after = e.head_tree().map_err(engine_err)?;
-        let roster = m.roster();
-        for (path, te) in &after.0 {
-            let scanned = disk.get(path).map(|f| f.sha256);
-            if scanned == Some(te.sha256) {
-                continue;
-            }
-            if workdir::disk_sha(&self.p, &root, path).map_err(io_err)? != scanned {
-                sum.skipped += 1;
-                continue;
-            }
-            let bytes = e.read(te, &roster).map_err(engine_err)?;
-            if scanned.is_some() {
-                hist.snapshot_before_overwrite(path, now as u64).map_err(hist_err)?;
-            }
-            workdir::write_atomic(&self.p, &root, path, &bytes).map_err(io_err)?;
-            hist.record_own_save(path, now as u64).map_err(hist_err)?;
-            sum.written += 1;
-        }
-        for (path, f) in &disk {
-            if after.0.contains_key(path) {
-                continue;
-            }
-            if workdir::disk_sha(&self.p, &root, path).map_err(io_err)? != Some(f.sha256) {
-                sum.skipped += 1;
-                continue;
-            }
-            hist.snapshot_before_delete(path, now as u64).map_err(hist_err)?;
-            workdir::remove(&root, path).map_err(io_err)?;
-            sum.removed += 1;
-        }
-        sum.head = e.head().map(|h| h.to_hex());
-        Ok(sum)
+        self.sync_with(&mut self.store()?)
     }
 
     fn history(&self, path: &str) -> ApiResult<Vec<HistoryItem>> {
@@ -506,5 +441,90 @@ impl SyncApi for LocalEngine {
         self.ks.delete(&vid, Entry::Daily).map_err(ks_err)?;
         self.ks.delete(&vid, Entry::Backup).map_err(ks_err)?;
         Ok(Receipt { ns: r.ns.to_hex(), destroyed_at: r.destroyed_at, objects: r.objects, bytes: r.bytes })
+    }
+}
+
+/// Where a sync pass records file history: the CLI / daemon open the store
+/// under the state dir; the app hands in its process-wide store (ONE opener
+/// per journal — the app's filehist already holds it, src-tauri/src/syncui.rs).
+pub trait HistSink {
+    /// Run `f` on the store. A sink without a store (history off) returns Ok.
+    fn with(&mut self, f: &mut dyn FnMut(&mut Store) -> Result<(), HistoryError>) -> ApiResult<()>;
+}
+
+impl HistSink for Store {
+    fn with(&mut self, f: &mut dyn FnMut(&mut Store) -> Result<(), HistoryError>) -> ApiResult<()> {
+        f(self).map_err(hist_err)
+    }
+}
+
+impl LocalEngine {
+    /// One sync pass (`sync_now`) with file history recorded through `hist`.
+    pub fn sync_with(&self, hist: &mut dyn HistSink) -> ApiResult<SyncSummary> {
+        let (t, m) = self.member()?;
+        let mut e = self.engine(&m)?;
+        let root = self.cfg.vault_dir.clone();
+        let mut sum = SyncSummary::default();
+        let before = e.head_tree().map_err(engine_err)?;
+        let (disk, _) = workdir::scan(&self.p, &root).map_err(io_err)?;
+        let edits = self.edits(&before, &disk)?;
+        let now = now_ms();
+        for ed in &edits {
+            if let Edit::Put { path, .. } = ed {
+                // the local version enters history before anything can replace it
+                let _ = hist.with(&mut |s| s.record_external(path, now as u64).map(|_| ()));
+            }
+        }
+        if !edits.is_empty() {
+            let id = e.commit_local(&m.device.signer(), &m.roster(), now, edits).map_err(engine_err)?;
+            sum.committed = Some(id.to_hex());
+        }
+        let mut losers: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut hook = |l: &Loser, b: &[u8]| losers.push((l.path.clone(), b.to_vec()));
+        let rep = e
+            .sync(&[&t as &dyn Transport], &m.device.signer(), &m.roster(), now, &mut hook)
+            .map_err(engine_err)?;
+        for (path, b) in &losers {
+            hist.with(&mut |s| s.record_sync_loser(path, b, now as u64).map(|_| ()))?;
+        }
+        sum.pulled = rep.pulled;
+        sum.pushed = rep.pushed;
+        sum.rejected = rep.rejected.len();
+        sum.replica_errors = rep.replica_errors.iter().map(|(_, e)| e.clone()).collect();
+        sum.losers = rep.losers;
+        // materialise the head tree; anything changed on disk meanwhile is left for the next pass
+        let after = e.head_tree().map_err(engine_err)?;
+        let roster = m.roster();
+        for (path, te) in &after.0 {
+            let scanned = disk.get(path).map(|f| f.sha256);
+            if scanned == Some(te.sha256) {
+                continue;
+            }
+            if workdir::disk_sha(&self.p, &root, path).map_err(io_err)? != scanned {
+                sum.skipped += 1;
+                continue;
+            }
+            let bytes = e.read(te, &roster).map_err(engine_err)?;
+            if scanned.is_some() {
+                hist.with(&mut |s| s.snapshot_before_overwrite(path, now as u64).map(|_| ()))?;
+            }
+            workdir::write_atomic(&self.p, &root, path, &bytes).map_err(io_err)?;
+            hist.with(&mut |s| s.record_own_save(path, now as u64).map(|_| ()))?;
+            sum.written += 1;
+        }
+        for (path, f) in &disk {
+            if after.0.contains_key(path) {
+                continue;
+            }
+            if workdir::disk_sha(&self.p, &root, path).map_err(io_err)? != Some(f.sha256) {
+                sum.skipped += 1;
+                continue;
+            }
+            hist.with(&mut |s| s.snapshot_before_delete(path, now as u64).map(|_| ()))?;
+            workdir::remove(&root, path).map_err(io_err)?;
+            sum.removed += 1;
+        }
+        sum.head = e.head().map(|h| h.to_hex());
+        Ok(sum)
     }
 }

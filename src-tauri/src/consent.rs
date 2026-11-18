@@ -53,6 +53,8 @@ pub const SPAWN_TITLE: &str = "opensidian: run program?";
 pub const SECURITY_TITLE: &str = "opensidian: lower protection?";
 /// #144 toggle 3: the confirm before a link opens in the browser while offline
 pub const OFFLINE_OPEN_TITLE: &str = "opensidian: open in browser while offline?";
+/// Sync M6b: the user-presence question in front of "Reveal backup words" (syncui.rs)
+pub const REVEAL_TITLE: &str = "opensidian: show backup words?";
 /// #74: the third button of a plugin's spawn question (never on Trust / open)
 pub const ALWAYS_LABEL: &str = "Al_ways allow this program";
 
@@ -64,6 +66,8 @@ pub enum Kind {
     Security,
     /// #144 toggle 3: open_external while offline mode is on
     OfflineOpen,
+    /// Sync M6b: sync_reveal (the backup words leave the keystore)
+    Reveal,
 }
 
 /// F6: the most variables, and bytes (key + value + 2 each), a plugin may lay
@@ -360,6 +364,16 @@ pub fn offline_open_question(url: &str) -> Question {
     Question { head: OFFLINE_OPEN_HEAD.into(), log: text.clone(), text, remember: None, always: false }
 }
 
+const REVEAL_HEAD: &str = "Show the backup words of this vault on screen?";
+const REVEAL_TEXT: &str = "Anyone who sees these 12 words can read, change and destroy the synced vault. \
+Make sure nobody is watching and no screen is being shared or recorded. \
+They hide again after 60 seconds; there is no copy button — write them on paper.";
+
+/// Sync M6b: the reveal question (fixed text, no page data in it)
+pub fn reveal_question() -> Question {
+    Question { head: REVEAL_HEAD.into(), text: REVEAL_TEXT.into(), log: REVEAL_TEXT.into(), remember: None, always: false }
+}
+
 /// R5: an open through the default opener. `sp` = the resolved opener Spec (no env)
 pub fn open_question(sp: &Spec, target: &str) -> Question {
     let text = open_text(sp, target);
@@ -470,6 +484,7 @@ pub async fn ask(slot: Slot, win: tauri::Window, kind: Kind, q: Question) -> Res
         Kind::Spawn => "spawn",
         Kind::Security => "security",
         Kind::OfflineOpen => "offline-open",
+        Kind::Reveal => "reveal",
     };
     eprintln!("[consent] {what}: asking");
     let yes = tauri::async_runtime::spawn_blocking(move || {
@@ -497,6 +512,7 @@ fn show_dialog(win: &tauri::Window, kind: Kind, q: &Question, tx: std::sync::mps
         Kind::Spawn => (SPAWN_TITLE, "_Deny", "Allow _once"),
         Kind::Security => (SECURITY_TITLE, "_Keep protection", "_Lower protection"),
         Kind::OfflineOpen => (OFFLINE_OPEN_TITLE, "_Cancel", "_Open in browser"),
+        Kind::Reveal => (REVEAL_TITLE, "_Cancel", "_Show words"),
     };
     let head = q.head.as_str();
     // the head is ours; the body (page values) goes into a read-only TextView

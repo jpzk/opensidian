@@ -2621,11 +2621,13 @@ dependencies = [
  "sha2",
  "soup3",
  "sync-core",
+ "syncd",
  "tauri",
  "tauri-build",
  "url",
  "webkit2gtk",
  "webkit2gtk-sys",
+ "zeroize",
 ]
 
 [[package]]

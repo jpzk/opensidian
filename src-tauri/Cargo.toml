@@ -86,6 +86,11 @@ ed25519-compact = { version = "=2.4.2", default-features = false }
 # (../crates/sync-core), no registry crate: its own deps (serde, serde_json,
 # sha2) are the versions already locked above. docs/sync/deps.md.
 sync-core = { path = "../crates/sync-core" }
+# Sync M6b — the embedded engine (src/syncui.rs): syncd's LocalEngine in-process.
+# Workspace path crate; its deps (serde, serde_json, zeroize, tokio rt+net) are
+# already locked. docs/sync/deps.md §M6b.
+syncd = { path = "../crates/syncd" }
+zeroize = "=1.9.1"
 
 # #220 UI translations — Project Fluent, the same engine as the vendored
 # ui/vendor/fluent (@fluent/bundle 0.19.1), so Rust-side text (native dialogs) and the
@@ -145,6 +150,10 @@ javascriptcore-rs = "=1.1.2"
 # Test-only: the shipped binary is unchanged.
 [dev-dependencies]
 sha2 = "=0.10.9"
+# Sync M6b: tauri's own mock runtime (feature `test = []`, no extra crate, lock
+# unchanged) drives a real IPC invoke from a "main" (plugin realm) webview and
+# the trusted "sync" webview — syncui.rs gate test.
+tauri = { version = "2.5", features = ["test"] }
 
 # Release binaries ship STRIPPED (symbol table removed at link time). The one release
 # compile is wrapped byte-identical into the AppImages, rpm and deb; Debian policy 10.1
