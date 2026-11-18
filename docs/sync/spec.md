@@ -254,6 +254,58 @@ vaults per QR). Key K_p is 32 random bytes in the QR together with the
 server url + ns + object id; the object is DELETEd by the receiver and
 expires server-side after 15 min.
 
+### 4.4–4.6 implementation notes (M5, `sync_proto::vault` + `sync_core::vault`)
+
+- **cfg** gains `bytes rsig_pub` (65-byte P-256 public K_rsig) after
+  `vk_epoch`; identical in every gen. Gen 0 MUST be signed by K_rsig
+  (`signer_kind 2`, `signer_slot 0`). Gen N+1: gen = N+1, `prev` =
+  SHA-256 of gen N's full plaintext, same rsig_pub, `vk_epoch` and
+  `min_suite` never decrease, every non-empty slot of gen N is still there
+  with the same key, a revoked slot never becomes active again, signer =
+  an ACTIVE slot of gen N or K_rsig. Empty slots are all-zero, device ids
+  unique. Signature: `Sign(SHA-256("osy cfg v1" || signed bytes))`.
+- The cfg chain is sealed and addressed with the **genesis epoch's K_cfg**
+  (keyring[0]), not the current one: any keyring holder — including a
+  device that has not followed a rotation yet — can walk the chain and
+  learn that it must. Slots hold public keys only.
+- **Roster** (commit signature keys) = every device that ever held a
+  slot; revoked = not active in the head gen. A revoked device's key still
+  verifies, but the engine keeps its commits only when *vouched for* (§4.8).
+- **Envelope** server entry gains `bytes server_key` (the destroy-receipt
+  key pinned at enrollment, 0 or 65 bytes); tokens are the base64url
+  strings (≤ 64, alphabet checked). Keyring epochs strictly ascending,
+  keyring[0] = epoch 0. A new envelope gen is written for every keyring
+  change; readers probe gen 0,1,2,… and take the newest.
+- **Pairing**: `u8 version 1 || u8 msg || …`. msg 1 = offer:
+  `u64 expires_unix || list<bytes envelope body || opt<22 S_bytes>>`
+  (the words are included by default so the new device can follow a key
+  rotation; the inviter may omit them). msg 2 = reply:
+  `id16 device_id || u8 key_alg || bytes pubkey || str name`, sealed under
+  the SAME K_p at id `HMAC(K_p, "osy pair reply v1" || u32 0)[0..16]` —
+  the channel is symmetric. Flow: inviter `pair_offer` (PUT offer) →
+  new device `pair_accept` (GET + DELETE offer, PUT reply) → inviter
+  `pair_complete` (GET + DELETE reply, cfg gen+1 adding the slot, retried
+  on 409 against a re-fetched chain) → new device `pair_join` (chain must
+  list it active). Pairing objects use `vault_id = 00*16` in AAD.
+  QR text: `osy-pair1:` + base64url(`u8 1 || str url || id16 ns ||
+  id16 offer_id || 32 K_p`).
+- **Create**: words → K_destroy → `enroll` → random vault_id + VK epoch 0
+  → cfg gen 0 (creator in slot 0, signed by K_rsig) → envelope gen 0.
+  **Join from words**: newest envelope under loc → tokens, keyring →
+  chain (genesis rsig_pub must equal the words' K_rsig) → cfg gen+1 adding
+  the new device, signed by K_rsig.
+- **Revoke**: new random VK at epoch+1 → envelope gen+1 (needs the words:
+  only K_wrap publishes keys) → cfg gen+1 with the slot `revoked` and the
+  new `vk_epoch`, signed by the revoking device. New objects are sealed
+  under the new epoch's K_obj; old epochs stay readable (readers pick the
+  K_obj whose key-commitment tag matches, `object::select_key`). There is
+  no public-key encryption, so another device learns the new VK only from
+  the envelope: `refresh_chain` answers `NeedWords` until the device
+  unlocks its backup entry (user presence) and calls `refresh_with_words`.
+  Residual (follow-up): the revoked device keeps the server write token
+  (no token-rotation endpoint yet) — it can still upload ciphertext, which
+  every client rejects (§4.8), and soft-delete within the retention window.
+
 ### 4.7 Tip merge (M4b, `sync_core::merge`)
 
 Input: two tips L (local) and R (remote) and their exact base B.
@@ -337,8 +389,14 @@ absorbed; with one parent the edits go in as is, otherwise the target
 tree is materialised and diffed against `parents[0]` (renames become
 delete + put there; chunks are re-referenced). Re-verification on open
 uses the caller's `devices`: a commit whose key is no longer accepted
-drops out of the DAG (M5 must therefore keep pre-revocation keys of a
-revoked device valid for its old commits — cfg generations). Not yet:
+drops out of the DAG. M5: the roster keeps a revoked device's key, and a
+commit signed by a revoked device is kept only when it is **vouched for**
+— an ancestor of a commit by a non-revoked device, of this engine's head
+or of an absorbed tip. On pull such commits wait in a quarantine until
+the whole pass is listed; unvouched ones are reported as rejected
+(`engine::NOT_VOUCHED`), not stored, and re-evaluated on the next pass.
+So pre-revocation history stays, anything the revoked device signs
+afterwards (nobody active built on it) is refused. Not yet:
 an index cache (open re-verifies the local replica, O(objects)), GC of
 superseded chunks, long-poll (syncd, M6).
 

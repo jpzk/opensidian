@@ -234,6 +234,17 @@ the lock has no diff crate (no `similar`, `dissimilar`, `diff-match-patch*`,
 `imara-diff`) and adding one was rejected under "minimise new crates".
 Settings JSON merge uses the already pinned `serde_json =1.0.151`.
 
+### M5 — onboarding + keystore (sync-proto, sync-core): no new crate
+
+No crate added to the lock. `sync-core` now lists `zeroize =1.9.1` directly
+(already locked and pinned by sync-crypto; the only Cargo.lock change is
+the extra `"zeroize"` line in sync-core's dependency list). The OS keystore
+backends (Secret Service, macOS Keychain, Windows Credential Manager)
+would each need a new crate (`keyring`, `secret-service`,
+`security-framework`, … — none in the lock); they are a follow-up behind
+the `sync_core::keystore::Keystore` trait. The headless/test backend
+`FileKeystore` uses std only.
+
 ## Existing crates reused by the new sync crates
 
 Already in Cargo.lock at d999420; the new crates pin them exactly to the

@@ -104,3 +104,20 @@ K_cfg = HKDF(VK, salt=00*32, info="osy cfg v1"      || epoch, 32)
   old epochs, the revoked device already had them)
 - revoked device held S → offer a new phrase: new S', new R', new
   envelope under loc'; old envelope DELETEd
+
+## 7. Implementation (M5)
+
+- per-epoch labels: `info = label || u32be(epoch)` (`sync_core::vault::epoch_keys`)
+- cfg id `HMAC(K_cfg[epoch 0], "osy cfg id v1" || u32be gen)[0..16]`, envelope id
+  `HMAC(loc, "osy env id v1" || u32be gen)[0..16]`, pairing reply id
+  `HMAC(K_p, "osy pair reply v1" || u32be 0)[0..16]`
+- daily entry (`Member::to_daily`): `u8 1 || id16 device_id || bytes
+  PKCS#8 device key || str name || u32 server || bytes envelope body`
+  (keyring + servers + tokens) — read without a prompt
+- backup entry: the 22 `S_bytes`, read only after `Presence::confirm`
+  (OS auth). `sync_core::keystore::FileKeystore` = headless/test backend
+  (dir 0700, files 0600, tmp + fsync + rename); OS backends are a
+  follow-up (deps.md §M5)
+- a revocation is followed by the other devices only through the
+  envelope (K_wrap): `NeedWords` → unlock backup entry → re-derive →
+  newest envelope. Pairing therefore carries S_bytes by default.
