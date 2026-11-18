@@ -87,9 +87,16 @@ the deny.toml allow list).
 - `zstd-sys =2.1.0+zstd.1.5.7` — 2026-09-04 — `0ef0a8027ec3ee71300ab3bcbcd0393f434aa72b91ca6d635a39941deae8eea0`
   — BSD-3-Clause — pinned directly (`^2.1.0` would float to 2.1.3, 2026-11-12).
 
-Reused from the lock: cc 1.4.4, pkg-config 0.3.34 (build-deps of zstd-sys).
-Lock delta = exactly these 3 package blocks + the sync-core dependency list;
-cargo-vet exemptions added for the three.
+Transitive: `jobserver 0.1.35` — 2026-07-06 — `1c00acbd29eabad4a2392fa0e921c874934dbbf4194312ad20f04a0ed67a3cb3`
+— MIT OR Apache-2.0 — zstd-sys turns on the `parallel` feature of cc, which
+pulls jobserver (build time only; newest release).
+
+Reused from the lock: cc 1.4.4 (now with `parallel`), libc, getrandom 0.4.3,
+pkg-config 0.3.34 (build-deps of zstd-sys).
+Lock delta = exactly these 4 package blocks + the sync-core and cc dependency
+lists (resolved by cargo on the box, sha256 of the lock identical to the one
+committed);
+cargo-vet exemptions added for the four.
 
 ## Toolchain (box only, FIPS build of aws-lc-fips-sys)
 
