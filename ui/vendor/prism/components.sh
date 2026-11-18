@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Rebuild prism-components.js (#186) from the pinned prismjs 1.30.0 tarball, byte-identical:
-#   sh components.sh /path/to/extracted/package      (the tarball's package/ dir, sha256 in VENDOR.md)
+#   sh components.sh /path/to/extracted/package      (the tarball's package/ dir; facts + file order in ../vendor.lock.json)
 # Every language component of components.json except the four already in prism.js (markup css clike javascript),
 # unmodified upstream components/prism-<id>.min.js, in dependency order (require + optional + modify first, GNU tsort),
 # each followed by one newline. Check: sha256sum -c SHA256SUMS. Needs jq + coreutils tsort; no network, no npm.

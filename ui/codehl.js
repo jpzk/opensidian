@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jendrik Poloczek
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* CODE HIGHLIGHTING (#186) — fenced code blocks, coloured by the vendored Prism (ui/vendor/prism,
-   1.30.0 + every language component of that release, VENDOR.md).
+   1.30.0 + every language component of that release, ui/vendor/vendor.lock.json).
    READING VIEW  CodeHL.reading(root, quiet): every `pre > code.language-L` the Rust renderer emitted
                  (escaped text only) gets pre.language-L + code.is-loaded (as Obsidian marks a fence),
                  then, once Prism is in, its text is replaced by Prism's token spans.
