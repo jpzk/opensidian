@@ -1084,11 +1084,15 @@ const Ed = {
     };
   },
   // the prefix a NEW item after this one carries: same indent + quote, the
-  // ordered number stepped (M4), a task always UNCHECKED (M8)
+  // ordered number stepped (M4), a task always UNCHECKED (M8). #154: BOTH at
+  // once for an ordered task ("1. [x] a" -> "2. [ ] ", stock 1.13.7) — the
+  // task branch used to win and repeat the number.
+  // the marker minus its "N. " head, by the digits actually typed: "01. [ ] "
+  // must not slice by String(1).length and keep a stray space (codeant #235)
+  mkTail(it) { return it.mk.replace(/^\d+\. /, ""); },
   contOf(it) {
-    const mk = it.task ? it.mk.replace(/\[[xX]\]/, "[ ]")
-      : it.num !== null ? (it.num + 1) + ". " + it.mk.slice(String(it.num).length + 2)
-        : it.mk;
+    let mk = it.num !== null ? (it.num + 1) + ". " + Ed.mkTail(it) : it.mk;
+    if (it.task) mk = mk.replace(/\[[xX]\]/, "[ ]");
     return it.ind + it.qt + mk;
   },
   // M24: Enter on an item's CONTINUATION line starts a new item of the item
@@ -1110,7 +1114,7 @@ const Ed = {
     for (let l = from; l < L.length; l++) {
       const it = Ed.info(L[l]);
       if (it.num !== null && it.ind + it.qt === pre) {
-        L[l] = pre + next + ". " + it.mk.slice(String(it.num).length + 2) + L[l].slice(it.pre.length);
+        L[l] = pre + next + ". " + Ed.mkTail(it) + L[l].slice(it.pre.length);
         next++;
       } else if (it.ind.length > ref.ind.length) continue;  // nested / continuation
       else break;
@@ -1555,6 +1559,8 @@ const Ed = {
       ["1. one\n2. two\n3. three", 0, 6, 0, "1. one\n2. \n3. two\n4. three", 1, 3],     // M4 renumber
       ["1. one\n2. two", 1, 4, 0, "1. one\n2. t\n3. wo", 2, 3],                          // M6
       ["- [x] done", 0, 10, 0, "- [x] done\n- [ ] ", 1, 6],                              // M8 always unchecked
+      ["1. [ ] a\n2. [ ] b", 0, 8, 0, "1. [ ] a\n2. [ ] \n3. [ ] b", 1, 7],          // #154 ordered task counts up
+      ["01. [ ] a\n02. [ ] b", 0, 9, 0, "01. [ ] a\n2. [ ] \n3. [ ] b", 1, 7],        // #154 leading zero: no stray space
       ["- a\n  - b", 1, 5, 0, "- a\n  - b\n  - ", 2, 4],                                 // M11 indent verbatim
       ["1. a\n\t1. b\n2. c", 1, 5, 0, "1. a\n\t1. b\n\t2. \n2. c", 2, 4],                // M12 nested run
       ["- a\n\t- ", 1, 3, 0, "- a\n- ", 1, 2],                                           // M13 empty nested -> outdent
