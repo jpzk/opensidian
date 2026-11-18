@@ -161,6 +161,54 @@ list (resolved by cargo on the box without `--locked`, lock sha256
 back unchanged); cargo-vet exemptions added for all six; licences are in
 the deny.toml allow list.
 
+### M3a-TLS — rustls on the AWS-LC FIPS provider (sync-server)
+
+TLS 1.3 only, provider `rustls::crypto::default_fips_provider()`;
+`server_config` refuses any config where `ServerConfig::fips()` is false
+(tests/tls.rs). Every crate is pinned direct in sync-server/Cargo.toml so the
+resolver cannot float to a younger release (cutoff 2026-10-07).
+
+- `rustls =0.23.45` — 2026-09-14 — `0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634`
+  — Apache-2.0 OR ISC OR MIT — features `std`, `fips` (no tls12, no logging,
+  no prefer-post-quantum).
+- `tokio-rustls =0.26.6` — 2026-09-28 — `c9cc2678c2cdd569ef8215e2afd7954ada2ae20b4fdd2c5fe6139a3b02d105db`
+  — MIT OR Apache-2.0 — feature `fips`.
+- `rustls-webpki =0.103.15` — 2026-08-21 — `f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2`
+  — ISC — features `std`, `aws-lc-rs-fips`.
+- `rustls-pki-types =1.15.1` — 2026-07-23 — `2f4925028c7eb5d1fcdaf196971378ed9d2c1c4efc7dc5d011256f76c99c0a96`
+  — MIT OR Apache-2.0 — PEM parsing (`pem::PemObject`).
+- `subtle =2.6.1` — 2024-06-24 — `13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292`
+  — BSD-3-Clause — rustls.
+- `untrusted =0.9.0` — 2021-07-13 — `8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1`
+  — ISC — rustls-webpki.
+- `aws-lc-sys =0.45.0` — 2026-09-01 — `9bff6c3b54fad79a2e60b8102caf565819711497c1f5f092f49508e2f5c31b27`
+  — ISC AND Apache-2.0 AND MIT AND BSD-3-Clause (+ OR-alternatives) — NOT
+  wanted, forced: rustls' `fips` feature implies `aws_lc_rs`, which sets
+  `aws-lc-rs/aws-lc-sys`. It is compiled (non-FIPS AWS-LC, own symbol prefix)
+  but aws-lc-rs binds `aws-lc-fips-sys` whenever its `fips` feature is on, so
+  no sync code path reaches it. Avoiding it would need a hand-written rustls
+  `CryptoProvider` — rejected as more risk than a dead static library. Same
+  release day as aws-lc-fips-sys 0.14.2; 0.46.0 (2026-10-12) is too young.
+  Build deps (cc, cmake, dunce, fs_extra, pkg-config) were already locked.
+
+Lock-only (present in Cargo.lock as optional deps of rustls-webpki, NOT
+compiled — `cargo tree -p sync-server -i ring` prints nothing):
+
+- `ring 0.17.14` — 2025-03-11 — `a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7`
+  — Apache-2.0 AND ISC.
+- `windows-sys 0.52.0` — 2023-11-15 — `282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d`
+  — MIT OR Apache-2.0 — ring's Windows dep.
+
+Lock delta = these 9 package blocks + the dependency lists of sync-server
+and rustls-webpki/ring, resolved by cargo on the box (bin/lockres.sh), lock
+sha256 `59c605f4966f9e19fc82003a90338643552393075116b06993b2c9b1512b3f58`
+copied back unchanged. cargo-vet exemptions for all nine; ISC exceptions
+for rustls-webpki, untrusted, aws-lc-sys, ring in deny.toml.
+
+Test fixture (not a crate): `crates/sync-server/tests/fixtures/test-{ca,leaf}.pem`
++ `test-leaf.key` — throwaway P-256 CA + leaf (SAN localhost, 127.0.0.1,
+100 y validity) generated with the box's `openssl` 3.5.7 CLI; test-only key.
+
 ## Existing crates reused by the new sync crates
 
 Already in Cargo.lock at d999420; the new crates pin them exactly to the
@@ -181,7 +229,7 @@ locked version so nothing in the lock moves.
 
 Per crate (direct deps): `sync-proto` → serde (dev: serde_json, JSON tests of the `/v1` bodies); `sync-crypto` → sha2, aws-lc-rs, aws-lc-fips-sys, zeroize (dev: serde_json, Wycheproof JSON);
 `sync-core` → sync-proto, sync-crypto, sha2, serde, serde_json, zstd, zstd-safe, zstd-sys; `syncd` →
-sync-core; `sync-server` → sync-proto, sync-crypto, serde, serde_json, base64, bytes, http, http-body-util, hyper, hyper-util, tokio, rusqlite, libsqlite3-sys (M3a). The Cargo.lock delta of
+sync-core; `sync-server` → sync-proto, sync-crypto, serde, serde_json, base64, bytes, http, http-body-util, hyper, hyper-util, tokio, rusqlite, libsqlite3-sys (M3a), rustls, tokio-rustls, rustls-webpki, rustls-pki-types, subtle, untrusted, aws-lc-sys (M3a-TLS). The Cargo.lock delta of
 the skeleton is exactly the five path packages (`[[package]]` entries without
 `source`/`checksum`); no registry package is added, removed or moved.
 
@@ -192,7 +240,7 @@ log in the goal work dir).
 ## Declared, NOT added yet
 
 - `aws-lc-rs` — ADDED in M2a (above, pin decision cmvp.md §7).
-- `rustls` with feature `fips` — 0.23.44 (2026-09-07) / 0.23.45
+- `rustls` with feature `fips` — ADDED in M3a-TLS (0.23.45). Was: 0.23.44 (2026-09-07) / 0.23.45
   (2026-09-14) satisfy the age rule; 0.24.0-dev.* are pre-releases.
 - `axum` — not needed (plain hyper, M3a). `hyper`/`rusqlite` — ADDED in M3a above.
 

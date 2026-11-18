@@ -66,6 +66,11 @@ exceptions = [
   { crate = "aws-lc-rs", allow = ["ISC"] },
   { crate = "aws-lc-fips-sys", allow = ["ISC", "OpenSSL"] },
   { crate = "libloading", allow = ["ISC"] },
+  # sync M3a TLS (docs/sync/deps.md §M3a-TLS): rustls stack + aws-lc-sys (pulled by rustls' fips feature)
+  { crate = "rustls-webpki", allow = ["ISC"] },
+  { crate = "untrusted", allow = ["ISC"] },
+  { crate = "aws-lc-sys", allow = ["ISC"] },
+  { crate = "ring", allow = ["ISC"] },
 ]
 # the vendored glib [patch] (path crate) is checked like any other crate; only unpublished crates are skipped
 [licenses.private]
