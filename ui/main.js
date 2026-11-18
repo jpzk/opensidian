@@ -455,11 +455,13 @@ async function rBacklinks(n) {
     row.title = "line " + (m.line + 1);
     const d = document.createElement("div");
     d.className = "blline"; d.dataset.ol = "ul:" + m.note;
-    const t = m.text, i = t.toLowerCase().indexOf(n.split("/").pop().toLowerCase());
-    if (i >= 0) {
+    // issue #178: mark THIS row's occurrence (m.mcol/m.mlen, UTF-16 inside m.text), like stock 1.13.7 —
+    // an indexOf of the name always marked the first one on the line (a [[link]] or another hit)
+    const t = m.text, i = m.mcol == null ? -1 : m.mcol, w = m.mlen || 0;
+    if (i >= 0 && i < t.length && w > 0) {
       d.appendChild(document.createTextNode(t.slice(0, i)));
-      const mk = document.createElement("mark"); mk.textContent = t.slice(i, i + m.len); d.appendChild(mk);
-      d.appendChild(document.createTextNode(t.slice(i + m.len)));
+      const mk = document.createElement("mark"); mk.textContent = t.slice(i, i + w); d.appendChild(mk);
+      d.appendChild(document.createTextNode(t.slice(i + w)));
     } else d.textContent = t;
     sideRow(d, m.note);
     sideRow(row, m.note);
