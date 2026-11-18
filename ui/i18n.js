@@ -130,13 +130,19 @@
     apply(document);
     for (const f of subs.slice()) { try { f(lang); } catch (e) { console.error("[i18n] onChange", e); } }
   }
-  /* switch now (live) and persist; resolves to the language in use */
+  /* switch now (live) and persist; resolves to the language in use.
+     Each switch takes a ticket: a slow load from an earlier switch (or the first-paint
+     load) that finishes after a newer one must not put the older language back (#220 review) */
+  let ticket = 0;
   async function set(s) {
     if (s !== "auto" && !LANGS.some(l => l[0] === s)) throw new Error("unknown language " + s);
+    const my = ++ticket;
     if (T) await T.core.invoke("i18n_set", { setting: s });
+    if (my !== ticket) return lang;
     setting = s;
     const code = resolve(s);
     await source(code);
+    if (my !== ticket) return lang;
     if (code !== lang) { use(code); emit(); }
     return lang;
   }
@@ -145,7 +151,7 @@
   // (it is unless navigator.languages disagrees with the env); else switch once loaded
   const want = resolve(setting);
   use(cache[want] != null ? want : (cache[boot.lang] != null ? boot.lang : "en"));
-  if (lang !== want) source(want).then(() => { use(want); emit(); }).catch(e => console.error("[i18n] load", e));
+  if (lang !== want) { const my = ticket; source(want).then(() => { if (my === ticket) { use(want); emit(); } }).catch(e => console.error("[i18n] load", e)); }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => apply(document), { once: true });
   else apply(document);
 

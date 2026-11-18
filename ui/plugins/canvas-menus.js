@@ -273,8 +273,17 @@
     "Background style: Cover": "media", "Background style: Fit": "media", "Background style: Repeat": "media",
   };
   const titleOf = it => it && it.titleEl ? String(it.titleEl.textContent || "") : null;
+  // a row shows its title in the UI language: is it the row whose English title is `en`? (#220 review)
+  const isRow = (it, en) => { const s = titleOf(it); return s !== null && (s === en || s === I18N.m(en)); };
+  // the English key of a displayed (maybe translated) title: ICON_OF is keyed by English
+  const keyOf = s => {
+    s = String(s || "").replace(/(\.\.\.|…)$/, "");
+    if (ICON_OF[s]) return s;
+    for (const k in ICON_OF) if (I18N.m(k) === s) return k;
+    return s;
+  };
   function iconize(it) {
-    const d = PATHS[ICON_OF[String(titleOf(it) || "").replace(/(\.\.\.|…)$/, "")]];
+    const d = PATHS[ICON_OF[keyOf(titleOf(it))]];
     if (!d || !it.iconEl || it.iconEl.querySelector("svg")) return;
     const s = document.createElementNS(SVG_NS, "svg");
     s.setAttribute("viewBox", "0 0 16 16"); s.setAttribute("fill", "none"); s.setAttribute("stroke", "currentColor");
@@ -515,8 +524,8 @@
           remove();
           // canvas-files adds Copy URL / Change URL through the hook: put them in their stock place
           fix = () => {
-            const at = l => m.items.findIndex(i => titleOf(i) === l);
-            const take = l => { const i = m.items.findIndex((x, j) => j >= base && titleOf(x) === l); return i >= 0 ? m.items.splice(i, 1)[0] : null; };
+            const at = l => m.items.findIndex(i => isRow(i, l));
+            const take = l => { const i = m.items.findIndex((x, j) => j >= base && isRow(x, l)); return i >= 0 ? m.items.splice(i, 1)[0] : null; };
             const chg = take("Change URL"), cpy = take("Copy URL");
             if (chg) m.items.splice(at("Zoom to selection") + 1, 0, chg);
             if (cpy) m.items.splice(at("Open external link") + 1, 0, cpy);
