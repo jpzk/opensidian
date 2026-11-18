@@ -245,6 +245,18 @@ would each need a new crate (`keyring`, `secret-service`,
 the `sync_core::keystore::Keystore` trait. The headless/test backend
 `FileKeystore` uses std only.
 
+### M6a — opensidian-syncd daemon + CLI (syncd): no new crate
+
+No crate added to the lock. `syncd` lists `serde =1.0.229`, `serde_json
+=1.0.151`, `zeroize =1.9.1` and `tokio =1.53.1` (features `rt`, `net`
+only) — all already locked and pinned by sync-core/sync-server. tokio is
+there for one reason: `tokio::net::UnixStream::peer_cred()` is the safe,
+stable SO_PEERCRED/getpeereid wrapper (std's `UnixStream::peer_cred` is
+still unstable, and the sync crates are `#![forbid(unsafe_code)]`, so
+libc's `getsockopt` is out). The CLI argument parser is hand-written (no
+clap). The daemon's own uid is read without `getuid()` as the owner of a
+file it just created in the socket dir.
+
 ## Existing crates reused by the new sync crates
 
 Already in Cargo.lock at d999420; the new crates pin them exactly to the
@@ -265,7 +277,7 @@ locked version so nothing in the lock moves.
 
 Per crate (direct deps): `sync-proto` → serde (dev: serde_json, JSON tests of the `/v1` bodies); `sync-crypto` → sha2, aws-lc-rs, aws-lc-fips-sys, zeroize (dev: serde_json, Wycheproof JSON);
 `sync-core` → sync-proto, sync-crypto, sha2, serde, serde_json, zstd, zstd-safe, zstd-sys, rustls, rustls-webpki, rustls-pki-types, base64 (M3c; dev: sync-server, tokio); `syncd` →
-sync-core; `sync-server` → sync-proto, sync-crypto, serde, serde_json, base64, bytes, http, http-body-util, hyper, hyper-util, tokio, rusqlite, libsqlite3-sys (M3a), rustls, tokio-rustls, rustls-webpki, rustls-pki-types, subtle, untrusted, aws-lc-sys (M3a-TLS). The Cargo.lock delta of
+sync-core, serde, serde_json, zeroize, tokio (M6a: `rt` + `net` for the safe SO_PEERCRED `peer_cred`; dev: sync-server); `sync-server` → sync-proto, sync-crypto, serde, serde_json, base64, bytes, http, http-body-util, hyper, hyper-util, tokio, rusqlite, libsqlite3-sys (M3a), rustls, tokio-rustls, rustls-webpki, rustls-pki-types, subtle, untrusted, aws-lc-sys (M3a-TLS). The Cargo.lock delta of
 the skeleton is exactly the five path packages (`[[package]]` entries without
 `source`/`checksum`); no registry package is added, removed or moved.
 

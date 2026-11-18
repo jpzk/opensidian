@@ -3730,7 +3730,12 @@ dependencies = [
 name = "syncd"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "sync-core",
+ "sync-server",
+ "tokio",
+ "zeroize",
 ]
 
 [[package]]
