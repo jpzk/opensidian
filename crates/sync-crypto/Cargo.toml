@@ -22,3 +22,7 @@ aws-lc-fips-sys = "=0.14.2"
 # aws-lc-rs needs zeroize ^1.8.1; 1.9.2 (2026-11-17) is < 6 weeks old -> pin 1.9.1
 # (2026-10-06). Also used directly to wipe key material.
 zeroize = "=1.9.1"
+
+[dev-dependencies]
+# Wycheproof JSON vectors (tests/wycheproof.rs); same pin as sync-proto/sync-core.
+serde_json = "=1.0.151"
