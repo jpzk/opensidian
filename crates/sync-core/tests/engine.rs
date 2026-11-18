@@ -242,7 +242,7 @@ fn three_replicas_converge_by_set_union() {
     let mut a = Engine::open(&p, v.clone(), &dir_a, &ks).unwrap();
     assert_eq!((a.head(), a.objects()), (head_a, objs_a));
     assert_eq!(hash(&p, &a.head_tree().unwrap()), hash(&p, &b.head_tree().unwrap()));
-    drop(hook);
+
     assert!(!lost.borrow().is_empty());
 }
 
@@ -260,9 +260,12 @@ fn bad_objects_are_rejected_and_not_propagated() {
     let mut hook = |_: &Loser, _: &[u8]| {};
     let c1 = a.commit_local(&signer(&da), &ks, T0, vec![put("n.md", Class::Markdown, b"hi\n")]).unwrap();
 
-    // garbage bytes
+    // a container with a valid header whose ciphertext was tampered with
     let g = rid(&p);
-    d1.put(ObjKind::Obj, &v.ns, &g, b"not a container at all").unwrap();
+    let mut bad = seal(&p, &k, &ObjectCtx { suite: v.suite, vault_id: v.vault_id, obj_id: g }, Kind::Chunk, b"y", Compress::Never).unwrap();
+    let n = bad.len();
+    bad[n - 1] ^= 1;
+    d1.put(ObjKind::Obj, &v.ns, &g, &bad).unwrap();
     // a valid chunk container sealed under ANOTHER vault key
     let mut k2 = [0u8; 32];
     p.random(&mut k2).unwrap();

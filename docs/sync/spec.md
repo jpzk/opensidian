@@ -295,6 +295,53 @@ Input: two tips L (local) and R (remote) and their exact base B.
 - Renames are path-level here (a rename on one side + an edit on the
   other keeps both paths; nothing is lost).
 
+### 4.8 Sync engine: equal peers, set union (M4c, `sync_core::engine`)
+
+Every replica (sync-server, dir replica, …) is a `Transport` holding
+opaque `obj` containers; none is authoritative. The engine owns a state
+dir: `lock` (exclusive `flock`, a second engine → `Busy`), `state.json`
+(`{v:1, head, absorbed}`, tmp + fsync + rename) and `objects/` — its own
+dir replica holding every object it has verified.
+
+One `sync(replicas)` pass:
+
+1. **pull**, per replica: paged `list` (wait 0); each unknown id is
+   fetched and verified before it is stored — batch = container auth +
+   kind + decode + signature of a device in `devices`; chunk = container
+   auth under `K_obj` with kind chunk. A failure is reported in
+   `rejected` and the object is neither stored nor pushed anywhere
+   (a bad or hostile replica cannot poison the others). 404/410 between
+   list and get is skipped.
+2. **resolve**: *ready* commits = every ancestor known; commits waiting for
+   a parent are `pending` (kept + propagated, never a tip). Tips (ready,
+   no ready child) are folded into the head in commit_id order:
+   ancestor of the head or absorbed → skip; else `merge_base` →
+   `merge_trees` → `FastForward` (head = tip), `Commit` (merge commit
+   signed by this device, head = it) or `UpToDate`. `UpToDate` with a
+   tip that is not an ancestor (two devices merged the same tips
+   concurrently: same tree, different ids) makes NO commit; the tip is
+   *absorbed* and becomes an extra parent (≤ 16 total) of the next local
+   commit, so tips cannot pile up and there is no ping-pong. Losers go to
+   the `on_loser` hook (→ `history::Store::record_sync_loser`).
+3. **push**, per replica that listed fine: every local object it lacks,
+   chunks first, then batches by generation (parents first), so a reader
+   never sees a dangling reference. 410 (deleted id) is skipped.
+
+A failing replica is reported (`replica_errors`) and skipped; the pass
+continues with the others. After a pass in which every replica answered,
+each holds ⋃(local, R₁..Rₙ) − rejected — so two devices that never share
+a replica still converge through any chain of replicas.
+
+`commit_local(edits)` (edits relative to the head tree): parents = head ∪
+absorbed; with one parent the edits go in as is, otherwise the target
+tree is materialised and diffed against `parents[0]` (renames become
+delete + put there; chunks are re-referenced). Re-verification on open
+uses the caller's `devices`: a commit whose key is no longer accepted
+drops out of the DAG (M5 must therefore keep pre-revocation keys of a
+revoked device valid for its old commits — cfg generations). Not yet:
+an index cache (open re-verifies the local replica, O(objects)), GC of
+superseded chunks, long-poll (syncd, M6).
+
 ## 5. sync-server API (/v1)
 
 Transport: HTTPS (rustls). Impl note (M3a): TLS 1.3 only, ALPN
