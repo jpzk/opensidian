@@ -5393,7 +5393,8 @@ function applyMode(g, keep) {  // exactly ONE of lp / preview fills the pane
      a widget there is a second, stale copy of every dataview/tasks block (rendered before a setting changed, never
      refreshed on a vault change) beside the reading view's live one; it is rebuilt fresh on the way back to edit. */
   const cbk = m === "reading" ? "r" : m === "source" ? "s" : "l";
-  if (g.lp._cbk !== cbk) { g.lp._cbk = cbk; if (Ed.cbHook && Ed.cbFx && Ed.cm(g)) Ed.cm(g).dispatch({ effects: Ed.cbFx.of(null) }); }
+  // #187: the app's own mermaid widgets live in the same field — rebuild for them too (no plugin hook needed)
+  if (g.lp._cbk !== cbk) { g.lp._cbk = cbk; const cm = Ed.cm(g); if (Ed.cbFx && cm && (Ed.cbHook || (Ed.cbMm && Ed.cbMm(cm.state.doc)))) cm.dispatch({ effects: Ed.cbFx.of(null) }); }
   g.preview.style.display = m === "reading" ? "" : "none";
   // modeswitch opt6: the view the edit <-> reading switch LEAVES (setMode passes
   // it as `keep`) stays laid out instead of display:none — hidden, out of flow,
