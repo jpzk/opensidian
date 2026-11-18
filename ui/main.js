@@ -12766,6 +12766,10 @@ async function startGraph(g, cfg) {
       redraw();
       return;
     }
+    // #172: a wheel event with no vertical part (touchpad sideways swipe, tilt wheel, shift+wheel
+    // reaching us as deltaX only) is not a zoom step — stock 1.13.7 keeps the scale (1 -> 1).
+    // Without this guard deltaY == 0 fell into the "+1" branch below and zoomed OUT per event.
+    if (!e.deltaY) return;
     view.notch = Math.max(GZ_IN, Math.min(GZ_OUT, view.notch + (e.deltaY < 0 ? -1 : 1)));
     const s = notchScale(view.notch);
     view.tx = mx - view.wx * s; view.ty = my - view.wy * s; view.scale = s;
