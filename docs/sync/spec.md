@@ -225,7 +225,12 @@ expires server-side after 15 min.
 
 ## 5. sync-server API (/v1)
 
-Transport: HTTPS (rustls). Bodies of control calls are JSON
+Transport: HTTPS (rustls). Impl note (M3a): TLS 1.3 only, ALPN
+`http/1.1`, rustls `default_fips_provider()` on the AWS-LC FIPS module; the
+server refuses a non-FIPS config and refuses plain HTTP on any non-loopback
+bind (`--tls-cert`/`--tls-key` PEM; handshake bounded at 10 s). TLS is
+defence in depth only — every object is already sealed end-to-end.
+Bodies of control calls are JSON
 (`application/json`, UTF-8, unknown fields rejected); object bodies are
 `application/octet-stream` containers. `{ns}` = 32-hex server namespace
 id assigned at `vault create` (random, unrelated to vault_id → no
