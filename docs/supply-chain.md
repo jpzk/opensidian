@@ -76,6 +76,10 @@ change in this repo. Check the `resolved version` step first when that happens.
 - **The advisory DB is not pinned.** cargo audit and cargo deny fetch the RustSec DB fresh on every
   run. A red run with no code change usually means a new advisory was published, so use the weekly
   schedule as an alarm. It also means results can't be reproduced bit for bit.
+  Example: RUSTSEC-2026-0543 (chrono 0.4.45 unmaintained, informational, no vulnerability; chrono
+  comes in transitively through serde_with / tauri-utils) turned `cargo audit` red with no code
+  change. It is ignored in both `src-tauri/.cargo/audit.toml` and `deny.toml`, expiring 2027-05-15,
+  the same as the other unmaintained transitive crates and the same exception #188 carries.
 - **cargo vet trusts people, not code.** Imported audits are only as good as the organisations
   behind them. Exemptions in the baseline were not audited. They only freeze today's graph.
 - `cargo vet --locked` does not pick up audits that importers publish later, so run `cargo vet` (or

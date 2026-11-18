@@ -28,6 +28,7 @@ ignore = [
   { id = "RUSTSEC-2025-0081", reason = "unic-char-property: transitive via urlpattern (tauri); revisit 2027-05-15" },
   { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version: transitive via urlpattern (tauri); revisit 2027-05-15" },
   { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident: transitive via urlpattern (tauri); revisit 2027-05-15" },
+  { id = "RUSTSEC-2026-0543", reason = "chrono 0.4.45 unmaintained: transitive via serde_with (tauri-utils); revisit 2027-05-15" },
 ]
 
 [sources]
