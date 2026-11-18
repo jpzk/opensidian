@@ -83,4 +83,5 @@ var CSPV = { n: 0, d: "-" };
 window.addEventListener("securitypolicyviolation", e => { CSPV.n++; CSPV.d = String(e.effectiveDirective || e.violatedDirective || "?").replace(/[[\]|@\s]/g, "_"); }, true);
 CENSUS.push(() => " [csp:" + CSPV.n + "|" + CSPV.d + "]");
 CENSUS.push(() => window.Merm ? Merm.tok() : "");   // #187 mermaid: [mmd:lib=<window.mermaid loaded 0/1>|allow=<0/1>|g=<guards>|ok=<diagrams>|err=<errors>|busy=<n>|kinds=<svg aria-roledescription,...>|th=<d/l>|pwn=<hostile payload ran 0/1>|sl=<mermaid securityLevel>|net=<non-localhost resource fetches>|fill=<first node fill>|btn=x,y] read off the DOM
+CENSUS.push(() => window.CodeHL ? CodeHL.tok() : "");   // #186 code highlighting: [chl:<rv|ed>|P<grammars>|<lang>/<pre.language-L><code.is-loaded>/<tokens>,...] [chlkw:] [chlnorm:] [chlxss:] [chlrc:] the focused pane's painted fences (ui/codehl.js) — gate phase codehl
 CENSUS.push(() => window.MathView ? MathView.tok() : "");   // #185 math: [mth:<rv|ed>|M<0/1 MathJax loaded>|i<inline>/b<block>/l<typeset>|d<first block display>] [mthxss:] [mthrc:] the focused pane's math (ui/mathview.js) — gate phase mathjax

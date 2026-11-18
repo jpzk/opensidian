@@ -7779,7 +7779,7 @@ function extClick(e, a) {   // `a` unused: kept for the Ed.extClick(e, a) signat
 // Only a style attribute on #preview ITSELF is ignored; any other record (a child,
 // a text, data-title, a class) still marks it dirty.
 const pvTouched = (P, recs) => recs.some(r => r.target !== P || r.type !== "attributes" || (r.attributeName !== "style" && r.attributeName !== "class"));   // opt6: + the vkeep class flip
-// #185: a write of ours into the reading DOM that must not mark it dirty (async math typesetting):
+// #185 / #186: a write of ours into the reading DOM that must not mark it dirty (async math typesetting, async code highlighting):
 // records pending from before (anyone else's) still count, the write's own are dropped
 const pvQuiet = (P, fn) => {
   if (!P._pvObs) return fn();
@@ -7864,6 +7864,10 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   // observer is armed, so their synchronous output is part of the retained DOM; async writes
   // later mark it dirty (the next switch re-renders). Not awaited: a slow plugin never holds the switch.
   if (PPOST) try { PPOST.run(P, curOf(g), g.active >= 0 ? g.tabs[g.active] : null, src, pvL).catch(e => console.error("[plugin] markdown processors:", e)); } catch (e) { console.error(e); }
+  // #186: fenced code coloured by Prism (ui/codehl.js). After the processors (a fence they own is skipped).
+  // Its synchronous part (pre.language-L, code.is-loaded) lands before the observer below; the token spans
+  // come after Prism loads, written through pvQuiet so they do not count as a touch of the retained DOM.
+  if (window.CodeHL) try { CodeHL.reading(P, fn => pvQuiet(P, fn)).catch(e => console.error("[codehl]", e)); } catch (e) { console.error(e); }
   // #185: $..$ / $$..$$ typeset by MathJax (ui/mathview.js). Its synchronous part (a $$ span becomes
   // div.math.math-block) lands before the observer below; the typeset output comes after MathJax loads,
   // written through pvQuiet so it does not count as a touch of the retained DOM.
