@@ -143,6 +143,7 @@ pub fn next_hop(cur: &url::Url, loc: &str, base: Option<&url::Url>) -> Result<ur
 pub fn http_get(logical: &str, cap: u64, what: &str) -> Result<Vec<u8>, String> {
     use soup::glib::translate::IntoGlib;
     use soup::prelude::*;
+    crate::net_allowed(what)?; // #144 toggle 3: the choke point, before any session exists
     let base = mirror_base();
     let mut cur = check_url(logical)?;
     let sess = soup::Session::new();
@@ -207,6 +208,7 @@ pub fn http_get(logical: &str, cap: u64, what: &str) -> Result<Vec<u8>, String> 
 
 #[cfg(not(target_os = "linux"))]
 pub fn http_get(logical: &str, _cap: u64, what: &str) -> Result<Vec<u8>, String> {
+    crate::net_allowed(what)?; // #144 toggle 3
     check_url(logical)?;
     Err(format!("{what}: the plugin browser has no network client on this platform"))
 }
