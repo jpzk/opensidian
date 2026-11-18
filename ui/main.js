@@ -9514,7 +9514,9 @@ async function cvEmbedPaint(s, link) {   // link: the reading view's a.wiki to r
   let p = null, doc = null;
   try {
     const all = await inv("canvas_io", { op: "list", path: "" });
-    p = all.includes(want) ? want : all.find(x => x.split("/").pop() === want.split("/").pop()) || null;
+    // issue #180: an embed resolves exactly like a [[x.canvas]] link (stock 1.13.7): case-insensitive, and a
+    // path whose folder does not exist is unresolved — never a same-named canvas in another folder
+    p = cvRefCanvas(want, all);
     if (p) doc = JSON.parse(await inv("canvas_io", { op: "read", path: p }));
   } catch (_) { doc = null; }
   if (!s.isConnected) return;
