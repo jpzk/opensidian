@@ -123,8 +123,8 @@ strip = "symbols"
 # passed `&p` as a variadic out-argument, UB. Fixed upstream only in glib >= 0.20
 # (gtk-rs/gtk-rs-core PR 1343, commit b5a4071e); gtk3-rs 0.18 pins glib 0.18, so no bump.
 # vendor/glib-0.18.5 = crates.io glib 0.18.5 byte-for-byte (sha256 233daaf6…0ee5, the
-# Cargo.lock checksum) + exactly that two-line upstream hunk. Checked by harness
-# scripts/glib-vendor-check.sh before every release.
+# crates.io index cksum) + exactly that two-line upstream hunk. Checked by
+# scripts/supply-chain/glib-vendor-check.sh in .github/workflows/supply-chain.yml.
 [patch.crates-io]
 glib = { path = "vendor/glib-0.18.5" }
 
