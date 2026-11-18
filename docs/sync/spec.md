@@ -158,6 +158,37 @@ The signature is by the device signing key listed in the current cfg
 generation (4.4). Unknown device / revoked slot → reject the batch (it is
 still kept as an object; no data is discarded on the server side).
 
+Implementation notes (M4a, `sync_proto::batch` layout + `sync_core::commit`):
+
+- **Canonical extras** (checked on encode AND decode): parents strictly
+  ascending, a commit is never its own parent; changes strictly ascending
+  by path bytes; paths are vault-relative (non-empty `/`-separated
+  segments, no `.`/`..`/empty segment, no backslash or control char);
+  inline blobs are referenced exactly once and in change order
+  (`blob_idx` = 0,1,2,… — no unreferenced or shared blob); inline
+  `size` = blob length ≤ 1 MiB; `where = chunks` only for size > 1 MiB and
+  with exactly `ceil(size / 4 MiB)` ids; rename target ≠ source.
+- **Changes are relative to the tree of `parents[0]`** (lowest commit_id;
+  empty tree for a root). Applying them: delete/rename need an existing
+  source, rename carries the source hash and may not land on an existing
+  path. `tree_hash` is the tree AFTER the commit; a receiver rebuilds the
+  tree from the manifest and compares.
+- **Signature**: `sig = Sign(K_dev, SHA-256("osy batch v1" || bytes from
+  commit_version through sig_alg))`; with suite 0x02 the module signs that
+  32-byte digest with ECDSA P-256/SHA-256 (fixed 64-byte r||s).
+- **Verify order**: container (commitment, GCM) → kind = batch → decode +
+  canonical checks → commit_id = obj_id → sig_alg of the vault suite →
+  device key from cfg (unknown/revoked → reject) → signature → every inline
+  blob's SHA-256.
+- **Chunk ids** are fresh random id16 (no content-derived ids: equal
+  attachments in two commits are not linkable by the server).
+- **Write order**: chunks first, then the batch, so a visible batch never
+  references a missing chunk; pushes are idempotent (write-once,
+  identical re-upload = OK).
+- **Size**: the encoded batch is capped at 12 MiB before compression so
+  Padme + segment overhead stays under the default 16 MiB object limit;
+  the engine splits larger edit sets into several commits.
+
 ### 4.2 Chunk (kind 0x02)
 
 Body = raw 4 MiB plaintext slice of an attachment > 1 MiB (last slice
