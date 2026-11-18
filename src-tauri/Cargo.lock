@@ -3654,11 +3654,17 @@ dependencies = [
 name = "sync-core"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "rustls",
+ "rustls-pki-types",
+ "rustls-webpki",
  "serde",
  "serde_json",
  "sha2",
  "sync-crypto",
  "sync-proto",
+ "sync-server",
+ "tokio",
  "zstd",
  "zstd-safe",
  "zstd-sys",

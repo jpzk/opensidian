@@ -191,6 +191,22 @@ resolver cannot float to a younger release (cutoff 2026-10-07).
   release day as aws-lc-fips-sys 0.14.2; 0.46.0 (2026-10-12) is too young.
   Build deps (cc, cmake, dunce, fs_extra, pkg-config) were already locked.
 
+### M3c — sync-core transport (HTTP(S) client + dir replica): no new crate
+
+`sync-core` now depends directly on `rustls =0.23.45`, `rustls-webpki
+=0.103.15`, `rustls-pki-types =1.15.1` (same versions + features as
+sync-server, above) and `base64 =0.22.1` (already locked). Dev-only:
+`sync-server` (path; the HTTP suite runs a real server on loopback) and
+`tokio =1.53.1` (already locked). Cargo.lock delta = the `sync-core`
+dependency list only; no `[[package]]` added. The client is hand-written
+HTTP/1.1 over `std::net::TcpStream` (no hyper client, no reqwest), TLS 1.3
+only on `rustls::crypto::default_fips_provider()`, config refused unless
+`ClientConfig::fips()`. System roots are read from `$SSL_CERT_FILE` or the
+distro bundle paths (no rustls-native-certs / webpki-roots crate).
+Consequence: the app crate (which depends on sync-core) now also links
+rustls + the forced non-FIPS aws-lc-sys described above; no other crate in
+the lock uses rustls, so no existing TLS user changes behaviour.
+
 Lock-only (present in Cargo.lock as optional deps of rustls-webpki, NOT
 compiled — `cargo tree -p sync-server -i ring` prints nothing):
 
@@ -228,7 +244,7 @@ locked version so nothing in the lock moves.
   binary canonical encoding of spec.md, not JSON).
 
 Per crate (direct deps): `sync-proto` → serde (dev: serde_json, JSON tests of the `/v1` bodies); `sync-crypto` → sha2, aws-lc-rs, aws-lc-fips-sys, zeroize (dev: serde_json, Wycheproof JSON);
-`sync-core` → sync-proto, sync-crypto, sha2, serde, serde_json, zstd, zstd-safe, zstd-sys; `syncd` →
+`sync-core` → sync-proto, sync-crypto, sha2, serde, serde_json, zstd, zstd-safe, zstd-sys, rustls, rustls-webpki, rustls-pki-types, base64 (M3c; dev: sync-server, tokio); `syncd` →
 sync-core; `sync-server` → sync-proto, sync-crypto, serde, serde_json, base64, bytes, http, http-body-util, hyper, hyper-util, tokio, rusqlite, libsqlite3-sys (M3a), rustls, tokio-rustls, rustls-webpki, rustls-pki-types, subtle, untrusted, aws-lc-sys (M3a-TLS). The Cargo.lock delta of
 the skeleton is exactly the five path packages (`[[package]]` entries without
 `source`/`checksum`); no registry package is added, removed or moved.
