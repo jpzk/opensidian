@@ -649,8 +649,15 @@ fn destroy_with_proof_purges_vault_and_signs_receipt() {
     assert!(s.app.store.destroyed(&e.ns).unwrap());
     let r = destroy_request(&s, &e.ns);
     assert_eq!((r.status, r.error()), (410, ErrorCode::Gone));
+    // replaying the same confirm (lost response) returns the stored receipt,
+    // and destroys nothing more; any other token gets 410
     let r = confirm(&s, &e.ns, &c.confirm_token, ts, &sign_destroy(&key, &e.ns, &c, ts));
-    assert_eq!((r.status, r.error()), (410, ErrorCode::Gone), "replay");
+    assert_eq!(r.status, 200, "replay recovers the receipt");
+    let again: DestroyReceipt = serde_json::from_slice(&r.body).unwrap();
+    assert_eq!(again, rc);
+    let other = URL_SAFE_NO_PAD.encode([3u8; 32]);
+    let r = confirm(&s, &e.ns, &other, ts, &sign_destroy(&key, &e.ns, &c, ts));
+    assert_eq!((r.status, r.error()), (410, ErrorCode::Gone), "unknown token on a destroyed vault");
     let leftovers: Vec<_> = std::fs::read_dir(s.dir.join("tmp")).unwrap().collect();
     assert!(leftovers.is_empty(), "trash removed");
 
