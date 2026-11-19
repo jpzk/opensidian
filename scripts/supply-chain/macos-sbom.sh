@@ -12,7 +12,7 @@
 #   os      the system WebKit the app renders with: WKWebView from WebKit.framework, shipped and
 #           patched by Apple with macOS (NOT bundled). Recorded as an OS-provided component
 #           (no purl: OSV has no ecosystem for it, so it is listed, not scanned), together with the
-#           minimum macOS the binary declares (LC_BUILD_VERSION minos) and the build SDK.
+#           minimum macOS the binary declares (LC_BUILD_VERSION minos, or LC_VERSION_MIN_MACOSX version on x86_64) and the build SDK.
 # Usage: macos-sbom.sh -t <triple> -m <cargo-metadata.json> -r <rust.cdx.json> -j <vendor.cdx.json>
 #                      -b <build-info.env> -o <dir> [-v <version>]
 #   build-info.env: KEY=VALUE lines from the macOS build job (MINOS, SDK_VERSION, XCODE_VERSION,

@@ -127,15 +127,20 @@ jobs:
       - name: build info (minimum macOS, SDK, Xcode) for the SBOM
         run: |
           B=src-tauri/target/release/opensidian
-          MINOS=$(otool -l "$B" | awk '/LC_BUILD_VERSION/{f=1} f&&$1=="minos"{print $2; exit}')
-          SDKB=$(otool -l "$B" | awk '/LC_BUILD_VERSION/{f=1} f&&$1=="sdk"{print $2; exit}')
-          printf '%s' "$MINOS" | grep -Eqx '[0-9]+(\.[0-9]+)+' || { echo "::error::no LC_BUILD_VERSION minos in $B"; exit 1; }
+          # minimum macOS: LC_BUILD_VERSION (minos/sdk) on aarch64 and >= 10.14 targets;
+          # LC_VERSION_MIN_MACOSX (version/sdk) on x86_64, whose rustc default target is 10.12
+          OL=$(otool -l "$B")
+          LOADCMD=$(awk '$1=="cmd"&&($2=="LC_BUILD_VERSION"||$2=="LC_VERSION_MIN_MACOSX"){print $2; exit}' <<<"$OL")
+          MINOS=$(awk '$1=="cmd"{c=$2} c=="LC_BUILD_VERSION"&&$1=="minos"{print $2; exit} c=="LC_VERSION_MIN_MACOSX"&&$1=="version"{print $2; exit}' <<<"$OL")
+          SDKB=$(awk '$1=="cmd"{c=$2} (c=="LC_BUILD_VERSION"||c=="LC_VERSION_MIN_MACOSX")&&$1=="sdk"{print $2; exit}' <<<"$OL")
+          printf '%s' "$MINOS" | grep -Eqx '[0-9]+(\.[0-9]+)+' || { echo "::error::no LC_BUILD_VERSION minos / LC_VERSION_MIN_MACOSX version in $B"; exit 1; }
           mkdir -p "$RUNNER_TEMP/info"
           {
             echo "TRIPLE=$TRIPLE"
             echo "MINOS=$MINOS"
             echo "SDK_VERSION=$(xcrun --sdk macosx --show-sdk-version)"
             echo "BINARY_SDK=$SDKB"
+            echo "MINOS_LOAD_COMMAND=$LOADCMD"
             echo "XCODE_VERSION=$(xcodebuild -version | awk 'NR==1{v=$2} /Build version/{b=$3} END{print v" ("b")"}')"
             echo "MACOS_BUILD_VERSION=macOS $(sw_vers -productVersion) ($(sw_vers -buildVersion))"
             echo "RUNNER_LABEL=${{ matrix.runner }}"
