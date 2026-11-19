@@ -39,5 +39,21 @@ fresh; jq '(.libraries[]|select(.name=="prismjs")|.files[]|select(.concat)|.conc
 fresh; jq '(.libraries[]|select(.name=="prismjs")|.files[]|select(.concat)|.concat[0])="package/../evil.js"' "$scratch/vendor/vendor.lock.json" >"$scratch/l" \
   && mv "$scratch/l" "$scratch/vendor/vendor.lock.json"; expect 1 "unsafe concat path (prism-components.js)"
 fresh; printf '# prose\n' >"$scratch/vendor/fluent/VENDOR.md"; expect 1 "VENDOR.md added back (fluent/VENDOR.md)"
+# files[] "source" entries (fluent/LICENSE: not in the npm tarball, pinned to an upstream commit URL).
+# The clean copy above is the good-source fixture; it must be locked by source, not allowed_unlocked.
+srcsel='(.libraries[]|select(.name=="@fluent/bundle")|.files[]|select(.path=="fluent/LICENSE"))'
+if jq -e "$srcsel|.source|test(\"^https://raw.githubusercontent.com/[^/]+/[^/]+/[0-9a-f]{40}/\")" "$root/ui/vendor/vendor.lock.json" >/dev/null \
+   && ! jq -e '.allowed_unlocked|index("fluent/LICENSE")' "$root/ui/vendor/vendor.lock.json" >/dev/null; then
+  echo "PASS  fluent/LICENSE locked by commit-pinned source + sha256, not in allowed_unlocked"
+else echo "FAIL  fluent/LICENSE is not locked by a commit-pinned source"; rc=1; fi
+lockmut() { jq "$1" "$scratch/vendor/vendor.lock.json" >"$scratch/l" && mv "$scratch/l" "$scratch/vendor/vendor.lock.json"; }
+fresh; lockmut "$srcsel.sha256=\"$(printf '0%.0s' {1..64})\""; expect 1 "source entry: wrong sha256 (fluent/LICENSE)"
+fresh; lockmut "$srcsel.source|=sub(\"^https:\";\"http:\")"; expect 1 "source entry: non-https URL (fluent/LICENSE)"
+fresh; lockmut "$srcsel.source|=sub(\"/[0-9a-f]{40}/\";\"/main/\")"; expect 1 "source entry: branch ref instead of commit (fluent/LICENSE)"
+fresh; lockmut "$srcsel.source|=sub(\"raw.githubusercontent.com\";\"example.com\")"; expect 1 "source entry: other host (fluent/LICENSE)"
+fresh; lockmut "$srcsel.tarball_path=\"package/LICENSE\""; expect 1 "source entry with tarball_path too (fluent/LICENSE)"
+fresh; printf ' ' >>"$scratch/vendor/fluent/LICENSE"; expect 1 "vendored fluent/LICENSE differs from the fetched source bytes"
+fresh; lockmut "(.libraries[]|select(.name==\"@fluent/bundle\")|.files)|=map(select(.path!=\"fluent/LICENSE\"))"
+expect 1 "fluent/LICENSE dropped from the lock (no longer covered)"
 [ $rc = 0 ] && echo "vendor-verify.test: ALL PASS" || echo "vendor-verify.test: FAILURES"
 exit $rc
