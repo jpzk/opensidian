@@ -788,3 +788,47 @@ fn thin_keeps_the_rename_that_hides_an_older_name() {
     assert_eq!(s.head("old.png"), None);
     assert_eq!(s.thin(now, &r).unwrap(), Rewrite::default(), "thin keeps working");
 }
+
+// ---- burn and move: copy_store -------------------------------------------
+
+#[test]
+fn copy_store_carries_every_version_to_the_new_vault() {
+    let f = fx("copy");
+    let mut s = open(&f);
+    write(&f, "n.md", b"v1\n");
+    let e1 = stored(s.record_external("n.md", 1).unwrap());
+    write(&f, "n.md", b"v2\n");
+    let e2 = stored(s.record_external("n.md", 2).unwrap());
+    drop(s);
+    let to = f.app.parent().unwrap().join("newstate").join("app");
+    // nothing to copy from a vault without a store
+    assert_eq!(copy_store(&f.app, "nostore", &to, "x1").unwrap(), 0);
+    assert!(!to.join("history").join("x1").exists());
+    let n = copy_store(&f.app, "v1", &to, "v2new").unwrap();
+    assert_eq!(n, 2, "two journal lines");
+    let t = Store::open(&to, "v2new", &f.vault, Config::default()).unwrap();
+    let vs = t.versions("n.md");
+    assert_eq!(vs.len(), 2);
+    assert_eq!(t.read_version(e1.seq).unwrap(), b"v1\n");
+    assert_eq!(t.read_version(e2.seq).unwrap(), b"v2\n");
+    // the copy belongs to the new vault only
+    assert!(Store::open(&to, "v1", &f.vault, Config::default()).is_ok_and(|s| s.versions("n.md").is_empty()));
+    // never over an existing store, never from a store of another vault id
+    assert!(copy_store(&f.app, "v1", &to, "v2new").is_err());
+    fs::rename(f.app.join("history").join("v1"), f.app.join("history").join("v9")).unwrap();
+    assert!(matches!(copy_store(&f.app, "v9", &to, "other"), Err(HistoryError::Meta(_))));
+}
+
+#[cfg(unix)]
+#[test]
+fn copy_store_refuses_a_symlink_in_the_source() {
+    let f = fx("copylink");
+    let mut s = open(&f);
+    write(&f, "n.md", b"v1\n");
+    stored(s.record_external("n.md", 1).unwrap());
+    drop(s);
+    std::os::unix::fs::symlink("/etc/passwd", f.app.join("history").join("v1").join("objects").join("evil")).unwrap();
+    let to = f.app.parent().unwrap().join("ns2");
+    assert!(matches!(copy_store(&f.app, "v1", &to, "v2"), Err(HistoryError::InvalidPath(_))));
+    assert!(!to.join("history").join("v2").exists(), "no half-copied store under the real name");
+}
