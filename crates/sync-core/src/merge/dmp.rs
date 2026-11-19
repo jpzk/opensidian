@@ -370,6 +370,29 @@ pub fn merge3(base: &str, ours: &str, theirs: &str) -> Result<String, DmpError> 
     let t: Vec<char> = theirs.chars().collect();
     let runs = diff(&b, &t)?;
     let hunks = make_patches(&b, &runs);
+    // If ours edited the base text a hunk was cut from (its change or its
+    // context), the hunk's exact `old` no longer exists at that place: any
+    // match apply_patches finds is a DIFFERENT occurrence of the same text,
+    // so the merge must fail (conflict copy) instead of editing that one.
+    let ours_edits = regions(&diff(&b, &o)?);
+    let mut delta: isize = 0;
+    for (n, ((cs, ce, ins), h)) in regions(&runs).iter().zip(&hunks).enumerate() {
+        let s = (*cs as isize + delta) as usize;
+        let pre = s.saturating_sub(h.loc);
+        let post = h.old.len().saturating_sub(pre + (ce - cs));
+        let (a, z) = (cs.saturating_sub(pre), ce + post);
+        let touched = ours_edits.iter().any(|(os, oe, _)| {
+            if os == oe {
+                a < *os && *os < z // pure insertion strictly inside the span
+            } else {
+                *os < z && *oe > a
+            }
+        });
+        if touched {
+            return Err(DmpError::PatchFailed(n));
+        }
+        delta += ins.len() as isize - (ce - cs) as isize;
+    }
     Ok(apply_patches(&o, &hunks)?.into_iter().collect())
 }
 
@@ -467,5 +490,19 @@ mod tests {
         let b: Vec<u32> = (100..110).collect();
         assert!(myers(&a, &b, 5).is_none());
         assert!(myers(&a, &b, 20).is_some());
+    }
+
+    #[test]
+    fn merge3_fails_when_ours_edited_the_hunks_original_place() {
+        let filler: String = (0..40).map(|i| format!("filler line {i}\n")).collect();
+        let base = format!("X same\n{filler}end\n");
+        // ours moved the line to the bottom: the only "X same" left is a
+        // different occurrence than the one theirs edited
+        let ours = format!("{filler}end\nX same\n");
+        let theirs = format!("X SAME\n{filler}end\n");
+        assert!(merge3(&base, &ours, &theirs).is_err(), "must become a conflict copy");
+        // an edit far from theirs' hunk still merges
+        let ours2 = format!("X same\n{filler}end, edited\n");
+        assert_eq!(merge3(&base, &ours2, &theirs).unwrap(), format!("X SAME\n{filler}end, edited\n"));
     }
 }
