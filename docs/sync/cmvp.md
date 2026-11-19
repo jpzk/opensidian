@@ -155,7 +155,9 @@ The goal rule is "Ed25519 if the pinned cert covers it, else P-256". The
 pinned module has **no certificate**, so no cert covers Ed25519 for it →
 suite v1 signs with **ECDSA P-256 / SHA-256 (FIPS 186-5)**, key_alg = P-256.
 Ed25519 stays reserved in the key_alg byte; switching back is a cfg/{gen}
-change once an AWS-LC 4 certificate lists EdDSA.
+change once an AWS-LC 4 certificate lists EdDSA. **Superseded (§9, 2026-11-19):**
+the pin moved to the validated 0.13.11 line (#5314 lists EDDSA) and suite v1
+is Ed25519 again.
 
 ### Build toolchain (box only, deps.md §Toolchain)
 
@@ -267,9 +269,10 @@ What may be claimed (and what not):
 
 **Signature algorithm (goal rule "Ed25519 if the pinned cert covers it, else
 P-256"):** #5314 lists EDDSA ED-25519 [V S9], so the rule now selects
-**Ed25519** for suite v1; the switch from the §7 P-256 fallback is a
-separate change (key_alg byte, keytree derivation, KAT vectors), tracked in
-the goal ledger.
+**Ed25519** for suite v1. DONE (2026-11-19): suite 0x01 / key_alg 1 is the
+v1 suite in code — device keys, phrase-derived K_destroy / K_rsig (key-tree
+§2), the server receipt key; RFC 8032 KATs green (fips_kat.rs). P-256
+(suite 0x02) stays as the documented fallback for verification.
 
 **Known advisories on the pinned line** (RustSec advisory-db, checked
 2026-11-19) — see deps.md §FIPS-0.13 for reachability:

@@ -278,7 +278,8 @@ impl Envelope {
             if s.spki_pins.len() > MAX_PINS {
                 return Err(bad("too many pins"));
             }
-            if !(s.server_key.is_empty() || s.server_key.len() == klen) {
+            // empty (not pinned yet), Ed25519 (32, suite v1) or a P-256 point (65)
+            if !matches!(s.server_key.len(), 0 | 32 | 65) {
                 return Err(bad("server_key length"));
             }
         }

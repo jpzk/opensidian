@@ -352,7 +352,7 @@ fn verification_failures() {
     );
     // key registered for the wrong algorithm
     let mut wrong_alg: Keys = BTreeMap::new();
-    wrong_alg.insert(d.id, (SigAlg::Ed25519, d.pk.clone()));
+    wrong_alg.insert(d.id, (SigAlg::EcdsaP256Sha256, d.pk.clone()));
     assert_eq!(
         open_commit(&p, &v, &b.id, &b.container, &wrong_alg),
         Err(CommitError::WrongAlg)
@@ -425,7 +425,7 @@ fn verification_failures() {
     assert_eq!(open_commit(&p, &v, &b.id, &c, &ks), Err(CommitError::WrongId));
     // sig_alg byte not of the suite
     let mut t = b.batch.clone();
-    t.sig_alg = SigAlg::Ed25519 as u8;
+    t.sig_alg = SigAlg::EcdsaP256Sha256 as u8;
     assert_eq!(open_commit(&p, &v, &b.id, &reseal(&t), &ks), Err(CommitError::WrongAlg));
 }
 

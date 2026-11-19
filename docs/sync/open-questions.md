@@ -15,6 +15,9 @@ settled when the crypto pin is chosen.
    P-256. The #5314 SP-version / tested-environment questions do not apply
    to this pin. Follow-up before any release: re-check the AWS-LC 4
    certificate (SP lists 4.2.0?, environments, EdDSA, caveats).
+   **Update 2026-11-19 (cmvp.md §9):** re-pinned to the validated line
+   (aws-lc-fips-sys 0.13.11 / AWS-LC 3.1.0, certificate #5314, which lists
+   EDDSA KeyGen/SigGen/SigVer) -> suite v1 = Ed25519 (0x01, key_alg 1).
 3. **Mobile data default** — suggestion: commits + files < 1 MB auto, rest
    on Wi-Fi/on demand. Operator.
 4. **Self-hosting without a domain** (SPKI pinning) in v1? Default: spec

@@ -20,8 +20,9 @@ Four independent version axes:
 2. **Container format byte** `fmt` (section 3.1) — `0x01` in v1.
 3. **Suite byte** `suite` — the crypto algorithm set:
    - `0x00` reserved / invalid
-   - `0x01` AES-256-GCM, HKDF-SHA256, HMAC-SHA256, SHA-256, Ed25519
-   - `0x02` same, signatures ECDSA P-256 / SHA-256 (fallback if the
+   - `0x01` AES-256-GCM, HKDF-SHA256, HMAC-SHA256, SHA-256, Ed25519 —
+     **the v1 suite** (validated module #5314 lists EDDSA, cmvp.md §7)
+   - `0x02` same, signatures ECDSA P-256 / SHA-256 (fallback if a
      pinned CMVP cert does not cover EdDSA — see cmvp.md)
    - `0xF0..0xFF` test-only, MUST be rejected by release builds
 4. **Record versions** inside plaintext (`commit_version`, `env_version`,
@@ -174,8 +175,9 @@ Implementation notes (M4a, `sync_proto::batch` layout + `sync_core::commit`):
   path. `tree_hash` is the tree AFTER the commit; a receiver rebuilds the
   tree from the manifest and compares.
 - **Signature**: `sig = Sign(K_dev, SHA-256("osy batch v1" || bytes from
-  commit_version through sig_alg))`; with suite 0x02 the module signs that
-  32-byte digest with ECDSA P-256/SHA-256 (fixed 64-byte r||s).
+  commit_version through sig_alg))`; with suite 0x01 the module signs that
+  32-byte digest with pure Ed25519 (RFC 8032, 64-byte R||S); suite 0x02
+  uses ECDSA P-256/SHA-256 (fixed 64-byte r||s).
 - **Verify order**: container (commitment, GCM) → kind = batch → decode +
   canonical checks → commit_id = obj_id → sig_alg of the vault suite →
   device key from cfg (unknown/revoked → reject) → signature → every inline
@@ -216,7 +218,7 @@ u32  gen                          0 = genesis
 h32  prev                         SHA-256 of previous cfg plaintext, 00*32 at gen 0
 u8   min_suite
 u32  vk_epoch                     current VK epoch
-bytes rsig_pub                    65-byte P-256 public K_rsig (M5), same in every gen
+bytes rsig_pub                    public K_rsig (32 Ed25519 / 65 P-256, per min_suite), same in every gen
 list<slot> slots                  ALWAYS 32 slots (padding: state 0)
 u8   signer_kind                  1 = device slot, 2 = K_rsig
 u8   signer_slot
@@ -259,7 +261,7 @@ expires server-side after 15 min.
 
 ### 4.4–4.6 implementation notes (M5, `sync_proto::vault` + `sync_core::vault`)
 
-- **cfg** gains `bytes rsig_pub` (65-byte P-256 public K_rsig) after
+- **cfg** gains `bytes rsig_pub` (public K_rsig, 32-byte Ed25519 in suite 0x01) after
   `vk_epoch`; identical in every gen. Gen 0 MUST be signed by K_rsig
   (`signer_kind 2`, `signer_slot 0`). Gen N+1: gen = N+1, `prev` =
   SHA-256 of gen N's full plaintext, same rsig_pub, `vk_epoch` and
@@ -449,8 +451,8 @@ Implementation notes (M3a, `crates/sync-server`):
 - `GET /v1/list` returns live `obj` and `cfg` rows only; `POST /v1/missing`
   checks `obj` ids (live or soft-deleted). A soft-deleted id is never
   reusable: PUT answers 410.
-- `enroll` accepts `key_alg = 2` (P-256) only — the FIPS build has no
-  approved Ed25519 (cmvp.md §7); `key_alg = 1` answers `unsupported`.
+- `enroll` accepts `key_alg = 1` (Ed25519, 32-byte `pub_destroy`) only —
+  suite v1 (cmvp.md §7); `key_alg = 2` answers `unsupported`.
 - `Opensidian-Proto` is optional; if present it must be a listed major.
 - Unsatisfiable or multi-part `Range` answers 416 with
   `Content-Range: bytes */<size>`.
@@ -491,8 +493,8 @@ Endpoints:
     (→ 429). TTL 300 s. `confirm_token` is 32 DRBG bytes, stored hashed.
   - `confirm` consumes the challenge before anything else (single use even
     when the proof then fails, so a token cannot be used to grind), then
-    requires `|ts − server now| ≤ 300 s` (400) and a 64-byte r‖s ECDSA
-    P-256/SHA-256 signature (bad/missing/wrong-key/wrong-nonce/wrong-ts →
+    requires `|ts − server now| ≤ 300 s` (400) and a 64-byte Ed25519
+    signature (bad/missing/wrong-key/wrong-nonce/wrong-ts →
     403 `forbidden`). A challenge of vault A never confirms vault B (401).
   - Purge is one transaction under the index lock (no concurrent PUT can
     publish into the namespace): object rows, tokens (the vault row) and
@@ -504,8 +506,8 @@ Endpoints:
     at a dead namespace.
   - Receipt = `"osy destroy receipt v1" || u8 scope(1) || id16 ns ||
     32 server_nonce || i64 ts || i64 destroyed_at || u64 objects ||
-    u64 bytes` followed by the 64-byte r‖s signature of the server receipt
-    key (P-256 from the module DRBG, `<data>/receipt_key.p8`, PKCS#8, 0600,
+    u64 bytes` followed by the 64-byte Ed25519 signature of the server receipt
+    key (Ed25519 from the module, `<data>/receipt_key.p8`, PKCS#8 v2, 0600,
     created once). `POST /v1/enroll` also returns `server_key` so devices
     pin it at enrollment (TOFU) and compare it with the receipt's.
 - `POST /v1/enroll` — `{"enrollment_token":…,"pub_destroy":"<b64>",

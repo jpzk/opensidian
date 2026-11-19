@@ -45,8 +45,14 @@ K_destroy = HKDF(R, salt=00*32, info="osy destroy v1", 32)  destroy signing seed
 
 No memory-hard KDF: S has 142 bits of entropy (not a password), so
 brute force is out of reach; HKDF keeps everything inside the module.
-Signing seeds: Ed25519 seed directly (suite 0x01, reserved); for P-256
-(suite 0x02, v1) the scalar follows the arithmetic of FIPS 186-5 A.2.2
+Signing seeds: suite 0x01 (v1) uses the 32-byte K_rsig / K_destroy directly
+as the Ed25519 private key (RFC 8032 §5.1.5 seed), imported into the module
+with `fips::FipsSigningKey::from_ed25519_seed` (`from_seed`); the module
+derives the public key and a sign + verify round trip runs as a
+pairwise-consistency check before the key is used (tests:
+`crates/sync-crypto/tests/fips_kat.rs`, RFC 8032 KATs in
+`vectors/ed25519.vec`). For P-256
+(suite 0x02, fallback) the scalar follows the arithmetic of FIPS 186-5 A.2.2
 (rejection sampling):
 
 ```
@@ -59,7 +65,7 @@ is treated as broken). The scalar enters the module as an RFC 5915
 ECPrivateKey; AWS-LC computes Q = d·G and runs its FIPS pairwise-consistency
 check. Resolved in M2d (open questions 10 + 12, cmvp.md §8): K_destroy and
 K_rsig stay phrase-derived. Implementation: `sync_crypto::keytree`
-(`derive_root`, `p256_scalar_from_seed`) + `fips::FipsSigningKey::from_seed`;
+(`derive_root`, `p256_scalar_from_seed`) + `fips::FipsSigningKey::from_seed_p256`;
 tests in `crates/sync-crypto/tests/p256_derive.rs` (d = 1 → G,
 d = n − 1 → −G, out-of-range rejected, retry path, FIPS vs soft HKDF chain,
 fresh-device re-derivation from words).

@@ -29,7 +29,7 @@ cmvp.md §9, §FIPS-0.13 below); was aws-lc-rs 1.18.1 / fips-sys 0.14.2
 
 - `aws-lc-rs =1.16.0` — 2026-02-18 — `d9a7b350e3bb1767102698302bc37256cbd48422809984b98d292c40e2579aa9`
   — ISC AND (Apache-2.0 OR ISC) — the crypto suite (AES-256-GCM, HKDF,
-  HMAC, SHA-256, ECDSA P-256, DRBG) from the AWS-LC FIPS module; features
+  HMAC, SHA-256, Ed25519 (suite v1), ECDSA P-256, DRBG) from the AWS-LC FIPS module; features
   `fips`, `alloc`, default features off (no non-FIPS `aws-lc-sys`). Newest
   aws-lc-rs whose own tag ships fips-sys 0.13.11 (v1.16.1 ships 0.13.12).
   No std/existing crate offers a FIPS module.
