@@ -103,6 +103,25 @@ jq '.specVersion = "1.5"' "$t/vendor.json" >"$t/v15.json"
 expect_fail "merge: non-1.6 input" "not a CycloneDX 1.6" "$here/sbom-merge.sh" -o "$t/x" "$t/v15.json"
 jq '.components[0].licenses = [{expression: "Apache-2.0"}]' "$t/webkit.json" >"$t/wk-lic2.json"
 expect_fail "merge: same bom-ref, different license" "different purl/version/hashes/licenses" "$here/sbom-merge.sh" -o "$t/x" "$t/wk-lic2.json" "$t/flatpak.json"
+# one source package, two binary .debs (webkit-bundle-sbom.sh shape, dry run 44542613403 tripped on it):
+# ONE component, two SHA-256 + two licenses -> must merge, and keep both; a second input with a
+# different set under that bom-ref still fails closed.
+HA=$(printf "%064d" 0 | tr 0 a); HB=$(printf "%064d" 0 | tr 0 b)
+jq --arg a "$HA" --arg b "$HB" '.components[1] += {hashes: [{alg:"SHA-256",content:$a},{alg:"SHA-256",content:$b}],
+  licenses: [{license:{id:"LGPL-2.1-or-later"}},{license:{id:"BSD-2-Clause"}}]}' "$t/webkit.json" >"$t/wk-2bin.json"
+p7=$("$here/sbom-merge.sh" -o "$t/out7" "$t/wk-2bin.json" "$t/flatpak.json" 2>"$t/err7") \
+  && ok "merge: one source pkg with 2 binary .debs (2 SHA-256, 2 licenses) merges" || { cat "$t/err7"; bad "merge: 2-binary source rejected"; }
+[ -n "${p7:-}" ] && check "merge: both deb SHA-256 + both licenses kept on deb:webkit2gtk" "$p7" \
+  '[.components[] | select(."bom-ref" == "deb:webkit2gtk@2.52.5-1")] | length == 1
+   and ((.[0].hashes | map(.content) | sort) == [("a" * 64), ("b" * 64)]) and ((.[0].licenses | length) == 2)'
+p8=$("$here/sbom-merge.sh" -o "$t/out8" "$t/wk-2bin.json" "$t/wk-2bin.json" 2>"$t/err8") \
+  && ok "merge: identical 2-hash component in two inputs merges" || { cat "$t/err8"; bad "merge: identical 2-hash dup rejected"; }
+[ -n "${p8:-}" ] && check "merge: identical dup kept once with 2 hashes" "$p8" \
+  '[.components[] | select(."bom-ref" == "deb:webkit2gtk@2.52.5-1") | .hashes | length] == [2]'
+jq --arg a "$HA" '.components[1].hashes = [{alg:"SHA-256",content:$a}]' "$t/wk-2bin.json" >"$t/wk-1bin.json"
+expect_fail "merge: same source bom-ref, hash SET differs (2 vs 1)" "different purl/version/hashes" "$here/sbom-merge.sh" -o "$t/x" "$t/wk-2bin.json" "$t/wk-1bin.json"
+jq '.components[1].licenses = [{license:{id:"LGPL-2.1-or-later"}}]' "$t/wk-2bin.json" >"$t/wk-1lic.json"
+expect_fail "merge: same source bom-ref, license SET differs (2 vs 1)" "different purl/version/hashes/licenses" "$here/sbom-merge.sh" -o "$t/x" "$t/wk-2bin.json" "$t/wk-1lic.json"
 expect_fail "merge: -v disagrees with -t" "disagrees with -t" "$here/sbom-merge.sh" -o "$t/x" -v 1.2.4 -t v1.2.3 "$t/rust.json"
 expect_fail "merge: tag without v" "bad tag" "$here/sbom-merge.sh" -o "$t/x" -t 1.2.3 "$t/rust.json"
 expect_fail "merge: tag with junk" "bad tag" "$here/sbom-merge.sh" -o "$t/x" -t 'v1.2.3;rm' "$t/rust.json"

@@ -126,6 +126,11 @@ chk "non-DEP-5 copyright -> LicenseRef + license-note" \
   '.components[]|select(.name=="libgcrypt20")|(.licenses==[{license:{name:"LicenseRef-deb-copyright-unstructured"}}]) and any(.properties[]; .name=="opensidian:license-note" and (.value|test("libgcrypt20/copyright")))'
 chk "one SHA-256 per binary .deb, mapped by property" \
   "($C|[.hashes[]|select(.alg==\"SHA-256\").content]|sort)==[\"$H1\",\"$H2\"] and ($C|.properties[]|select(.name==\"opensidian:deb-sha256\").value)==\"libjavascriptcoregtk-4.1-0=$H2,libwebkit2gtk-4.1-0=$H1\""
+cp "$t/sbom.json" "$t/sbom-pkgset.json"
+if mp=$("$here/sbom-merge.sh" -o "$t/merged" -v 0.0.1 "$t/sbom-pkgset.json" 2>"$t/merr") \
+   && jq -e --arg a "$H1" --arg b "$H2" '[.components[]|select(.name=="webkit2gtk")|.hashes|map(.content)|sort]==[[$a,$b]|sort]' "$mp" >/dev/null; then
+  ok "sbom-merge accepts the 2-binary source component and keeps both SHA-256 (dry run 44542613403)"
+else cat "$t/merr"; bad "sbom-merge on webkit-bundle-sbom --pkgset output"; fi
 chk "image package: no hash, hash-note says why" \
   '.components[]|select(.name=="libgcrypt20")|(has("hashes")|not) and any(.properties[]; .name=="opensidian:hash-note" and (.value|test("base image")))'
 chk "every deb component: hash or hash-note" 'all(.components[]|select(.purl|startswith("pkg:deb")); has("hashes") or any(.properties[]; .name=="opensidian:hash-note"))'

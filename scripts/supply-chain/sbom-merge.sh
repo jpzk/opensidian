@@ -8,7 +8,11 @@
 # bundle, flatpak} -> their components.
 # Dedup: components are keyed by bom-ref. The same bom-ref in two inputs (brotli@1.2.1 is both
 # the AppImage's and the flatpak's) is kept ONCE, properties unioned; the same bom-ref with a
-# different purl/version/hash fails closed (two different things under one name).
+# different purl/version/hash set/license set fails closed (two different things under one name).
+# Hashes and licenses are compared as SETS PER INPUT COMPONENT, not pooled: one component may
+# legitimately carry several SHA-256 (webkit-bundle-sbom.sh: one per binary .deb of a source
+# package) and several licenses (one per binary copyright); every other input naming that
+# bom-ref must carry the identical set or none (a member without hashes/licenses adds nothing).
 # Fails closed on: an input that is not CycloneDX 1.6, a dependency ref that names no component.
 # serialNumber is a UUID derived from the content hash, so equal inputs give equal bytes.
 #
@@ -49,10 +53,12 @@ jq -s --arg ver "$ver" --arg ts "$ts" --arg tag "$tag" --arg lic "$lic" '
   ("opensidian-release@\($ver)") as $rel
   | [ .[] | (.components // []) + [.metadata.component] | .[] ] as $all
   | ($all | group_by(."bom-ref")) as $groups
-  | def hs: [.[] | .hashes // [] | .[]] | unique;
-    def ls: [.[] | .licenses // [] | .[]] | unique;
+  | def hsets: [.[] | .hashes // [] | unique | select(length > 0)] | unique;
+    def lsets: [.[] | .licenses // [] | unique | select(length > 0)] | unique;
+    def hs: hsets[0] // [];
+    def ls: lsets[0] // [];
     ($groups | map(select((map(key) | unique | length) > 1
-                          or (hs | group_by(.alg) | any(length > 1)) or (ls | length) > 1)
+                          or (hsets | length) > 1 or (lsets | length) > 1)
                    | .[0]."bom-ref")) as $conflict
   | if ($conflict | length) > 0 then error("bom-ref with different purl/version/hashes/licenses across inputs: \($conflict | join(", "))") else . end
   | [ $groups[] | .[0] + (if (hs | length) > 0 then {hashes: hs} else {} end)
