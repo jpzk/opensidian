@@ -368,3 +368,91 @@ fn parent_cycle_is_pending_not_a_hang() {
     assert_eq!(e.head(), Some(c1));
     assert_eq!(e.tips(), vec![c1]);
 }
+
+/// CodeRabbit #238 engine:613: a bad copy served by one replica does not
+/// stop the pass from taking the good copy of the same id from another.
+#[test]
+fn bad_copy_on_one_replica_does_not_block_the_good_copy() {
+    let p = FipsProvider::new().expect("FIPS module in FIPS mode");
+    let mut k = [0u8; 32];
+    p.random(&mut k).unwrap();
+    let v = VaultCtx { suite: Suite::P256, vault_id: rid(&p), ns: rid(&p), k_obj: k, prev_k_obj: vec![] };
+    let (d1, d2) = (FsTransport::open(tmpdir("bc1")).unwrap(), FsTransport::open(tmpdir("bc2")).unwrap());
+    let da = device(&p);
+    let ks: Keys = [(da.id, (SigAlg::EcdsaP256Sha256, da.pk.clone()))].into_iter().collect();
+    let mut hook = |_: &Loser, _: &[u8]| {};
+    let c = build_commit(&p, &v, &signer(&da), T0, vec![], &Tree::default(), vec![put("n.md", Class::Markdown, b"good\n")]).unwrap();
+    push_commit(&d2, &v, &c).unwrap();
+    let mut bad = d2.get(ObjKind::Obj, &v.ns, &c.id, None).unwrap().bytes;
+    let n = bad.len();
+    bad[n - 1] ^= 1;
+    d1.put(ObjKind::Obj, &v.ns, &c.id, &bad).unwrap();
+
+    let mut b = Engine::open(&p, v.clone(), tmpdir("ebc"), &ks).unwrap();
+    let r = b.sync(&[&d1, &d2], &signer(&da), &ks, T0 + 1, &mut hook).unwrap();
+    assert_eq!(r.rejected.iter().map(|(i, id, _)| (*i, *id)).collect::<Vec<_>>(), vec![(0, c.id)]);
+    assert_eq!(b.head(), Some(c.id), "the good copy from replica 1 is taken");
+    assert_eq!(text(&mut b, &ks, "n.md").as_deref(), Some(&b"good\n"[..]));
+}
+
+/// Replica whose object reads fail (listing works): engine:644.
+struct BrokenGet<'a> {
+    inner: &'a FsTransport,
+}
+
+impl Transport for BrokenGet<'_> {
+    fn health(&self) -> sync_core::transport::Result<sync_proto::api::Health> {
+        self.inner.health()
+    }
+    fn enroll(&self, t: &str, k: &[u8]) -> sync_core::transport::Result<sync_proto::api::EnrollResponse> {
+        self.inner.enroll(t, k)
+    }
+    fn put(&self, kind: ObjKind, ns: &Id16, id: &Id16, b: &[u8]) -> sync_core::transport::Result<sync_core::transport::PutOutcome> {
+        self.inner.put(kind, ns, id, b)
+    }
+    fn get(&self, _: ObjKind, _: &Id16, _: &Id16, _: Option<sync_core::transport::Range>) -> sync_core::transport::Result<sync_core::transport::Fetched> {
+        Err(sync_core::transport::TransportError::Io("read failed".into()))
+    }
+    fn get_deleted(&self, kind: ObjKind, ns: &Id16, id: &Id16) -> sync_core::transport::Result<Vec<u8>> {
+        self.inner.get_deleted(kind, ns, id)
+    }
+    fn missing(&self, ns: &Id16, ids: &[Id16]) -> sync_core::transport::Result<Vec<Id16>> {
+        self.inner.missing(ns, ids)
+    }
+    fn list(&self, ns: &Id16, q: ListQuery) -> sync_core::transport::Result<sync_proto::api::ListResponse> {
+        self.inner.list(ns, q)
+    }
+    fn delete(&self, kind: ObjKind, ns: &Id16, id: &Id16) -> sync_core::transport::Result<()> {
+        self.inner.delete(kind, ns, id)
+    }
+    fn destroy_request(&self, ns: &Id16) -> sync_core::transport::Result<sync_proto::api::DestroyChallenge> {
+        self.inner.destroy_request(ns)
+    }
+    fn destroy_confirm(&self, ns: &Id16, c: &sync_proto::api::DestroyConfirm) -> sync_core::transport::Result<sync_proto::api::DestroyReceipt> {
+        self.inner.destroy_confirm(ns, c)
+    }
+}
+
+/// CodeRabbit #238 engine:644: a replica that fails during pull gets no
+/// push in the same pass (its error is reported once).
+#[test]
+fn replica_failing_in_pull_is_not_pushed_to() {
+    let p = FipsProvider::new().expect("FIPS module in FIPS mode");
+    let mut k = [0u8; 32];
+    p.random(&mut k).unwrap();
+    let v = VaultCtx { suite: Suite::P256, vault_id: rid(&p), ns: rid(&p), k_obj: k, prev_k_obj: vec![] };
+    let d1 = FsTransport::open(tmpdir("bg")).unwrap();
+    let (da, db) = (device(&p), device(&p));
+    let ks: Keys = [&da, &db].iter().map(|d| (d.id, (SigAlg::EcdsaP256Sha256, d.pk.clone()))).collect();
+    let mut hook = |_: &Loser, _: &[u8]| {};
+    let other = build_commit(&p, &v, &signer(&db), T0, vec![], &Tree::default(), vec![put("o.md", Class::Markdown, b"o\n")]).unwrap();
+    push_commit(&d1, &v, &other).unwrap();
+    let before = ids(&d1, &v.ns);
+    let mut a = Engine::open(&p, v.clone(), tmpdir("ebg"), &ks).unwrap();
+    a.commit_local(&signer(&da), &ks, T0 + 1, vec![put("n.md", Class::Markdown, b"n\n")]).unwrap();
+    let broken = BrokenGet { inner: &d1 };
+    let r = a.sync(&[&broken], &signer(&da), &ks, T0 + 2, &mut hook).unwrap();
+    assert_eq!(r.replica_errors.len(), 1, "{:?}", r.replica_errors);
+    assert_eq!(r.pushed, 0, "no push to a replica that failed in pull");
+    assert_eq!(ids(&d1, &v.ns), before);
+}

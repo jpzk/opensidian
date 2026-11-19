@@ -638,11 +638,14 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
                     continue;
                 }
             };
+            let mut failed = false;
             for id in &ids {
                 if self.commits.contains_key(id) || self.chunks.contains(id) {
                     continue;
                 }
-                if quarantine.contains_key(id) || rep.rejected.iter().any(|(_, x, _)| x == id) {
+                // a copy one replica served that failed verification does not stop
+                // another replica's copy of the same id (CodeRabbit #238 engine:613)
+                if quarantine.contains_key(id) || rep.rejected.iter().any(|(j, x, _)| *j == i && x == id) {
                     continue;
                 }
                 let bytes = match r.get(ObjKind::Obj, &ns, id, None) {
@@ -673,7 +676,9 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
                     Err(e) => rep.rejected.push((i, *id, e.to_string())),
                 }
             }
-            listed.push(Some(ids));
+            // a replica that failed mid-pull gets no push this pass: its listing
+            // is no longer a safe picture of what it holds (CodeRabbit #238 engine:644)
+            listed.push(if failed { None } else { Some(ids) });
         }
         if !quarantine.is_empty() {
             let roots: Vec<Id16> = self.commits.keys().copied().collect();
@@ -774,6 +779,7 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
                     Err(TransportError::Api { code: ErrorCode::Gone, .. }) => {}
                     Err(e) => {
                         rep.replica_errors.push((i, e.to_string()));
+                        failed = true;
                         break;
                     }
                 }
