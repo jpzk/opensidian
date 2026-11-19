@@ -1,0 +1,35 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 52fe1c7..e029e93 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -77,7 +77,6 @@ enum_variant_marked_deprecated = "warn"
+ 
+ [features]
+ alloc = [
+-    "ring?/alloc",
+     "pki-types/alloc",
+ ]
+ aws-lc-rs = [
+@@ -94,7 +93,9 @@ aws-lc-rs-unstable = [
+     "aws-lc-rs/unstable",
+ ]
+ default = ["std"]
+-ring = ["dep:ring"]
++# opensidian patch (scripts/supply-chain/webpki-noring): the ring backend is removed; the
++# feature stays declared (empty) so cfg(feature = "ring") is known and simply off.
++ring = []
+ std = [
+     "alloc",
+     "pki-types/std",
+@@ -114,11 +115,6 @@ version = "1.12"
+ default-features = false
+ package = "rustls-pki-types"
+ 
+-[dependencies.ring]
+-version = "0.17"
+-optional = true
+-default-features = false
+-
+ [dependencies.untrusted]
+ version = "0.9"
+ 

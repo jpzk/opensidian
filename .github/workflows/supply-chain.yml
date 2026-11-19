@@ -9,6 +9,7 @@
 #   webkit-bundle-cve  the WebKitGTK/GTK closure the PORTABLE AppImage bundles (ubuntu-26.04 dpkg
 #                      database -> pkg:deb/ubuntu source packages); fails on CVEs with a fix available
 #   glib-vendor-check  src-tauri/vendor/glib-0.18.5 == crates.io glib 0.18.5 + the one documented patch
+#   webpki-vendor-check  src-tauri/vendor/rustls-webpki-0.103.13 == crates.io 0.103.13 + Cargo.toml noring patch
 #   vex-check          supply-chain/vex.cdx.json == deny.toml / audit.toml ignores, no expired entry
 #   gate-tests         scripts/supply-chain/tests/*.test.sh: every gate still turns red on its fixture
 #   sbom               Rust + vendored JS + WebKit bundle + flatpak runtime -> opensidian-<ver>.cdx.json,
@@ -241,6 +242,17 @@ jobs:
           persist-credentials: false
       - name: vendor/glib-0.18.5 == crates.io glib 0.18.5 + glib-fix/variantstriter.patch only
         run: scripts/supply-chain/glib-vendor-check.sh
+
+  webpki-vendor-check:
+    name: webpki vendor check
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: vendor/rustls-webpki-0.103.13 == crates.io rustls-webpki 0.103.13 + webpki-noring/noring.patch only
+        run: scripts/supply-chain/webpki-vendor-check.sh
 
   vex-check:
     name: VEX check
