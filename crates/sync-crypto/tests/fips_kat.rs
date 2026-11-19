@@ -111,7 +111,7 @@ fn kat_hmac_sha256_both_providers() {
             refused += 1;
         }
     }
-    assert_eq!((approved, refused), (4, 1));
+    assert_eq!((approved, refused), (3, 1));
 }
 
 #[test]
