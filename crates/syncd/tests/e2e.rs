@@ -326,3 +326,25 @@ fn two_clients_and_a_fresh_device_end_to_end() {
 fn now_s() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
+
+/// CodeRabbit #238 syncui:135: the desktop passes its offline policy as the
+/// engine's net gate; a refusing gate stops every server connection (sync,
+/// status) with code `offline`, before any socket is opened.
+#[test]
+fn net_gate_refuses_every_server_connection() {
+    let srv = server();
+    let lap = client("offline");
+    let tok = srv.app.create_enrollment(None, 600).unwrap();
+    let (a, _) = setup(&lap, &srv.url, Join::Create { enrollment_token: &tok });
+    put(&lap, "n.md", b"stays local\n");
+    let a = a.with_net_gate(|_| Err("offline mode is on".to_string()));
+    let e = a.sync_now().expect_err("sync must not connect while offline");
+    assert_eq!(e.code, "offline", "{e}");
+    let st = a.status().unwrap();
+    assert!(!st.server_ok);
+    assert!(st.server_error.as_deref().unwrap_or("").contains("offline mode is on"), "{:?}", st.server_error);
+    // the gate opened again: the same engine syncs
+    let a = a.with_net_gate(|_| Ok(()));
+    assert!(a.status().unwrap().server_ok);
+    sync(&lap, &a);
+}

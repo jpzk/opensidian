@@ -146,11 +146,20 @@ pub struct Setup<'a> {
     pub join: Join<'a>,
 }
 
+/// Asked before every server connection (the desktop app passes its offline
+/// policy, net_allowed); Err(reason) = do not connect.
+pub type NetGate = fn(&str) -> Result<(), String>;
+
+fn net_open(_: &str) -> Result<(), String> {
+    Ok(())
+}
+
 pub struct LocalEngine {
     p: FipsProvider,
     state: PathBuf,
     cfg: VaultConfig,
     ks: FileKeystore,
+    net: NetGate,
 }
 
 impl std::fmt::Debug for LocalEngine {
@@ -175,7 +184,7 @@ impl LocalEngine {
         }
         let p = FipsProvider::new().map_err(io_err)?;
         let ks = FileKeystore::open(state.join("keys"), presence).map_err(ks_err)?;
-        Ok(LocalEngine { p, state: state.to_path_buf(), cfg, ks })
+        Ok(LocalEngine { p, state: state.to_path_buf(), cfg, ks, net: net_open })
     }
 
     /// Create or join a vault; writes the keystore entries + vault.json.
@@ -247,7 +256,7 @@ impl LocalEngine {
         let tmp = state.join("vault.json.tmp");
         fs::write(&tmp, serde_json::to_vec_pretty(&cfg).map_err(io_err)?).map_err(io_err)?;
         fs::rename(&tmp, config_path(&state)).map_err(io_err)?;
-        Ok((LocalEngine { p, state, cfg, ks }, text))
+        Ok((LocalEngine { p, state, cfg, ks, net: net_open }, text))
     }
 
     pub fn config(&self) -> &VaultConfig {
@@ -265,7 +274,14 @@ impl LocalEngine {
         fs::rename(&tmp, config_path(&self.state)).map_err(io_err)
     }
 
+    /// Every server connection of this engine asks `gate` first.
+    pub fn with_net_gate(mut self, gate: NetGate) -> Self {
+        self.net = gate;
+        self
+    }
+
     fn transport(&self) -> ApiResult<HttpTransport> {
+        (self.net)("sync server").map_err(|e| ApiError::new("offline", e))?;
         HttpTransport::new(&self.cfg.url, roots(&self.cfg.ca_file)?).map_err(|e| ApiError::new("server", e.to_string()))
     }
 

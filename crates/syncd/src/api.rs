@@ -14,7 +14,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApiError {
     /// Stable machine code: `not-configured`, `busy`, `revoked`, `need-words`,
-    /// `server`, `io`, `bad-request`, `denied`, `history`, `vault`, `engine`.
+    /// `server`, `io`, `bad-request`, `denied`, `history`, `vault`, `engine`,
+    /// `offline` (the net gate refused the connection).
     pub code: String,
     pub message: String,
 }

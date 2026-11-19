@@ -102,7 +102,8 @@ fn open_vault(v: &Vault) -> Result<(PathBuf, PathBuf), String> {
 }
 
 fn engine(st: &Path, presence: bool) -> Result<LocalEngine, String> {
-    LocalEngine::open(st, Box::new(FixedPresence(presence))).map_err(api)
+    // every server connection asks the app offline policy (#144 toggle 2)
+    LocalEngine::open(st, Box::new(FixedPresence(presence))).map(|e| e.with_net_gate(crate::net_allowed)).map_err(api)
 }
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
@@ -134,7 +135,7 @@ pub struct View {
 pub async fn sync_status<R: tauri::Runtime>(win: tauri::WebviewWindow<R>, v: State<'_, Vault>) -> Result<View, String> {
     gate(win.label(), "sync_status")?;
     let (_, st) = open_vault(&v)?;
-    blocking(move || match LocalEngine::open(&st, Box::new(FixedPresence(false))) {
+    blocking(move || match LocalEngine::open(&st, Box::new(FixedPresence(false))).map(|e| e.with_net_gate(crate::net_allowed)) {
         Err(e) if e.code == "not-configured" => Ok(View { configured: false, status: None }),
         Err(e) => Err(api(e)),
         Ok(e) => Ok(View { configured: true, status: Some(e.status().map_err(api)?) }),
@@ -162,6 +163,7 @@ pub async fn sync_setup<R: tauri::Runtime>(
     ca_file: Option<String>,
 ) -> Result<SetupDone, String> {
     gate(win.label(), "sync_setup")?;
+    crate::net_allowed("sync setup")?;
     let (root, st) = open_vault(&v)?;
     let secret = zeroize::Zeroizing::new(secret);
     blocking(move || {
