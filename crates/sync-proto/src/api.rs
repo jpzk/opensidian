@@ -193,7 +193,7 @@ pub struct EnrollResponse {
     pub ns: Id16,
     pub read_token: String,
     pub write_token: String,
-    /// base64url uncompressed P-256 public key the server signs destroy
+    /// base64url public key (suite v1: 32-byte Ed25519) the server signs destroy
     /// receipts with. Devices pin it here (TOFU at enrollment) and check
     /// [`DestroyReceipt::server_key`] against it.
     pub server_key: String,
@@ -263,8 +263,8 @@ pub const DESTROY_CHALLENGE_TTL: u64 = 300;
 pub const DESTROY_TS_SKEW: i64 = 300;
 
 /// What the server attests in a destroy receipt (spec §5). Wire form of
-/// `DestroyReceipt.receipt` = [`ReceiptBody::encode`] `||` 64-byte ECDSA
-/// P-256/SHA-256 signature (r‖s) by the server receipt key over those bytes.
+/// `DestroyReceipt.receipt` = [`ReceiptBody::encode`] `||` 64-byte Ed25519
+/// signature (suite v1, RFC 8032) by the server receipt key over those bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReceiptBody {
     pub ns: Id16,

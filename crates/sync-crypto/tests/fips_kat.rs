@@ -215,8 +215,63 @@ fn p256_sign_verify_pkcs8() {
 }
 
 #[test]
-fn ed25519_not_offered_by_fips_suite() {
+fn ed25519_rfc8032_known_answers() {
+    // suite v1 signatures through the module: key import from the 32-byte
+    // seed derives the RFC public key, signing is deterministic (RFC 8032),
+    // and verification accepts exactly the valid cases.
     let p = fips();
-    assert_eq!(p.generate_signing_key(SigAlg::Ed25519).err(), Some(CryptoError::Unsupported));
-    assert_eq!(p.verify(SigAlg::Ed25519, &[0; 32], b"m", &[0; 64]), Err(CryptoError::Unsupported));
+    let (area, cases) = load("ed25519.vec");
+    assert_eq!(area, "ed25519");
+    assert_eq!(sync_crypto::V1_SIG_ALG, SigAlg::Ed25519);
+    let mut valid = 0;
+    for (id, c) in &cases {
+        let sk: [u8; 32] = unhex(f(c, "sk")).try_into().unwrap();
+        let (pk, msg, sig) = (unhex(f(c, "pk")), unhex(f(c, "msg")), unhex(f(c, "sig")));
+        let k = FipsSigningKey::from_ed25519_seed(&sk).unwrap();
+        assert_eq!(k.alg(), SigAlg::Ed25519, "{id}");
+        assert_eq!(k.public_key(), pk, "{id}: derived public key");
+        let got = p.verify(SigAlg::Ed25519, &pk, &msg, &sig);
+        match f(c, "result") {
+            "valid" => {
+                got.unwrap_or_else(|e| panic!("{id}: {e:?}"));
+                assert_eq!(p.sign(&k, &msg).unwrap(), sig, "{id}: deterministic signature");
+                valid += 1;
+            }
+            "invalid" => assert_eq!(got, Err(CryptoError::Verify), "{id}"),
+            r => panic!("{id}: result {r}"),
+        }
+    }
+    assert_eq!(valid, 3);
+}
+
+#[test]
+fn ed25519_sign_verify_pkcs8() {
+    let p = fips();
+    let (k, pk) = p.generate_signing_key(SigAlg::Ed25519).unwrap();
+    assert_eq!(pk.len(), 32);
+    let m = b"osy batch v1 digest";
+    let sig = p.sign(&k, m).unwrap();
+    assert_eq!(sig.len(), sync_crypto::fips::ED25519_SIG_LEN);
+    let v = |pk: &[u8], m: &[u8], s: &[u8]| p.verify(SigAlg::Ed25519, pk, m, s);
+    v(&pk, m, &sig).unwrap();
+    assert_eq!(v(&pk, b"osy batch v1 digesT", &sig), Err(CryptoError::Verify));
+    let mut bad = sig.clone();
+    bad[10] ^= 0x80;
+    assert_eq!(v(&pk, m, &bad), Err(CryptoError::Verify));
+    assert_eq!(v(&pk, m, &sig[..63]), Err(CryptoError::Verify));
+    assert_eq!(v(&pk[..31], m, &sig), Err(CryptoError::Verify));
+    // a P-256 signature / key never verifies as Ed25519 and vice versa
+    let pk_ec = p.generate_signing_key(SigAlg::EcdsaP256Sha256).unwrap().1;
+    assert_eq!(v(&pk_ec, m, &sig), Err(CryptoError::Verify));
+    assert_eq!(p.verify(SigAlg::EcdsaP256Sha256, &pk, m, &sig), Err(CryptoError::Verify));
+    // keystore round trip keeps the algorithm
+    let der = k.to_pkcs8().unwrap();
+    let k2 = FipsSigningKey::from_pkcs8(&der).unwrap();
+    assert_eq!((k2.alg(), k2.public_key()), (SigAlg::Ed25519, pk.clone()));
+    v(&pk, b"m", &p.sign(&k2, b"m").unwrap()).unwrap();
+    // phrase-derived (from_seed) keys are Ed25519 and stable
+    let a = FipsSigningKey::from_seed(&p, &[7u8; 32]).unwrap();
+    let b = FipsSigningKey::from_seed(&p, &[7u8; 32]).unwrap();
+    assert_eq!((a.alg(), a.public_key()), (SigAlg::Ed25519, b.public_key()));
+    assert_ne!(a.public_key(), FipsSigningKey::from_seed(&p, &[8u8; 32]).unwrap().public_key());
 }

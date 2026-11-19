@@ -20,7 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use sync_crypto::fips::{FipsProvider, FipsSigningKey};
-use sync_crypto::{CryptoError, CryptoProvider, SigAlg};
+use sync_crypto::{CryptoError, CryptoProvider, V1_SIG_ALG};
 use tokio::sync::{Notify, Semaphore};
 
 pub use http::serve;
@@ -74,7 +74,7 @@ pub struct App {
     pub cfg: Config,
     pub store: Store,
     pub prov: FipsProvider,
-    /// Destroy-receipt signing key (P-256, module DRBG, `receipt_key.p8`).
+    /// Destroy-receipt signing key (Ed25519 = suite v1, module DRBG, `receipt_key.p8`).
     receipt_key: FipsSigningKey,
     /// Its wire public key (65-byte SEC1), base64url.
     pub receipt_pub: String,
@@ -175,9 +175,20 @@ fn load_or_create_receipt_key(prov: &FipsProvider, data: &std::path::Path) -> Re
         match std::fs::read(&path) {
             Ok(der) => {
                 let der = zeroize::Zeroizing::new(der);
-                FipsSigningKey::from_pkcs8(&der)
-                    .map(Some)
-                    .map_err(|_| format!("{}: not a P-256 PKCS#8 key", path.display()))
+                let k = FipsSigningKey::from_pkcs8(&der)
+                    .map_err(|_| format!("{}: not a PKCS#8 signing key", path.display()))?;
+                // clients verify receipts with the suite v1 algorithm only;
+                // an older P-256 key is refused instead of silently replaced
+                // (a replaced key would orphan receipts clients pinned).
+                if k.alg() != V1_SIG_ALG {
+                    return Err(format!(
+                        "{}: receipt key is {:?}, suite v1 needs {:?}; move it away to start with a new key",
+                        path.display(),
+                        k.alg(),
+                        V1_SIG_ALG
+                    ));
+                }
+                Ok(Some(k))
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(format!("{}: {e}", path.display())),
@@ -187,7 +198,7 @@ fn load_or_create_receipt_key(prov: &FipsProvider, data: &std::path::Path) -> Re
         return Ok(k);
     }
     let (key, _) = prov
-        .generate_signing_key(SigAlg::EcdsaP256Sha256)
+        .generate_signing_key(V1_SIG_ALG)
         .map_err(|e| format!("receipt key: {e:?}"))?;
     let der = key.to_pkcs8().map_err(|e| format!("receipt key: {e:?}"))?;
     let tmp = data.join(format!(".{RECEIPT_KEY_FILE}.{}.tmp", std::process::id()));

@@ -106,7 +106,8 @@ pub struct CfgGen {
     pub prev: [u8; 32],
     pub min_suite: u8,
     pub vk_epoch: u32,
-    /// Public half of K_rsig (65-byte P-256). Identical in every generation.
+    /// Public half of K_rsig (32-byte Ed25519 in suite 0x01, 65-byte P-256
+    /// point in 0x02). Identical in every generation.
     pub rsig_pub: Vec<u8>,
     /// Exactly [`SLOTS`] entries.
     pub slots: Vec<Slot>,
@@ -119,7 +120,9 @@ impl CfgGen {
         if self.slots.len() != SLOTS {
             return Err(bad("cfg must carry exactly 32 slots"));
         }
-        if self.rsig_pub.len() != 65 {
+        // key lengths follow the suite (0x01 Ed25519: 32, 0x02 P-256: 65)
+        let klen = pubkey_len(self.min_suite).ok_or_else(|| bad("min_suite"))?;
+        if self.rsig_pub.len() != klen {
             return Err(bad("rsig_pub length"));
         }
         if self.gen == 0 && self.prev != [0u8; 32] {
@@ -275,7 +278,7 @@ impl Envelope {
             if s.spki_pins.len() > MAX_PINS {
                 return Err(bad("too many pins"));
             }
-            if !(s.server_key.is_empty() || s.server_key.len() == 65) {
+            if !(s.server_key.is_empty() || s.server_key.len() == klen) {
                 return Err(bad("server_key length"));
             }
         }
@@ -460,6 +463,24 @@ mod tests {
             signer: CfgSigner::Recovery,
             sig: vec![1; 64],
         }
+    }
+
+    #[test]
+    fn cfg_key_lengths_follow_the_suite() {
+        // suite 0x01 (v1, Ed25519): 32-byte K_rsig public key
+        let mut c = cfg();
+        c.min_suite = 1;
+        c.slots[0] = Slot { state: SlotState::Active, device_id: Id16([7; 16]), key_alg: 1, pubkey: vec![9; 32] };
+        assert!(c.encode().is_err(), "65-byte rsig_pub under suite 1");
+        c.rsig_pub = vec![9; 32];
+        let (d, _) = CfgGen::decode(&c.encode().unwrap()).unwrap();
+        assert_eq!(d, c);
+        let mut x = cfg();
+        x.rsig_pub = vec![9; 32];
+        assert!(x.encode().is_err(), "32-byte rsig_pub under suite 2");
+        let mut x = c.clone();
+        x.min_suite = 3;
+        assert!(x.encode().is_err(), "unknown suite");
     }
 
     #[test]

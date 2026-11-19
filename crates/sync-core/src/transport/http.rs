@@ -531,7 +531,7 @@ impl Transport for HttpTransport {
             &EnrollRequest {
                 enrollment_token: enrollment_token.to_string(),
                 pub_destroy: URL_SAFE_NO_PAD.encode(pub_destroy),
-                key_alg: sync_crypto::SigAlg::EcdsaP256Sha256 as u8,
+                key_alg: sync_crypto::V1_SIG_ALG as u8,
             },
         )
     }

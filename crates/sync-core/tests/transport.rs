@@ -76,7 +76,7 @@ struct Vault {
 
 fn enroll(srv: &Srv, t: &HttpTransport) -> Vault {
     let p = FipsProvider::new().unwrap();
-    let (k, pk) = p.generate_signing_key(SigAlg::EcdsaP256Sha256).unwrap();
+    let (k, pk) = p.generate_signing_key(SigAlg::Ed25519).unwrap();
     let tok = srv.app.create_enrollment(None, 600).unwrap();
     let e = t.enroll(&tok, &pk).expect("enroll");
     // one-time token
@@ -102,7 +102,7 @@ fn id(b: u8) -> Id16 {
 /// A syntactically valid container: real header + `n` opaque body bytes.
 fn container(id: Id16, n: usize, fill: u8) -> Vec<u8> {
     let mut v = Header {
-        suite: Suite::P256,
+        suite: Suite::Ed25519,
         obj_id: id,
         commit: [7; 32],
     }
@@ -290,7 +290,7 @@ fn http_destroy_without_proof_is_refused_with_proof_succeeds() {
     t.put(ObjKind::Obj, &v.ns, &a, &container(a, 8, 1)).unwrap();
 
     // a key that is not K_destroy -> 403, vault intact
-    let (wrong, _) = p.generate_signing_key(SigAlg::EcdsaP256Sha256).unwrap();
+    let (wrong, _) = p.generate_signing_key(SigAlg::Ed25519).unwrap();
     let r = destroy_vault(&t, &p, &wrong, &v.ns, &v.server_key, now_unix());
     assert_eq!(code(r), ErrorCode::Forbidden);
     // no signature at all -> 403
@@ -360,7 +360,7 @@ fn http_destroy_vault_helper_and_pinned_key_check() {
     assert_eq!(body.ns, v.ns);
     // a server that signs with a key other than the pinned one is caught
     let w = enroll(&srv, &t);
-    let (_, other_pub) = p.generate_signing_key(SigAlg::EcdsaP256Sha256).unwrap();
+    let (_, other_pub) = p.generate_signing_key(SigAlg::Ed25519).unwrap();
     let r = destroy_vault(&t, &p, &w.k_destroy, &w.ns, &other_pub, now_unix());
     assert!(matches!(r, Err(TransportError::BadReceipt(_))), "{r:?}");
 }
@@ -430,7 +430,7 @@ fn fs_refuses_foreign_dir_and_server_only_ops() {
     assert!(matches!(t.enroll("x", &[4; 65]), Err(TransportError::Unsupported(_))));
     assert!(matches!(t.destroy_request(&id(1)), Err(TransportError::Unsupported(_))));
     let p = FipsProvider::new().unwrap();
-    let (k, pk) = p.generate_signing_key(SigAlg::EcdsaP256Sha256).unwrap();
+    let (k, pk) = p.generate_signing_key(SigAlg::Ed25519).unwrap();
     assert!(matches!(
         destroy_vault(&t, &p, &k, &id(1), &pk, 0),
         Err(TransportError::Unsupported(_))

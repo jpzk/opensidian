@@ -49,7 +49,7 @@ struct Dev {
 }
 
 fn device(p: &FipsProvider) -> Dev {
-    let (key, pk) = p.generate_signing_key(SigAlg::EcdsaP256Sha256).unwrap();
+    let (key, pk) = p.generate_signing_key(SigAlg::Ed25519).unwrap();
     Dev { id: rid(p), key, pk }
 }
 
@@ -95,7 +95,7 @@ fn server(p: &FipsProvider) -> Server {
     let a = app.clone();
     rt.spawn(async move { serve(a, l).await });
     let t = HttpTransport::new(&format!("http://127.0.0.1:{port}"), Roots::System).unwrap();
-    let (_k, pk) = p.generate_signing_key(SigAlg::EcdsaP256Sha256).unwrap();
+    let (_k, pk) = p.generate_signing_key(SigAlg::Ed25519).unwrap();
     let tok = app.create_enrollment(None, 600).unwrap();
     let e = t.enroll(&tok, &pk).expect("enroll");
     t.set_tokens(Tokens::from(&e));
@@ -128,11 +128,11 @@ fn three_replicas_converge_by_set_union() {
     let srv = server(&p);
     let mut k = [0u8; 32];
     p.random(&mut k).unwrap();
-    let v = VaultCtx { suite: Suite::P256, vault_id: rid(&p), ns: srv.ns, k_obj: k, prev_k_obj: vec![] };
+    let v = VaultCtx { suite: Suite::Ed25519, vault_id: rid(&p), ns: srv.ns, k_obj: k, prev_k_obj: vec![] };
     let d1 = FsTransport::open(tmpdir("d1")).unwrap();
     let d2 = FsTransport::open(tmpdir("d2")).unwrap();
     let (da, db) = (device(&p), device(&p));
-    let ks: Keys = [&da, &db].iter().map(|d| (d.id, (SigAlg::EcdsaP256Sha256, d.pk.clone()))).collect();
+    let ks: Keys = [&da, &db].iter().map(|d| (d.id, (SigAlg::Ed25519, d.pk.clone()))).collect();
     let (dir_a, dir_b) = (tmpdir("ea"), tmpdir("eb"));
     let mut a = Engine::open(&p, v.clone(), &dir_a, &ks).unwrap();
     let mut b = Engine::open(&p, v.clone(), &dir_b, &ks).unwrap();
@@ -253,10 +253,10 @@ fn bad_objects_are_rejected_and_not_propagated() {
     let srv = server(&p);
     let mut k = [0u8; 32];
     p.random(&mut k).unwrap();
-    let v = VaultCtx { suite: Suite::P256, vault_id: rid(&p), ns: srv.ns, k_obj: k, prev_k_obj: vec![] };
+    let v = VaultCtx { suite: Suite::Ed25519, vault_id: rid(&p), ns: srv.ns, k_obj: k, prev_k_obj: vec![] };
     let d1 = FsTransport::open(tmpdir("bad")).unwrap();
     let (da, evil) = (device(&p), device(&p));
-    let ks: Keys = [(da.id, (SigAlg::EcdsaP256Sha256, da.pk.clone()))].into_iter().collect();
+    let ks: Keys = [(da.id, (SigAlg::Ed25519, da.pk.clone()))].into_iter().collect();
     let mut a = Engine::open(&p, v.clone(), tmpdir("ebad"), &ks).unwrap();
     let mut hook = |_: &Loser, _: &[u8]| {};
     let c1 = a.commit_local(&signer(&da), &ks, T0, vec![put("n.md", Class::Markdown, b"hi\n")]).unwrap();
@@ -310,10 +310,10 @@ fn commit_with_a_lying_tree_hash_never_becomes_head() {
     let p = FipsProvider::new().expect("FIPS module in FIPS mode");
     let mut k = [0u8; 32];
     p.random(&mut k).unwrap();
-    let v = VaultCtx { suite: Suite::P256, vault_id: rid(&p), ns: rid(&p), k_obj: k, prev_k_obj: vec![] };
+    let v = VaultCtx { suite: Suite::Ed25519, vault_id: rid(&p), ns: rid(&p), k_obj: k, prev_k_obj: vec![] };
     let d1 = FsTransport::open(tmpdir("lie")).unwrap();
     let (da, db) = (device(&p), device(&p));
-    let ks: Keys = [&da, &db].iter().map(|d| (d.id, (SigAlg::EcdsaP256Sha256, d.pk.clone()))).collect();
+    let ks: Keys = [&da, &db].iter().map(|d| (d.id, (SigAlg::Ed25519, d.pk.clone()))).collect();
     let mut hook = |_: &Loser, _: &[u8]| {};
     // a vault member signs a ROOT commit whose tree_hash was computed over a
     // base tree it does not have (signature and content are valid)
@@ -342,10 +342,10 @@ fn parent_cycle_is_pending_not_a_hang() {
     let p = FipsProvider::new().expect("FIPS module in FIPS mode");
     let mut k = [0u8; 32];
     p.random(&mut k).unwrap();
-    let v = VaultCtx { suite: Suite::P256, vault_id: rid(&p), ns: rid(&p), k_obj: k, prev_k_obj: vec![] };
+    let v = VaultCtx { suite: Suite::Ed25519, vault_id: rid(&p), ns: rid(&p), k_obj: k, prev_k_obj: vec![] };
     let d1 = FsTransport::open(tmpdir("cyc")).unwrap();
     let (da, db) = (device(&p), device(&p));
-    let ks: Keys = [&da, &db].iter().map(|d| (d.id, (SigAlg::EcdsaP256Sha256, d.pk.clone()))).collect();
+    let ks: Keys = [&da, &db].iter().map(|d| (d.id, (SigAlg::Ed25519, d.pk.clone()))).collect();
     let mut hook = |_: &Loser, _: &[u8]| {};
     // B's parent is A; A is re-signed (same id) with B as ITS parent: A <-> B
     let a0 = build_commit(&p, &v, &signer(&db), T0, vec![], &Tree::default(), vec![put("a.md", Class::Markdown, b"a\n")]).unwrap();
@@ -376,10 +376,10 @@ fn bad_copy_on_one_replica_does_not_block_the_good_copy() {
     let p = FipsProvider::new().expect("FIPS module in FIPS mode");
     let mut k = [0u8; 32];
     p.random(&mut k).unwrap();
-    let v = VaultCtx { suite: Suite::P256, vault_id: rid(&p), ns: rid(&p), k_obj: k, prev_k_obj: vec![] };
+    let v = VaultCtx { suite: Suite::Ed25519, vault_id: rid(&p), ns: rid(&p), k_obj: k, prev_k_obj: vec![] };
     let (d1, d2) = (FsTransport::open(tmpdir("bc1")).unwrap(), FsTransport::open(tmpdir("bc2")).unwrap());
     let da = device(&p);
-    let ks: Keys = [(da.id, (SigAlg::EcdsaP256Sha256, da.pk.clone()))].into_iter().collect();
+    let ks: Keys = [(da.id, (SigAlg::Ed25519, da.pk.clone()))].into_iter().collect();
     let mut hook = |_: &Loser, _: &[u8]| {};
     let c = build_commit(&p, &v, &signer(&da), T0, vec![], &Tree::default(), vec![put("n.md", Class::Markdown, b"good\n")]).unwrap();
     push_commit(&d2, &v, &c).unwrap();
@@ -440,10 +440,10 @@ fn replica_failing_in_pull_is_not_pushed_to() {
     let p = FipsProvider::new().expect("FIPS module in FIPS mode");
     let mut k = [0u8; 32];
     p.random(&mut k).unwrap();
-    let v = VaultCtx { suite: Suite::P256, vault_id: rid(&p), ns: rid(&p), k_obj: k, prev_k_obj: vec![] };
+    let v = VaultCtx { suite: Suite::Ed25519, vault_id: rid(&p), ns: rid(&p), k_obj: k, prev_k_obj: vec![] };
     let d1 = FsTransport::open(tmpdir("bg")).unwrap();
     let (da, db) = (device(&p), device(&p));
-    let ks: Keys = [&da, &db].iter().map(|d| (d.id, (SigAlg::EcdsaP256Sha256, d.pk.clone()))).collect();
+    let ks: Keys = [&da, &db].iter().map(|d| (d.id, (SigAlg::Ed25519, d.pk.clone()))).collect();
     let mut hook = |_: &Loser, _: &[u8]| {};
     let other = build_commit(&p, &v, &signer(&db), T0, vec![], &Tree::default(), vec![put("o.md", Class::Markdown, b"o\n")]).unwrap();
     push_commit(&d1, &v, &other).unwrap();

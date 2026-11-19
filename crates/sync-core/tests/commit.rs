@@ -54,7 +54,7 @@ fn vault(p: &FipsProvider, ns: Id16) -> VaultCtx {
     let mut k = [0u8; 32];
     p.random(&mut k).unwrap();
     VaultCtx {
-        suite: Suite::P256,
+        suite: Suite::Ed25519,
         vault_id: rid(p),
         ns,
         k_obj: k,
@@ -69,7 +69,7 @@ struct Dev {
 }
 
 fn device(p: &FipsProvider) -> Dev {
-    let (key, pk) = p.generate_signing_key(SigAlg::EcdsaP256Sha256).unwrap();
+    let (key, pk) = p.generate_signing_key(SigAlg::Ed25519).unwrap();
     Dev { id: rid(p), key, pk }
 }
 
@@ -77,7 +77,7 @@ type Keys = BTreeMap<Id16, (SigAlg, Vec<u8>)>;
 
 fn keys(devs: &[&Dev]) -> Keys {
     devs.iter()
-        .map(|d| (d.id, (SigAlg::EcdsaP256Sha256, d.pk.clone())))
+        .map(|d| (d.id, (SigAlg::Ed25519, d.pk.clone())))
         .collect()
 }
 
@@ -345,7 +345,7 @@ fn verification_failures() {
     );
     // device id known but with a different key (impersonation)
     let mut swapped: Keys = BTreeMap::new();
-    swapped.insert(d.id, (SigAlg::EcdsaP256Sha256, other.pk.clone()));
+    swapped.insert(d.id, (SigAlg::Ed25519, other.pk.clone()));
     assert_eq!(
         open_commit(&p, &v, &b.id, &b.container, &swapped),
         Err(CommitError::BadSignature)
@@ -569,7 +569,7 @@ fn roundtrip_http_server() {
 
     let t = HttpTransport::new(&format!("http://127.0.0.1:{port}"), Roots::System).unwrap();
     let p = fips();
-    let (_k, pk) = p.generate_signing_key(SigAlg::EcdsaP256Sha256).unwrap();
+    let (_k, pk) = p.generate_signing_key(SigAlg::Ed25519).unwrap();
     let tok = app.create_enrollment(None, 600).unwrap();
     let e = t.enroll(&tok, &pk).expect("enroll");
     t.set_tokens(Tokens::from(&e));

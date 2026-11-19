@@ -116,7 +116,7 @@ fn bearer(t: &str) -> String {
 /// A syntactically valid container: real header + `n` opaque body bytes.
 fn container(id: Id16, n: usize, fill: u8) -> Vec<u8> {
     let mut v = Header {
-        suite: Suite::P256,
+        suite: Suite::Ed25519,
         obj_id: id,
         commit: [7; 32],
     }
@@ -132,7 +132,7 @@ fn id(b: u8) -> Id16 {
 
 fn pub_destroy() -> String {
     let p = FipsProvider::new().unwrap();
-    let (_k, pk) = p.generate_signing_key(SigAlg::EcdsaP256Sha256).unwrap();
+    let (_k, pk) = p.generate_signing_key(SigAlg::Ed25519).unwrap();
     URL_SAFE_NO_PAD.encode(pk)
 }
 
@@ -142,7 +142,7 @@ fn enroll_body(tok: &str, pk: &str, alg: u8) -> Vec<u8> {
 
 fn enroll(s: &Srv, quota: Option<u64>) -> EnrollResponse {
     let tok = s.app.create_enrollment(quota, 3600).unwrap();
-    let r = call(s.addr, "POST", "/v1/enroll", &[], &enroll_body(&tok, &pub_destroy(), 2));
+    let r = call(s.addr, "POST", "/v1/enroll", &[], &enroll_body(&tok, &pub_destroy(), 1));
     assert_eq!(r.status, 201, "{}", String::from_utf8_lossy(&r.body));
     serde_json::from_slice(&r.body).unwrap()
 }
@@ -166,25 +166,30 @@ fn health_and_routes() {
 }
 
 #[test]
-fn enroll_is_one_time_and_p256_only() {
+fn enroll_is_one_time_and_ed25519_only() {
     let s = start(|_| {});
     let tok = s.app.create_enrollment(None, 3600).unwrap();
     let pk = pub_destroy();
-    let r = call(s.addr, "POST", "/v1/enroll", &[], &enroll_body(&tok, &pk, 1));
-    assert_eq!((r.status, r.error()), (400, ErrorCode::Unsupported));
-    let r = call(s.addr, "POST", "/v1/enroll", &[], &enroll_body(&tok, "AAAA", 2));
-    assert_eq!((r.status, r.error()), (400, ErrorCode::BadRequest));
+    // P-256 (key_alg 2) is not the v1 suite
     let r = call(s.addr, "POST", "/v1/enroll", &[], &enroll_body(&tok, &pk, 2));
+    assert_eq!((r.status, r.error()), (400, ErrorCode::Unsupported));
+    let p = FipsProvider::new().unwrap();
+    let (_k, p256) = p.generate_signing_key(SigAlg::EcdsaP256Sha256).unwrap();
+    let r = call(s.addr, "POST", "/v1/enroll", &[], &enroll_body(&tok, &URL_SAFE_NO_PAD.encode(p256), 1));
+    assert_eq!((r.status, r.error()), (400, ErrorCode::BadRequest), "65-byte point under key_alg 1");
+    let r = call(s.addr, "POST", "/v1/enroll", &[], &enroll_body(&tok, "AAAA", 1));
+    assert_eq!((r.status, r.error()), (400, ErrorCode::BadRequest));
+    let r = call(s.addr, "POST", "/v1/enroll", &[], &enroll_body(&tok, &pk, 1));
     assert_eq!(r.status, 201);
     let e: EnrollResponse = serde_json::from_slice(&r.body).unwrap();
     assert_ne!(e.read_token, e.write_token);
-    let r = call(s.addr, "POST", "/v1/enroll", &[], &enroll_body(&tok, &pk, 2));
+    let r = call(s.addr, "POST", "/v1/enroll", &[], &enroll_body(&tok, &pk, 1));
     assert_eq!((r.status, r.error()), (401, ErrorCode::Unauthorized), "token reuse");
-    let r = call(s.addr, "POST", "/v1/enroll", &[], br#"{"enrollment_token":"x","pub_destroy":"y","key_alg":2,"z":1}"#);
+    let r = call(s.addr, "POST", "/v1/enroll", &[], br#"{"enrollment_token":"x","pub_destroy":"y","key_alg":1,"z":1}"#);
     assert_eq!((r.status, r.error()), (400, ErrorCode::BadRequest), "unknown field");
     // expired token
     let old = s.app.create_enrollment(None, -1).unwrap();
-    let r = call(s.addr, "POST", "/v1/enroll", &[], &enroll_body(&old, &pk, 2));
+    let r = call(s.addr, "POST", "/v1/enroll", &[], &enroll_body(&old, &pk, 1));
     assert_eq!(r.status, 401);
 }
 
@@ -192,7 +197,7 @@ fn enroll_is_one_time_and_p256_only() {
 fn tokens_are_stored_hashed() {
     let s = start(|_| {});
     let tok = s.app.create_enrollment(None, 3600).unwrap();
-    let r = call(s.addr, "POST", "/v1/enroll", &[], &enroll_body(&tok, &pub_destroy(), 2));
+    let r = call(s.addr, "POST", "/v1/enroll", &[], &enroll_body(&tok, &pub_destroy(), 1));
     let e: EnrollResponse = serde_json::from_slice(&r.body).unwrap();
     drop(s._rt);
     let mut db = Vec::new();
@@ -451,9 +456,9 @@ fn anonymous_paths_are_rate_limited() {
 
 fn enroll_with_key(s: &Srv) -> (EnrollResponse, FipsSigningKey) {
     let p = FipsProvider::new().unwrap();
-    let (k, pk) = p.generate_signing_key(SigAlg::EcdsaP256Sha256).unwrap();
+    let (k, pk) = p.generate_signing_key(SigAlg::Ed25519).unwrap();
     let tok = s.app.create_enrollment(None, 3600).unwrap();
-    let r = call(s.addr, "POST", "/v1/enroll", &[], &enroll_body(&tok, &URL_SAFE_NO_PAD.encode(pk), 2));
+    let r = call(s.addr, "POST", "/v1/enroll", &[], &enroll_body(&tok, &URL_SAFE_NO_PAD.encode(pk), 1));
     assert_eq!(r.status, 201, "{}", String::from_utf8_lossy(&r.body));
     let e: EnrollResponse = serde_json::from_slice(&r.body).unwrap();
     assert_eq!(e.server_key, s.app.receipt_pub);
@@ -531,7 +536,7 @@ fn destroy_without_valid_proof_is_refused() {
 
     // signature by another key (e.g. a device key, not K_destroy)
     let p = FipsProvider::new().unwrap();
-    let (other, _) = p.generate_signing_key(SigAlg::EcdsaP256Sha256).unwrap();
+    let (other, _) = p.generate_signing_key(SigAlg::Ed25519).unwrap();
     let c = challenge(&s, &e.ns);
     let r = confirm(&s, &e.ns, &c.confirm_token, now, &sign_destroy(&other, &e.ns, &c, now));
     assert_eq!((r.status, r.error()), (403, ErrorCode::Forbidden), "wrong key");
@@ -630,10 +635,10 @@ fn destroy_with_proof_purges_vault_and_signs_receipt() {
     let (body, signed, sig) = ReceiptBody::split(&wire).unwrap();
     let spk = URL_SAFE_NO_PAD.decode(&rc.server_key).unwrap();
     let p = FipsProvider::new().unwrap();
-    p.verify(SigAlg::EcdsaP256Sha256, &spk, signed, sig).expect("receipt signature");
+    p.verify(SigAlg::Ed25519, &spk, signed, sig).expect("receipt signature");
     let mut tampered = signed.to_vec();
     tampered[40] ^= 1;
-    assert!(p.verify(SigAlg::EcdsaP256Sha256, &spk, &tampered, sig).is_err());
+    assert!(p.verify(SigAlg::Ed25519, &spk, &tampered, sig).is_err());
     assert_eq!(body.ns, e.ns);
     assert_eq!(body.server_nonce, unhex32(&c.server_nonce));
     assert_eq!(body.ts, ts);
@@ -676,7 +681,7 @@ fn receipt_key_persists_and_is_private() {
     let again = App::open(Config::new(s.dir.clone())).unwrap();
     assert_eq!(again.receipt_pub, s.app.receipt_pub);
     let pk = URL_SAFE_NO_PAD.decode(&s.app.receipt_pub).unwrap();
-    assert_eq!((pk.len(), pk[0]), (65, 4));
+    assert_eq!(pk.len(), 32, "Ed25519 receipt key");
 }
 
 #[test]

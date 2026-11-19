@@ -58,7 +58,7 @@ struct Dev {
 }
 
 fn device(p: &FipsProvider, name: &'static str) -> Dev {
-    let (key, pk) = p.generate_signing_key(SigAlg::EcdsaP256Sha256).unwrap();
+    let (key, pk) = p.generate_signing_key(SigAlg::Ed25519).unwrap();
     Dev { id: rid(p), key, pk, name }
 }
 
@@ -101,10 +101,10 @@ impl World {
         let p = fips();
         let mut k = [0u8; 32];
         p.random(&mut k).unwrap();
-        let v = VaultCtx { suite: Suite::P256, vault_id: rid(&p), ns: rid(&p), k_obj: k, prev_k_obj: vec![] };
+        let v = VaultCtx { suite: Suite::Ed25519, vault_id: rid(&p), ns: rid(&p), k_obj: k, prev_k_obj: vec![] };
         let a = device(&p, "Laptop");
         let b = device(&p, "Phone");
-        let ks = [&a, &b].iter().map(|d| (d.id, (SigAlg::EcdsaP256Sha256, d.pk.clone()))).collect();
+        let ks = [&a, &b].iter().map(|d| (d.id, (SigAlg::Ed25519, d.pk.clone()))).collect();
         World {
             v,
             t: FsTransport::open(tmpdir("fs")).unwrap(),

@@ -65,7 +65,7 @@ fn raw_scalar_out_of_range_rejected() {
 #[test]
 fn imported_key_signs_verifies_and_round_trips_pkcs8() {
     let p = fips();
-    let k = FipsSigningKey::from_seed(&p, &[7u8; 32]).unwrap();
+    let k = FipsSigningKey::from_seed_p256(&p, &[7u8; 32]).unwrap();
     let pk = k.public_key();
     let sig = p.sign(&k, b"osy destroy v1 test").unwrap();
     p.verify(SigAlg::EcdsaP256Sha256, &pk, b"osy destroy v1 test", &sig).unwrap();
@@ -136,18 +136,18 @@ fn k_destroy_rederives_from_words_on_a_fresh_device() {
     let ph = Phrase::generate(&p).unwrap();
     let words = ph.to_text(&p);
     let ra = derive_root(&p, &ph.s_bytes()).unwrap();
-    let ka = FipsSigningKey::from_seed(&p, &ra.k_destroy).unwrap();
+    let ka = FipsSigningKey::from_seed_p256(&p, &ra.k_destroy).unwrap();
     // device B only has the words
     let ph_b = Phrase::parse(&p, &words).unwrap();
     let rb = derive_root(&p, &ph_b.s_bytes()).unwrap();
-    let kb = FipsSigningKey::from_seed(&p, &rb.k_destroy).unwrap();
+    let kb = FipsSigningKey::from_seed_p256(&p, &rb.k_destroy).unwrap();
     assert_eq!(ka.public_key(), kb.public_key());
     assert_eq!(ra.loc, rb.loc);
     let msg = b"osy destroy v1 confirm";
     let sig = p.sign(&kb, msg).unwrap();
     p.verify(SigAlg::EcdsaP256Sha256, &ka.public_key(), msg, &sig).unwrap();
     // recovery key is a different key
-    let krs = FipsSigningKey::from_seed(&p, &rb.k_rsig).unwrap();
+    let krs = FipsSigningKey::from_seed_p256(&p, &rb.k_rsig).unwrap();
     assert_ne!(krs.public_key(), kb.public_key());
 }
 

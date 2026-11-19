@@ -7,15 +7,16 @@
 //! - AEAD: AES-256-GCM via `RandomizedNonceKey` — the 96-bit nonce comes from
 //!   the module DRBG inside the seal call, a caller can never choose it.
 //! - HKDF-SHA256 / HMAC-SHA256 / SHA-256 / DRBG: module services.
-//! - Signatures: ECDSA P-256 / SHA-256 (fixed 64-byte r||s, uncompressed
-//!   65-byte public key). Ed25519 is NOT offered: the pinned module is not
-//!   covered by a certificate listing EdDSA (cmvp.md §7), so suite 0x02 is the
-//!   v1 suite and `SigAlg::Ed25519` returns `Unsupported`.
+//! - Signatures: Ed25519 (suite 0x01, the v1 suite: certificate #5314 lists
+//!   EDDSA KeyGen/SigGen/SigVer, cmvp.md §2 + §7; 32-byte public key, 64-byte
+//!   signature, RFC 8032 pure Ed25519). ECDSA P-256 / SHA-256 (suite 0x02,
+//!   fixed 64-byte r||s, 65-byte uncompressed point) stays available for
+//!   verification and as the documented fallback suite.
 
 use aws_lc_rs::aead::{Aad, Nonce, RandomizedNonceKey, AES_256_GCM};
 use aws_lc_rs::signature::{
-    EcdsaKeyPair, KeyPair, UnparsedPublicKey, ECDSA_P256_SHA256_FIXED,
-    ECDSA_P256_SHA256_FIXED_SIGNING,
+    EcdsaKeyPair, Ed25519KeyPair, KeyPair, UnparsedPublicKey, ECDSA_P256_SHA256_FIXED,
+    ECDSA_P256_SHA256_FIXED_SIGNING, ED25519,
 };
 use aws_lc_rs::{digest, hkdf, hmac, rand};
 use zeroize::Zeroizing;
@@ -24,6 +25,8 @@ use crate::{CryptoError, CryptoProvider, Sealed, SigAlg, HKDF_MAX, NONCE_LEN};
 
 /// ECDSA P-256 fixed-length signature (r || s).
 pub const P256_SIG_LEN: usize = 64;
+/// Ed25519 signature (R || S, RFC 8032 §5.1.6).
+pub const ED25519_SIG_LEN: usize = 64;
 
 /// The AWS-LC FIPS module provider. Construct with [`FipsProvider::new`],
 /// which refuses to hand out a provider unless the module reports FIPS mode
@@ -33,36 +36,60 @@ pub struct FipsProvider {
     _private: (),
 }
 
-/// A device signing key held by the module (ECDSA P-256).
+enum Pair {
+    Ed25519(Ed25519KeyPair),
+    P256(EcdsaKeyPair),
+}
+
+/// A signing key held by the module (Ed25519 for suite v1, or P-256).
 pub struct FipsSigningKey {
-    pair: EcdsaKeyPair,
+    pair: Pair,
 }
 
 impl std::fmt::Debug for FipsSigningKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("FipsSigningKey(P-256, <secret>)")
+        f.write_str(match self.pair {
+            Pair::Ed25519(_) => "FipsSigningKey(Ed25519, <secret>)",
+            Pair::P256(_) => "FipsSigningKey(P-256, <secret>)",
+        })
     }
 }
 
 impl FipsSigningKey {
-    /// PKCS#8 v1 DER of the private key, for the OS keystore. Wiped on drop.
+    /// Algorithm of this key.
+    pub fn alg(&self) -> SigAlg {
+        match self.pair {
+            Pair::Ed25519(_) => SigAlg::Ed25519,
+            Pair::P256(_) => SigAlg::EcdsaP256Sha256,
+        }
+    }
+
+    /// PKCS#8 DER of the private key, for the OS keystore (Ed25519: v2 with
+    /// the public key, re-checked on load; P-256: v1). Wiped on drop.
     pub fn to_pkcs8(&self) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
-        let doc = self.pair.to_pkcs8v1().map_err(|_| CryptoError::Module)?;
+        let doc = match &self.pair {
+            Pair::Ed25519(k) => k.to_pkcs8(),
+            Pair::P256(k) => k.to_pkcs8v1(),
+        }
+        .map_err(|_| CryptoError::Module)?;
         Ok(Zeroizing::new(doc.as_ref().to_vec()))
     }
 
-    /// Load a key previously exported with [`FipsSigningKey::to_pkcs8`].
+    /// Load a key previously exported with [`FipsSigningKey::to_pkcs8`]
+    /// (Ed25519 or P-256; the algorithm OID in the document decides).
     pub fn from_pkcs8(der: &[u8]) -> Result<Self, CryptoError> {
+        if let Ok(k) = Ed25519KeyPair::from_pkcs8(der) {
+            return Ok(FipsSigningKey { pair: Pair::Ed25519(k) });
+        }
         EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, der)
-            .map(|pair| FipsSigningKey { pair })
+            .map(|k| FipsSigningKey { pair: Pair::P256(k) })
             .map_err(|_| CryptoError::Invalid)
     }
 
     /// Import a raw P-256 private scalar `d` (big-endian, `1 <= d < n`) into
     /// the module: RFC 5915 ECPrivateKey without the public key, parsed by
     /// AWS-LC (which computes Q = d·G) and validated in FIPS builds by
-    /// `EC_KEY_check_fips` (pairwise-consistency test). Open question 10:
-    /// this is the module's own import path in FIPS mode (cmvp.md §8).
+    /// `EC_KEY_check_fips` (pairwise-consistency test). Suite 0x02 only.
     pub fn from_p256_scalar(d: &[u8; 32]) -> Result<Self, CryptoError> {
         let zero = [0u8; 32];
         // reject d == 0 and d >= n up front (constant time); the module checks too
@@ -75,22 +102,46 @@ impl FipsSigningKey {
         // [0] parameters: OID 1.2.840.10045.3.1.7 (prime256v1)
         der.extend_from_slice(&[0xa0, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07]);
         EcdsaKeyPair::from_private_key_der(&ECDSA_P256_SHA256_FIXED_SIGNING, &der)
-            .map(|pair| FipsSigningKey { pair })
+            .map(|k| FipsSigningKey { pair: Pair::P256(k) })
             .map_err(|_| CryptoError::Invalid)
     }
 
-    /// Phrase-derived signing key (K_destroy, K_rsig): scalar from
-    /// [`crate::keytree::p256_scalar_from_seed`] (module HKDF), imported with
-    /// [`FipsSigningKey::from_p256_scalar`]. Same seed -> same key on every
-    /// device.
-    pub fn from_seed(p: &FipsProvider, seed: &[u8; 32]) -> Result<Self, CryptoError> {
+    /// Import a 32-byte Ed25519 private key (RFC 8032 §5.1.5 seed) into the
+    /// module. The module derives the public key; a sign + verify round trip
+    /// through the module is then run as a pairwise-consistency check before
+    /// the key is handed out.
+    pub fn from_ed25519_seed(seed: &[u8; 32]) -> Result<Self, CryptoError> {
+        let k = Ed25519KeyPair::from_seed_unchecked(seed).map_err(|_| CryptoError::Invalid)?;
+        let msg = b"osy ed25519 pct v1";
+        let sig = k.try_sign(msg).map_err(|_| CryptoError::Module)?;
+        UnparsedPublicKey::new(&ED25519, k.public_key().as_ref())
+            .verify(msg, sig.as_ref())
+            .map_err(|_| CryptoError::Module)?;
+        Ok(FipsSigningKey { pair: Pair::Ed25519(k) })
+    }
+
+    /// Phrase-derived signing key of suite v1 (K_destroy, K_rsig): the
+    /// 32-byte key-tree output (module HKDF, key-tree.md §2) is the Ed25519
+    /// private key, imported with [`FipsSigningKey::from_ed25519_seed`].
+    /// Same seed -> same key on every device.
+    pub fn from_seed(_p: &FipsProvider, seed: &[u8; 32]) -> Result<Self, CryptoError> {
+        Self::from_ed25519_seed(seed)
+    }
+
+    /// Phrase-derived signing key of the P-256 fallback suite 0x02: scalar
+    /// from [`crate::keytree::p256_scalar_from_seed`] (module HKDF),
+    /// imported with [`FipsSigningKey::from_p256_scalar`].
+    pub fn from_seed_p256(p: &FipsProvider, seed: &[u8; 32]) -> Result<Self, CryptoError> {
         let d = crate::keytree::p256_scalar_from_seed(p, seed)?;
         Self::from_p256_scalar(&d)
     }
 
-    /// Wire public key (65 bytes, uncompressed SEC1 point).
+    /// Wire public key (Ed25519: 32 bytes; P-256: 65-byte uncompressed point).
     pub fn public_key(&self) -> Vec<u8> {
-        self.pair.public_key().as_ref().to_vec()
+        match &self.pair {
+            Pair::Ed25519(k) => k.public_key().as_ref().to_vec(),
+            Pair::P256(k) => k.public_key().as_ref().to_vec(),
+        }
     }
 }
 
@@ -115,7 +166,7 @@ impl CryptoProvider for FipsProvider {
     type SigningKey = FipsSigningKey;
 
     fn name(&self) -> &'static str {
-        "aws-lc-rs 1.18.1 / AWS-LC FIPS 4.2.0 (aws-lc-fips-sys 0.14.2)"
+        "aws-lc-rs 1.16.0 / AWS-LC FIPS 3.1.0 (aws-lc-fips-sys 0.13.11, CMVP #5314)"
     }
 
     fn fips_mode(&self) -> bool {
@@ -193,37 +244,37 @@ impl CryptoProvider for FipsProvider {
     }
 
     fn generate_signing_key(&self, alg: SigAlg) -> Result<(FipsSigningKey, Vec<u8>), CryptoError> {
-        match alg {
-            SigAlg::EcdsaP256Sha256 => {
-                let pair = EcdsaKeyPair::generate(&ECDSA_P256_SHA256_FIXED_SIGNING)
-                    .map_err(|_| CryptoError::Module)?;
-                let key = FipsSigningKey { pair };
-                let pk = key.public_key();
-                Ok((key, pk))
-            }
-            SigAlg::Ed25519 => Err(CryptoError::Unsupported),
-        }
+        let pair = match alg {
+            SigAlg::Ed25519 => Pair::Ed25519(Ed25519KeyPair::generate().map_err(|_| CryptoError::Module)?),
+            SigAlg::EcdsaP256Sha256 => Pair::P256(
+                EcdsaKeyPair::generate(&ECDSA_P256_SHA256_FIXED_SIGNING).map_err(|_| CryptoError::Module)?,
+            ),
+        };
+        let key = FipsSigningKey { pair };
+        let pk = key.public_key();
+        Ok((key, pk))
     }
 
     fn sign(&self, key: &FipsSigningKey, msg: &[u8]) -> Result<Vec<u8>, CryptoError> {
-        let rng = rand::SystemRandom::new();
-        key.pair
-            .sign(&rng, msg)
-            .map(|s| s.as_ref().to_vec())
-            .map_err(|_| CryptoError::Module)
+        match &key.pair {
+            Pair::Ed25519(k) => k.try_sign(msg).map(|s| s.as_ref().to_vec()).map_err(|_| CryptoError::Module),
+            Pair::P256(k) => {
+                let rng = rand::SystemRandom::new();
+                k.sign(&rng, msg).map(|s| s.as_ref().to_vec()).map_err(|_| CryptoError::Module)
+            }
+        }
     }
 
     fn verify(&self, alg: SigAlg, public_key: &[u8], msg: &[u8], sig: &[u8]) -> Result<(), CryptoError> {
-        match alg {
-            SigAlg::EcdsaP256Sha256 => {
-                if public_key.len() != alg.public_key_len() || sig.len() != P256_SIG_LEN {
-                    return Err(CryptoError::Verify);
-                }
-                UnparsedPublicKey::new(&ECDSA_P256_SHA256_FIXED, public_key)
-                    .verify(msg, sig)
-                    .map_err(|_| CryptoError::Verify)
-            }
-            SigAlg::Ed25519 => Err(CryptoError::Unsupported),
+        let (v, sig_len): (&'static dyn aws_lc_rs::signature::VerificationAlgorithm, usize) = match alg {
+            SigAlg::Ed25519 => (&ED25519, ED25519_SIG_LEN),
+            SigAlg::EcdsaP256Sha256 => (&ECDSA_P256_SHA256_FIXED, P256_SIG_LEN),
+        };
+        if public_key.len() != alg.public_key_len() || sig.len() != sig_len {
+            return Err(CryptoError::Verify);
         }
+        UnparsedPublicKey::new(v, public_key)
+            .verify(msg, sig)
+            .map_err(|_| CryptoError::Verify)
     }
 }

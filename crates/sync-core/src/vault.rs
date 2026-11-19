@@ -39,9 +39,9 @@ use crate::object::{open, seal, Compress, ObjectCtx, ObjectError};
 use crate::transport::http::HttpTransport;
 use crate::transport::{destroy_vault, Tokens, Transport, TransportError};
 
-/// v1 vaults: ECDSA P-256 (the FIPS build has no approved Ed25519, cmvp.md §7).
-pub const SUITE: Suite = Suite::P256;
-pub const KEY_ALG: u8 = SigAlg::EcdsaP256Sha256 as u8;
+/// v1 vaults: suite 0x01, Ed25519 (validated module #5314 lists EDDSA, cmvp.md §7).
+pub const SUITE: Suite = Suite::Ed25519;
+pub const KEY_ALG: u8 = sync_crypto::V1_SIG_ALG as u8;
 /// Pairing objects expire server-side after 15 min; the offer says so too.
 pub const PAIR_TTL_SECS: u64 = 15 * 60;
 /// Upper bound when probing envelope / cfg generations.
@@ -218,7 +218,7 @@ pub fn root_of(p: &FipsProvider, phrase: &Phrase) -> Result<RootKeys> {
 
 // ---------------------------------------------------------------- device
 
-/// This device: random id + module-generated P-256 signing key.
+/// This device: random id + module-generated Ed25519 signing key.
 pub struct Device {
     pub id: Id16,
     pub key: FipsSigningKey,
@@ -234,7 +234,7 @@ impl fmt::Debug for Device {
 
 impl Device {
     pub fn generate(p: &FipsProvider, name: &str) -> Result<Device> {
-        let (key, pubkey) = p.generate_signing_key(SigAlg::EcdsaP256Sha256).map_err(fmt_err)?;
+        let (key, pubkey) = p.generate_signing_key(sync_crypto::V1_SIG_ALG).map_err(fmt_err)?;
         Ok(Device { id: random16(p)?, key, pubkey, name: name.to_string() })
     }
 
@@ -365,7 +365,7 @@ pub fn verify_gen(p: &FipsProvider, prev: Option<(&CfgGen, &[u8; 32])>, c: &CfgG
             }
         }
     };
-    p.verify(SigAlg::EcdsaP256Sha256, key, &cfg_digest(p, signed), &c.sig)
+    p.verify(sync_crypto::V1_SIG_ALG, key, &cfg_digest(p, signed), &c.sig)
         .map_err(|_| chain_err("bad cfg signature"))
 }
 

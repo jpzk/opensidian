@@ -8,7 +8,8 @@
 //! What is here:
 //! - [`fips::FipsProvider`] (M2): the release provider, AWS-LC FIPS module via
 //!   aws-lc-rs (docs/sync/cmvp.md §7) — AES-256-GCM with module nonces,
-//!   HKDF/HMAC/SHA-256, module DRBG, ECDSA P-256 (suite 0x02). KATs:
+//!   HKDF/HMAC/SHA-256, module DRBG, Ed25519 (suite 0x01, v1; ECDSA P-256
+//!   suite 0x02 kept as fallback). KATs:
 //!   `vectors/*.vec`, `tests/fips_kat.rs`.
 //! - [`CryptoProvider`]: hash, HMAC, HKDF, randomness, AEAD (module-chosen
 //!   nonces), signatures — the whole surface the sync engine may use.
@@ -93,6 +94,12 @@ impl SigAlg {
         }
     }
 }
+
+/// Signature algorithm of the v1 suite (0x01): Ed25519, covered by the
+/// validated module (certificate #5314 lists EDDSA KeyGen/SigGen/SigVer,
+/// docs/sync/cmvp.md). Device keys, K_destroy, K_rsig and the server's
+/// receipt key all use it.
+pub const V1_SIG_ALG: SigAlg = SigAlg::Ed25519;
 
 /// AEAD output: module-generated nonce + ciphertext with the tag appended.
 #[derive(Debug, Clone, PartialEq, Eq)]

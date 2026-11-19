@@ -25,7 +25,7 @@ use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use serde::Serialize;
-use sync_crypto::{CryptoProvider, SigAlg};
+use sync_crypto::CryptoProvider;
 use sync_proto::api::{
     destroy_payload, DestroyChallenge, DestroyConfirm, DestroyReceipt, DestroyRequest, EnrollRequest,
     EnrollResponse, ErrorBody, ErrorCode, Health, ListQuery, ListResponse, MissingRequest,
@@ -314,14 +314,14 @@ async fn enroll(app: &Arc<App>, ip: IpAddr, req: Request<Incoming>) -> Result<Re
     let body = read_body(app, req, app.cfg.max_control as u64).await?;
     let r: EnrollRequest =
         serde_json::from_slice(&body).map_err(|_| err(ErrorCode::BadRequest, "bad enroll body"))?;
-    // FIPS build: the module's approved signature is ECDSA P-256 (cmvp.md §7).
-    if r.key_alg != sync_crypto::SigAlg::EcdsaP256Sha256 as u8 {
-        return Err(err(ErrorCode::Unsupported, "key_alg must be 2 (P-256)"));
+    // suite v1: Ed25519 (validated module #5314 lists EDDSA, cmvp.md §7).
+    if r.key_alg != sync_crypto::V1_SIG_ALG as u8 {
+        return Err(err(ErrorCode::Unsupported, "key_alg must be 1 (Ed25519)"));
     }
     let pubk = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &r.pub_destroy)
         .map_err(|_| err(ErrorCode::BadRequest, "pub_destroy is not base64url"))?;
-    if pubk.len() != 65 || pubk[0] != 0x04 {
-        return Err(err(ErrorCode::BadRequest, "pub_destroy must be an uncompressed P-256 point"));
+    if pubk.len() != sync_crypto::V1_SIG_ALG.public_key_len() {
+        return Err(err(ErrorCode::BadRequest, "pub_destroy must be a 32-byte Ed25519 public key"));
     }
     let tok = decode_token(&r.enrollment_token)
         .ok_or_else(|| err(ErrorCode::Unauthorized, "malformed enrollment token"))?;
@@ -560,7 +560,7 @@ async fn destroy_confirm(app: &Arc<App>, ip: IpAddr, ns: Id16, req: Request<Inco
         .decode(r.sig.as_bytes())
         .map_err(|_| err(ErrorCode::Forbidden, "destroy proof invalid"))?;
     app.prov
-        .verify(SigAlg::EcdsaP256Sha256, &pubk, &destroy_payload(&ns, &nonce, r.ts), &sig)
+        .verify(sync_crypto::V1_SIG_ALG, &pubk, &destroy_payload(&ns, &nonce, r.ts), &sig)
         .map_err(|_| err(ErrorCode::Forbidden, "destroy proof invalid"))?;
     let at = now_unix();
     let ts = r.ts;

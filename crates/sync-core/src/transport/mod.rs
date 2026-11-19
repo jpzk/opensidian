@@ -16,7 +16,7 @@
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use sync_crypto::{ct_eq, CryptoProvider, SigAlg};
+use sync_crypto::{ct_eq, CryptoProvider};
 use sync_proto::api::{
     destroy_payload, DestroyChallenge, DestroyConfirm, DestroyReceipt, EnrollResponse, ErrorCode, Health,
     ListQuery, ListResponse, ObjKind, ReceiptBody, MAX_MISSING_IDS,
@@ -168,7 +168,7 @@ pub trait Transport: Send + Sync {
     /// `GET /v1/health`.
     fn health(&self) -> Result<Health>;
     /// `POST /v1/enroll` with a one-time enrollment token; `pub_destroy` is
-    /// the 65-byte uncompressed P-256 K_destroy public key.
+    /// the 32-byte Ed25519 K_destroy public key (suite v1).
     fn enroll(&self, enrollment_token: &str, pub_destroy: &[u8]) -> Result<EnrollResponse>;
     /// `PUT /v1/{kind}/{ns}/{id}` — write-once: same bytes -> Identical,
     /// different bytes -> Conflict, deleted id -> Gone.
@@ -238,7 +238,7 @@ pub fn destroy_vault<P: CryptoProvider>(
 }
 
 /// Check a destroy receipt: `server_key` equals the pinned key, the ECDSA
-/// P-256 signature verifies over the body, and the body names this vault,
+/// Ed25519 signature verifies over the body, and the body names this vault,
 /// this nonce and this `ts`.
 pub fn verify_receipt<P: CryptoProvider + ?Sized>(
     prov: &P,
@@ -258,7 +258,7 @@ pub fn verify_receipt<P: CryptoProvider + ?Sized>(
         .decode(r.receipt.as_bytes())
         .map_err(|_| TransportError::BadReceipt("receipt not base64url"))?;
     let (body, signed, sig) = ReceiptBody::split(&wire).map_err(|_| TransportError::BadReceipt("receipt layout"))?;
-    prov.verify(SigAlg::EcdsaP256Sha256, pinned_server_key, signed, sig)
+    prov.verify(sync_crypto::V1_SIG_ALG, pinned_server_key, signed, sig)
         .map_err(|_| TransportError::BadReceipt("signature"))?;
     if body.ns != *ns || !ct_eq(&body.server_nonce, nonce) || body.ts != ts {
         return Err(TransportError::BadReceipt("receipt is for a different destroy"));
