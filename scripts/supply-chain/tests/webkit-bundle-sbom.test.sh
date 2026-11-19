@@ -53,8 +53,30 @@ case "${3%%:*}" in
   *) exit 1;;
 esac
 S
+# copyright files (DOC_ROOT): DEP-5 for webkit/jsc (BSD-2-clause, LGPL-2+, "or" split, an
+# unmappable "with ... exception" name), gtk (LGPL-2+), libsoup (Expat); libgcrypt20 is NOT DEP-5
+D=$t/doc; mkdir -p "$D"
+dep5() { local p=$1; mkdir -p "$D/$p"; { echo "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/"; echo
+  shift; for l in "$@"; do printf 'Files: *\nCopyright: x\nLicense: %s\n\nLicense: %s\n some text\n\n' "$l" "$l"; done; } >"$D/$p/copyright"; }
+for b in libwebkit2gtk-4.1-0 libjavascriptcoregtk-4.1-0; do dep5 $b "BSD-2-clause" "LGPL-2+ or MPL-1.1" "LGPL-2.1+, GPL-3+" "GPL-2+ with Bison exception"; done
+b=libgtk-3-0t64; dep5 $b "LGPL-2+"
+b=libsoup-3.0-0; dep5 $b "Expat"
+mkdir -p "$D/libgcrypt20"; printf 'This is Debian libgcrypt.\nGNU Lesser General Public License...\n' >"$D/libgcrypt20/copyright"
+# pkgset (appimage-build.sh format); libgcrypt20 came with the image -> "image"
+H1=$(printf a%.0s {1..64}); H2=$(printf b%.0s {1..64}); H3=$(printf c%.0s {1..64}); H4=$(printf d%.0s {1..64})
+{ printf '# image x  snapshot y\n# package\tversion\tarch\tdeb-sha256\n'
+  printf 'libgcrypt20\t1.11.0-7\tamd64\timage\n'
+  printf 'libgtk-3-0t64\t3.24.50-1ubuntu1\tamd64\t%s\n' "$H3"
+  printf 'libjavascriptcoregtk-4.1-0\t2.50.1-0ubuntu1\tamd64\t%s\n' "$H2"
+  printf 'libsoup-3.0-0\t3.6.5-3\tamd64\t%s\n' "$H4"
+  printf 'libwebkit2gtk-4.1-0\t2.50.1-0ubuntu1\tamd64\t%s\n' "$H1"; } >"$t/pkgset.tsv"
+# apt-cache stub (no --pkgset): only webkit is in the index
+cat >"$t/bin/apt-cache" <<S
+#!/bin/sh
+case "\$*" in *libwebkit2gtk-4.1-0*=2.50.1-0ubuntu1*) printf 'Package: libwebkit2gtk-4.1-0\nSHA256: $H1\n';; *) exit 100;; esac
+S
 chmod +x "$t/bin/"*
-run() { env PATH="$t/bin:$PATH" UNOWNED="$t/unowned" DISTRO=${DISTRO:-ubuntu-26.04} SOURCE_DATE_EPOCH=1700000000 \
+run() { env PATH="$t/bin:$PATH" UNOWNED="$t/unowned" DOC_ROOT="$t/doc" DISTRO=${DISTRO:-ubuntu-26.04} SOURCE_DATE_EPOCH=1700000000 \
   WK_EXEC_DIR="$W" WK_BUNDLE="$W/injected-bundle/libwebkit2gtkinjectedbundle.so" WK_LIB="$L/libwebkit2gtk-4.1.so.0" \
   "$here/webkit-bundle-sbom.sh" "$@"; }
 expect_fail() { local name=$1 pat=$2; shift 2
@@ -89,6 +111,39 @@ NOTFOUND=libmissing.so.9 expect_fail "ldd => not found is fatal" "ldd cannot res
 DISTRO=fedora-44 expect_fail "non-deb distro" "is not ubuntu" run
 DISTRO=debian-13 run >"$t/sbom.json" 2>/dev/null && chk "debian-13 namespace" 'all(.components[]|select(.purl|startswith("pkg:deb")); .purl|test("^pkg:deb/debian/.*distro=debian-13$"))'
 
+
+# ---- G3: licenses (DEP-5 -> SPDX) + .deb SHA-256 ----
+: >"$t/unowned"
+run --pkgset "$t/pkgset.tsv" >"$t/sbom.json" 2>"$t/err" && ok "--pkgset: rc=0" || { cat "$t/err"; bad "--pkgset rc!=0"; }
+C='.components[]|select(.name=="webkit2gtk")'
+chk "every component has licenses" 'all(.components[]; (.licenses|length)>0)'
+chk "DEP-5 short names -> SPDX ids (or split, comma split, + -> or-later)" \
+  "[$C|.licenses[].license.id|select(.)]==[\"BSD-2-Clause\",\"GPL-3.0-or-later\",\"LGPL-2.0-or-later\",\"LGPL-2.1-or-later\",\"MPL-1.1\"]"
+chk "unmappable DEP-5 name kept verbatim as license.name" "[$C|.licenses[].license.name|select(.)]==[\"GPL-2+ with Bison exception\"]"
+chk "Expat -> MIT" '.components[]|select(.name=="libsoup3")|.licenses==[{license:{id:"MIT"}}]'
+chk "non-DEP-5 copyright -> LicenseRef + license-note" \
+  '.components[]|select(.name=="libgcrypt20")|(.licenses==[{license:{name:"LicenseRef-deb-copyright-unstructured"}}]) and any(.properties[]; .name=="opensidian:license-note" and (.value|test("libgcrypt20/copyright")))'
+chk "one SHA-256 per binary .deb, mapped by property" \
+  "($C|[.hashes[]|select(.alg==\"SHA-256\").content]|sort)==[\"$H1\",\"$H2\"] and ($C|.properties[]|select(.name==\"opensidian:deb-sha256\").value)==\"libjavascriptcoregtk-4.1-0=$H2,libwebkit2gtk-4.1-0=$H1\""
+chk "image package: no hash, hash-note says why" \
+  '.components[]|select(.name=="libgcrypt20")|(has("hashes")|not) and any(.properties[]; .name=="opensidian:hash-note" and (.value|test("base image")))'
+chk "every deb component: hash or hash-note" 'all(.components[]|select(.purl|startswith("pkg:deb")); has("hashes") or any(.properties[]; .name=="opensidian:hash-note"))'
+chk "brotli licensed MIT (same form as flatpak-sbom.sh)" '.components[]|select(.name=="brotli")|.licenses==[{expression:"MIT"}]'
+chk "metadata says pinned, not UNPINNED" '(.metadata.properties[]|select(.name=="opensidian:source").value)|(test("UNPINNED")|not) and test("pinned")'
+run >"$t/sbom.json" 2>/dev/null
+chk "no --pkgset: hash from the apt index" "($C|[.hashes[].content])==[\"$H1\"] and ([.components[]|select(.name==\"gtk+3.0\")|has(\"hashes\")]==[false])"
+sed 's/^libsoup-3.0-0\t3.6.5-3\t/libsoup-3.0-0\t3.6.5-4\t/' "$t/pkgset.tsv" >"$t/ps2"
+expect_fail "pkgset version != dpkg" "pkgset says 3.6.5-4, dpkg says 3.6.5-3" run --pkgset "$t/ps2"
+grep -v '^libsoup-3.0-0' "$t/pkgset.tsv" >"$t/ps3"
+expect_fail "bundled package missing from pkgset" "libsoup-3.0-0: not in pkgset" run --pkgset "$t/ps3"
+sed 's/\t'"$H4"'$/\tdeadbeef/' "$t/pkgset.tsv" >"$t/ps4"
+expect_fail "malformed sha256 in pkgset" "bad sha256" run --pkgset "$t/ps4"
+expect_fail "missing pkgset file" "missing or empty" run --pkgset "$t/nope"
+mv "$D/libsoup-3.0-0/copyright" "$t/cr"
+expect_fail "missing copyright file" "libsoup-3.0-0: no .*copyright" run --pkgset "$t/pkgset.tsv"
+mv "$t/cr" "$D/libsoup-3.0-0/copyright"
+printf 'Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n\nFiles: *\n' >"$D/libgcrypt20/copyright"
+expect_fail "DEP-5 without License: line" "has no License: line" run --pkgset "$t/pkgset.tsv"
 # ---- osv-fixed-gate ----
 mk() { jq -n --arg eco "$1" --argjson ev "$2" '{results:[{packages:[{package:{name:"webkit2gtk",version:"2.50.1-0ubuntu1",ecosystem:"Ubuntu:26.04:LTS"},
   vulnerabilities:[{id:"UBUNTU-CVE-2026-0001",aliases:["CVE-2026-0001"],affected:[{package:{name:"webkit2gtk",ecosystem:$eco},ranges:[{type:"ECOSYSTEM",events:$ev}]}]}]}]}]}'; }
