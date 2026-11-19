@@ -88,6 +88,56 @@ while IFS= read -r b; do
   jq -Rn -c --arg ref "$bref" '{ref: $ref, dependsOn: [inputs]}' <"$tmp/bdeps" >>"$tmp/deps"
 done <"$tmp/bundles"
 
+# mermaid.min.js bundles third-party npm packages (no package-lock ships with it). Their list is
+# ui/vendor/mermaid/LICENSES-bundled.txt: one block per package, each opened by a line of 20+ '='
+# then "<name>@<version>  (SPDX: <expr>[; <note>])", "source: <registry tarball url>", a line of
+# '-'. Every block must parse (fail closed), the title must name the locked mermaid version, and
+# the tarball URL must be the registry URL of that name@version. No hash: the bytes are inlined
+# into mermaid.min.js (whose own SHA-256 is on the file property of the mermaid component).
+bl=$vd/mermaid/LICENSES-bundled.txt
+mref=$(jq -r '.libraries[] | select(.name == "mermaid") | .purl' "$lock")
+mver=$(jq -r '.libraries[] | select(.name == "mermaid") | .version' "$lock")
+if [ -n "$mref" ]; then
+  [ -f "$bl" ] || { echo "vendor-sbom: missing $bl (mermaid bundled packages)" >&2; exit 1; }
+  head -1 "$bl" | grep -qF "(mermaid $mver)" \
+    || { echo "vendor-sbom: $bl does not name mermaid $mver in its title" >&2; exit 1; }
+  : >"$tmp/mdeps"
+  st=0 n=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case $st in
+      0) [[ $line =~ ^={20,}$ ]] && st=1 ;;
+      1) [[ $line =~ ^(@?[a-z0-9][a-z0-9._-]*(/[a-z0-9._-]+)?)@([0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.+-]*)\ +\(SPDX:\ (.+)\)$ ]] \
+           || { echo "vendor-sbom: $bl: bad package line: $line" >&2; exit 1; }
+         pn=${BASH_REMATCH[1]} pv=${BASH_REMATCH[3]} rest=${BASH_REMATCH[4]}
+         lic=${rest%%;*} note=""; [ "$lic" = "$rest" ] || note=${rest#*; }
+         st=2 ;;
+      2) base=${pn##*/}
+         want="source: https://registry.npmjs.org/$pn/-/$base-$pv.tgz"
+         [ "$line" = "$want" ] || { echo "vendor-sbom: $bl: $pn@$pv: expected '$want', got '$line'" >&2; exit 1; }
+         st=3 ;;
+      3) [[ $line =~ ^-+$ ]] || { echo "vendor-sbom: $bl: $pn@$pv: no '---' line after source" >&2; exit 1; }
+         [[ $lic =~ ^[A-Za-z0-9.+-]+$ ]] && lk=id || lk=expression
+         jq -nc --arg n "$pn" --arg v "$pv" --arg lic "$lic" --arg lk "$lk" --arg note "$note" \
+               --arg url "${want#source: }" --arg in "$mref" '
+           ($n | sub("^@"; "%40")) as $pn | "pkg:npm/\($pn)@\($v)" as $purl
+           | {type: "library", "bom-ref": $purl, name: $n, version: $v, purl: $purl,
+              licenses: (if $lk == "id" then [{license: {id: $lic}}] else [{expression: ($lic | sub("^\\((?<e>.*)\\)$"; "\(.e)"))}] end),
+              externalReferences: [{type: "distribution", url: $url}],
+              properties: ([{name: "opensidian:bundled_in", value: "ui/vendor/mermaid/mermaid.min.js (\($in))"},
+                            {name: "opensidian:source", value: "ui/vendor/mermaid/LICENSES-bundled.txt"},
+                            {name: "opensidian:hash-note", value: "inlined into mermaid.min.js, no separate artifact; see the mermaid component file sha256"}]
+                           + (if $note != "" then [{name: "opensidian:version-note", value: $note}] else [] end))}' >>"$tmp/comps"
+         jq -rn --arg n "$pn" --arg v "$pv" '"pkg:npm/\($n | sub("^@"; "%40"))@\($v)"' >>"$tmp/mdeps"
+         n=$((n + 1)) st=0 ;;
+    esac
+  done <"$bl"
+  [ "$st" = 0 ] || { echo "vendor-sbom: $bl: truncated block" >&2; exit 1; }
+  [ "$n" -gt 0 ] || { echo "vendor-sbom: $bl lists no packages" >&2; exit 1; }
+  [ "$(grep -cE "^={20,}\$" "$bl")" = "$n" ] || { echo "vendor-sbom: $bl: block count != parsed packages" >&2; exit 1; }
+  [ "$(sort "$tmp/mdeps" | uniq -d | wc -l)" = 0 ] || { echo "vendor-sbom: $bl lists a package twice" >&2; exit 1; }
+  jq -Rn -c --arg ref "$mref" '{ref: $ref, dependsOn: [inputs]}' <"$tmp/mdeps" >>"$tmp/deps"
+fi
+
 ts=$(date -u -d "@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y-%m-%dT%H:%M:%SZ)
 jq -s --slurpfile deps "$tmp/deps" --arg ts "$ts" '{
     bomFormat: "CycloneDX", specVersion: "1.6", version: 1,
