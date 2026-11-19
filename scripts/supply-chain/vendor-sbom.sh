@@ -83,8 +83,9 @@ while IFS= read -r b; do
   jq -c --arg ref "$bref" '{type: "file", "bom-ref": $ref, name: $ref | sub("^file:"; ""),
       licenses: [{license: {id: .license}}], hashes: [{alg: "SHA-256", content: .sha256}],
       description: ."$comment",
-      properties: [{name: "opensidian:loaded_by", value: .loaded_by},
-                   {name: "opensidian:built_with", value: "\(.built_with.tool) \(.built_with.version)"}]}' <<<"$b" >>"$tmp/comps"
+      properties: ([{name: "opensidian:loaded_by", value: .loaded_by},
+                   {name: "opensidian:built_with", value: "\(.built_with.tool) \(.built_with.version)"}]
+                  + [(.files // [])[] | {name: "opensidian:file", value: "ui/vendor/\(.path) sha256:\(.sha256) <- \(.source)"}])}' <<<"$b" >>"$tmp/comps"
   jq -Rn -c --arg ref "$bref" '{ref: $ref, dependsOn: [inputs]}' <"$tmp/bdeps" >>"$tmp/deps"
 done <"$tmp/bundles"
 

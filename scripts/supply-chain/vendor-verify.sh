@@ -29,6 +29,7 @@
 #   must be exactly the lock's bundles[].packages (name, version, integrity), every package must
 #   have version/integrity/resolved equal to the registry's version/dist.integrity/dist.tarball,
 #   and every shipped package's publish date must match the registry and obey the six-week rule.
+#   bundles[].files[] (codemirror/LICENSE) take only the commit-pinned source form above.
 #
 # Exit 0 = all proven; 1 = any mismatch (all problems are listed); 2 = usage.
 # Usage: scripts/supply-chain/vendor-verify.sh
@@ -88,6 +89,23 @@ source_ok() {
   case $1 in *..* | *'?'* | *'#'* | *'@'* | *%*) return 1 ;; esac
   printf '%s' "$1" | grep -Eqx "https://${SRC_HOST//./\\.}/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/[0-9a-f]{40}/[A-Za-z0-9._/-]+"
 }
+# check_source <id> <files[] entry json> <tag>: a commit-pinned upstream file (fluent/LICENSE,
+# codemirror/LICENSE). Fetched once, https only, no redirects followed; its sha256 must equal the
+# lock AND the vendored bytes. Returns 0 even on mismatch (errors are counted by err).
+check_source() {
+  local id=$1 F=$2 tag=$3 p s src sf up
+  p=$(jq -r .path <<<"$F"); s=$(jq -r .sha256 <<<"$F"); src=$(jq -r .source <<<"$F")
+  jq -e 'has("tarball_path") or has("concat") | not' <<<"$F" >/dev/null \
+    || { err "$id: $p: a source entry must not also have tarball_path/concat"; return 0; }
+  printf '%s' "$s" | grep -Eqx '[0-9a-f]{64}' || { err "$id: $p: lock sha256 '$s' is not 64 hex"; return 0; }
+  source_ok "$src" || { err "$id: $p: source '$src' is not https://$SRC_HOST/<owner>/<repo>/<40-hex commit>/<path>"; return 0; }
+  [ -f "$vd/$p" ] && [ ! -L "$vd/$p" ] || { err "$id: vendored file $p missing"; return 0; }
+  sf=$work/src.$tag
+  if ! curl -4 -fsS --proto =https --max-redirs 0 --retry 3 -m 120 "$src" -o "$sf"; then err "$id: $p: download $src failed"; return 0; fi
+  up=$(sha256sum "$sf" | cut -d' ' -f1)
+  [ "$up" = "$s" ] || err "$id: lock sha256 of $p ($s) != source $src ($up)"
+  [ "$(sha256 "$vd/$p")" = "$up" ] || err "$id: $p differs from source $src"
+}
 
 jq -e '.lockfileVersion == 1 and (.libraries|type=="array") and (.bundles|type=="array")
        and (.allowed_unlocked|type=="array")' "$lock" >/dev/null \
@@ -131,19 +149,8 @@ for ((i = 0; i < nlib; i++)); do
     hl=$(jq -r '.local_header_lines // 0' <<<"$F")
     printf '%s\n' "$p" >>"$covered"
     if jq -e 'has("source")' <<<"$F" >/dev/null; then
-      # a file the npm tarball does not ship (e.g. fluent/LICENSE): pinned to an upstream commit URL.
-      # Fetched once, https only, no redirects followed; its sha256 must equal the lock AND the vendored bytes.
-      src=$(jq -r .source <<<"$F")
-      jq -e 'has("tarball_path") or has("concat") | not' <<<"$F" >/dev/null \
-        || { err "$id: $p: a source entry must not also have tarball_path/concat"; continue; }
-      printf '%s' "$s" | grep -Eqx '[0-9a-f]{64}' || { err "$id: $p: lock sha256 '$s' is not 64 hex"; continue; }
-      source_ok "$src" || { err "$id: $p: source '$src' is not https://$SRC_HOST/<owner>/<repo>/<40-hex commit>/<path>"; continue; }
-      [ -f "$vd/$p" ] && [ ! -L "$vd/$p" ] || { err "$id: vendored file $p missing"; continue; }
-      sf=$work/src$i.$j
-      if ! curl -4 -fsS --proto =https --max-redirs 0 --retry 3 -m 120 "$src" -o "$sf"; then err "$id: $p: download $src failed"; continue; fi
-      up=$(sha256sum "$sf" | cut -d' ' -f1)
-      [ "$up" = "$s" ] || err "$id: lock sha256 of $p ($s) != source $src ($up)"
-      [ "$(sha256 "$vd/$p")" = "$up" ] || err "$id: $p differs from source $src"
+      # a file the npm tarball does not ship (fluent/LICENSE): pinned to an upstream commit URL
+      check_source "$id" "$F" "lib$i.$j"
       continue
     fi
     if jq -e 'has("concat")' <<<"$F" >/dev/null; then
@@ -203,6 +210,15 @@ for ((i = 0; i < nb; i++)); do
   jq -e '.lockfileVersion >= 2 and (.packages|type=="object")' "$vd/$pl" >/dev/null || { err "bundle $bn: $pl not a v2/v3 package-lock"; continue; }
   badd=$(jq -r '.added // ""' <<<"$B")
   bad=$nerr
+  # bundles[].files[]: files next to the bundle (codemirror/LICENSE). A bundle has no tarball, so
+  # only the commit-pinned "source" form is accepted.
+  nbf=$(jq '.files // [] | length' <<<"$B")
+  for ((j = 0; j < nbf; j++)); do
+    F=$(jq -c ".files[$j]" <<<"$B")
+    printf '%s\n' "$(jq -r .path <<<"$F")" >>"$covered"
+    jq -e 'has("source")' <<<"$F" >/dev/null || { err "bundle $bn: files[$j] $(jq -r .path <<<"$F"): a bundle file needs a commit-pinned source"; continue; }
+    check_source "bundle $bn" "$F" "bundle$i.$j"
+  done
   # the lock's bundled-package list must be exactly the package-lock's non-dev packages
   plset=$(jq -r '.packages|to_entries[]|select(.key!="" and (.value.dev|not))|"\(.key|sub("^.*node_modules/";"")) \(.value.version) \(.value.integrity)"' "$vd/$pl" | sort)
   lkset=$(jq -r '.packages[]?|"\(.name) \(.version) \(.integrity)"' <<<"$B" | sort)
@@ -226,7 +242,7 @@ for ((i = 0; i < nb; i++)); do
   done <<EOF_PL
 $(jq -r '.packages | to_entries[] | select(.key != "") | "\(.key) \(.value.version) \(.value.integrity) \(.value.resolved) \(.value.dev // false)"' "$vd/$pl")
 EOF_PL
-  [ "$bad" = "$nerr" ] && ok "bundle $bn: $p sha256, $n package-lock entries match the registry"
+  [ "$bad" = "$nerr" ] && ok "bundle $bn: $p sha256, $nbf file(s), $n package-lock entries match the registry"
 done
 
 # d) the prose notes were retired for vendor.lock.json (#188): one coming back is an error by itself

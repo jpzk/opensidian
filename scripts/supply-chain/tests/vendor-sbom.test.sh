@@ -36,6 +36,16 @@ if SOURCE_DATE_EPOCH=0 "$s" >"$t/bom.json" 2>"$t/err"; then
 else bad "repo run rc!=0: $(tail -3 "$t/err")"; fi
 
 
+# G5: the CodeMirror bundle ships its LICENSE (codemirror/LICENSE, commit-pinned upstream source,
+# sha256 in the lock) and the bundle component names it
+if jq -e --arg sha "$(sha256sum "$root/ui/vendor/codemirror/LICENSE" | cut -d' ' -f1)" '
+     .components[] | select(."bom-ref" == "file:ui/vendor/codemirror/cm6.js")
+     | (.licenses == [{license: {id: "MIT"}}])
+       and ([.properties[] | select(.name == "opensidian:file") | .value
+             | select(test("^ui/vendor/codemirror/LICENSE sha256:" + $sha + " <- https://raw.githubusercontent.com/[^/]+/[^/]+/[0-9a-f]{40}/LICENSE$"))] | length) == 1
+   ' "$t/bom.json" >/dev/null; then ok "G5: cm6.js component carries codemirror/LICENSE sha256 + pinned source"
+else bad "G5: cm6.js component has no codemirror/LICENSE file property"; fi
+
 # G4: the npm packages bundled inside mermaid.min.js (LICENSES-bundled.txt) are components,
 # each with version + license + registry URL, and the mermaid component dependsOn all of them
 bl=$root/ui/vendor/mermaid/LICENSES-bundled.txt
