@@ -9,6 +9,8 @@
 
 use std::fmt;
 
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,8 +157,51 @@ pub fn dispatch(api: &dyn SyncApi, req: Request) -> Response {
         Request::Status => wrap(api.status()),
         Request::SyncNow => wrap(api.sync_now()),
         Request::History { path } => wrap(api.history(&path)),
-        Request::HistoryRead { seq } => wrap(api.history_read(seq)),
+        // base64 string: ~1.33x the bytes instead of ~3.6x as a JSON array
+        Request::HistoryRead { seq } => wrap(api.history_read(seq).map(|b| B64.encode(b))),
         Request::Restore { seq } => wrap(api.restore(seq)),
         Request::Destroy { words } => wrap(api.destroy(&words)),
+    }
+}
+
+/// Decode the `history-read` reply (see [`dispatch`]).
+pub fn decode_history_bytes(s: &str) -> ApiResult<Vec<u8>> {
+    B64.decode(s.as_bytes()).map_err(|e| ApiError::new("io", format!("daemon history bytes: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Blob;
+    impl SyncApi for Blob {
+        fn status(&self) -> ApiResult<Status> {
+            Err(ApiError::new("io", "unused"))
+        }
+        fn sync_now(&self) -> ApiResult<SyncSummary> {
+            Err(ApiError::new("io", "unused"))
+        }
+        fn history(&self, _: &str) -> ApiResult<Vec<HistoryItem>> {
+            Ok(Vec::new())
+        }
+        fn history_read(&self, _: u64) -> ApiResult<Vec<u8>> {
+            Ok((0..=255u8).cycle().take(3000).collect())
+        }
+        fn restore(&self, _: u64) -> ApiResult<HistoryItem> {
+            Err(ApiError::new("io", "unused"))
+        }
+        fn destroy(&self, _: &str) -> ApiResult<Receipt> {
+            Err(ApiError::new("io", "unused"))
+        }
+    }
+
+    #[test]
+    fn history_bytes_travel_as_one_base64_string() {
+        let Response::Ok(v) = dispatch(&Blob, Request::HistoryRead { seq: 1 }) else { panic!("err") };
+        let s = v.as_str().expect("a string, not a number array");
+        assert!(s.len() <= 3000 * 4 / 3 + 4);
+        let line = serde_json::to_string(&Response::Ok(v.clone())).unwrap();
+        assert!(line.len() < 4100, "{}", line.len());
+        assert_eq!(decode_history_bytes(s).unwrap(), Blob.history_read(1).unwrap());
     }
 }

@@ -182,7 +182,8 @@ impl IpcClient {
         let mut line = serde_json::to_vec(req).map_err(|e| ApiError::new("io", e.to_string()))?;
         line.push(b'\n');
         s.write_all(&line).map_err(io)?;
-        let mut r = BufReader::new(s.take(64 << 20));
+        // 64 MiB history blob as base64 (~85.4 MiB) + JSON framing
+        let mut r = BufReader::new(s.take(96 << 20));
         let mut resp = String::new();
         r.read_line(&mut resp).map_err(io)?;
         match serde_json::from_str::<Response>(resp.trim_end()).map_err(|e| ApiError::new("io", format!("daemon reply: {e}")))? {
@@ -203,7 +204,8 @@ impl SyncApi for IpcClient {
         self.call(&Request::History { path: path.to_string() })
     }
     fn history_read(&self, seq: u64) -> ApiResult<Vec<u8>> {
-        self.call(&Request::HistoryRead { seq })
+        let s: String = self.call(&Request::HistoryRead { seq })?;
+        crate::api::decode_history_bytes(&s)
     }
     fn restore(&self, seq: u64) -> ApiResult<HistoryItem> {
         self.call(&Request::Restore { seq })

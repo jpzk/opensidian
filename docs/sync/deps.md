@@ -322,6 +322,11 @@ libc's `getsockopt` is out). The CLI argument parser is hand-written (no
 clap). The daemon's own uid is read without `getuid()` as the owner of a
 file it just created in the socket dir.
 
+Later (CodeRabbit #238 api.rs:150): `syncd` also lists `base64 =0.22.1`
+(already locked, pinned by sync-core and sync-server) to send history bytes
+on the daemon socket as one base64 string; the lock only gains the
+`"base64 0.22.1"` line in the `syncd` entry, no new package.
+
 ### M6b — embedded engine + command gate (app, src-tauri): no new crate
 
 No crate added to the lock. The app (`opensidian`) gains two dependency
