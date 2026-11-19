@@ -4709,6 +4709,7 @@ function utBuild() {             // pane/focus census in the window title (headl
              tgTok() +                                                    // tabclose: why every tab went
              ucTok() +                                                    // tabclose: the undo-close RESCUE buffer (depth/with-bytes)
              tcxTok() +                                                   // tabclose S4: the close glyph's PAINTED centres
+             esaTok() +                                                   // #242: the empty leaf's header + empty-state actions
              (extCount ? " [ext:" + extCount + "]" : "");                 // S1: external-link clicks routed to open_external
   t += t2;
   const ov = ovfScan();            // R22: layout overflow census (window + frame)
@@ -7107,6 +7108,18 @@ function tcxTok() {
     panes.push(xs.join(";"));
   }
   return " [tcx:" + panes.join("|") + "]";
+}
+/* #242: the empty "New tab" leaf, measured — [etab:<header title>] + [esa:<act>@cx,cy|...] (the painted
+   centres of its empty-state actions, in DOM order), so a driver asserts and clicks what is on screen. */
+function esaTok() {
+  const g = fg();
+  if (!emptyLeaf(g)) return "";
+  const h = g.tabsEl && g.tabsEl.querySelector(".etab > .t");
+  let s = " [etab:" + (h ? h.textContent.replace(/[[\]|]/g, "") : "-") + "]";
+  const as = g.emptyEl && !g.emptyEl.hidden ? [...g.emptyEl.querySelectorAll(".empty-state-action")] : [];
+  s += " [esa:" + (as.length ? as.map(a => { const r = a.getBoundingClientRect();
+    return a.dataset.act + "@" + Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2); }).join("|") : "-") + "]";
+  return s;
 }
 
 /* `noFlush` exists for exactly ONE caller: afterDelete. The user said delete;
