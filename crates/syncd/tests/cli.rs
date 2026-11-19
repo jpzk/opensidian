@@ -236,3 +236,43 @@ fn short_run(tag: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&d);
     d
 }
+
+/// Approved mode or nothing (cmvp.md §6): with the OpenSSL FIPS provider
+/// unavailable (empty module dir, empty config) every engine command exits
+/// non-zero with code `fips` before it creates any state; `help` still works.
+#[test]
+fn refuses_to_start_without_fips_provider() {
+    let d = dev("nofips");
+    let broken = tmpdir("nofips-ossl");
+    std::fs::write(broken.join("openssl.cnf"), "").unwrap();
+    let state = d.state.join("fresh");
+    let run = |args: &[&str]| {
+        let o = Command::new(BIN)
+            .arg("--state")
+            .arg(&state)
+            .args(args)
+            .env("XDG_RUNTIME_DIR", &d.run)
+            .env("OPENSSL_MODULES", &broken)
+            .env("OPENSSL_CONF", broken.join("openssl.cnf"))
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let err = String::from_utf8_lossy(&o.stderr).into_owned();
+        eprintln!("$ (no fips) opensidian-syncd {}\n{err}rc={:?}", args.join(" "), o.status.code());
+        (o, err)
+    };
+    let (o, _) = run(&["help"]);
+    assert!(o.status.success(), "help needs no crypto");
+    for args in [
+        &["status"][..],
+        &["setup", "--url", "http://127.0.0.1:9", "--vault", d.vault.to_str().unwrap(), "--name", "x"][..],
+        &["daemon"][..],
+    ] {
+        let (o, err) = run(args);
+        assert!(!o.status.success(), "{args:?} must refuse");
+        assert!(err.contains("fips") && err.contains("refusing to start sync"), "{args:?}: {err}");
+        assert!(err.contains("OpenSSL FIPS provider not active"), "{args:?}: {err}");
+    }
+    assert!(!state.exists(), "a refused start must not create the state dir");
+    eprintln!("REFUSED: syncd status/setup/daemon without the fips provider");
+}

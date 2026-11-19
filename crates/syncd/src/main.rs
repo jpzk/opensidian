@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use sync_core::keystore::FixedPresence;
 use syncd::api::{ApiError, SyncApi};
-use syncd::local::{config_path, Join, LocalEngine, Setup};
+use syncd::local::{config_path, fips_gate, Join, LocalEngine, Setup};
 #[cfg(unix)]
 use syncd::ipc;
 
@@ -146,6 +146,10 @@ fn run(argv: Vec<String>) -> Result<(), ApiError> {
         return Ok(());
     }
     let cmd = a.rest.remove(0);
+    if cmd != "help" {
+        // approved mode or nothing (cmvp.md §6): refuse before any state, key or socket use
+        fips_gate()?;
+    }
     match cmd.as_str() {
         "help" => {
             print!("{HELP}");

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // opensidian, a vault-compatible markdown notes app.
 // Copyright (C) 2026 Jendrik Poloczek
-//! M4c: the sync engine on the AWS-LC FIPS module — replicas as equal
+//! M4c: the sync engine on the OpenSSL 3 FIPS provider — replicas as equal
 //! peers synced by set union (spec §4.8). Three replicas (a real
 //! opensidian-sync-server over HTTP + two dir replicas), two devices with
 //! their own engine state. Devices only ever talk to SOME replicas, the

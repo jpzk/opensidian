@@ -65,6 +65,16 @@ fn now_s() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
+/// Approved-mode gate (cmvp.md §6): establish the OpenSSL FIPS provider
+/// (fips + base loaded, default properties fips=yes) or refuse with code
+/// `fips`. Every engine (syncd CLI/daemon and the app's sync window, which
+/// embeds this engine) passes here before touching state, keys or the
+/// network, so sync never starts outside approved mode.
+pub fn fips_gate() -> ApiResult<FipsProvider> {
+    sync_core::sync_crypto::fips::init().map_err(|e| ApiError::new("fips", format!("refusing to start sync: {e}")))?;
+    FipsProvider::new().map_err(|e| ApiError::new("fips", format!("refusing to start sync: {e:?}")))
+}
+
 fn io_err(e: impl std::fmt::Display) -> ApiError {
     ApiError::new("io", e.to_string())
 }
@@ -275,6 +285,7 @@ impl std::fmt::Debug for LocalEngine {
 impl LocalEngine {
     /// Open a configured state dir. `presence` gates reading the backup words.
     pub fn open(state: &Path, presence: Box<dyn Presence>) -> ApiResult<LocalEngine> {
+        let p = fips_gate()?;
         let b = match fs::read(config_path(state)) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -286,7 +297,6 @@ impl LocalEngine {
         if cfg.v != CONFIG_V {
             return Err(ApiError::new("io", format!("unknown config version {}", cfg.v)));
         }
-        let p = FipsProvider::new().map_err(io_err)?;
         let ks = FileKeystore::open(state.join("keys"), presence).map_err(ks_err)?;
         Ok(LocalEngine { p, state: state.to_path_buf(), cfg, ks, net: net_open })
     }
@@ -295,6 +305,7 @@ impl LocalEngine {
     /// Returns the engine and, for `Create` (and a pairing that carried
     /// them), the words — show once, they are also in the backup entry.
     pub fn setup(s: Setup<'_>) -> ApiResult<(LocalEngine, Option<Zeroizing<String>>)> {
+        let p = fips_gate()?;
         if config_path(s.state).exists() {
             return Err(ApiError::new("bad-request", format!("{} already holds a vault", s.state.display())));
         }
@@ -304,7 +315,6 @@ impl LocalEngine {
         if state.starts_with(&vault_dir) || vault_dir.starts_with(&state) {
             return Err(ApiError::new("bad-request", "the state dir and the vault folder must not contain each other"));
         }
-        let p = FipsProvider::new().map_err(io_err)?;
         // persisted in config.json: a relative path would resolve against
         // whatever directory a later run starts in
         let ca_file = s.ca_file.as_deref().map(fs::canonicalize).transpose().map_err(io_err)?;

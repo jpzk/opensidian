@@ -2,9 +2,10 @@
 // opensidian, a vault-compatible markdown notes app.
 // Copyright (C) 2026 Jendrik Poloczek
 //! Blocking `/v1` client over std `TcpStream`, one request per connection
-//! (`Connection: close`). TLS is rustls 1.3-only on the AWS-LC FIPS provider
-//! (the same pinned stack the server uses); the config is refused unless
-//! rustls reports FIPS mode. Plain `http://` is accepted only for a loopback
+//! (`Connection: close`). TLS is rustls 1.3-only on the OpenSSL 3 FIPS provider
+//! via rustls-openssl (the same pinned stack and suite/group set the server
+//! uses, [`tls_provider`]); the config is refused unless approved mode is
+//! active and rustls reports FIPS mode. Plain `http://` is accepted only for a loopback
 //! host, matching the server's own rule (spec §5 TLS note).
 //!
 //! Response bodies are bounded ([`MAX_RESPONSE`]) so a hostile server cannot
@@ -180,6 +181,25 @@ impl BaseUrl {
     }
 }
 
+/// The rustls crypto provider on the OpenSSL FIPS provider (same set as
+/// sync-server's `tls::fips_provider`): TLS 1.3 AES-256-GCM / AES-128-GCM,
+/// ECDHE P-256 / P-384 (KAS-ECC-SSC in CMVP #5586; no ChaCha20, no X25519 /
+/// ML-KEM hybrids). Err unless approved mode is active (cmvp.md §6).
+pub fn tls_provider() -> Result<Arc<rustls::crypto::CryptoProvider>> {
+    sync_crypto::fips::init().map_err(|e| TransportError::Config(e.to_string()))?;
+    let p = rustls_openssl::custom_provider(
+        vec![
+            rustls_openssl::cipher_suite::TLS13_AES_256_GCM_SHA384,
+            rustls_openssl::cipher_suite::TLS13_AES_128_GCM_SHA256,
+        ],
+        vec![rustls_openssl::kx_group::SECP256R1, rustls_openssl::kx_group::SECP384R1],
+    );
+    if !p.fips() {
+        return Err(TransportError::Config("rustls-openssl provider does not report FIPS mode".into()));
+    }
+    Ok(Arc::new(p))
+}
+
 /// TLS 1.3 client config on the FIPS provider; Err unless rustls is in FIPS mode.
 pub fn client_config(roots: &Roots) -> Result<Arc<ClientConfig>> {
     let pem = match roots {
@@ -194,7 +214,7 @@ pub fn client_config(roots: &Roots) -> Result<Arc<ClientConfig>> {
     if added == 0 {
         return Err(TransportError::Config("no usable CA certificate".into()));
     }
-    let mut cfg = ClientConfig::builder_with_provider(Arc::new(rustls::crypto::default_fips_provider()))
+    let mut cfg = ClientConfig::builder_with_provider(tls_provider()?)
         .with_protocol_versions(&[&rustls::version::TLS13])
         .map_err(|e| TransportError::Config(format!("tls versions: {e}")))?
         .with_root_certificates(store)

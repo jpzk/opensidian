@@ -17,7 +17,8 @@ use serde::{Deserialize, Serialize};
 pub struct ApiError {
     /// Stable machine code: `not-configured`, `busy`, `not-member` (device not on the vault roster),
     /// `server`, `io`, `bad-request`, `denied`, `history`, `vault`, `engine`,
-    /// `offline` (the net gate refused the connection).
+    /// `offline` (the net gate refused the connection), `fips` (the OpenSSL FIPS
+    /// provider is not active: sync refuses to start, cmvp.md §6).
     pub code: String,
     pub message: String,
 }

@@ -74,7 +74,7 @@ fn container_kat() {
         assert_eq!(format!("{:02x}", o.comp as u8), c["comp"], "{id}");
         zstd_seen |= o.comp == Comp::Zstd;
 
-        // independent commitment: sha2 HKDF/HMAC reference, not AWS-LC
+        // independent commitment: sha2 HKDF/HMAC reference, not OpenSSL
         let s = SoftProvider;
         let keys = derive_object_keys(&s, &k, &ctx.obj_id.0, 0x02).unwrap();
         let want = key_commitment(&s, &keys.commit, &ctx.vault_id.0, &ctx.obj_id.0, 0x02, FMT_V1);

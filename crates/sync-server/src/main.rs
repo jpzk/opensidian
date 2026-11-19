@@ -27,7 +27,7 @@ USAGE:
 
 serve         run the /v1 API. Default --listen 127.0.0.1:8471. With --tls-cert
               (PEM chain, leaf first) and --tls-key (PEM key) it speaks TLS 1.3
-              on the AWS-LC FIPS module. Without TLS only loopback addresses
+              on the OpenSSL 3 FIPS provider. Without TLS only loopback addresses
               are accepted.
 vault create  print a one-time enrollment token for a new vault (default
               valid 168 h). Hand it to the client's setup; there is no open
@@ -109,6 +109,10 @@ fn main() {
     }
     if effective_uid() == Some(0) {
         die("refusing to run as root; use a dedicated unprivileged user");
+    }
+    // approved mode or nothing (cmvp.md §6): every subcommand below touches keys or TLS
+    if let Err(e) = sync_crypto::fips::init() {
+        die(&format!("refusing to start: {e}"));
     }
     match cmd.as_str() {
         "serve" => {

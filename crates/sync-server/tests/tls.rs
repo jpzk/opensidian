@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // opensidian, a vault-compatible markdown notes app.
 // Copyright (C) 2026 Jendrik Poloczek
-//! TLS termination (M3a): rustls on the AWS-LC FIPS provider, TLS 1.3 only.
+//! TLS termination (M3a): rustls on the OpenSSL 3 FIPS provider (rustls-openssl), TLS 1.3 only.
 //! Fixtures in tests/fixtures are a throwaway test CA + leaf (P-256,
 //! SAN localhost/127.0.0.1) generated with the box's openssl CLI; the leaf
 //! key is test-only and protects nothing.
@@ -49,7 +49,7 @@ fn client(roots_pem: &[u8]) -> Arc<ClientConfig> {
     for c in CertificateDer::pem_slice_iter(roots_pem) {
         roots.add(c.unwrap()).unwrap();
     }
-    let cfg = ClientConfig::builder_with_provider(fips_provider())
+    let cfg = ClientConfig::builder_with_provider(fips_provider().expect("fips provider"))
         .with_protocol_versions(&[&rustls::version::TLS13])
         .unwrap()
         .with_root_certificates(roots)

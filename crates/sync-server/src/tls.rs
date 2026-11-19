@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // opensidian, a vault-compatible markdown notes app.
 // Copyright (C) 2026 Jendrik Poloczek
-//! TLS termination with rustls on the AWS-LC FIPS module (spec §5, plan M3).
+//! TLS termination with rustls on the OpenSSL 3 FIPS provider (spec §5, plan M3).
 //!
-//! The provider is `rustls::crypto::default_fips_provider()` (aws-lc-rs built
-//! with `fips` -> aws-lc-fips-sys, cmvp.md §7). Protocol: TLS 1.3 only, ALPN
-//! `http/1.1`, no client auth (bearer tokens authenticate). [`server_config`]
-//! refuses to return a config for which `ServerConfig::fips()` is false.
+//! The rustls crypto provider is `rustls-openssl` restricted to the TLS 1.3
+//! AES-GCM suites and the P-256/P-384 ECDHE groups ([`fips_provider`]); every
+//! primitive is fetched through EVP under the process-wide default
+//! properties `fips=yes` that [`sync_crypto::fips::init`] establishes
+//! (cmvp.md §6). Protocol: TLS 1.3 only, ALPN `http/1.1`, no client auth
+//! (bearer tokens authenticate). [`server_config`] refuses to return a config
+//! unless approved mode is active and `ServerConfig::fips()` is true.
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -25,9 +28,24 @@ use crate::App;
 /// Bound on the TLS handshake (slow-loris before HTTP starts).
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The FIPS crypto provider shared by server and (sync-core) client.
-pub fn fips_provider() -> Arc<rustls::crypto::CryptoProvider> {
-    Arc::new(rustls::crypto::default_fips_provider())
+/// The rustls crypto provider on the OpenSSL FIPS provider: TLS 1.3
+/// AES-256-GCM / AES-128-GCM (no ChaCha20-Poly1305: not approved), ECDHE
+/// P-256 / P-384 (no X25519 / ML-KEM hybrids: keep to the groups the
+/// certificate lists for KAS-ECC-SSC, SP 800-56Ar3). Refuses unless approved mode
+/// is active.
+pub fn fips_provider() -> Result<Arc<rustls::crypto::CryptoProvider>, String> {
+    sync_crypto::fips::init().map_err(|e| e.to_string())?;
+    let p = rustls_openssl::custom_provider(
+        vec![
+            rustls_openssl::cipher_suite::TLS13_AES_256_GCM_SHA384,
+            rustls_openssl::cipher_suite::TLS13_AES_128_GCM_SHA256,
+        ],
+        vec![rustls_openssl::kx_group::SECP256R1, rustls_openssl::kx_group::SECP384R1],
+    );
+    if !p.fips() {
+        return Err("rustls-openssl provider does not report FIPS mode".into());
+    }
+    Ok(Arc::new(p))
 }
 
 /// Build the server config from a PEM certificate chain (leaf first) and a
@@ -40,7 +58,7 @@ pub fn server_config(cert_pem: &[u8], key_pem: &[u8]) -> Result<Arc<ServerConfig
         return Err("certificate PEM: no CERTIFICATE block".into());
     }
     let key = PrivateKeyDer::from_pem_slice(key_pem).map_err(|e| format!("key PEM: {e}"))?;
-    let mut cfg = ServerConfig::builder_with_provider(fips_provider())
+    let mut cfg = ServerConfig::builder_with_provider(fips_provider()?)
         .with_protocol_versions(&[&rustls::version::TLS13])
         .map_err(|e| format!("tls versions: {e}"))?
         .with_no_client_auth()
@@ -48,7 +66,7 @@ pub fn server_config(cert_pem: &[u8], key_pem: &[u8]) -> Result<Arc<ServerConfig
         .map_err(|e| format!("certificate/key: {e}"))?;
     cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
     if !cfg.fips() {
-        return Err("rustls config is not in FIPS mode (aws-lc-rs fips module unavailable)".into());
+        return Err("rustls config is not in FIPS mode (OpenSSL fips provider not active)".into());
     }
     Ok(Arc::new(cfg))
 }

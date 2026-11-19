@@ -5,7 +5,7 @@
 //! `/v1` surface (docs/sync/spec.md §5); two backends implement it:
 //!
 //! * [`http::HttpTransport`] — blocking HTTP/1.1 client for
-//!   opensidian-sync-server, TLS 1.3 on rustls + the AWS-LC FIPS provider
+//!   opensidian-sync-server, TLS 1.3 on rustls + the OpenSSL 3 FIPS provider (rustls-openssl)
 //!   (plain `http://` only to a loopback host, mirroring the server rule).
 //! * [`fs::FsTransport`] — a directory replica (USB stick, NAS mount,
 //!   synced folder) with the same write-once / 410 / list-cursor behaviour.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // opensidian, a vault-compatible markdown notes app.
 // Copyright (C) 2026 Jendrik Poloczek
-//! M4a: commit DAG objects (spec §4.1–4.3) on the AWS-LC FIPS module —
+//! M4a: commit DAG objects (spec §4.1–4.3) on the OpenSSL 3 FIPS provider —
 //! signed batch = manifest + inline blobs + signature in one object,
 //! attachments > 1 MiB as uniform 4 MiB chunk objects, tree hash, and the
 //! round trip through BOTH transports (real sync-server on loopback + dir

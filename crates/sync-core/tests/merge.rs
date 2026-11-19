@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // opensidian, a vault-compatible markdown notes app.
 // Copyright (C) 2026 Jendrik Poloczek
-//! M4b: tip merge (spec §4.7) on the AWS-LC FIPS module over a dir
+//! M4b: tip merge (spec §4.7) on the OpenSSL 3 FIPS provider over a dir
 //! replica — exact DAG base, markdown diff-match-patch, conflict file with
 //! the stock name, LWW (signed ts, commit-id tie-break), settings JSON
 //! local-over-remote, edit beats delete, losers reported + kept in file

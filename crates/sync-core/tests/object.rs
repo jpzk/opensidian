@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! M2b object containers (spec §3) on the AWS-LC FIPS module: round trips
+//! M2b object containers (spec §3) on the OpenSSL 3 FIPS provider: round trips
 //! over every kind and segment boundary, zstd, and every rejection the spec
 //! requires (commitment before decrypt, tamper, truncation, extension,
 //! reordering, wrong id/vault/key, padding, zip bomb).

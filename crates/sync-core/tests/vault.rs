@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // opensidian, a vault-compatible markdown notes app.
 // Copyright (C) 2026 Jendrik Poloczek
-//! M5 onboarding on the AWS-LC FIPS module against a real
+//! M5 onboarding on the OpenSSL 3 FIPS provider against a real
 //! opensidian-sync-server on loopback: create a vault, a fresh device from
 //! the words + URL only, symmetric pairing, the no-revocation rules (one VK
 //! epoch, no slot ever leaves the table, unknown devices have no key),

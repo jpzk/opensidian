@@ -26,14 +26,15 @@ zstd = { version = "=0.14.0", default-features = false }
 zstd-safe = { version = "=8.0.0", default-features = false }
 zstd-sys = { version = "=2.1.0", default-features = false }
 # M3c transport: HTTP(S) client on the SAME pinned TLS stack as sync-server (rustls on the
-# aws-lc-rs FIPS provider; all versions already in Cargo.lock, deps.md §M3a-TLS) + base64
-# (already locked). No new crate. sync-core does not depend on sync-server (dev only).
+# OpenSSL 3 FIPS provider via rustls-openssl 0.4.2, no rustls crypto feature; deps.md §TLS-OpenSSL) + base64
+# (already locked). New crate: rustls-openssl. sync-core does not depend on sync-server (dev only).
 base64 = "=0.22.1"
 # M5: secret buffers (keystore entries, phrase-derived keys) — already locked (sync-crypto).
 zeroize = "=1.9.1"
-rustls = { version = "=0.23.43", default-features = false, features = ["std", "fips"] }
-rustls-webpki = { version = "=0.103.13", default-features = false, features = ["std", "aws-lc-rs-fips"] }
+rustls = { version = "=0.23.43", default-features = false, features = ["std"] }
+rustls-webpki = { version = "=0.103.13", default-features = false, features = ["std"] }
 rustls-pki-types = { version = "=1.15.1", default-features = false, features = ["std"] }
+rustls-openssl = { version = "=0.4.2", default-features = false }
 
 [dev-dependencies]
 # The HTTP transport suite runs against a real opensidian-sync-server on loopback.
