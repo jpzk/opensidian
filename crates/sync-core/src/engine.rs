@@ -354,6 +354,27 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
         self.state.head
     }
 
+    /// Would revoking `device` lose commits this replica keeps? True when the
+    /// head or an absorbed tip leads to a commit of `device` that no commit
+    /// of another device reaches — i.e. it is vouched for only by local state
+    /// (head adopted from `device`, or a same-tree tip absorbed without a
+    /// merge commit). Sealing head + absorbed tips in a local commit
+    /// ([`Engine::commit_local`] with no edits) makes the vouch part of the
+    /// DAG that other and future devices check.
+    pub fn needs_vouch_before_revoke(&self, device: &Id16) -> bool {
+        let others: Vec<Id16> = self
+            .commits
+            .iter()
+            .filter(|(_, m)| m.batch.device_id != *device)
+            .map(|(id, _)| *id)
+            .collect();
+        let shared = reach(&others, |id| self.commits.get(id).map(|m| parent_ids(&m.batch)));
+        let local: Vec<Id16> = self.state.head.into_iter().chain(self.state.absorbed.iter().copied()).collect();
+        let mine = reach(&local, |id| self.commits.get(id).map(|m| parent_ids(&m.batch)));
+        mine.iter()
+            .any(|id| !shared.contains(id) && self.commits.get(id).is_some_and(|m| m.batch.device_id == *device))
+    }
+
     /// Tips absorbed by an `UpToDate` fold, waiting to become parents.
     pub fn absorbed(&self) -> &BTreeSet<Id16> {
         &self.state.absorbed
