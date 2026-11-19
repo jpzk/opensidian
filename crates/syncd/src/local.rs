@@ -511,6 +511,7 @@ impl LocalEngine {
                 }
                 Err(e) => return Err(vault_err(e)),
             }
+        }
     }
 
     /// Revoke another device (needs the words: a new VK epoch is published).

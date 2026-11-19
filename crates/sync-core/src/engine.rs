@@ -270,6 +270,9 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Fallible merge-loser hook of [`Engine::sync_checked`] (`Err` aborts the pass).
+pub type LoserHook<'a> = dyn FnMut(&Loser, &[u8]) -> std::result::Result<(), String> + 'a;
+
 impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
     /// Open (or create) the engine state under `dir`: `lock`, `state.json`
     /// and the local replica `objects/`. The local replica is re-verified
@@ -652,7 +655,7 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
         signer: &Signer<'_, P::SigningKey>,
         devices: &dyn DeviceKeys,
         now_ms: i64,
-        on_loser: &mut dyn FnMut(&Loser, &[u8]) -> std::result::Result<(), String>,
+        on_loser: &mut LoserHook<'_>,
     ) -> Result<Report> {
         let mut rep = Report::default();
         let ns = self.v.ns;
