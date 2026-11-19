@@ -436,10 +436,6 @@ impl LocalEngine {
         Ok((t, m))
     }
 
-    fn save_member(&self, m: &Member) -> ApiResult<()> {
-        self.ks.put(&self.cfg.vault_id, Entry::Daily, &m.to_daily().map_err(vault_err)?).map_err(ks_err)
-    }
-
     fn store(&self) -> ApiResult<Store> {
         Store::open(&self.state.join("app"), &self.cfg.vault_id.to_hex(), &self.cfg.vault_dir, history::Config::default())
             .map_err(hist_err)
