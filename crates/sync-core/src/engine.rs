@@ -529,6 +529,17 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
         write_atomic(&self.dir.join("state.json"), &b)
     }
 
+    /// Install `next` as the live state only if it was persisted: on a failed
+    /// save the in-memory head stays what state.json says.
+    fn set_state(&mut self, next: State) -> Result<()> {
+        let prev = std::mem::replace(&mut self.state, next);
+        if let Err(e) = self.save() {
+            self.state = prev;
+            return Err(e);
+        }
+        Ok(())
+    }
+
     fn parent(&self, id: &Id16) -> Parent {
         Parent { commit_id: *id, tree_hash: self.commits[id].batch.tree_hash }
     }
@@ -606,9 +617,10 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
             b
         };
         self.store_built(&built)?;
-        self.state.head = Some(built.id);
-        self.state.absorbed.clear();
-        self.save()?;
+        let mut next = self.state.clone();
+        next.head = Some(built.id);
+        next.absorbed.clear();
+        self.set_state(next)?;
         Ok(built.id)
     }
 
@@ -717,13 +729,15 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
             }
         }
         let mut cur = self.state.head;
+        // folded on a copy: an error part-way leaves the live state untouched
+        let mut absorbed = self.state.absorbed.clone();
         for t in tips {
             let Some(c) = cur else {
                 cur = Some(t);
                 rep.folded.push(Folded { tip: t, action: Action::FastForward, merge_commit: None });
                 continue;
             };
-            if t == c || self.state.absorbed.contains(&t) || self.is_ancestor(&t, &c) {
+            if t == c || absorbed.contains(&t) || self.is_ancestor(&t, &c) {
                 continue;
             }
             let base = match merge_base(&DagView(&self.commits), c, t)? {
@@ -745,7 +759,7 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
             let mut step = Folded { tip: t, action: m.action, merge_commit: None };
             match m.action {
                 Action::UpToDate => {
-                    self.state.absorbed.insert(t);
+                    absorbed.insert(t);
                 }
                 Action::FastForward => cur = Some(t),
                 Action::Commit => {
@@ -758,13 +772,10 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
             }
             rep.folded.push(step);
         }
-        self.state.head = cur;
         if let Some(h) = cur {
-            let keep: BTreeSet<Id16> =
-                self.state.absorbed.iter().filter(|a| !self.is_ancestor(a, &h)).copied().collect();
-            self.state.absorbed = keep;
+            absorbed.retain(|a| !self.is_ancestor(a, &h));
         }
-        self.save()?;
+        self.set_state(State { v: self.state.v, head: cur, absorbed })?;
         rep.head = cur;
         // 3. push: chunks, then batches parents-first (generation order)
         let mut order: Vec<Id16> = self.chunks.iter().copied().collect();
