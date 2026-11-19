@@ -178,7 +178,7 @@
     try { vs = await inv("history_list", { name }); } catch (e) { return g === viewGen && err("h-err", e); }
     if (g !== viewGen) return;
     if (!vs.length) { ul.appendChild(el("li", "hint", "no versions recorded for " + name)); return; }
-    for (const e of vs.slice().reverse()) {   // newest first
+    for (const e of vs) {   // history_list is newest first (Store::versions)
       ul.appendChild(rowFor(e, async li => {
         for (const x of ul.children) x.classList.toggle("sel", x === li);
         await pick(e, name);

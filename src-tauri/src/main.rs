@@ -2132,7 +2132,7 @@ fn hist_run<R>(v: &Vault, f: impl FnOnce(&mut sync_core::history::Store) -> R) -
     FILEHIST.with(&root, &hist_locate, f).ok_or_else(|| "file history is unavailable".to_string())
 }
 
-/// Every recorded version of note `name`, oldest first.
+/// Every stored version of note `name`, newest first (Store::versions).
 #[tauri::command]
 fn history_list<R: tauri::Runtime>(win: tauri::WebviewWindow<R>, v: State<Vault>, name: String) -> Result<Vec<sync_core::history::Entry>, String> {
     syncui::gate(win.label(), "history_list")?;
