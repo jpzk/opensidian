@@ -130,6 +130,14 @@ unpacking; versions are the newest stable release ≥ 6 weeks old on
   build without Perl.
 - C compiler: the box harness gcc 16.0.1 (`/var/tmp/gate-boxd/env`, already
   used for every T0 build); no C++ compiler is needed.
+- clippy component for the pinned box toolchain (operator decision C,
+  2026-11-19): `rustup component add clippy --toolchain 1.98.0` on the box
+  only (rustup 1.28.2, shared `/var/tmp/gate-boxd/env/rustup`), same release
+  as rustc 1.98.0 (88d9e12ae 2026-08-18; dist 2026-08-20): clippy 0.1.98,
+  `clippy-1.98.0-x86_64-unknown-linux-gnu.tar.xz` sha256
+  `646c6bd2450ea4c32a3c78ad7a3727294eea1f1519718a3f1487424021695ffa`
+  (rustup checked it against the 1.98.0 channel manifest). Used for
+  `cargo clippy -D warnings` on the sync crates in T0.
 - Reinstalled unchanged (same versions + sha256) on the fresh box
   hz-176764494 on 2026-11-19 (goal bin/toolchain.sh, logs/toolchain.log).
 
