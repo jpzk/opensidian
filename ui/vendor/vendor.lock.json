@@ -643,7 +643,7 @@
       },
       "recipe": "ui/vendor/codemirror/build/ (package.json, package-lock.json, entry.js, banner.txt, build.sh; originally harness bin/hz/cm6-vendor/): sh build.sh runs npm ci --ignore-scripts + esbuild and rebuilds cm6.js; CMP=ui/vendor/codemirror/cm6.js sh build.sh asserts byte-identity",
       "pin_rule": "each package = newest release published on or before 2026-09-01; sh build.sh check re-reads every publish date from the npm registry",
-      "license_file": "THIRD-PARTY.md (all MIT)",
+      "license_file": "codemirror/LICENSE (+ THIRD-PARTY.md, all MIT)",
       "packages": [
         {
           "name": "@codemirror/autocomplete",
@@ -802,7 +802,15 @@
       ],
       "previous_sha256": {
         "dd96abafcc8916d31dc355fa8886fca8384922f6dcc92022f70153818ab537ca": "2026-10-13 build; 2026-11-17 only the banner comment lines 2-3 were repointed (prose file deleted, #188)"
-      }
+      },
+      "files": [
+        {
+          "path": "codemirror/LICENSE",
+          "source": "https://raw.githubusercontent.com/codemirror/view/c7b762ef481994faeff1d6c1a61b1909ca26c2c3/LICENSE",
+          "sha256": "05c6130cda97e7600ca91427a41e8a065efcf82365fc0293e7de80faec494c07",
+          "$comment": "the MIT text of CodeMirror 6 and Lezer (same bytes as package/LICENSE of @codemirror/view 6.43.10; c7b762ef = its gitHead). The other bundled packages are MIT by the same author, texts in THIRD-PARTY.md"
+        }
+      ]
     }
   ],
   "allowed_unlocked": [
@@ -822,6 +830,6 @@
     "fluent/SHA256SUMS"
   ],
   "$comment_allowed": "allowed_unlocked: exact paths (no globs) that are documentation, checksums or build inputs, not shipped library bytes",
-  "$comment_files": "libraries[].files[] entry forms: {path, tarball_path, sha256} (a file of the npm tarball; optional local_header_lines + vendored_sha256), {path, concat, concat_separator, sha256} (concatenation of tarball files), or {path, source, sha256} for a file the tarball does not ship: source = https://raw.githubusercontent.com/<owner>/<repo>/<40-hex commit>/<path> (commit-pinned, never a branch/tag), fetched by vendor-verify.sh (https only, no redirects) and its sha256 checked against the lock and the vendored bytes",
+  "$comment_files": "libraries[].files[] entry forms: {path, tarball_path, sha256} (a file of the npm tarball; optional local_header_lines + vendored_sha256), {path, concat, concat_separator, sha256} (concatenation of tarball files), or {path, source, sha256} for a file the tarball does not ship: source = https://raw.githubusercontent.com/<owner>/<repo>/<40-hex commit>/<path> (commit-pinned, never a branch/tag), fetched by vendor-verify.sh (https only, no redirects) and its sha256 checked against the lock and the vendored bytes; bundles[].files[] accept only the source form",
   "six_week_rule": "published (npm registry time[version]) must be >= 42 days before added (the date the bytes landed in git)"
 }

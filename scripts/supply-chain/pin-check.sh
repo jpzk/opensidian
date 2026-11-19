@@ -19,8 +19,11 @@
 #   cargo    cargo install without --locked AND --version (or name@version)
 #   flatpak  flatpak install without --commit= (here or a `flatpak update --commit=` within 6 lines);
 #            --commit="$VAR" counts only when every VAR= assignment in the same file is 64 hex
-#   fetch    curl/wget download (-o/-O/--output, wget) without sha256sum/sha512sum within 6 lines;
-#            curl|wget piped into a shell is always a finding
+#   fetch    curl/wget download (-o/-O/--output, wget) without sha256sum/sha512sum within 6 lines,
+#            unless (operator 2026-11-19) a gpgv|sqv line within 6 lines verifies the same -o target,
+#            fails closed (|| die / || exit N, never || true or piped) and uses a --keyring that is
+#            a committed repo file listed with its sha256 in supply-chain/keyrings.tsv (no host or
+#            downloaded keyring); curl|wget piped into a shell is always a finding
 #   pkgmgr   npm/npx/yarn/pnpm/bun/pipx/go install|get (forbidden), pip without --require-hashes
 # ALLOWLIST: TSV  rule  path  needle  expires(YYYY-MM-DD)  scanner  reason
 #   A finding is allowed when rule and path match and the line contains needle. expires >= today,
@@ -153,6 +156,46 @@ pkgs() {  # file cmdtext
   done
 }
 
+# sig_pinned FILE JOINED WINDOW -> 0 if the download's output file is signature-verified within the
+# 6-line window (operator 2026-11-19 16:22Z): a gpgv|sqv line names the same -o/--output target,
+# fails closed (`|| die`, `|| { ... die`, `|| exit N>0`; no `|| true`/`|| :`, not piped), and its
+# --keyring resolves (literal, or EVERY VAR= assignment in FILE) to a repo-relative path
+# ($VAR/ prefix and ../ allowed, no absolute/host path, no other $VAR) that is listed in
+# ROOT/supply-chain/keyrings.tsv with the sha256 of the committed file, and is not itself downloaded.
+sig_pinned() {
+  local f=$1 out v line seg kr vals x rel want got kt=$ROOT/supply-chain/keyrings.tsv
+  [[ "$2" =~ (^|[[:space:]])(-o|--output)[[:space:]=]+(\"[^\"]*\"|\'[^\']*\'|[^[:space:]]+) ]] || return 1
+  out=${BASH_REMATCH[3]}; out=${out//\"/}; out=${out//\'/}
+  [ -n "$out" ] && [ -f "$kt" ] || return 1
+  line=$(printf '%s\n' "$3" | sed -E "s/[\"']//g" | grep -E '(^|[^a-z-])(gpgv|sqv)[[:space:]]' | grep -F -- " $out" | head -1)
+  [ -n "$line" ] || return 1
+  seg=${line%%||*}; [ "$seg" != "$line" ] || return 1          # no || at all: not fail closed
+  seg=${seg#*gpgv}; seg=${seg#*sqv}
+  [[ "$seg" == *"|"* ]] && return 1                            # piped: exit status lost
+  printf '%s' "$line" | grep -Eq '\|\|[[:space:]]*(true|:)([[:space:];)}]|$)' && return 1
+  printf '%s' "$line" | grep -Eq '\|\|[[:space:]]*(\{[^}]*[[:space:];{])?(die|exit[[:space:]]+[1-9])' || return 1
+  [[ "$line" =~ --keyring[[:space:]=]+([^[:space:]]+) ]] || return 1
+  kr=${BASH_REMATCH[1]}
+  if [[ "$kr" =~ ^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$ ]]; then
+    vals=$(grep -oE "(^|[[:space:];(])${BASH_REMATCH[1]}=[^[:space:];]+" "$f" | sed -E "s/^.*${BASH_REMATCH[1]}=//; s/[\"']//g")
+  else vals=$kr; fi
+  [ -n "$vals" ] || return 1
+  # the keyring (var or value) must not be a download target anywhere in the file
+  grep -E '(^|[^a-z-])(curl|wget)[[:space:]]' "$f" | sed -E "s/[\"']//g" | grep -qF -- "$kr" && return 1
+  while IFS= read -r v; do
+    case "$v" in /*|'') return 1 ;; esac
+    rel=$(printf '%s' "$v" | sed -E 's#^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?/##; s#^(\./|\.\./)+##')
+    case "$rel" in *'$'*|*..*|'') return 1 ;; esac
+    grep -E '(^|[^a-z-])(curl|wget)[[:space:]]' "$f" | grep -qF -- "$rel" && return 1
+    [ -f "$ROOT/$rel" ] || return 1
+    want=$(awk -F'\t' -v p="$rel" '$1==p{print $2}' "$kt" | head -1)
+    [[ "$want" =~ ^[0-9a-f]{64}$ ]] || return 1
+    got=$(sha256sum < "$ROOT/$rel" | cut -d' ' -f1)
+    [ "$got" = "$want" ] || return 1
+  done <<< "$vals"
+  return 0
+}
+
 # ---- scan -----------------------------------------------------------------------------------------
 nocom() { printf '%s' "$1" | sed -E 's/[[:space:]]#[^"\x27]*$//'; }  # cut a trailing " # comment"
 find "$ROOT" \( -name .git -o -path "$ROOT/ui/vendor" -o -path "$ROOT/src-tauri/vendor" -o -path "$ROOT/src-tauri/target" \
@@ -207,7 +250,7 @@ while IFS= read -r F; do
     if printf '%s' "$s" | grep -Eq '(^|[^a-z-])(curl|wget)[[:space:]]'; then
       if printf '%s' "$j" | grep -Eq '(curl|wget)[^|]*\|[[:space:]]*(sudo[[:space:]]+)?(ba|z|da)?sh([[:space:]]|$)'; then hit fetch "$rel" $ln "$s"
       elif printf '%s' "$j" | grep -Eq '(^|[^a-z-])wget[[:space:]]|[[:space:]](-[a-zA-Z]*[oO]|--output|--remote-name)([[:space:]=]|$)'; then
-        printf '%s\n%s' "$j" "$win" | grep -Eq 'sha(256|512)sum' || hit fetch "$rel" $ln "$s"
+        printf '%s\n%s' "$j" "$win" | grep -Eq 'sha(256|512)sum' || sig_pinned "$F" "$j" "$win" || hit fetch "$rel" $ln "$s"
       fi
     fi
     # pkgmgr

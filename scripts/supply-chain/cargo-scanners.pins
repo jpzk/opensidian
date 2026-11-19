@@ -1,0 +1,16 @@
+# cargo scanner pins (supply-chain.yml jobs audit / deny / vet). Operator decision 2026-11-19 15:49Z:
+# scanners track the NEWEST upstream release (exception to the 6-week rule for scanners only), still
+# pinned by version + sha256, fail closed. The version is ALSO written literally in the workflow
+# (`cargo install --locked --version =<v> <crate>`, what pin-check accepts); cargo-scanner-verify.sh
+# checks that the installed version == this pin and that the .crate cargo built from has THIS sha256
+# (source crate: one digest for every arch). tests/cargo-scanner-verify.test.sh checks workflow == pins.
+# sha256 cross-checked 2026-11-19: crates.io sparse index cksum == crates.io API checksum ==
+# sha256sum of the downloaded static.crates.io .crate. Weekly bump PR: .github/workflows/snapshot-bump.yml.
+# before (unpinned latest at the time): resolved per run, logged only. after:
+#   cargo-audit 0.23.0 published 2026-11-10T13:43:53Z (rust-version 1.88)
+#   cargo-deny  0.22.0 published 2026-11-19T16:23:37Z (rust-version 1.95.0)
+#   cargo-vet   0.10.3 published 2026-10-22T19:04:28Z (rust-version 1.85)
+# format: crate <name> <version> <sha256 of the .crate>
+crate cargo-audit 0.23.0 956f85aedfb64db887ec38466f982fc2b1ae55de726d4a12f2fddd5b812c6446
+crate cargo-deny 0.22.0 8372c38eace236d1fa34511ae7eb2ce28595cc50be63430d0bea8a833ad51446
+crate cargo-vet 0.10.3 173c2501643f10d4b4f1157da393d9dedb9c288f2ec8687c08bd5b71f89478d6

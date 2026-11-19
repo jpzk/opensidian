@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# webkit-apt.sh — the system packages of supply-chain.yml job webkit-bundle-cve, PINNED (#189).
+# webkit-apt.sh — the pinned WebKit build set of packaging/ci/appimage-build.sh on an Ubuntu 26.04 HOST (#189).
+# (No longer used by CI: the release WebKit SBOM + CVE gate run INSIDE the build container, release.yml;
+#  kept for local native sbom-local.sh runs and for --check, which sbom-local.sh calls.)
 # The job scans the WebKitGTK/GTK closure the portable AppImage bundles. That AppImage is built by
 # packaging/ci/appimage-build.sh from snapshot.ubuntu.com $SNAP with pkg=version pins, so this
 # script installs the SAME set on the ubuntu-26.04 runner from the SAME dated snapshot:
@@ -18,10 +20,10 @@ say(){ echo "[$(date +%H:%M:%S)] [webkit-apt] $*"; }
 die(){ say "FAIL: $*"; exit 1; }
 H=$(cd "$(dirname "$0")" && pwd)
 AB=${APPIMAGE_BUILD:-$H/../../packaging/ci/appimage-build.sh}
-SNAP=20261004T000000Z        # = packaging/ci/appimage-build.sh SNAP
+SNAP=20261119T120000Z        # = packaging/ci/appimage-build.sh SNAP
 # = release AppImage build set (appimage-build.sh PKGS), versions read from the snapshot indexes
 # (resolute-updates > -security > release) for amd64 at $SNAP:
-PKGS="build-essential=12.12ubuntu2.26.04.2 pkg-config=2.5.1-4 libssl-dev=3.5.5-1ubuntu3.7 libwebkit2gtk-4.1-dev=2.52.6-0ubuntu0.26.04.1 libwebkit2gtk-4.1-0=2.52.6-0ubuntu0.26.04.1 libjavascriptcoregtk-4.1-0=2.52.6-0ubuntu0.26.04.1 libgtk-3-dev=3.24.52-0ubuntu1 libayatana-appindicator3-dev=0.5.94-1build1 librsvg2-dev=2.61.3+dfsg-3 patchelf=0.18.0-1.4build1 file=1:5.46-5build2"
+PKGS="build-essential=12.12ubuntu2.26.04.2 pkg-config=2.5.1-4 libssl-dev=3.5.5-1ubuntu3.7 libwebkit2gtk-4.1-dev=2.52.6-0ubuntu0.26.04.2 libwebkit2gtk-4.1-0=2.52.6-0ubuntu0.26.04.2 libjavascriptcoregtk-4.1-0=2.52.6-0ubuntu0.26.04.2 libgtk-3-dev=3.24.52-0ubuntu1 libayatana-appindicator3-dev=0.5.94-1build1 librsvg2-dev=2.61.3+dfsg-3ubuntu0.1 patchelf=0.18.0-1.4build1 file=1:5.46-5build2"
 
 [ -f "$AB" ] || die "no $AB"
 ABSNAP=$(sed -n 's/^SNAP=\([0-9TZ]*\).*/\1/p' "$AB" | head -1)

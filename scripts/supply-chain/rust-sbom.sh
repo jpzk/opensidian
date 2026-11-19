@@ -16,19 +16,49 @@
 # otherwise enter the SBOM without a verifiable hash.
 #
 # Scope, deliberately conservative for CVE scanning: Cargo.lock lists every target and the
-# dev-dependencies (sha2) too, so the SBOM is a superset of what the Linux release links.
+# dev-dependencies (sha2) too, so the SBOM is a superset of what the Linux release links. Nothing
+# is dropped: with --resolve, crates outside the shipped graph are kept with scope "excluded".
 #
-# Usage: scripts/supply-chain/rust-sbom.sh [Cargo.lock] [> rust.cdx.json]
+# Licenses + scope (G2 / G11, optional inputs; release builds pass both, sbom-local.sh --release
+# refuses without them):
+#   --metadata <json>  `cargo metadata --locked --all-features --format-version 1` (every target, every
+#                      feature, so it covers every Cargo.lock package). .license (SPDX; legacy "A/B" ->
+#                      "A OR B") -> licenses[].expression; license_file-only crates -> licenses[].license.name
+#                      "LicenseRef-cargo-license-file" + property opensidian:license-note naming the file.
+#                      A Cargo.lock crate missing from it fails closed.
+#   --resolve <json>   `cargo metadata --locked --filter-platform <triple> --format-version 1` (default
+#                      features = how release builds compile). Crates reachable from the root over
+#                      normal/build edges are scope "required"; every other Cargo.lock crate (dev-only,
+#                      other platform, feature not enabled) stays listed with scope "excluded" + a reason.
+#   --target <triple>  recorded as metadata property opensidian:rust:target (with --resolve).
+#
+# Usage: scripts/supply-chain/rust-sbom.sh [--metadata f] [--resolve f] [--target t] [Cargo.lock] [> rust.cdx.json]
 #   SOURCE_DATE_EPOCH=<s> fixes metadata.timestamp
 # Exit 0 = SBOM on stdout; 1 = bad input (nothing on stdout); 2 = usage.
 set -euo pipefail
 export LC_ALL=C
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
-lock=${1:-$root/src-tauri/Cargo.lock}
 die() { echo "rust-sbom: $*" >&2; exit 1; }
+usage() { echo "usage: rust-sbom.sh [--metadata f] [--resolve f] [--target triple] [Cargo.lock]" >&2; exit 2; }
 command -v jq >/dev/null && command -v awk >/dev/null || { echo "rust-sbom: jq + awk required" >&2; exit 2; }
+meta= res= tgt= lock=
+while [ $# -gt 0 ]; do
+  case $1 in
+    --metadata) [ $# -ge 2 ] || usage; meta=$2; shift 2 ;;
+    --resolve)  [ $# -ge 2 ] || usage; res=$2; shift 2 ;;
+    --target)   [ $# -ge 2 ] || usage; tgt=$2; shift 2 ;;
+    -*) echo "rust-sbom: unknown option $1" >&2; usage ;;
+    *) [ -z "$lock" ] || usage; lock=$1; shift ;;
+  esac
+done
+lock=${lock:-$root/src-tauri/Cargo.lock}
 [ -f "$lock" ] || die "no $lock"
+for f in $meta $res; do
+  jq -e '.packages | type == "array"' "$f" >/dev/null 2>&1 || die "$f is not cargo metadata JSON"
+done
+[ -z "$res" ] || jq -e '.resolve.root | type == "string"' "$res" >/dev/null 2>&1 \
+  || die "$res has no resolve graph (cargo metadata --no-deps?)"
 
 glib_sha=$(sed -n 's/^CRATE_SHA=\([0-9a-f]\{64\}\)$/\1/p' "$here/glib-vendor-check.sh")
 [ -n "$glib_sha" ] || die "CRATE_SHA not found in glib-vendor-check.sh"
@@ -102,4 +132,49 @@ jq -e '.specVersion == "1.6" and (.components | length) > 0
        and ([.components[]."bom-ref"] | length == (unique | length))
        and ([.components[] | select(.purl == "pkg:cargo/glib@0.18.5")] | length == 1)' "$t/out" >/dev/null \
   || die "generated SBOM failed self-check"
+
+# ---- G2 licenses (cargo metadata --all-features) ----
+if [ -n "$meta" ]; then
+  jq --slurpfile md "$meta" '
+    def lic: if (.license // "") != "" then [{expression: (.license | gsub(" */ *"; " OR "))}]
+             elif (.license_file // "") != "" then [{license: {name: "LicenseRef-cargo-license-file"}}]
+             else null end;
+    ($md[0].packages | map({key: "\(.name)@\(.version)", value: .}) | from_entries) as $m
+    | ([.components[] | "\(.name)@\(.version)" | select($m[.] == null)]) as $miss
+    | if ($miss | length) > 0 then error("Cargo.lock crate(s) missing from cargo metadata: \($miss | join(", "))") else . end
+    | ([.components[] | "\(.name)@\(.version)" | select(($m[.] | lic) == null)]) as $nolic
+    | if ($nolic | length) > 0 then error("crate(s) with neither license nor license_file: \($nolic | join(", "))") else . end
+    | .components |= map($m["\(.name)@\(.version)"] as $p
+        | .licenses = ($p | lic)
+        | if ($p.license // "") == "" then
+            .properties = ((.properties // []) + [{name: "opensidian:license-note",
+              value: "Cargo.toml license_file = \($p.license_file | split("/") | last) (no SPDX expression declared)"}])
+          else . end)
+    | ($m["\(.metadata.component.name)@\(.metadata.component.version)"] // null) as $r
+    | if $r != null and ($r | lic) != null then .metadata.component.licenses = ($r | lic) else . end
+  ' "$t/out" >"$t/out2" 2>"$t/err" || die "$(sed 's/^jq: error[^:]*: //' "$t/err")"
+  mv "$t/out2" "$t/out"
+fi
+
+# ---- G11 scope (cargo metadata --filter-platform <triple>, default features) ----
+if [ -n "$res" ]; then
+  jq --slurpfile rs "$res" --arg tgt "${tgt:-unspecified}" '
+    ($rs[0].packages | map({key: .id, value: "\(.name)@\(.version)"}) | from_entries) as $id
+    | ($rs[0].resolve.nodes | map({key: .id, value: [(.deps // [])[]
+         | select((.dep_kinds // [{kind: null}]) | any(.kind != "dev")) | .pkg]}) | from_entries) as $g
+    | def closure: . as $s | ([$s[], ($s[] | $g[.] // [] | .[])] | unique) as $n
+                   | if $n == $s then $s else ($n | closure) end;
+    ([$rs[0].resolve.root] | closure | map($id[.])) as $live
+    | ($live | map({key: ., value: true}) | from_entries) as $in
+    | .components |= map(if $in["\(.name)@\(.version)"] then .scope = "required"
+        else .scope = "excluded"
+          | .properties = ((.properties // []) + [{name: "opensidian:scope-reason",
+              value: "in Cargo.lock but not in the \($tgt) release resolve (cargo metadata --filter-platform, default features, normal+build edges): dev-only, other platform or feature not enabled"}])
+        end)
+    | .metadata.properties = ((.metadata.properties // []) + [{name: "opensidian:rust:target", value: $tgt},
+        {name: "opensidian:rust:required", value: ([.components[] | select(.scope == "required")] | length | tostring)},
+        {name: "opensidian:rust:excluded", value: ([.components[] | select(.scope == "excluded")] | length | tostring)}])
+  ' "$t/out" >"$t/out2" 2>"$t/err" || die "$(sed 's/^jq: error[^:]*: //' "$t/err")"
+  mv "$t/out2" "$t/out"
+fi
 cat "$t/out"
