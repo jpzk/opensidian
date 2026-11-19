@@ -41,6 +41,8 @@ mod qscreate;
 mod perf;
 mod props; // #119: types.json, the vault property census, the Properties in document mode
 mod sandbox;
+#[cfg(target_os = "macos")]
+mod macos; // AppKit / WebKit / Security glue for the macOS port
 // cp-secrets: app.secretStorage over the OS keyring (Secret Service)
 mod secrets;
 mod security; // #144: Settings › Security — the one reader of the "security" key (docs/security-section.md)
@@ -1216,14 +1218,20 @@ async fn audio_rec_start(app: tauri::AppHandle, win: tauri::WebviewWindow, token
     let (ptx, prx) = std::sync::mpsc::channel();
     audiorec::sess_put(&parent, audiorec::Sess { gated: Some(grx), ready: false, started: Some(stx), stop_tx: Some(ptx), stop_rx: Some(prx), data: None });
     audiorec::arm(&parent, &token, std::time::Instant::now())?;
-    let built = tauri::WebviewWindowBuilder::new(&app, audiorec::rec_label(&parent), tauri::WebviewUrl::App("recorder.html".into()))
+    let b = tauri::WebviewWindowBuilder::new(&app, audiorec::rec_label(&parent), tauri::WebviewUrl::App("recorder.html".into()))
         .title("audio capture")
-        .visible(false)
         .focused(false)
         .skip_taskbar(true)
         .decorations(false)
-        .inner_size(1.0, 1.0)
-        .build();
+        .inner_size(1.0, 1.0);
+    #[cfg(not(target_os = "macos"))]
+    let b = b.visible(false);
+    // macOS: WKWebView never answers getUserMedia from a page in a hidden window, and there is no
+    // GTK box to embed it in (rec_offscreen is a no-op), so the recorder is a visible 1x1
+    // borderless, unfocused, always-on-top window in the screen corner
+    #[cfg(target_os = "macos")]
+    let b = b.visible(true).position(0.0, 0.0).always_on_top(true).shadow(false).resizable(false);
+    let built = b.build();
     let rw = match built {
         Ok(w) => w,
         Err(e) => {
@@ -2845,6 +2853,21 @@ fn picker_allows(p: &Path) -> bool {
     if !p.is_absolute() {
         return false;
     }
+    // macOS port: the system trees as canonicalize() spells them (/etc -> /private/etc, /var ->
+    // /private/var) plus the macOS-only ones. /private/var/folders is the per-user $TMPDIR, the
+    // twin of Linux's /tmp, which stays open like /tmp does.
+    #[cfg(target_os = "macos")]
+    {
+        const MAC_DENY: [&str; 6] = ["/private/etc", "/private/var", "/System", "/Library", "/bin", "/sbin"];
+        if MAC_DENY.iter().any(|d| p.starts_with(d)) && !p.starts_with("/private/var/folders") {
+            if let Ok(h) = std::env::var("HOME") {
+                if h.len() > 1 && p.starts_with(&h) {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
     if p.components().any(|c| match c {
         Component::Normal(s) => s.to_string_lossy().starts_with('.'),
         Component::RootDir => false,
@@ -2985,14 +3008,16 @@ fn open_external_now(url: String) -> Result<(), String> {
     check_external(&url)?;
     // std::process::Command only — no shell, no opener plugin. Missing xdg-open
     // (headless smoke, minimal hosts) is a plain Err, never a fallback.
-    std::process::Command::new("xdg-open")
+    // macOS: /usr/bin/open hands the URL to the default browser (Launch Services)
+    let opener = if cfg!(target_os = "macos") { "/usr/bin/open" } else { "xdg-open" };
+    std::process::Command::new(opener)
         .arg(&url)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
         .map(|_| ())
-        .map_err(|e| format!("xdg-open: {e}"))
+        .map_err(|e| format!("{opener}: {e}"))
 }
 
 #[tauri::command]
@@ -4303,7 +4328,19 @@ fn sec_webgl<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>, on: bool) {
         eprintln!("[sec] webgl={on} not applied: {e}");
     }
 }
-#[cfg(not(target_os = "linux"))]
+/// macOS: WKPreferences' WebGL switch (WebKit SPI `_setWebGLEnabled:`) on the live page webview
+#[cfg(target_os = "macos")]
+fn sec_webgl<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>, on: bool) {
+    security::PAGE_WEBGL.store(on, std::sync::atomic::Ordering::SeqCst);
+    let r = w.with_webview(move |pw| match macos::webview_pref(pw.inner(), "_setWebGLEnabled:", "_webGLEnabled", on) {
+        Ok(_) => eprintln!("[sec] webgl={} (WKPreferences _webGLEnabled)", if on { "on" } else { "off" }),
+        Err(e) => eprintln!("[sec] webgl={on} not applied: {e}"),
+    });
+    if let Err(e) = r {
+        eprintln!("[sec] webgl={on} not applied: {e}");
+    }
+}
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn sec_webgl<R: tauri::Runtime>(_w: &tauri::WebviewWindow<R>, on: bool) {
     eprintln!("[sec] webgl={on}: no WebKitSettings on this platform, not enforced");
 }
@@ -4349,7 +4386,21 @@ fn sec_canvas<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>, add: bool) {
         eprintln!("[sec] canvas live change not applied: {e}");
     }
 }
-#[cfg(not(target_os = "linux"))]
+/// macOS: OUR WKUserScript (all frames, document start) added to / removed from the page's
+/// WKUserContentController (macos::user_script keeps tauri's own scripts); next page load
+#[cfg(target_os = "macos")]
+fn sec_canvas<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>, add: bool) {
+    security::CANVAS_LIVE.store(add, std::sync::atomic::Ordering::SeqCst);
+    let src = add.then(security::canvas_script);
+    let r = w.with_webview(move |pw| match macos::user_script(pw.controller(), src.as_deref()) {
+        Ok(()) => eprintln!("[sec] canvas={} (live user script {}, next page load)", if add { "off" } else { "on" }, if add { "added" } else { "removed" }),
+        Err(e) => eprintln!("[sec] canvas live change not applied: {e}"),
+    });
+    if let Err(e) = r {
+        eprintln!("[sec] canvas live change not applied: {e}");
+    }
+}
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn sec_canvas<R: tauri::Runtime>(_w: &tauri::WebviewWindow<R>, add: bool) {
     eprintln!("[sec] canvas off={add}: no user content manager on this platform, applies at the next start");
 }
@@ -4374,7 +4425,32 @@ fn sec_clip<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>, on: bool) {
         eprintln!("[sec] appClipboard={on} not applied: {e}");
     }
 }
-#[cfg(not(target_os = "linux"))]
+/// macOS: WKPreferences' JS clipboard access (SPI `_setJavaScriptCanAccessClipboard:`): off = false,
+/// on = the value the webview had before we first touched it; the key gate (sec_clip_gate) reads
+/// PAGE_APPCLIP at each key press
+#[cfg(target_os = "macos")]
+fn sec_clip<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>, on: bool) {
+    security::PAGE_APPCLIP.store(on, std::sync::atomic::Ordering::SeqCst);
+    let r = w.with_webview(move |pw| {
+        static ORIG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let set = |v: bool| macos::webview_pref(pw.inner(), "_setJavaScriptCanAccessClipboard:", "_javaScriptCanAccessClipboard", v);
+        let orig = match ORIG.get() {
+            Some(o) => *o,
+            None => match set(false) {
+                Ok(b) => *ORIG.get_or_init(|| b.unwrap_or(false)),
+                Err(e) => return eprintln!("[sec] appClipboard={on} not applied: {e}"),
+            },
+        };
+        match set(on && orig) {
+            Ok(_) => eprintln!("[sec] appClipboard={} (javascript-can-access-clipboard={}, clipboard keys {})", if on { "on" } else { "off" }, on && orig, if on { "pass" } else { "swallowed" }),
+            Err(e) => eprintln!("[sec] appClipboard={on} not applied: {e}"),
+        }
+    });
+    if let Err(e) = r {
+        eprintln!("[sec] appClipboard={on} not applied: {e}");
+    }
+}
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn sec_clip<R: tauri::Runtime>(_w: &tauri::WebviewWindow<R>, on: bool) {
     security::PAGE_APPCLIP.store(on, std::sync::atomic::Ordering::SeqCst);
     eprintln!("[sec] appClipboard={on}: no native key gate on this platform, commands still refuse");
@@ -4422,7 +4498,32 @@ fn sec_clip_gate(w: &tauri::WebviewWindow) {
         eprintln!("[sec] could not wire the clipboard key gate: {e}");
     }
 }
-#[cfg(not(target_os = "linux"))]
+/// macOS: an NSEvent key-down monitor (macos::clip_key_monitor) — AppKit runs it before the Edit
+/// menu's key equivalents and before WebKit, and no page script can reach it. While PAGE_APPCLIP
+/// is off, Cmd+C/X/V for this window are swallowed and the page told why ("security-clip").
+#[cfg(target_os = "macos")]
+fn sec_clip_gate(w: &tauri::WebviewWindow) {
+    let nsw = match w.ns_window() {
+        Ok(p) => p as usize,
+        Err(e) => return eprintln!("[sec] could not wire the clipboard key gate: {e}"),
+    };
+    let win = w.clone();
+    let r = w.run_on_main_thread(move || {
+        macos::clip_key_monitor(
+            nsw,
+            || !security::PAGE_APPCLIP.load(std::sync::atomic::Ordering::SeqCst),
+            move |what| {
+                use tauri::Emitter;
+                eprintln!("[sec] refused {what}: {}", security::clip_key_text());
+                let _ = win.emit("security-clip", security::clip_key_text());
+            },
+        )
+    });
+    if let Err(e) = r {
+        eprintln!("[sec] could not wire the clipboard key gate: {e}");
+    }
+}
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn sec_clip_gate(_w: &tauri::WebviewWindow) {}
 
 /// the response hook of the page window: an HTML page (the only responses
@@ -4547,6 +4648,11 @@ fn page_window(app: &tauri::AppHandle, wc: &tauri::utils::config::WindowConfig) 
     // transport instead: a drop naming a local file still goes drop-files -> attach_drop, the rest
     // is WebKit's (the DOM drop -> Ed.htmlDrop converts its text/html, like stock)
     let b = b.disable_drag_drop_handler();
+    // macOS port: the native traffic lights over the app's top-left corner (title bar overlaid on
+    // the webview, no title text); the app's own min/max/close and resize strips are hidden by
+    // ui/style.css html.os-mac. AppKit also gives the window its native resize edges back.
+    #[cfg(target_os = "macos")]
+    let b = b.decorations(true).title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true);
     // #144 toggle 6: canvas off at creation = the stubs as an ALL-FRAMES initialization script,
     // guaranteed before the first document (it lives as long as the window: back on = restart)
     let b = if security::effective(&cfg_value()).sec.canvas {
@@ -7470,7 +7576,17 @@ fn probe_drag_proto() -> DragProto {
 #[tauri::command]
 fn win_move_proto(proto: tauri::State<'_, DragProto>) -> String {
     let honoured = proto.pos.lock().map(|p| p.honoured).unwrap_or(None);
-    drag_path(proto.x11, proto.moveresize, honoured).to_string()
+    drag_path_here(drag_path(proto.x11, proto.moveresize, honoured)).to_string()
+}
+
+/// macOS port: AppKit owns the window move (NSWindow performWindowDragWithEvent behind
+/// tauri's start_dragging), so every press is handed over: "wm". Elsewhere the measured path.
+fn drag_path_here(measured: &'static str) -> &'static str {
+    if cfg!(target_os = "macos") {
+        "wm"
+    } else {
+        measured
+    }
 }
 
 /// R33.6b: hand the press to the WM/compositor when this session will not let the
@@ -7501,7 +7617,7 @@ fn win_drag_start(win: tauri::Window, proto: tauri::State<'_, DragProto>) -> Res
         "win_drag_start",
         {
             let honoured = proto.pos.lock().map(|p| p.honoured).unwrap_or(None);
-            let p = drag_path(proto.x11, proto.moveresize, honoured);
+            let p = drag_path_here(drag_path(proto.x11, proto.moveresize, honoured));
             taken = p;
             // Written by the process that actually asks, for the same reason
             // win_gesture logs: a title census that stops updating looks exactly
@@ -7727,6 +7843,43 @@ fn quit_request(app: &tauri::AppHandle, why: &str) -> bool {
     }
 }
 
+/// macOS port: the app menu's predefined Quit is NSApp terminate:, which tao turns into a final
+/// exit (no CloseRequested, no preventable ExitRequested): the editor's debounced tail would be
+/// lost. Swap it for our own "Quit Opensidian" (Cmd+Q) that goes through quit_request.
+#[cfg(target_os = "macos")]
+const MAC_QUIT: &str = "os-quit";
+#[cfg(target_os = "macos")]
+fn mac_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
+    // the macOS-facing name is "Opensidian" (bundle.macOS.bundleName: the menu bar, Dock, About);
+    // productName stays "opensidian" for the binary and the Linux packages
+    const NAME: &str = "Opensidian";
+    let menu = Menu::default(app)?;
+    if let Some(MenuItemKind::Submenu(old)) = menu.items()?.into_iter().next() {
+        let quit = MenuItem::with_id(app, MAC_QUIT, format!("Quit {NAME}"), true, Some("CmdOrCtrl+Q"))?;
+        let appm = Submenu::with_items(
+            app,
+            NAME,
+            true,
+            &[
+                &PredefinedMenuItem::about(app, Some(&format!("About {NAME}")), None)?,
+                &PredefinedMenuItem::separator(app)?,
+                &PredefinedMenuItem::services(app, None)?,
+                &PredefinedMenuItem::separator(app)?,
+                &PredefinedMenuItem::hide(app, Some(&format!("Hide {NAME}")))?,
+                &PredefinedMenuItem::hide_others(app, None)?,
+                &PredefinedMenuItem::show_all(app, None)?,
+                &PredefinedMenuItem::separator(app)?,
+                &quit,
+            ],
+        )?;
+        menu.remove(&old)?;
+        menu.insert(&appm, 0)?;
+    }
+    app.set_menu(menu)?;
+    Ok(())
+}
+
 /// CloseRequested (close button -> win_close, Alt+F4, a WM close): held while the UI flushes
 fn quit_event(w: &tauri::Window, e: &tauri::WindowEvent) {
     use tauri::Manager;
@@ -7765,7 +7918,16 @@ extern "C" fn on_term(_: libc::c_int) {
 /// processes we spawn (desk_proc) keep the stock SIGTERM.
 fn install_term(app: tauri::AppHandle) {
     let mut fds = [0 as libc::c_int; 2];
-    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+    #[cfg(target_os = "linux")]
+    let failed = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0;
+    // no pipe2 on macOS: pipe, then FD_CLOEXEC on both ends (single-threaded at this point)
+    #[cfg(not(target_os = "linux"))]
+    let failed = unsafe {
+        libc::pipe(fds.as_mut_ptr()) != 0
+            || libc::fcntl(fds[0], libc::F_SETFD, libc::FD_CLOEXEC) != 0
+            || libc::fcntl(fds[1], libc::F_SETFD, libc::FD_CLOEXEC) != 0
+    };
+    if failed {
         eprintln!("[quit] SIGTERM flush unavailable: pipe2 failed");
         return;
     }
@@ -8125,7 +8287,16 @@ fn main() {
         .plugin(appid::plugin())
         .manage(vault)
         .manage(ZoomLevel(Mutex::new(read_zoom_cfg())))
+        .on_menu_event(|_app, _ev| {
+            // macOS port: our Quit (mac_menu) asks the UI to flush like a window close
+            #[cfg(target_os = "macos")]
+            if _ev.id().as_ref() == MAC_QUIT && quit_request(_app, "app quit") {
+                _app.exit(0); // not armed: nothing to wait for
+            }
+        })
         .setup(move |app| {
+            #[cfg(target_os = "macos")]
+            mac_menu(app.handle())?;
             if let Some(wc) = &page_conf {
                 page_window(app.handle(), wc)?;
             }
@@ -8319,8 +8490,20 @@ fn main() {
             secrets::secrets_op,
             settings::settings_model
         ])
-        .run(ctx)
-        .expect("tauri run");
+        .build(ctx)
+        .expect("tauri build")
+        .run(|_app, _ev| {
+            // macOS port: the app menu's Quit (Cmd+Q) is NSApp terminate:, which closes no window —
+            // CloseRequested never fires, so without this the debounced tail of the typing is lost.
+            // A USER exit (code None) asks the UI to flush exactly like a window close; quit_ready's
+            // own app.exit(0) (code Some) and the grace exit pass through.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::ExitRequested { code: None, api, .. } = &_ev {
+                if !quit_request(_app, "app quit") {
+                    api.prevent_exit();
+                }
+            }
+        });
 }
 
 #[cfg(test)]
@@ -13185,6 +13368,7 @@ mod tests {
 
     /// the two roads, each proven by WHICH road it took, not just by the result
     #[test]
+    #[cfg(target_os = "linux")] // the second filesystem is /dev/shm (tmpfs)
     fn osdrop_import_moves_by_link_on_one_fs_and_by_verified_copy_across() {
         let (root, srcd) = drop_vault("osd-roads");
         assert_eq!(dev_of(&root), dev_of(&srcd), "fixture: vault and source dir must share a filesystem");
@@ -13211,6 +13395,7 @@ mod tests {
 
     /// THE crash-safety criterion: a fault before the final rename, on both roads
     #[test]
+    #[cfg(target_os = "linux")] // the second filesystem is /dev/shm (tmpfs)
     fn osdrop_injected_failure_before_commit_leaves_source_intact_and_no_partial_file() {
         let shm = shm_src("osd-crash");
         // (road, fault point, source dir is another fs?, force the copy road on one fs?)
@@ -13277,6 +13462,7 @@ mod tests {
     /// a refused type is never touched, and a collision on the cross-fs road
     /// gets a new name without overwriting
     #[test]
+    #[cfg(target_os = "linux")] // the second filesystem is /dev/shm (tmpfs)
     fn osdrop_refused_untouched_and_crossfs_collision_renames() {
         let (root, _srcd) = drop_vault("osd-ref");
         let shm = shm_src("osd-ref");
@@ -13303,6 +13489,7 @@ mod tests {
     /// same type; collisions take `stem N.pdf` (stock: `recon-a 1.pdf`) and never
     /// overwrite.
     #[test]
+    #[cfg(target_os = "linux")] // the second filesystem is /dev/shm (tmpfs)
     fn pdfdrop_copies_a_pdf_on_both_filesystems_and_indexes_it() {
         let (root, srcd) = drop_vault("pdfd-ok");
         let body = pdf::tests::mini_pdf(2);
@@ -13353,6 +13540,7 @@ mod tests {
     /// vault gains nothing (no temp either). A file shorter than the magic is a
     /// mismatch, not a read error.
     #[test]
+    #[cfg(target_os = "linux")] // the second filesystem is /dev/shm (tmpfs)
     fn pdfdrop_refuses_a_pdf_whose_bytes_are_not_pdf() {
         let (root, srcd) = drop_vault("pdfd-magic");
         let shm = shm_src("pdfd-magic");

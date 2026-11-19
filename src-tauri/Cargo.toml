@@ -41,7 +41,6 @@ regex = "=1.13.1"
 # renderer-crates.txt, all >= 6 weeks old, resolved with --precise pins (never
 # "latest"). Design: harness docs/recon-pdfembed/README.md "security design".
 hayro = "=0.7.1"
-landlock = "=0.4.7"
 # vaultfs: openat/renameat/mkdirat/unlinkat with O_NOFOLLOW so vault writes never
 # follow a symlink. ALREADY in Cargo.lock (transitive via tauri/landlock); `=`
 # pins it to that exact version, so the lock gains no package.
@@ -85,6 +84,8 @@ fluent-bundle = "=0.16.0"
 # that is not tauri's gdk would hand us a DIFFERENT GdkDisplay type and the
 # downcast that detects X11-vs-Wayland would silently answer "wayland" everywhere.
 [target.'cfg(target_os = "linux")'.dependencies]
+# Landlock is a Linux kernel LSM; other targets build without it (sandbox.rs stub).
+landlock = "=0.4.7"
 gdk = "=0.18.2"
 gdkx11 = "=0.18.2"
 # spawn-consent: the native trust / run-program prompts (src/consent.rs) are
@@ -109,6 +110,13 @@ dbus = "=0.9.12"
 # `=` pins the locked versions so the WebView type is wry's type. Fetches nothing new.
 webkit2gtk = { version = "=2.0.2", features = ["v2_38"] }
 webkit2gtk-sys = { version = "=2.0.2", features = ["v2_38"] }
+
+# macOS port (src/macos.rs): AppKit / WebKit / Security calls sent by selector. Both crates are
+# ALREADY in Cargo.lock as tauri's own macOS dependencies (tauri -> muda/tao/wry -> objc2 0.6.4,
+# block2 0.6.2); `=` pins the locked versions, so this fetches and trusts nothing new.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "=0.6.4"
+block2 = "=0.6.2"
 
 # listtoggle A2 — the unit table runs ui/editor.js in JavaScriptCore, the engine
 # the webview runs it in. javascriptcore-rs 1.1.2 is ALREADY in Cargo.lock as
