@@ -64,8 +64,6 @@ exceptions = [
   # NO "OpenSSL" (OpenSSL/SSLeay) licence anywhere: it is GPL-incompatible (docs/sync/open-questions.md
   # #13, RESOLVED 2026-11-19: OpenSSL 3 FIPS provider, Apache-2.0). aws-lc-*/ring are gone from the
   # lock; their exceptions were removed with them.
-  # libloading 0.7.4: transitive via the tauri/gtk stack (not sync).
-  { crate = "libloading", allow = ["ISC"] },
   # sync TLS (docs/sync/deps.md): rustls-webpki (vendored path patch, noring) + its hard dep untrusted
   { crate = "rustls-webpki", allow = ["ISC"] },
   { crate = "untrusted", allow = ["ISC"] },

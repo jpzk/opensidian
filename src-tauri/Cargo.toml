@@ -85,11 +85,11 @@ ed25519-compact = { version = "=2.4.2", default-features = false }
 # Sync M1 — local file history (src/filehist.rs). A WORKSPACE PATH crate
 # (../crates/sync-core), no registry crate: its own deps (serde, serde_json,
 # sha2) are the versions already locked above. docs/sync/deps.md.
-sync-core = { path = "../crates/sync-core" }
+sync-core = { version = "=0.1.0", path = "../crates/sync-core" }
 # Sync M6b — the embedded engine (src/syncui.rs): syncd's LocalEngine in-process.
 # Workspace path crate; its deps (serde, serde_json, zeroize, tokio rt+net) are
 # already locked. docs/sync/deps.md §M6b.
-syncd = { path = "../crates/syncd" }
+syncd = { version = "=0.1.0", path = "../crates/syncd" }
 zeroize = "=1.9.1"
 
 # #220 UI translations — Project Fluent, the same engine as the vendored
