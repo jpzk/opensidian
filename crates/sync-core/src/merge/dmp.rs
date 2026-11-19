@@ -66,6 +66,14 @@ pub enum DmpError {
 /// Myers diff; `None` if D would exceed `max_d`. Returns runs of
 /// (op, len) in a/b order.
 fn myers<T: Eq>(a: &[T], b: &[T], max_d: usize) -> Option<Vec<(Op, usize)>> {
+    // one side empty: the only script is a pure insert / delete, no search
+    // (and no D limit: the cap bounds the search, not the edit size)
+    match (a.is_empty(), b.is_empty()) {
+        (true, true) => return Some(Vec::new()),
+        (true, false) => return Some(vec![(Op::Insert, b.len())]),
+        (false, true) => return Some(vec![(Op::Delete, a.len())]),
+        _ => {}
+    }
     let n = a.len() as isize;
     let m = b.len() as isize;
     let dlim = (a.len() + b.len()).min(max_d);
@@ -524,6 +532,11 @@ mod tests {
         let b: Vec<u32> = (100..110).collect();
         assert!(myers(&a, &b, 5).is_none());
         assert!(myers(&a, &b, 20).is_some());
+        // a pure insert / delete is no search: never TooComplex
+        let big: Vec<u32> = (0..5000).collect();
+        assert_eq!(myers(&[], &big, 5), Some(vec![(Op::Insert, 5000)]));
+        assert_eq!(myers(&big, &[], 5), Some(vec![(Op::Delete, 5000)]));
+        assert_eq!(myers::<u32>(&[], &[], 5), Some(vec![]));
     }
 
     #[test]
