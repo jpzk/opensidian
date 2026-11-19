@@ -143,11 +143,9 @@ jobs:
       # installed the apt set on the runner HOST): scans the WebKit part generated above in the build
       # container, i.e. exactly what this AppImage bundles, on BOTH arches. Fails on any CVE with a
       # fixed Ubuntu version (osv-fixed-gate.sh); draft-release needs this job.
-      - name: osv-scanner (latest release, digest-verified, unpinned by design)
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: osv-scanner (pinned version + per-arch sha256, osv-scanner.pins)
         run: |
-          bin=$(scripts/supply-chain/osv-install.sh "$RUNNER_TEMP/osv")
+          bin=$(scripts/supply-chain/osv-install.sh --pinned "$RUNNER_TEMP/osv")
           echo "OSV=$bin" >> "$GITHUB_ENV"
       - name: WebKit bundle CVE gate on the in-container SBOM (fail only on CVEs with a fixed Ubuntu version)
         run: |

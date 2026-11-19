@@ -1,0 +1,8 @@
+# osv-scanner pin for the RELEASE gate (release.yml appimage job: osv-install.sh --pinned).
+# One version, one sha256 per linux asset of THAT version. Cross-checked 2026-11-19 against
+# both the GitHub release API asset "digest" fields and the release's osv-scanner_SHA256SUMS.
+# v2.6.0 published 2026-09-14 (>= 6 weeks old; v2.7.0/v2.7.1 are newer than the 6-week rule).
+# format: version <tag> | sha256 <goarch> <64 hex>
+version v2.6.0
+sha256 amd64 ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108
+sha256 arm64 2c71403eb443d05891c4f268c3ad771cf4f16e5443463fd7851ef8f454d3c7e4

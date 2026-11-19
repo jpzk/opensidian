@@ -44,10 +44,19 @@ cargo-audit, cargo-deny and cargo-vet (operator decision 2026-11-15) and **osv-s
 latest release. Everything else stays pinned.
 
 - cargo tools: `cargo install --locked <tool>`. Each job prints a `resolved version` step.
-- osv-scanner: `scripts/supply-chain/osv-install.sh` makes one call to the GitHub
-  `releases/latest` API and refuses prereleases and drafts. It downloads the linux-amd64 asset,
-  checks it with `sha256sum -c` against the asset `digest` from the API, and fails closed if
-  there is no digest (same pattern as `opengrep.yml`). It logs the tag, sha256 and `--version`.
+- osv-scanner: `scripts/supply-chain/osv-install.sh` picks the asset for the runner's
+  architecture from `uname -m` (`linux_amd64` / `linux_arm64`; any other machine fails closed).
+  In supply-chain.yml it makes one call to the GitHub `releases/latest` API, refuses prereleases
+  and drafts, checks the asset with `sha256sum -c` against that asset's `digest` from the API, and
+  fails closed if there is no digest (same pattern as `opengrep.yml`). It logs the tag, sha256 and
+  `--version`.
+- Exception to the exception: the release.yml AppImage WebKit CVE gate runs
+  `osv-install.sh --pinned` on both arches. The version and one sha256 per arch live in
+  `scripts/supply-chain/osv-scanner.pins` (one release, >= 6 weeks old, digests cross-checked
+  against the API and the release's `osv-scanner_SHA256SUMS`). There is no API call; an arch without
+  a pinned digest, a malformed pin file or a digest mismatch fails the job. The advisory data is
+  still live (osv.dev). Bump the pin like any other pinned tool. Tested by
+  `tests/osv-install.test.sh`.
 
 Why: these are vulnerability scanners. Advisory DBs and formats keep changing, so an old release
 can fail to parse new advisories, or skip them, and the check stops protecting anything. The blast
