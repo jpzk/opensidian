@@ -47,11 +47,28 @@ for n in $names; do
   [ "$(printf '%s\n' "$v" | grep -c .)" = 1 ] || die "lock: not exactly one amd64 version for $n"
   new_pkgs="${new_pkgs:+$new_pkgs }$n=$v"
 done
+# every pinned apt list (appimage-build.sh PKGS + SBOM_PKGS, webkit-apt.sh PKGS = a subset,
+# sbom-local.sh PKGS = PKGS + jq libjq1) is rewritten token by token: each name=<old> becomes
+# name=<lock amd64 version>; a name not in the lock, or not exactly one such line, fails closed.
+# Fixed-string awk only (versions contain regex metacharacters: no grep/sed patterns on them).
+repin() { # file var
+  local f=$1 k=$2
+  [ "$(awk -v p="$k=\"" 'index($0, p) == 1' "$f" | wc -l)" = 1 ] || die "$f: not exactly one $k=\"...\" line"
+  awk -F'\t' -v p="$k=\"" -v lk="$W/lock" -v f="$f" '
+    BEGIN { while ((getline l < lk) > 0) { split(l, c, "\t"); if (c[3] == "amd64") { if (c[1] in v) dup[c[1]] = 1; v[c[1]] = c[2] } } }
+    index($0, p) == 1 {
+      rest = substr($0, length(p) + 1); e = index(rest, "\""); if (e == 0) { print f ": unterminated " p > "/dev/stderr"; exit 3 }
+      n = split(substr(rest, 1, e - 1), t, " "); out = ""
+      for (i = 1; i <= n; i++) { nm = t[i]; sub(/=.*/, "", nm)
+        if (!(nm in v) || (nm in dup)) { print f ": " nm " not exactly once in the lock" > "/dev/stderr"; exit 3 }
+        out = out (i > 1 ? " " : "") nm "=" v[nm] }
+      $0 = p out substr(rest, e) }
+    { print }' "$f" > "$W/re" || die "$f: $k rewrite failed"
+  cat "$W/re" > "$f"
+}
 cp "$W/lock" "$LOCK"
-for f in "$AB" "$SL" "$WA"; do
-  grep -q "^PKGS=\"$old_pkgs\"" "$f" || die "$f PKGS differs from $AB (fix by hand first)"
-  sed -i "s|^PKGS=\"$old_pkgs\"|PKGS=\"$new_pkgs\"|" "$f"
-done
+repin "$AB" PKGS; repin "$AB" SBOM_PKGS; repin "$WA" PKGS; repin "$SL" PKGS
+[ "$(sed -n 's/^PKGS="\([^"]*\)".*/\1/p' "$AB")" = "$new_pkgs" ] || die "$AB PKGS != resolved set"
 for f in "$AB" "$WA" "$WT"; do sed -i "s/$old_snap/$snap/g" "$f"; done
 note "- snapshot.ubuntu.com: $old_snap -> $snap (lock re-resolved, gpgv + Packages.xz sha256)"
 for p in $new_pkgs; do case " $old_pkgs " in *" $p "*) ;; *) note "  - $p (was $(printf '%s\n' $old_pkgs | grep "^${p%%=*}=" | cut -d= -f2-))" ;; esac; done
@@ -72,7 +89,7 @@ jq -e '[.manifests[].platform | "\(.os)/\(.architecture)\(if .variant then "/"+.
   || die "ubuntu:$tag manifest list lacks linux/amd64 or linux/arm64/v8"
 sed -i "s/$old_dig/$dig/" "$AB"; sed -i "s|^WK_IMG=docker.io/library/ubuntu@$old_dig|WK_IMG=docker.io/library/ubuntu@$dig|" "$SL"
 grep -q "^WK_IMG=docker.io/library/ubuntu@$dig" "$SL" || die "WK_IMG in $SL was not $old_dig"
-note "- ubuntu image: $old_dig -> ubuntu:$tag $dig"
+[ "$old_dig" = "$dig" ] || note "- ubuntu image: $old_dig -> ubuntu:$tag $dig"
 
 # ---- 3. scanners ------------------------------------------------------------------------------
 gh_hdr=(-H 'Accept: application/vnd.github+json'); [ -z "${GH_TOKEN:-}" ] || gh_hdr+=(-H "Authorization: Bearer $GH_TOKEN")

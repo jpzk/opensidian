@@ -148,7 +148,7 @@ webkit_podman() {
   snap=$(ab_var SNAP)
   [ -n "$snap" ] || die "cannot read SNAP from $AB"
   [ "$WK_IMG" = "docker.io/library/ubuntu@$(ab_var DIGEST)" ] || die "WK_IMG $WK_IMG != appimage-build.sh DIGEST $(ab_var DIGEST)"
-  [ "$PKGS" = "$(ab_var PKGS) jq=1.8.1-4ubuntu2 libjq1=1.8.1-4ubuntu2" ] || die "sbom-local.sh PKGS != appimage-build.sh PKGS + jq libjq1"
+  [ "$PKGS" = "$(ab_var PKGS) $(sed -n 's/^SBOM_PKGS="\([^"]*\)".*/\1/p' "$AB" | head -1)" ] || die "sbom-local.sh PKGS != appimage-build.sh PKGS + jq libjq1"
   ca=${HOST_CA_BUNDLE:-}
   if [ -z "$ca" ]; then for c in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do [ -s "$c" ] && { ca=$c; break; }; done; fi
   [ -s "$ca" ] || die "no host CA bundle (set HOST_CA_BUNDLE)"
