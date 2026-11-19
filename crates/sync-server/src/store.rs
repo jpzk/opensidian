@@ -697,7 +697,8 @@ impl Store {
     /// Reclaim every object whose `expires` has passed (soft-deleted objects
     /// past retention, expired pairing objects). Returns the number reclaimed.
     ///
-    /// The row stays as a tombstone (`deleted` set, `size` 0, no `expires`):
+    /// An obj/cfg row stays as a tombstone (`deleted` set, `size` 0, no `expires`;
+    /// single-use pairing rows are removed):
     /// a reclaimed id stays known to `missing` and can never be published
     /// again with different bytes. Each object is reclaimed in its own
     /// transaction that re-checks the row, so the quota is debited exactly
@@ -729,11 +730,20 @@ impl Store {
                 )
                 .optional()?;
             let Some(size) = size else { continue }; // reclaimed by a concurrent pass
-            tx.execute(
-                "UPDATE object SET deleted = COALESCE(deleted, ?4), expires = NULL, size = 0
-                 WHERE ns = ?1 AND kind = ?2 AND id = ?3",
-                params![&ns.0[..], kind_code(kind), &id.0[..], now],
-            )?;
+            if kind == ObjKind::Pair {
+                // single-use pairing drops: purged entirely (spec §5), the
+                // joiner only ever sees "not there"
+                tx.execute(
+                    "DELETE FROM object WHERE ns = ?1 AND kind = ?2 AND id = ?3",
+                    params![&ns.0[..], kind_code(kind), &id.0[..]],
+                )?;
+            } else {
+                tx.execute(
+                    "UPDATE object SET deleted = COALESCE(deleted, ?4), expires = NULL, size = 0
+                     WHERE ns = ?1 AND kind = ?2 AND id = ?3",
+                    params![&ns.0[..], kind_code(kind), &id.0[..], now],
+                )?;
+            }
             tx.execute(
                 "UPDATE vault SET used = MAX(used - ?2, 0) WHERE ns = ?1",
                 params![&ns.0[..], size],
