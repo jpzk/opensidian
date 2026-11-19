@@ -75,6 +75,29 @@ fn refuses_when_default_provider_active() {
 }
 
 #[test]
+fn refuses_when_security_checks_disabled() {
+    // a valid module + integrity MAC, but fipsmodule.cnf has security-checks = 0:
+    // the provider still loads and serves fips=yes, only without the approved-
+    // mode key/digest checks -> must be refused (the -pedantic file is the
+    // positive control every other test runs with)
+    let d = tmpdir("nochecks");
+    let conf = std::env::var("OPENSSL_CONF").expect("fips-env.sh sets OPENSSL_CONF");
+    let fipsmod = std::path::Path::new(&conf).with_file_name("fipsmodule.cnf");
+    let orig = std::fs::read_to_string(&fipsmod).unwrap();
+    assert!(orig.contains("security-checks = 1"), "{} is not a -pedantic config", fipsmod.display());
+    std::fs::write(d.join("fipsmodule.cnf"), orig.replace("security-checks = 1", "security-checks = 0")).unwrap();
+    std::fs::write(
+        d.join("openssl.cnf"),
+        format!(
+            "config_diagnostics = 1\nopenssl_conf = openssl_init\n.include {}\n[openssl_init]\nproviders = provider_sect\nalg_section = algorithm_sect\n[provider_sect]\nfips = fips_sect\nbase = base_sect\n[base_sect]\nactivate = 1\n[algorithm_sect]\ndefault_properties = fips=yes\n",
+            d.join("fipsmodule.cnf").display()
+        ),
+    )
+    .unwrap();
+    run_child("security-checks-0", &[("OPENSSL_CONF", d.join("openssl.cnf").display().to_string())]);
+}
+
+#[test]
 #[ignore = "child process of the refusal tests"]
 fn child_expects_refusal() {
     let Ok(case) = std::env::var(CHILD) else {

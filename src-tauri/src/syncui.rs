@@ -268,12 +268,21 @@ pub async fn sync_move<R: tauri::Runtime>(
         return Err("an enrollment token for the new vault is needed (opensidian-sync-server vault create)".into());
     }
     let w = native_window(&win).ok_or("move needs the native dialog")?;
+    // the vault the user is asked about: the worker refuses a different one
+    // (the state dir re-pointed while the dialog was up)
+    let approved = {
+        let st = st.clone();
+        blocking(move || Ok(engine(&st, true)?.config().vault_id)).await?
+    };
     let slot = crate::consent::admit()?;
     if !crate::consent::ask(slot, w, crate::consent::Kind::Move, crate::consent::move_question()).await? {
         return Err("denied: the vault was not moved".into());
     }
     let done = blocking(move || {
         let e = engine(&st, true)?;
+        if e.config().vault_id != approved {
+            return Err("denied: the sync vault changed while the move was being approved; nothing was moved".into());
+        }
         let old = match typed.filter(|t| !t.trim().is_empty()) {
             Some(t) => t,
             None => e.reveal_words().map_err(api)?,

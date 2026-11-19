@@ -252,8 +252,17 @@ fn run(argv: Vec<String>) -> Result<(), ApiError> {
                 moved.old_vault_id,
                 words.as_str()
             );
+            if let Some(ce) = &moved.destroyed.cleanup_error {
+                let _ = writeln!(
+                    err,
+                    "WARNING: the old vault is destroyed on the server, but removing its local keys failed: {ce}\n  its daily + backup keystore entries (vault {}) are still on this device: delete them by hand\n",
+                    moved.old_vault_id
+                );
+            }
             drop(err);
-            out(&serde_json::json!({ "moved": moved, "status": e.status()? }))
+            // the move is done: a failed follow-up status read must not turn it into an error
+            let status = e.status().map_err(|x| x.to_string());
+            out(&serde_json::json!({ "moved": moved, "status": status.as_ref().ok(), "status_error": status.as_ref().err() }))
         }
         "pair" => {
             let with = a.flag("--with-words");

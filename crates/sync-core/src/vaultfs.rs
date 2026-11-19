@@ -32,6 +32,16 @@ fn components(rel: &str) -> io::Result<Vec<&str>> {
     if rel.is_empty() || parts.iter().any(|c| c.is_empty() || *c == "." || *c == ".." || c.contains('\\') || c.contains('\0')) {
         return Err(refused(rel, "not a plain vault-relative path"));
     }
+    // each segment must be exactly one native normal component (a Windows
+    // prefix like `C:` or a root would make PathBuf::push leave the root);
+    // enforced here, independent of upstream path validation
+    for c in &parts {
+        let mut it = Path::new(c).components();
+        match (it.next(), it.next()) {
+            (Some(std::path::Component::Normal(n)), None) if n == std::ffi::OsStr::new(c) => {}
+            _ => return Err(refused(rel, "not a plain vault-relative path")),
+        }
+    }
     Ok(parts)
 }
 

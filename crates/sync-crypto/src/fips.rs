@@ -6,7 +6,10 @@
 //! 2026-11-19: OpenSSL 3 (Apache-2.0, GPLv3-compatible) replaces AWS-LC.
 //!
 //! Approved mode is enforced once per process in [`FipsProvider::new`]:
-//! load `fips` + `base` (an explicit load disables the `default` fallback),
+//! load `fips` (its own `version` parameter must be 3.5.9, `status` 1 and the
+//! -pedantic checks security-checks / hmac-key-check / hkdf-key-check /
+//! signature-digest-check reported as 1) + `base` (an explicit load disables
+//! the `default` fallback),
 //! set the default property query to `fips=yes`, then refuse unless
 //! - `EVP_default_properties_is_fips_enabled` is 1,
 //! - the `fips` provider is available and `default` is NOT,
@@ -54,6 +57,9 @@ pub const ED25519_SIG_LEN: usize = 64;
 const FIPS_PROPS: &str = "fips=yes";
 const FIPS_PROPS_C: &CStr = c"fips=yes";
 
+/// Version parameter of the validated module (CMVP #5586, cmvp.md).
+pub const FIPS_MODULE_VERSION: &str = "3.5.9";
+
 /// SubjectPublicKeyInfo prefix of an uncompressed P-256 point
 /// (id-ecPublicKey, prime256v1, BIT STRING of 66 bytes).
 const P256_SPKI_PREFIX: [u8; 26] = [
@@ -88,6 +94,26 @@ fn init_module() -> Result<Module, FipsInitError> {
     let e = |s: &str| FipsInitError(s.to_string());
     openssl::init();
     let fips = Provider::load(None, "fips").map_err(|x| FipsInitError(format!("load fips: {x}")))?;
+    // the module itself must be the 3.5.9 provider that CMVP #5586 covers
+    // (its own version parameter, independent of the libcrypto core), its
+    // self-tests must have passed (status 1) and the -pedantic approved-mode
+    // checks must be on (a fipsmodule.cnf with security-checks = 0 still
+    // loads and serves fips=yes, but without the SP §2.6 key/digest checks)
+    let st = ossl_ffi::provider_status(&fips).ok_or_else(|| e("OSSL_PROVIDER_get_params(fips) failed"))?;
+    if st.version.as_deref() != Some(FIPS_MODULE_VERSION) {
+        return Err(FipsInitError(format!(
+            "fips provider version {:?} is not the CMVP #5586 module {FIPS_MODULE_VERSION}",
+            st.version
+        )));
+    }
+    if st.status != Some(1) {
+        return Err(FipsInitError(format!("fips provider status {:?} (self-tests not passed)", st.status)));
+    }
+    for (k, v) in &st.checks {
+        if *v != Some(1) {
+            return Err(FipsInitError(format!("fips provider {k} = {v:?}, approved mode needs 1 (fipsinstall -pedantic)")));
+        }
+    }
     let base = Provider::load(None, "base").map_err(|x| FipsInitError(format!("load base: {x}")))?;
     if !ossl_ffi::enable_fips_default_properties() {
         return Err(e("EVP_default_properties_enable_fips failed"));

@@ -26,6 +26,53 @@ extern "C" {
     fn EVP_MD_get0_provider(md: *const ffi::EVP_MD) -> *const ffi::OSSL_PROVIDER;
     fn EVP_CIPHER_CTX_get_params(ctx: *mut ffi::EVP_CIPHER_CTX, params: *mut ffi::OSSL_PARAM) -> c_int;
     fn OSSL_PARAM_construct_utf8_string(key: *const c_char, buf: *mut c_char, bsize: usize) -> ffi::OSSL_PARAM;
+    fn OSSL_PROVIDER_get_params(prov: *const ffi::OSSL_PROVIDER, params: *mut ffi::OSSL_PARAM) -> c_int;
+    fn OSSL_PARAM_construct_utf8_ptr(key: *const c_char, buf: *mut *mut c_char, bsize: usize) -> ffi::OSSL_PARAM;
+    fn OSSL_PARAM_construct_int(key: *const c_char, buf: *mut c_int) -> ffi::OSSL_PARAM;
+}
+
+/// Approved-mode checks of the loaded FIPS provider that [`provider_status`]
+/// reads (fipsmodule.cnf from `fipsinstall -pedantic`, cmvp.md §5). Each must
+/// be reported AND be 1, else sync refuses to start.
+pub const REQUIRED_CHECKS: [&CStr; 4] = [c"security-checks", c"hmac-key-check", c"hkdf-key-check", c"signature-digest-check"];
+
+/// What `OSSL_PROVIDER_get_params` reports for a loaded provider: its own
+/// `version` (the module version, independent of the libcrypto core),
+/// `status` (1 = running, self-tests passed) and each of [`REQUIRED_CHECKS`]
+/// (`None` = not reported by the provider).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderStatus {
+    pub version: Option<String>,
+    pub status: Option<i32>,
+    pub checks: Vec<(&'static str, Option<i32>)>,
+}
+
+/// `OSSL_PROVIDER_get_params(prov, {version, status, REQUIRED_CHECKS..})`.
+pub fn provider_status(prov: &openssl::provider::ProviderRef) -> Option<ProviderStatus> {
+    unsafe {
+        let mut version: *mut c_char = ptr::null_mut();
+        let mut status: c_int = -1;
+        let mut vals: [c_int; REQUIRED_CHECKS.len()] = [-1; REQUIRED_CHECKS.len()];
+        let mut params = Vec::with_capacity(REQUIRED_CHECKS.len() + 3);
+        params.push(OSSL_PARAM_construct_utf8_ptr(c"version".as_ptr(), &mut version, 0));
+        params.push(OSSL_PARAM_construct_int(c"status".as_ptr(), &mut status));
+        for (k, v) in REQUIRED_CHECKS.iter().zip(vals.iter_mut()) {
+            params.push(OSSL_PARAM_construct_int(k.as_ptr(), v));
+        }
+        params.push(ffi::OSSL_PARAM_construct_end());
+        if OSSL_PROVIDER_get_params(prov.as_ptr(), params.as_mut_ptr()) != 1 {
+            return None;
+        }
+        let got = |i: usize| ffi::OSSL_PARAM_modified(&params[i]) == 1;
+        let version = (got(0) && !version.is_null()).then(|| CStr::from_ptr(version).to_string_lossy().into_owned());
+        let status = got(1).then_some(status);
+        let checks = REQUIRED_CHECKS
+            .iter()
+            .enumerate()
+            .map(|(i, k)| (k.to_str().unwrap_or("?"), got(i + 2).then_some(vals[i])))
+            .collect();
+        Some(ProviderStatus { version, status, checks })
+    }
 }
 
 /// `EVP_default_properties_enable_fips(NULL, 1)`: every implicit fetch in the

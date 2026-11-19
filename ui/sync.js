@@ -140,7 +140,9 @@
       const r = await inv("sync_move", { token: $("m-token").value, words });
       $("m-token").value = ""; $("m-words").value = "";
       $("m-result").textContent = "moved: new vault " + r.moved.new_vault_id.slice(0, 8) + " (" + r.moved.files + " files); old vault " +
-        r.moved.old_vault_id.slice(0, 8) + " destroyed (" + r.moved.destroyed.objects + " objects). Write down the NEW words.";
+        r.moved.old_vault_id.slice(0, 8) + " destroyed (" + r.moved.destroyed.objects + " objects). Write down the NEW words." +
+        (r.moved.destroyed.cleanup_error ? " WARNING: removing the old vault's local keys failed (" + r.moved.destroyed.cleanup_error +
+          "); its keystore entries for vault " + r.moved.old_vault_id.slice(0, 8) + " are still on this device, delete them by hand." : "");
       showWords(r.words);
       await refresh();
     } catch (e) { $("m-result").textContent = ""; err("s-err", e); } finally { b.disabled = false; }
