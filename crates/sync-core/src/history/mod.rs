@@ -353,6 +353,8 @@ pub struct Store {
     entries: Vec<Entry>,
     heads: BTreeMap<String, Head>,
     next_seq: u64,
+    /// A failed journal append could not be cut back: refuse further appends.
+    poisoned: bool,
 }
 
 impl Store {
@@ -393,7 +395,7 @@ impl Store {
                     f.sync_all()?;
                 }
                 fs::rename(&tmp, &meta_p)?;
-                fsx::sync_dir(&root);
+                fsx::sync_dir(&root)?;
             }
             Err(e) => return Err(e.into()),
         }
@@ -409,12 +411,22 @@ impl Store {
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),
         }
-        let text = std::str::from_utf8(&raw).map_err(|_| HistoryError::Corrupt { line: 0, msg: "not utf-8".into() })?;
+        // A crash can tear the final line anywhere, even inside a multi-byte
+        // character: only the complete lines have to be UTF-8, the torn tail
+        // after the last newline is dropped below like any other torn line.
+        let whole = match std::str::from_utf8(&raw) {
+            Ok(_) => raw.len(),
+            Err(_) => raw.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1),
+        };
+        let text =
+            std::str::from_utf8(&raw[..whole]).map_err(|_| HistoryError::Corrupt { line: 0, msg: "not utf-8".into() })?;
         let (entries, valid) = journal::parse(text)?;
         if valid == 0 {
             let mut f = fsx::create_private(&log_p)?;
             f.write_all(journal::HEADER.as_bytes())?;
             f.sync_all()?;
+            // the new index.log entry itself must survive a crash too
+            fsx::sync_dir(&root)?;
         } else if valid < raw.len() {
             // torn final line from a crash: drop it, keep everything before
             let f = fs::OpenOptions::new().write(true).open(&log_p)?;
@@ -432,6 +444,7 @@ impl Store {
             entries: Vec::new(),
             heads: BTreeMap::new(),
             next_seq: 1,
+            poisoned: false,
         };
         for e in entries {
             st.apply(&e);
@@ -776,11 +789,17 @@ impl Store {
                 f.write_all(body.as_bytes())?;
                 f.sync_all()?;
             }
+            // The append handle is opened on the temp file BEFORE the rename
+            // (it follows the inode): once the new journal is in place there
+            // is no step left that can fail and leave appends going to the
+            // replaced, unlinked journal.
+            let next = fsx::append_private(&tmp)?;
             fs::rename(&tmp, &log_p)?;
-            fsx::sync_dir(&self.root);
-            self.journal = fsx::append_private(&log_p)?;
+            self.journal = next;
             self.heads = replay(&keep);
             self.entries = keep;
+            // not durable -> do not collect blobs the old journal still names
+            fsx::sync_dir(&self.root)?;
         }
         let referenced: std::collections::BTreeSet<&str> = self.entries.iter().filter_map(|e| e.sha.as_deref()).collect();
         let blobs_removed = self.cas.sweep(|sha| referenced.contains(sha))?;
@@ -910,9 +929,26 @@ impl Store {
         from: Option<String>,
         now_ms: u64,
     ) -> Result<Entry, HistoryError> {
+        if self.poisoned {
+            return Err(HistoryError::Io(io::Error::other(
+                "history journal is in an unknown state after a failed write; reopen the store",
+            )));
+        }
         let e = Entry { seq: self.next_seq, ts_ms: now_ms, reason, sha, size, path: path.to_string(), from };
-        self.journal.write_all(journal::encode(&e).as_bytes())?;
-        self.journal.sync_data()?;
+        let before = self.journal.metadata()?.len();
+        let wrote = self
+            .journal
+            .write_all(journal::encode(&e).as_bytes())
+            .and_then(|_| self.journal.sync_data());
+        if let Err(err) = wrote {
+            // A partial line followed by the next record would corrupt a line
+            // in the middle of the journal (open refuses that): cut back to
+            // the last complete record, or refuse every further append.
+            if self.journal.set_len(before).and_then(|_| self.journal.sync_data()).is_err() {
+                self.poisoned = true;
+            }
+            return Err(err.into());
+        }
         self.apply(&e);
         self.next_seq += 1;
         self.entries.push(e.clone());

@@ -7,7 +7,7 @@
 
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::journal::is_sha_hex;
@@ -52,10 +52,20 @@ impl Cas {
     pub(crate) fn put(&self, data: &[u8]) -> Result<String, HistoryError> {
         let sha = sha_hex(data);
         let dst = self.path_of(&sha);
-        if dst.is_file() {
+        // Dedup only against a blob that still verifies: a truncated or
+        // bit-rotted copy must not make a new snapshot look recoverable, so
+        // it is replaced by the fresh bytes below.
+        if dst.is_file() && matches!(fs::read(&dst), Ok(old) if sha_hex(&old) == sha) {
             return Ok(sha);
         }
-        fsx::mkdir_private(&self.dir.join(&sha[..2]))?;
+        let shard = self.dir.join(&sha[..2]);
+        let fresh_shard = !shard.is_dir();
+        fsx::mkdir_private(&shard)?;
+        if fresh_shard {
+            // the shard's entry in objects/ must be durable before any
+            // journal record names a blob inside it
+            fsx::sync_dir(&self.dir)?;
+        }
         let n = TMP_CTR.fetch_add(1, Ordering::Relaxed);
         let tmp = self.dir.join("tmp").join(format!("{}.{}.{}", sha, std::process::id(), n));
         {
@@ -64,7 +74,7 @@ impl Cas {
             f.sync_all()?;
         }
         fs::rename(&tmp, &dst)?;
-        fsx::sync_dir(dst.parent().unwrap_or(Path::new(".")));
+        fsx::sync_dir(&shard)?;
         Ok(sha)
     }
 

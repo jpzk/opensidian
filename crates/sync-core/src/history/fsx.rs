@@ -34,16 +34,17 @@ pub(crate) fn append_private(p: &Path) -> io::Result<File> {
     private(OpenOptions::new().append(true).create(true)).open(p)
 }
 
-/// Best-effort directory fsync so a rename survives power loss.
-pub(crate) fn sync_dir(p: &Path) {
+/// Directory fsync so a rename or create inside it survives power loss.
+/// Errors are returned: callers must not act on a change (e.g. collect blobs
+/// a replaced journal no longer names) that might not be durable.
+pub(crate) fn sync_dir(p: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
-        if let Ok(d) = File::open(p) {
-            let _ = d.sync_all();
-        }
+        File::open(p)?.sync_all()
     }
     #[cfg(not(unix))]
     {
         let _ = p;
+        Ok(())
     }
 }

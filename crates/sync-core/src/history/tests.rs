@@ -730,3 +730,37 @@ fn restore_does_not_write_through_a_planted_temp_link() {
     assert_eq!(fs::read(&victim).unwrap(), b"victim");
     assert_eq!(fs::read(f.vault.join("r.md")).unwrap(), b"old");
 }
+
+#[test]
+fn torn_tail_inside_a_multibyte_char_is_dropped() {
+    let f = fx("tornutf8");
+    {
+        let mut s = open(&f);
+        write(&f, "a.md", b"1");
+        s.record_own_save("a.md", 1).unwrap();
+    }
+    let log = f.app.join("history/v1/index.log");
+    let good = fs::read(&log).unwrap();
+    let mut torn = good.clone();
+    // a record for "ä.md" cut after the first byte of the 2-byte char
+    torn.extend_from_slice(b"2\t5\town-save\t\xc3");
+    fs::write(&log, &torn).unwrap();
+    let s = open(&f);
+    assert_eq!(s.entries().len(), 1, "store still opens");
+    drop(s);
+    assert_eq!(fs::read(&log).unwrap(), good, "torn tail cut");
+}
+
+#[test]
+fn a_corrupt_blob_is_replaced_not_deduplicated() {
+    let f = fx("rot");
+    let mut s = open(&f);
+    write(&f, "a.md", b"hello");
+    let e = stored(s.record_own_save("a.md", 1).unwrap());
+    let sha = e.sha.clone().unwrap();
+    let blob = s.root().join("objects").join(&sha[..2]).join(&sha);
+    fs::write(&blob, b"hel").unwrap(); // truncated by a bad disk
+    write(&f, "b.md", b"hello"); // same content again
+    s.record_own_save("b.md", 2).unwrap();
+    assert_eq!(fs::read(&blob).unwrap(), b"hello", "fresh bytes replaced the rotten copy");
+}
