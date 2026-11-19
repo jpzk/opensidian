@@ -22,9 +22,9 @@ Sync help pages only (no Obsidian code was read).
 ## 2. Trust boundaries
 
 Trusted: the client device while unlocked (opensidian app process,
-opensidian-syncd running as the same user), the FIPS-mode AWS-LC crypto
-module inside it (pinned 4.2.0: no CMVP certificate yet, in process —
-cmvp.md §7), the OS keystore.
+opensidian-syncd running as the same user), the OpenSSL 3.5.9 FIPS
+provider inside it (CMVP #5586, Active; loaded and enforced at startup,
+sync refuses to start without it — cmvp.md §4), the OS keystore.
 
 Untrusted / hostile:
 

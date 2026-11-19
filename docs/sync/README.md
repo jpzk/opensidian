@@ -11,8 +11,8 @@ Status: draft, milestone M0 (spec) + M1 (local file history).
 - [key-tree.md](key-tree.md) — recovery phrase S, root R, vault key VK,
   device keys, rotation and revocation
 - [test-vectors.md](test-vectors.md) — `osy-vec-1` vector file format
-- [cmvp.md](cmvp.md) — what is publicly verifiable about aws-lc-rs `fips`
-  and the AWS-LC CMVP certificates; unknowns marked
+- [cmvp.md](cmvp.md) — the OpenSSL 3.5.9 FIPS provider, CMVP certificate
+  #5586, box build, operational rules, packaging; unknowns marked
 - [deps.md](deps.md) — every crate the sync work uses, pins, dates,
   checksums
 - [open-questions.md](open-questions.md) — decisions still open

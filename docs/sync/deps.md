@@ -19,63 +19,70 @@ why it is there. "direct" = declared with `=x.y.z` in a sync crate;
 (`--locked`); a transitive crate whose newest semver-compatible release was
 too young was pinned back (`cargo update --precise` / direct pin), noted.
 
-### M2a — AWS-LC FIPS module (sync-crypto)
+### M2a — OpenSSL 3 FIPS provider (sync-crypto)
 
-Direct (sync-crypto/Cargo.toml):
+Operator decision 2026-11-19 10:16Z ("okay openssl it is",
+open-questions #13): the AWS-LC module is gone (aws-lc-fips-sys carries the
+GPL-incompatible OpenSSL/SSLeay licence). The crypto suite now runs on the
+**OpenSSL 3.5.9 FIPS provider** (CMVP #5586, cmvp.md) through rust-openssl,
+behind the same `CryptoProvider` trait. Removed with it (Cargo.lock,
+5966065): aws-lc-rs 1.16.0, aws-lc-fips-sys 0.13.11, aws-lc-sys 0.37.1,
+ring 0.17.14 and their build graph (bindgen 0.72.1, cexpr, clang-sys,
+cmake, either 1.19.0, fs_extra, itertools 0.13.0, libloading 0.8.9,
+minimal-lexical, nom 7.1.3, prettyplease, shlex 1.3.0, windows-sys
+0.52.0). Their rows are in git history (deps.md before 2692bd7).
 
-Re-pinned 2026-11-19 to the CMVP-validated line (operator decision B,
-cmvp.md §9, §FIPS-0.13 below); was aws-lc-rs 1.18.1 / fips-sys 0.14.2
-(AWS-LC 4.2.0, in process).
+Direct (sync-crypto/Cargo.toml), crates.io `created_at` checked
+2026-11-19, cutoff for the 6-week rule = **2026-10-08**:
 
-- `aws-lc-rs =1.16.0` — 2026-02-18 — `d9a7b350e3bb1767102698302bc37256cbd48422809984b98d292c40e2579aa9`
-  — ISC AND (Apache-2.0 OR ISC) — the crypto suite (AES-256-GCM, HKDF,
-  HMAC, SHA-256, Ed25519 (suite v1), ECDSA P-256, DRBG) from the AWS-LC FIPS module; features
-  `fips`, `alloc`, default features off (no non-FIPS `aws-lc-sys`). Newest
-  aws-lc-rs whose own tag ships fips-sys 0.13.11 (v1.16.1 ships 0.13.12).
-  No std/existing crate offers a FIPS module.
-- `aws-lc-fips-sys =0.13.11` — 2026-01-14 — `df6ea8e07e2df15b9f09f2ac5ee2977369b06d116f0c4eb5fa4ad443b73c7f53`
-  — ISC AND (Apache-2.0 OR ISC) AND OpenSSL — the vendored **AWS-LC FIPS
-  3.1.0** C module = CMVP certificate **#5314** (every shipped file
-  byte-identical to the Security Policy's source zip, cmvp.md §9); pinned
-  directly so the `^0.13.1` requirement of aws-lc-rs cannot float to a
-  0.13.12+ (3.2.0+, not validated).
+- `openssl =0.10.81` — 2026-06-12 — `77823a27f0babb03091cb9ed9ef80af3b39dbc82f97e8fa530374b7dafd87a45`
+  — Apache-2.0 — safe EVP wrappers (cipher, MAC via ffi, KDF, Md, PKey,
+  rand, Provider). default features off (no `vendored` -> no openssl-src;
+  the C library is the box-built OpenSSL 3.5.9, below). 0.10.82
+  (2026-11-01) is too young. All 2026 openssl advisories are patched
+  <= 0.10.80 (§Advisories-5b).
+- `openssl-sys =0.9.117` — 2026-06-12 — `b47e7e6bb2c38cd930d25a23b40fa52e068c10e85f3e03a7f5ba5aaca5713695`
+  — MIT — FFI bindings; linked against `OPENSSL_DIR` (fips-env.sh,
+  `OPENSSL_NO_VENDOR=1`). Its optional deps (aws-lc-fips-sys, aws-lc-sys,
+  bssl-sys, openssl-src, bindgen) stay off — none is in Cargo.lock.
+- `foreign-types =0.3.2` — 2017-11-28 — `f6f339eb8adc052cd2ca78910fda869aefa38d22d5cb648e6485e4d3fc06f3b1`
+  — MIT/Apache-2.0 — `ForeignType::as_ptr` for the five raw calls below;
+  same version rust-openssl uses (a second, 0.5.0, was already locked).
 - `zeroize =1.9.1` — 2026-10-06 — `e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879`
-  — Apache-2.0 OR MIT — required by aws-lc-rs (`^1.8.1`); the newest, 1.9.2,
-  is from 2026-11-17 (< 6 weeks) so 1.9.1 is pinned directly. Also used to
-  wipe key material.
+  — Apache-2.0 OR MIT — wipes key material (1.9.2 = 2026-11-17 too young).
 
-Transitive (build-dependencies of aws-lc-fips-sys; build time only, none is
-linked into a binary except via the generated code of aws-lc-fips-sys):
+Transitive (fixed by Cargo.lock):
 
-- `bindgen 0.72.1` — 2025-08-31 — `993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895` — BSD-3-Clause (non-optional build-dep of fips-sys; pregenerated bindings are used on x86_64-linux, libclang is not loaded)
-- `cexpr 0.6.0` — 2021-10-11 — `6fac387a98bb7c37292057cffc56d62ecb629900026402633ae9160df93a8766` — Apache-2.0/MIT
-- `clang-sys 1.9.1` — 2026-07-29 — `157a8ba7b480713b56f4c09fd13fc3e0a22a5dfab8097ba61cbc5feef950788a` — Apache-2.0
-- `cmake 0.1.58` — 2026-03-26 — `c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678` — MIT OR Apache-2.0
-- `either 1.19.0` — 2026-10-06 — `0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be` — MIT OR Apache-2.0
-- `fs_extra 1.3.0` — 2023-02-03 — `42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c` — MIT
-- `itertools 0.13.0` — 2024-05-16 — `413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186` — MIT OR Apache-2.0
-- `libloading 0.8.9` — 2025-09-21 — `d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55` — ISC (a second version; 0.7.4 is already locked)
-- `minimal-lexical 0.2.1` — 2021-10-04 — `68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a` — MIT/Apache-2.0
-- `nom 7.1.3` — 2023-01-15 — `d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a` — MIT
-- `prettyplease 0.2.37` — 2025-08-19 — `479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b` — MIT OR Apache-2.0
-- `shlex 1.3.0` — 2024-01-22 — `0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64` — MIT OR Apache-2.0 (a second version; 2.0.1 is already locked)
+- `openssl-macros 0.1.1` — 2023-04-01 — `a948666b637a0f465e8564c73e89d4dde00d72d4d473cc972f390fc3dcee7d9c`
+  — MIT/Apache-2.0 — proc-macro of openssl.
+- `foreign-types-shared 0.1.1` — 2017-11-28 — `00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b`
+  — MIT/Apache-2.0 — foreign-types (second version next to 0.3.1).
 
-Reused from the lock, versions unchanged: cc 1.4.4, dunce 1.0.5,
-pkg-config 0.3.34, regex 1.13.1 (aws-lc-fips-sys); bitflags 2.13.1,
-log 0.4.34, proc-macro2 1.0.107, quote 1.0.47, rustc-hash 2.1.3,
-syn 2.0.119 (bindgen); glob 0.3.4, libc 0.2.189 (clang-sys); memchr (nom).
-The lock delta is exactly the 15 crates above (verified by diffing the
-lock against the base: only `+` package blocks, the two `-` lines are
-`"shlex"` / `"libloading"` dependency names gaining a version suffix
-because two versions now exist).
+Reused from the lock, versions unchanged: bitflags 2.13.1, cfg-if 1.0.4,
+libc 0.2.189, once_cell 1.21.4 (openssl); cc 1.4.4, pkg-config 0.3.34,
+vcpkg 0.2.15 (openssl-sys build script).
 
-**Licence note (operator-pending, open-questions.md):** aws-lc-fips-sys
-carries the OpenSSL/SSLeay licence for parts of AWS-LC; the FSF lists the
-OpenSSL licence as GPL-incompatible and the app is GPL-3.0-or-later. deny.toml
-gets per-crate exceptions (ISC for aws-lc-rs/aws-lc-fips-sys/libloading,
-OpenSSL for aws-lc-fips-sys) so CI reports exactly these, but whether
-distributing a GPL binary statically linking AWS-LC is acceptable is a
-licensing decision for the operator, not something this branch decides.
+**unsafe**: sync-crypto is `#![deny(unsafe_code)]` (was `forbid`); the only
+exception is `src/ossl_ffi.rs` (`#![allow(unsafe_code)]`), which declares
+five OpenSSL 3.0 APIs openssl-sys 0.9.117 does not expose:
+`OSSL_PROVIDER_available`, `OSSL_PROVIDER_get0_name`,
+`EVP_MD_get0_provider`, `EVP_CIPHER_CTX_get_params`,
+`OSSL_PARAM_construct_utf8_string` (enforcement checks + reading the
+provider-generated GCM IV, cmvp.md §4).
+
+**OpenSSL C library (not a crate)**: `openssl-3.5.9.tar.gz` (release
+2026-09-29, 51 days before 2026-11-19), sha256
+`603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a`,
+signature checked with gpg against the OpenSSL signing key
+`B146 647E 45A7 B339 47AB 226B 2A2C 87D1 6169 2D40`; Apache-2.0
+(GPLv3-compatible). Built on the box only, `./Configure enable-fips`, core
+and FIPS provider from the same tarball (= the #5586 module version), then
+`openssl fipsinstall -pedantic` (build log + per-file sha256: cmvp.md §3).
+
+**Licence**: RESOLVED (open-questions #13). Nothing in the graph carries the
+OpenSSL/SSLeay licence any more; the OpenSSL-licence and aws-lc ISC
+exceptions are gone from deny.toml (90ae732, 3afbf3e) and `cargo deny check
+licenses` passes (CI run 44515121547).
 
 ### M2b — zstd body compression (sync-core)
 
@@ -105,31 +112,31 @@ lists (resolved by cargo on the box, sha256 of the lock identical to the one
 committed);
 cargo-vet exemptions added for the four.
 
-## Toolchain (box only, FIPS build of aws-lc-fips-sys)
+## Toolchain (box only)
 
 Installed in user space under `/var/tmp/sync-e2e/toolchain` on the test box
 (never on the development VM, nothing system-wide), each from the upstream
 release artefact, sha256-checked against the upstream checksum before
 unpacking; versions are the newest stable release ≥ 6 weeks old on
-2026-11-18. Activated by `fips-env.sh` (goal work dir) with
-`GOTOOLCHAIN=local GOPROXY=off` so Go never fetches a toolchain or module.
+2026-11-18. Activated by `fips-env.sh` (goal work dir).
 
-- Go `1.27.1` (released 2026-09-01; 1.27.2 = 2026-10-08 is too young) —
-  `go1.27.1.linux-amd64.tar.gz` sha256
-  `63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445`
-  (go.dev/dl JSON).
-- CMake `4.4.4` (released 2026-10-02; 4.4.5 = 2026-10-27, 4.5.0 =
-  2026-11-12 too young) — `cmake-4.4.4-linux-x86_64.tar.gz` sha256
-  `e5bb807f7728cb60cd8b27ebc97a2edb469b68655f21e844a600c3575b76f5bb`
-  (Kitware `cmake-4.4.4-SHA-256.txt`).
+- OpenSSL `3.5.9` with `enable-fips` (see M2a): prefix
+  `/var/tmp/sync-e2e/ossl/openssl-3.5.9`; fips-env.sh exports
+  `OPENSSL_DIR`, `OPENSSL_LIB_DIR`, `OPENSSL_INCLUDE_DIR`,
+  `OPENSSL_NO_VENDOR=1`, `OPENSSL_CONF` (openssl.cnf: `.include
+  fipsmodule.cnf`, activate `base`, `default_properties = fips=yes`),
+  `OPENSSL_MODULES`, `LD_LIBRARY_PATH`. Build: goal `bin/osslbuild.sh`,
+  log `logs/ossl-3.5.9-build.log`.
 - Perl `5.44.0` (released 2026-07-15; newest stable, 5.45.x are dev
   releases) — `perl-5.44.0.tar.gz` sha256
   `3b855066b92491cb40e86affb1ca57d1a388aa43e51b91c7806a32c2f65f96c3`
   (cpan.org `.sha256.txt`), built from source with the box's gcc
-  (`Configure -des`, no man pages). Needed because AWS-LC refuses a FIPS
-  build without Perl.
+  (`Configure -des`, no man pages). Needed by OpenSSL's `Configure`.
 - C compiler: the box harness gcc 16.0.1 (`/var/tmp/gate-boxd/env`, already
   used for every T0 build); no C++ compiler is needed.
+- No longer used (AWS-LC only, removed from fips-env.sh 2026-11-19): Go
+  1.27.1 (sha256 `63d339f0..8445`) and CMake 4.4.4 (sha256
+  `e5bb807f..f5bb`); still on the box directory, not on PATH.
 - clippy component for the pinned box toolchain (operator decision C,
   2026-11-19): `rustup component add clippy --toolchain 1.98.0` on the box
   only (rustup 1.28.2, shared `/var/tmp/gate-boxd/env/rustup`), same release
@@ -141,49 +148,12 @@ unpacking; versions are the newest stable release ≥ 6 weeks old on
 - Reinstalled unchanged (same versions + sha256) on the fresh box
   hz-176764494 on 2026-11-19 (goal bin/toolchain.sh, logs/toolchain.log).
 
-## FIPS-0.13 — validated-line pin: what it costs (2026-11-19)
+## FIPS-0.13 — SUPERSEDED (2026-11-19 10:16Z)
 
-Pinning the CMVP-validated module (aws-lc-fips-sys 0.13.11 → aws-lc-rs
-1.16.0) caps rustls at 0.23.43 and rustls-webpki at 0.103.13 (their newer
-releases require aws-lc-rs ^1.18 = the unvalidated 4.x module) and forces
-aws-lc-sys 0.37.1. Lock delta = exactly these 5 version bumps (downwards),
-no package added or removed except one `pkg-config` dependency edge
-(resolved by cargo on the box, lock sha256
-`4ece8f7e03bc2a30e354456872d9aa8cfffd9f3cf396038b5fed4d1423931b4b`).
-Known RustSec advisories against the pinned versions (advisory-db, checked
-2026-11-19) and why each is or is not reachable here:
-
-- RUSTSEC-2026-0043 aws-lc-fips-sys (AES-CCM tag timing, EVP_CIPHER CCM;
-  patched 0.13.12) — not reachable: suite v1 uses AES-256-GCM only.
-- RUSTSEC-2026-0042 aws-lc-fips-sys (CRL distribution-point check in AWS-LC
-  X.509; patched 0.13.13) — not reachable: no AWS-LC X.509/CRL API is called;
-  TLS certificates are verified by rustls-webpki, no CRLs configured.
-- RUSTSEC-2026-0044/0045/0046/0047/0048 aws-lc-sys (X.509 name constraints,
-  AES-CCM timing, PKCS7_verify ×2, CRL scope) — not reachable: aws-lc-sys is
-  compiled but never called (aws-lc-rs binds aws-lc-fips-sys under `fips`).
-- RUSTSEC-2026-0285 rustls (TLS 1.3 handshake messages accepted across
-  encryption-level boundaries; patched 0.23.45) — **reachable, accepted
-  residual**: a network peer could send a should-be-encrypted handshake
-  message in plaintext without rustls aborting; the transcript is still
-  authenticated, so a handshake cannot be altered or completed by an
-  attacker. No fix exists on a rustls that accepts the validated aws-lc-rs.
-- RUSTSEC-2026-0349 rustls (key-share prediction downgrade via an
-  unauthenticated ServerHello; patched 0.23.46) — mitigated: the sync client
-  disables session resumption (`transport/http.rs`), so nothing is stored per
-  server name.
-- RUSTSEC-2026-0346 rustls (`Debug` of client session values) — not
-  reachable: no custom `ClientSessionStore`, resumption disabled.
-- RUSTSEC-2026-0347 (ECH, unaffected < 0.23.44), RUSTSEC-2026-0348 (brotli
-  feature, not enabled) — not affected.
-- RUSTSEC-2026-0382 rustls-webpki (distrusted emSign intermediates; patched
-  0.103.16) — reachable only with `Roots::System` and a path through those
-  intermediates; the recommended setup pins the server CA (`--ca-file`).
-  Residual for system roots.
-- RUSTSEC-2026-0049/0098/0099/0104 rustls-webpki — patched at ≤ 0.103.13, not
-  affected.
-
-Re-evaluate when an AWS-LC 4 certificate issues (cmvp.md §7): moving back
-to aws-lc-rs ≥ 1.18 lifts the rustls/webpki caps.
+The AWS-LC validated-line pin (aws-lc-fips-sys 0.13.11, cert #5314) and the
+rustls/webpki caps it forced are gone with the OpenSSL swap; the section is
+in git history (deps.md at 84d2606 and before). Current advisory triage:
+§Advisories-5b.
 
 ### M3a — sync-server storage + HTTP (sync-server)
 
@@ -222,71 +192,65 @@ list (resolved by cargo on the box without `--locked`, lock sha256
 back unchanged); cargo-vet exemptions added for all six; licences are in
 the deny.toml allow list.
 
-### M3a-TLS — rustls on the AWS-LC FIPS provider (sync-server)
+### M3a-TLS — rustls on the OpenSSL FIPS provider (sync-server, sync-core)
 
-TLS 1.3 only, provider `rustls::crypto::default_fips_provider()`;
-`server_config` refuses any config where `ServerConfig::fips()` is false
-(tests/tls.rs). Every crate is pinned direct in sync-server/Cargo.toml so the
-resolver cannot float to a younger release (cutoff 2026-10-07).
+TLS 1.3 only. Provider = `rustls_openssl::custom_provider` with exactly
+TLS13_AES_256_GCM_SHA384 + TLS13_AES_128_GCM_SHA256 and key exchange
+SECP256R1 + SECP384R1 (KAS-ECC-SSC in #5586; no ChaCha20, no X25519 /
+ML-KEM hybrids), built only after `sync_crypto::fips::init()` succeeded;
+`sync-server tls::fips_provider()` and `sync-core
+transport::http::tls_provider()` refuse unless `CryptoProvider::fips()`
+(tests/tls.rs, tests/fips_refuse.rs). Every crate is pinned direct so the
+resolver cannot float to a younger release.
 
 - `rustls =0.23.45` — 2026-09-14 — `0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634`
-  — Apache-2.0 OR ISC OR MIT — feature `std` only (crypto = rustls-openssl,
-  OpenSSL FIPS provider; no tls12, no brotli, no logging). Was 0.23.43 (the
-  aws-lc-rs 1.16 cap is gone with the OpenSSL swap); bumped to the newest
-  release >= 6 weeks old for RUSTSEC-2026-0285. Advisories: §Advisories-5b.
+  — Apache-2.0 OR ISC OR MIT — feature `std` only (no `aws_lc_rs`, no
+  `fips`, no tls12, no brotli, no logging). Bumped from 0.23.43 for
+  RUSTSEC-2026-0285 once the aws-lc-rs 1.16 cap was gone. Advisories:
+  §Advisories-5b.
+- `rustls-openssl =0.4.2` — 2026-10-02 — `ddabe409dbf2e374bae07c4b8cc90dbb890de5a47890312c46951661eb78760c`
+  — MIT — rustls `CryptoProvider` on rust-openssl (EVP); default features
+  off (drops `tls12` and `prefer-post-quantum`); its `fips` feature is a
+  no-op and is not used (enforcement is sync-crypto's). Requires rustls
+  ^0.23.20, openssl ^0.10. Smallest compliant option (rule e): the
+  alternative, a hand-written rustls CryptoProvider over EVP, is more
+  unaudited code in the TLS path.
 - `tokio-rustls =0.26.6` — 2026-09-28 — `c9cc2678c2cdd569ef8215e2afd7954ada2ae20b4fdd2c5fe6139a3b02d105db`
-  — MIT OR Apache-2.0 — feature `fips`.
+  — MIT OR Apache-2.0 — default features off (was `fips`).
 - `rustls-webpki =0.103.15` — 2026-08-21 — `f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2`
   — ISC — feature `std`. Required by rustls 0.23.45 (`^0.103.14`); newest
   >= 6 weeks. VENDORED: src-tauri/vendor/rustls-webpki-0.103.15 = the crates.io
   crate byte-for-byte + Cargo.toml-only noring.patch (sha256 `022975c7..a8b9`),
-  proved by scripts/supply-chain/webpki-vendor-check.sh. Advisories: §Advisories-5b.
+  proved by scripts/supply-chain/webpki-vendor-check.sh. Why: its `alloc`
+  feature names `ring?/alloc`, a weak dependency feature that makes Cargo
+  lock the optional ring crate even though nothing compiles it
+  (rust-lang/cargo#10801); the patch drops the dep so ring leaves
+  Cargo.lock. Advisories: §Advisories-5b.
 - `rustls-pki-types =1.15.1` — 2026-07-23 — `2f4925028c7eb5d1fcdaf196971378ed9d2c1c4efc7dc5d011256f76c99c0a96`
   — MIT OR Apache-2.0 — PEM parsing (`pem::PemObject`).
 - `subtle =2.6.1` — 2024-06-24 — `13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292`
   — BSD-3-Clause — rustls.
-- `untrusted =0.9.0` — 2021-07-13 — `8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1`
-  — ISC — rustls-webpki.
-- `aws-lc-sys =0.37.1` — 2026-02-11 — `b092fe214090261288111db7a2b2c2118e5a7f30dc2569f1732c4069a6840549`
-  (was 0.45.0; aws-lc-rs 1.16.0 requires `^0.37.0`)
-  — ISC AND Apache-2.0 AND MIT AND BSD-3-Clause (+ OR-alternatives) — NOT
-  wanted, forced: rustls' `fips` feature implies `aws_lc_rs`, which sets
-  `aws-lc-rs/aws-lc-sys`. It is compiled (non-FIPS AWS-LC, own symbol prefix)
-  but aws-lc-rs binds `aws-lc-fips-sys` whenever its `fips` feature is on, so
-  no sync code path reaches it. Avoiding it would need a hand-written rustls
-  `CryptoProvider` — rejected as more risk than a dead static library.
-  Version forced by aws-lc-rs 1.16.0; advisories (dead code here): §FIPS-0.13.
-  Build deps (cc, cmake, dunce, fs_extra, pkg-config) were already locked.
+- `untrusted 0.9.0` — 2021-07-13 — `8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1`
+  — ISC — rustls-webpki (transitive; the direct pin was dropped).
+- REMOVED: `aws-lc-sys =0.37.1` (forced by rustls' `fips` feature, dead
+  code) and the lock-only `ring 0.17.14` / `windows-sys 0.52.0`.
+  `cargo tree -p sync-server -p sync-core -p syncd -e normal` shows no
+  aws-lc*, ring or tauri crate (goal log ossl-tls-tree.log).
 
 ### M3c — sync-core transport (HTTP(S) client + dir replica): no new crate
 
-`sync-core` now depends directly on `rustls =0.23.45`, `rustls-webpki
-=0.103.15`, `rustls-pki-types =1.15.1` (same versions + features as
-sync-server, above) and `base64 =0.22.1` (already locked). Dev-only:
-`sync-server` (path; the HTTP suite runs a real server on loopback) and
-`tokio =1.53.1` (already locked). Cargo.lock delta = the `sync-core`
-dependency list only; no `[[package]]` added. The client is hand-written
-HTTP/1.1 over `std::net::TcpStream` (no hyper client, no reqwest), TLS 1.3
-only on `rustls::crypto::default_fips_provider()`, config refused unless
-`ClientConfig::fips()`. System roots are read from `$SSL_CERT_FILE` or the
-distro bundle paths (no rustls-native-certs / webpki-roots crate).
-Consequence: the app crate (which depends on sync-core) now also links
-rustls + the forced non-FIPS aws-lc-sys described above; no other crate in
-the lock uses rustls, so no existing TLS user changes behaviour.
-
-Lock-only (present in Cargo.lock as optional deps of rustls-webpki, NOT
-compiled — `cargo tree -p sync-server -i ring` prints nothing):
-
-- `ring 0.17.14` — 2025-03-11 — `a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7`
-  — Apache-2.0 AND ISC.
-- `windows-sys 0.52.0` — 2023-11-15 — `282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d`
-  — MIT OR Apache-2.0 — ring's Windows dep.
-
-Lock delta = these 9 package blocks + the dependency lists of sync-server
-and rustls-webpki/ring, resolved by cargo on the box (bin/lockres.sh), lock
-sha256 `59c605f4966f9e19fc82003a90338643552393075116b06993b2c9b1512b3f58`
-copied back unchanged. cargo-vet exemptions for all nine; ISC exceptions
-for rustls-webpki, untrusted, aws-lc-sys, ring in deny.toml.
+`sync-core` depends directly on `rustls =0.23.45`, `rustls-openssl
+=0.4.2`, `rustls-webpki =0.103.15`, `rustls-pki-types =1.15.1` (same
+versions + features as sync-server, above) and `base64 =0.22.1` (already
+locked). Dev-only: `sync-server` (path; the HTTP suite runs a real server
+on loopback) and `tokio =1.53.1` (already locked). The client is
+hand-written HTTP/1.1 over `std::net::TcpStream` (no hyper client, no
+reqwest), TLS 1.3 only on `transport::http::tls_provider()` (OpenSSL FIPS
+provider, see M3a-TLS), config refused unless `ClientConfig::fips()`.
+System roots are read from `$SSL_CERT_FILE` or the distro bundle paths (no
+rustls-native-certs / webpki-roots crate). Consequence: the app crate
+(which depends on sync-core) also links rustls + rust-openssl; no other
+crate in the lock uses rustls, so no existing TLS user changes behaviour.
 
 Test fixture (not a crate): `crates/sync-server/tests/fixtures/test-{ca,leaf}.pem`
 + `test-leaf.key` — throwaway P-256 CA + leaf (SAN localhost, 127.0.0.1,
@@ -356,9 +320,9 @@ locked version so nothing in the lock moves.
   — history index file, debug encodings only (the wire format is the
   binary canonical encoding of spec.md, not JSON).
 
-Per crate (direct deps): `sync-proto` → serde (dev: serde_json, JSON tests of the `/v1` bodies); `sync-crypto` → sha2, aws-lc-rs, aws-lc-fips-sys, zeroize (dev: serde_json, Wycheproof JSON);
-`sync-core` → sync-proto, sync-crypto, sha2, serde, serde_json, zstd, zstd-safe, zstd-sys, rustls, rustls-webpki, rustls-pki-types, base64 (M3c; dev: sync-server, tokio); `syncd` →
-sync-core, serde, serde_json, zeroize, tokio (M6a: `rt` + `net` for the safe SO_PEERCRED `peer_cred`; dev: sync-server); `sync-server` → sync-proto, sync-crypto, serde, serde_json, base64, bytes, http, http-body-util, hyper, hyper-util, tokio, rusqlite, libsqlite3-sys (M3a), rustls, tokio-rustls, rustls-webpki, rustls-pki-types, subtle, untrusted, aws-lc-sys (M3a-TLS). The Cargo.lock delta of
+Per crate (direct deps): `sync-proto` → serde (dev: serde_json, JSON tests of the `/v1` bodies); `sync-crypto` → sha2, openssl, openssl-sys, foreign-types, zeroize (M2a) (dev: serde_json, Wycheproof JSON);
+`sync-core` → sync-proto, sync-crypto, sha2, serde, serde_json, zstd, zstd-safe, zstd-sys, rustls, rustls-openssl, rustls-webpki, rustls-pki-types, base64 (M3c; dev: sync-server, tokio); `syncd` →
+sync-core, serde, serde_json, zeroize, tokio (M6a: `rt` + `net` for the safe SO_PEERCRED `peer_cred`; dev: sync-server); `sync-server` → sync-proto, sync-crypto, zeroize, serde, serde_json, base64, bytes, http, http-body-util, hyper, hyper-util, tokio, rusqlite, libsqlite3-sys (M3a), rustls, rustls-openssl, tokio-rustls, rustls-webpki, rustls-pki-types, subtle (M3a-TLS). The Cargo.lock delta of
 the skeleton is exactly the five path packages (`[[package]]` entries without
 `source`/`checksum`); no registry package is added, removed or moved.
 
@@ -370,9 +334,9 @@ log in the goal work dir).
 
 - diff-match-patch port — NOT added (M4b hand-written, see M4a/M4b above).
 
-- `aws-lc-rs` — ADDED in M2a (above, pin decision cmvp.md §7).
-- `rustls` with feature `fips` — ADDED in M3a-TLS (0.23.45). Was: 0.23.44 (2026-09-07) / 0.23.45
-  (2026-09-14) satisfy the age rule; 0.24.0-dev.* are pre-releases.
+- `aws-lc-rs` — added in M2a, REMOVED 2026-11-19 (OpenSSL swap, open-questions #13).
+- `rustls` — ADDED in M3a-TLS (0.23.45, feature `std` only; the former `fips`
+  feature is gone with aws-lc-rs); 0.24.0-dev.* are pre-releases.
 - `axum` — not needed (plain hyper, M3a). `hyper`/`rusqlite` — ADDED in M3a above.
 
 Checksums for the declared-not-added crates are recorded only when they are
@@ -432,3 +396,27 @@ analysis); deny.toml and src-tauri/.cargo/audit.toml hold the same ids
   visible; cargo deny reports it as advisory-not-detected (warning).
 - RUSTSEC-2026-0049/0098/0099/0104 rustls-webpki: patched <= 0.103.13.
 - openssl 0.10.81: RUSTSEC-2026-0463/0473-0479 all patched <= 0.10.80.
+
+## Supply-chain gates for the OpenSSL swap (2026-11-19, 9e7be73)
+
+- **cargo vet** (src-tauri/supply-chain/config.toml): exemptions — not
+  audits; nobody line-reviewed these crates — each with a note (pin, date,
+  sha256, why) for openssl 0.10.81, openssl-macros 0.1.1, openssl-sys
+  0.9.117, rustls-openssl 0.4.2. `[policy.rustls-webpki]
+  audit-as-crates-io = true` (same as glib) so the vendored path crate is
+  checked against its crates.io exemption. 17 exemptions of the
+  aws-lc/ring era whose (name, version) is no longer in Cargo.lock were
+  dropped. CI run 44518429210: vet reports only the 9 fluent/intl crates
+  that come from develop's i18n work (not sync, QUESTION-ci-i18n.md in
+  the goal dir).
+- **rust-sbom.sh**: emits the vendored rustls-webpki 0.103.15 like glib
+  (version, crate sha256 and patch sha256 read from
+  webpki-vendor-check.sh; pedigree = noring.patch) and the five sync
+  workspace crates as first-party GPL-3.0-or-later components WITHOUT a
+  purl (a `pkg:cargo/...` purl would make the CVE scan match unrelated
+  crates.io crates of the same name). Any other source-less crate still
+  fails the script. sbom-merge.test.sh covers both, plus two negatives
+  that must fail (stray non-workspace path crate, wrong webpki version).
+- **cargo deny**: licenses/bans/sources ok without any OpenSSL-licence
+  exception (CI 44515121547); advisories ok after §Advisories-5b (CI
+  44517061643).

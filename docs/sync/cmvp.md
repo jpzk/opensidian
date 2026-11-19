@@ -145,8 +145,10 @@ CMVP statement [V S2 Appendix A].
   private keys as RFC 5915 / PKCS#8 encodings; it runs a pairwise
   consistency test on EdDSA/ECDSA key import [V S2, PCT on key import]. Raw import is a
   key-*entry* by the calling application over the API (the SP's "manual key
-  entry is not supported" means operator keyboard entry). Box test PENDING
-  (ledger item 3: the RFC 8032 seed-import KATs through the provider).
+  entry is not supported" means operator keyboard entry). Proven on the box
+  through the provider (2692bd7, goal log ossl-sync-crypto-test.log):
+  `tests/p256_derive.rs` (d = 1 → G, d = n−1 → −G, d = 0 / ≥ n rejected) and
+  the RFC 8032 seed-import KATs in `tests/fips_kat.rs`.
 - **Decision unchanged**: K_destroy and K_rsig stay phrase-derived (destroy
   and recovery must work from the words alone); device keys and VK are
   module-generated (DRBG).
@@ -165,21 +167,53 @@ fallback should a future pin lose EdDSA (#4985 would force that switch).
 
 ## 7. Packaging — what each artifact must carry (rule f)
 
-The provider is a loadable module: `fips.so` + `fipsmodule.cnf` +
-an `openssl.cnf` that includes it and activates `fips` and `base`. The
-release artifact set does not change (operator approval needed for that).
+The provider is a loadable module. Per installation the runtime needs four
+things from the **same OpenSSL 3.5.9 build**: `fips.so` (the #5586 module
+file, built per SP §11.1 from the pinned tarball, never patched),
+`libcrypto.so.3` (core), an `openssl` binary for `fipsinstall`, and an
+`openssl.cnf` stub that `.include`s `fipsmodule.cnf`, activates `fips` +
+`base` and sets `default_properties = fips=yes`. `fipsmodule.cnf` carries
+the integrity MAC of the installed `fips.so`, so it is generated ON THE
+TARGET by `openssl fipsinstall -pedantic -module <fips.so> -out
+<fipsmodule.cnf>` and never shipped from the build machine. The release
+artifact set does not change (operator approval needed for that); only
+the contents below are added to existing artifacts.
 
-- **sync-server** (tarball / container): `fips.so`, run `openssl
-  fipsinstall -pedantic` at install time on the target host, ship an
-  `openssl.cnf` stub; set `OPENSSL_CONF` / `OPENSSL_MODULES` in the unit.
-- **deb / rpm**: ship `fips.so` under the package's lib dir and run
-  fipsinstall in the post-install script (the integrity value is per
-  installed file); the distro's own OpenSSL is not used.
-- **AppImage**: bundle `fips.so`; at first start write `fipsmodule.cnf`
-  into the user config dir via the bundled fipsinstall logic, then point
-  `OPENSSL_CONF` / `OPENSSL_MODULES` there before sync starts.
-- **flatpak**: build OpenSSL 3.5.9 with `enable-fips` as a module of the
-  manifest (pinned sha256), install `fips.so` in `/app/lib/ossl-modules`,
-  generate `fipsmodule.cnf` at first run into `$XDG_CONFIG_HOME`.
+Core-version rule: OpenSSL supports a validated provider under the same or
+a newer 3.x core, not an older one. The process must therefore run
+libcrypto ≥ 3.5.9. Distro libcrypto (e.g. Ubuntu 24.04 = 3.0.x) does not
+qualify, so each artifact ships its own core with a private RUNPATH.
+
+- **sync-server** (existing server tarball / container): `lib/libcrypto.so.3`,
+  `lib/libssl.so.3`, `lib/ossl-modules/fips.so`, `bin/openssl`,
+  `ssl/openssl.cnf`; binary RUNPATH `$ORIGIN/../lib`. Install step (or
+  container entrypoint on first start) runs fipsinstall into the data
+  dir's config; the service unit sets `OPENSSL_CONF` and `OPENSSL_MODULES`.
+  Separate process -> no libcrypto clash.
+- **deb / rpm**: the same files under `/usr/lib/opensidian/` (private, not
+  the distro's `libssl3`), fipsinstall in `postinst` / `%post` (integrity
+  value per installed file), `fipsmodule.cnf` under
+  `/etc/opensidian/`; removed in `prerm` / `%preun`. No `Depends:` on the
+  distro OpenSSL for sync.
+- **AppImage**: bundle the four files inside the AppDir (`usr/lib`,
+  `usr/lib/ossl-modules`, `usr/bin/openssl`); at first sync start the app
+  runs the bundled `openssl fipsinstall` into
+  `$XDG_CONFIG_HOME/opensidian/fips/` and points `OPENSSL_CONF` /
+  `OPENSSL_MODULES` there before `fips::init()`. Re-run when the AppImage's
+  `fips.so` sha256 changes.
+- **flatpak**: an `openssl-3.5.9` module in the manifest (archive + sha256
+  pinned, `config-opts: enable-fips`), installed to `/app/lib`,
+  `/app/lib/ossl-modules/fips.so`, `/app/bin/openssl`; fipsinstall at
+  first run into `$XDG_CONFIG_HOME` (the `/app` tree is read-only, so not at
+  build time). The runtime's own libcrypto must not shadow `/app/lib`.
+- **Shared-process risk (app artifacts, recorded, not solved here)**: the
+  desktop app also loads WebKitGTK and its dependency closure, which can
+  map the distro `libcrypto.so.3` first; the dynamic loader then reuses that
+  soname and the effective core could be the distro's older one. The sync
+  engine checks this at runtime: `fips::init()` refuses unless the fips
+  provider actually loads and answers `fips=yes` fetches, so a wrong core
+  makes sync refuse rather than run unvalidated. The packaging work (not
+  in this goal) must make the private core win (load order / RUNPATH) and
+  test it per artifact.
 - In every case: if the provider cannot be loaded the app still runs, but
   sync refuses to start with a clear message (§4).

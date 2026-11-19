@@ -21,7 +21,8 @@ HMAC-SHA256, HKDF-SHA256.
 
 M2b container KAT (present, run by `crates/sync-core/tests/container_kat.rs`):
 `crates/sync-core/vectors/container.vec` — suite 0x02 batch containers
-(raw + zstd) produced once on the FIPS module with module nonces. They are
+(raw + zstd) produced once on the former AWS-LC FIPS module with module
+nonces; the format is unchanged, they open through the OpenSSL provider. They are
 OPEN-direction vectors: a reader must open the bytes to exactly `body`; the
 header commitment is recomputed with the reference provider, and every
 single-byte flip must be rejected. No nonce-injection hook exists (the

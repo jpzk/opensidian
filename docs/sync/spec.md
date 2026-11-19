@@ -21,7 +21,8 @@ Four independent version axes:
 3. **Suite byte** `suite` — the crypto algorithm set:
    - `0x00` reserved / invalid
    - `0x01` AES-256-GCM, HKDF-SHA256, HMAC-SHA256, SHA-256, Ed25519 —
-     **the v1 suite** (validated module #5314 lists EDDSA, cmvp.md §7)
+     **the v1 suite** (OpenSSL FIPS provider 3.5.9, CMVP #5586, lists
+     EDDSA ED-25519 as approved — cmvp.md §2, §6)
    - `0x02` same, signatures ECDSA P-256 / SHA-256 (fallback if a
      pinned CMVP cert does not cover EdDSA — see cmvp.md)
    - `0xF0..0xFF` test-only, MUST be rejected by release builds
@@ -417,7 +418,8 @@ superseded chunks, long-poll (syncd, M6).
 ## 5. sync-server API (/v1)
 
 Transport: HTTPS (rustls). Impl note (M3a): TLS 1.3 only, ALPN
-`http/1.1`, rustls `default_fips_provider()` on the AWS-LC FIPS module; the
+`http/1.1`, rustls on the OpenSSL FIPS provider (rustls-openssl, TLS 1.3
+AES-GCM suites, ECDHE P-256/P-384 only; `tls::fips_provider()`); the
 server refuses a non-FIPS config and refuses plain HTTP on any non-loopback
 bind (`--tls-cert`/`--tls-key` PEM; handshake bounded at 10 s). TLS is
 defence in depth only — every object is already sealed end-to-end.
@@ -531,7 +533,7 @@ One `Transport` trait mirrors the calls above; the engine never branches on
 the backend. Errors are the same `ErrorCode`s on every backend.
 
 - **HTTP(S)** (`HttpTransport`): blocking HTTP/1.1 over std `TcpStream`,
-  one request per connection. `https://` = TLS 1.3 on the AWS-LC FIPS
+  one request per connection. `https://` = TLS 1.3 on the OpenSSL FIPS
   rustls provider, refused unless `ClientConfig::fips()`; roots = explicit
   PEM (self-hosted CA) or the OS bundle (`$SSL_CERT_FILE`, distro paths).
   `http://` only to `localhost`/loopback IPs; URLs with userinfo, query,

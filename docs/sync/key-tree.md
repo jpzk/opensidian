@@ -1,9 +1,8 @@
 # Opensidian Sync — key tree (M0, draft v1)
 
 Binding source: plan sections 4 + 5. All derivations go through the
-FIPS-mode AWS-LC module (HKDF-SHA256 / HMAC-SHA256 / DRBG; the pinned
-AWS-LC 4.2.0 build has NO CMVP certificate yet — in process, see
-cmvp.md §7). Every label is
+OpenSSL 3.5.9 FIPS provider (CMVP #5586; EVP under `fips=yes`: HKDF-SHA256 /
+HMAC-SHA256 / DRBG, cmvp.md). Every label is
 an ASCII byte string, no terminator. `HKDF(ikm, salt, info, L)` =
 RFC 5869 extract-then-expand with SHA-256.
 
@@ -61,9 +60,10 @@ first c_ctr with c_ctr ≤ n − 2 wins;  d = c_ctr + 1   (so 1 ≤ d ≤ n − 
 ```
 
 (a candidate is rejected with p ≈ 2⁻³², after 256 rejections the provider
-is treated as broken). The scalar enters the module as an RFC 5915
-ECPrivateKey; AWS-LC computes Q = d·G and runs its FIPS pairwise-consistency
-check. Resolved in M2d (open questions 10 + 12, cmvp.md §8): K_destroy and
+is treated as broken). The scalar enters the provider as a PKCS#8 / RFC 5915
+ECPrivateKey without public key; the provider computes Q = d·G, and the
+import PCT plus `fips::pct` (sign/verify) run. Resolved in M2d,
+re-checked for OpenSSL (open questions 10 + 12, cmvp.md §5): K_destroy and
 K_rsig stay phrase-derived. Implementation: `sync_crypto::keytree`
 (`derive_root`, `p256_scalar_from_seed`) + `fips::FipsSigningKey::from_seed_p256`;
 tests in `crates/sync-crypto/tests/p256_derive.rs` (d = 1 → G,
