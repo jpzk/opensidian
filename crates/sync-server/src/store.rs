@@ -675,7 +675,8 @@ impl Store {
     /// The receipt stored by a committed destroy of `ns`, if `chal` is the
     /// hash of the confirm token that destroyed it.
     pub fn destroy_receipt(&self, ns: &Id16, chal: &[u8; 32]) -> Result<Option<Vec<u8>>> {
-        let row: Option<(Option<Vec<u8>>, Option<Vec<u8>>)> = self
+        type Row = (Option<Vec<u8>>, Option<Vec<u8>>);
+        let row: Option<Row> = self
             .conn()
             .query_row(
                 "SELECT receipt, chal FROM destroyed WHERE ns = ?1",

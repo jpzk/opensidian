@@ -166,6 +166,20 @@ pub fn remove(root: &Path, rel: &str) -> io::Result<()> {
     }
 }
 
+/// Remove the directory at `rel` if it is an EMPTY real directory (anchored;
+/// a symlink or file is left alone). Used before a file replaces a folder.
+/// Ok(true) = removed, Ok(false) = nothing there; a non-empty directory is
+/// an error (its files are not ours to drop).
+pub fn remove_empty_dir(root: &Path, rel: &str) -> io::Result<bool> {
+    let Some(p) = anchored(root, rel, false)? else { return Ok(false) };
+    match fs::symlink_metadata(&p) {
+        Ok(md) if md.is_dir() && !md.file_type().is_symlink() => fs::remove_dir(&p).map(|_| true),
+        Ok(_) => Ok(false),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -235,6 +249,26 @@ mod tests {
         assert!(read_regular(&vault, "../c.md", 5).is_err());
         remove(&vault, "a/b/c.md").unwrap();
         remove(&vault, "a/b/c.md").unwrap();
+        let _ = fs::remove_dir_all(&t);
+    }
+
+    #[test]
+    fn remove_empty_dir_only_removes_empty_real_dirs() {
+        let t = tmpdir("emptydir");
+        fs::create_dir_all(t.join("a")).unwrap();
+        fs::create_dir_all(t.join("full")).unwrap();
+        fs::write(t.join("full/x.md"), b"x").unwrap();
+        fs::write(t.join("f.md"), b"f").unwrap();
+        fs::create_dir_all(t.join("target")).unwrap();
+        symlink(t.join("target"), t.join("link")).unwrap();
+        assert!(remove_empty_dir(&t, "a").unwrap());
+        assert!(!t.join("a").exists());
+        assert!(remove_empty_dir(&t, "full").is_err(), "files inside are kept");
+        assert!(t.join("full/x.md").is_file());
+        assert!(!remove_empty_dir(&t, "f.md").unwrap(), "a file is left alone");
+        assert!(!remove_empty_dir(&t, "link").unwrap(), "a symlink is left alone");
+        assert!(t.join("target").is_dir());
+        assert!(!remove_empty_dir(&t, "nope").unwrap());
         let _ = fs::remove_dir_all(&t);
     }
 }

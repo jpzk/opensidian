@@ -29,33 +29,33 @@ Each OPEN item is a follow-up and blocks goal_done (criterion 8).
 - crates/sync-core/src/merge/mod.rs:333-339 Reject merges that place a file and a directory at the same path. — OPEN
 - crates/sync-server/src/http.rs:395-395 Stream upload bodies instead of retaining one full buffer per connection. — FIXED (server-wide body budget: each request reserves its worst case from a shared semaphore before the first body byte, released when the handler drops the bytes; a 16 MiB object still needs one buffer because the header + sha256 are checked before publish; test body_budget_is_shared_across_connections)
 - crates/sync-server/src/http.rs:380-380 Bound total storage for anonymous envelopes. — FIXED (max_env_object 64 KiB per env object, max_env_total 256 MiB for the whole tokenless namespace -> 507; test env_object_and_namespace_caps)
-- crates/sync-server/src/http.rs:516-528 Make the destroy receipt recoverable after the purge commits. — OPEN
+- crates/sync-server/src/http.rs:516-528 Make the destroy receipt recoverable after the purge commits. — FIXED (444ca50: receipt signed inside the destroy transaction, stored with the tombstone bound to the confirm-token hash; replayed confirm returns it, client retries confirm on network error; failed_receipt_signing_purges_nothing + transport replay assertion)
 - crates/sync-server/src/http.rs:155-155 Apply a deadline to request bodies. — FIXED (body_timeout_secs 60 s for budget wait + whole body read; test stalled_body_hits_the_deadline)
-- crates/sync-server/src/lib.rs:161-161 Publish the receipt key only after writing it in full. — OPEN
+- crates/sync-server/src/lib.rs:161-161 Publish the receipt key only after writing it in full. — FIXED (444ca50: fsync'd temp file + hard_link publish, loser of a race adopts the winner key, dir fsync)
 - crates/sync-server/src/store.rs:298-303 Give each PUT its own staging file. — FIXED (pid + process-wide counter in the name, create_new)
-- crates/sync-server/src/store.rs:382-383 Make the published object path durable before committing the index. — OPEN
-- crates/sync-server/src/store.rs:169-170 Restore staged vault files when the destroy transaction did not commit. — OPEN
-- crates/sync-server/src/store.rs:624-627 Keep object tombstones after reclaiming their bytes. — OPEN
-- crates/sync-server/src/store.rs:628-631 Debit quota only for the object that GC actually removed. — OPEN
-- crates/sync-core/src/history/mod.rs:417-417 Sync the store directory after creating index.log. — OPEN
-- crates/sync-core/src/history/mod.rs:913-914 Recover or invalidate the journal after an append error. — OPEN
+- crates/sync-server/src/store.rs:382-383 Make the published object path durable before committing the index. — FIXED (444ca50: rename + every new shard directory fsync'd before the index commit)
+- crates/sync-server/src/store.rs:169-170 Restore staged vault files when the destroy transaction did not commit. — FIXED (444ca50: open restores a staged destroy-<ns> tree unless the tombstone committed; test reopen_restores_an_uncommitted_destroy_and_finishes_a_committed_one)
+- crates/sync-server/src/store.rs:624-627 Keep object tombstones after reclaiming their bytes. — FIXED (444ca50: gc keeps the row as a tombstone, size 0, id stays burned; soft_delete_retention_and_gc)
+- crates/sync-server/src/store.rs:628-631 Debit quota only for the object that GC actually removed. — FIXED (444ca50: per-object transaction re-checks the row, debits once; second gc pass reclaims 0)
+- crates/sync-core/src/history/mod.rs:417-417 Sync the store directory after creating index.log. — FIXED (0878c76: fsx::sync_dir(root)? after creating index.log)
+- crates/sync-core/src/history/mod.rs:913-914 Recover or invalidate the journal after an append error. — FIXED (0878c76: a failed append is cut back with set_len to the last record; if that fails too the store is poisoned and refuses appends)
 - crates/sync-core/src/history/mod.rs:567-568 Keep capture and restore inside the vault when a parent is a symlink. — FIXED (d0c2b51: sync-core vaultfs anchored read/write; tests vaultfs::*, history::restore_*)
 - crates/sync-core/src/history/mod.rs:571-573 Create restore staging files without replacing an existing file. — FIXED (d0c2b51: sync-core vaultfs anchored read/write; tests vaultfs::*, history::restore_*)
-- crates/sync-core/src/history/mod.rs:773-773 Do not leave the old journal writable after a replacement. — OPEN
+- crates/sync-core/src/history/mod.rs:773-773 Do not leave the old journal writable after a replacement. — FIXED (0878c76: append handle opened on the temp file before the rename, assigned right after it; nothing fallible in between)
 - crates/sync-core/src/history/mod.rs:675-681 Preserve rename records needed to prevent old paths from reappearing. — OPEN
 - crates/sync-core/src/history/mod.rs:566-566 Stop restore when history skips the current file. — FIXED (d0c2b51: sync-core vaultfs anchored read/write; tests vaultfs::*, history::restore_*)
-- crates/sync-core/src/history/mod.rs:412-412 Discard the torn tail before decoding UTF-8. — OPEN
+- crates/sync-core/src/history/mod.rs:412-412 Discard the torn tail before decoding UTF-8. — FIXED (0878c76: only complete lines must be UTF-8, the torn tail after the last newline is cut; test torn_tail_inside_a_multibyte_char_is_dropped)
 - crates/sync-core/src/history/mod.rs:611-612 Keep history-write failures from being ignored during sync merges. — OPEN
 - crates/sync-core/src/history/mod.rs:42-43 Serialize daemon history writers on the engine lock. — OPEN
-- crates/sync-core/src/history/cas.rs:58-58 Make new shard directories durable before journaling their blobs. — OPEN
-- crates/sync-core/src/history/cas.rs:55-56 Verify existing blobs before treating a snapshot as recoverable. — OPEN
+- crates/sync-core/src/history/cas.rs:58-58 Make new shard directories durable before journaling their blobs. — FIXED (0878c76: a new shard dir fsyncs objects/ before the blob is journaled; shard fsync errors propagate)
+- crates/sync-core/src/history/cas.rs:55-56 Verify existing blobs before treating a snapshot as recoverable. — FIXED (0878c76: dedup only if the existing blob hashes to its name, else rewritten; test a_corrupt_blob_is_replaced_not_deduplicated)
 - crates/syncd/src/api.rs:150-150 Use a compact wire representation for history bytes. — OPEN
-- crates/sync-core/src/history/fsx.rs:41-43 Do not collect blobs after a failed journal directory sync. — OPEN
+- crates/sync-core/src/history/fsx.rs:41-43 Do not collect blobs after a failed journal directory sync. — FIXED (0878c76: sync_dir returns io::Result; rewrite returns the error before the blob sweep)
 - crates/syncd/src/local.rs:321-321 Retry pairing only while the reply is still available. — OPEN
-- crates/syncd/src/local.rs:245-245 Persist an absolute CA file path. — OPEN
-- crates/syncd/src/local.rs:441-442 Return the verified receipt even if local cleanup fails. — OPEN
-- crates/syncd/src/local.rs:498-498 Apply file and directory replacements in dependency order. — OPEN
-- crates/syncd/src/local.rs:503-503 Keep the disk comparison valid through the write or delete. — OPEN
+- crates/syncd/src/local.rs:245-245 Persist an absolute CA file path. — FIXED (2bb1be9: setup canonicalizes ca_file before connecting and persists that path)
+- crates/syncd/src/local.rs:441-442 Return the verified receipt even if local cleanup fails. — FIXED (2bb1be9: destroy returns the receipt; key-cleanup failures ride along in Receipt.cleanup_error)
+- crates/syncd/src/local.rs:498-498 Apply file and directory replacements in dependency order. — FIXED (deletions run before writes; a file replacing an emptied folder removes it via vaultfs::remove_empty_dir, a folder that still holds files or a refused parent is skipped for the next pass; test remove_empty_dir_only_removes_empty_real_dirs)
+- crates/syncd/src/local.rs:503-503 Keep the disk comparison valid through the write or delete. — FIXED (disk re-checked after the history snapshot, immediately before the write/delete; residual: a same-instant edit between that check and the rename is still in the snapshot taken right before, so it is recoverable from history — no portable compare-and-swap rename exists)
 - crates/syncd/src/local.rs:191-191 Keep keystore entries outside the synced vault. — FIXED (reject either dir containing the other) — uncompiled
 - crates/syncd/src/local.rs:248-249 Make setup resumable after the enrollment token is consumed. — OPEN
 - crates/syncd/src/local.rs:485-486 Resume pending disk updates before creating local edits. — OPEN

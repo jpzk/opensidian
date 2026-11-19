@@ -538,9 +538,30 @@ impl LocalEngine {
         sum.rejected_detail.extend(rep.invalid.iter().map(|(id, why)| format!("tip {}: {why}", id.to_hex())));
         sum.replica_errors = rep.replica_errors.iter().map(|(_, e)| e.clone()).collect();
         sum.losers = rep.losers;
-        // materialise the head tree; anything changed on disk meanwhile is left for the next pass
+        // Materialise the head tree; anything changed on disk meanwhile is
+        // left for the next pass. Deletions run first, so a file that turns
+        // into a folder (or a folder emptied by them that turns into a file)
+        // is out of the way before the write that needs its name. Each change
+        // re-checks the disk right before it touches it, after the history
+        // snapshot: a concurrent edit is either skipped or already captured.
         let after = e.head_tree().map_err(engine_err)?;
         let roster = m.roster();
+        for (path, f) in &disk {
+            if after.0.contains_key(path) {
+                continue;
+            }
+            if workdir::disk_sha(&self.p, &root, path).map_err(io_err)? != Some(f.sha256) {
+                sum.skipped += 1;
+                continue;
+            }
+            hist.with(&mut |s| s.snapshot_before_delete(path, now as u64).map(|_| ()))?;
+            if workdir::disk_sha(&self.p, &root, path).map_err(io_err)? != Some(f.sha256) {
+                sum.skipped += 1;
+                continue;
+            }
+            workdir::remove(&root, path).map_err(io_err)?;
+            sum.removed += 1;
+        }
         for (path, te) in &after.0 {
             let scanned = disk.get(path).map(|f| f.sha256);
             if scanned == Some(te.sha256) {
@@ -553,22 +574,27 @@ impl LocalEngine {
             let bytes = e.read(te, &roster).map_err(engine_err)?;
             if scanned.is_some() {
                 hist.with(&mut |s| s.snapshot_before_overwrite(path, now as u64).map(|_| ()))?;
-            }
-            workdir::write_atomic(&self.p, &root, path, &bytes).map_err(io_err)?;
-            hist.with(&mut |s| s.record_own_save(path, now as u64).map(|_| ()))?;
-            sum.written += 1;
-        }
-        for (path, f) in &disk {
-            if after.0.contains_key(path) {
-                continue;
-            }
-            if workdir::disk_sha(&self.p, &root, path).map_err(io_err)? != Some(f.sha256) {
+                if workdir::disk_sha(&self.p, &root, path).map_err(io_err)? != scanned {
+                    sum.skipped += 1;
+                    continue;
+                }
+            } else if sync_core::vaultfs::remove_empty_dir(&root, path).is_err() {
+                // a folder with files still sits where the file goes
                 sum.skipped += 1;
                 continue;
             }
-            hist.with(&mut |s| s.snapshot_before_delete(path, now as u64).map(|_| ()))?;
-            workdir::remove(&root, path).map_err(io_err)?;
-            sum.removed += 1;
+            match workdir::write_atomic(&self.p, &root, path, &bytes) {
+                Ok(()) => {}
+                // vaultfs refused the path: a parent is a file whose delete was
+                // skipped above (user changed it) or a symlink -> next pass
+                Err(err) if err.kind() == std::io::ErrorKind::InvalidInput => {
+                    sum.skipped += 1;
+                    continue;
+                }
+                Err(err) => return Err(io_err(err)),
+            }
+            hist.with(&mut |s| s.record_own_save(path, now as u64).map(|_| ()))?;
+            sum.written += 1;
         }
         sum.head = e.head().map(|h| h.to_hex());
         Ok(sum)
