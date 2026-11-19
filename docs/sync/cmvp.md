@@ -1,8 +1,10 @@
 # Opensidian Sync — CMVP certificate check for aws-lc-rs `fips` (M0)
 
 Status: notes from public sources, retrieved 2026-11-18. **Nothing in this
-file is a compliance claim.** §1–§6 are the M0 evaluation; §7 is the M2
-pin decision (aws-lc-rs 1.18.1 → AWS-LC 4.2.0, CMVP in process).
+file is a compliance claim.** §1–§6 are the M0 evaluation; §7 was the M2
+pin decision (aws-lc-rs 1.18.1 → AWS-LC 4.2.0, CMVP in process), SUPERSEDED
+by §9 (2026-11-19): aws-lc-rs 1.16.0 / aws-lc-fips-sys 0.13.11 → AWS-LC FIPS
+3.1.0 = the module of certificate **#5314** (validated).
 
 Legend: **[V]** verified from a public source listed below,
 **[U]** unknown / not verifiable from public sources, **[I]** our inference.
@@ -198,3 +200,80 @@ cargo registry, AWS-LC 4.2.0 FIPS build) and by tests that run in FIPS mode
   AWS-LC 4 certificate issues, check that its SP lists 4.2.0 (or move the
   pin), its tested environments (Linux x86_64 / aarch64 glibc), whether it
   lists EdDSA (→ suite 0x01), and whether its caveats change the Q12 note.
+
+## 9. Re-pin to the validated module (2026-11-19, operator decision B)
+
+Operator decision 2026-11-19 07:41Z: use the already validated
+aws-lc-fips-sys 0.13.x line (newest release ≥ 6 weeks old that maps to a
+CMVP-validated certificate, not "in process"). This closes the §4 unknowns
+for that line. All sources public; retrieved 2026-11-19.
+
+Sources added:
+- S9 Security Policy `140sp5314.pdf` (NIST CSRC), sha256
+  `9e0c9f57f5d319c0c86492e6196aa5625a1b97867843e0e0d9bb423937e6f34e`
+  (same file as S8), now READ (text extracted from its Flate streams).
+- S10 `https://github.com/aws/aws-lc/archive/refs/tags/AWS-LC-FIPS-3.1.0.zip`
+- S11 crates.io crate files `aws-lc-fips-sys-0.13.{11,17}.crate` and the
+  aws-lc-rs repo tags v1.15.3..v1.16.1 (`aws-lc-fips-sys/Cargo.toml`).
+
+**Certificate #5314** [V S1, S9]: "AWS-LC 3 Cryptographic Module (static)",
+Amazon Web Services Inc., FIPS 140-3, overall level 1, status Active,
+initial validation 6/5/2026 (atsec), sunset 6/4/2031.
+- Module version [V S9 §2.1, Table 2]: the cryptographic boundary is
+  `bcm.o`, **version "AWS-LC FIPS 3.1.0"** — the only version listed.
+- Source [V S9 §11.1]: built from `AWS-LC-FIPS-3.1.0.zip` (S10), expected
+  sha256 `fe408fa438850786396faf79eba9ea4116c3802e60f3a95865f0dd2adb64c9f1`,
+  "There shall be no additions, deletions, or alterations of this set";
+  build `cmake -DFIPS=1`.
+- Tested operational environments [V S9 Table 3]: Amazon Linux 2023 on
+  c6i.metal (Intel Xeon Platinum 8375C, with and without PAA) and on
+  r8g.metal-24xl (Graviton4); **no vendor-affirmed OEs**. Our box (Fedora 44,
+  AMD EPYC cpx51) and user desktops are NOT tested OEs: "CMVP makes no
+  statement as to the correct operation of the module … when so ported".
+- Approved algorithms used by suite v1 [V S9 Table 5]: AES-GCM, HKDF
+  (KDA SP800-56Cr1), HMAC-SHA2-256, SHA2-256, Counter DRBG, ECDSA
+  KeyGen/SigGen/SigVer (FIPS 186-5, P-256), **EDDSA KeyGen/SigGen/SigVer
+  curve ED-25519** (FIPS 186-5).
+
+**Which crate vendors exactly that source** [V S11, box check
+`logs/fipsverify-0.13.11-vs-5314.log` in the goal dir]:
+- S10 downloaded on the box: sha256 = `fe408fa4…c9f1` = the SP value.
+- `AWSLC_VERSION_NUMBER_STRING` per fips-sys release: 0.13.10 3.0.0,
+  **0.13.11 3.1.0**, 0.13.12 3.2.0, 0.13.13/14 3.3.0, 0.13.15/16 3.4.0,
+  0.13.17 3.6.0.
+- 0.13.11 vs S10, whole tree: **every file the crate ships is byte-identical**
+  to the zip except `go.mod` (outside the module; Go is only the build-time
+  delocator/inject_hash tooling). The crate omits 257 files (test vectors,
+  docs, images) — none of them is a `bcm.o` input.
+- 0.13.17 vs S10: 29 files differ, including module sources inside
+  `crypto/fipsmodule` (`cipher/cipher.c`, `cipher/e_aesccm.c`, `dh/dh.c`,
+  `evp/p_hkdf.c`, `evp/p_kem.c`) → 3.6.0 is NOT the validated module.
+- aws-lc-rs tags whose tree ships fips-sys 0.13.11: v1.15.3, v1.15.4,
+  **v1.16.0** (v1.16.1 ships 0.13.12). Newest = **1.16.0** (2026-02-18).
+
+**Pinned:** `aws-lc-rs =1.16.0` + `aws-lc-fips-sys =0.13.11` (2026-01-14),
+both well past the 6-week rule. Module = AWS-LC FIPS 3.1.0 = cert #5314.
+
+What may be claimed (and what not):
+- MAY: "uses the AWS-LC FIPS 3.1.0 module (CMVP certificate #5314), built
+  from source identical to the validated source set, in approved mode".
+- NOT: "FIPS 140-3 validated on <user platform>" — only the two Amazon
+  Linux 2023 OEs are tested; any other OS/CPU is a porting case without a
+  CMVP statement. The aws-lc-fips-sys build adds its own CMake flags around
+  `-DFIPS=1` (not the SP's exact command line).
+- Q12 caveat unchanged (§8): phrase-derived K_destroy / K_rsig are SSPs
+  entered into the module; #5314 caveat "no assurance of the minimum
+  strength of generated SSPs" / externally loaded SSPs applies.
+
+**Signature algorithm (goal rule "Ed25519 if the pinned cert covers it, else
+P-256"):** #5314 lists EDDSA ED-25519 [V S9], so the rule now selects
+**Ed25519** for suite v1; the switch from the §7 P-256 fallback is a
+separate change (key_alg byte, keytree derivation, KAT vectors), tracked in
+the goal ledger.
+
+**Known advisories on the pinned line** (RustSec advisory-db, checked
+2026-11-19) — see deps.md §FIPS-0.13 for reachability:
+RUSTSEC-2026-0042 (CRL distribution-point check, patched 0.13.13) and
+RUSTSEC-2026-0043 (AES-CCM tag timing via EVP_CIPHER, patched 0.13.12).
+Both are outside the AWS-LC module code paths suite v1 calls (no AES-CCM,
+no AWS-LC X.509/CRL — certificates are verified by rustls-webpki).

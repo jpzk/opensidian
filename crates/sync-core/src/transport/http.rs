@@ -155,6 +155,10 @@ pub fn client_config(roots: &Roots) -> Result<Arc<ClientConfig>> {
         .with_root_certificates(store)
         .with_no_client_auth();
     cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+    // No session resumption: nothing from an unauthenticated ServerHello is cached per
+    // server name (RUSTSEC-2026-0349 on the pinned rustls 0.23.43, deps.md §FIPS-0.13),
+    // and no resumption secret ever sits in process memory between requests.
+    cfg.resumption = rustls::client::Resumption::disabled();
     if !cfg.fips() {
         return Err(TransportError::Config("rustls client config is not in FIPS mode".into()));
     }

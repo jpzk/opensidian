@@ -23,15 +23,22 @@ too young was pinned back (`cargo update --precise` / direct pin), noted.
 
 Direct (sync-crypto/Cargo.toml):
 
-- `aws-lc-rs =1.18.1` — 2026-09-01 — `b281d307588d634de920874890732659e2e7672f72b5e10e81badc1a8a83621e`
+Re-pinned 2026-11-19 to the CMVP-validated line (operator decision B,
+cmvp.md §9, §FIPS-0.13 below); was aws-lc-rs 1.18.1 / fips-sys 0.14.2
+(AWS-LC 4.2.0, in process).
+
+- `aws-lc-rs =1.16.0` — 2026-02-18 — `d9a7b350e3bb1767102698302bc37256cbd48422809984b98d292c40e2579aa9`
   — ISC AND (Apache-2.0 OR ISC) — the crypto suite (AES-256-GCM, HKDF,
   HMAC, SHA-256, ECDSA P-256, DRBG) from the AWS-LC FIPS module; features
-  `fips`, `alloc`, default features off (no non-FIPS `aws-lc-sys`). CMVP
-  status: cmvp.md §7. No std/existing crate offers a FIPS module.
-- `aws-lc-fips-sys =0.14.2` — 2026-09-01 — `03367707e92796b190a4207d4d39b0a4271d574503d2969c2b0cfbf5c87658ee`
-  — ISC AND (Apache-2.0 OR ISC) AND OpenSSL — the vendored AWS-LC 4.2.0 C
-  module; pinned directly so the `^0.14.2` requirement of aws-lc-rs cannot
-  float.
+  `fips`, `alloc`, default features off (no non-FIPS `aws-lc-sys`). Newest
+  aws-lc-rs whose own tag ships fips-sys 0.13.11 (v1.16.1 ships 0.13.12).
+  No std/existing crate offers a FIPS module.
+- `aws-lc-fips-sys =0.13.11` — 2026-01-14 — `df6ea8e07e2df15b9f09f2ac5ee2977369b06d116f0c4eb5fa4ad443b73c7f53`
+  — ISC AND (Apache-2.0 OR ISC) AND OpenSSL — the vendored **AWS-LC FIPS
+  3.1.0** C module = CMVP certificate **#5314** (every shipped file
+  byte-identical to the Security Policy's source zip, cmvp.md §9); pinned
+  directly so the `^0.13.1` requirement of aws-lc-rs cannot float to a
+  0.13.12+ (3.2.0+, not validated).
 - `zeroize =1.9.1` — 2026-10-06 — `e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879`
   — Apache-2.0 OR MIT — required by aws-lc-rs (`^1.8.1`); the newest, 1.9.2,
   is from 2026-11-17 (< 6 weeks) so 1.9.1 is pinned directly. Also used to
@@ -123,6 +130,52 @@ unpacking; versions are the newest stable release ≥ 6 weeks old on
   build without Perl.
 - C compiler: the box harness gcc 16.0.1 (`/var/tmp/gate-boxd/env`, already
   used for every T0 build); no C++ compiler is needed.
+- Reinstalled unchanged (same versions + sha256) on the fresh box
+  hz-176764494 on 2026-11-19 (goal bin/toolchain.sh, logs/toolchain.log).
+
+## FIPS-0.13 — validated-line pin: what it costs (2026-11-19)
+
+Pinning the CMVP-validated module (aws-lc-fips-sys 0.13.11 → aws-lc-rs
+1.16.0) caps rustls at 0.23.43 and rustls-webpki at 0.103.13 (their newer
+releases require aws-lc-rs ^1.18 = the unvalidated 4.x module) and forces
+aws-lc-sys 0.37.1. Lock delta = exactly these 5 version bumps (downwards),
+no package added or removed except one `pkg-config` dependency edge
+(resolved by cargo on the box, lock sha256
+`4ece8f7e03bc2a30e354456872d9aa8cfffd9f3cf396038b5fed4d1423931b4b`).
+Known RustSec advisories against the pinned versions (advisory-db, checked
+2026-11-19) and why each is or is not reachable here:
+
+- RUSTSEC-2026-0043 aws-lc-fips-sys (AES-CCM tag timing, EVP_CIPHER CCM;
+  patched 0.13.12) — not reachable: suite v1 uses AES-256-GCM only.
+- RUSTSEC-2026-0042 aws-lc-fips-sys (CRL distribution-point check in AWS-LC
+  X.509; patched 0.13.13) — not reachable: no AWS-LC X.509/CRL API is called;
+  TLS certificates are verified by rustls-webpki, no CRLs configured.
+- RUSTSEC-2026-0044/0045/0046/0047/0048 aws-lc-sys (X.509 name constraints,
+  AES-CCM timing, PKCS7_verify ×2, CRL scope) — not reachable: aws-lc-sys is
+  compiled but never called (aws-lc-rs binds aws-lc-fips-sys under `fips`).
+- RUSTSEC-2026-0285 rustls (TLS 1.3 handshake messages accepted across
+  encryption-level boundaries; patched 0.23.45) — **reachable, accepted
+  residual**: a network peer could send a should-be-encrypted handshake
+  message in plaintext without rustls aborting; the transcript is still
+  authenticated, so a handshake cannot be altered or completed by an
+  attacker. No fix exists on a rustls that accepts the validated aws-lc-rs.
+- RUSTSEC-2026-0349 rustls (key-share prediction downgrade via an
+  unauthenticated ServerHello; patched 0.23.46) — mitigated: the sync client
+  disables session resumption (`transport/http.rs`), so nothing is stored per
+  server name.
+- RUSTSEC-2026-0346 rustls (`Debug` of client session values) — not
+  reachable: no custom `ClientSessionStore`, resumption disabled.
+- RUSTSEC-2026-0347 (ECH, unaffected < 0.23.44), RUSTSEC-2026-0348 (brotli
+  feature, not enabled) — not affected.
+- RUSTSEC-2026-0382 rustls-webpki (distrusted emSign intermediates; patched
+  0.103.16) — reachable only with `Roots::System` and a path through those
+  intermediates; the recommended setup pins the server CA (`--ca-file`).
+  Residual for system roots.
+- RUSTSEC-2026-0049/0098/0099/0104 rustls-webpki — patched at ≤ 0.103.13, not
+  affected.
+
+Re-evaluate when an AWS-LC 4 certificate issues (cmvp.md §7): moving back
+to aws-lc-rs ≥ 1.18 lifts the rustls/webpki caps.
 
 ### M3a — sync-server storage + HTTP (sync-server)
 
@@ -168,27 +221,31 @@ TLS 1.3 only, provider `rustls::crypto::default_fips_provider()`;
 (tests/tls.rs). Every crate is pinned direct in sync-server/Cargo.toml so the
 resolver cannot float to a younger release (cutoff 2026-10-07).
 
-- `rustls =0.23.45` — 2026-09-14 — `0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634`
+- `rustls =0.23.43` — 2026-07-29 — `0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06`
   — Apache-2.0 OR ISC OR MIT — features `std`, `fips` (no tls12, no logging,
-  no prefer-post-quantum).
+  no prefer-post-quantum). Newest rustls whose `aws-lc-rs` requirement
+  (`^1.14`) admits the validated aws-lc-rs 1.16.0 (0.23.44+ need `^1.18`);
+  was 0.23.45. Advisories: §FIPS-0.13.
 - `tokio-rustls =0.26.6` — 2026-09-28 — `c9cc2678c2cdd569ef8215e2afd7954ada2ae20b4fdd2c5fe6139a3b02d105db`
   — MIT OR Apache-2.0 — feature `fips`.
-- `rustls-webpki =0.103.15` — 2026-08-21 — `f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2`
-  — ISC — features `std`, `aws-lc-rs-fips`.
+- `rustls-webpki =0.103.13` — 2026-04-21 — `61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e`
+  — ISC — features `std`, `aws-lc-rs-fips`. Newest admitting aws-lc-rs
+  1.16 (0.103.14+ need `^1.18`); was 0.103.15. Advisories: §FIPS-0.13.
 - `rustls-pki-types =1.15.1` — 2026-07-23 — `2f4925028c7eb5d1fcdaf196971378ed9d2c1c4efc7dc5d011256f76c99c0a96`
   — MIT OR Apache-2.0 — PEM parsing (`pem::PemObject`).
 - `subtle =2.6.1` — 2024-06-24 — `13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292`
   — BSD-3-Clause — rustls.
 - `untrusted =0.9.0` — 2021-07-13 — `8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1`
   — ISC — rustls-webpki.
-- `aws-lc-sys =0.45.0` — 2026-09-01 — `9bff6c3b54fad79a2e60b8102caf565819711497c1f5f092f49508e2f5c31b27`
+- `aws-lc-sys =0.37.1` — 2026-02-11 — `b092fe214090261288111db7a2b2c2118e5a7f30dc2569f1732c4069a6840549`
+  (was 0.45.0; aws-lc-rs 1.16.0 requires `^0.37.0`)
   — ISC AND Apache-2.0 AND MIT AND BSD-3-Clause (+ OR-alternatives) — NOT
   wanted, forced: rustls' `fips` feature implies `aws_lc_rs`, which sets
   `aws-lc-rs/aws-lc-sys`. It is compiled (non-FIPS AWS-LC, own symbol prefix)
   but aws-lc-rs binds `aws-lc-fips-sys` whenever its `fips` feature is on, so
   no sync code path reaches it. Avoiding it would need a hand-written rustls
-  `CryptoProvider` — rejected as more risk than a dead static library. Same
-  release day as aws-lc-fips-sys 0.14.2; 0.46.0 (2026-10-12) is too young.
+  `CryptoProvider` — rejected as more risk than a dead static library.
+  Version forced by aws-lc-rs 1.16.0; advisories (dead code here): §FIPS-0.13.
   Build deps (cc, cmake, dunce, fs_extra, pkg-config) were already locked.
 
 ### M3c — sync-core transport (HTTP(S) client + dir replica): no new crate
