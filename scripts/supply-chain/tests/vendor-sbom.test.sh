@@ -46,6 +46,9 @@ if jq -e --arg sha "$(sha256sum "$root/ui/vendor/codemirror/LICENSE" | cut -d' '
    ' "$t/bom.json" >/dev/null; then ok "G5: cm6.js component carries codemirror/LICENSE sha256 + pinned source"
 else bad "G5: cm6.js component has no codemirror/LICENSE file property"; fi
 
+jq -e 'any(.metadata.component.properties[]; .name == "opensidian:license-note")' "$t/bom.json" >/dev/null \
+  && ok "G7: ui/vendor aggregate root carries opensidian:license-note" || bad "G7: ui/vendor root has no license-note"
+
 # G4: the npm packages bundled inside mermaid.min.js (LICENSES-bundled.txt) are components,
 # each with version + license + registry URL, and the mermaid component dependsOn all of them
 bl=$root/ui/vendor/mermaid/LICENSES-bundled.txt

@@ -23,6 +23,8 @@ check "G9: archive sha256 carried verbatim as SHA-256 hash" "$t/ok.json" \
   '[.components[] | select(.name == "brotli") | .hashes] == [[{alg: "SHA-256", content: ("1" * 64)}]]'
 check "brotli: pkg:github purl + bom-ref shared with the AppImage SBOM" "$t/ok.json" \
   '[.components[] | select(.name == "brotli")][0] | .purl == "pkg:github/google/brotli@v1.2.1" and ."bom-ref" == "brotli@1.2.1"'
+check "G7: flatpak root (the app) licensed GPL-3.0-or-later from src-tauri/Cargo.toml" "$t/ok.json" \
+  '.metadata.component.licenses == [{expression: "GPL-3.0-or-later"}]'
 check "G3: brotli license MIT" "$t/ok.json" \
   '[.components[] | select(.name == "brotli") | .licenses] == [[{expression: "MIT"}]]'
 check "G3: runtime license.name + license-note + hash-note (reason for no hash)" "$t/ok.json" \

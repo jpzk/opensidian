@@ -144,7 +144,8 @@ jq -s --slurpfile deps "$tmp/deps" --arg ts "$ts" '{
     bomFormat: "CycloneDX", specVersion: "1.6", version: 1,
     metadata: {timestamp: $ts,
                tools: {components: [{type: "application", name: "scripts/supply-chain/vendor-sbom.sh"}]},
-               component: {type: "application", "bom-ref": "opensidian-ui-vendor", name: "opensidian ui/vendor"}},
+               component: {type: "application", "bom-ref": "opensidian-ui-vendor", name: "opensidian ui/vendor",
+                          properties: [{name: "opensidian:license-note", value: "aggregate: the third-party libraries vendored under ui/vendor; each component carries its own license"}]}},
     components: (unique_by(."bom-ref") | sort_by(."bom-ref")),
     dependencies: ([{ref: "opensidian-ui-vendor",
                      dependsOn: ([.[] | select(.type == "file" or (.properties | map(.name) | index("opensidian:loaded_by")))

@@ -30,6 +30,9 @@ MODLIC='{"brotli":"MIT"}'
 val() { sed -n "s/^$1:[[:space:]]*['\"]\{0,1\}\([^'\" ]*\)['\"]\{0,1\}[[:space:]]*$/\1/p" "$mf" | head -1; }
 rt=$(val runtime); rv=$(val runtime-version); app=$(val app-id)
 [ -n "$rt" ] && [ -n "$rv" ] && [ -n "$app" ] || die "runtime/runtime-version/app-id missing in $mf"
+# the flatpak root IS the opensidian app: same license as src-tauri/Cargo.toml (sbom-merge asserts that one)
+applic=$(awk -F'"' '/^\[package\]/{p=1; next} /^\[/{p=0} p && /^license *=/{print $2; exit}' "$root/src-tauri/Cargo.toml")
+[ -n "$applic" ] || die "no [package] license in src-tauri/Cargo.toml"
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 # module name, archive url, sha256 — one TSV row per archive source
 awk '
@@ -41,7 +44,7 @@ awk '
   /^        sha256:/      { sha=v($0); next }
   END { emit() }' "$mf" >"$t/arch.tsv"
 ts=$(date -u -d "@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y-%m-%dT%H:%M:%SZ)
-jq -R -s --arg ts "$ts" --arg rt "$rt" --arg rv "$rv" --arg app "$app" --argjson lic "$MODLIC" '
+jq -R -s --arg ts "$ts" --arg applic "$applic" --arg rt "$rt" --arg rv "$rv" --arg app "$app" --argjson lic "$MODLIC" '
   [split("\n")[] | select(length > 0) | split("\t") | {mod: .[0], url: .[1], sha: .[2]}] as $a
   | if ($a | map(select((.sha | test("^[0-9a-f]{64}$") | not) or .url == "")) | length) > 0
       then error("archive source without url/sha256: \($a | map(select((.sha | test("^[0-9a-f]{64}$") | not))) | map(.mod) | join(", "))")
@@ -73,7 +76,7 @@ jq -R -s --arg ts "$ts" --arg rt "$rt" --arg rv "$rv" --arg app "$app" --argjson
   | { bomFormat: "CycloneDX", specVersion: "1.6", version: 1,
       metadata: { timestamp: $ts,
         tools: { components: [{type: "application", name: "scripts/supply-chain/flatpak-sbom.sh"}] },
-        component: { type: "application", "bom-ref": "opensidian-flatpak", name: $app,
+        component: { type: "application", "bom-ref": "opensidian-flatpak", name: $app, licenses: [{expression: $applic}],
                      properties: [{name: "opensidian:source", value: "packaging/flatpak/dev.koto.opensidian.yml"}] } },
       components: ([$runtime] + $mods),
       dependencies: [{ref: "opensidian-flatpak", dependsOn: ([$runtime] + $mods | map(."bom-ref"))}] }

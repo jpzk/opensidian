@@ -218,7 +218,8 @@ jq -n --rawfile map "$t/map" --rawfile pkgs "$t/pkgs" --rawfile lic "$t/lic" --r
       bomFormat: "CycloneDX", specVersion: "1.6", version: 1,
       metadata: { timestamp: $ts,
         component: { type: "application", "bom-ref": "opensidian-portable-appimage-bundle",
-          name: "opensidian portable AppImage WebKit bundle", version: $distro },
+          name: "opensidian portable AppImage WebKit bundle", version: $distro,
+          properties: [{name: "opensidian:license-note", value: "aggregate: the Ubuntu packages and brotli bundled into the AppImage; each component carries its own license"}] },
         properties: [ {name: "opensidian:source", value: "dpkg database of the AppImage build environment (\($distro), apt pinned to the appimage-build.sh snapshot)"},
                       {name: "opensidian:hash-source", value: $hsrc} ] },
       components: ($debs + (if ($bl | length) > 0 then [{

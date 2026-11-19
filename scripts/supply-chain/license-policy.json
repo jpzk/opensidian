@@ -1,0 +1,21 @@
+{
+  "comment": "License policy for the merged release SBOM (license-policy.sh). Allowed everywhere = deny.toml [licenses] allow (read from deny.toml, not copied) + extra_allow. Anything else passes ONLY for the components an exception's match prefixes name (prefix of purl or bom-ref, or root = metadata.component), and every exception carries its reason. Add entries deliberately; the gate fails the release on anything not covered.",
+  "extra_allow": ["ISC"],
+  "exceptions": [
+    { "license": "GPL-3.0-or-later", "root": true, "match": ["pkg:cargo/opensidian@"],
+      "reason": "opensidian itself (the release root and its app crate) is GPL-3.0-or-later; same exception as deny.toml { crate = \"opensidian\" }, dependencies do not get it" },
+    { "license": "LicenseRef-flathub-runtime", "match": ["flatpak-runtime:"],
+      "reason": "the Flathub GNOME runtime is not shipped in our artifacts: the flatpak installs it from Flathub; it aggregates many projects whose per-package licenses are in the runtime vendor SBOM (see the component's opensidian:license-note)" },
+    { "license": "LicenseRef-deb-copyright-unstructured", "match": ["pkg:deb/"],
+      "reason": "Ubuntu package whose /usr/share/doc/<pkg>/copyright is not DEP-5 machine-readable; the shipped copyright file is named in the component's opensidian:license-note and is reviewed by hand" },
+    { "license": "LGPL-2.0-only", "match": ["pkg:deb/"], "reason": "unmodified Ubuntu system library bundled in the AppImage and dynamically linked (WebKitGTK/GTK/GLib stack); corresponding source = the pinned Ubuntu source package named in the purl (snapshot.ubuntu.com)" },
+    { "license": "LGPL-2.0-or-later", "match": ["pkg:deb/"], "reason": "unmodified Ubuntu system library bundled in the AppImage and dynamically linked (WebKitGTK/GTK/GLib stack); corresponding source = the pinned Ubuntu source package named in the purl (snapshot.ubuntu.com)" },
+    { "license": "LGPL-2.1-only", "match": ["pkg:deb/"], "reason": "unmodified Ubuntu system library bundled in the AppImage and dynamically linked (WebKitGTK/GTK/GLib stack); corresponding source = the pinned Ubuntu source package named in the purl (snapshot.ubuntu.com)" },
+    { "license": "LGPL-2.1-or-later", "match": ["pkg:deb/"], "reason": "unmodified Ubuntu system library bundled in the AppImage and dynamically linked (WebKitGTK/GTK/GLib stack); corresponding source = the pinned Ubuntu source package named in the purl (snapshot.ubuntu.com)" },
+    { "license": "LGPL-3.0-only", "match": ["pkg:deb/"], "reason": "unmodified Ubuntu system library bundled in the AppImage and dynamically linked; corresponding source = the pinned Ubuntu source package named in the purl (snapshot.ubuntu.com)" },
+    { "license": "LGPL-3.0-or-later", "match": ["pkg:deb/"], "reason": "unmodified Ubuntu system library bundled in the AppImage and dynamically linked; corresponding source = the pinned Ubuntu source package named in the purl (snapshot.ubuntu.com)" },
+    { "license": "GPL-2.0-or-later", "match": ["pkg:deb/"], "reason": "files under GPL-2+ inside an Ubuntu source package whose shipped library is bundled unmodified; compatible with the GPL-3.0-or-later app; source = the pinned Ubuntu source package (snapshot.ubuntu.com)" },
+    { "license": "GPL-3.0-or-later", "match": ["pkg:deb/"], "reason": "files under GPL-3+ inside an Ubuntu source package whose library is bundled unmodified; same license as the app; source = the pinned Ubuntu source package (snapshot.ubuntu.com)" },
+    { "license": "BSD-2-Clause", "match": ["pkg:deb/"], "reason": "permissive (attribution only, kept in the shipped copyright file); not in deny.toml only because no crate uses it" }
+  ]
+}

@@ -117,6 +117,7 @@ DISTRO=debian-13 run >"$t/sbom.json" 2>/dev/null && chk "debian-13 namespace" 'a
 run --pkgset "$t/pkgset.tsv" >"$t/sbom.json" 2>"$t/err" && ok "--pkgset: rc=0" || { cat "$t/err"; bad "--pkgset rc!=0"; }
 C='.components[]|select(.name=="webkit2gtk")'
 chk "every component has licenses" 'all(.components[]; (.licenses|length)>0)'
+chk "G7: aggregate bundle root carries opensidian:license-note (license-policy part rule)" 'any(.metadata.component.properties[]; .name=="opensidian:license-note")'
 chk "DEP-5 short names -> SPDX ids (or split, comma split, + -> or-later)" \
   "[$C|.licenses[].license.id|select(.)]==[\"BSD-2-Clause\",\"GPL-3.0-or-later\",\"LGPL-2.0-or-later\",\"LGPL-2.1-or-later\",\"MPL-1.1\"]"
 chk "unmappable DEP-5 name kept verbatim as license.name" "[$C|.licenses[].license.name|select(.)]==[\"GPL-2+ with Bison exception\"]"
