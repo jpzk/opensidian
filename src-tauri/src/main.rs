@@ -7845,25 +7845,36 @@ fn quit_request(app: &tauri::AppHandle, why: &str) -> bool {
 
 /// macOS port: the app menu's predefined Quit is NSApp terminate:, which tao turns into a final
 /// exit (no CloseRequested, no preventable ExitRequested): the editor's debounced tail would be
-/// lost. Swap it for our own "Quit opensidian" (Cmd+Q) that goes through quit_request.
+/// lost. Swap it for our own "Quit Opensidian" (Cmd+Q) that goes through quit_request.
 #[cfg(target_os = "macos")]
 const MAC_QUIT: &str = "os-quit";
 #[cfg(target_os = "macos")]
 fn mac_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
-    use tauri::menu::{Menu, MenuItem, MenuItemKind};
+    use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
+    // the macOS-facing name is "Opensidian" (bundle.macOS.bundleName: the menu bar, Dock, About);
+    // productName stays "opensidian" for the binary and the Linux packages
+    const NAME: &str = "Opensidian";
     let menu = Menu::default(app)?;
-    if let Some(MenuItemKind::Submenu(appm)) = menu.items()?.into_iter().next() {
-        let items = appm.items()?;
-        for (pos, it) in items.iter().enumerate() {
-            if let MenuItemKind::Predefined(p) = it {
-                if p.text()?.starts_with("Quit") {
-                    appm.remove(p)?;
-                    let q = MenuItem::with_id(app, MAC_QUIT, format!("Quit {}", app.package_info().name), true, Some("CmdOrCtrl+Q"))?;
-                    appm.insert(&q, pos)?;
-                    break;
-                }
-            }
-        }
+    if let Some(MenuItemKind::Submenu(old)) = menu.items()?.into_iter().next() {
+        let quit = MenuItem::with_id(app, MAC_QUIT, format!("Quit {NAME}"), true, Some("CmdOrCtrl+Q"))?;
+        let appm = Submenu::with_items(
+            app,
+            NAME,
+            true,
+            &[
+                &PredefinedMenuItem::about(app, Some(&format!("About {NAME}")), None)?,
+                &PredefinedMenuItem::separator(app)?,
+                &PredefinedMenuItem::services(app, None)?,
+                &PredefinedMenuItem::separator(app)?,
+                &PredefinedMenuItem::hide(app, Some(&format!("Hide {NAME}")))?,
+                &PredefinedMenuItem::hide_others(app, None)?,
+                &PredefinedMenuItem::show_all(app, None)?,
+                &PredefinedMenuItem::separator(app)?,
+                &quit,
+            ],
+        )?;
+        menu.remove(&old)?;
+        menu.insert(&appm, 0)?;
     }
     app.set_menu(menu)?;
     Ok(())

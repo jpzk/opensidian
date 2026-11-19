@@ -13062,6 +13062,19 @@ async function startGraph(g, cfg) {
       redraw();
       return;
     }
+    // macOS port: a trackpad TWO-FINGER SCROLL is a stream of small pixel deltas (dozens per gesture,
+    // then momentum), not notches — one notch per event zoomed a gentle 75 px scroll out 14x. It now
+    // zooms in proportion to the distance scrolled, like the pinch above but gentler (exp(-dy/400):
+    // a gentle 75 px swipe is ~2 notches). A mouse notch (|deltaY| >= 30) keeps the lattice below.
+    if (OS_MAC && !e.ctrlKey && e.deltaMode === 0 && e.deltaY && Math.abs(e.deltaY) < 30) {
+      const s = Math.min(GZ_MAX, Math.max(GZ_MIN, view.scale * Math.exp(-e.deltaY / 400)));
+      view.tx = mx - view.wx * s; view.ty = my - view.wy * s; view.scale = s;
+      view.notch = Math.max(GZ_IN, Math.min(GZ_OUT, Math.round(Math.log(s) / Math.log(0.9))));
+      if (gcS && (gcS.kind === "gg" || gcS.kind === "lg") && gcS.st.scale !== s) { gcS.st.scale = s; gcS.save({ scale: s }); }
+      updateTitle();
+      redraw();
+      return;
+    }
     // #172: a wheel event with no vertical part (touchpad sideways swipe, tilt wheel, shift+wheel
     // reaching us as deltaX only) is not a zoom step — stock 1.13.7 keeps the scale (1 -> 1).
     // Without this guard deltaY == 0 fell into the "+1" branch below and zoomed OUT per event.
