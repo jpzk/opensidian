@@ -2148,6 +2148,13 @@ fn history_read<R: tauri::Runtime>(win: tauri::WebviewWindow<R>, v: State<Vault>
     Ok(String::from_utf8_lossy(&b).into_owned())
 }
 
+/// history restores write through the index, so the watcher skips them;
+/// emit the same `vault-changed` it would, for the editor tabs (#238).
+fn notify_restored<R: tauri::Runtime>(win: &tauri::WebviewWindow<R>, c: watcher::Change) {
+    use tauri::Emitter as _;
+    let _ = win.emit("vault-changed", &c);
+}
+
 /// Write version `seq` back over its note (current bytes are kept as a
 /// pre-write version first). Returns the note name.
 #[tauri::command]
@@ -2162,6 +2169,10 @@ fn history_restore<R: tauri::Runtime>(win: tauri::WebviewWindow<R>, v: State<Vau
     let root = cur_vault(&v).ok_or("no vault open")?;
     let mut ix = v.index.lock().unwrap();
     write_note_in(&root, &mut ix, &name, &content)?;
+    drop(ix);
+    // own writes are invisible to the watcher (the index already holds the
+    // bytes), so tell the main window: an open tab of this note re-reads it
+    notify_restored(&win, watcher::Change { modified: vec![name.clone()], ..Default::default() });
     Ok(name)
 }
 
@@ -2189,7 +2200,10 @@ fn history_restore_deleted<R: tauri::Runtime>(win: tauri::WebviewWindow<R>, v: S
     let content = String::from_utf8(bytes).map_err(|_| "version is not UTF-8 text".to_string())?;
     let root = cur_vault(&v).ok_or("no vault open")?;
     let mut ix = v.index.lock().unwrap();
-    create_note_in(&root, &mut ix, &name, &content)
+    create_note_in(&root, &mut ix, &name, &content)?;
+    drop(ix);
+    notify_restored(&win, watcher::Change { added: vec![name], ..Default::default() });
+    Ok(())
 }
 
 #[derive(serde::Serialize)]
