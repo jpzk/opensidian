@@ -229,16 +229,18 @@ TLS 1.3 only, provider `rustls::crypto::default_fips_provider()`;
 (tests/tls.rs). Every crate is pinned direct in sync-server/Cargo.toml so the
 resolver cannot float to a younger release (cutoff 2026-10-07).
 
-- `rustls =0.23.43` — 2026-07-29 — `0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06`
-  — Apache-2.0 OR ISC OR MIT — features `std`, `fips` (no tls12, no logging,
-  no prefer-post-quantum). Newest rustls whose `aws-lc-rs` requirement
-  (`^1.14`) admits the validated aws-lc-rs 1.16.0 (0.23.44+ need `^1.18`);
-  was 0.23.45. Advisories: §FIPS-0.13.
+- `rustls =0.23.45` — 2026-09-14 — `0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634`
+  — Apache-2.0 OR ISC OR MIT — feature `std` only (crypto = rustls-openssl,
+  OpenSSL FIPS provider; no tls12, no brotli, no logging). Was 0.23.43 (the
+  aws-lc-rs 1.16 cap is gone with the OpenSSL swap); bumped to the newest
+  release >= 6 weeks old for RUSTSEC-2026-0285. Advisories: §Advisories-5b.
 - `tokio-rustls =0.26.6` — 2026-09-28 — `c9cc2678c2cdd569ef8215e2afd7954ada2ae20b4fdd2c5fe6139a3b02d105db`
   — MIT OR Apache-2.0 — feature `fips`.
-- `rustls-webpki =0.103.13` — 2026-04-21 — `61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e`
-  — ISC — features `std`, `aws-lc-rs-fips`. Newest admitting aws-lc-rs
-  1.16 (0.103.14+ need `^1.18`); was 0.103.15. Advisories: §FIPS-0.13.
+- `rustls-webpki =0.103.15` — 2026-08-21 — `f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2`
+  — ISC — feature `std`. Required by rustls 0.23.45 (`^0.103.14`); newest
+  >= 6 weeks. VENDORED: src-tauri/vendor/rustls-webpki-0.103.15 = the crates.io
+  crate byte-for-byte + Cargo.toml-only noring.patch (sha256 `022975c7..a8b9`),
+  proved by scripts/supply-chain/webpki-vendor-check.sh. Advisories: §Advisories-5b.
 - `rustls-pki-types =1.15.1` — 2026-07-23 — `2f4925028c7eb5d1fcdaf196971378ed9d2c1c4efc7dc5d011256f76c99c0a96`
   — MIT OR Apache-2.0 — PEM parsing (`pem::PemObject`).
 - `subtle =2.6.1` — 2024-06-24 — `13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292`
@@ -395,3 +397,38 @@ actually added (from the Cargo.lock that adds them).
 - BIP-0039 English list: NOT vendored. The rejection tests use the 12-word
   mnemonics of the reference test vectors (inline strings) plus words shared
   by both lists, so no BIP39 file is shipped or committed.
+
+## Advisories-5b — RustSec triage of the sync dependency graph (2026-11-19)
+
+cargo deny (CI supply-chain.yml run 44515121547 on 3afbf3e, cargo-deny 0.21.0)
+reported 19 advisories on sync dependencies after the OpenSSL swap. Policy:
+bump to a fixed release only if it is >= 6 weeks old (cutoff 2026-10-08),
+else ignore with a reachability reason and an EXPIRY = the day the fix turns
+6 weeks old. Source of truth: supply-chain/vex.cdx.json (CycloneDX 1.6, per-id
+analysis); deny.toml and src-tauri/.cargo/audit.toml hold the same ids
+(scripts/supply-chain/vex-check.sh). An expired entry fails CI.
+
+- FIXED by bump: RUSTSEC-2026-0285 (rustls handshake messages across
+  encryption levels) — rustls 0.23.43 -> 0.23.45 (+ webpki 0.103.15).
+- rustls 0.23.45, fix 0.23.46 (2026-10-14), EXPIRES 2026-11-25:
+  0346 (Debug of session values: resumption disabled, no rustls Debug),
+  0347 (ECH, introduced at 0.23.44: ECH never configured), 0348 (brotli
+  feature off), 0349 (classical ECDHE only, no hybrid group to downgrade
+  from; resumption disabled).
+- zstd 0.14.0 / zstd-safe 8.0.0 / zstd-sys 2.1.0, fixes zstd 0.14.3 /
+  zstd-safe 8.2.0 / zstd-sys 2.1.2 (2026-10-16), EXPIRES 2026-11-27:
+  0391, 0395-0406 per affected function — sync-core calls only
+  `zstd::bulk::compress` and `zstd::stream::read::Decoder::new` with a fresh
+  context per object, on AEAD-authenticated input; features seekable,
+  zstdmt, legacy, zdict_builder are off (box `cargo tree -e features`,
+  goal log 5b-zstd-features.log); 0410 is wasm32-only.
+- libsqlite3-sys 0.38.2 (bundled SQLite 3.53.2), fix 0.39.0 / rusqlite 0.41
+  (2026-10-24), EXPIRES 2026-12-05: 0459 needs a crafted `-wal` next to the
+  index in sync-server's private 0700 data dir.
+- rustls-webpki 0.103.15 (vendored path crate: cargo deny/audit cannot match
+  it), fix 0.103.16 (2026-10-20), EXPIRES 2026-12-01: 0382 (distrusted
+  emSign intermediates) is reachable only with `Roots::System`; pin the
+  server CA (`Roots::Pem`). Listed in both ignore lists so the triage is
+  visible; cargo deny reports it as advisory-not-detected (warning).
+- RUSTSEC-2026-0049/0098/0099/0104 rustls-webpki: patched <= 0.103.13.
+- openssl 0.10.81: RUSTSEC-2026-0463/0473-0479 all patched <= 0.10.80.
