@@ -101,7 +101,7 @@ impl World {
         let p = fips();
         let mut k = [0u8; 32];
         p.random(&mut k).unwrap();
-        let v = VaultCtx { suite: Suite::Ed25519, vault_id: rid(&p), ns: rid(&p), k_obj: k, prev_k_obj: vec![] };
+        let v = VaultCtx { suite: Suite::Ed25519, vault_id: rid(&p), ns: rid(&p), k_obj: k };
         let a = device(&p, "Laptop");
         let b = device(&p, "Phone");
         let ks = [&a, &b].iter().map(|d| (d.id, (SigAlg::Ed25519, d.pk.clone()))).collect();

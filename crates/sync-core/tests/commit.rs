@@ -58,7 +58,6 @@ fn vault(p: &FipsProvider, ns: Id16) -> VaultCtx {
         vault_id: rid(p),
         ns,
         k_obj: k,
-        prev_k_obj: vec![],
     }
 }
 
@@ -338,7 +337,7 @@ fn verification_failures() {
     .unwrap();
     open_commit(&p, &v, &b.id, &b.container, &ks).unwrap();
 
-    // unknown / revoked device
+    // unknown device (not on the roster)
     assert_eq!(
         open_commit(&p, &v, &b.id, &b.container, &keys(&[&other])),
         Err(CommitError::UnknownDevice)

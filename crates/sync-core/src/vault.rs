@@ -3,20 +3,25 @@
 // Copyright (C) 2026 Jendrik Poloczek
 //! M5 onboarding (docs/sync/spec.md §4.4–4.6, key-tree.md): create a vault,
 //! join from the backup words + URL, pair a device over a one-time
-//! symmetric channel, revoke a device (new VK epoch).
+//! symmetric channel.
 //!
 //! Trust model in one paragraph: the backup words derive K_wrap / loc /
 //! K_rsig / K_destroy. The envelope (keyring + servers + tokens) lives on
 //! the server under `loc`, sealed under K_wrap, so "words + URL → everything".
 //! Membership is the signed cfg chain: gen 0 is signed by K_rsig, every
-//! later gen by an active slot of the previous gen or by K_rsig. Commit
-//! signatures are checked against the roster of the chain ([`Roster`]).
-//! There is no public-key encryption: a new VK epoch is published only in
-//! the envelope (K_wrap), so after a revocation the remaining devices need
-//! the words (backup keystore entry, behind user presence) to follow it —
-//! [`VaultError::NeedWords`] says so.
+//! later gen by an active slot of the previous gen or by K_rsig; a slot,
+//! once added, never leaves. Commit signatures are checked against the
+//! roster of the chain ([`Roster`]); a device not on it is unknown.
+//!
+//! No revocation (operator decision 2026-11-19): a vault has exactly ONE
+//! VK epoch (0) for its whole life — the wire format keeps the `vk_epoch`
+//! / keyring fields, but [`verify_gen`] and [`vault_ctx`] refuse anything
+//! but epoch 0. If the words or a device are compromised the vault is
+//! BURNED: the user moves to a new vault (new words, new namespace) seeded
+//! from local data + file history, then destroys the old one with the
+//! K_destroy proof (spec §4.7, syncd `move`).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -61,11 +66,8 @@ pub enum VaultError {
     /// Someone else wrote this generation first (write-once 409): re-fetch, retry.
     Fork,
     SlotsFull,
-    /// This device's slot is revoked.
-    Revoked,
-    /// The cfg chain announces a VK epoch this device does not hold: unlock
-    /// the backup words and refresh the envelope.
-    NeedWords,
+    /// This device holds no active slot in the cfg chain (unknown device).
+    NotMember,
     Expired,
 }
 
@@ -79,8 +81,7 @@ impl fmt::Display for VaultError {
             VaultError::NoVault => f.write_str("no vault for these words on this server"),
             VaultError::Fork => f.write_str("vault: concurrent writer won this generation, retry"),
             VaultError::SlotsFull => f.write_str("vault: all 32 device slots are used"),
-            VaultError::Revoked => f.write_str("vault: this device is revoked"),
-            VaultError::NeedWords => f.write_str("vault: keys were rotated, the backup words are needed to continue"),
+            VaultError::NotMember => f.write_str("vault: this device is not on the vault's device list"),
             VaultError::Expired => f.write_str("vault: pairing code expired"),
         }
     }
@@ -168,25 +169,24 @@ pub fn epoch_keys(p: &FipsProvider, e: &VkEntry) -> Result<EpochKeys> {
     })
 }
 
-/// The cfg chain is keyed with the GENESIS epoch's K_cfg (keyring[0]) so
-/// every keyring holder — also one that has not followed a rotation yet —
-/// can walk it and learn that it must. Slots hold public keys only.
-fn cfg_key(p: &FipsProvider, env: &Envelope) -> Result<EpochKeys> {
-    let g = &env.keyring[0];
-    if g.epoch != 0 {
-        return Err(VaultError::Format("keyring does not start at epoch 0".into()));
+/// Suite v1: the envelope holds exactly one VK, at epoch 0 (no revocation,
+/// no rotation — a compromised vault is moved, spec §4.7).
+fn one_epoch(env: &Envelope) -> Result<&VkEntry> {
+    match env.keyring.as_slice() {
+        [g] if g.epoch == 0 => Ok(g),
+        _ => Err(VaultError::Format("keyring must hold exactly one key at epoch 0 (suite v1 has no key rotation)".into())),
     }
-    epoch_keys(p, g)
 }
 
-/// Batch/chunk context: current epoch seals, older epochs still open.
+/// The cfg chain is keyed with the vault's K_cfg. Slots hold public keys only.
+fn cfg_key(p: &FipsProvider, env: &Envelope) -> Result<EpochKeys> {
+    epoch_keys(p, one_epoch(env)?)
+}
+
+/// Batch/chunk context: the one epoch's K_obj seals and opens.
 pub fn vault_ctx(p: &FipsProvider, env: &Envelope, ns: Id16) -> Result<VaultCtx> {
-    let mut keys = Vec::with_capacity(env.keyring.len());
-    for e in env.keyring.iter().rev() {
-        keys.push(*epoch_keys(p, e)?.k_obj);
-    }
-    let k_obj = keys.remove(0);
-    Ok(VaultCtx { suite: SUITE, vault_id: env.vault_id, ns, k_obj, prev_k_obj: keys })
+    let k_obj = *epoch_keys(p, one_epoch(env)?)?.k_obj;
+    Ok(VaultCtx { suite: SUITE, vault_id: env.vault_id, ns, k_obj })
 }
 
 pub fn cfg_id(p: &FipsProvider, k_cfg: &[u8; 32], gen: u32) -> Id16 {
@@ -262,18 +262,16 @@ impl Chain {
         &self.gens[self.gens.len() - 1]
     }
 
+    /// Commit-signature keys: the ACTIVE slots of the head generation. Slots
+    /// never leave the table ([`verify_gen`]), so this is every device that
+    /// ever joined; anything else is an unknown device.
     pub fn roster(&self) -> Roster {
         let mut r = Roster::default();
-        for g in &self.gens {
-            for s in g.slots.iter().filter(|s| s.state != SlotState::Empty) {
-                if let Ok(alg) = SigAlg::from_byte(s.key_alg) {
-                    r.keys.insert(s.device_id, (alg, s.pubkey.clone()));
-                }
+        for s in self.head().slots.iter().filter(|s| s.state == SlotState::Active) {
+            if let Ok(alg) = SigAlg::from_byte(s.key_alg) {
+                r.keys.insert(s.device_id, (alg, s.pubkey.clone()));
             }
         }
-        let active: BTreeSet<Id16> =
-            self.head().slots.iter().filter(|s| s.state == SlotState::Active).map(|s| s.device_id).collect();
-        r.revoked = r.keys.keys().filter(|d| !active.contains(d)).copied().collect();
         r
     }
 
@@ -303,21 +301,15 @@ impl Chain {
     }
 }
 
-/// Commit-signature keys from the cfg chain: every device that ever held a
-/// slot (so pre-revocation commits keep verifying); revoked = not active
-/// in the head generation.
+/// Commit-signature keys from the cfg chain (active slots of the head).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Roster {
     pub keys: BTreeMap<Id16, (SigAlg, Vec<u8>)>,
-    pub revoked: BTreeSet<Id16>,
 }
 
 impl DeviceKeys for Roster {
     fn key(&self, device_id: &Id16) -> Option<(SigAlg, Vec<u8>)> {
         self.keys.get(device_id).cloned()
-    }
-    fn revoked(&self, device_id: &Id16) -> bool {
-        self.revoked.contains(device_id)
     }
 }
 
@@ -325,6 +317,10 @@ impl DeviceKeys for Roster {
 pub fn verify_gen(p: &FipsProvider, prev: Option<(&CfgGen, &[u8; 32])>, c: &CfgGen, signed: &[u8]) -> Result<()> {
     if c.min_suite != SUITE.byte() {
         return Err(chain_err("unsupported min_suite"));
+    }
+    // suite v1: one VK epoch per vault, no revocation / rotation (spec §4.7)
+    if c.vk_epoch != 0 {
+        return Err(chain_err("vk_epoch must be 0 (suite v1 has no key rotation)"));
     }
     let key: &[u8] = match prev {
         None => {
@@ -337,8 +333,8 @@ pub fn verify_gen(p: &FipsProvider, prev: Option<(&CfgGen, &[u8; 32])>, c: &CfgG
             if c.gen != pg.gen + 1 || c.prev != *ph {
                 return Err(chain_err("gen / prev hash does not follow"));
             }
-            if c.rsig_pub != pg.rsig_pub || c.vk_epoch < pg.vk_epoch {
-                return Err(chain_err("rsig_pub changed or vk_epoch went back"));
+            if c.rsig_pub != pg.rsig_pub {
+                return Err(chain_err("rsig_pub changed"));
             }
             for old in pg.slots.iter().filter(|s| s.state != SlotState::Empty) {
                 let now = c.slots.iter().find(|s| s.device_id == old.device_id && s.state != SlotState::Empty);
@@ -346,9 +342,6 @@ pub fn verify_gen(p: &FipsProvider, prev: Option<(&CfgGen, &[u8; 32])>, c: &CfgG
                     None => return Err(chain_err("a device disappeared from the slot table")),
                     Some(n) if n.key_alg != old.key_alg || n.pubkey != old.pubkey => {
                         return Err(chain_err("a device key changed"))
-                    }
-                    Some(n) if old.state == SlotState::Revoked && n.state != SlotState::Revoked => {
-                        return Err(chain_err("a revoked device came back"))
                     }
                     Some(_) => {}
                 }
@@ -507,11 +500,11 @@ impl Member {
     }
 
     fn own_slot(&self) -> Result<u8> {
-        self.chain.active_slot(&self.device.id).ok_or(VaultError::Revoked)
+        self.chain.active_slot(&self.device.id).ok_or(VaultError::NotMember)
     }
 
-    /// Re-read the cfg chain. Errors with `Revoked` if this device lost its
-    /// slot and `NeedWords` if a VK epoch exists that the keyring lacks.
+    /// Re-read the cfg chain. Errors with `NotMember` if this device holds no
+    /// active slot in it.
     /// A chain that does not extend the accepted one (a server serving an
     /// older or forked cfg chain) is refused and the accepted chain kept.
     pub fn refresh_chain(&mut self, p: &FipsProvider, t: &dyn Transport) -> Result<()> {
@@ -519,30 +512,6 @@ impl Member {
         if !chain.extends(&self.chain) {
             return Err(chain_err("cfg chain rolled back or forked"));
         }
-        self.chain = chain;
-        self.own_slot()?;
-        if self.chain.head().vk_epoch > self.env.current().epoch {
-            return Err(VaultError::NeedWords);
-        }
-        Ok(())
-    }
-
-    /// Follow a key rotation with the words: newest envelope + chain.
-    pub fn refresh_with_words(&mut self, p: &FipsProvider, t: &dyn Transport, root: &RootKeys) -> Result<()> {
-        let env = fetch_envelope(p, t, root)?.ok_or(VaultError::NoVault)?;
-        if env.vault_id != self.env.vault_id {
-            return Err(VaultError::Format("words belong to another vault".into()));
-        }
-        let rs = rsig_key(p, root)?.public_key();
-        let ns = env.servers.get(self.server).ok_or_else(|| VaultError::Format("envelope lost the server".into()))?.ns;
-        let chain = fetch_chain(p, t, &env, &ns, Some(rs.as_slice()))?;
-        if !chain.extends(&self.chain) {
-            return Err(chain_err("cfg chain rolled back or forked"));
-        }
-        if env.current().epoch < self.env.current().epoch {
-            return Err(VaultError::Format("envelope key epoch went back".into()));
-        }
-        self.env = env;
         self.chain = chain;
         self.own_slot()?;
         Ok(())
@@ -595,9 +564,6 @@ impl Member {
         let chain = fetch_chain(p, t, &env, &ns, None)?;
         let mut m = Member { env, device, chain, server };
         m.own_slot()?;
-        if m.chain.head().vk_epoch > m.env.current().epoch {
-            return Err(VaultError::NeedWords);
-        }
         m.server = server;
         Ok(m)
     }
@@ -697,65 +663,6 @@ fn add_slot(
     let free = next.slots.iter().position(|s| s.state == SlotState::Empty).ok_or(VaultError::SlotsFull)?;
     next.slots[free] = device.slot();
     append(p, t, env, ns, chain, next, signer, key)
-}
-
-/// Revoke `device_id` (an active slot other than this device): new random
-/// VK at epoch+1, cfg gen+1 with the slot revoked and the new epoch
-/// (signed by this device), envelope gen+1 with the extended keyring
-/// (needs the words: only K_wrap publishes keys). Old objects are not
-/// re-encrypted; the revoked device simply never learns the new VK.
-pub fn revoke(p: &FipsProvider, t: &dyn Transport, m: &mut Member, root: &RootKeys, device_id: &Id16) -> Result<u32> {
-    let own = m.own_slot()?;
-    if *device_id == m.device.id {
-        return Err(chain_err("a device cannot revoke itself here"));
-    }
-    let mut next = m.chain.successor();
-    let i = next
-        .slots
-        .iter()
-        .position(|s| s.state == SlotState::Active && s.device_id == *device_id)
-        .ok_or_else(|| chain_err("no active slot for that device"))?;
-    next.slots[i].state = SlotState::Revoked;
-    let epoch = m.env.current().epoch.checked_add(1).ok_or_else(|| chain_err("epoch overflow"))?;
-    next.vk_epoch = epoch;
-    // A previous revoke may have published the envelope and then failed
-    // the cfg append (network, conflict). Its envelope slot gen+1 is taken
-    // for good (write-once), so the retry adopts that envelope, as long as
-    // it is exactly our envelope plus one key at `epoch`, instead of
-    // sealing a new VK that could never be published.
-    let pending = match fetch_envelope(p, t, root)? {
-        Some(e) if e.env_gen > m.env.env_gen => {
-            let extends = e.env_gen == m.env.env_gen + 1
-                && e.vault_id == m.env.vault_id
-                && e.servers == m.env.servers
-                && e.keyring.len() == m.env.keyring.len() + 1
-                && e.keyring[..m.env.keyring.len()] == m.env.keyring[..]
-                && e.keyring.last().is_some_and(|k| k.epoch == epoch);
-            if !extends {
-                return Err(chain_err("the envelope moved on since this device loaded it; refresh, then revoke again"));
-            }
-            Some(e)
-        }
-        _ => None,
-    };
-    let ns = m.ns();
-    let env = match pending {
-        Some(e) => e,
-        None => {
-            let mut vk = [0u8; 32];
-            p.random(&mut vk).map_err(fmt_err)?;
-            let mut env = m.env.clone();
-            env.env_gen += 1;
-            env.keyring.push(VkEntry { epoch, vk });
-            vk.fill(0);
-            // envelope first: a cfg announcing an epoch nobody can fetch would strand everyone
-            put_envelope(p, t, root, &env)?;
-            env
-        }
-    };
-    append(p, t, &m.env, &ns, &mut m.chain, next, CfgSigner::Slot(own), &m.device.key)?;
-    m.env = env;
-    Ok(epoch)
 }
 
 /// 2-step destroy with the words (K_destroy proof), receipt checked against
@@ -948,11 +855,5 @@ pub fn pair_join(p: &FipsProvider, t: &dyn Transport, j: Joining) -> Result<(Mem
     let chain = fetch_chain(p, t, &j.env, &ns, None)?;
     let m = Member { env: j.env, device: j.device, chain, server: j.server };
     m.own_slot()?;
-    // same gate as from_daily / refresh_chain: a VK epoch the envelope we
-    // were handed does not hold means a newer key exists; activating now
-    // would sync under a stale key
-    if m.chain.head().vk_epoch > m.env.current().epoch {
-        return Err(VaultError::NeedWords);
-    }
     Ok((m, j.words))
 }

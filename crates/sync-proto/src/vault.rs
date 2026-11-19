@@ -49,11 +49,12 @@ fn pubkey_len(alg: u8) -> Option<usize> {
     }
 }
 
+/// Slot state byte. Any other value (drafts had a `2`) is a decode error:
+/// suite v1 has no revocation (a compromised vault is moved, spec §4.7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SlotState {
     Empty = 0,
     Active = 1,
-    Revoked = 2,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,7 +77,7 @@ impl Slot {
                     return Err(bad("empty slot must be all zero"));
                 }
             }
-            SlotState::Active | SlotState::Revoked => {
+            SlotState::Active => {
                 if pubkey_len(self.key_alg) != Some(self.pubkey.len()) {
                     return Err(bad("slot key_alg / pubkey length"));
                 }
@@ -186,7 +187,6 @@ impl CfgGen {
             let state = match r.u8()? {
                 0 => SlotState::Empty,
                 1 => SlotState::Active,
-                2 => SlotState::Revoked,
                 _ => return Err(bad("slot state")),
             };
             let device_id = Id16(r.array::<16>()?);
@@ -482,6 +482,18 @@ mod tests {
         let mut x = c.clone();
         x.min_suite = 3;
         assert!(x.encode().is_err(), "unknown suite");
+    }
+
+    #[test]
+    fn slot_state_2_is_a_decode_error() {
+        // no revocation in suite v1: the old draft state byte 2 is a decode error
+        let b = cfg().encode().unwrap();
+        let at = b.windows(17).position(|w| w[0] == SlotState::Active as u8 && w[1..] == [7; 16]).unwrap();
+        let mut x = b.clone();
+        x[at] = 2;
+        assert!(CfgGen::decode(&x).is_err(), "state 2 must not decode");
+        x[at] = 1;
+        assert!(CfgGen::decode(&x).is_ok(), "control");
     }
 
     #[test]

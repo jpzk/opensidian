@@ -8,7 +8,7 @@
 //! M4a: commit DAG objects — signed batches + 4 MiB chunks ([`commit`], spec §4);
 //! M4b: tip merge — DMP markdown, LWW, settings JSON, edit beats delete ([`merge`], spec §4.7).
 //! M4c: sync engine — replicas as equal peers, set-union sync ([`engine`], spec §4.8).
-//! M5: onboarding — create / join from words / pairing / revocation ([`vault`], spec §4.4–4.6) + device secret storage ([`keystore`]).
+//! M5: onboarding — create / join from words / pairing / move (burn) / destroy ([`vault`], spec §4.4–4.6) + device secret storage ([`keystore`]).
 #![forbid(unsafe_code)]
 
 pub use sync_crypto;

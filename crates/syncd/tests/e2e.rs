@@ -16,9 +16,8 @@
 //!   4. conflict mode "Create conflict file" -> conflict file even when mergeable
 //!   5. attachment > 1 MB -> 4 MiB chunk objects, bytes identical on the peer
 //!   6. delete on one device vs edit on the other -> the edit wins
-//!   7. revoke the desktop -> its sync is refused, roster shrinks
-//!   8. fresh device bootstraps from the words + URL only, same tree
-//!   9. destroy without a proof (no / forged signature, wrong words) refused;
+//!   7. fresh device bootstraps from the words + URL only, same tree
+//!   8. destroy without a proof (no / forged signature, wrong words) refused;
 //!      with the words' K_destroy proof -> signed receipt, vault gone for all
 //!
 //! Run: cargo test -p syncd --test e2e -- --nocapture
@@ -266,36 +265,19 @@ fn two_clients_and_a_fresh_device_end_to_end() {
     assert_eq!(tree(&lap.vault), tree(&desk.vault));
     eprintln!("E2E PASS: delete on laptop vs edit on desktop -> edit beats delete");
 
-    // 7. revoke the desktop -------------------------------------------------------
-    let desk_id = b.status().unwrap().device_id;
-    let epoch = a.revoke(&desk_id, &words).unwrap();
-    assert!(epoch >= 1, "revocation publishes a new VK epoch");
-    put(&desk, "after-revoke.md", b"written by the revoked device\n");
-    let e = b.sync_now().expect_err("revoked device must be refused");
-    assert_eq!(e.code, "revoked", "{e}");
-    let st = b.status().unwrap();
-    assert!(!st.server_ok);
-    let st = a.status().unwrap();
-    assert!(st.server_ok);
-    assert_eq!(st.active_devices, Some(1));
-    assert_eq!(st.vk_epoch, Some(epoch));
-    sync(&lap, &a);
-    assert!(!lap.vault.join("after-revoke.md").exists());
-    eprintln!("E2E PASS: revoked device rejected (sync refused 'revoked', new VK epoch {epoch}, roster 1)");
-
-    // 8. fresh device: words + URL only ----------------------------------------------
+    // 7. fresh device: words + URL only ----------------------------------------------
     let (c, _) = setup(&fresh, &srv.url, Join::Words { words: &words });
     let st = c.status().unwrap();
     assert!(st.server_ok, "{:?}", st.server_error);
     assert_eq!(st.vault_id, vid);
-    assert_eq!(st.vk_epoch, Some(epoch));
-    assert_eq!(st.active_devices, Some(2));
+    assert_eq!(st.vk_epoch, Some(0), "suite v1: one key epoch per vault");
+    assert_eq!(st.active_devices, Some(3), "laptop + desktop + fresh");
     sync(&fresh, &c);
     assert_eq!(tree(&fresh.vault), tree(&lap.vault), "fresh device materialises the same tree");
     assert_eq!(std::fs::read(fresh.vault.join("attachments/scan.pdf")).unwrap(), att);
     eprintln!("E2E PASS: fresh client bootstraps from words + URL only ({} files)", tree(&fresh.vault).len());
 
-    // 9. destroy ------------------------------------------------------------------------
+    // 8. destroy ------------------------------------------------------------------------
     let (t, m) = a.member().unwrap();
     let ns = m.env.servers[m.server].ns;
     // no signature at all

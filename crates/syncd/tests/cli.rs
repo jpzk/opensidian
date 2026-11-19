@@ -132,7 +132,7 @@ fn help_lists_every_command() {
     let o = cli(&d, &["help"], None);
     assert!(o.status.success());
     let h = String::from_utf8(o.stdout).unwrap();
-    for c in ["setup", "--words", "--pair", "--enroll", "daemon", "status", "sync-now", "history", "restore", "destroy", "pair", "revoke"] {
+    for c in ["setup", "--words", "--pair", "--enroll", "daemon", "status", "sync-now", "history", "restore", "destroy", "pair"] {
         assert!(h.contains(c), "help misses {c}");
     }
     let o = cli(&d, &["status"], None);

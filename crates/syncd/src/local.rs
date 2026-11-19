@@ -71,8 +71,7 @@ fn io_err(e: impl std::fmt::Display) -> ApiError {
 
 pub fn vault_err(e: VaultError) -> ApiError {
     match e {
-        VaultError::Revoked => ApiError::new("revoked", e.to_string()),
-        VaultError::NeedWords => ApiError::new("need-words", e.to_string()),
+        VaultError::NotMember => ApiError::new("not-member", e.to_string()),
         VaultError::Transport(_) => ApiError::new("server", e.to_string()),
         VaultError::NoVault => ApiError::new("no-vault", e.to_string()),
         _ => ApiError::new("vault", e.to_string()),
@@ -108,12 +107,6 @@ fn item(e: &history::Entry) -> HistoryItem {
         sha: e.sha.clone(),
     }
 }
-
-/// Shown with every revoke (spec §4.6, threat model R6): suite v1 has no
-/// phrase rotation, so the new key epoch is only as private as the words.
-pub const REVOKE_WARNING: &str = "the revoked device gets no new key from this device, but a device that ever \
-held the 12 backup words (pairing shares them by default) can still open the new envelope and read new notes; \
-to cut such a device off, create a new vault with new words and move the notes";
 
 /// Pairing poll: worth another try (reply not posted yet, or the network).
 fn retryable(e: &sync_core::transport::TransportError) -> bool {
@@ -512,29 +505,6 @@ impl LocalEngine {
                 Err(e) => return Err(vault_err(e)),
             }
         }
-    }
-
-    /// Revoke another device (needs the words: a new VK epoch is published).
-    pub fn revoke(&self, device_hex: &str, words: &str) -> ApiResult<u32> {
-        let root = vault::root_of(&self.p, &self.words(words)?).map_err(vault_err)?;
-        let id = Id16::from_hex(device_hex).map_err(|e| ApiError::new("bad-request", format!("{e:?}")))?;
-        let (t, mut m) = self.member()?;
-        // Vouch before revoking: this device may keep commits of the target
-        // only through local state — a head adopted from it (edit beats
-        // delete takes the remote tree) or a same-tree tip absorbed without a
-        // merge commit. Revocation keeps the target's commits only where an
-        // active commit reaches them (engine M5), so seal head + absorbed tips
-        // in an empty local commit; the next sync pushes it and devices that
-        // join later keep the same history.
-        {
-            let mut e = self.engine(&m)?;
-            if e.needs_vouch_before_revoke(&id) {
-                e.commit_local(&m.device.signer(), &m.roster(), now_ms(), Vec::new()).map_err(engine_err)?;
-            }
-        }
-        let epoch = vault::revoke(&self.p, &t, &mut m, &root, &id).map_err(vault_err)?;
-        self.save_member(&m)?;
-        Ok(epoch)
     }
 
     /// Backup words (behind the presence check).

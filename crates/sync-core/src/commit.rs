@@ -74,7 +74,7 @@ impl fmt::Display for CommitError {
             CommitError::WrongKind => f.write_str("unexpected object kind"),
             CommitError::WrongId => f.write_str("commit id mismatch"),
             CommitError::WrongAlg => f.write_str("signature algorithm not allowed by suite"),
-            CommitError::UnknownDevice => f.write_str("unknown or revoked device"),
+            CommitError::UnknownDevice => f.write_str("unknown device"),
             CommitError::BadSignature => f.write_str("bad commit signature"),
             CommitError::ContentMismatch => f.write_str("content hash/size mismatch"),
             CommitError::Tree(w) => write!(f, "tree: {w}"),
@@ -123,12 +123,11 @@ pub struct VaultCtx {
     pub vault_id: Id16,
     /// Server namespace of the vault.
     pub ns: Id16,
-    /// `K_obj` (key-tree.md) of the CURRENT VK epoch — new batch + chunk
-    /// objects are sealed under it.
+    /// `K_obj` (key-tree.md) of the vault's one VK epoch: batch + chunk
+    /// objects are sealed and opened under it. Suite v1 has no revocation
+    /// and no key rotation — a compromised vault is burned and moved to a
+    /// new vault (spec §4.7), so there is never an older epoch to read.
     pub k_obj: [u8; 32],
-    /// `K_obj` of every older epoch (M5 revocation): accepted for reading,
-    /// never used for sealing. The key is picked by commitment tag.
-    pub prev_k_obj: Vec<[u8; 32]>,
 }
 
 impl fmt::Debug for VaultCtx {
@@ -143,11 +142,6 @@ impl fmt::Debug for VaultCtx {
 }
 
 impl VaultCtx {
-    /// Every key a batch/chunk may be sealed under, current epoch first.
-    pub fn read_keys(&self) -> Vec<&[u8; 32]> {
-        std::iter::once(&self.k_obj).chain(self.prev_k_obj.iter()).collect()
-    }
-
     fn obj(&self, obj_id: Id16) -> ObjectCtx {
         ObjectCtx {
             suite: self.suite,
@@ -455,15 +449,10 @@ pub fn build_commit<P: CryptoProvider + ?Sized>(
 }
 
 /// Device keys from cfg: `device_id → (alg, wire public key)` for every
-/// active AND revoked slot. A revoked key still verifies signatures (its
-/// old commits must stay part of the DAG), but the engine only keeps such
-/// a commit when an active device vouched for it (spec §4.8, M5).
+/// active slot. A commit signed by a device that is not on the roster is
+/// rejected (`UnknownDevice`); there is no other device state (spec §4.7).
 pub trait DeviceKeys {
     fn key(&self, device_id: &Id16) -> Option<(SigAlg, Vec<u8>)>;
-    /// True for a device whose slot is revoked.
-    fn revoked(&self, _device_id: &Id16) -> bool {
-        false
-    }
 }
 
 impl DeviceKeys for BTreeMap<Id16, (SigAlg, Vec<u8>)> {
@@ -480,7 +469,7 @@ pub fn open_commit<P: CryptoProvider + ?Sized>(
     container: &[u8],
     devices: &dyn DeviceKeys,
 ) -> Result<Batch> {
-    let o = open_any(p, &v.read_keys(), &v.obj(*id), container)?;
+    let o = open_any(p, &[&v.k_obj], &v.obj(*id), container)?;
     if o.kind != Kind::Batch {
         return Err(CommitError::WrongKind);
     }
@@ -520,7 +509,7 @@ pub fn open_chunk<P: CryptoProvider + ?Sized>(
     id: &Id16,
     container: &[u8],
 ) -> Result<Vec<u8>> {
-    let o = open_any(p, &v.read_keys(), &v.obj(*id), container)?;
+    let o = open_any(p, &[&v.k_obj], &v.obj(*id), container)?;
     if o.kind != Kind::Chunk {
         return Err(CommitError::WrongKind);
     }

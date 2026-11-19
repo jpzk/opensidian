@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use sync_core::keystore::FixedPresence;
 use syncd::api::{ApiError, SyncApi};
-use syncd::local::{config_path, Join, LocalEngine, Setup, REVOKE_WARNING};
+use syncd::local::{config_path, Join, LocalEngine, Setup};
 #[cfg(unix)]
 use syncd::ipc;
 
@@ -34,7 +34,6 @@ COMMANDS
   restore SEQ                 write history record SEQ back to its path
   pair [--with-words]         invite a device: print a pairing code, wait for it
                               (--with-words: words from stdin are handed over too)
-  revoke DEVICE_ID            revoke a device (words from stdin; new key epoch)
   destroy                     delete the vault on the server (words from stdin = K_destroy proof)
   help                        this text
 
@@ -227,18 +226,6 @@ fn run(argv: Vec<String>) -> Result<(), ApiError> {
             };
             let joined = e.pair(w.as_ref().map(|w| w.as_str()), Duration::from_secs(600), &mut show)?;
             out(&serde_json::json!({ "paired": joined }))
-        }
-        "revoke" => {
-            let id = a.pos("DEVICE_ID")?;
-            a.done()?;
-            let w = stdin_words()?;
-            let epoch = local(&state)?.revoke(&id, &w)?;
-            // spec §4.6 / threat model R6: no phrase rotation in suite v1
-            out(&serde_json::json!({
-                "revoked": id,
-                "vk_epoch": epoch,
-                "warning": REVOKE_WARNING,
-            }))
         }
         #[cfg(unix)]
         "daemon" => {

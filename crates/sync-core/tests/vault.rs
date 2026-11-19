@@ -3,9 +3,9 @@
 // Copyright (C) 2026 Jendrik Poloczek
 //! M5 onboarding on the AWS-LC FIPS module against a real
 //! opensidian-sync-server on loopback: create a vault, a fresh device from
-//! the words + URL only, symmetric pairing, revocation with a new VK epoch
-//! (revoked device locked out of new content, its old commits still in the
-//! DAG, its post-revocation commits rejected), destroy with/without proof,
+//! the words + URL only, symmetric pairing, the no-revocation rules (one VK
+//! epoch, no slot ever leaves the table, unknown devices have no key),
+//! destroy with/without proof,
 //! keystore entries.
 
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -13,21 +13,21 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use sync_core::commit::{DeviceKeys, Edit};
-use sync_core::engine::{Engine, Report, NOT_VOUCHED};
+use sync_core::engine::{Engine, Report};
 use sync_core::keystore::{Entry, FileKeystore, FixedPresence, Keystore, KeystoreError};
 use sync_core::merge::Loser;
 use sync_core::transport::http::{HttpTransport, Roots};
 use sync_core::transport::{Transport, TransportError};
 use sync_core::vault::{
-    bootstrap, cfg_digest, create_vault, destroy, fetch_envelope, pair_accept, pair_complete, pair_join, pair_offer,
-    revoke, root_of, verify_gen, Member, PairCode, VaultError,
+    bootstrap, cfg_digest, create_vault, destroy, pair_accept, pair_complete, pair_join, pair_offer,
+    root_of, verify_gen, Member, PairCode, VaultError,
 };
 use sync_crypto::fips::FipsProvider;
 use sync_crypto::words::Phrase;
 use sync_crypto::CryptoProvider;
 use sync_proto::api::{DestroyConfirm, ErrorCode, ObjKind};
 use sync_proto::batch::Class;
-use sync_proto::vault::{CfgSigner, SlotState};
+use sync_proto::vault::CfgSigner;
 use sync_proto::Id16;
 use sync_server::{serve, App, Config};
 
@@ -93,7 +93,7 @@ fn clean(r: &Report) {
 }
 
 #[test]
-fn create_join_pair_revoke_destroy() {
+fn create_join_pair_destroy_no_revocation() {
     let p = FipsProvider::new().expect("FIPS module in FIPS mode");
     let s = server();
     let words = Phrase::generate(&p).unwrap();
@@ -151,35 +151,16 @@ fn create_join_pair_revoke_destroy() {
     assert_eq!(pair_accept(&p, &client(&s), &late, "late", now_s() + 3600).unwrap_err(), VaultError::Expired);
     clean(&sync(&p, &mut ea, &a, &ta, T0 + 4));
 
-    // revoke B: new VK epoch 1, cfg gen with B's slot revoked, envelope gen 1
+    // no revocation (operator decision 2026-11-19): one VK epoch, slots never leave
     let root = root_of(&p, &words).unwrap();
-    let epoch = revoke(&p, &ta, &mut a, &root, &b.device.id).expect("revoke");
-    assert_eq!(epoch, 1);
-    assert_eq!(a.env.keyring.len(), 2);
-    assert!(a.roster().revoked(&b.device.id));
-    assert!(a.roster().key(&b.device.id).is_some(), "revoked key still verifies old commits");
-    assert_eq!(fetch_envelope(&p, &ta, &root).unwrap().unwrap().env_gen, 1);
-    ea.rekey(a.ctx(&p).unwrap()).unwrap();
-    ea.commit_local(&a.device.signer(), &a.roster(), T0 + 5, vec![put("secret.md", b"after revocation\n")]).unwrap();
-    clean(&sync(&p, &mut ea, &a, &ta, T0 + 5));
-
-    // B: its slot is gone, and it cannot read epoch-1 objects
+    assert_eq!(a.env.keyring.len(), 1);
+    assert!(a.roster().key(&b.device.id).is_some());
     let mut b = b;
-    assert_eq!(b.refresh_chain(&p, &tb).unwrap_err(), VaultError::Revoked);
-    let rb = sync(&p, &mut eb, &b, &tb, T0 + 6);
-    assert!(!rb.rejected.is_empty(), "epoch-1 commit must not open for B");
-    assert!(read(&mut eb, &b.roster(), "secret.md").is_none());
-    // ...but it can still upload an epoch-0 commit (the server cannot judge)
-    let evil = eb
-        .commit_local(&b.device.signer(), &b.roster(), T0 + 7, vec![put("b.md", b"evil edit after revocation\n")])
-        .unwrap();
-    let _ = sync(&p, &mut eb, &b, &tb, T0 + 7);
-
-    // a revoked device cannot sign the next cfg generation
+    b.refresh_chain(&p, &tb).expect("B stays a member");
     let head = a.chain.head().clone();
     let head_hash = p.sha256(&head.encode().unwrap());
-    let next_by = |slot: u8, key: &sync_crypto::fips::FipsSigningKey| {
-        let mut g = head.clone();
+    let next_by = |g0: &sync_proto::vault::CfgGen, slot: u8, key: &sync_crypto::fips::FipsSigningKey| {
+        let mut g = g0.clone();
         g.gen += 1;
         g.prev = head_hash;
         g.signer = CfgSigner::Slot(slot);
@@ -188,50 +169,40 @@ fn create_join_pair_revoke_destroy() {
         g.sig = p.sign(key, &cfg_digest(&p, &signed)).unwrap();
         (g, signed)
     };
-    assert_eq!(head.slots[1].device_id, b.device.id);
-    assert_eq!(head.slots[1].state, SlotState::Revoked);
-    let (g, sg) = next_by(1, &b.device.key);
+    let (g, sg) = next_by(&head, 0, &a.device.key);
+    verify_gen(&p, Some((&head, &head_hash)), &g, &sg).expect("control: an active slot may sign gen+1");
+    // a key-epoch bump (what revocation used to publish) is refused
+    let mut bump = head.clone();
+    bump.vk_epoch = 1;
+    let (g, sg) = next_by(&bump, 0, &a.device.key);
     assert_eq!(
         verify_gen(&p, Some((&head, &head_hash)), &g, &sg).unwrap_err(),
-        VaultError::Chain("signer slot not active in the previous gen".into())
+        VaultError::Chain("vk_epoch must be 0 (suite v1 has no key rotation)".into())
     );
-    let (g, sg) = next_by(0, &a.device.key);
-    verify_gen(&p, Some((&head, &head_hash)), &g, &sg).expect("control: the active slot may sign");
-    let (mut g, _) = next_by(0, &a.device.key);
-    g.slots[1].state = SlotState::Active;
-    let sg = g.encode_signed().unwrap();
-    g.sig = p.sign(&a.device.key, &cfg_digest(&p, &sg)).unwrap();
-    assert!(verify_gen(&p, Some((&head, &head_hash)), &g, &sg).is_err(), "no un-revoke");
+    // dropping a device's slot (an implicit revocation) is refused
+    let mut drop_b = head.clone();
+    assert_eq!(drop_b.slots[1].device_id, b.device.id);
+    drop_b.slots[1] = sync_proto::vault::Slot::empty();
+    let (g, sg) = next_by(&drop_b, 0, &a.device.key);
+    assert_eq!(
+        verify_gen(&p, Some((&head, &head_hash)), &g, &sg).unwrap_err(),
+        VaultError::Chain("a device disappeared from the slot table".into())
+    );
+    // an unknown device (signed commit, never on the roster) is rejected
+    let stranger = Phrase::generate(&p).unwrap();
+    let tx = client(&s);
+    let tok2 = s.app.create_enrollment(None, 600).unwrap();
+    let x = create_vault(&p, &tx, &s.url, &tok2, &stranger, "stranger").unwrap();
+    assert!(a.roster().key(&x.device.id).is_none(), "a device of another vault is unknown here");
 
-    // A: B's post-revocation commit is rejected, B's old commit stays
-    let ra = sync(&p, &mut ea, &a, &ta, T0 + 8);
-    assert!(ra.rejected.iter().any(|(_, id, why)| *id == evil && why == NOT_VOUCHED), "{:?}", ra.rejected);
-    assert_eq!(read(&mut ea, &a.roster(), "b.md").as_deref(), Some(&b"from B\n"[..]));
-    drop(ea);
-    let mut ea = engine(&p, &a, "ea2");
-    let r2 = sync(&p, &mut ea, &a, &ta, T0 + 9);
-    assert!(r2.rejected.iter().all(|(_, id, why)| *id == evil && why == NOT_VOUCHED), "{:?}", r2.rejected);
-    assert_eq!(read(&mut ea, &a.roster(), "b.md").as_deref(), Some(&b"from B\n"[..]), "old B commit verifies after reopen");
-
-    // C (no words prompt yet): told to unlock the words, then follows epoch 1
-    let mut c = c;
-    assert_eq!(c.refresh_chain(&p, &tc).unwrap_err(), VaultError::NeedWords);
-    let croot = root_of(&p, cwords.as_ref().unwrap()).unwrap();
-    c.refresh_with_words(&p, &tc, &croot).unwrap();
-    ec.rekey(c.ctx(&p).unwrap()).unwrap();
-    let rc = sync(&p, &mut ec, &c, &tc, T0 + 10);
-    assert!(rc.rejected.iter().all(|(_, id, _)| *id == evil), "{:?}", rc.rejected);
-    assert_eq!(read(&mut ec, &c.roster(), "secret.md").as_deref(), Some(&b"after revocation\n"[..]));
-    assert_eq!(read(&mut ec, &c.roster(), "b.md").as_deref(), Some(&b"from B\n"[..]));
-
-    // D: fresh device from the words after the revocation sees the same
+    // D: fresh device from the words later sees the same tree, one key epoch
     let td = client(&s);
     let d = bootstrap(&p, &td, &s.url, &words, "tablet").unwrap();
-    assert_eq!(d.env.keyring.len(), 2);
+    assert_eq!(d.env.keyring.len(), 1);
+    assert_eq!(d.chain.head().vk_epoch, 0);
     let mut ed = engine(&p, &d, "ed");
-    let rd = sync(&p, &mut ed, &d, &td, T0 + 11);
-    assert!(rd.rejected.iter().all(|(_, id, why)| *id == evil && why == NOT_VOUCHED), "{:?}", rd.rejected);
-    assert_eq!(read(&mut ed, &d.roster(), "secret.md").as_deref(), Some(&b"after revocation\n"[..]));
+    clean(&sync(&p, &mut ed, &d, &td, T0 + 11));
+    assert_eq!(read(&mut ed, &d.roster(), "a.md").as_deref(), Some(&b"from A\n"[..]));
     assert_eq!(read(&mut ed, &d.roster(), "b.md").as_deref(), Some(&b"from B\n"[..]));
 
     // destroy: without proof refused, with the words' K_destroy accepted
@@ -319,8 +290,6 @@ struct StaleCfg<'a> {
     inner: &'a HttpTransport,
     cfg_gens: usize,
     seen: std::sync::Mutex<usize>,
-    /// cfg PUTs still to fail (a network error after the envelope went up)
-    fail_cfg_puts: std::sync::Mutex<usize>,
 }
 
 impl Transport for StaleCfg<'_> {
@@ -331,13 +300,6 @@ impl Transport for StaleCfg<'_> {
         self.inner.enroll(t, k)
     }
     fn put(&self, kind: ObjKind, ns: &Id16, id: &Id16, b: &[u8]) -> sync_core::transport::Result<sync_core::transport::PutOutcome> {
-        if kind == ObjKind::Cfg {
-            let mut n = self.fail_cfg_puts.lock().unwrap();
-            if *n > 0 {
-                *n -= 1;
-                return Err(TransportError::Io("connection reset".into()));
-            }
-        }
         self.inner.put(kind, ns, id, b)
     }
     fn get(&self, kind: ObjKind, ns: &Id16, id: &Id16, r: Option<sync_core::transport::Range>) -> sync_core::transport::Result<sync_core::transport::Fetched> {
@@ -386,41 +348,9 @@ fn refresh_refuses_a_rolled_back_cfg_chain() {
     let accepted = a.chain.clone();
 
     // the server replays gen 0 only: valid signatures, but older than what A accepted
-    let stale = StaleCfg { inner: &ta, cfg_gens: 1, seen: std::sync::Mutex::new(0), fail_cfg_puts: std::sync::Mutex::new(0) };
+    let stale = StaleCfg { inner: &ta, cfg_gens: 1, seen: std::sync::Mutex::new(0) };
     assert_eq!(a.refresh_chain(&p, &stale).unwrap_err(), VaultError::Chain("cfg chain rolled back or forked".into()));
     assert_eq!(a.chain, accepted, "the accepted chain is kept");
-    let root = root_of(&p, &words).unwrap();
-    let stale = StaleCfg { inner: &ta, cfg_gens: 1, seen: std::sync::Mutex::new(0), fail_cfg_puts: std::sync::Mutex::new(0) };
-    assert_eq!(
-        a.refresh_with_words(&p, &stale, &root).unwrap_err(),
-        VaultError::Chain("cfg chain rolled back or forked".into())
-    );
-    assert_eq!(a.chain, accepted);
     // control: the full chain still refreshes
     a.refresh_chain(&p, &ta).expect("refresh after the replay");
-    a.refresh_with_words(&p, &ta, &root).expect("words refresh");
-}
-
-#[test]
-fn revoke_retry_adopts_the_envelope_a_failed_attempt_published() {
-    let p = FipsProvider::new().expect("FIPS module in FIPS mode");
-    let s = server();
-    let words = Phrase::generate(&p).unwrap();
-    let ta = client(&s);
-    let tok = s.app.create_enrollment(None, 600).unwrap();
-    let mut a = create_vault(&p, &ta, &s.url, &tok, &words, "laptop").expect("create");
-    let b = bootstrap(&p, &client(&s), &s.url, &words, "desktop").expect("bootstrap");
-    a.refresh_chain(&p, &ta).unwrap();
-    let root = root_of(&p, &words).unwrap();
-    let flaky = StaleCfg { inner: &ta, cfg_gens: usize::MAX, seen: std::sync::Mutex::new(0), fail_cfg_puts: std::sync::Mutex::new(1) };
-    // envelope gen 1 goes up, the cfg append fails
-    assert!(revoke(&p, &flaky, &mut a, &root, &b.device.id).is_err());
-    assert_eq!(a.env.env_gen, 0, "member state unchanged");
-    let published = fetch_envelope(&p, &ta, &root).unwrap().unwrap();
-    assert_eq!(published.env_gen, 1);
-    // the retry reuses that envelope (its slot is write-once) and finishes
-    assert_eq!(revoke(&p, &flaky, &mut a, &root, &b.device.id).expect("retry"), 1);
-    assert_eq!(a.env, published);
-    assert!(a.roster().revoked(&b.device.id));
-    assert_eq!(a.chain.head().vk_epoch, 1);
 }

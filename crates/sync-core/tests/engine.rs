@@ -128,7 +128,7 @@ fn three_replicas_converge_by_set_union() {
     let srv = server(&p);
     let mut k = [0u8; 32];
     p.random(&mut k).unwrap();
-    let v = VaultCtx { suite: Suite::Ed25519, vault_id: rid(&p), ns: srv.ns, k_obj: k, prev_k_obj: vec![] };
+    let v = VaultCtx { suite: Suite::Ed25519, vault_id: rid(&p), ns: srv.ns, k_obj: k };
     let d1 = FsTransport::open(tmpdir("d1")).unwrap();
     let d2 = FsTransport::open(tmpdir("d2")).unwrap();
     let (da, db) = (device(&p), device(&p));
@@ -253,7 +253,7 @@ fn bad_objects_are_rejected_and_not_propagated() {
     let srv = server(&p);
     let mut k = [0u8; 32];
     p.random(&mut k).unwrap();
-    let v = VaultCtx { suite: Suite::Ed25519, vault_id: rid(&p), ns: srv.ns, k_obj: k, prev_k_obj: vec![] };
+    let v = VaultCtx { suite: Suite::Ed25519, vault_id: rid(&p), ns: srv.ns, k_obj: k };
     let d1 = FsTransport::open(tmpdir("bad")).unwrap();
     let (da, evil) = (device(&p), device(&p));
     let ks: Keys = [(da.id, (SigAlg::Ed25519, da.pk.clone()))].into_iter().collect();
@@ -310,7 +310,7 @@ fn commit_with_a_lying_tree_hash_never_becomes_head() {
     let p = FipsProvider::new().expect("FIPS module in FIPS mode");
     let mut k = [0u8; 32];
     p.random(&mut k).unwrap();
-    let v = VaultCtx { suite: Suite::Ed25519, vault_id: rid(&p), ns: rid(&p), k_obj: k, prev_k_obj: vec![] };
+    let v = VaultCtx { suite: Suite::Ed25519, vault_id: rid(&p), ns: rid(&p), k_obj: k };
     let d1 = FsTransport::open(tmpdir("lie")).unwrap();
     let (da, db) = (device(&p), device(&p));
     let ks: Keys = [&da, &db].iter().map(|d| (d.id, (SigAlg::Ed25519, d.pk.clone()))).collect();
@@ -342,7 +342,7 @@ fn parent_cycle_is_pending_not_a_hang() {
     let p = FipsProvider::new().expect("FIPS module in FIPS mode");
     let mut k = [0u8; 32];
     p.random(&mut k).unwrap();
-    let v = VaultCtx { suite: Suite::Ed25519, vault_id: rid(&p), ns: rid(&p), k_obj: k, prev_k_obj: vec![] };
+    let v = VaultCtx { suite: Suite::Ed25519, vault_id: rid(&p), ns: rid(&p), k_obj: k };
     let d1 = FsTransport::open(tmpdir("cyc")).unwrap();
     let (da, db) = (device(&p), device(&p));
     let ks: Keys = [&da, &db].iter().map(|d| (d.id, (SigAlg::Ed25519, d.pk.clone()))).collect();
@@ -376,7 +376,7 @@ fn bad_copy_on_one_replica_does_not_block_the_good_copy() {
     let p = FipsProvider::new().expect("FIPS module in FIPS mode");
     let mut k = [0u8; 32];
     p.random(&mut k).unwrap();
-    let v = VaultCtx { suite: Suite::Ed25519, vault_id: rid(&p), ns: rid(&p), k_obj: k, prev_k_obj: vec![] };
+    let v = VaultCtx { suite: Suite::Ed25519, vault_id: rid(&p), ns: rid(&p), k_obj: k };
     let (d1, d2) = (FsTransport::open(tmpdir("bc1")).unwrap(), FsTransport::open(tmpdir("bc2")).unwrap());
     let da = device(&p);
     let ks: Keys = [(da.id, (SigAlg::Ed25519, da.pk.clone()))].into_iter().collect();
@@ -440,7 +440,7 @@ fn replica_failing_in_pull_is_not_pushed_to() {
     let p = FipsProvider::new().expect("FIPS module in FIPS mode");
     let mut k = [0u8; 32];
     p.random(&mut k).unwrap();
-    let v = VaultCtx { suite: Suite::Ed25519, vault_id: rid(&p), ns: rid(&p), k_obj: k, prev_k_obj: vec![] };
+    let v = VaultCtx { suite: Suite::Ed25519, vault_id: rid(&p), ns: rid(&p), k_obj: k };
     let d1 = FsTransport::open(tmpdir("bg")).unwrap();
     let (da, db) = (device(&p), device(&p));
     let ks: Keys = [&da, &db].iter().map(|d| (d.id, (SigAlg::Ed25519, d.pk.clone()))).collect();
