@@ -168,6 +168,10 @@ pub struct Engine<'p, P: CryptoProvider + ?Sized> {
     pub mode: ConflictMode,
     pub names: Names,
     _lock: File,
+    /// state.json was renamed into place but its directory entry is not
+    /// known durable (the dir fsync failed): the in-memory state IS the
+    /// published one; no further commit or pass until a dir sync succeeds.
+    unsynced: bool,
 }
 
 impl<P: CryptoProvider + ?Sized> fmt::Debug for Engine<'_, P> {
@@ -233,19 +237,31 @@ fn list_all(t: &dyn Transport, ns: &Id16) -> std::result::Result<BTreeSet<Id16>,
     }
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+/// Where a [`write_atomic`] stopped: `Err((false, _))` = nothing was
+/// published (the old file is still in place), `Err((true, _))` = the new
+/// file is in place but its directory entry is not known durable.
+fn write_atomic(path: &Path, bytes: &[u8]) -> std::result::Result<(), (bool, EngineError)> {
     let tmp = path.with_extension("tmp");
-    let mut f = File::create(&tmp).map_err(io)?;
-    f.write_all(bytes).map_err(io)?;
-    f.sync_all().map_err(io)?;
-    drop(f);
-    fs::rename(&tmp, path).map_err(io)?;
-    // std cannot open a directory handle on Windows (File::open fails
-    // there); the rename is the durability point. Unix fsyncs the parent.
+    (|| {
+        let mut f = File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        drop(f);
+        fs::rename(&tmp, path)
+    })()
+    .map_err(|e| (false, io(e)))?;
+    sync_parent(path).map_err(|e| (true, e))
+}
+
+/// fsync the parent dir of `path`. std cannot open a directory handle on
+/// Windows (File::open fails there); the rename is the durability point.
+fn sync_parent(path: &Path) -> Result<()> {
     #[cfg(unix)]
     if let Some(d) = path.parent() {
         File::open(d).and_then(|d| d.sync_all()).map_err(io)?;
     }
+    #[cfg(not(unix))]
+    let _ = path;
     Ok(())
 }
 
@@ -290,6 +306,7 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
             mode: ConflictMode::default(),
             names: Names::new(),
             _lock: lock,
+            unsynced: false,
         };
         for id in list_all(&e.local, &e.v.ns)? {
             let f = e.local.get(ObjKind::Obj, &e.v.ns, &id, None)?;
@@ -430,6 +447,39 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
         (ready, gen)
     }
 
+    /// The frontier a pass may adopt: a ready commit is valid when its own
+    /// tree checks out (declared tree_hash along the first-parent chain)
+    /// AND every parent — secondary (merge) parents included — is valid.
+    /// The frontier = valid commits without a valid child, so a tip that
+    /// fails validation leaves its nearest valid ancestors eligible and a
+    /// merge tip over an invalid side branch is never adopted. Each commit
+    /// whose OWN check failed (its parents valid) is reported once.
+    fn valid_frontier(&mut self, ready: &BTreeSet<Id16>, gen: &HashMap<Id16, u64>, invalid: &mut Vec<(Id16, String)>) -> Vec<Id16> {
+        let mut order: Vec<Id16> = ready.iter().copied().collect();
+        // parents before children: a parent's generation is always lower
+        order.sort_by_key(|id| (gen.get(id).copied().unwrap_or(0), *id));
+        let mut valid: BTreeSet<Id16> = BTreeSet::new();
+        for c in order {
+            let parents: Vec<Id16> = self.commits[&c].batch.parents.iter().map(|x| x.commit_id).collect();
+            if !parents.iter().all(|x| valid.contains(x)) {
+                continue; // an invalid ancestor: neither adopted nor re-reported
+            }
+            match self.tree(&c) {
+                Ok(_) => {
+                    valid.insert(c);
+                }
+                Err(e) => invalid.push((c, e.to_string())),
+            }
+        }
+        let mut has_valid_child = BTreeSet::new();
+        for c in &valid {
+            for x in &self.commits[c].batch.parents {
+                has_valid_child.insert(x.commit_id);
+            }
+        }
+        valid.into_iter().filter(|c| !has_valid_child.contains(c)).collect()
+    }
+
     fn is_ancestor(&self, a: &Id16, b: &Id16) -> bool {
         let mut seen = BTreeSet::new();
         let mut q = vec![*b];
@@ -464,18 +514,33 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
         Ok(())
     }
 
-    fn save(&self) -> Result<()> {
-        let b = serde_json::to_vec(&self.state).map_err(|e| EngineError::State(e.to_string()))?;
-        write_atomic(&self.dir.join("state.json"), &b)
+    /// Install `next` as the live state, aligned with state.json at every
+    /// outcome: a failure before the rename keeps the old in-memory state
+    /// (the old file is in place); a failed dir sync AFTER the rename keeps
+    /// `next` (that file is what a reopen reads) and blocks further commits
+    /// and passes until a dir sync succeeds ([`Engine::confirm_durable`]).
+    fn set_state(&mut self, next: State) -> Result<()> {
+        let b = serde_json::to_vec(&next).map_err(|e| EngineError::State(e.to_string()))?;
+        match write_atomic(&self.dir.join("state.json"), &b) {
+            Ok(()) => {
+                self.state = next;
+                Ok(())
+            }
+            Err((false, e)) => Err(e),
+            Err((true, e)) => {
+                self.state = next;
+                self.unsynced = true;
+                Err(e)
+            }
+        }
     }
 
-    /// Install `next` as the live state only if it was persisted: on a failed
-    /// save the in-memory head stays what state.json says.
-    fn set_state(&mut self, next: State) -> Result<()> {
-        let prev = std::mem::replace(&mut self.state, next);
-        if let Err(e) = self.save() {
-            self.state = prev;
-            return Err(e);
+    /// Refuse new work while the published state.json is not known
+    /// durable; retry the dir sync first (success clears the block).
+    fn confirm_durable(&mut self) -> Result<()> {
+        if self.unsynced {
+            sync_parent(&self.dir.join("state.json"))?;
+            self.unsynced = false;
         }
         Ok(())
     }
@@ -494,6 +559,7 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
         ts_ms: i64,
         edits: Vec<Edit>,
     ) -> Result<Id16> {
+        self.confirm_durable()?;
         let head_tree = self.head_tree()?;
         let mut ids: Vec<Id16> = self.state.head.into_iter().collect();
         for a in &self.state.absorbed {
@@ -594,6 +660,7 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
         now_ms: i64,
         on_loser: &mut LoserHook<'_>,
     ) -> Result<Report> {
+        self.confirm_durable()?;
         let mut rep = Report::default();
         let ns = self.v.ns;
         // 1. pull
@@ -648,7 +715,7 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
             listed.push(if failed { None } else { Some(ids) });
         }
         // 2. resolve
-        let (ready, _) = self.ready_and_gen();
+        let (ready, gen) = self.ready_and_gen();
         rep.pending = self.commits.len() - ready.len();
         if let Some(h) = self.state.head {
             if !ready.contains(&h) {
@@ -659,13 +726,7 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
         // declared tree_hash checks out along the first-parent chain: a
         // validly signed commit that lies about its tree is reported and
         // skipped, it neither becomes head nor aborts the pass.
-        let mut tips = Vec::new();
-        for t in self.tips() {
-            match self.tree(&t) {
-                Ok(_) => tips.push(t),
-                Err(e) => rep.invalid.push((t, e.to_string())),
-            }
-        }
+        let tips = self.valid_frontier(&ready, &gen, &mut rep.invalid);
         let mut cur = self.state.head;
         // folded on a copy: an error part-way leaves the live state untouched
         let mut absorbed = self.state.absorbed.clone();
@@ -719,7 +780,6 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
         let mut order: Vec<Id16> = self.chunks.iter().copied().collect();
         // generations again: merge commits made by this fold are not in the
         // map computed before it, and a chain of them must go parents-first
-        let (_, gen) = self.ready_and_gen();
         let mut cs: Vec<(u64, Id16)> = self.commits.keys().map(|id| (gen.get(id).copied().unwrap_or(u64::MAX), *id)).collect();
         cs.sort();
         order.extend(cs.into_iter().map(|(_, id)| id));

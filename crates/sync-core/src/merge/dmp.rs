@@ -364,36 +364,53 @@ pub fn apply_patches(ours: &[char], hunks: &[Hunk]) -> Result<Vec<char>, DmpErro
 }
 
 /// Three-way text merge: apply diff(base, theirs) onto `ours`.
+///
+/// Each hunk of theirs is placed by the base→ours alignment, not by
+/// searching ours for its text: its base span `[a, z)` maps to ours at
+/// `a + Σ(length change of ours' edits before a)` (+ the length change of
+/// theirs' hunks already applied, which `Hunk::loc` carries), and it is
+/// applied only if ours holds exactly `old` there. Ours editing the span
+/// (change or context) = conflict, never a match on another occurrence.
 pub fn merge3(base: &str, ours: &str, theirs: &str) -> Result<String, DmpError> {
     let b: Vec<char> = base.chars().collect();
     let o: Vec<char> = ours.chars().collect();
     let t: Vec<char> = theirs.chars().collect();
     let runs = diff(&b, &t)?;
     let hunks = make_patches(&b, &runs);
-    // If ours edited the base text a hunk was cut from (its change or its
-    // context), the hunk's exact `old` no longer exists at that place: any
-    // match apply_patches finds is a DIFFERENT occurrence of the same text,
-    // so the merge must fail (conflict copy) instead of editing that one.
     let ours_edits = regions(&diff(&b, &o)?);
+    let mut r = o;
     let mut delta: isize = 0;
     for (n, ((cs, ce, ins), h)) in regions(&runs).iter().zip(&hunks).enumerate() {
+        if h.old.is_empty() {
+            return Err(DmpError::PatchFailed(n));
+        }
         let s = (*cs as isize + delta) as usize;
         let pre = s.saturating_sub(h.loc);
         let post = h.old.len().saturating_sub(pre + (ce - cs));
         let (a, z) = (cs.saturating_sub(pre), ce + post);
-        let touched = ours_edits.iter().any(|(os, oe, _)| {
-            if os == oe {
+        let mut shift: isize = 0;
+        for (os, oe, oi) in &ours_edits {
+            let touched = if os == oe {
                 a < *os && *os < z // pure insertion strictly inside the span
             } else {
                 *os < z && *oe > a
+            };
+            if touched {
+                return Err(DmpError::PatchFailed(n));
             }
-        });
-        if touched {
+            if *oe <= a {
+                shift += oi.len() as isize - (oe - os) as isize;
+            }
+        }
+        let pos = h.loc as isize + shift;
+        let pos = usize::try_from(pos).map_err(|_| DmpError::PatchFailed(n))?;
+        if r.get(pos..pos + h.old.len()) != Some(&h.old[..]) {
             return Err(DmpError::PatchFailed(n));
         }
+        r.splice(pos..pos + h.old.len(), h.new.iter().copied());
         delta += ins.len() as isize - (ce - cs) as isize;
     }
-    Ok(apply_patches(&o, &hunks)?.into_iter().collect())
+    Ok(r.into_iter().collect())
 }
 
 #[cfg(test)]
@@ -504,5 +521,20 @@ mod tests {
         // an edit far from theirs' hunk still merges
         let ours2 = format!("X same\n{filler}end, edited\n");
         assert_eq!(merge3(&base, &ours2, &theirs).unwrap(), format!("X SAME\n{filler}end, edited\n"));
+    }
+
+    #[test]
+    fn merge3_anchors_the_hunk_to_the_original_occurrence() {
+        // ours deleted a block above the line theirs edited and pasted a
+        // copy of that line (with its context) further down: the copy now
+        // sits nearer the hunk's old offset than the original, but the
+        // base->ours alignment puts theirs' edit on the original
+        let drop: String = (0..20).map(|i| format!("drop line {i:02}\n")).collect();
+        let keep_a: String = (0..10).map(|i| format!("keep line {i:02}\n")).collect();
+        let keep_b: String = (10..20).map(|i| format!("keep line {i:02}\n")).collect();
+        let base = format!("{drop}== KEY line ==\n{keep_a}{keep_b}");
+        let theirs = format!("{drop}== KEY LINE ==\n{keep_a}{keep_b}");
+        let ours = format!("== KEY line ==\n{keep_a}KEY line ==\n{keep_b}");
+        assert_eq!(merge3(&base, &ours, &theirs).unwrap(), format!("== KEY LINE ==\n{keep_a}KEY line ==\n{keep_b}"));
     }
 }

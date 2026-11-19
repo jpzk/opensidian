@@ -338,6 +338,49 @@ fn commit_with_a_lying_tree_hash_never_becomes_head() {
 }
 
 #[test]
+fn invalid_tips_leave_their_valid_ancestors_eligible() {
+    let p = FipsProvider::new().expect("FIPS module in FIPS mode");
+    let mut k = [0u8; 32];
+    p.random(&mut k).unwrap();
+    let v = VaultCtx { suite: Suite::Ed25519, vault_id: rid(&p), ns: rid(&p), k_obj: k };
+    let d1 = FsTransport::open(tmpdir("front")).unwrap();
+    let (da, db) = (device(&p), device(&p));
+    let ks: Keys = [&da, &db].iter().map(|d| (d.id, (SigAlg::Ed25519, d.pk.clone()))).collect();
+    let mut hook = |_: &Loser, _: &[u8]| {};
+    let v1 = build_commit(&p, &v, &signer(&db), T0, vec![], &Tree::default(), vec![put("a.md", Class::Markdown, b"a\n")]).unwrap();
+    push_commit(&d1, &v, &v1).unwrap();
+    let fake = build_commit(&p, &v, &signer(&db), T0, vec![], &Tree::default(), vec![put("hidden.md", Class::Markdown, b"h\n")]).unwrap();
+    let p1 = || Parent { commit_id: v1.id, tree_hash: v1.batch.tree_hash };
+    // a lying child of v1 (tree_hash over a base it does not have); its id
+    // sorts after v1 so a merge of both has v1 as its FIRST parent
+    let mut ts = T0 + 1;
+    let lie = loop {
+        let l = build_commit(&p, &v, &signer(&db), ts, vec![p1()], &fake.tree, vec![put("x.md", Class::Markdown, b"x\n")]).unwrap();
+        if l.id > v1.id {
+            break l;
+        }
+        ts += 1;
+    };
+    push_commit(&d1, &v, &lie).unwrap();
+    let mut a = Engine::open(&p, v.clone(), tmpdir("efront"), &ks).unwrap();
+    let r = a.sync(&[&d1], &signer(&da), &ks, ts + 1, &mut hook).expect("pass completes");
+    assert_eq!(r.invalid.iter().map(|x| x.0).collect::<Vec<_>>(), vec![lie.id]);
+    assert_eq!(a.head(), Some(v1.id), "the lying tip's nearest valid ancestor is adopted");
+    assert_eq!(text(&mut a, &ks, "a.md").as_deref(), Some(&b"a\n"[..]));
+    // a merge whose first parent (v1) is valid but whose SECONDARY parent
+    // lies: its own first-parent tree checks out, it is still never adopted
+    let lp = Parent { commit_id: lie.id, tree_hash: lie.batch.tree_hash };
+    let m = build_commit(&p, &v, &signer(&db), ts + 2, vec![p1(), lp], &v1.tree, vec![put("m.md", Class::Markdown, b"m\n")]).unwrap();
+    assert_eq!(m.batch.parents[0].commit_id, v1.id);
+    push_commit(&d1, &v, &m).unwrap();
+    let r = a.sync(&[&d1], &signer(&da), &ks, ts + 3, &mut hook).expect("pass completes");
+    assert_eq!(r.invalid.iter().map(|x| x.0).collect::<Vec<_>>(), vec![lie.id], "the merge is skipped, not re-reported");
+    assert_eq!(a.head(), Some(v1.id));
+    assert!(text(&mut a, &ks, "m.md").is_none());
+    assert!(text(&mut a, &ks, "x.md").is_none());
+}
+
+#[test]
 fn parent_cycle_is_pending_not_a_hang() {
     let p = FipsProvider::new().expect("FIPS module in FIPS mode");
     let mut k = [0u8; 32];

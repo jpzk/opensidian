@@ -141,6 +141,20 @@ impl FsTransport {
         Ok(NsLock(f))
     }
 
+    /// Shared per-namespace lock for a listing page: appends and the torn
+    /// tail repair run under the exclusive lock, so a page never reads a
+    /// log that is being appended to or truncated.
+    fn lock_shared(&self, ns: &Id16) -> Result<NsLock> {
+        let f = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.ns_dir(ns).join("lock"))
+            .map_err(io)?;
+        f.lock_shared().map_err(io)?;
+        Ok(NsLock(f))
+    }
+
     fn check_kind_ns(kind: ObjKind, ns: &Id16) -> Result<()> {
         let env_ns = *ns == Id16::ZERO;
         match kind {
@@ -166,6 +180,12 @@ impl FsTransport {
     fn list_now(&self, ns: &Id16, q: &ListQuery) -> Result<Vec<ListItem>> {
         // Start reading at the cursor: record `seq` sits at byte
         // (seq - 1) * RECORD, so a poll costs O(new records), not O(log).
+        if !self.ns_dir(ns).join("log").exists() {
+            return Ok(Vec::new());
+        }
+        // one consistent view per page (released before the caller's
+        // long-poll sleep: the guard drops when this returns)
+        let _g = self.lock_shared(ns)?;
         let mut f = match File::open(self.ns_dir(ns).join("log")) {
             Ok(f) => f,
             Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
