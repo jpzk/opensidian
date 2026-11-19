@@ -48,5 +48,13 @@ mut "oci drop tag"         packaging/build.sh 's#&& podman tag "\$ID" localhost/
 mut "FROM digest -> tag"  Containerfile 's#debian@sha256:[0-9a-f]{64}#debian:trixie#' image
 mut "pip drop hashes"      .github/workflows/w.yml 's# --require-hashes##' pkgmgr
 mut "allowlist expired"    supply-chain/pin-allow.tsv 's#2027-05-17#2026-11-16#' allow
+# signature-verified fetch (operator 2026-11-19 16:22Z): each defect turns the positive ok-1/packaging/sig.sh red
+mut "sig drop verify"      packaging/sig.sh '/^gpgv /d' fetch
+mut "sig || true"          packaging/sig.sh 's#\|\| \{ cat .*$#|| true#' fetch
+mut "sig piped verify"     packaging/sig.sh 's#2>"\$W/gpgv" \|\|#| cat ||#' fetch
+mut "sig other file"       packaging/sig.sh 's#"\$W/InRelease" 2>#"$W/Other" 2>#' fetch
+mut "sig host keyring"     packaging/sig.sh 's#^KR=.*#KR=/usr/share/keyrings/ubuntu-archive-keyring.gpg#' fetch
+mut "sig keyring tampered" supply-chain/keys/archive.gpg 's#fixture#tampered#' fetch
+mut "sig keyring pin"      supply-chain/keyrings.tsv 's#\t[0-9a-f]{64}\t#\t0000000000000000000000000000000000000000000000000000000000000000\t#' fetch
 echo "pin-check.test: $n fixtures"
 [ $fails = 0 ] && echo "ALL PASS" || { echo "SOME FAILED"; exit 1; }

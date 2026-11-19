@@ -1,0 +1,4 @@
+# Signature keyrings committed in the repo (pin-check: a fetch counts as pinned when the next lines verify it
+# with gpgv/sqv against a keyring listed here, fail closed). TAB-separated: path  sha256  fingerprints  source
+# Scripts that use a keyring re-check its sha256 against this file at runtime and fail closed on mismatch.
+supply-chain/keys/ubuntu-archive-keyring.gpg	80a36b0a6de2f69f49d2df75ef473ccde121e9e190b9ea01d20a4f63778d5c31	F6ECB3762474EDA9D21B7022871920D1991BC93C,790BC7277767219C42C86F933B4FE6ACC0B21F32,843938DF228D22F7B3742BC0D94AA3F0EFE21092	ubuntu-keyring (/usr/share/keyrings/ubuntu-archive-keyring.gpg); Ubuntu Archive Automatic Signing Key 2018 + 2012, CD Image 2012; verifies snapshot.ubuntu.com resolute InRelease

@@ -352,7 +352,11 @@ CI, packaging or bundled dependency is not pinned to an exact version **and** a 
 - `apt-get install` without `pkg=version`, `dnf install` without `pkg-version-release`
 - `cargo install` without `--locked` and `--version`
 - `flatpak install` without `--commit=<64 hex>`
-- `curl`/`wget` downloads without a `sha256sum`/`sha512sum` check within 6 lines; `curl … | sh`
+- `curl`/`wget` downloads without a `sha256sum`/`sha512sum` check within 6 lines, unless a
+  `gpgv`/`sqv` line within 6 lines verifies the same output file, fails closed (`|| die` /
+  `|| exit N`, never `|| true`, not piped) and uses a `--keyring` that is a committed repo file
+  listed with its sha256 in `supply-chain/keyrings.tsv` (no host or downloaded keyring; the
+  script re-checks that sha256 at runtime); `curl … | sh`
 - `npm`/`npx`/`yarn`/`pnpm`/`bun`/`pipx`/`go install` (forbidden), `pip install` without `--require-hashes`
 
 Exceptions live in `supply-chain/pin-allow.tsv` (TAB-separated: rule, path, needle, expiry, scanner,
@@ -403,7 +407,8 @@ WebKit bundle CVE gate reports a fix newer than `SNAP`:
    check that it contains both linux/amd64 and linux/arm64/v8. Set `DIGEST` (and
    `WK_IMG` in `sbom-local.sh`).
 3. Run `scripts/supply-chain/snapshot-resolve.sh <SNAP> <PKGS names> jq libjq1 >
-   packaging/ci/appimage-snapshot.lock.tsv`. It checks every InRelease signature and
+   packaging/ci/appimage-snapshot.lock.tsv`. It checks the committed keyring against its sha256 in
+   `supply-chain/keyrings.tsv`, every InRelease signature (gpgv, that keyring only) and
    every `Packages.xz` sha256, picks the highest version across the three pockets (what
    apt does), and fails if a package is missing or differs between amd64 and arm64.
    Copy the versions into `PKGS` here and in `scripts/supply-chain/sbom-local.sh` and

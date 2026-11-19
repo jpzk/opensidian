@@ -7,4 +7,3 @@ image	.github/workflows/semgrep.yml	semgrep/semgrep:latest	2027-05-17	semgrep	sc
 cargo	.github/workflows/supply-chain.yml	cargo install --locked cargo-audit	2027-05-17	cargo-audit	scanner exception: latest crates.io release, --locked, version logged
 cargo	.github/workflows/supply-chain.yml	cargo install --locked cargo-deny	2027-05-17	cargo-deny	scanner exception: latest crates.io release, --locked, version logged
 cargo	.github/workflows/supply-chain.yml	cargo install --locked cargo-vet	2027-05-17	cargo-vet	scanner exception: latest crates.io release, --locked, version logged
-fetch	scripts/supply-chain/snapshot-resolve.sh	/dists/$s/InRelease	2027-05-19	-	InRelease is a clearsigned index that changes per snapshot: verified with gpgv against ubuntu-archive-keyring on the next line (fail closed); every Packages.xz is then checked against the sha256 inside the verified InRelease

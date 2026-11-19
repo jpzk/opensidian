@@ -4,21 +4,25 @@
 # timestamp, exactly the way apt inside appimage-build.sh picks them (all suites priority 500 ->
 # highest version across resolute, resolute-updates, resolute-security; main universe), for amd64
 # AND arm64. Used for the snapshot bump (docs/supply-chain.md) and by snapshot-bump.yml.
-#   snapshot-resolve.sh [--keyring K] <SNAP YYYYMMDDTHHMMSSZ> <pkg>...  > lock.tsv
-# Every InRelease is checked with gpgv against K (default: the ubuntu-archive-keyring of the
-# host; the bump workflow runs on ubuntu-26.04), every Packages.xz against the sha256 in the
+#   snapshot-resolve.sh <SNAP YYYYMMDDTHHMMSSZ> <pkg>...  > lock.tsv
+# Every InRelease is checked with gpgv against the COMMITTED supply-chain/keys/ubuntu-archive-keyring.gpg
+# (its sha256 re-checked against supply-chain/keyrings.tsv first; no override), every Packages.xz against the sha256 in the
 # VERIFIED InRelease. Fails closed: bad signature, hash mismatch, a package missing on one arch,
 # or amd64 != arm64 version (one PKGS line pins both arches).
 # Output (TSV): name  version  deb-arch(amd64|arm64)  sha256  suite  filename
 set -euo pipefail
 say(){ echo "[$(date +%H:%M:%S)] [snapshot-resolve] $*" >&2; }
 die(){ say "FAIL: $*"; exit 1; }
-KR=/usr/share/keyrings/ubuntu-archive-keyring.gpg
-[ "${1:-}" = --keyring ] && { KR=${2:?keyring}; shift 2; }
+HERE=$(cd "$(dirname -- "$0")" && pwd)
+KR=$HERE/../../supply-chain/keys/ubuntu-archive-keyring.gpg
+KT=$HERE/../../supply-chain/keyrings.tsv
 SNAP=${1:?SNAP}; shift
 [[ "$SNAP" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || die "SNAP '$SNAP' is not a fixed YYYYMMDDTHHMMSSZ timestamp"
 [ $# -gt 0 ] || die "no packages"
 [ -s "$KR" ] || die "no keyring $KR"
+kw=$(awk -F'\t' '$1=="supply-chain/keys/ubuntu-archive-keyring.gpg"{print $2}' "$KT" 2>/dev/null)
+[[ "$kw" =~ ^[0-9a-f]{64}$ ]] || die "no sha256 pin for the keyring in $KT"
+[ "$(sha256sum < "$KR" | cut -d' ' -f1)" = "$kw" ] || die "keyring $KR sha256 != $KT"
 for t in curl gpgv xz dpkg awk sha256sum; do command -v $t >/dev/null || die "missing $t"; done
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 BASE=https://snapshot.ubuntu.com/ubuntu/$SNAP
