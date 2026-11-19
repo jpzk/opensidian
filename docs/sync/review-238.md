@@ -21,7 +21,7 @@ Each OPEN item is a follow-up and blocks goal_done (criterion 8).
 - crates/sync-core/src/engine.rs:436-440 Detect ancestry cycles before expanding parents. — FIXED (22fe9be: cyclic parents stay pending, ready_and_gen terminates; test parent_cycle_is_pending_not_a_hang)
 - crates/sync-core/src/engine.rs:644-644 Skip the push phase for replicas that fail during pull. — FIXED (8172d27: a replica whose get fails mid-pull is listed as None, so no push; test replica_failing_in_pull_is_not_pushed_to)
 - crates/sync-core/src/engine.rs:262-262 Use a Windows-compatible state persistence path. — FIXED (42235fe: parent-dir fsync cfg(unix) only)
-- crates/sync-core/src/engine.rs:723-723 Order new merge commits after their parents. — OPEN
+- crates/sync-core/src/engine.rs:723-723 Order new merge commits after their parents. — FIXED (push order recomputes generations after the fold, so new merge commits — including chains of them — go after their parents)
 - crates/sync-core/src/engine.rs:577-579 Keep the live head consistent when saving state fails. — FIXED (Engine::set_state installs the new head/absorbed only after state.json was written, restores the previous state on a failed save; the fold works on a copy of absorbed, so an error part-way leaves the live state untouched)
 - crates/sync-core/src/engine.rs:613-615 Try another replica after verification rejects an object. — FIXED (8172d27: the reject skip is per replica; test bad_copy_on_one_replica_does_not_block_the_good_copy)
 - crates/sync-core/src/engine.rs:662-720 Check a commit's declared tree_hash before the engine stores it as head. — FIXED (22fe9be: a tip is adopted only after its declared tree_hash matches the rebuilt tree, else Report.invalid; test commit_with_a_lying_tree_hash_never_becomes_head)

@@ -779,6 +779,9 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
         rep.head = cur;
         // 3. push: chunks, then batches parents-first (generation order)
         let mut order: Vec<Id16> = self.chunks.iter().copied().collect();
+        // generations again: merge commits made by this fold are not in the
+        // map computed before it, and a chain of them must go parents-first
+        let (_, gen) = self.ready_and_gen();
         let mut cs: Vec<(u64, Id16)> = self.commits.keys().map(|id| (gen.get(id).copied().unwrap_or(u64::MAX), *id)).collect();
         cs.sort();
         order.extend(cs.into_iter().map(|(_, id)| id));
