@@ -18,6 +18,8 @@
 #                             (the snapshot index's SHA256, which apt verified the download against;
 #                             "image" for packages that came with the pinned image unchanged)
 #   libset-<ver>-<arch>.tsv   sha256 of every library in the portable AppDir (same tag -> same file)
+#   sbom/opensidian-<ver>-<arch>.cdx.json (+ .sha256, parts/, logs/)   only with SBOM_TAG=<tag>: the release
+#                             SBOM, generated in THIS container after the build (sbom-local.sh --release)
 set -euo pipefail
 T=$(readlink -f "${1:?tree}"); V=${2:?ver}
 say(){ echo "[$(date +%H:%M:%S)] [appimage] $*"; }
@@ -59,7 +61,15 @@ say "tree $T  ver $V  arch $ARCH  image $IMG (ubuntu:resolute-20260927)  apt sna
 podman image exists "$IMG" || podman pull -q "$IMG" >/dev/null || die "pull $IMG"
 mkdir -p "$T/dist"
 CA=${HOST_CA_BUNDLE:-/etc/ssl/certs/ca-certificates.crt}; [ -s "$CA" ] || die "no host CA bundle $CA"
-podman run --rm --network=host -e V="$V" -e ARCH="$ARCH" -e TGT="$TGT" -e RUST="$RUST" -e SNAP="$SNAP" -e PKGS="$PKGS" -e IMGREF="$IMG" \
+# SBOM_TAG=<tag> (release.yml): also write dist/sbom/opensidian-<ver>-<arch>.cdx.json in the container.
+# commit / dirty / epoch come from the host checkout (the container has no git).
+SBOM_TAG=${SBOM_TAG:-} SBOM_COMMIT= SBOM_DIRTY= SBOM_EPOCH=
+SBOM_PKGS="jq=1.8.1-4ubuntu2 libjq1=1.8.1-4ubuntu2"   # = sbom-local.sh PKGS extras (same snapshot)
+if [ -n "$SBOM_TAG" ]; then
+  SBOM_COMMIT=$(git -C "$T" rev-parse HEAD) SBOM_EPOCH=$(git -C "$T" log -1 --format=%ct)
+  SBOM_DIRTY=false; [ -z "$(git -C "$T" status --porcelain --untracked-files=no)" ] || SBOM_DIRTY=true
+fi
+podman run --rm --network=host -e SBOM_TAG="$SBOM_TAG" -e SBOM_COMMIT="$SBOM_COMMIT" -e SBOM_DIRTY="$SBOM_DIRTY" -e SBOM_EPOCH="$SBOM_EPOCH" -e SBOM_PKGS="$SBOM_PKGS" -e V="$V" -e ARCH="$ARCH" -e TGT="$TGT" -e RUST="$RUST" -e SNAP="$SNAP" -e PKGS="$PKGS" -e IMGREF="$IMG" \
   -v "$CA":/host-ca.crt:ro -v "$T":/w -v "$RT":/rust.tar.xz:ro -v "$TOOL":/appimagetool:ro -v "$CARGO_CACHE":/cargo-home -w /w "$IMG" bash -euo pipefail -c '
   say(){ echo "[$(date +%H:%M:%S)] [appimage/resolute] $*"; }
   say "ubuntu $(. /etc/os-release; echo $VERSION_ID $VERSION_CODENAME)"
@@ -105,5 +115,20 @@ podman run --rm --network=host -e V="$V" -e ARCH="$ARCH" -e TGT="$TGT" -e RUST="
   L=/w/dist/libset-$V-$ARCH.tsv
   (cd dist/AppDir-portable && find usr/lib -type f | LC_ALL=C sort | xargs sha256sum) > $L
   say "libset: $(wc -l < $L) files, sha256 $(sha256sum $L | cut -d" " -f1)"
+  # ---- SBOM, IN THIS SAME CONTAINER, from the binary just built (G1/G6) ----
+  # The dpkg database here IS the one the portable AppImage was bundled from. jq is the only
+  # extra tool (same snapshot, pinned); it is installed AFTER pkgset was recorded and is not in the
+  # WebKit ldd closure, so it changes neither the pkgset nor the SBOM.
+  if [ -n "$SBOM_TAG" ]; then
+    say "SBOM: sbom-local.sh --release in the build container ($SBOM_TAG, $ARCH, commit $SBOM_COMMIT dirty=$SBOM_DIRTY)"
+    apt-get -y -q --no-install-recommends install $SBOM_PKGS >> /w/dist/apt-$ARCH.log 2>&1 || { tail -30 /w/dist/apt-$ARCH.log; exit 1; }
+    for p in $SBOM_PKGS; do n=${p%%=*}; want=${p#*=}; got=$(dpkg-query -W -f="\${Version}" "$n"); [ "$got" = "$want" ] || { say "FAIL: $n is $got, pinned $want"; exit 1; }; done
+    rm -rf /w/dist/sbom
+    SBOM_COMMIT="$SBOM_COMMIT" SBOM_DIRTY="$SBOM_DIRTY" SOURCE_DATE_EPOCH="$SBOM_EPOCH" \
+      bash scripts/supply-chain/sbom-local.sh --release --webkit native -o /w/dist/sbom -v "$V" -t "$SBOM_TAG" --arch "$ARCH" \
+        --bin /w/src-tauri/target/release/opensidian --pkgset "$O"
+    ls -l /w/dist/sbom; cat /w/dist/sbom/opensidian-$V-$ARCH.cdx.json.sha256
+  fi
 '
+if [ -n "${SBOM_TAG:-}" ]; then ls -l "$T/dist/sbom/opensidian-$V-$ARCH.cdx.json" "$T/dist/sbom/opensidian-$V-$ARCH.cdx.json.sha256"; fi
 ls -l "$T/dist/opensidian-$V-$ARCH-slim.AppImage" "$T/dist/opensidian-$V-$ARCH-portable.AppImage" "$T/dist/pkgset-$V-$ARCH.tsv" "$T/dist/libset-$V-$ARCH.tsv"

@@ -1,19 +1,19 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Supply chain — the ONE workflow for CVE scanning and dependency policy (#188); the SBOM is local.
+# Supply chain — CVE scanning and dependency policy (#188); the SBOM + WebKit CVE gate are in release.yml.
 #   cargo audit        RustSec advisories against Cargo.lock (--deny warnings)
 #   cargo deny         advisories + sources + bans + licenses (deny.toml)
 #   cargo vet          every third-party crate audited, imported or exempted (src-tauri/supply-chain/)
 #   pin-check          #189: every dependency pinned to exact version + content hash (pin-check.sh, pin-allow.tsv)
 #   vendor-js-cve      ui/vendor/vendor.lock.json proven against the npm registry + bytes, then
 #                      its SBOM scanned with osv-scanner against the VEX
-#   webkit-bundle-cve  the WebKitGTK/GTK closure the PORTABLE AppImage bundles (ubuntu-26.04 dpkg
-#                      database -> pkg:deb/ubuntu source packages); fails on CVEs with a fix available
+#   (webkit-bundle-cve moved to release.yml job appimage: it scans the SBOM generated in the build
+#                      container, both arches, blocking; G1 was this job installing apt on the runner host)
 #   glib-vendor-check  src-tauri/vendor/glib-0.18.5 == crates.io glib 0.18.5 + the one documented patch
 #   vex-check          supply-chain/vex.cdx.json == deny.toml / audit.toml ignores, no expired entry
 #   gate-tests         scripts/supply-chain/tests/*.test.sh: every gate still turns red on its fixture
-#   (no SBOM job: operator 2026-11-19, the merged SBOM is built locally with
-#                      scripts/supply-chain/sbom-local.sh, see the note above codemirror-rebuild)
+#   (no SBOM job: release.yml generates it in the appimage build container,
+#                      see the note above codemirror-rebuild)
 #   codemirror-rebuild opt-in (workflow_dispatch input / weekly cron): rebuild cm6.js, compare sha256
 # See docs/supply-chain.md for what each check catches and how to audit a new crate.
 #
@@ -177,7 +177,7 @@ jobs:
           scripts/supply-chain/vendor-sbom.sh > "$RUNNER_TEMP/sbom/vendor.cdx.json"
           jq -e '.bomFormat == "CycloneDX" and .specVersion == "1.6"' "$RUNNER_TEMP/sbom/vendor.cdx.json"
           echo "components: $(jq '.components | length' "$RUNNER_TEMP/sbom/vendor.cdx.json")"
-      # scan input only: not uploaded as an SBOM part since 2026-11-19 (SBOM is local, sbom-local.sh)
+      # scan input only, never uploaded (the release SBOM is generated in release.yml job appimage)
       - name: osv-scanner (latest release, digest-verified, unpinned by design)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -191,44 +191,11 @@ jobs:
           scripts/supply-chain/vex-osv-config.sh > "$RUNNER_TEMP/osvcfg/osv-scanner.toml"
           "$OSV" scan source --config "$RUNNER_TEMP/osvcfg/osv-scanner.toml" -L "$RUNNER_TEMP/sbom/vendor.cdx.json"
 
-  webkit-bundle-cve:
-    # Scans what the PORTABLE AppImage bundles: build-appimage.sh portable copies the
-    # WebKitGTK/GTK closure of packaging/ci/appimage-build.sh (snapshot.ubuntu.com SNAP, PKGS pinned
-    # pkg=version, #189) into the AppImage; webkit-apt.sh installs that same pinned set here.
-    # The slim AppImage, the .deb and the flatpak bundle NO WebKit: they use the
-    # system's / the org.gnome.Platform runtime's WebKit, which is the distro's / Flathub's to patch.
-    # Only x86_64 is scanned (ubuntu-26.04-arm installs the same source packages).
-    name: WebKit bundle CVE (AppImage closure, ubuntu-26.04)
-    runs-on: ubuntu-26.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          persist-credentials: false
-      - name: system packages (= appimage-build.sh PKGS from snapshot.ubuntu.com SNAP, pinned pkg=version, #189)
-        run: bash scripts/supply-chain/webkit-apt.sh
-      - name: WebKit bundle SBOM (ldd closure -> dpkg -S -> source packages)
-        run: |
-          mkdir -p "$RUNNER_TEMP/sbom"
-          scripts/supply-chain/webkit-bundle-sbom.sh > "$RUNNER_TEMP/sbom/webkit-bundle.cdx.json"
-          echo "components: $(jq '.components | length' "$RUNNER_TEMP/sbom/webkit-bundle.cdx.json")"
-      # scan input only: not uploaded as an SBOM part since 2026-11-19 (SBOM is local, sbom-local.sh)
-      - name: osv-scanner (latest release, digest-verified, unpinned by design)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          bin=$(scripts/supply-chain/osv-install.sh "$RUNNER_TEMP/osv")
-          echo "OSV=$bin" >> "$GITHUB_ENV"
-      - name: osv scan + gate (fail only on CVEs with a fixed Ubuntu version)
-        run: |
-          mkdir -p "$RUNNER_TEMP/osvcfg"
-          scripts/supply-chain/vex-osv-config.sh > "$RUNNER_TEMP/osvcfg/osv-scanner.toml"
-          # osv-scanner exits 1 on ANY match, including not-yet-fixed distro CVEs; osv-json.sh accepts
-          # rc 0/1 only (127/128 = failed scan) and checks the JSON; the gate decides on the findings
-          scripts/supply-chain/osv-json.sh "$RUNNER_TEMP/osv-webkit.json" \
-            "$OSV" scan source --config "$RUNNER_TEMP/osvcfg/osv-scanner.toml" --format json \
-            -L "$RUNNER_TEMP/sbom/webkit-bundle.cdx.json"
-          scripts/supply-chain/osv-fixed-gate.sh "$RUNNER_TEMP/osv-webkit.json"
+  # webkit-bundle-cve: MOVED to release.yml (job appimage, both arches), 2026-11-19 (#249). It
+  # installed the apt set on the runner HOST and generated the WebKit SBOM part there, so what it
+  # scanned was not what ships (G1). The release job now scans the WebKit part generated INSIDE the
+  # appimage-build.sh container, from the dpkg database the portable AppImage was bundled from,
+  # and stays BLOCKING for draft-release (osv-fixed-gate.sh, same rule).
 
   glib-vendor-check:
     name: glib vendor check
@@ -275,14 +242,10 @@ jobs:
           done
           exit "$rc"
 
-  # SBOM: NOT produced in CI (OPERATOR DECISION 2026-11-19: "lets deactivate now lets only run the
-  # sbom locally"). The former jobs `sbom` (merge + osv scan of the merged SBOM) and `attest-sbom`
-  # (actions/attest-sbom) are removed, and the vendor / WebKit parts are no longer uploaded as
-  # sbom-part-* artifacts. Their CVE scans stay above (vendor-js-cve, webkit-bundle-cve: each still
-  # generates its part in-job and scans it); the cargo side stays covered by cargo audit / deny.
-  # The release SBOM is built on the release build machine with scripts/supply-chain/sbom-local.sh
-  # (rust + vendor + flatpak + WebKit bundle -> sbom-merge.sh, fails closed on a missing part) and
-  # uploaded to the draft release by hand: docs/RELEASING.md "SBOM (local)".
+  # SBOM: NOT produced here. The release SBOM is generated by release.yml (job appimage, inside the
+  # pinned build container, sbom-local.sh --release) and attached to the draft release; the former
+  # jobs `sbom` / `attest-sbom` (merge on the runner host) are gone. vendor-js-cve's vendor part is a
+  # scan input only (tree-derived from vendor.lock.json, never uploaded).
 
   # Opt-in (workflow_dispatch input codemirror_rebuild / weekly cron): rebuild
   # ui/vendor/codemirror/cm6.js from ui/vendor/codemirror/build/ and fail unless the sha256

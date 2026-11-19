@@ -10,7 +10,7 @@ no python/js tooling); their tests are in `scripts/supply-chain/tests/`.
 - push of tags `v*`
 - weekly cron (Monday 04:23 UTC), so new advisories show up when no code changes
 - `workflow_dispatch` (input `codemirror_rebuild` turns on the opt-in rebuild job)
-- `workflow_call`, so `release.yml` can call it (no inputs; the `attest` input went with attest-sbom)
+- `workflow_call`, so `release.yml` can call it (no inputs)
 
 There is **no `pull_request` trigger** (and never `pull_request_target`). Earlier versions of this
 workflow ran on every PR; that trigger was removed on purpose.
@@ -30,7 +30,7 @@ cancel each other.
 - Top-level `permissions: contents: read`, no secrets (`github.token` only raises the GitHub API
   rate limit for `osv-install.sh`), `persist-credentials: false`, no caches.
 - No job gets `id-token` or `attestations` (attest-sbom was removed with the CI SBOM, 2026-11-19;
-  the SBOM is built locally, see "SBOM — built locally").
+  the release SBOM is attested in release.yml).
 - Every action is pinned by full commit SHA, the Rust toolchain to an exact release, node and
   esbuild (rebuild job only) by sha256/sha512. Pins are at least 6 weeks old.
 - actionlint: `.github/actionlint.yaml` lists `ubuntu-26.04` / `ubuntu-26.04-arm`. Those are
@@ -120,17 +120,17 @@ shipped (non-dev) packages from the CodeMirror `package-lock.json`. esbuild is a
 not shipped and is excluded. The job scans it with osv-scanner (no longer uploaded as an SBOM part, 2026-11-19)
 against the VEX-derived config.
 
-### webkit-bundle-cve — the WebKit the portable AppImage bundles
+### WebKit bundle CVE gate (release.yml job appimage) — the WebKit the portable AppImage bundles
 
 Only the **portable** AppImage bundles WebKitGTK/GTK. The slim AppImage, the .deb and the flatpak
 use the system/runtime WebKit and are not covered here (the flatpak runtime is a component in the
-SBOM, see "SBOM — built locally").
+SBOM).
 
 The portable AppImage is built by `packaging/ci/appimage-build.sh` from `snapshot.ubuntu.com` at
-`SNAP` with every requested package pinned `pkg=version` (#189). The job runs on `ubuntu-26.04`,
-installs that same pinned set from the same snapshot (`scripts/supply-chain/webkit-apt.sh`, which
-refuses unless its `SNAP` and every pin equal `appimage-build.sh`'s and checks the installed
-versions) and reads the truth from that dpkg database. `scripts/supply-chain/webkit-bundle-sbom.sh`:
+`SNAP` with every requested package pinned `pkg=version` (#189). The SBOM step runs INSIDE that build container
+after the build (no install on the runner host),
+so the dpkg database it reads is the one the AppImage was bundled from
+(both arches). `scripts/supply-chain/webkit-bundle-sbom.sh`:
 
 - roots: WebKit{Web,Network,GPU}Process, the injected bundle and `libwebkit2gtk-4.1.so.0` (plus the
   app binary if `--bin` is given), found in the same dirs as `build-appimage.sh`;
@@ -150,13 +150,12 @@ Decisions and known gaps:
 
 - **Source-package purls.** OSV keys Debian/Ubuntu advisories by source package. Scanning binary
   package names would come out falsely green.
-- **Pinned apt (#189).** The scanned set is the release set: same snapshot, same `pkg=version`
-  pins (`webkit-apt.sh`). Bumping WebKitGTK means bumping `SNAP` + `PKGS` in `appimage-build.sh`
-  and `webkit-apt.sh` together (the script fails when they differ). Residual gap: a dependency the
-  ubuntu-26.04 runner image already ships is not re-installed from the snapshot, so its version
-  can differ from the release container's; the release `pkgset-<ver>-<arch>.tsv` is the exact set.
-- **No `--bin`.** The CI job does not build the opensidian binary, so libraries linked only by the
-  app binary (not by WebKit) are not in the closure. Pass `--bin <elf>` to close that gap.
+- **Pinned apt (#189).** The scanned set IS the release set: the scan reads the SBOM generated in
+  the release build container (the old host-side job's residual gap, runner-image libraries not
+  re-installed from the snapshot, is gone). Bumping WebKitGTK means bumping `SNAP` + `PKGS` in
+  `appimage-build.sh`, `webkit-apt.sh` and `sbom-local.sh` together (they refuse when they differ).
+- **`--bin`.** The release SBOM passes the built opensidian binary, so libraries linked only by the
+  app binary (not by WebKit) are in the closure too.
 
 ### glib-vendor-check
 
@@ -196,41 +195,47 @@ SBOM dir, because osv-scanner automatically loads an `osv-scanner.toml` next to 
 To ignore an advisory: add it to the VEX with reason and expiry, **and** to `deny.toml` and
 `audit.toml` if it is a RustSec id. Remove it when it expires.
 
-### SBOM — built locally, not in CI (operator decision 2026-11-19)
+### SBOM — generated in the release build container (release.yml, 2026-11-19 12:47Z)
 
-> "lets deactivate now lets only run the sbom locally" (operator, 2026-11-19). Since develop
-> 2026-11-18 the WebKit part could not be produced on the runner (apt pin conflict, see
-> webkit-bundle-cve), so the former `sbom` job failed with "missing SBOM part" and blocked
-> `release.yml` draft-release. The CI jobs `sbom` and `attest-sbom` are removed and the parts are
-> no longer uploaded as `sbom-part-*`; every other gate in this workflow still runs.
+> Operator: "compute it in the build environment on a github workflow" + "include the stuff for a
+> good sbom". Root cause of the old CI SBOM failure (G1): supply-chain.yml generated the WebKit
+> part on the ubuntu-26.04 **runner host** after an apt install there, which conflicted with the
+> runner image's newer libraries and, when it worked, described the runner rather than the build.
 
-`scripts/supply-chain/sbom-local.sh` builds the same SBOM on the release build machine:
+`release.yml` job `appimage` (x86_64 + aarch64) runs `packaging/ci/appimage-build.sh` with
+`SBOM_TAG`; inside the same digest-pinned container, right after the build,
+`scripts/supply-chain/sbom-local.sh --release` merges:
 
-- `rust-sbom.sh`: `Cargo.lock` → `pkg:cargo` components with crates.io sha256 each. glib 0.18.5 is
-  an explicit component with the `.crate` sha256 and pedigree. Only the source-less workspace root
-  `opensidian` is exempt (a git/path crate merely NAMED opensidian is not). Any non-crates.io source fails
-  closed. This is a superset: dev-dependencies and all targets are included.
-- `vendor-sbom.sh`: the vendored JS (after `vendor-verify.sh`, needs registry.npmjs.org).
-- `flatpak-sbom.sh`: runtime `org.gnome.Platform` 49 and the brotli module.
-- `webkit-bundle-sbom.sh`: the portable AppImage WebKit closure, from a dpkg database holding exactly
-  `appimage-build.sh`'s pinned `PKGS` at its `SNAP`: `--webkit native` on Ubuntu 26.04 after
-  `webkit-apt.sh` (every pin checked with dpkg-query), or `--webkit podman` in
-  `appimage-build.sh`'s digest-pinned ubuntu image (any Linux host with podman). `--bin <elf>` adds
-  the release binary's own ldd closure.
+- `rust-sbom.sh`: `Cargo.lock` → `pkg:cargo` components with crates.io sha256 each; licenses from
+  `cargo metadata --all-features` (`license_file` crates: `LicenseRef-cargo-license-file` + a note);
+  crates outside the `cargo metadata --filter-platform <arch>-unknown-linux-gnu` resolve are kept
+  with `scope: excluded` and a reason. glib 0.18.5 is explicit with its `.crate` sha256 + pedigree.
+  Any non-crates.io source fails closed.
+- `vendor-sbom.sh`: the vendored JS (after `vendor-verify.sh`), including the 74 npm packages
+  bundled in `mermaid.min.js` (`LICENSES-bundled.txt`) as `pkg:npm` components mermaid dependsOn.
+- `flatpak-sbom.sh`: runtime `org.gnome.Platform` 49 and the brotli module, with licenses.
+- `webkit-bundle-sbom.sh --bin <built ELF> --pkgset <pkgset tsv>`: the portable AppImage WebKit
+  closure from the container's dpkg database; per source package the DEP-5 license and the SHA-256
+  of every binary `.deb` (from the snapshot index apt verified).
 
-`sbom-merge.sh` dedups by bom-ref and fails on purl/version/hash conflicts or dangling dependency
-refs. It adds a root `opensidian-release@<ver>` (version from `tauri.conf.json`) and derives a
-reproducible serial number from the content. `sbom-local.sh` then records the commit, a dirty flag,
-the parts and the skipped parts in `metadata.properties` (`opensidian:sbom-local:*`) and writes
-`opensidian-<ver>.cdx.json` + `opensidian-<ver>.cdx.json.sha256`. It **fails closed**: a part that
-fails or is empty aborts the run; the only way to leave one out is `--skip <part>`, which is
-recorded as `opensidian:sbom-local:skipped` in the SBOM. Upload: docs/RELEASING.md "SBOM (local)".
+`sbom-merge.sh -t <tag>` sets the root (license GPL-3.0-or-later, version + purl
+`pkg:github/jpzk/opensidian@<tag>`). `sbom-local.sh --release` refuses `--skip`, records
+commit/dirty/parts/skipped/arch in `metadata.properties` (`opensidian:sbom-local:*`; skipped must be
+empty), then requires `sbom-validate.sh --release` (jq structural CycloneDX 1.6 check: there is no
+pinned JSON-schema validator without a new dependency) and `license-policy.sh` (G7) to pass.
+Output: `opensidian-<ver>-<arch>.cdx.json` + `.sha256`, attested and attached to the draft.
 
-What CI no longer does: the osv scan of the **merged** SBOM, so the Rust crates are no longer
-OSV-scanned in CI (cargo audit + cargo deny advisories still gate them on RustSec) and the
-flatpak part is not scanned (its brotli is the same component webkit-bundle-cve scans). Scan the local SBOM before publishing:
-`scripts/supply-chain/vex-osv-config.sh > "$HOME/osv-scanner.toml"; osv-scanner scan source --config "$HOME/osv-scanner.toml" -L <sbom>`
-(non-deb findings must be 0, as the former job required).
+The WebKit bundle CVE gate (formerly supply-chain.yml `webkit-bundle-cve`) runs in the same
+`appimage` job on that in-container WebKit part, both arches, and stays **blocking**.
+Locally, `sbom-local.sh` (without `--release`) still works: `--webkit podman` recreates the build
+container, `--skip webkit` is recorded in the SBOM.
+
+### license-policy — the SBOM's licenses
+
+`scripts/supply-chain/license-policy.sh <sbom>`: every component (and the root) must carry a
+license; SPDX expressions are evaluated (AND/OR/WITH); allowed = `deny.toml` `[licenses] allow`
+(read from deny.toml, no copy) + `extra_allow` in `license-policy.json` (ISC). Anything else needs an
+exception in `license-policy.json` with a match (purl/bom-ref prefix) and a reason. Fails closed.
 
 ### gate-tests — the gates still fail on their fixtures
 
@@ -255,9 +260,9 @@ Local test scan (vendor + rust + flatpak): 499 scanned packages, 12 VEX ignores 
 
 ### attest-sbom (removed 2026-11-19)
 
-Removed with the CI SBOM. The local SBOM is not attested by GitHub; its integrity is the
-operator's upload from the release machine plus the `.sha256` next to it (and an optional gpg
-signature, docs/RELEASING.md).
+Removed with the host-side CI SBOM. The release SBOM is attested in `release.yml` job `appimage`
+with `actions/attest-build-provenance` (same as every other asset; not in dispatch dry runs):
+`gh attestation verify opensidian-<ver>-<arch>.cdx.json --repo jpzk/opensidian`.
 
 ### codemirror-rebuild (opt-in)
 
@@ -282,13 +287,12 @@ copy fails. CI confirmation on node 24.21.0 is recorded in the PR / goal progres
 
 `release.yml` has a job `supply-chain: uses: ./.github/workflows/supply-chain.yml` (no inputs, job
 permissions `contents: read` only, since no called job attests anything any more).
-`draft-release` needs `[appimage, sums, supply-chain]`, so EVERY remaining supply-chain gate must be
-green before a draft is staged. CI attaches no SBOM: the draft has 11 CI assets and the operator
-uploads `opensidian-<ver>.cdx.json` + `.sha256` from `sbom-local.sh` by hand (docs/RELEASING.md).
-The asset check in draft-release ignores those two names, so a re-run after the upload still passes.
+`draft-release` needs `[appimage, sums, supply-chain]`, so EVERY remaining supply-chain gate and the
+appimage job's SBOM / license-policy / WebKit CVE gates must be green before a draft is staged.
+The draft has 15 CI assets: the ten packages, SHA256SUMS, and `opensidian-<ver>-<arch>.cdx.json` +
+`.sha256` per arch.
 
-**The SBOM is not listed in SHA256SUMS**, so the offline gpg signature over SHA256SUMS does not
-cover it; sign the SBOM itself if its integrity must be provable (docs/RELEASING.md).
+**The SBOM is not listed in SHA256SUMS**; it has its own `.sha256` and attestation.
 
 ## Adding or updating a dependency
 

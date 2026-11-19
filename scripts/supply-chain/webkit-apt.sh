@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# webkit-apt.sh — the system packages of supply-chain.yml job webkit-bundle-cve, PINNED (#189).
+# webkit-apt.sh — the pinned WebKit build set of packaging/ci/appimage-build.sh on an Ubuntu 26.04 HOST (#189).
+# (No longer used by CI: the release WebKit SBOM + CVE gate run INSIDE the build container, release.yml;
+#  kept for local native sbom-local.sh runs and for --check, which sbom-local.sh calls.)
 # The job scans the WebKitGTK/GTK closure the portable AppImage bundles. That AppImage is built by
 # packaging/ci/appimage-build.sh from snapshot.ubuntu.com $SNAP with pkg=version pins, so this
 # script installs the SAME set on the ubuntu-26.04 runner from the SAME dated snapshot:
