@@ -189,7 +189,18 @@ jobs:
             || { echo "::error::src-tauri/Info.plist keys not in the bundle Info.plist"; exit 1; }
           plutil -p "$P"
           # NOT signed: report what the linker left (arm64 binaries carry an ad-hoc linker signature)
-          echo "codesign -dv (read-only):"; codesign -dv "$C/MacOS/opensidian" 2>&1 | sed 's/^/  /'
+          # codesign -dv exits 1 on a binary with no signature at all (x86_64 ld64 adds none);
+          # accept exactly two states: ad-hoc linker signature, or no signature. Anything else fails.
+          echo "codesign -dv (read-only):"
+          if CS=$(codesign -dv "$C/MacOS/opensidian" 2>&1); then
+            printf '%s\n' "$CS" | sed 's/^/  /'
+            grep -q '^Signature=adhoc$' <<<"$CS" || { echo "::error::binary carries a non-ad-hoc signature"; exit 1; }
+            echo "SIGNATURE_STATE=adhoc-linker"
+          else
+            printf '%s\n' "$CS" | sed 's/^/  /'
+            grep -q 'code object is not signed at all' <<<"$CS" || { echo "::error::codesign -dv failed unexpectedly"; exit 1; }
+            echo "SIGNATURE_STATE=none"
+          fi
           Z="opensidian-$V-macos-$ARCH-unsigned.app.zip"
           (cd "$D" && ditto -c -k --sequesterRsrc --keepParent Opensidian.app "$Z" && shasum -a 256 "$Z" | tee "$Z.sha256")
           rm -rf "$APP"
