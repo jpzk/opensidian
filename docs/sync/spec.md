@@ -157,7 +157,7 @@ change  = u8 op || str path || op-specific
 ```
 
 The signature is by the device signing key listed in the current cfg
-generation (4.4). Unknown device / revoked slot → reject the batch (it is
+generation (4.4). Unknown device (not on the cfg roster) → reject the batch (it is
 still kept as an object; no data is discarded on the server side).
 
 Implementation notes (M4a, `sync_proto::batch` layout + `sync_core::commit`):
@@ -181,7 +181,7 @@ Implementation notes (M4a, `sync_proto::batch` layout + `sync_core::commit`):
   uses ECDSA P-256/SHA-256 (fixed 64-byte r||s).
 - **Verify order**: container (commitment, GCM) → kind = batch → decode +
   canonical checks → commit_id = obj_id → sig_alg of the vault suite →
-  device key from cfg (unknown/revoked → reject) → signature → every inline
+  device key from cfg (unknown → reject) → signature → every inline
   blob's SHA-256.
 - **Chunk ids** are fresh random id16 (no content-derived ids: equal
   attachments in two commits are not linkable by the server).
@@ -225,7 +225,7 @@ u8   signer_kind                  1 = device slot, 2 = K_rsig
 u8   signer_slot
 bytes sig                         over SHA-256("osy cfg v1" || all bytes above)
 
-slot = u8 state (0 empty, 1 active, 2 revoked) || id16 device_id
+slot = u8 state (0 empty, 1 active; other = format error) || id16 device_id
        || u8 key_alg || bytes pubkey (32 Ed25519 / 65 P-256 uncompressed)
 ```
 
@@ -267,25 +267,28 @@ expires server-side after 15 min.
   (`signer_kind 2`, `signer_slot 0`). Gen N+1: gen = N+1, `prev` =
   SHA-256 of gen N's full plaintext, same rsig_pub, `vk_epoch` and
   `min_suite` never decrease, every non-empty slot of gen N is still there
-  with the same key, a revoked slot never becomes active again, signer =
-  an ACTIVE slot of gen N or K_rsig. Empty slots are all-zero, device ids
-  unique. Signature: `Sign(SHA-256("osy cfg v1" || signed bytes))`.
-- The cfg chain is sealed and addressed with the **genesis epoch's K_cfg**
-  (keyring[0]), not the current one: any keyring holder — including a
-  device that has not followed a rotation yet — can walk the chain and
-  learn that it must. Slots hold public keys only.
-- **Roster** (commit signature keys) = every device that ever held a
-  slot; revoked = not active in the head gen. A revoked device's key still
-  verifies, but the engine keeps its commits only when *vouched for* (§4.8).
+  with the same key (a slot, once added, never leaves), signer = an ACTIVE
+  slot of gen N or K_rsig. Empty slots are all-zero, device ids unique.
+  Signature: `Sign(SHA-256("osy cfg v1" || signed bytes))`.
+- **One VK epoch per vault** (no revocation, operator decision
+  2026-11-19, §4.9): `vk_epoch` = 0 in every gen and the keyring holds
+  exactly one entry at epoch 0; anything else is refused
+  (`verify_gen`, `vault_ctx`). The fields stay in the wire format — removing
+  them would change every cfg/envelope layout for no security gain, and a
+  later suite could use them. The cfg chain is sealed and addressed with
+  that epoch's K_cfg. Slots hold public keys only.
+- **Roster** (commit signature keys) = every device that holds a slot.
+  There is no other device state: a commit by a device not on the roster
+  is rejected (`UnknownDevice`).
 - **Envelope** server entry gains `bytes server_key` (the destroy-receipt
   key pinned at enrollment, 0 or 65 bytes); tokens are the base64url
-  strings (≤ 64, alphabet checked). Keyring epochs strictly ascending,
-  keyring[0] = epoch 0. A new envelope gen is written for every keyring
+  strings (≤ 64, alphabet checked). Keyring = exactly one entry,
+  epoch 0 (suite v1). A new envelope gen is written for every envelope
   change; readers probe gen 0,1,2,… and take the newest.
 - **Pairing**: `u8 version 1 || u8 msg || …`. msg 1 = offer:
   `u64 expires_unix || list<bytes envelope body || opt<22 S_bytes>>`
-  (the words are included by default so the new device can follow a key
-  rotation; the inviter may omit them). msg 2 = reply:
+  (the words are included by default so the new device holds them for a later
+  move or destroy, §4.9; the inviter may omit them). msg 2 = reply:
   `id16 device_id || u8 key_alg || bytes pubkey || str name`, sealed under
   the SAME K_p at id `HMAC(K_p, "osy pair reply v1" || u32 0)[0..16]` —
   the channel is symmetric. Flow: inviter `pair_offer` (PUT offer) →
@@ -300,26 +303,11 @@ expires server-side after 15 min.
   **Join from words**: newest envelope under loc → tokens, keyring →
   chain (genesis rsig_pub must equal the words' K_rsig) → cfg gen+1 adding
   the new device, signed by K_rsig.
-- **Revoke**: new random VK at epoch+1 → envelope gen+1 (needs the words:
-  only K_wrap publishes keys) → cfg gen+1 with the slot `revoked` and the
-  new `vk_epoch`, signed by the revoking device. New objects are sealed
-  under the new epoch's K_obj; old epochs stay readable (readers pick the
-  K_obj whose key-commitment tag matches, `object::select_key`). There is
-  no public-key encryption, so another device learns the new VK only from
-  the envelope: `refresh_chain` answers `NeedWords` until the device
-  unlocks its backup entry (user presence) and calls `refresh_with_words`.
-  Residual (follow-up): the revoked device keeps the server write token
-  (no token-rotation endpoint yet) — it can still upload ciphertext, which
-  every client rejects (§4.8), and soft-delete within the retention window.
-  **Residual (open, review finding on #238): a revoked device that holds
-  S_bytes (words entered, or received in a pairing offer — the default)
-  can still derive K_wrap and read the new envelope, i.e. the new VK.**
-  Revocation therefore cuts off ONLY devices that never held S. Required
-  follow-up before revocation is advertised as complete: revoking a
-  device that held S MUST first rotate the phrase (new S → new loc,
-  K_wrap, K_rsig chain hand-over) and publish the new epoch's envelope
-  ONLY under the new loc; the old loc's envelope stays at the old epoch.
-  Until then the UI/CLI must say so when revoking such a device.
+- **No revocation** (operator decision 2026-11-19): there is no revoke
+  command, no revoked slot state and no VK epoch bump. A compromised
+  device or compromised words burn the vault; the user moves to a new
+  vault (§4.9). Former text on revocation and its residual (a revoked
+  device that held S still read the new envelope) is obsolete.
 
 ### 4.7 Tip merge (M4b, `sync_core::merge`)
 
@@ -404,16 +392,58 @@ absorbed; with one parent the edits go in as is, otherwise the target
 tree is materialised and diffed against `parents[0]` (renames become
 delete + put there; chunks are re-referenced). Re-verification on open
 uses the caller's `devices`: a commit whose key is no longer accepted
-drops out of the DAG. M5: the roster keeps a revoked device's key, and a
-commit signed by a revoked device is kept only when it is **vouched for**
-— an ancestor of a commit by a non-revoked device, of this engine's head
-or of an absorbed tip. On pull such commits wait in a quarantine until
-the whole pass is listed; unvouched ones are reported as rejected
-(`engine::NOT_VOUCHED`), not stored, and re-evaluated on the next pass.
-So pre-revocation history stays, anything the revoked device signs
-afterwards (nobody active built on it) is refused. Not yet:
+drops out of the DAG. Slots never leave the roster (no revocation, §4.9),
+so there is no quarantine / vouching step: a commit by a device not on
+the roster is rejected. Not yet:
 an index cache (open re-verifies the local replica, O(objects)), GC of
 superseded chunks, long-poll (syncd, M6).
+
+### 4.9 Compromise = burn and move (no revocation)
+
+Operator decision 2026-11-19: "when an account number and key gets
+compromised consider the vault to be burned. in that case copy the data
+into a new vault. we dont do revocation". There is no way to cut one
+device out of a vault: every holder of the words (S) derives K_wrap and
+reads the envelope, so removing a device for real means new words, i.e.
+a new vault. Suite v1 therefore has one VK epoch per vault (§4.4–4.6
+notes) and the remedy for lost words or a lost/stolen device is:
+
+1. **Move** (`opensidian-syncd move --enroll TOKEN [--url] [--ca]`, old
+   words on stdin; app sync window "Vault compromised? → Move to a new
+   vault…", native consent question): the old words must open THIS
+   vault's envelope (else nothing is changed) → a NEW vault (new words,
+   new vault_id, new server namespace via the enrollment token, new
+   VK/K_rsig/K_destroy) is created in a staging dir → conflict mode and
+   file history (`history::copy_store`: journal + blobs byte for byte
+   under the new vault id) carried over → one sync pass of the new vault
+   commits and pushes the folder as it is on this device. Nothing is
+   pulled from the compromised vault first; edits other devices never
+   synced to this device are not carried (they are still in those
+   devices' folders and history).
+2. **Destroy the old vault** with the old words' K_destroy proof (2-step
+   destroy, §5): only after the new vault holds the folder (0 replica
+   errors). Receipt checked against the server key pinned at enrollment
+   and kept as `<state>/burned-<old id>.receipt.json`; the old state dir
+   is renamed `<state>.burned-<old id>`, old keystore entries deleted.
+   Every step is resumable (a rerun reuses the staging dir).
+3. **Other devices** join the new vault from the NEW words (§4.4–4.6
+   join). On the old vault they get 410 → `no-vault` ("vault destroyed —
+   join the new vault"); the daemon stops polling. An old-vault device
+   cannot read or write the new vault: its tokens, VK and K_wrap belong
+   to the old namespace and it does not hold the new words (e2e
+   scenario "move").
+
+The new words are shown once (CLI stderr / app words view + quiz) and
+stored in the new backup entry.
+
+Residuals (threat-model R6): (a) the old **envelope outlives the destroy**
+— it lives in the `env` namespace addressed by `loc`, which the server
+cannot link to the destroyed namespace; the old words still decrypt it,
+but it holds only the old VK (whose objects were purged) and dead tokens
+(410). (b) Whoever held the old words or a device before the move keeps
+what it already read (cannot un-know) and could, until the destroy, read
+and write the old vault. (c) A malicious server can keep the old
+ciphertext anyway (A1); the receipt proves only an honest server's purge.
 
 ## 5. sync-server API (/v1)
 

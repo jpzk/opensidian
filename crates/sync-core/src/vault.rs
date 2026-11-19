@@ -19,7 +19,7 @@
 //! but epoch 0. If the words or a device are compromised the vault is
 //! BURNED: the user moves to a new vault (new words, new namespace) seeded
 //! from local data + file history, then destroys the old one with the
-//! K_destroy proof (spec §4.7, syncd `move`).
+//! K_destroy proof (spec §4.9, syncd `move`).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -188,7 +188,7 @@ pub fn epoch_keys(p: &FipsProvider, e: &VkEntry) -> Result<EpochKeys> {
 }
 
 /// Suite v1: the envelope holds exactly one VK, at epoch 0 (no revocation,
-/// no rotation — a compromised vault is moved, spec §4.7).
+/// no rotation — a compromised vault is moved, spec §4.9).
 fn one_epoch(env: &Envelope) -> Result<&VkEntry> {
     match env.keyring.as_slice() {
         [g] if g.epoch == 0 => Ok(g),
@@ -336,7 +336,7 @@ pub fn verify_gen(p: &FipsProvider, prev: Option<(&CfgGen, &[u8; 32])>, c: &CfgG
     if c.min_suite != SUITE.byte() {
         return Err(chain_err("unsupported min_suite"));
     }
-    // suite v1: one VK epoch per vault, no revocation / rotation (spec §4.7)
+    // suite v1: one VK epoch per vault, no revocation / rotation (spec §4.9)
     if c.vk_epoch != 0 {
         return Err(chain_err("vk_epoch must be 0 (suite v1 has no key rotation)"));
     }
@@ -829,7 +829,7 @@ pub fn pair_accept(p: &FipsProvider, t: &HttpTransport, code: &PairCode, device_
 pub fn pair_complete(p: &FipsProvider, t: &dyn Transport, m: &mut Member, code: &PairCode) -> Result<(Id16, String)> {
     m.own_slot()?;
     // The reply is purged only after the slot is on the server: a failed
-    // append leaves it in place, so the inviter can retry (spec §4.7).
+    // append leaves it in place, so the inviter can retry (spec §4.6).
     let reply = code.reply_id(p);
     let PairMsg::Reply { device_id, key_alg, pubkey, name } = read_pair(p, t, code, reply)? else {
         return Err(VaultError::Format("expected a pairing reply".into()));

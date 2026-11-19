@@ -73,7 +73,8 @@ fresh-device re-derivation from words).
 ## 3. Vault key VK (random, not derived)
 
 - one phrase per vault, VK = 32 bytes from the module DRBG
-- keyring: list of `(epoch u32, VK)`; revocation adds epoch+1
+- keyring: list of `(epoch u32, VK)`; suite v1 holds exactly ONE entry,
+  epoch 0, for the vault's whole life (no revocation, no rotation — §6)
 - per epoch:
 
 ```
@@ -105,13 +106,22 @@ K_cfg = HKDF(VK, salt=00*32, info="osy cfg v1"      || epoch, 32)
 - never stored anywhere: R, K_wrap, K_rsig, K_destroy (re-derived from
   S on demand, zeroized after use)
 
-## 6. Rotation / revocation
+## 6. Compromise = burn and move (no rotation, no revocation)
 
-- revoke device: new VK epoch, new cfg gen with the slot state=2, new
-  envelope gen; re-encrypt nothing old (old objects stay readable with
-  old epochs, the revoked device already had them)
-- revoked device held S → offer a new phrase: new S', new R', new
-  envelope under loc'; old envelope DELETEd
+Operator decision 2026-11-19: no revocation. Every holder of S derives
+K_wrap and reads the envelope (= VK), so the only real cut-off is new
+words, i.e. a new vault. Lost words or a lost/stolen device → the vault
+is BURNED (spec.md §4.9, `syncd move`, app "Move to a new vault"):
+
+- new vault: new S' → new R', loc', K_wrap', K_rsig', K_destroy', new
+  random VK' (epoch 0), new vault_id, new server namespace (enrollment);
+  seeded from this device's folder (pushed, sealed under VK') + its local
+  file history (copied)
+- old vault destroyed with the OLD K_destroy (2-step proof, receipt);
+  old keystore daily + backup entries deleted
+- residual: the old envelope under loc is not deleted by the destroy (the
+  server cannot link loc to the namespace); it holds the purged vault's
+  VK and dead tokens only (threat-model R6)
 
 ## 7. Implementation (M5)
 
@@ -126,6 +136,6 @@ K_cfg = HKDF(VK, salt=00*32, info="osy cfg v1"      || epoch, 32)
   (OS auth). `sync_core::keystore::FileKeystore` = headless/test backend
   (dir 0700, files 0600, tmp + fsync + rename); OS backends are a
   follow-up (deps.md §M5)
-- a revocation is followed by the other devices only through the
-  envelope (K_wrap): `NeedWords` → unlock backup entry → re-derive →
-  newest envelope. Pairing therefore carries S_bytes by default.
+- there is no key rotation for other devices to follow; pairing still
+  carries S_bytes by default so the new device can move / destroy the
+  vault from its own backup entry

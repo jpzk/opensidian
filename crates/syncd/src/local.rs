@@ -267,7 +267,7 @@ pub struct Setup<'a> {
 }
 
 /// Burn-and-move (`opensidian-syncd move`, the app's "Move to a new vault";
-/// spec §4.8). A compromised vault is not repaired (no revocation): this
+/// spec §4.9). A compromised vault is not repaired (no revocation): this
 /// device creates a NEW vault (new words, new server namespace, new keys)
 /// seeded from its vault folder as it is now + its file history, then
 /// destroys the old vault with the old words' K_destroy proof.

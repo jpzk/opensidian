@@ -36,7 +36,7 @@ Untrusted / hostile:
 - T5 plugins and themes loaded into the app (see R1 below — partially
   trusted today, MUST be untrusted for sync/history commands)
 - T6 a stolen/lost device that is locked (disk at rest)
-- T7 a former device after revocation
+- T7 a lost/stolen device or leaked backup words (compromise = the vault is burned and moved, spec §4.9; there is no revocation)
 
 ## 3. Adversaries and what they must NOT achieve
 
@@ -58,11 +58,16 @@ Untrusted / hostile:
   the history store is plaintext-at-rest like the vault itself (stock
   parity: "Obsidian doesn't encrypt your local vault"). Open question:
   encrypt the local history store at rest.
-- revoked device (T7): gets no new VK epoch; old content it already had is
-  out of scope (cannot un-know). If it held S (words, or a pairing offer
-  that carried them — the default), it can still open the new envelope:
-  phrase rotation on revoke is out of suite v1 (R6, spec §4.6 notes; the
-  revoke reply warns, cut-off = new vault with new words).
+- compromised device or words (T7): no revocation (operator decision
+  2026-11-19) — the vault is BURNED. The user moves to a new vault (new
+  words, new namespace, seeded from this device's folder + file history)
+  and then destroys the old one with the K_destroy proof (spec §4.9,
+  `syncd move`, app "Vault compromised? → Move to a new vault"). After the
+  move T7 MUST NOT read or write the new vault (it lacks the new words,
+  tokens and VK; e2e scenario "move") and gets 410 / `no-vault` on the
+  old one. Old content it already had is out of scope (cannot un-know);
+  between compromise and destroy it can read and write the old vault, so
+  the move should happen right away. Residual R6.
 - destroy abuse: nobody without K_destroy can delete a vault on a server;
   soft DELETE is bounded by a server-enforced retention window, so a
   stolen write token cannot erase history immediately. M3b: the destroy
@@ -104,12 +109,17 @@ Untrusted / hostile:
 - R1 no app-command ACL in tauri → CLOSED for sync/history by the webview-label gate (spec §7.1): those commands answer only the `sync` window; other app commands are unchanged (out of scope)
 - R2 LWW trusts device clocks (mitigated: loser kept)
 - R3 server freeze/rollback only detectable across replicas
-- R4 FIPS build needs CMake + Go + cc → reproducible-build impact
+- R4 FIPS build: OpenSSL 3.5.9 core + fips provider built from the pinned tarball (perl + cc), fipsinstall on the target → reproducible-build impact (cmvp.md §5/§7)
 - R5 Linux Secret Service has no per-item user-presence gate
-- R6 revoking a device that held S does not cut it off (no phrase
-  rotation in suite v1: needs a re-rooted vault, i.e. a suite-v2 protocol
-  change) — review finding on #238, WONTFIX for v1; `syncd revoke` replies
-  with a `warning` saying so; cut-off = new vault with new words
+- R6 compromise = burn (no revocation, spec §4.9): (a) the old envelope
+  outlives the destroy (`env` namespace, addressed by loc, not linkable to
+  the namespace by the server) — the old words still open it, but it
+  holds only the purged vault's VK and dead (410) tokens; (b) a
+  compromised device / words-holder reads and writes the old vault until
+  the move's destroy completes; (c) edits other devices never synced to
+  the moving device are not carried over (still in their folders +
+  history). Former R6 (revoking a device that held S does not cut it
+  off) is OBSOLETE: revocation was removed.
 - R7 app save/delete history hooks log a failure and still write (D1/D3
   are best-effort when the history store itself fails) — review finding
   on #238, follow-up

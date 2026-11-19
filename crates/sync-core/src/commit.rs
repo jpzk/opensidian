@@ -126,7 +126,7 @@ pub struct VaultCtx {
     /// `K_obj` (key-tree.md) of the vault's one VK epoch: batch + chunk
     /// objects are sealed and opened under it. Suite v1 has no revocation
     /// and no key rotation — a compromised vault is burned and moved to a
-    /// new vault (spec §4.7), so there is never an older epoch to read.
+    /// new vault (spec §4.9), so there is never an older epoch to read.
     pub k_obj: [u8; 32],
 }
 
@@ -450,7 +450,7 @@ pub fn build_commit<P: CryptoProvider + ?Sized>(
 
 /// Device keys from cfg: `device_id → (alg, wire public key)` for every
 /// active slot. A commit signed by a device that is not on the roster is
-/// rejected (`UnknownDevice`); there is no other device state (spec §4.7).
+/// rejected (`UnknownDevice`); there is no other device state (spec §4.9).
 pub trait DeviceKeys {
     fn key(&self, device_id: &Id16) -> Option<(SigAlg, Vec<u8>)>;
 }

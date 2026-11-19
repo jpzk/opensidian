@@ -9,7 +9,7 @@ Status: draft, milestone M0 (spec) + M1 (local file history).
 - [spec.md](spec.md) — versioning, canonical encoding, container /
   envelope byte layouts, records, `/v1` server API, local history store
 - [key-tree.md](key-tree.md) — recovery phrase S, root R, vault key VK,
-  device keys, rotation and revocation
+  device keys, compromise = burn and move (no revocation)
 - [test-vectors.md](test-vectors.md) — `osy-vec-1` vector file format
 - [cmvp.md](cmvp.md) — the OpenSSL 3.5.9 FIPS provider, CMVP certificate
   #5586, box build, operational rules, packaging; unknowns marked
