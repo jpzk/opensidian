@@ -284,6 +284,35 @@ fn keystore_entries_and_daily_round_trip() {
     assert!(denied.get(&vid, Entry::Backup).unwrap().is_none());
 }
 
+/// CodeRabbit #238 keystore:134: concurrent writers each get their own
+/// create_new temp file (no shared ".tmp" truncated under another writer);
+/// the entry ends up as exactly one writer's bytes and no temp is left.
+#[cfg(unix)]
+#[test]
+fn keystore_concurrent_puts_use_unique_temp_files() {
+    let dir = tmpdir("ks-race");
+    let ks = Arc::new(FileKeystore::open(&dir, Box::new(FixedPresence(true))).unwrap());
+    let vid = sync_proto::Id16([7u8; 16]);
+    let hs: Vec<_> = (0..8u8)
+        .map(|i| {
+            let ks = ks.clone();
+            std::thread::spawn(move || {
+                for _ in 0..25 {
+                    ks.put(&vid, Entry::Daily, &[i; 4096]).unwrap();
+                }
+            })
+        })
+        .collect();
+    for h in hs {
+        h.join().unwrap();
+    }
+    let got = ks.get(&vid, Entry::Daily).unwrap().unwrap();
+    assert_eq!(got.len(), 4096);
+    assert!(got.iter().all(|b| *b == got[0]), "torn keystore entry");
+    let left: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+    assert_eq!(left.len(), 1, "temp files left behind: {left:?}");
+}
+
 /// Serves at most `cfg_gens` cfg generations per chain walk (a server
 /// replaying an older cfg chain); everything else passes through.
 struct StaleCfg<'a> {

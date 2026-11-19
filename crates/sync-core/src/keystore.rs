@@ -108,17 +108,52 @@ fn private_dir(d: &Path) -> std::io::Result<()> {
 #[cfg(unix)]
 fn create_private(p: &Path) -> std::io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt as _;
-    File::options().write(true).create(true).truncate(true).mode(0o600).open(p)
+    File::options().write(true).create_new(true).mode(0o600).open(p)
 }
 
 #[cfg(not(unix))]
 fn create_private(p: &Path) -> std::io::Result<File> {
-    File::options().write(true).create(true).truncate(true).open(p)
+    File::options().write(true).create_new(true).open(p)
+}
+
+#[cfg(unix)]
+fn sync_dir(d: &Path) -> std::io::Result<()> {
+    File::open(d)?.sync_all()
+}
+
+// std cannot open (or fsync) a directory handle on Windows; the rename is
+// the durability point there.
+#[cfg(not(unix))]
+fn sync_dir(_d: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Unique temp name per write (pid + process-wide counter + clock + retry),
+/// so two writers never share or truncate each other's temp file.
+fn temp_name(p: &Path, attempt: u32) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let mut s = p.as_os_str().to_owned();
+    s.push(format!(".{}.{n}.{t}.{attempt}.tmp", std::process::id()));
+    PathBuf::from(s)
 }
 
 impl FileKeystore {
+    /// Unix only: the secrets rely on 0700/0600 owner-only modes. There is
+    /// no Windows ACL code, so elsewhere the file keystore refuses to open
+    /// (fail closed) instead of writing secrets other users could read.
     pub fn open(dir: impl Into<PathBuf>, presence: Box<dyn Presence>) -> Result<FileKeystore, KeystoreError> {
         let dir = dir.into();
+        if !cfg!(unix) {
+            return Err(KeystoreError::Io(
+                "the file keystore needs owner-only file modes (unix); not supported on this platform".into(),
+            ));
+        }
         private_dir(&dir).map_err(io)?;
         Ok(FileKeystore { dir, presence })
     }
@@ -131,13 +166,22 @@ impl FileKeystore {
 impl Keystore for FileKeystore {
     fn put(&self, vault: &Id16, entry: Entry, secret: &[u8]) -> Result<(), KeystoreError> {
         let p = self.path(vault, entry);
-        let tmp = p.with_extension("tmp");
-        let mut f = create_private(&tmp).map_err(io)?;
-        f.write_all(secret).map_err(io)?;
-        f.sync_all().map_err(io)?;
+        let mut attempt = 0;
+        let (tmp, mut f) = loop {
+            let tmp = temp_name(&p, attempt);
+            match create_private(&tmp) {
+                Ok(f) => break (tmp, f),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && attempt < 16 => attempt += 1,
+                Err(e) => return Err(io(e)),
+            }
+        };
+        let r = f.write_all(secret).and_then(|()| f.sync_all());
         drop(f);
-        fs::rename(&tmp, &p).map_err(io)?;
-        File::open(&self.dir).and_then(|d| d.sync_all()).map_err(io)
+        if let Err(e) = r.and_then(|()| fs::rename(&tmp, &p)) {
+            let _ = fs::remove_file(&tmp);
+            return Err(io(e));
+        }
+        sync_dir(&self.dir).map_err(io)
     }
 
     fn get(&self, vault: &Id16, entry: Entry) -> Result<Option<Zeroizing<Vec<u8>>>, KeystoreError> {

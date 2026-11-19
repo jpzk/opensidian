@@ -4,3 +4,6 @@ ui/census.js merge=union
 .gitignore merge=union
 # built-in themes are byte-exact upstream files (sha256-pinned in builtins.rs): never normalise line endings
 src-tauri/themes/** -text
+# sync: sha256-pinned test vectors and the word list are byte-exact upstream files (CodeRabbit #238)
+crates/sync-crypto/vectors/** -text
+crates/sync-crypto/wordlists/** -text

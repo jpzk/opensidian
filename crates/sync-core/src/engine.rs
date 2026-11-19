@@ -261,6 +261,9 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     f.sync_all().map_err(io)?;
     drop(f);
     fs::rename(&tmp, path).map_err(io)?;
+    // std cannot open a directory handle on Windows (File::open fails
+    // there); the rename is the durability point. Unix fsyncs the parent.
+    #[cfg(unix)]
     if let Some(d) = path.parent() {
         File::open(d).and_then(|d| d.sync_all()).map_err(io)?;
     }
