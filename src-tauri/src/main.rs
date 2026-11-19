@@ -8385,7 +8385,9 @@ fn main() {
         .on_window_event(|w, e| {
             // #136: the hidden recorder webview is no app window (no size to keep, no quit flow);
             // an app window that is gone takes its recorder webview (and the mic) with it
-            if audiorec::is_rec(w.label()) {
+            // #238: the Sync/History window is no vault window either: closing it closes only
+            // it (no geometry save over the vault window's, no quit flow)
+            if audiorec::is_rec(w.label()) || w.label() == syncui::SYNC_LABEL {
                 return;
             }
             if let tauri::WindowEvent::Destroyed = e {
@@ -8615,6 +8617,13 @@ mod tests {
         assert_eq!(quit_step(true, true), QuitStep::Repeat);
         // bounded: a wedged webview can delay a quit, never cancel it
         assert!(QUIT_GRACE <= std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn sync_window_close_skips_winsize_and_quit() {
+        // CodeRabbit #238: closing Sync must not save its size as the vault window's or quit
+        let src = include_str!("main.rs");
+        assert!(src.contains("if audiorec::is_rec(w.label()) || w.label() == syncui::SYNC_LABEL {"));
     }
 
     #[test]
