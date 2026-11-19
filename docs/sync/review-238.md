@@ -16,8 +16,8 @@ Each OPEN item is a follow-up and blocks goal_done (criterion 8).
 - crates/sync-core/src/transport/fs.rs:250-250 Reject unsupported USB volumes during replica setup. — OPEN
 - crates/sync-core/src/transport/fs.rs:164-164 Read the replica log from the requested cursor. — OPEN
 - crates/sync-core/src/transport/fs.rs:233-235 Repair the list index before returning Identical. — OPEN
-- crates/sync-core/src/transport/http.rs:262-263 Enforce a deadline for the whole replica request. — OPEN
-- crates/sync-core/src/transport/http.rs:259-260 Check the resolved address before opening a plain HTTP connection. — OPEN
+- crates/sync-core/src/transport/http.rs:262-263 Enforce a deadline for the whole replica request. — FIXED (Deadline stream: per-op timeout = min(idle, time left), whole request <= timeout + REQUEST_BUDGET 300 s, TLS wraps it; test whole_request_deadline_beats_a_trickling_peer)
+- crates/sync-core/src/transport/http.rs:259-260 Check the resolved address before opening a plain HTTP connection. — FIXED (plain http skips every resolved non-loopback address; test plain_http_connects_to_loopback_addresses_only)
 - crates/sync-core/src/engine.rs:436-440 Detect ancestry cycles before expanding parents. — OPEN
 - crates/sync-core/src/engine.rs:644-644 Skip the push phase for replicas that fail during pull. — OPEN
 - crates/sync-core/src/engine.rs:262-262 Use a Windows-compatible state persistence path. — OPEN

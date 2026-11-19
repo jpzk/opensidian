@@ -13,7 +13,7 @@
 use std::io::{Read, Write};
 use std::net::{IpAddr, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
@@ -39,6 +39,51 @@ pub const MAX_HEAD: usize = 16 * 1024;
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Read/write timeout of a call without long-poll.
 pub const IO_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Extra wall-clock budget of one whole request on top of its idle timeout.
+/// The idle timeout bounds each read/write; this bounds the request, so a
+/// server trickling one byte per idle period cannot hold a sync forever.
+pub const REQUEST_BUDGET: Duration = Duration::from_secs(300);
+
+/// A TCP stream with a whole-request deadline: every read/write runs with a
+/// socket timeout of min(idle, time left) and fails `TimedOut` past it.
+struct Deadline {
+    s: TcpStream,
+    idle: Duration,
+    until: Instant,
+}
+
+impl Deadline {
+    fn arm(&self, write: bool) -> std::io::Result<()> {
+        let left = self.until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "request deadline exceeded"));
+        }
+        let t = Some(left.min(self.idle));
+        if write {
+            self.s.set_write_timeout(t)
+        } else {
+            self.s.set_read_timeout(t)
+        }
+    }
+}
+
+impl Read for Deadline {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.arm(false)?;
+        self.s.read(buf)
+    }
+}
+
+impl Write for Deadline {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.arm(true)?;
+        self.s.write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.s.flush()
+    }
+}
 
 /// Where trusted TLS roots come from.
 #[derive(Debug, Clone)]
@@ -255,18 +300,26 @@ impl HttpTransport {
         }
     }
 
-    fn connect(&self, timeout: Duration) -> Result<TcpStream> {
+    fn connect(&self, timeout: Duration) -> Result<Deadline> {
+        let until = Instant::now() + timeout + REQUEST_BUDGET;
         let addrs = (self.base.host.as_str(), self.base.port)
             .to_socket_addrs()
             .map_err(|e| TransportError::Io(format!("resolve {}: {e}", self.base.host)))?;
         let mut last = None;
         for a in addrs {
+            // Plain http:// is allowed for a loopback host only (BaseUrl::parse);
+            // a name like "localhost" is checked again after resolution, so a
+            // hosts/DNS entry cannot send tokens and ciphertext off-box in clear.
+            if !self.base.https && !a.ip().is_loopback() {
+                last = Some(std::io::Error::other(format!("{} resolves to non-loopback {}", self.base.host, a.ip())));
+                continue;
+            }
             match TcpStream::connect_timeout(&a, CONNECT_TIMEOUT) {
                 Ok(s) => {
                     s.set_read_timeout(Some(timeout)).map_err(io)?;
                     s.set_write_timeout(Some(timeout)).map_err(io)?;
                     let _ = s.set_nodelay(true);
-                    return Ok(s);
+                    return Ok(Deadline { s, idle: timeout, until });
                 }
                 Err(e) => last = Some(e),
             }
@@ -569,6 +622,44 @@ impl Transport for HttpTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plain_http_connects_to_loopback_addresses_only() {
+        // BaseUrl::parse already refuses such a URL; this is the post-resolution
+        // check for names that pass the parse rule but resolve off-box.
+        let t = HttpTransport::new("http://127.0.0.1:9", Roots::System).unwrap();
+        let t = HttpTransport { base: BaseUrl { host: "192.0.2.1".into(), ..t.base.clone() }, ..t };
+        let e = t.connect(IO_TIMEOUT).err().expect("non-loopback refused");
+        assert!(e.to_string().contains("non-loopback"), "{e}");
+    }
+
+    #[test]
+    fn whole_request_deadline_beats_a_trickling_peer() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut s, _) = l.accept().unwrap();
+            for _ in 0..100 {
+                if s.write_all(b"x").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let s = TcpStream::connect(addr).unwrap();
+        let idle = Duration::from_millis(400);
+        let mut d = Deadline { s, idle, until: Instant::now() + Duration::from_millis(600) };
+        let t = Instant::now();
+        let mut b = [0u8; 1];
+        let e = loop {
+            match d.read(&mut b) {
+                Ok(_) => continue,
+                Err(e) => break e,
+            }
+        };
+        assert!(t.elapsed() < Duration::from_secs(3), "deadline held: {:?}", t.elapsed());
+        assert!(matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock), "{e}");
+    }
 
     #[test]
     fn url_rules() {
