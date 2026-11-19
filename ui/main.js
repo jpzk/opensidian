@@ -4688,6 +4688,7 @@ function utBuild() {             // pane/focus census in the window title (headl
             (acItems.length ? " [ac:" + acKind + ":" + acItems.length + "]" : "") +
             " [pane:" + sidePane + "]" +
             exRenTok() +                                        // issue #101: an explorer row is in inline rename, [exren:<path>|sel=<selected>]
+            pvHdrTok() +                                        // issue #239: plugin-view header titles, [pvhdr:<i>:<title>@x,y]
             sfontTok() +                                        // sidefont: computed sidebar row font sizes (t=trow b=bmrow r=rlist)
             (sidePane === "search" && searchCount >= 0 ? " [sr:" + searchCount + "]" + srGeom() : "") +
             (sidePane === "bm" ? " [bm:" + bmRows() + "]" +          // RENDERED rows, not the model's length:
@@ -5717,8 +5718,9 @@ function renderTabs(g) {
    activates (switchTab). The editor is the explorer row editor of #101/#105 (exRenStart, hosted in the tab's
    label): Return and blur commit, Escape reverts, an illegal or taken name raises the notice and Return keeps
    the editor open. A note tab commits through renameThenAsk -> applyRename (tabs, history, MRU, bookmarks and
-   links follow; the Update links question); a canvas tab through cvRetarget. Every other view kind (graph,
-   pdf, audio, a plugin view) has no rename path, so its double click does nothing.
+   links follow; the Update links question); a canvas tab through cvRetarget; a plugin view backed by a vault
+   note (issue #239: an Excalidraw board) as that note. Every other view kind (graph, pdf, audio, a plugin view
+   with no note behind it) has no rename path, so its double click does nothing.
    [tabren:<vault path>|sel=<selected text>] is published while the editor is open. */
 async function tabRenStart(g, tab) {
   if (g.swP) { try { await g.swP; } catch (_) {} }   // the dblclick's first click may still be switching to this tab
@@ -5727,10 +5729,14 @@ async function tabRenStart(g, tab) {
   let kind = null, path = null;
   if (!tab.kind && tab.name) { kind = "note"; path = tab.name; }
   else { const cp = cvTabPath(tab); if (cp) { kind = "canvas"; path = cp; } }
+  // issue #239: a plugin view backed by a vault note (an Excalidraw board is its Drawing.excalidraw.md) renames as
+  // that note; the name keeps its inner suffix and only the stem is selected (Drawing|.excalidraw)
+  let pv = false;
+  if (!kind) { const pn = pvNoteName(tab); if (pn) { kind = "note"; path = pn; pv = true; } }
   if (!kind) return false;
   const d = g.tabsEl.children[i], tn = d && d.querySelector(".t");
   if (!tn) return false;
-  return exRenStart(kind, path, { row: d, tn, tab });
+  return exRenStart(kind, path, { row: d, tn, tab, stem: pv });
 }
 function tabDblClick(e, g) {
   if (e.button !== 0) return;
@@ -7423,21 +7429,44 @@ function exRenTok() {
   if (!exRen || !exRen.inp.isConnected) return "";
   const i = exRen.inp, sel = i.value.slice(i.selectionStart || 0, i.selectionEnd || 0);
   const c = s => String(s).replace(/[|\]]/g, "");
-  // issue #142: the TAB-hosted editor publishes [tabren:] (same shape), so a tab rename is never read as a row rename
-  return " [" + (exRen.tab ? "tabren" : "exren") + ":" + c(exRen.kind === "note" ? exRen.path + ".md" : exRen.path) + "|sel=" + c(sel) + "]";
+  // issue #142: the TAB-hosted editor publishes [tabren:] (same shape), so a tab rename is never read as a row rename;
+  // issue #239: the plugin-view HEADER title editor publishes [hdrren:]
+  return " [" + (exRen.tab ? "tabren" : exRen.hdr ? "hdrren" : "exren") + ":" + c(exRen.kind === "note" ? exRen.path + ".md" : exRen.path) + "|sel=" + c(sel) + "]";
+}
+/* issue #239 census [pvhdr:<i>:<title>@x,y|...] — per pane (document order) whose active plugin view shows a
+   header title (views.js FileView): its painted text and client centre, so a driver clicks what it measured.
+   Absent when no pane shows one. */
+function pvHdrTok() {
+  const out = [];
+  let i = 0;
+  for (const p of document.querySelectorAll("#main .pane")) {
+    i++;
+    for (const el of p.querySelectorAll(".os-pv:not([hidden]) > .view-header:not([hidden]) > .os-pvtitle")) {
+      const r = el.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) continue;
+      const inp = el.querySelector(".exren"), s = (inp ? inp.value : el.textContent).replace(/[|\]@]/g, "");
+      // the TEXT's centre (the title box spans the header): a click there lands on the name
+      let cx = r.left + r.width / 2;
+      try { if (!inp && el.firstChild) { const rg = document.createRange(); rg.selectNodeContents(el); const q = rg.getBoundingClientRect(); if (q.width > 0) cx = q.left + q.width / 2; } } catch (_) {}
+      out.push(i + ":" + s + "@" + Math.round(cx) + "," + Math.round(r.top + r.height / 2));
+    }
+  }
+  return out.length ? " [pvhdr:" + out.join("|") + "]" : "";
 }
 function exRenRow(kind, path) {
   if (kind === "note") return treeRows.get(path) || [...document.querySelectorAll("#tree .trow.note")].find(r => r.dataset.note === path) || null;
   return [...document.querySelectorAll("#tree .trow.cvfile")].find(r => r.dataset.canvas === path) || null;
 }
-function exRenStart(kind, path, at) {      // at (issue #142): {row, tn, tab, g} = host the editor in a TAB header, not the explorer row
+function exRenStart(kind, path, at) {      // at (issue #142): {row, tn, tab, g} = host the editor in a TAB header, not the explorer row;
+                                           // #239: at.hdr = a plugin view's header title, at.stem = select the name
+                                           // before its last ".", at.caret = a caret offset (the click's place)
   exRenClose();
   const row = at ? at.row : exRenRow(kind, path), tn = at ? at.tn : row && row.querySelector(".tn");
   if (!tn) return false;
   const label = tn.textContent;            // what the host painted before the editor (restored on revert)
   const orig = kind === "note" ? path.split("/").pop() : path.split("/").pop().replace(/\.canvas$/i, "");
   const inp = document.createElement("input");
-  inp.id = at ? "tabren" : "exren"; inp.className = at ? "exren tabren" : "exren"; inp.value = orig;
+  inp.id = at ? (at.hdr ? "hdrren" : "tabren") : "exren"; inp.className = at ? (at.hdr ? "exren hdrren" : "exren tabren") : "exren"; inp.value = orig;
   inp.spellcheck = false; inp.autocomplete = "off";
   const stop = e => e.stopPropagation();   // the row's click opens, its mousedown drags: neither belongs to the editor
   inp.onclick = stop; inp.onmousedown = stop; inp.onauxclick = stop; inp.ondblclick = stop; inp.oncontextmenu = stop;
@@ -7453,9 +7482,12 @@ function exRenStart(kind, path, at) {      // at (issue #142): {row, tn, tab, g}
   tn.textContent = "";
   tn.appendChild(inp);
   row.classList.add("renaming");
-  exRen = { path, kind, inp, tn, row, orig, label, tab: at ? at.tab : null, moving: false };
+  exRen = { path, kind, inp, tn, row, orig, label, tab: at ? at.tab || null : null, hdr: !!(at && at.hdr), moving: false };
   inp.focus();
-  inp.select();
+  const dot = orig.lastIndexOf("."), cc = at && typeof at.caret === "number" ? Math.max(0, Math.min(at.caret, orig.length)) : -1;
+  if (cc >= 0) inp.setSelectionRange(cc, cc);
+  else if (at && at.stem && dot > 0) inp.setSelectionRange(0, dot);
+  else inp.select();
   updateTitle();
   return true;
 }
@@ -7464,7 +7496,7 @@ function exRenClose() {                    // revert the row to its label; nothi
   if (!r) return;
   exRen = null;                            // FIRST: removing a focused input may fire blur, which must find no editor
   r.row.classList.remove("renaming");
-  if (r.inp.isConnected) r.tn.textContent = r.tab ? r.label : r.orig;
+  if (r.inp.isConnected) r.tn.textContent = r.tab || r.hdr ? r.label : r.orig;
   if (noticeSrc === "exren") say("", "exren");
   updateTitle();
 }
@@ -7491,8 +7523,35 @@ async function exRenCommit(blur) {
   for (const h of groups()) {              // every pane showing the note lands its pending bytes before the move
     const at = h.active >= 0 ? h.tabs[h.active] : null;
     if (at && !at.kind && at.name === r.path) await flushSave(h);
+    for (const tb of h.tabs) if (tb.kind === "unk" && pvNoteName(tb) === r.path) {   // #239: a board on the note lands its bytes too
+      const v = pvViewOf(tb);
+      if (v && typeof v.save === "function") try { await v.save(); } catch (e) { console.error("[plugin] save before rename:", e); }
+    }
   }
   await renameThenAsk(r.path, dir + t);   // NAMES CARRY NO EXTENSION (R34.1 note)
+}
+/* the live plugin view of a plugin-view tab, or null */
+function pvViewOf(t) {
+  if (!t || t.kind !== "unk" || !PLG) return null;
+  try { const l = PLG.app.workspace.getLeavesOfType(t.utype).find(x => x && x._t === t); return (l && l.view) || null; } catch (_) { return null; }
+}
+/* issue #239 — THE VIEW-HEADER TITLE RENAMES THE FILE (stock 1.13.7, black-box: a single click on an Excalidraw
+   board's header title "Drawing.excalidraw" makes it an editable name, as on a note). views.js FileView paints
+   the title and calls this on a click; the editor is the #101/#142 inline editor hosted in the title, the caret
+   at the clicked character (stock places a caret, it selects nothing). A note-backed view commits as the note
+   (renameThenAsk -> applyRename: disk, tabs, explorer, bookmarks, the Update links question); the refusals
+   are the tab editor's. [hdrren:<vault path>|sel=<selected text>] is published while it is open. */
+function pvTitleRename(view, e) {
+  const t = view && view.leaf && view.leaf._t, f = view && view.file, el = view && view.titleEl;
+  if (!t || !f || !el || !el.isConnected || el.querySelector(".exren")) return false;
+  const p = String(f.path || "");
+  if (!/\.md$/i.test(p)) return false;     // only a note-backed view renames through the note tail
+  let caret = p.slice(0, -3).split("/").pop().length;   // no hit on the text (a click beside it): the caret at the end
+  try {
+    const cr = e && document.caretRangeFromPoint ? document.caretRangeFromPoint(e.clientX, e.clientY) : null;
+    if (cr && cr.startContainer && el.contains(cr.startContainer)) caret = cr.startOffset;
+  } catch (_) {}
+  return exRenStart("note", p.slice(0, -3), { row: el, tn: el, tab: null, hdr: true, caret });
 }
 
 /* ---------- R24.6: DRAG A NOTE ONTO A FOLDER ROW TO MOVE IT ----------------
