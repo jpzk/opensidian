@@ -528,3 +528,26 @@ fn fs_identical_retry_repairs_a_missing_log_record() {
         .collect();
     assert!(stray.is_empty());
 }
+
+#[test]
+fn http_incomplete_response_is_io_so_a_destroy_confirm_replays() {
+    // a peer that cuts the body short (Content-Length 50, 4 bytes sent) and
+    // one that closes before the header: both are network failures (Io), the
+    // class destroy_vault replays the confirm for; a garbage peer stays
+    // Protocol (http_refuses_remote_plaintext_and_garbage_peers)
+    for reply in [&b"HTTP/1.1 200 OK\r\nContent-Length: 50\r\n\r\n{\"ab"[..], &b""[..]] {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let h = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut s, _) = l.accept().unwrap();
+            let mut b = [0u8; 512];
+            let _ = s.read(&mut b);
+            let _ = s.write_all(reply);
+        });
+        let t = HttpTransport::new(&format!("http://127.0.0.1:{port}"), Roots::System).unwrap();
+        let r = t.health();
+        assert!(matches!(r, Err(TransportError::Io(_))), "{:?}", r.err());
+        h.join().unwrap();
+    }
+}

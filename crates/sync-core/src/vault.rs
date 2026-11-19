@@ -852,7 +852,15 @@ pub fn pair_complete(p: &FipsProvider, t: &dyn Transport, m: &mut Member, code: 
         let free = next.slots.iter().position(|s| s.state == SlotState::Empty).ok_or(VaultError::SlotsFull)?;
         next.slots[free] = Slot { state: SlotState::Active, device_id, key_alg, pubkey: pubkey.clone() };
         match append(p, t, &m.env, &ns, &mut m.chain, next, CfgSigner::Slot(own), &m.device.key) {
-            Err(VaultError::Fork) => m.chain = fetch_chain(p, t, &m.env, &ns, None)?,
+            Err(VaultError::Fork) => {
+                // a concurrent extension is installed and retried; a shorter
+                // or divergent chain (rollback) is refused like refresh_chain
+                let chain = fetch_chain(p, t, &m.env, &ns, None)?;
+                if !chain.extends(&m.chain) {
+                    return Err(chain_err("cfg chain rolled back or forked"));
+                }
+                m.chain = chain;
+            }
             Ok(()) => {
                 // best effort: a leftover reply holds only a public key and
                 // the server GC drops pair rows; a second complete is refused

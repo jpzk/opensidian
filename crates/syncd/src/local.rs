@@ -743,12 +743,12 @@ impl LocalEngine {
             if after.0.contains_key(path) {
                 continue;
             }
-            if workdir::disk_sha(&self.p, &root, path).map_err(io_err)? != Some(f.sha256) {
+            if !workdir::disk_is(&self.p, &root, path, Some(f.sha256)).map_err(io_err)? {
                 sum.skipped += 1;
                 continue;
             }
             hist.with(&mut |s| s.snapshot_before_delete(path, now as u64).map(|_| ()))?;
-            if workdir::disk_sha(&self.p, &root, path).map_err(io_err)? != Some(f.sha256) {
+            if !workdir::disk_is(&self.p, &root, path, Some(f.sha256)).map_err(io_err)? {
                 sum.skipped += 1;
                 continue;
             }
@@ -761,14 +761,14 @@ impl LocalEngine {
             if scanned == Some(te.sha256) {
                 continue;
             }
-            if workdir::disk_sha(&self.p, &root, path).map_err(io_err)? != scanned {
+            if !workdir::disk_is(&self.p, &root, path, scanned).map_err(io_err)? {
                 sum.skipped += 1;
                 continue;
             }
             let bytes = e.read(te, &roster).map_err(engine_err)?;
             if scanned.is_some() {
                 hist.with(&mut |s| s.snapshot_before_overwrite(path, now as u64).map(|_| ()))?;
-                if workdir::disk_sha(&self.p, &root, path).map_err(io_err)? != scanned {
+                if !workdir::disk_is(&self.p, &root, path, scanned).map_err(io_err)? {
                     sum.skipped += 1;
                     continue;
                 }
@@ -843,6 +843,18 @@ impl LocalEngine {
                 return Err(ApiError::new(
                     "bad-request",
                     format!("{} holds a move of another folder ({})", staging.display(), e.cfg.vault_dir.display()),
+                ));
+            }
+            // an explicit destination must be the one the staged vault was
+            // created on (a same-destination retry needs no new token)
+            if mv.url.is_some_and(|u| u != e.cfg.url) || mv.ca_file.as_ref().is_some_and(|c| e.cfg.ca_file.as_ref() != Some(c)) {
+                return Err(ApiError::new(
+                    "bad-request",
+                    format!(
+                        "{} holds a move to another server ({}); finish or remove it before moving elsewhere",
+                        staging.display(),
+                        e.cfg.url
+                    ),
                 ));
             }
             let w = e.reveal_words()?;

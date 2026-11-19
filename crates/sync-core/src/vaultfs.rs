@@ -183,11 +183,36 @@ pub fn remove(root: &Path, rel: &str) -> io::Result<()> {
 pub fn remove_empty_dir(root: &Path, rel: &str) -> io::Result<bool> {
     let Some(p) = anchored(root, rel, false)? else { return Ok(false) };
     match fs::symlink_metadata(&p) {
-        Ok(md) if md.is_dir() && !md.file_type().is_symlink() => fs::remove_dir(&p).map(|_| true),
+        Ok(md) if md.is_dir() && !md.file_type().is_symlink() => {
+            // a folder that holds only empty folders is empty for sync (only
+            // files sync): prune those first; files and symlinks are kept, and
+            // then remove_dir fails, so the caller skips the write
+            prune_empty_subdirs(&p)?;
+            fs::remove_dir(&p).map(|_| true)
+        }
         Ok(_) => Ok(false),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(e) => Err(e),
     }
+}
+
+/// Remove every empty real subdirectory below `dir` (depth first). Symlinks
+/// are never followed or removed; a non-empty dir is left in place.
+fn prune_empty_subdirs(dir: &Path) -> io::Result<()> {
+    for e in fs::read_dir(dir)? {
+        let e = e?;
+        let ft = e.file_type()?;
+        if ft.is_dir() && !ft.is_symlink() {
+            let p = e.path();
+            prune_empty_subdirs(&p)?;
+            match fs::remove_dir(&p) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::DirectoryNotEmpty => {}
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(all(test, unix))]
@@ -279,6 +304,15 @@ mod tests {
         assert!(!remove_empty_dir(&t, "link").unwrap(), "a symlink is left alone");
         assert!(t.join("target").is_dir());
         assert!(!remove_empty_dir(&t, "nope").unwrap());
+        fs::create_dir_all(t.join("nest/x/y")).unwrap();
+        fs::create_dir_all(t.join("nest/z")).unwrap();
+        assert!(remove_empty_dir(&t, "nest").unwrap(), "only empty folders inside: removed");
+        assert!(!t.join("nest").exists());
+        fs::create_dir_all(t.join("keep/x")).unwrap();
+        fs::write(t.join("keep/x/n.md"), b"n").unwrap();
+        fs::create_dir_all(t.join("keep/e")).unwrap();
+        assert!(remove_empty_dir(&t, "keep").is_err(), "a file deep inside is kept");
+        assert!(t.join("keep/x/n.md").is_file());
         let _ = fs::remove_dir_all(&t);
     }
 }

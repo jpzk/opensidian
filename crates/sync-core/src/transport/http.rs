@@ -322,9 +322,18 @@ impl HttpTransport {
 
     fn connect(&self, timeout: Duration) -> Result<Deadline> {
         let until = Instant::now() + timeout + REQUEST_BUDGET;
-        let addrs = (self.base.host.as_str(), self.base.port)
-            .to_socket_addrs()
-            .map_err(|e| TransportError::Io(format!("resolve {}: {e}", self.base.host)))?;
+        // getaddrinfo has no timeout of its own: resolve on a helper thread
+        // and wait at most until the request deadline (a hung resolver
+        // thread is left behind, the request fails on time)
+        let (host, port) = (self.base.host.clone(), self.base.port);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send((host.as_str(), port).to_socket_addrs().map(|i| i.collect::<Vec<_>>()));
+        });
+        let addrs = match rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
+            Ok(r) => r.map_err(|e| TransportError::Io(format!("resolve {}: {e}", self.base.host)))?,
+            Err(_) => return Err(TransportError::Io(format!("resolve {}: timed out", self.base.host))),
+        };
         let mut last = None;
         for a in addrs {
             // Plain http:// is allowed for a loopback host only (BaseUrl::parse);
@@ -334,7 +343,13 @@ impl HttpTransport {
                 last = Some(std::io::Error::other(format!("{} resolves to non-loopback {}", self.base.host, a.ip())));
                 continue;
             }
-            match TcpStream::connect_timeout(&a, CONNECT_TIMEOUT) {
+            // each attempt gets at most the time left before the deadline
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                last = Some(std::io::Error::new(std::io::ErrorKind::TimedOut, "request deadline passed while connecting"));
+                break;
+            }
+            match TcpStream::connect_timeout(&a, CONNECT_TIMEOUT.min(left)) {
                 Ok(s) => {
                     s.set_read_timeout(Some(timeout)).map_err(io)?;
                     s.set_write_timeout(Some(timeout)).map_err(io)?;
@@ -432,7 +447,8 @@ fn read_response<S: Read>(s: &mut S) -> Result<Resp> {
         }
         let n = read_some(s, &mut chunk)?;
         if n == 0 {
-            return Err(TransportError::Protocol("connection closed before response header".into()));
+            // incomplete, not malformed: a network failure (retryable like Io)
+            return Err(TransportError::Io("connection closed before response header".into()));
         }
         buf.extend_from_slice(&chunk[..n]);
     };
@@ -473,7 +489,9 @@ fn read_response<S: Read>(s: &mut S) -> Result<Resp> {
                 let want = (len - r.body.len()).min(chunk.len());
                 let n = read_some(s, &mut chunk[..want])?;
                 if n == 0 {
-                    return Err(TransportError::Protocol("truncated response body".into()));
+                    // a cut connection, not a malformed response: Io, so a destroy
+                    // confirm replays (spec §5: the receipt is stored server-side)
+                    return Err(TransportError::Io("truncated response body".into()));
                 }
                 r.body.extend_from_slice(&chunk[..n]);
             }

@@ -5,7 +5,8 @@ Status: FIXED = changed in this branch (commit named; built, tested and
 clippy -D warnings on the build box); WONTFIX = not changed, with the
 reason; OBSOLETE = the finding concerned device revocation, which was
 removed by operator decision 2026-11-19 (compromise = burn and move,
-spec §4.9). 0 OPEN since 2026-11-19 (each item names its commit or reason).
+spec §4.9). Round 1 (this list, 5aab838): 0 OPEN since 2026-11-19 (each item
+names its commit or reason). Round 2 (eceb25c): section at the end.
 
 - crates/sync-crypto/tests/wycheproof.rs:12-12 Preserve the pinned fixture bytes on checkout. — FIXED (42235fe: .gitattributes marks crates/sync-crypto/vectors/** and wordlists/** -text; the test still asserts the pinned sha256)
 - crates/sync-core/src/vault.rs:708-709 Recover a published envelope when the cfg append fails. — OBSOLETE by operator decision 2026-11-19 (revocation removed, compromise = burn and move, spec §4.9: there is no revoke and no epoch+1 envelope to recover; the code was deleted in af3b8b2. Was FIXED in 3604d56: revoke retry adopts the envelope gen+1 a failed attempt published when it is exactly the old one plus a key at epoch+1, same vault + servers; else refused with refresh-first; test revoke_retry_adopts_the_envelope_a_failed_attempt_published)
@@ -75,3 +76,58 @@ spec §4.9). 0 OPEN since 2026-11-19 (each item names its commit or reason).
 - docs/sync/spec.md:297-303 Rotate the phrase before publishing a new epoch to a former device. — OBSOLETE by operator decision 2026-11-19 (revocation removed; the cut-off this finding asked for is now the only remedy: burn and move to a new vault with new words, spec §4.9, threat-model T7/R6. Was WONTFIX for suite v1: without public-key encryption the new VK can only reach the remaining devices through the S-derived envelope, so any holder of S reads it; the only fix is rotating S, which re-roots the vault (new loc/K_wrap, new K_rsig = new cfg genesis anchor, new K_destroy = server re-enrollment) and needs a cfg wire change + a server endpoint, i.e. a suite-v2 protocol change, not a patch. Mitigation shipped: spec §4.6 + threat model R6 state the limit, the CLI revoke reply carries REVOKE_WARNING (create a new vault with new words to cut off a device that held S). Product decision recorded in goal QUESTION-phrase-rotation.md.)
 - docs/sync/key-tree.md:3-4 Remove the validation claim. — FIXED (docs)
 - src-tauri/src/main.rs:8381-8382 Keep the vault open when the user closes Sync. (outside diff) — FIXED (93ca6cc: on_window_event returns early for SYNC_LABEL; test sync_window_close_skips_winsize_and_quit)
+## Round 2: CodeRabbit review of eceb25c (2026-11-19, full re-review)
+
+After the `src-tauri/vendor/**` path filter (eceb25c) CodeRabbit re-reviewed
+the whole branch: review 5976925092 + follow-up comments 7012073086,
+7012074524, 7012075966. Critical: 0. Major: 48 — FIXED 18, WONTFIX 4,
+OPEN 26. Minor/trivial findings are not triaged here.
+
+- crates/sync-core/src/history/mod.rs:719 Verify or repair the blob before returning `Unchanged`. — FIXED (7c08dc1: record_sync_loser (journal already has the record) and store_bytes (head unchanged) run the bytes through the verified CAS put, which repairs a truncated/missing blob without a second journal entry; Cas::contains removed)
+- crates/sync-core/src/history/mod.rs:715 Oversized sync losers lose their history entry, and the head still advances. — FIXED (7c08dc1: policy = a merge loser is always kept (threat model D4): no max_file_bytes skip in record_sync_loser, so it is never reported as skipped while the merged head advances; its size is bounded by what sync transfers)
+- crates/syncd/src/local.rs:846 Persist a resumable destruction phase before promoting the new state. — OPEN
+- crates/sync-crypto/src/fips.rs:90 Verify the loaded provider version before reporting CMVP `#5586`. — FIXED (288b1ff: init reads the loaded fips provider's own `version` parameter via OSSL_PROVIDER_get_params and refuses unless it is 3.5.9, separate from the libcrypto core version)
+- crates/sync-crypto/src/fips.rs:95-97 Reject configurations that disable required FIPS checks. — FIXED (288b1ff: init refuses unless the provider reports status 1 and security-checks, hmac-key-check, hkdf-key-check, signature-digest-check = 1; test fips_refuse::refuses_when_security_checks_disabled uses the real module + MAC with security-checks = 0, the -pedantic config is the positive control)
+- crates/sync-core/src/history/cas.rs:62-67 Retry the parent-directory sync for a newly created shard. — FIXED (7c08dc1: Cas::put syncs objects/ after mkdir on every put, so a failed sync of a fresh shard's entry is retried, never assumed)
+- crates/sync-core/src/history/cas.rs:58 Confirm blob durability before returning a deduplication hit. — FIXED (7c08dc1: a verified dedup hit syncs objects/ and the shard before returning)
+- crates/sync-core/src/engine.rs:664-665 Validate secondary parents before adopting a merge tip. — OPEN
+- crates/sync-core/src/engine.rs:477 Keep the live head aligned with the published state file. — OPEN
+- crates/sync-core/src/engine.rs:663-666 Select tips after excluding commits with invalid trees. — OPEN
+- crates/sync-core/src/history/mod.rs:675 Do not overwrite a disk version that restore did not capture. — OPEN
+- crates/sync-core/src/history/mod.rs:924 Confirm journal durability before GC on retry. — FIXED (7c08dc1: thin syncs the store root before EVERY sweep, including a retry whose rewrite was a no-op; a failed sync stops before the sweep)
+- crates/sync-core/src/history/mod.rs:381-384 Sync the staged store after creating `store.json`. — FIXED (7c08dc1: copy_store syncs the staged dir after writing store.json and before the publishing rename, keeps the destination-parent sync, and syncs the parent of a freshly created history parent)
+- crates/sync-core/src/history/fsx.rs:48 Windows path can delete history blobs before the journal replacement is durable. — WONTFIX (sync does not run off unix: FileKeystore::open refuses on non-unix platforms (fail closed since 42235fe), so the Windows rename path in fsx is never reached by a running sync; a Windows port needs a real keystore and FlushFileBuffers on the directory handle, recorded as a follow-up)
+- crates/sync-core/src/transport/fs.rs:247-250 Finish a failed log sync before returning `Identical`. — FIXED (7c08dc1: identical() syncs the object's dir and, when the log record is already present, the log file + namespace dir before returning Identical; no duplicate record)
+- crates/sync-core/src/transport/fs.rs:369-370 Do not list an object until its directory entry is durable. — FIXED (7c08dc1: put propagates a failed open/sync of the object's parent dir (was ignored) before the log append; the identical() retry path syncs it too)
+- crates/sync-core/src/transport/fs.rs:184-189 Do not combine bytes across a log tail repair. — OPEN
+- crates/sync-core/src/transport/fs.rs:240 Sync the namespace directory when the log is created. — FIXED (7c08dc1: append_log syncs the namespace dir after the log data on every append, errors propagated, so a failed earlier dir sync is retried)
+- crates/sync-core/src/vaultfs.rs:176 Handle empty subdirectories when a synced file replaces a folder. — OPEN
+- crates/sync-core/src/vaultfs.rs:32 Reject Windows path prefixes before appending components. — FIXED (288b1ff: vaultfs::components requires every segment to be exactly one native Component::Normal equal to itself before anything is pushed onto the root)
+- crates/sync-core/src/vaultfs.rs:113 Do not infer a deletion from a file that vanishes during the scan. — OPEN
+- crates/sync-core/src/merge/dmp.rs:384-392 Anchor each hunk to the original occurrence in `ours`. — OPEN
+- crates/sync-core/src/transport/mod.rs:232-234 Replay confirmation when the HTTP response ends early. — OPEN
+- crates/sync-core/src/transport/http.rs:323-324 Apply the request deadline to resolution and connection attempts. — OPEN
+- crates/syncd/src/workdir.rs:100 Skip blocked paths before the materialization hash check aborts sync. — OPEN
+- crates/syncd/src/workdir.rs:87-90 Abort the scan when a file disappears after enumeration. — OPEN
+- crates/sync-core/tests/transport.rs:325-328 Retry the destroy confirm when the response body is truncated. — OPEN
+- src-tauri/src/syncui.rs:275-279 Bind the move to the vault the user approved. — FIXED (288b1ff: sync_move reads the vault id before the consent dialog; the worker refuses with "the sync vault changed while the move was being approved" when the engine's vault id differs)
+- crates/sync-server/src/store.rs:775-778 Keep failed file reclamation retryable. — OPEN
+- crates/sync-server/src/store.rs:191-204 Serialize destroy recovery with live destroy operations. — OPEN
+- crates/sync-server/src/store.rs:665-675 Make the destroy rename durable before committing the tombstone. — FIXED (7c08dc1: destroy syncs objects/ and tmp/ after moving the vault tree and before the tombstone commit; a failed sync renames the tree back and the transaction rolls back; open still restores an uncommitted staged tree)
+- crates/sync-server/src/store.rs:774-775 Prevent pairing GC from unlinking a replacement object. — OPEN
+- crates/sync-server/src/store.rs:396-402 Provide a recovery path when envelope storage reaches its limit. — OPEN
+- crates/sync-server/src/store.rs:438 Sync parent entries even when a failed PUT left the directories in place. — FIXED (7c08dc1: PUT syncs the object's dir and every ancestor entry up to objects/ on every publish, not only dirs this call created)
+- crates/sync-core/src/vault.rs:855 Reject cfg rollback during pairing retries. — OPEN
+- crates/sync-server/src/lib.rs:197-198 Sync the receipt-key directory before adopting an existing key. — FIXED (7c08dc1: the data dir is synced before any path returns the receipt key: existing key, newly published key, and the race-loser adoption)
+- crates/sync-core/src/keystore.rs:184 Sync the parent of each directory that `open` creates. — FIXED (7c08dc1: FileKeystore::open syncs the parent of each directory it creates, stopping at the first existing ancestor; put keeps the leaf sync)
+- crates/syncd/src/ipc.rs:178-179 Authenticate the connected daemon before sending backup words. — WONTFIX (check_daemon_socket already requires a 0700 socket dir owned by our uid and a socket inode owned by our uid, checked before connect and before every request; only our uid or root can bind a socket in that directory, and both can read the keystore anyway, so a peer-UID check adds no boundary; SO_PEERCRED needs libc/unsafe (std UnixStream::peer_cred is unstable) -> new dependency not taken)
+- crates/syncd/src/local.rs:901-902 Make a move resumable after the old vault is destroyed. — OPEN
+- crates/syncd/src/local.rs:839-842 Reject staged vaults that do not match the requested destination. — OPEN
+- crates/syncd/src/local.rs:755 Preserve edits made after the final disk check. — OPEN
+- crates/syncd/src/local.rs:376-379 Failure after enrollment leaves a setup that cannot resume. — OPEN
+- crates/syncd/src/local.rs:711 Late local edits commit on the remote head and revert its changes. — OPEN
+- crates/syncd/src/api.rs:100-103 Show the local key cleanup failure in the burn-and-move result. — FIXED (288b1ff: opensidian-syncd move prints a WARNING with cleanup_error and the old vault id; the app's move result appends the same warning)
+- src-tauri/src/main.rs:2175 A restore of the open note can be silently reverted by the editor's autosave. — OPEN
+- docs/sync/spec.md:428 Document recovery after destruction succeeds. — OPEN
+- src-tauri/.cargo/audit.toml:37 Pin the server CA or re-vendor `rustls-webpki` before accepting this ignore. — WONTFIX until 2026-12-01 (the fix rustls-webpki 0.103.16 was released 2026-10-20, < 6 weeks old, so the project rule forbids it until 2026-12-01 = the ignore's EXPIRES date; reachable only with Roots::System and a server chain through the distrusted emSign intermediates; vault data is end-to-end encrypted and authenticated with keys the server never sees; deps.md says pin the server CA (Roots::Pem / --ca-file); deps.md + VEX record it as exploitable with that expiry)
+- supply-chain/vex.cdx.json:958 Fix the reachable certificate-verification vulnerability before deferring it. — WONTFIX until 2026-12-01 (same as the audit.toml ignore above: 0.103.16 < 6 weeks old; re-vendor with the noring patch at expiry)

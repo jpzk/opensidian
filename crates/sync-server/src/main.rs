@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! opensidian-sync-server serve --data DIR [--listen ADDR] [--max-object BYTES]
-//!                              [--retention-days N]
+//!                              [--retention-days N] [--max-env-total BYTES]
 //! opensidian-sync-server vault create --data DIR [--quota BYTES] [--ttl-hours N]
 //! ```
 #![forbid(unsafe_code)]
@@ -21,14 +21,17 @@ const USAGE: &str = "opensidian-sync-server — self-host storage for Opensidian
 
 USAGE:
   opensidian-sync-server serve --data DIR [--listen ADDR] [--max-object BYTES]
-                               [--retention-days N] [--tls-cert PEM --tls-key PEM]
+                               [--retention-days N] [--max-env-total BYTES]
+                               [--tls-cert PEM --tls-key PEM]
   opensidian-sync-server vault create --data DIR [--quota BYTES] [--ttl-hours N]
   opensidian-sync-server --help | --version
 
 serve         run the /v1 API. Default --listen 127.0.0.1:8471. With --tls-cert
               (PEM chain, leaf first) and --tls-key (PEM key) it speaks TLS 1.3
               on the OpenSSL 3 FIPS provider. Without TLS only loopback addresses
-              are accepted.
+              are accepted. --max-env-total caps the tokenless envelope
+              namespace (default 256 MiB); a full one answers 507 to every
+              new envelope write: raise it and restart (envelopes are kept).
 vault create  print a one-time enrollment token for a new vault (default
               valid 168 h). Hand it to the client's setup; there is no open
               registration.
@@ -44,6 +47,7 @@ struct Args {
     data: Option<PathBuf>,
     listen: SocketAddr,
     max_object: Option<u64>,
+    max_env_total: Option<u64>,
     retention_days: Option<i64>,
     quota: Option<u64>,
     ttl_hours: i64,
@@ -56,6 +60,7 @@ fn parse_flags(it: &mut dyn Iterator<Item = String>) -> Args {
         data: None,
         listen: "127.0.0.1:8471".parse().expect("static addr"),
         max_object: None,
+        max_env_total: None,
         retention_days: None,
         quota: None,
         ttl_hours: 168,
@@ -68,6 +73,7 @@ fn parse_flags(it: &mut dyn Iterator<Item = String>) -> Args {
             "--data" => a.data = Some(PathBuf::from(val())),
             "--listen" => a.listen = val().parse().unwrap_or_else(|_| die("bad --listen")),
             "--max-object" => a.max_object = Some(val().parse().unwrap_or_else(|_| die("bad --max-object"))),
+            "--max-env-total" => a.max_env_total = Some(val().parse().unwrap_or_else(|_| die("bad --max-env-total"))),
             "--retention-days" => {
                 a.retention_days = Some(val().parse().unwrap_or_else(|_| die("bad --retention-days")))
             }
@@ -86,6 +92,9 @@ fn app(a: &Args) -> Arc<App> {
     let mut cfg = Config::new(data);
     if let Some(m) = a.max_object {
         cfg.max_object = m;
+    }
+    if let Some(m) = a.max_env_total {
+        cfg.max_env_total = m;
     }
     if let Some(d) = a.retention_days {
         cfg.retention_secs = d.saturating_mul(86_400);

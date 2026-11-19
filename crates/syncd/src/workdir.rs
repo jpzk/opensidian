@@ -86,7 +86,9 @@ pub fn scan<P: CryptoProvider + ?Sized>(p: &P, root: &Path) -> io::Result<(BTree
                 // handle == lstat inode); it may vanish or turn into a link
                 let (bytes, md) = match vaultfs::read_regular(root, &rel, u64::MAX)? {
                     Found::Bytes(b, md) => (b, md),
-                    _ => continue,
+                    // enumerated as a regular file, gone or no longer regular
+                    // now: abort the scan for a retry, never read it as a delete
+                    _ => return Err(io::Error::other(format!("{rel}: changed while scanning, retry"))),
                 };
                 out.insert(rel, DiskFile { sha256: p.sha256(&bytes), size: bytes.len() as u64, mtime_ms: mtime_ms(&md) });
             }
@@ -95,11 +97,16 @@ pub fn scan<P: CryptoProvider + ?Sized>(p: &P, root: &Path) -> io::Result<(BTree
     Ok((out, skipped))
 }
 
-/// Current sha256 of one file (None = absent / not a regular file).
-pub fn disk_sha<P: CryptoProvider + ?Sized>(p: &P, root: &Path, rel: &str) -> io::Result<Option<[u8; 32]>> {
-    match vaultfs::read_regular(root, rel, u64::MAX)? {
-        Found::Bytes(b, _) => Ok(Some(p.sha256(&b))),
-        _ => Ok(None),
+/// Does the disk still hold `want` at `rel` (`None` = no regular file)?
+/// A path vaultfs refuses (symlinked parent, unsafe segment) is `false`:
+/// a per-path skip for the caller, not an error that aborts the pass;
+/// genuine read failures still propagate.
+pub fn disk_is<P: CryptoProvider + ?Sized>(p: &P, root: &Path, rel: &str, want: Option<[u8; 32]>) -> io::Result<bool> {
+    match vaultfs::read_regular(root, rel, u64::MAX) {
+        Ok(Found::Bytes(b, _)) => Ok(want == Some(p.sha256(&b))),
+        Ok(_) => Ok(want.is_none()),
+        Err(e) if e.kind() == io::ErrorKind::InvalidInput => Ok(false),
+        Err(e) => Err(e),
     }
 }
 
