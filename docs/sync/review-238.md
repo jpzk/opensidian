@@ -2,6 +2,7 @@
 
 Critical: 0 (the review posted no inline/critical comments). Major: 68.
 Status: FIXED = changed in this branch (commit named; built, tested and
+clippy -D warnings on the build box); WONTFIX = not changed, with the
 reason. 0 OPEN since 2026-11-19 (each item names its commit or reason).
 
 - crates/sync-crypto/tests/wycheproof.rs:12-12 Preserve the pinned fixture bytes on checkout. — FIXED (42235fe: .gitattributes marks crates/sync-crypto/vectors/** and wordlists/** -text; the test still asserts the pinned sha256)
