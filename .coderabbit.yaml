@@ -1,0 +1,6 @@
+# CodeRabbit: skip the vendored upstream crate (src-tauri/vendor/rustls-webpki-0.103.15 is the
+# crates.io source plus the patch recorded in docs/sync/deps.md; reviewing upstream code inline is
+# noise, and its 28 files pushed the #238 incremental review over the 100-file limit).
+reviews:
+  path_filters:
+    - "!src-tauri/vendor/**"
