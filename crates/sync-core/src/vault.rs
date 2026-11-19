@@ -63,6 +63,12 @@ pub enum VaultError {
     Chain(String),
     /// No envelope under these words on this server.
     NoVault,
+    /// The words open an envelope, but the server no longer knows its
+    /// namespace (401 unknown vault / 410 destroyed): the vault was destroyed
+    /// (burned). The envelope itself outlives a destroy — the server cannot
+    /// link `loc` to the namespace — but it only holds keys of purged data and
+    /// dead tokens.
+    Destroyed,
     /// Someone else wrote this generation first (write-once 409): re-fetch, retry.
     Fork,
     SlotsFull,
@@ -79,6 +85,7 @@ impl fmt::Display for VaultError {
             VaultError::Format(e) => write!(f, "vault format: {e}"),
             VaultError::Chain(e) => write!(f, "vault cfg chain: {e}"),
             VaultError::NoVault => f.write_str("no vault for these words on this server"),
+            VaultError::Destroyed => f.write_str("the vault of these words was destroyed on this server (burned); nothing to join"),
             VaultError::Fork => f.write_str("vault: concurrent writer won this generation, retry"),
             VaultError::SlotsFull => f.write_str("vault: all 32 device slots are used"),
             VaultError::NotMember => f.write_str("vault: this device is not on the vault's device list"),
@@ -452,8 +459,7 @@ pub fn fetch_envelope(p: &FipsProvider, t: &dyn Transport, root: &RootKeys) -> R
         let id = env_id(p, &root.loc, g);
         let bytes = match t.get(ObjKind::Env, &Id16::ZERO, &id, None) {
             Ok(f) => f.bytes,
-            // 410 = the vault was destroyed: no envelope for these words any more
-            Err(e) if is_not_found(&e) || matches!(e, TransportError::Api { code: ErrorCode::Gone, .. }) => break,
+            Err(e) if is_not_found(&e) => break,
             Err(e) => return Err(e.into()),
         };
         let o = open(p, &root.k_wrap, &env_ctx(id), &bytes)?;
@@ -640,7 +646,10 @@ pub fn bootstrap(p: &FipsProvider, t: &HttpTransport, url: &str, phrase: &Phrase
     let s = &env.servers[server];
     t.set_tokens(Tokens { read: Some(s.read_token.clone()), write: Some(s.write_token.clone()) });
     let rk = rsig_key(p, &root)?;
-    let mut chain = fetch_chain(p, t, &env, &ns, Some(rk.public_key().as_slice()))?;
+    let mut chain = fetch_chain(p, t, &env, &ns, Some(rk.public_key().as_slice())).map_err(|e| match e {
+        VaultError::Transport(TransportError::Api { code: ErrorCode::Unauthorized | ErrorCode::Gone, .. }) => VaultError::Destroyed,
+        e => e,
+    })?;
     let device = Device::generate(p, device_name)?;
     add_slot(p, t, &env, &ns, &mut chain, &device, CfgSigner::Recovery, &rk)?;
     Ok(Member { env, device, chain, server })

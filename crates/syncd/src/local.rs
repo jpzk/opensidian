@@ -84,6 +84,7 @@ pub fn vault_err(e: VaultError) -> ApiError {
         VaultError::NotMember => ApiError::new("not-member", e.to_string()),
         VaultError::Transport(_) => ApiError::new("server", e.to_string()),
         VaultError::NoVault => ApiError::new("no-vault", e.to_string()),
+        VaultError::Destroyed => ApiError::new("destroyed", e.to_string()),
         _ => ApiError::new("vault", e.to_string()),
     }
 }
