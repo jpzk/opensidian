@@ -395,6 +395,42 @@ fn soft_delete_retention_and_gc() {
     assert_eq!(s.app.store.vault(&e.ns).unwrap().unwrap().used, 100, "live object still counted");
 }
 
+
+/// GC isolates the exact file (tmp/gc-*) before its commit: a crash between
+/// isolation and commit gets the file back on open (row still live), a
+/// failed unlink after the commit is swept by the next pass without a
+/// second quota debit.
+#[test]
+fn gc_isolated_files_are_restored_or_swept() {
+    let s = start(|c| c.retention_secs = 100);
+    let e = enroll(&s, Some(10_000));
+    let (w, rd) = (bearer(&e.write_token), bearer(&e.read_token));
+    let p = obj_path(&e.ns, &id(1));
+    let c = container(id(1), 44, 5);
+    assert_eq!(call(s.addr, "PUT", &p, &[("Authorization", &w)], &c).status, 201);
+    assert_eq!(call(s.addr, "DELETE", &p, &[("Authorization", &w)], b"").status, 202);
+    let h = id(1).to_hex();
+    let file = s.dir.join("objects").join(e.ns.to_hex()).join("obj").join(&h[..2]).join(&h);
+    assert!(file.is_file(), "{}", file.display());
+    let iso = s.dir.join("tmp").join(format!("gc-{}-0-{h}", e.ns.to_hex()));
+    // crash after the isolation, before the commit: the row is still live
+    std::fs::rename(&file, &iso).unwrap();
+    let st = sync_server::Store::open(&s.dir).expect("reopen");
+    assert!(file.is_file() && !iso.exists(), "isolated file put back for a live row");
+    drop(st);
+    let r = call(s.addr, "GET", &format!("{p}?deleted=1"), &[("Authorization", &rd)], b"");
+    assert_eq!((r.status, &r.body), (200, &c));
+    assert_eq!(s.app.store.gc(now_unix() + 101).unwrap(), 1);
+    assert!(!file.exists() && !iso.exists());
+    assert_eq!(s.app.store.vault(&e.ns).unwrap().unwrap().used, 0);
+    // a reclaimed object whose unlink failed: the leftover is swept, no debit
+    std::fs::write(&iso, &c).unwrap();
+    let c2 = container(id(2), 44, 5);
+    assert_eq!(call(s.addr, "PUT", &obj_path(&e.ns, &id(2)), &[("Authorization", &w)], &c2).status, 201);
+    assert_eq!(s.app.store.gc(now_unix() + 202).unwrap(), 0);
+    assert!(!iso.exists() && !file.exists(), "swept, not restored over a reclaimed row");
+    assert_eq!(s.app.store.vault(&e.ns).unwrap().unwrap().used, 100, "no second debit");
+}
 #[test]
 fn quota_answers_507() {
     let s = start(|_| {});

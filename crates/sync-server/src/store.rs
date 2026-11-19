@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use sync_proto::api::{ErrorCode, ListItem, ObjKind};
 use sync_proto::Id16;
 
@@ -170,7 +170,7 @@ impl Store {
                 .mode(0o700)
                 .create(root.join(sub))?;
         }
-        let conn = Connection::open(root.join("index.sqlite"))?;
+        let mut conn = Connection::open(root.join("index.sqlite"))?;
         conn.execute_batch(SCHEMA)?;
         // Older indexes predate the stored receipt; the columns are additive.
         for col in ["receipt", "chal"] {
@@ -184,12 +184,21 @@ impl Store {
         // A crash between the rename and the commit of a destroy leaves a
         // staged `destroy-<ns>` tree: finish the purge only if the tombstone
         // committed, otherwise the vault still exists and gets its files back.
+        // Each decision holds the SQLite write reservation (BEGIN IMMEDIATE)
+        // from the tombstone check through the filesystem change: a live
+        // destroy in another process holds it from its first DELETE (before
+        // its rename) to its commit, so recovery never restores a tree a
+        // destroy is still committing.
         for e in fs::read_dir(root.join("tmp"))? {
             let e = e?;
             let name = e.file_name().to_string_lossy().into_owned();
             let Some(hex) = name.strip_prefix("destroy-") else { continue };
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            if fs::symlink_metadata(e.path()).is_err() {
+                continue; // handled while we waited for the reservation
+            }
             let committed = match Id16::from_hex(hex) {
-                Ok(ns) => is_destroyed(&conn, &ns)?,
+                Ok(ns) => is_destroyed(&tx, &ns)?,
                 Err(_) => true, // not ours to restore: no vault has this name
             };
             if committed {
@@ -203,11 +212,16 @@ impl Store {
                 fs::rename(e.path(), &dir)?;
                 sync_dir(&root.join("objects"))?;
             }
+            drop(tx); // nothing written: releases the reservation
         }
-        Ok(Store {
+        let s = Store {
             conn: Mutex::new(conn),
             root: root.to_path_buf(),
-        })
+        };
+        // object files a GC pass isolated but did not unlink (or a crash
+        // left between isolation and commit)
+        s.sweep_gc()?;
+        Ok(s)
     }
 
     fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
@@ -730,9 +744,12 @@ impl Store {
     /// again with different bytes. Each object is reclaimed in its own
     /// transaction that re-checks the row, so the quota is debited exactly
     /// once and only for an object this pass actually reclaimed; the file is
-    /// unlinked after the commit (a crash in between leaves an unreferenced
-    /// file, never a row without its bytes).
+    /// moved to `tmp/gc-*` before the commit (under the publication lock)
+    /// and unlinked after it; a failed unlink or a crash in between is
+    /// finished by `sweep_gc` (next pass / open), never a row without its
+    /// bytes and never a newer same-id publication unlinked.
     pub fn gc(&self, now: i64) -> Result<usize> {
+        self.sweep_gc()?;
         let victims: Vec<(Vec<u8>, i64, Vec<u8>)> = {
             let c = self.conn();
             c.execute("DELETE FROM destroy_chal WHERE expires < ?1", params![now])?;
@@ -775,16 +792,93 @@ impl Store {
                 "UPDATE vault SET used = MAX(used - ?2, 0) WHERE ns = ?1",
                 params![&ns.0[..], size],
             )?;
-            tx.commit()?;
-            drop(c);
-            match fs::remove_file(self.obj_path(&ns, kind, &id)) {
-                Ok(()) => {}
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            // Isolate the exact file while the row update is uncommitted and
+            // the publication lock is held (connection mutex + the write
+            // reservation this transaction took with its first UPDATE): a
+            // same-id PUT that publishes after the lock is dropped writes a
+            // new file at the object path, which this pass never touches.
+            let src = self.obj_path(&ns, kind, &id);
+            let iso = self.gc_path(&ns, kind, &id);
+            let moved = match fs::rename(&src, &iso) {
+                Ok(()) => true,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => false,
                 Err(e) => return Err(e.into()),
+            };
+            if let Err(e) = tx.commit() {
+                if moved {
+                    let _ = fs::rename(&iso, &src);
+                }
+                return Err(e.into());
+            }
+            drop(c);
+            // A failed unlink stays retryable: the isolated file is swept by
+            // the next pass / open (`sweep_gc`); the quota was debited once,
+            // in the commit above, and the sweep debits nothing.
+            if moved {
+                match fs::remove_file(&iso) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e.into()),
+                }
             }
             n += 1;
         }
         Ok(n)
+    }
+
+    /// `tmp/gc-<ns>-<kind>-<id>`: an object file a GC pass took out of
+    /// objects/ (one name per object: a pass that finds it already there
+    /// sweeps it first).
+    fn gc_path(&self, ns: &Id16, kind: ObjKind, id: &Id16) -> PathBuf {
+        self.root.join("tmp").join(format!("gc-{}-{}-{}", ns.to_hex(), kind_code(kind), id.to_hex()))
+    }
+
+    /// Finish isolated GC files: a row that is still live and has no file
+    /// at its path (crash between isolation and commit) gets the file back;
+    /// anything else (reclaim committed, or a newer publication owns the
+    /// path) is unlinked. Under the connection lock and the write
+    /// reservation, like the GC pass itself.
+    fn sweep_gc(&self) -> Result<()> {
+        let mut c = self.conn();
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for e in fs::read_dir(self.root.join("tmp"))? {
+            let e = e?;
+            let name = e.file_name().to_string_lossy().into_owned();
+            let Some(rest) = name.strip_prefix("gc-") else { continue };
+            let mut it = rest.splitn(3, '-');
+            let parsed = match (it.next(), it.next(), it.next()) {
+                (Some(ns), Some(k), Some(id)) => match (Id16::from_hex(ns), k.parse::<i64>().ok().and_then(kind_from_code), Id16::from_hex(id)) {
+                    (Ok(ns), Some(k), Ok(id)) => Some((ns, k, id)),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some((ns, kind, id)) = parsed {
+                let live: bool = tx
+                    .query_row(
+                        "SELECT 1 FROM object WHERE ns = ?1 AND kind = ?2 AND id = ?3 AND size > 0 AND expires IS NOT NULL",
+                        params![&ns.0[..], kind_code(kind), &id.0[..]],
+                        |_| Ok(()),
+                    )
+                    .optional()?
+                    .is_some();
+                let dst = self.obj_path(&ns, kind, &id);
+                if live && fs::symlink_metadata(&dst).is_err() {
+                    fs::rename(e.path(), &dst)?;
+                    if let Some(p) = dst.parent() {
+                        sync_dir(p)?;
+                    }
+                    continue;
+                }
+            }
+            match fs::remove_file(e.path()) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        drop(tx);
+        Ok(())
     }
 }
 
