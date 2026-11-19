@@ -2196,6 +2196,12 @@ span.is-flashing { background: var(--highlight-yellow) }
            text-align: center; user-select: text }
 .unkview[hidden] { display: none }
 .unkview .unkt { font-size: 1.1em; color: var(--text-normal, inherit) }
+/* #242: the empty "New tab" leaf (stock 1.13.7 shot: three accent links, centred, one under the other) */
+.empty-state { flex: 1 1 0; display: flex; align-items: center; justify-content: center; min-width: 0 }
+.empty-state[hidden] { display: none }
+.empty-state-container { display: flex; flex-direction: column; align-items: center; gap: 14px }
+.empty-state-action { color: var(--text-accent); cursor: pointer; font-size: 1.05em }
+.empty-state-action:hover { color: var(--text-accent-hover) }
 /* themematch: text selection paints from --text-selection (the accent
    at .2 light / .33 dark, see the tokens); without this the engine default blue showed */
 ::selection { background-color: var(--text-selection) }
