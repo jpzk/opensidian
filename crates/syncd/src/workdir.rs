@@ -13,6 +13,7 @@ use std::time::UNIX_EPOCH;
 
 use sync_core::sync_crypto::CryptoProvider;
 use sync_core::sync_proto::batch::Class;
+use sync_core::vaultfs::{self, Found};
 
 /// Directory names never synced (anywhere in the tree).
 pub const SKIP_DIRS: &[&str] = &[".git", ".trash", ".opensidian-sync"];
@@ -81,8 +82,12 @@ pub fn scan<P: CryptoProvider + ?Sized>(p: &P, root: &Path) -> io::Result<(BTree
                     skipped += 1;
                     continue;
                 }
-                let bytes = fs::read(ent.path())?;
-                let md = ent.metadata()?;
+                // read the file the scan saw, anchored (no symlinked parent,
+                // handle == lstat inode); it may vanish or turn into a link
+                let (bytes, md) = match vaultfs::read_regular(root, &rel, u64::MAX)? {
+                    Found::Bytes(b, md) => (b, md),
+                    _ => continue,
+                };
                 out.insert(rel, DiskFile { sha256: p.sha256(&bytes), size: bytes.len() as u64, mtime_ms: mtime_ms(&md) });
             }
         }
@@ -92,34 +97,32 @@ pub fn scan<P: CryptoProvider + ?Sized>(p: &P, root: &Path) -> io::Result<(BTree
 
 /// Current sha256 of one file (None = absent / not a regular file).
 pub fn disk_sha<P: CryptoProvider + ?Sized>(p: &P, root: &Path, rel: &str) -> io::Result<Option<[u8; 32]>> {
-    let path = abs(root, rel);
-    match fs::symlink_metadata(&path) {
-        Ok(md) if md.is_file() => Ok(Some(p.sha256(&fs::read(&path)?))),
-        Ok(_) => Ok(None),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e),
+    match vaultfs::read_regular(root, rel, u64::MAX)? {
+        Found::Bytes(b, _) => Ok(Some(p.sha256(&b))),
+        _ => Ok(None),
     }
 }
 
-/// Temp file next to the target + rename (parents created).
+/// Bytes of one file, only if they still hash to `want` (the scan result):
+/// a file edited between scan and read is an error, so a commit never
+/// pairs the scanned hash with other content.
+pub fn read_expect<P: CryptoProvider + ?Sized>(p: &P, root: &Path, rel: &str, want: &[u8; 32]) -> io::Result<Vec<u8>> {
+    match vaultfs::read_regular(root, rel, u64::MAX)? {
+        Found::Bytes(b, _) if p.sha256(&b) == *want => Ok(b),
+        _ => Err(io::Error::other(format!("{rel}: changed while syncing, retry"))),
+    }
+}
+
+/// Temp file next to the target + rename; parents are created as real
+/// directories and a symlinked parent is refused (anchored to the vault).
 pub fn write_atomic<P: CryptoProvider + ?Sized>(p: &P, root: &Path, rel: &str, bytes: &[u8]) -> io::Result<()> {
-    let path = abs(root, rel);
-    let dir = path.parent().ok_or_else(|| io::Error::other("no parent"))?;
-    fs::create_dir_all(dir)?;
     let mut r = [0u8; 8];
     p.random(&mut r).map_err(|e| io::Error::other(e.to_string()))?;
-    let tmp = dir.join(format!("{TMP_PREFIX}{}", sync_core::sync_proto::hex_lower(&r)));
-    fs::write(&tmp, bytes)?;
-    if let Err(e) = fs::rename(&tmp, &path) {
-        let _ = fs::remove_file(&tmp);
-        return Err(e);
-    }
-    Ok(())
+    let tmp = format!("{TMP_PREFIX}{}", sync_core::sync_proto::hex_lower(&r));
+    vaultfs::write_atomic(root, rel, bytes, &tmp).map(|_| ())
 }
 
+/// Unlink one file (anchored; a symlink is unlinked, never its target).
 pub fn remove(root: &Path, rel: &str) -> io::Result<()> {
-    match fs::remove_file(abs(root, rel)) {
-        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
-        _ => Ok(()),
-    }
+    vaultfs::remove(root, rel)
 }

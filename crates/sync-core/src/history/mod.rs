@@ -563,19 +563,27 @@ impl Store {
         let sha = e.sha.clone().ok_or_else(|| HistoryError::NotFound(format!("seq {seq} has no bytes")))?;
         let data = self.cas.get(&sha)?;
         validate_path(&e.path)?;
-        self.snapshot_before_overwrite(&e.path, now_ms)?;
-        let dst = self.vault.join(&e.path);
-        let dir = dst.parent().ok_or_else(|| HistoryError::InvalidPath(e.path.clone()))?.to_path_buf();
-        fs::create_dir_all(&dir)?;
-        let name = dst.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let tmp = dir.join(format!(".{name}.osy-restore.tmp"));
-        {
-            let mut f = fs::OpenOptions::new().write(true).create(true).truncate(true).open(&tmp)?;
-            f.write_all(&data)?;
-            f.sync_all()?;
+        // the current file must be captured first: a skipped file (too large,
+        // symlink, symlinked parent, …) would be destroyed with no copy, so
+        // restore stops instead (CodeRabbit #238: history 566)
+        if let Outcome::Skipped(s) = self.snapshot_before_overwrite(&e.path, now_ms)? {
+            return Err(HistoryError::Inconsistent(format!(
+                "{}: current file not captured ({s:?}); restore refused so it is not lost",
+                e.path
+            )));
         }
-        fs::rename(&tmp, &dst)?;
-        fsx::sync_dir(&dir);
+        // anchored write (no symlinked parent, CodeRabbit #238: history 567)
+        // through a create_new temp file (never reuses or follows an existing
+        // entry, history 571), then rename over the target
+        let name = e.path.rsplit('/').next().unwrap_or_default();
+        let tmp = format!(".{name}.osy-restore-{}-{seq}-{now_ms}.tmp", std::process::id());
+        crate::vaultfs::write_atomic(&self.vault, &e.path, &data, &tmp).map_err(|err| {
+            if err.kind() == io::ErrorKind::InvalidInput {
+                HistoryError::InvalidPath(format!("{}: {err}", e.path))
+            } else {
+                HistoryError::Io(err)
+            }
+        })?;
         self.append(Reason::Restore, &e.path, Some(sha), data.len() as u64, None, now_ms)
     }
 
@@ -875,22 +883,15 @@ impl Store {
         Ok(Outcome::Stored(self.append(reason, path, Some(sha), b.len() as u64, None, now_ms)?))
     }
 
+    /// Anchored read (CodeRabbit #238: history 567): a symlinked parent or a
+    /// file swapped while opening is "not a regular file", never followed.
     fn read_disk(&self, path: &str) -> Result<Disk, HistoryError> {
-        let p = self.vault.join(path);
-        let md = match fs::symlink_metadata(&p) {
-            Ok(m) => m,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Disk::Missing),
-            Err(e) => return Err(e.into()),
-        };
-        if !md.file_type().is_file() {
-            return Ok(Disk::Skip(Skip::NotRegularFile));
-        }
-        if md.len() > self.cfg.max_file_bytes {
-            return Ok(Disk::Skip(Skip::TooLarge(md.len())));
-        }
-        match fs::read(&p) {
-            Ok(b) => Ok(Disk::Bytes(b)),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Disk::Missing),
+        match crate::vaultfs::read_regular(&self.vault, path, self.cfg.max_file_bytes) {
+            Ok(crate::vaultfs::Found::Missing) => Ok(Disk::Missing),
+            Ok(crate::vaultfs::Found::NotRegular) => Ok(Disk::Skip(Skip::NotRegularFile)),
+            Ok(crate::vaultfs::Found::TooLarge(n)) => Ok(Disk::Skip(Skip::TooLarge(n))),
+            Ok(crate::vaultfs::Found::Bytes(b, _)) => Ok(Disk::Bytes(b)),
+            Err(e) if e.kind() == io::ErrorKind::InvalidInput => Ok(Disk::Skip(Skip::NotRegularFile)),
             Err(e) => Err(e.into()),
         }
     }

@@ -372,7 +372,8 @@ impl LocalEngine {
             if before.0.get(path).map(|e| e.sha256) == Some(f.sha256) {
                 continue;
             }
-            let content = fs::read(workdir::abs(&self.cfg.vault_dir, path)).map_err(io_err)?;
+            // the bytes committed are the bytes the scan hashed (anchored read)
+            let content = workdir::read_expect(&self.p, &self.cfg.vault_dir, path, &f.sha256).map_err(io_err)?;
             edits.push(Edit::Put { path: path.clone(), class: workdir::class_of(path), mtime_ms: f.mtime_ms, content });
         }
         for path in before.0.keys() {

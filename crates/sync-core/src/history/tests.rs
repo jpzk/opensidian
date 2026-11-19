@@ -678,3 +678,55 @@ fn purge_version_of_rename_leaves_old_path_deleted() {
     assert!(matches!(s.head("a.md"), Some(Head::Deleted { last: None })));
     assert_eq!(s.head("b.md"), None);
 }
+
+// ---- CodeRabbit #238: restore stays in the vault, never loses the current file
+
+#[test]
+fn restore_refuses_when_the_current_file_cannot_be_captured() {
+    let f = fx("restore-big");
+    let mut s = Store::open(&f.app, "v1", &f.vault, Config { max_file_bytes: 8, ..Config::default() }).unwrap();
+    write(&f, "b.md", b"small");
+    let old = stored(s.record_own_save("b.md", 1).unwrap());
+    write(&f, "b.md", b"now far too large to capture");
+    assert!(s.restore(old.seq, 2).is_err(), "restore would destroy an uncaptured file");
+    assert_eq!(fs::read(f.vault.join("b.md")).unwrap(), b"now far too large to capture");
+}
+
+#[cfg(unix)]
+#[test]
+fn restore_and_capture_never_follow_a_symlinked_parent() {
+    let f = fx("restore-link");
+    let mut s = open(&f);
+    write(&f, "d/n.md", b"v1");
+    let old = stored(s.record_own_save("d/n.md", 1).unwrap());
+    // the user's folder d/ is replaced by a link to a directory outside the vault
+    let outside = f._t.0.join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("n.md"), b"outside secret").unwrap();
+    fs::remove_dir_all(f.vault.join("d")).unwrap();
+    std::os::unix::fs::symlink(&outside, f.vault.join("d")).unwrap();
+    assert_eq!(s.record_external("d/n.md", 2).unwrap(), Outcome::Skipped(Skip::NotRegularFile));
+    assert!(s.restore(old.seq, 3).is_err());
+    assert_eq!(fs::read(outside.join("n.md")).unwrap(), b"outside secret", "nothing written outside the vault");
+    assert_eq!(fs::read_dir(&outside).unwrap().count(), 1, "no temp file outside the vault");
+}
+
+#[cfg(unix)]
+#[test]
+fn restore_does_not_write_through_a_planted_temp_link() {
+    let f = fx("restore-tmp");
+    let mut s = open(&f);
+    write(&f, "r.md", b"old");
+    let old = stored(s.record_own_save("r.md", 1).unwrap());
+    let victim = f._t.0.join("victim");
+    fs::write(&victim, b"victim").unwrap();
+    // the legacy fixed temp name, and the new one for this (seq, now)
+    std::os::unix::fs::symlink(&victim, f.vault.join(".r.md.osy-restore.tmp")).unwrap();
+    let planted = format!(".r.md.osy-restore-{}-{}-2.tmp", std::process::id(), old.seq);
+    std::os::unix::fs::symlink(&victim, f.vault.join(&planted)).unwrap();
+    assert!(s.restore(old.seq, 2).is_err(), "an existing temp entry is never reused");
+    assert_eq!(fs::read(&victim).unwrap(), b"victim");
+    s.restore(old.seq, 3).unwrap();
+    assert_eq!(fs::read(&victim).unwrap(), b"victim");
+    assert_eq!(fs::read(f.vault.join("r.md")).unwrap(), b"old");
+}

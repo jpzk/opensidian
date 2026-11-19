@@ -22,3 +22,4 @@ pub mod merge;
 pub mod object;
 pub mod transport;
 pub mod vault;
+pub mod vaultfs;
