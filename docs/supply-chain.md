@@ -366,13 +366,23 @@ mutations that unpin one thing each in an all-green fixture tree).
 ### AppImage build environment (#189 item 1)
 
 The slim and portable AppImages (and the binary the rpm/deb wrap) are built by
-`packaging/ci/appimage-build.sh` inside `ubuntu:resolute-20260927` pinned by its
+`packaging/ci/appimage-build.sh` inside `ubuntu:resolute-20261105.1` pinned by its
 multi-arch manifest-list digest. apt reads only `snapshot.ubuntu.com` at `SNAP`
 (resolute, -updates, -security; main, universe), with the archive signatures still
-checked. Every requested package is pinned `pkg=version`, and the script fails if
-the installed version differs. Everything they pull in is fixed by the frozen
-snapshot. The `ubuntu-26.04` runner floats by design, but it is only the host that
-runs podman: nothing it ships is compiled in or bundled.
+checked. The image's own packages are upgraded to that snapshot first, so no image
+library older than the snapshot is bundled. Every requested package is pinned
+`pkg=version`, and the script fails if the installed version differs or if its `.deb`
+sha256 differs from `packaging/ci/appimage-snapshot.lock.tsv` (one row per package
+and arch, written by `scripts/supply-chain/snapshot-resolve.sh`). Everything they pull
+in is fixed by the frozen snapshot. The `ubuntu-26.04` runner floats by design, but it
+is only the host that runs podman: nothing it ships is compiled in or bundled.
+
+**Snapshot age (operator decision 2026-11-19).** The AppImage build env, and the image
+it sits on, track the NEWEST dated snapshot: distro security updates in the bundled
+WebKit closure must not wait 6 weeks. This is an explicit exception to the 6-week age
+rule for this snapshot only. It is still a fixed dated pin, never `/latest`. Every other
+dependency keeps the 6-week rule, including the flatpak host packages in
+`packaging/flatpak/runtimes.sh`, which therefore stay on their own older `SNAP`.
 
 Each build records two workflow artifacts, `appimage-pkgset-<ver>-<arch>`:
 - `pkgset-<ver>-<arch>.tsv`: every installed package with its name, version, arch
@@ -384,20 +394,22 @@ Rust 1.98.0 comes from the dist tarball. The script checks
 `channel-rust-1.98.0.toml` against `RUST_MANIFEST_SHA256`. The per-arch `xz_hash`
 in that manifest must equal `RUST_XZ_SHA256_<arch>`, and the tarball must match it.
 
-**Bump the snapshot** when the weekly CVE scan flags WebKitGTK, GTK or OpenSSL in the
-pkgset, or on a routine refresh:
-1. Pick a `SNAP` timestamp and an image tag that are both at least 6 weeks old. The
+**Bump the snapshot** weekly (`snapshot-bump.yml` proposes it as a PR), or when the
+WebKit bundle CVE gate reports a fix newer than `SNAP`:
+1. Take the newest snapshot timestamp that is already in the past (a fixed
+   `YYYYMMDDTHHMMSSZ`, never `/latest`) and the newest `resolute-*` image tag. The
    snapshot must not be older than the image.
 2. Read `docker-content-digest` from the registry for the tag's manifest list, and
-   check that it contains both linux/amd64 and linux/arm64/v8. Set `DIGEST`.
-3. For each package in `PKGS`, read its version from the snapshot's `Packages`
-   indexes, preferring -updates, then -security, then the release pocket. Check both
-   `binary-amd64` and `binary-arm64`, since `PKGS` holds one version for both arches.
-   Set the same `SNAP` and the same pins in `scripts/supply-chain/webkit-apt.sh` (the CVE scan
-   of the portable AppImage's WebKit closure); it refuses to run while they differ.
-4. Run the dry-run release twice. Compare the `pkgset` and `libset` files: they must
-   be identical between the two runs. Diff them against the previous snapshot and
-   review what changed.
+   check that it contains both linux/amd64 and linux/arm64/v8. Set `DIGEST` (and
+   `WK_IMG` in `sbom-local.sh`).
+3. Run `scripts/supply-chain/snapshot-resolve.sh <SNAP> <PKGS names> jq libjq1 >
+   packaging/ci/appimage-snapshot.lock.tsv`. It checks every InRelease signature and
+   every `Packages.xz` sha256, picks the highest version across the three pockets (what
+   apt does), and fails if a package is missing or differs between amd64 and arm64.
+   Copy the versions into `PKGS` here and in `scripts/supply-chain/sbom-local.sh` and
+   `scripts/supply-chain/webkit-apt.sh`; both refuse to run while they differ.
+4. Run the dry-run release. The CVE gate must pass without new VEX. Diff `pkgset`
+   against the previous snapshot and review what changed.
 
 **Bump Rust**: see "Rust toolchain" below. In this script set `RUST`, copy
 `RUST_MANIFEST_SHA256` and both `xz_hash` values from the manifest. The script refuses
@@ -407,8 +419,8 @@ to run if `RUST` differs from `rust-toolchain.toml` or its sha256 from
 ### Flatpak build environment (#189 item 2)
 
 `packaging/flatpak/runtimes.sh` sets up the flatpak job in `release.yml`:
-- `host`: the runner's apt reads only `snapshot.ubuntu.com` at the same `SNAP` as the
-  AppImage build. It installs `flatpak`, `flatpak-builder` and `elfutils` as
+- `host`: the runner's apt reads only `snapshot.ubuntu.com` at its own `SNAP` (6-week rule; the
+  AppImage build env is the only cutting-edge snapshot). It installs `flatpak`, `flatpak-builder` and `elfutils` as
   `pkg=version`, then checks the installed versions.
 - `remote`: adds flathub from `flathub.flatpakrepo` after checking its sha256
   (`FLATHUB_REPO_SHA256`). The file carries flathub's GPG key, so a changed key fails

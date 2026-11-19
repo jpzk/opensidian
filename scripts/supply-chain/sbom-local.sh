@@ -138,10 +138,10 @@ webkit_native() {
 }
 # Literal pins (pin-check #189 reads them from this file); asserted == appimage-build.sh below,
 # like webkit-apt.sh --check, so the SBOM cannot drift from what the AppImage bundles.
-WK_IMG=docker.io/library/ubuntu@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7
+WK_IMG=docker.io/library/ubuntu@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db
 # = appimage-build.sh PKGS + jq/libjq1 for webkit-bundle-sbom.sh (same snapshot, resolute-security;
 # not in the WebKit ldd closure, so they add nothing to the SBOM)
-PKGS="build-essential=12.12ubuntu2.26.04.2 pkg-config=2.5.1-4 libssl-dev=3.5.5-1ubuntu3.7 libwebkit2gtk-4.1-dev=2.52.6-0ubuntu0.26.04.1 libwebkit2gtk-4.1-0=2.52.6-0ubuntu0.26.04.1 libjavascriptcoregtk-4.1-0=2.52.6-0ubuntu0.26.04.1 libgtk-3-dev=3.24.52-0ubuntu1 libayatana-appindicator3-dev=0.5.94-1build1 librsvg2-dev=2.61.3+dfsg-3 patchelf=0.18.0-1.4build1 file=1:5.46-5build2 ca-certificates=20260601~26.04.1 curl=8.18.0-1ubuntu2.7 xz-utils=5.8.3-1 jq=1.8.1-4ubuntu2 libjq1=1.8.1-4ubuntu2"
+PKGS="build-essential=12.12ubuntu2.26.04.2 pkg-config=2.5.1-4 libssl-dev=3.5.5-1ubuntu3.7 libwebkit2gtk-4.1-dev=2.52.6-0ubuntu0.26.04.2 libwebkit2gtk-4.1-0=2.52.6-0ubuntu0.26.04.2 libjavascriptcoregtk-4.1-0=2.52.6-0ubuntu0.26.04.2 libgtk-3-dev=3.24.52-0ubuntu1 libayatana-appindicator3-dev=0.5.94-1build1 librsvg2-dev=2.61.3+dfsg-3ubuntu0.1 patchelf=0.18.0-1.4build1 file=1:5.46-5build2 ca-certificates=20260816ubuntu0.26.04.2 curl=8.18.0-1ubuntu2.8 xz-utils=5.8.3-1ubuntu0.1 jq=1.8.1-4ubuntu2 libjq1=1.8.1-4ubuntu2"
 webkit_podman() {
   command -v podman >/dev/null || die "podman: not installed (or use --webkit native on Ubuntu 26.04, or --skip webkit)"
   local snap ca
