@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 # osv-install.sh arch selection + pins (run from a copy so the pin file can be faulted; `uname`
-# is shimmed on PATH). RED: unknown arch (both modes), no pinned digest for the arch, malformed
+# is shimmed on PATH). RED: unknown arch (with and without --pinned), --latest refused (mode removed), no pinned digest for the arch, malformed
 # pin file, two versions, unknown option, digest mismatch (real download of the amd64 asset of
 # the pinned version checked against the arm64 digest) -> rc!=0 and no binary left behind.
 # GREEN: --pinned on the host arch installs the pinned version (osv-scanner --version), and
@@ -45,7 +45,9 @@ version v9.9.9"
 kit swapped "$(sed "s/^sha256 amd64 .*/sha256 amd64 $d_arm/" "$pins")"
 
 try "unknown arch mips64 (--pinned)"         fail good   mips64  --pinned
-try "unknown arch riscv64 (latest mode)"     fail good   riscv64
+try "unknown arch riscv64 (no flag)"        fail good   riscv64
+try "--latest is refused (no latest mode)"  fail good   x86_64  --latest
+try "no flag on host: still pinned only"    pass good   host
 try "aarch64 without a pinned arm64 digest"  fail noarm  aarch64 --pinned
 try "malformed pinned digest"                fail badhex aarch64 --pinned
 try "two version lines"                      fail twover x86_64  --pinned
