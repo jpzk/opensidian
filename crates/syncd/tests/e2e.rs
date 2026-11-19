@@ -95,7 +95,7 @@ fn setup(c: &Client, url: &str, join: Join<'_>) -> (LocalEngine, Option<String>)
 fn sync(c: &Client, e: &LocalEngine) -> syncd::api::SyncSummary {
     let s = e.sync_now().unwrap_or_else(|err| panic!("{} sync: {err}", c.name));
     assert!(s.replica_errors.is_empty(), "{}: replica errors {:?}", c.name, s.replica_errors);
-    assert_eq!(s.rejected, 0, "{}: rejected objects", c.name);
+    assert_eq!(s.rejected, 0, "{}: rejected objects {:?}", c.name, s.rejected_detail);
     eprintln!(
         "  {} sync: committed={} pulled={} pushed={} losers={} written={} removed={}",
         c.name,

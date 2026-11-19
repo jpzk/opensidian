@@ -163,8 +163,8 @@ impl Phrase {
         let mut buf = Zeroizing::new([0u8; 2 * ENTROPY_WORDS]);
         while n < ENTROPY_WORDS {
             p.random(&mut buf[..]).map_err(|_| WordsError::Rng)?;
-            for pair in buf.chunks_exact(2) {
-                let x = u16::from_be_bytes([pair[0], pair[1]]);
+            for pair in buf.as_chunks::<2>().0 {
+                let x = u16::from_be_bytes(*pair);
                 if x < REJECT_AT && n < ENTROPY_WORDS {
                     idx[n] = x % LIST_LEN as u16;
                     n += 1;
@@ -206,8 +206,8 @@ impl Phrase {
     /// From canonical `S_bytes` (keystore restore).
     pub fn from_s_bytes(b: &[u8; S_BYTES_LEN]) -> Result<Self, WordsError> {
         let mut idx = [0u16; ENTROPY_WORDS];
-        for (i, pair) in b.chunks_exact(2).enumerate() {
-            let x = u16::from_be_bytes([pair[0], pair[1]]);
+        for (i, pair) in b.as_chunks::<2>().0.iter().enumerate() {
+            let x = u16::from_be_bytes(*pair);
             if x as usize >= LIST_LEN {
                 idx.zeroize();
                 return Err(WordsError::Invalid);

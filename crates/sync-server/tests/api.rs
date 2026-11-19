@@ -662,3 +662,78 @@ fn receipt_key_persists_and_is_private() {
     let pk = URL_SAFE_NO_PAD.decode(&s.app.receipt_pub).unwrap();
     assert_eq!((pk.len(), pk[0]), (65, 4));
 }
+
+#[test]
+fn env_object_and_namespace_caps() {
+    // Tokenless env writes have no quota owner: per-object and whole-namespace
+    // caps (CodeRabbit #238: bound anonymous envelope storage).
+    let s = start(|c| {
+        c.max_env_object = 1024;
+        c.max_env_total = 3000;
+    });
+    let p = |loc: Id16| format!("/v1/env/{}/{loc}", Id16::ZERO);
+    let r = call(s.addr, "PUT", &p(id(0x10)), &[], &container(id(0x10), 2000, 1));
+    assert_eq!(r.status, 413, "env object over max_env_object");
+    for b in 0x11..0x14u8 {
+        let r = call(s.addr, "PUT", &p(id(b)), &[], &container(id(b), 900, b));
+        assert_eq!(r.status, 201, "env {b:#x} under the namespace cap");
+    }
+    let r = call(s.addr, "PUT", &p(id(0x14)), &[], &container(id(0x14), 900, 9));
+    assert_eq!((r.status, r.error()), (507, ErrorCode::Quota), "env namespace full");
+    // Vault objects are not affected by the env caps.
+    let e = enroll(&s, None);
+    let tok = bearer(&e.write_token);
+    let ns = e.ns;
+    let r = call(s.addr, "PUT", &obj_path(&ns, &id(0x20)), &[("Authorization", &tok)], &container(id(0x20), 4000, 2));
+    assert_eq!(r.status, 201);
+}
+
+/// Send the headers and `sent` of `len` body bytes, then stall.
+fn stalled_put(addr: SocketAddr, path: &str, body: &[u8], sent: usize) -> TcpStream {
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+    let head = format!(
+        "PUT {path} HTTP/1.1\r\nHost: t\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+    s.write_all(head.as_bytes()).unwrap();
+    s.write_all(&body[..sent]).unwrap();
+    s
+}
+
+fn status_of(mut s: TcpStream) -> u16 {
+    let mut raw = Vec::new();
+    let _ = s.read_to_end(&mut raw);
+    let line = String::from_utf8_lossy(&raw).lines().next().unwrap_or("").to_string();
+    line.split(' ').nth(1).and_then(|v| v.parse().ok()).unwrap_or(0)
+}
+
+#[test]
+fn stalled_body_hits_the_deadline() {
+    let s = start(|c| c.body_timeout_secs = 1);
+    let loc = id(0x31);
+    let c = container(loc, 500, 1);
+    let t = Instant::now();
+    let conn = stalled_put(s.addr, &format!("/v1/env/{}/{loc}", Id16::ZERO), &c, 10);
+    assert_eq!(status_of(conn), 400, "stalled body answered, not held open");
+    assert!(t.elapsed() < Duration::from_secs(10), "deadline enforced: {:?}", t.elapsed());
+}
+
+#[test]
+fn body_budget_is_shared_across_connections() {
+    // Budget = one max_object: a second upload waits until the first one's
+    // reservation is released (here: its deadline), instead of buffering both.
+    let s = start(|c| {
+        c.max_object = 4096;
+        c.max_inflight_body = 4096;
+        c.body_timeout_secs = 3;
+    });
+    let a = stalled_put(s.addr, &format!("/v1/env/{}/{}", Id16::ZERO, id(0x41)), &container(id(0x41), 3900, 1), 10);
+    std::thread::sleep(Duration::from_millis(1000));
+    let t = Instant::now();
+    let b = container(id(0x42), 3900, 2);
+    let r = call(s.addr, "PUT", &format!("/v1/env/{}/{}", Id16::ZERO, id(0x42)), &[], &b);
+    assert_eq!(r.status, 201, "second upload proceeds once the budget frees");
+    assert!(t.elapsed() >= Duration::from_millis(1500), "second upload waited: {:?}", t.elapsed());
+    assert_eq!(status_of(a), 400, "first upload hit its deadline");
+}

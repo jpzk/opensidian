@@ -12,6 +12,7 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -284,7 +285,10 @@ impl Store {
     // ---- objects --------------------------------------------------------------
 
     /// Write-once PUT. `sha256` is the digest of `body`. `expires` is set for
-    /// short-lived kinds (pairing). Quota applies to vault namespaces only.
+    /// short-lived kinds (pairing). Quota applies to vault namespaces; the
+    /// tokenless `env` namespace has no owner, so it is bounded as a whole by
+    /// `env_total` bytes instead.
+    #[allow(clippy::too_many_arguments)]
     pub fn put(
         &self,
         ns: &Id16,
@@ -293,20 +297,23 @@ impl Store {
         body: &[u8],
         sha256: &[u8; 32],
         expires: Option<i64>,
+        env_total: u64,
     ) -> Result<PutOutcome> {
         // Stage the bytes outside the lock (fsync'd), then publish under it.
+        // Each PUT gets its own staging file (process-wide counter, created
+        // exclusively): two concurrent PUTs of the same id must not truncate
+        // or remove each other's bytes before publish renames them.
+        static STAGE_SEQ: AtomicU64 = AtomicU64::new(0);
         let tmp = self.root.join("tmp").join(format!(
-            "{}-{}-{}.part",
+            "{}-{}-{}-{}-{}.part",
             ns.to_hex(),
             kind.path_segment(),
-            id.to_hex()
+            id.to_hex(),
+            std::process::id(),
+            STAGE_SEQ.fetch_add(1, Ordering::Relaxed)
         ));
         let staged = (|| -> io::Result<()> {
-            let mut f = fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&tmp)?;
+            let mut f = fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
             f.write_all(body)?;
             f.sync_all()
         })();
@@ -314,7 +321,7 @@ impl Store {
             let _ = fs::remove_file(&tmp);
             return Err(e.into());
         }
-        let r = self.publish(ns, kind, id, &tmp, body.len() as u64, sha256, expires);
+        let r = self.publish(ns, kind, id, &tmp, body.len() as u64, sha256, expires, env_total);
         let _ = fs::remove_file(&tmp);
         r
     }
@@ -329,6 +336,7 @@ impl Store {
         size: u64,
         sha256: &[u8; 32],
         expires: Option<i64>,
+        env_total: u64,
     ) -> Result<PutOutcome> {
         let mut c = self.conn();
         let tx = c.transaction()?;
@@ -350,6 +358,16 @@ impl Store {
             };
         }
         let seq: i64 = if *ns == ENV_NS {
+            // Env objects are never deleted by clients, so the live sum is
+            // the namespace's footprint; refuse past the server-wide cap.
+            let used: i64 = tx.query_row(
+                "SELECT COALESCE(SUM(size), 0) FROM object WHERE ns = ?1",
+                params![&ns.0[..]],
+                |r| r.get(0),
+            )?;
+            if (used.max(0) as u64).saturating_add(size) > env_total {
+                return Err(StoreError::new(ErrorCode::Quota, "envelope storage full"));
+            }
             0
         } else {
             let (quota, used, next): (Option<i64>, i64, i64) = tx

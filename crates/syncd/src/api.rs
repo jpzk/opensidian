@@ -63,6 +63,9 @@ pub struct SyncSummary {
     pub pulled: usize,
     pub pushed: usize,
     pub rejected: usize,
+    /// One line per rejected object: replica index, object id, reason.
+    #[serde(default)]
+    pub rejected_detail: Vec<String>,
     pub replica_errors: Vec<String>,
     pub losers: usize,
     /// Files written into / removed from the vault folder.

@@ -32,10 +32,10 @@ use sync_proto::container::Header;
 use sync_proto::Id16;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::store::{PutOutcome, Scope, StoreError, ENV_NS};
-use crate::{decode_token, now_unix, App};
+use crate::{body_units, decode_token, now_unix, App};
 
 /// Concurrent connections served; further accepts wait.
 pub const MAX_CONNECTIONS: usize = 1024;
@@ -140,24 +140,51 @@ where
 
 // ---- request helpers ---------------------------------------------------------
 
+/// A request body plus its reservation in the server-wide body budget. The
+/// reservation is released when this is dropped (after the handler is done
+/// with the bytes).
+struct Body {
+    bytes: Bytes,
+    _budget: OwnedSemaphorePermit,
+}
+
+impl std::ops::Deref for Body {
+    type Target = Bytes;
+    fn deref(&self) -> &Bytes {
+        &self.bytes
+    }
+}
+
 /// Read the body with a hard cap; 413 past it (Content-Length checked first).
-async fn read_body(req: Request<Incoming>, limit: u64) -> Result<Bytes, Resp> {
-    if let Some(len) = req
+/// Before the first body byte the request reserves its worst case (declared
+/// length, else `limit`) from `app.body_budget`; the whole read — waiting for
+/// budget included — must finish within `cfg.body_timeout_secs`, so slow or
+/// stalled uploads cannot pin buffers or connections indefinitely.
+async fn read_body(app: &Arc<App>, req: Request<Incoming>, limit: u64) -> Result<Body, Resp> {
+    let declared = req
         .headers()
         .get(header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<u64>().ok())
-    {
-        if len > limit {
-            return Err(err(ErrorCode::TooLarge, "body over the size limit"));
-        }
+        .and_then(|v| v.parse::<u64>().ok());
+    if declared.is_some_and(|len| len > limit) {
+        return Err(err(ErrorCode::TooLarge, "body over the size limit"));
     }
-    match Limited::new(req.into_body(), limit as usize).collect().await {
-        Ok(b) => Ok(b.to_bytes()),
-        Err(e) if e.is::<http_body_util::LengthLimitError>() => {
+    let cap = declared.unwrap_or(limit);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(app.cfg.body_timeout_secs.max(1));
+    let budget = app.body_budget.clone();
+    let permit = match tokio::time::timeout_at(deadline, budget.acquire_many_owned(body_units(cap))).await {
+        Ok(Ok(p)) => p,
+        Ok(Err(_)) => return Err(err(ErrorCode::Internal, "body budget closed")),
+        Err(_) => return Err(err(ErrorCode::RateLimited, "server busy, retry later")),
+    };
+    let read = Limited::new(req.into_body(), cap as usize).collect();
+    match tokio::time::timeout_at(deadline, read).await {
+        Err(_) => Err(err(ErrorCode::BadRequest, "body read deadline exceeded")),
+        Ok(Ok(b)) => Ok(Body { bytes: b.to_bytes(), _budget: permit }),
+        Ok(Err(e)) if e.is::<http_body_util::LengthLimitError>() => {
             Err(err(ErrorCode::TooLarge, "body over the size limit"))
         }
-        Err(_) => Err(err(ErrorCode::BadRequest, "body read failed")),
+        Ok(Err(_)) => Err(err(ErrorCode::BadRequest, "body read failed")),
     }
 }
 
@@ -280,7 +307,7 @@ pub async fn handle(app: Arc<App>, ip: IpAddr, req: Request<Incoming>) -> Resp {
 
 async fn enroll(app: &Arc<App>, ip: IpAddr, req: Request<Incoming>) -> Result<Resp, Resp> {
     anon(app, ip)?;
-    let body = read_body(req, app.cfg.max_control as u64).await?;
+    let body = read_body(app, req, app.cfg.max_control as u64).await?;
     let r: EnrollRequest =
         serde_json::from_slice(&body).map_err(|_| err(ErrorCode::BadRequest, "bad enroll body"))?;
     // FIPS build: the module's approved signature is ECDSA P-256 (cmvp.md §7).
@@ -315,7 +342,7 @@ async fn enroll(app: &Arc<App>, ip: IpAddr, req: Request<Incoming>) -> Result<Re
 
 async fn missing(app: &Arc<App>, ns: Id16, req: Request<Incoming>) -> Result<Resp, Resp> {
     authorize(app, bearer(&req), ns, Scope::Read).await?;
-    let body = read_body(req, app.cfg.max_control as u64).await?;
+    let body = read_body(app, req, app.cfg.max_control as u64).await?;
     let r: MissingRequest =
         serde_json::from_slice(&body).map_err(|_| err(ErrorCode::BadRequest, "bad missing body"))?;
     r.validate().map_err(|c| err(c, "too many ids"))?;
@@ -392,14 +419,18 @@ async fn object(
 }
 
 async fn put(app: &Arc<App>, kind: ObjKind, ns: Id16, id: Id16, req: Request<Incoming>) -> Result<Resp, Resp> {
-    let body = read_body(req, app.cfg.max_object).await?;
+    // Envelopes are a few hundred bytes (spec §4.5); the tokenless env
+    // namespace gets a much smaller per-object cap than vault objects.
+    let limit = if kind == ObjKind::Env { app.cfg.max_env_object.min(app.cfg.max_object) } else { app.cfg.max_object };
+    let body = read_body(app, req, limit).await?;
     let (h, _) = Header::parse(&body).map_err(|_| err(ErrorCode::BadRequest, "bad container header"))?;
     if h.obj_id != id {
         return Err(err(ErrorCode::BadRequest, "URL id differs from header obj_id"));
     }
     let sha = app.prov.sha256(&body);
     let expires = (kind == ObjKind::Pair).then(|| now_unix() + app.cfg.pair_ttl_secs);
-    let out = blocking(app, move |a| a.store.put(&ns, kind, &id, &body, &sha, expires)).await?;
+    let env_total = app.cfg.max_env_total;
+    let out = blocking(app, move |a| a.store.put(&ns, kind, &id, &body, &sha, expires, env_total)).await?;
     Ok(match out {
         PutOutcome::Created => {
             app.changed.notify_waiters();
@@ -470,7 +501,7 @@ async fn delete(app: &Arc<App>, kind: ObjKind, ns: Id16, id: Id16) -> Result<Res
 /// rate-limited, at most [`crate::store::MAX_DESTROY_CHALLENGES`] open per vault.
 async fn destroy_request(app: &Arc<App>, ip: IpAddr, ns: Id16, req: Request<Incoming>) -> Result<Resp, Resp> {
     anon(app, ip)?;
-    let body = read_body(req, app.cfg.max_control as u64).await?;
+    let body = read_body(app, req, app.cfg.max_control as u64).await?;
     let _r: DestroyRequest =
         serde_json::from_slice(&body).map_err(|_| err(ErrorCode::BadRequest, "bad destroy request body"))?;
     let mut nonce = [0u8; 32];
@@ -496,7 +527,7 @@ async fn destroy_request(app: &Arc<App>, ip: IpAddr, ns: Id16, req: Request<Inco
 /// the vault purged and a receipt signed. No proof -> no destroy.
 async fn destroy_confirm(app: &Arc<App>, ip: IpAddr, ns: Id16, req: Request<Incoming>) -> Result<Resp, Resp> {
     anon(app, ip)?;
-    let body = read_body(req, app.cfg.max_control as u64).await?;
+    let body = read_body(app, req, app.cfg.max_control as u64).await?;
     let r: DestroyConfirm =
         serde_json::from_slice(&body).map_err(|_| err(ErrorCode::BadRequest, "bad destroy confirm body"))?;
     let tok = decode_token(&r.confirm_token).ok_or_else(|| err(ErrorCode::Unauthorized, "malformed confirm token"))?;

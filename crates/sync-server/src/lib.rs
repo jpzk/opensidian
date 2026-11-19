@@ -14,14 +14,14 @@ pub mod tls;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use sync_crypto::fips::{FipsProvider, FipsSigningKey};
 use sync_crypto::{CryptoError, CryptoProvider, SigAlg};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, Semaphore};
 
 pub use http::serve;
 pub use store::Store;
@@ -42,6 +42,14 @@ pub struct Config {
     /// Requests per minute per client IP on the tokenless paths (`env`,
     /// `pair` reads, `enroll`).
     pub anon_rate_per_min: u32,
+    /// Max size of one anonymous `env` object (envelopes are small, §4.5).
+    pub max_env_object: u64,
+    /// Total bytes the tokenless `env` namespace may hold (no quota owner).
+    pub max_env_total: u64,
+    /// Whole-body read deadline in seconds, after headers (slow-body bound).
+    pub body_timeout_secs: u64,
+    /// Request bodies buffered at once, in bytes, across all connections.
+    pub max_inflight_body: u64,
 }
 
 impl Config {
@@ -53,6 +61,10 @@ impl Config {
             retention_secs: 30 * 24 * 3600,
             pair_ttl_secs: 15 * 60,
             anon_rate_per_min: 120,
+            max_env_object: 64 * 1024,
+            max_env_total: 256 * 1024 * 1024,
+            body_timeout_secs: 60,
+            max_inflight_body: 256 * 1024 * 1024,
         }
     }
 }
@@ -69,6 +81,15 @@ pub struct App {
     /// Woken on every successful PUT (long-poll `GET /v1/list`).
     pub changed: Notify,
     limiter: Mutex<HashMap<IpAddr, (i64, u32)>>,
+    /// Body-buffer budget in KiB units (`cfg.max_inflight_body`): a request
+    /// holds its worst-case size from before the first body byte until the
+    /// handler drops the bytes, so N slow uploads cannot pin N × max_object.
+    pub body_budget: Arc<Semaphore>,
+}
+
+/// KiB units a body of at most `limit` bytes reserves from the budget.
+pub fn body_units(limit: u64) -> u32 {
+    u32::try_from(limit.div_ceil(1024).max(1)).unwrap_or(u32::MAX)
 }
 
 impl App {
@@ -77,6 +98,8 @@ impl App {
         let store = Store::open(&cfg.data).map_err(|e| format!("store: {}", e.detail))?;
         let receipt_key = load_or_create_receipt_key(&prov, &cfg.data)?;
         let receipt_pub = URL_SAFE_NO_PAD.encode(receipt_key.public_key());
+        // Never below one maximal request, or a lone upload could never start.
+        let budget = cfg.max_inflight_body.max(cfg.max_object).max(cfg.max_control as u64);
         Ok(App {
             cfg,
             store,
@@ -85,6 +108,7 @@ impl App {
             receipt_pub,
             changed: Notify::new(),
             limiter: Mutex::new(HashMap::new()),
+            body_budget: Arc::new(Semaphore::new(body_units(budget) as usize)),
         })
     }
 

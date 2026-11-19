@@ -27,12 +27,12 @@ Each OPEN item is a follow-up and blocks goal_done (criterion 8).
 - crates/sync-core/src/engine.rs:662-720 Check a commit's declared tree_hash before the engine stores it as head. — OPEN
 - crates/sync-core/src/merge/dmp.rs:351-351 Do not apply a hunk to a different occurrence when the original was edited. — OPEN
 - crates/sync-core/src/merge/mod.rs:333-339 Reject merges that place a file and a directory at the same path. — OPEN
-- crates/sync-server/src/http.rs:395-395 Stream upload bodies instead of retaining one full buffer per connection. — OPEN
-- crates/sync-server/src/http.rs:380-380 Bound total storage for anonymous envelopes. — OPEN
+- crates/sync-server/src/http.rs:395-395 Stream upload bodies instead of retaining one full buffer per connection. — FIXED (server-wide body budget: each request reserves its worst case from a shared semaphore before the first body byte, released when the handler drops the bytes; a 16 MiB object still needs one buffer because the header + sha256 are checked before publish; test body_budget_is_shared_across_connections)
+- crates/sync-server/src/http.rs:380-380 Bound total storage for anonymous envelopes. — FIXED (max_env_object 64 KiB per env object, max_env_total 256 MiB for the whole tokenless namespace -> 507; test env_object_and_namespace_caps)
 - crates/sync-server/src/http.rs:516-528 Make the destroy receipt recoverable after the purge commits. — OPEN
-- crates/sync-server/src/http.rs:155-155 Apply a deadline to request bodies. — OPEN
+- crates/sync-server/src/http.rs:155-155 Apply a deadline to request bodies. — FIXED (body_timeout_secs 60 s for budget wait + whole body read; test stalled_body_hits_the_deadline)
 - crates/sync-server/src/lib.rs:161-161 Publish the receipt key only after writing it in full. — OPEN
-- crates/sync-server/src/store.rs:298-303 Give each PUT its own staging file. — OPEN
+- crates/sync-server/src/store.rs:298-303 Give each PUT its own staging file. — FIXED (pid + process-wide counter in the name, create_new)
 - crates/sync-server/src/store.rs:382-383 Make the published object path durable before committing the index. — OPEN
 - crates/sync-server/src/store.rs:169-170 Restore staged vault files when the destroy transaction did not commit. — OPEN
 - crates/sync-server/src/store.rs:624-627 Keep object tombstones after reclaiming their bytes. — OPEN
