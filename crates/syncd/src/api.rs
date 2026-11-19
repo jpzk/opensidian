@@ -93,6 +93,10 @@ pub struct Receipt {
     pub destroyed_at: i64,
     pub objects: u64,
     pub bytes: u64,
+    /// The server purge succeeded and the receipt verified, but removing the
+    /// local keys failed (the caller must surface it; the vault is gone).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup_error: Option<String>,
 }
 
 pub trait SyncApi {

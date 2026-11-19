@@ -201,7 +201,10 @@ impl LocalEngine {
             return Err(ApiError::new("bad-request", "the state dir and the vault folder must not contain each other"));
         }
         let p = FipsProvider::new().map_err(io_err)?;
-        let t = HttpTransport::new(s.url, roots(&s.ca_file)?).map_err(|e| ApiError::new("server", e.to_string()))?;
+        // persisted in config.json: a relative path would resolve against
+        // whatever directory a later run starts in
+        let ca_file = s.ca_file.as_deref().map(fs::canonicalize).transpose().map_err(io_err)?;
+        let t = HttpTransport::new(s.url, roots(&ca_file)?).map_err(|e| ApiError::new("server", e.to_string()))?;
         let (m, words) = match s.join {
             Join::Create { enrollment_token } => {
                 let w = Phrase::generate(&p).map_err(io_err)?;
@@ -251,7 +254,7 @@ impl LocalEngine {
             vault_dir,
             device_name: s.device_name.to_string(),
             conflict_mode: ConflictMode::default(),
-            ca_file: s.ca_file,
+            ca_file,
         };
         let tmp = state.join("vault.json.tmp");
         fs::write(&tmp, serde_json::to_vec_pretty(&cfg).map_err(io_err)?).map_err(io_err)?;
@@ -467,10 +470,21 @@ impl SyncApi for LocalEngine {
         let root = vault::root_of(&self.p, &self.words(words)?).map_err(vault_err)?;
         let (t, m) = self.member()?;
         let r = vault::destroy(&self.p, &t, &m.env, m.server, &root, now_s() as i64).map_err(vault_err)?;
+        // The purge is done and the receipt verified: that proof goes back to
+        // the caller even if the local key cleanup fails (a retry could never
+        // fetch it again from a vault that no longer exists).
         let vid = self.cfg.vault_id;
-        self.ks.delete(&vid, Entry::Daily).map_err(ks_err)?;
-        self.ks.delete(&vid, Entry::Backup).map_err(ks_err)?;
-        Ok(Receipt { ns: r.ns.to_hex(), destroyed_at: r.destroyed_at, objects: r.objects, bytes: r.bytes })
+        let cleanup = [Entry::Daily, Entry::Backup]
+            .into_iter()
+            .filter_map(|en| self.ks.delete(&vid, en).err().map(|e| ks_err(e).to_string()))
+            .collect::<Vec<_>>();
+        Ok(Receipt {
+            ns: r.ns.to_hex(),
+            destroyed_at: r.destroyed_at,
+            objects: r.objects,
+            bytes: r.bytes,
+            cleanup_error: (!cleanup.is_empty()).then(|| cleanup.join("; ")),
+        })
     }
 }
 
