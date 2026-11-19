@@ -313,6 +313,29 @@ impl LocalEngine {
             .map_err(hist_err)
     }
 
+    /// Open the store under `<state>/history.lock`. Every daemon/CLI user
+    /// of this journal takes it (sync pass, restore, and readers too: open
+    /// cuts a torn tail, which must never hit a live writer's append), so
+    /// two processes cannot interleave appends or a rewrite (history is
+    /// single-writer). A held lock is `busy`, like the engine lock.
+    fn store_mut(&self) -> ApiResult<(fs::File, Store)> {
+        fs::create_dir_all(&self.state).map_err(io_err)?;
+        let lock = fs::File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.state.join("history.lock"))
+            .map_err(io_err)?;
+        match lock.try_lock() {
+            Ok(()) => {}
+            Err(fs::TryLockError::WouldBlock) => {
+                return Err(ApiError::new("busy", "history is being written by another sync or restore"))
+            }
+            Err(fs::TryLockError::Error(e)) => return Err(io_err(e)),
+        }
+        Ok((lock, self.store()?))
+    }
+
     fn engine<'a>(&'a self, m: &Member) -> ApiResult<Engine<'a, FipsProvider>> {
         let mut e = Engine::open(&self.p, m.ctx(&self.p).map_err(vault_err)?, self.state.join("engine"), &m.roster())
             .map_err(engine_err)?;
@@ -449,20 +472,21 @@ impl SyncApi for LocalEngine {
     }
 
     fn sync_now(&self) -> ApiResult<SyncSummary> {
-        self.sync_with(&mut self.store()?)
+        let (_lock, mut s) = self.store_mut()?;
+        self.sync_with(&mut s)
     }
 
     fn history(&self, path: &str) -> ApiResult<Vec<HistoryItem>> {
         history::validate_path(path).map_err(hist_err)?;
-        Ok(self.store()?.versions(path).iter().map(item).collect())
+        Ok(self.store_mut()?.1.versions(path).iter().map(item).collect())
     }
 
     fn history_read(&self, seq: u64) -> ApiResult<Vec<u8>> {
-        self.store()?.read_version(seq).map_err(hist_err)
+        self.store_mut()?.1.read_version(seq).map_err(hist_err)
     }
 
     fn restore(&self, seq: u64) -> ApiResult<HistoryItem> {
-        let mut s = self.store()?;
+        let (_lock, mut s) = self.store_mut()?;
         s.restore(seq, now_ms() as u64).map(|e| item(&e)).map_err(hist_err)
     }
 
@@ -515,22 +539,24 @@ impl LocalEngine {
         let now = now_ms();
         for ed in &edits {
             if let Edit::Put { path, .. } = ed {
-                // the local version enters history before anything can replace it
-                let _ = hist.with(&mut |s| s.record_external(path, now as u64).map(|_| ()));
+                // the local version enters history before anything can
+                // replace it; a failed write stops the pass before commit
+                hist.with(&mut |s| s.record_external(path, now as u64).map(|_| ()))?;
             }
         }
         if !edits.is_empty() {
             let id = e.commit_local(&m.device.signer(), &m.roster(), now, edits).map_err(engine_err)?;
             sum.committed = Some(id.to_hex());
         }
-        let mut losers: Vec<(String, Vec<u8>)> = Vec::new();
-        let mut hook = |l: &Loser, b: &[u8]| losers.push((l.path.clone(), b.to_vec()));
+        // Losers go to history inside the pass: a failed write aborts it
+        // before the merged head is installed, so the next pass merges
+        // again and offers the loser again (nothing is dropped silently).
+        let mut hook = |l: &Loser, b: &[u8]| -> Result<(), String> {
+            hist.with(&mut |s| s.record_sync_loser(&l.path, b, now as u64).map(|_| ())).map_err(|e| e.to_string())
+        };
         let rep = e
-            .sync(&[&t as &dyn Transport], &m.device.signer(), &m.roster(), now, &mut hook)
+            .sync_checked(&[&t as &dyn Transport], &m.device.signer(), &m.roster(), now, &mut hook)
             .map_err(engine_err)?;
-        for (path, b) in &losers {
-            hist.with(&mut |s| s.record_sync_loser(path, b, now as u64).map(|_| ()))?;
-        }
         sum.pulled = rep.pulled;
         sum.pushed = rep.pushed;
         sum.rejected = rep.rejected.len() + rep.invalid.len();

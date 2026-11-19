@@ -764,3 +764,27 @@ fn a_corrupt_blob_is_replaced_not_deduplicated() {
     s.record_own_save("b.md", 2).unwrap();
     assert_eq!(fs::read(&blob).unwrap(), b"hello", "fresh bytes replaced the rotten copy");
 }
+
+#[test]
+fn thin_keeps_the_rename_that_hides_an_older_name() {
+    // attachment bytes outlive notes: the rename old.png -> new.md is a
+    // note record past note_max_age, old.png's own record is kept forever.
+    // Dropping the rename would bring old.png back and refuse every thin.
+    let f = fx("thinrename");
+    let mut s = open(&f);
+    let now = 400 * DAY_MS;
+    let old = ver(&mut s, &f, "old.png", b"img", now - 300 * DAY_MS);
+    fs::rename(f.vault.join("old.png"), f.vault.join("new.md")).unwrap();
+    let ren = stored(s.record_rename("old.png", "new.md", now - 299 * DAY_MS).unwrap());
+    let cur = ver(&mut s, &f, "new.md", b"text", now - HOUR_MS);
+    let r = Retention {
+        note_max_age_ms: Some(30 * DAY_MS),
+        attachment_max_age_ms: None,
+        ..Retention::default()
+    };
+    s.thin(now, &r).unwrap();
+    let seqs: Vec<u64> = s.entries().iter().map(|e| e.seq).collect();
+    assert_eq!(seqs, vec![old.seq, ren.seq, cur.seq]);
+    assert_eq!(s.head("old.png"), None);
+    assert_eq!(s.thin(now, &r).unwrap(), Rewrite::default(), "thin keeps working");
+}

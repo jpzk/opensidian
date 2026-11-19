@@ -690,12 +690,12 @@ impl Store {
     fn thin_plan(&self, now_ms: u64, r: &Retention) -> Vec<Entry> {
         let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
         let mut buckets: std::collections::BTreeSet<(&str, u8, u64)> = std::collections::BTreeSet::new();
-        let mut keep: Vec<Entry> = Vec::with_capacity(self.entries.len());
-        for e in self.entries.iter().rev() {
+        let mut kept = vec![false; self.entries.len()];
+        for (i, e) in self.entries.iter().enumerate().rev() {
             let age = now_ms.saturating_sub(e.ts_ms);
             let newest = e.reason != Reason::SyncLoser && seen.insert(e.path.as_str());
             let max_age = if is_note(&e.path) { r.note_max_age_ms } else { r.attachment_max_age_ms };
-            let kept = if newest && matches!(self.heads.get(&e.path), Some(Head::Live { .. })) {
+            kept[i] = if newest && matches!(self.heads.get(&e.path), Some(Head::Live { .. })) {
                 true
             } else if max_age.is_some_and(|m| age > m) {
                 false
@@ -706,12 +706,52 @@ impl Store {
             } else {
                 buckets.insert((e.path.as_str(), 2, e.ts_ms / DAY_MS))
             };
-            if kept {
-                keep.push(e.clone());
+        }
+        // A rename away from a path, or a path's tombstone, is what keeps
+        // that path gone on replay. While any earlier record of the path
+        // survives (e.g. attachments outlive notes under max-age), the
+        // newer rename/delete records after it must survive too, or the old
+        // name would reappear and every later thin would be refused.
+        // Re-adding a record can make its own path need its successors, so
+        // iterate to a fixpoint (each pass only adds; bounded by len).
+        loop {
+            let mut added = false;
+            let mut live_since: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+            for (i, e) in self.entries.iter().enumerate() {
+                if kept[i] {
+                    live_since.insert(e.path.as_str());
+                    if let Some(from) = e.from.as_deref() {
+                        if e.reason == Reason::Rename {
+                            live_since.remove(from);
+                        }
+                    }
+                    if e.reason == Reason::Delete {
+                        live_since.remove(e.path.as_str());
+                    }
+                    continue;
+                }
+                let needed = match e.reason {
+                    Reason::Rename => e.from.as_deref().is_some_and(|f| live_since.contains(f)),
+                    Reason::Delete => live_since.contains(e.path.as_str()),
+                    _ => false,
+                };
+                if needed {
+                    kept[i] = true;
+                    added = true;
+                    live_since.insert(e.path.as_str());
+                    if let Some(from) = e.from.as_deref() {
+                        live_since.remove(from);
+                    }
+                    if e.reason == Reason::Delete {
+                        live_since.remove(e.path.as_str());
+                    }
+                }
+            }
+            if !added {
+                break;
             }
         }
-        keep.reverse();
-        keep
+        self.entries.iter().zip(kept).filter(|(_, k)| *k).map(|(e, _)| e.clone()).collect()
     }
 
     /// Erase `path` from history: every record of it is dropped, a rename

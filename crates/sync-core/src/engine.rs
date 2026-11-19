@@ -626,7 +626,8 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
 
     /// One set-union pass over `replicas` (see module docs). `on_loser`
     /// receives every version a merge did not keep verbatim (wire it to
-    /// [`crate::history::Store::record_sync_loser`]).
+    /// [`crate::history::Store::record_sync_loser`]). Infallible hook; a
+    /// caller that must not lose a loser uses [`Engine::sync_checked`].
     pub fn sync(
         &mut self,
         replicas: &[&dyn Transport],
@@ -634,6 +635,24 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
         devices: &dyn DeviceKeys,
         now_ms: i64,
         on_loser: &mut dyn FnMut(&Loser, &[u8]),
+    ) -> Result<Report> {
+        self.sync_checked(replicas, signer, devices, now_ms, &mut |l, b| {
+            on_loser(l, b);
+            Ok(())
+        })
+    }
+
+    /// [`Engine::sync`] with a fallible loser hook: an `Err` (e.g. the
+    /// history write failed) aborts the pass BEFORE the new head is
+    /// installed, so the merge is redone next pass and the loser is offered
+    /// again instead of being dropped from history (threat model D4).
+    pub fn sync_checked(
+        &mut self,
+        replicas: &[&dyn Transport],
+        signer: &Signer<'_, P::SigningKey>,
+        devices: &dyn DeviceKeys,
+        now_ms: i64,
+        on_loser: &mut dyn FnMut(&Loser, &[u8]) -> std::result::Result<(), String>,
     ) -> Result<Report> {
         let mut rep = Report::default();
         let ns = self.v.ns;
@@ -710,7 +729,7 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
             }
         }
         // 2. resolve
-        let (ready, gen) = self.ready_and_gen();
+        let (ready, _) = self.ready_and_gen();
         rep.pending = self.commits.len() - ready.len();
         if let Some(h) = self.state.head {
             if !ready.contains(&h) {
@@ -753,7 +772,7 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
             let m = merge_trees(p, &base, &ls, &rs, self.mode, &mut fetch)?;
             for l in &m.losers {
                 let bytes = fetch(&l.entry)?;
-                on_loser(l, &bytes);
+                on_loser(l, &bytes).map_err(|e| EngineError::Io(format!("merge loser {} not recorded: {e}", l.path)))?;
                 rep.losers += 1;
             }
             let mut step = Folded { tip: t, action: m.action, merge_commit: None };
