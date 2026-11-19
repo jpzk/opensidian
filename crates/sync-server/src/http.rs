@@ -38,7 +38,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::store::{PutOutcome, Scope, StoreError, ENV_NS};
+use crate::store::{PutOutcome, Scope, StoreError, VaultState, ENV_NS};
 use crate::{body_units, decode_token, now_unix, App};
 
 /// Concurrent connections served; further accepts wait.
@@ -197,8 +197,11 @@ fn bearer(req: &Request<Incoming>) -> Option<[u8; 32]> {
     decode_token(v.strip_prefix("Bearer ")?)
 }
 
-/// Require a token on `ns` with at least `need`. Unknown namespace and wrong
-/// token answer the same 401 (no namespace oracle).
+/// Require a token on `ns` with at least `need`. A token that matches
+/// nothing answers by the namespace's state (spec §5, COORD 2026-11-19):
+/// destroyed vault (tombstone) -> 410, never-existing vault -> 404, live
+/// vault -> 401. A namespace is 128 random bits, so 404 vs 401 is no
+/// practical oracle; 410 is already public via the destroy endpoint.
 async fn authorize(app: &Arc<App>, token: Option<[u8; 32]>, ns: Id16, need: Scope) -> Result<(), Resp> {
     let Some(raw) = token else {
         return Err(err(ErrorCode::Unauthorized, "missing or malformed bearer token"));
@@ -207,7 +210,11 @@ async fn authorize(app: &Arc<App>, token: Option<[u8; 32]>, ns: Id16, need: Scop
     match blocking(app, move |a| a.store.token_scope(&ns, &hash)).await? {
         Some(s) if s >= need => Ok(()),
         Some(_) => Err(err(ErrorCode::Forbidden, "token scope is read-only")),
-        None => Err(err(ErrorCode::Unauthorized, "invalid token")),
+        None => match blocking(app, move |a| a.store.vault_state(&ns)).await? {
+            VaultState::Destroyed => Err(err(ErrorCode::Gone, "vault destroyed")),
+            VaultState::Unknown if ns != ENV_NS => Err(err(ErrorCode::NotFound, "unknown vault")),
+            _ => Err(err(ErrorCode::Unauthorized, "invalid token")),
+        },
     }
 }
 

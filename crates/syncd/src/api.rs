@@ -18,7 +18,8 @@ pub struct ApiError {
     /// Stable machine code: `not-configured`, `busy`, `not-member` (device not on the vault roster),
     /// `server`, `io`, `bad-request`, `denied`, `history`, `vault`, `engine`,
     /// `offline` (the net gate refused the connection), `fips` (the OpenSSL FIPS
-    /// provider is not active: sync refuses to start, cmvp.md §6).
+    /// provider is not active: sync refuses to start, cmvp.md §6), `no-vault`
+    /// (404 never existed / 410 destroyed: the message says which; never retried).
     pub code: String,
     pub message: String,
 }

@@ -64,7 +64,7 @@ pub enum VaultError {
     /// No envelope under these words on this server.
     NoVault,
     /// The words open an envelope, but the server no longer knows its
-    /// namespace (401 unknown vault / 410 destroyed): the vault was destroyed
+    /// namespace (410 destroyed, tombstone): the vault was destroyed
     /// (burned). The envelope itself outlives a destroy — the server cannot
     /// link `loc` to the namespace — but it only holds keys of purged data and
     /// dead tokens.
@@ -117,6 +117,17 @@ fn chain_err(s: &str) -> VaultError {
 
 pub type Result<T> = std::result::Result<T, VaultError>;
 
+
+/// The server's answer for a namespace that is not (or no longer) there
+/// (spec §5): 410 = destroyed (tombstone) -> [`VaultError::Destroyed`],
+/// 404 = never existed -> [`VaultError::NoVault`]. Neither is retried.
+fn vault_gone(e: VaultError) -> VaultError {
+    match e {
+        VaultError::Transport(TransportError::Api { code: ErrorCode::Gone, .. }) => VaultError::Destroyed,
+        VaultError::Transport(TransportError::Api { code: ErrorCode::NotFound, .. }) => VaultError::NoVault,
+        e => e,
+    }
+}
 fn is_not_found(e: &TransportError) -> bool {
     matches!(e, TransportError::Api { code: ErrorCode::NotFound, .. })
 }
@@ -568,7 +579,7 @@ impl Member {
         let pubkey = key.public_key();
         let device = Device { id, key, pubkey, name };
         let ns = env.servers[server].ns;
-        let chain = fetch_chain(p, t, &env, &ns, None)?;
+        let chain = fetch_chain(p, t, &env, &ns, None).map_err(vault_gone)?;
         let mut m = Member { env, device, chain, server };
         m.own_slot()?;
         m.server = server;
@@ -646,10 +657,7 @@ pub fn bootstrap(p: &FipsProvider, t: &HttpTransport, url: &str, phrase: &Phrase
     let s = &env.servers[server];
     t.set_tokens(Tokens { read: Some(s.read_token.clone()), write: Some(s.write_token.clone()) });
     let rk = rsig_key(p, &root)?;
-    let mut chain = fetch_chain(p, t, &env, &ns, Some(rk.public_key().as_slice())).map_err(|e| match e {
-        VaultError::Transport(TransportError::Api { code: ErrorCode::Unauthorized | ErrorCode::Gone, .. }) => VaultError::Destroyed,
-        e => e,
-    })?;
+    let mut chain = fetch_chain(p, t, &env, &ns, Some(rk.public_key().as_slice())).map_err(vault_gone)?;
     let device = Device::generate(p, device_name)?;
     add_slot(p, t, &env, &ns, &mut chain, &device, CfgSigner::Recovery, &rk)?;
     Ok(Member { env, device, chain, server })

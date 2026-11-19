@@ -442,8 +442,16 @@ Implementation notes (M3a, `crates/sync-server`):
   the server stores `SHA-256(raw 32 bytes)` only (test
   `tokens_are_stored_hashed` greps the SQLite files). Every other base64
   value of this API (`pub_destroy`, `sig`, `receipt`, `server_key`) uses
-  the same alphabet. An unknown `{ns}` and a wrong token both answer 401
-  (no namespace oracle); a read token on a write path answers 403.
+  the same alphabet. A token that matches nothing answers by the
+  namespace's state (COORD decision 2026-11-19): a destroyed vault
+  (tombstone) → 410 `gone`, a never-existing `{ns}` → 404 `not_found`,
+  a live vault with a wrong token → 401. `{ns}` is 128 random bits, so
+  404 vs 401 is no practical namespace oracle, and the 410 tombstone is
+  already visible on the destroy endpoint. A read token on a write path
+  answers 403. Clients map both 404 and 410 on a vault to the error kind
+  `no-vault` (syncd), never retry it (the daemon's poll loop stops), and
+  on 410 say the vault was destroyed and point to joining the new vault
+  (burn and move, §5 destroy + key-tree.md).
 - `env` objects live in the all-zero namespace
   (`/v1/env/000…0/{id}`): a fresh device knows only the words and the URL,
   not `{ns}`. No token, write-once, per-IP rate limit, not deletable.
@@ -491,7 +499,7 @@ Endpoints:
   Implementation notes (M3b):
   - `request` needs no bearer token (the proof is the authority, so a
     device holding only the words can destroy); per-IP rate limit, unknown
-    vault → 401, destroyed vault → 410, at most 16 open challenges per vault
+    vault → 404, destroyed vault → 410, at most 16 open challenges per vault
     (→ 429). TTL 300 s. `confirm_token` is 32 DRBG bytes, stored hashed.
   - `confirm` consumes the challenge before anything else (single use even
     when the proof then fails, so a token cannot be used to grind), then
@@ -501,7 +509,7 @@ Endpoints:
   - Purge is one transaction under the index lock (no concurrent PUT can
     publish into the namespace): object rows, tokens (the vault row) and
     challenges go, a tombstone row stays (`request`/`confirm` → 410, tokens
-    → 401). The object tree is renamed into `tmp/` inside the transaction
+    → 410). The object tree is renamed into `tmp/` inside the transaction
     and deleted after commit; startup finishes an interrupted deletion.
     `env` objects are not linked to a namespace on the server (minimal
     metadata) and stay; they are ciphertext under the phrase and now point

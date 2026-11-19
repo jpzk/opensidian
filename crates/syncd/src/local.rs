@@ -79,12 +79,17 @@ fn io_err(e: impl std::fmt::Display) -> ApiError {
     ApiError::new("io", e.to_string())
 }
 
+/// 404 (never existed) and 410 (destroyed) both map to kind `no-vault`
+/// (COORD 2026-11-19); the message says which, and on 410 points at the
+/// burn-and-move way out. Callers never retry `no-vault`.
+pub const DESTROYED_HINT: &str = "this vault was destroyed (burned); if it was moved, join the new vault with its words";
+
 pub fn vault_err(e: VaultError) -> ApiError {
     match e {
         VaultError::NotMember => ApiError::new("not-member", e.to_string()),
+        VaultError::Destroyed => ApiError::new("no-vault", format!("{e}: {DESTROYED_HINT}")),
         VaultError::Transport(_) => ApiError::new("server", e.to_string()),
         VaultError::NoVault => ApiError::new("no-vault", e.to_string()),
-        VaultError::Destroyed => ApiError::new("destroyed", e.to_string()),
         _ => ApiError::new("vault", e.to_string()),
     }
 }

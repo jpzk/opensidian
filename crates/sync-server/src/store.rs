@@ -71,6 +71,14 @@ pub struct Vault {
     pub used: u64,
 }
 
+/// Server-side state of a namespace (see [`Store::vault_state`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VaultState {
+    Live,
+    Destroyed,
+    Unknown,
+}
+
 /// Token scope; write implies read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Scope {
@@ -542,7 +550,8 @@ impl Store {
     // ---- destroy (spec §5, 2-step) --------------------------------------------
 
     /// Step 1: record a challenge (`token_hash` = SHA-256 of the confirm token).
-    /// Unknown vault -> unauthorized (no namespace oracle), destroyed -> gone.
+    /// Unknown vault -> 404, destroyed -> 410 (spec §5; a namespace is 128
+    /// random bits, so the distinction is no practical oracle).
     pub fn add_destroy_challenge(
         &self,
         ns: &Id16,
@@ -560,7 +569,7 @@ impl Store {
             .query_row("SELECT 1 FROM vault WHERE ns = ?1", params![&ns.0[..]], |r| r.get(0))
             .optional()?;
         if known.is_none() || *ns == ENV_NS {
-            return Err(StoreError::new(ErrorCode::Unauthorized, "unknown vault"));
+            return Err(StoreError::new(ErrorCode::NotFound, "unknown vault"));
         }
         tx.execute("DELETE FROM destroy_chal WHERE expires < ?1", params![now])?;
         let open: i64 = tx.query_row(
@@ -693,6 +702,18 @@ impl Store {
     /// True once `ns` was destroyed.
     pub fn destroyed(&self, ns: &Id16) -> Result<bool> {
         is_destroyed(&self.conn(), ns)
+    }
+
+    /// What the server knows about `ns`: a live vault, a destroyed one
+    /// (tombstone) or nothing. The env namespace is never a vault.
+    pub fn vault_state(&self, ns: &Id16) -> Result<VaultState> {
+        let c = self.conn();
+        if is_destroyed(&c, ns)? {
+            return Ok(VaultState::Destroyed);
+        }
+        let known: Option<i64> =
+            c.query_row("SELECT 1 FROM vault WHERE ns = ?1", params![&ns.0[..]], |r| r.get(0)).optional()?;
+        Ok(if known.is_some() && *ns != ENV_NS { VaultState::Live } else { VaultState::Unknown })
     }
 
     /// Reclaim every object whose `expires` has passed (soft-deleted objects

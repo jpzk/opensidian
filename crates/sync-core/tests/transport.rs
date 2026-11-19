@@ -277,7 +277,7 @@ fn http_token_scopes() {
         write: None,
     });
     assert_eq!(code(ro.get(ObjKind::Obj, &v.ns, &a, None)), ErrorCode::Unauthorized);
-    assert_eq!(code(t.list(&id(0x77), q(0, 0, 10))), ErrorCode::Unauthorized);
+    assert_eq!(code(t.list(&id(0x77), q(0, 0, 10))), ErrorCode::NotFound, "never-existing vault -> 404");
 }
 
 #[test]
@@ -345,8 +345,8 @@ fn http_destroy_without_proof_is_refused_with_proof_succeeds() {
         verify_receipt(&p, &v.server_key, &id(1), &nonce, ts, &rc),
         Err(TransportError::BadReceipt(_))
     ));
-    // vault is gone: tokens dead, destroy again 410
-    assert_eq!(code(t.get(ObjKind::Obj, &v.ns, &a, None)), ErrorCode::Unauthorized);
+    // vault is gone: its tokens and destroy again answer 410
+    assert_eq!(code(t.get(ObjKind::Obj, &v.ns, &a, None)), ErrorCode::Gone);
     assert_eq!(code(t.destroy_request(&v.ns)), ErrorCode::Gone);
 }
 

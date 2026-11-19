@@ -281,6 +281,12 @@ fn run(argv: Vec<String>) -> Result<(), ApiError> {
                 std::thread::sleep(every);
                 match bg.sync_now() {
                     Ok(s) => eprintln!("opensidian-syncd: synced head={:?} pulled={} pushed={}", s.head, s.pulled, s.pushed),
+                    // 404/410: the vault is not (or no longer) on the server;
+                    // polling again cannot help (spec §5: no retry on 404/410)
+                    Err(err) if err.code == "no-vault" => {
+                        eprintln!("opensidian-syncd: sync stopped: {err}");
+                        break;
+                    }
                     Err(err) => eprintln!("opensidian-syncd: sync: {err}"),
                 }
             });

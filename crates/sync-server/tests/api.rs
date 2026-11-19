@@ -515,9 +515,9 @@ fn destroy_without_valid_proof_is_refused() {
 
     // request: unknown vault / bad scope / unknown field
     let r = destroy_request(&s, &id(0xee));
-    assert_eq!((r.status, r.error()), (401, ErrorCode::Unauthorized));
+    assert_eq!((r.status, r.error()), (404, ErrorCode::NotFound), "never-existing vault");
     let r = call(s.addr, "POST", &format!("/v1/destroy/{}/request", Id16::ZERO), &[], br#"{"scope":"vault"}"#);
-    assert_eq!(r.status, 401, "env namespace is not a vault");
+    assert_eq!(r.status, 404, "env namespace is not a vault");
     let r = call(s.addr, "POST", &format!("/v1/destroy/{}/request", e.ns), &[], br#"{"scope":"all"}"#);
     assert_eq!((r.status, r.error()), (400, ErrorCode::BadRequest));
 
@@ -645,11 +645,14 @@ fn destroy_with_proof_purges_vault_and_signs_receipt() {
     assert!((body.destroyed_at - ts).abs() <= 5);
     assert_eq!((body.objects, body.bytes), (3, stored));
 
-    // the vault is gone: tokens dead, files gone, tombstone answers 410
+    // the vault is gone: files gone, its tokens and the tombstone answer 410
+    // (destroyed), a never-existing vault 404 (spec §5)
     let r = call(s.addr, "GET", &obj_path(&e.ns, &id(1)), &[("Authorization", &bearer(&e.read_token))], b"");
-    assert_eq!(r.status, 401);
+    assert_eq!((r.status, r.error()), (410, ErrorCode::Gone));
     let r = call(s.addr, "PUT", &obj_path(&e.ns, &id(4)), &[("Authorization", &wt)], &container(id(4), 1, 4));
-    assert_eq!(r.status, 401);
+    assert_eq!((r.status, r.error()), (410, ErrorCode::Gone));
+    let r = call(s.addr, "GET", &format!("/v1/list/{}", id(0xee)), &[("Authorization", &bearer(&e.read_token))], b"");
+    assert_eq!((r.status, r.error()), (404, ErrorCode::NotFound), "never-existing vault");
     assert!(!s.dir.join("objects").join(e.ns.to_hex()).exists());
     assert!(s.app.store.destroyed(&e.ns).unwrap());
     let r = destroy_request(&s, &e.ns);

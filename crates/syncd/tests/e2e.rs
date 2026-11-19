@@ -359,7 +359,9 @@ fn two_clients_and_a_fresh_device_end_to_end() {
     // the old vault is gone for every old device
     let st = c.status().unwrap();
     assert!(!st.server_ok, "old vault gone for the other devices too");
-    assert!(c.sync_now().is_err());
+    let se = c.sync_now().expect_err("old device syncs a destroyed vault");
+    assert_eq!(se.code, "no-vault", "410 on the old namespace: {se}");
+    assert!(se.message.contains("destroyed"), "{se}");
     assert!(b.sync_now().is_err());
     // an old-vault device cannot read or write the new vault: its tokens are for the
     // destroyed namespace, and the old words join nothing (their vault is destroyed)
@@ -381,8 +383,9 @@ fn two_clients_and_a_fresh_device_end_to_end() {
         join: Join::Words { words: &words },
     });
     let e = r.expect_err("old words must not join anything");
-    assert_eq!(e.code, "destroyed", "{e}");
-    eprintln!("E2E PASS: an old-vault device cannot read or write the new vault (old tokens refused, old words join nothing: destroyed)");
+    assert_eq!(e.code, "no-vault", "{e}");
+    assert!(e.message.contains("destroyed"), "410 says the vault was destroyed: {e}");
+    eprintln!("E2E PASS: an old-vault device cannot read or write the new vault (old tokens refused, old words join nothing: no-vault, destroyed)");
     // a device that gets the NEW words joins the new vault with all files
     let joiner = client("new-words");
     let (j, _) = setup(&joiner, &srv.url, Join::Words { words: &new_words });
