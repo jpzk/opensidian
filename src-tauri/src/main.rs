@@ -2152,7 +2152,10 @@ fn history_read<R: tauri::Runtime>(win: tauri::WebviewWindow<R>, v: State<Vault>
 /// emit the same `vault-changed` it would, for the editor tabs (#238).
 fn notify_restored<R: tauri::Runtime>(win: &tauri::WebviewWindow<R>, c: watcher::Change) {
     use tauri::Emitter as _;
-    let _ = win.emit("vault-changed", &c);
+    // "note-restored", not "vault-changed": the main window must not treat a
+    // restore like an external edit (a dirty buffer would be re-saved over
+    // it); ui/main.js onNoteRestored keeps the restore and the unsaved text
+    let _ = win.emit("note-restored", &c);
 }
 
 /// Write version `seq` back over its note (current bytes are kept as a

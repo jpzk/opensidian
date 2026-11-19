@@ -123,3 +123,20 @@ Untrusted / hostile:
 - R7 app save/delete history hooks log a failure and still write (D1/D3
   are best-effort when the history store itself fails) — review finding
   on #238, follow-up
+- R8 no compare-and-swap replace of a vault file: POSIX `rename` cannot
+  require "the target is still the version I checked" (Linux
+  `renameat2(RENAME_EXCHANGE)` would, but needs FFI and the sync crates
+  are `#![forbid(unsafe_code)]`, no new dependency). A sync pass and a
+  history restore re-check the disk bytes and snapshot them into history
+  right before the rename; an editor save that lands in the microseconds
+  between that last check and the rename is replaced without a copy.
+  Every earlier edit is either skipped (next pass) or in history.
+  CodeRabbit #238 round 2 M18 / M51, WONTFIX with this residual.
+- R9 a vault setup that fails after the server consumed the one-time
+  enrollment token but before the cfg genesis + envelope were published
+  cannot resume with that token: the namespace holds at most the cfg
+  genesis (no envelope,
+  so no data is ever encrypted under it); the saved setup words are
+  kept, so the retry with a NEW token creates the vault for the same
+  words. Recovery = the operator issues a new token. CodeRabbit #238
+  round 2 M52, WONTFIX (follow-up: persist the enrollment response).
