@@ -66,7 +66,7 @@ if [ -s "$t/bom.json" ] && jq -e --argjson nb "$nb" '
      and ([$b[] | select(.name == "d3-array") | .version] | sort) == ["2.12.1", "3.2.4"]
      and ([$b[] | select(.purl == "pkg:npm/%40braintree/sanitize-url@7.1.2")] | length) == 1
      and ([.dependencies[].dependsOn[]] - [.components[]."bom-ref"] | length) == 0
-   ' "$t/bom.json" >/dev/null; then ok "mermaid: $nb bundled npm components, mermaid dependsOn all, licenses (id + expression)"
+   ' "$t/bom.json" >/dev/null; then ok "mermaid: $nb bundled pkg:npm components, mermaid dependsOn all, licenses (id + expression)"
 else bad "mermaid bundled components (jq -e)"; fi
 
 fresh() { rm -rf "$t/v"; cp -a "$root/ui/vendor" "$t/v"; }

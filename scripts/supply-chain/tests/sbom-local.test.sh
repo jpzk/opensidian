@@ -9,13 +9,14 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd); root=$(cd "$here/../.." && pwd)
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 export SOURCE_DATE_EPOCH=1700000000
+export CARGO=/nonexistent/cargo   # offline (no registry): rust part without cargo metadata
 fails=0
 ok()  { echo "ok   $*"; }
 bad() { echo "FAIL $*"; fails=1; }
 check() { local name=$1 f=$2 q=$3; if jq -e "$q" "$f" >/dev/null 2>&1; then ok "$name"; else bad "$name"; fi; }
 
 s=$t/tree; mkdir -p "$s/scripts/supply-chain" "$s/src-tauri" "$s/packaging/flatpak" "$s/packaging/ci"
-cp "$here/sbom-local.sh" "$here/rust-sbom.sh" "$here/flatpak-sbom.sh" "$here/sbom-merge.sh" "$s/scripts/supply-chain/"
+cp "$here/sbom-local.sh" "$here/rust-sbom.sh" "$here/flatpak-sbom.sh" "$here/sbom-merge.sh" "$here/sbom-validate.sh" "$s/scripts/supply-chain/"
 cp "$here/glib-vendor-check.sh" "$s/scripts/supply-chain/"   # rust-sbom.sh reads CRATE_SHA from it
 cp "$root/src-tauri/Cargo.lock" "$root/src-tauri/Cargo.toml" "$s/src-tauri/"
 cp "$root/packaging/flatpak/dev.koto.opensidian.yml" "$s/packaging/flatpak/"
@@ -63,5 +64,33 @@ mv "$t/manifest.yml" "$s/packaging/flatpak/dev.koto.opensidian.yml"
 expect_fail "unknown --skip part" 2 "unknown part" bash "$L" -o "$t/out" --skip bogus
 expect_fail "bad --webkit mode" 2 "usage" bash "$L" -o "$t/out" --webkit bogus
 expect_fail "every part skipped" 1 "every part skipped" bash "$L" -o "$t/out" --skip rust --skip vendor --skip flatpak --skip webkit
+
+# ---- item 9: --arch naming, SBOM_COMMIT/SBOM_DIRTY, cargo fail-closed, --release preconditions ----
+export CARGO=/nonexistent/cargo   # offline: rust part without cargo metadata (the default above too)
+run bash "$L" -o "$t/out" --skip webkit --arch aarch64
+A="$t/out/opensidian-9.8.7-aarch64.cdx.json"
+if [ "$rc" -eq 0 ] && [ -f "$A" ] && (cd "$t/out" && sha256sum -c --quiet opensidian-9.8.7-aarch64.cdx.json.sha256); then ok "--arch aarch64: opensidian-<ver>-<arch>.cdx.json + .sha256"; else cat "$t/se"; bad "--arch naming"; fi
+check "--arch recorded as opensidian:sbom-local:arch, release=false" "$A" \
+  '(.metadata.properties | from_entries) as $p | $p["opensidian:sbom-local:arch"] == "aarch64" and $p["opensidian:sbom-local:release"] == "false"'
+grep -q "sbom-validate: OK" "$t/se" && ok "structural validator ran on the output" || bad "validator not run"
+rm -rf "$t/out"; run env SBOM_COMMIT=0123456789abcdef0123456789abcdef01234567 SBOM_DIRTY=false bash "$L" -o "$t/out" --skip webkit -t v9.8.7
+check "SBOM_COMMIT/SBOM_DIRTY env win over git; -t passed to merge (purl + version)" "$t/out/opensidian-9.8.7.cdx.json" \
+  '(.metadata.properties | from_entries)["opensidian:sbom-local:commit"] == "0123456789abcdef0123456789abcdef01234567" and .metadata.component.purl == "pkg:github/jpzk/opensidian@v9.8.7" and .metadata.component.version == "9.8.7"'
+expect_fail "SBOM_COMMIT not 40-hex" 1 "not a 40-hex" env SBOM_COMMIT=abc SBOM_DIRTY=false bash "$L" -o "$t/out" --skip webkit
+expect_fail "SBOM_COMMIT without SBOM_DIRTY" 1 "SBOM_DIRTY" env SBOM_COMMIT=0123456789abcdef0123456789abcdef01234567 bash "$L" -o "$t/out" --skip webkit
+expect_fail "-t disagrees with -v" 1 "sbom-merge.sh failed" bash "$L" -o "$t/out" --skip webkit -v 9.8.7 -t v1.0.0
+expect_fail "bad --arch" 1 "x86_64 or aarch64" bash "$L" -o "$t/out" --skip webkit --arch riscv64
+printf '#!/bin/sh\necho "cargo stub: no network" >&2; exit 101\n' >"$t/cargo"; chmod +x "$t/cargo"
+expect_fail "cargo metadata failing fails closed" 1 "cargo metadata --all-features failed" env CARGO="$t/cargo" bash "$L" -o "$t/out" --skip webkit
+: >"$t/pkgset.tsv"; : >"$t/bin"
+RA=(-t v9.8.7 --bin "$t/bin" --pkgset "$t/pkgset.tsv" --arch x86_64)
+expect_fail "--release with --skip" 1 "no part may be skipped" env CARGO="$t/cargo" bash "$L" -o "$t/out" --release "${RA[@]}" --skip webkit
+expect_fail "--release without -t" 1 "needs -t" env CARGO="$t/cargo" bash "$L" -o "$t/out" --release --bin "$t/bin" --pkgset "$t/pkgset.tsv" --arch x86_64
+expect_fail "--release without --bin" 1 "needs --bin" env CARGO="$t/cargo" bash "$L" -o "$t/out" --release -t v9.8.7 --pkgset "$t/pkgset.tsv" --arch x86_64
+expect_fail "--release without --pkgset" 1 "needs --pkgset" env CARGO="$t/cargo" bash "$L" -o "$t/out" --release -t v9.8.7 --bin "$t/bin" --arch x86_64
+expect_fail "--release without --arch" 1 "needs --arch" env CARGO="$t/cargo" bash "$L" -o "$t/out" --release -t v9.8.7 --bin "$t/bin" --pkgset "$t/pkgset.tsv"
+expect_fail "--release without cargo" 1 "needs cargo" bash "$L" -o "$t/out" --release "${RA[@]}"
+expect_fail "--release on a dirty tree" 1 "tree is dirty" env CARGO="$t/cargo" SBOM_COMMIT=0123456789abcdef0123456789abcdef01234567 SBOM_DIRTY=true SOURCE_DATE_EPOCH=1 bash "$L" -o "$t/out" --release "${RA[@]}"
+expect_fail "--pkgset missing file" 1 "is not a file" bash "$L" -o "$t/out" --skip webkit --pkgset "$t/nope.tsv"
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "SOME FAILED"; exit 1; }
