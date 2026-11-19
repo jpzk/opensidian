@@ -654,6 +654,7 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
                     Err(TransportError::Api { code: ErrorCode::NotFound | ErrorCode::Gone, .. }) => continue,
                     Err(e) => {
                         rep.replica_errors.push((i, e.to_string()));
+                        failed = true;
                         break;
                     }
                 };
@@ -779,7 +780,6 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
                     Err(TransportError::Api { code: ErrorCode::Gone, .. }) => {}
                     Err(e) => {
                         rep.replica_errors.push((i, e.to_string()));
-                        failed = true;
                         break;
                     }
                 }
