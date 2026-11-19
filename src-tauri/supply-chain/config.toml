@@ -22,6 +22,9 @@ url = "https://raw.githubusercontent.com/zcash/rust-ecosystem/main/supply-chain/
 [policy.glib]
 audit-as-crates-io = true
 
+[policy.rustls-webpki]
+audit-as-crates-io = true
+
 [[exemptions.aho-corasick]]
 version = "1.1.5"
 criteria = "safe-to-deploy"
@@ -56,22 +59,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.autocfg]]
 version = "1.5.1"
-criteria = "safe-to-deploy"
-
-[[exemptions.aws-lc-fips-sys]]
-version = "0.14.2"
-criteria = "safe-to-deploy"
-
-[[exemptions.aws-lc-rs]]
-version = "1.18.1"
-criteria = "safe-to-deploy"
-
-[[exemptions.aws-lc-sys]]
-version = "0.45.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.bindgen]]
-version = "0.72.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.bitflags]]
@@ -138,10 +125,6 @@ criteria = "safe-to-deploy"
 version = "1.1.0"
 criteria = "safe-to-deploy"
 
-[[exemptions.cexpr]]
-version = "0.6.0"
-criteria = "safe-to-deploy"
-
 [[exemptions.cfb]]
 version = "0.7.3"
 criteria = "safe-to-deploy"
@@ -152,14 +135,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.chrono]]
 version = "0.4.45"
-criteria = "safe-to-deploy"
-
-[[exemptions.clang-sys]]
-version = "1.9.1"
-criteria = "safe-to-deploy"
-
-[[exemptions.cmake]]
-version = "0.1.58"
 criteria = "safe-to-deploy"
 
 [[exemptions.color]]
@@ -302,10 +277,6 @@ criteria = "safe-to-deploy"
 version = "2.4.2"
 criteria = "safe-to-deploy"
 
-[[exemptions.either]]
-version = "1.19.0"
-criteria = "safe-to-deploy"
-
 [[exemptions.embed-resource]]
 version = "3.0.11"
 criteria = "safe-to-deploy"
@@ -360,10 +331,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.foreign-types-macros]]
 version = "0.2.4"
-criteria = "safe-to-deploy"
-
-[[exemptions.fs_extra]]
-version = "1.3.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.futures-task]]
@@ -602,10 +569,6 @@ criteria = "safe-to-deploy"
 version = "2.12.1"
 criteria = "safe-to-deploy"
 
-[[exemptions.itertools]]
-version = "0.13.0"
-criteria = "safe-to-deploy"
-
 [[exemptions.itoa]]
 version = "1.0.18"
 criteria = "safe-to-deploy"
@@ -702,10 +665,6 @@ criteria = "safe-to-deploy"
 version = "0.7.4"
 criteria = "safe-to-deploy"
 
-[[exemptions.libloading]]
-version = "0.8.9"
-criteria = "safe-to-deploy"
-
 [[exemptions.libredox]]
 version = "0.1.21"
 criteria = "safe-to-deploy"
@@ -746,10 +705,6 @@ criteria = "safe-to-deploy"
 version = "0.3.17"
 criteria = "safe-to-deploy"
 
-[[exemptions.minimal-lexical]]
-version = "0.2.1"
-criteria = "safe-to-deploy"
-
 [[exemptions.miniz_oxide]]
 version = "0.9.1"
 criteria = "safe-to-deploy"
@@ -776,10 +731,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.new_debug_unreachable]]
 version = "1.0.6"
-criteria = "safe-to-deploy"
-
-[[exemptions.nom]]
-version = "7.1.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.num_enum]]
@@ -837,6 +788,21 @@ criteria = "safe-to-deploy"
 [[exemptions.once_cell]]
 version = "1.21.4"
 criteria = "safe-to-deploy"
+
+[[exemptions.openssl]]
+version = "0.10.81"
+criteria = "safe-to-deploy"
+notes = "sync OpenSSL swap (operator 2026-11-19): safe Rust FFI over libcrypto; links ONLY the box-built OpenSSL 3.5.9 whose FIPS provider is CMVP #5586 (docs/sync/cmvp.md). Pinned exact (=0.10.81, crates.io 2026-06-12, >= 6 weeks; sha256 77823a27..7a45, docs/sync/deps.md). No vendored feature. Used only by sync-crypto + rustls-openssl, every EVP fetch with fips=yes; approved mode enforced at startup (refusal tests)."
+
+[[exemptions.openssl-macros]]
+version = "0.1.1"
+criteria = "safe-to-deploy"
+notes = "sync OpenSSL swap: proc-macro of the openssl crate (corresponds/derive helpers, no runtime code, no I/O). Pinned exact =0.1.1 (crates.io 2023-04-01; sha256 a948666b..7d9c, docs/sync/deps.md)."
+
+[[exemptions.openssl-sys]]
+version = "0.9.117"
+criteria = "safe-to-deploy"
+notes = "sync OpenSSL swap: raw libcrypto/libssl bindings; build.rs only locates the system OpenSSL via OPENSSL_DIR (box prefix, OPENSSL_NO_VENDOR=1). Optional openssl-src/aws-lc-*/bssl-sys/bindgen stay OFF (Cargo.lock has none). Pinned exact =0.9.117 (crates.io 2026-06-12; sha256 b47e7e6b..3695, docs/sync/deps.md)."
 
 [[exemptions.pango]]
 version = "0.18.3"
@@ -908,10 +874,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.potential_utf]]
 version = "0.1.6"
-criteria = "safe-to-deploy"
-
-[[exemptions.prettyplease]]
-version = "0.2.37"
 criteria = "safe-to-deploy"
 
 [[exemptions.proc-macro-crate]]
@@ -990,10 +952,6 @@ criteria = "safe-to-deploy"
 version = "0.13.4"
 criteria = "safe-to-deploy"
 
-[[exemptions.ring]]
-version = "0.17.14"
-criteria = "safe-to-deploy"
-
 [[exemptions.rusqlite]]
 version = "0.40.2"
 criteria = "safe-to-deploy"
@@ -1005,6 +963,11 @@ criteria = "safe-to-deploy"
 [[exemptions.rustls]]
 version = "0.23.45"
 criteria = "safe-to-deploy"
+
+[[exemptions.rustls-openssl]]
+version = "0.4.2"
+criteria = "safe-to-deploy"
+notes = "sync OpenSSL swap: rustls CryptoProvider on rust-openssl. Pinned exact =0.4.2 (crates.io 2026-10-02, 48 days; sha256 ddabe409..760c, docs/sync/deps.md), default-features off; we build a custom provider (TLS 1.3 AES-GCM suites, ECDHE P-256/P-384 only) and refuse unless provider.fips(). Source read during pinning (goal sync-e2e-4 research/ro)."
 
 [[exemptions.rustls-pki-types]]
 version = "1.15.1"
@@ -1096,10 +1059,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.servo_arc]]
 version = "0.4.3"
-criteria = "safe-to-deploy"
-
-[[exemptions.shlex]]
-version = "1.3.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.simd-adler32]]
@@ -1512,10 +1471,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.windows-sys]]
 version = "0.45.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.windows-sys]]
-version = "0.52.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.windows-sys]]

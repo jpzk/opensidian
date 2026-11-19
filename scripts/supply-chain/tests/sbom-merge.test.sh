@@ -21,7 +21,7 @@ n_lock=$(grep -c '^\[\[package\]\]' "$root/src-tauri/Cargo.lock")
 check "rust: CycloneDX 1.6, one comp per non-root Cargo.lock package ($((n_lock-1)))" "$t/rust.json" \
   ".bomFormat == \"CycloneDX\" and .specVersion == \"1.6\" and (.components | length) == $((n_lock-1))"
 check "rust: every registry crate has the Cargo.lock sha256" "$t/rust.json" \
-  '[.components[] | select(.name != "glib") | .hashes[0].content | test("^[0-9a-f]{64}$")] | all'
+  '[.components[] | select(.purl != null) | .hashes[0].content | test("^[0-9a-f]{64}$")] | all'
 grep -A4 '^name = "serde"$' "$root/src-tauri/Cargo.lock" | sed -n 's/^checksum = "\(.*\)"/\1/p' >"$t/serde.sum"
 check "rust: serde hash == Cargo.lock checksum" "$t/rust.json" \
   "[.components[] | select(.name == \"serde\") | .hashes[0].content] == [\"$(cat "$t/serde.sum")\"]"
@@ -31,6 +31,11 @@ check "rust: root opensidian is metadata.component, not a component" "$t/rust.js
   '.metadata.component.name == "opensidian" and ([.components[] | select(.name == "opensidian")] | length == 0)'
 check "rust: every dependency ref resolves" "$t/rust.json" \
   '([.components[]."bom-ref"] + [.metadata.component."bom-ref"]) as $k | [.dependencies[] | .ref, .dependsOn[]] | unique | all(. as $r | $k | index($r))'
+wsha=$(sed -n 's/^CRATE_SHA=\([0-9a-f]\{64\}\)$/\1/p' "$here/webpki-vendor-check.sh")
+check "rust: vendored rustls-webpki explicit purl, .crate sha256 from webpki-vendor-check.sh, noring pedigree" "$t/rust.json" \
+  "[.components[] | select(.name == \"rustls-webpki\")] | length == 1 and .[0].purl == \"pkg:cargo/rustls-webpki@0.103.15\" and .[0].hashes[0].content == \"$wsha\" and (.[0].pedigree.patches[0].diff.text.content | test(\"noring.patch\"))"
+check "rust: 5 sync workspace crates first-party, NO purl, GPL-3.0-or-later" "$t/rust.json" \
+  '[.components[] | select(.properties[]?.name == "opensidian:workspace-member")] | (map(.name) | sort) == ["sync-core","sync-crypto","sync-proto","sync-server","syncd"] and all(.purl == null and .licenses[0].expression == "GPL-3.0-or-later")'
 
 "$here/flatpak-sbom.sh" >"$t/flatpak.json"
 check "flatpak: org.gnome.Platform 49 platform comp + brotli v1.2.1 sha256" "$t/flatpak.json" \
@@ -77,6 +82,11 @@ printf '\n[[package]]\nname = "opensidian"\nversion = "0.0.1"\nsource = "git+htt
 expect_fail "rust: git-sourced crate NAMED opensidian is not exempt" "opensidian@0.0.1 \[git+https" "$here/rust-sbom.sh" "$t/gitroot.lock"
 sed '0,/^checksum = /s/^checksum = .*/checksum = "nothex"/' "$root/src-tauri/Cargo.lock" >"$t/sum.lock"
 expect_fail "rust: registry crate with a bad checksum" "without a sha256" "$here/rust-sbom.sh" "$t/sum.lock"
+cp "$root/src-tauri/Cargo.lock" "$t/path.lock"
+printf '\n[[package]]\nname = "evil"\nversion = "0.1.0"\n' >>"$t/path.lock"
+expect_fail "rust: path crate that is not a workspace member fails closed" "evil@0.1.0 \[\]" "$here/rust-sbom.sh" "$t/path.lock"
+sed 's/^name = "rustls-webpki"$/name = "rustls-webpki"/; /^name = "rustls-webpki"$/{n;s/^version = "0.103.15"$/version = "0.103.14"/}' "$root/src-tauri/Cargo.lock" >"$t/wv.lock"
+expect_fail "rust: vendored webpki at a version webpki-vendor-check.sh does not prove fails closed" "rustls-webpki@0.103.14" "$here/rust-sbom.sh" "$t/wv.lock"
 sed 's/^runtime-version:.*$//' "$root/packaging/flatpak/dev.koto.opensidian.yml" >"$t/m.yml"
 expect_fail "flatpak: no runtime-version" "runtime/runtime-version" "$here/flatpak-sbom.sh" "$t/m.yml"
 sed '/^        sha256: 98d3/d' "$root/packaging/flatpak/dev.koto.opensidian.yml" >"$t/m2.yml"
