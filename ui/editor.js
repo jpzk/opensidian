@@ -1783,6 +1783,20 @@ Ed.field = function (g) {
   };
   return f;
 };
+/* #241: re-add the DOM caret range after a user edit (see mount) so WebKitGTK
+   repaints the native caret at its new rect and restarts the blink, as stock does
+   after every edit. Only for a focused, non-composing view with an empty
+   selection whose DOM selection already sits inside this editor. */
+Ed.caretRepaint = function (u) {
+  // a USER edit: CM6 input.* / delete.* and the editor's own keys (os.backspace, os.enter, ...)
+  if (!u.docChanged || !u.transactions.some(t => t.annotation(CMs.Transaction.userEvent) != null)) return;
+  const view = u.view;
+  if (!view.hasFocus || view.composing || !view.state.selection.main.empty) return;
+  const sel = view.root.getSelection ? view.root.getSelection() : document.getSelection();
+  if (!sel || sel.rangeCount !== 1 || !sel.isCollapsed || !view.contentDOM.contains(sel.anchorNode)) return;
+  const r = sel.getRangeAt(0).cloneRange();
+  sel.removeAllRanges(); sel.addRange(r);
+};
 /* The FIRST client rect of selectNodeContents(row).getClientRects(), without
    asking for all the others. A range's rects come in document order — a
    top-level child element's border boxes, then the text rects inside it — so
@@ -2282,6 +2296,16 @@ Object.assign(Ed, {
       Ed.viewTheme || (Ed.viewTheme = CMv.EditorView.theme({ "&.cm-focused": { outline: "none" }, ".cm-scroller": { fontFamily: "inherit", lineHeight: "inherit" },
                              ".cm-content": { padding: "0" }, ".cm-line": { padding: "0" } })),
       CMv.EditorView.updateListener.of(u => Ed.onUpdate(G(), v, u)),
+      // #241: this editor paints the NATIVE caret (no drawSelection). When an edit
+      // changes the line's syntax tree (Backspace into `**strong**` / `[[link]]`, the
+      // mark stops parsing), CM6 re-renders the line's inline DOM and re-collapses the
+      // DOM selection into the NEW text node at the same logical offset. WebKitGTK
+      // neither invalidates the old caret rect nor restarts the blink for that
+      // programmatic move: the caret stays drawn at the old x, or invisible, for up
+      // to a blink period. Re-adding the same range is a real selection change for
+      // WebKit (repaint at the new rect + blink restart); CM6 reads it back as equal
+      // to its state, so no transaction follows.
+      CMv.EditorView.updateListener.of(u => Ed.caretRepaint(u)),
       Ed.lpExt ? Ed.lpExt(v, G) : [],
       Ed.hlExt(v),
     ];
