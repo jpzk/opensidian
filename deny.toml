@@ -61,16 +61,14 @@ allow = [
 # the app crate itself is GPL-3.0-or-later; allow that for opensidian only, not for dependencies
 exceptions = [
   { crate = "opensidian", allow = ["GPL-3.0-or-later"] },
-  # sync M2a (docs/sync/deps.md): the AWS-LC FIPS module. OpenSSL licence = operator-pending
-  # licensing question (GPL compatibility), recorded in docs/sync/open-questions.md.
-  { crate = "aws-lc-rs", allow = ["ISC"] },
-  { crate = "aws-lc-fips-sys", allow = ["ISC", "OpenSSL"] },
+  # NO "OpenSSL" (OpenSSL/SSLeay) licence anywhere: it is GPL-incompatible (docs/sync/open-questions.md
+  # #13, RESOLVED 2026-11-19: OpenSSL 3 FIPS provider, Apache-2.0). aws-lc-*/ring are gone from the
+  # lock; their exceptions were removed with them.
+  # libloading 0.7.4: transitive via the tauri/gtk stack (not sync).
   { crate = "libloading", allow = ["ISC"] },
-  # sync M3a TLS (docs/sync/deps.md §M3a-TLS): rustls stack + aws-lc-sys (pulled by rustls' fips feature)
+  # sync TLS (docs/sync/deps.md): rustls-webpki (vendored path patch, noring) + its hard dep untrusted
   { crate = "rustls-webpki", allow = ["ISC"] },
   { crate = "untrusted", allow = ["ISC"] },
-  { crate = "aws-lc-sys", allow = ["ISC"] },
-  { crate = "ring", allow = ["ISC"] },
 ]
 # the vendored glib [patch] (path crate) is checked like any other crate; only unpublished crates are skipped
 [licenses.private]
