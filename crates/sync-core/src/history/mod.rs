@@ -317,7 +317,7 @@ pub fn store_root(app_data: &Path, vault_id: &str) -> Result<PathBuf, HistoryErr
 /// the source store.json names another vault; a symlink or other non-plain
 /// entry in the source is an error, never followed; `objects/tmp` (in-flight
 /// writes) is skipped. A source without a store = nothing to copy: Ok(0).
-/// Returns the number of journal entries copied.
+/// Returns the number of journal lines copied.
 pub fn copy_store(from_app_data: &Path, from_id: &str, to_app_data: &Path, to_id: &str) -> Result<usize, HistoryError> {
     let src = store_root(from_app_data, from_id)?;
     let dst = store_root(to_app_data, to_id)?;

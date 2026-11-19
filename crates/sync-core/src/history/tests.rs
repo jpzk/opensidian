@@ -805,7 +805,8 @@ fn copy_store_carries_every_version_to_the_new_vault() {
     assert_eq!(copy_store(&f.app, "nostore", &to, "x1").unwrap(), 0);
     assert!(!to.join("history").join("x1").exists());
     let n = copy_store(&f.app, "v1", &to, "v2new").unwrap();
-    assert_eq!(n, 2, "two journal lines");
+    let lines = fs::read(f.app.join("history").join("v1").join("index.log")).unwrap().iter().filter(|&&c| c == b'\n').count();
+    assert_eq!(n, lines, "every journal line copied");
     let t = Store::open(&to, "v2new", &f.vault, Config::default()).unwrap();
     let vs = t.versions("n.md");
     assert_eq!(vs.len(), 2);
