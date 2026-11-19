@@ -39,11 +39,11 @@ Each OPEN item is a follow-up and blocks goal_done (criterion 8).
 - crates/sync-server/src/store.rs:628-631 Debit quota only for the object that GC actually removed. — OPEN
 - crates/sync-core/src/history/mod.rs:417-417 Sync the store directory after creating index.log. — OPEN
 - crates/sync-core/src/history/mod.rs:913-914 Recover or invalidate the journal after an append error. — OPEN
-- crates/sync-core/src/history/mod.rs:567-568 Keep capture and restore inside the vault when a parent is a symlink. — OPEN
-- crates/sync-core/src/history/mod.rs:571-573 Create restore staging files without replacing an existing file. — OPEN
+- crates/sync-core/src/history/mod.rs:567-568 Keep capture and restore inside the vault when a parent is a symlink. — FIXED (d0c2b51: sync-core vaultfs anchored read/write; tests vaultfs::*, history::restore_*)
+- crates/sync-core/src/history/mod.rs:571-573 Create restore staging files without replacing an existing file. — FIXED (d0c2b51: sync-core vaultfs anchored read/write; tests vaultfs::*, history::restore_*)
 - crates/sync-core/src/history/mod.rs:773-773 Do not leave the old journal writable after a replacement. — OPEN
 - crates/sync-core/src/history/mod.rs:675-681 Preserve rename records needed to prevent old paths from reappearing. — OPEN
-- crates/sync-core/src/history/mod.rs:566-566 Stop restore when history skips the current file. — OPEN
+- crates/sync-core/src/history/mod.rs:566-566 Stop restore when history skips the current file. — FIXED (d0c2b51: sync-core vaultfs anchored read/write; tests vaultfs::*, history::restore_*)
 - crates/sync-core/src/history/mod.rs:412-412 Discard the torn tail before decoding UTF-8. — OPEN
 - crates/sync-core/src/history/mod.rs:611-612 Keep history-write failures from being ignored during sync merges. — OPEN
 - crates/sync-core/src/history/mod.rs:42-43 Serialize daemon history writers on the engine lock. — OPEN
@@ -62,8 +62,8 @@ Each OPEN item is a follow-up and blocks goal_done (criterion 8).
 - crates/syncd/src/local.rs:461-486 Commit large local edit sets in several batches, or sync stalls for vaults with more than about 12 MiB of changed inline content. — OPEN
 - crates/syncd/src/ipc.rs:104-104 Do not unlink a regular file at the socket path. — FIXED (stale path removed only if it is a socket) — uncompiled
 - crates/syncd/src/ipc.rs:154-158 Authenticate the daemon before sending backup words. — FIXED (client checks socket + 0700 dir owned by own uid before connect and before every request) — uncompiled
-- crates/syncd/src/workdir.rs:84-85 Check the file that sync actually reads. — OPEN
-- crates/syncd/src/workdir.rs:106-108 Anchor materialization to the vault directory. — OPEN
+- crates/syncd/src/workdir.rs:84-85 Check the file that sync actually reads. — FIXED (d0c2b51: sync-core vaultfs anchored read/write; tests vaultfs::*, history::restore_*)
+- crates/syncd/src/workdir.rs:106-108 Anchor materialization to the vault directory. — FIXED (d0c2b51: sync-core vaultfs anchored read/write; tests vaultfs::*, history::restore_*)
 - src-tauri/src/syncui.rs:135-137 Apply the app's offline policy to desktop sync. — OPEN
 - src-tauri/src/main.rs:2164-2164 Notify the main window when history restores a note. — OPEN
 - src-tauri/src/main.rs:2186-2186 Restore the newest stored bytes, not the oldest. — FIXED (dropped .rev(); versions() is newest first) — uncompiled
