@@ -145,18 +145,23 @@
     li.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); onpick(li); } };
     return li;
   }
+  // every view change bumps viewGen; an awaited reply for an older view is
+  // dropped, so a slow history_list/diff never paints over a newer one
+  let viewGen = 0;
   function clearView(head) {
+    viewGen++;
     sel = null; $("h-diff").innerHTML = ""; $("h-restore").disabled = true;
     $("h-restore").onclick = null; delete $("h-restore").dataset.armed; $("h-restore").textContent = "Restore this version";
     $("h-head").textContent = head || "Select a version to compare it with the note on disk.";
   }
   async function listVersions() {
-    err("h-err"); clearView();
+    err("h-err"); clearView(); const g = viewGen;
     const name = $("h-note").value.trim().replace(/\.md$/, "");
     const ul = $("h-list"); ul.innerHTML = "";
     if (!name) return;
     let vs;
-    try { vs = await inv("history_list", { name }); } catch (e) { return err("h-err", e); }
+    try { vs = await inv("history_list", { name }); } catch (e) { return g === viewGen && err("h-err", e); }
+    if (g !== viewGen) return;
     if (!vs.length) { ul.appendChild(el("li", "hint", "no versions recorded for " + name)); return; }
     for (const e of vs.slice().reverse()) {   // newest first
       ul.appendChild(rowFor(e, async li => {
@@ -167,10 +172,12 @@
   }
   async function pick(e, name) {
     err("h-err"); clearView(when(e.ts_ms) + " · " + (REASON[e.reason] || e.reason) + " — compared with the note on disk");
+    const g = viewGen;
     sel = e;
     if (!e.sha) { $("h-head").textContent += " (no bytes stored for this record)"; return; }
     let runs;
-    try { runs = await inv("history_diff", { seq: e.seq }); } catch (er) { return err("h-err", er); }
+    try { runs = await inv("history_diff", { seq: e.seq }); } catch (er) { return g === viewGen && err("h-err", er); }
+    if (g !== viewGen) return;
     const pre = $("h-diff");
     for (const r of runs) pre.appendChild(el("span", r.op, r.text));
     const b = $("h-restore");
@@ -188,10 +195,11 @@
     };
   }
   async function listDeleted() {
-    err("h-err"); clearView("Recently deleted notes — restore brings back the newest stored version.");
+    err("h-err"); clearView("Recently deleted notes — restore brings back the newest stored version."); const g = viewGen;
     const ul = $("h-list"); ul.innerHTML = "";
     let ds;
-    try { ds = await inv("history_deleted"); } catch (e) { return err("h-err", e); }
+    try { ds = await inv("history_deleted"); } catch (e) { return g === viewGen && err("h-err", e); }
+    if (g !== viewGen) return;
     if (!ds.length) { ul.appendChild(el("li", "hint", "nothing deleted")); return; }
     for (const e of ds) {
       const name = e.path.replace(/\.md$/, "");
