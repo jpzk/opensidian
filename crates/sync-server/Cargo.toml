@@ -39,18 +39,19 @@ tokio = { version = "=1.53.1", default-features = false, features = ["rt-multi-t
 rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
 libsqlite3-sys = { version = "=0.38.2", default-features = false, features = ["bundled"] }
 # TLS (M3a): rustls on the aws-lc-rs FIPS provider, TLS 1.3 only. Newest >= 6 weeks:
-# rustls 0.23.45 (2026-09-14), tokio-rustls 0.26.6 (2026-09-28). The transitive crates
+# rustls 0.23.43 / webpki 0.103.13 = newest that accept aws-lc-rs 1.16 (validated FIPS line,
+# deps.md §FIPS-0.13; 0.23.44+ need aws-lc-rs ^1.18), tokio-rustls 0.26.6. The transitive crates
 # are pinned direct so the resolver cannot drift to a younger release. rustls' fips
 # feature implies its aws_lc_rs feature, which also enables aws-lc-rs/aws-lc-sys
 # (non-FIPS build, compiled but unused: aws-lc-rs binds aws-lc-fips-sys when `fips`
 # is on). That coupling is in rustls' feature table, not ours; see deps.md §M3a-TLS.
-rustls = { version = "=0.23.45", default-features = false, features = ["std", "fips"] }
+rustls = { version = "=0.23.43", default-features = false, features = ["std", "fips"] }
 tokio-rustls = { version = "=0.26.6", default-features = false, features = ["fips"] }
-rustls-webpki = { version = "=0.103.15", default-features = false, features = ["std", "aws-lc-rs-fips"] }
+rustls-webpki = { version = "=0.103.13", default-features = false, features = ["std", "aws-lc-rs-fips"] }
 rustls-pki-types = { version = "=1.15.1", default-features = false, features = ["std"] }
 subtle = { version = "=2.6.1", default-features = false }
 untrusted = "=0.9.0"
-aws-lc-sys = { version = "=0.45.0", default-features = false }
+aws-lc-sys = { version = "=0.37.1", default-features = false }
 
 [[bin]]
 name = "opensidian-sync-server"

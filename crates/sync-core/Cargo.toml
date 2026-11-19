@@ -31,8 +31,8 @@ zstd-sys = { version = "=2.1.0", default-features = false }
 base64 = "=0.22.1"
 # M5: secret buffers (keystore entries, phrase-derived keys) — already locked (sync-crypto).
 zeroize = "=1.9.1"
-rustls = { version = "=0.23.45", default-features = false, features = ["std", "fips"] }
-rustls-webpki = { version = "=0.103.15", default-features = false, features = ["std", "aws-lc-rs-fips"] }
+rustls = { version = "=0.23.43", default-features = false, features = ["std", "fips"] }
+rustls-webpki = { version = "=0.103.13", default-features = false, features = ["std", "aws-lc-rs-fips"] }
 rustls-pki-types = { version = "=1.15.1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
