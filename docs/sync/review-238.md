@@ -8,8 +8,8 @@ Each OPEN item is a follow-up and blocks goal_done (criterion 8).
 
 - crates/sync-crypto/tests/wycheproof.rs:12-12 Preserve the pinned fixture bytes on checkout. — OPEN
 - crates/sync-core/src/vault.rs:708-709 Recover a published envelope when the cfg append fails. — OPEN
-- crates/sync-core/src/vault.rs:883-883 Check the key epoch before activating a paired device. — OPEN
-- crates/sync-core/src/vault.rs:509-509 Reject chain refreshes that roll back the accepted cfg chain. — OPEN
+- crates/sync-core/src/vault.rs:883-883 Check the key epoch before activating a paired device. — FIXED (22fe9be: pair_join returns NeedWords when the cfg head vk_epoch is newer than the envelope epoch, same gate as from_daily/refresh_chain)
+- crates/sync-core/src/vault.rs:509-509 Reject chain refreshes that roll back the accepted cfg chain. — FIXED (22fe9be: refresh refuses a chain that is shorter than or forks the accepted cfg chain, envelope key epoch going back refused; test refresh_refuses_a_rolled_back_cfg_chain)
 - crates/sync-core/src/keystore.rs:140-140 Make directory durability handling platform-specific. — OPEN
 - crates/sync-core/src/keystore.rs:134-134 Use a unique temporary file for each write. — OPEN
 - crates/sync-core/src/keystore.rs:105-105 Windows keystore entries have no owner-only access control. — OPEN
@@ -18,13 +18,13 @@ Each OPEN item is a follow-up and blocks goal_done (criterion 8).
 - crates/sync-core/src/transport/fs.rs:233-235 Repair the list index before returning Identical. — OPEN
 - crates/sync-core/src/transport/http.rs:262-263 Enforce a deadline for the whole replica request. — FIXED (Deadline stream: per-op timeout = min(idle, time left), whole request <= timeout + REQUEST_BUDGET 300 s, TLS wraps it; test whole_request_deadline_beats_a_trickling_peer)
 - crates/sync-core/src/transport/http.rs:259-260 Check the resolved address before opening a plain HTTP connection. — FIXED (plain http skips every resolved non-loopback address; test plain_http_connects_to_loopback_addresses_only)
-- crates/sync-core/src/engine.rs:436-440 Detect ancestry cycles before expanding parents. — OPEN
+- crates/sync-core/src/engine.rs:436-440 Detect ancestry cycles before expanding parents. — FIXED (22fe9be: cyclic parents stay pending, ready_and_gen terminates; test parent_cycle_is_pending_not_a_hang)
 - crates/sync-core/src/engine.rs:644-644 Skip the push phase for replicas that fail during pull. — OPEN
 - crates/sync-core/src/engine.rs:262-262 Use a Windows-compatible state persistence path. — OPEN
 - crates/sync-core/src/engine.rs:723-723 Order new merge commits after their parents. — OPEN
 - crates/sync-core/src/engine.rs:577-579 Keep the live head consistent when saving state fails. — OPEN
 - crates/sync-core/src/engine.rs:613-615 Try another replica after verification rejects an object. — OPEN
-- crates/sync-core/src/engine.rs:662-720 Check a commit's declared tree_hash before the engine stores it as head. — OPEN
+- crates/sync-core/src/engine.rs:662-720 Check a commit's declared tree_hash before the engine stores it as head. — FIXED (22fe9be: a tip is adopted only after its declared tree_hash matches the rebuilt tree, else Report.invalid; test commit_with_a_lying_tree_hash_never_becomes_head)
 - crates/sync-core/src/merge/dmp.rs:351-351 Do not apply a hunk to a different occurrence when the original was edited. — OPEN
 - crates/sync-core/src/merge/mod.rs:333-339 Reject merges that place a file and a directory at the same path. — OPEN
 - crates/sync-server/src/http.rs:395-395 Stream upload bodies instead of retaining one full buffer per connection. — FIXED (server-wide body budget: each request reserves its worst case from a shared semaphore before the first body byte, released when the handler drops the bytes; a 16 MiB object still needs one buffer because the header + sha256 are checked before publish; test body_budget_is_shared_across_connections)
