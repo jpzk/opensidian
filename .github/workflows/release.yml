@@ -11,7 +11,8 @@
 #   opensidian-<ver>-<arch>.rpm                packaging/ci/rpm-build.sh (fedora:44 GA by digest, per arch)
 #   opensidian-<ver>-<arch>.deb                packaging/ci/deb-build.sh (debian:trixie multi-arch index digest)
 #   SHA256SUMS                                 sha256sum of the ten, x86_64 five first (scripts/release.sh order)
-#   opensidian-<ver>.cdx.json                  merged CycloneDX SBOM from supply-chain.yml (called below; draft-release needs it green)
+#   (no SBOM asset from CI since 2026-11-19, operator: the SBOM is built LOCALLY with
+#    scripts/supply-chain/sbom-local.sh and uploaded to the draft by hand, docs/RELEASING.md)
 # The recipe is the one releases are cut with today (harness scripts/release.sh +
 # bin/hz/release-build.sh): ONE cargo build PER ARCH, both AppImages from that binary,
 # rpm + deb wrap the SAME binary (each stage refuses unless its /usr/bin/opensidian
@@ -310,18 +311,14 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  # SBOM + CVE scan + dependency policy: the ONE supply-chain workflow, called (not copied).
-  # A called workflow gets at most the permissions granted here; inside it only the
-  # attest-sbom job uses id-token/attestations write. draft-release needs it green.
+  # CVE scan + dependency policy: the ONE supply-chain workflow, called (not copied). It no
+  # longer builds or attests an SBOM (2026-11-19, local: sbom-local.sh), so it needs no
+  # id-token/attestations. draft-release still needs EVERY remaining supply-chain job green.
   supply-chain:
     name: supply-chain
     uses: ./.github/workflows/supply-chain.yml
-    with:
-      attest: true
     permissions:
       contents: read
-      id-token: write
-      attestations: write
 
   # DRAFT release only — CI never publishes. The operator signs SHA256SUMS
   # OFFLINE (gpg key never touches GitHub), uploads SHA256SUMS.asc, and only
@@ -356,15 +353,9 @@ jobs:
         with:
           name: SHA256SUMS
           path: assets
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: sbom
-          path: sbom
-      - name: check the SBOM is opensidian-<ver>.cdx.json (CycloneDX 1.6)
-        run: |
-          ls -l sbom
-          [ "$(ls -1 sbom | wc -l)" -eq 1 ] || { echo "expected exactly one SBOM file"; exit 1; }
-          jq -e '.bomFormat == "CycloneDX" and .specVersion == "1.6"' "sbom/opensidian-$V.cdx.json"
+      # NO SBOM from CI (operator 2026-11-19): the operator builds opensidian-<ver>.cdx.json + .sha256
+      # with scripts/supply-chain/sbom-local.sh and uploads both to this draft by hand
+      # (docs/RELEASING.md "SBOM (local)"). CI never fabricates or attaches one.
       - name: check the 11 assets against SHA256SUMS
         working-directory: assets
         run: |
@@ -392,8 +383,6 @@ jobs:
             FILES+=("$P-slim.AppImage" "$P-portable.AppImage" "$P.flatpak" "$P.rpm" "$P.deb")
           done
           FILES+=(assets/SHA256SUMS)
-          # the SBOM rides next to SHA256SUMS (attested by supply-chain.yml; not listed in SHA256SUMS)
-          FILES+=("sbom/opensidian-$V.cdx.json")
           {
             if [ -f ".github/release-notes/v$V.md" ]; then
               cat ".github/release-notes/v$V.md"
@@ -433,10 +422,12 @@ jobs:
             gh release create "$TAG" --draft --latest=false --title "$TITLE" --notes-file notes.md "${EXTRA[@]}" "${FILES[@]}"
           fi
 
-          # prove the result: exactly one release for TAG, still a draft, exactly 12 assets (10 + SHA256SUMS + SBOM)
+          # prove the result: exactly one release for TAG, still a draft, exactly 11 CI assets (10 +
+          # SHA256SUMS). A hand-uploaded local SBOM (opensidian-<ver>.cdx.json + .sha256, docs/RELEASING.md)
+          # is not counted, so re-running this job after that upload still passes; CI never uploads one.
           gh api --paginate "repos/$GH_REPO/releases" \
-            --jq ".[] | select(.tag_name == \"$TAG\") | \"\(.id) draft=\(.draft) assets=\(.assets | length) \(.html_url)\"" > after.txt
+            --jq ".[] | select(.tag_name == \"$TAG\") | \"\(.id) draft=\(.draft) assets=\([.assets[].name | select((endswith(\".cdx.json\") or endswith(\".cdx.json.sha256\")) | not)] | length) \(.html_url)\"" > after.txt
           cat after.txt
           [ "$(wc -l < after.txt)" -eq 1 ] || { echo "::error::expected exactly one release for $TAG"; exit 1; }
-          grep -q ' draft=true assets=12 ' after.txt || { echo "::error::release is not a draft with 12 assets"; exit 1; }
+          grep -q ' draft=true assets=11 ' after.txt || { echo "::error::release is not a draft with 11 CI assets"; exit 1; }
           gh api "repos/$GH_REPO/releases/$(cut -d' ' -f1 after.txt)" --jq '.assets[].name'

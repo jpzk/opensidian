@@ -1,6 +1,6 @@
 # Supply-chain checks
 
-Workflow: `.github/workflows/supply-chain.yml` (#188). It is the **one** workflow for all SBOM, CVE
+Workflow: `.github/workflows/supply-chain.yml` (#188). It is the **one** workflow for CVE
 scanning and dependency policy work. Scripts live in `scripts/supply-chain/` (bash + jq + coreutils,
 no python/js tooling); their tests are in `scripts/supply-chain/tests/`.
 
@@ -10,7 +10,7 @@ no python/js tooling); their tests are in `scripts/supply-chain/tests/`.
 - push of tags `v*`
 - weekly cron (Monday 04:23 UTC), so new advisories show up when no code changes
 - `workflow_dispatch` (input `codemirror_rebuild` turns on the opt-in rebuild job)
-- `workflow_call`, so `release.yml` can call it (input `attest`, default `true`)
+- `workflow_call`, so `release.yml` can call it (no inputs; the `attest` input went with attest-sbom)
 
 There is **no `pull_request` trigger** (and never `pull_request_target`). Earlier versions of this
 workflow ran on every PR; that trigger was removed on purpose.
@@ -29,8 +29,8 @@ cancel each other.
 
 - Top-level `permissions: contents: read`, no secrets (`github.token` only raises the GitHub API
   rate limit for `osv-install.sh`), `persist-credentials: false`, no caches.
-- Only `attest-sbom` gets `id-token: write` + `attestations: write`, at job level (same pattern as
-  `release.yml`).
+- No job gets `id-token` or `attestations` (attest-sbom was removed with the CI SBOM, 2026-11-19;
+  the SBOM is built locally, see "SBOM — built locally").
 - Every action is pinned by full commit SHA, the Rust toolchain to an exact release, node and
   esbuild (rebuild job only) by sha256/sha512. Pins are at least 6 weeks old.
 - actionlint: `.github/actionlint.yaml` lists `ubuntu-26.04` / `ubuntu-26.04-arm`. Those are
@@ -117,14 +117,14 @@ against the registry and the bundle sha256 against the lock.
 Only after that passes, `vendor-sbom.sh` writes the vendor SBOM: `pkg:npm` components for mathjax,
 pdfjs-dist, prismjs and moment, plus a file component for `cm6.js` that depends on the 22
 shipped (non-dev) packages from the CodeMirror `package-lock.json`. esbuild is a dev dependency, is
-not shipped and is excluded. The job uploads it as `sbom-part-vendor` and scans it with osv-scanner
+not shipped and is excluded. The job scans it with osv-scanner (no longer uploaded as an SBOM part, 2026-11-19)
 against the VEX-derived config.
 
 ### webkit-bundle-cve — the WebKit the portable AppImage bundles
 
 Only the **portable** AppImage bundles WebKitGTK/GTK. The slim AppImage, the .deb and the flatpak
 use the system/runtime WebKit and are not covered here (the flatpak runtime is a component in the
-SBOM, see sbom).
+SBOM, see "SBOM — built locally").
 
 The portable AppImage is built by `packaging/ci/appimage-build.sh` from `snapshot.ubuntu.com` at
 `SNAP` with every requested package pinned `pkg=version` (#189). The job runs on `ubuntu-26.04`,
@@ -196,28 +196,41 @@ SBOM dir, because osv-scanner automatically loads an `osv-scanner.toml` next to 
 To ignore an advisory: add it to the VEX with reason and expiry, **and** to `deny.toml` and
 `audit.toml` if it is a RustSec id. Remove it when it expires.
 
-### sbom — merged opensidian-<ver>.cdx.json
+### SBOM — built locally, not in CI (operator decision 2026-11-19)
 
-Needs vendor-js-cve and webkit-bundle-cve (runs if they were not cancelled, so a red CVE scan
-still produces an SBOM). It downloads the `sbom-part-*` artifacts and adds:
+> "lets deactivate now lets only run the sbom locally" (operator, 2026-11-19). Since develop
+> 2026-11-18 the WebKit part could not be produced on the runner (apt pin conflict, see
+> webkit-bundle-cve), so the former `sbom` job failed with "missing SBOM part" and blocked
+> `release.yml` draft-release. The CI jobs `sbom` and `attest-sbom` are removed and the parts are
+> no longer uploaded as `sbom-part-*`; every other gate in this workflow still runs.
+
+`scripts/supply-chain/sbom-local.sh` builds the same SBOM on the release build machine:
 
 - `rust-sbom.sh`: `Cargo.lock` → `pkg:cargo` components with crates.io sha256 each. glib 0.18.5 is
   an explicit component with the `.crate` sha256 and pedigree. Only the source-less workspace root
   `opensidian` is exempt (a git/path crate merely NAMED opensidian is not). Any non-crates.io source fails
   closed. This is a superset: dev-dependencies and all targets are included.
+- `vendor-sbom.sh`: the vendored JS (after `vendor-verify.sh`, needs registry.npmjs.org).
 - `flatpak-sbom.sh`: runtime `org.gnome.Platform` 49 and the brotli module.
+- `webkit-bundle-sbom.sh`: the portable AppImage WebKit closure, from a dpkg database holding exactly
+  `appimage-build.sh`'s pinned `PKGS` at its `SNAP`: `--webkit native` on Ubuntu 26.04 after
+  `webkit-apt.sh` (every pin checked with dpkg-query), or `--webkit podman` in
+  `appimage-build.sh`'s digest-pinned ubuntu image (any Linux host with podman). `--bin <elf>` adds
+  the release binary's own ldd closure.
 
 `sbom-merge.sh` dedups by bom-ref and fails on purl/version/hash conflicts or dangling dependency
 refs. It adds a root `opensidian-release@<ver>` (version from `tauri.conf.json`) and derives a
-reproducible serial number from the content. Output: `opensidian-<ver>.cdx.json`, valid
-CycloneDX 1.6, uploaded as artifact **`sbom`**.
+reproducible serial number from the content. `sbom-local.sh` then records the commit, a dirty flag,
+the parts and the skipped parts in `metadata.properties` (`opensidian:sbom-local:*`) and writes
+`opensidian-<ver>.cdx.json` + `opensidian-<ver>.cdx.json.sha256`. It **fails closed**: a part that
+fails or is empty aborts the run; the only way to leave one out is `--skip <part>`, which is
+recorded as `opensidian:sbom-local:skipped` in the SBOM. Upload: docs/RELEASING.md "SBOM (local)".
 
-The job then scans it with osv-scanner against the VEX config. It fails if any **non-deb**
-package has a finding. Deb packages are gated in webkit-bundle-cve by the fixed-version rule.
-Both JSON scans (here and in webkit-bundle-cve) go through `osv-json.sh`: osv-scanner must exit 0
-(no findings) or 1 (findings) and its output must carry a `.results` array (and list findings when
-rc=1). Any other exit (127 error, 128 no packages, a crash) or malformed output fails the step, so a
-scan that did not run is never counted as "zero findings".
+What CI no longer does: the osv scan of the **merged** SBOM, so the Rust crates are no longer
+OSV-scanned in CI (cargo audit + cargo deny advisories still gate them on RustSec) and the
+flatpak part is not scanned (its brotli is the same component webkit-bundle-cve scans). Scan the local SBOM before publishing:
+`scripts/supply-chain/vex-osv-config.sh > "$HOME/osv-scanner.toml"; osv-scanner scan source --config "$HOME/osv-scanner.toml" -L <sbom>`
+(non-deb findings must be 0, as the former job required).
 
 ### gate-tests — the gates still fail on their fixtures
 
@@ -240,14 +253,11 @@ both ignore lists, expiring 2027-05-15, the same as the other unmaintained trans
 Local test scan (vendor + rust + flatpak): 499 scanned packages, 12 VEX ignores applied,
 0 findings.
 
-### attest-sbom
+### attest-sbom (removed 2026-11-19)
 
-Runs on tags `v*` and when called with `attest: true` (release.yml). It uses
-`actions/attest-sbom` (pinned SHA, v4.1.0) with job-level `id-token: write` +
-`attestations: write`. The SBOM predicate is attested over these **subjects**: the lock inputs it
-was generated from (`src-tauri/Cargo.lock`, `ui/vendor/vendor.lock.json`,
-`ui/vendor/codemirror/build/package-lock.json`, the flatpak manifest). The subjects are not the
-release binaries.
+Removed with the CI SBOM. The local SBOM is not attested by GitHub; its integrity is the
+operator's upload from the release machine plus the `.sha256` next to it (and an optional gpg
+signature, docs/RELEASING.md).
 
 ### codemirror-rebuild (opt-in)
 
@@ -270,15 +280,15 @@ copy fails. CI confirmation on node 24.21.0 is recorded in the PR / goal progres
 
 ### release.yml integration
 
-`release.yml` has a job `supply-chain: uses: ./.github/workflows/supply-chain.yml` with
-`attest: true`. Its job permissions (contents read, id-token + attestations write) are the
-ceiling for the called attest-sbom job. `draft-release` needs `[appimage, sums, supply-chain]`.
-It downloads the `sbom` artifact into a separate `sbom/` dir, requires exactly one
-`opensidian-$V.cdx.json` that passes a CycloneDX 1.6 `jq -e` check, and attaches it next to
-`SHA256SUMS` (12 assets).
+`release.yml` has a job `supply-chain: uses: ./.github/workflows/supply-chain.yml` (no inputs, job
+permissions `contents: read` only, since no called job attests anything any more).
+`draft-release` needs `[appimage, sums, supply-chain]`, so EVERY remaining supply-chain gate must be
+green before a draft is staged. CI attaches no SBOM: the draft has 11 CI assets and the operator
+uploads `opensidian-<ver>.cdx.json` + `.sha256` from `sbom-local.sh` by hand (docs/RELEASING.md).
+The asset check in draft-release ignores those two names, so a re-run after the upload still passes.
 
-**The SBOM is not listed in SHA256SUMS**, so the operator's offline gpg signature over SHA256SUMS
-does not cover it. Its integrity comes from the GitHub attestation (attest-sbom) instead.
+**The SBOM is not listed in SHA256SUMS**, so the offline gpg signature over SHA256SUMS does not
+cover it; sign the SBOM itself if its integrity must be provable (docs/RELEASING.md).
 
 ## Adding or updating a dependency
 

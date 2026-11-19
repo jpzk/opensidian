@@ -55,6 +55,43 @@ If the workflow is re-run while the release is still a draft, the assets are
 re-uploaded (`--clobber`). If the release for the tag is already published,
 the job fails and does not touch it.
 
+CI attaches **no SBOM** (operator decision 2026-11-19: the SBOM runs locally only). Every
+remaining supply-chain gate (cargo audit / deny / vet, pin-check, vendored JS, WebKit bundle CVE,
+glib vendor, VEX, gate self-tests) must still be green, or `draft-release` does not run.
+
+## 3b. SBOM (local) — before publishing
+
+Build the SBOM on the release build environment, from the exact commit the draft was built from
+(the "Built by ... from commit <sha>" line in the draft body), with a clean tree:
+
+    git fetch origin && git checkout --detach <sha>
+    scripts/supply-chain/sbom-local.sh -o dist/sbom
+    # -> dist/sbom/opensidian-<ver>.cdx.json + opensidian-<ver>.cdx.json.sha256, logs in dist/sbom/logs/
+
+It merges four parts (rust, vendored JS, flatpak, WebKit bundle) and **fails closed** if any of them
+fails. The WebKit part needs either Ubuntu 26.04 with the pinned set installed
+(`scripts/supply-chain/webkit-apt.sh`, then `--webkit native`) or podman (`--webkit podman`, the
+pinned ubuntu image of `appimage-build.sh`); `auto` picks one. `--bin <opensidian ELF>` (from the
+portable AppImage) adds the binary's own library closure. A part can only be left out with
+`--skip <part>`; that is recorded in the SBOM (`opensidian:sbom-local:skipped`) and must be stated
+in the release notes. Do not publish an SBOM whose `opensidian:sbom-local:dirty` is `true`.
+
+Check and scan it (non-deb findings must be 0):
+
+    F=dist/sbom/opensidian-<ver>.cdx.json
+    (cd dist/sbom && sha256sum -c opensidian-<ver>.cdx.json.sha256)
+    jq -r '.metadata.properties[] | "\(.name)=\(.value)"' "$F"
+    scripts/supply-chain/vex-osv-config.sh > "$HOME/osv-scanner.toml"
+    osv-scanner scan source --config "$HOME/osv-scanner.toml" -L "$F"
+
+Upload both files to the draft (the draft-release job ignores these two names, so re-running it
+afterwards still passes):
+
+    gh release upload "$TAG" "$F" "$F.sha256" --repo jpzk/opensidian
+
+The SBOM is not in SHA256SUMS and is not attested by GitHub. If its integrity has to be provable,
+sign it in step 4 as well (`gpg --armor --detach-sign opensidian-<ver>.cdx.json`, upload the `.asc`).
+
 ## 4. Verify, sign, publish (operator, offline machine)
 
 Download everything from the draft:
@@ -67,6 +104,7 @@ Check the files against SHA256SUMS, and check each file's provenance:
 
     sha256sum -c SHA256SUMS
     for f in opensidian-*; do
+      case "$f" in *.cdx.json*) continue ;; esac   # local SBOM (3b): no GitHub attestation
       gh attestation verify "$f" --repo jpzk/opensidian
     done
     gh attestation verify SHA256SUMS --repo jpzk/opensidian

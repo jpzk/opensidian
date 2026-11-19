@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Supply chain — the ONE workflow for SBOM, CVE scanning and dependency policy (#188).
+# Supply chain — the ONE workflow for CVE scanning and dependency policy (#188); the SBOM is local.
 #   cargo audit        RustSec advisories against Cargo.lock (--deny warnings)
 #   cargo deny         advisories + sources + bans + licenses (deny.toml)
 #   cargo vet          every third-party crate audited, imported or exempted (src-tauri/supply-chain/)
@@ -12,9 +12,8 @@
 #   glib-vendor-check  src-tauri/vendor/glib-0.18.5 == crates.io glib 0.18.5 + the one documented patch
 #   vex-check          supply-chain/vex.cdx.json == deny.toml / audit.toml ignores, no expired entry
 #   gate-tests         scripts/supply-chain/tests/*.test.sh: every gate still turns red on its fixture
-#   sbom               Rust + vendored JS + WebKit bundle + flatpak runtime -> opensidian-<ver>.cdx.json,
-#                      scanned with osv-scanner against the VEX, uploaded as artifact "sbom"
-#   attest-sbom        on tags v* and when called by release.yml: actions/attest-sbom
+#   (no SBOM job: operator 2026-11-19, the merged SBOM is built locally with
+#                      scripts/supply-chain/sbom-local.sh, see the note above codemirror-rebuild)
 #   codemirror-rebuild opt-in (workflow_dispatch input / weekly cron): rebuild cm6.js, compare sha256
 # See docs/supply-chain.md for what each check catches and how to audit a new crate.
 #
@@ -29,10 +28,10 @@
 # Hardening:
 #   - push/tag/schedule/dispatch/call only (see Triggers): nothing here needs secrets or PR context.
 #   - top-level permissions contents: read; no secrets (github.token only raises the GitHub API
-#     rate limit for osv-install.sh); checkout does not persist the token. Only attest-sbom gets
-#     id-token: write + attestations: write, at job level (same pattern as release.yml).
+#     rate limit for osv-install.sh); checkout does not persist the token. No job needs
+#     id-token or attestations (attest-sbom was removed with the CI SBOM, 2026-11-19).
 #   - every action pinned to a full commit SHA (# vX.Y.Z) and the Rust toolchain pinned; every
-#     pin released >= 6 weeks before pin time (2026-11-15; attest-sbom v4.1.0 = 2026-03-18).
+#     pin released >= 6 weeks before pin time (2026-11-15).
 #   - EXCEPTION (operator decision 2026-11-15): cargo-audit, cargo-deny and cargo-vet are NOT
 #     pinned. Each run installs the latest crates.io release (still --locked, so the tool's own
 #     Cargo.lock is used) and logs the resolved version in a "resolved version" step. They are
@@ -63,12 +62,8 @@ on:
         description: 'also run the opt-in CodeMirror reproducible-rebuild check'
         type: boolean
         default: false
+  # no inputs since 2026-11-19 (the `attest` input fed the removed attest-sbom job)
   workflow_call:
-    inputs:
-      attest:
-        description: 'attest the merged SBOM (release.yml passes true)'
-        type: boolean
-        default: true
 
 permissions:
   contents: read
@@ -182,12 +177,7 @@ jobs:
           scripts/supply-chain/vendor-sbom.sh > "$RUNNER_TEMP/sbom/vendor.cdx.json"
           jq -e '.bomFormat == "CycloneDX" and .specVersion == "1.6"' "$RUNNER_TEMP/sbom/vendor.cdx.json"
           echo "components: $(jq '.components | length' "$RUNNER_TEMP/sbom/vendor.cdx.json")"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: sbom-part-vendor
-          path: ${{ runner.temp }}/sbom/vendor.cdx.json
-          if-no-files-found: error
-          retention-days: 7
+      # scan input only: not uploaded as an SBOM part since 2026-11-19 (SBOM is local, sbom-local.sh)
       - name: osv-scanner (latest release, digest-verified, unpinned by design)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -222,12 +212,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/sbom"
           scripts/supply-chain/webkit-bundle-sbom.sh > "$RUNNER_TEMP/sbom/webkit-bundle.cdx.json"
           echo "components: $(jq '.components | length' "$RUNNER_TEMP/sbom/webkit-bundle.cdx.json")"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: sbom-part-webkit
-          path: ${{ runner.temp }}/sbom/webkit-bundle.cdx.json
-          if-no-files-found: error
-          retention-days: 7
+      # scan input only: not uploaded as an SBOM part since 2026-11-19 (SBOM is local, sbom-local.sh)
       - name: osv-scanner (latest release, digest-verified, unpinned by design)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -290,110 +275,14 @@ jobs:
           done
           exit "$rc"
 
-  sbom:
-    name: SBOM (merged) + CVE scan
-    needs: [vendor-js-cve, webkit-bundle-cve]
-    # run even when a part job's CVE scan is red: its SBOM part is uploaded before the scan.
-    # A missing part (its generator failed) fails the download below -> fail closed.
-    if: ${{ !cancelled() }}
-    runs-on: ubuntu-26.04
-    timeout-minutes: 15
-    outputs:
-      file: ${{ steps.merge.outputs.file }}
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: sbom-part-*
-          merge-multiple: true
-          path: ${{ runner.temp }}/parts
-      - name: Rust SBOM (Cargo.lock) + flatpak runtime SBOM
-        run: |
-          export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
-          scripts/supply-chain/rust-sbom.sh > "$RUNNER_TEMP/parts/rust.cdx.json"
-          scripts/supply-chain/flatpak-sbom.sh > "$RUNNER_TEMP/parts/flatpak.cdx.json"
-          ls -l "$RUNNER_TEMP/parts"
-          for p in vendor webkit-bundle rust flatpak; do
-            test -s "$RUNNER_TEMP/parts/$p.cdx.json" || { echo "::error::missing SBOM part $p"; exit 1; }
-          done
-      - name: merge -> opensidian-<ver>.cdx.json
-        id: merge
-        run: |
-          export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
-          V=$(jq -r .version src-tauri/tauri.conf.json); V=${V%.0}
-          mkdir -p "$RUNNER_TEMP/out"
-          scripts/supply-chain/sbom-merge.sh -o "$RUNNER_TEMP/out" -v "$V" \
-            "$RUNNER_TEMP/parts/rust.cdx.json" "$RUNNER_TEMP/parts/vendor.cdx.json" \
-            "$RUNNER_TEMP/parts/webkit-bundle.cdx.json" "$RUNNER_TEMP/parts/flatpak.cdx.json"
-          F="$RUNNER_TEMP/out/opensidian-$V.cdx.json"
-          jq -e '.bomFormat == "CycloneDX" and .specVersion == "1.6"' "$F" > /dev/null
-          echo "components: $(jq '.components | length' "$F")"
-          for p in vendor webkit-bundle rust flatpak; do
-            echo "  $p: $(jq '.components | length' "$RUNNER_TEMP/parts/$p.cdx.json")"
-          done
-          sha256sum "$F"
-          echo "file=opensidian-$V.cdx.json" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: sbom
-          path: ${{ runner.temp }}/out/${{ steps.merge.outputs.file }}
-          if-no-files-found: error
-      - name: osv-scanner (latest release, digest-verified, unpinned by design)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          bin=$(scripts/supply-chain/osv-install.sh "$RUNNER_TEMP/osv")
-          echo "OSV=$bin" >> "$GITHUB_ENV"
-      - name: osv scan merged SBOM against the VEX
-        env:
-          F: ${{ steps.merge.outputs.file }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/osvcfg"
-          scripts/supply-chain/vex-osv-config.sh > "$RUNNER_TEMP/osvcfg/osv-scanner.toml"
-          # distro (deb) findings without a fix are gated in webkit-bundle-cve; here only the
-          # ecosystems we can upgrade ourselves (cargo, npm, github) may be red.
-          # osv-json.sh: rc must be 0/1 and the JSON must carry .results, else the step fails
-          scripts/supply-chain/osv-json.sh "$RUNNER_TEMP/osv-sbom.json" \
-            "$OSV" scan source --config "$RUNNER_TEMP/osvcfg/osv-scanner.toml" --format json \
-            -L "$RUNNER_TEMP/out/$F"
-          # human-readable table for the log only (same scan; its rc was checked above)
-          "$OSV" scan source --config "$RUNNER_TEMP/osvcfg/osv-scanner.toml" \
-            -L "$RUNNER_TEMP/out/$F" || true
-          bad=$(jq '[.results[].packages[]? | select((.package.ecosystem | test("^(Ubuntu|Debian)")) | not)
-                     | select((.vulnerabilities // []) | length > 0)] | length' "$RUNNER_TEMP/osv-sbom.json")
-          echo "non-distro packages with findings: $bad"
-          [ "$bad" -eq 0 ] || { echo "::error::$bad package(s) with CVEs not covered by the VEX"; exit 1; }
-
-  attest-sbom:
-    name: attest SBOM
-    needs: sbom
-    if: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.attest }}
-    runs-on: ubuntu-26.04
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      id-token: write
-      attestations: write
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: sbom
-          path: ${{ runner.temp }}/sbom
-      # subjects = the lock inputs the SBOM was generated from (the release binaries are built
-      # in parallel by release.yml and attested there with build provenance)
-      - uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
-        with:
-          subject-path: |
-            src-tauri/Cargo.lock
-            ui/vendor/vendor.lock.json
-            ui/vendor/codemirror/build/package-lock.json
-            packaging/flatpak/dev.koto.opensidian.yml
-          sbom-path: ${{ runner.temp }}/sbom/${{ needs.sbom.outputs.file }}
+  # SBOM: NOT produced in CI (OPERATOR DECISION 2026-11-19: "lets deactivate now lets only run the
+  # sbom locally"). The former jobs `sbom` (merge + osv scan of the merged SBOM) and `attest-sbom`
+  # (actions/attest-sbom) are removed, and the vendor / WebKit parts are no longer uploaded as
+  # sbom-part-* artifacts. Their CVE scans stay above (vendor-js-cve, webkit-bundle-cve: each still
+  # generates its part in-job and scans it); the cargo side stays covered by cargo audit / deny.
+  # The release SBOM is built on the release build machine with scripts/supply-chain/sbom-local.sh
+  # (rust + vendor + flatpak + WebKit bundle -> sbom-merge.sh, fails closed on a missing part) and
+  # uploaded to the draft release by hand: docs/RELEASING.md "SBOM (local)".
 
   # Opt-in (workflow_dispatch input codemirror_rebuild / weekly cron): rebuild
   # ui/vendor/codemirror/cm6.js from ui/vendor/codemirror/build/ and fail unless the sha256
