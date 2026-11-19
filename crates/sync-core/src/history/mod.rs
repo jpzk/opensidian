@@ -308,6 +308,88 @@ pub fn store_root(app_data: &Path, vault_id: &str) -> Result<PathBuf, HistoryErr
     Ok(app_data.join("history").join(vault_id))
 }
 
+/// Burn-and-move (spec §4.8): copy the history of vault `from_id` under
+/// `from_app_data` into a NEW store for vault `to_id` under `to_app_data` —
+/// the journal and every blob byte for byte, plus a store.json naming the
+/// new vault, so every version of every file stays restorable after the
+/// move. Built in a hidden sibling dir and renamed into place (no
+/// half-copied store under the real name). Refuses if the target exists or
+/// the source store.json names another vault; a symlink or other non-plain
+/// entry in the source is an error, never followed; `objects/tmp` (in-flight
+/// writes) is skipped. A source without a store = nothing to copy: Ok(0).
+/// Returns the number of journal entries copied.
+pub fn copy_store(from_app_data: &Path, from_id: &str, to_app_data: &Path, to_id: &str) -> Result<usize, HistoryError> {
+    let src = store_root(from_app_data, from_id)?;
+    let dst = store_root(to_app_data, to_id)?;
+    let meta_b = match fs::read(src.join("store.json")) {
+        Ok(b) => b,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e.into()),
+    };
+    let m: Meta = serde_json::from_slice(&meta_b).map_err(|e| HistoryError::Meta(e.to_string()))?;
+    if m.format != STORE_FORMAT || m.vault_id != from_id {
+        return Err(HistoryError::Meta(format!("source belongs to vault {:?} (format {})", m.vault_id, m.format)));
+    }
+    if fs::symlink_metadata(&dst).is_ok() {
+        return Err(HistoryError::Meta(format!("target store for {to_id} already exists")));
+    }
+    let parent = dst.parent().ok_or_else(|| HistoryError::InvalidPath(dst.display().to_string()))?;
+    fsx::mkdir_private(parent)?;
+    let tmp = parent.join(format!(".{to_id}.copying"));
+    match fs::remove_dir_all(&tmp) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    fsx::mkdir_private(&tmp)?;
+    fn copy_tree(from: &Path, to: &Path, top: bool) -> Result<(), HistoryError> {
+        for ent in fs::read_dir(from)? {
+            let ent = ent?;
+            let name = ent.file_name();
+            if top && name == "store.json" {
+                continue;
+            }
+            if top && (name == "store.json.tmp" || name == "index.log.tmp") {
+                continue;
+            }
+            let ft = fs::symlink_metadata(ent.path())?.file_type();
+            let (s, d) = (ent.path(), to.join(&name));
+            if ft.is_dir() {
+                if from.file_name().is_some_and(|n| n == "objects") && name == "tmp" {
+                    continue;
+                }
+                fsx::mkdir_private(&d)?;
+                copy_tree(&s, &d, false)?;
+            } else if ft.is_file() {
+                let mut i = File::open(&s)?;
+                let mut o = fsx::create_private(&d)?;
+                io::copy(&mut i, &mut o)?;
+                o.sync_all()?;
+            } else {
+                return Err(HistoryError::InvalidPath(format!("not a plain file in the history store: {}", s.display())));
+            }
+        }
+        fsx::sync_dir(to)?;
+        Ok(())
+    }
+    copy_tree(&src, &tmp, true)?;
+    let body = serde_json::to_vec(&Meta { format: STORE_FORMAT, vault_id: to_id.to_string() })
+        .map_err(|e| HistoryError::Meta(e.to_string()))?;
+    {
+        let mut f = fsx::create_private(&tmp.join("store.json"))?;
+        f.write_all(&body)?;
+        f.sync_all()?;
+    }
+    fs::rename(&tmp, &dst)?;
+    fsx::sync_dir(parent)?;
+    let n = match fs::read(dst.join("index.log")) {
+        Ok(b) => b.iter().filter(|&&c| c == b'\n').count(),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => 0,
+        Err(e) => return Err(e.into()),
+    };
+    Ok(n)
+}
+
 /// Canonical form of a possibly not-yet-existing path: canonicalize the
 /// deepest existing ancestor, re-append the rest (no `..` allowed in it).
 fn resolve(p: &Path) -> Result<PathBuf, HistoryError> {

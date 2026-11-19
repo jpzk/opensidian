@@ -44,7 +44,7 @@ use crate::object::{open, seal, Compress, ObjectCtx, ObjectError};
 use crate::transport::http::HttpTransport;
 use crate::transport::{destroy_vault, Tokens, Transport, TransportError};
 
-/// v1 vaults: suite 0x01, Ed25519 (validated module #5314 lists EDDSA, cmvp.md §7).
+/// v1 vaults: suite 0x01, Ed25519 (OpenSSL FIPS provider 3.5.9, CMVP #5586, lists EdDSA; cmvp.md).
 pub const SUITE: Suite = Suite::Ed25519;
 pub const KEY_ALG: u8 = sync_crypto::V1_SIG_ALG as u8;
 /// Pairing objects expire server-side after 15 min; the offer says so too.

@@ -132,7 +132,7 @@ fn help_lists_every_command() {
     let o = cli(&d, &["help"], None);
     assert!(o.status.success());
     let h = String::from_utf8(o.stdout).unwrap();
-    for c in ["setup", "--words", "--pair", "--enroll", "daemon", "status", "sync-now", "history", "restore", "destroy", "pair"] {
+    for c in ["setup", "--words", "--pair", "--enroll", "daemon", "status", "sync-now", "history", "restore", "destroy", "pair", "move", "VAULT COMPROMISED"] {
         assert!(h.contains(c), "help misses {c}");
     }
     let o = cli(&d, &["status"], None);
@@ -229,6 +229,63 @@ fn two_devices_daemon_history_destroy() {
     drop(dm);
 }
 
+/// `move` (burn and move, no revocation): refused while a daemon serves the
+/// vault and with another vault's words; then a new vault with the folder +
+/// file history, the old one destroyed with the K_destroy proof, the new
+/// words on stderr once, the receipt kept in the state dir.
+#[test]
+fn move_burns_the_old_vault() {
+    let s = server();
+    let a = dev("mva");
+    let b = dev("mvb");
+    let tok = s.app.create_enrollment(None, 600).unwrap();
+    let st = ok(&cli(&a, &["setup", "--url", &s.url, "--vault", a.vault.to_str().unwrap(), "--name", "laptop", "--enroll", &tok], None));
+    let old = st["vault_id"].as_str().unwrap().to_string();
+    std::fs::write(a.vault.join("n.md"), "v1\n").unwrap();
+    ok(&cli(&a, &["--local", "sync-now"], None));
+    std::fs::write(a.vault.join("n.md"), "v2\n").unwrap();
+    ok(&cli(&a, &["--local", "sync-now"], None));
+    let words = LocalEngine::open(&a.state, Box::new(FixedPresence(true))).unwrap().reveal_words().unwrap();
+    ok(&cli(&b, &["setup", "--url", &s.url, "--vault", b.vault.to_str().unwrap(), "--name", "desktop", "--words"], Some(words.as_str())));
+    let tok2 = s.app.create_enrollment(None, 600).unwrap();
+
+    // a running daemon would keep syncing the old vault: refused
+    let dm = daemon(&a, &old);
+    let o = cli(&a, &["move", "--enroll", &tok2], Some(words.as_str()));
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("stop it before the move"), "{}", String::from_utf8_lossy(&o.stderr));
+    drop(dm);
+    // another vault's words: refused, nothing changes
+    let p = sync_core::sync_crypto::fips::FipsProvider::new().unwrap();
+    let ow = sync_core::sync_crypto::words::Phrase::generate(&p).unwrap().to_text(&p);
+    let o = cli(&a, &["--local", "move", "--enroll", &tok2], Some(ow.as_str()));
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("not the backup words of this vault"));
+    assert_eq!(ok(&cli(&a, &["--local", "status"], None))["vault_id"], old.as_str());
+
+    let o = cli(&a, &["--local", "move", "--enroll", &tok2], Some(words.as_str()));
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    let r = ok(&o);
+    assert!(err.contains("NEW BACKUP WORDS"), "{err}");
+    let new = r["moved"]["new_vault_id"].as_str().unwrap().to_string();
+    assert_ne!(new, old);
+    assert_eq!(r["moved"]["old_vault_id"], old.as_str());
+    assert!(r["moved"]["destroyed"]["objects"].as_u64().unwrap() > 0);
+    assert!(r["moved"]["history_entries"].as_u64().unwrap() >= 2, "{r}");
+    assert_eq!(r["status"]["vault_id"], new.as_str());
+    assert_eq!(r["status"]["files"], 1);
+    assert!(a.state.join(format!("burned-{old}.receipt.json")).exists());
+    let nw = LocalEngine::open(&a.state, Box::new(FixedPresence(true))).unwrap().reveal_words().unwrap();
+    assert!(err.contains(nw.as_str()), "the new words are printed once");
+    assert_ne!(nw.as_str(), words.as_str());
+    let st = ok(&cli(&a, &["--local", "status"], None));
+    assert_eq!(st["vault_id"], new.as_str());
+    assert_eq!(st["server_ok"], true);
+    let h = ok(&cli(&a, &["--local", "history", "n.md"], None));
+    assert!(h.as_array().unwrap().len() >= 2, "file history moved with the vault: {h}");
+    // the old vault is gone for B
+    assert_eq!(ok(&cli(&b, &["--local", "status"], None))["server_ok"], false);
+}
 /// `$XDG_RUNTIME_DIR` stand-in: TMPDIR can be too long for sun_path
 /// (108 bytes) once `opensidian-syncd/<32 hex>.sock` is appended.
 fn short_run(tag: &str) -> PathBuf {

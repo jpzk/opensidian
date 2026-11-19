@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use sync_core::keystore::FixedPresence;
 use syncd::api::{ApiError, SyncApi};
-use syncd::local::{config_path, fips_gate, Join, LocalEngine, Setup};
+use syncd::local::{config_path, fips_gate, Join, LocalEngine, Move, Setup};
 #[cfg(unix)]
 use syncd::ipc;
 
@@ -35,6 +35,15 @@ COMMANDS
   pair [--with-words]         invite a device: print a pairing code, wait for it
                               (--with-words: words from stdin are handed over too)
   destroy                     delete the vault on the server (words from stdin = K_destroy proof)
+  move --enroll TOKEN [--url URL] [--ca PEM]
+                              VAULT COMPROMISED (words or a device lost/stolen)? -> move to a
+                              new vault. There is no revocation: the old vault is burned.
+                              Creates a NEW vault (new words, new server namespace) seeded
+                              from this device's vault folder + file history, then destroys
+                              the old vault with the K_destroy proof (old words from stdin).
+                              Nothing is pulled from the old vault first. Stop the daemon
+                              before; other devices join the new vault from its new words.
+                              Prints the NEW backup words ONCE.
   help                        this text
 
 OPTIONS
@@ -219,6 +228,32 @@ fn run(argv: Vec<String>) -> Result<(), ApiError> {
             a.done()?;
             let w = stdin_words()?;
             out(&api(&state, &sock, force_local)?.destroy(&w)?)
+        }
+        "move" => {
+            let enroll = a.need("--enroll")?;
+            let url = a.opt("--url")?;
+            let ca = a.opt("--ca")?.map(PathBuf::from);
+            a.done()?;
+            #[cfg(unix)]
+            if ipc::IpcClient::connect(&sock_for(&state, &sock)?).is_ok() {
+                return Err(ApiError::new("busy", "a daemon serves this vault: stop it before the move (it would keep syncing the old vault)"));
+            }
+            let _ = &sock;
+            let w = stdin_words()?;
+            let e = local(&state)?;
+            let (e, moved, words) = e.move_vault(
+                Move { old_words: w.as_str(), enrollment_token: &enroll, url: url.as_deref(), ca_file: ca },
+                None,
+            )?;
+            let mut err = std::io::stderr().lock();
+            let _ = writeln!(
+                err,
+                "\nold vault {} destroyed (receipt in the state dir). NEW BACKUP WORDS — write them down now, they are shown only once:\n\n  {}\n",
+                moved.old_vault_id,
+                words.as_str()
+            );
+            drop(err);
+            out(&serde_json::json!({ "moved": moved, "status": e.status()? }))
         }
         "pair" => {
             let with = a.flag("--with-words");

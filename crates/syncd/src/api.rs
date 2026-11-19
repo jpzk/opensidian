@@ -102,6 +102,24 @@ pub struct Receipt {
     pub cleanup_error: Option<String>,
 }
 
+/// Result of a burn-and-move (`opensidian-syncd move`, the app's "Move to a
+/// new vault", spec §4.8). The new words are NOT in here (shown once by the
+/// caller, kept in the new backup entry).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Moved {
+    pub old_vault_id: String,
+    pub new_vault_id: String,
+    /// files in the new vault's head after seeding
+    pub files: usize,
+    /// file-history journal lines carried over to the new vault
+    pub history_entries: usize,
+    /// the old vault's destroy receipt (K_destroy proof accepted, verified)
+    pub destroyed: Receipt,
+    /// the old state dir, renamed aside (engine objects of a vault that no
+    /// longer exists + its history copy; delete it when you like)
+    pub burned_state: String,
+}
+
 pub trait SyncApi {
     fn status(&self) -> ApiResult<Status>;
     fn sync_now(&self) -> ApiResult<SyncSummary>;

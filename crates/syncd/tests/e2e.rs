@@ -17,8 +17,12 @@
 //!   5. attachment > 1 MB -> 4 MiB chunk objects, bytes identical on the peer
 //!   6. delete on one device vs edit on the other -> the edit wins
 //!   7. fresh device bootstraps from the words + URL only, same tree
-//!   8. destroy without a proof (no / forged signature, wrong words) refused;
-//!      with the words' K_destroy proof -> signed receipt, vault gone for all
+//!   8. destroy without a proof (no / forged signature, wrong words) refused
+//!   9. burn and move (no revocation): move with wrong words refused; move ->
+//!      new vault (new words + namespace) holds every file + the file history,
+//!      old vault destroyed with the K_destroy proof (signed receipt, gone for
+//!      all), an old-vault device cannot read or write the new vault, a device
+//!      with the NEW words joins it
 //!
 //! Run: cargo test -p syncd --test e2e -- --nocapture
 #![cfg(unix)]
@@ -28,6 +32,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
+use sync_core::keystore::FixedPresence;
 use sync_core::merge::ConflictMode;
 use sync_core::sync_crypto::fips::FipsProvider;
 use sync_core::sync_crypto::words::Phrase;
@@ -35,7 +40,7 @@ use sync_core::sync_proto::api::DestroyConfirm;
 use sync_core::transport::Transport;
 use sync_server::{serve, App, Config};
 use syncd::api::SyncApi;
-use syncd::local::{Join, LocalEngine, Setup};
+use syncd::local::{Join, LocalEngine, Move, Setup};
 
 static N: AtomicU32 = AtomicU32::new(0);
 
@@ -296,13 +301,94 @@ fn two_clients_and_a_fresh_device_end_to_end() {
     assert!(a.status().unwrap().server_ok, "vault still alive after the refused attempts");
     sync(&fresh, &c);
     eprintln!("E2E PASS: destroy without proof refused (no sig, forged sig, wrong words)");
-    let rc = a.destroy(&words).expect("destroy with the words' K_destroy proof");
-    assert_eq!(rc.ns, ns.to_hex());
-    assert!(rc.objects > 0 && rc.bytes > 0, "{rc:?}");
+    // 9. burn and move (no revocation; operator decision 2026-11-19) ---------------------
+    // The words / a device are considered compromised: the laptop moves to a NEW vault
+    // seeded from its folder + file history, the old vault is destroyed with the
+    // K_destroy proof as part of the move.
+    let before_files = tree(&lap.vault);
+    let before_hist = a.history("c.md").unwrap();
+    assert!(!before_hist.is_empty(), "laptop has file history for c.md");
+    let (tb, mb) = b.member().unwrap(); // the desktop's old-vault transport + tokens
+    let tok2 = srv.app.create_enrollment(None, 600).unwrap();
+    // wrong old words: refused before anything is created
+    let staging = lap.state.with_file_name("state.move");
+    let a = match a.move_vault(
+        Move { old_words: &other, enrollment_token: &tok2, url: None, ca_file: None },
+        None,
+    ) {
+        Err(e) => {
+            assert_eq!(e.code, "bad-request", "{e}");
+            assert!(!staging.exists(), "a refused move creates nothing");
+            LocalEngine::open(&lap.state, Box::new(FixedPresence(false))).unwrap()
+        }
+        Ok(_) => panic!("move with another vault's words must be refused"),
+    };
+    assert!(a.status().unwrap().server_ok, "old vault untouched by the refused move");
+    let (n, moved, new_words) = a
+        .move_vault(Move { old_words: &words, enrollment_token: &tok2, url: None, ca_file: None }, None)
+        .expect("move to a new vault");
+    let new_words = new_words.to_string();
+    assert_ne!(new_words, words, "new vault, new words");
+    assert_ne!(moved.new_vault_id, vid, "new vault id");
+    assert_eq!(moved.old_vault_id, vid);
+    assert_eq!(moved.destroyed.ns, ns.to_hex(), "the OLD namespace was destroyed");
+    assert!(moved.destroyed.objects > 0 && moved.destroyed.bytes > 0, "{:?}", moved.destroyed);
+    assert!(lap.state.join(format!("burned-{vid}.receipt.json")).exists(), "receipt kept with the new state");
+    assert!(Path::new(&moved.burned_state).exists() && !staging.exists());
+    let st = n.status().unwrap();
+    assert!(st.server_ok, "{:?}", st.server_error);
+    assert_eq!(st.vault_id, moved.new_vault_id);
+    assert_eq!(st.active_devices, Some(1), "only the moving device is in the new vault");
+    assert_eq!(st.files, before_files.len(), "every file of the folder is in the new vault");
+    assert_eq!(tree(&lap.vault), before_files, "the folder is unchanged by the move");
+    let after_hist = n.history("c.md").unwrap();
+    assert!(after_hist.len() >= before_hist.len(), "file history carried over: {} -> {}", before_hist.len(), after_hist.len());
+    for h in &before_hist {
+        assert!(after_hist.iter().any(|x| x.seq == h.seq && x.sha == h.sha), "history record {} missing after the move", h.seq);
+        assert!(n.history_read(h.seq).is_ok(), "history record {} unreadable after the move", h.seq);
+    }
+    eprintln!(
+        "E2E PASS: move to new vault: {} files + {} history records in vault {}, old vault {} destroyed with proof ({} objects, {} B)",
+        st.files,
+        moved.history_entries,
+        moved.new_vault_id,
+        vid,
+        moved.destroyed.objects,
+        moved.destroyed.bytes
+    );
+    // the old vault is gone for every old device
     let st = c.status().unwrap();
-    assert!(!st.server_ok, "vault gone for the other devices too");
+    assert!(!st.server_ok, "old vault gone for the other devices too");
     assert!(c.sync_now().is_err());
-    eprintln!("E2E PASS: destroy with proof -> signed receipt ({} objects, {} B), vault gone", rc.objects, rc.bytes);
+    assert!(b.sync_now().is_err());
+    // an old-vault device cannot read or write the new vault: its tokens are for the
+    // destroyed namespace, and the old words open nothing any more
+    let (nt, nm) = n.member().unwrap();
+    let new_ns = nm.env.servers[nm.server].ns;
+    assert_ne!(new_ns, mb.env.servers[mb.server].ns);
+    assert!(tb.list(&new_ns, sync_core::sync_proto::api::ListQuery { after: 0, wait: 0, limit: 10 }).is_err(), "old device lists the new vault");
+    let probe = sync_core::sync_proto::Id16([7u8; 16]);
+    assert!(tb.put(sync_core::sync_proto::api::ObjKind::Obj, &new_ns, &probe, b"x").is_err(), "old device writes the new vault");
+    let listed = nt.list(&new_ns, sync_core::sync_proto::api::ListQuery { after: 0, wait: 0, limit: 10 }).unwrap();
+    assert!(!listed.items.is_empty(), "the new vault's own tokens list it");
+    let reuse = client("old-words");
+    let r = LocalEngine::setup(Setup {
+        state: &reuse.state,
+        url: &srv.url,
+        vault_dir: &reuse.vault,
+        device_name: "old-words",
+        ca_file: None,
+        join: Join::Words { words: &words },
+    });
+    assert_eq!(r.expect_err("old words must not join anything").code, "no-vault");
+    eprintln!("E2E PASS: an old-vault device cannot read or write the new vault (old tokens refused, old words open nothing)");
+    // a device that gets the NEW words joins the new vault with all files
+    let joiner = client("new-words");
+    let (j, _) = setup(&joiner, &srv.url, Join::Words { words: &new_words });
+    sync(&joiner, &j);
+    assert_eq!(tree(&joiner.vault), before_files, "new vault materialises the moved folder");
+    assert_eq!(std::fs::read(joiner.vault.join("attachments/scan.pdf")).unwrap(), att);
+    eprintln!("E2E PASS: a device with the NEW words joins the new vault ({} files)", tree(&joiner.vault).len());
 }
 
 fn now_s() -> i64 {

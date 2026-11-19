@@ -34,7 +34,7 @@ use sync_core::transport::Transport;
 use sync_core::vault::{self, Member, PairCode, VaultError};
 use zeroize::Zeroizing;
 
-use crate::api::{ApiError, ApiResult, HistoryItem, Receipt, Status, SyncApi, SyncSummary};
+use crate::api::{ApiError, ApiResult, HistoryItem, Moved, Receipt, Status, SyncApi, SyncSummary};
 use crate::workdir;
 
 pub const CONFIG_V: u32 = 1;
@@ -258,6 +258,31 @@ pub struct Setup<'a> {
     pub device_name: &'a str,
     pub ca_file: Option<PathBuf>,
     pub join: Join<'a>,
+}
+
+/// Burn-and-move (`opensidian-syncd move`, the app's "Move to a new vault";
+/// spec §4.8). A compromised vault is not repaired (no revocation): this
+/// device creates a NEW vault (new words, new server namespace, new keys)
+/// seeded from its vault folder as it is now + its file history, then
+/// destroys the old vault with the old words' K_destroy proof.
+pub struct Move<'a> {
+    /// the CURRENT vault's backup words — the destroy proof; checked against
+    /// this vault before anything is created
+    pub old_words: &'a str,
+    /// one-time enrollment token for the new vault (`opensidian-sync-server vault create`)
+    pub enrollment_token: &'a str,
+    /// server of the new vault; None = the current one
+    pub url: Option<&'a str>,
+    /// PEM bundle for that server; None = the current setting
+    pub ca_file: Option<PathBuf>,
+}
+
+/// `<state>` + suffix as a sibling path (`/a/state` -> `/a/state.move`).
+fn sibling(state: &Path, suffix: &str) -> ApiResult<PathBuf> {
+    let name = state.file_name().ok_or_else(|| ApiError::new("io", format!("state dir {} has no name", state.display())))?;
+    let mut n = name.to_os_string();
+    n.push(suffix);
+    Ok(state.with_file_name(n))
 }
 
 /// Asked before every server connection (the desktop app passes its offline
@@ -763,5 +788,126 @@ impl LocalEngine {
         idx.save(&self.state)?;
         sum.head = e.head().map(|h| h.to_hex());
         Ok(sum)
+    }
+
+    /// Burn-and-move, see [`Move`]. Every step is resumable — a rerun after
+    /// a failure continues where it stopped, and the old vault is destroyed
+    /// only after the new one holds the folder:
+    ///  1. the old words must open THIS vault's envelope (else nothing changes);
+    ///  2. new vault in the staging dir `<state>.move` (setup `Create` with the
+    ///     enrollment token; a staging dir of an interrupted move is reused);
+    ///  3. file history copied into the new vault's store
+    ///     ([`history::copy_store`]; `hist` = None) — the app passes its own
+    ///     per-folder store instead, which the move does not touch;
+    ///  4. seed: one sync pass of the new vault commits every file of the
+    ///     folder and pushes it. NOTHING is pulled from the old vault first —
+    ///     it is compromised; edits other devices never synced to this one
+    ///     are not carried over;
+    ///  5. 2-step destroy of the old vault with the old words' K_destroy
+    ///     proof (receipt checked against the pinned server key), old
+    ///     keystore entries deleted;
+    ///  6. `<state>` -> `<state>.burned-<old vault id>`, staging -> `<state>`.
+    ///
+    /// Returns the new vault's engine, the report and the NEW words (show
+    /// them once; they are also in the new backup entry).
+    pub fn move_vault(self, mv: Move<'_>, hist: Option<&mut dyn HistSink>) -> ApiResult<(LocalEngine, Moved, Zeroizing<String>)> {
+        let old_vid = self.cfg.vault_id;
+        let old_root = vault::root_of(&self.p, &self.words(mv.old_words)?).map_err(vault_err)?;
+        {
+            let (t, _m) = self.member()?;
+            match vault::fetch_envelope(&self.p, &t, &old_root).map_err(vault_err)? {
+                Some(env) if env.vault_id == old_vid => {}
+                _ => {
+                    return Err(ApiError::new(
+                        "bad-request",
+                        "these are not the backup words of this vault (nothing was changed)",
+                    ))
+                }
+            }
+        }
+        let staging = sibling(&self.state, ".move")?;
+        let burned = sibling(&self.state, &format!(".burned-{}", old_vid.to_hex()))?;
+        if fs::symlink_metadata(&burned).is_ok() {
+            return Err(ApiError::new("bad-request", format!("{} already exists", burned.display())));
+        }
+        let (mut new, words) = if config_path(&staging).exists() {
+            // interrupted move: the new vault exists already
+            let e = LocalEngine::open(&staging, Box::new(FixedPresence(true)))?.with_net_gate(self.net);
+            if e.cfg.vault_dir != self.cfg.vault_dir {
+                return Err(ApiError::new(
+                    "bad-request",
+                    format!("{} holds a move of another folder ({})", staging.display(), e.cfg.vault_dir.display()),
+                ));
+            }
+            let w = e.reveal_words()?;
+            (e, w)
+        } else {
+            (self.net)("sync server").map_err(|e| ApiError::new("offline", e))?;
+            let (e, w) = LocalEngine::setup(Setup {
+                state: &staging,
+                url: mv.url.unwrap_or(&self.cfg.url),
+                vault_dir: &self.cfg.vault_dir,
+                device_name: &self.cfg.device_name,
+                ca_file: mv.ca_file.clone().or_else(|| self.cfg.ca_file.clone()),
+                join: Join::Create { enrollment_token: mv.enrollment_token },
+            })?;
+            let w = w.ok_or_else(|| ApiError::new("vault", "the new vault came without words"))?;
+            (e.with_net_gate(self.net), w)
+        };
+        if new.cfg.vault_id == old_vid {
+            return Err(ApiError::new("vault", "the new vault has the old vault id"));
+        }
+        new.set_conflict_mode(self.cfg.conflict_mode)?;
+        let new_hex = new.cfg.vault_id.to_hex();
+        let new_app = staging.join("app");
+        let hist_root = history::store_root(&new_app, &new_hex).map_err(hist_err)?;
+        let history_entries = if fs::symlink_metadata(&hist_root).is_ok() {
+            fs::read(hist_root.join("index.log")).map(|b| b.iter().filter(|&&c| c == b'\n').count()).unwrap_or(0)
+        } else {
+            history::copy_store(&self.state.join("app"), &old_vid.to_hex(), &new_app, &new_hex).map_err(hist_err)?
+        };
+        let seeded = match hist {
+            Some(h) => new.sync_with(h)?,
+            None => {
+                let (_lock, mut s) = new.store_mut()?;
+                new.sync_with(&mut s)?
+            }
+        };
+        if !seeded.replica_errors.is_empty() || seeded.rejected > 0 {
+            return Err(ApiError::new(
+                "server",
+                format!(
+                    "seeding the new vault did not complete ({}); the old vault is untouched, run move again",
+                    seeded.replica_errors.join("; ")
+                ),
+            ));
+        }
+        let files = new.status()?.files;
+        let destroyed = self.destroy(mv.old_words).map_err(|e| {
+            ApiError::new(
+                &e.code,
+                format!("{e} — the new vault is ready in {}; run move again to finish", staging.display()),
+            )
+        })?;
+        let (state, net) = (self.state.clone(), self.net);
+        drop(new);
+        drop(self);
+        fs::rename(&state, &burned).map_err(io_err)?;
+        fs::rename(&staging, &state).map_err(io_err)?;
+        let e = LocalEngine::open(&state, Box::new(FixedPresence(false)))?.with_net_gate(net);
+        let moved = Moved {
+            old_vault_id: old_vid.to_hex(),
+            new_vault_id: new_hex,
+            files,
+            history_entries,
+            destroyed,
+            burned_state: burned.display().to_string(),
+        };
+        // the proof stays with the new vault's state (the receipt cannot be fetched again)
+        write_private(
+            &state.join(format!("burned-{}.receipt.json", moved.old_vault_id)),
+            &serde_json::to_vec_pretty(&moved.destroyed).map_err(io_err)?,
+        )?;
+        Ok((e, moved, words))
     }
 }
