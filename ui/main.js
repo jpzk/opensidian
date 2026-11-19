@@ -4,6 +4,12 @@
 // This program comes with ABSOLUTELY NO WARRANTY. It is free software, and you
 // are welcome to redistribute it under the terms of the GNU GPL version 3 or
 // (at your option) any later version. See LICENSE, or <https://www.gnu.org/licenses/>.
+// macOS port: Mod is Cmd on macOS and Ctrl elsewhere (ui/plugins/api-core.js Keymap uses the same test);
+// MODNAME is how labels and hints spell it. A physical Ctrl on macOS is not Mod (it stays the editor's).
+const OS_MAC = /Mac/.test(navigator.platform);
+const modKey = e => !!(e && (OS_MAC ? e.metaKey : e.ctrlKey));
+const MODNAME = OS_MAC ? "Cmd" : "Ctrl";
+if (OS_MAC) document.documentElement.classList.add("os-mac");   // style.css: native traffic lights, no own window buttons
 /* otel (R18): every invoke carries the innermost open UI action span as the
    `otel` arg, so backend spans nest under it (commands without the param
    ignore it). ui/otel.js owns ids, buffering and the 250ms batched IPC. */
@@ -1804,7 +1810,7 @@ function bmRowMenu(e, nm, ix) {             // right-click a FILE .bmrow -> Obsi
   // issue #31: a graph row (no file behind it) and a canvas / plugin-file row (a vault PATH) open through bmOpenRow
   const vr = bmTree[ix] && bmTree[ix].name === nm && !pdf && (bmTree[ix].graph || bmTree[ix].path) ? bmTree[ix] : null;
   if (vr) {
-    item(I18N.m("Open in new tab"), () => bmOpenRow(vr, { ctrlKey: true }));
+    item(I18N.m("Open in new tab"), () => bmOpenRow(vr, { ctrlKey: true, metaKey: true }));
     if (vr.path && Ed.isImg(vr.name)) item(I18N.m("Open to the right"), () => openImage(vr.name, null, "split"));   // issue #102: an image bookmark opens the image view to the right
     else if (vr.path && Ed.isAudio(vr.name)) item(I18N.m("Open to the right"), () => openAudio(vr.name, null, "split"));   // issue #140: a recording, the audio view
     else item(I18N.m("Open to the right"), null, "Not wired for a graph / canvas / plugin-file bookmark: click the row, then Split right");
@@ -5470,8 +5476,8 @@ function updateModeBtn(g) {
   g.modebtn.hidden = !tb || !!tb.kind;
   // graphhdr REQ-3: Obsidian's three-line tooltip for the CURRENT mode
   g.modebtn.title = m === "reading"
-    ? "Current view: reading\nClick to edit\nCtrl+Click to open to the right"
-    : "Current view: editing\nClick to read\nCtrl+Click to open to the right";
+    ? "Current view: reading\nClick to edit\n" + MODNAME + "+Click to open to the right"
+    : "Current view: editing\nClick to read\n" + MODNAME + "+Click to open to the right";
 }
 
 function applyMode(g, keep) {  // exactly ONE of lp / preview fills the pane
@@ -7905,7 +7911,7 @@ async function wikiClick(e, a) {
   const n = wikiTarget(a) || curOf(g), an = wikiAnchor(a);   // R10: [[#H]] = this note
   if (await cvLinkOpen(n, an)) return;      // cvf-links CVR-A-096: [[X.canvas]] opens the canvas, never makes X.canvas.md
   if (a.classList.contains("wiki-unresolved")) await createNote(n);
-  if (e.ctrlKey) {                            // R6.4: new tab, same group
+  if (modKey(e)) {                            // R6.4: new tab, same group
     await flushSave(g);
     // #171: the new tab goes DIRECTLY RIGHT of the active one (openNewTab's contract; stock 1.13.7 cfA*,cfB,cfC +
     // Ctrl+click [[cfD]] -> cfA,cfD*,cfB,cfC), not at the far end. No splice: the tabclose census counts those.
@@ -8066,7 +8072,7 @@ async function pvWikiClick(a, e) {
   if (await cvLinkOpen(n, an)) return;          // cvf-links CVR-A-096: [[X.canvas]] opens the canvas
   if (a.classList.contains("wiki-unresolved"))   // R3.5: click creates the note
     await createNote(n);
-  if (e.ctrlKey) {                               // R6.4: open in NEW TAB, same group
+  if (modKey(e)) {                               // R6.4: open in NEW TAB, same group
     await flushSave(g);
     // #171: the new tab goes DIRECTLY RIGHT of the active one (openNewTab's contract; stock 1.13.7 cfA*,cfB,cfC +
     // Ctrl+click [[cfD]] -> cfA,cfD*,cfB,cfC), not at the far end. No splice: the tabclose census counts those.
@@ -8344,7 +8350,7 @@ function qsItems() {                 // switcher source: MRU first, rest a-z, th
   return [...mruList.filter(n => notesCache.includes(n)), ...rest].map(n => ({
     label: n, hint: "",
     run: async ev => {               // Enter = focused group; Ctrl+Enter = new tab
-      if (ev && ev.ctrlKey) {
+      if (modKey(ev)) {
         const g = fg();
         // #171: right of the active tab, like Ctrl+click on a link (stock 1.13.7 cfA,cfD*,cfB,cfC)
         const at = g.active >= 0 ? g.active + 1 : g.tabs.length, nt = mkTab(n);
@@ -8571,7 +8577,7 @@ function renderModal() {
       const l = document.createElement("span"); l.textContent = qsCreateOff ? 'Create "' + mdNew + '"' : mdNew;
       const h = document.createElement("span"); h.className = "mhint mcreate"; h.textContent = qsCreateOff ? "Shift+Enter" : "Enter to create";
       d.append(l, h);
-      d.onmousedown = async e => { e.preventDefault(); const n = mdNew; closeModal(); await qsCreateNote(n, e.ctrlKey ? (e.altKey ? "right" : "tab") : "cur"); };
+      d.onmousedown = async e => { e.preventDefault(); const n = mdNew; closeModal(); await qsCreateNote(n, modKey(e) ? (e.altKey ? "right" : "tab") : "cur"); };
     } else { d.className = "mempty"; d.textContent = "No matches"; }
     box.appendChild(d);
     return mdTitleSoon();
@@ -8603,7 +8609,7 @@ $("minput").onkeydown = async e => {
        it); a plain Enter creates only when nothing matches; Ctrl = new tab, Ctrl+Alt
        = split right; Alt+Enter on the create row does nothing but dismiss. */
     e.preventDefault();
-    const how = e.ctrlKey ? (e.altKey ? "right" : "tab") : "cur";
+    const how = modKey(e) ? (e.altKey ? "right" : "tab") : "cur";
     const q = $("minput").value.trim();
     const it = mdItems[mdSel];
     if (e.shiftKey && q) { closeModal(); return await qsCreateNote(q, how); }
@@ -8619,7 +8625,7 @@ $("minput").onkeydown = async e => {
     }
     if (!mdNew) return;
     const n = mdNew; closeModal();
-    if (e.altKey && !e.ctrlKey) return;   // stock c08: no file, nothing opened
+    if (e.altKey && !modKey(e)) return;   // stock c08: no file, nothing opened
     return await qsCreateNote(n, how);
   } else if (e.key === "Enter") {
     e.preventDefault();
@@ -10164,7 +10170,7 @@ async function attachDrop(paths, at) {
   if (!state || !fg()) return dropSay("open a note first");
   const g = fg(), t = g.active >= 0 ? g.tabs[g.active] : null;
   if (!t || t.kind) return dropSay("open a note first");
-  if (t.mode === "reading") { dropTok = "ro"; dropSay("switch to editing (Ctrl+E) to attach a file"); return updateTitle(); }
+  if (t.mode === "reading") { dropTok = "ro"; dropSay("switch to editing (" + MODNAME + "+E) to attach a file"); return updateTitle(); }
   let a;
   try { a = await inv("attach_files", { note: t.name, paths }); }
   catch (e) { dropTok = "err"; dropSay(errStr(e)); return updateTitle(); }
@@ -11319,7 +11325,7 @@ function hkSet(c, chords) {                 // set + collapse to "default" when 
 // #163: Space is named ("Ctrl + Space", stock), not printed as a blank one-character key; the key part comes
 // from chordSplit, so a "+" key is labelled, not lost to the separator
 const chordLabel = ch => { const { mods, k } = chordSplit(ch);
-  return mods.map(m => m === "ctrl" ? "Ctrl" : m === "alt" ? "Alt" : "Shift").concat(
+  return mods.map(m => m === "ctrl" ? MODNAME : m === "alt" ? (OS_MAC ? "Option" : "Alt") : "Shift").concat(
     k === " " ? "Space" : k.length === 1 ? k.toUpperCase() : (KEYNAMES[k] || k).replace(/^Arrow/, "").replace(/^./, x => x.toUpperCase())).join(" + "); };
 // #163: stock 1.13.7 records a SHIFTED symbol by its physical key: Ctrl+Shift+= (e.key "+" on a US layout) is
 // saved as {"modifiers":["Mod","Shift"],"key":"="} and labelled "Ctrl + Shift + =". e.code names that key.
@@ -11328,13 +11334,14 @@ const SHIFT_BASE = { Equal: "=", Minus: "-", BracketLeft: "[", BracketRight: "]"
   Digit4: "4", Digit5: "5", Digit6: "6", Digit7: "7", Digit8: "8", Digit9: "9" };
 function chordOf(e) {                       // keydown -> normalised chord (null for bare modifiers)
   if (["Control", "Alt", "Shift", "Meta"].includes(e.key)) return null;
+  if (OS_MAC && e.ctrlKey) return null;   // macOS: Ctrl is not Mod; Ctrl+A/E/K stay the text editing keys
   let k = e.key.toLowerCase();
   if (e.code === "Tab") k = "tab";   // X11 shift+tab arrives as ISO_Left_Tab
   if (e.shiftKey && SHIFT_BASE[e.code] && k.length === 1) k = SHIFT_BASE[e.code];   // #163: the physical key, as stock
   // Xvfb/xdotool synthesize every F-key with a spurious Mod1 latch (alt:true
   // on F1..F12, clean on letters) — drop alt for function keys so F2 binds.
   const alt = e.altKey && !/^F\d+$/.test(e.code);
-  return (e.ctrlKey ? "ctrl+" : "") + (alt ? "alt+" : "") + (e.shiftKey ? "shift+" : "") + k;
+  return (modKey(e) ? "ctrl+" : "") + (alt ? "alt+" : "") + (e.shiftKey ? "shift+" : "") + k;
 }
 /* palette source: the registry w/ current hotkey hints, PLUS one "Use theme:
    <name>" item per theme this vault actually offers (themeone item 7).
@@ -13048,6 +13055,19 @@ async function startGraph(g, cfg) {
     // to the gesture, exp(-deltaY/100) per event, anchored at the cursor like a notch.
     if (e.ctrlKey && e.deltaY && Math.abs(e.deltaY) < 30) {
       const s = Math.min(GZ_MAX, Math.max(GZ_MIN, view.scale * Math.exp(-e.deltaY / 100)));
+      view.tx = mx - view.wx * s; view.ty = my - view.wy * s; view.scale = s;
+      view.notch = Math.max(GZ_IN, Math.min(GZ_OUT, Math.round(Math.log(s) / Math.log(0.9))));
+      if (gcS && (gcS.kind === "gg" || gcS.kind === "lg") && gcS.st.scale !== s) { gcS.st.scale = s; gcS.save({ scale: s }); }
+      updateTitle();
+      redraw();
+      return;
+    }
+    // macOS port: a trackpad TWO-FINGER SCROLL is a stream of small pixel deltas (dozens per gesture,
+    // then momentum), not notches — one notch per event zoomed a gentle 75 px scroll out 14x. It now
+    // zooms in proportion to the distance scrolled, like the pinch above but gentler (exp(-dy/400):
+    // a gentle 75 px swipe is ~2 notches). A mouse notch (|deltaY| >= 30) keeps the lattice below.
+    if (OS_MAC && !e.ctrlKey && e.deltaMode === 0 && e.deltaY && Math.abs(e.deltaY) < 30) {
+      const s = Math.min(GZ_MAX, Math.max(GZ_MIN, view.scale * Math.exp(-e.deltaY / 400)));
       view.tx = mx - view.wx * s; view.ty = my - view.wy * s; view.scale = s;
       view.notch = Math.max(GZ_IN, Math.min(GZ_OUT, Math.round(Math.log(s) / Math.log(0.9))));
       if (gcS && (gcS.kind === "gg" || gcS.kind === "lg") && gcS.st.scale !== s) { gcS.st.scale = s; gcS.save({ scale: s }); }
@@ -14776,6 +14796,7 @@ function wfDragRegion(t) {    // is this event target part of the drag region?
   // like the middle tab row). The header element ONLY — its .stab buttons and #rtoggle
   // are their own targets, so a press on an icon still switches and never drags.
   if (t.id === "wframe" || t.id === "stabs" || t.id === "rtabs") return true;
+  if (OS_MAC && t.id === "ribbon") return true;   // macOS port: the ribbon's empty space under the traffic lights drags too
   // R37: ANY pane's tab-bar background, not just the top row's (see the block above)
   return t.classList.contains("tabbar") || t.classList.contains("tabs");
 }

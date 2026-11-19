@@ -419,12 +419,35 @@ impl Vault {
     /// that zero-byte claim. Parents of `to` are created.
     pub fn move_file(&self, from: &Path, to: &Path) -> io::Result<()> {
         let (fd_from, lf) = self.parent(from, false)?;
-        match stat_at(fd_from.fd.as_raw_fd(), &lf) {
-            Ok(st) if is_reg(&st) => {}
+        let src = match stat_at(fd_from.fd.as_raw_fd(), &lf) {
+            Ok(st) if is_reg(&st) => st,
             Ok(_) => return Err(refused(from, "source is not a regular file")),
             Err(e) => return Err(e),
-        }
+        };
         let (fd_to, lt) = self.parent(to, true)?;
+        // macOS port: on a case-insensitive filesystem (APFS's default) `Note.md` -> `note.md` names
+        // the SAME directory entry, so the O_EXCL claim below says "exists". A case-only rename of
+        // that very file has nothing to claim or clobber: renameat just stores the new case. Taken
+        // ONLY when the volume itself says it is case-insensitive (_PC_CASE_SENSITIVE == 0): there
+        // both spellings are one entry, so a concurrent writer replacing `to` replaced `from` — the
+        // rename can never overwrite a different file, and it is never a silent no-op between two
+        // hard links (on a case-SENSITIVE volume those are two entries; the claim below refuses).
+        // SAFETY: valid fd
+        #[cfg(target_os = "macos")]
+        let case_insensitive = unsafe { libc::fpathconf(fd_to.fd.as_raw_fd(), libc::_PC_CASE_SENSITIVE) } == 0;
+        #[cfg(target_os = "macos")]
+        if case_insensitive {
+          if let Ok(t) = stat_at(fd_to.fd.as_raw_fd(), &lt) {
+            let same_name = lf.to_string_lossy().to_lowercase() == lt.to_string_lossy().to_lowercase();
+            let same_dir = stat_at(fd_from.fd.as_raw_fd(), &CString::new(".").expect("no NUL"))
+                .and_then(|a| stat_at(fd_to.fd.as_raw_fd(), &CString::new(".").expect("no NUL")).map(|b| (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)))
+                .unwrap_or(false);
+            if same_name && same_dir && (t.st_dev, t.st_ino) == (src.st_dev, src.st_ino) && lf != lt {
+                // SAFETY: valid fds + NUL-terminated names
+                return cvt(unsafe { libc::renameat(fd_from.fd.as_raw_fd(), lf.as_ptr(), fd_to.fd.as_raw_fd(), lt.as_ptr()) }).map(|_| ());
+            }
+          }
+        }
         drop(self.create_new_at(&fd_to, &lt)?);
         hook("move_file:claimed");
         // SAFETY: valid fds + NUL-terminated names
@@ -607,7 +630,11 @@ impl Vault {
                 Err(_) => continue,
             };
             // SAFETY: valid fd + NUL-terminated names
+            #[cfg(target_os = "linux")]
             let r = cvt(unsafe { libc::renameat2(dfd, tmp.as_ptr(), dfd, cn.as_ptr(), libc::RENAME_NOREPLACE) });
+            // no renameat2 off Linux: take the link(2) path below, which refuses an existing name too
+            #[cfg(not(target_os = "linux"))]
+            let r: io::Result<libc::c_int> = Err(io::Error::from_raw_os_error(libc::ENOSYS));
             let r = match r {
                 Err(e) if matches!(e.raw_os_error(), Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EOPNOTSUPP)) => {
                     // no NOREPLACE here: link(2) refuses an existing name too
@@ -907,6 +934,7 @@ impl Vault {
     /// directory is changed, through /proc/self/fd/<fd>, which names exactly the
     /// inode we hold (fchmod on an O_PATH fd is EBADF), so a swap after the open
     /// cannot redirect it. setuid/setgid/sticky never get through: mode & 0o777.
+    #[cfg(target_os = "linux")]
     pub fn p_chmod(&self, rel: &Path, mode: u32) -> io::Result<()> {
         let (d, leaf) = self.parent(rel, false)?;
         // SAFETY: valid fd + NUL-terminated name; the fd is owned below
@@ -917,6 +945,22 @@ impl Vault {
         let via = CString::new(format!("/proc/self/fd/{}", fd.as_raw_fd())).expect("no NUL in a decimal fd");
         // SAFETY: NUL-terminated path; the magic link resolves to the inode `fd` pins
         cvt(unsafe { libc::chmod(via.as_ptr(), (mode & PLUGIN_MODE_MASK) as libc::mode_t) }).map(|_| ())
+    }
+
+    /// Non-Linux p_chmod: no O_PATH and no /proc. The leaf is checked with fstatat(NOFOLLOW) and
+    /// changed with fchmodat(AT_SYMLINK_NOFOLLOW) relative to its held parent: a symlink is refused
+    /// by the check, and if one is swapped in afterwards the chmod lands on the LINK, never its
+    /// target. Needs no read access, so a file a plugin set to 000 can be set back. O_NONBLOCK (a FIFO
+    /// cannot hang the open) and O_NOCTTY; fstat refuses anything but a regular file
+    /// or directory, and fchmod acts on the held fd, so a swap after the open cannot
+    /// redirect it. A file without read permission cannot be opened and is refused.
+    #[cfg(not(target_os = "linux"))]
+    pub fn p_chmod(&self, rel: &Path, mode: u32) -> io::Result<()> {
+        let (d, leaf) = self.parent(rel, false)?;
+        pstat_of(rel, &stat_at(d.fd.as_raw_fd(), &leaf)?)?; // symlink, FIFO, device, socket -> refused
+        hook("p_chmod:opened");
+        // SAFETY: valid fd + NUL-terminated name
+        cvt(unsafe { libc::fchmodat(d.fd.as_raw_fd(), leaf.as_ptr(), (mode & PLUGIN_MODE_MASK) as libc::mode_t, libc::AT_SYMLINK_NOFOLLOW) }).map(|_| ())
     }
 }
 
@@ -1444,6 +1488,17 @@ mod tests {
         }
         assert_eq!(mode_of(&out.join("secret")), 0o600, "outside target mode unchanged");
         assert!(fs::symlink_metadata(root.join("a/leak")).unwrap().file_type().is_symlink());
+    }
+
+    /// CodeAnt #248: a plugin that set a file to 000 can set it back (no read access is needed)
+    #[test]
+    fn pchmod_mode_000_can_be_restored() {
+        let (root, _out) = fresh("pchmod-000");
+        fs::write(root.join("x.sh"), b"#!/bin/sh\n").unwrap();
+        plugin_chmod(&root, true, "x.sh", 0o000).expect("to 000");
+        plugin_chmod(&root, true, "x.sh", 0o755).expect("back from 000");
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(fs::metadata(root.join("x.sh")).unwrap().permissions().mode() & 0o777, 0o755);
     }
 
     #[test]

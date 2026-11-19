@@ -337,6 +337,7 @@ mod tests {
     /// cross-PROCESS: an outside process holds the cfg lock; our update must
     /// wait for it (not write around it) and then merge onto ITS write.
     #[test]
+    #[cfg(target_os = "linux")] // the holder is flock(1) from util-linux
     fn cfgstore_update_waits_for_another_process_holding_the_lock() {
         let d = tmp("proc");
         let (cfg, locks) = (d.join(".opensidian.json"), d.join("locks"));
