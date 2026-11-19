@@ -15,6 +15,7 @@ label.row input[type=text] { display: inline-block; width: 12em; margin: 0; }
 fieldset { border: 1px solid var(--line); border-radius: 4px; max-width: 520px; }
 button { font: inherit; padding: 5px 12px; border-radius: 4px; border: 1px solid var(--line); background: transparent; color: inherit; cursor: pointer; }
 button.cta { background: var(--acc); border-color: var(--acc); color: #fff; }
+button.danger { background: #b3261e; border-color: #b3261e; color: #fff; }
 button:disabled { opacity: .5; cursor: default; }
 .hint { color: var(--mut); font-size: 13px; }
 .warn { color: #e0a43a; font-weight: 600; }

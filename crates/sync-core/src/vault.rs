@@ -452,7 +452,8 @@ pub fn fetch_envelope(p: &FipsProvider, t: &dyn Transport, root: &RootKeys) -> R
         let id = env_id(p, &root.loc, g);
         let bytes = match t.get(ObjKind::Env, &Id16::ZERO, &id, None) {
             Ok(f) => f.bytes,
-            Err(e) if is_not_found(&e) => break,
+            // 410 = the vault was destroyed: no envelope for these words any more
+            Err(e) if is_not_found(&e) || matches!(e, TransportError::Api { code: ErrorCode::Gone, .. }) => break,
             Err(e) => return Err(e.into()),
         };
         let o = open(p, &root.k_wrap, &env_ctx(id), &bytes)?;

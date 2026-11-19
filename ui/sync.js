@@ -131,6 +131,21 @@
     } catch (e) { $("quiz-result").textContent = String(e); }
   };
 
+  /* ---- vault compromised -> move to a new vault (burn and move, no revocation) ---- */
+  $("m-move").onclick = async () => {
+    err("s-err");
+    const b = $("m-move"); b.disabled = true; $("m-result").textContent = "asking…";
+    try {
+      const words = $("m-words").value.trim() || null;
+      const r = await inv("sync_move", { token: $("m-token").value, words });
+      $("m-token").value = ""; $("m-words").value = "";
+      $("m-result").textContent = "moved: new vault " + r.moved.new_vault_id.slice(0, 8) + " (" + r.moved.files + " files); old vault " +
+        r.moved.old_vault_id.slice(0, 8) + " destroyed (" + r.moved.destroyed.objects + " objects). Write down the NEW words.";
+      showWords(r.words);
+      await refresh();
+    } catch (e) { $("m-result").textContent = ""; err("s-err", e); } finally { b.disabled = false; }
+  };
+
   /* ---- file history pane ---- */
   let sel = null;
   const REASON = { "own-save": "saved", "pre-write": "before overwrite", external: "external edit", delete: "deleted", rename: "renamed", idle: "snapshot", restore: "restored", "sync-loser": "kept by sync" };

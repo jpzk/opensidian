@@ -47,6 +47,11 @@
     <h3>Backup words</h3>
     <p class="hint">The 12 words are the only way to recover the vault on a new device. They never leave this window.</p>
     <button id="s-reveal">Reveal backup words…</button>
+    <h3>Vault compromised?</h3>
+    <p class="hint">If the backup words or a device of this vault were lost, stolen or seen by someone else, the vault is <b>burned</b> — a single device cannot be locked out. <b>Move to a new vault</b>: this device creates a new vault (new 12 words, new server space) from the notes in this folder and their file history, then destroys the old vault on the server. Every other device sets up sync again with the new words. Changes other devices never synced to this one are not carried over.</p>
+    <label>Enrollment token for the new vault <textarea id="m-token" rows="2" autocomplete="off" spellcheck="false"></textarea></label>
+    <label>Current backup words (only if this device does not hold them) <textarea id="m-words" rows="2" autocomplete="off" spellcheck="false"></textarea></label>
+    <div class="actions"><button id="m-move" class="danger">Move to a new vault…</button> <span id="m-result" class="hint"></span></div>
   </div>
 
   <div id="words-box" hidden>

@@ -44,7 +44,7 @@ use sync_core::history::{HistoryError, Store};
 use sync_core::keystore::FixedPresence;
 use sync_core::merge::ConflictMode;
 use syncd::api::{ApiError, ApiResult, SyncApi};
-use syncd::local::{HistSink, Join, LocalEngine, Setup};
+use syncd::local::{HistSink, Join, LocalEngine, Move, Setup};
 use tauri::State;
 
 use crate::Vault;
@@ -71,6 +71,7 @@ pub const GUARDED: &[&str] = &[
     "sync_reveal",
     "sync_quiz",
     "sync_census",
+    "sync_move",
 ];
 
 /// Ok only for the trusted sync webview; EPERM for every other (the main
@@ -237,6 +238,59 @@ pub async fn sync_reveal<R: tauri::Runtime>(win: tauri::WebviewWindow<R>, v: Sta
     Ok(words)
 }
 
+
+#[derive(Serialize)]
+pub struct MoveDone {
+    /// the NEW vault's backup words, shown once (also in its backup entry)
+    words: String,
+    moved: syncd::api::Moved,
+}
+
+/// "Vault compromised -> move to a new vault" (burn and move, no revocation;
+/// spec §4.8). After the native question: a new vault on the same server from
+/// the admin's one-time enrollment token, seeded from this folder (history
+/// stays in the app's per-folder store), then the old vault is destroyed with
+/// its words' K_destroy proof. The old words come from this device's backup
+/// entry; `words` only if the device does not hold them (joined by pairing).
+#[tauri::command]
+pub async fn sync_move<R: tauri::Runtime>(
+    win: tauri::WebviewWindow<R>,
+    v: State<'_, Vault>,
+    token: String,
+    words: Option<String>,
+) -> Result<MoveDone, String> {
+    gate(win.label(), "sync_move")?;
+    crate::net_allowed("sync move")?;
+    let (root, st) = open_vault(&v)?;
+    let token = zeroize::Zeroizing::new(token);
+    let typed = words.map(zeroize::Zeroizing::new);
+    if token.trim().is_empty() {
+        return Err("an enrollment token for the new vault is needed (opensidian-sync-server vault create)".into());
+    }
+    let w = native_window(&win).ok_or("move needs the native dialog")?;
+    let slot = crate::consent::admit()?;
+    if !crate::consent::ask(slot, w, crate::consent::Kind::Move, crate::consent::move_question()).await? {
+        return Err("denied: the vault was not moved".into());
+    }
+    let done = blocking(move || {
+        let e = engine(&st, true)?;
+        let old = match typed.filter(|t| !t.trim().is_empty()) {
+            Some(t) => t,
+            None => e.reveal_words().map_err(api)?,
+        };
+        let (_, moved, nw) = e
+            .move_vault(
+                Move { old_words: old.as_str(), enrollment_token: token.trim(), url: None, ca_file: None },
+                Some(&mut AppHist { root }),
+            )
+            .map_err(api)?;
+        Ok(MoveDone { words: nw.to_string(), moved })
+    })
+    .await?;
+    // the new words were just shown: the verify quiz may check them
+    *REVEALED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+    Ok(done)
+}
 /// census-gate (#30): the TEST probe of the sync window. ui/sync.js publishes
 /// its page state (pane, configured, mode, word COUNT, quiz positions, history
 /// list/diff counts, control rects — never a word or a secret) as `[k:v]`
@@ -506,6 +560,7 @@ mod tests {
                 sync_reveal,
                 sync_quiz,
                 sync_census,
+                sync_move,
             ])
             .build(mock_context(noop_assets()))
             .expect("mock app");
@@ -526,6 +581,7 @@ mod tests {
             ("sync_reveal", json!({})),
             ("sync_quiz", json!({"picks": [[1, "w"]]})),
             ("sync_census", json!({"tokens": "[spane:sync]"})),
+            ("sync_move", json!({"token": "t"})),
         ];
         assert_eq!(args.len(), GUARDED.len());
         let call = |w: &tauri::WebviewWindow<tauri::test::MockRuntime>, cmd: &str, a: &serde_json::Value| {

@@ -380,7 +380,8 @@ fn two_clients_and_a_fresh_device_end_to_end() {
         ca_file: None,
         join: Join::Words { words: &words },
     });
-    assert_eq!(r.expect_err("old words must not join anything").code, "no-vault");
+    let e = r.expect_err("old words must not join anything");
+    assert_eq!(e.code, "no-vault", "{e}");
     eprintln!("E2E PASS: an old-vault device cannot read or write the new vault (old tokens refused, old words open nothing)");
     // a device that gets the NEW words joins the new vault with all files
     let joiner = client("new-words");
