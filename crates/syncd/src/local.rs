@@ -27,6 +27,7 @@ use sync_core::history::{self, HistoryError, Store};
 use sync_core::keystore::{Entry, FileKeystore, FixedPresence, Keystore, KeystoreError, Presence};
 use sync_core::merge::{ConflictMode, Loser};
 use sync_core::sync_crypto::fips::FipsProvider;
+use sync_core::sync_crypto::CryptoProvider as _;
 use sync_core::sync_crypto::words::Phrase;
 use sync_core::sync_proto::Id16;
 use sync_core::transport::http::{HttpTransport, Roots};
