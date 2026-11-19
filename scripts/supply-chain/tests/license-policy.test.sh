@@ -61,8 +61,12 @@ expect_fail "RED: LicenseRef-flathub-runtime outside the flatpak runtime" "DENY 
 expect_fail "RED: root with a non-GPL license" "DENY <root opensidian>: not allowed: \"Proprietary\" (license.name)" \
   "$gate" "$(mut '.metadata.component.licenses = [{license: {name: "Proprietary"}}]')"
 # part roots (the release root's direct dependsOn: rust root crate, flatpak app, ui/vendor, AppImage bundle)
-expect_fail "RED: aggregate part without license and without license-note" "DENY opensidian-ui-vendor: no license" \
-  "$gate" "$(mut '(.components[] | select(."bom-ref" == "opensidian-ui-vendor")) |= del(.properties)')"
+expect_fail "RED: aggregate part without license is denied even WITH a license-note (no exemption, #249 D)" "DENY opensidian-ui-vendor: no license" \
+  "$gate" "$(mut '(.components[] | select(."bom-ref" == "opensidian-ui-vendor")) |= (del(.licenses) | .properties = [{name: "opensidian:license-note", value: "aggregate: the third-party libraries vendored under ui/vendor"}])')"
+expect_fail "RED: aggregate part with a license outside the root exception" "DENY opensidian-ui-vendor: not allowed: \"Proprietary\" (license.name)" \
+  "$gate" "$(mut '(.components[] | select(."bom-ref" == "opensidian-ui-vendor")) |= (.licenses = [{license: {name: "Proprietary"}}])')"
+expect_fail "RED: a third-party lib the release root dependsOn gets no root exception" "DENY pkg:npm/fake-gpl@1.0.0: not allowed: GPL-3.0-or-later" \
+  "$gate" "$(mut '.components += [{type: "library", "bom-ref": "pkg:npm/fake-gpl@1.0.0", purl: "pkg:npm/fake-gpl@1.0.0", name: "fake-gpl", licenses: [{expression: "GPL-3.0-or-later"}]}] | (.dependencies[] | select(.ref == "release:opensidian@1.2.3") | .dependsOn) += ["pkg:npm/fake-gpl@1.0.0"]')"
 expect_fail "RED: license-note does not excuse a non-part component" "DENY pkg:cargo/serde@1.0.0: no license" \
   "$gate" "$(mut '(.components[] | select(.name == "serde")) |= (del(.licenses) | .properties = [{name: "opensidian:license-note", value: "trust me, it is fine"}])')"
 expect_fail "RED: a part that is no longer a release dependency loses the root exception" "DENY opensidian-flatpak: not allowed: GPL-3.0-or-later" \

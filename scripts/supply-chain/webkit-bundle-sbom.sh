@@ -40,6 +40,11 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 die() { echo "webkit-bundle-sbom: $*" >&2; exit 1; }
+# #249 item D: the bundle root (what opensidian ships inside the portable AppImage) carries the app
+# license from src-tauri/Cargo.toml - no unlicensed aggregate, no license-note excuse; every Ubuntu
+# package / brotli keeps its own license on its own component.
+applic=$(awk -F'"' '/^\[package\]/{p=1; next} /^\[/{p=0} p && /^license *=/{print $2; exit}' "$root/src-tauri/Cargo.toml" 2>/dev/null || true)
+[ -n "$applic" ] || die "no [package] license in $root/src-tauri/Cargo.toml"
 BIN= PKGSET=
 while [ $# -gt 0 ]; do case "$1" in
   --bin) BIN=${2:?--bin needs a path}; shift 2;;
@@ -184,7 +189,7 @@ while IFS=$'\t' read -r bp ver _ _; do
 done <"$t/pkgs"
 
 jq -n --rawfile map "$t/map" --rawfile pkgs "$t/pkgs" --rawfile lic "$t/lic" --rawfile sha "$t/sha" \
-   --arg ns "$NS" --arg distro "$DISTRO" --arg arch "$ARCH" --arg brotli "$BROTLI_VER" --arg doc "$DOC" \
+   --arg ns "$NS" --arg distro "$DISTRO" --arg arch "$ARCH" --arg brotli "$BROTLI_VER" --arg doc "$DOC" --arg applic "$applic" \
    --arg hsrc "$(if [ -n "$PKGSET" ]; then echo "pkgset $(basename "$PKGSET") (snapshot index SHA256, checked against the downloaded .deb by appimage-build.sh)"; else echo "apt-cache show (the configured apt index SHA256)"; fi)" \
    --arg ts "$(date -u -d "@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y-%m-%dT%H:%M:%SZ)" '
   def rows($s): $s | split("\n") | map(select(length>0) | split("\t"));
@@ -219,7 +224,8 @@ jq -n --rawfile map "$t/map" --rawfile pkgs "$t/pkgs" --rawfile lic "$t/lic" --r
       metadata: { timestamp: $ts,
         component: { type: "application", "bom-ref": "opensidian-portable-appimage-bundle",
           name: "opensidian portable AppImage WebKit bundle", version: $distro,
-          properties: [{name: "opensidian:license-note", value: "aggregate: the Ubuntu packages and brotli bundled into the AppImage; each component carries its own license"}] },
+          licenses: [{expression: $applic}],
+          properties: [{name: "opensidian:aggregate", value: "aggregate part root: the Ubuntu packages and brotli bundled into the portable AppImage, conveyed as part of the opensidian app under its license (src-tauri/Cargo.toml); each component carries its own license"}] },
         properties: [ {name: "opensidian:source", value: "dpkg database of the AppImage build environment (\($distro), apt pinned to the appimage-build.sh snapshot)"},
                       {name: "opensidian:hash-source", value: $hsrc} ] },
       components: ($debs + (if ($bl | length) > 0 then [{

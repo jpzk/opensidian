@@ -46,8 +46,10 @@ if jq -e --arg sha "$(sha256sum "$root/ui/vendor/codemirror/LICENSE" | cut -d' '
    ' "$t/bom.json" >/dev/null; then ok "G5: cm6.js component carries codemirror/LICENSE sha256 + pinned source"
 else bad "G5: cm6.js component has no codemirror/LICENSE file property"; fi
 
-jq -e 'any(.metadata.component.properties[]; .name == "opensidian:license-note")' "$t/bom.json" >/dev/null \
-  && ok "G7: ui/vendor aggregate root carries opensidian:license-note" || bad "G7: ui/vendor root has no license-note"
+applic=$(awk -F'"' '/^\[package\]/{p=1; next} /^\[/{p=0} p && /^license *=/{print $2; exit}' "$root/src-tauri/Cargo.toml")
+jq -e --arg l "$applic" 'any(.metadata.component.properties[]; .name == "opensidian:aggregate") and .metadata.component.licenses == [{expression: $l}]
+    and all(.components[]; (.licenses // []) | length > 0)' "$t/bom.json" >/dev/null \
+  && ok "D: ui/vendor aggregate root licensed $applic (src-tauri/Cargo.toml), every component licensed" || bad "D: ui/vendor root not licensed $applic or a component without license"
 
 # G4: the npm packages bundled inside mermaid.min.js (LICENSES-bundled.txt) are components,
 # each with version + license + registry URL, and the mermaid component dependsOn all of them

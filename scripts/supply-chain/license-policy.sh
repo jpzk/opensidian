@@ -9,9 +9,10 @@
 # Every license form is read: licenses[].expression (SPDX; AND/OR/WITH/parens, "/" = OR as cargo
 # does; an OR passes if one side passes), licenses[].license.id and .license.name (exact).
 # Several licenses[] entries on one component = all must pass.
-# Part roots (what the release root directly dependsOn: the rust root crate, the flatpak app,
-# ui/vendor, the AppImage bundle) are opensidian's own and get the root exceptions; an aggregate
-# part (ui/vendor, AppImage bundle) may carry no license only with an opensidian:license-note.
+# Part roots (the release root's direct dependsOn that are opensidian-owned: bom-ref opensidian@<ver>
+# = the rust root crate, opensidian-* = the flatpak app) are opensidian's own and get the root
+# exceptions. NO component may lack a license (no license-note excuse; aggregate grouping nodes are
+# dropped by sbom-merge.sh instead, #249 item D); third-party libs the root dependsOn get no root exception.
 # FAILS CLOSED (exit 1, every violation listed) on: a component or the root without licenses, a
 # malformed licenses[] entry or expression, a license not allowed, a malformed policy (exception
 # without reason/match), an unreadable deny.toml allow list, input that is not CycloneDX.
@@ -75,8 +76,7 @@ jq -r --arg allow "$allow" --slurpfile pol "$policy" '
   def check($A; $X; $root; $part): . as $c | okfor($A; $X; $root or $part) as $ok
     | (if $root then "<root \(.name)>" else (."bom-ref" // .purl // .name // "?") end) as $id
     | if ((.licenses // []) | length) == 0 then
-        (if $part and ([.properties // [] | .[] | select(.name == "opensidian:license-note" and ((.value // "") | length) >= 10)] | length) > 0
-         then "OK\t\($id)\t(aggregate part, opensidian:license-note)" else "VIOL\t\($id)\tno license" end)
+        "VIOL\t\($id)\tno license"
       else (.licenses[] |
         if (.expression | type) == "string" then
           (try (.expression | evalx($ok)) catch ("PARSE " + .)) as $r
@@ -101,7 +101,7 @@ jq -r --arg allow "$allow" --slurpfile pol "$policy" '
   | if ($perr | length) > 0 then ($perr[] | "POLICY\t\(.)") else
     (($allow | split("\n") | map(select(length > 0))) + ($p.extra_allow // [])) as $A
   | ($p.exceptions // []) as $X
-  | ([.dependencies // [] | .[] | select(.ref == $c0."bom-ref") | .dependsOn // [] | .[]]) as $parts
+  | ([.dependencies // [] | .[] | select(.ref == $c0."bom-ref") | .dependsOn // [] | .[] | select(test("^opensidian([-@]|$)"))]) as $parts
   | (.metadata.component | check($A; $X; true; false)),
     (.components // [] | .[] | check($A; $X; false; (."bom-ref" | IN($parts[]))))
   end

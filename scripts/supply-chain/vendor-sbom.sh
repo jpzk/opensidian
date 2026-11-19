@@ -30,6 +30,11 @@ export VENDOR_DIR=${VENDOR_DIR:-$root/ui/vendor}
 export LOCK=${LOCK:-$VENDOR_DIR/vendor.lock.json}
 vd=$VENDOR_DIR lock=$LOCK
 for t in jq base64 od; do command -v "$t" >/dev/null || { echo "vendor-sbom: $t required" >&2; exit 2; }; done
+# #249 item D: the ui/vendor aggregate root is opensidian's own distribution unit (the ui/vendor tree
+# of the GPL app) and carries the app license from src-tauri/Cargo.toml - no unlicensed aggregate,
+# no license-note excuse; every vendored library keeps its own license on its own component.
+applic=$(awk -F'"' '/^\[package\]/{p=1; next} /^\[/{p=0} p && /^license *=/{print $2; exit}' "$root/src-tauri/Cargo.toml" 2>/dev/null || true)
+[ -n "$applic" ] || { echo "vendor-sbom: no [package] license in $root/src-tauri/Cargo.toml" >&2; exit 1; }
 
 # a)-e) first; its report goes to stderr so stdout stays pure JSON
 "$here/vendor-verify.sh" >&2 || { echo "vendor-sbom: vendor-verify.sh failed, no SBOM" >&2; exit 1; }
@@ -140,12 +145,13 @@ if [ -n "$mref" ]; then
 fi
 
 ts=$(date -u -d "@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y-%m-%dT%H:%M:%SZ)
-jq -s --slurpfile deps "$tmp/deps" --arg ts "$ts" '{
+jq -s --slurpfile deps "$tmp/deps" --arg ts "$ts" --arg applic "$applic" '{
     bomFormat: "CycloneDX", specVersion: "1.6", version: 1,
     metadata: {timestamp: $ts,
                tools: {components: [{type: "application", name: "scripts/supply-chain/vendor-sbom.sh"}]},
                component: {type: "application", "bom-ref": "opensidian-ui-vendor", name: "opensidian ui/vendor",
-                          properties: [{name: "opensidian:license-note", value: "aggregate: the third-party libraries vendored under ui/vendor; each component carries its own license"}]}},
+                          licenses: [{expression: $applic}],
+                          properties: [{name: "opensidian:aggregate", value: "aggregate part root: the third-party libraries vendored under ui/vendor, conveyed as part of the opensidian app under its license (src-tauri/Cargo.toml); each library component carries its own license"}]}},
     components: (unique_by(."bom-ref") | sort_by(."bom-ref")),
     dependencies: ([{ref: "opensidian-ui-vendor",
                      dependsOn: ([.[] | select(.type == "file" or (.properties | map(.name) | index("opensidian:loaded_by")))

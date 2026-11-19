@@ -182,10 +182,15 @@
       "type": "application",
       "bom-ref": "opensidian-ui-vendor",
       "name": "opensidian ui/vendor",
+      "licenses": [
+        {
+          "expression": "GPL-3.0-or-later"
+        }
+      ],
       "properties": [
         {
-          "name": "opensidian:license-note",
-          "value": "aggregate: the third-party libraries vendored under ui/vendor; each component carries its own license"
+          "name": "opensidian:aggregate",
+          "value": "aggregate part root: the third-party libraries vendored under ui/vendor, conveyed as part of the opensidian app under its license; each library component carries its own license"
         }
       ]
     }
