@@ -36,7 +36,7 @@ impl Id16 {
             return Err(IdError::Length(b.len()));
         }
         let mut out = [0u8; 16];
-        for (i, pair) in b.chunks_exact(2).enumerate() {
+        for (i, pair) in b.as_chunks::<2>().0.iter().enumerate() {
             out[i] = (hex_val(pair[0])? << 4) | hex_val(pair[1])?;
         }
         Ok(Id16(out))

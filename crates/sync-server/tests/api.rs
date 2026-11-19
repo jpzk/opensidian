@@ -726,6 +726,7 @@ fn body_budget_is_shared_across_connections() {
     let s = start(|c| {
         c.max_object = 4096;
         c.max_inflight_body = 4096;
+        c.max_control = 1024;
         c.body_timeout_secs = 3;
     });
     let a = stalled_put(s.addr, &format!("/v1/env/{}/{}", Id16::ZERO, id(0x41)), &container(id(0x41), 3900, 1), 10);

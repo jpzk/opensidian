@@ -334,6 +334,18 @@ impl LocalEngine {
         let root = vault::root_of(&self.p, &self.words(words)?).map_err(vault_err)?;
         let id = Id16::from_hex(device_hex).map_err(|e| ApiError::new("bad-request", format!("{e:?}")))?;
         let (t, mut m) = self.member()?;
+        // Vouch before revoking: a tip this device absorbed (same tree as its
+        // head, so no merge commit was made) is vouched for only in local
+        // state until the next local commit. Revocation makes the target's
+        // commits count only where an active commit reaches them (engine M5),
+        // so seal the absorbed tips now as parents of a commit; the next sync
+        // pushes it and devices that join later keep the same history.
+        {
+            let mut e = self.engine(&m)?;
+            if e.absorbed().iter().any(|a| Some(*a) != e.head()) {
+                e.commit_local(&m.device.signer(), &m.roster(), now_ms(), Vec::new()).map_err(engine_err)?;
+            }
+        }
         let epoch = vault::revoke(&self.p, &t, &mut m, &root, &id).map_err(vault_err)?;
         self.save_member(&m)?;
         Ok(epoch)

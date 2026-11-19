@@ -173,7 +173,7 @@ pub fn segment_aad(
 /// header alone is 10 bytes) and yields no segments.
 pub fn segment_lens(len: usize) -> Vec<usize> {
     let mut out = vec![SEG; len / SEG];
-    if len % SEG != 0 {
+    if !len.is_multiple_of(SEG) {
         out.push(len % SEG);
     }
     out
