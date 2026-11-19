@@ -4,6 +4,8 @@
   "exceptions": [
     { "license": "GPL-3.0-or-later", "root": true, "match": ["pkg:cargo/opensidian@"],
       "reason": "opensidian itself (the release root and its app crate) is GPL-3.0-or-later; same exception as deny.toml { crate = \"opensidian\" }, dependencies do not get it" },
+    { "license": "GPL-3.0-or-later", "match": ["pkg:npm/elkjs@"],
+      "reason": "elkjs (inlined into ui/vendor/mermaid/mermaid.min.js since mermaid 12) is dual-licensed EPL-2.0 OR GPL-3.0-or-later; we take it under GPL-3.0-or-later, the license of the app itself; its EPL-2.0 text ships in ui/vendor/mermaid/LICENSES-bundled.txt" },
     { "license": "LicenseRef-flathub-runtime", "match": ["flatpak-runtime:"],
       "reason": "the Flathub GNOME runtime is not shipped in our artifacts: the flatpak installs it from Flathub; it aggregates many projects whose per-package licenses are in the runtime vendor SBOM (see the component's opensidian:license-note)" },
     { "license": "LicenseRef-deb-copyright-unstructured", "match": ["pkg:deb/"],

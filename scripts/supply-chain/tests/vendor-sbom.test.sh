@@ -61,9 +61,11 @@ if [ -s "$t/bom.json" ] && jq -e --argjson nb "$nb" '
      and ($b | all(.version != null and (.purl | startswith("pkg:npm/"))
                    and (.licenses | length) == 1
                    and (.externalReferences[0].url | startswith("https://registry.npmjs.org/"))))
-     and ((.dependencies[] | select(.ref == "pkg:npm/mermaid@11.17.2") | .dependsOn | sort) == ($b | map(."bom-ref") | sort))
+     and ((.dependencies[] | select(.ref == "pkg:npm/mermaid@12.3.0") | .dependsOn | sort) == ($b | map(."bom-ref") | sort))
      and ($b[] | select(.name == "dompurify") | .licenses) == [{expression: "MPL-2.0 OR Apache-2.0"}]
-     and ($b[] | select(.name == "chevrotain") | .licenses == [{license: {id: "Apache-2.0"}}]
+     and ($b[] | select(.name == "elkjs") | .licenses) == [{expression: "EPL-2.0 OR GPL-3.0-or-later"}]
+     and ($b[] | select(.name == "chevrotain") | .licenses == [{license: {id: "Apache-2.0"}}])
+     and ($b[] | select(.name == "chevrotain-allstar") | .licenses == [{license: {id: "MIT"}}]
               and (.properties | map(.name) | index("opensidian:version-note")))
      and ([$b[] | select(.name == "d3-array") | .version] | sort) == ["2.12.1", "3.2.4"]
      and ([$b[] | select(.purl == "pkg:npm/%40braintree/sanitize-url@7.1.2")] | length) == 1
@@ -83,7 +85,7 @@ fresh; echo x >"$t/v/stray.js"; neg "unlisted ui/vendor/stray.js"
 mb=$t/v/mermaid/LICENSES-bundled.txt
 fresh; sed -i 's/^d3-array@3.2.4  (SPDX: ISC)$/d3-array 3.2.4 (ISC)/' "$mb"; neg "mermaid bundled: malformed package line"
 fresh; sed -i 's|^source: https://registry.npmjs.org/cytoscape/-/cytoscape-3.34.0.tgz$|source: https://evil.example/cytoscape-3.34.0.tgz|' "$mb"; neg "mermaid bundled: non-registry source URL"
-fresh; sed -i '1s/(mermaid 11.17.2)/(mermaid 11.0.0)/' "$mb"; neg "mermaid bundled: title names another mermaid version"
+fresh; sed -i '1s/(mermaid 12.3.0)/(mermaid 11.17.2)/' "$mb"; neg "mermaid bundled: title names another mermaid version"
 fresh; printf '%s
 ' '=====================================================================' 'stray@1.0.0  (SPDX: MIT)' >>"$mb"; neg "mermaid bundled: truncated last block"
 fresh; rm "$mb"; neg "mermaid bundled: LICENSES-bundled.txt missing"

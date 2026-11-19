@@ -33,6 +33,16 @@ fresh; jq '(.libraries[]|select(.name=="prismjs")|.published)="2025-03-11T00:00:
   && mv "$scratch/l" "$scratch/vendor/vendor.lock.json"; expect 1 "lock publish date != registry time (prismjs)"
 fresh; jq '(.libraries[]|select(.name=="pdfjs-dist")|.added)="2026-09-15"' "$scratch/vendor/vendor.lock.json" >"$scratch/l" \
   && mv "$scratch/l" "$scratch/vendor/vendor.lock.json"; expect 1 "six-week rule (pdfjs-dist added 17 days after publish)"
+# age_exemption: the only way past the six-week rule (mermaid 12.3.0, security fix). Every malformed form fails.
+mmsel='(.libraries[]|select(.name=="mermaid"))'
+fresh; jq "del($mmsel.age_exemption)" "$scratch/vendor/vendor.lock.json" >"$scratch/l" \
+  && mv "$scratch/l" "$scratch/vendor/vendor.lock.json"; expect 1 "six-week rule: mermaid 12.3.0 without its age_exemption"
+fresh; jq "$mmsel.age_exemption.reason=\"convenience\"" "$scratch/vendor/vendor.lock.json" >"$scratch/l" \
+  && mv "$scratch/l" "$scratch/vendor/vendor.lock.json"; expect 1 "age_exemption: reason is not security-fix"
+fresh; jq "$mmsel.age_exemption.advisories=[]" "$scratch/vendor/vendor.lock.json" >"$scratch/l" \
+  && mv "$scratch/l" "$scratch/vendor/vendor.lock.json"; expect 1 "age_exemption: no advisory named"
+fresh; jq "$mmsel.age_exemption.advisories+=[\"see issue\"] | $mmsel.age_exemption.max_days=0" "$scratch/vendor/vendor.lock.json" >"$scratch/l" \
+  && mv "$scratch/l" "$scratch/vendor/vendor.lock.json"; expect 1 "age_exemption: non-advisory id + unknown key"
 fresh; printf 'Prism.languages.x={};\n' >>"$scratch/vendor/prism/prism-components.js"; expect 1 "appended bytes in prism/prism-components.js (#186 concat)"
 fresh; jq '(.libraries[]|select(.name=="prismjs")|.files[]|select(.concat)|.concat)|=(.[1:]+.[:1])' "$scratch/vendor/vendor.lock.json" >"$scratch/l" \
   && mv "$scratch/l" "$scratch/vendor/vendor.lock.json"; expect 1 "concat order changed in lock (prism-components.js)"

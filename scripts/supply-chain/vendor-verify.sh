@@ -23,7 +23,8 @@
 #   d) every file under ui/vendor must be a lock file, a bundle, or listed in allowed_unlocked
 #      (exact paths); symlinks are refused; any VENDOR.md (retired prose notes) is an error;
 #   e) lock published == registry time[version], and published is >= 42 days (six weeks) before
-#      added (the date the bytes landed in git).
+#      added (the date the bytes landed in git), unless the lock carries an age_exemption for a security
+#      fix (reason "security-fix", the GHSA/CVE ids it fixes, who approved it; see age_exempt_ok).
 # For every bundle (CodeMirror cm6.js, an esbuild bundle no upstream file matches): the bundle
 #   sha256 must equal the lock, its committed package-lock.json must exist, its non-dev packages
 #   must be exactly the lock's bundles[].packages (name, version, integrity), every package must
@@ -82,6 +83,16 @@ meta() {
 # whole days from the date of ISO timestamp $1 to the date of $2
 days() { echo $((($(date -ud "${2:0:10}" +%s) - $(date -ud "${1:0:10}" +%s)) / 86400)); }
 MINDAYS=42 # six-week rule
+# age_exempt_ok <library json>: the ONLY way past the six-week rule is a security fix, written down in
+# the lock as age_exemption = {reason: "security-fix", advisories: ["GHSA-…"|"CVE-…", …] (non-empty,
+# each the advisory the bump fixes), approved: "<who + date>"} and nothing else. Hashes, registry
+# integrity and publish date are still proven exactly as for every other library.
+age_exempt_ok() {
+  jq -e '.age_exemption | type == "object" and (keys == ["advisories", "approved", "reason"])
+    and .reason == "security-fix" and (.approved | type == "string" and length > 0)
+    and (.advisories | type == "array" and length > 0
+         and all(.[]; type == "string" and test("^(GHSA(-[23456789cfghjmpqrvwx]{4}){3}|CVE-[0-9]{4}-[0-9]{4,})$")))' <<<"$1" >/dev/null
+}
 # a files[] "source" URL must be an immutable, commit-addressed raw file: https, one fixed host,
 # /<owner>/<repo>/<40-hex commit sha>/<path> (no branch or tag refs, no query, no '..', no userinfo)
 SRC_HOST=raw.githubusercontent.com
@@ -130,7 +141,10 @@ for ((i = 0; i < nlib; i++)); do
     rtime=$(jq -r '.time // ""' "$work/meta.json"); pub=$(jq -r '.published // ""' <<<"$L"); add=$(jq -r '.added // ""' <<<"$L")
     [ -n "$pub" ] && [ "$pub" = "$rtime" ] || err "$id: lock published '$pub' != registry time[$ver] '$rtime'"
     if [ -n "$pub" ] && [ -n "$add" ] && d=$(days "$pub" "$add" 2>/dev/null); then
-      [ "$d" -ge "$MINDAYS" ] || err "$id: published $pub only $d day(s) before added $add (six-week rule: >= $MINDAYS)"
+      if [ "$d" -ge "$MINDAYS" ]; then :
+      elif age_exempt_ok "$L"; then
+        ok "$id: published $pub only $d day(s) before added $add: six-week rule waived for a security fix ($(jq -r '.age_exemption.advisories | join(", ")' <<<"$L"))"
+      else err "$id: published $pub only $d day(s) before added $add (six-week rule: >= $MINDAYS; a security fix needs a well-formed age_exemption)"; fi
     else err "$id: lock needs published + added dates"; fi
   else
     err "$id: no version $ver in registry packument $reg/$name"
